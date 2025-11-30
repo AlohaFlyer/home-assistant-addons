@@ -1,6 +1,6 @@
 """
 Hybrid LLM Client - 3-tier decision system
-Version 1.0.3 - Added program validation and mode timeout rules
+Version 1.0.5 - Added startup sequence monitoring rules
 
 Tier 1: Rule-based (FREE) - handles ~70%
 Tier 2: Ollama local (FREE) - handles ~25%
@@ -328,6 +328,83 @@ class HybridLLM:
                     },
                     needs_confirmation=False  # Whitelisted for auto-fix
                 )
+
+        # ========== STARTUP SEQUENCE MONITORING RULES ==========
+
+        # Rule 13: Startup timeout - clear sequence lock
+        if 'startup_timeout' in issues_str:
+            return LLMResponse(
+                tier=DecisionTier.RULE_BASED,
+                decision="clear_startup_timeout",
+                confidence=1.0,
+                reasoning="Startup sequence has timed out (>5 min) - clearing sequence lock to unblock system",
+                action_required=True,
+                action={
+                    "service": "input_boolean.turn_off",
+                    "target": {"entity_id": "input_boolean.pool_sequence_lock"}
+                },
+                needs_confirmation=False  # Whitelisted for auto-fix
+            )
+
+        # Rule 14: 24VAC power stuck ON - turn it off to protect valve motors
+        if 'startup_issue' in issues_str and '24vac' in issues_str:
+            return LLMResponse(
+                tier=DecisionTier.RULE_BASED,
+                decision="turn_off_24vac",
+                confidence=1.0,
+                reasoning="24VAC power has been ON too long - turning off to prevent valve motor damage",
+                action_required=True,
+                action={
+                    "service": "switch.turn_off",
+                    "target": {"entity_id": "switch.pool_valve_power_24vac_zwave"}
+                },
+                needs_confirmation=False  # Whitelisted for auto-fix
+            )
+
+        # Rule 15: Valve switch stuck ON - turn off all valve switches
+        if 'valve_stuck' in issues_str:
+            return LLMResponse(
+                tier=DecisionTier.RULE_BASED,
+                decision="turn_off_stuck_valve",
+                confidence=1.0,
+                reasoning="Valve switch has been ON too long (>60s) - turning off all valve switches to prevent motor damage",
+                action_required=True,
+                action={
+                    "service": "switch.turn_off",
+                    "target": {"entity_id": [
+                        "switch.pool_valve_spa_suction_zwave",
+                        "switch.pool_valve_spa_return_zwave",
+                        "switch.pool_valve_pool_suction_zwave",
+                        "switch.pool_valve_pool_return_zwave",
+                        "switch.pool_valve_skimmer_zwave",
+                        "switch.pool_valve_vacuum_zwave"
+                    ]}
+                },
+                needs_confirmation=False  # Whitelisted for auto-fix
+            )
+
+        # Rule 16: Valve switches ON during steady-state - turn them off
+        if 'valve_switch_on' in issues_str and 'steady-state' in issues_str:
+            return LLMResponse(
+                tier=DecisionTier.RULE_BASED,
+                decision="turn_off_orphan_valve_switches",
+                confidence=1.0,
+                reasoning="Valve switches are ON during steady-state (no startup) - turning off orphan switches",
+                action_required=True,
+                action={
+                    "service": "switch.turn_off",
+                    "target": {"entity_id": [
+                        "switch.pool_valve_power_24vac_zwave",
+                        "switch.pool_valve_spa_suction_zwave",
+                        "switch.pool_valve_spa_return_zwave",
+                        "switch.pool_valve_pool_suction_zwave",
+                        "switch.pool_valve_pool_return_zwave",
+                        "switch.pool_valve_skimmer_zwave",
+                        "switch.pool_valve_vacuum_zwave"
+                    ]}
+                },
+                needs_confirmation=False  # Whitelisted for auto-fix
+            )
 
         # ========== MONITORING ONLY (No action) ==========
 
