@@ -1,6 +1,6 @@
 """
 Pool Agent - Monitors pool/hot tub system
-Version 1.0.2 - Added comprehensive auto-fix capabilities
+Version 1.0.3 - Added program validation with auto-fix
 """
 
 import logging
@@ -9,6 +9,126 @@ from typing import Dict, Any, List, Optional, Tuple
 from .base import BaseAgent, AgentCheck
 
 logger = logging.getLogger(__name__)
+
+
+# Expected states for each pool program
+# Format: { entity_id: expected_state }
+PROGRAM_EXPECTED_STATES = {
+    "hot_tub_heat": {
+        "input_boolean.hot_tub_heat": "on",
+        "switch.pool_pump_zwave": "on",
+        "switch.pool_heater_wifi": "on",
+        "climate.pool_heater_wifi": "heat",
+        # climate temp: 102 (checked separately)
+        "input_boolean.pool_valve_spa_suction_position_tracker": "on",
+        "input_boolean.pool_valve_pool_suction_position_tracker": "off",
+        "input_boolean.pool_valve_spa_return_position_tracker": "on",
+        "input_boolean.pool_valve_pool_return_position_tracker": "off",
+        "input_boolean.pool_valve_skimmer_position_tracker": "on",
+        "input_boolean.pool_valve_vacuum_position_tracker": "off",
+        "input_boolean.pool_sequence_lock": "off",
+        "input_boolean.pool_action": "on",
+        "switch.pool_valve_power_24vac_zwave": "off",
+    },
+    "pool_heat": {
+        "input_boolean.pool_heat": "on",
+        "input_boolean.pool_heat_allow": "on",
+        "switch.pool_pump_zwave": "on",
+        "switch.pool_heater_wifi": "on",
+        "climate.pool_heater_wifi": "heat",
+        # climate temp: 81 (checked separately)
+        "input_boolean.pool_valve_spa_suction_position_tracker": "off",
+        "input_boolean.pool_valve_pool_suction_position_tracker": "on",
+        "input_boolean.pool_valve_spa_return_position_tracker": "off",
+        "input_boolean.pool_valve_pool_return_position_tracker": "on",
+        "input_boolean.pool_valve_skimmer_position_tracker": "on",
+        "input_boolean.pool_valve_vacuum_position_tracker": "off",
+        "input_boolean.pool_sequence_lock": "off",
+        "input_boolean.pool_action": "on",
+        "switch.pool_valve_power_24vac_zwave": "off",
+    },
+    "pool_skimmer": {
+        "input_boolean.pool_skimmer": "on",
+        "switch.pool_pump_zwave": "on",
+        "switch.pool_heater_wifi": "off",
+        "climate.pool_heater_wifi": "off",
+        "input_boolean.pool_valve_spa_suction_position_tracker": "off",
+        "input_boolean.pool_valve_pool_suction_position_tracker": "on",
+        "input_boolean.pool_valve_spa_return_position_tracker": "off",
+        "input_boolean.pool_valve_pool_return_position_tracker": "on",
+        "input_boolean.pool_valve_skimmer_position_tracker": "on",
+        "input_boolean.pool_valve_vacuum_position_tracker": "off",
+        "input_boolean.pool_sequence_lock": "off",
+        "input_boolean.pool_action": "on",
+    },
+    "pool_waterfall": {
+        "input_boolean.pool_waterfall": "on",
+        "switch.pool_pump_zwave": "on",
+        "switch.pool_heater_wifi": "off",
+        "climate.pool_heater_wifi": "off",
+        "input_boolean.pool_valve_spa_suction_position_tracker": "off",
+        "input_boolean.pool_valve_pool_suction_position_tracker": "on",
+        "input_boolean.pool_valve_spa_return_position_tracker": "on",
+        "input_boolean.pool_valve_pool_return_position_tracker": "off",
+        "input_boolean.pool_valve_skimmer_position_tracker": "on",
+        "input_boolean.pool_valve_vacuum_position_tracker": "off",
+        "input_boolean.pool_sequence_lock": "off",
+        "input_boolean.pool_action": "on",
+    },
+    "pool_vacuum": {
+        "input_boolean.pool_vacuum": "on",
+        "switch.pool_pump_zwave": "on",
+        "switch.pool_heater_wifi": "off",
+        "climate.pool_heater_wifi": "off",
+        "input_boolean.pool_valve_spa_suction_position_tracker": "off",
+        "input_boolean.pool_valve_pool_suction_position_tracker": "on",
+        "input_boolean.pool_valve_spa_return_position_tracker": "off",
+        "input_boolean.pool_valve_pool_return_position_tracker": "on",
+        "input_boolean.pool_valve_skimmer_position_tracker": "off",
+        "input_boolean.pool_valve_vacuum_position_tracker": "on",
+        "input_boolean.pool_sequence_lock": "off",
+        "input_boolean.pool_action": "on",
+    },
+    "hot_tub_empty": {
+        "input_boolean.hot_tub_empty": "on",
+        "switch.pool_pump_zwave": "on",
+        "switch.pool_heater_wifi": "off",
+        "climate.pool_heater_wifi": "off",
+        "input_boolean.pool_valve_spa_suction_position_tracker": "on",
+        "input_boolean.pool_valve_pool_suction_position_tracker": "off",
+        "input_boolean.pool_valve_spa_return_position_tracker": "off",
+        "input_boolean.pool_valve_pool_return_position_tracker": "on",
+        "input_boolean.pool_valve_skimmer_position_tracker": "on",
+        "input_boolean.pool_valve_vacuum_position_tracker": "off",
+        "input_boolean.pool_sequence_lock": "off",
+        "input_boolean.pool_action": "on",
+        # Max runtime: 6 minutes (checked separately)
+    },
+    "no_mode": {
+        "input_boolean.hot_tub_heat": "off",
+        "input_boolean.pool_heat": "off",
+        "input_boolean.pool_skimmer": "off",
+        "input_boolean.pool_waterfall": "off",
+        "input_boolean.pool_vacuum": "off",
+        "input_boolean.hot_tub_empty": "off",
+        "switch.pool_pump_zwave": "off",
+        "switch.pool_heater_wifi": "off",
+        "climate.pool_heater_wifi": "off",
+        "input_boolean.pool_sequence_lock": "off",
+        "input_boolean.pool_action": "off",
+    },
+}
+
+# Climate temperature targets per mode
+CLIMATE_TEMP_TARGETS = {
+    "hot_tub_heat": 102,
+    "pool_heat": 81,
+}
+
+# Mode timeout limits (in minutes)
+MODE_TIMEOUT_MINUTES = {
+    "hot_tub_empty": 6,
+}
 
 
 class PoolAgent(BaseAgent):
@@ -33,6 +153,7 @@ class PoolAgent(BaseAgent):
             # Mode toggles
             "input_boolean.hot_tub_heat",
             "input_boolean.pool_heat",
+            "input_boolean.pool_heat_allow",
             "input_boolean.pool_skimmer",
             "input_boolean.pool_waterfall",
             "input_boolean.pool_vacuum",
@@ -79,13 +200,80 @@ class PoolAgent(BaseAgent):
             'switch.pool_valve_vacuum_zwave'
         ]
 
+        # Track mode start times for timeout detection
+        self.mode_start_times: Dict[str, datetime] = {}
+
     async def get_monitored_entities(self) -> List[str]:
         return self.monitored_entities
+
+    def _get_active_mode(self, states: Dict[str, Any]) -> Optional[str]:
+        """Determine which mode is currently active, if any"""
+        mode_entities = {
+            "hot_tub_heat": "input_boolean.hot_tub_heat",
+            "pool_heat": "input_boolean.pool_heat",
+            "pool_skimmer": "input_boolean.pool_skimmer",
+            "pool_waterfall": "input_boolean.pool_waterfall",
+            "pool_vacuum": "input_boolean.pool_vacuum",
+            "hot_tub_empty": "input_boolean.hot_tub_empty",
+        }
+
+        for mode, entity in mode_entities.items():
+            if states.get(entity) == 'on':
+                return mode
+
+        return None
+
+    def _validate_program(self, mode: str, states: Dict[str, Any]) -> List[str]:
+        """Validate that current states match expected states for the active mode"""
+        mismatches = []
+
+        if mode not in PROGRAM_EXPECTED_STATES:
+            return mismatches
+
+        expected = PROGRAM_EXPECTED_STATES[mode]
+
+        for entity, expected_state in expected.items():
+            actual_state = states.get(entity)
+
+            # Skip if entity is unavailable (separate check handles this)
+            if actual_state in ['unavailable', 'unknown', None]:
+                continue
+
+            if actual_state != expected_state:
+                mismatches.append(f"{entity}: expected '{expected_state}', got '{actual_state}'")
+
+        return mismatches
+
+    def _check_mode_timeout(self, mode: str) -> bool:
+        """Check if a mode has exceeded its timeout limit"""
+        if mode not in MODE_TIMEOUT_MINUTES:
+            return False
+
+        if mode not in self.mode_start_times:
+            # First time seeing this mode active, record start time
+            self.mode_start_times[mode] = datetime.now()
+            return False
+
+        elapsed = (datetime.now() - self.mode_start_times[mode]).total_seconds() / 60
+        return elapsed > MODE_TIMEOUT_MINUTES[mode]
+
+    def _clear_mode_start_time(self, mode: str):
+        """Clear the start time when a mode is no longer active"""
+        if mode in self.mode_start_times:
+            del self.mode_start_times[mode]
 
     async def check(self) -> AgentCheck:
         """Perform pool system health check"""
         states = await self.get_states(self.monitored_entities)
         issues = []
+
+        # Determine active mode
+        active_mode = self._get_active_mode(states)
+
+        # Clear start times for modes that are no longer active
+        for mode in list(self.mode_start_times.keys()):
+            if mode != active_mode:
+                self._clear_mode_start_time(mode)
 
         # Check for sensor failure
         sensor_failure = states.get('input_boolean.pool_sensor_failure_detected')
@@ -166,6 +354,26 @@ class PoolAgent(BaseAgent):
         if is_quiet_hours and pump == 'on' and not any_mode_active:
             issues.append("WARNING: Pump running during quiet hours with no mode active (orphan pump)")
 
+        # ========== PROGRAM VALIDATION ==========
+        # Validate that active mode has correct states
+        if active_mode:
+            mismatches = self._validate_program(active_mode, states)
+            if mismatches:
+                issues.append(f"PROGRAM_MISMATCH: {active_mode} has incorrect states: {'; '.join(mismatches)}")
+
+            # Check mode timeout (e.g., hot_tub_empty > 6 minutes)
+            if self._check_mode_timeout(active_mode):
+                timeout_mins = MODE_TIMEOUT_MINUTES.get(active_mode, 0)
+                issues.append(f"MODE_TIMEOUT: {active_mode} has been running longer than {timeout_mins} minutes")
+        else:
+            # No mode active - validate "no_mode" state
+            mismatches = self._validate_program("no_mode", states)
+            # Filter out pump mismatch during scheduled hours (8 AM - 6 PM) - pump may legitimately be off
+            # Only flag if heater or action flags are wrong when no mode is active
+            critical_mismatches = [m for m in mismatches if 'pool_heater' in m or 'pool_action' in m or 'pool_sequence_lock' in m]
+            if critical_mismatches:
+                issues.append(f"NO_MODE_MISMATCH: System flags incorrect with no mode active: {'; '.join(critical_mismatches)}")
+
         self.last_check = AgentCheck(
             agent_name=self.name,
             issues=issues,
@@ -200,6 +408,8 @@ class PoolAgent(BaseAgent):
                 ["pool_skimmer", "pool_waterfall"],
                 ["hot_tub_heat", "pool_heat"]
             ],
+            "mode_timeouts": MODE_TIMEOUT_MINUTES,
+            "climate_temp_targets": CLIMATE_TEMP_TARGETS,
             "auto_fix_whitelist": [
                 "clear_stuck_sequence_lock",
                 "clear_stuck_action_flag",
@@ -210,6 +420,8 @@ class PoolAgent(BaseAgent):
                 "force_restart_mode",
                 "zwave_recovery",
                 "emergency_overheat_stop",
-                "stop_heating_wrong_valves"
+                "stop_heating_wrong_valves",
+                "program_mismatch_restart",
+                "mode_timeout_stop"
             ]
         }

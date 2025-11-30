@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.0.3] - 2025-11-29
+
+### Added - Program Validation & Mode Timeout
+Pool agent now validates that active modes have correct equipment states:
+
+**7 Pool Modes Validated:**
+1. **Hot Tub Heat** - Spa valves, pump ON, heater ON at 102°F
+2. **Pool Heat** - Pool valves, pump ON, heater ON at 81°F (requires pool_heat_allow)
+3. **Pool Skimmer** - Pool valves, pump ON, heater OFF
+4. **Pool Waterfall** - Pool suction + spa return, pump ON, heater OFF
+5. **Pool Vacuum** - Pool valves + vacuum position, pump ON, heater OFF
+6. **Hot Tub Empty** - Spa suction + pool return, pump ON (MAX 6 MINUTES)
+7. **No Mode** - All modes OFF, pump OFF, heater OFF
+
+**New Auto-Fix Rules (Whitelisted):**
+11. **Program Mismatch Fix** - Calls `script.pool_system_force_restart_current_mode` to correct equipment states
+12. **Mode Timeout Stop** - Turns off `hot_tub_empty` after 6 minute timeout
+
+### Changed
+- Pool agent checks every 5 minutes for program validation
+- Mode start times tracked for timeout detection
+- Valve trackers validated against 3 Jandy valve pairs (mutually exclusive positions)
+
 ## [1.0.2] - 2025-11-29
 
 ### Added - Pool Agent Auto-Fix Whitelist
