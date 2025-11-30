@@ -1,0 +1,28 @@
+name: "Pool AI Agent"
+description: "AI-powered autonomous pool management using Claude API with hybrid LLM cost optimization"
+version: "1.1.0"
+slug: "pool_ai_agent"
+init: false
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+homeassistant_api: true
+map:
+  - config:rw
+options:
+  anthropic_api_key: ""
+  decision_interval_minutes: 5
+  log_level: "info"
+  # Hybrid LLM options
+  hybrid_mode_enabled: true
+  ollama_url: "http://homeassistant.local:11434"
+  ollama_model: "llama3.2:3b"
+schema:
+  anthropic_api_key: str
+  decision_interval_minutes: int(1,60)
+  log_level: list(debug|info|warning|error)
+  hybrid_mode_enabled: bool
+  ollama_url: str
+  ollama_model: str
