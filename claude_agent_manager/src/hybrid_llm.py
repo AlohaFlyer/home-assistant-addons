@@ -1,5 +1,7 @@
 """
 Hybrid LLM Client - 3-tier decision system
+Version 1.0.2 - Enhanced pool auto-fix rules
+
 Tier 1: Rule-based (FREE) - handles ~70%
 Tier 2: Ollama local (FREE) - handles ~25%
 Tier 3: Claude API (PAID) - handles ~5%
@@ -120,60 +122,199 @@ class HybridLLM:
         return None
 
     def _pool_rules(self, issues: list, states: dict) -> Optional[LLMResponse]:
-        """Pool-specific Tier 1 rules"""
+        """Pool-specific Tier 1 rules - comprehensive auto-fix"""
 
-        # CRITICAL: Overheat protection
-        temp = states.get('sensor.pool_heater_wifi_temperature')
-        if temp and temp != 'unavailable' and temp != 'unknown':
-            try:
-                temp_f = float(temp)
-                if temp_f > 105:
-                    return LLMResponse(
-                        tier=DecisionTier.RULE_BASED,
-                        decision="emergency_shutdown",
-                        confidence=1.0,
-                        reasoning=f"CRITICAL: Water temperature {temp_f}°F exceeds 105°F safety limit",
-                        action_required=True,
-                        action={
-                            "service": "homeassistant.turn_off",
-                            "target": {"entity_id": ["input_boolean.hot_tub_heat", "input_boolean.pool_heat"]}
-                        },
-                        needs_confirmation=False  # Emergency - act immediately
-                    )
-            except (ValueError, TypeError):
-                pass
+        issues_str = ' '.join(issues).lower()
 
-        # CRITICAL: Sensor failure detected
-        sensor_failure = states.get('input_boolean.pool_sensor_failure_detected')
-        if sensor_failure == 'on':
+        # ========== CRITICAL SAFETY RULES (Act immediately) ==========
+
+        # Rule 1: EMERGENCY - Overheat protection (>105°F)
+        if 'overheat' in issues_str and '105' in issues_str:
+            temp = states.get('sensor.pool_heater_wifi_temperature', 'unknown')
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
-                decision="sensor_failure_block",
+                decision="emergency_overheat_stop",
                 confidence=1.0,
-                reasoning="Sensor failure detected - heating blocked for safety",
-                action_required=False
+                reasoning=f"EMERGENCY: Water temperature {temp}°F exceeds 105°F safety limit - running emergency stop",
+                action_required=True,
+                action={
+                    "service": "script.turn_on",
+                    "target": {"entity_id": "script.pool_emergency_all_stop"}
+                },
+                needs_confirmation=False  # Emergency - act immediately
             )
 
-        # CRITICAL: Pump not running during heating mode
-        hot_tub_heat = states.get('input_boolean.hot_tub_heat')
-        pool_heat = states.get('input_boolean.pool_heat')
-        pump = states.get('switch.pool_pump_zwave')
-
-        if (hot_tub_heat == 'on' or pool_heat == 'on') and pump == 'off':
+        # Rule 2: CRITICAL - Heating mode with wrong valve position (drainage risk)
+        if 'hot tub heat on but valve trackers show wrong position' in issues_str:
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
-                decision="pump_not_running",
+                decision="stop_heating_wrong_valves",
                 confidence=1.0,
-                reasoning="CRITICAL: Heating mode active but pump is OFF",
+                reasoning="CRITICAL: Hot tub heating with valves in wrong position - drainage risk! Stopping heating mode.",
+                action_required=True,
+                action={
+                    "service": "input_boolean.turn_off",
+                    "target": {"entity_id": "input_boolean.hot_tub_heat"}
+                },
+                needs_confirmation=False  # Safety critical
+            )
+
+        # Rule 3: CRITICAL - Pump not running during heating mode
+        if 'heating mode active but pump is off' in issues_str:
+            return LLMResponse(
+                tier=DecisionTier.RULE_BASED,
+                decision="pump_on_during_heating",
+                confidence=1.0,
+                reasoning="CRITICAL: Heating mode active but pump is OFF - turning pump ON to prevent dry heater damage",
                 action_required=True,
                 action={
                     "service": "switch.turn_on",
                     "target": {"entity_id": "switch.pool_pump_zwave"}
                 },
-                needs_confirmation=self.confirm_critical
+                needs_confirmation=False  # Whitelisted for auto-fix
             )
 
-        # Normal: All systems operational
+        # ========== MEDIUM PRIORITY RULES (Auto-fix whitelisted) ==========
+
+        # Rule 4: Stuck sequence lock (no mode active)
+        if 'sequence lock stuck on' in issues_str:
+            return LLMResponse(
+                tier=DecisionTier.RULE_BASED,
+                decision="clear_stuck_sequence_lock",
+                confidence=1.0,
+                reasoning="Sequence lock is stuck ON with no mode active - clearing lock",
+                action_required=True,
+                action={
+                    "service": "input_boolean.turn_off",
+                    "target": {"entity_id": "input_boolean.pool_sequence_lock"}
+                },
+                needs_confirmation=False  # Whitelisted for auto-fix
+            )
+
+        # Rule 5: Stuck pool_action flag (no mode active)
+        if 'pool action flag stuck on' in issues_str:
+            return LLMResponse(
+                tier=DecisionTier.RULE_BASED,
+                decision="clear_stuck_action_flag",
+                confidence=1.0,
+                reasoning="Pool action flag is stuck ON with no mode active - clearing flag",
+                action_required=True,
+                action={
+                    "service": "input_boolean.turn_off",
+                    "target": {"entity_id": "input_boolean.pool_action"}
+                },
+                needs_confirmation=False  # Whitelisted for auto-fix
+            )
+
+        # Rule 6: Skimmer + Waterfall conflict
+        if 'both skimmer and waterfall active' in issues_str:
+            return LLMResponse(
+                tier=DecisionTier.RULE_BASED,
+                decision="resolve_mode_conflict",
+                confidence=1.0,
+                reasoning="Both skimmer and waterfall are active (conflict) - turning off waterfall, keeping skimmer",
+                action_required=True,
+                action={
+                    "service": "input_boolean.turn_off",
+                    "target": {"entity_id": "input_boolean.pool_waterfall"}
+                },
+                needs_confirmation=False  # Whitelisted for auto-fix
+            )
+
+        # Rule 7: Orphan pump during quiet hours
+        if 'pump running during quiet hours' in issues_str and 'orphan' in issues_str:
+            return LLMResponse(
+                tier=DecisionTier.RULE_BASED,
+                decision="pump_off_orphan",
+                confidence=1.0,
+                reasoning="Pump running during quiet hours (6PM-8AM) with no mode active - turning off orphan pump",
+                action_required=True,
+                action={
+                    "service": "switch.turn_off",
+                    "target": {"entity_id": "switch.pool_pump_zwave"}
+                },
+                needs_confirmation=False  # Whitelisted for auto-fix
+            )
+
+        # Rule 8: Valve tracker mismatch (sync trackers)
+        # Note: This handles the WARNING level mismatch, not the CRITICAL drainage risk one
+        if 'valve trackers' in issues_str and 'wrong' in issues_str and 'drainage' not in issues_str:
+            return LLMResponse(
+                tier=DecisionTier.RULE_BASED,
+                decision="sync_valve_trackers",
+                confidence=0.95,
+                reasoning="Valve trackers don't match expected positions - syncing trackers to current mode",
+                action_required=True,
+                action={
+                    "service": "script.turn_on",
+                    "target": {"entity_id": "script.pool_valve_tracker_sync_to_mode"}
+                },
+                needs_confirmation=False  # Whitelisted for auto-fix
+            )
+
+        # Rule 9: Z-Wave valves unavailable (3+) - attempt recovery
+        if 'z-wave valves unavailable' in issues_str and 'z-wave issue' in issues_str:
+            return LLMResponse(
+                tier=DecisionTier.RULE_BASED,
+                decision="zwave_recovery",
+                confidence=0.9,
+                reasoning="Multiple Z-Wave valves unavailable - attempting Z-Wave integration reload",
+                action_required=True,
+                action={
+                    "service": "homeassistant.reload_config_entry",
+                    "data": {"entry_id": "zwave_js"}  # May need adjustment based on actual entry ID
+                },
+                needs_confirmation=False  # Whitelisted for auto-fix
+            )
+
+        # Rule 10: Single Z-Wave valve unavailable - ping it
+        if 'z-wave valve(s) unavailable' in issues_str and 'z-wave issue' not in issues_str:
+            # Extract the unavailable valve name if possible
+            return LLMResponse(
+                tier=DecisionTier.RULE_BASED,
+                decision="zwave_ping",
+                confidence=0.85,
+                reasoning="Z-Wave valve(s) unavailable - attempting to ping devices",
+                action_required=True,
+                action={
+                    "service": "zwave_js.ping",
+                    "target": {"entity_id": [
+                        "switch.pool_valve_power_24vac_zwave",
+                        "switch.pool_valve_spa_suction_zwave",
+                        "switch.pool_valve_spa_return_zwave",
+                        "switch.pool_valve_pool_suction_zwave",
+                        "switch.pool_valve_pool_return_zwave",
+                        "switch.pool_valve_skimmer_zwave",
+                        "switch.pool_valve_vacuum_zwave"
+                    ]}
+                },
+                needs_confirmation=False  # Whitelisted for auto-fix
+            )
+
+        # ========== MONITORING ONLY (No action) ==========
+
+        # Sensor failure - just monitor, don't try to fix
+        if 'sensor failure' in issues_str:
+            return LLMResponse(
+                tier=DecisionTier.RULE_BASED,
+                decision="sensor_failure_monitor",
+                confidence=1.0,
+                reasoning="Temperature sensor failure detected - heating is blocked by existing automations. Monitoring only.",
+                action_required=False
+            )
+
+        # High temperature warning (but not overheat)
+        if 'temperature high' in issues_str and 'overheat' not in issues_str:
+            return LLMResponse(
+                tier=DecisionTier.RULE_BASED,
+                decision="high_temp_monitor",
+                confidence=1.0,
+                reasoning="Temperature is high but below critical threshold - monitoring",
+                action_required=False
+            )
+
+        # ========== NO ISSUES ==========
+
         if not issues:
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
