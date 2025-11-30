@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.4] - 2025-11-30
+
+### Fixed - Program Expected States
+Corrected expected states based on actual automation behavior:
+
+1. **`pool_action` is OFF during steady-state** - Only ON during startup phase, turned OFF after startup completes (line 1257 in valve executor, line 3610-3612 in hot_tub_heat_start)
+
+2. **`skimmer_position_tracker` is OFF for hot_tub_heat** - Hot tub heat sets ALL pool-side trackers to OFF including skimmer (line 3300, 3343 in hot_tub_heat_start)
+
+3. **Climate entity uses thermostat cycling** - The `climate.pool_heater_wifi` entity manages temperature cycling internally. `hvac_action` can be `heating` OR `idle` - both are valid when climate state is `heat`
+
+### Changed
+- All 6 modes now correctly expect `pool_action: "off"` in steady-state
+- `hot_tub_heat` correctly expects `skimmer_position_tracker: "off"`
+- Added explanatory comments in PROGRAM_EXPECTED_STATES
+
 ## [1.0.3] - 2025-11-29
 
 ### Added - Program Validation & Mode Timeout

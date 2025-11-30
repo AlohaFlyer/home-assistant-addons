@@ -1,6 +1,6 @@
 """
 Pool Agent - Monitors pool/hot tub system
-Version 1.0.3 - Added program validation with auto-fix
+Version 1.0.4 - Fixed expected states based on actual automation logic
 """
 
 import logging
@@ -20,14 +20,15 @@ PROGRAM_EXPECTED_STATES = {
         "switch.pool_heater_wifi": "on",
         "climate.pool_heater_wifi": "heat",
         # climate temp: 102 (checked separately)
+        # Valve trackers for spa heating: spa ON, pool OFF, skimmer OFF (per automation line 3343)
         "input_boolean.pool_valve_spa_suction_position_tracker": "on",
         "input_boolean.pool_valve_pool_suction_position_tracker": "off",
         "input_boolean.pool_valve_spa_return_position_tracker": "on",
         "input_boolean.pool_valve_pool_return_position_tracker": "off",
-        "input_boolean.pool_valve_skimmer_position_tracker": "on",
+        "input_boolean.pool_valve_skimmer_position_tracker": "off",  # OFF for hot tub heat
         "input_boolean.pool_valve_vacuum_position_tracker": "off",
         "input_boolean.pool_sequence_lock": "off",
-        "input_boolean.pool_action": "on",
+        "input_boolean.pool_action": "off",  # OFF after startup completes (line 3610-3612)
         "switch.pool_valve_power_24vac_zwave": "off",
     },
     "pool_heat": {
@@ -37,6 +38,7 @@ PROGRAM_EXPECTED_STATES = {
         "switch.pool_heater_wifi": "on",
         "climate.pool_heater_wifi": "heat",
         # climate temp: 81 (checked separately)
+        # Valve trackers for pool heating: pool ON, spa OFF, skimmer ON (per automation line 5180)
         "input_boolean.pool_valve_spa_suction_position_tracker": "off",
         "input_boolean.pool_valve_pool_suction_position_tracker": "on",
         "input_boolean.pool_valve_spa_return_position_tracker": "off",
@@ -44,7 +46,7 @@ PROGRAM_EXPECTED_STATES = {
         "input_boolean.pool_valve_skimmer_position_tracker": "on",
         "input_boolean.pool_valve_vacuum_position_tracker": "off",
         "input_boolean.pool_sequence_lock": "off",
-        "input_boolean.pool_action": "on",
+        "input_boolean.pool_action": "off",  # OFF after startup completes
         "switch.pool_valve_power_24vac_zwave": "off",
     },
     "pool_skimmer": {
@@ -52,6 +54,7 @@ PROGRAM_EXPECTED_STATES = {
         "switch.pool_pump_zwave": "on",
         "switch.pool_heater_wifi": "off",
         "climate.pool_heater_wifi": "off",
+        # Valve trackers for skimmer: pool ON, spa OFF, skimmer ON, vacuum OFF
         "input_boolean.pool_valve_spa_suction_position_tracker": "off",
         "input_boolean.pool_valve_pool_suction_position_tracker": "on",
         "input_boolean.pool_valve_spa_return_position_tracker": "off",
@@ -59,13 +62,14 @@ PROGRAM_EXPECTED_STATES = {
         "input_boolean.pool_valve_skimmer_position_tracker": "on",
         "input_boolean.pool_valve_vacuum_position_tracker": "off",
         "input_boolean.pool_sequence_lock": "off",
-        "input_boolean.pool_action": "on",
+        "input_boolean.pool_action": "off",  # OFF after startup completes
     },
     "pool_waterfall": {
         "input_boolean.pool_waterfall": "on",
         "switch.pool_pump_zwave": "on",
         "switch.pool_heater_wifi": "off",
         "climate.pool_heater_wifi": "off",
+        # Valve trackers for waterfall: pool suction ON, spa return ON (for waterfall), skimmer ON
         "input_boolean.pool_valve_spa_suction_position_tracker": "off",
         "input_boolean.pool_valve_pool_suction_position_tracker": "on",
         "input_boolean.pool_valve_spa_return_position_tracker": "on",
@@ -73,13 +77,14 @@ PROGRAM_EXPECTED_STATES = {
         "input_boolean.pool_valve_skimmer_position_tracker": "on",
         "input_boolean.pool_valve_vacuum_position_tracker": "off",
         "input_boolean.pool_sequence_lock": "off",
-        "input_boolean.pool_action": "on",
+        "input_boolean.pool_action": "off",  # OFF after startup completes
     },
     "pool_vacuum": {
         "input_boolean.pool_vacuum": "on",
         "switch.pool_pump_zwave": "on",
         "switch.pool_heater_wifi": "off",
         "climate.pool_heater_wifi": "off",
+        # Valve trackers for vacuum: pool ON, spa OFF, skimmer OFF (vacuum ON)
         "input_boolean.pool_valve_spa_suction_position_tracker": "off",
         "input_boolean.pool_valve_pool_suction_position_tracker": "on",
         "input_boolean.pool_valve_spa_return_position_tracker": "off",
@@ -87,13 +92,14 @@ PROGRAM_EXPECTED_STATES = {
         "input_boolean.pool_valve_skimmer_position_tracker": "off",
         "input_boolean.pool_valve_vacuum_position_tracker": "on",
         "input_boolean.pool_sequence_lock": "off",
-        "input_boolean.pool_action": "on",
+        "input_boolean.pool_action": "off",  # OFF after startup completes
     },
     "hot_tub_empty": {
         "input_boolean.hot_tub_empty": "on",
         "switch.pool_pump_zwave": "on",
         "switch.pool_heater_wifi": "off",
         "climate.pool_heater_wifi": "off",
+        # Valve trackers for hot tub empty: spa suction ON, pool return ON (drains spa to pool)
         "input_boolean.pool_valve_spa_suction_position_tracker": "on",
         "input_boolean.pool_valve_pool_suction_position_tracker": "off",
         "input_boolean.pool_valve_spa_return_position_tracker": "off",
@@ -101,7 +107,7 @@ PROGRAM_EXPECTED_STATES = {
         "input_boolean.pool_valve_skimmer_position_tracker": "on",
         "input_boolean.pool_valve_vacuum_position_tracker": "off",
         "input_boolean.pool_sequence_lock": "off",
-        "input_boolean.pool_action": "on",
+        "input_boolean.pool_action": "off",  # OFF after startup completes
         # Max runtime: 6 minutes (checked separately)
     },
     "no_mode": {
