@@ -1,17 +1,18 @@
 """
 Pool Agent - Monitors pool/hot tub system
+Version 1.0.2 - Added comprehensive auto-fix capabilities
 """
 
 import logging
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
 from .base import BaseAgent, AgentCheck
 
 logger = logging.getLogger(__name__)
 
 
 class PoolAgent(BaseAgent):
-    """Monitors pool and hot tub systems"""
+    """Monitors pool and hot tub systems with auto-fix capabilities"""
 
     def __init__(self, ha_client):
         super().__init__("pool", ha_client)
@@ -67,6 +68,17 @@ class PoolAgent(BaseAgent):
             "switch.pool_hot_tub_bubbler_zwave",
         ]
 
+        # Z-Wave valve entities for availability checks
+        self.zwave_valves = [
+            'switch.pool_valve_power_24vac_zwave',
+            'switch.pool_valve_spa_suction_zwave',
+            'switch.pool_valve_spa_return_zwave',
+            'switch.pool_valve_pool_suction_zwave',
+            'switch.pool_valve_pool_return_zwave',
+            'switch.pool_valve_skimmer_zwave',
+            'switch.pool_valve_vacuum_zwave'
+        ]
+
     async def get_monitored_entities(self) -> List[str]:
         return self.monitored_entities
 
@@ -111,32 +123,35 @@ class PoolAgent(BaseAgent):
 
         # Check for stuck sequence lock
         sequence_lock = states.get('input_boolean.pool_sequence_lock')
-        if sequence_lock == 'on':
-            issues.append("WARNING: Sequence lock is ON (may be stuck)")
+        pool_action = states.get('input_boolean.pool_action')
+        any_mode_active = self._any_mode_active(states)
+
+        if sequence_lock == 'on' and not any_mode_active:
+            issues.append("WARNING: Sequence lock stuck ON (no mode active)")
+
+        # Check for stuck pool_action flag
+        if pool_action == 'on' and not any_mode_active:
+            issues.append("WARNING: Pool action flag stuck ON (no mode active)")
 
         # Check Z-Wave valve availability
-        zwave_valves = [
-            'switch.pool_valve_power_24vac_zwave',
-            'switch.pool_valve_spa_suction_zwave',
-            'switch.pool_valve_spa_return_zwave',
-            'switch.pool_valve_pool_suction_zwave',
-            'switch.pool_valve_pool_return_zwave',
-            'switch.pool_valve_skimmer_zwave',
-            'switch.pool_valve_vacuum_zwave'
-        ]
-        unavailable_valves = [v for v in zwave_valves if states.get(v) == 'unavailable']
+        unavailable_valves = [v for v in self.zwave_valves if states.get(v) == 'unavailable']
         if len(unavailable_valves) >= 3:
             issues.append(f"CRITICAL: {len(unavailable_valves)} Z-Wave valves unavailable - Z-Wave issue")
         elif unavailable_valves:
-            issues.append(f"WARNING: {len(unavailable_valves)} Z-Wave valve(s) unavailable")
+            issues.append(f"WARNING: {len(unavailable_valves)} Z-Wave valve(s) unavailable: {', '.join([v.split('.')[-1] for v in unavailable_valves])}")
 
         # Check valve tracker mismatches during heating
         if hot_tub_heat == 'on':
-            # Hot tub heat should have spa valves ON
             spa_suction_tracker = states.get('input_boolean.pool_valve_spa_suction_position_tracker')
             spa_return_tracker = states.get('input_boolean.pool_valve_spa_return_position_tracker')
             if spa_suction_tracker == 'off' or spa_return_tracker == 'off':
-                issues.append("WARNING: Hot tub heat ON but valve trackers show wrong position")
+                issues.append("CRITICAL: Hot tub heat ON but valve trackers show WRONG position (drainage risk)")
+
+        if pool_heat == 'on':
+            pool_suction_tracker = states.get('input_boolean.pool_valve_pool_suction_position_tracker')
+            pool_return_tracker = states.get('input_boolean.pool_valve_pool_return_position_tracker')
+            if pool_suction_tracker == 'off' or pool_return_tracker == 'off':
+                issues.append("WARNING: Pool heat ON but valve trackers may be wrong")
 
         # Check for mutual exclusion violations
         skimmer = states.get('input_boolean.pool_skimmer')
@@ -147,17 +162,9 @@ class PoolAgent(BaseAgent):
         # Check off-hours pump (6 PM - 8 AM)
         current_hour = datetime.now().hour
         is_quiet_hours = current_hour >= 18 or current_hour < 8
-        any_mode_active = any([
-            states.get('input_boolean.hot_tub_heat') == 'on',
-            states.get('input_boolean.pool_heat') == 'on',
-            states.get('input_boolean.pool_skimmer') == 'on',
-            states.get('input_boolean.pool_waterfall') == 'on',
-            states.get('input_boolean.pool_vacuum') == 'on',
-            states.get('input_boolean.hot_tub_empty') == 'on'
-        ])
 
         if is_quiet_hours and pump == 'on' and not any_mode_active:
-            issues.append("WARNING: Pump running during quiet hours with no mode active")
+            issues.append("WARNING: Pump running during quiet hours with no mode active (orphan pump)")
 
         self.last_check = AgentCheck(
             agent_name=self.name,
@@ -168,6 +175,17 @@ class PoolAgent(BaseAgent):
         )
 
         return self.last_check
+
+    def _any_mode_active(self, states: Dict[str, Any]) -> bool:
+        """Check if any pool mode is currently active"""
+        return any([
+            states.get('input_boolean.hot_tub_heat') == 'on',
+            states.get('input_boolean.pool_heat') == 'on',
+            states.get('input_boolean.pool_skimmer') == 'on',
+            states.get('input_boolean.pool_waterfall') == 'on',
+            states.get('input_boolean.pool_vacuum') == 'on',
+            states.get('input_boolean.hot_tub_empty') == 'on'
+        ])
 
     def get_rules(self) -> Dict[str, Any]:
         return {
@@ -181,5 +199,17 @@ class PoolAgent(BaseAgent):
             "mutual_exclusions": [
                 ["pool_skimmer", "pool_waterfall"],
                 ["hot_tub_heat", "pool_heat"]
+            ],
+            "auto_fix_whitelist": [
+                "clear_stuck_sequence_lock",
+                "clear_stuck_action_flag",
+                "sync_valve_trackers",
+                "resolve_mode_conflict",
+                "pump_on_during_heating",
+                "pump_off_orphan",
+                "force_restart_mode",
+                "zwave_recovery",
+                "emergency_overheat_stop",
+                "stop_heating_wrong_valves"
             ]
         }
