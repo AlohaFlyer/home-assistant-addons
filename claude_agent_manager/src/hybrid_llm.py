@@ -1,6 +1,6 @@
 """
 Hybrid LLM Client - 3-tier decision system
-Version 1.0.2 - Enhanced pool auto-fix rules
+Version 1.0.3 - Added program validation and mode timeout rules
 
 Tier 1: Rule-based (FREE) - handles ~70%
 Tier 2: Ollama local (FREE) - handles ~25%
@@ -290,6 +290,44 @@ class HybridLLM:
                 },
                 needs_confirmation=False  # Whitelisted for auto-fix
             )
+
+        # Rule 11: Program mismatch - restart current mode to fix
+        if 'program_mismatch' in issues_str or 'program mismatch' in issues_str:
+            # Extract mode name from issue if possible for better logging
+            mode_name = "active mode"
+            for mode in ['hot_tub_heat', 'pool_heat', 'pool_skimmer', 'pool_waterfall', 'pool_vacuum', 'hot_tub_empty']:
+                if mode in issues_str:
+                    mode_name = mode.replace('_', ' ')
+                    break
+            return LLMResponse(
+                tier=DecisionTier.RULE_BASED,
+                decision="restart_mode_fix_mismatch",
+                confidence=1.0,
+                reasoning=f"Program mismatch detected in {mode_name} - restarting mode to correct equipment states",
+                action_required=True,
+                action={
+                    "service": "script.turn_on",
+                    "target": {"entity_id": "script.pool_system_force_restart_current_mode"}
+                },
+                needs_confirmation=False  # Whitelisted for auto-fix
+            )
+
+        # Rule 12: Mode timeout - stop the timed-out mode
+        if 'mode_timeout' in issues_str or 'mode timeout' in issues_str:
+            # hot_tub_empty is currently the only mode with a timeout (6 minutes)
+            if 'hot_tub_empty' in issues_str:
+                return LLMResponse(
+                    tier=DecisionTier.RULE_BASED,
+                    decision="stop_timed_out_mode",
+                    confidence=1.0,
+                    reasoning="Hot Tub Empty mode has exceeded 6 minute timeout - stopping mode to prevent damage",
+                    action_required=True,
+                    action={
+                        "service": "input_boolean.turn_off",
+                        "target": {"entity_id": "input_boolean.hot_tub_empty"}
+                    },
+                    needs_confirmation=False  # Whitelisted for auto-fix
+                )
 
         # ========== MONITORING ONLY (No action) ==========
 
