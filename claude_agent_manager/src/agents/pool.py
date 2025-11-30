@@ -1,6 +1,6 @@
 """
 Pool Agent - Monitors pool/hot tub system
-Version 1.0.4 - Fixed expected states based on actual automation logic
+Version 1.0.5 - Added startup sequence monitoring
 """
 
 import logging
@@ -136,6 +136,24 @@ MODE_TIMEOUT_MINUTES = {
     "hot_tub_empty": 6,
 }
 
+# Startup sequence timing limits (in seconds)
+STARTUP_TIMING = {
+    "valve_actuation_max": 60,      # Jandy valve takes ~40s, allow 60s max
+    "24vac_power_max": 120,         # 24VAC should be off within 2 minutes of startup
+    "sequence_lock_max": 300,       # Full startup should complete within 5 minutes
+}
+
+# Valve switches that should be OFF during steady-state operation
+VALVE_SWITCHES = [
+    "switch.pool_valve_power_24vac_zwave",
+    "switch.pool_valve_spa_suction_zwave",
+    "switch.pool_valve_spa_return_zwave",
+    "switch.pool_valve_pool_suction_zwave",
+    "switch.pool_valve_pool_return_zwave",
+    "switch.pool_valve_skimmer_zwave",
+    "switch.pool_valve_vacuum_zwave",
+]
+
 
 class PoolAgent(BaseAgent):
     """Monitors pool and hot tub systems with auto-fix capabilities"""
@@ -209,6 +227,16 @@ class PoolAgent(BaseAgent):
         # Track mode start times for timeout detection
         self.mode_start_times: Dict[str, datetime] = {}
 
+        # Track startup sequence state
+        self.startup_tracking: Dict[str, Any] = {
+            "sequence_lock_start": None,      # When sequence_lock turned ON
+            "24vac_on_start": None,           # When 24VAC turned ON
+            "valve_switch_on_times": {},      # When each valve switch turned ON
+            "last_sequence_lock_state": None, # Previous sequence_lock state
+            "last_24vac_state": None,         # Previous 24VAC state
+            "last_valve_states": {},          # Previous valve switch states
+        }
+
     async def get_monitored_entities(self) -> List[str]:
         return self.monitored_entities
 
@@ -267,6 +295,116 @@ class PoolAgent(BaseAgent):
         """Clear the start time when a mode is no longer active"""
         if mode in self.mode_start_times:
             del self.mode_start_times[mode]
+
+    def _check_startup_sequence(self, states: Dict[str, Any]) -> List[str]:
+        """
+        Monitor startup sequence timing and valve actuation.
+        Returns list of issues found during startup monitoring.
+        """
+        issues = []
+        now = datetime.now()
+
+        sequence_lock = states.get('input_boolean.pool_sequence_lock')
+        power_24vac = states.get('switch.pool_valve_power_24vac_zwave')
+
+        # Track sequence_lock state changes
+        if sequence_lock == 'on' and self.startup_tracking["last_sequence_lock_state"] != 'on':
+            # Sequence lock just turned ON - startup beginning
+            self.startup_tracking["sequence_lock_start"] = now
+            logger.info("Startup sequence detected - sequence_lock turned ON")
+        elif sequence_lock == 'off' and self.startup_tracking["last_sequence_lock_state"] == 'on':
+            # Sequence lock just turned OFF - startup completed
+            if self.startup_tracking["sequence_lock_start"]:
+                duration = (now - self.startup_tracking["sequence_lock_start"]).total_seconds()
+                logger.info(f"Startup sequence completed in {duration:.1f} seconds")
+            # Reset tracking
+            self.startup_tracking["sequence_lock_start"] = None
+            self.startup_tracking["24vac_on_start"] = None
+            self.startup_tracking["valve_switch_on_times"] = {}
+
+        self.startup_tracking["last_sequence_lock_state"] = sequence_lock
+
+        # Track 24VAC power state changes
+        if power_24vac == 'on' and self.startup_tracking["last_24vac_state"] != 'on':
+            # 24VAC just turned ON
+            self.startup_tracking["24vac_on_start"] = now
+            logger.info("24VAC power turned ON for valve actuation")
+        elif power_24vac == 'off' and self.startup_tracking["last_24vac_state"] == 'on':
+            # 24VAC just turned OFF
+            if self.startup_tracking["24vac_on_start"]:
+                duration = (now - self.startup_tracking["24vac_on_start"]).total_seconds()
+                logger.info(f"24VAC power turned OFF after {duration:.1f} seconds")
+            self.startup_tracking["24vac_on_start"] = None
+
+        self.startup_tracking["last_24vac_state"] = power_24vac
+
+        # Track individual valve switch state changes
+        for valve in VALVE_SWITCHES:
+            if valve == "switch.pool_valve_power_24vac_zwave":
+                continue  # Already tracked above
+
+            current_state = states.get(valve)
+            last_state = self.startup_tracking["last_valve_states"].get(valve)
+
+            if current_state == 'on' and last_state != 'on':
+                # Valve switch just turned ON
+                self.startup_tracking["valve_switch_on_times"][valve] = now
+                valve_name = valve.split('.')[-1].replace('_zwave', '')
+                logger.info(f"Valve switch {valve_name} turned ON (actuating)")
+            elif current_state == 'off' and last_state == 'on':
+                # Valve switch just turned OFF
+                if valve in self.startup_tracking["valve_switch_on_times"]:
+                    duration = (now - self.startup_tracking["valve_switch_on_times"][valve]).total_seconds()
+                    valve_name = valve.split('.')[-1].replace('_zwave', '')
+                    logger.info(f"Valve switch {valve_name} turned OFF after {duration:.1f} seconds")
+                    del self.startup_tracking["valve_switch_on_times"][valve]
+
+            self.startup_tracking["last_valve_states"][valve] = current_state
+
+        # Check for timing violations during active startup
+        if sequence_lock == 'on' and self.startup_tracking["sequence_lock_start"]:
+            lock_duration = (now - self.startup_tracking["sequence_lock_start"]).total_seconds()
+            if lock_duration > STARTUP_TIMING["sequence_lock_max"]:
+                issues.append(f"STARTUP_TIMEOUT: Sequence lock has been ON for {lock_duration:.0f}s (max {STARTUP_TIMING['sequence_lock_max']}s) - startup may be stuck")
+
+        # Check 24VAC power timeout
+        if power_24vac == 'on' and self.startup_tracking["24vac_on_start"]:
+            power_duration = (now - self.startup_tracking["24vac_on_start"]).total_seconds()
+            if power_duration > STARTUP_TIMING["24vac_power_max"]:
+                issues.append(f"STARTUP_ISSUE: 24VAC power has been ON for {power_duration:.0f}s (max {STARTUP_TIMING['24vac_power_max']}s) - may damage valve motors")
+
+        # Check individual valve switch timeouts
+        for valve, on_time in list(self.startup_tracking["valve_switch_on_times"].items()):
+            valve_duration = (now - on_time).total_seconds()
+            if valve_duration > STARTUP_TIMING["valve_actuation_max"]:
+                valve_name = valve.split('.')[-1].replace('_zwave', '')
+                issues.append(f"VALVE_STUCK: {valve_name} switch has been ON for {valve_duration:.0f}s (max {STARTUP_TIMING['valve_actuation_max']}s) - valve may be stuck or Z-Wave command failed")
+
+        return issues
+
+    def _check_steady_state_valves(self, states: Dict[str, Any]) -> List[str]:
+        """
+        During steady-state operation (no startup in progress),
+        all valve switches should be OFF.
+        """
+        issues = []
+        sequence_lock = states.get('input_boolean.pool_sequence_lock')
+
+        # Only check if NOT in startup sequence
+        if sequence_lock == 'on':
+            return issues  # Startup in progress, switches may legitimately be ON
+
+        # Check that all valve switches are OFF
+        switches_on = []
+        for valve in VALVE_SWITCHES:
+            if states.get(valve) == 'on':
+                valve_name = valve.split('.')[-1].replace('_zwave', '')
+                switches_on.append(valve_name)
+
+        if switches_on:
+            issues.append(f"VALVE_SWITCH_ON: Valve switches still ON during steady-state (no startup): {', '.join(switches_on)} - should be OFF after actuation")
+
+        return issues
 
     async def check(self) -> AgentCheck:
         """Perform pool system health check"""
@@ -359,6 +497,15 @@ class PoolAgent(BaseAgent):
 
         if is_quiet_hours and pump == 'on' and not any_mode_active:
             issues.append("WARNING: Pump running during quiet hours with no mode active (orphan pump)")
+
+        # ========== STARTUP SEQUENCE MONITORING ==========
+        # Monitor valve actuation timing during startup sequences
+        startup_issues = self._check_startup_sequence(states)
+        issues.extend(startup_issues)
+
+        # Check valve switches are OFF during steady-state
+        steady_state_issues = self._check_steady_state_valves(states)
+        issues.extend(steady_state_issues)
 
         # ========== PROGRAM VALIDATION ==========
         # Validate that active mode has correct states

@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.0.5] - 2025-11-30
+
+### Added - Startup Sequence Monitoring
+Pool agent now monitors valve actuation timing during mode startup sequences:
+
+**Timing Limits:**
+- **Valve actuation**: 60 seconds max (Jandy valves take ~40s)
+- **24VAC power**: 120 seconds max (should turn off after valves positioned)
+- **Sequence lock**: 300 seconds max (5 minutes for full startup)
+
+**New Issue Types:**
+- `STARTUP_TIMEOUT` - Startup sequence taking too long (>5 min)
+- `STARTUP_ISSUE` - 24VAC power stuck ON too long (>2 min)
+- `VALVE_STUCK` - Individual valve switch ON too long (>60s)
+- `VALVE_SWITCH_ON` - Valve switches ON during steady-state (should be OFF)
+
+**New Auto-Fix Rules (Whitelisted):**
+13. **Clear Startup Timeout** - Clears `pool_sequence_lock` when startup times out
+14. **Turn Off 24VAC** - Turns off 24VAC power when stuck ON (protects valve motors)
+15. **Turn Off Stuck Valve** - Turns off all valve switches when one is stuck
+16. **Turn Off Orphan Switches** - Turns off valve switches during steady-state
+
+### Changed
+- Pool agent tracks state transitions to detect when valves turn ON/OFF
+- Logs valve actuation timing for debugging
+- Validates valve switches are OFF after startup completes
+
 ## [1.0.4] - 2025-11-30
 
 ### Fixed - Program Expected States
