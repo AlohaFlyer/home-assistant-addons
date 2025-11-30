@@ -1,6 +1,6 @@
 name: "AI Agent Manager - NV"
 description: "Multi-agent home automation manager using Ollama (local) + Claude (fallback)"
-version: "1.0.3"
+version: "1.0.4"
 slug: "claude_agent_manager"
 init: false
 arch:
