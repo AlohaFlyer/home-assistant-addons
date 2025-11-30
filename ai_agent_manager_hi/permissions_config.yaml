@@ -1,0 +1,246 @@
+# ============================================================================
+# CLAUDE AGENT MANAGER - PERMISSION CONFIGURATION
+# ============================================================================
+# This file controls what actions each agent can AUTO-EXECUTE vs RECOMMEND.
+#
+# HOW TO USE:
+#   1. Find the agent you want to configure
+#   2. Add actions to its 'allowed_actions' list
+#   3. Restart the add-on for changes to take effect
+#
+# ACTION FORMAT: "service:entity_id"
+#   - Exact:    "light.turn_off:light.kitchen_relay"
+#   - Wildcard: "light.turn_off:light.*_relay" (any relay)
+#   - Wildcard: "light.*:light.kitchen" (any light service)
+#   - Wildcard: "*:light.kitchen" (any service on this entity)
+#
+# DEFAULT: All agents are RECOMMENDATION-ONLY until you add allowed_actions
+# ============================================================================
+
+agents:
+  # ---------------------------------------------------------------------------
+  # POWERWALL AGENT
+  # ---------------------------------------------------------------------------
+  # Monitors: Battery %, charging status, TOU rates, 100% by 5pm goal
+  # Safe to auto-execute: Reserve changes (0-100%)
+  # Keep as recommendation: Mode changes (could conflict with Tesla app)
+  powerwall:
+    enabled: true
+    description: "Powerwall battery and solar management"
+    max_per_hour: 10
+    cooldown_seconds: 300  # 5 min between same action
+    allowed_actions:
+      # Reserve changes - safe, doesn't conflict with Tesla app
+      - "number.set_value:number.home_energy_gateway_backup_reserve"
+      # Mode changes - DISABLED (could conflict with Tesla app)
+      # - "select.select_option:select.home_energy_gateway_operation_mode"
+
+  # ---------------------------------------------------------------------------
+  # LIGHT MANAGER AGENT
+  # ---------------------------------------------------------------------------
+  # Monitors: Relay/color sync, unavailable lights
+  # Safe to auto-execute: Generally none (sync issues are rare)
+  # Keep as recommendation: Relay cycling (could cause flickering)
+  light_manager:
+    enabled: true
+    description: "Light sync and availability monitoring"
+    max_per_hour: 20
+    cooldown_seconds: 30
+    allowed_actions:
+      # Auto-sync individual drifted bulbs to group state
+      - "script.turn_on:script.light_manager_sync_member_to_group"
+      - "script.turn_on:script.light_manager_fix_drifted_member"
+      # Relay cycling - DISABLED (recommend only)
+      # - "light.turn_on:light.*_relay"
+      # - "light.turn_off:light.*_relay"
+      # - "script.turn_on:script.light_manager_fix_relay_color_sync"
+
+  # ---------------------------------------------------------------------------
+  # HOT TUB AGENT
+  # ---------------------------------------------------------------------------
+  # Monitors: Temperature, schedule, energy, filter cycles
+  # Safe to auto-execute: Temperature range changes (HIGH/LOW)
+  # Keep as recommendation: Pump control
+  hot_tub:
+    enabled: true
+    description: "Hot tub temperature and energy management"
+    max_per_hour: 5
+    cooldown_seconds: 600  # 10 min between changes
+    allowed_actions:
+      # UNCOMMENT actions you want to AUTO-EXECUTE:
+      # - "select.select_option:select.hot_tub_temperature_range"
+      # - "climate.set_preset_mode:climate.hot_tub_thermostat"
+      []
+
+  # ---------------------------------------------------------------------------
+  # MOWER AGENT
+  # ---------------------------------------------------------------------------
+  # Monitors: Gate coordination, battery, task progress
+  # Safe to auto-execute: NONE (physical safety concerns)
+  # Keep as recommendation: Gate control (mower could be in the way)
+  mower:
+    enabled: true
+    description: "Mower gate coordination and monitoring"
+    max_per_hour: 5
+    cooldown_seconds: 30
+    allowed_actions:
+      # UNCOMMENT actions you want to AUTO-EXECUTE:
+      # WARNING: Gate auto-control could trap mower or create safety issues
+      # - "input_boolean.turn_on:input_boolean.gate_stay_open"
+      # - "input_boolean.turn_off:input_boolean.gate_stay_open"
+      []
+
+  # ---------------------------------------------------------------------------
+  # GARAGE/GATE AGENT
+  # ---------------------------------------------------------------------------
+  # Monitors: Door status, stay-open modes, obstructions
+  # Safe to auto-execute: NONE (physical safety)
+  # Keep as recommendation: All door/gate operations
+  garage:
+    enabled: true
+    description: "Garage and gate monitoring"
+    max_per_hour: 5
+    cooldown_seconds: 30
+    allowed_actions:
+      # WARNING: Auto garage/gate control is a safety risk
+      # Keep all actions as recommendations
+      []
+
+  # ---------------------------------------------------------------------------
+  # OCCUPANCY AGENT
+  # ---------------------------------------------------------------------------
+  # Monitors: Room presence, idle rooms with lights on
+  # Safe to auto-execute: Light turn_off after timeout
+  # Keep as recommendation: Initially, until you trust the occupancy detection
+  occupancy:
+    enabled: true
+    description: "Room occupancy and idle light detection"
+    max_per_hour: 30
+    cooldown_seconds: 30
+    allowed_actions:
+      # Auto-off for ALL INDOOR rooms when unoccupied
+      # Bedrooms
+      - "light.turn_off:light.master_bedroom_*"
+      - "light.turn_off:light.bedroom_1_*"
+      - "light.turn_off:light.bedroom_2_*"
+      - "light.turn_off:light.bedroom_3_*"
+      # Bathrooms
+      - "light.turn_off:light.master_bath_*"
+      - "light.turn_off:light.guest_bath_*"
+      - "light.turn_off:light.parlor_bath_*"
+      - "light.turn_off:light.powder_room_*"
+      # Common areas
+      - "light.turn_off:light.living_room_*"
+      - "light.turn_off:light.kitchen_*"
+      - "light.turn_off:light.bedroom_hall_*"
+      # Utility
+      - "light.turn_off:light.laundry_*"
+      - "light.turn_off:light.mud_room_*"
+      - "light.turn_off:light.pantry_*"
+      # Garages
+      - "light.turn_off:light.garage_*"
+      # EXCLUDED: Exterior (eves_*, lanai_*, driveway_*) - recommend only
+
+  # ---------------------------------------------------------------------------
+  # Z-WAVE AGENT
+  # ---------------------------------------------------------------------------
+  # Monitors: Network health, device availability
+  # Safe to auto-execute: Ping and refresh (non-destructive)
+  # Keep as recommendation: Network heal (can take hours)
+  zwave:
+    enabled: true
+    description: "Z-Wave network health monitoring"
+    max_per_hour: 50  # High limit for device pings
+    cooldown_seconds: 10
+    allowed_actions:
+      # Auto-ping and refresh unavailable devices (safe, non-destructive)
+      - "zwave_js.ping:*"
+      - "zwave_js.refresh_node_info:*"
+
+  # ---------------------------------------------------------------------------
+  # SECURITY AGENT
+  # ---------------------------------------------------------------------------
+  # Monitors: Camera status, detections
+  # Safe to auto-execute: NONE (security is sensitive)
+  # Keep as recommendation: All actions
+  security:
+    enabled: true
+    description: "Camera and security monitoring"
+    max_per_hour: 20
+    cooldown_seconds: 30
+    allowed_actions:
+      # Auto-restart offline camera streams
+      - "camera.turn_on:camera.cctv_*"
+      - "button.press:button.*_restart"
+      # Auto-send detection alerts
+      - "notify.persistent_notification:*"
+      - "notify.mobile_app_*:*"
+
+  # ---------------------------------------------------------------------------
+  # HEATED BATHROOM FLOORS AGENT (formerly Climate Agent)
+  # ---------------------------------------------------------------------------
+  # Monitors: Solar excess, floor heating conditions
+  # Auto-executes: Floor heating ON/OFF based on solar excess
+  bathroom_floors:
+    enabled: true
+    description: "Heated bathroom floors - uses excess solar (11am-2pm)"
+    max_per_hour: 10
+    cooldown_seconds: 300
+    allowed_actions:
+      # Auto-control floor heating based on solar excess
+      - "input_boolean.turn_on:input_boolean.heat_up_bathroom_floors"
+      - "input_boolean.turn_off:input_boolean.heat_up_bathroom_floors"
+
+  # ---------------------------------------------------------------------------
+  # ENTITY AVAILABILITY AGENT (Meta-Agent)
+  # ---------------------------------------------------------------------------
+  # Monitors: All entities for unavailable states
+  # Auto-executes: Routes to domain agents (safe actions only)
+  # Recommendation-only: Alerts for risky recoveries
+  entity_availability:
+    enabled: true
+    description: "Monitors all entities and routes issues to domain agents"
+    max_per_hour: 30
+    cooldown_seconds: 60
+    allowed_actions:
+      # Safe: Route events to trigger domain agents
+      - "event.fire:entity_availability_route_*"
+      # Safe: Logging and notifications
+      - "logbook.log:*"
+      - "notify.persistent_notification:*"
+      # DISABLED: Direct device control (too risky)
+      # - "switch.turn_on:*_reboot"
+      # - "zwave_js.ping:*"
+
+  # ---------------------------------------------------------------------------
+  # ESPHOME AGENT
+  # ---------------------------------------------------------------------------
+  # Monitors: 20 ESPHome devices, WiFi signal strength
+  # Auto-executes: Device reboot (if enabled)
+  # Recommendation-only: By default (reboot disabled)
+  esphome:
+    enabled: true
+    description: "ESPHome device health and WiFi monitoring"
+    max_per_hour: 10
+    cooldown_seconds: 300
+    allowed_actions:
+      # Safe: Logging and notifications
+      - "logbook.log:*"
+      - "notify.persistent_notification:*"
+      # RISKY (disabled by default via input_boolean):
+      # Reboot requires input_boolean.esphome_agent_auto_reboot_enabled = on
+      - "switch.turn_on:switch.*_sh1_reboot"
+      - "switch.turn_on:switch.*_sh25_reboot"
+
+# ============================================================================
+# GLOBAL SETTINGS
+# ============================================================================
+global:
+  # If true, unknown agents default to recommendation-only
+  deny_unknown_agents: true
+
+  # Log level for permission checks (debug, info, warning, error)
+  log_level: info
+
+  # Send notification when action is denied
+  notify_on_deny: true
