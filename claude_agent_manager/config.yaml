@@ -1,6 +1,6 @@
 name: "AI Agent Manager - NV"
 description: "Multi-agent home automation manager using Ollama (local) + Claude (fallback)"
-version: "1.0.5"
+version: "1.0.6"
 slug: "claude_agent_manager"
 init: false
 arch:
@@ -13,7 +13,7 @@ map:
   - config:rw
 options:
   ollama_url: "http://76e18fb5-ollama:11434"
-  ollama_model: "llama3.2:1b"
+  ollama_model: "qwen2.5:3b"
   claude_api_key: ""
   claude_model: "claude-sonnet-4-20250514"
   check_interval_minutes: 5
