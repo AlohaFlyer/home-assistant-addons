@@ -383,25 +383,19 @@ class HybridLLM:
                 needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
-        # Rule 16: Valve switches ON during steady-state - turn them off
-        if 'valve_switch_on' in issues_str and 'steady-state' in issues_str:
+        # Rule 16: 24VAC power ON during steady-state - turn it off
+        # NOTE: Valve direction switches stay ON to indicate position - that's normal!
+        # Only the 24VAC power should be OFF during steady-state.
+        if '24vac_on_steady_state' in issues_str:
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
-                decision="turn_off_orphan_valve_switches",
+                decision="turn_off_24vac_steady_state",
                 confidence=1.0,
-                reasoning="Valve switches are ON during steady-state (no startup) - turning off orphan switches",
+                reasoning="24VAC power is ON during steady-state (no startup in progress) - turning off to stop unnecessary valve actuation",
                 action_required=True,
                 action={
                     "service": "switch.turn_off",
-                    "target": {"entity_id": [
-                        "switch.pool_valve_power_24vac_zwave",
-                        "switch.pool_valve_spa_suction_zwave",
-                        "switch.pool_valve_spa_return_zwave",
-                        "switch.pool_valve_pool_suction_zwave",
-                        "switch.pool_valve_pool_return_zwave",
-                        "switch.pool_valve_skimmer_zwave",
-                        "switch.pool_valve_vacuum_zwave"
-                    ]}
+                    "target": {"entity_id": "switch.pool_valve_power_24vac_zwave"}
                 },
                 needs_confirmation=True  # User wants confirmation for all pool actions
             )
