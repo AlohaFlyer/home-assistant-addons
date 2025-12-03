@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.7] - 2025-12-02
+
+### Changed
+- **Pool agent now MONITOR-ONLY** - All 16 pool rules now require user confirmation
+- No auto-execute actions for pool until trust is established
+- User will receive notifications for any recommended pool actions
+
 ## [1.0.6] - 2025-12-02
 
 ### Changed
