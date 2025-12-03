@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.8] - 2025-12-02
+
+### Fixed - Valve Switch Logic (CRITICAL BUG)
+The agent incorrectly assumed valve direction switches should be OFF during steady-state.
+
+**How Jandy valves actually work:**
+- Valve direction switches (spa_suction, pool_return, etc.) stay ON to indicate position
+- 24VAC power controls whether valves are actually moving
+- When 24VAC is OFF, direction switches being ON just means "this is the valve position"
+- Valves hold position mechanically - no spring return
+
+**Changes:**
+- Removed false `VALVE_SWITCH_ON` issue detection - direction switches ON is NORMAL
+- Only flag `24VAC_ON_STEADY_STATE` if 24VAC power is on during steady-state
+- Valve "actuating" logging now only shows when 24VAC is actually powered
+- Rule 16 now only turns off 24VAC, not the direction switches
+
 ## [1.0.7] - 2025-12-02
 
 ### Changed
