@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.6] - 2025-12-02
+
+### Changed
+- Updated default Ollama model from `llama3.2:1b` to `qwen2.5:3b`
+- Qwen 2.5 3B provides better reasoning for home automation tasks
+
 ## [1.0.5] - 2025-11-30
 
 ### Added - Startup Sequence Monitoring
