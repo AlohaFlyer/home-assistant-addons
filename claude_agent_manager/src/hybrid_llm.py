@@ -1,6 +1,6 @@
 """
 Hybrid LLM Client - 3-tier decision system
-Version 1.0.5 - Added startup sequence monitoring rules
+Version 1.0.9 - Complete local permissions integration
 
 Tier 1: Rule-based (FREE) - handles ~70%
 Tier 2: Ollama local (FREE) - handles ~25%
@@ -11,11 +11,16 @@ import os
 import json
 import logging
 import aiohttp
+import yaml
 from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Path to local permissions config
+PERMISSIONS_CONFIG_PATH = "/config/agent_permissions.yaml"
 
 
 class DecisionTier(Enum):
@@ -52,6 +57,60 @@ class HybridLLM:
         self.tier1_calls = 0
         self.tier2_calls = 0
         self.tier3_calls = 0
+
+        # Load local permissions config
+        self.permissions = self._load_permissions_config()
+
+    def _load_permissions_config(self) -> Dict[str, Any]:
+        """Load permissions from local config file"""
+        try:
+            if Path(PERMISSIONS_CONFIG_PATH).exists():
+                with open(PERMISSIONS_CONFIG_PATH, 'r') as f:
+                    config = yaml.safe_load(f)
+                    logger.info(f"Loaded permissions from {PERMISSIONS_CONFIG_PATH}")
+                    return config or {}
+            else:
+                logger.info(f"No permissions config at {PERMISSIONS_CONFIG_PATH}, using defaults")
+                return {}
+        except Exception as e:
+            logger.warning(f"Failed to load permissions config: {e}, using defaults")
+            return {}
+
+    def _get_rule_settings(self, agent_name: str, rule_name: str) -> Tuple[bool, bool]:
+        """
+        Get settings for a specific rule from permissions config.
+        Returns: (enabled, auto_execute)
+        """
+        # Check if agent is enabled
+        agent_config = self.permissions.get(agent_name, {})
+        if not agent_config.get('enabled', True):
+            return (False, False)
+
+        # Get rule-specific settings
+        rules = agent_config.get('rules', {})
+        rule_config = rules.get(rule_name, {})
+
+        enabled = rule_config.get('enabled', True)
+
+        # Default auto_execute from global settings
+        global_config = self.permissions.get('global', {})
+        default_auto = global_config.get('default_auto_execute', False)
+
+        auto_execute = rule_config.get('auto_execute', default_auto)
+
+        return (enabled, auto_execute)
+
+    def _should_confirm(self, agent_name: str, rule_name: str) -> bool:
+        """Check if a rule requires confirmation (inverse of auto_execute)"""
+        enabled, auto_execute = self._get_rule_settings(agent_name, rule_name)
+        if not enabled:
+            return True  # If disabled, require confirmation (will be skipped)
+        return not auto_execute
+
+    def _is_rule_enabled(self, agent_name: str, rule_name: str) -> bool:
+        """Check if a rule is enabled"""
+        enabled, _ = self._get_rule_settings(agent_name, rule_name)
+        return enabled
 
     async def analyze(self, agent_name: str, context: Dict[str, Any]) -> LLMResponse:
         """
@@ -130,6 +189,8 @@ class HybridLLM:
 
         # Rule 1: EMERGENCY - Overheat protection (>105°F)
         if 'overheat' in issues_str and '105' in issues_str:
+            if not self._is_rule_enabled('pool', 'emergency_overheat_stop'):
+                return None  # Rule disabled, escalate to LLM
             temp = states.get('sensor.pool_heater_wifi_temperature', 'unknown')
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
@@ -141,11 +202,13 @@ class HybridLLM:
                     "service": "script.turn_on",
                     "target": {"entity_id": "script.pool_emergency_all_stop"}
                 },
-                needs_confirmation=True  # User wants confirmation for all pool actions
+                needs_confirmation=self._should_confirm('pool', 'emergency_overheat_stop')
             )
 
         # Rule 2: CRITICAL - Heating mode with wrong valve position (drainage risk)
         if 'hot tub heat on but valve trackers show wrong position' in issues_str:
+            if not self._is_rule_enabled('pool', 'stop_heating_wrong_valves'):
+                return None
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
                 decision="stop_heating_wrong_valves",
@@ -156,11 +219,13 @@ class HybridLLM:
                     "service": "input_boolean.turn_off",
                     "target": {"entity_id": "input_boolean.hot_tub_heat"}
                 },
-                needs_confirmation=True  # User wants confirmation for all pool actions
+                needs_confirmation=self._should_confirm('pool', 'stop_heating_wrong_valves')
             )
 
         # Rule 3: CRITICAL - Pump not running during heating mode
         if 'heating mode active but pump is off' in issues_str:
+            if not self._is_rule_enabled('pool', 'pump_on_during_heating'):
+                return None
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
                 decision="pump_on_during_heating",
@@ -171,13 +236,15 @@ class HybridLLM:
                     "service": "switch.turn_on",
                     "target": {"entity_id": "switch.pool_pump_zwave"}
                 },
-                needs_confirmation=True  # User wants confirmation for all pool actions
+                needs_confirmation=self._should_confirm('pool', 'pump_on_during_heating')
             )
 
         # ========== MEDIUM PRIORITY RULES (Auto-fix whitelisted) ==========
 
         # Rule 4: Stuck sequence lock (no mode active)
         if 'sequence lock stuck on' in issues_str:
+            if not self._is_rule_enabled('pool', 'clear_stuck_sequence_lock'):
+                return None
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
                 decision="clear_stuck_sequence_lock",
@@ -188,11 +255,13 @@ class HybridLLM:
                     "service": "input_boolean.turn_off",
                     "target": {"entity_id": "input_boolean.pool_sequence_lock"}
                 },
-                needs_confirmation=True  # User wants confirmation for all pool actions
+                needs_confirmation=self._should_confirm('pool', 'clear_stuck_sequence_lock')
             )
 
         # Rule 5: Stuck pool_action flag (no mode active)
         if 'pool action flag stuck on' in issues_str:
+            if not self._is_rule_enabled('pool', 'clear_stuck_action_flag'):
+                return None
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
                 decision="clear_stuck_action_flag",
@@ -203,11 +272,13 @@ class HybridLLM:
                     "service": "input_boolean.turn_off",
                     "target": {"entity_id": "input_boolean.pool_action"}
                 },
-                needs_confirmation=True  # User wants confirmation for all pool actions
+                needs_confirmation=self._should_confirm('pool', 'clear_stuck_action_flag')
             )
 
         # Rule 6: Skimmer + Waterfall conflict
         if 'both skimmer and waterfall active' in issues_str:
+            if not self._is_rule_enabled('pool', 'resolve_mode_conflict'):
+                return None
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
                 decision="resolve_mode_conflict",
@@ -218,11 +289,13 @@ class HybridLLM:
                     "service": "input_boolean.turn_off",
                     "target": {"entity_id": "input_boolean.pool_waterfall"}
                 },
-                needs_confirmation=True  # User wants confirmation for all pool actions
+                needs_confirmation=self._should_confirm('pool', 'resolve_mode_conflict')
             )
 
         # Rule 7: Orphan pump during quiet hours
         if 'pump running during quiet hours' in issues_str and 'orphan' in issues_str:
+            if not self._is_rule_enabled('pool', 'pump_off_orphan'):
+                return None
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
                 decision="pump_off_orphan",
@@ -233,12 +306,14 @@ class HybridLLM:
                     "service": "switch.turn_off",
                     "target": {"entity_id": "switch.pool_pump_zwave"}
                 },
-                needs_confirmation=True  # User wants confirmation for all pool actions
+                needs_confirmation=self._should_confirm('pool', 'pump_off_orphan')
             )
 
         # Rule 8: Valve tracker mismatch (sync trackers)
         # Note: This handles the WARNING level mismatch, not the CRITICAL drainage risk one
         if 'valve trackers' in issues_str and 'wrong' in issues_str and 'drainage' not in issues_str:
+            if not self._is_rule_enabled('pool', 'sync_valve_trackers'):
+                return None
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
                 decision="sync_valve_trackers",
@@ -249,11 +324,13 @@ class HybridLLM:
                     "service": "script.turn_on",
                     "target": {"entity_id": "script.pool_valve_tracker_sync_to_mode"}
                 },
-                needs_confirmation=True  # User wants confirmation for all pool actions
+                needs_confirmation=self._should_confirm('pool', 'sync_valve_trackers')
             )
 
         # Rule 9: Z-Wave valves unavailable (3+) - attempt recovery
         if 'z-wave valves unavailable' in issues_str and 'z-wave issue' in issues_str:
+            if not self._is_rule_enabled('pool', 'zwave_recovery'):
+                return None
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
                 decision="zwave_recovery",
@@ -262,14 +339,15 @@ class HybridLLM:
                 action_required=True,
                 action={
                     "service": "homeassistant.reload_config_entry",
-                    "data": {"entry_id": "zwave_js"}  # May need adjustment based on actual entry ID
+                    "data": {"entry_id": "zwave_js"}
                 },
-                needs_confirmation=True  # User wants confirmation for all pool actions
+                needs_confirmation=self._should_confirm('pool', 'zwave_recovery')
             )
 
         # Rule 10: Single Z-Wave valve unavailable - ping it
         if 'z-wave valve(s) unavailable' in issues_str and 'z-wave issue' not in issues_str:
-            # Extract the unavailable valve name if possible
+            if not self._is_rule_enabled('pool', 'zwave_ping'):
+                return None
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
                 decision="zwave_ping",
@@ -288,12 +366,13 @@ class HybridLLM:
                         "switch.pool_valve_vacuum_zwave"
                     ]}
                 },
-                needs_confirmation=True  # User wants confirmation for all pool actions
+                needs_confirmation=self._should_confirm('pool', 'zwave_ping')
             )
 
         # Rule 11: Program mismatch - restart current mode to fix
         if 'program_mismatch' in issues_str or 'program mismatch' in issues_str:
-            # Extract mode name from issue if possible for better logging
+            if not self._is_rule_enabled('pool', 'restart_mode_fix_mismatch'):
+                return None
             mode_name = "active mode"
             for mode in ['hot_tub_heat', 'pool_heat', 'pool_skimmer', 'pool_waterfall', 'pool_vacuum', 'hot_tub_empty']:
                 if mode in issues_str:
@@ -309,13 +388,14 @@ class HybridLLM:
                     "service": "script.turn_on",
                     "target": {"entity_id": "script.pool_system_force_restart_current_mode"}
                 },
-                needs_confirmation=True  # User wants confirmation for all pool actions
+                needs_confirmation=self._should_confirm('pool', 'restart_mode_fix_mismatch')
             )
 
         # Rule 12: Mode timeout - stop the timed-out mode
         if 'mode_timeout' in issues_str or 'mode timeout' in issues_str:
-            # hot_tub_empty is currently the only mode with a timeout (6 minutes)
             if 'hot_tub_empty' in issues_str:
+                if not self._is_rule_enabled('pool', 'stop_timed_out_mode'):
+                    return None
                 return LLMResponse(
                     tier=DecisionTier.RULE_BASED,
                     decision="stop_timed_out_mode",
@@ -326,13 +406,15 @@ class HybridLLM:
                         "service": "input_boolean.turn_off",
                         "target": {"entity_id": "input_boolean.hot_tub_empty"}
                     },
-                    needs_confirmation=True  # User wants confirmation for all pool actions
+                    needs_confirmation=self._should_confirm('pool', 'stop_timed_out_mode')
                 )
 
         # ========== STARTUP SEQUENCE MONITORING RULES ==========
 
         # Rule 13: Startup timeout - clear sequence lock
         if 'startup_timeout' in issues_str:
+            if not self._is_rule_enabled('pool', 'clear_startup_timeout'):
+                return None
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
                 decision="clear_startup_timeout",
@@ -343,11 +425,13 @@ class HybridLLM:
                     "service": "input_boolean.turn_off",
                     "target": {"entity_id": "input_boolean.pool_sequence_lock"}
                 },
-                needs_confirmation=True  # User wants confirmation for all pool actions
+                needs_confirmation=self._should_confirm('pool', 'clear_startup_timeout')
             )
 
         # Rule 14: 24VAC power stuck ON - turn it off to protect valve motors
         if 'startup_issue' in issues_str and '24vac' in issues_str:
+            if not self._is_rule_enabled('pool', 'turn_off_24vac'):
+                return None
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
                 decision="turn_off_24vac",
@@ -358,11 +442,13 @@ class HybridLLM:
                     "service": "switch.turn_off",
                     "target": {"entity_id": "switch.pool_valve_power_24vac_zwave"}
                 },
-                needs_confirmation=True  # User wants confirmation for all pool actions
+                needs_confirmation=self._should_confirm('pool', 'turn_off_24vac')
             )
 
         # Rule 15: Valve switch stuck ON - turn off all valve switches
         if 'valve_stuck' in issues_str:
+            if not self._is_rule_enabled('pool', 'turn_off_stuck_valve'):
+                return None
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
                 decision="turn_off_stuck_valve",
@@ -380,13 +466,15 @@ class HybridLLM:
                         "switch.pool_valve_vacuum_zwave"
                     ]}
                 },
-                needs_confirmation=True  # User wants confirmation for all pool actions
+                needs_confirmation=self._should_confirm('pool', 'turn_off_stuck_valve')
             )
 
         # Rule 16: 24VAC power ON during steady-state - turn it off
         # NOTE: Valve direction switches stay ON to indicate position - that's normal!
         # Only the 24VAC power should be OFF during steady-state.
         if '24vac_on_steady_state' in issues_str:
+            if not self._is_rule_enabled('pool', 'turn_off_24vac_steady_state'):
+                return None
             return LLMResponse(
                 tier=DecisionTier.RULE_BASED,
                 decision="turn_off_24vac_steady_state",
@@ -397,7 +485,7 @@ class HybridLLM:
                     "service": "switch.turn_off",
                     "target": {"entity_id": "switch.pool_valve_power_24vac_zwave"}
                 },
-                needs_confirmation=True  # User wants confirmation for all pool actions
+                needs_confirmation=self._should_confirm('pool', 'turn_off_24vac_steady_state')
             )
 
         # ========== MONITORING ONLY (No action) ==========
@@ -442,6 +530,8 @@ class HybridLLM:
         # Simple: Exterior lights on during day
         for issue in issues:
             if 'exterior_lights_on_during_day' in str(issue):
+                if not self._is_rule_enabled('lights', 'turn_off_exterior_lights'):
+                    return None
                 return LLMResponse(
                     tier=DecisionTier.RULE_BASED,
                     decision="turn_off_exterior_lights",
@@ -452,7 +542,7 @@ class HybridLLM:
                         "service": "light.turn_off",
                         "target": {"entity_id": "light.exterior_lights"}
                     },
-                    needs_confirmation=False  # Minor action
+                    needs_confirmation=self._should_confirm('lights', 'turn_off_exterior_lights')
                 )
 
         # No issues
