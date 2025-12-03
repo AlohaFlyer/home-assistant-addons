@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.0.9] - 2025-12-02
+
+### Added - Local Permissions Config
+All agent rule permissions can now be controlled via `/config/agent_permissions.yaml` without requiring GitHub updates.
+
+**New Features:**
+- Create `/config/agent_permissions.yaml` to override default rule behavior
+- Per-rule control: `enabled` (true/false) and `auto_execute` (true/false)
+- Global defaults: `agents_enabled` master switch, `default_auto_execute` fallback
+- Changes take effect on add-on restart (no GitHub push needed)
+
+**Example Config:**
+```yaml
+global:
+  agents_enabled: true
+  default_auto_execute: false  # Require confirmation by default
+
+pool:
+  enabled: true
+  rules:
+    emergency_overheat_stop:
+      enabled: true
+      auto_execute: false  # Set true to auto-execute on >105°F
+```
+
+**All 16 Pool Rules + Lights Rule Now Configurable:**
+- Rules 1-16: Pool safety, valve, mode, and Z-Wave rules
+- Lights: `turn_off_exterior_lights`
+
 ## [1.0.8] - 2025-12-02
 
 ### Fixed - Valve Switch Logic (CRITICAL BUG)
