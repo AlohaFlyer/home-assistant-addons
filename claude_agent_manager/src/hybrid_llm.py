@@ -141,7 +141,7 @@ class HybridLLM:
                     "service": "script.turn_on",
                     "target": {"entity_id": "script.pool_emergency_all_stop"}
                 },
-                needs_confirmation=False  # Emergency - act immediately
+                needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
         # Rule 2: CRITICAL - Heating mode with wrong valve position (drainage risk)
@@ -156,7 +156,7 @@ class HybridLLM:
                     "service": "input_boolean.turn_off",
                     "target": {"entity_id": "input_boolean.hot_tub_heat"}
                 },
-                needs_confirmation=False  # Safety critical
+                needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
         # Rule 3: CRITICAL - Pump not running during heating mode
@@ -171,7 +171,7 @@ class HybridLLM:
                     "service": "switch.turn_on",
                     "target": {"entity_id": "switch.pool_pump_zwave"}
                 },
-                needs_confirmation=False  # Whitelisted for auto-fix
+                needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
         # ========== MEDIUM PRIORITY RULES (Auto-fix whitelisted) ==========
@@ -188,7 +188,7 @@ class HybridLLM:
                     "service": "input_boolean.turn_off",
                     "target": {"entity_id": "input_boolean.pool_sequence_lock"}
                 },
-                needs_confirmation=False  # Whitelisted for auto-fix
+                needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
         # Rule 5: Stuck pool_action flag (no mode active)
@@ -203,7 +203,7 @@ class HybridLLM:
                     "service": "input_boolean.turn_off",
                     "target": {"entity_id": "input_boolean.pool_action"}
                 },
-                needs_confirmation=False  # Whitelisted for auto-fix
+                needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
         # Rule 6: Skimmer + Waterfall conflict
@@ -218,7 +218,7 @@ class HybridLLM:
                     "service": "input_boolean.turn_off",
                     "target": {"entity_id": "input_boolean.pool_waterfall"}
                 },
-                needs_confirmation=False  # Whitelisted for auto-fix
+                needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
         # Rule 7: Orphan pump during quiet hours
@@ -233,7 +233,7 @@ class HybridLLM:
                     "service": "switch.turn_off",
                     "target": {"entity_id": "switch.pool_pump_zwave"}
                 },
-                needs_confirmation=False  # Whitelisted for auto-fix
+                needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
         # Rule 8: Valve tracker mismatch (sync trackers)
@@ -249,7 +249,7 @@ class HybridLLM:
                     "service": "script.turn_on",
                     "target": {"entity_id": "script.pool_valve_tracker_sync_to_mode"}
                 },
-                needs_confirmation=False  # Whitelisted for auto-fix
+                needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
         # Rule 9: Z-Wave valves unavailable (3+) - attempt recovery
@@ -264,7 +264,7 @@ class HybridLLM:
                     "service": "homeassistant.reload_config_entry",
                     "data": {"entry_id": "zwave_js"}  # May need adjustment based on actual entry ID
                 },
-                needs_confirmation=False  # Whitelisted for auto-fix
+                needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
         # Rule 10: Single Z-Wave valve unavailable - ping it
@@ -288,7 +288,7 @@ class HybridLLM:
                         "switch.pool_valve_vacuum_zwave"
                     ]}
                 },
-                needs_confirmation=False  # Whitelisted for auto-fix
+                needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
         # Rule 11: Program mismatch - restart current mode to fix
@@ -309,7 +309,7 @@ class HybridLLM:
                     "service": "script.turn_on",
                     "target": {"entity_id": "script.pool_system_force_restart_current_mode"}
                 },
-                needs_confirmation=False  # Whitelisted for auto-fix
+                needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
         # Rule 12: Mode timeout - stop the timed-out mode
@@ -326,7 +326,7 @@ class HybridLLM:
                         "service": "input_boolean.turn_off",
                         "target": {"entity_id": "input_boolean.hot_tub_empty"}
                     },
-                    needs_confirmation=False  # Whitelisted for auto-fix
+                    needs_confirmation=True  # User wants confirmation for all pool actions
                 )
 
         # ========== STARTUP SEQUENCE MONITORING RULES ==========
@@ -343,7 +343,7 @@ class HybridLLM:
                     "service": "input_boolean.turn_off",
                     "target": {"entity_id": "input_boolean.pool_sequence_lock"}
                 },
-                needs_confirmation=False  # Whitelisted for auto-fix
+                needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
         # Rule 14: 24VAC power stuck ON - turn it off to protect valve motors
@@ -358,7 +358,7 @@ class HybridLLM:
                     "service": "switch.turn_off",
                     "target": {"entity_id": "switch.pool_valve_power_24vac_zwave"}
                 },
-                needs_confirmation=False  # Whitelisted for auto-fix
+                needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
         # Rule 15: Valve switch stuck ON - turn off all valve switches
@@ -380,7 +380,7 @@ class HybridLLM:
                         "switch.pool_valve_vacuum_zwave"
                     ]}
                 },
-                needs_confirmation=False  # Whitelisted for auto-fix
+                needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
         # Rule 16: Valve switches ON during steady-state - turn them off
@@ -403,7 +403,7 @@ class HybridLLM:
                         "switch.pool_valve_vacuum_zwave"
                     ]}
                 },
-                needs_confirmation=False  # Whitelisted for auto-fix
+                needs_confirmation=True  # User wants confirmation for all pool actions
             )
 
         # ========== MONITORING ONLY (No action) ==========
