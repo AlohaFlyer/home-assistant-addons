@@ -347,10 +347,13 @@ class PoolAgent(BaseAgent):
             last_state = self.startup_tracking["last_valve_states"].get(valve)
 
             if current_state == 'on' and last_state != 'on':
-                # Valve switch just turned ON
-                self.startup_tracking["valve_switch_on_times"][valve] = now
+                # Valve switch just turned ON - only track if 24VAC is powered (actually actuating)
                 valve_name = valve.split('.')[-1].replace('_zwave', '')
-                logger.info(f"Valve switch {valve_name} turned ON (actuating)")
+                if power_24vac == 'on':
+                    self.startup_tracking["valve_switch_on_times"][valve] = now
+                    logger.info(f"Valve {valve_name} ACTUATING (24VAC powered)")
+                else:
+                    logger.info(f"Valve {valve_name} position set (24VAC off - not actuating)")
             elif current_state == 'off' and last_state == 'on':
                 # Valve switch just turned OFF
                 if valve in self.startup_tracking["valve_switch_on_times"]:
@@ -385,24 +388,22 @@ class PoolAgent(BaseAgent):
     def _check_steady_state_valves(self, states: Dict[str, Any]) -> List[str]:
         """
         During steady-state operation (no startup in progress),
-        all valve switches should be OFF.
+        24VAC power should be OFF. Valve direction switches stay ON to indicate
+        position - they are depowered by turning off 24VAC, not by turning off
+        the direction switches.
         """
         issues = []
         sequence_lock = states.get('input_boolean.pool_sequence_lock')
+        power_24vac = states.get('switch.pool_valve_power_24vac_zwave')
 
         # Only check if NOT in startup sequence
         if sequence_lock == 'on':
-            return issues  # Startup in progress, switches may legitimately be ON
+            return issues  # Startup in progress, 24VAC may legitimately be ON
 
-        # Check that all valve switches are OFF
-        switches_on = []
-        for valve in VALVE_SWITCHES:
-            if states.get(valve) == 'on':
-                valve_name = valve.split('.')[-1].replace('_zwave', '')
-                switches_on.append(valve_name)
-
-        if switches_on:
-            issues.append(f"VALVE_SWITCH_ON: Valve switches still ON during steady-state (no startup): {', '.join(switches_on)} - should be OFF after actuation")
+        # The only issue is if 24VAC is ON during steady-state (no startup)
+        # Valve direction switches being ON is NORMAL - they indicate position
+        if power_24vac == 'on':
+            issues.append(f"24VAC_ON_STEADY_STATE: 24VAC power is ON but no startup in progress - valves may be actuating unnecessarily")
 
         return issues
 
