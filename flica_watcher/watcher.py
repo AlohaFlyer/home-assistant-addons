@@ -2,6 +2,7 @@
 
 Login rule: never two login attempts in a row without a success in between.
 A failed login, or anything unexpected, parks the watcher until re-armed from HA.
+v0.2 is READ ONLY: rules match and log; nothing is ever submitted to FLICA.
 """
 import json
 import logging
@@ -10,16 +11,23 @@ import random
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import paho.mqtt.client as mqtt
 import requests
-from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
+import rules as R
+import web
+from pot import BLOCK_HINTS, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+from store import Store
+
+VERSION = "0.2.0"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
+DB_FILE = f"{DATA}/watcher.db"
+RULES_FILE = f"{DATA}/rules.json"
 COOKIES = f"{DATA}/storage_state.json"
 OPTS = json.load(open(f"{DATA}/options.json"))
 
@@ -29,15 +37,11 @@ logging.basicConfig(
 )
 log = logging.getLogger("flica")
 
-KILLED_TXT = "new session under this account was detected"
-EXPIRED_HINTS = ("session has expired", "session expired", "please log in", "please sign in")
-BLOCK_HINTS = ("captcha", "verification code", "one-time", "one time pass", "change your password",
-               "password has expired", "account is locked", "account locked")
-PAIRING_RE = re.compile(r"^[A-Z]\d{4}$")
-PAIRING_ANY = re.compile(r"\b([A-Z]\d{4}[A-Z]?)\b")
 MOBILE_POT = "https://ha2.flica.net/full/mobileopentimepot.cgi?BCID=003.152&From=MainMenu"
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
           "September", "October", "November", "December"]
+BACKOFF_MIN = [1, 2, 4, 8, 16, 30]  # minutes before each re-login on repeated needs_login; then park
+HST = timezone(timedelta(hours=-10))
 
 T = "flica_watcher"
 AVAIL = f"{T}/status"
@@ -48,23 +52,61 @@ def now_iso():
 
 
 # ---------------------------------------------------------------- state
+DEFAULT_STATE = {"baseline": {}, "machine": "idle", "pot_urls": {}, "kills": [], "last_login_ok": None,
+                 "fingerprints": {}, "relogin_streak": 0}
+DB = Store(DB_FILE, legacy_json=STATE_FILE, default_state=DEFAULT_STATE)
+
+
 def load_state():
-    try:
-        return json.load(open(STATE_FILE))
-    except Exception:
-        return {"baseline": {}, "machine": "idle", "pot_urls": {}, "kills": [],
-                "last_login_ok": None}
+    s = DB.load_state()
+    for k, v in DEFAULT_STATE.items():
+        s.setdefault(k, json.loads(json.dumps(v)))
+    return s
 
 
 def save_state(s):
-    tmp = STATE_FILE + ".tmp"
-    json.dump(s, open(tmp, "w"), indent=1)
-    os.replace(tmp, STATE_FILE)
+    DB.save_state(s)
 
 
 S = load_state()
 WAKE = threading.Event()
 FLAGS = {"hunt": False, "pause": False, "rearm": False}
+RULES = {"list": [], "published": set()}
+RULE_LOCK = threading.Lock()
+
+
+# ---------------------------------------------------------------- rules file
+def load_rules():
+    if not os.path.exists(RULES_FILE):
+        clean, _ = R.validate(R.EXAMPLE)
+        write_rules(clean)
+        log.info("rules.json created with the example SIN alert rule (alert only, dry run)")
+        return clean
+    try:
+        clean, errs = R.validate(json.load(open(RULES_FILE)))
+    except Exception as e:
+        clean, errs = [], [f"rules.json unreadable: {e}"]
+    if errs:
+        log.warning("rules.json has errors, running with NO rules until fixed: %s", errs)
+    return clean
+
+
+def write_rules(lst):
+    tmp = RULES_FILE + ".tmp"
+    json.dump(lst, open(tmp, "w"), indent=2)
+    os.replace(tmp, RULES_FILE)
+
+
+def save_rules_from_page(data):
+    clean, errs = R.validate(data)
+    if errs:
+        return errs
+    with RULE_LOCK:
+        write_rules(clean)
+        RULES["list"] = clean
+    if MQ:
+        publish_rules(MQ)
+    return []
 
 
 # ---------------------------------------------------------------- mqtt
@@ -93,19 +135,84 @@ def on_message(c, u, msg):
         key = "hunt" if "hunt" in msg.topic else "pause"
         FLAGS[key] = p == "ON"
         return
+    elif msg.topic.startswith(f"{T}/rule/") and msg.topic.endswith("/live/set"):
+        rule_live_cmd(c, msg.topic.split("/")[2], p == "ON")
+        return
     WAKE.set()
 
 
+def rule_live_cmd(c, rid, want):
+    with RULE_LOCK:
+        rule = next((r for r in RULES["list"] if r["id"] == rid), None)
+    if rule is None:
+        return
+    if want:
+        ok, why = R.live_allowed(rule)
+        if not ok:
+            log.info("rule %s live refused: %s", rid, why)
+            c.publish(f"{T}/rule/{rid}/live/state", "OFF", retain=True)
+            c.publish(f"{T}/event/rule_refused", json.dumps({"rule_id": rid, "reason": why, "at": now_iso()}))
+            return
+    DB.set_live(rid, want)
+    c.publish(f"{T}/rule/{rid}/live/state", "ON" if want else "OFF", retain=True)
+    log.info("rule %s live=%s", rid, want)
+
+
+DEV = {"identifiers": ["flica_watcher"], "name": "FLICA Watcher", "manufacturer": "Pako HI",
+       "sw_version": VERSION}
+
+
+def publish_rules(c):
+    """One live switch per rule via MQTT discovery; removes switches of deleted rules."""
+    with RULE_LOCK:
+        lst = list(RULES["list"])
+    flags = DB.live_flags()
+    ids = {r["id"] for r in lst}
+    for rid in RULES["published"] - ids:
+        c.publish(f"homeassistant/switch/flica_watcher/rule_{rid}_live/config", "", retain=True)
+        c.publish(f"{T}/rule/{rid}/live/state", "", retain=True)
+        DB.drop_live(rid)
+    for r in lst:
+        cfg = {"availability_topic": AVAIL, "device": DEV, "name": f"Rule {r['name']} live",
+               "unique_id": f"flica_rule_{r['id']}_live", "object_id": f"flica_rule_{r['id']}_live",
+               "command_topic": f"{T}/rule/{r['id']}/live/set", "state_topic": f"{T}/rule/{r['id']}/live/state",
+               "icon": "mdi:rocket-launch", "entity_category": "config"}
+        c.publish(f"homeassistant/switch/flica_watcher/rule_{r['id']}_live/config", json.dumps(cfg), retain=True)
+        live = flags.get(r["id"], False) and R.live_allowed(r)[0]
+        c.publish(f"{T}/rule/{r['id']}/live/state", "ON" if live else "OFF", retain=True)
+    RULES["published"] = ids
+    active = [r for r in lst if r["enabled"]]
+    c.publish(f"{T}/rules/state", json.dumps({
+        "count": len(active),
+        "rules": [{"id": r["id"], "name": r["name"], "mode": r["mode"], "live": flags.get(r["id"], False),
+                   "created_at": r["created_at"]} for r in lst]}), retain=True)
+
+
+def publish_finds():
+    pub("finds", {"count": len(f := DB.recent_finds(50)), "finds": f})
+
+
 def discovery(c):
-    dev = {"identifiers": ["flica_watcher"], "name": "FLICA Watcher", "manufacturer": "Pako HI"}
+    dev = DEV
     base = {"availability_topic": AVAIL, "device": dev}
     ents = [
-        ("sensor", "state", {"name": "State", "state_topic": f"{T}/state", "icon": "mdi:airplane-search"}),
+        ("sensor", "state", {"name": "State", "state_topic": f"{T}/state", "icon": "mdi:airplane-search",
+                             "json_attributes_topic": f"{T}/state_attr"}),
         ("sensor", "last_check", {"name": "Last check", "state_topic": f"{T}/last_check",
                                   "device_class": "timestamp"}),
         ("sensor", "pot_count", {"name": "Pot count", "state_topic": f"{T}/pot/state",
-                                 "value_template": "{{ value_json.count }}",
+                                 "value_template": "{{ value_json.count }}", "state_class": "measurement",
+                                 "unit_of_measurement": "pairings",
                                  "json_attributes_topic": f"{T}/pot/state", "icon": "mdi:format-list-bulleted"}),
+        ("sensor", "finds", {"name": "Finds", "state_topic": f"{T}/finds",
+                             "value_template": "{{ value_json.count }}",
+                             "json_attributes_topic": f"{T}/finds", "icon": "mdi:history"}),
+        ("sensor", "rules_active", {"name": "Rules active", "state_topic": f"{T}/rules/state",
+                                    "value_template": "{{ value_json.count }}",
+                                    "json_attributes_topic": f"{T}/rules/state", "icon": "mdi:filter-cog"}),
+        ("sensor", "last_match", {"name": "Last match", "state_topic": f"{T}/last_match",
+                                  "value_template": "{{ value_json.rule_id }}: {{ value_json.row.pairing }}",
+                                  "json_attributes_topic": f"{T}/last_match", "icon": "mdi:bullseye-arrow"}),
         ("sensor", "last_new", {"name": "Last new pairing", "state_topic": f"{T}/last_new",
                                 "value_template": "{{ value_json.pairing }}",
                                 "json_attributes_topic": f"{T}/last_new", "icon": "mdi:new-box"}),
@@ -132,8 +239,9 @@ def mqtt_start():
     def on_connect(cl, u, f, rc, p=None):
         cl.publish(AVAIL, "online", retain=True)
         discovery(cl)
-        for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state"):
+        for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set"):
             cl.subscribe(f"{T}/{t}")
+        publish_rules(cl)
 
     c.on_connect = on_connect
     c.connect(m["host"], int(m["port"]))
@@ -153,34 +261,13 @@ def pub(topic, payload, retain=True):
 def set_machine(state, note=""):
     if S.get("machine") != state:
         log.info("state %s -> %s %s", S.get("machine"), state, note)
+    if S.get("machine") != state or not S.get("since"):
+        S["since"] = now_iso()
     S["machine"] = state
     S["note"] = note
     save_state(S)
     pub("state", state)
-
-
-# ---------------------------------------------------------------- page classification
-def visible_text(html):
-    """Text a person would read: drops scripts/styles so words like 'captcha' in
-    page code (FLICA's main menu loads a captcha script) don't count as a block."""
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        for t in soup(["script", "style", "noscript", "template"]):
-            t.decompose()
-        return soup.get_text(" ", strip=True).lower()
-    except Exception:
-        return html.lower()
-
-
-def classify(html):
-    low = html.lower()
-    if KILLED_TXT in low:
-        return "killed"
-    if any(h in visible_text(html) for h in BLOCK_HINTS):
-        return "blocked"
-    if 'type="password"' in low or "type=password" in low or any(h in low for h in EXPIRED_HINTS):
-        return "expired"
-    return "ok"
+    pub("state_attr", {"note": note, "version": VERSION, "since": S["since"]})
 
 
 # ---------------------------------------------------------------- browser
@@ -313,7 +400,19 @@ class Flica:
                 if mk in ("killed", "expired"):
                     return None
                 if "open time" in txt or "opentime" in txt:
-                    return {"mobile": MOBILE_POT}
+                    # key "mobile" kept for the first page so the v0.1.x baseline carries over
+                    urls = {"mobile": MOBILE_POT}
+                    if OPTS.get("watch_next_month", True):
+                        links = pot_links(html, MOBILE_POT)
+                        log.info("mobile pot links to other bid months: %s", links)
+                        mine = bcid(MOBILE_POT)
+                        later = sorted((l for l in links if bcid(l["url"]) and bcid_after(bcid(l["url"]), mine)),
+                                       key=lambda l: bcid_key(bcid(l["url"])))
+                        if later:  # the nearest later bid period only, never an earlier month
+                            urls[f"mobile_{bcid(later[0]['url'])}"] = later[0]["url"]
+                        if len(urls) < 2:
+                            log.info("no next-month pot link on the mobile page yet (opens with the bid month)")
+                    return urls
                 return None
             links = menu.evaluate(
                 """(sec) => {
@@ -374,33 +473,6 @@ class Flica:
         return r.text()
 
 
-def parse_pot(html):
-    soup = BeautifulSoup(html, "html.parser")
-    out = {}
-    for tr in soup.find_all("tr"):
-        cells = [c.get_text(" ", strip=True) for c in tr.find_all("td")]
-        if len(cells) >= 10 and PAIRING_RE.match(cells[0]):
-            key = f"{cells[0]}|{cells[1]}"
-            out[key] = {"pairing": cells[0], "dates": cells[1], "bid_pos": cells[2], "days": cells[3],
-                        "report": cells[4], "depart": cells[5], "arrive": cells[6], "blk": cells[7],
-                        "credit": cells[8], "layover": cells[9],
-                        "prem": cells[10] if len(cells) > 10 else ""}
-    if not out:  # mobile layout: any row naming a pairing number
-        for tr in soup.find_all("tr"):
-            cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
-            row = " | ".join(x for x in cells if x)
-            m = PAIRING_ANY.search(row)
-            if m and len(cells) >= 2:
-                key = f"{m.group(1)}|{cells[1] if cells[0] == m.group(1) else row[:40]}"
-                c = cells + [""] * 6
-                crd = c[3].replace("/", " ").split()
-                out.setdefault(key, {"pairing": m.group(1), "dates": f"{c[1]}-{c[2]}",
-                                     "days": crd[1] if len(crd) > 1 else "",
-                                     "credit": crd[0] if crd else "", "layover": c[4],
-                                     "report": "", "prem": c[5], "row": row[:300]})
-    return out
-
-
 # ---------------------------------------------------------------- main loop
 def gap():
     lo, hi = ((OPTS["hunt_min_s"], OPTS["hunt_max_s"]) if FLAGS["hunt"]
@@ -429,6 +501,25 @@ def try_login(fl, reason):
     return False
 
 
+def hst_midnight_utc():
+    d = datetime.now(HST).replace(hour=0, minute=0, second=0, microsecond=0)
+    return d.astimezone(timezone.utc).isoformat()
+
+
+def run_rules(month, key, row):
+    with RULE_LOCK:
+        lst = list(RULES["list"])
+    if not lst:
+        return
+    hits = R.evaluate(lst, row, DB.live_flags(), DB.would_submits_since(hst_midnight_utc()))
+    for m in hits:
+        DB.add_match(m, f"{month}|{key}")
+        log.info("rule match %s %s would_submit=%s (%s)", m["rule_id"], row.get("pairing"),
+                 m["would_submit"], m["reason"])
+        pub("event/rule_match", m, retain=False)
+        pub("last_match", m)
+
+
 def check(fl):
     """One pass. Returns next action hint."""
     if not S.get("pot_urls"):
@@ -439,9 +530,11 @@ def check(fl):
             set_machine("stopped_unexpected", f"no 'View Opentime Pot' found under '{OPTS['pot_section']}'")
             return "stop"
         S["pot_urls"] = urls
+        S["discovered_at"] = time.time()
         save_state(S)
         log.info("pot pages: %s", list(urls))
     pot_all = {}
+    new_any = False
     for month, url in list(S["pot_urls"].items()):
         html = fl.fetch(url)
         kind = classify(html)
@@ -452,32 +545,52 @@ def check(fl):
             return "stop"
         if kind == "expired":
             return "needs_login"
-        vt = visible_text(html) if month == "mobile" else ""
-        if ("Opentime Pot" not in html) and not (month == "mobile" and ("open time" in vt or "opentime" in vt)):
+        if not is_pot_page(html, mobile=month.startswith("mobile")):
             S["pot_urls"] = {}
-            save_state(S)
             S["parse_fail"] = S.get("parse_fail", 0) + 1
+            save_state(S)
             if S["parse_fail"] >= 3:
                 set_machine("stopped_unexpected", "open time page no longer recognised (3 in a row)")
                 return "stop"
             return "retry"
         S["parse_fail"] = 0
+        fp = header_fingerprint(html)
+        if fp:
+            old = S["fingerprints"].get(month)
+            if old is None:
+                S["fingerprints"][month] = fp
+                log.info("pot header fingerprint %s: %s", month, fp)
+            elif old != fp:
+                set_machine("stopped_unexpected",
+                            f"pot table layout changed on {month} ({old} -> {fp}); not parsing it. "
+                            "Check the page, then Re-arm to accept the new layout")
+                S["fingerprint_pending"] = {month: fp}
+                save_state(S)
+                return "stop"
         pot = parse_pot(html)
         pot_all[month] = pot
         base = S["baseline"].get(month)
+        new_keys = set()
         if base is None:
             log.info("baseline %s: %d pairings (no alert)", month, len(pot))
         else:
-            for k, v in pot.items():
-                if k not in base:
-                    ev = {**v, "month": month, "seen": now_iso()}
-                    log.info("NEW pairing %s", ev)
-                    pub("event/new_pairing", ev, retain=False)
-                    pub("last_new", ev)
+            new_keys = {k for k in pot if k not in base}
+            for k in sorted(new_keys):
+                ev = {**pot[k], "month": month, "seen": now_iso()}
+                log.info("NEW pairing %s", ev)
+                pub("event/new_pairing", ev, retain=False)
+                pub("last_new", ev)
+                run_rules(month, k, pot[k])
+        DB.record_pot(month, pot, new_keys)
+        new_any = new_any or bool(new_keys)
         S["baseline"][month] = sorted(pot.keys())
     # drop months no longer published
     S["baseline"] = {m: v for m, v in S["baseline"].items() if m in S["pot_urls"]}
+    S["relogin_streak"] = 0
     save_state(S)
+    if new_any or not S.get("finds_published"):
+        publish_finds()
+        S["finds_published"] = True
     flat = [dict(v, month=m) for m, p in pot_all.items() for v in p.values()]
     pub("pot/state", {"count": len(flat), "pairings": flat[:60]})
     pub("last_check", now_iso())
@@ -495,6 +608,11 @@ def main():
         set_machine(S["machine"], S.get("note", "") + " (still stopped after restart, press Re-arm)")
     else:
         set_machine("idle", "starting")
+    RULES["list"] = load_rules()
+    publish_rules(MQ)
+    publish_finds()
+    web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
+              save_rules_from_page, DB, log)
     last_month_check = None
     with sync_playwright() as pw:
         fl = Flica(pw)
@@ -502,10 +620,14 @@ def main():
             st = S.get("machine", "idle")
             if FLAGS["rearm"]:
                 FLAGS["rearm"] = False
-                if st.startswith("stopped") or st == "yielded":
+                if st.startswith("stopped") or st in ("yielded", "backoff"):
                     S["kills"] = []
                     S["pot_urls"] = {}
                     S["parse_fail"] = 0
+                    S["relogin_streak"] = 0
+                    if S.pop("fingerprint_pending", None):
+                        S["fingerprints"] = {}  # Re-arm after a layout park accepts the new layout
+                        log.info("re-arm: pot header fingerprints cleared, re-learned on next check")
                     try_login(fl, "re-arm")
                     continue
             if st.startswith("stopped"):
@@ -527,6 +649,21 @@ def main():
                     continue
                 if not try_login(fl, "after yield cooldown"):
                     continue
+            if st == "backoff":
+                wait_until = S.get("relogin_at", 0)
+                if time.time() < wait_until:
+                    sleep(wait_until - time.time())
+                    continue
+                try_login(fl, f"backoff step {S.get('relogin_streak', 0)}")
+                continue
+            # next bid month: its pot link appears mid-month, so rediscover every 6 h until found
+            if (OPTS.get("watch_next_month", True) and 0 < len(S.get("pot_urls") or {}) < 2
+                    and time.time() - S.get("discovered_at", 0) > 6 * 3600):
+                log.info("rediscovering pot pages to look for the next bid month")
+                S["pot_urls"] = {}
+            if time.time() - S.get("pruned_at", 0) > 86400:
+                DB.prune()
+                S["pruned_at"] = time.time()
             # month rollover: rediscover once per new calendar month
             mk = datetime.now().strftime("%Y-%m")
             if last_month_check and last_month_check != mk:
@@ -544,12 +681,16 @@ def main():
             S["net_fail"] = 0
             if res == "needs_login":
                 pub("session", "OFF")
-                last_ok = S.get("last_login_ok")
-                if last_ok and (datetime.now(timezone.utc) - datetime.fromisoformat(last_ok)).total_seconds() < 900:
-                    set_machine("stopped_unexpected", "session lost within 15 min of a login; not retrying")
+                streak = S.get("relogin_streak", 0)
+                if streak >= len(BACKOFF_MIN):
+                    set_machine("stopped_unexpected",
+                                f"session lost {streak} times in a row with no good check between; parked")
                     continue
-                log.info("session expired")
-                try_login(fl, "session expired")
+                wait = BACKOFF_MIN[streak]
+                S["relogin_streak"] = streak + 1
+                S["relogin_at"] = time.time() + wait * 60
+                set_machine("backoff", f"session expired, one login attempt in {wait} min "
+                                       f"(step {streak + 1}/{len(BACKOFF_MIN)})")
                 continue
             if res == "killed":
                 pub("session", "OFF")
