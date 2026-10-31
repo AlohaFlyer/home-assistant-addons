@@ -199,7 +199,21 @@ class Flica:
             page.goto(BASE + "/", wait_until="domcontentloaded", timeout=45000)
             pw_in = page.locator("input[type=password]").first
             pw_in.wait_for(timeout=20000)
-            user_in = page.locator("input[type=text]:visible, input[type=email]:visible").first
+            inputs = page.evaluate("""() => [...document.querySelectorAll('input')].map((e, i) => {
+                e.setAttribute('data-fwi', String(i));
+                const r = e.getBoundingClientRect();
+                return {i, type: (e.type || '').toLowerCase(), name: e.name || '', id: e.id || '',
+                        vis: r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== 'hidden'};
+            })""")
+            log.info("login form inputs: %s", [(x["type"], x["name"], x["id"], x["vis"]) for x in inputs])
+            pw_idx = next(x["i"] for x in inputs if x["type"] == "password" and x["vis"])
+            skip = {"hidden", "password", "submit", "button", "checkbox", "radio", "image", "reset"}
+            cands = [x for x in inputs if x["i"] < pw_idx and x["vis"] and x["type"] not in skip]
+            if not cands:
+                log.warning("no username field found before the password field")
+                return "failed"
+            user_in = page.locator(f"input[data-fwi='{cands[-1]['i']}']")
+            pw_in = page.locator(f"input[data-fwi='{pw_idx}']")
             user_in.fill(OPTS["username"])
             pw_in.fill(OPTS["password"])
             pw_in.press("Enter")
