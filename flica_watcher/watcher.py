@@ -288,12 +288,22 @@ class Flica:
         found = {}
         try:
             page.goto(BASE + "/online/mainmenu.cgi", wait_until="domcontentloaded", timeout=45000)
-            time.sleep(3)
-            if classify(page.content()) in ("killed", "expired"):
-                return None
-            menu = next((f for f in page.frames if "leftmenu" in f.url), None)
+            menu = None
+            for _ in range(10):  # mainmenu.cgi first shows a "forwarding to the Main Menu" page
+                time.sleep(2)
+                menu = next((f for f in page.frames if "leftmenu" in f.url.lower()), None)
+                if menu:
+                    break
+            kind = classify(page.content())
             if not menu:
-                return None
+                log.warning("main menu: no leftmenu frame (classify=%s) url=%s frames=%s", kind,
+                            page.url.split("?")[0], [f.url.split("?")[0] for f in page.frames])
+                if kind in ("killed", "expired"):
+                    return None
+                # try any frame that holds the pot links
+                menu = next((f for f in page.frames if "Opentime Pot" in (f.content() if f.url.startswith("http") else "")), None)
+                if not menu:
+                    return None
             links = menu.evaluate(
                 """(sec) => {
                   const months = %s; let section = '', month = '', out = [], i = 0;
