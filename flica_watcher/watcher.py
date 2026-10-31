@@ -226,7 +226,16 @@ class Flica:
                 except Exception:
                     pass
             low = html.lower()
-            if any(h in low for h in BLOCK_HINTS):
+            try:
+                os.makedirs("/share/flica_watcher", exist_ok=True)
+                page.screenshot(path="/share/flica_watcher/last_login.png", full_page=True)
+                vis = page.inner_text("body")[:600].replace("\n", " | ")
+                log.info("after login url=%s text=%s", page.url.split("?")[0], vis)
+            except Exception as e:
+                log.info("diag capture failed: %s", e)
+            hits = [h for h in BLOCK_HINTS if h in low]
+            if hits:
+                log.warning("block hints matched: %s", hits)
                 return "blocked"
             if "sign out" in low and "input type=\"password\"" not in low:
                 self.save()
