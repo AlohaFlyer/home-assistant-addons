@@ -34,6 +34,8 @@ EXPIRED_HINTS = ("session has expired", "session expired", "please log in", "ple
 BLOCK_HINTS = ("captcha", "verification code", "one-time", "one time pass", "change your password",
                "password has expired", "account is locked", "account locked")
 PAIRING_RE = re.compile(r"^[A-Z]\d{4}$")
+PAIRING_ANY = re.compile(r"\b([A-Z]\d{4}[A-Z]?)\b")
+MOBILE_POT = "https://ha2.flica.net/full/mobileopentimepot.cgi?BCID=003.152&From=MainMenu"
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
           "September", "October", "November", "December"]
 
@@ -300,10 +302,19 @@ class Flica:
                             page.url.split("?")[0], [f.url.split("?")[0] for f in page.frames])
                 if kind in ("killed", "expired"):
                     return None
-                # try any frame that holds the pot links
-                menu = next((f for f in page.frames if "Opentime Pot" in (f.content() if f.url.startswith("http") else "")), None)
-                if not menu:
+                # Headless main menu can stall on a reCAPTCHA forward; the mobile pot page is
+                # frameless and works with the same session cookie (Ryan's Distill used it).
+                html = self.fetch(MOBILE_POT)
+                mk = classify(html)
+                txt = visible_text(html)
+                log.info("mobile pot probe: classify=%s len=%d text=%s", mk, len(html), txt[:1500])
+                rows = re.findall(r"<tr[^>]*>.*?</tr>", html, re.S | re.I)
+                log.info("mobile pot rows=%d sample=%s", len(rows), [r[:400] for r in rows[:4]])
+                if mk in ("killed", "expired"):
                     return None
+                if "open time" in txt or "opentime" in txt:
+                    return {"mobile": MOBILE_POT}
+                return None
             links = menu.evaluate(
                 """(sec) => {
                   const months = %s; let section = '', month = '', out = [], i = 0;
@@ -374,6 +385,14 @@ def parse_pot(html):
                         "report": cells[4], "depart": cells[5], "arrive": cells[6], "blk": cells[7],
                         "credit": cells[8], "layover": cells[9],
                         "prem": cells[10] if len(cells) > 10 else ""}
+    if not out:  # mobile layout: any row naming a pairing number
+        for tr in soup.find_all("tr"):
+            cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
+            row = " | ".join(x for x in cells if x)
+            m = PAIRING_ANY.search(row)
+            if m and len(cells) >= 2:
+                key = f"{m.group(1)}|{cells[1] if cells[0] == m.group(1) else row[:40]}"
+                out.setdefault(key, {"pairing": m.group(1), "row": row[:300]})
     return out
 
 
@@ -428,7 +447,8 @@ def check(fl):
             return "stop"
         if kind == "expired":
             return "needs_login"
-        if "Opentime Pot" not in html:
+        vt = visible_text(html) if month == "mobile" else ""
+        if ("Opentime Pot" not in html) and not (month == "mobile" and ("open time" in vt or "opentime" in vt)):
             S["pot_urls"] = {}
             save_state(S)
             S["parse_fail"] = S.get("parse_fail", 0) + 1
