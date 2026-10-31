@@ -255,13 +255,21 @@ class Flica:
                         pass
                 low = html.lower()
             text = visible_text(html)
-            hits = [h for h in BLOCK_HINTS if h in text]
-            if hits:
-                log.warning("block hints matched (visible text): %s", hits)
-                return "blocked"
             on_menu = "/online/mainmenu.cgi" in page.url or "/full/" in page.url
             no_pw = page.locator("input[type=password]:visible").count() == 0
-            if ("sign out" in low or on_menu) and no_pw:
+            # The main menu's "Recent Updates" bulletin can mention captcha/MFA in its news
+            # text, so reaching the menu with no password box is a successful login.
+            if on_menu and no_pw:
+                self.save()
+                S["last_login_ok"] = now_iso()
+                save_state(S)
+                return "ok"
+            hits = [h for h in BLOCK_HINTS if h in text]
+            if hits:
+                i = text.find(hits[0])
+                log.warning("block hints matched (visible text): %s near: %s", hits, text[max(0, i - 120):i + 120])
+                return "blocked"
+            if "sign out" in low and no_pw:
                 self.save()
                 S["last_login_ok"] = now_iso()
                 save_state(S)
