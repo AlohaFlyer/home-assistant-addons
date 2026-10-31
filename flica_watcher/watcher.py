@@ -392,7 +392,12 @@ def parse_pot(html):
             m = PAIRING_ANY.search(row)
             if m and len(cells) >= 2:
                 key = f"{m.group(1)}|{cells[1] if cells[0] == m.group(1) else row[:40]}"
-                out.setdefault(key, {"pairing": m.group(1), "row": row[:300]})
+                c = cells + [""] * 6
+                crd = c[3].replace("/", " ").split()
+                out.setdefault(key, {"pairing": m.group(1), "dates": f"{c[1]}-{c[2]}",
+                                     "days": crd[1] if len(crd) > 1 else "",
+                                     "credit": crd[0] if crd else "", "layover": c[4],
+                                     "report": "", "prem": c[5], "row": row[:300]})
     return out
 
 
