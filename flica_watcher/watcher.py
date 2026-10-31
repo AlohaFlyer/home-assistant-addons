@@ -158,11 +158,23 @@ def set_machine(state, note=""):
 
 
 # ---------------------------------------------------------------- page classification
+def visible_text(html):
+    """Text a person would read: drops scripts/styles so words like 'captcha' in
+    page code (FLICA's main menu loads a captcha script) don't count as a block."""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        for t in soup(["script", "style", "noscript", "template"]):
+            t.decompose()
+        return soup.get_text(" ", strip=True).lower()
+    except Exception:
+        return html.lower()
+
+
 def classify(html):
     low = html.lower()
     if KILLED_TXT in low:
         return "killed"
-    if any(h in low for h in BLOCK_HINTS):
+    if any(h in visible_text(html) for h in BLOCK_HINTS):
         return "blocked"
     if 'type="password"' in low or "type=password" in low or any(h in low for h in EXPIRED_HINTS):
         return "expired"
@@ -233,11 +245,23 @@ class Flica:
                 log.info("after login url=%s text=%s", page.url.split("?")[0], vis)
             except Exception as e:
                 log.info("diag capture failed: %s", e)
-            hits = [h for h in BLOCK_HINTS if h in low]
+            if "forward to the main menu" in low or "/online/mainmenu.cgi" in page.url:
+                time.sleep(5)
+                html = page.content()
+                for fr in page.frames:
+                    try:
+                        html += fr.content()
+                    except Exception:
+                        pass
+                low = html.lower()
+            text = visible_text(html)
+            hits = [h for h in BLOCK_HINTS if h in text]
             if hits:
-                log.warning("block hints matched: %s", hits)
+                log.warning("block hints matched (visible text): %s", hits)
                 return "blocked"
-            if "sign out" in low and "input type=\"password\"" not in low:
+            on_menu = "/online/mainmenu.cgi" in page.url or "/full/" in page.url
+            no_pw = page.locator("input[type=password]:visible").count() == 0
+            if ("sign out" in low or on_menu) and no_pw:
                 self.save()
                 S["last_login_ok"] = now_iso()
                 save_state(S)
