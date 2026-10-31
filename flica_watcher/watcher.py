@@ -188,10 +188,10 @@ class Flica:
         self.ctx = None
         self.new_context()
 
-    def new_context(self):
+    def new_context(self, fresh=False):
         if self.ctx:
             self.ctx.close()
-        kw = {"storage_state": COOKIES} if os.path.exists(COOKIES) else {}
+        kw = {"storage_state": COOKIES} if (os.path.exists(COOKIES) and not fresh) else {}
         self.ctx = self.browser.new_context(
             viewport={"width": 1280, "height": 900},
             user_agent=("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -205,7 +205,7 @@ class Flica:
         log.info("login attempt")
         S["last_login_attempt"] = now_iso()
         save_state(S)
-        self.new_context()
+        self.new_context(fresh=True)  # old cookies can skip the login form and break the login
         page = self.ctx.new_page()
         try:
             page.goto(BASE + "/", wait_until="domcontentloaded", timeout=45000)
