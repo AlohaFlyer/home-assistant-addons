@@ -289,7 +289,7 @@ class Flica:
         try:
             page.goto(BASE + "/online/mainmenu.cgi", wait_until="domcontentloaded", timeout=45000)
             time.sleep(3)
-            if classify(page.content()) != "ok":
+            if classify(page.content()) in ("killed", "expired"):
                 return None
             menu = next((f for f in page.frames if "leftmenu" in f.url), None)
             if not menu:
