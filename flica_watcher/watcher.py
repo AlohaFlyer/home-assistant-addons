@@ -23,7 +23,7 @@ from pot import BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_aft
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.2.6"
+VERSION = "0.2.7"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -675,10 +675,13 @@ def tradeboard_check(fl):
                 continue
             picks = TB.parse_pickups(html)
             if not TB.TRIP_RE.search(html):
-                if not S.get("tb_raw_logged"):
-                    S["tb_raw_logged"] = True
-                    log.info("tradeboard %s: no trip rows in page; raw html: %s", n,
-                             re.sub(r"\\s+", " ", html)[:6000])
+                if not S.get("tb_raw_logged2"):
+                    S["tb_raw_logged2"] = True
+                    flat = re.sub(r"\s+", " ", html)
+                    calls = [m.start() for m in re.finditer(r"\bA\s*\(", flat)]
+                    i = calls[1] if len(calls) > 1 else (calls[0] if calls else 0)
+                    log.info("tradeboard %s: no trip rows; %d A( calls; data: %s", n, len(calls),
+                             flat[max(0, i - 300):i + 5000])
                     try:
                         os.makedirs(CAPTURE_DIR, exist_ok=True)
                         open(f"{CAPTURE_DIR}/tradeboard_{n}.html", "w").write(fh + "\n<!--OTHER-->\n" + html)
