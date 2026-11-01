@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+- `button.flica_watcher_check_now`: runs a pot check right away (ignored within 10 s of the last check, and while paused or stopped).
+- Frequency sliders `number.flica_watcher_normal_minutes` (1-60 min) and `number.flica_watcher_hunt_seconds` (15-300 s); each gap is randomized +-30 % around the setting. Defaults keep the old midpoints (6 min, 40 s).
+
 ## 0.2.1
 - New `sensor.flica_watcher_next_check` (timestamp): when the next pot check is due; unknown while paused or stopped.
 - Read-only page capture every 6 h to /share/flica_watcher/captures (pot page, its links, one pairing detail, any schedule link) so soft time, captain, fits and FAR parsers (t1222) are built from real HTML.

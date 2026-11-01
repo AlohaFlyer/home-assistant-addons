@@ -22,7 +22,7 @@ import web
 from pot import BLOCK_HINTS, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -71,6 +71,11 @@ def save_state(s):
 S = load_state()
 WAKE = threading.Event()
 FLAGS = {"hunt": False, "pause": False, "rearm": False}
+# Check frequency from the dashboard sliders (number entities); persisted in state.
+# Each gap is randomized +-30 % around the setting so the checks never look machine-regular.
+FREQ_LIMITS = {"normal_min": (1, 60), "hunt_s": (15, 300)}
+JITTER = 0.3
+CHECK_NOW_MIN_GAP_S = 10
 RULES = {"list": [], "published": set()}
 RULE_LOCK = threading.Lock()
 
@@ -135,6 +140,23 @@ def on_message(c, u, msg):
         key = "hunt" if "hunt" in msg.topic else "pause"
         FLAGS[key] = p == "ON"
         return
+    elif msg.topic == f"{T}/check_now/press":
+        # Waking the loop runs a check right away (only when idle or hunting; paused/stopped ignore it).
+        if time.time() - S.get("last_check_ts", 0) < CHECK_NOW_MIN_GAP_S:
+            log.info("check now ignored: last check under %d s ago", CHECK_NOW_MIN_GAP_S)
+            return
+        log.info("check now pressed")
+    elif msg.topic in (f"{T}/freq/normal_min/set", f"{T}/freq/hunt_s/set"):
+        key = msg.topic.split("/")[2]
+        lo, hi = FREQ_LIMITS[key]
+        try:
+            v = int(round(float(p)))
+        except ValueError:
+            return
+        S.setdefault("freq", {})[key] = max(lo, min(hi, v))
+        save_state(S)
+        c.publish(f"{T}/freq/{key}/state", str(S["freq"][key]), retain=True)
+        log.info("frequency %s = %s", key, S["freq"][key])
     elif msg.topic.startswith(f"{T}/rule/") and msg.topic.endswith("/live/set"):
         rule_live_cmd(c, msg.topic.split("/")[2], p == "ON")
         return
@@ -225,6 +247,16 @@ def discovery(c):
         ("switch", "pause", {"name": "Pause", "command_topic": f"{T}/pause/set",
                              "state_topic": f"{T}/pause/state", "icon": "mdi:pause-circle"}),
         ("button", "rearm", {"name": "Re-arm", "command_topic": f"{T}/rearm/press", "icon": "mdi:restart"}),
+        ("button", "check_now", {"name": "Check now", "command_topic": f"{T}/check_now/press",
+                                 "icon": "mdi:refresh"}),
+        ("number", "normal_minutes", {"name": "Normal check every", "command_topic": f"{T}/freq/normal_min/set",
+                                      "state_topic": f"{T}/freq/normal_min/state", "min": 1, "max": 60,
+                                      "step": 1, "mode": "slider", "unit_of_measurement": "min",
+                                      "icon": "mdi:timer-outline"}),
+        ("number", "hunt_seconds", {"name": "Hunt check every", "command_topic": f"{T}/freq/hunt_s/set",
+                                    "state_topic": f"{T}/freq/hunt_s/state", "min": 15, "max": 300,
+                                    "step": 5, "mode": "slider", "unit_of_measurement": "s",
+                                    "icon": "mdi:timer-alert-outline"}),
     ]
     for comp, oid, cfg in ents:
         cfg = {**base, **cfg, "unique_id": f"flica_watcher_{oid}", "object_id": f"flica_watcher_{oid}"}
@@ -241,8 +273,12 @@ def mqtt_start():
     def on_connect(cl, u, f, rc, p=None):
         cl.publish(AVAIL, "online", retain=True)
         discovery(cl)
-        for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set"):
+        for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set",
+                  "check_now/press", "freq/normal_min/set", "freq/hunt_s/set"):
             cl.subscribe(f"{T}/{t}")
+        fq = freq()
+        cl.publish(f"{T}/freq/normal_min/state", str(fq["normal_min"]), retain=True)
+        cl.publish(f"{T}/freq/hunt_s/state", str(fq["hunt_s"]), retain=True)
         publish_rules(cl)
 
     c.on_connect = on_connect
@@ -476,15 +512,24 @@ class Flica:
 
 
 # ---------------------------------------------------------------- main loop
+def freq():
+    """Current settings. Defaults are the midpoints of the add-on options (6 min normal, 40 s hunt)."""
+    f = dict(S.get("freq") or {})
+    f.setdefault("normal_min", max(1, round((OPTS["idle_min_s"] + OPTS["idle_max_s"]) / 2 / 60)))
+    f.setdefault("hunt_s", max(15, round((OPTS["hunt_min_s"] + OPTS["hunt_max_s"]) / 2)))
+    return f
+
+
 def gap():
-    lo, hi = ((OPTS["hunt_min_s"], OPTS["hunt_max_s"]) if FLAGS["hunt"]
-              else (OPTS["idle_min_s"], OPTS["idle_max_s"]))
-    return random.uniform(lo, max(lo, hi))
+    fq = freq()
+    mid = fq["hunt_s"] if FLAGS["hunt"] else fq["normal_min"] * 60
+    return random.uniform(mid * (1 - JITTER), mid * (1 + JITTER))
 
 
 def sleep(sec):
     WAKE.clear()
     WAKE.wait(sec)
+
 
 
 def sleep_announced(sec):
@@ -643,6 +688,7 @@ def check(fl):
     flat = [dict(v, month=m) for m, p in pot_all.items() for v in p.values()]
     pub("pot/state", {"count": len(flat), "pairings": flat[:60]})
     pub("last_check", now_iso())
+    S["last_check_ts"] = time.time()
     pub("session", "ON")
     return "ok"
 
