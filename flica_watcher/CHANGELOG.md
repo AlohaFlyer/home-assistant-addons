@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.6
+- Tradeboard: never baseline a page with no trip rows (logs its raw HTML once to find where rows load).
+
 ## 0.2.5
 - Tradeboard watch (read only): every check (at most every 2 min) reads Tradeboard All Requests for each watched bid month; a new post whose response method is "Pickup Trip" is published on `flica_watcher/event/new_pairing` with `source: tradeboard` (days, depart, arrive, blk, credit=TPay, soft, poster, captain from the detail page). First read is a silent baseline. Failures never stop the pot watch.
 
