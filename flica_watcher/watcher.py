@@ -23,7 +23,7 @@ from pot import BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_aft
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.2.5"
+VERSION = "0.2.6"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -661,7 +661,7 @@ def tradeboard_check(fl):
     nums = sorted({b.split(".")[-1] for b in (bcid(u) for u in S.get("pot_urls", {}).values()) if b})
     base = S.setdefault("tb_baseline", {})
     for n in nums:
-        key = f"tb_{n}"
+        key = f"tb2_{n}"
         try:
             furl = f"{BASE}/online/tb_frame.cgi?BCID=001.{n}&dp=mr"
             fh = fl.fetch(furl)
@@ -674,6 +674,17 @@ def tradeboard_check(fl):
                 log.info("tradeboard %s: %s, skipped", n, classify(html))
                 continue
             picks = TB.parse_pickups(html)
+            if not TB.TRIP_RE.search(html):
+                if not S.get("tb_raw_logged"):
+                    S["tb_raw_logged"] = True
+                    log.info("tradeboard %s: no trip rows in page; raw html: %s", n,
+                             re.sub(r"\\s+", " ", html)[:6000])
+                    try:
+                        os.makedirs(CAPTURE_DIR, exist_ok=True)
+                        open(f"{CAPTURE_DIR}/tradeboard_{n}.html", "w").write(fh + "\n<!--OTHER-->\n" + html)
+                    except Exception:
+                        pass
+                continue
             if not TB_PROBE["done"]:
                 TB_PROBE["done"] = True
                 log.info("tradeboard probe %s url=%s pickups=%s text=%s", n, url.split("?")[0],
