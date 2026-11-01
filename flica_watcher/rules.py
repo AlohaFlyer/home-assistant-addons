@@ -154,7 +154,7 @@ def matches(rule, row, today=None):
         except (TypeError, ValueError):
             return False, "days unknown"
     if m.get("report_after") or m.get("report_before"):
-        rpt = hhmm(row.get("report"))
+        rpt = hhmm(row.get("report")) or hhmm(row.get("depart"))  # pot rows carry first departure; check-in only after enrich
         if not rpt:
             return False, "report unknown"
         if m.get("report_after") and rpt < hhmm(str(m["report_after"])):

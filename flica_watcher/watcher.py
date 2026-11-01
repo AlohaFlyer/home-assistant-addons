@@ -22,7 +22,7 @@ import web
 from pot import BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
