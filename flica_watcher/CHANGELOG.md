@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+- New `sensor.flica_watcher_next_check` (timestamp): when the next pot check is due; unknown while paused or stopped.
+- Read-only page capture every 6 h to /share/flica_watcher/captures (pot page, its links, one pairing detail, any schedule link) so soft time, captain, fits and FAR parsers (t1222) are built from real HTML.
+
 ## 0.2.0
 - Rules engine (rules.json, Ingress editor page, per-rule live switch with dry-run week gate, cap per day). Read only: no FLICA writes exist.
 - Finds history in SQLite; retained `flica_watcher/finds`; new sensors finds, rules_active, last_match.

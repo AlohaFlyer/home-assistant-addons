@@ -22,7 +22,7 @@ import web
 from pot import BLOCK_HINTS, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -200,6 +200,8 @@ def discovery(c):
                              "json_attributes_topic": f"{T}/state_attr"}),
         ("sensor", "last_check", {"name": "Last check", "state_topic": f"{T}/last_check",
                                   "device_class": "timestamp"}),
+        ("sensor", "next_check", {"name": "Next check", "state_topic": f"{T}/next_check",
+                                  "device_class": "timestamp", "icon": "mdi:timer-sand"}),
         ("sensor", "pot_count", {"name": "Pot count", "state_topic": f"{T}/pot/state",
                                  "value_template": "{{ value_json.count }}", "state_class": "measurement",
                                  "unit_of_measurement": "pairings",
@@ -485,6 +487,16 @@ def sleep(sec):
     WAKE.wait(sec)
 
 
+def sleep_announced(sec):
+    """Sleep, publishing when the next pot check is due (sensor.flica_watcher_next_check)."""
+    pub("next_check", datetime.fromtimestamp(time.time() + sec, timezone.utc).isoformat())
+    sleep(sec)
+
+
+def no_next_check():
+    pub("next_check", "None")  # HA shows unknown: no check scheduled (paused/stopped)
+
+
 def try_login(fl, reason):
     """Single attempt. Parks the watcher on anything but success."""
     res = fl.login()
@@ -518,6 +530,42 @@ def run_rules(month, key, row):
                  m["would_submit"], m["reason"])
         pub("event/rule_match", m, retain=False)
         pub("last_match", m)
+
+
+CAPTURE_DIR = "/share/flica_watcher/captures"
+
+
+def capture(fl, month, html):
+    """Read-only discovery for t1222 (soft time, captain, fits, FAR): every 6 h save the pot page,
+    its links, one pairing detail page and any schedule page this session can already open, so
+    the parsers get built from real HTML. Same session, GET only; never clicks or submits."""
+    if time.time() - S.get("captured_at", 0) < 6 * 3600:
+        return
+    S["captured_at"] = time.time()
+    try:
+        from bs4 import BeautifulSoup
+        from urllib.parse import urljoin
+        os.makedirs(CAPTURE_DIR, exist_ok=True)
+        open(f"{CAPTURE_DIR}/pot_{month}.html", "w").write(html)
+        url = S["pot_urls"][month]
+        links = [{"text": a.get_text(" ", strip=True)[:60], "href": urljoin(url, a["href"])}
+                 for a in BeautifulSoup(html, "html.parser").find_all("a", href=True)]
+        json.dump(links, open(f"{CAPTURE_DIR}/links_{month}.json", "w"), indent=1)
+        picks = [l for l in links if re.match(r"^[A-Z]\d{4}", l["text"])][:1]
+        picks += [l for l in links if re.search(r"sched|my trips|calendar", l["text"], re.I)][:1]
+        for l in picks:
+            if not l["href"].startswith(BASE):
+                continue
+            page = fl.fetch(l["href"])
+            if classify(page) != "ok":
+                log.info("capture: %s gave %s, skipped", l["text"], classify(page))
+                continue
+            name = re.sub(r"[^A-Za-z0-9]+", "_", l["text"])[:30] or "page"
+            open(f"{CAPTURE_DIR}/{name}.html", "w").write(page)
+        log.info("capture saved to %s: %d links, extra pages %s", CAPTURE_DIR, len(links),
+                 [l["text"] for l in picks])
+    except Exception as e:
+        log.info("capture skipped: %s", e)
 
 
 def check(fl):
@@ -569,6 +617,7 @@ def check(fl):
                 return "stop"
         pot = parse_pot(html)
         pot_all[month] = pot
+        capture(fl, month, html)
         base = S["baseline"].get(month)
         new_keys = set()
         if base is None:
@@ -631,11 +680,13 @@ def main():
                     try_login(fl, "re-arm")
                     continue
             if st.startswith("stopped"):
+                no_next_check()
                 sleep(3600)
                 continue
             if FLAGS["pause"]:
                 if st != "paused":
                     set_machine("paused", "paused from HA")
+                no_next_check()
                 sleep(3600)
                 continue
             if st == "paused":
@@ -645,14 +696,14 @@ def main():
             if st == "yielded":
                 wait_until = S.get("yield_until", 0)
                 if time.time() < wait_until:
-                    sleep(wait_until - time.time())
+                    sleep_announced(wait_until - time.time())
                     continue
                 if not try_login(fl, "after yield cooldown"):
                     continue
             if st == "backoff":
                 wait_until = S.get("relogin_at", 0)
                 if time.time() < wait_until:
-                    sleep(wait_until - time.time())
+                    sleep_announced(wait_until - time.time())
                     continue
                 try_login(fl, f"backoff step {S.get('relogin_streak', 0)}")
                 continue
@@ -676,7 +727,7 @@ def main():
                 S["net_fail"] = S.get("net_fail", 0) + 1
                 if S["net_fail"] >= 3:
                     set_machine("stopped_unexpected", f"3 check errors in a row: {e}")
-                sleep(gap())
+                sleep_announced(gap())
                 continue
             S["net_fail"] = 0
             if res == "needs_login":
@@ -709,7 +760,7 @@ def main():
                 want = "hunting" if FLAGS["hunt"] else "idle"
                 if S["machine"] != want:
                     set_machine(want)
-            sleep(gap())
+            sleep_announced(gap())
 
 
 if __name__ == "__main__":
