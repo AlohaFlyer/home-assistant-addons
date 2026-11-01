@@ -23,7 +23,7 @@ from pot import fit_tag, parse_schedule, row_date, BLOCK_HINTS, detail_url, pars
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.3.2"
+VERSION = "0.3.3"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -628,6 +628,34 @@ def schedule_fit(ev):
     return ""
 
 
+DETAIL_FIELDS = ("captain", "report", "blk", "tafb", "soft", "detail_url")
+DETAIL_MAX_PER_CHECK = 8
+
+
+def pot_details(fl, pot):
+    """Captain, check-in, block, TAFB and soft time on EVERY pot row (not only new ones), so the
+    dashboard table can show them. One read-only detail GET per pairing, cached until the pairing
+    leaves the pot; at most 8 new ones per check, 1.5-3.5 s apart. Fit is re-tagged every check
+    because the schedule can change."""
+    cache = S.setdefault("details", {})
+    fetched = 0
+    for k, row in pot.items():
+        if k not in cache and fetched < DETAIL_MAX_PER_CHECK:
+            if fetched:
+                time.sleep(random.uniform(1.5, 3.5))
+            ev = dict(row)
+            enrich(fl, ev)
+            fetched += 1
+            cache[k] = {f: ev.get(f, "") for f in DETAIL_FIELDS}
+        if k in cache:
+            row.update({f: v for f, v in cache[k].items() if v or not row.get(f)})
+            if not row.get("soft"):
+                row["soft"] = soft_time(row.get("credit"), row.get("blk")) or ""
+        row["fit"] = schedule_fit(row)
+    if fetched:
+        log.info("pot details fetched: %d (cached %d)", fetched, len(cache))
+
+
 SCHED_GAP_S = 30 * 60
 
 
@@ -848,6 +876,7 @@ def check(fl):
         pot_all[month] = pot
         capture(fl, month, html)
         detail_probe(fl, pot)
+        pot_details(fl, pot)
         base = S["baseline"].get(month)
         new_keys = set()
         if base is None:
@@ -856,7 +885,8 @@ def check(fl):
             new_keys = {k for k in pot if k not in base}
             for k in sorted(new_keys):
                 ev = {**pot[k], "month": month, "seen": now_iso()}
-                enrich(fl, ev)
+                if not ev.get("detail_url"):  # pot_details already read it when cached
+                    enrich(fl, ev)
                 log.info("NEW pairing %s", ev)
                 pub("event/new_pairing", ev, retain=False)
                 pub("last_new", ev)
@@ -864,8 +894,10 @@ def check(fl):
         DB.record_pot(month, pot, new_keys)
         new_any = new_any or bool(new_keys)
         S["baseline"][month] = sorted(pot.keys())
-    # drop months no longer published
+    # drop months no longer published, and cached details of pairings no longer in any pot
     S["baseline"] = {m: v for m, v in S["baseline"].items() if m in S["pot_urls"]}
+    live = {k for p in pot_all.values() for k in p}
+    S["details"] = {k: v for k, v in S.get("details", {}).items() if k in live}
     S["relogin_streak"] = 0
     save_state(S)
     if new_any or not S.get("finds_published"):
