@@ -197,6 +197,9 @@ def detail_url(row, today=None):
 # Detail text (Nov 1, 2026): "... blk : 1218 tafb : 2609 pay : 1218 crew: ca 14157 dimaya jr, fedelino fo open"
 CA_RE = re.compile(r"crew\s*:.*?\bca\s+(?:\d{3,7}\s+)?(.+?)(?=\s+(?:fo|ro|fa|so|ca)\b|$)", re.I)
 CHECKIN_RE = re.compile(r"check\s*in\s*:\s*(\d{1,2}:?\d{2})", re.I)
+# A leg: flight number then STN-STN ("Th 865 HNL-PPG 1630 ..."). The column header "Dps-Ars"
+# has no flight number in front, so it never matches.
+LEG_RE = re.compile(r"\b\d{1,4}\s+([A-Za-z]{3})-([A-Za-z]{3})\b")
 TOT_RE = {
     "blk": re.compile(r"\bblk\s*:\s*(\d{1,3}:?\d{2})", re.I),
     "credit": re.compile(r"\bpay\s*:\s*(\d{1,3}:?\d{2})", re.I),
@@ -227,6 +230,13 @@ def parse_detail(html):
         found = rx.findall(text)
         if found:
             out[k] = _hm(found[-1])
+    legs = [(a.upper(), b.upper()) for a, b in LEG_RE.findall(text)]
+    if legs:
+        base = legs[0][0]
+        out["route"] = "-".join([base] + [b for _, b in legs])
+        away = [b for _, b in legs if b != base]
+        # Where the trip lands away from base: a turn's only stop (PPG), or every stop in order.
+        out["turn"] = "/".join(dict.fromkeys(away))
     return out
 
 
