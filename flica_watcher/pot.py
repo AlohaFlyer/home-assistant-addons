@@ -106,7 +106,10 @@ def header_fingerprint(html):
     for tr in soup.find_all("tr"):
         cells = _cells(tr, ("td", "th"))
         if cells and PAIRING_RE.match(cells[0]):
-            ncols = len(cells)
+            # Own cells only: FLICA never closes a pairing's <tr>, so html.parser nests every
+            # later row inside the first one and len(cells) grew with the pot (0.3.5 fix; it
+            # parked the watcher 9 times on Nov 1, 2026).
+            ncols = len(tr.find_all(("td", "th"), recursive=False)) or len(cells)
             if prev is None:
                 sig = f"noheader|cols={ncols}"
             else:
@@ -355,3 +358,14 @@ def fit_tag(start, end, sched):
         if off - used < need:
             return f"Days off {off - used}"
     return "Fits"
+
+
+def layout_still_parses(html):
+    """True when the pot page still yields well-formed rows: a pairing id, a start date the
+    parser understands and a credit in hours. Anything less is a real layout change."""
+    try:
+        rows = parse_pot(html)
+        return bool(rows) and all(r.get("pairing") and row_date(r.get("start") or (r.get("dates") or "").split("-")[0])
+                                  and hours(r.get("credit")) is not None for r in rows.values())
+    except Exception:
+        return False

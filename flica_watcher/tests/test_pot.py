@@ -101,3 +101,32 @@ def test_fingerprint_ignores_which_pairing_is_first():
     b = header_fingerprint(_nested([("H3619", "01Nov", "02Nov", "12.18", "LAS")]))
     c = header_fingerprint(_nested([("H3601", "26Nov", "27Nov", "11.20", "-none-")]))
     assert a and a == b == c
+
+
+def _unclosed(rows):
+    """Shape of the real mobile pot (Nov 1 2026): each pairing's first <tr> is never closed,
+    so html.parser nests every later row inside the first pairing row."""
+    hdr = ("<tr><td><b>Pair</b></td><td><b>Start</b></td><td><b>End</b></td><td><b>Crd</b>/<b>Dy</b></td>"
+           "<td><b>Layover</b></td><td><b>Prem</b></td></tr><tr><td colspan='6'><hr></td></tr>")
+    body = "".join(
+        f"<tr><td><a href='#'>{p}</a></td><td>{s}</td><td>{e}</td><td>{c}</td><td>{l}</td><td> </td>"
+        f"<tr><td>&nbsp;</td><td>16:30</td><td>05:55</td><td>2</td><td>&nbsp;</td></tr>"
+        f"<tr><td colspan='6'><hr/></td></tr>" for p, s, e, c, l in rows)
+    return f"<html><body><table>{hdr}{body}</table></body></html>"
+
+
+def test_fingerprint_ignores_pot_size_with_unclosed_rows():
+    # Counting nested cells made the hash change with the pot and parked the watcher 9 times.
+    two = _unclosed([("H3601", "26Nov", "27Nov", "11.20", "-none-"), ("H3633", "26Nov", "27Nov", "11.56", "LAX")])
+    one = _unclosed([("H3633", "26Nov", "27Nov", "11.56", "LAX")])
+    three = _unclosed([("H3655", "12Nov", "15Nov", "24.10", "SIN")] +
+                      [("H3601", "26Nov", "27Nov", "11.20", "-none-"), ("H3633", "26Nov", "27Nov", "11.56", "LAX")])
+    assert header_fingerprint(two) == header_fingerprint(one) == header_fingerprint(three) is not None
+
+
+def test_layout_still_parses(fx):
+    from pot import layout_still_parses
+    assert layout_still_parses(_unclosed([("H3601", "26Nov", "27Nov", "11.20", "-none-")]))
+    assert layout_still_parses(fx("mobile_pot_rows.html"))
+    assert not layout_still_parses(fx("mobile_pot_empty.html"))
+    assert not layout_still_parses(fx("killed.html"))
