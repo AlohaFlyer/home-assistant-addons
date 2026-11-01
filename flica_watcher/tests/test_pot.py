@@ -42,7 +42,7 @@ def test_parse_detail_real_text():
     from pot import parse_detail, soft_time
     d = parse_detail(f"<p>{DETAIL}</p>")
     assert d == {"captain": "Dimaya Jr, Fedelino", "report": "12:10", "blk": "12:18",
-                 "credit": "12:18", "tafb": "26:09"}
+                 "credit": "12:18", "tafb": "26:09", "route": "HNL-LAS-HNL", "turn": "LAS"}
     assert soft_time(d["credit"], d["blk"]) == "0:00"
     assert parse_detail("<p>crew: ca open fo open</p>")["captain"] == "OPEN"
 
@@ -130,3 +130,16 @@ def test_layout_still_parses(fx):
     assert layout_still_parses(fx("mobile_pot_rows.html"))
     assert not layout_still_parses(fx("mobile_pot_empty.html"))
     assert not layout_still_parses(fx("killed.html"))
+
+
+TURN = ("FLICA.Net - Mobile Pairing Pairing Details H3601:26NOV Nov 2 - Nov 30 Check In: 15:30 Dy Flt "
+        "Dps-Ars Dep Arr Blk Th 865 HNL-PPG 1630 2115 0545 Th 866 PPG-HNL 2320 0555 0535 Blk : 1120 "
+        "TAFB : 1455 Pay : 1120 Crew: CA 10001 SMITH JR, JOHN CA 10002 DOE, JANE FO Open")
+
+
+def test_parse_detail_turn_station():
+    from pot import parse_detail
+    d = parse_detail(f"<p>{TURN}</p>")
+    assert d["turn"] == "PPG" and d["route"] == "HNL-PPG-HNL"
+    multi = parse_detail("<p>Dy Flt Dps-Ars Th 865 HNL-PPG 1630 2115 Th 13 PPG-PPT 2320 0100 Fr 14 PPT-HNL 0300 0800</p>")
+    assert multi["turn"] == "PPG/PPT" and multi["route"] == "HNL-PPG-PPT-HNL"
