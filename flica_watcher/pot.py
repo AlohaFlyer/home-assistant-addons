@@ -298,6 +298,14 @@ def parse_schedule(html, domicile="HNL"):
         t = re.search(pat, text)
         if t:
             tot[key] = int(t.group(1)) if key == "days_off" else t.group(1)
+    if "days_off" not in tot:  # the OT drop view has no totals; FLICA counts VAC days as off
+        y0, m0 = days[0][0][:4], days[0][0][5:7]
+        work = set()
+        for it in items:
+            if PAIRING_RE.match(it["trip"]):
+                for d in _span(date.fromisoformat(it["start"]), date.fromisoformat(it["end"])):
+                    work.add(d.isoformat())
+        tot["days_off"] = sum(1 for d in days if d[0][:7] == f"{y0}-{m0}" and d[0] not in work)
     u = SCHED_UPDATED.search(text)
     first = date.fromisoformat(days[0][0])
     return {"month": f"{first.year}-{first.month:02d}", "updated": u.group(1) if u else "",
@@ -332,7 +340,9 @@ def fit_tag(start, end, sched):
     hit = [busy[d] for d in mine if d in busy]
     if hit:
         return f"Conflict {hit[0]}"
-    near = busy.get(start - timedelta(days=1)) or busy.get(end + timedelta(days=1))
+    near = [t for t in (busy.get(start - timedelta(days=1)), busy.get(end + timedelta(days=1)))
+            if t and PAIRING_RE.match(t)]
+    near = near[0] if near else None
     if near:
         return f"Check rest {near}"
     off = sched.get("totals", {}).get("days_off")
