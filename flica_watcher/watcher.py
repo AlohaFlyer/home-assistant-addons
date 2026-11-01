@@ -19,10 +19,10 @@ from playwright.sync_api import sync_playwright
 
 import rules as R
 import web
-from pot import BLOCK_HINTS, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+from pot import BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 
-VERSION = "0.2.2"
+VERSION = "0.2.3"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -577,6 +577,40 @@ def run_rules(month, key, row):
         pub("last_match", m)
 
 
+DETAIL_PROBE = {"done": False}
+
+
+def enrich(fl, ev):
+    """One read-only GET of the pairing's mobile detail page: captain name, block, credit,
+    soft time (credit minus block). Never clicks or submits. Failure leaves the row as is."""
+    try:
+        url = detail_url(ev)
+        if url:
+            page = fl.fetch(url)
+            if classify(page) == "ok":
+                d = parse_detail(page)
+                if not DETAIL_PROBE["done"]:
+                    DETAIL_PROBE["done"] = True
+                    log.info("detail text %s: %s", ev.get("pairing"), visible_text(page)[:2500])
+                ev.update({k: v for k, v in d.items() if k == "captain" or not ev.get(k)})
+                ev["detail_url"] = url
+    except Exception as e:
+        log.info("detail skipped for %s: %s", ev.get("pairing"), e)
+    ev.setdefault("captain", "")
+    st = soft_time(ev.get("credit"), ev.get("blk"))
+    ev["soft"] = st or ""
+
+
+def detail_probe(fl, pot):
+    """Once per start: log one detail page's text so the captain/total parsers can be checked."""
+    if DETAIL_PROBE["done"] or not pot:
+        return
+    row = dict(next(iter(pot.values())))
+    enrich(fl, row)
+    log.info("detail probe %s: captain=%r blk=%s credit=%s soft=%s", row.get("pairing"),
+             row.get("captain"), row.get("blk"), row.get("credit"), row.get("soft"))
+
+
 CAPTURE_DIR = "/share/flica_watcher/captures"
 
 
@@ -663,6 +697,7 @@ def check(fl):
         pot = parse_pot(html)
         pot_all[month] = pot
         capture(fl, month, html)
+        detail_probe(fl, pot)
         base = S["baseline"].get(month)
         new_keys = set()
         if base is None:
@@ -671,6 +706,7 @@ def check(fl):
             new_keys = {k for k in pot if k not in base}
             for k in sorted(new_keys):
                 ev = {**pot[k], "month": month, "seen": now_iso()}
+                enrich(fl, ev)
                 log.info("NEW pairing %s", ev)
                 pub("event/new_pairing", ev, retain=False)
                 pub("last_new", ev)
