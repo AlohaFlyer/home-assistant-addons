@@ -23,7 +23,7 @@ from pot import BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_aft
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.2.8"
+VERSION = "0.2.9"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"

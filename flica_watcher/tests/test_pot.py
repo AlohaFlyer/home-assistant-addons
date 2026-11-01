@@ -85,3 +85,19 @@ def test_next_bid_period_only():
     from pot import bcid_after
     assert bcid_after("003.153", "003.152") and not bcid_after("003.151", "003.152")
     assert bcid_after("003.160", "003.152") and not bcid_after("003.152", "003.152")
+
+
+def _nested(rows):
+    head = "<tr><td>[HNL 332 FO]</td><td></td><td><a href='#'>Display Options</a></td></tr>"
+    hdr = "<tr><td><b>Pair</b></td><td><b>Start</b></td><td><b>End</b></td><td><b>Crd</b>/<b>Dy</b></td><td><b>Layover</b></td><td><b>Prem</b></td></tr>"
+    body = "".join(
+        f"<tr><td colspan='6'><hr></td></tr><tr><td colspan='6'><table><tr><td>{p}</td><td>{s}</td><td>{e}</td>"
+        f"<td>{c}</td><td>{l}</td><td></td></tr></table></td></tr>" for p, s, e, c, l in rows)
+    return f"<html><body><table>{head}</table><table>{hdr}{body}</table></body></html>"
+
+
+def test_fingerprint_ignores_which_pairing_is_first():
+    a = header_fingerprint(_nested([("H3606", "01Nov", "03Nov", "21.00", "JFK"), ("H3619", "01Nov", "02Nov", "12.18", "LAS")]))
+    b = header_fingerprint(_nested([("H3619", "01Nov", "02Nov", "12.18", "LAS")]))
+    c = header_fingerprint(_nested([("H3601", "26Nov", "27Nov", "11.20", "-none-")]))
+    assert a and a == b == c
