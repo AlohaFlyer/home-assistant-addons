@@ -43,8 +43,83 @@ def _leaf_rows(soup):
     return out
 
 
+JS_TYPES = {"D": "Drop", "X": "Trade/Drop", "T": "Trade", "G": "Pickup", "R": "Reserve", "V": "Vacation"}
+PICKUP_TYPES = ("D", "X")  # posts answered with the "Pickup Trip" button
+
+
+def _js_args(src, i):
+    """Split the argument list starting at src[i] (just after 'new A(') into raw tokens."""
+    out, cur, q = [], "", None
+    while i < len(src):
+        ch = src[i]
+        if q:
+            cur += ch
+            if ch == "\\" and i + 1 < len(src):
+                cur += src[i + 1]
+                i += 1
+            elif ch == q:
+                q = None
+        elif ch in "\"'":
+            q = ch
+            cur += ch
+        elif ch == ",":
+            out.append(cur.strip())
+            cur = ""
+        elif ch == ")":
+            out.append(cur.strip())
+            return out
+        else:
+            cur += ch
+        i += 1
+    return out
+
+
+def _v(tok):
+    if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in "\"'":
+        from urllib.parse import unquote
+        return unquote(tok[1:-1]).replace("&nbsp;", "").strip()
+    return tok
+
+
+def parse_js(html, today=None):
+    """Tradeboard rows come as r[i]=new A(request_id, response_id, n, cid, TYPE, "H3606",
+    "Nov 4, 2026", "04NOV", "20261104", flica, email, phone, first, last, comments, auto,
+    created, accepted, accepted_id, hasdetails, report, days, blk, credit, layover, dep, arr, ...)."""
+    out = {}
+    for m in re.finditer(r"new\s+A\s*\(", html):
+        a = _js_args(html, m.end())
+        if len(a) < 27:
+            continue
+        typ = a[4]
+        if typ not in PICKUP_TYPES:
+            continue
+        v = [_v(x) for x in a]
+        pairing, date2 = v[5], v[7]
+        start = f"{date2[:2]}{date2[2:5].title()}" if len(date2) >= 5 else date2
+        days = v[21]
+        r = {"pairing": pairing, "start": start, "days": days, "layover": v[24],
+             "report": v[20], "depart": v[25], "arrive": v[26], "blk": v[22], "credit": v[23],
+             "poster": f"{v[12]} {v[13]}".title().strip(), "posted": v[16], "post_type": JS_TYPES.get(typ, typ),
+             "comments": v[14][:200], "request_id": a[0], "source": "tradeboard"}
+        d = row_date(start, today)
+        r["end"] = ""
+        if d and days.isdigit() and int(days) > 0:
+            e = d + timedelta(days=int(days) - 1)
+            r["end"] = f"{e.day:02d}{e.strftime('%b')}"
+        r["dates"] = f"{r['start']}-{r['end']}" if r["end"] else r["start"]
+        r["soft"] = soft_time(r["credit"], r["blk"]) or ""
+        out[f"{pairing}|{start}|{a[0]}"] = r
+    return out
+
+
+def has_rows(html):
+    return bool(re.search(r"new\s+A\s*\(\s*\d", html)) or bool(TRIP_RE.search(html))
+
+
 def parse_pickups(html, today=None):
-    """{key: row} for each 'Pickup Trip' post. key = pairing|startDDMon|poster."""
+    """{key: row} for each 'Pickup Trip' post (JS data first, HTML table fallback)."""
+    if re.search(r"new\s+A\s*\(\s*\d", html):
+        return parse_js(html, today)
     soup = BeautifulSoup(html, "html.parser")
     out = {}
     for tr in _leaf_rows(soup):

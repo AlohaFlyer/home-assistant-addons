@@ -23,7 +23,7 @@ from pot import BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_aft
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.2.7"
+VERSION = "0.2.8"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -674,7 +674,7 @@ def tradeboard_check(fl):
                 log.info("tradeboard %s: %s, skipped", n, classify(html))
                 continue
             picks = TB.parse_pickups(html)
-            if not TB.TRIP_RE.search(html):
+            if not TB.has_rows(html):
                 if not S.get("tb_raw_logged2"):
                     S["tb_raw_logged2"] = True
                     flat = re.sub(r"\s+", " ", html)

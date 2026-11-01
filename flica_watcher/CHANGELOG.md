@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.8
+- Tradeboard rows are read from the page's JS data (r[i]=new A(...)); Drop and Trade/Drop posts (the ones with a Pickup Trip button) alert.
+
 ## 0.2.6
 - Tradeboard: never baseline a page with no trip rows (logs its raw HTML once to find where rows load).
 
