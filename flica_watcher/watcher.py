@@ -21,8 +21,9 @@ import rules as R
 import web
 from pot import BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
+import tradeboard as TB
 
-VERSION = "0.2.4"
+VERSION = "0.2.5"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -647,6 +648,53 @@ def capture(fl, month, html):
         log.info("capture skipped: %s", e)
 
 
+TB_MIN_GAP_S = 120
+TB_PROBE = {"done": False}
+
+
+def tradeboard_check(fl):
+    """Read only: Tradeboard All Requests for each watched bid month. Alerts on new posts whose
+    response method is 'Pickup Trip'. Any failure is logged and never stops the pot watch."""
+    if time.time() - S.get("tb_checked_at", 0) < TB_MIN_GAP_S:
+        return
+    S["tb_checked_at"] = time.time()
+    nums = sorted({b.split(".")[-1] for b in (bcid(u) for u in S.get("pot_urls", {}).values()) if b})
+    base = S.setdefault("tb_baseline", {})
+    for n in nums:
+        key = f"tb_{n}"
+        try:
+            furl = f"{BASE}/online/tb_frame.cgi?BCID=001.{n}&dp=mr"
+            fh = fl.fetch(furl)
+            if classify(fh) != "ok":
+                log.info("tradeboard %s frame: %s, skipped", n, classify(fh))
+                continue
+            url = TB.other_requests_url(fh, furl) or f"{BASE}/online/tb_otherrequests.cgi?BCID=001.{n}"
+            html = fl.fetch(url)
+            if classify(html) != "ok":
+                log.info("tradeboard %s: %s, skipped", n, classify(html))
+                continue
+            picks = TB.parse_pickups(html)
+            if not TB_PROBE["done"]:
+                TB_PROBE["done"] = True
+                log.info("tradeboard probe %s url=%s pickups=%s text=%s", n, url.split("?")[0],
+                         list(picks), visible_text(html)[:1500])
+            old = base.get(key)
+            if old is None:
+                log.info("tradeboard baseline %s: %d pickup posts (no alert)", key, len(picks))
+            else:
+                for k in sorted(set(picks) - set(old)):
+                    ev = {**picks[k], "month": key, "seen": now_iso()}
+                    enrich(fl, ev)
+                    log.info("NEW tradeboard pickup %s", ev)
+                    pub("event/new_pairing", ev, retain=False)
+                    pub("last_tradeboard", ev)
+            base[key] = sorted(picks)
+            pub(f"tradeboard/{key}", {"count": len(picks), "posts": list(picks.values())[:40]})
+        except Exception as e:
+            log.info("tradeboard %s error: %s", n, e)
+    save_state(S)
+
+
 def check(fl):
     """One pass. Returns next action hint."""
     if not S.get("pot_urls"):
@@ -723,6 +771,7 @@ def check(fl):
         S["finds_published"] = True
     flat = [dict(v, month=m) for m, p in pot_all.items() for v in p.values()]
     pub("pot/state", {"count": len(flat), "pairings": flat[:60]})
+    tradeboard_check(fl)
     pub("last_check", now_iso())
     S["last_check_ts"] = time.time()
     pub("session", "ON")
