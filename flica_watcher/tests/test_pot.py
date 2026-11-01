@@ -27,9 +27,24 @@ def test_parse_rows_mobile_columns(fx):
     pot = parse_pot(fx("mobile_pot_rows.html"))
     assert set(pot) == {"H3644|01Nov", "H3601|26Nov", "H3649|26Nov"}
     r = pot["H3644|01Nov"]
-    # v0.1.9 put LAX in report and 2 in layover; these are the corrected fields the push uses
-    assert (r["dates"], r["days"], r["layover"], r["report"], r["credit"], r["blk"]) == \
-        ("01Nov-02Nov", "2", "LAX", "11.27", "11:04", "08:10")
+    # Crd/Dy column is pay; 08:10/11:04 are first departure and last arrival (confirmed Nov 1, 2026)
+    assert (r["dates"], r["days"], r["layover"], r["credit"], r["depart"], r["arrive"]) == \
+        ("01Nov-02Nov", "2", "LAX", "11:27", "08:10", "11:04")
+
+
+DETAIL = ("flica.net - mobile pairing pairing details h3619:01nov nov 1 - nov 17 check in: 12:10 dy flt "
+          "dps-ars dep arr blk su 876 hnl-las 1310 2054 0544 silverton casino lodge (702)263-7777 (1106) "
+          "mo 807 las-hnl 0930 1404 0634 blk : 1218 tafb : 2609 pay : 1218 crew: ca 14157 dimaya jr, "
+          "fedelino fo open")
+
+
+def test_parse_detail_real_text():
+    from pot import parse_detail, soft_time
+    d = parse_detail(f"<p>{DETAIL}</p>")
+    assert d == {"captain": "Dimaya Jr, Fedelino", "report": "12:10", "blk": "12:18",
+                 "credit": "12:18", "tafb": "26:09"}
+    assert soft_time(d["credit"], d["blk"]) == "0:00"
+    assert parse_detail("<p>crew: ca open fo open</p>")["captain"] == "OPEN"
 
 
 def test_parse_empty(fx):

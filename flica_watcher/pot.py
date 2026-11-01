@@ -18,10 +18,11 @@ PAIRING_ANY = re.compile(r"\b([A-Z]\d{4}[A-Z]?)\b")
 DAY_MON = re.compile(r"^(\d{1,2})\s*([A-Za-z]{3})")
 MON3 = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
 
-# Column order of the mobile open time pot (mobileopentimepot.cgi), the page v0.1.8+ reads.
-# Derived from v0.1.9 live rows, e.g. H3644 | 01Nov | 02Nov | 11.27 | LAX | | | 08:10 | 11:04 | 2 | .
-# v0.1.9 mapped these with the desktop order, so the push read "11.27d lay 2 rpt LAX"; fixed here.
-MOBILE_COLS = ["pairing", "start", "end", "report", "layover", "depart", "arrive", "blk", "credit",
+# Column order of the mobile open time pot (mobileopentimepot.cgi). Header reads
+# Pair | Start | End | Crd/Dy | Layover | Prem; confirmed Nov 1, 2026 against the H3619 detail page:
+# H3619 | 01Nov | 02Nov | 12.18 | LAS | | | 13:10 | 14:04 | 2 |  = pay 12:18, first leg departs 1310,
+# last leg arrives 1404, 2 days. Block and check-in come only from the detail page (enrich()).
+MOBILE_COLS = ["pairing", "start", "end", "credit", "layover", "x1", "x2", "depart", "arrive",
                "days", "prem"]
 
 
@@ -65,6 +66,14 @@ def _row(cells):
     c = cells + [""] * (len(MOBILE_COLS) - len(cells))
     r = dict(zip(MOBILE_COLS, c))
     r["dates"] = f"{r['start']}-{r['end']}" if r["end"] else r["start"]
+    r.pop("x1", None)
+    r.pop("x2", None)
+    if re.match(r"^\d{1,3}[.:]\d{2}$", r["credit"] or ""):
+        r["credit"] = r["credit"].replace(".", ":").lstrip("0") or "0:00"
+        if r["credit"].startswith(":"):
+            r["credit"] = "0" + r["credit"]
+    r["blk"] = ""
+    r["report"] = ""
     return r
 
 
@@ -154,7 +163,7 @@ def row_date(s, today=None):
 
 def hours(s):
     """'11:04' or '11.04' -> 11.067 hours; '' -> None."""
-    m = re.match(r"^\s*(\d{1,3})[:.](\d{2})\s*$", s or "")
+    m = re.match(r"^\s*(\d{1,3})[:.]?(\d{2})\s*$", s or "")
     if m:
         return int(m.group(1)) + int(m.group(2)) / 60
     try:
@@ -180,12 +189,19 @@ def detail_url(row, today=None):
             "&FROM=MobileOpentimePot&CurrentPage=1")
 
 
-CA_RE = re.compile(r"\b(?:CA|CPT|CAPT)\b\s*[:\-]?\s*(?:\d{3,7}\s+)?([A-Z][A-Za-z'\-]+(?:[ ,]+[A-Z][A-Za-z'\-]+){0,2})")
+# Detail text (Nov 1, 2026): "... blk : 1218 tafb : 2609 pay : 1218 crew: ca 14157 dimaya jr, fedelino fo open"
+CA_RE = re.compile(r"crew\s*:.*?\bca\s+(?:\d{3,7}\s+)?(.+?)(?=\s+(?:fo|ro|fa|so|ca)\b|$)", re.I)
+CHECKIN_RE = re.compile(r"check\s*in\s*:\s*(\d{1,2}:?\d{2})", re.I)
 TOT_RE = {
-    "blk": re.compile(r"\b(?:total\s+)?(?:blk|block)\b[^0-9]{0,12}(\d{1,3}[:.]\d{2})", re.I),
-    "credit": re.compile(r"\b(?:total\s+)?(?:crd|cred|credit)\b[^0-9]{0,12}(\d{1,3}[:.]\d{2})", re.I),
-    "tafb": re.compile(r"\btafb\b[^0-9]{0,12}(\d{1,3}[:.]\d{2})", re.I),
+    "blk": re.compile(r"\bblk\s*:\s*(\d{1,3}:?\d{2})", re.I),
+    "credit": re.compile(r"\bpay\s*:\s*(\d{1,3}:?\d{2})", re.I),
+    "tafb": re.compile(r"\btafb\s*:\s*(\d{1,3}:?\d{2})", re.I),
 }
+
+
+def _hm(v):
+    v = v.replace(":", "")
+    return f"{int(v[:-2])}:{v[-2:]}"
 
 
 def parse_detail(html):
@@ -197,11 +213,15 @@ def parse_detail(html):
     out = {}
     m = CA_RE.search(text)
     if m:
-        out["captain"] = m.group(1).strip(" ,")
+        name = m.group(1).strip(" ,")
+        out["captain"] = "OPEN" if name.lower() == "open" else name.title()
+    m = CHECKIN_RE.search(text)
+    if m:
+        out["report"] = _hm(m.group(1))
     for k, rx in TOT_RE.items():
         found = rx.findall(text)
         if found:
-            out[k] = found[-1]
+            out[k] = _hm(found[-1])
     return out
 
 

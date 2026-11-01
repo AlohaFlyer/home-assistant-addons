@@ -50,7 +50,7 @@ def test_04_date_window_edges_inclusive(sin_row):
 
 
 def test_05_min_credit_and_max_days(sin_row):
-    assert R.matches(rule(match={"min_credit": 24}), sin_row, NOW.date())[0]          # 24:10
+    assert R.matches(rule(match={"min_credit": 24}), sin_row, NOW.date())[0]          # 24.10 pay
     assert not R.matches(rule(match={"min_credit": 24.5}), sin_row, NOW.date())[0]
     assert R.matches(rule(match={"max_days": 4}), sin_row, NOW.date()) == (False, "days")
 
