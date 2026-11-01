@@ -19,11 +19,11 @@ from playwright.sync_api import sync_playwright
 
 import rules as R
 import web
-from pot import fit_tag, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+from pot import fit_tag, hours, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.3.4"
+VERSION = "0.3.5"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -625,6 +625,7 @@ def schedule_fit(ev):
             tag = fit_tag(s, e, sched)
             if tag:
                 return tag
+        return "No sched"  # never blank: blank read as "fits" for months with no schedule yet
     except Exception as ex:
         log.info("fit skipped for %s: %s", ev.get("pairing"), ex)
     return ""
@@ -826,6 +827,9 @@ def tradeboard_check(fl):
     save_state(S)
 
 
+FP_VERSION = 2  # bump when header_fingerprint changes, so stored hashes are re-learned
+
+
 def check(fl):
     """One pass. Returns next action hint."""
     if not S.get("pot_urls"):
@@ -867,6 +871,13 @@ def check(fl):
             if old is None:
                 S["fingerprints"][month] = fp
                 log.info("pot header fingerprint %s: %s", month, fp)
+            elif old != fp and layout_still_parses(html):
+                # Self re-arm (0.3.5): the hash moved but every row still parses, so accept it
+                # instead of going blind until someone presses Re-arm.
+                log.warning("pot header fingerprint %s changed %s -> %s; rows still parse, accepted",
+                            month, old, fp)
+                S["fingerprints"][month] = fp
+                S["fp_accepts"] = S.get("fp_accepts", 0) + 1
             elif old != fp:
                 set_machine("stopped_unexpected",
                             f"pot table layout changed on {month} ({old} -> {fp}); not parsing it. "
@@ -910,6 +921,8 @@ def check(fl):
     tradeboard_check(fl)
     pub("last_check", now_iso())
     S["last_check_ts"] = time.time()
+    if S.get("note") in ("starting",) or (S.get("note") or "").startswith("logged in"):
+        set_machine(S.get("machine", "idle"), "")
     pub("session", "ON")
     return "ok"
 
@@ -924,6 +937,11 @@ def main():
         set_machine(S["machine"], S.get("note", "") + " (still stopped after restart, press Re-arm)")
     else:
         set_machine("idle", "starting")
+    if S.get("fp_version") != FP_VERSION:
+        S["fingerprints"] = {}
+        S["fp_version"] = FP_VERSION
+        save_state(S)
+        log.info("pot header fingerprints cleared for fingerprint v%d", FP_VERSION)
     RULES["list"] = load_rules()
     publish_rules(MQ)
     publish_finds()
