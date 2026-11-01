@@ -234,3 +234,114 @@ def soft_time(credit, blk):
         return None
     mins = max(0, round((c - b) * 60))
     return f"{mins // 60}:{mins % 60:02d}"
+
+
+# ---- My schedule (mobileschedule.cgi), read only (0.3.0) ----
+DOW = ("SU", "MO", "TU", "WE", "TH", "FR", "SA")
+SCHED_MONTH = re.compile(r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})\s+Schedule", re.I)
+SCHED_UPDATED = re.compile(r"Schedule Updated:\s*([A-Za-z]{3}\s+\d{1,2},\s*\d{4}\s+\d{1,2}:\d{2}(?::\d{2})?)")
+
+
+def parse_schedule(html, domicile="HNL"):
+    """Ryan's month schedule from the mobile schedule page. Returns None unless it looks like one.
+    {'month': 'YYYY-MM', 'updated': 'Nov 1, 2026 09:54:34', 'days': [[iso, act, lay]],
+     'items': [{'trip','start','end','lay'}], 'totals': {...}}. act is '' on an empty day."""
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True)
+    m = SCHED_MONTH.search(text)
+    if not m:
+        return None
+    mon, yr = MON3.index(m.group(1)[:3].upper()) + 1, int(m.group(2))
+    days, prev_dd = [], 0
+    for tr in soup.find_all("tr"):
+        cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"], recursive=False)]
+        i = next((k for k, c in enumerate(cells) if c.upper() in DOW), None)
+        if i is None or i + 2 >= len(cells) or not re.fullmatch(r"\d{1,2}", cells[i + 1]):
+            continue
+        dd = int(cells[i + 1])
+        if dd < prev_dd:  # rolled into the next month (trip ending after month end)
+            mon, yr = (1, yr + 1) if mon == 12 else (mon + 1, yr)
+        prev_dd = dd
+        rest = [c for c in cells[i + 2:]]
+        act = rest[0] if rest else ""
+        lay = rest[1] if len(rest) > 1 else ""
+        act = "" if act in ("-", "") else act
+        try:
+            days.append([date(yr, mon, dd).isoformat(), act, lay])
+        except ValueError:
+            continue
+    if len(days) < 20:
+        return None
+    items = []
+    for k, (d, act, lay) in enumerate(days):
+        if not act:
+            continue
+        if not PAIRING_RE.match(act):  # VAC, SCR, etc: merge consecutive identical codes
+            if items and items[-1]["trip"] == act and items[-1]["_k"] == k - 1:
+                items[-1].update(end=d, _k=k)
+            else:
+                items.append({"trip": act, "start": d, "end": d, "lay": "", "_k": k})
+            continue
+        end = d
+        for j in range(k + 1, min(k + 8, len(days))):
+            if days[j][1]:
+                break
+            if days[j][2] == domicile:
+                end = days[j][0]
+                break
+        items.append({"trip": act, "start": d, "end": end, "lay": lay if lay != "-" else "", "_k": k})
+    for it in items:
+        it.pop("_k", None)
+    tot = {}
+    for key, pat in (("block", r"Block\s+([\d.:]+)"), ("credit", r"Credit\s+([\d.:]+)"),
+                     ("ytd", r"YTD\s+([\d.:]+)"), ("days_off", r"Days Off\s+(\d+)")):
+        t = re.search(pat, text)
+        if t:
+            tot[key] = int(t.group(1)) if key == "days_off" else t.group(1)
+    u = SCHED_UPDATED.search(text)
+    first = date.fromisoformat(days[0][0])
+    return {"month": f"{first.year}-{first.month:02d}", "updated": u.group(1) if u else "",
+            "days": days, "items": items, "totals": tot}
+
+
+def _span(a, b):
+    from datetime import timedelta
+    out, d = [], a
+    while d <= b:
+        out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def fit_tag(start, end, sched):
+    """'Fits', 'Conflict H3659', 'Check rest H3628', 'Days off 11' or '' when the schedule
+    doesn't cover those dates. start/end are dates. Days off: 12 in a 30-day month, 13 in a
+    31-day month (10.G). Rest next to a trip needs times the schedule page lacks, so it is flagged."""
+    from datetime import timedelta
+    if not sched or not start:
+        return ""
+    end = end or start
+    covered = {d[0] for d in sched.get("days", [])}
+    if start.isoformat() not in covered or end.isoformat() not in covered:
+        return ""
+    busy = {}
+    for it in sched.get("items", []):
+        for d in _span(date.fromisoformat(it["start"]), date.fromisoformat(it["end"])):
+            busy[d] = it["trip"]
+    mine = _span(start, end)
+    hit = [busy[d] for d in mine if d in busy]
+    if hit:
+        return f"Conflict {hit[0]}"
+    near = busy.get(start - timedelta(days=1)) or busy.get(end + timedelta(days=1))
+    if near:
+        return f"Check rest {near}"
+    off = sched.get("totals", {}).get("days_off")
+    if isinstance(off, int):
+        y, m = map(int, sched["month"].split("-"))
+        nxt = date(y + (m == 12), m % 12 + 1, 1)
+        mdays = (nxt - date(y, m, 1)).days
+        need = 13 if mdays == 31 else 12
+        used = sum(1 for d in mine if d.year == y and d.month == m)
+        if off - used < need:
+            return f"Days off {off - used}"
+    return "Fits"
