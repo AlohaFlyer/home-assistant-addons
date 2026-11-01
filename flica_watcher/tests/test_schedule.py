@@ -37,3 +37,14 @@ def test_fit_tags():
     assert fit_tag(date(2026, 11, 16), date(2026, 11, 17), s) == "Fits"
     s["totals"]["days_off"] = 13
     assert fit_tag(date(2026, 11, 16), date(2026, 11, 17), s) == "Days off 11"
+
+
+def test_days_off_computed_without_totals():
+    html = (FX / "mobile_schedule_nov.html").read_text().split("<p>Block")[0] + "</body></html>"
+    assert parse_schedule(html)["totals"] == {"days_off": 15}
+
+
+def test_vacation_next_door_is_not_a_rest_issue():
+    s = sched()
+    s["items"] = [i for i in s["items"] if i["trip"] != "H3659"]
+    assert fit_tag(date(2026, 11, 20), date(2026, 11, 21), s) == "Fits"

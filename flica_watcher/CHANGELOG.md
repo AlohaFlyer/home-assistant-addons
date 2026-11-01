@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.2
+- Days off computed from the schedule when the page shows no totals (VAC counts as off, as FLICA does). Rest flag only next to a real pairing, not vacation.
+
 ## 0.3.1
 - Schedule page: try the bid-period BCIDs (001-004 + Priority=1, then the read-only OTDrop view) and remember the one that works.
 
