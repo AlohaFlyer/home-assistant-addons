@@ -169,3 +169,46 @@ def hhmm(s):
     if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
         return None
     return f"{int(m.group(1)):02d}:{m.group(2)}"
+
+
+def detail_url(row, today=None):
+    """Mobile pairing detail page for a pot row (same link the pot page shows)."""
+    d = row_date(row.get("start", ""), today)
+    if not d or not row.get("pairing"):
+        return None
+    return (f"https://ha2.flica.net/full/mobilepairing.cgi?PID={row['pairing']}&DATE={d:%Y%m%d}"
+            "&FROM=MobileOpentimePot&CurrentPage=1")
+
+
+CA_RE = re.compile(r"\b(?:CA|CPT|CAPT)\b\s*[:\-]?\s*(?:\d{3,7}\s+)?([A-Z][A-Za-z'\-]+(?:[ ,]+[A-Z][A-Za-z'\-]+){0,2})")
+TOT_RE = {
+    "blk": re.compile(r"\b(?:total\s+)?(?:blk|block)\b[^0-9]{0,12}(\d{1,3}[:.]\d{2})", re.I),
+    "credit": re.compile(r"\b(?:total\s+)?(?:crd|cred|credit)\b[^0-9]{0,12}(\d{1,3}[:.]\d{2})", re.I),
+    "tafb": re.compile(r"\btafb\b[^0-9]{0,12}(\d{1,3}[:.]\d{2})", re.I),
+}
+
+
+def parse_detail(html):
+    """Best effort from a mobile pairing page: captain name and trip totals. Missing -> absent."""
+    soup = BeautifulSoup(html, "html.parser")
+    for t in soup(["script", "style", "noscript", "template"]):
+        t.decompose()
+    text = soup.get_text(" ", strip=True)
+    out = {}
+    m = CA_RE.search(text)
+    if m:
+        out["captain"] = m.group(1).strip(" ,")
+    for k, rx in TOT_RE.items():
+        found = rx.findall(text)
+        if found:
+            out[k] = found[-1]
+    return out
+
+
+def soft_time(credit, blk):
+    """Credit minus block, as H:MM. None when either is missing or block >= credit gives 0:00."""
+    c, b = hours(credit), hours(blk)
+    if c is None or b is None:
+        return None
+    mins = max(0, round((c - b) * 60))
+    return f"{mins // 60}:{mins % 60:02d}"
