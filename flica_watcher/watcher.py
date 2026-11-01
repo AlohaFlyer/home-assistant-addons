@@ -23,7 +23,7 @@ from pot import fit_tag, parse_schedule, row_date, BLOCK_HINTS, detail_url, pars
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.3.3"
+VERSION = "0.3.4"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -74,7 +74,7 @@ WAKE = threading.Event()
 FLAGS = {"hunt": False, "pause": False, "rearm": False}
 # Check frequency from the dashboard sliders (number entities); persisted in state.
 # Each gap is randomized +-30 % around the setting so the checks never look machine-regular.
-FREQ_LIMITS = {"normal_min": (1, 60), "hunt_s": (15, 300)}
+FREQ_LIMITS = {"normal_min": (1, 20), "hunt_s": (5, 90)}
 JITTER = 0.3
 CHECK_NOW_MIN_GAP_S = 10
 RULES = {"list": [], "published": set()}
@@ -254,11 +254,11 @@ def discovery(c):
         ("button", "check_now", {"name": "Check now", "command_topic": f"{T}/check_now/press",
                                  "icon": "mdi:refresh"}),
         ("number", "normal_minutes", {"name": "Normal check every", "command_topic": f"{T}/freq/normal_min/set",
-                                      "state_topic": f"{T}/freq/normal_min/state", "min": 1, "max": 60,
+                                      "state_topic": f"{T}/freq/normal_min/state", "min": 1, "max": 20,
                                       "step": 1, "mode": "slider", "unit_of_measurement": "min",
                                       "icon": "mdi:timer-outline"}),
         ("number", "hunt_seconds", {"name": "Hunt check every", "command_topic": f"{T}/freq/hunt_s/set",
-                                    "state_topic": f"{T}/freq/hunt_s/state", "min": 15, "max": 300,
+                                    "state_topic": f"{T}/freq/hunt_s/state", "min": 5, "max": 90,
                                     "step": 5, "mode": "slider", "unit_of_measurement": "s",
                                     "icon": "mdi:timer-alert-outline"}),
     ]
@@ -520,7 +520,9 @@ def freq():
     """Current settings. Defaults are the midpoints of the add-on options (6 min normal, 40 s hunt)."""
     f = dict(S.get("freq") or {})
     f.setdefault("normal_min", max(1, round((OPTS["idle_min_s"] + OPTS["idle_max_s"]) / 2 / 60)))
-    f.setdefault("hunt_s", max(15, round((OPTS["hunt_min_s"] + OPTS["hunt_max_s"]) / 2)))
+    f.setdefault("hunt_s", max(5, round((OPTS["hunt_min_s"] + OPTS["hunt_max_s"]) / 2)))
+    for k, (lo, hi) in FREQ_LIMITS.items():  # stored values from wider old ranges are clamped
+        f[k] = max(lo, min(hi, f[k]))
     return f
 
 
