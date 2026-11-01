@@ -33,3 +33,7 @@ dist/
 # Operating System Files
 .DS_Store
 Thumbs.db
+
+# Python
+__pycache__/
+.pytest_cache/
