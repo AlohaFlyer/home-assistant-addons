@@ -23,7 +23,7 @@ from pot import fit_tag, parse_schedule, row_date, BLOCK_HINTS, detail_url, pars
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -640,8 +640,15 @@ def schedule_check(fl, force=False):
     b = sorted({bcid(u) for u in S.get("pot_urls", {}).values() if bcid(u)}, key=bcid_key)
     b = b[0] if b else "003.152"
     store = S.setdefault("schedule", {})
-    for url in (f"{BASE}/full/mobileschedule.cgi?BCID={b}&From=MainMenu",
-                f"{BASE}/full/mobileschedule.cgi?BCID={b}"):
+    n = b.split(".")[-1]
+    tried = S.setdefault("sched_url_ok", "")
+    cands = [f"{BASE}/full/mobileschedule.cgi?BCID={p}.{n}&From=MainMenu" for p in ("001", "002", "004", "000")]
+    cands += [f"{BASE}/full/mobileschedule.cgi?BCID={b}&Priority=1&From=MainMenu",
+              f"{BASE}/full/mobileschedule.cgi?BCID={b}&Priority=1&From=MobileOTDrop"]  # view only; GET never submits
+    if tried in cands:
+        cands.remove(tried)
+        cands.insert(0, tried)
+    for url in cands:
         try:
             html = fl.fetch(url)
             if classify(html) != "ok":
@@ -649,6 +656,7 @@ def schedule_check(fl, force=False):
                 continue
             s = parse_schedule(html)
             if not s:
+                log.info("schedule try %s: %s", url.split("?")[1], visible_text(html)[:120])
                 if not S.get("sched_probe_logged"):
                     S["sched_probe_logged"] = True
                     log.info("schedule page not parsed (%s): %s", url, visible_text(html)[:2000])
@@ -666,6 +674,7 @@ def schedule_check(fl, force=False):
                       "totals": s["totals"]}
                 log.info("SCHEDULE changed %s", ev)
                 pub("event/schedule_changed", ev, retain=False)
+            S["sched_url_ok"] = url
             store[s["month"]] = s
             keep = sorted(store)[-2:]
             S["schedule"] = {k: store[k] for k in keep}
