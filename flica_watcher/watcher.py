@@ -19,11 +19,11 @@ from playwright.sync_api import sync_playwright
 
 import rules as R
 import web
-from pot import BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+from pot import fit_tag, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.2.9"
+VERSION = "0.3.0"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -241,6 +241,9 @@ def discovery(c):
         ("sensor", "last_new", {"name": "Last new pairing", "state_topic": f"{T}/last_new",
                                 "value_template": "{{ value_json.pairing }}",
                                 "json_attributes_topic": f"{T}/last_new", "icon": "mdi:new-box"}),
+        ("sensor", "schedule", {"name": "Schedule", "state_topic": f"{T}/schedule",
+                                "value_template": "{{ value_json.updated }}",
+                                "json_attributes_topic": f"{T}/schedule", "icon": "mdi:calendar-account"}),
         ("binary_sensor", "session_ok", {"name": "Session OK", "state_topic": f"{T}/session",
                                          "device_class": "connectivity"}),
         ("switch", "hunt_mode", {"name": "Hunt mode", "command_topic": f"{T}/hunt/set",
@@ -600,6 +603,81 @@ def enrich(fl, ev):
     ev.setdefault("captain", "")
     st = soft_time(ev.get("credit"), ev.get("blk"))
     ev["soft"] = st or ""
+    ev["fit"] = schedule_fit(ev)
+
+
+def schedule_fit(ev):
+    """'Fits' / 'Conflict H3659' / 'Check rest H3628' / 'Days off 11' vs Ryan's own schedule; ''
+    when no schedule month covers the dates. Never fails the alert."""
+    try:
+        s = row_date(ev.get("start"))
+        if not s:
+            return ""
+        e = row_date(ev.get("end")) if ev.get("end") else None
+        if not e:
+            try:
+                e = s + timedelta(days=max(int(ev.get("days") or 1), 1) - 1)
+            except ValueError:
+                e = s
+        for sched in S.get("schedule", {}).values():
+            tag = fit_tag(s, e, sched)
+            if tag:
+                return tag
+    except Exception as ex:
+        log.info("fit skipped for %s: %s", ev.get("pairing"), ex)
+    return ""
+
+
+SCHED_GAP_S = 30 * 60
+
+
+def schedule_check(fl, force=False):
+    """Read only: GET Ryan's month schedule (mobileschedule.cgi), publish sensor.flica_watcher_schedule
+    and an event when trips change. Never stops the pot watch."""
+    if not force and time.time() - S.get("sched_checked_at", 0) < SCHED_GAP_S:
+        return
+    S["sched_checked_at"] = time.time()
+    b = sorted({bcid(u) for u in S.get("pot_urls", {}).values() if bcid(u)}, key=bcid_key)
+    b = b[0] if b else "003.152"
+    store = S.setdefault("schedule", {})
+    for url in (f"{BASE}/full/mobileschedule.cgi?BCID={b}&From=MainMenu",
+                f"{BASE}/full/mobileschedule.cgi?BCID={b}"):
+        try:
+            html = fl.fetch(url)
+            if classify(html) != "ok":
+                log.info("schedule %s: %s", url.split("?")[1], classify(html))
+                continue
+            s = parse_schedule(html)
+            if not s:
+                if not S.get("sched_probe_logged"):
+                    S["sched_probe_logged"] = True
+                    log.info("schedule page not parsed (%s): %s", url, visible_text(html)[:2000])
+                    try:
+                        os.makedirs(CAPTURE_DIR, exist_ok=True)
+                        open(f"{CAPTURE_DIR}/schedule.html", "w").write(html)
+                    except Exception:
+                        pass
+                continue
+            old = store.get(s["month"])
+            if old and [(i["trip"], i["start"]) for i in old["items"]] != [(i["trip"], i["start"]) for i in s["items"]]:
+                ev = {"month": s["month"], "updated": s["updated"],
+                      "added": sorted({i["trip"] + " " + i["start"] for i in s["items"]} - {i["trip"] + " " + i["start"] for i in old["items"]}),
+                      "removed": sorted({i["trip"] + " " + i["start"] for i in old["items"]} - {i["trip"] + " " + i["start"] for i in s["items"]}),
+                      "totals": s["totals"]}
+                log.info("SCHEDULE changed %s", ev)
+                pub("event/schedule_changed", ev, retain=False)
+            store[s["month"]] = s
+            keep = sorted(store)[-2:]
+            S["schedule"] = {k: store[k] for k in keep}
+            pub("schedule", {"updated": s["updated"] or now_iso(), "source": "FLICA mobile schedule (Watcher)",
+                             "checked": now_iso(),
+                             "months": {k: {kk: v[kk] for kk in ("items", "days", "totals", "updated")}
+                                        for k, v in S["schedule"].items()}})
+            log.info("schedule %s: %d items, totals %s", s["month"], len(s["items"]), s["totals"])
+            save_state(S)
+            return
+        except Exception as e:
+            log.info("schedule error %s: %s", url, e)
 
 
 def detail_probe(fl, pot):
@@ -722,6 +800,7 @@ def check(fl):
         S["discovered_at"] = time.time()
         save_state(S)
         log.info("pot pages: %s", list(urls))
+    schedule_check(fl, force=not S.get("schedule"))
     pot_all = {}
     new_any = False
     for month, url in list(S["pot_urls"].items()):
