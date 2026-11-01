@@ -112,7 +112,9 @@ def header_fingerprint(html):
             else:
                 sig = "|".join(re.sub(r"\d", "", x).strip().lower() for x in prev) + f"|cols={ncols}"
             return hashlib.sha1(sig.encode()).hexdigest()[:12]
-        if cells and any(cells):
+        # A wrapper row (nested table) or any row naming a pairing is data, not the header:
+        # using it made the hash change every time the first pot pairing changed (0.2.9).
+        if cells and any(cells) and not tr.find("tr") and not PAIRING_ANY.search(" ".join(cells)):
             prev = cells
     return None
 
