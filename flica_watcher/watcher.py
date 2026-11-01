@@ -23,7 +23,7 @@ from pot import fit_tag, hours, layout_still_parses, parse_schedule, row_date, B
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.3.5"
+VERSION = "0.3.6"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -631,7 +631,7 @@ def schedule_fit(ev):
     return ""
 
 
-DETAIL_FIELDS = ("captain", "report", "blk", "tafb", "soft", "detail_url")
+DETAIL_FIELDS = ("captain", "report", "blk", "tafb", "soft", "turn", "route", "detail_url")
 DETAIL_MAX_PER_CHECK = 8
 
 
@@ -643,7 +643,8 @@ def pot_details(fl, pot):
     cache = S.setdefault("details", {})
     fetched = 0
     for k, row in pot.items():
-        if k not in cache and fetched < DETAIL_MAX_PER_CHECK:
+        stale = k in cache and "route" not in cache[k]  # cached before 0.3.6: re-read once for turn
+        if (k not in cache or stale) and fetched < DETAIL_MAX_PER_CHECK:
             if fetched:
                 time.sleep(random.uniform(1.5, 3.5))
             ev = dict(row)
