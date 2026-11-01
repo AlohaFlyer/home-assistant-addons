@@ -1,3 +1,4 @@
+import re
 from datetime import date
 
 import pytest
@@ -101,3 +102,21 @@ def test_fingerprint_ignores_which_pairing_is_first():
     b = header_fingerprint(_nested([("H3619", "01Nov", "02Nov", "12.18", "LAS")]))
     c = header_fingerprint(_nested([("H3601", "26Nov", "27Nov", "11.20", "-none-")]))
     assert a and a == b == c
+
+
+def test_fingerprint_real_page_ignores_pot_size(fx):
+    # Nov 1 2026 capture: FLICA leaves each pairing's <tr> open, so every later row nests inside
+    # the first. Counting nested cells made the hash change with the pot and parked the watcher.
+    real = fx("mobile_pot_real_nov1.html")
+    one = re.sub(r'<tr>\s*<td align="center" valign="top">\s*<a href="[^"]*H3601.*?<td colspan="6"><hr/></td>\s*</tr>',
+                 "", real, flags=re.S)
+    assert "H3601" not in one and "H3633" in one
+    assert header_fingerprint(real) == header_fingerprint(one)
+    assert header_fingerprint(real.replace("-none-", "SIN")) == header_fingerprint(real)
+
+
+def test_layout_still_parses(fx):
+    from pot import layout_still_parses
+    assert layout_still_parses(fx("mobile_pot_real_nov1.html"))
+    assert not layout_still_parses(fx("mobile_pot_empty.html"))
+    assert not layout_still_parses(fx("killed.html"))
