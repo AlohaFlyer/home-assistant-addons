@@ -203,6 +203,8 @@ CHECKIN_RE = re.compile(r"check\s*in\s*:\s*(\d{1,2}:?\d{2})", re.I)
 # A leg: flight number then STN-STN ("Th 865 HNL-PPG 1630 ..."). The column header "Dps-Ars"
 # has no flight number in front, so it never matches.
 LEG_RE = re.compile(r"\b\d{1,4}\s+([A-Za-z]{3})-([A-Za-z]{3})\b(?:\s+(\d{4})\s+(\d{4}))?")
+LEG_DOW = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"]
+DAY_LEG_RE = re.compile(r"\b(su|mo|tu|we|th|fr|sa)\s+\d{1,4}\s+[A-Za-z]{3}-[A-Za-z]{3}\b", re.I)
 TOT_RE = {
     "blk": re.compile(r"\bblk\s*:\s*(\d{1,3}:?\d{2})", re.I),
     "credit": re.compile(r"\bpay\s*:\s*(\d{1,3}:?\d{2})", re.I),
@@ -230,9 +232,15 @@ def parse_detail(html):
     if m:
         out["report"] = _hm(m.group(1))
     for k, rx in TOT_RE.items():
-        found = rx.findall(text)
+        # only H:MM-sized values: some pages carry a second "Pay : 1583974803" (an id), 0.4.3
+        found = [v for v in rx.findall(text) if len(v.replace(":", "")) <= 5]
         if found:
-            out[k] = _hm(found[-1])
+            out[k] = _hm(found[0] if k == "credit" else found[-1])
+    codes = DAY_LEG_RE.findall(text)
+    if codes:  # trip length from the leg day codes (Su 804 ... Tu 933 ... = 3 days)
+        idx = [LEG_DOW.index(c.upper()) for c in codes]
+        span = sum((b - a) % 7 for a, b in zip(idx, idx[1:]))
+        out["days"] = str(span + 1)
     crew = parse_crew(text)
     if crew:
         out["open_seats"] = ",".join(p for p, n in crew if n == "OPEN" and p in ("FO", "RO"))
