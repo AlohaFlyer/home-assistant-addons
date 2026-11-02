@@ -58,3 +58,14 @@ def test_add_find_from_email(tmp_path):
     assert f["source"] == "email" and f["gone"] == "2026-11-02T01:40:00+00:00"
     st.add_find("H3627|18Nov", "mobile", {"pairing": "X"}, "2026-11-03T00:00:00+00:00")  # ignored
     assert st.recent_finds()[0]["pairing"] == "H3627"
+
+
+def test_email_unchanged_cleared(tmp_path):
+    st = Store(str(tmp_path / "w.db"))
+    st.add_find("H3627|18Nov", "mobile", {"pairing": "H3627", "source": "email", "crew": [["FO", "Roe, Rick"]]},
+                "2026-11-02T01:36:31+00:00", "2026-11-02T01:40:00+00:00")
+    st.set_pickup("H3627|18Nov", {"status": "unchanged", "by": ""})
+    assert st.email_unchanged() == ["H3627|18Nov"]
+    st.clear_pickup("H3627|18Nov")
+    assert st.email_unchanged() == [] and "crew" not in st.find_row("H3627|18Nov")
+    assert st.recent_finds()[0]["pickup_status"] == ""
