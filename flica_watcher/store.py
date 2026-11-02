@@ -120,6 +120,16 @@ class Store:
                             "VALUES(?,?,?,?,?,?,?)", (key, row.get("pairing"), month, json.dumps(row),
                                                       seen, seen, gone))
 
+    def email_unchanged(self):
+        with self.lock:
+            rows = self.db.execute("SELECT key,row,pickup FROM finds WHERE pickup IS NOT NULL").fetchall()
+        return [k for k, r, p in rows
+                if json.loads(r).get("source") == "email" and json.loads(p).get("status") == "unchanged"]
+
+    def clear_pickup(self, key):
+        with self.lock:
+            self.db.execute("UPDATE finds SET pickup=NULL, row=json_remove(row, '$.crew') WHERE key=?", (key,))
+
     def find_row(self, key):
         with self.lock:
             r = self.db.execute("SELECT row FROM finds WHERE key=?", (key,)).fetchone()

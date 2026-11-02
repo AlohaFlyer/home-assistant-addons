@@ -24,7 +24,7 @@ from pot import PAIRING_RE, parse_alert_email, fit_tag, hours, parse_crew, picku
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -946,6 +946,11 @@ def pickup_check(fl, full=False):
     scheduling) and rechecked hourly until it is filled or the trip starts. Gone finds from before
     0.3.7 are back-filled once. Returns True when any pickup record changed."""
     pend = S.setdefault("pickup_pending", {})
+    if not S.get("email_unchanged_fixed"):  # 0.4.2: email finds 0.4.1 wrongly marked 'same crew'
+        for k in DB.email_unchanged():
+            DB.clear_pickup(k)
+            pend.setdefault(k, {"tries": 0, "next": 0})
+        S["email_unchanged_fixed"] = True
     if not S.get("pickup_backfilled"):
         for k in DB.gone_without_pickup(50):
             pend.setdefault(k, {"tries": 0, "next": 0})
@@ -1065,6 +1070,8 @@ def email_check(fl, pot_all):
             ev["layover"] = ev["turn"].split("/")[0]
         month = next(iter(S.get("pot_urls") or {"mobile": 1}))
         gone = None if k in live else now_iso()
+        if gone:  # roster read after it left the pot: no "before" to diff, so names stay unbolded
+            ev.pop("crew", None)
         DB.add_find(k, month, ev, it.get("at") or now_iso(), gone)
         if gone:
             S.setdefault("pickup_pending", {}).setdefault(k, {"tries": 0, "next": 0})
