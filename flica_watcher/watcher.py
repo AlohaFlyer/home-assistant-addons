@@ -250,6 +250,7 @@ def blocked_cmd(payload):
     S["blocked_days"] = sorted(days)
     log.info("blocked day %s %s", day, "on" if on else "off")
     publish_blocked()
+    publish_tradeboard()
 
 
 def publish_finds():
@@ -270,6 +271,10 @@ def discovery(c):
                                  "value_template": "{{ value_json.count }}", "state_class": "measurement",
                                  "unit_of_measurement": "pairings",
                                  "json_attributes_topic": f"{T}/pot/state", "icon": "mdi:format-list-bulleted"}),
+        ("sensor", "tradeboard", {"name": "Tradeboard pickups", "state_topic": f"{T}/tradeboard/state",
+                                  "value_template": "{{ value_json.count }}",
+                                  "json_attributes_topic": f"{T}/tradeboard/state",
+                                  "icon": "mdi:swap-horizontal"}),
         ("sensor", "blocked_days", {"name": "Blocked days", "state_topic": f"{T}/blocked/state",
                                     "value_template": "{{ value_json.count }}",
                                     "json_attributes_topic": f"{T}/blocked/state",
@@ -932,6 +937,9 @@ def tradeboard_check(fl, full=False):
     S["tb_checked_at"] = time.time()
     nums = sorted({b.split(".")[-1] for b in (bcid(u) for u in S.get("pot_urls", {}).values()) if b})
     base = S.setdefault("tb_baseline", {})
+    tb_cache = S.setdefault("tb_details", {})  # 0.4.6: enriched pickup posts, one detail GET each
+    live = {}
+    read_ok = False
     for n in nums:
         key = f"tb2_{n}"
         try:
@@ -976,9 +984,42 @@ def tradeboard_check(fl, full=False):
                     pub("last_tradeboard", ev)
             base[key] = sorted(picks)
             pub(f"tradeboard/{key}", {"count": len(picks), "posts": list(picks.values())[:40]})
+            read_ok = True
+            for k, row in picks.items():
+                cached = tb_cache.get(k)
+                if cached is None or full:
+                    cached = {**row}
+                    enrich(fl, cached)
+                    tb_cache[k] = cached
+                live[k] = cached
         except Exception as e:
             log.info("tradeboard %s error: %s", n, e)
+    if read_ok:
+        for k in list(tb_cache):
+            if k not in live:
+                del tb_cache[k]
+        publish_tradeboard(live)
     save_state(S)
+
+
+def publish_tradeboard(live=None):
+    """0.4.6 (Ryan): Tradeboard 'Pickup Trip' posts are trips anyone can pick up, like open time.
+    Published with the same fields as pot rows (fit, vac, blocked, far re-screened every time) plus
+    src 'T', so the dashboard lists them in the pot table."""
+    live = S.get("tb_details", {}) if live is None else live
+    rows = []
+    for k, row in sorted(live.items()):
+        r = {f: v for f, v in row.items() if f not in ("row", "crew")}
+        r["key"], r["src"] = k, "T"
+        try:
+            r["fit"] = schedule_fit(r)
+            r["vac"] = touches_vac(r)
+            r["blocked"] = touches_blocked(r)
+            r["far"] = far_for(r)
+        except Exception as e:
+            log.info("tradeboard screen %s skipped: %s", k, e)
+        rows.append(r)
+    pub("tradeboard/state", {"count": len(rows), "pairings": rows})
 
 
 PICKUP_FIRST_S = 120      # FLICA updates the crew line shortly after the pot drops it
@@ -1268,6 +1309,7 @@ def main():
     publish_rules(MQ)
     publish_finds()
     publish_blocked()
+    publish_tradeboard()
     web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
               save_rules_from_page, DB, log)
     last_month_check = None
