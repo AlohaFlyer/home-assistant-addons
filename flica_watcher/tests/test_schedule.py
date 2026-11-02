@@ -48,3 +48,10 @@ def test_vacation_next_door_is_not_a_rest_issue():
     s = sched()
     s["items"] = [i for i in s["items"] if i["trip"] != "H3659"]
     assert fit_tag(date(2026, 11, 20), date(2026, 11, 21), s) == "Fits"
+
+
+def test_suffixed_pairing_is_a_trip():
+    """0.4.8: a changed pairing shows as H3815B; it must still span to the HNL return day."""
+    s = parse_schedule((FX / "mobile_schedule_nov.html").read_text().replace("H3815", "H3815B"))
+    trips = {i["trip"]: (i["start"], i["end"]) for i in s["items"]}
+    assert trips["H3815B"] == ("2026-11-01", "2026-11-04")
