@@ -434,3 +434,21 @@ def layout_still_parses(html):
                                   and hours(r.get("credit")) is not None for r in rows.values())
     except Exception:
         return False
+
+
+# FLICA alert email (Nov 1, 2026): "3 alert matched pairings 'Nov 13-20 Max': H3627:18NOV from
+# 'OPEN TIME- Add/Swap/Drop requests - November', H3627:18NOV from 'Close in Opentime: ...'"
+ALERT_RE = re.compile(r"\b([A-Z]\d{4}):(\d{2})([A-Za-z]{3})\b(?:\s+from\s+'([^']*)')?")
+
+
+def parse_alert_email(text):
+    """[{key, pairing, start, sources}] from a FLICA alert email, one per pairing and date.
+    key matches the pot keys ('H3627|18Nov')."""
+    out = {}
+    for pid, dd, mon, src in ALERT_RE.findall(text or ""):
+        start = f"{dd}{mon.title()}"
+        k = f"{pid}|{start}"
+        e = out.setdefault(k, {"key": k, "pairing": pid, "start": start, "sources": []})
+        if src and src.strip() not in e["sources"]:
+            e["sources"].append(src.strip())
+    return list(out.values())
