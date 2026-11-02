@@ -194,9 +194,9 @@ def detail_url(row, today=None):
             "&FROM=MobileOpentimePot&CurrentPage=1")
 
 
-# Detail text (Nov 1, 2026): "... blk : 1218 tafb : 2609 pay : 1218 crew: ca 14157 dimaya jr, fedelino fo open"
+# Detail text (Nov 1, 2026): "... blk : 1218 tafb : 2609 pay : 1218 crew: ca 10007 lane jr, chris fo open" (names made up)
 CA_RE = re.compile(r"crew\s*:.*?\bca\s+(?:\d{3,7}\s+)?(.+?)(?=\s+(?:fo|ro|fa|so|ca)\b|$)", re.I)
-# Crew line (Nov 1, 2026): "Crew: CA 14393 RODRIGUEZ JR, ckp HAROLD CA 15638 WONG, SOHNGKRAHN FO Open"
+# Crew line (Nov 1, 2026): "Crew: CA 10001 SMITH JR, JOHN CA 10002 DOE, JANE FO Open" (names made up)
 CREW_POS = ("CA", "FO", "RO", "FA", "SO")
 CREW_RE = re.compile(r"\b(CA|FO|RO|FA|SO)\s+(?:\d{3,7}\s+)?(.+?)(?=\s+(?:CA|FO|RO|FA|SO)\s|\s*$)", re.I)
 CHECKIN_RE = re.compile(r"check\s*in\s*:\s*(\d{1,2}:?\d{2})", re.I)
@@ -236,6 +236,7 @@ def parse_detail(html):
     crew = parse_crew(text)
     if crew:
         out["open_seats"] = ",".join(p for p, n in crew if n == "OPEN" and p in ("FO", "RO"))
+        out["crew"] = [[p, n] for p, n in crew]  # roster while in the pot, for pickup diffs (0.4.0)
     found = LEG_RE.findall(text)
     legs = [(a.upper(), b.upper()) for a, b, _, _ in found]
     if found and found[-1][3]:
@@ -273,6 +274,25 @@ def pickup_result(crew, seats):
     if seats and any(n == "OPEN" for p, n in rows):
         return "open", "; ".join(filled)
     return ("filled", "; ".join(filled)) if filled else ("open", "")
+
+
+def pickup_diff(before, after):
+    """Who took the trip, by comparing the FO/RO roster seen while it was in the pot (before)
+    with the roster after it left (after). FLICA shows the open seat either as 'FO Open' or
+    not at all, so a newcomer in an FO/RO seat is the pickup either way.
+    Returns (status, text, known): filled + 'FO Name' (known=True); open = a FO/RO seat still
+    reads Open; unchanged = same FO/RO crew as before (dropper kept it, or trip changed)."""
+    if before is None:
+        return (*pickup_result(after, []), False)
+    if not any(p in ("FO", "RO") or p == "CA" for p, _ in after):
+        return "unknown", "", False
+    seen = {(p, n) for p, n in before}
+    new = [f"{p} {n}" for p, n in after if p in ("FO", "RO") and n != "OPEN" and (p, n) not in seen]
+    if new:
+        return "filled", "; ".join(new), True
+    if any(p in ("FO", "RO") and n == "OPEN" for p, n in after):
+        return "open", "", True
+    return "unchanged", "", True
 
 
 def soft_time(credit, blk):

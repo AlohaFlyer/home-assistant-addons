@@ -20,11 +20,11 @@ from playwright.sync_api import sync_playwright
 import rules as R
 import web
 from far import far_check, window as far_window
-from pot import PAIRING_RE, fit_tag, hours, parse_crew, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+from pot import PAIRING_RE, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.3.9"
+VERSION = "0.4.0"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -730,7 +730,7 @@ def schedule_fit(ev):
     return ""
 
 
-DETAIL_FIELDS = ("captain", "report", "blk", "tafb", "soft", "turn", "route", "open_seats", "detail_url")
+DETAIL_FIELDS = ("captain", "report", "blk", "tafb", "soft", "turn", "route", "open_seats", "crew", "detail_url")
 DETAIL_MAX_PER_CHECK = 8
 
 
@@ -742,7 +742,7 @@ def pot_details(fl, pot, full=False):
     cache = S.setdefault("details", {})
     fetched = 0
     for k, row in pot.items():
-        stale = k in cache and "open_seats" not in cache[k]  # cached before 0.3.7: re-read once
+        stale = k in cache and "crew" not in cache[k]  # cached before 0.4.0: re-read once
         if (k not in cache or stale or full) and fetched < (FULL_MAX if full else DETAIL_MAX_PER_CHECK):
             if fetched:
                 time.sleep(random.uniform(1.5, 3.5))
@@ -962,26 +962,31 @@ def pickup_check(fl, full=False):
             time.sleep(random.uniform(1.5, 3.5))
         n += 1
         p["tries"] = p.get("tries", 0) + 1
-        status, who, ca, seats = "unknown", "", "", []
+        status, who, ca, seats, known = "unknown", "", "", [], False
         try:
             page = fl.fetch(url)
             if classify(page) == "ok":
                 crew = parse_crew(visible_text(page))
                 seats = [x for x in (row.get("open_seats") or "").split(",") if x]
-                status, who = pickup_result(crew, seats)
+                before = row.get("crew")
+                if before is not None:
+                    status, who, known = pickup_diff([tuple(x) for x in before], crew)
+                else:  # found before 0.4.0: no roster to compare, fall back to open_seats
+                    status, who = pickup_result(crew, seats)
+                    known = bool(seats)
                 ca = next((nm for pos, nm in crew if pos == "CA" and nm != "OPEN"), "")
         except Exception as e:
             log.info("pickup lookup %s skipped: %s", k, e)
         start = row_date(row.get("start") or (row.get("dates") or "").split("-")[0])
         started = bool(start and start < datetime.now().date())
         if status == "filled":
-            DB.set_pickup(k, {"status": "filled", "by": who, "ca": ca, "known": bool(seats),
+            DB.set_pickup(k, {"status": "filled", "by": who, "ca": ca, "known": known,
                               "at": now_iso()})
             log.info("pickup %s: %s (CA %s)", k, who, ca or "?")
             pend.pop(k, None)
             done = True
         elif status == "open":
-            DB.set_pickup(k, {"status": "open", "by": who, "ca": ca, "known": bool(seats),
+            DB.set_pickup(k, {"status": "open", "by": who, "ca": ca, "known": known,
                               "at": now_iso()})
             if p.get("logged") != "open":
                 log.info("pickup %s: seat still Open on the pairing page but not in the pot "
@@ -992,6 +997,11 @@ def pickup_check(fl, full=False):
                 pend.pop(k, None)
             else:
                 p["next"] = now + (PICKUP_RETRY_S if p["tries"] < PICKUP_TRIES else PICKUP_OPEN_S)
+        elif status == "unchanged":
+            DB.set_pickup(k, {"status": "unchanged", "by": "", "ca": ca, "known": True, "at": now_iso()})
+            log.info("pickup %s: left the pot with the same FO/RO crew", k)
+            pend.pop(k, None)
+            done = True
         elif p["tries"] >= PICKUP_TRIES or started:
             DB.set_pickup(k, {"status": "unknown", "by": "?", "ca": ca, "at": now_iso()})
             pend.pop(k, None)
