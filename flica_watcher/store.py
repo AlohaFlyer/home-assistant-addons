@@ -27,6 +27,11 @@ CREATE TABLE IF NOT EXISTS rule_live (rule_id TEXT PRIMARY KEY, live INTEGER NOT
 KEEP_DAYS = 90
 
 
+def is_prem(row):
+    """Premium pairing: FLICA marks the Prem column with an X (mobile cell x1)."""
+    return any(str(row.get(k) or "").strip().upper() == "X" for k in ("x1", "prem"))
+
+
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
@@ -37,6 +42,10 @@ class Store:
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        try:  # 0.3.7: who picked up the open seat once a find leaves the pot (JSON)
+            self.db.execute("ALTER TABLE finds ADD COLUMN pickup TEXT")
+        except sqlite3.OperationalError:
+            pass
         self.default_state = default_state or {}
         if legacy_json and os.path.exists(legacy_json) and self.get("state") is None:
             try:
@@ -86,15 +95,33 @@ class Store:
 
     def recent_finds(self, n=50):
         with self.lock:
-            rows = self.db.execute("SELECT key,row,month,first_seen,gone_at FROM finds "
+            rows = self.db.execute("SELECT key,row,month,first_seen,gone_at,pickup FROM finds "
                                    "ORDER BY first_seen DESC LIMIT ?", (n,)).fetchall()
         out = []
-        for key, row, month, first, gone in rows:
+        for key, row, month, first, gone, pickup in rows:
             r = json.loads(row)
+            pk = json.loads(pickup) if pickup else {}
             out.append({"pairing": r.get("pairing"), "dates": r.get("dates"), "days": r.get("days"),
                         "layover": r.get("layover"), "report": r.get("report"), "credit": r.get("credit"),
+                        "turn": r.get("turn"), "captain": pk.get("ca") or r.get("captain") or "",
+                        "prem": is_prem(r), "picked_by": pk.get("by", ""), "pickup_status": pk.get("status", ""),
                         "month": month, "seen": first, "gone": gone})
         return out
+
+    def find_row(self, key):
+        with self.lock:
+            r = self.db.execute("SELECT row FROM finds WHERE key=?", (key,)).fetchone()
+        return json.loads(r[0]) if r else None
+
+    def set_pickup(self, key, pickup):
+        with self.lock:
+            self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pickup), key))
+
+    def gone_without_pickup(self, n=50):
+        with self.lock:
+            return [k for (k,) in self.db.execute(
+                "SELECT key FROM finds WHERE gone_at IS NOT NULL AND pickup IS NULL "
+                "ORDER BY first_seen DESC LIMIT ?", (n,)).fetchall()]
 
     # ---- matches
     def add_match(self, m, find_key):
