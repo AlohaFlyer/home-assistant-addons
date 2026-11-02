@@ -53,6 +53,15 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+HST = timezone(timedelta(hours=-10))  # FLICA dates are HNL local; Hawaii has no DST
+
+
+def local_now():
+    """0.4.5: wall-clock time in Honolulu. The container runs UTC, so after 14:00 HST datetime.now()
+    is already tomorrow (that pruned today's blocked day and skewed month rollover)."""
+    return datetime.now(HST).replace(tzinfo=None)
+
+
 # ---------------------------------------------------------------- state
 DEFAULT_STATE = {"baseline": {}, "machine": "idle", "pot_urls": {}, "kills": [], "last_login_ok": None,
                  "fingerprints": {}, "relogin_streak": 0}
@@ -221,7 +230,7 @@ def publish_rules(c):
 
 def publish_blocked():
     """0.4.4: days Ryan tapped off on the schedule card (no pickups wanted). Past days drop off."""
-    today = datetime.now().date().isoformat()
+    today = local_now().date().isoformat()
     S["blocked_days"] = sorted(d for d in set(S.get("blocked_days") or []) if d >= today)
     save_state(S)
     pub("blocked/state", {"count": len(S["blocked_days"]), "days": S["blocked_days"]})
@@ -513,7 +522,7 @@ class Flica:
                 }""" % json.dumps(MONTHS),
                 OPTS["pot_section"],
             )
-            now = datetime.now()
+            now = local_now()
             want = {MONTHS[now.month - 1], MONTHS[now.month % 12]}
             for l in links:
                 if not l["section"] or l["month"] not in want or l["month"] in found:
@@ -1034,7 +1043,7 @@ def pickup_check(fl, full=False):
         except Exception as e:
             log.info("pickup lookup %s skipped: %s", k, e)
         start = row_date(row.get("start") or (row.get("dates") or "").split("-")[0])
-        started = bool(start and start < datetime.now().date())
+        started = bool(start and start < local_now().date())
         if status == "filled":
             DB.set_pickup(k, {"status": "filled", "by": who, "ca": ca, "known": known,
                               "at": now_iso()})
@@ -1315,7 +1324,7 @@ def main():
                 DB.prune()
                 S["pruned_at"] = time.time()
             # month rollover: rediscover once per new calendar month
-            mk = datetime.now().strftime("%Y-%m")
+            mk = local_now().strftime("%Y-%m")
             if last_month_check and last_month_check != mk:
                 S["pot_urls"] = {}
             last_month_check = mk
