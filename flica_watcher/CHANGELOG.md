@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.4.2
+- Fix: an email find that had already left the pot took its crew roster after the pickup, so the diff read "left pot, same crew". Those finds now skip the roster and list the FO/RO names (not bold, seat unknown). Finds 0.4.1 marked that way are re-checked once.
+
 ## 0.4.1
 - Missed trips from FLICA alert emails (Ryan): Home Assistant forwards each email that lands in ha.flica.alerts@gmail.com (IMAP) to `flica_watcher/email/alert` (automation "FLICA alert email to Watcher"). Pairings it names that the pot watch never recorded (they came and went between checks) are added to finds with `source: email`. Each gets one read-only detail GET (CA, times, crew roster). One already out of the pot is stamped gone and its pickup is tracked like any other find. The email also wakes the Watcher for an immediate check.
 
