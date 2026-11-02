@@ -42,7 +42,7 @@ def test_parse_detail_real_text():
     from pot import parse_detail, soft_time
     d = parse_detail(f"<p>{DETAIL}</p>")
     assert d == {"captain": "Dimaya Jr, Fedelino", "report": "12:10", "blk": "12:18",
-                 "credit": "12:18", "tafb": "26:09", "route": "HNL-LAS-HNL", "turn": "LAS"}
+                 "credit": "12:18", "tafb": "26:09", "open_seats": "FO", "route": "HNL-LAS-HNL", "turn": "LAS"}
     assert soft_time(d["credit"], d["blk"]) == "0:00"
     assert parse_detail("<p>crew: ca open fo open</p>")["captain"] == "OPEN"
 
@@ -143,3 +143,20 @@ def test_parse_detail_turn_station():
     assert d["turn"] == "PPG" and d["route"] == "HNL-PPG-HNL"
     multi = parse_detail("<p>Dy Flt Dps-Ars Th 865 HNL-PPG 1630 2115 Th 13 PPG-PPT 2320 0100 Fr 14 PPT-HNL 0300 0800</p>")
     assert multi["turn"] == "PPG/PPT" and multi["route"] == "HNL-PPG-PPT-HNL"
+
+
+def test_parse_crew_and_pickup():
+    from pot import parse_crew, pickup_result
+    crew = parse_crew(TURN)
+    assert crew == [("CA", "Smith Jr, John"), ("CA", "Doe, Jane"), ("FO", "OPEN")]
+    assert pickup_result(crew, ["FO"]) == ("open", "")
+    taken = parse_crew("Crew: CA 10001 SMITH JR, JOHN FO 10003 ROE, RICK RO Open")
+    assert pickup_result(taken, ["FO"]) == ("filled", "FO Roe, Rick")
+    assert pickup_result(taken, ["RO"]) == ("open", "")
+    assert pickup_result(taken, []) == ("filled", "FO Roe, Rick")
+    assert pickup_result(parse_crew("no crew here"), ["FO"]) == ("unknown", "")
+
+
+def test_prem_flag():
+    from store import is_prem
+    assert is_prem({"x1": "X"}) and is_prem({"x1": " x "}) and not is_prem({"x1": "", "prem": ""})

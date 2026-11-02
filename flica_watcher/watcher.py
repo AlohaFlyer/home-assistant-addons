@@ -19,11 +19,11 @@ from playwright.sync_api import sync_playwright
 
 import rules as R
 import web
-from pot import fit_tag, hours, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+from pot import fit_tag, hours, parse_crew, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.3.6"
+VERSION = "0.3.7"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -631,7 +631,7 @@ def schedule_fit(ev):
     return ""
 
 
-DETAIL_FIELDS = ("captain", "report", "blk", "tafb", "soft", "turn", "route", "detail_url")
+DETAIL_FIELDS = ("captain", "report", "blk", "tafb", "soft", "turn", "route", "open_seats", "detail_url")
 DETAIL_MAX_PER_CHECK = 8
 
 
@@ -643,7 +643,7 @@ def pot_details(fl, pot):
     cache = S.setdefault("details", {})
     fetched = 0
     for k, row in pot.items():
-        stale = k in cache and "route" not in cache[k]  # cached before 0.3.6: re-read once for turn
+        stale = k in cache and "open_seats" not in cache[k]  # cached before 0.3.7: re-read once
         if (k not in cache or stale) and fetched < DETAIL_MAX_PER_CHECK:
             if fetched:
                 time.sleep(random.uniform(1.5, 3.5))
@@ -828,6 +828,77 @@ def tradeboard_check(fl):
     save_state(S)
 
 
+PICKUP_FIRST_S = 120      # FLICA updates the crew line shortly after the pot drops it
+PICKUP_RETRY_S = 20 * 60  # while unknown, or in the first 2 h after it left the pot
+PICKUP_OPEN_S = 60 * 60   # still open after that: recheck hourly until the trip starts
+PICKUP_TRIES = 6
+PICKUP_PER_CHECK = 3
+
+
+def pickup_check(fl):
+    """Read only (0.3.7): when a find leaves the pot, GET its pairing page and record who now holds
+    the FO/RO seat that was open, plus the CA. A seat still Open on the pairing page while the trip
+    is not in the open time pot is stored as status 'open' (dashboard: suspected hidden by
+    scheduling) and rechecked hourly until it is filled or the trip starts. Gone finds from before
+    0.3.7 are back-filled once. Returns True when any pickup record changed."""
+    pend = S.setdefault("pickup_pending", {})
+    if not S.get("pickup_backfilled"):
+        for k in DB.gone_without_pickup(50):
+            pend.setdefault(k, {"tries": 0, "next": 0})
+        S["pickup_backfilled"] = True
+    done, now, n = False, time.time(), 0
+    for k, p in list(pend.items()):
+        if n >= PICKUP_PER_CHECK:
+            break
+        if now < p.get("next", 0):
+            continue
+        row = DB.find_row(k)
+        url = row and (row.get("detail_url") or detail_url(row))
+        if not url:
+            pend.pop(k, None)
+            continue
+        if n:
+            time.sleep(random.uniform(1.5, 3.5))
+        n += 1
+        p["tries"] = p.get("tries", 0) + 1
+        status, who, ca = "unknown", "", ""
+        try:
+            page = fl.fetch(url)
+            if classify(page) == "ok":
+                crew = parse_crew(visible_text(page))
+                seats = [x for x in (row.get("open_seats") or "").split(",") if x]
+                status, who = pickup_result(crew, seats)
+                ca = next((nm for pos, nm in crew if pos == "CA" and nm != "OPEN"), "")
+        except Exception as e:
+            log.info("pickup lookup %s skipped: %s", k, e)
+        start = row_date(row.get("start") or (row.get("dates") or "").split("-")[0])
+        started = bool(start and start < datetime.now().date())
+        if status == "filled":
+            DB.set_pickup(k, {"status": "filled", "by": who, "ca": ca, "at": now_iso()})
+            log.info("pickup %s: %s (CA %s)", k, who, ca or "?")
+            pend.pop(k, None)
+            done = True
+        elif status == "open":
+            DB.set_pickup(k, {"status": "open", "by": who, "ca": ca, "at": now_iso()})
+            if p.get("logged") != "open":
+                log.info("pickup %s: seat still Open on the pairing page but not in the pot "
+                         "(suspected hidden)", k)
+                p["logged"] = "open"
+            done = True
+            if started:
+                pend.pop(k, None)
+            else:
+                p["next"] = now + (PICKUP_RETRY_S if p["tries"] < PICKUP_TRIES else PICKUP_OPEN_S)
+        elif p["tries"] >= PICKUP_TRIES or started:
+            DB.set_pickup(k, {"status": "unknown", "by": "?", "ca": ca, "at": now_iso()})
+            pend.pop(k, None)
+            done = True
+        else:
+            p["next"] = now + PICKUP_RETRY_S
+    save_state(S)
+    return done
+
+
 FP_VERSION = 2  # bump when header_fingerprint changes, so stored hashes are re-learned
 
 
@@ -905,6 +976,10 @@ def check(fl):
                 pub("event/new_pairing", ev, retain=False)
                 pub("last_new", ev)
                 run_rules(month, k, pot[k])
+        if base is not None:
+            pend = S.setdefault("pickup_pending", {})
+            for k in set(base) - set(pot):
+                pend.setdefault(k, {"tries": 0, "next": time.time() + PICKUP_FIRST_S})
         DB.record_pot(month, pot, new_keys)
         new_any = new_any or bool(new_keys)
         S["baseline"][month] = sorted(pot.keys())
@@ -919,6 +994,8 @@ def check(fl):
         S["finds_published"] = True
     flat = [dict(v, month=m) for m, p in pot_all.items() for v in p.values()]
     pub("pot/state", {"count": len(flat), "pairings": flat[:60]})
+    if pickup_check(fl):
+        publish_finds()
     tradeboard_check(fl)
     pub("last_check", now_iso())
     S["last_check_ts"] = time.time()

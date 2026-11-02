@@ -196,6 +196,9 @@ def detail_url(row, today=None):
 
 # Detail text (Nov 1, 2026): "... blk : 1218 tafb : 2609 pay : 1218 crew: ca 14157 dimaya jr, fedelino fo open"
 CA_RE = re.compile(r"crew\s*:.*?\bca\s+(?:\d{3,7}\s+)?(.+?)(?=\s+(?:fo|ro|fa|so|ca)\b|$)", re.I)
+# Crew line (Nov 1, 2026): "Crew: CA 14393 RODRIGUEZ JR, ckp HAROLD CA 15638 WONG, SOHNGKRAHN FO Open"
+CREW_POS = ("CA", "FO", "RO", "FA", "SO")
+CREW_RE = re.compile(r"\b(CA|FO|RO|FA|SO)\s+(?:\d{3,7}\s+)?(.+?)(?=\s+(?:CA|FO|RO|FA|SO)\s|\s*$)", re.I)
 CHECKIN_RE = re.compile(r"check\s*in\s*:\s*(\d{1,2}:?\d{2})", re.I)
 # A leg: flight number then STN-STN ("Th 865 HNL-PPG 1630 ..."). The column header "Dps-Ars"
 # has no flight number in front, so it never matches.
@@ -230,6 +233,9 @@ def parse_detail(html):
         found = rx.findall(text)
         if found:
             out[k] = _hm(found[-1])
+    crew = parse_crew(text)
+    if crew:
+        out["open_seats"] = ",".join(p for p, n in crew if n == "OPEN" and p in ("FO", "RO"))
     legs = [(a.upper(), b.upper()) for a, b in LEG_RE.findall(text)]
     if legs:
         base = legs[0][0]
@@ -238,6 +244,31 @@ def parse_detail(html):
         # Where the trip lands away from base: a turn's only stop (PPG), or every stop in order.
         out["turn"] = "/".join(dict.fromkeys(away))
     return out
+
+
+def parse_crew(text):
+    """[(pos, name)] from the crew line, in page order. An open seat's name is 'OPEN'."""
+    m = re.search(r"crew\s*:\s*(.*)$", text or "", re.I | re.S)
+    if not m:
+        return []
+    out = []
+    for pos, name in CREW_RE.findall(m.group(1)):
+        name = name.strip(" ,")
+        out.append((pos.upper(), "OPEN" if name.lower() == "open" else name.title()))
+    return out
+
+
+def pickup_result(crew, seats):
+    """Who now holds the seats that were open. seats: e.g. ['FO']; [] = unknown, report every
+    FO and RO. Returns (status, text): filled / open / unknown."""
+    want = seats or ["FO", "RO"]
+    rows = [(p, n) for p, n in crew if p in want]
+    if not rows:
+        return "unknown", ""
+    filled = [f"{p} {n}" for p, n in rows if n != "OPEN"]
+    if seats and any(n == "OPEN" for p, n in rows):
+        return "open", "; ".join(filled)
+    return ("filled", "; ".join(filled)) if filled else ("open", "")
 
 
 def soft_time(credit, blk):
