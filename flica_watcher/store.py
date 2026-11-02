@@ -126,6 +126,20 @@ class Store:
         return [k for k, r, p in rows
                 if json.loads(r).get("source") == "email" and json.loads(p).get("status") == "unchanged"]
 
+    def email_finds(self):
+        with self.lock:
+            rows = self.db.execute("SELECT key,row FROM finds").fetchall()
+        return [k for k, r in rows if json.loads(r).get("source") == "email"]
+
+    def patch_row(self, key, fields):
+        if not fields:
+            return
+        with self.lock:
+            r = self.db.execute("SELECT row FROM finds WHERE key=?", (key,)).fetchone()
+            if r:
+                row = dict(json.loads(r[0]), **fields)
+                self.db.execute("UPDATE finds SET row=? WHERE key=?", (json.dumps(row), key))
+
     def clear_pickup(self, key):
         with self.lock:
             self.db.execute("UPDATE finds SET pickup=NULL, row=json_remove(row, '$.crew') WHERE key=?", (key,))

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.3
+- Fix: some pairing pages carry a second "Pay : 1583974803" (an id), which became a 158:39 credit. Only H:MM-sized values count now, and the first Pay is the credit.
+- Pairing detail gives the trip length (`days`) from the leg day codes, so email finds show Days.
+- Email finds refresh credit, days, block and TAFB from the page on their pickup check; existing ones are re-read once.
+- Hidden trips push (Ryan): the first time a trip that left the pot still shows an open FO/RO seat, the Watcher publishes `flica_watcher/event/hidden`; HA automation "FLICA watcher hidden trip" sends a time-sensitive push.
+
 ## 0.4.2
 - Fix: an email find that had already left the pot took its crew roster after the pickup, so the diff read "left pot, same crew". Those finds now skip the roster and list the FO/RO names (not bold, seat unknown). Finds 0.4.1 marked that way are re-checked once.
 

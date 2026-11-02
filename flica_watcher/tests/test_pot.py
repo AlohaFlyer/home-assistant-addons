@@ -42,7 +42,7 @@ def test_parse_detail_real_text():
     from pot import parse_detail, soft_time
     d = parse_detail(f"<p>{DETAIL}</p>")
     assert d == {"captain": "Lane Jr, Chris", "report": "12:10", "blk": "12:18",
-                 "credit": "12:18", "tafb": "26:09", "open_seats": "FO", "crew": [["CA", "Lane Jr, Chris"], ["FO", "OPEN"]],
+                 "credit": "12:18", "tafb": "26:09", "days": "2", "open_seats": "FO", "crew": [["CA", "Lane Jr, Chris"], ["FO", "OPEN"]],
                  "last_arr": "14:04", "route": "HNL-LAS-HNL", "turn": "LAS"}
     assert soft_time(d["credit"], d["blk"]) == "0:00"
     assert parse_detail("<p>crew: ca open fo open</p>")["captain"] == "OPEN"
@@ -191,3 +191,10 @@ def test_parse_alert_email():
     assert got[0]["sources"] == ["OPEN TIME- Add/Swap/Drop requests - November",
                                  "Close in Opentime: &lt;16 Hrs to RPT - November"]
     assert parse_alert_email("test ding") == []
+
+
+def test_detail_days_and_pay_id():
+    from pot import parse_detail
+    d = parse_detail("<p>Check In: 20:37 Dy Flt Dps-Ars Su 804 HNL-LAX 2137 0500 0523 Tu 933 LAX-OGG 0830 1222 "
+                     "0552 Tu 1135 OGG-HNL 1326 1410 0044 Blk : 1115 TAFB : 4133 Pay : 1500 Pay : 1583974803</p>")
+    assert d["credit"] == "15:00" and d["days"] == "3" and d["blk"] == "11:15"
