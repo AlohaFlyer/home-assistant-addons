@@ -11,7 +11,7 @@ import random
 import re
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import paho.mqtt.client as mqtt
 import requests
@@ -19,11 +19,12 @@ from playwright.sync_api import sync_playwright
 
 import rules as R
 import web
-from pot import fit_tag, hours, parse_crew, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+from far import far_check, window as far_window
+from pot import PAIRING_RE, fit_tag, hours, parse_crew, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.3.7"
+VERSION = "0.3.8"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -606,6 +607,102 @@ def enrich(fl, ev):
     st = soft_time(ev.get("credit"), ev.get("blk"))
     ev["soft"] = st or ""
     ev["fit"] = schedule_fit(ev)
+    ev["vac"] = touches_vac(ev)
+    ev["far"] = far_for(ev)
+
+
+def _span(ev):
+    s = row_date(ev.get("start") or (ev.get("dates") or "").split("-")[0])
+    if not s:
+        return None, None
+    e = row_date(ev.get("end")) if ev.get("end") else None
+    if not e:
+        try:
+            e = s + timedelta(days=max(int(ev.get("days") or 1), 1) - 1)
+        except ValueError:
+            e = s
+    return s, e
+
+
+def _sched_items():
+    return [it for m in S.get("schedule", {}).values() for it in m.get("items", [])]
+
+
+def touches_vac(ev):
+    """True when the trip's dates overlap any VAC block on Ryan's schedule (0.3.8)."""
+    s, e = _span(ev)
+    if not s:
+        return False
+    for it in _sched_items():
+        if it.get("trip") == "VAC" and s.isoformat() <= it["end"] and e.isoformat() >= it["start"]:
+            return True
+    return False
+
+
+def far_for(ev):
+    """FAR 117 screen (far.py) of a pot or tradeboard row against Ryan's own trips. '?' when the
+    pickup's check-in or final arrival is not known yet."""
+    try:
+        s, e = _span(ev)
+        w = far_window(s, e, ev.get("report"), ev.get("arrive") or ev.get("last_arr"))
+        if not w:
+            return "?"
+        mine = []
+        for it in _sched_items():
+            if not PAIRING_RE.match(it.get("trip") or ""):
+                continue
+            t = S.get("own_trips", {}).get(f"{it['trip']}|{it['start']}") or {}
+            a, b = date.fromisoformat(it["start"]), date.fromisoformat(it["end"])
+            ow = far_window(a, b, t.get("report"), t.get("last_arr"))
+            if ow:
+                mine.append((ow[0], ow[1], hours(t.get("blk")) or 0))
+            else:  # times not read yet: whole days, flagged so a neighbouring trip reads '?'
+                mine.append((datetime.combine(a, datetime.min.time()),
+                             datetime.combine(b, datetime.max.time()), 0, True))
+        return far_check((w[0], w[1], hours(ev.get("blk")) or 0), mine)
+    except Exception as ex:
+        log.info("far skipped for %s: %s", ev.get("pairing"), ex)
+        return "?"
+
+
+OWN_PER_CHECK = 3
+
+
+def own_trip_times(fl):
+    """Read only (0.3.8): check-in, final arrival and block of Ryan's own trips from their pairing
+    pages, cached per trip and start date, so the FAR column can measure rest."""
+    own = S.setdefault("own_trips", {})
+    keep, n = set(), 0
+    for it in _sched_items():
+        trip = it.get("trip") or ""
+        if not PAIRING_RE.match(trip):
+            continue
+        k = f"{trip}|{it['start']}"
+        keep.add(k)
+        if k in own or n >= OWN_PER_CHECK:
+            continue
+        if n:
+            time.sleep(random.uniform(1.5, 3.5))
+        n += 1
+        url = (f"{BASE}/full/mobilepairing.cgi?PID={trip}&DATE={it['start'].replace('-', '')}"
+               "&FROM=MobileOpentimePot&CurrentPage=1")
+        try:
+            page = fl.fetch(url)
+            if classify(page) == "ok":
+                d = parse_detail(page)
+                if d.get("report") and d.get("last_arr"):
+                    own[k] = {f: d.get(f, "") for f in ("report", "last_arr", "blk")}
+                    log.info("own trip %s: report %s, in %s, blk %s", k, d["report"], d["last_arr"],
+                             d.get("blk"))
+                else:
+                    log.info("own trip %s: no times on the pairing page", k)
+                    own[k] = {}
+        except Exception as e:
+            log.info("own trip %s skipped: %s", k, e)
+    for k in [k for k in own if k not in keep]:
+        own.pop(k)
+    if n:
+        save_state(S)
 
 
 def schedule_fit(ev):
@@ -656,6 +753,8 @@ def pot_details(fl, pot):
             if not row.get("soft"):
                 row["soft"] = soft_time(row.get("credit"), row.get("blk")) or ""
         row["fit"] = schedule_fit(row)
+        row["vac"] = touches_vac(row)
+        row["far"] = far_for(row)
     if fetched:
         log.info("pot details fetched: %d (cached %d)", fetched, len(cache))
 
@@ -861,7 +960,7 @@ def pickup_check(fl):
             time.sleep(random.uniform(1.5, 3.5))
         n += 1
         p["tries"] = p.get("tries", 0) + 1
-        status, who, ca = "unknown", "", ""
+        status, who, ca, seats = "unknown", "", "", []
         try:
             page = fl.fetch(url)
             if classify(page) == "ok":
@@ -874,12 +973,14 @@ def pickup_check(fl):
         start = row_date(row.get("start") or (row.get("dates") or "").split("-")[0])
         started = bool(start and start < datetime.now().date())
         if status == "filled":
-            DB.set_pickup(k, {"status": "filled", "by": who, "ca": ca, "at": now_iso()})
+            DB.set_pickup(k, {"status": "filled", "by": who, "ca": ca, "known": bool(seats),
+                              "at": now_iso()})
             log.info("pickup %s: %s (CA %s)", k, who, ca or "?")
             pend.pop(k, None)
             done = True
         elif status == "open":
-            DB.set_pickup(k, {"status": "open", "by": who, "ca": ca, "at": now_iso()})
+            DB.set_pickup(k, {"status": "open", "by": who, "ca": ca, "known": bool(seats),
+                              "at": now_iso()})
             if p.get("logged") != "open":
                 log.info("pickup %s: seat still Open on the pairing page but not in the pot "
                          "(suspected hidden)", k)
@@ -916,6 +1017,7 @@ def check(fl):
         save_state(S)
         log.info("pot pages: %s", list(urls))
     schedule_check(fl, force=not S.get("schedule"))
+    own_trip_times(fl)
     pot_all = {}
     new_any = False
     for month, url in list(S["pot_urls"].items()):
