@@ -24,7 +24,7 @@ from pot import PAIRING_RE, parse_alert_email, fit_tag, hours, parse_crew, picku
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.4.7"
+VERSION = "0.4.8"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"

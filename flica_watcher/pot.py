@@ -13,7 +13,7 @@ KILLED_TXT = "new session under this account was detected"
 EXPIRED_HINTS = ("session has expired", "session expired", "please log in", "please sign in")
 BLOCK_HINTS = ("captcha", "verification code", "one-time", "one time pass", "change your password",
                "password has expired", "account is locked", "account locked")
-PAIRING_RE = re.compile(r"^[A-Z]\d{4}$")
+PAIRING_RE = re.compile(r"^[A-Z]\d{4}[A-Z]?$")  # 0.4.8: FLICA adds a letter to a changed pairing (H3815B)
 PAIRING_ANY = re.compile(r"\b([A-Z]\d{4}[A-Z]?)\b")
 DAY_MON = re.compile(r"^(\d{1,2})\s*([A-Za-z]{3})")
 MON3 = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
