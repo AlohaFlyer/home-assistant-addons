@@ -24,7 +24,7 @@ from pot import PAIRING_RE, parse_alert_email, fit_tag, hours, parse_crew, picku
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.4.2"
+VERSION = "0.4.3"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -951,6 +951,11 @@ def pickup_check(fl, full=False):
             DB.clear_pickup(k)
             pend.setdefault(k, {"tries": 0, "next": 0})
         S["email_unchanged_fixed"] = True
+    if not S.get("email_details_fixed"):  # 0.4.3: re-read email finds once (bad credit, no days)
+        for k in DB.email_finds():
+            DB.clear_pickup(k)
+            pend.setdefault(k, {"tries": 0, "next": 0})
+        S["email_details_fixed"] = True
     if not S.get("pickup_backfilled"):
         for k in DB.gone_without_pickup(50):
             pend.setdefault(k, {"tries": 0, "next": 0})
@@ -975,6 +980,9 @@ def pickup_check(fl, full=False):
             page = fl.fetch(url)
             if classify(page) == "ok":
                 crew = parse_crew(visible_text(page))
+                if row.get("source") == "email":  # 0.4.3: email finds get credit/days/blk from the page
+                    d = parse_detail(page)
+                    DB.patch_row(k, {f: d[f] for f in ("credit", "days", "blk", "tafb") if d.get(f)})
                 seats = [x for x in (row.get("open_seats") or "").split(",") if x]
                 before = row.get("crew")
                 if before is not None:
@@ -1000,6 +1008,11 @@ def pickup_check(fl, full=False):
                 log.info("pickup %s: seat still Open on the pairing page but not in the pot "
                          "(suspected hidden)", k)
                 p["logged"] = "open"
+                # 0.4.3: HA pushes this (automation "FLICA watcher hidden trip")
+                pub("event/hidden", {"key": k, **{f: row.get(f) for f in (
+                    "pairing", "start", "end", "dates", "days", "layover", "turn", "credit", "soft",
+                    "depart", "arrive", "detail_url", "source")}, "captain": ca or row.get("captain"),
+                    "gone": now_iso()}, retain=False)
             done = True
             if started:
                 pend.pop(k, None)
