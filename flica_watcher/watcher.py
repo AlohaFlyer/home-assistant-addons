@@ -20,11 +20,11 @@ from playwright.sync_api import sync_playwright
 import rules as R
 import web
 from far import far_check, window as far_window
-from pot import PAIRING_RE, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+from pot import PAIRING_RE, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -126,6 +126,9 @@ def mqtt_creds():
 
 
 def on_message(c, u, msg):
+    if msg.topic == f"{T}/email/alert":
+        email_alert(msg.payload.decode(errors="replace"))
+        return
     p = msg.payload.decode().strip().upper()
     if msg.topic == f"{T}/hunt/set":
         FLAGS["hunt"] = p == "ON"
@@ -280,7 +283,7 @@ def mqtt_start():
         cl.publish(AVAIL, "online", retain=True)
         discovery(cl)
         for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set",
-                  "check_now/press", "freq/normal_min/set", "freq/hunt_s/set"):
+                  "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert"):
             cl.subscribe(f"{T}/{t}")
         fq = freq()
         cl.publish(f"{T}/freq/normal_min/state", str(fq["normal_min"]), retain=True)
@@ -1015,6 +1018,63 @@ def pickup_check(fl, full=False):
 FP_VERSION = 2  # bump when header_fingerprint changes, so stored hashes are re-learned
 
 
+def email_alert(payload):
+    """0.4.1: HA forwards each FLICA alert email (imap_content) here. Pairings it names that the
+    pot watch never saw are queued; the next check (woken now) reads them and adds them to finds."""
+    try:
+        d = json.loads(payload)
+    except ValueError:
+        d = {"text": payload}
+    items = parse_alert_email(f"{d.get('subject', '')}\n{d.get('text', '')}")
+    try:  # HA sends the mail date as '2026-11-01 15:36:31-10:00'; store UTC ISO like every find
+        at = datetime.fromisoformat(str(d.get("date"))).astimezone(timezone.utc).isoformat()
+    except (TypeError, ValueError):
+        at = now_iso()
+    q = S.setdefault("email_queue", [])
+    for it in items:
+        if not any(x["key"] == it["key"] for x in q):
+            q.append(dict(it, at=at))
+    log.info("alert email: %s", [it["key"] for it in items] or "no pairings")
+    if items:
+        WAKE.set()
+
+
+def email_check(fl, pot_all):
+    """Add pairings from alert emails that are not finds yet (the pot moved faster than a check).
+    One read-only detail GET each, so CA, times and the crew roster are known; a pairing not in
+    the pot any more is stamped gone now and its pickup is tracked like any other find."""
+    q = S.get("email_queue") or []
+    if not q:
+        return False
+    live = {k: m for m, p in pot_all.items() for k in p}
+    added, n = False, 0
+    for it in list(q):
+        k = it["key"]
+        if DB.has_find(k):
+            q.remove(it)
+            continue
+        if n >= FULL_MAX:
+            break
+        if n:
+            time.sleep(random.uniform(1.5, 3.5))
+        n += 1
+        ev = {"pairing": it["pairing"], "start": it["start"], "dates": it["start"], "source": "email",
+              "alert_sources": it.get("sources", [])}
+        enrich(fl, ev)
+        if ev.get("turn") and not ev.get("layover"):
+            ev["layover"] = ev["turn"].split("/")[0]
+        month = next(iter(S.get("pot_urls") or {"mobile": 1}))
+        gone = None if k in live else now_iso()
+        DB.add_find(k, month, ev, it.get("at") or now_iso(), gone)
+        if gone:
+            S.setdefault("pickup_pending", {}).setdefault(k, {"tries": 0, "next": 0})
+        log.info("finds: %s added from alert email (%s)", k, "in pot" if k in live else "already gone")
+        q.remove(it)
+        added = True
+    save_state(S)
+    return added
+
+
 def check(fl):
     """One pass. Returns next action hint. After Check now (FLAGS full) every cached read is
     refreshed too: schedule, own trip times, pot details, pending pickups, tradeboard."""
@@ -1107,6 +1167,7 @@ def check(fl):
     save_state(S)
     flat = [dict(v, month=m) for m, p in pot_all.items() for v in p.values()]
     pub("pot/state", {"count": len(flat), "pairings": flat[:60]})
+    email_check(fl, pot_all)
     pickup_check(fl, full)
     publish_finds()  # rows carry live CA / details now, so publish every check
     tradeboard_check(fl, full)

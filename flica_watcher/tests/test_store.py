@@ -47,3 +47,14 @@ def test_find_row_stays_current_while_open(tmp_path):
     st.set_pickup("H3633|26Nov", {"status": "filled", "by": "FO Roe, Rick", "ca": "Lau, Sean", "known": True})
     f = st.recent_finds()[0]
     assert f["picked_by"] == "FO Roe, Rick" and f["pickup_known"] is True
+
+
+def test_add_find_from_email(tmp_path):
+    st = Store(str(tmp_path / "w.db"))
+    st.add_find("H3627|18Nov", "mobile", {"pairing": "H3627", "start": "18Nov", "source": "email"},
+                "2026-11-02T01:36:31+00:00", "2026-11-02T01:40:00+00:00")
+    assert st.has_find("H3627|18Nov") and not st.has_find("H1|01Nov")
+    f = st.recent_finds()[0]
+    assert f["source"] == "email" and f["gone"] == "2026-11-02T01:40:00+00:00"
+    st.add_find("H3627|18Nov", "mobile", {"pairing": "X"}, "2026-11-03T00:00:00+00:00")  # ignored
+    assert st.recent_finds()[0]["pairing"] == "H3627"
