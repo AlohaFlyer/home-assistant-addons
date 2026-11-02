@@ -24,7 +24,7 @@ from pot import PAIRING_RE, parse_alert_email, fit_tag, hours, parse_crew, picku
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.4.3"
+VERSION = "0.4.4"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -129,6 +129,9 @@ def on_message(c, u, msg):
     if msg.topic == f"{T}/email/alert":
         email_alert(msg.payload.decode(errors="replace"))
         return
+    if msg.topic == f"{T}/blocked/set":
+        blocked_cmd(msg.payload.decode(errors="replace"))
+        return
     p = msg.payload.decode().strip().upper()
     if msg.topic == f"{T}/hunt/set":
         FLAGS["hunt"] = p == "ON"
@@ -216,6 +219,30 @@ def publish_rules(c):
                    "created_at": r["created_at"]} for r in lst]}), retain=True)
 
 
+def publish_blocked():
+    """0.4.4: days Ryan tapped off on the schedule card (no pickups wanted). Past days drop off."""
+    today = datetime.now().date().isoformat()
+    S["blocked_days"] = sorted(d for d in set(S.get("blocked_days") or []) if d >= today)
+    save_state(S)
+    pub("blocked/state", {"count": len(S["blocked_days"]), "days": S["blocked_days"]})
+
+
+def blocked_cmd(payload):
+    """{"date": "2026-11-05"} toggles that day; {"date": ..., "on": true|false} sets it."""
+    try:
+        d = json.loads(payload)
+        day = date.fromisoformat(str(d["date"])).isoformat()
+    except (ValueError, KeyError, TypeError):
+        log.info("blocked day ignored: %r", payload[:80])
+        return
+    days = set(S.get("blocked_days") or [])
+    on = d.get("on", day not in days)
+    (days.add if on else days.discard)(day)
+    S["blocked_days"] = sorted(days)
+    log.info("blocked day %s %s", day, "on" if on else "off")
+    publish_blocked()
+
+
 def publish_finds():
     pub("finds", {"count": len(f := DB.recent_finds(50)), "finds": f})
 
@@ -234,6 +261,10 @@ def discovery(c):
                                  "value_template": "{{ value_json.count }}", "state_class": "measurement",
                                  "unit_of_measurement": "pairings",
                                  "json_attributes_topic": f"{T}/pot/state", "icon": "mdi:format-list-bulleted"}),
+        ("sensor", "blocked_days", {"name": "Blocked days", "state_topic": f"{T}/blocked/state",
+                                    "value_template": "{{ value_json.count }}",
+                                    "json_attributes_topic": f"{T}/blocked/state",
+                                    "icon": "mdi:calendar-remove"}),
         ("sensor", "finds", {"name": "Finds", "state_topic": f"{T}/finds",
                              "value_template": "{{ value_json.count }}",
                              "json_attributes_topic": f"{T}/finds", "icon": "mdi:history"}),
@@ -283,7 +314,7 @@ def mqtt_start():
         cl.publish(AVAIL, "online", retain=True)
         discovery(cl)
         for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set",
-                  "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert"):
+                  "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set"):
             cl.subscribe(f"{T}/{t}")
         fq = freq()
         cl.publish(f"{T}/freq/normal_min/state", str(fq["normal_min"]), retain=True)
@@ -612,6 +643,7 @@ def enrich(fl, ev):
     ev["soft"] = st or ""
     ev["fit"] = schedule_fit(ev)
     ev["vac"] = touches_vac(ev)
+    ev["blocked"] = touches_blocked(ev)
     ev["far"] = far_for(ev)
 
 
@@ -641,6 +673,13 @@ def touches_vac(ev):
         if it.get("trip") == "VAC" and s.isoformat() <= it["end"] and e.isoformat() >= it["start"]:
             return True
     return False
+
+
+def touches_blocked(ev):
+    """True when the trip's dates include a day Ryan blocked on the schedule card (0.4.4)."""
+    s, e = _span(ev)
+    days = S.get("blocked_days") or []
+    return bool(s and days and any(s.isoformat() <= d <= e.isoformat() for d in days))
 
 
 def far_for(ev):
@@ -759,6 +798,7 @@ def pot_details(fl, pot, full=False):
                 row["soft"] = soft_time(row.get("credit"), row.get("blk")) or ""
         row["fit"] = schedule_fit(row)
         row["vac"] = touches_vac(row)
+        row["blocked"] = touches_blocked(row)
         row["far"] = far_for(row)
     if fetched:
         log.info("pot details fetched: %d (cached %d)", fetched, len(cache))
@@ -1012,6 +1052,7 @@ def pickup_check(fl, full=False):
                 pub("event/hidden", {"key": k, **{f: row.get(f) for f in (
                     "pairing", "start", "end", "dates", "days", "layover", "turn", "credit", "soft",
                     "depart", "arrive", "detail_url", "source")}, "captain": ca or row.get("captain"),
+                    "vac": touches_vac(row), "blocked": touches_blocked(row),
                     "gone": now_iso()}, retain=False)
             done = True
             if started:
@@ -1217,6 +1258,7 @@ def main():
     RULES["list"] = load_rules()
     publish_rules(MQ)
     publish_finds()
+    publish_blocked()
     web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
               save_rules_from_page, DB, log)
     last_month_check = None
