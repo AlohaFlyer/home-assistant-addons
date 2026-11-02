@@ -85,8 +85,9 @@ class Store:
                         "ON CONFLICT(key) DO UPDATE SET first_seen=excluded.first_seen, "
                         "last_seen=excluded.last_seen, gone_at=NULL, "
                         "row=excluded.row", (k, row.get("pairing"), month, json.dumps(row), t, t))
-                else:
-                    self.db.execute("UPDATE finds SET last_seen=?, gone_at=NULL WHERE key=?", (t, k))
+                else:  # keep the stored row current (CA, details, fit) while it is still in the pot
+                    self.db.execute("UPDATE finds SET last_seen=?, gone_at=NULL, row=? WHERE key=?",
+                                    (t, json.dumps(row), k))
             keys = list(pot.keys())
             q = ",".join("?" * len(keys)) or "''"
             self.db.execute(f"UPDATE finds SET gone_at=? WHERE month=? AND gone_at IS NULL "

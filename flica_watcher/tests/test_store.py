@@ -34,3 +34,16 @@ def test_live_flags_and_counts(tmp_path):
     assert st.would_submits_since("2026-10-31T10:00:00+00:00") == {"sin": 1}
     st.drop_live("sin")
     assert st.live_flags() == {}
+
+
+def test_find_row_stays_current_while_open(tmp_path):
+    st = Store(str(tmp_path / "w.db"))
+    row = {"pairing": "H3633", "start": "26Nov", "dates": "26Nov-27Nov", "credit": "11:56"}
+    st.record_pot("mobile", {"H3633|26Nov": row}, {"H3633|26Nov"})
+    assert st.recent_finds()[0]["captain"] == ""
+    st.record_pot("mobile", {"H3633|26Nov": dict(row, captain="Lau, Sean", x1="X")}, set())
+    f = st.recent_finds()[0]
+    assert f["captain"] == "Lau, Sean" and f["prem"] is True
+    st.set_pickup("H3633|26Nov", {"status": "filled", "by": "FO Roe, Rick", "ca": "Lau, Sean", "known": True})
+    f = st.recent_finds()[0]
+    assert f["picked_by"] == "FO Roe, Rick" and f["pickup_known"] is True

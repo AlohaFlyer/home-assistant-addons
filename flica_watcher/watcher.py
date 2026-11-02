@@ -24,7 +24,7 @@ from pot import PAIRING_RE, fit_tag, hours, parse_crew, pickup_result, layout_st
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.3.8"
+VERSION = "0.3.9"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -72,7 +72,7 @@ def save_state(s):
 
 S = load_state()
 WAKE = threading.Event()
-FLAGS = {"hunt": False, "pause": False, "rearm": False}
+FLAGS = {"hunt": False, "pause": False, "rearm": False, "full": False}
 # Check frequency from the dashboard sliders (number entities); persisted in state.
 # Each gap is randomized +-30 % around the setting so the checks never look machine-regular.
 FREQ_LIMITS = {"normal_min": (1, 20), "hunt_s": (5, 90)}
@@ -147,7 +147,8 @@ def on_message(c, u, msg):
         if time.time() - S.get("last_check_ts", 0) < CHECK_NOW_MIN_GAP_S:
             log.info("check now ignored: last check under %d s ago", CHECK_NOW_MIN_GAP_S)
             return
-        log.info("check now pressed")
+        log.info("check now pressed: full refresh")
+        FLAGS["full"] = True  # 0.3.9: re-read schedule, own trips, pot details, pickups, tradeboard
     elif msg.topic in (f"{T}/freq/normal_min/set", f"{T}/freq/hunt_s/set"):
         key = msg.topic.split("/")[2]
         lo, hi = FREQ_LIMITS[key]
@@ -666,9 +667,10 @@ def far_for(ev):
 
 
 OWN_PER_CHECK = 3
+FULL_MAX = 12  # Check now: at most this many detail GETs per kind, still 1.5-3.5 s apart
 
 
-def own_trip_times(fl):
+def own_trip_times(fl, full=False):
     """Read only (0.3.8): check-in, final arrival and block of Ryan's own trips from their pairing
     pages, cached per trip and start date, so the FAR column can measure rest."""
     own = S.setdefault("own_trips", {})
@@ -679,7 +681,7 @@ def own_trip_times(fl):
             continue
         k = f"{trip}|{it['start']}"
         keep.add(k)
-        if k in own or n >= OWN_PER_CHECK:
+        if (k in own and not full) or n >= (FULL_MAX if full else OWN_PER_CHECK):
             continue
         if n:
             time.sleep(random.uniform(1.5, 3.5))
@@ -732,7 +734,7 @@ DETAIL_FIELDS = ("captain", "report", "blk", "tafb", "soft", "turn", "route", "o
 DETAIL_MAX_PER_CHECK = 8
 
 
-def pot_details(fl, pot):
+def pot_details(fl, pot, full=False):
     """Captain, check-in, block, TAFB and soft time on EVERY pot row (not only new ones), so the
     dashboard table can show them. One read-only detail GET per pairing, cached until the pairing
     leaves the pot; at most 8 new ones per check, 1.5-3.5 s apart. Fit is re-tagged every check
@@ -741,7 +743,7 @@ def pot_details(fl, pot):
     fetched = 0
     for k, row in pot.items():
         stale = k in cache and "open_seats" not in cache[k]  # cached before 0.3.7: re-read once
-        if (k not in cache or stale) and fetched < DETAIL_MAX_PER_CHECK:
+        if (k not in cache or stale or full) and fetched < (FULL_MAX if full else DETAIL_MAX_PER_CHECK):
             if fetched:
                 time.sleep(random.uniform(1.5, 3.5))
             ev = dict(row)
@@ -870,10 +872,10 @@ TB_MIN_GAP_S = 120
 TB_PROBE = {"done": False}
 
 
-def tradeboard_check(fl):
+def tradeboard_check(fl, full=False):
     """Read only: Tradeboard All Requests for each watched bid month. Alerts on new posts whose
     response method is 'Pickup Trip'. Any failure is logged and never stops the pot watch."""
-    if time.time() - S.get("tb_checked_at", 0) < TB_MIN_GAP_S:
+    if not full and time.time() - S.get("tb_checked_at", 0) < TB_MIN_GAP_S:
         return
     S["tb_checked_at"] = time.time()
     nums = sorted({b.split(".")[-1] for b in (bcid(u) for u in S.get("pot_urls", {}).values()) if b})
@@ -934,7 +936,7 @@ PICKUP_TRIES = 6
 PICKUP_PER_CHECK = 3
 
 
-def pickup_check(fl):
+def pickup_check(fl, full=False):
     """Read only (0.3.7): when a find leaves the pot, GET its pairing page and record who now holds
     the FO/RO seat that was open, plus the CA. A seat still Open on the pairing page while the trip
     is not in the open time pot is stored as status 'open' (dashboard: suspected hidden by
@@ -947,9 +949,9 @@ def pickup_check(fl):
         S["pickup_backfilled"] = True
     done, now, n = False, time.time(), 0
     for k, p in list(pend.items()):
-        if n >= PICKUP_PER_CHECK:
+        if n >= (FULL_MAX if full else PICKUP_PER_CHECK):
             break
-        if now < p.get("next", 0):
+        if now < p.get("next", 0) and not full:
             continue
         row = DB.find_row(k)
         url = row and (row.get("detail_url") or detail_url(row))
@@ -1004,7 +1006,9 @@ FP_VERSION = 2  # bump when header_fingerprint changes, so stored hashes are re-
 
 
 def check(fl):
-    """One pass. Returns next action hint."""
+    """One pass. Returns next action hint. After Check now (FLAGS full) every cached read is
+    refreshed too: schedule, own trip times, pot details, pending pickups, tradeboard."""
+    full, FLAGS["full"] = FLAGS.get("full", False), False
     if not S.get("pot_urls"):
         urls = fl.discover_pot_urls()
         if urls is None:
@@ -1016,8 +1020,8 @@ def check(fl):
         S["discovered_at"] = time.time()
         save_state(S)
         log.info("pot pages: %s", list(urls))
-    schedule_check(fl, force=not S.get("schedule"))
-    own_trip_times(fl)
+    schedule_check(fl, force=full or not S.get("schedule"))
+    own_trip_times(fl, full)
     pot_all = {}
     new_any = False
     for month, url in list(S["pot_urls"].items()):
@@ -1063,7 +1067,7 @@ def check(fl):
         pot_all[month] = pot
         capture(fl, month, html)
         detail_probe(fl, pot)
-        pot_details(fl, pot)
+        pot_details(fl, pot, full)
         base = S["baseline"].get(month)
         new_keys = set()
         if base is None:
@@ -1091,14 +1095,11 @@ def check(fl):
     S["details"] = {k: v for k, v in S.get("details", {}).items() if k in live}
     S["relogin_streak"] = 0
     save_state(S)
-    if new_any or not S.get("finds_published"):
-        publish_finds()
-        S["finds_published"] = True
     flat = [dict(v, month=m) for m, p in pot_all.items() for v in p.values()]
     pub("pot/state", {"count": len(flat), "pairings": flat[:60]})
-    if pickup_check(fl):
-        publish_finds()
-    tradeboard_check(fl)
+    pickup_check(fl, full)
+    publish_finds()  # rows carry live CA / details now, so publish every check
+    tradeboard_check(fl, full)
     pub("last_check", now_iso())
     S["last_check_ts"] = time.time()
     if S.get("note") in ("starting",) or (S.get("note") or "").startswith("logged in"):
