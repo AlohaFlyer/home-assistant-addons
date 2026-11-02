@@ -24,7 +24,7 @@ from pot import PAIRING_RE, parse_alert_email, fit_tag, hours, parse_crew, picku
 from store import Store
 import tradeboard as TB
 
-VERSION = "0.4.4"
+VERSION = "0.4.7"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -271,6 +271,9 @@ def discovery(c):
                                  "value_template": "{{ value_json.count }}", "state_class": "measurement",
                                  "unit_of_measurement": "pairings",
                                  "json_attributes_topic": f"{T}/pot/state", "icon": "mdi:format-list-bulleted"}),
+        ("sensor", "own_trips", {"name": "Own trip times", "state_topic": f"{T}/own_trips",
+                                 "value_template": "{{ value_json.count }}",
+                                 "json_attributes_topic": f"{T}/own_trips", "icon": "mdi:clock-outline"}),
         ("sensor", "tradeboard", {"name": "Tradeboard pickups", "state_topic": f"{T}/tradeboard/state",
                                   "value_template": "{{ value_json.count }}",
                                   "json_attributes_topic": f"{T}/tradeboard/state",
@@ -761,6 +764,13 @@ def own_trip_times(fl, full=False):
         own.pop(k)
     if n:
         save_state(S)
+    publish_own_trips()
+
+
+def publish_own_trips():
+    """0.4.7: Ryan's own trip report and block-in times (HNL local) for the schedule card, which
+    shows them and suggests tag-on pairings after each trip. Keys 'TRIP|YYYY-MM-DD' (start)."""
+    pub("own_trips", {"count": len(S.get("own_trips", {})), "trips": S.get("own_trips", {})})
 
 
 def schedule_fit(ev):
@@ -1310,6 +1320,7 @@ def main():
     publish_finds()
     publish_blocked()
     publish_tradeboard()
+    publish_own_trips()
     web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
               save_rules_from_page, DB, log)
     last_month_check = None
