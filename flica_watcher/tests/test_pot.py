@@ -42,7 +42,8 @@ def test_parse_detail_real_text():
     from pot import parse_detail, soft_time
     d = parse_detail(f"<p>{DETAIL}</p>")
     assert d == {"captain": "Lane Jr, Chris", "report": "12:10", "blk": "12:18",
-                 "credit": "12:18", "tafb": "26:09", "open_seats": "FO", "last_arr": "14:04", "route": "HNL-LAS-HNL", "turn": "LAS"}
+                 "credit": "12:18", "tafb": "26:09", "open_seats": "FO", "crew": [["CA", "Lane Jr, Chris"], ["FO", "OPEN"]],
+                 "last_arr": "14:04", "route": "HNL-LAS-HNL", "turn": "LAS"}
     assert soft_time(d["credit"], d["blk"]) == "0:00"
     assert parse_detail("<p>crew: ca open fo open</p>")["captain"] == "OPEN"
 
@@ -160,3 +161,21 @@ def test_parse_crew_and_pickup():
 def test_prem_flag():
     from store import is_prem
     assert is_prem({"x1": "X"}) and is_prem({"x1": " x "}) and not is_prem({"x1": "", "prem": ""})
+
+
+def test_pickup_diff_finds_the_newcomer():
+    from pot import parse_crew, pickup_diff
+    # open seat shown as "FO Open" while in the pot
+    before = parse_crew("Crew: CA 10001 SMITH JR, JOHN FO Open")
+    after = parse_crew("Crew: CA 10001 SMITH JR, JOHN FO 10003 ROE, RICK")
+    assert pickup_diff(before, after) == ("filled", "FO Roe, Rick", True)
+    # open seat not listed at all while in the pot (H3631 style): RO newcomer
+    before = parse_crew("Crew: CA 10001 SMITH JR, JOHN FO 10004 DOE, JANE")
+    after = parse_crew("Crew: CA 10001 SMITH JR, JOHN FO 10004 DOE, JANE RO 10005 POE, PAT")
+    assert pickup_diff(before, after) == ("filled", "RO Poe, Pat", True)
+    # still open after leaving the pot -> suspected hidden
+    assert pickup_diff(parse_crew("Crew: CA 1 A, B FO Open"), parse_crew("Crew: CA 1 A, B FO Open"))[0] == "open"
+    # same crew, nobody new
+    assert pickup_diff(before, before) == ("unchanged", "", True)
+    # no roster from before: fall back, not known
+    assert pickup_diff(None, after) == ("filled", "FO Doe, Jane; RO Poe, Pat", False)
