@@ -105,9 +105,20 @@ class Store:
             out.append({"pairing": r.get("pairing"), "dates": r.get("dates"), "days": r.get("days"),
                         "layover": r.get("layover"), "report": r.get("report"), "credit": r.get("credit"),
                         "turn": r.get("turn"), "captain": pk.get("ca") or r.get("captain") or "",
-                        "prem": is_prem(r), "picked_by": pk.get("by", ""), "pickup_status": pk.get("status", ""), "pickup_known": bool(pk.get("known")),
+                        "prem": is_prem(r), "picked_by": pk.get("by", ""), "source": r.get("source", "pot"), "pickup_status": pk.get("status", ""), "pickup_known": bool(pk.get("known")),
                         "month": month, "seen": first, "gone": gone})
         return out
+
+    def has_find(self, key):
+        with self.lock:
+            return self.db.execute("SELECT 1 FROM finds WHERE key=?", (key,)).fetchone() is not None
+
+    def add_find(self, key, month, row, seen, gone=None):
+        """A find the pot watch missed (0.4.1: from a FLICA alert email). No-op if already known."""
+        with self.lock:
+            self.db.execute("INSERT OR IGNORE INTO finds(key,pairing,month,row,first_seen,last_seen,gone_at) "
+                            "VALUES(?,?,?,?,?,?,?)", (key, row.get("pairing"), month, json.dumps(row),
+                                                      seen, seen, gone))
 
     def find_row(self, key):
         with self.lock:

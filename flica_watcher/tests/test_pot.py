@@ -179,3 +179,15 @@ def test_pickup_diff_finds_the_newcomer():
     assert pickup_diff(before, before) == ("unchanged", "", True)
     # no roster from before: fall back, not known
     assert pickup_diff(None, after) == ("filled", "FO Doe, Jane; RO Poe, Pat", False)
+
+
+def test_parse_alert_email():
+    from pot import parse_alert_email
+    text = ("Alert Notification - 3 match(es) for alert request 'Nov 13-20 Max'\r\n3 alert matched pairings "
+            "'Nov 13-20 Max': H3627:18NOV from 'OPEN TIME- Add/Swap/Drop requests - November', H3627:18NOV from "
+            "'Close in Opentime: &lt;16 Hrs to RPT - November', H3655:12NOV from 'Fly Me Preferencing - November'")
+    got = parse_alert_email(text)
+    assert [g["key"] for g in got] == ["H3627|18Nov", "H3655|12Nov"]
+    assert got[0]["sources"] == ["OPEN TIME- Add/Swap/Drop requests - November",
+                                 "Close in Opentime: &lt;16 Hrs to RPT - November"]
+    assert parse_alert_email("test ding") == []
