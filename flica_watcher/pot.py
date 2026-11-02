@@ -202,7 +202,7 @@ CREW_RE = re.compile(r"\b(CA|FO|RO|FA|SO)\s+(?:\d{3,7}\s+)?(.+?)(?=\s+(?:CA|FO|R
 CHECKIN_RE = re.compile(r"check\s*in\s*:\s*(\d{1,2}:?\d{2})", re.I)
 # A leg: flight number then STN-STN ("Th 865 HNL-PPG 1630 ..."). The column header "Dps-Ars"
 # has no flight number in front, so it never matches.
-LEG_RE = re.compile(r"\b\d{1,4}\s+([A-Za-z]{3})-([A-Za-z]{3})\b")
+LEG_RE = re.compile(r"\b\d{1,4}\s+([A-Za-z]{3})-([A-Za-z]{3})\b(?:\s+(\d{4})\s+(\d{4}))?")
 TOT_RE = {
     "blk": re.compile(r"\bblk\s*:\s*(\d{1,3}:?\d{2})", re.I),
     "credit": re.compile(r"\bpay\s*:\s*(\d{1,3}:?\d{2})", re.I),
@@ -236,7 +236,11 @@ def parse_detail(html):
     crew = parse_crew(text)
     if crew:
         out["open_seats"] = ",".join(p for p, n in crew if n == "OPEN" and p in ("FO", "RO"))
-    legs = [(a.upper(), b.upper()) for a, b in LEG_RE.findall(text)]
+    found = LEG_RE.findall(text)
+    legs = [(a.upper(), b.upper()) for a, b, _, _ in found]
+    if found and found[-1][3]:
+        v = found[-1][3]
+        out["last_arr"] = f"{v[:2]}:{v[2:]}"  # final block-in at base (HST)
     if legs:
         base = legs[0][0]
         out["route"] = "-".join([base] + [b for _, b in legs])

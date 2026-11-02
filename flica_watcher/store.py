@@ -104,7 +104,7 @@ class Store:
             out.append({"pairing": r.get("pairing"), "dates": r.get("dates"), "days": r.get("days"),
                         "layover": r.get("layover"), "report": r.get("report"), "credit": r.get("credit"),
                         "turn": r.get("turn"), "captain": pk.get("ca") or r.get("captain") or "",
-                        "prem": is_prem(r), "picked_by": pk.get("by", ""), "pickup_status": pk.get("status", ""),
+                        "prem": is_prem(r), "picked_by": pk.get("by", ""), "pickup_status": pk.get("status", ""), "pickup_known": bool(pk.get("known")),
                         "month": month, "seen": first, "gone": gone})
         return out
 

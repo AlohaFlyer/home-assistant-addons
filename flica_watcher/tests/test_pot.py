@@ -42,7 +42,7 @@ def test_parse_detail_real_text():
     from pot import parse_detail, soft_time
     d = parse_detail(f"<p>{DETAIL}</p>")
     assert d == {"captain": "Dimaya Jr, Fedelino", "report": "12:10", "blk": "12:18",
-                 "credit": "12:18", "tafb": "26:09", "open_seats": "FO", "route": "HNL-LAS-HNL", "turn": "LAS"}
+                 "credit": "12:18", "tafb": "26:09", "open_seats": "FO", "last_arr": "14:04", "route": "HNL-LAS-HNL", "turn": "LAS"}
     assert soft_time(d["credit"], d["blk"]) == "0:00"
     assert parse_detail("<p>crew: ca open fo open</p>")["captain"] == "OPEN"
 
@@ -140,7 +140,7 @@ TURN = ("FLICA.Net - Mobile Pairing Pairing Details H3601:26NOV Nov 2 - Nov 30 C
 def test_parse_detail_turn_station():
     from pot import parse_detail
     d = parse_detail(f"<p>{TURN}</p>")
-    assert d["turn"] == "PPG" and d["route"] == "HNL-PPG-HNL"
+    assert d["turn"] == "PPG" and d["route"] == "HNL-PPG-HNL" and d["last_arr"] == "05:55"
     multi = parse_detail("<p>Dy Flt Dps-Ars Th 865 HNL-PPG 1630 2115 Th 13 PPG-PPT 2320 0100 Fr 14 PPT-HNL 0300 0800</p>")
     assert multi["turn"] == "PPG/PPT" and multi["route"] == "HNL-PPG-PPT-HNL"
 
