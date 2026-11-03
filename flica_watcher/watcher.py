@@ -25,8 +25,9 @@ from store import Store
 import tradeboard as TB
 import swap as SW
 import swapmap as SM
+import grid as G
 
-VERSION = "0.4.12"
+VERSION = "0.4.13"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -309,6 +310,9 @@ def discovery(c):
                                  "value_template": "{{ value_json.count }}", "state_class": "measurement",
                                  "unit_of_measurement": "pairings",
                                  "json_attributes_topic": f"{T}/pot/state", "icon": "mdi:format-list-bulleted"}),
+        ("sensor", "reserve_grid", {"name": "Reserve grid", "state_topic": f"{T}/grid/state",
+                                    "value_template": "{{ value_json.green }}",
+                                    "json_attributes_topic": f"{T}/grid/state", "icon": "mdi:grid"}),
         ("sensor", "trade_away", {"name": "Would trade", "state_topic": f"{T}/trade/state",
                                   "value_template": "{{ value_json.count }}",
                                   "json_attributes_topic": f"{T}/trade/state", "icon": "mdi:swap-horizontal-bold"}),
@@ -1100,6 +1104,64 @@ def publish_tradeboard(live=None):
     pub("tradeboard/state", {"count": len(rows), "pairings": rows})
 
 
+GRID_MIN_GAP_S = 300
+GRID_RENDER_GAP_S = 1800
+
+
+def grid_check(fl, full=False):
+    """0.4.13 (Ryan): read the Reserve Grid for each watched pot month. The JSON service behind the
+    page is tried first (one GET); the rendered page is the fallback and also a cross-check every
+    30 min. Publishes {date: {net, color}} on flica_watcher/grid/state. Read only."""
+    if not full and time.time() - S.get("grid_at", 0) < GRID_MIN_GAP_S:
+        return
+    S["grid_at"] = time.time()
+    grid = {}
+    for u in S.get("pot_urls", {}).values():
+        b = bcid(u)
+        if not b:
+            continue
+        yr = local_now().year
+        try:
+            raw = fl.fetch(f"{BASE}/full/reserveGridService.cgi?bcid={b}&json=1")
+            data = json.loads(raw)
+            if not S.get("grid_json_logged"):
+                S["grid_json_logged"] = True
+                log.info("reserve grid json %s: %s", b, raw[:1500])
+            got = G.parse_grid_json(data, yr)
+        except Exception as e:
+            log.info("reserve grid json %s failed: %s", b, e)
+            got = {}
+        need_render = not got or full or time.time() - S.get("grid_rendered_at", 0) > GRID_RENDER_GAP_S
+        if need_render:
+            try:
+                html, _ = fl.render(f"{BASE}/ui/private/bidCloseReserveGrid/index.html?BCID={b}&GO=1",
+                                    wait_for="table td", timeout=30000)
+                page = G.parse_grid_html(html, yr)
+                S["grid_rendered_at"] = time.time()
+                if got and page and any(got[d]["color"] != page[d]["color"] for d in got if d in page):
+                    log.info("reserve grid %s: json colors differ from the page, page wins", b)
+                if page:
+                    got = {**got, **page}
+            except Exception as e:
+                log.info("reserve grid render %s failed: %s", b, e)
+        grid.update(got)
+    if grid:
+        S["grid"] = grid
+        save_state(S)
+    g = S.get("grid") or {}
+    pub("grid/state", {"green": sum(1 for v in g.values() if v["color"] == "green"), "count": len(g),
+                       "days": g, "read": now_iso() if grid else S.get("grid_read")})
+    if grid:
+        S["grid_read"] = now_iso()
+
+
+def _trip_days(ev):
+    s, e = _span(ev)
+    if not s:
+        return []
+    return [(s + timedelta(days=i)).isoformat() for i in range((e - s).days + 1)]
+
+
 SWAP_MAP_MAX = 14
 
 
@@ -1178,17 +1240,25 @@ def swap_scan(pot_rows):
             far = far_for(row, exclude=mk)
             if far != "OK":
                 continue
+            mine_it = next((it for it in _sched_items() if f"{it['trip']}|{it['start']}" == mk), None)
+            mine_days = [(date.fromisoformat(mine_it["start"]) + timedelta(days=i)).isoformat()
+                         for i in range((date.fromisoformat(mine_it["end"]) - date.fromisoformat(mine_it["start"])).days + 1)] if mine_it else []
+            ok_grid, bad_days = G.swap_allowed(S.get("grid") or {}, mine_days, _trip_days(row))
+            grid_note = "grid OK" if ok_grid else ("no shared day" if bad_days == ["no shared day"] else "grid red " + ", ".join(d[5:] for d in bad_days))
             ideas.append({"for": mk, "for_trip": trip, "for_credit": mine.get("credit", ""),
                           "for_soft": mine.get("soft", ""), "pairing": row.get("pairing"),
                           "start": row.get("start"), "end": row.get("end"), "dates": row.get("dates"),
                           "days": row.get("days"), "layover": row.get("layover"), "turn": row.get("turn"),
                           "credit": row.get("credit"), "soft": row.get("soft"), "src": row["src"],
                           "soft_gain": SW.fmt_gain(ds), "credit_gain": SW.fmt_gain(dc), "why": why,
-                          "detail_url": row.get("detail_url", ""), "gain_h": round(ds + dc / 10, 3)})
+                          "detail_url": row.get("detail_url", ""), "gain_h": round(ds + dc / 10, 3),
+                          "grid_ok": ok_grid, "grid": grid_note})
     ideas.sort(key=lambda i: -i["gain_h"])
     seen = set(S.get("swap_seen") or [])
     today = local_now().date().isoformat()
     for i in ideas:
+        if not i["grid_ok"]:
+            continue
         k = f"{i['pairing']}|{i['start']}>{i['for']}"
         if k in seen:
             continue
@@ -1204,7 +1274,7 @@ def swap_scan(pot_rows):
                 ev["would_submit"] = f"DRY RUN: daily cap of {AUTO_SWAP_PER_DAY} reached, not even dry-run counted"
         log.info("swap idea %s: %s (%s)", i["for_trip"], i["pairing"], i["why"])
         pub("event/swap", ev, retain=False)
-    live = {f"{i['pairing']}|{i['start']}>{i['for']}" for i in ideas}
+    live = {f"{i['pairing']}|{i['start']}>{i['for']}" for i in ideas if i["grid_ok"]}
     S["swap_seen"] = sorted(seen & live)  # an idea that goes away can alert again if it comes back
     S["auto_swap_log"] = {d: n for d, n in (S.get("auto_swap_log") or {}).items() if d >= today}
     save_state(S)
@@ -1474,6 +1544,7 @@ def check(fl):
     pickup_check(fl, full)
     publish_finds()  # rows carry live CA / details now, so publish every check
     tradeboard_check(fl, full)
+    grid_check(fl, full)
     swap_scan(flat)
     if FLAGS.pop("swap_map", False):
         swap_map_probe(fl)
