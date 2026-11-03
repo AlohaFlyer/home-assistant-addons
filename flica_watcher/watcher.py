@@ -26,7 +26,7 @@ import tradeboard as TB
 import swap as SW
 import swapmap as SM
 
-VERSION = "0.4.11"
+VERSION = "0.4.12"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -617,6 +617,22 @@ class Flica:
         r = self.ctx.request.get(url, timeout=45000)
         return r.text()
 
+    def render(self, url, wait_for=None, timeout=30000):
+        """0.4.12: load a JS-built page in a real tab (read only, no clicks) and return its HTML
+        once `wait_for` (a CSS selector) is present, plus the API responses it fetched."""
+        page = self.ctx.new_page()
+        calls = []
+        page.on("response", lambda resp: calls.append((resp.url, resp.status)) if "/api/" in resp.url or "json" in (resp.headers.get("content-type") or "") else None)
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            if wait_for:
+                page.wait_for_selector(wait_for, timeout=timeout)
+            else:
+                time.sleep(4)
+            return page.content(), calls
+        finally:
+            page.close()
+
 
 # ---------------------------------------------------------------- main loop
 def freq():
@@ -1121,6 +1137,16 @@ def swap_map_probe(fl):
         for t, u in SM.links(html, url):
             if u not in seen and (t == "frame" or SM.FOLLOW.search(t) or SM.FOLLOW.search(u)):
                 queue.append((t, u))
+    try:  # 0.4.12: the Reserve Grid is a JS page; render it and save HTML + the API calls it made
+        gurl = f"{BASE}/ui/private/bidCloseReserveGrid/index.html?BCID=003.{b}&GO=1"
+        html, calls = fl.render(gurl, wait_for="table td", timeout=30000)
+        open(f"{CAPTURE_DIR}/swapmap/grid.html", "w").write(html)
+        json.dump(calls, open(f"{CAPTURE_DIR}/swapmap/grid_calls.json", "w"), indent=1)
+        index.append({"n": 99, "text": "reserve grid (rendered)", "url": gurl, "len": len(html), "calls": calls[:20]})
+        log.info("swap map: reserve grid rendered, %d chars, %d api calls", len(html), len(calls))
+    except Exception as e:
+        index.append({"n": 99, "text": "reserve grid", "error": str(e)})
+        log.info("swap map: reserve grid failed: %s", e)
     json.dump(index, open(f"{CAPTURE_DIR}/swapmap/index.json", "w"), indent=1)
     log.info("swap map: %d pages saved to %s/swapmap (read only, GET only)", n, CAPTURE_DIR)
     pub("event/swap_map", {"pages": n, "at": now_iso()}, retain=False)
