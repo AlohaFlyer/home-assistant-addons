@@ -43,35 +43,73 @@ def parse_grid_html(html, year):
     return out
 
 
+def _find_rows(data):
+    """reserveGridService.cgi (seen 2026-11-03): {"success","total","root":{"BidPeriod","headings",
+    "data":[{"date":"01NOV","avl":"14","odp":"0","net":"14","statusColor":{"net":"black"}}, ...]}}.
+    Falls back to the first list of dicts found anywhere two levels deep."""
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return None
+    root = data.get("root")
+    if isinstance(root, dict) and isinstance(root.get("data"), list):
+        return root["data"]
+    for v in data.values():
+        if isinstance(v, list) and v and isinstance(v[0], dict):
+            return v
+        if isinstance(v, dict):
+            for vv in v.values():
+                if isinstance(vv, list) and vv and isinstance(vv[0], dict):
+                    return vv
+    return None
+
+
+def _int(v, default=0):
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return default
+
+
 def parse_grid_json(data, year):
-    """Best effort on reserveGridService JSON: any list of row objects with a date and a net value.
-    Field names are not known yet (captured on first read); returns {} when nothing fits."""
-    rows = None
-    if isinstance(data, dict):
-        for k, v in data.items():
-            if isinstance(v, list) and v and isinstance(v[0], dict):
-                rows = v
-                break
-    elif isinstance(data, list):
-        rows = data
+    """{iso_date: {'net','color','avail','open'}} from reserveGridService JSON. Color comes from
+    statusColor.net (FLICA's own green/red/black); a row without one counts as black. Dates roll
+    into the next year when the month goes backwards (Dec -> Jan)."""
+    rows = _find_rows(data)
     if not rows:
         return {}
-    out = {}
+    out, last_m = {}, 0
     for r in rows:
+        if not isinstance(r, dict):
+            continue
         keys = {k.lower(): k for k in r}
-        dk = next((keys[k] for k in keys if "date" in k or k in ("day", "dt")), None)
-        nk = next((keys[k] for k in keys if "net" in k), None)
-        ck = next((keys[k] for k in keys if "color" in k or "colour" in k), None)
+        dk = keys.get("date") or next((keys[k] for k in keys if "date" in k or k in ("day", "dt")), None)
+        nk = keys.get("net") or next((keys[k] for k in keys if "net" in k), None)
         if not dk or not nk:
             continue
-        d = _iso(str(r[dk]), year) if re.match(r"\d{2}[A-Za-z]{3}", str(r[dk])) else str(r[dk])[:10]
-        try:
-            net = int(r[nk])
-        except (TypeError, ValueError):
+        raw = str(r[dk]).strip()
+        if re.match(r"\d{2}[A-Za-z]{3}", raw):
+            d = _iso(raw, year)
+            if d and int(d[5:7]) < last_m:
+                year += 1
+                d = _iso(raw, year)
+        else:
+            d = raw[:10]
+        if not d:
             continue
-        color = str(r.get(ck, "")).lower() if ck else ""
-        color = next((c for c in ("green", "red", "black") if c in color), "")
-        out[d] = {"net": net, "color": color or "black"}
+        last_m = int(d[5:7]) if re.match(r"\d{4}-\d{2}", d) else last_m
+        net = _int(r[nk], None)
+        if net is None:
+            continue
+        sc = r.get("statusColor")
+        color = str((sc or {}).get("net", "") if isinstance(sc, dict) else sc or "").lower()
+        if not color:
+            ck = next((keys[k] for k in keys if "color" in k or "colour" in k), None)
+            color = str(r.get(ck, "")).lower() if ck else ""
+        color = next((c for c in ("green", "red", "black") if c in color), "black")
+        out[d] = {"net": net, "color": color,
+                  "avail": _int(r.get(keys.get("avl") or keys.get("avail", ""), 0)),
+                  "open": _int(r.get(keys.get("odp") or keys.get("open", ""), 0))}
     return out
 
 
