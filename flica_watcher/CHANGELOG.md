@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.4.12
+- Map swap pages also renders the Reserve Grid (a JS page) read only and saves its HTML and API calls, so the grid reader can be built from the real page.
+
 ## 0.4.11
 - Employee numbers (Ryan): the pairing page lists crew as "FO 14103 Name", so the pickup text and the captain now carry the number, e.g. "FO Faagau, Justin (12345)". Rosters still compare by name, so old finds keep working; the number appears on each find's next pickup check.
 
