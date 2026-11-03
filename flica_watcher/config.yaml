@@ -1,6 +1,6 @@
 name: FLICA Watcher
 slug: flica_watcher
-version: "0.4.14"
+version: "0.4.15"
 description: Keeps one FLICA session, watches the open time pot, reports new pairings to HA over MQTT
 url: https://github.com/AlohaFlyer/home-assistant-addons/tree/main/flica_watcher
 arch:
@@ -27,6 +27,7 @@ options:
   hunt_max_s: 60
   yield_cooldown_min: 30
   watch_next_month: true
+  my_name: ""
   log_level: info
 schema:
   username: str
@@ -39,4 +40,5 @@ schema:
   hunt_max_s: int(10,600)
   yield_cooldown_min: int(5,600)
   watch_next_month: bool
+  my_name: "str?"
   log_level: list(debug|info|warning)
