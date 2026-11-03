@@ -27,7 +27,7 @@ import swap as SW
 import swapmap as SM
 import grid as G
 
-VERSION = "0.4.15"
+VERSION = "0.4.16"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -917,6 +917,37 @@ def pot_details(fl, pot, full=False):
 SCHED_GAP_S = 30 * 60
 
 
+def prev_month_check(fl, ok_url, cur_month):
+    """0.4.16 (Ryan): read last month's schedule once a day from the same mobileschedule URL with the
+    bid-period number one lower (Nov 001.152 -> Oct 001.151), so the card's FAR 117 windows that reach
+    back into last month have data. Read only; failures are logged and ignored."""
+    store = S.setdefault("schedule", {})
+    y, m = int(cur_month[:4]), int(cur_month[5:7])
+    prev = f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
+    if prev in store and time.time() - S.get("sched_prev_at", 0) < 86400:
+        return
+    mo = re.search(r"BCID=(\d{3})\.(\d+)", ok_url)
+    if not mo:
+        return
+    url = ok_url.replace(f"BCID={mo.group(1)}.{mo.group(2)}", f"BCID={mo.group(1)}.{int(mo.group(2)) - 1:03d}")
+    try:
+        time.sleep(random.uniform(1.5, 3.5))
+        html = fl.fetch(url)
+        if classify(html) != "ok":
+            log.info("previous month schedule %s: %s", url.split("?")[1], classify(html))
+            return
+        sp = parse_schedule(html)
+        if sp and sp["month"] == prev:
+            store[prev] = sp
+            S["sched_prev_at"] = time.time()
+            log.info("schedule %s (previous month): %d items", prev, len(sp["items"]))
+        else:
+            log.info("previous month schedule %s: parsed %s, wanted %s", url.split("?")[1], sp and sp["month"], prev)
+            S["sched_prev_at"] = time.time()  # do not hammer a page that is not there
+    except Exception as e:
+        log.info("previous month schedule skipped: %s", e)
+
+
 def schedule_check(fl, force=False):
     """Read only: GET Ryan's month schedule (mobileschedule.cgi), publish sensor.flica_watcher_schedule
     and an event when trips change. Never stops the pot watch."""
@@ -962,7 +993,8 @@ def schedule_check(fl, force=False):
                 pub("event/schedule_changed", ev, retain=False)
             S["sched_url_ok"] = url
             store[s["month"]] = s
-            keep = sorted(store)[-2:]
+            prev_month_check(fl, url, s["month"])  # 0.4.16: last month too, for 30 in 7 / 100 in 672 windows
+            keep = sorted(store)[-3:]
             S["schedule"] = {k: store[k] for k in keep}
             pub("schedule", {"updated": s["updated"] or now_iso(), "source": "FLICA mobile schedule (Watcher)",
                              "checked": now_iso(),
