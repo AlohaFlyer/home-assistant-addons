@@ -23,8 +23,9 @@ from far import far_check, window as far_window
 from pot import PAIRING_RE, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 import tradeboard as TB
+import swap as SW
 
-VERSION = "0.4.8"
+VERSION = "0.4.9"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -141,6 +142,15 @@ def on_message(c, u, msg):
     if msg.topic == f"{T}/blocked/set":
         blocked_cmd(msg.payload.decode(errors="replace"))
         return
+    if msg.topic == f"{T}/trade/set":
+        trade_cmd(msg.payload.decode(errors="replace"))
+        return
+    if msg.topic == f"{T}/auto_swap/set":
+        S["auto_swap"] = msg.payload.decode().strip().upper() == "ON"
+        save_state(S)
+        c.publish(f"{T}/auto_swap/state", "ON" if S["auto_swap"] else "OFF", retain=True)
+        log.info("auto swap %s (dry run: nothing is ever submitted)", S["auto_swap"])
+        return
     p = msg.payload.decode().strip().upper()
     if msg.topic == f"{T}/hunt/set":
         FLAGS["hunt"] = p == "ON"
@@ -253,6 +263,30 @@ def blocked_cmd(payload):
     publish_tradeboard()
 
 
+def trade_cmd(payload):
+    """0.4.9: {"key": "H3628|2026-11-06"} toggles a trip Ryan would trade away for a better one."""
+    try:
+        k = str(json.loads(payload)["key"])
+        trip, start = k.split("|")
+        date.fromisoformat(start)
+    except (ValueError, KeyError, TypeError):
+        log.info("trade mark ignored: %r", payload[:80])
+        return
+    keys = set(S.get("trade_away") or [])
+    (keys.discard if k in keys else keys.add)(k)
+    S["trade_away"] = sorted(keys)
+    log.info("would trade %s: %s", k, k in keys)
+    publish_trade()
+
+
+def publish_trade():
+    live = {f"{it['trip']}|{it['start']}" for it in _sched_items()}
+    if live:  # a trip that is gone from the schedule (traded, dropped) drops its mark
+        S["trade_away"] = [k for k in S.get("trade_away") or [] if k in live]
+    save_state(S)
+    pub("trade/state", {"count": len(S.get("trade_away") or []), "keys": S.get("trade_away") or []})
+
+
 def publish_finds():
     pub("finds", {"count": len(f := DB.recent_finds(50)), "finds": f})
 
@@ -271,6 +305,14 @@ def discovery(c):
                                  "value_template": "{{ value_json.count }}", "state_class": "measurement",
                                  "unit_of_measurement": "pairings",
                                  "json_attributes_topic": f"{T}/pot/state", "icon": "mdi:format-list-bulleted"}),
+        ("sensor", "trade_away", {"name": "Would trade", "state_topic": f"{T}/trade/state",
+                                  "value_template": "{{ value_json.count }}",
+                                  "json_attributes_topic": f"{T}/trade/state", "icon": "mdi:swap-horizontal-bold"}),
+        ("sensor", "swap_ideas", {"name": "Swap ideas", "state_topic": f"{T}/swap/state",
+                                  "value_template": "{{ value_json.count }}",
+                                  "json_attributes_topic": f"{T}/swap/state", "icon": "mdi:swap-horizontal-circle"}),
+        ("switch", "auto_swap", {"name": "Auto swap (dry run)", "command_topic": f"{T}/auto_swap/set",
+                                 "state_topic": f"{T}/auto_swap/state", "icon": "mdi:robot"}),
         ("sensor", "own_trips", {"name": "Own trip times", "state_topic": f"{T}/own_trips",
                                  "value_template": "{{ value_json.count }}",
                                  "json_attributes_topic": f"{T}/own_trips", "icon": "mdi:clock-outline"}),
@@ -331,12 +373,14 @@ def mqtt_start():
         cl.publish(AVAIL, "online", retain=True)
         discovery(cl)
         for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set",
-                  "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set"):
+                  "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set",
+                  "trade/set", "auto_swap/set"):
             cl.subscribe(f"{T}/{t}")
         fq = freq()
         cl.publish(f"{T}/freq/normal_min/state", str(fq["normal_min"]), retain=True)
         cl.publish(f"{T}/freq/hunt_s/state", str(fq["hunt_s"]), retain=True)
         publish_rules(cl)
+        cl.publish(f"{T}/auto_swap/state", "ON" if S.get("auto_swap") else "OFF", retain=True)
 
     c.on_connect = on_connect
     c.connect(m["host"], int(m["port"]))
@@ -699,7 +743,7 @@ def touches_blocked(ev):
     return bool(s and days and any(s.isoformat() <= d <= e.isoformat() for d in days))
 
 
-def far_for(ev):
+def far_for(ev, exclude=None):
     """FAR 117 screen (far.py) of a pot or tradeboard row against Ryan's own trips. '?' when the
     pickup's check-in or final arrival is not known yet."""
     try:
@@ -709,7 +753,7 @@ def far_for(ev):
             return "?"
         mine = []
         for it in _sched_items():
-            if not PAIRING_RE.match(it.get("trip") or ""):
+            if not PAIRING_RE.match(it.get("trip") or "") or f"{it['trip']}|{it['start']}" == exclude:
                 continue
             t = S.get("own_trips", {}).get(f"{it['trip']}|{it['start']}") or {}
             a, b = date.fromisoformat(it["start"]), date.fromisoformat(it["end"])
@@ -740,7 +784,8 @@ def own_trip_times(fl, full=False):
             continue
         k = f"{trip}|{it['start']}"
         keep.add(k)
-        if (k in own and not full) or n >= (FULL_MAX if full else OWN_PER_CHECK):
+        old = k in own and own[k] and "credit" not in own[k]  # cached before 0.4.9: no credit
+        if (k in own and not full and not old) or n >= (FULL_MAX if full else OWN_PER_CHECK):
             continue
         if n:
             time.sleep(random.uniform(1.5, 3.5))
@@ -752,7 +797,8 @@ def own_trip_times(fl, full=False):
             if classify(page) == "ok":
                 d = parse_detail(page)
                 if d.get("report") and d.get("last_arr"):
-                    own[k] = {f: d.get(f, "") for f in ("report", "last_arr", "blk")}
+                    own[k] = {f: d.get(f, "") for f in ("report", "last_arr", "blk", "credit")}
+                    own[k]["soft"] = soft_time(d.get("credit"), d.get("blk")) or ""
                     log.info("own trip %s: report %s, in %s, blk %s", k, d["report"], d["last_arr"],
                              d.get("blk"))
                 else:
@@ -1032,6 +1078,65 @@ def publish_tradeboard(live=None):
     pub("tradeboard/state", {"count": len(rows), "pairings": rows})
 
 
+AUTO_SWAP_PER_DAY = 1
+
+
+def swap_scan(pot_rows):
+    """0.4.9 (Ryan): for each trip he marked 'would trade', find open time and Tradeboard pickups
+    that are better (swap.better: more soft time, or more credit) and still legal once his trip is
+    gone: FAR screen with that trip removed must read plain 'OK' (no CBA-rest note: PWA 10.E.1.a
+    wants 11 h in domicile), no VAC, no blocked day, no clash with his other trips. New ideas push
+    once (event/swap). With the Auto swap switch on, the event also says what a live swap WOULD
+    submit; nothing is ever submitted (swap.WRITES_IMPLEMENTED is False)."""
+    marks = S.get("trade_away") or []
+    own = S.get("own_trips", {})
+    rows = [dict(r, src="O") for r in pot_rows] + [dict(r, src="T") for r in S.get("tb_details", {}).values()]
+    ideas = []
+    for mk in marks:
+        mine = own.get(mk) or {}
+        trip = mk.split("|")[0]
+        for row in rows:
+            if row.get("pairing") == trip or touches_vac(row) or touches_blocked(row):
+                continue
+            ok, ds, dc, why = SW.better(row, mine)
+            if not ok:
+                continue
+            far = far_for(row, exclude=mk)
+            if far != "OK":
+                continue
+            ideas.append({"for": mk, "for_trip": trip, "for_credit": mine.get("credit", ""),
+                          "for_soft": mine.get("soft", ""), "pairing": row.get("pairing"),
+                          "start": row.get("start"), "end": row.get("end"), "dates": row.get("dates"),
+                          "days": row.get("days"), "layover": row.get("layover"), "turn": row.get("turn"),
+                          "credit": row.get("credit"), "soft": row.get("soft"), "src": row["src"],
+                          "soft_gain": SW.fmt_gain(ds), "credit_gain": SW.fmt_gain(dc), "why": why,
+                          "detail_url": row.get("detail_url", ""), "gain_h": round(ds + dc / 10, 3)})
+    ideas.sort(key=lambda i: -i["gain_h"])
+    seen = set(S.get("swap_seen") or [])
+    today = local_now().date().isoformat()
+    for i in ideas:
+        k = f"{i['pairing']}|{i['start']}>{i['for']}"
+        if k in seen:
+            continue
+        seen.add(k)
+        ev = dict(i, key=k, at=now_iso())
+        if S.get("auto_swap"):
+            done = S.setdefault("auto_swap_log", {})
+            if done.get(today, 0) < AUTO_SWAP_PER_DAY:
+                done[today] = done.get(today, 0) + 1
+                ev["would_submit"] = f"DRY RUN: drop {i['for_trip']} {i['for'].split('|')[1]}, add {i['pairing']} {i['start']}"
+                log.info("auto swap %s (dry run, nothing submitted)", ev["would_submit"])
+            else:
+                ev["would_submit"] = f"DRY RUN: daily cap of {AUTO_SWAP_PER_DAY} reached, not even dry-run counted"
+        log.info("swap idea %s: %s (%s)", i["for_trip"], i["pairing"], i["why"])
+        pub("event/swap", ev, retain=False)
+    live = {f"{i['pairing']}|{i['start']}>{i['for']}" for i in ideas}
+    S["swap_seen"] = sorted(seen & live)  # an idea that goes away can alert again if it comes back
+    S["auto_swap_log"] = {d: n for d, n in (S.get("auto_swap_log") or {}).items() if d >= today}
+    save_state(S)
+    pub("swap/state", {"count": len(ideas), "ideas": ideas[:30], "marked": marks})
+
+
 PICKUP_FIRST_S = 120      # FLICA updates the crew line shortly after the pot drops it
 PICKUP_RETRY_S = 20 * 60  # while unknown, or in the first 2 h after it left the pot
 PICKUP_OPEN_S = 60 * 60   # still open after that: recheck hourly until the trip starts
@@ -1292,6 +1397,7 @@ def check(fl):
     pickup_check(fl, full)
     publish_finds()  # rows carry live CA / details now, so publish every check
     tradeboard_check(fl, full)
+    swap_scan(flat)
     pub("last_check", now_iso())
     S["last_check_ts"] = time.time()
     if S.get("note") in ("starting",) or (S.get("note") or "").startswith("logged in"):
@@ -1321,6 +1427,7 @@ def main():
     publish_blocked()
     publish_tradeboard()
     publish_own_trips()
+    publish_trade()
     web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
               save_rules_from_page, DB, log)
     last_month_check = None
