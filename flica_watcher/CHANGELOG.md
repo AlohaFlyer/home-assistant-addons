@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.4.11
+- Employee numbers (Ryan): the pairing page lists crew as "FO 14103 Name", so the pickup text and the captain now carry the number, e.g. "FO Faagau, Justin (12345)". Rosters still compare by name, so old finds keep working; the number appears on each find's next pickup check.
+
 ## 0.4.10
 - "Map swap pages (read only)" button (diagnostic): on the next check the Watcher walks from the main menu, the pot, the OT drop view and the Tradeboard to the open time request pages, GETs each page that passes swapmap.safe_get (no POST, no filled Add/Drop list, no action words), and saves the HTML and a form summary to /share/flica_watcher/captures/swapmap (private, never committed). Groundwork for live swap; nothing is submitted.
 

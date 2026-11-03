@@ -41,7 +41,7 @@ DETAIL = ("flica.net - mobile pairing pairing details h3619:01nov nov 1 - nov 17
 def test_parse_detail_real_text():
     from pot import parse_detail, soft_time
     d = parse_detail(f"<p>{DETAIL}</p>")
-    assert d == {"captain": "Lane Jr, Chris", "report": "12:10", "blk": "12:18",
+    assert d == {"captain": "Lane Jr, Chris (10007)", "report": "12:10", "blk": "12:18",
                  "credit": "12:18", "tafb": "26:09", "days": "2", "open_seats": "FO", "crew": [["CA", "Lane Jr, Chris"], ["FO", "OPEN"]],
                  "last_arr": "14:04", "route": "HNL-LAS-HNL", "turn": "LAS"}
     assert soft_time(d["credit"], d["blk"]) == "0:00"
@@ -198,3 +198,13 @@ def test_detail_days_and_pay_id():
     d = parse_detail("<p>Check In: 20:37 Dy Flt Dps-Ars Su 804 HNL-LAX 2137 0500 0523 Tu 933 LAX-OGG 0830 1222 "
                      "0552 Tu 1135 OGG-HNL 1326 1410 0044 Blk : 1115 TAFB : 4133 Pay : 1500 Pay : 1583974803</p>")
     assert d["credit"] == "15:00" and d["days"] == "3" and d["blk"] == "11:15"
+
+
+def test_crew_ids_and_with_ids():
+    from pot import crew_ids, with_ids, parse_detail
+    txt = "Crew: CA 10001 SMITH JR, JOHN FO 10003 ROE, RICK RO Open"
+    assert crew_ids(txt) == {"Smith Jr, John": "10001", "Roe, Rick": "10003"}
+    assert with_ids("FO Roe, Rick; RO Poe, Pat", crew_ids(txt)) == "FO Roe, Rick (10003); RO Poe, Pat"
+    assert with_ids("", {}) == ""
+    d = parse_detail("<html><body>Pairing H9999:01NOV Check In: 07:00 " + txt + "</body></html>")
+    assert d["captain"] == "Smith Jr, John (10001)"
