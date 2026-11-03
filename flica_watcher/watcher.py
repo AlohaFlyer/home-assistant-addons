@@ -27,7 +27,7 @@ import swap as SW
 import swapmap as SM
 import grid as G
 
-VERSION = "0.4.14"
+VERSION = "0.4.15"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -810,7 +810,7 @@ def own_trip_times(fl, full=False):
             continue
         k = f"{trip}|{it['start']}"
         keep.add(k)
-        old = k in own and own[k] and "credit" not in own[k]  # cached before 0.4.9: no credit
+        old = k in own and own[k] and ("credit" not in own[k] or "duties" not in own[k])  # cached before 0.4.9 / 0.4.15
         if (k in own and not full and not old) or n >= (FULL_MAX if full else OWN_PER_CHECK):
             continue
         if n:
@@ -825,6 +825,8 @@ def own_trip_times(fl, full=False):
                 if d.get("report") and d.get("last_arr"):
                     own[k] = {f: d.get(f, "") for f in ("report", "last_arr", "blk", "credit")}
                     own[k]["soft"] = soft_time(d.get("credit"), d.get("blk")) or ""
+                    own[k]["duties"] = d.get("duties", [])  # 0.4.15: duty periods, so a 30 in 7 on a layover counts
+                    own[k]["seat"] = my_seat(d.get("crew") or [])  # 0.4.15: RO or FO as listed on the trip
                     log.info("own trip %s: report %s, in %s, blk %s", k, d["report"], d["last_arr"],
                              d.get("blk"))
                 else:
@@ -837,6 +839,18 @@ def own_trip_times(fl, full=False):
     if n:
         save_state(S)
     publish_own_trips()
+
+
+def my_seat(crew):
+    """'RO' / 'FO' / 'CA' when the crew roster lists my_name (config option, e.g. a surname); '' if not
+    set or not found. RO override pay only applies when Ryan is listed as RO on the trip."""
+    me = (OPTS.get("my_name") or "").strip().lower()
+    if not me:
+        return ""
+    for pos, name in crew:
+        if me in str(name).lower():
+            return pos
+    return ""
 
 
 def publish_own_trips():

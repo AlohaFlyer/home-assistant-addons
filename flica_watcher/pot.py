@@ -259,7 +259,66 @@ def parse_detail(html):
         away = [b for _, b in legs if b != base]
         # Where the trip lands away from base: a turn's only stop (PPG), or every stop in order.
         out["turn"] = "/".join(dict.fromkeys(away))
+    duties = parse_duties(text)
+    if duties:
+        out["duties"] = duties
     return out
+
+
+LEG_FULL_RE = re.compile(r"\b(su|mo|tu|we|th|fr|sa)\s+\d{1,4}\s+([A-Za-z]{3})-([A-Za-z]{3})\s+(\d{4})\s+(\d{4})\s+(\d{4})\b", re.I)
+LAYOVER_MIN_H = 8  # a gap this long between legs is a layover, so a new duty period
+# Standard UTC offsets (hours) of the stations on the HNL A330 package; DST is absorbed by snapping the
+# printed arrival to the nearest day candidate (an hour off never moves it a day).
+TZ = {"HNL": -10, "OGG": -10, "KOA": -10, "ITO": -10, "LIH": -10, "PPT": -10, "RAR": -10, "PPG": -11, "ANC": -9,
+      "LAX": -8, "SFO": -8, "SEA": -8, "SAN": -8, "OAK": -8, "SMF": -8, "LAS": -8, "PDX": -8, "SJC": -8, "ONT": -8, "LGB": -8,
+      "PHX": -7, "SLC": -7, "DEN": -7, "ORD": -6, "DFW": -6, "AUS": -6, "MSP": -6, "IAH": -6,
+      "JFK": -5, "BOS": -5, "MCO": -5, "IAD": -5, "ATL": -5, "MIA": -5, "EWR": -5,
+      "NRT": 9, "HND": 9, "KIX": 9, "CTS": 9, "FUK": 9, "NGO": 9, "ICN": 9, "SYD": 10, "BNE": 10, "MEL": 10,
+      "AKL": 12, "SIN": 8, "MNL": 8, "CRK": 8, "TPE": 8, "PEK": 8, "PVG": 8, "HKG": 8}
+
+
+def parse_duties(text):
+    """Duty periods from the leg list (0.4.15, Ryan: a 30 in 7 can happen on a layover). FLICA prints
+    leg times in station local time; each is converted to HST minutes from the trip's first day
+    (00:00 HST) with the TZ table, and the printed arrival is snapped to the day that best matches
+    departure + block. A gap of LAYOVER_MIN_H+ between legs starts a new duty. Each duty: {d: dep
+    day offset (HST), dep: HST minutes, arr: HST minutes, stn: station it ends at, dep_l/arr_l: the
+    printed local times}. Report = dep - 1:00, release = arr + 0:15 (PWA 2, 4.2.2) are left to the
+    reader. Stations missing from TZ fall back to the printed-time heuristic (arr < dep = next day)."""
+    legs, off, last_idx = [], 0, None
+    for dow, a, b, dep, arr, blk in LEG_FULL_RE.findall(text or ""):
+        idx = LEG_DOW.index(dow.upper())
+        if last_idx is not None:
+            off += (idx - last_idx) % 7
+        last_idx = idx
+        a, b = a.upper(), b.upper()
+        dmin, amin, bmin = (int(dep[:2]) * 60 + int(dep[2:]), int(arr[:2]) * 60 + int(arr[2:]),
+                            int(blk[:2]) * 60 + int(blk[2:]))
+        sh_a, sh_b = (TZ[a] + 10) * 60 if a in TZ else None, (TZ[b] + 10) * 60 if b in TZ else None
+        if sh_a is None or sh_b is None:
+            dep_h = off * 1440 + dmin
+            arr_h = dep_h + bmin
+        else:
+            dep_h = off * 1440 + dmin - sh_a              # printed local -> HST
+            est = dep_h + bmin                             # arrival in HST from block time
+            cands = [(off + k) * 1440 + amin - sh_b for k in (-1, 0, 1, 2)]
+            arr_h = min(cands, key=lambda c: abs(c - est))
+        legs.append({"dep": dep_h, "arr": arr_h, "to": b, "dep_l": f"{dmin // 60:02d}:{dmin % 60:02d}",
+                     "arr_l": f"{amin // 60:02d}:{amin % 60:02d}"})
+    if not legs:
+        return []
+    duties, cur = [], None
+    for lg in legs:
+        if cur is not None and lg["dep"] - cur["arr"] >= LAYOVER_MIN_H * 60:
+            duties.append(cur)
+            cur = None
+        if cur is None:
+            cur = dict(lg)
+        else:
+            cur.update(arr=lg["arr"], to=lg["to"], arr_l=lg["arr_l"])
+    duties.append(cur)
+    return [{"d": x["dep"] // 1440, "dep": x["dep"], "arr": x["arr"], "stn": x["to"], "dep_l": x["dep_l"], "arr_l": x["arr_l"]}
+            for x in duties]
 
 
 def parse_crew(text):

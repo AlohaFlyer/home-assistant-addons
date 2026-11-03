@@ -41,7 +41,7 @@ DETAIL = ("flica.net - mobile pairing pairing details h3619:01nov nov 1 - nov 17
 def test_parse_detail_real_text():
     from pot import parse_detail, soft_time
     d = parse_detail(f"<p>{DETAIL}</p>")
-    assert d == {"captain": "Lane Jr, Chris (10007)", "report": "12:10", "blk": "12:18",
+    assert d.pop("duties")[0]["stn"] == "LAS" and d == {"captain": "Lane Jr, Chris (10007)", "report": "12:10", "blk": "12:18",
                  "credit": "12:18", "tafb": "26:09", "days": "2", "open_seats": "FO", "crew": [["CA", "Lane Jr, Chris"], ["FO", "OPEN"]],
                  "last_arr": "14:04", "route": "HNL-LAS-HNL", "turn": "LAS"}
     assert soft_time(d["credit"], d["blk"]) == "0:00"
@@ -208,3 +208,18 @@ def test_crew_ids_and_with_ids():
     assert with_ids("", {}) == ""
     d = parse_detail("<html><body>Pairing H9999:01NOV Check In: 07:00 " + txt + "</body></html>")
     assert d["captain"] == "Smith Jr, John (10001)"
+
+
+def test_parse_duties_turn_and_layover():
+    from pot import parse_duties
+    # PPG turn (PPG is UTC-11): one duty, back next day; printed times are local
+    t = "dy flt dps-ars dep arr blk th 865 hnl-ppg 1630 2115 0545 th 866 ppg-hnl 2320 0555 0535 blk : 1120"
+    d = parse_duties(t)
+    assert len(d) == 1 and d[0]["d"] == 0 and d[0]["dep"] == 16 * 60 + 30 and d[0]["arr"] == 1440 + 5 * 60 + 55 and d[0]["stn"] == "HNL"
+    # SIN (UTC+8, 18 h ahead of HST): out Su 1130 HST, 10:50 block, lands Mo 16:20 SIN; back Tu 23:10 SIN
+    t = "su 450 hnl-sin 1130 1620 1050 tu 451 sin-hnl 2310 1300 1050"
+    d = parse_duties(t)
+    assert len(d) == 2 and d[0]["stn"] == "SIN" and d[0]["arr"] == 1440 - 1440 + 22 * 60 + 20
+    free = d[1]["dep"] - d[0]["arr"]
+    assert free == (2 * 1440 + 23 * 60 + 10 - 18 * 60) - (22 * 60 + 20)  # 30 h 50 min on the layover
+    assert free >= 30 * 60
