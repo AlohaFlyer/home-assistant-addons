@@ -20,13 +20,13 @@ from playwright.sync_api import sync_playwright
 import rules as R
 import web
 from far import far_check, window as far_window
-from pot import PAIRING_RE, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+from pot import PAIRING_RE, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 import tradeboard as TB
 import swap as SW
 import swapmap as SM
 
-VERSION = "0.4.10"
+VERSION = "0.4.11"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -1232,7 +1232,9 @@ def pickup_check(fl, full=False):
         try:
             page = fl.fetch(url)
             if classify(page) == "ok":
-                crew = parse_crew(visible_text(page))
+                vt = visible_text(page)
+                crew = parse_crew(vt)
+                ids = crew_ids(vt)
                 if row.get("source") == "email":  # 0.4.3: email finds get credit/days/blk from the page
                     d = parse_detail(page)
                     DB.patch_row(k, {f: d[f] for f in ("credit", "days", "blk", "tafb") if d.get(f)})
@@ -1244,6 +1246,7 @@ def pickup_check(fl, full=False):
                     status, who = pickup_result(crew, seats)
                     known = bool(seats)
                 ca = next((nm for pos, nm in crew if pos == "CA" and nm != "OPEN"), "")
+                who, ca = with_ids(who, ids), with_ids(f"CA {ca}", ids)[3:] if ca else ""
         except Exception as e:
             log.info("pickup lookup %s skipped: %s", k, e)
         start = row_date(row.get("start") or (row.get("dates") or "").split("-")[0])
