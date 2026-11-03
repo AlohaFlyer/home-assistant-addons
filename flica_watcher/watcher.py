@@ -24,8 +24,9 @@ from pot import PAIRING_RE, parse_alert_email, fit_tag, hours, parse_crew, picku
 from store import Store
 import tradeboard as TB
 import swap as SW
+import swapmap as SM
 
-VERSION = "0.4.9"
+VERSION = "0.4.10"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -167,6 +168,9 @@ def on_message(c, u, msg):
         key = "hunt" if "hunt" in msg.topic else "pause"
         FLAGS[key] = p == "ON"
         return
+    elif msg.topic == f"{T}/swap_map/press":
+        FLAGS["swap_map"] = True  # 0.4.10: one read-only mapping pass on the next check
+        log.info("swap map pressed: read-only mapping on the next check")
     elif msg.topic == f"{T}/check_now/press":
         # Waking the loop runs a check right away (only when idle or hunting; paused/stopped ignore it).
         if time.time() - S.get("last_check_ts", 0) < CHECK_NOW_MIN_GAP_S:
@@ -346,6 +350,8 @@ def discovery(c):
         ("switch", "pause", {"name": "Pause", "command_topic": f"{T}/pause/set",
                              "state_topic": f"{T}/pause/state", "icon": "mdi:pause-circle"}),
         ("button", "rearm", {"name": "Re-arm", "command_topic": f"{T}/rearm/press", "icon": "mdi:restart"}),
+        ("button", "swap_map", {"name": "Map swap pages (read only)", "command_topic": f"{T}/swap_map/press",
+                                 "icon": "mdi:map-search", "entity_category": "diagnostic"}),
         ("button", "check_now", {"name": "Check now", "command_topic": f"{T}/check_now/press",
                                  "icon": "mdi:refresh"}),
         ("number", "normal_minutes", {"name": "Normal check every", "command_topic": f"{T}/freq/normal_min/set",
@@ -374,7 +380,7 @@ def mqtt_start():
         discovery(cl)
         for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set",
                   "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set",
-                  "trade/set", "auto_swap/set"):
+                  "trade/set", "auto_swap/set", "swap_map/press"):
             cl.subscribe(f"{T}/{t}")
         fq = freq()
         cl.publish(f"{T}/freq/normal_min/state", str(fq["normal_min"]), retain=True)
@@ -1078,6 +1084,48 @@ def publish_tradeboard(live=None):
     pub("tradeboard/state", {"count": len(rows), "pairings": rows})
 
 
+SWAP_MAP_MAX = 14
+
+
+def swap_map_probe(fl):
+    """0.4.10, read only (t1243): walk from the main menu, the pot, the OT drop view and the
+    Tradeboard to the open time request pages, GET each page that swapmap.safe_get allows (never a
+    POST, never a URL carrying Add/Drop lists or an action word), and save the HTML plus a summary
+    of every form to the private captures folder so the live swap can be built from real pages."""
+    os.makedirs(f"{CAPTURE_DIR}/swapmap", exist_ok=True)
+    b = (bcid(MOBILE_POT) or "003.152").split(".")[-1]
+    queue = [("main menu", BASE + "/online/mainmenu.cgi"), ("mobile pot", MOBILE_POT),
+             ("OT drop view", f"{BASE}/full/mobileschedule.cgi?BCID=001.{b}&Priority=1&From=MobileOTDrop"),
+             ("tradeboard", f"{BASE}/online/tb_frame.cgi?BCID=001.{b}&dp=mr")]
+    seen, index, n = set(), [], 0
+    while queue and n < SWAP_MAP_MAX:
+        text, url = queue.pop(0)
+        if url in seen or not SM.safe_get(url):
+            continue
+        seen.add(url)
+        if n:
+            time.sleep(random.uniform(1.5, 3.5))
+        n += 1
+        try:
+            html = fl.fetch(url)
+        except Exception as e:
+            index.append({"n": n, "text": text, "url": url, "error": str(e)})
+            continue
+        kind = classify(html)
+        open(f"{CAPTURE_DIR}/swapmap/{n:02d}.html", "w").write(html)
+        fm = SM.forms(html)
+        index.append({"n": n, "text": text, "url": url, "classify": kind, "len": len(html), "forms": fm,
+                      "title": (re.search(r"<title>(.*?)</title>", html, re.I | re.S) or [None, ""])[1].strip()[:80]})
+        if kind != "ok":
+            continue
+        for t, u in SM.links(html, url):
+            if u not in seen and (t == "frame" or SM.FOLLOW.search(t) or SM.FOLLOW.search(u)):
+                queue.append((t, u))
+    json.dump(index, open(f"{CAPTURE_DIR}/swapmap/index.json", "w"), indent=1)
+    log.info("swap map: %d pages saved to %s/swapmap (read only, GET only)", n, CAPTURE_DIR)
+    pub("event/swap_map", {"pages": n, "at": now_iso()}, retain=False)
+
+
 AUTO_SWAP_PER_DAY = 1
 
 
@@ -1398,6 +1446,8 @@ def check(fl):
     publish_finds()  # rows carry live CA / details now, so publish every check
     tradeboard_check(fl, full)
     swap_scan(flat)
+    if FLAGS.pop("swap_map", False):
+        swap_map_probe(fl)
     pub("last_check", now_iso())
     S["last_check_ts"] = time.time()
     if S.get("note") in ("starting",) or (S.get("note") or "").startswith("logged in"):
