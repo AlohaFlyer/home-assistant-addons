@@ -27,7 +27,7 @@ import swap as SW
 import swapmap as SM
 import grid as G
 
-VERSION = "0.4.16"
+VERSION = "0.4.17"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -810,7 +810,7 @@ def own_trip_times(fl, full=False):
             continue
         k = f"{trip}|{it['start']}"
         keep.add(k)
-        old = k in own and own[k] and ("credit" not in own[k] or "duties" not in own[k])  # cached before 0.4.9 / 0.4.15
+        old = k in own and own[k] and ("credit" not in own[k] or "duties" not in own[k] or "crew" not in own[k])  # cached before 0.4.9 / 0.4.15 / 0.4.17
         if (k in own and not full and not old) or n >= (FULL_MAX if full else OWN_PER_CHECK):
             continue
         if n:
@@ -827,6 +827,8 @@ def own_trip_times(fl, full=False):
                     own[k]["soft"] = soft_time(d.get("credit"), d.get("blk")) or ""
                     own[k]["duties"] = d.get("duties", [])  # 0.4.15: duty periods, so a 30 in 7 on a layover counts
                     own[k]["seat"] = my_seat(d.get("crew") or [])  # 0.4.15: RO or FO as listed on the trip
+                    ids = crew_ids(visible_text(page))  # 0.4.17: roster with employee numbers for the card
+                    own[k]["crew"] = [with_ids(f"{pos} {name}", ids) for pos, name in (d.get("crew") or [])]
                     log.info("own trip %s: report %s, in %s, blk %s", k, d["report"], d["last_arr"],
                              d.get("blk"))
                 else:
@@ -918,34 +920,43 @@ SCHED_GAP_S = 30 * 60
 
 
 def prev_month_check(fl, ok_url, cur_month):
-    """0.4.16 (Ryan): read last month's schedule once a day from the same mobileschedule URL with the
-    bid-period number one lower (Nov 001.152 -> Oct 001.151), so the card's FAR 117 windows that reach
-    back into last month have data. Read only; failures are logged and ignored."""
+    """0.4.16/0.4.17 (Ryan): read last month's schedule once a day with the bid-period number one lower
+    (Nov 152 -> Oct 151), trying the same URL shapes as the current month (the OT drop view only
+    offers open months), so the card's FAR 117 windows that reach back into last month have data.
+    Read only; failures are logged and ignored."""
     store = S.setdefault("schedule", {})
     y, m = int(cur_month[:4]), int(cur_month[5:7])
     prev = f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
-    if prev in store and time.time() - S.get("sched_prev_at", 0) < 86400:
+    if S.get("sched_prev_v") == 2 and prev in store and time.time() - S.get("sched_prev_at", 0) < 86400:
         return
-    mo = re.search(r"BCID=(\d{3})\.(\d+)", ok_url)
+    if S.get("sched_prev_v") == 2 and time.time() - S.get("sched_prev_at", 0) < 3600:
+        return
+    mo = re.search(r"BCID=\d{3}\.(\d+)", ok_url)
     if not mo:
         return
-    url = ok_url.replace(f"BCID={mo.group(1)}.{mo.group(2)}", f"BCID={mo.group(1)}.{int(mo.group(2)) - 1:03d}")
-    try:
-        time.sleep(random.uniform(1.5, 3.5))
-        html = fl.fetch(url)
-        if classify(html) != "ok":
-            log.info("previous month schedule %s: %s", url.split("?")[1], classify(html))
-            return
-        sp = parse_schedule(html)
-        if sp and sp["month"] == prev:
-            store[prev] = sp
-            S["sched_prev_at"] = time.time()
-            log.info("schedule %s (previous month): %d items", prev, len(sp["items"]))
-        else:
-            log.info("previous month schedule %s: parsed %s, wanted %s", url.split("?")[1], sp and sp["month"], prev)
-            S["sched_prev_at"] = time.time()  # do not hammer a page that is not there
-    except Exception as e:
-        log.info("previous month schedule skipped: %s", e)
+    n = f"{int(mo.group(1)) - 1:03d}"
+    cands = [f"{BASE}/full/mobileschedule.cgi?BCID={p}.{n}&From=MainMenu" for p in ("001", "002", "003", "004", "000")]
+    cands += [f"{BASE}/full/mobileschedule.cgi?BCID={p}.{n}&Priority=1&From=MainMenu" for p in ("001", "003")]
+    S["sched_prev_v"] = 2
+    S["sched_prev_at"] = time.time()
+    seen = []
+    for url in cands:
+        try:
+            time.sleep(random.uniform(1.5, 3.5))
+            html = fl.fetch(url)
+            if classify(html) != "ok":
+                seen.append((url.split("?")[1], classify(html)))
+                continue
+            sp = parse_schedule(html)
+            if sp and sp["month"] == prev:
+                store[prev] = sp
+                S["sched_prev_url"] = url
+                log.info("schedule %s (previous month): %d items via %s", prev, len(sp["items"]), url.split("?")[1])
+                return
+            seen.append((url.split("?")[1], (sp and sp["month"]) or visible_text(html)[:160]))
+        except Exception as e:
+            seen.append((url.split("?")[1], str(e)))
+    log.info("previous month schedule %s not found: %s", prev, seen)
 
 
 def schedule_check(fl, force=False):
@@ -1355,6 +1366,10 @@ def pickup_check(fl, full=False):
         for k in DB.gone_without_pickup(50):
             pend.setdefault(k, {"tries": 0, "next": 0})
         S["pickup_backfilled"] = True
+    if not S.get("ids_backfilled"):  # 0.4.17 (Ryan): add employee numbers to finds recorded before 0.4.11
+        for k in DB.pickups_without_ids(50):
+            pend.setdefault(k, {"tries": 0, "next": 0})
+        S["ids_backfilled"] = True
     done, now, n = False, time.time(), 0
     for k, p in list(pend.items()):
         if n >= (FULL_MAX if full else PICKUP_PER_CHECK):

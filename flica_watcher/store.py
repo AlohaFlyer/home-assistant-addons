@@ -159,6 +159,21 @@ class Store:
                 "SELECT key FROM finds WHERE gone_at IS NOT NULL AND pickup IS NULL "
                 "ORDER BY first_seen DESC LIMIT ?", (n,)).fetchall()]
 
+    def pickups_without_ids(self, n=50):
+        """0.4.17: finds whose pickup name or CA has no employee number yet (recorded before 0.4.11)."""
+        with self.lock:
+            rows = self.db.execute("SELECT key,pickup FROM finds WHERE pickup IS NOT NULL "
+                                   "ORDER BY first_seen DESC LIMIT ?", (n,)).fetchall()
+        out = []
+        for k, pk in rows:
+            pk = json.loads(pk) if pk else {}
+            if pk.get("status") not in ("filled", "open", "unchanged"):
+                continue
+            by, ca = pk.get("by") or "", pk.get("ca") or ""
+            if (by and "(" not in by) or (ca and "(" not in ca):
+                out.append(k)
+        return out
+
     # ---- matches
     def add_match(self, m, find_key):
         with self.lock:
