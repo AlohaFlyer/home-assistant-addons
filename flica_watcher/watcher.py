@@ -27,7 +27,7 @@ import swap as SW
 import swapmap as SM
 import grid as G
 
-VERSION = "0.4.13"
+VERSION = "0.4.14"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
