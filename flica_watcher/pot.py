@@ -198,7 +198,7 @@ def detail_url(row, today=None):
 CA_RE = re.compile(r"crew\s*:.*?\bca\s+(?:\d{3,7}\s+)?(.+?)(?=\s+(?:fo|ro|fa|so|ca)\b|$)", re.I)
 # Crew line (Nov 1, 2026): "Crew: CA 10001 SMITH JR, JOHN CA 10002 DOE, JANE FO Open" (names made up)
 CREW_POS = ("CA", "FO", "RO", "FA", "SO")
-CREW_RE = re.compile(r"\b(CA|FO|RO|FA|SO)\s+(?:\d{3,7}\s+)?(.+?)(?=\s+(?:CA|FO|RO|FA|SO)\s|\s*$)", re.I)
+CREW_RE = re.compile(r"\b(CA|FO|RO|FA|SO)\s+(?:(\d{3,7})\s+)?(.+?)(?=\s+(?:CA|FO|RO|FA|SO)\s|\s*$)", re.I)
 CHECKIN_RE = re.compile(r"check\s*in\s*:\s*(\d{1,2}:?\d{2})", re.I)
 # A leg: flight number then STN-STN ("Th 865 HNL-PPG 1630 ..."). The column header "Dps-Ars"
 # has no flight number in front, so it never matches.
@@ -228,6 +228,9 @@ def parse_detail(html):
     if m:
         name = m.group(1).strip(" ,")
         out["captain"] = "OPEN" if name.lower() == "open" else name.title()
+        emp = crew_ids(text).get(out["captain"])
+        if emp:
+            out["captain"] = f"{out['captain']} ({emp})"
     m = CHECKIN_RE.search(text)
     if m:
         out["report"] = _hm(m.group(1))
@@ -265,10 +268,33 @@ def parse_crew(text):
     if not m:
         return []
     out = []
-    for pos, name in CREW_RE.findall(m.group(1)):
+    for pos, _emp, name in CREW_RE.findall(m.group(1)):
         name = name.strip(" ,")
         out.append((pos.upper(), "OPEN" if name.lower() == "open" else name.title()))
     return out
+
+
+def crew_ids(text):
+    """{name: employee number} from the crew line (0.4.11: Ryan wants the numbers shown)."""
+    m = re.search(r"crew\s*:\s*(.*)$", text or "", re.I | re.S)
+    if not m:
+        return {}
+    out = {}
+    for _pos, emp, name in CREW_RE.findall(m.group(1)):
+        name = name.strip(" ,")
+        if emp and name.lower() != "open":
+            out[name.title()] = emp
+    return out
+
+
+def with_ids(who, ids):
+    """'FO Roe, Rick; RO Poe, Pat' -> 'FO Roe, Rick (10003); RO Poe, Pat (10005)' when known."""
+    parts = []
+    for part in (who or "").split("; "):
+        pos, _, name = part.partition(" ")
+        emp = ids.get(name)
+        parts.append(f"{part} ({emp})" if emp else part)
+    return "; ".join(p for p in parts if p)
 
 
 def pickup_result(crew, seats):
