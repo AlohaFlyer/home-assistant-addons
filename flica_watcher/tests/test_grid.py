@@ -28,5 +28,29 @@ def test_swap_rules():
 def test_parse_grid_json_best_effort():
     data = {"rows": [{"date": "02NOV", "netReserves": 10, "netColor": "RED"}, {"date": "03NOV", "netReserves": 16, "netColor": "green"}]}
     g = parse_grid_json(data, 2026)
-    assert g["2026-11-02"] == {"net": 10, "color": "red"} and g["2026-11-03"]["color"] == "green"
+    assert g["2026-11-02"]["net"] == 10 and g["2026-11-02"]["color"] == "red" and g["2026-11-03"]["color"] == "green"
     assert parse_grid_json({"x": 1}, 2026) == {}
+
+
+def test_parse_grid_json_real_shape():
+    import grid as G
+    data = {"success": True, "total": 3, "root": {"BidPeriod": "November 2026", "data": [
+        {"date": "01NOV", "avl": "14", "odp": "0", "net": "14", "statusColor": {"net": "black"}},
+        {"date": "02NOV", "avl": "10", "odp": "0", "net": "10", "statusColor": {"net": "red"}},
+        {"date": "26NOV", "avl": "17", "odp": "2", "net": "15", "statusColor": {"net": "red"}},
+        {"date": "01DEC", "avl": "16", "odp": "0", "net": "16", "statusColor": {"net": "green"}},
+    ]}}
+    g = G.parse_grid_json(data, 2026)
+    assert g["2026-11-02"] == {"net": 10, "color": "red", "avail": 10, "open": 0}
+    assert g["2026-11-26"]["open"] == 2 and g["2026-11-26"]["color"] == "red"
+    assert g["2026-12-01"]["color"] == "green"
+
+
+def test_parse_grid_json_year_rollover():
+    import grid as G
+    data = {"root": {"data": [
+        {"date": "31DEC", "avl": "9", "odp": "0", "net": "9", "statusColor": {"net": "green"}},
+        {"date": "01JAN", "avl": "9", "odp": "0", "net": "9"},
+    ]}}
+    g = G.parse_grid_json(data, 2026)
+    assert "2027-01-01" in g and g["2027-01-01"]["color"] == "black"
