@@ -100,3 +100,33 @@ def hours_until(report_iso, now):
         return (datetime.fromisoformat(report_iso) - now).total_seconds() / 3600
     except (TypeError, ValueError):
         return None
+
+
+DROP_PATH = "/full/mobileotdrop.cgi"  # UNMAPPED: the DROP review page has not been walked yet; fields are a best guess
+
+
+def drop_form(bcid, trip, start, priority=1):
+    """Best-guess fields of the DROP request form, modelled on the mapped SWAP form (AddList empty).
+    Not sendable until the DROP review page is mapped read only with Ryan."""
+    return {
+        "BCID": bcid, "Priority": str(priority), "DropList": f"{trip}:{ymd(start)}", "AddList": "",
+        "SubmitBid": "1", "CanSplitList": "0", "SplitDetail": "Split", "SecCanSplitList": "0",
+        "SecSplitDetail": "Split", "AOT": "", "LimoData": "", "QuickSwap": "0", "Convert": "0", "ABI": "",
+        "Submit": "Submit",
+    }
+
+
+def compose_drop(key, bcid, hours_to_report=None, close_in_bcid=None):
+    """A drop request record for a marked trip 'TRIP|YYYY-MM-DD': {'folder','bcid','url','give','form',
+    'sendable','why'}. Never sends; the form is a draft until the DROP page is mapped."""
+    trip, start = key.split("|")
+    folder = folder_for(hours_to_report)
+    b = close_in_bcid if folder == "close-in" else bcid
+    rec = {"folder": folder, "bcid": b, "url": DROP_PATH, "give": f"{trip} {start}", "form": None,
+           "sendable": False, "why": ""}
+    if not b:
+        rec["why"] = "close-in folder BCID not read yet" if folder == "close-in" else "pot BCID unknown"
+        return rec
+    rec["form"] = drop_form(b, trip, start)
+    rec["why"] = "draft, not sent (Test mode; DROP review page not mapped yet)"
+    return rec
