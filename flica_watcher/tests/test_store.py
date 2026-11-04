@@ -111,3 +111,29 @@ def test_recheck_keeps_score(tmp_path):
     assert db.score_pickup("H3657|16Nov") == 420
     db.set_pickup("H3657|16Nov", {"status": "filled", "by": "FO Roe, Rick (10009)", "ca": "", "known": True})  # re-check after a new alert
     assert db.score_pickup("H3657|16Nov") is None and db.picker_stats()["10008"]["n"] == 1 and "10009" not in db.picker_stats()
+
+
+def test_inflt_backfill_and_counts(tmp_path):
+    db = Store(str(tmp_path / "i.db"))
+    db.add_find("H3647|07Nov", "2026-11", {"pairing": "H3647", "start": "07Nov"}, "2026-11-04T14:24:00+00:00", gone="2026-11-04T14:25:00+00:00")
+    db.set_pickup("H3647|07Nov", {"status": "filled", "by": "FO Doe, Pat (10008)", "ca": "", "known": True})
+    db.add_find("H3609|06Nov", "2026-11", {"pairing": "H3609", "start": "06Nov"}, "2026-11-03T21:25:00+00:00", gone="2026-11-03T21:26:00+00:00")
+    db.set_pickup("H3609|06Nov", {"status": "filled", "by": "FO Roe, Rick", "ca": "", "known": True})  # no employee number
+    todo = db.pickups_without_inflt()
+    assert [t[:3] for t in todo] == [("H3647|07Nov", "10008", "2026-11-04T14:25:00+00:00")]
+    db.set_inflt("H3647|07Nov", None, tries=1)        # a failed lookup only counts a try
+    assert db.pickups_without_inflt()[0][3] == 1
+    db.set_inflt("H3647|07Nov", True, "H3648 2026-11-03", tries=2)
+    assert db.pickups_without_inflt() == []
+    f = {x["pairing"]: x for x in db.recent_finds()}
+    assert f["H3647"]["inflt"] is True and f["H3647"]["inflt_trip"] == "H3648 2026-11-03"
+    assert f["H3609"]["inflt"] is None
+    db.set_pickup("H3647|07Nov", {"status": "filled", "by": "FO Doe, Pat (10008)", "ca": "", "known": True})  # re-check keeps it
+    assert db.recent_finds()[0]["inflt"] is True
+    db.score_pickup("H3647|07Nov")
+    assert db.picker_stats()["10008"]["inflt_n"] == 1
+    db.add_find("H3630|05Nov", "2026-11", {"pairing": "H3630", "start": "05Nov"}, "2026-11-04T04:42:00+00:00", gone="2026-11-04T04:47:00+00:00")
+    db.set_pickup("H3630|05Nov", {"status": "filled", "by": "FO Doe, Pat (10008)", "ca": "", "known": True})
+    db.set_inflt("H3630|05Nov", None, tries=3)          # third failure: unknown for good
+    f = {x["pairing"]: x for x in db.recent_finds()}
+    assert db.pickups_without_inflt() == [] and f["H3630"]["inflt"] is None

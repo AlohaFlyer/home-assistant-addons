@@ -4,7 +4,7 @@ Kept free of side effects so tests/ can run it against saved HTML fixtures.
 """
 import hashlib
 import re
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
@@ -277,14 +277,10 @@ TZ = {"HNL": -10, "OGG": -10, "KOA": -10, "ITO": -10, "LIH": -10, "PPT": -10, "R
       "AKL": 12, "SIN": 8, "MNL": 8, "CRK": 8, "TPE": 8, "PEK": 8, "PVG": 8, "HKG": 8}
 
 
-def parse_duties(text):
-    """Duty periods from the leg list (0.4.15, Ryan: a 30 in 7 can happen on a layover). FLICA prints
-    leg times in station local time; each is converted to HST minutes from the trip's first day
-    (00:00 HST) with the TZ table, and the printed arrival is snapped to the day that best matches
-    departure + block. A gap of LAYOVER_MIN_H+ between legs starts a new duty. Each duty: {d: dep
-    day offset (HST), dep: HST minutes, arr: HST minutes, stn: station it ends at, dep_l/arr_l: the
-    printed local times}. Report = dep - 1:00, release = arr + 0:15 (PWA 2, 4.2.2) are left to the
-    reader. Stations missing from TZ fall back to the printed-time heuristic (arr < dep = next day)."""
+def parse_legs(text):
+    """0.5.2: every leg of a pairing page in HST minutes from the trip's first day (00:00 HST):
+    [{dep, arr, to, blk, dep_l, arr_l}], same conversion as parse_duties. A pickup made between a
+    leg's dep and arr happened in flight (blocked out, away from the gate)."""
     legs, off, last_idx = [], 0, None
     for dow, a, b, dep, arr, blk in LEG_FULL_RE.findall(text or ""):
         idx = LEG_DOW.index(dow.upper())
@@ -305,6 +301,18 @@ def parse_duties(text):
             arr_h = min(cands, key=lambda c: abs(c - est))
         legs.append({"dep": dep_h, "arr": arr_h, "to": b, "blk": bmin, "dep_l": f"{dmin // 60:02d}:{dmin % 60:02d}",
                      "arr_l": f"{amin // 60:02d}:{amin % 60:02d}"})
+    return legs
+
+
+def parse_duties(text):
+    """Duty periods from the leg list (0.4.15, Ryan: a 30 in 7 can happen on a layover). FLICA prints
+    leg times in station local time; each is converted to HST minutes from the trip's first day
+    (00:00 HST) with the TZ table, and the printed arrival is snapped to the day that best matches
+    departure + block. A gap of LAYOVER_MIN_H+ between legs starts a new duty. Each duty: {d: dep
+    day offset (HST), dep: HST minutes, arr: HST minutes, stn: station it ends at, dep_l/arr_l: the
+    printed local times}. Report = dep - 1:00, release = arr + 0:15 (PWA 2, 4.2.2) are left to the
+    reader. Stations missing from TZ fall back to the printed-time heuristic (arr < dep = next day)."""
+    legs = parse_legs(text)
     if not legs:
         return []
     duties, cur = [], None
@@ -545,3 +553,35 @@ def parse_alert_email(text):
         if src and src.strip() not in e["sources"]:
             e["sources"].append(src.strip())
     return list(out.values())
+
+
+CM_PAIR_RE = re.compile(r"pair\(\s*'([A-Z]\d{4}[A-Z]?)'\s*,\s*'(\d{8})'")
+
+
+def parse_cm_schedule(html):
+    """0.5.2: pairings on a crewmember schedule page (Tools > Schedule Lookup, cmschedules.cgi):
+    [{'trip': 'H3648', 'start': '2026-11-03'}] from its pair('H3648','20261103',0) links, in page
+    order, duplicates kept once."""
+    out, seen = [], set()
+    for trip, ymd in CM_PAIR_RE.findall(html or ""):
+        k = (trip, ymd)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append({"trip": trip, "start": f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:]}"})
+    return out
+
+
+def inflight_at(legs, start_iso, at_utc_iso):
+    """True when the UTC instant falls inside a leg (block out to block in) of a pairing that
+    started on start_iso (HST day 0); False otherwise; None when the inputs do not parse."""
+    try:
+        start = datetime.strptime(start_iso, "%Y-%m-%d")
+        at = datetime.fromisoformat(at_utc_iso.replace("Z", "+00:00"))
+        if at.tzinfo is not None:
+            at = at.astimezone(timezone.utc).replace(tzinfo=None)
+        at_hst = at - timedelta(hours=10)
+        m = (at_hst - start).total_seconds() / 60
+    except (TypeError, ValueError):
+        return None
+    return any(lg["dep"] <= m <= lg["arr"] for lg in legs or [])
