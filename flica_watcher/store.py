@@ -31,7 +31,7 @@ EMP_RE = re.compile(r"\((\d{3,7})\)\s*$")
 
 
 def picker_of(by):
-    """('FO', 'Nesler, Benjamin', '18691') from 'FO Nesler, Benjamin (18691)'; None without a number."""
+    """('FO', 'Lane Jr, Chris', '10007') from 'FO Lane Jr, Chris (10007)'; None without a number."""
     m = EMP_RE.search(by or "")
     if not m:
         return None
