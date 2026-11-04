@@ -216,6 +216,7 @@ def test_parse_duties_turn_and_layover():
     t = "dy flt dps-ars dep arr blk th 865 hnl-ppg 1630 2115 0545 th 866 ppg-hnl 2320 0555 0535 blk : 1120"
     d = parse_duties(t)
     assert len(d) == 1 and d[0]["d"] == 0 and d[0]["dep"] == 16 * 60 + 30 and d[0]["arr"] == 1440 + 5 * 60 + 55 and d[0]["stn"] == "HNL"
+    assert d[0]["blk"] == 5 * 60 + 45 + 5 * 60 + 35
     # SIN (UTC+8, 18 h ahead of HST): out Su 1130 HST, 10:50 block, lands Mo 16:20 SIN; back Tu 23:10 SIN
     t = "su 450 hnl-sin 1130 1620 1050 tu 451 sin-hnl 2310 1300 1050"
     d = parse_duties(t)

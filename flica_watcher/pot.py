@@ -303,7 +303,7 @@ def parse_duties(text):
             est = dep_h + bmin                             # arrival in HST from block time
             cands = [(off + k) * 1440 + amin - sh_b for k in (-1, 0, 1, 2)]
             arr_h = min(cands, key=lambda c: abs(c - est))
-        legs.append({"dep": dep_h, "arr": arr_h, "to": b, "dep_l": f"{dmin // 60:02d}:{dmin % 60:02d}",
+        legs.append({"dep": dep_h, "arr": arr_h, "to": b, "blk": bmin, "dep_l": f"{dmin // 60:02d}:{dmin % 60:02d}",
                      "arr_l": f"{amin // 60:02d}:{amin % 60:02d}"})
     if not legs:
         return []
@@ -315,9 +315,9 @@ def parse_duties(text):
         if cur is None:
             cur = dict(lg)
         else:
-            cur.update(arr=lg["arr"], to=lg["to"], arr_l=lg["arr_l"])
+            cur.update(arr=lg["arr"], to=lg["to"], arr_l=lg["arr_l"], blk=cur["blk"] + lg["blk"])
     duties.append(cur)
-    return [{"d": x["dep"] // 1440, "dep": x["dep"], "arr": x["arr"], "stn": x["to"], "dep_l": x["dep_l"], "arr_l": x["arr_l"]}
+    return [{"d": x["dep"] // 1440, "dep": x["dep"], "arr": x["arr"], "stn": x["to"], "blk": x["blk"], "dep_l": x["dep_l"], "arr_l": x["arr_l"]}
             for x in duties]
 
 
