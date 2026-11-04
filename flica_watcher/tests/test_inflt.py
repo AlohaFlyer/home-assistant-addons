@@ -26,6 +26,7 @@ class FakeFl:
 
 def _db(tmp_path, gone):
     db = Store(str(tmp_path / "f.db"))
+    db.put("score_email_v", 1)  # the 0.5.6 one-shot scoring is not what these tests check
     db.add_find("H3647|07Nov", "2026-11", {"pairing": "H3647"}, gone, gone=gone)
     db.set_pickup("H3647|07Nov", {"status": "filled", "by": "FO Doe, Pat (10008)", "ca": "", "known": True})
     return db

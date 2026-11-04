@@ -135,7 +135,7 @@ class Store:
                         "layover": r.get("layover"), "report": r.get("report"), "credit": r.get("credit"),
                         "turn": r.get("turn"), "captain": pk.get("ca") or r.get("captain") or "",
                         "prem": is_prem(r), "picked_by": pk.get("by", ""), "source": r.get("source", "pot"), "pickup_status": pk.get("status", ""), "pickup_known": bool(pk.get("known")),
-                        "inflt": pk.get("inflt"), "inflt_trip": pk.get("inflt_trip", ""),
+                        "inflt": pk.get("inflt"), "inflt_trip": pk.get("inflt_trip", ""), "picker_approx": bool(pk.get("approx")),
                         "month": month, "seen": first, "gone": gone})
         return out
 
@@ -161,9 +161,13 @@ class Store:
             if not r:
                 return None
             row, first, gone, pickup = json.loads(r[0]), r[1], r[2], json.loads(r[3]) if r[3] else {}
-            if pickup.get("scored") or pickup.get("status") != "filled" or not pickup.get("known"):
+            if pickup.get("scored") or pickup.get("status") != "filled" or not gone:
                 return None
-            if row.get("source") == "email" or not gone:
+            # 0.5.6 (Ryan: always complete the data): an email-caught find has no pot dwell, but the FLICA alert
+            # is sent when the trip enters the pot, so alert time -> pickup check is a fair (upper-bound) dwell;
+            # scored as approximate when exactly one FO/RO name was found.
+            approx = row.get("source") == "email" or not pickup.get("known")
+            if approx and ";" in (pickup.get("by") or ""):
                 return None
             who = picker_of(pickup.get("by", ""))
             if not who:
@@ -176,6 +180,8 @@ class Store:
                             "n=n+1, total_s=total_s+excluded.total_s, last_at=excluded.last_at",
                             (emp, name, pos, secs, gone))
             pickup["scored"] = secs
+            if approx:
+                pickup["approx"] = True
             self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pickup), key))
             self.db.execute("COMMIT")
             return secs
