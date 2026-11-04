@@ -5,7 +5,9 @@ import inflt
 from store import Store
 
 HST = timezone(timedelta(hours=-10))
-SCHED = "<a onclick=\"javascript:pair('H3648','20261103',0)\">H3648</a> Emp# 10008 Last Updated: Nov 4"
+SCHED = ('<script>function pair(pr){} TAry[TAry.length]=new Task(1, "SU", "01", "H3647", "PHX", "20261101", 1, 0, \'H3647\');'
+         ' TAry[TAry.length]=new Task(1, "TU", "03", "H3648", "SAN", "20261103", 1, 0, \'H3648\');</script>'
+         ' MA, M (Emp# 10008) Schedule Last Updated: Nov 4')
 PAIR = "pairing details h3648:03nov check in: 11:40 dy flt dps-ars dep arr blk tu 816 hnl-san 1249 1946 0457 we 815 san-hnl 0805 1219 0614 blk : 1111"
 FWD = "<html>schedule details this is going to forward to the schedule details page ...</html>"
 
@@ -54,3 +56,9 @@ def test_forwarding_page_counts_as_failed_try(tmp_path, monkeypatch):
     assert inflt.run(fl, db, 3, logging.getLogger("t"), lambda: datetime(2026, 11, 4, 8, 0), "https://x", HST) is False
     assert db.pickups_without_inflt()[0][3] == 1 and db.recent_finds()[0]["inflt"] is None
     assert any("bd=1126" in u for u in fl.urls)  # the month shape was tried too
+
+
+def test_parse_task_rows_and_links():
+    assert inflt.parse_cm_schedule(SCHED) == [{"trip": "H3647", "start": "2026-11-01"}, {"trip": "H3648", "start": "2026-11-03"}]
+    assert inflt.parse_cm_schedule("onclick=\"javascript:pair('H3601','20261105',0)\"") == [{"trip": "H3601", "start": "2026-11-05"}]
+    assert inflt.schedule_ok("<script>function pair(){}</script>") is False
