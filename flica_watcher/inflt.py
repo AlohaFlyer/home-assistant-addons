@@ -4,6 +4,7 @@ Source: Tools > Schedule Lookup (cmschedules.cgi, mapped read only 2026-11-04) g
 pair('H3648','20261103') links; each pairing's legs come from the mobile pairing page the Watcher already
 parses. A pickup counts as in flight only between a leg's block-out and block-in: layover rest and ground
 time do not. No pairing covering the pickup day = not in flight. Read only, GET only."""
+import os
 import random
 import time
 from datetime import date, datetime
@@ -13,12 +14,33 @@ from pot import classify, inflight_at, parse_cm_schedule, parse_legs, visible_te
 CM_SCHED = "{base}/full/cmschedules.cgi?GO=1&SchBrowser=1&Prompt=1&EmployeeID={emp}"
 CM_SCHED_MONTH = "{base}/full/cmschedules.cgi?Prompt=1&EmployeeID={emp}&bd={bd}&SchBrowser=1"
 PROBE = {"logged": 0}
+RESET_V = 4  # bump when the parser changes so stored verdicts are re-checked once
+
+
+CAPTURE_DIR = "/share/flica_watcher/captures"
 
 
 def schedule_ok(html):
-    """The crewmember schedule page proper (not a forwarding or prompt page)."""
+    """The crewmember schedule page proper (not a forwarding or prompt page): it names the pilot
+    (Emp#) and carries a Last Updated stamp. 'pair(' alone is not enough: the page's own JS defines
+    function pair(...) even when no pairing links are rendered."""
     t = visible_text(html).lower()
-    return "pair(" in html or ("emp#" in t and "last updated" in t)
+    return "emp#" in t and "last updated" in t
+
+
+def capture(html, emp, log):
+    """0.5.4: save the first two schedule pages to the private share folder so the parser can be
+    checked against the real HTML (never committed)."""
+    if PROBE.get("saved", 0) >= 2:
+        return
+    try:
+        os.makedirs(CAPTURE_DIR, exist_ok=True)
+        open(f"{CAPTURE_DIR}/cmschedule_{emp}.html", "w").write(html)
+        PROBE["saved"] = PROBE.get("saved", 0) + 1
+        log.info("inflt: schedule page for %s saved (%d chars, %d pair links)", emp, len(html),
+                 len(parse_cm_schedule(html)))
+    except Exception as e:
+        log.info("inflt: capture skipped: %s", e)
 
 
 def fetch_schedule(fl, base, emp, bd, cur_bd, log, key):
@@ -30,6 +52,7 @@ def fetch_schedule(fl, base, emp, bd, cur_bd, log, key):
             time.sleep(random.uniform(1.5, 3.5))
         html = fl.fetch(url)
         if classify(html) == "ok" and schedule_ok(html):
+            capture(html, emp, log)
             return parse_cm_schedule(html)
         if PROBE["logged"] < 3:
             PROBE["logged"] += 1
@@ -41,6 +64,9 @@ def fetch_schedule(fl, base, emp, bd, cur_bd, log, key):
 def run(fl, db, limit, log, local_now, base, hst):
     """Three pickups per check: look the picker's month up, read the pairings around the pickup day,
     decide. Returns True when any verdict was written."""
+    if db.get("inflt_reset_v") != RESET_V:  # verdicts from an older parser are looked up again, once
+        db.reset_inflt()
+        db.put("inflt_reset_v", RESET_V)
     todo = db.pickups_without_inflt(50)
     if not todo:
         return False
