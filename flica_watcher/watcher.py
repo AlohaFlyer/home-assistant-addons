@@ -26,8 +26,9 @@ import tradeboard as TB
 import swap as SW
 import swapmap as SM
 import grid as G
+import submit as SUB
 
-VERSION = "0.4.21"
+VERSION = "0.5.0"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -147,6 +148,9 @@ def on_message(c, u, msg):
     if msg.topic == f"{T}/trade/set":
         trade_cmd(msg.payload.decode(errors="replace"))
         return
+    if msg.topic == f"{T}/swap_mode/set":
+        swap_mode_cmd(msg.payload.decode(errors="replace").strip())
+        return
     if msg.topic == f"{T}/auto_swap/set":
         S["auto_swap"] = msg.payload.decode().strip().upper() == "ON"
         save_state(S)
@@ -194,6 +198,22 @@ def on_message(c, u, msg):
         rule_live_cmd(c, msg.topic.split("/")[2], p == "ON")
         return
     WAKE.set()
+
+
+def swap_mode_cmd(want):
+    """0.5.0: Test / Confirm / Live from the dashboard select. Only Test exists in this version:
+    Confirm and Live are refused (logged, event) until the send path is written and Ryan turns it on."""
+    want = next((m for m in SUB.MODES if m.lower() == want.lower()), None)
+    if want is None:
+        return
+    if want != "Test" and not SUB.WRITES_IMPLEMENTED:
+        log.info("swap mode %s refused: writes not implemented, staying in Test", want)
+        pub("event/swap_mode_refused", {"wanted": want, "at": now_iso()}, retain=False)
+        want = "Test"
+    S["swap_mode"] = want
+    save_state(S)
+    pub("swap_mode/state", want)
+    log.info("swap mode %s", want)
 
 
 def rule_live_cmd(c, rid, want):
@@ -333,6 +353,12 @@ def discovery(c):
                                   "json_attributes_topic": f"{T}/swap/state", "icon": "mdi:swap-horizontal-circle"}),
         ("switch", "auto_swap", {"name": "Auto swap (dry run)", "command_topic": f"{T}/auto_swap/set",
                                  "state_topic": f"{T}/auto_swap/state", "icon": "mdi:robot"}),
+        ("select", "swap_mode", {"name": "Swap mode", "command_topic": f"{T}/swap_mode/set",
+                                 "state_topic": f"{T}/swap_mode/state", "options": list(SUB.MODES),
+                                 "icon": "mdi:swap-horizontal-variant"}),
+        ("sensor", "swap_tests", {"name": "Swap test requests", "state_topic": f"{T}/swap_tests",
+                                  "value_template": "{{ value_json.count }}",
+                                  "json_attributes_topic": f"{T}/swap_tests", "icon": "mdi:file-send-outline"}),
         ("sensor", "own_trips", {"name": "Own trip times", "state_topic": f"{T}/own_trips",
                                  "value_template": "{{ value_json.count }}",
                                  "json_attributes_topic": f"{T}/own_trips", "icon": "mdi:clock-outline"}),
@@ -396,13 +422,15 @@ def mqtt_start():
         discovery(cl)
         for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set",
                   "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set",
-                  "trade/set", "auto_swap/set", "swap_map/press"):
+                  "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set"):
             cl.subscribe(f"{T}/{t}")
         fq = freq()
         cl.publish(f"{T}/freq/normal_min/state", str(fq["normal_min"]), retain=True)
         cl.publish(f"{T}/freq/hunt_s/state", str(fq["hunt_s"]), retain=True)
         publish_rules(cl)
         cl.publish(f"{T}/auto_swap/state", "ON" if S.get("auto_swap") else "OFF", retain=True)
+        cl.publish(f"{T}/swap_mode/state", S.get("swap_mode") or SUB.DEFAULT_MODE, retain=True)
+        publish_swap_tests()
 
     c.on_connect = on_connect
     c.connect(m["host"], int(m["port"]))
@@ -1020,8 +1048,11 @@ def schedule_check(fl, force=False):
         save_state(S)
 
     fallback, tries = None, 0
+    probe_alts = time.time() - S.get("sched_alt_at", 0) > 86400  # 0.5.0: other URL shapes once a day, not every read
+    if probe_alts:
+        S["sched_alt_at"] = time.time()
     for url in cands:
-        if tries >= 4:
+        if tries >= 4 or (tries and not probe_alts and fallback):
             break
         try:
             if tries:
@@ -1318,6 +1349,32 @@ def swap_map_probe(fl):
 AUTO_SWAP_PER_DAY = 1
 
 
+def publish_swap_tests():
+    tests = S.get("swap_tests") or []
+    pub("swap_tests", {"count": len(tests), "tests": tests[-20:], "mode": S.get("swap_mode") or SUB.DEFAULT_MODE})
+
+
+def swap_test(idea):
+    """0.5.0 Test mode: compose the exact mobileotswap.cgi POST a live swap would send for this idea,
+    log it, keep the last 20 (sensor.flica_watcher_swap_test_requests) and push event/swap_test.
+    Never sends: submit.WRITES_IMPLEMENTED is False."""
+    b = sorted({bcid(u) for u in S.get("pot_urls", {}).values() if bcid(u)}, key=bcid_key)
+    rep_h = None
+    if idea.get("report") and idea.get("start"):
+        rep_h = SUB.hours_until(f"{idea['start']}T{idea['report'][:5]}", local_now())
+    seat = "R" if (S.get("own_trips", {}).get(idea["for"]) or {}).get("seat") == "RO" else "F"
+    rec = SUB.compose(idea, b[0] if b else None, rep_h, seat=seat, close_in_bcid=S.get("close_in_bcid"))
+    rec.update({"key": idea["key"], "at": now_iso(), "mode": S.get("swap_mode") or SUB.DEFAULT_MODE,
+                "hours_to_report": round(rep_h, 1) if rep_h is not None else None, "sent": False})
+    tests = S.setdefault("swap_tests", [])
+    tests.append(rec)
+    del tests[:-20]
+    log.info("SWAP TEST (not sent): give %s take %s folder %s bcid %s form %s", rec["give"], rec["take"],
+             rec["folder"], rec["bcid"], rec["form"])
+    pub("event/swap_test", rec, retain=False)
+    publish_swap_tests()
+
+
 def swap_scan(pot_rows):
     """0.4.9 (Ryan): for each trip he marked 'would trade', find open time and Tradeboard pickups
     that are better (swap.better: more soft time, or more credit) and still legal once his trip is
@@ -1365,6 +1422,7 @@ def swap_scan(pot_rows):
             continue
         seen.add(k)
         ev = dict(i, key=k, at=now_iso())
+        swap_test(dict(i, key=k, report=next((r.get("report", "") for r in rows if r.get("pairing") == i["pairing"] and r.get("start") == i["start"]), "")))
         if S.get("auto_swap"):
             done = S.setdefault("auto_swap_log", {})
             if done.get(today, 0) < AUTO_SWAP_PER_DAY:
