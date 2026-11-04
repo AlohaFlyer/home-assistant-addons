@@ -29,7 +29,7 @@ import grid as G
 import submit as SUB
 import inflt as IF
 
-VERSION = "0.5.3"
+VERSION = "0.5.6"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -321,7 +321,8 @@ def publish_finds():
 def publish_pickers():
     """0.4.18 (Ryan): every FO/RO seen taking a trip, with their average time in open time, fastest first."""
     rows = [{"emp": e, "name": v["name"], "pos": v["pos"], "n": v["n"], "avg_s": int(v["total_s"] / v["n"]) if v["n"] else None,
-             "inflt_n": v.get("inflt_n", 0), "last_at": v["last_at"]} for e, v in DB.picker_stats().items()]
+             "inflt_n": v.get("inflt_n", 0), "month_n": v.get("month_n", 0), "year_n": v.get("year_n", 0),
+             "last_at": v["last_at"]} for e, v in DB.picker_stats().items()]
     rows.sort(key=lambda r: (r["avg_s"] is None, r["avg_s"] or 0, r["name"]))
     pub("pickers", {"count": len(rows), "pickers": rows})
 
