@@ -102,3 +102,12 @@ def test_picker_scoring(tmp_path):
     db.add_find("H3609|06Nov", "2026-11", {"pairing": "H3609", "source": "email"}, "2026-11-03T21:25:00+00:00", gone="2026-11-03T21:26:00+00:00")
     db.set_pickup("H3609|06Nov", {"status": "filled", "by": "FO Doe, Pat (10008)", "ca": "", "known": True})
     assert db.score_pickup("H3609|06Nov") is None
+
+
+def test_recheck_keeps_score(tmp_path):
+    db = Store(str(tmp_path / "t.db"))
+    db.add_find("H3657|16Nov", "2026-11", {"pairing": "H3657"}, "2026-11-03T05:00:00+00:00", gone="2026-11-03T05:07:00+00:00")
+    db.set_pickup("H3657|16Nov", {"status": "filled", "by": "FO Doe, Pat (10008)", "ca": "", "known": True})
+    assert db.score_pickup("H3657|16Nov") == 420
+    db.set_pickup("H3657|16Nov", {"status": "filled", "by": "FO Roe, Rick (10009)", "ca": "", "known": True})  # re-check after a new alert
+    assert db.score_pickup("H3657|16Nov") is None and db.picker_stats()["10008"]["n"] == 1 and "10009" not in db.picker_stats()

@@ -219,6 +219,10 @@ class Store:
 
     def set_pickup(self, key, pickup):
         with self.lock:
+            old = self.db.execute("SELECT pickup FROM finds WHERE key=?", (key,)).fetchone()
+            old = json.loads(old[0]) if old and old[0] else {}
+            if old.get("scored") is not None and "scored" not in pickup:
+                pickup = dict(pickup, scored=old["scored"])  # 0.4.21: a re-check never scores the picker twice
             self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pickup), key))
 
     def gone_without_pickup(self, n=50):

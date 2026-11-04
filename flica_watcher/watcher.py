@@ -27,7 +27,7 @@ import swap as SW
 import swapmap as SM
 import grid as G
 
-VERSION = "0.4.20"
+VERSION = "0.4.21"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -940,18 +940,18 @@ def prev_month_check(fl, ok_url, cur_month):
     store = S.setdefault("schedule", {})
     y, m = int(cur_month[:4]), int(cur_month[5:7])
     prev = f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
-    if S.get("sched_prev_v") == 3 and prev in store and time.time() - S.get("sched_prev_at", 0) < 86400:
+    if S.get("sched_prev_v") == 4 and prev in store and time.time() - S.get("sched_prev_at", 0) < 86400:
         return
-    if S.get("sched_prev_v") == 3 and time.time() - S.get("sched_prev_at", 0) < 3600:
+    if S.get("sched_prev_v") == 4 and time.time() - S.get("sched_prev_at", 0) < 3600:
         return
     mo = re.search(r"BCID=\d{3}\.(\d+)", ok_url)
     if not mo:
         return
     n = f"{int(mo.group(1)) - 1:03d}"
     py, pm = int(prev[:4]), int(prev[5:7])
-    cands = [f"{BASE}/full/scheduledetail.cgi?BlockDate={pm:02d}{py % 100:02d}"]
-    cands += [f"{BASE}/full/mobileschedule.cgi?BCID={p}.{n}&From=MainMenu" for p in ("001", "003")]
-    S["sched_prev_v"] = 3
+    cands = [f"{BASE}/full/mobileschedule.cgi?BlockDate={pm:02d}{py % 100:02d}&From=MainMenu",
+             f"{BASE}/full/scheduledetail.cgi?BlockDate={pm:02d}{py % 100:02d}"]
+    S["sched_prev_v"] = 4
     S["sched_prev_at"] = time.time()
     seen = []
     for url in cands:
@@ -987,7 +987,9 @@ def schedule_check(fl, force=False):
     # 0.4.20: the desktop schedule page (Schedules > month) carries FLICA's Block / Credit / YTD / Days Off and
     # every leg; it is keyed by BlockDate=MMYY, not by BCID. Try it first for the pot month.
     cur = local_now()
-    cands = [f"{BASE}/full/scheduledetail.cgi?BlockDate={cur.month:02d}{cur.year % 100:02d}"]
+    bdc = f"{cur.month:02d}{cur.year % 100:02d}"
+    cands = [f"{BASE}/full/mobileschedule.cgi?BlockDate={bdc}&From=MainMenu", f"{BASE}/full/mobileschedule.cgi?From=MainMenu"]  # 0.4.21 shapes
+    cands += [f"{BASE}/full/scheduledetail.cgi?BlockDate={bdc}"]  # desktop page: reCAPTCHA interstitial for this session (0.4.20); kept last
     cands += [f"{BASE}/full/mobileschedule.cgi?BCID={p}.{n}&From=MainMenu" for p in ("003", "001", "002", "004", "000")]
     cands += [f"{BASE}/full/mobileschedule.cgi?BCID={b}&Priority=1&From=MainMenu",
               f"{BASE}/full/mobileschedule.cgi?BCID={b}&Priority=1&From=MobileOTDrop"]  # view only; GET never submits
@@ -1019,7 +1021,7 @@ def schedule_check(fl, force=False):
 
     fallback, tries = None, 0
     for url in cands:
-        if tries >= 3:
+        if tries >= 4:
             break
         try:
             if tries:
@@ -1052,7 +1054,7 @@ def schedule_check(fl, force=False):
             if "block" in s.get("totals", {}):
                 accept(url, s)
                 return
-            if fallback is None:
+            if fallback is None or url == S.get("sched_url_ok"):
                 fallback = (url, s)  # parses but has no totals: keep looking, use it if nothing better turns up
         except Exception as e:
             log.info("schedule error %s: %s", url, e)
@@ -1532,6 +1534,12 @@ def email_check(fl, pot_all):
     for it in list(q):
         k = it["key"]
         if DB.has_find(k):
+            # 0.4.21 (Ryan): a known find named in a fresh alert went back to open time; re-read its page
+            # so "who holds it now" is current, instead of trusting the old pickup record.
+            row = DB.find_row(k) or {}
+            if k not in live and row.get("source") != "email":
+                S.setdefault("pickup_pending", {})[k] = {"tries": 0, "next": 0, "realert": True}
+                log.info("alert email names known find %s: pickup re-check queued", k)
             q.remove(it)
             continue
         if n >= FULL_MAX:
