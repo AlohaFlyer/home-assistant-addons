@@ -266,6 +266,17 @@ class Store:
             pk["inflt"], pk["inflt_trip"] = inflt, trip
             self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), key))
 
+    def reset_inflt(self):
+        """0.5.3: drop every in-flight verdict so it is looked up again (0.5.2 judged forwarding pages)."""
+        with self.lock:
+            rows = self.db.execute("SELECT key,pickup FROM finds WHERE pickup IS NOT NULL").fetchall()
+            for k, pk in rows:
+                pk = json.loads(pk)
+                if "inflt" in pk or "inflt_tries" in pk:
+                    for f in ("inflt", "inflt_trip", "inflt_tries"):
+                        pk.pop(f, None)
+                    self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), k))
+
     def gone_without_pickup(self, n=50):
         with self.lock:
             return [k for (k,) in self.db.execute(

@@ -137,3 +137,13 @@ def test_inflt_backfill_and_counts(tmp_path):
     db.set_inflt("H3630|05Nov", None, tries=3)          # third failure: unknown for good
     f = {x["pairing"]: x for x in db.recent_finds()}
     assert db.pickups_without_inflt() == [] and f["H3630"]["inflt"] is None
+
+
+def test_reset_inflt(tmp_path):
+    db = Store(str(tmp_path / "r.db"))
+    db.add_find("H3647|07Nov", "2026-11", {"pairing": "H3647"}, "2026-11-04T14:24:00+00:00", gone="2026-11-04T14:25:00+00:00")
+    db.set_pickup("H3647|07Nov", {"status": "filled", "by": "FO Doe, Pat (10008)", "ca": "", "known": True})
+    db.set_inflt("H3647|07Nov", False, "", tries=1)
+    assert db.pickups_without_inflt() == []
+    db.reset_inflt()
+    assert [t[0] for t in db.pickups_without_inflt()] == ["H3647|07Nov"]
