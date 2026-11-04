@@ -29,7 +29,7 @@ import grid as G
 import submit as SUB
 import inflt as IF
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -328,8 +328,9 @@ def drop_cmd(payload):
 
 
 def publish_drop():
-    live = {f"{it['trip']}|{it['start']}" for it in _sched_items()}
-    if live:
+    today = local_now().date().isoformat()
+    live = {f"{it['trip']}|{it['start']}" for it in _sched_items() if it["start"] > today}  # 0.6.1: a started trip cannot be dropped
+    if _sched_items():
         S["drop_away"] = [k for k in S.get("drop_away") or [] if k in live]
     save_state(S)
     pub("drop/state", {"count": len(S.get("drop_away") or []), "keys": S.get("drop_away") or [],
@@ -377,8 +378,9 @@ def drop_scan():
 
 
 def publish_trade():
-    live = {f"{it['trip']}|{it['start']}" for it in _sched_items()}
-    if live:  # a trip that is gone from the schedule (traded, dropped) drops its mark
+    today = local_now().date().isoformat()
+    live = {f"{it['trip']}|{it['start']}" for it in _sched_items() if it["start"] > today}  # 0.6.1: a started trip cannot be traded
+    if _sched_items():  # a trip that is gone from the schedule (traded, dropped) or has started drops its mark
         S["trade_away"] = [k for k in S.get("trade_away") or [] if k in live]
     save_state(S)
     pub("trade/state", {"count": len(S.get("trade_away") or []), "keys": S.get("trade_away") or []})
@@ -928,6 +930,16 @@ def own_trip_times(fl, full=False):
         keep.add(k)
         old = k in own and own[k] and ("credit" not in own[k] or "duties" not in own[k] or "crew" not in own[k]
                                              or (own[k].get("duties") and "blk" not in own[k]["duties"][0]))  # cached before 0.4.9 / 0.4.15 / 0.4.17 / 0.4.19
+        # 0.6.1 (Ryan): block and credit move once a trip flies (actuals). Re-read a trip in progress every 6 h
+        # and a finished trip once more the day after it ends, so completed trips show their final times.
+        today = local_now().date().isoformat()
+        cur = own.get(k) or {}
+        if k in own and cur and it["start"] <= today:
+            read_at = cur.get("read_at") or ""
+            if it["end"] >= today and read_at[:13] < (local_now() - timedelta(hours=6)).isoformat()[:13]:
+                old = True
+            elif it["end"] < today and not cur.get("final"):
+                old = True
         if (k in own and not full and not old) or n >= (FULL_MAX if full else OWN_PER_CHECK):
             continue
         if n:
@@ -942,6 +954,8 @@ def own_trip_times(fl, full=False):
                 if d.get("report") and d.get("last_arr"):
                     own[k] = {f: d.get(f, "") for f in ("report", "last_arr", "blk", "credit")}
                     own[k]["soft"] = soft_time(d.get("credit"), d.get("blk")) or ""
+                    own[k]["read_at"] = local_now().isoformat()
+                    own[k]["final"] = it["end"] < today  # read after the trip ended: these are the final times
                     own[k]["duties"] = d.get("duties", [])  # 0.4.15: duty periods, so a 30 in 7 on a layover counts
                     own[k]["seat"] = my_seat(d.get("crew") or [])  # 0.4.15: RO or FO as listed on the trip
                     ids = crew_ids(visible_text(page))  # 0.4.17: roster with employee numbers for the card
