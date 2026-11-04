@@ -5,6 +5,7 @@ leaves the previous state intact. The old state.json is imported once and rename
 """
 import json
 import os
+import re
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -23,7 +24,30 @@ CREATE TABLE IF NOT EXISTS submissions (
   id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, rule_id TEXT, find_key TEXT,
   kind TEXT, result TEXT, page TEXT);
 CREATE TABLE IF NOT EXISTS rule_live (rule_id TEXT PRIMARY KEY, live INTEGER NOT NULL, changed_at TEXT);
+CREATE TABLE IF NOT EXISTS pickers (
+  emp TEXT PRIMARY KEY, name TEXT, pos TEXT, n INTEGER NOT NULL DEFAULT 0, total_s INTEGER NOT NULL DEFAULT 0, last_at TEXT);
 """
+EMP_RE = re.compile(r"\((\d{3,7})\)\s*$")
+
+
+def picker_of(by):
+    """('FO', 'Lane Jr, Chris', '10007') from 'FO Lane Jr, Chris (10007)'; None without a number."""
+    m = EMP_RE.search(by or "")
+    if not m:
+        return None
+    head = by[:m.start()].strip()
+    pos, _, name = head.partition(" ")
+    return pos.upper(), name.strip(), m.group(1)
+
+
+def fmt_dur(sec):
+    """'2m 17s', '42s', '1h 05m' for the finds table."""
+    sec = int(round(sec))
+    if sec >= 3600:
+        return f"{sec // 3600}h {(sec % 3600) // 60:02d}m"
+    if sec >= 60:
+        return f"{sec // 60}m {sec % 60:02d}s"
+    return f"{sec}s"
 KEEP_DAYS = 90
 
 
@@ -99,15 +123,59 @@ class Store:
             rows = self.db.execute("SELECT key,row,month,first_seen,gone_at,pickup FROM finds "
                                    "ORDER BY first_seen DESC LIMIT ?", (n,)).fetchall()
         out = []
+        stats = self.picker_stats()
         for key, row, month, first, gone, pickup in rows:
             r = json.loads(row)
             pk = json.loads(pickup) if pickup else {}
+            who = picker_of(pk.get("by", ""))
+            st = stats.get(who[2]) if who else None
             out.append({"pairing": r.get("pairing"), "dates": r.get("dates"), "days": r.get("days"),
+                        "picker_emp": who[2] if who else "", "picker_n": st["n"] if st else 0,
+                        "picker_avg_s": int(st["total_s"] / st["n"]) if st and st["n"] else None,
                         "layover": r.get("layover"), "report": r.get("report"), "credit": r.get("credit"),
                         "turn": r.get("turn"), "captain": pk.get("ca") or r.get("captain") or "",
                         "prem": is_prem(r), "picked_by": pk.get("by", ""), "source": r.get("source", "pot"), "pickup_status": pk.get("status", ""), "pickup_known": bool(pk.get("known")),
                         "month": month, "seen": first, "gone": gone})
         return out
+
+    # ---- pickers (0.4.18, Ryan): how fast each FO/RO grabs a trip = seconds the find sat in open time
+    def picker_stats(self):
+        with self.lock:
+            rows = self.db.execute("SELECT emp,name,pos,n,total_s,last_at FROM pickers").fetchall()
+        return {e: {"name": nm, "pos": ps, "n": n, "total_s": t, "last_at": la} for e, nm, ps, n, t, la in rows}
+
+    def score_pickup(self, key):
+        """Add this find's time in open time to its picker, once. Only when the seat was known (the
+        name is certain), the find was seen in the pot (not email-caught: its dwell is unknown) and the
+        picker has an employee number. Returns the seconds scored, or None."""
+        with self.lock:
+            r = self.db.execute("SELECT row,first_seen,gone_at,pickup FROM finds WHERE key=?", (key,)).fetchone()
+            if not r:
+                return None
+            row, first, gone, pickup = json.loads(r[0]), r[1], r[2], json.loads(r[3]) if r[3] else {}
+            if pickup.get("scored") or pickup.get("status") != "filled" or not pickup.get("known"):
+                return None
+            if row.get("source") == "email" or not gone:
+                return None
+            who = picker_of(pickup.get("by", ""))
+            if not who:
+                return None
+            secs = max(0, int((datetime.fromisoformat(gone) - datetime.fromisoformat(first)).total_seconds()))
+            pos, name, emp = who
+            self.db.execute("BEGIN")
+            self.db.execute("INSERT INTO pickers(emp,name,pos,n,total_s,last_at) VALUES(?,?,?,1,?,?) "
+                            "ON CONFLICT(emp) DO UPDATE SET name=excluded.name, pos=excluded.pos, "
+                            "n=n+1, total_s=total_s+excluded.total_s, last_at=excluded.last_at",
+                            (emp, name, pos, secs, gone))
+            pickup["scored"] = secs
+            self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pickup), key))
+            self.db.execute("COMMIT")
+            return secs
+
+    def unscored_pickups(self):
+        with self.lock:
+            rows = self.db.execute("SELECT key,pickup FROM finds WHERE pickup IS NOT NULL AND gone_at IS NOT NULL").fetchall()
+        return [k for k, pk in rows if pk and not json.loads(pk).get("scored")]
 
     def has_find(self, key):
         with self.lock:
