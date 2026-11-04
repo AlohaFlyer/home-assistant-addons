@@ -224,3 +224,19 @@ def test_parse_duties_turn_and_layover():
     free = d[1]["dep"] - d[0]["arr"]
     assert free == (2 * 1440 + 23 * 60 + 10 - 18 * 60) - (22 * 60 + 20)  # 30 h 50 min on the layover
     assert free >= 30 * 60
+
+
+def test_legs_cm_schedule_and_inflight():
+    from pot import parse_legs, parse_cm_schedule, inflight_at
+    txt = "check in: 11:40 dy flt dps-ars dep arr blk tu 816 hnl-san 1249 1946 0457 we 815 san-hnl 0805 1219 0614 blk : 1111"
+    legs = parse_legs(txt)
+    assert [(l["dep"], l["arr"], l["to"]) for l in legs] == [(769, 1066, "SAN"), (1805, 2179, "HNL")]
+    sched = parse_cm_schedule("pair('H3647','20261101',0) pair('H3648','20261103',0) pair('H3647','20261101',0)")
+    assert sched == [{"trip": "H3647", "start": "2026-11-01"}, {"trip": "H3648", "start": "2026-11-03"}]
+    # 04:25 HST Nov 4 = layover hotel, before block-out at 06:05 HST: not in flight
+    assert inflight_at(legs, "2026-11-03", "2026-11-04T14:25:00+00:00") is False
+    # 07:00 HST Nov 4 = airborne SAN-HNL
+    assert inflight_at(legs, "2026-11-03", "2026-11-04T17:00:00+00:00") is True
+    # 22:00 HST Nov 3 = on the ground in SAN after block-in
+    assert inflight_at(legs, "2026-11-03", "2026-11-04T08:00:00+00:00") is False
+    assert inflight_at(legs, "bad", "2026-11-04T17:00:00+00:00") is None

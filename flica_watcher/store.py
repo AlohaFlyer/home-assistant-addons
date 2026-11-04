@@ -135,6 +135,7 @@ class Store:
                         "layover": r.get("layover"), "report": r.get("report"), "credit": r.get("credit"),
                         "turn": r.get("turn"), "captain": pk.get("ca") or r.get("captain") or "",
                         "prem": is_prem(r), "picked_by": pk.get("by", ""), "source": r.get("source", "pot"), "pickup_status": pk.get("status", ""), "pickup_known": bool(pk.get("known")),
+                        "inflt": pk.get("inflt"), "inflt_trip": pk.get("inflt_trip", ""),
                         "month": month, "seen": first, "gone": gone})
         return out
 
@@ -142,7 +143,14 @@ class Store:
     def picker_stats(self):
         with self.lock:
             rows = self.db.execute("SELECT emp,name,pos,n,total_s,last_at FROM pickers").fetchall()
-        return {e: {"name": nm, "pos": ps, "n": n, "total_s": t, "last_at": la} for e, nm, ps, n, t, la in rows}
+            pks = self.db.execute("SELECT pickup FROM finds WHERE pickup IS NOT NULL").fetchall()
+        out = {e: {"name": nm, "pos": ps, "n": n, "total_s": t, "last_at": la, "inflt_n": 0} for e, nm, ps, n, t, la in rows}
+        for (pk,) in pks:  # 0.5.2: in-flight pickups per picker, counted from the finds
+            pk = json.loads(pk)
+            who = picker_of(pk.get("by", "")) if pk.get("inflt") is True else None
+            if who and who[2] in out:
+                out[who[2]]["inflt_n"] += 1
+        return out
 
     def score_pickup(self, key):
         """Add this find's time in open time to its picker, once. Only when the seat was known (the
@@ -223,7 +231,40 @@ class Store:
             old = json.loads(old[0]) if old and old[0] else {}
             if old.get("scored") is not None and "scored" not in pickup:
                 pickup = dict(pickup, scored=old["scored"])  # 0.4.21: a re-check never scores the picker twice
+            if "inflt" in old and "inflt" not in pickup:  # 0.5.2: a re-check keeps the in-flight verdict
+                pickup = dict(pickup, inflt=old["inflt"], inflt_trip=old.get("inflt_trip", ""), inflt_tries=old.get("inflt_tries", 0))
             self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pickup), key))
+
+    def pickups_without_inflt(self, n=50, max_tries=3):
+        """0.5.2 (Ryan): filled pickups with a known picker (employee number) and no in-flight verdict yet:
+        [(key, emp, gone_at, tries)], newest first. A pickup that failed max_tries lookups is skipped."""
+        with self.lock:
+            rows = self.db.execute("SELECT key,pickup,gone_at FROM finds WHERE pickup IS NOT NULL AND gone_at IS NOT NULL "
+                                   "ORDER BY first_seen DESC LIMIT ?", (n,)).fetchall()
+        out = []
+        for k, pk, gone in rows:
+            pk = json.loads(pk) if pk else {}
+            if pk.get("status") != "filled" or "inflt" in pk or pk.get("inflt_tries", 0) >= max_tries:
+                continue
+            who = picker_of(pk.get("by", ""))
+            if who:
+                out.append((k, who[2], gone, pk.get("inflt_tries", 0)))
+        return out
+
+    def set_inflt(self, key, inflt, trip="", tries=None):
+        """Record the in-flight verdict (True / False / None = unknown after max tries) on the pickup."""
+        with self.lock:
+            r = self.db.execute("SELECT pickup FROM finds WHERE key=?", (key,)).fetchone()
+            if not r or not r[0]:
+                return
+            pk = json.loads(r[0])
+            if tries is not None:
+                pk["inflt_tries"] = tries
+                if inflt is None and tries < 3:
+                    self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), key))
+                    return
+            pk["inflt"], pk["inflt_trip"] = inflt, trip
+            self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), key))
 
     def gone_without_pickup(self, n=50):
         with self.lock:
