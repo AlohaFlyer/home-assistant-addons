@@ -27,7 +27,7 @@ import swap as SW
 import swapmap as SM
 import grid as G
 
-VERSION = "0.4.18"
+VERSION = "0.4.19"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -822,7 +822,8 @@ def own_trip_times(fl, full=False):
             continue
         k = f"{trip}|{it['start']}"
         keep.add(k)
-        old = k in own and own[k] and ("credit" not in own[k] or "duties" not in own[k] or "crew" not in own[k])  # cached before 0.4.9 / 0.4.15 / 0.4.17
+        old = k in own and own[k] and ("credit" not in own[k] or "duties" not in own[k] or "crew" not in own[k]
+                                             or (own[k].get("duties") and "blk" not in own[k]["duties"][0]))  # cached before 0.4.9 / 0.4.15 / 0.4.17 / 0.4.19
         if (k in own and not full and not old) or n >= (FULL_MAX if full else OWN_PER_CHECK):
             continue
         if n:
@@ -982,14 +983,43 @@ def schedule_check(fl, force=False):
     store = S.setdefault("schedule", {})
     n = b.split(".")[-1]
     tried = S.setdefault("sched_url_ok", "")
-    cands = [f"{BASE}/full/mobileschedule.cgi?BCID={p}.{n}&From=MainMenu" for p in ("001", "002", "004", "000")]
+    cands = [f"{BASE}/full/mobileschedule.cgi?BCID={p}.{n}&From=MainMenu" for p in ("003", "001", "002", "004", "000")]
     cands += [f"{BASE}/full/mobileschedule.cgi?BCID={b}&Priority=1&From=MainMenu",
               f"{BASE}/full/mobileschedule.cgi?BCID={b}&Priority=1&From=MobileOTDrop"]  # view only; GET never submits
     if tried in cands:
         cands.remove(tried)
         cands.insert(0, tried)
+    # 0.4.19: prefer the view that carries FLICA's Block / Credit totals (the OT drop view has none); the
+    # winning URL is tried first next time. At most 3 fetches per read, 1-2 s apart.
+    def accept(url, s):
+        old = store.get(s["month"])
+        if old and [(i["trip"], i["start"]) for i in old["items"]] != [(i["trip"], i["start"]) for i in s["items"]]:
+            ev = {"month": s["month"], "updated": s["updated"],
+                  "added": sorted({i["trip"] + " " + i["start"] for i in s["items"]} - {i["trip"] + " " + i["start"] for i in old["items"]}),
+                  "removed": sorted({i["trip"] + " " + i["start"] for i in old["items"]} - {i["trip"] + " " + i["start"] for i in s["items"]}),
+                  "totals": s["totals"]}
+            log.info("SCHEDULE changed %s", ev)
+            pub("event/schedule_changed", ev, retain=False)
+        S["sched_url_ok"] = url
+        store[s["month"]] = s
+        prev_month_check(fl, url, s["month"])  # 0.4.16: last month too, for 30 in 7 / 100 in 672 windows
+        keep = sorted(store)[-3:]
+        S["schedule"] = {k: store[k] for k in keep}
+        pub("schedule", {"updated": s["updated"] or now_iso(), "source": "FLICA mobile schedule (Watcher)",
+                         "checked": now_iso(),
+                         "months": {k: {kk: v[kk] for kk in ("items", "days", "totals", "updated")}
+                                    for k, v in S["schedule"].items()}})
+        log.info("schedule %s: %d items, totals %s", s["month"], len(s["items"]), s["totals"])
+        save_state(S)
+
+    fallback, tries = None, 0
     for url in cands:
+        if tries >= 3:
+            break
         try:
+            if tries:
+                time.sleep(random.uniform(1.0, 2.0))
+            tries += 1
             html = fl.fetch(url)
             if classify(html) != "ok":
                 log.info("schedule %s: %s", url.split("?")[1], classify(html))
@@ -1006,28 +1036,15 @@ def schedule_check(fl, force=False):
                     except Exception:
                         pass
                 continue
-            old = store.get(s["month"])
-            if old and [(i["trip"], i["start"]) for i in old["items"]] != [(i["trip"], i["start"]) for i in s["items"]]:
-                ev = {"month": s["month"], "updated": s["updated"],
-                      "added": sorted({i["trip"] + " " + i["start"] for i in s["items"]} - {i["trip"] + " " + i["start"] for i in old["items"]}),
-                      "removed": sorted({i["trip"] + " " + i["start"] for i in old["items"]} - {i["trip"] + " " + i["start"] for i in s["items"]}),
-                      "totals": s["totals"]}
-                log.info("SCHEDULE changed %s", ev)
-                pub("event/schedule_changed", ev, retain=False)
-            S["sched_url_ok"] = url
-            store[s["month"]] = s
-            prev_month_check(fl, url, s["month"])  # 0.4.16: last month too, for 30 in 7 / 100 in 672 windows
-            keep = sorted(store)[-3:]
-            S["schedule"] = {k: store[k] for k in keep}
-            pub("schedule", {"updated": s["updated"] or now_iso(), "source": "FLICA mobile schedule (Watcher)",
-                             "checked": now_iso(),
-                             "months": {k: {kk: v[kk] for kk in ("items", "days", "totals", "updated")}
-                                        for k, v in S["schedule"].items()}})
-            log.info("schedule %s: %d items, totals %s", s["month"], len(s["items"]), s["totals"])
-            save_state(S)
-            return
+            if "block" in s.get("totals", {}):
+                accept(url, s)
+                return
+            if fallback is None:
+                fallback = (url, s)  # parses but has no totals: keep looking, use it if nothing better turns up
         except Exception as e:
             log.info("schedule error %s: %s", url, e)
+    if fallback:
+        accept(*fallback)
 
 
 def detail_probe(fl, pot):
