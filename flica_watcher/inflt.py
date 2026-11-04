@@ -6,15 +6,32 @@ parses. A pickup counts as in flight only between a leg's block-out and block-in
 time do not. No pairing covering the pickup day = not in flight. Read only, GET only."""
 import os
 import random
+import re
 import time
 from datetime import date, datetime
 
-from pot import classify, inflight_at, parse_cm_schedule, parse_legs, visible_text
+from pot import CM_PAIR_RE, classify, inflight_at, parse_legs, visible_text
+
+# 0.5.5: the page builds its rows in JS: TAry[...]=new Task(1, "SU", "01", "H3647", "PHX", "20261101", 1, 0, 'H3647');
+TASK_RE = re.compile(r'new Task\(\s*\d+,\s*"[A-Z]{2}",\s*"\d{2}",\s*"([A-Z]\d{4}[A-Z]?)",\s*"[^"]*",\s*"(\d{8})"')
+
+
+def parse_cm_schedule(html):
+    """[{'trip', 'start'}] from a crewmember schedule page: its JS Task(...) rows (real pages) or
+    pair('H3648','20261103') links (rendered DOM), in page order, each pairing once."""
+    out, seen = [], set()
+    for trip, ymd in TASK_RE.findall(html or "") + CM_PAIR_RE.findall(html or ""):
+        k = (trip, ymd)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append({"trip": trip, "start": f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:]}"})
+    return out
 
 CM_SCHED = "{base}/full/cmschedules.cgi?GO=1&SchBrowser=1&Prompt=1&EmployeeID={emp}"
 CM_SCHED_MONTH = "{base}/full/cmschedules.cgi?Prompt=1&EmployeeID={emp}&bd={bd}&SchBrowser=1"
 PROBE = {"logged": 0}
-RESET_V = 4  # bump when the parser changes so stored verdicts are re-checked once
+RESET_V = 5  # bump when the parser changes so stored verdicts are re-checked once
 
 
 CAPTURE_DIR = "/share/flica_watcher/captures"
