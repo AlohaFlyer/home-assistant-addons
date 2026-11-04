@@ -20,7 +20,7 @@ from playwright.sync_api import sync_playwright
 import rules as R
 import web
 from far import far_check, window as far_window
-from pot import PAIRING_RE, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+from pot import PAIRING_RE, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 import tradeboard as TB
 import swap as SW
@@ -28,7 +28,7 @@ import swapmap as SM
 import grid as G
 import submit as SUB
 
-VERSION = "0.5.0"
+VERSION = "0.5.2"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -320,7 +320,7 @@ def publish_finds():
 def publish_pickers():
     """0.4.18 (Ryan): every FO/RO seen taking a trip, with their average time in open time, fastest first."""
     rows = [{"emp": e, "name": v["name"], "pos": v["pos"], "n": v["n"], "avg_s": int(v["total_s"] / v["n"]) if v["n"] else None,
-             "last_at": v["last_at"]} for e, v in DB.picker_stats().items()]
+             "inflt_n": v.get("inflt_n", 0), "last_at": v["last_at"]} for e, v in DB.picker_stats().items()]
     rows.sort(key=lambda r: (r["avg_s"] is None, r["avg_s"] or 0, r["name"]))
     pub("pickers", {"count": len(rows), "pickers": rows})
 
@@ -1553,7 +1553,67 @@ def pickup_check(fl, full=False):
         else:
             p["next"] = now + PICKUP_RETRY_S
     save_state(S)
+    if inflt_check(fl, FULL_MAX if full else INFLT_PER_CHECK):
+        done = True
     return done
+
+
+INFLT_PER_CHECK = 3
+CM_SCHED = f"{BASE}/full/cmschedules.cgi?GO=1&SchBrowser=1&Prompt=1&EmployeeID={{emp}}"
+CM_SCHED_MONTH = f"{BASE}/full/cmschedules.cgi?Prompt=1&EmployeeID={{emp}}&bd={{bd}}&SchBrowser=1"
+
+
+def inflt_check(fl, limit=INFLT_PER_CHECK):
+    """0.5.2 (Ryan): was the picker in flight when the trip left the pot? Read only: GET the picker's
+    month on Tools > Schedule Lookup (cmschedules.cgi, mapped 2026-11-03), take the pairings that cover
+    the pickup day, read each pairing's legs from its mobile page, and mark the pickup in flight when
+    the pickup instant falls between a leg's block-out and block-in (layover rest and ground time do
+    not count). No pairing on that day = not in flight. Three lookups per check, 1.5-3.5 s apart;
+    after 3 failed lookups the verdict stays unknown."""
+    todo = DB.pickups_without_inflt(50)
+    if not todo:
+        return False
+    cache, n, changed = {}, 0, False
+    for key, emp, gone, tries in todo:
+        if n >= limit:
+            break
+        n += 1
+        try:
+            d = datetime.fromisoformat(gone.replace("Z", "+00:00")).astimezone(HST)
+            bd = f"{d.month:02d}{d.year % 100:02d}"
+            ck = (emp, bd)
+            if ck not in cache:
+                if n > 1:
+                    time.sleep(random.uniform(1.5, 3.5))
+                url = CM_SCHED_MONTH.format(emp=emp, bd=bd) if bd != f"{local_now().month:02d}{local_now().year % 100:02d}" else CM_SCHED.format(emp=emp)
+                html = fl.fetch(url)
+                if classify(html) != "ok" or "schedule" not in visible_text(html).lower():
+                    log.info("inflt %s: schedule lookup for %s gave %s", key, emp, classify(html))
+                    DB.set_inflt(key, None, tries=tries + 1)
+                    continue
+                cache[ck] = parse_cm_schedule(html)
+            day = d.date()
+            cands = [p for p in cache[ck] if 0 <= (day - date.fromisoformat(p["start"])).days <= 6]
+            verdict, trip = False, ""
+            for pr in cands:
+                time.sleep(random.uniform(1.5, 3.5))
+                page = fl.fetch(f"{BASE}/full/mobilepairing.cgi?PID={pr['trip']}&DATE={pr['start'].replace('-', '')}"
+                                "&FROM=MobileOpentimePot&CurrentPage=1")
+                if classify(page) != "ok":
+                    continue
+                if inflight_at(parse_legs(visible_text(page)), pr["start"], gone):
+                    verdict, trip = True, f"{pr['trip']} {pr['start']}"
+                    break
+            DB.set_inflt(key, verdict, trip, tries=tries + 1)
+            log.info("inflt %s: picker %s %s at pickup (%s)", key, emp, "IN FLIGHT on " + trip if verdict else "not in flight",
+                     ", ".join(p["trip"] for p in cands) or "no trip that day")
+            changed = True
+        except Exception as e:
+            log.info("inflt %s skipped: %s", key, e)
+            DB.set_inflt(key, None, tries=tries + 1)
+    if changed:
+        publish_finds()
+    return changed
 
 
 FP_VERSION = 2  # bump when header_fingerprint changes, so stored hashes are re-learned
