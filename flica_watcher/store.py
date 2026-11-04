@@ -26,7 +26,12 @@ CREATE TABLE IF NOT EXISTS submissions (
 CREATE TABLE IF NOT EXISTS rule_live (rule_id TEXT PRIMARY KEY, live INTEGER NOT NULL, changed_at TEXT);
 CREATE TABLE IF NOT EXISTS pickers (
   emp TEXT PRIMARY KEY, name TEXT, pos TEXT, n INTEGER NOT NULL DEFAULT 0, total_s INTEGER NOT NULL DEFAULT 0, last_at TEXT);
+CREATE TABLE IF NOT EXISTS picker_log (
+  key TEXT PRIMARY KEY, emp TEXT NOT NULL, at TEXT NOT NULL, secs INTEGER, approx INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS picker_log_emp ON picker_log(emp, at);
 """
+HST = timezone(timedelta(hours=-10))
+LOG_KEEP_DAYS = 400  # 0.5.6: per-pickup log for month / year counts outlives the 90-day finds history
 EMP_RE = re.compile(r"\((\d{3,7})\)\s*$")
 
 
@@ -71,6 +76,7 @@ class Store:
         except sqlite3.OperationalError:
             pass
         self.default_state = default_state or {}
+        self._backfill_picker_log()
         if legacy_json and os.path.exists(legacy_json) and self.get("state") is None:
             try:
                 self.put("state", json.load(open(legacy_json)))
@@ -140,16 +146,45 @@ class Store:
         return out
 
     # ---- pickers (0.4.18, Ryan): how fast each FO/RO grabs a trip = seconds the find sat in open time
-    def picker_stats(self):
+    def _backfill_picker_log(self):
+        """0.5.6: one row per scored pickup (emp, when it left the pot) so month and year counts survive
+        the 90-day finds history. Idempotent; fills the log from already scored finds on every start."""
+        with self.lock:
+            rows = self.db.execute("SELECT key,gone_at,pickup FROM finds WHERE pickup IS NOT NULL AND gone_at IS NOT NULL").fetchall()
+            for k, gone, pk in rows:
+                pk = json.loads(pk)
+                who = picker_of(pk.get("by", "")) if pk.get("scored") is not None else None
+                if who:
+                    self.db.execute("INSERT OR IGNORE INTO picker_log(key,emp,at,secs,approx) VALUES(?,?,?,?,?)",
+                                    (k, who[2], gone, pk.get("scored"), int(bool(pk.get("approx")))))
+
+    def picker_stats(self, now=None):
+        """{emp: {name, pos, n, total_s, last_at, inflt_n, month_n, year_n}}; month and year are the
+        current HST month and year, counted from picker_log."""
+        now = now or datetime.now(HST)
+        ym, y = now.strftime("%Y-%m"), now.strftime("%Y")
         with self.lock:
             rows = self.db.execute("SELECT emp,name,pos,n,total_s,last_at FROM pickers").fetchall()
             pks = self.db.execute("SELECT pickup FROM finds WHERE pickup IS NOT NULL").fetchall()
-        out = {e: {"name": nm, "pos": ps, "n": n, "total_s": t, "last_at": la, "inflt_n": 0} for e, nm, ps, n, t, la in rows}
+            logs = self.db.execute("SELECT emp,at FROM picker_log").fetchall()
+        out = {e: {"name": nm, "pos": ps, "n": n, "total_s": t, "last_at": la, "inflt_n": 0, "month_n": 0, "year_n": 0}
+               for e, nm, ps, n, t, la in rows}
         for (pk,) in pks:  # 0.5.2: in-flight pickups per picker, counted from the finds
             pk = json.loads(pk)
             who = picker_of(pk.get("by", "")) if pk.get("inflt") is True else None
             if who and who[2] in out:
                 out[who[2]]["inflt_n"] += 1
+        for emp, at in logs:
+            if emp not in out:
+                continue
+            try:
+                loc = datetime.fromisoformat(at).astimezone(HST)
+            except ValueError:
+                continue
+            if loc.strftime("%Y") == y:
+                out[emp]["year_n"] += 1
+                if loc.strftime("%Y-%m") == ym:
+                    out[emp]["month_n"] += 1
         return out
 
     def score_pickup(self, key):
@@ -183,6 +218,8 @@ class Store:
             if approx:
                 pickup["approx"] = True
             self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pickup), key))
+            self.db.execute("INSERT OR IGNORE INTO picker_log(key,emp,at,secs,approx) VALUES(?,?,?,?,?)",
+                            (key, emp, gone, secs, int(approx)))
             self.db.execute("COMMIT")
             return secs
 
@@ -347,3 +384,4 @@ class Store:
             self.db.execute("DELETE FROM matches WHERE at<?", (cut,))
             self.db.execute("DELETE FROM finds WHERE gone_at IS NOT NULL AND gone_at<?", (cut,))
             self.db.execute("DELETE FROM submissions WHERE at<?", (cut,))
+            self.db.execute("DELETE FROM picker_log WHERE at<?", ((datetime.now(timezone.utc) - timedelta(days=LOG_KEEP_DAYS)).isoformat(),))
