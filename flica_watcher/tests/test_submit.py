@@ -42,3 +42,11 @@ def test_hours_until():
     assert S.hours_until("2026-11-04T08:00", now) == 12
     assert S.folder_for(S.hours_until("2026-11-04T08:00", now)) == "close-in"
     assert S.hours_until("bad", now) is None and S.folder_for(None) == "pot"
+
+
+def test_compose_drop_is_a_draft():
+    r = S.compose_drop("H3629|2026-11-14", "003.152", hours_to_report=200)
+    assert r["form"]["DropList"] == "H3629:20261114" and r["form"]["AddList"] == "" and not r["sendable"]
+    assert "not mapped" in r["why"]
+    r = S.compose_drop("H3629|2026-11-14", "003.152", hours_to_report=3)
+    assert r["folder"] == "close-in" and r["form"] is None

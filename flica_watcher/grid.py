@@ -125,3 +125,10 @@ def swap_allowed(grid, mine_days, new_days):
         return False, ["no shared day"]
     bad = [d for d in days_moved_off(mine_days, new_days) if (grid.get(d) or {}).get("color") != "green"]
     return (not bad), bad
+
+
+def drop_allowed(grid, days):
+    """(ok, bad_days): a drop can be approved only when NET RESERVES is green on every day of the trip
+    (Ryan's FLICA rule, 2026-11-03). Days without a grid entry count as not green."""
+    bad = [d for d in days if (grid.get(d) or {}).get("color") != "green"]
+    return (not bad), bad

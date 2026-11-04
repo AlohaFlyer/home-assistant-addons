@@ -54,3 +54,11 @@ def test_parse_grid_json_year_rollover():
     ]}}
     g = G.parse_grid_json(data, 2026)
     assert "2027-01-01" in g and g["2027-01-01"]["color"] == "black"
+
+
+def test_drop_allowed():
+    from grid import drop_allowed
+    g = {"2026-11-14": {"color": "green"}, "2026-11-15": {"color": "green"}, "2026-11-16": {"color": "red"}}
+    assert drop_allowed(g, ["2026-11-14", "2026-11-15"]) == (True, [])
+    assert drop_allowed(g, ["2026-11-14", "2026-11-16"]) == (False, ["2026-11-16"])
+    assert drop_allowed(g, ["2026-11-14", "2026-11-17"]) == (False, ["2026-11-17"])  # no grid entry = not green
