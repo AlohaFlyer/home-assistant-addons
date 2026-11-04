@@ -81,15 +81,21 @@ def fetch_schedule(fl, base, emp, bd, cur_bd, log, key):
 def run(fl, db, limit, log, local_now, base, hst):
     """Three pickups per check: look the picker's month up, read the pairings around the pickup day,
     decide. Returns True when any verdict was written."""
+    changed_early = False
+    if db.get("score_email_v") != 1:  # 0.5.6 one-shot: score the email-caught pickups recorded before 0.5.6
+        for k in db.unscored_pickups():
+            if db.score_pickup(k) is not None:
+                changed_early = True
+        db.put("score_email_v", 1)
     if db.get("inflt_reset_v") != RESET_V:  # verdicts from an older parser are looked up again, once
         db.reset_inflt()
         db.put("inflt_reset_v", RESET_V)
     todo = db.pickups_without_inflt(50)
     if not todo:
-        return False
+        return changed_early
     cur = local_now()
     cur_bd = f"{cur.month:02d}{cur.year % 100:02d}"
-    cache, n, changed = {}, 0, False
+    cache, n, changed = {}, 0, changed_early
     for key, emp, gone, tries in todo:
         if n >= limit:
             break

@@ -101,7 +101,7 @@ def test_picker_scoring(tmp_path):
     # unknown seat or email source: not scored
     db.add_find("H3609|06Nov", "2026-11", {"pairing": "H3609", "source": "email"}, "2026-11-03T21:25:00+00:00", gone="2026-11-03T21:26:00+00:00")
     db.set_pickup("H3609|06Nov", {"status": "filled", "by": "FO Doe, Pat (10008)", "ca": "", "known": True})
-    assert db.score_pickup("H3609|06Nov") is None
+    assert db.score_pickup("H3609|06Nov") == 60  # 0.5.6: email-caught pickups score from the alert time (approx)
 
 
 def test_recheck_keeps_score(tmp_path):
@@ -147,3 +147,31 @@ def test_reset_inflt(tmp_path):
     assert db.pickups_without_inflt() == []
     db.reset_inflt()
     assert [t[0] for t in db.pickups_without_inflt()] == ["H3647|07Nov"]
+
+
+def test_email_find_scored_approx(tmp_path):
+    db = Store(str(tmp_path / "e.db"))
+    db.add_find("H3647|07Nov", "2026-11", {"pairing": "H3647", "source": "email"}, "2026-11-04T14:24:00+00:00", gone="2026-11-04T14:25:00+00:00")
+    db.set_pickup("H3647|07Nov", {"status": "filled", "by": "FO Doe, Pat (10008)", "ca": "", "known": False})
+    assert db.score_pickup("H3647|07Nov") == 60
+    f = db.recent_finds()[0]
+    assert f["picker_approx"] is True and f["picker_avg_s"] == 60 and f["picker_n"] == 1
+    db.add_find("H3609|06Nov", "2026-11", {"pairing": "H3609", "source": "email"}, "2026-11-03T21:25:00+00:00", gone="2026-11-03T21:26:00+00:00")
+    db.set_pickup("H3609|06Nov", {"status": "filled", "by": "FO Doe, Pat (10008); RO Roe, Rick (10009)", "ca": "", "known": False})
+    assert db.score_pickup("H3609|06Nov") is None  # two candidates: seat unknown, not scored
+
+
+def test_picker_month_year_counts(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    db = Store(str(tmp_path / "m.db"))
+    db.add_find("H3825|03Nov", "2026-11", {"pairing": "H3825"}, "2026-11-03T22:12:00+00:00", gone="2026-11-03T22:14:17+00:00")
+    db.set_pickup("H3825|03Nov", {"status": "filled", "by": "FO Lane Jr, Chris (10007)", "ca": "", "known": True})
+    db.score_pickup("H3825|03Nov")
+    db.add_find("H3606|18Oct", "2026-10", {"pairing": "H3606"}, "2026-10-02T19:07:00+00:00", gone="2026-10-02T19:08:00+00:00")
+    db.set_pickup("H3606|18Oct", {"status": "filled", "by": "FO Lane Jr, Chris (10007)", "ca": "", "known": True})
+    db.score_pickup("H3606|18Oct")
+    now = datetime(2026, 11, 4, 8, 0, tzinfo=timezone(timedelta(hours=-10)))
+    st = db.picker_stats(now)["10007"]
+    assert st["n"] == 2 and st["month_n"] == 1 and st["year_n"] == 2
+    db2 = Store(str(tmp_path / "m.db"))  # reopen: log backfill is idempotent
+    assert db2.picker_stats(now)["10007"]["year_n"] == 2
