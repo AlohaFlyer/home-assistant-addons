@@ -27,7 +27,7 @@ import swap as SW
 import swapmap as SM
 import grid as G
 
-VERSION = "0.4.17"
+VERSION = "0.4.18"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -294,6 +294,15 @@ def publish_trade():
 
 def publish_finds():
     pub("finds", {"count": len(f := DB.recent_finds(50)), "finds": f})
+    publish_pickers()
+
+
+def publish_pickers():
+    """0.4.18 (Ryan): every FO/RO seen taking a trip, with their average time in open time, fastest first."""
+    rows = [{"emp": e, "name": v["name"], "pos": v["pos"], "n": v["n"], "avg_s": int(v["total_s"] / v["n"]) if v["n"] else None,
+             "last_at": v["last_at"]} for e, v in DB.picker_stats().items()]
+    rows.sort(key=lambda r: (r["avg_s"] is None, r["avg_s"] or 0, r["name"]))
+    pub("pickers", {"count": len(rows), "pickers": rows})
 
 
 def discovery(c):
@@ -310,6 +319,9 @@ def discovery(c):
                                  "value_template": "{{ value_json.count }}", "state_class": "measurement",
                                  "unit_of_measurement": "pairings",
                                  "json_attributes_topic": f"{T}/pot/state", "icon": "mdi:format-list-bulleted"}),
+        ("sensor", "pickers", {"name": "Pickers", "state_topic": f"{T}/pickers",
+                               "value_template": "{{ value_json.count }}",
+                               "json_attributes_topic": f"{T}/pickers", "icon": "mdi:account-group"}),
         ("sensor", "reserve_grid", {"name": "Reserve grid", "state_topic": f"{T}/grid/state",
                                     "value_template": "{{ value_json.green }}",
                                     "json_attributes_topic": f"{T}/grid/state", "icon": "mdi:grid"}),
@@ -1366,6 +1378,10 @@ def pickup_check(fl, full=False):
         for k in DB.gone_without_pickup(50):
             pend.setdefault(k, {"tries": 0, "next": 0})
         S["pickup_backfilled"] = True
+    if not S.get("pickers_scored"):  # 0.4.18: score every finished pickup once
+        for k in DB.unscored_pickups():
+            DB.score_pickup(k)
+        S["pickers_scored"] = True
     if not S.get("ids_backfilled"):  # 0.4.17 (Ryan): add employee numbers to finds recorded before 0.4.11
         for k in DB.pickups_without_ids(50):
             pend.setdefault(k, {"tries": 0, "next": 0})
@@ -1412,6 +1428,9 @@ def pickup_check(fl, full=False):
             DB.set_pickup(k, {"status": "filled", "by": who, "ca": ca, "known": known,
                               "at": now_iso()})
             log.info("pickup %s: %s (CA %s)", k, who, ca or "?")
+            secs = DB.score_pickup(k)  # 0.4.18: picker speed stats
+            if secs is not None:
+                log.info("picker %s: %s in open time", who, secs)
             pend.pop(k, None)
             done = True
         elif status == "open":
