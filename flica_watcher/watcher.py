@@ -27,7 +27,7 @@ import swap as SW
 import swapmap as SM
 import grid as G
 
-VERSION = "0.4.19"
+VERSION = "0.4.20"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -940,17 +940,18 @@ def prev_month_check(fl, ok_url, cur_month):
     store = S.setdefault("schedule", {})
     y, m = int(cur_month[:4]), int(cur_month[5:7])
     prev = f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
-    if S.get("sched_prev_v") == 2 and prev in store and time.time() - S.get("sched_prev_at", 0) < 86400:
+    if S.get("sched_prev_v") == 3 and prev in store and time.time() - S.get("sched_prev_at", 0) < 86400:
         return
-    if S.get("sched_prev_v") == 2 and time.time() - S.get("sched_prev_at", 0) < 3600:
+    if S.get("sched_prev_v") == 3 and time.time() - S.get("sched_prev_at", 0) < 3600:
         return
     mo = re.search(r"BCID=\d{3}\.(\d+)", ok_url)
     if not mo:
         return
     n = f"{int(mo.group(1)) - 1:03d}"
-    cands = [f"{BASE}/full/mobileschedule.cgi?BCID={p}.{n}&From=MainMenu" for p in ("001", "002", "003", "004", "000")]
-    cands += [f"{BASE}/full/mobileschedule.cgi?BCID={p}.{n}&Priority=1&From=MainMenu" for p in ("001", "003")]
-    S["sched_prev_v"] = 2
+    py, pm = int(prev[:4]), int(prev[5:7])
+    cands = [f"{BASE}/full/scheduledetail.cgi?BlockDate={pm:02d}{py % 100:02d}"]
+    cands += [f"{BASE}/full/mobileschedule.cgi?BCID={p}.{n}&From=MainMenu" for p in ("001", "003")]
+    S["sched_prev_v"] = 3
     S["sched_prev_at"] = time.time()
     seen = []
     for url in cands:
@@ -983,7 +984,11 @@ def schedule_check(fl, force=False):
     store = S.setdefault("schedule", {})
     n = b.split(".")[-1]
     tried = S.setdefault("sched_url_ok", "")
-    cands = [f"{BASE}/full/mobileschedule.cgi?BCID={p}.{n}&From=MainMenu" for p in ("003", "001", "002", "004", "000")]
+    # 0.4.20: the desktop schedule page (Schedules > month) carries FLICA's Block / Credit / YTD / Days Off and
+    # every leg; it is keyed by BlockDate=MMYY, not by BCID. Try it first for the pot month.
+    cur = local_now()
+    cands = [f"{BASE}/full/scheduledetail.cgi?BlockDate={cur.month:02d}{cur.year % 100:02d}"]
+    cands += [f"{BASE}/full/mobileschedule.cgi?BCID={p}.{n}&From=MainMenu" for p in ("003", "001", "002", "004", "000")]
     cands += [f"{BASE}/full/mobileschedule.cgi?BCID={b}&Priority=1&From=MainMenu",
               f"{BASE}/full/mobileschedule.cgi?BCID={b}&Priority=1&From=MobileOTDrop"]  # view only; GET never submits
     if tried in cands:
@@ -1025,6 +1030,14 @@ def schedule_check(fl, force=False):
                 log.info("schedule %s: %s", url.split("?")[1], classify(html))
                 continue
             s = parse_schedule(html)
+            if "scheduledetail" in url and not S.get("sched_detail_saved"):
+                try:
+                    os.makedirs(CAPTURE_DIR, exist_ok=True)
+                    open(f"{CAPTURE_DIR}/scheduledetail.html", "w").write(html)
+                    S["sched_detail_saved"] = True
+                    log.info("scheduledetail page saved (%d chars), parsed: %s", len(html), bool(s) and s.get("totals"))
+                except Exception:
+                    pass
             if not s:
                 log.info("schedule try %s: %s", url.split("?")[1], visible_text(html)[:120])
                 if not S.get("sched_probe_logged"):
