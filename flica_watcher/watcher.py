@@ -29,7 +29,7 @@ import grid as G
 import submit as SUB
 import inflt as IF
 
-VERSION = "0.5.6"
+VERSION = "0.6.0"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -148,6 +148,9 @@ def on_message(c, u, msg):
         return
     if msg.topic == f"{T}/trade/set":
         trade_cmd(msg.payload.decode(errors="replace"))
+        return
+    if msg.topic == f"{T}/drop/set":
+        drop_cmd(msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/swap_mode/set":
         swap_mode_cmd(msg.payload.decode(errors="replace").strip())
@@ -305,6 +308,74 @@ def trade_cmd(payload):
     publish_trade()
 
 
+def drop_cmd(payload):
+    """0.6.0 (Ryan): {"key": "H3629|2026-11-14"} toggles a trip Ryan would DROP once the reserve grid is
+    green on every day of it. Marking never files anything."""
+    try:
+        k = str(json.loads(payload)["key"])
+        trip, start = k.split("|")
+        date.fromisoformat(start)
+    except (ValueError, KeyError, TypeError):
+        log.info("drop mark ignored: %r", payload[:80])
+        return
+    keys = set(S.get("drop_away") or [])
+    (keys.discard if k in keys else keys.add)(k)
+    S["drop_away"] = sorted(keys)
+    if k not in keys:
+        (S.get("drop_ready") or {}).pop(k, None)
+    log.info("would drop %s: %s", k, k in keys)
+    publish_drop()
+
+
+def publish_drop():
+    live = {f"{it['trip']}|{it['start']}" for it in _sched_items()}
+    if live:
+        S["drop_away"] = [k for k in S.get("drop_away") or [] if k in live]
+    save_state(S)
+    pub("drop/state", {"count": len(S.get("drop_away") or []), "keys": S.get("drop_away") or [],
+                       "ready": S.get("drop_ready") or {}, "tests": (S.get("drop_tests") or [])[-20:]})
+
+
+def drop_scan():
+    """0.6.0 Test mode: for each 'would drop' trip, check NET RESERVES on every day of the trip. The first
+    time all days are green the Watcher pushes event/drop_ready and composes the drop request (logged,
+    never sent); a day turning red again re-arms the push. Live filing waits for the DROP page map."""
+    marks = S.get("drop_away") or []
+    if not marks:
+        return
+    grid = S.get("grid") or {}
+    ready = S.setdefault("drop_ready", {})
+    for k in marks:
+        it = next((x for x in _sched_items() if f"{x['trip']}|{x['start']}" == k), None)
+        if not it:
+            continue
+        days = [(date.fromisoformat(it["start"]) + timedelta(days=i)).isoformat()
+                for i in range((date.fromisoformat(it["end"]) - date.fromisoformat(it["start"])).days + 1)]
+        ok, bad = G.drop_allowed(grid, days)
+        if not ok:
+            if k in ready:
+                log.info("drop %s: grid red again on %s", k, ", ".join(bad))
+                ready.pop(k, None)
+            continue
+        if k in ready:
+            continue
+        b = sorted({bcid(u) for u in S.get("pot_urls", {}).values() if bcid(u)}, key=bcid_key)
+        own = S.get("own_trips", {}).get(k) or {}
+        rep_h = SUB.hours_until(f"{it['start']}T{(own.get('report') or '')[:5]}", local_now()) if own.get("report") else None
+        rec = SUB.compose_drop(k, b[0] if b else None, rep_h, close_in_bcid=S.get("close_in_bcid"))
+        rec.update({"key": k, "at": now_iso(), "days": days, "net": {d: (grid.get(d) or {}).get("net") for d in days},
+                    "mode": S.get("swap_mode") or SUB.DEFAULT_MODE, "sent": False,
+                    "hours_to_report": round(rep_h, 1) if rep_h is not None else None})
+        ready[k] = rec["at"]
+        tests = S.setdefault("drop_tests", [])
+        tests.append(rec)
+        del tests[:-20]
+        log.info("DROP READY (not sent): %s, grid green on %s; form %s", k, ", ".join(days), rec["form"])
+        pub("event/drop_ready", rec, retain=False)
+    save_state(S)
+    publish_drop()
+
+
 def publish_trade():
     live = {f"{it['trip']}|{it['start']}" for it in _sched_items()}
     if live:  # a trip that is gone from the schedule (traded, dropped) drops its mark
@@ -347,6 +418,9 @@ def discovery(c):
         ("sensor", "reserve_grid", {"name": "Reserve grid", "state_topic": f"{T}/grid/state",
                                     "value_template": "{{ value_json.green }}",
                                     "json_attributes_topic": f"{T}/grid/state", "icon": "mdi:grid"}),
+        ("sensor", "drop_away", {"name": "Would drop", "state_topic": f"{T}/drop/state",
+                                 "value_template": "{{ value_json.count }}",
+                                 "json_attributes_topic": f"{T}/drop/state", "icon": "mdi:tray-arrow-down"}),
         ("sensor", "trade_away", {"name": "Would trade", "state_topic": f"{T}/trade/state",
                                   "value_template": "{{ value_json.count }}",
                                   "json_attributes_topic": f"{T}/trade/state", "icon": "mdi:swap-horizontal-bold"}),
@@ -424,7 +498,7 @@ def mqtt_start():
         discovery(cl)
         for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set",
                   "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set",
-                  "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set"):
+                  "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set", "drop/set"):
             cl.subscribe(f"{T}/{t}")
         fq = freq()
         cl.publish(f"{T}/freq/normal_min/state", str(fq["normal_min"]), retain=True)
@@ -1741,6 +1815,7 @@ def check(fl):
     tradeboard_check(fl, full)
     grid_check(fl, full)
     swap_scan(flat)
+    drop_scan()
     if FLAGS.pop("swap_map", False):
         swap_map_probe(fl)
     pub("last_check", now_iso())
