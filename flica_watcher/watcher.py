@@ -30,8 +30,9 @@ import submit as SUB
 import inflt as IF
 import charter as CH
 import versions as VER
+import pdfs as PDF
 
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLICA_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -1093,6 +1094,54 @@ def versions_check(force_pub=False):
                 pub("event/schedule_version", {"versions": [v for _, v in made], "at": now_iso()}, retain=False)
     except Exception as e:
         log.info("schedule versions skipped: %s", e)
+
+
+UPLOADS = "/share/flica_watcher/uploads"
+CARD_PAIRINGS = "/homeassistant/www/flica"
+
+
+def uploads_check():
+    """0.9.1 (Ryan): parse the monthly PDFs uploaded on the Web UI (text copies made by pdftotext). Pairings
+    package -> the schedule card's pairing file (www/flica/pairings_<YYYY-MM>.json) and trip details; award ->
+    this month's version .001. Each file is handled again only when it changes. No FLICA traffic."""
+    try:
+        done = S.setdefault("uploads_done", {})
+        files = sorted(os.listdir(UPLOADS)) if os.path.isdir(UPLOADS) else []
+        for kind in ("pairings", "award"):  # the award needs that month's package details
+            for f in [x for x in files if x.endswith(f"_{kind}.txt")]:
+                path = os.path.join(UPLOADS, f)
+                sig = f"{os.path.getmtime(path):.0f}"
+                if done.get(f) == sig:
+                    continue
+                month = f[:7]
+                text = open(path, errors="replace").read()
+                if kind == "pairings":
+                    pj = PDF.package_json(text, os.path.basename(path)[:-4] + " (uploaded PDF), A332 HNL base")
+                    if pj["month"] != month or not pj["rows"]:
+                        log.info("upload %s: not a %s A332 pairing package (%s, %d rows)", f, month, pj["month"], len(pj["rows"]))
+                    else:
+                        os.makedirs(CARD_PAIRINGS, exist_ok=True)
+                        json.dump(pj, open(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json"), "w"), separators=(",", ":"))
+                        DB.put(f"pkg_details:{month}", PDF.package_details(text))
+                        log.info("upload %s: %d A332 pairings -> www/flica/pairings_%s.json", f, len(pj["rows"]), month)
+                else:
+                    det = DB.get(f"pkg_details:{month}")
+                    emp = S.get("own_emp") or ""
+                    if not det or not emp:
+                        log.info("upload %s: waiting for the %s pairing package and the employee number", f, month)
+                        continue
+                    aw = PDF.parse_award(text, emp, det, month)
+                    if not aw:
+                        log.info("upload %s: employee %s not in this award", f, emp)
+                    else:
+                        vers = VER.set_award(DB, month, aw, now_iso())
+                        log.info("upload %s: awarded line is version %s (%d items, credit %s); %d versions",
+                                 f, vers[0]["ver"], len(aw["items"]), aw["totals"].get("credit"), len(vers))
+                        versions_check(force_pub=True)
+                done[f] = sig
+                save_state(S)
+    except Exception as e:
+        log.info("uploads skipped: %s", e)
 
 
 def improved_cmd(payload):
@@ -2195,6 +2244,7 @@ def check(fl):
     schedule_check(fl, force=full or not S.get("schedule"))
     own_trip_times(fl, full)
     versions_check()
+    uploads_check()
     pot_all = {}
     new_any = False
     for month, url in list(S["pot_urls"].items()):
@@ -2329,6 +2379,7 @@ def main():
     publish_charters()
     publish_improved()
     versions_check(force_pub=True)
+    uploads_check()
     threading.Thread(target=charter_thread, daemon=True, name="charter").start()
     web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
               save_rules_from_page, DB, log)
