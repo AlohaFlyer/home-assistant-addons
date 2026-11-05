@@ -2,11 +2,18 @@
 Supervisor ingress proxy (172.30.32.2) may connect."""
 import html
 import json
+import os
+import re
+import subprocess
 import threading
+from email.parser import BytesParser
+from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
 INGRESS_IP = "172.30.32.2"
+UPLOAD_DIR = "/share/flica_watcher/uploads"
+UPLOAD_MAX = 25_000_000
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>FLICA Watcher rules</title>
 <style>
@@ -17,7 +24,17 @@ textarea{{width:100%;height:340px;font:13px ui-monospace,monospace;box-sizing:bo
 table{{border-collapse:collapse;width:100%;margin:8px 0 20px}}td,th{{border:1px solid #ccc;padding:4px 6px;text-align:left}}
 .err{{color:#c62828}}.ok{{color:#2e7d32}}.note{{opacity:.75}}button{{padding:6px 14px}}
 </style></head><body>
-<h2>FLICA Watcher {version} rules</h2>
+<h2>FLICA Watcher {version}</h2>
+<h3>Monthly PDFs</h3>
+<p class="note">0.9.0 (Ryan): upload the month's award (your line as awarded) and the pilot pairings package. They are
+kept in /share/flica_watcher/uploads (never committed) with a text copy, and parsed for the month's starting
+schedule and the tag-on ideas.</p>
+<form method="post" action="upload" enctype="multipart/form-data">
+Month <input type="month" name="month" required value="{month}"> &nbsp;
+<select name="kind"><option value="award">Monthly award</option><option value="pairings">Pairings package</option></select> &nbsp;
+<input type="file" name="pdf" accept="application/pdf,.pdf" required> &nbsp;<button type="submit">Upload</button></form>
+{uploads}
+<h3>Rules</h3>
 <p class="note">Read only until v0.3: rules alert and log what they <i>would</i> submit. Every rule starts
 in dry run; its live switch (switch.flica_rule_&lt;id&gt;_live) cannot turn on until the rule is 7 days old.</p>
 {msg}
@@ -58,6 +75,57 @@ def _table(rows, cols):
     return f"<table><tr>{h}</tr>{b}</table>"
 
 
+def _month_default():
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(hours=10)).strftime("%Y-%m")
+
+
+def _uploads_table():
+    try:
+        files = sorted(f for f in os.listdir(UPLOAD_DIR) if f.endswith(".pdf"))
+    except OSError:
+        files = []
+    if not files:
+        return "<p class='note'>Nothing uploaded yet.</p>"
+    rows = []
+    for f in files:
+        st = os.stat(os.path.join(UPLOAD_DIR, f))
+        txt = os.path.exists(os.path.join(UPLOAD_DIR, f[:-4] + ".txt"))
+        rows.append({"file": f, "size": f"{st.st_size // 1024} KB", "text copy": "yes" if txt else "no"})
+    return _table(rows, ["file", "size", "text copy"])
+
+
+def _save_upload(ctype, body, log):
+    """Store one PDF from a multipart form as <YYYY-MM>_<award|pairings>.pdf plus a pdftotext -layout copy."""
+    try:
+        msg = BytesParser(policy=HTTP).parsebytes(b"Content-Type: " + ctype.encode() + b"\r\n\r\n" + body)
+        fields, data = {}, None
+        for part in msg.iter_parts():
+            name = part.get_param("name", header="content-disposition")
+            if name == "pdf":
+                data = part.get_payload(decode=True)
+            elif name:
+                fields[name] = (part.get_payload(decode=True) or b"").decode(errors="replace").strip()
+        month, kind = fields.get("month", ""), fields.get("kind", "")
+        if not re.fullmatch(r"\d{4}-\d{2}", month) or kind not in ("award", "pairings"):
+            return "<p class='err'>Pick a month and a kind.</p>"
+        if not data or not data.startswith(b"%PDF"):
+            return "<p class='err'>That file is not a PDF.</p>"
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        path = os.path.join(UPLOAD_DIR, f"{month}_{kind}.pdf")
+        with open(path, "wb") as f:
+            f.write(data)
+        note = ""
+        try:
+            subprocess.run(["pdftotext", "-layout", path, path[:-4] + ".txt"], check=True, timeout=120)
+        except Exception as e:
+            note = f" (no text copy: {html.escape(str(e))[:120]})"
+        log.info("upload: %s %s saved (%d KB)%s", month, kind, len(data) // 1024, note)
+        return f"<p class='ok'>Saved {html.escape(os.path.basename(path))} ({len(data) // 1024} KB){note}.</p>"
+    except Exception as e:
+        return f"<p class='err'>Upload failed: {html.escape(str(e))}</p>"
+
+
 def serve(port, version, get_rules, save_rules, store, log):
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -71,7 +139,7 @@ def serve(port, version, get_rules, save_rules, store, log):
 
         def _page(self, msg="", draft=None):
             body = PAGE.format(
-                version=html.escape(version), msg=msg,
+                version=html.escape(version), msg=msg, month=_month_default(), uploads=_uploads_table(),
                 rules=html.escape(draft if draft is not None else json.dumps(get_rules(), indent=2)),
                 schema=html.escape(SCHEMA_HELP),
                 finds=_table(store.recent_finds(50), ["seen", "pairing", "dates", "days", "layover",
@@ -93,6 +161,10 @@ def serve(port, version, get_rules, save_rules, store, log):
             if not self._guard():
                 return
             n = int(self.headers.get("Content-Length", 0) or 0)
+            if self.path.rstrip("/").endswith("upload"):
+                if n > UPLOAD_MAX:
+                    return self._page("<p class='err'>File too large (25 MB max).</p>")
+                return self._page(_save_upload(self.headers.get("Content-Type", ""), self.rfile.read(n), log))
             if n > 200_000:
                 self.send_error(413)
                 return
