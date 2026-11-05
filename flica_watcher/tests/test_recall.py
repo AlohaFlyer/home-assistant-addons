@@ -74,3 +74,20 @@ def test_watcher_recall_flow(tmp_path, monkeypatch):
     n = len([1 for t, _ in sent if t == "event/recall_miss"])
     W.recall_cmd(json.dumps({"date": "2026-11-10", "rows": [_row()]}))
     assert len([1 for t, _ in sent if t == "event/recall_miss"]) == n
+
+
+def test_finds_month_files(tmp_path, monkeypatch):
+    import json, sys
+    monkeypatch.setenv("FLICA_DATA", str(tmp_path))
+    (tmp_path / "options.json").write_text(json.dumps({"username": "u", "password": "p"}))
+    sys.modules.pop("watcher", None)
+    import watcher as W
+    from store import Store
+    monkeypatch.setattr(W, "DB", Store(str(tmp_path / "t.db")))
+    monkeypatch.setattr(W, "CARD_PAIRINGS", str(tmp_path / "www"))
+    now = W.local_now()
+    W.DB.db.execute("INSERT INTO finds(key,pairing,month,row,first_seen,last_seen) VALUES(?,?,?,?,?,?)",
+                    ("k1", "H1", "m", '{"pairing":"H1"}', W.now_iso(), W.now_iso()))
+    W.write_finds_months()
+    f = tmp_path / "www" / f"finds_{now:%Y-%m}.json"
+    assert json.loads(f.read_text())["finds"][0]["pairing"] == "H1"

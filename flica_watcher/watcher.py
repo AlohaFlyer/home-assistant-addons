@@ -33,7 +33,7 @@ import versions as VER
 import pdfs as PDF
 import recall as RC
 
-VERSION = "0.9.2"
+VERSION = "0.9.4"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLICA_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -410,6 +410,33 @@ def publish_trade():
 def publish_finds():
     pub("finds", {"count": len(f := DB.recent_finds(50)), "finds": f})
     publish_pickers()
+    write_finds_months()
+
+
+FINDS_FILES = {"all": False}
+
+
+def write_finds_months():
+    """0.9.4 (Ryan): one file per HST month, www/flica/finds_<YYYY-MM>.json, for the finds card's month picker.
+    This month and last month on every check; all 24 months once per start. Read only, no FLICA traffic."""
+    try:
+        today = local_now().date().replace(day=1)
+        n = 24 if not FINDS_FILES["all"] else 2
+        os.makedirs(CARD_PAIRINGS, exist_ok=True)
+        for i in range(n):
+            y, m = divmod(today.year * 12 + today.month - 1 - i, 12)
+            a = datetime(y, m + 1, 1, 10, tzinfo=timezone.utc)  # 00:00 HST = 10:00 UTC
+            y2, m2 = divmod(y * 12 + m + 1, 12)
+            b = datetime(y2, m2 + 1, 1, 10, tzinfo=timezone.utc)
+            rows = DB.finds_between(a.isoformat(), b.isoformat())
+            path = os.path.join(CARD_PAIRINGS, f"finds_{y:04d}-{m + 1:02d}.json")
+            if rows or os.path.exists(path):
+                tmp = path + ".tmp"
+                json.dump({"month": f"{y:04d}-{m + 1:02d}", "count": len(rows), "finds": rows}, open(tmp, "w"), separators=(",", ":"))
+                os.replace(tmp, path)
+        FINDS_FILES["all"] = True
+    except Exception as e:
+        log.info("finds month files skipped: %s", e)
 
 
 def publish_pickers():
