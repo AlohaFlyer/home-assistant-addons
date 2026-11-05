@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.7
+- FLICA fetch counter (Ryan): every page the Watcher loads from FLICA is counted and published as `sensor.flica_watcher_flica_fetches` (total_increasing), for hourly / daily / monthly utility meters on the dashboard.
+- Schedule lookup accepts Ryan's own page (no Emp# on it).
+
 ## 0.8.6
 - Schedule codes read from Schedule Lookup are URL-decoded (October showed O%2FK for O/K).
 
