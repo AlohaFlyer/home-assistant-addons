@@ -28,8 +28,9 @@ import swapmap as SM
 import grid as G
 import submit as SUB
 import inflt as IF
+import charter as CH
 
-VERSION = "0.6.1"
+VERSION = "0.7.0"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -180,6 +181,9 @@ def on_message(c, u, msg):
     elif msg.topic == f"{T}/swap_map/press":
         FLAGS["swap_map"] = True  # 0.4.10: one read-only mapping pass on the next check
         log.info("swap map pressed: read-only mapping on the next check")
+    elif msg.topic == f"{T}/charter_scan/press":
+        CHARTER_WAKE.set()  # 0.7.0: scan CrewTrac now
+        log.info("charter scan pressed")
     elif msg.topic == f"{T}/check_now/press":
         # Waking the loop runs a check right away (only when idle or hunting; paused/stopped ignore it).
         if time.time() - S.get("last_check_ts", 0) < CHECK_NOW_MIN_GAP_S:
@@ -470,6 +474,11 @@ def discovery(c):
         ("switch", "pause", {"name": "Pause", "command_topic": f"{T}/pause/set",
                              "state_topic": f"{T}/pause/state", "icon": "mdi:pause-circle"}),
         ("button", "rearm", {"name": "Re-arm", "command_topic": f"{T}/rearm/press", "icon": "mdi:restart"}),
+        ("sensor", "charters", {"name": "Charters", "state_topic": f"{T}/charters",
+                                "value_template": "{{ value_json.count }}",
+                                "json_attributes_topic": f"{T}/charters", "icon": "mdi:airplane-alert"}),
+        ("button", "charter_scan", {"name": "Scan CrewTrac charters now", "command_topic": f"{T}/charter_scan/press",
+                                    "icon": "mdi:airplane-search"}),
         ("button", "swap_map", {"name": "Map swap pages (read only)", "command_topic": f"{T}/swap_map/press",
                                  "icon": "mdi:map-search", "entity_category": "diagnostic"}),
         ("button", "check_now", {"name": "Check now", "command_topic": f"{T}/check_now/press",
@@ -500,7 +509,7 @@ def mqtt_start():
         discovery(cl)
         for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set",
                   "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set",
-                  "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set", "drop/set"):
+                  "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set", "drop/set", "charter_scan/press"):
             cl.subscribe(f"{T}/{t}")
         fq = freq()
         cl.publish(f"{T}/freq/normal_min/state", str(fq["normal_min"]), retain=True)
@@ -1439,6 +1448,81 @@ def swap_map_probe(fl):
 AUTO_SWAP_PER_DAY = 1
 
 
+# ---------------------------------------------------------------- 0.7.0 charter watch (CrewTrac, read only)
+CHARTER_WAKE = threading.Event()
+
+
+def publish_charters(status=""):
+    known = DB.get("charters") or {}
+    items = sorted(known.values(), key=lambda r: (r.get("date", ""), r.get("scheduled", "")))
+    pub("charters", {"count": len([r for r in items if not r.get("gone")]), "items": items,
+                     "last_scan": DB.get("charter_scan_at") or "", "status": status or DB.get("charter_status") or "",
+                     "regular": sorted(CH.regular_set(OPTS.get("charter_regular")))})
+
+
+def charter_scan():
+    """One read-only pass over CrewTrac Scheduled Service: HNL departures and arrivals for the next 30
+    days, A330 rows that are 99xx or touch a non-regular station become sensor.flica_watcher_charters
+    entries; each new one fires event/charter once (HA pushes it)."""
+    u, p = (OPTS.get("ctweb_username") or "").strip(), OPTS.get("ctweb_password") or ""
+    if not u or not p:
+        DB.put("charter_status", "not configured: set ctweb_username and ctweb_password (CrewTrac) in the app Configuration tab")
+        publish_charters()
+        return False
+    sess = requests.Session()
+    sess.headers["User-Agent"] = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                                  "(KHTML, like Gecko) Chrome/130.0 Safari/537.36")
+    sc = CH.Scanner(sess, u, p, log, sleep=lambda: time.sleep(random.uniform(1.0, 2.5)))
+    today = local_now().date()
+    try:
+        if not sc.login():
+            DB.put("charter_status", f"CrewTrac login failed at {local_now().strftime('%H:%M')} HST; one try per scan")
+            publish_charters()
+            return False
+        rows = sc.scan(today)
+    except Exception as e:
+        DB.put("charter_status", f"scan error: {e}")
+        log.info("charter scan error: %s", e)
+        publish_charters()
+        return False
+    if rows is None:
+        DB.put("charter_status", "CrewTrac session dropped mid-scan")
+        publish_charters()
+        return False
+    found = CH.unusual(rows, CH.regular_set(OPTS.get("charter_regular")))
+    known, new = CH.merge(DB.get("charters") or {}, found, today.isoformat())
+    DB.put("charters", known)
+    DB.put("charter_scan_at", now_iso())
+    DB.put("charter_status", f"ok: {len(rows)} rows, {len(found)} unusual A330, {len(new)} new")
+    log.info("charter scan: %d rows, %d unusual A330 flights, %d new", len(rows), len(found), len(new))
+    for k in new:
+        r = known[k]
+        log.info("CHARTER %s %s %s %s (%s)", r.get("date"), r.get("flight"), r.get("route"), r.get("eqpt"), r.get("why"))
+        pub("event/charter", {"key": k, **{f: r.get(f) for f in ("date", "flight", "route", "scheduled", "eqpt", "tail", "why")}},
+            retain=False)
+    publish_charters()
+    return True
+
+
+def charter_thread():
+    """Every 6 h (or on the Scan button) in its own thread: CrewTrac is a separate site and session, so
+    this never touches the FLICA session or delays the pot checks."""
+    while True:
+        last = DB.get("charter_scan_at")
+        due = CH.SCAN_EVERY_S
+        if last:
+            try:
+                due = CH.SCAN_EVERY_S - (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds()
+            except ValueError:
+                due = 0
+        CHARTER_WAKE.wait(max(30, due + random.uniform(0, 600)) if not CHARTER_WAKE.is_set() else 0)
+        CHARTER_WAKE.clear()
+        try:
+            charter_scan()
+        except Exception as e:
+            log.info("charter thread: %s", e)
+
+
 def publish_swap_tests():
     tests = S.get("swap_tests") or []
     pub("swap_tests", {"count": len(tests), "tests": tests[-20:], "mode": S.get("swap_mode") or SUB.DEFAULT_MODE})
@@ -1862,6 +1946,8 @@ def main():
     publish_tradeboard()
     publish_own_trips()
     publish_trade()
+    publish_charters()
+    threading.Thread(target=charter_thread, daemon=True, name="charter").start()
     web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
               save_rules_from_page, DB, log)
     last_month_check = None
