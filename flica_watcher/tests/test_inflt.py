@@ -99,3 +99,9 @@ def test_cm_month_decodes_codes():
             '<select><option value="1026" selected> October</select>')
     s = inflt.parse_cm_month(html)
     assert [d[1] for d in s["days"]] == ["O/K", ""] and s["items"][0]["trip"] == "O/K"
+
+
+def test_schedule_ok_own_page_without_emp():
+    own = '<script>TAry[TAry.length]=new Task(1, "SU", "01", "H3647", "PHX", "20261101", 1, 0, \'x\');</script> November Schedule Last Updated: Nov 4, 2026'
+    assert inflt.schedule_ok(own)
+    assert not inflt.schedule_ok("<html>schedule details this is going to forward</html>")

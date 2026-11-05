@@ -111,7 +111,7 @@ def schedule_ok(html):
     (Emp#) and carries a Last Updated stamp. 'pair(' alone is not enough: the page's own JS defines
     function pair(...) even when no pairing links are rendered."""
     t = visible_text(html).lower()
-    return "emp#" in t and "last updated" in t
+    return "last updated" in t and ("emp#" in t or "new task(" in (html or "").lower())  # 0.8.7: Ryan's own page has no Emp#
 
 
 def capture(html, emp, log):
