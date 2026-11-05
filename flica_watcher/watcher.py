@@ -30,7 +30,7 @@ import submit as SUB
 import inflt as IF
 import charter as CH
 
-VERSION = "0.8.1"
+VERSION = "0.8.2"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -402,6 +402,7 @@ def publish_pickers():
     rows = [{"emp": e, "name": v["name"], "pos": v["pos"], "n": v["n"], "avg_s": int(v["total_s"] / v["n"]) if v["n"] else None,
              "inflt_n": v.get("inflt_n", 0), "month_n": v.get("month_n", 0), "year_n": v.get("year_n", 0),
              "lays": v.get("lays", []), "last_lay": v.get("last_lay", ""),  # 0.7.6: Common Layover
+             "min_s": v.get("min_s"),  # 0.8.2: Fastest Pickup Speed
              "last_at": v["last_at"]} for e, v in DB.picker_stats().items()]
     rows.sort(key=lambda r: (r["avg_s"] is None, r["avg_s"] or 0, r["name"]))
     pub("pickers", {"count": len(rows), "pickers": rows})
@@ -851,6 +852,7 @@ def enrich(fl, ev):
             page = fl.fetch(url)
             if classify(page) == "ok":
                 d = parse_detail(page)
+                DB.remember_crew(visible_text(page))  # 0.8.2: crew directory for name lookups
                 if not DETAIL_PROBE["done"]:
                     DETAIL_PROBE["done"] = True
                     log.info("detail text %s: %s", ev.get("pairing"), visible_text(page)[:2500])
@@ -1502,7 +1504,23 @@ def pilot_cmd(payload):
         d = json.loads(payload)
         emp = re.sub(r"\D", "", str(d.get("emp") or ""))
     except (ValueError, AttributeError):
-        emp = ""
+        d, emp = {}, ""
+    q = str(d.get("q") or "").strip()
+    if not emp and q:  # 0.8.2 (Ryan): free text: an employee number, or a name from the crew directory
+        if q.isdigit():
+            emp = q
+        else:
+            hits = DB.find_crew(q)
+            if len(hits) == 1:
+                emp, d["name"] = hits[0]["emp"], hits[0]["name"]
+            elif hits:
+                pub("pilot_schedule", {"emp": "", "name": q, "status": f"{len(hits)} pilots match '{q}', pick one", "matches": hits,
+                                       "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
+                return
+            else:
+                pub("pilot_schedule", {"emp": "", "name": q, "status": f"no pilot named '{q}' in the {DB.crew_count()} crew the Watcher has seen; enter the employee number",
+                                       "matches": [], "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
+                return
     if not emp:
         return
     S["pilot_req"] = {"emp": emp, "name": d.get("name") or "", "at": now_iso()}
@@ -1559,6 +1577,7 @@ def pilot_check(fl):
             it.update({k: d.get(k, "") for k in ("blk", "credit", "captain", "tafb")})
             it["soft"] = soft_time(it.get("credit"), it.get("blk")) or ""
             txt = visible_text(page)
+            DB.remember_crew(txt)
             it["legs"] = [{"dow": dw, "route": f"{a}-{b}".upper(), "dep": dep, "arr": arr, "blk": blk}
                           for dw, a, b, dep, arr, blk in LEG_FULL_RE.findall(txt)][:12]
             it["crew"] = parse_crew(txt)[:6]
@@ -2078,6 +2097,19 @@ def main():
         S["fp_version"] = FP_VERSION
         save_state(S)
         log.info("pot header fingerprints cleared for fingerprint v%d", FP_VERSION)
+    if DB.get("crew_dir_v") != 1:  # 0.8.2 one-shot: seed the crew directory from pickers and captains already recorded
+        n = 0
+        for e, v in DB.picker_stats().items():
+            DB.remember_person(e, v["name"], v["pos"])
+            n += 1
+        for f in DB.recent_finds(500):
+            for who in (f.get("picked_by") or "").split("; ") + [("CA " + f["captain"]) if f.get("captain") else ""]:
+                m = re.match(r"(CA|FO|RO)\s+(.*?)\s*\((\d{3,7})\)\s*$", who or "")
+                if m:
+                    DB.remember_person(m.group(3), m.group(2), m.group(1))
+                    n += 1
+        DB.put("crew_dir_v", 1)
+        log.info("crew directory seeded with %d names (%d total)", n, DB.crew_count())
     if DB.get("score_v") != 2:  # 0.7.6 one-shot: Pickup Speed recomputed with the vetted dwell() for every scored pickup
         DB.rescore_all()
         DB.put("score_v", 2)
