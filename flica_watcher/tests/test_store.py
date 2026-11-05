@@ -211,3 +211,15 @@ def test_dwell_vetting(tmp_path):
     f = db.recent_finds()[0]
     assert f["dwell_s"] == 146 and f["dwell_pm_s"] == 6 and db.picker_stats()["10008"]["total_s"] == 146
     assert not db.set_alert_at("H3676|16Nov", "2026-11-04T16:36:00+00:00")  # a later alert does not win
+
+
+def test_crew_directory(tmp_path):
+    from store import Store
+    db = Store(str(tmp_path / "c.db"))
+    assert db.remember_crew("pairing details h3601 ... crew: ca 14393 rodriguez jr, ckp harold ca 15638 wong, sohngkrahn fo 24984 romano, matthew fo open") == 3
+    db.remember_person("10007", "Lane Jr, Chris", "FO")
+    assert db.crew_count() == 4
+    assert [r["emp"] for r in db.find_crew("romano")] == ["24984"]
+    assert db.find_crew("matthew romano")[0]["name"] == "Romano, Matthew" and db.find_crew("romano, matt")[0]["pos"] == "FO"
+    assert [r["emp"] for r in db.find_crew("143")] == ["14393"] and db.find_crew("10007")[0]["emp"] == "10007"
+    assert db.find_crew("nobody") == [] and db.find_crew("") == []

@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS pickers (
 CREATE TABLE IF NOT EXISTS picker_log (
   key TEXT PRIMARY KEY, emp TEXT NOT NULL, at TEXT NOT NULL, secs INTEGER, approx INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS picker_log_emp ON picker_log(emp, at);
+CREATE TABLE IF NOT EXISTS crew_dir (
+  emp TEXT PRIMARY KEY, name TEXT NOT NULL, pos TEXT, seen_at TEXT);
 """
 HST = timezone(timedelta(hours=-10))
 LOG_KEEP_DAYS = 400  # 0.5.6: per-pickup log for month / year counts outlives the 90-day finds history
@@ -271,6 +273,56 @@ class Store:
                             (key, emp, gone, secs, int(approx), lay_of(row)))
             self.db.execute("COMMIT")
             return secs
+
+    # ---- crew directory (0.8.2, Ryan: look anybody up by name)
+    def remember_crew(self, text):
+        """Every 'POS emp Name' on a pairing page's crew line goes into crew_dir (newest position wins)."""
+        from pot import CREW_RE
+        m = re.search(r"crew\s*:\s*(.*)$", text or "", re.I | re.S)
+        if not m:
+            return 0
+        n, t = 0, datetime.now(timezone.utc).isoformat()
+        with self.lock:
+            for pos, emp, name in CREW_RE.findall(m.group(1)):
+                name = name.strip(" ,")
+                if not emp or name.lower() == "open":
+                    continue
+                self.db.execute("INSERT INTO crew_dir(emp,name,pos,seen_at) VALUES(?,?,?,?) ON CONFLICT(emp) DO UPDATE SET "
+                                "name=excluded.name, pos=excluded.pos, seen_at=excluded.seen_at", (emp, name.title(), pos.upper(), t))
+                n += 1
+        return n
+
+    def remember_person(self, emp, name, pos=""):
+        if not emp or not name:
+            return
+        with self.lock:
+            self.db.execute("INSERT INTO crew_dir(emp,name,pos,seen_at) VALUES(?,?,?,?) ON CONFLICT(emp) DO UPDATE SET "
+                            "name=excluded.name, pos=COALESCE(NULLIF(excluded.pos,''), pos)",
+                            (str(emp), name, pos or "", datetime.now(timezone.utc).isoformat()))
+
+    def find_crew(self, q):
+        """[{emp, name, pos}] whose name contains every word of q (last, first, any order) or whose employee
+        number starts with q. Exact employee numbers come first."""
+        q = (q or "").strip().lower()
+        if not q:
+            return []
+        with self.lock:
+            rows = self.db.execute("SELECT emp,name,pos FROM crew_dir").fetchall()
+        words = [w for w in re.split(r"[\s,]+", q) if w]
+        out = []
+        for emp, name, pos in rows:
+            nm = (name or "").lower()
+            if q.isdigit():
+                if emp.startswith(q):
+                    out.append({"emp": emp, "name": name, "pos": pos or ""})
+            elif all(w in nm for w in words):
+                out.append({"emp": emp, "name": name, "pos": pos or ""})
+        out.sort(key=lambda r: (r["emp"] != q, r["name"]))
+        return out[:20]
+
+    def crew_count(self):
+        with self.lock:
+            return self.db.execute("SELECT COUNT(*) FROM crew_dir").fetchone()[0]
 
     def set_alert_at(self, key, at):
         """0.7.6: remember FLICA's alert time for a known find (earliest wins); a scored pickup is rescored."""
