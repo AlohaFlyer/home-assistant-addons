@@ -2134,6 +2134,7 @@ def pub_pilot(payload):
 CREW_FROM = CI.CREW_FROM
 CREW_PER_RUN = 300
 CREW_PER_CHECK = 50
+CREW_PER_CHECK_HUNT = 8  # about 20 s, so a hunt check is barely delayed
 CREW_SLOT_H = 6  # runs at 00:00, 06:00, 12:00, 18:00 HST
 CREW_DIR = "/share/flica_watcher/crew_index"
 
@@ -2168,8 +2169,9 @@ def crew_index_check(fl):
     rows = DB.crew_rows()
     todo = CI.queue(insts, rows, local_now(), run["started"])
     n, res, halted = 0, "ok", False
+    per_check = CREW_PER_CHECK_HUNT if FLAGS.get("hunt") else CREW_PER_CHECK  # hunting: short chunks, pot first
     for k in todo:
-        if run["pages"] >= CREW_PER_RUN or n >= CREW_PER_CHECK:
+        if run["pages"] >= CREW_PER_RUN or n >= per_check:
             break
         if FLAGS["pause"] or FLAGS["rearm"]:
             log.info("crew index: pause / re-arm, chunk stopped (run continues later)")
@@ -2202,7 +2204,7 @@ def crew_index_check(fl):
         DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], crew, at, "ok")
         DB.remember_crew(vt)
     # the run is over when its budget is used, a page ended it, or the queue ran dry before the chunk filled
-    done = res != "ok" or run["pages"] >= CREW_PER_RUN or (n < CREW_PER_CHECK and not halted)
+    done = res != "ok" or run["pages"] >= CREW_PER_RUN or (n < per_check and not halted)
     if done:
         S.pop("crew_run", None)
         S["crew_last"] = {"at": now_iso(), "pages": run["pages"], "why": run["why"], "ended": res}
