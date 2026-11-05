@@ -30,7 +30,7 @@ import submit as SUB
 import inflt as IF
 import charter as CH
 
-VERSION = "0.7.0"
+VERSION = "0.7.1"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -1509,7 +1509,7 @@ def charter_thread():
     this never touches the FLICA session or delays the pot checks."""
     while True:
         last = DB.get("charter_scan_at")
-        due = CH.SCAN_EVERY_S
+        due = 0  # 0.7.1: no scan yet = scan now (0.7.0 waited the full 6 h first)
         if last:
             try:
                 due = CH.SCAN_EVERY_S - (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds()
