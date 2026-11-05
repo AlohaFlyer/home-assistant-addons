@@ -60,7 +60,8 @@ def test_watcher_recall_flow(tmp_path, monkeypatch):
     sent = []
     monkeypatch.setattr(W, "pub", lambda t, p, retain=True: sent.append((t, p)))
     W.DB.put("pkg_details:2026-11", DET)
-    W.recall_cmd(json.dumps({"date": "2026-11-10", "rows": [_row()], "me": {"sen": 500}}))
+    nodate = {k: v for k, v in _row().items() if k != "date"}
+    W.recall_cmd(json.dumps({"date": "2026-11-10", "rows": [nodate], "me": {"sen": 500}}))
     ev = [p for t, p in sent if t == "event/recall_miss"]
     assert ev and ev[0]["verdict"] == "MISSED"
     st = [p for t, p in sent if t == "recall"][-1]

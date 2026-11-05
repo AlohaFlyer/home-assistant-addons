@@ -169,5 +169,7 @@ def narrative(v, me, name="", emp=""):
     return "\n\n".join(lines)
 
 
-def check_day(rows, me, sched_items, own_trips, blocked, details):
-    return [evaluate(r, me, sched_items, own_trips, blocked, details) for r in rows or []]
+def check_day(rows, me, sched_items, own_trips, blocked, details, day=None):
+    """Rows usually carry no date of their own: the list's date is the award date."""
+    return [evaluate({"date": day, **{k: v for k, v in r.items() if v not in (None, "")}}, me, sched_items, own_trips, blocked, details)
+            for r in rows or []]
