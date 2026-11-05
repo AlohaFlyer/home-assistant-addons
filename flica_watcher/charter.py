@@ -23,7 +23,8 @@ SCAN_EVERY_S = 6 * 3600
 HUB = "HNL"
 # Regular A330 stations (editable in the app Configuration tab, option charter_regular).
 REGULAR = ("HNL OGG KOA LIH ITO LAX SFO SAN SEA PDX LAS PHX SMF OAK SJC JFK BOS "
-           "SYD AKL NRT HND KIX ICN PPG")
+           "SYD AKL NRT HND KIX ICN PPG PPT")
+ISLANDS = {"HNL", "OGG", "KOA", "LIH", "ITO"}  # 99xx legs between these are positioning, not charters
 A330 = ("332", "333")
 CHARTER_FLT = 9900
 
@@ -77,22 +78,23 @@ def login_form(html):
     return form.get("action") or "", {"fields": fields, "user": user_key, "pass": pass_key}
 
 
+ROUTE_RE = re.compile(r"[A-Z]{3}-[A-Z]{3}")
+FLT_RE = re.compile(r"\d{1,4}[A-Z]?")
+
+
 def parse_rows(html):
     """[{cancelled, flight, route, scheduled, estimated, actual, eqpt, tail, orig}] from the Scheduled
-    Service table (the one whose header row has Org-Dest). Empty when no table rows."""
+    Service page. 0.7.4: the header sits in its own table and the rows in TABLE id REPORTINFO, so rows
+    are matched by shape (flight number in column 2, XXX-YYY route in column 3). Empty when none."""
     soup = BeautifulSoup(html or "", "html.parser")
     out = []
-    for table in soup.find_all("table"):
-        heads = [c.get_text(" ", strip=True).lower() for c in table.find_all("th")]
-        if not any("org-dest" in h for h in heads):
+    body = soup.find("table", id=re.compile("REPORTINFO", re.I)) or soup
+    for tr in body.find_all("tr"):
+        cells = [c.get_text(" ", strip=True).replace("\xa0", " ").strip() for c in tr.find_all("td", recursive=False)]
+        if len(cells) < 7 or not FLT_RE.fullmatch(cells[1] or "") or not ROUTE_RE.fullmatch(cells[2] or ""):
             continue
-        for tr in table.find_all("tr"):
-            cells = [c.get_text(" ", strip=True) for c in tr.find_all("td")]
-            if len(cells) < 7 or not re.fullmatch(r"\d{1,4}[A-Z]?", cells[1] or ""):
-                continue
-            cells += [""] * (len(HEADERS) - len(cells))
-            out.append(dict(zip(HEADERS, cells[:len(HEADERS)])))
-        break
+        cells += [""] * (len(HEADERS) - len(cells))
+        out.append(dict(zip(HEADERS, [re.sub(r"\s+", " ", c) for c in cells[:len(HEADERS)]])))
     return out
 
 
@@ -114,10 +116,13 @@ def flag(row, regular):
         n = int(re.sub(r"\D", "", row.get("flight") or "0") or 0)
     except ValueError:
         n = 0
-    if n >= CHARTER_FLT:
-        return "99xx charter"
     org, _, dest = (row.get("route") or "").partition("-")
-    for st in (org.strip().upper(), dest.strip().upper()):
+    org, dest = org.strip().upper(), dest.strip().upper()
+    if org == dest or (row.get("cancelled") or "").strip().lower().startswith("y"):
+        return ""  # 0.7.4: same-station legs (9940 HNL-HNL) are test or maintenance flights; cancelled rows are not news
+    if n >= CHARTER_FLT and not (org in ISLANDS and dest in ISLANDS):
+        return "99xx charter"
+    for st in (org, dest):
         if st and st not in regular:
             return f"{st} not a regular A330 station"
     return ""
