@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1
+
+- Crew index (Ryan): Ryan's instance rebuilds any HNL A330 pilot's month from the crew lines on the pairing pages. Trip instances come from the card's pairing files (www/flica/pairings_<YYYY-MM>.json, on or after Oct 31 2026; a day number past the month's end, or a late number ahead of a smaller one, is last month's, `D<n>` next month's; trip end = start + rel_days). Runs at the first check after 00:00, 06:00, 12:00 and 18:00 HST and on the new button "Update schedules" (`flica_watcher/crew_scan/press`): at most 300 pages per run, read 50 per check between pot checks, 1.5 to 3.5 s apart, GET only; order: never read (soonest first), failed over a day ago, departing within 72 h and read over 6 h ago, departed but read before departure (once), then the oldest-read future trips; a departed trip read after departure is never read again. A killed, expired or captcha page ends the run. Results in SQLite (crew_idx, crew_emp), `sensor.flica_watcher_crew_index` (coverage %, `flica_watcher/crew_index`) and one Markdown file per month in /share/flica_watcher/crew_index/<YYYY-MM>.md (a section per pilot, Date | Pairing | Seat | Route | Days).
+- Pilot lookup: every `flica_watcher/pilot_schedule` publish carries `reconstructed` (that pilot's trips in the shown month from the crew index: pairing, start, end, seat, route, checked_at), `reconstructed_coverage_pct` and `reconstructed_month`, also when FLICA's schedule page is hidden or errors.
+- Tickets (Ryan): bug reports and feature requests on `<prefix>/ticket/new` {kind bug|feature, title, narrative, steps?, expected?, page?, version?, image? (JPEG or PNG data URL, 2 MB max)}, numbered FW-0001 on across both pilots and kept in /share/flica_watcher/tickets/FW-nnnn/ (ticket.json, screenshot.jpg or .png). `<prefix>/ticket/act` {id, action triage|progress|fixed|verify|reopen|close|note, text?, version?} moves the status (new, triaged, in_progress, fixed, closed, reopened) with a history line. `sensor.<prefix>_tickets` (open count; `<prefix>/tickets` lists all tickets on Ryan's instance, a second pilot's own only), `<prefix>/event/ticket_new` on each new one, `<prefix>/event/ticket_error` when one is refused.
+
 ## 0.10.0
 
 - Renamed Flight Watcher (Ryan): app, device and Web UI names; entity ids unchanged.
