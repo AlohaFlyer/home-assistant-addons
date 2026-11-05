@@ -6,6 +6,6 @@ RUN python3 -m pip install --no-cache-dir playwright==1.48.0 paho-mqtt==2.1.0 be
  && python3 -c "import playwright, paho.mqtt, bs4, requests; print('deps ok')"
 
 WORKDIR /app
-COPY watcher.py pot.py far.py tradeboard.py rules.py store.py web.py swap.py swapmap.py grid.py submit.py inflt.py charter.py versions.py pdfs.py /app/
+COPY watcher.py pot.py far.py tradeboard.py rules.py store.py web.py swap.py swapmap.py grid.py submit.py inflt.py charter.py versions.py pdfs.py recall.py /app/
 
 CMD ["python3", "-u", "/app/watcher.py"]

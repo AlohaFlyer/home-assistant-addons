@@ -31,8 +31,9 @@ import inflt as IF
 import charter as CH
 import versions as VER
 import pdfs as PDF
+import recall as RC
 
-VERSION = "0.9.1"
+VERSION = "0.9.2"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLICA_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -151,6 +152,12 @@ def on_message(c, u, msg):
         return
     if msg.topic == f"{T}/improved/set":
         improved_cmd(msg.payload.decode(errors="replace"))
+        return
+    if msg.topic == f"{T}/recall/set":
+        recall_cmd(msg.payload.decode(errors="replace"))
+        return
+    if msg.topic == f"{T}/recall/act":
+        recall_act(msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/trade/set":
         trade_cmd(msg.payload.decode(errors="replace"))
@@ -281,6 +288,9 @@ def publish_rules(c):
 def publish_blocked():
     """0.4.4: days Ryan tapped off on the schedule card (no pickups wanted). Past days drop off."""
     today = local_now().date().isoformat()
+    old = [d for d in set(S.get("blocked_days") or []) if d < today]
+    if old:  # 0.9.2: the recall check looks back at past days, so keep what was blocked
+        DB.put("blocked_hist", sorted(set(DB.get("blocked_hist") or []) | set(old))[-400:])
     S["blocked_days"] = sorted(d for d in set(S.get("blocked_days") or []) if d >= today)
     save_state(S)
     pub("blocked/state", {"count": len(S["blocked_days"]), "days": S["blocked_days"]})
@@ -456,6 +466,8 @@ def discovery(c):
         ("sensor", "improved_pay", {"name": "Improved pay gross", "state_topic": f"{T}/improved_pay",
                                      "value_template": "{{ value_json.improved }}", "unit_of_measurement": "USD",
                                      "json_attributes_topic": f"{T}/improved_pay", "icon": "mdi:cash-plus"}),
+        ("sensor", "recall", {"name": "Recall O75", "state_topic": f"{T}/recall", "value_template": "{{ value_json.open }}",
+                               "json_attributes_topic": f"{T}/recall", "icon": "mdi:alert-octagon"}),
         ("sensor", "schedule_versions", {"name": "Schedule versions", "state_topic": f"{T}/schedule_versions",
                                           "value_template": "{{ value_json.count }}",
                                           "json_attributes_topic": f"{T}/schedule_versions", "icon": "mdi:history"}),
@@ -531,7 +543,7 @@ def mqtt_start():
         for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set",
                   "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set",
                   "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set", "drop/set", "charter_scan/press", "pilot/set",
-                  "improved/set"):
+                  "improved/set", "recall/set", "recall/act"):
             cl.subscribe(f"{T}/{t}")
         fq = freq()
         cl.publish(f"{T}/freq/normal_min/state", str(fq["normal_min"]), retain=True)
@@ -1164,6 +1176,98 @@ def improved_cmd(payload):
         publish_improved()
     except Exception as e:
         log.info("improved pay skipped: %s", e)
+
+
+def recall_me():
+    me = {"sen": None, "seat": "FO", "o75": True, **(DB.get("recall_me") or {})}
+    return me
+
+
+def recall_cmd(payload):
+    """0.9.2 (Ryan): Hark posts each day's HNL recall list from Alaska Flight Ops SharePoint here (HA webhook ->
+    MQTT recall/set): {"date": "YYYY-MM-DD", "file": "ok|blank|not posted", "rows": [{kind recall|o75|junior,
+    seat, pilot, sen, pairing, report?, last_arr?, days?, blk?}], "me": {sen, seat, o75}?}. A list of such days
+    is accepted too. Each row is judged against Ryan's line (recall.py, PWA 22.G.2 / FAR 117) and kept in the DB."""
+    try:
+        d = json.loads(payload or "{}")
+        days = d if isinstance(d, list) else [d]
+        if isinstance(d, dict) and d.get("me"):
+            DB.put("recall_me", {**(DB.get("recall_me") or {}), **{k: v for k, v in d["me"].items() if k in ("sen", "seat", "o75")}})
+        allr = DB.get("recall_days") or {}
+        for day in days:
+            dk = str(day.get("date") or "")[:10]
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", dk):
+                continue
+            allr[dk] = {"date": dk, "file": day.get("file") or ("ok" if day.get("rows") else "blank"),
+                        "rows": day.get("rows") or [], "at": now_iso()}
+        DB.put("recall_days", dict(sorted(allr.items())[-120:]))
+        recall_eval(notify=True)
+    except Exception as e:
+        log.info("recall list skipped: %s", e)
+
+
+def recall_eval(notify=False):
+    me = recall_me()
+    allr, acts = DB.get("recall_days") or {}, DB.get("recall_acts") or {}
+    blocked = sorted(set(DB.get("blocked_hist") or []) | set(S.get("blocked_days") or []))
+    det = {}
+    for dk in {k[:7] for k in allr}:
+        det.update(DB.get(f"pkg_details:{dk}") or {})
+    items, own = _sched_items(), S.get("own_trips") or {}
+    fresh = []
+    for dk, day in allr.items():
+        day["verdicts"] = RC.check_day(day.get("rows"), me, items, own, blocked, det)
+        for v in day["verdicts"]:
+            v["id"] = f"{v['date']}|{v['pairing']}|{v['kind']}"
+            a = acts.get(v["id"])
+            if v["verdict"] in ("MISSED", "POSSIBLE") and not a:
+                a = acts[v["id"]] = {"status": "new", "narrative": RC.narrative(v, me, S.get("own_name") or "", S.get("own_emp") or ""),
+                                     "at": now_iso()}
+                fresh.append(v)
+            v["act"] = a or {}
+    DB.put("recall_days", allr)
+    DB.put("recall_acts", acts)
+    publish_recall()
+    if notify:
+        for v in fresh:
+            pub("event/recall_miss", {"id": v["id"], "verdict": v["verdict"], "date": v["date"], "pairing": v["pairing"],
+                                      "kind": v["kind"], "sen": v["sen"], "why": "; ".join(v["why"])}, retain=False)
+
+
+def recall_act(payload):
+    """{id, action: confirm|dismiss|approve|filed|reopen, narrative?, ccr?}. Ryan's answers from the push or the tab.
+    approve stores his reviewed narrative; nothing is filed by the Watcher itself."""
+    try:
+        d = json.loads(payload or "{}")
+        if d.get("me"):
+            DB.put("recall_me", {**(DB.get("recall_me") or {}), **{k: v for k, v in d["me"].items() if k in ("sen", "seat", "o75")}})
+            recall_eval()
+            return
+        acts = DB.get("recall_acts") or {}
+        a = acts.get(str(d.get("id")))
+        st = {"confirm": "confirmed", "dismiss": "dismissed", "approve": "approved", "filed": "filed", "reopen": "new"}.get(d.get("action"))
+        if not a or not st:
+            return
+        a["status"], a["at"] = st, now_iso()
+        if isinstance(d.get("narrative"), str) and d["narrative"].strip():
+            a["narrative"] = d["narrative"].strip()[:6000]
+        if d.get("ccr"):
+            a["ccr"] = str(d["ccr"])[:80]
+        DB.put("recall_acts", acts)
+        recall_eval()
+        if st == "approved":
+            pub("event/recall_approved", {"id": d["id"], "narrative": a["narrative"]}, retain=False)
+    except Exception as e:
+        log.info("recall action skipped: %s", e)
+
+
+def publish_recall():
+    allr, acts = DB.get("recall_days") or {}, DB.get("recall_acts") or {}
+    days = [{k: v for k, v in allr[k].items() if k != "rows"} for k in sorted(allr)[-45:]]
+    opn = [v for d in days for v in d.get("verdicts") or [] if (v.get("act") or {}).get("status") in ("new", "confirmed", "approved")]
+    alert = [v for v in opn if v["verdict"] == "MISSED" or (v.get("act") or {}).get("status") in ("confirmed", "approved")]
+    pub("recall", {"open": len(opn), "alert": len(alert), "me": recall_me(), "last": days[-1]["date"] if days else "",
+                   "days": days[::-1]})
 
 
 def publish_improved():
@@ -2380,6 +2484,7 @@ def main():
     publish_improved()
     versions_check(force_pub=True)
     uploads_check()
+    recall_eval()
     threading.Thread(target=charter_thread, daemon=True, name="charter").start()
     web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
               save_rules_from_page, DB, log)
