@@ -35,6 +35,32 @@ LOG_KEEP_DAYS = 400  # 0.5.6: per-pickup log for month / year counts outlives th
 EMP_RE = re.compile(r"\((\d{3,7})\)\s*$")
 
 
+def dwell(first, last, gone, alert=None):
+    """(seconds, plus_minus) the trip sat in open time. 0.7.6 (Ryan: vet Pickup Speed): it entered the pot
+    at FLICA's alert time when that is earlier than the Watcher's first sighting; it was picked up some
+    time after the last check that still listed it and by the check that found it gone, so the estimate
+    is the middle of that window and plus_minus is half the window. None when gone is unknown."""
+    if not gone:
+        return None, None
+    try:
+        f, g = datetime.fromisoformat(first), datetime.fromisoformat(gone)
+        l = datetime.fromisoformat(last) if last else f
+        entry = min(f, datetime.fromisoformat(alert)) if alert else f
+    except (TypeError, ValueError):
+        return None, None
+    lo, hi = max(l, entry), max(g, entry)
+    mid = lo + (hi - lo) / 2
+    return max(0, int((mid - entry).total_seconds())), int((hi - lo).total_seconds() / 2)
+
+
+def lay_of(row):
+    """'LAX' from a find row: its layover, else its turn station (PPG), else ''."""
+    lay = (row or {}).get("layover") or ""
+    if lay.strip().lower() in ("", "-", "-none-", "none"):
+        lay = (row or {}).get("turn") or ""
+    return lay.strip().upper()
+
+
 def picker_of(by):
     """('FO', 'Lane Jr, Chris', '10007') from 'FO Lane Jr, Chris (10007)'; None without a number."""
     m = EMP_RE.search(by or "")
@@ -73,6 +99,14 @@ class Store:
         self.db.executescript(SCHEMA)
         try:  # 0.3.7: who picked up the open seat once a find leaves the pot (JSON)
             self.db.execute("ALTER TABLE finds ADD COLUMN pickup TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:  # 0.7.6 (Ryan): the layover (or turn station) of each scored pickup, for Common Layover
+            self.db.execute("ALTER TABLE picker_log ADD COLUMN lay TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:  # 0.7.6 (Ryan): when FLICA's alert email for the find was sent (the true pot-entry time)
+            self.db.execute("ALTER TABLE finds ADD COLUMN alert_at TEXT")
         except sqlite3.OperationalError:
             pass
         self.default_state = default_state or {}
@@ -126,16 +160,18 @@ class Store:
 
     def recent_finds(self, n=50):
         with self.lock:
-            rows = self.db.execute("SELECT key,row,month,first_seen,gone_at,pickup FROM finds "
+            rows = self.db.execute("SELECT key,row,month,first_seen,gone_at,pickup,last_seen,alert_at FROM finds "
                                    "ORDER BY first_seen DESC LIMIT ?", (n,)).fetchall()
         out = []
         stats = self.picker_stats()
-        for key, row, month, first, gone, pickup in rows:
+        for key, row, month, first, gone, pickup, last, alert in rows:
             r = json.loads(row)
             pk = json.loads(pickup) if pickup else {}
             who = picker_of(pk.get("by", ""))
             st = stats.get(who[2]) if who else None
+            secs, pm = dwell(first, last, gone, alert)
             out.append({"pairing": r.get("pairing"), "dates": r.get("dates"), "days": r.get("days"),
+                        "dwell_s": secs, "dwell_pm_s": pm, "alert_at": alert or "",
                         "picker_emp": who[2] if who else "", "picker_n": st["n"] if st else 0,
                         "picker_avg_s": int(st["total_s"] / st["n"]) if st and st["n"] else None,
                         "layover": r.get("layover"), "report": r.get("report"), "credit": r.get("credit"),
@@ -150,31 +186,44 @@ class Store:
         """0.5.6: one row per scored pickup (emp, when it left the pot) so month and year counts survive
         the 90-day finds history. Idempotent; fills the log from already scored finds on every start."""
         with self.lock:
-            rows = self.db.execute("SELECT key,gone_at,pickup FROM finds WHERE pickup IS NOT NULL AND gone_at IS NOT NULL").fetchall()
-            for k, gone, pk in rows:
+            rows = self.db.execute("SELECT key,gone_at,pickup,row FROM finds WHERE pickup IS NOT NULL AND gone_at IS NOT NULL").fetchall()
+            for k, gone, pk, row in rows:
                 pk = json.loads(pk)
                 who = picker_of(pk.get("by", "")) if pk.get("scored") is not None else None
                 if who:
-                    self.db.execute("INSERT OR IGNORE INTO picker_log(key,emp,at,secs,approx) VALUES(?,?,?,?,?)",
-                                    (k, who[2], gone, pk.get("scored"), int(bool(pk.get("approx")))))
+                    lay = lay_of(json.loads(row) if row else {})
+                    self.db.execute("INSERT OR IGNORE INTO picker_log(key,emp,at,secs,approx,lay) VALUES(?,?,?,?,?,?)",
+                                    (k, who[2], gone, pk.get("scored"), int(bool(pk.get("approx"))), lay))
+                    self.db.execute("UPDATE picker_log SET lay=? WHERE key=? AND (lay IS NULL OR lay='')", (lay, k))
 
     def picker_stats(self, now=None):
-        """{emp: {name, pos, n, total_s, last_at, inflt_n, month_n, year_n}}; month and year are the
-        current HST month and year, counted from picker_log."""
+        """{emp: {name, pos, n, total_s, last_at, inflt_n, month_n, year_n, lays, last_lay}}; month and
+        year are the current HST month and year, counted from picker_log. 0.7.6: lays = [[station, count]]
+        most picked first (ties: most recent first); last_lay = the most recent pickup's layover."""
         now = now or datetime.now(HST)
         ym, y = now.strftime("%Y-%m"), now.strftime("%Y")
         with self.lock:
             rows = self.db.execute("SELECT emp,name,pos,n,total_s,last_at FROM pickers").fetchall()
             pks = self.db.execute("SELECT pickup FROM finds WHERE pickup IS NOT NULL").fetchall()
-            logs = self.db.execute("SELECT emp,at FROM picker_log").fetchall()
-        out = {e: {"name": nm, "pos": ps, "n": n, "total_s": t, "last_at": la, "inflt_n": 0, "month_n": 0, "year_n": 0}
+            logs = self.db.execute("SELECT emp,at,lay FROM picker_log ORDER BY at").fetchall()
+        out = {e: {"name": nm, "pos": ps, "n": n, "total_s": t, "last_at": la, "inflt_n": 0, "month_n": 0, "year_n": 0,
+                   "lays": [], "last_lay": ""}
                for e, nm, ps, n, t, la in rows}
+        counts, latest = {}, {}
+        for emp, at, lay in logs:
+            if emp in out and lay:
+                counts.setdefault(emp, {}).setdefault(lay, 0)
+                counts[emp][lay] += 1
+                latest.setdefault(emp, {})[lay] = at
+                out[emp]["last_lay"] = lay
+        for emp, c in counts.items():
+            out[emp]["lays"] = [[l, n] for l, n in sorted(c.items(), key=lambda kv: (kv[1], latest[emp][kv[0]]), reverse=True)]
         for (pk,) in pks:  # 0.5.2: in-flight pickups per picker, counted from the finds
             pk = json.loads(pk)
             who = picker_of(pk.get("by", "")) if pk.get("inflt") is True else None
             if who and who[2] in out:
                 out[who[2]]["inflt_n"] += 1
-        for emp, at in logs:
+        for emp, at, _ in logs:
             if emp not in out:
                 continue
             try:
@@ -192,10 +241,10 @@ class Store:
         name is certain), the find was seen in the pot (not email-caught: its dwell is unknown) and the
         picker has an employee number. Returns the seconds scored, or None."""
         with self.lock:
-            r = self.db.execute("SELECT row,first_seen,gone_at,pickup FROM finds WHERE key=?", (key,)).fetchone()
+            r = self.db.execute("SELECT row,first_seen,gone_at,pickup,last_seen,alert_at FROM finds WHERE key=?", (key,)).fetchone()
             if not r:
                 return None
-            row, first, gone, pickup = json.loads(r[0]), r[1], r[2], json.loads(r[3]) if r[3] else {}
+            row, first, gone, pickup, last, alert = json.loads(r[0]), r[1], r[2], json.loads(r[3]) if r[3] else {}, r[4], r[5]
             if pickup.get("scored") or pickup.get("status") != "filled" or not gone:
                 return None
             # 0.5.6 (Ryan: always complete the data): an email-caught find has no pot dwell, but the FLICA alert
@@ -207,7 +256,7 @@ class Store:
             who = picker_of(pickup.get("by", ""))
             if not who:
                 return None
-            secs = max(0, int((datetime.fromisoformat(gone) - datetime.fromisoformat(first)).total_seconds()))
+            secs, _ = dwell(first, last, gone, alert)  # 0.7.6: alert time in, middle of the gone window out
             pos, name, emp = who
             self.db.execute("BEGIN")
             self.db.execute("INSERT INTO pickers(emp,name,pos,n,total_s,last_at) VALUES(?,?,?,1,?,?) "
@@ -218,10 +267,41 @@ class Store:
             if approx:
                 pickup["approx"] = True
             self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pickup), key))
-            self.db.execute("INSERT OR IGNORE INTO picker_log(key,emp,at,secs,approx) VALUES(?,?,?,?,?)",
-                            (key, emp, gone, secs, int(approx)))
+            self.db.execute("INSERT OR IGNORE INTO picker_log(key,emp,at,secs,approx,lay) VALUES(?,?,?,?,?,?)",
+                            (key, emp, gone, secs, int(approx), lay_of(row)))
             self.db.execute("COMMIT")
             return secs
+
+    def set_alert_at(self, key, at):
+        """0.7.6: remember FLICA's alert time for a known find (earliest wins); a scored pickup is rescored."""
+        with self.lock:
+            r = self.db.execute("SELECT alert_at,pickup FROM finds WHERE key=?", (key,)).fetchone()
+            if not r or (r[0] and r[0] <= at):
+                return False
+            self.db.execute("UPDATE finds SET alert_at=? WHERE key=?", (at, key))
+        self.rescore_all([key])
+        return True
+
+    def rescore_all(self, keys=None):
+        """0.7.6 (Ryan: vet Pickup Speed): recompute every scored pickup with dwell() and rebuild the
+        pickers totals and picker_log seconds from them. Idempotent."""
+        with self.lock:
+            rows = self.db.execute("SELECT key,first_seen,last_seen,gone_at,alert_at,pickup FROM finds "
+                                   "WHERE pickup IS NOT NULL AND gone_at IS NOT NULL").fetchall()
+            self.db.execute("BEGIN")
+            for k, first, last, gone, alert, pk in rows:
+                pk = json.loads(pk)
+                if pk.get("scored") is None or (keys and k not in keys):
+                    continue
+                secs, _ = dwell(first, last, gone, alert)
+                if secs is None or secs == pk["scored"]:
+                    continue
+                pk["scored"] = secs
+                self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), k))
+                self.db.execute("UPDATE picker_log SET secs=? WHERE key=?", (secs, k))
+            self.db.execute("UPDATE pickers SET total_s=(SELECT COALESCE(SUM(secs),0) FROM picker_log WHERE picker_log.emp=pickers.emp), "
+                            "n=(SELECT COUNT(*) FROM picker_log WHERE picker_log.emp=pickers.emp)")
+            self.db.execute("COMMIT")
 
     def unscored_pickups(self):
         with self.lock:
