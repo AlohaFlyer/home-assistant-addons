@@ -223,3 +223,14 @@ def test_crew_directory(tmp_path):
     assert db.find_crew("matthew romano")[0]["name"] == "Romano, Matthew" and db.find_crew("romano, matt")[0]["pos"] == "FO"
     assert [r["emp"] for r in db.find_crew("143")] == ["14393"] and db.find_crew("10007")[0]["emp"] == "10007"
     assert db.find_crew("nobody") == [] and db.find_crew("") == []
+
+
+def test_finds_between_month(tmp_path):
+    from store import Store
+    db = Store(str(tmp_path / "f.db"))
+    db.db.execute("INSERT INTO finds(key,pairing,month,row,first_seen,last_seen) VALUES(?,?,?,?,?,?)",
+                  ("k1", "H1", "m", '{"pairing":"H1"}', "2026-11-02T00:00:00+00:00", "2026-11-02T00:00:00+00:00"))
+    db.db.execute("INSERT INTO finds(key,pairing,month,row,first_seen,last_seen) VALUES(?,?,?,?,?,?)",
+                  ("k2", "H2", "m", '{"pairing":"H2"}', "2026-10-15T00:00:00+00:00", "2026-10-15T00:00:00+00:00"))
+    got = db.finds_between("2026-11-01T10:00:00+00:00", "2026-12-01T10:00:00+00:00")
+    assert [f["pairing"] for f in got] == ["H1"]

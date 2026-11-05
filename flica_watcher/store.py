@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS crew_dir (
   emp TEXT PRIMARY KEY, name TEXT NOT NULL, pos TEXT, seen_at TEXT);
 """
 HST = timezone(timedelta(hours=-10))
-LOG_KEEP_DAYS = 400  # 0.5.6: per-pickup log for month / year counts outlives the 90-day finds history
+LOG_KEEP_DAYS = 731  # 0.9.4: 24 months (Ryan); 0.5.6: per-pickup log for month / year counts outlives the 90-day finds history
 EMP_RE = re.compile(r"\((\d{3,7})\)\s*$")
 
 
@@ -81,7 +81,7 @@ def fmt_dur(sec):
     if sec >= 60:
         return f"{sec // 60}m {sec % 60:02d}s"
     return f"{sec}s"
-KEEP_DAYS = 90
+KEEP_DAYS = 731  # 0.9.4 (Ryan): finds, matches and submissions kept 24 months
 
 
 def is_prem(row):
@@ -164,6 +164,16 @@ class Store:
         with self.lock:
             rows = self.db.execute("SELECT key,row,month,first_seen,gone_at,pickup,last_seen,alert_at FROM finds "
                                    "ORDER BY first_seen DESC LIMIT ?", (n,)).fetchall()
+        return self._find_rows(rows)
+
+    def finds_between(self, start_iso, end_iso):
+        """0.9.4 (Ryan): every find first seen in [start, end), newest first, for the month picker."""
+        with self.lock:
+            rows = self.db.execute("SELECT key,row,month,first_seen,gone_at,pickup,last_seen,alert_at FROM finds "
+                                   "WHERE first_seen>=? AND first_seen<? ORDER BY first_seen DESC", (start_iso, end_iso)).fetchall()
+        return self._find_rows(rows)
+
+    def _find_rows(self, rows):
         out = []
         stats = self.picker_stats()
         for key, row, month, first, gone, pickup, last, alert in rows:
