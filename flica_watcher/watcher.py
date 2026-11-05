@@ -33,18 +33,53 @@ import versions as VER
 import pdfs as PDF
 import recall as RC
 
-VERSION = "0.9.4"
+VERSION = "0.10.0"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLICA_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
 DB_FILE = f"{DATA}/watcher.db"
 RULES_FILE = f"{DATA}/rules.json"
 COOKIES = f"{DATA}/storage_state.json"
-OPTS = json.load(open(f"{DATA}/options.json"))
+# 0.10.0: a second pilot runs as another watcher.py from the same add-on (run.py). The instance gets its own
+# MQTT prefix (T), its own /data folder and its own credentials (creds.json, set over MQTT); the add-on
+# options stay Ryan's.
+T = os.environ.get("FLICA_PREFIX", "flica_watcher")
+INSTANCE = os.environ.get("FLICA_INSTANCE", "")
+OPTIONS_FILE = os.environ.get("FLICA_OPTIONS", f"{DATA}/options.json")
+CREDS_FILE = f"{DATA}/creds.json"
+CRED_KEYS = ("username", "password", "ctweb_username", "ctweb_password", "my_name")
+
+
+def load_creds():
+    """creds.json: the per-pilot values set over {T}/settings/set (never the add-on options). {} when absent."""
+    try:
+        if os.path.exists(CREDS_FILE):
+            d = json.load(open(CREDS_FILE))
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def load_opts():
+    """Add-on options; an instance drops Ryan's credentials from them, then creds.json (non-empty keys only)
+    overlays for any instance."""
+    o = json.load(open(OPTIONS_FILE))
+    if INSTANCE:
+        for k in CRED_KEYS:
+            o.pop(k, None)
+        o.pop("second_pilot", None)
+    for k, v in load_creds().items():
+        if k in CRED_KEYS and isinstance(v, str) and v.strip():
+            o[k] = v.strip()
+    return o
+
+
+OPTS = load_opts()
 
 logging.basicConfig(
     level=getattr(logging, OPTS.get("log_level", "info").upper()),
-    format="%(asctime)s %(levelname)s %(message)s",
+    format=f"%(asctime)s %(levelname)s {'[' + INSTANCE + '] ' if INSTANCE else ''}%(message)s",
 )
 log = logging.getLogger("flica")
 
@@ -54,8 +89,10 @@ MONTHS = ["January", "February", "March", "April", "May", "June", "July", "Augus
 BACKOFF_MIN = [1, 2, 4, 8, 16, 30]  # minutes before each re-login on repeated needs_login; then park
 HST = timezone(timedelta(hours=-10))
 
-T = "flica_watcher"
 AVAIL = f"{T}/status"
+# 0.10.0: Ryan's rule switches keep their flica_rule_<id>_live ids; an instance's are <T>_rule_<id>_live
+RULE_UID = f"{T}_rule" if INSTANCE else "flica_rule"
+SHARE = f"/share/flica_watcher/{INSTANCE}" if INSTANCE else "/share/flica_watcher"
 
 
 def now_iso():
@@ -159,6 +196,9 @@ def on_message(c, u, msg):
     if msg.topic == f"{T}/recall/act":
         recall_act(msg.payload.decode(errors="replace"))
         return
+    if msg.topic == f"{T}/settings/set":
+        settings_cmd(msg.payload.decode(errors="replace"))
+        return
     if msg.topic == f"{T}/trade/set":
         trade_cmd(msg.payload.decode(errors="replace"))
         return
@@ -255,8 +295,66 @@ def rule_live_cmd(c, rid, want):
     log.info("rule %s live=%s", rid, want)
 
 
-DEV = {"identifiers": ["flica_watcher"], "name": "FLICA Watcher", "manufacturer": "Pako HI",
-       "sw_version": VERSION}
+DEV = {"identifiers": [T], "name": "Flight Watcher" + (f" ({INSTANCE.title()})" if INSTANCE else ""),
+       "manufacturer": "Pako HI", "sw_version": VERSION}
+
+
+def settings_state(creds=None):
+    """What {T}/settings/state says: who is configured, never a password."""
+    o = {**OPTS, **{k: v for k, v in (creds or {}).items() if k in CRED_KEYS and isinstance(v, str) and v.strip()}}
+    return {"instance": INSTANCE, "username": o.get("username") or "", "my_name": o.get("my_name") or "",
+            "ctweb_username": o.get("ctweb_username") or "", "has_password": bool(o.get("password")),
+            "has_ctweb_password": bool(o.get("ctweb_password")), "at": now_iso()}
+
+
+def publish_settings(c=None, creds=None):
+    (c or MQ).publish(f"{T}/settings/state", json.dumps(settings_state(creds)), retain=True)
+
+
+def settings_cmd(payload):
+    """0.10.0: {T}/settings/set {username?, password?, ctweb_username?, ctweb_password?, my_name?} merges the
+    non-empty values into creds.json (mode 600), publishes settings/state (no passwords) and restarts this
+    watcher after RESTART_DELAY_S so run.py brings it back with the new credentials."""
+    try:
+        d = json.loads(payload)
+        if not isinstance(d, dict):
+            raise ValueError("not an object")
+    except (ValueError, TypeError) as e:
+        log.info("settings ignored: %s", e)
+        return False
+    cur = load_creds()
+    changed = []
+    for k in CRED_KEYS:
+        v = d.get(k)
+        if isinstance(v, str) and v.strip() and cur.get(k) != v.strip():
+            cur[k] = v.strip()
+            changed.append(k)
+    if not changed:
+        log.info("settings: nothing new (keys %s)", ", ".join(sorted(k for k in d if k in CRED_KEYS)) or "none")
+        publish_settings(creds=cur)
+        return False
+    tmp = CREDS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cur, f)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, CREDS_FILE)
+    publish_settings(creds=cur)
+    log.info("settings saved (%s); restarting in %d s to use them", ", ".join(changed), RESTART_DELAY_S)
+    restart_later()
+    return True
+
+
+RESTART_DELAY_S = 2
+
+
+def restart_later():
+    threading.Thread(target=_restart, daemon=True, name="restart").start()
+
+
+def _restart():
+    time.sleep(RESTART_DELAY_S)  # let the settings/state publish go out
+    log.info("restarting for new settings")
+    os._exit(3)
 
 
 def publish_rules(c):
@@ -266,15 +364,15 @@ def publish_rules(c):
     flags = DB.live_flags()
     ids = {r["id"] for r in lst}
     for rid in RULES["published"] - ids:
-        c.publish(f"homeassistant/switch/flica_watcher/rule_{rid}_live/config", "", retain=True)
+        c.publish(f"homeassistant/switch/{T}/rule_{rid}_live/config", "", retain=True)
         c.publish(f"{T}/rule/{rid}/live/state", "", retain=True)
         DB.drop_live(rid)
     for r in lst:
         cfg = {"availability_topic": AVAIL, "device": DEV, "name": f"Rule {r['name']} live",
-               "unique_id": f"flica_rule_{r['id']}_live", "object_id": f"flica_rule_{r['id']}_live",
+               "unique_id": f"{RULE_UID}_{r['id']}_live", "object_id": f"{RULE_UID}_{r['id']}_live",
                "command_topic": f"{T}/rule/{r['id']}/live/set", "state_topic": f"{T}/rule/{r['id']}/live/state",
                "icon": "mdi:rocket-launch", "entity_category": "config"}
-        c.publish(f"homeassistant/switch/flica_watcher/rule_{r['id']}_live/config", json.dumps(cfg), retain=True)
+        c.publish(f"homeassistant/switch/{T}/rule_{r['id']}_live/config", json.dumps(cfg), retain=True)
         live = flags.get(r["id"], False) and R.live_allowed(r)[0]
         c.publish(f"{T}/rule/{r['id']}/live/state", "ON" if live else "OFF", retain=True)
     RULES["published"] = ids
@@ -422,14 +520,15 @@ def write_finds_months():
     try:
         today = local_now().date().replace(day=1)
         n = 24 if not FINDS_FILES["all"] else 2
-        os.makedirs(CARD_PAIRINGS, exist_ok=True)
+        fdir = finds_dir()
+        os.makedirs(fdir, exist_ok=True)
         for i in range(n):
             y, m = divmod(today.year * 12 + today.month - 1 - i, 12)
             a = datetime(y, m + 1, 1, 10, tzinfo=timezone.utc)  # 00:00 HST = 10:00 UTC
             y2, m2 = divmod(y * 12 + m + 1, 12)
             b = datetime(y2, m2 + 1, 1, 10, tzinfo=timezone.utc)
             rows = DB.finds_between(a.isoformat(), b.isoformat())
-            path = os.path.join(CARD_PAIRINGS, f"finds_{y:04d}-{m + 1:02d}.json")
+            path = os.path.join(fdir, f"finds_{y:04d}-{m + 1:02d}.json")
             if rows or os.path.exists(path):
                 tmp = path + ".tmp"
                 json.dump({"month": f"{y:04d}-{m + 1:02d}", "count": len(rows), "finds": rows}, open(tmp, "w"), separators=(",", ":"))
@@ -551,15 +650,19 @@ def discovery(c):
                                     "state_topic": f"{T}/freq/hunt_s/state", "min": 5, "max": 90,
                                     "step": 5, "mode": "slider", "unit_of_measurement": "s",
                                     "icon": "mdi:timer-alert-outline"}),
+        ("sensor", "settings", {"name": "Settings", "state_topic": f"{T}/settings/state",
+                                "value_template": "{{ value_json.has_password }}",
+                                "json_attributes_topic": f"{T}/settings/state", "icon": "mdi:account-key",
+                                "entity_category": "diagnostic"}),
     ]
     for comp, oid, cfg in ents:
-        cfg = {**base, **cfg, "unique_id": f"flica_watcher_{oid}", "object_id": f"flica_watcher_{oid}"}
-        c.publish(f"homeassistant/{comp}/flica_watcher/{oid}/config", json.dumps(cfg), retain=True)
+        cfg = {**base, **cfg, "unique_id": f"{T}_{oid}", "object_id": f"{T}_{oid}"}
+        c.publish(f"homeassistant/{comp}/{T}/{oid}/config", json.dumps(cfg), retain=True)
 
 
 def mqtt_start():
     m = mqtt_creds()
-    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="flica_watcher")
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=T)
     c.username_pw_set(m["username"], m["password"])
     c.will_set(AVAIL, "offline", retain=True)
     c.on_message = on_message
@@ -570,8 +673,9 @@ def mqtt_start():
         for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set",
                   "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set",
                   "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set", "drop/set", "charter_scan/press", "pilot/set",
-                  "improved/set", "recall/set", "recall/act"):
+                  "improved/set", "recall/set", "recall/act", "settings/set"):
             cl.subscribe(f"{T}/{t}")
+        publish_settings(cl)
         fq = freq()
         cl.publish(f"{T}/freq/normal_min/state", str(fq["normal_min"]), retain=True)
         cl.publish(f"{T}/freq/hunt_s/state", str(fq["hunt_s"]), retain=True)
@@ -623,7 +727,7 @@ def set_machine(state, note=""):
     S["note"] = note
     save_state(S)
     pub("state", state)
-    pub("state_attr", {"note": note, "version": VERSION, "since": S["since"]})
+    pub("state_attr", {"note": note, "version": VERSION, "since": S["since"], "instance": INSTANCE})
 
 
 # ---------------------------------------------------------------- browser
@@ -685,8 +789,8 @@ class Flica:
                     pass
             low = html.lower()
             try:
-                os.makedirs("/share/flica_watcher", exist_ok=True)
-                page.screenshot(path="/share/flica_watcher/last_login.png", full_page=True)
+                os.makedirs(SHARE, exist_ok=True)
+                page.screenshot(path=f"{SHARE}/last_login.png", full_page=True)
                 vis = page.inner_text("body")[:600].replace("\n", " | ")
                 log.info("after login url=%s text=%s", page.url.split("?")[0], vis)
             except Exception as e:
@@ -1117,7 +1221,7 @@ def versions_check(force_pub=False):
                 continue
             wait.pop(mk, None)
             ready[mk] = sch
-        if not S.get("ver_seeded"):  # 0.9.0: Nov 2-4 versions rebuilt from HA's recorder (before the Watcher kept versions)
+        if not INSTANCE and not S.get("ver_seeded"):  # 0.9.0: Nov 2-4 versions rebuilt from HA's recorder (before the Watcher kept versions); Ryan only
             for mk, v in VER.seed(DB, "/share/flica_watcher/versions_seed.json",
                                   lambda ts: datetime.fromtimestamp(ts or time.time(), timezone.utc).isoformat()):
                 log.info("schedule version %s (%s) imported from the recorder", v, mk)
@@ -1135,8 +1239,13 @@ def versions_check(force_pub=False):
         log.info("schedule versions skipped: %s", e)
 
 
-UPLOADS = "/share/flica_watcher/uploads"
-CARD_PAIRINGS = "/homeassistant/www/flica"
+UPLOADS = f"{SHARE}/uploads"
+CARD_PAIRINGS = "/homeassistant/www/flica"  # pairings_<month>.json: shared, either instance may write the same content
+
+
+def finds_dir():
+    """0.10.0: finds_<month>.json per pilot: www/flica for Ryan, www/flica/<instance> for a second pilot."""
+    return os.path.join(CARD_PAIRINGS, INSTANCE) if INSTANCE else CARD_PAIRINGS
 
 
 def uploads_check():
@@ -1617,7 +1726,7 @@ def detail_probe(fl, pot):
              row.get("captain"), row.get("blk"), row.get("credit"), row.get("soft"))
 
 
-CAPTURE_DIR = "/share/flica_watcher/captures"
+CAPTURE_DIR = f"{SHARE}/captures"
 
 
 def capture(fl, month, html):
@@ -2473,6 +2582,13 @@ def main():
     MQ = mqtt_start()
     time.sleep(2)
     if not OPTS.get("username") or not OPTS.get("password"):
+        if INSTANCE:  # 0.10.0: a second pilot gets credentials over MQTT; wait for them (settings/set restarts us)
+            set_machine("needs_settings", f"send username and password to {T}/settings/set")
+            no_next_check()
+            pub("session", "OFF")
+            log.info("no credentials for instance %s: waiting on %s/settings/set", INSTANCE, T)
+            while True:
+                time.sleep(3600)
         set_machine("stopped_unexpected", "set username and password in the add-on Configuration tab")
     elif S.get("machine", "").startswith("stopped"):
         set_machine(S["machine"], S.get("note", "") + " (still stopped after restart, press Re-arm)")
@@ -2513,8 +2629,9 @@ def main():
     uploads_check()
     recall_eval()
     threading.Thread(target=charter_thread, daemon=True, name="charter").start()
-    web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
-              save_rules_from_page, DB, log)
+    if os.environ.get("FLICA_WEB", "1") == "1":  # 0.10.0: only the default instance serves the ingress page
+        web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
+                  save_rules_from_page, DB, log)
     last_month_check = None
     with sync_playwright() as pw:
         fl = Flica(pw)
