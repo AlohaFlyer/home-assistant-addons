@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.3
+- Charter watch debug: the CrewTrac login page, login response and first report page are saved to the private share folder and summarised in the log (field names only, never values); a report served as the not-logged-in page counts as a dropped session.
+
 ## 0.7.2
 - Fix: CrewTrac login was judged refused because the menu page says "Change Password"; logged in now means Sign Out present and no password input.
 
