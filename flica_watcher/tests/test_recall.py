@@ -27,10 +27,10 @@ def test_senior_award_blocked_day_and_junior_manning_are_not_missed():
     assert RC.evaluate(_row(kind="o75"), {**ME, "o75": False}, [], {}, [], DET)["verdict"] == "NO"
 
 
-def test_trip_or_vacation_in_the_way_is_possible_not_missed():
+def test_trip_or_vacation_in_the_way_is_not_missed():
     trip = [{"trip": "H1234", "start": "2026-11-11", "end": "2026-11-13"}]
     v = RC.evaluate(_row(), ME, trip, {}, [], DET)
-    assert v["verdict"] == "POSSIBLE" and "22.G.2.f" in v["why"][-1]
+    assert v["verdict"] == "NO" and "22.G.2.f" in v["why"][-1]
     vac = [{"trip": "VAC", "start": "2026-11-09", "end": "2026-11-10"}]
     assert "22.G.2.g" in RC.evaluate(_row(), ME, vac, {}, [], DET)["why"][-1]
 

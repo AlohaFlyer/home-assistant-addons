@@ -105,13 +105,11 @@ def evaluate(row, me, sched_items, own_trips, blocked, details):
         if not (a and b and _overlaps(s, e, a, b)):
             continue
         (vac if it.get("trip") == "VAC" else trips).append(it.get("trip"))
-    if trips:
-        out["verdict"] = "POSSIBLE"
-        out["why"].append(f"would need removal from {', '.join(trips)} (22.G.2.f); a junior volunteer clean under 22.G.2.e goes first")
+    if trips:  # 22.G.2.f only reaches you after every clean 22.G.2.e volunteer; Over 75 (d) has no removal step
+        out["why"].append(f"you were on {', '.join(trips)}; removal (22.G.2.f) comes after clean junior volunteers (22.G.2.e)")
         return out
     if vac:
-        out["verdict"] = "POSSIBLE"
-        out["why"].append("would need removal from vacation (22.G.2.g)")
+        out["why"].append("you were on vacation; removal (22.G.2.g) comes after 22.G.2.e and f")
         return out
     w = window(s, e, rep, arr)
     if not w:
