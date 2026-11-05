@@ -57,7 +57,9 @@ def test_regular_option_and_merge():
     assert sorted(new) == ["471|HNL-MNL|2026-11-05", "9980|SIN-HNL|2026-11-04"]
     known, new = C.merge(known, rows[:1], "2026-11-05")
     assert new == [] and known["471|HNL-MNL|2026-11-05"]["gone"] is True
-    known, new = C.merge(known, [], "2026-11-10")
+    known, new = C.merge(known, [], "2026-12-10")
+    assert "471|HNL-MNL|2026-11-05" in known  # the month before stays listed
+    known, new = C.merge(known, [], "2027-01-10")
     assert known == {}
 
 
@@ -68,7 +70,7 @@ def test_login_form_and_dates():
     assert C.logged_in(TABLE) and not C.logged_in(LOGIN)
     assert C.logged_in("<html><body>CrewTrac Menu Home | Sign Out Options View Schedule Change Password</body></html>")
     ds = C.scan_dates(date(2026, 11, 4), 30)
-    assert ds[0] == "2026-11-03" and ds[-1] == "2026-12-04" and len(ds) == 32
+    assert ds[0] == "2026-10-31" and ds[-1] == "2026-12-04" and len(ds) == 35
     assert C.report_url("2026-11-04", "HNL", "").endswith("DeptDate=20261104&DeptCity=HNL&ArrvCity=")
 
 
@@ -91,4 +93,4 @@ def test_scanner_logs_in_and_scans():
     sc = C.Scanner(s, "12345", "pw", logging.getLogger("t"))
     assert sc.login()
     rows = sc.scan(date(2026, 11, 4), ahead=1)
-    assert len(rows) == 5 * 3 * 2 and len([u for u in s.urls if "ctw4190" in u]) == 6
+    assert len(rows) == 5 * 6 * 2 and len([u for u in s.urls if "ctw4190" in u]) == 12

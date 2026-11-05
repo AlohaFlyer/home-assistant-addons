@@ -36,8 +36,11 @@ def regular_set(text=None):
 
 
 def scan_dates(today, ahead=DAYS_AHEAD):
-    """Departure dates to query: yesterday (arrivals from Asia land a day after they leave) to +ahead."""
-    return [(today + timedelta(days=i)).isoformat() for i in range(-1, ahead + 1)]
+    """Departure dates to query: from the day before the 1st of this month (Ryan: show the month's past
+    charters too, e.g. the SIN run; arrivals from Asia land a day after they leave) to today + ahead."""
+    first = today.replace(day=1) - timedelta(days=1)
+    n = (today - first).days
+    return [(first + timedelta(days=i)).isoformat() for i in range(0, n + ahead + 1)]
 
 
 def report_url(iso, dep="", arr=""):
@@ -149,9 +152,10 @@ def unusual(rows, regular):
 def merge(known, found, today_iso):
     """known {key: rec} updated with found rows: new keys get first_seen=today, kept keys keep theirs,
     keys no longer found but dated in the future are kept and marked 'gone' (cancelled or moved),
-    keys before yesterday are dropped. Returns (known, new_keys)."""
+    keys before the 1st of last month are dropped. Returns (known, new_keys)."""
     new = []
-    cutoff = (date.fromisoformat(today_iso) - timedelta(days=1)).isoformat()
+    t = date.fromisoformat(today_iso)
+    cutoff = (t.replace(day=1) - timedelta(days=1)).replace(day=1).isoformat()
     fk = {r["key"]: r for r in found}
     for k, r in fk.items():
         if k not in known:
