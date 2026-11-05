@@ -30,7 +30,7 @@ import submit as SUB
 import inflt as IF
 import charter as CH
 
-VERSION = "0.8.6"
+VERSION = "0.8.7"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLICA_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -416,6 +416,9 @@ def discovery(c):
                              "json_attributes_topic": f"{T}/state_attr"}),
         ("sensor", "last_check", {"name": "Last check", "state_topic": f"{T}/last_check",
                                   "device_class": "timestamp"}),
+        ("sensor", "flica_fetches", {"name": "FLICA fetches", "state_topic": f"{T}/fetches", "value_template": "{{ value_json.total }}",
+                                     "state_class": "total_increasing", "unit_of_measurement": "pages", "icon": "mdi:counter",
+                                     "json_attributes_topic": f"{T}/fetches"}),
         ("sensor", "next_check", {"name": "Next check", "state_topic": f"{T}/next_check",
                                   "device_class": "timestamp", "icon": "mdi:timer-sand"}),
         ("sensor", "pot_count", {"name": "Pot count", "state_topic": f"{T}/pot/state",
@@ -541,6 +544,25 @@ def pub(topic, payload, retain=True):
     MQ.publish(f"{T}/{topic}", payload, retain=retain)
 
 
+FETCHES = {"n": None, "pub_at": 0}
+
+
+def count_fetch():
+    """0.8.7 (Ryan): count every page the Watcher loads from FLICA (fetch or goto), kept in the DB and
+    published as sensor.flica_watcher_flica_fetches (total_increasing) so HA utility meters can show
+    hourly / daily / monthly session refreshes."""
+    try:
+        if FETCHES["n"] is None:
+            FETCHES["n"] = int(DB.get("fetches_total") or 0)
+        FETCHES["n"] += 1
+        if time.time() - FETCHES["pub_at"] >= 5:
+            FETCHES["pub_at"] = time.time()
+            DB.put("fetches_total", FETCHES["n"])
+            pub("fetches", {"total": FETCHES["n"], "at": now_iso()})
+    except Exception as e:
+        log.info("fetch count skipped: %s", e)
+
+
 def set_machine(state, note=""):
     if S.get("machine") != state:
         log.info("state %s -> %s %s", S.get("machine"), state, note)
@@ -580,6 +602,7 @@ class Flica:
         self.new_context(fresh=True)  # old cookies can skip the login form and break the login
         page = self.ctx.new_page()
         try:
+            count_fetch()
             page.goto(BASE + "/", wait_until="domcontentloaded", timeout=45000)
             pw_in = page.locator("input[type=password]").first
             pw_in.wait_for(timeout=20000)
@@ -659,6 +682,7 @@ class Flica:
         page = self.ctx.new_page()
         found = {}
         try:
+            count_fetch()
             page.goto(BASE + "/online/mainmenu.cgi", wait_until="domcontentloaded", timeout=45000)
             menu = None
             for _ in range(10):  # mainmenu.cgi first shows a "forwarding to the Main Menu" page
@@ -752,6 +776,7 @@ class Flica:
             page.close()
 
     def fetch(self, url):
+        count_fetch()
         r = self.ctx.request.get(url, timeout=45000)
         return r.text()
 
@@ -761,6 +786,7 @@ class Flica:
         source. Read only: no clicks."""
         page = self.ctx.new_page()
         try:
+            count_fetch()
             page.goto(f"{BASE}/online/mainmenu.cgi", wait_until="domcontentloaded", timeout=45000)
             html = ""
             for _ in range(20):
@@ -784,6 +810,7 @@ class Flica:
         calls = []
         page.on("response", lambda resp: calls.append((resp.url, resp.status)) if "/api/" in resp.url or "json" in (resp.headers.get("content-type") or "") else None)
         try:
+            count_fetch()
             page.goto(url, wait_until="domcontentloaded", timeout=45000)
             if wait_for:
                 page.wait_for_selector(wait_for, timeout=timeout)
