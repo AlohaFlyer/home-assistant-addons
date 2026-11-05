@@ -44,9 +44,10 @@ def report_url(iso, dep="", arr=""):
 
 
 def logged_in(html):
-    """The CrewTrac main menu or any report page: both carry a Sign Out link; the login page does not."""
+    """The CrewTrac main menu or any report page: both carry a Sign Out link and no password input; the
+    login page has the input. (0.7.2: the menu says Change Password, so the word alone is no test.)"""
     t = (html or "").lower()
-    return "sign out" in t and "password" not in t
+    return "sign out" in t and 'type="password"' not in t and "type='password'" not in t
 
 
 def login_form(html):

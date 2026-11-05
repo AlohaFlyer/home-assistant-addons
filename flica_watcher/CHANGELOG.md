@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.2
+- Fix: CrewTrac login was judged refused because the menu page says "Change Password"; logged in now means Sign Out present and no password input.
+
 ## 0.7.1
 - Fix: the first charter scan runs at start (0.7.0 waited 6 h before the first one).
 - October (Ryan): the previous-month read now also follows FLICA's own Schedules menu (leftmenu.cgi) to the desktop schedule page for that month (tokened link, GET only); the page is saved privately so the parser can be written against it.
