@@ -30,7 +30,7 @@ import submit as SUB
 import inflt as IF
 import charter as CH
 
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -1529,8 +1529,15 @@ def pilot_check(fl):
     cur = local_now()
     bd = f"{cur.month:02d}{cur.year % 100:02d}"
     try:
-        html = fl.fetch(IF.CM_SCHED.format(base=BASE, emp=emp))
-        sched = IF.parse_cm_month(html) if classify(html) == "ok" and IF.schedule_ok(html) else None
+        sched, html = None, ""
+        for i, url in enumerate((IF.CM_SCHED.format(base=BASE, emp=emp), IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bd))):
+            if i:
+                time.sleep(random.uniform(1.5, 3.5))
+            html = fl.fetch(url)
+            sched = IF.parse_cm_month(html) if classify(html) == "ok" and IF.schedule_ok(html) else None
+            if sched:
+                break
+            log.info("pilot %s: %s gave %s: %s", emp, url.split("?")[1], classify(html), visible_text(html)[:200])
         if not sched:
             pub("pilot_schedule", {"emp": emp, "name": req.get("name") or "", "status": f"not readable: {classify(html)} {visible_text(html)[:120]}",
                                    "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": now_iso()})
