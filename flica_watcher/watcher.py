@@ -30,7 +30,7 @@ import submit as SUB
 import inflt as IF
 import charter as CH
 
-VERSION = "0.8.2"
+VERSION = "0.8.3"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -1068,7 +1068,7 @@ SCHED_GAP_S = 30 * 60
 
 
 LEFTMENU = f"{BASE}/online/leftmenu.cgi?whosepage=Crewmember"
-SCHED_LINK_RE = r"scheduledetail\.cgi\?BlockDate=%s&(?:amp;)?token=([0-9A-Za-z]+)"
+SCHED_LINK_RE = r"scheduledetail\.cgi\?[^\"']*?BlockDate=%s(?:[^\"']*?)(?:&|&amp;)token=([0-9A-Za-z]+)"  # 0.8.3: params in any order
 
 
 def desktop_schedule(fl, bd, seen):
@@ -1076,7 +1076,16 @@ def desktop_schedule(fl, bd, seen):
     two pages are saved to the private share folder for the parser; returns parse_schedule_desktop() or
     None. The token is never logged."""
     menu = fl.fetch(LEFTMENU)
+    try:  # 0.8.3: keep the menu page (token masked) so the link pattern can be checked against the real thing
+        os.makedirs(IF.CAPTURE_DIR, exist_ok=True)
+        open(f"{IF.CAPTURE_DIR}/leftmenu.html", "w").write(re.sub(r"token=[0-9A-Za-z]+", "token=MASKED", menu or ""))
+    except Exception as e:
+        log.info("leftmenu capture skipped: %s", e)
     m = re.search(SCHED_LINK_RE % bd, menu or "")
+    if not m:
+        m2 = re.search(r"scheduledetail\.cgi\?[^\"']*?token=([0-9A-Za-z]+)", menu or "")
+        if m2:  # any month's link carries the same session token (0.8.3)
+            m = m2
     if not m:
         seen.append(("leftmenu", f"no Schedules link for BlockDate={bd}: {classify(menu)} {visible_text(menu)[:120]}"))
         return None
@@ -1101,9 +1110,9 @@ def prev_month_check(fl, ok_url, cur_month):
     store = S.setdefault("schedule", {})
     y, m = int(cur_month[:4]), int(cur_month[5:7])
     prev = f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
-    if S.get("sched_prev_v") == 4 and prev in store and time.time() - S.get("sched_prev_at", 0) < 86400:
+    if S.get("sched_prev_v") == 5 and prev in store and time.time() - S.get("sched_prev_at", 0) < 86400:
         return
-    if S.get("sched_prev_v") == 4 and time.time() - S.get("sched_prev_at", 0) < 3600:
+    if S.get("sched_prev_v") == 5 and time.time() - S.get("sched_prev_at", 0) < 1800:
         return
     mo = re.search(r"BCID=\d{3}\.(\d+)", ok_url)
     if not mo:
@@ -1112,7 +1121,7 @@ def prev_month_check(fl, ok_url, cur_month):
     py, pm = int(prev[:4]), int(prev[5:7])
     cands = [f"{BASE}/full/mobileschedule.cgi?BlockDate={pm:02d}{py % 100:02d}&From=MainMenu",
              f"{BASE}/full/scheduledetail.cgi?BlockDate={pm:02d}{py % 100:02d}"]
-    S["sched_prev_v"] = 4
+    S["sched_prev_v"] = 5  # 0.8.3: re-run the October read right away
     S["sched_prev_at"] = time.time()
     seen = []
     try:  # 0.7.1 (Ryan: October): FLICA's own Schedules menu links each month with a session token

@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.8.3
+- October: the Schedules-menu link is matched with the query parameters in any order (any month's link carries the same session token), the menu page is saved (token masked) for checking, and the previous-month read re-runs at start and every 30 min until October is in.
+
 ## 0.8.2
 - Look anybody up (Ryan): `flica_watcher/pilot/set` accepts {"q": "last, first | first last | employee number"}. The Watcher keeps a crew directory (crew_dir) of every CA / FO / RO with a number it has seen on pairing pages (pot details, pilot schedules) plus the pickers and captains already recorded; one match reads that pilot, several are offered to pick from, none asks for the employee number.
 - Pickers (Ryan): `min_s` = the pilot's fastest pickup, for a Fastest Pickup Speed column.
