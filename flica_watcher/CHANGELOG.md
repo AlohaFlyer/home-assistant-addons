@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.1
+- Monthly PDFs parsed (Ryan): the pairings package becomes the schedule card's pairing file (www/flica/pairings_<YYYY-MM>.json, A332 HNL, checked 83 of 83 against the hand-built November file, plus the H3665 charter it lacked) with each pairing's block and HST duty times; the PBS award becomes the month's version .001 (Ryan's row only), renumbering later versions. December's bid period (Dec 2 to 31) and its 33L equipment code are handled. The app now maps HA's config folder to write the pairing file.
+
+## 0.9.0
+- Schedule versions (Ryan): every change FLICA shows to a month (trips added / dropped / swapped, day codes, any trip's block, credit, seat or times, FLICA's Block / Credit) is saved as a numbered version, MM.NNN (11.001 = first on file). Published on `sensor.flica_watcher_schedule_versions` (awarded version plus the latest 24 per month) and `flica_watcher/event/schedule_version`. November's Nov 2 to 4 versions are rebuilt from HA's recorder (11.001 H3628, 11.002 H3601, 11.003 H3620). FLICA's days_off is ignored (it differs between FLICA's own pages).
+- Improved pay: the schedule card prices the awarded and current versions with today's pay settings and reports them on `flica_watcher/improved/set`; kept per month and published as `sensor.flica_watcher_improved_pay` for the Details bar chart.
+- PDF upload (Ryan): the Web UI takes the monthly award and the pairings package PDFs (kept in /share/flica_watcher/uploads with a pdftotext copy; poppler-utils added). Parsers follow once real PDFs are on file.
+
 ## 0.8.7
 - FLICA fetch counter (Ryan): every page the Watcher loads from FLICA is counted and published as `sensor.flica_watcher_flica_fetches` (total_increasing), for hourly / daily / monthly utility meters on the dashboard.
 - Schedule lookup accepts Ryan's own page (no Emp# on it).
