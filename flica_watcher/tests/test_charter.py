@@ -47,6 +47,7 @@ def test_login_form_and_dates():
     assert action == "ctwc.aspx" and f["user"] == "ctl00$txtUsername" and f["pass"] == "ctl00$txtPassword"
     assert "__VIEWSTATE" in f["fields"]
     assert C.logged_in(TABLE) and not C.logged_in(LOGIN)
+    assert C.logged_in("<html><body>CrewTrac Menu Home | Sign Out Options View Schedule Change Password</body></html>")
     ds = C.scan_dates(date(2026, 11, 4), 30)
     assert ds[0] == "2026-11-03" and ds[-1] == "2026-12-04" and len(ds) == 32
     assert C.report_url("2026-11-04", "HNL", "").endswith("DeptDate=20261104&DeptCity=HNL&ArrvCity=")
