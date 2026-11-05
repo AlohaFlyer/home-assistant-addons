@@ -126,10 +126,29 @@ def seed(db, path, iso_of):
             rec = {"ver": f"{int(month[5:7])}.{len(vers) + 1:03d}", "n": len(vers) + 1, "at": iso_of(sn.get("ts")),
                    "updated": sn.get("updated") or "", "items": sn.get("items") or [], "days": sn.get("days") or [],
                    "totals": sn.get("totals") or {}, "trips": sn.get("trips") or {}, "seeded": True}
+            if sn.get("award"):
+                rec["award"] = True
             rec["fp"] = fingerprint(rec, rec["trips"])
-            rec["changes"] = diff(vers[-1] if vers else None, rec)
+            rec["changes"] = ["awarded line (PBS bid run)"] if rec.get("award") else diff(vers[-1] if vers else None, rec)
             vers.append(rec)
             made.append((month, rec["ver"]))
         if vers:
             db.put(key, vers)
     return made
+
+
+def set_award(db, month, sched, iso_now):
+    """Make the parsed PBS award this month's version .001 (replacing an earlier award) and renumber the rest
+    after it. Returns the version list."""
+    key = f"sched_versions:{month}"
+    vers = [v for v in (db.get(key) or []) if not v.get("award")]
+    rec = {"items": sched["items"], "days": sched["days"], "totals": sched.get("totals") or {},
+           "updated": sched.get("updated") or "Award", "trips": sched.get("trips") or {}, "at": iso_now, "award": True}
+    rec["fp"] = fingerprint(rec, rec["trips"])
+    out = []
+    for n, v in enumerate([rec] + vers, 1):
+        v = {**v, "ver": f"{int(month[5:7])}.{n:03d}", "n": n}
+        v["changes"] = ["awarded line (PBS bid run)"] if v.get("award") else diff(out[-1] if out else None, v)
+        out.append(v)
+    db.put(key, out)
+    return out
