@@ -29,8 +29,10 @@ import grid as G
 import submit as SUB
 import inflt as IF
 import charter as CH
+import versions as VER
+import pdfs as PDF
 
-VERSION = "0.8.7"
+VERSION = "0.9.1"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLICA_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -146,6 +148,9 @@ def on_message(c, u, msg):
         return
     if msg.topic == f"{T}/blocked/set":
         blocked_cmd(msg.payload.decode(errors="replace"))
+        return
+    if msg.topic == f"{T}/improved/set":
+        improved_cmd(msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/trade/set":
         trade_cmd(msg.payload.decode(errors="replace"))
@@ -448,6 +453,12 @@ def discovery(c):
         ("sensor", "swap_tests", {"name": "Swap test requests", "state_topic": f"{T}/swap_tests",
                                   "value_template": "{{ value_json.count }}",
                                   "json_attributes_topic": f"{T}/swap_tests", "icon": "mdi:file-send-outline"}),
+        ("sensor", "improved_pay", {"name": "Improved pay gross", "state_topic": f"{T}/improved_pay",
+                                     "value_template": "{{ value_json.improved }}", "unit_of_measurement": "USD",
+                                     "json_attributes_topic": f"{T}/improved_pay", "icon": "mdi:cash-plus"}),
+        ("sensor", "schedule_versions", {"name": "Schedule versions", "state_topic": f"{T}/schedule_versions",
+                                          "value_template": "{{ value_json.count }}",
+                                          "json_attributes_topic": f"{T}/schedule_versions", "icon": "mdi:history"}),
         ("sensor", "own_trips", {"name": "Own trip times", "state_topic": f"{T}/own_trips",
                                  "value_template": "{{ value_json.count }}",
                                  "json_attributes_topic": f"{T}/own_trips", "icon": "mdi:clock-outline"}),
@@ -519,7 +530,8 @@ def mqtt_start():
         discovery(cl)
         for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set",
                   "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set",
-                  "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set", "drop/set", "charter_scan/press", "pilot/set"):
+                  "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set", "drop/set", "charter_scan/press", "pilot/set",
+                  "improved/set"):
             cl.subscribe(f"{T}/{t}")
         fq = freq()
         cl.publish(f"{T}/freq/normal_min/state", str(fq["normal_min"]), retain=True)
@@ -1050,6 +1062,115 @@ def my_seat(crew):
         if me in str(name).lower():
             return pos
     return ""
+
+
+def versions_check(force_pub=False):
+    """0.9.0 (Ryan): a new schedule version (MM.NNN) every time anything on a month changes. A month whose new
+    pairings have no block / credit read yet waits up to 2 h for them, so one change makes one version."""
+    try:
+        months, own = S.get("schedule") or {}, S.get("own_trips") or {}
+        wait = S.setdefault("ver_wait", {})
+        ready = {}
+        for mk, sch in months.items():
+            missing = [i for i in sch.get("items") or [] if PAIRING_RE.match(i.get("trip") or "")
+                       and f"{i['trip']}|{i['start']}" not in own]
+            if missing and time.time() - wait.setdefault(mk, time.time()) < 7200:
+                continue
+            wait.pop(mk, None)
+            ready[mk] = sch
+        if not S.get("ver_seeded"):  # 0.9.0: Nov 2-4 versions rebuilt from HA's recorder (before the Watcher kept versions)
+            for mk, v in VER.seed(DB, "/share/flica_watcher/versions_seed.json",
+                                  lambda ts: datetime.fromtimestamp(ts or time.time(), timezone.utc).isoformat()):
+                log.info("schedule version %s (%s) imported from the recorder", v, mk)
+            S["ver_seeded"] = True
+        made = VER.update(DB, ready, own, now_iso())
+        for mk, v in made:
+            log.info("schedule version %s (%s)", v, mk)
+        if made or force_pub or not S.get("ver_published"):
+            pub("schedule_versions", {"count": sum(len(DB.get(f"sched_versions:{m}") or []) for m in months),
+                                      "months": VER.published(DB, months), "at": now_iso()})
+            S["ver_published"] = True
+            if made:
+                pub("event/schedule_version", {"versions": [v for _, v in made], "at": now_iso()}, retain=False)
+    except Exception as e:
+        log.info("schedule versions skipped: %s", e)
+
+
+UPLOADS = "/share/flica_watcher/uploads"
+CARD_PAIRINGS = "/homeassistant/www/flica"
+
+
+def uploads_check():
+    """0.9.1 (Ryan): parse the monthly PDFs uploaded on the Web UI (text copies made by pdftotext). Pairings
+    package -> the schedule card's pairing file (www/flica/pairings_<YYYY-MM>.json) and trip details; award ->
+    this month's version .001. Each file is handled again only when it changes. No FLICA traffic."""
+    try:
+        done = S.setdefault("uploads_done", {})
+        files = sorted(os.listdir(UPLOADS)) if os.path.isdir(UPLOADS) else []
+        for kind in ("pairings", "award"):  # the award needs that month's package details
+            for f in [x for x in files if x.endswith(f"_{kind}.txt")]:
+                path = os.path.join(UPLOADS, f)
+                sig = f"{os.path.getmtime(path):.0f}"
+                if done.get(f) == sig:
+                    continue
+                month = f[:7]
+                text = open(path, errors="replace").read()
+                if kind == "pairings":
+                    pj = PDF.package_json(text, os.path.basename(path)[:-4] + " (uploaded PDF), A332 HNL base")
+                    if pj["month"] != month or not pj["rows"]:
+                        log.info("upload %s: not a %s A332 pairing package (%s, %d rows)", f, month, pj["month"], len(pj["rows"]))
+                    else:
+                        os.makedirs(CARD_PAIRINGS, exist_ok=True)
+                        json.dump(pj, open(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json"), "w"), separators=(",", ":"))
+                        DB.put(f"pkg_details:{month}", PDF.package_details(text))
+                        log.info("upload %s: %d A332 pairings -> www/flica/pairings_%s.json", f, len(pj["rows"]), month)
+                else:
+                    det = DB.get(f"pkg_details:{month}")
+                    emp = S.get("own_emp") or ""
+                    if not det or not emp:
+                        log.info("upload %s: waiting for the %s pairing package and the employee number", f, month)
+                        continue
+                    aw = PDF.parse_award(text, emp, det, month)
+                    if not aw:
+                        log.info("upload %s: employee %s not in this award", f, emp)
+                    else:
+                        vers = VER.set_award(DB, month, aw, now_iso())
+                        log.info("upload %s: awarded line is version %s (%d items, credit %s); %d versions",
+                                 f, vers[0]["ver"], len(aw["items"]), aw["totals"].get("credit"), len(vers))
+                        versions_check(force_pub=True)
+                done[f] = sig
+                save_state(S)
+    except Exception as e:
+        log.info("uploads skipped: %s", e)
+
+
+def improved_cmd(payload):
+    """0.9.0 (Ryan): the schedule card prices each month's awarded version (.001) and current version with
+    today's pay settings and reports {month, awarded, current, ver, awarded_ver}; kept per month in the DB
+    (improved_pay) and published for the Details bar chart."""
+    try:
+        d = json.loads(payload or "{}")
+        mk = str(d.get("month") or "")
+        if not re.fullmatch(r"\d{4}-\d{2}", mk):
+            return
+        allm = DB.get("improved_pay") or {}
+        rec = {"month": mk, "awarded": round(float(d.get("awarded") or 0), 2), "current": round(float(d.get("current") or 0), 2),
+               "ver": str(d.get("ver") or ""), "awarded_ver": str(d.get("awarded_ver") or "")}
+        rec["improved"] = round(rec["current"] - rec["awarded"], 2)
+        if {k: v for k, v in (allm.get(mk) or {}).items() if k != "at"} == rec:
+            return
+        allm[mk] = {**rec, "at": now_iso()}
+        DB.put("improved_pay", allm)
+        publish_improved()
+    except Exception as e:
+        log.info("improved pay skipped: %s", e)
+
+
+def publish_improved():
+    allm = DB.get("improved_pay") or {}
+    rows = [allm[k] for k in sorted(allm)]
+    cur = rows[-1] if rows else {}
+    pub("improved_pay", {"improved": cur.get("improved", 0), "months": rows, "ytd": round(sum(r.get("improved", 0) for r in rows), 2)})
 
 
 def publish_own_trips():
@@ -2122,6 +2243,8 @@ def check(fl):
         log.info("pot pages: %s", list(urls))
     schedule_check(fl, force=full or not S.get("schedule"))
     own_trip_times(fl, full)
+    versions_check()
+    uploads_check()
     pot_all = {}
     new_any = False
     for month, url in list(S["pot_urls"].items()):
@@ -2254,6 +2377,9 @@ def main():
     publish_own_trips()
     publish_trade()
     publish_charters()
+    publish_improved()
+    versions_check(force_pub=True)
+    uploads_check()
     threading.Thread(target=charter_thread, daemon=True, name="charter").start()
     web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
               save_rules_from_page, DB, log)
