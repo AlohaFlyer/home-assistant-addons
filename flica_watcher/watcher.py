@@ -32,8 +32,10 @@ import charter as CH
 import versions as VER
 import pdfs as PDF
 import recall as RC
+import crewidx as CI
+import tickets as TK
 
-VERSION = "0.10.0"
+VERSION = "0.10.1"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLICA_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -199,6 +201,12 @@ def on_message(c, u, msg):
     if msg.topic == f"{T}/settings/set":
         settings_cmd(msg.payload.decode(errors="replace"))
         return
+    if msg.topic == f"{T}/ticket/new":
+        ticket_new(msg.payload.decode(errors="replace"))
+        return
+    if msg.topic == f"{T}/ticket/act":
+        ticket_act(msg.payload.decode(errors="replace"))
+        return
     if msg.topic == f"{T}/trade/set":
         trade_cmd(msg.payload.decode(errors="replace"))
         return
@@ -235,6 +243,10 @@ def on_message(c, u, msg):
         log.info("swap map pressed: read-only mapping on the next check")
     elif msg.topic == f"{T}/pilot/set":
         pilot_cmd(msg.payload.decode(errors="replace"))
+    elif msg.topic == f"{T}/crew_scan/press":
+        if not INSTANCE:
+            FLAGS["crew_scan"] = True  # 0.10.1: one crew index run, read in chunks over the next checks
+            log.info("crew index run requested")
     elif msg.topic == f"{T}/charter_scan/press":
         CHARTER_WAKE.set()  # 0.7.0: scan CrewTrac now
         log.info("charter scan pressed")
@@ -654,7 +666,17 @@ def discovery(c):
                                 "value_template": "{{ value_json.has_password }}",
                                 "json_attributes_topic": f"{T}/settings/state", "icon": "mdi:account-key",
                                 "entity_category": "diagnostic"}),
+        ("sensor", "tickets", {"name": "Tickets", "state_topic": f"{T}/tickets", "value_template": "{{ value_json.open }}",
+                               "json_attributes_topic": f"{T}/tickets", "icon": "mdi:ticket-outline"}),
     ]
+    if not INSTANCE:  # 0.10.1: the crew index runs on Ryan's instance only
+        ents += [
+            ("sensor", "crew_index", {"name": "Crew index", "state_topic": f"{T}/crew_index",
+                                      "value_template": "{{ value_json.coverage_pct }}", "unit_of_measurement": "%",
+                                      "json_attributes_topic": f"{T}/crew_index", "icon": "mdi:account-search"}),
+            ("button", "crew_scan", {"name": "Update schedules", "command_topic": f"{T}/crew_scan/press",
+                                     "icon": "mdi:account-sync"}),
+        ]
     for comp, oid, cfg in ents:
         cfg = {**base, **cfg, "unique_id": f"{T}_{oid}", "object_id": f"{T}_{oid}"}
         c.publish(f"homeassistant/{comp}/{T}/{oid}/config", json.dumps(cfg), retain=True)
@@ -673,7 +695,8 @@ def mqtt_start():
         for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set",
                   "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set",
                   "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set", "drop/set", "charter_scan/press", "pilot/set",
-                  "improved/set", "recall/set", "recall/act", "settings/set"):
+                  "improved/set", "recall/set", "recall/act", "settings/set",
+                  "ticket/new", "ticket/act") + (() if INSTANCE else ("crew_scan/press",)):
             cl.subscribe(f"{T}/{t}")
         publish_settings(cl)
         fq = freq()
@@ -1996,11 +2019,11 @@ def pilot_cmd(payload):
             if len(hits) == 1:
                 emp, d["name"] = hits[0]["emp"], hits[0]["name"]
             elif hits:
-                pub("pilot_schedule", {"emp": "", "name": q, "status": f"{len(hits)} pilots match '{q}', pick one", "matches": hits,
+                pub_pilot({"emp": "", "name": q, "status": f"{len(hits)} pilots match '{q}', pick one", "matches": hits,
                                        "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
                 return
             else:
-                pub("pilot_schedule", {"emp": "", "name": q, "status": f"no pilot named '{q}' in the {DB.crew_count()} crew the Watcher has seen; enter the employee number",
+                pub_pilot({"emp": "", "name": q, "status": f"no pilot named '{q}' in the {DB.crew_count()} crew the Watcher has seen; enter the employee number",
                                        "matches": [], "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
                 return
     if not emp:
@@ -2009,12 +2032,12 @@ def pilot_cmd(payload):
     save_state(S)
     cached = DB.get(f"pilot_sched:{emp}")
     if cached and time.time() - cached.get("fetched_ts", 0) < PILOT_CACHE_S:
-        pub("pilot_schedule", {**cached, "status": "cached"})
+        pub_pilot({**cached, "status": "cached"})
         S.pop("pilot_req", None)
         save_state(S)
         log.info("pilot %s: schedule served from cache", emp)
         return
-    pub("pilot_schedule", {"emp": emp, "name": d.get("name") or "", "status": "loading", "month": "", "days": [], "items": [],
+    pub_pilot({"emp": emp, "name": d.get("name") or "", "status": "loading", "month": "", "days": [], "items": [],
                            "totals": {}, "updated": "", "fetched": ""})
     log.info("pilot %s: schedule requested", emp)
     WAKE.set()
@@ -2050,7 +2073,7 @@ def pilot_check(fl):
                 break
             log.info("pilot %s: %s gave %s: %s", emp, url.split("?")[1], classify(html), visible_text(html)[:200])
         if not sched:
-            pub("pilot_schedule", {"emp": emp, "name": req.get("name") or "", "status": f"not readable: {classify(html)} {visible_text(html)[:120]}",
+            pub_pilot({"emp": emp, "name": req.get("name") or "", "status": f"not readable: {classify(html)} {visible_text(html)[:120]}",
                                    "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": now_iso()})
             log.info("pilot %s: schedule page not readable (%s)", emp, classify(html))
             S.pop("pilot_req", None)
@@ -2077,15 +2100,208 @@ def pilot_check(fl):
         rec = {**sched, "emp": emp, "name": sched.get("name") or req.get("name") or "", "bd": bd,
                "fetched": now_iso(), "fetched_ts": time.time()}
         DB.put(f"pilot_sched:{emp}", rec)
-        pub("pilot_schedule", {**rec, "status": "ok"})
+        pub_pilot({**rec, "status": "ok"})
         log.info("pilot %s (%s): %s read, %d items, %d pairing pages", emp, rec["name"], sched["month"], len(sched["items"]), n)
     except Exception as e:
         log.info("pilot %s: schedule read failed: %s", emp, e)
-        pub("pilot_schedule", {"emp": emp, "name": req.get("name") or "", "status": f"error: {e}", "month": "", "days": [],
+        pub_pilot({"emp": emp, "name": req.get("name") or "", "status": f"error: {e}", "month": "", "days": [],
                                "items": [], "totals": {}, "updated": "", "fetched": now_iso()})
     S.pop("pilot_req", None)
     save_state(S)
     return True
+
+
+def pub_pilot(payload):
+    """0.10.1: every pilot_schedule publish carries the crew index's view of that pilot's month too:
+    reconstructed [{pairing, start, end, seat, route, checked_at}], reconstructed_coverage_pct and
+    reconstructed_month, so the card can show it when FLICA hides the schedule or errors."""
+    try:
+        emp = re.sub(r"\D", "", str(payload.get("emp") or ""))
+        month = str(payload.get("month") or "")
+        if not re.fullmatch(r"\d{4}-\d{2}", month):
+            month = local_now().strftime("%Y-%m")
+        insts = CI.instances(CARD_PAIRINGS)
+        payload = {**payload, "reconstructed": CI.pilot_trips(insts, DB.crew_by_emp(emp), month) if emp else [],
+                   "reconstructed_coverage_pct": CI.coverage(insts, DB.crew_rows(), month)[2],
+                   "reconstructed_month": month}
+    except Exception as e:
+        log.info("pilot lookup: crew index skipped: %s", e)
+        payload = {**payload, "reconstructed": [], "reconstructed_coverage_pct": 0.0}
+    pub("pilot_schedule", payload)
+
+
+# ---------------------------------------------------------------- 0.10.1 crew index (Ryan)
+CREW_FROM = CI.CREW_FROM
+CREW_PER_RUN = 300
+CREW_PER_CHECK = 50
+CREW_SLOT_H = 6  # runs at 00:00, 06:00, 12:00, 18:00 HST
+CREW_DIR = "/share/flica_watcher/crew_index"
+
+
+def crew_slot(now=None):
+    """('2026-11-05T12', next slot start) for the 6 h HST slot `now` falls in (HST wall clock, naive)."""
+    now = now or local_now()
+    st = now.replace(hour=now.hour - now.hour % CREW_SLOT_H, minute=0, second=0, microsecond=0)
+    return st.strftime("%Y-%m-%dT%H"), st + timedelta(hours=CREW_SLOT_H)
+
+
+def crew_index_check(fl):
+    """Read up to CREW_PER_CHECK pairing pages of the current crew index run (GET only, 1.5-3.5 s apart).
+    A run starts at the first check after each 6 h slot (once per slot, saved in state) or on Update
+    schedules, and reads at most CREW_PER_RUN pages over as many checks as it takes. Returns 'ok', or
+    'killed' / 'needs_login' / 'stop' when a page says so (the run is ended there)."""
+    if INSTANCE:
+        return "ok"
+    slot, _ = crew_slot()
+    run = S.get("crew_run")
+    if not run:
+        why = "button" if FLAGS.pop("crew_scan", False) else ("slot" if S.get("crew_slot") != slot else "")
+        if not why:
+            return "ok"
+        S["crew_slot"] = slot
+        run = S["crew_run"] = {"started": local_now().isoformat(timespec="seconds"), "pages": 0, "why": why, "slot": slot}
+        save_state(S)
+        log.info("crew index run started (%s)", why)
+    else:
+        FLAGS.pop("crew_scan", None)  # a run is already going
+    insts = CI.instances(CARD_PAIRINGS)
+    rows = DB.crew_rows()
+    todo = CI.queue(insts, rows, local_now(), run["started"])
+    n, res, halted = 0, "ok", False
+    for k in todo:
+        if run["pages"] >= CREW_PER_RUN or n >= CREW_PER_CHECK:
+            break
+        if FLAGS["pause"] or FLAGS["rearm"]:
+            log.info("crew index: pause / re-arm, chunk stopped (run continues later)")
+            halted = True
+            break
+        it = insts[k]
+        if n:
+            time.sleep(random.uniform(1.5, 3.5))
+        n += 1
+        run["pages"] += 1
+        url = (f"{BASE}/full/mobilepairing.cgi?PID={it['pairing']}&DATE={it['date'].replace('-', '')}"
+               "&FROM=MobileOpentimePot&CurrentPage=1")
+        at = local_now().isoformat(timespec="seconds")
+        try:
+            page = fl.fetch(url)
+        except Exception as e:
+            DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "fail", f"fetch: {e}"[:200])
+            continue
+        kind = classify(page)
+        if kind != "ok":
+            res = {"killed": "killed", "expired": "needs_login", "blocked": "stop"}.get(kind, "ok")
+            log.info("crew index: %s page on %s, run ended", kind, k)
+            break
+        vt = visible_text(page)
+        crew = CI.crew_line(vt)
+        if crew is None:
+            DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "fail",
+                        f"no crew line: {vt[:120]}")
+            continue
+        DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], crew, at, "ok")
+        DB.remember_crew(vt)
+    # the run is over when its budget is used, a page ended it, or the queue ran dry before the chunk filled
+    done = res != "ok" or run["pages"] >= CREW_PER_RUN or (n < CREW_PER_CHECK and not halted)
+    if done:
+        S.pop("crew_run", None)
+        S["crew_last"] = {"at": now_iso(), "pages": run["pages"], "why": run["why"], "ended": res}
+        log.info("crew index run done: %d pages (%s)", run["pages"], res)
+    save_state(S)
+    if n or done:
+        publish_crew_index(insts, write=done)
+    if res == "stop":
+        set_machine("stopped_unexpected", "FLICA showed a captcha/MFA/password page (crew index)")
+    return res
+
+
+def publish_crew_index(insts=None, write=False):
+    """{T}/crew_index (retained) and, after a run, the month Markdown files."""
+    if INSTANCE:
+        return
+    insts = CI.instances(CARD_PAIRINGS) if insts is None else insts
+    rows = DB.crew_rows()
+    n, ok, pct = CI.coverage(insts, rows)
+    last = S.get("crew_last") or {}
+    _, nxt = crew_slot()
+    run = S.get("crew_run")
+    pub("crew_index", {"instances": n, "checked": ok, "coverage_pct": pct, "last_run": last.get("at") or "",
+                       "next_slot": nxt.replace(tzinfo=HST).isoformat(), "pages_last_run": last.get("pages", 0),
+                       "failures": sum(1 for k in insts if (rows.get(k) or {}).get("status") == "fail"),
+                       "running": bool(run), "pages_this_run": (run or {}).get("pages", 0)})
+    if write:
+        write_crew_md(insts, rows)
+
+
+def write_crew_md(insts, rows):
+    """/share/flica_watcher/crew_index/<YYYY-MM>.md for every month with instances, rewritten after each run."""
+    try:
+        os.makedirs(CREW_DIR, exist_ok=True)
+        stamp = local_now().strftime("%Y-%m-%d %H:%M")
+        for month in sorted({it["month"] for it in insts.values()}):
+            path = os.path.join(CREW_DIR, f"{month}.md")
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(CI.render_month(month, insts, rows, stamp))
+            os.replace(tmp, path)
+    except Exception as e:
+        log.info("crew index files skipped: %s", e)
+
+
+# ---------------------------------------------------------------- 0.10.1 tickets (Ryan)
+TICKETS_DIR = "/share/flica_watcher/tickets"  # shared by every instance
+TICKETS_SIG = {"sig": None}
+
+
+def reporter():
+    return INSTANCE or "ryan"
+
+
+def ticket_new(payload):
+    """{T}/ticket/new {kind, title, narrative, steps?, expected?, page?, version?, image?}."""
+    try:
+        d = json.loads(payload or "{}")
+    except ValueError:
+        d = None
+    t, err = TK.create(TICKETS_DIR, d, reporter(), now_iso())
+    if not t:
+        log.info("ticket refused: %s", err)
+        pub("event/ticket_error", {"error": err, "at": now_iso()}, retain=False)
+        return None
+    log.info("ticket %s (%s) from %s: %s", t["id"], t["kind"], t["reporter"], t["title"])
+    pub("event/ticket_new", {"id": t["id"], "kind": t["kind"], "title": t["title"], "reporter": t["reporter"]}, retain=False)
+    publish_tickets(force=True)
+    return t
+
+
+def ticket_act(payload):
+    """{T}/ticket/act {id, action: triage|progress|fixed|verify|reopen|close|note, text?, version?}. A pilot
+    instance may act on its own tickets only."""
+    try:
+        d = json.loads(payload or "{}")
+    except ValueError:
+        d = None
+    t, err = TK.act(TICKETS_DIR, d, reporter(), now_iso(), allowed_reporter=INSTANCE or None)
+    if not t:
+        log.info("ticket action refused: %s", err)
+        pub("event/ticket_error", {"error": err, "at": now_iso()}, retain=False)
+        return None
+    log.info("ticket %s: %s -> %s", t["id"], d.get("action"), t["status"])
+    publish_tickets(force=True)
+    return t
+
+
+def publish_tickets(force=False):
+    """{T}/tickets (retained): Ryan's instance lists every ticket, a pilot instance only its own. Re-published
+    when the folder changed (the other instance may have written to it) or when forced."""
+    try:
+        sig = TK.signature(TICKETS_DIR)
+        if not force and sig == TICKETS_SIG["sig"]:
+            return
+        TICKETS_SIG["sig"] = sig
+        pub("tickets", TK.listing(TICKETS_DIR, INSTANCE or None))
+    except Exception as e:
+        log.info("tickets publish skipped: %s", e)
 
 
 # ---------------------------------------------------------------- 0.7.0 charter watch (CrewTrac, read only)
@@ -2569,6 +2785,10 @@ def check(fl):
     drop_scan()
     if FLAGS.pop("swap_map", False):
         swap_map_probe(fl)
+    publish_tickets()  # 0.10.1: cheap folder re-scan, the other instance may have written
+    cr = crew_index_check(fl)  # 0.10.1: at most CREW_PER_CHECK pages per check, so pot checks keep their cadence
+    if cr != "ok":
+        return cr
     pub("last_check", now_iso())
     S["last_check_ts"] = time.time()
     if S.get("note") in ("starting",) or (S.get("note") or "").startswith("logged in"):
@@ -2625,6 +2845,8 @@ def main():
     publish_trade()
     publish_charters()
     publish_improved()
+    publish_tickets(force=True)
+    publish_crew_index()
     versions_check(force_pub=True)
     uploads_check()
     recall_eval()
