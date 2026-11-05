@@ -20,7 +20,7 @@ from playwright.sync_api import sync_playwright
 import rules as R
 import web
 from far import far_check, window as far_window
-from pot import PAIRING_RE, parse_schedule_desktop, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+from pot import PAIRING_RE, LEG_FULL_RE, parse_schedule_desktop, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 import tradeboard as TB
 import swap as SW
@@ -30,7 +30,7 @@ import submit as SUB
 import inflt as IF
 import charter as CH
 
-VERSION = "0.7.5"
+VERSION = "0.8.0"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -181,6 +181,8 @@ def on_message(c, u, msg):
     elif msg.topic == f"{T}/swap_map/press":
         FLAGS["swap_map"] = True  # 0.4.10: one read-only mapping pass on the next check
         log.info("swap map pressed: read-only mapping on the next check")
+    elif msg.topic == f"{T}/pilot/set":
+        pilot_cmd(msg.payload.decode(errors="replace"))
     elif msg.topic == f"{T}/charter_scan/press":
         CHARTER_WAKE.set()  # 0.7.0: scan CrewTrac now
         log.info("charter scan pressed")
@@ -399,6 +401,7 @@ def publish_pickers():
     """0.4.18 (Ryan): every FO/RO seen taking a trip, with their average time in open time, fastest first."""
     rows = [{"emp": e, "name": v["name"], "pos": v["pos"], "n": v["n"], "avg_s": int(v["total_s"] / v["n"]) if v["n"] else None,
              "inflt_n": v.get("inflt_n", 0), "month_n": v.get("month_n", 0), "year_n": v.get("year_n", 0),
+             "lays": v.get("lays", []), "last_lay": v.get("last_lay", ""),  # 0.7.6: Common Layover
              "last_at": v["last_at"]} for e, v in DB.picker_stats().items()]
     rows.sort(key=lambda r: (r["avg_s"] is None, r["avg_s"] or 0, r["name"]))
     pub("pickers", {"count": len(rows), "pickers": rows})
@@ -474,6 +477,9 @@ def discovery(c):
         ("switch", "pause", {"name": "Pause", "command_topic": f"{T}/pause/set",
                              "state_topic": f"{T}/pause/state", "icon": "mdi:pause-circle"}),
         ("button", "rearm", {"name": "Re-arm", "command_topic": f"{T}/rearm/press", "icon": "mdi:restart"}),
+        ("sensor", "pilot_schedule", {"name": "Pilot schedule", "state_topic": f"{T}/pilot_schedule",
+                                      "value_template": "{{ value_json.emp }}",
+                                      "json_attributes_topic": f"{T}/pilot_schedule", "icon": "mdi:account-clock"}),
         ("sensor", "charters", {"name": "Charters", "state_topic": f"{T}/charters",
                                 "value_template": "{{ value_json.count }}",
                                 "json_attributes_topic": f"{T}/charters", "icon": "mdi:airplane-alert"}),
@@ -509,7 +515,7 @@ def mqtt_start():
         discovery(cl)
         for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set",
                   "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set",
-                  "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set", "drop/set", "charter_scan/press"):
+                  "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set", "drop/set", "charter_scan/press", "pilot/set"):
             cl.subscribe(f"{T}/{t}")
         fq = freq()
         cl.publish(f"{T}/freq/normal_min/state", str(fq["normal_min"]), retain=True)
@@ -1483,6 +1489,86 @@ def swap_map_probe(fl):
 AUTO_SWAP_PER_DAY = 1
 
 
+# ---------------------------------------------------------------- 0.8.0 pilot schedule (Ryan: tap a picker's name)
+PILOT_CACHE_S = 6 * 3600
+PILOT_PAIRINGS_MAX = 8
+
+
+def pilot_cmd(payload):
+    """MQTT flica_watcher/pilot/set {"emp": "25576", "name": "..."}: show that pilot's current month on the
+    dashboard. Served from a 6 h cache when fresh, else read on the next check (Schedule Lookup + the
+    pairing pages, GET only)."""
+    try:
+        d = json.loads(payload)
+        emp = re.sub(r"\D", "", str(d.get("emp") or ""))
+    except (ValueError, AttributeError):
+        emp = ""
+    if not emp:
+        return
+    S["pilot_req"] = {"emp": emp, "name": d.get("name") or "", "at": now_iso()}
+    save_state(S)
+    cached = DB.get(f"pilot_sched:{emp}")
+    if cached and time.time() - cached.get("fetched_ts", 0) < PILOT_CACHE_S:
+        pub("pilot_schedule", {**cached, "status": "cached"})
+        S.pop("pilot_req", None)
+        save_state(S)
+        log.info("pilot %s: schedule served from cache", emp)
+        return
+    pub("pilot_schedule", {"emp": emp, "name": d.get("name") or "", "status": "loading", "month": "", "days": [], "items": [],
+                           "totals": {}, "updated": "", "fetched": ""})
+    log.info("pilot %s: schedule requested", emp)
+    WAKE.set()
+
+
+def pilot_check(fl):
+    """Read the requested pilot's month (read only) and publish it for the pilot schedule card."""
+    req = S.get("pilot_req")
+    if not req:
+        return False
+    emp = req["emp"]
+    cur = local_now()
+    bd = f"{cur.month:02d}{cur.year % 100:02d}"
+    try:
+        html = fl.fetch(IF.CM_SCHED.format(base=BASE, emp=emp))
+        sched = IF.parse_cm_month(html) if classify(html) == "ok" and IF.schedule_ok(html) else None
+        if not sched:
+            pub("pilot_schedule", {"emp": emp, "name": req.get("name") or "", "status": f"not readable: {classify(html)} {visible_text(html)[:120]}",
+                                   "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": now_iso()})
+            log.info("pilot %s: schedule page not readable (%s)", emp, classify(html))
+            S.pop("pilot_req", None)
+            save_state(S)
+            return True
+        n = 0
+        for it in sched["items"]:
+            if not PAIRING_RE.match(it["trip"]) or n >= PILOT_PAIRINGS_MAX:
+                continue
+            n += 1
+            time.sleep(random.uniform(1.5, 3.5))
+            page = fl.fetch(f"{BASE}/full/mobilepairing.cgi?PID={it['trip']}&DATE={it['start'].replace('-', '')}"
+                            "&FROM=MobileOpentimePot&CurrentPage=1")
+            if classify(page) != "ok":
+                continue
+            d = parse_detail(page)
+            it.update({k: d.get(k, "") for k in ("blk", "credit", "captain", "tafb")})
+            it["soft"] = soft_time(it.get("credit"), it.get("blk")) or ""
+            txt = visible_text(page)
+            it["legs"] = [{"dow": dw, "route": f"{a}-{b}".upper(), "dep": dep, "arr": arr, "blk": blk}
+                          for dw, a, b, dep, arr, blk in LEG_FULL_RE.findall(txt)][:12]
+            it["crew"] = parse_crew(txt)[:6]
+        rec = {**sched, "emp": emp, "name": sched.get("name") or req.get("name") or "", "bd": bd,
+               "fetched": now_iso(), "fetched_ts": time.time()}
+        DB.put(f"pilot_sched:{emp}", rec)
+        pub("pilot_schedule", {**rec, "status": "ok"})
+        log.info("pilot %s (%s): %s read, %d items, %d pairing pages", emp, rec["name"], sched["month"], len(sched["items"]), n)
+    except Exception as e:
+        log.info("pilot %s: schedule read failed: %s", emp, e)
+        pub("pilot_schedule", {"emp": emp, "name": req.get("name") or "", "status": f"error: {e}", "month": "", "days": [],
+                               "items": [], "totals": {}, "updated": "", "fetched": now_iso()})
+    S.pop("pilot_req", None)
+    save_state(S)
+    return True
+
+
 # ---------------------------------------------------------------- 0.7.0 charter watch (CrewTrac, read only)
 CHARTER_WAKE = threading.Event()
 
@@ -1771,6 +1857,8 @@ def pickup_check(fl, full=False):
     save_state(S)
     if inflt_check(fl, FULL_MAX if full else INFLT_PER_CHECK):
         done = True
+    if pilot_check(fl):  # 0.8.0: a tapped picker's month
+        done = True
     return done
 
 
@@ -1825,6 +1913,8 @@ def email_check(fl, pot_all):
     for it in list(q):
         k = it["key"]
         if DB.has_find(k):
+            if it.get("at") and DB.set_alert_at(k, it["at"]):  # 0.7.6: FLICA's alert time is the true pot-entry time
+                log.info("alert email: %s entered the pot at %s (Pickup Speed rescored)", k, it["at"])
             # 0.4.21 (Ryan): a known find named in a fresh alert went back to open time; re-read its page
             # so "who holds it now" is current, instead of trusting the old pickup record.
             row = DB.find_row(k) or {}
@@ -1981,6 +2071,10 @@ def main():
         S["fp_version"] = FP_VERSION
         save_state(S)
         log.info("pot header fingerprints cleared for fingerprint v%d", FP_VERSION)
+    if DB.get("score_v") != 2:  # 0.7.6 one-shot: Pickup Speed recomputed with the vetted dwell() for every scored pickup
+        DB.rescore_all()
+        DB.put("score_v", 2)
+        log.info("pickup speeds rescored (0.7.6 dwell: alert time in, middle of the gone window out)")
     RULES["list"] = load_rules()
     publish_rules(MQ)
     publish_finds()
