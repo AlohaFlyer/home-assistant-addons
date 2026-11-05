@@ -50,8 +50,8 @@ def test_parse_rows_and_flags():
 
 
 def test_regular_option_and_merge():
-    reg = C.regular_set("hnl, lax nrt")
-    assert "LAX" in reg and "MNL" not in reg
+    reg = C.regular_set("gum, lax")
+    assert "GUM" in reg and "PPT" in reg and "MNL" not in reg  # option adds, never shrinks
     rows = C.unusual(C.parse_rows(TABLE), reg)
     known, new = C.merge({}, rows, "2026-11-04")
     assert sorted(new) == ["471|HNL-MNL|2026-11-05", "9980|SIN-HNL|2026-11-04"]
@@ -61,6 +61,8 @@ def test_regular_option_and_merge():
     assert "471|HNL-MNL|2026-11-05" in known  # the month before stays listed
     known, new = C.merge(known, [], "2027-01-10")
     assert known == {}
+    known, _ = C.merge({}, rows, "2026-11-04")
+    assert sorted(C.prune(known, C.regular_set("MNL"))) == ["9980|SIN-HNL|2026-11-04"]
 
 
 def test_login_form_and_dates():
