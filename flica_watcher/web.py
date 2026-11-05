@@ -15,7 +15,7 @@ INGRESS_IP = "172.30.32.2"
 UPLOAD_DIR = "/share/flica_watcher/uploads"
 UPLOAD_MAX = 25_000_000
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>FLICA Watcher rules</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Flight Watcher rules</title>
 <style>
 body{{font:14px system-ui,sans-serif;margin:16px;max-width:1000px;background:#fafafa;color:#222}}
 @media (prefers-color-scheme:dark){{body{{background:#111;color:#ddd}}textarea,td,th{{border-color:#444}}
@@ -24,7 +24,7 @@ textarea{{width:100%;height:340px;font:13px ui-monospace,monospace;box-sizing:bo
 table{{border-collapse:collapse;width:100%;margin:8px 0 20px}}td,th{{border:1px solid #ccc;padding:4px 6px;text-align:left}}
 .err{{color:#c62828}}.ok{{color:#2e7d32}}.note{{opacity:.75}}button{{padding:6px 14px}}
 </style></head><body>
-<h2>FLICA Watcher {version}</h2>
+<h2>Flight Watcher {version}</h2>
 <h3>Monthly PDFs</h3>
 <p class="note">0.9.0 (Ryan): upload the month's award (your line as awarded) and the pilot pairings package. They are
 kept in /share/flica_watcher/uploads (never committed) with a text copy, and parsed for the month's starting
