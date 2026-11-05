@@ -1,6 +1,6 @@
-name: FLICA Watcher
+name: Flight Watcher
 slug: flica_watcher
-version: "0.9.4"
+version: "0.10.0"
 description: Keeps one FLICA session, watches the open time pot, reports new pairings to HA over MQTT
 url: https://github.com/AlohaFlyer/home-assistant-addons/tree/main/flica_watcher
 arch:
@@ -9,7 +9,7 @@ init: false
 ingress: true
 ingress_port: 8099
 panel_icon: mdi:airplane-search
-panel_title: FLICA Rules
+panel_title: Flight Watcher Rules
 startup: application
 boot: auto
 map:
@@ -31,6 +31,7 @@ options:
   my_name: ""
   ctweb_username: ""
   ctweb_password: ""
+  second_pilot: ""
   charter_regular: "HNL OGG KOA LIH ITO LAX SFO SAN SEA PDX LAS PHX SMF OAK SJC JFK BOS SYD AKL NRT HND KIX ICN PPG PPT"
   log_level: info
 schema:
@@ -47,5 +48,6 @@ schema:
   my_name: "str?"
   ctweb_username: "str?"
   ctweb_password: "password?"
+  second_pilot: "str?"
   charter_regular: "str?"
   log_level: list(debug|info|warning)

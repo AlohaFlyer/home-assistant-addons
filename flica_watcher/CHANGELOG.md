@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.10.0
+
+- Renamed Flight Watcher (Ryan): app, device and Web UI names; entity ids unchanged.
+- Second pilot (Ryan, for James): the add-on runs one `watcher.py` per pilot from a launcher (`run.py`). Option `second_pilot` (lowercase letters, digits, underscores, e.g. `james`) starts a second Watcher beside Ryan's with its own data folder (/data/<name>), its own MQTT prefix (`flica_watcher_<name>/...`), its own HA device "Flight Watcher (<Name>)" and entities `sensor.flica_watcher_<name>_schedule`, `switch.flica_watcher_<name>_hunt_mode` and so on (rule switches `switch.flica_watcher_<name>_rule_<id>_live`). Ryan's instance, topics, entity ids and the ingress Web UI are unchanged.
+- Credentials over MQTT: `flica_watcher_<name>/settings/set` {username, password, ctweb_username, ctweb_password, my_name} (any subset, blanks ignored) are kept in /data/<name>/creds.json (mode 600, never in the add-on options) and the Watcher restarts itself to use them; `.../settings/state` and `sensor.flica_watcher_<name>_settings` say who is configured (has_password, never the password). Without credentials the instance waits in state `needs_settings` instead of parking. Ryan's instance takes the same topic (creds.json overlays the add-on options).
+- Per pilot files: finds_<YYYY-MM>.json go to www/flica/<name>/, captures and uploads to /share/flica_watcher/<name>/; pairings_<YYYY-MM>.json stay shared. The launcher restarts a Watcher that exits (10 s, 60 s after a crash within 30 s of starting) and passes SIGTERM on to both.
+
+## 0.9.4
+- Finds history (Ryan): finds are kept 24 months (prune) and written one file per HST month, www/flica/finds_<YYYY-MM>.json, for the finds card's month picker (this month and last month on every check, all 24 once per start).
+
+## 0.9.3
+- Recall / O75: a trip or vacation in the way of the pairing is not a miss (it would have needed a removal under 22.G.2.f/g, and a junior volunteer clean under 22.G.2.e goes first), so the row is NO with the reason; only eligible days junior to you are MISSED.
+
+## 0.9.2
+- Recall / Over 75 miss check (Ryan): Hark posts the daily HNL recall list (Alaska Flight Ops SharePoint) to an HA webhook that lands on `flica_watcher/recall/set`; `recall.py` judges every Recall / Over 75 award against Ryan's line per PWA 22.G.2.d-g, 22.E, 4.M, 4.N, 10.E.1.a and FAR 117 (MISSED / POSSIBLE / NO with the reason) and publishes `sensor.flica_watcher_recall_o75`; a miss fires `flica_watcher/event/recall_miss` once, and approving the CCR narrative on the dashboard (`recall/act`) fires `flica_watcher/event/recall_approved`. The app files nothing.
+
 ## 0.9.1
 - Monthly PDFs parsed (Ryan): the pairings package becomes the schedule card's pairing file (www/flica/pairings_<YYYY-MM>.json, A332 HNL, checked 83 of 83 against the hand-built November file, plus the H3665 charter it lacked) with each pairing's block and HST duty times; the PBS award becomes the month's version .001 (Ryan's row only), renumbering later versions. December's bid period (Dec 2 to 31) and its 33L equipment code are handled. The app now maps HA's config folder to write the pairing file.
 
