@@ -32,7 +32,14 @@ HEADERS = ("cancelled", "flight", "route", "scheduled", "estimated", "actual", "
 
 
 def regular_set(text=None):
-    return {s.strip().upper() for s in (text or REGULAR).replace(",", " ").split() if s.strip()}
+    """The built-in regular stations plus any extra ones from the charter_regular option (0.7.5: the
+    option adds to the list, it never shrinks it, so an old saved option cannot re-flag PPT)."""
+    return {s.strip().upper() for s in (REGULAR + " " + (text or "")).replace(",", " ").split() if s.strip()}
+
+
+def prune(known, regular):
+    """Drop entries the current rules would not flag (e.g. a station added to the regular list)."""
+    return {k: v for k, v in known.items() if flag(v, regular)}
 
 
 def scan_dates(today, ahead=DAYS_AHEAD):

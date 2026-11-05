@@ -30,7 +30,7 @@ import submit as SUB
 import inflt as IF
 import charter as CH
 
-VERSION = "0.7.4"
+VERSION = "0.7.5"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -1531,7 +1531,8 @@ def charter_scan():
         publish_charters()
         return False
     found = CH.unusual(rows, CH.regular_set(OPTS.get("charter_regular")))
-    known, new = CH.merge(DB.get("charters") or {}, found, today.isoformat())
+    regular = CH.regular_set(OPTS.get("charter_regular"))
+    known, new = CH.merge(CH.prune(DB.get("charters") or {}, regular), found, today.isoformat())
     DB.put("charters", known)
     DB.put("charter_scan_at", now_iso())
     DB.put("charter_status", f"ok: {len(rows)} rows, {len(found)} unusual A330, {len(new)} new")
