@@ -585,3 +585,9 @@ def inflight_at(legs, start_iso, at_utc_iso):
     except (TypeError, ValueError):
         return None
     return any(lg["dep"] <= m <= lg["arr"] for lg in legs or [])
+
+
+def parse_schedule_desktop(html, domicile="HNL"):
+    """0.7.1: Ryan's month from the desktop Schedules page (scheduledetail.cgi). Same result shape as
+    parse_schedule. Returns None until the page layout is known (first captures land in /share)."""
+    return None
