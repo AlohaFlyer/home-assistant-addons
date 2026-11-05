@@ -91,3 +91,11 @@ def test_parse_cm_month():
                           {"trip": "H3606", "start": "2026-11-05", "end": "2026-11-07", "lay": "JFK"}]
     assert r["totals"] == {"block": "100:39", "credit": "116:16", "days_off": 10} and r["updated"].startswith("Nov 4, 2026")
     assert inflt.parse_cm_month("<html>nothing</html>") is None
+
+
+def test_cm_month_decodes_codes():
+    html = ('<script>TAry[TAry.length]=new Task(1, "MO", "26", "O%2FK", "", "20261026", 1, 0, \'x\');'
+            'TAry[TAry.length]=new Task(1, "TU", "27", "%26nbsp%3B", "", "20261027", 1, 0, \'x\');</script>'
+            '<select><option value="1026" selected> October</select>')
+    s = inflt.parse_cm_month(html)
+    assert [d[1] for d in s["days"]] == ["O/K", ""] and s["items"][0]["trip"] == "O/K"

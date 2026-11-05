@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.8.6
+- Schedule codes read from Schedule Lookup are URL-decoded (October showed O%2FK for O/K).
+
 ## 0.8.5
 - October and December (Ryan): Tools > Schedule Lookup for Ryan's own employee number lists every month FLICA holds (1026, 1126, 1226 once published); each month other than the current one is read with bd=MMYY (GET only) and stored beside it, so the FAR 30 in 7 / 100 in 672 columns can look back and forward. The employee number is taken from the Tradeboard page header; the Schedules-menu route stays as the fallback.
 
