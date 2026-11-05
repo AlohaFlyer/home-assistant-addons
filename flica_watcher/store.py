@@ -31,6 +31,13 @@ CREATE TABLE IF NOT EXISTS picker_log (
 CREATE INDEX IF NOT EXISTS picker_log_emp ON picker_log(emp, at);
 CREATE TABLE IF NOT EXISTS crew_dir (
   emp TEXT PRIMARY KEY, name TEXT NOT NULL, pos TEXT, seen_at TEXT);
+CREATE TABLE IF NOT EXISTS crew_idx (
+  key TEXT PRIMARY KEY, pairing TEXT NOT NULL, date TEXT NOT NULL, end_date TEXT, route TEXT, crew TEXT,
+  checked_at TEXT, status TEXT, reason TEXT, tries INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS crew_idx_date ON crew_idx(date);
+CREATE TABLE IF NOT EXISTS crew_emp (
+  emp TEXT NOT NULL, key TEXT NOT NULL, pos TEXT, name TEXT, PRIMARY KEY(emp, key));
+CREATE INDEX IF NOT EXISTS crew_emp_key ON crew_emp(key);
 """
 HST = timezone(timedelta(hours=-10))
 LOG_KEEP_DAYS = 731  # 0.9.4: 24 months (Ryan); 0.5.6: per-pickup log for month / year counts outlives the 90-day finds history
@@ -519,6 +526,47 @@ class Store:
     def drop_live(self, rule_id):
         with self.lock:
             self.db.execute("DELETE FROM rule_live WHERE rule_id=?", (rule_id,))
+
+    # ---- crew index (0.10.1, Ryan): crew lines of every A330 trip instance, looked up by employee number
+    def crew_put(self, key, pairing, date_, end_date, route, crew, checked_at, status, reason=""):
+        """Store one read of a trip instance. status 'ok' (crew is the list) or 'fail' (reason); a failure keeps
+        the last good crew. tries counts reads since the last good one."""
+        with self.lock:
+            self.db.execute("BEGIN")
+            old = self.db.execute("SELECT crew, tries FROM crew_idx WHERE key=?", (key,)).fetchone()
+            tries = 0 if status == "ok" else ((old[1] if old else 0) + 1)
+            cj = json.dumps(crew) if status == "ok" else (old[0] if old else None)
+            self.db.execute("INSERT INTO crew_idx(key,pairing,date,end_date,route,crew,checked_at,status,reason,tries) "
+                            "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET pairing=excluded.pairing, "
+                            "date=excluded.date, end_date=excluded.end_date, route=excluded.route, crew=excluded.crew, "
+                            "checked_at=excluded.checked_at, status=excluded.status, reason=excluded.reason, tries=excluded.tries",
+                            (key, pairing, date_, end_date, route, cj, checked_at, status, reason, tries))
+            if status == "ok":
+                self.db.execute("DELETE FROM crew_emp WHERE key=?", (key,))
+                for c in crew or []:
+                    if c.get("emp") and c.get("name") != "OPEN":
+                        self.db.execute("INSERT OR REPLACE INTO crew_emp(emp,key,pos,name) VALUES(?,?,?,?)",
+                                        (c["emp"], key, c.get("pos") or "", c.get("name") or ""))
+            self.db.execute("COMMIT")
+
+    def crew_rows(self):
+        """{key: {key, pairing, date, end_date, route, crew, checked_at, status, reason, tries}}."""
+        with self.lock:
+            rows = self.db.execute("SELECT key,pairing,date,end_date,route,crew,checked_at,status,reason,tries FROM crew_idx").fetchall()
+        out = {}
+        for k, p, d, e, r, c, at, st, why, tr in rows:
+            out[k] = {"key": k, "pairing": p, "date": d, "end_date": e, "route": r, "crew": json.loads(c) if c else [],
+                      "checked_at": at, "status": st, "reason": why or "", "tries": tr}
+        return out
+
+    def crew_by_emp(self, emp):
+        """[{key, pairing, date, end_date, route, pos, name, checked_at}] for one employee number (status ok)."""
+        with self.lock:
+            rows = self.db.execute("SELECT i.key,i.pairing,i.date,i.end_date,i.route,e.pos,e.name,i.checked_at FROM crew_emp e "
+                                   "JOIN crew_idx i ON i.key=e.key WHERE e.emp=? AND i.status='ok' ORDER BY i.date",
+                                   (str(emp),)).fetchall()
+        return [{"key": k, "pairing": p, "date": d, "end_date": e, "route": r, "pos": pos, "name": nm, "checked_at": at}
+                for k, p, d, e, r, pos, nm, at in rows]
 
     # ---- housekeeping
     def prune(self, days=KEEP_DAYS):
