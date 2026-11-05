@@ -30,7 +30,7 @@ import submit as SUB
 import inflt as IF
 import charter as CH
 
-VERSION = "0.7.5"
+VERSION = "0.7.6"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -399,6 +399,7 @@ def publish_pickers():
     """0.4.18 (Ryan): every FO/RO seen taking a trip, with their average time in open time, fastest first."""
     rows = [{"emp": e, "name": v["name"], "pos": v["pos"], "n": v["n"], "avg_s": int(v["total_s"] / v["n"]) if v["n"] else None,
              "inflt_n": v.get("inflt_n", 0), "month_n": v.get("month_n", 0), "year_n": v.get("year_n", 0),
+             "lays": v.get("lays", []), "last_lay": v.get("last_lay", ""),  # 0.7.6: Common Layover
              "last_at": v["last_at"]} for e, v in DB.picker_stats().items()]
     rows.sort(key=lambda r: (r["avg_s"] is None, r["avg_s"] or 0, r["name"]))
     pub("pickers", {"count": len(rows), "pickers": rows})
@@ -1825,6 +1826,8 @@ def email_check(fl, pot_all):
     for it in list(q):
         k = it["key"]
         if DB.has_find(k):
+            if it.get("at") and DB.set_alert_at(k, it["at"]):  # 0.7.6: FLICA's alert time is the true pot-entry time
+                log.info("alert email: %s entered the pot at %s (Pickup Speed rescored)", k, it["at"])
             # 0.4.21 (Ryan): a known find named in a fresh alert went back to open time; re-read its page
             # so "who holds it now" is current, instead of trusting the old pickup record.
             row = DB.find_row(k) or {}
@@ -1981,6 +1984,10 @@ def main():
         S["fp_version"] = FP_VERSION
         save_state(S)
         log.info("pot header fingerprints cleared for fingerprint v%d", FP_VERSION)
+    if DB.get("score_v") != 2:  # 0.7.6 one-shot: Pickup Speed recomputed with the vetted dwell() for every scored pickup
+        DB.rescore_all()
+        DB.put("score_v", 2)
+        log.info("pickup speeds rescored (0.7.6 dwell: alert time in, middle of the gone window out)")
     RULES["list"] = load_rules()
     publish_rules(MQ)
     publish_finds()
