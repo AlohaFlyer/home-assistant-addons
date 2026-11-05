@@ -166,14 +166,20 @@ class Scanner:
     """Read-only CrewTrac client over a requests.Session. Caller supplies the session, the credentials
     and a sleep hook; nothing here is ever written to CrewTrac."""
 
-    def __init__(self, session, username, password, log, sleep=lambda: None):
+    def __init__(self, session, username, password, log, sleep=lambda: None, capture=None):
         self.s, self.u, self.p, self.log, self.sleep = session, username, password, log, sleep
+        self.capture = capture or (lambda name, html: None)  # 0.7.3: private page captures for debugging
+        self._reported = False
 
     def login(self):
         r = self.s.get(LOGIN, timeout=30)
+        self.capture("login", r.text)
         if logged_in(r.text):
             return True
         action, f = login_form(r.text)
+        self.log.info("charter: login page %s (%d chars), form action %r, fields %s, user field %r, pass field %r",
+                      r.url.split("?")[0], len(r.text), action, sorted(f.get("fields", {}).keys()) if f else [],
+                      (f or {}).get("user"), (f or {}).get("pass"))
         if not f or not f.get("user") or not f.get("pass"):
             self.log.info("charter: login form not found on %s (%d chars, fields %s)", LOGIN, len(r.text),
                           sorted((f or {}).get("fields", {}).keys()))
@@ -184,7 +190,9 @@ class Scanner:
         url = action if action.startswith("http") else (LOGIN if not action or action.startswith("?") else
                                                         f"{BASE}/Pilot/{action.lstrip('./')}")
         r = self.s.post(url, data=data, timeout=30, allow_redirects=True)
+        self.capture("login_response", r.text)
         ok = logged_in(r.text) or MENU in r.url
+        self.log.info("charter: login response %s (%d chars, logged in: %s)", r.url.split("?")[0], len(r.text), ok)
         if not ok:
             self.log.info("charter: login refused (%s, %d chars): %s", r.url.split("?")[0], len(r.text),
                           re.sub(r"\s+", " ", BeautifulSoup(r.text, "html.parser").get_text(" "))[:200])
@@ -192,7 +200,12 @@ class Scanner:
 
     def rows(self, iso, dep="", arr=""):
         r = self.s.get(report_url(iso, dep, arr), timeout=30)
-        if not logged_in(r.text):
+        if not self._reported:
+            self._reported = True
+            self.capture("report", r.text)
+            self.log.info("charter: first report %s (%d chars, logged in: %s): %s", r.url.split("?")[0], len(r.text),
+                          logged_in(r.text), re.sub(r"\s+", " ", BeautifulSoup(r.text, "html.parser").get_text(" "))[:300])
+        if not logged_in(r.text) or "notloggedin" in r.url.lower():
             return None
         return parse_rows(r.text)
 

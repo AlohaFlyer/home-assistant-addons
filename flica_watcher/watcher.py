@@ -30,7 +30,7 @@ import submit as SUB
 import inflt as IF
 import charter as CH
 
-VERSION = "0.7.2"
+VERSION = "0.7.3"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -1507,7 +1507,13 @@ def charter_scan():
     sess = requests.Session()
     sess.headers["User-Agent"] = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                                   "(KHTML, like Gecko) Chrome/130.0 Safari/537.36")
-    sc = CH.Scanner(sess, u, p, log, sleep=lambda: time.sleep(random.uniform(1.0, 2.5)))
+    def capture(name, html):  # 0.7.3: first pages saved privately (never committed) to check the parser
+        try:
+            os.makedirs(IF.CAPTURE_DIR, exist_ok=True)
+            open(f"{IF.CAPTURE_DIR}/ctweb_{name}.html", "w").write(html or "")
+        except Exception as e:
+            log.info("charter capture skipped: %s", e)
+    sc = CH.Scanner(sess, u, p, log, sleep=lambda: time.sleep(random.uniform(1.0, 2.5)), capture=capture)
     today = local_now().date()
     try:
         if not sc.login():
