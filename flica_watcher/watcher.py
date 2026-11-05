@@ -30,7 +30,7 @@ import submit as SUB
 import inflt as IF
 import charter as CH
 
-VERSION = "0.8.3"
+VERSION = "0.8.4"
 BASE = "https://ha2.flica.net"
 DATA = "/data"
 STATE_FILE = f"{DATA}/state.json"
@@ -755,6 +755,28 @@ class Flica:
         r = self.ctx.request.get(url, timeout=45000)
         return r.text()
 
+    def menu_tree(self):
+        """0.8.4: the left menu's JS tree (M.addC entries with the tokened Schedules links). FLICA only
+        builds it inside the real menu frame, so load the main menu in a tab and read that frame's
+        source. Read only: no clicks."""
+        page = self.ctx.new_page()
+        try:
+            page.goto(f"{BASE}/online/mainmenu.cgi", wait_until="domcontentloaded", timeout=45000)
+            html = ""
+            for _ in range(20):
+                for fr in page.frames:
+                    if "leftmenu" in (fr.url or ""):
+                        try:
+                            html = fr.content()
+                        except Exception:
+                            html = ""
+                        if "addC(" in html or "addE(" in html:
+                            return html
+                time.sleep(1)
+            return html
+        finally:
+            page.close()
+
     def render(self, url, wait_for=None, timeout=30000):
         """0.4.12: load a JS-built page in a real tab (read only, no clicks) and return its HTML
         once `wait_for` (a CSS selector) is present, plus the API responses it fetched."""
@@ -1076,6 +1098,8 @@ def desktop_schedule(fl, bd, seen):
     two pages are saved to the private share folder for the parser; returns parse_schedule_desktop() or
     None. The token is never logged."""
     menu = fl.fetch(LEFTMENU)
+    if "scheduledetail" not in (menu or ""):  # 0.8.4: the plain GET gets only the skeleton; the frame has the tree
+        menu = fl.menu_tree()
     try:  # 0.8.3: keep the menu page (token masked) so the link pattern can be checked against the real thing
         os.makedirs(IF.CAPTURE_DIR, exist_ok=True)
         open(f"{IF.CAPTURE_DIR}/leftmenu.html", "w").write(re.sub(r"token=[0-9A-Za-z]+", "token=MASKED", menu or ""))
@@ -1552,6 +1576,17 @@ def pilot_check(fl):
     req = S.get("pilot_req")
     if not req:
         return False
+    if not S.get("cm_prompt_captured"):  # 0.8.4: does FLICA's Schedule Lookup prompt offer a name search? Save it once.
+        try:
+            html = fl.fetch(f"{BASE}/full/cmschedules.cgi?Prompt=1&SchBrowser=1")
+            os.makedirs(IF.CAPTURE_DIR, exist_ok=True)
+            open(f"{IF.CAPTURE_DIR}/cmschedules_prompt.html", "w").write(html or "")
+            log.info("schedule lookup prompt page saved (%d chars): %s", len(html or ""), visible_text(html)[:200])
+            S["cm_prompt_captured"] = True
+            save_state(S)
+            time.sleep(random.uniform(1.0, 2.0))
+        except Exception as e:
+            log.info("schedule lookup prompt capture skipped: %s", e)
     emp = req["emp"]
     cur = local_now()
     bd = f"{cur.month:02d}{cur.year % 100:02d}"
