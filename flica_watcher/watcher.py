@@ -20,7 +20,7 @@ from playwright.sync_api import sync_playwright
 import rules as R
 import web
 from far import far_check, window as far_window
-from pot import PAIRING_RE, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+from pot import PAIRING_RE, parse_schedule_desktop, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 import tradeboard as TB
 import swap as SW
@@ -1059,6 +1059,32 @@ def pot_details(fl, pot, full=False):
 SCHED_GAP_S = 30 * 60
 
 
+LEFTMENU = f"{BASE}/online/leftmenu.cgi?whosepage=Crewmember"
+SCHED_LINK_RE = r"scheduledetail\.cgi\?BlockDate=%s&(?:amp;)?token=([0-9A-Za-z]+)"
+
+
+def desktop_schedule(fl, bd, seen):
+    """0.7.1: the desktop Schedules > <month> page via the left menu's tokened link (GET only). The first
+    two pages are saved to the private share folder for the parser; returns parse_schedule_desktop() or
+    None. The token is never logged."""
+    menu = fl.fetch(LEFTMENU)
+    m = re.search(SCHED_LINK_RE % bd, menu or "")
+    if not m:
+        seen.append(("leftmenu", f"no Schedules link for BlockDate={bd}: {classify(menu)} {visible_text(menu)[:120]}"))
+        return None
+    time.sleep(random.uniform(1.0, 2.0))
+    page = fl.fetch(f"{BASE}/full/scheduledetail.cgi?GO=1&token={m.group(1)}&BlockDate={bd}")
+    try:
+        os.makedirs(IF.CAPTURE_DIR, exist_ok=True)
+        open(f"{IF.CAPTURE_DIR}/scheduledetail_{bd}.html", "w").write(page)
+    except Exception as e:
+        log.info("schedule capture skipped: %s", e)
+    sp = parse_schedule_desktop(page)
+    if not sp:
+        seen.append((f"scheduledetail GO=1 BlockDate={bd}", f"{classify(page)} {len(page)} chars: {visible_text(page)[:160]}"))
+    return sp
+
+
 def prev_month_check(fl, ok_url, cur_month):
     """0.4.16/0.4.17 (Ryan): read last month's schedule once a day with the bid-period number one lower
     (Nov 152 -> Oct 151), trying the same URL shapes as the current month (the OT drop view only
@@ -1081,6 +1107,15 @@ def prev_month_check(fl, ok_url, cur_month):
     S["sched_prev_v"] = 4
     S["sched_prev_at"] = time.time()
     seen = []
+    try:  # 0.7.1 (Ryan: October): FLICA's own Schedules menu links each month with a session token
+        sp = desktop_schedule(fl, f"{pm:02d}{py % 100:02d}", seen)
+        if sp and sp["month"] == prev:
+            store[prev] = sp
+            S["sched_prev_url"] = "leftmenu"
+            log.info("schedule %s (previous month): %d items via Schedules menu", prev, len(sp["items"]))
+            return
+    except Exception as e:
+        seen.append(("leftmenu", str(e)))
     for url in cands:
         try:
             time.sleep(random.uniform(1.5, 3.5))
