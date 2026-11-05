@@ -30,9 +30,9 @@ import submit as SUB
 import inflt as IF
 import charter as CH
 
-VERSION = "0.8.4"
+VERSION = "0.8.5"
 BASE = "https://ha2.flica.net"
-DATA = "/data"
+DATA = os.environ.get("FLICA_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
 DB_FILE = f"{DATA}/watcher.db"
 RULES_FILE = f"{DATA}/rules.json"
@@ -1126,6 +1126,59 @@ def desktop_schedule(fl, bd, seen):
     return sp
 
 
+OWN_RE = re.compile(r"\b([a-z]+(?: jr| sr| ii| iii)?, [a-z]+(?: [a-z]+)?)\s+(\d{3,6})\s+-\s+[a-z]{3}\s+\d{3}\s+(?:fo|ca|ro)\b")
+
+
+def note_own(text):
+    """0.8.5: Ryan's own employee number from a FLICA page header ('doe, jane 9901 - hnl 332 fo'),
+    kept in state for the Schedule Lookup reads of his other months."""
+    m = OWN_RE.search((text or "").lower())
+    if m and S.get("own_emp") != m.group(2):
+        S["own_emp"], S["own_name"] = m.group(2), m.group(1).title()
+        S["sched_prev_at"] = S["sched_checked_at"] = 0  # read the other months on the next pass
+        log.info("own employee number noted from the page header")
+    return S.get("own_emp")
+
+
+def other_months_check(fl, cur_month):
+    """0.8.5 (Ryan: October now, December once it is published): Tools > Schedule Lookup for Ryan's own
+    number lists every month FLICA holds in its <select> (1026, 1126, later 1226); each listed month other
+    than the current one is read with bd=MMYY (GET only) and parsed like a picker's month, so the FAR 30 in
+    7 / 100 in 672 columns can look back and forward. Returns True when every listed month is in."""
+    emp = S.get("own_emp")
+    if not emp:
+        return False
+    store = S.setdefault("schedule", {})
+    cur = local_now()
+    html = fl.fetch(IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=f"{cur.month:02d}{cur.year % 100:02d}"))
+    if classify(html) != "ok":
+        log.info("own schedule lookup: %s", classify(html))
+        return False
+    bds = re.findall(r'<option value="(\d{4})"', html)
+    if not bds:
+        log.info("own schedule lookup: no month list: %s", visible_text(html)[:160])
+        return False
+    got = []
+    for bd in bds:
+        mon = f"20{bd[2:]}-{bd[:2]}"
+        if mon == cur_month:
+            continue
+        if mon in store and store[mon].get("src") == "lookup" and time.time() - store[mon].get("read_ts", 0) < 6 * 3600:
+            got.append(mon)
+            continue
+        time.sleep(random.uniform(1.5, 3.5))
+        page = fl.fetch(IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bd))
+        sp = IF.parse_cm_month(page) if classify(page) == "ok" else None
+        if not sp or sp["month"] != mon:
+            log.info("own schedule %s (bd=%s): %s %s", mon, bd, classify(page), (sp and sp["month"]) or visible_text(page)[:160])
+            continue
+        store[mon] = {"month": mon, "updated": sp.get("updated", ""), "days": sp["days"], "items": sp["items"],
+                      "totals": sp.get("totals") or {}, "src": "lookup", "read_ts": time.time()}
+        got.append(mon)
+        log.info("schedule %s: %d items via Schedule Lookup (bd=%s), totals %s", mon, len(sp["items"]), bd, sp.get("totals"))
+    return len(got) == len([b for b in bds if f"20{b[2:]}-{b[:2]}" != cur_month])
+
+
 def prev_month_check(fl, ok_url, cur_month):
     """0.4.16/0.4.17 (Ryan): read last month's schedule once a day with the bid-period number one lower
     (Nov 152 -> Oct 151), trying the same URL shapes as the current month (the OT drop view only
@@ -1134,9 +1187,16 @@ def prev_month_check(fl, ok_url, cur_month):
     store = S.setdefault("schedule", {})
     y, m = int(cur_month[:4]), int(cur_month[5:7])
     prev = f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
-    if S.get("sched_prev_v") == 5 and prev in store and time.time() - S.get("sched_prev_at", 0) < 86400:
+    if time.time() - S.get("sched_prev_at", 0) < (6 * 3600 if S.get("sched_prev_v") == 6 else 1800):
         return
-    if S.get("sched_prev_v") == 5 and time.time() - S.get("sched_prev_at", 0) < 1800:
+    try:  # 0.8.5: Schedule Lookup lists every month FLICA holds; October (and December when out) come from there
+        if other_months_check(fl, cur_month):
+            S["sched_prev_at"] = time.time()
+            S["sched_prev_v"] = 6
+            return
+    except Exception as e:
+        log.info("own schedule lookup failed: %s", e)
+    if S.get("sched_prev_v") == 5 and prev in store and time.time() - S.get("sched_prev_at", 0) < 86400:
         return
     mo = re.search(r"BCID=\d{3}\.(\d+)", ok_url)
     if not mo:
@@ -1343,6 +1403,7 @@ def tradeboard_check(fl, full=False):
                 log.info("tradeboard %s: %s, skipped", n, classify(html))
                 continue
             picks = TB.parse_pickups(html)
+            note_own(visible_text(html))  # 0.8.5: the header names Ryan with his employee number
             if not TB.has_rows(html):
                 if not S.get("tb_raw_logged2"):
                     S["tb_raw_logged2"] = True
