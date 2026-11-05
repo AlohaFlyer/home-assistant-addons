@@ -63,3 +63,31 @@ def test_parse_task_rows_and_links():
     assert inflt.parse_cm_schedule(SCHED) == [{"trip": "H3647", "start": "2026-11-01"}, {"trip": "H3648", "start": "2026-11-03"}]
     assert inflt.parse_cm_schedule("onclick=\"javascript:pair('H3601','20261105',0)\"") == [{"trip": "H3601", "start": "2026-11-05"}]
     assert inflt.schedule_ok("<script>function pair(){}</script>") is False
+
+
+def test_parse_cm_month():
+    html = ('<html><head><title>FLICA.Net - Crewmember Schedule</title></head><body><select name="BlockDates">'
+            '<option value="1026" > October<option value="1126" selected> November</select>'
+            ' DOE, PAT (Emp# 10008) Schedule Last Updated: Nov 4, 2026 13:52:55 HA <script>'
+            'TAry[TAry.length]=new Task(1, "FR", "30", "H3075", "LAX", "20261030", 1, 0, \'H3075\');'
+            'TAry[TAry.length]=new Task(0, "SA", "31", "", "-", "20261030", 1, 0, \'\');'
+            'TAry[TAry.length]=new Task(0, "SU", "01", "", "HNL", "20261030", 1, 0, \'\');'
+            'TAry[TAry.length]=new Task(0, "MO", "02", "%26nbsp%3B", "", "", 0, 0, \'&nbsp;\');'
+            'TAry[TAry.length]=new Task(1, "TU", "03", "VAC", "", "20261103", 1, 0, \'VAC\');'
+            'TAry[TAry.length]=new Task(1, "WE", "04", "VAC", "", "20261104", 1, 0, \'VAC\');'
+            'TAry[TAry.length]=new Task(1, "TH", "05", "H3606", "JFK", "20261105", 1, 0, \'H3606\');'
+            'TAry[TAry.length]=new Task(0, "FR", "06", "", "-", "20261105", 1, 0, \'\');'
+            'TAry[TAry.length]=new Task(0, "SA", "07", "", "HNL", "20261105", 1, 0, \'\');'
+            'TAry[TAry.length]=new Task(0, "TU", "01", "%26nbsp%3B", "", "", 0, 0, \'&nbsp;\');</script>'
+            "<TABLE><TR><TD>Block &nbsp;&nbsp;</TD><TD Colspan=2 Class='right'>100.39 &nbsp;&nbsp;</TD></TR>"
+            "<TR><TD>Credit &nbsp;&nbsp;</TD><TD Colspan=2 Class='right'>116.16 &nbsp;&nbsp;</TD></TR>"
+            "<TR><TD>Days Off &nbsp;</TD><TD Colspan=2 Class='right'>10 &nbsp;&nbsp;</TD></TR></TABLE></body></html>")
+    r = inflt.parse_cm_month(html)
+    assert r["month"] == "2026-11" and r["name"] == "Doe, Pat" and r["emp"] == "10008"
+    assert r["days"][0] == ["2026-10-30", "H3075", "LAX"] and r["days"][2] == ["2026-11-01", "", "HNL"]
+    assert r["days"][-1][0] == "2026-12-01" and r["days"][3] == ["2026-11-02", "", ""]
+    assert r["items"] == [{"trip": "H3075", "start": "2026-10-30", "end": "2026-11-01", "lay": "LAX"},
+                          {"trip": "VAC", "start": "2026-11-03", "end": "2026-11-04", "lay": ""},
+                          {"trip": "H3606", "start": "2026-11-05", "end": "2026-11-07", "lay": "JFK"}]
+    assert r["totals"] == {"block": "100:39", "credit": "116:16", "days_off": 10} and r["updated"].startswith("Nov 4, 2026")
+    assert inflt.parse_cm_month("<html>nothing</html>") is None

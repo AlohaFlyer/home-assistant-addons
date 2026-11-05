@@ -28,6 +28,74 @@ def parse_cm_schedule(html):
         out.append({"trip": trip, "start": f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:]}"})
     return out
 
+DAY_RE = re.compile(r'new Task\(\s*(\d),\s*"([A-Z]{2})",\s*"(\d{2})",\s*"([^"]*)",\s*"([^"]*)",\s*"(\d{0,8})"')
+NAME_RE = re.compile(r"([A-Z][A-Z' .-]*,\s*[A-Z][A-Z' .-]*?)\s*\(Emp#\s*(\d+)\)")  # FLICA prints LAST, FIRST in caps
+MON3 = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+
+
+def parse_cm_month(html):
+    """0.8.0 (Ryan: a picker's month at a tap). The whole crewmember schedule page as the schedule card
+    wants it: {'month': 'YYYY-MM', 'name', 'emp', 'updated', 'days': [[iso, code, lay]], 'items':
+    [{'trip','start','end','lay'}], 'totals': {'block','credit','days_off'}}. Every Task(...) row is a
+    day: code is the pairing (or VAC/SCR...) on its first day, lay the layover station ('-' mid trip,
+    'HNL' on the day back home, '' on a day off). None when the page is not a schedule."""
+    h = html or ""
+    rows = DAY_RE.findall(h)
+    sel = re.search(r'<option value="(\d{4})"\s+selected', h)
+    if not rows or not sel:
+        return None
+    mm, yy = int(sel.group(1)[:2]), 2000 + int(sel.group(1)[2:])
+    # rows run from the end of last month to the start of next; the first row's own date anchors the month
+    first_dd = int(rows[0][2])
+    mon, yr = (mm - 1, yy) if (first_dd > 20 and rows[0][5][4:6] != f"{mm:02d}") else (mm, yy)
+    if mon == 0:
+        mon, yr = 12, yr - 1
+    days, prev = [], None
+    for _yn, _dow, dd, code, lay, _pd in rows:
+        dd = int(dd)
+        if prev is not None and dd < prev:
+            mon, yr = (1, yr + 1) if mon == 12 else (mon + 1, yr)
+        prev = dd
+        code = re.sub(r"%26nbsp%3B|&nbsp;", "", code).strip()
+        lay = lay.strip()
+        try:
+            iso = date(yr, mon, dd).isoformat()
+        except ValueError:
+            continue
+        days.append([iso, code, lay])
+    items = []
+    for k, (d, code, lay) in enumerate(days):
+        if not code:
+            continue
+        if not re.match(r"^[A-Z]\d{4}[A-Z]?$", code):
+            if items and items[-1]["trip"] == code and items[-1]["_k"] == k - 1:
+                items[-1].update(end=d, _k=k)
+            else:
+                items.append({"trip": code, "start": d, "end": d, "lay": "", "_k": k})
+            continue
+        end = d
+        for j in range(k + 1, min(k + 8, len(days))):
+            if days[j][1]:
+                break
+            if days[j][2] == "HNL":
+                end = days[j][0]
+                break
+        items.append({"trip": code, "start": d, "end": end, "lay": lay if lay not in ("-", "") else "", "_k": k})
+    for it in items:
+        it.pop("_k", None)
+    tot = {}
+    for key, pat in (("block", r"Block\s*(?:&nbsp;\s*)*</TD>\s*<TD[^>]*>\s*([\d.:]+)"),
+                     ("credit", r"Credit\s*(?:&nbsp;\s*)*</TD>\s*<TD[^>]*>\s*([\d.:]+)"),
+                     ("days_off", r"Days Off\s*(?:&nbsp;\s*)*</TD>\s*<TD[^>]*>\s*(\d+)")):
+        m = re.search(pat, h, re.I)
+        if m:
+            tot[key] = int(m.group(1)) if key == "days_off" else m.group(1).replace(".", ":")
+    nm = NAME_RE.search(re.sub(r"<[^>]+>", " ", h))  # raw case: visible_text lowercases
+    up = re.search(r"Last Updated:\s*([A-Za-z]{3}\s+\d{1,2},\s*\d{4}\s+\d{1,2}:\d{2}(?::\d{2})?)", h)
+    return {"month": f"{yy}-{mm:02d}", "name": nm.group(1).strip().title() if nm else "", "emp": nm.group(2) if nm else "",
+            "updated": up.group(1) if up else "", "days": days, "items": items, "totals": tot}
+
+
 CM_SCHED = "{base}/full/cmschedules.cgi?GO=1&SchBrowser=1&Prompt=1&EmployeeID={emp}"
 CM_SCHED_MONTH = "{base}/full/cmschedules.cgi?Prompt=1&EmployeeID={emp}&bd={bd}&SchBrowser=1"
 PROBE = {"logged": 0}
