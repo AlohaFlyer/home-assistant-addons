@@ -208,8 +208,9 @@ class Store:
             rows = self.db.execute("SELECT emp,name,pos,n,total_s,last_at FROM pickers").fetchall()
             pks = self.db.execute("SELECT pickup FROM finds WHERE pickup IS NOT NULL").fetchall()
             logs = self.db.execute("SELECT emp,at,lay FROM picker_log ORDER BY at").fetchall()
+            mins = dict(self.db.execute("SELECT emp,MIN(secs) FROM picker_log WHERE secs IS NOT NULL GROUP BY emp").fetchall())
         out = {e: {"name": nm, "pos": ps, "n": n, "total_s": t, "last_at": la, "inflt_n": 0, "month_n": 0, "year_n": 0,
-                   "lays": [], "last_lay": ""}
+                   "lays": [], "last_lay": "", "min_s": mins.get(e)}  # 0.8.2 (Ryan): fastest pickup
                for e, nm, ps, n, t, la in rows}
         counts, latest = {}, {}
         for emp, at, lay in logs:

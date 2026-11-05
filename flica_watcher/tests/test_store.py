@@ -97,7 +97,7 @@ def test_picker_scoring(tmp_path):
     db.db.execute("UPDATE finds SET last_seen='2026-11-02T19:08:00+00:00' WHERE key='H3606|18Nov'")
     db.score_pickup("H3606|18Nov")
     st = db.picker_stats()["10007"]
-    assert st["n"] == 2 and st["total_s"] == 197
+    assert st["n"] == 2 and st["total_s"] == 197 and st["min_s"] == 60
     f = {x["pairing"]: x for x in db.recent_finds()}
     assert f["H3825"]["picker_avg_s"] == 98 and f["H3825"]["picker_n"] == 2
     # unknown seat or email source: not scored
