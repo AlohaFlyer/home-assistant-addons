@@ -12,6 +12,25 @@ TABLE = """<html><body>Sign Out<table><tr><th>Cancelled</th><th>Flight #</th><th
 <tr><td>Yes</td><td>12</td><td>HNL-LAX</td><td>11/05/26 13:00-21:00</td><td></td><td></td><td>332/3</td><td>381</td><td></td></tr>
 </table>1 item</body></html>"""
 
+# 0.7.4: the real page: header table, then the rows in TABLE ID='REPORTINFO' with &nbsp; padding
+REAL = """<html><body>Sign Out<TABLE><THEAD><TR><TD><A HREF='x?SortCol=0'>Cancelled</A></TD><TD><A>Flight #</A></TD><TD><A>Org-Dest</A></TD></TR></THEAD></TABLE>
+<DIV ID='REPORTDIV'><TABLE ID='REPORTINFO' BORDER='0'>
+<TR><TD><FONT>&nbsp;&nbsp;</FONT></TD><TD><FONT>&nbsp;9940&nbsp;</FONT></TD><TD><FONT>&nbsp;HNL-HNL&nbsp;</FONT></TD><TD><FONT>&nbsp;11/03/26  05:00-05:30&nbsp;</FONT></TD><TD><FONT>&nbsp;&nbsp;</FONT></TD><TD><FONT>&nbsp;11/03/26  05:22-05:50&nbsp;</FONT></TD><TD><FONT>&nbsp;332/3  &nbsp;</FONT></TD><TD><FONT>&nbsp;361&nbsp;</FONT></TD><TD><FONT>&nbsp;&nbsp;</FONT></TD></TR>
+<TR><TD><FONT>&nbsp;&nbsp;</FONT></TD><TD><FONT>&nbsp;9950&nbsp;</FONT></TD><TD><FONT>&nbsp;HNL-KOA&nbsp;</FONT></TD><TD><FONT>&nbsp;11/03/26  07:00-07:45&nbsp;</FONT></TD><TD></TD><TD></TD><TD><FONT>&nbsp;332/3  &nbsp;</FONT></TD><TD><FONT>&nbsp;361&nbsp;</FONT></TD><TD></TD></TR>
+<TR><TD><FONT>&nbsp;Yes&nbsp;</FONT></TD><TD><FONT>&nbsp;9982&nbsp;</FONT></TD><TD><FONT>&nbsp;HNL-MNL&nbsp;</FONT></TD><TD><FONT>&nbsp;11/03/26  17:00-21:30&nbsp;</FONT></TD><TD></TD><TD></TD><TD><FONT>&nbsp;332/3  &nbsp;</FONT></TD><TD><FONT>&nbsp;383&nbsp;</FONT></TD><TD></TD></TR>
+<TR><TD><FONT>&nbsp;&nbsp;</FONT></TD><TD><FONT>&nbsp;9981&nbsp;</FONT></TD><TD><FONT>&nbsp;HNL-SIN&nbsp;</FONT></TD><TD><FONT>&nbsp;11/03/26  16:00-21:30&nbsp;</FONT></TD><TD><FONT>&nbsp;&nbsp;</FONT></TD><TD><FONT>&nbsp;&nbsp;</FONT></TD><TD><FONT>&nbsp;332/3  &nbsp;</FONT></TD><TD><FONT>&nbsp;382&nbsp;</FONT></TD><TD><FONT>&nbsp;&nbsp;</FONT></TD></TR>
+</TABLE></DIV></body></html>"""
+
+
+def test_real_layout_and_local_flight():
+    rows = C.parse_rows(REAL)
+    assert [(r["flight"], r["route"], r["eqpt"], r["scheduled"]) for r in rows] == [
+        ("9940", "HNL-HNL", "332/3", "11/03/26 05:00-05:30"), ("9950", "HNL-KOA", "332/3", "11/03/26 07:00-07:45"),
+        ("9982", "HNL-MNL", "332/3", "11/03/26 17:00-21:30"), ("9981", "HNL-SIN", "332/3", "11/03/26 16:00-21:30")]
+    u = C.unusual(rows, C.regular_set())
+    # HNL-HNL test flight and the 99xx interisland positioning leg are not charters; cancelled rows are skipped
+    assert [r["key"] for r in u] == ["9981|HNL-SIN|2026-11-03"]
+
 LOGIN = """<html><body><form action="ctwc.aspx" method="post"><input type="hidden" name="__VIEWSTATE" value="abc">
 <input type="text" name="ctl00$txtUsername"><input type="password" name="ctl00$txtPassword">
 <input type="submit" name="ctl00$btnLogin" value="Login"></form></body></html>"""
@@ -38,7 +57,9 @@ def test_regular_option_and_merge():
     assert sorted(new) == ["471|HNL-MNL|2026-11-05", "9980|SIN-HNL|2026-11-04"]
     known, new = C.merge(known, rows[:1], "2026-11-05")
     assert new == [] and known["471|HNL-MNL|2026-11-05"]["gone"] is True
-    known, new = C.merge(known, [], "2026-11-10")
+    known, new = C.merge(known, [], "2026-12-10")
+    assert "471|HNL-MNL|2026-11-05" in known  # the month before stays listed
+    known, new = C.merge(known, [], "2027-01-10")
     assert known == {}
 
 
@@ -49,7 +70,7 @@ def test_login_form_and_dates():
     assert C.logged_in(TABLE) and not C.logged_in(LOGIN)
     assert C.logged_in("<html><body>CrewTrac Menu Home | Sign Out Options View Schedule Change Password</body></html>")
     ds = C.scan_dates(date(2026, 11, 4), 30)
-    assert ds[0] == "2026-11-03" and ds[-1] == "2026-12-04" and len(ds) == 32
+    assert ds[0] == "2026-10-31" and ds[-1] == "2026-12-04" and len(ds) == 35
     assert C.report_url("2026-11-04", "HNL", "").endswith("DeptDate=20261104&DeptCity=HNL&ArrvCity=")
 
 
@@ -72,4 +93,4 @@ def test_scanner_logs_in_and_scans():
     sc = C.Scanner(s, "12345", "pw", logging.getLogger("t"))
     assert sc.login()
     rows = sc.scan(date(2026, 11, 4), ahead=1)
-    assert len(rows) == 5 * 3 * 2 and len([u for u in s.urls if "ctw4190" in u]) == 6
+    assert len(rows) == 5 * 6 * 2 and len([u for u in s.urls if "ctw4190" in u]) == 12
