@@ -9,6 +9,7 @@ import random
 import re
 import time
 from datetime import date, datetime
+from urllib.parse import unquote
 
 from pot import CM_PAIR_RE, classify, inflight_at, parse_legs, visible_text
 
@@ -56,7 +57,7 @@ def parse_cm_month(html):
         if prev is not None and dd < prev:
             mon, yr = (1, yr + 1) if mon == 12 else (mon + 1, yr)
         prev = dd
-        code = re.sub(r"%26nbsp%3B|&nbsp;", "", code).strip()
+        code = re.sub(r"&nbsp;", "", unquote(code)).strip()  # 0.8.6: FLICA URL-encodes codes (O%2FK = O/K)
         lay = lay.strip()
         try:
             iso = date(yr, mon, dd).isoformat()
