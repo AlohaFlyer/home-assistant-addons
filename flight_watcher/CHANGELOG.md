@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.5
+
+- Tickets card (Ryan, Nov 6): **Process Tickets in Claude Code** now copies the prompt ("Process all Flight Watcher tickets on Pako HI: fix every new or reopened one, release it, mark it fixed, then confirm and close your completed fixes.") to the clipboard for Ryan to paste into his own Claude Code window, instead of opening a new session. It says "Copied. Paste it in Claude Code." under the button; if the browser blocks copying, the prompt shows selected to copy by hand. Card option `claude_code_prompt` replaces the text.
+
 ## 1.4.4
 
 - FW-0062 (Ryan, Nov 6): a pilot's month "Reconstructed from pairing crew lists" on the pilot card ends with a pay line in the schedule card's totals style: Trips, Credit, Block, Soft, Pay-Gross, Pay-Net (est. at your tax %) and Days Off, then "Year N (DOH YYYY-MM-DD) · $rate/cr h CA (PWA 3.C.4) · $rate/cr h FO (PWA 3.D.6)". Each trip is priced for the seat on its crew line, on its own date, for the longevity year from the pilot's date of hire (PWA 3.B.1, capped at 12): a Captain at the PWA 3.C.4 Captain rate plus $5.00 per block hour on a crew of 3 or more and never the 15% (PWA 4.O.1.a/b, "under all circumstances"), an FO or RO at the PWA 3.D.6 FO rate with the same RO $4.00, FO $3.00 and Extended Range +15% rules as your own schedule. Trips without a credit are listed and left out (Pay-Gross then says "k of m trips"); a trip without its block is named when its override is missing. Days Off are bid period days with no trip on the crew lists (reserve and training are not on them). Pay-Net follows your federal and state tax settings live. Without a date of hire the line shows hours and days and says to upload the seniority list. The numbers come from the Watcher (`pay_line` on `sensor.<prefix>_pilot_schedule`, `gross` on each priced trip), which picks the grid's trips the way the card does (newest read wins; a test runs both).

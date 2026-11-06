@@ -78,7 +78,7 @@ events (`<prefix>/event/...`: new_pairing, request_decided, recall_miss, ticket_
 The tickets card (`custom:flight-watcher-tickets-card`, bottom of the Settings tab under a divider, shown to Ryan only:
 FW-0052, FW-0055) has one **Submit a ticket** button: one form, Bug or Feature request chosen at its top (Bug first;
 steps and expected only for a bug), up to 10 photos (library, camera, files, or a screenshot pasted with Cmd+V, FW-0053).
-At its far right, **Process Tickets in Claude Code** opens a new Claude Code session on this repo with the prompt filled in. Tickets
+At its far right, **Process Tickets in Claude Code** copies the ticket prompt to the clipboard, to paste into Claude Code. Tickets
 live in `/share/flight_watcher/tickets/FW-nnnn/`, shared by both pilots. MQTT, `<prefix>` = `flight_watcher` (a
 second pilot: `flight_watcher_<name>`):
 
