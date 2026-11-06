@@ -15,7 +15,7 @@ Keeps one FLICA session alive on the Pako HI NUC, reloads the HNL/332/FO open ti
 - Rules live in `/data/rules.json`, edited on the add-on's web page (Open Web UI / sidebar "FLICA Rules"). Schema is shown on the page. First start creates one example rule: SIN layover, this month or next, alert only.
 - Rules are checked against each **new** pairing (not the baseline). A match publishes `flight_watcher/event/rule_match` and `sensor.flight_watcher_last_match`.
 - Every rule is dry run. `switch.flight_watcher_rule_<id>_live` refuses to turn on until the rule is 7 days old. Even live, v0.2 only logs `would_submit`; writes arrive in v0.3 behind a global kill switch.
-- History in SQLite `/data/watcher.db` (finds, matches, submissions, state; 90 days). The last 50 finds are retained on `flight_watcher/finds` (`sensor.flight_watcher_finds`, list in the `finds` attribute).
+- History in SQLite `/data/watcher.db` (finds, matches, submissions, state; 90 days). The last 20 finds (short rows, kept under 8 KB for HA's recorder) are retained on `flight_watcher/finds` (`sensor.flight_watcher_finds`, list in the `finds` attribute); the finds card reads the full rows from the month files `www/flight-watcher/finds_<YYYY-MM>_<key>.json`, where `<key>` is a random key kept in `/data/www_key` and published only in the sensor's `file_key` attribute (HA serves `www` with no login, so these files never get a guessable name).
 
 ## Tickets (FW-nnnn)
 

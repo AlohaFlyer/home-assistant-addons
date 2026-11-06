@@ -2,7 +2,11 @@
 // card's full width on a phone, times built from parts; FW-0005: only today's finds (HST) show, the rest of the
 // month folds under "N earlier this month" in the same table, fold remembered per browser): "Recently added to the
 // pot" with a month picker. A past month picked in the picker opens in full. Live rows: sensor.flight_watcher_finds;
-// month history (24 months): /local/flight-watcher/finds_<YYYY-MM>.json written by the Watcher. Times HST.
+// month history (24 months): /local/flight-watcher/finds_<YYYY-MM>_<key>.json written by the Watcher. Times HST.
+// FW-0010: HA serves /local/ with no login and the files name crew, so their names carry a random key that only the
+// sensor's file_key attribute (behind HA's login) tells. FW-0026: the sensor keeps a short list of short rows (HA's
+// recorder limit), so the month file is the full source and a sensor row only adds to it (a new find, a fresher
+// pickup); a sensor change inside the 60 s refetch guard schedules one refetch when it ends.
 class FlightWatcherFindsCard extends HTMLElement {
   setConfig(c) { this._c = { entity: "sensor.flight_watcher_finds", ...c }; this._files = {}; this._m = this._hstMonth(Date.now()); }
   getCardSize() { return 8; }
@@ -28,19 +32,42 @@ class FlightWatcherFindsCard extends HTMLElement {
     const sig = `${st ? st.last_updated : "none"}|${this._hstDay(Date.now())}`;
     if (sig === this._sig) return;
     this._sig = sig;
+    // FW-0010: the files' key; a new key (first push, or a reset /data) drops every file read under the old one
+    const key = st && st.attributes ? st.attributes.file_key || "" : "";
+    if (key !== (this._key || "")) { this._key = key; this._files = {}; clearTimeout(this._later); }
     // FW-0005: left on this month, the card moves on with the clock (a past month opens in full, so a page open
     // over the month's end would otherwise show all of last month); a month picked in the picker stays.
     if (!this._picked) this._m = this._hstMonth(Date.now());
     if (this._m === this._hstMonth(Date.now())) this._load(this._m, true);
     this._render();
   }
+  disconnectedCallback() { clearTimeout(this._later); }
   async _load(m, force) {
-    if (this._files[m] && !force) return;
-    if (this._files[m] && force && Date.now() - (this._files[m].at || 0) < 60e3) return;
+    const files = this._files;
+    if (files[m] && !force) return;
+    // FW-0010: no key yet (sensor not published, Watcher down): no fetch; the sensor rows show, and the key's arrival
+    // clears this entry (set hass), which loads the file
+    if (!this._key) { files[m] = { finds: [], at: 0, missing: true }; return; }
+    if (files[m] && force) {
+      const wait = 60e3 - (Date.now() - (files[m].at || 0));
+      if (wait > 0) {  // FW-0026: refetch once the guard ends, so the file catches up with a sensor change made inside it
+        clearTimeout(this._later);
+        this._later = setTimeout(() => { if (this._m === m) this._load(m, true); }, wait + 500);
+        return;
+      }
+    }
+    // one fetch per month at a time (set hass and the first draw both ask for this month's file)
+    const busy = this._busy || (this._busy = new Set()), tag = `${this._key}|${m}`;
+    if (busy.has(tag)) return;
+    busy.add(tag);
+    let f;
     try {
-      const r = await fetch(`/local/flight-watcher/finds_${m}.json?t=${Date.now()}`, { cache: "no-store" });
-      this._files[m] = r.ok ? { ...(await r.json()), at: Date.now() } : { finds: [], at: Date.now(), missing: true };
-    } catch (e) { this._files[m] = { finds: [], at: Date.now(), missing: true }; }
+      const r = await fetch(`/local/flight-watcher/finds_${m}_${encodeURIComponent(this._key)}.json?t=${Date.now()}`, { cache: "no-store" });
+      f = r.ok ? { ...(await r.json()), at: Date.now() } : { finds: [], at: Date.now(), missing: true };
+    } catch (e) { f = { finds: [], at: Date.now(), missing: true }; }
+    busy.delete(tag);
+    if (files !== this._files) return;  // the key changed while this was in flight
+    files[m] = f;
     this._render();
   }
   _t(iso) {
@@ -98,7 +125,8 @@ class FlightWatcherFindsCard extends HTMLElement {
     const live = cur ? ((this._h && this._h.states[this._c.entity] || {}).attributes || {}).finds || [] : [];
     const byKey = new Map();
     for (const f of file) byKey.set(`${f.pairing}|${f.seen}`, f);
-    for (const f of live) if (this._hstMonth(Date.parse(f.seen)) === this._m) byKey.set(`${f.pairing}|${f.seen}`, f);
+    // FW-0026: a sensor row is short (no Pickup Speed, InFlt, Prem fields), so it updates the file's row, never replaces it
+    for (const f of live) if (this._hstMonth(Date.parse(f.seen)) === this._m) { const k = `${f.pairing}|${f.seen}`; byKey.set(k, { ...(byKey.get(k) || {}), ...f }); }
     return [...byKey.values()].sort((a, b) => Date.parse(b.seen) - Date.parse(a.seen));
   }
   _split(all, now) {

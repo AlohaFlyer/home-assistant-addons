@@ -390,3 +390,54 @@ def test_schedule_card_keeps_pay_labels_with_values():
     assert pay.index("Awarded-Pay-Gross") < pay.index("Improved-Pay-Gross") and pay.count('<span class="nw">') == 2
     assert '<span class="nw">Pay-Gross ${usd(cg)}</span>' in vb
     assert ".vbar{display:flex;flex-wrap:wrap" in src and ".vbar .nw{white-space:nowrap}" in src
+
+
+def test_finds_card_reads_keyed_file_and_merges_short_sensor_rows(tmp_path):
+    """FW-0010: the card fetches /local/flight-watcher/finds_<month>_<key>.json with the key from the sensor's file_key
+    attribute, never the old guessable name, and fetches nothing until a key is there; a new key drops the files read
+    under the old one. FW-0026: the sensor rows are short, so they update the file's rows (Pickup Speed, InFlt, Prem
+    stay) instead of replacing them, and a sensor change inside the 60 s refetch guard schedules one refetch.
+    Synthetic trips and names."""
+    key, key2 = "0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210"
+    full = [{**_find("H9301", "2026-11-07T09:00:00Z"), "dwell_s": 42, "inflt": True, "prem": True, "gone": None,
+             "picked_by": "", "pickup_status": ""},
+            {**_find("H9302", "2026-11-06T20:00:00Z"), "dwell_s": 300, "gone": "2026-11-06T20:05:00Z",
+             "picked_by": "FO Doe, Jane (12345)", "pickup_status": "filled"}]
+    short = [{"pairing": "H9301", "seen": "2026-11-07T09:00:00Z", "gone": "2026-11-07T09:01:00Z",
+              "picked_by": "FO Roe, Jim (23456)", "pickup_status": "filled", "dates": "08Nov-10Nov"},
+             {"pairing": "H9303", "seen": "2026-11-07T09:20:00Z", "gone": None, "picked_by": "", "pickup_status": "",
+              "dates": "12Nov-14Nov"}]
+    js = (f"const full = {json.dumps(full)}; const short = {json.dumps(short)};\n"
+          "let clock = Date.parse('2026-11-07T09:30:00Z'); Date.now = () => clock;\n"
+          "const urls = [], timers = [];\n"
+          "globalThis.fetch = async (u) => { urls.push(u.split('?')[0]); return {ok: true, json: async () => ({month: '2026-11', finds: full})}; };\n"
+          "globalThis.setTimeout = (fn, ms) => { timers.push(ms); return timers.length; }; globalThis.clearTimeout = () => {};\n"
+          "const hass = (attrs, lu) => ({states: {'sensor.flight_watcher_finds': {state: '2', last_updated: lu, attributes: attrs}}});\n"
+          "const tick = () => new Promise((r) => setImmediate(r));\n"
+          "(async () => {\n"
+          "  const c = new FlightWatcherFindsCard(); c.setConfig({}); c._render = () => {};\n"
+          "  c.hass = hass({finds: short}, 'LU0'); await tick();\n"
+          "  const noKey = {urls: urls.length, rows: c._rows().map((f) => f.pairing)};\n"
+          f"  c.hass = hass({{finds: short, file_key: '{key}'}}, 'LU1'); await tick();\n"
+          "  const rows = c._rows(); const r1 = rows.find((f) => f.pairing === 'H9301');\n"
+          "  const merged = {order: rows.map((f) => f.pairing), dwell: r1.dwell_s, inflt: r1.inflt, prem: r1.prem,\n"
+          "    by: r1.picked_by, gone: r1.gone, layover: r1.layover, html: c._row(r1)};\n"
+          "  clock += 20e3;\n"
+          f"  c.hass = hass({{finds: short, file_key: '{key}'}}, 'LU2'); await tick();\n"
+          "  const guarded = {urls: urls.length, timers: timers.slice()};\n"
+          f"  c.hass = hass({{finds: short, file_key: '{key2}'}}, 'LU3'); await tick();\n"
+          "  console.log(JSON.stringify({noKey, urls, merged, guarded}));\n"
+          "})();")
+    r = _finds_card_node(tmp_path, js)
+    assert r["noKey"] == {"urls": 0, "rows": ["H9303", "H9301"]}  # no key: no fetch, the sensor rows still show
+    assert r["urls"] == [f"/local/flight-watcher/finds_2026-11_{key}.json", f"/local/flight-watcher/finds_2026-11_{key2}.json"]
+    m = r["merged"]
+    assert m["order"] == ["H9303", "H9301", "H9302"]  # the sensor's new find joins the file's rows, newest first
+    assert (m["dwell"], m["inflt"], m["prem"], m["layover"]) == (42, True, True, "LAX")  # file fields kept
+    assert m["by"] == "FO Roe, Jim (23456)" and m["gone"] == "2026-11-07T09:01:00Z"  # sensor fields fresher
+    assert "42s" in m["html"] and "mdi:airplane" in m["html"]
+    # 20 s after the fetch: no second fetch yet, one refetch scheduled for when the 60 s guard ends
+    assert r["guarded"]["urls"] == 1 and r["guarded"]["timers"] == [40500]
+    pilot2 = cards.build("1", None, ["pilot2"])["flight-watcher-finds-card-pilot2.js"]
+    assert "/local/flight-watcher/pilot2/finds_${m}_${encodeURIComponent(this._key)}.json" in pilot2
+    assert "sensor.flight_watcher_pilot2_finds" in pilot2

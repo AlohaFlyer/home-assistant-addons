@@ -36,6 +36,7 @@ import crewidx as CI
 import tickets as TK
 import sealed as SEAL
 import pay as PAY
+import wwwfiles as WF
 
 VERSION = "1.3.0"
 BASE = "https://ha2.flica.net"
@@ -53,12 +54,21 @@ OPTIONS_FILE = os.environ.get("FLIGHT_WATCHER_OPTIONS", f"{DATA}/options.json")
 CREDS_FILE = f"{DATA}/creds.json"
 KEY_FILE = f"{DATA}/settings_key.pem"  # 1.1.0: this instance's key for sealed settings from the dashboard card
 _KEY = {}
+WWW_KEY_FILE = f"{DATA}/www_key"  # FW-0010: this instance's random key in the finds file names under /local/ (wwwfiles.py)
 
 
 def settings_key():
     if "k" not in _KEY:
         _KEY["k"] = SEAL.load_key(KEY_FILE)
     return _KEY["k"]
+
+
+def www_key():
+    """FW-0010: the 128-bit key in this instance's finds file names (made once, kept in /data). Published only in
+    sensor.<prefix>_finds (attribute file_key, behind HA's login); never logged."""
+    if "w" not in _KEY:
+        _KEY["w"] = WF.load_key(WWW_KEY_FILE)
+    return _KEY["w"]
 CRED_KEYS = ("username", "password", "ctweb_username", "ctweb_password", "my_name")
 
 
@@ -584,8 +594,30 @@ def publish_trade():
     pub("trade/state", {"count": len(S.get("trade_away") or []), "keys": S.get("trade_away") or []})
 
 
+# FW-0026: sensor.<prefix>_finds carries a short recent list only. At 50 full rows (~28 KB) its attributes passed HA's
+# 16 KiB recorder limit, so the recorder dropped them and logged a warning on every update. The finds card reads the
+# month files for the full rows; the attribute keeps what the automations on Pako read (the FLICA alert push looks a
+# trip up by pairing for layover, turn, dates, days, credit and captain) and what the card needs to show a row the
+# file has not caught up with yet. The H3628 Fanfare push reads event/new_pairing, not this sensor.
+FINDS_ATTR_ROWS = 20
+FINDS_ATTR_MAX = 8000  # bytes of the whole payload; HA's recorder limit is 16384
+FINDS_ATTR_KEYS = ("pairing", "dates", "days", "layover", "turn", "report", "credit", "captain", "seen", "gone",
+                   "alert_at", "pickup_status", "picked_by", "source")
+
+
+def finds_payload(rows, key):
+    """{count, finds, file_key} for sensor.<prefix>_finds: the newest FINDS_ATTR_ROWS finds with FINDS_ATTR_KEYS
+    only, fewer when the payload would pass FINDS_ATTR_MAX bytes; file_key is the finds files' key (FW-0010)."""
+    out = [{k: r.get(k) for k in FINDS_ATTR_KEYS} for r in rows[:FINDS_ATTR_ROWS]]
+    while True:
+        d = {"count": len(out), "finds": out, "file_key": key}
+        if len(json.dumps(d, separators=(",", ":"))) <= FINDS_ATTR_MAX or not out:
+            return d
+        out = out[:-1]
+
+
 def publish_finds():
-    pub("finds", {"count": len(f := DB.recent_finds(50)), "finds": f})
+    pub("finds", finds_payload(DB.recent_finds(FINDS_ATTR_ROWS), www_key()))
     publish_pickers()
     write_finds_months()
 
@@ -594,9 +626,12 @@ FINDS_FILES = {"all": False}
 
 
 def write_finds_months():
-    """0.9.4 (Ryan): one file per HST month, www/flight-watcher/finds_<YYYY-MM>.json, for the finds card's month picker.
-    This month and last month on every check; all 24 months once per start. Read only, no FLICA traffic."""
+    """0.9.4 (Ryan): one file per HST month for the finds card's month picker. This month and last month on every
+    check; all 24 months once per start. Read only, no FLICA traffic. FW-0010: the files carry crew names and
+    employee numbers and HA serves www with no login, so the name is finds_<YYYY-MM>_<key>.json (wwwfiles.py)."""
+    key = None
     try:
+        key = www_key()
         today = local_now().date().replace(day=1)
         n = 24 if not FINDS_FILES["all"] else 2
         fdir = finds_dir()
@@ -607,14 +642,32 @@ def write_finds_months():
             y2, m2 = divmod(y * 12 + m + 1, 12)
             b = datetime(y2, m2 + 1, 1, 10, tzinfo=timezone.utc)
             rows = DB.finds_between(a.isoformat(), b.isoformat())
-            path = os.path.join(fdir, f"finds_{y:04d}-{m + 1:02d}.json")
+            path = os.path.join(fdir, WF.finds_name(f"{y:04d}-{m + 1:02d}", key))
             if rows or os.path.exists(path):
                 tmp = path + ".tmp"
-                json.dump({"month": f"{y:04d}-{m + 1:02d}", "count": len(rows), "finds": rows}, open(tmp, "w"), separators=(",", ":"))
+                with open(tmp, "w") as fh:
+                    json.dump({"month": f"{y:04d}-{m + 1:02d}", "count": len(rows), "finds": rows}, fh, separators=(",", ":"))
                 os.replace(tmp, path)
         FINDS_FILES["all"] = True
     except Exception as e:
-        log.info("finds month files skipped: %s", e)
+        log.info("finds month files skipped: %s", WF.scrub(e, key))  # an OSError names the file: never log the key
+
+
+def finds_files_cleanup():
+    """FW-0010, once per start, before the month files are written: delete every finds file at a guessable /local/
+    path (finds_<YYYY-MM>.json from before FW-0010) and this instance's files under an old key. Ryan's instance also
+    sweeps the predictable names from the second-pilot folders (www/flight-watcher/<name>/, configured or not) and
+    the pre-1.0.0 www/flica tree; a second pilot's instance sweeps its own folder. The month files are rebuilt from
+    the DB right after, so nothing is lost. Logs a count, never a name."""
+    key = None
+    try:
+        key = www_key()
+        others = [] if INSTANCE else WF.subdirs(CARD_PAIRINGS) + [WWW_OLD] + WF.subdirs(WWW_OLD)
+        n = WF.cleanup(finds_dir(), key, others)
+        if n:
+            log.info("FW-0010: removed %d finds file(s) with a guessable /local/ name; the month files now carry a key", n)
+    except Exception as e:
+        log.info("finds file cleanup skipped: %s", WF.scrub(e, key))
 
 
 def publish_pickers():
@@ -1349,10 +1402,12 @@ def versions_check(force_pub=False):
 
 UPLOADS = f"{SHARE}/uploads"
 CARD_PAIRINGS = "/homeassistant/www/flight-watcher"  # pairings_<month>.json: shared, either instance may write the same content
+WWW_OLD = "/homeassistant/www/flica"  # FW-0010: the pre-1.0.0 folder (migrate.py moves it); swept for old finds files
 
 
 def finds_dir():
-    """0.10.0: finds_<month>.json per pilot: www/flight-watcher for Ryan, www/flight-watcher/<instance> for a second pilot."""
+    """0.10.0: the finds month files per pilot: www/flight-watcher for Ryan, www/flight-watcher/<instance> for a second
+    pilot (FW-0010: finds_<YYYY-MM>_<key>.json, the key from that instance's /data)."""
     return os.path.join(CARD_PAIRINGS, INSTANCE) if INSTANCE else CARD_PAIRINGS
 
 
@@ -3218,6 +3273,7 @@ def main():
         log.info("pickup speeds rescored (0.7.6 dwell: alert time in, middle of the gone window out)")
     RULES["list"] = load_rules()
     publish_rules(MQ)
+    finds_files_cleanup()  # FW-0010: before publish_finds() rebuilds the month files under the key
     publish_finds()
     publish_blocked()
     publish_tradeboard()
