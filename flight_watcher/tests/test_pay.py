@@ -127,3 +127,21 @@ def test_type_and_held_trips_decide_the_sides(tmp_path, monkeypatch):
     W.DB.put("sched_versions:2026-11", [])  # no schedule version on file: page words only when they name both sides
     one = {**swap, "legs": [{"trip": "H3629", "day": "12NOV", "side": "drop"}, {"trip": "H3815B", "day": "14NOV", "side": ""}]}
     assert W.price_request(one, now) is None
+
+
+def test_trade_prices_taken_ro_seat_and_same_pairing_twice(tmp_path, monkeypatch):
+    """1.4.1 (Ryan, Nov 6): a Trade gives the trips he held and takes the rest; a taken trip flown in the RO seat (the
+    view page's (R)) gets the PWA 4.O.1 $4.00 per block hour override, and the same pairing taken on two days counts
+    twice. Made-up trips and numbers."""
+    from datetime import datetime
+    W = _w(tmp_path, monkeypatch)
+    now = datetime(2026, 11, 6, 8, 0, tzinfo=W.HST)
+    rate = PAY.rate_for(7, W.local_now().date().isoformat())
+    r = {**SUB.parse_request_rows("11/05 09:10 trade approved")[0], "type": "Trade", "legs": SUB.parse_request_view(
+        "trade h3629:12nov (f) with emp #: 12345 for h3620:20nov (r) and h3620:23nov (f) time: 11/05 09:10 status: approved")["legs"]}
+    p = W.price_request(r, now)
+    assert [(x["trip"], x["start"], x["side"]) for x in p["parts"]] == [
+        ("H3629", "2026-11-12", "drop"), ("H3620", "2026-11-20", "add"), ("H3620", "2026-11-23", "add")]
+    give = 10.5 * rate
+    take = (11 * rate + 10.0 * 4.00) + 11 * rate    # RO seat: $4.00 per block hour; FO on a 2-pilot crew: no override
+    assert p["delta"] == pytest.approx(round(take - give, 2), abs=0.02)
