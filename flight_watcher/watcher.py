@@ -39,7 +39,7 @@ import sealed as SEAL
 import pay as PAY
 import wwwfiles as WF
 
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -2274,7 +2274,9 @@ def requests_check(fl):
     known yet)."""
     rows_of = S.setdefault("ot_req_rows", {})  # bcid -> rows of the last good read
     folders = sorted({x for x in (bcid(u) for u in S.get("pot_urls", {}).values()) if x})
-    pending = any(r.get("status") in SUB.OPEN for b in folders for r in rows_of.get(b) or [])
+    trows_of = S.setdefault("tb_req_rows", {})  # 1.4.3: tradeboard number -> Ryan's trade requests of the last good read
+    pending = any(r.get("status") in SUB.OPEN for b in folders for r in rows_of.get(b) or []) or \
+        any(r.get("status") in SUB.OPEN for rs in trows_of.values() for r in rs or [])
     gap = REQ_PENDING_GAP_S if pending else REQ_IDLE_GAP_S
     if not S.pop("req_force", False) and time.time() - S.get("req_checked_at", 0) < gap:
         return
@@ -2354,19 +2356,84 @@ def requests_check(fl):
             read_ok = True
         except Exception as e:
             log.info("requests %s error: %s", b, e)
+    tb_ok = _trade_requests_check(fl, folders, trows_of, pushed, now)
     if folders:
         for b in [x for x in rows_of if x not in folders]:
             rows_of.pop(b, None)  # a folder no longer watched: its Pending rows no longer hold the 2-min poll
+        nums = {b.split(".")[-1] for b in folders}
+        for n in [x for x in trows_of if x not in nums]:
+            trows_of.pop(n, None)
     cut = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
     for k in [k for k, v in pushed.items() if v < cut]:
         pushed.pop(k, None)
     if read_ok:
         S["ot_req_init"] = True
     save_state(S)
-    if read_ok:  # a failed pass keeps the last good sensor instead of showing 0 pending
+    tsig = json.dumps(trows_of, sort_keys=True)
+    tb_new = tb_ok and tsig != S.get("tb_req_sig")  # 1.4.3: trades alone republish only when they changed
+    if read_ok or tb_new:  # a failed pass keeps the last good sensor instead of showing 0 pending
+        S["tb_req_sig"] = tsig
         shown = [{**r, "bcid": b} for b in folders for r in rows_of.get(b) or []]
+        shown += [{**r, "bcid": f"001.{n}"} for n in sorted(trows_of) for r in trows_of[n] or []]
         pub("ot_requests", {"pending": sum(1 for r in shown if r["status"] in SUB.OPEN), "count": len(shown),
                             "requests": shown[-20:], "checked_at": now_iso()})
+
+
+def _trade_requests_check(fl, folders, trows_of, pushed, now):
+    """1.4.3 (Ryan's Nov 6 Trade, which the Open Time Requests list never shows): read only, Ryan's Tradeboard 'My
+    Requests' page for each watched bid month. A crew-to-crew Trade that turns Approved or Denied fires
+    event/request_decided once (type Trade, with Pay-Gross), like an open time request; while one reads Processing
+    or Pending the list is read every 2 min. The first read of each month (and a page that mentions a trade the
+    parser cannot read) is kept privately in CAPTURE_DIR for parser checks. True when at least one page was read."""
+    ok = False
+    first = not S.get("tb_req_init")
+    for n in sorted({b.split(".")[-1] for b in folders}):
+        url = TB.my_requests_url(BASE, n)
+        if not (SUB.safe_get(url) and SM.safe_get(url)):
+            log.info("trade requests %s: url refused by safe_get, skipped", n)
+            continue
+        try:
+            time.sleep(random.uniform(1.5, 3.5))  # paced like every other FLICA page load
+            html = fl.fetch(url)
+            if classify(html) != "ok":
+                log.info("trade requests %s: %s, skipped", n, classify(html))
+                continue
+            text = visible_text(html)
+            rows = TB.parse_my_requests(text)
+            odd = not rows and re.search(r"\btrade\b.*\bemp\b", text, re.I | re.S)
+            if not S.get("tbreq_captured", {}).get(n) or odd:
+                try:
+                    os.makedirs(CAPTURE_DIR, exist_ok=True)
+                    open(f"{CAPTURE_DIR}/tb_myrequests_{n}{'_latest' if odd else ''}.html", "w").write(html)
+                    S.setdefault("tbreq_captured", {})[n] = True
+                    log.info("trade requests %s: %d rows, page captured; text: %s", n, len(rows), text[:600])
+                except Exception:
+                    pass
+            for r in SUB.request_news(pushed, rows):
+                try:
+                    old = _filed_at(r, now) < now - timedelta(hours=REQ_FIRST_H)
+                except Exception:
+                    old = True
+                if first and old:
+                    continue  # the feature's first read: older decisions are history, not news
+                ev = {**r, "bcid": f"001.{n}", "at": now_iso(), "url": url}
+                try:
+                    ev["pay"] = price_request(r)
+                except Exception as e:
+                    log.info("trade pay not priced: %s", e)
+                    ev["pay"] = None
+                log.info("trade %s %s", r["status"], r["detail"][:120])
+                pub("event/request_decided", ev, retain=False)
+            for r in rows:
+                if r["status"] in SUB.DECIDED:
+                    pushed[SUB.push_key(r)] = now_iso()
+            trows_of[n] = rows
+            ok = True
+        except Exception as e:
+            log.info("trade requests %s error: %s", n, e)
+    if ok:
+        S["tb_req_init"] = True
+    return ok
 
 
 def tradeboard_check(fl, full=False):

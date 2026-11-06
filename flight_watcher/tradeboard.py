@@ -30,6 +30,54 @@ def other_requests_url(frame_html, frame_url):
     return None
 
 
+def my_requests_url(base, n):
+    """1.4.3 (Ryan's Nov 6 Trade): Ryan's own Tradeboard 'My Requests' page, the one tb_frame.cgi?...&dp=mr loads
+    (SRC="TB_MyRequests.cgi?&bcid=001.<n>"). A plain list GET: its Cancel / Hide boxes belong to a form the
+    Watcher never submits, and no link on it is followed."""
+    return f"{base}/online/TB_MyRequests.cgi?&bcid=001.{n}"
+
+
+MON3 = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+TRADE_ROW_RE = re.compile(
+    r"(\d{1,2})\s+([A-Za-z]{3})\s+(\d{1,2}:\d{2})\s+Trade\s+(.*?)\bWith\b\s*Emp\s*#?\s*:?\s*(\d{3,6})\s*For\b\s*(.*?)\s*"
+    r"\b(Processing|Pending|Approved|Denied|Cancell?ed|Expired|Withdrawn|Rejected)\b", re.I | re.S)
+TRADE_TRIP_RE = re.compile(r"\b([A-Za-z]\d{4}[A-Za-z]?)\b(?:\s*:\s*(\d{1,2})\s?([A-Za-z]{3})\b)?")
+
+
+def _trips(s):
+    out = []
+    for m in TRADE_TRIP_RE.finditer(s or ""):
+        day = f"{int(m.group(2)):02d}{m.group(3).upper()}" if m.group(2) and m.group(3).upper() in MON3 else ""
+        out.append((m.group(1).upper(), day))
+    return out
+
+
+def parse_my_requests(text):
+    """1.4.3: Ryan's crew-to-crew trades from the visible text of 'My Requests', in page order:
+    [{key, date 'MM/DD', time, type 'Trade', status, emp, trips, legs [{trip, day, side, seat}], detail}].
+    'Trade H3604:13NOV and H3659:18NOV With Emp #: 24594 For H3620:12NOV and H3620:15NOV ... Processing' (made-up
+    in tests): the trips before 'With' are given (drop), the trips after 'For' are taken (add)."""
+    rows, seen = [], {}
+    for m in TRADE_ROW_RE.finditer(text or ""):
+        dd, mon, hm, gave, emp, took, st = m.groups()
+        if mon.upper() not in MON3:
+            continue
+        date = f"{MON3.index(mon.upper()) + 1:02d}/{int(dd):02d}"
+        hm = f"{int(hm.split(':')[0]):02d}:{hm.split(':')[1]}"
+        g, t = _trips(gave), _trips(took)
+        if not g or not t:
+            continue
+        legs = [{"trip": a, "day": d, "side": "drop", "seat": ""} for a, d in g] + \
+               [{"trip": a, "day": d, "side": "add", "seat": ""} for a, d in t]
+        status = "Cancelled" if st.lower().startswith("cancel") else st.title()
+        base = f"tb|{date}|{hm}|{emp}|{'+'.join(f'{a}:{d}' for a, d in g + t)}"
+        seen[base] = seen.get(base, 0) + 1
+        detail = re.sub(r"\s+", " ", f"Trade {gave.strip()} with emp {emp} for {took.strip()}")[:200]
+        rows.append({"key": f"{base}|{seen[base]}", "date": date, "time": hm, "type": "Trade", "status": status,
+                     "emp": emp, "trips": [a for a, _ in g + t], "legs": legs, "detail": detail})
+    return rows
+
+
 def _leaf_rows(soup):
     """Rows that hold a trip id and are not wrappers around other such rows."""
     out = []
