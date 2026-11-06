@@ -10,7 +10,7 @@ import os
 import re
 from datetime import date, datetime, timedelta
 
-from pot import CREW_RE
+from pot import CREW_RE, soft_time
 
 CREW_FROM = date(2026, 10, 31)  # nothing before this is read
 PILOT_POS = ("CA", "FO", "RO", "SO")
@@ -98,7 +98,7 @@ def instances(pdir, crew_from=CREW_FROM):
         try:
             d = json.load(open(os.path.join(pdir, f)))
             cols = d.get("cols") or []
-            ix = {c: cols.index(c) for c in ("id", "report", "rel_days", "route", "days") if c in cols}
+            ix = {c: cols.index(c) for c in ("id", "report", "rel_days", "route", "credit", "days") if c in cols}
             rows = d.get("rows") or []
         except Exception:
             continue
@@ -122,6 +122,7 @@ def instances(pdir, crew_from=CREW_FROM):
                                    "end_date": (dt + timedelta(days=max(rel, 0))).isoformat(),
                                    "report": str(r[ix["report"]]) if "report" in ix else "",
                                    "route": str(r[ix["route"]]) if "route" in ix else "",
+                                   "credit": str(r[ix["credit"]] or "") if "credit" in ix else "",
                                    "days": max(rel, 0) + 1, "month": dt.strftime("%Y-%m")})
     return out
 
@@ -190,9 +191,11 @@ def crew_line(text):
     return out
 
 
-def coverage(insts, rows, month=None):
-    """(instances, checked ok, percent) over all instances or one month's."""
-    ks = [k for k, it in insts.items() if not month or it["month"] == month]
+def coverage(insts, rows, month=None, date_from=None, date_to=None):
+    """(instances, checked ok, percent) over all instances, one month's, or (FW-0002, the pilot card's grid)
+    those starting date_from..date_to (ISO, inclusive) whatever file they came from."""
+    ks = [k for k, it in insts.items() if (not month or it["month"] == month)
+          and (not date_from or it["date"] >= date_from) and (not date_to or it["date"] <= date_to)]
     ok = sum(1 for k in ks if (rows.get(k) or {}).get("status") == "ok")
     return len(ks), ok, round(100.0 * ok / len(ks), 1) if ks else 0.0
 
@@ -224,15 +227,98 @@ def render_month(month, insts, rows, now_s):
     return "\n".join(lines)
 
 
-def pilot_trips(insts, rows_for_emp, month=None):
-    """reconstructed list for the pilot lookup: [{pairing, start, end, seat, route, checked_at}] by start."""
-    out = []
+def _day_lists(pdir, month):
+    """The 'days' token lists of `month`'s pairing file, or None when there is no readable file."""
+    try:
+        d = json.load(open(os.path.join(pdir, f"pairings_{month}.json")))
+        i = (d.get("cols") or []).index("days")
+        return [str(r[i] or "").split() for r in d.get("rows") or [] if len(r) > i]
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def file_next_to(month, day_lists):
+    """The last next-month day of the bid period ('D1' in November = Dec 1, as pdfs.py writes days past the
+    month end), judged over the whole file (largest D day that is not a wrapped last-month one), else None."""
+    found = []
+    for toks in day_lists or []:
+        prev = _prev_tokens(month, toks)
+        found += [int(t[1:]) for i, t in enumerate(toks) if i not in prev and t[:1] in "Dd" and t[1:].isdigit()]
+    return max(found) if found else None
+
+
+def period_start(pdir, month):
+    """First day of `month`'s bid period, judged from the pairing files the way instances() places their days:
+    a last-month day in this month's file ('31' in November = Oct 31), else the day after the previous month's
+    period end when that runs into this month ('D1' in November's file: December starts Dec 2), else the 1st."""
+    y, m = _ym(month)
+    py, pm = _shift(y, m, -1)
+    pf = file_prev_from(month, _day_lists(pdir, month) or [])
+    try:
+        if pf:
+            return date(py, pm, pf).isoformat()
+        nx = file_next_to(f"{py}-{pm:02d}", _day_lists(pdir, f"{py}-{pm:02d}"))
+        if nx:
+            return (date(y, m, nx) + timedelta(days=1)).isoformat()
+    except ValueError:
+        pass
+    return f"{month}-01"
+
+
+def period_end(pdir, month):
+    """Last day of `month`'s bid period (FW-0002): the largest next-month day in this month's file ('D1' in
+    November = Dec 1), else the day before the next month's period start when that is in this month ('31' in
+    January's file: December ends Dec 30), else the month's last day."""
+    y, m = _ym(month)
+    ny, nm = _shift(y, m, 1)
+    nxt = f"{ny}-{nm:02d}"
+    try:
+        nx = file_next_to(month, _day_lists(pdir, month))
+        if nx:
+            return date(ny, nm, nx).isoformat()
+        pf = file_prev_from(nxt, _day_lists(pdir, nxt) or [])
+        if pf:
+            return (date(y, m, pf) - timedelta(days=1)).isoformat()
+    except ValueError:
+        pass
+    return date(y, m, calendar.monthrange(y, m)[1]).isoformat()
+
+
+def grid_range(pdir, month):
+    """(first, period start, period end) of the pilot card's grid for `month`: FLICA's schedule grid starts on
+    the day before the bid period (Oct 31 for a November that runs Nov 1 to Dec 1) and ends on its last day."""
+    ps, pe = period_start(pdir, month), period_end(pdir, month)
+    return (date.fromisoformat(ps) - timedelta(days=1)).isoformat(), ps, pe
+
+
+def _hm(v):
+    """'12h05' (pairing file) or '12:05' -> '12:05'; anything else ''."""
+    m = re.fullmatch(r"\s*(\d{1,3})[h:](\d{2})\s*", str(v or ""))
+    return f"{int(m.group(1))}:{m.group(2)}" if m else ""
+
+
+def pilot_trips(insts, rows_for_emp, month=None, start_from=None, crew_rows=None, details=None, end_to=None):
+    """reconstructed list for the pilot lookup, by start: [{pairing, start, end, seat, route, checked_at, lay, blk,
+    credit, soft, crew}]. month keeps the trips on any of its days; start_from / end_to (ISO, inclusive; FW-0002,
+    grid_range: the day before the bid period to its last day, which can be in the next month) replace that
+    calendar-month test on their side; a trip that starts before the range and runs into it is kept. FW-0002: the card draws these in the schedule grid, so each trip also carries
+    the layover, block and credit from the pairing package (`details`, pdfs.package_details; credit falls back
+    to the pairing file) and the crew line it was read with (`crew_rows`, [[pos, name]]); '' / [] when unknown."""
+    out, crew_rows, details = [], crew_rows or {}, details or {}
+    lo, hi = start_from or (f"{month}-01" if month else ""), end_to or (f"{month}-31" if month else "~")
     for r in rows_for_emp:
         it = insts.get(r["key"]) or {}
         start = r.get("date") or it.get("date") or ""
-        if month and start[:7] != month:
+        end = r.get("end_date") or it.get("end_date") or start
+        if not start or start > hi or end < lo:  # 1.3.0 review: a trip running into the grid from before it counts
             continue
-        out.append({"pairing": r.get("pairing") or it.get("pairing") or "", "start": start,
+        pid = r.get("pairing") or it.get("pairing") or ""
+        det = details.get(pid) or {}
+        blk, credit = _hm(det.get("block")), _hm(det.get("credit")) or _hm(it.get("credit"))
+        crew = [[c.get("pos") or "", c.get("name") or ""] for c in (crew_rows.get(r["key"]) or {}).get("crew") or []][:6]
+        out.append({"pairing": pid, "start": start,
                     "end": r.get("end_date") or it.get("end_date") or start, "seat": r.get("pos") or "",
-                    "route": r.get("route") or it.get("route") or "", "checked_at": r.get("checked_at") or ""})
+                    "route": r.get("route") or it.get("route") or "", "checked_at": r.get("checked_at") or "",
+                    "lay": det.get("lay") or "", "blk": blk, "credit": credit, "soft": soft_time(credit, blk) or "",
+                    "crew": crew})
     return sorted(out, key=lambda x: (x["start"], x["pairing"]))

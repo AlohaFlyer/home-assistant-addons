@@ -107,28 +107,85 @@ def requests_url(base, bcid):
     return f"{base}{REQUESTS_PATH}?BCID={bcid}&From=MainMenu"
 
 
-def parse_request_rows(text):
+def _legs(detail):
+    """[{trip, day, side}] of the pairings named in a request's text; side from the last drop / add word before each."""
+    legs, prev = [], 0
+    for tm in TRIP_RE.finditer(detail):
+        labels = SIDE_RE.findall(detail[prev:tm.start()])
+        side = SIDE_OF.get(re.sub(r"\s+", " ", labels[-1].lower())) if labels else ""
+        day = f"{int(tm.group(2)):02d}{tm.group(3).upper()}" if tm.group(2) else ""
+        legs.append({"trip": tm.group(1).upper(), "day": day, "side": side})
+        prev = tm.end()
+    return legs[:4]
+
+
+REQ_ID_RE = re.compile(r"ShowRequest=1&(?:amp;)?TimeStamp=([0-9A-Fa-f]{4,}:[0-9A-Fa-f]{4,})")
+
+
+def request_ids(html):
+    """1.2.2: FLICA's own id of each request row (the TimeStamp of its read-only ShowRequest link), in page order."""
+    return REQ_ID_RE.findall(html or "")
+
+
+def request_view_url(base, bcid, ts):
+    """The read-only view of one request (its ShowRequest link, with the BCID the page's addMRLink() appends).
+    Never the QuickDelete link beside it, which deletes the request on a GET."""
+    return f"{base}{REQUESTS_PATH}?ShowRequest=1&TimeStamp={ts}&BCID={bcid}&From=Self&Parent=MainMenu"
+
+
+VIEW_SIDE_RE = re.compile(r"\b(drop|give\s?up|add|pick\s?up|take)\b", re.I)
+VIEW_SIDE_OF = {"drop": "drop", "give up": "drop", "giveup": "drop", "add": "add", "pick up": "add", "pickup": "add",
+                "take": "add"}
+
+
+def _view_legs(text):
+    """Legs of a request's view page. Strict: only drop / give up / add / pick up / take, found between the previous
+    trip and this one and at most 40 characters before it (a page header such as 'Add/Swap/Drop requests' or a
+    'From:' line never labels a trip); each trip once."""
+    legs, prev, seen = [], 0, set()
+    for tm in TRIP_RE.finditer(text):
+        labels = VIEW_SIDE_RE.findall(text[max(prev, tm.start() - 40):tm.start()])
+        prev = tm.end()
+        trip = tm.group(1).upper()
+        if trip in seen:
+            continue
+        seen.add(trip)
+        side = VIEW_SIDE_OF.get(re.sub(r"\s+", " ", labels[-1].lower())) if labels else ""
+        day = f"{int(tm.group(2)):02d}{tm.group(3).upper()}" if tm.group(2) else ""
+        legs.append({"trip": trip, "day": day, "side": side})
+    return legs[:4]
+
+
+def parse_request_view(text):
+    """{legs, trips, detail} from one request's view page: the pairings it drops and adds."""
+    legs = _view_legs(text or "")
+    m = TRIP_RE.search(text or "")
+    detail = re.sub(r"\s+", " ", text[max(0, m.start() - 60):m.start() + 160]).strip() if m else ""
+    return {"legs": legs, "trips": [x["trip"] for x in legs], "detail": detail}
+
+
+def parse_request_rows(text, html=None):
     """1.2.0: the request rows of the Open Time Requests page's visible text, each with the text that follows it
-    up to the next row ('detail') and the pairings named there ('trips'). key = date|time|type|trips|n: the row's
-    own content (n only counts rows that are otherwise identical), so clearing one request never renumbers another."""
+    up to the next row ('detail') and the pairings named there ('trips'). key = date|time|type|trips|n, n counting
+    rows that are otherwise identical. 1.2.2: with the page's html, key = 'ts:<FLICA request id>' (stable when
+    other requests are cleared) and 'alt' keeps the content key; the list itself names no trips, so detail is
+    empty and trips come from the request's own view page."""
     rows, seen = [], {}
     ms = list(REQ_RE.finditer(text))
     for i, m in enumerate(ms):
         d, t, k, st = m.group(1), m.group(2), m.group(3).title(), m.group(4).title()
         end = ms[i + 1].start() if i + 1 < len(ms) else min(len(text), m.end() + 300)
         detail = re.sub(r"\s+", " ", text[m.end():end]).strip()[:200]
-        legs, prev = [], 0
-        for tm in TRIP_RE.finditer(detail):
-            labels = SIDE_RE.findall(detail[prev:tm.start()])
-            side = SIDE_OF.get(re.sub(r"\s+", " ", labels[-1].lower())) if labels else ""
-            day = f"{int(tm.group(2)):02d}{tm.group(3).upper()}" if tm.group(2) else ""
-            legs.append({"trip": tm.group(1).upper(), "day": day, "side": side})
-            prev = tm.end()
-        trips = [x["trip"] for x in legs][:4]
+        legs = _legs(detail)
+        trips = [x["trip"] for x in legs]
         base = f"{d}|{t}|{k}|{'+'.join(sorted(trips))}"
         seen[base] = seen.get(base, 0) + 1
         rows.append({"key": f"{base}|{seen[base]}", "date": d, "time": t, "type": k, "status": st,
-                     "trips": trips, "legs": legs[:4], "detail": detail})
+                     "trips": trips, "legs": legs, "detail": detail})
+    ids = request_ids(html)
+    if ids and len(ids) == len(rows):
+        for r, ts in zip(rows, ids):
+            r.update({"alt": r["key"], "key": f"ts:{ts}", "ts": ts, "detail": "", "legs": [], "trips": []})
     return rows
 
 
@@ -147,8 +204,10 @@ def push_key(r):
 
 def request_news(pushed, rows):
     """Rows to push: Approved / Denied rows whose push_key is not in pushed ({push_key: last seen}, kept in state).
-    A row that drops out of one read (an error page) and comes back never fires twice."""
-    return [r for r in rows if r["status"] in DECIDED and push_key(r) not in pushed]
+    A row that drops out of one read (an error page) and comes back never fires twice; a row pushed under its
+    1.2.1 content key ('alt') is not pushed again under its 1.2.2 id."""
+    return [r for r in rows if r["status"] in DECIDED and push_key(r) not in pushed
+            and f"{r.get('alt')}|{r['status']}" not in pushed]
 
 
 def hours_until(report_iso, now):

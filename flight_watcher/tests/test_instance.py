@@ -264,3 +264,21 @@ def test_sealed_settings_without_a_key_never_raise(tmp_path, monkeypatch):
     monkeypatch.setattr(W, "settings_key", boom)
     assert W.settings_cmd(json.dumps({"enc": {"v": 1}})) is False
     assert "key unavailable" in json.loads(fake.msgs[-1][1])["result"]
+
+
+def test_ticket_fixed_event_on_the_instance_prefix(tmp_path, monkeypatch):
+    """FW-0007: each instance sends ticket_fixed on its own prefix, not retained; a pilot instance only for its own
+    tickets (it may not act on Ryan's). The tickets folder is shared, as on Pako."""
+    for inst, topic in (("", "flight_watcher/event/ticket_fixed"), ("pilot2", "flight_watcher_pilot2/event/ticket_fixed")):
+        W = _load(tmp_path, monkeypatch, inst, OPTS)
+        monkeypatch.setattr(W, "TICKETS_DIR", str(tmp_path / "tickets"))
+        fake = FakeClient()
+        monkeypatch.setattr(W, "MQ", fake)
+        t = W.ticket_new(json.dumps({"kind": "bug", "title": f"Card blank ({inst or 'ryan'})", "narrative": "y"}))
+        W.ticket_act(json.dumps({"id": t["id"], "action": "fixed", "version": "1.3.0"}))
+        ev = [(tp, json.loads(p), r) for tp, p, r in fake.msgs if tp.endswith("/event/ticket_fixed")]
+        assert ev == [(topic, {"id": t["id"], "kind": "bug", "title": t["title"], "reporter": inst or "ryan",
+                               "version": "1.3.0"}, False)]
+    fake.msgs.clear()
+    assert W.ticket_act(json.dumps({"id": "FW-0001", "action": "fixed"})) is None  # Ryan's ticket: refused
+    assert not [1 for tp, _, _ in fake.msgs if tp.endswith("/event/ticket_fixed")]

@@ -40,14 +40,62 @@ class FlightWatcherPilotCard extends HTMLElement {
     this._paint();
   }
   getCardSize() { return 8; }
-  _recon(a) {
+  _recon(a, readable) {  // FW-0002: the crew index's rebuilt month, drawn in the same grid as a readable schedule
     const r = a.reconstructed || [];
     const cov = a.reconstructed_coverage_pct;
     if (!r.length) return cov != null ? `<div class="u" style="margin-top:6px">Crew index: no trips found for this pilot in ${this._esc(a.reconstructed_month || "")} yet (${this._esc(cov)}% of trips read).</div>` : "";
-    const d = (x) => { const t = new Date(x + "T12:00:00"); return t.toLocaleDateString("en-US", { month: "short", day: "numeric" }); };
-    const rows = r.map((x) => `<tr><td>${d(x.start)}${x.end && x.end !== x.start ? " - " + d(x.end) : ""}</td><td><b>${this._esc(x.pairing)}</b></td><td>${this._esc(x.seat)}</td><td>${this._esc(x.route)}</td><td class="u">${this._esc(String(x.checked_at || "").slice(5, 16).replace("T", " "))}</td></tr>`).join("");
-    return `<div style="margin-top:8px"><b>Reconstructed from pairing crew lists</b> <span class="u">${this._esc(a.reconstructed_month || "")} · ${this._esc(cov)}% of trips read · updated 00/06/12/18 HST</span>
-      <table style="border-collapse:collapse;margin-top:4px;font-size:12px"><tr><th style="text-align:left;padding:2px 8px">Dates</th><th style="text-align:left;padding:2px 8px">Pairing</th><th style="text-align:left;padding:2px 8px">Seat</th><th style="text-align:left;padding:2px 8px">Route</th><th style="text-align:left;padding:2px 8px">Read</th></tr>${rows}</table></div>`;
+    const g = this._rebuild(a);
+    const [y, m] = String(a.reconstructed_month || "").split("-").map(Number);
+    const mon = m >= 1 && m <= 12 ? `${MONTHS[m - 1]} ${y}` : (a.reconstructed_month || "");
+    const head = `<b>Reconstructed from pairing crew lists</b> <span class="u">${this._esc(mon)} · ${this._esc(cov)}% of trips read · updated 00/06/12/18 HST</span>`;
+    const tot = g.items.filter((it) => it.start >= g.from);  // totals: trips in the bid period, as drawn (not the day-before row, not the overlaps below)
+    const sum = (k) => { let t = 0; for (const it of tot) { const x = /^(\d+):(\d{2})$/.exec(it[k] || ""); if (!x) return "?"; t += +x[1] * 60 + +x[2]; } return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
+    const md = (d) => `${MONTHS[+d.slice(5, 7) - 1].slice(0, 3)} ${+d.slice(8)}`;
+    const days = (x) => (x.start === x.end ? md(x.start) : x.start.slice(0, 7) === x.end.slice(0, 7) ? `${md(x.start)}-${+x.end.slice(8)}` : `${md(x.start)}-${md(x.end)}`);
+    const also = g.also.length ? `<div class="u also">Also on crew lists, on days of a trip above (one of them was likely traded after it was read): ${g.also.map((x) => `<b>${this._esc(x.pairing)}</b> ${days(x)}${x.seat ? " " + this._esc(x.seat) : ""}${x.checked_at ? ", read " + this._esc(String(x.checked_at).slice(5, 16).replace("T", " ")) : ""}`).join(" · ")}</div>` : "";
+    const left = [g.also.length ? `+${g.also.length} overlapping` : "", g.items.length > tot.length ? `+${g.items.length - tot.length} before ${md(g.from)}` : ""].filter(Boolean);
+    const body = g.items.length ? `${this._grid(g.days, g.items, g.month)}${also}
+      <div class="tot"><span>Trips<b>${tot.length}</b>${left.length ? ` <small class="u">(${left.join(", ")}: not totaled)</small>` : ""}</span><span>Block<b>${sum("blk")}</b></span><span>Credit<b>${sum("credit")}</b></span><span class="u">Source: crew lines on FLICA pairing pages (crew index, read only); Block / Credit / layover from the pairing package, blank where it has none. A trip picked up or dropped after it was read shows as it was then.</span></div>` : "";
+    return readable ? `<details class="rb"><summary>${head}</summary>${body}</details>` : `<div class="rb"><div class="rbh">${head}</div>${body}</div>`;
+  }
+  _rebuild(a) {  // FW-0002: reconstructed trips -> the readable schedule's {days: [[iso, code, lay]], items} shape, plus also (overlaps)
+    const ok = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || "");
+    const cmp = (u, v) => (u < v ? -1 : u > v ? 1 : 0);
+    const month = /^\d{4}-\d{2}$/.test(a.reconstructed_month || "") ? a.reconstructed_month : "";
+    const add = (d, n) => { const t = new Date(d + "T00:00:00Z"); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
+    if (!month) return { month, from: "", days: [], items: [], also: [] };
+    const [y, m] = month.split("-").map(Number);
+    const from = ok(a.reconstructed_from) ? a.reconstructed_from : `${month}-01`;  // the bid period's first day
+    const fd = a.month === month && Array.isArray(a.days) && a.days.length && ok((a.days[0] || [])[0]) && ok((a.days[a.days.length - 1] || [])[0]);
+    let first = fd ? a.days[0][0] : add(from, -1);  // FLICA's grid starts on the day before the bid period: line up with it
+    let last = fd ? a.days[a.days.length - 1][0] : ok(a.reconstructed_to) ? a.reconstructed_to : "";  // and ends on its last day (Dec 1 for November)
+    // The crew index can hold two trips on the same days (a trade between reads): newest read goes in the grid, the rest in `also`
+    const used = {}, trips = [], also = [];
+    const all = (a.reconstructed || []).filter((x) => x && x.pairing && ok(x.start)).map((x) => ({ ...x, end: ok(x.end) && x.end >= x.start ? x.end : x.start }));
+    all.sort((p, q) => cmp(q.checked_at || "", p.checked_at || "") || cmp(p.start, q.start) || cmp(p.pairing, q.pairing));
+    for (const x of all) {
+      const ds = []; for (let d = x.start, k = 0; d <= x.end && k < 15; d = add(d, 1), k++) ds.push(d);
+      if (ds.some((d) => used[d])) { also.push(x); continue; }
+      for (const d of ds) used[d] = 1;
+      trips.push(x);
+    }
+    trips.sort((p, q) => cmp(p.start, q.start)); also.sort((p, q) => cmp(p.start, q.start) || cmp(p.pairing, q.pairing));
+    if (!last) { last = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); for (const x of trips) if (x.end > last) last = x.end; }  // a publish without reconstructed_to
+    for (const x of trips) { if (x.start < first) first = x.start; if (x.start > last) last = x.end; }  // never drop a trip; one running past the end stays open at the bottom, like FLICA's
+    const at = {}, items = [];
+    for (const x of trips) {
+      const st = String(x.route || "").split("-").filter(Boolean);
+      const base = st[0] || "HNL";
+      const outs = [...new Set(st.filter((s) => s !== base))];
+      const lay = x.start === x.end ? base : (x.lay || (outs.length === 1 ? outs[0] : ""));  // out and back: the one outstation
+      for (let d = add(x.start, 1), k = 0; d <= x.end && k < 14; d = add(d, 1), k++) if (!(at[d] && at[d][0])) at[d] = ["", d === x.end ? base : "-"];
+      at[x.start] = [x.pairing, lay];
+      items.push({ trip: x.pairing, start: x.start, end: x.end, blk: x.blk || "", credit: x.credit || "", soft: x.soft || "", crew: x.crew || [],
+        legs: st.slice(1).map((s, i) => ({ route: `${st[i]}-${s}` })), seat: x.seat || "", read: x.checked_at || "" });
+    }
+    const days = [];
+    for (let d = first, k = 0; d <= last && k < 45; d = add(d, 1), k++) days.push([d, ...(at[d] || ["", ""])]);
+    return { month, from, days, items, also };
   }
   _esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
   _hol(iso) {
@@ -84,6 +132,7 @@ class FlightWatcherPilotCard extends HTMLElement {
         .legs{font-size:10.5px;color:var(--secondary-text-color)}
         .tot{margin:6px 0 0;font-size:12px}.tot b{margin-left:4px}.tot span{margin-right:14px}
         .none{padding:8px;color:var(--secondary-text-color)}
+        .rb{margin-top:10px}.rbh{margin:0 0 4px}details.rb summary{cursor:pointer;margin:0 0 4px}.also{margin:6px 0 0}.also b{color:var(--primary-text-color)}
         .picks{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0}
         .pk{padding:6px 10px;border:1px solid var(--divider-color,#ccc);border-radius:6px;background:var(--card-background-color,#fff);color:var(--primary-text-color);cursor:pointer;font-size:13px}
         @media (prefers-color-scheme: dark){
@@ -113,40 +162,44 @@ class FlightWatcherPilotCard extends HTMLElement {
     if (!a.month) {
       const picks = (a.matches || []).map((m) => `<button class="pk" data-emp="${this._esc(m.emp)}" data-name="${this._esc(m.name)}">${this._esc(m.name)} <span class="u">${this._esc(m.pos)} ${this._esc(m.emp)}</span></button>`).join("");
       body.innerHTML = `<div class="hd"><h3>${this._esc(name || "Pilot")}${emp ? " (" + this._esc(emp) + ")" : ""}</h3><span class="u">${this._esc(/application error|customer care/i.test(a.status || "") ? "FLICA showed its error page for this schedule (often a pilot who has hidden it, or a FLICA hiccup). Nothing to read; try again later." : (a.status || "no data"))}</span><span class="x" title="close">&times;</span></div>${picks ? `<div class="picks">${picks}</div>` : ""}`;
-      body.insertAdjacentHTML("beforeend", this._recon(a));  // 0.10.1: crew index (reconstructed from pairing crew lists)
+      body.insertAdjacentHTML("beforeend", this._recon(a, false));  // 0.10.1 crew index; FW-0002: in the schedule grid
       return;
     }
     const [y, m] = a.month.split("-").map(Number);
-    const items = a.items || [];
+    const t = a.totals || {};
+    body.innerHTML = `<div class="hd"><h3>${this._esc(name)} (${this._esc(emp)})</h3><span class="u">${MONTHS[m - 1]} ${y} · FLICA updated ${this._esc(a.updated || "?")} · read ${a.fetched ? new Date(a.fetched).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}${a.status === "cached" ? " (cached)" : ""}</span><span class="x" title="close">&times;</span></div>
+      ${this._grid(a.days, a.items || [], a.month)}
+      <div class="tot"><span>Block<b>${this._esc(t.block || "?")}</b></span><span>Credit<b>${this._esc(t.credit || "?")}</b></span><span>Days Off<b>${t.days_off != null ? t.days_off : "?"}</b></span><span class="u">Source: FLICA Tools > Schedule Lookup, read only. Block / Credit per trip from the pairing pages.</span></div>`;
+    body.insertAdjacentHTML("beforeend", this._recon(a, true));  // 0.10.1: crew index (reconstructed from pairing crew lists), folded under a readable month
+  }
+  _grid(days, items, month) {  // the calendar: one row per day, trips boxed in the Layover column (readable and rebuilt months)
     const byStart = {}; for (const it of items) byStart[it.start] = it;
     const span = (d) => items.find((it) => /^[A-Z]\d{4}/.test(it.trip) && it.start <= d && d <= it.end);
     let rows = "";
-    for (const [d, code, lay] of a.days || []) {
+    for (const [d, code, lay] of days || []) {
       const dt = new Date(d + "T00:00:00");
       const wk = dt.getDay() === 0 || dt.getDay() === 6;
-      const oth = d.slice(0, 7) !== a.month;
+      const oth = d.slice(0, 7) !== month;
       const tr = span(d);
       const bx = tr ? " bx" + (tr.start === d ? " bxs" : "") + (tr.end === d ? " bxe" : "") : "";
       const it = byStart[d];
       let tripCell = "", layCell = "", blk = "", cr = "", soft = "", crew = "";
       if (code) {
-        tripCell = /^[A-Z]\d{4}/.test(code) ? `<span class="trip">${this._esc(code)}</span>` : this._esc(code);
+        const read = it && it.read ? ` title="crew read ${this._esc(String(it.read).slice(5, 16).replace("T", " "))} HST"` : "";
+        tripCell = /^[A-Z]\d{4}/.test(code) ? `<span class="trip"${read}>${this._esc(code)}</span>` : this._esc(code);
         if (it && it.legs && it.legs.length) {
-          tripCell += ` <span class="legs" title="${this._esc(it.legs.map((l) => `${l.dow} ${l.route} ${l.dep}-${l.arr} ${l.blk}`).join("\n"))}">${it.legs.length} legs</span>`;
+          tripCell += ` <span class="legs" title="${this._esc(it.legs.map((l) => [l.dow, l.route, l.dep && l.arr ? `${l.dep}-${l.arr}` : "", l.blk].filter(Boolean).join(" ")).join("\n"))}">${it.legs.length} legs</span>`;
         }
+        if (it && it.seat) tripCell += ` <span class="legs" title="seat on the crew list">${this._esc(it.seat)}</span>`;
       }
       if (lay && lay !== "-") layCell = lay === "HNL" ? `<span class="u">HNL</span>` : `<b>${this._esc(lay)}</b>`;
       if (it && /^[A-Z]\d{4}/.test(it.trip)) {
-        blk = it.blk || ""; cr = it.credit || ""; soft = it.soft || "";
-        crew = (it.crew || []).map(([p, n]) => `${p} ${this._esc(n)}`).join(" · ");
+        blk = this._esc(it.blk || ""); cr = this._esc(it.credit || ""); soft = this._esc(it.soft || "");
+        crew = (it.crew || []).map(([p, n]) => `${this._esc(p)} ${this._esc(n)}`).join(" · ");
       }
       rows += `<tr class="${wk ? "wk" : ""}${this._hol(d) ? " hol" : ""}${oth ? " oth" : ""}${bx}"><td>${DOW[dt.getDay()]}</td><td class="n">${d.slice(8)}</td><td>${tripCell}</td><td>${layCell}</td><td class="n">${blk}</td><td class="n">${cr}</td><td class="n">${soft}</td><td class="crew">${crew}</td></tr>`;
     }
-    const t = a.totals || {};
-    body.innerHTML = `<div class="hd"><h3>${this._esc(name)} (${this._esc(emp)})</h3><span class="u">${MONTHS[m - 1]} ${y} · FLICA updated ${this._esc(a.updated || "?")} · read ${a.fetched ? new Date(a.fetched).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}${a.status === "cached" ? " (cached)" : ""}</span><span class="x" title="close">&times;</span></div>
-      <div class="wrap"><table class="cal"><thead><tr><th></th><th></th><th>Trip</th><th>Layover</th><th>Block</th><th>Credit</th><th>Soft</th><th>Crew</th></tr></thead><tbody>${rows}</tbody></table></div>
-      <div class="tot"><span>Block<b>${this._esc(t.block || "?")}</b></span><span>Credit<b>${this._esc(t.credit || "?")}</b></span><span>Days Off<b>${t.days_off != null ? t.days_off : "?"}</b></span><span class="u">Source: FLICA Tools > Schedule Lookup, read only. Block / Credit per trip from the pairing pages.</span></div>`;
-    body.insertAdjacentHTML("beforeend", this._recon(a));  // 0.10.1: crew index (reconstructed from pairing crew lists)
+    return `<div class="wrap"><table class="cal"><thead><tr><th></th><th></th><th>Trip</th><th>Layover</th><th>Block</th><th>Credit</th><th>Soft</th><th>Crew</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }
 }
 customElements.define("flight-watcher-pilot-card", FlightWatcherPilotCard);

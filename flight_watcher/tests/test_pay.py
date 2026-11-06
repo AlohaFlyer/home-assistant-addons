@@ -110,3 +110,20 @@ def test_no_rate_means_no_amount(tmp_path, monkeypatch):
     W = _w(tmp_path, monkeypatch)
     monkeypatch.setattr(W, "ha_state", lambda e: None)  # no helper, no DOH file
     assert W.price_request(SUB.parse_request_rows("11/05 09:10 add approved h3620 28nov")[0]) is None
+
+
+def test_type_and_held_trips_decide_the_sides(tmp_path, monkeypatch):
+    from datetime import datetime
+    W = _w(tmp_path, monkeypatch)
+    now = datetime(2026, 11, 6, 8, 0, tzinfo=W.HST)
+    rate = PAY.rate_for(7, W.local_now().date().isoformat())
+    base = SUB.parse_request_rows("11/05 09:10 add approved")[0]
+    add = {**base, "legs": [{"trip": "H3620", "day": "28NOV", "side": "drop"}]}  # a page word said drop: the type wins
+    assert W.price_request(add, now)["delta"] == pytest.approx(11 * rate, abs=0.02)
+    swap = {**base, "type": "Swap", "legs": [{"trip": "H3629", "day": "12NOV", "side": "add"},
+                                            {"trip": "H3815B", "day": "14NOV", "side": "drop"}]}
+    p = W.price_request(swap, now)  # inverted page words: the trip he held when he filed is the one given
+    assert [(x["trip"], x["side"]) for x in p["parts"]] == [("H3629", "drop"), ("H3815B", "add")]
+    W.DB.put("sched_versions:2026-11", [])  # no schedule version on file: page words only when they name both sides
+    one = {**swap, "legs": [{"trip": "H3629", "day": "12NOV", "side": "drop"}, {"trip": "H3815B", "day": "14NOV", "side": ""}]}
+    assert W.price_request(one, now) is None
