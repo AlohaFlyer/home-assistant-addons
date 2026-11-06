@@ -115,10 +115,8 @@ def test_finds_card_time_format_is_browser_independent(tmp_path):
     assert json.loads(out.stdout) == ["Nov 5 12:23", "Nov 6 00:05", "", "bad"]
 
 
-def test_finds_card_shows_today_hst_and_folds_the_rest(tmp_path):
-    """FW-0005 (Ryan): this month shows only the finds first seen today in HST (UTC-10); every earlier one folds under
-    "N earlier this month", closed until opened and remembered per browser (localStorage, which may throw). A past
-    month opens in full. Synthetic trips and names."""
+def _finds_card_node(tmp_path, body):
+    """Run the finds card in node with stub DOM globals (and a Map-backed localStorage); return its JSON output."""
     import shutil
     import subprocess
     if not shutil.which("node"):
@@ -126,23 +124,36 @@ def test_finds_card_shows_today_hst_and_folds_the_rest(tmp_path):
         pytest.skip("node not installed")
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www", "flight-watcher-finds-card.js"),
                encoding="utf-8").read()
-    now = "2026-11-07T09:30:00Z"  # Nov 6 23:30 HST: the UTC date is already Nov 7
-
-    def find(pid, seen):
-        return {"pairing": pid, "seen": seen, "dates": "08Nov-10Nov", "layover": "LAX", "days": "3", "credit": "12:34",
-                "captain": "Doe, Jane (12345)"}
-    rows = [find("H9001", "2026-11-07T09:00:00Z"),   # Nov 6 23:00 HST: today
-            find("H9002", "2026-11-06T10:00:00Z"),   # Nov 6 00:00 HST: today (midnight)
-            find("H9003", "2026-11-06T09:59:00Z"),   # Nov 5 23:59 HST: earlier, though the UTC date is Nov 6
-            find("H9004", "2026-11-01T10:05:00Z"),   # Nov 1 00:05 HST
-            find("H9005", "not a time")]
     js = ("globalThis.HTMLElement = class {}; globalThis.customElements = {define() {}}; globalThis.window = {};\n"
           "const store = new Map(); globalThis.localStorage = {getItem: (k) => store.has(k) ? store.get(k) : null,"
-          " setItem: (k, v) => store.set(k, String(v))};\n" + src +
-          f"\nconst rows = {json.dumps(rows)}; const now = Date.parse({json.dumps(now)});\n"
+          " setItem: (k, v) => store.set(k, String(v))};\n" + src + "\n" + body)
+    f = tmp_path / "t.js"
+    f.write_text(js)
+    out = subprocess.run(["node", str(f)], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def _find(pid, seen):
+    return {"pairing": pid, "seen": seen, "dates": "08Nov-10Nov", "layover": "LAX", "days": "3", "credit": "12:34",
+            "captain": "Doe, Jane (12345)"}
+
+
+def test_finds_card_shows_today_hst_and_folds_the_rest(tmp_path):
+    """FW-0005 (Ryan): this month shows only the finds first seen today in HST (UTC-10); every earlier one folds under
+    "N earlier this month" in the same table (so the columns line up), closed until opened and remembered per browser
+    (localStorage, which may throw). A past month opens in full. Synthetic trips and names."""
+    now = "2026-11-07T09:30:00Z"  # Nov 6 23:30 HST: the UTC date is already Nov 7
+    rows = [_find("H9001", "2026-11-07T09:00:00Z"),   # Nov 6 23:00 HST: today
+            _find("H9002", "2026-11-06T10:00:00Z"),   # Nov 6 00:00 HST: today (midnight)
+            _find("H9003", "2026-11-06T09:59:00Z"),   # Nov 5 23:59 HST: earlier, though the UTC date is Nov 6
+            _find("H9004", "2026-11-01T10:05:00Z"),   # Nov 1 00:05 HST
+            _find("H9005", "not a time")]
+    js = (f"const rows = {json.dumps(rows)}; const now = Date.parse({json.dumps(now)});\n"
           "const tr = (h) => (h.match(/<tr class/g) || []).length;\n"
-          "const parts = (h) => { const i = h.indexOf('<details'); return i < 0 ? [h, ''] : [h.slice(0, i), h.slice(i)]; };\n"
-          "const tag = (h) => parts(h)[1].split('>')[0] + '>';\n"
+          "const parts = (h) => { const i = h.indexOf('<tbody class=\"fold\"'); return i < 0 ? [h, ''] : [h.slice(0, i), h.slice(i)]; };\n"
+          "const tag = (h) => { const m = h.match(/<tbody class=\"old\"[^>]*>/); return m ? m[0] : null; };\n"
+          "const btn = (h) => { const m = h.match(/<button[^>]*>[^<]*<\\/button>/); return m ? m[0] : null; };\n"
           "const card = () => { const c = new FlightWatcherFindsCard(); c.setConfig({}); c._m = '2026-11'; return c; };\n"
           "const c = card(); const sp = c._split(rows, now); const first = c._list(rows, now, false);\n"
           "c._setEarlier(true); const opened = c._list(rows, now, false); const saved = store.get('flight_watcher_finds_earlier');\n"
@@ -150,29 +161,67 @@ def test_finds_card_shows_today_hst_and_folds_the_rest(tmp_path):
           "c._setEarlier(false); const shut = store.get('flight_watcher_finds_earlier');\n"
           "const none = card()._list(rows.slice(2), now, false);\n"
           "const p = card(); p._m = '2026-10'; const past = p._list(rows, now, false); const pastNone = p._list([], now, false);\n"
+          "const empty = card()._list([], now, false); const loading = card()._list([], now, true);\n"
           "globalThis.localStorage = {getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); }};\n"
           "const b = card(); const blocked = b._list(rows, now, false); b._setEarlier(true); const blockedOpen = b._list(rows, now, false);\n"
           "console.log(JSON.stringify({today: sp.today.map((f) => f.pairing), earlier: sp.earlier.map((f) => f.pairing),\n"
-          "  first: parts(first).map(tr), firstFold: parts(first)[1].slice(0, 60), opened: tag(opened), saved,\n"
-          "  again: tag(again), shut, none: parts(none).map(tr), noneText: parts(none)[0],\n"
-          "  past: tr(past), pastFold: past.includes('<details'), pastNone, blocked: tag(blocked),\n"
+          "  first: parts(first).map(tr), tables: (first.match(/<table/g) || []).length, firstBtn: btn(first),\n"
+          "  firstTag: tag(first), firstHead: parts(first)[0].includes('<thead>'), opened: tag(opened),\n"
+          "  openedBtn: btn(opened), saved, again: tag(again), shut, none: parts(none).map(tr), noneText: parts(none)[0],\n"
+          "  noneTag: tag(none), noneHeadInFold: parts(none)[1].includes('<th>Seen</th>'), noneThead: none.includes('<thead>'),\n"
+          "  past: tr(past), pastFold: past.includes('fold'), pastNone, empty, loading, blocked: tag(blocked),\n"
           "  blockedOpen: tag(blockedOpen)}));")
-    f = tmp_path / "t.js"
-    f.write_text(js)
-    out = subprocess.run(["node", str(f)], capture_output=True, text=True, timeout=30)
-    assert out.returncode == 0, out.stderr
-    r = json.loads(out.stdout)
+    r = _finds_card_node(tmp_path, js)
     assert r["today"] == ["H9001", "H9002"] and r["earlier"] == ["H9003", "H9004", "H9005"]
-    assert r["first"] == [2, 3] and r["firstFold"] == '<details class="old"><summary>3 earlier this month</summary>'
-    assert r["opened"] == '<details class="old" open>' and r["saved"] == "1"
-    assert r["again"] == '<details class="old" open>'  # a new card (page reload) reads the browser's choice
+    # one table: today's 2 rows under the header, then the fold line, then the 3 earlier rows (hidden)
+    assert r["first"] == [2, 3] and r["tables"] == 1 and r["firstHead"]
+    assert r["firstBtn"] == '<button type="button" class="fb" aria-expanded="false">3 earlier this month</button>'
+    assert r["firstTag"] == '<tbody class="old" hidden>'
+    assert r["opened"] == '<tbody class="old">' and 'aria-expanded="true"' in r["openedBtn"] and r["saved"] == "1"
+    assert r["again"] == '<tbody class="old">'  # a new card (page reload) reads the browser's choice
     assert r["shut"] == "0"
+    # nothing today: the line says so, and the header row moves into the fold (a closed fold is one line)
     assert r["none"] == [0, 3] and "Nothing new today (Nov 6 HST)." in r["noneText"]
+    assert r["noneTag"] == '<tbody class="old" hidden>' and r["noneHeadInFold"] and not r["noneThead"]
     assert r["past"] == 5 and not r["pastFold"] and r["pastNone"] == '<div class="k">Nothing added in Oct 2026.</div>'
+    assert r["empty"] == '<div class="k">Nothing new today (Nov 6 HST).</div>' and r["loading"] == ""
     # storage blocked (private mode): closed by default, the fold still opens for this page, nothing throws
-    assert r["blocked"] == '<details class="old">' and r["blockedOpen"] == '<details class="old" open>'
+    assert r["blocked"] == '<tbody class="old" hidden>' and r["blockedOpen"] == '<tbody class="old">'
     pilot2 = cards.build("1", None, ["pilot2"])["flight-watcher-finds-card-pilot2.js"]
     assert 'localStorage.getItem("flight_watcher_pilot2_finds_earlier")' in pilot2  # a second pilot's fold is his own
+
+
+def test_finds_card_today_moves_on_at_midnight_hst_without_a_finds_change(tmp_path):
+    """FW-0005 fix: the card redraws only when its signature changes, and the finds sensor can sit unchanged overnight
+    (the card stays alive in the HA iOS app's webview and in a desktop tab). The HST day is part of the signature, so
+    the first hass push after midnight HST moves "today" on, and on the 1st the month too. Synthetic trips."""
+    rows = [_find("H9101", "2026-11-07T09:40:00Z"),   # Nov 6 23:40 HST
+            _find("H9102", "2026-11-06T20:00:00Z"),   # Nov 6 10:00 HST
+            _find("H9103", "2026-11-05T20:00:00Z")]   # Nov 5 10:00 HST
+    dec = [_find("H9201", "2026-12-01T09:00:00Z")]    # Nov 30 23:00 HST
+    js = (f"const rows = {json.dumps(rows)}; const dec = {json.dumps(dec)};\n"
+          "let clock = 0; Date.now = () => clock;\n"
+          "const hass = (finds, lu) => ({states: {'sensor.flight_watcher_finds': {state: String(finds.length),"
+          " last_updated: lu, attributes: {finds}}, 'sun.sun': {state: 'below_horizon', last_updated: String(clock)}}});\n"
+          "const mk = () => { const c = new FlightWatcherFindsCard(); c.setConfig({}); c._load = () => {}; c.draws = [];\n"
+          "  c._render = () => { const { today, earlier } = c._split(c._rows(), Date.now());\n"
+          "    const line = c._list(c._rows(), Date.now(), false).match(/Nothing new today \\([^)]*\\)/);\n"
+          "    c.draws.push({m: c._m, today: today.map((f) => f.pairing), earlier: earlier.length, line: line ? line[0] : ''}); };\n"
+          "  return c; };\n"
+          "clock = Date.parse('2026-11-07T09:50:00Z'); const c = mk(); c.hass = hass(rows, 'LU1');  // Nov 6 23:50 HST\n"
+          "clock = Date.parse('2026-11-07T09:59:00Z'); c.hass = hass(rows, 'LU1');  // 23:59, same day, sensor unchanged\n"
+          "const before = c.draws.length;\n"
+          "clock = Date.parse('2026-11-07T16:00:00Z'); c.hass = hass(rows, 'LU1');  // Nov 7 06:00 HST, sensor unchanged\n"
+          "clock = Date.parse('2026-12-01T09:50:00Z'); const d = mk(); d.hass = hass(dec, 'LU9');  // Nov 30 23:50 HST\n"
+          "clock = Date.parse('2026-12-01T10:30:00Z'); d.hass = hass(dec, 'LU9');  // Dec 1 00:30 HST\n"
+          "console.log(JSON.stringify({before, draws: c.draws, month: d.draws}));")
+    r = _finds_card_node(tmp_path, js)
+    assert r["before"] == 1  # a push on the same HST day with the sensor unchanged does not redraw
+    assert r["draws"][0] == {"m": "2026-11", "today": ["H9101", "H9102"], "earlier": 1, "line": ""}
+    assert r["draws"][1] == {"m": "2026-11", "today": [], "earlier": 3, "line": "Nothing new today (Nov 7 HST)"}
+    assert len(r["draws"]) == 2
+    assert [x["m"] for x in r["month"]] == ["2026-11", "2026-12"]  # left on this month, the card follows into December
+    assert r["month"][1]["today"] == [] and r["month"][1]["line"] == "Nothing new today (Dec 1 HST)"
 
 
 def test_pilot_card_draws_rebuilt_month_in_the_schedule_grid(tmp_path):
