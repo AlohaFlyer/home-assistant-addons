@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1
+
+- Pay-Gross in the request push (Ryan): an Approved request carries `pay` {delta, delta_text, parts [{trip, start, side drop|add, gross, credit}], rate, year}: + for a pickup, - for a drop, the net for a swap. New `pay.py` is the schedule card's tripFull() in Python (credit x PWA 3.D.6 FO rate by longevity year, the package credit carrying the PWA 4.C.3 5:00 minimum; PWA 4.O.1 IRO $4.00 RO / $3.00 FO per block hour and Extended Range +15%); a test runs the card's JavaScript beside it. A trip given is priced from Ryan's own trip record (FLICA credit, block, seat), a trip taken from the month's pairing package (FO). Which trip was given: the page's own words, else the request type, else (swap) the trip on the schedule version in force when he filed. Longevity year and ER list from the HA helpers (new `homeassistant_api: true`), else the DOH in /data/cards.json. No amount when a trip cannot be priced.
+
+## 1.2.0
+
+- Request decisions pushed (Ryan): the Watcher reads FLICA's Open Time Requests list (`/full/mobileotrequest.cgi?BCID=<pot folder>&From=MainMenu`, GET only, both safe_get guards; the per-row Approved / Denied links delete a request on a GET and are never followed) every 15 min, every 2 min while a request is Pending, and first thing after a yield to Ryan's own FLICA login (when he files them). A swap, add or drop request that turns Approved or Denied, or first shows up already decided, fires `<prefix>/event/request_decided` once {key, date, time, type, status, trips, detail, bcid, url}. Each decision is pushed once ever (kept in state 60 days after it leaves the list), so an error page or a cleared request never brings a second push; a request is keyed on its own content (date, time, type, trips), not its place on the page. The feature's very first read pushes only decisions filed in the last 6 hours; a bid folder that opens later is read in full. A page that is not the request list (maintenance, error, interstitial) is not a read, a list gone empty must read so twice, and a failed pass leaves the sensor as it was. Reads are paced 1.5 to 3.5 s apart. Not covered yet: requests filed in the close-in folder (its BCID is not known). `sensor.<prefix>_ot_requests` = pending count, attributes = the last 20 requests. The first read of each folder saves a private copy to /share/flight_watcher/captures for parser checks. HA automation "Flight Watcher request decided" pushes it to Ryan's iPhones.
+
 ## 1.1.2
 
 - Tickets card (Ryan): completed tickets (fixed or closed) fold away under "N completed" (noting how many still wait for your verify); open ones stay in the log. The header reads "N open · N completed". The fold remembers whether you opened it.

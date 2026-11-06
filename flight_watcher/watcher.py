@@ -35,8 +35,9 @@ import recall as RC
 import crewidx as CI
 import tickets as TK
 import sealed as SEAL
+import pay as PAY
 
-VERSION = "1.1.2"
+VERSION = "1.2.1"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -740,6 +741,9 @@ def discovery(c):
                                 "value_template": "{{ value_json.has_password }}",
                                 "json_attributes_topic": f"{T}/settings/state", "icon": "mdi:account-key",
                                 "entity_category": "diagnostic"}),
+        ("sensor", "ot_requests", {"name": "Open time requests", "state_topic": f"{T}/ot_requests",
+                                   "value_template": "{{ value_json.pending }}",
+                                   "json_attributes_topic": f"{T}/ot_requests", "icon": "mdi:swap-horizontal-circle-outline"}),
         ("sensor", "tickets", {"name": "Tickets", "state_topic": f"{T}/tickets", "value_template": "{{ value_json.open }}",
                                "json_attributes_topic": f"{T}/tickets", "icon": "mdi:ticket-outline"}),
     ]
@@ -1865,6 +1869,198 @@ def capture(fl, month, html):
 
 TB_MIN_GAP_S = 120
 TB_PROBE = {"done": False}
+REQ_IDLE_GAP_S = 900     # 1.2.0: Open Time Requests read every 15 min,
+REQ_PENDING_GAP_S = 120  # every 2 min while a request is pending, and right after a yield to Ryan's own login
+REQ_FIRST_H = 6  # the feature's first read: decisions filed this recently are still pushed
+
+
+MON3 = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+
+
+def ha_state(entity_id):
+    """1.2.1: one entity's state from Home Assistant (Supervisor API proxy, homeassistant_api in config.yaml);
+    None when unreachable."""
+    try:
+        r = requests.get(f"http://supervisor/core/api/states/{entity_id}",
+                         headers={"Authorization": f"Bearer {os.environ.get('SUPERVISOR_TOKEN', '')}"}, timeout=5)
+        return r.json().get("state") if r.ok else None
+    except Exception:
+        return None
+
+
+def pay_settings():
+    """(rate, longevity year, ER list) the way the schedule card reads them: the longevity year helper, else the
+    DOH in /data/cards.json; rate for today (HST); the per-trip Extended Range list helper."""
+    today = local_now().date().isoformat()
+    yr = None
+    try:
+        yr = int(float(ha_state(f"input_number.{T}_longevity_year")))
+    except (TypeError, ValueError):
+        pass
+    if not yr:
+        try:
+            yr = min(12, PAY.doh_year(json.load(open(f"{DATA}/cards.json"))["doh"], today))
+        except Exception:
+            yr = None
+    er = [x for x in str(ha_state(f"input_text.{T}_er_trips") or "").split(",") if x]
+    return (PAY.rate_for(yr, today) if yr else None), yr, er
+
+
+def _package(month, cache):
+    if month not in cache:
+        try:
+            d = json.load(open(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json")))
+            cols = d.get("cols") or []
+            cache[month] = {r[0]: dict(zip(cols, r)) for r in d.get("rows") or [] if r}
+        except Exception:
+            cache[month] = {}
+    return cache[month]
+
+
+def _filed_at(r, now):
+    """The request's filing time (HST) from its MM/DD and HH:MM: this year, or last year when that is in the future."""
+    mo, dd = (int(x) for x in r["date"].split("/"))
+    hh, mi = (int(x) for x in r["time"].split(":"))
+    t = datetime(now.year, mo, dd, hh, mi, tzinfo=HST)
+    return t.replace(year=now.year - 1) if t > now + timedelta(days=1) else t
+
+
+def _own_trips_at(t):
+    """Ryan's trips ({TRIP: start}) on the schedule version in force at time t (versions are stamped UTC)."""
+    out = {}
+    for month in sorted(S.get("schedule") or {}):
+        vers = DB.get(f"sched_versions:{month}") or []
+        before = [v for v in vers if v.get("at") and datetime.fromisoformat(v["at"]) <= t]
+        for it in (before[-1] if before else (vers[0] if vers else {})).get("items") or []:
+            if it.get("trip"):
+                out.setdefault(it["trip"], it.get("start"))
+    return out
+
+
+def price_request(r, now=None):
+    """1.2.1 (Ryan): Pay-Gross change of an Approved request: + for a pickup, - for a drop, the net for a swap.
+    Each leg is a trip given (drop) or taken (add): from the page's own words when it has them, else Add / Drop
+    by the request type, else for a swap the trip Ryan held when he filed it is the one given. A trip given is
+    priced from his own trip record (FLICA's credit, block, seat), a trip taken from the month's pairing package
+    (FO seat). None when any leg cannot be priced; the push then goes out without an amount."""
+    if r.get("status") != "Approved" or not r.get("legs"):
+        return None
+    now = now or local_now().replace(tzinfo=HST)
+    rate, yr, er = pay_settings()
+    if not rate:
+        return None
+    filed = _filed_at(r, now)
+    held = _own_trips_at(filed.astimezone(timezone.utc))
+    own, cache, parts = S.get("own_trips") or {}, {}, []
+    for leg in r["legs"]:
+        trip = leg["trip"]
+        side = leg.get("side") or {"Add": "add", "Drop": "drop"}.get(r["type"]) or ("drop" if trip in held else "add")
+        start = held.get(trip) if side == "drop" else None
+        if not start and leg.get("day"):
+            mo = MON3.index(leg["day"][2:]) + 1
+            y = filed.year + (1 if mo < filed.month - 6 else 0)
+            start = f"{y}-{mo:02d}-{leg['day'][:2]}"
+        if not start:
+            return None
+        rec = (own.get(f"{trip}|{start}") or {}) if side == "drop" else {}
+        pk = _package(start[:7], cache).get(trip[:5]) or {}
+        credit = PAY.hrs(rec.get("credit")) if rec.get("credit") else PAY.hrs(pk.get("credit"))
+        block = PAY.hrs(rec.get("blk")) if rec.get("blk") else PAY.hrs(pk.get("block"))
+        lay = "/".join(x for x in str(pk.get("route") or "").split("-") if x and x != "HNL")
+        g = PAY.trip_gross(credit, block, pk.get("crew"), lay, f"{trip}|{start}", rec.get("seat") or "FO", rate, er)
+        if g is None:
+            return None
+        parts.append({"trip": trip, "start": start, "side": side, "gross": round(g, 2),
+                      "credit": rec.get("credit") or pk.get("credit") or ""})
+    delta = sum(p["gross"] for p in parts if p["side"] == "add") - sum(p["gross"] for p in parts if p["side"] == "drop")
+    return {"delta": round(delta, 2), "delta_text": PAY.usd(delta), "parts": parts, "rate": rate, "year": yr}
+
+
+def requests_check(fl):
+    """1.2.0 (Ryan): read only, the Open Time Requests list of each watched bid folder. A swap, add or drop
+    request that turns Approved or Denied (or first shows up already decided) fires event/request_decided once,
+    which HA pushes to Ryan's phone. Only the list URL is fetched (SUB.safe_get + SM.safe_get): its Approved /
+    Denied links carry QuickDelete=1 and would delete the request, so no link on the page is ever followed.
+    Each decision is pushed once ever (S['ot_req_pushed']); on the feature's very first read only decisions filed
+    in the last REQ_FIRST_H hours are news. Requests filed in the close-in folder are not read (its BCID is not
+    known yet)."""
+    rows_of = S.setdefault("ot_req_rows", {})  # bcid -> rows of the last good read
+    folders = sorted({x for x in (bcid(u) for u in S.get("pot_urls", {}).values()) if x})
+    pending = any(r.get("status") == "Pending" for b in folders for r in rows_of.get(b) or [])
+    gap = REQ_PENDING_GAP_S if pending else REQ_IDLE_GAP_S
+    if not S.pop("req_force", False) and time.time() - S.get("req_checked_at", 0) < gap:
+        return
+    S["req_checked_at"] = time.time()
+    pushed = S.setdefault("ot_req_pushed", {})
+    empty = S.setdefault("ot_req_empty", {})
+    first = not S.get("ot_req_init")
+    now = datetime.now(HST)
+    read_ok = False
+    for b in folders:
+        url = SUB.requests_url(BASE, b)
+        if not (SUB.safe_get(url) and SM.safe_get(url)):
+            log.info("requests %s: url refused by safe_get, skipped", b)
+            continue
+        try:
+            time.sleep(random.uniform(1.5, 3.5))  # paced like every other FLICA page load
+            html = fl.fetch(url)
+            if classify(html) != "ok":
+                log.info("requests %s: %s, skipped", b, classify(html))
+                continue
+            text = visible_text(html)
+            rows = SUB.parse_request_rows(text)
+            n = b.split(".")[-1]
+            if not S.get("req_captured", {}).get(n):  # first read: a private copy for parser checks (/share)
+                try:
+                    os.makedirs(CAPTURE_DIR, exist_ok=True)
+                    open(f"{CAPTURE_DIR}/otrequests_{n}.html", "w").write(html)
+                    S.setdefault("req_captured", {})[n] = True
+                    log.info("requests %s: %d rows, page captured; text: %s", b, len(rows), text[:600])
+                except Exception:
+                    pass
+            if not SUB.is_request_page(text, rows):
+                log.info("requests %s: not the request list, skipped: %s", b, text[:120])
+                continue
+            if not rows and rows_of.get(b) and empty.get(b, 0) < 1:  # a list gone empty must read so twice
+                empty[b] = empty.get(b, 0) + 1
+                log.info("requests %s: list empty after %d rows, read again before believing it", b, len(rows_of[b]))
+                continue
+            empty.pop(b, None)
+            for r in SUB.request_news(pushed, rows):
+                try:
+                    old = _filed_at(r, now) < now - timedelta(hours=REQ_FIRST_H)
+                except Exception:
+                    old = True
+                if first and old:
+                    continue  # the feature's first read: older decisions are history, not news
+                ev = {**r, "bcid": b, "at": now_iso(), "url": url}
+                try:
+                    ev["pay"] = price_request(r)  # 1.2.1: Pay-Gross gained or given up (Approved only)
+                except Exception as e:
+                    log.info("request pay not priced: %s", e)
+                    ev["pay"] = None
+                log.info("request %s %s %s", r["type"], r["status"], r["detail"][:80])
+                pub("event/request_decided", ev, retain=False)
+            for r in rows:
+                if r["status"] in SUB.DECIDED:
+                    pushed[SUB.push_key(r)] = now_iso()  # last seen; pruned once gone 60 days
+            rows_of[b] = rows
+            read_ok = True
+        except Exception as e:
+            log.info("requests %s error: %s", b, e)
+    if folders:
+        for b in [x for x in rows_of if x not in folders]:
+            rows_of.pop(b, None)  # a folder no longer watched: its Pending rows no longer hold the 2-min poll
+    cut = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+    for k in [k for k, v in pushed.items() if v < cut]:
+        pushed.pop(k, None)
+    if read_ok:
+        S["ot_req_init"] = True
+    save_state(S)
+    if read_ok:  # a failed pass keeps the last good sensor instead of showing 0 pending
+        shown = [{**r, "bcid": b} for b in folders for r in rows_of.get(b) or []]
+        pub("ot_requests", {"pending": sum(1 for r in shown if r["status"] == "Pending"), "count": len(shown),
+                            "requests": shown[-20:], "checked_at": now_iso()})
 
 
 def tradeboard_check(fl, full=False):
@@ -2860,6 +3056,7 @@ def check(fl):
     pickup_check(fl, full)
     publish_finds()  # rows carry live CA / details now, so publish every check
     tradeboard_check(fl, full)
+    requests_check(fl)  # 1.2.0: swap / add / drop request decisions -> push
     grid_check(fl, full)
     swap_scan(flat)
     drop_scan()
@@ -3028,6 +3225,7 @@ def main():
                 mult = 2 ** max(0, len(recent) - 1)
                 cool = min(OPTS["yield_cooldown_min"] * 60 * mult, 4 * 3600)
                 S["yield_until"] = now + cool
+                S["req_force"] = True  # 1.2.0: he was in FLICA, maybe filing a request: read the list first thing back
                 set_machine("yielded", f"Ryan logged in elsewhere, back in {int(cool / 60)} min")
                 continue
             if res == "stop":
