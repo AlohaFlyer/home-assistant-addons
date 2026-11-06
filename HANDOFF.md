@@ -5,12 +5,11 @@ Work top to bottom; tick items off here in the same PR that finishes them.
 
 ## Open items
 
-1. **Cards into git, self-deploying.** Copy every `/config/www/flica-*.js` (not the `-james` copies, not `.bak`
-   files) plus `make_pilot_cards.py` from Pako into `flica_watcher/www/`. On start the add-on copies them to
-   `/homeassistant/www/` (it already maps `homeassistant_config:rw`). Add one loader resource
-   (`/local/flight-watcher-loader.js`) that imports each card with `?v=<app version>`, then replace the current
-   per-card dashboard resources (ids listed by `ha_config_list_dashboard_resources`) with the loader.
-   Afterwards a card change ships with an app update, no manual `?v=` bumps.
+1. **Cards into git, self-deploying.** Code done in 0.10.2 (`flica_watcher/www/`, `cards.py`; `make_pilot_cards.py`
+   folded into `cards.pilot_copy`, James's copies are generated on start when `second_pilot` is set). Left after the
+   0.10.2 app update: confirm `/homeassistant/www/flight-watcher-loader.js` and `flight-watcher-cards.json` exist,
+   add resource `/local/flight-watcher-loader.js` (module), delete the per-card `flica-*.js?v=` resources, reload
+   the dashboard. Item 4's "register resources for the -james copies" is then covered by the loader.
 2. **Pako-side config into git (snapshots):** the automations below and the `flica-watcher` dashboard JSON, saved
    under `ha/` for review and history (write back via the HA connector, never by hand-editing .storage):
    "FLICA alert to phone", "FLICA recall list in (Hark webhook)", "FLICA recall miss alert",
