@@ -1,4 +1,5 @@
-// Flight Watcher finds card (0.9.4, Ryan): "Recently added to the pot" with a month picker. The last 2 days show,
+// Flight Watcher finds card (0.9.4, Ryan; 1.1.1 FW-0001: month picker pinned top-right so the table gets the
+// card's full width on a phone, times built from parts): "Recently added to the pot" with a month picker. The last 2 days show,
 // the rest of the month opens under "Older". Live rows: sensor.flight_watcher_finds; month history (24 months):
 // /local/flight-watcher/finds_<YYYY-MM>.json written by the Watcher. Times HST.
 class FlightWatcherFindsCard extends HTMLElement {
@@ -25,8 +26,14 @@ class FlightWatcherFindsCard extends HTMLElement {
     this._render();
   }
   _t(iso) {
+    // 1.1.1 (FW-0001): built from parts, so every browser shows "Nov 5 12:23" (iOS Safari's
+    // toLocaleString says "Nov 5 at 12:23", which widened every row); h23 keeps midnight as 00:xx.
     if (!iso) return "";
-    return new Date(iso).toLocaleString("en-US", { timeZone: "Pacific/Honolulu", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).replace(",", "");
+    const d = new Date(iso);
+    if (isNaN(d)) return this._e(iso);
+    const p = {};
+    for (const x of new Intl.DateTimeFormat("en-US", { timeZone: "Pacific/Honolulu", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(d)) p[x.type] = x.value;
+    return `${p.month} ${p.day} ${p.hour}:${p.minute}`;
   }
   _dates(f) {
     const m = String(f.dates || "").match(/^(\d{2})([A-Za-z]{3})(?:-(\d{2})([A-Za-z]{3}))?/);
@@ -89,8 +96,8 @@ class FlightWatcherFindsCard extends HTMLElement {
     const openTop = this._top !== false;
     this.shadowRoot.innerHTML = `<style>
       ha-card{padding:10px 14px;font-size:12.5px}
-      .hd{display:flex;align-items:flex-start;gap:8px}.hd summary{cursor:pointer;font-weight:700;font-size:14px}
-      .mp{margin-left:auto;display:flex;align-items:center;gap:8px;font-weight:700}.mp .nv{cursor:pointer;font-size:20px;color:var(--primary-color);padding:0 6px;user-select:none}
+      .hd{position:relative}.hd summary{cursor:pointer;font-weight:700;font-size:14px;padding-right:140px}
+      .mp{position:absolute;top:-4px;right:0;display:flex;align-items:center;gap:4px;font-weight:700;white-space:nowrap}.mp .nv{cursor:pointer;font-size:20px;color:var(--primary-color);padding:0 6px;user-select:none}
       .wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;margin-top:6px}
       th,td{border:1px solid var(--divider-color);padding:4px 6px;text-align:left;white-space:nowrap}th{font-weight:700}
       td.n{text-align:right}td.c{text-align:center}
@@ -100,7 +107,7 @@ class FlightWatcherFindsCard extends HTMLElement {
       .k{color:var(--secondary-text-color);font-size:12px;margin-top:6px}
       ha-icon{--mdc-icon-size:16px}
     </style><ha-card>
-      <div class="hd"><details class="top"${openTop ? " open" : ""} style="flex:1;min-width:0"><summary><ha-icon icon="mdi:new-box"></ha-icon> Recently added to the pot <span class="k">${all.length} in ${MON[m - 1]}</span></summary>
+      <div class="hd"><details class="top"${openTop ? " open" : ""}><summary><ha-icon icon="mdi:new-box"></ha-icon> Recently added to the pot <span class="k">${all.length} in ${MON[m - 1]}</span></summary>
         ${loading ? `<div class="k">Loading ${MON[m - 1]} ${y}...</div>` : ""}
         ${recent.length ? `<div class="wrap"><table>${head}${recent.map((f) => this._row(f)).join("")}</table></div>` : (!loading ? `<div class="k">Nothing new in the last 2 days${older.length ? "" : ` in ${MON[m - 1]} ${y}`}.</div>` : "")}
         ${older.length ? `<details class="old"${this._older ? " open" : ""}><summary>${older.length} older in ${MON[m - 1]} ${y}</summary><div class="wrap"><table>${head}${older.map((f) => this._row(f)).join("")}</table></div></details>` : ""}
