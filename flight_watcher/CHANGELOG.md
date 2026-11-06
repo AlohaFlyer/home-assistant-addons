@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.2
+
+- Request push, checked on the real FLICA page (19 requests): the list names no trips, so a decided request's trips (and the Pay-Gross of an Approved one) now come from its own read-only view page (its ShowRequest link, GET only, both safe_get guards; never the QuickDelete link beside it), read once per decision, paced. Each request is keyed on FLICA's own request id (the link's TimeStamp), so clearing one never renumbers another; decisions 1.2.1 already pushed are not pushed again. The push no longer shows the page footer as its detail. The first view page is saved privately to /share/flight_watcher/captures for parser checks.
+
 ## 1.2.1
 
 - Pay-Gross in the request push (Ryan): an Approved request carries `pay` {delta, delta_text, parts [{trip, start, side drop|add, gross, credit}], rate, year}: + for a pickup, - for a drop, the net for a swap. New `pay.py` is the schedule card's tripFull() in Python (credit x PWA 3.D.6 FO rate by longevity year, the package credit carrying the PWA 4.C.3 5:00 minimum; PWA 4.O.1 IRO $4.00 RO / $3.00 FO per block hour and Extended Range +15%); a test runs the card's JavaScript beside it. A trip given is priced from Ryan's own trip record (FLICA credit, block, seat), a trip taken from the month's pairing package (FO). Which trip was given: the page's own words, else the request type, else (swap) the trip on the schedule version in force when he filed. Longevity year and ER list from the HA helpers (new `homeassistant_api: true`), else the DOH in /data/cards.json. No amount when a trip cannot be priced.
