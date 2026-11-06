@@ -85,7 +85,10 @@ def compose(idea, bcid, hours_to_report=None, seat="F", close_in_bcid=None):
     return rec
 
 
-REQ_RE = re.compile(r"(\d{2}/\d{2})\s+(\d{2}:\d{2})\s+(Add|Swap|Drop)\s+(Approved|Denied|Pending)", re.I)
+# 1.4.1 (Ryan, Nov 6): a crew-to-crew Trade request ('Trade H3604:13NOV and H3659:18NOV With Emp #: ... For
+# H3620:12NOV and H3620:15NOV') shows as type Trade, and an undecided request can read Processing as well as Pending.
+REQ_RE = re.compile(r"(\d{2}/\d{2})\s+(\d{2}:\d{2})\s+(Add|Swap|Drop|Trade)\s+(Approved|Denied|Pending|Processing)", re.I)
+OPEN = ("Pending", "Processing")  # not decided yet: the list is read every 2 min while one is open
 
 
 def parse_requests(text):
@@ -138,26 +141,34 @@ VIEW_SIDE_OF = {"drop": "drop", "give up": "drop", "giveup": "drop", "add": "add
                 "take": "add"}
 
 
+SEAT_MARK_RE = re.compile(r"\s*\(([fcr])\)", re.I)
+SEAT_OF = {"f": "FO", "c": "CA", "r": "RO"}
+
+
 def _view_legs(text):
     """Legs of a request's view page. Strict: only drop / give up / add / pick up / take, found between the previous
     trip and this one and at most 40 characters before it (a page header such as 'Add/Swap/Drop requests' or a
-    'From:' line never labels a trip); each trip once."""
+    'From:' line never labels a trip); each trip and day once (1.4.1: a trade can take the same pairing on two
+    days, H3620:12NOV and H3620:15NOV). 1.4.1: FLICA's seat mark after a trip, (F) / (R) / (C), is its seat."""
     legs, prev, seen = [], 0, set()
     for tm in TRIP_RE.finditer(text):
         labels = VIEW_SIDE_RE.findall(text[max(prev, tm.start() - 40):tm.start()])
         prev = tm.end()
         trip = tm.group(1).upper()
-        if trip in seen:
-            continue
-        seen.add(trip)
-        side = VIEW_SIDE_OF.get(re.sub(r"\s+", " ", labels[-1].lower())) if labels else ""
         day = f"{int(tm.group(2)):02d}{tm.group(3).upper()}" if tm.group(2) else ""
-        legs.append({"trip": trip, "day": day, "side": side})
-    return legs[:4]
+        if (trip, day) in seen or (not day and any(t == trip for t, _ in seen)):
+            continue
+        seen.add((trip, day))
+        side = VIEW_SIDE_OF.get(re.sub(r"\s+", " ", labels[-1].lower())) if labels else ""
+        sm = SEAT_MARK_RE.match(text, tm.end())
+        legs.append({"trip": trip, "day": day, "side": side, "seat": SEAT_OF[sm.group(1).lower()] if sm else ""})
+    return legs[:6]
 
 
 CS_RE = re.compile(r"\bcs:\s*(.*?)(?=\s*\bnote:|$)", re.I | re.S)
 SWAP_FOR_RE = re.compile(r"\bswap\s+([A-Za-z]\d{4}[A-Za-z]?)\b.*?\bfor\s+([A-Za-z]\d{4}[A-Za-z]?)\b", re.I | re.S)
+# 1.4.1: 'Trade <given> and <given> With Emp #: <n> For <taken> and <taken>'
+TRADE_RE = re.compile(r"\btrade\b(.*?)\bwith\b.*?\bfor\b(.*?)(?=\b(?:time|status|cm|cs)\s*:|$)", re.I | re.S)
 
 
 def parse_request_view(text):
@@ -167,7 +178,15 @@ def parse_request_view(text):
     reason = crew scheduling's comment (CS), '' when none."""
     text = text or ""
     legs = _view_legs(text)
-    m = SWAP_FOR_RE.search(text)
+    tr = TRADE_RE.search(text)
+    if tr:  # 1.4.1: every trip before 'With' is given, every trip after 'For' is taken
+        given = {(t.group(1).upper(), f"{int(t.group(2)):02d}{t.group(3).upper()}" if t.group(2) else "") for t in TRIP_RE.finditer(tr.group(1))}
+        taken = {(t.group(1).upper(), f"{int(t.group(2)):02d}{t.group(3).upper()}" if t.group(2) else "") for t in TRIP_RE.finditer(tr.group(2))}
+        for x in legs:
+            k = (x["trip"], x["day"])
+            if not x["side"]:
+                x["side"] = "drop" if k in given else "add" if k in taken else ""
+    m = None if tr else SWAP_FOR_RE.search(text)
     if m:
         give, take = m.group(1).upper(), m.group(2).upper()
         for x in legs:

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.1
+
+- Trade requests (Ryan, Nov 6): a crew-to-crew Trade on the Open Time Requests list ('Trade H3604:13NOV and H3659:18NOV With Emp #: ... For H3620:12NOV and H3620:15NOV') is now read like a swap: listed, polled every 2 min while it reads Processing (as well as Pending), and pushed once when Approved or Denied, with Pay-Gross. The trips before 'With' are given, the trips after 'For' are taken, and the same pairing taken on two days counts twice (the view page's legs were kept once per trip number).
+- Pay-Gross (Ryan, Nov 6): a taken trip is priced in the seat FLICA's view page marks, (F) / (R) / (C), so an RO seat gets the PWA 4.O.1 $4.00 per block hour override (it was always priced FO, $3.00 on a 3-pilot crew). The H3604 RO swap's push was about $17 low.
+
 ## 1.4.0
 
 - FW-0010 / FW-0026 (Ryan): the month finds files get a random key in their name (`finds_<YYYY-MM>_<key>.json`, key kept in /data/www_key and published only behind HA's login as the `file_key` attribute), so crew names and employee numbers no longer sit at a guessable /local/ address; the pilot's DOH moves out of the card files into `/data/cards.json` and reaches the schedule card as the `doh` attribute of `sensor.flight_watcher_state`. `sensor.flight_watcher_finds` keeps the last 30 finds as short rows under 12 KB, so the recorder stops dropping it; the files are written before the sensor and the card keeps its history while the Watcher is offline.

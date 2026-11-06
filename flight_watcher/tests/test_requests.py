@@ -247,7 +247,7 @@ def test_view_labels_are_strict():
     from pot import visible_text
     head = "<strong>Nov 2026 OPEN TIME- Add/Swap/Drop requests</strong><p>Request Detail</p><p>Status: Approved</p>"
     v = SUB.parse_request_view(visible_text(head + "<table><tr><td>Trip</td><td>H3620</td><td>28NOV</td></tr></table>"))
-    assert v["legs"] == [{"trip": "H3620", "day": "28NOV", "side": ""}]  # the header never labels a trip
+    assert v["legs"] == [{"trip": "H3620", "day": "28NOV", "side": "", "seat": ""}]  # the header never labels a trip
     v = SUB.parse_request_view("type: swap from: doe, jane trip h3629 14nov to: h3628 13nov h3629 14nov")
     assert [x["side"] for x in v["legs"]] == ["", ""] and v["trips"] == ["H3629", "H3628"]  # no to/from, once each
 
@@ -263,3 +263,22 @@ def test_view_page_as_flica_writes_it():
     assert v["reason"] == "<rest short (synthetic) on 20nov"
     assert SUB.parse_request_view(t.replace("cs: <rest short (synthetic) on 20nov", "cs: [no comments]"))["reason"] == ""
     assert SUB.parse_request_view("add h3620:28nov status: approved cm: [no comments] cs:")["reason"] == ""
+
+
+def test_trade_request_row_and_view_page():
+    """1.4.1 (Ryan, Nov 6): a crew-to-crew Trade (made-up trips, times and employee number) is listed, counts as open
+    while Processing, and its view page gives the trips before 'With' as given and after 'For' as taken, the same
+    pairing on two days kept twice, and each trip's (F)/(R)/(C) seat mark."""
+    rows = SUB.parse_requests("11/02 08:41 Swap Approved 11/03 09:58 Trade Processing 11/03 10:02 Add Pending")
+    assert [(r["type"], r["status"]) for r in rows] == [("Swap", "Approved"), ("Trade", "Processing"), ("Add", "Pending")]
+    assert [r["status"] in SUB.OPEN for r in rows] == [False, True, True]
+    t = ("flica.net - mobile opentime open time requests trade h3911:21nov (r) and h3915:26nov (f) with emp #: 12345 "
+         "for h3920:20nov (f) and h3920:23nov (f) time: 11/03 09:58 (ha) status: approved 11/03 11:20 cm: [no comments] "
+         "cs: [no comments] note: if a request is actively being processed it can not be canceled.")
+    v = SUB.parse_request_view(t)
+    assert [(x["trip"], x["day"], x["side"], x["seat"]) for x in v["legs"]] == [
+        ("H3911", "21NOV", "drop", "RO"), ("H3915", "26NOV", "drop", "FO"),
+        ("H3920", "20NOV", "add", "FO"), ("H3920", "23NOV", "add", "FO")]
+    assert v["reason"] == ""
+    s = SUB.parse_request_view("swap h3911:21nov (f) for h3914b:19nov (r) time: 11/02 08:41 status: approved")
+    assert [(x["side"], x["seat"]) for x in s["legs"]] == [("drop", "FO"), ("add", "RO")]
