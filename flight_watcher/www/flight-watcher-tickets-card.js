@@ -7,9 +7,22 @@
 // FW-0003 (Ryan): up to 10 photos per ticket (photo library, camera or files). The ticket goes first with a
 // card-made cid and the photo count, then each photo as its own flight_watcher/ticket/image {cid, i, n, image}
 // message, so no MQTT message carries more than one photo (each photo's data URL stays under MAX_URL).
+// FW-0049 (Ryan): an open ticket's Edit (only while new or reopened, the Watcher's "editable") changes its title,
+// description, steps, expected and Where in place, sending only what changed to flight_watcher/ticket/edit; Delete
+// (any status, the completed fold too) asks first in a dialog, then sends flight_watcher/ticket/delete. Each carries
+// a card-made rid; the Watcher's answer comes back as "last" on the tickets sensor and shows under the button.
 const FW_TICKET_MAX_PHOTOS = 10;
 const FW_TICKET_MAX_URL = 1.75e6;  // one photo's data URL; its whole message stays under about 1.8e6 chars
 // FW-0006: the choice at the top of the one ticket form (Bug first): its label, the description prompt, a title hint
+const FW_TICKET_PAGES = ["Watcher", "Schedule", "Recall/O75", "Details", "Settings", "Aviation Wx", "Phone alert", "Other"];
+// Ryan (Nov 6): "Process Tickets in Claude Code", far right of Submit a ticket, opens Claude Code on the web (or the
+// Claude app, which takes claude.ai/code links) on a new session with this repo picked and the prompt filled in
+// (documented link: claude.ai/code/new?q=<prompt>&repo=<owner/name>; it does not send until tapped). Card option
+// claude_code_url overrides the whole link.
+const FW_TICKET_CC_PROMPT = "Process all Flight Watcher tickets on Pako HI: fix every new or reopened one, release it, mark it fixed, then confirm and close your completed fixes.";
+const FW_TICKET_CC_REPO = "AlohaFlyer/home-assistant-addons";
+const fwTicketCcUrl = (prompt, repo) => `https://claude.ai/code/new?q=${encodeURIComponent(prompt)}&repo=${encodeURIComponent(repo)}`;
+const FW_TICKET_EDIT = { title: 200, narrative: 10000, steps: 5000, expected: 5000, page: 300 };  // tickets.MAX_TEXT
 const FW_TICKET_KINDS = {
   bug: { label: "&#128027; Bug", narrative: "What happened?", title: "e.g. Pay-Gross wrong on v11.003" },
   feature: { label: "&#128161; Feature request", narrative: "What do you want, and why?", title: "e.g. Show reserve days on the schedule" },
@@ -18,15 +31,39 @@ class FlightWatcherTicketsCard extends HTMLElement {
   setConfig(c) {
     this._c = { prefix: "flight_watcher", ...c };
     this._form = null; this._imgs = []; this._prep = null; this._note = ""; this._gen = 0; this._send = null; this._sending = false;
-    this._open = {}; this._doneOpen = false;
+    this._open = {}; this._doneOpen = false; this._req = null; this._dlg = false; this._fk = ""; this._unsaved = null;
   }
   getCardSize() { return 6; }
+  _ccUrl() { return this._c.claude_code_url || fwTicketCcUrl(FW_TICKET_CC_PROMPT, FW_TICKET_CC_REPO); }
+  // FW-0053 (Ryan, Mac): Cmd+V (Ctrl+V) pastes a copied screenshot into an open New ticket form as a photo. The
+  // listener sits on the document, because a paste with nothing focused never reaches the card; it takes image
+  // files only (text still pastes into a field as usual) and does nothing unless this card's new-ticket form is open.
+  connectedCallback() {
+    if (!this._onPaste) this._onPaste = (e) => this._paste(e);
+    document.addEventListener("paste", this._onPaste);
+  }
+  disconnectedCallback() { if (this._onPaste) document.removeEventListener("paste", this._onPaste); }
+  _pastedImages(cd) {
+    if (!cd) return [];
+    const img = (t) => /^image\//.test(t || "");
+    const fl = Array.from(cd.items || []).filter((it) => it.kind === "file" && img(it.type)).map((it) => it.getAsFile()).filter(Boolean);
+    return fl.length ? fl : Array.from(cd.files || []).filter((x) => img(x.type));
+  }
+  _paste(e) {
+    const f = this._form;
+    if (!f || f.mode === "edit" || this._sending) return;
+    const cd = e.clipboardData, fl = this._pastedImages(cd);
+    if (!fl.length) return;
+    // a copy that also carries plain text (rare for a screenshot) still pastes its text into the focused field
+    if (!Array.from((cd && cd.items) || []).some((it) => it.kind === "string" && it.type === "text/plain")) e.preventDefault();
+    this._addFiles(fl);
+  }
   _e(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
   set hass(h) {
     this._h = h;
     const st = h.states[`sensor.${this._c.prefix}_tickets`];
     const sig = st ? st.last_updated : "none";
-    if (sig === this._sig || this._form) return;  // never redraw over a form being filled
+    if (sig === this._sig || this._form || this._dlg) return;  // never redraw over a form being filled or the dialog
     this._sig = sig;
     this._render();
   }
@@ -75,7 +112,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
     box.innerHTML = `<div class="lbl">Photos <span class="u">(optional, up to ${FW_TICKET_MAX_PHOTOS})</span></div>
       ${n ? `<div class="thumbs">${this._imgs.map((x, i) => `<div class="ph"><img src="${x.thumb}" alt="Photo ${i + 1}"><button class="x" data-rm="${i}" aria-label="Remove photo ${i + 1}">&times;</button></div>`).join("")}</div>` : ""}
       <button class="g" data-add${full || p ? " disabled" : ""}>&#128247; ${full ? `${FW_TICKET_MAX_PHOTOS} of ${FW_TICKET_MAX_PHOTOS} photos` : n ? "Add more photos" : "Add photos"}</button>${n ? `<button class="g" data-clear${p ? " disabled" : ""}>Remove all</button>` : ""}
-      <div class="u" data-count>${p ? `Preparing photo ${p.i} of ${p.n}...` : n ? `${n} photo${n === 1 ? "" : "s"} attached (${this._kb(bytes)})` : "Photo library, camera or files."}</div>
+      <div class="u" data-count>${p ? `Preparing photo ${p.i} of ${p.n}...` : n ? `${n} photo${n === 1 ? "" : "s"} attached (${this._kb(bytes)})` : "Photo library, camera or files, or paste a screenshot (\u2318V)."}</div>
       ${this._note ? `<div class="warn">${this._e(this._note)}</div>` : ""}`;
     box.querySelector("[data-add]").onclick = () => { if (!this._prep && this._imgs.length < FW_TICKET_MAX_PHOTOS) this.shadowRoot.querySelector("[data-img]").click(); };
     const cl = box.querySelector("[data-clear]");
@@ -159,23 +196,119 @@ class FlightWatcherTicketsCard extends HTMLElement {
     if (el) { el.textContent = this._statusText(); el.className = this._send && this._send.failed.length ? "warn" : "u"; }
     if (r) r.querySelectorAll("[data-new]").forEach((b) => { b.disabled = this._busy(); });
   }
+  // FW-0049: the edit message, {id, ...only the fields that changed}, or why there is nothing to send. t is the
+  // ticket as listed (an editable one carries its whole text), vals the form's values.
+  _editMsg(t, vals) {
+    const v = {};
+    Object.keys(FW_TICKET_EDIT).forEach((k) => { if (k in vals) v[k] = String(vals[k] == null ? "" : vals[k]).trim().slice(0, FW_TICKET_EDIT[k]); });
+    if (!v.title || !v.narrative) return "Add a title and a description.";
+    const m = { id: t.id };
+    let n = 0;
+    Object.keys(v).forEach((k) => { if (v[k] !== String(t[k] == null ? "" : t[k]).trim()) { m[k] = v[k]; n++; } });
+    return n ? m : "Nothing changed.";
+  }
+  // FW-0049: the line under the buttons for the last edit / delete this card sent; last = the sensor's "last".
+  _reqText(last) {
+    const q = this._req;
+    if (!q) return "";
+    const del = q.action === "delete", what = del ? "deleted" : "saved";
+    if (q.err) return `${q.id} not ${what}: didn't send (${q.err}). Try again.`;
+    const L = last && last.rid && last.rid === q.rid ? last : null;
+    if (!L) return q.slow ? `${q.id}: sent, no answer from the Watcher yet.` : `${del ? "Deleting" : "Saving"} ${q.id}...`;
+    if (L.ok) return `${q.id} ${what}.`;
+    const e = L.error || "refused";
+    return e.includes(q.id) ? `Not ${what}: ${e}.` : `${q.id} not ${what}: ${e}.`;
+  }
+  _reqBad(last) { const q = this._req; return !!(q && (q.err || (last && last.rid && last.rid === q.rid && !last.ok))); }
+  // 1.4.0 review: text an edit could not save (refused, no answer, or its ticket left the log) is offered back,
+  // to copy or add as a note, instead of being lost when the form closes.
+  _unsavedText(vals) {
+    const lab = { title: "Title", narrative: "Description", steps: "Steps", expected: "Expected", page: "Where" };
+    return Object.keys(lab).filter((k) => vals && vals[k] != null && String(vals[k]) !== "").map((k) => `${lab[k]}: ${vals[k]}`).join("\n\n");
+  }
+  _offerUnsaved(last, tix) {
+    const q = this._req, L = q && last && last.rid && last.rid === q.rid ? last : null;
+    if (q && q.vals && L && L.ok && this._unsaved && this._unsaved.rid === q.rid) this._unsaved = null;  // a late "saved"
+    if (!q || !q.vals || q.offered || (L ? L.ok : !q.slow)) return;
+    q.offered = true;
+    this._unsaved = { rid: q.rid, id: q.id, text: this._unsavedText(q.vals), why: this._reqText(last), live: tix.some((t) => t.id === q.id) };
+  }
+  _sent(q) {
+    this._req = q;
+    setTimeout(() => { if (this._req === q) { q.slow = true; this._sig = null; if (!this._form && !this._dlg) this._render(); } }, 30000);
+  }
+  _editForm(t) {
+    const K = FW_TICKET_KINDS[t.kind] || FW_TICKET_KINDS.bug, bug = t.kind === "bug" || !!(t.steps || t.expected);
+    const pages = FW_TICKET_PAGES.slice();
+    if (t.page && !pages.includes(t.page)) pages.push(t.page);
+    const opt = (p) => `<option${p === (t.page || "") ? " selected" : ""}>${this._e(p)}</option>`;
+    return `<div class="form ef" data-editform>
+        <h4>&#9998; Edit ${this._e(t.id)}</h4>
+        <div class="u">Open to edits while it is new or reopened. Photos stay as they are.</div>
+        <label>Title<input data-f="title" maxlength="${FW_TICKET_EDIT.title}" value="${this._e(t.title)}"></label>
+        <label>${K.narrative}<textarea data-f="narrative" rows="6">${this._e(t.narrative)}</textarea></label>
+        ${bug ? `<label>Steps to see it<textarea data-f="steps" rows="2">${this._e(t.steps)}</textarea></label>
+        <label>What did you expect?<textarea data-f="expected" rows="2">${this._e(t.expected)}</textarea></label>` : ""}
+        <label>Where<select data-f="page">${t.page ? "" : `<option value="" selected>(not set)</option>`}${pages.map(opt).join("")}</select></label>
+        <button data-save>Save</button> <button class="g" data-cancel>Cancel</button> <span class="u" data-msg></span>
+      </div>`;
+  }
+  // FW-0049: Delete asks first. A real dialog where the browser has one, else the browser's own confirm.
+  _askDelete(t) {
+    const d = this.shadowRoot.querySelector("dialog[data-dlg]");
+    const q = `Delete ${t.id}?`;
+    if (!d || typeof d.showModal !== "function") { if (window.confirm(`${q} ${t.title}`)) this._delete(t.id); return; }
+    const st = String(t.status || "").replace("_", " ");
+    d.innerHTML = `<form method="dialog"><h4>${this._e(q)}</h4><div class="dt">${this._e(t.title)}</div>
+      <p class="u">It comes off the ticket log${st && st !== "new" ? ` (it is ${this._e(st)})` : ""}. The Watcher keeps a copy in its deleted folder.</p>
+      <div class="dr"><button value="keep" class="g" autofocus>Keep</button><button value="delete" class="del">Delete</button></div></form>`;
+    d.returnValue = "";
+    d.onclose = () => {
+      this._dlg = false;
+      if (d.returnValue === "delete") this._delete(t.id);
+      else { this._sig = null; if (!this._form) this._render(); }  // anything that came in while it was open
+    };
+    this._dlg = true;
+    d.showModal();
+  }
+  async _delete(id) {
+    const q = { rid: this._cid(), id, action: "delete" };
+    this._sent(q);
+    this._sig = null;
+    if (!this._form) this._render();
+    try { await this._pub("ticket/delete", { id, rid: q.rid }); }
+    catch (e) { q.err = (e && e.message) || "no connection"; if (!this._form && !this._dlg) this._render(); }
+  }
   _render() {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    // what is typed in an open form survives a redraw of the same form (a ticket opened or closed under it)
+    const fk = this._form ? (this._form.mode === "edit" ? `edit:${this._form.id}` : "new") : "";
+    const keep = {};
+    if (fk && fk === this._fk) this.shadowRoot.querySelectorAll("[data-f]").forEach((el) => { keep[el.dataset.f] = el.value; });
+    this._fk = fk;
     const st = this._h && this._h.states[`sensor.${this._c.prefix}_tickets`];
     const a = st ? st.attributes : {};
     const tix = a.tickets || [];
+    if (this._form && this._form.mode === "edit" && !tix.some((t) => t.id === this._form.id)) {
+      const gone = this._form, m = this._editMsg(gone.t || {}, Object.keys(keep).length ? keep : {});
+      if (typeof m === "object") { delete m.id; this._unsaved = { id: gone.id, text: this._unsavedText(m), why: `${gone.id} is no longer on the ticket log, so the edit was not sent.`, live: false }; }
+      this._closeForm(); this._fk = "";
+      Object.keys(keep).forEach((k) => delete keep[k]);
+    }
+    this._offerUnsaved(a.last || {}, tix);
     const ver = (this._h && this._h.states[`sensor.${this._c.prefix}_state`] || { attributes: {} }).attributes.version || "";
     const chip = { new: "#1976d2", triaged: "#6a1b9a", in_progress: "#ef6c00", fixed: "#2e7d32", closed: "#757575", reopened: "#c62828" };
-    const f = this._form, K = f ? FW_TICKET_KINDS[f.kind] || FW_TICKET_KINDS.bug : null;
-    const form = f ? `<div class="form">
+    const f = this._form, nf = f && f.mode !== "edit" ? f : null, K = nf ? FW_TICKET_KINDS[nf.kind] || FW_TICKET_KINDS.bug : null;
+    const last = a.last || {};
+    const form = nf ? `<div class="form">
         <h4>&#127915; New ticket</h4>
         <div class="seg" role="radiogroup" aria-label="Ticket type">${Object.keys(FW_TICKET_KINDS).map((k) =>
-          `<label><input type="radio" name="fw-ticket-kind" value="${k}" data-kind${k === f.kind ? " checked" : ""}><span>${FW_TICKET_KINDS[k].label}</span></label>`).join("")}</div>
+          `<label><input type="radio" name="fw-ticket-kind" value="${k}" data-kind${k === nf.kind ? " checked" : ""}><span>${FW_TICKET_KINDS[k].label}</span></label>`).join("")}</div>
         <label>Title<input data-f="title" maxlength="120" placeholder="${K.title}"></label>
         <label><span data-narr>${K.narrative}</span><textarea data-f="narrative" rows="4"></textarea></label>
-        <div data-bugonly${f.kind === "bug" ? "" : " hidden"}><label>Steps to see it<textarea data-f="steps" rows="2" placeholder="Tab, what you tapped"></textarea></label>
+        <div data-bugonly${nf.kind === "bug" ? "" : " hidden"}><label>Steps to see it<textarea data-f="steps" rows="2" placeholder="Tab, what you tapped"></textarea></label>
         <label>What did you expect?<textarea data-f="expected" rows="2"></textarea></label></div>
-        <label>Where<select data-f="page"><option>Watcher</option><option>Schedule</option><option>Recall/O75</option><option>Details</option><option>Aviation Wx</option><option>Phone alert</option><option>Other</option></select></label>
+        <label>Where<select data-f="page">${FW_TICKET_PAGES.map((p) => `<option>${p}</option>`).join("")}</select></label>
         <div class="photos" data-photos></div>
         <input class="vh" type="file" accept="image/*" multiple data-img tabindex="-1" aria-hidden="true">
         <button data-send>Submit</button> <button class="g" data-cancel>Cancel</button> <span class="u" data-msg></span>
@@ -184,16 +317,24 @@ class FlightWatcherTicketsCard extends HTMLElement {
     const DONE = ["fixed", "closed"];
     const active = tix.filter((t) => !DONE.includes(t.status)), done = tix.filter((t) => DONE.includes(t.status));
     const waiting = done.filter((t) => t.status === "fixed").length;
+    // FW-0049: the answer to the last edit / delete shows in that ticket's open row (where Save or Delete was
+    // tapped), or at the top when the row is gone (deleted) or shut
+    const rq0 = this._req, rqHtml = `<div data-req class="${this._reqBad(last) ? "warn" : "u"}">${this._e(this._reqText(last))}</div>`;
+    const rqRow = rq0 && this._open[rq0.id] && !(f && f.mode === "edit" && f.id === rq0.id)
+      && (active.some((t) => t.id === rq0.id) || (this._doneOpen && done.some((t) => t.id === rq0.id))) ? rq0.id : "";
     const row = (t) => {
       const op = this._open[t.id];
       const np = t.image_count != null ? +t.image_count || 0 : t.has_image ? 1 : 0;  // FW-0003; older Watchers send has_image only
       const acts = t.status === "fixed" ? `<button data-a="verify" data-id="${this._e(t.id)}">Verified, close</button><button class="g" data-a="reopen" data-id="${this._e(t.id)}">Still broken</button>`
         : t.status === "closed" ? `<button class="g" data-a="reopen" data-id="${this._e(t.id)}">Reopen</button>` : "";
+      // FW-0049: Edit only while the Watcher lists it editable (new or reopened); Delete in any status
+      const eds = `<div class="eds">${t.editable ? `<button class="g" data-edit="${this._e(t.id)}">&#9998; Edit</button>` : ""}<button class="del" data-del="${this._e(t.id)}">Delete</button></div>`;
+      const editing = f && f.mode === "edit" && f.id === t.id;
       return `<div class="t"><div class="th" data-t="${this._e(t.id)}"><b>${this._e(t.id)}</b> ${t.kind === "bug" ? "&#128027;" : "&#128161;"} ${this._e(t.title)}
-        <span class="chip" style="background:${chip[t.status] || "#757575"}">${this._e(String(t.status).replace("_", " "))}${t.version_fixed ? " v" + this._e(t.version_fixed) : ""}</span>
+        <span class="chip" style="background:${chip[t.status] || "#757575"}">${this._e(String(t.status).replace("_", " "))}${t.version_fixed ? (/^\d+(\.\d+)+$/.test(String(t.version_fixed)) ? " v" : " in ") + this._e(t.version_fixed) : ""}</span>
         <span class="u">${this._e(t.reporter)} · ${this._e(String(t.created_at || "").slice(0, 10))}${np ? ` · <span title="${np} photo${np === 1 ? "" : "s"}">&#128247;${np > 1 ? " " + np : ""}</span>` : ""}</span></div>
-        ${op ? `<div class="tb"><div class="n">${this._e(t.narrative)}</div>${np ? `<div class="u" style="margin-bottom:6px">&#128247; ${np} photo${np === 1 ? "" : "s"} attached</div>` : ""}${acts}
-          <div><input data-note="${this._e(t.id)}" placeholder="Add a note" style="width:70%"> <button class="g" data-a="note" data-id="${this._e(t.id)}">Add</button></div></div>` : ""}</div>`;
+        ${editing ? `<div class="tb">${this._editForm(f.t)}</div>` : op ? `<div class="tb">${rqRow === t.id ? rqHtml : ""}<div class="n">${this._e(t.narrative)}</div>${np ? `<div class="u" style="margin-bottom:6px">&#128247; ${np} photo${np === 1 ? "" : "s"} attached</div>` : ""}${acts}
+          <div><input data-note="${this._e(t.id)}" placeholder="Add a note" style="width:70%"> <button class="g" data-a="note" data-id="${this._e(t.id)}">Add</button></div>${eds}</div>` : ""}</div>`;
     };
     const rows = active.map(row).join("");
     const doneRows = done.length ? `<details class="done"${this._doneOpen ? " open" : ""}><summary>${done.length} completed${waiting ? ` <span class="u">(${waiting} waiting for your verify)</span>` : ""}</summary>${done.map(row).join("")}</details>` : "";
@@ -221,16 +362,36 @@ class FlightWatcherTicketsCard extends HTMLElement {
       .u{color:var(--secondary-text-color);font-size:12px}
       .t{border-top:1px solid var(--divider-color);padding:6px 0}.th{cursor:pointer}
       .chip{display:inline-block;border-radius:10px;padding:0 8px;font-size:11px;font-weight:700;color:#fff;margin:0 6px}
-      .tb{margin:6px 0 0 12px}.n{white-space:pre-wrap;margin-bottom:6px}
+      .tb{margin:6px 0 0 12px}.n{white-space:pre-wrap;margin-bottom:6px}.tb [data-req]:not(:empty){margin-bottom:6px}
       details.done{border-top:1px solid var(--divider-color);padding-top:6px}details.done summary{cursor:pointer;font-weight:600;color:var(--secondary-text-color)}
+      .eds{margin-top:6px}button.del{background:none;color:var(--error-color,#c62828);border:1px solid currentColor;padding:5px 11px}
+      .form.ef{margin:4px 0 2px}
+      dialog{border:0;border-radius:12px;padding:16px 18px;width:min(340px,calc(100vw - 48px));box-sizing:border-box;background:var(--card-background-color,#fff);color:var(--primary-text-color);box-shadow:0 8px 28px rgba(0,0,0,.35)}
+      dialog::backdrop{background:rgba(0,0,0,.45)}dialog h4{margin:0 0 6px;font-size:16px}dialog .dt{font-weight:600;margin-bottom:6px;overflow-wrap:anywhere}
+      dialog p{margin:6px 0 14px}.dr{display:flex;gap:8px;justify-content:flex-end}.dr button{margin:0;min-height:40px;padding:8px 18px;font-size:14px}
+      .dr button.del{background:var(--error-color,#c62828);color:#fff;border:0}
+      .hd{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px}.hd button{margin:0}
+      a.cc{margin-left:auto;display:inline-block;border-radius:6px;padding:8px 14px;font-size:14px;font-weight:600;background:#d97757;color:#fff;text-decoration:none;white-space:nowrap}
+      a.cc:focus-visible{outline:2px solid var(--primary-text-color);outline-offset:2px}
     </style><ha-card>
-      <div><button class="big" data-new${this._busy() ? " disabled" : ""}>&#127915; Submit a ticket</button>
-        <span class="u">${tix.length ? `${active.length} open · ${done.length} completed` : ""}</span></div>
+      <div class="hd"><button class="big" data-new${this._busy() ? " disabled" : ""}>&#127915; Submit a ticket</button>
+        <span class="u">${tix.length ? `${active.length} open · ${done.length} completed` : ""}</span>
+        <a class="cc" data-cc href="${this._e(this._ccUrl())}" target="_blank" rel="noopener noreferrer">Process Tickets in Claude Code</a></div>
       <div data-status class="${this._send && this._send.failed.length ? "warn" : "u"}">${this._e(this._statusText())}</div>
+      ${rqRow ? "" : rqHtml}
+      ${this._unsaved ? `<div class="form ef" data-unsaved><div class="warn">${this._e(this._unsaved.why)}</div>
+        <div class="u">Your text was not saved. Copy it${this._unsaved.live ? `, or add it to ${this._e(this._unsaved.id)} as a note` : ""}.</div>
+        <textarea readonly rows="5" data-u-text>${this._e(this._unsaved.text)}</textarea>
+        <button data-u-copy>Copy</button>${this._unsaved.live ? `<button class="g" data-u-note>Add as a note</button>` : ""}<button class="g" data-u-close>Dismiss</button></div>` : ""}
       ${form}
       ${tix.length ? `<div style="margin-top:6px"><b>Ticket log</b>${rows || `<div class="u" style="padding:6px 0">Nothing open.</div>`}${doneRows}</div>` : `<div class="u" style="margin-top:6px">No tickets yet.</div>`}
+      <dialog data-dlg aria-label="Delete ticket"></dialog>
     </ha-card>`;
     const r = this.shadowRoot;
+    Object.keys(keep).forEach((k) => { const el = r.querySelector(`[data-f="${k}"]`); if (el) el.value = keep[k]; });
+    // a finished edit / delete line clears itself after 10 s; a refusal stays until the next one
+    const q = this._req, L = last.rid && q && last.rid === q.rid ? last : null;
+    if (L && L.ok && !q.clear) q.clear = setTimeout(() => { if (this._req === q) { this._req = null; const el = this.shadowRoot.querySelector("[data-req]"); if (el) el.textContent = ""; } }, 10000);
     r.querySelectorAll("[data-new]").forEach((b) => b.onclick = () => {
       if (this._busy()) return;  // the last ticket's photos are still going
       if (this._form) { const ti = r.querySelector('[data-f="title"]'); if (ti) ti.focus(); return; }  // open already: keep what is typed
@@ -238,15 +399,62 @@ class FlightWatcherTicketsCard extends HTMLElement {
       if (this._send && this._send.done) this._send = null;
       this._render();
     });
+    const ub = r.querySelector("[data-unsaved]");
+    if (ub) {
+      const u = this._unsaved, ta = ub.querySelector("[data-u-text]");
+      ub.querySelector("[data-u-copy]").onclick = (ev) => {
+        const done = () => { ev.target.textContent = "Copied"; };
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(u.text).then(done, () => { ta.select(); });
+        else { ta.select(); try { if (document.execCommand("copy")) done(); } catch (e) {} }
+      };
+      const nb = ub.querySelector("[data-u-note]");
+      if (nb) nb.onclick = () => { this._pub("ticket/act", { id: u.id, action: "note", text: `Unsaved edit: ${u.text}`.slice(0, 5000) }); this._unsaved = null; this._sig = null; this._render(); };
+      ub.querySelector("[data-u-close]").onclick = () => { this._unsaved = null; this._render(); };
+    }
     r.querySelectorAll("[data-t]").forEach((el) => el.onclick = () => { this._open[el.dataset.t] = !this._open[el.dataset.t]; this._render(); });
     const dd = r.querySelector("details.done");
     if (dd) dd.ontoggle = () => { this._doneOpen = dd.open; };
+    r.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => {
+      const t = tix.find((x) => x.id === b.dataset.edit);
+      if (!t || !t.editable) return;
+      if (this._form) { const ti = r.querySelector('[data-f="title"]'); if (ti) ti.focus(); return; }  // finish or cancel the open form first
+      this._form = { mode: "edit", id: t.id, t: { ...t } };
+      this._open[t.id] = true;
+      this._render();
+      const ti = this.shadowRoot.querySelector('[data-editform] [data-f="title"]');
+      if (ti) ti.focus();
+    });
+    r.querySelectorAll("[data-del]").forEach((b) => b.onclick = () => {
+      const t = tix.find((x) => x.id === b.dataset.del);
+      if (t) this._askDelete(t);
+    });
     r.querySelectorAll("button[data-a]").forEach((b) => b.onclick = () => {
       const m = { id: b.dataset.id, action: b.dataset.a };
       if (b.dataset.a === "note") { const i = r.querySelector(`input[data-note="${CSS.escape(b.dataset.id)}"]`); if (!i || !i.value.trim()) return; m.text = i.value.trim(); }
       this._pub("ticket/act", m); b.textContent = "Sent";
     });
-    if (f) {
+    if (f && f.mode === "edit") {
+      const box = r.querySelector("[data-editform]");
+      if (box) {
+        box.querySelector("[data-cancel]").onclick = () => { this._closeForm(); this._sig = null; this._render(); };
+        const save = box.querySelector("[data-save]"), msg = box.querySelector("[data-msg]");
+        save.onclick = async () => {
+          if (save.disabled) return;
+          const vals = {};
+          box.querySelectorAll("[data-f]").forEach((el) => { vals[el.dataset.f] = el.value; });
+          const m = this._editMsg(f.t, vals);
+          if (typeof m === "string") { msg.textContent = m; return; }
+          m.rid = this._cid();
+          save.disabled = true; save.textContent = "Saving...";
+          try { await this._pub("ticket/edit", m); }
+          catch (e) { save.disabled = false; save.textContent = "Save"; msg.textContent = `Didn't send: ${(e && e.message) || "no connection"}. Try again.`; return; }
+          const sentVals = { ...m }; delete sentVals.id; delete sentVals.rid;
+          this._sent({ rid: m.rid, id: f.id, action: "edit", vals: sentVals });  // kept until the Watcher says saved
+          this._closeForm(); this._sig = null; this._render();
+        };
+      }
+    }
+    if (nf) {
       this._photos();
       r.querySelector("[data-cancel]").onclick = () => { this._closeForm(); this._sig = null; this._render(); };
       // FW-0006: switching Bug / Feature changes the form in place, so nothing typed (or picked) is lost

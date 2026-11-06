@@ -105,3 +105,61 @@ def test_schedule_ok_own_page_without_emp():
     own = '<script>TAry[TAry.length]=new Task(1, "SU", "01", "H3647", "PHX", "20261101", 1, 0, \'x\');</script> November Schedule Last Updated: Nov 4, 2026'
     assert inflt.schedule_ok(own)
     assert not inflt.schedule_ok("<html>schedule details this is going to forward</html>")
+
+
+# FW-0013: FLICA's error page for a picker's month (synthetic, same shape as the real one: title, CAE Customer Care
+# line, "(Emp# n) Schedule", "Last Updated: Unknown", "No Schedule Available" and the page JS with function pair()).
+ERR = ("<html><head><title>FLICA.Net - Application Error</title></head><body>"
+       '<h3 style="margin-left: auto; margin-right: auto;">An error has occurred, please contact CAE Customer Care for assistance.</h3>'
+       "<script>function pair( pr, pDate, AOTS ) { var myurl='/full/aotsitem_view.cgi?PID='+pr; }</script>"
+       "<table><tr><td>November  (Emp# 10008) Schedule<br><font size=-1>Last Updated: Unknown</font></td></tr></table>"
+       "<h3><center><B>No Schedule Available for Nov 2026.</B></center></h3></body></html>")
+NOW = lambda: datetime(2026, 11, 4, 8, 0)  # noqa: E731
+
+
+def test_schedule_ok_rejects_application_error_page():
+    assert not inflt.schedule_ok(ERR)
+    assert inflt.schedule_ok(SCHED)  # the real schedule page still passes
+    assert inflt.parse_cm_schedule(ERR) == [] and inflt.parse_cm_month(ERR) is None
+
+
+def test_application_error_page_is_retried_not_stored_as_not_in_flight(tmp_path, monkeypatch):
+    monkeypatch.setattr(inflt.time, "sleep", lambda s: None)
+    db = _db(tmp_path, "2026-11-04T17:00:00+00:00")
+    fl = FakeFl({"cmschedules.cgi": ERR})
+    assert inflt.run(fl, db, 3, logging.getLogger("t"), NOW, "https://x", HST) is False
+    assert db.recent_finds()[0]["inflt"] is None and db.pickups_without_inflt()[0][3] == 1  # unknown: tried again later
+    assert any("bd=1126" in u for u in fl.urls)  # the month shape was tried after the error page
+    assert not any("mobilepairing" in u for u in fl.urls)
+    # FLICA answers on a later check: the verdict comes from the real page
+    fl.pages = {"cmschedules.cgi": SCHED, "mobilepairing.cgi": PAIR}
+    assert inflt.run(fl, db, 3, logging.getLogger("t"), NOW, "https://x", HST)
+    f = db.recent_finds()[0]
+    assert f["inflt"] is True and f["inflt_trip"] == "H3648 2026-11-03"
+
+
+def test_error_page_on_current_month_falls_through_to_month_url(tmp_path, monkeypatch):
+    monkeypatch.setattr(inflt.time, "sleep", lambda s: None)
+    db = _db(tmp_path, "2026-11-04T17:00:00+00:00")
+    fl = FakeFl({"GO=1": ERR, "bd=1126": SCHED, "mobilepairing.cgi": PAIR})
+    assert inflt.run(fl, db, 3, logging.getLogger("t"), NOW, "https://x", HST)
+    assert db.recent_finds()[0]["inflt"] is True
+
+
+def test_not_in_flight_verdicts_are_looked_up_again_once(tmp_path, monkeypatch):
+    """Verdicts stored before FW-0013 may have come off the error page: every False is checked once more, a True stays."""
+    monkeypatch.setattr(inflt.time, "sleep", lambda s: None)
+    db = _db(tmp_path, "2026-11-04T17:00:00+00:00")
+    db.add_find("H3700|08Nov", "2026-11", {"pairing": "H3700"}, "2026-11-04T18:00:00+00:00", gone="2026-11-04T18:00:00+00:00")
+    db.set_pickup("H3700|08Nov", {"status": "filled", "by": "FO Doe, Jane (10009)", "ca": "", "known": True})
+    db.put("inflt_reset_v", inflt.RESET_V)
+    db.set_inflt("H3647|07Nov", False, tries=1)
+    db.set_inflt("H3700|08Nov", True, "H3650 2026-11-04", tries=1)
+    fl = FakeFl({"cmschedules.cgi": SCHED, "mobilepairing.cgi": PAIR})
+    assert inflt.run(fl, db, 3, logging.getLogger("t"), NOW, "https://x", HST)
+    got = {f["pairing"]: (f["inflt"], f["inflt_trip"]) for f in db.recent_finds()}
+    assert got == {"H3647": (True, "H3648 2026-11-03"), "H3700": (True, "H3650 2026-11-04")}
+    assert not any("10009" in u for u in fl.urls)  # the True verdict was not looked up again
+    db.set_inflt("H3647|07Nov", False, tries=1)
+    n = len(fl.urls)
+    assert inflt.run(fl, db, 3, logging.getLogger("t"), NOW, "https://x", HST) is False and len(fl.urls) == n  # once only

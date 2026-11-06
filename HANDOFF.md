@@ -1,70 +1,54 @@
-# HANDOFF: Flight Watcher, moved from Cowork to Claude Code (2026-11-05)
+# HANDOFF: Flight Watcher (refreshed 2026-11-06, release 1.4.0)
 
-State at hand-off: app **0.10.1** running on Pako HI (Ryan's instance only). Crew index first pass in progress.
-Work top to bottom; tick items off here in the same PR that finishes them.
+State: app **1.4.0** on Pako HI (slug `43b22650_flight_watcher`), two instances: Ryan (`flight_watcher`, `/data`) and
+James (`second_pilot: james`, `flight_watcher_james`, `/data/james`). James's HA user exists; his Watcher waits for
+his FLICA and CrewTrac logins on his own Settings tab. The work list is the tickets folder, not this file:
+`/share/flight_watcher/tickets/FW-nnnn/ticket.json` (card at the bottom of the Settings tab, Ryan only).
 
-## Open items
+## How the work runs
 
-0. ~~**Rename to Flight Watcher on Pako (1.0.0).**~~ Done 2026-11-06: backup `1c4b12af` first; 65 entity ids, 14
-   automations (aliases, topics, tags, deep links; the Hark webhook id kept), 7 helpers, 3 utility meters,
-   `custom_templates/flight_watcher.jinja`, `packages/flight_watcher_wx.yaml` renamed with history kept; old retained
-   discovery cleared; app `43b22650_flight_watcher` installed (imported /data: 47 finds, crew index, rules, DOH;
-   /share and /www/flica moved); dashboard `flight-watcher` recreated, old one deleted; old app uninstalled, old
-   cards removed, `.bak` copies and pre-rename files in `/share/flight_watcher/archive/`. **Ryan:** enter FLICA and
-   CrewTrac credentials in the app's Web UI > Settings (1.0.1; or the Configuration tab) (the Watcher waits until then); `second_pilot` too when
-   James is ready.
-1. ~~**Cards into git, self-deploying.**~~ Done (0.10.2, live 0.10.3 on 2026-11-06): cards in `flight_watcher/www/`,
-   deployed by `cards.py` on start; the only resource is `/local/flight-watcher-loader.js` (the 10 per-card
-   resources were deleted). Ryan's DOH lives in `/data/cards.json` on Pako, never in git. Item 4's "register
-   resources for the -james copies" is covered by the loader. Old `/config/www/make_pilot_cards.py` and the
-   hand-made `-james` copies on Pako are superseded (the add-on regenerates them when `second_pilot` is set).
-2. **Pako-side config into git (snapshots):** the automations below and the `flight-watcher` dashboard JSON, saved
-   under `ha/` for review and history (write back via the HA connector, never by hand-editing .storage):
-   "FLICA alert to phone", "FLICA recall list in (Hark webhook)", "FLICA recall miss alert",
-   "Flight Watcher new ticket", the new-pairing / charter / watcher-health automations, `packages/flica_wx.yaml`.
-   Strip the webhook id before committing.
-3. **Entity id bug:** fixed in 0.10.3 (discovery sends `default_entity_id`, keeps `object_id`). After the update,
-   any entity created as `*.flight_watcher_*` before the fix still needs a one-time rename in the entity registry.
-4. **James Kane's instance** (HNL A330 FO, HA username `jameskane`; email on file in Ryan's memory; do NOT
-   contact him until Ryan approves):
-   - Ryan sets option `second_pilot: james` in the app Configuration (Claude does not edit options that hold
-     Ryan's passwords) and creates James's HA user himself (Settings > People, non-admin; Claude does not
-     create accounts; may generate a temporary password for Ryan to type).
-   - Then (the loader already loads `flight-watcher-*-card-james.js`): helpers `input_number.flight_watcher_james_*`
-     (federal_tax_pct, state_tax_pct, longevity_year, month_offset) and `input_text.flight_watcher_james_er_trips`,
-     copying ranges from Ryan's; dashboard `flight-watcher-james` (same views, James's cards); a **Settings
-     tab** card that publishes `flight_watcher_james/settings/set` (FLICA user/password, CrewTrac user/password,
-     last name) and `flight_watcher_james/recall/act {me:{sen, seat}}`; forward the recall webhook to
-     `flight_watcher_james/recall/set` too; push automations to his Companion app notify target; set Ryan's
-     other dashboards `require_admin` so James sees only his.
-   - His pay: FO table PWA 3.D by his longevity year (he sets it); his DOH is not on file.
-5. **Crew index checks** (0.10.1): confirm the first full pass (about 1,336 trip instances, 300 pages per run at
-   00/06/12/18 HST, 8 per check while hunting), `/share/flight_watcher/crew_index/<YYYY-MM>.md` written, and the
-   pilot card's "Reconstructed" table. Unverified on real pages: crew-name trimming, the day-number to date
-   mapping, and a suspected `pdfs.py` bug for a bid period starting on the 31st (D prefixes on every day).
-   Ryan confirmed with ALPA and the company that crew assignments are public information.
-6. **Tickets workflow:** buttons and log are on Details. "work tickets" = read `/share/flight_watcher/tickets/*`,
-   mirror each to a GitHub issue here (label bug / feature, link FW id), diagnose, batch fixes into a release,
-   mark `fixed` with the version via `flight_watcher/ticket/act`. Reporter verifies. Since FW-0007 that `fixed`
-   also sends `flight_watcher/event/ticket_fixed` {id, kind, title, reporter, version} (once per move to fixed);
-   an HA automation on Pako (to be created) pushes it quietly, no sound, to the reporter's phone. See
-   `flight_watcher/README.md` > Tickets.
-7. **Paycheck check:** paydays the 7th (estimate) and 22nd (true-up), PWA 2.A.56. Ryan taps "Get paycheck
-   (Hark)"; Hark saves `YYYYMMDD_pay-advice_HAL.pdf` (+ earnings detail) to Drive "Claude - Pay stubs" via Alaska
-   PeopleSoft (aagpeople.com) with a PingID one-time code. First real check Dec 22: compare line by line with the
-   schedule card (credit x rate PWA 3.D, 5:00 min per day 4.C.3, IRO / ER overrides 4.O.1, vacation 4:00 per day
-   6.J). Open question: SIN H3815B pays both the RO $4.00/blk h override and ER 15% today; settle against the stub.
-8. **Hunt-mode load:** about 376 FLICA page loads an hour while hunting. Ryan to pick a cap.
-9. **Recall/O75:** live. Hark posts each day's HNL recall list to the HA webhook automation. Red rows = missed
-   (eligible, junior pilot got it); push + red alert only for those. Filing a CCR on hal.alpa.org needs a
-   browser session (Cowork with Chrome, or Hark), only after Ryan approves the narrative and says
-   "file CCR <date> <pairing>". Claude Code on the web cannot do this step.
-10. **Housekeeping:** Hark's shared Google Doc "Flight Watcher Shared Context" gets a Log line for each release;
-    homeofficemanager.app task register items t1275 (hunt load), t1276 (paycheck), t1277 (James), t1278 (Hark
-    paycheck procedure, done) to update.
+- **Tickets:** "process all bugs" = read every new / reopened ticket, fix, release, mark `fixed` with the version
+  via `flight_watcher/ticket/act` (that sends `event/ticket_fixed`, a quiet push to the reporter). "Confirm your
+  completed fixes" = Claude verifies each fixed ticket itself (tests, app log, entity states, deployed files) and
+  closes it with a note; only steps that need Ryan's phone, password or a [DESTRUCTIVE] yes stay open.
+  Claude files its own follow-ups straight into the folder (same lock and counter) so they do not push Ryan.
+- **Releases:** CLAUDE.md > Release procedure. Ryan pre-approved (2026-11-06) merging and updating releases of
+  fixed tickets, `second_pilot: james`, and the Pako / GitHub leftover cleanup listed in FW-0032 / FW-0033.
+- **Pako config** (automations, dashboards, wx package) is changed through the HA connector, then the redacted
+  snapshot under `ha/` is refreshed in the same PR and checked by sha256 (`ha/README.md`). Run
+  `python3 ha/check_push_isolation.py` after any push change: James's pushes never reach Ryan's devices and the
+  reverse.
+- **Pushes:** Ryan's iPhone 16 and "Ryan's iPhone" (Apple Watch mirrors), MacBook for H3628 only. The device table
+  is the Phone alerts card on the Details tab. New pairing he can take = critical with the buzzer
+  (`/local/flight-watcher-buzzer.wav`, `ha/sounds/`).
 
-## Done this period (for context)
-0.9.2 Recall/O75 tab, 0.9.3 trip/vacation is not a miss, 0.9.4 finds kept 24 months + month picker card,
-0.10.0 second-pilot engine + Flight Watcher name, 0.10.1 crew index + tickets. Card-only: schedule card version
-bar aligned, changes list under Pay settings, Credit left of Block, recall card FO/CA boxes, pilot card error
-text and reconstructed table, finds card, tickets card, Update schedules button.
+## Open items (ticket numbers)
+
+1. **Ryan, on his iPhones:** allow Critical Alerts for Home Assistant; import the buzzer (FW-0054) and Fanfare
+   (H3628 alert) sounds in the HA app (Settings > Companion App > Notifications > Sounds > Import); Watch app >
+   Notifications > Home Assistant > Mirror iPhone alerts.
+2. **James (FW-0037 / FW-0038):** once his Samsung registers in the HA app, add his Android push automations
+   (`JRECALL_` / `FLIGHT_WATCHER_JAMES_` action prefixes, alarm-stream channel for critical) and run the isolation
+   guard. Welcome note with the Samsung steps is a Gmail **draft only**; nobody contacts James until Ryan says so.
+3. **Crew index (FW-0056 to FW-0059):** trips not in the bid package, the previous bid period, names split on seat
+   codes, a pilot on two overlapping trips.
+4. **Sensor size (FW-0060):** tickets (about 39 KB) and schedule versions (about 16 KB) exceed the recorder limit.
+5. **Features:** FW-0034 close-in open time folder (read only), FW-0039 FAR 117.23(c) cumulative FDP, FW-0042 smart
+   push (commute, month-type rules), FW-0044 FLICA DROP review page mapped read only.
+6. **Ryan-owned:** FW-0021 paycheck check Dec 22 (PWA 2.A.56, 3.D, 4.C.3, 4.O.1, 6.J); FW-0040 upload the December
+   award and January pairings PDFs when posted; FW-0033 delete the merged `claude/*` branches in the GitHub UI
+   (this session can push only its own branch).
+7. **Waiting on Hark:** FW-0020 (Nov 3 recall list blank), FW-0030 (HPA 2026-27 school calendar partial).
+
+## Decided (do not reopen)
+
+- FLICA read only, forever: no submit, drop, swap, add or bid; the swap "mode" is a read-only sensor (FW-0028).
+- Hunt load stays about 376 FLICA loads an hour (FW-0035).
+- Hark's daily A330 charter scan is retired; the Watcher's own charter watch pushes a new charter (FW-0043, FW-0050).
+- Crew assignments are public information (Ryan confirmed with ALPA and the company).
+- Recall/O75 CCRs are filed on hal.alpa.org only after Ryan approves the narrative ("file CCR <date> <pairing>").
+
+## Recent releases
+
+1.1.x Settings card (sealed), 1.2.x request-decided push with Pay-Gross, 1.3.0 FW-0002 to FW-0009,
+1.4.0 FW-0010 to FW-0029 batch, FW-0047 to FW-0049, FW-0053 (see `flight_watcher/CHANGELOG.md`).

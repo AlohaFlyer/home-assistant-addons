@@ -14,7 +14,9 @@ const DOW = ["SU","MO","TU","WE","TH","FR","SA"];
 const MON3 = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
 const H = 3600e3;
 // Pay (Ryan): hourly rate per credit hour; PWA 4.O.1.a IRO override $4.00 per block hour; 4.O.1.b Extended Range type-rated FO 15% hourly premium
-const IRO_OVERRIDE = 4.00, ER_PCT = 0.15, DOH = "2000-01-01";  // FW_DOH: the add-on writes the pilot's date of hire here on deploy (cards.py)
+// FW-0010: DOH is a placeholder only. HA serves this file at /local/ with no login, so the pilot's date of hire is
+// never written here; the Watcher publishes it in sensor.flight_watcher_state (attribute doh, from /data/cards.json).
+const IRO_OVERRIDE = 4.00, ER_PCT = 0.15, DOH = "2000-01-01";
 const VAC_H = 4.0;  // PWA 6.J.1.c: vacation day Paid and Credited at 4:00 from 1 Jan 2026 (3.75 if the AA/DL/UA trigger had failed); FLICA's totals confirm 4:00
 // PWA 3.D.6 A330 PAX / B787 First Officer hourly rate by longevity year (1-12) and effective date
 const RATE_DATES = ["2023-03-02", "2024-03-02", "2025-03-02", "2026-03-02", "2027-01-31"];
@@ -24,7 +26,7 @@ const RATE_TABLE = [
   [251.28, 261.33, 271.79, 282.66, 291.13], [256.66, 266.93, 277.61, 288.71, 297.37], [262.48, 272.98, 283.90, 295.26, 304.12],
   [266.03, 276.67, 287.74, 299.24, 308.22], [270.00, 280.80, 292.03, 303.71, 312.82], [273.62, 284.56, 295.95, 307.78, 317.02]];
 const rateFor = (year, iso) => { let i = 0; RATE_DATES.forEach((d, k) => { if (iso >= d) i = k; }); return RATE_TABLE[Math.min(12, Math.max(1, year)) - 1][i]; };
-const dohYear = (iso) => Math.floor((Date.parse(iso) - Date.parse(DOH)) / (365.25 * 24 * H)) + 1;
+const dohYear = (iso, doh) => Math.floor((Date.parse(iso) - Date.parse(doh || DOH)) / (365.25 * 24 * H)) + 1;
 const hrs = (t) => { const mm = /^(\d+):(\d{2})$/.exec(String(t || "").trim()); return mm ? Number(mm[1]) + Number(mm[2]) / 60 : null; };
 const usd = (v) => (v == null ? "" : "$" + Math.round(v).toLocaleString("en-US"));
 
@@ -35,14 +37,20 @@ class FlightWatcherScheduleCard extends HTMLElement {
       "sensor.flight_watcher_blocked_days", "sensor.flight_watcher_own_trip_times", "sensor.flight_watcher_tradeboard_pickups",
       "sensor.flight_watcher_would_trade", "sensor.flight_watcher_swap_ideas", "sensor.flight_watcher_reserve_grid",
       "input_number.flight_watcher_federal_tax_pct", "input_number.flight_watcher_state_tax_pct", "input_number.flight_watcher_longevity_year", "input_text.flight_watcher_er_trips", "sensor.flight_watcher_schedule_versions"]
-      .map((e) => h.states[e] && h.states[e].last_updated).join("|");
+      .map((e) => h.states[e] && h.states[e].last_updated).join("|") + "|" + this._doh(h) + (h.user && h.user.is_owner ? "|owner" : "|user");
     this._h = h;
     if (sig === this._sig) return;
     this._sig = sig;
     this._render();
   }
+  // FW-0010: the pilot's DOH from the state sensor ("" when none is on file or the Watcher is offline); only this
+  // value is in the redraw signature, not the sensor's last_updated (its note changes on every check)
+  _doh(h) {
+    const d = (((h || this._h).states["sensor.flight_watcher_state"] || {}).attributes || {}).doh;
+    return /^\d{4}-\d{2}-\d{2}$/.test(d || "") ? d : "";
+  }
   _key() {
-    const off = parseInt((this._h.states["input_number.flight_watcher_month_offset"] || {}).state || "0", 10) || 0;
+    const off =parseInt((this._h.states["input_number.flight_watcher_month_offset"] || {}).state || "0", 10) || 0;
     const d = new Date(); const m = d.getMonth() + off; const y = d.getFullYear() + Math.floor(m / 12);
     return { y, m: ((m % 12) + 12) % 12, key: `${y}-${String(((m % 12) + 12) % 12 + 1).padStart(2, "0")}` };
   }
@@ -106,11 +114,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
       if (!j) { this._pk[key] = false; return; }
       const [y, mo] = key.split("-").map(Number);
       const nxt = new Date(Date.UTC(y, mo, 1)).toISOString().slice(0, 7);
+      const prv = new Date(Date.UTC(y, mo - 2, 1)).toISOString().slice(0, 7);
+      // FW-0014: a period that starts last month ("start": "2026-12-31" in January): a day from its first day up is last month's
+      const sd = typeof j.start === "string" && j.start.slice(0, 7) === prv ? Number(j.start.slice(8, 10)) : 99;
       const ix = Object.fromEntries(j.cols.map((c, i) => [c, i]));
       const map = {};
       for (const r of j.rows) {
         const days = String(r[ix.days]).split(" ").filter(Boolean)
-          .map((d) => (d[0] === "D" ? `${nxt}-${d.slice(1).padStart(2, "0")}` : `${key}-${d.padStart(2, "0")}`));
+          .map((d) => (d[0] === "D" ? `${nxt}-${d.slice(1).padStart(2, "0")}` : `${Number(d) >= sd ? prv : key}-${d.padStart(2, "0")}`));
         map[r[ix.id]] = { id: r[ix.id], report: r[ix.report], dep: r[ix.dep], release: r[ix.release], relDays: r[ix.rel_days],
           firstDuty: r[ix.first_duty_min], route: r[ix.route], credit: r[ix.credit], tafb: r[ix.tafb], days: new Set(days),
           block: ix.block != null ? r[ix.block] : "", crew: ix.crew != null ? r[ix.crew] : "" };
@@ -119,6 +130,12 @@ class FlightWatcherScheduleCard extends HTMLElement {
     }).catch(() => { this._pk[key] = false; });
     return null;
   }
+  // FW-0048 (Ryan, Nov 6): the auto swap / auto drop / auto add tools stay hidden for every user but Ryan until he
+  // turns them on for others. Here that is the DROP mark (it composes a drop request, Test mode); the trade mark and the
+  // swap / pick-up ideas are read only and stay for everyone. Ryan is the HA owner (HA has exactly one), so the test is
+  // is_owner, not is_admin: Pako has another admin login, and a second pilot's account may be made an admin.
+  _owner() { return !!(this._h && this._h.user && this._h.user.is_owner); }
+  _marks() { return this._owner() ? "availability, trade and drop marks" : "availability and trade marks"; }
   _say(msg) { const box = this.shadowRoot.querySelector(".info"); if (box) { box.textContent = msg; box.style.whiteSpace = "pre-line"; box.style.display = "block"; } }
   _render() {
     if (this._locked === undefined) { let v = "1"; try { const g = localStorage.getItem("flight_watcher_lock"); v = g === null ? "1" : g; } catch (e) { v = "1"; } this._locked = v !== "0"; }  // v48: locked by default
@@ -138,7 +155,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
         if (lk) { this._locked = !this._locked; try { localStorage.setItem("flight_watcher_lock", this._locked ? "1" : "0"); } catch (e2) { /* ignore */ } this._render(); return; }
         const locked = this._locked;
         const db = e.target.closest(".drb");
-        if (db && locked) { this._say("Settings are locked: tap the lock at the top left to change availability, trade or drop marks."); return; }
+        if (db && !this._owner()) return;  // FW-0048: not drawn for anyone but the owner; ignore a stale one
+        if (db && locked) { this._say(`Settings are locked: tap the lock at the top left to change ${this._marks().replace(" and ", " or ")}.`); return; }
         if (db && db.dataset.k) {
           db.classList.toggle("on");
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/drop/set", payload: JSON.stringify({ key: db.dataset.k }) });
@@ -146,7 +164,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         }
         const tp = e.target.closest(".trip, .trb");
         if (tp && tp.dataset.k && tp.dataset.k.split("|")[1] <= new Date(Date.now() - 10 * H).toISOString().slice(0, 10)) return;  // v46: a started trip cannot be traded
-        if (tp && tp.dataset.k && locked) { this._say("Settings are locked: tap the lock at the top left to change availability, trade or drop marks."); return; }
+        if (tp && tp.dataset.k && locked) { this._say(`Settings are locked: tap the lock at the top left to change ${this._marks().replace(" and ", " or ")}.`); return; }
         if (tp && tp.dataset.k) {
           const row = tp.closest("td"); row.querySelector(".trip").classList.toggle("tr"); row.querySelector(".trb").classList.toggle("on");
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/trade/set", payload: JSON.stringify({ key: tp.dataset.k }) });
@@ -178,7 +196,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const dc = e.target.closest("td"); if (!dc || dc.cellIndex > 1) return;  // v43 (Ryan): only the day/date cells toggle a blocked day
         const tr = e.target.closest("tr[data-d]"); if (!tr || !this._h) return;
         if (tr.classList.contains("vac")) { this._say("Vacation day: always unavailable."); return; }  // v48 (Ryan): VAC days cannot be toggled
-        if (locked) { this._say("Settings are locked: tap the lock at the top left to change availability, trade or drop marks."); return; }
+        if (locked) { this._say(`Settings are locked: tap the lock at the top left to change ${this._marks().replace(" and ", " or ")}.`); return; }
         tr.classList.toggle("blk");
         this._h.callService("mqtt", "publish", { topic: "flight_watcher/blocked/set", payload: JSON.stringify({ date: tr.dataset.d }) });
       });
@@ -188,7 +206,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const num = (e, d) => { const v = parseFloat((S[e] || {}).state); return isNaN(v) ? d : v; };
     const fed = num("input_number.flight_watcher_federal_tax_pct", 22), stt = num("input_number.flight_watcher_state_tax_pct", 0);
     const today = new Date(Date.now() - 10 * H).toISOString().slice(0, 10);
-    const lyr = num("input_number.flight_watcher_longevity_year", Math.min(12, dohYear(today)));
+    const doh = this._doh();
+    const owner = this._owner();  // FW-0048: the drop mark (auto drop) for the HA owner (Ryan) only
+    const lyr = num("input_number.flight_watcher_longevity_year", Math.min(12, dohYear(today, doh)));
     const RATE = rateFor(lyr, today);
     const erOv = String((S["input_text.flight_watcher_er_trips"] || {}).state || "").split(",").filter(Boolean);
     const erOn = (k, lay, n) => erOv.includes("-" + k) ? false : erOv.includes("+" + k) ? true : (n ? n >= 4 : /\bSIN\b/.test(lay || ""));
@@ -478,7 +498,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const dt = new Date(d + "T12:00:00"); const wk = dt.getDay() === 0 || dt.getDay() === 6;
         const other = dt.getMonth() !== m;
         const sc = this._school(d); const noSchool = !!(sc && sc.days.has(d));
-        const t = trip === "VAC" ? `<span class="vac">VAC</span>` : (trip ? `<span class="trip${trade.has(trip + "|" + d) ? " tr" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${this._esc(((ownT[`${trip}|${d}`] || {}).crew || []).join("\n") || "crew not read yet")}">${this._esc(trip)}</span>${d <= today ? "" : `<span class="trb${trade.has(trip + "|" + d) ? " on" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${trade.has(trip + "|" + d) ? "Marked: would trade this trip for a better one. Tap to unmark." : "Tap to mark this trip as one you would trade for a better one."}">&#8644;</span>`}${d <= today ? "" : `<span class="drb${dropM.has(trip + "|" + d) ? (dropR[trip + "|" + d] ? " on rdy" : " on") : ""}" data-k="${this._esc(trip + "|" + d)}" title="${dropR[trip + "|" + d] ? "Grid green on every day: drop request ready (Test mode, nothing filed). Tap to unmark." : dropM.has(trip + "|" + d) ? "Marked: would DROP this trip once the reserve grid is green on every day of it. Tap to unmark." : "Tap to mark this trip as one you would DROP when the grid allows it."}">&#8615;</span>`}` : "");
+        const t = trip === "VAC" ? `<span class="vac">VAC</span>` : (trip ? `<span class="trip${trade.has(trip + "|" + d) ? " tr" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${this._esc(((ownT[`${trip}|${d}`] || {}).crew || []).join("\n") || "crew not read yet")}">${this._esc(trip)}</span>${d <= today ? "" : `<span class="trb${trade.has(trip + "|" + d) ? " on" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${trade.has(trip + "|" + d) ? "Marked: would trade this trip for a better one. Tap to unmark." : "Tap to mark this trip as one you would trade for a better one."}">&#8644;</span>`}${d <= today || !owner ? "" : `<span class="drb${dropM.has(trip + "|" + d) ? (dropR[trip + "|" + d] ? " on rdy" : " on") : ""}" data-k="${this._esc(trip + "|" + d)}" title="${dropR[trip + "|" + d] ? "Grid green on every day: drop request drafted (draft only, never sent: drop it yourself in FLICA). Tap to unmark." : dropM.has(trip + "|" + d) ? "Marked: would DROP this trip once the reserve grid is green on every day of it. Tap to unmark." : "Tap to mark this trip as one you would DROP when the grid allows it."}">&#8615;</span>`}` : "");
         const sw = (swapFor[trip + "|" + d] || []).slice(0, 2).map((i) => `<span class="tag sw" title="${this._esc([`Swap ${trip} for ${i.pairing}`, `${i.dates}  ${i.layover || i.turn || ""}`, i.why, i.src === "T" ? "On the Tradeboard" : "In open time"].join("\n"))}">&#8644; ${this._esc(i.layover || i.turn || "")}(${this._esc(i.pairing)}) ${this._esc(i.soft_gain)}</span>`).join("<br>");
         const crewT = this._esc(((ownT[`${trip}|${d}`] || {}).crew || []).join("\n") || "crew not read yet");
         const rp = repOn[d] ? ` <span class="tm tag" title="${trip && trip !== "VAC" ? `${trip} crew:\n${crewT}\n\nReport ${repOn[d]}` : `Report ${repOn[d]}`}">R ${repOn[d]}</span>` : "";
@@ -676,7 +696,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .info{display:none;position:fixed;left:8px;right:8px;bottom:14px;z-index:9;margin:0 auto;max-width:460px;font-size:12px;padding:8px 10px 8px;border-radius:8px;background:var(--secondary-background-color);color:var(--primary-text-color);box-shadow:0 4px 18px rgba(0,0,0,.35);cursor:pointer}
       .info::after{content:"tap to close";display:block;margin-top:6px;font-size:10px;color:var(--secondary-text-color);text-align:right}
       .none{text-align:center;color:var(--secondary-text-color);padding:12px}
-    </style><ha-card><div class="frame"><div class="hd2"><span class="lock ${this._locked ? "shut" : "open"}" title="${this._locked ? "Locked: availability, trade and drop marks cannot be changed by a tap. Tap to unlock." : "Unlocked: taps change availability, trade and drop marks. Tap to lock."}">${this._locked ? "&#128274;" : "&#128275;"}</span><span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span><span class="u">updated ${this._esc(upd)}</span></div>${vhtml}${body}</div>${panel}
+    </style><ha-card><div class="frame"><div class="hd2"><span class="lock ${this._locked ? "shut" : "open"}" title="${this._locked ? `Locked: ${this._marks()} cannot be changed by a tap. Tap to unlock.` : `Unlocked: taps change ${this._marks()}. Tap to lock.`}">${this._locked ? "&#128274;" : "&#128275;"}</span><span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span><span class="u">updated ${this._esc(upd)}</span></div>${vhtml}${body}</div>${panel}
     <div class="info"></div>
     <details class="leg"><summary>Key</summary><table class="lt">
     <tr><td>Trip</td><td>Your pairing. R = report time. Tap &#8644; to mark it "would trade" (orange).</td></tr>
@@ -691,13 +711,13 @@ class FlightWatcherScheduleCard extends HTMLElement {
     <tr><td>Legal next</td><td>Earliest report for another trip: release + 11 h (PWA 10.E.1.a). Tap for the 18 h case.</td></tr>
     <tr><td>Open</td><td>Open time trips starting that day: <span class="fit">fits</span>, <span class="clash">clashes or blocked</span>.</td></tr>
     <tr><td>Ideas</td><td>Tag-ons after your release with legal rest, <b>O</b> = in open time, <b>T</b> = on the Tradeboard. Orange = better trip for a marked one. Tap for details.</td></tr>
-    <tr><td>Day</td><td>Blue = weekend, yellow = no school at HPA (from the school year file), hatched yellow = US or Hawaii holiday with no school file loaded. Tap a day to block it (&#8856;), tap again to unblock; VAC days are always &#8856; and cannot be changed. The lock at the top left (&#128274;) freezes availability, trade and drop taps. All times HNL.</td></tr>
+    <tr><td>Day</td><td>Blue = weekend, yellow = no school at HPA (from the school year file), hatched yellow = US or Hawaii holiday with no school file loaded. Tap a day to block it (&#8856;), tap again to unblock; VAC days are always &#8856; and cannot be changed. The lock at the top left (&#128274;) freezes ${owner ? "availability, trade and drop" : "availability and trade"} taps. All times HNL.</td></tr>
     </table>${note ? `<div>${note}</div>` : ""}</details>
     <details class="set"><summary>Pay settings</summary>
       <span>Federal tax <select data-e="input_number.flight_watcher_federal_tax_pct">${sel(0, 45, 0.5, fed, "%")}</select></span>
       <span>State tax <select data-e="input_number.flight_watcher_state_tax_pct">${sel(0, 15, 0.25, stt, "%")}</select></span>
       <span>Longevity year <select data-e="input_number.flight_watcher_longevity_year">${sel(1, 12, 1, lyr, "")}</select></span>
-      <div class="r">Rate $${RATE.toFixed(2)}/credit h: A330 PAX FO, PWA 3.D.6, year ${lyr} (DOH ${DOH} = year ${dohYear(today)}, table caps at 12), effective ${RATE_DATES.filter((x) => x <= today).pop()}. Net = gross less federal and state only; estimate.</div>
+      <div class="r">Rate $${RATE.toFixed(2)}/credit h: A330 PAX FO, PWA 3.D.6, year ${lyr} ${doh ? `(DOH ${doh} = year ${dohYear(today, doh)}, table caps at 12)` : "(set your longevity year here; table caps at 12)"}, effective ${RATE_DATES.filter((x) => x <= today).pop()}. Net = gross less federal and state only; estimate.</div>
     </details>${chtml}</ha-card>`;
     this._wire();
   }
