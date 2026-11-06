@@ -39,7 +39,7 @@ import sealed as SEAL
 import pay as PAY
 import wwwfiles as WF
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -2182,9 +2182,10 @@ def _own_trips_at(t):
 def price_request(r, now=None):
     """1.2.1 (Ryan): Pay-Gross change of an Approved request: + for a pickup, - for a drop, the net for a swap.
     Each leg is a trip given (drop) or taken (add): from the page's own words when it has them, else Add / Drop
-    by the request type, else for a swap the trip Ryan held when he filed it is the one given. A trip given is
-    priced from his own trip record (FLICA's credit, block, seat), a trip taken from the month's pairing package
-    (FO seat). None when any leg cannot be priced; the push then goes out without an amount."""
+    by the request type, else for a swap or a trade (1.4.1) the trips Ryan held when he filed are the ones given. A
+    trip given is priced from his own trip record (FLICA's credit, block, seat), a trip taken from the month's pairing
+    package in the seat the view page marks, (F) / (R) / (C), FO when unmarked (1.4.1). None when any leg cannot be
+    priced; the push then goes out without an amount."""
     if r.get("status") != "Approved" or not r.get("legs"):
         return None
     now = now or local_now().replace(tzinfo=HST)
@@ -2225,7 +2226,8 @@ def price_request(r, now=None):
         credit = PAY.hrs(rec.get("credit")) if rec.get("credit") else PAY.hrs(pk.get("credit"))
         block = PAY.hrs(rec.get("blk")) if rec.get("blk") else PAY.hrs(pk.get("block"))
         lay = "/".join(x for x in str(pk.get("route") or "").split("-") if x and x != "HNL")
-        g = PAY.trip_gross(credit, block, pk.get("crew"), lay, f"{trip}|{start}", rec.get("seat") or "FO", rate, er)
+        seat = rec.get("seat") or leg.get("seat") or "FO"  # 1.4.1: a taken trip's seat from the view page's (F)/(R)/(C)
+        g = PAY.trip_gross(credit, block, pk.get("crew"), lay, f"{trip}|{start}", seat, rate, er)
         if g is None:
             return None
         parts.append({"trip": trip, "start": start, "side": side, "gross": round(g, 2),
@@ -2272,7 +2274,7 @@ def requests_check(fl):
     known yet)."""
     rows_of = S.setdefault("ot_req_rows", {})  # bcid -> rows of the last good read
     folders = sorted({x for x in (bcid(u) for u in S.get("pot_urls", {}).values()) if x})
-    pending = any(r.get("status") == "Pending" for b in folders for r in rows_of.get(b) or [])
+    pending = any(r.get("status") in SUB.OPEN for b in folders for r in rows_of.get(b) or [])
     gap = REQ_PENDING_GAP_S if pending else REQ_IDLE_GAP_S
     if not S.pop("req_force", False) and time.time() - S.get("req_checked_at", 0) < gap:
         return
@@ -2351,7 +2353,7 @@ def requests_check(fl):
     save_state(S)
     if read_ok:  # a failed pass keeps the last good sensor instead of showing 0 pending
         shown = [{**r, "bcid": b} for b in folders for r in rows_of.get(b) or []]
-        pub("ot_requests", {"pending": sum(1 for r in shown if r["status"] == "Pending"), "count": len(shown),
+        pub("ot_requests", {"pending": sum(1 for r in shown if r["status"] in SUB.OPEN), "count": len(shown),
                             "requests": shown[-20:], "checked_at": now_iso()})
 
 
