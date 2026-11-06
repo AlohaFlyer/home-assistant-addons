@@ -247,3 +247,15 @@ def test_pilot_instance_skips_crew_index(W, tmp_path, monkeypatch):
     _file(tmp_path / "www", "2026-11", [_row("H9001", "2", rel=0)])
     fl = FakeFl()
     assert W.crew_index_check(fl) == "ok" and fl.urls == []
+
+
+def test_rebuilt_keeps_a_trip_running_into_the_grid():
+    """1.3.0 review: a trip that starts before the grid (Nov 30) and runs into December's period is kept, as on
+    FLICA's own grid; one that ends before the grid is not."""
+    insts = {"a": {"date": "2026-11-30", "end_date": "2026-12-03", "pairing": "H9120"},
+             "b": {"date": "2026-11-27", "end_date": "2026-11-29", "pairing": "H9121"},
+             "c": {"date": "2026-12-10", "end_date": "2026-12-12", "pairing": "H9201"}}
+    rows = [{"key": k, "pos": "FO"} for k in insts]
+    got = CI.pilot_trips(insts, rows, start_from="2026-12-01", end_to="2026-12-31")
+    assert [(x["pairing"], x["start"], x["end"]) for x in got] == [
+        ("H9120", "2026-11-30", "2026-12-03"), ("H9201", "2026-12-10", "2026-12-12")]
