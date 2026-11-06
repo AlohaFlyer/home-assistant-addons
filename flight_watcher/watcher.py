@@ -37,7 +37,7 @@ import tickets as TK
 import sealed as SEAL
 import pay as PAY
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -212,10 +212,13 @@ def on_message(c, u, msg):
         settings_cmd(msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/ticket/new":
-        ticket_new(msg.payload.decode(errors="replace"))
+        ticket_safe(ticket_new, msg.payload.decode(errors="replace"))
+        return
+    if msg.topic == f"{T}/ticket/image":
+        ticket_safe(ticket_image, msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/ticket/act":
-        ticket_act(msg.payload.decode(errors="replace"))
+        ticket_safe(ticket_act, msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/trade/set":
         trade_cmd(msg.payload.decode(errors="replace"))
@@ -778,7 +781,7 @@ def mqtt_start():
                   "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set",
                   "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set", "drop/set", "charter_scan/press", "pilot/set",
                   "improved/set", "recall/set", "recall/act", "settings/set",
-                  "ticket/new", "ticket/act") + (() if INSTANCE else ("crew_scan/press",)):
+                  "ticket/new", "ticket/image", "ticket/act") + (() if INSTANCE else ("crew_scan/press",)):
             cl.subscribe(f"{T}/{t}")
         publish_settings(cl)
         fq = freq()
@@ -1952,9 +1955,25 @@ def price_request(r, now=None):
     filed = _filed_at(r, now)
     held = _own_trips_at(filed.astimezone(timezone.utc))
     own, cache, parts = S.get("own_trips") or {}, {}, []
-    for leg in r["legs"]:
+
+    def was_held(leg):  # Ryan held this trip (on this date, when the page gives one) when he filed
+        st = held.get(leg["trip"])
+        if not st:
+            return False
+        d = leg.get("day") or ""
+        return not d or (st[8:10] == d[:2] and MON3.index(d[2:]) + 1 == int(st[5:7]))
+    # 1.2.2 review: the request type decides an Add or a Drop; a swap's sides come from what Ryan held when he
+    # filed. Page words only when no schedule version is on file, and only when they name both sides; else no
+    # amount (a missing Pay-Gross beats a wrong one).
+    typed = {"Add": "add", "Drop": "drop"}.get(r["type"])
+    words = [leg.get("side") or "" for leg in r["legs"]]
+    if not typed:
+        sides = [("drop" if was_held(leg) else "add") for leg in r["legs"]] if held else words
+        if "drop" not in sides or "add" not in sides or not all(sides):
+            return None
+    for i, leg in enumerate(r["legs"]):
         trip = leg["trip"]
-        side = leg.get("side") or {"Add": "add", "Drop": "drop"}.get(r["type"]) or ("drop" if trip in held else "add")
+        side = typed or sides[i]
         start = held.get(trip) if side == "drop" else None
         if not start and leg.get("day"):
             mo = MON3.index(leg["day"][2:]) + 1
@@ -1974,6 +1993,34 @@ def price_request(r, now=None):
                       "credit": rec.get("credit") or pk.get("credit") or ""})
     delta = sum(p["gross"] for p in parts if p["side"] == "add") - sum(p["gross"] for p in parts if p["side"] == "drop")
     return {"delta": round(delta, 2), "delta_text": PAY.usd(delta), "parts": parts, "rate": rate, "year": yr}
+
+
+def _request_view(fl, b, ts):
+    """1.2.2: {legs, trips, detail} of one request from its read-only view page ({} when it cannot be read).
+    The first view page of each folder is saved privately to CAPTURE_DIR for parser checks."""
+    url = SUB.request_view_url(BASE, b, ts)
+    if not (SUB.safe_get(url) and SM.safe_get(url)):
+        log.info("request view %s: url refused by safe_get", ts)
+        return {}
+    try:
+        time.sleep(random.uniform(1.5, 3.5))
+        html = fl.fetch(url)
+        if classify(html) != "ok":
+            return {}
+        text = visible_text(html)
+        n = b.split(".")[-1]
+        if not S.get("req_view_captured", {}).get(n):
+            S.setdefault("req_view_captured", {})[n] = True
+            try:
+                os.makedirs(CAPTURE_DIR, exist_ok=True)
+                open(f"{CAPTURE_DIR}/otrequest_view_{n}.html", "w").write(html)
+                log.info("request view %s captured; text: %s", ts, text[:600])
+            except Exception:
+                pass
+        return SUB.parse_request_view(text)
+    except Exception as e:
+        log.info("request view %s error: %s", ts, e)
+        return {}
 
 
 def requests_check(fl):
@@ -2008,7 +2055,7 @@ def requests_check(fl):
                 log.info("requests %s: %s, skipped", b, classify(html))
                 continue
             text = visible_text(html)
-            rows = SUB.parse_request_rows(text)
+            rows = SUB.parse_request_rows(text, html)
             n = b.split(".")[-1]
             if not S.get("req_captured", {}).get(n):  # first read: a private copy for parser checks (/share)
                 try:
@@ -2033,6 +2080,8 @@ def requests_check(fl):
                     old = True
                 if first and old:
                     continue  # the feature's first read: older decisions are history, not news
+                if r.get("ts") and not r.get("legs"):
+                    r.update(_request_view(fl, b, r["ts"]))  # the list names no trips; its view page does
                 ev = {**r, "bcid": b, "at": now_iso(), "url": url}
                 try:
                     ev["pay"] = price_request(r)  # 1.2.1: Pay-Gross gained or given up (Approved only)
@@ -2041,9 +2090,13 @@ def requests_check(fl):
                     ev["pay"] = None
                 log.info("request %s %s %s", r["type"], r["status"], r["detail"][:80])
                 pub("event/request_decided", ev, retain=False)
+            if rows and rows[-1].get("ts") and not S.get("req_view_captured", {}).get(n):
+                _request_view(fl, b, rows[-1]["ts"])  # once: a private copy of a view page for parser checks
             for r in rows:
                 if r["status"] in SUB.DECIDED:
                     pushed[SUB.push_key(r)] = now_iso()  # last seen; pruned once gone 60 days
+                    if r.get("alt"):  # the content key too: a read that falls back to it never re-pushes
+                        pushed[f"{r['alt']}|{r['status']}"] = now_iso()
             rows_of[b] = rows
             read_ok = True
         except Exception as e:
@@ -2387,17 +2440,21 @@ def pilot_check(fl):
 
 def pub_pilot(payload):
     """0.10.1: every pilot_schedule publish carries the crew index's view of that pilot's month too:
-    reconstructed [{pairing, start, end, seat, route, checked_at}], reconstructed_coverage_pct and
-    reconstructed_month, so the card can show it when FLICA hides the schedule or errors."""
+    reconstructed [{pairing, start, end, seat, route, checked_at, lay, blk, credit, soft, crew}],
+    reconstructed_coverage_pct, reconstructed_month and (FW-0002) reconstructed_from / reconstructed_to, the
+    bid period's first and last day, so the card can draw it in the schedule grid when FLICA hides the schedule
+    or errors. Trips and coverage span that grid: the day before the bid period (FLICA's first row) to its end."""
     try:
         emp = re.sub(r"\D", "", str(payload.get("emp") or ""))
         month = str(payload.get("month") or "")
         if not re.fullmatch(r"\d{4}-\d{2}", month):
             month = local_now().strftime("%Y-%m")
-        insts = CI.instances(CARD_PAIRINGS)
-        payload = {**payload, "reconstructed": CI.pilot_trips(insts, DB.crew_by_emp(emp), month) if emp else [],
-                   "reconstructed_coverage_pct": CI.coverage(insts, DB.crew_rows(), month)[2],
-                   "reconstructed_month": month}
+        insts, rows = CI.instances(CARD_PAIRINGS), DB.crew_rows()
+        first, start, end = CI.grid_range(CARD_PAIRINGS, month)
+        payload = {**payload, "reconstructed": CI.pilot_trips(insts, DB.crew_by_emp(emp), month, first, rows,
+                                                              DB.get(f"pkg_details:{month}") or {}, end) if emp else [],
+                   "reconstructed_coverage_pct": CI.coverage(insts, rows, None, first, end)[2],
+                   "reconstructed_month": month, "reconstructed_from": start, "reconstructed_to": end}
     except Exception as e:
         log.info("pilot lookup: crew index skipped: %s", e)
         payload = {**payload, "reconstructed": [], "reconstructed_coverage_pct": 0.0}
@@ -2533,8 +2590,24 @@ def reporter():
     return INSTANCE or "ryan"
 
 
+def ticket_safe(fn, payload):
+    """FW-0003: run a ticket handler so that one bad message can never end the MQTT loop (paho re-raises an
+    exception from on_message and the loop thread stops). The error is logged and sent as event/ticket_error."""
+    try:
+        return fn(payload)
+    except Exception as e:
+        log.warning("ticket message failed (%s): %s: %s", getattr(fn, "__name__", "?"), type(e).__name__, e)
+        try:
+            pub("event/ticket_error", {"error": f"ticket message failed: {type(e).__name__}", "at": now_iso()},
+                retain=False)
+        except Exception:
+            pass
+        return None
+
+
 def ticket_new(payload):
-    """{T}/ticket/new {kind, title, narrative, steps?, expected?, page?, version?, image?}."""
+    """{T}/ticket/new {kind, title, narrative, steps?, expected?, page?, version?, image?, cid?, images?}.
+    FW-0003: the card sends photos after this, one per {T}/ticket/image message (ticket_image)."""
     try:
         d = json.loads(payload or "{}")
     except ValueError:
@@ -2544,15 +2617,37 @@ def ticket_new(payload):
         log.info("ticket refused: %s", err)
         pub("event/ticket_error", {"error": err, "at": now_iso()}, retain=False)
         return None
-    log.info("ticket %s (%s) from %s: %s", t["id"], t["kind"], t["reporter"], t["title"])
+    log.info("ticket %s (%s) from %s: %s (%d photos to come)", t["id"], t["kind"], t["reporter"], t["title"],
+             t["images_expected"] - len(t["images"]))
     pub("event/ticket_new", {"id": t["id"], "kind": t["kind"], "title": t["title"], "reporter": t["reporter"]}, retain=False)
+    publish_tickets(force=True)
+    return t
+
+
+def ticket_image(payload):
+    """FW-0003 {T}/ticket/image {cid, i, image}: photo i (1 to 10) of the ticket this instance filed with that
+    cid, one photo per message. An unknown cid or a bad photo is refused and nothing is written."""
+    try:
+        d = json.loads(payload or "{}")
+    except ValueError:
+        d = None
+    t, err = TK.add_image(TICKETS_DIR, d, reporter(), now_iso())
+    if not t:
+        log.info("ticket photo refused: %s", err)
+        pub("event/ticket_error", {"error": err, "at": now_iso()}, retain=False)
+        return None
+    log.info("ticket %s: photo %s (%d of %d)", t["id"], d.get("i"), len(t["images"]), t["images_expected"])
     publish_tickets(force=True)
     return t
 
 
 def ticket_act(payload):
     """{T}/ticket/act {id, action: triage|progress|fixed|verify|reopen|close|note, text?, version?}. A pilot
-    instance may act on its own tickets only."""
+    instance may act on its own tickets only.
+    FW-0007: a fixed action that moves a ticket to fixed also sends {T}/event/ticket_fixed {id, kind, title,
+    reporter, version} (not retained), once per move, after the new listing. "reporter" (ryan, or the second
+    pilot's name) says whose phone the HA automation pushes it to, quietly, so they can check it is what they
+    expected and verify or reopen it on the tickets card."""
     try:
         d = json.loads(payload or "{}")
     except ValueError:
@@ -2564,6 +2659,10 @@ def ticket_act(payload):
         return None
     log.info("ticket %s: %s -> %s", t["id"], d.get("action"), t["status"])
     publish_tickets(force=True)
+    ev = TK.fixed_event(t)
+    if ev:
+        log.info("ticket %s fixed (v%s): telling %s", ev["id"], ev["version"] or "?", ev["reporter"])
+        pub("event/ticket_fixed", ev, retain=False)
     return t
 
 
