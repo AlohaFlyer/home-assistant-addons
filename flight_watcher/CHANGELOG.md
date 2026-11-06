@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.3
+
+- Trade requests (Ryan, Nov 6): a crew-to-crew Trade never shows on the Open Time Requests list; it lives on the Tradeboard's My Requests page (TB_MyRequests.cgi, the page tb_frame.cgi?...&dp=mr loads). The Watcher now reads that page too (read only, a plain list GET through both URL guards, paced 1.5 to 3.5 s; its Cancel / Hide form is never submitted), lists each trade on `sensor.flight_watcher_ot_requests`, reads every 2 min while one is Processing or Pending, and pushes once when one is Approved or Denied (`event/request_decided`, type Trade, with Pay-Gross: the trips before 'With' are given, the trips after 'For' are taken). Its first read is kept privately in /share/flight_watcher/captures for parser checks.
+
 ## 1.4.2
 
 - Request list (Ryan's Nov 6 Trade was not read): when the Open Time Requests page holds a request the parser does not recognise, or mentions a trade or Processing, the Watcher logs how many requests the page has against the rows it read and keeps a private copy of the latest such page in /share/flight_watcher/captures (never in git), so the row's wording can be added.

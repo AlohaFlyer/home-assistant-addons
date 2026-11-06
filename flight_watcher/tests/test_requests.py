@@ -63,6 +63,8 @@ def _flow(tmp_path, monkeypatch):
     class FL:
         def fetch(self, url):
             fetched.append(url)
+            if "TB_MyRequests" in url:  # 1.4.3: Ryan's Tradeboard My Requests page
+                return pages.get("tb", "<html><body>my requests</body></html>")
             return pages.get(url.split("BCID=")[1].split("&")[0], pages.get("text"))
 
     def read(force=True):
@@ -93,14 +95,14 @@ def test_requests_check_flow(tmp_path, monkeypatch):
     assert all("QuickDelete" not in u for u in fetched) and fetched[0].endswith("BCID=003.152&From=MainMenu")
     assert sensor()[-1]["pending"] == 1
     read(force=False)  # inside the pending gap: no fetch
-    assert len(fetched) == 1
+    assert len(fetched) == 2  # 1.4.3: the request list and the Tradeboard My Requests page
     pages["text"] = pages["text"].replace("swap pending", "swap approved")
     read()
     ev = events()
     assert len(ev) == 1 and ev[0]["status"] == "Approved" and ev[0]["trips"] == ["H3629", "H3815B"]
     assert sensor()[-1]["pending"] == 0 and sensor()[-1]["count"] == 2
     read()  # same page again: no second push
-    assert len(fetched) == 3 and len(events()) == 1
+    assert len(fetched) == 6 and len(events()) == 1
 
 
 def test_first_read_pushes_a_decision_filed_in_the_last_hours(tmp_path, monkeypatch):
@@ -163,7 +165,7 @@ def test_reads_are_paced(tmp_path, monkeypatch):
     W.S["pot_urls"]["2026-12"] = "https://ha2.flica.net/full/mobileopentimepot.cgi?BCID=003.153&From=MainMenu"
     pages["text"] = _page("")
     read()
-    assert len(waits) == 2 and all(1.5 <= w <= 3.5 for w in waits)
+    assert len(waits) == 4 and all(1.5 <= w <= 3.5 for w in waits)  # 2 months x (request list + My Requests)
 
 
 def _html(rows):
@@ -282,3 +284,34 @@ def test_trade_request_row_and_view_page():
     assert v["reason"] == ""
     s = SUB.parse_request_view("swap h3911:21nov (f) for h3914b:19nov (r) time: 11/02 08:41 status: approved")
     assert [(x["side"], x["seat"]) for x in s["legs"]] == [("drop", "FO"), ("add", "RO")]
+
+
+def test_trade_requests_from_tradeboard_my_requests(tmp_path, monkeypatch):
+    """1.4.3 (Ryan's Nov 6 Trade, made-up trips and numbers): a crew-to-crew Trade on Tradeboard My Requests is
+    listed while Processing (holding the 2-min poll), pushed once when Approved with its given / taken legs, and its
+    page is kept privately on the first read. The URL passes both GET guards and no link on it is followed."""
+    import tradeboard as TB
+    import swapmap as SM
+    W, pages, fetched, read, events, sensor = _flow(tmp_path, monkeypatch)
+    when = _recent(W, 1)
+    mmdd, hm = when.split()
+    mon = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"][int(mmdd[:2]) - 1]
+    row = (f"{mmdd[3:]} {mon} {hm} Trade H3911:21NOV and H3915:26NOV With Emp #: 12345 "
+           "For H3920:20NOV and H3920:23NOV {st} [ ]")
+    pages["text"] = _page("")
+    pages["tb"] = "<html><body>Requested (HA) Type Status Cancel/Hide " + row.format(st="Processing") + "</body></html>"
+    read()
+    u = TB.my_requests_url(W.BASE, "152")
+    assert u in fetched and SUB.safe_get(u) and SM.safe_get(u)
+    assert (tmp_path / "cap" / "tb_myrequests_152.html").exists()
+    assert sensor()[-1]["pending"] == 1 and sensor()[-1]["requests"][-1]["type"] == "Trade"
+    assert events() == []
+    pages["tb"] = pages["tb"].replace("Processing", "Approved")
+    read()
+    ev = events()
+    assert len(ev) == 1 and ev[0]["type"] == "Trade" and ev[0]["status"] == "Approved" and ev[0]["bcid"] == "001.152"
+    assert [(x["trip"], x["day"], x["side"]) for x in ev[0]["legs"]] == [
+        ("H3911", "21NOV", "drop"), ("H3915", "26NOV", "drop"), ("H3920", "20NOV", "add"), ("H3920", "23NOV", "add")]
+    assert sensor()[-1]["pending"] == 0
+    read()
+    assert len(events()) == 1  # pushed once
