@@ -89,5 +89,6 @@ def test_finds_month_files(tmp_path, monkeypatch):
     W.DB.db.execute("INSERT INTO finds(key,pairing,month,row,first_seen,last_seen) VALUES(?,?,?,?,?,?)",
                     ("k1", "H1", "m", '{"pairing":"H1"}', W.now_iso(), W.now_iso()))
     W.write_finds_months()
-    f = tmp_path / "www" / f"finds_{now:%Y-%m}.json"
+    f = tmp_path / "www" / f"finds_{now:%Y-%m}_{W.www_key()}.json"  # FW-0010: keyed name
     assert json.loads(f.read_text())["finds"][0]["pairing"] == "H1"
+    assert not (tmp_path / "www" / f"finds_{now:%Y-%m}.json").exists()
