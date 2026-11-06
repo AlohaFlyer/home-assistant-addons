@@ -543,11 +543,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
       const chk = (mine, flica) => flica == null ? "" : Math.abs(mine - flica) < 1 / 60 ? ` <span class="okc" title="matches FLICA">&#10003;</span>` : ` <span class="bad" title="FLICA shows ${hm(flica)}">FLICA ${hm(flica)}</span>`;
       const bAv = 98 - (fBlk != null ? fBlk : sum.blk);
       const n30 = need30 ? `<span class="${need30 - nowHst < 48 * H ? "bad" : ""}" title="The first report after which you need 30 h off first (FAR 117.25(b)), from the schedule on file">${this._d(need30).slice(5).replace("-", "/")} ${this._hm(need30)}</span>` : `<span title="FAR 117.25(b) met for any report through the end of the schedule on file">end of sched</span>`;
-      const tot = [["Credit", hm(crAll) + chk(crAll, fCr)], ["Block", hm(sum.blk) + chk(sum.blk, fBlk)], ["Block Avail", `<span class="${bAv <= 0 ? "bad" : ""}" title="98:00 bid-month block cap (crew scheduling) minus FLICA's bid-period Block">${bAv < 0 ? "-" + hm(-bAv) : hm(bAv)}</span>`], ["Soft", hm(sum.soft)],
-        ["Vacation", sum.vacDays ? `${hm(sum.vac)} <span class="k">(${sum.vacDays} d x ${hm(VAC_H)})</span>` : ""],
-        ["Pay-Gross", usd(sum.gross)], ["Pay-Net", usd(sum.net)], ["Days Off", tt.days_off], ["Need 30 h off by", n30]]
-        .filter(([, v]) => v !== undefined && v !== null && v !== "")
-        .map(([k, v]) => `<span><span class="k">${k}</span> ${v}</span>`).join("");
+      // FW-0009 (Ryan, Nov 6): three groups (hours, pay, days) that wrap as units; Pay-Gross and Pay-Net share one
+      // unbreakable row (on an iPhone their own line) and no label is ever split from its value
+      const tgrp = (cls, list) => { const s = list.filter(([, v]) => v !== undefined && v !== null && v !== "")
+        .map(([k, v]) => `<span class="ti"><span class="k">${k}</span> ${v}</span>`).join(""); return s ? `<span class="tgrp ${cls}">${s}</span>` : ""; };
+      const tot = tgrp("thrs", [["Credit", hm(crAll) + chk(crAll, fCr)], ["Block", hm(sum.blk) + chk(sum.blk, fBlk)], ["Block Avail", `<span class="${bAv <= 0 ? "bad" : ""}" title="98:00 bid-month block cap (crew scheduling) minus FLICA's bid-period Block">${bAv < 0 ? "-" + hm(-bAv) : hm(bAv)}</span>`], ["Soft", hm(sum.soft)],
+        ["Vacation", sum.vacDays ? `${hm(sum.vac)} <span class="k">(${sum.vacDays} d x ${hm(VAC_H)})</span>` : ""]]) +
+        tgrp("tpay", [["Pay-Gross", usd(sum.gross)], ["Pay-Net", usd(sum.net)]]) +
+        tgrp("tdays", [["Days Off", tt.days_off], ["Need 30 h off by", n30]]);
       if (this._idea && this._idea.key === key) {
         const r = ideasFor(this._idea.d, this._idea.trip);
         const md = (iso) => `${MON3[parseInt(iso.slice(5, 7), 10) - 1].slice(0, 1)}${MON3[parseInt(iso.slice(5, 7), 10) - 1].slice(1).toLowerCase()} ${parseInt(iso.slice(8), 10)}`;
@@ -564,8 +567,11 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const shown = vsel || vl[vl.length - 1];
         const cg = vsel ? price(mon, ownT) : curG;
         const isCur = !vsel;
-        vhtml = `<div class="vbar"><span class="vb" data-v="prev" title="Older version">&#9664;</span> <b>v${this._esc(shown.ver)}</b> <span class="vb" data-v="next" title="Newer version">&#9654;</span> <span class="vb${isCur ? " here" : ""}" data-v="home" title="Current version">&#127968;</span> <span class="k">${vl.length} versions${isCur ? " (current)" : " · viewing " + this._esc((shown.at || "").slice(0, 10)) + ", Pay-Gross " + usd(cg)}</span>` +
-          ` &nbsp;<span class="k">Awarded-Pay-Gross</span> <b>${usd(awd)}</b> <span class="k">(v${this._esc(vl[0].ver)})</span> &nbsp;<span class="k">Improved-Pay-Gross</span> <b class="${imp >= 0 ? "up" : "dn"}">${imp >= 0 ? "+" : "-"}${usd(Math.abs(imp))}</b>` +
+        // FW-0008 (Ryan, Nov 6): two groups that wrap as units: the version arrows, then Awarded-Pay-Gross with
+        // Improved-Pay-Gross (on an iPhone their own line); a label never wraps away from its value
+        vhtml = `<div class="vbar"><span class="vg"><span class="nw"><span class="vb" data-v="prev" title="Older version">&#9664;</span> <b>v${this._esc(shown.ver)}</b> <span class="vb" data-v="next" title="Newer version">&#9654;</span> <span class="vb${isCur ? " here" : ""}" data-v="home" title="Current version">&#127968;</span></span> <span class="k">${isCur ? `<span class="nw">${vl.length} versions (current)</span>` : `${vl.length} versions · viewing <span class="nw">${this._esc((shown.at || "").slice(0, 10))},</span> <span class="nw">Pay-Gross ${usd(cg)}</span>`}</span></span>` +
+          `<span class="vg vpay"><span class="nw"><span class="k">Awarded-Pay-Gross</span> <b>${usd(awd)}</b> <span class="k">(v${this._esc(vl[0].ver)})</span></span>` +
+          `<span class="nw"><span class="k">Improved-Pay-Gross</span> <b class="${imp >= 0 ? "up" : "dn"}">${imp >= 0 ? "+" : "-"}${usd(Math.abs(imp))}</b></span></span>` +
           `</div>`;
         const chg = (shown.changes || []).filter((c) => !/ \? -> /.test(c));
         chtml = `<details class="chg"><summary>Changes in v${this._esc(shown.ver)}${shown.at ? " (" + this._esc(String(shown.at).slice(0, 10)) + ")" : ""}</summary>${chg.length ? "<ul>" + chg.map((c) => "<li>" + this._esc(c) + "</li>").join("") + "</ul>" : "<div>No trip or pay changes (first reads of seat or times only).</div>"}</details>`;
@@ -590,7 +596,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
       @media (max-width:700px){ha-card{font-size:10.5px;padding:6px 3px 8px}.cal td{padding:1px 3px}
         .cal td:nth-child(1),.cal th:nth-child(1){position:static}.cal td:nth-child(2),.cal th:nth-child(2){left:0;border-left:none}
         .lt td:first-child{width:90px}.set span{display:block;margin:2px 0}.nav{font-size:20px}}
-      .vbar{text-align:left;font-size:12px;margin:0 0 6px;padding-left:0}.vbar .vb{cursor:pointer;padding:0 6px;color:var(--primary-color)}.vbar .vb.here{opacity:.5}.vbar .vch{opacity:.7;font-size:11px}.vbar .up,.ipanel .up{color:#2e7d32}.vbar .dn,.ipanel .dn{color:#c62828}
+      .vbar{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 14px;text-align:left;font-size:12px;margin:0 0 6px;padding-left:0}.vbar .vpay{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 10px}.vbar .nw{white-space:nowrap}
+      @media (max-width:700px){.vbar{font-size:11px;column-gap:10px}.vbar .vpay{column-gap:8px}.vbar .vb{font-size:12px}}.vbar .vb{cursor:pointer;padding:0 6px;color:var(--primary-color)}.vbar .vb.here{opacity:.5}.vbar .vch{opacity:.7;font-size:11px}.vbar .up,.ipanel .up{color:#2e7d32}.vbar .dn,.ipanel .dn{color:#c62828}
       .idb{cursor:pointer;color:#888;white-space:nowrap}.idb.live{color:var(--primary-color);font-weight:700}.idb small{color:#2e7d32}
       .ipanel{margin:10px 0;padding:8px;border:1px solid var(--divider-color,#ccc);border-radius:8px}.ipanel .ihd{margin-bottom:6px}.ipanel .ix{float:right;cursor:pointer;padding:0 6px}
       .itab{border-collapse:collapse;font-size:12px;width:100%}.itab td,.itab th{border-bottom:1px solid var(--divider-color,#ddd);padding:3px 5px;text-align:left}.itab td.t{text-align:right}.itab tr.off{opacity:.55}
@@ -662,7 +669,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .tag{cursor:help}.lay{display:inline-block;min-width:28px}
       .st{color:#2e7d32;font-weight:700;cursor:help}.st.fly{color:#1565c0}
       @media (prefers-color-scheme: dark){.st{color:#81c784}.st.fly{color:#90caf9}}.more{color:var(--primary-color);font-weight:700;padding:0 3px}.tag.avail{color:var(--success-color,#2e7d32);font-weight:600}
-      .tot{margin-top:8px;font-size:14px;font-weight:700;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .k{font-weight:600;color:var(--secondary-text-color);font-size:12px;margin-right:4px}
+      .tot{margin-top:8px;font-size:14px;font-weight:700;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tgrp{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tpay{flex-wrap:nowrap}.tot .ti{white-space:nowrap}.tot .k{font-weight:600;color:var(--secondary-text-color);font-size:12px;margin-right:4px}
       .lt{margin:0 auto;text-align:left}.lt td{padding:1px 6px;vertical-align:top}.lt td:first-child{font-weight:700;white-space:nowrap}
       .leg{font-size:10.5px;color:var(--secondary-text-color);text-align:center;margin-top:6px}
       .leg summary{cursor:pointer;font-weight:600;font-size:11px;list-style:none}.leg summary::before{content:"\\25B8 "}.leg[open] summary::before{content:"\\25BE "}
