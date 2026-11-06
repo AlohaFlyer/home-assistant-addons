@@ -1,5 +1,6 @@
-"""Ingress page: settings (credentials), monthly PDFs, rules editor, recent finds, recent matches. HA handles
-auth; only the Supervisor ingress proxy (172.30.32.2) may connect. Passwords are never shown or logged."""
+"""Ingress page: settings (credentials), monthly PDFs and the pilot seniority list, rules editor, recent finds,
+recent matches. HA handles auth (the ingress panel is for HA admins); only the Supervisor ingress proxy (172.30.32.2)
+may connect. Passwords are never shown or logged."""
 import html
 import json
 import os
@@ -33,12 +34,15 @@ nav a{{margin-right:14px}}.set label{{display:block;margin:6px 0}}.set input{{wi
 <h3 id="pdfs">Monthly PDFs</h3>
 <p class="note">0.9.0 (Ryan): upload the month's award (your line as awarded) and the pilot pairings package. They are
 kept in /share/flight_watcher/uploads (never committed) with a text copy, and parsed for the month's starting
-schedule and the tag-on ideas.</p>
+schedule and the tag-on ideas. 1.4.2 (FW-0062): the pilot seniority list (any month; the Month box is not used for
+it) gives each pilot's date of hire, so a pilot's month rebuilt from crew lists shows a pay line for every pilot
+instance. Give its list date if the PDF does not print one.</p>
 <form method="post" action="upload" enctype="multipart/form-data">
-Month <input type="month" name="month" required value="{month}"> &nbsp;
-<select name="kind"><option value="award">Monthly award</option><option value="pairings">Pairings package</option></select> &nbsp;
+Month <input type="month" name="month" value="{month}"> &nbsp;
+<select name="kind"><option value="award">Monthly award</option><option value="pairings">Pairings package</option><option value="seniority">Pilot seniority list</option></select> &nbsp;
+<label>List date <input type="date" name="list_date" title="Seniority list only, optional"></label> &nbsp;
 <input type="file" name="pdf" accept="application/pdf,.pdf" required> &nbsp;<button type="submit">Upload</button></form>
-{uploads}
+{uploads}{seniority}
 <h3 id="rules">Rules</h3>
 <p class="note">FLICA is read only: rules alert and log what they <i>would</i> submit, and nothing is ever sent to
 FLICA. Every rule starts in dry run; its live switch (switch.flight_watcher_rule_&lt;id&gt;_live) cannot turn on until the rule is 7 days old.</p>
@@ -87,7 +91,7 @@ def _month_default():
 
 def _uploads_table():
     try:
-        files = sorted(f for f in os.listdir(UPLOAD_DIR) if f.endswith(".pdf"))
+        files = sorted(f for f in os.listdir(UPLOAD_DIR) if f.endswith(".pdf") and not f.endswith(".new.pdf"))
     except OSError:
         files = []
     if not files:
@@ -100,8 +104,63 @@ def _uploads_table():
     return _table(rows, ["file", "size", "text copy"])
 
 
+def _hst_now():
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone(timedelta(hours=-10)))
+
+
+def seniority_file():
+    """FW-0062: the parsed seniority list, shared by every pilot instance (the Web UI runs on the default one)."""
+    return os.path.join(UPLOAD_DIR, "seniority.json")
+
+
+def seniority_read(txt_path, uploaded_at, list_date=""):
+    """Parse a seniority list text copy (pdftotext -layout): seniority.parse's dict (rows, rejects, ...). The century
+    of a two-digit year comes from the list date, else the upload's year."""
+    import seniority as SEN
+    ref = int(list_date[:4]) if list_date else int(uploaded_at[:4])
+    return SEN.parse(open(txt_path, encoding="utf-8", errors="replace").read(), ref)
+
+
+def seniority_store(parsed, pdf_name, uploaded_at, list_date="", out=None):
+    """Write seniority.json (atomic; seniority_file() unless `out`) from a parse with pilot rows. Returns the dict."""
+    import seniority as SEN
+    d = SEN.to_json(parsed, pdf_name, uploaded_at, list_date)
+    out = out or seniority_file()
+    tmp = out + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, separators=(",", ":"))
+    os.replace(tmp, out)
+    return d
+
+
+def seniority_write(txt_path, pdf_name, uploaded_at, list_date="", out=None):
+    """Parse a seniority list text copy and write seniority.json (seniority_read + seniority_store). Returns the
+    written dict, or None when no pilot row was read (the file on hand is kept). Nothing personal is logged."""
+    parsed = seniority_read(txt_path, uploaded_at, list_date)
+    return seniority_store(parsed, pdf_name, uploaded_at, list_date, out) if parsed["rows"] else None
+
+
+def _seniority_line(d):
+    when = f"list date {d['list_date']}" if d.get("list_date") else "no list date in the file"
+    return (f"{d.get('count', 0)} pilots read, {when}, newest date of hire on it {d.get('newest_doh') or '?'}"
+            f" ({d.get('rejects', 0)} lines not read)")
+
+
+def _seniority_status():
+    try:
+        d = json.load(open(seniority_file(), encoding="utf-8"))
+    except (OSError, ValueError):
+        return "<p class='note'>No pilot seniority list on file: the pay line under a rebuilt month needs one.</p>"
+    return (f"<p class='note'>Seniority list on file: {html.escape(_seniority_line(d))}; uploaded "
+            f"{html.escape(str(d.get('uploaded_at') or '')[:16].replace('T', ' '))} HST "
+            f"({html.escape(str(d.get('file') or ''))}). Every pilot instance reads it.</p>")
+
+
 def _save_upload(ctype, body, log):
-    """Store one PDF from a multipart form as <YYYY-MM>_<award|pairings>.pdf plus a pdftotext -layout copy."""
+    """Store one PDF from a multipart form as <YYYY-MM>_<award|pairings>.pdf plus a pdftotext -layout copy.
+    FW-0062: kind 'seniority' (no month) goes to _save_seniority: kept as seniority_<YYYY-MM-DD, HST upload day>.pdf
+    and read into seniority.json only when it gives pilot rows."""
     try:
         msg = BytesParser(policy=HTTP).parsebytes(b"Content-Type: " + ctype.encode() + b"\r\n\r\n" + body)
         fields, data = {}, None
@@ -112,11 +171,13 @@ def _save_upload(ctype, body, log):
             elif name:
                 fields[name] = (part.get_payload(decode=True) or b"").decode(errors="replace").strip()
         month, kind = fields.get("month", ""), fields.get("kind", "")
-        if not re.fullmatch(r"\d{4}-\d{2}", month) or kind not in ("award", "pairings"):
+        if kind not in ("award", "pairings", "seniority") or (kind != "seniority" and not re.fullmatch(r"\d{4}-\d{2}", month)):
             return "<p class='err'>Pick a month and a kind.</p>"
         if not data or not data.startswith(b"%PDF"):
             return "<p class='err'>That file is not a PDF.</p>"
         os.makedirs(UPLOAD_DIR, exist_ok=True)
+        if kind == "seniority":
+            return _save_seniority(data, fields, log)
         path = os.path.join(UPLOAD_DIR, f"{month}_{kind}.pdf")
         with open(path, "wb") as f:
             f.write(data)
@@ -129,6 +190,53 @@ def _save_upload(ctype, body, log):
         return f"<p class='ok'>Saved {html.escape(os.path.basename(path))} ({len(data) // 1024} KB){note}.</p>"
     except Exception as e:
         return f"<p class='err'>Upload failed: {html.escape(str(e))}</p>"
+
+
+def _save_seniority(data, fields, log):
+    """FW-0062: a seniority list upload. It goes to a temporary name (seniority_<day>.new.pdf / .txt) and is read
+    there; only a file that gives pilot rows is renamed to seniority_<YYYY-MM-DD, HST upload day>.pdf / .txt and
+    written to seniority.json. A refused file (no text copy, no pilot rows) is deleted, so the list on file keeps its
+    PDF and text copy (seniority_refresh re-reads that text after a parser change), even when the refused upload is
+    on the same day."""
+    now = _hst_now()
+    name = f"seniority_{now.strftime('%Y-%m-%d')}"
+    final, tmp = os.path.join(UPLOAD_DIR, name + ".pdf"), os.path.join(UPLOAD_DIR, name + ".new.pdf")
+    kb = len(data) // 1024
+    kept = "the list on file is kept."
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+        try:
+            subprocess.run(["pdftotext", "-layout", tmp, tmp[:-4] + ".txt"], check=True, timeout=120)
+        except Exception as e:
+            log.info("upload: seniority list (%d KB) gave no text copy; not kept", kb)
+            return (f"<p class='err'>Not kept: {name}.pdf ({kb} KB) gave no text copy "
+                    f"({html.escape(str(e))[:120]}), so the list cannot be read; {kept}</p>")
+        given = fields.get("list_date", "")
+        given = given if re.fullmatch(r"\d{4}-\d{2}-\d{2}", given) else ""
+        at = now.isoformat(timespec="seconds")
+        parsed = seniority_read(tmp[:-4] + ".txt", at, given)
+        if not parsed["rows"]:
+            why = {r for r, _ in parsed.get("rejects") or []}
+            log.info("upload: seniority list (%d KB) read no pilot rows (%d lines not read); not kept", kb,
+                     len(parsed.get("rejects") or []))
+            if "header-order" in why:
+                return (f"<p class='err'>Not kept: {name}.pdf ({kb} KB). No pilot rows were read: its header puts the "
+                        "columns in an order this version does not read (it needs EMP # before ALPA #, and DOH as "
+                        f"the first date column); {kept}</p>")
+            return (f"<p class='err'>Not kept: {name}.pdf ({kb} KB). No pilot rows were found in it (is it the pilot "
+                    f"seniority list?); {kept}</p>")
+        os.replace(tmp, final)
+        os.replace(tmp[:-4] + ".txt", final[:-4] + ".txt")
+        d = seniority_store(parsed, name + ".pdf", at, given)
+    finally:
+        for f in (tmp, tmp[:-4] + ".txt"):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+    log.info("upload: seniority list read, %d pilots, %d lines not read; saved (%d KB)", d["count"], d["rejects"], kb)
+    return f"<p class='ok'>Saved {html.escape(name)}.pdf ({kb} KB). {html.escape(_seniority_line(d))}.</p>"
 
 
 SETTINGS_FIELDS = (  # (key, label, secret)
@@ -188,6 +296,7 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
         def _page(self, msg="", draft=None, settings_msg=""):
             body = PAGE.format(
                 version=html.escape(version), msg=msg, month=_month_default(), uploads=_uploads_table(),
+                seniority=_seniority_status(),
                 settings_msg=settings_msg,
                 settings=_settings_form(get_settings() if get_settings else {}) if save_settings else
                 "<p class='note'>Not available on this instance.</p>",

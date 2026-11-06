@@ -1,0 +1,46 @@
+The new MARCH seniority list is attached. Questions to the Membership Committee.
+Synthetic test list: every name and number below is made up.
+                                                Sorted by:
+                                                SENIORITY
+SEN   NAME, Initial         EMP #   ALPA #   LAST NAME       FIRST NAME   DOH         DOR    EQUIP   SEAT
+  1   DOE, J.A.             901     990001   DOE             JANE         5/1/1988    May‐28 330     CA
+  2   ROE, R.B.             9002    990002   ROE             RICHARD      3/19/1989   Jun‐29 330     CA
+  3   VAN DOE, K.C.         9003    990003   VAN DOE         KAREN        11/2/1990   Jan‐31 717     CA
+  4   SMITH, A.             90004   9900004  SMITH           ALEX         12/15/1994  Oct‐33 321     CA
+  5   O'DOE, M.             90005   9900005  O'DOE           MARY ANN     6/30/1998   Feb‐37 330     FO
+  6   POE, E.               90006            POE             EDGAR        1/7/2002    Aug‐40 767     FO
+  7   LEE, T.               90007   9900007  LEE             TOM          9/9/2007    Dec‐45 717     FO
+                                                    Page 1
+                                                Sorted by:
+                                                SENIORITY
+SEN   NAME, Initial      EMP #   ALPA #    LAST NAME        FIRST NAME    DOH          DOR    EQUIP   SEAT
+  8   DOE‐SMITHERSON, J90008   9900008   DOE‐SMITHERSO    JOHN          2/2/2015     Apr‐52 321     FO
+  9   ROE JR, R.A.9009     9900009   ROE JR           ROBERT        7/14/2016    Jul‐55 330     FO
+ 10   MOE,K.             90010   9900010   MOE              KAI           10/3/2018    Mar‐58 330     FO
+ 11   ZOE, Z.            90011   9900011   ZOE              ZACHARIAH     4/22/2019    Sep‐60 321     FO
+ 12   NOE, N.            90011   9900012   NOE              NINA          8/5/2019     Nov‐61 330     FO
+                                                    Page 2
+                                                Sorted by:
+                                                ALPHABETICAL
+SEN   NAME, Initial         EMP #   ALPA #   LAST NAME       FIRST NAME   DOH         DOR    EQUIP   SEAT
+  1   DOE, J.A.             901     990001   DOE             JANE         05/01/88    May‐28 330     CA
+  8   DOE‐SMITHERSON, J      90008   9900008  DOE‐SMITHERSON  JOHN         02/02/15    Apr‐52 321     FO
+ 10   MOE, K.               90010   9900010  MOEKAI                       10/03/18    Mar‐58 330     FO
+ 12   NOE, N.               90011   9900012  NOE             NINA         08/05/19    Nov‐61 330     FO
+ 11   ZOE, Z.               90011   9900011  ZOE             ZACHARIAH04/22/19    Sep‐60 321     FO
+                                                    Page 3
+                                                Sorted by:
+                                                A330 Captains
+SEN   NAME, Initial         EMP #   ALPA #   LAST NAME       FIRST NAME   DOH         DOR    EQUIP   SEAT
+  1   DOE, J.A.             901     990001   DOE             JANE         05/01/88    May‐28 330     CA
+  2   ROE, R.B.             9002    990002   ROE             RICHARD      03/19/89    Jun‐29 330     CA
+                                                    Page 4
+                                                Sorted by:
+                                  MANDATORY AGE 65 RETIREMENT AGE
+SEN   NAME, Initial         EMP #   ALPA #   LAST NAME       FIRST NAME   DOH         DOR    EQUIP   SEAT
+2028 = 1 PILOTS
+  1   DOE, J.A.             901     990001   DOE             JANE         05/01/88    May‐28 330     CA
+2029 = 1 PILOTS
+  2   ROE, R.B.             9002    990002   ROE             RICHARD      03/19/89    Jun‐29 330     CA
+                                                    Page 5
+     TOTAL PILOTS   12        CAPTAINS   4        FIRST OFFICERS   8

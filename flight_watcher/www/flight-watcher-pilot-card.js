@@ -7,6 +7,9 @@ const DOW = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const PILOT_EV = "flight-watcher-pilot";  // the lookup event (pickers, pilot lookup, the pick list, #pilot= links)
 const PILOT_SAME_MS = 2000;  // FW-0025: the same lookup again inside 2 s is one tap heard twice, not a new request
+// FW-0062: the viewer's own tax settings (the schedule card's), for the pay line's Pay-Net estimate
+const TAX_HELPERS = ["input_number.flight_watcher_federal_tax_pct", "input_number.flight_watcher_state_tax_pct"];
+const usd = (v) => "$" + Math.round(v).toLocaleString("en-US");
 
 class FlightWatcherPilotCard extends HTMLElement {
   // FW-0025: HA calls setConfig more than once per card and keeps replaced card elements alive, and each call used to
@@ -87,12 +90,17 @@ class FlightWatcherPilotCard extends HTMLElement {
     this._h = h;
     const st = h.states[this._config.entity];
     const sig = st ? st.last_updated : "";
-    if (sig === this._sig && this._root) return;
+    const tsig = TAX_HELPERS.map((e) => (h.states[e] || {}).last_updated || "").join("|");  // FW-0062: Pay-Net follows the tax settings
+    if (sig === this._sig && this._root) {
+      if (tsig !== this._tsig) { this._tsig = tsig; if (!this._busy) this._paint(); }
+      return;
+    }
     if (sig !== this._sig && this._askQ && st && st.attributes) {  // the reply to a name lookup: remember the pilot it found
       if (st.attributes.emp) (FlightWatcherPilotCard._qEmp = FlightWatcherPilotCard._qEmp || {})[this._askQ] = String(st.attributes.emp);
       this._askQ = "";
     }
     this._sig = sig;
+    this._tsig = tsig;
     this._paint();
   }
   getCardSize() { return 8; }
@@ -110,9 +118,44 @@ class FlightWatcherPilotCard extends HTMLElement {
     const days = (x) => (x.start === x.end ? md(x.start) : x.start.slice(0, 7) === x.end.slice(0, 7) ? `${md(x.start)}-${+x.end.slice(8)}` : `${md(x.start)}-${md(x.end)}`);
     const also = g.also.length ? `<div class="u also">Also on crew lists, on days of a trip above (one of them was likely traded after it was read): ${g.also.map((x) => `<b>${this._esc(x.pairing)}</b> ${days(x)}${x.seat ? " " + this._esc(x.seat) : ""}${x.checked_at ? ", read " + this._esc(String(x.checked_at).slice(5, 16).replace("T", " ")) : ""}`).join(" · ")}</div>` : "";
     const left = [g.also.length ? `+${g.also.length} overlapping` : "", g.items.length > tot.length ? `+${g.items.length - tot.length} before ${md(g.from)}` : ""].filter(Boolean);
-    const body = g.items.length ? `${this._grid(g.days, g.items, g.month)}${also}
-      <div class="tot"><span>Trips<b>${tot.length}</b>${left.length ? ` <small class="u">(${left.join(", ")}: not totaled)</small>` : ""}</span><span>Block<b>${sum("blk")}</b></span><span>Credit<b>${sum("credit")}</b></span><span class="u">Source: crew lines on FLICA pairing pages (crew index, read only); Block / Credit / layover from the pairing package, blank where it has none. A trip picked up or dropped after it was read shows as it was then.</span></div>` : "";
+    const src = `Source: crew lines on FLICA pairing pages (crew index, read only); Block / Credit / layover from the pairing package, blank where it has none. A trip picked up or dropped after it was read shows as it was then.`;
+    const body = !g.items.length ? "" : `${this._grid(g.days, g.items, g.month)}${also}` + (a.pay_line ? this._payLine(a.pay_line, left, md, src) :
+      `<div class="tot"><span>Trips<b>${tot.length}</b>${left.length ? ` <small class="u">(${left.join(", ")}: not totaled)</small>` : ""}</span><span>Block<b>${sum("blk")}</b></span><span>Credit<b>${sum("credit")}</b></span><span class="u">${src}</span></div>`);
     return readable ? `<details class="rb"><summary>${head}</summary>${body}</details>` : `<div class="rb"><div class="rbh">${head}</div>${body}</div>`;
+  }
+  _payLine(pl, left, md, src) {  // FW-0062: the rebuilt month's totals and pay, in the schedule card's totals style (groups that wrap as units)
+    const e = (s) => this._esc(s);
+    const S = (this._h && this._h.states) || {};
+    const num = (id) => { const v = parseFloat((S[id] || {}).state); return isNaN(v) ? null : v; };
+    const [fed, stt] = TAX_HELPERS.map(num);
+    const tax = Math.round((fed == null && stt == null ? Number(pl.tax_pct) || 0 : (fed == null ? 22 : fed) + (stt == null ? 0 : stt)) * 100) / 100;
+    const m = Number(pl.trips) || 0;
+    const of = (n) => (Number(n) < m ? ` <span class="k">(${e(n)} of ${e(m)})</span>` : "");
+    const ti = (k, v, t) => `<span class="ti"${t ? ` title="${e(t)}"` : ""}><span class="k">${k}</span> ${v}</span>`;
+    const grp = (cls, s) => (s ? `<span class="tgrp ${cls}">${s}</span>` : "");
+    const ds = (x) => `${e(x.pairing)} ${/^\d{4}-\d{2}-\d{2}$/.test(x.start || "") ? md(x.start) : e(x.start)}`;
+    const priced = pl.doh_known && pl.gross != null;
+    const hrsG = ti("Trips", e(m)) + ti("Credit", e(pl.credit) + of(pl.credit_n)) + ti("Block", e(pl.block) + of(pl.block_n)) + ti("Soft", e(pl.soft) + of(pl.soft_n));
+    const payG = priced ? ti("Pay-Gross", e(usd(pl.gross)) + (Number(pl.trips_priced) < m ? ` <span class="k">(${e(pl.trips_priced)} of ${e(m)} trips)</span>` : "")) +
+      ti("Pay-Net", `${e(usd(pl.gross * (1 - tax / 100)))} <span class="k">est. at your ${e(tax)}% tax</span>`, "Pay-Gross less your federal and state tax settings (the schedule card's); an estimate") : "";
+    const daysG = ti("Days Off", pl.days_off == null ? "?" : e(pl.days_off), "Bid period days with no trip on the crew lists. Reserve, training and other duty without a pairing are not on crew lists, so they count here as days off.");
+    const why = `Totals over the ${m} trips that start in the bid period, as drawn.` + (!priced ? "" : ` Pay-Gross = credit x the hourly rate of the seat flown on each trip, for the pilot's longevity year from the date of hire (PWA 3.B.1; Captain PWA 3.C.4, First Officer and RO PWA 3.D.6), plus PWA 4.O.1: Captain $5.00 per block hour on a crew of 3 or more, RO $4.00, First Officer $3.00 on a 3-pilot crew, and the Extended Range +15% for an FO or RO on a 4-pilot crew or a SIN layover. Credit from the pairing package (minimums per PWA 4.C.3).`);
+    let rate;
+    if (pl.doh_known) {
+      const seats = (pl.seats && pl.seats.length ? pl.seats : ["FO"]).map((s) => String(s).toUpperCase());
+      const r = pl.seat_rates || {};
+      const parts = [];
+      if (seats.includes("CA") && r.CA != null) parts.push(`$${e(Number(r.CA).toFixed(2))}/cr h CA (PWA 3.C.4)`);
+      if (seats.some((s) => s !== "CA") && r.FO != null) parts.push(`$${e(Number(r.FO).toFixed(2))}/cr h ${seats.includes("RO") ? "FO/RO" : "FO"} (PWA 3.D.6)`);
+      rate = [`Year ${e(pl.year)}${pl.year_to ? ` to ${e(pl.year_to)}` : ""} (DOH ${e(pl.doh)})`, ...parts].join(" · ");
+    } else if (pl.list_status === "not_on_list") {
+      rate = `Not on the seniority list on file${pl.list_date ? ` (${e(pl.list_date)})` : pl.list_newest_doh ? ` (newest DOH on it ${e(pl.list_newest_doh)})` : ""}: upload a newer list on the Web UI for this pilot's pay`;
+    } else rate = "Upload the seniority list on the Web UI for this pilot's pay";
+    const notes = [left.length ? `${left.join(", ")}: not totaled` : "",
+      (pl.missing || []).length ? `No credit for ${(pl.missing || []).map(ds).join(", ")}: not priced` : "",
+      (pl.no_block || []).length ? `No block for ${(pl.no_block || []).map(ds).join(", ")}: its PWA 4.O.1 override is not in Pay-Gross` : ""].filter(Boolean);
+    return `<div class="ptot" title="${e(why)}">${grp("thrs", hrsG)}${grp("tpay", payG)}${grp("tdays", daysG)}</div>` +
+      `<div class="u prate">${rate}</div>${notes.length ? `<div class="u prate">${notes.join(" · ")}</div>` : ""}<div class="u psrc">${src}</div>`;
   }
   _rebuild(a) {  // FW-0002: reconstructed trips -> the readable schedule's {days: [[iso, code, lay]], items} shape, plus also (overlaps)
     const ok = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || "");
@@ -162,6 +205,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     return list.some(([mo, dd]) => mo === m && dd === d);
   }
   _paint(loading) {
+    this._busy = !!loading;  // FW-0062: a tax setting change does not redraw over the loading line
     if (!this._root) {
       this._root = this.attachShadow({ mode: "open" });
       this._root.innerHTML = `<style>
@@ -187,6 +231,10 @@ class FlightWatcherPilotCard extends HTMLElement {
         .crew{font-size:11px;color:var(--secondary-text-color)}
         .legs{font-size:10.5px;color:var(--secondary-text-color)}
         .tot{margin:6px 0 0;font-size:12px}.tot b{margin-left:4px}.tot span{margin-right:14px}
+        .ptot{margin:8px 0 2px;font-size:13px;font-weight:700;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:4px 16px}
+        .ptot .tgrp{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 16px}.ptot .ti{white-space:nowrap}
+        .ptot .k{font-weight:600;color:var(--secondary-text-color);font-size:11.5px;margin-right:3px}
+        .prate{text-align:center;margin:2px 0;overflow-wrap:anywhere}.psrc{margin-top:4px}
         .none{padding:8px;color:var(--secondary-text-color)}
         .rb{margin-top:10px}.rbh{margin:0 0 4px}details.rb summary{cursor:pointer;margin:0 0 4px}.also{margin:6px 0 0}.also b{color:var(--primary-text-color)}
         .picks{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0}
@@ -196,7 +244,7 @@ class FlightWatcherPilotCard extends HTMLElement {
           .cal tr.bxs td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb}
           .cal tr.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 -2px 0 #bbb}
           .cal tr.bxs.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb,inset 0 -2px 0 #bbb}}
-        @media (max-width:700px){ha-card{font-size:10.5px;padding:6px 3px 8px}.cal td{padding:1px 3px}}
+        @media (max-width:700px){ha-card{font-size:10.5px;padding:6px 3px 8px}.cal td{padding:1px 3px}.ptot{font-size:12px;gap:3px 12px}.ptot .tgrp{gap:3px 12px}}
       </style><ha-card><div class="body"></div></ha-card>`;
       this._root.addEventListener("click", (e) => {
         if (e.target.closest(".x")) { this._hidden = true; this._paint(); return; }

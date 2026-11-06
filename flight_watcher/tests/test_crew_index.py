@@ -1,5 +1,6 @@
 """0.10.1 crew index: day mapping, run order and budget, crew lines, Markdown, pilot lookup (synthetic data only)."""
 import json
+import os
 import sys
 from datetime import date, datetime, timedelta
 
@@ -541,3 +542,202 @@ def test_crawl_awarded_period_with_open_trips(W, tmp_path, monkeypatch):
         30, 30, 100.0, 0, [])
     rows = W.DB.crew_rows()
     assert rows["H9502|2026-11-20"]["status"] == "ok" and rows["H9501|2026-11-12"]["status"] == "ok"
+
+
+# ---------------------------------------------------------------- FW-0062: pay line under a rebuilt month
+def test_rebuilt_details_from_each_trips_bid_period():
+    """The grid's first row (Oct 31) is a trip from October's file: it takes October's package, not November's (the
+    same id is another trip there); an id with a letter falls back to the package id without it; n counts the pilots
+    on the whole crew line (OPEN seats yes, flight attendants no), before the crew list is cut to 6."""
+    insts = {"H9007|2026-10-31": {"date": "2026-10-31", "end_date": "2026-11-02", "pairing": "H9007", "period": "2026-10"},
+             "H9008A|2026-11-05": {"date": "2026-11-05", "end_date": "2026-11-06", "pairing": "H9008A", "period": "2026-11",
+                                   "credit": "7h00"}}
+    rows = [{"key": k, "pos": "FO"} for k in insts]
+    det = {"2026-10": {"H9007": {"block": "20:55", "credit": "21:30", "lay": "SYD"}},
+           "2026-11": {"H9007": {"block": "1:00", "credit": "5:00", "lay": "OGG"}, "H9008": {"block": "5:00", "credit": "6:00", "lay": "SFO"}}}
+    line = [{"pos": "CA", "name": "Doe, Jane"}, {"pos": "FO", "name": "Roe, Rick"}, {"pos": "RO", "name": "OPEN"},
+            {"pos": "FA", "name": "Moe, Mo"}, {"pos": "FA", "name": "Poe, Pat"}, {"pos": "FA", "name": "Lee, Lou"},
+            {"pos": "FO", "name": "Zoe, Zed"}]
+    crew_rows = {"H9007|2026-10-31": {"crew": line}}
+    for d in (det, lambda p: det.get(p)):
+        got = CI.pilot_trips(insts, rows, start_from="2026-10-31", end_to="2026-11-30", crew_rows=crew_rows, details=d)
+        assert [(x["pairing"], x["period"], x["lay"], x["blk"], x["credit"]) for x in got] == [
+            ("H9007", "2026-10", "SYD", "20:55", "21:30"), ("H9008A", "2026-11", "SFO", "5:00", "6:00")]
+        assert (got[0]["n"], len(got[0]["crew"]), got[1]["n"]) == (4, 6, 0)
+    flat = CI.pilot_trips(insts, rows, start_from="2026-10-31", end_to="2026-11-30", details={"H9007": {"lay": "NRT"}})
+    assert [x["lay"] for x in flat] == ["NRT", ""] and flat[1]["credit"] == "7:00"  # an older flat map; the file's credit
+
+
+def test_grid_pick_matches_the_cards_choice():
+    trips = [{"pairing": "H9005", "start": "2026-11-05", "end": "2026-11-07", "checked_at": "2026-11-01T13:10:00"},
+             {"pairing": "H9006", "start": "2026-11-05", "end": "2026-11-06", "checked_at": "2026-11-04T09:00:00"},
+             {"pairing": "H9002", "start": "2026-11-20", "end": "", "checked_at": ""},
+             {"pairing": "", "start": "2026-11-21"}, {"pairing": "H9009", "start": "bad"}]
+    grid, also = CI.grid_pick(trips)
+    assert [(x["pairing"], x["end"]) for x in grid] == [("H9006", "2026-11-06"), ("H9002", "2026-11-20")]
+    assert [x["pairing"] for x in also] == ["H9005"]
+
+
+def _sen(tmp_path, pilots, list_date="2026-03-01"):
+    up = tmp_path / "uploads"
+    up.mkdir(exist_ok=True)
+    (up / "seniority.json").write_text(json.dumps({"list_date": list_date, "newest_doh": "2026-01-05", "count": len(pilots),
+                                                   "pilots": pilots}))
+    return str(up)
+
+
+ROE = {"sen": 5, "name": "Roe, Rick", "last": "Roe", "doh": "2018-10-03", "seat": "FO", "equip": "330"}
+
+
+def test_pilot_lookup_pay_line(W, tmp_path, monkeypatch):
+    """The rebuilt month's pay line: the trips the grid draws, each at its seat's rate for the longevity year from the
+    DOH on the shared seniority list (made-up), FO on a 3-pilot crew + $3.00 / block h (PWA 4.O.1), Pay-Net at this
+    instance's tax settings; 'gross' on each priced trip. No list, or not on it: hours and days only."""
+    import pay as PAY
+    _file(tmp_path / "www", "2026-11", [_row("H9001", "9", rel=2), _row("H9002", "20", rel=0, route="HNL-OGG-HNL")])
+    W.crew_index_check(FakeFl())  # crew line: CA, FO 10999 Roe, RO open = 3 pilots
+    W.DB.put("pkg_details:2026-11", {"H9001": {"block": "9:58", "credit": "12:34", "lay": "LAX"}})
+    monkeypatch.setattr(W, "UPLOADS_SHARED", _sen(tmp_path, {"10999": ROE}))
+    monkeypatch.setattr(W, "ha_state", lambda e: {"input_number.flight_watcher_federal_tax_pct": "20.0",
+                                                  "input_number.flight_watcher_state_tax_pct": "5"}.get(e))
+    W.pub_pilot({"emp": "10999", "name": "Roe, Rick", "status": "not readable", "month": "", "days": [], "items": []})
+    p = [p for t, p in W.SENT if t == "pilot_schedule"][-1]
+    pl, r = p["pay_line"], p["reconstructed"]
+    fo = PAY.rate_for(9, "2026-11-01")
+    g1, g2 = (12 + 34 / 60) * fo + (9 + 58 / 60) * 3.00, 12 * fo
+    assert [(x["pairing"], x["n"], x["gross"]) for x in r] == [("H9001", 3, pytest.approx(round(g1, 2))), ("H9002", 3, pytest.approx(round(g2, 2)))]
+    assert (pl["list_status"], pl["list_date"], pl["doh"], pl["year"], pl["seat_rates"]["FO"]) == ("ok", "2026-03-01", "2018-10-03", 9, fo)
+    assert pl["gross"] == pytest.approx(g1 + g2, abs=0.01) and pl["net"] == pytest.approx(pl["gross"] * 0.75, abs=0.01)
+    assert (pl["tax_pct"], pl["trips"], pl["trips_priced"], pl["credit"], pl["block"], pl["days_off"]) == (25.0, 2, 2, "24:34", "9:58", 26)
+    assert pl["no_block"] == [{"pairing": "H9002", "start": "2026-11-20"}] and pl["missing"] == []
+    # by name when the number is not on the list
+    monkeypatch.setattr(W, "UPLOADS_SHARED", _sen(tmp_path, {"55555": ROE}))
+    W._SEN_CACHE.clear()
+    W.pub_pilot({"emp": "10999", "name": "", "status": "not readable", "month": "", "days": [], "items": []})
+    assert [p for t, p in W.SENT if t == "pilot_schedule"][-1]["pay_line"]["doh"] == "2018-10-03"
+    # on no list / not on the list: no amounts
+    for pilots, why in ((None, "none"), ({"10001": {**ROE, "name": "Doe, Jane", "last": "Doe"}}, "not_on_list")):
+        if pilots is None:
+            (tmp_path / "uploads" / "seniority.json").unlink()
+        else:
+            _sen(tmp_path, pilots)
+        W._SEN_CACHE.clear()
+        W.pub_pilot({"emp": "10999", "name": "Roe, Rick", "status": "not readable", "month": "", "days": [], "items": []})
+        pl = [p for t, p in W.SENT if t == "pilot_schedule"][-1]["pay_line"]
+        assert (pl["list_status"], pl["doh_known"], pl["gross"], pl["net"], pl["credit"]) == (why, False, None, None, "24:34")
+    # a pilot the crew index has no trips for: no pay line
+    W.pub_pilot({"emp": "12345", "name": "Poe, Pat", "status": "not readable", "month": "", "days": [], "items": []})
+    assert "pay_line" not in [p for t, p in W.SENT if t == "pilot_schedule"][-1]
+
+
+def test_pilot_lookup_previous_period_package(W, tmp_path):
+    """The blank Block / Layover fix: the Oct 31 trip (October's file) takes October's package details."""
+    _file(tmp_path / "www", "2026-10", [_row("H9007", "31", rel=2, route="HNL-SYD-HNL")])
+    _file(tmp_path / "www", "2026-11", [_row("H9001", "9", rel=2)])
+    W.crew_index_check(FakeFl())
+    W.DB.put("pkg_details:2026-10", {"H9007": {"block": "20:55", "credit": "21:30", "lay": "SYD"}})
+    W.DB.put("pkg_details:2026-11", {"H9007": {"block": "1:00", "credit": "5:00", "lay": "OGG"},
+                                     "H9001": {"block": "9:58", "credit": "12:34", "lay": "LAX"}})
+    W.pub_pilot({"emp": "10999", "name": "Roe, Rick", "status": "not readable", "month": "", "days": [], "items": []})
+    r = [p for t, p in W.SENT if t == "pilot_schedule"][-1]["reconstructed"]
+    assert [(x["pairing"], x["start"], x["lay"], x["blk"], x["credit"], x["soft"]) for x in r] == [
+        ("H9007", "2026-10-31", "SYD", "20:55", "21:30", "0:35"), ("H9001", "2026-11-09", "LAX", "9:58", "12:34", "2:36")]
+
+
+def test_second_pilot_reads_the_shared_uploads(tmp_path, monkeypatch):
+    """One codebase for every pilot: a second pilot's instance (no Web UI, its own DB and uploads folder) takes the
+    pairing package details from the shared upload's text copy and the DOH from the shared seniority list, and
+    prices Pay-Net at its own tax helpers (input_number.flight_watcher_<name>_*)."""
+    from test_instance import _load
+    from test_pdfs import PKG
+    from store import Store
+    W = _load(tmp_path, monkeypatch, "james", {"username": "u", "password": "p"})
+    monkeypatch.setattr(W, "DB", Store(str(tmp_path / "t.db")))
+    monkeypatch.setattr(W, "CARD_PAIRINGS", str(tmp_path / "www"))
+    monkeypatch.setattr(W, "local_now", lambda: datetime(2026, 11, 10, 12, 5))
+    sent = []
+    monkeypatch.setattr(W, "pub", lambda t, p, retain=True: sent.append((t, p)))
+    up = _sen(tmp_path, {"10999": ROE})
+    (tmp_path / "uploads" / "2026-11_pairings.txt").write_text(PKG)
+    monkeypatch.setattr(W, "UPLOADS_SHARED", up)
+    monkeypatch.setattr(W, "ha_state", lambda e: {"input_number.flight_watcher_james_federal_tax_pct": "10",
+                                                  "input_number.flight_watcher_federal_tax_pct": "40"}.get(e))
+    assert W.UPLOADS == "/share/flight_watcher/james/uploads" != W.UPLOADS_SHARED
+    assert W.DB.get("pkg_details:2026-11") is None and W.pkg_details_for("2026-11")["H9001"]["lay"] == "LAX"
+    assert W.pkg_details_for("2026-10") == {}
+    _file(tmp_path / "www", "2026-11", [_row("H9001", "2", rel=2)])
+    W.DB.crew_put("H9001|2026-11-02", "H9001", "2026-11-02", "2026-11-04", "HNL-OGG-LAX-HNL",
+                  [{"pos": "CA", "name": "Doe, Jane", "emp": "10001"}, {"pos": "FO", "name": "Roe, Rick", "emp": "10999"}],
+                  "2026-11-01T10:00:00", "ok")
+    W.pub_pilot({"emp": "10999", "name": "Roe, Rick", "status": "not readable", "month": "", "days": [], "items": []})
+    p = [p for t, p in sent if t == "pilot_schedule"][-1]
+    assert [(x["lay"], x["blk"], x["credit"], x["n"]) for x in p["reconstructed"]] == [("LAX", "11:00", "12:00", 2)]
+    pl = p["pay_line"]
+    assert (pl["list_status"], pl["year"], pl["tax_pct"]) == ("ok", 9, 10.0)
+    import pay as PAY
+    assert pl["gross"] == pytest.approx(12 * PAY.rate_for(9, "2026-11-02"), abs=0.01)
+    (tmp_path / "uploads" / "seniority_2026-11-07.txt").write_text("a newer list")
+    monkeypatch.setattr(W.SEN, "PARSER", W.SEN.PARSER + 1)
+    W.seniority_refresh()  # the list has one writer, the default instance: this one never rewrites it
+    assert json.loads((tmp_path / "uploads" / "seniority.json").read_text())["pilots"] == {"10999": ROE}
+
+
+def test_seniority_refresh_rereads_after_a_parser_change(W, tmp_path, monkeypatch, fx):
+    up = tmp_path / "uploads"
+    up.mkdir()
+    (up / "seniority_2026-11-06.txt").write_text(fx("seniority_synthetic.txt"), encoding="utf-8")
+    monkeypatch.setattr(W, "UPLOADS_SHARED", str(up))
+    W.seniority_refresh()
+    d = json.loads((up / "seniority.json").read_text())
+    assert (d["count"], d["file"], d["uploaded_at"][:10]) == (12, "seniority_2026-11-06.pdf", "2026-11-06")
+    (up / "seniority.json").write_text(json.dumps({**d, "count": 1, "list_date": "2026-03-01"}))
+    W._SEN_CACHE.clear()
+    W.seniority_refresh()  # same parser: the file on hand stands
+    assert json.loads((up / "seniority.json").read_text())["count"] == 1
+    monkeypatch.setattr(W.SEN, "PARSER", W.SEN.PARSER + 1)  # a release with a changed parse rule
+    W.seniority_refresh()
+    d2 = json.loads((up / "seniority.json").read_text())
+    assert (d2["count"], d2["parser"], d2["list_date"]) == (12, W.SEN.PARSER, "2026-03-01")  # a typed list date is kept
+    mt = (up / "seniority.json").stat().st_mtime_ns
+    W._SEN_CACHE.clear()
+    W.seniority_refresh()  # current: not read again
+    assert (up / "seniority.json").stat().st_mtime_ns == mt
+
+
+def test_seniority_refresh_rereads_the_list_on_file(W, tmp_path, monkeypatch, fx):
+    """Review fix: after a parser change the Watcher re-reads the text copy of the file seniority.json names (with
+    its upload time and typed list date), not whichever seniority_<date>.txt is newest; with no seniority.json it reads
+    the newest. The file's signature is stored before the read, so a slow or failing file is not read again at the
+    next start (made-up list)."""
+    import web
+    up = tmp_path / "uploads"
+    up.mkdir()
+    (up / "seniority_2026-11-06.txt").write_text(fx("seniority_synthetic.txt"), encoding="utf-8")
+    (up / "seniority_2026-11-07.txt").write_text("Minutes of the March meeting\n", encoding="utf-8")  # an older build's leftover
+    monkeypatch.setattr(W, "UPLOADS_SHARED", str(up))
+    (up / "seniority.json").write_text(json.dumps({"file": "seniority_2026-11-06.pdf", "uploaded_at": "2026-11-06T09:30:00-10:00",
+                                                   "list_date": "2026-03-01", "parser": W.SEN.PARSER - 1, "count": 1, "pilots": {}}))
+    calls, real = [], web.seniority_write
+
+    def spy(path, *a):
+        f = os.path.basename(path)
+        calls.append((f, W.DB.load_state().get("uploads_done", {}).get(f)))  # already stored when the read starts
+        return real(path, *a)
+    monkeypatch.setattr(W.web, "seniority_write", spy)
+    W.seniority_refresh()
+    d = json.loads((up / "seniority.json").read_text())
+    assert (d["count"], d["parser"], d["file"], d["list_date"], d["uploaded_at"]) == (
+        12, W.SEN.PARSER, "seniority_2026-11-06.pdf", "2026-03-01", "2026-11-06T09:30:00-10:00")
+    assert [c[0] for c in calls] == ["seniority_2026-11-06.txt"] and calls[0][1].endswith(f"|{W.SEN.PARSER}")
+    # a file that fails is not read again with the same parser
+    (up / "seniority.json").unlink()
+    W._SEN_CACHE.clear()
+
+    def boom(path, *a):
+        calls.append((os.path.basename(path), "boom"))
+        raise RuntimeError("slow or broken")
+    monkeypatch.setattr(W.web, "seniority_write", boom)
+    W.seniority_refresh()  # no seniority.json: the newest text copy
+    W.seniority_refresh()
+    assert calls[1:] == [("seniority_2026-11-07.txt", "boom")]
+    assert "seniority_2026-11-07.txt" in W.DB.load_state()["uploads_done"]
