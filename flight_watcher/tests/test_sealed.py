@@ -46,7 +46,7 @@ def test_browser_card_seal_opens_in_python(tmp_path):
     k = SEAL.load_key(str(tmp_path / "k.pem"))
     info = SEAL.public_info(k)
     src = open(os.path.join(HERE, "..", "www", "flight-watcher-settings-card.js"), encoding="utf-8").read()
-    body = re.search(r"try \{\n(.*?)\n      this\._sentAt = a\.at", src, re.S).group(1)
+    body = re.search(r"\n(      const b64 = .*?)\n      this\._sentAt = a\.at", src, re.S).group(1)
     js = ("const a = %s; const fields = {password: 'pw-node', my_name: 'Doe'};\n"
           "(async () => {\n%s\n console.log(JSON.stringify(body)); })();" % (json.dumps(info), body))
     f = tmp_path / "seal.mjs"
