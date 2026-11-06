@@ -48,9 +48,8 @@ Pako HI Home Assistant). Read `HANDOFF.md` next: it lists everything open.
 3. After merge: Home Assistant > the app store reload (`check_updates`) then update the app (second yes if not
    already given for this release). Verify `sensor.flight_watcher_state` attribute `version` and the app log.
 4. New MQTT discovery entities come up as `*.flight_watcher_*` (discovery sends `default_entity_id`).
-5. Renamed from FLICA Watcher in 1.0.0 (slug, folder, prefix, entities, cards, folders). Until the move on Pako is
-   finished (HANDOFF item 0), the repo also holds `flica_watcher/`: the old app's last release (0.10.4) that only
-   hands its /data over through `/share/flight_watcher/import/`. Remove that folder after the old app is uninstalled.
+5. Renamed from FLICA Watcher in 1.0.0 (slug, folder, prefix, entities, cards, folders); the move on Pako is done.
+   `migrate.py` stays for a second pilot's or a restored install's one-time import.
 
 ## Reaching Home Assistant
 - Pako HI Home Assistant: Nabu Casa URL (in Ryan's connectors), MCP connector "Home Assistant - Pako HI" and the
