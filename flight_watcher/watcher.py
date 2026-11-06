@@ -34,8 +34,9 @@ import pdfs as PDF
 import recall as RC
 import crewidx as CI
 import tickets as TK
+import sealed as SEAL
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -49,6 +50,14 @@ T = os.environ.get("FLIGHT_WATCHER_PREFIX", "flight_watcher")
 INSTANCE = os.environ.get("FLIGHT_WATCHER_INSTANCE", "")
 OPTIONS_FILE = os.environ.get("FLIGHT_WATCHER_OPTIONS", f"{DATA}/options.json")
 CREDS_FILE = f"{DATA}/creds.json"
+KEY_FILE = f"{DATA}/settings_key.pem"  # 1.1.0: this instance's key for sealed settings from the dashboard card
+_KEY = {}
+
+
+def settings_key():
+    if "k" not in _KEY:
+        _KEY["k"] = SEAL.load_key(KEY_FILE)
+    return _KEY["k"]
 CRED_KEYS = ("username", "password", "ctweb_username", "ctweb_password", "my_name")
 
 
@@ -311,16 +320,22 @@ DEV = {"identifiers": [T], "name": "Flight Watcher" + (f" ({INSTANCE.title()})" 
        "manufacturer": "Pako HI", "sw_version": VERSION}
 
 
-def settings_state(creds=None):
-    """What {T}/settings/state says: who is configured, never a password."""
+def settings_state(creds=None, result=""):
+    """What {T}/settings/state says: who is configured, never a password; plus the public key the dashboard card
+    seals new settings with (1.1.0) and the result of the last settings message."""
     o = {**OPTS, **{k: v for k, v in (creds or {}).items() if k in CRED_KEYS and isinstance(v, str) and v.strip()}}
-    return {"instance": INSTANCE, "username": o.get("username") or "", "my_name": o.get("my_name") or "",
-            "ctweb_username": o.get("ctweb_username") or "", "has_password": bool(o.get("password")),
-            "has_ctweb_password": bool(o.get("ctweb_password")), "at": now_iso()}
+    st = {"instance": INSTANCE, "username": o.get("username") or "", "my_name": o.get("my_name") or "",
+          "ctweb_username": o.get("ctweb_username") or "", "has_password": bool(o.get("password")),
+          "has_ctweb_password": bool(o.get("ctweb_password")), "at": now_iso(), "result": result}
+    try:
+        st.update(SEAL.public_info(settings_key()))
+    except Exception as e:  # noqa: BLE001 (no key: the card says so; Web UI and plain settings/set still work)
+        log.info("settings key unavailable: %s", e)
+    return st
 
 
-def publish_settings(c=None, creds=None):
-    (c or MQ).publish(f"{T}/settings/state", json.dumps(settings_state(creds)), retain=True)
+def publish_settings(c=None, creds=None, result=""):
+    (c or MQ).publish(f"{T}/settings/state", json.dumps(settings_state(creds, result)), retain=True)
 
 
 def settings_cmd(payload):
@@ -334,6 +349,13 @@ def settings_cmd(payload):
     except (ValueError, TypeError) as e:
         log.info("settings ignored: %s", e)
         return False
+    if "enc" in d:  # 1.1.0: sealed by the dashboard Settings card
+        try:
+            d = SEAL.open_sealed(settings_key(), d["enc"])
+        except SEAL.SealError as e:
+            log.info("sealed settings refused: %s", e)
+            publish_settings(creds=load_creds(), result=f"refused: {e}")
+            return False
     cur = load_creds()
     changed = []
     for k in CRED_KEYS:
@@ -343,7 +365,7 @@ def settings_cmd(payload):
             changed.append(k)
     if not changed:
         log.info("settings: nothing new (keys %s)", ", ".join(sorted(k for k in d if k in CRED_KEYS)) or "none")
-        publish_settings(creds=cur)
+        publish_settings(creds=cur, result="nothing new")
         return False
     tmp = CREDS_FILE + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # never readable by others, even briefly
@@ -355,7 +377,7 @@ def settings_cmd(payload):
         S["machine"], S["note"] = "idle", "new settings"
         S["pot_urls"], S["parse_fail"], S["relogin_streak"] = {}, 0, 0
         save_state(S)
-    publish_settings(creds=cur)
+    publish_settings(creds=cur, result="saved: " + ", ".join(changed))
     log.info("settings saved (%s); restarting in %d s to use them", ", ".join(changed), RESTART_DELAY_S)
     restart_later()
     return True
