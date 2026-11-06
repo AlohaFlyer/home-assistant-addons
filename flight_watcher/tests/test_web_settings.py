@@ -41,8 +41,10 @@ def test_settings_post_end_to_end():
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     sock.close()
+    cleared = []
     srv = web.serve(port, "9.9.9", lambda: [], lambda d: [], Store(), logging.getLogger("t"),
-                    get_settings=lambda: state, save_settings=lambda d: saved.append(d) or True)
+                    get_settings=lambda: state, save_settings=lambda d: saved.append(d) or True,
+                    clear_settings=lambda: cleared.append(1) or True)
     try:
         page = urllib.request.urlopen(f"http://127.0.0.1:{port}/").read().decode()
         assert page.index('id="settings"') < page.index('id="pdfs"') and "value='doej'" in page
@@ -52,5 +54,7 @@ def test_settings_post_end_to_end():
         assert "Saved." in reply and "Secr3t-pw" not in reply
         reply = urllib.request.urlopen(f"http://127.0.0.1:{port}/settings", data=b"username=&password=").read().decode()
         assert "every field was blank" in reply and len(saved) == 1
+        reply = urllib.request.urlopen(f"http://127.0.0.1:{port}/settings", data=b"clear=1").read().decode()
+        assert "Saved values cleared" in reply and cleared == [1] and len(saved) == 1
     finally:
         srv.shutdown()

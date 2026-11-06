@@ -152,10 +152,14 @@ def _settings_form(state):
             rows.append(f"<label><span class='k'>{label}</span> <input type='text' name='{k}' value='{v}' "
                         f"autocomplete='off' spellcheck='false'></label>")
     return ("<p class='note'>Saved on this Home Assistant only (/data/creds.json, readable by this app alone), never "
-            "in git. A blank field keeps what is saved. Saving restarts the Watcher, which logs in to FLICA with the "
-            "new details within a minute. The app's Configuration tab works too; values saved here win.</p>"
+            "in git. A blank field keeps what is saved. Saving restarts the Watcher; with a new FLICA username or "
+            "password it logs in within a minute, unless FLICA asked for a CAPTCHA/MFA (then press Re-arm after "
+            "dealing with FLICA yourself).</p>"
             "<form class='set' method='post' action='settings'>" + "".join(rows) +
-            "<p><button type='submit'>Save settings</button></p></form>")
+            "<p><button type='submit'>Save settings</button></p></form>"
+            "<form method='post' action='settings'><input type='hidden' name='clear' value='1'>"
+            "<p class='note'>Saved values win over the Configuration tab. To go back to it: "
+            "<button type='submit'>Clear saved values</button></p></form>")
 
 
 def parse_settings(body):
@@ -169,7 +173,8 @@ def parse_settings(body):
     return out
 
 
-def serve(port, version, get_rules, save_rules, store, log, get_settings=None, save_settings=None):
+def serve(port, version, get_rules, save_rules, store, log, get_settings=None, save_settings=None,
+          clear_settings=None):
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -218,7 +223,13 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
                 if not save_settings:
                     self.send_error(404)
                     return
-                d = parse_settings(self.rfile.read(n).decode())
+                body = self.rfile.read(n).decode()
+                if parse_qs(body).get("clear") == ["1"]:
+                    if clear_settings and clear_settings():
+                        return self._page(settings_msg="<p class='ok'>Saved values cleared: the Configuration tab "
+                                          "applies again. The Watcher restarts in a few seconds.</p>")
+                    return self._page(settings_msg="<p class='note'>Nothing saved here to clear.</p>")
+                d = parse_settings(body)
                 if not d:
                     return self._page(settings_msg="<p class='note'>Nothing to save: every field was blank.</p>")
                 if save_settings(d):

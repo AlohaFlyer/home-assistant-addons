@@ -2,7 +2,7 @@
 
 ## 1.0.1
 
-- Settings tab (Ryan): the Web UI (Settings > Apps > Flight Watcher > Open Web UI) opens on a Settings form for the FLICA username and password, the CrewTrac username and password and the last name. Saved to /data/creds.json (created mode 600), which wins over the Configuration tab; a blank field keeps what is saved; passwords are only shown as set / not set and never logged. Saving restarts the Watcher; a new FLICA username or password clears only a no-credentials or rejected-login stop (no Re-arm needed). A CAPTCHA/MFA stop or any other park still waits for Re-arm, whatever is saved. The stopped note points there.
+- Settings tab (Ryan): the Web UI (Settings > Apps > Flight Watcher > Open Web UI) opens on a Settings form for the FLICA username and password, the CrewTrac username and password and the last name. Saved to /data/creds.json (created mode 600), which wins over the Configuration tab; a blank field keeps what is saved; passwords are only shown as set / not set and never logged. Saving restarts the Watcher; a new FLICA username or password clears only a no-credentials or rejected-login stop (no Re-arm needed). A CAPTCHA/MFA stop or any other park still waits for Re-arm, whatever is saved. "Clear saved values" forgets creds.json so the Configuration tab applies again. Any restart (a save, an app restart) now keeps a running 30-min yield to your own FLICA login and a re-login back-off instead of loading FLICA at once. The stopped note points there.
 
 ## 1.0.0
 

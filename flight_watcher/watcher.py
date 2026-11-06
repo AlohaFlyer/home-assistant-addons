@@ -351,12 +351,31 @@ def settings_cmd(payload):
         json.dump(cur, f)
     os.chmod(tmp, 0o600)
     os.replace(tmp, CREDS_FILE)
-    if creds_stop_cleared(changed):
+    if creds_stop_cleared(changed):  # kills (the yield back-off count) stay; only Re-arm clears those
         S["machine"], S["note"] = "idle", "new settings"
-        S["kills"], S["pot_urls"], S["parse_fail"] = [], {}, 0
+        S["pot_urls"], S["parse_fail"], S["relogin_streak"] = {}, 0, 0
         save_state(S)
     publish_settings(creds=cur)
     log.info("settings saved (%s); restarting in %d s to use them", ", ".join(changed), RESTART_DELAY_S)
+    restart_later()
+    return True
+
+
+def still_waiting(now=None):
+    """1.0.1: a yield to Ryan's own FLICA login, or a re-login back-off, that has not run out yet."""
+    now = time.time() if now is None else now
+    m = S.get("machine")
+    return (m == "yielded" and now < S.get("yield_until", 0)) or (m == "backoff" and now < S.get("relogin_at", 0))
+
+
+def settings_clear():
+    """1.0.1: forget everything saved in creds.json (Web UI 'Use the Configuration tab'), so the add-on options
+    apply again; restarts like a save. True when there was something to forget."""
+    if not os.path.exists(CREDS_FILE):
+        return False
+    os.remove(CREDS_FILE)
+    publish_settings(creds={})
+    log.info("settings: saved values cleared, the Configuration tab applies; restarting in %d s", RESTART_DELAY_S)
     restart_later()
     return True
 
@@ -2847,6 +2866,10 @@ def main():
         set_machine("stopped_unexpected", "enter your FLICA username and password: Open Web UI > Settings")
     elif S.get("machine", "").startswith("stopped"):
         set_machine(S["machine"], S.get("note", "") + " (still stopped after restart, press Re-arm)")
+    elif still_waiting():
+        # 1.0.1 review: a restart (a Settings save, an app restart) keeps a yield to Ryan's own FLICA login
+        # and a re-login back-off running instead of loading FLICA at once
+        set_machine(S["machine"], S.get("note", ""))
     else:
         set_machine("idle", "starting")
     if S.get("fp_version") != FP_VERSION:
@@ -2889,7 +2912,7 @@ def main():
     if os.environ.get("FLIGHT_WATCHER_WEB", "1") == "1":  # 0.10.0: only the default instance serves the ingress page
         web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
                   save_rules_from_page, DB, log, get_settings=lambda: settings_state(load_creds()),
-                  save_settings=lambda d: settings_cmd(json.dumps(d)))
+                  save_settings=lambda d: settings_cmd(json.dumps(d)), clear_settings=settings_clear)
     last_month_check = None
     with sync_playwright() as pw:
         fl = Flica(pw)
