@@ -59,3 +59,6 @@ Pako HI Home Assistant). Read `HANDOFF.md` next: it lists everything open.
 - Pako HI Home Assistant: Nabu Casa URL (in Ryan's connectors), MCP connector "Home Assistant - Pako HI" and the
   "Pako HI Shell" connector (file read/write, bash on the HA host). Long shell calls drop: run patches in the
   background. Sprucebrook NV is a different house: never touch it for this project.
+- HOM MCP (the task register Hark and Claude share): `.mcp.json` server `hom`. URL from `HOM_MCP_URL` (set on the
+  cloud environment to the Funnel host), else `homeofficemanager.app/api/mcp`. Token from `HOM_AGENT_TOKEN` on a
+  laptop; cloud sessions get it injected by the network proxy. Never commit either value.

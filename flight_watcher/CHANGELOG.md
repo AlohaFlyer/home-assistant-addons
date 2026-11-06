@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.4.5
+
+- Tickets card (Ryan, Nov 6): **Process Tickets in Claude Code** now copies the prompt ("Process all Flight Watcher tickets on Pako HI: fix every new or reopened one, release it, mark it fixed, then confirm and close your completed fixes.") to the clipboard for Ryan to paste into his own Claude Code window, instead of opening a new session. It says "Copied. Paste it in Claude Code." under the button; if the browser blocks copying, the prompt shows selected to copy by hand. Card option `claude_code_prompt` replaces the text.
+- Uploads on the dashboard (Ryan, Nov 6: "give me a place to upload the award and the pairings monthly"): a new
+  card, `custom:flight-watcher-uploads-card`, for the Settings tab under Credentials and above Tickets. Pick Monthly
+  award, Pairings package or Pilot seniority list, the bid period (next month, HST, by default; the seniority list
+  takes an optional List date instead) and the PDF; the card shows the upload's progress and the app's answer, what
+  is on file (what, bid period, size, upload time HST, read or not) and the dates of hire on file. Home Assistant
+  admin only: anyone else sees "Uploads are for the Home Assistant admin." and the card makes no call. It reaches
+  the app the way Home Assistant's own app panels do (Supervisor ingress address and session over the WebSocket
+  `supervisor/api`, the `ingress_session` cookie, re-validated every 5 min while open). Shipped and loaded like the
+  other cards (a second pilot's copy too, still admin only, still talking to the one app). Fits a 390 px phone.
+- Web UI: JSON endpoints beside the page for the card, with the same ingress-only access: `GET api/uploads` (the PDFs
+  on file and a seniority summary: counts and dates, no pilot) and `POST api/upload` (the page's own multipart form
+  and checks; one save path for both). The Web UI page works as before.
+- Dates of hire from the award (Ryan: the monthly award packet lists every pilot's date of hire): an uploaded award
+  is read for dates of hire too, from a seniority section in the seniority list's layout or from the pilot lines with
+  a labeled DOH. With 25 pilot rows or more it is merged into `seniority.json` (source `award YYYY-MM`): the later of
+  the award's bid period and the seniority list's date is on top (a tie goes to the list), an award on top keeps the
+  list's other pilots, and an award with fewer rows or an older award month never replaces what is on file. An award
+  uploaded before 1.4.5 is read once at the first start. The upload's answer and the Web UI say where the dates of
+  hire came from; counts only in the log. Built on made-up text (the real packet was not available): the first real
+  upload's counts are to be checked.
+- Pilot card: a pay line without a date of hire now says to upload the seniority list or the month's award on the
+  Settings tab, and names the award when the dates of hire on file came from one (`list_source` on the pay line).
+- Settings card relabeled for the Credentials heading: its button reads "Save credentials".
+- Review fixes (1.4.5):
+  - An award or pairings package that gives no text copy (damaged or password-protected PDF) is refused ("Not kept")
+    instead of replacing the month's good PDF while its old text copy stayed beside it (the card then said "read" for
+    a file never read). It is read under `<YYYY-MM>_<kind>.new.pdf` and deleted, as a refused seniority list is.
+  - The card and `api/uploads` give the real size limit, 15.9 MB: the Supervisor's ingress proxy refuses a request
+    over 16 MiB (HTTP 413) after it has all arrived, so a larger PDF is refused in the card before it is sent. The
+    Web UI page says so too; the app's 25 MB check stays as the hard cap.
+  - An award already on file is now read for dates of hire at the first 1.4.5 start also when a 1.4.4 seniority list
+    is on file (the current list no longer ends the check before the award), once per file and parser.
+  - An award on top keeps both pilots of a shared employee number: when the award lists only one of them, the other
+    keeps the list's record and date of hire (PWA 3.B.1 longevity) instead of being found as the other pilot.
+  - The card's progress and result lines are live regions (WCAG 4.1.3), so a screen reader announces the outcome.
+
 ## 1.4.4
 
 - FW-0062 (Ryan, Nov 6): a pilot's month "Reconstructed from pairing crew lists" on the pilot card ends with a pay line in the schedule card's totals style: Trips, Credit, Block, Soft, Pay-Gross, Pay-Net (est. at your tax %) and Days Off, then "Year N (DOH YYYY-MM-DD) · $rate/cr h CA (PWA 3.C.4) · $rate/cr h FO (PWA 3.D.6)". Each trip is priced for the seat on its crew line, on its own date, for the longevity year from the pilot's date of hire (PWA 3.B.1, capped at 12): a Captain at the PWA 3.C.4 Captain rate plus $5.00 per block hour on a crew of 3 or more and never the 15% (PWA 4.O.1.a/b, "under all circumstances"), an FO or RO at the PWA 3.D.6 FO rate with the same RO $4.00, FO $3.00 and Extended Range +15% rules as your own schedule. Trips without a credit are listed and left out (Pay-Gross then says "k of m trips"); a trip without its block is named when its override is missing. Days Off are bid period days with no trip on the crew lists (reserve and training are not on them). Pay-Net follows your federal and state tax settings live. Without a date of hire the line shows hours and days and says to upload the seniority list. The numbers come from the Watcher (`pay_line` on `sensor.<prefix>_pilot_schedule`, `gross` on each priced trip), which picks the grid's trips the way the card does (newest read wins; a test runs both).

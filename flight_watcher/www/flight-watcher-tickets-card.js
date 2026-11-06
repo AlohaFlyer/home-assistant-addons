@@ -15,13 +15,10 @@ const FW_TICKET_MAX_PHOTOS = 10;
 const FW_TICKET_MAX_URL = 1.75e6;  // one photo's data URL; its whole message stays under about 1.8e6 chars
 // FW-0006: the choice at the top of the one ticket form (Bug first): its label, the description prompt, a title hint
 const FW_TICKET_PAGES = ["Watcher", "Schedule", "Recall/O75", "Details", "Settings", "Aviation Wx", "Phone alert", "Other"];
-// Ryan (Nov 6): "Process Tickets in Claude Code", far right of Submit a ticket, opens Claude Code on the web (or the
-// Claude app, which takes claude.ai/code links) on a new session with this repo picked and the prompt filled in
-// (documented link: claude.ai/code/new?q=<prompt>&repo=<owner/name>; it does not send until tapped). Card option
-// claude_code_url overrides the whole link.
+// Ryan (Nov 6): "Process Tickets in Claude Code", far right of Submit a ticket. 1.4.5 (Ryan): it copies the prompt
+// below to the clipboard (Ryan pastes it into his own Claude Code window) instead of opening a new session. Card
+// option claude_code_prompt replaces the text.
 const FW_TICKET_CC_PROMPT = "Process all Flight Watcher tickets on Pako HI: fix every new or reopened one, release it, mark it fixed, then confirm and close your completed fixes.";
-const FW_TICKET_CC_REPO = "AlohaFlyer/home-assistant-addons";
-const fwTicketCcUrl = (prompt, repo) => `https://claude.ai/code/new?q=${encodeURIComponent(prompt)}&repo=${encodeURIComponent(repo)}`;
 const FW_TICKET_EDIT = { title: 200, narrative: 10000, steps: 5000, expected: 5000, page: 300 };  // tickets.MAX_TEXT
 const FW_TICKET_KINDS = {
   bug: { label: "&#128027; Bug", narrative: "What happened?", title: "e.g. Pay-Gross wrong on v11.003" },
@@ -34,7 +31,39 @@ class FlightWatcherTicketsCard extends HTMLElement {
     this._open = {}; this._doneOpen = false; this._req = null; this._dlg = false; this._fk = ""; this._unsaved = null;
   }
   getCardSize() { return 6; }
-  _ccUrl() { return this._c.claude_code_url || fwTicketCcUrl(FW_TICKET_CC_PROMPT, FW_TICKET_CC_REPO); }
+  _ccPrompt() { return this._c.claude_code_prompt || FW_TICKET_CC_PROMPT; }
+  // 1.4.5: copy the prompt. The Clipboard API first (needs https, which Nabu Casa and the companion app give); else
+  // a hidden textarea and execCommand("copy"); if both are blocked, the prompt shows selected under the button.
+  async _copyPrompt() {
+    const text = this._ccPrompt();
+    let ok = false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); ok = true; }
+    } catch (e) { ok = false; }
+    if (!ok) {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.top = "0"; ta.style.opacity = "0";
+        (this.shadowRoot || document.body).appendChild(ta);
+        ta.focus(); ta.select();
+        ok = !!document.execCommand("copy");
+        ta.remove();
+      } catch (e) { ok = false; }
+    }
+    this._ccMsg = ok ? "ok" : "fail";
+    this._showCcMsg();
+    clearTimeout(this._ccT);
+    if (ok) this._ccT = setTimeout(() => { this._ccMsg = ""; this._showCcMsg(); }, 4000);
+    return ok;
+  }
+  _showCcMsg() {
+    const r = this.shadowRoot, el = r && r.querySelector("[data-ccmsg]");
+    if (!el) return;
+    el.innerHTML = this._ccMsg === "ok" ? `<span class="u">&#10003; Copied. Paste it in Claude Code.</span>`
+      : this._ccMsg === "fail" ? `<div class="warn">Copy was blocked: select the prompt and copy it.</div><textarea readonly rows="3" data-cctext>${this._e(this._ccPrompt())}</textarea>` : "";
+    const ta = el.querySelector("[data-cctext]");
+    if (ta) { ta.focus(); ta.select(); }
+  }
   // FW-0053 (Ryan, Mac): Cmd+V (Ctrl+V) pastes a copied screenshot into an open New ticket form as a photo. The
   // listener sits on the document, because a paste with nothing focused never reaches the card; it takes image
   // files only (text still pastes into a field as usual) and does nothing unless this card's new-ticket form is open.
@@ -371,12 +400,14 @@ class FlightWatcherTicketsCard extends HTMLElement {
       dialog p{margin:6px 0 14px}.dr{display:flex;gap:8px;justify-content:flex-end}.dr button{margin:0;min-height:40px;padding:8px 18px;font-size:14px}
       .dr button.del{background:var(--error-color,#c62828);color:#fff;border:0}
       .hd{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px}.hd button{margin:0}
-      a.cc{margin-left:auto;display:inline-block;border-radius:6px;padding:8px 14px;font-size:14px;font-weight:600;background:#d97757;color:#fff;text-decoration:none;white-space:nowrap}
-      a.cc:focus-visible{outline:2px solid var(--primary-text-color);outline-offset:2px}
+      .hd button.cc{margin-left:auto;border-radius:6px;padding:8px 14px;font-size:14px;font-weight:600;background:#d97757;color:#fff;white-space:nowrap}
+      .hd button.cc:focus-visible{outline:2px solid var(--primary-text-color);outline-offset:2px}
+      [data-ccmsg]{text-align:right}[data-ccmsg] textarea{width:100%;box-sizing:border-box;font:13px sans-serif;margin-top:4px}
     </style><ha-card>
       <div class="hd"><button class="big" data-new${this._busy() ? " disabled" : ""}>&#127915; Submit a ticket</button>
         <span class="u">${tix.length ? `${active.length} open · ${done.length} completed` : ""}</span>
-        <a class="cc" data-cc href="${this._e(this._ccUrl())}" target="_blank" rel="noopener noreferrer">Process Tickets in Claude Code</a></div>
+        <button class="cc" data-cc type="button" title="Copies the prompt; paste it in Claude Code">Process Tickets in Claude Code</button></div>
+      <div data-ccmsg></div>
       <div data-status class="${this._send && this._send.failed.length ? "warn" : "u"}">${this._e(this._statusText())}</div>
       ${rqRow ? "" : rqHtml}
       ${this._unsaved ? `<div class="form ef" data-unsaved><div class="warn">${this._e(this._unsaved.why)}</div>
@@ -392,6 +423,9 @@ class FlightWatcherTicketsCard extends HTMLElement {
     // a finished edit / delete line clears itself after 10 s; a refusal stays until the next one
     const q = this._req, L = last.rid && q && last.rid === q.rid ? last : null;
     if (L && L.ok && !q.clear) q.clear = setTimeout(() => { if (this._req === q) { this._req = null; const el = this.shadowRoot.querySelector("[data-req]"); if (el) el.textContent = ""; } }, 10000);
+    const ccb = r.querySelector("[data-cc]");
+    if (ccb) ccb.onclick = () => this._copyPrompt();
+    this._showCcMsg();  // a redraw keeps the last copy result showing
     r.querySelectorAll("[data-new]").forEach((b) => b.onclick = () => {
       if (this._busy()) return;  // the last ticket's photos are still going
       if (this._form) { const ti = r.querySelector('[data-f="title"]'); if (ti) ti.focus(); return; }  // open already: keep what is typed

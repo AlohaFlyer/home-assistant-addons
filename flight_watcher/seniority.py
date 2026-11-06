@@ -273,3 +273,146 @@ def find(data, emp="", name=""):
         if len(hits) == 1:
             return hits[0]
     return None
+
+
+# ---------------------------------------------------------------- 1.4.5: dates of hire from the monthly award packet
+# Ryan (Nov 6): the monthly award packet lists every pilot's date of hire. Two layouts are read, made-up text only
+# (the real packet was not available to build on; check the counts on the first real upload):
+#  1. a seniority section in the seniority list's own layout (a 'SEN ... EMP # ... DOH' header, then one row per
+#     pilot), read by parse() above;
+#  2. the bid-line award's pilot blocks, 'SSSSS / EMP' (seniority number / employee number, the line parse_award
+#     finds) with the date of hire labeled on the block's lines ('DOH 05/01/88', 'HIRE DATE 5/1/1988', 'DATE OF
+#     HIRE ...'). An unlabeled date is never taken for a date of hire.
+# The reader that gives more pilot rows wins. Fewer than AWARD_MIN rows is not a seniority section (a stray table,
+# an award with no dates of hire): nothing on file changes.
+AWARD_MIN = 25
+AWARD_PILOT_RE = re.compile(r"^\s*(?P<sen>\d{1,5})\s*/\s*(?P<emp>\d{3,6})(?!\d)(?P<rest>.*)$")
+DOH_LABEL_RE = re.compile(r"(?:\bDOH\b|\bD\.O\.H\.?|\bHIRE\s*DATE\b|\bDATE\s+OF\s+HIRE\b|\bHIRED\b)\s*[:#=\-]?\s*"
+                          r"(?P<doh>\d{1,2}/\d{1,2}/(?:\d{4}|\d{2}))(?!\d)", re.I)
+# each word after the first starts after a comma or one space, so a line that is not a name fails in linear time
+AWARD_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z'.\-]*(?:(?:,\s?|\s)[A-Za-z][A-Za-z'.\-]*)*,?$")
+AWARD_BLOCK = 6  # lines a pilot block may span (its 'SSSSS / EMP' line and the next five)
+VIEW_ONLY = ("as_of", "carried", "base", "award_older")  # seniority.json keys that describe the merge, not a source
+
+
+def _award_name(s):
+    """'DOE, JANE' from the start of an award line (cut before a DOH label; 2+ spaces end the name); '' if none."""
+    g = DOH_LABEL_RE.search(s or "")
+    s = (s[:g.start()] if g else s or "").strip()
+    head = re.split(r"\s{2,}", s)[0].strip() if s else ""
+    return head if AWARD_NAME_RE.fullmatch(head) else ""
+
+
+def _award_blocks(text, ref):
+    """Layout 2: {'rows', 'rejects', 'sections', 'list_date'} from 'SSSSS / EMP' pilot blocks with a labeled DOH."""
+    lines = text.split("\n")
+    when = list_date(text)
+    starts = [i for i, ln in enumerate(lines) if AWARD_PILOT_RE.match(ln)]
+    by_key, rejects = {}, []
+    for j, i in enumerate(starts):
+        end = min(starts[j + 1] if j + 1 < len(starts) else len(lines), i + AWARD_BLOCK)
+        if len(lines[i]) > MAX_LINE:
+            rejects.append(("too-long", i + 1))
+            continue
+        m = AWARD_PILOT_RE.match(lines[i])
+        g = next((x for x in (DOH_LABEL_RE.search(ln) for ln in lines[i:end] if len(ln) <= MAX_LINE) if x), None)
+        if not g:
+            rejects.append(("no-doh", i + 1))
+            continue
+        try:
+            doh = _doh(g["doh"], ref)
+        except ValueError:
+            rejects.append(("bad-date", i + 1))
+            continue
+        if int(doh[:4]) > ref or (when and doh > when):
+            rejects.append(("future-doh", i + 1))
+            continue
+        name = _award_name(m["rest"]) or (_award_name(lines[i + 1]) if i + 1 < end else "")
+        if not name:
+            rejects.append(("no-name", i + 1))
+            continue
+        last, _, first = (x.strip() for x in name.partition(","))
+        key = (int(m["sen"]), m["emp"])
+        old = by_key.get(key)
+        if old:
+            if old["doh"] != doh:
+                rejects.append(("conflict-doh", i + 1))
+            old["listed"] += 1
+            continue
+        by_key[key] = {"sen": key[0], "emp": m["emp"], "last": last.title(), "first": first.title(),
+                       "name": f"{last}, {first}".strip(" ,").title(), "doh": doh, "equip": "", "seat": "", "listed": 1}
+    rows = [by_key[k] for k in sorted(by_key)]
+    return {"list_date": when, "rows": rows, "rejects": sorted(rejects, key=lambda x: x[1]),
+            "sections": {"AWARD PILOT LINES": len(rows)} if rows else {}}
+
+
+def award_parse(text, ref_year=None):
+    """Dates of hire from a monthly award packet's text: parse()'s dict for the reader with more pilot rows (a tie
+    goes to the seniority section), plus 'reader' ('seniority section' or 'pilot lines')."""
+    norm = (text or "").translate(DASHES).replace(" ", " ")
+    when = list_date(norm)
+    ref = ref_year or (int(when[:4]) if when else date.today().year)
+    sec = parse(norm, ref)
+    blk = _award_blocks(norm, ref)
+    best, reader = max(((sec, "seniority section"), (blk, "pilot lines")), key=lambda x: len(x[0]["rows"]))
+    sections = {(k or "AWARD SENIORITY SECTION"): v for k, v in (best.get("sections") or {}).items()}
+    return dict(best, reader=reader, sections=sections)
+
+
+def as_of(d):
+    """The date a source's dates of hire stand at: its list date (typed or printed), else an award's bid period
+    month (its first day), else the upload day. '' for nothing."""
+    d = d or {}
+    return str(d.get("list_date") or (f"{d['award_month']}-01" if d.get("award_month") else "")
+               or str(d.get("uploaded_at") or "")[:10])
+
+
+def _merge_pilots(lp, ap):
+    """(pilots, carried): the award's pilots on top of the list's, merged per pilot, not per employee number. A number
+    two pilots share holds both in the list (the record and its 'also'); an award that lists only one of them keeps
+    the other from the list in 'also', so find() still tells them apart by last name instead of giving the one left
+    the other pilot's date of hire. A list pilot is the award's when the award has the last name (_last) under that
+    number. carried counts the list's pilots kept under the award."""
+    pilots, carried = {}, 0
+    for k in list(lp) + [k for k in ap if k not in lp]:
+        old, new = lp.get(k), ap.get(k)
+        if not new:
+            pilots[k] = old
+            carried += 1 + len(old.get("also") or [])
+            continue
+        if not old:
+            pilots[k] = new
+            continue
+        have = {_last(c.get("name")) for c in [new] + list(new.get("also") or [])}
+        extra = [{x: v for x, v in c.items() if x != "also"} for c in [old] + list(old.get("also") or [])
+                 if _last(c.get("name")) not in have]
+        pilots[k] = dict(new, also=list(new.get("also") or []) + extra) if extra else new
+        carried += len(extra)
+    return pilots, carried
+
+
+def combine(lst, aw):
+    """seniority.json, what the Watcher reads, from the dedicated seniority list (`lst`, to_json + source 'list') and
+    the newest award with dates of hire (`aw`, to_json + source 'award YYYY-MM', award_month). The later as_of() is on
+    top and a tie goes to the list. An award on top keeps the list's pilots it does not hold ('carried', with the
+    list described in 'base'; per pilot, so the other pilot on a shared employee number stays, _merge_pilots), since
+    an award may cover fewer pilots than the whole list; a list on top stands alone
+    (an older award adds nothing). None when there is neither."""
+    lst = {k: v for k, v in (lst or {}).items() if k not in VIEW_ONLY} or None
+    aw = {k: v for k, v in (aw or {}).items() if k not in VIEW_ONLY} or None
+    if not lst and not aw:
+        return None
+    if lst and (not aw or as_of(lst) >= as_of(aw)):
+        out = dict(lst, source="list", as_of=as_of(lst))
+        if aw:
+            out["award_older"] = {"source": aw.get("source"), "as_of": as_of(aw), "count": aw.get("count", 0)}
+        return out
+    out = dict(aw, as_of=as_of(aw))
+    if lst:
+        pilots, carried = _merge_pilots(lst.get("pilots") or {}, aw.get("pilots") or {})
+        recs = [r for p in pilots.values() for r in [p] + list(p.get("also") or [])]
+        out.update(pilots=pilots, count=len(recs), newest_doh=max((r.get("doh") or "" for r in recs), default=""),
+                   carried=carried,
+                   base={"source": "list", "file": lst.get("file", ""), "list_date": lst.get("list_date", ""),
+                         "uploaded_at": lst.get("uploaded_at", ""), "as_of": as_of(lst), "count": lst.get("count", 0)})
+    return out
