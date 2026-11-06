@@ -2506,8 +2506,9 @@ def crew_index_check(fl):
     insts = CI.instances(CARD_PAIRINGS)
     rows = DB.crew_rows()
     todo = CI.queue(insts, rows, local_now(), run["started"])
-    held0 = CI.held_periods(insts, rows)  # FW-0016: periods already held (their one probe is in todo)
-    held, unheld = set(held0), False
+    awarded = CI.awarded_periods(insts, rows)  # FW-0016: bid periods with a read that named a pilot
+    held0 = CI.held_periods(insts, rows, awarded)  # periods already held (their one probe is in todo)
+    held, newly = set(held0), False
     n, res, halted = 0, "ok", False
     per_check = CREW_PER_CHECK_HUNT if FLAGS.get("hunt") else CREW_PER_CHECK  # hunting: short chunks, pot first
     for k in todo:
@@ -2543,31 +2544,30 @@ def crew_index_check(fl):
             DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "fail",
                         f"no crew line: {vt[:120]}")
             continue
-        if not CI.has_crew(crew):  # FW-0016: no pilot named yet (before the award): not read, read again later
-            DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "empty",
+        per, named = CI.period_of(it), CI.has_crew(crew)
+        if not named and per not in awarded:  # FW-0016: no pilot named and no award seen in this bid period yet:
+            DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "empty",  # not read
                         "no crew names on the page")
             rows[k] = {**(rows.get(k) or {}), "status": "empty", "checked_at": at}
-            per = CI.period_of(it)
-            if per not in held and per in CI.held_periods(insts, rows):
+            if per not in held and per in CI.held_periods(insts, rows, awarded):
                 held.add(per)
                 log.info("crew index: %s bid period names no crew yet, held until names appear (one page a run)", per)
             continue
+        # after the award a page naming no pilot is an open-time trip ('CA Open FO Open'): a read like any other
         DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], crew, at, "ok")
-        rows[k] = {**(rows.get(k) or {}), "status": "ok", "checked_at": at}
-        per = CI.period_of(it)
-        if per in held:  # FW-0016: the probe names crew (the award is out): its pages read empty go first again
-            held.discard(per)
-            unheld = True
-            again = [x for x, i2 in insts.items() if CI.period_of(i2) == per and (rows.get(x) or {}).get("status") == "empty"]
-            DB.crew_requeue(again)
-            for x in again:
-                rows[x] = {**rows[x], "checked_at": None}
-            log.info("crew index: %s bid period names crew now (%s), %d pages to read again", per, k, len(again))
+        rows[k] = {**(rows.get(k) or {}), "status": "ok", "checked_at": at, "crew": crew}
+        if named and per not in awarded:  # FW-0016: the first names in this bid period: the award is out
+            awarded.add(per)
+            again = sum(1 for x, i2 in insts.items() if CI.period_of(i2) == per and (rows.get(x) or {}).get("status") == "empty")
+            if per in held or again:  # its pages held back or read before the award: read from the next check on
+                held.discard(per)
+                newly = True
+                log.info("crew index: %s bid period names crew now (%s), %d pages read before it go first", per, k, again)
         DB.remember_crew(vt)
     # the run is over when its budget is used, a page ended it, or the queue ran dry before the chunk filled
     # (FW-0016: the pages of a period held in this chunk are not read, so they do not keep the run going; a period
-    # whose probe named crew does: its pages are read from the next check on, not a slot later)
-    done = res != "ok" or run["pages"] >= CREW_PER_RUN or (n < per_check and not halted and not unheld)
+    # whose award was seen in this chunk does: its pages are read from the next check on, not a slot later)
+    done = res != "ok" or run["pages"] >= CREW_PER_RUN or (n < per_check and not halted and not newly)
     if done:
         S.pop("crew_run", None)
         S["crew_last"] = {"at": now_iso(), "pages": run["pages"], "why": run["why"], "ended": res}
@@ -3249,8 +3249,9 @@ def main():
         DB.put("crew_dir_v", 1)
         log.info("crew directory seeded with %d names (%d total)", n, DB.crew_count())
     if DB.get("crew_fix_v") != 1:  # FW-0016 / FW-0017 one-shot: CKP out of stored names, pre-award reads not counted
-        try:
-            names, empties = DB.crew_fix(CI.has_crew)
+        try:  # by bid period (Dec 1 is November's), and only trips not yet started
+            periods = {k: CI.period_of(it) for k, it in CI.instances(CARD_PAIRINGS).items()}
+            names, empties = DB.crew_fix(CI.has_crew, periods, local_now().date().isoformat())
             DB.put("crew_fix_v", 1)
             log.info("crew index repaired: %d CKP tags taken out of names, %d reads with no crew names set to read "
                      "again", names, empties)

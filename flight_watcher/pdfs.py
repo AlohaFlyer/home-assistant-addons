@@ -210,21 +210,21 @@ def package_details(text, base="HNL", eqp="33"):
     return out
 
 
-def _cols(line):
-    """Column start of each day number in the award's date header."""
-    return [(m.start(), int(m.group())) for m in re.finditer(r"\b\d{1,2}\b", line)]
-
-
 def _day_header(line):
-    """FW-0015: the award's date header as [(column, day)]: a line of day numbers only, at least 7, each the day
-    after the one before ('2 3 4 ... 31' in December, '1 2 ... 30 1' in November, '31 1 2 ...' for a period
-    that starts last month); None for any other line."""
-    if not line.strip() or re.search(r"[^\d\s]", line):
-        return None
-    cols = _cols(line)
-    if len(cols) < 7 or any(not (b == a + 1 or (b == 1 and a >= 28)) for (_, a), (_, b) in zip(cols, cols[1:])):
-        return None
-    return cols
+    """FW-0015: the award's date header as [(column, day)]: the run of day numbers the line starts with, at least
+    7, each the day after the one before ('2 3 4 ... 31' in December, '1 2 ... 30 1' in November, '31 1 2 ...'
+    for a period that starts last month). Whatever follows the run (a label, a stray mark) is ignored, as the
+    pre-FW-0015 matcher '^\\s+1\\s+2\\s+3\\s' did; None when the line does not start with such a run."""
+    cols = []
+    for m in re.finditer(r"\S+", line):
+        t = m.group()
+        if not re.fullmatch(r"\d{1,2}", t):
+            break
+        n = int(t)
+        if not 1 <= n <= 31 or (cols and not (n == cols[-1][1] + 1 or (n == 1 and cols[-1][1] >= 28))):
+            break
+        cols.append((m.start(), n))
+    return cols if len(cols) >= 7 else None
 
 
 def award_start(cols, month, start=None):

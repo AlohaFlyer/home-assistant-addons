@@ -149,55 +149,74 @@ def period_of(it):
     return it.get("period") or it.get("month") or str(it.get("date") or "")[:7]
 
 
-def held_periods(insts, rows):
-    """FW-0016: bid periods whose last HOLD_AFTER reads (by checked_at) all named no pilot: the award is not out
-    yet, so the crawl reads one page of such a period per run (a probe) instead of all of them."""
-    reads = {}
+def awarded_periods(insts, rows):
+    """FW-0016: bid periods with a read that named a pilot: the award is out. A row keeps the last crew read with
+    names ('empty' and 'fail' reads do not replace it), so a period seen awarded stays awarded."""
+    return {period_of(it) for k, it in insts.items() if has_crew((rows.get(k) or {}).get("crew"))}
+
+
+def held_periods(insts, rows, awarded=None):
+    """FW-0016: bid periods none of whose reads has ever named a pilot (awarded_periods) and HOLD_AFTER or more of
+    whose reads found no names: the award is not out, so the crawl reads one page of such a period per run (a
+    probe) instead of all of them. An awarded period is never held: after the award an open-time trip ('CA Open
+    FO Open') names nobody either, and it is read like any other."""
+    awarded = awarded_periods(insts, rows) if awarded is None else awarded
+    n = {}
     for k, it in insts.items():
         r = rows.get(k) or {}
-        if r.get("status") in ("ok", "empty") and r.get("checked_at"):
-            reads.setdefault(period_of(it), []).append((r["checked_at"], r["status"]))
-    return {p for p, rs in reads.items()
-            if len(rs) >= HOLD_AFTER and all(st == "empty" for _, st in sorted(rs)[-HOLD_AFTER:])}
+        if r.get("status") == "empty" and r.get("checked_at"):
+            n[period_of(it)] = n.get(period_of(it), 0) + 1
+    return {p for p, c in n.items() if c >= HOLD_AFTER and p not in awarded}
 
 
 def queue(insts, rows, now, run_started=None):
-    """Keys to read, in order: (0) FW-0016: one probe per held bid period (held_periods) per run, its soonest
-    future instance not yet read with crew; (1) never checked, soonest first (past dates too); (1b) failed or
-    read with no crew names (in a period that is not held) more than FAIL_RETRY_H ago; (2) departing within
-    SOON_H and checked more than SOON_STALE_H ago; (2b) departed but last checked before departure (one read
-    for the final crew); (3) the oldest-checked future ones. Nothing else of a held period is read. Departed
-    instances checked after departure are never re-read; nothing read in this run is read again.
-    `now` and checked_at are HST wall clock (naive ISO)."""
+    """Keys to read, in order: (0) FW-0016: one probe per held bid period (held_periods) per run: a future
+    instance never read, soonest first, else the one checked longest ago, so the probe moves through the
+    period; (1) never checked, soonest first (past dates too), and future pages read with no crew names before
+    their period's award was seen (FW-0016: stale once it is); (1b) failed, or read with no crew names in a
+    period with no award seen yet (and not held), more than FAIL_RETRY_H ago; (2) departing within SOON_H and
+    checked more than SOON_STALE_H ago; (2b) departed but last checked before departure (one read for the
+    final crew); (3) the oldest-checked future ones. Nothing else of a held period is read. Departed instances
+    checked after departure are never re-read (FW-0016: a page read with no crew names included); nothing read
+    in this run is read again. `now` and checked_at are HST wall clock (naive ISO)."""
     nowi = now.isoformat()
     soon = (now + timedelta(hours=SOON_H)).isoformat()
     stale = (now - timedelta(hours=SOON_STALE_H)).isoformat()
     retry = (now - timedelta(hours=FAIL_RETRY_H)).isoformat()
-    held = held_periods(insts, rows)
+    awarded = awarded_periods(insts, rows)
+    held = held_periods(insts, rows, awarded)
     probe, probed = {}, set()
     c1, c1b, c2, c2b, c3 = [], [], [], [], []
     for k, it in insts.items():
-        r = rows.get(k)
+        r = rows.get(k) or {}
         dep = departs(it).isoformat()
         per = period_of(it)
+        at = r.get("checked_at") or ""
         if per in held:
-            at = (r or {}).get("checked_at") or ""
             if run_started and at >= run_started:
                 probed.add(per)  # this period had its read in this run
-            elif dep > nowi and (r or {}).get("status") != "ok" and (per not in probe or dep < probe[per][0]):
-                probe[per] = (dep, k)
+            elif dep > nowi:  # never read (soonest) before read (longest ago), so no one trip pins the probe
+                cand = (1, at, dep, k) if at else (0, dep, "", k)
+                if per not in probe or cand < probe[per]:
+                    probe[per] = cand
             continue
-        if not r or not r.get("checked_at"):
+        if not at:
             c1.append((dep, k))
             continue
-        at = r["checked_at"]
         if run_started and at >= run_started:
             continue
-        if r.get("status") != "ok":
+        st = r.get("status")
+        if st == "empty" and dep > nowi:
+            if per in awarded:  # read before the award was seen: stale now, read again first
+                c1.append((dep, k))
+            elif at < retry:
+                c1b.append((dep, k))
+            continue
+        if st not in ("ok", "empty"):
             if at < retry and (dep > nowi or int(r.get("tries") or 0) < FAIL_MAX_PAST):
                 c1b.append((dep, k))
             continue
-        if dep <= nowi:
+        if dep <= nowi:  # 'ok', or 'empty' of a departed trip: crew that can no longer change, no retries
             if at < dep:
                 c2b.append((dep, k))
             continue
@@ -207,7 +226,7 @@ def queue(insts, rows, now, run_started=None):
             continue
         c3.append((at, dep, k))
     c0 = sorted(v for p, v in probe.items() if p not in probed)
-    return ([k for _, k in c0] + [k for _, k in sorted(c1)] + [k for _, k in sorted(c1b)] + [k for _, k in sorted(c2)]
+    return ([k for *_, k in c0] + [k for _, k in sorted(c1)] + [k for _, k in sorted(c1b)] + [k for _, k in sorted(c2)]
             + [k for _, k in sorted(c2b)] + [k for *_, k in sorted(c3)])
 
 

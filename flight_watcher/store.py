@@ -553,15 +553,6 @@ class Store:
                                         (c["emp"], key, c.get("pos") or "", c.get("name") or ""))
             self.db.execute("COMMIT")
 
-    def crew_requeue(self, keys):
-        """FW-0016: reads that named no crew go back to never read (checked_at NULL), so the crawl takes them
-        first once a probe shows the award is out. Returns how many."""
-        n = 0
-        with self.lock:
-            for k in keys or []:
-                n += self.db.execute("UPDATE crew_idx SET checked_at=NULL WHERE key=? AND status='empty'", (k,)).rowcount
-        return n
-
     def crew_rows(self):
         """{key: {key, pairing, date, end_date, route, crew, checked_at, status, reason, tries}}."""
         with self.lock:
@@ -581,14 +572,24 @@ class Store:
         return [{"key": k, "pairing": p, "date": d, "end_date": e, "route": r, "pos": pos, "name": nm, "checked_at": at}
                 for k, p, d, e, r, pos, nm, at in rows]
 
-    def crew_fix(self, has_crew):
-        """One-shot repair of what the crew index stored before FW-0016 / FW-0017. Returns (names, empties):
-        * names: the CKP tag taken out of every stored name (crew_dir, crew_emp, pickers and the crew lines in
-          crew_idx, which get ckp: true instead), so 'Doe, Ckp Jane' and 'Doe, Jane' are one person;
-        * empties: an 'ok' read whose crew line names no pilot (a page read before the award) becomes 'empty', so
-          it no longer counts as read and is read again once names appear. has_crew(crew list) decides."""
+    def crew_fix(self, has_crew, periods=None, today=""):
+        """One-shot repair of what was stored before FW-0016 / FW-0017. Returns (names, empties):
+        * names: the CKP tag taken out of every stored name (crew_dir, crew_emp, pickers, the crew lines in
+          crew_idx, which get ckp: true instead, and the finds history: a row's captain and pot roster, a pickup's
+          ca / by), so 'Doe, Ckp Jane' and 'Doe, Jane' are one person and the finds card shows the clean name;
+        * empties: an 'ok' read whose crew line names no pilot becomes 'empty' (not counted as read, read again
+          once names appear) only when it is a page read before the award: no read of its bid period (periods
+          {key: 'YYYY-MM'}, else the date's month) names a pilot, and the trip has not started (date >= today,
+          ISO). An awarded period's open-time trips stay read, and a departed trip is not read again for crew
+          that can no longer change. has_crew(crew list) decides what names a pilot."""
         from pot import clean_name
+        periods = periods or {}
         names = empties = 0
+
+        def clean_by(s):  # 'FO Doe, Ckp Jane (10001); RO Roe, Rick (10002)': each picker on its own
+            parts = [clean_name(p) for p in str(s or "").split("; ")]
+            return "; ".join(p for p, _ in parts), any(c for _, c in parts)
+
         with self.lock:
             self.db.execute("BEGIN")
             try:
@@ -598,7 +599,28 @@ class Store:
                         if ckp:
                             self.db.execute(f"UPDATE {table} SET name=? WHERE {key}=?", (new, k))
                             names += 1
-                for k, c, st in self.db.execute("SELECT key, crew, status FROM crew_idx").fetchall():
+                for k, row, pk in self.db.execute("SELECT key, row, pickup FROM finds").fetchall():
+                    try:
+                        r, p = json.loads(row), json.loads(pk) if pk else None
+                    except ValueError:
+                        continue
+                    n0 = names
+                    if r.get("captain"):
+                        r["captain"], c = clean_name(r["captain"])
+                        names += c
+                    for x in r.get("crew") or []:
+                        if isinstance(x, list) and len(x) > 1:
+                            x[1], c = clean_name(x[1])
+                            names += c
+                    for f in ("ca", "by"):
+                        if isinstance(p, dict) and p.get(f):
+                            p[f], c = clean_by(p[f])
+                            names += c
+                    if names != n0:
+                        self.db.execute("UPDATE finds SET row=?, pickup=? WHERE key=?",
+                                        (json.dumps(r), json.dumps(p) if p is not None else pk, k))
+                rows = []
+                for k, d, c, st in self.db.execute("SELECT key, date, crew, status FROM crew_idx").fetchall():
                     try:
                         crew = json.loads(c) if c else []
                     except ValueError:
@@ -611,7 +633,10 @@ class Store:
                             names += 1
                     if changed:
                         self.db.execute("UPDATE crew_idx SET crew=? WHERE key=?", (json.dumps(crew), k))
-                    if st == "ok" and not has_crew(crew):
+                    rows.append((k, periods.get(k) or str(d or "")[:7], str(d or ""), crew, st))
+                awarded = {p for _, p, _, crew, _ in rows if has_crew(crew)}
+                for k, p, d, crew, st in rows:
+                    if st == "ok" and not has_crew(crew) and p not in awarded and d >= (today or ""):
                         self.db.execute("UPDATE crew_idx SET status='empty', reason=? WHERE key=?",
                                         ("no crew names on the page (read before the award)", k))
                         empties += 1

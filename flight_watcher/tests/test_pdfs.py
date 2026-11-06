@@ -161,6 +161,30 @@ def test_award_december_starts_on_the_2nd(tmp_path):
     assert [v["ver"] for v in VER.set_award(db, "2026-12", aw, "t1")] == ["12.001"]
 
 
+def test_award_full_width_november_header():
+    """FW-0015 review: the real November award (11.001 on Pako) was read by the old '^\\s+1\\s+2\\s+3\\s' matcher, which
+    let anything follow the days. A full-width header ('1 2 ... 30 1', the period Nov 1 to Dec 1) reads as before,
+    and so does one with text after the run of days (a label, a stray mark); text before the days is no header."""
+    det = pdfs.package_details(PKG)
+    want = [("H9001", "2026-11-02", "2026-11-04"), ("VAC", "2026-11-05", "2026-11-06")]
+    full = list(range(1, 31)) + [1]
+    for tail in ("", "   C/OUT", " |", "  Total  31"):
+        lines = AWARD.splitlines()
+        lines[3] = _hdr(full) + tail
+        text = "\n".join(lines) + "\n"
+        cols = pdfs._day_header(lines[3])
+        assert [d for _, d in cols] == full and cols[1][0] == 33  # the days only, the 2nd column where H9001 sits
+        aw = pdfs.parse_award(text, "1234", det, "2026-11")
+        assert [(i["trip"], i["start"], i["end"]) for i in aw["items"]] == want
+        assert aw["trips"]["H9001|2026-11-02"]["seat"] == "RO" and aw["totals"] == {"credit": "22:00", "days_off": 25}
+        assert aw["days"][0][0] == "2026-11-01" and aw["days"][-1][0] == "2026-12-01"  # the period's 31 days
+        assert aw["days"][1] == ["2026-11-02", "H9001", "LAX"]
+    # the 10 column fixture with text after it, and a run that breaks: the days up to the break
+    assert pdfs._day_header(AWARD.splitlines()[3] + "   (HST)") == pdfs._day_header(AWARD.splitlines()[3])
+    assert [d for _, d in pdfs._day_header(_hdr([1, 2, 3, 4, 5, 6, 7, 9, 10]))] == [1, 2, 3, 4, 5, 6, 7]
+    assert pdfs._day_header("Days " + _hdr(full)) is None and pdfs._day_header(_hdr([0, 1, 2, 3, 4, 5, 6, 7])) is None
+
+
 def test_award_header_first_day():
     """FW-0015: the header's first column, from the header itself or the package's period start."""
     hdr = lambda days: pdfs._day_header(_hdr(days))
