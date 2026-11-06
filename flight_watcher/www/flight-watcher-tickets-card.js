@@ -76,26 +76,33 @@ class FlightWatcherTicketsCard extends HTMLElement {
     const send = this.shadowRoot.querySelector("[data-send]");
     if (send && !this._sending) send.disabled = !!p;
   }
+  // Every picked file is tried in order: an unreadable one is skipped and takes no slot, and reading stops once the
+  // ticket holds FW_TICKET_MAX_PHOTOS. "Left out" counts only the files that were not tried because it was full.
   async _addFiles(list) {
     const files = Array.from(list || []);
     if (!files.length || this._prep) return;
-    const room = FW_TICKET_MAX_PHOTOS - this._imgs.length, take = files.slice(0, Math.max(0, room));
-    const left = files.length - take.length;
-    this._note = left ? (room > 0
-      ? `A ticket takes ${FW_TICKET_MAX_PHOTOS} photos at most: left out ${left} of the ${files.length} you picked.`
-      : `Already ${FW_TICKET_MAX_PHOTOS} photos, the most a ticket takes. Remove one to add another.`) : "";
+    if (this._imgs.length >= FW_TICKET_MAX_PHOTOS) {
+      this._note = `Already ${FW_TICKET_MAX_PHOTOS} photos, the most a ticket takes. Remove one to add another.`;
+      this._photos();
+      return;
+    }
+    this._note = "";
     const gen = this._gen, bad = [];
-    for (let i = 0; i < take.length; i++) {
-      this._prep = { i: i + 1, n: take.length };
+    let i = 0;
+    for (; i < files.length && this._imgs.length < FW_TICKET_MAX_PHOTOS; i++) {
+      this._prep = { i: i + 1, n: Math.min(files.length, i + FW_TICKET_MAX_PHOTOS - this._imgs.length) };
       this._photos();
       try {
-        const x = await this._shrink(take[i]);
+        const x = await this._shrink(files[i]);
         if (gen !== this._gen) return;  // the form was closed meanwhile
         this._imgs.push(x);
-      } catch (e) { if (gen !== this._gen) return; bad.push(take[i].name || `photo ${i + 1}`); }
+      } catch (e) { if (gen !== this._gen) return; bad.push(files[i].name || `file ${i + 1}`); }
     }
     this._prep = null;
-    if (bad.length) this._note = [this._note, `Couldn't read ${bad.length === 1 ? "this one as an image" : `${bad.length} of them as images`}: ${bad.join(", ")}.`].filter(Boolean).join(" ");
+    const left = files.length - i, notes = [];
+    if (left) notes.push(`A ticket takes ${FW_TICKET_MAX_PHOTOS} photos at most: left out ${left} of the ${files.length} you picked.`);
+    if (bad.length) notes.push(`Couldn't read ${bad.length === 1 ? "this one as an image" : `${bad.length} of them as images`}: ${bad.join(", ")}.`);
+    this._note = notes.join(" ");
     this._photos();
   }
   _closeForm() { this._form = null; this._imgs = []; this._prep = null; this._note = ""; this._gen++; this._sending = false; }
@@ -110,27 +117,39 @@ class FlightWatcherTicketsCard extends HTMLElement {
       return;
     }
     this._closeForm(); this._sig = null;
-    this._send = { n, i: 0, failed: [] };
+    // s is this ticket's own progress: only it is written here, and it is shown only while it is still this._send
+    // (the Submit buttons stay off until its photos are done, so a second ticket cannot take over the status line).
+    const s = this._send = { n, i: 0, failed: [], done: !n };
+    const show = () => { if (this._send === s) this._status(); };
     this._render();
     for (let i = 0; i < n; i++) {  // one photo per message, in order, each after the one before has gone
-      this._send.i = i + 1; this._status();
+      s.i = i + 1; show();
       try { await this._pub("ticket/image", { cid, i: i + 1, n, image: imgs[i].url }); }
-      catch (e) { this._send.failed.push(i + 1); }
+      catch (e) { s.failed.push(i + 1); }
     }
-    this._send.done = true; this._status();
-    const s = this._send;  // a success line clears itself; a failed photo stays until the next ticket is started
+    s.done = true; show();
+    // a success line clears itself; a failed photo stays until the next ticket is started
     if (!s.failed.length) setTimeout(() => { if (this._send === s) { this._send = null; this._status(); } }, 10000);
   }
+  _busy() { return !!(this._send && !this._send.done); }
+  // "1", "1 and 2", "1, 2 and 5"
+  _and(a) { return a.length < 2 ? a.join("") : `${a.slice(0, -1).join(", ")} and ${a[a.length - 1]}`; }
   _statusText() {
     const s = this._send;
     if (!s) return "";
     if (!s.done) return s.n ? `Ticket sent. Sending photo ${s.i} of ${s.n}...` : "Ticket sent.";
-    if (s.failed.length) return `Ticket sent, but photo ${s.failed.join(", ")} of ${s.n} didn't go through.`;
+    const f = s.failed;
+    if (f.length) {
+      if (s.n === 1) return "Ticket sent, but the photo didn't go through.";
+      if (f.length === s.n) return `Ticket sent, but none of the ${s.n} photos went through.`;
+      return `Ticket sent, but photo${f.length === 1 ? "" : "s"} ${this._and(f)} of ${s.n} didn't go through.`;
+    }
     return s.n ? `Ticket sent with ${s.n} photo${s.n === 1 ? "" : "s"}.` : "Ticket sent.";
   }
   _status() {
-    const el = this.shadowRoot && this.shadowRoot.querySelector("[data-status]");
+    const r = this.shadowRoot, el = r && r.querySelector("[data-status]");
     if (el) { el.textContent = this._statusText(); el.className = this._send && this._send.failed.length ? "warn" : "u"; }
+    if (r) r.querySelectorAll("[data-new]").forEach((b) => { b.disabled = this._busy(); });
   }
   _render() {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
@@ -188,7 +207,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
       .tb{margin:6px 0 0 12px}.n{white-space:pre-wrap;margin-bottom:6px}
       details.done{border-top:1px solid var(--divider-color);padding-top:6px}details.done summary{cursor:pointer;font-weight:600;color:var(--secondary-text-color)}
     </style><ha-card>
-      <div><button class="big" data-new="bug">&#128027; Submit a bug</button><button class="big" data-new="feature">&#128161; Submit a feature request</button>
+      <div><button class="big" data-new="bug"${this._busy() ? " disabled" : ""}>&#128027; Submit a bug</button><button class="big" data-new="feature"${this._busy() ? " disabled" : ""}>&#128161; Submit a feature request</button>
         <span class="u">${tix.length ? `${active.length} open · ${done.length} completed` : ""}</span></div>
       <div data-status class="${this._send && this._send.failed.length ? "warn" : "u"}">${this._e(this._statusText())}</div>
       ${form}
@@ -196,6 +215,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
     </ha-card>`;
     const r = this.shadowRoot;
     r.querySelectorAll("[data-new]").forEach((b) => b.onclick = () => {
+      if (this._busy()) return;  // the last ticket's photos are still going
       this._closeForm(); this._form = { kind: b.dataset.new };
       if (this._send && this._send.done) this._send = null;
       this._render();

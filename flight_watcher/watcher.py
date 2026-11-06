@@ -212,13 +212,13 @@ def on_message(c, u, msg):
         settings_cmd(msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/ticket/new":
-        ticket_new(msg.payload.decode(errors="replace"))
+        ticket_safe(ticket_new, msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/ticket/image":
-        ticket_image(msg.payload.decode(errors="replace"))
+        ticket_safe(ticket_image, msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/ticket/act":
-        ticket_act(msg.payload.decode(errors="replace"))
+        ticket_safe(ticket_act, msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/trade/set":
         trade_cmd(msg.payload.decode(errors="replace"))
@@ -2566,6 +2566,21 @@ TICKETS_SIG = {"sig": None}
 
 def reporter():
     return INSTANCE or "ryan"
+
+
+def ticket_safe(fn, payload):
+    """FW-0003: run a ticket handler so that one bad message can never end the MQTT loop (paho re-raises an
+    exception from on_message and the loop thread stops). The error is logged and sent as event/ticket_error."""
+    try:
+        return fn(payload)
+    except Exception as e:
+        log.warning("ticket message failed (%s): %s: %s", getattr(fn, "__name__", "?"), type(e).__name__, e)
+        try:
+            pub("event/ticket_error", {"error": f"ticket message failed: {type(e).__name__}", "at": now_iso()},
+                retain=False)
+        except Exception:
+            pass
+        return None
 
 
 def ticket_new(payload):
