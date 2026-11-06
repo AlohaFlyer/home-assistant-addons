@@ -199,6 +199,8 @@ CA_RE = re.compile(r"crew\s*:.*?\bca\s+(?:\d{3,7}\s+)?(.+?)(?=\s+(?:fo|ro|fa|so|
 # Crew line (Nov 1, 2026): "Crew: CA 10001 SMITH JR, JOHN CA 10002 DOE, JANE FO Open" (names made up)
 CREW_POS = ("CA", "FO", "RO", "FA", "SO")
 CREW_RE = re.compile(r"\b(CA|FO|RO|FA|SO)\s+(?:(\d{3,7})\s+)?(.+?)(?=\s+(?:CA|FO|RO|FA|SO)\s|\s*$)", re.I)
+# FLICA tags a check pilot in the name ("CA 10001 DOE, CKP JANE", Nov 2026; FW-0017)
+CKP_RE = re.compile(r"(?<![\w'-])ckp(?![\w'-])", re.I)
 CHECKIN_RE = re.compile(r"check\s*in\s*:\s*(\d{1,2}:?\d{2})", re.I)
 # A leg: flight number then STN-STN ("Th 865 HNL-PPG 1630 ..."). The column header "Dps-Ars"
 # has no flight number in front, so it never matches.
@@ -226,7 +228,7 @@ def parse_detail(html):
     out = {}
     m = CA_RE.search(text)
     if m:
-        name = m.group(1).strip(" ,")
+        name = clean_name(m.group(1))[0]
         out["captain"] = "OPEN" if name.lower() == "open" else name.title()
         emp = crew_ids(text).get(out["captain"])
         if emp:
@@ -329,26 +331,38 @@ def parse_duties(text):
             for x in duties]
 
 
+def clean_name(name):
+    """(name, ckp) without FLICA's check pilot tag (FW-0017): 'DOE, CKP JANE' -> ('DOE, JANE', True). The tag is
+    a word of its own, after the comma on the live pages, taken out wherever it stands."""
+    s = re.sub(r"\s+", " ", str(name or "")).strip(" ,")
+    out = CKP_RE.sub(" ", s)
+    if out == s:
+        return s, False
+    return re.sub(r"\s+", " ", re.sub(r"\s*,\s*", ", ", out)).strip(" ,"), True
+
+
 def parse_crew(text):
-    """[(pos, name)] from the crew line, in page order. An open seat's name is 'OPEN'."""
+    """[(pos, name)] from the crew line, in page order. An open seat's name is 'OPEN'. FW-0017: names without
+    the CKP tag."""
     m = re.search(r"crew\s*:\s*(.*)$", text or "", re.I | re.S)
     if not m:
         return []
     out = []
     for pos, _emp, name in CREW_RE.findall(m.group(1)):
-        name = name.strip(" ,")
+        name = clean_name(name)[0]
         out.append((pos.upper(), "OPEN" if name.lower() == "open" else name.title()))
     return out
 
 
 def crew_ids(text):
-    """{name: employee number} from the crew line (0.4.11: Ryan wants the numbers shown)."""
+    """{name: employee number} from the crew line (0.4.11: Ryan wants the numbers shown), names as parse_crew
+    gives them."""
     m = re.search(r"crew\s*:\s*(.*)$", text or "", re.I | re.S)
     if not m:
         return {}
     out = {}
     for _pos, emp, name in CREW_RE.findall(m.group(1)):
-        name = name.strip(" ,")
+        name = clean_name(name)[0]
         if emp and name.lower() != "open":
             out[name.title()] = emp
     return out
@@ -387,7 +401,7 @@ def pickup_diff(before, after):
         return (*pickup_result(after, []), False)
     if not any(p in ("FO", "RO") or p == "CA" for p, _ in after):
         return "unknown", "", False
-    seen = {(p, n) for p, n in before}
+    seen = {(p, clean_name(n)[0]) for p, n in before}  # FW-0017: a roster stored before the fix can carry 'Ckp'
     new = [f"{p} {n}" for p, n in after if p in ("FO", "RO") and n != "OPEN" and (p, n) not in seen]
     if new:
         return "filled", "; ".join(new), True

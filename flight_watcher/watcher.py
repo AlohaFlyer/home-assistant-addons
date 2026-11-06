@@ -1474,9 +1474,16 @@ def uploads_check():
                     if not det or not emp:
                         log.info("upload %s: waiting for the %s pairing package and the employee number", f, month)
                         continue
-                    aw = PDF.parse_award(text, emp, det, month)
+                    try:  # FW-0015: the award's columns start on the bid period's first day (Dec 2 in December)
+                        start = json.load(open(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json"))).get("start")
+                    except (OSError, ValueError, AttributeError):
+                        start = None
+                    try:
+                        aw, why = PDF.parse_award(text, emp, det, month, start), f"employee {emp} not in this award"
+                    except ValueError as e:  # logged once: the file is marked done until it changes
+                        aw, why = None, f"award not read: {e}"
                     if not aw:
-                        log.info("upload %s: employee %s not in this award", f, emp)
+                        log.info("upload %s: %s", f, why)
                     else:
                         vers = VER.set_award(DB, month, aw, now_iso())
                         log.info("upload %s: awarded line is version %s (%d items, credit %s); %d versions",
@@ -2617,6 +2624,9 @@ def crew_index_check(fl):
     insts = CI.instances(CARD_PAIRINGS)
     rows = DB.crew_rows()
     todo = CI.queue(insts, rows, local_now(), run["started"])
+    awarded = CI.awarded_periods(insts, rows)  # FW-0016: bid periods with a read that named a pilot
+    held0 = CI.held_periods(insts, rows, awarded)  # periods already held (their one probe is in todo)
+    held, newly = set(held0), False
     n, res, halted = 0, "ok", False
     per_check = CREW_PER_CHECK_HUNT if FLAGS.get("hunt") else CREW_PER_CHECK  # hunting: short chunks, pot first
     for k in todo:
@@ -2627,6 +2637,8 @@ def crew_index_check(fl):
             halted = True
             break
         it = insts[k]
+        if CI.period_of(it) in held - held0:  # FW-0016: held during this chunk, the rest waits for names
+            continue
         if n:
             time.sleep(random.uniform(1.5, 3.5))
         n += 1
@@ -2650,10 +2662,30 @@ def crew_index_check(fl):
             DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "fail",
                         f"no crew line: {vt[:120]}")
             continue
+        per, named = CI.period_of(it), CI.has_crew(crew)
+        if not named and per not in awarded:  # FW-0016: no pilot named and no award seen in this bid period yet:
+            DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "empty",  # not read
+                        "no crew names on the page")
+            rows[k] = {**(rows.get(k) or {}), "status": "empty", "checked_at": at}
+            if per not in held and per in CI.held_periods(insts, rows, awarded):
+                held.add(per)
+                log.info("crew index: %s bid period names no crew yet, held until names appear (one page a run)", per)
+            continue
+        # after the award a page naming no pilot is an open-time trip ('CA Open FO Open'): a read like any other
         DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], crew, at, "ok")
+        rows[k] = {**(rows.get(k) or {}), "status": "ok", "checked_at": at, "crew": crew}
+        if named and per not in awarded:  # FW-0016: the first names in this bid period: the award is out
+            awarded.add(per)
+            again = sum(1 for x, i2 in insts.items() if CI.period_of(i2) == per and (rows.get(x) or {}).get("status") == "empty")
+            if per in held or again:  # its pages held back or read before the award: read from the next check on
+                held.discard(per)
+                newly = True
+                log.info("crew index: %s bid period names crew now (%s), %d pages read before it go first", per, k, again)
         DB.remember_crew(vt)
     # the run is over when its budget is used, a page ended it, or the queue ran dry before the chunk filled
-    done = res != "ok" or run["pages"] >= CREW_PER_RUN or (n < per_check and not halted)
+    # (FW-0016: the pages of a period held in this chunk are not read, so they do not keep the run going; a period
+    # whose award was seen in this chunk does: its pages are read from the next check on, not a slot later)
+    done = res != "ok" or run["pages"] >= CREW_PER_RUN or (n < per_check and not halted and not newly)
     if done:
         S.pop("crew_run", None)
         S["crew_last"] = {"at": now_iso(), "pages": run["pages"], "why": run["why"], "ended": res}
@@ -2676,15 +2708,19 @@ def publish_crew_index(insts=None, write=False):
     last = S.get("crew_last") or {}
     _, nxt = crew_slot()
     run = S.get("crew_run")
+    held = CI.held_periods(insts, rows)
     pub("crew_index", {"instances": n, "checked": ok, "coverage_pct": pct, "last_run": last.get("at") or "",
                        "next_slot": nxt.replace(tzinfo=HST).isoformat(), "pages_last_run": last.get("pages", 0),
                        "failures": sum(1 for k in insts if (rows.get(k) or {}).get("status") == "fail"),
+                       # FW-0016: read with no crew names yet (not counted in checked), and the bid periods held
+                       "no_crew_yet": sum(1 for k in insts if (rows.get(k) or {}).get("status") == "empty"),
+                       "waiting_for_award": sorted(held),
                        "running": bool(run), "pages_this_run": (run or {}).get("pages", 0)})
     if write:
-        write_crew_md(insts, rows)
+        write_crew_md(insts, rows, held)
 
 
-def write_crew_md(insts, rows):
+def write_crew_md(insts, rows, held=None):
     """/share/flight_watcher/crew_index/<YYYY-MM>.md for every month with instances, rewritten after each run."""
     try:
         os.makedirs(CREW_DIR, exist_ok=True)
@@ -2693,7 +2729,7 @@ def write_crew_md(insts, rows):
             path = os.path.join(CREW_DIR, f"{month}.md")
             tmp = path + ".tmp"
             with open(tmp, "w") as f:
-                f.write(CI.render_month(month, insts, rows, stamp))
+                f.write(CI.render_month(month, insts, rows, stamp, held))
             os.replace(tmp, path)
     except Exception as e:
         log.info("crew index files skipped: %s", e)
@@ -3330,6 +3366,15 @@ def main():
                     n += 1
         DB.put("crew_dir_v", 1)
         log.info("crew directory seeded with %d names (%d total)", n, DB.crew_count())
+    if DB.get("crew_fix_v") != 1:  # FW-0016 / FW-0017 one-shot: CKP out of stored names, pre-award reads not counted
+        try:  # by bid period (Dec 1 is November's), and only trips not yet started
+            periods = {k: CI.period_of(it) for k, it in CI.instances(CARD_PAIRINGS).items()}
+            names, empties = DB.crew_fix(CI.has_crew, periods, local_now().date().isoformat())
+            DB.put("crew_fix_v", 1)
+            log.info("crew index repaired: %d CKP tags taken out of names, %d reads with no crew names set to read "
+                     "again", names, empties)
+        except Exception as e:  # never stops the start; tried again on the next one
+            log.warning("crew index repair skipped: %s: %s", type(e).__name__, e)
     if DB.get("score_v") != 2:  # 0.7.6 one-shot: Pickup Speed recomputed with the vetted dwell() for every scored pickup
         DB.rescore_all()
         DB.put("score_v", 2)
