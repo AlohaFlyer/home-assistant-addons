@@ -367,3 +367,20 @@ def test_card_paste_takes_screenshots_only_while_new_form_open(tmp_path):
     assert on and not still
     assert got == [["image.png"], ["image.png"], ["shot.jpg"]]
     assert (p0, p1, p2, p3, p4, p5) == (False, True, False, False, True, False)
+
+
+def test_card_claude_code_button_link(tmp_path):
+    """Ryan (Nov 6): Process Tickets in Claude Code opens claude.ai/code/new with the prompt and this repo filled in."""
+    js = ("const c = new FlightWatcherTicketsCard(); c.setConfig({}); const d = new FlightWatcherTicketsCard();\n"
+          "d.setConfig({claude_code_url: 'https://claude.ai/code/new?q=x'});\n"
+          "console.log(JSON.stringify([c._ccUrl(), d._ccUrl(), FW_TICKET_CC_PROMPT]));")
+    url, override, prompt = _card_node(tmp_path, js)
+    from urllib.parse import urlsplit, parse_qs
+    u = urlsplit(url)
+    assert (u.scheme, u.netloc, u.path) == ("https", "claude.ai", "/code/new")
+    assert parse_qs(u.query) == {"q": [prompt], "repo": ["AlohaFlyer/home-assistant-addons"]}
+    assert "Flight Watcher tickets" in prompt and override == "https://claude.ai/code/new?q=x"
+    src = open(CARD, encoding="utf-8").read()
+    assert 'data-cc href="${this._e(this._ccUrl())}" target="_blank" rel="noopener noreferrer">Process Tickets in Claude Code</a>' in src
+    p = cards.build("1", ["pilot2"])["flight-watcher-tickets-card-pilot2.js"]
+    assert "Process Tickets in Claude Code" in p and 'FW_TICKET_CC_REPO = "AlohaFlyer/home-assistant-addons"' in p

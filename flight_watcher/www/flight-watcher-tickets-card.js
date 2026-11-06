@@ -15,6 +15,13 @@ const FW_TICKET_MAX_PHOTOS = 10;
 const FW_TICKET_MAX_URL = 1.75e6;  // one photo's data URL; its whole message stays under about 1.8e6 chars
 // FW-0006: the choice at the top of the one ticket form (Bug first): its label, the description prompt, a title hint
 const FW_TICKET_PAGES = ["Watcher", "Schedule", "Recall/O75", "Details", "Settings", "Aviation Wx", "Phone alert", "Other"];
+// Ryan (Nov 6): "Process Tickets in Claude Code", far right of Submit a ticket, opens Claude Code on the web (or the
+// Claude app, which takes claude.ai/code links) on a new session with this repo picked and the prompt filled in
+// (documented link: claude.ai/code/new?q=<prompt>&repo=<owner/name>; it does not send until tapped). Card option
+// claude_code_url overrides the whole link.
+const FW_TICKET_CC_PROMPT = "Process all Flight Watcher tickets on Pako HI: fix every new or reopened one, release it, mark it fixed, then confirm and close your completed fixes.";
+const FW_TICKET_CC_REPO = "AlohaFlyer/home-assistant-addons";
+const fwTicketCcUrl = (prompt, repo) => `https://claude.ai/code/new?q=${encodeURIComponent(prompt)}&repo=${encodeURIComponent(repo)}`;
 const FW_TICKET_EDIT = { title: 200, narrative: 10000, steps: 5000, expected: 5000, page: 300 };  // tickets.MAX_TEXT
 const FW_TICKET_KINDS = {
   bug: { label: "&#128027; Bug", narrative: "What happened?", title: "e.g. Pay-Gross wrong on v11.003" },
@@ -27,6 +34,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
     this._open = {}; this._doneOpen = false; this._req = null; this._dlg = false; this._fk = "";
   }
   getCardSize() { return 6; }
+  _ccUrl() { return this._c.claude_code_url || fwTicketCcUrl(FW_TICKET_CC_PROMPT, FW_TICKET_CC_REPO); }
   // FW-0053 (Ryan, Mac): Cmd+V (Ctrl+V) pastes a copied screenshot into an open New ticket form as a photo. The
   // listener sits on the document, because a paste with nothing focused never reaches the card; it takes image
   // files only (text still pastes into a field as usual) and does nothing unless this card's new-ticket form is open.
@@ -342,9 +350,13 @@ class FlightWatcherTicketsCard extends HTMLElement {
       dialog::backdrop{background:rgba(0,0,0,.45)}dialog h4{margin:0 0 6px;font-size:16px}dialog .dt{font-weight:600;margin-bottom:6px;overflow-wrap:anywhere}
       dialog p{margin:6px 0 14px}.dr{display:flex;gap:8px;justify-content:flex-end}.dr button{margin:0;min-height:40px;padding:8px 18px;font-size:14px}
       .dr button.del{background:var(--error-color,#c62828);color:#fff;border:0}
+      .hd{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px}.hd button{margin:0}
+      a.cc{margin-left:auto;display:inline-block;border-radius:6px;padding:8px 14px;font-size:14px;font-weight:600;background:#d97757;color:#fff;text-decoration:none;white-space:nowrap}
+      a.cc:focus-visible{outline:2px solid var(--primary-text-color);outline-offset:2px}
     </style><ha-card>
-      <div><button class="big" data-new${this._busy() ? " disabled" : ""}>&#127915; Submit a ticket</button>
-        <span class="u">${tix.length ? `${active.length} open · ${done.length} completed` : ""}</span></div>
+      <div class="hd"><button class="big" data-new${this._busy() ? " disabled" : ""}>&#127915; Submit a ticket</button>
+        <span class="u">${tix.length ? `${active.length} open · ${done.length} completed` : ""}</span>
+        <a class="cc" data-cc href="${this._e(this._ccUrl())}" target="_blank" rel="noopener noreferrer">Process Tickets in Claude Code</a></div>
       <div data-status class="${this._send && this._send.failed.length ? "warn" : "u"}">${this._e(this._statusText())}</div>
       ${rqRow ? "" : rqHtml}
       ${form}
