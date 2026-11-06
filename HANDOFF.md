@@ -11,7 +11,7 @@ Work top to bottom; tick items off here in the same PR that finishes them.
    discovery cleared; app `43b22650_flight_watcher` installed (imported /data: 47 finds, crew index, rules, DOH;
    /share and /www/flica moved); dashboard `flight-watcher` recreated, old one deleted; old app uninstalled, old
    cards removed, `.bak` copies and pre-rename files in `/share/flight_watcher/archive/`. **Ryan:** enter FLICA and
-   CrewTrac credentials in the new app's Configuration tab (the Watcher waits until then); `second_pilot` too when
+   CrewTrac credentials in the app's Web UI > Settings (1.0.1; or the Configuration tab) (the Watcher waits until then); `second_pilot` too when
    James is ready.
 1. ~~**Cards into git, self-deploying.**~~ Done (0.10.2, live 0.10.3 on 2026-11-06): cards in `flight_watcher/www/`,
    deployed by `cards.py` on start; the only resource is `/local/flight-watcher-loader.js` (the 10 per-card

@@ -190,3 +190,45 @@ def test_run_child_specs():
     assert specs[1]["env"] == {"FLIGHT_WATCHER_DATA": "/d/pilot2", "FLIGHT_WATCHER_PREFIX": "flight_watcher_pilot2", "FLIGHT_WATCHER_INSTANCE": "pilot2",
                                "FLIGHT_WATCHER_OPTIONS": "/d/options.json", "FLIGHT_WATCHER_WEB": "0"}
     assert run.child_specs({"second_pilot": "bad name"}) == [{"name": "", "env": {}}]
+
+
+def test_new_settings_clear_a_stop(tmp_path, monkeypatch):
+    """1.0.1: new FLICA credentials clear only a no-credentials or rejected-login stop, never a CAPTCHA/MFA one."""
+    W = _load(tmp_path, monkeypatch, "", {**OPTS, "username": "", "password": ""})
+    monkeypatch.setattr(W, "MQ", FakeClient())
+    monkeypatch.setattr(W, "restart_later", lambda: None)
+    W.S.update({"machine": "stopped_unexpected", "kills": [1], "parse_fail": 2, "relogin_streak": 6,
+                "note": "enter your FLICA username and password: Open Web UI > Settings (still stopped after restart, press Re-arm)"})
+    assert W.settings_cmd(json.dumps({"username": "doej", "password": "pw1"})) is True
+    assert W.S["machine"] == "idle" and W.S["parse_fail"] == 0 and W.S["relogin_streak"] == 0
+    assert W.S["kills"] == [1]  # the yield back-off count is only cleared by Re-arm
+    assert stat.S_IMODE(os.stat(tmp_path / "creds.json").st_mode) == 0o600
+    W.S.update({"machine": "stopped_login_failed", "note": "one login attempt failed (bad password)"})
+    assert W.settings_cmd(json.dumps({"password": "pw2"})) is True and W.S["machine"] == "idle"
+    for i, note in enumerate(("FLICA asked for captcha/MFA/password change during login", "FLICA showed a captcha/MFA/password page")):
+        W.S.update({"machine": "stopped_unexpected", "note": note})
+        assert W.settings_cmd(json.dumps({"password": f"pw-captcha-{i}"})) is True
+        assert W.S["machine"] == "stopped_unexpected"  # CAPTCHA/MFA: only Ryan's Re-arm
+    W.S.update({"machine": "stopped_login_failed", "note": "x"})
+    assert W.settings_cmd(json.dumps({"my_name": "Doe"})) is True and W.S["machine"] == "stopped_login_failed"
+    W.S.update({"machine": "hunting", "note": ""})
+    assert W.settings_cmd(json.dumps({"password": "pw3"})) is True and W.S["machine"] == "hunting"
+
+
+def test_settings_clear_and_still_waiting(tmp_path, monkeypatch):
+    W = _load(tmp_path, monkeypatch, "", OPTS)
+    fake = FakeClient()
+    monkeypatch.setattr(W, "MQ", fake)
+    restarts = []
+    monkeypatch.setattr(W, "restart_later", lambda: restarts.append(1))
+    assert W.settings_clear() is False and restarts == []
+    W.settings_cmd(json.dumps({"password": "pw9"}))
+    assert (tmp_path / "creds.json").exists()
+    assert W.settings_clear() is True and not (tmp_path / "creds.json").exists() and len(restarts) == 2
+    assert "pw9" not in fake.msgs[-1][1]
+    W.S.update({"machine": "yielded", "yield_until": 1000})
+    assert W.still_waiting(now=999) is True and W.still_waiting(now=1001) is False
+    W.S.update({"machine": "backoff", "relogin_at": 50})
+    assert W.still_waiting(now=10) is True and W.still_waiting(now=60) is False
+    W.S.update({"machine": "idle"})
+    assert W.still_waiting(now=0) is False

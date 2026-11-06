@@ -1,5 +1,5 @@
-"""Ingress page: rules editor, recent finds, recent matches. HA handles auth; only the
-Supervisor ingress proxy (172.30.32.2) may connect."""
+"""Ingress page: settings (credentials), monthly PDFs, rules editor, recent finds, recent matches. HA handles
+auth; only the Supervisor ingress proxy (172.30.32.2) may connect. Passwords are never shown or logged."""
 import html
 import json
 import os
@@ -23,9 +23,14 @@ textarea{{background:#1b1b1b;color:#ddd}}}}
 textarea{{width:100%;height:340px;font:13px ui-monospace,monospace;box-sizing:border-box}}
 table{{border-collapse:collapse;width:100%;margin:8px 0 20px}}td,th{{border:1px solid #ccc;padding:4px 6px;text-align:left}}
 .err{{color:#c62828}}.ok{{color:#2e7d32}}.note{{opacity:.75}}button{{padding:6px 14px}}
+nav a{{margin-right:14px}}.set label{{display:block;margin:6px 0}}.set input{{width:260px;max-width:100%;padding:4px}}
+.set .k{{display:inline-block;width:150px}}
 </style></head><body>
 <h2>Flight Watcher {version}</h2>
-<h3>Monthly PDFs</h3>
+<nav><a href="#settings">Settings</a><a href="#pdfs">Monthly PDFs</a><a href="#rules">Rules</a><a href="#finds">Recent finds</a></nav>
+<h3 id="settings">Settings</h3>
+{settings_msg}{settings}
+<h3 id="pdfs">Monthly PDFs</h3>
 <p class="note">0.9.0 (Ryan): upload the month's award (your line as awarded) and the pilot pairings package. They are
 kept in /share/flight_watcher/uploads (never committed) with a text copy, and parsed for the month's starting
 schedule and the tag-on ideas.</p>
@@ -34,14 +39,14 @@ Month <input type="month" name="month" required value="{month}"> &nbsp;
 <select name="kind"><option value="award">Monthly award</option><option value="pairings">Pairings package</option></select> &nbsp;
 <input type="file" name="pdf" accept="application/pdf,.pdf" required> &nbsp;<button type="submit">Upload</button></form>
 {uploads}
-<h3>Rules</h3>
+<h3 id="rules">Rules</h3>
 <p class="note">Read only until v0.3: rules alert and log what they <i>would</i> submit. Every rule starts
 in dry run; its live switch (switch.flight_watcher_rule_&lt;id&gt;_live) cannot turn on until the rule is 7 days old.</p>
 {msg}
 <form method="post" action="rules"><textarea name="rules" spellcheck="false">{rules}</textarea>
 <p><button type="submit">Save rules</button></p></form>
 <details><summary>Schema</summary><pre>{schema}</pre></details>
-<h3>Recent finds</h3>{finds}
+<h3 id="finds">Recent finds</h3>{finds}
 <h3>Recent rule matches</h3>{matches}
 </body></html>"""
 SCHEMA_HELP = """[{
@@ -126,7 +131,50 @@ def _save_upload(ctype, body, log):
         return f"<p class='err'>Upload failed: {html.escape(str(e))}</p>"
 
 
-def serve(port, version, get_rules, save_rules, store, log):
+SETTINGS_FIELDS = (  # (key, label, secret)
+    ("username", "FLICA username", False), ("password", "FLICA password", True),
+    ("ctweb_username", "CrewTrac username", False), ("ctweb_password", "CrewTrac password", True),
+    ("my_name", "Last name", False))
+
+
+def _settings_form(state):
+    """The credentials form. Usernames and the name are shown; a password only as set / not set."""
+    state = state or {}
+    rows = []
+    for k, label, secret in SETTINGS_FIELDS:
+        if secret:
+            has = state.get("has_" + k if k != "password" else "has_password")
+            cur = "<b class='ok'>set</b>" if has else "<b class='err'>not set</b>"
+            rows.append(f"<label><span class='k'>{label}</span> <input type='password' name='{k}' "
+                        f"autocomplete='new-password' placeholder='leave blank to keep'> {cur}</label>")
+        else:
+            v = html.escape(str(state.get(k) or ""))
+            rows.append(f"<label><span class='k'>{label}</span> <input type='text' name='{k}' value='{v}' "
+                        f"autocomplete='off' spellcheck='false'></label>")
+    return ("<p class='note'>Saved on this Home Assistant only (/data/creds.json, readable by this app alone), never "
+            "in git. A blank field keeps what is saved. Saving restarts the Watcher; with a new FLICA username or "
+            "password it logs in within a minute, unless FLICA asked for a CAPTCHA/MFA (then press Re-arm after "
+            "dealing with FLICA yourself).</p>"
+            "<form class='set' method='post' action='settings'>" + "".join(rows) +
+            "<p><button type='submit'>Save settings</button></p></form>"
+            "<form method='post' action='settings'><input type='hidden' name='clear' value='1'>"
+            "<p class='note'>Saved values win over the Configuration tab. To go back to it: "
+            "<button type='submit'>Clear saved values</button></p></form>")
+
+
+def parse_settings(body):
+    """Form body -> {key: value} for the non-blank settings fields (values stripped)."""
+    q = parse_qs(body, keep_blank_values=True)
+    out = {}
+    for k, _label, _secret in SETTINGS_FIELDS:
+        v = (q.get(k) or [""])[0].strip()
+        if v:
+            out[k] = v
+    return out
+
+
+def serve(port, version, get_rules, save_rules, store, log, get_settings=None, save_settings=None,
+          clear_settings=None):
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -137,9 +185,12 @@ def serve(port, version, get_rules, save_rules, store, log):
                 return False
             return True
 
-        def _page(self, msg="", draft=None):
+        def _page(self, msg="", draft=None, settings_msg=""):
             body = PAGE.format(
                 version=html.escape(version), msg=msg, month=_month_default(), uploads=_uploads_table(),
+                settings_msg=settings_msg,
+                settings=_settings_form(get_settings() if get_settings else {}) if save_settings else
+                "<p class='note'>Not available on this instance.</p>",
                 rules=html.escape(draft if draft is not None else json.dumps(get_rules(), indent=2)),
                 schema=html.escape(SCHEMA_HELP),
                 finds=_table(store.recent_finds(50), ["seen", "pairing", "dates", "days", "layover",
@@ -168,6 +219,23 @@ def serve(port, version, get_rules, save_rules, store, log):
             if n > 200_000:
                 self.send_error(413)
                 return
+            if self.path.rstrip("/").endswith("settings"):
+                if not save_settings:
+                    self.send_error(404)
+                    return
+                body = self.rfile.read(n).decode()
+                if parse_qs(body).get("clear") == ["1"]:
+                    if clear_settings and clear_settings():
+                        return self._page(settings_msg="<p class='ok'>Saved values cleared: the Configuration tab "
+                                          "applies again. The Watcher restarts in a few seconds.</p>")
+                    return self._page(settings_msg="<p class='note'>Nothing saved here to clear.</p>")
+                d = parse_settings(body)
+                if not d:
+                    return self._page(settings_msg="<p class='note'>Nothing to save: every field was blank.</p>")
+                if save_settings(d):
+                    return self._page(settings_msg="<p class='ok'>Saved. The Watcher restarts in a few seconds and "
+                                      "logs in with the new details; reload this page in a minute.</p>")
+                return self._page(settings_msg="<p class='note'>Nothing changed: those values were already saved.</p>")
             raw = parse_qs(self.rfile.read(n).decode()).get("rules", [""])[0]
             try:
                 data = json.loads(raw)
