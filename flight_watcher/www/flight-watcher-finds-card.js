@@ -1,11 +1,24 @@
 // Flight Watcher finds card (0.9.4, Ryan; 1.1.1 FW-0001: month picker pinned top-right so the table gets the
-// card's full width on a phone, times built from parts): "Recently added to the pot" with a month picker. The last 2 days show,
-// the rest of the month opens under "Older". Live rows: sensor.flight_watcher_finds; month history (24 months):
-// /local/flight-watcher/finds_<YYYY-MM>.json written by the Watcher. Times HST.
+// card's full width on a phone, times built from parts; FW-0005: only today's finds (HST) show, the rest of the
+// month folds under "N earlier this month", fold remembered per browser): "Recently added to the pot" with a month
+// picker. A past month picked in the picker opens in full. Live rows: sensor.flight_watcher_finds; month history
+// (24 months): /local/flight-watcher/finds_<YYYY-MM>.json written by the Watcher. Times HST.
 class FlightWatcherFindsCard extends HTMLElement {
-  setConfig(c) { this._c = { entity: "sensor.flight_watcher_finds", ...c }; this._files = {}; this._older = false; this._m = this._hstMonth(Date.now()); }
+  setConfig(c) { this._c = { entity: "sensor.flight_watcher_finds", ...c }; this._files = {}; this._m = this._hstMonth(Date.now()); }
   getCardSize() { return 8; }
   _hstMonth(ms) { return new Date(ms - 10 * 3600e3).toISOString().slice(0, 7); }
+  _hstDay(ms) { return new Date(ms - 10 * 3600e3).toISOString().slice(0, 10); }  // HST is UTC-10 all year
+  // FW-0005: the "earlier this month" fold, closed until opened; remembered per browser (try/catch: private mode,
+  // blocked storage). The key starts flight_watcher_, so a second pilot's copy gets a key of its own.
+  _earlierOpen() {
+    if (this._earlier === undefined) { let v = null; try { v = localStorage.getItem("flight_watcher_finds_earlier"); } catch (e) { v = null; } this._earlier = v === "1"; }
+    return this._earlier;
+  }
+  _setEarlier(open) {
+    if (open === this._earlierOpen()) return;
+    this._earlier = open;
+    try { localStorage.setItem("flight_watcher_finds_earlier", open ? "1" : "0"); } catch (e) { /* not saved, still works */ }
+  }
   _e(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
   set hass(h) {
     this._h = h;
@@ -13,6 +26,9 @@ class FlightWatcherFindsCard extends HTMLElement {
     const sig = st ? st.last_updated : "none";
     if (sig === this._sig) return;
     this._sig = sig;
+    // FW-0005: left on this month, the card moves on with the clock (a past month opens in full, so a page open
+    // over the month's end would otherwise show all of last month); a month picked in the picker stays.
+    if (!this._picked) this._m = this._hstMonth(Date.now());
     if (this._m === this._hstMonth(Date.now())) this._load(this._m, true);
     this._render();
   }
@@ -83,15 +99,33 @@ class FlightWatcherFindsCard extends HTMLElement {
     for (const f of live) if (this._hstMonth(Date.parse(f.seen)) === this._m) byKey.set(`${f.pairing}|${f.seen}`, f);
     return [...byKey.values()].sort((a, b) => Date.parse(b.seen) - Date.parse(a.seen));
   }
+  _split(all, now) {
+    // FW-0005: rows first seen today (HST calendar day) and the rest; a row without a readable time counts as earlier.
+    const day = this._hstDay(now), today = [], earlier = [];
+    for (const f of all) { const t = Date.parse(f.seen); (!isNaN(t) && this._hstDay(t) === day ? today : earlier).push(f); }
+    return { today, earlier };
+  }
+  _list(all, now, loading) {
+    // FW-0005 (Ryan): this month shows today's finds (HST) only; every earlier one folds under one line. A past month
+    // picked in the picker has no today: picking it is the ask to see it, so its table opens in full (a fold there
+    // would only repeat the header count and cost a second tap).
+    const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const [y, m] = this._m.split("-").map(Number);
+    const head = `<tr><th>Seen</th><th>Picked up</th><th>Trip</th><th>Dates</th><th>Layover</th><th>Days</th><th>Credit</th><th>CA</th><th>Picked up by</th><th>InFlt</th><th>Pickup Speed</th><th>Prem</th></tr>`;
+    const table = (rows) => `<div class="wrap"><table>${head}${rows.map((f) => this._row(f)).join("")}</table></div>`;
+    if (this._m !== this._hstMonth(now)) return all.length ? table(all) : (loading ? "" : `<div class="k">Nothing added in ${MON[m - 1]} ${y}.</div>`);
+    const { today, earlier } = this._split(all, now);
+    const d = this._hstDay(now);
+    let h = today.length ? table(today) : (loading ? "" : `<div class="k">Nothing new today (${MON[+d.slice(5, 7) - 1]} ${+d.slice(8, 10)} HST).</div>`);
+    if (earlier.length) h += `<details class="old"${this._earlierOpen() ? " open" : ""}><summary>${earlier.length} earlier this month</summary>${table(earlier)}</details>`;
+    return h;
+  }
   _render() {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     if (!this._files[this._m]) this._load(this._m);
     const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const [y, m] = this._m.split("-").map(Number);
     const all = this._rows();
-    const cut = Date.now() - 48 * 3600e3;
-    const recent = all.filter((f) => Date.parse(f.seen) >= cut), older = all.filter((f) => Date.parse(f.seen) < cut);
-    const head = `<tr><th>Seen</th><th>Picked up</th><th>Trip</th><th>Dates</th><th>Layover</th><th>Days</th><th>Credit</th><th>CA</th><th>Picked up by</th><th>InFlt</th><th>Pickup Speed</th><th>Prem</th></tr>`;
     const loading = !this._files[this._m];
     const openTop = this._top !== false;
     this.shadowRoot.innerHTML = `<style>
@@ -103,33 +137,33 @@ class FlightWatcherFindsCard extends HTMLElement {
       td.n{text-align:right}td.c{text-align:center}
       tr.hid td{background:rgba(244,67,54,.14)}tr.prem td{background:rgba(76,175,80,.16)}
       a{color:var(--primary-color);text-decoration:underline}
-      .old{margin-top:6px}.old summary,.key summary{cursor:pointer;font-size:12px;color:var(--secondary-text-color)}
+      .old{margin-top:6px}.old summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--secondary-text-color);padding:6px 0}
+      .key{margin-top:4px}.key summary{cursor:pointer;font-size:12px;color:var(--secondary-text-color)}
       .k{color:var(--secondary-text-color);font-size:12px;margin-top:6px}
       ha-icon{--mdc-icon-size:16px}
     </style><ha-card>
       <div class="hd"><details class="top"${openTop ? " open" : ""}><summary><ha-icon icon="mdi:new-box"></ha-icon> Recently added to the pot <span class="k">${all.length} in ${MON[m - 1]}</span></summary>
         ${loading ? `<div class="k">Loading ${MON[m - 1]} ${y}...</div>` : ""}
-        ${recent.length ? `<div class="wrap"><table>${head}${recent.map((f) => this._row(f)).join("")}</table></div>` : (!loading ? `<div class="k">Nothing new in the last 2 days${older.length ? "" : ` in ${MON[m - 1]} ${y}`}.</div>` : "")}
-        ${older.length ? `<details class="old"${this._older ? " open" : ""}><summary>${older.length} older in ${MON[m - 1]} ${y}</summary><div class="wrap"><table>${head}${older.map((f) => this._row(f)).join("")}</table></div></details>` : ""}
+        ${this._list(all, Date.now(), loading)}
         <details class="key"><summary>Key</summary><div class="k">
           <div><ha-icon icon="mdi:email-outline"></ha-icon> caught from your FLICA alert email (gone before a pot check)</div>
           <div>InFlt <ha-icon icon="mdi:airplane"></ha-icon> = picked up while airborne (from the picker's own trip); no = on the ground; - = not checked yet</div>
           <div>Pickup Speed = how long the trip sat in open time, ± half the check window; ~ = timed from your alert email; bold under 1 min. Hover for the picker's average.</div>
           <div>Red row: seat still open but not in the pot (hidden?). Green row: Premium trip picked up.</div>
-          <div>Last 2 days show; the rest of the month opens under "older". History kept 24 months.</div></div></details>
+          <div>Today's finds (HST) show; the rest of the month folds under "earlier this month" (this device remembers it open or closed). A past month opens in full. History kept 24 months.</div></div></details>
       </details>
       <span class="mp"><span class="nv" data-m="-1">&#8249;</span>${MON[m - 1]} ${y}<span class="nv" data-m="1">&#8250;</span></span></div>
     </ha-card>`;
     const r = this.shadowRoot;
     r.querySelector("details.top").ontoggle = (e) => { this._top = e.target.open; };
     const od = r.querySelector("details.old");
-    if (od) od.ontoggle = () => { this._older = od.open; };
+    if (od) od.ontoggle = () => this._setEarlier(od.open);
     r.querySelectorAll("[data-m]").forEach((el) => el.onclick = () => {
       const d = new Date(Date.UTC(y, m - 1 + Number(el.dataset.m), 1));
       const nm = d.toISOString().slice(0, 7);
       if (nm > this._hstMonth(Date.now())) return;
       this._m = nm;
-      this._older = false;
+      this._picked = nm !== this._hstMonth(Date.now());
       this._render();
     });
   }
