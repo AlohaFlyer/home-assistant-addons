@@ -1,5 +1,6 @@
-"""Ingress page: settings (credentials), monthly PDFs, rules editor, recent finds, recent matches. HA handles
-auth; only the Supervisor ingress proxy (172.30.32.2) may connect. Passwords are never shown or logged."""
+"""Ingress page: settings (credentials), monthly PDFs and the pilot seniority list, rules editor, recent finds,
+recent matches. HA handles auth (the ingress panel is for HA admins); only the Supervisor ingress proxy (172.30.32.2)
+may connect. Passwords are never shown or logged."""
 import html
 import json
 import os
@@ -33,12 +34,15 @@ nav a{{margin-right:14px}}.set label{{display:block;margin:6px 0}}.set input{{wi
 <h3 id="pdfs">Monthly PDFs</h3>
 <p class="note">0.9.0 (Ryan): upload the month's award (your line as awarded) and the pilot pairings package. They are
 kept in /share/flight_watcher/uploads (never committed) with a text copy, and parsed for the month's starting
-schedule and the tag-on ideas.</p>
+schedule and the tag-on ideas. 1.4.2 (FW-0062): the pilot seniority list (any month; the Month box is not used for
+it) gives each pilot's date of hire, so a pilot's month rebuilt from crew lists shows a pay line for every pilot
+instance. Give its list date if the PDF does not print one.</p>
 <form method="post" action="upload" enctype="multipart/form-data">
-Month <input type="month" name="month" required value="{month}"> &nbsp;
-<select name="kind"><option value="award">Monthly award</option><option value="pairings">Pairings package</option></select> &nbsp;
+Month <input type="month" name="month" value="{month}"> &nbsp;
+<select name="kind"><option value="award">Monthly award</option><option value="pairings">Pairings package</option><option value="seniority">Pilot seniority list</option></select> &nbsp;
+<label>List date <input type="date" name="list_date" title="Seniority list only, optional"></label> &nbsp;
 <input type="file" name="pdf" accept="application/pdf,.pdf" required> &nbsp;<button type="submit">Upload</button></form>
-{uploads}
+{uploads}{seniority}
 <h3 id="rules">Rules</h3>
 <p class="note">FLICA is read only: rules alert and log what they <i>would</i> submit, and nothing is ever sent to
 FLICA. Every rule starts in dry run; its live switch (switch.flight_watcher_rule_&lt;id&gt;_live) cannot turn on until the rule is 7 days old.</p>
@@ -100,8 +104,54 @@ def _uploads_table():
     return _table(rows, ["file", "size", "text copy"])
 
 
+def _hst_now():
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone(timedelta(hours=-10)))
+
+
+def seniority_file():
+    """FW-0062: the parsed seniority list, shared by every pilot instance (the Web UI runs on the default one)."""
+    return os.path.join(UPLOAD_DIR, "seniority.json")
+
+
+def seniority_write(txt_path, pdf_name, uploaded_at, list_date="", out=None):
+    """Parse a seniority list text copy (pdftotext -layout) and write seniority.json (atomic; seniority_file() unless
+    `out`). Returns the written dict, or None when no pilot row was read (the file on hand is kept). Nothing
+    personal is logged."""
+    import seniority as SEN
+    ref = int(list_date[:4]) if list_date else int(uploaded_at[:4])
+    parsed = SEN.parse(open(txt_path, encoding="utf-8", errors="replace").read(), ref)
+    if not parsed["rows"]:
+        return None
+    d = SEN.to_json(parsed, pdf_name, uploaded_at, list_date)
+    out = out or seniority_file()
+    tmp = out + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, separators=(",", ":"))
+    os.replace(tmp, out)
+    return d
+
+
+def _seniority_line(d):
+    when = f"list date {d['list_date']}" if d.get("list_date") else "no list date in the file"
+    return (f"{d.get('count', 0)} pilots read, {when}, newest date of hire on it {d.get('newest_doh') or '?'}"
+            f" ({d.get('rejects', 0)} lines not read)")
+
+
+def _seniority_status():
+    try:
+        d = json.load(open(seniority_file(), encoding="utf-8"))
+    except (OSError, ValueError):
+        return "<p class='note'>No pilot seniority list on file: the pay line under a rebuilt month needs one.</p>"
+    return (f"<p class='note'>Seniority list on file: {html.escape(_seniority_line(d))}; uploaded "
+            f"{html.escape(str(d.get('uploaded_at') or '')[:16].replace('T', ' '))} HST "
+            f"({html.escape(str(d.get('file') or ''))}). Every pilot instance reads it.</p>")
+
+
 def _save_upload(ctype, body, log):
-    """Store one PDF from a multipart form as <YYYY-MM>_<award|pairings>.pdf plus a pdftotext -layout copy."""
+    """Store one PDF from a multipart form as <YYYY-MM>_<award|pairings>.pdf plus a pdftotext -layout copy.
+    FW-0062: kind 'seniority' (no month) is stored as seniority_<YYYY-MM-DD, HST upload day>.pdf and parsed at once
+    into seniority.json (seniority_write)."""
     try:
         msg = BytesParser(policy=HTTP).parsebytes(b"Content-Type: " + ctype.encode() + b"\r\n\r\n" + body)
         fields, data = {}, None
@@ -112,12 +162,14 @@ def _save_upload(ctype, body, log):
             elif name:
                 fields[name] = (part.get_payload(decode=True) or b"").decode(errors="replace").strip()
         month, kind = fields.get("month", ""), fields.get("kind", "")
-        if not re.fullmatch(r"\d{4}-\d{2}", month) or kind not in ("award", "pairings"):
+        if kind not in ("award", "pairings", "seniority") or (kind != "seniority" and not re.fullmatch(r"\d{4}-\d{2}", month)):
             return "<p class='err'>Pick a month and a kind.</p>"
         if not data or not data.startswith(b"%PDF"):
             return "<p class='err'>That file is not a PDF.</p>"
         os.makedirs(UPLOAD_DIR, exist_ok=True)
-        path = os.path.join(UPLOAD_DIR, f"{month}_{kind}.pdf")
+        now = _hst_now()
+        name = f"seniority_{now.strftime('%Y-%m-%d')}" if kind == "seniority" else f"{month}_{kind}"
+        path = os.path.join(UPLOAD_DIR, f"{name}.pdf")
         with open(path, "wb") as f:
             f.write(data)
         note = ""
@@ -125,8 +177,21 @@ def _save_upload(ctype, body, log):
             subprocess.run(["pdftotext", "-layout", path, path[:-4] + ".txt"], check=True, timeout=120)
         except Exception as e:
             note = f" (no text copy: {html.escape(str(e))[:120]})"
-        log.info("upload: %s %s saved (%d KB)%s", month, kind, len(data) // 1024, note)
-        return f"<p class='ok'>Saved {html.escape(os.path.basename(path))} ({len(data) // 1024} KB){note}.</p>"
+        log.info("upload: %s %s saved (%d KB)%s", month if kind != "seniority" else "-", kind, len(data) // 1024, note)
+        saved = f"Saved {html.escape(os.path.basename(path))} ({len(data) // 1024} KB){note}."
+        if kind != "seniority":
+            return f"<p class='ok'>{saved}</p>"
+        if note:
+            return f"<p class='err'>{saved} Without a text copy the list cannot be read.</p>"
+        given = fields.get("list_date", "")
+        given = given if re.fullmatch(r"\d{4}-\d{2}-\d{2}", given) else ""
+        d = seniority_write(path[:-4] + ".txt", os.path.basename(path), now.isoformat(timespec="seconds"), given)
+        if not d:
+            log.info("upload: seniority list read no pilot rows; the list on file is kept")
+            return (f"<p class='err'>{saved} No pilot rows were found in it (is it the pilot seniority list?); "
+                    "the list on file is kept.</p>")
+        log.info("upload: seniority list read, %d pilots, %d lines not read", d["count"], d["rejects"])
+        return f"<p class='ok'>{saved} {html.escape(_seniority_line(d))}.</p>"
     except Exception as e:
         return f"<p class='err'>Upload failed: {html.escape(str(e))}</p>"
 
@@ -188,6 +253,7 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
         def _page(self, msg="", draft=None, settings_msg=""):
             body = PAGE.format(
                 version=html.escape(version), msg=msg, month=_month_default(), uploads=_uploads_table(),
+                seniority=_seniority_status(),
                 settings_msg=settings_msg,
                 settings=_settings_form(get_settings() if get_settings else {}) if save_settings else
                 "<p class='note'>Not available on this instance.</p>",

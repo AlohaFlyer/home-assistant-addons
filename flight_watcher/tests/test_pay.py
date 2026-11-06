@@ -127,3 +127,86 @@ def test_type_and_held_trips_decide_the_sides(tmp_path, monkeypatch):
     W.DB.put("sched_versions:2026-11", [])  # no schedule version on file: page words only when they name both sides
     one = {**swap, "legs": [{"trip": "H3629", "day": "12NOV", "side": "drop"}, {"trip": "H3815B", "day": "14NOV", "side": ""}]}
     assert W.price_request(one, now) is None
+
+
+# ---------------------------------------------------------------- FW-0062: Captain rates and the rebuilt month's pay line
+def test_captain_rate_table_and_seat():
+    """PWA 3.C.4 (Captain) next to PWA 3.D.6 (FO): same dates, 12 years; an RO is paid the FO rate; the FO numbers and
+    the two-argument call are unchanged."""
+    assert len(PAY.RATE_TABLE_CA) == 12 and all(len(r) == len(PAY.RATE_DATES) for r in PAY.RATE_TABLE_CA)
+    assert all(ca > fo for rc, rf in zip(PAY.RATE_TABLE_CA, PAY.RATE_TABLE) for ca, fo in zip(rc, rf))
+    assert all(a < b for r in PAY.RATE_TABLE_CA for a, b in zip(r, r[1:]))  # each raise date pays more
+    assert all(a[i] < b[i] for a, b in zip(PAY.RATE_TABLE_CA, PAY.RATE_TABLE_CA[1:]) for i in range(5))  # and each year
+    assert PAY.rate_for(1, "2023-03-02", "CA") == 359.68 and PAY.rate_for(1, "2023-03-02") == 81.00  # 3.D.1: FO year 1 only
+    assert PAY.rate_for(9, "2026-11-06", "CA") == 431.04 and PAY.rate_for(12, "2027-02-01", "ca") == 454.18
+    assert PAY.rate_for(99, "2026-11-06", "CA") == 440.95 and PAY.rate_for(0, "2022-01-01", "CA") == 359.68
+    for seat in ("FO", "RO", "", None):
+        assert PAY.rate_for(7, "2026-11-06", seat) == PAY.rate_for(7, "2026-11-06") == 282.66
+
+
+def test_trip_gross_captain_rules():
+    """PWA 4.O.1: a Captain gets $5.00 per block hour on any crew of 3 or more and never the type-rated FO's 15%; off by
+    default (the schedule card's tripFull parity above), on for another pilot's pay line."""
+    r = PAY.rate_for(9, "2026-11-06", "CA")
+    assert PAY.trip_gross(20.0, 17.5, 3, "NRT", "k", "CA", r, ca_rules=True) == pytest.approx(20 * r + 17.5 * 5.00)
+    assert PAY.trip_gross(20.0, 17.5, "CA02FO02", "SIN", "k", "CA", r, ca_rules=True) == pytest.approx(20 * r + 17.5 * 5.00)
+    assert PAY.trip_gross(10.0, 9.0, 2, "LAX", "k", "CA", r, ["+k"], ca_rules=True) == pytest.approx(10 * r)
+    assert PAY.trip_gross(20.0, None, 3, "NRT", "k", "CA", r, ca_rules=True) == pytest.approx(20 * r)
+    assert PAY.trip_gross(20.0, 17.5, "CA02FO02", "SIN", "k", "CA", r) == pytest.approx(20 * r * 1.15)  # default: as before
+    fo = PAY.rate_for(9, "2026-11-06")
+    for seat, n, want in (("FO", 3, 16.5 * fo + 14 * 3.00), ("RO", 3, 16.5 * fo + 14 * 4.00), ("FO", 2, 16.5 * fo),
+                          ("FO", 4, 16.5 * fo * 1.15), ("RO", 4, 16.5 * fo + 14 * 4.00 + 16.5 * fo * 0.15)):
+        assert PAY.trip_gross(16.5, 14.0, n, "NRT", "k", seat, fo, ca_rules=True) == pytest.approx(want)  # FO / RO unchanged
+        assert PAY.trip_gross(16.5, 14.0, n, "NRT", "k", seat, fo) == pytest.approx(want)
+    assert PAY.crew_n(3) == 3 and PAY.crew_n("CA01FO01RO01") == 3 and PAY.crew_n(None) == 0
+    assert [PAY.overrides_due(s, n) for s, n in (("RO", 2), ("CA", 3), ("CA", 2), ("FO", 3), ("FO", 4))] == [True, True, False, True, False]
+
+
+def _t(pid, s, e, seat, cr, blk, n, soft="", lay="", route="HNL-NRT-HNL"):
+    return {"pairing": pid, "start": s, "end": e, "seat": seat, "credit": cr, "blk": blk, "soft": soft, "n": n,
+            "lay": lay, "route": route}
+
+
+TRIPS = [_t("H9001", "2026-10-31", "2026-11-02", "FO", "12:34", "9:58", 2, "2:36", "LAX"),  # last period's: not totaled
+         _t("H9002", "2026-11-05", "2026-11-07", "CA", "20:00", "17:30", 3, "2:30", "NRT"),
+         _t("H9003", "2026-11-12", "2026-11-14", "RO", "16:30", "14:00", 3, "2:30"),
+         _t("H9004", "2026-11-20", "2026-11-23", "FO", "20:00", "17:30", 4, "2:30", "SIN", "HNL-SIN-HNL"),
+         _t("H9005", "2026-11-26", "2026-11-26", "FO", "", "", 2),
+         _t("H9006", "2026-11-28", "2026-11-30", "FO", "12:00", "", 3),
+         _t("H9007", "2026-12-01", "2026-12-03", "FO", "16:35", "16:35", 2, "0:00", "", "HNL-SYD-HNL")]
+
+
+def test_pay_line_prices_each_seat():
+    line, per = PAY.pay_line(TRIPS, "2018-10-03", "2026-11-01", "2026-12-01", 22.0)
+    ca, fo = PAY.rate_for(9, "2026-11-01", "CA"), PAY.rate_for(9, "2026-11-01")
+    want = {"H9002|2026-11-05": 20 * ca + 17.5 * 5.00,             # CA on a 3-pilot crew: $5.00 / block h, no 15%
+            "H9003|2026-11-12": 16.5 * fo + 14 * 4.00,             # RO: FO rate + $4.00 / block h
+            "H9004|2026-11-20": 20 * fo * 1.15,                    # FO on a 4-pilot crew: Extended Range +15%
+            "H9006|2026-11-28": 12 * fo,                           # no block: the $3.00 override cannot be added
+            "H9007|2026-12-01": (16 + 35 / 60) * fo}
+    assert per == pytest.approx({k: round(v, 2) for k, v in want.items()})
+    assert line["gross"] == pytest.approx(sum(want.values()), abs=0.01)
+    assert line["net"] == pytest.approx(line["gross"] * 0.78, abs=0.01) and line["tax_pct"] == 22.0
+    assert (line["doh_known"], line["doh"], line["year"], line["year_to"]) == (True, "2018-10-03", 9, None)
+    assert line["seat_rates"] == {"CA": ca, "FO": fo} and line["seats"] == ["CA", "FO", "RO"]
+    assert (line["trips"], line["trips_priced"], line["credit"], line["credit_n"]) == (6, 5, "85:05", 5)
+    assert (line["block"], line["block_n"], line["soft"], line["soft_n"]) == ("65:35", 4, "7:30", 4)
+    assert line["missing"] == [{"pairing": "H9005", "start": "2026-11-26"}]
+    assert line["no_block"] == [{"pairing": "H9006", "start": "2026-11-28"}]
+    assert line["days_off"] == 31 - 17  # Nov 1-2 (the Oct 31 trip), 5-7, 12-14, 20-23, 26, 28-30, Dec 1
+
+
+def test_pay_line_longevity_and_no_doh():
+    # the DOH anniversary inside the bid period: year 8 to 9, each trip at its own start date
+    line, per = PAY.pay_line(TRIPS, "2018-11-15", "2026-11-01", "2026-12-01", 0)
+    assert (line["year"], line["year_to"]) == (8, 9)
+    assert per["H9002|2026-11-05"] == pytest.approx(round(20 * PAY.rate_for(8, "2026-11-05", "CA") + 17.5 * 5, 2))
+    assert per["H9004|2026-11-20"] == pytest.approx(round(20 * PAY.rate_for(9, "2026-11-20") * 1.15, 2))
+    assert line["net"] == line["gross"]
+    for doh in ("", None, "not a date"):  # no date of hire: hours and days, no amounts
+        line, per = PAY.pay_line(TRIPS, doh, "2026-11-01", "2026-12-01", 22.0)
+        assert per == {} and line["gross"] is None and line["net"] is None and line["doh_known"] is False
+        assert line["year"] is None and line["seat_rates"] == {} and line["trips_priced"] == 0
+        assert (line["credit"], line["days_off"], line["trips"]) == ("85:05", 14, 6)
+    line, _ = PAY.pay_line([], "2018-10-03", "2026-11-01", "2026-12-01", 22.0)
+    assert line["gross"] is None and line["days_off"] == 31 and line["credit"] == "0:00"
