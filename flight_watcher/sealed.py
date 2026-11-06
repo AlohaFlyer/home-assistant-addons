@@ -14,6 +14,8 @@ import base64
 import hashlib
 import json
 import os
+import tempfile
+import threading
 import time
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -27,20 +29,29 @@ class SealError(ValueError):
     pass
 
 
+_LOCK = threading.Lock()
+
+
 def load_key(path):
-    """The instance's private key, created (mode 600) when missing."""
-    if os.path.exists(path):
-        with open(path, "rb") as f:
-            return serialization.load_pem_private_key(f.read(), password=None)
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-                            serialization.NoEncryption())
-    tmp = path + ".tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(pem)
-    os.replace(tmp, path)
-    return key
+    """The instance's private key, created (mode 600) when missing. A file that does not parse (empty, cut short)
+    is moved aside to <path>.bad and replaced by a new key; the card picks the new public key up from the state."""
+    with _LOCK:
+        if os.path.exists(path):
+            try:
+                with open(path, "rb") as f:
+                    return serialization.load_pem_private_key(f.read(), password=None)
+            except ValueError:
+                os.replace(path, path + ".bad")
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                serialization.NoEncryption())
+        fd, tmp = tempfile.mkstemp(prefix=".settings_key.", dir=os.path.dirname(path) or ".")  # mode 600
+        with os.fdopen(fd, "wb") as f:
+            f.write(pem)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        return key
 
 
 def public_info(key):

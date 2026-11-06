@@ -21,6 +21,14 @@ def test_key_created_private_and_reused(tmp_path):
     assert SEAL.public_info(SEAL.load_key(str(p))) == SEAL.public_info(k1)
 
 
+def test_corrupt_key_is_replaced(tmp_path):
+    p = tmp_path / "k.pem"
+    p.write_bytes(b"")
+    k = SEAL.load_key(str(p))
+    assert (tmp_path / "k.pem.bad").exists() and stat.S_IMODE(os.stat(p).st_mode) == 0o600
+    assert SEAL.public_info(SEAL.load_key(str(p))) == SEAL.public_info(k)
+
+
 def test_round_trip_and_refusals(tmp_path):
     k = SEAL.load_key(str(tmp_path / "k.pem"))
     pub = SEAL.public_info(k)["pubkey"]

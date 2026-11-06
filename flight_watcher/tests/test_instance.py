@@ -252,3 +252,15 @@ def test_sealed_settings_from_the_card(tmp_path, monkeypatch):
     assert W.settings_cmd(json.dumps(old)) is False
     assert json.loads(fake.msgs[-1][1])["result"].startswith("refused")
     assert json.loads((tmp_path / "creds.json").read_text())["password"] == "pw-sealed"
+
+
+def test_sealed_settings_without_a_key_never_raise(tmp_path, monkeypatch):
+    W = _load(tmp_path, monkeypatch, "pilot2", OPTS)
+    fake = FakeClient()
+    monkeypatch.setattr(W, "MQ", fake)
+
+    def boom():
+        raise OSError("read-only")
+    monkeypatch.setattr(W, "settings_key", boom)
+    assert W.settings_cmd(json.dumps({"enc": {"v": 1}})) is False
+    assert "key unavailable" in json.loads(fake.msgs[-1][1])["result"]

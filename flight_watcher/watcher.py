@@ -352,9 +352,13 @@ def settings_cmd(payload):
     if "enc" in d:  # 1.1.0: sealed by the dashboard Settings card
         try:
             d = SEAL.open_sealed(settings_key(), d["enc"])
-        except SEAL.SealError as e:
-            log.info("sealed settings refused: %s", e)
-            publish_settings(creds=load_creds(), result=f"refused: {e}")
+        except Exception as e:  # noqa: BLE001 (SealError, or no usable key: never let it reach paho's thread)
+            msg = str(e) if isinstance(e, SEAL.SealError) else f"settings key unavailable ({type(e).__name__})"
+            log.info("sealed settings refused: %s", msg)
+            try:
+                publish_settings(creds=load_creds(), result=f"refused: {msg}")
+            except Exception:  # noqa: BLE001
+                pass
             return False
     cur = load_creds()
     changed = []
