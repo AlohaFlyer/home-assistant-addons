@@ -115,6 +115,66 @@ def test_finds_card_time_format_is_browser_independent(tmp_path):
     assert json.loads(out.stdout) == ["Nov 5 12:23", "Nov 6 00:05", "", "bad"]
 
 
+def test_finds_card_shows_today_hst_and_folds_the_rest(tmp_path):
+    """FW-0005 (Ryan): this month shows only the finds first seen today in HST (UTC-10); every earlier one folds under
+    "N earlier this month", closed until opened and remembered per browser (localStorage, which may throw). A past
+    month opens in full. Synthetic trips and names."""
+    import shutil
+    import subprocess
+    if not shutil.which("node"):
+        import pytest
+        pytest.skip("node not installed")
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www", "flight-watcher-finds-card.js"),
+               encoding="utf-8").read()
+    now = "2026-11-07T09:30:00Z"  # Nov 6 23:30 HST: the UTC date is already Nov 7
+
+    def find(pid, seen):
+        return {"pairing": pid, "seen": seen, "dates": "08Nov-10Nov", "layover": "LAX", "days": "3", "credit": "12:34",
+                "captain": "Doe, Jane (12345)"}
+    rows = [find("H9001", "2026-11-07T09:00:00Z"),   # Nov 6 23:00 HST: today
+            find("H9002", "2026-11-06T10:00:00Z"),   # Nov 6 00:00 HST: today (midnight)
+            find("H9003", "2026-11-06T09:59:00Z"),   # Nov 5 23:59 HST: earlier, though the UTC date is Nov 6
+            find("H9004", "2026-11-01T10:05:00Z"),   # Nov 1 00:05 HST
+            find("H9005", "not a time")]
+    js = ("globalThis.HTMLElement = class {}; globalThis.customElements = {define() {}}; globalThis.window = {};\n"
+          "const store = new Map(); globalThis.localStorage = {getItem: (k) => store.has(k) ? store.get(k) : null,"
+          " setItem: (k, v) => store.set(k, String(v))};\n" + src +
+          f"\nconst rows = {json.dumps(rows)}; const now = Date.parse({json.dumps(now)});\n"
+          "const tr = (h) => (h.match(/<tr class/g) || []).length;\n"
+          "const parts = (h) => { const i = h.indexOf('<details'); return i < 0 ? [h, ''] : [h.slice(0, i), h.slice(i)]; };\n"
+          "const tag = (h) => parts(h)[1].split('>')[0] + '>';\n"
+          "const card = () => { const c = new FlightWatcherFindsCard(); c.setConfig({}); c._m = '2026-11'; return c; };\n"
+          "const c = card(); const sp = c._split(rows, now); const first = c._list(rows, now, false);\n"
+          "c._setEarlier(true); const opened = c._list(rows, now, false); const saved = store.get('flight_watcher_finds_earlier');\n"
+          "const again = card()._list(rows, now, false);\n"
+          "c._setEarlier(false); const shut = store.get('flight_watcher_finds_earlier');\n"
+          "const none = card()._list(rows.slice(2), now, false);\n"
+          "const p = card(); p._m = '2026-10'; const past = p._list(rows, now, false); const pastNone = p._list([], now, false);\n"
+          "globalThis.localStorage = {getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); }};\n"
+          "const b = card(); const blocked = b._list(rows, now, false); b._setEarlier(true); const blockedOpen = b._list(rows, now, false);\n"
+          "console.log(JSON.stringify({today: sp.today.map((f) => f.pairing), earlier: sp.earlier.map((f) => f.pairing),\n"
+          "  first: parts(first).map(tr), firstFold: parts(first)[1].slice(0, 60), opened: tag(opened), saved,\n"
+          "  again: tag(again), shut, none: parts(none).map(tr), noneText: parts(none)[0],\n"
+          "  past: tr(past), pastFold: past.includes('<details'), pastNone, blocked: tag(blocked),\n"
+          "  blockedOpen: tag(blockedOpen)}));")
+    f = tmp_path / "t.js"
+    f.write_text(js)
+    out = subprocess.run(["node", str(f)], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    r = json.loads(out.stdout)
+    assert r["today"] == ["H9001", "H9002"] and r["earlier"] == ["H9003", "H9004", "H9005"]
+    assert r["first"] == [2, 3] and r["firstFold"] == '<details class="old"><summary>3 earlier this month</summary>'
+    assert r["opened"] == '<details class="old" open>' and r["saved"] == "1"
+    assert r["again"] == '<details class="old" open>'  # a new card (page reload) reads the browser's choice
+    assert r["shut"] == "0"
+    assert r["none"] == [0, 3] and "Nothing new today (Nov 6 HST)." in r["noneText"]
+    assert r["past"] == 5 and not r["pastFold"] and r["pastNone"] == '<div class="k">Nothing added in Oct 2026.</div>'
+    # storage blocked (private mode): closed by default, the fold still opens for this page, nothing throws
+    assert r["blocked"] == '<details class="old">' and r["blockedOpen"] == '<details class="old" open>'
+    pilot2 = cards.build("1", None, ["pilot2"])["flight-watcher-finds-card-pilot2.js"]
+    assert 'localStorage.getItem("flight_watcher_pilot2_finds_earlier")' in pilot2  # a second pilot's fold is his own
+
+
 def test_pilot_card_draws_rebuilt_month_in_the_schedule_grid(tmp_path):
     """FW-0002: the crew index's rebuilt trips use the readable schedule's day-by-day grid (synthetic names): FLICA's
     rows (the day before the bid period to its last day, Oct 31 to Dec 1), one trip per day (two trips on the same
