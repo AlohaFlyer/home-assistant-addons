@@ -280,7 +280,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
       const eds = `<div class="eds">${t.editable ? `<button class="g" data-edit="${this._e(t.id)}">&#9998; Edit</button>` : ""}<button class="del" data-del="${this._e(t.id)}">Delete</button></div>`;
       const editing = f && f.mode === "edit" && f.id === t.id;
       return `<div class="t"><div class="th" data-t="${this._e(t.id)}"><b>${this._e(t.id)}</b> ${t.kind === "bug" ? "&#128027;" : "&#128161;"} ${this._e(t.title)}
-        <span class="chip" style="background:${chip[t.status] || "#757575"}">${this._e(String(t.status).replace("_", " "))}${t.version_fixed ? " v" + this._e(t.version_fixed) : ""}</span>
+        <span class="chip" style="background:${chip[t.status] || "#757575"}">${this._e(String(t.status).replace("_", " "))}${t.version_fixed ? (/^\d+(\.\d+)+$/.test(String(t.version_fixed)) ? " v" : " in ") + this._e(t.version_fixed) : ""}</span>
         <span class="u">${this._e(t.reporter)} · ${this._e(String(t.created_at || "").slice(0, 10))}${np ? ` · <span title="${np} photo${np === 1 ? "" : "s"}">&#128247;${np > 1 ? " " + np : ""}</span>` : ""}</span></div>
         ${editing ? `<div class="tb">${this._editForm(f.t)}</div>` : op ? `<div class="tb">${rqRow === t.id ? rqHtml : ""}<div class="n">${this._e(t.narrative)}</div>${np ? `<div class="u" style="margin-bottom:6px">&#128247; ${np} photo${np === 1 ? "" : "s"} attached</div>` : ""}${acts}
           <div><input data-note="${this._e(t.id)}" placeholder="Add a note" style="width:70%"> <button class="g" data-a="note" data-id="${this._e(t.id)}">Add</button></div>${eds}</div>` : ""}</div>`;

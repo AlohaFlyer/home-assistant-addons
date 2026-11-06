@@ -335,3 +335,11 @@ def test_card_edit_form_prefills_and_escapes(tmp_path):
 def test_card_pilot_copy_sends_to_his_own_topics():
     p = cards.build("1", ["pilot2"])["flight-watcher-tickets-card-pilot2.js"]
     assert 'prefix: "flight_watcher_pilot2"' in p and '"ticket/edit"' in p and '"ticket/delete"' in p
+
+
+def test_fixed_chip_says_v_only_for_app_versions():
+    """A ticket fixed in an app release reads 'fixed v1.3.0'; one fixed in Pako config reads 'fixed in Pako config ...'."""
+    import os
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www", "flight-watcher-tickets-card.js"),
+               encoding="utf-8").read()
+    assert '(/^\\d+(\\.\\d+)+$/.test(String(t.version_fixed)) ? " v" : " in ")' in src
