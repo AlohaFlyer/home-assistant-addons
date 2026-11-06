@@ -53,6 +53,21 @@ RYAN_TO_OTHER = """\
 """
 
 
+# Crossing 3 (review fix): a wildcard first level matches both pilots' Watchers, so it may not push Ryan.
+WILDCARD_TO_RYAN = """\
+- id: '3'
+  alias: Flight Watcher any new pairing
+  triggers:
+  - topic: +/event/new_pairing
+    trigger: mqtt
+  actions:
+  - action: notify.mobile_app_ryans_iphone
+    data:
+      message: '{{ trigger.payload_json.pairing }}'
+  mode: queued
+"""
+
+
 def _write(tmp_path, text):
     p = tmp_path / "automations.yaml"
     p.write_text(text, encoding="utf-8")
@@ -90,7 +105,9 @@ def test_snapshot_is_redacted():
 @pytest.mark.parametrize("text, why", [
     (JAMES_TO_RYAN, "triggered by ['james'] but pushes Ryan"),
     (RYAN_TO_OTHER, "triggered by Ryan's Watcher but pushes non-Ryan targets"),
-], ids=["james-event-to-ryan", "ryan-event-to-other"])
+    (WILDCARD_TO_RYAN, "triggered by ['james'] but pushes Ryan"),
+    (WILDCARD_TO_RYAN.replace("+/event/new_pairing", "'#'"), "triggered by ['james'] but pushes Ryan"),
+], ids=["james-event-to-ryan", "ryan-event-to-other", "wildcard-to-ryan", "hash-to-ryan"])
 def test_crossings_fail(tmp_path, use_yaml, text, why):
     offenders, summary = G.check(G.load(_write(tmp_path, text), use_yaml=use_yaml))
     assert summary.startswith("push isolation FAILED:")

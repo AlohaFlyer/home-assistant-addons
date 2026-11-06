@@ -239,6 +239,18 @@ def _pilots_in(o):
     return found
 
 
+def _wild_pilots(t):
+    """Review fix (1.4.0): an MQTT trigger whose first topic level is a wildcard ('+/event/new_pairing', '#')
+    matches every pilot's Watcher, so it counts as triggered by all of them."""
+    if not isinstance(t, dict) or t.get("trigger", t.get("platform")) != "mqtt":
+        return set()
+    topics = t.get("topic")
+    for topic in (topics if isinstance(topics, list) else [topics]):
+        if str(topic or "").split("/", 1)[0] in ("+", "#"):
+            return {RYAN, *SECOND_PILOTS}
+    return set()
+
+
 def _as_list(v):
     if v is None:
         return []
@@ -301,7 +313,7 @@ def check_one(a):
     trig_pilots = set()
     for t in triggers:
         if not _is_handler(t):
-            trig_pilots |= _pilots_in(t)
+            trig_pilots |= _pilots_in(t) | _wild_pilots(t)
     pushes = _pushes(actions, [])
     targets = {t for t, _ in pushes}
     ryan_t = {t for t in targets if t in RYAN_TARGETS}

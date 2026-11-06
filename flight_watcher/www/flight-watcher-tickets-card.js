@@ -31,7 +31,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
   setConfig(c) {
     this._c = { prefix: "flight_watcher", ...c };
     this._form = null; this._imgs = []; this._prep = null; this._note = ""; this._gen = 0; this._send = null; this._sending = false;
-    this._open = {}; this._doneOpen = false; this._req = null; this._dlg = false; this._fk = "";
+    this._open = {}; this._doneOpen = false; this._req = null; this._dlg = false; this._fk = ""; this._unsaved = null;
   }
   getCardSize() { return 6; }
   _ccUrl() { return this._c.claude_code_url || fwTicketCcUrl(FW_TICKET_CC_PROMPT, FW_TICKET_CC_REPO); }
@@ -220,6 +220,19 @@ class FlightWatcherTicketsCard extends HTMLElement {
     return e.includes(q.id) ? `Not ${what}: ${e}.` : `${q.id} not ${what}: ${e}.`;
   }
   _reqBad(last) { const q = this._req; return !!(q && (q.err || (last && last.rid && last.rid === q.rid && !last.ok))); }
+  // 1.4.0 review: text an edit could not save (refused, no answer, or its ticket left the log) is offered back,
+  // to copy or add as a note, instead of being lost when the form closes.
+  _unsavedText(vals) {
+    const lab = { title: "Title", narrative: "Description", steps: "Steps", expected: "Expected", page: "Where" };
+    return Object.keys(lab).filter((k) => vals && vals[k] != null && String(vals[k]) !== "").map((k) => `${lab[k]}: ${vals[k]}`).join("\n\n");
+  }
+  _offerUnsaved(last, tix) {
+    const q = this._req, L = q && last && last.rid && last.rid === q.rid ? last : null;
+    if (q && q.vals && L && L.ok && this._unsaved && this._unsaved.rid === q.rid) this._unsaved = null;  // a late "saved"
+    if (!q || !q.vals || q.offered || (L ? L.ok : !q.slow)) return;
+    q.offered = true;
+    this._unsaved = { rid: q.rid, id: q.id, text: this._unsavedText(q.vals), why: this._reqText(last), live: tix.some((t) => t.id === q.id) };
+  }
   _sent(q) {
     this._req = q;
     setTimeout(() => { if (this._req === q) { q.slow = true; this._sig = null; if (!this._form && !this._dlg) this._render(); } }, 30000);
@@ -276,6 +289,13 @@ class FlightWatcherTicketsCard extends HTMLElement {
     const st = this._h && this._h.states[`sensor.${this._c.prefix}_tickets`];
     const a = st ? st.attributes : {};
     const tix = a.tickets || [];
+    if (this._form && this._form.mode === "edit" && !tix.some((t) => t.id === this._form.id)) {
+      const gone = this._form, m = this._editMsg(gone.t || {}, Object.keys(keep).length ? keep : {});
+      if (typeof m === "object") { delete m.id; this._unsaved = { id: gone.id, text: this._unsavedText(m), why: `${gone.id} is no longer on the ticket log, so the edit was not sent.`, live: false }; }
+      this._closeForm(); this._fk = "";
+      Object.keys(keep).forEach((k) => delete keep[k]);
+    }
+    this._offerUnsaved(a.last || {}, tix);
     const ver = (this._h && this._h.states[`sensor.${this._c.prefix}_state`] || { attributes: {} }).attributes.version || "";
     const chip = { new: "#1976d2", triaged: "#6a1b9a", in_progress: "#ef6c00", fixed: "#2e7d32", closed: "#757575", reopened: "#c62828" };
     const f = this._form, nf = f && f.mode !== "edit" ? f : null, K = nf ? FW_TICKET_KINDS[nf.kind] || FW_TICKET_KINDS.bug : null;
@@ -359,6 +379,10 @@ class FlightWatcherTicketsCard extends HTMLElement {
         <a class="cc" data-cc href="${this._e(this._ccUrl())}" target="_blank" rel="noopener noreferrer">Process Tickets in Claude Code</a></div>
       <div data-status class="${this._send && this._send.failed.length ? "warn" : "u"}">${this._e(this._statusText())}</div>
       ${rqRow ? "" : rqHtml}
+      ${this._unsaved ? `<div class="form ef" data-unsaved><div class="warn">${this._e(this._unsaved.why)}</div>
+        <div class="u">Your text was not saved. Copy it${this._unsaved.live ? `, or add it to ${this._e(this._unsaved.id)} as a note` : ""}.</div>
+        <textarea readonly rows="5" data-u-text>${this._e(this._unsaved.text)}</textarea>
+        <button data-u-copy>Copy</button>${this._unsaved.live ? `<button class="g" data-u-note>Add as a note</button>` : ""}<button class="g" data-u-close>Dismiss</button></div>` : ""}
       ${form}
       ${tix.length ? `<div style="margin-top:6px"><b>Ticket log</b>${rows || `<div class="u" style="padding:6px 0">Nothing open.</div>`}${doneRows}</div>` : `<div class="u" style="margin-top:6px">No tickets yet.</div>`}
       <dialog data-dlg aria-label="Delete ticket"></dialog>
@@ -375,6 +399,18 @@ class FlightWatcherTicketsCard extends HTMLElement {
       if (this._send && this._send.done) this._send = null;
       this._render();
     });
+    const ub = r.querySelector("[data-unsaved]");
+    if (ub) {
+      const u = this._unsaved, ta = ub.querySelector("[data-u-text]");
+      ub.querySelector("[data-u-copy]").onclick = (ev) => {
+        const done = () => { ev.target.textContent = "Copied"; };
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(u.text).then(done, () => { ta.select(); });
+        else { ta.select(); try { if (document.execCommand("copy")) done(); } catch (e) {} }
+      };
+      const nb = ub.querySelector("[data-u-note]");
+      if (nb) nb.onclick = () => { this._pub("ticket/act", { id: u.id, action: "note", text: `Unsaved edit: ${u.text}`.slice(0, 5000) }); this._unsaved = null; this._sig = null; this._render(); };
+      ub.querySelector("[data-u-close]").onclick = () => { this._unsaved = null; this._render(); };
+    }
     r.querySelectorAll("[data-t]").forEach((el) => el.onclick = () => { this._open[el.dataset.t] = !this._open[el.dataset.t]; this._render(); });
     const dd = r.querySelector("details.done");
     if (dd) dd.ontoggle = () => { this._doneOpen = dd.open; };
@@ -412,7 +448,8 @@ class FlightWatcherTicketsCard extends HTMLElement {
           save.disabled = true; save.textContent = "Saving...";
           try { await this._pub("ticket/edit", m); }
           catch (e) { save.disabled = false; save.textContent = "Save"; msg.textContent = `Didn't send: ${(e && e.message) || "no connection"}. Try again.`; return; }
-          this._sent({ rid: m.rid, id: f.id, action: "edit" });
+          const sentVals = { ...m }; delete sentVals.id; delete sentVals.rid;
+          this._sent({ rid: m.rid, id: f.id, action: "edit", vals: sentVals });  // kept until the Watcher says saved
           this._closeForm(); this._sig = null; this._render();
         };
       }

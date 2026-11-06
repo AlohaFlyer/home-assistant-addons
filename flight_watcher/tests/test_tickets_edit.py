@@ -384,3 +384,22 @@ def test_card_claude_code_button_link(tmp_path):
     assert 'data-cc href="${this._e(this._ccUrl())}" target="_blank" rel="noopener noreferrer">Process Tickets in Claude Code</a>' in src
     p = cards.build("1", ["pilot2"])["flight-watcher-tickets-card-pilot2.js"]
     assert "Process Tickets in Claude Code" in p and 'FW_TICKET_CC_REPO = "AlohaFlyer/home-assistant-addons"' in p
+
+
+def test_card_offers_back_an_edit_the_watcher_did_not_save(tmp_path):
+    """1.4.0 review: a refused or unanswered edit keeps its text (copy or add as a note); a late 'saved' clears it."""
+    js = ("const c = new FlightWatcherTicketsCard(); c.setConfig({}); const out = [];\n"
+          "const tix = [{id: 'FW-0050'}];\n"
+          "const q = () => ({rid: 'r1', id: 'FW-0050', action: 'edit', vals: {title: 'New title', narrative: 'My rewrite.'}});\n"
+          "c._req = q(); c._offerUnsaved({}, tix); out.push(c._unsaved);\n"
+          "c._offerUnsaved({rid: 'r1', ok: false, error: 'FW-0050 is triaged: edits only while new or reopened'}, tix); out.push(c._unsaved);\n"
+          "c._unsaved = null; c._req = {...q(), slow: true}; c._offerUnsaved({}, []); out.push(c._unsaved);\n"
+          "c._offerUnsaved({rid: 'r1', ok: true}, tix); out.push(c._unsaved);\n"
+          "c._unsaved = null; c._req = q(); c._offerUnsaved({rid: 'r1', ok: true}, tix); out.push(c._unsaved);\n"
+          "c._req = {rid: 'r2', id: 'FW-0050', action: 'delete'}; c._offerUnsaved({rid: 'r2', ok: false, error: 'x'}, tix); out.push(c._unsaved);\n"
+          "console.log(JSON.stringify(out));")
+    pending, refused, slow, late_ok, saved, delete_refused = _card_node(tmp_path, js)
+    assert pending is None and saved is None and delete_refused is None and late_ok is None
+    assert refused == {"rid": "r1", "id": "FW-0050", "text": "Title: New title\n\nDescription: My rewrite.",
+                       "why": "Not saved: FW-0050 is triaged: edits only while new or reopened.", "live": True}
+    assert slow["why"] == "FW-0050: sent, no answer from the Watcher yet." and slow["live"] is False

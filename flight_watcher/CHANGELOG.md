@@ -22,6 +22,7 @@
 - FW-0052 / FW-0055 (Ryan, Pako config): the tickets card moved to the bottom of the Settings tab under a divider and shows to Ryan only (on James's dashboard too); the new-ticket and ticket-fixed pushes open the Settings tab.
 - FW-0054 (Ryan, Pako config): a new pairing he can take (the push already skips VAC, blocked, conflicting and FAR 117 failing trips) now buzzes: `flight-watcher-buzzer.wav` (ha/sounds, served at /local/) as the critical sound. iOS plays the default sound until the file is imported in the Home Assistant app.
 - Request view (FW-0002 follow-up): FLICA's "Swap <given> For <taken>" sets the Pay-Gross sides, and crew scheduling's CS comment becomes the denial reason in the push.
+- Review fixes: a ticket edit the Watcher refused or never answered keeps its text (Copy, or Add as a note); a ticket deleted while its edit form is open no longer freezes the tickets card; the push-isolation guard counts an MQTT trigger whose first topic level is a wildcard (`+/...`, `#`) as every pilot's.
 - ha/ (FW-0036): a redacted snapshot of Pako's Flight Watcher automations, both dashboards and the aviation weather package, plus `ha/check_push_isolation.py` (and a test) that fails if any of James's pushes could reach Ryan's devices or the reverse.
 
 ## 1.3.0
