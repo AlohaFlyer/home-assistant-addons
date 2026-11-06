@@ -1,0 +1,706 @@
+{
+  "version": 1,
+  "minor_version": 1,
+  "key": "lovelace.flight_watcher",
+  "data": {
+    "config": {
+      "title": "Flight Watcher",
+      "views": [
+        {
+          "icon": "mdi:airplane-search",
+          "max_columns": 4,
+          "path": "watcher",
+          "sections": [
+            {
+              "cards": [
+                {
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "mode": "alert",
+                  "type": "custom:flight-watcher-recall-card"
+                }
+              ],
+              "column_span": 4,
+              "type": "grid"
+            },
+            {
+              "cards": [
+                {
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "custom:flight-watcher-clock-card"
+                }
+              ],
+              "column_span": 4,
+              "type": "grid"
+            },
+            {
+              "cards": [
+                {
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "custom:flight-watcher-schedule-card"
+                }
+              ],
+              "column_span": 4,
+              "type": "grid"
+            },
+            {
+              "cards": [
+                {
+                  "badges": [
+                    {
+                      "entity": "sensor.flight_watcher_pot_count",
+                      "show_name": false,
+                      "show_state": true,
+                      "type": "entity"
+                    }
+                  ],
+                  "heading": "Open time pot / Tradeboard Pickups",
+                  "icon": "mdi:airplane",
+                  "type": "heading"
+                },
+                {
+                  "color": "amber",
+                  "entity": "input_boolean.flight_watcher_show_vac_trips",
+                  "features": [
+                    {
+                      "type": "toggle"
+                    }
+                  ],
+                  "features_position": "inline",
+                  "grid_options": {
+                    "columns": 12
+                  },
+                  "icon": "mdi:island",
+                  "name": "Show VAC / blocked",
+                  "tap_action": {
+                    "action": "toggle"
+                  },
+                  "type": "tile"
+                },
+                {
+                  "content": "{%- from 'flight_watcher.jinja' import pot_table, month_key -%}\n{%- set key = month_key() -%}\n{%- set sch = (state_attr('sensor.flight_watcher_schedule', 'months') or {}).get(key) -%}\n{%- set ps = (state_attr('sensor.flight_watcher_pot_count', 'pairings') or []) + (state_attr('sensor.flight_watcher_tradeboard_pickups', 'pairings') or []) -%}\n{%- set st = states('sensor.flight_watcher_state') -%}\n{%- set lc = states('sensor.flight_watcher_last_check') -%}\n{%- set t = as_datetime(lc) if lc not in ['unknown', 'unavailable'] else none -%}\n{%- set fresh = st in ['idle', 'hunting'] and t is not none and (now() - t).total_seconds() < 900 -%}\n{%- if not fresh and t -%}\n<ha-alert alert-type=\"warning\">Pot last read {{ (t | as_local).strftime('%b %-d %H:%M') }}. May be out of date until the Watcher is running again.</ha-alert>\n\n{% endif -%}\n{{ pot_table(ps, sch['items'] if sch else none, key, is_state('input_boolean.flight_watcher_show_vac_trips', 'on'), state_attr('sensor.flight_watcher_blocked_days', 'days') or []) }}\n\n<details><summary><b>Key</b></summary>\n\n- **T** after a trip = Tradeboard pickup post; the rest are the open time pot\n- **Soft**: soft time\n- **CA**: captain\n- **Fits**: no overlap with your trips or VAC\n- **FAR**: 10 h rest before and after, 30 h off in 168 h, 100 h flying in 672 h\n- **CBA rest**: legal, but under the 11 h company minimum\n- **?**: not read yet\n- Trips on VAC or blocked days are hidden: tap **Show VAC/blocked**\n- Block a day: tap it on the schedule calendar\n\n</details>",
+                  "entity_id": [
+                    "input_number.flight_watcher_month_offset",
+                    "sensor.flight_watcher_schedule",
+                    "sensor.flight_watcher_pot_count",
+                    "sensor.flight_watcher_state",
+                    "sensor.flight_watcher_last_check",
+                    "input_boolean.flight_watcher_show_vac_trips",
+                    "sensor.flight_watcher_blocked_days",
+                    "sensor.flight_watcher_tradeboard_pickups"
+                  ],
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "markdown"
+                },
+                {
+                  "badges": [
+                    {
+                      "entity": "sensor.flight_watcher_would_trade",
+                      "name": "Marked",
+                      "show_name": true,
+                      "show_state": true,
+                      "type": "entity"
+                    },
+                    {
+                      "color": "orange",
+                      "entity": "switch.flight_watcher_auto_swap_dry_run",
+                      "name": "Auto swap (dry run)",
+                      "show_name": true,
+                      "show_state": true,
+                      "tap_action": {
+                        "action": "toggle"
+                      },
+                      "type": "entity"
+                    }
+                  ],
+                  "heading": "Swap ideas",
+                  "heading_style": "subtitle",
+                  "icon": "mdi:swap-horizontal-bold",
+                  "type": "heading"
+                },
+                {
+                  "content": "{%- set ideas = state_attr('sensor.flight_watcher_swap_ideas', 'ideas') or [] -%}\n{%- set marked = state_attr('sensor.flight_watcher_would_trade', 'keys') or [] -%}\n{%- if marked | count == 0 -%}\nNo trips marked. Tap a trip number on the calendar to mark one you'd trade for something better.\n{%- elif ideas | count == 0 -%}\nWatching for better trips than: **{{ marked | map('regex_replace', '\\\\|.*', '') | join(', ') }}**. Nothing better right now.\n{%- else -%}\n| Give up | For | Dates | Layover | Days | Credit | Soft | Gain | Src | Grid |\n|:--|:--|:--|:--|--:|--:|--:|:--|:-:|:--|\n{%- for i in ideas %}\n| {{ i.for_trip }} | **{{ i.pairing }}** | {{ i.dates }} | {{ i.layover if i.layover not in [none, '', '-none-'] else ('**' ~ i.turn ~ '**' if i.turn else 'turn') }} | {{ i.days }} | {{ i.credit }} | {{ i.soft }} | **{{ i.soft_gain }}** soft, {{ i.credit_gain }} cr | {{ i.src }} | {{ '**OK**' if i.grid_ok | default(false) else (i.grid | default('?')) }} |\n{%- endfor %}\n{%- endif %}\n\n<details><summary><b>Key</b></summary>\n\n- Better = soft time up 0:30+, or credit up 1:00+ without losing soft time\n- Must be legal with your trip gone: FAR OK, 11 h home rest, no VAC or blocked day\n- **Grid**: the new trip must share a day with yours, and every day you move off must be green on the reserve grid; red ideas wait and push when the grid turns green\n- **Auto swap (dry run)**: pushes what it *would* submit; nothing is ever submitted to FLICA yet\n\n</details>",
+                  "entity_id": [
+                    "sensor.flight_watcher_swap_ideas",
+                    "sensor.flight_watcher_would_trade"
+                  ],
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "markdown"
+                }
+              ],
+              "column_span": 4,
+              "type": "grid"
+            },
+            {
+              "cards": [
+                {
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "custom:flight-watcher-finds-card"
+                },
+                {
+                  "entity": "button.flight_watcher_check_now",
+                  "grid_options": {
+                    "columns": 4
+                  },
+                  "icon": "mdi:refresh",
+                  "name": "Scan FLICA now",
+                  "tap_action": {
+                    "action": "perform-action",
+                    "perform_action": "button.press",
+                    "target": {
+                      "entity_id": "button.flight_watcher_check_now"
+                    }
+                  },
+                  "type": "tile"
+                },
+                {
+                  "grid_options": {
+                    "columns": 5
+                  },
+                  "type": "custom:flight-watcher-pilot-search-card"
+                },
+                {
+                  "entity": "button.flight_watcher_update_schedules",
+                  "grid_options": {
+                    "columns": 3
+                  },
+                  "icon": "mdi:account-search",
+                  "name": "Update schedules",
+                  "tap_action": {
+                    "action": "perform-action",
+                    "perform_action": "button.press",
+                    "target": {
+                      "entity_id": "button.flight_watcher_update_schedules"
+                    }
+                  },
+                  "type": "tile"
+                },
+                {
+                  "entity": "sensor.flight_watcher_pilot_schedule",
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "custom:flight-watcher-pilot-card"
+                },
+                {
+                  "entity": "sensor.flight_watcher_pickers",
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "custom:flight-watcher-pickers-card"
+                }
+              ],
+              "column_span": 4,
+              "type": "grid"
+            },
+            {
+              "cards": [
+                {
+                  "content": "<details open><summary><ha-icon icon=\"mdi:airplane-alert\"></ha-icon> <b>Charters and unusual A330 flying (CrewTrac, next 30 days)</b> &middot; {{ states('sensor.flight_watcher_charters') }}</summary>{{ '\\n\\n' }}{%- set items = state_attr('sensor.flight_watcher_charters', 'items') or [] -%}\n{%- set st = state_attr('sensor.flight_watcher_charters', 'status') or '' -%}\n{%- set ls = state_attr('sensor.flight_watcher_charters', 'last_scan') or '' -%}\n{%- if st.startswith('not configured') -%}\n<ha-alert alert-type=\"info\">CrewTrac not configured yet: set ctweb_username (employee number) and ctweb_password in Settings > Apps > Flight Watcher > Configuration.</ha-alert>\n{%- elif st and not st.startswith('ok') -%}\n<ha-alert alert-type=\"warning\">{{ st }}</ha-alert>\n{%- endif %}\n{%- if items | count == 0 %}\nNo unusual A330 flying found{{ ' (scanned ' ~ (as_datetime(ls) | as_local).strftime('%b %-d %H:%M') ~ ')' if ls else '' }}.\n{%- else %}\n| Date | Flight | Route | Scheduled (local) | Eqpt | Tail | Why | Seen |\n|:--|:--|:--|:--|:--|:--|:--|:--|\n{%- for r in items %}\n{%- set act = r.actual | default('', true) | trim -%}\n{%- set st = ' &#10004;' if act is search('\\\\d\\\\d:\\\\d\\\\d-\\\\d\\\\d:\\\\d\\\\d') else (' &#9992;' if act is search('\\\\d\\\\d:\\\\d\\\\d-\\\\s*$') else '') %}\n| {{ '~~' if r.gone else '' }}{{ r.date }}{{ '~~' if r.gone else '' }} | **{{ r.flight }}** | **{{ r.route }}**{{ st }} | {{ r.scheduled }} | {{ r.eqpt }} | {{ r.tail }} | {{ r.why }} | {{ r.first_seen }} |\n{%- endfor %}\n\n<sub>Last scan {{ (as_datetime(ls) | as_local).strftime('%b %-d %H:%M') if ls else 'never' }}; {{ st }}. Struck through = no longer on the schedule.</sub>\n{%- endif %}\n\n<details><summary>&#9656; Key</summary>\n\n<sub>\n\n- Source: CrewTrac Web > Options > Scheduled Service, HNL departures and arrivals, one date at a time, every 6 h (read only)\n- Flagged: A330 (332/333) flights numbered 99xx, or whose other end is not a regular A330 station (list in the app Configuration, charter_regular)\n- Each newly seen flight pushes once, as a critical alert, to iPhone 16 and Ryan's iPhone (automation Flight Watcher charter; replaces Hark's daily charter scan)\n- &#10004; after the route = flown (CrewTrac shows actual out and in); &#9992; = airborne now (actual out, no in yet)\n\n</sub>{{ '\\n\\n' }}</details>\n\n</details>",
+                  "entity_id": [
+                    "sensor.flight_watcher_charters"
+                  ],
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "markdown"
+                },
+                {
+                  "entity": "button.flight_watcher_scan_crewtrac_charters_now",
+                  "grid_options": {
+                    "columns": 6
+                  },
+                  "icon": "mdi:airplane-search",
+                  "name": "Scan CrewTrac now",
+                  "tap_action": {
+                    "action": "perform-action",
+                    "perform_action": "button.press",
+                    "target": {
+                      "entity_id": "button.flight_watcher_scan_crewtrac_charters_now"
+                    }
+                  },
+                  "type": "tile"
+                }
+              ],
+              "column_span": 4,
+              "type": "grid"
+            }
+          ],
+          "title": "Watcher",
+          "type": "sections"
+        },
+        {
+          "icon": "mdi:airplane",
+          "max_columns": 2,
+          "path": "wx",
+          "sections": [
+            {
+              "cards": [
+                {
+                  "badges": [
+                    {
+                      "entity": "sensor.wx_station_icao",
+                      "name": "ICAO",
+                      "show_name": true,
+                      "show_state": true,
+                      "type": "entity"
+                    }
+                  ],
+                  "heading": "Aviation weather",
+                  "icon": "mdi:weather-windy",
+                  "type": "heading"
+                },
+                {
+                  "entities": [
+                    {
+                      "entity": "input_text.wx_station",
+                      "name": "Airport (ICAO or IATA, e.g. PHMU, KOA, LAX, NRT)"
+                    }
+                  ],
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "entities"
+                },
+                {
+                  "content": "{%- set icao = states('sensor.wx_station_icao') -%}\n{%- macro age(e) -%}{%- set t = states(e) -%}{%- if t not in ['none', 'unknown', 'unavailable', ''] -%}{{ ((now() - as_datetime(t)).total_seconds() / 60) | int }} min ago{%- else -%}no report{%- endif -%}{%- endmacro -%}\n{%- set mid = state_attr('sensor.wx_metar_station', 'icaoId') -%}\n## {{ icao }}{{ ' ' ~ state_attr('sensor.wx_metar_station', 'name') if mid == icao and state_attr('sensor.wx_metar_station', 'name') else '' }}{{ ' <sub>' ~ state_attr('sensor.wx_metar_station', 'fltCat') ~ '</sub>' if mid == icao and state_attr('sensor.wx_metar_station', 'fltCat') else '' }}\n### METAR <sub>{{ age('sensor.wx_metar_station') if mid == icao else '' }}</sub>\n```\n{{ state_attr('sensor.wx_metar_station', 'rawOb') if mid == icao and state_attr('sensor.wx_metar_station', 'rawOb') else 'No METAR for ' ~ icao ~ ' on the network right now' }}\n```\n### TAF <sub>{{ ('issued ' ~ age('sensor.wx_taf_station')) if state_attr('sensor.wx_taf_station', 'icaoId') == icao else '' }}</sub>\n```\n{{ (state_attr('sensor.wx_taf_station', 'rawTAF') | regex_replace(' (FM|TEMPO|BECMG|PROB)', '\\n  \\\\1')) if state_attr('sensor.wx_taf_station', 'icaoId') == icao and state_attr('sensor.wx_taf_station', 'rawTAF') else 'No TAF for ' ~ icao ~ (' (AWOS field; PHKO is the nearest TAF, below)' if icao == 'PHMU' else '') }}\n```\n### D-ATIS {{ states('sensor.wx_atis_station') if state_attr('sensor.wx_atis_station', 'airport') == icao else '' }}\n```\n{{ state_attr('sensor.wx_atis_station', 'datis') if state_attr('sensor.wx_atis_station', 'airport') == icao and state_attr('sensor.wx_atis_station', 'datis') else 'No D-ATIS for ' ~ icao ~ (' (AWOS-3 field)' if icao == 'PHMU' else '') }}\n```\n<sub>Type a code and press Enter. ICAO or IATA (KOA, LAX, NRT, SYD...); other 3-letter codes get a K. Resets to PHMU on restart. Sources: aviationweather.gov, atis.info. Read only.</sub>",
+                  "entity_id": [
+                    "sensor.wx_station_icao",
+                    "sensor.wx_metar_station",
+                    "sensor.wx_taf_station",
+                    "sensor.wx_atis_station"
+                  ],
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "markdown"
+                },
+                {
+                  "content": "<details><summary><ha-icon icon=\"mdi:map-marker-radius\"></ha-icon> <b>Nearby: PHKO Kona and PHNL Honolulu</b></summary>{{ '\\n\\n' }}{%- macro age(e) -%}{%- set t = states(e) -%}{%- if t not in ['none', 'unknown', 'unavailable', ''] -%}{%- set d = as_datetime(t) -%}{{ ((now() - d).total_seconds() / 60) | int }} min ago{%- else -%}no report{%- endif -%}{%- endmacro -%}\n### METAR\n{% for st in ['PHKO', 'PHNL'] %}{% set e = 'sensor.wx_metar_' ~ st | lower %}\n**{{ st }}** <sub>{{ age(e) }}</sub>\n```\n{{ state_attr(e, 'rawOb') or 'No METAR on the network right now' }}\n```\n{% endfor %}\n### TAF\n{% for st in ['PHKO', 'PHNL'] %}{% set e = 'sensor.wx_taf_' ~ st | lower %}{% if state_attr(e, 'rawTAF') %}\n**{{ st }}** <sub>issued {{ age(e) }}</sub>\n```\n{{ state_attr(e, 'rawTAF') | regex_replace(' (FM|TEMPO|BECMG|PROB)', '\\n  \\\\1') }}\n```\n{% endif %}{% endfor %}\n### ATIS\n**PHNL D-ATIS {{ states('sensor.wx_phnl_atis') }}**\n```\n{{ state_attr('sensor.wx_phnl_atis', 'datis') or 'unavailable' }}\n```\n<sub>Sources: aviationweather.gov (METAR / TAF, 10 to 15 min), atis.info (PHNL D-ATIS, 5 min). Read only.</sub>{{ '\\n\\n' }}</details>",
+                  "entity_id": [
+                    "sensor.wx_metar_phmu",
+                    "sensor.wx_metar_phko",
+                    "sensor.wx_metar_phnl",
+                    "sensor.wx_taf_phmu",
+                    "sensor.wx_taf_phko",
+                    "sensor.wx_taf_phnl",
+                    "sensor.wx_phnl_atis"
+                  ],
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "markdown"
+                }
+              ],
+              "column_span": 2,
+              "type": "grid"
+            },
+            {
+              "cards": [
+                {
+                  "heading": "Radar: PHKI Kohala (NWS, loop)",
+                  "icon": "mdi:radar",
+                  "type": "heading"
+                },
+                {
+                  "alt_text": "PHKI Kohala radar loop",
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "image": "https://radar.weather.gov/ridge/standard/PHKI_loop.gif",
+                  "tap_action": {
+                    "action": "url",
+                    "url_path": "https://radar.weather.gov/station/phki/standard"
+                  },
+                  "type": "picture"
+                }
+              ],
+              "type": "grid"
+            },
+            {
+              "cards": [
+                {
+                  "heading": "Radar and wind: Windy (Big Island)",
+                  "icon": "mdi:map",
+                  "type": "heading"
+                },
+                {
+                  "aspect_ratio": "4:3",
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "iframe",
+                  "url": "https://embed.windy.com/embed2.html?lat=<redacted>&lon=<redacted>&detailLat=<redacted>&detailLon=<redacted>&width=650&height=450&zoom=8&level=surface&overlay=radar&product=radar&menu=&message=&marker=true&calendar=now&pressure=&type=map&location=coordinates&detail=&metricWind=kt&metricTemp=%C2%B0C&radarRange=-1"
+                }
+              ],
+              "type": "grid"
+            }
+          ],
+          "title": "Aviation Wx",
+          "type": "sections"
+        },
+        {
+          "max_columns": 3,
+          "path": "details",
+          "sections": [
+            {
+              "cards": [
+                {
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "custom:flight-watcher-tickets-card"
+                }
+              ],
+              "column_span": 3,
+              "type": "grid"
+            },
+            {
+              "cards": [
+                {
+                  "heading": "Health",
+                  "icon": "mdi:stethoscope",
+                  "type": "heading"
+                },
+                {
+                  "entity": "sensor.flight_watcher_state",
+                  "grid_options": {
+                    "columns": 6
+                  },
+                  "name": "State",
+                  "type": "tile"
+                },
+                {
+                  "entity": "binary_sensor.flight_watcher_session_ok",
+                  "grid_options": {
+                    "columns": 6
+                  },
+                  "name": "FLICA session",
+                  "type": "tile"
+                },
+                {
+                  "entity": "sensor.flight_watcher_last_check",
+                  "grid_options": {
+                    "columns": 6
+                  },
+                  "name": "Last check",
+                  "type": "tile"
+                },
+                {
+                  "entity": "update.flight_watcher_update",
+                  "grid_options": {
+                    "columns": 6
+                  },
+                  "name": "App version",
+                  "state_content": [
+                    "installed_version",
+                    "state"
+                  ],
+                  "type": "tile"
+                },
+                {
+                  "content": "**Phone alerts** (devices as of Nov 6, 2026)\n\n| Push | Level | Devices |\n|:--|:--|:--|\n| New pairing in the pot or Tradeboard pickup | Critical | iPhone 16, Ryan's iPhone |\n| FLICA alert email | Critical | iPhone 16, Ryan's iPhone |\n| Hidden trip (seat open, gone from pot) | Critical | iPhone 16, Ryan's iPhone |\n| New charter / unusual A330 (CrewTrac) | Critical | iPhone 16, Ryan's iPhone |\n| Swap / add / drop request decided, with Pay-Gross | Time-sensitive | iPhone 16, Ryan's iPhone |\n| Swap idea | Time-sensitive | iPhone 16, Ryan's iPhone |\n| Drop ready (grid green) | Time-sensitive | iPhone 16, Ryan's iPhone |\n| Recall / Over 75 possible miss | Time-sensitive | iPhone 16, Ryan's iPhone |\n| Watcher stopped, needs you | Time-sensitive | iPhone 16, Ryan's iPhone |\n| H3628 LAX is up (Fanfare) | Time-sensitive | iPhone 16, Ryan's iPhone, MacBook (Hero) |\n| Watcher blind (no check 30 min) | Normal | iPhone 16, Ryan's iPhone |\n| App down 5 min | Normal | iPhone 16, Ryan's iPhone |\n| New ticket filed | Normal | iPhone 16, Ryan's iPhone |\n| Ticket fixed, please check | Quiet (no sound) | iPhone 16, Ryan's iPhone |\n\n- **Apple Watch**: every push mirrors from the paired iPhone (Watch app > Notifications > Home Assistant > Mirror iPhone alerts). Critical needs Critical Alerts allowed for Home Assistant in iOS Settings.\n- **Not sent to**: iPhone 16 Pro (retired Nov 6), James's phone (his Watcher pushes only his own phone, and none of his reach yours).\n- Critical sounds through silent and Focus; time-sensitive breaks through Focus.\n\n**Health**: Hark checks every hour.\n\n**Rules editor**: Settings > Apps > Flight Watcher > Open Web UI.",
+                  "text_only": true,
+                  "type": "markdown"
+                },
+                {
+                  "entity": "number.flight_watcher_hunt_check_every",
+                  "features": [
+                    {
+                      "style": "slider",
+                      "type": "numeric-input"
+                    }
+                  ],
+                  "grid_options": {
+                    "columns": 12
+                  },
+                  "name": "Hunt: check every",
+                  "type": "tile"
+                },
+                {
+                  "entity": "number.flight_watcher_normal_check_every",
+                  "features": [
+                    {
+                      "style": "slider",
+                      "type": "numeric-input"
+                    }
+                  ],
+                  "grid_options": {
+                    "columns": 12
+                  },
+                  "name": "Normal: check every",
+                  "type": "tile"
+                },
+                {
+                  "content": "- **Check now**: reads the pot right away\n- **Hunt**: checks at hunt speed; off = normal speed\n- Every wait varies by 30 %, so FLICA never sees a fixed rhythm\n- **Pause**: only if you'll be in FLICA 30+ min. For a quick look, just log in; the Watcher steps aside for 30 min",
+                  "text_only": true,
+                  "type": "markdown"
+                }
+              ],
+              "type": "grid"
+            },
+            {
+              "cards": [
+                {
+                  "heading": "History",
+                  "icon": "mdi:chart-timeline-variant",
+                  "type": "heading"
+                },
+                {
+                  "entity": "sensor.flight_watcher_improved_pay_gross",
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "custom:flight-watcher-improved-card"
+                },
+                {
+                  "color": "green",
+                  "entity": "sensor.flight_watcher_improved_pay_gross",
+                  "grid_options": {
+                    "columns": 6
+                  },
+                  "icon": "mdi:cash-check",
+                  "name": "Get paycheck (Hark)",
+                  "tap_action": {
+                    "action": "url",
+                    "url_path": "https://hark.com/chat"
+                  },
+                  "type": "tile",
+                  "hide_state": true,
+                  "visibility": [
+                    {
+                      "condition": "user",
+                      "users": [
+                        "c0d7b9eb3a7e4e5e9642c4d66a28be9a"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "entity": "sensor.flight_watcher_improved_pay_gross",
+                  "grid_options": {
+                    "columns": 6
+                  },
+                  "icon": "mdi:folder-google-drive",
+                  "name": "Pay stubs folder",
+                  "tap_action": {
+                    "action": "url",
+                    "url_path": "<redacted-drive-url>"
+                  },
+                  "type": "tile",
+                  "hide_state": true,
+                  "visibility": [
+                    {
+                      "condition": "user",
+                      "users": [
+                        "c0d7b9eb3a7e4e5e9642c4d66a28be9a"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "content": "**Paycheck check** (paydays the 7th = estimate and 22nd = true-up of last month, PWA 2.A.56)\n1. Tap **Get paycheck (Hark)** and send Hark: *paycheck* plus your PingID code.\n2. Hark saves the stub PDF to **Claude - Pay stubs** in Drive.\n3. The day after each payday Claude compares it with this card (credit x rate PWA 3.D, min 5:00 per day PWA 4.C.3, IRO / Extended Range overrides PWA 4.O.1, vacation 4:00 per day PWA 6.J) and flags every difference.",
+                  "text_only": true,
+                  "type": "markdown",
+                  "visibility": [
+                    {
+                      "condition": "user",
+                      "users": [
+                        "c0d7b9eb3a7e4e5e9642c4d66a28be9a"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "badges": [
+                    {
+                      "entity": "sensor.flight_watcher_flica_fetches",
+                      "name": "all time",
+                      "show_name": true,
+                      "show_state": true,
+                      "type": "entity"
+                    }
+                  ],
+                  "heading": "FLICA session refreshes",
+                  "heading_style": "subtitle",
+                  "icon": "mdi:counter",
+                  "type": "heading"
+                },
+                {
+                  "color": "teal",
+                  "entity": "sensor.flight_watcher_flica_refreshes_this_hour",
+                  "grid_options": {
+                    "columns": 4
+                  },
+                  "icon": "mdi:clock-outline",
+                  "name": "This hour",
+                  "type": "tile"
+                },
+                {
+                  "color": "teal",
+                  "entity": "sensor.flight_watcher_flica_refreshes_today",
+                  "grid_options": {
+                    "columns": 4
+                  },
+                  "icon": "mdi:calendar-today",
+                  "name": "Today",
+                  "type": "tile"
+                },
+                {
+                  "color": "teal",
+                  "entity": "sensor.flight_watcher_flica_refreshes_this_month",
+                  "grid_options": {
+                    "columns": 4
+                  },
+                  "icon": "mdi:calendar-month",
+                  "name": "This month",
+                  "type": "tile"
+                },
+                {
+                  "content": "Every page the Watcher loads from FLICA (pot, schedule, pairing pages, Tradeboard, logins). Hour and day reset at the top of the hour / midnight HST; month on the 1st. Counting since app 0.8.7, Nov 5.",
+                  "text_only": true,
+                  "type": "markdown"
+                },
+                {
+                  "entities": [
+                    {
+                      "color": "teal",
+                      "entity": "sensor.flight_watcher_flica_refreshes_this_hour",
+                      "name": "per hour"
+                    }
+                  ],
+                  "grid_options": {
+                    "columns": "full",
+                    "rows": 4
+                  },
+                  "hours_to_show": 48,
+                  "title": "Refreshes per hour, 48 h",
+                  "type": "history-graph"
+                },
+                {
+                  "entities": [
+                    {
+                      "color": "blue",
+                      "entity": "sensor.flight_watcher_pot_count",
+                      "name": "Pot"
+                    }
+                  ],
+                  "grid_options": {
+                    "columns": "full",
+                    "rows": 4
+                  },
+                  "hours_to_show": 48,
+                  "title": "Pot size, 48 h",
+                  "type": "history-graph"
+                },
+                {
+                  "entities": [
+                    {
+                      "entity": "sensor.flight_watcher_state",
+                      "name": "State"
+                    },
+                    {
+                      "entity": "binary_sensor.flight_watcher_session_ok",
+                      "name": "Session"
+                    }
+                  ],
+                  "grid_options": {
+                    "columns": "full",
+                    "rows": 3
+                  },
+                  "hours_to_show": 48,
+                  "title": "Watcher state, 48 h",
+                  "type": "history-graph"
+                }
+              ],
+              "type": "grid"
+            },
+            {
+              "cards": [
+                {
+                  "heading": "Log",
+                  "icon": "mdi:format-list-text",
+                  "type": "heading"
+                },
+                {
+                  "entities": [
+                    "automation.flight_watcher_new_pairing",
+                    "sensor.flight_watcher_last_new_pairing",
+                    "sensor.flight_watcher_state"
+                  ],
+                  "grid_options": {
+                    "columns": "full",
+                    "rows": 8
+                  },
+                  "hours_to_show": 48,
+                  "type": "logbook"
+                }
+              ],
+              "type": "grid"
+            }
+          ],
+          "title": "Details",
+          "type": "sections"
+        },
+        {
+          "max_columns": 2,
+          "path": "recall",
+          "sections": [
+            {
+              "cards": [
+                {
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "mode": "tab",
+                  "type": "custom:flight-watcher-recall-card"
+                }
+              ],
+              "column_span": 2,
+              "type": "grid"
+            }
+          ],
+          "title": "Recall/O75",
+          "type": "sections"
+        },
+        {
+          "icon": "mdi:account-key",
+          "max_columns": 2,
+          "path": "settings",
+          "sections": [
+            {
+              "cards": [
+                {
+                  "heading": "Settings",
+                  "icon": "mdi:account-key",
+                  "type": "heading"
+                },
+                {
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "custom:flight-watcher-settings-card"
+                }
+              ],
+              "column_span": 2,
+              "type": "grid"
+            }
+          ],
+          "title": "Settings",
+          "type": "sections"
+        }
+      ]
+    }
+  }
+}

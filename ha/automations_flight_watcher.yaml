@@ -1,0 +1,943 @@
+# Snapshot of the Flight Watcher automations on the Pako HI Home Assistant (/config/automations.yaml),
+# taken 2026-11-06 for review and history (FW-0036). Not loaded by anything: the live copies are edited
+# through the Home Assistant connector, never by hand. Redacted: webhook ids, email addresses. See ha/README.md.
+- id: '1793300707198'
+  alias: Flight Watcher FLICA alert to phone
+  description: 'Critical push to Ryan''s iPhones whenever a new email lands in <redacted-email>
+    (FLICA alert inbox, IMAP entry 01M64GRZBMHYG22ZBRZF0SQF1Q). Backup to the Gmail
+    app ding, since FLICA SMS is broken. Silent when every pairing the email names
+    touches, on any day of the trip (Nov 5), a day blocked on the schedule card or
+    a VAC day (always, regardless of the Show VAC/blocked toggle). Nov 3 2026 (Ryan):
+    message leads with layover, pairing, dates and captain from the Watcher''s pot
+    / Tradeboard / finds data; FLICA''s own subject goes last.'
+  triggers:
+  - event_data:
+      entry_id: 01M64GRZBMHYG22ZBRZF0SQF1Q
+    event_type: imap_content
+    note: Every mail in this dedicated inbox is a FLICA alert, so no sender filter.
+    trigger: event
+  conditions: []
+  actions:
+  - alias: Wait up to 90 s for the Watcher to know each trip's length (it reads the
+      same email within seconds)
+    wait_template: '{%- set txt = (trigger.event.data.subject | default('''')) ~ ''
+      '' ~ (trigger.event.data.text | default('''')) -%}
+
+      {%- set pids = txt | regex_findall(''([A-Z]\d{4}[A-Z]?):\d{2}[A-Za-z]{3}'')
+      | unique | list -%}
+
+      {%- set have = ((state_attr(''sensor.flight_watcher_pot_count'',''pairings'')
+      or []) + (state_attr(''sensor.flight_watcher_tradeboard_pickups'',''pairings'')
+      or []) + (state_attr(''sensor.flight_watcher_finds'',''finds'') or [])) | map(attribute=''pairing'')
+      | list -%}
+
+      {{ pids | reject(''in'', have) | list | count == 0 }}'
+    timeout: 00:01:30
+    continue_on_timeout: true
+  - alias: 'Nov 5 (Ryan): skip when every trip in the email touches a blocked (unavailable)
+      or VAC day on ANY day of the trip, not just its start'
+    condition: template
+    value_template: '{%- set txt = (trigger.event.data.subject | default('''')) ~
+      '' '' ~ (trigger.event.data.text | default('''')) -%}
+
+      {%- set keys = txt | regex_findall(''([A-Z]\d{4}[A-Z]?):(\d{2}[A-Za-z]{3})'')
+      | unique | list -%}
+
+      {%- set blocked = state_attr(''sensor.flight_watcher_blocked_days'',''days'')
+      or [] -%}
+
+      {%- set rows = (state_attr(''sensor.flight_watcher_pot_count'',''pairings'')
+      or []) + (state_attr(''sensor.flight_watcher_tradeboard_pickups'',''pairings'')
+      or []) + (state_attr(''sensor.flight_watcher_finds'',''finds'') or []) -%}
+
+      {%- set ns = namespace(vacs=[], open=0, hit=false, r=none) -%}
+
+      {%- for m in (state_attr(''sensor.flight_watcher_schedule'',''months'') or {}).values()
+      -%}{%- set ns.vacs = ns.vacs + ((m[''items''] or []) | selectattr(''trip'',''eq'',''VAC'')
+      | list) -%}{%- endfor -%}
+
+      {%- for k in keys -%}
+
+      {%- set pid = k[0] -%}{%- set sd = k[1] | title -%}
+
+      {%- set dt = strptime(now().year ~ sd, ''%Y%d%b'', none) -%}
+
+      {%- if dt and dt.month < now().month - 1 -%}{%- set dt = strptime((now().year
+      + 1) ~ sd, ''%Y%d%b'', none) -%}{%- endif -%}
+
+      {%- set cand = rows | selectattr(''pairing'',''eq'',pid) | list -%}
+
+      {%- set ns.r = none -%}{%- for c in cand -%}{%- if ns.r is none and ((c.start
+      | default('''', true)) ~ (c.dates | default('''', true))) | lower | regex_search(''^''
+      ~ (sd | lower)) -%}{%- set ns.r = c -%}{%- endif -%}{%- endfor -%}
+
+      {%- set r = ns.r if ns.r is not none else (cand | first | default(none)) -%}
+
+      {%- set n = (r.days | default(0) | int(0)) if r else 0 -%}
+
+      {%- if dt and n == 0 and r and (r.end | default('''', true)) -%}{%- set e =
+      strptime(dt.year ~ (r.end | title), ''%Y%d%b'', none) -%}{%- set n = ((e - dt).days
+      + 1) if e and e >= dt else 1 -%}{%- endif -%}
+
+      {%- set ns.hit = false -%}
+
+      {%- if dt -%}{%- for i in range([n, 1] | max) -%}{%- set iso = (dt + timedelta(days=i)).strftime(''%Y-%m-%d'')
+      -%}
+
+      {%- if iso in blocked or ns.vacs | selectattr(''start'',''le'',iso) | selectattr(''end'',''ge'',iso)
+      | list | count > 0 -%}{%- set ns.hit = true -%}{%- endif -%}
+
+      {%- endfor -%}{%- endif -%}
+
+      {%- if not ns.hit -%}{%- set ns.open = ns.open + 1 -%}{%- endif -%}
+
+      {%- endfor -%}
+
+      {{ keys | count == 0 or ns.open > 0 }}'
+  - variables:
+      folders: '{%- set txt = trigger.event.data.text | default('''') -%}{{ txt |
+        regex_findall("from ''([^'']+?)( - [A-Z][a-z]+)?''") | map(''first'') | map(''replace'',
+        ''OPEN TIME- Add/Swap/Drop requests'', ''Open time'') | map(''replace'', ''Close
+        in Opentime: &lt;16 Hrs to RPT'', ''Close-in'') | map(''replace'', ''Close
+        in Opentime: <16 Hrs to RPT'', ''Close-in'') | unique | list }}'
+      keys: '{%- set txt = (trigger.event.data.subject | default('''')) ~ '' '' ~
+        (trigger.event.data.text | default('''')) -%}{{ txt | regex_findall(''([A-Z]\\d{4}[A-Z]?:\\d{2}[A-Za-z]{3})'')
+        | unique | list }}'
+      lines: '{%- set ns = namespace(out=[]) -%}
+
+        {%- set pot = (state_attr(''sensor.flight_watcher_pot_count'',''pairings'')
+        or []) + (state_attr(''sensor.flight_watcher_tradeboard_pickups'',''pairings'')
+        or []) -%}
+
+        {%- set finds = state_attr(''sensor.flight_watcher_finds'',''finds'') or []
+        -%}
+
+        {%- for k in keys -%}
+
+        {%- set pid = k.split('':'')[0] -%}{%- set sd = k.split('':'')[1] -%}{%- set
+        sdn = (sd[2:5] | capitalize) ~ '' '' ~ (sd[:2] | int) -%}
+
+        {%- set p = (pot | selectattr(''pairing'',''eq'',pid) | list | first) or (finds
+        | selectattr(''pairing'',''eq'',pid) | list | first) or none -%}
+
+        {%- if p -%}
+
+        {%- set lay = p.layover if p.layover not in [none,'''',''-none-''] else (p.turn
+        ~ '' turn'' if p.turn else ''?'') -%}
+
+        {%- set dates = p.dates | default('''', true) -%}{%- set dates = ((dates[2:5]
+        | capitalize) ~ '' '' ~ (dates[:2] | int) ~ (''-'' ~ (dates[6:8] | int) if
+        dates | length > 5 else '''')) if dates else sdn -%}
+
+        {%- set ca = p.captain | default('''', true) -%}
+
+        {%- set ns.out = ns.out + [lay ~ ''  '' ~ pid ~ ''  '' ~ dates ~ ('' ('' ~
+        p.days ~ '' d, '' ~ p.credit ~ '')'' if p.days and p.credit else '''') ~ ''\nCA
+        '' ~ (ca if ca else ''?'')] -%}
+
+        {%- else -%}
+
+        {%- set ns.out = ns.out + [pid ~ ''  '' ~ sdn ~ ''  (no details yet)''] -%}
+
+        {%- endif -%}
+
+        {%- endfor -%}
+
+        {{ ns.out | join(''\n'') }}'
+      req: '{{ (trigger.event.data.subject | default('''')) | regex_findall("alert
+        request ''([^'']+)''") | first | default('''') }}'
+      subject: '{{ trigger.event.data.subject | default(''FLICA alert'') }}'
+  - variables:
+      msg: '{{ lines }}{{ ''\nIn: '' ~ (folders | join('', '')) if folders | count
+        else '''' }}{{ ''\nFLICA request: '' ~ req if req else '''' }}{% if keys |
+        count == 0 %}{{ subject }}\n{{ trigger.event.data.text | default('''') | truncate(200)
+        }}{% endif %}'
+      title: '{%- set pot = (state_attr(''sensor.flight_watcher_pot_count'',''pairings'')
+        or []) + (state_attr(''sensor.flight_watcher_tradeboard_pickups'',''pairings'')
+        or []) + (state_attr(''sensor.flight_watcher_finds'',''finds'') or []) -%}{%-
+        if keys | count == 1 -%}{%- set pid = keys[0].split('':'')[0] -%}{%- set sd
+        = keys[0].split('':'')[1] -%}{%- set sdn = (sd[2:5] | capitalize) ~ '' ''
+        ~ (sd[:2] | int) -%}{%- set p = pot | selectattr(''pairing'',''eq'',pid) |
+        list | first | default(none) -%}{%- set lay = (p.layover if p and p.layover
+        not in [none,'''',''-none-''] else (p.turn if p and p.turn else '''')) -%}FLICA:
+        {{ lay ~ '' '' if lay else '''' }}{{ pid }} {{ sdn }}{%- else -%}FLICA: {{
+        keys | count }} trips{{ '' for '' ~ req if req else '''' }}{%- endif -%}'
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: critical
+            sound:
+              critical: 1
+              name: default
+              volume: 1
+          url: https://ha2.flica.net/online/mainmenu.cgi
+        message: '{{ msg }}'
+        title: '{{ title }}'
+    - action: notify.mobile_app_ryans_iphone_16
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: critical
+            sound:
+              critical: 1
+              name: default
+              volume: 1
+          url: https://ha2.flica.net/online/mainmenu.cgi
+        message: '{{ msg }}'
+        title: '{{ title }}'
+  max: 10
+  mode: parallel
+- id: '1793352453467'
+  alias: Flight Watcher new pairing
+  description: 'Critical push when the Flight Watcher add-on sees a pairing added
+    to the HNL/332/FO open time pot. 0.3.6: a no-layover turn shows its station in
+    the title, e.g. **PPG**. 0.4.4: silent for trips touching VAC or blocked days;
+    the Show VAC/blocked toggle only affects the dashboard (per Ryan, Nov 1). Nov
+    4: silent when the trip conflicts with his own schedule or fails the FAR 117 screen
+    (he is not legal to take it anyway).'
+  triggers:
+  - topic: flight_watcher/event/new_pairing
+    trigger: mqtt
+  conditions:
+  - condition: template
+    alias: Skip trips touching VAC or blocked days (the Show VAC/blocked toggle is
+      display only)
+    value_template: '{{ not (trigger.payload_json.vac | default(false)) and not (trigger.payload_json.blocked
+      | default(false)) }}'
+  - condition: template
+    alias: 'Skip trips Ryan cannot legally take (Nov 4, Ryan): fit says Conflict,
+      or the FAR 117 screen is not OK (Conflict, rest, 30 in 7, 100 in 672). ''?''
+      (times not read yet) still pushes.'
+    value_template: '{% set fit = trigger.payload_json.fit | default('''') %}{% set
+      far = trigger.payload_json.far | default('''') %}{{ not fit.startswith(''Conflict'')
+      and (far in ['''', ''?''] or far.startswith(''OK'')) }}'
+  actions:
+  - variables:
+      p: '{{ trigger.payload_json }}'
+  - variables:
+      msg: '{% set y = now().year %}{% set s = strptime(p.start ~ y, ''%d%b%Y'', none)
+        %}{% set e = strptime((p.end or p.start) ~ y, ''%d%b%Y'', none) %}{% if s
+        %}{{ s.strftime(''%a'')[:2] }} {{ s.strftime(''%b'') }} {{ s.day }}{% if e
+        and e != s %} - {{ e.strftime(''%a'')[:2] }} {{ e.strftime(''%b'') }} {{ e.day
+        }}{% endif %}{% else %}{{ p.dates }}{% endif %}{% set ca = (p.captain or '''')
+        %}{% if ca %} | {{ ''OPEN'' if ca == ''OPEN'' else ca.split('', '')[0] }}{%
+        endif %}
+
+        {% set d = strptime(p.depart or '''', ''%H:%M'', none) %}{% set a = strptime(p.arrive
+        or '''', ''%H:%M'', none) %}Dep {{ d.strftime(''%-I:%M%p'').lower() if d else
+        ''?'' }} - Ret {{ a.strftime(''%-I:%M%p'').lower() if a else ''?'' }}
+
+        Cr {{ p.credit }} | ST {{ p.soft if p.soft else ''?'' }}{% if p.fit is defined
+        and p.fit %} | {{ p.fit }}{% endif %}'
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: critical
+            sound:
+              critical: 1
+              name: default
+              volume: 1
+          tag: flight_watcher_{{ p.source | default('pot') }}_{{ p.pairing }}_{{ p.start
+            }}{% if p.practice is defined %}_practice_{{ now().timestamp() | int }}{%
+            endif %}
+          url: '{{ p.detail_url if p.detail_url is defined else ''https://ha2.flica.net/online/mainmenu.cgi''
+            }}'
+        message: '{{ msg }}'
+        title: '{% if p.practice is defined %}PRACTICE {% endif %}{{ ''Tradeboard
+          Pick Up'' if p.source is defined and p.source == ''tradeboard'' else ''***''
+          }} {{ p.layover if p.layover not in [''-none-'',''''] else (''**'' ~ p.turn
+          ~ ''**'' if p.turn is defined and p.turn else ''Turn'') }} {{ p.days }}-day
+          {{ p.pairing }}'
+    - action: notify.mobile_app_ryans_iphone_16
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: critical
+            sound:
+              critical: 1
+              name: default
+              volume: 1
+          tag: flight_watcher_{{ p.source | default('pot') }}_{{ p.pairing }}_{{ p.start
+            }}{% if p.practice is defined %}_practice_{{ now().timestamp() | int }}{%
+            endif %}
+          url: '{{ p.detail_url if p.detail_url is defined else ''https://ha2.flica.net/online/mainmenu.cgi''
+            }}'
+        message: '{{ msg }}'
+        title: '{% if p.practice is defined %}PRACTICE {% endif %}{{ ''Tradeboard
+          Pick Up'' if p.source is defined and p.source == ''tradeboard'' else ''***''
+          }} {{ p.layover if p.layover not in [''-none-'',''''] else (''**'' ~ p.turn
+          ~ ''**'' if p.turn is defined and p.turn else ''Turn'') }} {{ p.days }}-day
+          {{ p.pairing }}'
+  max: 20
+  mode: queued
+- id: '1793470160223'
+  alias: Flight Watcher needs you
+  description: Time-sensitive push when the Flight Watcher parks itself (login failed
+    or something unexpected). Routine yields/expiries stay in the add-on log.
+  triggers:
+  - entity_id: sensor.flight_watcher_state
+    to:
+    - stopped_login_failed
+    - stopped_unexpected
+    trigger: state
+  actions:
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone
+      continue_on_error: true
+      data:
+        data:
+          actions:
+          - action: FLIGHT_WATCHER_REARM
+            title: Re-arm
+          push:
+            interruption-level: time-sensitive
+          tag: flight_watcher_stopped
+        message: 'State: {{ trigger.to_state.state }}. Check the Flight Watcher add-on
+          log, fix, then press Re-arm.'
+        title: Flight Watcher stopped
+    - action: notify.mobile_app_ryans_iphone_16
+      continue_on_error: true
+      data:
+        data:
+          actions:
+          - action: FLIGHT_WATCHER_REARM
+            title: Re-arm
+          push:
+            interruption-level: time-sensitive
+          tag: flight_watcher_stopped
+        message: 'State: {{ trigger.to_state.state }}. Check the Flight Watcher add-on
+          log, fix, then press Re-arm.'
+        title: Flight Watcher stopped
+  mode: single
+- id: '1793470165322'
+  alias: Flight Watcher re-arm from push
+  description: Re-arm button on the 'Flight Watcher stopped' push presses button.flight_watcher_re_arm.
+  triggers:
+  - event_data:
+      action: FLIGHT_WATCHER_REARM
+    event_type: mobile_app_notification_action
+    trigger: event
+  actions:
+  - action: button.press
+    target:
+      entity_id: button.flight_watcher_re_arm
+  mode: single
+- id: '1793470168710'
+  alias: Flight Watcher down
+  description: One push if the Flight Watcher add-on has been offline (MQTT LWT) for
+    5 min. Supervisor watchdog restarts it first; this fires only if self-healing
+    failed.
+  triggers:
+  - entity_id: sensor.flight_watcher_state
+    for:
+      minutes: 5
+    to: unavailable
+    trigger: state
+  actions:
+  - action: notify.mobile_app_ryans_iphone
+    continue_on_error: true
+    data:
+      data:
+        tag: flight_watcher_down
+      message: The add-on has been offline 5 min and did not restart on its own.
+      title: Flight Watcher down
+  - action: notify.mobile_app_ryans_iphone_16
+    continue_on_error: true
+    data:
+      data:
+        tag: flight_watcher_down
+      message: The add-on has been offline 5 min and did not restart on its own.
+      title: Flight Watcher down
+  mode: single
+- id: '1793478226336'
+  alias: Flight Watcher heartbeat stale
+  description: 'One push when the Watcher says idle or hunting but has not checked
+    the pot for 30 min, or 2.5x the normal check interval when that is longer (0.3.5:
+    was 15 min, which a 20 min interval +-30 % could trip). Skips paused, yielded,
+    backoff and stopped states, which have their own handling. HOM t1218.'
+  triggers:
+  - trigger: template
+    value_template: '{% set lc = states(''sensor.flight_watcher_last_check'') %}{%
+      set limit = [30, (states(''number.flight_watcher_normal_check_every'') | float(20))
+      * 2.5] | max %}{{ lc not in [''unknown'', ''unavailable''] and as_datetime(lc)
+      is not none and now() - as_datetime(lc) > timedelta(minutes=limit) }}'
+  conditions:
+  - condition: state
+    entity_id: switch.flight_watcher_pause
+    state: 'off'
+  - condition: state
+    entity_id: sensor.flight_watcher_state
+    state:
+    - idle
+    - hunting
+  actions:
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone_16
+      continue_on_error: true
+      data:
+        data:
+          actions:
+          - action: FLIGHT_WATCHER_REARM
+            title: Re-arm
+          tag: flight_watcher_stale
+        message: '{{ states(''sensor.flight_watcher_state'') | capitalize }} but no
+          pot check for {{ ((now() - as_datetime(states(''sensor.flight_watcher_last_check''))).total_seconds()
+          / 60) | round(0) | int }} min. Tap Re-arm or restart the app.'
+        title: Flight Watcher blind
+    - action: notify.mobile_app_ryans_iphone
+      continue_on_error: true
+      data:
+        data:
+          actions:
+          - action: FLIGHT_WATCHER_REARM
+            title: Re-arm
+          tag: flight_watcher_stale
+        message: '{{ states(''sensor.flight_watcher_state'') | capitalize }} but no
+          pot check for {{ ((now() - as_datetime(states(''sensor.flight_watcher_last_check''))).total_seconds()
+          / 60) | round(0) | int }} min. Tap Re-arm or restart the app.'
+        title: Flight Watcher blind
+  mode: single
+- id: '1793493329647'
+  alias: Flight Watcher dashboard month reset
+  description: On the 1st of each month, point the Flight Watcher page back at the
+    current month (input_number.flight_watcher_month_offset = 0). HOM t1218. James's
+    page too (input_number.flight_watcher_james_month_offset).
+  triggers:
+  - at: 00:01:00
+    trigger: time
+  conditions:
+  - condition: template
+    value_template: '{{ now().day == 1 }}'
+  actions:
+  - action: input_number.set_value
+    data:
+      value: 0
+    target:
+      entity_id:
+      - input_number.flight_watcher_month_offset
+      - input_number.flight_watcher_james_month_offset
+  mode: single
+- id: '1793585834839'
+  alias: Flight Watcher FLICA alert email in
+  description: Forwards every FLICA alert email (<redacted-email>, IMAP entry
+    01M64GRZBMHYG22ZBRZF0SQF1Q) to the Flight Watcher over MQTT, so pairings the pot
+    watch missed between checks still land in Recently added (app 0.4.1+). Pushes
+    stay with 'Flight Watcher FLICA alert to phone'.
+  triggers:
+  - event_data:
+      entry_id: 01M64GRZBMHYG22ZBRZF0SQF1Q
+    event_type: imap_content
+    trigger: event
+  actions:
+  - action: mqtt.publish
+    data:
+      payload: '{{ {''subject'': trigger.event.data.subject | default(''''), ''text'':
+        (trigger.event.data.text | default(''''))[:6000], ''date'': (trigger.event.data.date
+        | default(now())) | string} | to_json }}'
+      retain: false
+      topic: flight_watcher/email/alert
+  max: 20
+  mode: queued
+- id: '1793586673369'
+  alias: Flight Watcher hidden trip
+  description: 'Critical push (full-volume ding) when the Flight Watcher sees a trip
+    leave the open time pot while its FO/RO seat still reads Open on the pairing page
+    (suspected hidden by scheduling). App 0.4.3+ publishes flight_watcher/event/hidden
+    once per trip. 0.4.4: silent for trips touching VAC or blocked days; the Show
+    VAC/blocked toggle only affects the dashboard (per Ryan, Nov 1).'
+  triggers:
+  - topic: flight_watcher/event/hidden
+    trigger: mqtt
+  conditions:
+  - condition: template
+    alias: Skip trips touching VAC or blocked days (the Show VAC/blocked toggle is
+      display only)
+    value_template: '{{ not (trigger.payload_json.vac | default(false)) and not (trigger.payload_json.blocked
+      | default(false)) }}'
+  actions:
+  - variables:
+      p: '{{ trigger.payload_json }}'
+  - variables:
+      lay: '{{ p.layover if p.layover not in [none, '''', ''-none-''] else (''**''
+        ~ p.turn ~ ''**'' if p.turn else ''Turn'') }}'
+  - variables:
+      msg: '{% set y = now().year %}{% set s = strptime((p.start or '''') ~ y, ''%d%b%Y'',
+        none) %}{% set e = strptime((p.end or p.start or '''') ~ y, ''%d%b%Y'', none)
+        %}{% if s %}{{ s.strftime(''%a'')[:2] }} {{ s.strftime(''%b'') }} {{ s.day
+        }}{% if e and e != s %} - {{ e.strftime(''%a'')[:2] }} {{ e.strftime(''%b'')
+        }} {{ e.day }}{% endif %}{% else %}{{ p.dates }}{% endif %}{% if p.captain
+        %} | {{ p.captain.split('', '')[0] }}{% endif %}
+
+        Seat still open, gone from the pot
+
+        Cr {{ p.credit or ''?'' }}'
+      title: '***HIDDEN*** {{ lay }} {{ p.days or ''?'' }}-day {{ p.pairing }}'
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone_16
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: critical
+            sound:
+              critical: 1
+              name: default
+              volume: 1
+          tag: flight_watcher_hidden_{{ p.key }}
+          url: '{{ p.detail_url or ''https://ha2.flica.net/online/mainmenu.cgi'' }}'
+        message: '{{ msg }}'
+        title: '{{ title }}'
+    - action: notify.mobile_app_ryans_iphone
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: critical
+            sound:
+              critical: 1
+              name: default
+              volume: 1
+          tag: flight_watcher_hidden_{{ p.key }}
+          url: '{{ p.detail_url or ''https://ha2.flica.net/online/mainmenu.cgi'' }}'
+        message: '{{ msg }}'
+        title: '{{ title }}'
+  max: 10
+  mode: queued
+- id: '1793668027645'
+  alias: Flight Watcher swap idea
+  description: Time-sensitive push when the Flight Watcher (0.4.9+) finds an open
+    time or Tradeboard trip better than one Ryan marked 'would trade' (more soft time
+    or credit, legal once his trip is gone). With the Auto swap switch on, the push
+    also shows what a live swap WOULD submit; the Watcher never submits anything (dry
+    run).
+  triggers:
+  - topic: flight_watcher/event/swap
+    trigger: mqtt
+  actions:
+  - variables:
+      p: '{{ trigger.payload_json }}'
+  - variables:
+      msg: '{{ p.dates }} | Cr {{ p.credit }} vs {{ p.for_credit }} | ST {{ p.soft
+        }} vs {{ p.for_soft }} | {{ ''Tradeboard'' if p.src == ''T'' else ''Open time''
+        }}{% if p.would_submit is defined %}
+
+        {{ p.would_submit }}{% endif %}'
+      title: SWAP? {{ p.for_trip }} for {{ p.pairing }} {{ p.layover if p.layover
+        not in [none, '', '-none-'] else (p.turn or 'turn') }} {{ p.days }}-day ({{
+        p.soft_gain }} soft)
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone_16
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: time-sensitive
+          tag: flight_watcher_swap_{{ p.key }}
+          url: '{{ p.detail_url or ''https://ha2.flica.net/online/mainmenu.cgi'' }}'
+        message: '{{ msg }}'
+        title: '{{ title }}'
+    - action: notify.mobile_app_ryans_iphone
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: time-sensitive
+          tag: flight_watcher_swap_{{ p.key }}
+          url: '{{ p.detail_url or ''https://ha2.flica.net/online/mainmenu.cgi'' }}'
+        message: '{{ msg }}'
+        title: '{{ title }}'
+  max: 10
+  mode: queued
+- id: '1793827091219'
+  alias: Flight Watcher drop ready
+  description: '0.6.0 (Ryan): a trip he marked ''would drop'' has NET RESERVES green
+    on every day. Test mode: the Watcher composed the drop request but filed nothing;
+    Ryan drops it himself in FLICA if he still wants to. Re-arms when a day turns
+    red again.'
+  triggers:
+  - topic: flight_watcher/event/drop_ready
+    trigger: mqtt
+  actions:
+  - variables:
+      p: '{{ trigger.payload_json }}'
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: time-sensitive
+          tag: flight_watcher_drop_{{ p.key }}
+          url: https://ha2.flica.net/online/mainmenu.cgi
+        message: 'Reserves green on {{ p.days | join('', '') }} ({{ p.net.values()
+          | list | join(''/'') }}). {{ ''Inside 16 h: use the Close-in folder. ''
+          if p.folder == ''close-in'' else '''' }}Test mode: nothing filed, drop it
+          yourself in FLICA.'
+        title: 'FLICA: grid green, drop {{ p.give }} now?'
+    - action: notify.mobile_app_ryans_iphone_16
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: time-sensitive
+          tag: flight_watcher_drop_{{ p.key }}
+          url: https://ha2.flica.net/online/mainmenu.cgi
+        message: 'Reserves green on {{ p.days | join('', '') }} ({{ p.net.values()
+          | list | join(''/'') }}). {{ ''Inside 16 h: use the Close-in folder. ''
+          if p.folder == ''close-in'' else '''' }}Test mode: nothing filed, drop it
+          yourself in FLICA.'
+        title: 'FLICA: grid green, drop {{ p.give }} now?'
+  max: 10
+  mode: queued
+- id: '1793840617119'
+  alias: Flight Watcher charter
+  description: '0.7.0 (Ryan): the Watcher found a new unusual A330 flight on CrewTrac
+    Scheduled Service (99xx charter, or SIN / MNL / CRK / any station outside the
+    regular A330 list), looking 30 days ahead. One push per flight. FW-0050 (Ryan,
+    2026-11-06): a previously unseen charter is a CRITICAL alert (sounds through silent
+    and Focus; the HA app needs Critical Alerts allowed in iOS Settings > Notifications
+    > Home Assistant).'
+  triggers:
+  - topic: flight_watcher/event/charter
+    trigger: mqtt
+  actions:
+  - variables:
+      p: '{{ trigger.payload_json }}'
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: critical
+            sound:
+              name: default
+              critical: 1
+              volume: 1.0
+          tag: flight_watcher_charter_{{ p.key }}
+          url: https://ctweb.hawaiianair.com/Pilot/ctwcmainmenu.aspx
+        message: '{{ p.scheduled }} {{ p.eqpt }} tail {{ p.tail }}. {{ p.why }}. From
+          CrewTrac Scheduled Service; check FLICA open time and the Tradeboard.'
+        title: 'CHARTER: {{ p.route }} {{ p.flight }} {{ p.date }}'
+    - action: notify.mobile_app_ryans_iphone_16
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: critical
+            sound:
+              name: default
+              critical: 1
+              volume: 1.0
+          tag: flight_watcher_charter_{{ p.key }}
+          url: https://ctweb.hawaiianair.com/Pilot/ctwcmainmenu.aspx
+        message: '{{ p.scheduled }} {{ p.eqpt }} tail {{ p.tail }}. {{ p.why }}. From
+          CrewTrac Scheduled Service; check FLICA open time and the Tradeboard.'
+        title: 'CHARTER: {{ p.route }} {{ p.flight }} {{ p.date }}'
+  max: 10
+  mode: queued
+- id: '1793914913300'
+  alias: Flight Watcher recall list in (Hark webhook)
+  description: 'Hark posts the daily HNL recall list from Flight Ops SharePoint; forwarded
+    to the Watcher (recall.py, PWA 22.G.2 / FAR 117). Also forwarded to James''s Watcher
+    (flight_watcher_james/recall/set): the list is the same for both; each Watcher
+    judges misses for its own pilot and pushes only its own pilot (FW-0038).'
+  triggers:
+  - allowed_methods:
+    - POST
+    local_only: false
+    trigger: webhook
+    webhook_id: '<redacted>'
+  actions:
+  - action: mqtt.publish
+    data:
+      payload: '{%- set j = trigger.json -%}{%- set days = j if j is list else [j]
+        -%}{%- set ns = namespace(out=[]) -%}{%- for d in days -%}{%- set nr = namespace(rows=[])
+        -%}{%- for r in d.rows | default([]) -%}{%- set nr.rows = nr.rows + [dict({''date'':
+        d.date}, **r)] -%}{%- endfor -%}{%- set ns.out = ns.out + [dict(d, rows=nr.rows)]
+        -%}{%- endfor -%}{{ (ns.out if j is list else ns.out[0]) | tojson }}'
+      topic: flight_watcher/recall/set
+  - action: mqtt.publish
+    data:
+      payload: '{%- set j = trigger.json -%}{%- set days = j if j is list else [j]
+        -%}{%- set ns = namespace(out=[]) -%}{%- for d in days -%}{%- set nr = namespace(rows=[])
+        -%}{%- for r in d.rows | default([]) -%}{%- set nr.rows = nr.rows + [dict({''date'':
+        d.date}, **r)] -%}{%- endfor -%}{%- set ns.out = ns.out + [dict(d, rows=nr.rows)]
+        -%}{%- endfor -%}{{ (ns.out if j is list else ns.out[0]) | tojson }}'
+      topic: flight_watcher_james/recall/set
+    continue_on_error: true
+  mode: queued
+- id: '1793914999001'
+  alias: Flight Watcher recall miss alert
+  description: Pushes each possible missed Recall / Over 75 with Confirm / Not a miss
+    buttons; the answer goes back to the Watcher (recall.py).
+  triggers:
+  - trigger: mqtt
+    topic: flight_watcher/event/recall_miss
+    id: miss
+  - trigger: event
+    event_type: mobile_app_notification_action
+    id: act
+  conditions:
+  - condition: template
+    value_template: '{{ (trigger.id == ''miss'' and trigger.payload_json.verdict ==
+      ''MISSED'') or (trigger.id == ''act'' and (trigger.event.data.action | default('''')).startswith(''RECALL_''))
+      }}'
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id: miss
+      sequence:
+      - variables:
+          ev: '{{ trigger.payload_json }}'
+      - parallel:
+        - action: notify.mobile_app_ryans_iphone
+          data:
+            title: '{{ ''RED ALERT: missed '' if ev.verdict == ''MISSED'' else ''Possible
+              missed '' }}{{ ''Over 75'' if ev.kind == ''o75'' else ''Recall'' }}
+              {{ ev.pairing }}'
+            message: '{{ ev.date }}: {{ ev.why }}'
+            data:
+              tag: recall-{{ ev.date }}-{{ ev.pairing }}
+              url: /flight-watcher/recall
+              push:
+                interruption-level: time-sensitive
+              actions:
+              - action: RECALL_CONFIRM|{{ ev.id }}
+                title: Yes, I missed it
+              - action: RECALL_DISMISS|{{ ev.id }}
+                title: Not a miss
+              - action: URI
+                title: Review
+                uri: /flight-watcher/recall
+          continue_on_error: true
+        - action: notify.mobile_app_ryans_iphone_16
+          data:
+            title: '{{ ''RED ALERT: missed '' if ev.verdict == ''MISSED'' else ''Possible
+              missed '' }}{{ ''Over 75'' if ev.kind == ''o75'' else ''Recall'' }}
+              {{ ev.pairing }}'
+            message: '{{ ev.date }}: {{ ev.why }}'
+            data:
+              tag: recall-{{ ev.date }}-{{ ev.pairing }}
+              url: /flight-watcher/recall
+              push:
+                interruption-level: time-sensitive
+              actions:
+              - action: RECALL_CONFIRM|{{ ev.id }}
+                title: Yes, I missed it
+              - action: RECALL_DISMISS|{{ ev.id }}
+                title: Not a miss
+              - action: URI
+                title: Review
+                uri: /flight-watcher/recall
+          continue_on_error: true
+    - conditions:
+      - condition: trigger
+        id: act
+      sequence:
+      - action: mqtt.publish
+        data:
+          topic: flight_watcher/recall/act
+          payload: '{{ {''id'': trigger.event.data.action.split(''|'', 1)[1], ''action'':
+            ''confirm'' if trigger.event.data.action.startswith(''RECALL_CONFIRM'')
+            else ''dismiss''} | tojson }}'
+  mode: queued
+- id: '1793915999002'
+  alias: Flight Watcher new ticket
+  description: 'Pushes Ryan each new bug report or feature request (FW-nnnn) filed
+    on his own dashboard. Push isolation (Ryan, FW-0038): James''s instance (flight_watcher_james)
+    never pushes Ryan''s phones; his tickets are worked from the tickets folder.'
+  triggers:
+  - trigger: mqtt
+    topic: flight_watcher/event/ticket_new
+  actions:
+  - variables:
+      t: '{{ trigger.payload_json }}'
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone
+      data:
+        title: '{{ ''Bug'' if t.kind == ''bug'' else ''Feature request'' }} {{ t.id
+          }} from {{ t.reporter | title }}'
+        message: '{{ t.title }}'
+        data:
+          url: /flight-watcher/details
+          tag: ticket-{{ t.id }}
+      continue_on_error: true
+    - action: notify.mobile_app_ryans_iphone_16
+      data:
+        title: '{{ ''Bug'' if t.kind == ''bug'' else ''Feature request'' }} {{ t.id
+          }} from {{ t.reporter | title }}'
+        message: '{{ t.title }}'
+        data:
+          url: /flight-watcher/details
+          tag: ticket-{{ t.id }}
+      continue_on_error: true
+  mode: queued
+- id: '1793941354206'
+  alias: Flight Watcher request decided
+  description: 'Time-sensitive push when a FLICA open time request Ryan filed (swap,
+    add or drop) is Approved or Denied. Title: what was given and taken (H3629 ->
+    H3628) and, when approved, the Pay-Gross added or given up (credit x PWA 3.D.6
+    rate + PWA 4.O.1 overrides, the schedule card''s rules). Body: each trip''s credit
+    and gross, FLICA''s crew scheduling reason when denied (1.3.1+), and the filing
+    time. Push isolation (FW-0038): Ryan''s prefix only, to Ryan''s phones only.'
+  triggers:
+  - topic: flight_watcher/event/request_decided
+    trigger: mqtt
+  actions:
+  - variables:
+      p: '{{ trigger.payload_json }}'
+  - variables:
+      route: '{%- set pr = p.pay.parts if (p.pay and p.pay.parts) else [] -%}{%- set
+        g = pr | selectattr(''side'',''eq'',''drop'') | map(attribute=''trip'') |
+        list -%}{%- set t = pr | selectattr(''side'',''eq'',''add'') | map(attribute=''trip'')
+        | list -%}{%- if g and t -%}{{ g | join('', '') }} → {{ t | join('', '') }}{%-
+        elif g -%}gave {{ g | join('', '') }}{%- elif t -%}took {{ t | join('', '')
+        }}{%- elif ''Swap'' in p.type and (p.trips | count) > 1 -%}{{ p.trips[0] }}
+        → {{ p.trips[1:] | join('', '') }}{%- else -%}{{ p.trips | join('' / '') }}{%-
+        endif -%}'
+  - variables:
+      title: '{{ ''✅'' if p.status == ''Approved'' else ''❌'' }} {{ p.type }} {{ p.status
+        | lower }}{{ '': '' ~ route if route else '''' }}{{ '' · '' ~ p.pay.delta_text
+        ~ '' Pay-Gross'' if p.status == ''Approved'' and p.pay else '''' }}'
+      msg: '{%- if p.status == ''Approved'' and p.pay -%}Pay-Gross {{ p.pay.delta_text
+        }}: {% for x in p.pay.parts %}{{ ''gave'' if x.side == ''drop'' else ''took''
+        }} {{ x.trip }} {{ x.credit }} = ${{ ''{:,.0f}''.format(x.gross) }}{{ '',
+        '' if not loop.last }}{% endfor %} at ${{ ''%.2f'' | format(p.pay.rate) }}/cr
+        h (PWA 3.D.6, year {{ p.pay.year }}).
+
+        {% elif p.status == ''Approved'' %}Pay-Gross not priced (trip not in the pairing
+        package or no rate on file).
+
+        {% endif %}{% if p.reason %}Why: {{ p.reason }}
+
+        {% endif %}Filed {{ p.date }} {{ p.time }} HST.'
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone_16
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: time-sensitive
+          tag: flight_watcher_req_{{ p.key | replace('/', '') | replace('|', '_')
+            | replace(':', '') }}
+          url: https://ha2.flica.net/online/mainmenu.cgi
+        message: '{{ msg }}'
+        title: '{{ title }}'
+    - action: notify.mobile_app_ryans_iphone
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: time-sensitive
+          tag: flight_watcher_req_{{ p.key | replace('/', '') | replace('|', '_')
+            | replace(':', '') }}
+          url: https://ha2.flica.net/online/mainmenu.cgi
+        message: '{{ msg }}'
+        title: '{{ title }}'
+  max: 10
+  mode: queued
+- id: '1793942012688'
+  alias: Flight Watcher H3628 up (Fanfare)
+  description: 'Ryan 2026-11-05: push with the Fanfare sound (iPhones) and Hero (Mac)
+    whenever an H3628 LAX trip shows up in open time or on the tradeboard. Read-only:
+    the Watcher never submits a request.'
+  triggers:
+  - topic: flight_watcher/event/new_pairing
+    trigger: mqtt
+  conditions:
+  - '{{ (trigger.payload_json.pairing | default('''') | string).startswith(''H3628'')
+    }}'
+  actions:
+  - variables:
+      p: '{{ trigger.payload_json }}'
+  - variables:
+      title: "\U0001F3BA H3628 LAX is up: {{ p.dates | default(p.start | default(''))
+        }}"
+      msg: Report {{ p.report | default('?') }}, credit {{ p.credit | default('?')
+        }}, {{ p.days | default('?') }} days, LAX layover. Trade or pick up in FLICA
+        now.
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone_16
+      data:
+        data:
+          push:
+            interruption-level: time-sensitive
+            sound:
+              name: Fanfare.caf
+              volume: 1
+          tag: flight_watcher_h3628_up
+          url: https://ha2.flica.net/online/mainmenu.cgi
+        message: '{{ msg }}'
+        title: '{{ title }}'
+    - action: notify.mobile_app_ryans_iphone
+      data:
+        data:
+          push:
+            interruption-level: time-sensitive
+            sound:
+              name: Fanfare.caf
+              volume: 1
+          tag: flight_watcher_h3628_up
+          url: https://ha2.flica.net/online/mainmenu.cgi
+        message: '{{ msg }}'
+        title: '{{ title }}'
+    - action: notify.mobile_app_ryan_macbook
+      data:
+        data:
+          push:
+            sound: Hero
+          tag: flight_watcher_h3628_up
+        message: '{{ msg }}'
+        title: '{{ title }}'
+  mode: queued
+- id: '1793948803983'
+  alias: Flight Watcher ticket fixed
+  description: 'FW-0007 (Ryan): a quiet push (passive, no sound) to the reporter when
+    one of their tickets is marked fixed, so they can check it. Push isolation (FW-0038):
+    only Ryan''s own tickets (reporter ryan) reach Ryan''s phones; James''s tickets
+    go to his phone from his own automation.'
+  triggers:
+  - topic: flight_watcher/event/ticket_fixed
+    trigger: mqtt
+  conditions:
+  - '{{ (trigger.payload_json.reporter | default('''')) == ''ryan'' }}'
+  actions:
+  - variables:
+      t: '{{ trigger.payload_json }}'
+  - variables:
+      msg: In {{ t.version or 'the latest version' }}. Check it's what you expected,
+        then tap Verified (or Still broken) on the Details tab.
+      title: 'Fixed: {{ t.id }} {{ t.title }}'
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone_16
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: passive
+          tag: ticket-fixed-{{ t.id }}
+          url: /flight-watcher/details
+        message: '{{ msg }}'
+        title: '{{ title }}'
+    - action: notify.mobile_app_ryans_iphone
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: passive
+          tag: ticket-fixed-{{ t.id }}
+          url: /flight-watcher/details
+        message: '{{ msg }}'
+        title: '{{ title }}'
+  max: 30
+  mode: queued
