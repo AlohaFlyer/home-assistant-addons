@@ -10,6 +10,12 @@ card sends the ticket first with a client-made "cid" and its photo count, then e
 
 Fixed push (FW-0007): fixed_event() turns the ticket act() just returned into the event/ticket_fixed payload when
 that action moved it to fixed (once per move: a second "fixed" on a fixed ticket only corrects the version).
+
+Edit and delete (FW-0049, Ryan): edit() changes title, narrative, steps, expected or page while the ticket is still
+new or reopened (EDITABLE), so nothing changes under whoever is working it; each edit keeps the old text in its
+history line. delete() works in any status and moves the folder to tickets/.deleted/<id>-<stamp> (nothing is
+destroyed); listings skip it and its number is never given out again. Both take allowed_reporter like act(): a
+pilot instance only touches its own tickets, Ryan's instance any.
 """
 import base64
 import binascii
@@ -29,6 +35,10 @@ MAX_TEXT = {"title": 200, "narrative": 10000, "steps": 5000, "expected": 5000, "
 ACTIONS = {"triage": "triaged", "progress": "in_progress", "fixed": "fixed", "verify": "closed",
            "reopen": "reopened", "close": "closed", "note": None}
 OPEN = ("new", "triaged", "in_progress", "fixed", "reopened")
+EDITABLE = ("new", "reopened")  # FW-0049: edits only before anyone works it (or after its reporter reopened it)
+EDIT_FIELDS = ("title", "narrative", "steps", "expected", "page")
+DELETED = ".deleted"  # FW-0049: tickets/.deleted/<id>-<stamp>/, out of every listing
+DELETED_RE = re.compile(r"^FW-(\d{4,})-")
 
 
 @contextmanager
@@ -63,7 +73,12 @@ def _next_id(base):
         n = int(open(cpath).read().strip() or 0)
     except (OSError, ValueError):
         n = 0
-    n = max([n] + [int(ID_RE.match(d).group(1)) for d in os.listdir(base) if ID_RE.match(d)]) + 1
+    nums = [int(ID_RE.match(d).group(1)) for d in os.listdir(base) if ID_RE.match(d)]
+    try:  # FW-0049: a deleted ticket's number is never given out again, even with the counter file lost
+        nums += [int(DELETED_RE.match(d).group(1)) for d in os.listdir(os.path.join(base, DELETED)) if DELETED_RE.match(d)]
+    except OSError:
+        pass
+    n = max([n] + nums) + 1
     tmp = cpath + ".tmp"
     open(tmp, "w").write(str(n))
     os.replace(tmp, cpath)
@@ -257,6 +272,80 @@ def act(base, payload, actor, now, allowed_reporter=None):
     return t, ""
 
 
+def _own(base, payload, allowed_reporter):
+    """(tid, ticket, '') or (tid, None, error) for edit / delete. Call under _locked."""
+    tid = str(payload.get("id") or "").strip().upper()
+    if not ID_RE.match(tid):
+        return tid, None, "bad id"
+    t = load(base, tid)
+    if not t:
+        return tid, None, f"{tid} not found"
+    if allowed_reporter and t.get("reporter") != allowed_reporter:
+        return tid, None, f"{tid} is not {allowed_reporter}'s ticket"
+    return tid, t, ""
+
+
+def edit(base, payload, actor, now, allowed_reporter=None):
+    """FW-0049: (ticket, '') or (None, error). payload {id, title?, narrative?, steps?, expected?, page?}: only the
+    fields sent change (cut to MAX_TEXT like create). Only while the ticket is new or reopened; title and narrative
+    cannot be blanked; a message that changes nothing is refused. The history line keeps the replaced text."""
+    if not isinstance(payload, dict):
+        return None, "not an object"
+    new = {k: str(payload.get(k) or "").strip()[:MAX_TEXT[k]] for k in EDIT_FIELDS if k in payload}
+    if not new:
+        return None, "nothing to edit"
+    for k in ("title", "narrative"):
+        if k in new and not new[k]:
+            return None, f"{k} is required"
+    with _locked(base):
+        tid, t, err = _own(base, payload, allowed_reporter)
+        if not t:
+            return None, err
+        st = t.get("status")
+        if st not in EDITABLE:
+            return None, f"{tid} is {str(st).replace('_', ' ')}: edits only while new or reopened"
+        changed = [k for k in EDIT_FIELDS if k in new and new[k] != (t.get(k) or "")]
+        if not changed:
+            return None, "nothing changed"
+        h = {"at": now, "actor": actor, "action": "edit", "from": st, "to": st, "fields": changed,
+             "before": {k: t.get(k) or "" for k in changed}}
+        for k in changed:
+            t[k] = new[k]
+        t.setdefault("history", []).append(h)
+        t["updated_at"] = now
+        _write_json(os.path.join(base, tid, "ticket.json"), t)
+    return t, ""
+
+
+def _stamp(now):
+    """A folder-safe stamp from the time given: '2026-11-06T20:15:00.1+00:00' -> '20261106T201500'."""
+    return re.sub(r"[^0-9A-Za-z]", "", str(now or "")[:19]) or "x"
+
+
+def delete(base, payload, actor, now, allowed_reporter=None):
+    """FW-0049: (ticket as deleted, '') or (None, error). payload {id}. Any status. The folder moves whole (photos and
+    all) to <base>/.deleted/<id>-<stamp>, its ticket.json marked deleted_at / deleted_by with a history line, so it
+    can be put back by hand; nothing is destroyed."""
+    if not isinstance(payload, dict):
+        return None, "not an object"
+    with _locked(base):
+        tid, t, err = _own(base, payload, allowed_reporter)
+        if not t:
+            return None, err
+        bin_ = os.path.join(base, DELETED)
+        os.makedirs(bin_, exist_ok=True)
+        dest, n = os.path.join(bin_, f"{tid}-{_stamp(now)}"), 1
+        while os.path.exists(dest):
+            n += 1
+            dest = os.path.join(bin_, f"{tid}-{_stamp(now)}_{n}")
+        t.setdefault("history", []).append({"at": now, "actor": actor, "action": "delete", "from": t.get("status"),
+                                            "to": t.get("status")})
+        t["deleted_at"], t["deleted_by"], t["updated_at"] = now, actor, now
+        _write_json(os.path.join(base, tid, "ticket.json"), t)
+        os.replace(os.path.join(base, tid), dest)
+    return t, ""
+
+
 def fixed_event(t):
     """FW-0007: {id, kind, title, reporter, version} for the ticket act() just returned when that action moved it to
     fixed from any other status, else None. Read from the history line act() wrote under the lock (its "from"), so
@@ -272,11 +361,18 @@ def fixed_event(t):
 
 
 def summary(t):
+    """One listing row. FW-0049: "editable" (new or reopened) and "page"; an editable ticket carries its whole
+    narrative plus steps and expected, so the card's Edit form starts from the full text (others keep 500 chars)."""
     n = len(images(t))
-    return {"id": t["id"], "kind": t.get("kind"), "title": t.get("title"), "status": t.get("status"),
-            "reporter": t.get("reporter"), "created_at": t.get("created_at"), "updated_at": t.get("updated_at"),
-            "version_fixed": t.get("version_fixed") or "", "has_image": n > 0, "image_count": n,
-            "narrative": (t.get("narrative") or "")[:500], "history_count": len(t.get("history") or [])}
+    ed = t.get("status") in EDITABLE
+    r = {"id": t["id"], "kind": t.get("kind"), "title": t.get("title"), "status": t.get("status"),
+         "reporter": t.get("reporter"), "created_at": t.get("created_at"), "updated_at": t.get("updated_at"),
+         "version_fixed": t.get("version_fixed") or "", "has_image": n > 0, "image_count": n,
+         "narrative": (t.get("narrative") or "") if ed else (t.get("narrative") or "")[:500],
+         "history_count": len(t.get("history") or []), "page": t.get("page") or "", "editable": ed}
+    if ed:
+        r["steps"], r["expected"] = t.get("steps") or "", t.get("expected") or ""
+    return r
 
 
 def listing(base, reporter=None):

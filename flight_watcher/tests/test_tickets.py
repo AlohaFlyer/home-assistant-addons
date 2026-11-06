@@ -177,7 +177,9 @@ def test_listing_filter(tmp_path):
     b = str(tmp_path)
     TK.create(b, {"kind": "bug", "title": "a", "narrative": "n" * 900}, "ryan", "t1")
     TK.create(b, {"kind": "feature", "title": "b", "narrative": "n"}, "james", "t2")
+    assert len(TK.listing(b)["tickets"][1]["narrative"]) == 900  # FW-0049: new, so editable: the whole text
     TK.act(b, {"id": "FW-0002", "action": "close"}, "ryan", "t3")
+    TK.act(b, {"id": "FW-0001", "action": "triage"}, "ryan", "t3")
     allx = TK.listing(b)
     assert [r["id"] for r in allx["tickets"]] == ["FW-0002", "FW-0001"] and allx["total"] == 2 and allx["open"] == 1
     assert len(allx["tickets"][1]["narrative"]) == 500 and allx["tickets"][0]["history_count"] == 1

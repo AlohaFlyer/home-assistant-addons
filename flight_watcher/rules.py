@@ -1,7 +1,7 @@
 """Rules: schema validation and matching. Pure, no I/O.
 
-v0.2 is read only. `would_submit` reports what a live auto_add / auto_swap rule WOULD do once
-v0.3 ships; nothing in this add-on can submit to FLICA (WRITES_IMPLEMENTED is False).
+FLICA is read only. `would_submit` reports what a live auto_add / auto_swap rule WOULD do; nothing in this
+add-on submits to FLICA (WRITES_IMPLEMENTED is False).
 """
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -194,7 +194,7 @@ def evaluate(rules, row, live, submits_today, now=None):
             reason = f"cap {r['cap_per_day']}/day reached"
         else:
             would = True
-            reason = "live" + ("" if WRITES_IMPLEMENTED else " (writes ship in v0.3; nothing sent)")
+            reason = "live" + ("" if WRITES_IMPLEMENTED else " (read only: nothing sent to FLICA)")
         out.append({"rule_id": r["id"], "rule": r["name"], "mode": r["mode"], "dry_run": dry,
                     "would_submit": would, "reason": reason, "notify": r["notify"],
                     "row": row, "at": now.isoformat()})

@@ -40,8 +40,8 @@ Month <input type="month" name="month" required value="{month}"> &nbsp;
 <input type="file" name="pdf" accept="application/pdf,.pdf" required> &nbsp;<button type="submit">Upload</button></form>
 {uploads}
 <h3 id="rules">Rules</h3>
-<p class="note">Read only until v0.3: rules alert and log what they <i>would</i> submit. Every rule starts
-in dry run; its live switch (switch.flight_watcher_rule_&lt;id&gt;_live) cannot turn on until the rule is 7 days old.</p>
+<p class="note">FLICA is read only: rules alert and log what they <i>would</i> submit, and nothing is ever sent to
+FLICA. Every rule starts in dry run; its live switch (switch.flight_watcher_rule_&lt;id&gt;_live) cannot turn on until the rule is 7 days old.</p>
 {msg}
 <form method="post" action="rules"><textarea name="rules" spellcheck="false">{rules}</textarea>
 <p><button type="submit">Save rules</button></p></form>
