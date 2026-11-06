@@ -35,8 +35,9 @@ import recall as RC
 import crewidx as CI
 import tickets as TK
 import sealed as SEAL
+import pay as PAY
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -1872,6 +1873,108 @@ REQ_IDLE_GAP_S = 900     # 1.2.0: Open Time Requests read every 15 min,
 REQ_PENDING_GAP_S = 120  # every 2 min while a request is pending, and right after a yield to Ryan's own login
 
 
+MON3 = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+
+
+def ha_state(entity_id):
+    """1.2.1: one entity's state from Home Assistant (Supervisor API proxy, homeassistant_api in config.yaml);
+    None when unreachable."""
+    try:
+        r = requests.get(f"http://supervisor/core/api/states/{entity_id}",
+                         headers={"Authorization": f"Bearer {os.environ.get('SUPERVISOR_TOKEN', '')}"}, timeout=5)
+        return r.json().get("state") if r.ok else None
+    except Exception:
+        return None
+
+
+def pay_settings():
+    """(rate, longevity year, ER list) the way the schedule card reads them: the longevity year helper, else the
+    DOH in /data/cards.json; rate for today (HST); the per-trip Extended Range list helper."""
+    today = local_now().date().isoformat()
+    yr = None
+    try:
+        yr = int(float(ha_state(f"input_number.{T}_longevity_year")))
+    except (TypeError, ValueError):
+        pass
+    if not yr:
+        try:
+            yr = min(12, PAY.doh_year(json.load(open(f"{DATA}/cards.json"))["doh"], today))
+        except Exception:
+            yr = None
+    er = [x for x in str(ha_state(f"input_text.{T}_er_trips") or "").split(",") if x]
+    return (PAY.rate_for(yr, today) if yr else None), yr, er
+
+
+def _package(month, cache):
+    if month not in cache:
+        try:
+            d = json.load(open(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json")))
+            cols = d.get("cols") or []
+            cache[month] = {r[0]: dict(zip(cols, r)) for r in d.get("rows") or [] if r}
+        except Exception:
+            cache[month] = {}
+    return cache[month]
+
+
+def _filed_at(r, now):
+    """The request's filing time (HST) from its MM/DD and HH:MM: this year, or last year when that is in the future."""
+    mo, dd = (int(x) for x in r["date"].split("/"))
+    hh, mi = (int(x) for x in r["time"].split(":"))
+    t = datetime(now.year, mo, dd, hh, mi, tzinfo=HST)
+    return t.replace(year=now.year - 1) if t > now + timedelta(days=1) else t
+
+
+def _own_trips_at(t):
+    """Ryan's trips ({TRIP: start}) on the schedule version in force at time t (versions are stamped UTC)."""
+    out = {}
+    for month in sorted(S.get("schedule") or {}):
+        vers = DB.get(f"sched_versions:{month}") or []
+        before = [v for v in vers if v.get("at") and datetime.fromisoformat(v["at"]) <= t]
+        for it in (before[-1] if before else (vers[0] if vers else {})).get("items") or []:
+            if it.get("trip"):
+                out.setdefault(it["trip"], it.get("start"))
+    return out
+
+
+def price_request(r, now=None):
+    """1.2.1 (Ryan): Pay-Gross change of an Approved request: + for a pickup, - for a drop, the net for a swap.
+    Each leg is a trip given (drop) or taken (add): from the page's own words when it has them, else Add / Drop
+    by the request type, else for a swap the trip Ryan held when he filed it is the one given. A trip given is
+    priced from his own trip record (FLICA's credit, block, seat), a trip taken from the month's pairing package
+    (FO seat). None when any leg cannot be priced; the push then goes out without an amount."""
+    if r.get("status") != "Approved" or not r.get("legs"):
+        return None
+    now = now or local_now().replace(tzinfo=HST)
+    rate, yr, er = pay_settings()
+    if not rate:
+        return None
+    filed = _filed_at(r, now)
+    held = _own_trips_at(filed.astimezone(timezone.utc))
+    own, cache, parts = S.get("own_trips") or {}, {}, []
+    for leg in r["legs"]:
+        trip = leg["trip"]
+        side = leg.get("side") or {"Add": "add", "Drop": "drop"}.get(r["type"]) or ("drop" if trip in held else "add")
+        start = held.get(trip) if side == "drop" else None
+        if not start and leg.get("day"):
+            mo = MON3.index(leg["day"][2:]) + 1
+            y = filed.year + (1 if mo < filed.month - 6 else 0)
+            start = f"{y}-{mo:02d}-{leg['day'][:2]}"
+        if not start:
+            return None
+        rec = (own.get(f"{trip}|{start}") or {}) if side == "drop" else {}
+        pk = _package(start[:7], cache).get(trip[:5]) or {}
+        credit = PAY.hrs(rec.get("credit")) if rec.get("credit") else PAY.hrs(pk.get("credit"))
+        block = PAY.hrs(rec.get("blk")) if rec.get("blk") else PAY.hrs(pk.get("block"))
+        lay = "/".join(x for x in str(pk.get("route") or "").split("-") if x and x != "HNL")
+        g = PAY.trip_gross(credit, block, pk.get("crew"), lay, f"{trip}|{start}", rec.get("seat") or "FO", rate, er)
+        if g is None:
+            return None
+        parts.append({"trip": trip, "start": start, "side": side, "gross": round(g, 2),
+                      "credit": rec.get("credit") or pk.get("credit") or ""})
+    delta = sum(p["gross"] for p in parts if p["side"] == "add") - sum(p["gross"] for p in parts if p["side"] == "drop")
+    return {"delta": round(delta, 2), "delta_text": PAY.usd(delta), "parts": parts, "rate": rate, "year": yr}
+
+
 def requests_check(fl):
     """1.2.0 (Ryan): read only, the Open Time Requests list of each watched bid folder. A swap, add or drop
     request that turns Approved or Denied (or first shows up already decided) fires event/request_decided once,
@@ -1908,6 +2011,11 @@ def requests_check(fl):
             old = st.get(b)
             for r in SUB.request_changes(old, rows):
                 ev = {**r, "bcid": b, "at": now_iso(), "url": url}
+                try:
+                    ev["pay"] = price_request(r)  # 1.2.1: Pay-Gross gained or given up (Approved only)
+                except Exception as e:
+                    log.info("request pay not priced: %s", e)
+                    ev["pay"] = None
                 log.info("request %s %s %s", r["type"], r["status"], r["detail"][:80])
                 pub("event/request_decided", ev, retain=False)
             st[b] = {r["key"]: r["status"] for r in rows}

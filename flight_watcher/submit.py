@@ -94,7 +94,10 @@ def parse_requests(text):
     return [{"date": d, "time": t, "type": k.title(), "status": s.title()} for d, t, k, s in REQ_RE.findall(text)]
 
 
-TRIP_RE = re.compile(r"\b([A-Za-z]\d{4}[A-Za-z]?)\b")
+TRIP_RE = re.compile(r"\b([A-Za-z]\d{4}[A-Za-z]?)\b(?:[\s:]+(\d{1,2})\s?([A-Za-z]{3})\b)?")
+SIDE_RE = re.compile(r"\b(drop|give|from|add|take|pick\s?up|to)\b", re.I)
+SIDE_OF = {"drop": "drop", "give": "drop", "from": "drop", "add": "add", "take": "add", "pickup": "add", "pick up": "add",
+           "to": "add"}
 DECIDED = ("Approved", "Denied")
 
 
@@ -116,8 +119,15 @@ def parse_request_rows(text):
         detail = re.sub(r"\s+", " ", text[m.end():end]).strip()[:200]
         base = f"{d}|{t}|{k}"
         seen[base] = seen.get(base, 0) + 1
+        legs, prev = [], 0
+        for tm in TRIP_RE.finditer(detail):
+            labels = SIDE_RE.findall(detail[prev:tm.start()])
+            side = SIDE_OF.get(re.sub(r"\s+", " ", labels[-1].lower())) if labels else ""
+            day = f"{int(tm.group(2)):02d}{tm.group(3).upper()}" if tm.group(2) else ""
+            legs.append({"trip": tm.group(1).upper(), "day": day, "side": side})
+            prev = tm.end()
         rows.append({"key": f"{base}|{seen[base]}", "date": d, "time": t, "type": k, "status": st,
-                     "trips": [x.upper() for x in TRIP_RE.findall(detail)][:4], "detail": detail})
+                     "trips": [x["trip"] for x in legs][:4], "legs": legs[:4], "detail": detail})
     return rows
 
 

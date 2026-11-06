@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1
+
+- Pay-Gross in the request push (Ryan): an Approved request carries `pay` {delta, delta_text, parts [{trip, start, side drop|add, gross, credit}], rate, year}: + for a pickup, - for a drop, the net for a swap. New `pay.py` is the schedule card's tripFull() in Python (credit x PWA 3.D.6 FO rate by longevity year, the package credit carrying the PWA 4.C.3 5:00 minimum; PWA 4.O.1 IRO $4.00 RO / $3.00 FO per block hour and Extended Range +15%); a test runs the card's JavaScript beside it. A trip given is priced from Ryan's own trip record (FLICA credit, block, seat), a trip taken from the month's pairing package (FO). Which trip was given: the page's own words, else the request type, else (swap) the trip on the schedule version in force when he filed. Longevity year and ER list from the HA helpers (new `homeassistant_api: true`), else the DOH in /data/cards.json. No amount when a trip cannot be priced.
+
 ## 1.2.0
 
 - Request decisions pushed (Ryan): the Watcher reads FLICA's Open Time Requests list (`/full/mobileotrequest.cgi?BCID=<pot folder>&From=MainMenu`, GET only, both safe_get guards; the per-row Approved / Denied links delete a request on a GET and are never followed) every 15 min, every 2 min while a request is Pending, and first thing after a yield to Ryan's own FLICA login (when he files them). A swap, add or drop request that turns Approved or Denied, or first shows up already decided, fires `<prefix>/event/request_decided` once {key, date, time, type, status, trips, detail, bcid, url}; the very first read of a folder only sets the baseline. `sensor.<prefix>_ot_requests` = pending count, attributes = the last 20 requests. The first read of each folder saves a private copy to /share/flight_watcher/captures for parser checks. HA automation "Flight Watcher request decided" pushes it to Ryan's iPhones.
