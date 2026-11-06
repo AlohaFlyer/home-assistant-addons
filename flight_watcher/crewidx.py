@@ -299,9 +299,9 @@ def _hm(v):
 
 def pilot_trips(insts, rows_for_emp, month=None, start_from=None, crew_rows=None, details=None, end_to=None):
     """reconstructed list for the pilot lookup, by start: [{pairing, start, end, seat, route, checked_at, lay, blk,
-    credit, soft, crew}]. month keeps the trips starting in it; start_from / end_to (ISO, inclusive; FW-0002,
+    credit, soft, crew}]. month keeps the trips on any of its days; start_from / end_to (ISO, inclusive; FW-0002,
     grid_range: the day before the bid period to its last day, which can be in the next month) replace that
-    calendar-month test on their side. FW-0002: the card draws these in the schedule grid, so each trip also carries
+    calendar-month test on their side; a trip that starts before the range and runs into it is kept. FW-0002: the card draws these in the schedule grid, so each trip also carries
     the layover, block and credit from the pairing package (`details`, pdfs.package_details; credit falls back
     to the pairing file) and the crew line it was read with (`crew_rows`, [[pos, name]]); '' / [] when unknown."""
     out, crew_rows, details = [], crew_rows or {}, details or {}
@@ -309,7 +309,8 @@ def pilot_trips(insts, rows_for_emp, month=None, start_from=None, crew_rows=None
     for r in rows_for_emp:
         it = insts.get(r["key"]) or {}
         start = r.get("date") or it.get("date") or ""
-        if not lo <= start <= hi:
+        end = r.get("end_date") or it.get("end_date") or start
+        if not start or start > hi or end < lo:  # 1.3.0 review: a trip running into the grid from before it counts
             continue
         pid = r.get("pairing") or it.get("pairing") or ""
         det = details.get(pid) or {}
