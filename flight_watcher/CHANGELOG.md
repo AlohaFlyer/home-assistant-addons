@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1
+
+- FW-0001 (Ryan, iPhone): the finds card ("Recently added to the pot") cut its table off after the Trip column on a phone, because the month picker took a column of its own beside the table. The picker now sits in the card's top-right corner and the table gets the full width (it scrolls sideways on a phone). Times are built from parts, so iOS Safari no longer shows "Nov 5 at 12:23" (wider rows); midnight shows 00:xx.
+- The stopped note for missing credentials points to the dashboard Settings tab.
+
 ## 1.1.0
 
 - Settings card on the dashboard (Ryan, for a pilot without Home Assistant admin access): `custom:flight-watcher-settings-card` edits the FLICA and CrewTrac usernames and passwords and the last name right on the dashboard. The form is sealed in the browser (AES-256-GCM, its key wrapped with RSA-OAEP SHA-256) with the Watcher's own public key and sent with mqtt.publish to `<prefix>/settings/set` as `{"enc": ...}`, so Home Assistant's history database, logs and the MQTT broker only ever hold ciphertext. Each instance keeps its key pair in /data/settings_key.pem (mode 600) and publishes the public half (`pubkey`, `kid`) and the last result (`result`: saved / nothing new / refused) on `sensor.<prefix>_settings`. A sealed message older than an hour, tampered with, or sealed for another key is refused. A second pilot's card copy writes to his own Watcher. On a plain http address (no browser crypto) the card sends the fields unencrypted instead (Ryan: trusted users only). New dependency: cryptography 43.0.3.

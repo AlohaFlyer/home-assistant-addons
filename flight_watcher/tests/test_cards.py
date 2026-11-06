@@ -94,3 +94,22 @@ def test_every_entity_a_card_reads_is_one_discovery_creates(tmp_path, monkeypatc
         used |= set(_re.findall(r"\b(?:sensor|switch|button|number|select|binary_sensor)\.flight_watcher_[a-z0-9_]+", text))
     missing = {e for e in used if e not in made and not e.startswith("switch.flight_watcher_rule")}
     assert not missing, sorted(missing)
+
+
+def test_finds_card_time_format_is_browser_independent(tmp_path):
+    """1.1.1 FW-0001: the finds card builds "Nov 5 12:23" from parts (iOS Safari's toLocaleString adds 'at')."""
+    import shutil
+    import subprocess
+    if not shutil.which("node"):
+        import pytest
+        pytest.skip("node not installed")
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www", "flight-watcher-finds-card.js"),
+               encoding="utf-8").read()
+    js = ("globalThis.HTMLElement = class {}; globalThis.customElements = {define() {}}; globalThis.window = {};\n" + src +
+          "\nconst c = new FlightWatcherFindsCard();\n"
+          "console.log(JSON.stringify([c._t('2026-11-05T22:23:00Z'), c._t('2026-11-06T10:05:00Z'), c._t(''), c._t('bad')]));")
+    f = tmp_path / "t.js"
+    f.write_text(js)
+    out = subprocess.run(["node", str(f)], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout) == ["Nov 5 12:23", "Nov 6 00:05", "", "bad"]
