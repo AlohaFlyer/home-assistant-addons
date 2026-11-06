@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.3
+
+- Entity ids (Ryan): Home Assistant now ignores `object_id` in MQTT discovery, so new entities were named from the device (`sensor.flight_watcher_*`). Discovery also sends `default_entity_id` (`<component>.<prefix>_<id>`, rule switches `switch.flica_rule_<id>_live`), so new entities come up as `*.flica_watcher_*` again and a second pilot's as `*.flica_watcher_<name>_*`. `object_id` stays for older HA. Existing entities keep their registry ids.
+
 ## 0.10.2
 
 - Dashboard cards ship with the app (Ryan): every `flica-*.js` card is now in git (`flica_watcher/www/`) and the add-on copies it to HA's `www` folder (`/local/`) on each start, writing only files that changed. A second pilot's copies (`flica-*-<name>.js`, formerly made by hand with `/config/www/make_pilot_cards.py`, now `cards.pilot_copy`) are written too when `second_pilot` is set. One dashboard resource, `/local/flight-watcher-loader.js`, reads `flight-watcher-cards.json` (card list and app version, fetched with cache `no-store`) and imports each card with `?v=<app version>`, so a card change reaches every browser with the app update and no resource needs a manual `?v=` bump. The schedule card's date of hire is personal data and stays out of git: it is kept in `/data/cards.json` `{"doh": "YYYY-MM-DD"}`, taken once from the card already on disk.
