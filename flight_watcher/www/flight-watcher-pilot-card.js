@@ -5,31 +5,66 @@
    trip), Block, Credit, Soft, Crew. Nothing is written to FLICA. */
 const DOW = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const PILOT_EV = "flight-watcher-pilot";  // the lookup event (pickers, pilot lookup, the pick list, #pilot= links)
+const PILOT_SAME_MS = 2000;  // FW-0025: the same lookup again inside 2 s is one tap heard twice, not a new request
 
 class FlightWatcherPilotCard extends HTMLElement {
+  // FW-0025: HA calls setConfig more than once per card and keeps replaced card elements alive, and each call used to
+  // add another window listener (never removed), so one lookup published 2 to 4 times. Now a card listens only while
+  // it is on the page (one bound handler, added on connect, removed on disconnect), and one lookup publishes once
+  // however many cards hear it (an editor preview, a stale copy).
+  constructor() {
+    super();
+    this._onPilot = (e) => this._lookup(e);
+  }
   setConfig(config) {
     this._config = { entity: "sensor.flight_watcher_pilot_schedule", ...config };
     this._hidden = false;
-    if (!FlightWatcherPilotCard._hooked) {
-      FlightWatcherPilotCard._hooked = true;
-      const fire = () => {
-        const m = /#pilot=(\d+)(?:,([^#&]*))?/.exec(location.hash || "");
-        if (!m) return;
-        history.replaceState(null, "", location.pathname + location.search);
-        window.dispatchEvent(new CustomEvent("flight-watcher-pilot", { detail: { emp: m[1], name: decodeURIComponent(m[2] || "") } }));
-      };
-      for (const ev of ["hashchange", "popstate", "location-changed"]) window.addEventListener(ev, fire);  // HA routes markdown links via pushState: location-changed
-      fire();
-    }
-    window.addEventListener("flight-watcher-pilot", (e) => {
-      this._hidden = false;
-      this._want = e.detail.emp || e.detail.q;
-      if (this._h) {
-        this._h.callService("mqtt", "publish", { topic: "flight_watcher/pilot/set", payload: JSON.stringify(e.detail) });
-        this._paint(true);
-        this.scrollIntoView({ behavior: "smooth", block: "start" });
-      }
-    });
+    FlightWatcherPilotCard._hook();
+  }
+  connectedCallback() {
+    if (this._on) return;
+    this._on = true;
+    FlightWatcherPilotCard._live = (FlightWatcherPilotCard._live || 0) + 1;
+    window.addEventListener(PILOT_EV, this._onPilot);
+    FlightWatcherPilotCard._hook();
+    FlightWatcherPilotCard._fromHash();  // a #pilot= link opened before this card was on the page (a deep link, another view)
+  }
+  disconnectedCallback() {
+    if (!this._on) return;
+    this._on = false;
+    FlightWatcherPilotCard._live = Math.max(0, (FlightWatcherPilotCard._live || 0) - 1);
+    window.removeEventListener(PILOT_EV, this._onPilot);
+  }
+  static _hook() {  // the #pilot=EMP[,Name] links: hooked once per page
+    if (FlightWatcherPilotCard._hooked) return;
+    FlightWatcherPilotCard._hooked = true;
+    const fire = () => FlightWatcherPilotCard._fromHash();
+    for (const ev of ["hashchange", "popstate", "location-changed"]) window.addEventListener(ev, fire);  // HA routes markdown links via pushState: location-changed
+  }
+  static _fromHash() {  // the link becomes one lookup event, once a card is on the page to hear it (the hash waits till then)
+    if (!FlightWatcherPilotCard._live) return;
+    const m = /#pilot=(\d+)(?:,([^#&]*))?/.exec(location.hash || "");
+    if (!m) return;
+    history.replaceState(null, "", location.pathname + location.search);
+    let name = m[2] || "";
+    try { name = decodeURIComponent(name); } catch (e) { /* a stray % : keep it as typed */ }
+    window.dispatchEvent(new CustomEvent(PILOT_EV, { detail: { emp: m[1], name } }));
+  }
+  static _first(detail) {  // true for the first card to hear a lookup; false for the same lookup again inside PILOT_SAME_MS
+    const p = JSON.stringify(detail || {}), now = Date.now(), last = FlightWatcherPilotCard._sent;
+    if (last && last.p === p && now - last.t >= 0 && now - last.t < PILOT_SAME_MS) return false;
+    FlightWatcherPilotCard._sent = { p, t: now };
+    return true;
+  }
+  _lookup(e) {
+    const d = (e && e.detail) || {};
+    this._hidden = false;
+    this._want = d.emp || d.q;
+    if (!this._h) return;
+    if (FlightWatcherPilotCard._first(d)) this._h.callService("mqtt", "publish", { topic: "flight_watcher/pilot/set", payload: JSON.stringify(d) });
+    this._paint(true);
+    this.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   set hass(h) {
     this._h = h;
@@ -145,7 +180,7 @@ class FlightWatcherPilotCard extends HTMLElement {
       this._root.addEventListener("click", (e) => {
         if (e.target.closest(".x")) { this._hidden = true; this._paint(); return; }
         const pk = e.target.closest(".pk");
-        if (pk) window.dispatchEvent(new CustomEvent("flight-watcher-pilot", { detail: { emp: pk.dataset.emp, name: pk.dataset.name } }));
+        if (pk) window.dispatchEvent(new CustomEvent(PILOT_EV, { detail: { emp: pk.dataset.emp, name: pk.dataset.name } }));
       });
     }
     const body = this._root.querySelector(".body");
