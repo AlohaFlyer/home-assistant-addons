@@ -67,6 +67,15 @@ def _next_id(base):
     return f"FW-{n:04d}"
 
 
+def _int(v, default=None):
+    """int(v), or default when v is not a number. json.loads takes Infinity and 1e999 (float inf), and int() of
+    those raises OverflowError, so all three errors are caught here."""
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def decode_image(data_url):
     """(bytes, ext) from 'data:image/jpeg;base64,...' (or bare base64); JPEG or PNG by magic bytes only.
     Raises ValueError with the reason."""
@@ -133,11 +142,7 @@ def create(base, payload, reporter, now):
         cid = ""  # the ticket still files; it just takes no photos later
     want = 1 if img else 0
     if cid:
-        try:
-            n = int(payload.get("images"))
-        except (TypeError, ValueError):
-            n = MAX_IMAGES
-        want = max(want, min(MAX_IMAGES, n))
+        want = max(want, min(MAX_IMAGES, _int(payload.get("images"), MAX_IMAGES)))
     with _locked(base):
         tid = _next_id(base)
         d = os.path.join(base, tid)
@@ -165,9 +170,8 @@ def add_image(base, payload, reporter, now):
     cid = str(payload.get("cid") or "").strip()
     if not CID_RE.match(cid):
         return None, "bad cid"
-    try:
-        i = int(payload.get("i"))
-    except (TypeError, ValueError):
+    i = _int(payload.get("i"))
+    if i is None:
         return None, "bad photo number"
     if not 1 <= i <= MAX_IMAGES:
         return None, f"photo number must be 1 to {MAX_IMAGES}"
@@ -185,10 +189,7 @@ def add_image(base, payload, reporter, now):
         if not t:
             return None, "no ticket for that photo"
         names = images(t)
-        try:
-            want = int(t.get("images_expected") or 0)
-        except (TypeError, ValueError):
-            want = 0
+        want = _int(t.get("images_expected") or 0, 0)
         if i > want:
             return None, f"{t['id']} takes {want} photos, not photo {i}"
         if any(_photo_no(n) == i for n in names):

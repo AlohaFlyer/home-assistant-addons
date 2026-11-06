@@ -151,6 +151,28 @@ def test_photos_old_readers_and_inline_first(tmp_path):
     assert TK.summary({**old, "image": ""})["image_count"] == 0
 
 
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan"), "Infinity", None, [3], {"n": 3}])
+def test_photos_counts_that_are_not_numbers(tmp_path, bad):
+    """json.loads takes Infinity and 1e999 (float inf); int() of those raises OverflowError, not ValueError."""
+    b = str(tmp_path)
+    t, err = TK.create(b, {"kind": "bug", "title": "x", "narrative": "y", "cid": "abcdef12", "images": bad}, "ryan", "t0")
+    assert err == "" and t["images_expected"] == 10  # an unusable count: the cap
+    assert TK.add_image(b, {"cid": "abcdef12", "i": bad, "image": _url(JPEG)}, "ryan", "t1")[1] == "bad photo number"
+    assert _files(tmp_path / t["id"]) == []
+
+
+def test_photos_infinity_from_json(tmp_path):
+    b = str(tmp_path)
+    d = json.loads('{"kind": "bug", "title": "x", "narrative": "y", "cid": "abcdef12", "images": Infinity}')
+    t, err = TK.create(b, d, "ryan", "t0")
+    assert err == "" and t["images_expected"] == 10
+    for raw in ('{"cid": "abcdef12", "i": Infinity, "image": "x"}', '{"cid": "abcdef12", "i": 1e999, "image": "x"}',
+                '{"cid": "abcdef12", "i": -Infinity, "image": "x"}', '{"cid": "abcdef12", "i": NaN, "image": "x"}'):
+        assert TK.add_image(b, json.loads(raw), "ryan", "t1")[1] == "bad photo number"
+    t, err = TK.add_image(b, {"cid": "abcdef12", "i": 1.0, "image": _url(JPEG)}, "ryan", "t2")
+    assert err == "" and t["images"] == ["screenshot.jpg"]
+
+
 def test_listing_filter(tmp_path):
     b = str(tmp_path)
     TK.create(b, {"kind": "bug", "title": "a", "narrative": "n" * 900}, "ryan", "t1")
@@ -230,3 +252,28 @@ def test_on_message_routes_ticket_image(W, monkeypatch):
     msg = type("M", (), {"topic": f"{W.T}/ticket/image", "payload": b'{"cid": "card0001"}'})()
     W.on_message(None, None, msg)
     assert got == ['{"cid": "card0001"}']
+
+
+def test_watcher_ticket_infinity_files_and_is_ignored(W):
+    """A hand-made ticket/new or ticket/image with Infinity must not raise out of on_message (paho would end the
+    MQTT loop thread): the ticket files with the cap, the photo is refused."""
+    def msg(topic, raw):
+        return type("M", (), {"topic": f"{W.T}/{topic}", "payload": raw.encode()})()
+    W.on_message(None, None, msg("ticket/new", '{"kind": "bug", "title": "x", "narrative": "y", "cid": "abcdef12", "images": Infinity}'))
+    assert TK.load(W.TICKETS_DIR, "FW-0001")["images_expected"] == 10
+    n = len(W.SENT)
+    W.on_message(None, None, msg("ticket/image", '{"cid": "abcdef12", "i": 1e999, "image": "x"}'))
+    W.on_message(None, None, msg("ticket/image", '{"cid": "abcdef12", "i": Infinity, "image": "x"}'))
+    assert [p["error"] for t, p, _ in W.SENT[n:] if t == "event/ticket_error"] == ["bad photo number", "bad photo number"]
+
+
+@pytest.mark.parametrize("topic,name", [("ticket/new", "create"), ("ticket/image", "add_image"), ("ticket/act", "act")])
+def test_on_message_ticket_errors_never_escape(W, monkeypatch, topic, name):
+    """Any exception inside a ticket handler is logged and sent as event/ticket_error, never raised to paho."""
+    def boom(*a, **k):
+        raise OverflowError("cannot convert float infinity to integer")
+    monkeypatch.setattr(W.TK, name, boom)
+    msg = type("M", (), {"topic": f"{W.T}/{topic}", "payload": b'{"cid": "abcdef12", "id": "FW-0001"}'})()
+    W.on_message(None, None, msg)  # must not raise
+    errs = [p for t, p, r in W.SENT if t == "event/ticket_error"]
+    assert errs and errs[-1]["error"] == "ticket message failed: OverflowError"
