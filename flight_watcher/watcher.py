@@ -1871,6 +1871,7 @@ TB_MIN_GAP_S = 120
 TB_PROBE = {"done": False}
 REQ_IDLE_GAP_S = 900     # 1.2.0: Open Time Requests read every 15 min,
 REQ_PENDING_GAP_S = 120  # every 2 min while a request is pending, and right after a yield to Ryan's own login
+REQ_FIRST_H = 6  # the feature's first read: decisions filed this recently are still pushed
 
 
 MON3 = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
@@ -1979,20 +1980,29 @@ def requests_check(fl):
     """1.2.0 (Ryan): read only, the Open Time Requests list of each watched bid folder. A swap, add or drop
     request that turns Approved or Denied (or first shows up already decided) fires event/request_decided once,
     which HA pushes to Ryan's phone. Only the list URL is fetched (SUB.safe_get + SM.safe_get): its Approved /
-    Denied links carry QuickDelete=1 and would delete the request, so no link on the page is ever followed."""
-    st = S.setdefault("ot_req", {})
-    pending = any(v == "Pending" for b in st.values() for v in (b or {}).values())
+    Denied links carry QuickDelete=1 and would delete the request, so no link on the page is ever followed.
+    Each decision is pushed once ever (S['ot_req_pushed']); on the feature's very first read only decisions filed
+    in the last REQ_FIRST_H hours are news. Requests filed in the close-in folder are not read (its BCID is not
+    known yet)."""
+    rows_of = S.setdefault("ot_req_rows", {})  # bcid -> rows of the last good read
+    folders = sorted({x for x in (bcid(u) for u in S.get("pot_urls", {}).values()) if x})
+    pending = any(r.get("status") == "Pending" for b in folders for r in rows_of.get(b) or [])
     gap = REQ_PENDING_GAP_S if pending else REQ_IDLE_GAP_S
     if not S.pop("req_force", False) and time.time() - S.get("req_checked_at", 0) < gap:
         return
     S["req_checked_at"] = time.time()
-    shown = []
-    for b in sorted({x for x in (bcid(u) for u in S.get("pot_urls", {}).values()) if x}):
+    pushed = S.setdefault("ot_req_pushed", {})
+    empty = S.setdefault("ot_req_empty", {})
+    first = not S.get("ot_req_init")
+    now = datetime.now(HST)
+    read_ok = False
+    for b in folders:
         url = SUB.requests_url(BASE, b)
         if not (SUB.safe_get(url) and SM.safe_get(url)):
             log.info("requests %s: url refused by safe_get, skipped", b)
             continue
         try:
+            time.sleep(random.uniform(1.5, 3.5))  # paced like every other FLICA page load
             html = fl.fetch(url)
             if classify(html) != "ok":
                 log.info("requests %s: %s, skipped", b, classify(html))
@@ -2008,8 +2018,21 @@ def requests_check(fl):
                     log.info("requests %s: %d rows, page captured; text: %s", b, len(rows), text[:600])
                 except Exception:
                     pass
-            old = st.get(b)
-            for r in SUB.request_changes(old, rows):
+            if not SUB.is_request_page(text, rows):
+                log.info("requests %s: not the request list, skipped: %s", b, text[:120])
+                continue
+            if not rows and rows_of.get(b) and empty.get(b, 0) < 1:  # a list gone empty must read so twice
+                empty[b] = empty.get(b, 0) + 1
+                log.info("requests %s: list empty after %d rows, read again before believing it", b, len(rows_of[b]))
+                continue
+            empty.pop(b, None)
+            for r in SUB.request_news(pushed, rows):
+                try:
+                    old = _filed_at(r, now) < now - timedelta(hours=REQ_FIRST_H)
+                except Exception:
+                    old = True
+                if first and old:
+                    continue  # the feature's first read: older decisions are history, not news
                 ev = {**r, "bcid": b, "at": now_iso(), "url": url}
                 try:
                     ev["pay"] = price_request(r)  # 1.2.1: Pay-Gross gained or given up (Approved only)
@@ -2018,13 +2041,26 @@ def requests_check(fl):
                     ev["pay"] = None
                 log.info("request %s %s %s", r["type"], r["status"], r["detail"][:80])
                 pub("event/request_decided", ev, retain=False)
-            st[b] = {r["key"]: r["status"] for r in rows}
-            shown += [{**r, "bcid": b} for r in rows]
+            for r in rows:
+                if r["status"] in SUB.DECIDED:
+                    pushed[SUB.push_key(r)] = now_iso()  # last seen; pruned once gone 60 days
+            rows_of[b] = rows
+            read_ok = True
         except Exception as e:
             log.info("requests %s error: %s", b, e)
+    if folders:
+        for b in [x for x in rows_of if x not in folders]:
+            rows_of.pop(b, None)  # a folder no longer watched: its Pending rows no longer hold the 2-min poll
+    cut = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+    for k in [k for k, v in pushed.items() if v < cut]:
+        pushed.pop(k, None)
+    if read_ok:
+        S["ot_req_init"] = True
     save_state(S)
-    pub("ot_requests", {"pending": sum(1 for r in shown if r["status"] == "Pending"), "count": len(shown),
-                        "requests": shown[-20:], "checked_at": now_iso()})
+    if read_ok:  # a failed pass keeps the last good sensor instead of showing 0 pending
+        shown = [{**r, "bcid": b} for b in folders for r in rows_of.get(b) or []]
+        pub("ot_requests", {"pending": sum(1 for r in shown if r["status"] == "Pending"), "count": len(shown),
+                            "requests": shown[-20:], "checked_at": now_iso()})
 
 
 def tradeboard_check(fl, full=False):
