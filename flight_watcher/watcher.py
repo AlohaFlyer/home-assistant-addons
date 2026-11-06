@@ -35,7 +35,7 @@ import recall as RC
 import crewidx as CI
 import tickets as TK
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -346,17 +346,53 @@ def settings_cmd(payload):
         publish_settings(creds=cur)
         return False
     tmp = CREDS_FILE + ".tmp"
-    with open(tmp, "w") as f:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # never readable by others, even briefly
+    with os.fdopen(fd, "w") as f:
         json.dump(cur, f)
     os.chmod(tmp, 0o600)
     os.replace(tmp, CREDS_FILE)
+    if creds_stop_cleared(changed):  # kills (the yield back-off count) stay; only Re-arm clears those
+        S["machine"], S["note"] = "idle", "new settings"
+        S["pot_urls"], S["parse_fail"], S["relogin_streak"] = {}, 0, 0
+        save_state(S)
     publish_settings(creds=cur)
     log.info("settings saved (%s); restarting in %d s to use them", ", ".join(changed), RESTART_DELAY_S)
     restart_later()
     return True
 
 
+def still_waiting(now=None):
+    """1.0.1: a yield to Ryan's own FLICA login, or a re-login back-off, that has not run out yet."""
+    now = time.time() if now is None else now
+    m = S.get("machine")
+    return (m == "yielded" and now < S.get("yield_until", 0)) or (m == "backoff" and now < S.get("relogin_at", 0))
+
+
+def settings_clear():
+    """1.0.1: forget everything saved in creds.json (Web UI 'Use the Configuration tab'), so the add-on options
+    apply again; restarts like a save. True when there was something to forget."""
+    if not os.path.exists(CREDS_FILE):
+        return False
+    os.remove(CREDS_FILE)
+    publish_settings(creds={})
+    log.info("settings: saved values cleared, the Configuration tab applies; restarting in %d s", RESTART_DELAY_S)
+    restart_later()
+    return True
+
+
 RESTART_DELAY_S = 2
+NO_CREDS_NOTES = ("enter your FLICA username and password", "set username and password")
+
+
+def creds_stop_cleared(changed):
+    """1.0.1: a new FLICA username or password fixes only the stops it can fix: no credentials yet, or one login
+    rejected (stopped_login_failed). A CAPTCHA/MFA/password-change stop or any other park keeps needing Ryan's
+    Re-arm after he has dealt with FLICA himself, whatever is saved (FLICA's CAPTCHA/MFA is never worked around)."""
+    if not ({"username", "password"} & set(changed)):
+        return False
+    m, note = str(S.get("machine", "")), str(S.get("note", ""))
+    return m in ("needs_settings", "stopped_login_failed") or (
+        m == "stopped_unexpected" and note.startswith(NO_CREDS_NOTES))
 
 
 def restart_later():
@@ -2827,9 +2863,13 @@ def main():
             log.info("no credentials for instance %s: waiting on %s/settings/set", INSTANCE, T)
             while True:
                 time.sleep(3600)
-        set_machine("stopped_unexpected", "set username and password in the add-on Configuration tab")
+        set_machine("stopped_unexpected", "enter your FLICA username and password: Open Web UI > Settings")
     elif S.get("machine", "").startswith("stopped"):
         set_machine(S["machine"], S.get("note", "") + " (still stopped after restart, press Re-arm)")
+    elif still_waiting():
+        # 1.0.1 review: a restart (a Settings save, an app restart) keeps a yield to Ryan's own FLICA login
+        # and a re-login back-off running instead of loading FLICA at once
+        set_machine(S["machine"], S.get("note", ""))
     else:
         set_machine("idle", "starting")
     if S.get("fp_version") != FP_VERSION:
@@ -2871,7 +2911,8 @@ def main():
     threading.Thread(target=charter_thread, daemon=True, name="charter").start()
     if os.environ.get("FLIGHT_WATCHER_WEB", "1") == "1":  # 0.10.0: only the default instance serves the ingress page
         web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
-                  save_rules_from_page, DB, log)
+                  save_rules_from_page, DB, log, get_settings=lambda: settings_state(load_creds()),
+                  save_settings=lambda d: settings_cmd(json.dumps(d)), clear_settings=settings_clear)
     last_month_check = None
     with sync_playwright() as pw:
         fl = Flica(pw)

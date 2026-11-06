@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- Settings tab (Ryan): the Web UI (Settings > Apps > Flight Watcher > Open Web UI) opens on a Settings form for the FLICA username and password, the CrewTrac username and password and the last name. Saved to /data/creds.json (created mode 600), which wins over the Configuration tab; a blank field keeps what is saved; passwords are only shown as set / not set and never logged. Saving restarts the Watcher; a new FLICA username or password clears only a no-credentials or rejected-login stop (no Re-arm needed). A CAPTCHA/MFA stop or any other park still waits for Re-arm, whatever is saved. "Clear saved values" forgets creds.json so the Configuration tab applies again. Any restart (a save, an app restart) now keeps a running 30-min yield to your own FLICA login and a re-login back-off instead of loading FLICA at once. The stopped note points there.
+
 ## 1.0.0
 
 - Renamed FLICA Watcher to Flight Watcher everywhere (Ryan). New app: folder `flight_watcher/`, slug `flight_watcher` (Supervisor `43b22650_flight_watcher`). MQTT prefix `flight_watcher` (second pilot `flight_watcher_<name>`), device `flight_watcher`, entities `*.flight_watcher_*` (rule switches `switch.flight_watcher_rule_<id>_live` for every instance), folders `/share/flight_watcher/` and `/homeassistant/www/flight-watcher/` (`/local/flight-watcher/`), cards `flight-watcher-<x>-card.js` with elements `custom:flight-watcher-<x>-card`, helpers `input_*.flight_watcher_*`, localStorage keys `flight_watcher_*`, card event `flight-watcher-pilot` (per pilot in a second pilot's copies, which also open their own `/flight-watcher-<name>/recall`), env vars `FLIGHT_WATCHER_*`, logger `flight_watcher`. Names of FLICA itself (the website, `sensor.flight_watcher_flica_fetches`) and FW- ticket numbers are unchanged. Entries below keep the names of their time.
