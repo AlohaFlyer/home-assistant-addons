@@ -65,6 +65,92 @@ def test_actions(tmp_path):
     assert TK.act(b, {"id": tid, "action": "explode"}, "ryan", "t6")[1] == "unknown action explode"
 
 
+def _files(d):
+    return sorted(p.name for p in d.iterdir() if p.name != "ticket.json")
+
+
+def test_photos_one_message_each(tmp_path):
+    """FW-0003: the ticket first (cid + count), then each photo on its own; stored in photo order."""
+    b = str(tmp_path)
+    t, err = TK.create(b, {"kind": "bug", "title": "x", "narrative": "y", "cid": "c0ffee01", "images": 3}, "ryan", "t0")
+    assert err == "" and t["images"] == [] and t["image"] == "" and t["images_expected"] == 3
+    d = tmp_path / t["id"]
+    t, _ = TK.add_image(b, {"cid": "c0ffee01", "i": 2, "image": _url(PNG, "image/png")}, "ryan", "t1")
+    assert t["images"] == ["screenshot_2.png"] and t["image"] == "screenshot_2.png"  # arrived out of order
+    t, _ = TK.add_image(b, {"cid": "c0ffee01", "i": 1, "image": _url(JPEG)}, "ryan", "t2")
+    t, _ = TK.add_image(b, {"cid": "c0ffee01", "i": 3, "image": _url(JPEG)}, "ryan", "t3")
+    assert t["images"] == ["screenshot.jpg", "screenshot_2.png", "screenshot_3.jpg"]
+    assert t["image"] == "screenshot.jpg" and t["updated_at"] == "t3"  # "image" stays photo 1 for older readers
+    assert _files(d) == ["screenshot.jpg", "screenshot_2.png", "screenshot_3.jpg"]
+    assert (d / "screenshot_2.png").read_bytes() == PNG
+    j = json.loads((d / "ticket.json").read_text())
+    assert j["images"] == t["images"] and j["image"] == "screenshot.jpg"
+    s = TK.listing(b)["tickets"][0]
+    assert s["image_count"] == 3 and s["has_image"] is True
+    # refused, nothing written: a 4th past the count, a repeat, a bad number
+    assert TK.add_image(b, {"cid": "c0ffee01", "i": 4, "image": _url(JPEG)}, "ryan", "t4")[1] == f"{t['id']} takes 3 photos, not photo 4"
+    assert TK.add_image(b, {"cid": "c0ffee01", "i": 2, "image": _url(JPEG)}, "ryan", "t4")[1] == f"{t['id']} already has photo 2"
+    assert TK.add_image(b, {"cid": "c0ffee01", "i": "two", "image": _url(JPEG)}, "ryan", "t4")[1] == "bad photo number"
+    assert _files(d) == ["screenshot.jpg", "screenshot_2.png", "screenshot_3.jpg"]
+    assert json.loads((d / "ticket.json").read_text())["updated_at"] == "t3"
+
+
+def test_photos_unknown_cid_and_checks(tmp_path):
+    b = str(tmp_path)
+    t, _ = TK.create(b, {"kind": "feature", "title": "x", "narrative": "y", "cid": "abc123XY", "images": 2}, "ryan", "t0")
+    d = tmp_path / t["id"]
+    before = (d / "ticket.json").read_text()
+    # unknown cid, someone else's ticket, a malformed cid, not a dict: ignored, nothing written anywhere
+    assert TK.add_image(b, {"cid": "nobody99", "i": 1, "image": _url(JPEG)}, "ryan", "t1")[1] == "no ticket for that photo"
+    assert TK.add_image(b, {"cid": "abc123XY", "i": 1, "image": _url(JPEG)}, "james", "t1")[1] == "no ticket for that photo"
+    assert TK.add_image(b, {"cid": "../../etc", "i": 1, "image": _url(JPEG)}, "ryan", "t1")[1] == "bad cid"
+    assert TK.add_image(b, "not a dict", "ryan", "t1")[1] == "not an object"
+    assert TK.add_image(str(tmp_path / "none"), {"cid": "abc123XY", "i": 1, "image": _url(JPEG)}, "ryan", "t1")[1] == "no ticket for that photo"
+    # the per-image size and magic-byte checks still apply to every photo
+    assert TK.add_image(b, {"cid": "abc123XY", "i": 1, "image": _url(b"GIF89a....")}, "ryan", "t1")[1] == "image is not a JPEG or PNG"
+    big = b"\xff\xd8\xff" + b"\x00" * (2 * 1024 * 1024)
+    assert TK.add_image(b, {"cid": "abc123XY", "i": 1, "image": _url(big)}, "ryan", "t1")[1] == "image over 2 MB"
+    assert TK.add_image(b, {"cid": "abc123XY", "i": 1}, "ryan", "t1")[1] == "image is not a JPEG or PNG"
+    assert _files(d) == [] and (d / "ticket.json").read_text() == before
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("FW-")] == [t["id"]]
+    # a ticket filed without a cid takes no later photos; an unusable cid is dropped, the ticket still files
+    t2, _ = TK.create(b, {"kind": "bug", "title": "x", "narrative": "y", "images": 5}, "ryan", "t2")
+    t3, _ = TK.create(b, {"kind": "bug", "title": "x", "narrative": "y", "cid": "a b", "images": 5}, "ryan", "t3")
+    assert (t2["cid"], t2["images_expected"], t3["cid"], t3["images_expected"]) == ("", 0, "", 0)
+
+
+def test_photos_cap_ten(tmp_path):
+    b = str(tmp_path)
+    t, _ = TK.create(b, {"kind": "bug", "title": "x", "narrative": "y", "cid": "tenphotos", "images": 25}, "ryan", "t0")
+    assert t["images_expected"] == 10
+    t0, _ = TK.create(b, {"kind": "bug", "title": "x", "narrative": "y", "cid": "nocount1"}, "ryan", "t0")
+    assert t0["images_expected"] == 10  # a cid with no count may send up to the cap
+    for i in range(1, 11):
+        t, err = TK.add_image(b, {"cid": "tenphotos", "i": i, "image": _url(JPEG)}, "ryan", f"t{i}")
+        assert err == ""
+    assert t["images"] == ["screenshot.jpg"] + [f"screenshot_{i}.jpg" for i in range(2, 11)]
+    assert TK.add_image(b, {"cid": "tenphotos", "i": 11, "image": _url(JPEG)}, "ryan", "t11")[1] == "photo number must be 1 to 10"
+    assert TK.add_image(b, {"cid": "tenphotos", "i": 0, "image": _url(JPEG)}, "ryan", "t11")[1] == "photo number must be 1 to 10"
+    assert len(list((tmp_path / t["id"]).glob("screenshot*"))) == 10
+    assert TK.listing(b)["tickets"][1]["image_count"] == 10
+
+
+def test_photos_old_readers_and_inline_first(tmp_path):
+    b = str(tmp_path)
+    # a card from before FW-0003: one image inline on ticket/new, no cid
+    t, _ = TK.create(b, {"kind": "bug", "title": "x", "narrative": "y", "image": _url(JPEG)}, "ryan", "t0")
+    assert (t["image"], t["images"], t["images_expected"]) == ("screenshot.jpg", ["screenshot.jpg"], 1)
+    # inline photo 1 plus a cid: later photos start at 2
+    t, _ = TK.create(b, {"kind": "bug", "title": "x", "narrative": "y", "image": _url(JPEG), "cid": "mixed001", "images": 3}, "ryan", "t1")
+    assert TK.add_image(b, {"cid": "mixed001", "i": 1, "image": _url(JPEG)}, "ryan", "t2")[1] == f"{t['id']} already has photo 1"
+    t, _ = TK.add_image(b, {"cid": "mixed001", "i": 3, "image": _url(PNG)}, "ryan", "t2")
+    assert t["images"] == ["screenshot.jpg", "screenshot_3.png"]
+    # a ticket.json written before FW-0003 has only "image"
+    old = {"id": "FW-0099", "kind": "bug", "title": "old", "status": "new", "reporter": "ryan", "image": "screenshot.png"}
+    assert TK.images(old) == ["screenshot.png"] and TK.summary(old)["image_count"] == 1 and TK.summary(old)["has_image"]
+    assert TK.summary({**old, "image": ""})["image_count"] == 0
+
+
 def test_listing_filter(tmp_path):
     b = str(tmp_path)
     TK.create(b, {"kind": "bug", "title": "a", "narrative": "n" * 900}, "ryan", "t1")
@@ -115,3 +201,32 @@ def test_watcher_ticket_flow(W, monkeypatch):
     assert len(W.SENT) == n
     t = W.ticket_act(json.dumps({"id": "FW-0002", "action": "triage", "text": "next release"}))
     assert t["status"] == "triaged" and t["history"][0]["actor"] == "ryan"
+
+
+def test_watcher_ticket_photos(W, monkeypatch):
+    """FW-0003: ticket/new with a cid, then one ticket/image message per photo; an unknown cid is ignored."""
+    W.ticket_new(json.dumps({"kind": "bug", "title": "Grid blank", "narrative": "Nothing.", "cid": "card0001", "images": 2}))
+    assert [p for t, p, _ in W.SENT if t == "tickets"][-1]["tickets"][0]["image_count"] == 0
+    for i, (raw, mime) in ((1, (JPEG, "image/jpeg")), (2, (PNG, "image/png"))):
+        t = W.ticket_image(json.dumps({"cid": "card0001", "i": i, "n": 2, "image": _url(raw, mime)}))
+        assert t and t["id"] == "FW-0001"
+    lst = [p for t, p, _ in W.SENT if t == "tickets"][-1]
+    assert lst["tickets"][0]["image_count"] == 2 and lst["tickets"][0]["has_image"]
+    n = len(W.SENT)
+    assert W.ticket_image(json.dumps({"cid": "stranger", "i": 1, "image": _url(JPEG)})) is None
+    assert W.ticket_image("not json") is None
+    errs = [p["error"] for t, p, _ in W.SENT[n:] if t == "event/ticket_error"]
+    assert errs == ["no ticket for that photo", "not an object"]
+    assert not [1 for t, p, _ in W.SENT[n:] if t == "tickets"]  # nothing changed, nothing re-listed
+    # the second pilot's instance cannot add photos to Ryan's ticket even with its cid
+    monkeypatch.setattr(W, "INSTANCE", "james")
+    assert W.ticket_image(json.dumps({"cid": "card0001", "i": 2, "image": _url(JPEG)})) is None
+    assert TK.load(W.TICKETS_DIR, "FW-0001")["images"] == ["screenshot.jpg", "screenshot_2.png"]
+
+
+def test_on_message_routes_ticket_image(W, monkeypatch):
+    got = []
+    monkeypatch.setattr(W, "ticket_image", got.append)
+    msg = type("M", (), {"topic": f"{W.T}/ticket/image", "payload": b'{"cid": "card0001"}'})()
+    W.on_message(None, None, msg)
+    assert got == ['{"cid": "card0001"}']
