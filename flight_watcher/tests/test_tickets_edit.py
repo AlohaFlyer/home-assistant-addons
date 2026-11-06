@@ -369,21 +369,32 @@ def test_card_paste_takes_screenshots_only_while_new_form_open(tmp_path):
     assert (p0, p1, p2, p3, p4, p5) == (False, True, False, False, True, False)
 
 
-def test_card_claude_code_button_link(tmp_path):
-    """Ryan (Nov 6): Process Tickets in Claude Code opens claude.ai/code/new with the prompt and this repo filled in."""
-    js = ("const c = new FlightWatcherTicketsCard(); c.setConfig({}); const d = new FlightWatcherTicketsCard();\n"
-          "d.setConfig({claude_code_url: 'https://claude.ai/code/new?q=x'});\n"
-          "console.log(JSON.stringify([c._ccUrl(), d._ccUrl(), FW_TICKET_CC_PROMPT]));")
-    url, override, prompt = _card_node(tmp_path, js)
-    from urllib.parse import urlsplit, parse_qs
-    u = urlsplit(url)
-    assert (u.scheme, u.netloc, u.path) == ("https", "claude.ai", "/code/new")
-    assert parse_qs(u.query) == {"q": [prompt], "repo": ["AlohaFlyer/home-assistant-addons"]}
-    assert "Flight Watcher tickets" in prompt and override == "https://claude.ai/code/new?q=x"
+def test_card_claude_code_button_copies_the_prompt(tmp_path):
+    """1.4.5 (Ryan): Process Tickets in Claude Code copies the prompt to the clipboard (no link); when the Clipboard
+    API is refused it falls back to execCommand('copy'), and when that fails too the prompt shows to copy by hand."""
+    js = ("const copied = []; let fallback = false; Object.defineProperty(globalThis, 'navigator', {value: {clipboard: {writeText: async (t) => { copied.push(t); }}}, writable: true, configurable: true});\n"
+          "globalThis.document = {addEventListener() {}, removeEventListener() {}, body: {appendChild() {}},\n"
+          "  createElement: () => ({style: {}, setAttribute() {}, focus() {}, select() {}, remove() {}}), execCommand: () => fallback};\n"
+          "(async () => {\n"
+          "  const c = new FlightWatcherTicketsCard(); c.setConfig({}); c._showCcMsg = () => {};\n"
+          "  const a = await c._copyPrompt(); const m1 = c._ccMsg;\n"
+          "  navigator.clipboard.writeText = async () => { throw new Error('denied'); }; fallback = true;\n"
+          "  const b = await c._copyPrompt();\n"
+          "  fallback = false; const d = await c._copyPrompt(); const m3 = c._ccMsg;\n"
+          "  const e = new FlightWatcherTicketsCard(); e.setConfig({claude_code_prompt: 'other'}); e._showCcMsg = () => {};\n"
+          "  navigator.clipboard.writeText = async (t) => { copied.push(t); }; await e._copyPrompt();\n"
+          "  console.log(JSON.stringify([a, m1, b, d, m3, copied, FW_TICKET_CC_PROMPT]));\n"
+          "})();")
+    a, m1, b, d, m3, copied, prompt = _card_node(tmp_path, js)
+    assert prompt == ("Process all Flight Watcher tickets on Pako HI: fix every new or reopened one, release it, "
+                      "mark it fixed, then confirm and close your completed fixes.")
+    assert (a, m1, b, d, m3) == (True, "ok", True, False, "fail")
+    assert copied == [prompt, "other"]
     src = open(CARD, encoding="utf-8").read()
-    assert 'data-cc href="${this._e(this._ccUrl())}" target="_blank" rel="noopener noreferrer">Process Tickets in Claude Code</a>' in src
+    assert 'class="cc" data-cc type="button"' in src and "claude.ai/code/new" not in src
     p = cards.build("1", ["pilot2"])["flight-watcher-tickets-card-pilot2.js"]
-    assert "Process Tickets in Claude Code" in p and 'FW_TICKET_CC_REPO = "AlohaFlyer/home-assistant-addons"' in p
+    assert "Process Tickets in Claude Code" in p and "mark it fixed, then confirm and close" in p
+
 
 
 def test_card_offers_back_an_edit_the_watcher_did_not_save(tmp_path):

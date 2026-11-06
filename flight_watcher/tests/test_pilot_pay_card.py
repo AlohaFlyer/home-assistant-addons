@@ -51,11 +51,13 @@ def _node(js, tmp_path):
 
 def test_pay_line_in_the_totals_style(tmp_path):
     a, none, off = _payload(), _payload(""), _payload("", "not_on_list")
+    off_aw = _payload("", "not_on_list")
+    off_aw["pay_line"]["list_source"] = "award 2026-12"
     r = _node(f"const c = new FlightWatcherPilotCard(); const a = {json.dumps(a)};\n"
-              f"const none = {json.dumps(none)}, off = {json.dumps(off)};\n"
+              f"const none = {json.dumps(none)}, off = {json.dumps(off)}, offAw = {json.dumps(off_aw)};\n"
               "const plain = c._recon(a, false), g = c._rebuild(a);\n"
               "c._h = {states: {'input_number.flight_watcher_federal_tax_pct': {state: '20.0'}, 'input_number.flight_watcher_state_tax_pct': {state: '5'}}};\n"
-              "console.log(JSON.stringify({plain, taxed: c._recon(a, false), none: c._recon(none, false), off: c._recon(off, false),\n"
+              "console.log(JSON.stringify({plain, taxed: c._recon(a, false), none: c._recon(none, false), off: c._recon(off, false), offAw: c._recon(offAw, false),\n"
               "  items: g.items.map((x) => [x.trip, x.start]), also: g.also.map((x) => x.pairing), tot: g.items.filter((x) => x.start >= g.from).length}));",
               tmp_path)
     pl = a["pay_line"]
@@ -82,8 +84,11 @@ def test_pay_line_in_the_totals_style(tmp_path):
     assert f'${round(pl["gross"] * 0.75):,} <span class="k">est. at your 25% tax</span>' in r["taxed"]
     # no DOH: hours and days, no amounts, and what to do
     assert "Pay-Gross" not in r["none"] and "Days Off" in r["none"] and "Credit</span> 73:05" in r["none"]
-    assert "Upload the seniority list on the Web UI for this pilot's pay" in r["none"]
-    assert "Not on the seniority list on file (2026-03-01): upload a newer list on the Web UI for this pilot's pay" in r["off"]
+    assert "Upload the seniority list or the month's award (Settings tab) for this pilot's pay" in r["none"]
+    assert "Not on the seniority list on file (2026-03-01): upload a newer list (Settings tab) for this pilot's pay" in r["off"]
+    # 1.4.5: dates of hire from an award packet say so
+    assert ("Not in the dates of hire on file (from the 2026-12 award): upload a newer award or the seniority list "
+            "(Settings tab) for this pilot's pay") in r["offAw"]
 
 
 def test_old_publish_keeps_the_old_line(tmp_path):
@@ -98,7 +103,7 @@ def test_second_pilot_copy_reads_its_own_tax_helpers():
     p = f["flight-watcher-pilot-card-james.js"]
     assert "input_number.flight_watcher_james_federal_tax_pct" in p and "input_number.flight_watcher_james_state_tax_pct" in p
     assert "input_number.flight_watcher_federal_tax_pct" not in p and "Ryan" not in p
-    assert "Upload the seniority list on the Web UI for this pilot's pay" in p
+    assert "Upload the seniority list or the month's award (Settings tab) for this pilot's pay" in p
 
 
 def test_pay_line_fits_a_phone():

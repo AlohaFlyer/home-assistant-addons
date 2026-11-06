@@ -12,11 +12,14 @@ def _mp(fields, pdf):
 
 def test_upload_saves_pdf(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "UPLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(web.subprocess, "run", _fake_pdftotext("PAIRINGS\n"))
     ct, body = _mp({"month": "2026-12", "kind": "pairings"}, b"%PDF-1.4 fake")
     msg = web._save_upload(ct, body, logging.getLogger("t"))
     assert "Saved 2026-12_pairings.pdf" in msg
     assert (tmp_path / "2026-12_pairings.pdf").read_bytes() == b"%PDF-1.4 fake"
+    assert (tmp_path / "2026-12_pairings.txt").read_text() == "PAIRINGS\n"
     assert "2026-12_pairings.pdf" in web._uploads_table()
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["2026-12_pairings.pdf", "2026-12_pairings.txt"]  # no .new.*
 
 
 def test_upload_rejects(tmp_path, monkeypatch):
@@ -114,3 +117,51 @@ def test_a_refused_seniority_upload_leaves_the_list_on_file(tmp_path, monkeypatc
 def test_upload_page_offers_the_seniority_list():
     assert '<option value="seniority">Pilot seniority list</option>' in web.PAGE and 'name="list_date"' in web.PAGE
     assert '<input type="month" name="month" value="{month}">' in web.PAGE  # not required: the list has no month
+
+
+def test_an_unreadable_award_or_package_keeps_the_file_on_file(tmp_path, monkeypatch, fx, caplog):
+    """1.4.5 review fix: an award or pairings package that gives no text copy (truncated, password-protected: pdftotext
+    exits 1) is staged under <month>_<kind>.new.pdf and refused, so the good PDF and its text copy on file stay, the
+    list says read only for a file that was read, and the dates of hire from the good award stay. The real pdftotext
+    reads the broken bytes when it is installed (made-up files)."""
+    import json
+    import shutil
+    import subprocess
+    real_run = subprocess.run
+    monkeypatch.setattr(web, "UPLOAD_DIR", str(tmp_path))
+    log = logging.getLogger("t")
+    good = fx("award_packet_synthetic.txt")
+    monkeypatch.setattr(web.subprocess, "run", _fake_pdftotext(good))
+    for kind in ("award", "pairings"):
+        assert web.upload_result(*_mp({"month": "2026-12", "kind": kind}, b"%PDF-1.4 good " + kind.encode()), log)["ok"]
+    before = {f.name: f.read_bytes() for f in tmp_path.iterdir()}
+    assert "seniority.json" in before and "2026-12_award.txt" in before
+
+    def exit1(cmd, check=True, timeout=None):
+        raise subprocess.CalledProcessError(1, cmd)
+    fails = [exit1]
+    if shutil.which("pdftotext"):
+        fails.append(real_run)  # the real tool on a truncated PDF
+    for run in fails:
+        monkeypatch.setattr(web.subprocess, "run", run)
+        for kind, what in (("award", "award"), ("pairings", "pairings package")):
+            with caplog.at_level(logging.INFO):
+                r = web.upload_result(*_mp({"month": "2026-12", "kind": kind}, b"%PDF-1.4 truncated"), log)
+            assert r == {"ok": False, "message": f"Not kept: 2026-12_{kind}.pdf (0 KB) gave no text copy (pdftotext exit 1: "
+                         f"damaged or password-protected PDF?), so the Watcher cannot read it; the 2026-12 {what} on file is kept."}
+            assert "class='err'" in web._save_upload(*_mp({"month": "2026-12", "kind": kind}, b"%PDF-1.4 truncated"), log)
+        assert {f.name: f.read_bytes() for f in tmp_path.iterdir()} == before  # PDFs, text copies, seniority.json
+    assert [(f["name"], f["has_text"]) for f in sorted(web.uploads_list(), key=lambda f: f["name"])] == [
+        ("2026-12_award.pdf", True), ("2026-12_pairings.pdf", True)]
+    assert json.loads(before["seniority.json"])["count"] == 30 and "gave no text copy; not kept" in caplog.text
+    # nothing on file for that month yet: nothing is saved, no PDF without its text copy is left
+    monkeypatch.setattr(web.subprocess, "run", exit1)
+    r = web.upload_result(*_mp({"month": "2027-01", "kind": "award"}, b"%PDF-1.4 truncated"), log)
+    assert not r["ok"] and r["message"].endswith("so the Watcher cannot read it; nothing was saved.")
+    assert {f.name for f in tmp_path.iterdir()} == set(before)
+    # a timeout says so; still nothing kept
+    def slow(cmd, check=True, timeout=None):
+        raise subprocess.TimeoutExpired(cmd, timeout)
+    monkeypatch.setattr(web.subprocess, "run", slow)
+    assert "(pdftotext took over 2 minutes)" in web.upload_result(*_mp({"month": "2026-12", "kind": "award"}, b"%PDF"), log)["message"]
+    assert {f.name: f.read_bytes() for f in tmp_path.iterdir()} == before
