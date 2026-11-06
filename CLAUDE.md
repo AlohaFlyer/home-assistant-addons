@@ -35,8 +35,10 @@ Pako HI Home Assistant). Read `HANDOFF.md` next: it lists everything open.
   PDFs), `crewidx.py` (crew index), `tickets.py` (FW-nnnn tickets), `store.py` (SQLite), `web.py` (ingress UI).
 - Shared files on Pako: `/homeassistant/www/flica/pairings_<YYYY-MM>.json`, `finds_<YYYY-MM>.json`
   (`/www/flica/<name>/` for a second pilot), `/share/flica_watcher/` (uploads, crew_index/*.md, tickets/).
-- Dashboard cards currently live ONLY on Pako `/config/www/flica-*.js` (not in git yet, see HANDOFF item 1).
-  `/config/www/make_pilot_cards.py james` generates James's copies (`flica-*-james.js`).
+- Dashboard cards live in `flica_watcher/www/` and ship with the app: `cards.py` copies them to `/config/www/` on
+  start (plus `flica-*-<name>.js` copies for a second pilot) and writes `flight-watcher-cards.json`; the one
+  dashboard resource `/local/flight-watcher-loader.js` imports each with `?v=<app version>`. Edit cards in git,
+  never on Pako (a start overwrites them). The pilot's DOH is in `/data/cards.json`, not in git.
 - Dashboard `flica-watcher` (title "Flight Watcher"), views: watcher, wx, details, recall.
 
 ## Release procedure
