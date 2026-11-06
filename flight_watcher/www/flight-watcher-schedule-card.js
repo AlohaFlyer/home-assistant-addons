@@ -304,8 +304,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
         if (b > a) frees.push({ a, b, at: duties[i].stn, after: duties[i].trip });
       }
       if (duties.length && duties[0].start > dataStart) frees.unshift({ a: dataStart, b: duties[0].start, at: "HNL", after: "" });
-      // v50 (Ryan, Nov 5): shade EVERY 30 h+ break (FAR 117.25(b)), past and future; a long layover counts. Each break
+      // v50 (Ryan, Nov 5): mark EVERY 30 h+ break (FAR 117.25(b)), past and future; a long layover counts. Each break
       // covers any report up to 138 h after it ends (168 h look-back minus the 30 h it must fill).
+      // FW-0004 (Ryan, Nov 6): no teal row background any more (FAR-30/7 carries the check and date); a thin teal edge
+      // on the day cell is the only mark, and the date cell's hover still gives the break's window.
       const r30 = new Set(); const r30Notes = {};
       for (const f of frees) {
         const b = Math.min(f.b, dataEnd);
@@ -339,7 +341,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       for (const [d] of (mon.days || [])) {
         const R = dutyStartOn[d] != null ? dutyStartOn[d] : this._t(d, "0:01");
         const mid = dutyStartOn[d] == null && (inDuty(R) || own.some((o) => o.rep && o.rel && o.rep < R && R < o.rel));  // layover day inside a trip
-        let t30 = "&#8211;", t30t = "Mid-trip (layover): no report this day. The layover itself is shaded if it is 30 h or more.", bad30 = false;
+        let t30 = "&#8211;", t30t = "Mid-trip (layover): no report this day. The layover itself gets the teal edge if it is 30 h or more.", bad30 = false;
         if (!mid) {
           const big = free30(R); const ok = !!big && big.b - big.a >= 30 * H; const unknown = !ok && R - 168 * H < dataStart;
           const gu = ok ? Math.min(big.b, R) + 138 * H : null;
@@ -574,7 +576,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/improved/set", payload: JSON.stringify({ month: key, awarded: Math.round(awd * 100) / 100, current: Math.round(curG * 100) / 100, ver: vl[vl.length - 1].ver, awarded_ver: vl[0].ver }) });
         }
       }
-      const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th>Block</th><th>Credit</th><th>Soft</th><th title="Credit pay + RO + RO+15%; hover or tap for the breakdown">Pay-Gross</th><th>Pay-Net</th><th title="Reserve grid net reserves">Res Grid</th><th title="Check = a 30 h break (gray band) falls in the 168 h before a report that day, FAR 117.25(b). Hover for the hours and 'covered until'.">FAR-30/7</th><th title="Block flown in the 672 h ending that day, FAR 117.23(b)(1)">FAR-100/672</th><th title="100:00 minus the busiest 672 h window the day falls in, back and forward">Room</th><th title="Earliest report for another trip">Legal next</th><th>Open</th><th title="Tap the airplane: swap or pick-up ideas for that day, with the Pay-Gross difference">Ideas</th></tr>`;
+      const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th>Block</th><th>Credit</th><th>Soft</th><th title="Credit pay + RO + RO+15%; hover or tap for the breakdown">Pay-Gross</th><th>Pay-Net</th><th title="Reserve grid net reserves">Res Grid</th><th title="Check MM/DD = a 30 h break falls in the 168 h before a report that day and ended on MM/DD, FAR 117.25(b). The teal edge on a day marks the break itself. Hover for the hours and 'covered until'.">FAR-30/7</th><th title="Block flown in the 672 h ending that day, FAR 117.23(b)(1)">FAR-100/672</th><th title="100:00 minus the busiest 672 h window the day falls in, back and forward">Room</th><th title="Earliest report for another trip">Legal next</th><th>Open</th><th title="Tap the airplane: swap or pick-up ideas for that day, with the Pay-Gross difference">Ideas</th></tr>`;
       body = `<div class="wrap"><table class="cal">${head}${rows}</table></div><div class="tot" title="${this._esc(`${MONTHS[m]} totals: flying credited to the month each segment originates (PWA 4.A) plus vacation days at ${hm(VAC_H)} (PWA 6.J). Pay at $${RATE.toFixed(2)}/credit h incl. RO and RO+15% where on; net after the tax settings. Checked against FLICA's Block and Credit.`)}">${tot}</div>`;
     }
     const upd = st ? (st.attributes.updated || "") : "";
@@ -607,7 +609,6 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .far{font-size:11px}.far.bad{color:#c62828;font-weight:700}.far.ok30{color:#2e7d32;font-weight:700;text-align:center;white-space:nowrap}.far.ok30 .k{font-weight:400;font-size:10px;color:#555}
       .cal td.t{text-align:right;font-size:11px}
       .cal td.n{text-align:right;padding-right:10px}
-      .cal tr.r30 td{background:rgba(0,150,136,.13)}
       .cal tr.r30 td:nth-child(1){box-shadow:inset 4px 0 0 #00897b}
       .cal td.far.mid{color:#999;text-align:center}
       .cal tr.bx td:nth-child(4){box-shadow:inset 2px 0 0 #444,inset -2px 0 0 #444}
@@ -620,18 +621,15 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .cal tr.wk td:nth-child(1),.cal tr.wk td:nth-child(2){background:#dde6f3;color:#1f2a44}
       .cal tr.hol td:nth-child(1),.cal tr.hol td:nth-child(2){background:#fff0a8;color:#4e3b00}
       .cal tr.hol2 td:nth-child(1),.cal tr.hol2 td:nth-child(2){background:#fff0a8;color:#4e3b00;background-image:repeating-linear-gradient(135deg,transparent 0 5px,rgba(0,0,0,.06) 5px 7px)}
-      .cal tr.r30 td:nth-child(1),.cal tr.r30 td:nth-child(2){background:#cfe8e4;color:#222}
-      .cal tr.r30.wk td:nth-child(1),.cal tr.r30.wk td:nth-child(2){background:#c3dde6;color:#1f2a44}
       .cal tr.oth td:nth-child(1),.cal tr.oth td:nth-child(2){opacity:.75}
       @media (prefers-color-scheme: dark){
-        .cal tr.r30 td{background:rgba(0,150,136,.22)}
         .cal tr.gg td:nth-child(4),.cal tr.gg td:nth-child(10){background:rgba(76,175,80,.28)}
         .cal tr.gx td:nth-child(4),.cal tr.gx td:nth-child(10){background:rgba(229,57,53,.3)}
         .cal tr.bx td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb}
         .cal tr.bxs td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb}
         .cal tr.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 -2px 0 #bbb}
         .cal tr.bxs.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb,inset 0 -2px 0 #bbb}
-        .g.green{color:#81c784}.g.red{color:#ef9a9a}.far.bad{color:#ef9a9a}.far.ok30{color:#81c784}.lgl{color:#90caf9}.er.on{color:#81c784}.sw{color:#ffb74d}.trb.on{color:#ffb74d}
+        .g.green{color:#81c784}.g.red{color:#ef9a9a}.far.bad{color:#ef9a9a}.far.ok30{color:#81c784}.far.ok30 .k{color:#bdbdbd}.lgl{color:#90caf9}.er.on{color:#81c784}.sw{color:#ffb74d}.trb.on{color:#ffb74d}
         .fit{color:#81c784}.tag.avail{color:#81c784}.trip.tr{background:rgba(255,160,0,.4)}
         .nav:hover{background:rgba(255,255,255,.1)}.trb:hover{background:rgba(255,255,255,.12)}
       }
@@ -679,10 +677,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
     <tr><td>Block / Credit / Soft</td><td>Your trip's block, credit and soft time (credit minus block), from FLICA's pairing page. Purple = this month's share only; the rest pays next month (PWA 4.A), hover for the split.</td></tr>
     <tr><td>Totals</td><td>Month totals incl. vacation at ${hm(VAC_H)} a day (PWA 6.J); &#10003; = matches FLICA's figure, red = FLICA differs.</td></tr>
     <tr><td>Pay-Gross / Pay-Net</td><td>Gross = credit x $${RATE.toFixed(2)} + RO + RO+15%; hover or tap it for the breakdown. Net = gross after the tax settings below.</td></tr>
-    <tr><td>Grey row</td><td>Your latest 30 in 7: 30+ consecutive hours free of duty (FAR 117.25(b)), between duty periods, a long layover included. Hover the date for the window.</td></tr>
+    <tr><td>Teal edge</td><td>Thin teal mark left of the day = that day falls inside a break of 30+ consecutive hours free of all duty (FAR 117.25(b)), between duty periods, a long layover included. Hover the date for the break's start, end and 'covers reports until'. The FAR-30/7 column gives the date that counts: &#10003; MM/DD = the day the qualifying break ended.</td></tr>
     <tr><td>RO / RO+15%</td><td>Add-ons inside Pay-Gross. RO = only on trips where you are listed RO: block x $${IRO_OVERRIDE.toFixed(2)} (PWA 4.O.1.a). RO+15% = Extended Range crew, 4 pilots, type-rated FO: 15% of pay (PWA 4.O.1.b); on by itself for SIN, tap Pay-Gross to switch any trip on or off.</td></tr>
     <tr><td>Res Grid</td><td>FLICA net reserves. <span class="g green">Green</span> = drop or swap off this day OK. <span class="g red">Red</span> = add only.</td></tr>
-    <tr><td>FAR-30/7, FAR-100/672, Room</td><td>Teal band (teal edge on the left) = a break of 30 h+ off all duty (a long layover counts). Each break covers any report up to 138 h after it ends (FAR 117.25(b): 30 h free in the 168 h before report). FAR-30/7: &#10003; MM/DD = a report that day is covered, and the date the qualifying 30 h break ended; red 'need 30' = it is not; ? = the window reaches before the schedule on file; &#8211; = mid-trip, no report that day. Hover for the hours and 'covered until'. Training (SIM, OEB, ground school) and reserve days count as duty. Need 30 h off by (totals): the first report time after which you need 30 h off first. 100/672: block flown in the 28 days ending that day, leg by leg (117.23(b)(1)). Room: 100:00 minus the busiest 28-day window the day falls in, back and forward: the most block you could add that day. ~ = a window reaches past the schedule on file. Block Avail: 98:00 bid-month cap minus FLICA's bid-period Block.</td></tr>
+    <tr><td>FAR-30/7, FAR-100/672, Room</td><td>A break of 30 h+ off all duty (teal edge on its days, a long layover counts) covers any report up to 138 h after it ends (FAR 117.25(b): 30 h free in the 168 h before report). FAR-30/7: &#10003; MM/DD = a report that day is covered, and the date the qualifying 30 h break ended; red 'need 30' = it is not; ? = the window reaches before the schedule on file; &#8211; = mid-trip, no report that day. Hover for the hours and 'covered until'. Training (SIM, OEB, ground school) and reserve days count as duty. Need 30 h off by (totals): the first report time after which you need 30 h off first. 100/672: block flown in the 28 days ending that day, leg by leg (117.23(b)(1)). Room: 100:00 minus the busiest 28-day window the day falls in, back and forward: the most block you could add that day. ~ = a window reaches past the schedule on file. Block Avail: 98:00 bid-month cap minus FLICA's bid-period Block.</td></tr>
     <tr><td>Legal next</td><td>Earliest report for another trip: release + 11 h (PWA 10.E.1.a). Tap for the 18 h case.</td></tr>
     <tr><td>Open</td><td>Open time trips starting that day: <span class="fit">fits</span>, <span class="clash">clashes or blocked</span>.</td></tr>
     <tr><td>Ideas</td><td>Tag-ons after your release with legal rest, <b>O</b> = in open time, <b>T</b> = on the Tradeboard. Orange = better trip for a marked one. Tap for details.</td></tr>
