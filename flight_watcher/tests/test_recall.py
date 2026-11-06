@@ -173,3 +173,30 @@ def test_finds_month_files(tmp_path, monkeypatch):
     f = tmp_path / "www" / f"finds_{now:%Y-%m}_{W.www_key()}.json"  # FW-0010: keyed name
     assert json.loads(f.read_text())["finds"][0]["pairing"] == "H1"
     assert not (tmp_path / "www" / f"finds_{now:%Y-%m}.json").exists()
+
+
+def test_refresh_rejudges_against_the_current_line_without_a_push(tmp_path, monkeypatch):
+    """Ryan (Nov 6): the tab's Refresh (recall/act {refresh}) re-judges every list on file now, publishes 'checked'
+    and 'received', and never pushes, even when the re-check finds a miss the last one did not."""
+    import json, sys
+    monkeypatch.setenv("FLIGHT_WATCHER_DATA", str(tmp_path))
+    (tmp_path / "options.json").write_text(json.dumps({"username": "u", "password": "p"}))
+    sys.modules.pop("watcher", None)
+    import watcher as W
+    from store import Store
+    W.S.clear()
+    monkeypatch.setattr(W, "DB", Store(str(tmp_path / "t.db")))
+    sent = []
+    monkeypatch.setattr(W, "pub", lambda t, p, retain=True: sent.append((t, p)))
+    W.DB.put("pkg_details:2026-11", DET)
+    W.S["blocked_days"] = ["2026-11-11"]  # blocked: not a miss when the list comes in
+    W.recall_cmd(json.dumps({"date": "2026-11-10", "rows": [_row()], "me": {"sen": 500}}))
+    st = [p for t, p in sent if t == "recall"][-1]
+    assert st["days"][0]["verdicts"][0]["verdict"] == "NO" and st["received"] and st["checked"]
+    W.S["blocked_days"] = []  # the block was lifted: now a miss
+    sent.clear()
+    W.recall_act(json.dumps({"refresh": True}))
+    st = [p for t, p in sent if t == "recall"][-1]
+    assert st["days"][0]["verdicts"][0]["verdict"] == "MISSED" and st["open"] == 1
+    assert not [t for t, _ in sent if t.startswith("event/")]
+    W.recall_act("not json")  # a bad message is logged, never raised

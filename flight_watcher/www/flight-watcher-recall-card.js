@@ -15,6 +15,25 @@ class FlightWatcherRecallCard extends HTMLElement {
   getCardSize() { return this._c.mode === "alert" ? 1 : 8; }
   _e(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
   _send(topic, obj) { this._h.callService("mqtt", "publish", { topic: `flight_watcher/${topic}`, payload: JSON.stringify(obj) }); }
+  // HST "Nov 6 09:52" from an ISO time, built from parts (iOS Safari's toLocale strings vary, FW-0001)
+  _hst(iso) {
+    const t = Date.parse(iso || "");
+    if (isNaN(t)) return "";
+    const d = new Date(t - 10 * 3600e3);
+    return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getUTCMonth()]} ${d.getUTCDate()} ${d.toISOString().slice(11, 16)}`;
+  }
+  // Ryan (Nov 6): Refresh asks the Watcher to re-judge every list on file against the current line (recall/act
+  // {refresh}); the card redraws when the sensor comes back with a new "checked" time, or says so after 15 s.
+  _refresh() {
+    if (this._busy) return;
+    const st = this._h.states[this._c.entity];
+    this._busy = { since: Date.now(), was: st ? st.attributes.checked || st.last_updated : "" };
+    this._send("recall/act", { refresh: true });
+    this._sig = null;
+    this._render(st);
+    clearTimeout(this._busyT);
+    this._busyT = setTimeout(() => { if (this._busy) { this._busy = null; this._note = "No answer from the Watcher yet. Is it running?"; this._render(this._h.states[this._c.entity]); } }, 15000);
+  }
   _go() { history.pushState(null, "", this._c.tab); window.dispatchEvent(new CustomEvent("location-changed")); }
   _render(st) {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
@@ -29,7 +48,7 @@ class FlightWatcherRecallCard extends HTMLElement {
       .red summary{cursor:pointer;font-weight:800;letter-spacing:.5px}
       .red li{margin:3px 0}.red button{margin-top:6px}
       button{cursor:pointer;border:0;border-radius:6px;padding:5px 10px;font-weight:600;background:var(--primary-color);color:#fff;margin:2px 4px 2px 0}
-      button.g{background:#757575}button.r{background:#c62828}button.w{background:#fff;color:#b71c1c}
+      button.g{background:#757575}button.r{background:#c62828}button.w{background:#fff;color:#b71c1c}button:disabled{opacity:.6;cursor:default}
       .day{border-top:1px solid var(--divider-color);padding:8px 0}
       .day h4{margin:0 0 4px;font-size:14px}
       .row{margin:4px 0 4px 8px}
@@ -47,6 +66,7 @@ class FlightWatcherRecallCard extends HTMLElement {
       if (b) b.onclick = () => this._go();
       return;
     }
+    if (this._busy && (a.checked || (st && st.last_updated)) !== this._busy.was) { this._busy = null; this._note = ""; clearTimeout(this._busyT); }
     const me = a.me || {};
     const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     if (!this._m) { const n = new Date(Date.now() - 10 * 3600e3); this._m = n.toISOString().slice(0, 7); }
@@ -61,7 +81,9 @@ class FlightWatcherRecallCard extends HTMLElement {
         <span>My seniority # <input type="number" data-me="sen" value="${this._e(me.sen ?? "")}"></span>
         <span><label><input type="checkbox" data-show="FO"${show.FO ? " checked" : ""}> FO</label> <label><input type="checkbox" data-show="CA"${show.CA ? " checked" : ""}> CA</label></span>
         <span><label><input type="checkbox" data-me="o75"${me.o75 !== false ? " checked" : ""}> Over 75 eligible (Reserve Run, 22.G.2.d)</label></span>
-        <span class="k">last list ${this._e(a.last || "none yet")}</span>
+        <span class="k">last list ${this._e(a.last || "none yet")}${a.received ? ` (came in ${this._e(this._hst(a.received))})` : ""}</span>
+        <button class="g" data-refresh${this._busy ? " disabled" : ""}>&#8635; ${this._busy ? "Refreshing..." : "Refresh"}</button>
+        <span class="k" data-checked>${this._note ? `<span style="color:var(--error-color,#c62828)">${this._e(this._note)}</span>` : a.checked ? `checked ${this._e(this._hst(a.checked))} HST` : ""}</span>
         <span class="mp"><span class="nv" data-m="-1">&#8249;</span><b>${MON[mm - 1]} ${my}</b><span class="nv" data-m="1">&#8250;</span>${nmiss ? `<span class="chip MISSED">${nmiss} missed</span>` : ""}</span></div>
       <div class="k">Hark reads the daily HNL recall list from Flight Ops SharePoint and posts it here. Each award to a pilot junior to you is checked against your line: open days, no blocked day, trip or vacation in the way (22.G.2.e first, 22.G.2.f/g after), FAR 117 rest and 30 h in 168 h, 100 h in 672 h, PWA 10.E.1.a 11 h domicile rest.</div>
       ${rows || `<div class="day why">No recall lists on file for ${MON[mm - 1]} ${my}.</div>`}
@@ -93,6 +115,8 @@ class FlightWatcherRecallCard extends HTMLElement {
   }
   _wire() {
     const r = this.shadowRoot;
+    const rf = r.querySelector("[data-refresh]");
+    if (rf) rf.onclick = () => this._refresh();
     r.querySelectorAll("[data-m]").forEach((el) => el.onclick = () => {
       const [y, m] = this._m.split("-").map(Number);
       const d = new Date(Date.UTC(y, m - 1 + Number(el.dataset.m), 1));

@@ -1657,9 +1657,13 @@ def recall_eval(notify=False):
 
 def recall_act(payload):
     """{id, action: confirm|dismiss|approve|filed|reopen, narrative?, ccr?}. Ryan's answers from the push or the tab.
-    approve stores his reviewed narrative; nothing is filed by the Watcher itself."""
+    approve stores his reviewed narrative; nothing is filed by the Watcher itself. {refresh: true} re-judges every list
+    on file against the current line (the tab's Refresh button), and {me: {...}} changes seniority / seat / Over 75."""
     try:
         d = json.loads(payload or "{}")
+        if d.get("refresh"):  # Ryan (Nov 6): the tab's Refresh re-judges every list on file now; no push, no FLICA read
+            recall_eval()
+            return
         if d.get("me"):
             DB.put("recall_me", {**(DB.get("recall_me") or {}), **{k: v for k, v in d["me"].items() if k in ("sen", "seat", "o75")}})
             recall_eval()
@@ -1691,8 +1695,9 @@ def publish_recall():
     opn = [v for d in days for v in d.get("verdicts") or []
            if v.get("verdict") in RECALL_LIVE and (v.get("act") or {}).get("status") in RECALL_OPEN]
     alert = [v for v in opn if v["verdict"] == "MISSED" or (v.get("act") or {}).get("status") in ("confirmed", "approved")]
+    received = max((d.get("at") or "" for d in allr.values()), default="")  # when the newest list post came in
     pub("recall", {"open": len(opn), "alert": len(alert), "me": recall_me(), "last": days[-1]["date"] if days else "",
-                   "days": days[::-1]})
+                   "checked": now_iso(), "received": received, "days": days[::-1]})
 
 
 def publish_improved():
