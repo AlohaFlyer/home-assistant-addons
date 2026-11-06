@@ -1,7 +1,7 @@
-# CLAUDE.md: Flight Watcher (folder flica_watcher)
+# CLAUDE.md: Flight Watcher (folder flight_watcher)
 
 Owner: Ryan Pettit, A330 FO, Hawaiian Airlines (Alaska), HNL based. This repo holds his Home Assistant add-ons;
-the one under active development is **Flight Watcher** (`flica_watcher/`, slug `43b22650_flica_watcher` on the
+the one under active development is **Flight Watcher** (`flight_watcher/`, slug `43b22650_flight_watcher` on the
 Pako HI Home Assistant). Read `HANDOFF.md` next: it lists everything open.
 
 ## How Ryan wants you to work
@@ -26,29 +26,31 @@ Pako HI Home Assistant). Read `HANDOFF.md` next: it lists everything open.
 - Never print or repeat passwords seen in add-on options.
 
 ## Architecture
-- `run.py` launcher starts `watcher.py` once per pilot. Ryan = default instance (MQTT prefix `flica_watcher`,
-  `/data`). Option `second_pilot: james` adds an instance with prefix `flica_watcher_james`, `/data/james`,
+- `run.py` launcher starts `watcher.py` once per pilot. Ryan = default instance (MQTT prefix `flight_watcher`,
+  `/data`). Option `second_pilot: james` adds an instance with prefix `flight_watcher_james`, `/data/james`,
   creds over MQTT `<prefix>/settings/set`.
-- `watcher.py`: main loop, MQTT discovery (entities `*.flica_watcher_*`), pot / schedule / tradeboard / pairing
+- `watcher.py`: main loop, MQTT discovery (entities `*.flight_watcher_*`), pot / schedule / tradeboard / pairing
   detail reads via Playwright `fl.fetch`. Modules: `pot.py` (parsers), `far.py` (FAR 117), `recall.py`
   (Recall/O75 miss check, PWA 22.G.2), `versions.py` (schedule versions MM.NNN), `pdfs.py` (award and pairings
   PDFs), `crewidx.py` (crew index), `tickets.py` (FW-nnnn tickets), `store.py` (SQLite), `web.py` (ingress UI).
-- Shared files on Pako: `/homeassistant/www/flica/pairings_<YYYY-MM>.json`, `finds_<YYYY-MM>.json`
-  (`/www/flica/<name>/` for a second pilot), `/share/flica_watcher/` (uploads, crew_index/*.md, tickets/).
-- Dashboard cards live in `flica_watcher/www/` and ship with the app: `cards.py` copies them to `/config/www/` on
-  start (plus `flica-*-<name>.js` copies for a second pilot) and writes `flight-watcher-cards.json`; the one
+- Shared files on Pako: `/homeassistant/www/flight-watcher/pairings_<YYYY-MM>.json`, `finds_<YYYY-MM>.json`
+  (`/www/flight-watcher/<name>/` for a second pilot), `/share/flight_watcher/` (uploads, crew_index/*.md, tickets/).
+- Dashboard cards live in `flight_watcher/www/` and ship with the app: `cards.py` copies them to `/config/www/` on
+  start (plus `flight-watcher-*-<name>.js` copies for a second pilot) and writes `flight-watcher-cards.json`; the one
   dashboard resource `/local/flight-watcher-loader.js` imports each with `?v=<app version>`. Edit cards in git,
   never on Pako (a start overwrites them). The pilot's DOH is in `/data/cards.json`, not in git.
-- Dashboard `flica-watcher` (title "Flight Watcher"), views: watcher, wx, details, recall.
+- Dashboard `flight-watcher` (title "Flight Watcher"), views: watcher, wx, details, recall.
 
 ## Release procedure
-1. Branch, change, `cd flica_watcher && python -m pytest -q` (all must pass), bump `version` in `config.yaml`
+1. Branch, change, `cd flight_watcher && python -m pytest -q` (all must pass), bump `version` in `config.yaml`
    and `VERSION` in `watcher.py`, add a CHANGELOG entry.
 2. Push branch, open PR. Ask Ryan for a yes ([DESTRUCTIVE]) before merging.
 3. After merge: Home Assistant > the app store reload (`check_updates`) then update the app (second yes if not
-   already given for this release). Verify `sensor.flica_watcher_state` attribute `version` and the app log.
-4. New MQTT discovery entities come up as `*.flica_watcher_*` (0.10.3 sends `default_entity_id`). Any created as
-   `*.flight_watcher_*` before 0.10.3 need a one-time rename in the entity registry.
+   already given for this release). Verify `sensor.flight_watcher_state` attribute `version` and the app log.
+4. New MQTT discovery entities come up as `*.flight_watcher_*` (discovery sends `default_entity_id`).
+5. Renamed from FLICA Watcher in 1.0.0 (slug, folder, prefix, entities, cards, folders). Until the move on Pako is
+   finished (HANDOFF item 0), the repo also holds `flica_watcher/`: the old app's last release (0.10.4) that only
+   hands its /data over through `/share/flight_watcher/import/`. Remove that folder after the old app is uninstalled.
 
 ## Reaching Home Assistant
 - Pako HI Home Assistant: Nabu Casa URL (in Ryan's connectors), MCP connector "Home Assistant - Pako HI" and the
