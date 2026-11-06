@@ -15,7 +15,8 @@ publishes what it finds to Home Assistant over MQTT.
   repeat). A failed login, a layout change or anything unexpected parks it until Re-arm.
 - Schedule: your line, numbered schedule versions (MM.NNN), FAR 117 columns, pay from the PWA tables, pairing
   details, and the monthly award and pairings PDFs uploaded on the Web UI.
-- Request decisions: reads FLICA's Open Time Requests list and pushes each Approved or Denied request once.
+- Request decisions: reads FLICA's Open Time Requests list and the Tradeboard's My Requests page (crew-to-crew
+  trades), and pushes each Approved or Denied request once, with Pay-Gross.
 - Recall / Over 75: checks each award against your line (PWA 22.G.2) and flags a possible miss.
 - Crew index and pilot lookup, charter watch (CrewTrac, read only), tickets (below).
 - A second pilot: option `second_pilot` runs a second Watcher with its own data, MQTT prefix
