@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.2
+
+- Request list (Ryan's Nov 6 Trade was not read): when the Open Time Requests page holds a request the parser does not recognise, or mentions a trade or Processing, the Watcher logs how many requests the page has against the rows it read and keeps a private copy of the latest such page in /share/flight_watcher/captures (never in git), so the row's wording can be added.
+
 ## 1.4.1
 
 - Trade requests (Ryan, Nov 6): a crew-to-crew Trade on the Open Time Requests list ('Trade H3604:13NOV and H3659:18NOV With Emp #: ... For H3620:12NOV and H3620:15NOV') is now read like a swap: listed, polled every 2 min while it reads Processing (as well as Pending), and pushed once when Approved or Denied, with Pay-Gross. The trips before 'With' are given, the trips after 'For' are taken, and the same pairing taken on two days counts twice (the view page's legs were kept once per trip number).
