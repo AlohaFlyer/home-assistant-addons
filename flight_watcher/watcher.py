@@ -2,7 +2,7 @@
 
 Login rule: never two login attempts in a row without a success in between.
 A failed login, or anything unexpected, parks the watcher until re-armed from HA.
-v0.2 is READ ONLY: rules match and log; nothing is ever submitted to FLICA.
+FLICA is read only: rules match and log, nothing is ever submitted to FLICA.
 """
 import json
 import logging
@@ -219,6 +219,12 @@ def on_message(c, u, msg):
         return
     if msg.topic == f"{T}/ticket/act":
         ticket_safe(ticket_act, msg.payload.decode(errors="replace"))
+        return
+    if msg.topic == f"{T}/ticket/edit":
+        ticket_safe(ticket_edit, msg.payload.decode(errors="replace"))
+        return
+    if msg.topic == f"{T}/ticket/delete":
+        ticket_safe(ticket_delete, msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/trade/set":
         trade_cmd(msg.payload.decode(errors="replace"))
@@ -781,7 +787,8 @@ def mqtt_start():
                   "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set",
                   "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set", "drop/set", "charter_scan/press", "pilot/set",
                   "improved/set", "recall/set", "recall/act", "settings/set",
-                  "ticket/new", "ticket/image", "ticket/act") + (() if INSTANCE else ("crew_scan/press",)):
+                  "ticket/new", "ticket/image", "ticket/act", "ticket/edit",
+                  "ticket/delete") + (() if INSTANCE else ("crew_scan/press",)):
             cl.subscribe(f"{T}/{t}")
         publish_settings(cl)
         fq = freq()
@@ -2584,6 +2591,8 @@ def write_crew_md(insts, rows):
 # ---------------------------------------------------------------- 0.10.1 tickets (Ryan)
 TICKETS_DIR = "/share/flight_watcher/tickets"  # shared by every instance
 TICKETS_SIG = {"sig": None}
+TICKETS_LAST = {}  # FW-0049: the last edit / delete answer, sent as "last" on the listing for the card
+RID_RE = TK.CID_RE
 
 
 def reporter():
@@ -2666,15 +2675,54 @@ def ticket_act(payload):
     return t
 
 
+def _ticket_change(fn, verb, payload):
+    """FW-0049: run TK.edit or TK.delete for this instance (a pilot instance: its own tickets only) and say how it
+    went in "last" {rid, id, action, ok, error, at} on the next listing, so the card that sent the card-made rid can
+    show it. A refusal also goes out as event/ticket_error, like every other ticket message."""
+    try:
+        d = json.loads(payload or "{}")
+    except ValueError:
+        d = None
+    t, err = fn(TICKETS_DIR, d, reporter(), now_iso(), allowed_reporter=INSTANCE or None)
+    d = d if isinstance(d, dict) else {}
+    rid = str(d.get("rid") or "").strip()
+    TICKETS_LAST.clear()
+    TICKETS_LAST.update({"rid": rid if RID_RE.match(rid) else "", "id": str(d.get("id") or "")[:20], "action": verb,
+                         "ok": bool(t), "error": err, "at": now_iso()})
+    if not t:
+        log.info("ticket %s refused: %s", verb, err)
+        pub("event/ticket_error", {"error": err, "at": now_iso()}, retain=False)
+    publish_tickets(force=True)
+    return t
+
+
+def ticket_edit(payload):
+    """FW-0049 {T}/ticket/edit {id, rid?, title?, narrative?, steps?, expected?, page?}: only while the ticket is new
+    or reopened; only the fields sent change."""
+    t = _ticket_change(TK.edit, "edit", payload)
+    if t:
+        log.info("ticket %s edited by %s: %s", t["id"], reporter(), ", ".join(t["history"][-1]["fields"]))
+    return t
+
+
+def ticket_delete(payload):
+    """FW-0049 {T}/ticket/delete {id, rid?}: any status; the folder moves to tickets/.deleted/ and leaves the list."""
+    t = _ticket_change(TK.delete, "delete", payload)
+    if t:
+        log.info("ticket %s (%s) deleted by %s", t["id"], t.get("status"), reporter())
+    return t
+
+
 def publish_tickets(force=False):
     """{T}/tickets (retained): Ryan's instance lists every ticket, a pilot instance only its own. Re-published
-    when the folder changed (the other instance may have written to it) or when forced."""
+    when the folder changed (the other instance may have written to it) or when forced. FW-0049: "last" is this
+    instance's last edit / delete answer ({} until one)."""
     try:
         sig = TK.signature(TICKETS_DIR)
         if not force and sig == TICKETS_SIG["sig"]:
             return
         TICKETS_SIG["sig"] = sig
-        pub("tickets", TK.listing(TICKETS_DIR, INSTANCE or None))
+        pub("tickets", {**TK.listing(TICKETS_DIR, INSTANCE or None), "last": dict(TICKETS_LAST)})
     except Exception as e:
         log.info("tickets publish skipped: %s", e)
 
