@@ -1,8 +1,8 @@
-// Flight Watcher tickets card (0.10.1, Ryan): bug reports and feature requests with a screenshot.
+// Flight Watcher tickets card (0.10.1, Ryan; 1.1.2: completed tickets fold away): bug reports and feature requests.
 // New tickets go to MQTT flight_watcher/ticket/new; the Watcher numbers them FW-0001... and lists them on
 // sensor.flight_watcher_tickets. Answers (verify / reopen / note) go to flight_watcher/ticket/act.
 class FlightWatcherTicketsCard extends HTMLElement {
-  setConfig(c) { this._c = { prefix: "flight_watcher", ...c }; this._form = null; this._img = null; this._open = {}; }
+  setConfig(c) { this._c = { prefix: "flight_watcher", ...c }; this._form = null; this._img = null; this._open = {}; this._doneOpen = false; }
   getCardSize() { return 6; }
   _e(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
   set hass(h) {
@@ -50,7 +50,11 @@ class FlightWatcherTicketsCard extends HTMLElement {
         <div class="u" data-imginfo>${this._img ? "Screenshot attached" : ""}</div>
         <button data-send>Submit</button> <button class="g" data-cancel>Cancel</button> <span class="u" data-msg></span>
       </div>` : "";
-    const rows = tix.map((t) => {
+    // 1.1.2 (Ryan): completed tickets (fixed, closed) fold away under "N completed"; open ones stay in the log.
+    const DONE = ["fixed", "closed"];
+    const active = tix.filter((t) => !DONE.includes(t.status)), done = tix.filter((t) => DONE.includes(t.status));
+    const waiting = done.filter((t) => t.status === "fixed").length;
+    const row = (t) => {
       const op = this._open[t.id];
       const acts = t.status === "fixed" ? `<button data-a="verify" data-id="${this._e(t.id)}">Verified, close</button><button class="g" data-a="reopen" data-id="${this._e(t.id)}">Still broken</button>`
         : t.status === "closed" ? `<button class="g" data-a="reopen" data-id="${this._e(t.id)}">Reopen</button>` : "";
@@ -59,7 +63,9 @@ class FlightWatcherTicketsCard extends HTMLElement {
         <span class="u">${this._e(t.reporter)} · ${this._e(String(t.created_at || "").slice(0, 10))}${t.has_image ? " · &#128247;" : ""}</span></div>
         ${op ? `<div class="tb"><div class="n">${this._e(t.narrative)}</div>${acts}
           <div><input data-note="${this._e(t.id)}" placeholder="Add a note" style="width:70%"> <button class="g" data-a="note" data-id="${this._e(t.id)}">Add</button></div></div>` : ""}</div>`;
-    }).join("");
+    };
+    const rows = active.map(row).join("");
+    const doneRows = done.length ? `<details class="done"${this._doneOpen ? " open" : ""}><summary>${done.length} completed${waiting ? ` <span class="u">(${waiting} waiting for your verify)</span>` : ""}</summary>${done.map(row).join("")}</details>` : "";
     this.shadowRoot.innerHTML = `<style>
       ha-card{padding:12px 14px;font-size:13px}
       button{cursor:pointer;border:0;border-radius:6px;padding:6px 12px;font-weight:600;background:var(--primary-color);color:#fff;margin:2px 4px 2px 0}
@@ -71,15 +77,18 @@ class FlightWatcherTicketsCard extends HTMLElement {
       .t{border-top:1px solid var(--divider-color);padding:6px 0}.th{cursor:pointer}
       .chip{display:inline-block;border-radius:10px;padding:0 8px;font-size:11px;font-weight:700;color:#fff;margin:0 6px}
       .tb{margin:6px 0 0 12px}.n{white-space:pre-wrap;margin-bottom:6px}
+      details.done{border-top:1px solid var(--divider-color);padding-top:6px}details.done summary{cursor:pointer;font-weight:600;color:var(--secondary-text-color)}
     </style><ha-card>
       <div><button class="big" data-new="bug">&#128027; Submit a bug</button><button class="big" data-new="feature">&#128161; Submit a feature request</button>
-        <span class="u">${a.open != null ? `${a.open} open of ${a.total}` : ""}</span></div>
+        <span class="u">${tix.length ? `${active.length} open · ${done.length} completed` : ""}</span></div>
       ${form}
-      ${tix.length ? `<div style="margin-top:6px"><b>Ticket log</b>${rows}</div>` : `<div class="u" style="margin-top:6px">No tickets yet.</div>`}
+      ${tix.length ? `<div style="margin-top:6px"><b>Ticket log</b>${rows || `<div class="u" style="padding:6px 0">Nothing open.</div>`}${doneRows}</div>` : `<div class="u" style="margin-top:6px">No tickets yet.</div>`}
     </ha-card>`;
     const r = this.shadowRoot;
     r.querySelectorAll("[data-new]").forEach((b) => b.onclick = () => { this._form = { kind: b.dataset.new }; this._img = null; this._render(); });
     r.querySelectorAll("[data-t]").forEach((el) => el.onclick = () => { this._open[el.dataset.t] = !this._open[el.dataset.t]; this._render(); });
+    const dd = r.querySelector("details.done");
+    if (dd) dd.ontoggle = () => { this._doneOpen = dd.open; };
     r.querySelectorAll("button[data-a]").forEach((b) => b.onclick = () => {
       const m = { id: b.dataset.id, action: b.dataset.a };
       if (b.dataset.a === "note") { const i = r.querySelector(`input[data-note="${CSS.escape(b.dataset.id)}"]`); if (!i || !i.value.trim()) return; m.text = i.value.trim(); }
