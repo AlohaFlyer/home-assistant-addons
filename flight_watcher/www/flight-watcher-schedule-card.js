@@ -550,7 +550,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       const tot = tgrp("thrs", [["Credit", hm(crAll) + chk(crAll, fCr)], ["Block", hm(sum.blk) + chk(sum.blk, fBlk)], ["Block Avail", `<span class="${bAv <= 0 ? "bad" : ""}" title="98:00 bid-month block cap (crew scheduling) minus FLICA's bid-period Block">${bAv < 0 ? "-" + hm(-bAv) : hm(bAv)}</span>`], ["Soft", hm(sum.soft)],
         ["Vacation", sum.vacDays ? `${hm(sum.vac)} <span class="k">(${sum.vacDays} d x ${hm(VAC_H)})</span>` : ""]]) +
         tgrp("tpay", [["Pay-Gross", usd(sum.gross)], ["Pay-Net", usd(sum.net)]]) +
-        tgrp("tdays", [["Days Off", tt.days_off], ["Need 30 h off by", n30]]);
+        tgrp("tdays", [["Days Off", tt.days_off == null ? "" : this._esc(tt.days_off)], ["Need 30 h off by", n30]]);
       if (this._idea && this._idea.key === key) {
         const r = ideasFor(this._idea.d, this._idea.trip);
         const md = (iso) => `${MON3[parseInt(iso.slice(5, 7), 10) - 1].slice(0, 1)}${MON3[parseInt(iso.slice(5, 7), 10) - 1].slice(1).toLowerCase()} ${parseInt(iso.slice(8), 10)}`;
@@ -636,7 +636,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         .cal tr.bxs td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb}
         .cal tr.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 -2px 0 #bbb}
         .cal tr.bxs.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb,inset 0 -2px 0 #bbb}
-        .g.green{color:#81c784}.g.red{color:#ef9a9a}.far.bad{color:#ef9a9a}.far.ok30{color:#81c784}.far.ok30 .k{color:#bdbdbd}.lgl{color:#90caf9}.er.on{color:#81c784}.sw{color:#ffb74d}.trb.on{color:#ffb74d}
+        .g.green{color:#81c784}.g.red{color:#ef9a9a}.far.bad{color:#ef9a9a}.tot .bad{color:#ef9a9a}.far.ok30{color:#81c784}.far.ok30 .k{color:#bdbdbd}.lgl{color:#90caf9}.er.on{color:#81c784}.sw{color:#ffb74d}.trb.on{color:#ffb74d}
         .fit{color:#81c784}.tag.avail{color:#81c784}.trip.tr{background:rgba(255,160,0,.4)}
         .nav:hover{background:rgba(255,255,255,.1)}.trb:hover{background:rgba(255,255,255,.12)}
       }
@@ -669,7 +669,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .tag{cursor:help}.lay{display:inline-block;min-width:28px}
       .st{color:#2e7d32;font-weight:700;cursor:help}.st.fly{color:#1565c0}
       @media (prefers-color-scheme: dark){.st{color:#81c784}.st.fly{color:#90caf9}}.more{color:var(--primary-color);font-weight:700;padding:0 3px}.tag.avail{color:var(--success-color,#2e7d32);font-weight:600}
-      .tot{margin-top:8px;font-size:14px;font-weight:700;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tgrp{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tpay{flex-wrap:nowrap}.tot .ti{white-space:nowrap}.tot .k{font-weight:600;color:var(--secondary-text-color);font-size:12px;margin-right:4px}
+      .tot{margin-top:8px;font-size:14px;font-weight:700;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tgrp{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tpay{flex-wrap:nowrap}.tot .ti{white-space:nowrap}.tot .k{font-weight:600;color:var(--secondary-text-color);font-size:12px;margin-right:4px}.tot .bad{color:#c62828}
       .lt{margin:0 auto;text-align:left}.lt td{padding:1px 6px;vertical-align:top}.lt td:first-child{font-weight:700;white-space:nowrap}
       .leg{font-size:10.5px;color:var(--secondary-text-color);text-align:center;margin-top:6px}
       .leg summary{cursor:pointer;font-weight:600;font-size:11px;list-style:none}.leg summary::before{content:"\\25B8 "}.leg[open] summary::before{content:"\\25BE "}
