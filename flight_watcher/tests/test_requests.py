@@ -228,3 +228,25 @@ def test_decided_request_reads_its_view_page_for_trips(tmp_path, monkeypatch):
     W.S["req_force"] = True
     W.requests_check(FL())
     assert len(events()) == 1 and len(views) == 1
+
+
+def test_fallback_to_content_keys_never_repushes(tmp_path, monkeypatch):
+    W, pages, fetched, read, events, sensor = _flow(tmp_path, monkeypatch)
+    d, t = _recent(W, 1).split()
+    pages["text"] = _html([(d, t, "Swap", "Approved", "0000BBBB:00000003")])
+    read()
+    assert len(events()) == 1
+    # a later list where ids and rows no longer pair up (a Pending row without its own link): content keys only
+    extra = f"<tr><td>{d}</td><td>{t}</td><td>Add</td><td>Pending</td></tr></table>"
+    pages["text"] = pages["text"].replace("</table>", extra, 1)
+    read()
+    assert len(events()) == 1
+
+
+def test_view_labels_are_strict():
+    from pot import visible_text
+    head = "<strong>Nov 2026 OPEN TIME- Add/Swap/Drop requests</strong><p>Request Detail</p><p>Status: Approved</p>"
+    v = SUB.parse_request_view(visible_text(head + "<table><tr><td>Trip</td><td>H3620</td><td>28NOV</td></tr></table>"))
+    assert v["legs"] == [{"trip": "H3620", "day": "28NOV", "side": ""}]  # the header never labels a trip
+    v = SUB.parse_request_view("type: swap from: doe, jane trip h3629 14nov to: h3628 13nov h3629 14nov")
+    assert [x["side"] for x in v["legs"]] == ["", ""] and v["trips"] == ["H3629", "H3628"]  # no to/from, once each
