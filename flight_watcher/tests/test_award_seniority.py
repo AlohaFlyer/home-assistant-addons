@@ -231,3 +231,72 @@ def test_the_second_pilots_watcher_never_writes_it(W, tmp_path, monkeypatch, fx)
     monkeypatch.setattr(W, "INSTANCE", "pilot2")
     W.seniority_refresh()
     assert not (up / "seniority.json").exists()
+
+
+def test_a_shared_employee_number_keeps_both_pilots_under_an_award():
+    """Review fix: the list holds two pilots on one employee number (the record and 'also'); a later award that lists
+    only one of them keeps the other from the list, so each is still found by last name with their own date of hire
+    (PWA 3.B.1 longevity) instead of the one left getting the other's (made-up pilots)."""
+    ann = {"sen": 11, "name": "Moe, Ann", "last": "Moe", "doh": "1995-01-01", "seat": "CA", "equip": "330"}
+    nina = {"sen": 12, "name": "Noe, Nina", "last": "Noe", "doh": "2010-06-01", "seat": "FO", "equip": "330"}
+    jane = {"sen": 1, "name": "Doe, Jane", "last": "Doe", "doh": "1988-05-01", "seat": "CA", "equip": "330"}
+    lst = {"source": "list", "list_date": "2026-03-01", "count": 3,
+           "pilots": {"90011": dict(ann, also=[nina]), "901": jane}}
+    assert SEN.find(lst, "90011", "Noe, Nina")["doh"] == "2010-06-01"
+    award = {"source": "award 2026-12", "award_month": "2026-12", "count": 1,
+             "pilots": {"90011": dict(ann, sen=10, seat="FO")}}  # only Ann, with her award record
+    v = SEN.combine(lst, award)
+    assert SEN.find(v, "90011", "Noe, Nina") == nina and SEN.find(v, "90011", "Moe, Ann")["sen"] == 10
+    assert (v["count"], v["carried"], v["newest_doh"]) == (3, 2, "2010-06-01")  # Jane and Nina kept from the list
+    assert lst["pilots"]["90011"]["also"] == [nina] and "also" not in award["pilots"]["90011"]  # inputs untouched
+    # the award holds the other one: Ann stays, from the list, without a nested 'also'
+    v = SEN.combine(lst, dict(award, pilots={"90011": dict(nina, sen=13)}))
+    assert SEN.find(v, "90011", "Moe, Ann") == ann and SEN.find(v, "90011", "Noe, Nina")["sen"] == 13
+    assert v["pilots"]["90011"]["also"] == [ann] and v["carried"] == 2
+    # the award holds both (its own 'also'): nothing is carried under that number, the award's records win
+    v = SEN.combine(lst, dict(award, count=2, pilots={"90011": dict(ann, sen=10, also=[dict(nina, sen=14)])}))
+    assert v["pilots"]["90011"]["also"] == [dict(nina, sen=14)] and (v["count"], v["carried"]) == (3, 1)
+    assert SEN.find(v, "90011", "Noe, Nina")["sen"] == 14
+
+
+def test_the_watcher_reads_an_award_on_file_beside_a_1_4_4_list(W, tmp_path, monkeypatch, fx, caplog):
+    """Review fix: a seniority.json written by 1.4.4 (the current parser, no 'source') no longer stops the first 1.4.5
+    start from reading an award already on file: its dates of hire are read once and go on top of the older list,
+    then not again; an award with too few rows is tried once, not at every check (made-up text)."""
+    import os
+    up = tmp_path / "uploads"
+    up.mkdir()
+    old = SEN.to_json(SEN.parse(fx("seniority_synthetic.txt"), 2026), "seniority_2026-11-01.pdf",
+                      "2026-11-01T09:30:00-10:00", "")
+    assert old["parser"] == SEN.PARSER and "source" not in old
+    (up / "seniority.json").write_text(json.dumps(old))
+    (up / "seniority_2026-11-01.txt").write_text(fx("seniority_synthetic.txt"), encoding="utf-8")
+    (up / "2026-12_award.txt").write_text(fx("award_packet_synthetic.txt"), encoding="utf-8")
+    monkeypatch.setattr(W, "UPLOADS_SHARED", str(up))
+    calls, real_w, real_a = [], W.web.seniority_write, W.web.award_seniority
+    monkeypatch.setattr(W.web, "seniority_write", lambda path, *a: calls.append(os.path.basename(path)) or real_w(path, *a))
+    monkeypatch.setattr(W.web, "award_seniority", lambda path, *a: calls.append(os.path.basename(path)) or real_a(path, *a))
+    W._SEN_CACHE.clear()
+    with caplog.at_level(logging.INFO):
+        W.seniority_refresh()
+    v = json.loads((up / "seniority.json").read_text())
+    assert calls == ["2026-12_award.txt"]  # the list is current: only the award is read
+    assert (v["source"], v["count"], v["carried"], v["base"]["file"]) == ("award 2026-12", 42, 12, "seniority_2026-11-01.pdf")
+    assert (up / "seniority_award.json").exists() and json.loads((up / "seniority_list.json").read_text())["pilots"] == old["pilots"]
+    assert "award 2026-12_award.txt dates of hire: 30 pilot rows (seniority section), on-top" in caplog.text
+    for _ in range(2):  # later checks: nothing is read again
+        W._SEN_CACHE.clear()
+        W.seniority_refresh()
+    assert calls == ["2026-12_award.txt"]
+    # an award with too few dates of hire beside a 1.4.4 list: tried once, the list stays as it was
+    for f in ("seniority.json", "seniority_award.json", "seniority_list.json", "2026-12_award.txt"):
+        (up / f).unlink()
+    (up / "seniority.json").write_text(json.dumps(old))
+    from test_pdfs import AWARD
+    (up / "2027-01_award.txt").write_text(AWARD, encoding="utf-8")
+    calls.clear()
+    for _ in range(3):
+        W._SEN_CACHE.clear()
+        W.seniority_refresh()
+    assert calls == ["2027-01_award.txt"] and json.loads((up / "seniority.json").read_text()) == old
+    assert not (up / "seniority_award.json").exists()

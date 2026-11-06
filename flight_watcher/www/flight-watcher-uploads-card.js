@@ -11,7 +11,10 @@ const FW_UP_SLUG = ["43b22650", "flight", "watcher"].join("_");  // in parts: a 
 const FW_UP_KINDS = [["award", "Monthly award"], ["pairings", "Pairings package"], ["seniority", "Pilot seniority list"]];
 const FW_UP_LABEL = { award: "Award", pairings: "Pairings package", seniority: "Seniority list", other: "Other file" };
 const FW_UP_REFRESH_MS = 5 * 60 * 1000;
-const FW_UP_MAX = 25000000;  // web.UPLOAD_MAX; api/uploads gives the app's own figure
+// web.INGRESS_MAX: the Supervisor's ingress proxy refuses a body over 16 MiB (HTTP 413) after it has all arrived, so
+// a larger PDF is refused here, before it is sent; 64 KiB is left for the form around it. api/uploads gives the
+// app's own figure and the card takes the lower of the two.
+const FW_UP_MAX = 16 * 1024 * 1024 - 64 * 1024;
 const FW_UP_SHOW = 6;  // files listed before the rest fold away
 const FW_UP_URL_RE = /^\/api\/hassio_ingress\/[A-Za-z0-9_-]+\/?$/;
 const FW_UP_MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -120,8 +123,8 @@ class FlightWatcherUploadsCard extends HTMLElement {
       <label data-ml>Bid period <input type="month" data-month value="${this._e(fwUpNextMonth(Date.now()))}"></label>
       <label data-dl hidden>List date <span class="u">(optional, when the PDF does not print one)</span><input type="date" data-date></label>
       <label>PDF <input type="file" data-pdf accept="application/pdf,.pdf"></label></div>
-      <div class="act"><button data-up>Upload</button><span class="u" data-prog></span></div>
-      <div class="msg" data-msg></div></div>`;
+      <div class="act"><button data-up>Upload</button><span class="u" data-prog aria-live="polite"></span></div>
+      <div class="msg" data-msg role="status" aria-live="polite" aria-atomic="true"></div></div>`;
   }
   _kind() {  // the seniority list has no bid period; it takes an optional list date instead
     const sen = (this._q("[data-kind]") || {}).value === "seniority";
@@ -267,14 +270,14 @@ class FlightWatcherUploadsCard extends HTMLElement {
     const month = ((this._q("[data-month]") || {}).value || "").trim();
     const day = ((this._q("[data-date]") || {}).value || "").trim();
     const input = this._q("[data-pdf]"), f = input && input.files && input.files[0];
-    const max = (this._data && +this._data.max_bytes) || FW_UP_MAX;
+    const max = Math.min((this._data && +this._data.max_bytes) || FW_UP_MAX, FW_UP_MAX);
     if (kind !== "seniority" && !fwUpMonth(month)) return this._say(false, "Pick the bid period (month).");
     if (!f) return this._say(false, "Pick the PDF.");
     if (!/\.pdf$/i.test(f.name || "") && f.type !== "application/pdf") return this._say(false, "That file is not a PDF.");
-    if (f.size > max) return this._say(false, `Too large: ${fwUpSize(f.size)} (the app takes up to ${fwUpSize(max)}).`);
+    if (f.size > max) return this._say(false, `Too large: ${fwUpSize(f.size)}. Home Assistant's app proxy takes a PDF of up to ${fwUpSize(max)}.`);
     const what = kind === "seniority" ? "the pilot seniority list" : `the ${fwUpMonth(month)} ${kind === "award" ? "award" : "pairings package"}`;
     const btn = this._q("[data-up]"), prog = this._q("[data-prog]");
-    const show = (t) => { if (prog) prog.textContent = t; };
+    const show = (t) => { if (prog && prog.textContent !== t) prog.textContent = t; };
     this._busy = true;
     if (btn) btn.disabled = true;
     this._say(true, "");
@@ -286,7 +289,8 @@ class FlightWatcherUploadsCard extends HTMLElement {
         fd.append("month", kind === "seniority" ? "" : month);
         if (kind === "seniority" && /^\d{4}-\d{2}-\d{2}$/.test(day)) fd.append("list_date", day);
         fd.append("pdf", f, f.name || "upload.pdf");
-        return this._post(`${base}api/upload`, fd, (p) => show(p >= 100 ? `Reading ${what}...` : `Uploading ${what} (${fwUpSize(f.size)})... ${p}%`));
+        // 10 % steps: the progress line is read out (aria-live), so it changes a few times, not at every event
+        return this._post(`${base}api/upload`, fd, (p) => show(p >= 100 ? `Reading ${what}...` : `Uploading ${what} (${fwUpSize(f.size)})... ${Math.floor(p / 10) * 10}%`));
       });
       this._say(!!r.ok, r.message || (r.ok ? "Saved." : "Not saved."));
       if (r.ok && input) input.value = "";

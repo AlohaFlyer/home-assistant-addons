@@ -22,7 +22,13 @@ import seniority as SEN
 
 INGRESS_IP = "172.30.32.2"
 UPLOAD_DIR = "/share/flight_watcher/uploads"
-UPLOAD_MAX = 25_000_000
+UPLOAD_MAX = 25_000_000  # the app's own hard cap on a request body
+# 1.4.5 review fix: what reaches the app through ingress. The Supervisor's ingress proxy reads a POST body whole
+# (supervisor/api/ingress.py, no ingress_stream in config.yaml) and its aiohttp app refuses a body over 16 MiB
+# (supervisor/api/__init__.py, MAX_CLIENT_SIZE = 1024**2 * 16) with HTTP 413, before the app sees it. api/uploads
+# advertises this, less 64 KiB for the multipart form around the PDF, so the card refuses a larger file before
+# sending it. Not ingress_stream: the body would then come chunked, with no Content-Length for this server to read.
+INGRESS_MAX = 16 * 1024 * 1024 - 64 * 1024
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Flight Watcher rules</title>
 <style>
@@ -44,7 +50,8 @@ nav a{{margin-right:14px}}.set label{{display:block;margin:6px 0}}.set input{{wi
 kept in /share/flight_watcher/uploads (never committed) with a text copy, and parsed for the month's starting
 schedule and the tag-on ideas. 1.4.2 (FW-0062): the pilot seniority list (any month; the Month box is not used for
 it) gives each pilot's date of hire, so a pilot's month rebuilt from crew lists shows a pay line for every pilot
-instance. Give its list date if the PDF does not print one.</p>
+instance. Give its list date if the PDF does not print one. Home Assistant's app proxy takes a PDF of up to
+{max_mb} MB.</p>
 <form method="post" action="upload" enctype="multipart/form-data">
 Month <input type="month" name="month" value="{month}"> &nbsp;
 <select name="kind"><option value="award">Monthly award</option><option value="pairings">Pairings package</option><option value="seniority">Pilot seniority list</option></select> &nbsp;
@@ -169,7 +176,12 @@ def seniority_sources(out=None):
         lst["source"] = "list"
     else:
         lst = _load_json(os.path.join(d, SEN_LIST))
-    return lst, _load_json(os.path.join(d, SEN_AWARD))
+    return lst, seniority_award(out)
+
+
+def seniority_award(out=None):
+    """1.4.5: the newest award's dates of hire (seniority_award.json beside `out`), or None."""
+    return _load_json(os.path.join(os.path.dirname(out or seniority_file()), SEN_AWARD))
 
 
 def seniority_rebuild(lst, aw, out=None):
@@ -304,9 +316,19 @@ def _form(ctype, body):
     return fields, data
 
 
+def _why_no_text(e):
+    """Why pdftotext gave no text copy, short and without the file's path."""
+    if isinstance(e, subprocess.CalledProcessError):
+        return f"pdftotext exit {e.returncode}: damaged or password-protected PDF?"
+    if isinstance(e, subprocess.TimeoutExpired):
+        return "pdftotext took over 2 minutes"
+    return str(e)[:120]
+
+
 def save_upload(fields, data, log):
     """The one save path of the Web UI page and the dashboard card (1.4.5): {ok, message (plain text), file?,
-    seniority?}. Stores one PDF as <YYYY-MM>_<award|pairings>.pdf plus a pdftotext -layout copy. An award's text is
+    seniority?}. Stores one PDF as <YYYY-MM>_<award|pairings>.pdf plus a pdftotext -layout copy; a PDF that gives no
+    text copy is refused and the month's file on file is kept. An award's text is
     also read for dates of hire (award_seniority; it never fails the upload). FW-0062: kind 'seniority' (no month)
     goes to _save_seniority: kept as seniority_<YYYY-MM-DD, HST upload day>.pdf and read into seniority.json only when
     it gives pilot rows."""
@@ -318,18 +340,33 @@ def save_upload(fields, data, log):
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     if kind == "seniority":
         return _save_seniority(data, fields, log)
-    path = os.path.join(UPLOAD_DIR, f"{month}_{kind}.pdf")
-    with open(path, "wb") as f:
-        f.write(data)
-    note, txt = "", path[:-4] + ".txt"
+    path, kb = os.path.join(UPLOAD_DIR, f"{month}_{kind}.pdf"), len(data) // 1024
+    tmp, txt = path[:-4] + ".new.pdf", path[:-4] + ".txt"
+    # 1.4.5 review fix: staged like a seniority list (_save_seniority). The PDF is written and read under
+    # <month>_<kind>.new.pdf / .new.txt and only a file that gives a text copy replaces the one on file, so a PDF
+    # pdftotext cannot read (truncated, encrypted) never replaces a good one nor leaves the old text copy beside it.
     try:
-        subprocess.run(["pdftotext", "-layout", path, txt], check=True, timeout=120)
-    except Exception as e:
-        note, txt = f" (no text copy: {str(e)[:120]})", None
-    log.info("upload: %s %s saved (%d KB)%s", month, kind, len(data) // 1024, note)
-    out = {"ok": True, "message": f"Saved {os.path.basename(path)} ({len(data) // 1024} KB){note}.",
-           "file": os.path.basename(path)}
-    if kind == "award" and txt:
+        with open(tmp, "wb") as f:
+            f.write(data)
+        try:
+            subprocess.run(["pdftotext", "-layout", tmp, tmp[:-4] + ".txt"], check=True, timeout=120)
+        except Exception as e:
+            what = "award" if kind == "award" else "pairings package"
+            kept = f"the {month} {what} on file is kept" if os.path.exists(path) else "nothing was saved"
+            log.info("upload: %s %s (%d KB) gave no text copy; not kept", month, kind, kb)
+            return {"ok": False, "message": f"Not kept: {os.path.basename(path)} ({kb} KB) gave no text copy "
+                                            f"({_why_no_text(e)}), so the Watcher cannot read it; {kept}."}
+        os.replace(tmp, path)
+        os.replace(tmp[:-4] + ".txt", txt)
+    finally:
+        for f in (tmp, tmp[:-4] + ".txt"):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+    log.info("upload: %s %s saved (%d KB)", month, kind, kb)
+    out = {"ok": True, "message": f"Saved {os.path.basename(path)} ({kb} KB).", "file": os.path.basename(path)}
+    if kind == "award":
         try:
             info = award_seniority(txt, month, os.path.basename(path), _hst_now().isoformat(timespec="seconds"))
             log.info("upload: %s award dates of hire: %d pilot rows (%s, %d lines not read), %s", month, info["rows"],
@@ -374,7 +411,7 @@ def _save_seniority(data, fields, log):
             subprocess.run(["pdftotext", "-layout", tmp, tmp[:-4] + ".txt"], check=True, timeout=120)
         except Exception as e:
             log.info("upload: seniority list (%d KB) gave no text copy; not kept", kb)
-            return {"ok": False, "message": f"Not kept: {name}.pdf ({kb} KB) gave no text copy ({str(e)[:120]}), so "
+            return {"ok": False, "message": f"Not kept: {name}.pdf ({kb} KB) gave no text copy ({_why_no_text(e)}), so "
                                             f"the list cannot be read; {kept}"}
         given = fields.get("list_date", "")
         given = given if re.fullmatch(r"\d{4}-\d{2}-\d{2}", given) else ""
@@ -429,9 +466,10 @@ def uploads_list():
 
 
 def uploads_json(version):
-    """api/uploads: {files, seniority (seniority_summary of seniority.json, or None), version, max_bytes}."""
+    """api/uploads: {files, seniority (seniority_summary of seniority.json, or None), version, max_bytes (the largest
+    PDF that gets through Home Assistant's ingress proxy, INGRESS_MAX)}."""
     return {"files": uploads_list(), "seniority": seniority_summary(_load_json(seniority_file())), "version": version,
-            "max_bytes": UPLOAD_MAX}
+            "max_bytes": min(UPLOAD_MAX, INGRESS_MAX)}
 
 
 SETTINGS_FIELDS = (  # (key, label, secret)
@@ -491,6 +529,7 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
         def _page(self, msg="", draft=None, settings_msg=""):
             body = PAGE.format(
                 version=html.escape(version), msg=msg, month=_month_default(), uploads=_uploads_table(),
+                max_mb=f"{INGRESS_MAX / 1048576:.1f}",
                 seniority=_seniority_status(),
                 settings_msg=settings_msg,
                 settings=_settings_form(get_settings() if get_settings else {}) if save_settings else

@@ -53,7 +53,7 @@ def _post(port, fields, pdf=b"%PDF-1.4 fake", path="/api/upload", **kw):
 def test_uploads_list_and_upload(srv, tmp_path):
     st, ct, data = _req(srv, "GET", "/api/uploads")
     assert st == 200 and ct.startswith("application/json")
-    assert json.loads(data) == {"files": [], "seniority": None, "version": "9.9.9", "max_bytes": web.UPLOAD_MAX}
+    assert json.loads(data) == {"files": [], "seniority": None, "version": "9.9.9", "max_bytes": web.INGRESS_MAX}
     st, ct, data = _post(srv, {"kind": "pairings", "month": "2026-12"})
     r = json.loads(data)
     assert (st, r["ok"], r["file"], r["message"]) == (200, True, "2026-12_pairings.pdf", "Saved 2026-12_pairings.pdf (0 KB).")
@@ -114,3 +114,38 @@ def test_the_page_still_uploads(srv, tmp_path):
     assert st == 200 and ct.startswith("text/html") and b"<p class='ok'>Saved 2026-12_pairings.pdf (0 KB).</p>" in data
     st, _, data = _req(srv, "GET", "/")
     assert st == 200 and b"2026-12_pairings.pdf" in data and b"Monthly PDFs" in data
+
+
+def test_the_advertised_limit_is_what_ingress_lets_through(srv):
+    """1.4.5 review fix: the Supervisor's ingress proxy refuses a body over 16 MiB (MAX_CLIENT_SIZE = 1024**2 * 16,
+    read whole without ingress_stream) with HTTP 413 after it has all arrived. api/uploads advertises that less 64 KiB
+    for the form, and the card refuses a larger PDF before sending it; the app's own 25 MB check stays the hard cap."""
+    import os
+    import re
+    assert web.INGRESS_MAX == 16 * 1024 * 1024 - 64 * 1024 < web.UPLOAD_MAX
+    assert json.loads(_req(srv, "GET", "/api/uploads")[2])["max_bytes"] == web.INGRESS_MAX
+    card = open(os.path.join(os.path.dirname(web.__file__), "www", "flight-watcher-uploads-card.js"), encoding="utf-8").read()
+    m = re.search(r"^const FW_UP_MAX = (16 \* 1024 \* 1024 - 64 \* 1024);", card, re.M)
+    assert m and eval(m.group(1)) == web.INGRESS_MAX  # the card's fallback is the same figure
+    st, _, page = _req(srv, "GET", "/")  # the Web UI page says so too
+    assert st == 200 and "Home Assistant's app proxy takes a PDF of up to 15.9 MB." in " ".join(page.decode().split())
+    # not ingress_stream: the Supervisor would then send the body chunked, and this server reads Content-Length
+    assert "ingress_stream" not in open(os.path.join(os.path.dirname(web.__file__), "config.yaml")).read()
+
+
+def test_an_unreadable_pdf_is_refused_over_the_api(srv, tmp_path, monkeypatch):
+    """1.4.5 review fix, through api/upload: a PDF with no text copy answers 400 ok:false and the month's good PDF and
+    text copy stay, so api/uploads still says read only for the file that was read (made-up files)."""
+    import subprocess
+    assert json.loads(_post(srv, {"kind": "award", "month": "2026-12"}, b"%PDF-1.4 good")[2])["ok"]
+
+    def exit1(cmd, check=True, timeout=None):
+        raise subprocess.CalledProcessError(1, cmd)
+    monkeypatch.setattr(web.subprocess, "run", exit1)
+    st, _, data = _post(srv, {"kind": "award", "month": "2026-12"}, b"%PDF-1.4 truncated")
+    r = json.loads(data)
+    assert st == 400 and not r["ok"] and r["message"].endswith("the 2026-12 award on file is kept.") and "file" not in r
+    assert (tmp_path / "2026-12_award.pdf").read_bytes() == b"%PDF-1.4 good"
+    d = json.loads(_req(srv, "GET", "/api/uploads")[2])
+    assert [(f["name"], f["size"], f["has_text"]) for f in d["files"]] == [("2026-12_award.pdf", 13, True)]
+    assert not [f for f in tmp_path.iterdir() if ".new." in f.name]

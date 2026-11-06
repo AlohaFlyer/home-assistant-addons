@@ -180,6 +180,8 @@ def test_renders_and_uploads_in_a_browser(tmp_path):
     assert r["sen_toggle"] == {"month_hidden": True, "date_hidden": False} and r["award_toggle"] == {"month_hidden": False, "date_hidden": True}
     assert r["rows_before"] == 4 and r["rows_after"] == 5 and r["pwned"] is None and r["imgs"] == 0
     assert r["msg"].startswith("Saved 2026-12_award.pdf (1 KB). Dates of hire: 30 pilots") and r["msg_class"] == "ok"
+    assert r["status"] == r["msg"] and r["live"] == {"msg": ["status", "polite"], "prog": "polite"}  # announced
+    assert '- status: "Saved 2026-12_award.pdf (1 KB).' in r["aria"], r["aria"]
     p = r["post"]
     assert "ingress_session=" + "f" * 128 in p["cookie"] and len(r["gets"]) == 2 and all("ingress_session=" in g for g in r["gets"])
     for part in ('name="kind"\r\n\r\naward\r\n', 'name="month"\r\n\r\n2026-12\r\n', 'filename="award.pdf"', "%PDF-1.4 synthetic"):
@@ -189,3 +191,47 @@ def test_renders_and_uploads_in_a_browser(tmp_path):
     assert r["refused"]["msg"] == "That file is not a PDF." and r["refused"]["class"] == "err" and r["refused"]["posts"] == 1
     for name in r["shots"]:
         assert os.path.getsize(os.path.join(shots, name)) > 1000
+
+
+def test_a_pdf_over_the_ingress_limit_is_refused_before_it_is_sent():
+    """Review fix: the Supervisor's ingress proxy refuses a body over 16 MiB (HTTP 413) only after it has all arrived,
+    so the card refuses a larger PDF before any request, even when the app advertises its own 25 MB cap (the lower of
+    the two wins); a PDF under the limit is sent (stub XMLHttpRequest)."""
+    r = _node("""
+      const xhrs = [];
+      globalThis.FormData = class { constructor() { this.names = []; } append(n) { this.names.push(n); } };
+      globalThis.XMLHttpRequest = class { constructor() { xhrs.push(this); this.upload = {}; }
+        open(m, u) { this.url = u; } send(fd) { this.fd = fd.names; this.status = 200;
+          this.responseText = JSON.stringify({ok: true, message: "Saved 2026-12_pairings.pdf (15625 KB)."}); setTimeout(() => this.onload(), 0); } };
+      DATA = {files: [], seniority: null, version: "1.4.5", max_bytes: 25000000};  // an app that advertises more
+      const c = new FlightWatcherUploadsCard(); c.setConfig({}); c.hass = hass(true);
+      for (let i = 0; i < 20 && !c._data; i++) await tick();
+      c._q("[data-kind]").value = "pairings"; c._q("[data-month]").value = "2026-12";
+      const try_ = async (size) => { c._q("[data-pdf]").files = [{name: "p.pdf", type: "application/pdf", size}]; const n = xhrs.length;
+        await c._upload(); return {msg: c._msg, sent: xhrs.length - n}; };
+      const big = await try_(20000000), edge = await try_(FW_UP_MAX + 1), ok = await try_(16000000);
+      DATA = {files: [], seniority: null, version: "1.4.5", max_bytes: 1000000}; await c._load();  // a lower app figure wins
+      const low = await try_(2000000);
+      console.log(JSON.stringify({big, edge, ok, low, max: FW_UP_MAX, url: xhrs[0] && xhrs[0].url, fd: xhrs[0] && xhrs[0].fd}));
+    """)
+    assert r["max"] == 16 * 1024 * 1024 - 64 * 1024
+    assert r["big"] == {"msg": {"ok": False, "text": "Too large: 19.1 MB. Home Assistant's app proxy takes a PDF of up to 15.9 MB."}, "sent": 0}
+    assert r["edge"]["sent"] == 0 and r["edge"]["msg"]["text"].startswith("Too large: 15.9 MB.")
+    assert r["ok"] == {"msg": {"ok": True, "text": "Saved 2026-12_pairings.pdf (15625 KB)."}, "sent": 1}
+    assert r["url"] == "/api/hassio_ingress/tok123/api/upload" and r["fd"] == ["kind", "month", "pdf"]
+    assert r["low"]["sent"] == 0 and r["low"]["msg"]["text"].endswith("up to 977 KB.")
+
+
+def test_progress_and_result_lines_are_live_regions():
+    """Review fix (WCAG 4.1.3 status messages): the result line is a polite status region and the progress line is
+    live too, so a screen reader announces the upload's progress and its outcome; the progress moves in 10 % steps."""
+    r = _node("""
+      const c = new FlightWatcherUploadsCard(); c.setConfig({}); c.hass = hass(true);
+      for (let i = 0; i < 20 && !c._data; i++) await tick();
+      console.log(JSON.stringify({html: c.shadowRoot.innerHTML}));
+    """)
+    h = " ".join(r["html"].split())
+    assert '<div class="msg" data-msg role="status" aria-live="polite" aria-atomic="true"></div>' in h
+    assert '<span class="u" data-prog aria-live="polite"></span>' in h
+    src = open(CARD, encoding="utf-8").read()
+    assert "Math.floor(p / 10) * 10}%" in src

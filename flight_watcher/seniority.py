@@ -367,11 +367,36 @@ def as_of(d):
                or str(d.get("uploaded_at") or "")[:10])
 
 
+def _merge_pilots(lp, ap):
+    """(pilots, carried): the award's pilots on top of the list's, merged per pilot, not per employee number. A number
+    two pilots share holds both in the list (the record and its 'also'); an award that lists only one of them keeps
+    the other from the list in 'also', so find() still tells them apart by last name instead of giving the one left
+    the other pilot's date of hire. A list pilot is the award's when the award has the last name (_last) under that
+    number. carried counts the list's pilots kept under the award."""
+    pilots, carried = {}, 0
+    for k in list(lp) + [k for k in ap if k not in lp]:
+        old, new = lp.get(k), ap.get(k)
+        if not new:
+            pilots[k] = old
+            carried += 1 + len(old.get("also") or [])
+            continue
+        if not old:
+            pilots[k] = new
+            continue
+        have = {_last(c.get("name")) for c in [new] + list(new.get("also") or [])}
+        extra = [{x: v for x, v in c.items() if x != "also"} for c in [old] + list(old.get("also") or [])
+                 if _last(c.get("name")) not in have]
+        pilots[k] = dict(new, also=list(new.get("also") or []) + extra) if extra else new
+        carried += len(extra)
+    return pilots, carried
+
+
 def combine(lst, aw):
     """seniority.json, what the Watcher reads, from the dedicated seniority list (`lst`, to_json + source 'list') and
     the newest award with dates of hire (`aw`, to_json + source 'award YYYY-MM', award_month). The later as_of() is on
     top and a tie goes to the list. An award on top keeps the list's pilots it does not hold ('carried', with the
-    list described in 'base'), since an award may cover fewer pilots than the whole list; a list on top stands alone
+    list described in 'base'; per pilot, so the other pilot on a shared employee number stays, _merge_pilots), since
+    an award may cover fewer pilots than the whole list; a list on top stands alone
     (an older award adds nothing). None when there is neither."""
     lst = {k: v for k, v in (lst or {}).items() if k not in VIEW_ONLY} or None
     aw = {k: v for k, v in (aw or {}).items() if k not in VIEW_ONLY} or None
@@ -384,12 +409,10 @@ def combine(lst, aw):
         return out
     out = dict(aw, as_of=as_of(aw))
     if lst:
-        pilots = dict(lst.get("pilots") or {})
-        pilots.update(aw.get("pilots") or {})
+        pilots, carried = _merge_pilots(lst.get("pilots") or {}, aw.get("pilots") or {})
         recs = [r for p in pilots.values() for r in [p] + list(p.get("also") or [])]
         out.update(pilots=pilots, count=len(recs), newest_doh=max((r.get("doh") or "" for r in recs), default=""),
-                   carried=sum(1 + len(p.get("also") or []) for k, p in (lst.get("pilots") or {}).items()
-                               if k not in (aw.get("pilots") or {})),
+                   carried=carried,
                    base={"source": "list", "file": lst.get("file", ""), "list_date": lst.get("list_date", ""),
                          "uploaded_at": lst.get("uploaded_at", ""), "as_of": as_of(lst), "count": lst.get("count", 0)})
     return out

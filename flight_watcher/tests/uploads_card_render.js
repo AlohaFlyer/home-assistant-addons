@@ -105,6 +105,12 @@ c.hass = { user: { is_admin: ${admin ? "true" : "false"} }, callWS: async (m) =>
     await pg.waitForFunction(() => document.querySelector("flight-watcher-uploads-card").shadowRoot.querySelectorAll(".f").length === 5);
     const r1 = await msg();
     res.msg = r1.text; res.msg_class = r1.cls;
+    // review fix (WCAG 4.1.3): the outcome is in a status region a screen reader announces, the progress line is live
+    res.status = (await card.getByRole("status").textContent()).trim();
+    res.live = await pg.evaluate(() => { const r = document.querySelector("flight-watcher-uploads-card").shadowRoot;
+      const m = r.querySelector("[data-msg]"), p = r.querySelector("[data-prog]");
+      return { msg: [m.getAttribute("role"), m.getAttribute("aria-live")], prog: p.getAttribute("aria-live") }; });
+    res.aria = await card.ariaSnapshot();
     res.refused = { msg: r0.text, class: r0.cls, posts: posts.length };
     res.post = posts[0] || {};
     res.rows_after = await rows();

@@ -12,8 +12,8 @@
   `supervisor/api`, the `ingress_session` cookie, re-validated every 5 min while open). Shipped and loaded like the
   other cards (a second pilot's copy too, still admin only, still talking to the one app). Fits a 390 px phone.
 - Web UI: JSON endpoints beside the page for the card, with the same ingress-only access: `GET api/uploads` (the PDFs
-  on file and a seniority summary: counts and dates, no pilot) and `POST api/upload` (the page's own multipart form,
-  checks and 25 MB limit; one save path for both). The Web UI page works as before.
+  on file and a seniority summary: counts and dates, no pilot) and `POST api/upload` (the page's own multipart form
+  and checks; one save path for both). The Web UI page works as before.
 - Dates of hire from the award (Ryan: the monthly award packet lists every pilot's date of hire): an uploaded award
   is read for dates of hire too, from a seniority section in the seniority list's layout or from the pilot lines with
   a labeled DOH. With 25 pilot rows or more it is merged into `seniority.json` (source `award YYYY-MM`): the later of
@@ -25,6 +25,18 @@
 - Pilot card: a pay line without a date of hire now says to upload the seniority list or the month's award on the
   Settings tab, and names the award when the dates of hire on file came from one (`list_source` on the pay line).
 - Settings card relabeled for the Credentials heading: its button reads "Save credentials".
+- Review fixes (1.4.5):
+  - An award or pairings package that gives no text copy (damaged or password-protected PDF) is refused ("Not kept")
+    instead of replacing the month's good PDF while its old text copy stayed beside it (the card then said "read" for
+    a file never read). It is read under `<YYYY-MM>_<kind>.new.pdf` and deleted, as a refused seniority list is.
+  - The card and `api/uploads` give the real size limit, 15.9 MB: the Supervisor's ingress proxy refuses a request
+    over 16 MiB (HTTP 413) after it has all arrived, so a larger PDF is refused in the card before it is sent. The
+    Web UI page says so too; the app's 25 MB check stays as the hard cap.
+  - An award already on file is now read for dates of hire at the first 1.4.5 start also when a 1.4.4 seniority list
+    is on file (the current list no longer ends the check before the award), once per file and parser.
+  - An award on top keeps both pilots of a shared employee number: when the award lists only one of them, the other
+    keeps the list's record and date of hire (PWA 3.B.1 longevity) instead of being found as the other pilot.
+  - The card's progress and result lines are live regions (WCAG 4.1.3), so a screen reader announces the outcome.
 
 ## 1.4.4
 
