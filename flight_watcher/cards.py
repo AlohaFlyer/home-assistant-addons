@@ -3,8 +3,11 @@
 The cards live in git under www/ (copied to /app/www in the image). run.py calls deploy() once before the
 watchers start:
 - every www/flight-watcher-*.js goes to /homeassistant/www/ (HA's /local/), written only when its content changed;
-- the schedule card gets the pilot's date of hire (DOH) from /data/cards.json {"doh": "YYYY-MM-DD"}. The DOH is
-  personal data and never in git; on the first deploy it is taken from the card already on disk, if any;
+- the pilot's date of hire (DOH) lives in /data/cards.json {"doh": "YYYY-MM-DD"}: personal data, never in git and
+  (FW-0010) never in a deployed card, since HA serves /local/ with no login. The Watcher publishes it in
+  sensor.<prefix>_state (attribute doh) and the schedule card reads it there; every card file carries the placeholder.
+  On the first deploy a DOH an older version wrote into the card on disk is moved to /data/cards.json (load_doh)
+  before that card is replaced;
 - a second pilot (option second_pilot) gets a copy of every card (flight-watcher-*-<name>.js, from pilot_copy(), formerly
   /config/www/make_pilot_cards.py) reading that pilot's entities, topics, helpers and finds files;
 - flight-watcher-cards.json lists the cards and the app version, and flight-watcher-loader.js (the one dashboard
@@ -74,8 +77,7 @@ def pilot_copy(s, name):
     s = re.sub(r'customElements\.get\("(flight-watcher-[a-z-]+)"\)', rf'customElements.get("\1-{name}")', s)
     s = re.sub(r'(customCards\.push\(\{ type: ")(flight-watcher-[a-z-]+)", name: "([^"]*)"',
                rf'\1\2-{name}", name: "\3 ({name})"', s)
-    s = set_doh(s, PLACEHOLDER_DOH)  # not his; his longevity year helper sets his rate
-    s = s.replace("(DOH ${DOH} = year ${dohYear(today)}, table caps at 12)", "(set your longevity year here; table caps at 12)")
+    s = set_doh(s, PLACEHOLDER_DOH)  # FW-0010: the source holds the placeholder already; kept as a guard
     s = s.replace("Ryan", "")
     return s
 
@@ -121,12 +123,13 @@ def _write(path, text):
     return True
 
 
-def build(version, doh=None, pilots=(), src=SRC):
-    """{filename: text} of everything to deploy, without touching disk."""
+def build(version, pilots=(), src=SRC):
+    """{filename: text} of everything to deploy, without touching disk. FW-0010: no DOH goes into any card (the
+    schedule card reads it from sensor.<prefix>_state); set_doh() puts the placeholder back if a source lost it."""
     files, cards = {}, []
     srcs = sources(src)
     for base, s in srcs.items():
-        files[f"{base}.js"] = set_doh(s, doh) if doh else s
+        files[f"{base}.js"] = set_doh(s, PLACEHOLDER_DOH)
         cards.append(f"{base}.js")
     for name in pilots:
         if not NAME_RE.match(name or ""):
@@ -145,10 +148,9 @@ def deploy(version, pilots=(), src=SRC, dst=DST, settings=SETTINGS):
         if not os.path.isdir(dst):
             log(f"{dst} not mapped; cards not deployed")
             return []
-        doh = load_doh(settings, dst)
-        if not doh:
-            log(f"no DOH on file: set {settings} {{\"doh\": \"YYYY-MM-DD\"}}; schedule card uses {PLACEHOLDER_DOH}")
-        written = [n for n, t in build(version, doh, pilots, src).items() if _write(os.path.join(dst, n), t)]
+        if not load_doh(settings, dst):  # before the cards are written: moves a DOH an older deploy left in a card
+            log(f"no DOH on file: set {settings} {{\"doh\": \"YYYY-MM-DD\"}}; the schedule card asks for the longevity year")
+        written = [n for n, t in build(version, pilots, src).items() if _write(os.path.join(dst, n), t)]
         log(f"cards {version}: {len(written)} file(s) updated" + (f" ({', '.join(written)})" if written else ""))
         return written
     except Exception as e:  # noqa: BLE001

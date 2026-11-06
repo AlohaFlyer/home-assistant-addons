@@ -76,6 +76,87 @@ def test_watcher_recall_flow(tmp_path, monkeypatch):
     assert len([1 for t, _ in sent if t == "event/recall_miss"]) == n
 
 
+def _recall_w(tmp_path, monkeypatch):
+    import json, sys
+    monkeypatch.setenv("FLIGHT_WATCHER_DATA", str(tmp_path))
+    (tmp_path / "options.json").write_text(json.dumps({"username": "u", "password": "p"}))
+    sys.modules.pop("watcher", None)
+    import watcher as W
+    from store import Store
+    W.S.clear()
+    monkeypatch.setattr(W, "DB", Store(str(tmp_path / "t.db")))
+    sent = []
+    monkeypatch.setattr(W, "pub", lambda t, p, retain=True: sent.append((t, p)))
+    W.DB.put("pkg_details:2026-11", DET)
+    return W, sent
+
+
+def _last(sent):
+    st = [p for t, p in sent if t == "recall"][-1]
+    return st, {v["id"]: v for d in st["days"] for v in d["verdicts"]}
+
+
+def test_recall_draft_superseded_when_row_becomes_no_and_back(tmp_path, monkeypatch):
+    """FW-0012: a CCR draft is open only while its row is MISSED / POSSIBLE. When the row turns NO (here Ryan's seniority
+    number is corrected so the award went senior to him) the act is superseded, not counted, shown without its narrative,
+    and kept; when the row is a miss again it comes back as it was (edited narrative, approved) with no second push."""
+    import json
+    W, sent = _recall_w(tmp_path, monkeypatch)
+    W.recall_cmd(json.dumps({"date": "2026-11-10", "rows": [_row()], "me": {"sen": 500}}))
+    vid = "2026-11-10|H9001|recall"
+    W.recall_act(json.dumps({"id": vid, "action": "approve", "narrative": "edited text"}))
+    st, vs = _last(sent)
+    assert (st["open"], st["alert"], vs[vid]["act"]["status"]) == (1, 1, "approved")
+    W.recall_act(json.dumps({"me": {"sen": 950}}))  # #900 is now senior to Ryan: NO
+    st, vs = _last(sent)
+    assert vs[vid]["verdict"] == "NO" and (st["open"], st["alert"]) == (0, 0)
+    a = W.DB.get("recall_acts")[vid]
+    assert (a["status"], a["was"], a["narrative"]) == ("superseded", "approved", "edited text") and "senior" in a["superseded_why"]
+    assert vs[vid]["act"]["status"] == "superseded" and "narrative" not in vs[vid]["act"]
+    # a late tap on the old push changes nothing
+    W.recall_act(json.dumps({"id": vid, "action": "confirm"}))
+    assert W.DB.get("recall_acts")[vid]["status"] == "superseded"
+    pushes = len([1 for t, _ in sent if t == "event/recall_miss"])
+    W.recall_act(json.dumps({"me": {"sen": 500}}))  # a miss again
+    st, vs = _last(sent)
+    a = W.DB.get("recall_acts")[vid]
+    assert (a["status"], a["narrative"]) == ("approved", "edited text") and "was" not in a and "superseded_why" not in a
+    assert (st["open"], st["alert"], vs[vid]["act"]["status"]) == (1, 1, "approved")
+    assert len([1 for t, _ in sent if t == "event/recall_miss"]) == pushes
+
+
+def test_recall_draft_superseded_when_row_leaves_a_corrected_list(tmp_path, monkeypatch):
+    """A corrected list for the day no longer has the row: its draft is superseded. Filed and dismissed acts keep what
+    they were in 'was'. An act from a day older than the lists kept is history and left as it stands."""
+    import json
+    W, sent = _recall_w(tmp_path, monkeypatch)
+    W.DB.put("recall_acts", {"2026-06-01|H8000|recall": {"status": "new", "narrative": "old", "at": "2026-06-01T00:00:00"}})
+    W.recall_cmd(json.dumps({"date": "2026-11-10", "rows": [_row(), _row(pairing="H9999")], "me": {"sen": 500}}))
+    gone = "2026-11-10|H9999|recall"
+    W.recall_act(json.dumps({"id": gone, "action": "filed", "ccr": "12345"}))
+    assert _last(sent)[0]["open"] == 1  # filed: not open
+    W.recall_cmd(json.dumps({"date": "2026-11-10", "rows": [_row()]}))
+    acts = W.DB.get("recall_acts")
+    assert (acts[gone]["status"], acts[gone]["was"], acts[gone]["ccr"]) == ("superseded", "filed", "12345")
+    assert acts[gone]["superseded_why"] == "no longer on the recall list"
+    assert acts["2026-11-10|H9001|recall"]["status"] == "new"
+    assert acts["2026-06-01|H8000|recall"] == {"status": "new", "narrative": "old", "at": "2026-06-01T00:00:00"}
+    assert _last(sent)[0]["open"] == 1
+
+
+def test_publish_recall_counts_only_live_verdicts(tmp_path, monkeypatch):
+    """Days stored before FW-0012 can carry an open act on a NO row: publish counts it only while MISSED / POSSIBLE."""
+    W, sent = _recall_w(tmp_path, monkeypatch)
+    W.DB.put("recall_days", {"2026-11-10": {"date": "2026-11-10", "file": "ok", "rows": [], "verdicts": [
+        {"id": "a", "verdict": "NO", "act": {"status": "confirmed"}},
+        {"id": "b", "verdict": "POSSIBLE", "act": {"status": "new"}},
+        {"id": "c", "verdict": "MISSED", "act": {"status": "approved"}},
+        {"id": "d", "verdict": "MISSED", "act": {"status": "superseded"}}]}})
+    W.publish_recall()
+    st = _last(sent)[0]
+    assert (st["open"], st["alert"]) == (2, 1)
+
+
 def test_finds_month_files(tmp_path, monkeypatch):
     import json, sys
     monkeypatch.setenv("FLIGHT_WATCHER_DATA", str(tmp_path))
@@ -89,5 +170,33 @@ def test_finds_month_files(tmp_path, monkeypatch):
     W.DB.db.execute("INSERT INTO finds(key,pairing,month,row,first_seen,last_seen) VALUES(?,?,?,?,?,?)",
                     ("k1", "H1", "m", '{"pairing":"H1"}', W.now_iso(), W.now_iso()))
     W.write_finds_months()
-    f = tmp_path / "www" / f"finds_{now:%Y-%m}.json"
+    f = tmp_path / "www" / f"finds_{now:%Y-%m}_{W.www_key()}.json"  # FW-0010: keyed name
     assert json.loads(f.read_text())["finds"][0]["pairing"] == "H1"
+    assert not (tmp_path / "www" / f"finds_{now:%Y-%m}.json").exists()
+
+
+def test_refresh_rejudges_against_the_current_line_without_a_push(tmp_path, monkeypatch):
+    """Ryan (Nov 6): the tab's Refresh (recall/act {refresh}) re-judges every list on file now, publishes 'checked'
+    and 'received', and never pushes, even when the re-check finds a miss the last one did not."""
+    import json, sys
+    monkeypatch.setenv("FLIGHT_WATCHER_DATA", str(tmp_path))
+    (tmp_path / "options.json").write_text(json.dumps({"username": "u", "password": "p"}))
+    sys.modules.pop("watcher", None)
+    import watcher as W
+    from store import Store
+    W.S.clear()
+    monkeypatch.setattr(W, "DB", Store(str(tmp_path / "t.db")))
+    sent = []
+    monkeypatch.setattr(W, "pub", lambda t, p, retain=True: sent.append((t, p)))
+    W.DB.put("pkg_details:2026-11", DET)
+    W.S["blocked_days"] = ["2026-11-11"]  # blocked: not a miss when the list comes in
+    W.recall_cmd(json.dumps({"date": "2026-11-10", "rows": [_row()], "me": {"sen": 500}}))
+    st = [p for t, p in sent if t == "recall"][-1]
+    assert st["days"][0]["verdicts"][0]["verdict"] == "NO" and st["received"] and st["checked"]
+    W.S["blocked_days"] = []  # the block was lifted: now a miss
+    sent.clear()
+    W.recall_act(json.dumps({"refresh": True}))
+    st = [p for t, p in sent if t == "recall"][-1]
+    assert st["days"][0]["verdicts"][0]["verdict"] == "MISSED" and st["open"] == 1
+    assert not [t for t, _ in sent if t.startswith("event/")]
+    W.recall_act("not json")  # a bad message is logged, never raised

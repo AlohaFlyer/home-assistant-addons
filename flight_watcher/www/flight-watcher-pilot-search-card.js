@@ -4,9 +4,12 @@ class FlightWatcherPilotSearchCard extends HTMLElement {
   setConfig(config) { this._config = { ...config }; }
   set hass(h) { this._h = h; if (!this._root) this._render(); }
   getCardSize() { return 1; }
-  _go() {
+  _go() {  // FW-0025: one lookup per press; a double tap on Go or a held Enter inside 2 s asks once
     const q = this._root.querySelector("input").value.trim();
     if (!q) return;
+    const now = Date.now();
+    if (this._last && this._last.q === q && now - this._last.t >= 0 && now - this._last.t < 2000) return;
+    this._last = { q, t: now };
     window.dispatchEvent(new CustomEvent("flight-watcher-pilot", { detail: { q } }));
   }
   _render() {
@@ -18,7 +21,10 @@ class FlightWatcherPilotSearchCard extends HTMLElement {
       button{padding:8px 12px;border:none;border-radius:6px;background:var(--primary-color);color:#fff;font-size:13px;cursor:pointer}
     </style><ha-card><ha-icon icon="mdi:account-search"></ha-icon><input type="search" placeholder="Anybody's schedule: last name, first name or employee #"><button>Go</button></ha-card>`;
     this._root.querySelector("button").addEventListener("click", () => this._go());
-    this._root.querySelector("input").addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") this._go(); });  // keep HA's e/a/c shortcuts out of the field
+    this._root.querySelector("input").addEventListener("keydown", (e) => {
+      e.stopPropagation();  // keep HA's e/a/c shortcuts out of the field
+      if (e.key === "Enter" && !e.repeat && !e.isComposing) this._go();  // FW-0025: not the key's auto-repeat, not an IME confirm
+    });
   }
 }
 customElements.define("flight-watcher-pilot-search-card", FlightWatcherPilotSearchCard);

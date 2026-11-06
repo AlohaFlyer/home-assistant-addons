@@ -7,10 +7,10 @@ POST /full/mobileotswap.cgi, whose Submit button files the request. Everything b
 selection only. The request then shows on mobileotrequest.cgi?BCID=..&From=MainMenu as a Swap
 row with Approved / Denied.
 
-Modes: TEST logs the composed POST and never sends (the only mode this version implements);
-CONFIRM would wait for an Approve press in HA; LIVE would send at most LIVE_PER_DAY a day.
-WRITES_IMPLEMENTED stays False: the Watcher refuses CONFIRM and LIVE until Ryan has reviewed
-TEST output and the send path is written, tested and switched on by him.
+Mode: Test only (FW-0028, Ryan: FLICA stays read-only for good). The Watcher composes the POST a
+swap or drop would need, logs it and labels it DRAFT ('draft only, never sent'); nothing sends it.
+The old Confirm and Live modes are gone (the Watcher turns a stored one into Test at start), and
+WRITES_IMPLEMENTED stays False.
 
 Close-in rule (Ryan, 2026-11-03): any add or swap involving a trip inside CLOSE_IN_H hours to
 report must be filed from the 'Close in Opentime: <16 Hrs to RPT' folder (its own BCID, 008.xxx
@@ -19,10 +19,10 @@ folder 'close-in' and no BCID, and is never sendable."""
 import re
 from datetime import datetime
 
-MODES = ("Test", "Confirm", "Live")
+MODES = ("Test",)  # FW-0028: Confirm and Live removed for good
 DEFAULT_MODE = "Test"
 WRITES_IMPLEMENTED = False
-LIVE_PER_DAY = 1
+DRAFT = "draft only, never sent"
 CLOSE_IN_H = 16
 SWAP_PATH = "/full/mobileotswap.cgi"
 REQUESTS_PATH = "/full/mobileotrequest.cgi"
@@ -76,12 +76,12 @@ def compose(idea, bcid, hours_to_report=None, seat="F", close_in_bcid=None):
     folder = folder_for(hours_to_report)
     b = close_in_bcid if folder == "close-in" else bcid
     rec = {"folder": folder, "bcid": b, "url": SWAP_PATH, "give": f"{give_trip} {give_start}",
-           "take": f"{idea['pairing']} {idea['start']}", "form": None, "sendable": False, "why": ""}
+           "take": f"{idea['pairing']} {idea['start']}", "form": None, "sendable": False, "draft": DRAFT, "why": ""}
     if not b:
-        rec["why"] = "close-in folder BCID not read yet" if folder == "close-in" else "pot BCID unknown"
+        rec["why"] = f"{DRAFT}: " + ("close-in folder BCID not read yet" if folder == "close-in" else "pot BCID unknown")
         return rec
     rec["form"] = swap_form(b, give_trip, give_start, idea["pairing"], idea["start"], seat)
-    rec["why"] = "composed, not sent (Test mode)" if not WRITES_IMPLEMENTED else "composed"
+    rec["why"] = DRAFT
     return rec
 
 
@@ -156,12 +156,30 @@ def _view_legs(text):
     return legs[:4]
 
 
+CS_RE = re.compile(r"\bcs:\s*(.*?)(?=\s*\bnote:|$)", re.I | re.S)
+SWAP_FOR_RE = re.compile(r"\bswap\s+([A-Za-z]\d{4}[A-Za-z]?)\b.*?\bfor\s+([A-Za-z]\d{4}[A-Za-z]?)\b", re.I | re.S)
+
+
 def parse_request_view(text):
-    """{legs, trips, detail} from one request's view page: the pairings it drops and adds."""
-    legs = _view_legs(text or "")
-    m = TRIP_RE.search(text or "")
-    detail = re.sub(r"\s+", " ", text[max(0, m.start() - 60):m.start() + 160]).strip() if m else ""
-    return {"legs": legs, "trips": [x["trip"] for x in legs], "detail": detail}
+    """{legs, trips, detail, reason} from one request's view page (layout checked on the real page, 1.3.0; made-up
+    values here): 'Swap H3911:21NOV (F) For H3914B:19NOV (F) Time: ... Status: Denied ... CM: [no comments] CS: <rest
+    short on 20nov Note: ...'. FLICA writes a swap as 'Swap <given> For <taken>', so those two get drop / add when the page says so;
+    reason = crew scheduling's comment (CS), '' when none."""
+    text = text or ""
+    legs = _view_legs(text)
+    m = SWAP_FOR_RE.search(text)
+    if m:
+        give, take = m.group(1).upper(), m.group(2).upper()
+        for x in legs:
+            if not x["side"]:
+                x["side"] = "drop" if x["trip"] == give else "add" if x["trip"] == take else ""
+    t = TRIP_RE.search(text)
+    detail = re.sub(r"\s+", " ", text[max(0, t.start() - 60):t.start() + 160]).strip() if t else ""
+    c = CS_RE.search(text)
+    reason = re.sub(r"\s+", " ", c.group(1)).strip()[:160] if c else ""
+    if reason.strip("[]").strip().lower() in ("", "no comments", "none"):
+        reason = ""
+    return {"legs": legs, "trips": [x["trip"] for x in legs], "detail": detail, "reason": reason}
 
 
 def parse_request_rows(text, html=None):
@@ -239,10 +257,10 @@ def compose_drop(key, bcid, hours_to_report=None, close_in_bcid=None):
     folder = folder_for(hours_to_report)
     b = close_in_bcid if folder == "close-in" else bcid
     rec = {"folder": folder, "bcid": b, "url": DROP_PATH, "give": f"{trip} {start}", "form": None,
-           "sendable": False, "why": ""}
+           "sendable": False, "draft": DRAFT, "why": ""}
     if not b:
-        rec["why"] = "close-in folder BCID not read yet" if folder == "close-in" else "pot BCID unknown"
+        rec["why"] = f"{DRAFT}: " + ("close-in folder BCID not read yet" if folder == "close-in" else "pot BCID unknown")
         return rec
     rec["form"] = drop_form(b, trip, start)
-    rec["why"] = "draft, not sent (Test mode; DROP review page not mapped yet)"
+    rec["why"] = f"{DRAFT} (DROP review page not mapped yet)"
     return rec

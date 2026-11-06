@@ -50,3 +50,14 @@ def test_compose_drop_is_a_draft():
     assert "not mapped" in r["why"]
     r = S.compose_drop("H3629|2026-11-14", "003.152", hours_to_report=3)
     assert r["folder"] == "close-in" and r["form"] is None
+
+
+def test_test_is_the_only_mode_and_drafts_are_labelled():
+    """FW-0028: FLICA stays read-only for good; Confirm and Live are gone and every request is a draft."""
+    assert S.MODES == ("Test",) and S.DEFAULT_MODE == "Test" and S.WRITES_IMPLEMENTED is False
+    assert not hasattr(S, "LIVE_PER_DAY")
+    idea = {"for": "H3629|2026-11-14", "pairing": "H3633", "start": "2026-11-26"}
+    for r in (S.compose(idea, "003.152", hours_to_report=40), S.compose(idea, None, hours_to_report=40),
+              S.compose_drop("H3629|2026-11-14", "003.152", hours_to_report=200), S.compose_drop("H3629|2026-11-14", None)):
+        assert r["draft"] == "draft only, never sent" and r["why"].startswith("draft only, never sent")
+        assert r["sendable"] is False

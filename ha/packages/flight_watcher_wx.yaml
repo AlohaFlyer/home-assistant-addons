@@ -1,0 +1,119 @@
+# Flight Watcher: PHMU aviation weather (Ryan, 2026-11-04). Read-only REST pulls from aviationweather.gov and atis.info.
+rest:
+  - resource: "https://aviationweather.gov/api/data/metar?ids=PHMU&format=json"
+    scan_interval: 600
+    sensor:
+      - name: "Wx METAR PHMU"
+        unique_id: flight_watcher_wx_metar_phmu
+        value_template: "{{ value_json[0].reportTime if value_json else 'none' }}"
+        json_attributes_path: "$[0]"
+        json_attributes: ["rawOb", "temp", "dewp", "wdir", "wspd", "wgst", "visib", "altim", "obsTime"]
+  - resource: "https://aviationweather.gov/api/data/taf?ids=PHMU&format=json"
+    scan_interval: 900
+    sensor:
+      - name: "Wx TAF PHMU"
+        unique_id: flight_watcher_wx_taf_phmu
+        value_template: "{{ value_json[0].issueTime if value_json else 'none' }}"
+        json_attributes_path: "$[0]"
+        json_attributes: ["rawTAF", "validTimeFrom", "validTimeTo"]
+  - resource: "https://aviationweather.gov/api/data/metar?ids=PHKO&format=json"
+    scan_interval: 600
+    sensor:
+      - name: "Wx METAR PHKO"
+        unique_id: flight_watcher_wx_metar_phko
+        value_template: "{{ value_json[0].reportTime if value_json else 'none' }}"
+        json_attributes_path: "$[0]"
+        json_attributes: ["rawOb", "temp", "dewp", "wdir", "wspd", "wgst", "visib", "altim", "obsTime"]
+  - resource: "https://aviationweather.gov/api/data/taf?ids=PHKO&format=json"
+    scan_interval: 900
+    sensor:
+      - name: "Wx TAF PHKO"
+        unique_id: flight_watcher_wx_taf_phko
+        value_template: "{{ value_json[0].issueTime if value_json else 'none' }}"
+        json_attributes_path: "$[0]"
+        json_attributes: ["rawTAF", "validTimeFrom", "validTimeTo"]
+  - resource: "https://aviationweather.gov/api/data/metar?ids=PHNL&format=json"
+    scan_interval: 600
+    sensor:
+      - name: "Wx METAR PHNL"
+        unique_id: flight_watcher_wx_metar_phnl
+        value_template: "{{ value_json[0].reportTime if value_json else 'none' }}"
+        json_attributes_path: "$[0]"
+        json_attributes: ["rawOb", "temp", "dewp", "wdir", "wspd", "wgst", "visib", "altim", "obsTime"]
+  - resource: "https://aviationweather.gov/api/data/taf?ids=PHNL&format=json"
+    scan_interval: 900
+    sensor:
+      - name: "Wx TAF PHNL"
+        unique_id: flight_watcher_wx_taf_phnl
+        value_template: "{{ value_json[0].issueTime if value_json else 'none' }}"
+        json_attributes_path: "$[0]"
+        json_attributes: ["rawTAF", "validTimeFrom", "validTimeTo"]
+  - resource: "https://atis.info/api/PHNL"
+    scan_interval: 300
+    sensor:
+      - name: "Wx PHNL ATIS"
+        unique_id: flight_watcher_wx_phnl_atis
+        value_template: "{{ value_json[0].code if value_json else 'n/a' }}"
+        json_attributes_path: "$[0]"
+        json_attributes: ["datis", "type", "airport"]
+
+  - resource_template: "https://aviationweather.gov/api/data/metar?ids={{ states('sensor.wx_station_icao') }}&format=json"
+    scan_interval: 600
+    sensor:
+      - name: "Wx METAR station"
+        unique_id: flight_watcher_wx_metar_station
+        value_template: "{{ value_json[0].reportTime if value_json else 'none' }}"
+        json_attributes_path: "$[0]"
+        json_attributes: ["icaoId", "name", "rawOb", "temp", "dewp", "wdir", "wspd", "wgst", "visib", "altim", "obsTime", "fltCat"]
+  - resource_template: "https://aviationweather.gov/api/data/taf?ids={{ states('sensor.wx_station_icao') }}&format=json"
+    scan_interval: 900
+    sensor:
+      - name: "Wx TAF station"
+        unique_id: flight_watcher_wx_taf_station
+        value_template: "{{ value_json[0].issueTime if value_json else 'none' }}"
+        json_attributes_path: "$[0]"
+        json_attributes: ["icaoId", "rawTAF", "validTimeFrom", "validTimeTo"]
+  - resource_template: "https://atis.info/api/{{ states('sensor.wx_station_icao') }}"
+    scan_interval: 300
+    sensor:
+      - name: "Wx ATIS station"
+        unique_id: flight_watcher_wx_atis_station
+        value_template: "{{ value_json[0].code if value_json is list and value_json and value_json[0].code is defined else 'n/a' }}"
+        json_attributes_path: "$[0]"
+        json_attributes: ["datis", "type", "airport"]
+
+# Nov 5 2026 (Ryan): a station field at the top of the PHMU Wx view; default PHMU (resets to PHMU on restart).
+# Accepts ICAO (PHMU, KLAX) or IATA (MUE, LAX, NRT); IATA is mapped to ICAO for Ryan's network, else K + code.
+input_text:
+  wx_station:
+    name: Airport
+    initial: PHMU
+    min: 3
+    max: 4
+    pattern: "[A-Za-z0-9]{3,4}"
+    icon: mdi:airport
+
+template:
+  - sensor:
+      - name: "Wx station ICAO"
+        unique_id: flight_watcher_wx_station_icao
+        state: >-
+          {%- set c = (states('input_text.wx_station') | default('PHMU', true) | upper | trim) -%}
+          {%- set m = {'HNL':'PHNL','OGG':'PHOG','KOA':'PHKO','LIH':'PHLI','ITO':'PHTO','MUE':'PHMU','MKK':'PHMK','LNY':'PHNY','JHM':'PHJH',
+                       'ANC':'PANC','GUM':'PGUM','NRT':'RJAA','HND':'RJTT','KIX':'RJBB','FUK':'RJFF','CTS':'RJCC','NGO':'RJGG','OKA':'ROAH',
+                       'ICN':'RKSI','TPE':'RCTP','SYD':'YSSY','MEL':'YMML','BNE':'YBBN','AKL':'NZAA','PPT':'NTAA','PPG':'NSTU','SIN':'WSSS',
+                       'MNL':'RPLL','CRK':'RPLC','YVR':'CYVR','YYZ':'CYYZ','MEX':'MMMX'} -%}
+          {%- if c | length == 4 -%}{{ c }}{%- elif c in m -%}{{ m[c] }}{%- elif c | length == 3 -%}K{{ c }}{%- else -%}PHMU{%- endif -%}
+
+automation:
+  - id: flight_watcher_wx_station_refresh
+    alias: Wx station changed, refresh weather
+    description: "Nov 5 2026 (Ryan): pull METAR, TAF and D-ATIS for the airport typed on the PHMU Wx view right away."
+    mode: restart
+    triggers:
+      - trigger: state
+        entity_id: sensor.wx_station_icao
+    actions:
+      - action: homeassistant.update_entity
+        target:
+          entity_id: [sensor.wx_metar_station, sensor.wx_taf_station, sensor.wx_atis_station]

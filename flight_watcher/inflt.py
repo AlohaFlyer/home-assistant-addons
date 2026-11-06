@@ -101,16 +101,25 @@ CM_SCHED = "{base}/full/cmschedules.cgi?GO=1&SchBrowser=1&Prompt=1&EmployeeID={e
 CM_SCHED_MONTH = "{base}/full/cmschedules.cgi?Prompt=1&EmployeeID={emp}&bd={bd}&SchBrowser=1"
 PROBE = {"logged": 0}
 RESET_V = 5  # bump when the parser changes so stored verdicts are re-checked once
+RECHECK_NO_V = 1  # FW-0013: 'not in flight' verdicts (some were read off the error page below) are looked up again, once
 
 
 CAPTURE_DIR = "/share/flight_watcher/captures"
 
 
+# FW-0013: FLICA's "Application Error" page ("An error has occurred, please contact CAE Customer Care ... No Schedule
+# Available for Nov 2026.") still says "(Emp# n) Schedule" and "Last Updated: Unknown". It holds no schedule, so it is
+# unreadable (retried later), never a month with no trips in it.
+ERROR_HINTS = ("application error", "an error has occurred", "no schedule available", "last updated: unknown")
+
+
 def schedule_ok(html):
-    """The crewmember schedule page proper (not a forwarding or prompt page): it names the pilot
+    """The crewmember schedule page proper (not a forwarding, prompt or error page): it names the pilot
     (Emp#) and carries a Last Updated stamp. 'pair(' alone is not enough: the page's own JS defines
     function pair(...) even when no pairing links are rendered."""
     t = visible_text(html).lower()
+    if any(h in t for h in ERROR_HINTS):
+        return False
     return "last updated" in t and ("emp#" in t or "new task(" in (html or "").lower())  # 0.8.7: Ryan's own page has no Emp#
 
 
@@ -159,6 +168,9 @@ def run(fl, db, limit, log, local_now, base, hst):
     if db.get("inflt_reset_v") != RESET_V:  # verdicts from an older parser are looked up again, once
         db.reset_inflt()
         db.put("inflt_reset_v", RESET_V)
+    if db.get("inflt_recheck_no_v") != RECHECK_NO_V:
+        db.reset_inflt(only=False)
+        db.put("inflt_recheck_no_v", RECHECK_NO_V)
     todo = db.pickups_without_inflt(50)
     if not todo:
         return changed_early

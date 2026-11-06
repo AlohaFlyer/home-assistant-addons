@@ -2,8 +2,9 @@
 
 Login rule: never two login attempts in a row without a success in between.
 A failed login, or anything unexpected, parks the watcher until re-armed from HA.
-v0.2 is READ ONLY: rules match and log; nothing is ever submitted to FLICA.
+FLICA is read only: rules match and log, nothing is ever submitted to FLICA.
 """
+import hashlib
 import json
 import logging
 import os
@@ -36,8 +37,9 @@ import crewidx as CI
 import tickets as TK
 import sealed as SEAL
 import pay as PAY
+import wwwfiles as WF
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -53,12 +55,21 @@ OPTIONS_FILE = os.environ.get("FLIGHT_WATCHER_OPTIONS", f"{DATA}/options.json")
 CREDS_FILE = f"{DATA}/creds.json"
 KEY_FILE = f"{DATA}/settings_key.pem"  # 1.1.0: this instance's key for sealed settings from the dashboard card
 _KEY = {}
+WWW_KEY_FILE = f"{DATA}/www_key"  # FW-0010: this instance's random key in the finds file names under /local/ (wwwfiles.py)
 
 
 def settings_key():
     if "k" not in _KEY:
         _KEY["k"] = SEAL.load_key(KEY_FILE)
     return _KEY["k"]
+
+
+def www_key():
+    """FW-0010: the 128-bit key in this instance's finds file names (made once, kept in /data). Published only in
+    sensor.<prefix>_finds (attribute file_key, behind HA's login); never logged."""
+    if "w" not in _KEY:
+        _KEY["w"] = WF.load_key(WWW_KEY_FILE)
+    return _KEY["w"]
 CRED_KEYS = ("username", "password", "ctweb_username", "ctweb_password", "my_name")
 
 
@@ -140,6 +151,11 @@ def save_state(s):
 S = load_state()
 WAKE = threading.Event()
 FLAGS = {"hunt": False, "pause": False, "rearm": False, "full": False}
+# FW-0024: the Hunt mode and Pause switches are kept in state as well as on their retained MQTT topics, and both are
+# published a few seconds after every connect, so HA never shows them 'unknown' after a start.
+SWITCHES = ("hunt", "pause")
+FLAGS.update({k: bool((S.get("switches") or {}).get(k)) for k in SWITCHES})
+CONNECT_STATES_DELAY_S = 3.0
 # Check frequency from the dashboard sliders (number entities); persisted in state.
 # Each gap is randomized +-30 % around the setting so the checks never look machine-regular.
 FREQ_LIMITS = {"normal_min": (1, 20), "hunt_s": (5, 90)}
@@ -220,14 +236,17 @@ def on_message(c, u, msg):
     if msg.topic == f"{T}/ticket/act":
         ticket_safe(ticket_act, msg.payload.decode(errors="replace"))
         return
+    if msg.topic == f"{T}/ticket/edit":
+        ticket_safe(ticket_edit, msg.payload.decode(errors="replace"))
+        return
+    if msg.topic == f"{T}/ticket/delete":
+        ticket_safe(ticket_delete, msg.payload.decode(errors="replace"))
+        return
     if msg.topic == f"{T}/trade/set":
         trade_cmd(msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/drop/set":
         drop_cmd(msg.payload.decode(errors="replace"))
-        return
-    if msg.topic == f"{T}/swap_mode/set":
-        swap_mode_cmd(msg.payload.decode(errors="replace").strip())
         return
     if msg.topic == f"{T}/auto_swap/set":
         S["auto_swap"] = msg.payload.decode().strip().upper() == "ON"
@@ -237,19 +256,17 @@ def on_message(c, u, msg):
         return
     p = msg.payload.decode().strip().upper()
     if msg.topic == f"{T}/hunt/set":
-        FLAGS["hunt"] = p == "ON"
-        c.publish(f"{T}/hunt/state", "ON" if FLAGS["hunt"] else "OFF", retain=True)
+        set_switch(c, "hunt", p == "ON")
         log.info("hunt mode %s", FLAGS["hunt"])
     elif msg.topic == f"{T}/pause/set":
-        FLAGS["pause"] = p == "ON"
-        c.publish(f"{T}/pause/state", "ON" if FLAGS["pause"] else "OFF", retain=True)
+        set_switch(c, "pause", p == "ON")
         log.info("pause %s", FLAGS["pause"])
     elif msg.topic == f"{T}/rearm/press":
         FLAGS["rearm"] = True
         log.info("re-arm pressed")
     elif msg.topic in (f"{T}/hunt/state", f"{T}/pause/state"):
-        key = "hunt" if "hunt" in msg.topic else "pause"
-        FLAGS[key] = p == "ON"
+        if p in ("ON", "OFF"):  # the retained state restores the switch after a restart (an empty payload is no state)
+            remember_switch("hunt" if "hunt" in msg.topic else "pause", p == "ON")
         return
     elif msg.topic == f"{T}/swap_map/press":
         FLAGS["swap_map"] = True  # 0.4.10: one read-only mapping pass on the next check
@@ -287,20 +304,54 @@ def on_message(c, u, msg):
     WAKE.set()
 
 
-def swap_mode_cmd(want):
-    """0.5.0: Test / Confirm / Live from the dashboard select. Only Test exists in this version:
-    Confirm and Live are refused (logged, event) until the send path is written and Ryan turns it on."""
-    want = next((m for m in SUB.MODES if m.lower() == want.lower()), None)
-    if want is None:
-        return
-    if want != "Test" and not SUB.WRITES_IMPLEMENTED:
-        log.info("swap mode %s refused: writes not implemented, staying in Test", want)
-        pub("event/swap_mode_refused", {"wanted": want, "at": now_iso()}, retain=False)
-        want = "Test"
-    S["swap_mode"] = want
-    save_state(S)
-    pub("swap_mode/state", want)
-    log.info("swap mode %s", want)
+def remember_switch(key, on):
+    """FW-0024: FLAGS plus the copy in state, saved only when it changes."""
+    FLAGS[key] = on
+    sw = S.setdefault("switches", {})
+    if sw.get(key) != on:
+        sw[key] = on
+        save_state(S)
+
+
+def set_switch(c, key, on):
+    remember_switch(key, on)
+    c.publish(f"{T}/{key}/state", "ON" if on else "OFF", retain=True)
+
+
+def publish_switches(c):
+    """FW-0024: switch.flight_watcher_hunt_mode and switch.flight_watcher_pause states, which used to go out only on a
+    toggle (HA showed 'unknown' after every start, and the heartbeat-stale automation's 'pause is off' condition
+    could never pass)."""
+    for k in SWITCHES:
+        set_switch(c, k, FLAGS[k])
+
+
+def connect_states(c):
+    """FW-0024: run CONNECT_STATES_DELAY_S after each connect, once the retained switch states subscribed in
+    on_connect have restored FLAGS: the switches, and Would drop (count 0 when nothing is marked)."""
+    try:
+        publish_switches(c)
+        publish_drop()
+    except Exception as e:
+        log.info("connect states skipped: %s", e)
+
+
+def migrate_swap_mode():
+    """FW-0028 (FLICA stays read-only for good): Confirm and Live are gone; a stored 'Confirm' / 'Live' (or anything
+    but Test) becomes Test once, at start."""
+    old = S.get("swap_mode")
+    if old != SUB.DEFAULT_MODE:
+        S["swap_mode"] = SUB.DEFAULT_MODE
+        save_state(S)
+        if old:
+            log.info("swap mode %r retired: Test is the only mode (swap and drop requests are drafts, never sent)", old)
+
+
+def publish_swap_mode(c):
+    """FW-0028: sensor.flight_watcher_swap_mode, read only (was a Test / Confirm / Live select)."""
+    c.publish(f"{T}/swap_mode/state", SUB.DEFAULT_MODE, retain=True)
+    c.publish(f"{T}/swap_mode/attr", json.dumps({"sends": False, "writes_implemented": SUB.WRITES_IMPLEMENTED,
+                                                  "note": f"swap and drop requests are drafts: {SUB.DRAFT}"}), retain=True)
 
 
 def rule_live_cmd(c, rid, want):
@@ -525,7 +576,11 @@ def drop_cmd(payload):
     publish_drop()
 
 
+DROP_PUB = {"at": 0}
+
+
 def publish_drop():
+    DROP_PUB["at"] = time.time()
     today = local_now().date().isoformat()
     live = {f"{it['trip']}|{it['start']}" for it in _sched_items() if it["start"] > today}  # 0.6.1: a started trip cannot be dropped
     if _sched_items():
@@ -537,10 +592,14 @@ def publish_drop():
 
 def drop_scan():
     """0.6.0 Test mode: for each 'would drop' trip, check NET RESERVES on every day of the trip. The first
-    time all days are green the Watcher pushes event/drop_ready and composes the drop request (logged,
-    never sent); a day turning red again re-arms the push. Live filing waits for the DROP page map."""
+    time all days are green the Watcher pushes event/drop_ready and composes the drop request (logged, a
+    draft only, never sent); a day turning red again re-arms the push. FW-0028: FLICA stays read-only, so the
+    draft is all there is; Ryan files the drop himself."""
     marks = S.get("drop_away") or []
     if not marks:
+        if not DROP_PUB["at"] or S.get("drop_ready"):  # FW-0024: Would drop reads 0, not 'unknown', with nothing marked
+            S["drop_ready"] = {}
+            publish_drop()
         return
     grid = S.get("grid") or {}
     ready = S.setdefault("drop_ready", {})
@@ -563,13 +622,13 @@ def drop_scan():
         rep_h = SUB.hours_until(f"{it['start']}T{(own.get('report') or '')[:5]}", local_now()) if own.get("report") else None
         rec = SUB.compose_drop(k, b[0] if b else None, rep_h, close_in_bcid=S.get("close_in_bcid"))
         rec.update({"key": k, "at": now_iso(), "days": days, "net": {d: (grid.get(d) or {}).get("net") for d in days},
-                    "mode": S.get("swap_mode") or SUB.DEFAULT_MODE, "sent": False,
+                    "mode": SUB.DEFAULT_MODE, "sent": False,
                     "hours_to_report": round(rep_h, 1) if rep_h is not None else None})
         ready[k] = rec["at"]
         tests = S.setdefault("drop_tests", [])
         tests.append(rec)
         del tests[:-20]
-        log.info("DROP READY (not sent): %s, grid green on %s; form %s", k, ", ".join(days), rec["form"])
+        log.info("DROP READY (%s): %s, grid green on %s; form %s", SUB.DRAFT, k, ", ".join(days), rec["form"])
         pub("event/drop_ready", rec, retain=False)
     save_state(S)
     publish_drop()
@@ -584,37 +643,100 @@ def publish_trade():
     pub("trade/state", {"count": len(S.get("trade_away") or []), "keys": S.get("trade_away") or []})
 
 
+# FW-0026: sensor.<prefix>_finds carries a short recent list only. At 50 full rows (~28 KB) its attributes passed HA's
+# 16 KiB recorder limit, so the recorder dropped them and logged a warning on every update. The finds card reads the
+# month files for the full rows; the attribute keeps what the automations on Pako read (the FLICA alert push looks a
+# trip up by pairing in pot_count, tradeboard_pickups and this list for layover, turn, dates, days, credit and
+# captain, so a burst of new finds should not push a trip out of every list) and what the card needs to show a row
+# the file has not caught up with yet. 30 short rows ran 9.9 KB on Pako's live data (Nov 2026). The H3628 Fanfare
+# push reads event/new_pairing, not this sensor.
+FINDS_ATTR_ROWS = 30
+FINDS_ATTR_MAX = 12000  # bytes of the whole payload (ASCII-escaped, so HA's UTF-8 copy is no larger); recorder limit 16384
+FINDS_ATTR_KEYS = ("pairing", "dates", "days", "layover", "turn", "report", "credit", "captain", "seen", "gone",
+                   "alert_at", "pickup_status", "picked_by", "source")
+
+
+def finds_payload(rows, key, rev=None):
+    """{count, finds, file_key, rev} for sensor.<prefix>_finds: the newest FINDS_ATTR_ROWS finds with FINDS_ATTR_KEYS
+    only, fewer when the payload would pass FINDS_ATTR_MAX bytes; file_key is the finds files' key (FW-0010); rev
+    changes whenever this month's or last month's file changes (FW-0026: an InFlt verdict, a Prem flag or a picker's
+    average lives only in the files, and without rev the sensor would not change, so an open card would not refetch)."""
+    out = [{k: r.get(k) for k in FINDS_ATTR_KEYS} for r in rows[:FINDS_ATTR_ROWS]]
+    while True:
+        d = {"count": len(out), "finds": out, "file_key": key, "rev": rev}
+        if len(json.dumps(d, separators=(",", ":"))) <= FINDS_ATTR_MAX or not out:
+            return d
+        out = out[:-1]
+
+
 def publish_finds():
-    pub("finds", {"count": len(f := DB.recent_finds(50)), "finds": f})
+    """FW-0026: the month files first, then the sensor: the finds card refetches the file when the sensor changes, so
+    the file must already hold what the sensor announces (rev)."""
+    rev = write_finds_months()
+    try:
+        key = www_key()
+    except Exception as e:  # /data not writable: publish the rows anyway; the card says history is not available
+        key = None
+        log.info("finds file key unavailable: %s", e)
+    pub("finds", finds_payload(DB.recent_finds(FINDS_ATTR_ROWS), key, rev))
     publish_pickers()
-    write_finds_months()
 
 
 FINDS_FILES = {"all": False}
 
 
 def write_finds_months():
-    """0.9.4 (Ryan): one file per HST month, www/flight-watcher/finds_<YYYY-MM>.json, for the finds card's month picker.
-    This month and last month on every check; all 24 months once per start. Read only, no FLICA traffic."""
+    """0.9.4 (Ryan): one file per HST month for the finds card's month picker. This month and last month on every
+    check; all 24 months once per start. Read only, no FLICA traffic. FW-0010: the files carry crew names and
+    employee numbers and HA serves www with no login, so the name is finds_<YYYY-MM>_<key>.json (wwwfiles.py).
+    FW-0026: returns rev, a short hash of this month's and last month's files as written (the two that change between
+    starts), for the sensor; None when the files could not be written."""
+    key = None
     try:
+        key = www_key()
         today = local_now().date().replace(day=1)
         n = 24 if not FINDS_FILES["all"] else 2
         fdir = finds_dir()
         os.makedirs(fdir, exist_ok=True)
+        rev = hashlib.sha256()
         for i in range(n):
             y, m = divmod(today.year * 12 + today.month - 1 - i, 12)
             a = datetime(y, m + 1, 1, 10, tzinfo=timezone.utc)  # 00:00 HST = 10:00 UTC
             y2, m2 = divmod(y * 12 + m + 1, 12)
             b = datetime(y2, m2 + 1, 1, 10, tzinfo=timezone.utc)
             rows = DB.finds_between(a.isoformat(), b.isoformat())
-            path = os.path.join(fdir, f"finds_{y:04d}-{m + 1:02d}.json")
+            month = f"{y:04d}-{m + 1:02d}"
+            path = os.path.join(fdir, WF.finds_name(month, key))
             if rows or os.path.exists(path):
+                text = json.dumps({"month": month, "count": len(rows), "finds": rows}, separators=(",", ":"))
                 tmp = path + ".tmp"
-                json.dump({"month": f"{y:04d}-{m + 1:02d}", "count": len(rows), "finds": rows}, open(tmp, "w"), separators=(",", ":"))
+                with open(tmp, "w") as fh:
+                    fh.write(text)
                 os.replace(tmp, path)
+                if i < 2:
+                    rev.update(f"{month}\n{text}\n".encode())
         FINDS_FILES["all"] = True
+        return rev.hexdigest()[:12]
     except Exception as e:
-        log.info("finds month files skipped: %s", e)
+        log.info("finds month files skipped: %s", WF.scrub(e, key))  # an OSError names the file: never log the key
+        return None
+
+
+def finds_files_cleanup():
+    """FW-0010, once per start, before the month files are written: delete every finds file at a guessable /local/
+    path (finds_<YYYY-MM>.json from before FW-0010) and this instance's files under an old key. Ryan's instance also
+    sweeps the predictable names from the second-pilot folders (www/flight-watcher/<name>/, configured or not) and
+    the pre-1.0.0 www/flica tree; a second pilot's instance sweeps its own folder. The month files are rebuilt from
+    the DB right after, so nothing is lost. Logs a count, never a name."""
+    key = None
+    try:
+        key = www_key()
+        others = [] if INSTANCE else WF.subdirs(CARD_PAIRINGS) + [WWW_OLD] + WF.subdirs(WWW_OLD)
+        n = WF.cleanup(finds_dir(), key, others)
+        if n:
+            log.info("FW-0010: removed %d finds file(s) with a guessable /local/ name; the month files now carry a key", n)
+    except Exception as e:
+        log.info("finds file cleanup skipped: %s", WF.scrub(e, key))
 
 
 def publish_pickers():
@@ -637,6 +759,9 @@ ENTITY_SUFFIX = {
     "rearm": "re_arm", "recall": "recall_o75", "swap_map": "map_swap_pages_read_only",
     "swap_tests": "swap_test_requests", "trade_away": "would_trade", "tradeboard": "tradeboard_pickups",
 }
+
+
+RETIRED_ENTITIES = (("select", "swap_mode"),)  # FW-0028: the Test / Confirm / Live select, now a read-only sensor
 
 
 def discovery(c):
@@ -673,9 +798,8 @@ def discovery(c):
                                   "json_attributes_topic": f"{T}/swap/state", "icon": "mdi:swap-horizontal-circle"}),
         ("switch", "auto_swap", {"name": "Auto swap (dry run)", "command_topic": f"{T}/auto_swap/set",
                                  "state_topic": f"{T}/auto_swap/state", "icon": "mdi:robot"}),
-        ("select", "swap_mode", {"name": "Swap mode", "command_topic": f"{T}/swap_mode/set",
-                                 "state_topic": f"{T}/swap_mode/state", "options": list(SUB.MODES),
-                                 "icon": "mdi:swap-horizontal-variant"}),
+        ("sensor", "swap_mode", {"name": "Swap mode", "state_topic": f"{T}/swap_mode/state",  # FW-0028: read only
+                                 "json_attributes_topic": f"{T}/swap_mode/attr", "icon": "mdi:file-document-edit-outline"}),
         ("sensor", "swap_tests", {"name": "Swap test requests", "state_topic": f"{T}/swap_tests",
                                   "value_template": "{{ value_json.count }}",
                                   "json_attributes_topic": f"{T}/swap_tests", "icon": "mdi:file-send-outline"}),
@@ -765,6 +889,8 @@ def discovery(c):
         eid = f"{T}_{ENTITY_SUFFIX.get(oid, oid)}"
         cfg = {**base, **cfg, "unique_id": f"{T}_{oid}", "object_id": eid, "default_entity_id": f"{comp}.{eid}"}
         c.publish(f"homeassistant/{comp}/{T}/{oid}/config", json.dumps(cfg), retain=True)
+    for comp, oid in RETIRED_ENTITIES:  # an empty retained config removes the entity from HA
+        c.publish(f"homeassistant/{comp}/{T}/{oid}/config", "", retain=True)
 
 
 def mqtt_start():
@@ -779,9 +905,10 @@ def mqtt_start():
         discovery(cl)
         for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set",
                   "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set",
-                  "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set", "drop/set", "charter_scan/press", "pilot/set",
+                  "trade/set", "auto_swap/set", "swap_map/press", "drop/set", "charter_scan/press", "pilot/set",
                   "improved/set", "recall/set", "recall/act", "settings/set",
-                  "ticket/new", "ticket/image", "ticket/act") + (() if INSTANCE else ("crew_scan/press",)):
+                  "ticket/new", "ticket/image", "ticket/act", "ticket/edit",
+                  "ticket/delete") + (() if INSTANCE else ("crew_scan/press",)):
             cl.subscribe(f"{T}/{t}")
         publish_settings(cl)
         fq = freq()
@@ -789,8 +916,11 @@ def mqtt_start():
         cl.publish(f"{T}/freq/hunt_s/state", str(fq["hunt_s"]), retain=True)
         publish_rules(cl)
         cl.publish(f"{T}/auto_swap/state", "ON" if S.get("auto_swap") else "OFF", retain=True)
-        cl.publish(f"{T}/swap_mode/state", S.get("swap_mode") or SUB.DEFAULT_MODE, retain=True)
+        publish_swap_mode(cl)
         publish_swap_tests()
+        tm = threading.Timer(CONNECT_STATES_DELAY_S, connect_states, args=(cl,))  # FW-0024
+        tm.daemon = True
+        tm.start()
 
     c.on_connect = on_connect
     c.connect(m["host"], int(m["port"]))
@@ -835,7 +965,19 @@ def set_machine(state, note=""):
     S["note"] = note
     save_state(S)
     pub("state", state)
-    pub("state_attr", {"note": note, "version": VERSION, "since": S["since"], "instance": INSTANCE})
+    pub("state_attr", {"note": note, "version": VERSION, "since": S["since"], "instance": INSTANCE, "doh": pilot_doh()})
+
+
+def pilot_doh():
+    """FW-0010: the pilot's date of hire (YYYY-MM-DD) from <data>/cards.json for the schedule card's longevity year,
+    "" when none. Published in sensor.<prefix>_state (behind HA's login); the deployed card file under /local/ (no
+    login) carries the placeholder only (cards.py)."""
+    try:
+        with open(f"{DATA}/cards.json", encoding="utf-8") as f:
+            d = json.load(f).get("doh", "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return d if isinstance(d, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", d) else ""
 
 
 # ---------------------------------------------------------------- browser
@@ -1349,10 +1491,12 @@ def versions_check(force_pub=False):
 
 UPLOADS = f"{SHARE}/uploads"
 CARD_PAIRINGS = "/homeassistant/www/flight-watcher"  # pairings_<month>.json: shared, either instance may write the same content
+WWW_OLD = "/homeassistant/www/flica"  # FW-0010: the pre-1.0.0 folder (migrate.py moves it); swept for old finds files
 
 
 def finds_dir():
-    """0.10.0: finds_<month>.json per pilot: www/flight-watcher for Ryan, www/flight-watcher/<instance> for a second pilot."""
+    """0.10.0: the finds month files per pilot: www/flight-watcher for Ryan, www/flight-watcher/<instance> for a second
+    pilot (FW-0010: finds_<YYYY-MM>_<key>.json, the key from that instance's /data)."""
     return os.path.join(CARD_PAIRINGS, INSTANCE) if INSTANCE else CARD_PAIRINGS
 
 
@@ -1386,9 +1530,16 @@ def uploads_check():
                     if not det or not emp:
                         log.info("upload %s: waiting for the %s pairing package and the employee number", f, month)
                         continue
-                    aw = PDF.parse_award(text, emp, det, month)
+                    try:  # FW-0015: the award's columns start on the bid period's first day (Dec 2 in December)
+                        start = json.load(open(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json"))).get("start")
+                    except (OSError, ValueError, AttributeError):
+                        start = None
+                    try:
+                        aw, why = PDF.parse_award(text, emp, det, month, start), f"employee {emp} not in this award"
+                    except ValueError as e:  # logged once: the file is marked done until it changes
+                        aw, why = None, f"award not read: {e}"
                     if not aw:
-                        log.info("upload %s: employee %s not in this award", f, emp)
+                        log.info("upload %s: %s", f, why)
                     else:
                         vers = VER.set_award(DB, month, aw, now_iso())
                         log.info("upload %s: awarded line is version %s (%d items, credit %s); %d versions",
@@ -1450,7 +1601,14 @@ def recall_cmd(payload):
         log.info("recall list skipped: %s", e)
 
 
+RECALL_LIVE = ("MISSED", "POSSIBLE")  # FW-0012: a CCR draft is open, counted and shown only while its row says this
+RECALL_OPEN = ("new", "confirmed", "approved")
+
+
 def recall_eval(notify=False):
+    """Judge every recall list on file and keep one act (CCR draft) per MISSED / POSSIBLE row. FW-0012: an act whose
+    row no longer says MISSED or POSSIBLE (now NO, or gone from a list on file) is marked superseded, keeping what it
+    was ('was'), its narrative and CCR #; it comes back as it was if the row turns into a miss again (no second push)."""
     me = recall_me()
     allr, acts = DB.get("recall_days") or {}, DB.get("recall_acts") or {}
     blocked = sorted(set(DB.get("blocked_hist") or []) | set(S.get("blocked_days") or []))
@@ -1458,17 +1616,36 @@ def recall_eval(notify=False):
     for dk in {k[:7] for k in allr}:
         det.update(DB.get(f"pkg_details:{dk}") or {})
     items, own = _sched_items(), S.get("own_trips") or {}
-    fresh = []
+    fresh, live, seen = [], {}, {}
     for dk, day in allr.items():
         day["verdicts"] = RC.check_day(day.get("rows"), me, items, own, blocked, det)
         for v in day["verdicts"]:
             v["id"] = f"{v['date']}|{v['pairing']}|{v['kind']}"
-            a = acts.get(v["id"])
-            if v["verdict"] in ("MISSED", "POSSIBLE") and not a:
-                a = acts[v["id"]] = {"status": "new", "narrative": RC.narrative(v, me, S.get("own_name") or "", S.get("own_emp") or ""),
-                                     "at": now_iso()}
-                fresh.append(v)
-            v["act"] = a or {}
+            seen.setdefault(v["id"], v)
+            if v["verdict"] in RECALL_LIVE:
+                live.setdefault(v["id"], v)
+    for vid, v in live.items():
+        a = acts.get(vid)
+        if not a:
+            acts[vid] = {"status": "new", "narrative": RC.narrative(v, me, S.get("own_name") or "", S.get("own_emp") or ""),
+                         "at": now_iso()}
+            fresh.append(v)
+        elif a.get("status") == "superseded":
+            a["status"], a["at"] = a.pop("was", None) or "new", now_iso()
+            a.pop("superseded_why", None)
+    first = min(allr) if allr else ""
+    for vid, a in acts.items():
+        if vid in live or a.get("status") == "superseded" or (vid not in seen and (not first or vid[:10] < first)):
+            continue  # live, already closed, or from a day older than the lists kept: history as it stands
+        why = ((seen.get(vid) or {}).get("why") or ["no longer on the recall list"])[-1]
+        a.update(was=a.get("status") or "new", status="superseded", superseded_why=why, at=now_iso())
+    for day in allr.values():
+        for v in day["verdicts"]:
+            a = acts.get(v["id"]) or {}
+            if v["verdict"] in RECALL_LIVE:
+                v["act"] = a
+            else:  # history only: no narrative, no controls
+                v["act"] = {k: a[k] for k in ("status", "was", "at", "ccr", "superseded_why") if k in a} if a.get("status") == "superseded" else {}
     DB.put("recall_days", allr)
     DB.put("recall_acts", acts)
     publish_recall()
@@ -1480,9 +1657,13 @@ def recall_eval(notify=False):
 
 def recall_act(payload):
     """{id, action: confirm|dismiss|approve|filed|reopen, narrative?, ccr?}. Ryan's answers from the push or the tab.
-    approve stores his reviewed narrative; nothing is filed by the Watcher itself."""
+    approve stores his reviewed narrative; nothing is filed by the Watcher itself. {refresh: true} re-judges every list
+    on file against the current line (the tab's Refresh button), and {me: {...}} changes seniority / seat / Over 75."""
     try:
         d = json.loads(payload or "{}")
+        if d.get("refresh"):  # Ryan (Nov 6): the tab's Refresh re-judges every list on file now; no push, no FLICA read
+            recall_eval()
+            return
         if d.get("me"):
             DB.put("recall_me", {**(DB.get("recall_me") or {}), **{k: v for k, v in d["me"].items() if k in ("sen", "seat", "o75")}})
             recall_eval()
@@ -1491,6 +1672,9 @@ def recall_act(payload):
         a = acts.get(str(d.get("id")))
         st = {"confirm": "confirmed", "dismiss": "dismissed", "approve": "approved", "filed": "filed", "reopen": "new"}.get(d.get("action"))
         if not a or not st:
+            return
+        if a.get("status") == "superseded":  # FW-0012: the row is no longer a miss; a late tap on an old push does nothing
+            log.info("recall action %s on %s skipped: superseded (%s)", d.get("action"), d.get("id"), a.get("superseded_why", ""))
             return
         a["status"], a["at"] = st, now_iso()
         if isinstance(d.get("narrative"), str) and d["narrative"].strip():
@@ -1508,10 +1692,12 @@ def recall_act(payload):
 def publish_recall():
     allr, acts = DB.get("recall_days") or {}, DB.get("recall_acts") or {}
     days = [{k: v for k, v in allr[k].items() if k != "rows"} for k in sorted(allr)[-45:]]
-    opn = [v for d in days for v in d.get("verdicts") or [] if (v.get("act") or {}).get("status") in ("new", "confirmed", "approved")]
+    opn = [v for d in days for v in d.get("verdicts") or []
+           if v.get("verdict") in RECALL_LIVE and (v.get("act") or {}).get("status") in RECALL_OPEN]
     alert = [v for v in opn if v["verdict"] == "MISSED" or (v.get("act") or {}).get("status") in ("confirmed", "approved")]
+    received = max((d.get("at") or "" for d in allr.values()), default="")  # when the newest list post came in
     pub("recall", {"open": len(opn), "alert": len(alert), "me": recall_me(), "last": days[-1]["date"] if days else "",
-                   "days": days[::-1]})
+                   "checked": now_iso(), "received": received, "days": days[::-1]})
 
 
 def publish_improved():
@@ -1636,6 +1822,53 @@ def note_own(text):
     return S.get("own_emp")
 
 
+LOOKUP_KEYS = ("block", "credit")
+LOOKUP_PAGE = {"bd": "", "html": "", "at": 0}  # the last Schedule Lookup page read, so other_months_check does not load it twice
+
+
+def lookup_totals(fl, month):
+    """FW-0019: FLICA's Block / Credit for `month` (YYYY-MM) from Tools > Schedule Lookup for the pilot's own number
+    (cmschedules.cgi bd=MMYY, a plain GET that passes both safe_get checks, paced 1.5 to 3.5 s). The mobile schedule
+    page the current month comes from carries no totals; the lookup page does (October's read showed them).
+    {} when the number is not known yet, the URL is refused or the page is not that month's schedule."""
+    emp = S.get("own_emp")
+    if not emp or not re.match(r"^\d{4}-\d{2}$", month or ""):
+        return {}
+    bd = f"{month[5:7]}{month[2:4]}"
+    url = IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bd)
+    if not (SUB.safe_get(url) and SM.safe_get(url)):
+        log.info("schedule %s totals: lookup url refused by safe_get", month)
+        return {}
+    time.sleep(random.uniform(1.5, 3.5))
+    html = fl.fetch(url)
+    sp = IF.parse_cm_month(html) if classify(html) == "ok" else None
+    if not sp or sp["month"] != month:
+        log.info("schedule %s totals via Schedule Lookup (bd=%s): %s %s", month, bd, classify(html),
+                 (sp and sp["month"]) or visible_text(html)[:120])
+        return {}
+    LOOKUP_PAGE.update(bd=bd, html=html, at=time.time())
+    return {k: v for k, v in (sp.get("totals") or {}).items() if k in LOOKUP_KEYS and v not in (None, "")}
+
+
+def merge_lookup_totals(fl, s, old=None):
+    """FW-0019: fill the Block / Credit a schedule page lacks from the Schedule Lookup page, so schedule versions see
+    FLICA's totals change. A missed lookup keeps the figures last stored for the month (old), so a failed read is
+    never taken for a schedule change. Figures the schedule page has itself are kept."""
+    tot = s.setdefault("totals", {})
+    if all(k in tot for k in LOOKUP_KEYS):
+        return
+    try:
+        got = lookup_totals(fl, s.get("month"))
+    except Exception as e:
+        log.info("schedule %s totals via Schedule Lookup failed: %s", s.get("month"), e)
+        got = {}
+    if not got and old and old.get("month", s.get("month")) == s.get("month"):
+        got = {k: v for k, v in (old.get("totals") or {}).items() if k in LOOKUP_KEYS}
+    for k in LOOKUP_KEYS:
+        if k not in tot and got.get(k) not in (None, ""):
+            tot[k] = got[k]
+
+
 def other_months_check(fl, cur_month):
     """0.8.5 (Ryan: October now, December once it is published): Tools > Schedule Lookup for Ryan's own
     number lists every month FLICA holds in its <select> (1026, 1126, later 1226); each listed month other
@@ -1646,7 +1879,12 @@ def other_months_check(fl, cur_month):
         return False
     store = S.setdefault("schedule", {})
     cur = local_now()
-    html = fl.fetch(IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=f"{cur.month:02d}{cur.year % 100:02d}"))
+    bdc = f"{cur.month:02d}{cur.year % 100:02d}"
+    if LOOKUP_PAGE["bd"] == bdc and time.time() - LOOKUP_PAGE["at"] < 300:
+        html = LOOKUP_PAGE["html"]  # FW-0019: the schedule check's totals read just loaded this page
+    else:
+        time.sleep(random.uniform(1.5, 3.5))
+        html = fl.fetch(IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bdc))
     if classify(html) != "ok":
         log.info("own schedule lookup: %s", classify(html))
         return False
@@ -1759,6 +1997,7 @@ def schedule_check(fl, force=False):
     # winning URL is tried first next time. At most 3 fetches per read, 1-2 s apart.
     def accept(url, s):
         old = store.get(s["month"])
+        merge_lookup_totals(fl, s, old)  # FW-0019: the mobile page has no Block / Credit; Schedule Lookup does
         if old and [(i["trip"], i["start"]) for i in old["items"]] != [(i["trip"], i["start"]) for i in s["items"]]:
             ev = {"month": s["month"], "updated": s["updated"],
                   "added": sorted({i["trip"] + " " + i["start"] for i in s["items"]} - {i["trip"] + " " + i["start"] for i in old["items"]}),
@@ -2499,6 +2738,9 @@ def crew_index_check(fl):
     insts = CI.instances(CARD_PAIRINGS)
     rows = DB.crew_rows()
     todo = CI.queue(insts, rows, local_now(), run["started"])
+    awarded = CI.awarded_periods(insts, rows)  # FW-0016: bid periods with a read that named a pilot
+    held0 = CI.held_periods(insts, rows, awarded)  # periods already held (their one probe is in todo)
+    held, newly = set(held0), False
     n, res, halted = 0, "ok", False
     per_check = CREW_PER_CHECK_HUNT if FLAGS.get("hunt") else CREW_PER_CHECK  # hunting: short chunks, pot first
     for k in todo:
@@ -2509,6 +2751,8 @@ def crew_index_check(fl):
             halted = True
             break
         it = insts[k]
+        if CI.period_of(it) in held - held0:  # FW-0016: held during this chunk, the rest waits for names
+            continue
         if n:
             time.sleep(random.uniform(1.5, 3.5))
         n += 1
@@ -2532,10 +2776,30 @@ def crew_index_check(fl):
             DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "fail",
                         f"no crew line: {vt[:120]}")
             continue
+        per, named = CI.period_of(it), CI.has_crew(crew)
+        if not named and per not in awarded:  # FW-0016: no pilot named and no award seen in this bid period yet:
+            DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "empty",  # not read
+                        "no crew names on the page")
+            rows[k] = {**(rows.get(k) or {}), "status": "empty", "checked_at": at}
+            if per not in held and per in CI.held_periods(insts, rows, awarded):
+                held.add(per)
+                log.info("crew index: %s bid period names no crew yet, held until names appear (one page a run)", per)
+            continue
+        # after the award a page naming no pilot is an open-time trip ('CA Open FO Open'): a read like any other
         DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], crew, at, "ok")
+        rows[k] = {**(rows.get(k) or {}), "status": "ok", "checked_at": at, "crew": crew}
+        if named and per not in awarded:  # FW-0016: the first names in this bid period: the award is out
+            awarded.add(per)
+            again = sum(1 for x, i2 in insts.items() if CI.period_of(i2) == per and (rows.get(x) or {}).get("status") == "empty")
+            if per in held or again:  # its pages held back or read before the award: read from the next check on
+                held.discard(per)
+                newly = True
+                log.info("crew index: %s bid period names crew now (%s), %d pages read before it go first", per, k, again)
         DB.remember_crew(vt)
     # the run is over when its budget is used, a page ended it, or the queue ran dry before the chunk filled
-    done = res != "ok" or run["pages"] >= CREW_PER_RUN or (n < per_check and not halted)
+    # (FW-0016: the pages of a period held in this chunk are not read, so they do not keep the run going; a period
+    # whose award was seen in this chunk does: its pages are read from the next check on, not a slot later)
+    done = res != "ok" or run["pages"] >= CREW_PER_RUN or (n < per_check and not halted and not newly)
     if done:
         S.pop("crew_run", None)
         S["crew_last"] = {"at": now_iso(), "pages": run["pages"], "why": run["why"], "ended": res}
@@ -2558,15 +2822,19 @@ def publish_crew_index(insts=None, write=False):
     last = S.get("crew_last") or {}
     _, nxt = crew_slot()
     run = S.get("crew_run")
+    held = CI.held_periods(insts, rows)
     pub("crew_index", {"instances": n, "checked": ok, "coverage_pct": pct, "last_run": last.get("at") or "",
                        "next_slot": nxt.replace(tzinfo=HST).isoformat(), "pages_last_run": last.get("pages", 0),
                        "failures": sum(1 for k in insts if (rows.get(k) or {}).get("status") == "fail"),
+                       # FW-0016: read with no crew names yet (not counted in checked), and the bid periods held
+                       "no_crew_yet": sum(1 for k in insts if (rows.get(k) or {}).get("status") == "empty"),
+                       "waiting_for_award": sorted(held),
                        "running": bool(run), "pages_this_run": (run or {}).get("pages", 0)})
     if write:
-        write_crew_md(insts, rows)
+        write_crew_md(insts, rows, held)
 
 
-def write_crew_md(insts, rows):
+def write_crew_md(insts, rows, held=None):
     """/share/flight_watcher/crew_index/<YYYY-MM>.md for every month with instances, rewritten after each run."""
     try:
         os.makedirs(CREW_DIR, exist_ok=True)
@@ -2575,7 +2843,7 @@ def write_crew_md(insts, rows):
             path = os.path.join(CREW_DIR, f"{month}.md")
             tmp = path + ".tmp"
             with open(tmp, "w") as f:
-                f.write(CI.render_month(month, insts, rows, stamp))
+                f.write(CI.render_month(month, insts, rows, stamp, held))
             os.replace(tmp, path)
     except Exception as e:
         log.info("crew index files skipped: %s", e)
@@ -2584,6 +2852,8 @@ def write_crew_md(insts, rows):
 # ---------------------------------------------------------------- 0.10.1 tickets (Ryan)
 TICKETS_DIR = "/share/flight_watcher/tickets"  # shared by every instance
 TICKETS_SIG = {"sig": None}
+TICKETS_LAST = {}  # FW-0049: the last edit / delete answer, sent as "last" on the listing for the card
+RID_RE = TK.CID_RE
 
 
 def reporter():
@@ -2666,15 +2936,54 @@ def ticket_act(payload):
     return t
 
 
+def _ticket_change(fn, verb, payload):
+    """FW-0049: run TK.edit or TK.delete for this instance (a pilot instance: its own tickets only) and say how it
+    went in "last" {rid, id, action, ok, error, at} on the next listing, so the card that sent the card-made rid can
+    show it. A refusal also goes out as event/ticket_error, like every other ticket message."""
+    try:
+        d = json.loads(payload or "{}")
+    except ValueError:
+        d = None
+    t, err = fn(TICKETS_DIR, d, reporter(), now_iso(), allowed_reporter=INSTANCE or None)
+    d = d if isinstance(d, dict) else {}
+    rid = str(d.get("rid") or "").strip()
+    TICKETS_LAST.clear()
+    TICKETS_LAST.update({"rid": rid if RID_RE.match(rid) else "", "id": str(d.get("id") or "")[:20], "action": verb,
+                         "ok": bool(t), "error": err, "at": now_iso()})
+    if not t:
+        log.info("ticket %s refused: %s", verb, err)
+        pub("event/ticket_error", {"error": err, "at": now_iso()}, retain=False)
+    publish_tickets(force=True)
+    return t
+
+
+def ticket_edit(payload):
+    """FW-0049 {T}/ticket/edit {id, rid?, title?, narrative?, steps?, expected?, page?}: only while the ticket is new
+    or reopened; only the fields sent change."""
+    t = _ticket_change(TK.edit, "edit", payload)
+    if t:
+        log.info("ticket %s edited by %s: %s", t["id"], reporter(), ", ".join(t["history"][-1]["fields"]))
+    return t
+
+
+def ticket_delete(payload):
+    """FW-0049 {T}/ticket/delete {id, rid?}: any status; the folder moves to tickets/.deleted/ and leaves the list."""
+    t = _ticket_change(TK.delete, "delete", payload)
+    if t:
+        log.info("ticket %s (%s) deleted by %s", t["id"], t.get("status"), reporter())
+    return t
+
+
 def publish_tickets(force=False):
     """{T}/tickets (retained): Ryan's instance lists every ticket, a pilot instance only its own. Re-published
-    when the folder changed (the other instance may have written to it) or when forced."""
+    when the folder changed (the other instance may have written to it) or when forced. FW-0049: "last" is this
+    instance's last edit / delete answer ({} until one)."""
     try:
         sig = TK.signature(TICKETS_DIR)
         if not force and sig == TICKETS_SIG["sig"]:
             return
         TICKETS_SIG["sig"] = sig
-        pub("tickets", TK.listing(TICKETS_DIR, INSTANCE or None))
+        pub("tickets", {**TK.listing(TICKETS_DIR, INSTANCE or None), "last": dict(TICKETS_LAST)})
     except Exception as e:
         log.info("tickets publish skipped: %s", e)
 
@@ -2763,25 +3072,25 @@ def charter_thread():
 
 def publish_swap_tests():
     tests = S.get("swap_tests") or []
-    pub("swap_tests", {"count": len(tests), "tests": tests[-20:], "mode": S.get("swap_mode") or SUB.DEFAULT_MODE})
+    pub("swap_tests", {"count": len(tests), "tests": tests[-20:], "mode": SUB.DEFAULT_MODE})
 
 
 def swap_test(idea):
-    """0.5.0 Test mode: compose the exact mobileotswap.cgi POST a live swap would send for this idea,
-    log it, keep the last 20 (sensor.flight_watcher_swap_test_requests) and push event/swap_test.
-    Never sends: submit.WRITES_IMPLEMENTED is False."""
+    """0.5.0 Test mode: compose the exact mobileotswap.cgi POST a swap would need for this idea, log it,
+    keep the last 20 (sensor.flight_watcher_swap_test_requests) and push event/swap_test. FW-0028: a draft
+    only, never sent (submit.WRITES_IMPLEMENTED is False and FLICA stays read-only)."""
     b = sorted({bcid(u) for u in S.get("pot_urls", {}).values() if bcid(u)}, key=bcid_key)
     rep_h = None
     if idea.get("report") and idea.get("start"):
         rep_h = SUB.hours_until(f"{idea['start']}T{idea['report'][:5]}", local_now())
     seat = "R" if (S.get("own_trips", {}).get(idea["for"]) or {}).get("seat") == "RO" else "F"
     rec = SUB.compose(idea, b[0] if b else None, rep_h, seat=seat, close_in_bcid=S.get("close_in_bcid"))
-    rec.update({"key": idea["key"], "at": now_iso(), "mode": S.get("swap_mode") or SUB.DEFAULT_MODE,
+    rec.update({"key": idea["key"], "at": now_iso(), "mode": SUB.DEFAULT_MODE,
                 "hours_to_report": round(rep_h, 1) if rep_h is not None else None, "sent": False})
     tests = S.setdefault("swap_tests", [])
     tests.append(rec)
     del tests[:-20]
-    log.info("SWAP TEST (not sent): give %s take %s folder %s bcid %s form %s", rec["give"], rec["take"],
+    log.info("SWAP DRAFT (%s): give %s take %s folder %s bcid %s form %s", SUB.DRAFT, rec["give"], rec["take"],
              rec["folder"], rec["bcid"], rec["form"])
     pub("event/swap_test", rec, retain=False)
     publish_swap_tests()
@@ -2839,10 +3148,10 @@ def swap_scan(pot_rows):
             done = S.setdefault("auto_swap_log", {})
             if done.get(today, 0) < AUTO_SWAP_PER_DAY:
                 done[today] = done.get(today, 0) + 1
-                ev["would_submit"] = f"DRY RUN: drop {i['for_trip']} {i['for'].split('|')[1]}, add {i['pairing']} {i['start']}"
-                log.info("auto swap %s (dry run, nothing submitted)", ev["would_submit"])
+                ev["would_submit"] = f"DRAFT ({SUB.DRAFT}): drop {i['for_trip']} {i['for'].split('|')[1]}, add {i['pairing']} {i['start']}"
+                log.info("auto swap %s", ev["would_submit"])
             else:
-                ev["would_submit"] = f"DRY RUN: daily cap of {AUTO_SWAP_PER_DAY} reached, not even dry-run counted"
+                ev["would_submit"] = f"DRAFT ({SUB.DRAFT}): daily cap of {AUTO_SWAP_PER_DAY} reached, not even a draft counted"
         log.info("swap idea %s: %s (%s)", i["for_trip"], i["pairing"], i["why"])
         pub("event/swap", ev, retain=False)
     live = {f"{i['pairing']}|{i['start']}>{i['for']}" for i in ideas if i["grid_ok"]}
@@ -3175,6 +3484,7 @@ def check(fl):
 
 def main():
     global MQ
+    migrate_swap_mode()  # FW-0028: before on_connect publishes the mode
     MQ = mqtt_start()
     time.sleep(2)
     if not OPTS.get("username") or not OPTS.get("password"):
@@ -3212,12 +3522,22 @@ def main():
                     n += 1
         DB.put("crew_dir_v", 1)
         log.info("crew directory seeded with %d names (%d total)", n, DB.crew_count())
+    if DB.get("crew_fix_v") != 1:  # FW-0016 / FW-0017 one-shot: CKP out of stored names, pre-award reads not counted
+        try:  # by bid period (Dec 1 is November's), and only trips not yet started
+            periods = {k: CI.period_of(it) for k, it in CI.instances(CARD_PAIRINGS).items()}
+            names, empties = DB.crew_fix(CI.has_crew, periods, local_now().date().isoformat())
+            DB.put("crew_fix_v", 1)
+            log.info("crew index repaired: %d CKP tags taken out of names, %d reads with no crew names set to read "
+                     "again", names, empties)
+        except Exception as e:  # never stops the start; tried again on the next one
+            log.warning("crew index repair skipped: %s: %s", type(e).__name__, e)
     if DB.get("score_v") != 2:  # 0.7.6 one-shot: Pickup Speed recomputed with the vetted dwell() for every scored pickup
         DB.rescore_all()
         DB.put("score_v", 2)
         log.info("pickup speeds rescored (0.7.6 dwell: alert time in, middle of the gone window out)")
     RULES["list"] = load_rules()
     publish_rules(MQ)
+    finds_files_cleanup()  # FW-0010: before publish_finds() rebuilds the month files under the key
     publish_finds()
     publish_blocked()
     publish_tradeboard()
