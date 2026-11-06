@@ -10,6 +10,10 @@ Pako HI Home Assistant). Read `HANDOFF.md` next: it lists everything open.
 - No em dashes. No preamble, no closing summaries. Under ~200 words unless the task needs more.
 - Questions: one at a time, tappable options, recommended option first and marked "(recommended)".
 - Multi-step work: state done-criteria and steps briefly, then run straight through. No approval gate.
+- Always take every task to `STATUS: 100% DONE`. Verify results yourself (tests, the app log, entity states, the
+  deployed file vs git, rendering a card with Playwright on live data) instead of leaving checks to Ryan. Only steps
+  that truly need him (typing a password, a [DESTRUCTIVE] yes, his phone or FLICA account) may stay open, and say
+  exactly which one and why.
 - **[DESTRUCTIVE]** ops need one explicit yes each time: merging a PR, updating/restarting the add-on, deleting
   anything, changing the add-on Configuration options. Never assume an earlier yes covers a new one.
 - Never send messages on any channel (email, chat, SMS). Drafts only. Exception: Hark's chat on hark.com.
