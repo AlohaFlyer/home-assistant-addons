@@ -37,9 +37,10 @@ import crewidx as CI
 import tickets as TK
 import sealed as SEAL
 import pay as PAY
+import seniority as SEN
 import wwwfiles as WF
 
-VERSION = "1.4.3"
+VERSION = "1.4.4"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -1490,8 +1491,119 @@ def versions_check(force_pub=False):
 
 
 UPLOADS = f"{SHARE}/uploads"
+# FW-0062: where the Web UI saves every upload (web.UPLOAD_DIR). The Web UI runs on the default instance only, so a
+# second pilot's instance reads the pairings package text and the seniority list from here too.
+UPLOADS_SHARED = "/share/flight_watcher/uploads"
 CARD_PAIRINGS = "/homeassistant/www/flight-watcher"  # pairings_<month>.json: shared, either instance may write the same content
 WWW_OLD = "/homeassistant/www/flica"  # FW-0010: the pre-1.0.0 folder (migrate.py moves it); swept for old finds files
+_PKG_CACHE = {}  # FW-0062: period -> (file time, details) parsed from the shared package text
+_SEN_CACHE = {}  # FW-0062: {mt: file time, data: seniority.json}
+
+
+def pkg_details_for(period):
+    """FW-0062: the pairing package details ({pid: {block, credit, lay, ...}}) of one bid period: this instance's DB
+    copy (uploads_check), else parsed from the shared upload's text copy (<period>_pairings.txt, cached by file
+    time), so a second pilot's instance has them too. {} when there is no package for the period."""
+    det = DB.get(f"pkg_details:{period}")
+    if det:
+        return det
+    path = os.path.join(UPLOADS_SHARED, f"{period}_pairings.txt")
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return {}
+    c = _PKG_CACHE.get(period)
+    if c and c[0] == mt:
+        return c[1]
+    try:
+        det = PDF.package_details(open(path, errors="replace").read())
+    except Exception as e:
+        log.info("pairing package %s not read: %s", period, e)
+        det = {}
+    _PKG_CACHE[period] = (mt, det)
+    return det
+
+
+def seniority_data():
+    """FW-0062: the parsed pilot seniority list (web.seniority_write), shared by every instance; {} when none."""
+    path = os.path.join(UPLOADS_SHARED, "seniority.json")
+    try:
+        mt = os.path.getmtime(path)
+        if _SEN_CACHE.get("mt") != mt:
+            _SEN_CACHE.update(mt=mt, data=json.load(open(path, encoding="utf-8")))
+        return _SEN_CACHE["data"] or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def seniority_refresh():
+    """FW-0062: the Web UI parses the seniority list as it is uploaded. When seniority.json is missing or was written
+    by an older parser (SEN.PARSER), the list is read again here: the text copy of the file seniority.json names, else
+    (no seniority.json, or its text copy is gone) the newest seniority_<date>.txt. Every such file is one that gave
+    pilot rows when it was uploaded: the Web UI deletes a refused upload (web._save_seniority). The file's signature is
+    recorded before it is read, so a file that is slow or fails is not read again at every start. Default instance
+    only, so the file has one writer; counts only in the log."""
+    if INSTANCE:
+        return
+    try:
+        txts = sorted(f for f in os.listdir(UPLOADS_SHARED) if re.fullmatch(r"seniority_\d{4}-\d{2}-\d{2}\.txt", f))
+    except OSError:
+        return
+    cur = seniority_data()
+    if not txts or (cur and int(cur.get("parser") or 0) >= SEN.PARSER):
+        return
+    own = re.sub(r"\.pdf$", ".txt", str(cur.get("file") or ""))
+    f = own if own in txts else txts[-1]
+    path = os.path.join(UPLOADS_SHARED, f)
+    done = S.setdefault("uploads_done", {})
+    sig = f"{os.path.getmtime(path):.0f}|{SEN.PARSER}"
+    if done.get(f) == sig:
+        return
+    done[f] = sig
+    save_state(S)
+    same = cur.get("file") == f[:-4] + ".pdf"
+    try:
+        d = web.seniority_write(path, f[:-4] + ".pdf", cur.get("uploaded_at") if same else f"{f[10:20]}T00:00:00",
+                                (cur.get("list_date") or "") if same else "", os.path.join(UPLOADS_SHARED, "seniority.json"))
+        log.info("seniority list %s: %s", f, f"{d['count']} pilots read again" if d else "no pilot rows")
+    except Exception as e:
+        log.info("seniority list %s not read: %s", f, e)
+
+
+TAX = {"at": 0.0, "pct": None}
+TAX_CACHE_S = 600
+
+
+def tax_pct():
+    """FW-0062: this instance's federal + state tax % for the pay line's Pay-Net estimate, from the same helpers the
+    schedule card reads (input_number.<prefix>_federal_tax_pct, default 22; ..._state_tax_pct, default 0); read at
+    most every 10 min."""
+    if TAX["pct"] is None or time.time() - TAX["at"] > TAX_CACHE_S:
+        tot = 0.0
+        for name, dflt in (("federal", 22.0), ("state", 0.0)):
+            try:
+                tot += float(ha_state(f"input_number.{T}_{name}_tax_pct"))
+            except (TypeError, ValueError):
+                tot += dflt
+        TAX.update(at=time.time(), pct=round(tot, 2))
+    return TAX["pct"]
+
+
+def pilot_pay_line(trips, emp, name, start, end):
+    """FW-0062: the pay line under a rebuilt month (pay.pay_line over the trips the card draws, crewidx.grid_pick),
+    priced with the date of hire on the shared seniority list. Adds 'gross' to each priced trip. list_status: 'ok',
+    'none' (no list uploaded) or 'not_on_list' (a newer hire, or a name the list spells another way)."""
+    data = seniority_data()
+    rec = SEN.find(data, emp, name) if data else None
+    grid, _also = CI.grid_pick(trips)
+    line, per = PAY.pay_line(grid, (rec or {}).get("doh") or "", start, end, tax_pct())
+    for t in trips:
+        g = per.get(f"{t.get('pairing')}|{t.get('start')}")
+        if g is not None:
+            t["gross"] = g
+    line.update(list_status="ok" if rec else ("not_on_list" if data else "none"), list_date=data.get("list_date") or "",
+                list_newest_doh=data.get("newest_doh") or "", seat_list=(rec or {}).get("seat") or "")
+    return line
 
 
 def finds_dir():
@@ -1503,7 +1615,13 @@ def finds_dir():
 def uploads_check():
     """0.9.1 (Ryan): parse the monthly PDFs uploaded on the Web UI (text copies made by pdftotext). Pairings
     package -> the schedule card's pairing file (www/flight-watcher/pairings_<YYYY-MM>.json) and trip details; award ->
-    this month's version .001. Each file is handled again only when it changes. No FLICA traffic."""
+    this month's version .001. Each file is handled again only when it changes. No FLICA traffic.
+    FW-0062: the seniority list is parsed by the Web UI as it is uploaded; seniority_refresh re-reads it after a
+    parser change."""
+    try:
+        seniority_refresh()
+    except Exception as e:
+        log.info("seniority list skipped: %s", e)
     try:
         done = S.setdefault("uploads_done", {})
         files = sorted(os.listdir(UPLOADS)) if os.path.isdir(UPLOADS) else []
@@ -2763,7 +2881,12 @@ def pub_pilot(payload):
     reconstructed [{pairing, start, end, seat, route, checked_at, lay, blk, credit, soft, crew}],
     reconstructed_coverage_pct, reconstructed_month and (FW-0002) reconstructed_from / reconstructed_to, the
     bid period's first and last day, so the card can draw it in the schedule grid when FLICA hides the schedule
-    or errors. Trips and coverage span that grid: the day before the bid period (FLICA's first row) to its end."""
+    or errors. Trips and coverage span that grid: the day before the bid period (FLICA's first row) to its end.
+    FW-0062: each trip's package details come from its own bid period (pkg_details_for), and pay_line (pilot_pay_line)
+    totals the rebuilt month with Pay-Gross for the seat flown on each trip, from the pilot's date of hire on the
+    shared seniority list. A readable month (status ok) gets no pay line of its own: Schedule Lookup shows no seat,
+    only PILOT_PAIRINGS_MAX of its pairing pages are read, and FLICA's credit total holds reserve and training days
+    that cannot be priced trip by trip."""
     try:
         emp = re.sub(r"\D", "", str(payload.get("emp") or ""))
         month = str(payload.get("month") or "")
@@ -2771,10 +2894,17 @@ def pub_pilot(payload):
             month = local_now().strftime("%Y-%m")
         insts, rows = CI.instances(CARD_PAIRINGS), DB.crew_rows()
         first, start, end = CI.grid_range(CARD_PAIRINGS, month)
-        payload = {**payload, "reconstructed": CI.pilot_trips(insts, DB.crew_by_emp(emp), month, first, rows,
-                                                              DB.get(f"pkg_details:{month}") or {}, end) if emp else [],
+        mine = DB.crew_by_emp(emp) if emp else []
+        trips = CI.pilot_trips(insts, mine, month, first, rows, pkg_details_for, end) if emp else []
+        payload = {**payload, "reconstructed": trips,
                    "reconstructed_coverage_pct": CI.coverage(insts, rows, None, first, end)[2],
                    "reconstructed_month": month, "reconstructed_from": start, "reconstructed_to": end}
+        if trips:
+            try:
+                name = payload.get("name") or next((r.get("name") for r in mine if r.get("name")), "")
+                payload["pay_line"] = pilot_pay_line(trips, emp, name, start, end)
+            except Exception as e:
+                log.info("pilot lookup: pay line skipped: %s", e)
     except Exception as e:
         log.info("pilot lookup: crew index skipped: %s", e)
         payload = {**payload, "reconstructed": [], "reconstructed_coverage_pct": 0.0}

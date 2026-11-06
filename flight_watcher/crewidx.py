@@ -383,14 +383,28 @@ def _hm(v):
     return f"{int(m.group(1))}:{m.group(2)}" if m else ""
 
 
+def _details_for(details, period):
+    """FW-0062: the pairing package details of one bid period. `details` is a function of the period (the
+    Watcher's pkg_details_for), {period: {pid: det}}, or (older callers) one flat {pid: det} for every trip."""
+    if callable(details):
+        return details(period) or {}
+    if details and all(re.fullmatch(r"\d{4}-\d{2}", str(k)) for k in details):
+        return details.get(period) or {}
+    return details or {}
+
+
 def pilot_trips(insts, rows_for_emp, month=None, start_from=None, crew_rows=None, details=None, end_to=None):
     """reconstructed list for the pilot lookup, by start: [{pairing, start, end, seat, route, checked_at, lay, blk,
-    credit, soft, crew}]. month keeps the trips on any of its days; start_from / end_to (ISO, inclusive; FW-0002,
-    grid_range: the day before the bid period to its last day, which can be in the next month) replace that
+    credit, soft, crew, period, n}]. month keeps the trips on any of its days; start_from / end_to (ISO, inclusive;
+    FW-0002, grid_range: the day before the bid period to its last day, which can be in the next month) replace that
     calendar-month test on their side; a trip that starts before the range and runs into it is kept. FW-0002: the card draws these in the schedule grid, so each trip also carries
     the layover, block and credit from the pairing package (`details`, pdfs.package_details; credit falls back
-    to the pairing file) and the crew line it was read with (`crew_rows`, [[pos, name]]); '' / [] when unknown."""
-    out, crew_rows, details = [], crew_rows or {}, details or {}
+    to the pairing file) and the crew line it was read with (`crew_rows`, [[pos, name]]); '' / [] when unknown.
+    FW-0062: details are looked up in the trip's own bid period (a trip from October's file on the grid's first
+    row, Oct 31, gets October's package, not November's; the same id can be another trip in another month), by the
+    exact id, else the id without its trailing letter; n is the pilots on the whole crew line (OPEN seats count,
+    flight attendants do not), for the PWA 4.O.1 overrides."""
+    out, crew_rows = [], crew_rows or {}
     lo, hi = start_from or (f"{month}-01" if month else ""), end_to or (f"{month}-31" if month else "~")
     for r in rows_for_emp:
         it = insts.get(r["key"]) or {}
@@ -399,12 +413,40 @@ def pilot_trips(insts, rows_for_emp, month=None, start_from=None, crew_rows=None
         if not start or start > hi or end < lo:  # 1.3.0 review: a trip running into the grid from before it counts
             continue
         pid = r.get("pairing") or it.get("pairing") or ""
-        det = details.get(pid) or {}
+        per = period_of(it) if it else start[:7]
+        dets = _details_for(details, per)
+        det = dets.get(pid) or dets.get(re.sub(r"(?<=\d)[A-Z]$", "", pid)) or {}
         blk, credit = _hm(det.get("block")), _hm(det.get("credit")) or _hm(it.get("credit"))
-        crew = [[c.get("pos") or "", c.get("name") or ""] for c in (crew_rows.get(r["key"]) or {}).get("crew") or []][:6]
+        line = (crew_rows.get(r["key"]) or {}).get("crew") or []
+        crew = [[c.get("pos") or "", c.get("name") or ""] for c in line][:6]
         out.append({"pairing": pid, "start": start,
                     "end": r.get("end_date") or it.get("end_date") or start, "seat": r.get("pos") or "",
                     "route": r.get("route") or it.get("route") or "", "checked_at": r.get("checked_at") or "",
                     "lay": det.get("lay") or "", "blk": blk, "credit": credit, "soft": soft_time(credit, blk) or "",
-                    "crew": crew})
+                    "crew": crew, "period": per, "n": sum(1 for c in line if c.get("pos") in PILOT_POS)})
     return sorted(out, key=lambda x: (x["start"], x["pairing"]))
+
+
+def _iso_days(start, end, cap):
+    d, e = date.fromisoformat(start), date.fromisoformat(end)
+    return [(d + timedelta(days=k)).isoformat() for k in range(cap) if d + timedelta(days=k) <= e]
+
+
+def grid_pick(trips):
+    """(grid, also): FW-0062, the same choice as the pilot card's _rebuild: the crew index can hold two trips on
+    the same days (a trade between reads), so the newest read goes in the grid and a trip on a day already taken
+    goes to `also`. Both sorted by start. A trip without a readable start is left out, as on the card."""
+    ok = [dict(t, end=t["end"] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(t.get("end") or "")) and t["end"] >= t["start"]
+               else t["start"]) for t in trips
+          if t and t.get("pairing") and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(t.get("start") or ""))]
+    ok.sort(key=lambda t: (t["start"], t["pairing"]))
+    ok.sort(key=lambda t: t.get("checked_at") or "", reverse=True)  # stable: newest read first, then start, pairing
+    used, grid, also = set(), [], []
+    for t in ok:
+        ds = _iso_days(t["start"], t["end"], 15)
+        if any(d in used for d in ds):
+            also.append(t)
+            continue
+        used.update(ds)
+        grid.append(t)
+    return sorted(grid, key=lambda t: t["start"]), sorted(also, key=lambda t: (t["start"], t["pairing"]))
