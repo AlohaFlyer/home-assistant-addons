@@ -562,6 +562,17 @@ def publish_pickers():
     pub("pickers", {"count": len(rows), "pickers": rows})
 
 
+# 1.0.0: entity id suffix per discovery oid where the two differ (the ids HA gave these entities from their names
+# before 0.10.3; the dashboard cards and the automations on Pako use them).
+ENTITY_SUFFIX = {
+    "auto_swap": "auto_swap_dry_run", "charter_scan": "scan_crewtrac_charters_now", "crew_scan": "update_schedules",
+    "drop_away": "would_drop", "hunt_seconds": "hunt_check_every", "improved_pay": "improved_pay_gross",
+    "last_new": "last_new_pairing", "normal_minutes": "normal_check_every", "own_trips": "own_trip_times",
+    "rearm": "re_arm", "recall": "recall_o75", "swap_map": "map_swap_pages_read_only",
+    "swap_tests": "swap_test_requests", "trade_away": "would_trade", "tradeboard": "tradeboard_pickups",
+}
+
+
 def discovery(c):
     dev = DEV
     base = {"availability_topic": AVAIL, "device": dev}
@@ -679,10 +690,11 @@ def discovery(c):
                                      "icon": "mdi:account-sync"}),
         ]
     for comp, oid, cfg in ents:
-        # 0.10.3: HA ignores object_id now (entities took the device name, sensor.flight_watcher_*);
-        # default_entity_id sets the id, object_id stays for older HA.
-        cfg = {**base, **cfg, "unique_id": f"{T}_{oid}", "object_id": f"{T}_{oid}",
-               "default_entity_id": f"{comp}.{T}_{oid}"}
+        # 0.10.3: HA ignores object_id now; default_entity_id sets the id, object_id stays for older HA.
+        # 1.0.0: the id keeps the name-based suffix the entity has always had (ENTITY_SUFFIX), which the cards,
+        # automations and recorder history use; the unique_id and topics keep the short oid.
+        eid = f"{T}_{ENTITY_SUFFIX.get(oid, oid)}"
+        cfg = {**base, **cfg, "unique_id": f"{T}_{oid}", "object_id": eid, "default_entity_id": f"{comp}.{eid}"}
         c.publish(f"homeassistant/{comp}/{T}/{oid}/config", json.dumps(cfg), retain=True)
 
 

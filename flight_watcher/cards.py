@@ -72,6 +72,8 @@ def pilot_copy(s, name):
     s = s.replace('"flight-watcher-pilot"', f'"flight-watcher-pilot-{name}"')
     s = re.sub(r'customElements\.define\("(flight-watcher-[a-z-]+)"', rf'customElements.define("\1-{name}"', s)
     s = re.sub(r'customElements\.get\("(flight-watcher-[a-z-]+)"\)', rf'customElements.get("\1-{name}")', s)
+    s = re.sub(r'(customCards\.push\(\{ type: ")(flight-watcher-[a-z-]+)", name: "([^"]*)"',
+               rf'\1\2-{name}", name: "\3 ({name})"', s)
     s = set_doh(s, PLACEHOLDER_DOH)  # not his; his longevity year helper sets his rate
     s = s.replace("(DOH ${DOH} = year ${dohYear(today)}, table caps at 12)", "(set your longevity year here; table caps at 12)")
     s = s.replace("Ryan", "")

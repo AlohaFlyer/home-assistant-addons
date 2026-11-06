@@ -8,7 +8,7 @@ Work top to bottom; tick items off here in the same PR that finishes them.
 0. **Rename to Flight Watcher on Pako (1.0.0).** Code done: new app `flight_watcher` (slug `43b22650_flight_watcher`),
    old `flica_watcher` 0.10.4 hands over /data via `/share/flight_watcher/import/` (`migrate.py` imports it, moves
    `/share/flica_watcher` and `/www/flica`). Pako steps, each its own yes: backup; merge; update old app to 0.10.4
-   (export, no FLICA); rename the 41 MQTT entity ids, 7 helpers and the app automations in the registry so history
+   (export, no FLICA); copy the retained pause / hunt states to `flight_watcher/{pause,hunt}/state`; rename the 41 MQTT entity ids, 7 helpers and the app automations in the registry so history
    follows; update automations, utility meters, `custom_templates`, `packages/flica_wx.yaml`; clear the old
    retained discovery topics; install Flight Watcher, Ryan enters the credentials; recreate the dashboard as
    `flight-watcher`; verify; uninstall the old app; remove `flica_watcher/` and the old `/config/www/flica-*` files.

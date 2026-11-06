@@ -65,7 +65,10 @@ def test_default_instance_unchanged(tmp_path, monkeypatch):
     assert cfgs["homeassistant/binary_sensor/flight_watcher/session_ok/config"]["default_entity_id"] == "binary_sensor.flight_watcher_session_ok"
     for topic, cfg in cfgs.items():
         comp = topic.split("/")[1]
-        assert cfg["default_entity_id"] == f"{comp}.{cfg['object_id']}" == f"{comp}.{cfg['unique_id']}"
+        assert cfg["default_entity_id"] == f"{comp}.{cfg['object_id']}"
+        assert cfg["object_id"] == "flight_watcher_" + W.ENTITY_SUFFIX.get(topic.split("/")[3], topic.split("/")[3])
+    assert cfgs["homeassistant/sensor/flight_watcher/recall/config"]["default_entity_id"] == "sensor.flight_watcher_recall_o75"
+    assert cfgs["homeassistant/sensor/flight_watcher/recall/config"]["unique_id"] == "flight_watcher_recall"
 
 
 def test_instance_prefix_and_ids(tmp_path, monkeypatch):

@@ -1,6 +1,6 @@
 // Flight Watcher: Improved-Pay-Gross by month (Ryan, 2026-11-05). Bars = current version's Pay-Gross minus the awarded
 // line (version .001) for each month, both priced with today's pay settings by the schedule card; dashed line = least
-// squares trend. Reads sensor.flight_watcher_improved_pay (app 0.9.0+). Read only.
+// squares trend. Reads sensor.flight_watcher_improved_pay_gross (app 0.9.0+). Read only.
 class FlightWatcherImprovedCard extends HTMLElement {
   setConfig(c) { this.c = c || {}; }
   set hass(h) {

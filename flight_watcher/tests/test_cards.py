@@ -71,3 +71,26 @@ def test_app_version_read_without_import():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     v = run.app_version(os.path.join(here, "watcher.py"))
     assert v == open(os.path.join(here, "config.yaml")).read().split('version: "')[1].split('"')[0]
+
+
+def test_every_entity_a_card_reads_is_one_discovery_creates(tmp_path, monkeypatch):
+    """1.0.0 review: the cards' entity literals must equal discovery's default_entity_ids (both instances)."""
+    import json as _json
+    import re as _re
+    import sys
+    from test_instance import FakeClient, _load
+    opts = {"username": "u", "password": "p", "log_level": "info", "category_check": "HNL 332 FO"}
+    made = set()
+    for inst in ("", "pilot2"):
+        (tmp_path / (inst or "ryan")).mkdir()
+        W = _load(tmp_path / (inst or "ryan"), monkeypatch, inst, opts)
+        c = FakeClient()
+        W.discovery(c)
+        made |= {_json.loads(p)["default_entity_id"] for t, p, _ in c.msgs if t.endswith("/config") and p}
+        sys.modules.pop("watcher", None)
+    f = cards.build("1", None, ["pilot2"])
+    used = set()
+    for text in f.values():
+        used |= set(_re.findall(r"\b(?:sensor|switch|button|number|select|binary_sensor)\.flight_watcher_[a-z0-9_]+", text))
+    missing = {e for e in used if e not in made and not e.startswith("switch.flight_watcher_rule")}
+    assert not missing, sorted(missing)
