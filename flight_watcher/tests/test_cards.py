@@ -113,3 +113,72 @@ def test_finds_card_time_format_is_browser_independent(tmp_path):
     out = subprocess.run(["node", str(f)], capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout) == ["Nov 5 12:23", "Nov 6 00:05", "", "bad"]
+
+
+def test_pilot_card_draws_rebuilt_month_in_the_schedule_grid(tmp_path):
+    """FW-0002: the crew index's rebuilt trips use the readable schedule's day-by-day grid (synthetic names): FLICA's
+    rows (the day before the bid period to its last day, Oct 31 to Dec 1), one trip per day (two trips on the same
+    days: the newest read in the grid, the other listed under it) and totals over what the grid counts."""
+    import shutil
+    import subprocess
+    if not shutil.which("node"):
+        import pytest
+        pytest.skip("node not installed")
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www", "flight-watcher-pilot-card.js"),
+               encoding="utf-8").read()
+
+    def t(pid, s, e, route, blk, cr, at="", **kw):
+        return {"pairing": pid, "start": s, "end": e, "seat": "FO", "route": route, "checked_at": at, "blk": blk, "credit": cr, **kw}
+    a = {"reconstructed_month": "2026-11", "reconstructed_from": "2026-11-01", "reconstructed_to": "2026-12-01",
+         "reconstructed_coverage_pct": 87.5, "reconstructed": [
+             t("H9001", "2026-10-31", "2026-11-02", "HNL-LAX-HNL", "9:58", "12:34", "2026-11-05T13:56:42", lay="LAX", soft="2:36",
+               crew=[["CA", "Doe, Jane"], ["FO", "Roe, Rick"]]),
+             t("H9005", "2026-11-05", "2026-11-07", "HNL-SEA-HNL", "10:00", "12:00", "2026-11-01T13:10:00"),  # traded away
+             t("H9006", "2026-11-05", "2026-11-06", "HNL-SFO-HNL", "5:00", "6:00", "2026-11-04T09:00:00", soft="1:00"),
+             {**t("H9002", "2026-11-20", "2026-11-20", "HNL-OGG-HNL", "1:00", "5:00"), "seat": "RO"},
+             t("H9003", "2026-11-27", "2026-11-30", "HNL-SYD-HNL", "20:55", "20:55"),
+             t("H9004", "2026-12-01", "2026-12-03", "HNL-NRT-HNL", "16:35", "16:35", "2026-11-06T01:00:00", lay="NRT")]}
+    readable = ([["2026-11-04", "H3826", "HNL"]],
+                [{"trip": "H3826", "start": "2026-11-04", "end": "2026-11-04", "blk": "5:00", "credit": "5:30", "soft": "0:30",
+                  "legs": [{"dow": "WE", "route": "HNL-OGG", "dep": "0800", "arr": "0840", "blk": "0:40"}],
+                  "crew": [["CA", "Doe, Jane"]]}], "2026-11")
+    js = ("globalThis.HTMLElement = class {}; globalThis.customElements = {define() {}}; globalThis.window = {};\n" + src +
+          f"\nconst c = new FlightWatcherPilotCard(); const a = {json.dumps(a)}; const rd = {json.dumps(readable)};\n"
+          "const nob = {...a, reconstructed: a.reconstructed.map((x) => x.pairing === 'H9002' ? {...x, blk: ''} : x)};\n"
+          "const bare = {...a, reconstructed_from: undefined, reconstructed_to: undefined};\n"
+          "const lined = {...bare, month: '2026-11', days: [['2026-10-31', 'H3082', 'LAX'], ['2026-12-01', '', '']]};\n"
+          "console.log(JSON.stringify({g: c._rebuild(a), open: c._recon(a, false), fold: c._recon(a, true), rd: c._grid(...rd),\n"
+          "  nob: c._recon(nob, false), bare: c._rebuild(bare).days.map((d) => d[0]), lined: c._rebuild(lined).days.map((d) => d[0])}));")
+    f = tmp_path / "t.js"
+    f.write_text(js)
+    out = subprocess.run(["node", str(f)], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    r = json.loads(out.stdout)
+    days = {d: (code, lay) for d, code, lay in r["g"]["days"]}
+    assert r["g"]["days"][0][0] == "2026-10-31" and r["g"]["days"][-1][0] == "2026-12-01" and len(days) == 32
+    assert days["2026-10-31"] == ("H9001", "LAX") and days["2026-11-01"] == ("", "-") and days["2026-11-02"] == ("", "HNL")
+    # two trips from Nov 5: the newer read (H9006) is drawn; H9005 does not leak into its box or the day after
+    assert days["2026-11-05"] == ("H9006", "SFO") and days["2026-11-06"] == ("", "HNL") and days["2026-11-07"] == ("", "")
+    assert [x["pairing"] for x in r["g"]["also"]] == ["H9005"]
+    assert days["2026-11-20"] == ("H9002", "HNL")  # a day trip: base, like FLICA
+    assert days["2026-11-27"] == ("H9003", "SYD") and days["2026-11-30"] == ("", "HNL")  # out and back: the outstation
+    assert days["2026-12-01"] == ("H9004", "NRT")  # the bid period's last day (a 'D1' trip): kept, open at the bottom
+    assert days["2026-11-10"] == ("", "")
+    it = r["g"]["items"][0]
+    assert (it["trip"], it["blk"], it["credit"], it["soft"], it["seat"]) == ("H9001", "9:58", "12:34", "2:36", "FO")
+    assert [x["route"] for x in it["legs"]] == ["HNL-LAX", "LAX-HNL"]
+    h = r["open"]
+    assert h.count("<tr") == 33 and h.count(" bxs") == 5 and h.count(" bxe") == 4
+    assert h.count(' bx"') + h.count(" bx ") == 11  # Oct 31-Nov 2, Nov 5-6, Nov 20, Nov 27-30, Dec 1
+    assert "CA Doe, Jane · FO Roe, Rick" in h and "2 legs" in h and 'title="crew read 11-05 13:56 HST"' in h
+    assert "November 2026 · 87.5% of trips read · updated 00/06/12/18 HST" in h
+    assert "Also on crew lists" in h and "<b>H9005</b> Nov 5-7 FO, read 11-01 13:10" in h
+    # totals: the 4 trips in the bid period as drawn; the overlap and the Oct 31 row are named, not added
+    assert 'Trips<b>4</b> <small class="u">(+1 overlapping, +1 before Nov 1: not totaled)</small>' in h
+    assert "Block<b>43:30</b>" in h and "Credit<b>48:30</b>" in h
+    assert "Block<b>?</b>" in r["nob"] and "Credit<b>48:30</b>" in r["nob"]  # a trip without block: no block total
+    # a readable month: the rebuilt grid takes FLICA's first and last day; an old publish: month end or the last trip
+    assert (r["lined"][0], r["lined"][-1], len(r["lined"])) == ("2026-10-31", "2026-12-01", 32)
+    assert (r["bare"][0], r["bare"][-1]) == ("2026-10-31", "2026-12-03")
+    assert r["fold"].startswith('<details class="rb"><summary>') and not h.startswith("<details")
+    assert 'title="WE HNL-OGG 0800-0840 0:40">1 legs</span>' in r["rd"] and "CA Doe, Jane" in r["rd"]
