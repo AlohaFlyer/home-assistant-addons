@@ -373,3 +373,20 @@ def test_tickets_card_one_form_bug_or_feature():
             assert (t["kind"], t["steps"], t["expected"]) == ("bug", "Open the grid", "")
         finally:
             b.close()
+
+
+def test_schedule_card_keeps_pay_labels_with_values():
+    """FW-0008 / FW-0009 (iPhone): the version bar puts Awarded-Pay-Gross and Improved-Pay-Gross in one group that wraps
+    as a unit, and the totals put Pay-Gross and Pay-Net in one row that never wraps; every label stays with its value."""
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www", "flight-watcher-schedule-card.js"),
+               encoding="utf-8").read()
+    # totals: hours, pay, days groups; Pay-Gross and Pay-Net share the unbreakable pay group
+    assert 'tgrp("tpay", [["Pay-Gross", usd(sum.gross)], ["Pay-Net", usd(sum.net)]])' in src
+    assert '<span class="ti"><span class="k">${k}</span> ${v}</span>' in src
+    assert ".tot .tpay{flex-wrap:nowrap}.tot .ti{white-space:nowrap}" in src
+    # version bar: the arrows group, then the pay group holding both labelled values
+    vb = src[src.index('vhtml = `<div class="vbar">'):src.index("const chg = (shown.changes")]
+    pay = vb[vb.index('<span class="vg vpay">'):]
+    assert pay.index("Awarded-Pay-Gross") < pay.index("Improved-Pay-Gross") and pay.count('<span class="nw">') == 2
+    assert '<span class="nw">Pay-Gross ${usd(cg)}</span>' in vb
+    assert ".vbar{display:flex;flex-wrap:wrap" in src and ".vbar .nw{white-space:nowrap}" in src
