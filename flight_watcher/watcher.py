@@ -40,7 +40,7 @@ import pay as PAY
 import seniority as SEN
 import wwwfiles as WF
 
-VERSION = "1.4.4"
+VERSION = "1.4.5"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -1538,36 +1538,64 @@ def seniority_data():
 
 def seniority_refresh():
     """FW-0062: the Web UI parses the seniority list as it is uploaded. When seniority.json is missing or was written
-    by an older parser (SEN.PARSER), the list is read again here: the text copy of the file seniority.json names, else
-    (no seniority.json, or its text copy is gone) the newest seniority_<date>.txt. Every such file is one that gave
-    pilot rows when it was uploaded: the Web UI deletes a refused upload (web._save_seniority). The file's signature is
-    recorded before it is read, so a file that is slow or fails is not read again at every start. Default instance
-    only, so the file has one writer; counts only in the log."""
+    by an older parser (SEN.PARSER), its sources are read again: the dedicated list (the text copy of the file
+    seniority.json names, else (no seniority.json, or its text copy is gone) the newest seniority_<date>.txt) and,
+    1.4.5 (Ryan, Nov 6: the monthly award packet lists every pilot's date of hire), the award (the month
+    seniority.json names, else the newest <YYYY-MM>_award.txt), so an award uploaded before 1.4.5 is read for dates
+    of hire at the first start. web.award_seniority applies the merge rules (25 pilot rows or more; the later date on
+    top). Every list file is one that gave pilot rows when it was uploaded: the Web UI deletes a refused upload
+    (web._save_seniority). Each file's signature is recorded before it is read (an award's under 'sen:<file>', its own
+    key belongs to uploads_check), so a file that is slow or fails is not read again at every start. Default instance
+    only, so the files have one writer; counts only in the log."""
     if INSTANCE:
         return
     try:
-        txts = sorted(f for f in os.listdir(UPLOADS_SHARED) if re.fullmatch(r"seniority_\d{4}-\d{2}-\d{2}\.txt", f))
+        names = os.listdir(UPLOADS_SHARED)
     except OSError:
         return
     cur = seniority_data()
-    if not txts or (cur and int(cur.get("parser") or 0) >= SEN.PARSER):
+    if cur and int(cur.get("parser") or 0) >= SEN.PARSER:
         return
-    own = re.sub(r"\.pdf$", ".txt", str(cur.get("file") or ""))
-    f = own if own in txts else txts[-1]
-    path = os.path.join(UPLOADS_SHARED, f)
+    lists = sorted(f for f in names if re.fullmatch(r"seniority_\d{4}-\d{2}-\d{2}\.txt", f))
+    awards = sorted(f for f in names if re.fullmatch(r"\d{4}-\d{2}_award\.txt", f))
+    if not lists and not awards:
+        return
+    out = os.path.join(UPLOADS_SHARED, "seniority.json")
+    lst, aw = web.seniority_sources(out)
     done = S.setdefault("uploads_done", {})
-    sig = f"{os.path.getmtime(path):.0f}|{SEN.PARSER}"
-    if done.get(f) == sig:
-        return
-    done[f] = sig
-    save_state(S)
-    same = cur.get("file") == f[:-4] + ".pdf"
-    try:
-        d = web.seniority_write(path, f[:-4] + ".pdf", cur.get("uploaded_at") if same else f"{f[10:20]}T00:00:00",
-                                (cur.get("list_date") or "") if same else "", os.path.join(UPLOADS_SHARED, "seniority.json"))
-        log.info("seniority list %s: %s", f, f"{d['count']} pilots read again" if d else "no pilot rows")
-    except Exception as e:
-        log.info("seniority list %s not read: %s", f, e)
+
+    def fresh(key, path):  # True once per file version and parser: the signature is stored before the read
+        sig = f"{os.path.getmtime(path):.0f}|{SEN.PARSER}"
+        if done.get(key) == sig:
+            return False
+        done[key] = sig
+        save_state(S)
+        return True
+
+    if lists and int((lst or {}).get("parser") or 0) < SEN.PARSER:
+        own = re.sub(r"\.pdf$", ".txt", str((lst or {}).get("file") or ""))
+        f = own if own in lists else lists[-1]
+        path = os.path.join(UPLOADS_SHARED, f)
+        if fresh(f, path):
+            same = (lst or {}).get("file") == f[:-4] + ".pdf"
+            try:
+                d = web.seniority_write(path, f[:-4] + ".pdf", lst.get("uploaded_at") if same else f"{f[10:20]}T00:00:00",
+                                        (lst.get("list_date") or "") if same else "", out)
+                log.info("seniority list %s: %s", f, f"{d['count']} pilots read again" if d else "no pilot rows")
+            except Exception as e:
+                log.info("seniority list %s not read: %s", f, e)
+    if awards and int((aw or {}).get("parser") or 0) < SEN.PARSER:
+        own = f"{(aw or {}).get('award_month')}_award.txt"
+        f = own if own in awards else awards[-1]
+        path = os.path.join(UPLOADS_SHARED, f)
+        if fresh("sen:" + f, path):
+            same = (aw or {}).get("file") == f[:-4] + ".pdf"
+            try:
+                info = web.award_seniority(path, f[:7], f[:-4] + ".pdf",
+                                           aw.get("uploaded_at") if same else web.hst_iso(os.path.getmtime(path)), out)
+                log.info("award %s dates of hire: %d pilot rows (%s), %s", f, info["rows"], info["reader"], info["decision"])
+            except Exception as e:
+                log.info("award %s dates of hire not read: %s", f, e)
 
 
 TAX = {"at": 0.0, "pct": None}
@@ -1602,7 +1630,8 @@ def pilot_pay_line(trips, emp, name, start, end):
         if g is not None:
             t["gross"] = g
     line.update(list_status="ok" if rec else ("not_on_list" if data else "none"), list_date=data.get("list_date") or "",
-                list_newest_doh=data.get("newest_doh") or "", seat_list=(rec or {}).get("seat") or "")
+                list_newest_doh=data.get("newest_doh") or "", seat_list=(rec or {}).get("seat") or "",
+                list_source=(data.get("source") or "list") if data else "")
     return line
 
 

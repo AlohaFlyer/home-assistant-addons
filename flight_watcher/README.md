@@ -14,7 +14,7 @@ publishes what it finds to Home Assistant over MQTT.
 - One session: FLICA allows one login. When you log in elsewhere the Watcher steps aside for 30 min (doubling on
   repeat). A failed login, a layout change or anything unexpected parks it until Re-arm.
 - Schedule: your line, numbered schedule versions (MM.NNN), FAR 117 columns, pay from the PWA tables, pairing
-  details, and the monthly award and pairings PDFs uploaded on the Web UI.
+  details, and the monthly award and pairings PDFs uploaded on the dashboard (or the Web UI).
 - Request decisions: reads FLICA's Open Time Requests list and the Tradeboard's My Requests page (crew-to-crew
   trades), and pushes each Approved or Denied request once, with Pay-Gross.
 - Recall / Over 75: checks each award against your line (PWA 22.G.2) and flags a possible miss.
@@ -24,18 +24,47 @@ publishes what it finds to Home Assistant over MQTT.
 
 ## Settings
 
-Enter the FLICA and CrewTrac logins and your last name on the dashboard **Settings card** (sealed in the browser,
-so HA's history and the MQTT broker only hold ciphertext). The Web UI Settings form and the app's Configuration tab
-work too; a saved value wins over the Configuration tab. Credentials never go in git.
+Enter the FLICA and CrewTrac logins and your last name on the dashboard **Settings card** (Credentials, on the
+Settings tab; sealed in the browser, so HA's history and the MQTT broker only hold ciphertext). The Web UI Settings
+form and the app's Configuration tab work too; a saved value wins over the Configuration tab. Credentials never go in
+git.
+
+## Uploads on the dashboard (1.4.5)
+
+The monthly award, the pilot pairings package and the pilot seniority list are uploaded from the dashboard: Settings
+tab, the **uploads card** (`custom:flight-watcher-uploads-card`) under Credentials and above Tickets. It is for the
+Home Assistant admin only: anyone else sees "Uploads are for the Home Assistant admin." and the card makes no call.
+
+- Pick what (Monthly award, Pairings package, Pilot seniority list), the bid period (it starts on next month, HST;
+  the seniority list has no bid period and takes an optional List date instead) and the PDF, then Upload. The line
+  under the button shows the progress and the app's answer (for an award, how many dates of hire it read).
+- "On file" lists every PDF kept (what, bid period, size, upload time HST, and whether its text was read), then the
+  dates of hire on file: how many pilots, from the seniority list or from which award, its date, and how many more
+  were kept from the list under a later award.
+- How it reaches the app: the same way Home Assistant's own app panels do. It asks the Supervisor (WebSocket
+  `supervisor/api`) for the app's ingress address (`/addons/<slug>/info`, card option `slug`, default
+  `43b22650_flight_watcher`) and an ingress session (`/ingress/session`), sets it as the `ingress_session` cookie
+  (path `/api/hassio_ingress/`), re-validates it every 5 minutes while the card is open (`/ingress/validate_session`),
+  then calls the Web UI's JSON endpoints: `GET api/uploads` and `POST api/upload` (the same form, checks and 25 MB
+  limit as the Web UI page). Only the Supervisor's ingress proxy may connect to them, like the page.
 
 ## Web UI and rules
 
 The Web UI (sidebar "Flight Watcher Rules", an HA Ingress panel for HA admins) has Settings, Monthly PDFs, Rules and
 Recent finds.
 
-- Monthly PDFs: pick a month and a kind, then the PDF. Uploads go to `/share/flight_watcher/uploads` (never in git)
-  with a `pdftotext -layout` text copy. The award and the pairings package are per month (`<YYYY-MM>_award.pdf`,
-  `<YYYY-MM>_pairings.pdf`).
+- Monthly PDFs: pick a month and a kind, then the PDF (the dashboard uploads card above does the same). Uploads go to
+  `/share/flight_watcher/uploads` (never in git) with a `pdftotext -layout` text copy. The award and the pairings
+  package are per month (`<YYYY-MM>_award.pdf`, `<YYYY-MM>_pairings.pdf`).
+- **Dates of hire from the award** (1.4.5, Ryan: the monthly award packet lists every pilot's date of hire): an
+  uploaded award is also read for dates of hire, either from a seniority section in the seniority list's layout or
+  from the pilot lines (`SSSSS / EMP`) with the date labeled DOH, HIRE DATE or DATE OF HIRE (an unlabeled date is
+  never taken). With 25 pilot rows or more it is kept as `seniority_award.json` and merged into `seniority.json`:
+  the award's bid period (or a list date printed in it) against the seniority list's date (typed, printed, else its
+  upload day). The later one is on top and a tie goes to the list. An award on top keeps the list's other pilots
+  under it (`seniority_list.json`); a newer list stands alone. An award with fewer rows, or an older award month
+  than the one on file, changes nothing, so it never overwrites a good list. An award already on file when 1.4.5
+  starts is read once at the start. The log has counts only.
 - **Pilot seniority list** (FW-0062): kind "Pilot seniority list" needs no month (the Month box is ignored). It is
   saved as `seniority_<YYYY-MM-DD>.pdf` (the HST upload day) and read at once into
   `/share/flight_watcher/uploads/seniority.json`: each pilot's seniority number, name, seat, equipment and date of
