@@ -106,11 +106,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
       if (!j) { this._pk[key] = false; return; }
       const [y, mo] = key.split("-").map(Number);
       const nxt = new Date(Date.UTC(y, mo, 1)).toISOString().slice(0, 7);
+      const prv = new Date(Date.UTC(y, mo - 2, 1)).toISOString().slice(0, 7);
+      // FW-0014: a period that starts last month ("start": "2026-12-31" in January): a day from its first day up is last month's
+      const sd = typeof j.start === "string" && j.start.slice(0, 7) === prv ? Number(j.start.slice(8, 10)) : 99;
       const ix = Object.fromEntries(j.cols.map((c, i) => [c, i]));
       const map = {};
       for (const r of j.rows) {
         const days = String(r[ix.days]).split(" ").filter(Boolean)
-          .map((d) => (d[0] === "D" ? `${nxt}-${d.slice(1).padStart(2, "0")}` : `${key}-${d.padStart(2, "0")}`));
+          .map((d) => (d[0] === "D" ? `${nxt}-${d.slice(1).padStart(2, "0")}` : `${Number(d) >= sd ? prv : key}-${d.padStart(2, "0")}`));
         map[r[ix.id]] = { id: r[ix.id], report: r[ix.report], dep: r[ix.dep], release: r[ix.release], relDays: r[ix.rel_days],
           firstDuty: r[ix.first_duty_min], route: r[ix.route], credit: r[ix.credit], tafb: r[ix.tafb], days: new Set(days),
           block: ix.block != null ? r[ix.block] : "", crew: ix.crew != null ? r[ix.crew] : "" };

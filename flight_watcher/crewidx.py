@@ -10,7 +10,7 @@ import os
 import re
 from datetime import date, datetime, timedelta
 
-from pot import CREW_RE, soft_time
+from pot import CREW_RE, clean_name, soft_time
 
 CREW_FROM = date(2026, 10, 31)  # nothing before this is read
 PILOT_POS = ("CA", "FO", "RO", "SO")
@@ -20,6 +20,7 @@ SOON_H = 72
 SOON_STALE_H = 6
 FAIL_RETRY_H = 24
 FAIL_MAX_PAST = 3  # a departed instance that keeps failing is given up after this many tries
+HOLD_AFTER = 3  # FW-0016: this many reads in a row naming no pilot hold a bid period until names appear
 
 
 def _ym(month):
@@ -106,6 +107,9 @@ def instances(pdir, crew_from=CREW_FROM):
             continue
         lists = [str(r[ix["days"]] or "").split() for r in rows if len(r) > ix["days"]]
         prev_from = file_prev_from(month, lists)
+        st = str(d.get("start") or "")  # FW-0014: pdfs.py writes the period's first day; it settles '31' in January
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", st) and st < f"{month}-01":
+            prev_from = int(st[8:])
         for r in rows:
             try:
                 pid = str(r[ix["id"]]).strip()
@@ -123,7 +127,7 @@ def instances(pdir, crew_from=CREW_FROM):
                                    "report": str(r[ix["report"]]) if "report" in ix else "",
                                    "route": str(r[ix["route"]]) if "route" in ix else "",
                                    "credit": str(r[ix["credit"]] or "") if "credit" in ix else "",
-                                   "days": max(rel, 0) + 1, "month": dt.strftime("%Y-%m")})
+                                   "days": max(rel, 0) + 1, "month": dt.strftime("%Y-%m"), "period": month})
     return out
 
 
@@ -134,20 +138,55 @@ def departs(inst):
     return d.replace(hour=int(m.group(1)), minute=int(m.group(2))) if m and int(m.group(1)) < 24 else d
 
 
+def has_crew(crew):
+    """FW-0016: True when a crew line names at least one pilot (an OPEN seat or a flight attendant is not one).
+    Before the award FLICA's pairing pages list nobody, and such a read is not counted as read."""
+    return any(c.get("pos") in PILOT_POS and c.get("name") and c.get("name") != "OPEN" for c in crew or [])
+
+
+def period_of(it):
+    """The bid period (pairing file month) an instance came from; its calendar month for older records."""
+    return it.get("period") or it.get("month") or str(it.get("date") or "")[:7]
+
+
+def held_periods(insts, rows):
+    """FW-0016: bid periods whose last HOLD_AFTER reads (by checked_at) all named no pilot: the award is not out
+    yet, so the crawl reads one page of such a period per run (a probe) instead of all of them."""
+    reads = {}
+    for k, it in insts.items():
+        r = rows.get(k) or {}
+        if r.get("status") in ("ok", "empty") and r.get("checked_at"):
+            reads.setdefault(period_of(it), []).append((r["checked_at"], r["status"]))
+    return {p for p, rs in reads.items()
+            if len(rs) >= HOLD_AFTER and all(st == "empty" for _, st in sorted(rs)[-HOLD_AFTER:])}
+
+
 def queue(insts, rows, now, run_started=None):
-    """Keys to read, in order: (1) never checked, soonest first (past dates too); (1b) failed more than
-    FAIL_RETRY_H ago; (2) departing within SOON_H and checked more than SOON_STALE_H ago; (2b) departed
-    but last checked before departure (one read for the final crew); (3) the oldest-checked future ones.
-    Departed instances checked after departure are never re-read; nothing read in this run is read again.
+    """Keys to read, in order: (0) FW-0016: one probe per held bid period (held_periods) per run, its soonest
+    future instance not yet read with crew; (1) never checked, soonest first (past dates too); (1b) failed or
+    read with no crew names (in a period that is not held) more than FAIL_RETRY_H ago; (2) departing within
+    SOON_H and checked more than SOON_STALE_H ago; (2b) departed but last checked before departure (one read
+    for the final crew); (3) the oldest-checked future ones. Nothing else of a held period is read. Departed
+    instances checked after departure are never re-read; nothing read in this run is read again.
     `now` and checked_at are HST wall clock (naive ISO)."""
     nowi = now.isoformat()
     soon = (now + timedelta(hours=SOON_H)).isoformat()
     stale = (now - timedelta(hours=SOON_STALE_H)).isoformat()
     retry = (now - timedelta(hours=FAIL_RETRY_H)).isoformat()
+    held = held_periods(insts, rows)
+    probe, probed = {}, set()
     c1, c1b, c2, c2b, c3 = [], [], [], [], []
     for k, it in insts.items():
         r = rows.get(k)
         dep = departs(it).isoformat()
+        per = period_of(it)
+        if per in held:
+            at = (r or {}).get("checked_at") or ""
+            if run_started and at >= run_started:
+                probed.add(per)  # this period had its read in this run
+            elif dep > nowi and (r or {}).get("status") != "ok" and (per not in probe or dep < probe[per][0]):
+                probe[per] = (dep, k)
+            continue
         if not r or not r.get("checked_at"):
             c1.append((dep, k))
             continue
@@ -167,7 +206,8 @@ def queue(insts, rows, now, run_started=None):
                 c2.append((dep, k))
             continue
         c3.append((at, dep, k))
-    return ([k for _, k in sorted(c1)] + [k for _, k in sorted(c1b)] + [k for _, k in sorted(c2)]
+    c0 = sorted(v for p, v in probe.items() if p not in probed)
+    return ([k for _, k in c0] + [k for _, k in sorted(c1)] + [k for _, k in sorted(c1b)] + [k for _, k in sorted(c2)]
             + [k for _, k in sorted(c2b)] + [k for *_, k in sorted(c3)])
 
 
@@ -176,18 +216,22 @@ NAME_RE = re.compile(r"^([a-z][a-z'.\- ]*?(?: jr| sr| ii| iii)?,\s*[a-z][a-z'.\-
 
 def crew_line(text):
     """[{pos, name, emp}] from a pairing page's crew line, in page order (OPEN seats kept, name 'OPEN', emp '');
-    None when the page has no crew line. Same regex as pot.parse_crew / crew_ids."""
+    None when the page has no crew line. Same regex as pot.parse_crew / crew_ids. FW-0017: FLICA's check pilot
+    tag ('Doe, Ckp Jane') is taken out of the name and kept as ckp: true."""
     m = re.search(r"crew\s*:\s*(.*)$", text or "", re.I | re.S)
     if not m:
         return None
     out = []
     for pos, emp, name in CREW_RE.findall(m.group(1)):
-        name = name.strip(" ,")
+        name, ckp = clean_name(name)
         if name.lower() == "open":
             out.append({"pos": pos.upper(), "name": "OPEN", "emp": ""})
             continue
         nm = NAME_RE.match(name)  # the last name on the line can run into page text after it
-        out.append({"pos": pos.upper(), "name": (nm.group(1) if nm else name[:40]).strip().title(), "emp": emp or ""})
+        c = {"pos": pos.upper(), "name": (nm.group(1) if nm else name[:40]).strip().title(), "emp": emp or ""}
+        if ckp:
+            c["ckp"] = True
+        out.append(c)
     return out
 
 
@@ -200,10 +244,14 @@ def coverage(insts, rows, month=None, date_from=None, date_to=None):
     return len(ks), ok, round(100.0 * ok / len(ks), 1) if ks else 0.0
 
 
-def render_month(month, insts, rows, now_s):
-    """Markdown for one month: header, then one section per pilot (sorted by name) with a table of trips."""
+def render_month(month, insts, rows, now_s, held=None):
+    """Markdown for one month: header, then one section per pilot (sorted by name) with a table of trips.
+    FW-0016: pages read with no crew names are counted apart, and a held bid period (held_periods) says so."""
     n, ok, pct = coverage(insts, rows, month)
     fails = sum(1 for k, it in insts.items() if it["month"] == month and (rows.get(k) or {}).get("status") == "fail")
+    empty = sum(1 for k, it in insts.items() if it["month"] == month and (rows.get(k) or {}).get("status") == "empty")
+    held = held_periods(insts, rows) if held is None else held
+    waiting = sorted({period_of(it) for it in insts.values() if it["month"] == month and period_of(it) in held})
     pilots = {}
     for k, it in insts.items():
         r = rows.get(k) or {}
@@ -216,15 +264,28 @@ def render_month(month, insts, rows, now_s):
             p = pilots.setdefault(pid, {"name": c["name"], "emp": c.get("emp") or "", "trips": []})
             p["trips"].append((it["date"], it["pairing"], c["pos"], it.get("route") or "", it.get("days") or 1))
     lines = [f"# Crew index {month}", "",
-             f"Coverage {pct}% ({ok} of {n} trip instances read, {fails} failed). Updated {now_s} HST.",
+             f"Coverage {pct}% ({ok} of {n} trip instances read, {fails} failed, {empty} with no crew names yet). "
+             f"Updated {now_s} HST.",
              "Rebuilt from the crew lines on FLICA pairing pages (read only). A trip picked up or dropped after",
              "it was read shows the crew at the time of the read.", ""]
+    for p in waiting:
+        lines += [f"Waiting for the award: the {p} bid period's pages name no crew yet. One page is read per run",
+                  "until names appear, then the whole period.", ""]
     for p in sorted(pilots.values(), key=lambda p: (p["name"], p["emp"])):
         lines += [f"### {p['name']} ({p['emp'] or '?'})", "", "| Date | Pairing | Seat | Route | Days |",
                   "|---|---|---|---|---|"]
         lines += [f"| {d} | {pr} | {pos} | {rt} | {dy} |" for d, pr, pos, rt, dy in sorted(p["trips"])]
         lines.append("")
     return "\n".join(lines)
+
+
+def _file_bound(pdir, month, key):
+    """FW-0014: the bid period's 'start' / 'end' (ISO) that pdfs.py writes into the pairing file, or ''."""
+    try:
+        v = str(json.load(open(os.path.join(pdir, f"pairings_{month}.json"))).get(key) or "")
+    except (OSError, ValueError, TypeError, AttributeError):
+        return ""
+    return v if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v) else ""
 
 
 def _day_lists(pdir, month):
@@ -251,6 +312,9 @@ def period_start(pdir, month):
     """First day of `month`'s bid period, judged from the pairing files the way instances() places their days:
     a last-month day in this month's file ('31' in November = Oct 31), else the day after the previous month's
     period end when that runs into this month ('D1' in November's file: December starts Dec 2), else the 1st."""
+    own = _file_bound(pdir, month, "start")
+    if own:
+        return own
     y, m = _ym(month)
     py, pm = _shift(y, m, -1)
     pf = file_prev_from(month, _day_lists(pdir, month) or [])
@@ -269,6 +333,9 @@ def period_end(pdir, month):
     """Last day of `month`'s bid period (FW-0002): the largest next-month day in this month's file ('D1' in
     November = Dec 1), else the day before the next month's period start when that is in this month ('31' in
     January's file: December ends Dec 30), else the month's last day."""
+    own = _file_bound(pdir, month, "end")
+    if own:
+        return own
     y, m = _ym(month)
     ny, nm = _shift(y, m, 1)
     nxt = f"{ny}-{nm:02d}"

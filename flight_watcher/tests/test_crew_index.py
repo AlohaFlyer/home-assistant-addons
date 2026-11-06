@@ -104,7 +104,7 @@ def test_render_month():
             "H9003|2026-11-12": {"status": "fail"}}
     md = CI.render_month("2026-11", ins, rows, "2026-11-10 12:00")
     assert md.startswith("# Crew index 2026-11")
-    assert "Coverage 66.7% (2 of 3 trip instances read, 1 failed)" in md
+    assert "Coverage 66.7% (2 of 3 trip instances read, 1 failed, 0 with no crew names yet)" in md
     assert md.index("### Doe, Jane (10001)") < md.index("### Roe, Rick (10002)")
     assert "Moe" not in md and "OPEN" not in md
     sec = md.split("### Doe, Jane (10001)")[1].split("###")[0]
@@ -259,3 +259,149 @@ def test_rebuilt_keeps_a_trip_running_into_the_grid():
     got = CI.pilot_trips(insts, rows, start_from="2026-12-01", end_to="2026-12-31")
     assert [(x["pairing"], x["start"], x["end"]) for x in got] == [
         ("H9120", "2026-11-30", "2026-12-03"), ("H9201", "2026-12-10", "2026-12-12")]
+
+
+# ---------------------------------------------------------------- FW-0017: FLICA's CKP check pilot tag
+CKP_TXT = "pairing h9001 crew: ca 10001 doe jr, ckp jane ca 10002 roe, rick fo open"
+
+
+def test_ckp_tag_out_of_names():
+    import pot
+    assert CI.crew_line(CKP_TXT) == [{"pos": "CA", "name": "Doe Jr, Jane", "emp": "10001", "ckp": True},
+                                     {"pos": "CA", "name": "Roe, Rick", "emp": "10002"},
+                                     {"pos": "FO", "name": "OPEN", "emp": ""}]
+    assert CI.crew_line("crew: fo 10003 poe, ckp pat a back to top")[0] == {"pos": "FO", "name": "Poe, Pat A", "emp": "10003", "ckp": True}
+    assert pot.parse_crew(CKP_TXT) == [("CA", "Doe Jr, Jane"), ("CA", "Roe, Rick"), ("FO", "OPEN")]
+    assert pot.crew_ids(CKP_TXT) == {"Doe Jr, Jane": "10001", "Roe, Rick": "10002"}
+    assert pot.parse_detail(f"<html><p>{CKP_TXT}</p></html>")["captain"] == "Doe Jr, Jane (10001)"
+    assert pot.clean_name("DOE, CKP JANE") == ("DOE, JANE", True) and pot.clean_name("Ckpson, Jane") == ("Ckpson, Jane", False)
+    assert pot.clean_name("Ckp Doe, Jane") == ("Doe, Jane", True) and pot.clean_name("Doe,Ckp Jane") == ("Doe, Jane", True)
+    # a pot roster stored with the tag is the same crew as the page read without it
+    assert pot.pickup_diff([("CA", "Doe, Ckp Jane"), ("FO", "OPEN")], [("CA", "Doe, Jane"), ("FO", "OPEN")])[0] == "open"
+    assert pot.pickup_diff([("FO", "Doe, Ckp Jane")], [("FO", "Doe, Jane")])[0] == "unchanged"
+
+
+def test_crew_dir_merges_ckp_forms(tmp_path):
+    """FW-0017: 'Doe, Ckp Jane' and 'Doe, Jane' are one person in the directory, the index and the pickers; the
+    one-shot repair (Store.crew_fix) cleans what was stored before. FW-0016: it also sets a stored 'ok' read
+    whose crew names no pilot to 'empty'."""
+    from store import Store
+    db = Store(str(tmp_path / "t.db"))
+    assert db.remember_crew(CKP_TXT) == 2
+    db.remember_crew("crew: ca 10001 doe jr, jane")
+    assert db.find_crew("doe jane") == [{"emp": "10001", "name": "Doe Jr, Jane", "pos": "CA"}]
+    db.remember_person("10004", "Moe, Ckp Max", "FO")
+    assert db.find_crew("10004")[0]["name"] == "Moe, Max"
+    # rows as an earlier version stored them
+    with db.lock:
+        db.db.execute("UPDATE crew_dir SET name='Doe Jr, Ckp Jane' WHERE emp='10001'")
+        db.db.execute("INSERT INTO pickers(emp,name,pos,n,total_s,last_at) VALUES('10002','Roe, Ckp Rick','FO',1,60,'x')")
+    db.crew_put("H9001|2026-11-02", "H9001", "2026-11-02", "2026-11-02", "", [
+        {"pos": "CA", "name": "Doe Jr, Ckp Jane", "emp": "10001"}, {"pos": "FO", "name": "OPEN", "emp": ""}],
+        "2026-11-01T10:00:00", "ok")
+    db.crew_put("H9101|2026-12-03", "H9101", "2026-12-03", "2026-12-03", "", [], "2026-11-01T10:00:05", "ok")
+    db.crew_put("H9102|2026-12-04", "H9102", "2026-12-04", "2026-12-04", "", [{"pos": "FO", "name": "OPEN", "emp": ""}],
+                "2026-11-01T10:00:09", "ok")
+    assert db.crew_fix(CI.has_crew) == (4, 2)  # crew_dir, crew_emp, pickers, the crew line; two pre-award reads
+    assert db.find_crew("doe")[0]["name"] == "Doe Jr, Jane" and db.picker_stats()["10002"]["name"] == "Roe, Rick"
+    assert db.crew_by_emp("10001")[0]["name"] == "Doe Jr, Jane"
+    rows = db.crew_rows()
+    assert rows["H9001|2026-11-02"]["crew"][0] == {"pos": "CA", "name": "Doe Jr, Jane", "emp": "10001", "ckp": True}
+    assert rows["H9001|2026-11-02"]["status"] == "ok"
+    assert rows["H9101|2026-12-03"]["status"] == "empty" and rows["H9102|2026-12-04"]["status"] == "empty"
+    assert rows["H9101|2026-12-03"]["checked_at"] == "2026-11-01T10:00:05"
+    assert db.crew_fix(CI.has_crew) == (0, 0)  # nothing left to repair
+
+
+# ---------------------------------------------------------------- FW-0016: pages read before the award
+def test_has_crew():
+    assert not CI.has_crew([]) and not CI.has_crew(None)
+    assert not CI.has_crew([{"pos": "CA", "name": "OPEN", "emp": ""}, {"pos": "FA", "name": "Moe, Mo", "emp": "20001"}])
+    assert CI.has_crew([{"pos": "FO", "name": "Doe, Jane", "emp": "10001"}])
+
+
+def _per(**kw):
+    """Instances like _ins, with the bid period they came from: key=(date, period)."""
+    return {k: {"key": k, "pairing": k.split("|")[0], "date": d, "end_date": d, "report": "08:00", "route": "",
+                "days": 1, "month": d[:7], "period": p} for k, (d, p) in kw.items()}
+
+
+def test_held_period_gets_one_probe_a_run():
+    now = datetime(2026, 11, 10, 12, 0)
+    ins = _per(**{"A|2026-12-03": ("2026-12-03", "2026-12"), "B|2026-12-04": ("2026-12-04", "2026-12"),
+                  "C|2026-12-05": ("2026-12-05", "2026-12"), "D|2026-12-06": ("2026-12-06", "2026-12"),
+                  "E|2026-12-07": ("2026-12-07", "2026-12"), "N|2026-11-20": ("2026-11-20", "2026-11"),
+                  "M|2026-12-01": ("2026-12-01", "2026-11")})
+    empty = lambda at: {"status": "empty", "checked_at": at, "tries": 1}
+    ok = lambda at: {"status": "ok", "checked_at": at, "tries": 0}
+    rows = {"B|2026-12-04": empty("2026-11-10T06:00:01"), "C|2026-12-05": empty("2026-11-10T06:00:04"),
+            "D|2026-12-06": empty("2026-11-10T06:00:07"), "M|2026-12-01": ok("2026-11-10T06:00:10")}
+    # December's last 3 reads named nobody: held. M (Dec 1) is November's period and keeps it unheld.
+    assert CI.held_periods(ins, rows) == {"2026-12"}
+    q = CI.queue(ins, rows, now, "2026-11-10T12:00:00")
+    assert q == ["A|2026-12-03", "N|2026-11-20", "M|2026-12-01"]  # one probe (soonest not read with crew), then the rest
+    # December had its read in this run: no second probe
+    rows2 = {**rows, "A|2026-12-03": empty("2026-11-10T12:00:30")}
+    assert CI.queue(ins, rows2, now, "2026-11-10T12:00:00") == ["N|2026-11-20", "M|2026-12-01"]
+    # fewer than HOLD_AFTER empty reads do not hold a period; empties are read again after FAIL_RETRY_H
+    few = {k: v for k, v in rows.items() if k != "D|2026-12-06"}
+    assert CI.held_periods(ins, few) == set()
+    assert CI.queue(ins, few, now, "2026-11-10T12:00:00")[:4] == ["N|2026-11-20", "A|2026-12-03", "D|2026-12-06", "E|2026-12-07"]
+    assert "B|2026-12-04" not in CI.queue(ins, few, now) and "B|2026-12-04" in CI.queue(ins, few, datetime(2026, 11, 11, 7, 0))
+    # the probe names crew: the period is no longer held
+    rows3 = {**rows, "A|2026-12-03": ok("2026-11-10T12:00:30")}
+    assert CI.held_periods(ins, rows3) == set()
+    # coverage counts only reads with crew; the Markdown says the period waits for the award
+    assert CI.coverage(ins, rows, "2026-12")[:2] == (6, 1)
+    md = CI.render_month("2026-12", ins, rows, "2026-11-10 12:00")
+    assert "(1 of 6 trip instances read, 0 failed, 3 with no crew names yet)" in md
+    assert "Waiting for the award: the 2026-12 bid period" in md
+    assert "Waiting for the award" not in CI.render_month("2026-12", ins, rows3, "2026-11-10 12:00")
+
+
+class AwardFl(FakeFl):
+    """FakeFl whose December-period pairings (H91xx) list nobody until award is set."""
+    award = False
+
+    def fetch(self, url):
+        pid = url.split("PID=")[1].split("&")[0]
+        if pid.startswith("H91") and not self.award:
+            self.urls.append(url)
+            return f"<html><p>pairing {pid} crew: ca open fo open</p></html>"
+        return super().fetch(url)
+
+
+def test_crawl_holds_a_period_until_the_award(W, tmp_path, monkeypatch):
+    """FW-0016 on Pako: December's pages were read before the award and counted done (247 of 681, only Dec 1
+    with crew). Now three empty pages in a row hold the period, one page is read per run until names appear,
+    and then the pages read empty are read first again, in the same run."""
+    clock = [datetime(2026, 11, 10, 12, 5)]
+    monkeypatch.setattr(W, "local_now", lambda: clock[0])
+    _file(tmp_path / "www", "2026-11", [_row("H9001", "2 3 D1", rel=0)])
+    _file(tmp_path / "www", "2026-12", [_row("H9101", "2 3 4 5 6 7 8 9 10", rel=0), _row("H9102", "12 13", rel=0)])
+    fl = AwardFl()
+    W.crew_index_check(fl)
+    dec = lambda urls: [u.split("DATE=")[1][:8] for u in urls if "PID=H91" in u]
+    assert dec(fl.urls) == ["20261202", "20261203", "20261204"]  # held after 3: the other 8 are not loaded
+    assert len(fl.urls) == 6 and "crew_run" not in W.S  # Nov 2, Nov 3, Dec 1 (November's period) and the 3
+    ci = [p for t, p in W.SENT if t == "crew_index"][-1]
+    assert (ci["instances"], ci["checked"], ci["no_crew_yet"], ci["waiting_for_award"]) == (14, 3, 3, ["2026-12"])
+    assert ci["coverage_pct"] == 21.4
+    assert "Waiting for the award: the 2026-12 bid period" in (tmp_path / "crew_index" / "2026-12.md").read_text()
+    # next slot, award still not out: one probe
+    clock[0] = datetime(2026, 11, 10, 18, 5)
+    n0 = len(fl.urls)
+    W.crew_index_check(fl)
+    assert dec(fl.urls[n0:]) == ["20261202"]
+    # award out: the probe names crew and the run goes on to read the rest of December in the next check
+    fl.award = True
+    clock[0] = datetime(2026, 11, 11, 0, 5)
+    n0 = len(fl.urls)
+    W.crew_index_check(fl)
+    assert dec(fl.urls[n0:]) == ["20261202"] and "crew_run" in W.S
+    clock[0] = datetime(2026, 11, 11, 0, 10)
+    W.crew_index_check(fl)
+    assert sorted(dec(fl.urls[n0:])) == ["20261202", "20261203", "20261204", "20261205", "20261206", "20261207",
+                                         "20261208", "20261209", "20261210", "20261212", "20261213"]
+    ci = [p for t, p in W.SENT if t == "crew_index"][-1]
+    assert (ci["checked"], ci["coverage_pct"], ci["no_crew_yet"], ci["waiting_for_award"]) == (14, 100.0, 0, [])
