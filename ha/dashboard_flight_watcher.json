@@ -117,7 +117,15 @@
                       "tap_action": {
                         "action": "toggle"
                       },
-                      "type": "entity"
+                      "type": "entity",
+                      "visibility": [
+                        {
+                          "condition": "user",
+                          "users": [
+                            "c0d7b9eb3a7e4e5e9642c4d66a28be9a"
+                          ]
+                        }
+                      ]
                     }
                   ],
                   "heading": "Swap ideas",
@@ -357,18 +365,6 @@
             {
               "cards": [
                 {
-                  "grid_options": {
-                    "columns": "full"
-                  },
-                  "type": "custom:flight-watcher-tickets-card"
-                }
-              ],
-              "column_span": 3,
-              "type": "grid"
-            },
-            {
-              "cards": [
-                {
                   "heading": "Health",
                   "icon": "mdi:stethoscope",
                   "type": "heading"
@@ -410,7 +406,7 @@
                   "type": "tile"
                 },
                 {
-                  "content": "**Phone alerts** (devices as of Nov 6, 2026)\n\n| Push | Level | Devices |\n|:--|:--|:--|\n| New pairing in the pot or Tradeboard pickup | Critical | iPhone 16, Ryan's iPhone |\n| FLICA alert email | Critical | iPhone 16, Ryan's iPhone |\n| Hidden trip (seat open, gone from pot) | Critical | iPhone 16, Ryan's iPhone |\n| New charter / unusual A330 (CrewTrac) | Critical | iPhone 16, Ryan's iPhone |\n| Swap / add / drop request decided, with Pay-Gross | Time-sensitive | iPhone 16, Ryan's iPhone |\n| Swap idea | Time-sensitive | iPhone 16, Ryan's iPhone |\n| Drop ready (grid green) | Time-sensitive | iPhone 16, Ryan's iPhone |\n| Recall / Over 75 possible miss | Time-sensitive | iPhone 16, Ryan's iPhone |\n| Watcher stopped, needs you | Time-sensitive | iPhone 16, Ryan's iPhone |\n| H3628 LAX is up (Fanfare) | Time-sensitive | iPhone 16, Ryan's iPhone, MacBook (Hero) |\n| Watcher blind (no check 30 min) | Normal | iPhone 16, Ryan's iPhone |\n| App down 5 min | Normal | iPhone 16, Ryan's iPhone |\n| New ticket filed | Normal | iPhone 16, Ryan's iPhone |\n| Ticket fixed, please check | Quiet (no sound) | iPhone 16, Ryan's iPhone |\n\n- **Apple Watch**: every push mirrors from the paired iPhone (Watch app > Notifications > Home Assistant > Mirror iPhone alerts). Critical needs Critical Alerts allowed for Home Assistant in iOS Settings.\n- **Not sent to**: iPhone 16 Pro (retired Nov 6), James's phone (his Watcher pushes only his own phone, and none of his reach yours).\n- Critical sounds through silent and Focus; time-sensitive breaks through Focus.\n\n**Health**: Hark checks every hour.\n\n**Rules editor**: Settings > Apps > Flight Watcher > Open Web UI.",
+                  "content": "**Phone alerts** (devices as of Nov 6, 2026)\n\n| Push | Level | Devices |\n|:--|:--|:--|\n| New pairing you can take (pot or Tradeboard pickup) | Critical, buzzer | iPhone 16, Ryan's iPhone |\n| FLICA alert email | Critical | iPhone 16, Ryan's iPhone |\n| Hidden trip (seat open, gone from pot) | Critical | iPhone 16, Ryan's iPhone |\n| New charter / unusual A330 (CrewTrac) | Critical | iPhone 16, Ryan's iPhone |\n| Swap / add / drop request decided, with Pay-Gross | Time-sensitive | iPhone 16, Ryan's iPhone |\n| Swap idea | Time-sensitive | iPhone 16, Ryan's iPhone |\n| Drop ready (grid green) | Time-sensitive | iPhone 16, Ryan's iPhone |\n| Recall / Over 75 possible miss | Time-sensitive | iPhone 16, Ryan's iPhone |\n| Watcher stopped, needs you | Time-sensitive | iPhone 16, Ryan's iPhone |\n| H3628 LAX is up (Fanfare) | Time-sensitive | iPhone 16, Ryan's iPhone, MacBook (Hero) |\n| Watcher blind (no check 30 min) | Normal | iPhone 16, Ryan's iPhone |\n| App down 5 min | Normal | iPhone 16, Ryan's iPhone |\n| New ticket filed | Normal | iPhone 16, Ryan's iPhone |\n| Ticket fixed, please check | Quiet (no sound) | iPhone 16, Ryan's iPhone |\n\n- **Apple Watch**: every push mirrors from the paired iPhone (Watch app > Notifications > Home Assistant > Mirror iPhone alerts). Critical needs Critical Alerts allowed for Home Assistant in iOS Settings.\n- **Not sent to**: iPhone 16 Pro (retired Nov 6), James's phone (his Watcher pushes only his own phone, and none of his reach yours).\n- Critical sounds through silent and Focus; time-sensitive breaks through Focus.\n- **Buzzer** (FW-0054): on each iPhone open /local/flight-watcher-buzzer.wav, save it to Files, then Home Assistant app > Settings > Companion App > Notifications > Sounds > Import. Until then the new-pairing push plays the default sound.\n- **Tickets**: Settings tab, bottom (Ryan only).\n\n**Health**: Hark checks every hour.\n\n**Rules editor**: Settings > Apps > Flight Watcher > Open Web UI.",
                   "text_only": true,
                   "type": "markdown"
                 },
@@ -691,6 +687,49 @@
                     "columns": "full"
                   },
                   "type": "custom:flight-watcher-settings-card"
+                },
+                {
+                  "type": "markdown",
+                  "text_only": true,
+                  "content": "---",
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "visibility": [
+                    {
+                      "condition": "user",
+                      "users": [
+                        "c0d7b9eb3a7e4e5e9642c4d66a28be9a"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "heading",
+                  "heading": "Tickets",
+                  "icon": "mdi:ticket-outline",
+                  "visibility": [
+                    {
+                      "condition": "user",
+                      "users": [
+                        "c0d7b9eb3a7e4e5e9642c4d66a28be9a"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "custom:flight-watcher-tickets-card",
+                  "visibility": [
+                    {
+                      "condition": "user",
+                      "users": [
+                        "c0d7b9eb3a7e4e5e9642c4d66a28be9a"
+                      ]
+                    }
+                  ]
                 }
               ],
               "column_span": 2,

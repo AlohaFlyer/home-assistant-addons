@@ -161,9 +161,9 @@ SWAP_FOR_RE = re.compile(r"\bswap\s+([A-Za-z]\d{4}[A-Za-z]?)\b.*?\bfor\s+([A-Za-
 
 
 def parse_request_view(text):
-    """{legs, trips, detail, reason} from one request's view page (checked on the real page, 1.3.0): 'Swap H3629:14NOV
-    (F) For H3632A:12NOV (F) Time: ... Status: Denied ... CM: [no comments] CS: <10hrs rest (prgs at base) on 13nov
-    Note: ...'. FLICA writes a swap as 'Swap <given> For <taken>', so those two get drop / add when the page says so;
+    """{legs, trips, detail, reason} from one request's view page (layout checked on the real page, 1.3.0; made-up
+    values here): 'Swap H3911:21NOV (F) For H3914B:19NOV (F) Time: ... Status: Denied ... CM: [no comments] CS: <rest
+    short on 20nov Note: ...'. FLICA writes a swap as 'Swap <given> For <taken>', so those two get drop / add when the page says so;
     reason = crew scheduling's comment (CS), '' when none."""
     text = text or ""
     legs = _view_legs(text)

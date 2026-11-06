@@ -198,7 +198,9 @@
     the title, e.g. **PPG**. 0.4.4: silent for trips touching VAC or blocked days;
     the Show VAC/blocked toggle only affects the dashboard (per Ryan, Nov 1). Nov
     4: silent when the trip conflicts with his own schedule or fails the FAR 117 screen
-    (he is not legal to take it anyway).'
+    (he is not legal to take it anyway). FW-0054 (Nov 6): a trip he can take buzzes
+    (flight-watcher-buzzer.wav, served at /local/; iOS plays the default sound until
+    it is imported in the Home Assistant app).'
   triggers:
   - topic: flight_watcher/event/new_pairing
     trigger: mqtt
@@ -242,7 +244,7 @@
             interruption-level: critical
             sound:
               critical: 1
-              name: default
+              name: flight-watcher-buzzer.wav
               volume: 1
           tag: flight_watcher_{{ p.source | default('pot') }}_{{ p.pairing }}_{{ p.start
             }}{% if p.practice is defined %}_practice_{{ now().timestamp() | int }}{%
@@ -263,7 +265,7 @@
             interruption-level: critical
             sound:
               critical: 1
-              name: default
+              name: flight-watcher-buzzer.wav
               volume: 1
           tag: flight_watcher_{{ p.source | default('pot') }}_{{ p.pairing }}_{{ p.start
             }}{% if p.practice is defined %}_practice_{{ now().timestamp() | int }}{%
@@ -755,7 +757,8 @@
   alias: Flight Watcher new ticket
   description: 'Pushes Ryan each new bug report or feature request (FW-nnnn) filed
     on his own dashboard. Push isolation (Ryan, FW-0038): James''s instance (flight_watcher_james)
-    never pushes Ryan''s phones; his tickets are worked from the tickets folder.'
+    never pushes Ryan''s phones; his tickets are worked from the tickets folder. FW-0055
+    (Nov 6): the push opens the tickets card on the Settings tab.'
   triggers:
   - trigger: mqtt
     topic: flight_watcher/event/ticket_new
@@ -769,7 +772,7 @@
           }} from {{ t.reporter | title }}'
         message: '{{ t.title }}'
         data:
-          url: /flight-watcher/details
+          url: /flight-watcher/settings
           tag: ticket-{{ t.id }}
       continue_on_error: true
     - action: notify.mobile_app_ryans_iphone_16
@@ -778,7 +781,7 @@
           }} from {{ t.reporter | title }}'
         message: '{{ t.title }}'
         data:
-          url: /flight-watcher/details
+          url: /flight-watcher/settings
           tag: ticket-{{ t.id }}
       continue_on_error: true
   mode: queued
@@ -905,7 +908,8 @@
   description: 'FW-0007 (Ryan): a quiet push (passive, no sound) to the reporter when
     one of their tickets is marked fixed, so they can check it. Push isolation (FW-0038):
     only Ryan''s own tickets (reporter ryan) reach Ryan''s phones; James''s tickets
-    go to his phone from his own automation.'
+    go to his phone from his own automation. FW-0055 (Nov 6): the tickets card moved
+    to the Settings tab; the push opens it there.'
   triggers:
   - topic: flight_watcher/event/ticket_fixed
     trigger: mqtt
@@ -916,7 +920,7 @@
       t: '{{ trigger.payload_json }}'
   - variables:
       msg: In {{ t.version or 'the latest version' }}. Check it's what you expected,
-        then tap Verified (or Still broken) on the Details tab.
+        then tap Verified (or Still broken) on the Settings tab.
       title: 'Fixed: {{ t.id }} {{ t.title }}'
   - parallel:
     - action: notify.mobile_app_ryans_iphone_16
@@ -926,7 +930,7 @@
           push:
             interruption-level: passive
           tag: ticket-fixed-{{ t.id }}
-          url: /flight-watcher/details
+          url: /flight-watcher/settings
         message: '{{ msg }}'
         title: '{{ title }}'
     - action: notify.mobile_app_ryans_iphone
@@ -936,7 +940,7 @@
           push:
             interruption-level: passive
           tag: ticket-fixed-{{ t.id }}
-          url: /flight-watcher/details
+          url: /flight-watcher/settings
         message: '{{ msg }}'
         title: '{{ title }}'
   max: 30

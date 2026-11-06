@@ -50,8 +50,9 @@ events (`<prefix>/event/...`: new_pairing, request_decided, recall_miss, ticket_
 
 ## Tickets (FW-nnnn)
 
-The tickets card (`custom:flight-watcher-tickets-card`, Details tab) has one **Submit a ticket** button: one form,
-Bug or Feature request chosen at its top (Bug first; steps and expected only for a bug), up to 10 photos. Tickets
+The tickets card (`custom:flight-watcher-tickets-card`, bottom of the Settings tab under a divider, shown to Ryan only:
+FW-0052, FW-0055) has one **Submit a ticket** button: one form, Bug or Feature request chosen at its top (Bug first;
+steps and expected only for a bug), up to 10 photos (library, camera, files, or a screenshot pasted with Cmd+V, FW-0053). Tickets
 live in `/share/flight_watcher/tickets/FW-nnnn/`, shared by both pilots. MQTT, `<prefix>` = `flight_watcher` (a
 second pilot: `flight_watcher_<name>`):
 
@@ -75,7 +76,7 @@ second pilot: `flight_watcher_<name>`):
   (normally `flight_watcher/ticket/act`), so `reporter` (`ryan`, or the second pilot's name) says who to tell.
 
 The HA automation for `event/ticket_fixed` lives on Pako, not here: push it to the reporter's phone as a quiet,
-non-critical message (no sound, e.g. iOS `push: {interruption-level: passive}`), opening the Details tab so they
+non-critical message (no sound, e.g. iOS `push: {interruption-level: passive}`), opening the Settings tab so they
 can check it is what they expected, then verify or reopen it on the card.
 
 ## Tests

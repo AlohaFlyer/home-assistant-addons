@@ -15,6 +15,9 @@
 - FW-0047 (Ryan): Improved-Pay has a Net tick box to show Pay-Net instead of Pay-Gross.
 - FW-0048 (Ryan): the auto drop mark on the schedule card shows only for the HA owner (never for a second pilot); the auto swap badge on Ryan's dashboard is Ryan-only.
 - FW-0049 (Ryan): tickets can be edited while new or reopened, and deleted at any status (`<prefix>/ticket/edit`, `<prefix>/ticket/delete`; the folder moves to `tickets/.deleted/`, nothing is destroyed, the number is never reused). The fixed chip says "v" only before an app version number.
+- FW-0053 (Ryan, Mac): Cmd+V pastes a copied screenshot into an open New ticket form as a photo (same 10-photo cap and checks); text still pastes into a field as usual.
+- FW-0052 / FW-0055 (Ryan, Pako config): the tickets card moved to the bottom of the Settings tab under a divider and shows to Ryan only (on James's dashboard too); the new-ticket and ticket-fixed pushes open the Settings tab.
+- FW-0054 (Ryan, Pako config): a new pairing he can take (the push already skips VAC, blocked, conflicting and FAR 117 failing trips) now buzzes: `flight-watcher-buzzer.wav` (ha/sounds, served at /local/) as the critical sound. iOS plays the default sound until the file is imported in the Home Assistant app.
 - Request view (FW-0002 follow-up): FLICA's "Swap <given> For <taken>" sets the Pay-Gross sides, and crew scheduling's CS comment becomes the denial reason in the push.
 - ha/ (FW-0036): a redacted snapshot of Pako's Flight Watcher automations, both dashboards and the aviation weather package, plus `ha/check_push_isolation.py` (and a test) that fails if any of James's pushes could reach Ryan's devices or the reverse.
 

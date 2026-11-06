@@ -343,3 +343,27 @@ def test_fixed_chip_says_v_only_for_app_versions():
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www", "flight-watcher-tickets-card.js"),
                encoding="utf-8").read()
     assert '(/^\\d+(\\.\\d+)+$/.test(String(t.version_fixed)) ? " v" : " in ")' in src
+
+
+def test_card_paste_takes_screenshots_only_while_new_form_open(tmp_path):
+    """FW-0053: Cmd+V on a Mac adds a copied screenshot as a photo; text pastes, an edit form or a closed form are left alone."""
+    js = ("const listeners = {}; globalThis.document = {addEventListener(t, f) { listeners[t] = f; },\n"
+          "  removeEventListener(t, f) { if (listeners[t] === f) delete listeners[t]; }};\n"
+          "const c = new FlightWatcherTicketsCard(); c.setConfig({}); const got = []; c._addFiles = (fl) => got.push(fl.map((x) => x.name));\n"
+          "const png = {name: 'image.png', type: 'image/png'};\n"
+          "const ev = (items, files) => ({prevented: false, preventDefault() { this.prevented = true; },\n"
+          "  clipboardData: {items: items.map(([kind, type, f]) => ({kind, type, getAsFile: () => f})), files: files || []}});\n"
+          "c.connectedCallback(); const on = typeof listeners.paste === 'function';\n"
+          "const e0 = ev([['file', 'image/png', png]]); listeners.paste(e0);\n"
+          "c._form = {mode: 'new', kind: 'bug'};\n"
+          "const e1 = ev([['file', 'image/png', png]]); listeners.paste(e1);\n"
+          "const e2 = ev([['string', 'text/plain', null]]); listeners.paste(e2);\n"
+          "const e3 = ev([['string', 'text/plain', null], ['file', 'image/png', png]]); listeners.paste(e3);\n"
+          "const e4 = ev([], [{name: 'shot.jpg', type: 'image/jpeg'}, {name: 'a.pdf', type: 'application/pdf'}]); listeners.paste(e4);\n"
+          "c._form = {mode: 'edit', id: 'FW-0001'}; const e5 = ev([['file', 'image/png', png]]); listeners.paste(e5);\n"
+          "c.disconnectedCallback();\n"
+          "console.log(JSON.stringify([on, got, e0.prevented, e1.prevented, e2.prevented, e3.prevented, e4.prevented, e5.prevented, 'paste' in listeners]));")
+    on, got, p0, p1, p2, p3, p4, p5, still = _card_node(tmp_path, js)
+    assert on and not still
+    assert got == [["image.png"], ["image.png"], ["shot.jpg"]]
+    assert (p0, p1, p2, p3, p4, p5) == (False, True, False, False, True, False)

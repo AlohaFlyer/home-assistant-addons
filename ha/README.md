@@ -4,8 +4,9 @@ Copies of the Flight Watcher pieces that live in Home Assistant on Pako HI rathe
 review and history (FW-0036). Nothing in this folder is loaded by Home Assistant or by the app, and the app store
 ignores it (no `config.yaml`).
 
-**Snapshot taken 2026-11-05 about 21:40 HST (2026-11-06 UTC).** Each file was checked against Pako by sha256 of
-the redacted text at that time.
+**Snapshot refreshed 2026-11-06 about 09:30 HST** (FW-0048 badge, FW-0052/0055 tickets on Settings for Ryan only,
+FW-0054 buzzer, James's per-view visibility). The automations and both dashboards were checked against Pako by sha256
+of the redacted text at that time; the wx package is unchanged since 2026-11-05.
 
 | File | Live copy on Pako |
 |:--|:--|
@@ -14,12 +15,13 @@ the redacted text at that time.
 | `dashboard_flight_watcher_james.json` | `/config/.storage/lovelace.flight_watcher_james` (dashboard `flight-watcher-james`) |
 | `packages/flight_watcher_wx.yaml` | `/config/packages/flight_watcher_wx.yaml` |
 | `check_push_isolation.py` | the push-isolation guard (below) |
+| `sounds/flight-watcher-buzzer.wav` | `/config/www/flight-watcher-buzzer.wav` (`/local/`), the FW-0054 new-pairing buzzer; `sounds/make_buzzer.py` regenerates it byte for byte |
 
 ## Rules
 
 - These are snapshots. The live copies are changed through the Home Assistant connector (automation and dashboard
   tools) or the HA UI, never by hand-editing `.storage`. Refresh the snapshot in the same PR as any related change.
-- Redacted before commit: webhook ids (`'<redacted>'`), email addresses (`<redacted-email>`), Google Drive / Docs
+- Redacted before commit: webhook ids (`'<redacted>'`, quoted or not on Pako), email addresses (`<redacted-email>`), Google Drive / Docs
   URLs (`<redacted-drive-url>`), any token, password or API key (`'<redacted>'`), phone numbers
   (`<redacted-phone>`). No crew names or employee numbers (none were present).
 - Kept on purpose (opaque, not secrets): automation ids, the IMAP integration's config entry id, and one HA user id

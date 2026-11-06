@@ -14,7 +14,7 @@
 const FW_TICKET_MAX_PHOTOS = 10;
 const FW_TICKET_MAX_URL = 1.75e6;  // one photo's data URL; its whole message stays under about 1.8e6 chars
 // FW-0006: the choice at the top of the one ticket form (Bug first): its label, the description prompt, a title hint
-const FW_TICKET_PAGES = ["Watcher", "Schedule", "Recall/O75", "Details", "Aviation Wx", "Phone alert", "Other"];
+const FW_TICKET_PAGES = ["Watcher", "Schedule", "Recall/O75", "Details", "Settings", "Aviation Wx", "Phone alert", "Other"];
 const FW_TICKET_EDIT = { title: 200, narrative: 10000, steps: 5000, expected: 5000, page: 300 };  // tickets.MAX_TEXT
 const FW_TICKET_KINDS = {
   bug: { label: "&#128027; Bug", narrative: "What happened?", title: "e.g. Pay-Gross wrong on v11.003" },
@@ -27,6 +27,29 @@ class FlightWatcherTicketsCard extends HTMLElement {
     this._open = {}; this._doneOpen = false; this._req = null; this._dlg = false; this._fk = "";
   }
   getCardSize() { return 6; }
+  // FW-0053 (Ryan, Mac): Cmd+V (Ctrl+V) pastes a copied screenshot into an open New ticket form as a photo. The
+  // listener sits on the document, because a paste with nothing focused never reaches the card; it takes image
+  // files only (text still pastes into a field as usual) and does nothing unless this card's new-ticket form is open.
+  connectedCallback() {
+    if (!this._onPaste) this._onPaste = (e) => this._paste(e);
+    document.addEventListener("paste", this._onPaste);
+  }
+  disconnectedCallback() { if (this._onPaste) document.removeEventListener("paste", this._onPaste); }
+  _pastedImages(cd) {
+    if (!cd) return [];
+    const img = (t) => /^image\//.test(t || "");
+    const fl = Array.from(cd.items || []).filter((it) => it.kind === "file" && img(it.type)).map((it) => it.getAsFile()).filter(Boolean);
+    return fl.length ? fl : Array.from(cd.files || []).filter((x) => img(x.type));
+  }
+  _paste(e) {
+    const f = this._form;
+    if (!f || f.mode === "edit" || this._sending) return;
+    const cd = e.clipboardData, fl = this._pastedImages(cd);
+    if (!fl.length) return;
+    // a copy that also carries plain text (rare for a screenshot) still pastes its text into the focused field
+    if (!Array.from((cd && cd.items) || []).some((it) => it.kind === "string" && it.type === "text/plain")) e.preventDefault();
+    this._addFiles(fl);
+  }
   _e(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
   set hass(h) {
     this._h = h;
@@ -81,7 +104,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
     box.innerHTML = `<div class="lbl">Photos <span class="u">(optional, up to ${FW_TICKET_MAX_PHOTOS})</span></div>
       ${n ? `<div class="thumbs">${this._imgs.map((x, i) => `<div class="ph"><img src="${x.thumb}" alt="Photo ${i + 1}"><button class="x" data-rm="${i}" aria-label="Remove photo ${i + 1}">&times;</button></div>`).join("")}</div>` : ""}
       <button class="g" data-add${full || p ? " disabled" : ""}>&#128247; ${full ? `${FW_TICKET_MAX_PHOTOS} of ${FW_TICKET_MAX_PHOTOS} photos` : n ? "Add more photos" : "Add photos"}</button>${n ? `<button class="g" data-clear${p ? " disabled" : ""}>Remove all</button>` : ""}
-      <div class="u" data-count>${p ? `Preparing photo ${p.i} of ${p.n}...` : n ? `${n} photo${n === 1 ? "" : "s"} attached (${this._kb(bytes)})` : "Photo library, camera or files."}</div>
+      <div class="u" data-count>${p ? `Preparing photo ${p.i} of ${p.n}...` : n ? `${n} photo${n === 1 ? "" : "s"} attached (${this._kb(bytes)})` : "Photo library, camera or files, or paste a screenshot (\u2318V)."}</div>
       ${this._note ? `<div class="warn">${this._e(this._note)}</div>` : ""}`;
     box.querySelector("[data-add]").onclick = () => { if (!this._prep && this._imgs.length < FW_TICKET_MAX_PHOTOS) this.shadowRoot.querySelector("[data-img]").click(); };
     const cl = box.querySelector("[data-clear]");
