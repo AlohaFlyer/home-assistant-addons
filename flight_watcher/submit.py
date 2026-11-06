@@ -94,6 +94,41 @@ def parse_requests(text):
     return [{"date": d, "time": t, "type": k.title(), "status": s.title()} for d, t, k, s in REQ_RE.findall(text)]
 
 
+TRIP_RE = re.compile(r"\b([A-Za-z]\d{4}[A-Za-z]?)\b")
+DECIDED = ("Approved", "Denied")
+
+
+def requests_url(base, bcid):
+    """The Open Time Requests list for one bid folder. A plain list GET; the per-row Approved / Denied links
+    (QuickDelete=1) are never followed."""
+    return f"{base}{REQUESTS_PATH}?BCID={bcid}&From=MainMenu"
+
+
+def parse_request_rows(text):
+    """1.2.0: the request rows of the Open Time Requests page's visible text, each with the text that follows it
+    up to the next row ('detail') and the pairings named there ('trips'). key = date|time|type|n, n counting
+    rows that share date, time and type, so two requests filed in the same minute stay apart."""
+    rows, seen = [], {}
+    ms = list(REQ_RE.finditer(text))
+    for i, m in enumerate(ms):
+        d, t, k, st = m.group(1), m.group(2), m.group(3).title(), m.group(4).title()
+        end = ms[i + 1].start() if i + 1 < len(ms) else min(len(text), m.end() + 300)
+        detail = re.sub(r"\s+", " ", text[m.end():end]).strip()[:200]
+        base = f"{d}|{t}|{k}"
+        seen[base] = seen.get(base, 0) + 1
+        rows.append({"key": f"{base}|{seen[base]}", "date": d, "time": t, "type": k, "status": st,
+                     "trips": [x.upper() for x in TRIP_RE.findall(detail)][:4], "detail": detail})
+    return rows
+
+
+def request_changes(old, rows):
+    """Rows to push: a request now Approved / Denied that was Pending (or unseen) before. old = {key: status}
+    from the last read, or None on the very first read (nothing is pushed then: no alerts for old requests)."""
+    if old is None:
+        return []
+    return [r for r in rows if r["status"] in DECIDED and old.get(r["key"]) != r["status"]]
+
+
 def hours_until(report_iso, now):
     """Hours from now (naive HST datetime) to an ISO 'YYYY-MM-DDTHH:MM' report time; None if unparsable."""
     try:

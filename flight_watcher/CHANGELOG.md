@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.0
+
+- Request decisions pushed (Ryan): the Watcher reads FLICA's Open Time Requests list (`/full/mobileotrequest.cgi?BCID=<pot folder>&From=MainMenu`, GET only, both safe_get guards; the per-row Approved / Denied links delete a request on a GET and are never followed) every 15 min, every 2 min while a request is Pending, and first thing after a yield to Ryan's own FLICA login (when he files them). A swap, add or drop request that turns Approved or Denied, or first shows up already decided, fires `<prefix>/event/request_decided` once {key, date, time, type, status, trips, detail, bcid, url}; the very first read of a folder only sets the baseline. `sensor.<prefix>_ot_requests` = pending count, attributes = the last 20 requests. The first read of each folder saves a private copy to /share/flight_watcher/captures for parser checks. HA automation "Flight Watcher request decided" pushes it to Ryan's iPhones.
+
 ## 1.1.2
 
 - Tickets card (Ryan): completed tickets (fixed or closed) fold away under "N completed" (noting how many still wait for your verify); open ones stay in the log. The header reads "N open · N completed". The fold remembers whether you opened it.

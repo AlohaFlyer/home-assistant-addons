@@ -36,7 +36,7 @@ import crewidx as CI
 import tickets as TK
 import sealed as SEAL
 
-VERSION = "1.1.2"
+VERSION = "1.2.0"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -740,6 +740,9 @@ def discovery(c):
                                 "value_template": "{{ value_json.has_password }}",
                                 "json_attributes_topic": f"{T}/settings/state", "icon": "mdi:account-key",
                                 "entity_category": "diagnostic"}),
+        ("sensor", "ot_requests", {"name": "Open time requests", "state_topic": f"{T}/ot_requests",
+                                   "value_template": "{{ value_json.pending }}",
+                                   "json_attributes_topic": f"{T}/ot_requests", "icon": "mdi:swap-horizontal-circle-outline"}),
         ("sensor", "tickets", {"name": "Tickets", "state_topic": f"{T}/tickets", "value_template": "{{ value_json.open }}",
                                "json_attributes_topic": f"{T}/tickets", "icon": "mdi:ticket-outline"}),
     ]
@@ -1865,6 +1868,55 @@ def capture(fl, month, html):
 
 TB_MIN_GAP_S = 120
 TB_PROBE = {"done": False}
+REQ_IDLE_GAP_S = 900     # 1.2.0: Open Time Requests read every 15 min,
+REQ_PENDING_GAP_S = 120  # every 2 min while a request is pending, and right after a yield to Ryan's own login
+
+
+def requests_check(fl):
+    """1.2.0 (Ryan): read only, the Open Time Requests list of each watched bid folder. A swap, add or drop
+    request that turns Approved or Denied (or first shows up already decided) fires event/request_decided once,
+    which HA pushes to Ryan's phone. Only the list URL is fetched (SUB.safe_get + SM.safe_get): its Approved /
+    Denied links carry QuickDelete=1 and would delete the request, so no link on the page is ever followed."""
+    st = S.setdefault("ot_req", {})
+    pending = any(v == "Pending" for b in st.values() for v in (b or {}).values())
+    gap = REQ_PENDING_GAP_S if pending else REQ_IDLE_GAP_S
+    if not S.pop("req_force", False) and time.time() - S.get("req_checked_at", 0) < gap:
+        return
+    S["req_checked_at"] = time.time()
+    shown = []
+    for b in sorted({x for x in (bcid(u) for u in S.get("pot_urls", {}).values()) if x}):
+        url = SUB.requests_url(BASE, b)
+        if not (SUB.safe_get(url) and SM.safe_get(url)):
+            log.info("requests %s: url refused by safe_get, skipped", b)
+            continue
+        try:
+            html = fl.fetch(url)
+            if classify(html) != "ok":
+                log.info("requests %s: %s, skipped", b, classify(html))
+                continue
+            text = visible_text(html)
+            rows = SUB.parse_request_rows(text)
+            n = b.split(".")[-1]
+            if not S.get("req_captured", {}).get(n):  # first read: a private copy for parser checks (/share)
+                try:
+                    os.makedirs(CAPTURE_DIR, exist_ok=True)
+                    open(f"{CAPTURE_DIR}/otrequests_{n}.html", "w").write(html)
+                    S.setdefault("req_captured", {})[n] = True
+                    log.info("requests %s: %d rows, page captured; text: %s", b, len(rows), text[:600])
+                except Exception:
+                    pass
+            old = st.get(b)
+            for r in SUB.request_changes(old, rows):
+                ev = {**r, "bcid": b, "at": now_iso(), "url": url}
+                log.info("request %s %s %s", r["type"], r["status"], r["detail"][:80])
+                pub("event/request_decided", ev, retain=False)
+            st[b] = {r["key"]: r["status"] for r in rows}
+            shown += [{**r, "bcid": b} for r in rows]
+        except Exception as e:
+            log.info("requests %s error: %s", b, e)
+    save_state(S)
+    pub("ot_requests", {"pending": sum(1 for r in shown if r["status"] == "Pending"), "count": len(shown),
+                        "requests": shown[-20:], "checked_at": now_iso()})
 
 
 def tradeboard_check(fl, full=False):
@@ -2860,6 +2912,7 @@ def check(fl):
     pickup_check(fl, full)
     publish_finds()  # rows carry live CA / details now, so publish every check
     tradeboard_check(fl, full)
+    requests_check(fl)  # 1.2.0: swap / add / drop request decisions -> push
     grid_check(fl, full)
     swap_scan(flat)
     drop_scan()
@@ -3028,6 +3081,7 @@ def main():
                 mult = 2 ** max(0, len(recent) - 1)
                 cool = min(OPTS["yield_cooldown_min"] * 60 * mult, 4 * 3600)
                 S["yield_until"] = now + cool
+                S["req_force"] = True  # 1.2.0: he was in FLICA, maybe filing a request: read the list first thing back
                 set_machine("yielded", f"Ryan logged in elsewhere, back in {int(cool / 60)} min")
                 continue
             if res == "stop":
