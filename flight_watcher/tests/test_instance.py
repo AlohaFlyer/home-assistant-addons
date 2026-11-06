@@ -232,3 +232,35 @@ def test_settings_clear_and_still_waiting(tmp_path, monkeypatch):
     assert W.still_waiting(now=10) is True and W.still_waiting(now=60) is False
     W.S.update({"machine": "idle"})
     assert W.still_waiting(now=0) is False
+
+
+def test_sealed_settings_from_the_card(tmp_path, monkeypatch):
+    """1.1.0: settings/set {"enc": ...} sealed with this instance's key is saved; a bad seal is refused."""
+    import sealed as SEAL
+    W = _load(tmp_path, monkeypatch, "pilot2", OPTS)
+    fake = FakeClient()
+    monkeypatch.setattr(W, "MQ", fake)
+    monkeypatch.setattr(W, "restart_later", lambda: None)
+    st = W.settings_state()
+    assert st["pubkey"] and st["kid"] and stat.S_IMODE(os.stat(tmp_path / "settings_key.pem").st_mode) == 0o600
+    body = SEAL.seal(st["pubkey"], {"username": "doej", "password": "pw-sealed"})
+    assert W.settings_cmd(json.dumps(body)) is True
+    assert json.loads((tmp_path / "creds.json").read_text()) == {"username": "doej", "password": "pw-sealed"}
+    last = json.loads(fake.msgs[-1][1])
+    assert last["result"] == "saved: username, password" and "pw-sealed" not in fake.msgs[-1][1]
+    old = SEAL.seal(st["pubkey"], {"password": "pw-old"}, ts=1)
+    assert W.settings_cmd(json.dumps(old)) is False
+    assert json.loads(fake.msgs[-1][1])["result"].startswith("refused")
+    assert json.loads((tmp_path / "creds.json").read_text())["password"] == "pw-sealed"
+
+
+def test_sealed_settings_without_a_key_never_raise(tmp_path, monkeypatch):
+    W = _load(tmp_path, monkeypatch, "pilot2", OPTS)
+    fake = FakeClient()
+    monkeypatch.setattr(W, "MQ", fake)
+
+    def boom():
+        raise OSError("read-only")
+    monkeypatch.setattr(W, "settings_key", boom)
+    assert W.settings_cmd(json.dumps({"enc": {"v": 1}})) is False
+    assert "key unavailable" in json.loads(fake.msgs[-1][1])["result"]
