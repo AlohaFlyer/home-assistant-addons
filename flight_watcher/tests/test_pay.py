@@ -210,3 +210,39 @@ def test_pay_line_longevity_and_no_doh():
         assert (line["credit"], line["days_off"], line["trips"]) == ("85:05", 14, 6)
     line, _ = PAY.pay_line([], "2018-10-03", "2026-11-01", "2026-12-01", 22.0)
     assert line["gross"] is None and line["days_off"] == 31 and line["credit"] == "0:00"
+
+
+ANNIV = [("2025-11-05", "2026-11-04", 1), ("2025-11-05", "2026-11-05", 2), ("2025-11-05", "2026-11-06", 2),
+         ("2021-03-15", "2022-03-15", 2), ("2021-03-15", "2022-03-14", 1), ("2018-11-15", "2026-11-15", 9),
+         ("2024-02-29", "2025-02-28", 1), ("2024-02-29", "2025-03-01", 2), ("2024-02-29", "2028-02-29", 5),
+         ("1999-02-03", "2026-11-06", 28), ("2026-11-06", "2026-11-06", 1)]
+
+
+def test_longevity_turns_over_on_the_doh_anniversary():
+    """Review fix: the longevity year turns over on the DOH anniversary (PWA 3.B.1 from the date of employment;
+    PWA 3.D.2 'completed one (1) year of active service'), not after 365.25 days, which priced a trip that starts on
+    the anniversary one year too low when the span holds fewer leap days. Synthetic FO, DOH 2025-11-05."""
+    for doh, day, yr in ANNIV:
+        assert PAY.doh_year(doh, day) == yr, (doh, day)
+    trip = {"pairing": "H9100", "start": "2026-11-05", "end": "2026-11-06", "seat": "FO", "credit": "16:30", "n": 2}
+    line, per = PAY.pay_line([trip], "2025-11-05", "2026-11-01", "2026-12-01", 0)
+    assert PAY.rate_for(2, "2026-11-05") == 203.93  # PWA 3.D.6, year 2 FO, 3/2/26 column
+    assert per == {"H9100|2026-11-05": pytest.approx(16.5 * 203.93, abs=0.01)} and (line["year"], line["year_to"]) == (1, 2)
+    # a Captain on his anniversary, the bid period starting that day: year 2 already (PWA 3.C.4 $362.59, not $359.68)
+    ca = {**trip, "seat": "CA", "start": "2022-03-15", "end": "2022-03-16"}
+    line, per = PAY.pay_line([ca], "2021-03-15", "2022-03-15", "2022-04-14", 0)
+    assert per == {"H9100|2022-03-15": pytest.approx(16.5 * 362.59, abs=0.01)} and (line["year"], line["year_to"]) == (2, None)
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_doh_year_matches_the_cards_dohyear(tmp_path):
+    """The schedule card's dohYear() (Ryan's own longevity year) counts anniversaries the same way as pay.doh_year
+    (another pilot's pay line), so both cards agree on every date."""
+    src = open(CARD, encoding="utf-8").read()
+    head = src[:src.index("class FlightWatcherScheduleCard")]
+    js = head.replace("customElements", "//") + f"\nconsole.log(JSON.stringify({json.dumps(ANNIV)}.map(([d, i]) => dohYear(i, d))));"
+    f = tmp_path / "d.js"
+    f.write_text(js)
+    res = subprocess.run(["node", str(f)], capture_output=True, text=True, timeout=30)
+    assert res.returncode == 0, res.stderr
+    assert json.loads(res.stdout) == [yr for _, _, yr in ANNIV] == [PAY.doh_year(d, i) for d, i, _ in ANNIV]

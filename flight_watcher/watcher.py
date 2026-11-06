@@ -1538,8 +1538,11 @@ def seniority_data():
 
 def seniority_refresh():
     """FW-0062: the Web UI parses the seniority list as it is uploaded. When seniority.json is missing or was written
-    by an older parser (SEN.PARSER), the newest seniority_<date>.txt is read again here. Default instance only, so
-    the file has one writer; counts only in the log."""
+    by an older parser (SEN.PARSER), the list is read again here: the text copy of the file seniority.json names, else
+    (no seniority.json, or its text copy is gone) the newest seniority_<date>.txt. Every such file is one that gave
+    pilot rows when it was uploaded: the Web UI deletes a refused upload (web._save_seniority). The file's signature is
+    recorded before it is read, so a file that is slow or fails is not read again at every start. Default instance
+    only, so the file has one writer; counts only in the log."""
     if INSTANCE:
         return
     try:
@@ -1549,12 +1552,15 @@ def seniority_refresh():
     cur = seniority_data()
     if not txts or (cur and int(cur.get("parser") or 0) >= SEN.PARSER):
         return
-    f = txts[-1]
+    own = re.sub(r"\.pdf$", ".txt", str(cur.get("file") or ""))
+    f = own if own in txts else txts[-1]
     path = os.path.join(UPLOADS_SHARED, f)
     done = S.setdefault("uploads_done", {})
     sig = f"{os.path.getmtime(path):.0f}|{SEN.PARSER}"
     if done.get(f) == sig:
         return
+    done[f] = sig
+    save_state(S)
     same = cur.get("file") == f[:-4] + ".pdf"
     try:
         d = web.seniority_write(path, f[:-4] + ".pdf", cur.get("uploaded_at") if same else f"{f[10:20]}T00:00:00",
@@ -1562,8 +1568,6 @@ def seniority_refresh():
         log.info("seniority list %s: %s", f, f"{d['count']} pilots read again" if d else "no pilot rows")
     except Exception as e:
         log.info("seniority list %s not read: %s", f, e)
-    done[f] = sig
-    save_state(S)
 
 
 TAX = {"at": 0.0, "pct": None}

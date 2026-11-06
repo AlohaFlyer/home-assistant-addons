@@ -91,7 +91,7 @@ def _month_default():
 
 def _uploads_table():
     try:
-        files = sorted(f for f in os.listdir(UPLOAD_DIR) if f.endswith(".pdf"))
+        files = sorted(f for f in os.listdir(UPLOAD_DIR) if f.endswith(".pdf") and not f.endswith(".new.pdf"))
     except OSError:
         files = []
     if not files:
@@ -114,15 +114,17 @@ def seniority_file():
     return os.path.join(UPLOAD_DIR, "seniority.json")
 
 
-def seniority_write(txt_path, pdf_name, uploaded_at, list_date="", out=None):
-    """Parse a seniority list text copy (pdftotext -layout) and write seniority.json (atomic; seniority_file() unless
-    `out`). Returns the written dict, or None when no pilot row was read (the file on hand is kept). Nothing
-    personal is logged."""
+def seniority_read(txt_path, uploaded_at, list_date=""):
+    """Parse a seniority list text copy (pdftotext -layout): seniority.parse's dict (rows, rejects, ...). The century
+    of a two-digit year comes from the list date, else the upload's year."""
     import seniority as SEN
     ref = int(list_date[:4]) if list_date else int(uploaded_at[:4])
-    parsed = SEN.parse(open(txt_path, encoding="utf-8", errors="replace").read(), ref)
-    if not parsed["rows"]:
-        return None
+    return SEN.parse(open(txt_path, encoding="utf-8", errors="replace").read(), ref)
+
+
+def seniority_store(parsed, pdf_name, uploaded_at, list_date="", out=None):
+    """Write seniority.json (atomic; seniority_file() unless `out`) from a parse with pilot rows. Returns the dict."""
+    import seniority as SEN
     d = SEN.to_json(parsed, pdf_name, uploaded_at, list_date)
     out = out or seniority_file()
     tmp = out + ".tmp"
@@ -130,6 +132,13 @@ def seniority_write(txt_path, pdf_name, uploaded_at, list_date="", out=None):
         json.dump(d, f, separators=(",", ":"))
     os.replace(tmp, out)
     return d
+
+
+def seniority_write(txt_path, pdf_name, uploaded_at, list_date="", out=None):
+    """Parse a seniority list text copy and write seniority.json (seniority_read + seniority_store). Returns the
+    written dict, or None when no pilot row was read (the file on hand is kept). Nothing personal is logged."""
+    parsed = seniority_read(txt_path, uploaded_at, list_date)
+    return seniority_store(parsed, pdf_name, uploaded_at, list_date, out) if parsed["rows"] else None
 
 
 def _seniority_line(d):
@@ -150,8 +159,8 @@ def _seniority_status():
 
 def _save_upload(ctype, body, log):
     """Store one PDF from a multipart form as <YYYY-MM>_<award|pairings>.pdf plus a pdftotext -layout copy.
-    FW-0062: kind 'seniority' (no month) is stored as seniority_<YYYY-MM-DD, HST upload day>.pdf and parsed at once
-    into seniority.json (seniority_write)."""
+    FW-0062: kind 'seniority' (no month) goes to _save_seniority: kept as seniority_<YYYY-MM-DD, HST upload day>.pdf
+    and read into seniority.json only when it gives pilot rows."""
     try:
         msg = BytesParser(policy=HTTP).parsebytes(b"Content-Type: " + ctype.encode() + b"\r\n\r\n" + body)
         fields, data = {}, None
@@ -167,9 +176,9 @@ def _save_upload(ctype, body, log):
         if not data or not data.startswith(b"%PDF"):
             return "<p class='err'>That file is not a PDF.</p>"
         os.makedirs(UPLOAD_DIR, exist_ok=True)
-        now = _hst_now()
-        name = f"seniority_{now.strftime('%Y-%m-%d')}" if kind == "seniority" else f"{month}_{kind}"
-        path = os.path.join(UPLOAD_DIR, f"{name}.pdf")
+        if kind == "seniority":
+            return _save_seniority(data, fields, log)
+        path = os.path.join(UPLOAD_DIR, f"{month}_{kind}.pdf")
         with open(path, "wb") as f:
             f.write(data)
         note = ""
@@ -177,23 +186,57 @@ def _save_upload(ctype, body, log):
             subprocess.run(["pdftotext", "-layout", path, path[:-4] + ".txt"], check=True, timeout=120)
         except Exception as e:
             note = f" (no text copy: {html.escape(str(e))[:120]})"
-        log.info("upload: %s %s saved (%d KB)%s", month if kind != "seniority" else "-", kind, len(data) // 1024, note)
-        saved = f"Saved {html.escape(os.path.basename(path))} ({len(data) // 1024} KB){note}."
-        if kind != "seniority":
-            return f"<p class='ok'>{saved}</p>"
-        if note:
-            return f"<p class='err'>{saved} Without a text copy the list cannot be read.</p>"
-        given = fields.get("list_date", "")
-        given = given if re.fullmatch(r"\d{4}-\d{2}-\d{2}", given) else ""
-        d = seniority_write(path[:-4] + ".txt", os.path.basename(path), now.isoformat(timespec="seconds"), given)
-        if not d:
-            log.info("upload: seniority list read no pilot rows; the list on file is kept")
-            return (f"<p class='err'>{saved} No pilot rows were found in it (is it the pilot seniority list?); "
-                    "the list on file is kept.</p>")
-        log.info("upload: seniority list read, %d pilots, %d lines not read", d["count"], d["rejects"])
-        return f"<p class='ok'>{saved} {html.escape(_seniority_line(d))}.</p>"
+        log.info("upload: %s %s saved (%d KB)%s", month, kind, len(data) // 1024, note)
+        return f"<p class='ok'>Saved {html.escape(os.path.basename(path))} ({len(data) // 1024} KB){note}.</p>"
     except Exception as e:
         return f"<p class='err'>Upload failed: {html.escape(str(e))}</p>"
+
+
+def _save_seniority(data, fields, log):
+    """FW-0062: a seniority list upload. It goes to a temporary name (seniority_<day>.new.pdf / .txt) and is read
+    there; only a file that gives pilot rows is renamed to seniority_<YYYY-MM-DD, HST upload day>.pdf / .txt and
+    written to seniority.json. A refused file (no text copy, no pilot rows) is deleted, so the list on file keeps its
+    PDF and text copy (seniority_refresh re-reads that text after a parser change), even when the refused upload is
+    on the same day."""
+    now = _hst_now()
+    name = f"seniority_{now.strftime('%Y-%m-%d')}"
+    final, tmp = os.path.join(UPLOAD_DIR, name + ".pdf"), os.path.join(UPLOAD_DIR, name + ".new.pdf")
+    kb = len(data) // 1024
+    kept = "the list on file is kept."
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+        try:
+            subprocess.run(["pdftotext", "-layout", tmp, tmp[:-4] + ".txt"], check=True, timeout=120)
+        except Exception as e:
+            log.info("upload: seniority list (%d KB) gave no text copy; not kept", kb)
+            return (f"<p class='err'>Not kept: {name}.pdf ({kb} KB) gave no text copy "
+                    f"({html.escape(str(e))[:120]}), so the list cannot be read; {kept}</p>")
+        given = fields.get("list_date", "")
+        given = given if re.fullmatch(r"\d{4}-\d{2}-\d{2}", given) else ""
+        at = now.isoformat(timespec="seconds")
+        parsed = seniority_read(tmp[:-4] + ".txt", at, given)
+        if not parsed["rows"]:
+            why = {r for r, _ in parsed.get("rejects") or []}
+            log.info("upload: seniority list (%d KB) read no pilot rows (%d lines not read); not kept", kb,
+                     len(parsed.get("rejects") or []))
+            if "header-order" in why:
+                return (f"<p class='err'>Not kept: {name}.pdf ({kb} KB). No pilot rows were read: its header puts the "
+                        "columns in an order this version does not read (it needs EMP # before ALPA #, and DOH as "
+                        f"the first date column); {kept}</p>")
+            return (f"<p class='err'>Not kept: {name}.pdf ({kb} KB). No pilot rows were found in it (is it the pilot "
+                    f"seniority list?); {kept}</p>")
+        os.replace(tmp, final)
+        os.replace(tmp[:-4] + ".txt", final[:-4] + ".txt")
+        d = seniority_store(parsed, name + ".pdf", at, given)
+    finally:
+        for f in (tmp, tmp[:-4] + ".txt"):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+    log.info("upload: seniority list read, %d pilots, %d lines not read; saved (%d KB)", d["count"], d["rejects"], kb)
+    return f"<p class='ok'>Saved {html.escape(name)}.pdf ({kb} KB). {html.escape(_seniority_line(d))}.</p>"
 
 
 SETTINGS_FIELDS = (  # (key, label, secret)

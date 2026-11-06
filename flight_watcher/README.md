@@ -40,12 +40,17 @@ Recent finds.
   `/share/flight_watcher/uploads/seniority.json`: each pilot's seniority number, name, seat, equipment and date of
   hire, keyed on the employee number. The page then says how many pilots were read, the list date (typed in the
   List date box, else found in the cover text, else "no list date in the file") and the newest date of hire on the
-  list. A PDF with no pilot rows is refused and the list on file stays. The log has counts only. Every pilot
-  instance (Ryan's and a second pilot's) reads the same file. Upload a newer list when new hires are missing.
+  list. A PDF with no pilot rows (or with its columns in another order: the reader needs EMP # before ALPA # and DOH
+  as the first date column) is refused and deleted; the list on file keeps its PDF, text copy and seniority.json,
+  even when the refused upload is on the same day. Lines the reader skips are counted as "lines not read" (a row
+  whose DOH wrapped onto the next line is joined and read; a DOH after the list date is not read). The log has
+  counts only. Every pilot instance (Ryan's and a second pilot's) reads the same file. Upload a newer list when new
+  hires are missing.
 - Pay line under a rebuilt month: when the pilot card shows a month "Reconstructed from pairing crew lists", the
   Watcher adds `pay_line` to `sensor.<prefix>_pilot_schedule`: Trips, Credit, Block, Soft, Pay-Gross, Pay-Net and Days
   Off over the trips the grid draws, each trip priced for the seat on its crew line (Captain PWA 3.C.4, FO and RO PWA
-  3.D.6) for the longevity year from the date of hire on the seniority list (PWA 3.B.1, capped at 12), with the PWA
+  3.D.6) for the longevity year from the date of hire on the seniority list (PWA 3.B.1; a new year on each DOH
+  anniversary, PWA 3.D.2; capped at 12), with the PWA
   4.O.1 overrides (Captain $5.00 per block hour on a crew of 3 or more, RO $4.00, FO $3.00 on a 3-pilot crew) and the
   Extended Range +15% as on your own schedule. Pay-Net is an estimate at your own federal and state tax settings. Days
   Off counts bid period days with no trip on the crew lists (reserve and training are not on crew lists). No date of

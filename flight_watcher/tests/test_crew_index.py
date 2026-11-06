@@ -1,5 +1,6 @@
 """0.10.1 crew index: day mapping, run order and budget, crew lines, Markdown, pilot lookup (synthetic data only)."""
 import json
+import os
 import sys
 from datetime import date, datetime, timedelta
 
@@ -701,3 +702,42 @@ def test_seniority_refresh_rereads_after_a_parser_change(W, tmp_path, monkeypatc
     W._SEN_CACHE.clear()
     W.seniority_refresh()  # current: not read again
     assert (up / "seniority.json").stat().st_mtime_ns == mt
+
+
+def test_seniority_refresh_rereads_the_list_on_file(W, tmp_path, monkeypatch, fx):
+    """Review fix: after a parser change the Watcher re-reads the text copy of the file seniority.json names (with
+    its upload time and typed list date), not whichever seniority_<date>.txt is newest; with no seniority.json it reads
+    the newest. The file's signature is stored before the read, so a slow or failing file is not read again at the
+    next start (made-up list)."""
+    import web
+    up = tmp_path / "uploads"
+    up.mkdir()
+    (up / "seniority_2026-11-06.txt").write_text(fx("seniority_synthetic.txt"), encoding="utf-8")
+    (up / "seniority_2026-11-07.txt").write_text("Minutes of the March meeting\n", encoding="utf-8")  # an older build's leftover
+    monkeypatch.setattr(W, "UPLOADS_SHARED", str(up))
+    (up / "seniority.json").write_text(json.dumps({"file": "seniority_2026-11-06.pdf", "uploaded_at": "2026-11-06T09:30:00-10:00",
+                                                   "list_date": "2026-03-01", "parser": W.SEN.PARSER - 1, "count": 1, "pilots": {}}))
+    calls, real = [], web.seniority_write
+
+    def spy(path, *a):
+        f = os.path.basename(path)
+        calls.append((f, W.DB.load_state().get("uploads_done", {}).get(f)))  # already stored when the read starts
+        return real(path, *a)
+    monkeypatch.setattr(W.web, "seniority_write", spy)
+    W.seniority_refresh()
+    d = json.loads((up / "seniority.json").read_text())
+    assert (d["count"], d["parser"], d["file"], d["list_date"], d["uploaded_at"]) == (
+        12, W.SEN.PARSER, "seniority_2026-11-06.pdf", "2026-03-01", "2026-11-06T09:30:00-10:00")
+    assert [c[0] for c in calls] == ["seniority_2026-11-06.txt"] and calls[0][1].endswith(f"|{W.SEN.PARSER}")
+    # a file that fails is not read again with the same parser
+    (up / "seniority.json").unlink()
+    W._SEN_CACHE.clear()
+
+    def boom(path, *a):
+        calls.append((os.path.basename(path), "boom"))
+        raise RuntimeError("slow or broken")
+    monkeypatch.setattr(W.web, "seniority_write", boom)
+    W.seniority_refresh()  # no seniority.json: the newest text copy
+    W.seniority_refresh()
+    assert calls[1:] == [("seniority_2026-11-07.txt", "boom")]
+    assert "seniority_2026-11-07.txt" in W.DB.load_state()["uploads_done"]

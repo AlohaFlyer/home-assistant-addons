@@ -11,19 +11,27 @@ number, the names, the DOH (m/d/yyyy or mm/dd/yy, month first), then DOR / EQUIP
 import re
 from datetime import date
 
-PARSER = 1  # bump when a parse rule changes: the Watcher re-reads the last upload with the new rules
+PARSER = 2  # bump when a parse rule changes: the Watcher re-reads the list on file with the new rules
 DASHES = dict.fromkeys((0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2212), "-")  # the hyphens and dashes pdftotext prints
 SECTION_RE = re.compile(r"^(?:SENIORITY|ALPHABETICAL|MANDATORY AGE 65 RETIREMENT AGE|[AB]?\d{3}\s+(?:Captains|First Officers))$", re.I)
 DATE_RE = re.compile(r"\d{1,2}/\d{1,2}/\d{2,4}")
 HEADER_RE = re.compile(r"^\s*SEN\b.*\bEMP\b.*\bDOH\b", re.I)
+ROW_START_RE = re.compile(r"^\s*\d+\s")      # a line that starts with a seniority number
+GROUP_RE = re.compile(r"^\s*\d{4}\s*=")       # 'YYYY = n PILOTS' group lines of the retirement section
+PAGE_OF_RE = re.compile(r"^\s*\d+\s+of\s+\d+\s*$", re.I)  # a 'n of m' page footer
+MAX_LINE = 400  # longer 'rows' are not read (a wrong or garbled file); a real row is about 110 to 200 characters
+# Each free text zone (the short name, the names) starts and ends on a character that is neither a space nor a digit,
+# so a run of spaces can only be taken by the \s+ / \s* next to it. With \D*? zones a line that does not match
+# tried every split of every gap (O(w^4) in the gap width: seconds to hours per line); this form fails in linear time.
+# Python 3.10 (the image) has no atomic groups or possessive quantifiers.
 ROW_RE = re.compile(
-    r"^\s*(?P<sen>\d{1,5})\s+"                      # seniority number
-    r"(?P<short>\D*?)\s*"                            # 'LAST, F.M.' (may touch the employee number, or lack the comma)
-    r"(?P<emp>\d{3,6})"                              # employee number
-    r"(?:\s+(?P<alpa>\d{6,8}))?\s+"                  # union member number, blank for some pilots
-    r"(?P<names>\D*?)\s*"                            # 'LAST NAME   FIRST NAME' (the first name may touch the date)
-    r"(?P<doh>\d{1,2}/\d{1,2}/(?:\d{4}|\d{2}))"      # date of hire, month first
-    r"(?P<tail>(?:\s+\S+)*)\s*$")                    # DOR, EQUIP, SEAT (and any new column) in any order
+    r"^\s*(?P<sen>\d{1,5})\s+"                         # seniority number
+    r"(?:(?P<short>[^\d\s](?:\D*[^\d\s])?)\s*)?"        # 'LAST, F.M.' (may touch the employee number, or lack the comma)
+    r"(?P<emp>\d{3,6})"                                 # employee number
+    r"(?:\s+(?P<alpa>\d{6,8}))?\s+"                     # union member number, blank for some pilots
+    r"(?:(?P<names>[^\d\s](?:\D*[^\d\s])?)\s*)?"        # 'LAST NAME   FIRST NAME' (the first name may touch the date)
+    r"(?P<doh>\d{1,2}/\d{1,2}/(?:\d{4}|\d{2}))"         # date of hire, month first
+    r"(?P<tail>(?:\s+\S+)*)\s*$")                       # DOR, EQUIP, SEAT (and any new column) in any order
 TAIL = (("dor", re.compile(r"^[A-Z][a-z]{2}-\d{2}$")),          # mandatory retirement month, Mon-yy
         ("seat", re.compile(r"^(?:CA|FO|RO|SO|FE)$")),
         ("equip", re.compile(r"^[AB]?\d{3}[A-Z]?$")),              # 330, 321, 717, 767 (A321N, B787 tolerated)
@@ -84,30 +92,82 @@ def _split_names(short, names):
     return (head, tail) if head else (names, "")
 
 
+def header_order_ok(line):
+    """True when a header line puts its columns in the order ROW_RE reads them: EMP # before ALPA # (when the list has
+    a union number), the employee number before the date of hire, and DOH the first date column (before DOR, or a DOB
+    or other DO? / DATE column). Another order would store the wrong field (a DOR read as the DOH, the ALPA number as
+    the employee number), so the rows under such a header are not read ('header-order')."""
+    u = line.upper()
+    emp, alpa, doh = (re.search(rx, u) for rx in (r"\bEMP\b", r"\bALPA\b", r"\bDOH\b"))
+    if not emp or not doh or emp.start() > doh.start() or (alpa and alpa.start() < emp.start()):
+        return False
+    dates = [m.start() for m in re.finditer(r"\b(?:DO[A-Z]|DATE)\b", u)]
+    return min(dates) == doh.start()
+
+
+def _candidates(lines, rejects):
+    """(line_no, line, section, header_ok) for each line under a header that starts with a seniority number. A row
+    that wraps (no date on its line, the DOH on the next line, which has no seniority number of its own) is joined to
+    that next line; a numbered line with no date that is not joined is reported ('no-date') rather than dropped
+    silently. Cover text, 'YYYY = n PILOTS' group lines, page footers and the summary page are not rows."""
+    section, header, pending = "", None, None
+    for no, raw in enumerate(lines, 1):
+        line = raw.replace("\f", "").rstrip()
+        s = line.strip()
+        if not s:
+            continue
+        if SECTION_RE.match(s) or HEADER_RE.match(line):
+            if pending:
+                rejects.append(("no-date", pending[0]))
+                pending = None
+            if SECTION_RE.match(s):
+                section = s.upper()
+            else:
+                header = header_order_ok(line)
+            continue
+        if header is None:
+            continue  # cover letter, before the first header
+        starts = bool(ROW_START_RE.match(line)) and not GROUP_RE.match(line) and not PAGE_OF_RE.match(line)
+        dated = bool(DATE_RE.search(line))
+        if pending:
+            pno, pline = pending
+            pending = None
+            if not starts and dated:
+                yield pno, pline + "   " + s, section, header
+                continue
+            rejects.append(("no-date", pno))
+        if not starts:
+            continue
+        if not dated:
+            if len(line) <= MAX_LINE:
+                pending = (no, line)
+            else:
+                rejects.append(("too-long", no))
+            continue
+        yield no, line, section, header
+    if pending:
+        rejects.append(("no-date", pending[0]))
+
+
 def parse(text, ref_year=None):
     """{'list_date': ISO or '', 'rows': [...], 'rejects': [(reason, line_no)], 'sections': {label: rows}}.
     One row per seniority number, the list's only unique key (a few employee numbers belong to two pilots). The
     first listing of a pilot is kept and the repeats in the other sections are checked against it; a repeat whose
     names split more cleanly replaces the names. ref_year sets the century of two-digit years (the list's year,
-    else this year). A row is {sen, emp, last, first, name, doh, equip, seat, listed}."""
+    else this year); a DOH after it (or after the list date the text gives) is not read ('future-doh'). A row is
+    {sen, emp, last, first, name, doh, equip, seat, listed}. Rejects: no-match, too-long, header-order, no-date,
+    bad-date, future-doh, no-name (the line is not read); tail-unknown-token and conflict-* (the row is kept)."""
     text = (text or "").translate(DASHES).replace(" ", " ")
     when = list_date(text)
     ref = ref_year or (int(when[:4]) if when else date.today().year)
-    section, header_seen = "", False
     by_sen, rejects, sections = {}, [], {}
-    for no, raw in enumerate(text.split("\n"), 1):
-        line = raw.replace("\f", "").rstrip()
-        s = line.strip()
-        if not s:
+    for no, line, section, header_ok in _candidates(text.split("\n"), rejects):
+        if len(line) > MAX_LINE:
+            rejects.append(("too-long", no))
             continue
-        if SECTION_RE.match(s):
-            section = s.upper()
+        if not header_ok:
+            rejects.append(("header-order", no))
             continue
-        if HEADER_RE.match(line):
-            header_seen = True
-            continue
-        if not header_seen or not re.match(r"^\s*\d+\s", line) or not DATE_RE.search(line):
-            continue  # cover letter, summary counts, 'YYYY = n PILOTS' group lines, page numbers
         r = ROW_RE.match(line)
         if not r:
             rejects.append(("no-match", no))
@@ -117,7 +177,11 @@ def parse(text, ref_year=None):
         except ValueError:
             rejects.append(("bad-date", no))
             continue
-        last, first = _split_names(r["short"], r["names"])
+        if int(doh[:4]) > ref or (when and doh > when):
+            rejects.append(("future-doh", no))  # a DOH after the list: a misread column, never priced
+            continue
+        short, names = r["short"] or "", r["names"] or ""
+        last, first = _split_names(short, names)
         if not last:
             rejects.append(("no-name", no))
             continue
@@ -135,8 +199,8 @@ def parse(text, ref_year=None):
                "seat": tail.get("seat", "")}
         sections[section] = sections.get(section, 0) + 1
         # how cleanly the names split: crowded columns cut long names short or glue LAST to FIRST
-        row["_q"] = (bool(re.search(r"\S\s{2,}\S", r["names"].strip())) + bool(first)
-                     + (r["short"].split(",")[0].strip().upper() == last.upper()))
+        row["_q"] = (bool(re.search(r"\S\s{2,}\S", names.strip())) + bool(first)
+                     + (short.split(",")[0].strip().upper() == last.upper()))
         old = by_sen.get(row["sen"])
         if old is None:
             by_sen[row["sen"]] = dict(row, listed=1)
@@ -153,6 +217,7 @@ def parse(text, ref_year=None):
     rows = [by_sen[k] for k in sorted(by_sen)]
     for r in rows:
         r.pop("_q", None)
+    rejects.sort(key=lambda x: x[1])
     return {"list_date": when, "rows": rows, "rejects": rejects, "sections": sections}
 
 

@@ -46,9 +46,12 @@ def rate_for(year, iso, seat="FO"):
 
 
 def doh_year(doh, iso):
-    """Longevity year from the date of hire, as the card counts it (365.25-day years, year 1 from the DOH)."""
+    """Longevity year on the date iso from the date of hire: year 1 from the DOH, and a new year on each anniversary
+    of it (PWA 3.B.1 counts from the date of employment; PWA 3.D.2 'completed one (1) year of active service'). The
+    schedule card's dohYear() counts the same way (tests/test_pay.py runs both). A Feb 29 DOH turns over on Mar 1 in a
+    common year."""
     a, b = date.fromisoformat(doh), date.fromisoformat(iso)
-    return int((b - a).days // 365.25) + 1
+    return b.year - a.year - ((b.month, b.day) < (a.month, a.day)) + 1
 
 
 def hrs(v):

@@ -26,7 +26,8 @@ const RATE_TABLE = [
   [251.28, 261.33, 271.79, 282.66, 291.13], [256.66, 266.93, 277.61, 288.71, 297.37], [262.48, 272.98, 283.90, 295.26, 304.12],
   [266.03, 276.67, 287.74, 299.24, 308.22], [270.00, 280.80, 292.03, 303.71, 312.82], [273.62, 284.56, 295.95, 307.78, 317.02]];
 const rateFor = (year, iso) => { let i = 0; RATE_DATES.forEach((d, k) => { if (iso >= d) i = k; }); return RATE_TABLE[Math.min(12, Math.max(1, year)) - 1][i]; };
-const dohYear = (iso, doh) => Math.floor((Date.parse(iso) - Date.parse(doh || DOH)) / (365.25 * 24 * H)) + 1;
+// Longevity year: year 1 from the DOH, a new year on each anniversary (PWA 3.B.1, 3.D.2); pay.doh_year counts the same way
+const dohYear = (iso, doh) => { const [a, b] = [doh || DOH, iso].map((s) => String(s).slice(0, 10).split("-").map(Number)); return b[0] - a[0] - (b[1] < a[1] || (b[1] === a[1] && b[2] < a[2]) ? 1 : 0) + 1; };
 const hrs = (t) => { const mm = /^(\d+):(\d{2})$/.exec(String(t || "").trim()); return mm ? Number(mm[1]) + Number(mm[2]) / 60 : null; };
 const usd = (v) => (v == null ? "" : "$" + Math.round(v).toLocaleString("en-US"));
 
