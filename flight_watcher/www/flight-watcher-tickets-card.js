@@ -1,11 +1,19 @@
 // Flight Watcher tickets card (0.10.1, Ryan; 1.1.2: completed tickets fold away): bug reports and feature requests.
+// FW-0006 (Ryan): one "Submit a ticket" button and one form, Bug or Feature request chosen at its top (Bug first);
+// the bug-only fields (steps, expected) show for Bug only. The payload keeps "kind" (bug | feature) as before.
 // New tickets go to MQTT flight_watcher/ticket/new; the Watcher numbers them FW-0001... and lists them on
-// sensor.flight_watcher_tickets. Answers (verify / reopen / note) go to flight_watcher/ticket/act.
+// sensor.flight_watcher_tickets. Answers (verify / reopen / note) go to flight_watcher/ticket/act. When a ticket is
+// marked fixed the Watcher sends flight_watcher/event/ticket_fixed (FW-0007) for a quiet push to its reporter.
 // FW-0003 (Ryan): up to 10 photos per ticket (photo library, camera or files). The ticket goes first with a
 // card-made cid and the photo count, then each photo as its own flight_watcher/ticket/image {cid, i, n, image}
 // message, so no MQTT message carries more than one photo (each photo's data URL stays under MAX_URL).
 const FW_TICKET_MAX_PHOTOS = 10;
 const FW_TICKET_MAX_URL = 1.75e6;  // one photo's data URL; its whole message stays under about 1.8e6 chars
+// FW-0006: the choice at the top of the one ticket form (Bug first): its label, the description prompt, a title hint
+const FW_TICKET_KINDS = {
+  bug: { label: "&#128027; Bug", narrative: "What happened?", title: "e.g. Pay-Gross wrong on v11.003" },
+  feature: { label: "&#128161; Feature request", narrative: "What do you want, and why?", title: "e.g. Show reserve days on the schedule" },
+};
 class FlightWatcherTicketsCard extends HTMLElement {
   setConfig(c) {
     this._c = { prefix: "flight_watcher", ...c };
@@ -158,13 +166,15 @@ class FlightWatcherTicketsCard extends HTMLElement {
     const tix = a.tickets || [];
     const ver = (this._h && this._h.states[`sensor.${this._c.prefix}_state`] || { attributes: {} }).attributes.version || "";
     const chip = { new: "#1976d2", triaged: "#6a1b9a", in_progress: "#ef6c00", fixed: "#2e7d32", closed: "#757575", reopened: "#c62828" };
-    const f = this._form;
+    const f = this._form, K = f ? FW_TICKET_KINDS[f.kind] || FW_TICKET_KINDS.bug : null;
     const form = f ? `<div class="form">
-        <h4>${f.kind === "bug" ? "&#128027; Submit a bug" : "&#128161; Submit a feature request"}</h4>
-        <label>Title<input data-f="title" maxlength="120" placeholder="${f.kind === "bug" ? "e.g. Pay-Gross wrong on v11.003" : "e.g. Show reserve days on the schedule"}"></label>
-        <label>${f.kind === "bug" ? "What happened?" : "What do you want, and why?"}<textarea data-f="narrative" rows="4"></textarea></label>
-        ${f.kind === "bug" ? `<label>Steps to see it<textarea data-f="steps" rows="2" placeholder="Tab, what you tapped"></textarea></label>
-        <label>What did you expect?<textarea data-f="expected" rows="2"></textarea></label>` : ""}
+        <h4>&#127915; New ticket</h4>
+        <div class="seg" role="radiogroup" aria-label="Ticket type">${Object.keys(FW_TICKET_KINDS).map((k) =>
+          `<label><input type="radio" name="fw-ticket-kind" value="${k}" data-kind${k === f.kind ? " checked" : ""}><span>${FW_TICKET_KINDS[k].label}</span></label>`).join("")}</div>
+        <label>Title<input data-f="title" maxlength="120" placeholder="${K.title}"></label>
+        <label><span data-narr>${K.narrative}</span><textarea data-f="narrative" rows="4"></textarea></label>
+        <div data-bugonly${f.kind === "bug" ? "" : " hidden"}><label>Steps to see it<textarea data-f="steps" rows="2" placeholder="Tab, what you tapped"></textarea></label>
+        <label>What did you expect?<textarea data-f="expected" rows="2"></textarea></label></div>
         <label>Where<select data-f="page"><option>Watcher</option><option>Schedule</option><option>Recall/O75</option><option>Details</option><option>Aviation Wx</option><option>Phone alert</option><option>Other</option></select></label>
         <div class="photos" data-photos></div>
         <input class="vh" type="file" accept="image/*" multiple data-img tabindex="-1" aria-hidden="true">
@@ -193,7 +203,14 @@ class FlightWatcherTicketsCard extends HTMLElement {
       button.g{background:#757575}.big{font-size:14px;padding:8px 14px}button:disabled{opacity:.5;cursor:default}
       .form{border:1px solid var(--divider-color);border-radius:8px;padding:10px;margin:8px 0}
       .form label{display:block;margin:6px 0;font-weight:600;font-size:12px}
-      .form input:not([type=file]),.form textarea,.form select{display:block;width:100%;box-sizing:border-box;margin-top:2px;font:13px sans-serif;padding:4px}
+      .form input:not([type=file]):not([type=radio]),.form textarea,.form select{display:block;width:100%;box-sizing:border-box;margin-top:2px;font:13px sans-serif;padding:4px}
+      .form h4{margin:2px 0 0;font-size:14px}
+      .seg{display:flex;border:1px solid var(--primary-color);border-radius:8px;overflow:hidden;margin:8px 0 10px}
+      .form .seg label{flex:1;position:relative;margin:0;font-size:13px}.seg label+label{border-left:1px solid var(--primary-color)}
+      .seg input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+      .seg span{display:flex;align-items:center;justify-content:center;gap:4px;min-height:40px;padding:0 6px;text-align:center;color:var(--primary-color)}
+      .seg input:checked+span{background:var(--primary-color);color:#fff}
+      .seg input:focus-visible+span{outline:2px solid var(--primary-text-color);outline-offset:-4px}
       .photos{margin:8px 0}.photos .lbl{font-weight:600;font-size:12px;margin-bottom:4px}
       .thumbs{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px}
       .ph{position:relative;width:64px;height:64px}
@@ -207,7 +224,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
       .tb{margin:6px 0 0 12px}.n{white-space:pre-wrap;margin-bottom:6px}
       details.done{border-top:1px solid var(--divider-color);padding-top:6px}details.done summary{cursor:pointer;font-weight:600;color:var(--secondary-text-color)}
     </style><ha-card>
-      <div><button class="big" data-new="bug"${this._busy() ? " disabled" : ""}>&#128027; Submit a bug</button><button class="big" data-new="feature"${this._busy() ? " disabled" : ""}>&#128161; Submit a feature request</button>
+      <div><button class="big" data-new${this._busy() ? " disabled" : ""}>&#127915; Submit a ticket</button>
         <span class="u">${tix.length ? `${active.length} open · ${done.length} completed` : ""}</span></div>
       <div data-status class="${this._send && this._send.failed.length ? "warn" : "u"}">${this._e(this._statusText())}</div>
       ${form}
@@ -216,7 +233,8 @@ class FlightWatcherTicketsCard extends HTMLElement {
     const r = this.shadowRoot;
     r.querySelectorAll("[data-new]").forEach((b) => b.onclick = () => {
       if (this._busy()) return;  // the last ticket's photos are still going
-      this._closeForm(); this._form = { kind: b.dataset.new };
+      if (this._form) { const ti = r.querySelector('[data-f="title"]'); if (ti) ti.focus(); return; }  // open already: keep what is typed
+      this._closeForm(); this._form = { kind: "bug" };  // FW-0006: Bug first, Feature one tap away
       if (this._send && this._send.done) this._send = null;
       this._render();
     });
@@ -231,6 +249,15 @@ class FlightWatcherTicketsCard extends HTMLElement {
     if (f) {
       this._photos();
       r.querySelector("[data-cancel]").onclick = () => { this._closeForm(); this._sig = null; this._render(); };
+      // FW-0006: switching Bug / Feature changes the form in place, so nothing typed (or picked) is lost
+      r.querySelectorAll("[data-kind]").forEach((el) => el.onchange = () => {
+        if (!el.checked || !FW_TICKET_KINDS[el.value]) return;
+        f.kind = el.value;
+        const k = FW_TICKET_KINDS[f.kind];
+        r.querySelector("[data-bugonly]").hidden = f.kind !== "bug";
+        r.querySelector("[data-narr]").textContent = k.narrative;
+        r.querySelector('[data-f="title"]').placeholder = k.title;
+      });
       const inp = r.querySelector("[data-img]");
       inp.onchange = () => { const fl = Array.from(inp.files || []); inp.value = ""; this._addFiles(fl); };  // cleared so the same photo can be picked again
       r.querySelector("[data-send]").onclick = () => {
@@ -238,7 +265,8 @@ class FlightWatcherTicketsCard extends HTMLElement {
         const v = (k, n) => { const el = r.querySelector(`[data-f="${k}"]`); return el ? el.value.trim().slice(0, n) : ""; };
         const msg = r.querySelector("[data-msg]");
         if (!v("title") || !v("narrative")) { msg.textContent = "Add a title and a description."; return; }
-        const t = { kind: f.kind, title: v("title", 200), narrative: v("narrative", 10000), steps: v("steps", 5000), expected: v("expected", 5000), page: v("page", 300), version: ver };
+        const bug = f.kind === "bug";  // a feature request sends no steps / expected, even if typed under Bug first
+        const t = { kind: f.kind, title: v("title", 200), narrative: v("narrative", 10000), steps: bug ? v("steps", 5000) : "", expected: bug ? v("expected", 5000) : "", page: v("page", 300), version: ver };
         this._submit(t, this._imgs.slice());
       };
     }

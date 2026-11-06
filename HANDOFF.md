@@ -45,7 +45,10 @@ Work top to bottom; tick items off here in the same PR that finishes them.
    Ryan confirmed with ALPA and the company that crew assignments are public information.
 6. **Tickets workflow:** buttons and log are on Details. "work tickets" = read `/share/flight_watcher/tickets/*`,
    mirror each to a GitHub issue here (label bug / feature, link FW id), diagnose, batch fixes into a release,
-   mark `fixed` with the version via `flight_watcher/ticket/act`. Reporter verifies.
+   mark `fixed` with the version via `flight_watcher/ticket/act`. Reporter verifies. Since FW-0007 that `fixed`
+   also sends `flight_watcher/event/ticket_fixed` {id, kind, title, reporter, version} (once per move to fixed);
+   an HA automation on Pako (to be created) pushes it quietly, no sound, to the reporter's phone. See
+   `flight_watcher/README.md` > Tickets.
 7. **Paycheck check:** paydays the 7th (estimate) and 22nd (true-up), PWA 2.A.56. Ryan taps "Get paycheck
    (Hark)"; Hark saves `YYYYMMDD_pay-advice_HAL.pdf` (+ earnings detail) to Drive "Claude - Pay stubs" via Alaska
    PeopleSoft (aagpeople.com) with a PingID one-time code. First real check Dec 22: compare line by line with the
