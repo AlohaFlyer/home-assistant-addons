@@ -133,9 +133,32 @@ def request_view_url(base, bcid, ts):
     return f"{base}{REQUESTS_PATH}?ShowRequest=1&TimeStamp={ts}&BCID={bcid}&From=Self&Parent=MainMenu"
 
 
+VIEW_SIDE_RE = re.compile(r"\b(drop|give\s?up|add|pick\s?up|take)\b", re.I)
+VIEW_SIDE_OF = {"drop": "drop", "give up": "drop", "giveup": "drop", "add": "add", "pick up": "add", "pickup": "add",
+                "take": "add"}
+
+
+def _view_legs(text):
+    """Legs of a request's view page. Strict: only drop / give up / add / pick up / take, found between the previous
+    trip and this one and at most 40 characters before it (a page header such as 'Add/Swap/Drop requests' or a
+    'From:' line never labels a trip); each trip once."""
+    legs, prev, seen = [], 0, set()
+    for tm in TRIP_RE.finditer(text):
+        labels = VIEW_SIDE_RE.findall(text[max(prev, tm.start() - 40):tm.start()])
+        prev = tm.end()
+        trip = tm.group(1).upper()
+        if trip in seen:
+            continue
+        seen.add(trip)
+        side = VIEW_SIDE_OF.get(re.sub(r"\s+", " ", labels[-1].lower())) if labels else ""
+        day = f"{int(tm.group(2)):02d}{tm.group(3).upper()}" if tm.group(2) else ""
+        legs.append({"trip": trip, "day": day, "side": side})
+    return legs[:4]
+
+
 def parse_request_view(text):
     """{legs, trips, detail} from one request's view page: the pairings it drops and adds."""
-    legs = _legs(text or "")
+    legs = _view_legs(text or "")
     m = TRIP_RE.search(text or "")
     detail = re.sub(r"\s+", " ", text[max(0, m.start() - 60):m.start() + 160]).strip() if m else ""
     return {"legs": legs, "trips": [x["trip"] for x in legs], "detail": detail}

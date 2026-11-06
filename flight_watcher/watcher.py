@@ -1952,9 +1952,25 @@ def price_request(r, now=None):
     filed = _filed_at(r, now)
     held = _own_trips_at(filed.astimezone(timezone.utc))
     own, cache, parts = S.get("own_trips") or {}, {}, []
-    for leg in r["legs"]:
+
+    def was_held(leg):  # Ryan held this trip (on this date, when the page gives one) when he filed
+        st = held.get(leg["trip"])
+        if not st:
+            return False
+        d = leg.get("day") or ""
+        return not d or (st[8:10] == d[:2] and MON3.index(d[2:]) + 1 == int(st[5:7]))
+    # 1.2.2 review: the request type decides an Add or a Drop; a swap's sides come from what Ryan held when he
+    # filed. Page words only when no schedule version is on file, and only when they name both sides; else no
+    # amount (a missing Pay-Gross beats a wrong one).
+    typed = {"Add": "add", "Drop": "drop"}.get(r["type"])
+    words = [leg.get("side") or "" for leg in r["legs"]]
+    if not typed:
+        sides = [("drop" if was_held(leg) else "add") for leg in r["legs"]] if held else words
+        if "drop" not in sides or "add" not in sides or not all(sides):
+            return None
+    for i, leg in enumerate(r["legs"]):
         trip = leg["trip"]
-        side = leg.get("side") or {"Add": "add", "Drop": "drop"}.get(r["type"]) or ("drop" if trip in held else "add")
+        side = typed or sides[i]
         start = held.get(trip) if side == "drop" else None
         if not start and leg.get("day"):
             mo = MON3.index(leg["day"][2:]) + 1
@@ -2076,6 +2092,8 @@ def requests_check(fl):
             for r in rows:
                 if r["status"] in SUB.DECIDED:
                     pushed[SUB.push_key(r)] = now_iso()  # last seen; pruned once gone 60 days
+                    if r.get("alt"):  # the content key too: a read that falls back to it never re-pushes
+                        pushed[f"{r['alt']}|{r['status']}"] = now_iso()
             rows_of[b] = rows
             read_ok = True
         except Exception as e:
