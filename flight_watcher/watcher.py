@@ -351,8 +351,7 @@ def settings_cmd(payload):
         json.dump(cur, f)
     os.chmod(tmp, 0o600)
     os.replace(tmp, CREDS_FILE)
-    if str(S.get("machine", "")).startswith("stopped") or S.get("machine") == "needs_settings":
-        # 1.0.1: new credentials are the fix for a stop (missing or rejected login): start fresh, no Re-arm needed
+    if creds_stop_cleared(changed):
         S["machine"], S["note"] = "idle", "new settings"
         S["kills"], S["pot_urls"], S["parse_fail"] = [], {}, 0
         save_state(S)
@@ -363,6 +362,18 @@ def settings_cmd(payload):
 
 
 RESTART_DELAY_S = 2
+NO_CREDS_NOTES = ("enter your FLICA username and password", "set username and password")
+
+
+def creds_stop_cleared(changed):
+    """1.0.1: a new FLICA username or password fixes only the stops it can fix: no credentials yet, or one login
+    rejected (stopped_login_failed). A CAPTCHA/MFA/password-change stop or any other park keeps needing Ryan's
+    Re-arm after he has dealt with FLICA himself, whatever is saved (FLICA's CAPTCHA/MFA is never worked around)."""
+    if not ({"username", "password"} & set(changed)):
+        return False
+    m, note = str(S.get("machine", "")), str(S.get("note", ""))
+    return m in ("needs_settings", "stopped_login_failed") or (
+        m == "stopped_unexpected" and note.startswith(NO_CREDS_NOTES))
 
 
 def restart_later():

@@ -193,14 +193,22 @@ def test_run_child_specs():
 
 
 def test_new_settings_clear_a_stop(tmp_path, monkeypatch):
-    """1.0.1: saving credentials (Web UI Settings) restarts fresh instead of staying stopped until Re-arm."""
+    """1.0.1: new FLICA credentials clear only a no-credentials or rejected-login stop, never a CAPTCHA/MFA one."""
     W = _load(tmp_path, monkeypatch, "", {**OPTS, "username": "", "password": ""})
     monkeypatch.setattr(W, "MQ", FakeClient())
     monkeypatch.setattr(W, "restart_later", lambda: None)
-    W.S.update({"machine": "stopped_unexpected", "note": "no login", "kills": [1], "parse_fail": 2})
+    W.S.update({"machine": "stopped_unexpected", "kills": [1], "parse_fail": 2,
+                "note": "enter your FLICA username and password: Open Web UI > Settings"})
     assert W.settings_cmd(json.dumps({"username": "doej", "password": "pw1"})) is True
     assert W.S["machine"] == "idle" and W.S["kills"] == [] and W.S["parse_fail"] == 0
     assert stat.S_IMODE(os.stat(tmp_path / "creds.json").st_mode) == 0o600
-    W.S.update({"machine": "hunting"})
-    assert W.settings_cmd(json.dumps({"password": "pw2"})) is True
-    assert W.S["machine"] == "hunting"  # a running watcher is left alone
+    W.S.update({"machine": "stopped_login_failed", "note": "one login attempt failed (bad password)"})
+    assert W.settings_cmd(json.dumps({"password": "pw2"})) is True and W.S["machine"] == "idle"
+    for i, note in enumerate(("FLICA asked for captcha/MFA/password change during login", "FLICA showed a captcha/MFA/password page")):
+        W.S.update({"machine": "stopped_unexpected", "note": note})
+        assert W.settings_cmd(json.dumps({"password": f"pw-captcha-{i}"})) is True
+        assert W.S["machine"] == "stopped_unexpected"  # CAPTCHA/MFA: only Ryan's Re-arm
+    W.S.update({"machine": "stopped_login_failed", "note": "x"})
+    assert W.settings_cmd(json.dumps({"my_name": "Doe"})) is True and W.S["machine"] == "stopped_login_failed"
+    W.S.update({"machine": "hunting", "note": ""})
+    assert W.settings_cmd(json.dumps({"password": "pw3"})) is True and W.S["machine"] == "hunting"
