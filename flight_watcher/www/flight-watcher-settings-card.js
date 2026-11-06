@@ -1,5 +1,6 @@
 /* Flight Watcher: settings card (1.1.0). Edit the FLICA and CrewTrac logins and the last name from the dashboard,
-   also for a user who is not a Home Assistant admin. Usernames are shown; a password only as set / not set.
+   also for a user who is not a Home Assistant admin (1.4.5, Ryan Nov 6: labeled Credentials on the Settings tab).
+   Usernames are shown; a password only as set / not set.
    On Save the form is sealed in the browser (AES-256-GCM, the key wrapped with this Watcher's RSA-OAEP public key
    from sensor.flight_watcher_settings) and published to flight_watcher/settings/set, so Home Assistant's history,
    logs and MQTT only ever see ciphertext. A blank field keeps what is saved. On a plain http address (no
@@ -38,7 +39,7 @@ class FlightWatcherSettingsCard extends HTMLElement {
       .note{opacity:.75;font-size:13px}.msg{margin-top:8px}.err{color:#c62828}.ok{color:#2e7d32}</style>
       <ha-card><div class="note">Saved on this Home Assistant only, encrypted before it leaves this screen. A blank field keeps
       what is saved. Saving restarts the Watcher; with a new FLICA login it logs in within a minute.</div>
-      ${rows}<button id="save">Save settings</button><div class="msg" id="msg"></div>
+      ${rows}<button id="save">Save credentials</button><div class="msg" id="msg"></div>
       <div class="note" id="who"></div></ha-card>`;
     root.getElementById("save").addEventListener("click", () => this._save());
     this._built = true;
@@ -102,4 +103,4 @@ class FlightWatcherSettingsCard extends HTMLElement {
 }
 customElements.define("flight-watcher-settings-card", FlightWatcherSettingsCard);
 window.customCards = window.customCards || [];
-window.customCards.push({ type: "flight-watcher-settings-card", name: "Flight Watcher settings", description: "Edit the FLICA and CrewTrac logins, sealed end to end" });
+window.customCards.push({ type: "flight-watcher-settings-card", name: "Flight Watcher credentials", description: "Edit the FLICA and CrewTrac logins, sealed end to end" });

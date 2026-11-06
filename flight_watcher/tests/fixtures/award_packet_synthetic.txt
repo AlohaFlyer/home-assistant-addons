@@ -1,0 +1,56 @@
+                                      A332FO PBS BIDLINE AWARD
+                                       DECEMBER 2026 BID PERIOD
+                                         Posted November 18, 2026
+Synthetic test packet: every name and number below is made up.
+                 C/IN   Wed      Thu      Fri
+                        2        3        4        5        6        7        8        9        10       11
+
+                                 LAX
+00001 / 70001                     10:00
+DOE                                       01:00
+Cr:082:00                        012:00                     010:00
+Days Off: 17                     H9001                      VA
+                                 CA
+
+00011 / 70011                     10:00
+GOE                                       01:00
+Cr:079:30                        012:00
+Days Off: 18                     H9001
+                                 FO
+                                       PILOT SENIORITY LIST
+SEN   NAME, Initial       EMP #   ALPA #   LAST NAME       FIRST NAME   DOH         DOR    EQUIP   SEAT
+  1   DOE, J.             70001   7700001  DOE             JANE         1/1/1988    Jan-28 330     CA
+  2   ROE, J.             70002   7700002  ROE             JOHN         2/2/1989    Jan-29 321     CA
+  3   POE, A.             70003   7700003  POE             ALEX         3/3/1990    Jan-30 717     CA
+  4   LOE, P.             70004   7700004  LOE             PAT          4/4/1991    Jan-31 330     CA
+  5   MOE, K.             70005   7700005  MOE             KAI          5/5/1992    Jan-32 321     CA
+  6   NOE, L.             70006   7700006  NOE             LEE          6/6/1993    Jan-33 717     CA
+  7   KOE, S.             70007   7700007  KOE             SAM          7/7/1994    Jan-34 330     CA
+  8   ZOE, M.             70008   7700008  ZOE             MAX          8/8/1995    Jan-35 321     CA
+  9   VOE, R.             70009   7700009  VOE             ROBIN        9/9/1996    Jan-36 717     CA
+ 10   HOE, T.             70010   7700010  HOE             TERRY        10/10/1997  Jan-37 330     CA
+ 11   BOE, J.             70011   7700011  BOE             JANE         11/11/1998  Jan-38 321     FO
+ 12   COE, J.             70012   7700012  COE             JOHN         12/12/1999  Jan-39 717     FO
+ 13   FOE, A.             70013   7700013  FOE             ALEX         1/13/2000   Jan-40 330     FO
+ 14   GOE, P.             70014   7700014  GOE             PAT          2/14/2001   Jan-41 321     FO
+ 15   JOE, K.             70015   7700015  JOE             KAI          3/15/2002   Jan-42 717     FO
+ 16   WOE, L.             70016   7700016  WOE             LEE          4/16/2003   Jan-43 330     FO
+                                                    Page 1
+                                       PILOT SENIORITY LIST
+SEN   NAME, Initial       EMP #   ALPA #   LAST NAME       FIRST NAME   DOH         DOR    EQUIP   SEAT
+ 17   YOE, S.             70017   7700017  YOE             SAM          5/17/2004   Jan-44 321     FO
+ 18   QUOE, M.            70018   7700018  QUOE            MAX          6/18/2005   Jan-45 717     FO
+ 19   SOE, R.             70019   7700019  SOE             ROBIN        7/19/2006   Jan-46 330     FO
+ 20   TOE, T.             70020   7700020  TOE             TERRY        8/20/2007   Jan-47 321     FO
+ 21   DOE-SMITH, J.       70021   7700021  DOE-SMITH       JANE         9/21/2008   Jan-48 717     FO
+ 22   VAN ROE, J.         70022   7700022  VAN ROE         JOHN         10/22/2009  Jan-49 330     FO
+ 23   O'POE, A.           70023   7700023  O'POE           ALEX         11/23/2010  Jan-50 321     FO
+ 24   MOE JR, P.          70024   7700024  MOE JR          PAT          12/24/2011  Jan-51 717     FO
+ 25   LOEWE, K.           70025   7700025  LOEWE           KAI          1/25/2012   Jan-52 330     FO
+ 26   NOEL, L.            70026   7700026  NOEL            LEE          2/26/2013   Jan-53 321     FO
+ 27   KOEHL, S.           70027   7700027  KOEHL           SAM          3/27/2014   Jan-54 717     FO
+ 28   ZOELL, M.           70028   7700028  ZOELL           MAX          4/1/2015    Jan-55 330     FO
+ 29   VOEGT, R.           70029   7700029  VOEGT           ROBIN        5/2/2016    Jan-56 321     FO
+ 30   HOEFT, T.           70030   7700030  HOEFT           TERRY        6/3/2017    Jan-57 717     FO
+                                                    Page 2
+     TOTAL PILOTS   30

@@ -149,8 +149,11 @@ class FlightWatcherPilotCard extends HTMLElement {
       if (seats.some((s) => s !== "CA") && r.FO != null) parts.push(`$${e(Number(r.FO).toFixed(2))}/cr h ${seats.includes("RO") ? "FO/RO" : "FO"} (PWA 3.D.6)`);
       rate = [`Year ${e(pl.year)}${pl.year_to ? ` to ${e(pl.year_to)}` : ""} (DOH ${e(pl.doh)})`, ...parts].join(" · ");
     } else if (pl.list_status === "not_on_list") {
-      rate = `Not on the seniority list on file${pl.list_date ? ` (${e(pl.list_date)})` : pl.list_newest_doh ? ` (newest DOH on it ${e(pl.list_newest_doh)})` : ""}: upload a newer list on the Web UI for this pilot's pay`;
-    } else rate = "Upload the seniority list on the Web UI for this pilot's pay";
+      // 1.4.5: the dates of hire may come from an award packet (list_source "award YYYY-MM"); uploads are on the Settings tab
+      const aw = /^award (\d{4}-\d{2})$/.exec(String(pl.list_source || ""));
+      rate = aw ? `Not in the dates of hire on file (from the ${e(aw[1])} award): upload a newer award or the seniority list (Settings tab) for this pilot's pay`
+        : `Not on the seniority list on file${pl.list_date ? ` (${e(pl.list_date)})` : pl.list_newest_doh ? ` (newest DOH on it ${e(pl.list_newest_doh)})` : ""}: upload a newer list (Settings tab) for this pilot's pay`;
+    } else rate = "Upload the seniority list or the month's award (Settings tab) for this pilot's pay";
     const notes = [left.length ? `${left.join(", ")}: not totaled` : "",
       (pl.missing || []).length ? `No credit for ${(pl.missing || []).map(ds).join(", ")}: not priced` : "",
       (pl.no_block || []).length ? `No block for ${(pl.no_block || []).map(ds).join(", ")}: its PWA 4.O.1 override is not in Pay-Gross` : ""].filter(Boolean);

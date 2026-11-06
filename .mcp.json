@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "hom": {
+      "type": "http",
+      "url": "${HOM_MCP_URL:-https://homeofficemanager.app/api/mcp}",
+      "headers": {
+        "X-HOM-AGENT-TOKEN": "${HOM_AGENT_TOKEN:-set-by-proxy}"
+      }
+    }
+  }
+}

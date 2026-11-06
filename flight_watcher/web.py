@@ -1,20 +1,34 @@
 """Ingress page: settings (credentials), monthly PDFs and the pilot seniority list, rules editor, recent finds,
 recent matches. HA handles auth (the ingress panel is for HA admins); only the Supervisor ingress proxy (172.30.32.2)
-may connect. Passwords are never shown or logged."""
+may connect. Passwords are never shown or logged.
+
+1.4.5 (Ryan, Nov 6): JSON endpoints beside the page, same ingress-only access, for the dashboard uploads card
+(www/flight-watcher-uploads-card.js, admin only): GET api/uploads (what is on file) and POST api/upload (the page's
+own multipart form, the same checks and limits; the page and the card share one save path). An award upload is also
+read for dates of hire (seniority.award_parse) and merged into seniority.json (award_seniority)."""
 import html
 import json
 import os
 import re
 import subprocess
 import threading
+from datetime import datetime, timedelta, timezone
 from email.parser import BytesParser
 from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
+
+import seniority as SEN
 
 INGRESS_IP = "172.30.32.2"
 UPLOAD_DIR = "/share/flight_watcher/uploads"
-UPLOAD_MAX = 25_000_000
+UPLOAD_MAX = 25_000_000  # the app's own hard cap on a request body
+# 1.4.5 review fix: what reaches the app through ingress. The Supervisor's ingress proxy reads a POST body whole
+# (supervisor/api/ingress.py, no ingress_stream in config.yaml) and its aiohttp app refuses a body over 16 MiB
+# (supervisor/api/__init__.py, MAX_CLIENT_SIZE = 1024**2 * 16) with HTTP 413, before the app sees it. api/uploads
+# advertises this, less 64 KiB for the multipart form around the PDF, so the card refuses a larger file before
+# sending it. Not ingress_stream: the body would then come chunked, with no Content-Length for this server to read.
+INGRESS_MAX = 16 * 1024 * 1024 - 64 * 1024
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Flight Watcher rules</title>
 <style>
@@ -36,7 +50,8 @@ nav a{{margin-right:14px}}.set label{{display:block;margin:6px 0}}.set input{{wi
 kept in /share/flight_watcher/uploads (never committed) with a text copy, and parsed for the month's starting
 schedule and the tag-on ideas. 1.4.2 (FW-0062): the pilot seniority list (any month; the Month box is not used for
 it) gives each pilot's date of hire, so a pilot's month rebuilt from crew lists shows a pay line for every pilot
-instance. Give its list date if the PDF does not print one.</p>
+instance. Give its list date if the PDF does not print one. Home Assistant's app proxy takes a PDF of up to
+{max_mb} MB.</p>
 <form method="post" action="upload" enctype="multipart/form-data">
 Month <input type="month" name="month" value="{month}"> &nbsp;
 <select name="kind"><option value="award">Monthly award</option><option value="pairings">Pairings package</option><option value="seniority">Pilot seniority list</option></select> &nbsp;
@@ -117,20 +132,83 @@ def seniority_file():
 def seniority_read(txt_path, uploaded_at, list_date=""):
     """Parse a seniority list text copy (pdftotext -layout): seniority.parse's dict (rows, rejects, ...). The century
     of a two-digit year comes from the list date, else the upload's year."""
-    import seniority as SEN
     ref = int(list_date[:4]) if list_date else int(uploaded_at[:4])
     return SEN.parse(open(txt_path, encoding="utf-8", errors="replace").read(), ref)
 
 
-def seniority_store(parsed, pdf_name, uploaded_at, list_date="", out=None):
-    """Write seniority.json (atomic; seniority_file() unless `out`) from a parse with pilot rows. Returns the dict."""
-    import seniority as SEN
-    d = SEN.to_json(parsed, pdf_name, uploaded_at, list_date)
-    out = out or seniority_file()
-    tmp = out + ".tmp"
+SEN_LIST = "seniority_list.json"    # 1.4.5: the dedicated list, kept while an award's dates of hire are on top
+SEN_AWARD = "seniority_award.json"  # 1.4.5: the newest award's dates of hire (25 pilot rows or more)
+HST = timezone(timedelta(hours=-10))
+
+
+def hst_iso(ts):
+    """A file time as HST ISO ('2026-11-06T09:30:00-10:00')."""
+    return datetime.fromtimestamp(ts, HST).isoformat(timespec="seconds")
+
+
+def _load_json(path):
+    try:
+        d = json.load(open(path, encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def _dump(path, d):
+    tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(d, f, separators=(",", ":"))
-    os.replace(tmp, out)
+    os.replace(tmp, path)
+
+
+def seniority_sources(out=None):
+    """1.4.5: (list, award) that seniority.json (`out`, seniority_file() unless given) was built from. Under a list on
+    top it is the list itself (a 1.4.4 file, with no 'source', is a list); under an award the list is in
+    seniority_list.json. The award is seniority_award.json. (None, None) when there is no seniority.json: the Watcher
+    then starts over from the text copies (seniority_refresh)."""
+    out = out or seniority_file()
+    view = _load_json(out)
+    if not view:
+        return None, None
+    d = os.path.dirname(out)
+    if str(view.get("source") or "list") == "list":
+        lst = {k: v for k, v in view.items() if k not in SEN.VIEW_ONLY}
+        lst["source"] = "list"
+    else:
+        lst = _load_json(os.path.join(d, SEN_LIST))
+    return lst, seniority_award(out)
+
+
+def seniority_award(out=None):
+    """1.4.5: the newest award's dates of hire (seniority_award.json beside `out`), or None."""
+    return _load_json(os.path.join(os.path.dirname(out or seniority_file()), SEN_AWARD))
+
+
+def seniority_rebuild(lst, aw, out=None):
+    """1.4.5: write seniority.json = seniority.combine(list, award) (atomic). Under an award on top the list is kept
+    as seniority_list.json; with the list on top seniority.json is the list, and a leftover seniority_list.json goes.
+    Returns what seniority.json now holds (None when there is neither)."""
+    out = out or seniority_file()
+    keep = os.path.join(os.path.dirname(out), SEN_LIST)
+    view = SEN.combine(lst, aw)
+    if view and lst and view.get("source") != "list":
+        _dump(keep, dict({k: v for k, v in lst.items() if k not in SEN.VIEW_ONLY}, source="list"))
+    elif os.path.exists(keep):
+        os.remove(keep)
+    if view:
+        view["parser"] = SEN.PARSER
+        _dump(out, view)
+    return view
+
+
+def seniority_store(parsed, pdf_name, uploaded_at, list_date="", out=None):
+    """Store a dedicated seniority list parse with pilot rows (SEN.to_json, source 'list') and rebuild seniority.json
+    (`out`, seniority_file() unless given) with the award on file: the list is on top unless that award is later
+    (seniority.combine). Returns the list's dict."""
+    d = SEN.to_json(parsed, pdf_name, uploaded_at, list_date)
+    d["source"] = "list"
+    _lst, aw = seniority_sources(out)
+    seniority_rebuild(d, aw, out)
     return d
 
 
@@ -141,55 +219,178 @@ def seniority_write(txt_path, pdf_name, uploaded_at, list_date="", out=None):
     return seniority_store(parsed, pdf_name, uploaded_at, list_date, out) if parsed["rows"] else None
 
 
+def award_seniority(txt_path, month, pdf_name, uploaded_at, out=None):
+    """1.4.5 (Ryan, Nov 6: the monthly award packet lists every pilot's date of hire): read an award's text copy for
+    dates of hire (SEN.award_parse) and merge them into seniority.json. Rules:
+      * fewer than SEN.AWARD_MIN pilot rows: nothing changes ('too-few'), so an award with no dates of hire never
+        overwrites a good list;
+      * an older award month than the award on file: nothing changes ('older-award');
+      * else the award is kept as seniority_award.json (source 'award YYYY-MM') and seniority.json is rebuilt: the
+        award goes on top when its bid period (or a list date printed in it) is later than the dedicated list's date
+        ('on-top', the list's other pilots carried under it), else the list stays in use ('list-newer').
+    Returns {rows, reader, rejects, month, decision, on_file?, view?} (counts only; nothing personal)."""
+    out = out or seniority_file()
+    parsed = SEN.award_parse(open(txt_path, encoding="utf-8", errors="replace").read(), int(month[:4]))
+    info = {"rows": len(parsed["rows"]), "reader": parsed["reader"], "rejects": len(parsed["rejects"]), "month": month}
+    if info["rows"] < SEN.AWARD_MIN:
+        return dict(info, decision="too-few")
+    lst, aw_on = seniority_sources(out)
+    if aw_on and str(aw_on.get("award_month") or "") > month:
+        return dict(info, decision="older-award", on_file=aw_on["award_month"])
+    aw = SEN.to_json(parsed, pdf_name, uploaded_at)
+    aw.update(source=f"award {month}", award_month=month, reader=parsed["reader"])
+    _dump(os.path.join(os.path.dirname(out), SEN_AWARD), aw)
+    view = seniority_rebuild(lst, aw, out)
+    return dict(info, decision="on-top" if view.get("source") == aw["source"] else "list-newer", view=seniority_summary(view))
+
+
+def award_note(info):
+    """The upload result's sentence about an award's dates of hire (plain text, counts only)."""
+    n, d = info.get("rows", 0), info.get("decision")
+    if d == "too-few":
+        return (f"No dates of hire read from it ({n} pilot rows; {SEN.AWARD_MIN} needed), so the seniority data on "
+                "file is unchanged.")
+    if d == "older-award":
+        return f"Dates of hire: {n} pilots read, but the {info.get('on_file')} award on file is newer and stays in use."
+    v = info.get("view") or {}
+    if d == "list-newer":
+        return (f"Dates of hire: {n} pilots read from its {info.get('reader')}; the seniority list on file "
+                f"({v.get('as_of') or 'no date'}) is newer and stays in use.")
+    more = f" ({v['carried']} more kept from the seniority list of {(v.get('base') or {}).get('as_of')})" if v.get("carried") else ""
+    return f"Dates of hire: {n} pilots read from its {info.get('reader')}; {v.get('pilots', n)} pilots on file now{more}."
+
+
+def seniority_summary(view):
+    """What api/uploads and the upload result say about seniority.json (counts and dates only, no pilot)."""
+    if not view:
+        return None
+    base = view.get("base") or {}
+    return {"pilots": view.get("count", 0), "list_date": view.get("list_date") or "",
+            "uploaded_at": view.get("uploaded_at") or "", "source": view.get("source") or "list",
+            "file": view.get("file") or "", "as_of": SEN.as_of(view), "newest_doh": view.get("newest_doh") or "",
+            "rejects": view.get("rejects", 0), "carried": view.get("carried", 0),
+            "base": {"source": base.get("source"), "as_of": base.get("as_of"), "file": base.get("file")} if base else None}
+
+
 def _seniority_line(d):
-    when = f"list date {d['list_date']}" if d.get("list_date") else "no list date in the file"
+    if d.get("list_date"):
+        when = f"list date {d['list_date']}"
+    elif str(d.get("source") or "list").startswith("award"):
+        when = f"as of {SEN.as_of(d)} (the award's bid period)"
+    else:
+        when = "no list date in the file"
     return (f"{d.get('count', 0)} pilots read, {when}, newest date of hire on it {d.get('newest_doh') or '?'}"
             f" ({d.get('rejects', 0)} lines not read)")
 
 
+def _view_note(view):
+    """A list upload under a later award: say the award's dates of hire stay on top."""
+    if not view or str(view.get("source") or "list") == "list":
+        return ""
+    return (f" The {view['source']} on file is later ({SEN.as_of(view)}), so its dates of hire stay on top of this "
+            f"list ({view.get('count', 0)} pilots in all).")
+
+
 def _seniority_status():
-    try:
-        d = json.load(open(seniority_file(), encoding="utf-8"))
-    except (OSError, ValueError):
+    d = _load_json(seniority_file())
+    if d is None:
         return "<p class='note'>No pilot seniority list on file: the pay line under a rebuilt month needs one.</p>"
-    return (f"<p class='note'>Seniority list on file: {html.escape(_seniority_line(d))}; uploaded "
+    src = str(d.get("source") or "list")
+    head = "Seniority list on file" if src == "list" else f"Dates of hire on file from the {src[6:]} award"
+    more = f", {d['carried']} more kept from the seniority list of {(d.get('base') or {}).get('as_of')}" if d.get("carried") else ""
+    return (f"<p class='note'>{html.escape(head)}: {html.escape(_seniority_line(d))}{html.escape(more)}; uploaded "
             f"{html.escape(str(d.get('uploaded_at') or '')[:16].replace('T', ' '))} HST "
             f"({html.escape(str(d.get('file') or ''))}). Every pilot instance reads it.</p>")
 
 
-def _save_upload(ctype, body, log):
-    """Store one PDF from a multipart form as <YYYY-MM>_<award|pairings>.pdf plus a pdftotext -layout copy.
-    FW-0062: kind 'seniority' (no month) goes to _save_seniority: kept as seniority_<YYYY-MM-DD, HST upload day>.pdf
-    and read into seniority.json only when it gives pilot rows."""
+def _form(ctype, body):
+    """(fields, pdf bytes or None) from a multipart/form-data body."""
+    msg = BytesParser(policy=HTTP).parsebytes(b"Content-Type: " + ctype.encode() + b"\r\n\r\n" + body)
+    fields, data = {}, None
+    for part in msg.iter_parts():
+        name = part.get_param("name", header="content-disposition")
+        if name == "pdf":
+            data = part.get_payload(decode=True)
+        elif name:
+            fields[name] = (part.get_payload(decode=True) or b"").decode(errors="replace").strip()
+    return fields, data
+
+
+def _why_no_text(e):
+    """Why pdftotext gave no text copy, short and without the file's path."""
+    if isinstance(e, subprocess.CalledProcessError):
+        return f"pdftotext exit {e.returncode}: damaged or password-protected PDF?"
+    if isinstance(e, subprocess.TimeoutExpired):
+        return "pdftotext took over 2 minutes"
+    return str(e)[:120]
+
+
+def save_upload(fields, data, log):
+    """The one save path of the Web UI page and the dashboard card (1.4.5): {ok, message (plain text), file?,
+    seniority?}. Stores one PDF as <YYYY-MM>_<award|pairings>.pdf plus a pdftotext -layout copy; a PDF that gives no
+    text copy is refused and the month's file on file is kept. An award's text is
+    also read for dates of hire (award_seniority; it never fails the upload). FW-0062: kind 'seniority' (no month)
+    goes to _save_seniority: kept as seniority_<YYYY-MM-DD, HST upload day>.pdf and read into seniority.json only when
+    it gives pilot rows."""
+    month, kind = fields.get("month", ""), fields.get("kind", "")
+    if kind not in ("award", "pairings", "seniority") or (kind != "seniority" and not re.fullmatch(r"\d{4}-\d{2}", month)):
+        return {"ok": False, "message": "Pick a month and a kind."}
+    if not data or not data.startswith(b"%PDF"):
+        return {"ok": False, "message": "That file is not a PDF."}
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    if kind == "seniority":
+        return _save_seniority(data, fields, log)
+    path, kb = os.path.join(UPLOAD_DIR, f"{month}_{kind}.pdf"), len(data) // 1024
+    tmp, txt = path[:-4] + ".new.pdf", path[:-4] + ".txt"
+    # 1.4.5 review fix: staged like a seniority list (_save_seniority). The PDF is written and read under
+    # <month>_<kind>.new.pdf / .new.txt and only a file that gives a text copy replaces the one on file, so a PDF
+    # pdftotext cannot read (truncated, encrypted) never replaces a good one nor leaves the old text copy beside it.
     try:
-        msg = BytesParser(policy=HTTP).parsebytes(b"Content-Type: " + ctype.encode() + b"\r\n\r\n" + body)
-        fields, data = {}, None
-        for part in msg.iter_parts():
-            name = part.get_param("name", header="content-disposition")
-            if name == "pdf":
-                data = part.get_payload(decode=True)
-            elif name:
-                fields[name] = (part.get_payload(decode=True) or b"").decode(errors="replace").strip()
-        month, kind = fields.get("month", ""), fields.get("kind", "")
-        if kind not in ("award", "pairings", "seniority") or (kind != "seniority" and not re.fullmatch(r"\d{4}-\d{2}", month)):
-            return "<p class='err'>Pick a month and a kind.</p>"
-        if not data or not data.startswith(b"%PDF"):
-            return "<p class='err'>That file is not a PDF.</p>"
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
-        if kind == "seniority":
-            return _save_seniority(data, fields, log)
-        path = os.path.join(UPLOAD_DIR, f"{month}_{kind}.pdf")
-        with open(path, "wb") as f:
+        with open(tmp, "wb") as f:
             f.write(data)
-        note = ""
         try:
-            subprocess.run(["pdftotext", "-layout", path, path[:-4] + ".txt"], check=True, timeout=120)
+            subprocess.run(["pdftotext", "-layout", tmp, tmp[:-4] + ".txt"], check=True, timeout=120)
         except Exception as e:
-            note = f" (no text copy: {html.escape(str(e))[:120]})"
-        log.info("upload: %s %s saved (%d KB)%s", month, kind, len(data) // 1024, note)
-        return f"<p class='ok'>Saved {html.escape(os.path.basename(path))} ({len(data) // 1024} KB){note}.</p>"
+            what = "award" if kind == "award" else "pairings package"
+            kept = f"the {month} {what} on file is kept" if os.path.exists(path) else "nothing was saved"
+            log.info("upload: %s %s (%d KB) gave no text copy; not kept", month, kind, kb)
+            return {"ok": False, "message": f"Not kept: {os.path.basename(path)} ({kb} KB) gave no text copy "
+                                            f"({_why_no_text(e)}), so the Watcher cannot read it; {kept}."}
+        os.replace(tmp, path)
+        os.replace(tmp[:-4] + ".txt", txt)
+    finally:
+        for f in (tmp, tmp[:-4] + ".txt"):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+    log.info("upload: %s %s saved (%d KB)", month, kind, kb)
+    out = {"ok": True, "message": f"Saved {os.path.basename(path)} ({kb} KB).", "file": os.path.basename(path)}
+    if kind == "award":
+        try:
+            info = award_seniority(txt, month, os.path.basename(path), _hst_now().isoformat(timespec="seconds"))
+            log.info("upload: %s award dates of hire: %d pilot rows (%s, %d lines not read), %s", month, info["rows"],
+                     info["reader"], info["rejects"], info["decision"])
+            out["seniority"] = {k: info[k] for k in ("rows", "reader", "decision", "view") if k in info}
+            out["message"] += " " + award_note(info)
+        except Exception as e:
+            log.info("upload: %s award dates of hire not read: %s", month, e)
+            out["message"] += f" Dates of hire not read ({str(e)[:120]})."
+    return out
+
+
+def upload_result(ctype, body, log):
+    """A multipart upload body -> save_upload's dict; never raises."""
+    try:
+        return save_upload(*_form(ctype, body), log)
     except Exception as e:
-        return f"<p class='err'>Upload failed: {html.escape(str(e))}</p>"
+        return {"ok": False, "message": f"Upload failed: {e}"}
+
+
+def _save_upload(ctype, body, log):
+    """The Web UI page's upload: save_upload's result as one HTML line."""
+    r = upload_result(ctype, body, log)
+    return f"<p class='{'ok' if r['ok'] else 'err'}'>{html.escape(r['message'])}</p>"
 
 
 def _save_seniority(data, fields, log):
@@ -197,7 +398,7 @@ def _save_seniority(data, fields, log):
     there; only a file that gives pilot rows is renamed to seniority_<YYYY-MM-DD, HST upload day>.pdf / .txt and
     written to seniority.json. A refused file (no text copy, no pilot rows) is deleted, so the list on file keeps its
     PDF and text copy (seniority_refresh re-reads that text after a parser change), even when the refused upload is
-    on the same day."""
+    on the same day. Returns save_upload's dict."""
     now = _hst_now()
     name = f"seniority_{now.strftime('%Y-%m-%d')}"
     final, tmp = os.path.join(UPLOAD_DIR, name + ".pdf"), os.path.join(UPLOAD_DIR, name + ".new.pdf")
@@ -210,8 +411,8 @@ def _save_seniority(data, fields, log):
             subprocess.run(["pdftotext", "-layout", tmp, tmp[:-4] + ".txt"], check=True, timeout=120)
         except Exception as e:
             log.info("upload: seniority list (%d KB) gave no text copy; not kept", kb)
-            return (f"<p class='err'>Not kept: {name}.pdf ({kb} KB) gave no text copy "
-                    f"({html.escape(str(e))[:120]}), so the list cannot be read; {kept}</p>")
+            return {"ok": False, "message": f"Not kept: {name}.pdf ({kb} KB) gave no text copy ({_why_no_text(e)}), so "
+                                            f"the list cannot be read; {kept}"}
         given = fields.get("list_date", "")
         given = given if re.fullmatch(r"\d{4}-\d{2}-\d{2}", given) else ""
         at = now.isoformat(timespec="seconds")
@@ -221,11 +422,11 @@ def _save_seniority(data, fields, log):
             log.info("upload: seniority list (%d KB) read no pilot rows (%d lines not read); not kept", kb,
                      len(parsed.get("rejects") or []))
             if "header-order" in why:
-                return (f"<p class='err'>Not kept: {name}.pdf ({kb} KB). No pilot rows were read: its header puts the "
-                        "columns in an order this version does not read (it needs EMP # before ALPA #, and DOH as "
-                        f"the first date column); {kept}</p>")
-            return (f"<p class='err'>Not kept: {name}.pdf ({kb} KB). No pilot rows were found in it (is it the pilot "
-                    f"seniority list?); {kept}</p>")
+                return {"ok": False, "message": f"Not kept: {name}.pdf ({kb} KB). No pilot rows were read: its header "
+                        "puts the columns in an order this version does not read (it needs EMP # before ALPA #, and "
+                        f"DOH as the first date column); {kept}"}
+            return {"ok": False, "message": f"Not kept: {name}.pdf ({kb} KB). No pilot rows were found in it (is it "
+                                            f"the pilot seniority list?); {kept}"}
         os.replace(tmp, final)
         os.replace(tmp[:-4] + ".txt", final[:-4] + ".txt")
         d = seniority_store(parsed, name + ".pdf", at, given)
@@ -236,7 +437,39 @@ def _save_seniority(data, fields, log):
             except OSError:
                 pass
     log.info("upload: seniority list read, %d pilots, %d lines not read; saved (%d KB)", d["count"], d["rejects"], kb)
-    return f"<p class='ok'>Saved {html.escape(name)}.pdf ({kb} KB). {html.escape(_seniority_line(d))}.</p>"
+    view = _load_json(seniority_file())
+    return {"ok": True, "message": f"Saved {name}.pdf ({kb} KB). {_seniority_line(d)}.{_view_note(view)}",
+            "file": name + ".pdf", "seniority": {"view": seniority_summary(view)}}
+
+
+def uploads_list():
+    """1.4.5, api/uploads: the PDFs on file, newest first: {name, kind (award | pairings | seniority | other),
+    month (YYYY-MM; '' for a seniority list), day (a seniority list's HST upload day), size (bytes), uploaded_at (the
+    file time, HST ISO), has_text (a pdftotext copy exists, so the Watcher can read it)}."""
+    try:
+        names = sorted(f for f in os.listdir(UPLOAD_DIR) if f.endswith(".pdf") and not f.endswith(".new.pdf"))
+    except OSError:
+        return []
+    out = []
+    for f in names:
+        try:
+            st = os.stat(os.path.join(UPLOAD_DIR, f))
+        except OSError:
+            continue
+        m = re.fullmatch(r"(\d{4}-\d{2})_(award|pairings)\.pdf", f)
+        n = re.fullmatch(r"seniority_(\d{4}-\d{2}-\d{2})\.pdf", f)
+        out.append({"name": f, "kind": m.group(2) if m else "seniority" if n else "other", "month": m.group(1) if m else "",
+                    "day": n.group(1) if n else "", "size": st.st_size, "uploaded_at": hst_iso(st.st_mtime),
+                    "has_text": os.path.exists(os.path.join(UPLOAD_DIR, f[:-4] + ".txt"))})
+    out.sort(key=lambda x: x["uploaded_at"], reverse=True)
+    return out
+
+
+def uploads_json(version):
+    """api/uploads: {files, seniority (seniority_summary of seniority.json, or None), version, max_bytes (the largest
+    PDF that gets through Home Assistant's ingress proxy, INGRESS_MAX)}."""
+    return {"files": uploads_list(), "seniority": seniority_summary(_load_json(seniority_file())), "version": version,
+            "max_bytes": min(UPLOAD_MAX, INGRESS_MAX)}
 
 
 SETTINGS_FIELDS = (  # (key, label, secret)
@@ -296,6 +529,7 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
         def _page(self, msg="", draft=None, settings_msg=""):
             body = PAGE.format(
                 version=html.escape(version), msg=msg, month=_month_default(), uploads=_uploads_table(),
+                max_mb=f"{INGRESS_MAX / 1048576:.1f}",
                 seniority=_seniority_status(),
                 settings_msg=settings_msg,
                 settings=_settings_form(get_settings() if get_settings else {}) if save_settings else
@@ -313,14 +547,49 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
             self.end_headers()
             self.wfile.write(b)
 
+        def _json(self, code, obj):
+            b = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def _api(self):
+            """1.4.5: 'uploads' / 'upload' for a path under api/ (as the ingress proxy passes it on), '' for an
+            unknown one under api/, None for the page's own paths."""
+            p = urlsplit(self.path).path.rstrip("/")
+            m = re.search(r"(?:^|/)api(?:/([a-z]*))?$", p)
+            return (m.group(1) or "") if m else None
+
         def do_GET(self):
-            if self._guard():
-                self._page()
+            if not self._guard():
+                return
+            api = self._api()
+            if api == "uploads":
+                return self._json(200, uploads_json(version))
+            if api is not None:
+                return self._json(404, {"ok": False, "message": "Not found."})
+            self._page()
 
         def do_POST(self):
             if not self._guard():
                 return
             n = int(self.headers.get("Content-Length", 0) or 0)
+            api = self._api()
+            if api is not None:  # 1.4.5: the dashboard uploads card
+                if api != "upload":
+                    return self._json(404, {"ok": False, "message": "Not found."})
+                ctype = self.headers.get("Content-Type", "")
+                if not ctype.lower().startswith("multipart/form-data"):
+                    return self._json(400, {"ok": False, "message": "Send the PDF as a multipart form."})
+                if n > UPLOAD_MAX:
+                    return self._json(413, {"ok": False, "message": f"File too large ({UPLOAD_MAX // 1_000_000} MB max)."})
+                if n <= 0:
+                    return self._json(400, {"ok": False, "message": "No file received."})
+                r = upload_result(ctype, self.rfile.read(n), log)
+                return self._json(200 if r["ok"] else 400, r)
             if self.path.rstrip("/").endswith("upload"):
                 if n > UPLOAD_MAX:
                     return self._page("<p class='err'>File too large (25 MB max).</p>")
