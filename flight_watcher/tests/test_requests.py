@@ -250,3 +250,16 @@ def test_view_labels_are_strict():
     assert v["legs"] == [{"trip": "H3620", "day": "28NOV", "side": ""}]  # the header never labels a trip
     v = SUB.parse_request_view("type: swap from: doe, jane trip h3629 14nov to: h3628 13nov h3629 14nov")
     assert [x["side"] for x in v["legs"]] == ["", ""] and v["trips"] == ["H3629", "H3628"]  # no to/from, once each
+
+
+def test_view_page_as_flica_writes_it():
+    """1.3.1: the shape of the real view page (captured 2026-11-06, trips and wording only): 'Swap <given> For
+    <taken>' sets the sides, and crew scheduling's CS comment is the denial reason."""
+    t = ("flica.net - mobile opentime open time requests swap h3629:14nov (f) for h3632a:12nov (f) time: 11/05 19:09 "
+         "(ha) status: denied 11/05 19:09 cm: [no comments] cs: <10hrs rest (prgs at base) on 13nov note: if a request "
+         "is actively being processed it can not be canceled.")
+    v = SUB.parse_request_view(t)
+    assert [(x["trip"], x["day"], x["side"]) for x in v["legs"]] == [("H3629", "14NOV", "drop"), ("H3632A", "12NOV", "add")]
+    assert v["reason"] == "<10hrs rest (prgs at base) on 13nov"
+    assert SUB.parse_request_view(t.replace("cs: <10hrs rest (prgs at base) on 13nov", "cs: [no comments]"))["reason"] == ""
+    assert SUB.parse_request_view("add h3620:28nov status: approved cm: [no comments] cs:")["reason"] == ""

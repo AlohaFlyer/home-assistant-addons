@@ -156,12 +156,30 @@ def _view_legs(text):
     return legs[:4]
 
 
+CS_RE = re.compile(r"\bcs:\s*(.*?)(?=\s*\bnote:|$)", re.I | re.S)
+SWAP_FOR_RE = re.compile(r"\bswap\s+([A-Za-z]\d{4}[A-Za-z]?)\b.*?\bfor\s+([A-Za-z]\d{4}[A-Za-z]?)\b", re.I | re.S)
+
+
 def parse_request_view(text):
-    """{legs, trips, detail} from one request's view page: the pairings it drops and adds."""
-    legs = _view_legs(text or "")
-    m = TRIP_RE.search(text or "")
-    detail = re.sub(r"\s+", " ", text[max(0, m.start() - 60):m.start() + 160]).strip() if m else ""
-    return {"legs": legs, "trips": [x["trip"] for x in legs], "detail": detail}
+    """{legs, trips, detail, reason} from one request's view page (checked on the real page, 1.3.0): 'Swap H3629:14NOV
+    (F) For H3632A:12NOV (F) Time: ... Status: Denied ... CM: [no comments] CS: <10hrs rest (prgs at base) on 13nov
+    Note: ...'. FLICA writes a swap as 'Swap <given> For <taken>', so those two get drop / add when the page says so;
+    reason = crew scheduling's comment (CS), '' when none."""
+    text = text or ""
+    legs = _view_legs(text)
+    m = SWAP_FOR_RE.search(text)
+    if m:
+        give, take = m.group(1).upper(), m.group(2).upper()
+        for x in legs:
+            if not x["side"]:
+                x["side"] = "drop" if x["trip"] == give else "add" if x["trip"] == take else ""
+    t = TRIP_RE.search(text)
+    detail = re.sub(r"\s+", " ", text[max(0, t.start() - 60):t.start() + 160]).strip() if t else ""
+    c = CS_RE.search(text)
+    reason = re.sub(r"\s+", " ", c.group(1)).strip()[:160] if c else ""
+    if reason.strip("[]").strip().lower() in ("", "no comments", "none"):
+        reason = ""
+    return {"legs": legs, "trips": [x["trip"] for x in legs], "detail": detail, "reason": reason}
 
 
 def parse_request_rows(text, html=None):
