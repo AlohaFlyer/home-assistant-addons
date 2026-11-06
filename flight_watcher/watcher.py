@@ -39,7 +39,7 @@ import sealed as SEAL
 import pay as PAY
 import wwwfiles as WF
 
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -2306,6 +2306,18 @@ def requests_check(fl):
                     log.info("requests %s: %d rows, page captured; text: %s", b, len(rows), text[:600])
                 except Exception:
                     pass
+            ids = SUB.request_ids(html)
+            if len(ids) != len(rows) or re.search(r"\b(trade|processing)\b", text, re.I):
+                # 1.4.2: a row the parser does not know (Ryan's Nov 6 Trade was missed): keep a private copy of the
+                # latest such page (/share, never git) and say how many requests the page has against rows read
+                try:
+                    os.makedirs(CAPTURE_DIR, exist_ok=True)
+                    open(f"{CAPTURE_DIR}/otrequests_{n}_latest.html", "w").write(html)
+                except Exception:
+                    pass
+                if S.get("req_mismatch_logged", {}).get(n) != len(ids):
+                    S.setdefault("req_mismatch_logged", {})[n] = len(ids)
+                    log.info("requests %s: %d requests on the page, %d rows read; latest page captured", b, len(ids), len(rows))
             if not SUB.is_request_page(text, rows):
                 log.info("requests %s: not the request list, skipped: %s", b, text[:120])
                 continue
