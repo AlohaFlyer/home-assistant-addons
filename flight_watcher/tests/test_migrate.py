@@ -6,7 +6,7 @@ import sqlite3
 import migrate
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-spec = importlib.util.spec_from_file_location("old_export", os.path.join(HERE, "..", "..", "flica_watcher", "export.py"))
+spec = importlib.util.spec_from_file_location("old_export", os.path.join(HERE, "old_export.py"))
 old_export = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(old_export)
 

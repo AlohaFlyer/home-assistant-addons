@@ -1,4 +1,5 @@
-"""Old FLICA Watcher app, final release 0.10.4: hand the data to the new Flight Watcher app, then wait.
+"""Test helper: the exporter of the retired flica_watcher 0.10.4 app (removed from git after the move), kept so migrate.py stays tested.
+Old FLICA Watcher app, final release 0.10.4: hand the data to the new Flight Watcher app, then wait.
 
 Copies /data to /share/flight_watcher/import/data (then writes READY) so Flight Watcher 1.0.0 can import it on
 its first start. Never copied: options.json (the Configuration, credentials included), storage_state.json (FLICA

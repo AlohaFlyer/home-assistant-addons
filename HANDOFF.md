@@ -5,13 +5,14 @@ Work top to bottom; tick items off here in the same PR that finishes them.
 
 ## Open items
 
-0. **Rename to Flight Watcher on Pako (1.0.0).** Code done: new app `flight_watcher` (slug `43b22650_flight_watcher`),
-   old `flica_watcher` 0.10.4 hands over /data via `/share/flight_watcher/import/` (`migrate.py` imports it, moves
-   `/share/flica_watcher` and `/www/flica`). Pako steps, each its own yes: backup; merge; update old app to 0.10.4
-   (export, no FLICA); copy the retained pause / hunt states to `flight_watcher/{pause,hunt}/state`; rename the 41 MQTT entity ids, 7 helpers and the app automations in the registry so history
-   follows; update automations, utility meters, `custom_templates`, `packages/flica_wx.yaml`; clear the old
-   retained discovery topics; install Flight Watcher, Ryan enters the credentials; recreate the dashboard as
-   `flight-watcher`; verify; uninstall the old app; remove `flica_watcher/` and the old `/config/www/flica-*` files.
+0. ~~**Rename to Flight Watcher on Pako (1.0.0).**~~ Done 2026-11-06: backup `1c4b12af` first; 65 entity ids, 14
+   automations (aliases, topics, tags, deep links; the Hark webhook id kept), 7 helpers, 3 utility meters,
+   `custom_templates/flight_watcher.jinja`, `packages/flight_watcher_wx.yaml` renamed with history kept; old retained
+   discovery cleared; app `43b22650_flight_watcher` installed (imported /data: 47 finds, crew index, rules, DOH;
+   /share and /www/flica moved); dashboard `flight-watcher` recreated, old one deleted; old app uninstalled, old
+   cards removed, `.bak` copies and pre-rename files in `/share/flight_watcher/archive/`. **Ryan:** enter FLICA and
+   CrewTrac credentials in the new app's Configuration tab (the Watcher waits until then); `second_pilot` too when
+   James is ready.
 1. ~~**Cards into git, self-deploying.**~~ Done (0.10.2, live 0.10.3 on 2026-11-06): cards in `flight_watcher/www/`,
    deployed by `cards.py` on start; the only resource is `/local/flight-watcher-loader.js` (the 10 per-card
    resources were deleted). Ryan's DOH lives in `/data/cards.json` on Pako, never in git. Item 4's "register
