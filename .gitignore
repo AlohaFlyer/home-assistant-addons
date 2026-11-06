@@ -37,3 +37,6 @@ Thumbs.db
 # Python
 __pycache__/
 .pytest_cache/
+
+# Claude Code workflow worktrees (local, never committed)
+.claude/worktrees/
