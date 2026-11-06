@@ -94,6 +94,63 @@ def parse_requests(text):
     return [{"date": d, "time": t, "type": k.title(), "status": s.title()} for d, t, k, s in REQ_RE.findall(text)]
 
 
+TRIP_RE = re.compile(r"\b([A-Za-z]\d{4}[A-Za-z]?)\b(?:[\s:]+(\d{1,2})\s?([A-Za-z]{3})\b)?")
+SIDE_RE = re.compile(r"\b(drop|give|from|add|take|pick\s?up|to)\b", re.I)
+SIDE_OF = {"drop": "drop", "give": "drop", "from": "drop", "add": "add", "take": "add", "pickup": "add", "pick up": "add",
+           "to": "add"}
+DECIDED = ("Approved", "Denied")
+
+
+def requests_url(base, bcid):
+    """The Open Time Requests list for one bid folder. A plain list GET; the per-row Approved / Denied links
+    (QuickDelete=1) are never followed."""
+    return f"{base}{REQUESTS_PATH}?BCID={bcid}&From=MainMenu"
+
+
+def parse_request_rows(text):
+    """1.2.0: the request rows of the Open Time Requests page's visible text, each with the text that follows it
+    up to the next row ('detail') and the pairings named there ('trips'). key = date|time|type|trips|n: the row's
+    own content (n only counts rows that are otherwise identical), so clearing one request never renumbers another."""
+    rows, seen = [], {}
+    ms = list(REQ_RE.finditer(text))
+    for i, m in enumerate(ms):
+        d, t, k, st = m.group(1), m.group(2), m.group(3).title(), m.group(4).title()
+        end = ms[i + 1].start() if i + 1 < len(ms) else min(len(text), m.end() + 300)
+        detail = re.sub(r"\s+", " ", text[m.end():end]).strip()[:200]
+        legs, prev = [], 0
+        for tm in TRIP_RE.finditer(detail):
+            labels = SIDE_RE.findall(detail[prev:tm.start()])
+            side = SIDE_OF.get(re.sub(r"\s+", " ", labels[-1].lower())) if labels else ""
+            day = f"{int(tm.group(2)):02d}{tm.group(3).upper()}" if tm.group(2) else ""
+            legs.append({"trip": tm.group(1).upper(), "day": day, "side": side})
+            prev = tm.end()
+        trips = [x["trip"] for x in legs][:4]
+        base = f"{d}|{t}|{k}|{'+'.join(sorted(trips))}"
+        seen[base] = seen.get(base, 0) + 1
+        rows.append({"key": f"{base}|{seen[base]}", "date": d, "time": t, "type": k, "status": st,
+                     "trips": trips, "legs": legs[:4], "detail": detail})
+    return rows
+
+
+REQ_PAGE_RE = re.compile(r"\brequests?\b", re.I)
+
+
+def is_request_page(text, rows):
+    """A read counts only when the page is the request list: it has request rows, or at least speaks of requests
+    (an empty list). An error, maintenance or interstitial page that classify() lets through is not a read."""
+    return bool(rows) or bool(REQ_PAGE_RE.search(text or ""))
+
+
+def push_key(r):
+    return f"{r['key']}|{r['status']}"
+
+
+def request_news(pushed, rows):
+    """Rows to push: Approved / Denied rows whose push_key is not in pushed ({push_key: last seen}, kept in state).
+    A row that drops out of one read (an error page) and comes back never fires twice."""
+    return [r for r in rows if r["status"] in DECIDED and push_key(r) not in pushed]
+
+
 def hours_until(report_iso, now):
     """Hours from now (naive HST datetime) to an ISO 'YYYY-MM-DDTHH:MM' report time; None if unparsable."""
     try:
