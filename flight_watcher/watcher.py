@@ -37,7 +37,7 @@ import tickets as TK
 import sealed as SEAL
 import pay as PAY
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -1976,6 +1976,34 @@ def price_request(r, now=None):
     return {"delta": round(delta, 2), "delta_text": PAY.usd(delta), "parts": parts, "rate": rate, "year": yr}
 
 
+def _request_view(fl, b, ts):
+    """1.2.2: {legs, trips, detail} of one request from its read-only view page ({} when it cannot be read).
+    The first view page of each folder is saved privately to CAPTURE_DIR for parser checks."""
+    url = SUB.request_view_url(BASE, b, ts)
+    if not (SUB.safe_get(url) and SM.safe_get(url)):
+        log.info("request view %s: url refused by safe_get", ts)
+        return {}
+    try:
+        time.sleep(random.uniform(1.5, 3.5))
+        html = fl.fetch(url)
+        if classify(html) != "ok":
+            return {}
+        text = visible_text(html)
+        n = b.split(".")[-1]
+        if not S.get("req_view_captured", {}).get(n):
+            S.setdefault("req_view_captured", {})[n] = True
+            try:
+                os.makedirs(CAPTURE_DIR, exist_ok=True)
+                open(f"{CAPTURE_DIR}/otrequest_view_{n}.html", "w").write(html)
+                log.info("request view %s captured; text: %s", ts, text[:600])
+            except Exception:
+                pass
+        return SUB.parse_request_view(text)
+    except Exception as e:
+        log.info("request view %s error: %s", ts, e)
+        return {}
+
+
 def requests_check(fl):
     """1.2.0 (Ryan): read only, the Open Time Requests list of each watched bid folder. A swap, add or drop
     request that turns Approved or Denied (or first shows up already decided) fires event/request_decided once,
@@ -2008,7 +2036,7 @@ def requests_check(fl):
                 log.info("requests %s: %s, skipped", b, classify(html))
                 continue
             text = visible_text(html)
-            rows = SUB.parse_request_rows(text)
+            rows = SUB.parse_request_rows(text, html)
             n = b.split(".")[-1]
             if not S.get("req_captured", {}).get(n):  # first read: a private copy for parser checks (/share)
                 try:
@@ -2033,6 +2061,8 @@ def requests_check(fl):
                     old = True
                 if first and old:
                     continue  # the feature's first read: older decisions are history, not news
+                if r.get("ts") and not r.get("legs"):
+                    r.update(_request_view(fl, b, r["ts"]))  # the list names no trips; its view page does
                 ev = {**r, "bcid": b, "at": now_iso(), "url": url}
                 try:
                     ev["pay"] = price_request(r)  # 1.2.1: Pay-Gross gained or given up (Approved only)
@@ -2041,6 +2071,8 @@ def requests_check(fl):
                     ev["pay"] = None
                 log.info("request %s %s %s", r["type"], r["status"], r["detail"][:80])
                 pub("event/request_decided", ev, retain=False)
+            if rows and rows[-1].get("ts") and not S.get("req_view_captured", {}).get(n):
+                _request_view(fl, b, rows[-1]["ts"])  # once: a private copy of a view page for parser checks
             for r in rows:
                 if r["status"] in SUB.DECIDED:
                     pushed[SUB.push_key(r)] = now_iso()  # last seen; pruned once gone 60 days

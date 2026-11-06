@@ -164,3 +164,67 @@ def test_reads_are_paced(tmp_path, monkeypatch):
     pages["text"] = _page("")
     read()
     assert len(waits) == 2 and all(1.5 <= w <= 3.5 for w in waits)
+
+
+def _html(rows):
+    """Synthetic list page shaped like FLICA's (made-up ids): each row a ShowRequest link and a QuickDelete link."""
+    out = ["<html><body><strong>Nov 2026 OPEN TIME- Add/Swap/Drop requests Requests</strong><table>"
+           "<tr><td>Date</td><td>Time</td><td>Request</td><td>Status</td></tr>"]
+    for d, t, k, st, ts in rows:
+        out.append(f'<tr><td>{d}</td><td>{t}</td><td><a href="/full/mobileotrequest.cgi?ShowRequest=1&TimeStamp={ts}">'
+                   f'{k}</a></td><td><a href="/full/mobileotrequest.cgi?TimeStamp={ts}&Type={k}&status={st}'
+                   f'&QuickDelete=1">{st}</a></td></tr>')
+    out.append("</table>Pending requests are listed by creation date.</body></html>")
+    return "".join(out)
+
+
+def test_rows_keyed_on_flica_id_and_cleared_rows_do_not_renumber():
+    from pot import visible_text
+    rows = [("10/31", "11:17", "Swap", "Approved", "0000AAAA:00000001"), ("10/31", "11:17", "Swap", "Denied", "0000AAAA:00000002")]
+    h = _html(rows)
+    got = SUB.parse_request_rows(visible_text(h), h)
+    assert [(r["key"], r["status"], r["detail"], r["trips"]) for r in got] == [
+        ("ts:0000AAAA:00000001", "Approved", "", []), ("ts:0000AAAA:00000002", "Denied", "", [])]
+    assert got[0]["alt"] == "10/31|11:17|Swap||1"
+    h2 = _html(rows[1:])
+    assert [r["key"] for r in SUB.parse_request_rows(visible_text(h2), h2)] == ["ts:0000AAAA:00000002"]
+    pushed = {"10/31|11:17|Swap||2|Denied": "x"}  # pushed by 1.2.1 under the content key: not pushed again
+    assert [r["status"] for r in SUB.request_news(pushed, got)] == ["Approved"]
+
+
+def test_view_url_is_safe_and_view_parsed():
+    import swapmap as SM
+    u = SUB.request_view_url("https://ha2.flica.net", "003.152", "0000AAAA:00000001")
+    assert u == ("https://ha2.flica.net/full/mobileotrequest.cgi?ShowRequest=1&TimeStamp=0000AAAA:00000001"
+                 "&BCID=003.152&From=Self&Parent=MainMenu")
+    assert SUB.safe_get(u) and SM.safe_get(u)
+    v = SUB.parse_request_view("swap request status: approved drop h3629:14nov add h3628:13nov comments none")
+    assert v["trips"] == ["H3629", "H3628"] and [x["side"] for x in v["legs"]] == ["drop", "add"]
+    assert v["detail"].startswith("swap request status") and SUB.parse_request_view("nothing here")["trips"] == []
+
+
+def test_decided_request_reads_its_view_page_for_trips(tmp_path, monkeypatch):
+    W, pages, fetched, read, events, sensor = _flow(tmp_path, monkeypatch)
+    rid = "0000BBBB:00000003"
+    pages["text"] = _html([(*_recent(W, 1).split(), "Swap", "Pending", rid)])
+    read()
+    assert events() == [] and any("ShowRequest=1" in u for u in fetched)  # one view page captured once
+    assert (tmp_path / "cap" / "otrequest_view_152.html").exists()
+    views = []
+
+    class FL:
+        def fetch(self, url):
+            fetched.append(url)
+            if "ShowRequest=1" in url:
+                views.append(url)
+                return "<html><body>Swap request: drop H3629:14NOV add H3628:13NOV</body></html>"
+            return pages["text"].replace("Pending", "Approved")
+    W.S["req_force"] = True
+    W.requests_check(FL())
+    ev = events()
+    assert len(ev) == 1 and ev[0]["trips"] == ["H3629", "H3628"] and ev[0]["key"] == f"ts:{rid}"
+    assert [x["side"] for x in ev[0]["legs"]] == ["drop", "add"] and "h3628" in ev[0]["detail"]
+    assert len(views) == 1 and all("QuickDelete" not in u for u in fetched)
+    W.S["req_force"] = True
+    W.requests_check(FL())
+    assert len(events()) == 1 and len(views) == 1
