@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.4.0
+
+- FW-0010 / FW-0026 (Ryan): the month finds files get a random key in their name (`finds_<YYYY-MM>_<key>.json`, key kept in /data/www_key and published only behind HA's login as the `file_key` attribute), so crew names and employee numbers no longer sit at a guessable /local/ address; the pilot's DOH moves out of the card files into `/data/cards.json` and reaches the schedule card as the `doh` attribute of `sensor.flight_watcher_state`. `sensor.flight_watcher_finds` keeps the last 30 finds as short rows under 12 KB, so the recorder stops dropping it; the files are written before the sensor and the card keeps its history while the Watcher is offline.
+- FW-0012 (Ryan): Recall/O75 retires a CCR draft once its row is no longer a miss (PWA 22.G.2).
+- FW-0013 (Ryan): the in-flight lookup rejects FLICA's no-schedule error page instead of storing "not in flight".
+- FW-0014 / FW-0015 (Ryan): bid period month math for the pairings and award PDFs: a bid period that starts in the prior month is dated right, and December (starts Dec 2) parses.
+- FW-0016 / FW-0017 (Ryan): the crew index waits for the award before reading a new bid period, an awarded period is never treated as held, no retries after departure, and FLICA's CKP check-pilot tag stays out of first names.
+- FW-0019 (Ryan): the current month schedule shows FLICA's Block and Credit totals.
+- FW-0024 (Ryan): the Pause switch and Would drop sensor publish their states on connect, so they no longer read unknown after a start.
+- FW-0025 (Ryan): the pilot card adds one listener (one lookup per tap); a re-asked pilot draws the reply it already has.
+- FW-0028 (Ryan): the Test / Confirm / Live swap mode select is retired (removed from discovery) and replaced by a read-only `sensor.flight_watcher_swap_mode`; nothing can submit to FLICA.
+- FW-0029 (Ryan): stale "writes ship in v0.3" and pre-rename text removed from the UI and READMEs.
+- FW-0047 (Ryan): Improved-Pay has a Net tick box to show Pay-Net instead of Pay-Gross.
+- FW-0048 (Ryan): the auto drop mark on the schedule card shows only for the HA owner (never for a second pilot); the auto swap badge on Ryan's dashboard is Ryan-only.
+- FW-0049 (Ryan): tickets can be edited while new or reopened, and deleted at any status (`<prefix>/ticket/edit`, `<prefix>/ticket/delete`; the folder moves to `tickets/.deleted/`, nothing is destroyed, the number is never reused). The fixed chip says "v" only before an app version number.
+- Request view (FW-0002 follow-up): FLICA's "Swap <given> For <taken>" sets the Pay-Gross sides, and crew scheduling's CS comment becomes the denial reason in the push.
+- ha/ (FW-0036): a redacted snapshot of Pako's Flight Watcher automations, both dashboards and the aviation weather package, plus `ha/check_push_isolation.py` (and a test) that fails if any of James's pushes could reach Ryan's devices or the reverse.
+
 ## 1.3.0
 
 - FW-0002 (Ryan): rebuilt schedules (a pilot whose FLICA schedule page is not readable, reconstructed from pairing crew lists) now use the same day-by-day grid as a readable schedule: weekday, day, Trip with its leg count and the pilot's seat, the Layover box across the trip's days, Block, Credit, Soft and Crew, over the whole bid period (its first and last day too). Layover, block and credit come from the month's pairing package when it is uploaded, else credit from the pairing file; blanks stay blank. Two trips read for the same days (a trade between reads) show the newer one in the grid and list the other under it, untotaled. Under a readable schedule the rebuilt grid folds away.

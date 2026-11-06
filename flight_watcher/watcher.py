@@ -39,7 +39,7 @@ import sealed as SEAL
 import pay as PAY
 import wwwfiles as WF
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
