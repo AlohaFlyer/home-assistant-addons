@@ -13,21 +13,23 @@ def test_repo_cards_hold_no_real_doh():
 
 
 def test_build_lists_every_card_and_pilot_copy():
-    f = cards.build("9.9.9", "1999-02-03", ["pilot2"])
+    f = cards.build("9.9.9", ["pilot2"])
     m = json.loads(f[cards.MANIFEST])
     assert m["version"] == "9.9.9"
     assert "flight-watcher-schedule-card.js" in m["cards"] and "flight-watcher-schedule-card-pilot2.js" in m["cards"]
     assert set(m["cards"]) | {cards.MANIFEST, cards.LOADER} == set(f)
-    assert 'DOH = "1999-02-03"' in f["flight-watcher-schedule-card.js"]
+    # FW-0010: no card carries a DOH (HA serves /local/ with no login); the schedule card reads sensor.<prefix>_state
+    assert f'DOH = "{cards.PLACEHOLDER_DOH}"' in f["flight-watcher-schedule-card.js"]
+    assert '"sensor.flight_watcher_state"' in f["flight-watcher-schedule-card.js"]
     p = f["flight-watcher-schedule-card-pilot2.js"]
-    assert f'DOH = "{cards.PLACEHOLDER_DOH}"' in p and "1999-02-03" not in p
+    assert f'DOH = "{cards.PLACEHOLDER_DOH}"' in p and '"sensor.flight_watcher_pilot2_state"' in p
     assert 'customElements.define("flight-watcher-schedule-card-pilot2"' in p
     assert "sensor.flight_watcher_pilot2_" in p and "Ryan" not in p
     assert cards.MANIFEST in f[cards.LOADER] and "no-store" in f[cards.LOADER]
 
 
 def test_pilot_copy_moves_every_per_pilot_name():
-    f = cards.build("1", "1999-02-03", ["pilot2"])
+    f = cards.build("1", ["pilot2"])
     sch, rec, pk = f["flight-watcher-schedule-card-pilot2.js"], f["flight-watcher-recall-card-pilot2.js"], f["flight-watcher-pickers-card-pilot2.js"]
     assert "input_number.flight_watcher_pilot2_month_offset" in sch and "input_number.flight_watcher_month_offset" not in sch
     assert 'localStorage.getItem("flight_watcher_pilot2_' in sch and "flight_watcher_pilot2_pilot2" not in sch
@@ -41,17 +43,21 @@ def test_pilot_copy_moves_every_per_pilot_name():
 
 
 def test_bad_pilot_name_skipped():
-    f = cards.build("1", None, ["../x"])
+    f = cards.build("1", ["../x"])
     assert not any("../" in n for n in f)
 
 
 def test_deploy_migrates_doh_and_writes_only_changes(tmp_path):
+    """FW-0010: a DOH an older deploy wrote into the public card file moves to /data/cards.json, and the card that
+    replaces it carries the placeholder only."""
     dst, settings = tmp_path / "www", tmp_path / "cards.json"
     dst.mkdir()
     (dst / "flight-watcher-schedule-card.js").write_text('const DOH = "1998-07-06";\n')
     w1 = cards.deploy("1.0", [], dst=str(dst), settings=str(settings))
     assert json.loads(settings.read_text()) == {"doh": "1998-07-06"}
-    assert 'DOH = "1998-07-06"' in (dst / "flight-watcher-schedule-card.js").read_text()
+    assert "1998-07-06" not in (dst / "flight-watcher-schedule-card.js").read_text()
+    assert f'DOH = "{cards.PLACEHOLDER_DOH}"' in (dst / "flight-watcher-schedule-card.js").read_text()
+    assert not any("1998-07-06" in (dst / n).read_text() for n in os.listdir(dst))
     assert cards.LOADER in w1 and "flight-watcher-clock-card.js" in w1
     assert cards.deploy("1.0", [], dst=str(dst), settings=str(settings)) == []
     assert cards.deploy("1.1", [], dst=str(dst), settings=str(settings)) == [cards.MANIFEST]
@@ -88,7 +94,7 @@ def test_every_entity_a_card_reads_is_one_discovery_creates(tmp_path, monkeypatc
         W.discovery(c)
         made |= {_json.loads(p)["default_entity_id"] for t, p, _ in c.msgs if t.endswith("/config") and p}
         sys.modules.pop("watcher", None)
-    f = cards.build("1", None, ["pilot2"])
+    f = cards.build("1", ["pilot2"])
     used = set()
     for text in f.values():
         used |= set(_re.findall(r"\b(?:sensor|switch|button|number|select|binary_sensor)\.flight_watcher_[a-z0-9_]+", text))
@@ -187,7 +193,7 @@ def test_finds_card_shows_today_hst_and_folds_the_rest(tmp_path):
     assert r["empty"] == '<div class="k">Nothing new today (Nov 6 HST).</div>' and r["loading"] == ""
     # storage blocked (private mode): closed by default, the fold still opens for this page, nothing throws
     assert r["blocked"] == '<tbody class="old" hidden>' and r["blockedOpen"] == '<tbody class="old">'
-    pilot2 = cards.build("1", None, ["pilot2"])["flight-watcher-finds-card-pilot2.js"]
+    pilot2 = cards.build("1", ["pilot2"])["flight-watcher-finds-card-pilot2.js"]
     assert 'localStorage.getItem("flight_watcher_pilot2_finds_earlier")' in pilot2  # a second pilot's fold is his own
 
 
@@ -375,6 +381,35 @@ def test_tickets_card_one_form_bug_or_feature():
             b.close()
 
 
+def test_schedule_card_reads_doh_from_the_state_sensor(tmp_path):
+    """FW-0010 (survey): HA serves the card file at /local/ with no login, so it no longer carries the pilot's DOH; the
+    card reads it from sensor.flight_watcher_state (attribute doh, behind the login) for the longevity year default
+    and its note, redraws when it arrives, and says to set the longevity year when there is none. Synthetic date."""
+    import shutil
+    import subprocess
+    if not shutil.which("node"):
+        import pytest
+        pytest.skip("node not installed")
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www", "flight-watcher-schedule-card.js"),
+               encoding="utf-8").read()
+    js = ("globalThis.HTMLElement = class {}; globalThis.customElements = {define() {}}; globalThis.window = {};\n" + src + "\n"
+          "const st = (doh) => ({states: {'sensor.flight_watcher_state': {state: 'watching', last_updated: 'x',"
+          " attributes: doh === undefined ? {} : {doh}}}});\n"
+          "const c = new FlightWatcherScheduleCard(); c.setConfig({}); let draws = 0; c._render = () => { draws += 1; };\n"
+          "c.hass = st(undefined); c.hass = st('1999-02-03'); c.hass = st('1999-02-03'); const d2 = draws;\n"
+          "console.log(JSON.stringify({none: c._doh(st(undefined)), bad: c._doh(st('soon')), ok: c._doh(st('1999-02-03')),"
+          " draws: d2, yr: dohYear('2026-11-06', '1999-02-03'), dflt: dohYear('2026-11-06', '')}));")
+    f = tmp_path / "s.js"
+    f.write_text(js)
+    out = subprocess.run(["node", str(f)], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    r = json.loads(out.stdout)
+    assert (r["none"], r["bad"], r["ok"]) == ("", "", "1999-02-03")
+    assert r["draws"] == 2  # the DOH's arrival redraws; the same DOH again does not
+    assert r["yr"] == 28 and r["dflt"] == 27  # 1999-02-03 to 2026-11-06; no DOH: the placeholder (table caps at 12)
+    assert '${doh ? `(DOH ${doh} = year ${dohYear(today, doh)}, table caps at 12)` : "(set your longevity year here; table caps at 12)"}' in src
+
+
 def test_schedule_card_keeps_pay_labels_with_values():
     """FW-0008 / FW-0009 (iPhone): the version bar puts Awarded-Pay-Gross and Improved-Pay-Gross in one group that wraps
     as a unit, and the totals put Pay-Gross and Pay-Net in one row that never wraps; every label stays with its value."""
@@ -438,6 +473,76 @@ def test_finds_card_reads_keyed_file_and_merges_short_sensor_rows(tmp_path):
     assert "42s" in m["html"] and "mdi:airplane" in m["html"]
     # 20 s after the fetch: no second fetch yet, one refetch scheduled for when the 60 s guard ends
     assert r["guarded"]["urls"] == 1 and r["guarded"]["timers"] == [40500]
-    pilot2 = cards.build("1", None, ["pilot2"])["flight-watcher-finds-card-pilot2.js"]
+    pilot2 = cards.build("1", ["pilot2"])["flight-watcher-finds-card-pilot2.js"]
     assert "/local/flight-watcher/pilot2/finds_${m}_${encodeURIComponent(this._key)}.json" in pilot2
     assert "sensor.flight_watcher_pilot2_finds" in pilot2
+
+
+def test_finds_card_keeps_history_while_the_watcher_is_offline(tmp_path):
+    """FW-0010 fix: the finds sensor goes unavailable whenever the Watcher is offline or restarting, and HA then drops
+    its attributes, file_key included. The card keeps the key it has (and this browser keeps the last one), so the
+    month files still show; a page opened with no key known says history is not available instead of "Nothing new
+    today". FW-0026 fix: a sensor change (rev) fetches the month shown again, last month too, and marks the other one
+    to fetch again when picked. Synthetic trips."""
+    key = "0123456789abcdef0123456789abcdef"
+    nov = [{**_find("H9401", "2026-11-07T09:00:00Z"), "inflt": True},
+           {**_find("H9402", "2026-11-06T20:00:00Z")}, {**_find("H9403", "2026-11-02T20:00:00Z")}]
+    octr = [_find("H9301", "2026-10-20T20:00:00Z")]
+    js = (f"const files = {{'2026-11': {json.dumps(nov)}, '2026-10': {json.dumps(octr)}}};\n"
+          "let clock = Date.parse('2026-11-07T09:30:00Z'); Date.now = () => clock;\n"
+          "const urls = [];\n"
+          "globalThis.fetch = async (u) => { const p = u.split('?')[0]; urls.push(p); const m = p.match(/finds_(\\d{4}-\\d{2})_/)[1];"
+          " return {ok: true, json: async () => ({month: m, finds: files[m]})}; };\n"
+          "globalThis.setTimeout = () => 1; globalThis.clearTimeout = () => {};\n"
+          "const S = (state, attrs, lu) => ({states: {'sensor.flight_watcher_finds': {state, last_updated: lu, attributes: attrs}}});\n"
+          "const tick = () => new Promise((r) => setImmediate(r));\n"
+          "const mk = () => { const c = new FlightWatcherFindsCard(); c.setConfig({});\n"
+          "  c.attachShadow = function () { this.shadowRoot = {innerHTML: '', querySelector: (s) => (s === 'details.top' ? {} : null),"
+          " querySelectorAll: () => []}; return this.shadowRoot; }; return c; };\n"
+          "const text = (c) => c.shadowRoot.innerHTML.replace(/<style>[\\s\\S]*?<\\/style>/, '').replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ');\n"
+          "const out = {};\n"
+          "(async () => {\n"
+          "  // 1. first load while the Watcher is down, no key ever seen in this browser\n"
+          "  const a = mk(); a.hass = S('unavailable', {friendly_name: 'Finds'}, 'U0'); await tick(); a._render();\n"
+          "  out.first = {urls: urls.length, text: text(a)};\n"
+          "  // 2. the Watcher comes up: the key arrives, the file loads, the browser keeps the key\n"
+          f"  a.hass = S('3', {{finds: [], file_key: '{key}', rev: 'r1'}}, 'L1'); await tick();\n"
+          "  out.online = {urls: urls.slice(), text: text(a), kept: store.get('flight_watcher_finds_key')};\n"
+          "  // 3. the Watcher restarts: unavailable, no attributes; the rows stay, the line says offline\n"
+          "  clock += 61e3; a.hass = S('unavailable', {}, 'U1'); await tick();\n"
+          "  out.down = {rows: a._rows().map((f) => f.pairing), key: a._key, url: urls[urls.length - 1], text: text(a)};\n"
+          "  // 4. a page opened while the Watcher is down reads the files with the key this browser kept\n"
+          "  const b = mk(); b.hass = S('unavailable', {}, 'U1'); await tick();\n"
+          "  out.reopened = {rows: b._rows().map((f) => f.pairing), url: urls[urls.length - 1], text: text(b)};\n"
+          "  // 5. last month picked; an InFlt-only change (rev) fetches it again; this month is marked to fetch again\n"
+          f"  a.hass = S('3', {{finds: [], file_key: '{key}', rev: 'r1'}}, 'L2'); await tick();\n"
+          "  a._m = '2026-10'; a._picked = true; a._render(); await tick();\n"
+          "  const before = urls.length; clock += 61e3;\n"
+          f"  a.hass = S('3', {{finds: [], file_key: '{key}', rev: 'r2'}}, 'L3'); await tick();\n"
+          "  out.rev = {urls: urls.slice(before), novStale: !!a._files['2026-11'].stale};\n"
+          "  a._m = '2026-11'; a._picked = false; a._render(); await tick();\n"
+          "  out.back = {url: urls[urls.length - 1], novStale: !!(a._files['2026-11'] || {}).stale};\n"
+          "  // 6. storage blocked (private mode): no key kept, no throw\n"
+          "  store.clear(); globalThis.localStorage.getItem = () => { throw new Error('blocked'); };\n"
+          "  const d = mk(); d.hass = S('unavailable', {}, 'U9'); await tick(); d._render();\n"
+          "  out.blocked = text(d).includes('history not available');\n"
+          "  console.log(JSON.stringify(out));\n"
+          "})();")
+    r = _finds_card_node(tmp_path, js)
+    k = f"_{key}.json"
+    assert r["first"]["urls"] == 0
+    t = r["first"]["text"]
+    assert "Flight Watcher offline: history not available." in t
+    assert "Nothing new today" not in t and "Nothing added" not in t and "0 in Nov" not in t
+    assert r["online"]["urls"] == [f"/local/flight-watcher/finds_2026-11{k}"] and r["online"]["kept"] == key
+    assert "3 in Nov" in r["online"]["text"] and "offline" not in r["online"]["text"]
+    d = r["down"]
+    assert d["rows"] == ["H9401", "H9402", "H9403"] and d["key"] == key and d["url"] == f"/local/flight-watcher/finds_2026-11{k}"
+    assert "Flight Watcher offline: list as of its last check." in d["text"] and "3 in Nov" in d["text"]
+    assert r["reopened"]["rows"] == ["H9401", "H9402", "H9403"] and r["reopened"]["url"].endswith(f"finds_2026-11{k}")
+    assert "list as of its last check" in r["reopened"]["text"]
+    assert r["rev"] == {"urls": [f"/local/flight-watcher/finds_2026-10{k}"], "novStale": True}
+    assert r["back"] == {"url": f"/local/flight-watcher/finds_2026-11{k}", "novStale": False}
+    assert r["blocked"] is True
+    pilot2 = cards.build("1", ["pilot2"])["flight-watcher-finds-card-pilot2.js"]
+    assert 'localStorage.getItem("flight_watcher_pilot2_finds_key")' in pilot2  # a second pilot's key is his own

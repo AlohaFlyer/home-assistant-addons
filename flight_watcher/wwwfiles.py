@@ -8,8 +8,9 @@ in an attribute of sensor.<prefix>_finds (reading HA states needs a login), wher
 never logged: scrub() takes it out of any error text first.
 
 The other files the Watcher writes under www hold no names: pairings_<YYYY-MM>.json (the company's pairing package:
-times, routes, crew complement codes such as CA01FO01) and the cards. school_<YYYY-YY>.json is a school calendar
-put there by hand. The crew index and tickets live in /share, which HA does not serve.
+times, routes, crew complement codes such as CA01FO01) and the cards. The cards carry no date of hire either: the
+pilot's DOH stays in /data/cards.json and goes out in sensor.<prefix>_state (cards.py). school_<YYYY-YY>.json is a
+school calendar put there by hand. The crew index and tickets live in /share, which HA does not serve.
 Pure file logic; no network, no MQTT."""
 import os
 import re

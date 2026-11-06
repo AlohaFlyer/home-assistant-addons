@@ -141,7 +141,8 @@ def _watcher_key(tmp_path):
 
 def test_finds_sensor_payload_small_and_keeps_what_automations_read(tmp_path, monkeypatch):
     """FW-0026: 50 finds with long names used to publish ~28 KB of attributes (HA's recorder drops attributes over 16384
-    bytes and logs every update). Now: the newest 20, short rows, at most 8000 bytes, plus file_key for the card."""
+    bytes and logs every update). Now: the newest 30, short rows, at most 12000 bytes, plus file_key and rev for the
+    card."""
     W = _watcher(tmp_path, monkeypatch)
     long = "; ".join(f"FO Doe-Longername, Janeallison Q ({10000 + i})" for i in range(3))
     for i in range(50):
@@ -154,8 +155,8 @@ def test_finds_sensor_payload_small_and_keeps_what_automations_read(tmp_path, mo
     (topic, p), = sent
     assert topic == "finds"
     size = len(json.dumps(p, separators=(",", ":")))
-    assert size <= W.FINDS_ATTR_MAX <= 8000  # under half the recorder's 16384
-    assert 10 <= p["count"] == len(p["finds"]) <= 20 and p["file_key"] == W.www_key()
+    assert size <= W.FINDS_ATTR_MAX <= 12000  # well under the recorder's 16384
+    assert 15 <= p["count"] == len(p["finds"]) <= 30 and p["file_key"] == W.www_key()
     newest = W.DB.recent_finds(1)[0]
     assert p["finds"][0]["pairing"] == newest["pairing"] and p["finds"][0]["seen"] == newest["seen"]
     # fields the Pako automations read (FLICA alert push: pairing, layover, turn, dates, days, credit, captain) and the
@@ -165,10 +166,62 @@ def test_finds_sensor_payload_small_and_keeps_what_automations_read(tmp_path, mo
     for r in p["finds"]:
         assert need <= set(r) and set(r) == set(W.FINDS_ATTR_KEYS)
     assert p["finds"][0]["picked_by"] == long and p["finds"][0]["captain"] == "Doe, John (23456)"
-    # typical rows: all 20 fit
-    short = W.finds_payload([{**newest, "picked_by": "FO Doe, Jane (12345)"}] * 25, KEY)
-    assert short["count"] == 20 and len(json.dumps(short)) < 8000
-    assert W.finds_payload([], KEY) == {"count": 0, "finds": [], "file_key": KEY}
+    # typical rows: all 30 fit (the FLICA alert push finds a trip that left the pot even after a burst of new finds)
+    short = W.finds_payload([{**newest, "picked_by": "FO Doe, Jane (12345)"}] * 40, KEY, "abc")
+    assert short["count"] == 30 and len(json.dumps(short)) < 12000 and short["rev"] == "abc"
+    assert W.finds_payload([], KEY) == {"count": 0, "finds": [], "file_key": KEY, "rev": None}
+
+
+def test_finds_files_written_before_the_sensor_and_rev_follows_file_only_changes(tmp_path, monkeypatch):
+    """FW-0026 fix: InFlt, Prem and the picker's average live only in the month files. An InFlt verdict (inflt_check,
+    some time after the pickup) leaves every sensor row as it was, so the sensor carries rev, a hash of this month's
+    and last month's files: the payload changes, HA updates the sensor, and an open finds card fetches the file
+    again. The files are written before the sensor is published, so that fetch reads the new file. Synthetic rows."""
+    W = _watcher(tmp_path, monkeypatch)
+    seen = W.now_iso()
+    _add_find(W, "k1", "H9001", seen)
+    sent = []
+    fw = tmp_path / "www" / "flight-watcher"
+
+    def pub(t, p, retain=True):
+        if t == "finds":  # what the card would fetch at the moment the sensor changes
+            f = fw / f"finds_{W.local_now():%Y-%m}_{W.www_key()}.json"
+            sent.append((p, json.loads(f.read_text())["finds"][0]))
+    monkeypatch.setattr(W, "pub", pub)
+    W.publish_finds()
+    W.publish_finds()  # nothing changed: the same payload (HA keeps the state, no recorder row)
+    W.DB.set_inflt("k1", True, "H8001")
+    W.publish_finds()
+    (p1, f1), (p2, _), (p3, f3) = sent
+    assert p1 == p2 and re.fullmatch(r"[0-9a-f]{12}", p1["rev"])
+    assert p3["finds"] == p1["finds"]  # the sensor rows do not carry InFlt ...
+    assert p3["rev"] != p1["rev"]  # ... so rev moves the sensor
+    assert f1["inflt"] is None and f3["inflt"] is True  # the file already held the verdict when the sensor changed
+    # a file that cannot be written: no rev, the rows still go out
+    monkeypatch.setattr(W, "finds_dir", lambda: str(tmp_path / "www" / "flight-watcher" / f"finds_{W.local_now():%Y-%m}_{W.www_key()}.json"))
+    sent.clear()
+    monkeypatch.setattr(W, "pub", lambda t, p, retain=True: sent.append((t, p)) if t == "finds" else None)
+    W.publish_finds()
+    (_, p4), = sent
+    assert p4["rev"] is None and p4["finds"][0]["pairing"] == "H9001"
+
+
+def test_state_attr_carries_the_doh_from_data_only(tmp_path, monkeypatch):
+    """FW-0010 (survey): the pilot's DOH no longer goes into the schedule card file under /local/ (no login); the
+    Watcher publishes it in sensor.<prefix>_state from <data>/cards.json, and nothing when there is none or it is not
+    a date. Synthetic date."""
+    W = _watcher(tmp_path, monkeypatch)
+    sent = []
+    monkeypatch.setattr(W, "pub", lambda t, p, retain=True: sent.append((t, p)))
+    W.set_machine("watching", "ok")
+    assert dict(sent)["state_attr"]["doh"] == ""
+    (tmp_path / "data_default" / "cards.json").write_text('{"doh": "1999-02-03"}')
+    W.set_machine("watching", "ok")
+    assert sent[-1] == ("state_attr", {"note": "ok", "version": W.VERSION, "since": W.S["since"], "instance": "",
+                                       "doh": "1999-02-03"})
+    for bad in ('{"doh": "soon"}', '["1999-02-03"]', "not json"):
+        (tmp_path / "data_default" / "cards.json").write_text(bad)
+        assert W.pilot_doh() == ""
 
 
 def test_dockerfile_copies_every_local_module():

@@ -4,6 +4,7 @@ Login rule: never two login attempts in a row without a success in between.
 A failed login, or anything unexpected, parks the watcher until re-armed from HA.
 v0.2 is READ ONLY: rules match and log; nothing is ever submitted to FLICA.
 """
+import hashlib
 import json
 import logging
 import os
@@ -597,29 +598,40 @@ def publish_trade():
 # FW-0026: sensor.<prefix>_finds carries a short recent list only. At 50 full rows (~28 KB) its attributes passed HA's
 # 16 KiB recorder limit, so the recorder dropped them and logged a warning on every update. The finds card reads the
 # month files for the full rows; the attribute keeps what the automations on Pako read (the FLICA alert push looks a
-# trip up by pairing for layover, turn, dates, days, credit and captain) and what the card needs to show a row the
-# file has not caught up with yet. The H3628 Fanfare push reads event/new_pairing, not this sensor.
-FINDS_ATTR_ROWS = 20
-FINDS_ATTR_MAX = 8000  # bytes of the whole payload; HA's recorder limit is 16384
+# trip up by pairing in pot_count, tradeboard_pickups and this list for layover, turn, dates, days, credit and
+# captain, so a burst of new finds should not push a trip out of every list) and what the card needs to show a row
+# the file has not caught up with yet. 30 short rows ran 9.9 KB on Pako's live data (Nov 2026). The H3628 Fanfare
+# push reads event/new_pairing, not this sensor.
+FINDS_ATTR_ROWS = 30
+FINDS_ATTR_MAX = 12000  # bytes of the whole payload (ASCII-escaped, so HA's UTF-8 copy is no larger); recorder limit 16384
 FINDS_ATTR_KEYS = ("pairing", "dates", "days", "layover", "turn", "report", "credit", "captain", "seen", "gone",
                    "alert_at", "pickup_status", "picked_by", "source")
 
 
-def finds_payload(rows, key):
-    """{count, finds, file_key} for sensor.<prefix>_finds: the newest FINDS_ATTR_ROWS finds with FINDS_ATTR_KEYS
-    only, fewer when the payload would pass FINDS_ATTR_MAX bytes; file_key is the finds files' key (FW-0010)."""
+def finds_payload(rows, key, rev=None):
+    """{count, finds, file_key, rev} for sensor.<prefix>_finds: the newest FINDS_ATTR_ROWS finds with FINDS_ATTR_KEYS
+    only, fewer when the payload would pass FINDS_ATTR_MAX bytes; file_key is the finds files' key (FW-0010); rev
+    changes whenever this month's or last month's file changes (FW-0026: an InFlt verdict, a Prem flag or a picker's
+    average lives only in the files, and without rev the sensor would not change, so an open card would not refetch)."""
     out = [{k: r.get(k) for k in FINDS_ATTR_KEYS} for r in rows[:FINDS_ATTR_ROWS]]
     while True:
-        d = {"count": len(out), "finds": out, "file_key": key}
+        d = {"count": len(out), "finds": out, "file_key": key, "rev": rev}
         if len(json.dumps(d, separators=(",", ":"))) <= FINDS_ATTR_MAX or not out:
             return d
         out = out[:-1]
 
 
 def publish_finds():
-    pub("finds", finds_payload(DB.recent_finds(FINDS_ATTR_ROWS), www_key()))
+    """FW-0026: the month files first, then the sensor: the finds card refetches the file when the sensor changes, so
+    the file must already hold what the sensor announces (rev)."""
+    rev = write_finds_months()
+    try:
+        key = www_key()
+    except Exception as e:  # /data not writable: publish the rows anyway; the card says history is not available
+        key = None
+        log.info("finds file key unavailable: %s", e)
+    pub("finds", finds_payload(DB.recent_finds(FINDS_ATTR_ROWS), key, rev))
     publish_pickers()
-    write_finds_months()
 
 
 FINDS_FILES = {"all": False}
@@ -628,7 +640,9 @@ FINDS_FILES = {"all": False}
 def write_finds_months():
     """0.9.4 (Ryan): one file per HST month for the finds card's month picker. This month and last month on every
     check; all 24 months once per start. Read only, no FLICA traffic. FW-0010: the files carry crew names and
-    employee numbers and HA serves www with no login, so the name is finds_<YYYY-MM>_<key>.json (wwwfiles.py)."""
+    employee numbers and HA serves www with no login, so the name is finds_<YYYY-MM>_<key>.json (wwwfiles.py).
+    FW-0026: returns rev, a short hash of this month's and last month's files as written (the two that change between
+    starts), for the sensor; None when the files could not be written."""
     key = None
     try:
         key = www_key()
@@ -636,21 +650,28 @@ def write_finds_months():
         n = 24 if not FINDS_FILES["all"] else 2
         fdir = finds_dir()
         os.makedirs(fdir, exist_ok=True)
+        rev = hashlib.sha256()
         for i in range(n):
             y, m = divmod(today.year * 12 + today.month - 1 - i, 12)
             a = datetime(y, m + 1, 1, 10, tzinfo=timezone.utc)  # 00:00 HST = 10:00 UTC
             y2, m2 = divmod(y * 12 + m + 1, 12)
             b = datetime(y2, m2 + 1, 1, 10, tzinfo=timezone.utc)
             rows = DB.finds_between(a.isoformat(), b.isoformat())
-            path = os.path.join(fdir, WF.finds_name(f"{y:04d}-{m + 1:02d}", key))
+            month = f"{y:04d}-{m + 1:02d}"
+            path = os.path.join(fdir, WF.finds_name(month, key))
             if rows or os.path.exists(path):
+                text = json.dumps({"month": month, "count": len(rows), "finds": rows}, separators=(",", ":"))
                 tmp = path + ".tmp"
                 with open(tmp, "w") as fh:
-                    json.dump({"month": f"{y:04d}-{m + 1:02d}", "count": len(rows), "finds": rows}, fh, separators=(",", ":"))
+                    fh.write(text)
                 os.replace(tmp, path)
+                if i < 2:
+                    rev.update(f"{month}\n{text}\n".encode())
         FINDS_FILES["all"] = True
+        return rev.hexdigest()[:12]
     except Exception as e:
         log.info("finds month files skipped: %s", WF.scrub(e, key))  # an OSError names the file: never log the key
+        return None
 
 
 def finds_files_cleanup():
@@ -888,7 +909,19 @@ def set_machine(state, note=""):
     S["note"] = note
     save_state(S)
     pub("state", state)
-    pub("state_attr", {"note": note, "version": VERSION, "since": S["since"], "instance": INSTANCE})
+    pub("state_attr", {"note": note, "version": VERSION, "since": S["since"], "instance": INSTANCE, "doh": pilot_doh()})
+
+
+def pilot_doh():
+    """FW-0010: the pilot's date of hire (YYYY-MM-DD) from <data>/cards.json for the schedule card's longevity year,
+    "" when none. Published in sensor.<prefix>_state (behind HA's login); the deployed card file under /local/ (no
+    login) carries the placeholder only (cards.py)."""
+    try:
+        with open(f"{DATA}/cards.json", encoding="utf-8") as f:
+            d = json.load(f).get("doh", "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return d if isinstance(d, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", d) else ""
 
 
 # ---------------------------------------------------------------- browser

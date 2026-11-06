@@ -14,7 +14,9 @@ const DOW = ["SU","MO","TU","WE","TH","FR","SA"];
 const MON3 = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
 const H = 3600e3;
 // Pay (Ryan): hourly rate per credit hour; PWA 4.O.1.a IRO override $4.00 per block hour; 4.O.1.b Extended Range type-rated FO 15% hourly premium
-const IRO_OVERRIDE = 4.00, ER_PCT = 0.15, DOH = "2000-01-01";  // FW_DOH: the add-on writes the pilot's date of hire here on deploy (cards.py)
+// FW-0010: DOH is a placeholder only. HA serves this file at /local/ with no login, so the pilot's date of hire is
+// never written here; the Watcher publishes it in sensor.flight_watcher_state (attribute doh, from /data/cards.json).
+const IRO_OVERRIDE = 4.00, ER_PCT = 0.15, DOH = "2000-01-01";
 const VAC_H = 4.0;  // PWA 6.J.1.c: vacation day Paid and Credited at 4:00 from 1 Jan 2026 (3.75 if the AA/DL/UA trigger had failed); FLICA's totals confirm 4:00
 // PWA 3.D.6 A330 PAX / B787 First Officer hourly rate by longevity year (1-12) and effective date
 const RATE_DATES = ["2023-03-02", "2024-03-02", "2025-03-02", "2026-03-02", "2027-01-31"];
@@ -24,7 +26,7 @@ const RATE_TABLE = [
   [251.28, 261.33, 271.79, 282.66, 291.13], [256.66, 266.93, 277.61, 288.71, 297.37], [262.48, 272.98, 283.90, 295.26, 304.12],
   [266.03, 276.67, 287.74, 299.24, 308.22], [270.00, 280.80, 292.03, 303.71, 312.82], [273.62, 284.56, 295.95, 307.78, 317.02]];
 const rateFor = (year, iso) => { let i = 0; RATE_DATES.forEach((d, k) => { if (iso >= d) i = k; }); return RATE_TABLE[Math.min(12, Math.max(1, year)) - 1][i]; };
-const dohYear = (iso) => Math.floor((Date.parse(iso) - Date.parse(DOH)) / (365.25 * 24 * H)) + 1;
+const dohYear = (iso, doh) => Math.floor((Date.parse(iso) - Date.parse(doh || DOH)) / (365.25 * 24 * H)) + 1;
 const hrs = (t) => { const mm = /^(\d+):(\d{2})$/.exec(String(t || "").trim()); return mm ? Number(mm[1]) + Number(mm[2]) / 60 : null; };
 const usd = (v) => (v == null ? "" : "$" + Math.round(v).toLocaleString("en-US"));
 
@@ -35,14 +37,20 @@ class FlightWatcherScheduleCard extends HTMLElement {
       "sensor.flight_watcher_blocked_days", "sensor.flight_watcher_own_trip_times", "sensor.flight_watcher_tradeboard_pickups",
       "sensor.flight_watcher_would_trade", "sensor.flight_watcher_swap_ideas", "sensor.flight_watcher_reserve_grid",
       "input_number.flight_watcher_federal_tax_pct", "input_number.flight_watcher_state_tax_pct", "input_number.flight_watcher_longevity_year", "input_text.flight_watcher_er_trips", "sensor.flight_watcher_schedule_versions"]
-      .map((e) => h.states[e] && h.states[e].last_updated).join("|");
+      .map((e) => h.states[e] && h.states[e].last_updated).join("|") + "|" + this._doh(h);
     this._h = h;
     if (sig === this._sig) return;
     this._sig = sig;
     this._render();
   }
+  // FW-0010: the pilot's DOH from the state sensor ("" when none is on file or the Watcher is offline); only this
+  // value is in the redraw signature, not the sensor's last_updated (its note changes on every check)
+  _doh(h) {
+    const d = (((h || this._h).states["sensor.flight_watcher_state"] || {}).attributes || {}).doh;
+    return /^\d{4}-\d{2}-\d{2}$/.test(d || "") ? d : "";
+  }
   _key() {
-    const off = parseInt((this._h.states["input_number.flight_watcher_month_offset"] || {}).state || "0", 10) || 0;
+    const off =parseInt((this._h.states["input_number.flight_watcher_month_offset"] || {}).state || "0", 10) || 0;
     const d = new Date(); const m = d.getMonth() + off; const y = d.getFullYear() + Math.floor(m / 12);
     return { y, m: ((m % 12) + 12) % 12, key: `${y}-${String(((m % 12) + 12) % 12 + 1).padStart(2, "0")}` };
   }
@@ -188,7 +196,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const num = (e, d) => { const v = parseFloat((S[e] || {}).state); return isNaN(v) ? d : v; };
     const fed = num("input_number.flight_watcher_federal_tax_pct", 22), stt = num("input_number.flight_watcher_state_tax_pct", 0);
     const today = new Date(Date.now() - 10 * H).toISOString().slice(0, 10);
-    const lyr = num("input_number.flight_watcher_longevity_year", Math.min(12, dohYear(today)));
+    const doh = this._doh();
+    const lyr = num("input_number.flight_watcher_longevity_year", Math.min(12, dohYear(today, doh)));
     const RATE = rateFor(lyr, today);
     const erOv = String((S["input_text.flight_watcher_er_trips"] || {}).state || "").split(",").filter(Boolean);
     const erOn = (k, lay, n) => erOv.includes("-" + k) ? false : erOv.includes("+" + k) ? true : (n ? n >= 4 : /\bSIN\b/.test(lay || ""));
@@ -697,7 +706,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       <span>Federal tax <select data-e="input_number.flight_watcher_federal_tax_pct">${sel(0, 45, 0.5, fed, "%")}</select></span>
       <span>State tax <select data-e="input_number.flight_watcher_state_tax_pct">${sel(0, 15, 0.25, stt, "%")}</select></span>
       <span>Longevity year <select data-e="input_number.flight_watcher_longevity_year">${sel(1, 12, 1, lyr, "")}</select></span>
-      <div class="r">Rate $${RATE.toFixed(2)}/credit h: A330 PAX FO, PWA 3.D.6, year ${lyr} (DOH ${DOH} = year ${dohYear(today)}, table caps at 12), effective ${RATE_DATES.filter((x) => x <= today).pop()}. Net = gross less federal and state only; estimate.</div>
+      <div class="r">Rate $${RATE.toFixed(2)}/credit h: A330 PAX FO, PWA 3.D.6, year ${lyr} ${doh ? `(DOH ${doh} = year ${dohYear(today, doh)}, table caps at 12)` : "(set your longevity year here; table caps at 12)"}, effective ${RATE_DATES.filter((x) => x <= today).pop()}. Net = gross less federal and state only; estimate.</div>
     </details>${chtml}</ha-card>`;
     this._wire();
   }

@@ -4,9 +4,12 @@
 // pot" with a month picker. A past month picked in the picker opens in full. Live rows: sensor.flight_watcher_finds;
 // month history (24 months): /local/flight-watcher/finds_<YYYY-MM>_<key>.json written by the Watcher. Times HST.
 // FW-0010: HA serves /local/ with no login and the files name crew, so their names carry a random key that only the
-// sensor's file_key attribute (behind HA's login) tells. FW-0026: the sensor keeps a short list of short rows (HA's
-// recorder limit), so the month file is the full source and a sensor row only adds to it (a new find, a fresher
-// pickup); a sensor change inside the 60 s refetch guard schedules one refetch when it ends.
+// sensor's file_key attribute (behind HA's login) tells; the card keeps the last key it saw (and this browser keeps
+// it too), because HA drops the attributes while the Watcher is offline. FW-0026: the sensor keeps a short list of
+// short rows (HA's recorder limit), so the month file is the full source and a sensor row only adds to it (a new
+// find, a fresher pickup); the sensor's rev changes with every change to this month's or last month's file, which
+// makes the card fetch the month it shows again; a sensor change inside the 60 s refetch guard schedules one refetch
+// when it ends.
 class FlightWatcherFindsCard extends HTMLElement {
   setConfig(c) { this._c = { entity: "sensor.flight_watcher_finds", ...c }; this._files = {}; this._m = this._hstMonth(Date.now()); }
   getCardSize() { return 8; }
@@ -32,22 +35,47 @@ class FlightWatcherFindsCard extends HTMLElement {
     const sig = `${st ? st.last_updated : "none"}|${this._hstDay(Date.now())}`;
     if (sig === this._sig) return;
     this._sig = sig;
-    // FW-0010: the files' key; a new key (first push, or a reset /data) drops every file read under the old one
-    const key = st && st.attributes ? st.attributes.file_key || "" : "";
-    if (key !== (this._key || "")) { this._key = key; this._files = {}; clearTimeout(this._later); }
+    // FW-0010: the files' key. HA drops the attributes while the sensor is unavailable (the Watcher offline or
+    // restarting), so no key never clears the one in hand, and the browser keeps the last one for a page opened while
+    // the Watcher is down. A new key (a reset /data) drops every file read under the old one.
+    const fk = st && st.attributes ? st.attributes.file_key : "";
+    const key = /^[0-9a-f]{32}$/.test(fk || "") ? fk : "";
+    if (key) this._keepKey(key);
+    const k = key || this._key || this._keptKey();
+    if (k && k !== this._key) { this._key = k; this._files = {}; clearTimeout(this._later); }
     // FW-0005: left on this month, the card moves on with the clock (a past month opens in full, so a page open
     // over the month's end would otherwise show all of last month); a month picked in the picker stays.
     if (!this._picked) this._m = this._hstMonth(Date.now());
-    if (this._m === this._hstMonth(Date.now())) this._load(this._m, true);
+    // FW-0026: the Watcher rewrites this month's and last month's files on every check and the sensor (rev) changes
+    // with them: the one shown is fetched again now, the other one when it is picked
+    const cur = this._hstMonth(Date.now());
+    for (const x of [cur, this._prevMonth(cur)]) {
+      if (x === this._m) this._load(x, true);
+      else if (this._files[x]) this._files[x].stale = true;
+    }
     this._render();
   }
+  _prevMonth(m) { const [y, mo] = m.split("-").map(Number); return new Date(Date.UTC(y, mo - 2, 1)).toISOString().slice(0, 7); }
+  // the last file key per browser (try/catch: private mode, blocked storage); the key starts flight_watcher_, so a
+  // second pilot's copy keeps his own
+  _keptKey() {
+    let v = "";
+    try { v = localStorage.getItem("flight_watcher_finds_key") || ""; } catch (e) { v = ""; }
+    return /^[0-9a-f]{32}$/.test(v) ? v : "";
+  }
+  _keepKey(k) {
+    if (k === this._kept) return;
+    this._kept = k;
+    try { localStorage.setItem("flight_watcher_finds_key", k); } catch (e) { /* not kept, still works */ }
+  }
+  _offline() { const st = this._h && this._h.states[this._c.entity]; return !st || st.state === "unavailable"; }
   disconnectedCallback() { clearTimeout(this._later); }
   async _load(m, force) {
     const files = this._files;
     if (files[m] && !force) return;
-    // FW-0010: no key yet (sensor not published, Watcher down): no fetch; the sensor rows show, and the key's arrival
-    // clears this entry (set hass), which loads the file
-    if (!this._key) { files[m] = { finds: [], at: 0, missing: true }; return; }
+    // FW-0010: no key known (the Watcher has never published one to this card or browser, or is offline): no fetch;
+    // the card says history is not available, and the key's arrival clears this entry (set hass), which loads the file
+    if (!this._key) { files[m] = { finds: [], at: 0, missing: true, nokey: true }; return; }
     if (files[m] && force) {
       const wait = 60e3 - (Date.now() - (files[m].at || 0));
       if (wait > 0) {  // FW-0026: refetch once the guard ends, so the file catches up with a sensor change made inside it
@@ -158,11 +186,16 @@ class FlightWatcherFindsCard extends HTMLElement {
   }
   _render() {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
-    if (!this._files[this._m]) this._load(this._m);
+    const have = this._files[this._m];
+    if (!have || have.stale) this._load(this._m, !!have);  // stale: kept on screen until the new file is in
     const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const [y, m] = this._m.split("-").map(Number);
     const all = this._rows();
     const loading = !this._files[this._m];
+    // FW-0010: no key, no history: say so instead of "Nothing new today" (which would be false)
+    const nokey = !!(this._files[this._m] || {}).nokey, offline = this._offline();
+    const off = nokey ? (offline ? "Flight Watcher offline: history not available." : "Finds history not available yet (no file key from the Watcher).")
+      : offline ? "Flight Watcher offline: list as of its last check." : "";
     const openTop = this._top !== false;
     this.shadowRoot.innerHTML = `<style>
       ha-card{padding:10px 14px;font-size:12.5px}
@@ -178,11 +211,13 @@ class FlightWatcherFindsCard extends HTMLElement {
       .fb::before{content:"\\25B6";display:inline-block;width:1.5em;font-size:.72em}.fb[aria-expanded="true"]::before{content:"\\25BC"}
       .key{margin-top:4px}.key summary{cursor:pointer;font-size:12px;color:var(--secondary-text-color)}
       .k{color:var(--secondary-text-color);font-size:12px;margin-top:6px}
+      .k.off{color:var(--error-color,#c62828);font-weight:600}
       ha-icon{--mdc-icon-size:16px}
     </style><ha-card>
-      <div class="hd"><details class="top"${openTop ? " open" : ""}><summary><ha-icon icon="mdi:new-box"></ha-icon> Recently added to the pot <span class="k">${all.length} in ${MON[m - 1]}</span></summary>
+      <div class="hd"><details class="top"${openTop ? " open" : ""}><summary><ha-icon icon="mdi:new-box"></ha-icon> Recently added to the pot <span class="k">${nokey && !all.length ? "" : `${all.length} in ${MON[m - 1]}`}</span></summary>
+        ${off ? `<div class="k off"><ha-icon icon="mdi:lan-disconnect"></ha-icon> ${off}</div>` : ""}
         ${loading ? `<div class="k">Loading ${MON[m - 1]} ${y}...</div>` : ""}
-        ${this._list(all, Date.now(), loading)}
+        ${this._list(all, Date.now(), loading || nokey)}
         <details class="key"><summary>Key</summary><div class="k">
           <div><ha-icon icon="mdi:email-outline"></ha-icon> caught from your FLICA alert email (gone before a pot check)</div>
           <div>InFlt <ha-icon icon="mdi:airplane"></ha-icon> = picked up while airborne (from the picker's own trip); no = on the ground; - = not checked yet</div>
