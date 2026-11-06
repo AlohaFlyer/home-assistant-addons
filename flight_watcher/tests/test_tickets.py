@@ -277,3 +277,72 @@ def test_on_message_ticket_errors_never_escape(W, monkeypatch, topic, name):
     W.on_message(None, None, msg)  # must not raise
     errs = [p for t, p, r in W.SENT if t == "event/ticket_error"]
     assert errs and errs[-1]["error"] == "ticket message failed: OverflowError"
+
+
+def test_fixed_event_once_per_move_to_fixed(tmp_path):
+    """FW-0007: the ticket_fixed payload only when an action moved the ticket to fixed; a repeat fixed (a version
+    correction, a doubled message) is not a second push; fixed again after a reopen is."""
+    b = str(tmp_path)
+    t, _ = TK.create(b, {"kind": "feature", "title": "Push on fix", "narrative": "Tell me."}, "pilot2", "t0")
+    tid = t["id"]
+    assert TK.fixed_event(t) is None  # new
+    assert TK.fixed_event(TK.act(b, {"id": tid, "action": "progress"}, "ryan", "t1")[0]) is None
+    t, _ = TK.act(b, {"id": tid, "action": "fixed", "version": "1.3.0"}, "ryan", "t2")
+    assert TK.fixed_event(t) == {"id": tid, "kind": "feature", "title": "Push on fix", "reporter": "pilot2", "version": "1.3.0"}
+    t, _ = TK.act(b, {"id": tid, "action": "fixed", "version": "1.3.1"}, "ryan", "t3")
+    assert t["version_fixed"] == "1.3.1" and TK.fixed_event(t) is None  # already fixed: only the version changed
+    assert TK.fixed_event(TK.act(b, {"id": tid, "action": "note", "text": "in 1.3.1"}, "ryan", "t4")[0]) is None
+    assert TK.fixed_event(TK.act(b, {"id": tid, "action": "reopen", "text": "not quite"}, "pilot2", "t5")[0]) is None
+    t, _ = TK.act(b, {"id": tid, "action": "fixed"}, "ryan", "t6")  # fixed again, no version given
+    assert TK.fixed_event(t) == {"id": tid, "kind": "feature", "title": "Push on fix", "reporter": "pilot2", "version": ""}
+    assert TK.fixed_event(TK.act(b, {"id": tid, "action": "verify"}, "pilot2", "t7")[0]) is None  # closed
+    assert TK.act(b, {"id": tid, "action": "fixed"}, "ryan", "t8")[1] == f"{tid} is closed"
+    for bad in (None, "x", {}, {"status": "fixed", "history": "x"}, {"status": "fixed", "history": [None]}):
+        assert TK.fixed_event(bad) is None
+
+
+def test_watcher_ticket_fixed_event(W, monkeypatch):
+    """FW-0007: {T}/event/ticket_fixed {id, kind, title, reporter, version}, not retained, once per move to fixed,
+    sent after the new listing so the card already shows it fixed when the push is opened."""
+    W.ticket_new(json.dumps({"kind": "bug", "title": "Grid blank", "narrative": "Nothing."}))
+    monkeypatch.setattr(W, "INSTANCE", "pilot2")
+    W.ticket_new(json.dumps({"kind": "feature", "title": "Push on pickup", "narrative": "Please."}))
+    monkeypatch.setattr(W, "INSTANCE", "")
+
+    def fixed(n=0):
+        return [(p, r) for t, p, r in W.SENT[n:] if t == "event/ticket_fixed"]
+    n = len(W.SENT)
+    W.ticket_act(json.dumps({"id": "FW-0001", "action": "triage"}))
+    assert fixed(n) == []
+    W.ticket_act(json.dumps({"id": "FW-0001", "action": "fixed", "version": "1.3.0"}))
+    assert fixed(n) == [({"id": "FW-0001", "kind": "bug", "title": "Grid blank", "reporter": "ryan", "version": "1.3.0"}, False)]
+    topics = [t for t, _, _ in W.SENT[n:]]
+    assert topics.index("event/ticket_fixed") > max(i for i, x in enumerate(topics) if x == "tickets")
+    n = len(W.SENT)
+    W.ticket_act(json.dumps({"id": "FW-0001", "action": "fixed", "version": "1.3.0"}))  # doubled: no second push
+    W.ticket_act(json.dumps({"id": "FW-0001", "action": "note", "text": "check the grid"}))
+    assert fixed(n) == []
+    # the second pilot's ticket, marked fixed through Ryan's instance: the reporter says whose phone
+    W.ticket_act(json.dumps({"id": "FW-0002", "action": "fixed", "version": "1.3.0"}))
+    assert fixed(n) == [({"id": "FW-0002", "kind": "feature", "title": "Push on pickup", "reporter": "pilot2", "version": "1.3.0"}, False)]
+    # reopened and fixed again: a new push; refused or bad messages: none
+    n = len(W.SENT)
+    W.ticket_act(json.dumps({"id": "FW-0001", "action": "reopen"}))
+    W.ticket_act(json.dumps({"id": "FW-0001", "action": "fixed", "version": "1.3.1"}))
+    assert [p["version"] for p, _ in fixed(n)] == ["1.3.1"]
+    n = len(W.SENT)
+    W.ticket_act(json.dumps({"id": "FW-0001", "action": "verify"}))
+    W.ticket_act(json.dumps({"id": "FW-0001", "action": "fixed"}))  # closed: refused
+    W.ticket_act(json.dumps({"id": "FW-9999", "action": "fixed"}))
+    W.ticket_act("not json")
+    assert fixed(n) == [] and len([1 for t, _, _ in W.SENT[n:] if t == "event/ticket_error"]) == 3
+
+
+def test_on_message_ticket_fixed_event(W):
+    """FW-0007 end to end through on_message, as HA's mqtt.publish delivers it."""
+    def msg(topic, obj):
+        return type("M", (), {"topic": f"{W.T}/{topic}", "payload": json.dumps(obj).encode()})()
+    W.on_message(None, None, msg("ticket/new", {"kind": "bug", "title": "x", "narrative": "y"}))
+    W.on_message(None, None, msg("ticket/act", {"id": "FW-0001", "action": "fixed", "version": "1.3.0"}))
+    assert [p for t, p, _ in W.SENT if t == "event/ticket_fixed"] == [
+        {"id": "FW-0001", "kind": "bug", "title": "x", "reporter": "ryan", "version": "1.3.0"}]

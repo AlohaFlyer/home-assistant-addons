@@ -2643,7 +2643,11 @@ def ticket_image(payload):
 
 def ticket_act(payload):
     """{T}/ticket/act {id, action: triage|progress|fixed|verify|reopen|close|note, text?, version?}. A pilot
-    instance may act on its own tickets only."""
+    instance may act on its own tickets only.
+    FW-0007: a fixed action that moves a ticket to fixed also sends {T}/event/ticket_fixed {id, kind, title,
+    reporter, version} (not retained), once per move, after the new listing. "reporter" (ryan, or the second
+    pilot's name) says whose phone the HA automation pushes it to, quietly, so they can check it is what they
+    expected and verify or reopen it on the tickets card."""
     try:
         d = json.loads(payload or "{}")
     except ValueError:
@@ -2655,6 +2659,10 @@ def ticket_act(payload):
         return None
     log.info("ticket %s: %s -> %s", t["id"], d.get("action"), t["status"])
     publish_tickets(force=True)
+    ev = TK.fixed_event(t)
+    if ev:
+        log.info("ticket %s fixed (v%s): telling %s", ev["id"], ev["version"] or "?", ev["reporter"])
+        pub("event/ticket_fixed", ev, retain=False)
     return t
 
 
