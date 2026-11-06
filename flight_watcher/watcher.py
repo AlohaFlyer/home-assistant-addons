@@ -36,7 +36,7 @@ import crewidx as CI
 import tickets as TK
 import sealed as SEAL
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"

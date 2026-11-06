@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.2
+
+- Tickets card (Ryan): completed tickets (fixed or closed) fold away under "N completed" (noting how many still wait for your verify); open ones stay in the log. The header reads "N open · N completed". The fold remembers whether you opened it.
+
 ## 1.1.1
 
 - FW-0001 (Ryan, iPhone): the finds card ("Recently added to the pot") cut its table off after the Trip column on a phone, because the month picker took a column of its own beside the table. The picker now sits in the card's top-right corner and the table gets the full width (it scrolls sideways on a phone). Times are built from parts, so iOS Safari no longer shows "Nov 5 at 12:23" (wider rows); midnight shows 00:xx.
