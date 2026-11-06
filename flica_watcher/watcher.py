@@ -35,7 +35,7 @@ import recall as RC
 import crewidx as CI
 import tickets as TK
 
-VERSION = "0.10.1"
+VERSION = "0.10.2"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLICA_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"

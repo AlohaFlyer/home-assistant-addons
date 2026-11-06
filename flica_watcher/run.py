@@ -1,4 +1,4 @@
-"""FLICA Watcher launcher (0.10.0): one watcher.py per pilot from the same add-on.
+"""FLICA Watcher launcher (0.10.0; cards deployed since 0.10.2): one watcher.py per pilot from the same add-on.
 
 The default instance is Ryan's and runs exactly as before (add-on options, /data, flica_watcher/... topics,
 the ingress Web UI). When the option `second_pilot` names another pilot (lowercase letters, digits and
@@ -73,8 +73,20 @@ def start(spec):
     return {"p": p, "started": time.time(), "restart_at": None}
 
 
+def app_version(path=WATCHER):
+    """VERSION from watcher.py without importing it (the import starts a watcher's globals)."""
+    try:
+        m = re.search(r'^VERSION = "([^"]+)"', open(path, encoding="utf-8").read(), re.M)
+        return m.group(1) if m else "unknown"
+    except OSError:
+        return "unknown"
+
+
 def main():
-    specs = child_specs(read_options())
+    opts = read_options()
+    specs = child_specs(opts)
+    import cards  # 0.10.2: the dashboard cards ship with the app
+    cards.deploy(app_version(), [s["name"] for s in specs if s["name"]])
     procs = {}
     stopping = {"on": False}
 
