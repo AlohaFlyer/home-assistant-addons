@@ -36,7 +36,7 @@ import crewidx as CI
 import tickets as TK
 import sealed as SEAL
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -2889,7 +2889,7 @@ def main():
             log.info("no credentials for instance %s: waiting on %s/settings/set", INSTANCE, T)
             while True:
                 time.sleep(3600)
-        set_machine("stopped_unexpected", "enter your FLICA username and password: Open Web UI > Settings")
+        set_machine("stopped_unexpected", "enter your FLICA username and password: dashboard Settings tab")
     elif S.get("machine", "").startswith("stopped"):
         set_machine(S["machine"], S.get("note", "") + " (still stopped after restart, press Re-arm)")
     elif still_waiting():
