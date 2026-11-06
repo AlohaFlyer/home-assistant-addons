@@ -21,7 +21,8 @@ class FlightWatcherRecallCard extends HTMLElement {
     const a = st ? st.attributes : {};
     const days = a.days || [];
     const all = days.flatMap((d) => (d.verdicts || []).map((v) => ({ ...v, file: d.file })));
-    const alert = all.filter((v) => ["new", "confirmed", "approved"].includes((v.act || {}).status) && (v.verdict === "MISSED" || ["confirmed", "approved"].includes((v.act || {}).status)));
+    // FW-0012: a CCR draft counts only while its row is MISSED or POSSIBLE (a row that turned NO keeps its act as history)
+    const alert = all.filter((v) => ["MISSED", "POSSIBLE"].includes(v.verdict) && ["new", "confirmed", "approved"].includes((v.act || {}).status) && (v.verdict === "MISSED" || ["confirmed", "approved"].includes((v.act || {}).status)));
     const css = `<style>
       ha-card{padding:12px 14px;font-size:13px}
       .red{background:#b71c1c;color:#fff;border-radius:10px;padding:8px 12px}
@@ -70,7 +71,7 @@ class FlightWatcherRecallCard extends HTMLElement {
   }
   _row(v) {
     const act = v.act || {};
-    const live = v.verdict !== "NO" && act.status;
+    const live = ["MISSED", "POSSIBLE"].includes(v.verdict) && act.status && act.status !== "superseded";
     const id = this._e(v.id);
     let ctl = "";
     if (live) {
@@ -83,6 +84,8 @@ class FlightWatcherRecallCard extends HTMLElement {
           <button class="g" data-a="dismiss" data-id="${id}">Not a miss</button>
           <span>CCR # <input data-ccr="${id}" style="width:90px"></span><button class="g" data-a="filed" data-id="${id}">Mark filed</button>` : ""}
         ${["dismissed", "filed"].includes(act.status) ? `<button class="g" data-a="reopen" data-id="${id}">Reopen</button>` : ""}`;
+    } else if (act.status === "superseded") {
+      ctl = `<div class="k"><span class="st">superseded</span> CCR draft closed, no longer a miss (was ${this._e(act.was || "new")}${act.ccr ? `, CCR ${this._e(act.ccr)}` : ""}). It comes back if the row turns into a miss again.</div>`;
     }
     const lab = { MISSED: "SHOULD HAVE BEEN YOU", POSSIBLE: "CHECK", NO: "NO MISS" }[v.verdict] || v.verdict;
     return `<div class="row v${this._e(v.verdict)}"><span class="chip ${this._e(v.verdict)}">${this._e(lab)}</span><b>${this._e(v.kind === "o75" ? "Over 75" : v.kind === "junior" ? "Junior manning" : "Recall")} ${this._e(v.pairing)}</b> ${this._e(v.seat)} to #${this._e(v.sen)} ${this._e(v.pilot)}
