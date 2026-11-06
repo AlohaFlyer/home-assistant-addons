@@ -113,3 +113,50 @@ def test_finds_card_time_format_is_browser_independent(tmp_path):
     out = subprocess.run(["node", str(f)], capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout) == ["Nov 5 12:23", "Nov 6 00:05", "", "bad"]
+
+
+def test_pilot_card_draws_rebuilt_month_in_the_schedule_grid(tmp_path):
+    """FW-0002: the crew index's rebuilt trips use the readable schedule's day-by-day grid (synthetic names)."""
+    import shutil
+    import subprocess
+    if not shutil.which("node"):
+        import pytest
+        pytest.skip("node not installed")
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www", "flight-watcher-pilot-card.js"),
+               encoding="utf-8").read()
+    a = {"reconstructed_month": "2026-11", "reconstructed_from": "2026-10-31", "reconstructed_coverage_pct": 87.5,
+         "reconstructed": [
+             {"pairing": "H9001", "start": "2026-10-31", "end": "2026-11-02", "seat": "FO", "route": "HNL-LAX-HNL",
+              "checked_at": "2026-11-05T13:56:42", "lay": "LAX", "blk": "9:58", "credit": "12:34", "soft": "2:36",
+              "crew": [["CA", "Doe, Jane"], ["FO", "Roe, Rick"]]},
+             {"pairing": "H9002", "start": "2026-11-20", "end": "2026-11-20", "seat": "RO", "route": "HNL-OGG-HNL",
+              "checked_at": "", "lay": "", "blk": "", "credit": "", "soft": "", "crew": []},
+             {"pairing": "H9003", "start": "2026-11-28", "end": "2026-12-01", "seat": "FO", "route": "HNL-SYD-HNL"}]}
+    readable = ([["2026-11-04", "H3826", "HNL"]],
+                [{"trip": "H3826", "start": "2026-11-04", "end": "2026-11-04", "blk": "5:00", "credit": "5:30", "soft": "0:30",
+                  "legs": [{"dow": "WE", "route": "HNL-OGG", "dep": "0800", "arr": "0840", "blk": "0:40"}],
+                  "crew": [["CA", "Doe, Jane"]]}], "2026-11")
+    js = ("globalThis.HTMLElement = class {}; globalThis.customElements = {define() {}}; globalThis.window = {};\n" + src +
+          f"\nconst c = new FlightWatcherPilotCard(); const a = {json.dumps(a)}; const rd = {json.dumps(readable)};\n"
+          "console.log(JSON.stringify({g: c._rebuild(a), open: c._recon(a, false), fold: c._recon(a, true), rd: c._grid(...rd)}));")
+    f = tmp_path / "t.js"
+    f.write_text(js)
+    out = subprocess.run(["node", str(f)], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    r = json.loads(out.stdout)
+    days = {d: (code, lay) for d, code, lay in r["g"]["days"]}
+    assert r["g"]["days"][0][0] == "2026-10-31" and r["g"]["days"][-1][0] == "2026-12-01" and len(days) == 32
+    assert days["2026-10-31"] == ("H9001", "LAX") and days["2026-11-01"] == ("", "-") and days["2026-11-02"] == ("", "HNL")
+    assert days["2026-11-20"] == ("H9002", "HNL")  # a day trip: base, like FLICA
+    assert days["2026-11-28"] == ("H9003", "SYD") and days["2026-12-01"] == ("", "HNL")  # out and back: the outstation
+    assert days["2026-11-10"] == ("", "")
+    it = r["g"]["items"][0]
+    assert (it["trip"], it["blk"], it["credit"], it["soft"], it["seat"]) == ("H9001", "9:58", "12:34", "2:36", "FO")
+    assert [x["route"] for x in it["legs"]] == ["HNL-LAX", "LAX-HNL"]
+    h = r["open"]
+    assert h.count("<tr") == 33 and h.count(" bxs") == 3 and h.count(" bxe") == 3
+    assert "CA Doe, Jane · FO Roe, Rick" in h and "2 legs" in h and 'title="crew read 11-05 13:56 HST"' in h
+    assert "November 2026 · 87.5% of trips read · updated 00/06/12/18 HST" in h
+    assert "Trips<b>3</b>" in h and "Block<b>?</b>" in h  # a trip without block: no total
+    assert r["fold"].startswith('<details class="rb"><summary>') and not h.startswith("<details")
+    assert 'title="WE HNL-OGG 0800-0840 0:40">1 legs</span>' in r["rd"] and "CA Doe, Jane" in r["rd"]

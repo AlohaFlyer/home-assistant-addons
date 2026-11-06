@@ -10,7 +10,7 @@ import os
 import re
 from datetime import date, datetime, timedelta
 
-from pot import CREW_RE
+from pot import CREW_RE, soft_time
 
 CREW_FROM = date(2026, 10, 31)  # nothing before this is read
 PILOT_POS = ("CA", "FO", "RO", "SO")
@@ -98,7 +98,7 @@ def instances(pdir, crew_from=CREW_FROM):
         try:
             d = json.load(open(os.path.join(pdir, f)))
             cols = d.get("cols") or []
-            ix = {c: cols.index(c) for c in ("id", "report", "rel_days", "route", "days") if c in cols}
+            ix = {c: cols.index(c) for c in ("id", "report", "rel_days", "route", "credit", "days") if c in cols}
             rows = d.get("rows") or []
         except Exception:
             continue
@@ -122,6 +122,7 @@ def instances(pdir, crew_from=CREW_FROM):
                                    "end_date": (dt + timedelta(days=max(rel, 0))).isoformat(),
                                    "report": str(r[ix["report"]]) if "report" in ix else "",
                                    "route": str(r[ix["route"]]) if "route" in ix else "",
+                                   "credit": str(r[ix["credit"]] or "") if "credit" in ix else "",
                                    "days": max(rel, 0) + 1, "month": dt.strftime("%Y-%m")})
     return out
 
@@ -224,15 +225,49 @@ def render_month(month, insts, rows, now_s):
     return "\n".join(lines)
 
 
-def pilot_trips(insts, rows_for_emp, month=None):
-    """reconstructed list for the pilot lookup: [{pairing, start, end, seat, route, checked_at}] by start."""
-    out = []
+def period_start(pdir, month):
+    """First day of `month`'s bid period ('2026-10-31' for a November that starts on Oct 31, else the 1st),
+    judged from that month's pairing file the way instances() places its days."""
+    try:
+        d = json.load(open(os.path.join(pdir, f"pairings_{month}.json")))
+        i = (d.get("cols") or []).index("days")
+        pf = file_prev_from(month, [str(r[i] or "").split() for r in d.get("rows") or [] if len(r) > i])
+    except (OSError, ValueError, TypeError, AttributeError):
+        pf = None
+    if pf:
+        y, m = _shift(*_ym(month), -1)
+        try:
+            return date(y, m, pf).isoformat()
+        except ValueError:
+            pass
+    return f"{month}-01"
+
+
+def _hm(v):
+    """'12h05' (pairing file) or '12:05' -> '12:05'; anything else ''."""
+    m = re.fullmatch(r"\s*(\d{1,3})[h:](\d{2})\s*", str(v or ""))
+    return f"{int(m.group(1))}:{m.group(2)}" if m else ""
+
+
+def pilot_trips(insts, rows_for_emp, month=None, start_from=None, crew_rows=None, details=None):
+    """reconstructed list for the pilot lookup, by start: [{pairing, start, end, seat, route, checked_at, lay, blk,
+    credit, soft, crew}]. month keeps the trips starting in it (or on/after start_from, the bid period's first
+    day in the month before). FW-0002: the card draws these in the schedule grid, so each trip also carries
+    the layover, block and credit from the pairing package (`details`, pdfs.package_details; credit falls back
+    to the pairing file) and the crew line it was read with (`crew_rows`, [[pos, name]]); '' / [] when unknown."""
+    out, crew_rows, details = [], crew_rows or {}, details or {}
     for r in rows_for_emp:
         it = insts.get(r["key"]) or {}
         start = r.get("date") or it.get("date") or ""
-        if month and start[:7] != month:
+        if month and start[:7] != month and not (start_from and start_from <= start < f"{month}-01"):
             continue
-        out.append({"pairing": r.get("pairing") or it.get("pairing") or "", "start": start,
+        pid = r.get("pairing") or it.get("pairing") or ""
+        det = details.get(pid) or {}
+        blk, credit = _hm(det.get("block")), _hm(det.get("credit")) or _hm(it.get("credit"))
+        crew = [[c.get("pos") or "", c.get("name") or ""] for c in (crew_rows.get(r["key"]) or {}).get("crew") or []][:6]
+        out.append({"pairing": pid, "start": start,
                     "end": r.get("end_date") or it.get("end_date") or start, "seat": r.get("pos") or "",
-                    "route": r.get("route") or it.get("route") or "", "checked_at": r.get("checked_at") or ""})
+                    "route": r.get("route") or it.get("route") or "", "checked_at": r.get("checked_at") or "",
+                    "lay": det.get("lay") or "", "blk": blk, "credit": credit, "soft": soft_time(credit, blk) or "",
+                    "crew": crew})
     return sorted(out, key=lambda x: (x["start"], x["pairing"]))
