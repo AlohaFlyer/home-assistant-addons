@@ -48,22 +48,40 @@ class FlightWatcherPilotCard extends HTMLElement {
     const [y, m] = String(a.reconstructed_month || "").split("-").map(Number);
     const mon = m >= 1 && m <= 12 ? `${MONTHS[m - 1]} ${y}` : (a.reconstructed_month || "");
     const head = `<b>Reconstructed from pairing crew lists</b> <span class="u">${this._esc(mon)} · ${this._esc(cov)}% of trips read · updated 00/06/12/18 HST</span>`;
-    const sum = (k) => { let t = 0; for (const it of g.items) { const x = /^(\d+):(\d{2})$/.exec(it[k] || ""); if (!x) return "?"; t += +x[1] * 60 + +x[2]; } return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
-    const body = g.items.length ? `${this._grid(g.days, g.items, g.month)}
-      <div class="tot"><span>Trips<b>${g.items.length}</b></span><span>Block<b>${sum("blk")}</b></span><span>Credit<b>${sum("credit")}</b></span><span class="u">Source: crew lines on FLICA pairing pages (crew index, read only); Block / Credit / layover from the pairing package, blank where it has none. A trip picked up or dropped after it was read shows as it was then.</span></div>` : "";
+    const tot = g.items.filter((it) => it.start >= g.from);  // totals: trips in the bid period, as drawn (not the day-before row, not the overlaps below)
+    const sum = (k) => { let t = 0; for (const it of tot) { const x = /^(\d+):(\d{2})$/.exec(it[k] || ""); if (!x) return "?"; t += +x[1] * 60 + +x[2]; } return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
+    const md = (d) => `${MONTHS[+d.slice(5, 7) - 1].slice(0, 3)} ${+d.slice(8)}`;
+    const days = (x) => (x.start === x.end ? md(x.start) : x.start.slice(0, 7) === x.end.slice(0, 7) ? `${md(x.start)}-${+x.end.slice(8)}` : `${md(x.start)}-${md(x.end)}`);
+    const also = g.also.length ? `<div class="u also">Also on crew lists, on days of a trip above (one of them was likely traded after it was read): ${g.also.map((x) => `<b>${this._esc(x.pairing)}</b> ${days(x)}${x.seat ? " " + this._esc(x.seat) : ""}${x.checked_at ? ", read " + this._esc(String(x.checked_at).slice(5, 16).replace("T", " ")) : ""}`).join(" · ")}</div>` : "";
+    const left = [g.also.length ? `+${g.also.length} overlapping` : "", g.items.length > tot.length ? `+${g.items.length - tot.length} before ${md(g.from)}` : ""].filter(Boolean);
+    const body = g.items.length ? `${this._grid(g.days, g.items, g.month)}${also}
+      <div class="tot"><span>Trips<b>${tot.length}</b>${left.length ? ` <small class="u">(${left.join(", ")}: not totaled)</small>` : ""}</span><span>Block<b>${sum("blk")}</b></span><span>Credit<b>${sum("credit")}</b></span><span class="u">Source: crew lines on FLICA pairing pages (crew index, read only); Block / Credit / layover from the pairing package, blank where it has none. A trip picked up or dropped after it was read shows as it was then.</span></div>` : "";
     return readable ? `<details class="rb"><summary>${head}</summary>${body}</details>` : `<div class="rb"><div class="rbh">${head}</div>${body}</div>`;
   }
-  _rebuild(a) {  // FW-0002: reconstructed trips -> the readable schedule's {days: [[iso, code, lay]], items} shape
+  _rebuild(a) {  // FW-0002: reconstructed trips -> the readable schedule's {days: [[iso, code, lay]], items} shape, plus also (overlaps)
     const ok = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || "");
+    const cmp = (u, v) => (u < v ? -1 : u > v ? 1 : 0);
     const month = /^\d{4}-\d{2}$/.test(a.reconstructed_month || "") ? a.reconstructed_month : "";
     const add = (d, n) => { const t = new Date(d + "T00:00:00Z"); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
-    const trips = (a.reconstructed || []).filter((x) => x && x.pairing && ok(x.start)).map((x) => ({ ...x, end: ok(x.end) && x.end >= x.start ? x.end : x.start }))
-      .sort((p, q) => (p.start < q.start ? -1 : p.start > q.start ? 1 : 0));
-    if (!month) return { month, days: [], items: [] };
+    if (!month) return { month, from: "", days: [], items: [], also: [] };
     const [y, m] = month.split("-").map(Number);
-    let first = ok(a.reconstructed_from) && a.reconstructed_from <= `${month}-01` ? a.reconstructed_from : add(`${month}-01`, -1);  // FLICA's grid starts on the bid period's first day
-    let last = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
-    for (const x of trips) { if (x.start < first) first = x.start; if (x.end > last) last = x.end; }
+    const from = ok(a.reconstructed_from) ? a.reconstructed_from : `${month}-01`;  // the bid period's first day
+    const fd = a.month === month && Array.isArray(a.days) && a.days.length && ok((a.days[0] || [])[0]) && ok((a.days[a.days.length - 1] || [])[0]);
+    let first = fd ? a.days[0][0] : add(from, -1);  // FLICA's grid starts on the day before the bid period: line up with it
+    let last = fd ? a.days[a.days.length - 1][0] : ok(a.reconstructed_to) ? a.reconstructed_to : "";  // and ends on its last day (Dec 1 for November)
+    // The crew index can hold two trips on the same days (a trade between reads): newest read goes in the grid, the rest in `also`
+    const used = {}, trips = [], also = [];
+    const all = (a.reconstructed || []).filter((x) => x && x.pairing && ok(x.start)).map((x) => ({ ...x, end: ok(x.end) && x.end >= x.start ? x.end : x.start }));
+    all.sort((p, q) => cmp(q.checked_at || "", p.checked_at || "") || cmp(p.start, q.start) || cmp(p.pairing, q.pairing));
+    for (const x of all) {
+      const ds = []; for (let d = x.start, k = 0; d <= x.end && k < 15; d = add(d, 1), k++) ds.push(d);
+      if (ds.some((d) => used[d])) { also.push(x); continue; }
+      for (const d of ds) used[d] = 1;
+      trips.push(x);
+    }
+    trips.sort((p, q) => cmp(p.start, q.start)); also.sort((p, q) => cmp(p.start, q.start) || cmp(p.pairing, q.pairing));
+    if (!last) { last = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); for (const x of trips) if (x.end > last) last = x.end; }  // a publish without reconstructed_to
+    for (const x of trips) { if (x.start < first) first = x.start; if (x.start > last) last = x.end; }  // never drop a trip; one running past the end stays open at the bottom, like FLICA's
     const at = {}, items = [];
     for (const x of trips) {
       const st = String(x.route || "").split("-").filter(Boolean);
@@ -77,7 +95,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     }
     const days = [];
     for (let d = first, k = 0; d <= last && k < 45; d = add(d, 1), k++) days.push([d, ...(at[d] || ["", ""])]);
-    return { month, days, items };
+    return { month, from, days, items, also };
   }
   _esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
   _hol(iso) {
@@ -114,7 +132,7 @@ class FlightWatcherPilotCard extends HTMLElement {
         .legs{font-size:10.5px;color:var(--secondary-text-color)}
         .tot{margin:6px 0 0;font-size:12px}.tot b{margin-left:4px}.tot span{margin-right:14px}
         .none{padding:8px;color:var(--secondary-text-color)}
-        .rb{margin-top:10px}.rbh{margin:0 0 4px}details.rb summary{cursor:pointer;margin:0 0 4px}
+        .rb{margin-top:10px}.rbh{margin:0 0 4px}details.rb summary{cursor:pointer;margin:0 0 4px}.also{margin:6px 0 0}.also b{color:var(--primary-text-color)}
         .picks{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0}
         .pk{padding:6px 10px;border:1px solid var(--divider-color,#ccc);border-radius:6px;background:var(--card-background-color,#fff);color:var(--primary-text-color);cursor:pointer;font-size:13px}
         @media (prefers-color-scheme: dark){

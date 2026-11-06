@@ -2420,18 +2420,20 @@ def pilot_check(fl):
 def pub_pilot(payload):
     """0.10.1: every pilot_schedule publish carries the crew index's view of that pilot's month too:
     reconstructed [{pairing, start, end, seat, route, checked_at, lay, blk, credit, soft, crew}],
-    reconstructed_coverage_pct, reconstructed_month and (FW-0002) reconstructed_from, the bid period's first
-    day, so the card can draw it in the schedule grid when FLICA hides the schedule or errors."""
+    reconstructed_coverage_pct, reconstructed_month and (FW-0002) reconstructed_from / reconstructed_to, the
+    bid period's first and last day, so the card can draw it in the schedule grid when FLICA hides the schedule
+    or errors. Trips and coverage span that grid: the day before the bid period (FLICA's first row) to its end."""
     try:
         emp = re.sub(r"\D", "", str(payload.get("emp") or ""))
         month = str(payload.get("month") or "")
         if not re.fullmatch(r"\d{4}-\d{2}", month):
             month = local_now().strftime("%Y-%m")
-        insts, rows, start = CI.instances(CARD_PAIRINGS), DB.crew_rows(), CI.period_start(CARD_PAIRINGS, month)
-        payload = {**payload, "reconstructed": CI.pilot_trips(insts, DB.crew_by_emp(emp), month, start, rows,
-                                                              DB.get(f"pkg_details:{month}") or {}) if emp else [],
-                   "reconstructed_coverage_pct": CI.coverage(insts, rows, month)[2],
-                   "reconstructed_month": month, "reconstructed_from": start}
+        insts, rows = CI.instances(CARD_PAIRINGS), DB.crew_rows()
+        first, start, end = CI.grid_range(CARD_PAIRINGS, month)
+        payload = {**payload, "reconstructed": CI.pilot_trips(insts, DB.crew_by_emp(emp), month, first, rows,
+                                                              DB.get(f"pkg_details:{month}") or {}, end) if emp else [],
+                   "reconstructed_coverage_pct": CI.coverage(insts, rows, None, first, end)[2],
+                   "reconstructed_month": month, "reconstructed_from": start, "reconstructed_to": end}
     except Exception as e:
         log.info("pilot lookup: crew index skipped: %s", e)
         payload = {**payload, "reconstructed": [], "reconstructed_coverage_pct": 0.0}
