@@ -459,12 +459,15 @@ class Store:
             pk["inflt"], pk["inflt_trip"] = inflt, trip
             self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), key))
 
-    def reset_inflt(self):
-        """0.5.3: drop every in-flight verdict so it is looked up again (0.5.2 judged forwarding pages)."""
+    def reset_inflt(self, only=None):
+        """0.5.3: drop every in-flight verdict so it is looked up again (0.5.2 judged forwarding pages).
+        only=False (FW-0013) drops just the 'not in flight' verdicts and leaves the rest."""
         with self.lock:
             rows = self.db.execute("SELECT key,pickup FROM finds WHERE pickup IS NOT NULL").fetchall()
             for k, pk in rows:
                 pk = json.loads(pk)
+                if only is not None and ("inflt" not in pk or pk["inflt"] is not only):
+                    continue
                 if "inflt" in pk or "inflt_tries" in pk:
                     for f in ("inflt", "inflt_trip", "inflt_tries"):
                         pk.pop(f, None)

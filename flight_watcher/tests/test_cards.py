@@ -375,6 +375,50 @@ def test_tickets_card_one_form_bug_or_feature():
             b.close()
 
 
+def test_recall_card_counts_and_shows_drafts_only_on_live_rows():
+    """FW-0012: the red alert counts a CCR draft only while its row is MISSED / POSSIBLE (a stored NO row with an open act
+    from before the fix does not count); a NO row with a superseded act shows it as history with no controls."""
+    import pytest
+    sync_api = pytest.importorskip("playwright.sync_api")
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www", "flight-watcher-recall-card.js"),
+               encoding="utf-8").read()
+
+    def v(vid, verdict, act, kind="recall"):
+        return {"id": vid, "date": "2026-11-10", "kind": kind, "pairing": vid, "sen": 900, "seat": "FO", "pilot": "Doe, Jane",
+                "verdict": verdict, "why": ["w"], "refs": [], "act": act}
+    days = [{"date": "2026-11-10", "file": "ok", "verdicts": [
+        v("H9001", "MISSED", {"status": "new", "narrative": "n"}),
+        v("H9002", "NO", {"status": "confirmed", "narrative": "n"}),
+        v("H9003", "NO", {"status": "superseded", "was": "approved", "ccr": "12345"}, "o75")]}]
+    st = {"last_updated": "a", "attributes": {"open": 1, "alert": 1, "me": {"sen": 500, "seat": "FO", "o75": True},
+                                              "last": "2026-11-10", "days": days}}
+    page_html = ("<!doctype html><html><body><script>customElements.define('ha-card', class extends HTMLElement {});"
+                 "</script><script>" + src + "</script><script>"
+                 "for (const mode of ['alert', 'tab']) { const c = document.createElement('flight-watcher-recall-card');"
+                 "c.id = mode; c.setConfig({mode}); c._m = '2026-11'; document.body.appendChild(c);"
+                 f"c.hass = {{states: {{'sensor.flight_watcher_recall_o75': {json.dumps(st)}}}, callService: async () => {{}}}}; }}"
+                 "</script></body></html>")
+    with sync_api.sync_playwright() as p:
+        b = _chromium(p)
+        if not b:
+            pytest.skip("no Chromium for Playwright")
+        try:
+            pg = b.new_page(viewport={"width": 390, "height": 844})
+            pg.set_content(page_html)
+            al = pg.locator("#alert")
+            assert al.locator("summary").inner_text().startswith("RED ALERT: 1 recall you may have missed")
+            assert al.locator("li").count() == 1 and "H9001" in al.locator("li").inner_text()
+            rows = pg.locator("#tab .row")
+            assert rows.count() == 3
+            assert rows.nth(0).locator('[data-a="confirm"]').count() == 1
+            assert rows.nth(1).locator("button").count() == 0 and "confirmed" not in rows.nth(1).inner_text()
+            sup = rows.nth(2)
+            assert sup.locator("button, textarea").count() == 0
+            assert "superseded" in sup.inner_text().lower() and "was approved, CCR 12345" in sup.inner_text()
+        finally:
+            b.close()
+
+
 def test_schedule_card_keeps_pay_labels_with_values():
     """FW-0008 / FW-0009 (iPhone): the version bar puts Awarded-Pay-Gross and Improved-Pay-Gross in one group that wraps
     as a unit, and the totals put Pay-Gross and Pay-Net in one row that never wraps; every label stays with its value."""

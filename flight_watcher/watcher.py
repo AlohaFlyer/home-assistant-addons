@@ -1450,7 +1450,14 @@ def recall_cmd(payload):
         log.info("recall list skipped: %s", e)
 
 
+RECALL_LIVE = ("MISSED", "POSSIBLE")  # FW-0012: a CCR draft is open, counted and shown only while its row says this
+RECALL_OPEN = ("new", "confirmed", "approved")
+
+
 def recall_eval(notify=False):
+    """Judge every recall list on file and keep one act (CCR draft) per MISSED / POSSIBLE row. FW-0012: an act whose
+    row no longer says MISSED or POSSIBLE (now NO, or gone from a list on file) is marked superseded, keeping what it
+    was ('was'), its narrative and CCR #; it comes back as it was if the row turns into a miss again (no second push)."""
     me = recall_me()
     allr, acts = DB.get("recall_days") or {}, DB.get("recall_acts") or {}
     blocked = sorted(set(DB.get("blocked_hist") or []) | set(S.get("blocked_days") or []))
@@ -1458,17 +1465,36 @@ def recall_eval(notify=False):
     for dk in {k[:7] for k in allr}:
         det.update(DB.get(f"pkg_details:{dk}") or {})
     items, own = _sched_items(), S.get("own_trips") or {}
-    fresh = []
+    fresh, live, seen = [], {}, {}
     for dk, day in allr.items():
         day["verdicts"] = RC.check_day(day.get("rows"), me, items, own, blocked, det)
         for v in day["verdicts"]:
             v["id"] = f"{v['date']}|{v['pairing']}|{v['kind']}"
-            a = acts.get(v["id"])
-            if v["verdict"] in ("MISSED", "POSSIBLE") and not a:
-                a = acts[v["id"]] = {"status": "new", "narrative": RC.narrative(v, me, S.get("own_name") or "", S.get("own_emp") or ""),
-                                     "at": now_iso()}
-                fresh.append(v)
-            v["act"] = a or {}
+            seen.setdefault(v["id"], v)
+            if v["verdict"] in RECALL_LIVE:
+                live.setdefault(v["id"], v)
+    for vid, v in live.items():
+        a = acts.get(vid)
+        if not a:
+            acts[vid] = {"status": "new", "narrative": RC.narrative(v, me, S.get("own_name") or "", S.get("own_emp") or ""),
+                         "at": now_iso()}
+            fresh.append(v)
+        elif a.get("status") == "superseded":
+            a["status"], a["at"] = a.pop("was", None) or "new", now_iso()
+            a.pop("superseded_why", None)
+    first = min(allr) if allr else ""
+    for vid, a in acts.items():
+        if vid in live or a.get("status") == "superseded" or (vid not in seen and (not first or vid[:10] < first)):
+            continue  # live, already closed, or from a day older than the lists kept: history as it stands
+        why = ((seen.get(vid) or {}).get("why") or ["no longer on the recall list"])[-1]
+        a.update(was=a.get("status") or "new", status="superseded", superseded_why=why, at=now_iso())
+    for day in allr.values():
+        for v in day["verdicts"]:
+            a = acts.get(v["id"]) or {}
+            if v["verdict"] in RECALL_LIVE:
+                v["act"] = a
+            else:  # history only: no narrative, no controls
+                v["act"] = {k: a[k] for k in ("status", "was", "at", "ccr", "superseded_why") if k in a} if a.get("status") == "superseded" else {}
     DB.put("recall_days", allr)
     DB.put("recall_acts", acts)
     publish_recall()
@@ -1492,6 +1518,9 @@ def recall_act(payload):
         st = {"confirm": "confirmed", "dismiss": "dismissed", "approve": "approved", "filed": "filed", "reopen": "new"}.get(d.get("action"))
         if not a or not st:
             return
+        if a.get("status") == "superseded":  # FW-0012: the row is no longer a miss; a late tap on an old push does nothing
+            log.info("recall action %s on %s skipped: superseded (%s)", d.get("action"), d.get("id"), a.get("superseded_why", ""))
+            return
         a["status"], a["at"] = st, now_iso()
         if isinstance(d.get("narrative"), str) and d["narrative"].strip():
             a["narrative"] = d["narrative"].strip()[:6000]
@@ -1508,7 +1537,8 @@ def recall_act(payload):
 def publish_recall():
     allr, acts = DB.get("recall_days") or {}, DB.get("recall_acts") or {}
     days = [{k: v for k, v in allr[k].items() if k != "rows"} for k in sorted(allr)[-45:]]
-    opn = [v for d in days for v in d.get("verdicts") or [] if (v.get("act") or {}).get("status") in ("new", "confirmed", "approved")]
+    opn = [v for d in days for v in d.get("verdicts") or []
+           if v.get("verdict") in RECALL_LIVE and (v.get("act") or {}).get("status") in RECALL_OPEN]
     alert = [v for v in opn if v["verdict"] == "MISSED" or (v.get("act") or {}).get("status") in ("confirmed", "approved")]
     pub("recall", {"open": len(opn), "alert": len(alert), "me": recall_me(), "last": days[-1]["date"] if days else "",
                    "days": days[::-1]})
