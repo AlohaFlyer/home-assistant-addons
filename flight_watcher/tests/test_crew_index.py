@@ -195,6 +195,25 @@ def test_pilot_lookup_reconstructed(W, tmp_path):
     assert [p for t, p in W.SENT if t == "pilot_schedule"][-1]["reconstructed"] == []
 
 
+def test_pilot_lookup_rebuilt_grid_fields(W, tmp_path):
+    """FW-0002: the rebuilt trips carry what the schedule grid shows (layover, block, credit, soft, crew) and
+    start at the bid period's first day (Oct 31 for this November)."""
+    _file(tmp_path / "www", "2026-11", [_row("H9001", "31 9", rel=2), _row("H9002", "20", rel=0, route="HNL-OGG-HNL")])
+    W.crew_index_check(FakeFl())
+    W.DB.put("pkg_details:2026-11", {"H9001": {"block": "9:58", "credit": "12:34", "lay": "LAX"}})
+    W.pub_pilot({"emp": "10999", "name": "Roe, Rick", "status": "not readable", "month": "", "days": [], "items": []})
+    p = [p for t, p in W.SENT if t == "pilot_schedule"][-1]
+    assert p["reconstructed_from"] == "2026-10-31" and p["reconstructed_month"] == "2026-11"
+    r = p["reconstructed"]
+    assert [(x["pairing"], x["start"], x["end"]) for x in r] == [
+        ("H9001", "2026-10-31", "2026-11-02"), ("H9001", "2026-11-09", "2026-11-11"), ("H9002", "2026-11-20", "2026-11-20")]
+    assert (r[0]["lay"], r[0]["blk"], r[0]["credit"], r[0]["soft"]) == ("LAX", "9:58", "12:34", "2:36")
+    assert r[0]["crew"] == [["CA", "Doe, Jane"], ["FO", "Roe, Rick"], ["RO", "OPEN"]]
+    # no package details: credit from the pairing file, no block, layover or soft
+    assert (r[2]["lay"], r[2]["blk"], r[2]["credit"], r[2]["soft"]) == ("", "", "12:00", "")
+    assert CI.period_start(str(tmp_path / "www"), "2026-12") == "2026-12-01"  # no file: the 1st
+
+
 def test_pilot_instance_skips_crew_index(W, tmp_path, monkeypatch):
     monkeypatch.setattr(W, "INSTANCE", "james")
     _file(tmp_path / "www", "2026-11", [_row("H9001", "2", rel=0)])
