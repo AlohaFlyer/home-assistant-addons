@@ -195,6 +195,53 @@ def test_pilot_lookup_reconstructed(W, tmp_path):
     assert [p for t, p in W.SENT if t == "pilot_schedule"][-1]["reconstructed"] == []
 
 
+def test_pilot_lookup_rebuilt_grid_fields(W, tmp_path):
+    """FW-0002: the rebuilt trips carry what the schedule grid shows (layover, block, credit, soft, crew) and
+    span FLICA's grid for the month: the day before the bid period (Oct 31, a trip from October's file) to its
+    last day (Dec 1, a 'D1' trip in November's file, as on the live package). Coverage spans the same days."""
+    _file(tmp_path / "www", "2026-10", [_row("H9007", "31", rel=2)])
+    _file(tmp_path / "www", "2026-11", [_row("H9001", "9 D1", rel=2), _row("H9002", "20", rel=0, route="HNL-OGG-HNL"),
+                                        _row("H9003", "15", rel=0)])
+    W.crew_index_check(FakeFl(fail=("H9003",)))
+    W.DB.put("pkg_details:2026-11", {"H9001": {"block": "9:58", "credit": "12:34", "lay": "LAX"}})
+    W.pub_pilot({"emp": "10999", "name": "Roe, Rick", "status": "not readable", "month": "", "days": [], "items": []})
+    p = [p for t, p in W.SENT if t == "pilot_schedule"][-1]
+    assert (p["reconstructed_from"], p["reconstructed_to"], p["reconstructed_month"]) == ("2026-11-01", "2026-12-01", "2026-11")
+    r = p["reconstructed"]
+    assert [(x["pairing"], x["start"], x["end"]) for x in r] == [
+        ("H9007", "2026-10-31", "2026-11-02"), ("H9001", "2026-11-09", "2026-11-11"), ("H9002", "2026-11-20", "2026-11-20"),
+        ("H9001", "2026-12-01", "2026-12-03")]
+    assert (r[1]["lay"], r[1]["blk"], r[1]["credit"], r[1]["soft"]) == ("LAX", "9:58", "12:34", "2:36")
+    assert r[1]["crew"] == [["CA", "Doe, Jane"], ["FO", "Roe, Rick"], ["RO", "OPEN"]]
+    # no package details: credit from the pairing file, no block, layover or soft
+    assert (r[2]["lay"], r[2]["blk"], r[2]["credit"], r[2]["soft"]) == ("", "", "12:00", "")
+    # Oct 31 to Dec 1: 4 of 5 instances read (H9003 failed); the calendar month alone would say 2 of 3
+    assert p["reconstructed_coverage_pct"] == 80.0
+    # November's D1 ends its period on Dec 1, so December's starts on Dec 2 (its grid's first row is Dec 1)
+    www = str(tmp_path / "www")
+    assert CI.period_start(www, "2026-12") == "2026-12-02" and CI.period_end(www, "2026-12") == "2026-12-31"
+    assert CI.grid_range(www, "2026-12") == ("2026-12-01", "2026-12-02", "2026-12-31")
+    assert CI.period_start(www, "2027-02") == "2027-02-01"  # no files: the 1st
+
+
+def test_period_bounds(tmp_path):
+    """FW-0002: bid period ends from the pairing files: a D day in this month's file, else the day before the
+    next month's period start (a last-month day in its file), else the month's last day."""
+    d = tmp_path / "www"
+    _file(d, "2026-11", [_row("H9001", "1 2 30 D1"), _row("H9002", "D31 4")])  # D31 ahead of 4 is Oct 31, not Dec 31
+    _file(d, "2027-01", [_row("H9003", "31 3")])  # January's period starts Dec 31
+    assert CI.period_end(str(d), "2026-11") == "2026-12-01"
+    assert CI.period_start(str(d), "2026-11") == "2026-10-31"
+    assert CI.period_end(str(d), "2026-12") == "2026-12-30" and CI.period_start(str(d), "2026-12") == "2026-12-02"
+    assert CI.period_start(str(d), "2027-01") == "2026-12-31" and CI.period_end(str(d), "2027-01") == "2027-01-31"
+    assert CI.file_next_to("2026-11", [["D31", "4"]]) is None
+    ins = CI.instances(str(d))
+    rows = {k: {"status": "ok"} for k in ins if k.startswith("H9001|")}
+    # 1 2 30 D1 and Oct 31 / Nov 4: the range counts by date, whatever file or month the instance has
+    assert CI.coverage(ins, rows, None, "2026-10-31", "2026-12-01")[:2] == (6, 4)
+    assert CI.coverage(ins, rows, "2026-11")[:2] == (4, 3)
+
+
 def test_pilot_instance_skips_crew_index(W, tmp_path, monkeypatch):
     monkeypatch.setattr(W, "INSTANCE", "james")
     _file(tmp_path / "www", "2026-11", [_row("H9001", "2", rel=0)])
