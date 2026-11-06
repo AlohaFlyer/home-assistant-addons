@@ -214,6 +214,9 @@ def on_message(c, u, msg):
     if msg.topic == f"{T}/ticket/new":
         ticket_new(msg.payload.decode(errors="replace"))
         return
+    if msg.topic == f"{T}/ticket/image":
+        ticket_image(msg.payload.decode(errors="replace"))
+        return
     if msg.topic == f"{T}/ticket/act":
         ticket_act(msg.payload.decode(errors="replace"))
         return
@@ -778,7 +781,7 @@ def mqtt_start():
                   "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set",
                   "trade/set", "auto_swap/set", "swap_map/press", "swap_mode/set", "drop/set", "charter_scan/press", "pilot/set",
                   "improved/set", "recall/set", "recall/act", "settings/set",
-                  "ticket/new", "ticket/act") + (() if INSTANCE else ("crew_scan/press",)):
+                  "ticket/new", "ticket/image", "ticket/act") + (() if INSTANCE else ("crew_scan/press",)):
             cl.subscribe(f"{T}/{t}")
         publish_settings(cl)
         fq = freq()
@@ -2566,7 +2569,8 @@ def reporter():
 
 
 def ticket_new(payload):
-    """{T}/ticket/new {kind, title, narrative, steps?, expected?, page?, version?, image?}."""
+    """{T}/ticket/new {kind, title, narrative, steps?, expected?, page?, version?, image?, cid?, images?}.
+    FW-0003: the card sends photos after this, one per {T}/ticket/image message (ticket_image)."""
     try:
         d = json.loads(payload or "{}")
     except ValueError:
@@ -2576,8 +2580,26 @@ def ticket_new(payload):
         log.info("ticket refused: %s", err)
         pub("event/ticket_error", {"error": err, "at": now_iso()}, retain=False)
         return None
-    log.info("ticket %s (%s) from %s: %s", t["id"], t["kind"], t["reporter"], t["title"])
+    log.info("ticket %s (%s) from %s: %s (%d photos to come)", t["id"], t["kind"], t["reporter"], t["title"],
+             t["images_expected"] - len(t["images"]))
     pub("event/ticket_new", {"id": t["id"], "kind": t["kind"], "title": t["title"], "reporter": t["reporter"]}, retain=False)
+    publish_tickets(force=True)
+    return t
+
+
+def ticket_image(payload):
+    """FW-0003 {T}/ticket/image {cid, i, image}: photo i (1 to 10) of the ticket this instance filed with that
+    cid, one photo per message. An unknown cid or a bad photo is refused and nothing is written."""
+    try:
+        d = json.loads(payload or "{}")
+    except ValueError:
+        d = None
+    t, err = TK.add_image(TICKETS_DIR, d, reporter(), now_iso())
+    if not t:
+        log.info("ticket photo refused: %s", err)
+        pub("event/ticket_error", {"error": err, "at": now_iso()}, retain=False)
+        return None
+    log.info("ticket %s: photo %s (%d of %d)", t["id"], d.get("i"), len(t["images"]), t["images_expected"])
     publish_tickets(force=True)
     return t
 
