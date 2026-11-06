@@ -59,6 +59,13 @@ def test_default_instance_unchanged(tmp_path, monkeypatch):
     assert cfgs["homeassistant/sensor/flica_watcher/schedule/config"]["state_topic"] == "flica_watcher/schedule"
     assert cfgs["homeassistant/switch/flica_watcher/hunt_mode/config"]["unique_id"] == "flica_watcher_hunt_mode"
     assert cfgs["homeassistant/sensor/flica_watcher/settings/config"]["state_topic"] == "flica_watcher/settings/state"
+    # 0.10.3: HA ignores object_id; default_entity_id keeps the flica_watcher_* ids
+    assert cfgs["homeassistant/sensor/flica_watcher/schedule/config"]["default_entity_id"] == "sensor.flica_watcher_schedule"
+    assert cfgs["homeassistant/switch/flica_watcher/hunt_mode/config"]["default_entity_id"] == "switch.flica_watcher_hunt_mode"
+    assert cfgs["homeassistant/binary_sensor/flica_watcher/session_ok/config"]["default_entity_id"] == "binary_sensor.flica_watcher_session_ok"
+    for topic, cfg in cfgs.items():
+        comp = topic.split("/")[1]
+        assert cfg["default_entity_id"] == f"{comp}.{cfg['object_id']}" == f"{comp}.{cfg['unique_id']}"
 
 
 def test_instance_prefix_and_ids(tmp_path, monkeypatch):
@@ -82,6 +89,8 @@ def test_instance_prefix_and_ids(tmp_path, monkeypatch):
     W.publish_rules(c)
     rule = json.loads(next(p for t, p, _ in c.msgs if t == "homeassistant/switch/flica_watcher_pilot2/rule_r1_live/config"))
     assert rule["unique_id"] == "flica_watcher_pilot2_rule_r1_live" and rule["command_topic"] == "flica_watcher_pilot2/rule/r1/live/set"
+    assert rule["default_entity_id"] == "switch.flica_watcher_pilot2_rule_r1_live"
+    assert sch["default_entity_id"] == "sensor.flica_watcher_pilot2_schedule"
 
 
 def test_instance_drops_option_creds_and_overlays_creds_json(tmp_path, monkeypatch):

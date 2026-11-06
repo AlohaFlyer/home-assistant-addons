@@ -15,9 +15,8 @@ Work top to bottom; tick items off here in the same PR that finishes them.
    "FLICA alert to phone", "FLICA recall list in (Hark webhook)", "FLICA recall miss alert",
    "Flight Watcher new ticket", the new-pairing / charter / watcher-health automations, `packages/flica_wx.yaml`.
    Strip the webhook id before committing.
-3. **Entity id bug:** HA now ignores `object_id` in MQTT discovery, so new entities take the device name
-   (`sensor.flight_watcher_*`). Fix discovery to send `default_entity_id: <component>.<T>_<oid>` (keep
-   `object_id` for older HA). Must ship BEFORE James's instance starts, or his ~30 entities need renaming.
+3. **Entity id bug:** fixed in 0.10.3 (discovery sends `default_entity_id`, keeps `object_id`). After the update,
+   any entity created as `*.flight_watcher_*` before the fix still needs a one-time rename in the entity registry.
 4. **James Kane's instance** (HNL A330 FO, HA username `jameskane`; email on file in Ryan's memory; do NOT
    contact him until Ryan approves):
    - Ryan sets option `second_pilot: james` in the app Configuration (Claude does not edit options that hold

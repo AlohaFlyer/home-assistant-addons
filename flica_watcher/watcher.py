@@ -35,7 +35,7 @@ import recall as RC
 import crewidx as CI
 import tickets as TK
 
-VERSION = "0.10.2"
+VERSION = "0.10.3"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLICA_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -382,6 +382,7 @@ def publish_rules(c):
     for r in lst:
         cfg = {"availability_topic": AVAIL, "device": DEV, "name": f"Rule {r['name']} live",
                "unique_id": f"{RULE_UID}_{r['id']}_live", "object_id": f"{RULE_UID}_{r['id']}_live",
+               "default_entity_id": f"switch.{RULE_UID}_{r['id']}_live",
                "command_topic": f"{T}/rule/{r['id']}/live/set", "state_topic": f"{T}/rule/{r['id']}/live/state",
                "icon": "mdi:rocket-launch", "entity_category": "config"}
         c.publish(f"homeassistant/switch/{T}/rule_{r['id']}_live/config", json.dumps(cfg), retain=True)
@@ -678,7 +679,10 @@ def discovery(c):
                                      "icon": "mdi:account-sync"}),
         ]
     for comp, oid, cfg in ents:
-        cfg = {**base, **cfg, "unique_id": f"{T}_{oid}", "object_id": f"{T}_{oid}"}
+        # 0.10.3: HA ignores object_id now (entities took the device name, sensor.flight_watcher_*);
+        # default_entity_id sets the id, object_id stays for older HA.
+        cfg = {**base, **cfg, "unique_id": f"{T}_{oid}", "object_id": f"{T}_{oid}",
+               "default_entity_id": f"{comp}.{T}_{oid}"}
         c.publish(f"homeassistant/{comp}/{T}/{oid}/config", json.dumps(cfg), retain=True)
 
 
