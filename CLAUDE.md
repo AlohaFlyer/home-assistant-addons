@@ -45,8 +45,8 @@ Pako HI Home Assistant). Read `HANDOFF.md` next: it lists everything open.
 2. Push branch, open PR. Ask Ryan for a yes ([DESTRUCTIVE]) before merging.
 3. After merge: Home Assistant > the app store reload (`check_updates`) then update the app (second yes if not
    already given for this release). Verify `sensor.flica_watcher_state` attribute `version` and the app log.
-4. New MQTT discovery entities come up as `flight_watcher_*` (device name) until HANDOFF item 3 is fixed; rename
-   them to `flica_watcher_*` in the entity registry.
+4. New MQTT discovery entities come up as `*.flica_watcher_*` (0.10.3 sends `default_entity_id`). Any created as
+   `*.flight_watcher_*` before 0.10.3 need a one-time rename in the entity registry.
 
 ## Reaching Home Assistant
 - Pako HI Home Assistant: Nabu Casa URL (in Ryan's connectors), MCP connector "Home Assistant - Pako HI" and the
