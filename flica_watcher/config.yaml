@@ -1,22 +1,15 @@
-name: Flight Watcher
+name: Old Flight Watcher (hand-off)
 slug: flica_watcher
-version: "0.10.3"
-description: Keeps one FLICA session, watches the open time pot, reports new pairings to HA over MQTT
+version: "0.10.4"
+description: "Retired: copies its data to /share for the new Flight Watcher app, then waits. Uninstall after the move."
 url: https://github.com/AlohaFlyer/home-assistant-addons/tree/main/flica_watcher
 arch:
   - amd64
 init: false
-ingress: true
-ingress_port: 8099
-panel_icon: mdi:airplane-search
-panel_title: Flight Watcher Rules
 startup: application
 boot: auto
 map:
   - share:rw
-  - homeassistant_config:rw
-services:
-  - mqtt:need
 options:
   username: ""
   password: ""

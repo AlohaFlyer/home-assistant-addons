@@ -1,0 +1,53 @@
+name: Flight Watcher
+slug: flight_watcher
+version: "1.0.0"
+description: Keeps one FLICA session, watches the open time pot, reports new pairings to HA over MQTT
+url: https://github.com/AlohaFlyer/home-assistant-addons/tree/main/flight_watcher
+arch:
+  - amd64
+init: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:airplane-search
+panel_title: Flight Watcher Rules
+startup: application
+boot: auto
+map:
+  - share:rw
+  - homeassistant_config:rw
+services:
+  - mqtt:need
+options:
+  username: ""
+  password: ""
+  category_check: "HNL 332 FO"
+  pot_section: "OPEN TIME"
+  idle_min_s: 120
+  idle_max_s: 600
+  hunt_min_s: 20
+  hunt_max_s: 60
+  yield_cooldown_min: 30
+  watch_next_month: true
+  my_name: ""
+  ctweb_username: ""
+  ctweb_password: ""
+  second_pilot: ""
+  charter_regular: "HNL OGG KOA LIH ITO LAX SFO SAN SEA PDX LAS PHX SMF OAK SJC JFK BOS SYD AKL NRT HND KIX ICN PPG PPT"
+  log_level: info
+schema:
+  username: str
+  password: password
+  category_check: str
+  pot_section: str
+  idle_min_s: int(30,7200)
+  idle_max_s: int(30,7200)
+  hunt_min_s: int(10,600)
+  hunt_max_s: int(10,600)
+  yield_cooldown_min: int(5,600)
+  watch_next_month: bool
+  my_name: "str?"
+  ctweb_username: "str?"
+  ctweb_password: "password?"
+  second_pilot: "str?"
+  charter_regular: "str?"
+  log_level: list(debug|info|warning)
