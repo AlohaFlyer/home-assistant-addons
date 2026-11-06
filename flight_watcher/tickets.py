@@ -7,6 +7,9 @@ Photos (FW-0003): up to 10 per ticket, screenshot.jpg (photo 1), screenshot_2.jp
 for a PNG), listed in index order in ticket.json "images"; "image" stays the first one for older readers. The
 card sends the ticket first with a client-made "cid" and its photo count, then each photo as its own message
 {cid, i, image} (add_image), so no single MQTT message carries more than one photo.
+
+Fixed push (FW-0007): fixed_event() turns the ticket act() just returned into the event/ticket_fixed payload when
+that action moved it to fixed (once per move: a second "fixed" on a fixed ticket only corrects the version).
 """
 import base64
 import binascii
@@ -252,6 +255,20 @@ def act(base, payload, actor, now, allowed_reporter=None):
         t["updated_at"] = now
         _write_json(os.path.join(base, tid, "ticket.json"), t)
     return t, ""
+
+
+def fixed_event(t):
+    """FW-0007: {id, kind, title, reporter, version} for the ticket act() just returned when that action moved it to
+    fixed from any other status, else None. Read from the history line act() wrote under the lock (its "from"), so
+    a repeated "fixed" (a version correction, a retained or doubled message) never makes a second push; fixed again
+    after a reopen does."""
+    t = t if isinstance(t, dict) else {}
+    h = t.get("history") or []
+    last = h[-1] if isinstance(h, list) and h and isinstance(h[-1], dict) else {}
+    if t.get("status") != "fixed" or last.get("action") != "fixed" or last.get("from") == "fixed":
+        return None
+    return {"id": t.get("id"), "kind": t.get("kind"), "title": t.get("title"), "reporter": t.get("reporter"),
+            "version": t.get("version_fixed") or ""}
 
 
 def summary(t):

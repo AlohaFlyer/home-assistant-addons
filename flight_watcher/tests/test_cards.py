@@ -182,3 +182,85 @@ def test_pilot_card_draws_rebuilt_month_in_the_schedule_grid(tmp_path):
     assert (r["bare"][0], r["bare"][-1]) == ("2026-10-31", "2026-12-03")
     assert r["fold"].startswith('<details class="rb"><summary>') and not h.startswith("<details")
     assert 'title="WE HNL-OGG 0800-0840 0:40">1 legs</span>' in r["rd"] and "CA Doe, Jane" in r["rd"]
+
+
+def _chromium(p):
+    """Playwright's own Chromium, else one under a known browsers folder; None when there is none."""
+    import glob
+    try:
+        return p.chromium.launch()
+    except Exception:
+        pass
+    for root in (os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or "", "/ms-playwright", "/opt/pw-browsers",
+                 os.path.expanduser("~/.cache/ms-playwright")):
+        for exe in sorted(glob.glob(os.path.join(root, "chromium-*", "chrome-linux*", "chrome")), reverse=True):
+            try:
+                return p.chromium.launch(executable_path=exe)
+            except Exception:
+                continue
+    return None
+
+
+def test_tickets_card_one_form_bug_or_feature():
+    """FW-0006: one "Submit a ticket" button, one form with Bug / Feature request at its top (Bug first). The bug-only
+    fields show for Bug only, switching keeps what is typed, and the payload keeps kind as before (a feature request
+    sends no steps / expected). Synthetic state, in a real browser."""
+    import pytest
+    sync_api = pytest.importorskip("playwright.sync_api")
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www", "flight-watcher-tickets-card.js"),
+               encoding="utf-8").read()
+    tix = [{"id": "FW-0001", "kind": "bug", "title": "Card blank", "status": "new", "reporter": "ryan",
+            "created_at": "2026-11-06T09:00:00", "narrative": "x"}]
+    page_html = ("<!doctype html><html><body><script>customElements.define('ha-card', class extends HTMLElement {});"
+                 "window.calls = [];</script><script>" + src + "</script><script>"
+                 "const c = document.createElement('flight-watcher-tickets-card'); c.setConfig({});"
+                 "document.body.appendChild(c); c.hass = {states: {'sensor.flight_watcher_tickets': {last_updated: 'a', "
+                 f"attributes: {{tickets: {json.dumps(tix)}}}}}, 'sensor.flight_watcher_state': {{attributes: {{version: '9.9.9'}}}}}},"
+                 "callService: async (d, s, data) => { window.calls.push([d, s, data]); }};</script></body></html>")
+    with sync_api.sync_playwright() as p:
+        b = _chromium(p)
+        if not b:
+            pytest.skip("no Chromium for Playwright")
+        try:
+            pg = b.new_page(viewport={"width": 390, "height": 844})
+            pg.set_content(page_html)
+            card = pg.locator("flight-watcher-tickets-card")
+            new = card.locator("[data-new]")
+            assert new.count() == 1 and new.inner_text().strip().endswith("Submit a ticket")
+            new.click()
+            kinds = card.locator("[data-kind]")
+            assert [kinds.nth(i).get_attribute("value") for i in range(kinds.count())] == ["bug", "feature"]
+            assert card.locator("[data-kind][value=bug]").is_checked()
+            assert card.locator("[data-bugonly]").is_visible() and card.locator("[data-narr]").inner_text() == "What happened?"
+            card.locator('[data-f="title"]').fill("Pay-Gross wrong")
+            card.locator('[data-f="narrative"]').fill("Shows 0.00.")
+            card.locator('[data-f="steps"]').fill("Schedule tab")
+            card.locator('[data-f="expected"]').fill("12.34")
+            card.locator("[data-kind][value=feature]").check()
+            assert not card.locator("[data-bugonly]").is_visible()
+            assert card.locator("[data-narr]").inner_text() == "What do you want, and why?"
+            new.click()  # open already: the form and what is typed stay
+            pg.evaluate("document.querySelector('flight-watcher-tickets-card').hass = "
+                        "{...document.querySelector('flight-watcher-tickets-card')._h}")  # a state update: no redraw
+            assert card.locator('[data-f="title"]').input_value() == "Pay-Gross wrong"
+            assert card.locator("[data-kind][value=feature]").is_checked()
+            card.locator("[data-send]").click()
+            pg.wait_for_function("window.calls.length === 1")
+            d, s, data = pg.evaluate("window.calls[0]")
+            assert (d, s, data["topic"]) == ("mqtt", "publish", "flight_watcher/ticket/new")
+            t = json.loads(data["payload"])
+            assert t["kind"] == "feature" and t["steps"] == "" and t["expected"] == "" and t["images"] == 0
+            assert (t["title"], t["narrative"], t["page"], t["version"]) == ("Pay-Gross wrong", "Shows 0.00.", "Watcher", "9.9.9")
+            assert not card.locator(".form").count()
+            # the next ticket starts on Bug again and sends the bug fields
+            new.click()
+            assert card.locator("[data-kind][value=bug]").is_checked() and card.locator('[data-f="title"]').input_value() == ""
+            card.locator('[data-f="title"]').fill("Grid blank")
+            card.locator('[data-f="narrative"]').fill("Nothing.")
+            card.locator('[data-f="steps"]').fill("Open the grid")
+            card.locator("[data-send]").click()
+            pg.wait_for_function("window.calls.length === 2")
+            t = json.loads(pg.evaluate("window.calls[1][2].payload"))
+            assert (t["kind"], t["steps"], t["expected"]) == ("bug", "Open the grid", "")
+        finally:
+            b.close()
