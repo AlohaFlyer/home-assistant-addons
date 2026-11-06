@@ -35,7 +35,7 @@ import recall as RC
 import crewidx as CI
 import tickets as TK
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -346,10 +346,16 @@ def settings_cmd(payload):
         publish_settings(creds=cur)
         return False
     tmp = CREDS_FILE + ".tmp"
-    with open(tmp, "w") as f:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # never readable by others, even briefly
+    with os.fdopen(fd, "w") as f:
         json.dump(cur, f)
     os.chmod(tmp, 0o600)
     os.replace(tmp, CREDS_FILE)
+    if str(S.get("machine", "")).startswith("stopped") or S.get("machine") == "needs_settings":
+        # 1.0.1: new credentials are the fix for a stop (missing or rejected login): start fresh, no Re-arm needed
+        S["machine"], S["note"] = "idle", "new settings"
+        S["kills"], S["pot_urls"], S["parse_fail"] = [], {}, 0
+        save_state(S)
     publish_settings(creds=cur)
     log.info("settings saved (%s); restarting in %d s to use them", ", ".join(changed), RESTART_DELAY_S)
     restart_later()
@@ -2827,7 +2833,7 @@ def main():
             log.info("no credentials for instance %s: waiting on %s/settings/set", INSTANCE, T)
             while True:
                 time.sleep(3600)
-        set_machine("stopped_unexpected", "set username and password in the add-on Configuration tab")
+        set_machine("stopped_unexpected", "enter your FLICA username and password: Open Web UI > Settings")
     elif S.get("machine", "").startswith("stopped"):
         set_machine(S["machine"], S.get("note", "") + " (still stopped after restart, press Re-arm)")
     else:
@@ -2871,7 +2877,8 @@ def main():
     threading.Thread(target=charter_thread, daemon=True, name="charter").start()
     if os.environ.get("FLIGHT_WATCHER_WEB", "1") == "1":  # 0.10.0: only the default instance serves the ingress page
         web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
-                  save_rules_from_page, DB, log)
+                  save_rules_from_page, DB, log, get_settings=lambda: settings_state(load_creds()),
+                  save_settings=lambda d: settings_cmd(json.dumps(d)))
     last_month_check = None
     with sync_playwright() as pw:
         fl = Flica(pw)

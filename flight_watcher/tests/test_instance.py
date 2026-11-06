@@ -190,3 +190,17 @@ def test_run_child_specs():
     assert specs[1]["env"] == {"FLIGHT_WATCHER_DATA": "/d/pilot2", "FLIGHT_WATCHER_PREFIX": "flight_watcher_pilot2", "FLIGHT_WATCHER_INSTANCE": "pilot2",
                                "FLIGHT_WATCHER_OPTIONS": "/d/options.json", "FLIGHT_WATCHER_WEB": "0"}
     assert run.child_specs({"second_pilot": "bad name"}) == [{"name": "", "env": {}}]
+
+
+def test_new_settings_clear_a_stop(tmp_path, monkeypatch):
+    """1.0.1: saving credentials (Web UI Settings) restarts fresh instead of staying stopped until Re-arm."""
+    W = _load(tmp_path, monkeypatch, "", {**OPTS, "username": "", "password": ""})
+    monkeypatch.setattr(W, "MQ", FakeClient())
+    monkeypatch.setattr(W, "restart_later", lambda: None)
+    W.S.update({"machine": "stopped_unexpected", "note": "no login", "kills": [1], "parse_fail": 2})
+    assert W.settings_cmd(json.dumps({"username": "doej", "password": "pw1"})) is True
+    assert W.S["machine"] == "idle" and W.S["kills"] == [] and W.S["parse_fail"] == 0
+    assert stat.S_IMODE(os.stat(tmp_path / "creds.json").st_mode) == 0o600
+    W.S.update({"machine": "hunting"})
+    assert W.settings_cmd(json.dumps({"password": "pw2"})) is True
+    assert W.S["machine"] == "hunting"  # a running watcher is left alone
