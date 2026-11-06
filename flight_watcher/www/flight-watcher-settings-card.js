@@ -2,7 +2,8 @@
    also for a user who is not a Home Assistant admin. Usernames are shown; a password only as set / not set.
    On Save the form is sealed in the browser (AES-256-GCM, the key wrapped with this Watcher's RSA-OAEP public key
    from sensor.flight_watcher_settings) and published to flight_watcher/settings/set, so Home Assistant's history,
-   logs and MQTT only ever see ciphertext. A blank field keeps what is saved. Needs https (crypto.subtle). */
+   logs and MQTT only ever see ciphertext. A blank field keeps what is saved. On a plain http address (no
+   crypto.subtle) it sends the fields unencrypted instead (Ryan: trusted users only). */
 const FW_SET_FIELDS = [
   ["username", "FLICA username", false], ["password", "FLICA password", true],
   ["ctweb_username", "CrewTrac username", false], ["ctweb_password", "CrewTrac password", true],
@@ -66,8 +67,19 @@ class FlightWatcherSettingsCard extends HTMLElement {
     root.querySelectorAll("input[data-k]").forEach((i) => { const v = i.value.trim(); if (v) fields[i.dataset.k] = v; });
     for (const [k, , secret] of FW_SET_FIELDS) if (!secret && fields[k] === String(a[k] || "")) delete fields[k];
     if (!Object.keys(fields).length) { msg.innerHTML = `<span class="err">Nothing to save: no field changed.</span>`; return; }
-    if (!window.crypto || !crypto.subtle) { msg.innerHTML = `<span class="err">This page is not https, so it cannot encrypt. Open Home Assistant through its https address (Nabu Casa) and try again.</span>`; return; }
-    if (!a.pubkey) { msg.innerHTML = `<span class="err">The Watcher has not published its key yet (is the app running?).</span>`; return; }
+    if (!window.crypto || !crypto.subtle || !a.pubkey) {
+      // Plain http (no WebCrypto) or no key yet: send unencrypted, as Ryan accepted (trusted users only).
+      this._sentAt = a.at || "-";
+      try {
+        await this._h.callService("mqtt", "publish", { topic: this._c.topic, payload: JSON.stringify(fields) });
+        root.querySelectorAll("input[type=password]").forEach((i) => { i.value = ""; });
+        msg.innerHTML = `<span class="ok">Sent (not encrypted on this address). Waiting for the Watcher to confirm...</span>`;
+      } catch (e) {
+        this._sentAt = null;
+        msg.innerHTML = `<span class="err">Not sent: ${this._e(e && e.message ? e.message : e)}</span>`;
+      }
+      return;
+    }
     try {
       const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
       const der = Uint8Array.from(atob(a.pubkey), (c) => c.charCodeAt(0));
