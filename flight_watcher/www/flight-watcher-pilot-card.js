@@ -62,15 +62,36 @@ class FlightWatcherPilotCard extends HTMLElement {
     this._hidden = false;
     this._want = d.emp || d.q;
     if (!this._h) return;
+    const q = String(d.q || "").trim();
+    this._askQ = !d.emp && q && !/^\d+$/.test(q) ? q.toLowerCase() : "";  // a name: learn which pilot it found (_shows)
     if (FlightWatcherPilotCard._first(d)) this._h.callService("mqtt", "publish", { topic: "flight_watcher/pilot/set", payload: JSON.stringify(d) });
-    this._paint(true);
+    // FW-0025: the loading line only while the reply is still to come. When the sensor already holds the answer (a
+    // double tap after a quick cached reply, the same pilot asked again), draw it: HA fires no state change for an
+    // identical reply, so the loading line would never clear. A stale cache still answers "loading" (a change).
+    const shown = this._shows(d);
+    if (shown) this._askQ = "";  // nothing to learn: the sensor already shows this name's answer
+    this._paint(!shown);
     this.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  _shows(d) {  // FW-0025: does the sensor already hold the Watcher's answer to this lookup?
+    const st = this._h && this._h.states && this._h.states[this._config.entity];
+    const a = (st && st.attributes) || {};
+    const q = String(d.q || "").trim();
+    const emp = String(d.emp || "").replace(/\D/g, "") || (/^\d+$/.test(q) ? q : "");  // the Watcher reads an all-digit q as an emp
+    if (emp) return String(a.emp || "") === emp;
+    if (!q) return false;
+    if (!a.emp) return String(a.name || "").trim().toLowerCase() === q.toLowerCase() && !!a.status;  // the pick list or "no pilot named"
+    return (FlightWatcherPilotCard._qEmp || {})[q.toLowerCase()] === String(a.emp);  // one match: the pilot this name found before
   }
   set hass(h) {
     this._h = h;
     const st = h.states[this._config.entity];
     const sig = st ? st.last_updated : "";
     if (sig === this._sig && this._root) return;
+    if (sig !== this._sig && this._askQ && st && st.attributes) {  // the reply to a name lookup: remember the pilot it found
+      if (st.attributes.emp) (FlightWatcherPilotCard._qEmp = FlightWatcherPilotCard._qEmp || {})[this._askQ] = String(st.attributes.emp);
+      this._askQ = "";
+    }
     this._sig = sig;
     this._paint();
   }

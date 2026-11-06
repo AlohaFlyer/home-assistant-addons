@@ -1,5 +1,5 @@
 """Cards: FW-0025 (one pilot lookup publishes once), FW-0047 (Improved-Pay Gross / Net tick box), FW-0048 (auto drop
-mark for an HA admin only). Synthetic data and made-up names only."""
+mark for the HA owner only). Synthetic data and made-up names only."""
 import json
 import os
 import shutil
@@ -84,6 +84,61 @@ console.log(JSON.stringify(r));
     p2 = cards.build("1", None, ["pilot2"])["flight-watcher-pilot-card-pilot2.js"]
     assert 'PILOT_EV = "flight-watcher-pilot-pilot2"' in p2 and '"flight_watcher_pilot2/pilot/set"' in p2
     assert '"flight-watcher-pilot"' not in p2 and '"flight_watcher/pilot/set"' not in p2
+
+
+def test_pilot_card_double_tap_after_a_quick_reply_draws_the_reply(tmp_path):
+    """FW-0025: a lookup the Watcher already answered (a cache hit, a pick list, 'no pilot named') and asked again,
+    as a double tap (dropped) or later (published), ends on that reply, not on the loading line: HA fires no state
+    change for an identical reply, so the loading line would stay forever. A new pilot still shows loading."""
+    js = _DOM + _src("flight-watcher-pilot-card.js") + r"""
+const sent = [], paints = [];
+const E = "sensor.flight_watcher_pilot_schedule";
+let S = { [E]: { last_updated: "t0", attributes: {} } };
+const c = new FlightWatcherPilotCard(); c.setConfig({}); c.scrollIntoView = () => {};
+c._paint = (l) => paints.push(l ? "loading" : "reply"); c._root = {};  // as if drawn once
+const hass = () => ({ states: S, callService: (d, s, data) => sent.push(JSON.parse(data.payload)) });
+c.hass = hass(); c.connectedCallback();
+const ask = (detail) => { window.dispatchEvent(new CustomEvent("flight-watcher-pilot", { detail })); return [sent.length, paints[paints.length - 1]]; };
+const reply = (attrs) => { S = { [E]: { last_updated: "t" + clock, attributes: attrs } }; c.hass = hass(); clock += 1; return paints[paints.length - 1]; };
+const r = {};
+r.first = ask({ emp: "10002", name: "Doe, Jane" });
+r.cached = reply({ emp: "10002", name: "Doe, Jane", status: "cached", month: "2026-11" });
+clock += 300; r.dbl = ask({ emp: "10002", name: "Doe, Jane" });       // a double tap after the cached reply: dropped
+const n = paints.length; c.hass = hass(); r.idle = paints.length - n;  // HA re-sends hass, nothing changed: no redraw
+clock += 3000; r.again = ask({ emp: "10002", name: "Doe, Jane" });    // the same pilot later: asks, draws what it has
+r.digits = ask({ q: "10002" });                                      // an all-digit lookup is that employee number
+r.other = ask({ emp: "10003" });                                     // another pilot: loading till the reply
+r.loading = reply({ emp: "10003", name: "", status: "loading", month: "" });
+// a name with one match: loading, then the reply teaches the card which pilot the name found
+clock += 3000; r.name = ask({ q: "Doe" });
+r.nameReply = reply({ emp: "10008", name: "Doe, John", status: "cached", month: "2026-11" });
+clock += 300; r.nameDbl = ask({ q: "Doe" });
+clock += 3000; r.nameAgain = ask({ q: " doe " });
+// a name with several matches (the pick list), and one nobody has
+clock += 3000; r.many = ask({ q: "Roe" });
+reply({ emp: "", name: "Roe", status: "2 pilots match 'Roe', pick one", matches: [{ emp: "10010", name: "Roe, Ann" }], month: "" });
+clock += 300; r.manyDbl = ask({ q: "Roe" });
+clock += 3000; r.none = ask({ q: "Poe" });
+reply({ emp: "", name: "Poe", status: "no pilot named 'Poe' in the 9 crew the Watcher has seen; enter the employee number", month: "" });
+clock += 300; r.noneDbl = ask({ q: "Poe" });
+r.otherName = ask({ q: "Moe" });                                     // a different name: loading
+r.qEmp = FlightWatcherPilotCard._qEmp;
+r.sent = sent;
+console.log(JSON.stringify(r));
+"""
+    r = _node(tmp_path, js)
+    assert r["first"] == [1, "loading"] and r["cached"] == "reply"
+    assert r["dbl"] == [1, "reply"]  # the old code stayed on "reading this pilot's month from FLICA, 20 to 40 s"
+    assert r["idle"] == 0
+    assert r["again"] == [2, "reply"] and r["digits"] == [3, "reply"]
+    assert r["other"] == [4, "loading"] and r["loading"] == "reply"  # the card draws the Watcher's own loading status
+    assert r["name"] == [5, "loading"] and r["nameReply"] == "reply"
+    assert r["nameDbl"] == [5, "reply"] and r["nameAgain"] == [6, "reply"]
+    assert r["qEmp"] == {"doe": "10008"}
+    assert r["many"] == [7, "loading"] and r["manyDbl"] == [7, "reply"]
+    assert r["none"] == [8, "loading"] and r["noneDbl"] == [8, "reply"]
+    assert r["otherName"] == [9, "loading"]
+    assert r["sent"][:3] == [{"emp": "10002", "name": "Doe, Jane"}] * 2 + [{"q": "10002"}]
 
 
 def test_pilot_search_card_asks_once_per_press(tmp_path):
@@ -185,7 +240,7 @@ def test_improved_card_net_matches_schedule_card_pay_net():
     assert "total * (1 - (fed + stt) / 100)" in sch and "1 - (fed + stt) / 100" in imp
 
 
-def _sched_states(admin):
+def _sched_states(who):
     """Synthetic November: a trip that starts after 'today' (Nov 6 HST), one in the past, a VAC day."""
     days = [[f"2026-11-{d:02d}", "", ""] for d in range(1, 31)]
     days[2] = ["2026-11-03", "H9001", "LAX"]
@@ -204,14 +259,15 @@ def _sched_states(admin):
           "input_number.flight_watcher_federal_tax_pct": {"state": "22", "last_updated": "a"},
           "input_number.flight_watcher_state_tax_pct": {"state": "0", "last_updated": "a"}}
     h = {"states": st}
-    if admin is not None:
-        h["user"] = {"name": "Doe, Jane", "is_admin": admin}
+    if who is not None:  # HA's hass.user: the owner is always an admin too; HA has exactly one owner
+        h["user"] = {"name": "Doe, Jane", "is_owner": who == "owner", "is_admin": who in ("owner", "admin")}
     return h
 
 
-def test_schedule_card_drop_mark_for_admin_only():
-    """FW-0048 (Ryan): the auto drop mark (it composes a drop request) shows for an HA admin only; a non-admin (or a
-    hass without a user yet) keeps the read-only parts and the trade mark. The user arriving later redraws."""
+def test_schedule_card_drop_mark_for_owner_only():
+    """FW-0048 (Ryan): the auto drop mark (it composes a drop request) shows for the HA owner (Ryan) only. Another
+    admin login (Pako has one), a plain user or a hass without a user yet keeps the read-only parts and the trade
+    mark. The user arriving later redraws."""
     sync_api = pytest.importorskip("playwright.sync_api")
     page_html = ("<!doctype html><html><body><script>customElements.define('ha-card', class extends HTMLElement {});"
                  "window.calls = [];</script><script>" + _src("flight-watcher-schedule-card.js") + "</script></body></html>")
@@ -229,24 +285,24 @@ def test_schedule_card_drop_mark_for_admin_only():
                     " return {drb: r.querySelectorAll('.drb').length, drbOn: r.querySelectorAll('.drb.on').length,"
                     " trb: r.querySelectorAll('.trb').length, lock: r.querySelector('.lock').title,"
                     " key: [...r.querySelectorAll('.lt td')].map((t) => t.textContent).find((t) => t.includes('The lock')) || ''}; }")
-            for i, who in enumerate((True, False, None)):
+            for who in ("owner", "admin", "user", None):
                 pg.evaluate("(h) => { window.mk(h); }", _sched_states(who))
-            admin, user, nobody = (pg.evaluate(look, i) for i in range(3))
-            assert admin["drb"] == 1 and admin["drbOn"] == 1 and admin["trb"] == 1  # H9002 (Nov 12); H9001 has started
-            assert "availability, trade and drop marks" in admin["lock"] and "availability, trade and drop taps" in admin["key"]
-            for x in (user, nobody):
+            owner, admin, user, nobody = (pg.evaluate(look, i) for i in range(4))
+            assert owner["drb"] == 1 and owner["drbOn"] == 1 and owner["trb"] == 1  # H9002 (Nov 12); H9001 has started
+            assert "availability, trade and drop marks" in owner["lock"] and "availability, trade and drop taps" in owner["key"]
+            for x in (admin, user, nobody):
                 assert x["drb"] == 0 and x["trb"] == 1
                 assert "availability and trade marks" in x["lock"] and "drop" not in x["lock"]
                 assert "availability and trade taps" in x["key"]
-            # unlock and tap the trade mark as a non-admin: it publishes; there is no drop mark to tap
+            # unlock and tap the trade mark as a non-owner admin: it publishes; there is no drop mark to tap
             r = "document.querySelectorAll('flight-watcher-schedule-card')[1].shadowRoot"
             pg.evaluate(f"{r}.querySelector('.lock').click()")
             pg.evaluate(f"{r}.querySelector('.trb').click()")
             assert pg.evaluate("window.calls.map((c) => c[2].topic)") == ["flight_watcher/trade/set"]
-            # the user (an admin) arrives after the first states: the card redraws with the drop mark
-            pg.evaluate("() => { const c = document.querySelectorAll('flight-watcher-schedule-card')[2];"
-                        " c.hass = {...c._h, user: {name: 'Doe, Jane', is_admin: true}}; }")
-            assert pg.evaluate(look, 2)["drb"] == 1
+            # the user (the owner) arrives after the first states: the card redraws with the drop mark
+            pg.evaluate("() => { const c = document.querySelectorAll('flight-watcher-schedule-card')[3];"
+                        " c.hass = {...c._h, user: {name: 'Doe, Jane', is_owner: true, is_admin: true}}; }")
+            assert pg.evaluate(look, 3)["drb"] == 1
         finally:
             b.close()
 
