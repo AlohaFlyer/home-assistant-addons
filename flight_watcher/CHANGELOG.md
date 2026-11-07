@@ -1,5 +1,84 @@
 # Changelog
 
+## 1.4.6
+
+- Recall / Over 75 judged on the line held that day (Ryan, Nov 6): each recall list day is checked against the
+  schedule version Ryan held then (`sched_versions:<month>`), never today's schedule, so a later trade neither turns
+  an old row into a miss nor clears a real one. The line at 00:00 HST is checked and again each version seen during
+  the day; when they disagree the row is POSSIBLE (the award time is not on the list). Per month around the day: the
+  newest version seen by then; for a month not on file yet, the trips that had already started (from a later
+  version); a later month with no version by then counts as not awarded yet (its first 8 days after the list day stay
+  unknown); the PBS award alone counts only for a month the Watcher kept versions for from its first day. New `recall.held_at`, `helds_on`, `judge`; the row's why names the version (`your line as held at Nov 10
+  00:00 HST (version 11.004)`).
+- Full legality before MISSED (`far.legality`, audit of recall.py against FAR 117 and the PWA): FAR 117.25(e) 10 h
+  rest and PWA 10.E.1.a 11 h domicile rest on both sides; FAR 117.25(b) 30 h free from duty in the 168 h before every
+  FDP the pairing touches (its own and the next week's); FAR 117.23(b)(1) 100 h flight time in 672 h; FAR 117.23(c)(1)
+  60 h and (c)(2) 190 h FDP in 168 / 672 h (new: not checked before); per duty period, with PWA 2.19.b duty times
+  (1:00 before departure in domicile, 1:15 out of domicile, 15 min after block-in, 30 with customs). Every check runs
+  on what is surely known (a NO needs that to fail) and on the worst case of every guess (an OK needs that to pass);
+  between the two it is unknown and the row is POSSIBLE. Missing data (days of the line not on file for that day, a
+  trip's times or block) can only make a check unknown: POSSIBLE, never MISSED. Over 75 with a trip or vacation in the
+  way now says Over 75 is for days off (22.G.2.d) instead of citing the Recall removal steps. Every rule is cited in
+  `refs` and in the why.
+- RECALL ALERT bar: a red bar at the top of the Recall/O75 tab card and as the alert card on the main view (was "RED
+  ALERT"), one line per MISSED row with an open CCR draft: date, Recall / Over 75, pairing, who it went to, the draft's
+  status; the main view keeps its button to the tab, a line on the tab opens that day. `alert` on
+  `sensor.flight_watcher_recall_o75` now counts exactly those rows (a POSSIBLE row confirmed by Ryan stays on the tab).
+- Recall/O75 days fold: a day is closed by default when every row is NO MISS, the list is blank or not posted; a day
+  with a MISSED or POSSIBLE row is open. What Ryan opens or closes is remembered in the browser (localStorage
+  `flight_watcher_recall_fold`; works without it).
+- Pushes: a MISSED row is a critical push (iOS interruption-level critical, sound default, critical 1, volume 1),
+  titled "RECALL ALERT: missed Recall H3601"; anything else stays time-sensitive (only MISSED rows push, as before).
+  `ha/automations_flight_watcher.yaml` has the new "recall miss alert" (to apply on Pako after the release). A
+  POSSIBLE row that turns MISSED on a later list post pushes once (`missed_sent`); Refresh still never pushes.
+- CCR by Hark: after Ryan approves the narrative, the row shows **Have Hark file this CCR** (the copy-and-open
+  hal.alpa.org button stays as the manual way). It sends `recall/act {id, action: file_request}`; the Watcher refuses
+  unless the narrative is approved (status approved, or blocked / cancelled after an approval) and the row is still
+  MISSED or POSSIBLE, and on a second pilot's instance; a superseded draft never files. Then it writes
+  `/share/flight_watcher/ccr_requests/<rid>.json` (`ccr.py`: `{v: 1, rid, id, pilot, date, pairing, kind, seat,
+  narrative as approved, approved_at, requested_at}`, temp file and rename, no symlinks, at most 64 KB), sets the
+  draft to `filing` and fires `event/recall_file_requested` (not retained). Once a minute, with no FLICA traffic, it
+  reads the HOM app's answers: `<rid>.done.json` sets `filed` with the CCR number, `filed_at` and who filed it
+  (`event/recall_ccr_filed`); `<rid>.status.json` sets `blocked` or `cancelled` with the reason; `<rid>.task.json`
+  shows the HOM task. Answers older than the request, other names, symlinks, files over 64 KB and anything off the
+  contract are refused; their text is trimmed and shown escaped. The card shows "Sent to Hark <time> HST, waiting for
+  the CCR number", "Filed: CCR <n> by Hark <time>" or the blocked reason. New sensor attribute `hark_files` (true on
+  Ryan's instance only).
+- Review fixes (Nov 7), each with a test:
+  - A row awarded to Ryan's own seniority number is NO ("awarded to you"): the version showing his own trip can come
+    in after the list day.
+  - A pairing whose length is unknown (no days or end on the row, no package) is POSSIBLE ("pairing length unknown"),
+    never squeezed to one day.
+  - Each row reads its own bid period's package (`pkg_details_for(row month)`); pairing ids repeat across months and the
+    old merged dict let whichever month came last win. A period with no package gives POSSIBLE.
+  - The line held at a time also uses each version's FLICA "Schedule Updated" stamp (HST): a version stored after a
+    read outage whose stamp is at or before that time is the line then, and its month is not "not awarded yet".
+    Change times during the list day come from the stamp too.
+  - The held line reaches LOOK + 7 days back (a trip from the month before that runs into the 672 h window counts for
+    FAR 117.23(b)(1) and (c)(2)); days not on file are unknown from there, and 7 days into the next month (a trip that
+    starts on an unknown day may still be running).
+  - Upgrade from 1.4.5: an open draft counts as already pushed only if its stored verdict was MISSED, so a 1.4.5
+    POSSIBLE row that is MISSED now gets its critical push once.
+  - Over 75 eligibility (PWA 22.G.2.d, Reserve Run pilots only) is answered per month on the tab
+    (`me.o75_months {YYYY-MM: true | false}`, `recall/act {me: {o75_months}}`; the old single flag, which defaulted to
+    eligible, is dropped). Not set: an Over 75 row that would be MISSED is POSSIBLE.
+  - Hark requests: HOM makes one task per rid, ever, so no second request goes out under a rid HOM made a task of
+    (a request HOM rejected without a task can still be sent again). The date in a rid must be a real date. Withdraw
+    from Hark, Not a miss and Mark filed work while Hark has the draft (sent, blocked, cancelled): with no HOM task yet
+    the Watcher removes its own `<rid>.json` first; with a task they need `hom_cleared` ("I completed HOM task <id> as
+    skipped" on the card), because nothing reaches HOM from the Watcher. An edit approved while Hark's task is blocked
+    or cancelled keeps that status. Refusals show on the card (`hark_note`).
+  - A blocked or cancelled draft goes back to `filing` when HOM removes its status file and the task is still there
+    (the task is open again). Drafts keep being read after Ryan withdraws, dismisses or marks them filed: a CCR number
+    from Hark other than his, a task HOM made after the request was taken back, or a draft superseded while Hark had it
+    fires `event/recall_hark_alert` (new, not retained) once and shows on the card. `ha/automations_flight_watcher.yaml`
+    has the new "Flight Watcher Hark CCR alert" (time-sensitive, Ryan's phones; to apply on Pako after the release).
+  - Card: Have Hark file this CCR is off while the box differs from the approved narrative ("Re-approve first: the box
+    differs from what you approved") and sends the box text, which the Watcher checks; the approve button says
+    Approve narrative when nothing changed. Wherever Hark may still file a draft a red line names the HOM task, and
+    Withdraw from Hark, Not a miss and Mark filed wait for the "completed as skipped" tick. The Over 75 checkbox is a
+    per-month choice (not set, on reserve, not on reserve).
+
 ## 1.4.5
 
 - Tickets card (Ryan, Nov 6): **Process Tickets in Claude Code** now copies the prompt ("Process all Flight Watcher tickets on Pako HI: fix every new or reopened one, release it, mark it fixed, then confirm and close your completed fixes.") to the clipboard for Ryan to paste into his own Claude Code window, instead of opening a new session. It says "Copied. Paste it in Claude Code." under the button; if the browser blocks copying, the prompt shows selected to copy by hand. Card option `claude_code_prompt` replaces the text.
