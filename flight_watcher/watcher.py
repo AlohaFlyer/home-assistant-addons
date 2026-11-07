@@ -20,8 +20,8 @@ from playwright.sync_api import sync_playwright
 
 import rules as R
 import web
-from far import far_check, window as far_window
-from pot import PAIRING_RE, LEG_FULL_RE, parse_schedule_desktop, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+import far as FAR
+from pot import PAIRING_RE, LEG_FULL_RE, schedule_items, parse_schedule_desktop, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, CLOSE_IN_RE, close_in_folders, pick_close_in, trade_pages, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 import tradeboard as TB
 import swap as SW
@@ -40,8 +40,9 @@ import sealed as SEAL
 import pay as PAY
 import seniority as SEN
 import wwwfiles as WF
+import trades as TR
 
-VERSION = "1.4.6"
+VERSION = "1.4.7"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -741,15 +742,21 @@ def finds_files_cleanup():
         log.info("finds file cleanup skipped: %s", WF.scrub(e, key))
 
 
+PICKERS_ATTR_ROWS = 20  # FW-0060: the fastest pickers the sensor keeps; the card reads every one from the file
+
+
 def publish_pickers():
-    """0.4.18 (Ryan): every FO/RO seen taking a trip, with their average time in open time, fastest first."""
+    """0.4.18 (Ryan): every FO/RO seen taking a trip, with their average time in open time, fastest first.
+    FW-0060: one pilot runs about 230 bytes, so the list (38 pilots, 8.7 KB in Nov 2026, more every week) goes to
+    pickers_<key>.json for the pickers card, and the sensor keeps the count and the fastest PICKERS_ATTR_ROWS."""
     rows = [{"emp": e, "name": v["name"], "pos": v["pos"], "n": v["n"], "avg_s": int(v["total_s"] / v["n"]) if v["n"] else None,
              "inflt_n": v.get("inflt_n", 0), "month_n": v.get("month_n", 0), "year_n": v.get("year_n", 0),
              "lays": v.get("lays", []), "last_lay": v.get("last_lay", ""),  # 0.7.6: Common Layover
              "min_s": v.get("min_s"),  # 0.8.2: Fastest Pickup Speed
              "last_at": v["last_at"]} for e, v in DB.picker_stats().items()]
     rows.sort(key=lambda r: (r["avg_s"] is None, r["avg_s"] or 0, r["name"]))
-    pub("pickers", {"count": len(rows), "pickers": rows})
+    key, rev = write_list_file("pickers", {"count": len(rows), "pickers": rows})
+    pub("pickers", {"count": len(rows), "pickers": rows[:PICKERS_ATTR_ROWS], "file_key": key, "rev": rev})
 
 
 # 1.0.0: entity id suffix per discovery oid where the two differ (the ids HA gave these entities from their names
@@ -932,11 +939,98 @@ def mqtt_start():
 
 MQ = None
 
+# FW-0060: HA's recorder keeps no history for a state whose attributes pass 16 KiB and logs a warning on every update
+# (sensor.flight_watcher_tickets ran about 39 KB, schedule_versions about 33 KB). Every sensor attribute payload stays
+# at or under ATTR_MAX bytes (compact JSON, ASCII-escaped, so HA's UTF-8 copy is no larger; HA adds friendly_name and
+# icon, about 100 bytes, which keeps it under 12 KB). The long lists live in files (write_list_file); this is the
+# backstop for the rest: the list a sensor carries is cut from its least useful end and "trimmed" says how many went.
+ATTR_MAX = FINDS_ATTR_MAX
+# topic -> (attribute holding the list or dict that can grow, which end goes first: "end", "front", or "old" for a
+# dict keyed TRIP|YYYY-MM-DD or YYYY-MM, oldest key first)
+ATTR_TRIM = {
+    "pot/state": ("pairings", "end"), "tradeboard/state": ("pairings", "end"), "recall": ("days", "end"),
+    "charters": ("items", "front"), "ot_requests": ("requests", "front"), "swap/state": ("ideas", "end"),
+    "swap_tests": ("tests", "front"), "own_trips": ("trips", "old"), "improved_pay": ("months", "front"),
+    "pilot_schedule": ("reconstructed", "end"), "rules/state": ("rules", "end"), "blocked/state": ("days", "front"),
+    "finds": ("finds", "end"), "pickers": ("pickers", "end"), "tickets": ("tickets", "end"),
+    "schedule": ("months", "old"), "schedule_versions": ("months", "old"), "grid/state": ("days", "old"),
+    "drop/state": ("keys", "front"), "trade/state": ("keys", "front"), "last_tradeboard": (None, None),
+    "last_new": (None, None), "last_match": (None, None), "crew_index": ("waiting_for_award", "front"),
+}
+ATTR_LOGGED = set()
+
+
+def attr_size(payload):
+    return len(json.dumps(payload, separators=(",", ":")))
+
+
+def _dict_age(k):
+    k = str(k)
+    return k.split("|")[-1] if "|" in k else k
+
+
+def cap_attrs(topic, payload):
+    """FW-0060: payload (a dict for a sensor's json_attributes_topic) at or under ATTR_MAX bytes: the ATTR_TRIM list
+    loses items from its least useful end until it fits, and "trimmed" counts them. A payload that still does not fit
+    (no list to cut) goes out as it is, logged once per topic."""
+    if not isinstance(payload, dict) or attr_size(payload) <= ATTR_MAX:
+        return payload
+    key, end = ATTR_TRIM.get(topic, (None, None))
+    lst = payload.get(key) if key else None
+    out, n = dict(payload), 0
+    if isinstance(lst, list):
+        lst = list(lst)
+        while lst and attr_size({**out, key: lst, "trimmed": n}) > ATTR_MAX:
+            lst.pop(0 if end == "front" else -1)
+            n += 1
+        out[key] = lst
+    elif isinstance(lst, dict):
+        keep = sorted(lst, key=_dict_age)
+        while keep and attr_size({**out, key: {k: lst[k] for k in keep}, "trimmed": n}) > ATTR_MAX:
+            keep.pop(0)
+            n += 1
+        out[key] = {k: lst[k] for k in lst if k in keep}
+    if n:
+        out["trimmed"] = n
+    if topic not in ATTR_LOGGED and (n or attr_size(out) > ATTR_MAX):
+        ATTR_LOGGED.add(topic)
+        log.info("FW-0060: %s attributes over %d bytes: %s", topic, ATTR_MAX,
+                 f"{n} item(s) of {key} left out" if n else "nothing to cut")
+    return out
+
 
 def pub(topic, payload, retain=True):
     if not isinstance(payload, str):
-        payload = json.dumps(payload)
+        payload = json.dumps(cap_attrs(topic, payload) if topic in ATTR_TRIM else payload)
     MQ.publish(f"{T}/{topic}", payload, retain=retain)
+
+
+LIST_REV = {}  # FW-0060: name -> rev of the list file last written, so an unchanged list is not written again
+
+
+def write_list_file(name, obj):
+    """FW-0060: obj as <name>_<key>.json (wwwfiles.LIST_NAMES) in this instance's www folder (finds_dir(): a second
+    pilot's is www/flight-watcher/<name>/), written atomically and only when it changed. Returns (file_key, rev): rev
+    is a short hash of the text, which the sensor carries so an open card fetches the file again when it changes;
+    (None, None) when it could not be written (the card then shows the sensor's short list). Never logs the key."""
+    key = None
+    try:
+        key = www_key()
+        text = json.dumps(obj, separators=(",", ":"))
+        rev = hashlib.sha256(text.encode()).hexdigest()[:12]
+        fdir = finds_dir()
+        path = os.path.join(fdir, WF.list_name(name, key))
+        if LIST_REV.get(name) != (key, rev) or not os.path.exists(path):
+            os.makedirs(fdir, exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as fh:
+                fh.write(text)
+            os.replace(tmp, path)
+            LIST_REV[name] = (key, rev)
+        return key, rev
+    except Exception as e:
+        log.info("%s file skipped: %s", name, WF.scrub(e, key))
+        return None, None
 
 
 FETCHES = {"n": None, "pub_at": 0}
@@ -1116,12 +1210,15 @@ class Flica:
                 if "open time" in txt or "opentime" in txt:
                     # key "mobile" kept for the first page so the v0.1.x baseline carries over
                     urls = {"mobile": MOBILE_POT}
+                    close_in_scan(html, "mobile open time page")  # FW-0034: a link naming the close-in folder
                     if OPTS.get("watch_next_month", True):
                         links = pot_links(html, MOBILE_POT)
                         log.info("mobile pot links to other bid months: %s", links)
                         mine = bcid(MOBILE_POT)
-                        later = sorted((l for l in links if bcid(l["url"]) and bcid_after(bcid(l["url"]), mine)),
-                                       key=lambda l: bcid_key(bcid(l["url"])))
+                        ci = (S.get("close_in") or {}).get("bcid")
+                        later = sorted((l for l in links if bcid(l["url"]) and bcid_after(bcid(l["url"]), mine)
+                                        and not CLOSE_IN_RE.search(l["text"]) and bcid(l["url"]) != ci),
+                                       key=lambda l: bcid_key(bcid(l["url"])))  # FW-0034: never the close-in folder
                         if later:  # the nearest later bid period only, never an earlier month
                             urls[f"mobile_{bcid(later[0]['url'])}"] = later[0]["url"]
                         if len(urls) < 2:
@@ -1149,6 +1246,10 @@ class Flica:
                 }""" % json.dumps(MONTHS),
                 OPTS["pot_section"],
             )
+            try:  # FW-0034: the menu frame names the close-in folder, if the account has one
+                close_in_scan(menu.content(), "main menu frame")
+            except Exception as e:
+                log.info("close-in scan of the menu frame skipped: %s", e)
             now = local_now()
             want = {MONTHS[now.month - 1], MONTHS[now.month % 12]}
             for l in links:
@@ -1304,6 +1405,9 @@ def enrich(fl, ev):
     soft time (credit minus block). Never clicks or submits. Failure leaves the row as is."""
     try:
         url = detail_url(ev)
+        if url and not (SUB.safe_get(url) and SM.safe_get(url)):
+            log.info("detail %s: url refused by safe_get, skipped", ev.get("pairing"))
+            url = None
         if url:
             page = fl.fetch(url)
             if classify(page) == "ok":
@@ -1360,30 +1464,52 @@ def touches_blocked(ev):
     return bool(s and days and any(s.isoformat() <= d <= e.isoformat() for d in days))
 
 
-def far_for(ev, exclude=None):
-    """FAR 117 screen (far.py) of a pot or tradeboard row against Ryan's own trips. '?' when the
-    pickup's check-in or final arrival is not known yet."""
+FAR_WHY_MAX = 400  # far_why on published rows stays short (the pot sensor's attributes)
+
+
+def _pickup_duties(ev, s):
+    """FW-0039: the pickup's duty periods (HST minutes from 00:00 of its first day, pot.parse_duties shape): from its
+    FLICA pairing page (enrich(); pot rows keep them in the details cache, off the published row), else the bid
+    period's pairing package (the same lookup as the Recall check). [] when neither has them."""
+    d = ev.get("duties") or (S.get("details", {}).get(f"{ev.get('pairing')}|{ev.get('start')}") or {}).get("duties")
+    if d:
+        return d
+    try:
+        return RC.package_entry(ev.get("pairing"), s, pkg_details_for).get("duties") or []
+    except Exception:
+        return []
+
+
+def far_screen(ev, exclude=None):
+    """FW-0039: FAR 117 and PWA rest screen of a pot, Tradeboard or finds row against Ryan's own line, with the same
+    rules as the Recall check (far.legality(): 117.25(e), 117.25(b), 117.23(b)(1) and now 117.23(c)(1)/(2), the FDP
+    60 h in 168 h and 190 h in 672 h; PWA 10.E.1.a, 2.19.b), per duty period of his trips and of the pickup.
+    {far, why}: far is the column ('OK', 'OK (CBA rest 10:30)', 'Conflict', 'Rest 8:00 before · FDP 65h/168h', or
+    '?' when the pickup's report or final arrival is not known yet or a check needs data not on file: never OK);
+    why cites the rule behind it. exclude: 'TRIP|YYYY-MM-DD' of his own trip to leave out (a swap)."""
     try:
         s, e = _span(ev)
-        w = far_window(s, e, ev.get("report"), ev.get("arrive") or ev.get("last_arr"))
-        if not w:
-            return "?"
-        mine = []
-        for it in _sched_items():
-            if not PAIRING_RE.match(it.get("trip") or "") or f"{it['trip']}|{it['start']}" == exclude:
-                continue
-            t = S.get("own_trips", {}).get(f"{it['trip']}|{it['start']}") or {}
-            a, b = date.fromisoformat(it["start"]), date.fromisoformat(it["end"])
-            ow = far_window(a, b, t.get("report"), t.get("last_arr"))
-            if ow:
-                mine.append((ow[0], ow[1], hours(t.get("blk")) or 0))
-            else:  # times not read yet: whole days, flagged so a neighbouring trip reads '?'
-                mine.append((datetime.combine(a, datetime.min.time()),
-                             datetime.combine(b, datetime.max.time()), 0, True))
-        return far_check((w[0], w[1], hours(ev.get("blk")) or 0), mine)
+        if not s:
+            return {"far": "?", "why": "pickup dates unknown"}
+        rep, arr = ev.get("report"), ev.get("arrive") or ev.get("last_arr")
+        if not FAR.window(s, e, rep, arr):
+            return {"far": "?", "why": "pickup report or final arrival not read yet"}
+        new = RC.pickup_trip(ev.get("pairing") or "pickup", s, e, rep, arr, hours(ev.get("blk")),
+                             _pickup_duties(ev, s))
+        mine = RC.line_records(S.get("schedule") or {}, S.get("own_trips") or {}, s, e, local_now().date(), exclude)
+        r = FAR.screen(new, mine)
+        return {"far": r["far"], "why": r["why"][:FAR_WHY_MAX]}
     except Exception as ex:
         log.info("far skipped for %s: %s", ev.get("pairing"), ex)
-        return "?"
+        return {"far": "?", "why": "FAR screen failed"}
+
+
+def far_for(ev, exclude=None):
+    """The FAR column of a row (far_screen), and its reason on the row as far_why."""
+    r = far_screen(ev, exclude)
+    if exclude is None:
+        ev["far_why"] = r["why"]
+    return r["far"]
 
 
 OWN_PER_CHECK = 3
@@ -1459,9 +1585,42 @@ def my_seat(crew):
     return ""
 
 
+ENDS_FIX_V = 1  # trip end: bump to run repair_ends() over the stored versions again
+
+
+def repair_trip_ends():
+    """Trip end, once: versions and the schedule on file stored while the item builder cut a trip short when the next
+    activity started on its return day (H3681 Nov 9 to 12 kept as Nov 9 to 9 from 11.009 on) get the end their own
+    days list gives, so recall legality spans and pay see the whole trip. Months from 24 back to 3 ahead."""
+    if S.get("ends_fix_v") == ENDS_FIX_V:
+        return 0
+    n = 0
+    today = local_now().date()
+    for i in range(-24, 4):
+        y, m = divmod(today.year * 12 + today.month - 1 + i, 12)
+        key = f"sched_versions:{y:04d}-{m + 1:02d}"
+        vers = DB.get(key)
+        if vers and VER.repair_ends(vers, schedule_items):
+            n += sum(1 for v in vers if v.get("repaired"))
+            DB.put(key, vers)
+    for mk, sch in (S.get("schedule") or {}).items():
+        if isinstance(sch, dict) and sch.get("days") and VER.repair_ends([sch], schedule_items):
+            sch.pop("repaired", None)
+            n += 1
+    S["ends_fix_v"] = ENDS_FIX_V
+    save_state(S)
+    if n:
+        log.info("trip end repair: %d stored schedule version(s) / month(s) got the trip end their days list gives", n)
+    return n
+
+
 def versions_check(force_pub=False):
     """0.9.0 (Ryan): a new schedule version (MM.NNN) every time anything on a month changes. A month whose new
     pairings have no block / credit read yet waits up to 2 h for them, so one change makes one version."""
+    try:
+        repair_trip_ends()
+    except Exception as e:  # never stops the versions; tried again next time
+        log.info("trip end repair skipped: %s", e)
     try:
         months, own = S.get("schedule") or {}, S.get("own_trips") or {}
         wait = S.setdefault("ver_wait", {})
@@ -1482,8 +1641,12 @@ def versions_check(force_pub=False):
         for mk, v in made:
             log.info("schedule version %s (%s)", v, mk)
         if made or force_pub or not S.get("ver_published"):
+            # FW-0060: every version's items, days and trips go to versions_<key>.json (about 33 KB in Nov 2026) for
+            # the schedule card; the sensor keeps the counts and each month's awarded / current version
+            full = VER.published(DB, months)
+            key, rev = write_list_file("versions", {"months": full})
             pub("schedule_versions", {"count": sum(len(DB.get(f"sched_versions:{m}") or []) for m in months),
-                                      "months": VER.published(DB, months), "at": now_iso()})
+                                      "months": VER.summary(full), "file_key": key, "rev": rev, "at": now_iso()})
             S["ver_published"] = True
             if made:
                 pub("event/schedule_version", {"versions": [v for _, v in made], "at": now_iso()}, retain=False)
@@ -2246,8 +2409,12 @@ def publish_recall():
            if v.get("verdict") in RECALL_LIVE and (v.get("act") or {}).get("status") in RECALL_OPEN]
     alert = [v for v in opn if v["verdict"] == "MISSED"]  # 1.4.6 (Ryan): RECALL ALERT = the Watcher says he should have been called
     received = max((d.get("at") or "" for d in allr.values()), default="")  # when the newest list post came in
+    # FW-0060: every day goes to recall_<key>.json for the recall card (about 380 bytes a verdict: 45 days would pass
+    # the recorder's 16 KB); the sensor keeps the newest days that fit (cap_attrs) and the counts over all of them
+    key, rev = write_list_file("recall", {"days": days[::-1]})
     pub("recall", {"open": len(opn), "alert": len(alert), "me": recall_me(), "last": days[-1]["date"] if days else "",
-                   "checked": now_iso(), "received": received, "hark_files": not INSTANCE, "days": days[::-1]})
+                   "checked": now_iso(), "received": received, "hark_files": not INSTANCE, "days": days[::-1],
+                   "days_total": len(days), "file_key": key, "rev": rev})
 
 
 def publish_improved():
@@ -2298,7 +2465,7 @@ def pot_details(fl, pot, full=False):
     cache = S.setdefault("details", {})
     fetched = 0
     for k, row in pot.items():
-        stale = k in cache and "crew" not in cache[k]  # cached before 0.4.0: re-read once
+        stale = k in cache and ("crew" not in cache[k] or "duties" not in cache[k])  # cached before 0.4.0 / FW-0039: re-read once
         if (k not in cache or stale or full) and fetched < (FULL_MAX if full else DETAIL_MAX_PER_CHECK):
             if fetched:
                 time.sleep(random.uniform(1.5, 3.5))
@@ -2306,8 +2473,9 @@ def pot_details(fl, pot, full=False):
             enrich(fl, ev)
             fetched += 1
             cache[k] = {f: ev.get(f, "") for f in DETAIL_FIELDS}
+            cache[k]["duties"] = ev.get("duties") or []  # FW-0039: the FAR screen's FDPs; kept off the published row
         if k in cache:
-            row.update({f: v for f, v in cache[k].items() if v or not row.get(f)})
+            row.update({f: v for f, v in cache[k].items() if f in DETAIL_FIELDS and (v or not row.get(f))})
             if not row.get("soft"):
                 row["soft"] = soft_time(row.get("credit"), row.get("blk")) or ""
         row["fit"] = schedule_fit(row)
@@ -2331,7 +2499,13 @@ def desktop_schedule(fl, bd, seen):
     None. The token is never logged."""
     menu = fl.fetch(LEFTMENU)
     if "scheduledetail" not in (menu or ""):  # 0.8.4: the plain GET gets only the skeleton; the frame has the tree
-        menu = fl.menu_tree()
+        # 1.4.7 verify: live, the main menu's frame often never loads (FLICA's forward page with its reCAPTCHA, never
+        # bypassed) and menu_tree() gives ''. Keep the plain page then, so it is still scanned (close-in folder, trades
+        # page) and its capture is not an empty file (Pako's leftmenu.html of Nov 4 was 0 bytes).
+        menu = fl.menu_tree() or menu
+    close_in_scan(menu or "", "left menu")  # FW-0034: the close-in folder's link, if the menu names it
+    if menu and classify(menu) == "ok":
+        trade_pages_scan(menu, "schedule menu")  # FW-0064: a crew-to-crew trades page, if the menu names one
     try:  # 0.8.3: keep the menu page (token masked) so the link pattern can be checked against the real thing
         os.makedirs(IF.CAPTURE_DIR, exist_ok=True)
         open(f"{IF.CAPTURE_DIR}/leftmenu.html", "w").write(re.sub(r"token=[0-9A-Za-z]+", "token=MASKED", menu or ""))
@@ -2362,7 +2536,7 @@ OWN_RE = re.compile(r"\b([a-z]+(?: jr| sr| ii| iii)?, [a-z]+(?: [a-z]+)?)\s+(\d{
 
 
 def note_own(text):
-    """0.8.5: Ryan's own employee number from a FLICA page header ('doe, jane 9901 - hnl 332 fo'),
+    """0.8.5: Ryan's own employee number from a FLICA page header ('doe, jane 10001 - hnl 332 fo', made up),
     kept in state for the Schedule Lookup reads of his other months."""
     m = OWN_RE.search((text or "").lower())
     if m and S.get("own_emp") != m.group(2):
@@ -2547,6 +2721,7 @@ def schedule_check(fl, force=False):
     # winning URL is tried first next time. At most 3 fetches per read, 1-2 s apart.
     def accept(url, s):
         old = store.get(s["month"])
+        read_at = now_iso()
         merge_lookup_totals(fl, s, old)  # FW-0019: the mobile page has no Block / Credit; Schedule Lookup does
         if old and [(i["trip"], i["start"]) for i in old["items"]] != [(i["trip"], i["start"]) for i in s["items"]]:
             ev = {"month": s["month"], "updated": s["updated"],
@@ -2555,6 +2730,12 @@ def schedule_check(fl, force=False):
                   "totals": s["totals"]}
             log.info("SCHEDULE changed %s", ev)
             pub("event/schedule_changed", ev, retain=False)
+            try:  # FW-0064; never fails the read (an error here must not make schedule_check load another URL)
+                if not old.get("src"):  # the same page read twice; a month first read on Schedule Lookup is not
+                    sched_moves_record(s["month"], old["items"], s["items"], s.get("updated"), read_at)
+            except Exception as e:
+                log.info("schedule moves not recorded: %s", e)
+        S["sched_read_at"] = read_at  # FW-0064: a trade seen on the schedule is decided one quiet read later
         S["sched_url_ok"] = url
         store[s["month"]] = s
         prev_month_check(fl, url, s["month"])  # 0.4.16: last month too, for 30 in 7 / 100 in 672 windows
@@ -2565,6 +2746,10 @@ def schedule_check(fl, force=False):
                          "months": {k: {kk: v[kk] for kk in ("items", "days", "totals", "updated")}
                                     for k, v in S["schedule"].items()}})
         log.info("schedule %s: %d items, totals %s", s["month"], len(s["items"]), s["totals"])
+        try:
+            trade_check()  # FW-0064
+        except Exception as e:
+            log.info("schedule trade check skipped: %s", e)
         save_state(S)
 
     fallback, tries = None, 0
@@ -2786,6 +2971,242 @@ def price_request(r, now=None):
     return {"delta": round(delta, 2), "delta_text": PAY.usd(delta), "parts": parts, "rate": rate, "year": yr}
 
 
+# ---------------------------------------------------------------- FW-0034: the close-in open time folder
+CLOSE_IN_KEY = "closein"  # its rows' month key (pot rows, finds)
+CLOSE_IN_GAP_S = 6 * 3600  # a menu read every 6 h while the folder is not known,
+CLOSE_IN_RECHECK_S = 86400  # once a day once it is (a new bid period can bring a new BCID)
+CLOSE_IN_BAD_MAX = 3  # reads that are not its open time page before its BCID is dropped
+CLOSE_IN_READ_S = 300  # FW-0035: hunting, the close-in page is read at most every 5 min (about 12 loads an hour; every check otherwise)
+CLOSE_IN_LAST = {"bcid": None, "at": 0.0, "rows": {}}  # its last good read in this process (the rows between reads)
+STOP_KINDS = ("killed", "expired", "blocked")  # pages that end the pass (classify())
+
+
+def close_in_url(b):
+    return f"{BASE}/full/mobileopentimepot.cgi?BCID={b}&From=MainMenu"
+
+
+def _regular_bcids():
+    return {x for x in (bcid(u) for u in (S.get("pot_urls") or {}).values()) if x}
+
+
+def close_in_scan(html, via):
+    """FW-0034: look for the close-in folder ('Close in Opentime: <16 Hrs to RPT') on a page already read (a menu or
+    an open time page; pot.close_in_folders: a link whose text names it, never a guess). A BCID found becomes the
+    candidate, logged once; it is used only once its own open time page reads (close_in_check). Never fetches.
+    Returns the BCID found, or None."""
+    try:
+        reg = _regular_bcids()
+        ci = S.get("close_in") or {}
+        ex = reg | {f"001.{b.split('.')[-1]}" for b in reg} | set(ci.get("rejected") or [])  # 001.n: Tradeboard
+        found = close_in_folders(html, ex)
+        b = pick_close_in(found, {x.split(".")[-1] for x in reg})
+    except Exception as e:
+        log.info("close-in scan of the %s failed: %s", via, e)
+        return None
+    if not b:
+        return None
+    ci = S.setdefault("close_in", {})
+    if ci.get("bcid") != b:
+        log.info("close-in folder found on the %s: BCID %s ('%s'); its open time page is read next, GET only", via, b,
+                 next(f["text"] for f in found if f["bcid"] == b))
+        for k in ("verified", "verified_at", "bad", "baseline"):  # a new folder: its own baseline, no alert storm
+            ci.pop(k, None)
+        ci.update(bcid=b, via=via, found_at=now_iso())
+        S["close_in_bcid"] = None  # drafts and the request list wait for its page to read
+    return b
+
+
+def trade_pages_scan(html, via):
+    """FW-0064 (Ryan: 'also find the FLICA page that lists crew-to-crew trades, read only'): look on a menu already read
+    for an entry naming crew-to-crew trades (pot.trade_pages; Tradeboard folders left out). Nothing is fetched or
+    followed: what is found is logged once (S['trade_pages'], token masked) and the menu is kept privately as
+    CAPTURE_DIR/menu_trades.html (token masked) whenever what it names changes, so the page can be checked by hand
+    before the Watcher ever reads it. Returns the entries found."""
+    try:
+        found = trade_pages(html)
+    except Exception as e:
+        log.info("trade page scan of the %s failed: %s", via, e)
+        return []
+    tp = S.setdefault("trade_pages", {})
+    sig = json.dumps(found, sort_keys=True)
+    if tp.get("sig") != sig:
+        tp.update(sig=sig, found=found, via=via, at=now_iso())
+        if found:
+            log.info("crew-to-crew trades page named on the %s (not read; GET only once checked): %s", via,
+                     "; ".join(f"{f['text']} -> {f['url']}" for f in found))
+        else:
+            log.info("crew-to-crew trades page: the %s names none", via)
+        try:  # a private copy of the menu that was scanned (/share, never git)
+            os.makedirs(CAPTURE_DIR, exist_ok=True)
+            open(f"{CAPTURE_DIR}/menu_trades.html", "w").write(re.sub(r"token=[0-9A-Za-z]+", "token=MASKED", html or ""))
+        except Exception:
+            pass
+    return found
+
+
+def close_in_menu_read(fl):
+    """FW-0034: the menu read that finds the close-in folder, read only: the left menu (leftmenu.cgi, a plain GET), and
+    when that holds no menu tree (FLICA builds it only inside the menu frame), the main menu's menu frame (rendered in
+    a tab like the pot discovery, no clicks). Both URLs pass SUB.safe_get and SM.safe_get; paced 1.5 to 3.5 s. Every
+    6 h while the folder is not known (or its BCID is of no bid period watched), once a day once it is. A menu that
+    does not name the folder is logged and kept privately (CAPTURE_DIR/menu_closein.html, session token masked) so
+    its shape can be checked. FW-0064: the same menu is scanned for a crew-to-crew trades page (trade_pages_scan, never
+    followed). Returns (the BCID found or None, kind): kind is 'ok', or 'killed' / 'expired' / 'blocked' when a menu
+    page said so (the caller ends the pass as the pot loop does)."""
+    ci = S.setdefault("close_in", {})
+    periods = {x.split(".")[-1] for x in _regular_bcids()}
+    settled = ci.get("verified") and (not periods or ci["bcid"].split(".")[-1] in periods)  # a new bid period: look again
+    if time.time() - ci.get("menu_at", 0) < (CLOSE_IN_RECHECK_S if settled else CLOSE_IN_GAP_S):
+        return None, "ok"
+    ci["menu_at"] = time.time()
+    seen, keep, stop = [], "", "ok"
+    for url, how in ((LEFTMENU, "left menu"), (f"{BASE}/online/mainmenu.cgi", "main menu frame")):
+        if not (SUB.safe_get(url) and SM.safe_get(url)):
+            seen.append(f"{how}: refused by safe_get")
+            continue
+        time.sleep(random.uniform(1.5, 3.5))
+        try:
+            html = (fl.fetch(url) if how == "left menu" else fl.menu_tree()) or ""
+        except Exception as e:
+            seen.append(f"{how}: {e}")
+            continue
+        kind = classify(html) if html else "empty"
+        if kind != "ok":
+            seen.append(f"{how}: {kind}")
+            if kind in STOP_KINDS:
+                stop = kind
+                break
+            continue
+        trade_pages_scan(html, how)  # FW-0064: a page listing crew-to-crew trades, if the menu names one
+        b = close_in_scan(html, how)
+        if b:
+            return b, "ok"
+        named = bool(CLOSE_IN_RE.search(visible_text(html)))
+        seen.append(f"{how}: {len(html)} chars, " + ("names the folder but no BCID link" if named else
+                                                       "no close-in folder named"))
+        keep = html
+        if "addC(" in html or "addE(" in html or "BCID=" in html.upper():
+            break  # a real menu that does not name it; the frame would show the same
+    log.info("close-in folder not on the menu yet: %s", "; ".join(seen) or "nothing read")
+    if keep:
+        try:
+            os.makedirs(CAPTURE_DIR, exist_ok=True)
+            open(f"{CAPTURE_DIR}/menu_closein.html", "w").write(re.sub(r"token=[0-9A-Za-z]+", "token=MASKED", keep))
+        except Exception:
+            pass
+    return None, stop
+
+
+def _close_in_cached(regular):
+    """The close-in rows of the last good read of the folder now trusted, less any trip a regular pot has now."""
+    b = (S.get("close_in") or {}).get("bcid")
+    if not b or CLOSE_IN_LAST["bcid"] != b:
+        return {}
+    return {k: r for k, r in CLOSE_IN_LAST["rows"].items() if k not in regular}
+
+
+def close_in_check(fl, pot_all, full=False, moved_from=()):
+    """FW-0034 (Ryan: trips under 16 h to report reached him only through FLICA's alert email): read only, the close-in
+    folder. Finds its BCID (close_in_menu_read when due; close_in_scan of pages read anyway), then GETs its open time
+    page (mobileopentimepot.cgi?BCID=<its BCID>, both safe_get guards, paced 1.5 to 3.5 s). The BCID is trusted (swap
+    and drop drafts, the request list) only once that page reads as an open time page of the pilot's category
+    (OPTS category_check); CLOSE_IN_BAD_MAX reads that do not drop it. Its pairings not in a regular pot join the pot
+    rows (src 'C', folder 'close-in'), with details, the FAR column and finds; a new one fires event/new_pairing like
+    a pot find (none on the folder's first read).
+    FW-0035: hunting, the page is read at most every CLOSE_IN_READ_S (about 12 loads an hour, not one a check); between
+    reads (and after a read that failed) the last good read's rows are returned. Every check otherwise, and on Check
+    now. A trip that moved here from a regular pot (moved_from: the regular baselines before this check's pot reads;
+    or a trip waiting for its pickup check because it left one) is not new: no second push, its find keeps its
+    first_seen and now belongs to the close-in folder, and it is no pickup to check. Returns (rows {key: row}, kind):
+    kind is 'ok', or 'killed' / 'expired' / 'blocked' when a page read here said so (check() then ends the pass as
+    the pot loop does)."""
+    ci = S.setdefault("close_in", {})
+    regular = {k: r for p in pot_all.values() for k, r in p.items()}
+    if not ci.get("bcid") or ci.get("verified"):
+        _, kind = close_in_menu_read(fl)
+        if kind in STOP_KINDS:
+            return _close_in_cached(regular), kind
+    b = ci.get("bcid")
+    if not b:
+        return {}, "ok"
+    if (FLAGS.get("hunt") and not full and CLOSE_IN_LAST["bcid"] == b and CLOSE_IN_LAST["at"]
+            and time.time() - CLOSE_IN_LAST["at"] < CLOSE_IN_READ_S):
+        return _close_in_cached(regular), "ok"
+    url = close_in_url(b)
+    if not (SUB.safe_get(url) and SM.safe_get(url)):
+        log.info("close-in %s: url refused by safe_get", b)
+        return {}, "ok"
+    time.sleep(random.uniform(1.5, 3.5))
+    try:
+        html = fl.fetch(url)
+    except Exception as e:
+        log.info("close-in %s error: %s", b, e)
+        return _close_in_cached(regular), "ok"
+    kind = classify(html)
+    if kind != "ok":
+        log.info("close-in %s: %s, skipped", b, kind)
+        return _close_in_cached(regular), kind if kind in STOP_KINDS else "ok"
+    text = visible_text(html)
+    cat = [c.lower() for c in (OPTS.get("category_check") or "").split()]
+    if not (is_pot_page(html) and all(c in text for c in cat)):
+        ci["bad"] = ci.get("bad", 0) + 1
+        log.info("close-in %s: not an open time page of %s (%d of %d): %s", b, OPTS.get("category_check"), ci["bad"],
+                 CLOSE_IN_BAD_MAX, text[:160])
+        if ci["bad"] >= CLOSE_IN_BAD_MAX:
+            log.info("close-in BCID %s dropped; the menu is read again", b)
+            ci["rejected"] = (ci.get("rejected") or [])[-4:] + [b]
+            for k in ("bcid", "verified", "verified_at", "bad", "via", "found_at", "menu_at", "baseline"):
+                ci.pop(k, None)
+            S["close_in_bcid"] = None
+            CLOSE_IN_LAST.update(bcid=None, at=0.0, rows={})
+            return {}, "ok"
+        return _close_in_cached(regular), "ok"
+    ci["bad"] = 0
+    if not ci.get("verified"):
+        ci.update(verified=True, verified_at=now_iso())
+        log.info("close-in folder %s verified (found on the %s): its open time page reads; text: %s", b, ci.get("via"),
+                 text[:300])
+        try:  # a private copy for parser checks (/share, never git)
+            os.makedirs(CAPTURE_DIR, exist_ok=True)
+            open(f"{CAPTURE_DIR}/pot_closein_{b.split('.')[-1]}.html", "w").write(html)
+        except Exception:
+            pass
+    S["close_in_bcid"] = b
+    pot = parse_pot(html)
+    rows = {k: dict(r, src="C", folder="close-in") for k, r in pot.items() if k not in regular}
+    cache = S.get("details") or {}
+    if full or any(k not in cache or "duties" not in cache[k] for k in rows):
+        time.sleep(random.uniform(1.5, 3.5))  # pot_details paces its own reads after the first
+    pot_details(fl, rows, full)
+    pend = S.setdefault("pickup_pending", {})
+    moved = {k for k in rows if k in set(moved_from or ()) or k in pend}
+    if moved:  # the regular pot gave the trip up to this folder (at 16 h to report): the same find, not a new one
+        log.info("close-in %s: %s moved here from the regular pot (no new alert)", b, ", ".join(sorted(moved)))
+        DB.move_finds(moved, CLOSE_IN_KEY)
+    for k in rows:
+        pend.pop(k, None)  # open in this folder: neither picked up nor hidden by scheduling
+    base, new_keys = ci.get("baseline"), set()
+    if base is None:
+        log.info("close-in baseline %s: %d pairings (no alert)", b, len(pot))
+    else:
+        new_keys = {k for k in rows if k not in base and k not in moved}
+        for k in sorted(new_keys):
+            ev = {**rows[k], "month": CLOSE_IN_KEY, "seen": now_iso()}
+            if not ev.get("detail_url"):  # details not read yet (pot_details' per-check cap)
+                time.sleep(random.uniform(1.5, 3.5))
+                enrich(fl, ev)
+            log.info("NEW close-in pairing %s", ev)
+            pub("event/new_pairing", ev, retain=False)
+            pub("last_new", ev)
+            run_rules(CLOSE_IN_KEY, k, rows[k])
+        for k in set(base) - set(pot) - set(regular):
+            pend.setdefault(k, {"tries": 0, "next": time.time() + PICKUP_FIRST_S})
+    DB.record_pot(CLOSE_IN_KEY, {k: rows.get(k) or regular[k] for k in pot}, new_keys)
+    ci["baseline"] = sorted(pot)
+    CLOSE_IN_LAST.update(bcid=b, at=time.time(), rows={k: dict(r) for k, r in rows.items()})
+    return rows, "ok"
+
+
 def _request_view(fl, b, ts):
     """1.2.2: {legs, trips, detail} of one request from its read-only view page ({} when it cannot be read).
     The first view page of each folder is saved privately to CAPTURE_DIR for parser checks."""
@@ -2799,7 +3220,7 @@ def _request_view(fl, b, ts):
         if classify(html) != "ok":
             return {}
         text = visible_text(html)
-        n = b.split(".")[-1]
+        n = ("closein_" if b == S.get("close_in_bcid") else "") + b.split(".")[-1]
         if not S.get("req_view_captured", {}).get(n):
             S.setdefault("req_view_captured", {})[n] = True
             try:
@@ -2814,16 +3235,51 @@ def _request_view(fl, b, ts):
         return {}
 
 
+REQ_VIEW_TRIES = 3  # FW-0064 review: view page reads of one pending request whose legs could not be read
+REQ_VIEWS_PER_READ = 3  # new pending view pages per folder per list read (each request's page is read once)
+
+
+def _pending_legs(fl, b, rows):
+    """FW-0064 review: the list names no trips, so a Pending or Processing request read with its id (ts) has no legs,
+    and trades.match_pending could not match it on the schedule (a swap approved there would go out as a trade with
+    no request on file, then again as the Swap). Its read-only view page is read once (_request_view: both safe_get
+    guards, paced), at most REQ_VIEWS_PER_READ new ones per read, and its legs and trips kept by folder and ts in
+    S['req_views'] (pruned to the rows listed) and put on the row."""
+    views = S.setdefault("req_views", {})
+    listed, n = set(), 0
+    for r in rows:
+        if r.get("status") not in SUB.OPEN or not r.get("ts") or r.get("legs"):
+            continue
+        k = f"{b}|{r['ts']}"
+        listed.add(k)
+        v = views.get(k)
+        if (v is None or (not v.get("ok") and v.get("tries", 0) < REQ_VIEW_TRIES)) and n < REQ_VIEWS_PER_READ:
+            n += 1
+            got = _request_view(fl, b, r["ts"])
+            v = views[k] = {"ok": bool(got.get("legs")), "tries": (v or {}).get("tries", 0) + 1,
+                            "legs": got.get("legs") or [], "trips": got.get("trips") or []}
+        if v and v.get("legs"):
+            r["legs"] = v["legs"]
+            if v.get("trips") and not r.get("trips"):
+                r["trips"] = v["trips"]
+    for k in [k for k in views if k.startswith(f"{b}|") and k not in listed]:
+        views.pop(k, None)
+
+
 def requests_check(fl):
     """1.2.0 (Ryan): read only, the Open Time Requests list of each watched bid folder. A swap, add or drop
     request that turns Approved or Denied (or first shows up already decided) fires event/request_decided once,
     which HA pushes to Ryan's phone. Only the list URL is fetched (SUB.safe_get + SM.safe_get): its Approved /
     Denied links carry QuickDelete=1 and would delete the request, so no link on the page is ever followed.
     Each decision is pushed once ever (S['ot_req_pushed']); on the feature's very first read only decisions filed
-    in the last REQ_FIRST_H hours are news. Requests filed in the close-in folder are not read (its BCID is not
-    known yet)."""
+    in the last REQ_FIRST_H hours are news. FW-0034: the close-in folder's list is read too once its BCID is verified
+    (close_in_check); its decisions carry folder 'close-in', and its own first read pushes only the last REQ_FIRST_H
+    hours (older ones are history)."""
     rows_of = S.setdefault("ot_req_rows", {})  # bcid -> rows of the last good read
-    folders = sorted({x for x in (bcid(u) for u in S.get("pot_urls", {}).values()) if x})
+    regular = sorted({x for x in (bcid(u) for u in S.get("pot_urls", {}).values()) if x})
+    ci = S.get("close_in_bcid") if (S.get("close_in") or {}).get("verified") else None
+    folders = regular + ([ci] if ci and ci not in regular else [])
+    done_first = S.setdefault("ot_req_first_done", {})  # FW-0034: folders (the close-in one) whose first read is done
     trows_of = S.setdefault("tb_req_rows", {})  # 1.4.3: tradeboard number -> Ryan's trade requests of the last good read
     pending = any(r.get("status") in SUB.OPEN for b in folders for r in rows_of.get(b) or []) or \
         any(r.get("status") in SUB.OPEN for rs in trows_of.values() for r in rs or [])
@@ -2849,7 +3305,7 @@ def requests_check(fl):
                 continue
             text = visible_text(html)
             rows = SUB.parse_request_rows(text, html)
-            n = b.split(".")[-1]
+            n = ("closein_" if b == ci else "") + b.split(".")[-1]  # capture names; FW-0034: the close-in list apart
             if not S.get("req_captured", {}).get(n):  # first read: a private copy for parser checks (/share)
                 try:
                     os.makedirs(CAPTURE_DIR, exist_ok=True)
@@ -2878,16 +3334,20 @@ def requests_check(fl):
                 log.info("requests %s: list empty after %d rows, read again before believing it", b, len(rows_of[b]))
                 continue
             empty.pop(b, None)
+            _pending_legs(fl, b, rows)  # FW-0064 review: a pending swap's trips, so the schedule can decide it
+            first_b = first or (b == ci and not done_first.get(b))
             for r in SUB.request_news(pushed, rows):
                 try:
                     old = _filed_at(r, now) < now - timedelta(hours=REQ_FIRST_H)
                 except Exception:
                     old = True
-                if first and old:
-                    continue  # the feature's first read: older decisions are history, not news
+                if first_b and old:
+                    continue  # the feature's (or the close-in folder's) first read: older decisions are history
                 if r.get("ts") and not r.get("legs"):
                     r.update(_request_view(fl, b, r["ts"]))  # the list names no trips; its view page does
                 ev = {**r, "bcid": b, "at": now_iso(), "url": url}
+                if b == ci:
+                    ev["folder"] = "close-in"
                 try:
                     ev["pay"] = price_request(r)  # 1.2.1: Pay-Gross gained or given up (Approved only)
                 except Exception as e:
@@ -2895,6 +3355,7 @@ def requests_check(fl):
                     ev["pay"] = None
                 log.info("request %s %s %s", r["type"], r["status"], r["detail"][:80])
                 pub("event/request_decided", ev, retain=False)
+                note_decided(r, now)  # FW-0064: its schedule changes are this request's, not a trade's
             if rows and rows[-1].get("ts") and not S.get("req_view_captured", {}).get(n):
                 _request_view(fl, b, rows[-1]["ts"])  # once: a private copy of a view page for parser checks
             for r in rows:
@@ -2903,14 +3364,20 @@ def requests_check(fl):
                     if r.get("alt"):  # the content key too: a read that falls back to it never re-pushes
                         pushed[f"{r['alt']}|{r['status']}"] = now_iso()
             rows_of[b] = rows
+            if b == ci:
+                done_first[b] = now_iso()
             read_ok = True
         except Exception as e:
             log.info("requests %s error: %s", b, e)
-    tb_ok = _trade_requests_check(fl, folders, trows_of, pushed, now)
+    tb_ok = _trade_requests_check(fl, regular, trows_of, pushed, now)
+    try:
+        trade_check()  # FW-0064: a decision just read explains schedule changes; a pending one may match them
+    except Exception as e:
+        log.info("schedule trade check skipped: %s", e)
     if folders:
         for b in [x for x in rows_of if x not in folders]:
             rows_of.pop(b, None)  # a folder no longer watched: its Pending rows no longer hold the 2-min poll
-        nums = {b.split(".")[-1] for b in folders}
+        nums = {b.split(".")[-1] for b in regular}
         for n in [x for x in trows_of if x not in nums]:
             trows_of.pop(n, None)
     cut = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
@@ -2923,7 +3390,7 @@ def requests_check(fl):
     tb_new = tb_ok and tsig != S.get("tb_req_sig")  # 1.4.3: trades alone republish only when they changed
     if read_ok or tb_new:  # a failed pass keeps the last good sensor instead of showing 0 pending
         S["tb_req_sig"] = tsig
-        shown = [{**r, "bcid": b} for b in folders for r in rows_of.get(b) or []]
+        shown = [{**r, "bcid": b, **({"folder": "close-in"} if b == ci else {})} for b in folders for r in rows_of.get(b) or []]
         shown += [{**r, "bcid": f"001.{n}"} for n in sorted(trows_of) for r in trows_of[n] or []]
         pub("ot_requests", {"pending": sum(1 for r in shown if r["status"] in SUB.OPEN), "count": len(shown),
                             "requests": shown[-20:], "checked_at": now_iso()})
@@ -2974,6 +3441,7 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
                     ev["pay"] = None
                 log.info("trade %s %s", r["status"], r["detail"][:120])
                 pub("event/request_decided", ev, retain=False)
+                note_decided(r, now)  # FW-0064
             for r in rows:
                 if r["status"] in SUB.DECIDED:
                     pushed[SUB.push_key(r)] = now_iso()
@@ -2984,6 +3452,156 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
     if ok:
         S["tb_req_init"] = True
     return ok
+
+
+# ---------------------------------------------------------------- FW-0064: a request decided on the schedule
+DECIDED_KEEP_DAYS = 7
+
+
+def note_decided(r, now=None):
+    """FW-0064: an Approved decision the request path just pushed: its legs (or, with none read, its filing time and
+    now) explain the schedule changes it made, so trade_check() never pushes them again as a trade."""
+    if r.get("status") != "Approved":
+        return
+    try:
+        now = now or datetime.fromisoformat(now_iso()).astimezone(HST)
+        filed = _filed_at(r, now).astimezone(timezone.utc).isoformat()
+    except Exception:
+        filed = now_iso()
+    cut = (datetime.fromisoformat(now_iso()) - timedelta(days=DECIDED_KEEP_DAYS)).isoformat()
+    lst = [d for d in S.get("req_decided") or [] if d.get("seen", "") >= cut]
+    lst.append({"key": r.get("key") or "", "type": r.get("type") or "", "filed": filed, "seen": now_iso(),
+                "legs": [{k: x.get(k) for k in ("trip", "day", "side")} for x in r.get("legs") or []]})
+    S["req_decided"] = lst[-50:]
+
+
+def _move_rec(trip, start, month):
+    """What a trip on Ryan's line pays, kept when it leaves the schedule (its own trip record is dropped then): credit,
+    block and seat from his own trip record, else from the newest schedule version that held it; the number of pilots
+    from its crew roster (PWA 4.O.1 overrides)."""
+    k = f"{trip}|{start}"
+    own = (S.get("own_trips") or {}).get(k) or {}
+    if not own.get("credit"):
+        for v in reversed(DB.get(f"sched_versions:{month}") or []):
+            if (v.get("trips") or {}).get(k):
+                own = {**v["trips"][k], **{f: x for f, x in own.items() if x}}
+                break
+    rec = {f: own.get(f) for f in ("credit", "blk", "seat") if own.get(f)}
+    if own.get("crew"):
+        rec["n"] = len(own["crew"])
+    return rec
+
+
+def sched_moves_record(month, old_items, new_items, updated, read_at):
+    """FW-0064: the pairings this read dropped and added, kept in the state with what each dropped trip paid."""
+    keys = lambda its: {f"{i['trip']}|{i['start']}" for i in its or []}  # noqa: E731
+    dropped = keys(old_items) - keys(new_items)
+    recs = {k: _move_rec(*k.split("|"), month) for k in dropped}
+    mv = TR.moves(old_items, new_items, month, updated, read_at, recs)
+    if mv:
+        S["sched_moves"] = TR.prune(S.get("sched_moves") or [], read_at) + mv
+        log.info("schedule moves %s: %s", month, ", ".join(f"{m['side']} {m['trip']} {m['start']}" for m in mv))
+
+
+def _add_rec(m):
+    """A trip taken: its own trip record once read (credit, block, seat, crew roster)."""
+    own = (S.get("own_trips") or {}).get(f"{m['trip']}|{m['start']}") or {}
+    rec = {f: own.get(f) for f in ("credit", "blk", "seat") if own.get(f)}
+    if own.get("crew"):
+        rec["n"] = len(own["crew"])
+    return rec
+
+
+def price_moves(group, legs=None):
+    """FW-0064: the Pay-Gross change of trips given and taken on the schedule, the request path's way (pay.py, the
+    schedule card's rules): each trip at its own credit x the PWA 3.D.6 rate for the longevity year, plus the PWA 4.O.1
+    override for the seat flown (RO $4.00 per block hour; FO $3.00 on a 3-pilot crew) and the Extended Range +15% where
+    on. A trip's credit, block, seat and crew come from Ryan's own trip record (a given trip's as kept when it left), else
+    the month's pairing package (seat as the request page marks it, else FO). None when any trip cannot be priced."""
+    rate, yr, er = pay_settings()
+    if not rate:
+        return None
+    cache, parts, cr = {}, [], 0.0
+    for m in sorted(group, key=lambda x: (x["side"] != "drop", x["t"], x["start"])):
+        rec = (m.get("rec") or {}) if m["side"] == "drop" else _add_rec(m)
+        pk = _package(m["start"][:7], cache).get(m["trip"][:5]) or {}
+        credit = PAY.hrs(rec.get("credit")) if rec.get("credit") else PAY.hrs(pk.get("credit"))
+        block = PAY.hrs(rec.get("blk")) if rec.get("blk") else PAY.hrs(pk.get("block"))
+        lay = "/".join(x for x in str(pk.get("route") or "").split("-") if x and x != "HNL") or m.get("lay") or ""
+        leg = next((x for x in legs or [] if TR.leg_matches(x, m)), {})
+        seat = rec.get("seat") or leg.get("seat") or "FO"
+        key = f"{m['trip']}|{m['start']}"
+        g = PAY.trip_gross(credit, block, rec.get("n") or pk.get("crew"), lay, key, seat, rate, er)
+        if g is None:
+            return None
+        parts.append({"trip": m["trip"], "start": m["start"], "side": m["side"], "gross": round(g, 2), "seat": seat,
+                      "credit": rec.get("credit") or pk.get("credit") or ""})
+        cr += credit if m["side"] == "add" else -credit
+    delta = sum(p["gross"] for p in parts if p["side"] == "add") - sum(p["gross"] for p in parts if p["side"] == "drop")
+    return {"delta": round(delta, 2), "delta_text": PAY.usd(delta), "parts": parts, "rate": rate, "year": yr,
+            "credit_delta": ("+" if cr >= 0 else "-") + PAY.hm(abs(cr))}
+
+
+def _priced(m):
+    return bool(_add_rec(m).get("credit"))
+
+
+def trade_check():
+    """FW-0064: schedule changes that are a decided request. A pending request (Open Time Requests or Tradeboard My
+    Requests) whose every leg is now on the schedule is decided at once under its own key (the list path then never
+    pushes it again); what no request explains, a same-day group of trips dropped and added, goes out once a later
+    read is quiet (trades.py). Each goes out once as event/request_decided, status Approved, with the Pay-Gross change
+    (price_moves), and the moves are marked so a restart never pushes them again."""
+    mvs = S.get("sched_moves") or []
+    if not mvs:
+        return
+    TR.explain(mvs, S.get("req_decided") or [])
+    pushed = S.setdefault("ot_req_pushed", {})
+    pending = [{**r, "bcid": b} for b, rs in (S.get("ot_req_rows") or {}).items() for r in rs or []
+               if r.get("status") in SUB.OPEN]
+    pending += [{**r, "bcid": f"001.{n}"} for n, rs in (S.get("tb_req_rows") or {}).items() for r in rs or []
+                if r.get("status") in SUB.OPEN]
+    for r, used in TR.match_pending(mvs, [r for r in pending if f"{r.get('key')}|Approved" not in pushed]):
+        ev = {"reason": "", **r, "status": "Approved", "source": "schedule", "at": now_iso(),
+              "url": f"{BASE}/online/mainmenu.cgi"}
+        try:
+            ev["pay"] = price_moves(used, r.get("legs"))
+        except Exception as e:
+            log.info("schedule request pay not priced: %s", e)
+            ev["pay"] = None
+        for m in used:
+            m.update(state="pushed", by=r.get("key") or "")
+        pushed[f"{r.get('key')}|Approved"] = now_iso()  # SUB.push_key of the Approved row the list will show
+        if r.get("alt"):
+            pushed[f"{r['alt']}|Approved"] = now_iso()
+        note_decided({**r, "status": "Approved"})
+        log.info("request %s %s approved on the schedule (%s)", r.get("type"), r.get("key"),
+                 ", ".join(m["id"] for m in used))
+        pub("event/request_decided", ev, retain=False)
+    done = S.setdefault("sched_trades_pushed", {})
+    for day, grp in sorted(TR.groups(mvs).items()):
+        if not TR.settled(grp, S.get("sched_read_at"), now_iso(), _priced):
+            continue
+        ev = TR.group_event(day, grp)
+        if ev["key"] in done:
+            for m in grp:
+                m.update(state="pushed", by=ev["key"])
+            continue
+        ev.update(bcid="", at=now_iso(), url=f"{BASE}/online/mainmenu.cgi")
+        try:
+            ev["pay"] = price_moves(grp)
+        except Exception as e:
+            log.info("schedule trade pay not priced: %s", e)
+            ev["pay"] = None
+        for m in grp:
+            m.update(state="pushed", by=ev["key"])
+        done[ev["key"]] = now_iso()
+        log.info("trade seen on the schedule (%s): %s, Pay-Gross %s", day, ev["detail"],
+                 (ev["pay"] or {}).get("delta_text", "not priced"))
+        pub("event/request_decided", ev, retain=False)
+    cut = (datetime.fromisoformat(now_iso()) - timedelta(days=30)).isoformat()
+    S["sched_trades_pushed"] = {k: v for k, v in done.items() if v >= cut}
+    save_state(S)
 
 
 def tradeboard_check(fl, full=False):
@@ -3076,6 +3694,7 @@ def publish_tradeboard(live=None):
             r["far"] = far_for(r)
         except Exception as e:
             log.info("tradeboard screen %s skipped: %s", k, e)
+        r.pop("far_why", None)  # off the sensor, as on pot/state
         rows.append(r)
     pub("tradeboard/state", {"count": len(rows), "pairings": rows})
 
@@ -3276,6 +3895,7 @@ def pilot_check(fl):
             S.pop("pilot_req", None)
             save_state(S)
             return True
+        note_sched_trips(sched["items"], "lookup")  # FW-0056 / FW-0057: the crew index reads every trip on it
         n = 0
         for it in sched["items"]:
             if not PAIRING_RE.match(it["trip"]) or n >= PILOT_PAIRINGS_MAX:
@@ -3299,6 +3919,7 @@ def pilot_check(fl):
         DB.put(f"pilot_sched:{emp}", rec)
         pub_pilot({**rec, "status": "ok"})
         log.info("pilot %s (%s): %s read, %d items, %d pairing pages", emp, rec["name"], sched["month"], len(sched["items"]), n)
+        lookup_prev_month(fl, emp, cur)  # FW-0057: trips run into this month from the previous one (the next run reads them)
     except Exception as e:
         log.info("pilot %s: schedule read failed: %s", emp, e)
         pub_pilot({"emp": emp, "name": req.get("name") or "", "status": f"error: {e}", "month": "", "days": [],
@@ -3308,12 +3929,60 @@ def pilot_check(fl):
     return True
 
 
+PREV_LOOKUP_TRIES = 2  # FW-0057: reads of one pilot's previous bid month that may fail before it is left alone
+
+
+def lookup_prev_month(fl, emp, cur):
+    """FW-0057 review: a trip another pilot started in the previous bid period and runs into this one is on no
+    schedule the Watcher reads, and in no pairing file when that period's package is not on file (Pako has no
+    October file). So when CARD_PAIRINGS has no pairings_<previous month>.json, a pilot lookup also reads that pilot's
+    previous bid month once (Schedule Lookup, GET only, both safe_get guards, paced 1.5 to 3.5 s) and notes the trips
+    on it that end on or after the day before this month starts (a bid period can start on the 31st) for the crew
+    index (note_sched_trips). Once per pilot and month (DB 'pilot_prev:<emp>:<YYYY-MM>'; a failed read is tried again
+    at most PREV_LOOKUP_TRIES times). Ryan's instance only (the crew index's). Returns the number of new trips."""
+    if INSTANCE:
+        return 0
+    first = date(cur.year, cur.month, 1)
+    prev = first - timedelta(days=1)
+    pm = f"{prev:%Y-%m}"
+    if os.path.exists(os.path.join(CARD_PAIRINGS, f"pairings_{pm}.json")) or prev < CREW_FROM:
+        return 0  # the package lists those trips, or the index does not reach back that far
+    key = f"pilot_prev:{emp}:{pm}"
+    st = DB.get(key) or {}
+    if st.get("done") or st.get("tries", 0) >= PREV_LOOKUP_TRIES:
+        return 0
+    url = IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=f"{prev.month:02d}{prev.year % 100:02d}")
+    if not (SUB.safe_get(url) and SM.safe_get(url)):
+        log.info("pilot %s: previous month url refused by safe_get", emp)
+        return 0
+    time.sleep(random.uniform(1.5, 3.5))
+    try:
+        html = fl.fetch(url)
+        sched = IF.parse_cm_month(html) if classify(html) == "ok" and IF.schedule_ok(html) else None
+    except Exception as e:
+        html, sched = "", None
+        log.info("pilot %s: previous month read failed: %s", emp, e)
+    if not sched:
+        DB.put(key, {"tries": st.get("tries", 0) + 1, "at": now_iso()})
+        log.info("pilot %s: previous month %s not readable (%s)", emp, pm, classify(html or "") if html else "no page")
+        return 0
+    floor = prev.isoformat()
+    into = [it for it in sched["items"] if (it.get("end") or it.get("start") or "") >= floor]
+    n = note_sched_trips(into, "lookup")
+    DB.put(key, {"done": True, "at": now_iso(), "trips": len(into)})
+    log.info("pilot %s: previous month %s read, %d trips run into this month (%d new for the crew index)", emp, pm,
+             len(into), n)
+    return n
+
+
 def pub_pilot(payload):
     """0.10.1: every pilot_schedule publish carries the crew index's view of that pilot's month too:
     reconstructed [{pairing, start, end, seat, route, checked_at, lay, blk, credit, soft, crew}],
     reconstructed_coverage_pct, reconstructed_month and (FW-0002) reconstructed_from / reconstructed_to, the
     bid period's first and last day, so the card can draw it in the schedule grid when FLICA hides the schedule
     or errors. Trips and coverage span that grid: the day before the bid period (FLICA's first row) to its end.
+    FW-0056 / FW-0057: the trips come from crew_instances (the package's and every schedule's, October's included);
+    FW-0059: a trip that overlaps another of the pilot's carries overlap / overlap_with (crewidx.pilot_trips).
     FW-0062: each trip's package details come from its own bid period (pkg_details_for), and pay_line (pilot_pay_line)
     totals the rebuilt month with Pay-Gross for the seat flown on each trip, from the pilot's date of hire on the
     shared seniority list. A readable month (status ok) gets no pay line of its own: Schedule Lookup shows no seat,
@@ -3324,10 +3993,11 @@ def pub_pilot(payload):
         month = str(payload.get("month") or "")
         if not re.fullmatch(r"\d{4}-\d{2}", month):
             month = local_now().strftime("%Y-%m")
-        insts, rows = CI.instances(CARD_PAIRINGS), DB.crew_rows()
+        insts, rows = crew_instances(), DB.crew_rows()
         first, start, end = CI.grid_range(CARD_PAIRINGS, month)
         mine = DB.crew_by_emp(emp) if emp else []
-        trips = CI.pilot_trips(insts, mine, month, first, rows, pkg_details_for, end) if emp else []
+        marks = CI.overlap_marks(DB.get(CREW_OVERLAP_KEY) or {}, rows).get(emp) or {}  # FW-0059
+        trips = CI.pilot_trips(insts, mine, month, first, rows, pkg_details_for, end, marks) if emp else []
         payload = {**payload, "reconstructed": trips,
                    "reconstructed_coverage_pct": CI.coverage(insts, rows, None, first, end)[2],
                    "reconstructed_month": month, "reconstructed_from": start, "reconstructed_to": end}
@@ -3359,66 +4029,241 @@ def crew_slot(now=None):
     return st.strftime("%Y-%m-%dT%H"), st + timedelta(hours=CREW_SLOT_H)
 
 
+CREW_SCHED_KEY = "crew_sched_trips"  # FW-0056: {key: {pairing, date, end, route, report, src, seen}} from schedules read
+CREW_SCHED_KEEP_D = 62  # a schedule trip that ended this long ago is forgotten
+CREW_REREAD_KEY = "crew_reread"  # FW-0058 / FW-0059: {key: {why, at}} trips to read once more, first
+CREW_OVERLAP_KEY = "crew_overlaps"  # FW-0059: {id: {emp, name, keys, found_at, state}} pilots on two overlapping trips
+CREW_REREAD_PER_CHECK = 10  # re-reads per check while no run is going (a run reads them first, in its own chunks)
+
+
+def note_sched_trips(items, src):
+    """FW-0056 / FW-0057: remember the pairings on a schedule the Watcher read (Ryan's own months, October's from
+    Schedule Lookup included; a pilot lookup's month; a picker's month), so the crew index reads them even when no
+    pairing package lists them (H38xx trips built later, a trade's H3815B, October's trips with no October file).
+    Items are the schedule parsers' {trip, start[, end]}; anything not a pairing id (VAC, SCR...) is skipped. Kept in
+    the DB (CREW_SCHED_KEY); a trip that ended more than CREW_SCHED_KEEP_D days ago is dropped. Ryan's instance only
+    (the crew index's). Returns the number of new trips."""
+    if INSTANCE:
+        return 0
+    try:
+        reg = DB.get(CREW_SCHED_KEY) or {}
+        old = json.dumps(reg, sort_keys=True)
+        now, n = now_iso(), 0
+        for it in items or []:
+            trip, start = str(it.get("trip") or "").strip().upper(), str(it.get("start") or "")
+            if not PAIRING_RE.match(trip) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", start):
+                continue
+            end = str(it.get("end") or "")
+            end = end if re.fullmatch(r"\d{4}-\d{2}-\d{2}", end) and end >= start else ""
+            k = f"{trip}|{start}"
+            e = reg.get(k)
+            if e is None:
+                reg[k] = {"pairing": trip, "date": start, "end": end, "src": src, "seen": now}
+                n += 1
+            elif end and end > (e.get("end") or ""):
+                e["end"] = end  # trip end: a trip end cut short by the old item builder grows to the repaired one
+        cut = (local_now().date() - timedelta(days=CREW_SCHED_KEEP_D)).isoformat()
+        reg = {k: e for k, e in reg.items() if (e.get("end") or e.get("date") or "") >= cut}
+        if json.dumps(reg, sort_keys=True) != old:
+            DB.put(CREW_SCHED_KEY, reg)
+        if n:
+            log.info("crew index: %d new trips from a schedule (%s) for the index to read", n, src)
+        return n
+    except Exception as e:
+        log.info("crew index: schedule trips not noted (%s): %s", src, e)
+        return 0
+
+
+def crew_instances():
+    """FW-0056 / FW-0057: the crew index's trip instances: every pairing file's, plus the trips on the schedules the
+    Watcher read that no file lists on that date (note_sched_trips; Ryan's own months are noted here, so a trade on
+    his schedule is read at the next run). A trip that starts before CREW_FROM and runs into it is kept."""
+    if INSTANCE:
+        return CI.instances(CARD_PAIRINGS)
+    try:  # a pilot lookup publishes from the MQTT thread while the main thread may be storing a schedule
+        own = _sched_items()
+    except RuntimeError:
+        own = []
+    note_sched_trips(own, "own")
+    return CI.instances(CARD_PAIRINGS, extra=DB.get(CREW_SCHED_KEY) or {})
+
+
+def crew_reread_add(keys, why):
+    """FW-0058 / FW-0059: queue trips for one more read, ahead of everything else (CREW_REREAD_KEY)."""
+    rr = DB.get(CREW_REREAD_KEY) or {}
+    at = local_now().isoformat(timespec="seconds")
+    for k in keys:
+        rr.setdefault(k, {"why": why, "at": at})
+    DB.put(CREW_REREAD_KEY, rr)
+
+
+def crew_overlaps(insts, rows):
+    """FW-0059: look for pilots the index shows on two overlapping trips (a trade between reads). A new overlap is
+    flagged and both trips are queued for one paced re-read (read first at the next check, in a run or not); an
+    overlap still there once both were read again keeps its flag, with the newer read kept; one gone is cleared.
+    Returns the stored flags."""
+    try:
+        f0, r0 = DB.get(CREW_OVERLAP_KEY) or {}, DB.get(CREW_REREAD_KEY) or {}
+        live = {k: r for k, r in rows.items() if k in insts}  # a trip gone from the index is never flagged or kept
+        flags, rr, new, kept, cleared = CI.overlap_update(CI.overlaps(insts, live), f0, r0,
+                                                          local_now().isoformat(timespec="seconds"))
+        for i in new:
+            log.info("crew index: pilot %s on two overlapping trips (%s), both queued for a re-read", flags[i]["emp"],
+                     " and ".join(flags[i]["keys"]))
+        for i in kept:
+            log.info("crew index: pilot %s still on %s after the re-read, newer read kept (flagged)", flags[i]["emp"],
+                     " and ".join(flags[i]["keys"]))
+        for i in cleared:
+            log.info("crew index: overlap %s cleared", i)
+        if flags != f0:
+            DB.put(CREW_OVERLAP_KEY, flags)
+        if rr != r0:
+            DB.put(CREW_REREAD_KEY, rr)
+        return flags
+    except Exception as e:
+        log.info("crew index: overlap check skipped: %s", e)
+        return DB.get(CREW_OVERLAP_KEY) or {}
+
+
+def crew_split_repair():
+    """FW-0058 one-shot (at start, Ryan's instance): crew lines stored before the seat code fix and cut at a seat code
+    inside a name (crewidx.split_suspect) are queued for one re-read, ahead of everything else; a failed re-read keeps
+    the stored line. Returns the number queued, or None when already done."""
+    if INSTANCE or DB.get("crew_split_v") == 1:
+        return None
+    try:
+        keys = sorted(k for k, r in DB.crew_rows().items() if r.get("status") == "ok" and CI.split_suspect(r.get("crew")))
+        if keys:
+            crew_reread_add(keys, "name split (FW-0058)")
+        DB.put("crew_split_v", 1)
+        log.info("crew index: %d crew lines read before the seat code fix queued for a re-read", len(keys))
+        return len(keys)
+    except Exception as e:  # never stops the start; tried again on the next one
+        log.warning("crew index split repair skipped: %s: %s", type(e).__name__, e)
+        return None
+
+
+def crew_fill(k, it, vt):
+    """FW-0056: a trip from a schedule (no package row) takes its end, route and report from its pairing page when
+    the schedule did not give them (a picker's month lists starts only); the schedule entry keeps them."""
+    if it.get("src") != "schedule":
+        return it
+    got = CI.page_trip(vt)
+    upd = {}
+    if not it.get("end_known") and got.get("days"):
+        upd["end"] = (date.fromisoformat(it["date"]) + timedelta(days=max(int(got["days"]) - 1, 0))).isoformat()
+    for f in ("route", "report"):
+        if not it.get(f) and got.get(f):
+            upd[f] = got[f]
+    if not upd:
+        return it
+    try:
+        reg = DB.get(CREW_SCHED_KEY) or {}
+        if k in reg:
+            reg[k].update(upd)
+            DB.put(CREW_SCHED_KEY, reg)
+    except Exception as e:
+        log.info("crew index: %s details not kept: %s", k, e)
+    it = {**it, **{f: v for f, v in upd.items() if f != "end"}}
+    if "end" in upd:
+        it.update(end_date=upd["end"], end_known=True, days=int(got["days"]))
+    return it
+
+
 def crew_index_check(fl):
-    """Read up to CREW_PER_CHECK pairing pages of the current crew index run (GET only, 1.5-3.5 s apart).
-    A run starts at the first check after each 6 h slot (once per slot, saved in state) or on Update
-    schedules, and reads at most CREW_PER_RUN pages over as many checks as it takes. Returns 'ok', or
-    'killed' / 'needs_login' / 'stop' when a page says so (the run is ended there)."""
+    """Read up to CREW_PER_CHECK pairing pages of the current crew index run (GET only, 1.5-3.5 s apart, each URL
+    through SUB.safe_get and SM.safe_get). A run starts at the first check after each 6 h slot (once per slot, saved
+    in state) or on Update schedules, and reads at most CREW_PER_RUN pages over as many checks as it takes.
+    FW-0058 / FW-0059: trips queued for a re-read (CREW_REREAD_KEY: both trips of a pilot on two overlapping trips, a
+    crew line cut at a seat code) are read first, one read each; with no run going a check reads just those. A
+    re-read that fails keeps the trip's last good read. Returns 'ok', or 'killed' / 'needs_login' / 'stop' when a
+    page says so (the run is ended there)."""
     if INSTANCE:
         return "ok"
     slot, _ = crew_slot()
     run = S.get("crew_run")
     if not run:
         why = "button" if FLAGS.pop("crew_scan", False) else ("slot" if S.get("crew_slot") != slot else "")
-        if not why:
+        if why:
+            S["crew_slot"] = slot
+            run = S["crew_run"] = {"started": local_now().isoformat(timespec="seconds"), "pages": 0, "why": why,
+                                   "slot": slot}
+            save_state(S)
+            log.info("crew index run started (%s)", why)
+        elif not DB.get(CREW_REREAD_KEY):  # nothing to read: the idle check stays cheap
             return "ok"
-        S["crew_slot"] = slot
-        run = S["crew_run"] = {"started": local_now().isoformat(timespec="seconds"), "pages": 0, "why": why, "slot": slot}
-        save_state(S)
-        log.info("crew index run started (%s)", why)
     else:
         FLAGS.pop("crew_scan", None)  # a run is already going
-    insts = CI.instances(CARD_PAIRINGS)
+    insts = crew_instances()
     rows = DB.crew_rows()
-    todo = CI.queue(insts, rows, local_now(), run["started"])
+    crew_overlaps(insts, rows)  # FW-0059: an overlap not flagged yet (as before this version) queues its two trips
+    pending = DB.get(CREW_REREAD_KEY) or {}
+    again = {k for k in pending if k in insts}
+    if len(again) < len(pending):  # a trip no longer in the index is not waited for
+        DB.put(CREW_REREAD_KEY, {k: v for k, v in pending.items() if k in again})
+    if not run and not again:
+        return "ok"
+    if run:
+        todo = CI.queue(insts, rows, local_now(), run["started"], again)
+    else:  # FW-0059: no run going: only the re-reads, soonest first
+        todo = sorted(again, key=lambda k: (CI.departs(insts[k]).isoformat(), k))
     awarded = CI.awarded_periods(insts, rows)  # FW-0016: bid periods with a read that named a pilot
     held0 = CI.held_periods(insts, rows, awarded)  # periods already held (their one probe is in todo)
     held, newly = set(held0), False
-    n, res, halted = 0, "ok", False
+    n, res, halted, reread = 0, "ok", False, set()
     per_check = CREW_PER_CHECK_HUNT if FLAGS.get("hunt") else CREW_PER_CHECK  # hunting: short chunks, pot first
+    if not run:
+        per_check = min(per_check, CREW_REREAD_PER_CHECK)
     for k in todo:
-        if run["pages"] >= CREW_PER_RUN or n >= per_check:
+        if (run and run["pages"] >= CREW_PER_RUN) or n >= per_check:
             break
         if FLAGS["pause"] or FLAGS["rearm"]:
             log.info("crew index: pause / re-arm, chunk stopped (run continues later)")
             halted = True
             break
         it = insts[k]
-        if CI.period_of(it) in held - held0:  # FW-0016: held during this chunk, the rest waits for names
+        forced = k in again
+        if CI.period_of(it) in held - held0 and not forced:  # FW-0016: held during this chunk, the rest waits for names
+            continue
+        url = (f"{BASE}/full/mobilepairing.cgi?PID={it['pairing']}&DATE={it['date'].replace('-', '')}"
+               "&FROM=MobileOpentimePot&CurrentPage=1")
+        if not (SUB.safe_get(url) and SM.safe_get(url)):
+            log.info("crew index: %s url refused by safe_get, skipped", k)
+            reread.add(k)
             continue
         if n:
             time.sleep(random.uniform(1.5, 3.5))
         n += 1
-        run["pages"] += 1
-        url = (f"{BASE}/full/mobilepairing.cgi?PID={it['pairing']}&DATE={it['date'].replace('-', '')}"
-               "&FROM=MobileOpentimePot&CurrentPage=1")
+        if run:
+            run["pages"] += 1
+        good = forced and (rows.get(k) or {}).get("status") == "ok"  # a re-read never loses the last good read
         at = local_now().isoformat(timespec="seconds")
         try:
             page = fl.fetch(url)
         except Exception as e:
-            DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "fail", f"fetch: {e}"[:200])
+            if good:
+                log.info("crew index: re-read of %s failed (%s), last read kept; it stays queued", k, e)
+            else:
+                DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "fail",
+                            f"fetch: {e}"[:200])
             continue
         kind = classify(page)
         if kind != "ok":
             res = {"killed": "killed", "expired": "needs_login", "blocked": "stop"}.get(kind, "ok")
             log.info("crew index: %s page on %s, run ended", kind, k)
             break
+        if forced:
+            reread.add(k)  # FW-0059: a re-read is done once a page came back (a failed fetch stays queued)
         vt = visible_text(page)
         crew = CI.crew_line(vt)
         if crew is None:
-            DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "fail",
-                        f"no crew line: {vt[:120]}")
+            if good:
+                log.info("crew index: re-read of %s found no crew line, last read kept", k)
+            else:
+                DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "fail",
+                            f"no crew line: {vt[:120]}")
             continue
+        it = insts[k] = crew_fill(k, it, vt)  # FW-0056: a schedule trip's end and route from its page
         per, named = CI.period_of(it), CI.has_crew(crew)
         if not named and per not in awarded:  # FW-0016: no pilot named and no award seen in this bid period yet:
             DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "empty",  # not read
@@ -3433,23 +4278,32 @@ def crew_index_check(fl):
         rows[k] = {**(rows.get(k) or {}), "status": "ok", "checked_at": at, "crew": crew}
         if named and per not in awarded:  # FW-0016: the first names in this bid period: the award is out
             awarded.add(per)
-            again = sum(1 for x, i2 in insts.items() if CI.period_of(i2) == per and (rows.get(x) or {}).get("status") == "empty")
-            if per in held or again:  # its pages held back or read before the award: read from the next check on
+            again_n = sum(1 for x, i2 in insts.items() if CI.period_of(i2) == per and (rows.get(x) or {}).get("status") == "empty")
+            if per in held or again_n:  # its pages held back or read before the award: read from the next check on
                 held.discard(per)
                 newly = True
-                log.info("crew index: %s bid period names crew now (%s), %d pages read before it go first", per, k, again)
+                log.info("crew index: %s bid period names crew now (%s), %d pages read before it go first", per, k, again_n)
         DB.remember_crew(vt)
-    # the run is over when its budget is used, a page ended it, or the queue ran dry before the chunk filled
-    # (FW-0016: the pages of a period held in this chunk are not read, so they do not keep the run going; a period
-    # whose award was seen in this chunk does: its pages are read from the next check on, not a slot later)
-    done = res != "ok" or run["pages"] >= CREW_PER_RUN or (n < per_check and not halted and not newly)
-    if done:
-        S.pop("crew_run", None)
-        S["crew_last"] = {"at": now_iso(), "pages": run["pages"], "why": run["why"], "ended": res}
-        log.info("crew index run done: %d pages (%s)", run["pages"], res)
-    save_state(S)
+    if reread:  # FW-0058 / FW-0059: one re-read each, done
+        rr = DB.get(CREW_REREAD_KEY) or {}
+        DB.put(CREW_REREAD_KEY, {k: v for k, v in rr.items() if k not in reread})
+    if n:
+        crew_overlaps(insts, DB.crew_rows())  # FW-0059: new overlaps queue their re-reads, re-read ones keep or clear
+    done = False
+    if run:
+        # the run is over when its budget is used, a page ended it, or the queue ran dry before the chunk filled
+        # (FW-0016: the pages of a period held in this chunk are not read, so they do not keep the run going; a period
+        # whose award was seen in this chunk does: its pages are read from the next check on, not a slot later)
+        done = res != "ok" or run["pages"] >= CREW_PER_RUN or (n < per_check and not halted and not newly)
+        if done:
+            S.pop("crew_run", None)
+            S["crew_last"] = {"at": now_iso(), "pages": run["pages"], "why": run["why"], "ended": res}
+            log.info("crew index run done: %d pages (%s)", run["pages"], res)
+        save_state(S)
+    elif n:
+        log.info("crew index: %d trips read again (no run going)", n)
     if n or done:
-        publish_crew_index(insts, write=done)
+        publish_crew_index(insts, write=done or not run)
     if res == "stop":
         set_machine("stopped_unexpected", "FLICA showed a captcha/MFA/password page (crew index)")
     return res
@@ -3459,25 +4313,30 @@ def publish_crew_index(insts=None, write=False):
     """{T}/crew_index (retained) and, after a run, the month Markdown files."""
     if INSTANCE:
         return
-    insts = CI.instances(CARD_PAIRINGS) if insts is None else insts
+    insts = crew_instances() if insts is None else insts
     rows = DB.crew_rows()
     n, ok, pct = CI.coverage(insts, rows)
     last = S.get("crew_last") or {}
     _, nxt = crew_slot()
     run = S.get("crew_run")
     held = CI.held_periods(insts, rows)
+    flags = DB.get(CREW_OVERLAP_KEY) or {}
     pub("crew_index", {"instances": n, "checked": ok, "coverage_pct": pct, "last_run": last.get("at") or "",
                        "next_slot": nxt.replace(tzinfo=HST).isoformat(), "pages_last_run": last.get("pages", 0),
                        "failures": sum(1 for k in insts if (rows.get(k) or {}).get("status") == "fail"),
                        # FW-0016: read with no crew names yet (not counted in checked), and the bid periods held
                        "no_crew_yet": sum(1 for k in insts if (rows.get(k) or {}).get("status") == "empty"),
                        "waiting_for_award": sorted(held),
+                       # FW-0056: trips from schedules no package lists; FW-0059: pilots on two overlapping trips
+                       "from_schedules": sum(1 for it in insts.values() if it.get("src") == "schedule"),
+                       "overlaps": len(flags), "overlaps_rereading": sum(1 for f in flags.values() if f.get("state") != "kept"),
+                       "reread_queued": len(DB.get(CREW_REREAD_KEY) or {}),
                        "running": bool(run), "pages_this_run": (run or {}).get("pages", 0)})
     if write:
-        write_crew_md(insts, rows, held)
+        write_crew_md(insts, rows, held, flags)
 
 
-def write_crew_md(insts, rows, held=None):
+def write_crew_md(insts, rows, held=None, flags=None):
     """/share/flight_watcher/crew_index/<YYYY-MM>.md for every month with instances, rewritten after each run."""
     try:
         os.makedirs(CREW_DIR, exist_ok=True)
@@ -3486,7 +4345,7 @@ def write_crew_md(insts, rows, held=None):
             path = os.path.join(CREW_DIR, f"{month}.md")
             tmp = path + ".tmp"
             with open(tmp, "w") as f:
-                f.write(CI.render_month(month, insts, rows, stamp, held))
+                f.write(CI.render_month(month, insts, rows, stamp, held, flags))
             os.replace(tmp, path)
     except Exception as e:
         log.info("crew index files skipped: %s", e)
@@ -3617,16 +4476,38 @@ def ticket_delete(payload):
     return t
 
 
+TICKET_ROW_KEYS = ("id", "kind", "title", "status", "reporter", "created_at", "version_fixed", "image_count", "editable")
+TICKET_ATTR_ROWS = 30  # FW-0060: open tickets on the sensor, newest first; the card reads every ticket from the file
+
+
+def tickets_payload(listing, key, rev, last):
+    """FW-0060: the tickets sensor. The full listing (every ticket, narratives, steps) is in tickets_<key>.json, which
+    the tickets card reads; the sensor keeps the counts, this instance's last edit / delete answer and a short row
+    (no text) for the newest TICKET_ATTR_ROWS tickets still open (TK.OPEN: new, triaged, in progress, fixed,
+    reopened), so the card can list them before the file comes in. It ran about 39 KB with every ticket's text, over
+    the recorder's 16 KB."""
+    rows = [{k: t.get(k) for k in TICKET_ROW_KEYS} for t in listing.get("tickets") or []
+            if t.get("status") in TK.OPEN][:TICKET_ATTR_ROWS]
+    for r in rows:
+        r["title"] = str(r.get("title") or "")[:80]
+        r["created_at"] = str(r.get("created_at") or "")[:10]
+    return {"open": listing.get("open", 0), "total": listing.get("total", 0), "tickets": rows, "rows": "open",
+            "file_key": key, "rev": rev, "last": dict(last or {})}
+
+
 def publish_tickets(force=False):
     """{T}/tickets (retained): Ryan's instance lists every ticket, a pilot instance only its own. Re-published
     when the folder changed (the other instance may have written to it) or when forced. FW-0049: "last" is this
-    instance's last edit / delete answer ({} until one)."""
+    instance's last edit / delete answer ({} until one). FW-0060: the listing goes to tickets_<key>.json first, then
+    the sensor (tickets_payload) announces it with rev."""
     try:
         sig = TK.signature(TICKETS_DIR)
         if not force and sig == TICKETS_SIG["sig"]:
             return
         TICKETS_SIG["sig"] = sig
-        pub("tickets", {**TK.listing(TICKETS_DIR, INSTANCE or None), "last": dict(TICKETS_LAST)})
+        listing = TK.listing(TICKETS_DIR, INSTANCE or None)
+        key, rev = write_list_file("tickets", listing)
+        pub("tickets", tickets_payload(listing, key, rev, TICKETS_LAST))
     except Exception as e:
         log.info("tickets publish skipped: %s", e)
 
@@ -3748,7 +4629,7 @@ def swap_scan(pot_rows):
     submit; nothing is ever submitted (swap.WRITES_IMPLEMENTED is False)."""
     marks = S.get("trade_away") or []
     own = S.get("own_trips", {})
-    rows = [dict(r, src="O") for r in pot_rows] + [dict(r, src="T") for r in S.get("tb_details", {}).values()]
+    rows = [dict(r, src=r.get("src") or "O") for r in pot_rows] + [dict(r, src="T") for r in S.get("tb_details", {}).values()]
     ideas = []
     for mk in marks:
         mine = own.get(mk) or {}
@@ -3851,6 +4732,10 @@ def pickup_check(fl, full=False):
         if not url:
             pend.pop(k, None)
             continue
+        if not (SUB.safe_get(url) and SM.safe_get(url)):  # read only: both guards, as every other FLICA read
+            log.info("pickup %s: url refused by safe_get, dropped", k)
+            pend.pop(k, None)
+            continue
         if n:
             time.sleep(random.uniform(1.5, 3.5))
         n += 1
@@ -3933,7 +4818,8 @@ def inflt_check(fl, limit=INFLT_PER_CHECK):
         DB.reset_inflt()
         S["inflt_reset_v3"] = True
         save_state(S)
-    changed = IF.run(fl, DB, limit, log, local_now, BASE, HST)
+    changed = IF.run(fl, DB, limit, log, local_now, BASE, HST,
+                     on_sched=lambda items: note_sched_trips(items, "picker"))  # FW-0056: the crew index reads them too
     if changed:
         publish_finds()
     return changed
@@ -4030,6 +4916,7 @@ def check(fl):
     uploads_check()
     pot_all = {}
     new_any = False
+    was_regular = {k for v in (S.get("baseline") or {}).values() for k in v or ()}  # FW-0034: before this pass's reads
     for month, url in list(S["pot_urls"].items()):
         html = fl.fetch(url)
         kind = classify(html)
@@ -4071,6 +4958,8 @@ def check(fl):
                 return "stop"
         pot = parse_pot(html)
         pot_all[month] = pot
+        if not (S.get("close_in") or {}).get("verified"):
+            close_in_scan(html, f"open time page {month}")  # FW-0034: a link to the close-in folder, if it has one
         capture(fl, month, html)
         detail_probe(fl, pot)
         pot_details(fl, pot, full)
@@ -4095,6 +4984,21 @@ def check(fl):
         DB.record_pot(month, pot, new_keys)
         new_any = new_any or bool(new_keys)
         S["baseline"][month] = sorted(pot.keys())
+    ci_rows, ci_kind = {}, "ok"
+    try:  # FW-0034: the close-in folder (trips under 16 h to report), read only
+        ci_rows, ci_kind = close_in_check(fl, pot_all, full, was_regular)
+    except Exception as e:
+        log.info("close-in check error: %s", e)
+    pot_all[CLOSE_IN_KEY] = ci_rows
+    for k in ci_rows:  # a trip FLICA moved to the close-in folder is still open: no pickup to check, never 'hidden'
+        S.setdefault("pickup_pending", {}).pop(k, None)
+    if ci_kind == "killed":
+        return "killed"
+    if ci_kind == "blocked":
+        set_machine("stopped_unexpected", "FLICA showed a captcha/MFA/password page (close-in folder)")
+        return "stop"
+    if ci_kind == "expired":
+        return "needs_login"
     # drop months no longer published, and cached details of pairings no longer in any pot
     S["baseline"] = {m: v for m, v in S["baseline"].items() if m in S["pot_urls"]}
     live = {k for p in pot_all.values() for k in p}
@@ -4102,7 +5006,11 @@ def check(fl):
     S["relogin_streak"] = 0
     save_state(S)
     flat = [dict(v, month=m) for m, p in pot_all.items() for v in p.values()]
-    pub("pot/state", {"count": len(flat), "pairings": flat[:60]})
+    flat.sort(key=lambda r: r.get("src") != "C")  # FW-0034: close-in trips (under 16 h to report) first
+    # far_why stays off the sensor (no card shows it yet; it would cost rows under cap_attrs' 12 KB): the DB, the
+    # finds files and event/new_pairing keep it
+    pub("pot/state", {"count": len(flat), "pairings": [{k: v for k, v in r.items() if k != "far_why"}
+                                                       for r in flat[:60]]})
     email_check(fl, pot_all)
     pickup_check(fl, full)
     publish_finds()  # rows carry live CA / details now, so publish every check
@@ -4174,6 +5082,7 @@ def main():
                      "again", names, empties)
         except Exception as e:  # never stops the start; tried again on the next one
             log.warning("crew index repair skipped: %s: %s", type(e).__name__, e)
+    crew_split_repair()
     if DB.get("score_v") != 2:  # 0.7.6 one-shot: Pickup Speed recomputed with the vetted dwell() for every scored pickup
         DB.rescore_all()
         DB.put("score_v", 2)

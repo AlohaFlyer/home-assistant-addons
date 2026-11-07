@@ -6,7 +6,9 @@
    as the ingress_session cookie (path /api/hassio_ingress/, SameSite=Strict, Secure on https), re-validated with
    /ingress/validate_session before it can lapse (the Supervisor keeps a session 15 min from its last validation),
    then GET api/uploads and POST api/upload (the Web UI's own form fields: kind, month, list_date, pdf). The files
-   stay on this Home Assistant; nothing is sent to FLICA. Card options: slug (the app's slug), title. */
+   stay on this Home Assistant; nothing is sent to FLICA. FW-0057: a pairings package the crew index still needs
+   (api/uploads 'wanted': this bid month's or the previous one's) is asked for above the files. Card options: slug
+   (the app's slug), title. */
 const FW_UP_SLUG = ["43b22650", "flight", "watcher"].join("_");  // in parts: a second pilot's copy keeps the one app's slug
 const FW_UP_KINDS = [["award", "Monthly award"], ["pairings", "Pairings package"], ["seniority", "Pilot seniority list"]];
 const FW_UP_LABEL = { award: "Award", pairings: "Pairings package", seniority: "Seniority list", other: "Other file" };
@@ -24,6 +26,11 @@ const fwUpNextMonth = (now) => {
   const h = new Date(now - 10 * 3600e3);
   const m = h.getUTCMonth() + 1;
   return m === 12 ? `${h.getUTCFullYear() + 1}-01` : `${h.getUTCFullYear()}-${fwUpPad(m + 1)}`;
+};
+// FW-0057: a bid month k months on ('2026-10', 1 -> '2026-11')
+const fwUpAdd = (ym, k) => {
+  const n = +ym.slice(0, 4) * 12 + (+ym.slice(5) - 1) + k;
+  return `${Math.floor(n / 12)}-${fwUpPad((n % 12) + 1)}`;
 };
 const fwUpMonth = (ym) => (/^\d{4}-\d{2}$/.test(String(ym || "")) && +ym.slice(5) >= 1 && +ym.slice(5) <= 12
   ? `${FW_UP_MON[+ym.slice(5) - 1]} ${ym.slice(0, 4)}` : "");
@@ -112,6 +119,7 @@ class FlightWatcherUploadsCard extends HTMLElement {
       .msg{margin-top:6px}.ok{color:#2e7d32}.err{color:var(--error-color,#c62828)}
       .hd{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:10px 0 2px}
       .f{border-top:1px solid var(--divider-color,#ccc);padding:5px 0}
+      .w{border-left:3px solid var(--warning-color,#f57c00);padding:4px 8px;margin:6px 0}
       details summary{cursor:pointer;color:var(--secondary-text-color);font-size:12px;padding:4px 0}
       .sen{border-top:1px solid var(--divider-color,#ccc);margin-top:6px;padding-top:6px}.lbl{font-weight:600;margin-bottom:2px}
       [hidden]{display:none!important}`;
@@ -137,7 +145,8 @@ class FlightWatcherUploadsCard extends HTMLElement {
     if (this._err) return `<div class="err">${e(this._err)}</div>`;
     if (!d) return `<div class="u">Loading...</div>`;
     const files = Array.isArray(d.files) ? d.files.slice() : [];
-    if (!files.length) return `<div class="u">Nothing uploaded yet.</div>`;
+    const want = this._wantHtml(d);
+    if (!files.length) return want + `<div class="u">Nothing uploaded yet.</div>`;
     const order = { award: 0, pairings: 1, seniority: 2 };
     const key = (f) => (f.kind === "award" || f.kind === "pairings" ? `1${f.month}` : `0${f.day || ""}`);
     files.sort((a, b) => (key(a) < key(b) ? 1 : key(a) > key(b) ? -1 : (order[a.kind] ?? 3) - (order[b.kind] ?? 3)));
@@ -149,7 +158,18 @@ class FlightWatcherUploadsCard extends HTMLElement {
         <div class="u">${e(fwUpSize(f.size))} · uploaded ${e(fwUpHst(f.uploaded_at) || "?")} HST · ${read}</div></div>`;
     };
     const top = files.slice(0, FW_UP_SHOW).map(row).join(""), rest = files.slice(FW_UP_SHOW);
-    return top + (rest.length ? `<details><summary>${rest.length} older</summary>${rest.map(row).join("")}</details>` : "");
+    return want + top + (rest.length ? `<details><summary>${rest.length} older</summary>${rest.map(row).join("")}</details>` : "");
+  }
+  _wantHtml(d) {  // FW-0057: the pairings packages the crew index still needs (api/uploads 'wanted'), oldest first
+    const e = (s) => this._e(s);
+    const w = (Array.isArray(d && d.wanted) ? d.wanted : []).filter((x) => x && fwUpMonth(x.month));
+    return w.map((x) => {
+      const m = fwUpMonth(x.month);
+      const why = x.why === "previous"
+        ? `Trips other pilots started in ${m} that run into ${fwUpMonth(fwUpAdd(x.month, 1))} reach the crew index only from pilot lookups until it is on file.`
+        : `The trip details and the crew index for ${m} need it.`;
+      return `<div class="w"><b>Wanted:</b> the ${e(m)} pairings package<div class="u">${e(why)}</div></div>`;
+    }).join("");
   }
   _senHtml(s) {
     const e = (x) => this._e(x);

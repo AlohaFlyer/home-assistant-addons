@@ -315,3 +315,38 @@ def test_trade_requests_from_tradeboard_my_requests(tmp_path, monkeypatch):
     assert sensor()[-1]["pending"] == 0
     read()
     assert len(events()) == 1  # pushed once
+
+
+def test_pending_request_reads_its_view_page_once_for_its_legs(tmp_path, monkeypatch):
+    """FW-0064 review: the list names no trips, so a Pending swap read with its id had no legs and the schedule could
+    not decide it (trades.match_pending). Its view page is read once (both guards, paced) and the legs kept on the row;
+    a later read does not load it again; a request no longer listed is forgotten."""
+    import trades as TR
+    W, pages, fetched, read, events, sensor = _flow(tmp_path, monkeypatch)
+    rid = "0000CCCC:00000004"
+    pages["text"] = _html([(*_recent(W, 1).split(), "Swap", "Pending", rid)])
+    views = []
+
+    class FL:
+        def fetch(self, url):
+            fetched.append(url)
+            if "ShowRequest=1" in url:
+                views.append(url)
+                return "<html><body>Swap request: drop H3629:14NOV add H3628:13NOV</body></html>"
+            return pages["text"]
+    W.S["req_force"] = True
+    W.requests_check(FL())
+    (row,) = W.S["ot_req_rows"]["003.152"]
+    assert [(x["trip"], x["day"], x["side"]) for x in row["legs"]] == [("H3629", "14NOV", "drop"), ("H3628", "13NOV", "add")]
+    assert len(views) == 1 and all(SUB.safe_get(u) for u in fetched)
+    mv = TR.moves([{"trip": "H3629", "start": "2026-11-14"}], [{"trip": "H3628", "start": "2026-11-13"}], "2026-11",
+                  "Nov 6, 2026 10:01:11", "2026-11-06T20:05:00+00:00")
+    assert [(r["key"], len(used)) for r, used in TR.match_pending(mv, [row])] == [(f"ts:{rid}", 2)]
+    W.S["req_force"] = True
+    W.requests_check(FL())
+    assert len(views) == 1 and W.S["ot_req_rows"]["003.152"][0]["legs"]  # kept, not read again
+    pages["text"] = _html([])
+    for _ in range(2):  # a list gone empty must read so twice
+        W.S["req_force"] = True
+        W.requests_check(FL())
+    assert W.S["req_views"] == {}

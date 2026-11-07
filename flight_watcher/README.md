@@ -11,18 +11,33 @@ publishes what it finds to Home Assistant over MQTT.
 - Pot watch: reloads the open time pot at random gaps (idle 2 to 10 min, hunt 20 to 60 s with
   `switch.flight_watcher_hunt_mode`), for the current bid month and the next one once FLICA shows it. A new pairing
   fires `flight_watcher/event/new_pairing` and lands on the finds card.
+- Close-in folder (1.4.7, FW-0034): the "Close in Opentime: <16 Hrs to RPT" folder is read too, GET only, once a menu
+  link that names it gives its BCID (never guessed) and its open time page reads as HNL 332 FO. Its trips are listed
+  first on the pot (src `C`, folder `close-in`) and push like any new pairing (a trip moved there from the regular
+  pot is the same find, not a new one); its request list joins the request-decided push. Hunting, its page is read
+  at most every 5 min (about 12 FLICA loads an hour, keeping FW-0035's ~376); every check otherwise.
 - One session: FLICA allows one login. When you log in elsewhere the Watcher steps aside for 30 min (doubling on
   repeat). A failed login, a layout change or anything unexpected parks it until Re-arm.
 - Schedule: your line, numbered schedule versions (MM.NNN), FAR 117 columns, pay from the PWA tables, pairing
-  details, and the monthly award and pairings PDFs uploaded on the dashboard (or the Web UI).
+  details, and the monthly award and pairings PDFs uploaded on the dashboard (or the Web UI). A trip that comes home
+  the day the next one starts keeps its real end (1.4.7).
+- FAR column (1.4.7, FW-0039): pot, Tradeboard and finds rows run the Recall check's FAR 117 and PWA rules per duty
+  period (117.25(e), 117.25(b), 117.23(b)(1), 117.23(c)(1) and (2): `FDP 65h/168h`, `FDP 191h/672h`; PWA 10.E.1.a
+  as the `OK (CBA rest 10:30)` note). Anything not on file (a neighbour's times, training or reserve days, a customs
+  release) reads `?`, never OK; `far_why` on the row cites the rule.
 - Request decisions: reads FLICA's Open Time Requests list and the Tradeboard's My Requests page (crew-to-crew
-  trades), and pushes each Approved or Denied request once, with Pay-Gross.
+  trades), and pushes each Approved or Denied request once, with Pay-Gross. A trade no list shows (1.4.7, FW-0064):
+  trips dropped and added on your schedule the same HST day that no decided request explains are pushed once as an
+  Approved Trade ("Seen on your FLICA schedule"), with Pay-Gross (`trades.py`).
 - Recall / Over 75: checks each award against the line you held that day (schedule versions; PWA 22.G.2, FAR 117,
   PWA 10.E.1.a) and flags a miss: a red RECALL ALERT bar on the dashboard and a critical push for a sure one. An
   approved CCR narrative can go to Hark ("Have Hark file this CCR", through the HOM app and
   `/share/flight_watcher/ccr_requests/`); the app itself files nothing. Over 75 is judged per month from your answer
   on the tab (on reserve or not, PWA 22.G.2.d); while it is not set an Over 75 miss shows as CHECK.
-- Crew index and pilot lookup, charter watch (CrewTrac, read only), tickets (below).
+- Crew index and pilot lookup, charter watch (CrewTrac, read only), tickets (below). Since 1.4.7 the crew index
+  also reads trips on any schedule the Watcher reads that the pairing package does not list (FW-0056), trips that
+  start in the previous bid period and run into it (FW-0057), keeps names such as "Lee, So Young" (made up) whole
+  (FW-0058), and flags a pilot on two overlapping trips, reading both again first (FW-0059).
 - A second pilot: option `second_pilot` runs a second Watcher with its own data, MQTT prefix
   (`flight_watcher_<name>`), entities and card copies.
 
@@ -106,6 +121,10 @@ Recent finds.
   `sensor.flight_watcher_finds`. The finds card reads the full month files `finds_<YYYY-MM>_<key>.json`, whose random key
   is kept in `/data/www_key` and published only behind HA's login (`file_key` attribute), so nothing personal sits
   at a guessable `/local/` address.
+- Sensor sizes (1.4.7, FW-0060): every sensor stays under 12 KB of attributes. The ticket log, schedule versions,
+  pickers and recall days go to `tickets|versions|pickers|recall_<key>.json` under the same key (a second pilot's in
+  `www/flight-watcher/<name>/`); the sensors keep counts, a short list, `file_key` and `rev`, and their cards fetch
+  the file. Any other list over 12000 bytes loses its oldest or least useful items and says how many in `trimmed`.
 - The pilot's date of hire stays in `/data/cards.json` and reaches the schedule card as the `doh` attribute of
   `sensor.flight_watcher_state`; the card files carry a placeholder only.
 
@@ -135,9 +154,11 @@ second pilot: `flight_watcher_<name>`):
 - `<prefix>/ticket/delete` {id, rid?} (FW-0049): any status, the completed list too. The card asks first. The
   folder moves to `tickets/.deleted/<id>-<time>` (nothing is destroyed) and leaves every list; its number is not
   used again. Ryan's instance edits or deletes any ticket, a second pilot's instance only his own.
-- `<prefix>/tickets` (retained, `sensor.<prefix>_tickets`): the list (Ryan's instance: all; a second pilot: his own).
-  A new or reopened ticket is listed `editable` with its whole text. `last` {rid, id, action, ok, error, at} is the
-  answer to the last edit or delete, so the card can say saved, deleted or why not.
+- `<prefix>/tickets` (retained, `sensor.<prefix>_tickets`): the list (Ryan's instance: all; a second pilot: his own)
+  goes to `tickets_<key>.json` (1.4.7, FW-0060), where a new or reopened ticket is listed `editable` with its whole
+  text; the sensor keeps the counts, the newest 30 open tickets without their text, `file_key`, `rev` and `last`
+  {rid, id, action, ok, error, at}, the answer to the last edit or delete, so the card can say saved, deleted or why
+  not.
 - Events (not retained): `<prefix>/event/ticket_new` {id, kind, title, reporter}; `<prefix>/event/ticket_error`
   {error, at}; **`<prefix>/event/ticket_fixed` {id, kind, title, reporter, version}** (FW-0007) when a `fixed`
   action moves a ticket to fixed, once per move (a repeated `fixed` that only corrects the version sends nothing;

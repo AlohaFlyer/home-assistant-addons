@@ -1,6 +1,7 @@
 """FW-0029: the user-facing text matches 1.3.x (read-only FLICA, Settings card, tickets, pushes): no promise of FLICA
 writes in a later version, no pre-rename names, no request for real FLICA captures, no em dashes."""
 import os
+import re
 
 import pytest
 
@@ -34,3 +35,15 @@ def test_repository_names_every_app():
     for name in ("Flight Watcher", "AI Agent Manager - HI", "AI Agent Manager - NV", "flight_watcher/README.md"):
         assert name in readme, name
     assert "Flight Watcher" in open(os.path.join(ROOT, "repository.yaml"), encoding="utf-8").read()
+
+
+EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+DOCS = [os.path.join(HERE, f) for f in ("CHANGELOG.md", "CHANGELOG_PENDING.md", "README.md")] + \
+       [os.path.join(ROOT, f) for f in ("README.md", "HANDOFF.md", "CLAUDE.md", "ha/README.md", "ha/automations_flight_watcher.yaml")]
+
+
+@pytest.mark.parametrize("path", [p for p in DOCS if os.path.exists(p)], ids=lambda p: os.path.relpath(p, ROOT))
+def test_no_email_address_in_the_docs(path):
+    """1.4.7 verify: no mailbox in git (the 0.4.1 changelog entry named the FLICA alerts inbox, which anyone could then
+    mail into the Watcher's alert path); the ha/ snapshot already writes <redacted-email>."""
+    assert EMAIL.findall(open(path, encoding="utf-8").read()) == []

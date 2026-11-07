@@ -7,6 +7,12 @@ pickers' and captains' names and employee numbers, so each instance names them f
 in an attribute of sensor.<prefix>_finds (reading HA states needs a login), where the finds card picks it up. It is
 never logged: scrub() takes it out of any error text first.
 
+FW-0060 (1.4.7): the long lists that used to ride in sensor attributes (tickets about 39 KB, schedule versions about
+33 KB, pickers and the recall days growing past HA's 16 KB recorder limit) go to <name>_<key>.json in the same folder
+under the same key (LIST_NAMES), and the sensor carries a short form plus file_key and rev (a hash of the file) so
+the card fetches the file again when it changes. They are cleaned like the finds files: in an instance's own folder
+every list file not under its current key goes.
+
 The other files the Watcher writes under www hold no names: pairings_<YYYY-MM>.json (the company's pairing package:
 times, routes, crew complement codes such as CA01FO01) and the cards. The cards carry no date of hire either: the
 pilot's DOH stays in /data/cards.json and goes out in sensor.<prefix>_state (cards.py). school_<YYYY-YY>.json is a
@@ -20,6 +26,10 @@ KEY_RE = re.compile(r"[0-9a-f]{32}")
 # every finds month file the Watcher has ever written: finds_<YYYY-MM>.json before FW-0010, finds_<YYYY-MM>_<key>.json
 # since, plus the .tmp of an atomic write cut short. Nothing else in the folder matches.
 FINDS_RE = re.compile(r"finds_(\d{4}-\d{2})(?:_([0-9a-f]{32}))?\.json(?:\.tmp)?")
+
+
+LIST_NAMES = ("tickets", "versions", "pickers", "recall")  # FW-0060
+LIST_RE = re.compile(r"(%s)_([0-9a-f]{32})\.json(?:\.tmp)?" % "|".join(LIST_NAMES))
 
 
 def load_key(path):
@@ -45,11 +55,19 @@ def finds_name(month, key):
     return f"finds_{month}_{key}.json"
 
 
+def list_name(name, key):
+    """<name>_<key>.json (FW-0060): a list file a card fetches, name one of LIST_NAMES."""
+    return f"{name}_{key}.json"
+
+
 def stale(name, key, own):
     """True for a finds file to delete. In the instance's own folder: every finds file but its own current names
     (the old predictable names, files under a key from a reset /data, .tmp leftovers). In any other folder (a second
     pilot's, the pre-1.0.0 www/flica): only the predictable names, since that pilot's own instance keeps its keyed
-    files."""
+    files. FW-0060: a list file (LIST_RE) the same way; it never had a predictable name, so only the own folder."""
+    lm = LIST_RE.fullmatch(name)
+    if lm:
+        return own and name != list_name(lm.group(1), key)
     m = FINDS_RE.fullmatch(name)
     if not m:
         return False
