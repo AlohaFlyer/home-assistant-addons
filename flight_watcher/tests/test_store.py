@@ -216,12 +216,12 @@ def test_dwell_vetting(tmp_path):
 def test_crew_directory(tmp_path):
     from store import Store
     db = Store(str(tmp_path / "c.db"))
-    assert db.remember_crew("pairing details h3601 ... crew: ca 14393 rodriguez jr, ckp harold ca 15638 wong, sohngkrahn fo 24984 romano, matthew fo open") == 3
+    assert db.remember_crew("pairing details h3601 ... crew: ca 31001 doe jr, ckp jane ca 32002 lee, soyeon fo 33003 poe, patrick fo open") == 3
     db.remember_person("10007", "Lane Jr, Chris", "FO")
     assert db.crew_count() == 4
-    assert [r["emp"] for r in db.find_crew("romano")] == ["24984"]
-    assert db.find_crew("matthew romano")[0]["name"] == "Romano, Matthew" and db.find_crew("romano, matt")[0]["pos"] == "FO"
-    assert [r["emp"] for r in db.find_crew("143")] == ["14393"] and db.find_crew("10007")[0]["emp"] == "10007"
+    assert [r["emp"] for r in db.find_crew("poe")] == ["33003"]
+    assert db.find_crew("patrick poe")[0]["name"] == "Poe, Patrick" and db.find_crew("poe, pat")[0]["pos"] == "FO"
+    assert [r["emp"] for r in db.find_crew("310")] == ["31001"] and db.find_crew("10007")[0]["emp"] == "10007"
     assert db.find_crew("nobody") == [] and db.find_crew("") == []
 
 

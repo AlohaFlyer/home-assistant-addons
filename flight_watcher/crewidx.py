@@ -10,9 +10,9 @@ import os
 import re
 from datetime import date, datetime, timedelta
 
-from pot import CREW_RE, clean_name, soft_time
+from pot import CHECKIN_RE, CREW_RE, DAY_LEG_RE, LEG_DOW, LEG_RE, clean_name, soft_time
 
-CREW_FROM = date(2026, 10, 31)  # nothing before this is read
+CREW_FROM = date(2026, 10, 31)  # nothing that ends before this is read (FW-0057: a trip running into it is)
 PILOT_POS = ("CA", "FO", "RO", "SO")
 FILE_RE = re.compile(r"^pairings_(\d{4})-(\d{2})\.json$")
 WRAP_MIN = 25  # a day number above this, ahead of a smaller one in the same list, is last month's
@@ -85,9 +85,19 @@ def month_dates(month, days, prev_from=None):
     return out
 
 
-def instances(pdir, crew_from=CREW_FROM):
-    """{key 'H3601|2026-11-02': {key, pairing, date, end_date, report, route, days, month}} from every pairing
-    file, on or after crew_from. rel_days (pdfs.py: release day minus report day) gives the trip end."""
+def _iso(v):
+    v = str(v or "")
+    return v if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v) else ""
+
+
+def instances(pdir, crew_from=CREW_FROM, extra=None):
+    """{key 'H3601|2026-11-02': {key, pairing, date, end_date, report, release, route, days, month, period, src}} from
+    every pairing file, for trips that end on or after crew_from (FW-0057: one that starts before it and runs into it
+    is kept). rel_days (pdfs.py: release day minus report day) gives the trip end. FW-0056: `extra` ({key: {pairing,
+    date, end, route, report}}, the trips on the schedules the Watcher read, watcher.note_sched_trips) adds every trip
+    no pairing file lists on that date (H38xx built later, a trade's H3815B, October's trips when there is no
+    October file), src 'schedule', its bid period from the period bounds (period_for); end_known is False while
+    its end is a guess (the start day) until its pairing page is read."""
     out = {}
     try:
         files = sorted(f for f in os.listdir(pdir) if FILE_RE.match(f))
@@ -99,7 +109,7 @@ def instances(pdir, crew_from=CREW_FROM):
         try:
             d = json.load(open(os.path.join(pdir, f)))
             cols = d.get("cols") or []
-            ix = {c: cols.index(c) for c in ("id", "report", "rel_days", "route", "credit", "days") if c in cols}
+            ix = {c: cols.index(c) for c in ("id", "report", "release", "rel_days", "route", "credit", "days") if c in cols}
             rows = d.get("rows") or []
         except Exception:
             continue
@@ -119,15 +129,72 @@ def instances(pdir, crew_from=CREW_FROM):
             if not pid:
                 continue
             for dt in month_dates(month, r[ix["days"]], prev_from):
-                if dt < crew_from:
+                end = dt + timedelta(days=max(rel, 0))
+                if end < crew_from:
                     continue
                 k = f"{pid}|{dt.isoformat()}"
-                out.setdefault(k, {"key": k, "pairing": pid, "date": dt.isoformat(),
-                                   "end_date": (dt + timedelta(days=max(rel, 0))).isoformat(),
+                out.setdefault(k, {"key": k, "pairing": pid, "date": dt.isoformat(), "end_date": end.isoformat(),
                                    "report": str(r[ix["report"]]) if "report" in ix else "",
+                                   "release": str(r[ix["release"]] or "") if "release" in ix else "",
                                    "route": str(r[ix["route"]]) if "route" in ix else "",
                                    "credit": str(r[ix["credit"]] or "") if "credit" in ix else "",
-                                   "days": max(rel, 0) + 1, "month": dt.strftime("%Y-%m"), "period": month})
+                                   "days": max(rel, 0) + 1, "month": dt.strftime("%Y-%m"), "period": month,
+                                   "src": "package"})
+    cache, floor = {}, crew_from.isoformat()
+    for e in (extra or {}).values():
+        pid, d = str((e or {}).get("pairing") or "").strip().upper(), _iso((e or {}).get("date"))
+        if not pid or not d or f"{pid}|{d}" in out:
+            continue
+        end = _iso(e.get("end"))
+        end = end if end >= d else ""
+        last = end or d
+        if last < floor:
+            continue
+        k = f"{pid}|{d}"
+        out[k] = {"key": k, "pairing": pid, "date": d, "end_date": last, "report": str(e.get("report") or ""),
+                  "release": "", "route": str(e.get("route") or ""), "credit": "",
+                  "days": (date.fromisoformat(last) - date.fromisoformat(d)).days + 1, "month": d[:7],
+                  "period": period_for(pdir, d, cache), "src": "schedule", "end_known": bool(end)}
+    return out
+
+
+def period_for(pdir, iso, cache=None):
+    """FW-0056 / FW-0057: the bid period (pairing file month) a trip starting on `iso` belongs to, from the period
+    bounds the pairing files give (period_start / period_end: Oct 31 is October's when November's period starts Nov 1,
+    Dec 1 is November's when its file has a D1 day); the calendar month when no bound says otherwise. `cache` keeps
+    the bounds of each month between calls."""
+    cache = {} if cache is None else cache
+    try:
+        y, m = _ym(iso)
+        for k in (0, 1, -1):
+            yy, mm = _shift(y, m, k)
+            mon = f"{yy}-{mm:02d}"
+            if mon not in cache:
+                cache[mon] = (period_start(pdir, mon), period_end(pdir, mon))
+            if cache[mon][0] <= iso <= cache[mon][1]:
+                return mon
+    except ValueError:
+        pass
+    return str(iso)[:7]
+
+
+def page_trip(text):
+    """FW-0056: {days, route, report} of a trip from its pairing page's text, for a trip no package lists (the crew
+    index reads the page anyway): days from the legs' day codes (as pot.parse_detail), route from the legs, report
+    from 'check in'. Missing -> absent."""
+    t, out = text or "", {}
+    codes = DAY_LEG_RE.findall(t)
+    if codes:
+        idx = [LEG_DOW.index(c.upper()) for c in codes]
+        out["days"] = sum((b - a) % 7 for a, b in zip(idx, idx[1:])) + 1
+    legs = [(a.upper(), b.upper()) for a, b, _, _ in LEG_RE.findall(t)]
+    if legs:
+        out["route"] = "-".join([legs[0][0]] + [b for _, b in legs])
+    m = CHECKIN_RE.search(t)
+    if m:
+        v = m.group(1).replace(":", "")
+        if len(v) in (3, 4) and int(v[:-2]) < 24:
+            out["report"] = f"{int(v[:-2]):02d}:{v[-2:]}"
     return out
 
 
@@ -169,8 +236,10 @@ def held_periods(insts, rows, awarded=None):
     return {p for p, c in n.items() if c >= HOLD_AFTER and p not in awarded}
 
 
-def queue(insts, rows, now, run_started=None):
-    """Keys to read, in order: (0) FW-0016: one probe per held bid period (held_periods) per run: a future
+def queue(insts, rows, now, run_started=None, first=None):
+    """Keys to read, in order: (00) FW-0058 / FW-0059: `first`, the trips queued for one re-read (a pilot on two
+    overlapping trips, a crew line cut at a seat code), soonest first, whatever their state or period and even when
+    departed or read in this run; (0) FW-0016: one probe per held bid period (held_periods) per run: a future
     instance never read, soonest first, else the one checked longest ago, so the probe moves through the
     period; (1) never checked, soonest first (past dates too), and future pages read with no crew names before
     their period's award was seen (FW-0016: stale once it is); (1b) failed, or read with no crew names in a
@@ -226,8 +295,10 @@ def queue(insts, rows, now, run_started=None):
             continue
         c3.append((at, dep, k))
     c0 = sorted(v for p, v in probe.items() if p not in probed)
-    return ([k for *_, k in c0] + [k for _, k in sorted(c1)] + [k for _, k in sorted(c1b)] + [k for _, k in sorted(c2)]
-            + [k for _, k in sorted(c2b)] + [k for *_, k in sorted(c3)])
+    head = [k for _, k in sorted((departs(insts[k]).isoformat(), k) for k in set(first or ()) if k in insts)]
+    out = (head + [k for *_, k in c0] + [k for _, k in sorted(c1)] + [k for _, k in sorted(c1b)] + [k for _, k in sorted(c2)]
+           + [k for _, k in sorted(c2b)] + [k for *_, k in sorted(c3)])
+    return list(dict.fromkeys(out))
 
 
 NAME_RE = re.compile(r"^([a-z][a-z'.\- ]*?(?: jr| sr| ii| iii)?,\s*[a-z][a-z'.\-]*(?:\s[a-z][a-z'.\-]*)?)\b", re.I)
@@ -254,23 +325,141 @@ def crew_line(text):
     return out
 
 
+def split_suspect(crew):
+    """FW-0058: a crew line stored before the seat code fix and cut at a seat code inside a name: a named seat with no
+    employee number (FLICA prints one for every named seat) or a name with no comma (FLICA prints 'LAST, FIRST')."""
+    return any(c.get("pos") in PILOT_POS + ("FA",) and c.get("name") not in (None, "", "OPEN")
+               and (not c.get("emp") or "," not in c["name"]) for c in crew or [])
+
+
+# ---------------------------------------------------------------- FW-0059: one pilot on two overlapping trips
+def _hhmm(v):
+    m = re.match(r"^\s*(\d{1,2}):(\d{2})", str(v or ""))
+    return f"{int(m.group(1)):02d}:{m.group(2)}" if m and int(m.group(1)) < 24 else ""
+
+
+def _bounds(it, r):
+    """(start, end, report, release) of a trip instance: its dates (the instance's, else the read's) and the
+    package's report / release times ('' when unknown)."""
+    start = _iso(it.get("date")) or _iso(r.get("date"))
+    end = _iso(it.get("end_date")) or _iso(r.get("end_date"))
+    return start, end if end >= start else start, _hhmm(it.get("report")), _hhmm(it.get("release"))
+
+
+def overlap(a, b):
+    """FW-0059: True when two trips (start, end, report, release) cannot both be one pilot's: they share two or more
+    days, start on the same day or end on the same day, or one ends on the day the other starts and the package's
+    times put the later trip's report before the earlier one's release. A trip that ends on the day the next one
+    starts, with no times to say otherwise, is not flagged (a morning release and a night report can both be flown)."""
+    lo, hi = max(a[0], b[0]), min(a[1], b[1])
+    if not lo or lo > hi:
+        return False
+    if lo < hi or a[0] == b[0] or a[1] == b[1]:
+        return True
+    first, second = (a, b) if a[1] == lo else (b, a)  # first ends on the day second starts
+    return bool(first[3] and second[2] and second[2] < first[3])
+
+
+def overlaps(insts, rows):
+    """FW-0059: [{id, emp, name, keys: [k1, k2]}] for every pilot (by employee number) whom the last good reads show on
+    two trips that overlap (overlap()), keys by start. Only 'ok' reads count; OPEN seats and flight attendants do not.
+    Sorted by id ('emp|k1|k2')."""
+    by = {}
+    for k, r in rows.items():
+        if r.get("status") != "ok":
+            continue
+        b = _bounds(insts.get(k) or {}, r)
+        if not b[0]:
+            continue
+        for c in r.get("crew") or []:
+            if c.get("pos") in PILOT_POS and c.get("emp") and c.get("name") != "OPEN":
+                by.setdefault(str(c["emp"]), {})[k] = (b, c.get("name") or "")
+    out = []
+    for emp, ks in by.items():
+        items = sorted(ks.items(), key=lambda x: (x[1][0][0], x[0]))
+        for i, (k1, (b1, n1)) in enumerate(items):
+            for k2, (b2, n2) in items[i + 1:]:
+                if b2[0] > b1[1]:
+                    break
+                if overlap(b1, b2):
+                    out.append({"id": f"{emp}|{k1}|{k2}", "emp": emp, "name": n1 or n2, "keys": [k1, k2]})
+    return sorted(out, key=lambda f: f["id"])
+
+
+def overlap_update(found, flags, reread, now_s):
+    """FW-0059: the stored overlap flags after a fresh look (found = overlaps()). A new overlap is flagged (state
+    'reread', found_at now_s) and both its trips go into `reread` ({key: {why, at}}) for one paced re-read; once
+    neither trip waits for its re-read any more, an overlap that is still there keeps its flag with the newer read
+    kept (state 'kept'); a flag no longer found is cleared. Pure: returns (flags, reread, new ids, kept ids,
+    cleared ids)."""
+    flags, reread = dict(flags or {}), dict(reread or {})
+    out, new, kept = {}, [], []
+    for f in found:
+        old = flags.get(f["id"])
+        if not old:
+            out[f["id"]] = {**f, "found_at": now_s, "state": "reread"}
+            for k in f["keys"]:
+                reread.setdefault(k, {"why": "overlap", "at": now_s})
+            new.append(f["id"])
+            continue
+        st = old.get("state") or "reread"
+        if st == "reread" and not any(k in reread for k in f["keys"]):
+            st = "kept"
+            kept.append(f["id"])
+        out[f["id"]] = {**old, **f, "state": st}
+    return out, reread, new, kept, sorted(set(flags) - set(out))
+
+
+OVERLAP_RANK = {"reread": 0, "older": 1, "newer": 2}
+OVERLAP_SAYS = {"reread": "re-read queued", "older": "older read", "newer": "newer read kept"}
+
+
+def overlap_marks(flags, rows):
+    """FW-0059: {emp: {key: {'with': ['H3620 2026-11-06'], 'state'}}} for the trips of the stored overlap flags: state
+    'reread' while the re-read is queued, then 'newer' for the trip read last (the read kept) and 'older' for the
+    other (a tie goes to the earlier trip, as in grid_pick). A trip in several flags of one pilot takes the most
+    pressing state (reread, then older)."""
+    out = {}
+    for f in (flags or {}).values():
+        ks = list(f.get("keys") or [])
+        if len(ks) != 2:
+            continue
+        if f.get("state") == "kept":
+            at = [(rows.get(k) or {}).get("checked_at") or "" for k in ks]
+            newer = ks[0] if at[0] >= at[1] else ks[1]  # keys run by start
+            st = {k: "newer" if k == newer else "older" for k in ks}
+        else:
+            st = {k: "reread" for k in ks}
+        for k, o in ((ks[0], ks[1]), (ks[1], ks[0])):
+            m = out.setdefault(str(f.get("emp") or ""), {}).setdefault(k, {"with": [], "state": st[k]})
+            m["with"].append(o.replace("|", " "))
+            if OVERLAP_RANK[st[k]] < OVERLAP_RANK[m["state"]]:
+                m["state"] = st[k]
+    return out
+
+
 def coverage(insts, rows, month=None, date_from=None, date_to=None):
     """(instances, checked ok, percent) over all instances, one month's, or (FW-0002, the pilot card's grid)
-    those starting date_from..date_to (ISO, inclusive) whatever file they came from."""
+    those on any day of date_from..date_to (ISO, inclusive) whatever file they came from (FW-0057: a trip that starts
+    before the range and runs into it counts, as pilot_trips keeps it)."""
     ks = [k for k, it in insts.items() if (not month or it["month"] == month)
-          and (not date_from or it["date"] >= date_from) and (not date_to or it["date"] <= date_to)]
+          and (not date_from or (it.get("end_date") or it["date"]) >= date_from) and (not date_to or it["date"] <= date_to)]
     ok = sum(1 for k in ks if (rows.get(k) or {}).get("status") == "ok")
     return len(ks), ok, round(100.0 * ok / len(ks), 1) if ks else 0.0
 
 
-def render_month(month, insts, rows, now_s, held=None):
+def render_month(month, insts, rows, now_s, held=None, flags=None):
     """Markdown for one month: header, then one section per pilot (sorted by name) with a table of trips.
-    FW-0016: pages read with no crew names are counted apart, and a held bid period (held_periods) says so."""
+    FW-0016: pages read with no crew names are counted apart, and a held bid period (held_periods) says so.
+    FW-0059: a trip of a pilot shown on two overlapping trips (the stored overlap flags) says so in its Pairing cell,
+    with the other trip and where the re-read stands, and the header counts them."""
     n, ok, pct = coverage(insts, rows, month)
     fails = sum(1 for k, it in insts.items() if it["month"] == month and (rows.get(k) or {}).get("status") == "fail")
     empty = sum(1 for k, it in insts.items() if it["month"] == month and (rows.get(k) or {}).get("status") == "empty")
     held = held_periods(insts, rows) if held is None else held
     waiting = sorted({period_of(it) for it in insts.values() if it["month"] == month and period_of(it) in held})
+    marks = overlap_marks(flags, rows)
+    flagged = [f for f in (flags or {}).values() if any((insts.get(k) or {}).get("month") == month for k in f.get("keys") or [])]
     pilots = {}
     for k, it in insts.items():
         r = rows.get(k) or {}
@@ -281,7 +470,9 @@ def render_month(month, insts, rows, now_s, held=None):
                 continue
             pid = c.get("emp") or c["name"]
             p = pilots.setdefault(pid, {"name": c["name"], "emp": c.get("emp") or "", "trips": []})
-            p["trips"].append((it["date"], it["pairing"], c["pos"], it.get("route") or "", it.get("days") or 1))
+            mk = marks.get(c.get("emp") or "", {}).get(k)
+            pr = it["pairing"] + (f" (overlaps {', '.join(mk['with'])}: {OVERLAP_SAYS[mk['state']]})" if mk else "")
+            p["trips"].append((it["date"], pr, c["pos"], it.get("route") or "", it.get("days") or 1))
     lines = [f"# Crew index {month}", "",
              f"Coverage {pct}% ({ok} of {n} trip instances read, {fails} failed, {empty} with no crew names yet). "
              f"Updated {now_s} HST.",
@@ -290,6 +481,10 @@ def render_month(month, insts, rows, now_s, held=None):
     for p in waiting:
         lines += [f"Waiting for the award: the {p} bid period's pages name no crew yet. One page is read per run",
                   "until names appear, then the whole period.", ""]
+    if flagged:
+        rr = sum(1 for f in flagged if f.get("state") != "kept")
+        lines += [f"Overlaps: {len(flagged)} (a pilot on two trips that overlap, as after a trade between reads). Both trips",
+                  f"are read again ({rr} still queued); when the pilot is still on both, the newer read is kept.", ""]
     for p in sorted(pilots.values(), key=lambda p: (p["name"], p["emp"])):
         lines += [f"### {p['name']} ({p['emp'] or '?'})", "", "| Date | Pairing | Seat | Route | Days |",
                   "|---|---|---|---|---|"]
@@ -393,7 +588,7 @@ def _details_for(details, period):
     return details or {}
 
 
-def pilot_trips(insts, rows_for_emp, month=None, start_from=None, crew_rows=None, details=None, end_to=None):
+def pilot_trips(insts, rows_for_emp, month=None, start_from=None, crew_rows=None, details=None, end_to=None, marks=None):
     """reconstructed list for the pilot lookup, by start: [{pairing, start, end, seat, route, checked_at, lay, blk,
     credit, soft, crew, period, n}]. month keeps the trips on any of its days; start_from / end_to (ISO, inclusive;
     FW-0002, grid_range: the day before the bid period to its last day, which can be in the next month) replace that
@@ -403,8 +598,11 @@ def pilot_trips(insts, rows_for_emp, month=None, start_from=None, crew_rows=None
     FW-0062: details are looked up in the trip's own bid period (a trip from October's file on the grid's first
     row, Oct 31, gets October's package, not November's; the same id can be another trip in another month), by the
     exact id, else the id without its trailing letter; n is the pilots on the whole crew line (OPEN seats count,
-    flight attendants do not), for the PWA 4.O.1 overrides."""
-    out, crew_rows = [], crew_rows or {}
+    flight attendants do not), for the PWA 4.O.1 overrides. FW-0059: `marks` ({key: {with, state}}, this pilot's
+    overlap_marks) flag a trip that overlaps another of the pilot's: overlap is its state ('reread', 'older', 'newer';
+    '' when none) and overlap_with the other trips ('H3620 2026-11-06').
+    FW-0056 / FW-0057: a trip from a schedule (no package row) or from the previous bid period is listed the same way."""
+    out, crew_rows, marks = [], crew_rows or {}, marks or {}
     lo, hi = start_from or (f"{month}-01" if month else ""), end_to or (f"{month}-31" if month else "~")
     for r in rows_for_emp:
         it = insts.get(r["key"]) or {}
@@ -423,7 +621,9 @@ def pilot_trips(insts, rows_for_emp, month=None, start_from=None, crew_rows=None
                     "end": r.get("end_date") or it.get("end_date") or start, "seat": r.get("pos") or "",
                     "route": r.get("route") or it.get("route") or "", "checked_at": r.get("checked_at") or "",
                     "lay": det.get("lay") or "", "blk": blk, "credit": credit, "soft": soft_time(credit, blk) or "",
-                    "crew": crew, "period": per, "n": sum(1 for c in line if c.get("pos") in PILOT_POS)})
+                    "crew": crew, "period": per, "n": sum(1 for c in line if c.get("pos") in PILOT_POS),
+                    "overlap": (marks.get(r["key"]) or {}).get("state") or "",
+                    "overlap_with": ", ".join((marks.get(r["key"]) or {}).get("with") or [])})
     return sorted(out, key=lambda x: (x["start"], x["pairing"]))
 
 

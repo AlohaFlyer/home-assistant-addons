@@ -55,7 +55,7 @@ def _trips(s):
 def parse_my_requests(text):
     """1.4.3: Ryan's crew-to-crew trades from the visible text of 'My Requests', in page order:
     [{key, date 'MM/DD', time, type 'Trade', status, emp, trips, legs [{trip, day, side, seat}], detail}].
-    'Trade H3604:13NOV and H3659:18NOV With Emp #: 24594 For H3620:12NOV and H3620:15NOV ... Processing' (made-up
+    'Trade H3604:13NOV and H3659:18NOV With Emp #: 10004 For H3620:12NOV and H3620:15NOV ... Processing' (made-up
     in tests): the trips before 'With' are given (drop), the trips after 'For' are taken (add)."""
     rows, seen = [], {}
     for m in TRADE_ROW_RE.finditer(text or ""):

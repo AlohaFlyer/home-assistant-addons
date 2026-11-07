@@ -156,9 +156,10 @@ def fetch_schedule(fl, base, emp, bd, cur_bd, log, key):
     return None
 
 
-def run(fl, db, limit, log, local_now, base, hst):
+def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
     """Three pickups per check: look the picker's month up, read the pairings around the pickup day,
-    decide. Returns True when any verdict was written."""
+    decide. Returns True when any verdict was written. FW-0056: on_sched(items) gets each picker month read
+    ([{trip, start}]), so the crew index reads those trips too."""
     changed_early = False
     if db.get("score_email_v") != 1:  # 0.5.6 one-shot: score the email-caught pickups recorded before 0.5.6
         for k in db.unscored_pickups():
@@ -193,6 +194,11 @@ def run(fl, db, limit, log, local_now, base, hst):
                     db.set_inflt(key, None, tries=tries + 1)
                     continue
                 cache[ck] = sched
+                if on_sched:
+                    try:
+                        on_sched(sched)
+                    except Exception as e:
+                        log.info("inflt %s: schedule trips not passed on: %s", key, e)
             day = d.date()
             cands = [p for p in cache[ck] if 0 <= (day - date.fromisoformat(p["start"])).days <= 6]
             verdict, trip = False, ""
