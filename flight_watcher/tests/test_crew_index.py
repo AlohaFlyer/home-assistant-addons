@@ -16,8 +16,8 @@ def _file(d, month, rows):
     (d / f"pairings_{month}.json").write_text(json.dumps({"month": month, "cols": COLS, "rows": rows}))
 
 
-def _row(pid, days, rel=1, report="07:30", route="HNL-LAX-HNL"):
-    return [pid, report, "08:30", "14:00", rel, 300, route, "12:00", "30:30", days, "10:00", ""]
+def _row(pid, days, rel=1, report="07:30", route="HNL-LAX-HNL", block="10:00"):
+    return [pid, report, "08:30", "14:00", rel, 300, route, "12:00", "30:30", days, block, ""]
 
 
 def test_month_dates_plain_and_next_month():
@@ -216,8 +216,10 @@ def test_pilot_lookup_rebuilt_grid_fields(W, tmp_path):
         ("H9001", "2026-12-01", "2026-12-03")]
     assert (r[1]["lay"], r[1]["blk"], r[1]["credit"], r[1]["soft"]) == ("LAX", "9:58", "12:34", "2:36")
     assert r[1]["crew"] == [["CA", "Doe, Jane"], ["FO", "Roe, Rick"], ["RO", "OPEN"]]
-    # no package details: credit from the pairing file, no block, layover or soft
-    assert (r[2]["lay"], r[2]["blk"], r[2]["credit"], r[2]["soft"]) == ("", "", "12:00", "")
+    # FW-0062: no package details: credit and block from the pairing file; a trip that ends on its start day has no
+    # layover, one that lays over (October's H9007, no October package) takes it from its route
+    assert (r[2]["lay"], r[2]["blk"], r[2]["credit"], r[2]["soft"]) == ("", "10:00", "12:00", "2:00")
+    assert (r[0]["lay"], r[0]["blk"], r[0]["credit"], r[0]["soft"]) == ("LAX", "10:00", "12:00", "2:00")
     # Oct 31 to Dec 1: 4 of 5 instances read (H9003 failed); the calendar month alone would say 2 of 3
     assert p["reconstructed_coverage_pct"] == 80.0
     # November's D1 ends its period on Dec 1, so December's starts on Dec 2 (its grid's first row is Dec 1)
@@ -596,7 +598,8 @@ def test_pilot_lookup_pay_line(W, tmp_path, monkeypatch):
     DOH on the shared seniority list (made-up), FO on a 3-pilot crew + $3.00 / block h (PWA 4.O.1), Pay-Net at this
     instance's tax settings; 'gross' on each priced trip. No list, or not on it: hours and days only."""
     import pay as PAY
-    _file(tmp_path / "www", "2026-11", [_row("H9001", "9", rel=2), _row("H9002", "20", rel=0, route="HNL-OGG-HNL")])
+    # H9002: no package details and no block in the pairing file either (FW-0062: the file's block fills in otherwise)
+    _file(tmp_path / "www", "2026-11", [_row("H9001", "9", rel=2), _row("H9002", "20", rel=0, route="HNL-OGG-HNL", block="")])
     W.crew_index_check(FakeFl())  # crew line: CA, FO 10999 Roe, RO open = 3 pilots
     W.DB.put("pkg_details:2026-11", {"H9001": {"block": "9:58", "credit": "12:34", "lay": "LAX"}})
     monkeypatch.setattr(W, "UPLOADS_SHARED", _sen(tmp_path, {"10999": ROE}))
@@ -644,6 +647,86 @@ def test_pilot_lookup_previous_period_package(W, tmp_path):
     r = [p for t, p in W.SENT if t == "pilot_schedule"][-1]["reconstructed"]
     assert [(x["pairing"], x["start"], x["lay"], x["blk"], x["credit"], x["soft"]) for x in r] == [
         ("H9007", "2026-10-31", "SYD", "20:55", "21:30", "0:35"), ("H9001", "2026-11-09", "LAX", "9:58", "12:34", "2:36")]
+
+
+# FW-0062 (live 2026-11-07): no package details for the period (no upload on this install, so pkg_details_for is {}),
+# only the published pairing file, whose block and credit read '12h19', and which has no 'start' / 'end'. Synthetic ids.
+LIVE_ROWS = [["H9604", "11:55", "12:55", "08:50", 2, 350, "HNL-HND-HNL", "16h35", "44h55", "9", "16h35", "CA01FO01RO01"],
+             ["H9620", "22:45", "23:45", "11:52", 2, 537, "HNL-LAS-HNL", "15h00", "37h07", "12", "12h19", "CA01FO01"],
+             ["H9640", "14:35", "15:35", "05:55", 1, 920, "HNL-PPT-HNL", "11h50", "15h20", "20", "11h50", "CA01FO01"],
+             ["H9605", "14:10", "15:10", "10:05", 2, 350, "HNL-HND-HNL", "16h35", "43h55", "26", "16h35", "CA01FO01RO01"]]
+
+
+class SeatFl(FakeFl):
+    """Crew lines with the looked-up pilot (10999, made up) in the seat each trip gives him."""
+    LINES = {"H9604": "ca 10001 doe, jane fo 10999 roe, rick ro open",
+             "H9620": "ca 10001 doe, jane fo 10999 roe, rick",
+             "H9640": "ca 10002 poe, pat fo 10999 roe, rick",
+             "H9605": "ca 10001 doe, jane fo 10003 moe, mo ro 10999 roe, rick"}
+
+    def fetch(self, url):
+        self.urls.append(url)
+        pid = url.split("PID=")[1].split("&")[0]
+        return f"<html><p>pairing {pid} crew: {self.LINES[pid]} back to top</p></html>"
+
+
+def test_pilot_lookup_block_and_layover_without_a_package(W, tmp_path, monkeypatch):
+    """FW-0062 regression: every rebuilt trip had a blank blk and lay when the bid period has no pairing package
+    details, so the pay line said Block 0:00 (block_n 0) and the RO and 3-pilot FO overrides (PWA 4.O.1) could not be
+    priced. Block now comes from the pairing file ('12h19' -> '12:19') and the layover from its route; a one-duty
+    red-eye turn (TAFB = first duty) has none. With no date of hire on file the pay line is still there (hours and
+    days; the card says to upload); with one, both overrides are priced."""
+    import pay as PAY
+    d = tmp_path / "www"
+    d.mkdir()
+    (d / "pairings_2026-11.json").write_text(json.dumps({"month": "2026-11", "source": "synthetic", "cols": COLS, "rows": LIVE_ROWS}))
+    up = tmp_path / "uploads"
+    up.mkdir()
+    monkeypatch.setattr(W, "UPLOADS_SHARED", str(up))  # no package text, no seniority list
+    W.crew_index_check(SeatFl())
+    assert W.pkg_details_for("2026-11") == {}
+    W.pub_pilot({"emp": "10999", "name": "Roe, Rick", "status": "not readable", "month": "", "days": [], "items": []})
+    p = [p for t, p in W.SENT if t == "pilot_schedule"][-1]
+    assert [(x["pairing"], x["start"], x["seat"], x["n"], x["lay"], x["blk"], x["credit"], x["soft"]) for x in p["reconstructed"]] == [
+        ("H9604", "2026-11-09", "FO", 3, "HND", "16:35", "16:35", "0:00"),
+        ("H9620", "2026-11-12", "FO", 2, "LAS", "12:19", "15:00", "2:41"),
+        ("H9640", "2026-11-20", "FO", 2, "", "11:50", "11:50", "0:00"),
+        ("H9605", "2026-11-26", "RO", 3, "HND", "16:35", "16:35", "0:00")]
+    pl = p["pay_line"]
+    assert (pl["doh_known"], pl["list_status"], pl["gross"], pl["trips"]) == (False, "none", None, 4)
+    assert (pl["block"], pl["block_n"], pl["credit"], pl["credit_n"], pl["soft"]) == ("57:19", 4, "60:00", 4, "2:41")
+    # with a date of hire on file: the FO $3.00 (3-pilot crew) and RO $4.00 per block hour overrides are in Pay-Gross
+    _sen(tmp_path, {"10999": ROE})
+    W._SEN_CACHE.clear()
+    W.pub_pilot({"emp": "10999", "name": "Roe, Rick", "status": "not readable", "month": "", "days": [], "items": []})
+    p = [p for t, p in W.SENT if t == "pilot_schedule"][-1]
+    pl = p["pay_line"]
+    fo = {s: PAY.rate_for(9, s) for s in ("2026-11-09", "2026-11-12", "2026-11-20", "2026-11-26")}
+    want = [(16 + 35 / 60) * (fo["2026-11-09"] + 3.00), 15 * fo["2026-11-12"], (11 + 50 / 60) * fo["2026-11-20"],
+            (16 + 35 / 60) * (fo["2026-11-26"] + 4.00)]
+    assert [x["gross"] for x in p["reconstructed"]] == [pytest.approx(round(g, 2)) for g in want]
+    assert (pl["doh_known"], pl["trips_priced"], pl["no_block"], pl["block_n"]) == (True, 4, [], 4)
+    assert pl["gross"] == pytest.approx(sum(want), abs=0.02)
+
+
+def test_rebuilt_package_first_then_the_pairing_file():
+    """FW-0062: the package's block and layover win; a pairing the package lacks (or a period without one) takes the
+    pairing file's block and its route's layover. route_lay: stations past the base, '/' joined, only for a trip that
+    lays over (more than one day and, when known, TAFB longer than the first duty)."""
+    insts = {"H9604|2026-11-09": {"date": "2026-11-09", "end_date": "2026-11-11", "pairing": "H9604", "period": "2026-11",
+                                  "route": "HNL-HND-HNL", "credit": "16h35", "block": "16h35", "tafb": "44h55",
+                                  "first_duty_min": "350"},
+             "H9620|2026-11-12": {"date": "2026-11-12", "end_date": "2026-11-14", "pairing": "H9620", "period": "2026-11",
+                                  "route": "HNL-LAS-HNL", "credit": "15h00", "block": "12h19", "tafb": "37h07",
+                                  "first_duty_min": "537"}}
+    rows = [{"key": k, "pos": "FO"} for k in insts]
+    det = {"2026-11": {"H9604": {"block": "16:30", "credit": "16:35", "lay": "NRT"}}}
+    got = CI.pilot_trips(insts, rows, start_from="2026-10-31", end_to="2026-12-01", details=det)
+    assert [(x["lay"], x["blk"], x["credit"]) for x in got] == [("NRT", "16:30", "16:35"), ("LAS", "12:19", "15:00")]
+    assert CI.route_lay("HNL-OGG-LAX-HNL", {}, "2026-11-02", "2026-11-04") == "OGG/LAX"
+    assert CI.route_lay("HNL-PPT-HNL", {"tafb": "15h20", "first_duty_min": 920}, "2026-11-20", "2026-11-21") == ""
+    assert CI.route_lay("HNL-OGG-HNL", {"tafb": "30h30", "first_duty_min": 300}, "2026-11-20", "2026-11-20") == ""
+    assert CI.route_lay("", {}, "2026-11-02", "2026-11-04") == ""
 
 
 def test_second_pilot_reads_the_shared_uploads(tmp_path, monkeypatch):

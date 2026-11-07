@@ -2,6 +2,12 @@
 
 ## 1.4.7
 
+- FW-0062 (Ryan, Nov 7): a looked-up pilot's rebuilt month now has Block and Layover on every trip when the bid period
+  has no pairing package details (no package upload on file): block comes from the pairing file's block column
+  ('12h19'), the layover from its route (stations past HNL, only for a trip that lays over: more than one day and TAFB
+  longer than its first duty, so a red-eye turn has none). The pay line's Block total and the PWA 4.O.1 RO $4.00 and
+  3-pilot FO $3.00 per block hour overrides are priced again; package details still win where they exist
+  (`crewidx.pilot_trips`, new `crewidx.route_lay`; `crewidx.instances` keeps block, tafb, first_duty_min).
 - FW-0034 (close-in folder, read only): the close-in open time folder ("Close in Opentime: <16 Hrs to RPT") is read,
   GET only. Its BCID is taken only from a menu link whose text names the folder (or the first link under a heading
   that does), never guessed: from the open time pages read every check, the pot discovery menu (desktop and mobile),

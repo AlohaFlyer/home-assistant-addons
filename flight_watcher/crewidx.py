@@ -85,13 +85,19 @@ def month_dates(month, days, prev_from=None):
     return out
 
 
+def _cell(r, i):
+    """A pairing file row's cell as text ('' when the file has no such column or the row is short)."""
+    return str(r[i] if r[i] is not None else "").strip() if i is not None and i < len(r) else ""
+
+
 def _iso(v):
     v = str(v or "")
     return v if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v) else ""
 
 
 def instances(pdir, crew_from=CREW_FROM, extra=None):
-    """{key 'H3601|2026-11-02': {key, pairing, date, end_date, report, release, route, days, month, period, src}} from
+    """{key 'H3601|2026-11-02': {key, pairing, date, end_date, report, release, route, credit, block, tafb, first_duty_min,
+    days, month, period, src}} from
     every pairing file, for trips that end on or after crew_from (FW-0057: one that starts before it and runs into it
     is kept). rel_days (pdfs.py: release day minus report day) gives the trip end. FW-0056: `extra` ({key: {pairing,
     date, end, route, report}}, the trips on the schedules the Watcher read, watcher.note_sched_trips) adds every trip
@@ -109,7 +115,8 @@ def instances(pdir, crew_from=CREW_FROM, extra=None):
         try:
             d = json.load(open(os.path.join(pdir, f)))
             cols = d.get("cols") or []
-            ix = {c: cols.index(c) for c in ("id", "report", "release", "rel_days", "route", "credit", "days") if c in cols}
+            ix = {c: cols.index(c) for c in ("id", "report", "release", "rel_days", "first_duty_min", "route", "credit",
+                                             "tafb", "days", "block") if c in cols}
             rows = d.get("rows") or []
         except Exception:
             continue
@@ -138,6 +145,9 @@ def instances(pdir, crew_from=CREW_FROM, extra=None):
                                    "release": str(r[ix["release"]] or "") if "release" in ix else "",
                                    "route": str(r[ix["route"]]) if "route" in ix else "",
                                    "credit": str(r[ix["credit"]] or "") if "credit" in ix else "",
+                                   # FW-0062: block, TAFB and the first duty's length, for a rebuilt trip without its package
+                                   "block": _cell(r, ix.get("block")), "tafb": _cell(r, ix.get("tafb")),
+                                   "first_duty_min": _cell(r, ix.get("first_duty_min")),
                                    "days": max(rel, 0) + 1, "month": dt.strftime("%Y-%m"), "period": month,
                                    "src": "package"})
     cache, floor = {}, crew_from.isoformat()
@@ -152,7 +162,8 @@ def instances(pdir, crew_from=CREW_FROM, extra=None):
             continue
         k = f"{pid}|{d}"
         out[k] = {"key": k, "pairing": pid, "date": d, "end_date": last, "report": str(e.get("report") or ""),
-                  "release": "", "route": str(e.get("route") or ""), "credit": "",
+                  "release": "", "route": str(e.get("route") or ""), "credit": "", "block": "", "tafb": "",
+                  "first_duty_min": "",
                   "days": (date.fromisoformat(last) - date.fromisoformat(d)).days + 1, "month": d[:7],
                   "period": period_for(pdir, d, cache), "src": "schedule", "end_known": bool(end)}
     return out
@@ -578,6 +589,34 @@ def _hm(v):
     return f"{int(m.group(1))}:{m.group(2)}" if m else ""
 
 
+def _mins(v):
+    """'44h55' / '44:55' / 350 -> minutes; None when unreadable."""
+    s = str(v if v is not None else "").strip()
+    m = re.fullmatch(r"(\d{1,3})[h:](\d{2})", s)
+    return int(m.group(1)) * 60 + int(m.group(2)) if m else (int(s) if s.isdigit() else None)
+
+
+def route_lay(route, it, start="", end=""):
+    """FW-0062: the layover when the pairing package has none for a trip: the route's stations other than its base (its
+    first station, in route order, '/' joined: 'HNL-LAS-HNL' -> 'LAS'), only when the trip lays over: it runs over more
+    than one day (a trip that ends on its start day has no layover, as on the card) and, when the pairing file has
+    them, its TAFB is longer than its first duty (a one-duty red-eye turn, HNL-PPT-HNL released the next day, has
+    none). '' otherwise."""
+    st = [s for s in str(route or "").split("-") if s.strip()]
+    if len(st) < 2:
+        return ""
+    days = (end > start) if start and end else None
+    tafb, first = _mins((it or {}).get("tafb")), _mins((it or {}).get("first_duty_min"))
+    duties = tafb > first + 60 if tafb is not None and first is not None else None
+    if days is False or not (duties if duties is not None else days):
+        return ""
+    outs = []
+    for s in st[1:]:
+        if s != st[0] and s not in outs:
+            outs.append(s)
+    return "/".join(outs)
+
+
 def _details_for(details, period):
     """FW-0062: the pairing package details of one bid period. `details` is a function of the period (the
     Watcher's pkg_details_for), {period: {pid: det}}, or (older callers) one flat {pid: det} for every trip."""
@@ -593,8 +632,9 @@ def pilot_trips(insts, rows_for_emp, month=None, start_from=None, crew_rows=None
     credit, soft, crew, period, n}]. month keeps the trips on any of its days; start_from / end_to (ISO, inclusive;
     FW-0002, grid_range: the day before the bid period to its last day, which can be in the next month) replace that
     calendar-month test on their side; a trip that starts before the range and runs into it is kept. FW-0002: the card draws these in the schedule grid, so each trip also carries
-    the layover, block and credit from the pairing package (`details`, pdfs.package_details; credit falls back
-    to the pairing file) and the crew line it was read with (`crew_rows`, [[pos, name]]); '' / [] when unknown.
+    the layover, block and credit from the pairing package (`details`, pdfs.package_details; each falls back to the
+    pairing file: its credit and block columns, the layover from its route, route_lay) and the crew line it was read
+    with (`crew_rows`, [[pos, name]]); '' / [] when unknown.
     FW-0062: details are looked up in the trip's own bid period (a trip from October's file on the grid's first
     row, Oct 31, gets October's package, not November's; the same id can be another trip in another month), by the
     exact id, else the id without its trailing letter; n is the pilots on the whole crew line (OPEN seats count,
@@ -614,13 +654,16 @@ def pilot_trips(insts, rows_for_emp, month=None, start_from=None, crew_rows=None
         per = period_of(it) if it else start[:7]
         dets = _details_for(details, per)
         det = dets.get(pid) or dets.get(re.sub(r"(?<=\d)[A-Z]$", "", pid)) or {}
-        blk, credit = _hm(det.get("block")), _hm(det.get("credit")) or _hm(it.get("credit"))
+        # FW-0062: a period without its package (or a pairing the package lacks) takes block and layover from the
+        # pairing file itself ('12h19' block column; the layover from the route), as credit already did
+        blk, credit = _hm(det.get("block")) or _hm(it.get("block")), _hm(det.get("credit")) or _hm(it.get("credit"))
+        route = r.get("route") or it.get("route") or ""
         line = (crew_rows.get(r["key"]) or {}).get("crew") or []
         crew = [[c.get("pos") or "", c.get("name") or ""] for c in line][:6]
-        out.append({"pairing": pid, "start": start,
-                    "end": r.get("end_date") or it.get("end_date") or start, "seat": r.get("pos") or "",
-                    "route": r.get("route") or it.get("route") or "", "checked_at": r.get("checked_at") or "",
-                    "lay": det.get("lay") or "", "blk": blk, "credit": credit, "soft": soft_time(credit, blk) or "",
+        out.append({"pairing": pid, "start": start, "end": end, "seat": r.get("pos") or "",
+                    "route": route, "checked_at": r.get("checked_at") or "",
+                    "lay": det.get("lay") or route_lay(route, it, start, end), "blk": blk, "credit": credit,
+                    "soft": soft_time(credit, blk) or "",
                     "crew": crew, "period": per, "n": sum(1 for c in line if c.get("pos") in PILOT_POS),
                     "overlap": (marks.get(r["key"]) or {}).get("state") or "",
                     "overlap_with": ", ".join((marks.get(r["key"]) or {}).get("with") or [])})
