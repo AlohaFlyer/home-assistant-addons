@@ -411,7 +411,7 @@ def test_schedule_card_reads_doh_from_the_state_sensor(tmp_path):
 
 
 def test_recall_card_counts_and_shows_drafts_only_on_live_rows():
-    """FW-0012: the red alert counts a CCR draft only while its row is MISSED / POSSIBLE (a stored NO row with an open act
+    """FW-0012: the RECALL ALERT counts a CCR draft only while its row is MISSED (1.4.6) (a stored NO row with an open act
     from before the fix does not count); a NO row with a superseded act shows it as history with no controls."""
     import pytest
     sync_api = pytest.importorskip("playwright.sync_api")
@@ -441,8 +441,9 @@ def test_recall_card_counts_and_shows_drafts_only_on_live_rows():
             pg = b.new_page(viewport={"width": 390, "height": 844})
             pg.set_content(page_html)
             al = pg.locator("#alert")
-            assert al.locator("summary").inner_text().startswith("RED ALERT: 1 recall you may have missed")
+            assert al.locator(".bh").inner_text().replace("\n", "").startswith("RECALL ALERT1")  # 1.4.6: the RECALL ALERT bar
             assert al.locator("li").count() == 1 and "H9001" in al.locator("li").inner_text()
+            assert pg.locator("#tab .bar li").count() == 1
             rows = pg.locator("#tab .row")
             assert rows.count() == 3
             assert rows.nth(0).locator('[data-a="confirm"]').count() == 1
