@@ -19,6 +19,25 @@ Pako by sha256 of the redacted text.
 says "Seen on your FLICA schedule ... (a crew-to-crew trade)" for a `sched:` key instead of "Filed ...". The 19
 automations here match Pako by sha256 of the redacted text.
 
+## Pending on Pako (1.4.8, FW-0066)
+
+The two dashboard snapshots hold the **intended** state for 1.4.8 ("any user can see and upload"); Pako still has the
+1.4.7 Settings views until these edits are applied through the HA connector after the release is live (the cards'
+user path needs the 1.4.8 sensors). Each is a [DESTRUCTIVE] change to a live dashboard: Ryan's yes first. Then
+refresh the sha256 check below.
+
+1. `flight-watcher` (Ryan's, `lovelace.flight_watcher`), view `settings`, section 0: the heading card "Monthly PDFs"
+   (icon `mdi:file-upload-outline`) is renamed **"Monthly files"** and loses its `visibility` (the `user` condition
+   naming Ryan's user id); the `custom:flight-watcher-uploads-card` right after it loses the same `visibility`. The
+   divider (`markdown` "---"), the Tickets heading and the tickets card keep theirs. (The dashboard itself stays
+   `require_admin: true`, so on it the card meets admins only.)
+2. `flight-watcher-james` (`lovelace.flight_watcher_james`), view `settings`, section 0: after
+   `custom:flight-watcher-settings-card-james` (Credentials) and before the divider, insert
+   `{"type": "heading", "heading": "Monthly files", "icon": "mdi:file-upload-outline"}` and
+   `{"type": "custom:flight-watcher-uploads-card-james", "grid_options": {"columns": "full"}}`, with no visibility
+   condition (James is not an admin: his card reads `sensor.flight_watcher_james_uploads` and sends chunks to
+   `flight_watcher_james/upload/chunk`).
+
 | File | Live copy on Pako |
 |:--|:--|
 | `automations_flight_watcher.yaml` | `/config/automations.yaml`: the 18 automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order |

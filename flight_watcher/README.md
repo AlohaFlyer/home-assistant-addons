@@ -48,36 +48,60 @@ Settings tab; sealed in the browser, so HA's history and the MQTT broker only ho
 form and the app's Configuration tab work too; a saved value wins over the Configuration tab. Credentials never go in
 git.
 
-## Uploads on the dashboard (1.4.5)
+## Uploads on the dashboard (1.4.5; any user since 1.4.8)
 
-The monthly award, the pilot pairings package and the pilot seniority list are uploaded from the dashboard: Settings
-tab, the **uploads card** (`custom:flight-watcher-uploads-card`) under Credentials and above Tickets. It is for the
-Home Assistant admin only: anyone else sees "Uploads are for the Home Assistant admin." and the card makes no call.
+The monthly award, the pilot pairings package, the pilot seniority list and (1.4.8) the pilot contact list are
+uploaded from the dashboard: Settings tab, heading "Monthly files", the **uploads card**
+(`custom:flight-watcher-uploads-card`; `custom:flight-watcher-uploads-card-james` on James's dashboard) under
+Credentials. FW-0066: every Home Assistant user who can open a Flight Watcher dashboard sees what is on file and can
+upload. The files are base-wide: every pilot's Watcher reads the one folder `/share/flight_watcher/uploads`.
 
-- Pick what (Monthly award, Pairings package, Pilot seniority list), the bid period (it starts on next month, HST;
-  the seniority list has no bid period and takes an optional List date instead) and the PDF, then Upload. The line
-  under the button shows the progress and the app's answer (for an award, how many dates of hire it read).
-- "On file" lists every PDF kept (what, bid period, size, upload time HST, and whether its text was read), then the
-  dates of hire on file: how many pilots, from the seniority list or from which award, its date, and how many more
-  were kept from the list under a later award.
-- How it reaches the app: the same way Home Assistant's own app panels do. It asks the Supervisor (WebSocket
-  `supervisor/api`) for the app's ingress address (`/addons/<slug>/info`, card option `slug`, default
-  `43b22650_flight_watcher`) and an ingress session (`/ingress/session`), sets it as the `ingress_session` cookie
-  (path `/api/hassio_ingress/`), re-validates it every 5 minutes while the card is open (`/ingress/validate_session`),
-  then calls the Web UI's JSON endpoints: `GET api/uploads` and `POST api/upload` (the same form and checks as the
-  Web UI page). Only the Supervisor's ingress proxy may connect to them, like the page.
-- Size: a PDF of up to 15.9 MB. The Supervisor's ingress proxy refuses a request over 16 MiB (HTTP 413) only after
-  all of it has arrived, so the card refuses a larger PDF before sending it (`max_bytes` in `api/uploads`, 16 MiB
-  less 64 KiB for the form). The app's own 25 MB check stays as the hard cap.
+- Pick what (Monthly award, Pairings package, Pilot seniority list, Pilot contact list), the bid period (award and
+  package; it starts on next month, HST; the seniority list takes an optional List date instead; the contact list
+  neither) and the file (a PDF; a contact list may also be CSV or XLSX), then Upload. The line under the button shows
+  the progress and the app's answer (for an award, how many dates of hire it read; for a contact list, how many pilots,
+  with a phone and with an email).
+- "On file" lists every file kept (what, bid period, size, upload time HST, and whether the Watcher can read it), then
+  the dates of hire on file (how many pilots, from the seniority list or from which award, its date, and how many more
+  were kept from the list under a later award) and the contact list's counts.
+- How it reaches the app, picked from the signed-in user:
+  - **An admin**: the app's Web UI, the way Home Assistant's own app panels do. The card asks the Supervisor (WebSocket
+    `supervisor/api`) for the app's ingress address (`/addons/<slug>/info`, card option `slug`, default
+    `43b22650_flight_watcher`) and an ingress session (`/ingress/session`), sets it as the `ingress_session` cookie
+    (path `/api/hassio_ingress/`), re-validates it every 5 minutes while the card is open
+    (`/ingress/validate_session`), then calls `GET api/uploads` and `POST api/upload` (the Web UI page's form and
+    checks). Only the Supervisor's ingress proxy may connect to them. A PDF of up to 15.9 MB: the ingress proxy refuses
+    a request over 16 MiB (HTTP 413) only after all of it has arrived, so the card refuses a larger file first.
+  - **Anyone else** (Home Assistant grants app ingress to admins only): what is on file comes from
+    `sensor.<prefix>_uploads`, and the file goes in chunks with the `mqtt.publish` service to `<prefix>/upload/chunk`
+    (qos 1, not retained; 192 KiB of file, about 256 KiB of base64, per message; up to 25 MB). On an https address
+    (the Nabu Casa one) the file is sealed in the browser first, as the Credentials card seals a login (AES-256-GCM, the
+    key wrapped with this Watcher's public key, the upload's fields bound to it), so Home Assistant's history database
+    (it records service calls) and the MQTT broker hold ciphertext only. On a plain http address the file goes as it
+    is, except a contact list, which is refused there. The Watcher stages the chunks privately
+    (`/share/flight_watcher/uploads/.staging/<prefix>/`, mode 700), takes them in any order, ignores a repeated one,
+    drops an upload that stops arriving for 2 minutes, checks the size, the sha256 and the file type, and saves it
+    with the same code as the ingress path. Its progress and answer come back on `sensor.<prefix>_upload_status`
+    (from `<prefix>/upload/status`, not retained).
+- **Pilot contact list** (FW-0066): a PDF, CSV or XLSX with each pilot's employee number, name, phone numbers and email
+  addresses. A sheet is read by its header row (EMP / EMPLOYEE # / FILE #, NAME or LAST and FIRST, PHONE / CELL /
+  MOBILE / HOME / WORK, EMAIL; a FAX column is left out); a PDF line by line ("Last, First", US phone numbers, email
+  addresses, the employee number). Only pilots with a phone or an email are kept, in
+  `/share/flight_watcher/contacts.json` (mode 600, outside `/config/www`, never in git); the file uploaded is kept mode
+  600 and replaces the previous list's. When you look a pilot up, the pilot card shows **Call**, **Text** (not to a
+  home or work number) and **Mail** links beside the name, and small ones beside that pilot's name in the crew lists.
+  Only the looked-up pilot's entry is ever in a sensor (`sensor.<prefix>_pilot_schedule`, attribute `contact`); the
+  upload result, `sensor.<prefix>_uploads` and the log carry counts only.
 - The progress line and the result line are live regions (the result a polite status), so a screen reader
-  announces the upload's progress and whether the PDF was saved or refused.
+  announces the upload's progress and whether the file was saved or refused.
 
 ## Web UI and rules
 
 The Web UI (sidebar "Flight Watcher Rules", an HA Ingress panel for HA admins) has Settings, Monthly PDFs, Rules and
 Recent finds.
 
-- Monthly PDFs: pick a month and a kind, then the PDF (the dashboard uploads card above does the same). Uploads go to
+- Monthly PDFs: pick a month and a kind, then the file (the dashboard uploads card above does the same; a pilot
+  contact list may be a CSV or XLSX too). Uploads go to
   `/share/flight_watcher/uploads` (never in git) with a `pdftotext -layout` text copy. The award and the pairings
   package are per month (`<YYYY-MM>_award.pdf`, `<YYYY-MM>_pairings.pdf`). A PDF that gives no text copy (damaged or
   password-protected) is refused: it is read under `<YYYY-MM>_<kind>.new.pdf` and deleted, so the month's PDF and
