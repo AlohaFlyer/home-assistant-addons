@@ -32,7 +32,7 @@
   Watcher reads (Ryan's own months, a pilot lookup's month, a picker's month), kept in the DB as `crew_sched_trips`
   (dropped 62 days after the trip ends), so trips built or renumbered later (H38xx, a trade's H3815B) get their crew
   in pilot lookups and the Markdown. A trip with no package row takes its end, route and report from its pairing page;
-  a later schedule end replaces a shorter one stored (the FW-0065 repair). Every crew index page load now goes through
+  a later schedule end replaces a shorter one stored (the trip end repair). Every crew index page load now goes through
   `SUB.safe_get` and `SM.safe_get`; pacing is unchanged.
 - FW-0057 (previous bid period): the crew index keeps a trip that starts before its first day (Oct 31) and runs into
   it; October's trips come from Ryan's October schedule when there is no October package, each in its own bid period
@@ -67,8 +67,8 @@
   restarts (`trades.py`). The request-decided automation says "Seen on your FLICA schedule MM/DD HH:MM HST; no request
   on file (a crew-to-crew trade)" for these (`ha/automations_flight_watcher.yaml`, to apply on Pako). Not pushed: a
   trade whose drops and adds fall on different HST days, months first read through Schedule Lookup.
-- FW-0065 (trip end cut short): a trip that comes home the day the next activity starts (H3681 SYD Nov 9 to 12, then
-  H3620 on Nov 12) kept only its first day from version 11.009 on: FLICA shows only the new trip's row that day, so
+- Trip end cut short (no ticket filed): a trip that comes home the day the next activity starts (H3681 SYD Nov 9
+  to 12, then H3620 on Nov 12) kept only its first day from version 11.009 on: FLICA shows only the new trip's row that day, so
   there was no HNL layover cell to end it. `pot.schedule_items()` (now also the Schedule Lookup builder in
   `inflt.parse_cm_month`) ends a trip still away on the day the next activity starts. Stored versions and the schedule
   on file are repaired once at start (`versions.repair_ends`, fingerprints remade so the fix makes no new version; the

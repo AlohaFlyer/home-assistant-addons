@@ -36,3 +36,12 @@
   that request, not first as a crew-to-crew trade with no request on file.
 - Test data: the `note_own` docstring's sample page header in `watcher.py` is made up now (it held a real employee
   number). The old values remain in git history: rewriting it is a [DESTRUCTIVE] decision for Ryan (HANDOFF.md item 4).
+- Trip end (was labeled FW-0065; no such ticket is filed on Pako, whose counter reads 64, so the next ticket filed
+  there takes that number): relabeled "trip end fix (no ticket filed)" in CHANGELOG 1.4.7, README, HANDOFF, code and
+  tests; `versions.repair_ends` marks a repaired version `repaired: "trip-end-1.4.7"` (`versions.REPAIR_TAG`). Not yet
+  on Pako (it runs 1.4.6), so no stored version carries the old marker. Do not list FW-0065 among the tickets 1.4.7
+  closes; if Ryan wants it tracked, file it through the ticket flow first.
+- Test data (tradeboard): the JS fixture in `tests/test_tradeboard.py` had three real FLICA values left (r[0]'s request
+  id, and the crew id of r[0] and r[1]); they are made up now (29600000, 100001, 100002). A sweep of every 6 to 9
+  digit number in tests, cards and code against Pako's captures and crew index finds no other match. The old values
+  remain in git history (HANDOFF.md item 4, a [DESTRUCTIVE] decision for Ryan).

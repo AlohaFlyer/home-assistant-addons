@@ -64,7 +64,7 @@ def parse_cm_month(html):
         except ValueError:
             continue
         days.append([iso, code, lay])
-    items = schedule_items(days, "HNL")  # FW-0065: the mobile schedule's builder (a trip home the day the next starts)
+    items = schedule_items(days, "HNL")  # trip end: the mobile schedule's builder (a trip home the day the next starts)
     tot = {}
     for key, pat in (("block", r"Block\s*(?:&nbsp;\s*)*</TD>\s*<TD[^>]*>\s*([\d.:]+)"),
                      ("credit", r"Credit\s*(?:&nbsp;\s*)*</TD>\s*<TD[^>]*>\s*([\d.:]+)"),

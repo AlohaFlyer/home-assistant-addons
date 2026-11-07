@@ -374,7 +374,7 @@ def test_a_failed_reread_stays_queued(W, tmp_path, monkeypatch):
 
 
 def test_a_schedule_end_grows_and_never_shrinks(W):
-    """FW-0056 / FW-0065: a trip noted with its end cut short (Nov 9 to Nov 9, the old item builder) takes the later
+    """FW-0056 / trip end fix: a trip noted with its end cut short (Nov 9 to Nov 9, the old item builder) takes the later
     end a schedule gives (Nov 12); a later, shorter end does not shrink it. A pilot lookup shows the later end even
     when the stored crew read still has the short one."""
     assert W.note_sched_trips([{"trip": "H9100", "start": "2026-11-09", "end": "2026-11-09"}], "own") == 1

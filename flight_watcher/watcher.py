@@ -1585,11 +1585,11 @@ def my_seat(crew):
     return ""
 
 
-ENDS_FIX_V = 1  # FW-0065: bump to run repair_ends() over the stored versions again
+ENDS_FIX_V = 1  # trip end: bump to run repair_ends() over the stored versions again
 
 
 def repair_trip_ends():
-    """FW-0065, once: versions and the schedule on file stored while the item builder cut a trip short when the next
+    """Trip end, once: versions and the schedule on file stored while the item builder cut a trip short when the next
     activity started on its return day (H3681 Nov 9 to 12 kept as Nov 9 to 9 from 11.009 on) get the end their own
     days list gives, so recall legality spans and pay see the whole trip. Months from 24 back to 3 ahead."""
     if S.get("ends_fix_v") == ENDS_FIX_V:
@@ -1610,7 +1610,7 @@ def repair_trip_ends():
     S["ends_fix_v"] = ENDS_FIX_V
     save_state(S)
     if n:
-        log.info("FW-0065: %d stored schedule version(s) / month(s) got the trip end their days list gives", n)
+        log.info("trip end repair: %d stored schedule version(s) / month(s) got the trip end their days list gives", n)
     return n
 
 
@@ -1620,7 +1620,7 @@ def versions_check(force_pub=False):
     try:
         repair_trip_ends()
     except Exception as e:  # never stops the versions; tried again next time
-        log.info("FW-0065 trip end repair skipped: %s", e)
+        log.info("trip end repair skipped: %s", e)
     try:
         months, own = S.get("schedule") or {}, S.get("own_trips") or {}
         wait = S.setdefault("ver_wait", {})
@@ -4058,7 +4058,7 @@ def note_sched_trips(items, src):
                 reg[k] = {"pairing": trip, "date": start, "end": end, "src": src, "seen": now}
                 n += 1
             elif end and end > (e.get("end") or ""):
-                e["end"] = end  # FW-0065: a trip end cut short by the old item builder grows to the repaired one
+                e["end"] = end  # trip end: a trip end cut short by the old item builder grows to the repaired one
         cut = (local_now().date() - timedelta(days=CREW_SCHED_KEEP_D)).isoformat()
         reg = {k: e for k, e in reg.items() if (e.get("end") or e.get("date") or "") >= cut}
         if json.dumps(reg, sort_keys=True) != old:

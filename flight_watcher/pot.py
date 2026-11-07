@@ -654,7 +654,7 @@ def _away(lay, domicile):
 
 def schedule_items(days, domicile="HNL"):
     """The items of a month from its days [[iso, act, lay]] (parse_schedule; also used to repair stored versions).
-    A pairing ends on the first later day whose layover cell is domicile. FW-0065: when the next activity starts on the
+    A pairing ends on the first later day whose layover cell is domicile. Trip end: when the next activity starts on the
     day the trip comes home (H3681 SYD Nov 9 to 12, then H3620 on Nov 12), FLICA shows only that activity's row on that
     day, so there is no domicile cell: a trip still away (its first layover a station, nothing but '-' since) ends on
     the day the next activity starts. Codes (VAC, SCR...) merge over consecutive days."""
@@ -672,7 +672,7 @@ def schedule_items(days, domicile="HNL"):
         for j in range(k + 1, min(k + 8, len(days))):
             if days[j][1]:
                 if away and days[j][0] > end:
-                    end = days[j][0]  # FW-0065: home that morning, out again on the next activity
+                    end = days[j][0]  # trip end: home that morning, out again on the next activity
                 break
             if days[j][2] == domicile:
                 end = days[j][0]

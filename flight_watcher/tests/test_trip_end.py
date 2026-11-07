@@ -1,5 +1,5 @@
-"""FW-0065 (Nov 7): from version 11.009 the schedule item of a 4-day SYD trip (Nov 9 to 12) read Nov 9 to Nov 9, because
-another trip started on Nov 12, the day it came home: FLICA's mobile schedule then shows only the new trip's row on that
+"""Trip end fix (Nov 7, no ticket filed): from version 11.009 the schedule item of a 4-day SYD trip (Nov 9 to 12)
+read Nov 9 to Nov 9, because another trip started on Nov 12, the day it came home: FLICA's mobile schedule then shows only the new trip's row on that
 day, so there was no 'HNL' layover cell to end the first trip on. Made-up trips (H39xx)."""
 import json
 
@@ -54,7 +54,7 @@ def test_stored_versions_repaired_once_and_no_new_version_for_it(W):  # noqa: F8
     assert W.repair_trip_ends() == 2  # the stored FLICA version and the schedule on file
     vers = W.DB.get("sched_versions:2026-11")
     assert vers[0]["items"][0]["end"] == "2026-11-09" and "repaired" not in vers[0]  # the award: untouched
-    assert _ends(vers[1])[("H3981", "2026-11-09")] == "2026-11-12" and vers[1]["repaired"] == "FW-0065"
+    assert _ends(vers[1])[("H3981", "2026-11-09")] == "2026-11-12" and vers[1]["repaired"] == "trip-end-1.4.7"
     assert _ends(W.S["schedule"]["2026-11"])[("H3981", "2026-11-09")] == "2026-11-12"
     assert "repaired" not in W.S["schedule"]["2026-11"]
     assert W.repair_trip_ends() == 0  # once

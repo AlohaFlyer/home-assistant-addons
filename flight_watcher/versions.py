@@ -46,7 +46,7 @@ def diff(old, new):
         out.append(f"added {t} {s}")
     for t, s in sorted(oi - ni):
         out.append(f"dropped {t} {s}")
-    oe = {(i["trip"], i["start"]): i.get("end") for i in old.get("items") or []}  # FW-0065: a trip's last day moved
+    oe = {(i["trip"], i["start"]): i.get("end") for i in old.get("items") or []}  # trip end: a trip's last day moved
     for i in new.get("items") or []:
         a = oe.get((i["trip"], i["start"]))
         if a and i.get("end") and a != i["end"]:
@@ -119,8 +119,13 @@ def summary(full):
             for mk, m in (full or {}).items()}
 
 
+# The marker repair_ends() leaves on a version it changed. A plain label, not a ticket number: the trip end fix has
+# no ticket filed on Pako, and FW-nnnn numbers come only from the ticket flow (tickets.py).
+REPAIR_TAG = "trip-end-1.4.7"
+
+
 def repair_ends(vers, rebuild):
-    """FW-0065: versions stored while the item builder cut a trip short (its return day taken by the next trip's row:
+    """Trip end: versions stored while the item builder cut a trip short (its return day taken by the next trip's row:
     H3681 Nov 9 to 12 stored as Nov 9 to 9) get the end their own days list gives (rebuild(days) -> items, pot's
     schedule_items). Only a pairing's end that moves later changes; the PBS award (built from the PDF) is left alone.
     Each changed version's fingerprint is made again so the next read of the same line is not a new version.
@@ -142,7 +147,7 @@ def repair_ends(vers, rebuild):
         if hit:
             if "fp" in v:
                 v["fp"] = fingerprint(v, v.get("trips") or {})
-            v["repaired"] = "FW-0065"
+            v["repaired"] = REPAIR_TAG
             n += 1
     return n
 
