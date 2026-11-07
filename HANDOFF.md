@@ -40,14 +40,19 @@ his FLICA and CrewTrac logins on his own Settings tab. The work list is the tick
    the tree are still in git history on `main` and on pushed `claude/*` branches. Options: `git filter-repo
    --replace-text` (old values to made-up ones) over `main` and those branches, force-push, and ask GitHub Support to
    purge cached views and PR refs; or delete the stale branches. Until then, merge 1.4.7 promptly so `main`'s tree is
-   clean.
+   clean. The FLICA alerts mailbox address (CHANGELOG 0.4.1, redacted in the tree in 1.4.7) is in that history too.
 5. **After 1.4.7 is live:** FW-0057, trips other pilots started in October that run into November are indexed only
    from pilot lookups (each reads the pilot's October once) until October's pairings package is uploaded; keep it open
    until checked on Pako. FW-0064, the crew-to-crew trades page: watch the app log for "crew-to-crew trades page named"
-   (menu reads, never followed) and check that page by hand before the Watcher reads it.
+   (menu reads, never followed) and check that page by hand before the Watcher reads it. FW-0034 / FW-0064 risk: at
+   every login the main menu never builds its left menu frame in the Watcher's browser (it stays on FLICA's forward
+   page with its reCAPTCHA, never bypassed), so the menu tree both rely on may never be read; check the log for
+   "close-in folder not on the menu yet" and `captures/menu_closein.html`, then Ryan decides how the close-in BCID is
+   found (nothing is guessed).
 6. **Features:** FW-0042 smart push (commute, month-type rules), FW-0044 FLICA DROP review page mapped read only.
 7. **Ryan-owned:** FW-0021 paycheck check Dec 22 (PWA 2.A.56, 3.D, 4.C.3, 4.O.1, 6.J); FW-0040 upload the December
-   award and January pairings PDFs when posted; FW-0033 delete the merged `claude/*` branches in the GitHub UI
+   award and January pairings PDFs when posted; FW-0057 upload the October 2026 pairings package (the uploads card
+   on the Settings tab asks for it from 1.4.7); FW-0033 delete the merged `claude/*` branches in the GitHub UI
    (this session can push only its own branch).
 8. **Waiting on Hark:** FW-0020 (Nov 3 recall list blank), FW-0030 (HPA 2026-27 school calendar partial).
 

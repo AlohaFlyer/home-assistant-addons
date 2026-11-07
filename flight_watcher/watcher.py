@@ -2499,7 +2499,10 @@ def desktop_schedule(fl, bd, seen):
     None. The token is never logged."""
     menu = fl.fetch(LEFTMENU)
     if "scheduledetail" not in (menu or ""):  # 0.8.4: the plain GET gets only the skeleton; the frame has the tree
-        menu = fl.menu_tree()
+        # 1.4.7 verify: live, the main menu's frame often never loads (FLICA's forward page with its reCAPTCHA, never
+        # bypassed) and menu_tree() gives ''. Keep the plain page then, so it is still scanned (close-in folder, trades
+        # page) and its capture is not an empty file (Pako's leftmenu.html of Nov 4 was 0 bytes).
+        menu = fl.menu_tree() or menu
     close_in_scan(menu or "", "left menu")  # FW-0034: the close-in folder's link, if the menu names it
     if menu and classify(menu) == "ok":
         trade_pages_scan(menu, "schedule menu")  # FW-0064: a crew-to-crew trades page, if the menu names one
