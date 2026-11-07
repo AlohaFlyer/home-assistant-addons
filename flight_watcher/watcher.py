@@ -20,8 +20,8 @@ from playwright.sync_api import sync_playwright
 
 import rules as R
 import web
-from far import far_check, window as far_window
-from pot import PAIRING_RE, LEG_FULL_RE, parse_schedule_desktop, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+import far as FAR
+from pot import PAIRING_RE, LEG_FULL_RE, parse_schedule_desktop, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, CLOSE_IN_RE, close_in_folders, pick_close_in, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 import tradeboard as TB
 import swap as SW
@@ -1116,12 +1116,15 @@ class Flica:
                 if "open time" in txt or "opentime" in txt:
                     # key "mobile" kept for the first page so the v0.1.x baseline carries over
                     urls = {"mobile": MOBILE_POT}
+                    close_in_scan(html, "mobile open time page")  # FW-0034: a link naming the close-in folder
                     if OPTS.get("watch_next_month", True):
                         links = pot_links(html, MOBILE_POT)
                         log.info("mobile pot links to other bid months: %s", links)
                         mine = bcid(MOBILE_POT)
-                        later = sorted((l for l in links if bcid(l["url"]) and bcid_after(bcid(l["url"]), mine)),
-                                       key=lambda l: bcid_key(bcid(l["url"])))
+                        ci = (S.get("close_in") or {}).get("bcid")
+                        later = sorted((l for l in links if bcid(l["url"]) and bcid_after(bcid(l["url"]), mine)
+                                        and not CLOSE_IN_RE.search(l["text"]) and bcid(l["url"]) != ci),
+                                       key=lambda l: bcid_key(bcid(l["url"])))  # FW-0034: never the close-in folder
                         if later:  # the nearest later bid period only, never an earlier month
                             urls[f"mobile_{bcid(later[0]['url'])}"] = later[0]["url"]
                         if len(urls) < 2:
@@ -1149,6 +1152,10 @@ class Flica:
                 }""" % json.dumps(MONTHS),
                 OPTS["pot_section"],
             )
+            try:  # FW-0034: the menu frame names the close-in folder, if the account has one
+                close_in_scan(menu.content(), "main menu frame")
+            except Exception as e:
+                log.info("close-in scan of the menu frame skipped: %s", e)
             now = local_now()
             want = {MONTHS[now.month - 1], MONTHS[now.month % 12]}
             for l in links:
@@ -1360,30 +1367,52 @@ def touches_blocked(ev):
     return bool(s and days and any(s.isoformat() <= d <= e.isoformat() for d in days))
 
 
-def far_for(ev, exclude=None):
-    """FAR 117 screen (far.py) of a pot or tradeboard row against Ryan's own trips. '?' when the
-    pickup's check-in or final arrival is not known yet."""
+FAR_WHY_MAX = 400  # far_why on published rows stays short (the pot sensor's attributes)
+
+
+def _pickup_duties(ev, s):
+    """FW-0039: the pickup's duty periods (HST minutes from 00:00 of its first day, pot.parse_duties shape): from its
+    FLICA pairing page (enrich(); pot rows keep them in the details cache, off the published row), else the bid
+    period's pairing package (the same lookup as the Recall check). [] when neither has them."""
+    d = ev.get("duties") or (S.get("details", {}).get(f"{ev.get('pairing')}|{ev.get('start')}") or {}).get("duties")
+    if d:
+        return d
+    try:
+        return RC.package_entry(ev.get("pairing"), s, pkg_details_for).get("duties") or []
+    except Exception:
+        return []
+
+
+def far_screen(ev, exclude=None):
+    """FW-0039: FAR 117 and PWA rest screen of a pot, Tradeboard or finds row against Ryan's own line, with the same
+    rules as the Recall check (far.legality(): 117.25(e), 117.25(b), 117.23(b)(1) and now 117.23(c)(1)/(2), the FDP
+    60 h in 168 h and 190 h in 672 h; PWA 10.E.1.a, 2.19.b), per duty period of his trips and of the pickup.
+    {far, why}: far is the column ('OK', 'OK (CBA rest 10:30)', 'Conflict', 'Rest 8:00 before · FDP 65h/168h', or
+    '?' when the pickup's report or final arrival is not known yet or a check needs data not on file: never OK);
+    why cites the rule behind it. exclude: 'TRIP|YYYY-MM-DD' of his own trip to leave out (a swap)."""
     try:
         s, e = _span(ev)
-        w = far_window(s, e, ev.get("report"), ev.get("arrive") or ev.get("last_arr"))
-        if not w:
-            return "?"
-        mine = []
-        for it in _sched_items():
-            if not PAIRING_RE.match(it.get("trip") or "") or f"{it['trip']}|{it['start']}" == exclude:
-                continue
-            t = S.get("own_trips", {}).get(f"{it['trip']}|{it['start']}") or {}
-            a, b = date.fromisoformat(it["start"]), date.fromisoformat(it["end"])
-            ow = far_window(a, b, t.get("report"), t.get("last_arr"))
-            if ow:
-                mine.append((ow[0], ow[1], hours(t.get("blk")) or 0))
-            else:  # times not read yet: whole days, flagged so a neighbouring trip reads '?'
-                mine.append((datetime.combine(a, datetime.min.time()),
-                             datetime.combine(b, datetime.max.time()), 0, True))
-        return far_check((w[0], w[1], hours(ev.get("blk")) or 0), mine)
+        if not s:
+            return {"far": "?", "why": "pickup dates unknown"}
+        rep, arr = ev.get("report"), ev.get("arrive") or ev.get("last_arr")
+        if not FAR.window(s, e, rep, arr):
+            return {"far": "?", "why": "pickup report or final arrival not read yet"}
+        new = RC.pickup_trip(ev.get("pairing") or "pickup", s, e, rep, arr, hours(ev.get("blk")),
+                             _pickup_duties(ev, s))
+        mine = RC.line_records(S.get("schedule") or {}, S.get("own_trips") or {}, s, e, local_now().date(), exclude)
+        r = FAR.screen(new, mine)
+        return {"far": r["far"], "why": r["why"][:FAR_WHY_MAX]}
     except Exception as ex:
         log.info("far skipped for %s: %s", ev.get("pairing"), ex)
-        return "?"
+        return {"far": "?", "why": "FAR screen failed"}
+
+
+def far_for(ev, exclude=None):
+    """The FAR column of a row (far_screen), and its reason on the row as far_why."""
+    r = far_screen(ev, exclude)
+    if exclude is None:
+        ev["far_why"] = r["why"]
+    return r["far"]
 
 
 OWN_PER_CHECK = 3
@@ -2298,7 +2327,7 @@ def pot_details(fl, pot, full=False):
     cache = S.setdefault("details", {})
     fetched = 0
     for k, row in pot.items():
-        stale = k in cache and "crew" not in cache[k]  # cached before 0.4.0: re-read once
+        stale = k in cache and ("crew" not in cache[k] or "duties" not in cache[k])  # cached before 0.4.0 / FW-0039: re-read once
         if (k not in cache or stale or full) and fetched < (FULL_MAX if full else DETAIL_MAX_PER_CHECK):
             if fetched:
                 time.sleep(random.uniform(1.5, 3.5))
@@ -2306,8 +2335,9 @@ def pot_details(fl, pot, full=False):
             enrich(fl, ev)
             fetched += 1
             cache[k] = {f: ev.get(f, "") for f in DETAIL_FIELDS}
+            cache[k]["duties"] = ev.get("duties") or []  # FW-0039: the FAR screen's FDPs; kept off the published row
         if k in cache:
-            row.update({f: v for f, v in cache[k].items() if v or not row.get(f)})
+            row.update({f: v for f, v in cache[k].items() if f in DETAIL_FIELDS and (v or not row.get(f))})
             if not row.get("soft"):
                 row["soft"] = soft_time(row.get("credit"), row.get("blk")) or ""
         row["fit"] = schedule_fit(row)
@@ -2332,6 +2362,7 @@ def desktop_schedule(fl, bd, seen):
     menu = fl.fetch(LEFTMENU)
     if "scheduledetail" not in (menu or ""):  # 0.8.4: the plain GET gets only the skeleton; the frame has the tree
         menu = fl.menu_tree()
+    close_in_scan(menu or "", "left menu")  # FW-0034: the close-in folder's link, if the menu names it
     try:  # 0.8.3: keep the menu page (token masked) so the link pattern can be checked against the real thing
         os.makedirs(IF.CAPTURE_DIR, exist_ok=True)
         open(f"{IF.CAPTURE_DIR}/leftmenu.html", "w").write(re.sub(r"token=[0-9A-Za-z]+", "token=MASKED", menu or ""))
@@ -2786,6 +2817,178 @@ def price_request(r, now=None):
     return {"delta": round(delta, 2), "delta_text": PAY.usd(delta), "parts": parts, "rate": rate, "year": yr}
 
 
+# ---------------------------------------------------------------- FW-0034: the close-in open time folder
+CLOSE_IN_KEY = "closein"  # its rows' month key (pot rows, finds)
+CLOSE_IN_GAP_S = 6 * 3600  # a menu read every 6 h while the folder is not known,
+CLOSE_IN_RECHECK_S = 86400  # once a day once it is (a new bid period can bring a new BCID)
+CLOSE_IN_BAD_MAX = 3  # reads that are not its open time page before its BCID is dropped
+
+
+def close_in_url(b):
+    return f"{BASE}/full/mobileopentimepot.cgi?BCID={b}&From=MainMenu"
+
+
+def _regular_bcids():
+    return {x for x in (bcid(u) for u in (S.get("pot_urls") or {}).values()) if x}
+
+
+def close_in_scan(html, via):
+    """FW-0034: look for the close-in folder ('Close in Opentime: <16 Hrs to RPT') on a page already read (a menu or
+    an open time page; pot.close_in_folders: a link whose text names it, never a guess). A BCID found becomes the
+    candidate, logged once; it is used only once its own open time page reads (close_in_check). Never fetches.
+    Returns the BCID found, or None."""
+    try:
+        reg = _regular_bcids()
+        ci = S.get("close_in") or {}
+        ex = reg | {f"001.{b.split('.')[-1]}" for b in reg} | set(ci.get("rejected") or [])  # 001.n: Tradeboard
+        found = close_in_folders(html, ex)
+        b = pick_close_in(found, {x.split(".")[-1] for x in reg})
+    except Exception as e:
+        log.info("close-in scan of the %s failed: %s", via, e)
+        return None
+    if not b:
+        return None
+    ci = S.setdefault("close_in", {})
+    if ci.get("bcid") != b:
+        log.info("close-in folder found on the %s: BCID %s ('%s'); its open time page is read next, GET only", via, b,
+                 next(f["text"] for f in found if f["bcid"] == b))
+        for k in ("verified", "verified_at", "bad", "baseline"):  # a new folder: its own baseline, no alert storm
+            ci.pop(k, None)
+        ci.update(bcid=b, via=via, found_at=now_iso())
+        S["close_in_bcid"] = None  # drafts and the request list wait for its page to read
+    return b
+
+
+def close_in_menu_read(fl):
+    """FW-0034: the menu read that finds the close-in folder, read only: the left menu (leftmenu.cgi, a plain GET), and
+    when that holds no menu tree (FLICA builds it only inside the menu frame), the main menu's menu frame (rendered in
+    a tab like the pot discovery, no clicks). Both URLs pass SUB.safe_get and SM.safe_get; paced 1.5 to 3.5 s. Every
+    6 h while the folder is not known (or its BCID is of no bid period watched), once a day once it is. A menu that
+    does not name the folder is logged and kept privately (CAPTURE_DIR/menu_closein.html, session token masked) so
+    its shape can be checked. Returns the BCID found, or None."""
+    ci = S.setdefault("close_in", {})
+    periods = {x.split(".")[-1] for x in _regular_bcids()}
+    settled = ci.get("verified") and (not periods or ci["bcid"].split(".")[-1] in periods)  # a new bid period: look again
+    if time.time() - ci.get("menu_at", 0) < (CLOSE_IN_RECHECK_S if settled else CLOSE_IN_GAP_S):
+        return None
+    ci["menu_at"] = time.time()
+    seen, keep = [], ""
+    for url, how in ((LEFTMENU, "left menu"), (f"{BASE}/online/mainmenu.cgi", "main menu frame")):
+        if not (SUB.safe_get(url) and SM.safe_get(url)):
+            seen.append(f"{how}: refused by safe_get")
+            continue
+        time.sleep(random.uniform(1.5, 3.5))
+        try:
+            html = (fl.fetch(url) if how == "left menu" else fl.menu_tree()) or ""
+        except Exception as e:
+            seen.append(f"{how}: {e}")
+            continue
+        kind = classify(html) if html else "empty"
+        if kind != "ok":
+            seen.append(f"{how}: {kind}")
+            if kind in ("killed", "expired", "blocked"):
+                break
+            continue
+        b = close_in_scan(html, how)
+        if b:
+            return b
+        named = bool(CLOSE_IN_RE.search(visible_text(html)))
+        seen.append(f"{how}: {len(html)} chars, " + ("names the folder but no BCID link" if named else
+                                                       "no close-in folder named"))
+        keep = html
+        if "addC(" in html or "addE(" in html or "BCID=" in html.upper():
+            break  # a real menu that does not name it; the frame would show the same
+    log.info("close-in folder not on the menu yet: %s", "; ".join(seen) or "nothing read")
+    if keep:
+        try:
+            os.makedirs(CAPTURE_DIR, exist_ok=True)
+            open(f"{CAPTURE_DIR}/menu_closein.html", "w").write(re.sub(r"token=[0-9A-Za-z]+", "token=MASKED", keep))
+        except Exception:
+            pass
+    return None
+
+
+def close_in_check(fl, pot_all, full=False):
+    """FW-0034 (Ryan: trips under 16 h to report reached him only through FLICA's alert email): read only, the close-in
+    folder. Finds its BCID (close_in_menu_read when due; close_in_scan of pages read anyway), then GETs its open time
+    page (mobileopentimepot.cgi?BCID=<its BCID>, both safe_get guards, paced 1.5 to 3.5 s). The BCID is trusted (swap
+    and drop drafts, the request list) only once that page reads as an open time page of the pilot's category
+    (OPTS category_check); CLOSE_IN_BAD_MAX reads that do not drop it. Its pairings not in a regular pot join the pot
+    rows (src 'C', folder 'close-in'), with details, the FAR column and finds; a new one fires event/new_pairing like
+    a pot find (none on the folder's first read). Returns those rows {key: row}."""
+    ci = S.setdefault("close_in", {})
+    if not ci.get("bcid") or ci.get("verified"):
+        close_in_menu_read(fl)
+    b = ci.get("bcid")
+    if not b:
+        return {}
+    url = close_in_url(b)
+    if not (SUB.safe_get(url) and SM.safe_get(url)):
+        log.info("close-in %s: url refused by safe_get", b)
+        return {}
+    time.sleep(random.uniform(1.5, 3.5))
+    try:
+        html = fl.fetch(url)
+    except Exception as e:
+        log.info("close-in %s error: %s", b, e)
+        return {}
+    kind = classify(html)
+    if kind != "ok":
+        log.info("close-in %s: %s, skipped", b, kind)
+        return {}
+    text = visible_text(html)
+    cat = [c.lower() for c in (OPTS.get("category_check") or "").split()]
+    if not (is_pot_page(html) and all(c in text for c in cat)):
+        ci["bad"] = ci.get("bad", 0) + 1
+        log.info("close-in %s: not an open time page of %s (%d of %d): %s", b, OPTS.get("category_check"), ci["bad"],
+                 CLOSE_IN_BAD_MAX, text[:160])
+        if ci["bad"] >= CLOSE_IN_BAD_MAX:
+            log.info("close-in BCID %s dropped; the menu is read again", b)
+            ci["rejected"] = (ci.get("rejected") or [])[-4:] + [b]
+            for k in ("bcid", "verified", "verified_at", "bad", "via", "found_at", "menu_at", "baseline"):
+                ci.pop(k, None)
+            S["close_in_bcid"] = None
+        return {}
+    ci["bad"] = 0
+    if not ci.get("verified"):
+        ci.update(verified=True, verified_at=now_iso())
+        log.info("close-in folder %s verified (found on the %s): its open time page reads; text: %s", b, ci.get("via"),
+                 text[:300])
+        try:  # a private copy for parser checks (/share, never git)
+            os.makedirs(CAPTURE_DIR, exist_ok=True)
+            open(f"{CAPTURE_DIR}/pot_closein_{b.split('.')[-1]}.html", "w").write(html)
+        except Exception:
+            pass
+    S["close_in_bcid"] = b
+    pot = parse_pot(html)
+    regular = {k: r for p in pot_all.values() for k, r in p.items()}
+    rows = {k: dict(r, src="C", folder="close-in") for k, r in pot.items() if k not in regular}
+    cache = S.get("details") or {}
+    if full or any(k not in cache or "duties" not in cache[k] for k in rows):
+        time.sleep(random.uniform(1.5, 3.5))  # pot_details paces its own reads after the first
+    pot_details(fl, rows, full)
+    base, new_keys = ci.get("baseline"), set()
+    if base is None:
+        log.info("close-in baseline %s: %d pairings (no alert)", b, len(pot))
+    else:
+        new_keys = {k for k in rows if k not in base}
+        for k in sorted(new_keys):
+            ev = {**rows[k], "month": CLOSE_IN_KEY, "seen": now_iso()}
+            if not ev.get("detail_url"):  # details not read yet (pot_details' per-check cap)
+                time.sleep(random.uniform(1.5, 3.5))
+                enrich(fl, ev)
+            log.info("NEW close-in pairing %s", ev)
+            pub("event/new_pairing", ev, retain=False)
+            pub("last_new", ev)
+            run_rules(CLOSE_IN_KEY, k, rows[k])
+        pend = S.setdefault("pickup_pending", {})
+        for k in set(base) - set(pot) - set(regular):
+            pend.setdefault(k, {"tries": 0, "next": time.time() + PICKUP_FIRST_S})
+    DB.record_pot(CLOSE_IN_KEY, {k: rows.get(k) or regular[k] for k in pot}, new_keys)
+    ci["baseline"] = sorted(pot)
+    return rows
+
+
 def _request_view(fl, b, ts):
     """1.2.2: {legs, trips, detail} of one request from its read-only view page ({} when it cannot be read).
     The first view page of each folder is saved privately to CAPTURE_DIR for parser checks."""
@@ -2799,7 +3002,7 @@ def _request_view(fl, b, ts):
         if classify(html) != "ok":
             return {}
         text = visible_text(html)
-        n = b.split(".")[-1]
+        n = ("closein_" if b == S.get("close_in_bcid") else "") + b.split(".")[-1]
         if not S.get("req_view_captured", {}).get(n):
             S.setdefault("req_view_captured", {})[n] = True
             try:
@@ -2820,10 +3023,14 @@ def requests_check(fl):
     which HA pushes to Ryan's phone. Only the list URL is fetched (SUB.safe_get + SM.safe_get): its Approved /
     Denied links carry QuickDelete=1 and would delete the request, so no link on the page is ever followed.
     Each decision is pushed once ever (S['ot_req_pushed']); on the feature's very first read only decisions filed
-    in the last REQ_FIRST_H hours are news. Requests filed in the close-in folder are not read (its BCID is not
-    known yet)."""
+    in the last REQ_FIRST_H hours are news. FW-0034: the close-in folder's list is read too once its BCID is verified
+    (close_in_check); its decisions carry folder 'close-in', and its own first read pushes only the last REQ_FIRST_H
+    hours (older ones are history)."""
     rows_of = S.setdefault("ot_req_rows", {})  # bcid -> rows of the last good read
-    folders = sorted({x for x in (bcid(u) for u in S.get("pot_urls", {}).values()) if x})
+    regular = sorted({x for x in (bcid(u) for u in S.get("pot_urls", {}).values()) if x})
+    ci = S.get("close_in_bcid") if (S.get("close_in") or {}).get("verified") else None
+    folders = regular + ([ci] if ci and ci not in regular else [])
+    done_first = S.setdefault("ot_req_first_done", {})  # FW-0034: folders (the close-in one) whose first read is done
     trows_of = S.setdefault("tb_req_rows", {})  # 1.4.3: tradeboard number -> Ryan's trade requests of the last good read
     pending = any(r.get("status") in SUB.OPEN for b in folders for r in rows_of.get(b) or []) or \
         any(r.get("status") in SUB.OPEN for rs in trows_of.values() for r in rs or [])
@@ -2849,7 +3056,7 @@ def requests_check(fl):
                 continue
             text = visible_text(html)
             rows = SUB.parse_request_rows(text, html)
-            n = b.split(".")[-1]
+            n = ("closein_" if b == ci else "") + b.split(".")[-1]  # capture names; FW-0034: the close-in list apart
             if not S.get("req_captured", {}).get(n):  # first read: a private copy for parser checks (/share)
                 try:
                     os.makedirs(CAPTURE_DIR, exist_ok=True)
@@ -2878,16 +3085,19 @@ def requests_check(fl):
                 log.info("requests %s: list empty after %d rows, read again before believing it", b, len(rows_of[b]))
                 continue
             empty.pop(b, None)
+            first_b = first or (b == ci and not done_first.get(b))
             for r in SUB.request_news(pushed, rows):
                 try:
                     old = _filed_at(r, now) < now - timedelta(hours=REQ_FIRST_H)
                 except Exception:
                     old = True
-                if first and old:
-                    continue  # the feature's first read: older decisions are history, not news
+                if first_b and old:
+                    continue  # the feature's (or the close-in folder's) first read: older decisions are history
                 if r.get("ts") and not r.get("legs"):
                     r.update(_request_view(fl, b, r["ts"]))  # the list names no trips; its view page does
                 ev = {**r, "bcid": b, "at": now_iso(), "url": url}
+                if b == ci:
+                    ev["folder"] = "close-in"
                 try:
                     ev["pay"] = price_request(r)  # 1.2.1: Pay-Gross gained or given up (Approved only)
                 except Exception as e:
@@ -2903,14 +3113,16 @@ def requests_check(fl):
                     if r.get("alt"):  # the content key too: a read that falls back to it never re-pushes
                         pushed[f"{r['alt']}|{r['status']}"] = now_iso()
             rows_of[b] = rows
+            if b == ci:
+                done_first[b] = now_iso()
             read_ok = True
         except Exception as e:
             log.info("requests %s error: %s", b, e)
-    tb_ok = _trade_requests_check(fl, folders, trows_of, pushed, now)
+    tb_ok = _trade_requests_check(fl, regular, trows_of, pushed, now)
     if folders:
         for b in [x for x in rows_of if x not in folders]:
             rows_of.pop(b, None)  # a folder no longer watched: its Pending rows no longer hold the 2-min poll
-        nums = {b.split(".")[-1] for b in folders}
+        nums = {b.split(".")[-1] for b in regular}
         for n in [x for x in trows_of if x not in nums]:
             trows_of.pop(n, None)
     cut = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
@@ -2923,7 +3135,7 @@ def requests_check(fl):
     tb_new = tb_ok and tsig != S.get("tb_req_sig")  # 1.4.3: trades alone republish only when they changed
     if read_ok or tb_new:  # a failed pass keeps the last good sensor instead of showing 0 pending
         S["tb_req_sig"] = tsig
-        shown = [{**r, "bcid": b} for b in folders for r in rows_of.get(b) or []]
+        shown = [{**r, "bcid": b, **({"folder": "close-in"} if b == ci else {})} for b in folders for r in rows_of.get(b) or []]
         shown += [{**r, "bcid": f"001.{n}"} for n in sorted(trows_of) for r in trows_of[n] or []]
         pub("ot_requests", {"pending": sum(1 for r in shown if r["status"] in SUB.OPEN), "count": len(shown),
                             "requests": shown[-20:], "checked_at": now_iso()})
@@ -3748,7 +3960,7 @@ def swap_scan(pot_rows):
     submit; nothing is ever submitted (swap.WRITES_IMPLEMENTED is False)."""
     marks = S.get("trade_away") or []
     own = S.get("own_trips", {})
-    rows = [dict(r, src="O") for r in pot_rows] + [dict(r, src="T") for r in S.get("tb_details", {}).values()]
+    rows = [dict(r, src=r.get("src") or "O") for r in pot_rows] + [dict(r, src="T") for r in S.get("tb_details", {}).values()]
     ideas = []
     for mk in marks:
         mine = own.get(mk) or {}
@@ -4071,6 +4283,8 @@ def check(fl):
                 return "stop"
         pot = parse_pot(html)
         pot_all[month] = pot
+        if not (S.get("close_in") or {}).get("verified"):
+            close_in_scan(html, f"open time page {month}")  # FW-0034: a link to the close-in folder, if it has one
         capture(fl, month, html)
         detail_probe(fl, pot)
         pot_details(fl, pot, full)
@@ -4095,6 +4309,10 @@ def check(fl):
         DB.record_pot(month, pot, new_keys)
         new_any = new_any or bool(new_keys)
         S["baseline"][month] = sorted(pot.keys())
+    try:  # FW-0034: the close-in folder (trips under 16 h to report), read only
+        pot_all[CLOSE_IN_KEY] = close_in_check(fl, pot_all, full)
+    except Exception as e:
+        log.info("close-in check error: %s", e)
     # drop months no longer published, and cached details of pairings no longer in any pot
     S["baseline"] = {m: v for m, v in S["baseline"].items() if m in S["pot_urls"]}
     live = {k for p in pot_all.values() for k in p}
@@ -4102,6 +4320,7 @@ def check(fl):
     S["relogin_streak"] = 0
     save_state(S)
     flat = [dict(v, month=m) for m, p in pot_all.items() for v in p.values()]
+    flat.sort(key=lambda r: r.get("src") != "C")  # FW-0034: close-in trips (under 16 h to report) first
     pub("pot/state", {"count": len(flat), "pairings": flat[:60]})
     email_check(fl, pot_all)
     pickup_check(fl, full)

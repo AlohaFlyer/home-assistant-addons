@@ -72,6 +72,12 @@ def _det(row, details):
     return det.get(p) or det.get(p.rstrip("ABCDEFGHJ")) or {}
 
 
+def package_entry(pairing, day, details):
+    """FW-0039: one pairing's package details for the bid period of `day` ({} when none), as the miss check reads them
+    (_det: a changed pairing such as H3815B falls back to H3815)."""
+    return _det({"pairing": pairing, "date": day.isoformat()}, details)
+
+
 def pairing_window(row, details):
     """(start, end, report, last_arr, block_h, length_known) for a recall row, from the row itself or the month's
     package. length_known is False when neither the row (days, end) nor the package (rel_days, duties) gives the
@@ -348,6 +354,46 @@ def own_records(sched_items, own_trips):
         t = (own_trips or {}).get(f"{trip}|{it.get('start')}") or {}
         out.append(_trip(lab, a, b, t.get("report"), t.get("last_arr"), _hrs(t.get("blk")), t.get("duties")))
     return out
+
+
+def line_gaps(months, lo, hi, today, near=NEAR):
+    """FW-0039: the days from lo to hi (dates) that no schedule month on file covers ({YYYY-MM: {days: [[iso, ...]]}},
+    the Watcher's S['schedule']), as [(from, to)] ISO spans: Ryan's current line there is unknown. A day after the
+    last day on file and more than `near` days after today is in a month not awarded yet (no trips), as in
+    held_at(); nearer ones stay unknown in case the Watcher has not read an awarded month yet."""
+    covered = {str(d[0]) for m in (months or {}).values() for d in (m or {}).get("days") or [] if d}
+    last = max(covered) if covered else ""
+    out, d = [], lo
+    while d <= hi:
+        iso = d.isoformat()
+        if iso not in covered and not (last and iso > last and d > today + timedelta(days=near)):
+            if out and out[-1][1] == (d - timedelta(days=1)).isoformat():
+                out[-1] = (out[-1][0], iso)
+            else:
+                out.append((iso, iso))
+        d += timedelta(days=1)
+    return out
+
+
+def pickup_trip(label, start, end, report, last_arr, blk_h, duties):
+    """FW-0039: a pot / Tradeboard pickup as far.legality() reads it (the same _trip() the miss check builds)."""
+    return _trip(label, start, end, report, last_arr, blk_h, duties)
+
+
+def line_records(months, own_trips, start, end, today, exclude=None):
+    """FW-0039: Ryan's current line as far.legality() trips, for the FAR column of a pickup from start to end: his
+    items (own_records; `exclude` 'TRIP|YYYY-MM-DD' left out, for a swap) plus the days LOOK + TRIP_MARGIN around the
+    pickup that no schedule month on file covers (line_gaps), which can only make a check unknown, never OK."""
+    items, seen = [], {exclude}
+    for m in (months or {}).values():
+        for it in (m or {}).get("items") or []:
+            k = f"{it.get('trip')}|{it.get('start')}"
+            if k not in seen:  # a trip listed by two months counts once
+                seen.add(k)
+                items.append(it)
+    gaps = line_gaps(months, start - timedelta(days=LOOK + TRIP_MARGIN), end + timedelta(days=LOOK + TRIP_MARGIN),
+                     today)
+    return own_records(items, own_trips) + _gaps_as_trips(gaps)
 
 
 def _gaps_as_trips(unknown):
