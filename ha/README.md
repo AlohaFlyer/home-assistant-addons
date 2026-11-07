@@ -4,9 +4,10 @@ Copies of the Flight Watcher pieces that live in Home Assistant on Pako HI rathe
 review and history (FW-0036). Nothing in this folder is loaded by Home Assistant or by the app, and the app store
 ignores it (no `config.yaml`).
 
-**Snapshot refreshed 2026-11-06 about 09:30 HST** (FW-0048 badge, FW-0052/0055 tickets on Settings for Ryan only,
-FW-0054 buzzer, James's per-view visibility). The automations and both dashboards were checked against Pako by sha256
-of the redacted text at that time; the wx package is unchanged since 2026-11-05.
+**Snapshot refreshed 2026-11-06 about 13:50 HST** (Settings tab: "Settings" heading relabeled "Credentials" on both
+dashboards; Ryan's gets a "Monthly PDFs" heading and the 1.4.5 upload card above Tickets, Ryan only). Both dashboards
+were checked against Pako by sha256 of the redacted text; the automations are unchanged since the 09:30 HST refresh and
+the wx package since 2026-11-05.
 
 | File | Live copy on Pako |
 |:--|:--|
