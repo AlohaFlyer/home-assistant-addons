@@ -459,26 +459,7 @@ def parse_schedule(html, domicile="HNL"):
             continue
     if len(days) < 20:
         return None
-    items = []
-    for k, (d, act, lay) in enumerate(days):
-        if not act:
-            continue
-        if not PAIRING_RE.match(act):  # VAC, SCR, etc: merge consecutive identical codes
-            if items and items[-1]["trip"] == act and items[-1]["_k"] == k - 1:
-                items[-1].update(end=d, _k=k)
-            else:
-                items.append({"trip": act, "start": d, "end": d, "lay": "", "_k": k})
-            continue
-        end = d
-        for j in range(k + 1, min(k + 8, len(days))):
-            if days[j][1]:
-                break
-            if days[j][2] == domicile:
-                end = days[j][0]
-                break
-        items.append({"trip": act, "start": d, "end": end, "lay": lay if lay != "-" else "", "_k": k})
-    for it in items:
-        it.pop("_k", None)
+    items = schedule_items(days, domicile)
     tot = {}
     for key, pat in (("block", r"Block\s+([\d.:]+)"), ("credit", r"Credit\s+([\d.:]+)"),
                      ("ytd", r"YTD\s+([\d.:]+)"), ("days_off", r"Days Off\s+(\d+)")):
@@ -497,6 +478,45 @@ def parse_schedule(html, domicile="HNL"):
     first = date.fromisoformat(days[0][0])
     return {"month": f"{first.year}-{first.month:02d}", "updated": u.group(1) if u else "",
             "days": days, "items": items, "totals": tot}
+
+
+def _away(lay, domicile):
+    """A layover cell that means Ryan is still away at the end of that day: a station other than domicile. FLICA writes
+    '-' on a trip's middle days and on days off alike, so '-' says nothing either way."""
+    return bool(lay) and lay not in ("-", domicile)
+
+
+def schedule_items(days, domicile="HNL"):
+    """The items of a month from its days [[iso, act, lay]] (parse_schedule; also used to repair stored versions).
+    A pairing ends on the first later day whose layover cell is domicile. FW-0065: when the next activity starts on the
+    day the trip comes home (H3681 SYD Nov 9 to 12, then H3620 on Nov 12), FLICA shows only that activity's row on that
+    day, so there is no domicile cell: a trip still away (its first layover a station, nothing but '-' since) ends on
+    the day the next activity starts. Codes (VAC, SCR...) merge over consecutive days."""
+    items = []
+    for k, (d, act, lay) in enumerate(days):
+        if not act:
+            continue
+        if not PAIRING_RE.match(act):  # VAC, SCR, etc: merge consecutive identical codes
+            if items and items[-1]["trip"] == act and items[-1]["_k"] == k - 1:
+                items[-1].update(end=d, _k=k)
+            else:
+                items.append({"trip": act, "start": d, "end": d, "lay": "", "_k": k})
+            continue
+        end, away = d, _away(lay, domicile)
+        for j in range(k + 1, min(k + 8, len(days))):
+            if days[j][1]:
+                if away and days[j][0] > end:
+                    end = days[j][0]  # FW-0065: home that morning, out again on the next activity
+                break
+            if days[j][2] == domicile:
+                end = days[j][0]
+                break
+            if days[j][2] not in ("-",) and not _away(days[j][2], domicile):
+                away = False  # an empty layover cell: not on the trip any more
+        items.append({"trip": act, "start": d, "end": end, "lay": lay if lay != "-" else "", "_k": k})
+    for it in items:
+        it.pop("_k", None)
+    return items
 
 
 def _span(a, b):

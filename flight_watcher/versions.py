@@ -46,6 +46,11 @@ def diff(old, new):
         out.append(f"added {t} {s}")
     for t, s in sorted(oi - ni):
         out.append(f"dropped {t} {s}")
+    oe = {(i["trip"], i["start"]): i.get("end") for i in old.get("items") or []}  # FW-0065: a trip's last day moved
+    for i in new.get("items") or []:
+        a = oe.get((i["trip"], i["start"]))
+        if a and i.get("end") and a != i["end"]:
+            out.append(f"{i['trip']} {i['start']} ends {i['end']} (was {a})")
     # day codes that changed (VAC, SCR, SICK...), skipping days already explained by an added / dropped trip
     moved = {t for t, _ in (ni ^ oi)}
     od = {d[0]: d[1] for d in old.get("days") or []}
@@ -93,8 +98,9 @@ def update(db, months, own_trips, now_iso):
 
 
 def published(db, months):
-    """The payload for sensor.flight_watcher_schedule_versions: per month, the awarded version and the latest
-    MAX_PUBLISHED - 1 versions, newest last, without fingerprints."""
+    """Per month, the awarded version and the latest MAX_PUBLISHED - 1 versions, newest last, without fingerprints.
+    FW-0060: this goes to the versions_<key>.json file the schedule card reads (it ran about 33 KB as sensor
+    attributes, over HA's 16 KB recorder limit); the sensor carries summary() only."""
     out = {}
     for month in sorted(months or {}):
         vers = db.get(f"sched_versions:{month}") or []
@@ -104,6 +110,41 @@ def published(db, months):
         out[month] = {"count": len(vers), "current": vers[-1]["ver"], "awarded": vers[0]["ver"],
                       "versions": [{k: v for k, v in r.items() if k != "fp"} for r in keep]}
     return out
+
+
+def summary(full):
+    """FW-0060: the sensor's per-month summary of published(): counts and the awarded / current version, no items."""
+    return {mk: {"count": m["count"], "current": m["current"], "awarded": m["awarded"],
+                 "current_at": (m["versions"][-1].get("at") or "") if m.get("versions") else ""}
+            for mk, m in (full or {}).items()}
+
+
+def repair_ends(vers, rebuild):
+    """FW-0065: versions stored while the item builder cut a trip short (its return day taken by the next trip's row:
+    H3681 Nov 9 to 12 stored as Nov 9 to 9) get the end their own days list gives (rebuild(days) -> items, pot's
+    schedule_items). Only a pairing's end that moves later changes; the PBS award (built from the PDF) is left alone.
+    Each changed version's fingerprint is made again so the next read of the same line is not a new version.
+    Returns the number of versions changed (vers is changed in place)."""
+    n = 0
+    for v in vers or []:
+        if not isinstance(v, dict) or v.get("award") or not v.get("days"):
+            continue
+        try:
+            ends = {(i.get("trip"), i.get("start")): i.get("end") for i in rebuild(v["days"]) or []}
+        except Exception:
+            continue
+        hit = False
+        for it in v.get("items") or []:
+            e = ends.get((it.get("trip"), it.get("start")))
+            if e and it.get("end") and e > it["end"] and it.get("trip") not in ("VAC",):
+                it["end"] = e
+                hit = True
+        if hit:
+            if "fp" in v:
+                v["fp"] = fingerprint(v, v.get("trips") or {})
+            v["repaired"] = "FW-0065"
+            n += 1
+    return n
 
 
 def seed(db, path, iso_of):

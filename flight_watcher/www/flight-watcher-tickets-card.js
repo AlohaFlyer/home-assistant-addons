@@ -11,6 +11,9 @@
 // description, steps, expected and Where in place, sending only what changed to flight_watcher/ticket/edit; Delete
 // (any status, the completed fold too) asks first in a dialog, then sends flight_watcher/ticket/delete. Each carries
 // a card-made rid; the Watcher's answer comes back as "last" on the tickets sensor and shows under the button.
+// FW-0060 (1.4.7): the full ticket log (every ticket with its text) comes from tickets_<key>.json under /local/; the
+// sensor keeps the counts, "last" and a short row per open ticket (it ran about 39 KB with every ticket's text, over
+// HA's 16 KB recorder limit). The key is only in the sensor's attributes, which need HA's login.
 const FW_TICKET_MAX_PHOTOS = 10;
 const FW_TICKET_MAX_URL = 1.75e6;  // one photo's data URL; its whole message stays under about 1.8e6 chars
 // FW-0006: the choice at the top of the one ticket form (Bug first): its label, the description prompt, a title hint
@@ -24,6 +27,23 @@ const FW_TICKET_KINDS = {
   bug: { label: "&#128027; Bug", narrative: "What happened?", title: "e.g. Pay-Gross wrong on v11.003" },
   feature: { label: "&#128161; Feature request", narrative: "What do you want, and why?", title: "e.g. Show reserve days on the schedule" },
 };
+// FW-0060: a sensor's full list from its file under /local/ (<url><file_key>.json, the pilot's own www folder). Fetched
+// again whenever the sensor's rev changes; null until it is in (or when the sensor has no key), so the caller falls
+// back to the sensor's own short list. A failed fetch is not retried until rev changes.
+function fwListFile(box, url, st, redraw) {
+  const a = (st && st.attributes) || {};
+  const key = /^[0-9a-f]{32}$/.test(String(a.file_key || "")) ? a.file_key : "";
+  if (!key) return null;
+  const want = `${key}|${a.rev || ""}`;
+  if (box.want !== want && !box.busy) {
+    box.busy = true;
+    fetch(`${url}${key}.json?r=${encodeURIComponent(a.rev || "")}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => { box.busy = false; box.want = want; if (j) { box.key = key; box.data = j; } redraw(); })
+      .catch(() => { box.busy = false; box.want = want; });
+  }
+  return box.key === key ? box.data : null;
+}
 class FlightWatcherTicketsCard extends HTMLElement {
   setConfig(c) {
     this._c = { prefix: "flight_watcher", ...c };
@@ -88,6 +108,23 @@ class FlightWatcherTicketsCard extends HTMLElement {
     this._addFiles(fl);
   }
   _e(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
+  // FW-0060: the ticket log. The file has every ticket with its text; the sensor's short rows (open tickets) are newer,
+  // so they win on the fields they carry and a ticket the file does not have yet still shows. An older Watcher (no
+  // "rows" mark) still sends every ticket on the sensor.
+  _tickets(st) {
+    const a = (st && st.attributes) || {};
+    const sens = a.tickets || [];
+    if (a.rows !== "open") return sens;
+    const f = fwListFile(this._lf || (this._lf = {}), "/local/flight-watcher/tickets_", st,
+      () => { this._sig = null; if (!this._form && !this._dlg) this._render(); });
+    if (!f || !Array.isArray(f.tickets)) return sens;
+    const byId = {};
+    sens.forEach((t) => { byId[t.id] = t; });
+    const out = f.tickets.map((t) => (byId[t.id] ? { ...t, ...byId[t.id] } : t));
+    sens.forEach((t) => { if (!out.some((x) => x.id === t.id)) out.push(t); });
+    const n = (t) => parseInt(String(t.id || "").slice(3), 10) || 0;
+    return out.sort((x, y) => n(y) - n(x));
+  }
   set hass(h) {
     this._h = h;
     const st = h.states[`sensor.${this._c.prefix}_tickets`];
@@ -317,7 +354,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
     this._fk = fk;
     const st = this._h && this._h.states[`sensor.${this._c.prefix}_tickets`];
     const a = st ? st.attributes : {};
-    const tix = a.tickets || [];
+    const tix = this._tickets(st);
     if (this._form && this._form.mode === "edit" && !tix.some((t) => t.id === this._form.id)) {
       const gone = this._form, m = this._editMsg(gone.t || {}, Object.keys(keep).length ? keep : {});
       if (typeof m === "object") { delete m.id; this._unsaved = { id: gone.id, text: this._unsavedText(m), why: `${gone.id} is no longer on the ticket log, so the edit was not sent.`, live: false }; }
@@ -357,7 +394,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
       const acts = t.status === "fixed" ? `<button data-a="verify" data-id="${this._e(t.id)}">Verified, close</button><button class="g" data-a="reopen" data-id="${this._e(t.id)}">Still broken</button>`
         : t.status === "closed" ? `<button class="g" data-a="reopen" data-id="${this._e(t.id)}">Reopen</button>` : "";
       // FW-0049: Edit only while the Watcher lists it editable (new or reopened); Delete in any status
-      const eds = `<div class="eds">${t.editable ? `<button class="g" data-edit="${this._e(t.id)}">&#9998; Edit</button>` : ""}<button class="del" data-del="${this._e(t.id)}">Delete</button></div>`;
+      const eds = `<div class="eds">${t.editable && t.narrative !== undefined ? `<button class="g" data-edit="${this._e(t.id)}">&#9998; Edit</button>` : ""}<button class="del" data-del="${this._e(t.id)}">Delete</button></div>`;
       const editing = f && f.mode === "edit" && f.id === t.id;
       return `<div class="t"><div class="th" data-t="${this._e(t.id)}"><b>${this._e(t.id)}</b> ${t.kind === "bug" ? "&#128027;" : "&#128161;"} ${this._e(t.title)}
         <span class="chip" style="background:${chip[t.status] || "#757575"}">${this._e(String(t.status).replace("_", " "))}${t.version_fixed ? (/^\d+(\.\d+)+$/.test(String(t.version_fixed)) ? " v" : " in ") + this._e(t.version_fixed) : ""}</span>
@@ -450,7 +487,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
     if (dd) dd.ontoggle = () => { this._doneOpen = dd.open; };
     r.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => {
       const t = tix.find((x) => x.id === b.dataset.edit);
-      if (!t || !t.editable) return;
+      if (!t || !t.editable || t.narrative === undefined) return;  // FW-0060: only with its full text from the file
       if (this._form) { const ti = r.querySelector('[data-f="title"]'); if (ti) ti.focus(); return; }  // finish or cancel the open form first
       this._form = { mode: "edit", id: t.id, t: { ...t } };
       this._open[t.id] = true;

@@ -21,7 +21,7 @@ from playwright.sync_api import sync_playwright
 import rules as R
 import web
 from far import far_check, window as far_window
-from pot import PAIRING_RE, LEG_FULL_RE, parse_schedule_desktop, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+from pot import PAIRING_RE, LEG_FULL_RE, schedule_items, parse_schedule_desktop, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 import tradeboard as TB
 import swap as SW
@@ -40,6 +40,7 @@ import sealed as SEAL
 import pay as PAY
 import seniority as SEN
 import wwwfiles as WF
+import trades as TR
 
 VERSION = "1.4.6"
 BASE = "https://ha2.flica.net"
@@ -741,15 +742,21 @@ def finds_files_cleanup():
         log.info("finds file cleanup skipped: %s", WF.scrub(e, key))
 
 
+PICKERS_ATTR_ROWS = 20  # FW-0060: the fastest pickers the sensor keeps; the card reads every one from the file
+
+
 def publish_pickers():
-    """0.4.18 (Ryan): every FO/RO seen taking a trip, with their average time in open time, fastest first."""
+    """0.4.18 (Ryan): every FO/RO seen taking a trip, with their average time in open time, fastest first.
+    FW-0060: one pilot runs about 230 bytes, so the list (38 pilots, 8.7 KB in Nov 2026, more every week) goes to
+    pickers_<key>.json for the pickers card, and the sensor keeps the count and the fastest PICKERS_ATTR_ROWS."""
     rows = [{"emp": e, "name": v["name"], "pos": v["pos"], "n": v["n"], "avg_s": int(v["total_s"] / v["n"]) if v["n"] else None,
              "inflt_n": v.get("inflt_n", 0), "month_n": v.get("month_n", 0), "year_n": v.get("year_n", 0),
              "lays": v.get("lays", []), "last_lay": v.get("last_lay", ""),  # 0.7.6: Common Layover
              "min_s": v.get("min_s"),  # 0.8.2: Fastest Pickup Speed
              "last_at": v["last_at"]} for e, v in DB.picker_stats().items()]
     rows.sort(key=lambda r: (r["avg_s"] is None, r["avg_s"] or 0, r["name"]))
-    pub("pickers", {"count": len(rows), "pickers": rows})
+    key, rev = write_list_file("pickers", {"count": len(rows), "pickers": rows})
+    pub("pickers", {"count": len(rows), "pickers": rows[:PICKERS_ATTR_ROWS], "file_key": key, "rev": rev})
 
 
 # 1.0.0: entity id suffix per discovery oid where the two differ (the ids HA gave these entities from their names
@@ -932,11 +939,98 @@ def mqtt_start():
 
 MQ = None
 
+# FW-0060: HA's recorder keeps no history for a state whose attributes pass 16 KiB and logs a warning on every update
+# (sensor.flight_watcher_tickets ran about 39 KB, schedule_versions about 33 KB). Every sensor attribute payload stays
+# at or under ATTR_MAX bytes (compact JSON, ASCII-escaped, so HA's UTF-8 copy is no larger; HA adds friendly_name and
+# icon, about 100 bytes, which keeps it under 12 KB). The long lists live in files (write_list_file); this is the
+# backstop for the rest: the list a sensor carries is cut from its least useful end and "trimmed" says how many went.
+ATTR_MAX = FINDS_ATTR_MAX
+# topic -> (attribute holding the list or dict that can grow, which end goes first: "end", "front", or "old" for a
+# dict keyed TRIP|YYYY-MM-DD or YYYY-MM, oldest key first)
+ATTR_TRIM = {
+    "pot/state": ("pairings", "end"), "tradeboard/state": ("pairings", "end"), "recall": ("days", "end"),
+    "charters": ("items", "front"), "ot_requests": ("requests", "front"), "swap/state": ("ideas", "end"),
+    "swap_tests": ("tests", "front"), "own_trips": ("trips", "old"), "improved_pay": ("months", "front"),
+    "pilot_schedule": ("reconstructed", "end"), "rules/state": ("rules", "end"), "blocked/state": ("days", "front"),
+    "finds": ("finds", "end"), "pickers": ("pickers", "end"), "tickets": ("tickets", "end"),
+    "schedule": ("months", "old"), "schedule_versions": ("months", "old"), "grid/state": ("days", "old"),
+    "drop/state": ("keys", "front"), "trade/state": ("keys", "front"), "last_tradeboard": (None, None),
+    "last_new": (None, None), "last_match": (None, None), "crew_index": ("waiting_for_award", "front"),
+}
+ATTR_LOGGED = set()
+
+
+def attr_size(payload):
+    return len(json.dumps(payload, separators=(",", ":")))
+
+
+def _dict_age(k):
+    k = str(k)
+    return k.split("|")[-1] if "|" in k else k
+
+
+def cap_attrs(topic, payload):
+    """FW-0060: payload (a dict for a sensor's json_attributes_topic) at or under ATTR_MAX bytes: the ATTR_TRIM list
+    loses items from its least useful end until it fits, and "trimmed" counts them. A payload that still does not fit
+    (no list to cut) goes out as it is, logged once per topic."""
+    if not isinstance(payload, dict) or attr_size(payload) <= ATTR_MAX:
+        return payload
+    key, end = ATTR_TRIM.get(topic, (None, None))
+    lst = payload.get(key) if key else None
+    out, n = dict(payload), 0
+    if isinstance(lst, list):
+        lst = list(lst)
+        while lst and attr_size({**out, key: lst, "trimmed": n}) > ATTR_MAX:
+            lst.pop(0 if end == "front" else -1)
+            n += 1
+        out[key] = lst
+    elif isinstance(lst, dict):
+        keep = sorted(lst, key=_dict_age)
+        while keep and attr_size({**out, key: {k: lst[k] for k in keep}, "trimmed": n}) > ATTR_MAX:
+            keep.pop(0)
+            n += 1
+        out[key] = {k: lst[k] for k in lst if k in keep}
+    if n:
+        out["trimmed"] = n
+    if topic not in ATTR_LOGGED and (n or attr_size(out) > ATTR_MAX):
+        ATTR_LOGGED.add(topic)
+        log.info("FW-0060: %s attributes over %d bytes: %s", topic, ATTR_MAX,
+                 f"{n} item(s) of {key} left out" if n else "nothing to cut")
+    return out
+
 
 def pub(topic, payload, retain=True):
     if not isinstance(payload, str):
-        payload = json.dumps(payload)
+        payload = json.dumps(cap_attrs(topic, payload) if topic in ATTR_TRIM else payload)
     MQ.publish(f"{T}/{topic}", payload, retain=retain)
+
+
+LIST_REV = {}  # FW-0060: name -> rev of the list file last written, so an unchanged list is not written again
+
+
+def write_list_file(name, obj):
+    """FW-0060: obj as <name>_<key>.json (wwwfiles.LIST_NAMES) in this instance's www folder (finds_dir(): a second
+    pilot's is www/flight-watcher/<name>/), written atomically and only when it changed. Returns (file_key, rev): rev
+    is a short hash of the text, which the sensor carries so an open card fetches the file again when it changes;
+    (None, None) when it could not be written (the card then shows the sensor's short list). Never logs the key."""
+    key = None
+    try:
+        key = www_key()
+        text = json.dumps(obj, separators=(",", ":"))
+        rev = hashlib.sha256(text.encode()).hexdigest()[:12]
+        fdir = finds_dir()
+        path = os.path.join(fdir, WF.list_name(name, key))
+        if LIST_REV.get(name) != (key, rev) or not os.path.exists(path):
+            os.makedirs(fdir, exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as fh:
+                fh.write(text)
+            os.replace(tmp, path)
+            LIST_REV[name] = (key, rev)
+        return key, rev
+    except Exception as e:
+        log.info("%s file skipped: %s", name, WF.scrub(e, key))
+        return None, None
 
 
 FETCHES = {"n": None, "pub_at": 0}
@@ -1459,9 +1553,42 @@ def my_seat(crew):
     return ""
 
 
+ENDS_FIX_V = 1  # FW-0065: bump to run repair_ends() over the stored versions again
+
+
+def repair_trip_ends():
+    """FW-0065, once: versions and the schedule on file stored while the item builder cut a trip short when the next
+    activity started on its return day (H3681 Nov 9 to 12 kept as Nov 9 to 9 from 11.009 on) get the end their own
+    days list gives, so recall legality spans and pay see the whole trip. Months from 24 back to 3 ahead."""
+    if S.get("ends_fix_v") == ENDS_FIX_V:
+        return 0
+    n = 0
+    today = local_now().date()
+    for i in range(-24, 4):
+        y, m = divmod(today.year * 12 + today.month - 1 + i, 12)
+        key = f"sched_versions:{y:04d}-{m + 1:02d}"
+        vers = DB.get(key)
+        if vers and VER.repair_ends(vers, schedule_items):
+            n += sum(1 for v in vers if v.get("repaired"))
+            DB.put(key, vers)
+    for mk, sch in (S.get("schedule") or {}).items():
+        if isinstance(sch, dict) and sch.get("days") and VER.repair_ends([sch], schedule_items):
+            sch.pop("repaired", None)
+            n += 1
+    S["ends_fix_v"] = ENDS_FIX_V
+    save_state(S)
+    if n:
+        log.info("FW-0065: %d stored schedule version(s) / month(s) got the trip end their days list gives", n)
+    return n
+
+
 def versions_check(force_pub=False):
     """0.9.0 (Ryan): a new schedule version (MM.NNN) every time anything on a month changes. A month whose new
     pairings have no block / credit read yet waits up to 2 h for them, so one change makes one version."""
+    try:
+        repair_trip_ends()
+    except Exception as e:  # never stops the versions; tried again next time
+        log.info("FW-0065 trip end repair skipped: %s", e)
     try:
         months, own = S.get("schedule") or {}, S.get("own_trips") or {}
         wait = S.setdefault("ver_wait", {})
@@ -1482,8 +1609,12 @@ def versions_check(force_pub=False):
         for mk, v in made:
             log.info("schedule version %s (%s)", v, mk)
         if made or force_pub or not S.get("ver_published"):
+            # FW-0060: every version's items, days and trips go to versions_<key>.json (about 33 KB in Nov 2026) for
+            # the schedule card; the sensor keeps the counts and each month's awarded / current version
+            full = VER.published(DB, months)
+            key, rev = write_list_file("versions", {"months": full})
             pub("schedule_versions", {"count": sum(len(DB.get(f"sched_versions:{m}") or []) for m in months),
-                                      "months": VER.published(DB, months), "at": now_iso()})
+                                      "months": VER.summary(full), "file_key": key, "rev": rev, "at": now_iso()})
             S["ver_published"] = True
             if made:
                 pub("event/schedule_version", {"versions": [v for _, v in made], "at": now_iso()}, retain=False)
@@ -2246,8 +2377,12 @@ def publish_recall():
            if v.get("verdict") in RECALL_LIVE and (v.get("act") or {}).get("status") in RECALL_OPEN]
     alert = [v for v in opn if v["verdict"] == "MISSED"]  # 1.4.6 (Ryan): RECALL ALERT = the Watcher says he should have been called
     received = max((d.get("at") or "" for d in allr.values()), default="")  # when the newest list post came in
+    # FW-0060: every day goes to recall_<key>.json for the recall card (about 380 bytes a verdict: 45 days would pass
+    # the recorder's 16 KB); the sensor keeps the newest days that fit (cap_attrs) and the counts over all of them
+    key, rev = write_list_file("recall", {"days": days[::-1]})
     pub("recall", {"open": len(opn), "alert": len(alert), "me": recall_me(), "last": days[-1]["date"] if days else "",
-                   "checked": now_iso(), "received": received, "hark_files": not INSTANCE, "days": days[::-1]})
+                   "checked": now_iso(), "received": received, "hark_files": not INSTANCE, "days": days[::-1],
+                   "days_total": len(days), "file_key": key, "rev": rev})
 
 
 def publish_improved():
@@ -2547,6 +2682,7 @@ def schedule_check(fl, force=False):
     # winning URL is tried first next time. At most 3 fetches per read, 1-2 s apart.
     def accept(url, s):
         old = store.get(s["month"])
+        read_at = now_iso()
         merge_lookup_totals(fl, s, old)  # FW-0019: the mobile page has no Block / Credit; Schedule Lookup does
         if old and [(i["trip"], i["start"]) for i in old["items"]] != [(i["trip"], i["start"]) for i in s["items"]]:
             ev = {"month": s["month"], "updated": s["updated"],
@@ -2555,6 +2691,12 @@ def schedule_check(fl, force=False):
                   "totals": s["totals"]}
             log.info("SCHEDULE changed %s", ev)
             pub("event/schedule_changed", ev, retain=False)
+            try:  # FW-0064; never fails the read (an error here must not make schedule_check load another URL)
+                if not old.get("src"):  # the same page read twice; a month first read on Schedule Lookup is not
+                    sched_moves_record(s["month"], old["items"], s["items"], s.get("updated"), read_at)
+            except Exception as e:
+                log.info("schedule moves not recorded: %s", e)
+        S["sched_read_at"] = read_at  # FW-0064: a trade seen on the schedule is decided one quiet read later
         S["sched_url_ok"] = url
         store[s["month"]] = s
         prev_month_check(fl, url, s["month"])  # 0.4.16: last month too, for 30 in 7 / 100 in 672 windows
@@ -2565,6 +2707,10 @@ def schedule_check(fl, force=False):
                          "months": {k: {kk: v[kk] for kk in ("items", "days", "totals", "updated")}
                                     for k, v in S["schedule"].items()}})
         log.info("schedule %s: %d items, totals %s", s["month"], len(s["items"]), s["totals"])
+        try:
+            trade_check()  # FW-0064
+        except Exception as e:
+            log.info("schedule trade check skipped: %s", e)
         save_state(S)
 
     fallback, tries = None, 0
@@ -2895,6 +3041,7 @@ def requests_check(fl):
                     ev["pay"] = None
                 log.info("request %s %s %s", r["type"], r["status"], r["detail"][:80])
                 pub("event/request_decided", ev, retain=False)
+                note_decided(r, now)  # FW-0064: its schedule changes are this request's, not a trade's
             if rows and rows[-1].get("ts") and not S.get("req_view_captured", {}).get(n):
                 _request_view(fl, b, rows[-1]["ts"])  # once: a private copy of a view page for parser checks
             for r in rows:
@@ -2907,6 +3054,10 @@ def requests_check(fl):
         except Exception as e:
             log.info("requests %s error: %s", b, e)
     tb_ok = _trade_requests_check(fl, folders, trows_of, pushed, now)
+    try:
+        trade_check()  # FW-0064: a decision just read explains schedule changes; a pending one may match them
+    except Exception as e:
+        log.info("schedule trade check skipped: %s", e)
     if folders:
         for b in [x for x in rows_of if x not in folders]:
             rows_of.pop(b, None)  # a folder no longer watched: its Pending rows no longer hold the 2-min poll
@@ -2974,6 +3125,7 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
                     ev["pay"] = None
                 log.info("trade %s %s", r["status"], r["detail"][:120])
                 pub("event/request_decided", ev, retain=False)
+                note_decided(r, now)  # FW-0064
             for r in rows:
                 if r["status"] in SUB.DECIDED:
                     pushed[SUB.push_key(r)] = now_iso()
@@ -2984,6 +3136,156 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
     if ok:
         S["tb_req_init"] = True
     return ok
+
+
+# ---------------------------------------------------------------- FW-0064: a request decided on the schedule
+DECIDED_KEEP_DAYS = 7
+
+
+def note_decided(r, now=None):
+    """FW-0064: an Approved decision the request path just pushed: its legs (or, with none read, its filing time and
+    now) explain the schedule changes it made, so trade_check() never pushes them again as a trade."""
+    if r.get("status") != "Approved":
+        return
+    try:
+        now = now or datetime.fromisoformat(now_iso()).astimezone(HST)
+        filed = _filed_at(r, now).astimezone(timezone.utc).isoformat()
+    except Exception:
+        filed = now_iso()
+    cut = (datetime.fromisoformat(now_iso()) - timedelta(days=DECIDED_KEEP_DAYS)).isoformat()
+    lst = [d for d in S.get("req_decided") or [] if d.get("seen", "") >= cut]
+    lst.append({"key": r.get("key") or "", "type": r.get("type") or "", "filed": filed, "seen": now_iso(),
+                "legs": [{k: x.get(k) for k in ("trip", "day", "side")} for x in r.get("legs") or []]})
+    S["req_decided"] = lst[-50:]
+
+
+def _move_rec(trip, start, month):
+    """What a trip on Ryan's line pays, kept when it leaves the schedule (its own trip record is dropped then): credit,
+    block and seat from his own trip record, else from the newest schedule version that held it; the number of pilots
+    from its crew roster (PWA 4.O.1 overrides)."""
+    k = f"{trip}|{start}"
+    own = (S.get("own_trips") or {}).get(k) or {}
+    if not own.get("credit"):
+        for v in reversed(DB.get(f"sched_versions:{month}") or []):
+            if (v.get("trips") or {}).get(k):
+                own = {**v["trips"][k], **{f: x for f, x in own.items() if x}}
+                break
+    rec = {f: own.get(f) for f in ("credit", "blk", "seat") if own.get(f)}
+    if own.get("crew"):
+        rec["n"] = len(own["crew"])
+    return rec
+
+
+def sched_moves_record(month, old_items, new_items, updated, read_at):
+    """FW-0064: the pairings this read dropped and added, kept in the state with what each dropped trip paid."""
+    keys = lambda its: {f"{i['trip']}|{i['start']}" for i in its or []}  # noqa: E731
+    dropped = keys(old_items) - keys(new_items)
+    recs = {k: _move_rec(*k.split("|"), month) for k in dropped}
+    mv = TR.moves(old_items, new_items, month, updated, read_at, recs)
+    if mv:
+        S["sched_moves"] = TR.prune(S.get("sched_moves") or [], read_at) + mv
+        log.info("schedule moves %s: %s", month, ", ".join(f"{m['side']} {m['trip']} {m['start']}" for m in mv))
+
+
+def _add_rec(m):
+    """A trip taken: its own trip record once read (credit, block, seat, crew roster)."""
+    own = (S.get("own_trips") or {}).get(f"{m['trip']}|{m['start']}") or {}
+    rec = {f: own.get(f) for f in ("credit", "blk", "seat") if own.get(f)}
+    if own.get("crew"):
+        rec["n"] = len(own["crew"])
+    return rec
+
+
+def price_moves(group, legs=None):
+    """FW-0064: the Pay-Gross change of trips given and taken on the schedule, the request path's way (pay.py, the
+    schedule card's rules): each trip at its own credit x the PWA 3.D.6 rate for the longevity year, plus the PWA 4.O.1
+    override for the seat flown (RO $4.00 per block hour; FO $3.00 on a 3-pilot crew) and the Extended Range +15% where
+    on. A trip's credit, block, seat and crew come from Ryan's own trip record (a given trip's as kept when it left), else
+    the month's pairing package (seat as the request page marks it, else FO). None when any trip cannot be priced."""
+    rate, yr, er = pay_settings()
+    if not rate:
+        return None
+    cache, parts, cr = {}, [], 0.0
+    for m in sorted(group, key=lambda x: (x["side"] != "drop", x["t"], x["start"])):
+        rec = (m.get("rec") or {}) if m["side"] == "drop" else _add_rec(m)
+        pk = _package(m["start"][:7], cache).get(m["trip"][:5]) or {}
+        credit = PAY.hrs(rec.get("credit")) if rec.get("credit") else PAY.hrs(pk.get("credit"))
+        block = PAY.hrs(rec.get("blk")) if rec.get("blk") else PAY.hrs(pk.get("block"))
+        lay = "/".join(x for x in str(pk.get("route") or "").split("-") if x and x != "HNL") or m.get("lay") or ""
+        leg = next((x for x in legs or [] if TR.leg_matches(x, m)), {})
+        seat = rec.get("seat") or leg.get("seat") or "FO"
+        key = f"{m['trip']}|{m['start']}"
+        g = PAY.trip_gross(credit, block, rec.get("n") or pk.get("crew"), lay, key, seat, rate, er)
+        if g is None:
+            return None
+        parts.append({"trip": m["trip"], "start": m["start"], "side": m["side"], "gross": round(g, 2), "seat": seat,
+                      "credit": rec.get("credit") or pk.get("credit") or ""})
+        cr += credit if m["side"] == "add" else -credit
+    delta = sum(p["gross"] for p in parts if p["side"] == "add") - sum(p["gross"] for p in parts if p["side"] == "drop")
+    return {"delta": round(delta, 2), "delta_text": PAY.usd(delta), "parts": parts, "rate": rate, "year": yr,
+            "credit_delta": ("+" if cr >= 0 else "-") + PAY.hm(abs(cr))}
+
+
+def _priced(m):
+    return bool(_add_rec(m).get("credit"))
+
+
+def trade_check():
+    """FW-0064: schedule changes that are a decided request. A pending request (Open Time Requests or Tradeboard My
+    Requests) whose every leg is now on the schedule is decided at once under its own key (the list path then never
+    pushes it again); what no request explains, a same-day group of trips dropped and added, goes out once a later
+    read is quiet (trades.py). Each goes out once as event/request_decided, status Approved, with the Pay-Gross change
+    (price_moves), and the moves are marked so a restart never pushes them again."""
+    mvs = S.get("sched_moves") or []
+    if not mvs:
+        return
+    TR.explain(mvs, S.get("req_decided") or [])
+    pushed = S.setdefault("ot_req_pushed", {})
+    pending = [{**r, "bcid": b} for b, rs in (S.get("ot_req_rows") or {}).items() for r in rs or []
+               if r.get("status") in SUB.OPEN]
+    pending += [{**r, "bcid": f"001.{n}"} for n, rs in (S.get("tb_req_rows") or {}).items() for r in rs or []
+                if r.get("status") in SUB.OPEN]
+    for r, used in TR.match_pending(mvs, [r for r in pending if f"{r.get('key')}|Approved" not in pushed]):
+        ev = {"reason": "", **r, "status": "Approved", "source": "schedule", "at": now_iso(),
+              "url": f"{BASE}/online/mainmenu.cgi"}
+        try:
+            ev["pay"] = price_moves(used, r.get("legs"))
+        except Exception as e:
+            log.info("schedule request pay not priced: %s", e)
+            ev["pay"] = None
+        for m in used:
+            m.update(state="pushed", by=r.get("key") or "")
+        pushed[f"{r.get('key')}|Approved"] = now_iso()  # SUB.push_key of the Approved row the list will show
+        if r.get("alt"):
+            pushed[f"{r['alt']}|Approved"] = now_iso()
+        note_decided({**r, "status": "Approved"})
+        log.info("request %s %s approved on the schedule (%s)", r.get("type"), r.get("key"),
+                 ", ".join(m["id"] for m in used))
+        pub("event/request_decided", ev, retain=False)
+    done = S.setdefault("sched_trades_pushed", {})
+    for day, grp in sorted(TR.groups(mvs).items()):
+        if not TR.settled(grp, S.get("sched_read_at"), now_iso(), _priced):
+            continue
+        ev = TR.group_event(day, grp)
+        if ev["key"] in done:
+            for m in grp:
+                m.update(state="pushed", by=ev["key"])
+            continue
+        ev.update(bcid="", at=now_iso(), url=f"{BASE}/online/mainmenu.cgi")
+        try:
+            ev["pay"] = price_moves(grp)
+        except Exception as e:
+            log.info("schedule trade pay not priced: %s", e)
+            ev["pay"] = None
+        for m in grp:
+            m.update(state="pushed", by=ev["key"])
+        done[ev["key"]] = now_iso()
+        log.info("trade seen on the schedule (%s): %s, Pay-Gross %s", day, ev["detail"],
+                 (ev["pay"] or {}).get("delta_text", "not priced"))
+        pub("event/request_decided", ev, retain=False)
+    cut = (datetime.fromisoformat(now_iso()) - timedelta(days=30)).isoformat()
+    S["sched_trades_pushed"] = {k: v for k, v in done.items() if v >= cut}
+    save_state(S)
 
 
 def tradeboard_check(fl, full=False):
@@ -3394,8 +3696,8 @@ def note_sched_trips(items, src):
             if e is None:
                 reg[k] = {"pairing": trip, "date": start, "end": end, "src": src, "seen": now}
                 n += 1
-            elif end and not e.get("end"):
-                e["end"] = end
+            elif end and end > (e.get("end") or ""):
+                e["end"] = end  # FW-0065: a trip end cut short by the old item builder grows to the repaired one
         cut = (local_now().date() - timedelta(days=CREW_SCHED_KEEP_D)).isoformat()
         reg = {k: e for k, e in reg.items() if (e.get("end") or e.get("date") or "") >= cut}
         if json.dumps(reg, sort_keys=True) != old:
@@ -3810,16 +4112,38 @@ def ticket_delete(payload):
     return t
 
 
+TICKET_ROW_KEYS = ("id", "kind", "title", "status", "reporter", "created_at", "version_fixed", "image_count", "editable")
+TICKET_ATTR_ROWS = 30  # FW-0060: open tickets on the sensor, newest first; the card reads every ticket from the file
+
+
+def tickets_payload(listing, key, rev, last):
+    """FW-0060: the tickets sensor. The full listing (every ticket, narratives, steps) is in tickets_<key>.json, which
+    the tickets card reads; the sensor keeps the counts, this instance's last edit / delete answer and a short row
+    (no text) for the newest TICKET_ATTR_ROWS tickets still open (TK.OPEN: new, triaged, in progress, fixed,
+    reopened), so the card can list them before the file comes in. It ran about 39 KB with every ticket's text, over
+    the recorder's 16 KB."""
+    rows = [{k: t.get(k) for k in TICKET_ROW_KEYS} for t in listing.get("tickets") or []
+            if t.get("status") in TK.OPEN][:TICKET_ATTR_ROWS]
+    for r in rows:
+        r["title"] = str(r.get("title") or "")[:80]
+        r["created_at"] = str(r.get("created_at") or "")[:10]
+    return {"open": listing.get("open", 0), "total": listing.get("total", 0), "tickets": rows, "rows": "open",
+            "file_key": key, "rev": rev, "last": dict(last or {})}
+
+
 def publish_tickets(force=False):
     """{T}/tickets (retained): Ryan's instance lists every ticket, a pilot instance only its own. Re-published
     when the folder changed (the other instance may have written to it) or when forced. FW-0049: "last" is this
-    instance's last edit / delete answer ({} until one)."""
+    instance's last edit / delete answer ({} until one). FW-0060: the listing goes to tickets_<key>.json first, then
+    the sensor (tickets_payload) announces it with rev."""
     try:
         sig = TK.signature(TICKETS_DIR)
         if not force and sig == TICKETS_SIG["sig"]:
             return
         TICKETS_SIG["sig"] = sig
-        pub("tickets", {**TK.listing(TICKETS_DIR, INSTANCE or None), "last": dict(TICKETS_LAST)})
+        listing = TK.listing(TICKETS_DIR, INSTANCE or None)
+        key, rev = write_list_file("tickets", listing)
+        pub("tickets", tickets_payload(listing, key, rev, TICKETS_LAST))
     except Exception as e:
         log.info("tickets publish skipped: %s", e)
 

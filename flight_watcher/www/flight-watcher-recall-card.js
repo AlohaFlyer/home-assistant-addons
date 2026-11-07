@@ -9,6 +9,25 @@
 // still file a draft (sent, blocked, cancelled), a warning names the HOM task and Withdraw from Hark, Not a miss and
 // Mark filed wait for "I completed HOM task ... as skipped" (they send hom_cleared); no second request once HOM made a
 // task; Over 75 eligibility is answered per month (me.o75_months).
+// FW-0060 (1.4.7): every list day comes from recall_<key>.json under /local/ too; the sensor keeps the newest days that
+// fit HA's 16 KB recorder limit (and the counts over all of them), and its days win over the file's.
+// FW-0060: a sensor's full list from its file under /local/ (<url><file_key>.json, the pilot's own www folder). Fetched
+// again whenever the sensor's rev changes; null until it is in (or when the sensor has no key), so the caller falls
+// back to the sensor's own short list. A failed fetch is not retried until rev changes.
+function fwListFile(box, url, st, redraw) {
+  const a = (st && st.attributes) || {};
+  const key = /^[0-9a-f]{32}$/.test(String(a.file_key || "")) ? a.file_key : "";
+  if (!key) return null;
+  const want = `${key}|${a.rev || ""}`;
+  if (box.want !== want && !box.busy) {
+    box.busy = true;
+    fetch(`${url}${key}.json?r=${encodeURIComponent(a.rev || "")}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => { box.busy = false; box.want = want; if (j) { box.key = key; box.data = j; } redraw(); })
+      .catch(() => { box.busy = false; box.want = want; });
+  }
+  return box.key === key ? box.data : null;
+}
 const RC_MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const RC_DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const RC_LIVE = ["MISSED", "POSSIBLE"];
@@ -29,6 +48,16 @@ class FlightWatcherRecallCard extends HTMLElement {
     this._render(st);
   }
   getCardSize() { return this._c.mode === "alert" ? 1 : 8; }
+  // FW-0060: the sensor's days (newest, fresher) plus the older days only the file has, newest first
+  _days(st) {
+    const a = (st && st.attributes) || {};
+    const sens = a.days || [];
+    const f = fwListFile(this._lf || (this._lf = {}), "/local/flight-watcher/recall_", st,
+      () => { this._sig = null; if (this._h) this.hass = this._h; });
+    if (!f || !Array.isArray(f.days)) return sens;
+    const have = new Set(sens.map((d) => d.date));
+    return sens.concat(f.days.filter((d) => !have.has(d.date))).sort((x, y) => (x.date < y.date ? 1 : x.date > y.date ? -1 : 0));
+  }
   _e(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
   _send(topic, obj) { this._h.callService("mqtt", "publish", { topic: `flight_watcher/${topic}`, payload: JSON.stringify(obj) }); }
   // HST "Nov 6 09:52" from an ISO time, built from parts (iOS Safari's toLocale strings vary, FW-0001)
@@ -111,7 +140,7 @@ class FlightWatcherRecallCard extends HTMLElement {
   _render(st) {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     const a = st ? st.attributes : {};
-    const days = a.days || [];
+    const days = this._days(st);
     const alert = this._alerts(days);
     const css = this._css();
     if (this._c.mode === "alert") {
@@ -221,7 +250,7 @@ class FlightWatcherRecallCard extends HTMLElement {
     const t = this.shadowRoot.querySelector(`textarea[data-n="${CSS.escape(id)}"]`);
     if (t) return t.value;
     const st = this._h.states[this._c.entity];
-    for (const d of (st && st.attributes.days) || []) for (const v of d.verdicts || []) if (v.id === id) return (v.act || {}).narrative || "";
+    for (const d of this._days(st)) for (const v of d.verdicts || []) if (v.id === id) return (v.act || {}).narrative || "";
     return "";
   }
   _wire() {
@@ -236,7 +265,7 @@ class FlightWatcherRecallCard extends HTMLElement {
     });
     r.querySelectorAll("details.day").forEach((el) => el.addEventListener("toggle", () => {
       const st = this._h.states[this._c.entity];
-      const d = ((st && st.attributes.days) || []).find((x) => x.date === el.dataset.day);
+      const d = this._days(st).find((x) => x.date === el.dataset.day);
       if (!d) return;
       const f = this._folds(), was = JSON.stringify(f[d.date]);
       if (el.open === this._dayOpenByDefault(d)) delete f[d.date]; else f[d.date] = el.open;

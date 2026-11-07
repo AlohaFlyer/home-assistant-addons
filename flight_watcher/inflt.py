@@ -11,7 +11,7 @@ import time
 from datetime import date, datetime
 from urllib.parse import unquote
 
-from pot import CM_PAIR_RE, classify, inflight_at, parse_legs, visible_text
+from pot import CM_PAIR_RE, classify, inflight_at, parse_legs, schedule_items, visible_text
 
 # 0.5.5: the page builds its rows in JS: TAry[...]=new Task(1, "SU", "01", "H3647", "PHX", "20261101", 1, 0, 'H3647');
 TASK_RE = re.compile(r'new Task\(\s*\d+,\s*"[A-Z]{2}",\s*"\d{2}",\s*"([A-Z]\d{4}[A-Z]?)",\s*"[^"]*",\s*"(\d{8})"')
@@ -64,26 +64,7 @@ def parse_cm_month(html):
         except ValueError:
             continue
         days.append([iso, code, lay])
-    items = []
-    for k, (d, code, lay) in enumerate(days):
-        if not code:
-            continue
-        if not re.match(r"^[A-Z]\d{4}[A-Z]?$", code):
-            if items and items[-1]["trip"] == code and items[-1]["_k"] == k - 1:
-                items[-1].update(end=d, _k=k)
-            else:
-                items.append({"trip": code, "start": d, "end": d, "lay": "", "_k": k})
-            continue
-        end = d
-        for j in range(k + 1, min(k + 8, len(days))):
-            if days[j][1]:
-                break
-            if days[j][2] == "HNL":
-                end = days[j][0]
-                break
-        items.append({"trip": code, "start": d, "end": end, "lay": lay if lay not in ("-", "") else "", "_k": k})
-    for it in items:
-        it.pop("_k", None)
+    items = schedule_items(days, "HNL")  # FW-0065: the mobile schedule's builder (a trip home the day the next starts)
     tot = {}
     for key, pat in (("block", r"Block\s*(?:&nbsp;\s*)*</TD>\s*<TD[^>]*>\s*([\d.:]+)"),
                      ("credit", r"Credit\s*(?:&nbsp;\s*)*</TD>\s*<TD[^>]*>\s*([\d.:]+)"),
