@@ -18,6 +18,8 @@ function initialData() {
       { name: "seniority_2026-11-06.pdf", kind: "seniority", month: "", day: "2026-11-06", size: 456789, uploaded_at: "2026-11-06T09:30:00-10:00", has_text: true },
       { name: `${BAD}.pdf`, kind: "other", month: "", day: "", size: 2048, uploaded_at: "2026-11-01T07:00:00-10:00", has_text: false },
     ],
+    // FW-0057: a pairings package the crew index still needs, and a month that is not one (left out)
+    wanted: [{ kind: "pairings", month: "2026-10", why: "previous" }, { kind: "pairings", month: BAD, why: BAD }],
     seniority: { pilots: 12, list_date: "2026-03-01", uploaded_at: "2026-11-06T09:30:00-10:00", source: "list", file: "seniority_2026-11-06.pdf",
       as_of: "2026-03-01", newest_doh: "2019-08-05", rejects: 0, carried: 0, base: null },
   };
@@ -81,6 +83,7 @@ c.hass = { user: { is_admin: ${admin ? "true" : "false"} }, callWS: async (m) =>
     const rows = () => pg.evaluate(() => document.querySelector("flight-watcher-uploads-card").shadowRoot.querySelectorAll(".f").length);
     await pg.waitForFunction(() => document.querySelector("flight-watcher-uploads-card").shadowRoot.querySelectorAll(".f").length > 0);
     res.rows_before = await rows();
+    res.wanted = await pg.evaluate(() => Array.from(document.querySelector("flight-watcher-uploads-card").shadowRoot.querySelectorAll(".w"), (x) => x.textContent));
     res.month = await card.locator("[data-month]").inputValue();
     const h = new Date(Date.now() - 10 * 3600e3), m = h.getUTCMonth() + 1;
     res.expect_month = m === 12 ? `${h.getUTCFullYear() + 1}-01` : `${h.getUTCFullYear()}-${String(m + 1).padStart(2, "0")}`;

@@ -144,6 +144,30 @@ def test_escaping_and_dates():
     assert r["hst"] == "Nov 20 09:31" and r["size"] == ["2 KB", "2.4 MB"]
 
 
+def test_wanted_packages_are_asked_for_above_the_files():
+    """FW-0057 (1.4.7 verify): api/uploads 'wanted' shows above the files (and with none on file), oldest first; a month
+    that is not YYYY-MM is left out, so nothing from the answer reaches the page unchecked; no 'wanted' shows nothing."""
+    r = _node("""
+      const c = new FlightWatcherUploadsCard(); c.setConfig({});
+      const bad = "<img src=x onerror=alert(1)>";
+      const wanted = [{kind: "pairings", month: "2026-12", why: "previous"}, {kind: "pairings", month: "2027-01", why: "current"},
+        {kind: "pairings", month: bad, why: bad}];
+      const none = c._listHtml({files: [], wanted});
+      const some = c._listHtml({files: [{name: "2026-11_pairings.pdf", kind: "pairings", month: "2026-11", size: 900000,
+        uploaded_at: "2026-11-20T09:30:00-10:00", has_text: true}], wanted: wanted.slice(1)});
+      const old = c._listHtml({files: []});
+      console.log(JSON.stringify({none, some, old, add: [fwUpAdd("2026-12", 1), fwUpAdd("2026-10", 1), fwUpAdd("2027-01", -1)]}));
+    """)
+    assert r["none"].index("Dec 2026") < r["none"].index("Jan 2027") < r["none"].index("Nothing uploaded yet.")
+    assert ("<b>Wanted:</b> the Dec 2026 pairings package<div class=\"u\">Trips other pilots started in Dec 2026 that run into "
+            "Jan 2027 reach the crew index only from pilot lookups until it is on file.</div>") in r["none"]
+    assert "The trip details and the crew index for Jan 2027 need it." in r["none"]
+    assert "<img" not in r["none"] and "img src" not in r["none"] and r["none"].count("Wanted:") == 2
+    assert r["some"].index("Wanted:") < r["some"].index('<div class="f">') and r["some"].count("Wanted:") == 1
+    assert "Wanted" not in r["old"] and r["old"] == '<div class="u">Nothing uploaded yet.</div>'
+    assert r["add"] == ["2027-01", "2026-11", "2026-12"]
+
+
 def test_second_pilot_copy_keeps_the_apps_slug_and_admin_rule():
     src = cards.build("1.4.5", ["james"])["flight-watcher-uploads-card-james.js"]
     assert 'customElements.define("flight-watcher-uploads-card-james"' in src and "Ryan" not in src
@@ -179,6 +203,8 @@ def test_renders_and_uploads_in_a_browser(tmp_path):
     assert r["month"] == r["expect_month"] and r["kinds"] == ["award", "pairings", "seniority"]
     assert r["sen_toggle"] == {"month_hidden": True, "date_hidden": False} and r["award_toggle"] == {"month_hidden": False, "date_hidden": True}
     assert r["rows_before"] == 4 and r["rows_after"] == 5 and r["pwned"] is None and r["imgs"] == 0
+    assert r["wanted"] == ["Wanted: the Oct 2026 pairings packageTrips other pilots started in Oct 2026 that run into Nov 2026 "
+                           "reach the crew index only from pilot lookups until it is on file."]  # FW-0057
     assert r["msg"].startswith("Saved 2026-12_award.pdf (1 KB). Dates of hire: 30 pilots") and r["msg_class"] == "ok"
     assert r["status"] == r["msg"] and r["live"] == {"msg": ["status", "polite"], "prog": "polite"}  # announced
     assert '- status: "Saved 2026-12_award.pdf (1 KB).' in r["aria"], r["aria"]

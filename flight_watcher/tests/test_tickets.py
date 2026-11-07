@@ -205,7 +205,7 @@ def test_watcher_ticket_flow(W, monkeypatch):
     ev = [(p, r) for t, p, r in W.SENT if t == "event/ticket_new"]
     assert ev == [({"id": "FW-0001", "kind": "bug", "title": "Finds empty", "reporter": "ryan"}, False)]
     lst = [(p, r) for t, p, r in W.SENT if t == "tickets"][-1]
-    assert lst[1] is True and lst[0]["open"] == 1 and lst[0]["tickets"][0]["has_image"]
+    assert lst[1] is True and lst[0]["open"] == 1 and lst[0]["tickets"][0]["image_count"] == 1  # FW-0060: short rows
     W.ticket_new("not json")
     assert [p for t, p, _ in W.SENT if t == "event/ticket_error"][-1]["error"] == "not an object"
     seen = TK.signature(W.TICKETS_DIR)  # what Ryan's process last published
@@ -235,7 +235,7 @@ def test_watcher_ticket_photos(W, monkeypatch):
         t = W.ticket_image(json.dumps({"cid": "card0001", "i": i, "n": 2, "image": _url(raw, mime)}))
         assert t and t["id"] == "FW-0001"
     lst = [p for t, p, _ in W.SENT if t == "tickets"][-1]
-    assert lst["tickets"][0]["image_count"] == 2 and lst["tickets"][0]["has_image"]
+    assert lst["tickets"][0]["image_count"] == 2  # FW-0060: the sensor row carries the count only
     n = len(W.SENT)
     assert W.ticket_image(json.dumps({"cid": "stranger", "i": 1, "image": _url(JPEG)})) is None
     assert W.ticket_image("not json") is None

@@ -15,6 +15,11 @@ time-sensitive), and the new "Flight Watcher Hark CCR alert" (`flight_watcher/ev
 Ryan's phones only) is live. Both were applied through the Home Assistant connector, and the 19 automations here match
 Pako by sha256 of the redacted text.
 
+**Pending on Pako (1.4.7, FW-0064):** the snapshot's "Flight Watcher request decided" automation (id
+`1793941354206`) has a new description and its `msg` ends with "Seen on your FLICA schedule ... (a crew-to-crew
+trade)" for a `sched:` key instead of "Filed ...". Apply it through the HA connector with the release; until then
+the sha256 of that one automation differs from Pako.
+
 | File | Live copy on Pako |
 |:--|:--|
 | `automations_flight_watcher.yaml` | `/config/automations.yaml`: the 18 automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order |

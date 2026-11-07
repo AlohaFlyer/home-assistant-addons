@@ -1,5 +1,85 @@
 # Changelog
 
+## 1.4.7
+
+- FW-0062 (Ryan, Nov 7): a looked-up pilot's rebuilt month now has Block and Layover on every trip when the bid period
+  has no pairing package details (no package upload on file): block comes from the pairing file's block column
+  ('12h19'), the layover from its route (stations past HNL, only for a trip that lays over: more than one day and TAFB
+  longer than its first duty, so a red-eye turn has none). The pay line's Block total and the PWA 4.O.1 RO $4.00 and
+  3-pilot FO $3.00 per block hour overrides are priced again; package details still win where they exist
+  (`crewidx.pilot_trips`, new `crewidx.route_lay`; `crewidx.instances` keeps block, tafb, first_duty_min).
+- FW-0034 (close-in folder, read only): the close-in open time folder ("Close in Opentime: <16 Hrs to RPT") is read,
+  GET only. Its BCID is taken only from a menu link whose text names the folder (or the first link under a heading
+  that does), never guessed: from the open time pages read every check, the pot discovery menu (desktop and mobile),
+  the schedule menu read, and a paced left menu read every 6 h while it is unknown (once a day once known; the main
+  menu frame when the left menu is only its skeleton). The BCID is used only after its open time page reads as HNL 332
+  FO, and dropped after 3 bad reads. Once trusted: its pot is read every check (both safe_get guards, paced 1.5 to 3.5
+  s), its trips are listed first on the pot (src `C`, folder `close-in`, FAR column, finds) and a new one fires
+  `event/new_pairing`; its Open Time Requests list joins the request-decided push (folder `close-in`; its first read
+  pushes only decisions from the last 6 h); swap and drop drafts under 16 h to report carry its BCID. A menu that does
+  not name the folder is kept privately as `captures/menu_closein.html` (session token masked). Until a live menu read
+  names the folder it stays unknown (no saved page on Pako shows it).
+- FW-0039 (FAR column): pot, Tradeboard and finds rows get their FAR column from the same checks as the Recall miss
+  check (`far.screen()` on `far.legality()`), per duty period of Ryan's trips and of the pickup (duty times from its
+  FLICA pairing page, else the bid period's package): FAR 117.25(e) 10 h rest, 117.25(b) 30 h free in 168 h,
+  117.23(b)(1) 100 h flight time in 672 h and, new on these rows, 117.23(c)(1) FDP 60 h in 168 h and 117.23(c)(2) FDP
+  190 h in 672 h (column words `FDP 65h/168h`, `FDP 191h/672h`). Anything not on file (a neighbour trip's times, days
+  no schedule month covers, training and reserve days, a customs release that could cut the 10 h rest) reads `?`,
+  never OK, so some pickups that read OK before (next to training or reserve days) now read `?`. Each row carries
+  `far_why` citing the rule. The PWA 10.E.1.a 11 h domicile rest stays the `OK (CBA rest 10:30)` note (`10:50?` when
+  only a 30 min customs release, PWA 2.19.b, can make it short). The old `far_check` is gone.
+- FW-0056 (crew index, trips the package does not list): the crew index also reads every trip on a schedule the
+  Watcher reads (Ryan's own months, a pilot lookup's month, a picker's month), kept in the DB as `crew_sched_trips`
+  (dropped 62 days after the trip ends), so trips built or renumbered later (H38xx, a trade's H3815B) get their crew
+  in pilot lookups and the Markdown. A trip with no package row takes its end, route and report from its pairing page;
+  a later schedule end replaces a shorter one stored (the trip end repair). Every crew index page load now goes through
+  `SUB.safe_get` and `SM.safe_get`; pacing is unchanged.
+- FW-0057 (previous bid period): the crew index keeps a trip that starts before its first day (Oct 31) and runs into
+  it; October's trips come from Ryan's October schedule when there is no October package, each in its own bid period
+  (`crewidx.period_for()`: Oct 31 is October's, Dec 1 November's). A pilot lookup's rebuilt grid and its coverage
+  count a trip that starts before the grid and runs into it.
+- FW-0058 (seat codes inside names): a seat code (CA, FO, RO, FA, SO) on a crew line counts only in FLICA's seat
+  position, standing alone and followed by the employee number or Open, so a name such as "Lee, So Young" (made up)
+  stays whole. Crew lines stored before the fix that look cut are read once more at the first start
+  (`crew_split_repair()`; a failed re-read keeps the stored line).
+- FW-0059 (one pilot on two overlapping trips): two trips overlap when they share two or more days, start the same day
+  or end the same day; trips that only touch (a morning release, a night report the same day) count only when the
+  package times put the report before the release. A new overlap is flagged and both trips are read again first (at
+  most 10 a check outside a run); the flag clears when the re-read shows the pilot on one, and when he is still on
+  both the newer read is kept and the other is marked "older read" (Markdown Pairing cell, `overlap` / `overlap_with`
+  on pilot lookup trips, one line on the pilot card).
+- FW-0060 (sensor attributes too large): every Flight Watcher sensor stays under 12 KB of attributes (HA's recorder
+  keeps no history past 16 KB). The ticket log, the schedule versions, the pickers and the recall days are written to
+  `<name>_<key>.json` in the pilot's own `www/flight-watcher/` folder (second pilot: `www/flight-watcher/<name>/`;
+  same random key as the finds files, published only as the sensor's `file_key`, with `rev` so an open card fetches
+  again). The sensors keep counts and a short list (tickets: counts, `last` and the newest 30 open tickets without
+  their text; versions: each month's count and awarded / current version; pickers: the count and the fastest 20;
+  recall: the newest days that fit, `days_total`, the open and alert counts over every day). Every other sensor list
+  is held at 12000 bytes by `cap_attrs()` (oldest or least useful items out, `trimmed` says how many). The tickets,
+  schedule, pickers and recall cards read the files and show the sensor's short list until a file arrives. List files
+  under an old key are deleted at start.
+- FW-0064 (trade approved, no push): a crew-to-crew Trade is pushed as `event/request_decided`, type Trade, status
+  Approved, when the schedule shows trips dropped and added on the same HST day (FLICA's "Schedule Updated" time) that
+  no decided request explains (the request reads log each decision) and that is not a pairing renamed with a suffix
+  letter, once a later read shows no new change and the trips taken have their credit (at most 2 h). A Pending or
+  Processing request whose every trip shows on the schedule is pushed at once under its own key. Pay-Gross from pay.py
+  (seat and credit from Ryan's trip records, PWA 4.O.1 overrides, PWA 3.D.6 rate); each is pushed once, also across
+  restarts (`trades.py`). The request-decided automation says "Seen on your FLICA schedule MM/DD HH:MM HST; no request
+  on file (a crew-to-crew trade)" for these (`ha/automations_flight_watcher.yaml`, to apply on Pako). Not pushed: a
+  trade whose drops and adds fall on different HST days, months first read through Schedule Lookup.
+- Trip end cut short (no ticket filed): a trip that comes home the day the next activity starts (H3681 SYD Nov 9
+  to 12, then H3620 on Nov 12) kept only its first day from version 11.009 on: FLICA shows only the new trip's row that day, so
+  there was no HNL layover cell to end it. `pot.schedule_items()` (now also the Schedule Lookup builder in
+  `inflt.parse_cm_month`) ends a trip still away on the day the next activity starts. Stored versions and the schedule
+  on file are repaired once at start (`versions.repair_ends`, fingerprints remade so the fix makes no new version; the
+  PBS award is left alone), and a later end change shows in a version's change list. Recall legality spans and pay see
+  the whole trip again.
+- Test data: real crew names, employee numbers and a phone number copied from FLICA pages into `tests/test_store.py`,
+  `tests/test_tradeboard.py`, a `tradeboard.py` docstring, a `watcher.py` docstring and one CHANGELOG line were
+  replaced with made-up ones (the old values remain in git history).
+- FW-0035 kept: while hunting the close-in page is read at most every 5 min (about 12 FLICA loads an hour), every
+  check otherwise.
+
 ## 1.4.6
 
 - Recall / Over 75 judged on the line held that day (Ryan, Nov 6): each recall list day is checked against the
@@ -362,7 +442,7 @@
 - Map swap pages also renders the Reserve Grid (a JS page) read only and saves its HTML and API calls, so the grid reader can be built from the real page.
 
 ## 0.4.11
-- Employee numbers (Ryan): the pairing page lists crew as "FO 14103 Name", so the pickup text and the captain now carry the number, e.g. "FO Faagau, Justin (12345)". Rosters still compare by name, so old finds keep working; the number appears on each find's next pickup check.
+- Employee numbers (Ryan): the pairing page lists crew as "FO 10001 Name", so the pickup text and the captain now carry the number, e.g. "FO Doe, Jane (12345)". Rosters still compare by name, so old finds keep working; the number appears on each find's next pickup check.
 
 ## 0.4.10
 - "Map swap pages (read only)" button (diagnostic): on the next check the Watcher walks from the main menu, the pot, the OT drop view and the Tradeboard to the open time request pages, GETs each page that passes swapmap.safe_get (no POST, no filled Add/Drop list, no action words), and saves the HTML and a form summary to /share/flica_watcher/captures/swapmap (private, never committed). Groundwork for live swap; nothing is submitted.
@@ -398,7 +478,7 @@
 - Fix: an email find that had already left the pot took its crew roster after the pickup, so the diff read "left pot, same crew". Those finds now skip the roster and list the FO/RO names (not bold, seat unknown). Finds 0.4.1 marked that way are re-checked once.
 
 ## 0.4.1
-- Missed trips from FLICA alert emails (Ryan): Home Assistant forwards each email that lands in ha.flica.alerts@gmail.com (IMAP) to `flica_watcher/email/alert` (automation "FLICA alert email to Watcher"). Pairings it names that the pot watch never recorded (they came and went between checks) are added to finds with `source: email`. Each gets one read-only detail GET (CA, times, crew roster). One already out of the pot is stamped gone and its pickup is tracked like any other find. The email also wakes the Watcher for an immediate check.
+- Missed trips from FLICA alert emails (Ryan): Home Assistant forwards each email that lands in the FLICA alerts Gmail inbox (<redacted-email>, IMAP) to `flica_watcher/email/alert` (automation "FLICA alert email to Watcher"). Pairings it names that the pot watch never recorded (they came and went between checks) are added to finds with `source: email`. Each gets one read-only detail GET (CA, times, crew roster). One already out of the pot is stamped gone and its pickup is tracked like any other find. The email also wakes the Watcher for an immediate check.
 
 ## 0.4.0
 - Who picked it up, by seat (Ryan): every pot pairing now keeps its crew roster (`crew`) while it is in the pot. When it leaves, the roster is compared with the pairing page: the FO or RO who is new is the pickup (`known`, shown bold with the seat). This works whether FLICA showed the open seat as "FO Open" or did not list it at all. Status `unchanged` = left the pot with the same FO/RO crew. Pairings cached before 0.4.0 are re-read once to get their roster.

@@ -11,7 +11,7 @@ import time
 from datetime import date, datetime
 from urllib.parse import unquote
 
-from pot import CM_PAIR_RE, classify, inflight_at, parse_legs, visible_text
+from pot import CM_PAIR_RE, classify, inflight_at, parse_legs, schedule_items, visible_text
 
 # 0.5.5: the page builds its rows in JS: TAry[...]=new Task(1, "SU", "01", "H3647", "PHX", "20261101", 1, 0, 'H3647');
 TASK_RE = re.compile(r'new Task\(\s*\d+,\s*"[A-Z]{2}",\s*"\d{2}",\s*"([A-Z]\d{4}[A-Z]?)",\s*"[^"]*",\s*"(\d{8})"')
@@ -64,26 +64,7 @@ def parse_cm_month(html):
         except ValueError:
             continue
         days.append([iso, code, lay])
-    items = []
-    for k, (d, code, lay) in enumerate(days):
-        if not code:
-            continue
-        if not re.match(r"^[A-Z]\d{4}[A-Z]?$", code):
-            if items and items[-1]["trip"] == code and items[-1]["_k"] == k - 1:
-                items[-1].update(end=d, _k=k)
-            else:
-                items.append({"trip": code, "start": d, "end": d, "lay": "", "_k": k})
-            continue
-        end = d
-        for j in range(k + 1, min(k + 8, len(days))):
-            if days[j][1]:
-                break
-            if days[j][2] == "HNL":
-                end = days[j][0]
-                break
-        items.append({"trip": code, "start": d, "end": end, "lay": lay if lay not in ("-", "") else "", "_k": k})
-    for it in items:
-        it.pop("_k", None)
+    items = schedule_items(days, "HNL")  # trip end: the mobile schedule's builder (a trip home the day the next starts)
     tot = {}
     for key, pat in (("block", r"Block\s*(?:&nbsp;\s*)*</TD>\s*<TD[^>]*>\s*([\d.:]+)"),
                      ("credit", r"Credit\s*(?:&nbsp;\s*)*</TD>\s*<TD[^>]*>\s*([\d.:]+)"),
@@ -156,9 +137,10 @@ def fetch_schedule(fl, base, emp, bd, cur_bd, log, key):
     return None
 
 
-def run(fl, db, limit, log, local_now, base, hst):
+def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
     """Three pickups per check: look the picker's month up, read the pairings around the pickup day,
-    decide. Returns True when any verdict was written."""
+    decide. Returns True when any verdict was written. FW-0056: on_sched(items) gets each picker month read
+    ([{trip, start}]), so the crew index reads those trips too."""
     changed_early = False
     if db.get("score_email_v") != 1:  # 0.5.6 one-shot: score the email-caught pickups recorded before 0.5.6
         for k in db.unscored_pickups():
@@ -193,6 +175,11 @@ def run(fl, db, limit, log, local_now, base, hst):
                     db.set_inflt(key, None, tries=tries + 1)
                     continue
                 cache[ck] = sched
+                if on_sched:
+                    try:
+                        on_sched(sched)
+                    except Exception as e:
+                        log.info("inflt %s: schedule trips not passed on: %s", key, e)
             day = d.date()
             cands = [p for p in cache[ck] if 0 <= (day - date.fromisoformat(p["start"])).days <= 6]
             verdict, trip = False, ""

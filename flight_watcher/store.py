@@ -167,6 +167,17 @@ class Store:
                             f"AND key NOT IN ({q})", (t, month, *keys))
             self.db.execute("COMMIT")
 
+    def move_finds(self, keys, month):
+        """FW-0034: finds that moved to another folder (a trip FLICA moves from the regular pot to the close-in one)
+        belong to that folder's month key from now on, so the regular pot's next read does not stamp them gone; their
+        first_seen (pickup speed) is kept."""
+        keys = sorted(keys or ())
+        if not keys:
+            return
+        with self.lock:
+            q = ",".join("?" * len(keys))
+            self.db.execute(f"UPDATE finds SET month=?, gone_at=NULL WHERE key IN ({q})", (month, *keys))
+
     def recent_finds(self, n=50):
         with self.lock:
             rows = self.db.execute("SELECT key,row,month,first_seen,gone_at,pickup,last_seen,alert_at FROM finds "

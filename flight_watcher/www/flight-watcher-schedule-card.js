@@ -31,6 +31,24 @@ const dohYear = (iso, doh) => { const [a, b] = [doh || DOH, iso].map((s) => Stri
 const hrs = (t) => { const mm = /^(\d+):(\d{2})$/.exec(String(t || "").trim()); return mm ? Number(mm[1]) + Number(mm[2]) / 60 : null; };
 const usd = (v) => (v == null ? "" : "$" + Math.round(v).toLocaleString("en-US"));
 
+// FW-0060: a sensor's full list from its file under /local/ (<url><file_key>.json, the pilot's own www folder). Fetched
+// again whenever the sensor's rev changes; null until it is in (or when the sensor has no key), so the caller falls
+// back to the sensor's own short list. A failed fetch is not retried until rev changes.
+function fwListFile(box, url, st, redraw) {
+  const a = (st && st.attributes) || {};
+  const key = /^[0-9a-f]{32}$/.test(String(a.file_key || "")) ? a.file_key : "";
+  if (!key) return null;
+  const want = `${key}|${a.rev || ""}`;
+  if (box.want !== want && !box.busy) {
+    box.busy = true;
+    fetch(`${url}${key}.json?r=${encodeURIComponent(a.rev || "")}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => { box.busy = false; box.want = want; if (j) { box.key = key; box.data = j; } redraw(); })
+      .catch(() => { box.busy = false; box.want = want; });
+  }
+  return box.key === key ? box.data : null;
+}
+
 class FlightWatcherScheduleCard extends HTMLElement {
   setConfig(c) { this.c = c || {}; this._pk = {}; }
   set hass(h) {
@@ -49,6 +67,15 @@ class FlightWatcherScheduleCard extends HTMLElement {
   _doh(h) {
     const d = (((h || this._h).states["sensor.flight_watcher_state"] || {}).attributes || {}).doh;
     return /^\d{4}-\d{2}-\d{2}$/.test(d || "") ? d : "";
+  }
+  // FW-0060 (1.4.7): the schedule versions (each one's items, days, totals and trips) come from versions_<key>.json under
+  // /local/; sensor.flight_watcher_schedule_versions keeps only each month's counts (it ran about 33 KB, over HA's
+  // 16 KB recorder limit). Until the file is in, no versions bar (and no Improved-Pay-Gross report) is drawn. An older
+  // Watcher still sends every version on the sensor.
+  _vmonths() {
+    const st = this._h.states["sensor.flight_watcher_schedule_versions"];
+    const f = fwListFile(this._vf || (this._vf = {}), "/local/flight-watcher/versions_", st, () => { this._sig = null; this.hass = this._h; });
+    return (f && f.months) || ((st || {}).attributes || {}).months || {};
   }
   _key() {
     const off =parseInt((this._h.states["input_number.flight_watcher_month_offset"] || {}).state || "0", 10) || 0;
@@ -144,7 +171,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       this.attachShadow({ mode: "open" });
       this.shadowRoot.addEventListener("click", (e) => {
         const vb = e.target.closest(".vb");  // v51: schedule versions
-        if (vb) { const k = this._key().key; const n = (((((this._h.states["sensor.flight_watcher_schedule_versions"] || {}).attributes || {}).months || {})[k] || {}).versions || []).length;
+        if (vb) { const k = this._key().key; const n = ((this._vmonths()[k] || {}).versions || []).length;
           let i = this._vsel && this._vsel[k] != null ? this._vsel[k] : n - 1; const a = vb.dataset.v;
           i = a === "home" ? n - 1 : a === "prev" ? Math.max(0, i - 1) : Math.min(n - 1, i + 1);
           this._vsel = this._vsel || {}; this._vsel[k] = i; this._sig = null; this._render(); return; }
@@ -223,7 +250,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const { y, m, key } = this._key();
     let mon = st && st.attributes.months ? st.attributes.months[key] : null;
     // v51 (Ryan): schedule versions MM.NNN; arrows step through them, the house returns to the current one
-    const VS = ((S["sensor.flight_watcher_schedule_versions"] || {}).attributes || {}).months || {};
+    const VS = this._vmonths();
     const vl = (VS[key] || {}).versions || [];
     this._vsel = this._vsel || {};
     let vi = this._vsel[key]; if (vi == null || vi < 0 || vi >= vl.length - 1) vi = null;

@@ -26,6 +26,7 @@ class _Store:
 def srv(tmp_path, monkeypatch, fx):
     monkeypatch.setattr(web, "UPLOAD_DIR", str(tmp_path))
     monkeypatch.setattr(web, "_hst_now", lambda: dt.datetime(2026, 11, 20, 9, 30, tzinfo=HST))
+    monkeypatch.setattr(web, "PAIRINGS_DIR", str(tmp_path / "www"))  # no pairing file on file
     monkeypatch.setattr(web.subprocess, "run", _fake_pdftotext(fx("award_packet_synthetic.txt")))
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -53,7 +54,9 @@ def _post(port, fields, pdf=b"%PDF-1.4 fake", path="/api/upload", **kw):
 def test_uploads_list_and_upload(srv, tmp_path):
     st, ct, data = _req(srv, "GET", "/api/uploads")
     assert st == 200 and ct.startswith("application/json")
-    assert json.loads(data) == {"files": [], "seniority": None, "version": "9.9.9", "max_bytes": web.INGRESS_MAX}
+    assert json.loads(data) == {"files": [], "seniority": None, "version": "9.9.9", "max_bytes": web.INGRESS_MAX,
+                                "wanted": [{"kind": "pairings", "month": "2026-10", "why": "previous"},
+                                           {"kind": "pairings", "month": "2026-11", "why": "current"}]}
     st, ct, data = _post(srv, {"kind": "pairings", "month": "2026-12"})
     r = json.loads(data)
     assert (st, r["ok"], r["file"], r["message"]) == (200, True, "2026-12_pairings.pdf", "Saved 2026-12_pairings.pdf (0 KB).")
@@ -149,3 +152,25 @@ def test_an_unreadable_pdf_is_refused_over_the_api(srv, tmp_path, monkeypatch):
     d = json.loads(_req(srv, "GET", "/api/uploads")[2])
     assert [(f["name"], f["size"], f["has_text"]) for f in d["files"]] == [("2026-12_award.pdf", 13, True)]
     assert not [f for f in tmp_path.iterdir() if ".new." in f.name]
+
+
+def test_wanted_pairings_packages(srv, tmp_path):
+    """FW-0057 (1.4.7 verify): api/uploads names the pairings packages the crew index still needs, this bid month's and
+    the previous one's (trips other pilots started in October that run into November), while neither the pairing file
+    nor an upload of it is on file, never before the crew index's first bid month (crewidx.CREW_FROM)."""
+    www = tmp_path / "www"
+    www.mkdir()
+    (www / "pairings_2026-11.json").write_text("{}")  # November's package was read
+    d = json.loads(_req(srv, "GET", "/api/uploads")[2])
+    assert d["wanted"] == [{"kind": "pairings", "month": "2026-10", "why": "previous"}]
+    assert _post(srv, {"kind": "pairings", "month": "2026-10"})[0] == 200  # uploaded: no longer asked for
+    assert json.loads(_req(srv, "GET", "/api/uploads")[2])["wanted"] == []
+    (tmp_path / "2026-10_pairings.pdf").unlink()
+    (www / "pairings_2026-10.json").write_text("{}")  # the Watcher wrote its pairing file
+    assert web.uploads_wanted(dt.date(2026, 11, 20), str(www)) == []
+    assert web.uploads_wanted(dt.date(2026, 12, 2), str(www)) == [{"kind": "pairings", "month": "2026-12", "why": "current"}]
+    assert web.uploads_wanted(dt.date(2027, 1, 5), str(www)) == [
+        {"kind": "pairings", "month": "2026-12", "why": "previous"}, {"kind": "pairings", "month": "2027-01", "why": "current"}]
+    # before the crew index starts (CREW_FROM, Oct 31 2026): September is never asked for
+    assert web.uploads_wanted(dt.date(2026, 10, 20), str(tmp_path / "none")) == [
+        {"kind": "pairings", "month": "2026-10", "why": "current"}]

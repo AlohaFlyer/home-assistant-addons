@@ -5,9 +5,10 @@ Kept free of side effects so tests/ can run it against saved HTML fixtures.
 import hashlib
 import re
 from datetime import date, datetime, timedelta, timezone
+from html import unescape
 from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
 KILLED_TXT = "new session under this account was detected"
 EXPIRED_HINTS = ("session has expired", "session expired", "please log in", "please sign in")
@@ -140,6 +141,171 @@ def bcid(url):
     return m.group(1) if m else None
 
 
+# FW-0034: the close-in open time folder. FLICA's alert emails name it 'Close in Opentime: <16 Hrs to RPT'; Ryan
+# (2026-11-03): a trip under 16 h to report is added or swapped only from it, and it has its own BCID (an 008.xxx
+# series). Taken only from a menu link whose text names the folder (or the first link under a heading that does),
+# never guessed.
+CLOSE_IN_RE = re.compile(r"close[\s-]*in\s*open\s*time|<\s*16\s*hrs?\.?\s*to\s*rpt", re.I)
+BCID_IN = re.compile(r"\bBCID=(\d{3}\.\d{1,4})\b|['\"](\d{3}\.\d{3})['\"]", re.I)
+BCID_ONLY = re.compile(r"^\d{3}\.\d{1,4}$")
+JS_CALL_RE = re.compile(r"\b(?:\w+\.)?add[A-Z]\w*\s*\((.*?)\)\s*;", re.S)
+JS_STR_RE = re.compile(r"'((?:[^'\\]|\\.)*)'|\"((?:[^\"\\]|\\.)*)\"")
+MONTH_WORD = re.compile(r"^\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b", re.I)
+LINK_ATTRS = ("href", "onclick", "src", "action")
+
+
+def _bcids(text):
+    return [a or b for a, b in BCID_IN.findall(text or "")]
+
+
+def _html_entries(soup):
+    """(label, [bcid]) in page order: each <a> or onclick element (its text and title; BCIDs in href / onclick), each
+    <option> whose value is a BCID, each other text node. Entities are decoded (&lt;16 reads <16)."""
+    out = []
+
+    def walk(node):
+        for ch in node.children:
+            if isinstance(ch, Tag):
+                if ch.name in ("script", "style", "noscript", "template"):
+                    continue
+                if ch.name == "a" or ch.get("onclick"):
+                    attrs = " ".join(str(ch.get(k) or "") for k in LINK_ATTRS)
+                    out.append((f"{ch.get_text(' ', strip=True)} {ch.get('title') or ''}".strip(), _bcids(attrs)))
+                    continue
+                if ch.name == "option" and BCID_ONLY.match(str(ch.get("value") or "").strip()):
+                    out.append((ch.get_text(" ", strip=True), [str(ch.get("value")).strip()]))
+                    continue
+                walk(ch)
+            elif isinstance(ch, NavigableString) and not isinstance(ch, Comment):
+                t = str(ch).strip()
+                if t:
+                    out.append((t, []))
+    walk(soup)
+    return out
+
+
+def _js_entries(soup):
+    """(label, [bcid]) of every JS menu-tree call (M.addC / M.addE ...) in the page's scripts, in order: the label is
+    its first quoted string, the BCIDs come from all of its arguments."""
+    out = []
+    for sc in soup.find_all("script"):
+        for m in JS_CALL_RE.finditer(sc.string or sc.get_text() or ""):
+            strs = [unescape(a or b) for a, b in JS_STR_RE.findall(m.group(1))]
+            out.append((re.sub(r"<[^>]+>", " ", strs[0]).strip() if strs else "", _bcids(unescape(m.group(1)))))
+    return out
+
+
+def close_in_folders(html, exclude=()):
+    """FW-0034: [{'bcid', 'text'}] of the close-in open time folder named on a menu or open time page: a link (or a
+    folder <option>) whose own text names it, or the first link under a heading that names it, before the next
+    heading (any other text with letters that is not a month name). BCIDs in `exclude` (the regular pot and
+    Tradeboard folders) are never taken. [] when the page does not name the folder: nothing is guessed."""
+    found, seen = [], set(exclude or ())
+    soup = BeautifulSoup(html or "", "html.parser")
+    for entries in (_html_entries(soup), _js_entries(soup)):
+        sect = None
+        for label, ids in entries:
+            ids = [b for b in ids if b not in seen]
+            if CLOSE_IN_RE.search(label):
+                if ids:
+                    seen.add(ids[0])
+                    found.append({"bcid": ids[0], "text": label[:80]})
+                    sect = None
+                else:
+                    sect = label
+                continue
+            if sect is None:
+                continue
+            if ids:
+                seen.add(ids[0])
+                found.append({"bcid": ids[0], "text": sect[:80]})
+                sect = None
+            elif re.search(r"[A-Za-z]{2}", label) and not MONTH_WORD.match(label):
+                sect = None  # the next heading: the close-in section ended without a link
+    return found
+
+
+# FW-0064: a menu entry naming crew-to-crew trades ('Trades', 'Crew Trade', 'Pending Trades', 'Trade Requests'...);
+# the Tradeboard (its own 001.n folders, already read) and the open time Add/Swap/Drop requests are not it
+TRADE_WORD = re.compile(r"\btrades?\b|crew[\s-]*(?:to|2)[\s-]*crew", re.I)
+TRADEBOARD = re.compile(r"trade\s*board|tb_frame|\bBCID=0*01\.|['\"]0*01\.\d+['\"]", re.I)
+TARGET_RE = re.compile(r"(?:https?://[^\s'\"<>]+|/?(?:full|online)/[\w./-]+\.cgi[^\s'\"<>)]*)", re.I)
+
+
+def _targets(soup):
+    """(label, target) in page order: each <a> or onclick element (its text and title; the first URL-like path in its
+    href / onclick), each JS menu-tree call (M.addC / M.addE: its first quoted string; a URL in the rest); other text
+    nodes as headings (target ''). Entities are decoded."""
+    out = []
+
+    def walk(node):
+        for ch in node.children:
+            if isinstance(ch, Tag):
+                if ch.name in ("script", "style", "noscript", "template"):
+                    continue
+                if ch.name == "a" or ch.get("onclick"):
+                    attrs = unescape(" ".join(str(ch.get(k) or "") for k in LINK_ATTRS))
+                    m = TARGET_RE.search(attrs)
+                    out.append((f"{ch.get_text(' ', strip=True)} {ch.get('title') or ''}".strip(),
+                                m.group(0) if m else attrs.strip()[:160]))
+                    continue
+                walk(ch)
+            elif isinstance(ch, NavigableString) and not isinstance(ch, Comment):
+                t = str(ch).strip()
+                if t:
+                    out.append((t, ""))
+    walk(soup)
+    for sc in soup.find_all("script"):
+        for m in JS_CALL_RE.finditer(sc.string or sc.get_text() or ""):
+            strs = [unescape(a or b) for a, b in JS_STR_RE.findall(m.group(1))]
+            rest = " ".join(strs[1:])
+            u = TARGET_RE.search(rest)
+            out.append((re.sub(r"<[^>]+>", " ", strs[0]).strip() if strs else "",
+                        u.group(0) if u else rest.strip()[:160]))
+    return out
+
+
+def trade_pages(html):
+    """FW-0064: [{'text', 'url'}] of the menu entries that name crew-to-crew trades: an entry whose own text names
+    them, or an entry with a target under a heading that does (until the next heading). Tradeboard entries are left
+    out. Read only: nothing here is fetched, the Watcher only logs what it finds. Session tokens are masked."""
+    found, sect = [], None
+    for label, target in _targets(BeautifulSoup(html or "", "html.parser")):
+        if TRADEBOARD.search(label) or TRADEBOARD.search(target):
+            sect = None
+            continue
+        if TRADE_WORD.search(label):
+            if target and not target.lower().startswith("javascript:void"):
+                found.append({"text": label[:80], "url": re.sub(r"token=[0-9A-Za-z]+", "token=MASKED", target)})
+                sect = None
+            else:
+                sect = label
+            continue
+        if sect is None:
+            continue
+        if target:
+            found.append({"text": f"{sect[:60]}: {label[:40]}",
+                          "url": re.sub(r"token=[0-9A-Za-z]+", "token=MASKED", target)})
+        elif re.search(r"[A-Za-z]{2}", label) and not MONTH_WORD.match(label):
+            sect = None
+    out, seen = [], set()
+    for f in found:
+        if (f["text"], f["url"]) not in seen:
+            seen.add((f["text"], f["url"]))
+            out.append(f)
+    return out
+
+
+def pick_close_in(found, periods=()):
+    """The close-in BCID for the bid periods watched (the regular pot BCIDs' last part, e.g. '152'): the first found
+    for the earliest such period, else the first found; None when nothing was found."""
+    for p in sorted(periods or (), key=lambda x: int(x) if str(x).isdigit() else 0):
+        for f in found or []:
+            if f["bcid"].split(".")[-1] == str(p):
+                return f["bcid"]
+    return (found or [{}])[0].get("bcid")
+
+
 def bcid_key(b):
     return tuple(int(x) for x in b.split(".") if x.isdigit())
 
@@ -195,10 +361,14 @@ def detail_url(row, today=None):
 
 
 # Detail text (Nov 1, 2026): "... blk : 1218 tafb : 2609 pay : 1218 crew: ca 10007 lane jr, chris fo open" (names made up)
-CA_RE = re.compile(r"crew\s*:.*?\bca\s+(?:\d{3,7}\s+)?(.+?)(?=\s+(?:fo|ro|fa|so|ca)\b|$)", re.I)
+# FW-0058: a seat code counts only in FLICA's seat position, standing alone and followed by the employee number or
+# 'Open' ("CA 10001 ..." / "FO Open"); the same letters inside a name ("LEE, SO YOUNG", made up) are part of the name.
+SEAT_AT = r"(?<![\w'.,-])(?:CA|FO|RO|FA|SO)\s+(?=\d+\b|open\b)"
+CA_RE = re.compile(r"crew\s*:.*?(?<![\w'.,-])ca\s+(?=\d+\b|open\b)(?:\d{3,7}\s+)?(.+?)(?=\s+" + SEAT_AT + r"|$)", re.I)
 # Crew line (Nov 1, 2026): "Crew: CA 10001 SMITH JR, JOHN CA 10002 DOE, JANE FO Open" (names made up)
 CREW_POS = ("CA", "FO", "RO", "FA", "SO")
-CREW_RE = re.compile(r"\b(CA|FO|RO|FA|SO)\s+(?:(\d{3,7})\s+)?(.+?)(?=\s+(?:CA|FO|RO|FA|SO)\s|\s*$)", re.I)
+CREW_RE = re.compile(r"(?<![\w'.,-])(CA|FO|RO|FA|SO)\s+(?=\d+\b|open\b)(?:(\d{3,7})\s+)?(.+?)(?=\s+" + SEAT_AT + r"|\s*$)",
+                     re.I)
 # FLICA tags a check pilot in the name ("CA 10001 DOE, CKP JANE", Nov 2026; FW-0017)
 CKP_RE = re.compile(r"(?<![\w'-])ckp(?![\w'-])", re.I)
 CHECKIN_RE = re.compile(r"check\s*in\s*:\s*(\d{1,2}:?\d{2})", re.I)
@@ -455,26 +625,7 @@ def parse_schedule(html, domicile="HNL"):
             continue
     if len(days) < 20:
         return None
-    items = []
-    for k, (d, act, lay) in enumerate(days):
-        if not act:
-            continue
-        if not PAIRING_RE.match(act):  # VAC, SCR, etc: merge consecutive identical codes
-            if items and items[-1]["trip"] == act and items[-1]["_k"] == k - 1:
-                items[-1].update(end=d, _k=k)
-            else:
-                items.append({"trip": act, "start": d, "end": d, "lay": "", "_k": k})
-            continue
-        end = d
-        for j in range(k + 1, min(k + 8, len(days))):
-            if days[j][1]:
-                break
-            if days[j][2] == domicile:
-                end = days[j][0]
-                break
-        items.append({"trip": act, "start": d, "end": end, "lay": lay if lay != "-" else "", "_k": k})
-    for it in items:
-        it.pop("_k", None)
+    items = schedule_items(days, domicile)
     tot = {}
     for key, pat in (("block", r"Block\s+([\d.:]+)"), ("credit", r"Credit\s+([\d.:]+)"),
                      ("ytd", r"YTD\s+([\d.:]+)"), ("days_off", r"Days Off\s+(\d+)")):
@@ -493,6 +644,45 @@ def parse_schedule(html, domicile="HNL"):
     first = date.fromisoformat(days[0][0])
     return {"month": f"{first.year}-{first.month:02d}", "updated": u.group(1) if u else "",
             "days": days, "items": items, "totals": tot}
+
+
+def _away(lay, domicile):
+    """A layover cell that means Ryan is still away at the end of that day: a station other than domicile. FLICA writes
+    '-' on a trip's middle days and on days off alike, so '-' says nothing either way."""
+    return bool(lay) and lay not in ("-", domicile)
+
+
+def schedule_items(days, domicile="HNL"):
+    """The items of a month from its days [[iso, act, lay]] (parse_schedule; also used to repair stored versions).
+    A pairing ends on the first later day whose layover cell is domicile. Trip end: when the next activity starts on the
+    day the trip comes home (H3681 SYD Nov 9 to 12, then H3620 on Nov 12), FLICA shows only that activity's row on that
+    day, so there is no domicile cell: a trip still away (its first layover a station, nothing but '-' since) ends on
+    the day the next activity starts. Codes (VAC, SCR...) merge over consecutive days."""
+    items = []
+    for k, (d, act, lay) in enumerate(days):
+        if not act:
+            continue
+        if not PAIRING_RE.match(act):  # VAC, SCR, etc: merge consecutive identical codes
+            if items and items[-1]["trip"] == act and items[-1]["_k"] == k - 1:
+                items[-1].update(end=d, _k=k)
+            else:
+                items.append({"trip": act, "start": d, "end": d, "lay": "", "_k": k})
+            continue
+        end, away = d, _away(lay, domicile)
+        for j in range(k + 1, min(k + 8, len(days))):
+            if days[j][1]:
+                if away and days[j][0] > end:
+                    end = days[j][0]  # trip end: home that morning, out again on the next activity
+                break
+            if days[j][2] == domicile:
+                end = days[j][0]
+                break
+            if days[j][2] not in ("-",) and not _away(days[j][2], domicile):
+                away = False  # an empty layover cell: not on the trip any more
+        items.append({"trip": act, "start": d, "end": end, "lay": lay if lay != "-" else "", "_k": k})
+    for it in items:
+        it.pop("_k", None)
+    return items
 
 
 def _span(a, b):

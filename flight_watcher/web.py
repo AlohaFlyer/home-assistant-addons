@@ -18,10 +18,12 @@ from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+import crewidx as CI
 import seniority as SEN
 
 INGRESS_IP = "172.30.32.2"
 UPLOAD_DIR = "/share/flight_watcher/uploads"
+PAIRINGS_DIR = "/homeassistant/www/flight-watcher"  # watcher.CARD_PAIRINGS: the pairing files the crew index reads
 UPLOAD_MAX = 25_000_000  # the app's own hard cap on a request body
 # 1.4.5 review fix: what reaches the app through ingress. The Supervisor's ingress proxy reads a POST body whole
 # (supervisor/api/ingress.py, no ingress_stream in config.yaml) and its aiohttp app refuses a body over 16 MiB
@@ -465,11 +467,36 @@ def uploads_list():
     return out
 
 
+def _month_shift(ym, k):
+    y, m = divmod(int(ym[:4]) * 12 + int(ym[5:7]) - 1 + k, 12)
+    return f"{y}-{m + 1:02d}"
+
+
+def uploads_wanted(today=None, pdir=None, files=None):
+    """FW-0057 (1.4.7 verify): the pairings packages the crew index still needs, so the card can ask for them: this
+    bid month's and the previous one's (a trip another pilot started in the previous bid period and runs into this
+    one is on no other file: until that package is on file it reaches the crew index only from pilot lookups), each
+    while its pairing file (PAIRINGS_DIR/pairings_<YYYY-MM>.json) is missing and no upload of it is on file, back to
+    the bid month of crewidx.CREW_FROM. `today` is an HST date (now by default), `files` uploads_list(). Oldest first:
+    [{kind: 'pairings', month, why}]. Reads local files only; nothing goes to FLICA."""
+    today = today or _hst_now().date()
+    cur, floor = f"{today:%Y-%m}", f"{CI.CREW_FROM:%Y-%m}"
+    have = {f.get("month") for f in (uploads_list() if files is None else files) if f.get("kind") == "pairings"}
+    out = []
+    for month in (_month_shift(cur, -1), cur):
+        if month < floor or month in have or os.path.exists(os.path.join(pdir or PAIRINGS_DIR, f"pairings_{month}.json")):
+            continue
+        out.append({"kind": "pairings", "month": month, "why": "previous" if month < cur else "current"})
+    return out
+
+
 def uploads_json(version):
     """api/uploads: {files, seniority (seniority_summary of seniority.json, or None), version, max_bytes (the largest
-    PDF that gets through Home Assistant's ingress proxy, INGRESS_MAX)}."""
-    return {"files": uploads_list(), "seniority": seniority_summary(_load_json(seniority_file())), "version": version,
-            "max_bytes": min(UPLOAD_MAX, INGRESS_MAX)}
+    PDF that gets through Home Assistant's ingress proxy, INGRESS_MAX), wanted (uploads_wanted: the pairings packages
+    the crew index still needs)}."""
+    files = uploads_list()
+    return {"files": files, "seniority": seniority_summary(_load_json(seniority_file())), "version": version,
+            "max_bytes": min(UPLOAD_MAX, INGRESS_MAX), "wanted": uploads_wanted(files=files)}
 
 
 SETTINGS_FIELDS = (  # (key, label, secret)
