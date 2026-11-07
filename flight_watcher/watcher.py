@@ -2976,7 +2976,7 @@ CLOSE_IN_KEY = "closein"  # its rows' month key (pot rows, finds)
 CLOSE_IN_GAP_S = 6 * 3600  # a menu read every 6 h while the folder is not known,
 CLOSE_IN_RECHECK_S = 86400  # once a day once it is (a new bid period can bring a new BCID)
 CLOSE_IN_BAD_MAX = 3  # reads that are not its open time page before its BCID is dropped
-CLOSE_IN_READ_S = 60  # FW-0035: hunting, the close-in page is read at most once a minute (every check otherwise)
+CLOSE_IN_READ_S = 300  # FW-0035: hunting, the close-in page is read at most every 5 min (about 12 loads an hour; every check otherwise)
 CLOSE_IN_LAST = {"bcid": None, "at": 0.0, "rows": {}}  # its last good read in this process (the rows between reads)
 STOP_KINDS = ("killed", "expired", "blocked")  # pages that end the pass (classify())
 
@@ -3113,7 +3113,7 @@ def close_in_check(fl, pot_all, full=False, moved_from=()):
     (OPTS category_check); CLOSE_IN_BAD_MAX reads that do not drop it. Its pairings not in a regular pot join the pot
     rows (src 'C', folder 'close-in'), with details, the FAR column and finds; a new one fires event/new_pairing like
     a pot find (none on the folder's first read).
-    FW-0035: hunting, the page is read at most every CLOSE_IN_READ_S (one load a minute, not one a check); between
+    FW-0035: hunting, the page is read at most every CLOSE_IN_READ_S (about 12 loads an hour, not one a check); between
     reads (and after a read that failed) the last good read's rows are returned. Every check otherwise, and on Check
     now. A trip that moved here from a regular pot (moved_from: the regular baselines before this check's pot reads;
     or a trip waiting for its pickup check because it left one) is not new: no second push, its find keeps its

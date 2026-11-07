@@ -15,7 +15,7 @@ publishes what it finds to Home Assistant over MQTT.
   link that names it gives its BCID (never guessed) and its open time page reads as HNL 332 FO. Its trips are listed
   first on the pot (src `C`, folder `close-in`) and push like any new pairing (a trip moved there from the regular
   pot is the same find, not a new one); its request list joins the request-decided push. Hunting, its page is read
-  once a minute; every check otherwise.
+  at most every 5 min (about 12 FLICA loads an hour, keeping FW-0035's ~376); every check otherwise.
 - One session: FLICA allows one login. When you log in elsewhere the Watcher steps aside for 30 min (doubling on
   repeat). A failed login, a layout change or anything unexpected parks it until Re-arm.
 - Schedule: your line, numbered schedule versions (MM.NNN), FAR 117 columns, pay from the PWA tables, pairing

@@ -77,6 +77,8 @@
 - Test data: real crew names, employee numbers and a phone number copied from FLICA pages into `tests/test_store.py`,
   `tests/test_tradeboard.py`, a `tradeboard.py` docstring, a `watcher.py` docstring and one CHANGELOG line were
   replaced with made-up ones (the old values remain in git history).
+- FW-0035 kept: while hunting the close-in page is read at most every 5 min (about 12 FLICA loads an hour), every
+  check otherwise.
 
 ## 1.4.6
 

@@ -34,8 +34,8 @@ his FLICA and CrewTrac logins on his own Settings tab. The work list is the tick
    guard. Welcome note with the Samsung steps is a Gmail **draft only**; nobody contacts James until Ryan says so.
 3. **Release 1.4.7, each a [DESTRUCTIVE] yes from Ryan:** merge the PR and update the add-on (then verify
    `sensor.flight_watcher_state` version and the app log); apply the request-decided automation change through the HA
-   connector (`ha/README.md`, "Pending on Pako"); OK the close-in folder's load while hunting (one read a minute,
-   about +60 FLICA loads an hour on top of FW-0035's ~376; every check when not hunting).
+   connector (`ha/README.md`, "Pending on Pako"); close-in folder while hunting is read at most every 5 min (about +12 FLICA loads an hour on top of FW-0035's
+   ~376; every check when not hunting); Ryan may ask for once a minute (+60 an hour).
 4. **[DESTRUCTIVE] decision, Ryan (the repo is public):** the real crew names and employee numbers 1.4.7 removed from
    the tree are still in git history on `main` and on pushed `claude/*` branches. Options: `git filter-repo
    --replace-text` (old values to made-up ones) over `main` and those branches, force-push, and ask GitHub Support to
