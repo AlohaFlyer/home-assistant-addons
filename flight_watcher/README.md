@@ -53,8 +53,11 @@ git.
 The monthly award, the pilot pairings package, the pilot seniority list and (1.4.8) the pilot contact list are
 uploaded from the dashboard: Settings tab, heading "Monthly files", the **uploads card**
 (`custom:flight-watcher-uploads-card`; `custom:flight-watcher-uploads-card-james` on James's dashboard) under
-Credentials. FW-0066: every Home Assistant user who can open a Flight Watcher dashboard sees what is on file and can
-upload. The files are base-wide: every pilot's Watcher reads the one folder `/share/flight_watcher/uploads`.
+Credentials. FW-0066: every Home Assistant user who can open a Flight Watcher dashboard's Settings view sees what is
+on file and can upload, admin or not. On Pako that is the HA admins (Ryan's dashboard is admin-only) and James (every
+view of James's dashboard is visible to James and Ryan only); other household users reach the card only if their user
+is added to that Settings view's `visible` list. The files are base-wide: every pilot's Watcher reads the one folder
+`/share/flight_watcher/uploads`.
 
 - Pick what (Monthly award, Pairings package, Pilot seniority list, Pilot contact list), the bid period (award and
   package; it starts on next month, HST; the seniority list takes an optional List date instead; the contact list
@@ -71,7 +74,8 @@ upload. The files are base-wide: every pilot's Watcher reads the one folder `/sh
     (path `/api/hassio_ingress/`), re-validates it every 5 minutes while the card is open
     (`/ingress/validate_session`), then calls `GET api/uploads` and `POST api/upload` (the Web UI page's form and
     checks). Only the Supervisor's ingress proxy may connect to them. A PDF of up to 15.9 MB: the ingress proxy refuses
-    a request over 16 MiB (HTTP 413) only after all of it has arrived, so the card refuses a larger file first.
+    a request over 16 MiB (HTTP 413) only after all of it has arrived, so a larger file (up to 25 MB) goes the other
+    way, in chunks.
   - **Anyone else** (Home Assistant grants app ingress to admins only): what is on file comes from
     `sensor.<prefix>_uploads`, and the file goes in chunks with the `mqtt.publish` service to `<prefix>/upload/chunk`
     (qos 1, not retained; 192 KiB of file, about 256 KiB of base64, per message; up to 25 MB). On an https address
@@ -81,8 +85,11 @@ upload. The files are base-wide: every pilot's Watcher reads the one folder `/sh
     is, except a contact list, which is refused there. The Watcher stages the chunks privately
     (`/share/flight_watcher/uploads/.staging/<prefix>/`, mode 700), takes them in any order, ignores a repeated one,
     drops an upload that stops arriving for 2 minutes, checks the size, the sha256 and the file type, and saves it
-    with the same code as the ingress path. Its progress and answer come back on `sensor.<prefix>_upload_status`
-    (from `<prefix>/upload/status`, not retained).
+    with the same code as the ingress path; an ended upload's chunks sent again within the seal's hour (or after a
+    restart) are ignored. Its progress and answer come back on `sensor.<prefix>_upload_status` (from
+    `<prefix>/upload/status`, not retained; the phase is the sensor's state and attribute `phase`). The card waits
+    2.5 minutes for the answer, from the last part or the Watcher's last word on it; a part lost with the connection
+    (the phone slept, the signal dropped) is sent again once Home Assistant is back, for up to 90 seconds.
 - **Pilot contact list** (FW-0066): a PDF, CSV or XLSX with each pilot's employee number, name, phone numbers and email
   addresses. A sheet is read by its header row (EMP / EMPLOYEE # / FILE #, NAME or LAST and FIRST, PHONE / CELL /
   MOBILE / HOME / WORK, EMAIL; a FAX column is left out); a PDF line by line ("Last, First", US phone numbers, email
@@ -90,8 +97,12 @@ upload. The files are base-wide: every pilot's Watcher reads the one folder `/sh
   `/share/flight_watcher/contacts.json` (mode 600, outside `/config/www`, never in git); the file uploaded is kept mode
   600 and replaces the previous list's. When you look a pilot up, the pilot card shows **Call**, **Text** (not to a
   home or work number) and **Mail** links beside the name, and small ones beside that pilot's name in the crew lists.
-  Only the looked-up pilot's entry is ever in a sensor (`sensor.<prefix>_pilot_schedule`, attribute `contact`); the
-  upload result, `sensor.<prefix>_uploads` and the log carry counts only.
+  Only the looked-up pilot's entry is ever in a sensor (`sensor.<prefix>_pilot_schedule`, attribute `contact`), and
+  only in a message the broker does not keep (the retained copy has no contact); the upload result,
+  `sensor.<prefix>_uploads` and the log carry counts only. With the pilot's employee number known, an entry under
+  another number is never taken by its name (two pilots of one name); an address line ("Honolulu, HI 96815") is no
+  pilot; "DOE JR, JOHN" keeps its suffix; a sheet's "Employee Name" column is the name. An XLSX reads only its first
+  256 columns, part by part (a sheet or string table over 10 MB unpacked is refused).
 - The progress line and the result line are live regions (the result a polite status), so a screen reader
   announces the upload's progress and whether the file was saved or refused.
 

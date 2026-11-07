@@ -114,12 +114,31 @@ def test_contact_links_fit_a_phone(tmp_path):
                 m = pg.evaluate("""() => {
                   const r = document.querySelector('flight-watcher-pilot-card').shadowRoot, card = r.querySelector('ha-card');
                   const hd = r.querySelector('.hd'), links = [...hd.querySelectorAll('a.ct')].map((a) => a.getBoundingClientRect());
+                  const mini = [...r.querySelectorAll('.cts.mini a.ct')].map((a) => a.getBoundingClientRect());
                   return {doc: document.documentElement.scrollWidth, win: window.innerWidth, card: card.getBoundingClientRect().right,
-                          n: links.length, right: Math.max(...links.map((x) => x.right)), h: Math.min(...links.map((x) => x.height))};
+                          n: links.length, right: Math.max(...links.map((x) => x.right)), h: Math.min(...links.map((x) => x.height)),
+                          mn: mini.length, mh: Math.min(...mini.map((x) => x.height)), mw: Math.min(...mini.map((x) => x.width))};
                 }""")
                 assert m["doc"] <= m["win"] and m["card"] <= w + 0.5 and m["right"] <= w + 0.5, (w, m)
                 assert m["n"] == 4 and m["h"] >= 20, (w, m)  # call and text the cell, call home, mail
+                # FW-0066 review: the crew-list links are tap targets too (Call dials at once): 24 px high at least
+                # (they sit in the calendar grid, which scrolls sideways in its own box on a phone: the page does not)
+                assert m["mn"] >= 3 and m["mh"] >= 24 and m["mw"] >= 24, (w, m)
                 pg.screenshot(path=os.path.join(shots, f"pilot_contact_{w}.png"))
                 pg.close()
         finally:
             b.close()
+
+
+def test_crew_links_match_flicas_spelling_of_the_pilot(tmp_path):
+    """FW-0066 review: the crew lists carry FLICA's spelling of a name; a contact list may spell it otherwise (a suffix,
+    a second last name), so the pilot's own crew-list entries are found by the sensor's name as well as the contact's."""
+    a = dict(_payload(), contact=dict(ROE, name="Roe Jr, Rick"))
+    r = _node(tmp_path, _paint() + f"""
+      const c = paint({json.dumps(a)});
+      console.log(JSON.stringify({{h: html(c)}}));
+    """)
+    rows = [x.split("</td>")[0] for x in r["h"].split('<td class="crew">')[1:]]
+    roe = [x for x in rows if "Roe, Rick" in x]
+    assert roe and all('<span class="cts mini"><a class="ct" href="tel:+18085550112"' in x for x in roe)
+    assert all("cts mini" not in x for x in rows if "Roe, Rick" not in x)

@@ -151,7 +151,12 @@ def test_find_one_pilot():
     assert CT.find(d, "10001") == {"name": "Doe, Jane", "emails": ["jane.doe@example.com"],
                                    "phones": [{"label": "phone", "number": "808-555-0101", "tel": "+18085550101"},
                                               {"label": "phone", "number": "808-555-0102", "tel": "+18085550102"}]}
-    assert CT.find(d, "99999", "DOE, JANE M")["name"] == "Doe, Jane"  # by name when the number is not on the list
+    # review: Doe, Jane on the list is 10001, so pilot 99999 of the same name is someone else: no contact
+    assert CT.find(d, "99999", "DOE, JANE M") is None and CT.find(d, "99999", "Doe, Jane") is None
+    noemp = dict(d, pilots=[dict(e, emp="") if e["emp"] == "10001" else e for e in d["pilots"]])
+    assert CT.find(noemp, "99999", "DOE, JANE M")["name"] == "Doe, Jane"  # an entry with no number: by name
+    assert CT.find(d, "", "Doe, Jane")["name"] == "Doe, Jane"  # no number looked up: by name
+    assert CT.find(d, "010001")["name"] == "Doe, Jane"  # leading zeros do not count
     assert CT.find(d, "99999", "Nobody, Here") is None and CT.find(None, "10001") is None
     twice = dict(d, pilots=d["pilots"] + [{"emp": "20001", "name": "Doe, Jane", "phones": [], "emails": ["x@example.com"]}])
     assert CT.find(twice, "", "Doe, Jane") is None  # two pilots by that name: none is guessed
@@ -224,3 +229,86 @@ def test_save_contacts_xlsx_through_the_web_ui_form(up, tmp_path):
     assert r["ok"] and r["file"] == "contacts_2026-11-07.xlsx" and r["contacts"]["count"] == 2
     assert "contacts_2026-11-07.xlsx" in web._uploads_table()
     assert 'value="contacts"' in web.PAGE
+
+
+# ---------------------------------------------------------------- FW-0066 review fixes
+def _sheet_zip(sheet, shared=None):
+    ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("xl/workbook.xml", f"<workbook {ns}/>")
+        z.writestr("xl/worksheets/sheet1.xml", f"<worksheet {ns}><sheetData>{sheet}</sheetData></worksheet>")
+        if shared is not None:
+            z.writestr("xl/sharedStrings.xml", f"<sst {ns}>{shared}</sst>")
+    return b.getvalue()
+
+
+def _bounded(fn, mb):
+    """fn() under tracemalloc: its result and that its peak stayed under mb megabytes."""
+    import tracemalloc
+    tracemalloc.start()
+    try:
+        out = fn()
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < mb * 2 ** 20, f"peak {peak / 2 ** 20:.0f} MB"
+    return out
+
+
+def test_xlsx_a_cell_far_to_the_right_cannot_exhaust_memory():
+    """A 500-byte workbook with one cell at ZZZZZZZ1 asked for about 67 GB of list (a row as wide as its column
+    index); a column of AAAAA on every row did the same at scale. Now only MAX_COLS columns are read."""
+    far = _sheet_zip('<row r="1"><c r="ZZZZZZZ1" t="inlineStr"><is><t>x</t></is></c>'
+                     '<c r="A1" t="inlineStr"><is><t>Doe, Jane</t></is></c></row>')
+    assert len(far) < 1000 and CT.sniff(far) == "xlsx"
+    assert _bounded(lambda: CT.xlsx_rows(far), 5) == [["Doe, Jane"]]
+    wide = _sheet_zip("".join(f'<row r="{i}"><c r="AAAAA{i}"><v>1</v></c><c r="B{i}"><v>2</v></c></row>'
+                              for i in range(1, CT.MAX_ROWS + 1)))
+    rows = _bounded(lambda: CT.xlsx_rows(wide), 120)
+    assert len(rows) == CT.MAX_ROWS and rows[0] == ["", "2"]
+    edge = _sheet_zip('<row r="1"><c r="IV1"><v>1</v></c><c r="IW1"><v>2</v></c><c><v>3</v></c></row>')
+    r = CT.xlsx_rows(edge)[0]
+    assert len(r) == CT.MAX_COLS and r[-1] == "1"  # IV is the last column read; IW and a cell after it are left out
+    assert CT._col("XFD7") == CT.MAX_COLS and CT._col("ZZZZ1") == CT.MAX_COLS and CT._col("C7") == 2 and CT._col(None) is None
+
+
+def test_xlsx_parts_are_streamed_and_capped(monkeypatch):
+    """The string table and the sheet are read element by element (an 87 KB upload of <si/> used to cost 1.2 GB as
+    one tree), and a part past XLSX_PART_MAX is refused."""
+    many = _sheet_zip('<row r="1"><c r="A1" t="s"><v>1</v></c></row>', "<si><t>Doe, Jane</t></si>" + "<si/>" * 400_000)
+    assert len(many) < 100_000
+    assert _bounded(lambda: CT.xlsx_rows(many), 40) == [[""]]
+    monkeypatch.setattr(CT, "XLSX_PART_MAX", 1000)
+    with pytest.raises(ValueError, match="too large"):
+        CT.xlsx_rows(many)
+
+
+def test_employee_name_is_a_name_column():
+    csv_ = ("Employee ID,Employee Name,Cell Phone,Email\r\n10001,Jane Doe,808-555-0121,jane.doe@example.com\r\n"
+            "10002,Rick Roe,808-555-0122,\r\n").encode()
+    r = CT.parse(csv_, CT.sniff(csv_))
+    assert [(e["emp"], e["name"], [p["tel"] for p in e["phones"]]) for e in r["entries"]] == [
+        ("10001", "Doe, Jane", ["+18085550121"]), ("10002", "Roe, Rick", ["+18085550122"])]
+    assert r["rejects"] == 0
+    assert CT._role("Employee #") == ("emp", "") and CT._role("Employee Number") == ("emp", "")
+    assert CT._role("Last Name") == ("last", "") and CT._role("First Name") == ("first", "")
+
+
+def test_an_address_block_is_not_a_pilot():
+    text = ("DOE, JANE        10001\n  45 Example St\n  Honolulu, HI 96815\n  Cell: 808-555-0131\n  jane.doe@example.com\n"
+            "ROE, RICK        1002   1 Sample Rd  Kailua, HI 96734-1234   808-555-0132\n")
+    r = CT.parse(b"%PDF", "pdf", text)
+    assert [(e["emp"], e["name"], [p["tel"] for p in e["phones"]], e["emails"]) for e in r["entries"]] == [
+        ("10001", "Doe, Jane", ["+18085550131"], ["jane.doe@example.com"]),
+        ("1002", "Roe, Rick", ["+18085550132"], [])]  # the ZIP is no employee number
+    assert "Honolulu" not in json.dumps(r) and "96815" not in json.dumps(r)
+    assert CT.name_in("CA  Doe, Jane") == "Doe, Jane"  # a seat code is no state
+
+
+def test_a_suffix_or_a_two_word_last_name_is_kept():
+    assert CT.name_in("DOE JR, JOHN") == "Doe Jr, John" and CT.name_in("Doe Jr., John A") == "Doe Jr, John"
+    assert CT.name_in("SMITH JONES, MARY") == "Smith Jones, Mary" and CT.name_in("VAN DYKE, SAM") == "Van Dyke, Sam"
+    assert CT.name_in("12345  LANE JR, CHRIS   808-555-0133") == "Lane Jr, Chris"
+    d = CT.build(CT.parse(b"%PDF", "pdf", "  1  10009  LANE JR, CHRIS   808-555-0133\n"), "c.pdf", "")
+    assert CT.find(d, "", "Lane Jr, Chris")["name"] == "Lane Jr, Chris"  # FLICA keeps the suffix: the keys match

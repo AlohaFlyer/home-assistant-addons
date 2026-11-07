@@ -271,7 +271,7 @@ class FlightWatcherPilotCard extends HTMLElement {
         .rb{margin-top:10px}.rbh{margin:0 0 4px}details.rb summary{cursor:pointer;margin:0 0 4px}.also{margin:6px 0 0}.also b{color:var(--primary-text-color)}
         .picks{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0}
         .cts{display:inline-flex;flex-wrap:wrap;gap:6px}.ct{padding:4px 10px;border-radius:14px;background:var(--primary-color);color:var(--text-primary-color,#fff);text-decoration:none;font-size:12px;font-weight:600;line-height:1.3}
-        .cts.mini{gap:4px;margin-left:4px}.cts.mini .ct{padding:0 6px;font-size:11px;font-weight:400}
+        .cts.mini{gap:6px;margin-left:4px}.cts.mini .ct{padding:4px 8px;font-size:11px;font-weight:400;line-height:16px}
         .pk{padding:6px 10px;border:1px solid var(--divider-color,#ccc);border-radius:6px;background:var(--card-background-color,#fff);color:var(--primary-text-color);cursor:pointer;font-size:13px}
         @media (prefers-color-scheme: dark){
           .cal tr.bx td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb}
@@ -295,7 +295,8 @@ class FlightWatcherPilotCard extends HTMLElement {
     const emp = a.emp || this._want || "";
     // FW-0066: the contact belongs to the pilot the sensor holds; while a new lookup is still to answer, none is shown
     const ct = loading ? "" : this._contact(a, false);
-    this._ctKey = ct ? pilotNameKey((a.contact && a.contact.name) || name) : "";
+    // the pilot's own name in a crew list: FLICA's spelling (the sensor's name) or the contact list's ('Lane Jr, Chris')
+    this._ctKeys = ct ? [pilotNameKey(name), pilotNameKey(a.contact && a.contact.name)].filter(Boolean) : [];
     this._ctMini = ct ? this._contact(a, true) : "";
     if (loading || a.status === "loading") {
       body.innerHTML = `<div class="hd"><h3>${this._esc(name || "Pilot")} (${this._esc(emp)})</h3>${ct}<span class="u">reading this pilot's month from FLICA (Schedule Lookup, read only), 20 to 40 s</span><span class="x" title="close">&times;</span></div>`;
@@ -337,7 +338,7 @@ class FlightWatcherPilotCard extends HTMLElement {
       if (lay && lay !== "-") layCell = lay === "HNL" ? `<span class="u">HNL</span>` : `<b>${this._esc(lay)}</b>`;
       if (it && /^[A-Z]\d{4}/.test(it.trip)) {
         blk = this._esc(it.blk || ""); cr = this._esc(it.credit || ""); soft = this._esc(it.soft || "");
-        crew = (it.crew || []).map(([p, n]) => `${this._esc(p)} ${this._esc(n)}${this._ctKey && pilotNameKey(n) === this._ctKey ? this._ctMini : ""}`).join(" · ");
+        crew = (it.crew || []).map(([p, n]) => `${this._esc(p)} ${this._esc(n)}${(this._ctKeys || []).includes(pilotNameKey(n)) ? this._ctMini : ""}`).join(" · ");
       }
       rows += `<tr class="${wk ? "wk" : ""}${this._hol(d) ? " hol" : ""}${oth ? " oth" : ""}${bx}"><td>${DOW[dt.getDay()]}</td><td class="n">${d.slice(8)}</td><td>${tripCell}</td><td>${layCell}</td><td class="n">${blk}</td><td class="n">${cr}</td><td class="n">${soft}</td><td class="crew">${crew}</td></tr>`;
     }

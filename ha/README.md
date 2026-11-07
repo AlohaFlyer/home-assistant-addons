@@ -23,8 +23,13 @@ automations here match Pako by sha256 of the redacted text.
 
 The two dashboard snapshots hold the **intended** state for 1.4.8 ("any user can see and upload"); Pako still has the
 1.4.7 Settings views until these edits are applied through the HA connector after the release is live (the cards'
-user path needs the 1.4.8 sensors). Each is a [DESTRUCTIVE] change to a live dashboard: Ryan's yes first. Then
-refresh the sha256 check below.
+user path needs the 1.4.8 sensors). Each is a [DESTRUCTIVE] change to a live dashboard or to Home Assistant's
+configuration: Ryan's yes first, one at a time. Then refresh the sha256 check below.
+
+Who the card reaches (read on Pako 2026-11-07): `flight-watcher` is `require_admin: true`, so only HA admins open it;
+all five views of `flight-watcher-james` (Settings included) are `visible` to James's and Ryan's user ids only. So
+after edits 1 and 2 the uploads card serves Ryan, the other HA admins and James, not every HA user: the non-admin
+household users (four, a guest login among them) can open `flight-watcher-james` but see none of its views.
 
 1. `flight-watcher` (Ryan's, `lovelace.flight_watcher`), view `settings`, section 0: the heading card "Monthly PDFs"
    (icon `mdi:file-upload-outline`) is renamed **"Monthly files"** and loses its `visibility` (the `user` condition
@@ -36,7 +41,24 @@ refresh the sha256 check below.
    `{"type": "heading", "heading": "Monthly files", "icon": "mdi:file-upload-outline"}` and
    `{"type": "custom:flight-watcher-uploads-card-james", "grid_options": {"columns": "full"}}`, with no visibility
    condition (James is not an admin: his card reads `sensor.flight_watcher_james_uploads` and sends chunks to
-   `flight_watcher_james/upload/chunk`).
+   `flight_watcher_james/upload/chunk`). The view's own `visible` list (James, Ryan) stays as it is.
+3. Open question for Ryan, not applied: should the other household users upload too? That
+   means adding their user ids to the `visible` list of the `flight-watcher-james` Settings view (they would then also
+   see James's Credentials card there, which shows his FLICA username), or a separate view or dashboard for the
+   uploads card alone. A separate [DESTRUCTIVE] edit; recommended: leave as is.
+4. Optional (`/config/configuration.yaml`, then an HA restart): `recorder: exclude: entities:` add
+   `sensor.flight_watcher_pilot_schedule` and `sensor.flight_watcher_james_pilot_schedule`. A pilot lookup's payload
+   carries the looked-up pilot's contact (not retained in MQTT since the review fix), and a small payload (a "loading"
+   or "no data" reply) is under the recorder's 16 KB attribute limit, so without this each lookup's contact stays in
+   `home-assistant_v2.db` for `purge_keep_days` (3 on Pako). Nothing reads these sensors' history.
+5. Optional (`/config/configuration.yaml`, then an HA restart): each chunk is a `call_service` event of about 256 KiB,
+   and the recorder logs "Event data for call_service exceed maximum size of 32768 bytes" at WARNING for every one
+   (about 10 for a 1.7 MB award, about 130 for 25 MB) and stores `{}` for it. Recommended: under the existing
+   `logger:` add
+   `filters: {homeassistant.components.recorder.db_schema: ["Event data for call_service exceed maximum size"]}`,
+   which only silences that line. (`recorder: exclude: event_types: [call_service]` also stops the warnings and the
+   one small last chunk being stored, but drops every service call from history and from the logbook's "triggered
+   by" context.)
 
 | File | Live copy on Pako |
 |:--|:--|

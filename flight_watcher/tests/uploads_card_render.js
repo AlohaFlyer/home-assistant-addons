@@ -61,8 +61,11 @@ let H = { user: { is_admin: ${admin ? "true" : "false"} }, states: ${admin ? "{}
     H = { ...H, states: { ...H.states,
       "sensor.flight_watcher_uploads": { state: "5", last_updated: "t2", attributes: { ...H.states["sensor.flight_watcher_uploads"].attributes, files,
         contacts: { count: 1, with_phone: 1, with_email: 1, with_emp: 1, rejects: 0, file: "contacts_2026-11-20.csv", uploaded_at: "2026-11-20T09:31:00-10:00" } } },
-      "sensor.flight_watcher_upload_status": { state: "done", last_updated: "t3", attributes: { id: p.id, state: "done", ok: true,
-        message: "Saved contacts_2026-11-20.csv (0 KB). Pilot contacts: 1 pilot, 1 with a phone, 1 with an email." } } } };
+      // as Home Assistant gives it: state is the sensor's state, never an attribute (MQTT_ATTRIBUTES_BLOCKED)
+      "sensor.flight_watcher_upload_status": { state: "done", last_updated: "t3", attributes: { id: p.id, phase: "done", ok: true,
+        message: "Saved contacts_2026-11-20.csv (0 KB). Pilot contacts: 1 pilot, 1 with a phone, 1 with an email.",
+        recent: [{ id: p.id, kind: "contacts", ok: true, at: "t3",
+          message: "Saved contacts_2026-11-20.csv (0 KB). Pilot contacts: 1 pilot, 1 with a phone, 1 with an email." }] } } } };
     c.hass = H;
   }, 50);
 } };

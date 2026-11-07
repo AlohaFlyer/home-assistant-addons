@@ -152,11 +152,14 @@ def test_the_card_picks_the_path_from_the_user():
       const kp = await crypto.subtle.generateKey({name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256"}, true, ["encrypt", "decrypt"]);
       const states = {...""" + USER_STATES + """, "sensor.flight_watcher_settings": {state: "True", attributes: {
         pubkey: Buffer.from(await crypto.subtle.exportKey("spki", kp.publicKey)).toString("base64"), kid: "k1"}}};
-      const run = async (admin, reply, kind, f) => {
+      // the status as Home Assistant's MQTT sensor gives it: state is the sensor's state and is dropped from the
+      // attributes (MQTT_ATTRIBUTES_BLOCKED); the Watcher adds phase; nophase: a payload without it (recent only)
+      const ha = (st, nophase) => { const {state, ...a} = st; return {state, attributes: nophase ? a : {...a, phase: state}}; };
+      const run = async (admin, reply, kind, f, nophase) => {
         const pubs = [], seen = [];
         const c = new FlightWatcherUploadsCard(); c.setConfig({});
         const h = {...hass(admin), states, callService: async (d, s, data) => { const p = JSON.parse(data.payload); pubs.push(p);
-          const st = reply(p); if (st) c.hass = {...h, states: {...states, "sensor.flight_watcher_upload_status": {state: st.state, attributes: st}}};
+          const st = reply(p); if (st) c.hass = {...h, states: {...states, "sensor.flight_watcher_upload_status": ha(st, nophase)}};
           seen.push(c._q("[data-prog]").textContent); }};
         c.hass = h;
         for (let i = 0; i < 20 && admin && !c._data; i++) await tick();
@@ -174,20 +177,26 @@ def test_the_card_picks_the_path_from_the_user():
       Object.defineProperty(globalThis, "crypto", {value: {getRandomValues: (a) => require("crypto").getRandomValues(a)}, configurable: true});
       const plainCsv = await run(false, done, "contacts", file("list.csv", "text/csv", new TextEncoder().encode(["Name,Emp", "Doe Jane,10001"].join(String.fromCharCode(10)))));
       const plainPdf = await run(false, done);
-      console.log(JSON.stringify({admin, user, refused, plainCsv, plainPdf}));
+      // the answer only in recent (another upload's status on top) or only in the sensor's state (no phase)
+      const viaRecent = await run(false, (p) => p.i === p.n - 1 ? {id: "other", state: "receiving", got: 1, total: 9, message: "x",
+        recent: [{id: p.id, kind: "award", ok: true, message: "Saved by recent.", at: "t"}]} : null, "award", undefined, true);
+      const viaState = await run(false, (p) => p.i === p.n - 1 ? {id: p.id, state: "error", ok: false, message: "Not a PDF."} : null, "award", undefined, true);
+      console.log(JSON.stringify({admin, user, refused, plainCsv, plainPdf, viaRecent, viaState}));
     """)
     a, u = r["admin"], r["user"]
     assert a["pubs"] == [] and a["xhr"] == 1 and a["msg"]["text"] == "Saved 2026-12_award.pdf (400 KB)."  # ingress: no mqtt.publish
     assert u["ws"] == 0 and u["xhr"] == 0 and u["msg"] == {"ok": True, "text": "Saved 2026-12_award.pdf (488 KB)."}
     assert [p["i"] for p in u["pubs"]] == [0, 1, 2] and all(p["n"] == 3 and p["sealed"] and p["kind"] == "award" and p["month"] == "2026-12" for p in u["pubs"])
-    assert u["seen"] == ["Uploading the Dec 2026 award (488 KB)...", "Sending the Dec 2026 award (488 KB)... 30%",
-                         "Sending the Dec 2026 award (488 KB)... 60%"]  # the line at each publish: 10 % steps
+    assert u["seen"] == ["Uploading the Dec 2026 award (488 KB)...", "Sending the Dec 2026 award (488 KB): part 1 of 3, 33%",
+                         "Sending the Dec 2026 award (488 KB): part 2 of 3, 66%"]  # the line at each publish
     rf = r["refused"]
     assert len(rf["pubs"]) == 1 and rf["msg"] == {"ok": False, "text": "Too large: 30.0 MB (the Watcher takes up to 25 MB)."}
     pc = r["plainCsv"]
     assert pc["pubs"] == [] and pc["msg"]["ok"] is False and "https address" in pc["msg"]["text"]
     pp = r["plainPdf"]
     assert pp["msg"]["ok"] is True and len(pp["pubs"]) == 3 and not any(p["sealed"] for p in pp["pubs"])
+    assert r["viaRecent"]["msg"] == {"ok": True, "text": "Saved by recent."}
+    assert r["viaState"]["msg"] == {"ok": False, "text": "Not a PDF."}
 
 
 def test_escaping_and_dates():
@@ -258,7 +267,7 @@ def test_second_pilot_copy_keeps_the_apps_slug_and_uses_its_own_topic():
         "sensor.flight_watcher_james_settings": {state: "True", attributes: {pubkey: "", kid: ""}}};
       const u = new FlightWatcherUploadsCard(); u.setConfig({}); const n = calls.length;
       const h = {...hass(false), states, callService: async (d, s, data) => { const p = JSON.parse(data.payload); pubs.push(data.topic);
-        if (p.i === p.n - 1) u.hass = {...h, states: {...states, "sensor.flight_watcher_james_upload_status": {state: "done", attributes: {id: p.id, state: "done", ok: true, message: "Saved."}}}}; }};
+        if (p.i === p.n - 1) u.hass = {...h, states: {...states, "sensor.flight_watcher_james_upload_status": {state: "done", attributes: {id: p.id, phase: "done", ok: true, message: "Saved."}}}}; }};
       u.hass = h;
       u._q("[data-kind]").value = "seniority";
       u._q("[data-pdf]").files = [{name: "s.pdf", type: "application/pdf", size: 9, arrayBuffer: async () => new TextEncoder().encode("%PDF-1.4 ").buffer}];
@@ -327,33 +336,41 @@ def test_renders_and_uploads_in_a_browser(tmp_path):
         assert os.path.getsize(os.path.join(shots, name)) > 1000
 
 
-def test_a_pdf_over_the_ingress_limit_is_refused_before_it_is_sent():
+def test_a_pdf_over_the_ingress_limit_goes_in_parts():
     """Review fix: the Supervisor's ingress proxy refuses a body over 16 MiB (HTTP 413) only after it has all arrived,
-    so the card refuses a larger PDF before any request, even when the app advertises its own 25 MB cap (the lower of
-    the two wins); a PDF under the limit is sent (stub XMLHttpRequest)."""
+    so an admin's file over that (or over a lower figure the app gives) never goes to ingress; FW-0066 review: it goes
+    in parts over mqtt.publish instead, like a non-admin's, up to the Watcher's 25 MB; a PDF under the limit still
+    goes through ingress (stub XMLHttpRequest); a file over 25 MB is refused before anything is sent."""
     r = _node("""
-      const xhrs = [];
+      const xhrs = [], pubs = [];
       globalThis.FormData = class { constructor() { this.names = []; } append(n) { this.names.push(n); } };
       globalThis.XMLHttpRequest = class { constructor() { xhrs.push(this); this.upload = {}; }
         open(m, u) { this.url = u; } send(fd) { this.fd = fd.names; this.status = 200;
           this.responseText = JSON.stringify({ok: true, message: "Saved 2026-12_pairings.pdf (15625 KB)."}); setTimeout(() => this.onload(), 0); } };
-      DATA = {files: [], seniority: null, version: "1.4.5", max_bytes: 25000000};  // an app that advertises more
-      const c = new FlightWatcherUploadsCard(); c.setConfig({}); c.hass = hass(true);
+      DATA = {files: [], seniority: null, version: "1.4.8", max_bytes: 25000000, mqtt_max_bytes: 25000000};  // an app that advertises more
+      const kp = await crypto.subtle.generateKey({name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256"}, true, ["encrypt", "decrypt"]);
+      const states = {"sensor.flight_watcher_uploads": {state: "0", last_updated: "1", attributes: {files: [], version: "1.4.8"}},
+        "sensor.flight_watcher_settings": {state: "True", attributes: {pubkey: Buffer.from(await crypto.subtle.exportKey("spki", kp.publicKey)).toString("base64"), kid: "k1"}}};
+      const c = new FlightWatcherUploadsCard(); c.setConfig({});
+      const h = {...hass(true), states, callService: async (d, s, data) => { const p = JSON.parse(data.payload); pubs.push(p.i);
+        if (p.i === p.n - 1) c.hass = {...h, states: {...states, "sensor.flight_watcher_upload_status": {state: "done", attributes: {id: p.id, phase: "done", ok: true, message: "Saved in parts."}}}}; }};
+      c.hass = h;
       for (let i = 0; i < 20 && !c._data; i++) await tick();
       c._q("[data-kind]").value = "pairings"; c._q("[data-month]").value = "2026-12";
-      const try_ = async (size) => { c._q("[data-pdf]").files = [{name: "p.pdf", type: "application/pdf", size}]; const n = xhrs.length;
-        await c._upload(); return {msg: c._msg, sent: xhrs.length - n}; };
-      const big = await try_(20000000), edge = await try_(FW_UP_MAX + 1), ok = await try_(16000000);
-      DATA = {files: [], seniority: null, version: "1.4.5", max_bytes: 1000000}; await c._load();  // a lower app figure wins
+      const try_ = async (size) => { const b = new Uint8Array(size); b.set([37, 80, 68, 70]);
+        c._q("[data-pdf]").files = [{name: "p.pdf", type: "application/pdf", size, arrayBuffer: async () => b.buffer}];
+        const n = xhrs.length, m = pubs.length; await c._upload(); return {msg: c._msg, xhr: xhrs.length - n, parts: pubs.length - m}; };
+      const ok = await try_(16000000), edge = await try_(FW_UP_MAX + 1), huge = await try_(25000001);
+      DATA = {files: [], seniority: null, version: "1.4.8", max_bytes: 1000000}; await c._load();  // a lower app figure wins
       const low = await try_(2000000);
-      console.log(JSON.stringify({big, edge, ok, low, max: FW_UP_MAX, url: xhrs[0] && xhrs[0].url, fd: xhrs[0] && xhrs[0].fd}));
+      console.log(JSON.stringify({ok, edge, huge, low, max: FW_UP_MAX, url: xhrs[0] && xhrs[0].url, fd: xhrs[0] && xhrs[0].fd}));
     """)
     assert r["max"] == 16 * 1024 * 1024 - 64 * 1024
-    assert r["big"] == {"msg": {"ok": False, "text": "Too large: 19.1 MB. Home Assistant's app proxy takes a PDF of up to 15.9 MB."}, "sent": 0}
-    assert r["edge"]["sent"] == 0 and r["edge"]["msg"]["text"].startswith("Too large: 15.9 MB.")
-    assert r["ok"] == {"msg": {"ok": True, "text": "Saved 2026-12_pairings.pdf (15625 KB)."}, "sent": 1}
+    assert r["ok"] == {"msg": {"ok": True, "text": "Saved 2026-12_pairings.pdf (15625 KB)."}, "xhr": 1, "parts": 0}
     assert r["url"] == "/api/hassio_ingress/tok123/api/upload" and r["fd"] == ["kind", "month", "pdf"]
-    assert r["low"]["sent"] == 0 and r["low"]["msg"]["text"].endswith("up to 977 KB.")
+    assert r["edge"] == {"msg": {"ok": True, "text": "Saved in parts."}, "xhr": 0, "parts": 86}  # 16.7 MB / 192 KiB
+    assert r["huge"] == {"msg": {"ok": False, "text": "Too large: 23.8 MB. The Watcher takes a file of up to 23.8 MB."}, "xhr": 0, "parts": 0}
+    assert r["low"] == {"msg": {"ok": True, "text": "Saved in parts."}, "xhr": 0, "parts": 11}
 
 
 def test_progress_and_result_lines_are_live_regions():
@@ -369,3 +386,72 @@ def test_progress_and_result_lines_are_live_regions():
     assert '<span class="u" data-prog aria-live="polite"></span>' in h
     src = open(CARD, encoding="utf-8").read()
     assert "Math.floor(p / 10) * 10}%" in src
+
+
+def test_a_dropped_connection_a_slow_watcher_refresh_and_progress():
+    """FW-0066 review: (1) a part lost with the connection (home-assistant-js-websocket rejects a call it cut off with
+    {error: {code: 3}}, and any call while it is down with a bare 3) is sent again once Home Assistant is back, and a
+    connection that stays down gives a plain message, never "[object Object]"; (2) every status of this upload starts
+    the wait for the Watcher's answer again (checking, then reading, then done after more than one wait); (3) Refresh
+    re-reads the sensor for a user who is not an admin; (4) the progress line names the part from the first one."""
+    src = open(CARD, encoding="utf-8").read()
+    assert "const FW_UP_WAIT_MS = 150000;" in src and "const FW_UP_RETRY_MS = 90000;" in src
+    src = src.replace("const FW_UP_WAIT_MS = 150000;", "const FW_UP_WAIT_MS = 300;").replace(
+        "const FW_UP_RETRY_MS = 90000;", "const FW_UP_RETRY_MS = 50;").replace("const FW_UP_RETRY_GAP_MS = 3000;", "const FW_UP_RETRY_GAP_MS = 5;")
+    r = _node("""
+      globalThis.crypto = undefined;  // a plain http page: the file goes as it is (no key needed here)
+      const states = """ + USER_STATES + """;
+      const lost = {type: "result", success: false, error: {code: 3, message: "Connection lost"}};
+      const file = (n) => { const b = new Uint8Array(n); b.set([37, 80, 68, 70]); return {name: "a.pdf", type: "application/pdf", size: n, arrayBuffer: async () => b.buffer}; };
+      const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+      const run = async (fail, answer, n) => {
+        const sent = [], seen = [];
+        const c = new FlightWatcherUploadsCard(); c.setConfig({});
+        let k = 0;
+        const h = {...hass(false), states, callService: async (d, s, data, target, notify) => {
+          const p = JSON.parse(data.payload); k++;
+          const e = fail(p, k); if (e !== undefined) throw e;
+          sent.push(p.i); seen.push(c._q("[data-prog]").textContent);
+          if (notify !== false) throw new Error("the card says what failed: no toast");
+          if (p.i === p.n - 1) answer(c, h, p);
+        }};
+        c.hass = h;
+        c._q("[data-kind]").value = "award"; c._q("[data-month]").value = "2026-12";
+        c._q("[data-pdf]").files = [file(n || 400000)];
+        await c._upload();
+        return {sent, msg: c._msg, seen};
+      };
+      const say = (c, h, st, ms) => setTimeout(() => { c.hass = {...h, states: {...states, "sensor.flight_watcher_upload_status": {state: st.phase, attributes: st}}}; }, ms);
+      const quick = (c, h, p) => say(c, h, {id: p.id, phase: "done", ok: true, message: "Saved."}, 0);
+      // (1) part 1 cut off, then the socket down twice: sent again, in order, no part lost
+      const retried = await run((p, k) => (k === 2 ? lost : k === 3 || k === 4 ? 3 : undefined), quick);
+      const gaveUp = await run((p) => (p.i === 1 ? lost : undefined), quick);
+      const downAll = await run((p) => (p.i === 1 ? 3 : undefined), quick);
+      const other = await run((p) => (p.i === 0 ? {code: "unauthorized", message: "Unauthorized"} : undefined), quick);
+      // (2) checking at 200 ms, reading at 400, done at 650: each inside the 300 ms wait of the one before
+      const slow = await run(() => undefined, (c, h, p) => {
+        say(c, h, {id: p.id, phase: "checking", got: p.n, total: p.n, message: "All parts in; checking the file.", at: "a"}, 200);
+        say(c, h, {id: p.id, phase: "reading", got: p.n, total: p.n, message: "Reading the award...", at: "b"}, 400);
+        say(c, h, {id: p.id, phase: "done", ok: true, message: "Saved late.", at: "c"}, 650);
+      });
+      const silent = await run(() => undefined, () => {});
+      // (3) Refresh for a user who is not an admin: the sensor is read again
+      const u = new FlightWatcherUploadsCard(); u.setConfig({}); u._root();
+      const rl = u._q("[data-reload]"); rl.addEventListener = (t, fn) => { rl.click = fn; };
+      u.hass = {...hass(false), states: {}};
+      const before = u._err; u._h = {...u._h, states}; rl.click();
+      // (4) 25 parts: the first line already says where it is
+      const many = await run(() => undefined, quick, 25 * 192 * 1024);
+      console.log(JSON.stringify({retried, gaveUp, downAll, other, slow, silent, refresh: {before, after: u._err, data: !!u._data, calls: calls.length}, many: many.seen.slice(1, 4)}));
+    """, src=src)
+    assert r["retried"]["sent"] == [0, 1, 2] and r["retried"]["msg"] == {"ok": True, "text": "Saved."}
+    drop = "The connection to Home Assistant dropped (the phone slept or lost signal) and did not come back in time; nothing was saved. Keep this page open and upload again."
+    assert r["gaveUp"]["msg"] == {"ok": False, "text": drop} and r["gaveUp"]["sent"] == [0]
+    assert r["downAll"]["msg"] == {"ok": False, "text": drop}
+    assert r["other"]["msg"] == {"ok": False, "text": "Unauthorized"}  # any other error: its own message, no retry
+    assert r["slow"]["msg"] == {"ok": True, "text": "Saved late."}
+    assert r["silent"]["msg"]["ok"] is False and r["silent"]["msg"]["text"].startswith("No answer from the Watcher for 0.005 minutes")
+    assert r["refresh"]["before"].startswith("The Watcher has not listed its files yet") and r["refresh"]["after"] == ""
+    assert r["refresh"]["data"] is True and r["refresh"]["calls"] == 0
+    p1, p3 = ("Sending the Dec 2026 award (4.7 MB): part 1 of 25, 4%", "Sending the Dec 2026 award (4.7 MB): part 3 of 25, 12%")
+    assert r["many"] == [p1, p1, p3]  # read out (aria-live) at each 10 % step, or every 3 s: not at every part

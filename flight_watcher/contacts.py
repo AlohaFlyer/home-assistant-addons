@@ -11,8 +11,10 @@ Readers, all made for lists laid out one pilot per row:
   * PDF (the pdftotext -layout copy) and header-less sheets: per line, phone numbers (US, 10 digits), email
     addresses, a "Last, First" name and the employee number (the longest 3 to 7 digit number left once phones and
     dates are taken out). A line with a phone or an email but no name joins the pilot above it (a wrapped row).
-Only entries with a phone or an email are kept. The XLSX reader is the standard library's (zipfile and ElementTree):
-a workbook that unpacks past XLSX_MAX or declares a DTD is refused."""
+Only entries with a phone or an email are kept. A "City, ST 12345" address line is not a pilot (its ZIP is not an
+employee number). The XLSX reader is the standard library's (zipfile and ElementTree, streamed): a workbook that
+unpacks past XLSX_MAX, a sheet or string table past XLSX_PART_MAX, or a part that declares a DTD is refused, and only
+the first MAX_COLS columns are read (a cell reference far to the right cannot make a row huge)."""
 import csv
 import io
 import json
@@ -23,7 +25,9 @@ from xml.etree import ElementTree as ET
 
 PARSER = 1  # bump when a parse rule changes
 XLSX_MAX = 60_000_000  # unpacked bytes an XLSX may hold
+XLSX_PART_MAX = 10_000_000  # unpacked bytes of the one worksheet or the shared strings read (each)
 MAX_ROWS = 20_000
+MAX_COLS = 256  # columns read per row (A to IV); a contact list needs a handful
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 
@@ -41,8 +45,18 @@ LETTER_BEFORE = re.compile(r"(?:^|\s{2,}|[\d)]\s*)([chmw])\s*[:.]?\s*$", re.I)
 NOISE = re.compile(r"\b(?:cell|mobile|mob|home|work|office|business|fax|phone|ph|tel|email|e-mail|emp|employee|"
                    r"capt|captain|ca|fo|ro|so|f/o|hnl|ogg|koa|lih|a330|a332|332|a321|b717|717|b787|787)\b[:.#]?", re.I)
 PARTICLE = r"(?:(?:de|da|del|della|di|du|la|le|van|von|der|den|st\.?|mc|mac)\s+)*"
-NAME_RE = re.compile(r"(?<![A-Za-z'])(" + PARTICLE + r"[A-Za-z][A-Za-z'\-]*[A-Za-z])\s*,\s*([A-Za-z][A-Za-z'\-]*[A-Za-z])"
+# the last name may run to two more words joined by single spaces ('DOE JR', 'SMITH JONES'; pdftotext -layout puts 2 or
+# more spaces between columns, and NOISE words around a name are blanked first)
+LAST = r"[A-Za-z][A-Za-z'\-]*[A-Za-z](?: [A-Za-z][A-Za-z'\-]*\.?){0,2}"
+NAME_RE = re.compile(r"(?<![A-Za-z'])(" + PARTICLE + LAST + r")\s*,\s*([A-Za-z][A-Za-z'\-]*[A-Za-z])"
                      r"(?:\s+([A-Za-z])\.?)?(?![A-Za-z])", re.I)
+# 'Honolulu, HI 96815': after a city, a US state or territory code (upper case) and a ZIP after one space. The comma,
+# the state and the ZIP are taken out before a name or an employee number is looked for, so the city is no name. (A
+# pilot named 'AL' printed with one space before a 5-digit employee number would read the same; a roster's columns
+# are 2 or more spaces apart.)
+STATES = ("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK "
+          "OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC PR GU VI AS MP").split()
+ADDR_RE = re.compile(r"(?<=[A-Za-z.]),\s*(?:" + "|".join(STATES) + r") \d{5}(?:-\d{4})?(?!\d)")
 
 
 def _title(s):
@@ -81,7 +95,7 @@ def name_in(text):
     m = NAME_RE.search(t)
     if not m:
         return ""
-    return f"{_title(m.group(1))}, {_title(m.group(2))}"
+    return f"{_title(m.group(1)).rstrip('.')}, {_title(m.group(2))}"
 
 
 def _emp(text):
@@ -93,6 +107,7 @@ def _emp(text):
 def _strip(text):
     t = EMAIL_RE.sub(" ", text or "")
     t = PHONE_RE.sub(" ", t)
+    t = ADDR_RE.sub(" ", t)  # a city, state and ZIP: not a name, and the ZIP is not an employee number
     return DATE_RE.sub(" ", t)
 
 
@@ -127,6 +142,8 @@ def _role(h):
         return "email", ""
     if "fax" in h:
         return "", ""
+    if re.search(r"\bname\b", h) and not re.search(r"\b(last|first|sur|given)\b", h):
+        return "name", ""  # 'Employee Name', 'Crew Name', 'Pilot Name' (not 'Employee #' or 'Employee ID')
     if re.search(r"\bemp\b|emp\s*(#|no|num|id)|employee|badge|file\s*(#|no|num)|^emp", h):
         return "emp", ""
     if re.search(r"phone|cell|mobile|\btel\b|telephone|\bhome\b|\bwork\b|office", h):
@@ -224,20 +241,48 @@ def csv_rows(data):
 
 
 def _col(ref):
+    """A cell reference's column ('C7' -> 2), None when the cell has none, MAX_COLS for one past the columns read
+    (more than three letters is past Excel's last column, XFD)."""
     m = re.match(r"([A-Z]+)", ref or "")
     if not m:
         return None
+    if len(m.group(1)) > 3:
+        return MAX_COLS
     n = 0
     for ch in m.group(1):
         n = n * 26 + (ord(ch) - 64)
-    return n - 1
+    return min(n - 1, MAX_COLS)
 
 
-def _xml(z, name):
+def _raw(z, name, cap=None):
+    """A part's bytes (zipfile stops at the size the archive declares for it); a part over cap or with a DTD is
+    refused."""
+    if cap is not None and z.getinfo(name).file_size > cap:
+        raise ValueError("XLSX part unpacks too large")
     raw = z.read(name)
     if b"<!DOCTYPE" in raw or b"<!ENTITY" in raw:
         raise ValueError("XLSX part declares a DTD")
-    return ET.fromstring(raw)
+    return raw
+
+
+def _xml(z, name):
+    return ET.fromstring(_raw(z, name, XLSX_PART_MAX))
+
+
+def _stream(raw, tags):
+    """(element) for each closing tag in tags, streamed: the element is dropped from its parent once the caller is
+    done with it, so a large part never sits in memory as a whole tree."""
+    stack = []
+    for ev, el in ET.iterparse(io.BytesIO(raw), events=("start", "end")):
+        if ev == "start":
+            stack.append(el)
+            continue
+        stack.pop()
+        if el.tag in tags:
+            yield el
+            if stack:
+                stack[-1].remove(el)
+            el.clear()
 
 
 def _first_sheet(z):
@@ -287,17 +332,19 @@ def xlsx_rows(data):
         raise ValueError("XLSX file unpacks too large")
     shared = []
     if "xl/sharedStrings.xml" in z.namelist():
-        for si in _xml(z, "xl/sharedStrings.xml").findall(f"{NS}si"):
+        for si in _stream(_raw(z, "xl/sharedStrings.xml", XLSX_PART_MAX), {f"{NS}si"}):
             shared.append("".join(t.text or "" for t in si.iter(f"{NS}t")))
-    rows = []
-    for row in _xml(z, _first_sheet(z)).iter(f"{NS}row"):
-        cells, k = {}, 0
-        for c in row.findall(f"{NS}c"):
-            j = _col(c.get("r"))
+    rows, cells, k = [], {}, 0
+    for el in _stream(_raw(z, _first_sheet(z), XLSX_PART_MAX), {f"{NS}c", f"{NS}row"}):
+        if el.tag == f"{NS}c":  # a cell: kept by its column (a cell past MAX_COLS is left out)
+            j = _col(el.get("r"))
             j = k if j is None else j
-            cells[j] = _cell_text(c, shared)
+            if j < MAX_COLS:
+                cells[j] = _cell_text(el, shared)
             k = j + 1
+            continue
         rows.append([cells.get(i, "") for i in range(max(cells) + 1)] if cells else [])
+        cells, k = {}, 0
         if len(rows) >= MAX_ROWS:
             break
     return rows
@@ -409,17 +456,24 @@ def _key(name):
     return f"{' '.join(last.split())},{first[0] if first else ''}"
 
 
+def _emp_id(v):
+    """An employee number to compare: digits only, leading zeros dropped ('012345' is '12345')."""
+    return re.sub(r"\D", "", str(v or "")).lstrip("0")
+
+
 def find(d, emp="", name=""):
-    """The one entry for a looked-up pilot: by employee number, else by name when exactly one entry has it.
-    {name, phones, emails} (no employee number: the sensor has it already), or None."""
+    """The one entry for a looked-up pilot: by employee number, else by name when exactly one entry has it. With the
+    pilot's employee number known, a name match counts only for an entry with no employee number of its own (an
+    entry with another number is another pilot of the same name). {name, phones, emails} (no employee number: the
+    sensor has it already), or None."""
     if not d:
         return None
     es = [e for e in d.get("pilots") or [] if isinstance(e, dict)]
-    emp = re.sub(r"\D", "", str(emp or ""))
-    hit = [e for e in es if emp and e.get("emp") == emp]
+    emp = _emp_id(emp)
+    hit = [e for e in es if emp and _emp_id(e.get("emp")) == emp]
     if not hit:
         k = _key(name)
-        hit = [e for e in es if k and _key(e.get("name")) == k]
+        hit = [e for e in es if k and _key(e.get("name")) == k and not (emp and _emp_id(e.get("emp")))]
         if len({e.get("emp") or id(e) for e in hit}) != 1:
             return None
     e = hit[0]

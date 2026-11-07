@@ -348,7 +348,13 @@ def test_a_contact_list_end_to_end_reaches_only_the_looked_up_pilot(tmp_path, mo
         W.pub_pilot({"emp": "10002", "name": "Roe, Rick", "status": "loading", "month": "", "days": [], "items": []})
         W.pub_pilot({"emp": "10999", "name": "Nobody, Else", "status": "ok", "month": "", "days": [], "items": []})
         W.pilot_cmd(json.dumps({"q": "o'neil, kim"}))  # a name only the contact list has: looked up by its number
-    ps = [json.loads(p) for t, p, _ in W.MQ.msgs if t == f"{W.T}/pilot_schedule"]
+    allps = [(json.loads(p), r) for t, p, r in W.MQ.msgs if t == f"{W.T}/pilot_schedule"]
+    # review: the broker never keeps a contact: each lookup's retained copy has none, and the copy with it follows,
+    # not retained (the sensor ends on it)
+    assert [(x["emp"], r, "contact" in x) for x, r in allps] == [
+        ("10002", True, False), ("10002", False, True), ("10999", True, False), ("10006", True, False), ("10006", False, True)]
+    assert all({k: v for k, v in x.items() if k != "contact"} == allps[i - 1][0] for i, (x, r) in enumerate(allps) if not r)
+    ps = [x for i, (x, r) in enumerate(allps) if not (r and i + 1 < len(allps) and not allps[i + 1][1])]
     assert ps[0]["contact"] == {"name": "Roe, Rick", "emails": ["rick.roe@example.com"],
                                 "phones": [{"label": "cell", "number": "808-555-0103", "tel": "+18085550103"}]}
     assert "contact" not in ps[1]
@@ -387,7 +393,7 @@ def test_the_card_and_the_watcher_agree_on_the_seal(tmp_path, key):
         const h = {{user: {{is_admin: false}}, states, callWS: async () => {{ throw new Error("no ws"); }},
           callService: async (d, s, data) => {{ pubs.push([d, s, data]); const p = JSON.parse(data.payload);
             if (p.i === p.n - 1) setTimeout(() => {{ c.hass = {{...h, states: {{...states, "sensor.flight_watcher_upload_status": {{state: "done",
-              attributes: {{id: "other", state: "done", recent: [{{id: p.id, ok: true, message: "Saved 2026-12_pairings.pdf (400 KB)."}}]}}}}}}}}; }}, 0); }} }};
+              attributes: {{id: "other", phase: "done", recent: [{{id: p.id, ok: true, message: "Saved 2026-12_pairings.pdf (400 KB)."}}]}}}}}}}}; }}, 0); }} }};
         c.hass = h;
         c._q("[data-kind]").value = "pairings"; c._q("[data-month]").value = "2026-12";
         c._q("[data-pdf]").files = [file("p.pdf", "application/pdf")];
@@ -416,3 +422,72 @@ def test_the_card_and_the_watcher_agree_on_the_seal(tmp_path, key):
         assert got == data and fields == {"kind": "pairings", "month": "2026-12", "list_date": ""}
         assert ("enc" in msgs[0]) == (mode == "https")
         assert msgs[0]["sha"] == hashlib.sha256(data).hexdigest()
+
+
+# ---------------------------------------------------------------- FW-0066 review fixes
+def test_an_ended_upload_is_not_saved_again_while_its_seal_opens(tmp_path, key):
+    """A sealed upload's chunks sent again (a replay) are ignored for the seal's whole life (it used to be 20 min of
+    the seal's 60), and after a restart too: the ids of completed sealed uploads are kept in done_path (mode 600)."""
+    clock = Clock()
+    done = tmp_path / "upload_done.json"
+    a = UP.Assembler(str(tmp_path / "st"), 25_000_000, key=lambda: key, now=clock, done_path=str(done))
+    msgs = sealed(SEAL.public_info(key)["pubkey"], PDF, uid="K" * 20)
+    _, (r,) = _feed(a, msgs)
+    assert a.finish(r)[1] == PDF
+    assert stat.S_IMODE(os.stat(done).st_mode) == 0o600 and "K" * 20 in json.loads(done.read_text())
+    clock.t += 10 * UP.TIMEOUT_S + 60  # past the old 20 min window, inside the seal's hour
+    a.sweep()
+    assert [a.add(m) for m in msgs] == [(None, None)] * len(msgs)
+    b = UP.Assembler(str(tmp_path / "st"), 25_000_000, key=lambda: key, now=clock, done_path=str(done))  # a restart
+    assert [b.add(m) for m in msgs] == [(None, None)] * len(msgs)
+    clock.t += SEAL.MAX_AGE_S  # the seal no longer opens: the id may go
+    b.sweep()
+    assert "K" * 20 not in b.done and json.loads(done.read_text()) == {}
+    # an unsealed upload or a refused one is never written to disk (anyone could send it anyway)
+    _feed(b, plain(PDF, uid="U" * 20))
+    b.add(dict(plain(PDF, uid="V" * 20)[0], kind="nope"))
+    assert json.loads(done.read_text()) == {} and "U" * 20 in b.done and "V" * 20 in b.done
+    # a damaged file is no reason to fail
+    done.write_text("{not json")
+    assert UP.Assembler(str(tmp_path / "st"), 25_000_000, key=None, done_path=str(done)).done == {}
+
+
+def test_the_upload_status_carries_its_phase(tmp_path, monkeypatch):
+    """HA's MQTT sensor drops an attribute named state (MQTT_ATTRIBUTES_BLOCKED): the status also says phase, which
+    the card reads."""
+    W, up = _watcher(tmp_path, monkeypatch)
+    for m in plain(PDF, uid="H" * 20):
+        W.on_message(W.MQ, None, Msg(f"{W.T}/upload/chunk", m))
+    sts = [s for s, _ in _status(W)]
+    assert [s["phase"] for s in sts] == [s["state"] for s in sts] == ["receiving", "checking", "reading", "done"]
+
+
+def test_a_second_pilot_waiting_for_settings_still_sweeps_uploads(tmp_path, monkeypatch):
+    """James's instance has no FLICA credentials yet (needs_settings) and waits in main(); its MQTT already takes
+    upload chunks, so the janitor (stalled uploads, the busy slots, the files list) must run there too."""
+    from test_instance import _load
+    W = _load(tmp_path, monkeypatch, "james", {})
+    fake = FakeClient()
+    monkeypatch.setattr(W, "mqtt_start", lambda: fake)
+    import threading
+    stop = threading.Event()
+    monkeypatch.setattr(W, "upload_janitor", lambda: stop.wait(30))
+    W._UP["janitor"] = None
+
+    class Waiting(Exception):
+        pass
+
+    def sleep(s):
+        if s >= 3600:
+            raise Waiting()
+    monkeypatch.setattr(W.time, "sleep", sleep)
+    try:
+        with pytest.raises(Waiting):
+            W.main()
+        assert W.S["machine"] == "needs_settings"
+        j = W._UP["janitor"]
+        assert j is not None and j.name == "uploads" and j.is_alive()
+        assert W.start_upload_janitor() is j  # once only
+    finally:
+        stop.set()
+        W._UP["janitor"] = None

@@ -3,8 +3,10 @@
 ## 1.4.8
 
 - FW-0066 (Ryan, Nov 7: "Make sure that any user can see and upload pairings and awards and seniority lists and pilot
-  contact lists"): the uploads card works for every Home Assistant user who can open a Flight Watcher dashboard. It
-  picks its path from the signed-in user: an admin keeps the ingress fast path (`api/uploads`, `api/upload`); anyone
+  contact lists"): the uploads card works for every Home Assistant user who can open a Flight Watcher dashboard's
+  Settings view, admin or not (on Pako: the HA admins, since Ryan's dashboard is admin-only, and James, since James's
+  views are visible to James and Ryan only; another household user would need adding to that view's `visible`
+  list). It picks its path from the signed-in user: an admin keeps the ingress fast path (`api/uploads`, `api/upload`); anyone
   else (Home Assistant grants an app ingress session to admins only) reads what is on file from the new
   `sensor.<prefix>_uploads` and sends the file in chunks with the `mqtt.publish` service (any signed-in user may call
   it) to `<prefix>/upload/chunk` (qos 1, never retained): an upload id, index, total, size, the file's sha256, kind,
@@ -40,10 +42,23 @@
   pilot's own name in the crew lists. No other sensor attribute, status message or log line carries a name, number or
   address from the list: the upload result, the uploads sensor and the log carry counts only.
 - Uploads card (`www/flight-watcher-uploads-card.js`): a fourth kind, "Pilot contact list" (no bid period, the file
-  picker takes .pdf, .csv, .xlsx); the contact list's counts under "On file"; the progress line reads "Sending ...
-  N %" by 10 % steps, then the Watcher's own progress. The James copy publishes to `flight_watcher_james/upload/chunk`
+  picker takes .pdf, .csv, .xlsx); the contact list's counts under "On file"; the progress line reads "Sending ...:
+  part i of n, N %" (read out at each 10 % step), then the Watcher's own progress. The James copy publishes to `flight_watcher_james/upload/chunk`
   and reads `sensor.flight_watcher_james_*`; an admin's copy still reaches the one app's ingress. The Web UI's
   Monthly PDFs form takes the contact list too.
+- FW-0066 review fixes: an XLSX contact list reads only its first 256 columns (a 500-byte workbook with a cell at
+  `ZZZZZZZ1` asked for about 67 GB) and streams its sheet and string table (each refused over 10 MB unpacked); a
+  lookup by employee number never takes another numbered entry by name; "Employee Name" is a name column; a
+  "City, ST 12345" address line is no pilot and its ZIP no employee number; a two-word last name or a suffix ("Doe
+  Jr") is kept. The pilot schedule's retained MQTT copy carries no contact (the copy with it follows, not retained).
+  The upload janitor starts with MQTT, so James's instance sweeps stalled uploads while it waits for settings. An
+  ended upload's id is ignored for the seal's hour (it was 20 minutes), and a completed sealed upload's id is kept in
+  the instance's `/data/upload_done.json` across a restart (no replays). The upload status also carries `phase`
+  (Home Assistant drops an attribute named `state`); the card reads it, restarts its 2.5-minute wait on each status
+  of its upload, resends a part lost with the connection for up to 90 s and says so plainly instead of
+  "[object Object]", re-reads the sensor on Refresh for a user who is not an admin, sends an admin's file over
+  15.9 MB in parts instead of refusing it, and shows "part i of n, p %". The crew-list contact links are 24 px tap
+  targets and match the pilot's FLICA spelling too.
 - Dashboards (`ha/` snapshots, the intended state; applied on Pako after this release): Ryan's Settings view heading
   "Monthly PDFs" becomes "Monthly files" and it and the uploads card lose their Ryan-only visibility condition;
   James's Settings view gets the same heading and `custom:flight-watcher-uploads-card-james` under Credentials.

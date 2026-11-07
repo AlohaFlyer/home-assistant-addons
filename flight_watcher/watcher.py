@@ -4040,7 +4040,11 @@ def pub_pilot(payload):
         ct = contact_for(emp, payload.get("name") or "") if emp else None
         if ct:
             payload["contact"] = ct
-    pub("pilot_schedule", payload)
+    # FW-0066 review: a contact never stays in the broker. The retained copy (what HA reads after a restart) has none;
+    # the same payload with it follows, not retained, and that is the one the sensor and the card end on.
+    pub("pilot_schedule", {k: v for k, v in payload.items() if k != "contact"})
+    if payload.get("contact"):
+        pub("pilot_schedule", payload, retain=False)
 
 
 # ---------------------------------------------------------------- 0.10.1 crew index (Ryan)
@@ -4408,14 +4412,17 @@ _UP_LOCK = threading.Lock()
 
 def assembler():
     if _UP["asm"] is None:
-        _UP["asm"] = UP.Assembler(UPLOAD_STAGING, web.UPLOAD_MAX, key=settings_key)
+        _UP["asm"] = UP.Assembler(UPLOAD_STAGING, web.UPLOAD_MAX, key=settings_key,
+                                  done_path=os.path.join(DATA, "upload_done.json"))  # FW-0066 review: no replays
     return _UP["asm"]
 
 
 def publish_upload_status(st):
-    """{T}/upload/status, not retained: {state (receiving | checking | reading | done | error), id, kind, got, total,
-    ok?, message (plain text: file names and counts, never file content), at, recent [{id, ok, message, at}]}."""
+    """{T}/upload/status, not retained: {state and phase (receiving | checking | reading | done | error; HA keeps state
+    as the sensor's state and drops it from the attributes), id, kind, got, total, ok?, message (plain text: file
+    names and counts, never file content), at, recent [{id, ok, message, at}]}."""
     st = {**st, "at": now_iso()}
+    st["phase"] = st["state"]  # HA's MQTT sensor drops an attribute named state: the card reads phase
     with _UP_LOCK:
         if st["state"] == "receiving" and 0 < st.get("got", 0) < st.get("total", 0):
             last = _UP["pub_at"].get(st["id"], 0)
@@ -4524,6 +4531,14 @@ def upload_janitor():
                 publish_uploads()
         except Exception as e:  # noqa: BLE001
             log.info("upload janitor: %s", type(e).__name__)
+
+
+def start_upload_janitor():
+    """Start the janitor once (main(), right after MQTT starts: before the wait for a second pilot's settings)."""
+    if _UP.get("janitor") is None:
+        _UP["janitor"] = threading.Thread(target=upload_janitor, daemon=True, name="uploads")
+        _UP["janitor"].start()
+    return _UP["janitor"]
 
 
 _CT_CACHE = {}
@@ -5235,6 +5250,7 @@ def main():
     global MQ
     migrate_swap_mode()  # FW-0028: before on_connect publishes the mode
     MQ = mqtt_start()
+    start_upload_janitor()  # FW-0066: chunks arrive as soon as MQTT is up, even while a second pilot waits for settings
     time.sleep(2)
     if not OPTS.get("username") or not OPTS.get("password"):
         if INSTANCE:  # 0.10.0: a second pilot gets credentials over MQTT; wait for them (settings/set restarts us)
@@ -5307,7 +5323,6 @@ def main():
                   save_rules_from_page, DB, log, get_settings=lambda: settings_state(load_creds()),
                   save_settings=lambda d: settings_cmd(json.dumps(d)), clear_settings=settings_clear,
                   on_saved=lambda: publish_uploads(force=True))
-    threading.Thread(target=upload_janitor, daemon=True, name="uploads").start()  # FW-0066
     last_month_check = None
     with sync_playwright() as pw:
         fl = Flica(pw)

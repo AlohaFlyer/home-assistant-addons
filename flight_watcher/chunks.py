@@ -17,11 +17,14 @@ unsealed (here and in the card).
 
 The Watcher keeps each upload's chunks in a private staging folder (mode 700, files 600) under
 /share/flight_watcher/uploads/.staging/<prefix>/<id>/; a repeated chunk is ignored; chunks may come in any order. An
-upload that stops arriving for TIMEOUT_S is dropped (sweep()). When all n are in: joined in order, opened when sealed,
+upload that stops arriving for TIMEOUT_S is dropped (sweep()). An ended upload's id is ignored for DONE_KEEP_S (a
+seal's life and a minute), and a completed sealed upload's id outlasts a restart (done_path, in the instance's /data),
+so its captured chunks sent again are never saved twice. When all n are in: joined in order, opened when sealed,
 checked (size, sha256, the file type for its kind, the size cap) and handed to web.save_upload, the ingress upload's
 own save path. The status goes back on <prefix>/upload/status (not retained; sensor.<prefix>_upload_status)."""
 import base64
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -39,6 +42,9 @@ CHUNK_MAX = 192 * 1024  # raw bytes in one chunk (about 256 KiB of base64): the 
 MAX_CHUNKS = 4096
 MAX_ACTIVE = 4  # uploads in progress at once, per Watcher instance
 TIMEOUT_S = 120  # an upload with no chunk for this long is dropped
+# an ended upload's id is remembered at least as long as its seal opens, so its chunks sent again later (a replay)
+# are ignored; with done_path the ids outlast a restart too
+DONE_KEEP_S = SEAL.MAX_AGE_S + 60
 TAG = 16  # the AES-GCM tag after the ciphertext
 KINDS = ("award", "pairings", "seniority", "contacts")
 ID_RE = re.compile(r"[A-Za-z0-9]{16,64}")
@@ -106,10 +112,42 @@ class Assembler:
     """Chunks in, whole files out. Thread-safe: chunks arrive on the MQTT thread, sweep() runs on a timer and
     finish() on a worker thread."""
 
-    def __init__(self, root, max_bytes, key=None, now=time.time, timeout_s=TIMEOUT_S):
+    def __init__(self, root, max_bytes, key=None, now=time.time, timeout_s=TIMEOUT_S, done_path=None):
         self.root, self.max_bytes, self.key, self.now, self.timeout_s = root, max_bytes, key, now, timeout_s
         self.ups, self.lock = {}, threading.Lock()
         self.done = {}  # id -> time an upload was finished or dropped: a late repeated chunk of it is ignored
+        self.done_path, self.sealed_done = done_path, {}  # completed sealed uploads, kept on disk across a restart
+        try:
+            if done_path:
+                with open(done_path, encoding="utf-8") as f:
+                    d = json.load(f)
+                self.sealed_done = {k: float(t) for k, t in d.items()
+                                    if ID_RE.fullmatch(str(k)) and self.now() - float(t) < self.keep_s()}
+        except (OSError, ValueError, TypeError, AttributeError):
+            self.sealed_done = {}
+        self.done.update(self.sealed_done)
+
+    def keep_s(self):
+        return max(10 * self.timeout_s, DONE_KEEP_S)
+
+    def _ended(self, uid, sealed=False):
+        """Remember an ended upload's id; a completed sealed one also goes in done_path (mode 600, written
+        atomically), the only kind a replay could save again (an unsealed upload can be sent by anyone anyway)."""
+        self.done[uid] = self.now()
+        if not (sealed and self.done_path):
+            return
+        self.sealed_done[uid] = self.done[uid]
+        self._write_done()
+
+    def _write_done(self):
+        try:
+            tmp = self.done_path + ".tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self.sealed_done, f)
+            os.replace(tmp, self.done_path)
+        except OSError:
+            pass  # kept in memory all the same
 
     def _status(self, up, state, message, ok=None, meta=None):
         m = meta or up["meta"]
@@ -125,7 +163,7 @@ class Assembler:
 
     def _drop(self, uid):
         self.ups.pop(uid, None)
-        self.done[uid] = self.now()
+        self._ended(uid)
         shutil.rmtree(os.path.join(self.root, uid), ignore_errors=True)
 
     def _fail(self, uid, up, message, meta):
@@ -184,7 +222,7 @@ class Assembler:
             if up["bytes"] != expected(meta):
                 return self._fail(uid, up, "The parts do not add up to the file's size; nothing was saved.", meta)
             self.ups.pop(uid, None)
-            self.done[uid] = self.now()
+            self._ended(uid, sealed=bool(meta.get("enc")))
             return self._status(up, "checking", f"All {meta['n']} parts in; checking the file."), up
 
     def finish(self, up):
@@ -233,8 +271,13 @@ class Assembler:
         out, now = [], self.now()
         with self.lock:
             for uid, t in list(self.done.items()):
-                if now - t > 10 * self.timeout_s:
+                if now - t > self.keep_s():
                     self.done.pop(uid, None)
+            old = [uid for uid, t in self.sealed_done.items() if now - t > self.keep_s()]
+            for uid in old:
+                self.sealed_done.pop(uid, None)
+            if old and self.done_path:
+                self._write_done()
             for uid, up in list(self.ups.items()):
                 if now - up["last"] > self.timeout_s:
                     self._drop(uid)

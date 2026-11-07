@@ -14,7 +14,10 @@
      with a random key wrapped by the Watcher's RSA-OAEP public key (sensor.flight_watcher_settings, the Credentials
      card's), so Home Assistant's history database (it records service calls) and the MQTT broker only hold
      ciphertext. On a plain http address the file goes as it is, except a pilot contact list, which is refused there.
-     The Watcher's progress and answer come back on sensor.flight_watcher_upload_status.
+     The Watcher's progress and answer come back on sensor.flight_watcher_upload_status (its phase in the sensor's state
+     and attribute phase: Home Assistant drops an attribute named state). A part lost with the connection (the phone
+     slept, the signal dropped) is sent again once Home Assistant is back, for up to FW_UP_RETRY_MS. An admin's file
+     past the app proxy's cap goes this way too.
    FW-0057: a pairings package the crew index still needs ('wanted') is asked for above the files. Card options: slug
    (the app's slug), title. */
 const FW_UP_SLUG = ["43b22650", "flight", "watcher"].join("_");  // in parts: a second pilot's copy keeps the one app's slug
@@ -27,7 +30,14 @@ const FW_UP_STATUS = "sensor.flight_watcher_upload_status";
 const FW_UP_SETTINGS = "sensor.flight_watcher_settings";
 const FW_UP_CHUNK = 192 * 1024;  // chunks.CHUNK_MAX: raw bytes per mqtt.publish (about 256 KiB of base64)
 const FW_UP_MQTT_MAX = 25000000;  // web.UPLOAD_MAX
-const FW_UP_WAIT_MS = 120000;  // the Watcher's answer after the last chunk (chunks.TIMEOUT_S)
+// the Watcher's answer after the last chunk: past chunks.TIMEOUT_S (120 s) and the janitor's 10 s sweep, so the
+// Watcher's own "Timed out" comes first; every status of this upload (checking, reading) starts the wait again
+const FW_UP_WAIT_MS = 150000;
+const FW_UP_RETRY_MS = 90000;  // a part lost with the connection is sent again for this long (under chunks.TIMEOUT_S)
+const FW_UP_RETRY_GAP_MS = 3000;
+const FW_UP_LOST = 3;  // home-assistant-js-websocket ERR_CONNECTION_LOST
+// the connection dropped: a bare 3 while it is down, {error: {code: 3}} for a call it cut off
+const fwUpLost = (err) => err === FW_UP_LOST || !!(err && ((err.error && err.error.code === FW_UP_LOST) || err.code === FW_UP_LOST));
 const FW_UP_ACCEPT = { pdf: "application/pdf,.pdf",
   contacts: "application/pdf,.pdf,text/csv,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx" };
 const FW_UP_CT_RE = /\.(pdf|csv|xlsx)$/i;
@@ -187,7 +197,7 @@ class FlightWatcherUploadsCard extends HTMLElement {
     const up = this._q("[data-up]");
     if (up) up.addEventListener("click", () => this._upload());
     const rl = this._q("[data-reload]");
-    if (rl) rl.addEventListener("click", () => this._load());
+    if (rl) rl.addEventListener("click", () => (this._mode === "admin" ? this._load() : this._fromSensor(true)));
   }
   _css() {
     return `ha-card{padding:12px 14px;font-size:13px;overflow-wrap:anywhere}
@@ -285,6 +295,9 @@ class FlightWatcherUploadsCard extends HTMLElement {
     if (sen) sen.innerHTML = this._data && !this._err ? this._senHtml(this._data.seniority) + ("contacts" in this._data ? this._ctHtml(this._data.contacts) : "") + (this._data.version ? `<div class="u">Flight Watcher ${this._e(this._data.version)}</div>` : "") : "";
   }
   _why(err) {
+    if (fwUpLost(err)) return "The connection to Home Assistant dropped (the phone slept or lost signal) and did not come back in time; nothing was saved. Keep this page open and upload again.";
+    const e2 = err && err.error;  // home-assistant-js-websocket rejects some calls with {type: "result", error: {code, message}}
+    if (e2 && e2.message) return String(e2.message);
     if (err && err.message) return String(err.message);
     if (err && err.code) return `Home Assistant: ${err.code}`;
     return String(err || "failed");
@@ -386,16 +399,16 @@ class FlightWatcherUploadsCard extends HTMLElement {
     const month = ((this._q("[data-month]") || {}).value || "").trim();
     const day = ((this._q("[data-date]") || {}).value || "").trim();
     const input = this._q("[data-pdf]"), f = input && input.files && input.files[0];
-    const max = admin ? Math.min((this._data && +this._data.max_bytes) || FW_UP_MAX, FW_UP_MAX)
-      : Math.min((this._data && +this._data.mqtt_max_bytes) || FW_UP_MQTT_MAX, FW_UP_MQTT_MAX);
+    const ingressMax = Math.min((this._data && +this._data.max_bytes) || FW_UP_MAX, FW_UP_MAX);
+    const viaMqtt = !admin || !!(f && f.size > ingressMax);  // an admin's file past the app proxy's cap goes in parts too
+    const max = viaMqtt ? Math.min((this._data && +this._data.mqtt_max_bytes) || FW_UP_MQTT_MAX, FW_UP_MQTT_MAX) : ingressMax;
     const monthly = kind === "award" || kind === "pairings";
     if (monthly && !fwUpMonth(month)) return this._say(false, "Pick the bid period (month).");
     if (!f) return this._say(false, kind === "contacts" ? "Pick the file." : "Pick the PDF.");
     if (kind === "contacts") {
       if (!FW_UP_CT_RE.test(f.name || "") && !FW_UP_CT_TYPES.includes(f.type)) return this._say(false, "That file is not a PDF, CSV or XLSX contact list.");
     } else if (!/\.pdf$/i.test(f.name || "") && f.type !== "application/pdf") return this._say(false, "That file is not a PDF.");
-    if (f.size > max) return this._say(false, admin ? `Too large: ${fwUpSize(f.size)}. Home Assistant's app proxy takes a PDF of up to ${fwUpSize(max)}.`
-      : `Too large: ${fwUpSize(f.size)}. The Watcher takes a file of up to ${fwUpSize(max)}.`);
+    if (f.size > max) return this._say(false, `Too large: ${fwUpSize(f.size)}. The Watcher takes a file of up to ${fwUpSize(max)}.`);
     const what = kind === "seniority" ? "the pilot seniority list" : kind === "contacts" ? "the pilot contact list"
       : `the ${fwUpMonth(month)} ${kind === "award" ? "award" : "pairings package"}`;
     const btn = this._q("[data-up]"), prog = this._q("[data-prog]");
@@ -405,7 +418,7 @@ class FlightWatcherUploadsCard extends HTMLElement {
     this._say(true, "");
     show(`Uploading ${what} (${fwUpSize(f.size)})...`);
     try {
-      const r = !admin ? await this._mqtt(kind, monthly ? month : "", day, f, what, show) : await this._call((base) => {
+      const r = viaMqtt ? await this._mqtt(kind, monthly ? month : "", day, f, what, show) : await this._call((base) => {
         const fd = new FormData();
         fd.append("kind", kind);
         fd.append("month", monthly ? month : "");
@@ -430,15 +443,33 @@ class FlightWatcherUploadsCard extends HTMLElement {
     const w = this._wait;
     if (!w || w.final) return;
     const st = this._st(FW_UP_STATUS), a = (st && st.attributes) || {};
-    const hit = (a.id === w.id && (a.state === "done" || a.state === "error")) ? a
+    const ph = a.phase || (st && st.state);  // Home Assistant drops an attribute named state: phase, or the sensor's state
+    const hit = (a.id === w.id && (ph === "done" || ph === "error")) ? a
       : (Array.isArray(a.recent) ? a.recent.find((x) => x && x.id === w.id) : null);
     if (hit) {
       w.final = true;
       w.res({ ok: hit.ok === true, message: String(hit.message || (hit.ok ? "Saved." : "Not saved.")) });
-    } else if (a.id === w.id && w.sent && a.message) w.show(`Watcher: ${String(a.message)}`);
+    } else if (a.id === w.id) {
+      const at = `${a.at || ""}|${ph || ""}|${a.got || ""}`;
+      if (at !== w.at) { w.at = at; if (w.bump) w.bump(); }  // the Watcher is at it (checking, reading): wait on from here
+      if (w.sent && a.message) w.show(`Watcher: ${String(a.message)}`);
+    }
+  }
+  async _send(payload, i, n, show) {  // one part; one lost with the connection is sent again (the Watcher ignores a repeat)
+    const t0 = Date.now();
+    for (;;) {
+      try {
+        // this._h, not a copy: Home Assistant hands the card a new hass after it reconnects; the card says what failed
+        return await this._h.callService("mqtt", "publish", { topic: FW_UP_TOPIC, payload, qos: 1, retain: false }, undefined, false);
+      } catch (err) {
+        if (!fwUpLost(err) || Date.now() - t0 > FW_UP_RETRY_MS) throw err;
+        show(`Connection to Home Assistant lost: sending part ${i + 1} of ${n} again when it is back...`);
+        await new Promise((r) => setTimeout(r, FW_UP_RETRY_GAP_MS));
+      }
+    }
   }
   async _mqtt(kind, month, day, f, what, show) {
-    const h = this._h, lst = this._st(FW_UP_LIST);
+    const lst = this._st(FW_UP_LIST);
     if (!lst) throw new Error("The Watcher takes uploads from this card from version 1.4.8: update the Flight Watcher app.");
     if (lst.state === "unavailable") throw new Error("The Flight Watcher app is not running (its sensors are unavailable).");
     const set = (this._st(FW_UP_SETTINGS) || {}).attributes || {};
@@ -462,22 +493,31 @@ class FlightWatcherUploadsCard extends HTMLElement {
       body = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv, additionalData: new TextEncoder().encode(fwUpAad(meta)) }, aes, buf));
       meta.enc.key = fwUpB64(new Uint8Array(await subtle.encrypt({ name: "RSA-OAEP" }, pub, await subtle.exportKey("raw", aes))));
     }
-    const w = this._wait = { id: meta.id, final: false, sent: false, show };
+    const w = this._wait = { id: meta.id, final: false, sent: false, show, at: "", bump: null };
     const answer = new Promise((res) => { w.res = res; });
     let timer = null;
     try {
+      let step = -1, stepAt = 0;
       for (let i = 0; i < meta.n && !w.final; i++) {  // the Watcher may refuse it part way (too large, busy): stop sending
         const data = fwUpB64(body.subarray(i * FW_UP_CHUNK, (i + 1) * FW_UP_CHUNK));
-        await h.callService("mqtt", "publish", { topic: FW_UP_TOPIC, payload: JSON.stringify({ ...meta, i, data }), qos: 1, retain: false });
-        // 10 % steps: the progress line is read out (aria-live)
-        show(`Sending ${what} (${fwUpSize(buf.length)})... ${Math.floor((i + 1) * 10 / meta.n) * 10}%`);
+        await this._send(JSON.stringify({ ...meta, i, data }), i, meta.n, show);
+        // the progress line is read out (aria-live): it changes at each 10 % step, or every 3 s on a slow link
+        const pct = Math.floor(((i + 1) * 100) / meta.n), now = Date.now();
+        if (Math.floor(pct / 10) !== step || now - stepAt >= 3000) {
+          step = Math.floor(pct / 10);
+          stepAt = now;
+          show(`Sending ${what} (${fwUpSize(buf.length)}): part ${i + 1} of ${meta.n}, ${pct}%`);
+        }
       }
       w.sent = true;
       if (!w.final) show(`Waiting for the Watcher to read ${what}...`);
+      const late = new Promise((res) => {
+        w.bump = () => { if (timer) clearTimeout(timer); timer = setTimeout(() => res(null), FW_UP_WAIT_MS); };
+        w.bump();
+      });
       this._onStatus();  // the answer may be in already
-      const late = new Promise((res) => { timer = setTimeout(() => res(null), FW_UP_WAIT_MS); });
       const r = await Promise.race([answer, late]);
-      if (!r) throw new Error("No answer from the Watcher within 2 minutes: is the Flight Watcher app running? Check On file below before sending it again.");
+      if (!r) throw new Error(`No answer from the Watcher for ${FW_UP_WAIT_MS / 60000} minutes: is the Flight Watcher app running? Check On file below before sending it again.`);
       return r;
     } finally {
       if (timer) clearTimeout(timer);
