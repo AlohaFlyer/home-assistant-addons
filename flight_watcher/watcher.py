@@ -3199,7 +3199,7 @@ PILOT_PAIRINGS_MAX = 8
 
 
 def pilot_cmd(payload):
-    """MQTT flight_watcher/pilot/set {"emp": "25576", "name": "..."}: show that pilot's current month on the
+    """MQTT flight_watcher/pilot/set {"emp": "10001", "name": "..."}: show that pilot's current month on the
     dashboard. Served from a 6 h cache when fresh, else read on the next check (Schedule Lookup + the
     pairing pages, GET only)."""
     try:
@@ -3276,6 +3276,7 @@ def pilot_check(fl):
             S.pop("pilot_req", None)
             save_state(S)
             return True
+        note_sched_trips(sched["items"], "lookup")  # FW-0056 / FW-0057: the crew index reads every trip on it
         n = 0
         for it in sched["items"]:
             if not PAIRING_RE.match(it["trip"]) or n >= PILOT_PAIRINGS_MAX:
@@ -3314,6 +3315,8 @@ def pub_pilot(payload):
     reconstructed_coverage_pct, reconstructed_month and (FW-0002) reconstructed_from / reconstructed_to, the
     bid period's first and last day, so the card can draw it in the schedule grid when FLICA hides the schedule
     or errors. Trips and coverage span that grid: the day before the bid period (FLICA's first row) to its end.
+    FW-0056 / FW-0057: the trips come from crew_instances (the package's and every schedule's, October's included);
+    FW-0059: a trip that overlaps another of the pilot's carries overlap / overlap_with (crewidx.pilot_trips).
     FW-0062: each trip's package details come from its own bid period (pkg_details_for), and pay_line (pilot_pay_line)
     totals the rebuilt month with Pay-Gross for the seat flown on each trip, from the pilot's date of hire on the
     shared seniority list. A readable month (status ok) gets no pay line of its own: Schedule Lookup shows no seat,
@@ -3324,10 +3327,11 @@ def pub_pilot(payload):
         month = str(payload.get("month") or "")
         if not re.fullmatch(r"\d{4}-\d{2}", month):
             month = local_now().strftime("%Y-%m")
-        insts, rows = CI.instances(CARD_PAIRINGS), DB.crew_rows()
+        insts, rows = crew_instances(), DB.crew_rows()
         first, start, end = CI.grid_range(CARD_PAIRINGS, month)
         mine = DB.crew_by_emp(emp) if emp else []
-        trips = CI.pilot_trips(insts, mine, month, first, rows, pkg_details_for, end) if emp else []
+        marks = CI.overlap_marks(DB.get(CREW_OVERLAP_KEY) or {}, rows).get(emp) or {}  # FW-0059
+        trips = CI.pilot_trips(insts, mine, month, first, rows, pkg_details_for, end, marks) if emp else []
         payload = {**payload, "reconstructed": trips,
                    "reconstructed_coverage_pct": CI.coverage(insts, rows, None, first, end)[2],
                    "reconstructed_month": month, "reconstructed_from": start, "reconstructed_to": end}
@@ -3359,66 +3363,241 @@ def crew_slot(now=None):
     return st.strftime("%Y-%m-%dT%H"), st + timedelta(hours=CREW_SLOT_H)
 
 
+CREW_SCHED_KEY = "crew_sched_trips"  # FW-0056: {key: {pairing, date, end, route, report, src, seen}} from schedules read
+CREW_SCHED_KEEP_D = 62  # a schedule trip that ended this long ago is forgotten
+CREW_REREAD_KEY = "crew_reread"  # FW-0058 / FW-0059: {key: {why, at}} trips to read once more, first
+CREW_OVERLAP_KEY = "crew_overlaps"  # FW-0059: {id: {emp, name, keys, found_at, state}} pilots on two overlapping trips
+CREW_REREAD_PER_CHECK = 10  # re-reads per check while no run is going (a run reads them first, in its own chunks)
+
+
+def note_sched_trips(items, src):
+    """FW-0056 / FW-0057: remember the pairings on a schedule the Watcher read (Ryan's own months, October's from
+    Schedule Lookup included; a pilot lookup's month; a picker's month), so the crew index reads them even when no
+    pairing package lists them (H38xx trips built later, a trade's H3815B, October's trips with no October file).
+    Items are the schedule parsers' {trip, start[, end]}; anything not a pairing id (VAC, SCR...) is skipped. Kept in
+    the DB (CREW_SCHED_KEY); a trip that ended more than CREW_SCHED_KEEP_D days ago is dropped. Ryan's instance only
+    (the crew index's). Returns the number of new trips."""
+    if INSTANCE:
+        return 0
+    try:
+        reg = DB.get(CREW_SCHED_KEY) or {}
+        old = json.dumps(reg, sort_keys=True)
+        now, n = now_iso(), 0
+        for it in items or []:
+            trip, start = str(it.get("trip") or "").strip().upper(), str(it.get("start") or "")
+            if not PAIRING_RE.match(trip) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", start):
+                continue
+            end = str(it.get("end") or "")
+            end = end if re.fullmatch(r"\d{4}-\d{2}-\d{2}", end) and end >= start else ""
+            k = f"{trip}|{start}"
+            e = reg.get(k)
+            if e is None:
+                reg[k] = {"pairing": trip, "date": start, "end": end, "src": src, "seen": now}
+                n += 1
+            elif end and not e.get("end"):
+                e["end"] = end
+        cut = (local_now().date() - timedelta(days=CREW_SCHED_KEEP_D)).isoformat()
+        reg = {k: e for k, e in reg.items() if (e.get("end") or e.get("date") or "") >= cut}
+        if json.dumps(reg, sort_keys=True) != old:
+            DB.put(CREW_SCHED_KEY, reg)
+        if n:
+            log.info("crew index: %d new trips from a schedule (%s) for the index to read", n, src)
+        return n
+    except Exception as e:
+        log.info("crew index: schedule trips not noted (%s): %s", src, e)
+        return 0
+
+
+def crew_instances():
+    """FW-0056 / FW-0057: the crew index's trip instances: every pairing file's, plus the trips on the schedules the
+    Watcher read that no file lists on that date (note_sched_trips; Ryan's own months are noted here, so a trade on
+    his schedule is read at the next run). A trip that starts before CREW_FROM and runs into it is kept."""
+    if INSTANCE:
+        return CI.instances(CARD_PAIRINGS)
+    try:  # a pilot lookup publishes from the MQTT thread while the main thread may be storing a schedule
+        own = _sched_items()
+    except RuntimeError:
+        own = []
+    note_sched_trips(own, "own")
+    return CI.instances(CARD_PAIRINGS, extra=DB.get(CREW_SCHED_KEY) or {})
+
+
+def crew_reread_add(keys, why):
+    """FW-0058 / FW-0059: queue trips for one more read, ahead of everything else (CREW_REREAD_KEY)."""
+    rr = DB.get(CREW_REREAD_KEY) or {}
+    at = local_now().isoformat(timespec="seconds")
+    for k in keys:
+        rr.setdefault(k, {"why": why, "at": at})
+    DB.put(CREW_REREAD_KEY, rr)
+
+
+def crew_overlaps(insts, rows):
+    """FW-0059: look for pilots the index shows on two overlapping trips (a trade between reads). A new overlap is
+    flagged and both trips are queued for one paced re-read (read first at the next check, in a run or not); an
+    overlap still there once both were read again keeps its flag, with the newer read kept; one gone is cleared.
+    Returns the stored flags."""
+    try:
+        f0, r0 = DB.get(CREW_OVERLAP_KEY) or {}, DB.get(CREW_REREAD_KEY) or {}
+        flags, rr, new, kept, cleared = CI.overlap_update(CI.overlaps(insts, rows), f0, r0,
+                                                          local_now().isoformat(timespec="seconds"))
+        for i in new:
+            log.info("crew index: pilot %s on two overlapping trips (%s), both queued for a re-read", flags[i]["emp"],
+                     " and ".join(flags[i]["keys"]))
+        for i in kept:
+            log.info("crew index: pilot %s still on %s after the re-read, newer read kept (flagged)", flags[i]["emp"],
+                     " and ".join(flags[i]["keys"]))
+        for i in cleared:
+            log.info("crew index: overlap %s cleared", i)
+        if flags != f0:
+            DB.put(CREW_OVERLAP_KEY, flags)
+        if rr != r0:
+            DB.put(CREW_REREAD_KEY, rr)
+        return flags
+    except Exception as e:
+        log.info("crew index: overlap check skipped: %s", e)
+        return DB.get(CREW_OVERLAP_KEY) or {}
+
+
+def crew_split_repair():
+    """FW-0058 one-shot (at start, Ryan's instance): crew lines stored before the seat code fix and cut at a seat code
+    inside a name (crewidx.split_suspect) are queued for one re-read, ahead of everything else; a failed re-read keeps
+    the stored line. Returns the number queued, or None when already done."""
+    if INSTANCE or DB.get("crew_split_v") == 1:
+        return None
+    try:
+        keys = sorted(k for k, r in DB.crew_rows().items() if r.get("status") == "ok" and CI.split_suspect(r.get("crew")))
+        if keys:
+            crew_reread_add(keys, "name split (FW-0058)")
+        DB.put("crew_split_v", 1)
+        log.info("crew index: %d crew lines read before the seat code fix queued for a re-read", len(keys))
+        return len(keys)
+    except Exception as e:  # never stops the start; tried again on the next one
+        log.warning("crew index split repair skipped: %s: %s", type(e).__name__, e)
+        return None
+
+
+def crew_fill(k, it, vt):
+    """FW-0056: a trip from a schedule (no package row) takes its end, route and report from its pairing page when
+    the schedule did not give them (a picker's month lists starts only); the schedule entry keeps them."""
+    if it.get("src") != "schedule":
+        return it
+    got = CI.page_trip(vt)
+    upd = {}
+    if not it.get("end_known") and got.get("days"):
+        upd["end"] = (date.fromisoformat(it["date"]) + timedelta(days=max(int(got["days"]) - 1, 0))).isoformat()
+    for f in ("route", "report"):
+        if not it.get(f) and got.get(f):
+            upd[f] = got[f]
+    if not upd:
+        return it
+    try:
+        reg = DB.get(CREW_SCHED_KEY) or {}
+        if k in reg:
+            reg[k].update(upd)
+            DB.put(CREW_SCHED_KEY, reg)
+    except Exception as e:
+        log.info("crew index: %s details not kept: %s", k, e)
+    it = {**it, **{f: v for f, v in upd.items() if f != "end"}}
+    if "end" in upd:
+        it.update(end_date=upd["end"], end_known=True, days=int(got["days"]))
+    return it
+
+
 def crew_index_check(fl):
-    """Read up to CREW_PER_CHECK pairing pages of the current crew index run (GET only, 1.5-3.5 s apart).
-    A run starts at the first check after each 6 h slot (once per slot, saved in state) or on Update
-    schedules, and reads at most CREW_PER_RUN pages over as many checks as it takes. Returns 'ok', or
-    'killed' / 'needs_login' / 'stop' when a page says so (the run is ended there)."""
+    """Read up to CREW_PER_CHECK pairing pages of the current crew index run (GET only, 1.5-3.5 s apart, each URL
+    through SUB.safe_get and SM.safe_get). A run starts at the first check after each 6 h slot (once per slot, saved
+    in state) or on Update schedules, and reads at most CREW_PER_RUN pages over as many checks as it takes.
+    FW-0058 / FW-0059: trips queued for a re-read (CREW_REREAD_KEY: both trips of a pilot on two overlapping trips, a
+    crew line cut at a seat code) are read first, one read each; with no run going a check reads just those. A
+    re-read that fails keeps the trip's last good read. Returns 'ok', or 'killed' / 'needs_login' / 'stop' when a
+    page says so (the run is ended there)."""
     if INSTANCE:
         return "ok"
     slot, _ = crew_slot()
     run = S.get("crew_run")
     if not run:
         why = "button" if FLAGS.pop("crew_scan", False) else ("slot" if S.get("crew_slot") != slot else "")
-        if not why:
+        if why:
+            S["crew_slot"] = slot
+            run = S["crew_run"] = {"started": local_now().isoformat(timespec="seconds"), "pages": 0, "why": why,
+                                   "slot": slot}
+            save_state(S)
+            log.info("crew index run started (%s)", why)
+        elif not DB.get(CREW_REREAD_KEY):  # nothing to read: the idle check stays cheap
             return "ok"
-        S["crew_slot"] = slot
-        run = S["crew_run"] = {"started": local_now().isoformat(timespec="seconds"), "pages": 0, "why": why, "slot": slot}
-        save_state(S)
-        log.info("crew index run started (%s)", why)
     else:
         FLAGS.pop("crew_scan", None)  # a run is already going
-    insts = CI.instances(CARD_PAIRINGS)
+    insts = crew_instances()
     rows = DB.crew_rows()
-    todo = CI.queue(insts, rows, local_now(), run["started"])
+    crew_overlaps(insts, rows)  # FW-0059: an overlap not flagged yet (as before this version) queues its two trips
+    pending = DB.get(CREW_REREAD_KEY) or {}
+    again = {k for k in pending if k in insts}
+    if len(again) < len(pending):  # a trip no longer in the index is not waited for
+        DB.put(CREW_REREAD_KEY, {k: v for k, v in pending.items() if k in again})
+    if not run and not again:
+        return "ok"
+    if run:
+        todo = CI.queue(insts, rows, local_now(), run["started"], again)
+    else:  # FW-0059: no run going: only the re-reads, soonest first
+        todo = sorted(again, key=lambda k: (CI.departs(insts[k]).isoformat(), k))
     awarded = CI.awarded_periods(insts, rows)  # FW-0016: bid periods with a read that named a pilot
     held0 = CI.held_periods(insts, rows, awarded)  # periods already held (their one probe is in todo)
     held, newly = set(held0), False
-    n, res, halted = 0, "ok", False
+    n, res, halted, reread = 0, "ok", False, set()
     per_check = CREW_PER_CHECK_HUNT if FLAGS.get("hunt") else CREW_PER_CHECK  # hunting: short chunks, pot first
+    if not run:
+        per_check = min(per_check, CREW_REREAD_PER_CHECK)
     for k in todo:
-        if run["pages"] >= CREW_PER_RUN or n >= per_check:
+        if (run and run["pages"] >= CREW_PER_RUN) or n >= per_check:
             break
         if FLAGS["pause"] or FLAGS["rearm"]:
             log.info("crew index: pause / re-arm, chunk stopped (run continues later)")
             halted = True
             break
         it = insts[k]
-        if CI.period_of(it) in held - held0:  # FW-0016: held during this chunk, the rest waits for names
+        forced = k in again
+        if CI.period_of(it) in held - held0 and not forced:  # FW-0016: held during this chunk, the rest waits for names
+            continue
+        url = (f"{BASE}/full/mobilepairing.cgi?PID={it['pairing']}&DATE={it['date'].replace('-', '')}"
+               "&FROM=MobileOpentimePot&CurrentPage=1")
+        if not (SUB.safe_get(url) and SM.safe_get(url)):
+            log.info("crew index: %s url refused by safe_get, skipped", k)
+            reread.add(k)
             continue
         if n:
             time.sleep(random.uniform(1.5, 3.5))
         n += 1
-        run["pages"] += 1
-        url = (f"{BASE}/full/mobilepairing.cgi?PID={it['pairing']}&DATE={it['date'].replace('-', '')}"
-               "&FROM=MobileOpentimePot&CurrentPage=1")
+        if run:
+            run["pages"] += 1
+        if forced:
+            reread.add(k)
+        good = forced and (rows.get(k) or {}).get("status") == "ok"  # a re-read never loses the last good read
         at = local_now().isoformat(timespec="seconds")
         try:
             page = fl.fetch(url)
         except Exception as e:
-            DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "fail", f"fetch: {e}"[:200])
+            if good:
+                log.info("crew index: re-read of %s failed (%s), last read kept", k, e)
+            else:
+                DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "fail",
+                            f"fetch: {e}"[:200])
             continue
         kind = classify(page)
         if kind != "ok":
+            reread.discard(k)
             res = {"killed": "killed", "expired": "needs_login", "blocked": "stop"}.get(kind, "ok")
             log.info("crew index: %s page on %s, run ended", kind, k)
             break
         vt = visible_text(page)
         crew = CI.crew_line(vt)
         if crew is None:
-            DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "fail",
-                        f"no crew line: {vt[:120]}")
+            if good:
+                log.info("crew index: re-read of %s found no crew line, last read kept", k)
+            else:
+                DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "fail",
+                            f"no crew line: {vt[:120]}")
             continue
+        it = insts[k] = crew_fill(k, it, vt)  # FW-0056: a schedule trip's end and route from its page
         per, named = CI.period_of(it), CI.has_crew(crew)
         if not named and per not in awarded:  # FW-0016: no pilot named and no award seen in this bid period yet:
             DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "empty",  # not read
@@ -3433,23 +3612,32 @@ def crew_index_check(fl):
         rows[k] = {**(rows.get(k) or {}), "status": "ok", "checked_at": at, "crew": crew}
         if named and per not in awarded:  # FW-0016: the first names in this bid period: the award is out
             awarded.add(per)
-            again = sum(1 for x, i2 in insts.items() if CI.period_of(i2) == per and (rows.get(x) or {}).get("status") == "empty")
-            if per in held or again:  # its pages held back or read before the award: read from the next check on
+            again_n = sum(1 for x, i2 in insts.items() if CI.period_of(i2) == per and (rows.get(x) or {}).get("status") == "empty")
+            if per in held or again_n:  # its pages held back or read before the award: read from the next check on
                 held.discard(per)
                 newly = True
-                log.info("crew index: %s bid period names crew now (%s), %d pages read before it go first", per, k, again)
+                log.info("crew index: %s bid period names crew now (%s), %d pages read before it go first", per, k, again_n)
         DB.remember_crew(vt)
-    # the run is over when its budget is used, a page ended it, or the queue ran dry before the chunk filled
-    # (FW-0016: the pages of a period held in this chunk are not read, so they do not keep the run going; a period
-    # whose award was seen in this chunk does: its pages are read from the next check on, not a slot later)
-    done = res != "ok" or run["pages"] >= CREW_PER_RUN or (n < per_check and not halted and not newly)
-    if done:
-        S.pop("crew_run", None)
-        S["crew_last"] = {"at": now_iso(), "pages": run["pages"], "why": run["why"], "ended": res}
-        log.info("crew index run done: %d pages (%s)", run["pages"], res)
-    save_state(S)
+    if reread:  # FW-0058 / FW-0059: one re-read each, done
+        rr = DB.get(CREW_REREAD_KEY) or {}
+        DB.put(CREW_REREAD_KEY, {k: v for k, v in rr.items() if k not in reread})
+    if n:
+        crew_overlaps(insts, DB.crew_rows())  # FW-0059: new overlaps queue their re-reads, re-read ones keep or clear
+    done = False
+    if run:
+        # the run is over when its budget is used, a page ended it, or the queue ran dry before the chunk filled
+        # (FW-0016: the pages of a period held in this chunk are not read, so they do not keep the run going; a period
+        # whose award was seen in this chunk does: its pages are read from the next check on, not a slot later)
+        done = res != "ok" or run["pages"] >= CREW_PER_RUN or (n < per_check and not halted and not newly)
+        if done:
+            S.pop("crew_run", None)
+            S["crew_last"] = {"at": now_iso(), "pages": run["pages"], "why": run["why"], "ended": res}
+            log.info("crew index run done: %d pages (%s)", run["pages"], res)
+        save_state(S)
+    elif n:
+        log.info("crew index: %d trips read again (no run going)", n)
     if n or done:
-        publish_crew_index(insts, write=done)
+        publish_crew_index(insts, write=done or not run)
     if res == "stop":
         set_machine("stopped_unexpected", "FLICA showed a captcha/MFA/password page (crew index)")
     return res
@@ -3459,25 +3647,30 @@ def publish_crew_index(insts=None, write=False):
     """{T}/crew_index (retained) and, after a run, the month Markdown files."""
     if INSTANCE:
         return
-    insts = CI.instances(CARD_PAIRINGS) if insts is None else insts
+    insts = crew_instances() if insts is None else insts
     rows = DB.crew_rows()
     n, ok, pct = CI.coverage(insts, rows)
     last = S.get("crew_last") or {}
     _, nxt = crew_slot()
     run = S.get("crew_run")
     held = CI.held_periods(insts, rows)
+    flags = DB.get(CREW_OVERLAP_KEY) or {}
     pub("crew_index", {"instances": n, "checked": ok, "coverage_pct": pct, "last_run": last.get("at") or "",
                        "next_slot": nxt.replace(tzinfo=HST).isoformat(), "pages_last_run": last.get("pages", 0),
                        "failures": sum(1 for k in insts if (rows.get(k) or {}).get("status") == "fail"),
                        # FW-0016: read with no crew names yet (not counted in checked), and the bid periods held
                        "no_crew_yet": sum(1 for k in insts if (rows.get(k) or {}).get("status") == "empty"),
                        "waiting_for_award": sorted(held),
+                       # FW-0056: trips from schedules no package lists; FW-0059: pilots on two overlapping trips
+                       "from_schedules": sum(1 for it in insts.values() if it.get("src") == "schedule"),
+                       "overlaps": len(flags), "overlaps_rereading": sum(1 for f in flags.values() if f.get("state") != "kept"),
+                       "reread_queued": len(DB.get(CREW_REREAD_KEY) or {}),
                        "running": bool(run), "pages_this_run": (run or {}).get("pages", 0)})
     if write:
-        write_crew_md(insts, rows, held)
+        write_crew_md(insts, rows, held, flags)
 
 
-def write_crew_md(insts, rows, held=None):
+def write_crew_md(insts, rows, held=None, flags=None):
     """/share/flight_watcher/crew_index/<YYYY-MM>.md for every month with instances, rewritten after each run."""
     try:
         os.makedirs(CREW_DIR, exist_ok=True)
@@ -3486,7 +3679,7 @@ def write_crew_md(insts, rows, held=None):
             path = os.path.join(CREW_DIR, f"{month}.md")
             tmp = path + ".tmp"
             with open(tmp, "w") as f:
-                f.write(CI.render_month(month, insts, rows, stamp, held))
+                f.write(CI.render_month(month, insts, rows, stamp, held, flags))
             os.replace(tmp, path)
     except Exception as e:
         log.info("crew index files skipped: %s", e)
@@ -3933,7 +4126,8 @@ def inflt_check(fl, limit=INFLT_PER_CHECK):
         DB.reset_inflt()
         S["inflt_reset_v3"] = True
         save_state(S)
-    changed = IF.run(fl, DB, limit, log, local_now, BASE, HST)
+    changed = IF.run(fl, DB, limit, log, local_now, BASE, HST,
+                     on_sched=lambda items: note_sched_trips(items, "picker"))  # FW-0056: the crew index reads them too
     if changed:
         publish_finds()
     return changed
@@ -4174,6 +4368,7 @@ def main():
                      "again", names, empties)
         except Exception as e:  # never stops the start; tried again on the next one
             log.warning("crew index repair skipped: %s: %s", type(e).__name__, e)
+    crew_split_repair()
     if DB.get("score_v") != 2:  # 0.7.6 one-shot: Pickup Speed recomputed with the vetted dwell() for every scored pickup
         DB.rescore_all()
         DB.put("score_v", 2)

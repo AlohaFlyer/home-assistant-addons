@@ -135,8 +135,8 @@ def W(tmp_path, monkeypatch):
 
 
 class FakeFl:
-    def __init__(self, fail=(), kind_at=None):
-        self.urls, self.fail, self.kind_at = [], fail, kind_at
+    def __init__(self, fail=(), kind_at=None, fo_by_pid=False):
+        self.urls, self.fail, self.kind_at, self.fo_by_pid = [], fail, kind_at, fo_by_pid
 
     def fetch(self, url):
         self.urls.append(url)
@@ -146,13 +146,15 @@ class FakeFl:
         if pid in self.fail:
             return "<html><p>pairing not found</p></html>"
         emp = 10000 + int(pid[1:]) % 1000
-        return f"<html><p>pairing {pid} crew: ca {emp} doe, jane fo 10999 roe, rick ro open</p></html>"
+        fo = 11000 + int(pid[1:]) % 1000 if self.fo_by_pid else 10999  # FW-0059: one FO a pairing, so no overlaps
+        return f"<html><p>pairing {pid} crew: ca {emp} doe, jane fo {fo} roe, rick ro open</p></html>"
 
 
 def test_run_budget_chunks_and_outputs(W, tmp_path):
     _file(tmp_path / "www", "2026-11", [_row(f"H{9000 + i}", " ".join(str(d) for d in range(1, 31)), rel=0) for i in range(12)])
-    # 12 pairings x 30 days = 360 instances; budget 300 per run, 50 per check
-    fl = FakeFl(fail=("H9011",))
+    # 12 pairings x 30 days = 360 instances; budget 300 per run, 50 per check. Each pairing has its own FO: one FO on
+    # all 12 pairings of a day would be a pilot on overlapping trips (FW-0059), read again outside the run
+    fl = FakeFl(fail=("H9011",), fo_by_pid=True)
     assert W.crew_index_check(fl) == "ok"
     assert len(fl.urls) == 50 and W.S["crew_run"]["pages"] == 50 and W.S["crew_slot"] == "2026-11-10T12"
     assert "DATE=20261101" in fl.urls[0]  # soonest first, past dates back to CREW_FROM included
@@ -165,7 +167,7 @@ def test_run_budget_chunks_and_outputs(W, tmp_path):
     assert ci["instances"] == 360 and ci["checked"] + ci["failures"] == 300 and ci["pages_last_run"] == 300
     assert ci["next_slot"] == "2026-11-10T18:00:00-10:00"
     md = (tmp_path / "crew_index" / "2026-11.md").read_text()
-    assert "### Roe, Rick (10999)" in md and "| 2026-11-01 | H9000 | FO |" in md
+    assert "### Roe, Rick (11000)" in md and "| 2026-11-01 | H9000 | FO |" in md
     W.FLAGS["crew_scan"] = True
     W.crew_index_check(fl)
     assert len(fl.urls) == 350

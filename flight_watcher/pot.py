@@ -195,10 +195,14 @@ def detail_url(row, today=None):
 
 
 # Detail text (Nov 1, 2026): "... blk : 1218 tafb : 2609 pay : 1218 crew: ca 10007 lane jr, chris fo open" (names made up)
-CA_RE = re.compile(r"crew\s*:.*?\bca\s+(?:\d{3,7}\s+)?(.+?)(?=\s+(?:fo|ro|fa|so|ca)\b|$)", re.I)
+# FW-0058: a seat code counts only in FLICA's seat position, standing alone and followed by the employee number or
+# 'Open' ("CA 10001 ..." / "FO Open"); the same letters inside a name ("LEE, SO YOUNG", made up) are part of the name.
+SEAT_AT = r"(?<![\w'.,-])(?:CA|FO|RO|FA|SO)\s+(?=\d+\b|open\b)"
+CA_RE = re.compile(r"crew\s*:.*?(?<![\w'.,-])ca\s+(?=\d+\b|open\b)(?:\d{3,7}\s+)?(.+?)(?=\s+" + SEAT_AT + r"|$)", re.I)
 # Crew line (Nov 1, 2026): "Crew: CA 10001 SMITH JR, JOHN CA 10002 DOE, JANE FO Open" (names made up)
 CREW_POS = ("CA", "FO", "RO", "FA", "SO")
-CREW_RE = re.compile(r"\b(CA|FO|RO|FA|SO)\s+(?:(\d{3,7})\s+)?(.+?)(?=\s+(?:CA|FO|RO|FA|SO)\s|\s*$)", re.I)
+CREW_RE = re.compile(r"(?<![\w'.,-])(CA|FO|RO|FA|SO)\s+(?=\d+\b|open\b)(?:(\d{3,7})\s+)?(.+?)(?=\s+" + SEAT_AT + r"|\s*$)",
+                     re.I)
 # FLICA tags a check pilot in the name ("CA 10001 DOE, CKP JANE", Nov 2026; FW-0017)
 CKP_RE = re.compile(r"(?<![\w'-])ckp(?![\w'-])", re.I)
 CHECKIN_RE = re.compile(r"check\s*in\s*:\s*(\d{1,2}:?\d{2})", re.I)
