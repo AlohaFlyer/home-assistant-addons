@@ -12,6 +12,14 @@ def _row(**k):
     return r
 
 
+def _line(W, items=(), trips=None, at="2026-10-20T00:00:00+00:00", months=("2026-10", "2026-11", "2026-12")):
+    """1.4.6: a schedule version on file for each month, seen at `at`, so a list day after it is judged on that line."""
+    for mk in months:
+        its = [i for i in items if i["start"][:7] == mk]
+        W.DB.put(f"sched_versions:{mk}", [{"ver": f"{int(mk[5:])}.001", "n": 1, "at": at, "items": its, "days": [],
+                                          "totals": {}, "trips": {k: v for k, v in (trips or {}).items() if k.split("|")[1][:7] == mk}}])
+
+
 def test_junior_award_on_open_legal_day_is_missed():
     v = RC.evaluate(_row(), ME, [], {}, [], DET)
     assert v["verdict"] == "MISSED" and v["end"] == "2026-11-11" and v["last_arr"] == "16:00"
@@ -24,7 +32,7 @@ def test_senior_award_blocked_day_and_junior_manning_are_not_missed():
     assert RC.evaluate(_row(), ME, [], {}, ["2026-11-11"], DET)["verdict"] == "NO"
     assert RC.evaluate(_row(kind="junior"), ME, [], {}, [], DET)["verdict"] == "NO"
     assert RC.evaluate(_row(seat="CA"), ME, [], {}, [], DET)["verdict"] == "NO"
-    assert RC.evaluate(_row(kind="o75"), {**ME, "o75": False}, [], {}, [], DET)["verdict"] == "NO"
+    assert RC.evaluate(_row(kind="o75"), {**ME, "o75_months": {"2026-11": False}}, [], {}, [], DET)["verdict"] == "NO"
 
 
 def test_trip_or_vacation_in_the_way_is_not_missed():
@@ -60,6 +68,7 @@ def test_watcher_recall_flow(tmp_path, monkeypatch):
     sent = []
     monkeypatch.setattr(W, "pub", lambda t, p, retain=True: sent.append((t, p)))
     W.DB.put("pkg_details:2026-11", DET)
+    _line(W)
     W.recall_cmd(json.dumps({"date": "2026-11-10", "rows": [_row()], "me": {"sen": 500}}))
     ev = [p for t, p in sent if t == "event/recall_miss"]
     assert ev and ev[0]["verdict"] == "MISSED"
@@ -88,6 +97,7 @@ def _recall_w(tmp_path, monkeypatch):
     sent = []
     monkeypatch.setattr(W, "pub", lambda t, p, retain=True: sent.append((t, p)))
     W.DB.put("pkg_details:2026-11", DET)
+    _line(W)
     return W, sent
 
 
@@ -189,6 +199,7 @@ def test_refresh_rejudges_against_the_current_line_without_a_push(tmp_path, monk
     sent = []
     monkeypatch.setattr(W, "pub", lambda t, p, retain=True: sent.append((t, p)))
     W.DB.put("pkg_details:2026-11", DET)
+    _line(W)
     W.S["blocked_days"] = ["2026-11-11"]  # blocked: not a miss when the list comes in
     W.recall_cmd(json.dumps({"date": "2026-11-10", "rows": [_row()], "me": {"sen": 500}}))
     st = [p for t, p in sent if t == "recall"][-1]
@@ -200,3 +211,71 @@ def test_refresh_rejudges_against_the_current_line_without_a_push(tmp_path, monk
     assert st["days"][0]["verdicts"][0]["verdict"] == "MISSED" and st["open"] == 1
     assert not [t for t, _ in sent if t.startswith("event/")]
     W.recall_act("not json")  # a bad message is logged, never raised
+
+
+# ---------------------------------------------------------------- 1.4.6 review (Nov 7)
+def test_each_list_day_reads_its_own_bid_period_package(tmp_path, monkeypatch):
+    """Pairing ids repeat across bid periods: October's H3601 is 4 days, November's is 1 day. With lists for Oct 28 and
+    Nov 10 on file, the Oct 28 row uses October's H3601, so Ryan's H1200 on Oct 30-31 is in the way (NO), and the
+    Nov 10 row uses November's (MISSED). Before, one merged dict let the month iterated last win (hash seed order)."""
+    import json
+    W, sent = _recall_w(tmp_path, monkeypatch)
+    W.DB.put("pkg_details:2026-10", {"H3601": {"report": "08:00", "block": "20:00", "rel_days": 4,
+                                               "duties": [{"d": 0, "dep": 540, "arr": 840, "stn": "LAX", "blk": 300},
+                                                          {"d": 3, "dep": 3 * 1440 + 540, "arr": 3 * 1440 + 840, "stn": "HNL", "blk": 300}]}})
+    W.DB.put("pkg_details:2026-11", {"H3601": {"report": "08:00", "block": "5:00", "rel_days": 1,
+                                               "duties": [{"d": 0, "dep": 540, "arr": 840, "stn": "HNL", "blk": 300}]}})
+    _line(W, [{"trip": "H1200", "start": "2026-10-30", "end": "2026-10-31"}],
+          {"H1200|2026-10-30": {"report": "08:00", "last_arr": "16:00", "blk": "8:00"}}, months=("2026-09", "2026-10", "2026-11", "2026-12"))
+    W.recall_cmd(json.dumps([{"date": "2026-10-28", "rows": [_row(date="2026-10-28", pairing="H3601")]},
+                             {"date": "2026-11-20", "rows": [_row(date="2026-11-20", pairing="H3601")]}]))
+    W.recall_act(json.dumps({"me": {"sen": 500}}))
+    vs = _last(sent)[1]
+    old, new = vs["2026-10-28|H3601|recall"], vs["2026-11-20|H3601|recall"]
+    assert old["verdict"] == "NO" and old["end"] == "2026-10-31" and "H1200" in old["why"][-1], old["why"]
+    assert new["verdict"] == "MISSED" and new["end"] == "2026-11-20", new["why"]
+
+
+def test_upgrade_counts_a_draft_as_pushed_only_if_it_was_missed(tmp_path, monkeypatch):
+    """Acts from 1.4.5 have no 'missed_sent'. One whose stored verdict was POSSIBLE (its push was dropped by the
+    MISSED-only automation) and is MISSED now pushes once on the next list post; one stored MISSED was pushed already."""
+    import json
+    W, sent = _recall_w(tmp_path, monkeypatch)
+    W.DB.put("recall_me", {"sen": 500})
+    rows = [_row(), _row(pairing="H9003", date="2026-11-10")]
+    W.DB.put("pkg_details:2026-11", {**DET, "H9003": DET["H9001"]})
+    W.DB.put("recall_days", {"2026-11-10": {"date": "2026-11-10", "file": "ok", "rows": rows, "at": "2026-11-10T20:00:00+00:00",
+                                            "verdicts": [{"id": "2026-11-10|H9001|recall", "verdict": "POSSIBLE"},
+                                                         {"id": "2026-11-10|H9003|recall", "verdict": "MISSED"}]}})
+    W.DB.put("recall_acts", {"2026-11-10|H9001|recall": {"status": "new", "narrative": "n", "at": "2026-11-10T20:00:00+00:00"},
+                             "2026-11-10|H9003|recall": {"status": "new", "narrative": "n", "at": "2026-11-10T20:00:00+00:00"}})
+    W.recall_eval()  # startup: no push
+    acts = W.DB.get("recall_acts")
+    assert acts["2026-11-10|H9001|recall"]["missed_sent"] is False and acts["2026-11-10|H9003|recall"]["missed_sent"] is True
+    assert not [t for t, _ in sent if t == "event/recall_miss"]
+    W.recall_cmd(json.dumps({"date": "2026-11-11", "rows": []}))
+    ev = [p for t, p in sent if t == "event/recall_miss"]
+    assert [(p["id"], p["verdict"]) for p in ev] == [("2026-11-10|H9001|recall", "MISSED")]
+    W.recall_cmd(json.dumps({"date": "2026-11-12", "rows": []}))
+    assert len([1 for t, _ in sent if t == "event/recall_miss"]) == 1
+
+
+def test_over_75_answer_is_kept_per_month(tmp_path, monkeypatch):
+    """PWA 22.G.2.d: {me: {o75_months: {YYYY-MM: true | false | null}}} from the tab; bad months and values are
+    ignored, null forgets. The old single 'o75' flag is dropped. An Over 75 row is POSSIBLE until the month is set."""
+    import json
+    W, sent = _recall_w(tmp_path, monkeypatch)
+    W.DB.put("recall_me", {"sen": 500, "o75": True})
+    W.recall_cmd(json.dumps({"date": "2026-11-10", "rows": [_row(kind="o75")]}))
+    vid = "2026-11-10|H9001|o75"
+    st, vs = _last(sent)
+    assert vs[vid]["verdict"] == "POSSIBLE" and "reserve status for Nov 2026 unknown" in vs[vid]["why"][-1]
+    assert st["me"] == {"sen": 500, "seat": "FO", "o75_months": {}}
+    W.recall_act(json.dumps({"me": {"o75_months": {"2026-11": True, "2026-13": True, "nope": False, "2026-12": "yes"}}}))
+    st, vs = _last(sent)
+    assert st["me"]["o75_months"] == {"2026-11": True} and vs[vid]["verdict"] == "MISSED"
+    W.recall_act(json.dumps({"me": {"o75_months": {"2026-11": False}}}))
+    assert _last(sent)[1][vid]["verdict"] == "NO"
+    W.recall_act(json.dumps({"me": {"o75_months": {"2026-11": None}, "sen": 500}}))
+    st, vs = _last(sent)
+    assert st["me"]["o75_months"] == {} and vs[vid]["verdict"] == "POSSIBLE"
