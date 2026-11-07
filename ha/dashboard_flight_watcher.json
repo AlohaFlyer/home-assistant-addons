@@ -678,7 +678,7 @@
             {
               "cards": [
                 {
-                  "heading": "Settings",
+                  "heading": "Credentials",
                   "icon": "mdi:account-key",
                   "type": "heading"
                 },
@@ -687,6 +687,33 @@
                     "columns": "full"
                   },
                   "type": "custom:flight-watcher-settings-card"
+                },
+                {
+                  "type": "heading",
+                  "heading": "Monthly PDFs",
+                  "icon": "mdi:file-upload-outline",
+                  "visibility": [
+                    {
+                      "condition": "user",
+                      "users": [
+                        "00000000000000000000000000000001"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "custom:flight-watcher-uploads-card",
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "visibility": [
+                    {
+                      "condition": "user",
+                      "users": [
+                        "00000000000000000000000000000001"
+                      ]
+                    }
+                  ]
                 },
                 {
                   "type": "markdown",
