@@ -14,8 +14,9 @@ WRITES_IMPLEMENTED stays False.
 
 Close-in rule (Ryan, 2026-11-03): any add or swap involving a trip inside CLOSE_IN_H hours to
 report must be filed from the 'Close in Opentime: <16 Hrs to RPT' folder (its own BCID, 008.xxx
-series) or FLICA denies it. The close-in BCID is not read yet, so such a swap is composed with
-folder 'close-in' and no BCID, and is never sendable."""
+series) or FLICA denies it. FW-0034: the Watcher finds that BCID on the menu (a link whose text names the
+folder, never a guess) and trusts it once the folder's open time page reads (S['close_in_bcid']); until
+then such a draft has folder 'close-in' and no BCID. Drafts are never sendable either way."""
 import re
 from datetime import datetime
 

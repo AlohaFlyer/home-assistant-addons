@@ -1,14 +1,15 @@
-"""FAR 117 screen for a pot pairing against Ryan's own trips. Pure, no I/O (0.3.8).
+"""FAR 117 and PWA rest legality of a pairing against Ryan's own trips. Pure, no I/O (0.3.8, 1.4.6, FW-0039).
 
-What it checks (14 CFR 117, unaugmented, all trips start and end at HNL so times are HST):
-- 117.25(e): at least 10 h rest before and after the pickup (release = last block-in + 15 min).
-- 117.25(b): 30 consecutive hours free from duty in the 168 h before each report it affects.
-- 117.23(b): flight time at most 100 h in any 672 h (trip block counted whole).
-It also notes the company 11 h minimum rest (Hark's rules, bid line month) when FAR passes.
-far_check (the pot and Tradeboard screen) does not check cumulative FDP 60 h / 168 h and 190 h / 672 h.
-legality() (1.4.6, the Recall / Over 75 miss check) checks all of the above per duty period, adds FAR 117.23(c)
-FDP 60 h in 168 h and 190 h in 672 h and PWA 10.E.1.a 11 h domicile rest, and says '?' instead of guessing.
-The pairing's own FDP is built legal by scheduling and is not re-checked.
+What it checks (14 CFR 117, unaugmented, all trips start and end at HNL so times are HST), per duty period:
+- 117.25(e): at least 10 h rest before and after the pairing (release = last block-in + 15 min, PWA 2.19.b).
+- 117.25(b): 30 consecutive hours free from duty in the 168 h before each FDP it affects.
+- 117.23(b)(1): flight time at most 100 h in any 672 h.
+- 117.23(c)(1) and (2): FDP at most 60 h in any 168 h and 190 h in any 672 h.
+- PWA 10.E.1.a: 11 h rest in domicile; PWA 2.19.b: a release 30 min after block-in when clearing customs.
+legality() (1.4.6, the Recall / Over 75 miss check) says OK, NO or '?' (data not on file), never guessing.
+screen() (FW-0039) is the FAR column of pot, Tradeboard and finds rows: the same checks, in the column's short words
+(a pickup that broke 117.23(c) read OK under the old far_check, which is gone). The 11 h PWA rest stays a note there
+('OK (CBA rest 10:30)'), as before. The pairing's own FDP is built legal by scheduling and is not re-checked.
 """
 from datetime import datetime, time, timedelta
 
@@ -53,49 +54,6 @@ def free_30_in_168(duties, at):
             return True
         cur = max(cur, e)
     return at - cur >= timedelta(hours=30)
-
-
-def far_check(new, mine):
-    """new: (report, release, block_hours). mine: list of the same for Ryan's trips; an entry may
-    carry approx=True as a 4th item when its times are whole-day guesses. Returns 'OK', 'OK (CBA
-    rest 10:40)', a ' · '-joined list of problems, 'Conflict' or '?'."""
-    nr, ne, nb = new[:3]
-    for m in mine:
-        if m[0] < ne and nr < m[1]:
-            return "Conflict"
-    issues, notes = [], []
-    prev = [m for m in mine if m[1] <= nr]
-    nxt = [m for m in mine if m[0] >= ne]
-    if prev:
-        p = max(prev, key=lambda m: m[1])
-        if len(p) > 3 and p[3]:
-            return "?"
-        gap = nr - p[1]
-        if gap < REST:
-            issues.append(f"Rest {_hm(gap)} before")
-        elif gap < CBA_REST:
-            notes.append(f"CBA rest {_hm(gap)}")
-    if nxt:
-        n = min(nxt, key=lambda m: m[0])
-        if len(n) > 3 and n[3]:
-            return "?"
-        gap = n[0] - ne
-        if gap < REST:
-            issues.append(f"Rest {_hm(gap)} after")
-        elif gap < CBA_REST:
-            notes.append(f"CBA rest {_hm(gap)}")
-    duties = [m[:3] for m in mine] + [(nr, ne, nb)]
-    points = [nr] + [m[0] for m in mine if nr < m[0] <= ne + H168]
-    if not all(free_30_in_168(duties, p) for p in points):
-        issues.append("No 30h/168h")
-    for p in [ne] + [m[1] for m in mine if ne < m[1] <= ne + H672]:
-        ft = sum(b or 0 for r, e, b in duties if p - H672 < e <= p)
-        if ft > 100:
-            issues.append(f"FT {ft:.0f}h/672h")
-            break
-    if issues:
-        return " · ".join(issues)
-    return "OK" + (f" ({notes[0]})" if notes else "")
 
 
 # ---------------------------------------------------------------- 1.4.6: full legality for the recall miss check
@@ -161,22 +119,32 @@ def _what(t):
     return t["label"] if t.get("unknown_line") else f"{t['label']} times"
 
 
-def _rest(side, m, gap, issues, unknown, notes):
+def _rest(side, m, gap):
     """FAR 117.25(e) 10 h rest before every FDP; PWA 10.E.1.a 11 h rest in domicile (every trip here starts and
     ends in HNL, so the rest on either side of the pairing is domicile rest). gap runs from the release (block-in
-    + 15 min); with customs (PWA 2.19.b) the rest can be 15 min shorter."""
+    + 15 min); with customs (PWA 2.19.b) the rest can be 15 min shorter. One check dict: far / pwa 'OK' | 'NO' | '?'
+    (each rule on its own, for screen()), res (both together, for legality()) and the line legality() reports."""
     worst = gap - CUSTOMS
-    if worst >= CBA_REST:
-        notes.append(f"rest {_hh(_hrs(gap))} {side} ({REST_REFS})")
-    elif m.get("approx") or m.get("unknown_line"):
-        unknown.append(f"rest {side}: {_what(m)} not on file, at least {_hh(_hrs(worst))} ({REST_REFS})")
-    elif gap < REST:
-        issues.append(f"rest {_hh(_hrs(gap))} {side} ({m['label']}), under 10 h (FAR 117.25(e))")
-    elif gap < CBA_REST:
-        issues.append(f"rest {_hh(_hrs(gap))} {side} ({m['label']}), under 11 h domicile rest (PWA 10.E.1.a)")
+    guess = bool(m.get("approx") or m.get("unknown_line"))
+    if guess:  # the neighbour's release is its latest possible one, so gap is the least rest it can leave
+        far = "OK" if worst >= REST else "?"
+        pwa = "OK" if worst >= CBA_REST else "?"
     else:
-        unknown.append(f"rest {_hh(_hrs(gap))} {side} ({m['label']}) is under 11 h if that release was 30 min after "
-                       f"block-in for customs (PWA 2.19.b, PWA 10.E.1.a)")
+        far = "NO" if gap < REST else "?" if worst < REST else "OK"
+        pwa = "NO" if gap < CBA_REST else "?" if worst < CBA_REST else "OK"
+    if pwa == "OK":
+        res, line = "OK", f"rest {_hh(_hrs(gap))} {side} ({REST_REFS})"
+    elif guess:
+        res, line = "?", f"rest {side}: {_what(m)} not on file, at least {_hh(_hrs(worst))} ({REST_REFS})"
+    elif far == "NO":
+        res, line = "NO", f"rest {_hh(_hrs(gap))} {side} ({m['label']}), under 10 h (FAR 117.25(e))"
+    elif pwa == "NO":
+        res, line = "NO", f"rest {_hh(_hrs(gap))} {side} ({m['label']}), under 11 h domicile rest (PWA 10.E.1.a)"
+    else:
+        res, line = "?", (f"rest {_hh(_hrs(gap))} {side} ({m['label']}) is under 11 h if that release was 30 min after "
+                          f"block-in for customs (PWA 2.19.b, PWA 10.E.1.a)")
+    return {"kind": "rest", "side": side, "gap": gap, "worst": worst, "far": far, "pwa": pwa, "res": res,
+            "line": line}
 
 
 def _segments(t, what):
@@ -191,7 +159,8 @@ def _cum(trips, new, span, lim, what, ref):
     worst (hi): FDP = overlap of every span; flight time = the lesser of each span's block (its length when the block
     is unknown) and its overlap. Both are piecewise linear in the window's position, so their maxima are at the
     windows that start at a span's start or at its end less its cap, or end at a span's end or at its start plus its
-    cap; only those windows are tried."""
+    cap; only those windows are tried. Returns (result 'OK' | 'NO' | '?', line, hours: the failing window's when NO,
+    else the most it can be)."""
     lo_h, hi_h = new["report"] - span, new["release"] + span
     segs = []  # (start, end, cap h, block h or None, sure, is_new, trip)
     for t in trips:
@@ -233,38 +202,43 @@ def _cum(trips, new, span, lim, what, ref):
             fail = (lo, lo_mine)
     n = int(span.total_seconds() // 3600)
     if fail and fail[1] <= lim:
-        return "NO", f"{what} {_hh(fail[0])} h in {n} h, over {lim} h ({ref})"
+        return "NO", f"{what} {_hh(fail[0])} h in {n} h, over {lim} h ({ref})", fail[0]
     if fail:
         return "?", (f"{what} in {n} h is over {lim} h even without the pairing ({ref}): the line on file looks "
-                     f"incomplete")
+                     f"incomplete"), fail[0]
     if best_hi > lim:
         guess = sorted({_what(s[6]) for s in segs if not s[4] and worst_w and _ov(s[0], s[1], *worst_w) > 0})
         return "?", (f"{what} in {n} h may pass {lim} h ({ref}): {_hh(best_lo)} h known, up to {_hh(best_hi)} h; "
-                     f"{', '.join(guess) or 'some times'} not on file")
-    return "OK", f"{what} at most {_hh(best_hi)} of {lim} h in {n} h ({ref})"
+                     f"{', '.join(guess) or 'some times'} not on file"), best_hi
+    return "OK", f"{what} at most {_hh(best_hi)} of {lim} h in {n} h ({ref})", best_hi
 
 
-def legality(new, mine):
-    """FAR 117 and PWA rest legality of the new pairing against Ryan's trips as he held them (both as described
-    above). Returns {result: 'OK' | 'NO' | '?', issues: [broken rules], unknown: [checks that need data not on file],
-    notes: [checks passed], summary}. Every line cites its rule."""
-    issues, unknown, notes = [], [], []
+CUM = ((H672, FT_672, "flight time", "FAR 117.23(b)(1)", "FT"),
+       (H168, FDP_168, "FDP", "FAR 117.23(c)(1)", "FDP"),
+       (H672, FDP_672, "FDP", "FAR 117.23(c)(2)", "FDP"))
+
+
+def _checks(new, mine):
+    """Every check of the new pairing against Ryan's trips, in report order: [{kind, res 'OK' | 'NO' | '?', line,
+    ...}]. kind 'overlap' (one per trip it may overlap; when one surely overlaps, nothing else is checked), 'rest'
+    (before, after: _rest), '30h' (FAR 117.25(b)) and 'cum' (FAR 117.23(b)(1), (c)(1), (c)(2): short, n, hours)."""
+    out = []
     for m in mine:
         if m["report"] < new["release"] and new["report"] < m["release"]:
             if m.get("approx") or m.get("unknown_line"):
-                unknown.append(f"may overlap {m['label']}: {_what(m)} not on file")
+                out.append({"kind": "overlap", "res": "?", "line": f"may overlap {m['label']}: {_what(m)} not on file"})
             else:
-                issues.append(f"overlaps {m['label']}")
-    if issues:
-        return {"result": "NO", "issues": issues, "unknown": unknown, "notes": notes, "summary": "; ".join(issues)}
+                out.append({"kind": "overlap", "res": "NO", "line": f"overlaps {m['label']}"})
+    if any(c["res"] == "NO" for c in out):
+        return out
     prev = [m for m in mine if m["release"] <= new["report"]]
     nxt = [m for m in mine if m["report"] >= new["release"]]
     if prev:
         m = max(prev, key=lambda x: x["release"])
-        _rest("before", m, new["report"] - m["release"], issues, unknown, notes)
+        out.append(_rest("before", m, new["report"] - m["release"]))
     if nxt:
         m = min(nxt, key=lambda x: x["report"])
-        _rest("after", m, m["report"] - new["release"], issues, unknown, notes)
+        out.append(_rest("after", m, m["report"] - new["release"]))
     # FAR 117.25(b): 30 consecutive hours free from all duty in the 168 h before every FDP the pairing touches
     trips = mine + [new]
     hi_all, lo_all, lo_mine = _busy(trips, False), _busy(trips, True), _busy(mine, True)
@@ -280,20 +254,69 @@ def legality(new, mine):
         else:
             maybe30.append(p)
     if no30:
-        issues.append(f"no 30 h free from duty in the 168 h before the duty at {no30:%b} {no30.day} {no30:%H:%M} (FAR 117.25(b))")
+        out.append({"kind": "30h", "res": "NO", "line": f"no 30 h free from duty in the 168 h before the duty at "
+                                                       f"{no30:%b} {no30.day} {no30:%H:%M} (FAR 117.25(b))"})
     elif maybe30:
         guess = sorted({_what(t) for t in trips if not _sure(t) and any(
             s < maybe30[0] and e > maybe30[0] - H168 for s, e, _ in t["duties"])})
-        unknown.append(f"30 h free in the 168 h before {maybe30[0]:%b} {maybe30[0].day} {maybe30[0]:%H:%M} not provable: "
-                       f"{', '.join(guess) or 'some duty times'} not on file (FAR 117.25(b))")
+        out.append({"kind": "30h", "res": "?", "line": (
+            f"30 h free in the 168 h before {maybe30[0]:%b} {maybe30[0].day} {maybe30[0]:%H:%M} not provable: "
+            f"{', '.join(guess) or 'some duty times'} not on file (FAR 117.25(b))")})
     else:
-        notes.append("30 h free in every 168 h (FAR 117.25(b))")
+        out.append({"kind": "30h", "res": "OK", "line": "30 h free in every 168 h (FAR 117.25(b))"})
     # FAR 117.23(b)(1) 100 h flight time in 672 h; 117.23(c) FDP 60 h in 168 h and 190 h in 672 h
-    for span, lim, what, ref in ((H672, FT_672, "flight time", "FAR 117.23(b)(1)"),
-                                 (H168, FDP_168, "FDP", "FAR 117.23(c)(1)"),
-                                 (H672, FDP_672, "FDP", "FAR 117.23(c)(2)")):
-        res, line = _cum(trips, new, span, lim, what, ref)
-        (issues if res == "NO" else unknown if res == "?" else notes).append(line)
+    for span, lim, what, ref, short in CUM:
+        res, line, h = _cum(trips, new, span, lim, what, ref)
+        out.append({"kind": "cum", "res": res, "line": line, "short": short, "n": int(span.total_seconds() // 3600),
+                    "hours": h})
+    return out
+
+
+def legality(new, mine):
+    """FAR 117 and PWA rest legality of the new pairing against Ryan's trips as he held them (both as described
+    above). Returns {result: 'OK' | 'NO' | '?', issues: [broken rules], unknown: [checks that need data not on file],
+    notes: [checks passed], summary}. Every line cites its rule."""
+    issues, unknown, notes = [], [], []
+    for c in _checks(new, mine):
+        (issues if c["res"] == "NO" else unknown if c["res"] == "?" else notes).append(c["line"])
     result = "NO" if issues else "?" if unknown else "OK"
     return {"result": result, "issues": issues, "unknown": unknown, "notes": notes,
             "summary": "; ".join(issues or unknown or notes)}
+
+
+def screen(new, mine):
+    """FW-0039: the FAR column of a pot, Tradeboard or finds row: legality()'s checks (FAR 117.25(e), 117.25(b),
+    117.23(b)(1), 117.23(c)(1) and (2), PWA 10.E.1.a, 2.19.b) in the column's short words. Returns {far, why, result}:
+    far is 'Conflict', the broken rules joined by ' · ' ('Rest 8:00 before', 'No 30h/168h', 'FT 105h/672h',
+    'FDP 65h/168h', 'FDP 191h/672h'), '?' when a FAR check needs data not on file (never OK), else 'OK', or
+    'OK (CBA rest 10:30)' when FAR is met but the PWA 10.E.1.a 11 h domicile rest is short ('10:50?' when only a
+    customs release, PWA 2.19.b, or a neighbour's unknown times can make it short). why: the lines behind it, each
+    citing its rule ('' when OK). result: legality()'s 'OK' | 'NO' | '?'."""
+    cs = _checks(new, mine)
+    result = "NO" if any(c["res"] == "NO" for c in cs) else "?" if any(c["res"] == "?" for c in cs) else "OK"
+    probs, unk, cba, why_no, why_cba = [], [], [], [], []
+    for c in cs:
+        k, res = c["kind"], c["res"]
+        if k == "rest":
+            if c["far"] == "NO":
+                probs.append(f"Rest {_hm(c['gap'])} {c['side']}")
+                why_no.append(c["line"])
+            elif c["far"] == "?":
+                unk.append(c["line"] if res == "?" else  # known times: only a customs release can make it short
+                           f"rest {_hh(_hrs(c['gap']))} {c['side']} is under 10 h if that release was 30 min after "
+                           f"block-in for customs (FAR 117.25(e), PWA 2.19.b)")
+            elif c["pwa"] != "OK":
+                cba.append(f"CBA rest {_hm(c['gap'])}" if c["pwa"] == "NO" else f"CBA rest {_hm(c['worst'])}?")
+                why_cba.append(c["line"])
+        elif res == "NO":
+            probs.append("Conflict" if k == "overlap" else "No 30h/168h" if k == "30h" else
+                         f"{c['short']} {c['hours']:.0f}h/{c['n']}h")
+            why_no.append(c["line"])
+        elif res == "?":
+            unk.append(c["line"])
+    if probs:
+        far = "Conflict" if "Conflict" in probs else " · ".join(dict.fromkeys(probs))
+        return {"far": far, "why": "; ".join(why_no), "result": result}
+    if unk:
+        return {"far": "?", "why": "; ".join(unk + why_cba), "result": result}
+    return {"far": "OK" + (f" ({cba[0]})" if cba else ""), "why": "; ".join(why_cba), "result": result}

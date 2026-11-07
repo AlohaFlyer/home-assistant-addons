@@ -5,9 +5,10 @@ Kept free of side effects so tests/ can run it against saved HTML fixtures.
 import hashlib
 import re
 from datetime import date, datetime, timedelta, timezone
+from html import unescape
 from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
 KILLED_TXT = "new session under this account was detected"
 EXPIRED_HINTS = ("session has expired", "session expired", "please log in", "please sign in")
@@ -138,6 +139,100 @@ def pot_links(html, page_url):
 def bcid(url):
     m = re.search(r"BCID=([\d.]+)", url or "")
     return m.group(1) if m else None
+
+
+# FW-0034: the close-in open time folder. FLICA's alert emails name it 'Close in Opentime: <16 Hrs to RPT'; Ryan
+# (2026-11-03): a trip under 16 h to report is added or swapped only from it, and it has its own BCID (an 008.xxx
+# series). Taken only from a menu link whose text names the folder (or the first link under a heading that does),
+# never guessed.
+CLOSE_IN_RE = re.compile(r"close[\s-]*in\s*open\s*time|<\s*16\s*hrs?\.?\s*to\s*rpt", re.I)
+BCID_IN = re.compile(r"\bBCID=(\d{3}\.\d{1,4})\b|['\"](\d{3}\.\d{3})['\"]", re.I)
+BCID_ONLY = re.compile(r"^\d{3}\.\d{1,4}$")
+JS_CALL_RE = re.compile(r"\b(?:\w+\.)?add[A-Z]\w*\s*\((.*?)\)\s*;", re.S)
+JS_STR_RE = re.compile(r"'((?:[^'\\]|\\.)*)'|\"((?:[^\"\\]|\\.)*)\"")
+MONTH_WORD = re.compile(r"^\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b", re.I)
+LINK_ATTRS = ("href", "onclick", "src", "action")
+
+
+def _bcids(text):
+    return [a or b for a, b in BCID_IN.findall(text or "")]
+
+
+def _html_entries(soup):
+    """(label, [bcid]) in page order: each <a> or onclick element (its text and title; BCIDs in href / onclick), each
+    <option> whose value is a BCID, each other text node. Entities are decoded (&lt;16 reads <16)."""
+    out = []
+
+    def walk(node):
+        for ch in node.children:
+            if isinstance(ch, Tag):
+                if ch.name in ("script", "style", "noscript", "template"):
+                    continue
+                if ch.name == "a" or ch.get("onclick"):
+                    attrs = " ".join(str(ch.get(k) or "") for k in LINK_ATTRS)
+                    out.append((f"{ch.get_text(' ', strip=True)} {ch.get('title') or ''}".strip(), _bcids(attrs)))
+                    continue
+                if ch.name == "option" and BCID_ONLY.match(str(ch.get("value") or "").strip()):
+                    out.append((ch.get_text(" ", strip=True), [str(ch.get("value")).strip()]))
+                    continue
+                walk(ch)
+            elif isinstance(ch, NavigableString) and not isinstance(ch, Comment):
+                t = str(ch).strip()
+                if t:
+                    out.append((t, []))
+    walk(soup)
+    return out
+
+
+def _js_entries(soup):
+    """(label, [bcid]) of every JS menu-tree call (M.addC / M.addE ...) in the page's scripts, in order: the label is
+    its first quoted string, the BCIDs come from all of its arguments."""
+    out = []
+    for sc in soup.find_all("script"):
+        for m in JS_CALL_RE.finditer(sc.string or sc.get_text() or ""):
+            strs = [unescape(a or b) for a, b in JS_STR_RE.findall(m.group(1))]
+            out.append((re.sub(r"<[^>]+>", " ", strs[0]).strip() if strs else "", _bcids(unescape(m.group(1)))))
+    return out
+
+
+def close_in_folders(html, exclude=()):
+    """FW-0034: [{'bcid', 'text'}] of the close-in open time folder named on a menu or open time page: a link (or a
+    folder <option>) whose own text names it, or the first link under a heading that names it, before the next
+    heading (any other text with letters that is not a month name). BCIDs in `exclude` (the regular pot and
+    Tradeboard folders) are never taken. [] when the page does not name the folder: nothing is guessed."""
+    found, seen = [], set(exclude or ())
+    soup = BeautifulSoup(html or "", "html.parser")
+    for entries in (_html_entries(soup), _js_entries(soup)):
+        sect = None
+        for label, ids in entries:
+            ids = [b for b in ids if b not in seen]
+            if CLOSE_IN_RE.search(label):
+                if ids:
+                    seen.add(ids[0])
+                    found.append({"bcid": ids[0], "text": label[:80]})
+                    sect = None
+                else:
+                    sect = label
+                continue
+            if sect is None:
+                continue
+            if ids:
+                seen.add(ids[0])
+                found.append({"bcid": ids[0], "text": sect[:80]})
+                sect = None
+            elif re.search(r"[A-Za-z]{2}", label) and not MONTH_WORD.match(label):
+                sect = None  # the next heading: the close-in section ended without a link
+    return found
+
+
+def pick_close_in(found, periods=()):
+    """The close-in BCID for the bid periods watched (the regular pot BCIDs' last part, e.g. '152'): the first found
+    for the earliest such period, else the first found; None when nothing was found."""
+    for p in sorted(periods or (), key=lambda x: int(x) if str(x).isdigit() else 0):
+        for f in found or []:
+            if f["bcid"].split(".")[-1] == str(p):
+                return f["bcid"]
+    return (found or [{}])[0].get("bcid")
 
 
 def bcid_key(b):
