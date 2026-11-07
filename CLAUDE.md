@@ -36,7 +36,8 @@ Pako HI Home Assistant). Read `HANDOFF.md` next: it lists everything open.
 - `watcher.py`: main loop, MQTT discovery (entities `*.flight_watcher_*`), pot / schedule / tradeboard / pairing
   detail reads via Playwright `fl.fetch`. Modules: `pot.py` (parsers), `far.py` (FAR 117), `recall.py`
   (Recall/O75 miss check, PWA 22.G.2), `versions.py` (schedule versions MM.NNN), `pdfs.py` (award and pairings
-  PDFs), `crewidx.py` (crew index), `tickets.py` (FW-nnnn tickets), `store.py` (SQLite), `web.py` (ingress UI).
+  PDFs), `crewidx.py` (crew index), `tickets.py` (FW-nnnn tickets), `trades.py` (trades seen on the schedule),
+  `ccr.py` (CCR file requests for Hark), `store.py` (SQLite), `web.py` (ingress UI).
 - Shared files on Pako: `/homeassistant/www/flight-watcher/pairings_<YYYY-MM>.json`, `finds_<YYYY-MM>.json`
   (`/www/flight-watcher/<name>/` for a second pilot), `/share/flight_watcher/` (uploads, crew_index/*.md, tickets/).
 - Dashboard cards live in `flight_watcher/www/` and ship with the app: `cards.py` copies them to `/config/www/` on

@@ -42,7 +42,7 @@ import seniority as SEN
 import wwwfiles as WF
 import trades as TR
 
-VERSION = "1.4.6"
+VERSION = "1.4.7"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
