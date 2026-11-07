@@ -680,16 +680,16 @@
 - id: '1793914999001'
   alias: Flight Watcher recall miss alert
   description: 'Pushes each missed Recall / Over 75 with Confirm / Not a miss buttons;
-    the answer goes back to the Watcher (recall.py). 1.4.6 (Ryan, Nov 6): a MISSED row
-    is a critical push (RECALL ALERT, sound at full volume through silent mode); POSSIBLE
-    would be time-sensitive.'
+    the answer goes back to the Watcher (recall.py). 1.4.6 (Ryan, Nov 6): a MISSED
+    row is a critical push (RECALL ALERT, sound at full volume through silent mode);
+    POSSIBLE would be time-sensitive.'
   triggers:
-  - trigger: mqtt
+  - id: miss
     topic: flight_watcher/event/recall_miss
-    id: miss
-  - trigger: event
-    event_type: mobile_app_notification_action
+    trigger: mqtt
+  - event_type: mobile_app_notification_action
     id: act
+    trigger: event
   conditions:
   - condition: template
     value_template: '{{ (trigger.id == ''miss'' and trigger.payload_json.verdict ==
@@ -708,15 +708,9 @@
             ''time-sensitive''} }}'
       - parallel:
         - action: notify.mobile_app_ryans_iphone
+          continue_on_error: true
           data:
-            title: '{{ ''RECALL ALERT: missed '' if ev.verdict == ''MISSED'' else ''Possible
-              missed '' }}{{ ''Over 75'' if ev.kind == ''o75'' else ''Recall'' }}
-              {{ ev.pairing }}'
-            message: '{{ ev.date }}: {{ ev.why }}'
             data:
-              tag: recall-{{ ev.date }}-{{ ev.pairing }}
-              url: /flight-watcher/recall
-              push: '{{ push }}'
               actions:
               - action: RECALL_CONFIRM|{{ ev.id }}
                 title: Yes, I missed it
@@ -725,17 +719,17 @@
               - action: URI
                 title: Review
                 uri: /flight-watcher/recall
-          continue_on_error: true
+              push: '{{ push }}'
+              tag: recall-{{ ev.date }}-{{ ev.pairing }}
+              url: /flight-watcher/recall
+            message: '{{ ev.date }}: {{ ev.why }}'
+            title: '{{ ''RECALL ALERT: missed '' if ev.verdict == ''MISSED'' else
+              ''Possible missed '' }}{{ ''Over 75'' if ev.kind == ''o75'' else ''Recall''
+              }} {{ ev.pairing }}'
         - action: notify.mobile_app_ryans_iphone_16
+          continue_on_error: true
           data:
-            title: '{{ ''RECALL ALERT: missed '' if ev.verdict == ''MISSED'' else ''Possible
-              missed '' }}{{ ''Over 75'' if ev.kind == ''o75'' else ''Recall'' }}
-              {{ ev.pairing }}'
-            message: '{{ ev.date }}: {{ ev.why }}'
             data:
-              tag: recall-{{ ev.date }}-{{ ev.pairing }}
-              url: /flight-watcher/recall
-              push: '{{ push }}'
               actions:
               - action: RECALL_CONFIRM|{{ ev.id }}
                 title: Yes, I missed it
@@ -744,54 +738,23 @@
               - action: URI
                 title: Review
                 uri: /flight-watcher/recall
-          continue_on_error: true
+              push: '{{ push }}'
+              tag: recall-{{ ev.date }}-{{ ev.pairing }}
+              url: /flight-watcher/recall
+            message: '{{ ev.date }}: {{ ev.why }}'
+            title: '{{ ''RECALL ALERT: missed '' if ev.verdict == ''MISSED'' else
+              ''Possible missed '' }}{{ ''Over 75'' if ev.kind == ''o75'' else ''Recall''
+              }} {{ ev.pairing }}'
     - conditions:
       - condition: trigger
         id: act
       sequence:
       - action: mqtt.publish
         data:
-          topic: flight_watcher/recall/act
           payload: '{{ {''id'': trigger.event.data.action.split(''|'', 1)[1], ''action'':
             ''confirm'' if trigger.event.data.action.startswith(''RECALL_CONFIRM'')
             else ''dismiss''} | tojson }}'
-  mode: queued
-- id: '1793915999003'
-  alias: Flight Watcher Hark CCR alert
-  description: '1.4.6 review (Nov 7): time-sensitive push when Hark may file a CCR
-    Ryan no longer wants filed (the row was superseded while Hark had it, or HOM made
-    a task after the request was taken back) or Hark filed one Ryan had already filed
-    or dismissed. Nothing tells HOM: Ryan completes the HOM task as skipped. Push isolation
-    (FW-0038): Ryan''s prefix only, to Ryan''s phones only.'
-  triggers:
-  - trigger: mqtt
-    topic: flight_watcher/event/recall_hark_alert
-  actions:
-  - variables:
-      ev: '{{ trigger.payload_json }}'
-  - parallel:
-    - action: notify.mobile_app_ryans_iphone
-      data:
-        title: 'Hark CCR: {{ ''Over 75'' if ev.kind == ''o75'' else ''Recall'' }} {{ ev.pairing
-          }} {{ ev.date }}'
-        message: '{{ ev.text }}'
-        data:
-          tag: recall-hark-{{ ev.rid }}
-          url: /flight-watcher/recall
-          push:
-            interruption-level: time-sensitive
-      continue_on_error: true
-    - action: notify.mobile_app_ryans_iphone_16
-      data:
-        title: 'Hark CCR: {{ ''Over 75'' if ev.kind == ''o75'' else ''Recall'' }} {{ ev.pairing
-          }} {{ ev.date }}'
-        message: '{{ ev.text }}'
-        data:
-          tag: recall-hark-{{ ev.rid }}
-          url: /flight-watcher/recall
-          push:
-            interruption-level: time-sensitive
-      continue_on_error: true
+          topic: flight_watcher/recall/act
   mode: queued
 - id: '1793915999002'
   alias: Flight Watcher new ticket
@@ -984,4 +947,41 @@
         message: '{{ msg }}'
         title: '{{ title }}'
   max: 30
+  mode: queued
+- id: '1793915999003'
+  alias: Flight Watcher Hark CCR alert
+  description: '1.4.6 review (Nov 7): time-sensitive push when Hark may file a CCR
+    Ryan no longer wants filed (the row was superseded while Hark had it, or HOM made
+    a task after the request was taken back) or Hark filed one Ryan had already filed
+    or dismissed. Nothing tells HOM: Ryan completes the HOM task as skipped. Push
+    isolation (FW-0038): Ryan''s prefix only, to Ryan''s phones only.'
+  triggers:
+  - topic: flight_watcher/event/recall_hark_alert
+    trigger: mqtt
+  actions:
+  - variables:
+      ev: '{{ trigger.payload_json }}'
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: time-sensitive
+          tag: recall-hark-{{ ev.rid }}
+          url: /flight-watcher/recall
+        message: '{{ ev.text }}'
+        title: 'Hark CCR: {{ ''Over 75'' if ev.kind == ''o75'' else ''Recall'' }}
+          {{ ev.pairing }} {{ ev.date }}'
+    - action: notify.mobile_app_ryans_iphone_16
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: time-sensitive
+          tag: recall-hark-{{ ev.rid }}
+          url: /flight-watcher/recall
+        message: '{{ ev.text }}'
+        title: 'Hark CCR: {{ ''Over 75'' if ev.kind == ''o75'' else ''Recall'' }}
+          {{ ev.pairing }} {{ ev.date }}'
   mode: queued
