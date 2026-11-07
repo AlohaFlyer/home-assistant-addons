@@ -5,7 +5,14 @@ may connect. Passwords are never shown or logged.
 1.4.5 (Ryan, Nov 6): JSON endpoints beside the page, same ingress-only access, for the dashboard uploads card
 (www/flight-watcher-uploads-card.js, admin only): GET api/uploads (what is on file) and POST api/upload (the page's
 own multipart form, the same checks and limits; the page and the card share one save path). An award upload is also
-read for dates of hire (seniority.award_parse) and merged into seniority.json (award_seniority)."""
+read for dates of hire (seniority.award_parse) and merged into seniority.json (award_seniority).
+
+1.4.8 (FW-0066, Ryan Nov 7: any user can see and upload, and pilot contact lists): kind 'contacts' (a PDF, CSV or XLSX
+pilot contact list) is read into /share/flight_watcher/contacts.json (mode 600; contacts.py) and its source kept mode
+600; save_upload is also the save path of an upload sent in chunks over MQTT by a user who is not an admin
+(chunks.py, watcher.upload_chunk), and every save runs under one lock shared by the pilot instances (save_lock)."""
+import contextlib
+import fcntl
 import html
 import json
 import os
@@ -18,13 +25,21 @@ from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+import contacts as CT
 import crewidx as CI
 import seniority as SEN
 
 INGRESS_IP = "172.30.32.2"
 UPLOAD_DIR = "/share/flight_watcher/uploads"
 PAIRINGS_DIR = "/homeassistant/www/flight-watcher"  # watcher.CARD_PAIRINGS: the pairing files the crew index reads
-UPLOAD_MAX = 25_000_000  # the app's own hard cap on a request body
+UPLOAD_MAX = 25_000_000  # the app's own hard cap on a request body (and on a file sent in chunks over MQTT)
+CONTACTS_FILE = "/share/flight_watcher/contacts.json"  # FW-0066: the parsed pilot contact list (mode 600, not /config/www)
+# FW-0066: every save (the Web UI, the card's ingress path, a chunked upload on either pilot instance) runs under this
+# lock; both instances run in this one container, so /tmp is theirs alone.
+LOCK_PATH = "/tmp/flight-watcher-uploads.lock"
+_SAVE_LOCK = threading.Lock()
+KINDS = ("award", "pairings", "seniority", "contacts")
+CONTACTS_RE = re.compile(r"contacts_(\d{4}-\d{2}-\d{2})\.(pdf|csv|xlsx)")
 # 1.4.5 review fix: what reaches the app through ingress. The Supervisor's ingress proxy reads a POST body whole
 # (supervisor/api/ingress.py, no ingress_stream in config.yaml) and its aiohttp app refuses a body over 16 MiB
 # (supervisor/api/__init__.py, MAX_CLIENT_SIZE = 1024**2 * 16) with HTTP 413, before the app sees it. api/uploads
@@ -56,9 +71,12 @@ instance. Give its list date if the PDF does not print one. Home Assistant's app
 {max_mb} MB.</p>
 <form method="post" action="upload" enctype="multipart/form-data">
 Month <input type="month" name="month" value="{month}"> &nbsp;
-<select name="kind"><option value="award">Monthly award</option><option value="pairings">Pairings package</option><option value="seniority">Pilot seniority list</option></select> &nbsp;
+<select name="kind"><option value="award">Monthly award</option><option value="pairings">Pairings package</option><option value="seniority">Pilot seniority list</option><option value="contacts">Pilot contact list</option></select> &nbsp;
 <label>List date <input type="date" name="list_date" title="Seniority list only, optional"></label> &nbsp;
-<input type="file" name="pdf" accept="application/pdf,.pdf" required> &nbsp;<button type="submit">Upload</button></form>
+<input type="file" name="pdf" accept="application/pdf,.pdf,.csv,.xlsx,text/csv" required> &nbsp;<button type="submit">Upload</button></form>
+<p class="note">1.4.8 (FW-0066): a pilot contact list (PDF, CSV or XLSX: employee number, name, phones, emails) is kept
+as /share/flight_watcher/contacts.json (readable by this app only); the pilot card shows a call, text and mail link
+for the pilot looked up.</p>
 {uploads}{seniority}
 <h3 id="rules">Rules</h3>
 <p class="note">FLICA is read only: rules alert and log what they <i>would</i> submit, and nothing is ever sent to
@@ -107,17 +125,11 @@ def _month_default():
 
 
 def _uploads_table():
-    try:
-        files = sorted(f for f in os.listdir(UPLOAD_DIR) if f.endswith(".pdf") and not f.endswith(".new.pdf"))
-    except OSError:
-        files = []
+    files = sorted(uploads_list(), key=lambda f: f["name"])
     if not files:
         return "<p class='note'>Nothing uploaded yet.</p>"
-    rows = []
-    for f in files:
-        st = os.stat(os.path.join(UPLOAD_DIR, f))
-        txt = os.path.exists(os.path.join(UPLOAD_DIR, f[:-4] + ".txt"))
-        rows.append({"file": f, "size": f"{st.st_size // 1024} KB", "text copy": "yes" if txt else "no"})
+    rows = [{"file": f["name"], "size": f"{f['size'] // 1024} KB", "text copy": "yes" if f["has_text"] else "no"}
+            for f in files]
     return _table(rows, ["file", "size", "text copy"])
 
 
@@ -306,12 +318,12 @@ def _seniority_status():
 
 
 def _form(ctype, body):
-    """(fields, pdf bytes or None) from a multipart/form-data body."""
+    """(fields, file bytes or None) from a multipart/form-data body (the file in the part named pdf, or file)."""
     msg = BytesParser(policy=HTTP).parsebytes(b"Content-Type: " + ctype.encode() + b"\r\n\r\n" + body)
     fields, data = {}, None
     for part in msg.iter_parts():
         name = part.get_param("name", header="content-disposition")
-        if name == "pdf":
+        if name in ("pdf", "file"):
             data = part.get_payload(decode=True)
         elif name:
             fields[name] = (part.get_payload(decode=True) or b"").decode(errors="replace").strip()
@@ -327,21 +339,54 @@ def _why_no_text(e):
     return str(e)[:120]
 
 
+@contextlib.contextmanager
+def save_lock():
+    """FW-0066: one save at a time, across threads (the Web UI, the MQTT thread's worker) and across the pilot
+    instances' processes (an flock on LOCK_PATH)."""
+    with _SAVE_LOCK:
+        fd = None
+        try:
+            fd = os.open(LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError:
+            if fd is not None:
+                os.close(fd)
+            fd = None  # no lock file (a read-only /tmp): the thread lock still holds within this process
+        try:
+            yield
+        finally:
+            if fd is not None:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+
+
 def save_upload(fields, data, log):
-    """The one save path of the Web UI page and the dashboard card (1.4.5): {ok, message (plain text), file?,
-    seniority?}. Stores one PDF as <YYYY-MM>_<award|pairings>.pdf plus a pdftotext -layout copy; a PDF that gives no
-    text copy is refused and the month's file on file is kept. An award's text is
-    also read for dates of hire (award_seniority; it never fails the upload). FW-0062: kind 'seniority' (no month)
-    goes to _save_seniority: kept as seniority_<YYYY-MM-DD, HST upload day>.pdf and read into seniority.json only when
-    it gives pilot rows."""
+    """The one save path of the Web UI page, the dashboard card's ingress path and (1.4.8) an upload sent in chunks
+    over MQTT: {ok, message (plain text), file?, seniority?, contacts?}. Stores one PDF as
+    <YYYY-MM>_<award|pairings>.pdf plus a pdftotext -layout copy; a PDF that gives no text copy is refused and the
+    month's file on file is kept. An award's text is also read for dates of hire (award_seniority; it never fails the
+    upload). FW-0062: kind 'seniority' (no month) goes to _save_seniority: kept as seniority_<YYYY-MM-DD, HST upload
+    day>.pdf and read into seniority.json only when it gives pilot rows. FW-0066: kind 'contacts' goes to
+    _save_contacts."""
     month, kind = fields.get("month", ""), fields.get("kind", "")
-    if kind not in ("award", "pairings", "seniority") or (kind != "seniority" and not re.fullmatch(r"\d{4}-\d{2}", month)):
+    if kind not in KINDS or (kind in ("award", "pairings") and not re.fullmatch(r"\d{4}-\d{2}", month)):
         return {"ok": False, "message": "Pick a month and a kind."}
-    if not data or not data.startswith(b"%PDF"):
+    if kind == "contacts":
+        if CT.sniff(data) is None:
+            return {"ok": False, "message": "That file is not a PDF, CSV or XLSX contact list."}
+    elif not data or not data.startswith(b"%PDF"):
         return {"ok": False, "message": "That file is not a PDF."}
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    if kind == "seniority":
-        return _save_seniority(data, fields, log)
+    with save_lock():
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        if kind == "contacts":
+            return _save_contacts(data, log)
+        if kind == "seniority":
+            return _save_seniority(data, fields, log)
+        return _save_monthly(data, month, kind, log)
+
+
+def _save_monthly(data, month, kind, log):
+    """An award or a pairings package (save_upload, under save_lock)."""
     path, kb = os.path.join(UPLOAD_DIR, f"{month}_{kind}.pdf"), len(data) // 1024
     tmp, txt = path[:-4] + ".new.pdf", path[:-4] + ".txt"
     # 1.4.5 review fix: staged like a seniority list (_save_seniority). The PDF is written and read under
@@ -389,9 +434,11 @@ def upload_result(ctype, body, log):
         return {"ok": False, "message": f"Upload failed: {e}"}
 
 
-def _save_upload(ctype, body, log):
+def _save_upload(ctype, body, log, after=None):
     """The Web UI page's upload: save_upload's result as one HTML line."""
     r = upload_result(ctype, body, log)
+    if after:
+        after(r)
     return f"<p class='{'ok' if r['ok'] else 'err'}'>{html.escape(r['message'])}</p>"
 
 
@@ -444,12 +491,89 @@ def _save_seniority(data, fields, log):
             "file": name + ".pdf", "seniority": {"view": seniority_summary(view)}}
 
 
-def uploads_list():
-    """1.4.5, api/uploads: the PDFs on file, newest first: {name, kind (award | pairings | seniority | other),
-    month (YYYY-MM; '' for a seniority list), day (a seniority list's HST upload day), size (bytes), uploaded_at (the
-    file time, HST ISO), has_text (a pdftotext copy exists, so the Watcher can read it)}."""
+def _private(path):
+    """FW-0066: a contact list's files are readable by this app only."""
     try:
-        names = sorted(f for f in os.listdir(UPLOAD_DIR) if f.endswith(".pdf") and not f.endswith(".new.pdf"))
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _save_contacts(data, log):
+    """FW-0066: a pilot contact list (PDF, CSV or XLSX; the type is read from the bytes). It is written mode 600
+    under contacts_<HST day>.new.<ext> and read there (a PDF from its pdftotext copy); only a list that gives pilot
+    contacts (a phone or an email with a name or employee number) replaces the one on file: it becomes
+    contacts_<YYYY-MM-DD>.<ext> (any older contact list file goes) and CONTACTS_FILE is rewritten (mode 600). A refused
+    file is deleted. The result and the log carry counts only, never a name, number or address."""
+    ext = CT.sniff(data)
+    if ext is None:
+        return {"ok": False, "message": "That file is not a PDF, CSV or XLSX contact list."}
+    now = _hst_now()
+    name = f"contacts_{now.strftime('%Y-%m-%d')}"
+    final, tmp = os.path.join(UPLOAD_DIR, f"{name}.{ext}"), os.path.join(UPLOAD_DIR, f"{name}.new.{ext}")
+    ttxt = tmp.rsplit(".", 1)[0] + ".txt"
+    kb, kept = len(data) // 1024, "the contact list on file is kept."
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        text = None
+        if ext == "pdf":
+            try:
+                subprocess.run(["pdftotext", "-layout", tmp, ttxt], check=True, timeout=120)
+                _private(ttxt)
+                text = open(ttxt, encoding="utf-8", errors="replace").read()
+            except Exception as e:
+                log.info("upload: contact list (%d KB) gave no text copy; not kept", kb)
+                return {"ok": False, "message": f"Not kept: {name}.pdf ({kb} KB) gave no text copy ({_why_no_text(e)}), "
+                                                f"so the list cannot be read; {kept}"}
+        try:
+            parsed = CT.parse(data, ext, text)
+        except Exception as e:
+            log.info("upload: contact list (%d KB, %s) not read: %s", kb, ext, type(e).__name__)
+            return {"ok": False, "message": f"Not kept: {name}.{ext} ({kb} KB) could not be read ({type(e).__name__}); "
+                                            f"{kept}"}
+        if not parsed["entries"]:
+            log.info("upload: contact list (%d KB, %s) gave no pilot contacts (%d lines); not kept", kb, ext,
+                     parsed["lines"])
+            return {"ok": False, "message": f"Not kept: {name}.{ext} ({kb} KB). No pilot contacts were found in it "
+                                            "(each pilot needs a name or employee number with a phone or an email); "
+                                            f"{kept}"}
+        for old in os.listdir(UPLOAD_DIR):
+            if CONTACTS_RE.fullmatch(old) or re.fullmatch(r"contacts_\d{4}-\d{2}-\d{2}\.txt", old):
+                try:
+                    os.remove(os.path.join(UPLOAD_DIR, old))
+                except OSError:
+                    pass
+        os.replace(tmp, final)
+        if text is not None:
+            os.replace(ttxt, final.rsplit(".", 1)[0] + ".txt")
+        d = CT.build(parsed, os.path.basename(final), now.isoformat(timespec="seconds"))
+        CT.store(CONTACTS_FILE, d)
+    finally:
+        for f in (tmp, ttxt):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+    log.info("upload: pilot contact list read, %d pilots (%d with a phone, %d with an email, %d lines not read, "
+             "%d with neither); saved (%d KB)", d["count"], d["with_phone"], d["with_email"], d["rejects"],
+             d["skipped"], kb)
+    more = f" {d['rejects']} lines with a phone or email but no pilot were not read." if d["rejects"] else ""
+    return {"ok": True, "message": f"Saved {os.path.basename(final)} ({kb} KB). Pilot contacts: {d['count']} "
+                                   f"pilot{'' if d['count'] == 1 else 's'}, "
+                                   f"{d['with_phone']} with a phone, {d['with_email']} with an email.{more}",
+            "file": os.path.basename(final), "contacts": CT.summary(d)}
+
+
+def uploads_list():
+    """1.4.5, api/uploads: the files on file, newest first: {name, kind (award | pairings | seniority | contacts |
+    other), month (YYYY-MM; '' for a seniority or contact list), day (a seniority or contact list's HST upload day),
+    size (bytes), uploaded_at (the file time, HST ISO), has_text (the Watcher can read it: a pdftotext copy beside a
+    PDF; a CSV or XLSX contact list is read as it is)}. File names and sizes only: never a file's content."""
+    try:
+        names = sorted(f for f in os.listdir(UPLOAD_DIR) if ".new." not in f and
+                       (f.endswith(".pdf") or CONTACTS_RE.fullmatch(f)))
     except OSError:
         return []
     out = []
@@ -460,9 +584,12 @@ def uploads_list():
             continue
         m = re.fullmatch(r"(\d{4}-\d{2})_(award|pairings)\.pdf", f)
         n = re.fullmatch(r"seniority_(\d{4}-\d{2}-\d{2})\.pdf", f)
-        out.append({"name": f, "kind": m.group(2) if m else "seniority" if n else "other", "month": m.group(1) if m else "",
-                    "day": n.group(1) if n else "", "size": st.st_size, "uploaded_at": hst_iso(st.st_mtime),
-                    "has_text": os.path.exists(os.path.join(UPLOAD_DIR, f[:-4] + ".txt"))})
+        c = CONTACTS_RE.fullmatch(f)
+        kind = m.group(2) if m else "seniority" if n else "contacts" if c else "other"
+        text = (c and c.group(2) != "pdf") or os.path.exists(os.path.join(UPLOAD_DIR, f.rsplit(".", 1)[0] + ".txt"))
+        out.append({"name": f, "kind": kind, "month": m.group(1) if m else "",
+                    "day": n.group(1) if n else c.group(1) if c else "", "size": st.st_size,
+                    "uploaded_at": hst_iso(st.st_mtime), "has_text": bool(text)})
     out.sort(key=lambda x: x["uploaded_at"], reverse=True)
     return out
 
@@ -491,12 +618,15 @@ def uploads_wanted(today=None, pdir=None, files=None):
 
 
 def uploads_json(version):
-    """api/uploads: {files, seniority (seniority_summary of seniority.json, or None), version, max_bytes (the largest
-    PDF that gets through Home Assistant's ingress proxy, INGRESS_MAX), wanted (uploads_wanted: the pairings packages
-    the crew index still needs)}."""
+    """api/uploads (and, 1.4.8, sensor.<prefix>_uploads): {files, seniority (seniority_summary of seniority.json, or
+    None), contacts (contacts.summary of contacts.json: counts and its file name only, or None), version, max_bytes
+    (the largest file that gets through Home Assistant's ingress proxy, INGRESS_MAX), mqtt_max_bytes (the largest file
+    sent in chunks over MQTT, UPLOAD_MAX), wanted (uploads_wanted: the pairings packages the crew index still
+    needs)}."""
     files = uploads_list()
-    return {"files": files, "seniority": seniority_summary(_load_json(seniority_file())), "version": version,
-            "max_bytes": min(UPLOAD_MAX, INGRESS_MAX), "wanted": uploads_wanted(files=files)}
+    return {"files": files, "seniority": seniority_summary(_load_json(seniority_file())),
+            "contacts": CT.summary(CT.load(CONTACTS_FILE)), "version": version,
+            "max_bytes": min(UPLOAD_MAX, INGRESS_MAX), "mqtt_max_bytes": UPLOAD_MAX, "wanted": uploads_wanted(files=files)}
 
 
 SETTINGS_FIELDS = (  # (key, label, secret)
@@ -542,7 +672,17 @@ def parse_settings(body):
 
 
 def serve(port, version, get_rules, save_rules, store, log, get_settings=None, save_settings=None,
-          clear_settings=None):
+          clear_settings=None, on_saved=None):
+    """The ingress page and its JSON endpoints. on_saved (1.4.8) runs after an upload is saved (the Watcher then
+    publishes sensor.<prefix>_uploads); its failure never fails the upload."""
+    def saved(r):
+        if r.get("ok") and on_saved:
+            try:
+                on_saved()
+            except Exception as e:  # noqa: BLE001
+                log.info("upload: after-save hook failed: %s", type(e).__name__)
+        return r
+
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -615,12 +755,12 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
                     return self._json(413, {"ok": False, "message": f"File too large ({UPLOAD_MAX // 1_000_000} MB max)."})
                 if n <= 0:
                     return self._json(400, {"ok": False, "message": "No file received."})
-                r = upload_result(ctype, self.rfile.read(n), log)
+                r = saved(upload_result(ctype, self.rfile.read(n), log))
                 return self._json(200 if r["ok"] else 400, r)
             if self.path.rstrip("/").endswith("upload"):
                 if n > UPLOAD_MAX:
                     return self._page("<p class='err'>File too large (25 MB max).</p>")
-                return self._page(_save_upload(self.headers.get("Content-Type", ""), self.rfile.read(n), log))
+                return self._page(_save_upload(self.headers.get("Content-Type", ""), self.rfile.read(n), log, saved))
             if n > 200_000:
                 self.send_error(413)
                 return

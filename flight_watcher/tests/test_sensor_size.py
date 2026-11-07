@@ -195,6 +195,20 @@ def _fill(W, fake, tmp_path, monkeypatch):
     W.versions_check(force_pub=True)
     W.publish_recall()
     W.publish_finds()  # and the pickers
+    # FW-0066: the uploads list with 90 files on file, and an upload status carrying its recent results
+    busy = tmp_path / "uploads_busy"
+    busy.mkdir()
+    for k in range(30):
+        for kind in ("award", "pairings"):
+            (busy / f"20{24 + k // 12}-{1 + k % 12:02d}_{kind}.pdf").write_bytes(b"%PDF-1.4")
+        (busy / f"seniority_2026-{1 + k % 12:02d}-{1 + k:02d}.pdf").write_bytes(b"%PDF-1.4")
+    monkeypatch.setattr(W.web, "UPLOAD_DIR", str(busy))
+    monkeypatch.setattr(W.web, "CONTACTS_FILE", str(tmp_path / "contacts.json"))
+    monkeypatch.setattr(W.web, "PAIRINGS_DIR", str(tmp_path / "www" / "flight-watcher"))
+    W.publish_uploads(force=True)
+    for i in range(8):
+        W.publish_upload_status({"id": f"{'a' * 15}{i}", "kind": "award", "state": "done", "ok": True, "got": 99,
+                                 "total": 99, "message": "Saved 2026-12_award.pdf (1743 KB). " + "m" * 560})
     # the ones published inline in a FLICA read: the payloads those reads build, through the same pub()
     W.pub("pot/state", {"count": 25, "pairings": [_pot_row(i) for i in range(25)]})
     W.pub("schedule", {"updated": "Nov 6, 2026 14:01:09", "source": "FLICA mobile schedule (Watcher)", "checked": W.now_iso(),

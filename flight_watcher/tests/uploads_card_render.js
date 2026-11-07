@@ -1,11 +1,14 @@
 // 1.4.5: renders www/flight-watcher-uploads-card.js in Chromium (node Playwright) against a stubbed hass.callWS and
 // stubbed ingress answers (page.route), uploads a made-up PDF and measures the card at 390 px and 1100 px.
-// Usage: node tests/uploads_card_render.js <card.js> <screenshot dir>. Prints one JSON line; test_uploads_card.py
-// checks it. Made-up data only.
+// 1.4.8 (FW-0066): a user who is not an admin gets the same card, fed by sensor.flight_watcher_uploads, and uploads a
+// made-up contact list in chunks over a stubbed mqtt.publish, sealed by Chromium's WebCrypto with the public key given.
+// Usage: node tests/uploads_card_render.js <card.js> <screenshot dir> [<public key, base64 SPKI>]. Prints one JSON line;
+// test_uploads_card.py checks it. Made-up data only.
 const fs = require("fs");
 const path = require("path");
 
-const [, , cardPath, outDir] = process.argv;
+const [, , cardPath, outDir, pubKey] = process.argv;
+const CSV = "Name,Emp #,Cell,Email\nDoe, Jane,10001,808-555-0101,jane.doe@example.com\n";
 const SESSION = "f".repeat(128);
 const BAD = "<img src=x onerror=window.pwned=1>";
 
@@ -25,6 +28,12 @@ function initialData() {
   };
 }
 
+function userStates() {
+  const d = initialData();
+  return { "sensor.flight_watcher_uploads": { state: "4", last_updated: "t1", attributes: { ...d, mqtt_max_bytes: 25000000, contacts: null } },
+    "sensor.flight_watcher_settings": { state: "True", attributes: { pubkey: pubKey || "", kid: "" } } };
+}
+
 function page(src, admin) {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>body{margin:0;padding:8px 16px;font-family:Roboto,sans-serif;background:#f4f4f4;color:#212121;
@@ -38,12 +47,29 @@ window.ws = [];</script>
 <script>${src}</script>
 <script>
 const c = document.createElement("flight-watcher-uploads-card"); c.setConfig({}); document.body.appendChild(c);
-c.hass = { user: { is_admin: ${admin ? "true" : "false"} }, callWS: async (m) => {
+window.pubs = [];
+let H = { user: { is_admin: ${admin ? "true" : "false"} }, states: ${admin ? "{}" : JSON.stringify(userStates())}, callWS: async (m) => {
   window.ws.push(m.endpoint);
   if (m.endpoint.endsWith("/info")) return { ingress_url: "/api/hassio_ingress/tok123/", state: "started", ingress: true };
   if (m.endpoint === "/ingress/session") return { session: "${SESSION}" };
   return {};
+}, callService: async (d, s, data) => {  // FW-0066: mqtt.publish; the Watcher's answer comes back on the status sensor
+  window.pubs.push({ d, s, data });
+  const p = JSON.parse(data.payload);
+  if (p.i === p.n - 1) setTimeout(() => {
+    const files = [{ name: "contacts_2026-11-20.csv", kind: "contacts", month: "", day: "2026-11-20", size: 120, uploaded_at: "2026-11-20T09:31:00-10:00", has_text: true }, ...H.states["sensor.flight_watcher_uploads"].attributes.files];
+    H = { ...H, states: { ...H.states,
+      "sensor.flight_watcher_uploads": { state: "5", last_updated: "t2", attributes: { ...H.states["sensor.flight_watcher_uploads"].attributes, files,
+        contacts: { count: 1, with_phone: 1, with_email: 1, with_emp: 1, rejects: 0, file: "contacts_2026-11-20.csv", uploaded_at: "2026-11-20T09:31:00-10:00" } } },
+      // as Home Assistant gives it: state is the sensor's state, never an attribute (MQTT_ATTRIBUTES_BLOCKED)
+      "sensor.flight_watcher_upload_status": { state: "done", last_updated: "t3", attributes: { id: p.id, phase: "done", ok: true,
+        message: "Saved contacts_2026-11-20.csv (0 KB). Pilot contacts: 1 pilot, 1 with a phone, 1 with an email.",
+        recent: [{ id: p.id, kind: "contacts", ok: true, at: "t3",
+          message: "Saved contacts_2026-11-20.csv (0 KB). Pilot contacts: 1 pilot, 1 with a phone, 1 with an email." }] } } } };
+    c.hass = H;
+  }, 50);
 } };
+c.hass = H;
 </script></body></html>`;
 }
 
@@ -132,15 +158,33 @@ c.hass = { user: { is_admin: ${admin ? "true" : "false"} }, callWS: async (m) =>
     res.fit["1100"] = await fit(1100);
     await pg.screenshot({ path: path.join(outDir, "uploads_1100.png"), fullPage: true });
     res.shots.push("uploads_1100.png");
-    // a user who is not an admin: a note, no supervisor call, no ingress request
+    // FW-0066: a user who is not an admin: the list from the sensor, a contact list sent in sealed chunks over
+    // mqtt.publish, no supervisor call, no ingress request
     const before = ingressHits;
     const up = await ctx.newPage();
-    await up.setViewportSize({ width: 390, height: 400 });
+    await up.setViewportSize({ width: 390, height: 900 });
     await up.goto("https://fw.test/user");
-    await up.waitForTimeout(300);
-    res.user = { ws: (await up.evaluate(() => window.ws)).length, ingress: ingressHits - before,
-      text: (await up.evaluate(() => document.querySelector("flight-watcher-uploads-card").shadowRoot.querySelector("ha-card").textContent)).trim() };
-    await up.screenshot({ path: path.join(outDir, "uploads_user_390.png") });
+    await up.waitForFunction(() => document.querySelector("flight-watcher-uploads-card").shadowRoot.querySelectorAll(".f").length > 0);
+    const uc = up.locator("flight-watcher-uploads-card");
+    const urows = () => up.evaluate(() => document.querySelector("flight-watcher-uploads-card").shadowRoot.querySelectorAll(".f").length);
+    const rowsBefore = await urows();
+    await uc.locator("[data-kind]").selectOption("contacts");
+    const ctToggle = await up.evaluate(() => { const r = document.querySelector("flight-watcher-uploads-card").shadowRoot;
+      return { month_hidden: r.querySelector("[data-ml]").hidden, date_hidden: r.querySelector("[data-dl]").hidden,
+        accept: r.querySelector("[data-pdf]").accept, label: r.querySelector("[data-fl]").textContent }; });
+    await uc.locator("[data-pdf]").setInputFiles({ name: "contacts.csv", mimeType: "text/csv", buffer: Buffer.from(CSV) });
+    await uc.locator("[data-up]").click();
+    await up.waitForFunction(() => { const s = document.querySelector("flight-watcher-uploads-card").shadowRoot.querySelector("[data-msg] span");
+      return s && s.textContent.length > 0; });
+    const um = await up.evaluate(() => { const s = document.querySelector("flight-watcher-uploads-card").shadowRoot.querySelector("[data-msg] span");
+      return { text: s.textContent, cls: s.className }; });
+    res.user = { ws: (await up.evaluate(() => window.ws)).length, ingress: ingressHits - before, rows_before: rowsBefore,
+      rows_after: await urows(), toggle: ctToggle, msg: um.text, msg_class: um.cls, pubs: await up.evaluate(() => window.pubs),
+      secure: await up.evaluate(() => window.isSecureContext && !!crypto.subtle),
+      sen: await up.evaluate(() => document.querySelector("flight-watcher-uploads-card").shadowRoot.querySelector("[data-sen]").textContent),
+      fit: await up.evaluate(() => { const c = document.querySelector("flight-watcher-uploads-card").shadowRoot.querySelector("ha-card");
+        return { doc: document.documentElement.scrollWidth, win: window.innerWidth, card: c.getBoundingClientRect().right, inner: c.scrollWidth - c.clientWidth }; }) };
+    await up.screenshot({ path: path.join(outDir, "uploads_user_390.png"), fullPage: true });
     res.shots.push("uploads_user_390.png");
   } finally {
     await browser.close();

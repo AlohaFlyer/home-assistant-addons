@@ -2,7 +2,10 @@
    Tap a pilot's name on the pickers list or in Recently added (link #pilot=EMP) and the Watcher reads that
    pilot's current month from Tools > Schedule Lookup (read only) and publishes sensor.flight_watcher_pilot_schedule;
    this card draws it in the same calendar shape as the schedule card: Day, Date, Trip, Layover (boxed per
-   trip), Block, Credit, Soft, Crew. Nothing is written to FLICA. */
+   trip), Block, Credit, Soft, Crew. Nothing is written to FLICA.
+   1.4.8 (FW-0066): when the pilot contact list (uploaded on the Settings tab) has the looked-up pilot, the Watcher adds
+   that one pilot's entry (attribute contact: name, phones, emails) and the card shows tap-to-call, tap-to-text and mail
+   links beside the name, and beside the pilot's own name in the crew lists. */
 const DOW = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const PILOT_EV = "flight-watcher-pilot";  // the lookup event (pickers, pilot lookup, the pick list, #pilot= links)
@@ -10,6 +13,15 @@ const PILOT_SAME_MS = 2000;  // FW-0025: the same lookup again inside 2 s is one
 // FW-0062: the viewer's own tax settings (the schedule card's), for the pay line's Pay-Net estimate
 const TAX_HELPERS = ["input_number.flight_watcher_federal_tax_pct", "input_number.flight_watcher_state_tax_pct"];
 const usd = (v) => "$" + Math.round(v).toLocaleString("en-US");
+// FW-0066: only these reach a link (a tel: number of digits, an address with no space, quote or angle bracket)
+const PILOT_TEL_RE = /^\+?\d{7,15}$/;
+const PILOT_MAIL_RE = /^[^\s@<>"'&]+@[^\s@<>"'&]+\.[A-Za-z]{2,}$/;
+const pilotNameKey = (n) => {  // 'Doe, Jane A' / 'DOE, JANE' -> 'doe,jane' (contacts._key)
+  const s = String(n || "").toLowerCase().replace(/[^a-z, ]/g, "");
+  if (!s.includes(",")) return "";
+  const [last, first] = [s.slice(0, s.indexOf(",")), s.slice(s.indexOf(",") + 1)];
+  return `${last.trim().split(/\s+/).join(" ")},${first.trim().split(/\s+/)[0] || ""}`;
+};
 
 class FlightWatcherPilotCard extends HTMLElement {
   // FW-0025: HA calls setConfig more than once per card and keeps replaced card elements alive, and each call used to
@@ -200,6 +212,23 @@ class FlightWatcherPilotCard extends HTMLElement {
     return { month, from, days, items, also };
   }
   _esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+  _contact(a, mini) {  // FW-0066: call / text / mail links for the looked-up pilot (attribute contact), '' when none
+    const c = a && a.contact;
+    if (!c || typeof c !== "object") return "";
+    const out = [];
+    for (const p of (Array.isArray(c.phones) ? c.phones : []).slice(0, 3)) {
+      const tel = String((p && p.tel) || "");
+      if (!PILOT_TEL_RE.test(tel)) continue;
+      const lab = p.label && p.label !== "phone" ? ` ${this._esc(p.label)}` : "";
+      const num = this._esc(p.number || tel);
+      out.push(`<a class="ct" href="tel:${tel}" title="Call ${num}">Call${mini ? "" : lab}</a>`);
+      if (p.label !== "home" && p.label !== "work") out.push(`<a class="ct" href="sms:${tel}" title="Text ${num}">Text${mini ? "" : lab}</a>`);  // no text to a landline
+      if (mini) break;  // in a crew list: the first number only
+    }
+    const mails = (Array.isArray(c.emails) ? c.emails : []).map(String).filter((m) => PILOT_MAIL_RE.test(m));
+    for (const m of mails.slice(0, mini ? 1 : 2)) out.push(`<a class="ct" href="mailto:${this._esc(m)}" title="Mail ${this._esc(m)}">Mail</a>`);
+    return out.length ? `<span class="cts${mini ? " mini" : ""}">${out.join("")}</span>` : "";
+  }
   _hol(iso) {
     const [y, m, d] = iso.split("-").map(Number);
     const nth = (mo, dow, n) => { const f = new Date(Date.UTC(y, mo - 1, 1)).getUTCDay(); return 1 + ((dow - f + 7) % 7) + (n - 1) * 7; };
@@ -241,6 +270,8 @@ class FlightWatcherPilotCard extends HTMLElement {
         .none{padding:8px;color:var(--secondary-text-color)}
         .rb{margin-top:10px}.rbh{margin:0 0 4px}details.rb summary{cursor:pointer;margin:0 0 4px}.also{margin:6px 0 0}.also b{color:var(--primary-text-color)}
         .picks{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0}
+        .cts{display:inline-flex;flex-wrap:wrap;gap:6px}.ct{padding:4px 10px;border-radius:14px;background:var(--primary-color);color:var(--text-primary-color,#fff);text-decoration:none;font-size:12px;font-weight:600;line-height:1.3}
+        .cts.mini{gap:6px;margin-left:4px}.cts.mini .ct{padding:4px 8px;font-size:11px;font-weight:400;line-height:16px}
         .pk{padding:6px 10px;border:1px solid var(--divider-color,#ccc);border-radius:6px;background:var(--card-background-color,#fff);color:var(--primary-text-color);cursor:pointer;font-size:13px}
         @media (prefers-color-scheme: dark){
           .cal tr.bx td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb}
@@ -262,19 +293,24 @@ class FlightWatcherPilotCard extends HTMLElement {
     this.style.display = "";
     const name = a.name || "";
     const emp = a.emp || this._want || "";
+    // FW-0066: the contact belongs to the pilot the sensor holds; while a new lookup is still to answer, none is shown
+    const ct = loading ? "" : this._contact(a, false);
+    // the pilot's own name in a crew list: FLICA's spelling (the sensor's name) or the contact list's ('Lane Jr, Chris')
+    this._ctKeys = ct ? [pilotNameKey(name), pilotNameKey(a.contact && a.contact.name)].filter(Boolean) : [];
+    this._ctMini = ct ? this._contact(a, true) : "";
     if (loading || a.status === "loading") {
-      body.innerHTML = `<div class="hd"><h3>${this._esc(name || "Pilot")} (${this._esc(emp)})</h3><span class="u">reading this pilot's month from FLICA (Schedule Lookup, read only), 20 to 40 s</span><span class="x" title="close">&times;</span></div>`;
+      body.innerHTML = `<div class="hd"><h3>${this._esc(name || "Pilot")} (${this._esc(emp)})</h3>${ct}<span class="u">reading this pilot's month from FLICA (Schedule Lookup, read only), 20 to 40 s</span><span class="x" title="close">&times;</span></div>`;
       return;
     }
     if (!a.month) {
       const picks = (a.matches || []).map((m) => `<button class="pk" data-emp="${this._esc(m.emp)}" data-name="${this._esc(m.name)}">${this._esc(m.name)} <span class="u">${this._esc(m.pos)} ${this._esc(m.emp)}</span></button>`).join("");
-      body.innerHTML = `<div class="hd"><h3>${this._esc(name || "Pilot")}${emp ? " (" + this._esc(emp) + ")" : ""}</h3><span class="u">${this._esc(/application error|customer care/i.test(a.status || "") ? "FLICA showed its error page for this schedule (often a pilot who has hidden it, or a FLICA hiccup). Nothing to read; try again later." : (a.status || "no data"))}</span><span class="x" title="close">&times;</span></div>${picks ? `<div class="picks">${picks}</div>` : ""}`;
+      body.innerHTML = `<div class="hd"><h3>${this._esc(name || "Pilot")}${emp ? " (" + this._esc(emp) + ")" : ""}</h3>${ct}<span class="u">${this._esc(/application error|customer care/i.test(a.status || "") ? "FLICA showed its error page for this schedule (often a pilot who has hidden it, or a FLICA hiccup). Nothing to read; try again later." : (a.status || "no data"))}</span><span class="x" title="close">&times;</span></div>${picks ? `<div class="picks">${picks}</div>` : ""}`;
       body.insertAdjacentHTML("beforeend", this._recon(a, false));  // 0.10.1 crew index; FW-0002: in the schedule grid
       return;
     }
     const [y, m] = a.month.split("-").map(Number);
     const t = a.totals || {};
-    body.innerHTML = `<div class="hd"><h3>${this._esc(name)} (${this._esc(emp)})</h3><span class="u">${MONTHS[m - 1]} ${y} · FLICA updated ${this._esc(a.updated || "?")} · read ${a.fetched ? new Date(a.fetched).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}${a.status === "cached" ? " (cached)" : ""}</span><span class="x" title="close">&times;</span></div>
+    body.innerHTML = `<div class="hd"><h3>${this._esc(name)} (${this._esc(emp)})</h3>${ct}<span class="u">${MONTHS[m - 1]} ${y} · FLICA updated ${this._esc(a.updated || "?")} · read ${a.fetched ? new Date(a.fetched).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}${a.status === "cached" ? " (cached)" : ""}</span><span class="x" title="close">&times;</span></div>
       ${this._grid(a.days, a.items || [], a.month)}
       <div class="tot"><span>Block<b>${this._esc(t.block || "?")}</b></span><span>Credit<b>${this._esc(t.credit || "?")}</b></span><span>Days Off<b>${t.days_off != null ? t.days_off : "?"}</b></span><span class="u">Source: FLICA Tools > Schedule Lookup, read only. Block / Credit per trip from the pairing pages.</span></div>`;
     body.insertAdjacentHTML("beforeend", this._recon(a, true));  // 0.10.1: crew index (reconstructed from pairing crew lists), folded under a readable month
@@ -302,7 +338,7 @@ class FlightWatcherPilotCard extends HTMLElement {
       if (lay && lay !== "-") layCell = lay === "HNL" ? `<span class="u">HNL</span>` : `<b>${this._esc(lay)}</b>`;
       if (it && /^[A-Z]\d{4}/.test(it.trip)) {
         blk = this._esc(it.blk || ""); cr = this._esc(it.credit || ""); soft = this._esc(it.soft || "");
-        crew = (it.crew || []).map(([p, n]) => `${this._esc(p)} ${this._esc(n)}`).join(" · ");
+        crew = (it.crew || []).map(([p, n]) => `${this._esc(p)} ${this._esc(n)}${(this._ctKeys || []).includes(pilotNameKey(n)) ? this._ctMini : ""}`).join(" · ");
       }
       rows += `<tr class="${wk ? "wk" : ""}${this._hol(d) ? " hol" : ""}${oth ? " oth" : ""}${bx}"><td>${DOW[dt.getDay()]}</td><td class="n">${d.slice(8)}</td><td>${tripCell}</td><td>${layCell}</td><td class="n">${blk}</td><td class="n">${cr}</td><td class="n">${soft}</td><td class="crew">${crew}</td></tr>`;
     }

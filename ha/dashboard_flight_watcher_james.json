@@ -585,6 +585,17 @@
                   "type": "custom:flight-watcher-settings-card-james"
                 },
                 {
+                  "type": "heading",
+                  "heading": "Monthly files",
+                  "icon": "mdi:file-upload-outline"
+                },
+                {
+                  "type": "custom:flight-watcher-uploads-card-james",
+                  "grid_options": {
+                    "columns": "full"
+                  }
+                },
+                {
                   "type": "markdown",
                   "text_only": true,
                   "content": "---",
