@@ -756,6 +756,43 @@
             ''confirm'' if trigger.event.data.action.startswith(''RECALL_CONFIRM'')
             else ''dismiss''} | tojson }}'
   mode: queued
+- id: '1793915999003'
+  alias: Flight Watcher Hark CCR alert
+  description: '1.4.6 review (Nov 7): time-sensitive push when Hark may file a CCR
+    Ryan no longer wants filed (the row was superseded while Hark had it, or HOM made
+    a task after the request was taken back) or Hark filed one Ryan had already filed
+    or dismissed. Nothing tells HOM: Ryan completes the HOM task as skipped. Push isolation
+    (FW-0038): Ryan''s prefix only, to Ryan''s phones only.'
+  triggers:
+  - trigger: mqtt
+    topic: flight_watcher/event/recall_hark_alert
+  actions:
+  - variables:
+      ev: '{{ trigger.payload_json }}'
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone
+      data:
+        title: 'Hark CCR: {{ ''Over 75'' if ev.kind == ''o75'' else ''Recall'' }} {{ ev.pairing
+          }} {{ ev.date }}'
+        message: '{{ ev.text }}'
+        data:
+          tag: recall-hark-{{ ev.rid }}
+          url: /flight-watcher/recall
+          push:
+            interruption-level: time-sensitive
+      continue_on_error: true
+    - action: notify.mobile_app_ryans_iphone_16
+      data:
+        title: 'Hark CCR: {{ ''Over 75'' if ev.kind == ''o75'' else ''Recall'' }} {{ ev.pairing
+          }} {{ ev.date }}'
+        message: '{{ ev.text }}'
+        data:
+          tag: recall-hark-{{ ev.rid }}
+          url: /flight-watcher/recall
+          push:
+            interruption-level: time-sensitive
+      continue_on_error: true
+  mode: queued
 - id: '1793915999002'
   alias: Flight Watcher new ticket
   description: 'Pushes Ryan each new bug report or feature request (FW-nnnn) filed

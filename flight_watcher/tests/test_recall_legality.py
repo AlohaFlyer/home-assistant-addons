@@ -94,7 +94,7 @@ def test_a_month_of_the_672_h_window_not_on_file_is_possible():
     """October is not on file at all: FAR 117.23(b)(1) and (c)(2) cannot be proven, so POSSIBLE (not MISSED)."""
     v = judge(V(EARLY, months=("2026-11", "2026-12")))
     assert v["verdict"] == "POSSIBLE"
-    assert "FAR 117.23(b)(1)" in v["why"][-1] and "your line 2026-10-01 to 2026-10-31 not on file" in v["why"][-1]
+    assert "FAR 117.23(b)(1)" in v["why"][-1] and "your line 2026-10-05 to 2026-11-07 not on file" in v["why"][-1]
 
 
 def test_a_later_month_not_awarded_yet_is_empty_but_its_first_days_stay_unknown():
@@ -201,7 +201,7 @@ def test_held_line_parts():
     a = {"trip": "H1111", "start": "2026-11-02", "end": "2026-11-03"}
     b = {"trip": "H2222", "start": "2026-11-15", "end": "2026-11-16"}
     h = RC.held_at(V("2026-11-12T00:00:00+00:00", [a, b], months=("2026-11",)), DAY)
-    assert [i["trip"] for i in h["items"]] == ["H1111"] and ("2026-11-10", "2026-11-30") in h["unknown"]
+    assert [i["trip"] for i in h["items"]] == ["H1111"] and ("2026-11-10", "2026-12-07") in h["unknown"]
     h = RC.held_at(merge(V(EARLY, [a]), V("2026-11-12T00:00:00+00:00", [a, b], months=("2026-11",), ver=2)), DAY)
     assert [i["trip"] for i in h["items"]] == ["H1111"] and h["line"] == "11.001" and not h["unknown"]
 
@@ -216,5 +216,112 @@ def test_an_award_alone_counts_only_for_a_month_the_watcher_watched():
                               "items": [{"trip": "H2222", "start": "2026-12-05", "end": "2026-12-06"}], "trips": {}}]}
     keeping = V("2026-11-02T00:00:00+00:00", months=("2026-11",))
     h = RC.held_at(merge(keeping, oct_award, dec_award), DAY)
-    assert ("2026-10-01", "2026-10-31") in h["unknown"] and h["lines"]["2026-10"] == "not on file"
+    assert ("2026-10-05", "2026-11-07") in h["unknown"] and h["lines"]["2026-10"] == "not on file"
     assert [i["trip"] for i in h["items"]] == ["H2222"] and h["lines"]["2026-12"] == "12.001"
+
+
+# ---------------------------------------------------------------- 1.4.6 review (Nov 7)
+def test_a_row_awarded_to_ryan_himself_is_not_a_miss():
+    """Ryan (#500) is awarded H9001 for Nov 10 at 21:00 HST; the version holding it is stored at 00:40 HST Nov 11 (the
+    block / credit wait). His own award is never a miss, whatever line was on file at 00:00."""
+    mine = {"trip": "H9001", "start": "2026-11-10", "end": "2026-11-11"}
+    late = V("2026-11-11T10:40:00+00:00", [mine], months=("2026-11",), ver=2)
+    late["2026-11"][0]["updated"] = "Nov 10, 2026 21:00:00"
+    versions = merge(V(EARLY), late)
+    row = dict(ROW, sen=500)
+    v = judge(versions, row=row)
+    assert v["verdict"] == "NO" and v["why"][0].startswith("awarded to you (#500)"), v["why"]
+    v = judge(merge(V(EARLY)), row=row)  # the version never came: still his own
+    assert v["verdict"] == "NO" and "awarded to you" in v["why"][0]
+
+
+def test_a_pairing_of_unknown_length_is_possible_not_one_day():
+    """No days on the row and no package: H9002's report and last arrival are known but not its length. It must not
+    shrink to one day (Ryan's H1111 on Nov 12-13 would be ignored and the row MISSED)."""
+    trip = {"trip": "H1111", "start": "2026-11-12", "end": "2026-11-13"}
+    t = {"H1111|2026-11-12": {"report": "08:00", "last_arr": "16:00", "blk": "8:00"}}
+    row = dict(ROW, pairing="H9002", report="08:00", last_arr="06:00", blk="18:00")
+    v = judge(V(EARLY, [trip], t), row=row)
+    assert v["verdict"] == "POSSIBLE" and "pairing length unknown" in v["why"][-1], v["why"]
+    v = judge(V(EARLY, [trip], t), row=dict(row, days=4))  # with its length: H1111 is in the way
+    assert v["verdict"] == "NO" and "H1111" in v["why"][-1]
+    assert RC.pairing_window(row, {})[5] is False and RC.pairing_window(dict(row, days=2), {})[5] is True
+    assert RC.pairing_window(ROW, DET)[5] is True  # the package's duty periods give it
+
+
+def test_details_come_from_the_row_s_own_bid_period():
+    """Pairing ids repeat across bid periods: October's H3601 is 4 days, November's is 1 day. An October row is judged
+    with October's package (H1200 Oct 30-31 is in the way), never November's, whichever is looked up first."""
+    pkgs = {"2026-10": {"H3601": {"report": "08:00", "block": "20:00", "rel_days": 4}},
+            "2026-11": {"H3601": {"report": "08:00", "block": "5:00", "rel_days": 1,
+                                  "duties": [{"d": 0, "dep": 540, "arr": 840, "stn": "HNL", "blk": 300}]}}}
+    h = {"trip": "H1200", "start": "2026-10-30", "end": "2026-10-31"}
+    row = dict(ROW, date="2026-10-28", pairing="H3601", last_arr="16:00")
+    helds = RC.helds_on(V(EARLY, [h]), date(2026, 10, 28))
+    v = RC.check_day([row], ME, None, None, [], lambda p: pkgs.get(p), helds)[0]
+    assert v["verdict"] == "NO" and "H1200" in v["why"][-1] and v["end"] == "2026-10-31", v["why"]
+    assert RC.check_day([row], ME, None, None, [], lambda p: {}, helds)[0]["verdict"] == "POSSIBLE"  # no package
+
+
+def test_a_version_read_late_counts_from_flica_s_updated_stamp():
+    """Ryan picked up H2222 (Nov 10-11) on Nov 8 10:00 HST ('Schedule Updated: Nov 8, 2026 10:00:00'); the Watcher was
+    stuck on a CAPTCHA and stored version 11.002 only on Nov 12. The Nov 10 line is 11.002, so H2222 is in the way."""
+    pick = {"trip": "H2222", "start": "2026-11-10", "end": "2026-11-11"}
+    late = V("2026-11-12T00:00:00+00:00", [pick], months=("2026-11",), ver=2)
+    late["2026-11"][0]["updated"] = "Nov 8, 2026 10:00:00"
+    v = judge(merge(V(EARLY), late))
+    assert v["verdict"] == "NO" and "H2222" in v["why"][-1] and "version 11.002" in v["why"][-1], v["why"]
+    late["2026-11"][0]["updated"] = "Nov 11, 2026 10:00:00"  # changed after the list day: the old line held
+    assert judge(merge(V(EARLY), late))["verdict"] == "MISSED"
+    late["2026-11"][0]["updated"] = ""  # no stamp: only 'at' is trusted
+    assert judge(merge(V(EARLY), late))["verdict"] == "MISSED"
+    late["2026-11"][0]["updated"] = "Nov 30, 2026 10:00:00"  # later than the read: not trusted
+    assert RC._upd(late["2026-11"][0]) is None
+
+
+def test_a_month_awarded_during_an_outage_is_not_counted_as_not_awarded_yet():
+    """List day Nov 20; December's first version is stored Nov 28 but FLICA shows it updated Nov 15: December was
+    awarded by then, so its trips count (the 672 h windows), not 'not awarded yet'."""
+    dec = {"trip": "H3000", "start": "2026-12-05", "end": "2026-12-06"}
+    late = V("2026-11-28T00:00:00+00:00", [dec], months=("2026-12",))
+    late["2026-12"][0]["updated"] = "Nov 15, 2026 12:00:00"
+    versions = merge(V(EARLY, months=("2026-10", "2026-11")), late)
+    h = RC.held_at(versions, date(2026, 11, 20))
+    assert h["lines"]["2026-12"] == "12.001" and [i["trip"] for i in h["items"]] == ["H3000"]
+    late["2026-12"][0]["updated"] = "Nov 27, 2026 12:00:00"
+    h = RC.held_at(merge(V(EARLY, months=("2026-10", "2026-11")), late), date(2026, 11, 20))
+    assert h["lines"]["2026-12"] == "not awarded yet" and not h["items"]
+
+
+def test_a_trip_from_the_month_before_counts_in_the_672_h_window():
+    """List day Oct 30 (LOOK reaches Oct 1). H1000 runs Sep 29 to Oct 3 with 10 h block on Oct 3, plus 81 h of October
+    trips and the 10 h recall pairing: 101 h in the 672 h from Oct 3 (FAR 117.23(b)(1)). The September trip counts."""
+    sep = {"trip": "H1000", "start": "2026-09-29", "end": "2026-10-03"}
+    sep_t = {"H1000|2026-09-29": {"report": "08:00", "last_arr": "16:00", "blk": "15:00",
+                                  "duties": [{"d": 0, "dep": 540, "arr": 840, "stn": "LAX", "blk": 300},
+                                             {"d": 4, "dep": 4 * 1440 + 360, "arr": 4 * 1440 + 960, "stn": "HNL", "blk": 600}]}}
+    octs = [{"trip": f"H10{d:02d}", "start": f"2026-10-{d:02d}", "end": f"2026-10-{d:02d}"} for d in range(5, 22, 2)]
+    oct_t = {f"H10{d:02d}|2026-10-{d:02d}": {"report": "08:00", "last_arr": "18:00", "blk": "9:00"} for d in range(5, 22, 2)}
+    row = dict(ROW, date="2026-10-30", pairing="H9005", report="08:00", last_arr="18:00", blk="10:00", days=1)
+    months = ("2026-09", "2026-10", "2026-11", "2026-12")
+    v = judge(V(EARLY, [sep] + octs, {**sep_t, **oct_t}, months=months), day=date(2026, 10, 30), row=row)
+    assert v["verdict"] == "NO" and "flight time 101:00 h in 672 h" in v["why"][-1], v["why"]
+    # September not on file: its last days are unknown, so POSSIBLE, never MISSED
+    v = judge(V(EARLY, octs, oct_t, months=months[1:]), day=date(2026, 10, 30), row=row)
+    assert v["verdict"] == "POSSIBLE" and "your line 2026-09-24 to 2026-10-07 not on file" in v["why"][-1], v["why"]
+    # and a pairing on Oct 2-3: a September trip could still be running (it is in September's items only)
+    v = judge(V(EARLY, octs, oct_t, months=months[1:]), day=date(2026, 10, 2), row=dict(row, date="2026-10-02", days=2))
+    assert v["verdict"] == "POSSIBLE" and "not on file for 2026-09-01 to 2026-10-07" in v["why"][-1], v["why"]
+
+
+def test_over_75_needs_the_month_s_reserve_answer():
+    """PWA 22.G.2.d: Over 75 goes to Reserve Run pilots. Without Ryan's answer for the month the row is POSSIBLE, not
+    MISSED; 'on reserve' that month gives MISSED; 'not on reserve' gives NO."""
+    row = dict(ROW, kind="o75")
+    me = {"sen": 500, "seat": "FO", "o75": True}  # the old flag no longer counts
+    v = RC.judge(row, me, RC.helds_on(V(EARLY), DAY, {}, {}), [], DET)
+    assert v["verdict"] == "POSSIBLE" and "reserve status for Nov 2026 unknown" in v["why"][-1], v["why"]
+    v = RC.judge(row, {**me, "o75_months": {"2026-11": True}}, RC.helds_on(V(EARLY), DAY, {}, {}), [], DET)
+    assert v["verdict"] == "MISSED"
+    v = RC.judge(row, {**me, "o75_months": {"2026-11": False, "2026-12": True}}, RC.helds_on(V(EARLY), DAY, {}, {}), [], DET)
+    assert v["verdict"] == "NO" and "not on reserve in Nov 2026" in v["why"][-1]

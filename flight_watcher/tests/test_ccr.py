@@ -17,7 +17,8 @@ def test_rid_rules():
     assert CCR.rid_for("2026-11-10|H3601A|o75") == "2026-11-10_H3601A_o75"
     assert CCR.rid_for("2026-11-10|H9001|recall", "james") == RID + "_james"
     for bad in ("2026-11-10|H9001|junior", "2026-11-10|h9001|recall", "2026-11-10|H9|recall", "2026-1-10|H9001|recall",
-                "2026-11-10|H9001/../x|recall", "2026-11-10|H9001|recall|x", ""):
+                "2026-11-10|H9001/../x|recall", "2026-11-10|H9001|recall|x", "", "2026-11-31|H9001|recall",
+                "2026-13-01|H9001|recall"):
         assert CCR.rid_for(bad) is None, bad
     assert CCR.valid_rid(RID) and not CCR.valid_rid(RID + "\n") and not CCR.valid_rid("../" + RID)
     assert not CCR.valid_rid(RID + "_James") and not CCR.valid_rid(RID + "_" + "a" * 21) and not CCR.valid_rid(None)
@@ -170,9 +171,10 @@ def test_file_request_needs_an_approved_narrative_and_writes_the_contract(tmp_pa
     assert len(ev) == 1 and ev[0][1] is False and ev[0][0]["rid"] == rec["rid"]
     st, vs = _st(sent)
     assert vs[VID]["act"]["status"] == "filing" and st["open"] == 1 and st["alert"] == 1
-    # while Hark has it: no re-approve, no dismiss, no second request; a manual "Mark filed" still works later
+    # while Hark has it: no re-approve, no second request (Withdraw / Not a miss / Mark filed: test_withdraw_*)
     W.recall_act(json.dumps({"id": VID, "action": "approve", "narrative": "changed"}))
-    W.recall_act(json.dumps({"id": VID, "action": "dismiss"}))
+    W.recall_act(json.dumps({"id": VID, "action": "confirm"}))
+    W.recall_act(json.dumps({"id": VID, "action": "reopen"}))
     assert W.recall_file_request({"id": VID}) is False
     assert (_act(W)["status"], _act(W)["narrative"]) == ("filing", "Approved made-up narrative.")
 
@@ -190,27 +192,38 @@ def _iso(age=0):
     return (datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat()
 
 
+def _hark_alerts(sent):
+    return [p for t, p, r in sent if t == "event/recall_hark_alert" and r is False]
+
+
 def test_hom_answers_blocked_then_filed(tmp_path, monkeypatch):
+    """1.4.6 review: HOM makes one task per rid, ever. After Hark parks the task the draft is 'blocked'; a second
+    request under the same rid is refused (HOM would never answer it and the draft would sit in 'filing'). When HOM
+    removes its status file because the task is open again, the draft is 'filing' again; Hark's done file files it."""
     W, sent = _w(tmp_path, monkeypatch)
     W.recall_act(json.dumps({"id": VID, "action": "approve", "narrative": "N1"}))
     assert W.recall_file_request({"id": VID})
     rid = "2026-11-10_H9001_recall"
     assert W.ccr_poll() is False  # nothing from HOM yet
-    _hom(W, "task", {"v": 1, "rid": rid, "task_id": "T-9", "imported_at": _iso()})
+    _hom(W, "task", {"v": 1, "rid": rid, "task_id": "t9", "imported_at": _iso()})
     _hom(W, "status", {"v": 1, "rid": rid, "status": "blocked", "reason": "hal.alpa.org <b>login</b>", "at": _iso()})
     assert W.ccr_poll() is True
     a = _act(W)
-    assert (a["status"], a["hark_reason"], a["task_id"]) == ("blocked", "hal.alpa.org <b>login</b>", "T-9")
+    assert (a["status"], a["hark_reason"], a["task_id"]) == ("blocked", "hal.alpa.org <b>login</b>", "t9")
     st, vs = _st(sent)
     assert vs[VID]["act"]["status"] == "blocked" and st["alert"] == 1
     assert W.ccr_poll() is False  # the same answer again changes nothing
-    # the button comes back: Ryan can edit, re-approve and send again; the old 'blocked' answer does not stick
-    _hom(W, "status", {"v": 1, "rid": rid, "status": "blocked", "reason": "old", "at": _iso(3600)}, age=3600)
+    # an edit is kept for filing by hand, Hark's task stays what it was, and no second request goes out
     W.recall_act(json.dumps({"id": VID, "action": "approve", "narrative": "N2"}))
-    assert W.recall_file_request({"id": VID})
-    assert json.load(open(os.path.join(W.CCR_DIR, rid + ".json")))["narrative"] == "N2"
-    W.ccr_poll()
-    assert _act(W)["status"] == "filing" and "hark_reason" not in _act(W)
+    assert (_act(W)["status"], _act(W)["narrative"]) == ("blocked", "N2")
+    assert W.recall_file_request({"id": VID}) is False
+    assert json.load(open(os.path.join(W.CCR_DIR, rid + ".json")))["narrative"] == "N1"
+    assert "HOM task t9" in _act(W)["hark_note"] and _act(W)["hark_reason"] == "hal.alpa.org <b>login</b>"
+    # Hark resumes: HOM removes the status file (the task is plainly open again)
+    os.remove(os.path.join(W.CCR_DIR, rid + ".status.json"))
+    assert W.ccr_poll() is True
+    a = _act(W)
+    assert a["status"] == "filing" and "hark_reason" not in a and a["task_id"] == "t9"
     _hom(W, "done", {"v": 1, "rid": rid, "ccr": "2026-0042", "filed_at": _iso(), "by": "hark", "note": "Filed on hal.alpa.org."})
     assert W.ccr_poll() is True
     a = _act(W)
@@ -219,9 +232,140 @@ def test_hom_answers_blocked_then_filed(tmp_path, monkeypatch):
     assert len(ev) == 1 and ev[0][1] is False and ev[0][0]["ccr"] == "2026-0042"
     st, vs = _st(sent)
     assert st["open"] == 0 and st["alert"] == 0 and vs[VID]["act"]["ccr"] == "2026-0042"
-    assert W.ccr_poll() is False  # filed: no longer polled
+    assert W.ccr_poll() is False and not _hark_alerts(sent)  # filed by Hark: nothing more to say
     # the Watcher never wrote HOM's files
-    assert _files(W) == [rid + ".done.json", rid + ".json", rid + ".status.json", rid + ".task.json"]
+    assert _files(W) == [rid + ".done.json", rid + ".json", rid + ".task.json"]
+
+
+def test_a_rejected_request_without_a_task_can_be_sent_again(tmp_path, monkeypatch):
+    """HOM rejected the request (blocked, no task file): HOM reads the request again each pass, so a second request
+    under the same rid is allowed; HOM's old status file is older than it and is ignored."""
+    W, sent = _w(tmp_path, monkeypatch)
+    W.recall_act(json.dumps({"id": VID, "action": "approve", "narrative": "N1"}))
+    assert W.recall_file_request({"id": VID})
+    rid = "2026-11-10_H9001_recall"
+    _hom(W, "status", {"v": 1, "rid": rid, "status": "blocked", "reason": "invalid request: narrative", "at": _iso()})
+    W.ccr_poll()
+    assert _act(W)["status"] == "blocked" and "task_id" not in _act(W)
+    _hom(W, "status", {"v": 1, "rid": rid, "status": "blocked", "reason": "invalid request: narrative", "at": _iso(3600)}, age=3600)
+    W.recall_act(json.dumps({"id": VID, "action": "approve", "narrative": "N2"}))
+    assert _act(W)["status"] == "approved" and rid + ".json" not in _files(W)  # the stale N1 request is taken back
+    assert W.recall_file_request({"id": VID, "narrative": "N2"})
+    assert json.load(open(os.path.join(W.CCR_DIR, rid + ".json")))["narrative"] == "N2"
+    W.ccr_poll()
+    assert _act(W)["status"] == "filing" and "hark_reason" not in _act(W)
+
+
+def test_the_hark_request_carries_only_the_approved_narrative(tmp_path, monkeypatch):
+    """Finding (card): the box held an edit Ryan had not approved. The card sends the box text with file_request and
+    the Watcher refuses when it is not the approved narrative; nothing is written."""
+    W, sent = _w(tmp_path, monkeypatch)
+    W.recall_act(json.dumps({"id": VID, "action": "approve", "narrative": "Approved text."}))
+    W.recall_act(json.dumps({"id": VID, "action": "file_request", "narrative": "Approved text. CORRECTED: pairing is H3609."}))
+    assert _files(W) == [] and _act(W)["status"] == "approved" and "re-approve" in _act(W)["hark_note"]
+    W.recall_act(json.dumps({"id": VID, "action": "approve", "narrative": "Approved text. CORRECTED: pairing is H3609."}))
+    assert "hark_note" not in _act(W)
+    W.recall_act(json.dumps({"id": VID, "action": "file_request", "narrative": "Approved text. CORRECTED: pairing is H3609. "}))
+    rec = json.load(open(os.path.join(W.CCR_DIR, "2026-11-10_H9001_recall.json")))
+    assert rec["narrative"] == "Approved text. CORRECTED: pairing is H3609." and _act(W)["status"] == "filing"
+
+
+def test_withdraw_before_hom_made_a_task_takes_the_request_back(tmp_path, monkeypatch):
+    """No HOM task yet (HOM not live, or not run yet): Withdraw from Hark removes the Watcher's own request file, so
+    HOM never imports it, and the draft is approved again with the Hark button back. If HOM made the task in the same
+    moment anyway, its task file fires a Hark alert (late_task) once."""
+    W, sent = _w(tmp_path, monkeypatch)
+    W.recall_act(json.dumps({"id": VID, "action": "approve", "narrative": "N1"}))
+    assert W.recall_file_request({"id": VID})
+    rid = "2026-11-10_H9001_recall"
+    W.recall_act(json.dumps({"id": VID, "action": "withdraw"}))
+    a = _act(W)
+    assert a["status"] == "approved" and a["withdrawn_at"] and _files(W) == []
+    assert W.recall_file_request({"id": VID}) is True and _files(W) == [rid + ".json"]  # can be sent again
+    W.recall_act(json.dumps({"id": VID, "action": "dismiss"}))  # Not a miss also takes it back first
+    assert _act(W)["status"] == "dismissed" and _files(W) == []
+    _hom(W, "task", {"v": 1, "rid": rid, "task_id": "t12", "imported_at": _iso()})  # HOM got it just before
+    assert W.ccr_poll() is True
+    al = _hark_alerts(sent)
+    assert len(al) == 1 and al[0]["what"] == "late_task" and al[0]["task_id"] == "t12" and "t12" in _act(W)["hark_alert"]
+    assert W.ccr_poll() is False and len(_hark_alerts(sent)) == 1
+
+
+def test_withdraw_dismiss_and_mark_filed_with_a_hom_task_need_hom_cleared(tmp_path, monkeypatch):
+    """With a HOM task, nothing from the Watcher reaches HOM, so Withdraw from Hark, Not a miss and Mark filed wait
+    for Ryan to say he completed that task as skipped (hom_cleared). A Hark CCR number that comes in after a manual
+    Mark filed with another number fires a duplicate alert, once; the same number just records who filed it."""
+    W, sent = _w(tmp_path, monkeypatch)
+    W.recall_act(json.dumps({"id": VID, "action": "approve", "narrative": "N1"}))
+    assert W.recall_file_request({"id": VID})
+    rid = "2026-11-10_H9001_recall"
+    _hom(W, "task", {"v": 1, "rid": rid, "task_id": "t7", "imported_at": _iso()})
+    for action in ("withdraw", "dismiss", "filed"):
+        W.recall_act(json.dumps({"id": VID, "action": action, "ccr": "12345"}))
+        a = _act(W)
+        assert a["status"] == "filing" and "HOM task t7" in a["hark_note"] and "ccr" not in a, action
+    assert _files(W) == [rid + ".json", rid + ".task.json"]  # the request stays; HOM already has it
+    st, vs = _st(sent)
+    assert "HOM task t7" in vs[VID]["act"]["hark_note"]
+    W.recall_act(json.dumps({"id": VID, "action": "withdraw", "hom_cleared": True}))
+    a = _act(W)
+    assert (a["status"], a["task_id"]) == ("approved", "t7") and "hark_note" not in a
+    assert W.recall_file_request({"id": VID}) is False and "HOM task t7" in _act(W)["hark_note"]  # never a 2nd request
+    W.recall_act(json.dumps({"id": VID, "action": "filed", "ccr": "12345"}))  # approved: no Hark gate any more
+    assert (_act(W)["status"], _act(W)["ccr"]) == ("filed", "12345")
+    _hom(W, "status", {"v": 1, "rid": rid, "status": "cancelled", "reason": "skipped", "at": _iso()})
+    assert W.ccr_poll() is False and _act(W)["status"] == "filed"  # HOM's answer to the skip: nothing to do
+    _hom(W, "done", {"v": 1, "rid": rid, "ccr": "2026-0042", "filed_at": _iso(), "by": "hark", "note": ""})
+    assert W.ccr_poll() is True
+    al = _hark_alerts(sent)
+    assert len(al) == 1 and al[0]["what"] == "duplicate" and "2026-0042" in al[0]["text"] and "12345" in al[0]["text"]
+    assert (_act(W)["status"], _act(W)["ccr"], _act(W)["hark_ccr"]) == ("filed", "12345", "2026-0042")
+    assert W.ccr_poll() is False and len(_hark_alerts(sent)) == 1
+    # the same number Ryan typed: no alert, Hark recorded as the filer
+    (tmp_path / "b").mkdir()
+    W2, sent2 = _w(tmp_path / "b", monkeypatch)
+    W2.recall_act(json.dumps({"id": VID, "action": "approve", "narrative": "N1"}))
+    assert W2.recall_file_request({"id": VID})
+    _hom(W2, "task", {"v": 1, "rid": rid, "task_id": "t8", "imported_at": _iso()})
+    W2.recall_act(json.dumps({"id": VID, "action": "filed", "ccr": "2026 0043", "hom_cleared": True}))
+    _hom(W2, "done", {"v": 1, "rid": rid, "ccr": "2026-0043", "filed_at": _iso(), "by": "hark", "note": ""})
+    assert W2.ccr_poll() is True and not _hark_alerts(sent2) and _act(W2)["filed_by"] == "hark"
+
+
+def test_a_draft_hark_still_has_that_is_superseded_alerts(tmp_path, monkeypatch):
+    """A re-judge turns the row NO while Hark has the request: the draft is superseded (was filing) and
+    event/recall_hark_alert says to complete HOM task t5 as skipped, once; the card shows it on the history row."""
+    W, sent = _w(tmp_path, monkeypatch)
+    W.recall_act(json.dumps({"id": VID, "action": "approve", "narrative": "N1"}))
+    assert W.recall_file_request({"id": VID})
+    _hom(W, "task", {"v": 1, "rid": "2026-11-10_H9001_recall", "task_id": "t5", "imported_at": _iso()})
+    W.ccr_poll()
+    W.recall_act(json.dumps({"me": {"sen": 950}}))  # #900 is senior now: NO
+    a = _act(W)
+    assert (a["status"], a["was"]) == ("superseded", "filing")
+    al = _hark_alerts(sent)
+    assert len(al) == 1 and al[0]["what"] == "superseded" and "t5" in al[0]["text"] and "skipped" in al[0]["text"]
+    st, vs = _st(sent)
+    assert vs[VID]["verdict"] == "NO" and "t5" in vs[VID]["act"]["hark_alert"] and vs[VID]["act"]["task_id"] == "t5"
+    W.recall_act(json.dumps({"refresh": True}))
+    assert len(_hark_alerts(sent)) == 1
+    W.recall_act(json.dumps({"me": {"sen": 500}}))  # a miss again: back to filing, the warning goes
+    assert _act(W)["status"] == "filing" and "hark_alert" not in _act(W)
+
+
+def test_a_row_date_that_is_not_a_real_date_is_never_sent(tmp_path, monkeypatch):
+    """2026-11-31 fits the rid pattern but is not a date: HOM ignores the name and would never answer."""
+    assert CCR.rid_for("2026-11-31|H9001|recall") is None and CCR.rid_for("2026-02-29|H9001|recall") is None
+    assert CCR.rid_for("2028-02-29|H9001|recall") == "2028-02-29_H9001_recall"
+    W, sent = _w(tmp_path, monkeypatch)
+    W.recall_cmd(json.dumps({"date": "2026-11-30", "rows": [{"date": "2026-11-31", "kind": "recall", "seat": "FO",
+                                                             "sen": 900, "pairing": "H9001"}]}))
+    vid = "2026-11-31|H9001|recall"
+    assert _st(sent)[1][vid]["verdict"] == "POSSIBLE"
+    W.recall_act(json.dumps({"id": vid, "action": "confirm"}))
+    W.recall_act(json.dumps({"id": vid, "action": "approve", "narrative": "N"}))
+    assert W.recall_file_request({"id": vid}) is False and _files(W) == []
+    assert W.DB.get("recall_acts")[vid]["status"] == "approved"
 
 
 def test_cancelled_and_a_bad_reply(tmp_path, monkeypatch):

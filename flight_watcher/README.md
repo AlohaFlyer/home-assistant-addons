@@ -20,7 +20,8 @@ publishes what it finds to Home Assistant over MQTT.
 - Recall / Over 75: checks each award against the line you held that day (schedule versions; PWA 22.G.2, FAR 117,
   PWA 10.E.1.a) and flags a miss: a red RECALL ALERT bar on the dashboard and a critical push for a sure one. An
   approved CCR narrative can go to Hark ("Have Hark file this CCR", through the HOM app and
-  `/share/flight_watcher/ccr_requests/`); the app itself files nothing.
+  `/share/flight_watcher/ccr_requests/`); the app itself files nothing. Over 75 is judged per month from your answer
+  on the tab (on reserve or not, PWA 22.G.2.d); while it is not set an Over 75 miss shows as CHECK.
 - Crew index and pilot lookup, charter watch (CrewTrac, read only), tickets (below).
 - A second pilot: option `second_pilot` runs a second Watcher with its own data, MQTT prefix
   (`flight_watcher_<name>`), entities and card copies.

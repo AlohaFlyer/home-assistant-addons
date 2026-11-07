@@ -17,7 +17,7 @@ function v(date, pairing, verdict, act, extra) {
 function data() {
   const narr = "On 2026-11-10, Recall pairing H3601 was awarded to a FO with seniority #900, junior to me.";
   return {
-    open: 5, alert: 3, me: { sen: 500, seat: "FO", o75: true }, last: "2026-11-10", checked: "2026-11-10T20:00:00+00:00",
+    open: 6, alert: 4, me: { sen: 500, seat: "FO", o75_months: { "2026-10": true } }, last: "2026-11-10", checked: "2026-11-10T20:00:00+00:00",
     received: "2026-11-10T19:00:00+00:00", hark_files: true,
     days: [
       { date: "2026-11-10", file: "ok", verdicts: [
@@ -34,6 +34,9 @@ function data() {
         hark_reason: `hal.alpa.org asked for a login ${BAD}`, hark_at: "2026-11-05T20:30:00+00:00" })] },
       { date: "2026-11-04", file: "ok", verdicts: [v("2026-11-04", "H3608", "MISSED", { status: "filed", narrative: narr,
         ccr: "12345", filed_by: "hark", filed_at: "2026-11-05T01:15:00+00:00", rid: "2026-11-04_H3608_recall" })] },
+      { date: "2026-11-03", file: "ok", verdicts: [v("2026-11-03", "H3609", "MISSED", { status: "blocked", narrative: narr,
+        approved_at: "2026-11-03T18:00:00+00:00", requested_at: "2026-11-03T19:00:00+00:00", rid: "2026-11-03_H3609_recall",
+        task_id: "t50", hark_reason: "parked: site down", hark_at: "2026-11-03T20:00:00+00:00" })] },
     ],
   };
 }
@@ -93,6 +96,8 @@ c.hass = { states: { "sensor.flight_watcher_recall_o75": { state: String(attrs.o
         hark: [...r.querySelectorAll("button[data-hark]")].map((b) => b.dataset.hark),
         manual: [...r.querySelectorAll("button[data-file]")].map((b) => b.dataset.file),
         hk: [...r.querySelectorAll(".hk")].map((h) => h.textContent.replace(/\s+/g, " ").trim()),
+        hw: [...r.querySelectorAll(".hw")].map((h) => h.textContent.replace(/\s+/g, " ").trim()),
+        gated: [...r.querySelectorAll("button[data-gate]")].map((b) => `${b.dataset.a}|${b.dataset.gate}|${b.disabled}`),
         imgs: r.querySelectorAll("img").length, pwned: window.pwned === undefined ? null : window.pwned,
         store: (() => { try { return localStorage.getItem("flight_watcher_recall_fold"); } catch (e) { return "blocked"; } })(),
         fit: { doc: document.documentElement.scrollWidth, win: window.innerWidth, card: r.querySelector("ha-card").getBoundingClientRect().right,
@@ -117,6 +122,45 @@ c.hass = { states: { "sensor.flight_watcher_recall_o75": { state: String(attrs.o
     // the manual fallback still opens hal.alpa.org
     await R(pg, (root) => eval(root).querySelector('button[data-file="2026-11-06|H3606|recall"]').click(), root);
     res.opened = await R(pg, () => window.opened);
+    // 1.4.6 review: the Hark button is off while the box differs from the approved narrative
+    res.diff = await R(pg, (root) => {
+      const r = eval(root), id = "2026-11-10|H3601|recall";
+      const t = r.querySelector(`textarea[data-n="${id}"]`);
+      const h = () => r.querySelector(`button[data-hark="${id}"]`);
+      const look = () => ({ dis: h().disabled, label: r.querySelector(`button[data-approve="${id}"]`).textContent,
+        note: !r.querySelector(`[data-diff="${id}"]`).hidden });
+      const before = look();
+      t.value = t.value + " CORRECTED: pairing is H3609.";
+      t.dispatchEvent(new Event("input"));
+      const n0 = window.sent.length;
+      h().click();
+      const edited = { ...look(), sent: window.sent.length - n0 };
+      t.value = t.value.replace(" CORRECTED: pairing is H3609.", "");
+      t.dispatchEvent(new Event("input"));
+      return { before, edited, back: look() };
+    }, root);
+    // while Hark has HOM task T-42: Withdraw / Not a miss / Mark filed wait for "I completed HOM task ... as skipped"
+    res.gate = await R(pg, (root) => {
+      const r = eval(root), id = "2026-11-06|H3606|recall";
+      const btn = (a) => r.querySelector(`button[data-a="${a}"][data-id="${id}"]`);
+      const before = ["withdraw", "dismiss", "filed"].map((a) => btn(a).disabled);
+      const n0 = window.sent.length;
+      btn("filed").click();
+      const none = window.sent.length - n0;
+      r.querySelector(`input[data-cleared="${id}"]`).click();
+      const after = ["withdraw", "dismiss", "filed"].map((a) => btn(a).disabled);
+      r.querySelector(`input[data-ccr="${id}"]`).value = "12345";
+      btn("filed").click();
+      return { before, none, after, sent: window.sent.slice(n0), label: r.querySelector(`input[data-cleared="${id}"]`).parentElement.textContent.trim() };
+    }, root);
+    // Over 75 (PWA 22.G.2.d) is answered per month
+    res.o75 = await R(pg, (root) => {
+      const r = eval(root), s = r.querySelector("select[data-o75]");
+      const was = s.value, n0 = window.sent.length;
+      s.value = "yes";
+      s.dispatchEvent(new Event("change"));
+      return { month: s.dataset.o75, was, sent: window.sent.slice(n0) };
+    }, root);
     // a tap on a RECALL ALERT line opens that day
     await R(pg, (root) => { const r = eval(root); r.querySelector('details.day[data-day="2026-11-10"]').open = false; }, root);
     await R(pg, (root) => eval(root).querySelector('.bar li[data-goday="2026-11-10"]').click(), root);

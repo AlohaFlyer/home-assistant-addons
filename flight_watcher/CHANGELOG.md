@@ -39,12 +39,45 @@
   narrative as approved, approved_at, requested_at}`, temp file and rename, no symlinks, at most 64 KB), sets the
   draft to `filing` and fires `event/recall_file_requested` (not retained). Once a minute, with no FLICA traffic, it
   reads the HOM app's answers: `<rid>.done.json` sets `filed` with the CCR number, `filed_at` and who filed it
-  (`event/recall_ccr_filed`); `<rid>.status.json` sets `blocked` or `cancelled` with the reason and brings the button
-  back; `<rid>.task.json` shows the HOM task. Answers older than the request, other names, symlinks, files over 64 KB
-  and anything off the contract are refused; their text is trimmed and shown escaped. The card shows "Sent to Hark
-  <time> HST, waiting for the CCR number", "Filed: CCR <n> by Hark <time>" or the blocked reason. While Hark has it,
-  only Mark filed works (cancel the task in HOM to change it). New sensor attribute `hark_files` (true on Ryan's
-  instance only).
+  (`event/recall_ccr_filed`); `<rid>.status.json` sets `blocked` or `cancelled` with the reason; `<rid>.task.json`
+  shows the HOM task. Answers older than the request, other names, symlinks, files over 64 KB and anything off the
+  contract are refused; their text is trimmed and shown escaped. The card shows "Sent to Hark <time> HST, waiting for
+  the CCR number", "Filed: CCR <n> by Hark <time>" or the blocked reason. New sensor attribute `hark_files` (true on
+  Ryan's instance only).
+- Review fixes (Nov 7), each with a test:
+  - A row awarded to Ryan's own seniority number is NO ("awarded to you"): the version showing his own trip can come
+    in after the list day.
+  - A pairing whose length is unknown (no days or end on the row, no package) is POSSIBLE ("pairing length unknown"),
+    never squeezed to one day.
+  - Each row reads its own bid period's package (`pkg_details_for(row month)`); pairing ids repeat across months and the
+    old merged dict let whichever month came last win. A period with no package gives POSSIBLE.
+  - The line held at a time also uses each version's FLICA "Schedule Updated" stamp (HST): a version stored after a
+    read outage whose stamp is at or before that time is the line then, and its month is not "not awarded yet".
+    Change times during the list day come from the stamp too.
+  - The held line reaches LOOK + 7 days back (a trip from the month before that runs into the 672 h window counts for
+    FAR 117.23(b)(1) and (c)(2)); days not on file are unknown from there, and 7 days into the next month (a trip that
+    starts on an unknown day may still be running).
+  - Upgrade from 1.4.5: an open draft counts as already pushed only if its stored verdict was MISSED, so a 1.4.5
+    POSSIBLE row that is MISSED now gets its critical push once.
+  - Over 75 eligibility (PWA 22.G.2.d, Reserve Run pilots only) is answered per month on the tab
+    (`me.o75_months {YYYY-MM: true | false}`, `recall/act {me: {o75_months}}`; the old single flag, which defaulted to
+    eligible, is dropped). Not set: an Over 75 row that would be MISSED is POSSIBLE.
+  - Hark requests: HOM makes one task per rid, ever, so no second request goes out under a rid HOM made a task of
+    (a request HOM rejected without a task can still be sent again). The date in a rid must be a real date. Withdraw
+    from Hark, Not a miss and Mark filed work while Hark has the draft (sent, blocked, cancelled): with no HOM task yet
+    the Watcher removes its own `<rid>.json` first; with a task they need `hom_cleared` ("I completed HOM task <id> as
+    skipped" on the card), because nothing reaches HOM from the Watcher. An edit approved while Hark's task is blocked
+    or cancelled keeps that status. Refusals show on the card (`hark_note`).
+  - A blocked or cancelled draft goes back to `filing` when HOM removes its status file and the task is still there
+    (the task is open again). Drafts keep being read after Ryan withdraws, dismisses or marks them filed: a CCR number
+    from Hark other than his, a task HOM made after the request was taken back, or a draft superseded while Hark had it
+    fires `event/recall_hark_alert` (new, not retained) once and shows on the card. `ha/automations_flight_watcher.yaml`
+    has the new "Flight Watcher Hark CCR alert" (time-sensitive, Ryan's phones; to apply on Pako after the release).
+  - Card: Have Hark file this CCR is off while the box differs from the approved narrative ("Re-approve first: the box
+    differs from what you approved") and sends the box text, which the Watcher checks; the approve button says
+    Approve narrative when nothing changed. Wherever Hark may still file a draft a red line names the HOM task, and
+    Withdraw from Hark, Not a miss and Mark filed wait for the "completed as skipped" tick. The Over 75 checkbox is a
+    per-month choice (not set, on reserve, not on reserve).
 
 ## 1.4.5
 

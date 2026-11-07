@@ -15,14 +15,19 @@ only from that task; nothing here files anything. The folder is shared by both a
                        {v: 1, rid, status: blocked | cancelled, reason (max 500 chars), at}
 
 rid = YYYY-MM-DD_<PAIRING>_<recall|o75>[_<pilot>]. Each side rejects any other name, never follows a symlink, reads at
-most 64 KB, and treats the other side's content as untrusted data (checked, trimmed, never run)."""
+most 64 KB, and treats the other side's content as untrusted data (checked, trimmed, never run).
+
+1.4.6 review (Nov 7): the date in a rid is a real calendar date. HOM makes one task per rid, ever, so the Watcher never
+sends a second request under a rid HOM already made a task of. The contract has no message from the Watcher to HOM
+after the request: before HOM's import the Watcher can take its own <rid>.json back (remove_request); after it, Ryan
+completes the HOM task as skipped himself."""
 import json
 import os
 import re
 import secrets
 import stat
 import unicodedata
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 RID_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}_[A-Z0-9]{4,7}_(recall|o75)(_[a-z0-9]{1,20})?")
 MAX_BYTES = 64 * 1024
@@ -40,9 +45,15 @@ def valid_rid(rid):
 
 def rid_for(act_id, pilot=""):
     """'2026-11-10|H3601|recall' -> '2026-11-10_H3601_recall' (+ '_<pilot>' for a second pilot), or None when the
-    act id does not make a valid rid."""
+    act id does not make a valid rid. 1.4.6 review: the date must be a real calendar date (HOM ignores a name like
+    2026-11-31 and would never answer, leaving the draft 'filing')."""
     parts = str(act_id or "").split("|")
     if len(parts) != 3:
+        return None
+    try:
+        if date.fromisoformat(parts[0]).isoformat() != parts[0]:
+            return None
+    except ValueError:
         return None
     rid = f"{parts[0]}_{parts[1]}_{parts[2]}" + (f"_{pilot}" if pilot else "")
     return rid if valid_rid(rid) else None
@@ -90,6 +101,29 @@ def write_request(folder, rec):
             pass
         raise
     return path
+
+
+def remove_request(folder, rid):
+    """Take back this side's own <rid>.json (1.4.6 review: Withdraw from Hark, or a dismiss / Mark filed while HOM has
+    not made a task yet). HOM imports only a request it can still read, so a request removed before the import never
+    becomes a task. Refuses a bad rid, a symlinked folder and anything at the name that is not a plain file. Returns
+    True when a file was removed, False when there was none."""
+    if not valid_rid(rid):
+        raise Refused(f"bad rid {rid!r}")
+    if not _folder_ok(folder):
+        return False
+    path = os.path.join(folder, f"{rid}.json")
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(st.st_mode):
+        raise Refused(f"{rid}.json is not a plain file")
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return False
+    return True
 
 
 def _read_json(path):

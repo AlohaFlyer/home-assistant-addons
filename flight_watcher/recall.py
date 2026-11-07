@@ -20,7 +20,14 @@ blocked day in the way, and FAR / PWA rest pass with known times. POSSIBLE when 
 versions in versions.py), never today's schedule, so a later trade neither makes an old row a miss nor clears a real
 one. The line at 00:00 HST is checked, and again every version that came in during the day; when they disagree the
 row is POSSIBLE. Missing data (days of the line not on file for that day, a trip's times or block unknown) gives
-POSSIBLE, never MISSED: such days enter far.legality() as guesses, and a guess can only make a check unknown."""
+POSSIBLE, never MISSED: such days enter far.legality() as guesses, and a guess can only make a check unknown.
+
+1.4.6 review (Nov 7): a row awarded to Ryan's own seniority number is his own trip (NO); a pairing whose length is not
+known (no days or end on the row, no package) is POSSIBLE; package details come from the row's own bid period (a
+callable `details`); each FLICA version's 'Schedule Updated' stamp (HST) dates the change it shows, so a version read
+late (CAPTCHA, add-on down) still counts from when FLICA changed; the held line reaches back LOOK + 7 days for a trip
+that started in the month before; Over 75 eligibility (PWA 22.G.2.d) is per month (me['o75_months']), unknown gives
+POSSIBLE."""
 import re
 from datetime import date, datetime, time, timedelta, timezone
 
@@ -29,6 +36,7 @@ from far import LEGAL_REFS, legality, window
 PAIRING = re.compile(r"^[A-Z]\d{4}[A-Z]?$")  # pot.PAIRING_RE (kept here so this module stays free of bs4)
 HST = timezone(timedelta(hours=-10))
 NEAR = 8   # days after the list day where a month not yet on file is unknown, not "not awarded yet"
+TRIP_MARGIN = 7  # days a pairing can run past the day it starts (the held line reaches this far past LOOK)
 LOOK = 29  # days each side of the list day the 672 h limits reach (FAR 117.23(b)(1), (c)(2))
 
 KINDS = {"recall": ("Recall", "22.G.2.e, 22.E, 4.M (200%)"),
@@ -48,31 +56,52 @@ def _hm(m):
     return f"{(m // 60) % 24:02d}:{m % 60:02d}"
 
 
+def _details(row, details):
+    """The package details for the row's bid period: details is {pid: ...} (one period) or a callable period ->
+    {pid: ...} (the Watcher's pkg_details_for). Pairing ids repeat across bid periods (FW-0062), so a row is never
+    judged with another month's package; a period with no package gives {}."""
+    if callable(details):
+        d = _d(row.get("date"))
+        return (details(f"{d:%Y-%m}") if d else None) or {}
+    return details or {}
+
+
 def _det(row, details):
     p = str(row.get("pairing") or "")
-    return (details or {}).get(p) or (details or {}).get(p.rstrip("ABCDEFGHJ")) or {}
+    det = _details(row, details)
+    return det.get(p) or det.get(p.rstrip("ABCDEFGHJ")) or {}
 
 
 def pairing_window(row, details):
-    """(start, end, report, last_arr, block_h) for a recall row, from the row itself or the month's package."""
+    """(start, end, report, last_arr, block_h, length_known) for a recall row, from the row itself or the month's
+    package. length_known is False when neither the row (days, end) nor the package (rel_days, duties) gives the
+    pairing's length: end is then the start day only as a placeholder, never to be trusted (1.4.6 review)."""
     start = _d(row.get("date"))
     det = _det(row, details)
     report = row.get("report") or det.get("report")
-    days = int(row.get("days") or det.get("rel_days") or 1)
+    try:
+        days = int(row.get("days") or det.get("rel_days") or 0)
+    except (TypeError, ValueError):
+        days = 0
     last_arr, end = row.get("last_arr"), _d(row.get("end"))
     duties = det.get("duties") or []
-    if not last_arr and duties:
-        arr = max(d["arr"] for d in duties)
-        last_arr, end = _hm(arr), start + timedelta(days=arr // 1440) if start else None
+    known = bool(end or days > 0)
+    if duties and (not last_arr or not known):  # the package's duty periods give the last arrival and its day
+        try:
+            arr = max(int(d["arr"]) for d in duties)
+            last_arr = last_arr or _hm(arr)
+            end, known = (start + timedelta(days=arr // 1440) if start else None), True
+        except (KeyError, TypeError, ValueError):
+            pass
     if not end and start:
-        end = start + timedelta(days=days - 1)
+        end = start + timedelta(days=max(days, 1) - 1)
     blk = row.get("blk") or det.get("block") or ""
     try:
         h, m = str(blk).split(":")[:2]
         blk_h = int(h) + int(m) / 60
     except ValueError:
         blk_h = 0
-    return start, end, report, last_arr, blk_h
+    return start, end, report, last_arr, blk_h, known
 
 
 def _overlaps(a, b, c, d):
@@ -113,6 +142,31 @@ def _plain(versions, mk):
                   key=_at)
 
 
+UPDATED_FORMATS = ("%b %d, %Y %H:%M:%S", "%b %d, %Y %H:%M", "%B %d, %Y %H:%M:%S", "%B %d, %Y %H:%M")
+
+
+def _upd(v):
+    """When FLICA last changed the line a version shows: its 'Schedule Updated' stamp ('Nov 8, 2026 10:00:00', HST,
+    pot.SCHED_UPDATED) as an aware UTC time, or None when the stamp is empty or unreadable, or later than the Watcher
+    stored the version (more than 5 min of clock slack): then only 'at' is trusted."""
+    raw = " ".join(str((v or {}).get("updated") or "").split())
+    for f in UPDATED_FORMATS:
+        try:
+            t = datetime.strptime(raw, f).replace(tzinfo=HST).astimezone(timezone.utc)
+        except ValueError:
+            continue
+        at = _at(v)
+        return t if at is None or t <= at + timedelta(minutes=5) else None
+    return None
+
+
+def _span_months(day):
+    """The months the held line covers around list day `day`: back to LOOK + 7 days before it (a trip that started in
+    the month before and runs into the 672 h window, the same 7 day trip margin as the forward side), forward to
+    LOOK + 7 days after it."""
+    return _months(day - timedelta(days=LOOK + TRIP_MARGIN), day + timedelta(days=LOOK + TRIP_MARGIN))
+
+
 def keeping_since(versions):
     """When the Watcher started keeping schedule versions (the oldest FLICA version on file), or None."""
     ts = [_at(v) for mk in (versions or {}) for v in _plain(versions, mk)]
@@ -131,8 +185,15 @@ def held_at(versions, day, at=None, current=None, current_own=None, since=None):
       would have made one); a month that began before that is not on file;
     - else the trips that started before the day, which cannot change once started (from the first later version,
       else the schedule on file now); the rest of the month is unknown.
+    1.4.6 review: a version stored after that time whose FLICA 'Schedule Updated' stamp (_upd) is at or before it shows
+    the line as it was then (FLICA changed nothing between the stamp and the read), so it is the line held, whatever
+    came before it (a read outage: CAPTCHA, MFA, add-on down, the 2 h block / credit wait); it also means the month
+    was awarded by then. Months start LOOK + 7 days before the day (_span_months); days not on file are unknown from
+    that margin on (never earlier: they cannot matter), and up to 7 days into the next month (a trip that started on
+    an unknown day is in its own month's items only).
     Returns {day, items, trips, unknown [(from, to) ISO dates], asof (UTC ISO), line ('11.004'), lines}. Pure."""
     t = at or datetime.combine(day, time(0), HST).astimezone(timezone.utc)
+    reach = day - timedelta(days=LOOK + TRIP_MARGIN)
     since = since if since is not None else keeping_since(versions)
     items, trips, unknown, lines = [], {}, [], {}
     seen = set()
@@ -147,13 +208,18 @@ def held_at(versions, day, at=None, current=None, current_own=None, since=None):
                     trips[k] = trs[k]
 
     started = lambda it: (_d(it.get("start")) or day) < day  # noqa: E731
-    for mk in _months(day - timedelta(days=LOOK), day + timedelta(days=LOOK + 7)):
+    for mk in _span_months(day):
         first, last = _month_span(mk)
         plain = _plain(versions, mk)
         award = next((v for v in (versions or {}).get(mk) or [] if isinstance(v, dict) and v.get("award")), None)
         before = [v for v in plain if _at(v) <= t]
         after = [v for v in plain if _at(v) > t]
-        if before:
+        stamped = [v for v in after if _upd(v) and _upd(v) <= t]  # read late, but FLICA had it by then
+        if stamped:
+            v = stamped[-1]
+            take(v.get("items"), v.get("trips"))
+            lines[mk] = v.get("ver") or mk
+        elif before:
             v = before[-1]
             take(v.get("items"), v.get("trips"))
             lines[mk] = v.get("ver") or mk
@@ -178,10 +244,13 @@ def held_at(versions, day, at=None, current=None, current_own=None, since=None):
             src = after[0] if after else (current or {}).get(mk)
             if src:
                 take(src.get("items"), src.get("trips") if after else current_own, started)
+            # a trip that starts on an unknown day is in this month's items only and may run TRIP_MARGIN days into the
+            # next month, whose own version does not show it: those days are unknown too
+            carry = (last + timedelta(days=TRIP_MARGIN)).isoformat()
             if not src:
-                unknown.append((first.isoformat(), last.isoformat()))
+                unknown.append((max(first, reach).isoformat(), carry))
             elif last >= day:
-                unknown.append((max(first, day).isoformat(), last.isoformat()))
+                unknown.append((max(first, day).isoformat(), carry))
             lines[mk] = "not on file"
     for k, v in (current_own or {}).items():  # times the version did not keep (same trip, same start)
         if any(f"{it.get('trip')}|{it.get('start')}" == k for it in items):
@@ -196,8 +265,8 @@ def helds_on(versions, day, current=None, current_own=None):
     t0 = datetime.combine(day, time(0), HST).astimezone(timezone.utc)
     t1 = t0 + timedelta(days=1)
     since = keeping_since(versions)
-    times = {_at(v) for mk in _months(day - timedelta(days=LOOK), day + timedelta(days=LOOK + 7))
-             for v in _plain(versions, mk) if t0 < _at(v) < t1}
+    times = {x for mk in _span_months(day) for v in _plain(versions, mk) for x in (_at(v), _upd(v))
+             if x and t0 < x < t1}  # 1.4.6 review: FLICA's own change time too, for a version read after the day
     out, sigs = [], set()
     for t in [t0] + sorted(times):
         h = held_at(versions, day, t, current, current_own, since)
@@ -304,10 +373,31 @@ def _hst(iso):
     return f"{t:%b} {t.day} {t:%H:%M} HST"
 
 
+def o75_eligible(me, month):
+    """PWA 22.G.2.d: Over 75 goes to Reserve Run pilots only. Whether Ryan was on reserve in `month` (YYYY-MM), from
+    his per-month answer me['o75_months'] {YYYY-MM: true | false}: True, False, or None when he has not said (the old
+    single 'o75' flag is not used: it defaulted to eligible for every month)."""
+    v = (me.get("o75_months") or {}).get(month) if isinstance(me.get("o75_months"), dict) else None
+    return v if isinstance(v, bool) else None
+
+
 def evaluate(row, me, sched_items, own_trips, blocked, details, held=None):
-    """One verdict dict for one recall-list row against one line. me = {sen, seat, o75}. held (held_at()): the line
-    as held on the list day, used instead of sched_items / own_trips; its unknown spans can only make a check unknown
-    (POSSIBLE), never pass it. Without held, sched_items / own_trips are taken as complete."""
+    """One verdict dict for one recall-list row against one line. me = {sen, seat, o75_months}. held (held_at()): the
+    line as held on the list day, used instead of sched_items / own_trips; its unknown spans can only make a check
+    unknown (POSSIBLE), never pass it. Without held, sched_items / own_trips are taken as complete. details: the
+    package {pid: ...} or a callable period -> {pid: ...} (_details)."""
+    out = _evaluate(row, me, sched_items, own_trips, blocked, details, held)
+    if out.get("kind") == "o75" and out["verdict"] == "MISSED":
+        d = _d(row.get("date"))
+        mk = f"{d:%Y-%m}" if d else ""
+        if o75_eligible(me, mk) is None:  # 1.4.6 review: never MISSED on an assumed reserve month
+            out["verdict"] = "POSSIBLE"
+            out["why"].append(f"reserve status for {d:%b %Y} unknown: Over 75 goes to Reserve Run pilots only (PWA "
+                              f"22.G.2.d); say on the tab whether you were on reserve that month")
+    return out
+
+
+def _evaluate(row, me, sched_items, own_trips, blocked, details, held=None):
     kind = (row.get("kind") or "").lower()
     out = {"date": row.get("date"), "kind": kind, "pairing": row.get("pairing") or "", "sen": row.get("sen"),
            "pilot": row.get("pilot") or "", "seat": (row.get("seat") or "FO").upper(), "verdict": "NO", "why": [], "refs": []}
@@ -320,8 +410,10 @@ def evaluate(row, me, sched_items, own_trips, blocked, details, held=None):
     if out["seat"] != (me.get("seat") or "FO").upper():
         out["why"].append(f"{out['seat']} seat, you bid {me.get('seat') or 'FO'}")
         return out
-    if kind == "o75" and not me.get("o75", True):
-        out["why"].append("Over 75 is for Reserve Run pilots (PWA 22.G.2.d); you are not on reserve")
+    rd = _d(row.get("date"))
+    if kind == "o75" and rd and o75_eligible(me, f"{rd:%Y-%m}") is False:
+        out["why"].append(f"Over 75 is for Reserve Run pilots (PWA 22.G.2.d); you said you were not on reserve in "
+                          f"{rd:%b %Y}")
         return out
     try:
         their, mine = int(row.get("sen")), int(me.get("sen"))
@@ -329,11 +421,14 @@ def evaluate(row, me, sched_items, own_trips, blocked, details, held=None):
         out["verdict"] = "POSSIBLE"
         out["why"].append("seniority unknown")
         return out
+    if their == mine:  # 1.4.6 review: his own award (the version showing it may come in after the list day)
+        out["why"].append(f"awarded to you (#{mine})")
+        return out
     if their < mine:
         out["why"].append(f"went to #{their}, senior to you (#{mine})")
         return out
     out["why"].append(f"went to #{their}, junior to you (#{mine})")
-    s, e, rep, arr, blk = pairing_window(row, details)
+    s, e, rep, arr, blk, known = pairing_window(row, details)
     if not s:
         out["verdict"] = "POSSIBLE"
         out["why"].append("date unreadable")
@@ -378,6 +473,10 @@ def evaluate(row, me, sched_items, own_trips, blocked, details, held=None):
     if not window(s, e, rep, arr):
         out["verdict"] = "POSSIBLE"
         out["why"].append("pairing times unknown; upload the month's pairings PDF or add report and arrival")
+        return out
+    if not known:  # 1.4.6 review: a multi-day pairing must not shrink to one day (its later days unchecked)
+        out["verdict"] = "POSSIBLE"
+        out["why"].append(f"pairing length unknown; upload the {s:%b %Y} pairings PDF or add days to the row")
         return out
     new = _trip(out["pairing"], s, e, rep, arr, blk or None, _det(row, details).get("duties"))
     res = legality(new, own_records(sched_items, own_trips) + _gaps_as_trips(gaps))
@@ -434,7 +533,8 @@ def narrative(v, me, name="", emp=""):
 
 
 def check_day(rows, me, sched_items, own_trips, blocked, details, helds=None):
-    """Every row of one list. helds (helds_on()): the lines held that day; without it, the current line."""
+    """Every row of one list. helds (helds_on()): the lines held that day; without it, the current line. details:
+    {pid: ...} or a callable period -> {pid: ...}, so each row reads its own bid period's package."""
     if helds:
         return [judge(r, me, helds, blocked, details) for r in rows or []]
     return [evaluate(r, me, sched_items, own_trips, blocked, details) for r in rows or []]
