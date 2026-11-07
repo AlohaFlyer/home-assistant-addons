@@ -19,12 +19,12 @@ Pako by sha256 of the redacted text.
 says "Seen on your FLICA schedule ... (a crew-to-crew trade)" for a `sched:` key instead of "Filed ...". The 19
 automations here match Pako by sha256 of the redacted text.
 
-## Pending on Pako (1.4.8, FW-0066)
+## Applied on Pako 2026-11-07 about 13:35 HST (1.4.8, FW-0066)
 
-The two dashboard snapshots hold the **intended** state for 1.4.8 ("any user can see and upload"); Pako still has the
-1.4.7 Settings views until these edits are applied through the HA connector after the release is live (the cards'
-user path needs the 1.4.8 sensors). Each is a [DESTRUCTIVE] change to a live dashboard or to Home Assistant's
-configuration: Ryan's yes first, one at a time. Then refresh the sha256 check below.
+Edits 1 and 2 below were applied through the HA connector once 1.4.8 was live (`flight-watcher` 13:34,
+`flight-watcher-james` 13:38 HST). Both dashboard snapshots here match Pako by sha256 of the redacted text. Undo: give
+the two cards of edit 1 back the `user` visibility condition and rename the heading "Monthly PDFs"; delete the two
+cards edit 2 inserted. Items 3 to 5 are still open and not applied.
 
 Who the card reaches (read on Pako 2026-11-07): `flight-watcher` is `require_admin: true`, so only HA admins open it;
 all five views of `flight-watcher-james` (Settings included) are `visible` to James's and Ryan's user ids only. So
@@ -42,7 +42,7 @@ household users (four, a guest login among them) can open `flight-watcher-james`
    `{"type": "custom:flight-watcher-uploads-card-james", "grid_options": {"columns": "full"}}`, with no visibility
    condition (James is not an admin: his card reads `sensor.flight_watcher_james_uploads` and sends chunks to
    `flight_watcher_james/upload/chunk`). The view's own `visible` list (James, Ryan) stays as it is.
-3. Open question for Ryan, not applied: should the other household users upload too? That
+3. Open question for Ryan, not applied (still open): should the other household users upload too? That
    means adding their user ids to the `visible` list of the `flight-watcher-james` Settings view (they would then also
    see James's Credentials card there, which shows his FLICA username), or a separate view or dashboard for the
    uploads card alone. A separate [DESTRUCTIVE] edit; recommended: leave as is.
@@ -62,7 +62,7 @@ household users (four, a guest login among them) can open `flight-watcher-james`
 
 | File | Live copy on Pako |
 |:--|:--|
-| `automations_flight_watcher.yaml` | `/config/automations.yaml`: the 18 automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order |
+| `automations_flight_watcher.yaml` | `/config/automations.yaml`: the 19 automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order |
 | `dashboard_flight_watcher.json` | `/config/.storage/lovelace.flight_watcher` (dashboard `flight-watcher`) |
 | `dashboard_flight_watcher_james.json` | `/config/.storage/lovelace.flight_watcher_james` (dashboard `flight-watcher-james`) |
 | `packages/flight_watcher_wx.yaml` | `/config/packages/flight_watcher_wx.yaml` |
