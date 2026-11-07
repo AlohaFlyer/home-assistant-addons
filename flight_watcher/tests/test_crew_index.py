@@ -747,7 +747,7 @@ def test_second_pilot_reads_the_shared_uploads(tmp_path, monkeypatch):
     monkeypatch.setattr(W, "UPLOADS_SHARED", up)
     monkeypatch.setattr(W, "ha_state", lambda e: {"input_number.flight_watcher_james_federal_tax_pct": "10",
                                                   "input_number.flight_watcher_federal_tax_pct": "40"}.get(e))
-    assert W.UPLOADS == "/share/flight_watcher/james/uploads" != W.UPLOADS_SHARED
+    assert W.UPLOADS == "/share/flight_watcher/uploads"  # FW-0066 (1.4.8): every instance reads the one shared folder
     assert W.DB.get("pkg_details:2026-11") is None and W.pkg_details_for("2026-11")["H9001"]["lay"] == "LAX"
     assert W.pkg_details_for("2026-10") == {}
     _file(tmp_path / "www", "2026-11", [_row("H9001", "2", rel=2)])

@@ -27,6 +27,7 @@ def srv(tmp_path, monkeypatch, fx):
     monkeypatch.setattr(web, "UPLOAD_DIR", str(tmp_path))
     monkeypatch.setattr(web, "_hst_now", lambda: dt.datetime(2026, 11, 20, 9, 30, tzinfo=HST))
     monkeypatch.setattr(web, "PAIRINGS_DIR", str(tmp_path / "www"))  # no pairing file on file
+    monkeypatch.setattr(web, "CONTACTS_FILE", str(tmp_path / "contacts.json"))
     monkeypatch.setattr(web.subprocess, "run", _fake_pdftotext(fx("award_packet_synthetic.txt")))
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -54,7 +55,8 @@ def _post(port, fields, pdf=b"%PDF-1.4 fake", path="/api/upload", **kw):
 def test_uploads_list_and_upload(srv, tmp_path):
     st, ct, data = _req(srv, "GET", "/api/uploads")
     assert st == 200 and ct.startswith("application/json")
-    assert json.loads(data) == {"files": [], "seniority": None, "version": "9.9.9", "max_bytes": web.INGRESS_MAX,
+    assert json.loads(data) == {"files": [], "seniority": None, "contacts": None, "version": "9.9.9",
+                                "max_bytes": web.INGRESS_MAX, "mqtt_max_bytes": web.UPLOAD_MAX,
                                 "wanted": [{"kind": "pairings", "month": "2026-10", "why": "previous"},
                                            {"kind": "pairings", "month": "2026-11", "why": "current"}]}
     st, ct, data = _post(srv, {"kind": "pairings", "month": "2026-12"})

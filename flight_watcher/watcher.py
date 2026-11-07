@@ -41,8 +41,10 @@ import pay as PAY
 import seniority as SEN
 import wwwfiles as WF
 import trades as TR
+import chunks as UP
+import contacts as CT
 
-VERSION = "1.4.7"
+VERSION = "1.4.8"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -229,6 +231,9 @@ def on_message(c, u, msg):
         return
     if msg.topic == f"{T}/settings/set":
         settings_cmd(msg.payload.decode(errors="replace"))
+        return
+    if msg.topic == f"{T}/upload/chunk":
+        upload_chunk(msg.payload)
         return
     if msg.topic == f"{T}/ticket/new":
         ticket_safe(ticket_new, msg.payload.decode(errors="replace"))
@@ -877,6 +882,14 @@ def discovery(c):
                                 "value_template": "{{ value_json.has_password }}",
                                 "json_attributes_topic": f"{T}/settings/state", "icon": "mdi:account-key",
                                 "entity_category": "diagnostic"}),
+        # FW-0066: what is on file (web.uploads_json: names, sizes and counts only) and the last chunked upload's
+        # progress and result, for the uploads card of a user who is not an admin (no ingress session)
+        ("sensor", "uploads", {"name": "Uploads on file", "state_topic": f"{T}/uploads",
+                               "value_template": "{{ value_json.count }}",
+                               "json_attributes_topic": f"{T}/uploads", "icon": "mdi:file-upload-outline"}),
+        ("sensor", "upload_status", {"name": "Upload status", "state_topic": f"{T}/upload/status",
+                                     "value_template": "{{ value_json.state }}",
+                                     "json_attributes_topic": f"{T}/upload/status", "icon": "mdi:progress-upload"}),
         ("sensor", "ot_requests", {"name": "Open time requests", "state_topic": f"{T}/ot_requests",
                                    "value_template": "{{ value_json.pending }}",
                                    "json_attributes_topic": f"{T}/ot_requests", "icon": "mdi:swap-horizontal-circle-outline"}),
@@ -919,6 +932,7 @@ def mqtt_start():
                   "ticket/new", "ticket/image", "ticket/act", "ticket/edit",
                   "ticket/delete") + (() if INSTANCE else ("crew_scan/press",)):
             cl.subscribe(f"{T}/{t}")
+        cl.subscribe((f"{T}/upload/chunk", 1))  # FW-0066 (qos 1): an upload in chunks (mqtt.publish from the uploads card)
         publish_settings(cl)
         fq = freq()
         cl.publish(f"{T}/freq/normal_min/state", str(fq["normal_min"]), retain=True)
@@ -927,6 +941,7 @@ def mqtt_start():
         cl.publish(f"{T}/auto_swap/state", "ON" if S.get("auto_swap") else "OFF", retain=True)
         publish_swap_mode(cl)
         publish_swap_tests()
+        publish_uploads(cl, force=True)  # FW-0066
         tm = threading.Timer(CONNECT_STATES_DELAY_S, connect_states, args=(cl,))  # FW-0024
         tm.daemon = True
         tm.start()
@@ -956,6 +971,7 @@ ATTR_TRIM = {
     "schedule": ("months", "old"), "schedule_versions": ("months", "old"), "grid/state": ("days", "old"),
     "drop/state": ("keys", "front"), "trade/state": ("keys", "front"), "last_tradeboard": (None, None),
     "last_new": (None, None), "last_match": (None, None), "crew_index": ("waiting_for_award", "front"),
+    "uploads": ("files", "end"),  # FW-0066: newest first, so the oldest files go
 }
 ATTR_LOGGED = set()
 
@@ -1654,10 +1670,13 @@ def versions_check(force_pub=False):
         log.info("schedule versions skipped: %s", e)
 
 
-UPLOADS = f"{SHARE}/uploads"
 # FW-0062: where the Web UI saves every upload (web.UPLOAD_DIR). The Web UI runs on the default instance only, so a
 # second pilot's instance reads the pairings package text and the seniority list from here too.
 UPLOADS_SHARED = "/share/flight_watcher/uploads"
+# FW-0066 (1.4.8): the award, the pairings package and the seniority list are base-wide, and either instance may save
+# an upload sent in chunks over MQTT, so every instance reads the one shared folder (a second pilot's instance read
+# /share/flight_watcher/<name>/uploads before, which nothing ever wrote to). uploads_check's marks stay per instance.
+UPLOADS = UPLOADS_SHARED
 CARD_PAIRINGS = "/homeassistant/www/flight-watcher"  # pairings_<month>.json: shared, either instance may write the same content
 WWW_OLD = "/homeassistant/www/flica"  # FW-0010: the pre-1.0.0 folder (migrate.py moves it); swept for old finds files
 _PKG_CACHE = {}  # FW-0062: period -> (file time, details) parsed from the shared package text
@@ -3832,7 +3851,10 @@ def pilot_cmd(payload):
             emp = q
         else:
             hits = DB.find_crew(q)
-            if len(hits) == 1:
+            ct = None if hits else contact_emp(q)  # FW-0066: a name only the contact list has
+            if ct:
+                emp, d["name"] = ct
+            elif len(hits) == 1:
                 emp, d["name"] = hits[0]["emp"], hits[0]["name"]
             elif hits:
                 pub_pilot({"emp": "", "name": q, "status": f"{len(hits)} pilots match '{q}', pick one", "matches": hits,
@@ -4001,6 +4023,10 @@ def pub_pilot(payload):
         payload = {**payload, "reconstructed": trips,
                    "reconstructed_coverage_pct": CI.coverage(insts, rows, None, first, end)[2],
                    "reconstructed_month": month, "reconstructed_from": start, "reconstructed_to": end}
+        payload.pop("contact", None)
+        ct = contact_for(emp, payload.get("name") or "") if emp else None
+        if ct:  # FW-0066: the one looked-up pilot's phone and email, for the card's call / text / mail links
+            payload["contact"] = ct
         if trips:
             try:
                 name = payload.get("name") or next((r.get("name") for r in mine if r.get("name")), "")
@@ -4010,7 +4036,15 @@ def pub_pilot(payload):
     except Exception as e:
         log.info("pilot lookup: crew index skipped: %s", e)
         payload = {**payload, "reconstructed": [], "reconstructed_coverage_pct": 0.0}
-    pub("pilot_schedule", payload)
+        emp = re.sub(r"\D", "", str(payload.get("emp") or ""))
+        ct = contact_for(emp, payload.get("name") or "") if emp else None
+        if ct:
+            payload["contact"] = ct
+    # FW-0066 review: a contact never stays in the broker. The retained copy (what HA reads after a restart) has none;
+    # the same payload with it follows, not retained, and that is the one the sensor and the card end on.
+    pub("pilot_schedule", {k: v for k, v in payload.items() if k != "contact"})
+    if payload.get("contact"):
+        pub("pilot_schedule", payload, retain=False)
 
 
 # ---------------------------------------------------------------- 0.10.1 crew index (Ryan)
@@ -4360,6 +4394,185 @@ RID_RE = TK.CID_RE
 
 def reporter():
     return INSTANCE or "ryan"
+
+
+# ---------------------------------------------------------------- 1.4.8 FW-0066 uploads for every user
+# Ryan, Nov 7: "Make sure that any user can see and upload pairings and awards and seniority lists and pilot contact
+# lists." The uploads card of a user who is not an HA admin (no ingress session) sends the file in chunks over
+# mqtt.publish to {T}/upload/chunk (chunks.py); this instance stages, checks and saves it with web.save_upload into the
+# shared uploads folder, and answers on {T}/upload/status (not retained). sensor.{T}_uploads lists what is on file.
+UPLOAD_STAGING = os.path.join(UPLOADS_SHARED, ".staging", T)  # private: mode 700, chunk files 600
+UPLOAD_SWEEP_S = 10  # the janitor drops stalled uploads this often
+UPLOADS_PUB_S = 60  # and re-lists what is on file (the other instance or the Web UI may have saved a file)
+UPLOAD_STATUS_GAP_S = 1.0  # 'receiving' statuses at most this often per upload (the first and last always go)
+UPLOAD_RECENT = 5  # results kept in the status, so a card that missed one update still finds its own
+_UP = {"asm": None, "sig": None, "recent": [], "pub_at": {}}
+_UP_LOCK = threading.Lock()
+
+
+def assembler():
+    if _UP["asm"] is None:
+        _UP["asm"] = UP.Assembler(UPLOAD_STAGING, web.UPLOAD_MAX, key=settings_key,
+                                  done_path=os.path.join(DATA, "upload_done.json"))  # FW-0066 review: no replays
+    return _UP["asm"]
+
+
+def publish_upload_status(st):
+    """{T}/upload/status, not retained: {state and phase (receiving | checking | reading | done | error; HA keeps state
+    as the sensor's state and drops it from the attributes), id, kind, got, total, ok?, message (plain text: file
+    names and counts, never file content), at, recent [{id, ok, message, at}]}."""
+    st = {**st, "at": now_iso()}
+    st["phase"] = st["state"]  # HA's MQTT sensor drops an attribute named state: the card reads phase
+    with _UP_LOCK:
+        if st["state"] == "receiving" and 0 < st.get("got", 0) < st.get("total", 0):
+            last = _UP["pub_at"].get(st["id"], 0)
+            if time.time() - last < UPLOAD_STATUS_GAP_S and st.get("got") != 1:
+                return False
+        _UP["pub_at"][st["id"]] = time.time()
+        if st["state"] in ("done", "error"):
+            _UP["pub_at"].pop(st["id"], None)
+            rec = [r for r in _UP["recent"] if r["id"] != st["id"]]
+            _UP["recent"] = ([{k: st.get(k) for k in ("id", "kind", "ok", "message", "at")}] + rec)[:UPLOAD_RECENT]
+        st["recent"] = list(_UP["recent"])
+    pub("upload/status", st, retain=False)
+    return True
+
+
+def _bg(fn, *args):
+    """Run fn on its own daemon thread (tests run it in place)."""
+    threading.Thread(target=fn, args=args, daemon=True, name="upload").start()
+
+
+def upload_chunk(payload):
+    """One chunk from {T}/upload/chunk. Never raises (paho would stop its loop). The log has the upload's id prefix,
+    kind and counts only."""
+    try:
+        try:
+            msg = json.loads(payload.decode("utf-8") if isinstance(payload, (bytes, bytearray)) else payload)
+        except (ValueError, UnicodeDecodeError):
+            log.info("upload chunk ignored: not JSON")
+            return
+        st, ready = assembler().add(msg)
+        if st is None:
+            return
+        if st["state"] == "error":
+            log.info("upload %s (%s): refused: %s", st["id"][:6], st.get("kind") or "?", st["message"])
+        elif st.get("got") == 1 and st["state"] == "receiving":
+            log.info("upload %s (%s): receiving %d parts", st["id"][:6], st["kind"], st["total"])
+        publish_upload_status(st)
+        if ready:
+            _bg(upload_finish, ready)
+    except Exception as e:  # noqa: BLE001
+        log.warning("upload chunk failed: %s", type(e).__name__)
+
+
+def upload_finish(ready):
+    """A complete upload: check it (chunks.Assembler.finish), then save it exactly like the ingress upload
+    (web.save_upload), then say so and re-list the files. Runs on its own thread (pdftotext can take seconds)."""
+    m = ready["meta"]
+    base = {"id": m["id"], "kind": m["kind"], "got": m["n"], "total": m["n"]}
+    try:
+        fields, data = assembler().finish(ready)
+    except UP.Bad as e:
+        log.info("upload %s (%s): refused: %s", m["id"][:6], m["kind"], e)
+        publish_upload_status({**base, "state": "error", "ok": False, "message": str(e)})
+        return
+    except Exception as e:  # noqa: BLE001
+        log.warning("upload %s (%s): check failed: %s", m["id"][:6], m["kind"], type(e).__name__)
+        publish_upload_status({**base, "state": "error", "ok": False, "message": f"Upload failed ({type(e).__name__})."})
+        return
+    publish_upload_status({**base, "state": "reading", "message": f"Reading {UP.WHAT.get(m['kind'], 'the file')}..."})
+    try:
+        r = web.save_upload(fields, data, log)
+    except Exception as e:  # noqa: BLE001
+        r = {"ok": False, "message": f"Upload failed ({type(e).__name__})."}
+    log.info("upload %s (%s, %d KB, %s): %s", m["id"][:6], m["kind"], len(data) // 1024,
+             "sealed" if m.get("enc") else "not sealed", "saved" if r.get("ok") else "not saved")
+    publish_upload_status({**base, "state": "done" if r.get("ok") else "error", "ok": bool(r.get("ok")),
+                           "message": str(r.get("message") or "")[:600]})
+    try:
+        publish_uploads(force=True)
+    except Exception as e:  # noqa: BLE001
+        log.info("uploads list not published: %s", type(e).__name__)
+
+
+def publish_uploads(c=None, force=False):
+    """{T}/uploads (retained), sensor.{T}_uploads: web.uploads_json plus count and chunk_bytes. Published when it
+    changes (or force); no file content and no contact entry (contacts: counts and the file name only)."""
+    try:
+        d = web.uploads_json(VERSION)
+    except Exception as e:  # noqa: BLE001
+        log.info("uploads list skipped: %s", type(e).__name__)
+        return False
+    d.update(count=len(d.get("files") or []), chunk_bytes=UP.CHUNK_MAX)
+    sig = json.dumps(d, sort_keys=True)
+    if not force and sig == _UP["sig"]:
+        return False
+    _UP["sig"] = sig
+    if c is not None:
+        c.publish(f"{T}/uploads", json.dumps(cap_attrs("uploads", d)), retain=True)
+    else:
+        pub("uploads", d)
+    return True
+
+
+def upload_janitor():
+    """Drop stalled uploads (chunks.TIMEOUT_S with no chunk) and re-list what is on file now and then."""
+    n = 0
+    while True:
+        time.sleep(UPLOAD_SWEEP_S)
+        try:
+            for st in assembler().sweep():
+                log.info("upload %s (%s): %s", st["id"][:6], st.get("kind") or "?", st["message"])
+                publish_upload_status(st)
+            n += 1
+            if n * UPLOAD_SWEEP_S >= UPLOADS_PUB_S:
+                n = 0
+                publish_uploads()
+        except Exception as e:  # noqa: BLE001
+            log.info("upload janitor: %s", type(e).__name__)
+
+
+def start_upload_janitor():
+    """Start the janitor once (main(), right after MQTT starts: before the wait for a second pilot's settings)."""
+    if _UP.get("janitor") is None:
+        _UP["janitor"] = threading.Thread(target=upload_janitor, daemon=True, name="uploads")
+        _UP["janitor"].start()
+    return _UP["janitor"]
+
+
+_CT_CACHE = {}
+
+
+def contacts_data():
+    """FW-0066: the pilot contact list (web.CONTACTS_FILE, shared by every instance), cached by file time; None when
+    there is none. Personal data: never logged, never published but for the one looked-up pilot (contact_for)."""
+    path = web.CONTACTS_FILE
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return None
+    if _CT_CACHE.get("path") != path or _CT_CACHE.get("mt") != mt:
+        _CT_CACHE.update(path=path, mt=mt, data=CT.load(path))
+    return _CT_CACHE.get("data")
+
+
+def contact_emp(q):
+    """(emp, name) of the one contact list entry a typed name matches, or None."""
+    try:
+        return CT.find_by_name(contacts_data(), q)
+    except Exception as e:  # noqa: BLE001
+        log.info("pilot lookup: contact list not searched: %s", type(e).__name__)
+        return None
+
+
+def contact_for(emp, name=""):
+    """The looked-up pilot's {name, phones, emails} from the contact list, or None."""
+    try:
+        return CT.find(contacts_data(), emp, name)
+    except Exception as e:  # noqa: BLE001 (type only: the message could carry a name)
+        log.info("pilot lookup: contact skipped: %s", type(e).__name__)
+        return None
 
 
 def ticket_safe(fn, payload):
@@ -5037,6 +5250,7 @@ def main():
     global MQ
     migrate_swap_mode()  # FW-0028: before on_connect publishes the mode
     MQ = mqtt_start()
+    start_upload_janitor()  # FW-0066: chunks arrive as soon as MQTT is up, even while a second pilot waits for settings
     time.sleep(2)
     if not OPTS.get("username") or not OPTS.get("password"):
         if INSTANCE:  # 0.10.0: a second pilot gets credentials over MQTT; wait for them (settings/set restarts us)
@@ -5107,7 +5321,8 @@ def main():
     if os.environ.get("FLIGHT_WATCHER_WEB", "1") == "1":  # 0.10.0: only the default instance serves the ingress page
         web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
                   save_rules_from_page, DB, log, get_settings=lambda: settings_state(load_creds()),
-                  save_settings=lambda d: settings_cmd(json.dumps(d)), clear_settings=settings_clear)
+                  save_settings=lambda d: settings_cmd(json.dumps(d)), clear_settings=settings_clear,
+                  on_saved=lambda: publish_uploads(force=True))
     last_month_check = None
     with sync_playwright() as pw:
         fl = Flica(pw)
