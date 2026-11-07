@@ -76,7 +76,9 @@ def test_instance_prefix_and_ids(tmp_path, monkeypatch):
     assert W.T == "flight_watcher_pilot2" and W.INSTANCE == "pilot2" and W.AVAIL == "flight_watcher_pilot2/status"
     assert W.DEV["identifiers"] == ["flight_watcher_pilot2"] and W.DEV["name"] == "Flight Watcher (Pilot2)"
     assert W.RULE_UID == "flight_watcher_pilot2_rule"
-    assert W.UPLOADS == "/share/flight_watcher/pilot2/uploads" and W.CAPTURE_DIR == "/share/flight_watcher/pilot2/captures"
+    # FW-0066 (1.4.8): the uploads are base-wide, so a second pilot reads the shared folder; its captures stay its own
+    assert W.UPLOADS == "/share/flight_watcher/uploads" and W.CAPTURE_DIR == "/share/flight_watcher/pilot2/captures"
+    assert W.UPLOAD_STAGING == "/share/flight_watcher/uploads/.staging/flight_watcher_pilot2"
     assert W.finds_dir() == "/homeassistant/www/flight-watcher/pilot2" and W.CARD_PAIRINGS == "/homeassistant/www/flight-watcher"
     cfgs = _discovery(W)
     assert "homeassistant/sensor/flight_watcher/schedule/config" not in cfgs

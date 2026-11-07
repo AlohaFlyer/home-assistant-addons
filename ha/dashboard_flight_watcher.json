@@ -690,30 +690,14 @@
                 },
                 {
                   "type": "heading",
-                  "heading": "Monthly PDFs",
-                  "icon": "mdi:file-upload-outline",
-                  "visibility": [
-                    {
-                      "condition": "user",
-                      "users": [
-                        "c0d7b9eb3a7e4e5e9642c4d66a28be9a"
-                      ]
-                    }
-                  ]
+                  "heading": "Monthly files",
+                  "icon": "mdi:file-upload-outline"
                 },
                 {
                   "type": "custom:flight-watcher-uploads-card",
                   "grid_options": {
                     "columns": "full"
-                  },
-                  "visibility": [
-                    {
-                      "condition": "user",
-                      "users": [
-                        "c0d7b9eb3a7e4e5e9642c4d66a28be9a"
-                      ]
-                    }
-                  ]
+                  }
                 },
                 {
                   "type": "markdown",
