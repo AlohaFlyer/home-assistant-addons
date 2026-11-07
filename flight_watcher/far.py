@@ -11,6 +11,7 @@ screen() (FW-0039) is the FAR column of pot, Tradeboard and finds rows: the same
 (a pickup that broke 117.23(c) read OK under the old far_check, which is gone). The 11 h PWA rest stays a note there
 ('OK (CBA rest 10:30)'), as before. The pairing's own FDP is built legal by scheduling and is not re-checked.
 """
+import math
 from datetime import datetime, time, timedelta
 
 REST = timedelta(hours=10)
@@ -78,6 +79,12 @@ REST_REFS = "FAR 117.25(e) 10 h, PWA 10.E.1.a 11 h in domicile"
 def _hh(h):
     m = int(round(h * 60))
     return f"{m // 60}:{m % 60:02d}"
+
+
+def _over_h(h):
+    """Whole hours of a total over its limit, rounded up so it never reads as the limit itself (60:30 h of a 60 h
+    limit is '61', not '60')."""
+    return math.ceil(h - 1e-9)
 
 
 def _hrs(td):
@@ -159,8 +166,9 @@ def _cum(trips, new, span, lim, what, ref):
     worst (hi): FDP = overlap of every span; flight time = the lesser of each span's block (its length when the block
     is unknown) and its overlap. Both are piecewise linear in the window's position, so their maxima are at the
     windows that start at a span's start or at its end less its cap, or end at a span's end or at its start plus its
-    cap; only those windows are tried. Returns (result 'OK' | 'NO' | '?', line, hours: the failing window's when NO,
-    else the most it can be)."""
+    cap; only those windows are tried. Returns (result 'OK' | 'NO' | '?', line, hours: when NO or '?' over, the worst
+    failing window's of the kind the first one in time decided (the pairing's own excess, or the line's), else the most
+    it can be)."""
     lo_h, hi_h = new["report"] - span, new["release"] + span
     segs = []  # (start, end, cap h, block h or None, sure, is_new, trip)
     for t in trips:
@@ -198,10 +206,14 @@ def _cum(trips, new, span, lim, what, ref):
         if hi > best_hi:
             best_hi, worst_w = hi, (a, b)
         best_lo = max(best_lo, lo)
-        if lo > lim and fail is None:
-            fail = (lo, lo_mine)
+        if lo > lim:
+            mine_over = lo_mine > lim
+            if fail is None:
+                fail = (lo, mine_over)
+            elif mine_over == fail[1]:
+                fail = (max(fail[0], lo), mine_over)  # the worst window of that kind, not the first in time
     n = int(span.total_seconds() // 3600)
-    if fail and fail[1] <= lim:
+    if fail and not fail[1]:
         return "NO", f"{what} {_hh(fail[0])} h in {n} h, over {lim} h ({ref})", fail[0]
     if fail:
         return "?", (f"{what} in {n} h is over {lim} h even without the pairing ({ref}): the line on file looks "
@@ -310,7 +322,7 @@ def screen(new, mine):
                 why_cba.append(c["line"])
         elif res == "NO":
             probs.append("Conflict" if k == "overlap" else "No 30h/168h" if k == "30h" else
-                         f"{c['short']} {c['hours']:.0f}h/{c['n']}h")
+                         f"{c['short']} {_over_h(c['hours'])}h/{c['n']}h")
             why_no.append(c["line"])
         elif res == "?":
             unk.append(c["line"])

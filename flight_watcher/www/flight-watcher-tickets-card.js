@@ -109,8 +109,9 @@ class FlightWatcherTicketsCard extends HTMLElement {
   }
   _e(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
   // FW-0060: the ticket log. The file has every ticket with its text; the sensor's short rows (open tickets) are newer,
-  // so they win on the fields they carry and a ticket the file does not have yet still shows. An older Watcher (no
-  // "rows" mark) still sends every ticket on the sensor.
+  // so they win on the fields they carry and a ticket the file does not have yet still shows. The sensor cuts a title
+  // at 80 characters: when the file's title starts with that cut, the file's whole title is kept (and Edit starts from
+  // it). An older Watcher (no "rows" mark) still sends every ticket on the sensor.
   _tickets(st) {
     const a = (st && st.attributes) || {};
     const sens = a.tickets || [];
@@ -120,7 +121,11 @@ class FlightWatcherTicketsCard extends HTMLElement {
     if (!f || !Array.isArray(f.tickets)) return sens;
     const byId = {};
     sens.forEach((t) => { byId[t.id] = t; });
-    const out = f.tickets.map((t) => (byId[t.id] ? { ...t, ...byId[t.id] } : t));
+    const merge = (t, r) => {
+      const ft = String(t.title || ""), st = String(r.title || "");
+      return { ...t, ...r, title: st.length >= 80 && ft.length > st.length && ft.startsWith(st) ? ft : (st || ft) };
+    };
+    const out = f.tickets.map((t) => (byId[t.id] ? merge(t, byId[t.id]) : t));
     sens.forEach((t) => { if (!out.some((x) => x.id === t.id)) out.push(t); });
     const n = (t) => parseInt(String(t.id || "").slice(3), 10) || 0;
     return out.sort((x, y) => n(y) - n(x));

@@ -102,10 +102,10 @@ def _w(tmp_path, monkeypatch, menu=MENU_HTML, frame=""):
 
 def test_discovered_verified_then_read_like_the_pot(tmp_path, monkeypatch):
     W, fl, pages, fetched, framed, waits, events = _w(tmp_path, monkeypatch)
-    rows = W.close_in_check(fl, {"mobile": {}})
+    rows, kind = W.close_in_check(fl, {"mobile": {}})
     ci = W.S["close_in"]
     assert ci["bcid"] == "008.152" and ci["verified"] and W.S["close_in_bcid"] == "008.152"
-    assert rows == {} and events("new_pairing") == []  # first read: baseline, no alert
+    assert rows == {} and kind == "ok" and events("new_pairing") == []  # first read: baseline, no alert
     assert fetched[-1] == "https://ha2.flica.net/full/mobileopentimepot.cgi?BCID=008.152&From=MainMenu"
     assert not framed  # the plain left menu named it
     assert all(SUB.safe_get(u) and SM.safe_get(u) for u in fetched)
@@ -113,7 +113,7 @@ def test_discovered_verified_then_read_like_the_pot(tmp_path, monkeypatch):
     # a new close-in trip pushes like a pot find; one also in the regular pot does not
     pages["008.152"] = _pot_page([("H3627", "07Nov"), ("H3628", "07Nov")])
     reg = {"mobile": {"H3628|07Nov": {"pairing": "H3628", "start": "07Nov"}}}
-    rows = W.close_in_check(fl, reg)
+    rows, _ = W.close_in_check(fl, reg)
     assert list(rows) == ["H3627|07Nov"] and rows["H3627|07Nov"]["src"] == "C"
     ev = events("new_pairing")
     assert [(e["pairing"], e["folder"], e["month"]) for e in ev] == [("H3627", "close-in", "closein")]
@@ -138,7 +138,7 @@ def test_menu_frame_when_the_left_menu_is_a_skeleton(tmp_path, monkeypatch):
 def test_not_named_logs_and_keeps_the_menu_privately(tmp_path, monkeypatch):
     menu = MENU_HTML.replace("Close in Opentime: &lt;16 Hrs to RPT", "Reserve").replace("008.152", "009.152")
     W, fl, pages, fetched, framed, waits, events = _w(tmp_path, monkeypatch, menu=menu)
-    assert W.close_in_check(fl, {"mobile": {}}) == {}
+    assert W.close_in_check(fl, {"mobile": {}}) == ({}, "ok")
     assert not W.S.get("close_in_bcid") and (tmp_path / "cap" / "menu_closein.html").exists()
     assert not any("009.152" in u for u in fetched) and not framed  # a real menu: the frame shows the same
     n = len(fetched)
@@ -184,3 +184,122 @@ def test_close_in_requests_join_the_decided_push(tmp_path, monkeypatch):
     assert [e["status"] for e in events()] == ["Denied", "Approved"]  # after its first read, every new decision
     tb = [u for u in fetched if "TB_MyRequests" in u]
     assert tb and all("bcid=001.152" in u for u in tb)  # Tradeboard trades: regular bid periods only
+
+
+# ---------------------------------------------------------------- review: moves between folders, load, stop pages
+def _checks(W, monkeypatch):
+    """check() with everything but the pot reads and the close-in read stubbed out."""
+    for f in ("schedule_check", "own_trip_times", "versions_check", "uploads_check", "capture", "detail_probe",
+              "email_check", "pickup_check", "publish_finds", "tradeboard_check", "requests_check", "grid_check",
+              "swap_scan", "drop_scan", "publish_tickets"):
+        monkeypatch.setattr(W, f, lambda *a, **k: None)
+    monkeypatch.setattr(W, "crew_index_check", lambda fl: "ok")
+    for k, v in json.loads(json.dumps(W.DEFAULT_STATE)).items():
+        W.S.setdefault(k, v)
+
+
+def _find(W, k):
+    r = W.DB.db.execute("SELECT month, first_seen, gone_at FROM finds WHERE key=?", (k,)).fetchone()
+    return dict(zip(("month", "first_seen", "gone_at"), r)) if r else None
+
+
+def test_a_trip_moving_into_the_close_in_folder_is_the_same_find(tmp_path, monkeypatch):
+    """FLICA moves H3627 from the regular pot to the close-in folder (16 h to report): no second new_pairing push, its
+    find keeps its first_seen (pickup speed) and stays open, and no pickup check is queued (it would read the seat
+    still Open and push 'hidden by scheduling'). Once it leaves the close-in folder, its pickup is checked."""
+    import store
+    W, fl, pages, fetched, framed, waits, events = _w(tmp_path, monkeypatch)
+    _checks(W, monkeypatch)
+    clock = iter(f"2026-11-07T0{h}:00:00+00:00" for h in range(1, 10))
+    monkeypatch.setattr(store, "now_iso", lambda: next(clock))
+    pages["003.152"] = _pot_page([("H3628", "07Nov")])
+    assert W.check(fl) == "ok"  # both baselines
+    pages["003.152"] = _pot_page([("H3628", "07Nov"), ("H3627", "07Nov")])
+    assert W.check(fl) == "ok"
+    assert [e["pairing"] for e in events("new_pairing")] == ["H3627"]
+    first = _find(W, "H3627|07Nov")["first_seen"]
+    pages["003.152"] = _pot_page([("H3628", "07Nov")])
+    pages["008.152"] = _pot_page([("H3627", "07Nov")])
+    assert W.check(fl) == "ok"
+    assert [e["pairing"] for e in events("new_pairing")] == ["H3627"]  # moved, not new
+    f = _find(W, "H3627|07Nov")
+    assert (f["month"], f["first_seen"], f["gone_at"]) == ("closein", first, None)
+    assert "H3627|07Nov" not in W.S.get("pickup_pending", {})
+    pot = [json.loads(p) for tp, p, _ in W.MQ.msgs if tp == "flight_watcher/pot/state"][-1]["pairings"]
+    assert (pot[0]["pairing"], pot[0].get("src"), pot[0].get("folder")) == ("H3627", "C", "close-in")
+    assert all("far_why" not in r for r in pot)
+    pages["008.152"] = _pot_page([])
+    assert W.check(fl) == "ok"  # taken from the close-in folder: now its pickup is checked
+    assert "H3627|07Nov" in W.S["pickup_pending"] and _find(W, "H3627|07Nov")["gone_at"]
+    assert len(events("new_pairing")) == 1
+
+
+def test_hunting_reads_the_close_in_page_once_a_minute(tmp_path, monkeypatch):
+    """FW-0035 (hunt load stays about 376 FLICA loads an hour): hunting, the close-in page is read at most once every
+    CLOSE_IN_READ_S; between reads its last rows are kept on the pot. Check now reads it at once."""
+    W, fl, pages, fetched, framed, waits, events = _w(tmp_path, monkeypatch)
+    now = [1_000_000.0]
+    monkeypatch.setattr(W.time, "time", lambda: now[0])
+    W.FLAGS["hunt"] = True
+    ci_url = "https://ha2.flica.net/full/mobileopentimepot.cgi?BCID=008.152&From=MainMenu"
+    pages["008.152"] = _pot_page([("H3627", "07Nov")])
+    rows, _ = W.close_in_check(fl, {"mobile": {}})
+    assert list(rows) == ["H3627|07Nov"] and fetched.count(ci_url) == 1
+    n = len(fetched)
+    now[0] += 30
+    rows, kind = W.close_in_check(fl, {"mobile": {}})
+    assert list(rows) == ["H3627|07Nov"] and kind == "ok" and len(fetched) == n  # no page load
+    rows, _ = W.close_in_check(fl, {"mobile": {"H3627|07Nov": {"pairing": "H3627"}}})
+    assert rows == {}  # a regular pot has it now
+    now[0] += W.CLOSE_IN_READ_S
+    W.close_in_check(fl, {"mobile": {}})
+    assert fetched.count(ci_url) == 2
+    W.close_in_check(fl, {"mobile": {}}, full=True)
+    assert fetched.count(ci_url) == 3
+    W.FLAGS["hunt"] = False  # not hunting: every check
+    W.close_in_check(fl, {"mobile": {}})
+    assert fetched.count(ci_url) == 4
+    assert len(waits) >= 4 and all(1.5 <= w <= 3.5 for w in waits)
+
+
+def test_a_stop_page_on_the_close_in_read_ends_the_pass(tmp_path, monkeypatch):
+    """A captcha on the close-in page stops the Watcher, as on the pot; a session taken over elsewhere yields; an
+    expired one logs in again. The checks after it in the same pass do not run."""
+    W, fl, pages, fetched, framed, waits, events = _w(tmp_path, monkeypatch)
+    _checks(W, monkeypatch)
+    ran = []
+    monkeypatch.setattr(W, "tradeboard_check", lambda *a, **k: ran.append(1))
+    pages["003.152"] = _pot_page([("H3628", "07Nov")])
+    assert W.check(fl) == "ok" and ran == [1]
+    pages["008.152"] = "<html><body>Please enter the verification code</body></html>"
+    assert W.check(fl) == "stop" and ran == [1]
+    assert W.S["machine"] == "stopped_unexpected" and "close-in" in W.S["note"]
+    pages["008.152"] = "<html><body>A new session under this account was detected</body></html>"
+    assert W.check(fl) == "killed"
+    pages["008.152"] = "<html><body>Your session has expired</body></html>"
+    assert W.check(fl) == "needs_login" and ran == [1]
+
+
+def test_a_stop_page_on_the_menu_read_skips_the_close_in_page(tmp_path, monkeypatch):
+    W, fl, pages, fetched, framed, waits, events = _w(tmp_path, monkeypatch)
+    pages["leftmenu"] = "<html><body>A new session under this account was detected</body></html>"
+    assert W.close_in_check(fl, {"mobile": {}}) == ({}, "killed")
+    assert not any("008.152" in u for u in fetched) and not framed
+
+
+TRADE_MENU = MENU_HTML.replace("</body>", '<b>Crew Trades</b><div>November</div>'
+                               '<a href="/online/crewtrades.cgi?BCID=011.152&amp;token=Ab12">View</a></body>')
+
+
+def test_menu_reads_name_the_trades_page_without_following_it(tmp_path, monkeypatch):
+    """FW-0064: the menu read that looks for the close-in folder also looks for a crew-to-crew trades page. Found, it
+    is logged and kept in state (token masked) and the menu is kept privately; it is never fetched. Tradeboard
+    entries are not it."""
+    W, fl, pages, fetched, framed, waits, events = _w(tmp_path, monkeypatch, menu=TRADE_MENU)
+    W.close_in_check(fl, {"mobile": {}})
+    tp = W.S["trade_pages"]
+    assert tp["found"] == [{"text": "Crew Trades: View", "url": "/online/crewtrades.cgi?BCID=011.152&token=MASKED"}]
+    assert tp["via"] == "left menu" and not any("crewtrades" in u for u in fetched)
+    kept = (tmp_path / "cap" / "menu_trades.html").read_text()
+    assert "Crew Trades" in kept and "Ab12" not in kept
+    assert P.trade_pages(MENU_HTML) == [] and P.trade_pages(MENU_JS) == []

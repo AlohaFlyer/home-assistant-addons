@@ -384,16 +384,20 @@ def _node(tmp_path, card, body):
 KEY = "0123456789abcdef0123456789abcdef"
 
 
+LONG = "Crew index misses trips from the previous bid period that run into the month, and lookups of them (made up)"
+
+
 def test_tickets_card_merges_file_and_sensor(tmp_path):
     """The file gives every ticket with its text; the sensor's open rows are newer and win on their fields; a ticket
     only the sensor has shows too; Edit needs the file's text; one fetch per rev, none without a key."""
     file = {"open": 2, "total": 3, "tickets": [
         {"id": "FW-0003", "status": "new", "title": "Old title", "narrative": "Full text", "editable": True},
-        {"id": "FW-0002", "status": "fixed", "title": "B", "narrative": "b"},
+        {"id": "FW-0002", "status": "fixed", "title": LONG, "narrative": "b"},
         {"id": "FW-0001", "status": "closed", "title": "A", "narrative": "a"}]}
     sens = {"rows": "open", "file_key": KEY, "rev": "abc", "tickets": [
         {"id": "FW-0004", "status": "new", "title": "Brand new", "editable": True},
-        {"id": "FW-0003", "status": "triaged", "title": "New title", "editable": False}]}
+        {"id": "FW-0003", "status": "triaged", "title": "New title", "editable": False},
+        {"id": "FW-0002", "status": "fixed", "title": LONG[:80]}]}
     body = (f"FILE = {json.dumps(file)}; const st = {{ attributes: {json.dumps(sens)} }};\n"
             "const c = new FlightWatcherTicketsCard(); c.setConfig({}); c._render = () => {};\n"
             "const before = c._tickets(st).map((t) => t.id);\n"
@@ -405,12 +409,12 @@ def test_tickets_card_merges_file_and_sensor(tmp_path):
             "const older = c._tickets({ attributes: { tickets: [{ id: 'FW-0009', narrative: 'x' }] } }).map((t) => t.id);\n"
             "console.log(JSON.stringify([before, after, FETCHED, again, nk, older]));")
     before, after, fetched, again, nk, older = _node(tmp_path, "flight-watcher-tickets-card.js", body)
-    assert before == ["FW-0004", "FW-0003"]  # the sensor's rows until the file is in
+    assert before == ["FW-0004", "FW-0003", "FW-0002"]  # the sensor's rows until the file is in
     assert [(t["id"], t["status"], t["title"], t.get("narrative")) for t in after] == [
         ("FW-0004", "new", "Brand new", None), ("FW-0003", "triaged", "New title", "Full text"),
-        ("FW-0002", "fixed", "B", "b"), ("FW-0001", "closed", "A", "a")]
+        ("FW-0002", "fixed", LONG, "b"), ("FW-0001", "closed", "A", "a")]  # a title the sensor cut: the file's whole one
     assert fetched == [f"/local/flight-watcher/tickets_{KEY}.json?r=abc"] and again == 1
-    assert nk == ["FW-0004", "FW-0003"] and older == ["FW-0009"]
+    assert nk == ["FW-0004", "FW-0003", "FW-0002"] and older == ["FW-0009"]
 
 
 def test_schedule_card_versions_from_the_file(tmp_path):

@@ -225,6 +225,77 @@ def close_in_folders(html, exclude=()):
     return found
 
 
+# FW-0064: a menu entry naming crew-to-crew trades ('Trades', 'Crew Trade', 'Pending Trades', 'Trade Requests'...);
+# the Tradeboard (its own 001.n folders, already read) and the open time Add/Swap/Drop requests are not it
+TRADE_WORD = re.compile(r"\btrades?\b|crew[\s-]*(?:to|2)[\s-]*crew", re.I)
+TRADEBOARD = re.compile(r"trade\s*board|tb_frame|\bBCID=0*01\.|['\"]0*01\.\d+['\"]", re.I)
+TARGET_RE = re.compile(r"(?:https?://[^\s'\"<>]+|/?(?:full|online)/[\w./-]+\.cgi[^\s'\"<>)]*)", re.I)
+
+
+def _targets(soup):
+    """(label, target) in page order: each <a> or onclick element (its text and title; the first URL-like path in its
+    href / onclick), each JS menu-tree call (M.addC / M.addE: its first quoted string; a URL in the rest); other text
+    nodes as headings (target ''). Entities are decoded."""
+    out = []
+
+    def walk(node):
+        for ch in node.children:
+            if isinstance(ch, Tag):
+                if ch.name in ("script", "style", "noscript", "template"):
+                    continue
+                if ch.name == "a" or ch.get("onclick"):
+                    attrs = unescape(" ".join(str(ch.get(k) or "") for k in LINK_ATTRS))
+                    m = TARGET_RE.search(attrs)
+                    out.append((f"{ch.get_text(' ', strip=True)} {ch.get('title') or ''}".strip(),
+                                m.group(0) if m else attrs.strip()[:160]))
+                    continue
+                walk(ch)
+            elif isinstance(ch, NavigableString) and not isinstance(ch, Comment):
+                t = str(ch).strip()
+                if t:
+                    out.append((t, ""))
+    walk(soup)
+    for sc in soup.find_all("script"):
+        for m in JS_CALL_RE.finditer(sc.string or sc.get_text() or ""):
+            strs = [unescape(a or b) for a, b in JS_STR_RE.findall(m.group(1))]
+            rest = " ".join(strs[1:])
+            u = TARGET_RE.search(rest)
+            out.append((re.sub(r"<[^>]+>", " ", strs[0]).strip() if strs else "",
+                        u.group(0) if u else rest.strip()[:160]))
+    return out
+
+
+def trade_pages(html):
+    """FW-0064: [{'text', 'url'}] of the menu entries that name crew-to-crew trades: an entry whose own text names
+    them, or an entry with a target under a heading that does (until the next heading). Tradeboard entries are left
+    out. Read only: nothing here is fetched, the Watcher only logs what it finds. Session tokens are masked."""
+    found, sect = [], None
+    for label, target in _targets(BeautifulSoup(html or "", "html.parser")):
+        if TRADEBOARD.search(label) or TRADEBOARD.search(target):
+            sect = None
+            continue
+        if TRADE_WORD.search(label):
+            if target and not target.lower().startswith("javascript:void"):
+                found.append({"text": label[:80], "url": re.sub(r"token=[0-9A-Za-z]+", "token=MASKED", target)})
+                sect = None
+            else:
+                sect = label
+            continue
+        if sect is None:
+            continue
+        if target:
+            found.append({"text": f"{sect[:60]}: {label[:40]}",
+                          "url": re.sub(r"token=[0-9A-Za-z]+", "token=MASKED", target)})
+        elif re.search(r"[A-Za-z]{2}", label) and not MONTH_WORD.match(label):
+            sect = None
+    out, seen = [], set()
+    for f in found:
+        if (f["text"], f["url"]) not in seen:
+            seen.add((f["text"], f["url"]))
+            out.append(f)
+    return out
+
+
 def pick_close_in(found, periods=()):
     """The close-in BCID for the bid periods watched (the regular pot BCIDs' last part, e.g. '152'): the first found
     for the earliest such period, else the first found; None when nothing was found."""

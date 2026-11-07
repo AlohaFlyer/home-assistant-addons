@@ -1,6 +1,8 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-06, release 1.4.0)
+# HANDOFF: Flight Watcher (refreshed 2026-11-07, release 1.4.7 pending)
 
-State: app **1.4.0** on Pako HI (slug `43b22650_flight_watcher`), two instances: Ryan (`flight_watcher`, `/data`) and
+State: app **1.4.6** on Pako HI; release **1.4.7** (FW-0034, FW-0039, FW-0056 to FW-0060, FW-0062, FW-0064, FW-0065)
+is on branch `claude/quirky-thompson-p94wms`, waiting on the yeses in open item 3. Slug `43b22650_flight_watcher`,
+two instances: Ryan (`flight_watcher`, `/data`) and
 James (`second_pilot: james`, `flight_watcher_james`, `/data/james`). James's HA user exists; his Watcher waits for
 his FLICA and CrewTrac logins on his own Settings tab. The work list is the tickets folder, not this file:
 `/share/flight_watcher/tickets/FW-nnnn/ticket.json` (card at the bottom of the Settings tab, Ryan only).
@@ -30,15 +32,24 @@ his FLICA and CrewTrac logins on his own Settings tab. The work list is the tick
 2. **James (FW-0037 / FW-0038):** once his Samsung registers in the HA app, add his Android push automations
    (`JRECALL_` / `FLIGHT_WATCHER_JAMES_` action prefixes, alarm-stream channel for critical) and run the isolation
    guard. Welcome note with the Samsung steps is a Gmail **draft only**; nobody contacts James until Ryan says so.
-3. **Crew index (FW-0056 to FW-0059):** trips not in the bid package, the previous bid period, names split on seat
-   codes, a pilot on two overlapping trips.
-4. **Sensor size (FW-0060):** tickets (about 39 KB) and schedule versions (about 16 KB) exceed the recorder limit.
-5. **Features:** FW-0034 close-in open time folder (read only), FW-0039 FAR 117.23(c) cumulative FDP, FW-0042 smart
-   push (commute, month-type rules), FW-0044 FLICA DROP review page mapped read only.
-6. **Ryan-owned:** FW-0021 paycheck check Dec 22 (PWA 2.A.56, 3.D, 4.C.3, 4.O.1, 6.J); FW-0040 upload the December
+3. **Release 1.4.7, each a [DESTRUCTIVE] yes from Ryan:** merge the PR and update the add-on (then verify
+   `sensor.flight_watcher_state` version and the app log); apply the request-decided automation change through the HA
+   connector (`ha/README.md`, "Pending on Pako"); OK the close-in folder's load while hunting (one read a minute,
+   about +60 FLICA loads an hour on top of FW-0035's ~376; every check when not hunting).
+4. **[DESTRUCTIVE] decision, Ryan (the repo is public):** the real crew names and employee numbers 1.4.7 removed from
+   the tree are still in git history on `main` and on pushed `claude/*` branches. Options: `git filter-repo
+   --replace-text` (old values to made-up ones) over `main` and those branches, force-push, and ask GitHub Support to
+   purge cached views and PR refs; or delete the stale branches. Until then, merge 1.4.7 promptly so `main`'s tree is
+   clean.
+5. **After 1.4.7 is live:** FW-0057, trips other pilots started in October that run into November are indexed only
+   from pilot lookups (each reads the pilot's October once) until October's pairings package is uploaded; keep it open
+   until checked on Pako. FW-0064, the crew-to-crew trades page: watch the app log for "crew-to-crew trades page named"
+   (menu reads, never followed) and check that page by hand before the Watcher reads it.
+6. **Features:** FW-0042 smart push (commute, month-type rules), FW-0044 FLICA DROP review page mapped read only.
+7. **Ryan-owned:** FW-0021 paycheck check Dec 22 (PWA 2.A.56, 3.D, 4.C.3, 4.O.1, 6.J); FW-0040 upload the December
    award and January pairings PDFs when posted; FW-0033 delete the merged `claude/*` branches in the GitHub UI
    (this session can push only its own branch).
-7. **Waiting on Hark:** FW-0020 (Nov 3 recall list blank), FW-0030 (HPA 2026-27 school calendar partial).
+8. **Waiting on Hark:** FW-0020 (Nov 3 recall list blank), FW-0030 (HPA 2026-27 school calendar partial).
 
 ## Decided (do not reopen)
 
@@ -51,4 +62,5 @@ his FLICA and CrewTrac logins on his own Settings tab. The work list is the tick
 ## Recent releases
 
 1.1.x Settings card (sealed), 1.2.x request-decided push with Pay-Gross, 1.3.0 FW-0002 to FW-0009,
-1.4.0 FW-0010 to FW-0029 batch, FW-0047 to FW-0049, FW-0053 (see `flight_watcher/CHANGELOG.md`).
+1.4.0 FW-0010 to FW-0029 batch, FW-0047 to FW-0049, FW-0053; 1.4.1 to 1.4.6 trade requests, pay line (FW-0062),
+uploads, Recall/O75 (see `flight_watcher/CHANGELOG.md`).

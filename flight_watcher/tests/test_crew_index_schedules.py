@@ -333,3 +333,97 @@ def test_overlap_still_there_after_the_reread_keeps_the_newer_read(W, tmp_path, 
         W.crew_index_check(fl)
     assert len(fl.urls) == n0 + 2
     assert _last(W, "crew_index")["overlaps"] == 1 and _last(W, "crew_index")["overlaps_rereading"] == 0
+
+
+def test_a_trip_gone_from_the_index_is_never_flagged_or_kept(W):
+    """FW-0059 review: a stored read of a trip no longer in the index (it ended, or its file left) is never re-read,
+    so it must not raise or keep an overlap flag."""
+    insts = {"H9001|2026-11-05": {"key": "H9001|2026-11-05", "pairing": "H9001", "date": "2026-11-05",
+                                  "end_date": "2026-11-07"}}
+    crew = [{"pos": "FO", "name": "Poe, Pat", "emp": "10777"}]
+    rows = {"H9001|2026-11-05": {"status": "ok", "crew": crew, "date": "2026-11-05", "end_date": "2026-11-07"},
+            "H9002|2026-11-06": {"status": "ok", "crew": crew, "date": "2026-11-06", "end_date": "2026-11-07"}}
+    assert W.crew_overlaps(insts, rows) == {} and not W.DB.get(W.CREW_REREAD_KEY)
+    insts["H9002|2026-11-06"] = {"key": "H9002|2026-11-06", "pairing": "H9002", "date": "2026-11-06",
+                                 "end_date": "2026-11-07"}
+    assert [f["state"] for f in W.crew_overlaps(insts, rows).values()] == ["reread"]
+    del insts["H9002|2026-11-06"]  # the trip left the index before its re-read: the flag clears, it is not 'kept'
+    assert W.crew_overlaps(insts, rows) == {}
+
+
+def test_a_failed_reread_stays_queued(W, tmp_path, monkeypatch):
+    """FW-0059 review: a forced re-read whose fetch fails is not counted as done; it stays queued and the flag does not
+    turn 'kept' without a re-read."""
+    clock, fl = _overlap_setup(W, tmp_path, monkeypatch)
+    real = fl.fetch
+
+    def flaky(url):
+        if "PID=H9001" in url:
+            fl.urls.append(url)
+            raise OSError("timed out")
+        return real(url)
+    fl.fetch = flaky
+    W.crew_index_check(fl)
+    assert sorted(W.DB.get(W.CREW_REREAD_KEY)) == ["H9001|2026-11-05"]
+    assert [f["state"] for f in W.DB.get(W.CREW_OVERLAP_KEY).values()] == ["reread"]
+    fl.fetch = real
+    clock[0] = datetime(2026, 11, 2, 12, 30)
+    W.crew_index_check(fl)
+    assert W.DB.get(W.CREW_REREAD_KEY) == {}
+    assert [f["state"] for f in W.DB.get(W.CREW_OVERLAP_KEY).values()] == ["kept"]
+
+
+def test_a_schedule_end_grows_and_never_shrinks(W):
+    """FW-0056 / FW-0065: a trip noted with its end cut short (Nov 9 to Nov 9, the old item builder) takes the later
+    end a schedule gives (Nov 12); a later, shorter end does not shrink it. A pilot lookup shows the later end even
+    when the stored crew read still has the short one."""
+    assert W.note_sched_trips([{"trip": "H9100", "start": "2026-11-09", "end": "2026-11-09"}], "own") == 1
+    assert W.note_sched_trips([{"trip": "H9100", "start": "2026-11-09", "end": "2026-11-12"}], "own") == 0
+    assert W.DB.get(W.CREW_SCHED_KEY)["H9100|2026-11-09"]["end"] == "2026-11-12"
+    W.note_sched_trips([{"trip": "H9100", "start": "2026-11-09", "end": "2026-11-10"}], "lookup")
+    assert W.DB.get(W.CREW_SCHED_KEY)["H9100|2026-11-09"]["end"] == "2026-11-12"
+    insts = CI.instances(str(W.CARD_PAIRINGS), extra=W.DB.get(W.CREW_SCHED_KEY))
+    assert insts["H9100|2026-11-09"]["end_date"] == "2026-11-12"
+    r = {"key": "H9100|2026-11-09", "pairing": "H9100", "date": "2026-11-09", "end_date": "2026-11-09", "pos": "FO"}
+    got = CI.pilot_trips(insts, [r], start_from="2026-10-31", end_to="2026-11-30")
+    assert [(x["start"], x["end"]) for x in got] == [("2026-11-09", "2026-11-12")]
+
+
+OCT_PAGE = ('<select><option value="1026" selected>Oct 2026</option></select><script>'
+            'TAry[0]=new Task(1, "SA", "10", "H3780", "NRT", "20261001", 1, 0, \'H3780\');'
+            'TAry[1]=new Task(1, "SU", "11", "", "HNL", "20261001", 1, 0, \'\');'
+            'TAry[2]=new Task(1, "TH", "29", "H3790", "SYD", "20261001", 1, 0, \'H3790\');'
+            'TAry[3]=new Task(1, "FR", "30", "", "-", "20261001", 1, 0, \'\');'
+            'TAry[4]=new Task(1, "SA", "31", "", "-", "20261001", 1, 0, \'\');'
+            'TAry[5]=new Task(1, "SU", "01", "", "HNL", "20261101", 1, 0, \'\');</script>'
+            '<p>DOE, JANE (Emp# 10001) Schedule Last Updated: Oct 28, 2026 10:00</p>')
+
+
+def test_pilot_lookup_reads_the_previous_month_when_no_package_lists_it(W, tmp_path):
+    """FW-0057 review: no October package on file. A pilot lookup also reads that pilot's October (once, GET only,
+    both guards, paced), and the trip that runs into November (H3790 Oct 29 to Nov 1) is noted for the crew index;
+    one that ended in October (H3780) is not. With October's package on file, nothing more is read."""
+    import submit as SUB
+    import swapmap as SM
+    _file(tmp_path / "www", "2026-11", [_row("H9001", "20", rel=0)])
+    W.S["cm_prompt_captured"] = True
+
+    class Fl(CrewFl):
+        def fetch(self, url):
+            self.urls.append(url)
+            if "cmschedules.cgi" in url:
+                return OCT_PAGE if "bd=1026" in url else CM_PAGE
+            return super().fetch(url)
+
+    fl = Fl()
+    W.S["pilot_req"] = {"emp": "10001", "name": "", "at": ""}
+    assert W.pilot_check(fl)
+    reg = W.DB.get(W.CREW_SCHED_KEY)
+    assert reg["H3790|2026-10-29"]["end"] == "2026-11-01" and "H3780|2026-10-10" not in reg
+    prev = [u for u in fl.urls if "bd=1026" in u]
+    assert len(prev) == 1 and SUB.safe_get(prev[0]) and SM.safe_get(prev[0])
+    assert W.crew_instances()["H3790|2026-10-29"]["period"] == "2026-10"
+    assert W.lookup_prev_month(fl, "10001", W.local_now()) == 0 and len([u for u in fl.urls if "bd=1026" in u]) == 1
+    _file(tmp_path / "www", "2026-10", [_row("H9701", "29", rel=2)])
+    assert W.lookup_prev_month(fl, "10002", W.local_now()) == 0
+    assert not any("EmployeeID=10002" in u for u in fl.urls)

@@ -108,7 +108,7 @@ def instances(pdir, crew_from=CREW_FROM, extra=None):
     try:
         files = sorted(f for f in os.listdir(pdir) if FILE_RE.match(f))
     except OSError:
-        return out
+        files = []  # no pairing files yet: the schedule trips (extra) are still the index's
     for f in files:
         y, m = FILE_RE.match(f).groups()
         month = f"{y}-{m}"
@@ -647,7 +647,9 @@ def pilot_trips(insts, rows_for_emp, month=None, start_from=None, crew_rows=None
     for r in rows_for_emp:
         it = insts.get(r["key"]) or {}
         start = r.get("date") or it.get("date") or ""
-        end = r.get("end_date") or it.get("end_date") or start
+        # FW-0056: the later end of the stored read and the index (a schedule trip's end grows once a later schedule
+        # gives the whole trip, note_sched_trips, while the stored read keeps the end it was read with)
+        end = max((x for x in (r.get("end_date"), it.get("end_date")) if x), default=start)
         if not start or start > hi or end < lo:  # 1.3.0 review: a trip running into the grid from before it counts
             continue
         pid = r.get("pairing") or it.get("pairing") or ""

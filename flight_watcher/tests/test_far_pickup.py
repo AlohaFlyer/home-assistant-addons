@@ -39,6 +39,26 @@ def test_fdp_60_in_168_is_no_longer_ok():
     assert "FAR 117.23(c)(1)" in r["why"]
 
 
+def test_an_over_limit_total_never_reads_as_the_limit():
+    """12 h duties Nov 6, 7, 8 and 12 and a 12:30 pickup on Nov 10: 60:30 h of FDP in 168 h. The column rounds up
+    ('61h', never '60h/168h', which reads as at the limit) and the why line gives the minutes (FAR 117.23(c)(1))."""
+    new = T("H9001", D(10, 8), D(10, 20, 30), 6)
+    mine = [T(f"H10{d:02d}", D(d, 6), D(d, 18), 6) for d in (6, 7, 8, 12)]
+    r = F.screen(new, mine)
+    assert r["far"] == "FDP 61h/168h" and r["result"] == "NO", r
+    assert "FDP 60:30 h in 168 h" in r["why"]
+
+
+def test_the_worst_failing_window_is_shown_not_the_first():
+    """A 14 h duty on Nov 13 makes the window Nov 6 20:00 to Nov 13 20:00 hold 62:30 h; an earlier window that also
+    fails holds 60:30 h. The column shows the worst one."""
+    new = T("H9001", D(10, 8), D(10, 20, 30), 6)
+    mine = [T(f"H10{d:02d}", D(d, 6), D(d, 18), 6) for d in (6, 7, 8, 12)] + [T("H1013", D(13, 6), D(13, 20), 6)]
+    r = F.screen(new, mine)
+    assert r["far"] == "FDP 63h/168h", r
+    assert "FDP 62:30 h in 168 h" in r["why"]
+
+
 def test_fdp_190_in_672():
     x = D(20)
     mine = [T(f"P{k}", x + timedelta(days=k, hours=6.5), x + timedelta(days=k, hours=6.5 + 14.2), 3)
@@ -51,7 +71,8 @@ def test_fdp_190_in_672():
 def test_flight_time_30_in_168_rest_and_conflict_words_are_kept():
     x = D(20)
     ft = [T(f"P{k}", x + timedelta(days=k, hours=8), x + timedelta(days=k, hours=16), 7.5) for k in range(-14, 15, 2) if k]
-    assert F.screen(T("H9001", x + timedelta(hours=8), x + timedelta(hours=14), 5), ft)["far"] == "FT 102h/672h"
+    # 102:30 h of flight time: rounded up, so the column never shows less than the total
+    assert F.screen(T("H9001", x + timedelta(hours=8), x + timedelta(hours=14), 5), ft)["far"] == "FT 103h/672h"
     six = [T(f"H10{d:02d}", D(d, 8), D(d, 14), 5) for d in range(4, 10)]
     assert F.screen(NEW, six)["far"] == "No 30h/168h"
     assert F.screen(NEW, before(9, 0))["far"] == "Rest 9:00 before"
@@ -208,3 +229,15 @@ def test_pot_details_keep_duties_off_the_published_row(tmp_path, monkeypatch):
     row = pot["H9001|10Nov"]
     assert "duties" not in row and W.S["details"]["H9001|10Nov"]["duties"]
     assert row["far"] == "FDP 65h/168h" and row["far_why"]
+
+
+def test_far_why_stays_off_the_tradeboard_sensor(tmp_path, monkeypatch):
+    """FW-0039 / FW-0060 review: the sensor rows carry the FAR column but not far_why (no card shows it yet, and it
+    would cost rows under the 12 KB cap); far_for still sets it on the row it screens."""
+    W = _w(tmp_path, monkeypatch)
+    _line(W)
+    sent = []
+    monkeypatch.setattr(W, "pub", lambda t, p, retain=True: sent.append((t, p)))
+    W.publish_tradeboard({"H9001|10Nov": dict(ROW)})
+    rows = [p for t, p in sent if t == "tradeboard/state"][-1]["pairings"]
+    assert rows[0]["far"] == "FDP 65h/168h" and "far_why" not in rows[0]
