@@ -12,6 +12,14 @@ def _row(**k):
     return r
 
 
+def _line(W, items=(), trips=None, at="2026-10-20T00:00:00+00:00", months=("2026-10", "2026-11", "2026-12")):
+    """1.4.6: a schedule version on file for each month, seen at `at`, so a list day after it is judged on that line."""
+    for mk in months:
+        its = [i for i in items if i["start"][:7] == mk]
+        W.DB.put(f"sched_versions:{mk}", [{"ver": f"{int(mk[5:])}.001", "n": 1, "at": at, "items": its, "days": [],
+                                          "totals": {}, "trips": {k: v for k, v in (trips or {}).items() if k.split("|")[1][:7] == mk}}])
+
+
 def test_junior_award_on_open_legal_day_is_missed():
     v = RC.evaluate(_row(), ME, [], {}, [], DET)
     assert v["verdict"] == "MISSED" and v["end"] == "2026-11-11" and v["last_arr"] == "16:00"
@@ -60,6 +68,7 @@ def test_watcher_recall_flow(tmp_path, monkeypatch):
     sent = []
     monkeypatch.setattr(W, "pub", lambda t, p, retain=True: sent.append((t, p)))
     W.DB.put("pkg_details:2026-11", DET)
+    _line(W)
     W.recall_cmd(json.dumps({"date": "2026-11-10", "rows": [_row()], "me": {"sen": 500}}))
     ev = [p for t, p in sent if t == "event/recall_miss"]
     assert ev and ev[0]["verdict"] == "MISSED"
@@ -88,6 +97,7 @@ def _recall_w(tmp_path, monkeypatch):
     sent = []
     monkeypatch.setattr(W, "pub", lambda t, p, retain=True: sent.append((t, p)))
     W.DB.put("pkg_details:2026-11", DET)
+    _line(W)
     return W, sent
 
 
@@ -189,6 +199,7 @@ def test_refresh_rejudges_against_the_current_line_without_a_push(tmp_path, monk
     sent = []
     monkeypatch.setattr(W, "pub", lambda t, p, retain=True: sent.append((t, p)))
     W.DB.put("pkg_details:2026-11", DET)
+    _line(W)
     W.S["blocked_days"] = ["2026-11-11"]  # blocked: not a miss when the list comes in
     W.recall_cmd(json.dumps({"date": "2026-11-10", "rows": [_row()], "me": {"sen": 500}}))
     st = [p for t, p in sent if t == "recall"][-1]

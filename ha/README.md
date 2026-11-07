@@ -9,6 +9,11 @@ dashboards; Ryan's gets a "Monthly PDFs" heading and the 1.4.5 upload card above
 were checked against Pako by sha256 of the redacted text; the automations are unchanged since the 09:30 HST refresh and
 the wx package since 2026-11-05.
 
+**Ahead of Pako (1.4.6, not applied yet):** the "Flight Watcher recall miss alert" automation in
+`automations_flight_watcher.yaml` is the 1.4.6 version (a MISSED row is a critical push titled "RECALL ALERT: missed
+...", sound `default`, `critical: 1`, `volume: 1`; anything else time-sensitive). Claude applies it on Pako through the
+Home Assistant connector after the 1.4.6 release, then refreshes this note.
+
 | File | Live copy on Pako |
 |:--|:--|
 | `automations_flight_watcher.yaml` | `/config/automations.yaml`: the 18 automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order |

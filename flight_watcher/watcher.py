@@ -33,6 +33,7 @@ import charter as CH
 import versions as VER
 import pdfs as PDF
 import recall as RC
+import ccr as CCR
 import crewidx as CI
 import tickets as TK
 import sealed as SEAL
@@ -40,7 +41,7 @@ import pay as PAY
 import seniority as SEN
 import wwwfiles as WF
 
-VERSION = "1.4.5"
+VERSION = "1.4.6"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -1743,111 +1744,310 @@ def recall_cmd(payload):
     """0.9.2 (Ryan): Hark posts each day's HNL recall list from Alaska Flight Ops SharePoint here (HA webhook ->
     MQTT recall/set): {"date": "YYYY-MM-DD", "file": "ok|blank|not posted", "rows": [{kind recall|o75|junior,
     seat, pilot, sen, pairing, report?, last_arr?, days?, blk?}], "me": {sen, seat, o75}?}. A list of such days
-    is accepted too. Each row is judged against Ryan's line (recall.py, PWA 22.G.2 / FAR 117) and kept in the DB."""
+    is accepted too. Each row is judged against Ryan's line as he held it that day (recall.py, PWA 22.G.2 /
+    FAR 117) and kept in the DB."""
     try:
         d = json.loads(payload or "{}")
         days = d if isinstance(d, list) else [d]
-        if isinstance(d, dict) and d.get("me"):
-            DB.put("recall_me", {**(DB.get("recall_me") or {}), **{k: v for k, v in d["me"].items() if k in ("sen", "seat", "o75")}})
-        allr = DB.get("recall_days") or {}
-        for day in days:
-            dk = str(day.get("date") or "")[:10]
-            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", dk):
-                continue
-            allr[dk] = {"date": dk, "file": day.get("file") or ("ok" if day.get("rows") else "blank"),
-                        "rows": day.get("rows") or [], "at": now_iso()}
-        DB.put("recall_days", dict(sorted(allr.items())[-120:]))
-        recall_eval(notify=True)
+        with RECALL_LOCK:
+            if isinstance(d, dict) and d.get("me"):
+                DB.put("recall_me", {**(DB.get("recall_me") or {}), **{k: v for k, v in d["me"].items() if k in ("sen", "seat", "o75")}})
+            allr = DB.get("recall_days") or {}
+            for day in days:
+                dk = str(day.get("date") or "")[:10]
+                if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", dk):
+                    continue
+                allr[dk] = {"date": dk, "file": day.get("file") or ("ok" if day.get("rows") else "blank"),
+                            "rows": day.get("rows") or [], "at": now_iso()}
+            DB.put("recall_days", dict(sorted(allr.items())[-120:]))
+            recall_eval(notify=True)
     except Exception as e:
         log.info("recall list skipped: %s", e)
 
 
 RECALL_LIVE = ("MISSED", "POSSIBLE")  # FW-0012: a CCR draft is open, counted and shown only while its row says this
-RECALL_OPEN = ("new", "confirmed", "approved")
+# 1.4.6: 'filing' while Hark has the CCR request; 'blocked' / 'cancelled' when Hark's task stopped without a CCR number
+# (the narrative stays approved and can be sent again)
+RECALL_OPEN = ("new", "confirmed", "approved", "filing", "blocked", "cancelled")
+RECALL_LOCK = threading.RLock()  # recall_days / recall_acts change from MQTT, the CCR poll and the main thread
+CCR_DIR = "/share/flight_watcher/ccr_requests"  # 1.4.6: shared with the HOM app (ccr.py); one folder, not per pilot
+CCR_POLL_S = 60
+CCR_PILOT = "ryan"  # 1.4.6: only Ryan's Watcher (the default instance) asks Hark to file
+
+
+def recall_versions(day_keys):
+    """{YYYY-MM: [schedule versions]} for the months the list days reach (recall.LOOK days each side), plus the
+    months before them back to the first one on file, so recall.keeping_since() sees when versions began."""
+    ds = sorted(d for d in day_keys if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(d)))
+    if not ds:
+        return {}
+    a = date.fromisoformat(ds[0]) - timedelta(days=RC.LOOK)
+    b = date.fromisoformat(ds[-1]) + timedelta(days=RC.LOOK + 7)
+    out = {}
+    for mk in RC._months(a, b):
+        v = DB.get(f"sched_versions:{mk}")
+        if v:
+            out[mk] = v
+    y, m = a.year, a.month
+    for _ in range(24):  # versions are kept month after month since they began: stop at the first gap
+        y, m = (y - 1, 12) if m == 1 else (y, m - 1)
+        v = DB.get(f"sched_versions:{y:04d}-{m:02d}")
+        if not v:
+            break
+        out[f"{y:04d}-{m:02d}"] = v
+    return out
+
+
+def recall_helds(vers, dk):
+    """The lines Ryan held on list day dk (recall.helds_on). If that fails, one line with nothing on file around
+    the day, so every row that reaches legality is POSSIBLE, never MISSED on today's schedule."""
+    day = date.fromisoformat(dk)
+    try:
+        return RC.helds_on(vers, day, S.get("schedule") or {}, S.get("own_trips") or {})
+    except Exception as e:
+        log.info("recall: line held on %s not built (%s); its rows cannot be MISSED", dk, e)
+        return [{"day": dk, "items": [], "trips": {}, "line": "", "asof": "",
+                 "unknown": [((day - timedelta(days=RC.LOOK)).isoformat(), (day + timedelta(days=RC.LOOK + 7)).isoformat())]}]
 
 
 def recall_eval(notify=False):
-    """Judge every recall list on file and keep one act (CCR draft) per MISSED / POSSIBLE row. FW-0012: an act whose
-    row no longer says MISSED or POSSIBLE (now NO, or gone from a list on file) is marked superseded, keeping what it
-    was ('was'), its narrative and CCR #; it comes back as it was if the row turns into a miss again (no second push)."""
-    me = recall_me()
-    allr, acts = DB.get("recall_days") or {}, DB.get("recall_acts") or {}
-    blocked = sorted(set(DB.get("blocked_hist") or []) | set(S.get("blocked_days") or []))
-    det = {}
-    for dk in {k[:7] for k in allr}:
-        det.update(DB.get(f"pkg_details:{dk}") or {})
-    items, own = _sched_items(), S.get("own_trips") or {}
-    fresh, live, seen = [], {}, {}
-    for dk, day in allr.items():
-        day["verdicts"] = RC.check_day(day.get("rows"), me, items, own, blocked, det)
-        for v in day["verdicts"]:
-            v["id"] = f"{v['date']}|{v['pairing']}|{v['kind']}"
-            seen.setdefault(v["id"], v)
-            if v["verdict"] in RECALL_LIVE:
-                live.setdefault(v["id"], v)
-    for vid, v in live.items():
-        a = acts.get(vid)
-        if not a:
-            acts[vid] = {"status": "new", "narrative": RC.narrative(v, me, S.get("own_name") or "", S.get("own_emp") or ""),
-                         "at": now_iso()}
-            fresh.append(v)
-        elif a.get("status") == "superseded":
-            a["status"], a["at"] = a.pop("was", None) or "new", now_iso()
-            a.pop("superseded_why", None)
-    first = min(allr) if allr else ""
-    for vid, a in acts.items():
-        if vid in live or a.get("status") == "superseded" or (vid not in seen and (not first or vid[:10] < first)):
-            continue  # live, already closed, or from a day older than the lists kept: history as it stands
-        why = ((seen.get(vid) or {}).get("why") or ["no longer on the recall list"])[-1]
-        a.update(was=a.get("status") or "new", status="superseded", superseded_why=why, at=now_iso())
-    for day in allr.values():
-        for v in day["verdicts"]:
-            a = acts.get(v["id"]) or {}
-            if v["verdict"] in RECALL_LIVE:
-                v["act"] = a
-            else:  # history only: no narrative, no controls
-                v["act"] = {k: a[k] for k in ("status", "was", "at", "ccr", "superseded_why") if k in a} if a.get("status") == "superseded" else {}
-    DB.put("recall_days", allr)
-    DB.put("recall_acts", acts)
-    publish_recall()
-    if notify:
-        for v in fresh:
-            pub("event/recall_miss", {"id": v["id"], "verdict": v["verdict"], "date": v["date"], "pairing": v["pairing"],
-                                      "kind": v["kind"], "sen": v["sen"], "why": "; ".join(v["why"])}, retain=False)
+    """Judge every recall list on file against the line Ryan held on that list day (1.4.6) and keep one act (CCR
+    draft) per MISSED / POSSIBLE row. FW-0012: an act whose row no longer says MISSED or POSSIBLE (now NO, or gone
+    from a list on file) is marked superseded, keeping what it was ('was'), its narrative and CCR #; it comes back as
+    it was if the row turns into a miss again (no second push). With notify (a list just came in), a new act fires
+    event/recall_miss, and so does an act whose row turns MISSED for the first time (once per act, 'missed_sent')."""
+    with RECALL_LOCK:
+        me = recall_me()
+        allr, acts = DB.get("recall_days") or {}, DB.get("recall_acts") or {}
+        blocked = sorted(set(DB.get("blocked_hist") or []) | set(S.get("blocked_days") or []))
+        det = {}
+        for dk in {k[:7] for k in allr}:
+            det.update(DB.get(f"pkg_details:{dk}") or {})
+        items, own = _sched_items(), S.get("own_trips") or {}
+        vers = recall_versions(allr)
+        fresh, live, seen = [], {}, {}
+        for dk, day in allr.items():
+            day["verdicts"] = RC.check_day(day.get("rows"), me, items, own, blocked, det, helds=recall_helds(vers, dk))
+            for v in day["verdicts"]:
+                v["id"] = f"{v['date']}|{v['pairing']}|{v['kind']}"
+                seen.setdefault(v["id"], v)
+                if v["verdict"] in RECALL_LIVE:
+                    live.setdefault(v["id"], v)
+        for vid, v in live.items():  # 1.4.6: a live act from before counts a MISSED row as already pushed
+            if vid in acts and "missed_sent" not in acts[vid]:
+                acts[vid]["missed_sent"] = v["verdict"] != "POSSIBLE"
+        for vid, v in live.items():
+            a = acts.get(vid)
+            if not a:
+                acts[vid] = {"status": "new", "narrative": RC.narrative(v, me, S.get("own_name") or "", S.get("own_emp") or ""),
+                             "at": now_iso(), "missed_sent": False}
+                fresh.append(v)
+            elif a.get("status") == "superseded":
+                a["status"], a["at"] = a.pop("was", None) or "new", now_iso()
+                a.pop("superseded_why", None)
+        first = min(allr) if allr else ""
+        for vid, a in acts.items():
+            if vid in live or a.get("status") == "superseded" or (vid not in seen and (not first or vid[:10] < first)):
+                continue  # live, already closed, or from a day older than the lists kept: history as it stands
+            why = ((seen.get(vid) or {}).get("why") or ["no longer on the recall list"])[-1]
+            a.update(was=a.get("status") or "new", status="superseded", superseded_why=why, at=now_iso())
+        push = []
+        if notify:
+            push = list(fresh) + [v for vid, v in live.items() if v not in fresh and v["verdict"] == "MISSED"
+                                  and acts[vid].get("missed_sent") is False and acts[vid].get("status") in RECALL_OPEN]
+            for v in push:
+                if v["verdict"] == "MISSED":
+                    acts[v["id"]]["missed_sent"] = True
+        keep = ("status", "was", "at", "ccr", "superseded_why", "filed_at", "filed_by", "rid")
+        for day in allr.values():
+            for v in day["verdicts"]:
+                a = acts.get(v["id"]) or {}
+                if v["verdict"] in RECALL_LIVE:
+                    v["act"] = {k: x for k, x in a.items() if k not in ("missed_sent", "hark_bad")}
+                else:  # history only: no narrative, no controls
+                    v["act"] = {k: a[k] for k in keep if k in a} if a.get("status") == "superseded" else {}
+        DB.put("recall_days", allr)
+        DB.put("recall_acts", acts)
+        publish_recall()
+    for v in push:
+        pub("event/recall_miss", {"id": v["id"], "verdict": v["verdict"], "date": v["date"], "pairing": v["pairing"],
+                                  "kind": v["kind"], "sen": v["sen"], "why": "; ".join(v["why"])}, retain=False)
 
 
 def recall_act(payload):
-    """{id, action: confirm|dismiss|approve|filed|reopen, narrative?, ccr?}. Ryan's answers from the push or the tab.
-    approve stores his reviewed narrative; nothing is filed by the Watcher itself. {refresh: true} re-judges every list
-    on file against the current line (the tab's Refresh button), and {me: {...}} changes seniority / seat / Over 75."""
+    """{id, action: confirm|dismiss|approve|filed|reopen|file_request, narrative?, ccr?}. Ryan's answers from the push
+    or the tab. approve stores his reviewed narrative; file_request (1.4.6) hands the approved narrative to Hark through
+    the HOM app (recall_file_request); the Watcher itself files nothing. {refresh: true} re-judges every list on file
+    (the tab's Refresh button), and {me: {...}} changes seniority / seat / Over 75."""
+    st = None
     try:
         d = json.loads(payload or "{}")
         if d.get("refresh"):  # Ryan (Nov 6): the tab's Refresh re-judges every list on file now; no push, no FLICA read
             recall_eval()
             return
         if d.get("me"):
-            DB.put("recall_me", {**(DB.get("recall_me") or {}), **{k: v for k, v in d["me"].items() if k in ("sen", "seat", "o75")}})
+            with RECALL_LOCK:
+                DB.put("recall_me", {**(DB.get("recall_me") or {}), **{k: v for k, v in d["me"].items() if k in ("sen", "seat", "o75")}})
+                recall_eval()
+            return
+        if d.get("action") == "file_request":
+            recall_file_request(d)
+            return
+        with RECALL_LOCK:
+            acts = DB.get("recall_acts") or {}
+            a = acts.get(str(d.get("id")))
+            st = {"confirm": "confirmed", "dismiss": "dismissed", "approve": "approved", "filed": "filed", "reopen": "new"}.get(d.get("action"))
+            if not a or not st:
+                return
+            if a.get("status") == "superseded":  # FW-0012: the row is no longer a miss; a late tap on an old push does nothing
+                log.info("recall action %s on %s skipped: superseded (%s)", d.get("action"), d.get("id"), a.get("superseded_why", ""))
+                return
+            if a.get("status") == "filing" and st != "filed":  # 1.4.6: Hark has it; cancel the task in HOM first
+                log.info("recall action %s on %s skipped: Hark has the CCR request %s", d.get("action"), d.get("id"), a.get("rid"))
+                return
+            a["status"], a["at"] = st, now_iso()
+            if isinstance(d.get("narrative"), str) and d["narrative"].strip():
+                a["narrative"] = d["narrative"].strip()[:6000]
+            if d.get("ccr"):
+                a["ccr"] = str(d["ccr"])[:80]
+            if st == "approved":  # 1.4.6: what Hark gets is the narrative as approved now
+                a["approved_at"] = a["at"]
+                for k in ("hark_reason", "hark_at"):
+                    a.pop(k, None)
+            DB.put("recall_acts", acts)
             recall_eval()
-            return
-        acts = DB.get("recall_acts") or {}
-        a = acts.get(str(d.get("id")))
-        st = {"confirm": "confirmed", "dismiss": "dismissed", "approve": "approved", "filed": "filed", "reopen": "new"}.get(d.get("action"))
-        if not a or not st:
-            return
-        if a.get("status") == "superseded":  # FW-0012: the row is no longer a miss; a late tap on an old push does nothing
-            log.info("recall action %s on %s skipped: superseded (%s)", d.get("action"), d.get("id"), a.get("superseded_why", ""))
-            return
-        a["status"], a["at"] = st, now_iso()
-        if isinstance(d.get("narrative"), str) and d["narrative"].strip():
-            a["narrative"] = d["narrative"].strip()[:6000]
-        if d.get("ccr"):
-            a["ccr"] = str(d["ccr"])[:80]
-        DB.put("recall_acts", acts)
-        recall_eval()
         if st == "approved":
             pub("event/recall_approved", {"id": d["id"], "narrative": a["narrative"]}, retain=False)
     except Exception as e:
         log.info("recall action skipped: %s", e)
+
+
+def _recall_verdict(vid):
+    for day in (DB.get("recall_days") or {}).values():
+        for v in day.get("verdicts") or []:
+            if v.get("id") == vid:
+                return v
+    return None
+
+
+def recall_file_refusal(vid, a, v):
+    """Why a CCR request for this act may not go to Hark, or '' when it may."""
+    if INSTANCE:
+        return "only Ryan's Watcher asks Hark to file CCRs in this release"
+    if not a:
+        return "no CCR draft for this row"
+    if a.get("status") == "superseded":
+        return "the row is no longer a miss (superseded); a superseded draft is never filed"
+    if a.get("status") not in ("approved", "blocked", "cancelled") or not (a.get("approved_at") or a.get("status") == "approved"):
+        return f"the narrative is not approved (status {a.get('status')})"
+    if not str(a.get("narrative") or "").strip():
+        return "no narrative"
+    if not v or v.get("verdict") not in RECALL_LIVE:
+        return "the row is no longer MISSED or POSSIBLE"
+    if not CCR.rid_for(vid):
+        return "this row's date, pairing and kind do not make a request name"
+    return ""
+
+
+def recall_file_request(d):
+    """1.4.6 (Ryan, Nov 6): 'Have Hark file this CCR'. Only for an act whose narrative Ryan approved and whose row is
+    still MISSED / POSSIBLE, on Ryan's Watcher. Writes <rid>.json in CCR_DIR (ccr.py contract) with the narrative as
+    approved, sets the act to 'filing' and fires event/recall_file_requested. Hark files on hal.alpa.org from the HOM
+    task; ccr_poll() reads the answer. Returns True when the request was written."""
+    vid = str(d.get("id") or "")
+    with RECALL_LOCK:
+        acts = DB.get("recall_acts") or {}
+        a, v = acts.get(vid), _recall_verdict(vid)
+        why = recall_file_refusal(vid, a, v)
+        if why:
+            log.info("CCR request for %s refused: %s", vid, why)
+            return False
+        now = now_iso()
+        rid = CCR.rid_for(vid)
+        rec = {"v": 1, "rid": rid, "id": vid, "pilot": CCR_PILOT, "date": v["date"], "pairing": v["pairing"],
+               "kind": v["kind"], "seat": v.get("seat") or "FO", "narrative": a["narrative"],
+               "approved_at": a.get("approved_at") or a.get("at") or now, "requested_at": now}
+        try:
+            CCR.write_request(CCR_DIR, rec)
+        except (CCR.Refused, OSError) as e:
+            log.warning("CCR request for %s not written: %s", vid, e)
+            a["hark_reason"], a["hark_at"] = f"the request could not be written ({e})", now
+            DB.put("recall_acts", acts)
+            recall_eval()
+            return False
+        for k in ("hark_reason", "hark_at", "task_id", "task_at", "hark_bad"):
+            a.pop(k, None)
+        a.update(status="filing", rid=rid, requested_at=now, at=now)
+        DB.put("recall_acts", acts)
+        recall_eval()
+    log.info("CCR request %s written for Hark", rid)
+    pub("event/recall_file_requested", {"id": vid, "rid": rid, "date": rec["date"], "pairing": rec["pairing"],
+                                        "kind": rec["kind"], "requested_at": now}, retain=False)
+    return True
+
+
+def ccr_poll():
+    """1.4.6: HOM's answers to this Watcher's CCR requests (ccr.py), once a minute, no FLICA. <rid>.done.json -> the act
+    is 'filed' with the CCR number (event/recall_ccr_filed); <rid>.status.json -> 'blocked' / 'cancelled' with the
+    reason (the Hark button comes back); <rid>.task.json -> the HOM task id. Replies older than the request are
+    ignored; a reply that breaks the contract is logged once and left alone. A superseded act records what Hark did
+    in 'was'. Returns True when something changed."""
+    events = []
+    with RECALL_LOCK:
+        acts = DB.get("recall_acts") or {}
+        changed = False
+        for vid, a in acts.items():
+            st = a.get("status")
+            cur = a.get("was") if st == "superseded" else st
+            rid, req = a.get("rid"), a.get("requested_at")
+            if cur not in ("filing", "blocked", "cancelled") or not rid:
+                continue
+            try:
+                task, done, stat = (CCR.read_reply(CCR_DIR, rid, k) for k in ("task", "done", "status"))
+            except CCR.Refused as e:
+                if a.get("hark_bad") != str(e):
+                    log.warning("CCR reply for %s refused: %s", rid, e)
+                    a["hark_bad"], changed = str(e), True
+                continue
+            except OSError as e:
+                log.info("CCR replies for %s not read: %s", rid, e)
+                continue
+            if task and CCR.fresh(task, req, "imported_at") and a.get("task_id") != task["task_id"]:
+                a["task_id"], a["task_at"], changed = task["task_id"], task.get("imported_at") or task["mtime"], True
+            if done and CCR.fresh(done, req, "filed_at"):
+                a.update(ccr=done["ccr"], filed_at=done.get("filed_at") or done["mtime"], filed_by=done["by"],
+                         filed_note=done["note"], at=now_iso())
+                a.pop("hark_reason", None)
+                a.pop("hark_at", None)
+                a["was" if st == "superseded" else "status"] = "filed"
+                changed = True
+                events.append({"id": vid, "rid": rid, "ccr": a["ccr"], "filed_at": a["filed_at"], "by": a["filed_by"],
+                               "date": vid.split("|")[0], "pairing": vid.split("|")[1], "kind": vid.split("|")[2]})
+                log.info("CCR %s filed by %s for %s", a["ccr"], a["filed_by"], rid)
+                continue
+            if stat and CCR.fresh(stat, req, "at"):
+                at = stat.get("at") or stat["mtime"]
+                if cur != stat["status"] or a.get("hark_at") != at:
+                    a["hark_reason"], a["hark_at"] = stat["reason"] or "no reason given", at
+                    a["was" if st == "superseded" else "status"] = stat["status"]
+                    changed = True
+                    log.info("CCR request %s %s by HOM: %s", rid, stat["status"], a["hark_reason"])
+        if changed:
+            DB.put("recall_acts", acts)
+            recall_eval()
+    for p in events:
+        pub("event/recall_ccr_filed", p, retain=False)
+    return changed
+
+
+def ccr_thread():
+    """1.4.6: ccr_poll() every CCR_POLL_S in its own thread, so it keeps running while the FLICA loop waits."""
+    while True:
+        time.sleep(CCR_POLL_S)
+        try:
+            ccr_poll()
+        except Exception as e:
+            log.info("CCR poll: %s", e)
 
 
 def publish_recall():
@@ -1855,10 +2055,10 @@ def publish_recall():
     days = [{k: v for k, v in allr[k].items() if k != "rows"} for k in sorted(allr)[-45:]]
     opn = [v for d in days for v in d.get("verdicts") or []
            if v.get("verdict") in RECALL_LIVE and (v.get("act") or {}).get("status") in RECALL_OPEN]
-    alert = [v for v in opn if v["verdict"] == "MISSED" or (v.get("act") or {}).get("status") in ("confirmed", "approved")]
+    alert = [v for v in opn if v["verdict"] == "MISSED"]  # 1.4.6 (Ryan): RECALL ALERT = the Watcher says he should have been called
     received = max((d.get("at") or "" for d in allr.values()), default="")  # when the newest list post came in
     pub("recall", {"open": len(opn), "alert": len(alert), "me": recall_me(), "last": days[-1]["date"] if days else "",
-                   "checked": now_iso(), "received": received, "days": days[::-1]})
+                   "checked": now_iso(), "received": received, "hark_files": not INSTANCE, "days": days[::-1]})
 
 
 def publish_improved():
@@ -3805,6 +4005,7 @@ def main():
     uploads_check()
     recall_eval()
     threading.Thread(target=charter_thread, daemon=True, name="charter").start()
+    threading.Thread(target=ccr_thread, daemon=True, name="ccr").start()  # 1.4.6: Hark's answers to CCR requests
     if os.environ.get("FLIGHT_WATCHER_WEB", "1") == "1":  # 0.10.0: only the default instance serves the ingress page
         web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
                   save_rules_from_page, DB, log, get_settings=lambda: settings_state(load_creds()),

@@ -679,8 +679,10 @@
   mode: queued
 - id: '1793914999001'
   alias: Flight Watcher recall miss alert
-  description: Pushes each possible missed Recall / Over 75 with Confirm / Not a miss
-    buttons; the answer goes back to the Watcher (recall.py).
+  description: 'Pushes each missed Recall / Over 75 with Confirm / Not a miss buttons;
+    the answer goes back to the Watcher (recall.py). 1.4.6 (Ryan, Nov 6): a MISSED row
+    is a critical push (RECALL ALERT, sound at full volume through silent mode); POSSIBLE
+    would be time-sensitive.'
   triggers:
   - trigger: mqtt
     topic: flight_watcher/event/recall_miss
@@ -701,18 +703,20 @@
       sequence:
       - variables:
           ev: '{{ trigger.payload_json }}'
+          push: '{{ {''interruption-level'': ''critical'', ''sound'': {''name'': ''default'',
+            ''critical'': 1, ''volume'': 1}} if ev.verdict == ''MISSED'' else {''interruption-level'':
+            ''time-sensitive''} }}'
       - parallel:
         - action: notify.mobile_app_ryans_iphone
           data:
-            title: '{{ ''RED ALERT: missed '' if ev.verdict == ''MISSED'' else ''Possible
+            title: '{{ ''RECALL ALERT: missed '' if ev.verdict == ''MISSED'' else ''Possible
               missed '' }}{{ ''Over 75'' if ev.kind == ''o75'' else ''Recall'' }}
               {{ ev.pairing }}'
             message: '{{ ev.date }}: {{ ev.why }}'
             data:
               tag: recall-{{ ev.date }}-{{ ev.pairing }}
               url: /flight-watcher/recall
-              push:
-                interruption-level: time-sensitive
+              push: '{{ push }}'
               actions:
               - action: RECALL_CONFIRM|{{ ev.id }}
                 title: Yes, I missed it
@@ -724,15 +728,14 @@
           continue_on_error: true
         - action: notify.mobile_app_ryans_iphone_16
           data:
-            title: '{{ ''RED ALERT: missed '' if ev.verdict == ''MISSED'' else ''Possible
+            title: '{{ ''RECALL ALERT: missed '' if ev.verdict == ''MISSED'' else ''Possible
               missed '' }}{{ ''Over 75'' if ev.kind == ''o75'' else ''Recall'' }}
               {{ ev.pairing }}'
             message: '{{ ev.date }}: {{ ev.why }}'
             data:
               tag: recall-{{ ev.date }}-{{ ev.pairing }}
               url: /flight-watcher/recall
-              push:
-                interruption-level: time-sensitive
+              push: '{{ push }}'
               actions:
               - action: RECALL_CONFIRM|{{ ev.id }}
                 title: Yes, I missed it

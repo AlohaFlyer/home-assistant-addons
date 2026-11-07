@@ -17,7 +17,10 @@ publishes what it finds to Home Assistant over MQTT.
   details, and the monthly award and pairings PDFs uploaded on the dashboard (or the Web UI).
 - Request decisions: reads FLICA's Open Time Requests list and the Tradeboard's My Requests page (crew-to-crew
   trades), and pushes each Approved or Denied request once, with Pay-Gross.
-- Recall / Over 75: checks each award against your line (PWA 22.G.2) and flags a possible miss.
+- Recall / Over 75: checks each award against the line you held that day (schedule versions; PWA 22.G.2, FAR 117,
+  PWA 10.E.1.a) and flags a miss: a red RECALL ALERT bar on the dashboard and a critical push for a sure one. An
+  approved CCR narrative can go to Hark ("Have Hark file this CCR", through the HOM app and
+  `/share/flight_watcher/ccr_requests/`); the app itself files nothing.
 - Crew index and pilot lookup, charter watch (CrewTrac, read only), tickets (below).
 - A second pilot: option `second_pilot` runs a second Watcher with its own data, MQTT prefix
   (`flight_watcher_<name>`), entities and card copies.
@@ -109,7 +112,8 @@ Recent finds.
 
 The cards ship with the app (`www/`) and are copied to `/config/www/` on each start; the dashboard loads them
 through `/local/flight-watcher-loader.js`. Phone pushes are HA automations on Pako that listen to the Watcher's
-events (`<prefix>/event/...`: new_pairing, request_decided, recall_miss, ticket_fixed and others).
+events (`<prefix>/event/...`: new_pairing, request_decided, recall_miss, recall_file_requested, recall_ccr_filed,
+ticket_fixed and others).
 
 ## Tickets (FW-nnnn)
 
