@@ -2,7 +2,9 @@
    Sortable table of sensor.flight_watcher_pickers: tap a column header to sort by it, tap again to flip.
    Columns: Pilot, Emp, Pos, Ttl / Month / Year / InFlt Pickups, Common Layover (most picked first,
    count as a small subscript, latest pickup's layover first when tied), Avg Pickup Speed.
-   Search box filters by last name, first name or employee number. Read only. */
+   Search box filters by last name, first name or employee number. Read only.
+   FW-0060 (1.4.7): every picker comes from pickers_<key>.json under /local/; the sensor keeps the count and the
+   fastest few (the list passed HA's 16 KB recorder limit as it grew). The key is only in the sensor's attributes. */
 const FMT = (a) => a == null ? "-" : a >= 3600 ? `${Math.floor(a / 3600)}h ${String(Math.floor((a % 3600) / 60)).padStart(2, "0")}m`
   : a >= 60 ? `${Math.floor(a / 60)}m ${String(a % 60).padStart(2, "0")}s` : `${a}s`;
 const COLS = [
@@ -10,6 +12,24 @@ const COLS = [
   ["month_n", "Month Pickups", "n"], ["year_n", "Year Pickups", "n"], ["inflt_n", "InFlt Pickups", "n"],
   ["lays", "Common Layover", "l"], ["min_s", "Fastest Pickup Speed", "n"], ["avg_s", "Avg Pickup Speed", "n"],
 ];
+
+// FW-0060: a sensor's full list from its file under /local/ (<url><file_key>.json, the pilot's own www folder). Fetched
+// again whenever the sensor's rev changes; null until it is in (or when the sensor has no key), so the caller falls
+// back to the sensor's own short list. A failed fetch is not retried until rev changes.
+function fwListFile(box, url, st, redraw) {
+  const a = (st && st.attributes) || {};
+  const key = /^[0-9a-f]{32}$/.test(String(a.file_key || "")) ? a.file_key : "";
+  if (!key) return null;
+  const want = `${key}|${a.rev || ""}`;
+  if (box.want !== want && !box.busy) {
+    box.busy = true;
+    fetch(`${url}${key}.json?r=${encodeURIComponent(a.rev || "")}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => { box.busy = false; box.want = want; if (j) { box.key = key; box.data = j; } redraw(); })
+      .catch(() => { box.busy = false; box.want = want; });
+  }
+  return box.key === key ? box.data : null;
+}
 
 class FlightWatcherPickersCard extends HTMLElement {
   setConfig(config) {
@@ -21,8 +41,11 @@ class FlightWatcherPickersCard extends HTMLElement {
     this._open = !!this._config.open;
   }
   set hass(hass) {
+    this._h = hass;
     const st = hass.states[this._config.entity];
-    const rows = (st && st.attributes.pickers) || [];
+    // FW-0060: the file's full list once it is in, else the sensor's fastest few
+    const f = fwListFile(this._lf || (this._lf = {}), "/local/flight-watcher/pickers_", st, () => { if (this._h) this.hass = this._h; });
+    const rows = (f && Array.isArray(f.pickers) ? f.pickers : null) || (st && st.attributes.pickers) || [];
     const sig = JSON.stringify(rows);
     if (sig === this._sig && this._root) return;
     this._sig = sig;
