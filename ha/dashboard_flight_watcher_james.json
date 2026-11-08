@@ -340,6 +340,35 @@
           ]
         },
         {
+          "icon": "mdi:airplane-takeoff",
+          "max_columns": 2,
+          "path": "flight",
+          "sections": [
+            {
+              "cards": [
+                {
+                  "content": "{%- set w = states['sensor.flight_watcher_james_working_flight'] -%}\n{%- set wa = w.attributes if w else {} -%}\n{%- set st = w -%}\n{%- set a = st.attributes if st else {} -%}\n{%- if not a.get('pairing', '') -%}\n## ✈️ Working flight\n{{ 'No trip on your schedule.' if st else 'Waiting for Flight Watcher.' }}{% if a.get('next', '') %} Next: {{ a.get('next', '') }}{% endif %}\n{%- else -%}\n## ✈️ {{ a.get('flight', '') }} {{ a.get('origin', '') }} → {{ a.get('dest', '') }}\n**{{ a.get('pairing', '') }} leg {{ a.get('leg', '') }}** · {{ a.get('date', '') }}{% if a.get('tail', '') %} · {{ a.get('tail', '') }}{% endif %}\n**Status:** {{ a.get('status', '') }} <small>({{ a.get('status_as_of', '') }})</small>\n\n| | Out | In |\n|---|---|---|\n| Station | {{ a.get('origin', '') }}{% if a.get('origin_gate', '') %} gate {{ a.get('origin_gate', '') }}{% endif %} | {{ a.get('dest', '') }}{% if a.get('dest_gate', '') %} gate {{ a.get('dest_gate', '') }}{% endif %} |\n| Sched | {{ a.get('dep_sched', '') }} | {{ a.get('arr_sched', '') }} |\n{% if a.get('dep_est', '') or a.get('arr_est', '') %}| Est | {{ a.get('dep_est', '') }} | {{ a.get('arr_est', '') }} |\n{% endif %}\n{% if a.get('release_url', '') %}**[📄 Release]({{ a.get('release_url', '') }})** · {% endif %}**[FlightAware]({{ a.get('flightaware_url', '') }})** · **[Sig Wx]({{ a.get('sigwx_url', '') }})**\n\n**Report:** {{ a.get('report', '') }}\n{% if a.get('gin_dep', '') %}**GIN dep:** `{{ a.get('gin_dep', '') }}`\n{% endif %}{% if a.get('gin_arr', '') %}**GIN arr:** `{{ a.get('gin_arr', '') }}`\n{% endif %}\n> From your FLICA schedule.\n\n<small>Next: {{ a.get('next', '') }} · Updated {{ a.get('updated', '') }} by {{ a.get('updated_by', '') }}</small>\n{%- endif -%}",
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "markdown"
+                }
+              ],
+              "type": "grid"
+            }
+          ],
+          "title": "Working Flight",
+          "type": "sections",
+          "visible": [
+            {
+              "user": "00000000000000000000000000000002"
+            },
+            {
+              "user": "00000000000000000000000000000001"
+            }
+          ]
+        },
+        {
           "max_columns": 3,
           "path": "details",
           "sections": [

@@ -1,7 +1,8 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-07, release 1.4.7 pending)
+# HANDOFF: Flight Watcher (refreshed 2026-11-08, release 1.4.9)
 
-State: app **1.4.6** on Pako HI; release **1.4.7** (FW-0034, FW-0039, FW-0056 to FW-0060, FW-0062, FW-0064, a trip
-end fix with no ticket) is on branch `claude/quirky-thompson-p94wms`, waiting on the yeses in open item 3. Slug `43b22650_flight_watcher`,
+State: app **1.4.9** on Pako HI (1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
+per pilot Nov 8; each instance publishes `sensor.<prefix>_working_flight`, read by the Working Flight view on each
+dashboard, see `ha/README.md`). The git history was cleaned on Nov 7 (`ha/` files carry placeholder user ids). Slug `43b22650_flight_watcher`,
 two instances: Ryan (`flight_watcher`, `/data`) and
 James (`second_pilot: james`, `flight_watcher_james`, `/data/james`). James's HA user exists; his Watcher waits for
 his FLICA and CrewTrac logins on his own Settings tab. The work list is the tickets folder, not this file:

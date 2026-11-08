@@ -19,6 +19,22 @@ Pako by sha256 of the redacted text.
 says "Seen on your FLICA schedule ... (a crew-to-crew trade)" for a `sched:` key instead of "Filed ...". The 19
 automations here match Pako by sha256 of the redacted text.
 
+## Applied on Pako 2026-11-08 (1.4.9, FW-0067): Working Flight views
+
+A **Working Flight** view (path `flight`, icon `mdi:airplane-takeoff`) sits at index 2 of both dashboards (Watcher, Aviation
+Wx, Working Flight, Details, Recall/O75, Settings), one markdown card each:
+
+- `flight-watcher` (Ryan): reads `sensor.hark_working_flight` (Hark writes it over HA REST every 30 min: live status, gates,
+  tail, MEL, NOTAM, GIN, release link) when it covers the same pairing as `sensor.flight_watcher_working_flight`, else the
+  Watcher's sensor (1.4.9, from Ryan's own FLICA pairings, retained over MQTT, so it survives an HA restart while Hark's REST
+  state does not). A **Ready to update?** button opens Ryan's Hark project (redacted here) to send "ready".
+- `flight-watcher-james`: reads only `sensor.flight_watcher_james_working_flight` (his own schedule); no Hark data and no
+  button. The view's `visible` list is James's and Ryan's, like his other views.
+
+Both templates use `.get()` on the attributes, so a missing field never logs a template warning. Applied through the HA
+connector (JSON patch at `/views/2`, with a `test` on the Details path first); HA stores the inserted view with sorted keys.
+Undo: remove `/views/2` from each dashboard.
+
 ## Applied on Pako 2026-11-07 about 13:35 HST (1.4.8, FW-0066)
 
 Edits 1 and 2 below were applied through the HA connector once 1.4.8 was live (`flight-watcher` 13:34,
@@ -76,10 +92,12 @@ household users (four, a guest login among them) can open `flight-watcher-james`
 - These are snapshots. The live copies are changed through the Home Assistant connector (automation and dashboard
   tools) or the HA UI, never by hand-editing `.storage`. Refresh the snapshot in the same PR as any related change.
 - Redacted before commit: webhook ids (`'<redacted>'`, quoted or not on Pako), email addresses (`<redacted-email>`), Google Drive / Docs
-  URLs (`<redacted-drive-url>`), any token, password or API key (`'<redacted>'`), phone numbers
-  (`<redacted-phone>`). No crew names or employee numbers (none were present).
-- Kept on purpose (opaque, not secrets): automation ids, the IMAP integration's config entry id, and one HA user id
-  (Ryan's) in the `visibility` conditions of the three paycheck cards on the Details view.
+  URLs (`<redacted-drive-url>`), Hark project links (`<redacted-hark-url>`), the Windy map's lat/lon (`<redacted>`), any token,
+  password or API key (`'<redacted>'`), phone numbers (`<redacted-phone>`). No crew names or employee numbers.
+- HA user ids and the IMAP config entry id are placeholders since the Nov 7 history cleanup: Ryan's user id is
+  `00000000000000000000000000000001`, James's `00000000000000000000000000000002`, the config entry id 26 zeros. The
+  sha256 check applies the same mapping to Pako's text. Never copy these files over Pako without putting the real ids back.
+- Kept on purpose (opaque, not secrets): automation ids.
 
 ## Refresh
 
