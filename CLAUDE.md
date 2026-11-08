@@ -45,7 +45,8 @@ Pako HI Home Assistant). Read `HANDOFF.md` next: it lists everything open.
   start (plus `flight-watcher-*-<name>.js` copies for a second pilot) and writes `flight-watcher-cards.json`; the one
   dashboard resource `/local/flight-watcher-loader.js` imports each with `?v=<app version>`. Edit cards in git,
   never on Pako (a start overwrites them). The pilot's DOH is in `/data/cards.json`, not in git.
-- Dashboard `flight-watcher` (title "Flight Watcher"), views: watcher, wx, details, recall, settings (tickets at its bottom, Ryan only).
+- Dashboard `flight-watcher` (title "Flight Watcher"), views: watcher, wx, flight (Working Flight, FW-0067), details, recall,
+  settings (tickets at its bottom, Ryan only). `flight-watcher-james` has the same views for James.
 
 ## Release procedure
 1. Branch, change, `cd flight_watcher && python -m pytest -q` (all must pass), bump `version` in `config.yaml`
