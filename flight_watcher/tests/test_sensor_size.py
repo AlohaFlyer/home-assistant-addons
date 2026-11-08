@@ -15,6 +15,7 @@ import pytest
 import cards
 import tickets as TK
 import wwwfiles as WF
+from pot import parse_legs
 
 LIMIT = 12 * 1024  # the ticket's bar for the attributes HA stores
 HA_OWN = 160  # friendly_name, icon, unit_of_measurement HA adds to each state's attributes
@@ -65,11 +66,16 @@ def _crew(i):
     return [f"CA {PAD} (1{i:04d})", f"FO Doe, Jane (2{i:04d})", f"RO Roe, Rick (3{i:04d})"]
 
 
+# FW-0067: a SYD trip's legs as own_trip_times keeps them in the state
+LEGS = parse_legs("mo 451 hnl-syd 1155 1945 1050 th 452 syd-hnl 2140 1045 1005")
+
+
 def _own(i):
     return {"report": "10:55", "last_arr": "10:45", "blk": "20:55", "credit": "21:06", "soft": "0:11",
             "read_at": "2026-11-06T10:23:34.302824", "final": False, "seat": "FO", "crew": _crew(i),
             "duties": [{"d": 0, "dep": 715, "arr": 1425, "dep_l": "11:55", "arr_l": "19:45", "blk": 650, "stn": "SYD"},
-                       {"d": 3, "dep": 4420, "arr": 4965, "dep_l": "21:40", "arr_l": "10:45", "blk": 605, "stn": "HNL"}]}
+                       {"d": 3, "dep": 4420, "arr": 4965, "dep_l": "21:40", "arr_l": "10:45", "blk": 605, "stn": "HNL"}],
+            "legs": [dict(lg) for lg in LEGS]}
 
 
 def _month(y, m):
@@ -188,6 +194,7 @@ def _fill(W, fake, tmp_path, monkeypatch):
     W.publish_swap_tests()
     W.publish_tradeboard()
     W.publish_own_trips()
+    W.publish_working_flight(force=True)  # FW-0067
     W.publish_charters()
     W.publish_improved()
     W.publish_tickets(force=True)
@@ -267,6 +274,10 @@ def test_every_sensor_under_12_kb_on_a_busy_month(tmp_path, monkeypatch, instanc
     # the four lists the ticket names moved to files: not trimmed, just short
     for t in ("tickets", "schedule_versions", "pickers"):
         assert sizes[t] < 8000 and "trimmed" not in got[t], (t, sizes[t])
+    # FW-0067: the own trips carry their legs in the state, not on the sensor, so every trip of the three months fits
+    own = got["own_trips"]
+    assert "trimmed" not in own and len(own["trips"]) == own["count"] == len(W.S["own_trips"]) == 24
+    assert all("legs" not in t for t in own["trips"].values()) and all("legs" in t for t in W.S["own_trips"].values())
 
 
 def test_long_lists_live_in_keyed_files_the_cards_read(tmp_path, monkeypatch):

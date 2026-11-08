@@ -37,14 +37,16 @@ Pako HI Home Assistant). Read `HANDOFF.md` next: it lists everything open.
   detail reads via Playwright `fl.fetch`. Modules: `pot.py` (parsers), `far.py` (FAR 117), `recall.py`
   (Recall/O75 miss check, PWA 22.G.2), `versions.py` (schedule versions MM.NNN), `pdfs.py` (award and pairings
   PDFs), `crewidx.py` (crew index), `tickets.py` (FW-nnnn tickets), `trades.py` (trades seen on the schedule),
-  `ccr.py` (CCR file requests for Hark), `store.py` (SQLite), `web.py` (ingress UI).
+  `ccr.py` (CCR file requests for Hark), `working.py` (working flight sensor from the pilot's own schedule),
+  `store.py` (SQLite), `web.py` (ingress UI).
 - Shared files on Pako: `/homeassistant/www/flight-watcher/pairings_<YYYY-MM>.json`, `finds_<YYYY-MM>.json`
   (`/www/flight-watcher/<name>/` for a second pilot), `/share/flight_watcher/` (uploads, crew_index/*.md, tickets/).
 - Dashboard cards live in `flight_watcher/www/` and ship with the app: `cards.py` copies them to `/config/www/` on
   start (plus `flight-watcher-*-<name>.js` copies for a second pilot) and writes `flight-watcher-cards.json`; the one
   dashboard resource `/local/flight-watcher-loader.js` imports each with `?v=<app version>`. Edit cards in git,
   never on Pako (a start overwrites them). The pilot's DOH is in `/data/cards.json`, not in git.
-- Dashboard `flight-watcher` (title "Flight Watcher"), views: watcher, wx, details, recall, settings (tickets at its bottom, Ryan only).
+- Dashboard `flight-watcher` (title "Flight Watcher"), views: watcher, wx, flight (Working Flight, FW-0067), details, recall,
+  settings (tickets at its bottom, Ryan only). `flight-watcher-james` has the same views for James.
 
 ## Release procedure
 1. Branch, change, `cd flight_watcher && python -m pytest -q` (all must pass), bump `version` in `config.yaml`

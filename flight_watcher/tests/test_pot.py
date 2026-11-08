@@ -240,3 +240,20 @@ def test_legs_cm_schedule_and_inflight():
     # 22:00 HST Nov 3 = on the ground in SAN after block-in
     assert inflight_at(legs, "2026-11-03", "2026-11-04T08:00:00+00:00") is False
     assert inflight_at(legs, "bad", "2026-11-04T17:00:00+00:00") is None
+
+
+def test_parse_legs_flight_number_and_origin():
+    """FW-0067: each leg also carries its flight number and origin; every other key and value stays as before, and
+    LEG_FULL_RE keeps its 6 groups (watcher.py unpacks them)."""
+    from pot import LEG_FULL_RE, parse_legs
+    txt = "dy flt dps-ars dep arr blk th 865 hnl-ppg 1630 2115 0545 th 0866 ppg-hnl 2320 0555 0535 blk : 1120"
+    legs = parse_legs(txt)
+    assert [(l["flt"], l["frm"], l["to"]) for l in legs] == [("865", "HNL", "PPG"), ("866", "PPG", "HNL")]
+    assert legs[0] == {"dep": 990, "arr": 1335, "to": "PPG", "blk": 345, "dep_l": "16:30", "arr_l": "21:15",
+                       "flt": "865", "frm": "HNL"}
+    assert legs[1]["dep"] == 1440 + 20 and legs[1]["arr"] == 1440 + 355 and legs[1]["dep_l"] == "23:20"
+    assert LEG_FULL_RE.groups == 6 and len(LEG_FULL_RE.findall(txt)[0]) == 6
+    assert LEG_FULL_RE.findall(txt)[0] == ("th", "hnl", "ppg", "1630", "2115", "0545")
+    # the column header has no day and flight in front, so it is no leg; upper case pages read the same
+    assert parse_legs("DY FLT DPS-ARS DEP ARR BLK TH 865 HNL-PPG 1630 2115 0545")[0]["frm"] == "HNL"
+    assert parse_legs("") == [] and parse_legs(None) == []

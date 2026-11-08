@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.4.9
+
+- FW-0067 (Ryan, Nov 8: "When other users use Flight Watcher the new Working Flight view should point to their
+  schedule"): every Watcher instance publishes `sensor.<prefix>_working_flight` (Ryan: `sensor.flight_watcher_working_flight`;
+  James: `sensor.flight_watcher_james_working_flight`) from that pilot's own FLICA schedule, so each pilot's Working
+  Flight view can read his own line. Hark's `sensor.hark_working_flight` (Ryan only: release, MEL, NOTAMs, gate codes,
+  live status) is unchanged. New module `working.py` (pure, no FLICA): all legs of the pilot's own trips on HST time
+  in departure order; the working leg is the first whose block-in + 2 h is after now (it stays on a leg until 2 h
+  after block-in, then rolls to the next; on a turn shorter than 2 h it rolls when the next leg blocks out). State
+  `HA865 HNL-PPG` (or `No trip`); attributes pairing, leg (`2 of 2`), flight, date (the departure day FLICA printed,
+  the date at the origin), origin, dest, dep_sched / arr_sched (`16:30 local, 16:30 HST`), block, report (the trip's
+  first duty: FLICA's check in, `15:30 HST`; a later duty after a layover of 8 h or more: 1:15 before departure out
+  of domicile, 1:00 in domicile, PWA 2.19.b, as local and HST; a later leg in the same duty: its duty's report), status (`Scheduled`, `Enroute per schedule`,
+  `Arrived per schedule`), status_as_of, next (`HA866 PPG-HNL 2026-11-27 23:20 local`, else the next pairing as
+  `H3681 SYD 2026-11-09`), flightaware_url, sigwx_url, source `schedule`, release_updated false, updated, updated_by
+  `Flight Watcher`. With no leg ahead: `No trip` with source, next (the next pairing whose legs are not read yet),
+  updated, updated_by. A trip whose legs are not read yet is skipped for the working leg but can be next; while such a
+  trip has not ended and comes before the first read leg's trip (the pilot is on it or flies it first), the sensor
+  says `No trip` with that trip next instead of showing a later trip's leg.
+- HST times follow each station's own clock, daylight time included (SYD, MEL and AKL from October to April, the US
+  mainland and ANC from March to November): each leg is rebuilt from the day and times FLICA printed at the station's
+  zone (`working.ZONES`, one for every station in `pot.TZ`), the arrival at the printed time nearest departure +
+  block, so departure + block is the arrival and status, the 2 h roll and a later duty's report are on time. A
+  station in no table: the leg hangs on its known end (known origin: arrival = departure + block; known destination:
+  departure = arrival - block); with neither end known only the printed local times show. The image installs
+  `tzdata` (2025.2) so the zones do not depend on the base image. `pot.parse_legs` and the FAR 117 duty periods keep
+  their standard offsets, unchanged.
+- Published retained on `<prefix>/working_flight` at start, after the own trip times on each check, and every minute
+  while the Watcher waits (also when yielded, paused or parked), only when something besides the time stamps changed,
+  and at least every 30 min. A failure is logged and never stops the check loop.
+- `pot.parse_legs` gives each leg its flight number (`flt`) and origin (`frm`) too (new `LEG_FLT_RE`; `LEG_FULL_RE`
+  and every other key unchanged). The own trip times keep each trip's legs in the state (a trip cached without them
+  that ended no earlier than yesterday is read again, at most 3 a check, read only; an ended trip keeps its cached
+  times and is not read for legs); `sensor.<prefix>_own_trip_times` leaves the legs out (with them a busy line passes
+  the 12 KB cap and loses trips the schedule card shows). Every own trip read now waits 1.5 to 3.5 s before it (the
+  first too, after the schedule read) and the last one before the pot read that follows.
+
 ## 1.4.8
 
 - FW-0066 (Ryan, Nov 7: "Make sure that any user can see and upload pairings and awards and seniority lists and pilot
