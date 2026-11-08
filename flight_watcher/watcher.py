@@ -1557,12 +1557,15 @@ def own_trip_times(fl, full=False):
             continue
         k = f"{trip}|{it['start']}"
         keep.add(k)
+        today = local_now().date().isoformat()
+        # FW-0067: the legs only matter to a trip that can still be the working or next one (the working leg can be
+        # yesterday's last leg until 2 h after its block-in); an ended trip is not read again for them
+        yesterday = (local_now() - timedelta(days=1)).date().isoformat()
         old = k in own and own[k] and ("credit" not in own[k] or "duties" not in own[k] or "crew" not in own[k]
                                              or (own[k].get("duties") and "blk" not in own[k]["duties"][0])
-                                             or "legs" not in own[k])  # cached before 0.4.9 / 0.4.15 / 0.4.17 / 0.4.19 / 1.4.9
+                                             or ("legs" not in own[k] and it["end"] >= yesterday))  # cached before 0.4.9 / 0.4.15 / 0.4.17 / 0.4.19 / 1.4.9
         # 0.6.1 (Ryan): block and credit move once a trip flies (actuals). Re-read a trip in progress every 6 h
         # and a finished trip once more the day after it ends, so completed trips show their final times.
-        today = local_now().date().isoformat()
         cur = own.get(k) or {}
         if k in own and cur and it["start"] <= today:
             read_at = cur.get("read_at") or ""
@@ -1572,8 +1575,8 @@ def own_trip_times(fl, full=False):
                 old = True
         if (k in own and not full and not old) or n >= (FULL_MAX if full else OWN_PER_CHECK):
             continue
-        if n:
-            time.sleep(random.uniform(1.5, 3.5))
+        # FW-0067: paced before every read, the first too (the schedule check may have just loaded a page) ...
+        time.sleep(random.uniform(1.5, 3.5))
         n += 1
         url = (f"{BASE}/full/mobilepairing.cgi?PID={trip}&DATE={it['start'].replace('-', '')}"
                "&FROM=MobileOpentimePot&CurrentPage=1")
@@ -1605,6 +1608,7 @@ def own_trip_times(fl, full=False):
         own.pop(k)
     if n:
         save_state(S)
+        time.sleep(random.uniform(1.5, 3.5))  # ... and after the last, before the check loads the pot
     publish_own_trips()
 
 

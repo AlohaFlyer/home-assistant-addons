@@ -3,13 +3,17 @@
 sensor.hark_working_flight (Ryan only) adds the release, MEL, NOTAMs and live status; this one is what the schedule
 says ("per schedule").
 
-Pure: no FLICA, no MQTT, no clock of its own. Times: an own trip's legs are HST minutes from 00:00 HST of the trip's
-first day (pot.parse_legs). Hawaii keeps no DST, so HST is a fixed UTC-10. A station's local time is HST plus its
-standard offset (pot.TZ), the same table parse_legs used to turn FLICA's printed local times into HST, so the date at
-the origin is the day FLICA printed. A station missing from pot.TZ shows its printed local time and HST, and its date
-falls back to the HST date."""
+Pure: no FLICA, no MQTT, no clock of its own. FLICA prints a leg's times in station local time, and pot.parse_legs
+turns them into HST with standard offsets (pot.TZ), an hour off at a station on daylight time (SYD, MEL and AKL from
+October to April, the US mainland and ANC from March to November). So each leg is rebuilt here from what FLICA
+printed: the departure day and time at the origin's own zone (ZONES, daylight time included), the arrival at the
+printed time at the destination nearest departure + block. Hawaii keeps no DST, so HST is a fixed UTC-10. A station
+in neither ZONES nor pot.TZ: the leg hangs on its known end (known origin: arrival = departure + block; known
+destination: departure = arrival - block); with neither end known only the printed local times show. The date is
+the departure day FLICA printed, the date at the origin."""
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from pot import LAYOVER_MIN_H, PAIRING_RE, TZ
 
@@ -26,6 +30,22 @@ STATE_MAX = 255  # Home Assistant's limit for a state
 REPORT_DOMICILE_MIN, REPORT_AWAY_MIN = 60, 75
 VOLATILE = ("updated", "status_as_of")  # move on every call; a payload that differs only here is not news
 STN_RE = re.compile(r"^[A-Z]{3}$")
+# The zone of every station in pot.TZ (whose offsets are the standard ones): its local time with daylight time
+ZONES = {"HNL": "Pacific/Honolulu", "OGG": "Pacific/Honolulu", "KOA": "Pacific/Honolulu", "ITO": "Pacific/Honolulu",
+         "LIH": "Pacific/Honolulu", "PPT": "Pacific/Tahiti", "RAR": "Pacific/Rarotonga", "PPG": "Pacific/Pago_Pago",
+         "ANC": "America/Anchorage",
+         **{s: "America/Los_Angeles" for s in ("LAX", "SFO", "SEA", "SAN", "OAK", "SMF", "LAS", "PDX", "SJC", "ONT",
+                                              "LGB")},
+         "PHX": "America/Phoenix", "SLC": "America/Denver", "DEN": "America/Denver",
+         **{s: "America/Chicago" for s in ("ORD", "DFW", "AUS", "MSP", "IAH")},
+         **{s: "America/New_York" for s in ("JFK", "BOS", "MCO", "IAD", "ATL", "MIA", "EWR")},
+         **{s: "Asia/Tokyo" for s in ("NRT", "HND", "KIX", "CTS", "FUK", "NGO")},
+         "ICN": "Asia/Seoul", "SYD": "Australia/Sydney", "BNE": "Australia/Brisbane", "MEL": "Australia/Melbourne",
+         "AKL": "Pacific/Auckland", "SIN": "Asia/Singapore", "MNL": "Asia/Manila", "CRK": "Asia/Manila",
+         "TPE": "Asia/Taipei", "PEK": "Asia/Shanghai", "PVG": "Asia/Shanghai", "HKG": "Asia/Hong_Kong"}
+# An origin in neither table lies somewhere from UTC-11 to UTC+13, so its printed time read as HST runs 1 h early to
+# 23 h late: the arrival is looked for around that reading minus this many hours (the middle)
+UNKNOWN_MID_H = 11
 
 
 def stamp(dt):
@@ -44,18 +64,43 @@ def _hhmm(m):
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
-def _local(dt, stn):
-    """Station wall clock (naive) for an aware time, from the standard offset in pot.TZ; None for a station not in it."""
+def _zone(stn):
+    """A station's clock: its zone (ZONES, daylight time included), or its fixed standard offset (pot.TZ) when the
+    tz database is missing (the Dockerfile installs tzdata); None for a station in neither."""
+    name = ZONES.get(stn)
+    if name:
+        try:
+            return ZoneInfo(name)
+        except (KeyError, OSError, ValueError):  # ZoneInfoNotFoundError is a KeyError
+            pass
     off = TZ.get(stn)
-    if off is None:
-        return None
-    return (dt.astimezone(timezone.utc) + timedelta(hours=off)).replace(tzinfo=None)
+    return timezone(timedelta(hours=off)) if off is not None else None
 
 
-def _pair(local_hm, dt):
-    """'16:30 local, 16:30 HST'; just 'HH:MM HST' when the local time is unknown."""
-    hst = dt.astimezone(HST).strftime("%H:%M")
-    return f"{local_hm} local, {hst} HST" if local_hm else f"{hst} HST"
+def _at(day, m, zone):
+    """Minute m (0 to 1439) of a local day at a zone, as an aware HST time."""
+    return datetime.combine(day, dtime(m // 60, m % 60), tzinfo=zone).astimezone(HST)
+
+
+def _snap(m, zone, est):
+    """The time printed as minute m at a zone that falls nearest est (HST): a printed arrival put on its day."""
+    day = est.astimezone(zone).date()
+    return min((_at(day + timedelta(days=k), m, zone) for k in (-1, 0, 1)), key=lambda c: abs(c - est))
+
+
+def _wall(dt, stn):
+    """'HH:MM' at a station for an aware time; '' for a station with no known clock."""
+    z = _zone(stn)
+    return dt.astimezone(z).strftime("%H:%M") if z else ""
+
+
+def _pair(local_hm, dt, hst=True):
+    """'16:30 local, 16:30 HST'; just 'HH:MM HST' when the local time is unknown, just 'HH:MM local' when the HST time
+    is (neither station of the leg known)."""
+    if not hst:
+        return f"{local_hm} local" if local_hm else ""
+    h = dt.astimezone(HST).strftime("%H:%M")
+    return f"{local_hm} local, {h} HST" if local_hm else f"{h} HST"
 
 
 def _pairings(items):
@@ -79,7 +124,7 @@ def _pairings(items):
     return out
 
 
-def _report(first, rec, dep, dep_l, frm):
+def _report(first, rec, dep, dep_l, frm, hst=True):
     """The report for a duty that starts with this leg. The trip's first duty: FLICA's check in (HNL time, so HST).
     A later duty (after a layover of LAYOVER_MIN_H or more): 1:15 before departure out of domicile, 1:00 in domicile
     (PWA 2.19.b), shown as local and HST."""
@@ -88,12 +133,32 @@ def _report(first, rec, dep, dep_l, frm):
     before = REPORT_DOMICILE_MIN if frm == DOMICILE else REPORT_AWAY_MIN
     rep = dep - timedelta(minutes=before)
     lm = _mins(dep_l)
-    if lm is not None:
-        local = _hhmm(lm - before)
-    else:
-        loc = _local(rep, frm)
-        local = loc.strftime("%H:%M") if loc else ""
-    return _pair(local, rep)
+    return _pair(_hhmm(lm - before) if lm is not None else _wall(rep, frm), rep, hst)
+
+
+def _times(p, lg, frm, to):
+    """(dep, arr, day, hst) of a leg from what FLICA printed: departure and arrival as aware HST times, the departure
+    day at the origin, and whether the HST times are known (False only when neither station is: the printed times
+    then stand in for HST). parse_legs's own HST minutes only serve to find the printed day."""
+    raw_dep, raw_arr = int(lg["dep"]), int(lg["arr"])
+    blk = timedelta(minutes=int(lg["blk"]) if lg.get("blk") not in (None, "") else raw_arr - raw_dep)
+    dm, am = _mins(lg.get("dep_l")), _mins(lg.get("arr_l"))
+    if dm is None:  # nothing printed to rebuild from: parse_legs's times as they are
+        dep = p["day0"] + timedelta(minutes=raw_dep)
+        return dep, p["day0"] + timedelta(minutes=raw_arr), dep.date(), True
+    # parse_legs took the standard offset off the printed time (raw = printed - shift) only when it knew both ends
+    shift = (TZ[frm] + 10) * 60 if frm in TZ and to in TZ else 0
+    day = p["day0"].date() + timedelta(days=(raw_dep + shift) // 1440)
+    zf, zt = _zone(frm), _zone(to)
+    if zf:
+        dep = _at(day, dm, zf)
+        arr = _snap(am, zt, dep + blk) if zt and am is not None else dep + blk
+        return dep, arr, day, True
+    if zt and am is not None:
+        arr = _snap(am, zt, _at(day, dm, HST) + blk - timedelta(hours=UNKNOWN_MID_H))
+        return arr - blk, arr, day, True
+    dep = _at(day, dm, HST)
+    return dep, dep + blk, day, False
 
 
 def _legs(p, rec):
@@ -105,19 +170,17 @@ def _legs(p, rec):
     out, prev, rep = [], None, ""
     try:
         for i, lg in enumerate(raw):
-            dep = p["day0"] + timedelta(minutes=int(lg["dep"]))
-            arr = p["day0"] + timedelta(minutes=int(lg["arr"]))
             frm = str(lg.get("frm") or (prev["to"] if prev else DOMICILE)).upper()
             to = str(lg.get("to") or "").upper()
+            dep, arr, day, hst = _times(p, lg, frm, to)
             new_duty = prev is None or dep - prev["arr"] >= timedelta(hours=LAYOVER_MIN_H)
             if new_duty:
-                rep = _report(prev is None, rec, dep, lg.get("dep_l"), frm)
-            loc = _local(dep, frm)
+                rep = _report(prev is None, rec, dep, lg.get("dep_l"), frm, hst)
             blk = lg.get("blk")
             x = {"trip": p["trip"], "key": p["key"], "i": i, "flt": str(lg.get("flt") or ""), "frm": frm, "to": to,
                  "dep": dep, "arr": arr, "dep_l": str(lg.get("dep_l") or ""), "arr_l": str(lg.get("arr_l") or ""),
                  "blk": int(blk) if blk not in (None, "") else int((arr - dep).total_seconds() // 60),
-                 "date": (loc or dep.astimezone(HST)).date().isoformat(), "report": rep, "duty_start": new_duty}
+                 "date": day.isoformat(), "hst": hst, "report": rep, "duty_start": new_duty}
             if prev is not None:
                 prev["duty_end"] = new_duty
             out.append(x)
@@ -169,7 +232,9 @@ def working_flight(items, own, now, roll_h=2):
     sooner only when the next leg blocks out within those 2 h).
     items: the schedule items (trip, start, end, lay); own: own_trips keyed TRIP|YYYY-MM-DD (start, HST) with legs and
     report; now: an aware datetime (a naive one is taken as HST). A trip whose legs are not read yet is skipped for the
-    working leg but can be the next pairing. No leg left: state "No trip"."""
+    working leg but can be the next pairing; one that has not ended and comes before the working leg's pairing (the
+    pilot is on it, or going to it first) shows as "No trip" with that pairing next, rather than a later trip's leg.
+    No leg left: state "No trip"."""
     now = now.astimezone(HST) if now.tzinfo else now.replace(tzinfo=HST)
     own = own if isinstance(own, dict) else {}
     today, at = now.date().isoformat(), stamp(now)
@@ -186,10 +251,13 @@ def working_flight(items, own, now, roll_h=2):
     # shorter than that (HNL-OGG-LAX with 40 min in OGG shows OGG-LAX once it leaves, not HNL-OGG)
     cur = next((x for j, x in enumerate(every)
                 if min([x["arr"] + roll] + [y["dep"] for y in every[j + 1:j + 2]]) > now), None)
-    if cur is None:
+    p = next((q for q in pairs if q["key"] == cur["key"]), None) if cur else None
+    # the first pairing not ended whose legs are not read yet (a new trip, or one cached before 1.4.9): when it comes
+    # before the working leg's pairing, the pilot is flying it or flies it first, so no later leg is his working one
+    unread = next((q for q in pairs if not q["legs"] and q["end"] >= today), None)
+    if p is None or (unread is not None and (unread["start"], unread["trip"]) < (p["start"], p["trip"])):
         return {"state": NO_TRIP, "attributes": {"source": SOURCE, "next": _next_pairing(pairs, today, unread_only=True),
                                                  "updated": at, "updated_by": UPDATED_BY}}
-    p = next(q for q in pairs if q["key"] == cur["key"])
     if cur["i"] + 1 < cur["n"]:
         nl = p["legs"][cur["i"] + 1]
         when = f"{nl['dep_l']} local" if nl["dep_l"] else nl["dep"].strftime("%H:%M HST")
@@ -202,9 +270,8 @@ def working_flight(items, own, now, roll_h=2):
         status = "Enroute per schedule"
     else:
         status = "Arrived per schedule"
-    dep_loc, arr_loc = _local(cur["dep"], cur["frm"]), _local(cur["arr"], cur["to"])
-    dep_l = cur["dep_l"] or (dep_loc.strftime("%H:%M") if dep_loc else "")
-    arr_l = cur["arr_l"] or (arr_loc.strftime("%H:%M") if arr_loc else "")
+    dep_l = cur["dep_l"] or _wall(cur["dep"], cur["frm"])
+    arr_l = cur["arr_l"] or _wall(cur["arr"], cur["to"])
     flight = _flight(cur)
     attrs = {
         "pairing": cur["trip"],
@@ -213,8 +280,8 @@ def working_flight(items, own, now, roll_h=2):
         "date": cur["date"],
         "origin": cur["frm"],
         "dest": cur["to"],
-        "dep_sched": _pair(dep_l, cur["dep"]),
-        "arr_sched": _pair(arr_l, cur["arr"]),
+        "dep_sched": _pair(dep_l, cur["dep"], cur["hst"]),
+        "arr_sched": _pair(arr_l, cur["arr"], cur["hst"]),
         "block": f"{cur['blk'] // 60}:{cur['blk'] % 60:02d}",
         "report": cur["report"],
         "status": status,
