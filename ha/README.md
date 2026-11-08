@@ -24,7 +24,9 @@ automations here match Pako by sha256 of the redacted text.
 Edits 1 and 2 below were applied through the HA connector once 1.4.8 was live (`flight-watcher` 13:34,
 `flight-watcher-james` 13:38 HST). Both dashboard snapshots here match Pako by sha256 of the redacted text. Undo: give
 the two cards of edit 1 back the `user` visibility condition and rename the heading "Monthly PDFs"; delete the two
-cards edit 2 inserted. Items 3 to 5 are still open and not applied.
+cards edit 2 inserted. Item 3 is still open. Items 4 and 5 were applied on Pako 2026-11-07 about 15:15 HST
+(Ryan's yes): `configuration.yaml` backed up to `configuration.yaml.bak-20261107-fw0066`, both edits made, config
+check valid, HA restarted.
 
 Who the card reaches (read on Pako 2026-11-07): `flight-watcher` is `require_admin: true`, so only HA admins open it;
 all five views of `flight-watcher-james` (Settings included) are `visible` to James's and Ryan's user ids only. So
@@ -46,12 +48,12 @@ household users (four, a guest login among them) can open `flight-watcher-james`
    means adding their user ids to the `visible` list of the `flight-watcher-james` Settings view (they would then also
    see James's Credentials card there, which shows his FLICA username), or a separate view or dashboard for the
    uploads card alone. A separate [DESTRUCTIVE] edit; recommended: leave as is.
-4. Optional (`/config/configuration.yaml`, then an HA restart): `recorder: exclude: entities:` add
+4. Applied 2026-11-07 (`/config/configuration.yaml`, then an HA restart): `recorder: exclude: entities:` add
    `sensor.flight_watcher_pilot_schedule` and `sensor.flight_watcher_james_pilot_schedule`. A pilot lookup's payload
    carries the looked-up pilot's contact (not retained in MQTT since the review fix), and a small payload (a "loading"
    or "no data" reply) is under the recorder's 16 KB attribute limit, so without this each lookup's contact stays in
    `home-assistant_v2.db` for `purge_keep_days` (3 on Pako). Nothing reads these sensors' history.
-5. Optional (`/config/configuration.yaml`, then an HA restart): each chunk is a `call_service` event of about 256 KiB,
+5. Applied 2026-11-07 (`/config/configuration.yaml`, then an HA restart): each chunk is a `call_service` event of about 256 KiB,
    and the recorder logs "Event data for call_service exceed maximum size of 32768 bytes" at WARNING for every one
    (about 10 for a 1.7 MB award, about 130 for 25 MB) and stores `{}` for it. Recommended: under the existing
    `logger:` add
