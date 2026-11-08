@@ -43,8 +43,9 @@ import wwwfiles as WF
 import trades as TR
 import chunks as UP
 import contacts as CT
+import working as WK
 
-VERSION = "1.4.8"
+VERSION = "1.4.9"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -828,6 +829,12 @@ def discovery(c):
         ("sensor", "own_trips", {"name": "Own trip times", "state_topic": f"{T}/own_trips",
                                  "value_template": "{{ value_json.count }}",
                                  "json_attributes_topic": f"{T}/own_trips", "icon": "mdi:clock-outline"}),
+        # FW-0067: the working flight from this pilot's own schedule (working.py), for every instance
+        ("sensor", "working_flight", {"name": "Working flight", "state_topic": f"{T}/working_flight",
+                                      "value_template": "{{ value_json.state }}",
+                                      "json_attributes_topic": f"{T}/working_flight",
+                                      "json_attributes_template": "{{ value_json.attributes | tojson }}",
+                                      "icon": "mdi:airplane-takeoff"}),
         ("sensor", "tradeboard", {"name": "Tradeboard pickups", "state_topic": f"{T}/tradeboard/state",
                                   "value_template": "{{ value_json.count }}",
                                   "json_attributes_topic": f"{T}/tradeboard/state",
@@ -1363,8 +1370,15 @@ def gap():
 
 
 def sleep(sec):
+    """Wait sec seconds or until WAKE is set. FW-0067: looks at the working flight every WORKING_TICK_S meanwhile
+    (it publishes only on a change), so it follows the schedule clock while no check runs."""
     WAKE.clear()
-    WAKE.wait(sec)
+    end = time.time() + sec
+    while True:
+        left = end - time.time()
+        if left <= 0 or WAKE.wait(min(left, WORKING_TICK_S)):
+            return
+        publish_working_flight()
 
 
 
@@ -1544,7 +1558,8 @@ def own_trip_times(fl, full=False):
         k = f"{trip}|{it['start']}"
         keep.add(k)
         old = k in own and own[k] and ("credit" not in own[k] or "duties" not in own[k] or "crew" not in own[k]
-                                             or (own[k].get("duties") and "blk" not in own[k]["duties"][0]))  # cached before 0.4.9 / 0.4.15 / 0.4.17 / 0.4.19
+                                             or (own[k].get("duties") and "blk" not in own[k]["duties"][0])
+                                             or "legs" not in own[k])  # cached before 0.4.9 / 0.4.15 / 0.4.17 / 0.4.19 / 1.4.9
         # 0.6.1 (Ryan): block and credit move once a trip flies (actuals). Re-read a trip in progress every 6 h
         # and a finished trip once more the day after it ends, so completed trips show their final times.
         today = local_now().date().isoformat()
@@ -1573,8 +1588,12 @@ def own_trip_times(fl, full=False):
                     own[k]["final"] = it["end"] < today  # read after the trip ended: these are the final times
                     own[k]["duties"] = d.get("duties", [])  # 0.4.15: duty periods, so a 30 in 7 on a layover counts
                     own[k]["seat"] = my_seat(d.get("crew") or [])  # 0.4.15: RO or FO as listed on the trip
-                    ids = crew_ids(visible_text(page))  # 0.4.17: roster with employee numbers for the card
+                    txt = visible_text(page)  # parse_detail's text, lower case (parse_legs ignores case)
+                    ids = crew_ids(txt)  # 0.4.17: roster with employee numbers for the card
                     own[k]["crew"] = [with_ids(f"{pos} {name}", ids) for pos, name in (d.get("crew") or [])]
+                    # FW-0067: every leg (flight, from, to, times) for the working flight; kept in the state, not
+                    # on the own_trips sensor (publish_own_trips)
+                    own[k]["legs"] = parse_legs(txt)
                     log.info("own trip %s: report %s, in %s, blk %s", k, d["report"], d["last_arr"],
                              d.get("blk"))
                 else:
@@ -2445,8 +2464,43 @@ def publish_improved():
 
 def publish_own_trips():
     """0.4.7: Ryan's own trip report and block-in times (HNL local) for the schedule card, which
-    shows them and suggests tag-on pairings after each trip. Keys 'TRIP|YYYY-MM-DD' (start)."""
-    pub("own_trips", {"count": len(S.get("own_trips", {})), "trips": S.get("own_trips", {})})
+    shows them and suggests tag-on pairings after each trip. Keys 'TRIP|YYYY-MM-DD' (start). FW-0067: without
+    the legs (about 100 bytes a leg; with them a busy line passes ATTR_MAX and loses trips the card shows);
+    the working flight sensor carries the one leg that matters."""
+    own = S.get("own_trips", {})
+    pub("own_trips", {"count": len(own), "trips": {k: ({f: v for f, v in t.items() if f != "legs"} if isinstance(t, dict) else t)
+                                                   for k, t in own.items()}})
+
+
+# FW-0067: the working flight sensor is published when it changes (state, leg, status, next...), and at least every
+# WORKING_REPUB_S while only its time stamps move; WORKING_TICK_S is how often a long wait looks again, so a
+# departure, a block-in or the 2 h roll shows within a minute even while the Watcher is yielded or paused.
+WORKING_REPUB_S = 30 * 60
+WORKING_TICK_S = 60
+WORKING_ROLL_H = 2
+WORKING_LAST = {"news": None, "at": None}
+
+
+def publish_working_flight(now=None, force=False):
+    """FW-0067: sensor.<prefix>_working_flight from this instance's own schedule and own trip legs (working.py), any
+    pilot. Retained. Skipped when nothing but its time stamps changed, unless WORKING_REPUB_S passed. Never raises
+    (logs and goes on). Returns True when it published."""
+    try:
+        now = now or datetime.now(HST)
+        wf = WK.working_flight(_sched_items(), S.get("own_trips") or {}, now, WORKING_ROLL_H)
+        news = WK.news(wf)
+        last = WORKING_LAST.get("at")
+        if (not force and news == WORKING_LAST.get("news") and last is not None
+                and timedelta(0) <= now - last < timedelta(seconds=WORKING_REPUB_S)):
+            return False
+        pub("working_flight", wf)
+        if news.get("state") != (WORKING_LAST.get("news") or {}).get("state"):
+            log.info("working flight: %s", wf["state"])
+        WORKING_LAST.update(news=news, at=now)
+        return True
+    except Exception as e:
+        log.warning("working flight not published: %s: %s", type(e).__name__, e)
+        return False
 
 
 def schedule_fit(ev):
@@ -5125,6 +5179,7 @@ def check(fl):
         log.info("pot pages: %s", list(urls))
     schedule_check(fl, force=full or not S.get("schedule"))
     own_trip_times(fl, full)
+    publish_working_flight()  # FW-0067
     versions_check()
     uploads_check()
     pot_all = {}
@@ -5308,6 +5363,7 @@ def main():
     publish_blocked()
     publish_tradeboard()
     publish_own_trips()
+    publish_working_flight(force=True)  # FW-0067
     publish_trade()
     publish_charters()
     publish_improved()

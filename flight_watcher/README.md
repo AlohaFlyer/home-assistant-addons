@@ -162,6 +162,16 @@ Recent finds.
   the file. Any other list over 12000 bytes loses its oldest or least useful items and says how many in `trimmed`.
 - The pilot's date of hire stays in `/data/cards.json` and reaches the schedule card as the `doh` attribute of
   `sensor.flight_watcher_state`; the card files carry a placeholder only.
+- Working flight (1.4.9, FW-0067): `sensor.<prefix>_working_flight` (`sensor.flight_watcher_working_flight`, a second
+  pilot's `sensor.flight_watcher_<name>_working_flight`), retained on `<prefix>/working_flight`, is the leg of the
+  pilot's own schedule he is working, from his own trips' pairing pages (`working.py`). State `HA865 HNL-PPG` or
+  `No trip`; attributes pairing, leg (`1 of 2`), flight, date (at the origin), origin, dest, dep_sched and arr_sched
+  (`16:30 local, 16:30 HST`), block, report (FLICA's check in for the trip's first duty; a later duty 1:15 before
+  departure out of domicile, 1:00 in domicile, PWA 2.19.b), status (`Scheduled`, `Enroute per schedule`, `Arrived per
+  schedule`), status_as_of, next (the next leg, else the next pairing), flightaware_url, sigwx_url, source
+  `schedule`, release_updated false, updated, updated_by. A leg stays the working one until 2 h after its block-in
+  (or until the next leg blocks out, if sooner). The legs live in the state, not on `sensor.<prefix>_own_trip_times`
+  (size). Hark's `sensor.hark_working_flight` (Ryan only: release, MEL, NOTAMs, live status) is separate.
 
 ## Dashboard cards and pushes
 

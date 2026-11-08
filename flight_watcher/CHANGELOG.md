@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.4.9
+
+- FW-0067 (Ryan, Nov 8: "When other users use Flight Watcher the new Working Flight view should point to their
+  schedule"): every Watcher instance publishes `sensor.<prefix>_working_flight` (Ryan: `sensor.flight_watcher_working_flight`;
+  James: `sensor.flight_watcher_james_working_flight`) from that pilot's own FLICA schedule, so each pilot's Working
+  Flight view can read his own line. Hark's `sensor.hark_working_flight` (Ryan only: release, MEL, NOTAMs, gate codes,
+  live status) is unchanged. New module `working.py` (pure, no FLICA): all legs of the pilot's own trips on HST time
+  in departure order; the working leg is the first whose block-in + 2 h is after now (it stays on a leg until 2 h
+  after block-in, then rolls to the next; on a turn shorter than 2 h it rolls when the next leg blocks out). State
+  `HA865 HNL-PPG` (or `No trip`); attributes pairing, leg (`2 of 2`), flight, date (departure date at the origin, from
+  HST and the station's standard offset in `pot.TZ`; the HST date for a station not in it), origin, dest, dep_sched /
+  arr_sched (`16:30 local, 16:30 HST`), block, report (the trip's first duty: FLICA's check in, `15:30 HST`; a later
+  duty after a layover of 8 h or more: 1:15 before departure out of domicile, 1:00 in domicile, PWA 2.19.b, as
+  local and HST; a later leg in the same duty: its duty's report), status (`Scheduled`, `Enroute per schedule`,
+  `Arrived per schedule`), status_as_of, next (`HA866 PPG-HNL 2026-11-27 23:20 local`, else the next pairing as
+  `H3681 SYD 2026-11-09`), flightaware_url, sigwx_url, source `schedule`, release_updated false, updated, updated_by
+  `Flight Watcher`. With no leg ahead: `No trip` with source, next (the next pairing whose legs are not read yet),
+  updated, updated_by. A trip whose legs are not read yet is skipped for the working leg but can be next.
+- Published retained on `<prefix>/working_flight` at start, after the own trip times on each check, and every minute
+  while the Watcher waits (also when yielded, paused or parked), only when something besides the time stamps changed,
+  and at least every 30 min. A failure is logged and never stops the check loop.
+- `pot.parse_legs` gives each leg its flight number (`flt`) and origin (`frm`) too (new `LEG_FLT_RE`; `LEG_FULL_RE`
+  and every other key unchanged). The own trip times keep each trip's legs in the state (a trip cached without them
+  is read again, at most 3 a check, 1.5 to 3.5 s apart, read only); `sensor.<prefix>_own_trip_times` leaves the legs
+  out (with them a busy line passes the 12 KB cap and loses trips the schedule card shows).
+
 ## 1.4.8
 
 - FW-0066 (Ryan, Nov 7: "Make sure that any user can see and upload pairings and awards and seniority lists and pilot

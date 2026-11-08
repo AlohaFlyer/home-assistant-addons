@@ -188,6 +188,7 @@ def _fill(W, fake, tmp_path, monkeypatch):
     W.publish_swap_tests()
     W.publish_tradeboard()
     W.publish_own_trips()
+    W.publish_working_flight(force=True)  # FW-0067
     W.publish_charters()
     W.publish_improved()
     W.publish_tickets(force=True)

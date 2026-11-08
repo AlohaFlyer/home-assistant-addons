@@ -438,6 +438,9 @@ def parse_detail(html):
 
 
 LEG_FULL_RE = re.compile(r"\b(su|mo|tu|we|th|fr|sa)\s+\d{1,4}\s+([A-Za-z]{3})-([A-Za-z]{3})\s+(\d{4})\s+(\d{4})\s+(\d{4})\b", re.I)
+# FW-0067: the same leg with its flight number captured too (LEG_FULL_RE keeps its 6 groups for watcher.py)
+LEG_FLT_RE = re.compile(r"\b(su|mo|tu|we|th|fr|sa)\s+(\d{1,4})\s+([A-Za-z]{3})-([A-Za-z]{3})\s+(\d{4})\s+(\d{4})\s+(\d{4})\b",
+                        re.I)
 LAYOVER_MIN_H = 8  # a gap this long between legs is a layover, so a new duty period
 # Standard UTC offsets (hours) of the stations on the HNL A330 package; DST is absorbed by snapping the
 # printed arrival to the nearest day candidate (an hour off never moves it a day).
@@ -451,10 +454,11 @@ TZ = {"HNL": -10, "OGG": -10, "KOA": -10, "ITO": -10, "LIH": -10, "PPT": -10, "R
 
 def parse_legs(text):
     """0.5.2: every leg of a pairing page in HST minutes from the trip's first day (00:00 HST):
-    [{dep, arr, to, blk, dep_l, arr_l}], same conversion as parse_duties. A pickup made between a
-    leg's dep and arr happened in flight (blocked out, away from the gate)."""
+    [{dep, arr, to, blk, dep_l, arr_l, flt, frm}], same conversion as parse_duties. A pickup made between a
+    leg's dep and arr happened in flight (blocked out, away from the gate). FW-0067: flt is the flight number
+    ("865", leading zeros dropped) and frm the origin station, for the working flight sensor."""
     legs, off, last_idx = [], 0, None
-    for dow, a, b, dep, arr, blk in LEG_FULL_RE.findall(text or ""):
+    for dow, flt, a, b, dep, arr, blk in LEG_FLT_RE.findall(text or ""):
         idx = LEG_DOW.index(dow.upper())
         if last_idx is not None:
             off += (idx - last_idx) % 7
@@ -472,7 +476,7 @@ def parse_legs(text):
             cands = [(off + k) * 1440 + amin - sh_b for k in (-1, 0, 1, 2)]
             arr_h = min(cands, key=lambda c: abs(c - est))
         legs.append({"dep": dep_h, "arr": arr_h, "to": b, "blk": bmin, "dep_l": f"{dmin // 60:02d}:{dmin % 60:02d}",
-                     "arr_l": f"{amin // 60:02d}:{amin % 60:02d}"})
+                     "arr_l": f"{amin // 60:02d}:{amin % 60:02d}", "flt": str(int(flt)), "frm": a})
     return legs
 
 
