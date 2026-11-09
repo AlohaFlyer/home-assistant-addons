@@ -111,7 +111,11 @@ def test_admin_subscriptions_are_the_1412_list_verbatim():
     assert roles.subscriptions("", portal=True) == roles.subscriptions("")
     pilot = [s for s, q in roles.subscriptions("pilot2")]
     assert pilot == [s for s, q in roles.subscriptions("") if s not in PILOT_LOSES]
-    assert roles.subscriptions("pilot2", portal=True) == roles.subscriptions("pilot2")  # nothing portal-only in 1.5.0
+    # 1.6.0 (FW-0061): a pilot whose portal is on also takes pref/set, after the rest; the admin never does
+    assert roles.subscriptions("pilot2", portal=True) == roles.subscriptions("pilot2") + [("pref/set", 0)]
+    assert "pref/set" not in [s for s, q in roles.subscriptions("", portal=True)]
+    assert not roles.sub_allowed("pref/set", "") and not roles.sub_allowed("pref/set", "", portal=True)
+    assert not roles.sub_allowed("pref/set", "pilot2") and roles.sub_allowed("pref/set", "pilot2", portal=True)
 
 
 @pytest.mark.parametrize("instance", ["", "pilot2"])

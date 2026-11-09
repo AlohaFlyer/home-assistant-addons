@@ -9,7 +9,12 @@ One table, FEATURES, says who has each feature and whether a pilot's portal (1.6
 the same table (tests/test_roles.py keeps them equal). SUBS maps every MQTT command topic an instance subscribes to
 onto a feature, EVENTS every event topic, and ENTITY_FEATURE the discovery entities that are not core. Plain Python,
 no imports from the app, so ha/check_push_isolation.py can read RESERVED too.
+
+1.6.0 (FW-0061): the pilot portal's contract 1 (the bottom of this file): what a portal may send, which events and
+fields it gets, the prefs it may set and the files it serves. portal.py builds tests/fixtures/portal_contract_v1.json
+from these; PORTAL_CONTRACT.md documents them.
 """
+import math
 import re
 
 ADMIN, PILOT = "admin", "pilot"
@@ -50,9 +55,12 @@ SUBS = {
     "ticket/new": "tickets", "ticket/image": "tickets", "ticket/act": "tickets", "ticket/edit": "tickets",
     "ticket/delete": "tickets", "crew_scan/press": "crew_index",
     "upload/chunk": "uploads",
+    "pref/set": "prefs",  # 1.6.0 (FW-0061): portal only (PORTAL_SUBS), never on the admin
 }
 QOS = {"upload/chunk": 1}  # FW-0066: chunks at qos 1; every other subscription at qos 0
-PORTAL_SUBS = ()  # subscriptions taken only when the pilot's portal is on: none in 1.5.0 (1.6.0 adds pref/set)
+# 1.6.0 (FW-0061): subscriptions taken only on a pilot instance whose portal is on (option pilots[].portal); the
+# admin never takes them, so its list stays the 1.4.12 one
+PORTAL_SUBS = ("pref/set",)
 
 # every event topic (after <prefix>/event/) and its feature
 EVENTS = {
@@ -80,8 +88,8 @@ MAX_PILOTS = 3  # pilots besides the admin: each runs its own Chromium and its o
 RESERVED = frozenset({
     "admin", "auto", "blocked", "captures", "ccr", "charter", "charters", "check", "crew", "default", "drop",
     "email", "er", "event", "federal", "fetches", "finds", "flica", "freq", "grid", "hunt", "improved", "last",
-    "longevity", "map", "month", "new", "next", "normal", "ot", "own", "pause", "pickers", "pilot", "pot", "re",
-    "rearm", "recall", "reserve", "rule", "rules", "ryan", "scan", "schedule", "session", "settings", "show",
+    "longevity", "map", "month", "new", "next", "normal", "ot", "own", "pause", "pickers", "pilot", "pot", "pref",
+    "re", "rearm", "recall", "reserve", "rule", "rules", "ryan", "scan", "schedule", "session", "settings", "show",
     "state", "status", "swap", "ticket", "tickets", "trade", "tradeboard", "update", "upload", "uploads",
     "versions", "working", "would", "www",
 })
@@ -112,20 +120,24 @@ def sub_key(sub):
     return None
 
 
-def sub_allowed(sub, instance):
+def sub_allowed(sub, instance, portal=False):
     """True when this instance acts on a message on <prefix>/<sub>. An internal topic is every instance's; a topic
-    SUBS does not name is left to on_message (it ignores it)."""
+    SUBS does not name is left to on_message (it ignores it). 1.6.0: a PORTAL_SUBS topic only on a pilot whose portal
+    is on."""
     k = sub_key(sub)
     if k is None:
         return True
+    if k in PORTAL_SUBS and not (portal and role(instance) == PILOT):
+        return False
     f = SUBS[k]
     return f == INTERNAL or allowed(f, instance)
 
 
 def subscriptions(instance, portal=False):
     """[(sub, qos)] this instance subscribes to under its prefix, in the 1.4.12 order. portal: the pilot's portal is
-    on (no subscription depends on it in 1.5.0)."""
-    out = [(s, QOS.get(s, 0)) for s, f in SUBS.items() if f == INTERNAL or allowed(f, instance)]
+    on (1.6.0: then PORTAL_SUBS follow; the admin never takes them)."""
+    out = [(s, QOS.get(s, 0)) for s, f in SUBS.items()
+           if s not in PORTAL_SUBS and (f == INTERNAL or allowed(f, instance))]
     if portal and role(instance) == PILOT:
         out += [(s, QOS.get(s, 0)) for s in PORTAL_SUBS if (s, QOS.get(s, 0)) not in out]
     return out
@@ -154,3 +166,120 @@ def name_refusal(name, taken=()):
         if name.startswith(t + "_") or t.startswith(name + "_"):
             return f"its ids would mix with pilot {t!r}'s"
     return ""
+
+
+# ---------------------------------------------------------------- 1.6.0 (FW-0061): the pilot portal, contract v1
+# What a pilot's portal (HOM, a separate unprivileged process) may do through this pilot's Watcher, and nothing more:
+# the command subs it may send (PORTAL_CMDS; PORTAL_REFUSED names every other subscription so a test proves each is
+# refused), the events it shows and ntfy pushes (PORTAL_EVENTS, MACHINE_EVENTS) with only EVENT_FIELDS in their data,
+# the pay and tax prefs it may set (PREF_KEYS), the helpers that stay view state in the portal (LOCAL_HELPERS) and the
+# list files it serves (FILE_KINDS). portal.py builds the contract fixture (tests/fixtures/portal_contract_v1.json)
+# from these; PORTAL_CONTRACT.md documents it. The admin has no portal: none of this runs on the default instance.
+CONTRACT = 1
+PORTAL_CMDS = ("hunt/set", "pause/set", "rearm/press", "check_now/press", "charter_scan/press", "freq/normal_min/set",
+               "freq/hunt_s/set", "rule/+/live/set", "blocked/set", "trade/set", "pilot/set", "improved/set",
+               "recall/set", "recall/act", "settings/set", "pref/set")
+PORTAL_RULE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
+# the check frequency sliders (number entities; freq/normal_min/set in minutes, freq/hunt_s/set in seconds): the
+# Watcher clamps a dashboard value into these, and a portal's freq/*/set must be a finite number within them
+FREQ_LIMITS = {"normal_min": (1, 20), "hunt_s": (5, 90)}
+PORTAL_REFUSED = ("email/alert", "crew_scan/press", "ticket/new", "ticket/image", "ticket/act", "ticket/edit",
+                  "ticket/delete", "upload/chunk", "drop/set", "auto_swap/set", "swap_map/press", "hunt/state",
+                  "pause/state")
+# the tabs of the portal (portal_layout.json), and the one each event opens (ntfy Click, the events list)
+PORTAL_TABS = ("watcher", "schedule", "pilot", "recall", "settings")
+PORTAL_EVENTS = ("new_pairing", "rule_match", "recall_miss", "request_decided", "schedule_changed", "charter",
+                 "hidden")
+MACHINE_EVENTS = ("needs_settings", "stopped_*")  # sensor.<prefix>_state turning to one of these (stopped_ any)
+EVENT_VIEWS = {"new_pairing": "watcher", "rule_match": "watcher", "recall_miss": "recall",
+               "request_decided": "schedule", "schedule_changed": "schedule", "charter": "watcher",
+               "hidden": "watcher", "needs_settings": "settings", "stopped_*": "watcher"}
+# the only fields an event's data (events.json) carries; the title and body are built from these alone, so no name,
+# employee number, captain, contact, URL, commute reason or pay amount (value, pay) ever leaves the Watcher in one
+EVENT_FIELDS = ("pairing", "dates", "start", "end", "days", "month", "date", "layover", "report", "release",
+                "credit", "block", "fit", "far", "vac", "comm", "month_rule", "verdict", "type", "status", "added",
+                "removed", "flight", "route", "rule_id", "state")
+# the pay and tax helpers the portal sets with pref/set (feature prefs); the Watcher keeps them in <data>/prefs.json
+# and shows them as these entities. Bounds: the schedule card's own pickers (federal 0 to 45 % by 0.5, state 0 to
+# 15 % by 0.25), the longevity year 1 to 12 (PWA 3.B.1, 3.D.6 table caps at 12), the Extended Range list the schedule
+# card writes (PWA 4.O.1.b: +TRIP|YYYY-MM-DD forces it on, -TRIP|YYYY-MM-DD off; HA's 255-character text cap)
+PREF_KEYS = {
+    "federal_tax_pct": {"entity": "input_number.{prefix}_federal_tax_pct", "type": "number", "min": 0, "max": 45,
+                        "step": 0.5, "unit": "%"},
+    "state_tax_pct": {"entity": "input_number.{prefix}_state_tax_pct", "type": "number", "min": 0, "max": 15,
+                      "step": 0.25, "unit": "%"},
+    "longevity_year": {"entity": "input_number.{prefix}_longevity_year", "type": "number", "min": 1, "max": 12,
+                       "step": 1, "unit": ""},
+    "er_trips": {"entity": "input_text.{prefix}_er_trips", "type": "text", "max_len": 255,
+                 "item_re": r"[+-][A-Z0-9]{1,8}\|\d{4}-\d{2}-\d{2}"},
+}
+# helpers the cards read and set that stay in the portal's page (never sent to the Watcher)
+LOCAL_HELPERS = {"month_offset": {"entity": "input_number.{prefix}_month_offset",
+                                  "services": ["set_value", "increment", "decrement"]}}
+# the list files a portal serves: kind -> its argument's pattern ("" = none). finds_<YYYY-MM>, the shared
+# pairings_<YYYY-MM> package, school_<YYYY-YY> and FW-0060 / FW-0069's list files (tickets are not in contract 1)
+FILE_KINDS = {"finds": r"\d{4}-\d{2}", "pairings": r"\d{4}-\d{2}", "school": r"\d{4}-\d{2}", "versions": "",
+              "pickers": "", "recall": "", "pilotver": ""}
+
+
+def portal_sub(sub):
+    """The PORTAL_CMDS entry a portal command's sub falls under ('rule/<id>/live/set' -> 'rule/+/live/set' for an id
+    of PORTAL_RULE_ID_RE), or None: refused."""
+    if not isinstance(sub, str):
+        return None
+    if sub in PORTAL_CMDS and sub != "rule/+/live/set":
+        return sub
+    p = sub.split("/")
+    if len(p) == 4 and p[0] == "rule" and p[2:] == ["live", "set"] and PORTAL_RULE_ID_RE.fullmatch(p[1]):
+        return "rule/+/live/set"
+    return None
+
+
+def machine_event(state):
+    """The MACHINE_EVENTS kind a Watcher state is ('needs_settings', 'stopped_*'), or ''."""
+    if state == "needs_settings":
+        return "needs_settings"
+    return "stopped_*" if isinstance(state, str) and state.startswith("stopped_") else ""
+
+
+def pref_entity(key, prefix):
+    return PREF_KEYS[key]["entity"].format(prefix=prefix)
+
+
+def pref_value(key, value):
+    """The value pref/set may store for key (PREF_KEYS), normalized (a number on its step, an int when whole; the ER
+    list as given); ValueError saying why when it is refused."""
+    spec = PREF_KEYS.get(key) if isinstance(key, str) else None
+    if spec is None:
+        raise ValueError("unknown pref key")
+    if spec["type"] == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise ValueError(f"{key}: not a number")
+        try:
+            v = float(value)  # a JSON integer too large for a float is OverflowError, not ValueError
+        except (ValueError, OverflowError, TypeError):
+            raise ValueError(f"{key}: not a number") from None
+        if not math.isfinite(v) or not spec["min"] <= v <= spec["max"]:
+            raise ValueError(f"{key}: outside {spec['min']} to {spec['max']}")
+        steps = (v - spec["min"]) / spec["step"]
+        if abs(steps - round(steps)) > 1e-9:
+            raise ValueError(f"{key}: not a multiple of {spec['step']}")
+        v = round(spec["min"] + round(steps) * spec["step"], 4)
+        return int(v) if float(v).is_integer() else v
+    if not isinstance(value, str) or len(value) > spec["max_len"]:
+        raise ValueError(f"{key}: not text of at most {spec['max_len']} characters")
+    items = value.split(",") if value else []
+    if any(not re.fullmatch(spec["item_re"], x) for x in items):
+        raise ValueError(f"{key}: each item is +TRIP|YYYY-MM-DD or -TRIP|YYYY-MM-DD")
+    return value
+
+
+# discovery oids a pilot has whose feature its portal does not offer (contract 1 has no tickets or uploads)
+ENTITY_PORTAL_FEATURE = {"tickets": "tickets", "uploads": "uploads", "upload_status": "uploads"}
+
+
+def entity_on_portal(oid, instance):
+    """True when a portal serves this discovery entity of instance: the instance has its feature and FEATURES offers
+    that feature on a portal."""
+    f = ENTITY_FEATURE.get(oid) or ENTITY_PORTAL_FEATURE.get(oid, "core")
+    return allowed(f, instance) and FEATURES[f][1]

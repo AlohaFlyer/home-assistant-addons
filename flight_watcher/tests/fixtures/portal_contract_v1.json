@@ -1,0 +1,1026 @@
+{
+ "contract": 1,
+ "fwp": 1,
+ "generated_by": "flight_watcher/portal.py contract(); docs: flight_watcher/PORTAL_CONTRACT.md",
+ "names": {
+  "pilot_re": "^(?=.{1,32}$)[a-z0-9]+(?:_[a-z0-9]+)*$",
+  "cmd_file_re": "^\\d{13}-[0-9a-f]{16}\\.json$",
+  "id_re": "^[0-9a-f]{16}$",
+  "session_re": "^[0-9a-f]{16}$",
+  "rule_id_re": "^[a-z0-9_]{1,40}$",
+  "public_key_re": "^ed25519:[A-Za-z0-9_-]{43}$",
+  "origin_re": "^https://[a-z0-9-]+\\.[a-z0-9-]+\\.ts\\.net$"
+ },
+ "uid": 2061,
+ "gid": 2061,
+ "paths": {
+  "root": "/share/fw_portal",
+  "pilot": "/share/fw_portal/<name>",
+  "out": "/share/fw_portal/<name>/out",
+  "in": "/share/fw_portal/<name>/in",
+  "key": "/data/portal_ed25519.pem",
+  "modes": {
+   "root": "root:root 0755",
+   "pilot": "root:2061 0750",
+   "out": "root:2061 0750",
+   "out_files": "root:2061 0640",
+   "in": "2061:2061 0700",
+   "in_files": "2061:2061 0600"
+  },
+  "out_tmp": ".<file>.<16 hex>.tmp",
+  "in_tmp": ".<file>.tmp"
+ },
+ "envelope": {
+  "keys": [
+   "fwp",
+   "kind",
+   "pilot",
+   "seq",
+   "payload",
+   "sig"
+  ],
+  "signed_bytes": "fwp1\\n<kind>\\n<pilot>\\n<seq>\\n<payload>",
+  "sig": "base64url, no padding, 64-byte Ed25519 signature",
+  "kinds": [
+   "manifest",
+   "state",
+   "events",
+   "results",
+   "file:<kind>",
+   "file:<kind>:<arg>"
+  ],
+  "files": {
+   "manifest": "manifest.json",
+   "state": "state.json",
+   "events": "events.json",
+   "results": "results.json",
+   "file:<kind>": "files/<kind>.json",
+   "file:<kind>:<arg>": "files/<kind>_<arg>.json",
+   "blob": "blobs/<sha256>.js"
+  }
+ },
+ "caps": {
+  "manifest": 262144,
+  "state": 2097152,
+  "events": 262144,
+  "results": 65536,
+  "file": 8388608,
+  "blob": 1048576,
+  "cmd": 65536
+ },
+ "commands": {
+  "max_bytes": 65536,
+  "max_age_s": 300,
+  "max_ahead_s": 60,
+  "per_minute": 30,
+  "seen_keep_s": 600,
+  "keys": [
+   "fwp",
+   "id",
+   "pilot",
+   "ts",
+   "sub",
+   "payload",
+   "session"
+  ],
+  "allowed": [
+   "hunt/set",
+   "pause/set",
+   "rearm/press",
+   "check_now/press",
+   "charter_scan/press",
+   "freq/normal_min/set",
+   "freq/hunt_s/set",
+   "rule/+/live/set",
+   "blocked/set",
+   "trade/set",
+   "pilot/set",
+   "improved/set",
+   "recall/set",
+   "recall/act",
+   "settings/set",
+   "pref/set"
+  ],
+  "refused": [
+   "email/alert",
+   "crew_scan/press",
+   "ticket/new",
+   "ticket/image",
+   "ticket/act",
+   "ticket/edit",
+   "ticket/delete",
+   "upload/chunk",
+   "drop/set",
+   "auto_swap/set",
+   "swap_map/press",
+   "hunt/state",
+   "pause/state"
+  ],
+  "settings_set": "payload is exactly {\"enc\": {...}}",
+  "pref_set": "payload is {\"key\", \"value\"}",
+  "freq_set": "payload is a finite number within freq_limits[<normal_min|hunt_s>]",
+  "freq_limits": {
+   "normal_min": [
+    1,
+    20
+   ],
+   "hunt_s": [
+    5,
+    90
+   ]
+  }
+ },
+ "prefs": {
+  "federal_tax_pct": {
+   "entity": "input_number.{prefix}_federal_tax_pct",
+   "type": "number",
+   "min": 0,
+   "max": 45,
+   "step": 0.5,
+   "unit": "%"
+  },
+  "state_tax_pct": {
+   "entity": "input_number.{prefix}_state_tax_pct",
+   "type": "number",
+   "min": 0,
+   "max": 15,
+   "step": 0.25,
+   "unit": "%"
+  },
+  "longevity_year": {
+   "entity": "input_number.{prefix}_longevity_year",
+   "type": "number",
+   "min": 1,
+   "max": 12,
+   "step": 1,
+   "unit": ""
+  },
+  "er_trips": {
+   "entity": "input_text.{prefix}_er_trips",
+   "type": "text",
+   "max_len": 255,
+   "item_re": "[+-][A-Z0-9]{1,8}\\|\\d{4}-\\d{2}-\\d{2}"
+  }
+ },
+ "local_helpers": {
+  "month_offset": {
+   "entity": "input_number.{prefix}_month_offset",
+   "services": [
+    "set_value",
+    "increment",
+    "decrement"
+   ]
+  }
+ },
+ "events": {
+  "kinds": [
+   "new_pairing",
+   "rule_match",
+   "recall_miss",
+   "request_decided",
+   "schedule_changed",
+   "charter",
+   "hidden",
+   "needs_settings",
+   "stopped_*"
+  ],
+  "views": {
+   "new_pairing": "watcher",
+   "rule_match": "watcher",
+   "recall_miss": "recall",
+   "request_decided": "schedule",
+   "schedule_changed": "schedule",
+   "charter": "watcher",
+   "hidden": "watcher",
+   "needs_settings": "settings",
+   "stopped_*": "watcher"
+  },
+  "fields": [
+   "pairing",
+   "dates",
+   "start",
+   "end",
+   "days",
+   "month",
+   "date",
+   "layover",
+   "report",
+   "release",
+   "credit",
+   "block",
+   "fit",
+   "far",
+   "vac",
+   "comm",
+   "month_rule",
+   "verdict",
+   "type",
+   "status",
+   "added",
+   "removed",
+   "flight",
+   "route",
+   "rule_id",
+   "state"
+  ],
+  "entry": [
+   "seq",
+   "ts",
+   "kind",
+   "id",
+   "view",
+   "priority",
+   "title",
+   "body",
+   "data",
+   "tags"
+  ],
+  "keep": 100
+ },
+ "results": {
+  "entry": [
+   "id",
+   "ok",
+   "why"
+  ],
+  "keep": 50
+ },
+ "tabs": [
+  "watcher",
+  "schedule",
+  "pilot",
+  "recall",
+  "settings"
+ ],
+ "file_kinds": {
+  "finds": "\\d{4}-\\d{2}",
+  "pairings": "\\d{4}-\\d{2}",
+  "school": "\\d{4}-\\d{2}",
+  "versions": "",
+  "pickers": "",
+  "recall": "",
+  "pilotver": ""
+ },
+ "masks": {
+  "zero": [
+   "file_key",
+   "versions_file_key"
+  ],
+  "drop": [
+   "contact"
+  ],
+  "never_copied": [
+   "context"
+  ]
+ },
+ "blob_keep_s": 3600,
+ "test_key": {
+  "label": "Flight Watcher portal contract v1 TEST SEED: not a real key, never used outside tests",
+  "seed": "sha256(label)",
+  "public_key": "ed25519:5h35alE3yYHDJNLGkCiqO_URG1HpNkivHoPqyfroxL8"
+ },
+ "samples": {
+  "envelopes": [
+   {
+    "file": "manifest.json",
+    "envelope": {
+     "fwp": 1,
+     "kind": "manifest",
+     "pilot": "demo",
+     "seq": 1763600000000,
+     "payload": "{\"contract\":1,\"app_version\":\"1.6.0\",\"pilot\":\"demo\",\"prefix\":\"flight_watcher_demo\",\"role\":\"pilot\",\"cards\":{\"flight-watcher-clock-card-demo.js\":\"6252f3e7a4c42648a5497c232a04b5a410d26d816e131503008461a405b9601a\"},\"layout\":{\"tabs\":[{\"id\":\"watcher\",\"title\":\"Watcher\",\"cards\":[{\"type\":\"custom:flight-watcher-clock-card-demo\"},{\"type\":\"heading\",\"heading\":\"Finds\"}]}]},\"services\":{\"switch.flight_watcher_demo_pause\":{\"toggle\":{\"sub\":\"pause/set\",\"on\":\"ON\",\"off\":\"OFF\"},\"turn_on\":{\"sub\":\"pause/set\",\"payload\":\"ON\"},\"turn_off\":{\"sub\":\"pause/set\",\"payload\":\"OFF\"}},\"button.flight_watcher_demo_check_now\":{\"press\":{\"sub\":\"check_now/press\",\"payload\":\"PRESS\"}},\"number.flight_watcher_demo_hunt_check_every\":{\"set_value\":{\"sub\":\"freq/hunt_s/set\"}},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"set_value\":{\"sub\":\"pref/set\",\"key\":\"federal_tax_pct\"}},\"input_number.flight_watcher_demo_month_offset\":{\"set_value\":{\"local\":true},\"increment\":{\"local\":true},\"decrement\":{\"local\":true}}},\"mqtt_subs\":[\"blocked/set\",\"improved/set\",\"pilot/set\",\"recall/act\",\"recall/set\",\"settings/set\",\"trade/set\"],\"files\":[\"finds:2026-11\",\"pairings:2026-11\",\"pickers\",\"pilotver\",\"recall\",\"school:2026-27\",\"versions\"],\"ntfy\":false}",
+     "sig": "GEaJCHQ6Jb0EsqtAyGXtqpJgDmj6YGghcq5_ltaXCuiStMAs0j38jrfTkzzxxk99Otq39m9tPrI9Lhg-mdT_Ag"
+    }
+   },
+   {
+    "file": "state.json",
+    "envelope": {
+     "fwp": 1,
+     "kind": "state",
+     "pilot": "demo",
+     "seq": 1763600000001,
+     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"idle\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null}},\"ha_ok\":true}",
+     "sig": "qAS95kd6F46YxQTfZ2O_7jPzxS3KERMedhGwdGkQj3ku0Nd0bX9gp8WMLto6pXR0ZnRftelXjTJNNUM3hgp3AA"
+    }
+   },
+   {
+    "file": "events.json",
+    "envelope": {
+     "fwp": 1,
+     "kind": "events",
+     "pilot": "demo",
+     "seq": 1763600000002,
+     "payload": "{\"events\":[{\"seq\":1763600000010,\"ts\":\"2026-11-09T20:00:10+00:00\",\"kind\":\"new_pairing\",\"id\":\"4dd6d0fdf21705e8\",\"view\":\"watcher\",\"priority\":5,\"title\":\"New pairing H9001 20NOV-22NOV\",\"body\":\"3 days, layover SYD. Report 0800. Credit 15:20. Fit Fits. FAR 117 OK. Commute Yes\",\"data\":{\"pairing\":\"H9001\",\"dates\":\"20NOV-22NOV\",\"days\":3,\"layover\":\"SYD\",\"report\":\"0800\",\"credit\":\"15:20\",\"fit\":\"Fits\",\"far\":\"OK\",\"comm\":\"Yes\"},\"tags\":\"airplane\"}]}",
+     "sig": "nUL7U7mCjHig4PR_RhtkihnvcPgJtQwq_WaIIR6QJu3UEzieP3zSV8Bjx6fLqITOZkKEfRVyVSiu2OSrTC97DA"
+    }
+   },
+   {
+    "file": "results.json",
+    "envelope": {
+     "fwp": 1,
+     "kind": "results",
+     "pilot": "demo",
+     "seq": 1763600000003,
+     "payload": "{\"results\":[{\"id\":\"0123456789abcdef\",\"ok\":true,\"why\":\"\"},{\"id\":\"fedcba9876543210\",\"ok\":false,\"why\":\"sub not allowed: drop/set\"}]}",
+     "sig": "plzNBfdHopTSmk2P3FqGei0IGtQly9LWY8I54cNHNm4gO7i1HMkCGEfxjymp42JLNiKUJHYw1WJeN3xJ9VYIBg"
+    }
+   },
+   {
+    "file": "files/finds_2026-11.json",
+    "envelope": {
+     "fwp": 1,
+     "kind": "file:finds:2026-11",
+     "pilot": "demo",
+     "seq": 1763600000004,
+     "payload": "{\"month\":\"2026-11\",\"count\":0,\"finds\":[]}",
+     "sig": "D_2tSrzkvBNwpikR3-uoEexw8wYFpmci4dJj15AxXhlvh6orwHaVj7onb6TDUxMv7KF_iX_l3K7VjvE-wA2tBw"
+    }
+   },
+   {
+    "file": "files/pickers.json",
+    "envelope": {
+     "fwp": 1,
+     "kind": "file:pickers",
+     "pilot": "demo",
+     "seq": 1763600000005,
+     "payload": "{\"count\":0,\"pickers\":[]}",
+     "sig": "G5DYVCGyZztIu1CVlqLkn4oH9P3eriL1SvnAaEGBrxEDRviTxNHLd7jt-7SSnuiIMXTEquUTjRXrV8j1KcxDBQ"
+    }
+   }
+  ],
+  "bad_envelopes": [
+   {
+    "why": "tampered payload",
+    "envelope": {
+     "fwp": 1,
+     "kind": "state",
+     "pilot": "demo",
+     "seq": 1763600000001,
+     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"hunting\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null}},\"ha_ok\":true}",
+     "sig": "qAS95kd6F46YxQTfZ2O_7jPzxS3KERMedhGwdGkQj3ku0Nd0bX9gp8WMLto6pXR0ZnRftelXjTJNNUM3hgp3AA"
+    }
+   },
+   {
+    "why": "wrong pilot",
+    "envelope": {
+     "fwp": 1,
+     "kind": "state",
+     "pilot": "james",
+     "seq": 1763600000001,
+     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"idle\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null}},\"ha_ok\":true}",
+     "sig": "qAS95kd6F46YxQTfZ2O_7jPzxS3KERMedhGwdGkQj3ku0Nd0bX9gp8WMLto6pXR0ZnRftelXjTJNNUM3hgp3AA"
+    }
+   },
+   {
+    "why": "wrong kind (state.json holding a manifest)",
+    "file": "state.json",
+    "envelope": {
+     "fwp": 1,
+     "kind": "manifest",
+     "pilot": "demo",
+     "seq": 1763600000000,
+     "payload": "{\"contract\":1,\"app_version\":\"1.6.0\",\"pilot\":\"demo\",\"prefix\":\"flight_watcher_demo\",\"role\":\"pilot\",\"cards\":{\"flight-watcher-clock-card-demo.js\":\"6252f3e7a4c42648a5497c232a04b5a410d26d816e131503008461a405b9601a\"},\"layout\":{\"tabs\":[{\"id\":\"watcher\",\"title\":\"Watcher\",\"cards\":[{\"type\":\"custom:flight-watcher-clock-card-demo\"},{\"type\":\"heading\",\"heading\":\"Finds\"}]}]},\"services\":{\"switch.flight_watcher_demo_pause\":{\"toggle\":{\"sub\":\"pause/set\",\"on\":\"ON\",\"off\":\"OFF\"},\"turn_on\":{\"sub\":\"pause/set\",\"payload\":\"ON\"},\"turn_off\":{\"sub\":\"pause/set\",\"payload\":\"OFF\"}},\"button.flight_watcher_demo_check_now\":{\"press\":{\"sub\":\"check_now/press\",\"payload\":\"PRESS\"}},\"number.flight_watcher_demo_hunt_check_every\":{\"set_value\":{\"sub\":\"freq/hunt_s/set\"}},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"set_value\":{\"sub\":\"pref/set\",\"key\":\"federal_tax_pct\"}},\"input_number.flight_watcher_demo_month_offset\":{\"set_value\":{\"local\":true},\"increment\":{\"local\":true},\"decrement\":{\"local\":true}}},\"mqtt_subs\":[\"blocked/set\",\"improved/set\",\"pilot/set\",\"recall/act\",\"recall/set\",\"settings/set\",\"trade/set\"],\"files\":[\"finds:2026-11\",\"pairings:2026-11\",\"pickers\",\"pilotver\",\"recall\",\"school:2026-27\",\"versions\"],\"ntfy\":false}",
+     "sig": "GEaJCHQ6Jb0EsqtAyGXtqpJgDmj6YGghcq5_ltaXCuiStMAs0j38jrfTkzzxxk99Otq39m9tPrI9Lhg-mdT_Ag"
+    }
+   },
+   {
+    "why": "rollback (seq not above the last served)",
+    "after": 1763600000001,
+    "envelope": {
+     "fwp": 1,
+     "kind": "state",
+     "pilot": "demo",
+     "seq": 1763600000001,
+     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"idle\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null}},\"ha_ok\":true}",
+     "sig": "qAS95kd6F46YxQTfZ2O_7jPzxS3KERMedhGwdGkQj3ku0Nd0bX9gp8WMLto6pXR0ZnRftelXjTJNNUM3hgp3AA"
+    }
+   },
+   {
+    "why": "fwp 2",
+    "envelope": {
+     "fwp": 2,
+     "kind": "state",
+     "pilot": "demo",
+     "seq": 1763600000001,
+     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"idle\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null}},\"ha_ok\":true}",
+     "sig": "qAS95kd6F46YxQTfZ2O_7jPzxS3KERMedhGwdGkQj3ku0Nd0bX9gp8WMLto6pXR0ZnRftelXjTJNNUM3hgp3AA"
+    }
+   },
+   {
+    "why": "signed by another key",
+    "envelope": {
+     "fwp": 1,
+     "kind": "state",
+     "pilot": "demo",
+     "seq": 1763600000001,
+     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"idle\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null}},\"ha_ok\":true}",
+     "sig": "13tREICQql7qowX51XdMpaIH4vWey81-JIuKlKEdj-K7ZETBieOBgvCi8eQZXAZ27yZSsxhg6CUR1QcAJHQGAg"
+    }
+   }
+  ],
+  "commands": {
+   "accepted": [
+    {
+     "name": "1763600000001-00000000c0de0001.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0001",
+      "pilot": "demo",
+      "ts": 1763600000001,
+      "sub": "hunt/set",
+      "payload": "ON",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000002-00000000c0de0002.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0002",
+      "pilot": "demo",
+      "ts": 1763600000002,
+      "sub": "pause/set",
+      "payload": "OFF",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000003-00000000c0de0003.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0003",
+      "pilot": "demo",
+      "ts": 1763600000003,
+      "sub": "rearm/press",
+      "payload": "PRESS",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000004-00000000c0de0004.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0004",
+      "pilot": "demo",
+      "ts": 1763600000004,
+      "sub": "check_now/press",
+      "payload": "PRESS",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000005-00000000c0de0005.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0005",
+      "pilot": "demo",
+      "ts": 1763600000005,
+      "sub": "charter_scan/press",
+      "payload": "PRESS",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000006-00000000c0de0006.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0006",
+      "pilot": "demo",
+      "ts": 1763600000006,
+      "sub": "freq/normal_min/set",
+      "payload": "6",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000007-00000000c0de0007.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0007",
+      "pilot": "demo",
+      "ts": 1763600000007,
+      "sub": "freq/hunt_s/set",
+      "payload": "40",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000008-00000000c0de0008.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0008",
+      "pilot": "demo",
+      "ts": 1763600000008,
+      "sub": "rule/sin_alert/live/set",
+      "payload": "ON",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000009-00000000c0de0009.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0009",
+      "pilot": "demo",
+      "ts": 1763600000009,
+      "sub": "blocked/set",
+      "payload": "{\"date\":\"2026-11-20\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000010-00000000c0de000a.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de000a",
+      "pilot": "demo",
+      "ts": 1763600000010,
+      "sub": "trade/set",
+      "payload": "{\"key\":\"H9001|2026-11-20\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000011-00000000c0de000b.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de000b",
+      "pilot": "demo",
+      "ts": 1763600000011,
+      "sub": "pilot/set",
+      "payload": "{\"q\":\"10001\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000012-00000000c0de000c.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de000c",
+      "pilot": "demo",
+      "ts": 1763600000012,
+      "sub": "improved/set",
+      "payload": "{\"month\":\"2026-11\",\"awarded\":1,\"current\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000013-00000000c0de000d.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de000d",
+      "pilot": "demo",
+      "ts": 1763600000013,
+      "sub": "recall/set",
+      "payload": "{\"date\":\"2026-11-03\",\"rows\":[]}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000014-00000000c0de000e.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de000e",
+      "pilot": "demo",
+      "ts": 1763600000014,
+      "sub": "recall/act",
+      "payload": "{\"refresh\":true}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000015-00000000c0de000f.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de000f",
+      "pilot": "demo",
+      "ts": 1763600000015,
+      "sub": "settings/set",
+      "payload": "{\"enc\":{\"v\":1,\"kid\":\"0011223344556677\",\"key\":\"AAAA\",\"iv\":\"AAAA\",\"data\":\"AAAA\"}}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000016-00000000c0de0010.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0010",
+      "pilot": "demo",
+      "ts": 1763600000016,
+      "sub": "pref/set",
+      "payload": "{\"key\":\"federal_tax_pct\",\"value\":22.5}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000017-00000000c0de0011.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0011",
+      "pilot": "demo",
+      "ts": 1763600000017,
+      "sub": "pref/set",
+      "payload": "{\"key\":\"longevity_year\",\"value\":7}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000018-00000000c0de0012.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0012",
+      "pilot": "demo",
+      "ts": 1763600000018,
+      "sub": "pref/set",
+      "payload": "{\"key\":\"er_trips\",\"value\":\"+H9001|2026-11-20,-H9002|2026-11-24\"}",
+      "session": "5e55105e55105e55"
+     }
+    }
+   ],
+   "refused": [
+    {
+     "why": "sub not allowed",
+     "name": "1763600000100-00000000c0de0064.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0064",
+      "pilot": "demo",
+      "ts": 1763600000100,
+      "sub": "email/alert",
+      "payload": "x",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "sub not allowed",
+     "name": "1763600000101-00000000c0de0065.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0065",
+      "pilot": "demo",
+      "ts": 1763600000101,
+      "sub": "crew_scan/press",
+      "payload": "x",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "sub not allowed",
+     "name": "1763600000102-00000000c0de0066.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0066",
+      "pilot": "demo",
+      "ts": 1763600000102,
+      "sub": "ticket/new",
+      "payload": "x",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "sub not allowed",
+     "name": "1763600000103-00000000c0de0067.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0067",
+      "pilot": "demo",
+      "ts": 1763600000103,
+      "sub": "ticket/image",
+      "payload": "x",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "sub not allowed",
+     "name": "1763600000104-00000000c0de0068.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0068",
+      "pilot": "demo",
+      "ts": 1763600000104,
+      "sub": "ticket/act",
+      "payload": "x",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "sub not allowed",
+     "name": "1763600000105-00000000c0de0069.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0069",
+      "pilot": "demo",
+      "ts": 1763600000105,
+      "sub": "ticket/edit",
+      "payload": "x",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "sub not allowed",
+     "name": "1763600000106-00000000c0de006a.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de006a",
+      "pilot": "demo",
+      "ts": 1763600000106,
+      "sub": "ticket/delete",
+      "payload": "x",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "sub not allowed",
+     "name": "1763600000107-00000000c0de006b.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de006b",
+      "pilot": "demo",
+      "ts": 1763600000107,
+      "sub": "upload/chunk",
+      "payload": "x",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "sub not allowed",
+     "name": "1763600000108-00000000c0de006c.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de006c",
+      "pilot": "demo",
+      "ts": 1763600000108,
+      "sub": "drop/set",
+      "payload": "x",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "sub not allowed",
+     "name": "1763600000109-00000000c0de006d.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de006d",
+      "pilot": "demo",
+      "ts": 1763600000109,
+      "sub": "auto_swap/set",
+      "payload": "x",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "sub not allowed",
+     "name": "1763600000110-00000000c0de006e.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de006e",
+      "pilot": "demo",
+      "ts": 1763600000110,
+      "sub": "swap_map/press",
+      "payload": "x",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "sub not allowed",
+     "name": "1763600000111-00000000c0de006f.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de006f",
+      "pilot": "demo",
+      "ts": 1763600000111,
+      "sub": "hunt/state",
+      "payload": "x",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "sub not allowed",
+     "name": "1763600000112-00000000c0de0070.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0070",
+      "pilot": "demo",
+      "ts": 1763600000112,
+      "sub": "pause/state",
+      "payload": "x",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "sub not allowed",
+     "name": "1763600000200-00000000c0de00c8.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de00c8",
+      "pilot": "demo",
+      "ts": 1763600000200,
+      "sub": "anything/else",
+      "payload": "x",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "sub not allowed (rule id)",
+     "name": "1763600000201-00000000c0de00c9.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de00c9",
+      "pilot": "demo",
+      "ts": 1763600000201,
+      "sub": "rule/Bad-Id/live/set",
+      "payload": "ON",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "settings must be sealed",
+     "name": "1763600000202-00000000c0de00ca.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de00ca",
+      "pilot": "demo",
+      "ts": 1763600000202,
+      "sub": "settings/set",
+      "payload": "{\"username\":\"doej\",\"password\":\"x\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "settings must be sealed",
+     "name": "1763600000203-00000000c0de00cb.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de00cb",
+      "pilot": "demo",
+      "ts": 1763600000203,
+      "sub": "settings/set",
+      "payload": "{\"enc\":{},\"username\":\"doej\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "pref out of bounds",
+     "name": "1763600000204-00000000c0de00cc.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de00cc",
+      "pilot": "demo",
+      "ts": 1763600000204,
+      "sub": "pref/set",
+      "payload": "{\"key\":\"federal_tax_pct\",\"value\":46}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "pref off its step",
+     "name": "1763600000205-00000000c0de00cd.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de00cd",
+      "pilot": "demo",
+      "ts": 1763600000205,
+      "sub": "pref/set",
+      "payload": "{\"key\":\"state_tax_pct\",\"value\":1.1}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "pref out of bounds",
+     "name": "1763600000206-00000000c0de00ce.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de00ce",
+      "pilot": "demo",
+      "ts": 1763600000206,
+      "sub": "pref/set",
+      "payload": "{\"key\":\"longevity_year\",\"value\":13}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "pref unknown key",
+     "name": "1763600000207-00000000c0de00cf.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de00cf",
+      "pilot": "demo",
+      "ts": 1763600000207,
+      "sub": "pref/set",
+      "payload": "{\"key\":\"month_offset\",\"value\":1}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "pref bad list",
+     "name": "1763600000208-00000000c0de00d0.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de00d0",
+      "pilot": "demo",
+      "ts": 1763600000208,
+      "sub": "pref/set",
+      "payload": "{\"key\":\"er_trips\",\"value\":\"H9001\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "freq not a finite number in range",
+     "name": "1763600000211-00000000c0de00d3.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de00d3",
+      "pilot": "demo",
+      "ts": 1763600000211,
+      "sub": "freq/hunt_s/set",
+      "payload": "inf",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "freq not a finite number in range",
+     "name": "1763600000212-00000000c0de00d4.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de00d4",
+      "pilot": "demo",
+      "ts": 1763600000212,
+      "sub": "freq/normal_min/set",
+      "payload": "0",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "wrong pilot",
+     "name": "1763600000209-00000000c0de00d1.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de00d1",
+      "pilot": "james",
+      "ts": 1763600000209,
+      "sub": "hunt/set",
+      "payload": "ON",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "too old or clock off",
+     "name": "1763599699000-00000000c0de00d2.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de00d2",
+      "pilot": "demo",
+      "ts": 1763599699000,
+      "sub": "hunt/set",
+      "payload": "ON",
+      "session": "5e55105e55105e55"
+     }
+    }
+   ]
+  },
+  "file_urls": [
+   {
+    "url": "/local/flight-watcher/demo/finds_2026-11_abababababababababababababababab.json?t=1",
+    "kind": "finds",
+    "arg": "2026-11",
+    "api": "/fw/api/file/finds/2026-11"
+   },
+   {
+    "url": "/local/flight-watcher/pairings_2026-11.json?v=1",
+    "kind": "pairings",
+    "arg": "2026-11",
+    "api": "/fw/api/file/pairings/2026-11"
+   },
+   {
+    "url": "/local/flight-watcher/demo/school_2026-27.json?v=1",
+    "kind": "school",
+    "arg": "2026-27",
+    "api": "/fw/api/file/school/2026-27"
+   },
+   {
+    "url": "/local/flight-watcher/demo/versions_00000000000000000000000000000000.json?r=abc",
+    "kind": "versions",
+    "arg": "",
+    "api": "/fw/api/file/versions"
+   },
+   {
+    "url": "/local/flight-watcher/demo/pickers_00000000000000000000000000000000.json?r=abc",
+    "kind": "pickers",
+    "arg": "",
+    "api": "/fw/api/file/pickers"
+   },
+   {
+    "url": "/local/flight-watcher/demo/recall_00000000000000000000000000000000.json?r=abc",
+    "kind": "recall",
+    "arg": "",
+    "api": "/fw/api/file/recall"
+   },
+   {
+    "url": "/local/flight-watcher/demo/pilotver_00000000000000000000000000000000.json?r=abc",
+    "kind": "pilotver",
+    "arg": "",
+    "api": "/fw/api/file/pilotver"
+   }
+  ]
+ }
+}

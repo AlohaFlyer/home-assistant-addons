@@ -10,7 +10,8 @@ import web
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(HERE)
-FILES = [os.path.join(HERE, f) for f in ("web.py", "rules.py", "watcher.py", "README.md", "tests/fixtures/README.md")] + \
+FILES = [os.path.join(HERE, f) for f in ("web.py", "rules.py", "watcher.py", "README.md", "tests/fixtures/README.md",
+                                        "PORTAL_CONTRACT.md", "portal.py", "ntfy.py", "roles.py")] + \
         [os.path.join(ROOT, f) for f in ("README.md", "repository.yaml", "repository.json")]
 STALE = ("v0.3", "until v0.", "v0.2 is", "v0.2 only", "v0.2:", "FLICA Rules", "writes ship", "writes arrive",
          "real capture", "replace with real", "Replace each file", "flica_watcher", "FLICA Watcher")
