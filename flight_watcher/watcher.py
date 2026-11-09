@@ -45,7 +45,7 @@ import chunks as UP
 import contacts as CT
 import working as WK
 
-VERSION = "1.4.9"
+VERSION = "1.4.10"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -4126,6 +4126,9 @@ CREW_SCHED_KEEP_D = 62  # a schedule trip that ended this long ago is forgotten
 CREW_REREAD_KEY = "crew_reread"  # FW-0058 / FW-0059: {key: {why, at}} trips to read once more, first
 CREW_OVERLAP_KEY = "crew_overlaps"  # FW-0059: {id: {emp, name, keys, found_at, state}} pilots on two overlapping trips
 CREW_REREAD_PER_CHECK = 10  # re-reads per check while no run is going (a run reads them first, in its own chunks)
+CREW_VARIANT_KEY = "crew_variants"  # FW-0068: {base key: {at, found}} package trips probed for a rebuilt copy
+VARIANT_PER_CHECK = 2  # package trips probed per check (each up to len(CI.VARIANT_LETTERS) pages)
+VARIANT_MAX_AGE_D = 35  # a trip that departed longer ago than this is not probed
 
 
 def note_sched_trips(items, src):
@@ -4237,8 +4240,9 @@ def crew_split_repair():
 
 def crew_fill(k, it, vt):
     """FW-0056: a trip from a schedule (no package row) takes its end, route and report from its pairing page when
-    the schedule did not give them (a picker's month lists starts only); the schedule entry keeps them."""
-    if it.get("src") != "schedule":
+    the schedule did not give them (a picker's month lists starts only); the schedule entry keeps them. FW-0068: a
+    rebuilt copy the variant probe found (src 'variant') is filled the same way when it is read again."""
+    if it.get("src") not in ("schedule", "variant"):
         return it
     got = CI.page_trip(vt)
     upd = {}
@@ -4262,14 +4266,129 @@ def crew_fill(k, it, vt):
     return it
 
 
+def crew_variant_keep(insts, rows, base, vid, vt, crew, at):
+    """FW-0068: the rebuilt copy `vid` of package trip `base` named crew on its page: note it with the schedule trips
+    (CREW_SCHED_KEY, src 'variant'; its end from the page's day codes, else the package trip's end; route and report
+    from the page), store the read and add both to insts / rows."""
+    it = insts[base]
+    d, got = it["date"], CI.page_trip(vt)
+    end = it.get("end_date") or ""
+    if got.get("days"):
+        end = (date.fromisoformat(d) + timedelta(days=max(int(got["days"]) - 1, 0))).isoformat()
+    e = {"pairing": vid, "date": d, "end": end if end >= d else "", "route": got.get("route") or it.get("route") or "",
+         "report": got.get("report") or "", "src": "variant", "seen": now_iso()}
+    vk = f"{vid}|{d}"
+    reg = DB.get(CREW_SCHED_KEY) or {}
+    reg[vk] = e
+    DB.put(CREW_SCHED_KEY, reg)
+    nit = insts[vk] = CI.extra_instance(CARD_PAIRINGS, e)
+    DB.crew_put(vk, vid, d, nit["end_date"], nit["route"], crew, at, "ok")
+    rows[vk] = {"key": vk, "pairing": vid, "date": d, "end_date": nit["end_date"], "route": nit["route"], "crew": crew,
+                "checked_at": at, "status": "ok", "reason": "", "tries": 0}
+    DB.remember_crew(vt)
+
+
+def crew_variants(fl, insts, rows, budget):
+    """FW-0068 (Ryan, Nov 8): FLICA rebuilds a package pairing it changes under the same id plus a letter (H3631 flown
+    as H3631B on Nov 6) and the crew moves to it: the package trip's page then names no pilot (seats OPEN), and the new
+    id is in no package and on no schedule the Watcher can read, so the trip was missing from that pilot's rebuilt
+    month. Called during a run, before its queue (so trips read in earlier runs count too). Up to VARIANT_PER_CHECK
+    package trips (crewidx.variant_candidates: departed no more than VARIANT_MAX_AGE_D days ago, read after departure,
+    no pilot named, bid period awarded, not probed yet), most recently departed first, are probed: the same pairing
+    page URL with each lettered id (crewidx.variant_ids; an id already in the index is not read, and when its read
+    names a pilot it is the one), GET only, each URL through SUB.safe_get and SM.safe_get, 1.5 to 3.5 s before every
+    read, at most `budget` reads. A page that names that id on that date (crewidx.page_names) with a pilot on its crew
+    line is the trip flown: crew_variant_keep indexes it. The probe is recorded (CREW_VARIANT_KEY {base: {at, found}})
+    once every letter was tried or one was found; a fetch error leaves the trip for a later run. insts and rows are
+    updated in place. Returns (pages read, 'ok' or 'killed' / 'needs_login' / 'stop' when a page said so, halted by
+    pause / re-arm). Ryan's instance only. Logs pairing ids and dates, never names."""
+    if INSTANCE or budget <= 0:
+        return 0, "ok", False
+    now = local_now()
+    try:
+        reg0 = DB.get(CREW_VARIANT_KEY) or {}
+        cut = (now - timedelta(days=VARIANT_MAX_AGE_D + 30)).isoformat(timespec="seconds")
+        probed = {k: v for k, v in reg0.items() if str((v or {}).get("at") or "") >= cut}
+        if probed != reg0:
+            DB.put(CREW_VARIANT_KEY, probed)
+        run = S.get("crew_run")
+        tried = run.setdefault("variant_tried", []) if run else []  # a fetch error: not again in this run
+        cands = CI.variant_candidates(insts, rows, now, set(probed) | set(tried), VARIANT_MAX_AGE_D)[:VARIANT_PER_CHECK]
+    except Exception as e:
+        log.info("crew index: variant probe skipped: %s", e)
+        return 0, "ok", False
+    n = 0
+    for base in cands:
+        it = insts[base]
+        d, complete = it["date"], True
+        ids = CI.variant_ids(it["pairing"])
+        # a copy indexed already (from a schedule) whose read names a pilot is the one: nothing to read
+        found = next((v for v in ids if f"{v}|{d}" in insts and (rows.get(f"{v}|{d}") or {}).get("status") == "ok"
+                      and CI.has_crew(rows[f"{v}|{d}"].get("crew"))), "")
+        if found:
+            log.info("crew index: %s %s flew as %s (indexed)", it["pairing"], d, found)
+            ids = []
+        for vid in ids:
+            vk = f"{vid}|{d}"
+            if vk in insts:  # indexed already, read by the queue, not by this probe
+                continue
+            if n >= budget:
+                complete = False
+                break
+            if FLAGS["pause"] or FLAGS["rearm"]:
+                log.info("crew index: pause / re-arm, variant probe stopped (run continues later)")
+                return n, "ok", True
+            url = (f"{BASE}/full/mobilepairing.cgi?PID={vid}&DATE={d.replace('-', '')}"
+                   "&FROM=MobileOpentimePot&CurrentPage=1")
+            if not (SUB.safe_get(url) and SM.safe_get(url)):
+                log.info("crew index: %s url refused by safe_get, skipped", vk)
+                continue
+            time.sleep(random.uniform(1.5, 3.5))  # before every read, the first too (pages read before this check)
+            n += 1
+            at = local_now().isoformat(timespec="seconds")
+            try:
+                page = fl.fetch(url)
+            except Exception as e:
+                log.info("crew index: %s %s probe of %s failed (%s), tried again in a later run", it["pairing"], d, vid, e)
+                tried.append(base)
+                complete = False
+                break
+            kind = classify(page)
+            if kind != "ok":
+                log.info("crew index: %s page on %s, run ended", kind, vk)
+                return n, {"killed": "killed", "expired": "needs_login", "blocked": "stop"}.get(kind, "ok"), False
+            vt = visible_text(page)
+            crew = CI.crew_line(vt)
+            if not CI.page_names(vt, vid, d) or not CI.has_crew(crew):
+                continue  # no such trip that day (an error page, another date's page) or no pilot on it
+            try:
+                crew_variant_keep(insts, rows, base, vid, vt, crew, at)
+            except Exception as e:
+                log.info("crew index: %s %s flew as %s, not kept (%s), tried again in a later run", it["pairing"], d, vid, e)
+                tried.append(base)
+                complete = False
+                break
+            found = vid
+            log.info("crew index: %s %s flew as %s (read)", it["pairing"], d, vid)
+            break
+        if complete:
+            probed[base] = {"at": local_now().isoformat(timespec="seconds"), "found": found}
+            DB.put(CREW_VARIANT_KEY, probed)
+            if not found:
+                log.info("crew index: %s %s, no rebuilt copy names a pilot (%s tried)", it["pairing"], d,
+                         "/".join(CI.variant_ids(it["pairing"])))
+    return n, "ok", False
+
+
 def crew_index_check(fl):
     """Read up to CREW_PER_CHECK pairing pages of the current crew index run (GET only, 1.5-3.5 s apart, each URL
     through SUB.safe_get and SM.safe_get). A run starts at the first check after each 6 h slot (once per slot, saved
     in state) or on Update schedules, and reads at most CREW_PER_RUN pages over as many checks as it takes.
     FW-0058 / FW-0059: trips queued for a re-read (CREW_REREAD_KEY: both trips of a pilot on two overlapping trips, a
     crew line cut at a seat code) are read first, one read each; with no run going a check reads just those. A
-    re-read that fails keeps the trip's last good read. Returns 'ok', or 'killed' / 'needs_login' / 'stop' when a
-    page says so (the run is ended there)."""
+    re-read that fails keeps the trip's last good read. FW-0068: during a run, each chunk first probes up to
+    VARIANT_PER_CHECK departed package trips that name no pilot for the rebuilt copy the crew flew (crew_variants).
+    Returns 'ok', or 'killed' / 'needs_login' / 'stop' when a page says so (the run is ended there)."""
     if INSTANCE:
         return "ok"
     slot, _ = crew_slot()
@@ -4295,17 +4414,21 @@ def crew_index_check(fl):
         DB.put(CREW_REREAD_KEY, {k: v for k, v in pending.items() if k in again})
     if not run and not again:
         return "ok"
+    n, res, halted, reread = 0, "ok", False, set()
+    per_check = CREW_PER_CHECK_HUNT if FLAGS.get("hunt") else CREW_PER_CHECK  # hunting: short chunks, pot first
+    if not run:
+        per_check = min(per_check, CREW_REREAD_PER_CHECK)
     if run:
-        todo = CI.queue(insts, rows, local_now(), run["started"], again)
+        # FW-0068: package trips whose crew moved to a rebuilt copy (H3631 flown as H3631B), first; their reads
+        # count in this chunk and this run
+        n, res, halted = crew_variants(fl, insts, rows, min(per_check, CREW_PER_RUN - run["pages"]))
+        run["pages"] += n
+        todo = [] if res != "ok" or halted else CI.queue(insts, rows, local_now(), run["started"], again)
     else:  # FW-0059: no run going: only the re-reads, soonest first
         todo = sorted(again, key=lambda k: (CI.departs(insts[k]).isoformat(), k))
     awarded = CI.awarded_periods(insts, rows)  # FW-0016: bid periods with a read that named a pilot
     held0 = CI.held_periods(insts, rows, awarded)  # periods already held (their one probe is in todo)
     held, newly = set(held0), False
-    n, res, halted, reread = 0, "ok", False, set()
-    per_check = CREW_PER_CHECK_HUNT if FLAGS.get("hunt") else CREW_PER_CHECK  # hunting: short chunks, pot first
-    if not run:
-        per_check = min(per_check, CREW_REREAD_PER_CHECK)
     for k in todo:
         if (run and run["pages"] >= CREW_PER_RUN) or n >= per_check:
             break
@@ -4421,6 +4544,8 @@ def publish_crew_index(insts=None, write=False):
                        "waiting_for_award": sorted(held),
                        # FW-0056: trips from schedules no package lists; FW-0059: pilots on two overlapping trips
                        "from_schedules": sum(1 for it in insts.values() if it.get("src") == "schedule"),
+                       # FW-0068: rebuilt copies of package trips (H3631 flown as H3631B) found by the variant probe
+                       "from_variants": sum(1 for it in insts.values() if it.get("src") == "variant"),
                        "overlaps": len(flags), "overlaps_rereading": sum(1 for f in flags.values() if f.get("state") != "kept"),
                        "reread_queued": len(DB.get(CREW_REREAD_KEY) or {}),
                        "running": bool(run), "pages_this_run": (run or {}).get("pages", 0)})

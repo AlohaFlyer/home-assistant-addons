@@ -1,6 +1,6 @@
 name: Flight Watcher
 slug: flight_watcher
-version: "1.4.9"
+version: "1.4.10"
 description: Keeps one FLICA session, watches the open time pot, reports new pairings to HA over MQTT
 url: https://github.com/AlohaFlyer/home-assistant-addons/tree/main/flight_watcher
 arch:

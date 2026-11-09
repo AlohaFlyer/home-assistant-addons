@@ -102,8 +102,9 @@ def instances(pdir, crew_from=CREW_FROM, extra=None):
     is kept). rel_days (pdfs.py: release day minus report day) gives the trip end. FW-0056: `extra` ({key: {pairing,
     date, end, route, report}}, the trips on the schedules the Watcher read, watcher.note_sched_trips) adds every trip
     no pairing file lists on that date (H38xx built later, a trade's H3815B, October's trips when there is no
-    October file), src 'schedule', its bid period from the period bounds (period_for); end_known is False while
-    its end is a guess (the start day) until its pairing page is read."""
+    October file), src 'schedule' (FW-0068: 'variant' for a rebuilt copy the variant probe found), its bid period from
+    the period bounds (period_for); end_known is False while its end is a guess (the start day) until its pairing page
+    is read (extra_instance)."""
     out = {}
     try:
         files = sorted(f for f in os.listdir(pdir) if FILE_RE.match(f))
@@ -152,21 +153,74 @@ def instances(pdir, crew_from=CREW_FROM, extra=None):
                                    "src": "package"})
     cache, floor = {}, crew_from.isoformat()
     for e in (extra or {}).values():
-        pid, d = str((e or {}).get("pairing") or "").strip().upper(), _iso((e or {}).get("date"))
-        if not pid or not d or f"{pid}|{d}" in out:
-            continue
-        end = _iso(e.get("end"))
-        end = end if end >= d else ""
-        last = end or d
-        if last < floor:
-            continue
-        k = f"{pid}|{d}"
-        out[k] = {"key": k, "pairing": pid, "date": d, "end_date": last, "report": str(e.get("report") or ""),
-                  "release": "", "route": str(e.get("route") or ""), "credit": "", "block": "", "tafb": "",
-                  "first_duty_min": "",
-                  "days": (date.fromisoformat(last) - date.fromisoformat(d)).days + 1, "month": d[:7],
-                  "period": period_for(pdir, d, cache), "src": "schedule", "end_known": bool(end)}
+        it = extra_instance(pdir, e, cache)
+        if it and it["key"] not in out and it["end_date"] >= floor:
+            out[it["key"]] = it
     return out
+
+
+def extra_instance(pdir, e, cache=None):
+    """FW-0056: one trip instance from a schedule entry ({pairing, date, end, route, report, src}), or None when it has
+    no pairing id or start date. src 'schedule', except FW-0068: a rebuilt copy found by the crew index's variant probe
+    (watcher.crew_variants, entry src 'variant') keeps src 'variant'. end_known is False while the end is a guess."""
+    pid, d = str((e or {}).get("pairing") or "").strip().upper(), _iso((e or {}).get("date"))
+    if not pid or not d:
+        return None
+    end = _iso(e.get("end"))
+    end = end if end >= d else ""
+    last = end or d
+    k = f"{pid}|{d}"
+    return {"key": k, "pairing": pid, "date": d, "end_date": last, "report": str(e.get("report") or ""),
+            "release": "", "route": str(e.get("route") or ""), "credit": "", "block": "", "tafb": "",
+            "first_duty_min": "",
+            "days": (date.fromisoformat(last) - date.fromisoformat(d)).days + 1, "month": d[:7],
+            "period": period_for(pdir, d, cache), "src": "variant" if e.get("src") == "variant" else "schedule",
+            "end_known": bool(end)}
+
+
+# ---------------------------------------------------------------- FW-0068: a package trip FLICA rebuilt (H3631 -> H3631B)
+VARIANT_LETTERS = "ABCD"
+BASE_ID_RE = re.compile(r"^H\d{4}$", re.I)
+MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+
+
+def variant_ids(pid):
+    """FW-0068: the ids FLICA gives a package pairing when it rebuilds it (H3631 -> H3631A, H3631B, ...), in
+    VARIANT_LETTERS order; [] for an id that already has a letter (or is not a pairing id)."""
+    pid = str(pid or "").strip()
+    return [pid.upper() + c for c in VARIANT_LETTERS] if BASE_ID_RE.match(pid) else []
+
+
+def page_names(text, pid, iso):
+    """FW-0068: True when a pairing page's visible text names exactly this pairing on this date. The mobile pairing
+    page's header reads 'pairing details h3601:26nov' (lowercase visible text, the date as DDmon): 'h3631:06nov' is
+    not H3631B and 'h3631b:06nov' is not H3631."""
+    d = _iso(iso)
+    pid = str(pid or "").strip().lower()
+    if not d or not pid:
+        return False
+    stamp = f"{d[8:10]}{MONTHS[int(d[5:7]) - 1]}"
+    return re.search(rf"(?<![a-z0-9]){re.escape(pid)}\s*:\s*{stamp}(?![a-z])", str(text or "").lower()) is not None
+
+
+def variant_candidates(insts, rows, now, probed=(), max_age_d=35):
+    """FW-0068: package trips whose crew may have moved to a rebuilt copy, most recently departed first: a package
+    instance (src 'package') of a pairing with no letter (variant_ids), departed (departs() <= now, HST wall clock,
+    as queue() compares) no more than max_age_d days ago, its last read 'ok' and taken after departure (the final
+    crew), that read naming no pilot (has_crew), in an awarded bid period (awarded_periods), and not in `probed`."""
+    nowi, lo = now.isoformat(), (now - timedelta(days=max_age_d)).isoformat()
+    awarded, out = awarded_periods(insts, rows), []
+    for k, it in insts.items():
+        if it.get("src") != "package" or k in probed or not variant_ids(it.get("pairing")):
+            continue
+        r = rows.get(k) or {}
+        dep = departs(it).isoformat()
+        if not lo <= dep <= nowi or r.get("status") != "ok" or (r.get("checked_at") or "") < dep:
+            continue
+        if has_crew(r.get("crew")) or period_of(it) not in awarded:
+            continue
+        out.append((dep, k))
+    return [k for _, k in sorted(out, reverse=True)]
 
 
 def period_for(pdir, iso, cache=None):
