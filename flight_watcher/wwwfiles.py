@@ -11,7 +11,8 @@ FW-0060 (1.4.7): the long lists that used to ride in sensor attributes (tickets 
 33 KB, pickers and the recall days growing past HA's 16 KB recorder limit) go to <name>_<key>.json in the same folder
 under the same key (LIST_NAMES), and the sensor carries a short form plus file_key and rev (a hash of the file) so
 the card fetches the file again when it changes. They are cleaned like the finds files: in an instance's own folder
-every list file not under its current key goes.
+every list file not under its current key goes. FW-0069 (1.4.11): pilotver_<key>.json holds the schedule versions of
+the pilot on the pilot card (names and employee numbers, so keyed like the rest).
 
 The other files the Watcher writes under www hold no names: pairings_<YYYY-MM>.json (the company's pairing package:
 times, routes, crew complement codes such as CA01FO01) and the cards. The cards carry no date of hire either: the
@@ -28,7 +29,7 @@ KEY_RE = re.compile(r"[0-9a-f]{32}")
 FINDS_RE = re.compile(r"finds_(\d{4}-\d{2})(?:_([0-9a-f]{32}))?\.json(?:\.tmp)?")
 
 
-LIST_NAMES = ("tickets", "versions", "pickers", "recall")  # FW-0060
+LIST_NAMES = ("tickets", "versions", "pickers", "recall", "pilotver")  # FW-0060; FW-0069: pilotver (pilot card)
 LIST_RE = re.compile(r"(%s)_([0-9a-f]{32})\.json(?:\.tmp)?" % "|".join(LIST_NAMES))
 
 

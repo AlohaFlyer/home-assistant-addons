@@ -5,7 +5,12 @@
    trip), Block, Credit, Soft, Crew. Nothing is written to FLICA.
    1.4.8 (FW-0066): when the pilot contact list (uploaded on the Settings tab) has the looked-up pilot, the Watcher adds
    that one pilot's entry (attribute contact: name, phones, emails) and the card shows tap-to-call, tap-to-text and mail
-   links beside the name, and beside the pilot's own name in the crew lists. */
+   links beside the name, and beside the pilot's own name in the crew lists.
+   1.4.11 (FW-0069): schedule versions for the looked-up pilot, M.NNN like the schedule card's. A bar under the header
+   (older / newer arrows, the version, the house back to the current one, "Changes in v11.003") for the month the card
+   shows; the counts come from the sensor (attribute versions), each version's days and trips from pilotver_<key>.json
+   under /local/ (only the pilot on the card). The current version draws the live payload as before; an older one
+   draws its own days and trips in the same grid, with the live block, credit, crew and pay. */
 const DOW = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const PILOT_EV = "flight-watcher-pilot";  // the lookup event (pickers, pilot lookup, the pick list, #pilot= links)
@@ -22,6 +27,10 @@ const pilotNameKey = (n) => {  // 'Doe, Jane A' / 'DOE, JANE' -> 'doe,jane' (con
   const [last, first] = [s.slice(0, s.indexOf(",")), s.slice(s.indexOf(",") + 1)];
   return `${last.trim().split(/\s+/).join(" ")},${first.trim().split(/\s+/)[0] || ""}`;
 };
+// FW-0069: the pilot's versions file (a second pilot's copy reads its own folder: cards.pilot_copy moves this path)
+const PILOTVER_URL = "/local/flight-watcher/pilotver_";
+const VER_SRC = { lookup: "FLICA schedule", rebuild: "rebuilt", award: "awarded line" };
+const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 class FlightWatcherPilotCard extends HTMLElement {
   // FW-0025: HA calls setConfig more than once per card and keeps replaced card elements alive, and each call used to
@@ -212,6 +221,95 @@ class FlightWatcherPilotCard extends HTMLElement {
     return { month, from, days, items, also };
   }
   _esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+  // FW-0069: the versions file, like the schedule card's fwListFile: <PILOTVER_URL><key>.json fetched once per key|rev
+  // (no-store); null until it is in, or when the sensor has no key. A failed fetch is not retried until rev changes.
+  _vfile(a) {
+    const key = /^[0-9a-f]{32}$/.test(String(a.versions_file_key || "")) ? a.versions_file_key : "";
+    if (!key || typeof fetch !== "function") return null;
+    const box = this._vf || (this._vf = {});
+    const rev = a.versions_rev == null ? "" : String(a.versions_rev);
+    const want = `${key}|${rev}`;
+    if (box.want !== want && !box.busy) {
+      box.busy = true;
+      const done = (j) => { box.busy = false; box.want = want; if (j && typeof j === "object") { box.key = key; box.data = j; } };
+      fetch(`${PILOTVER_URL}${key}.json?r=${encodeURIComponent(rev)}`, { cache: "no-store" })
+        .then((r) => (r && r.ok ? r.json() : null))
+        .then((j) => { done(j); if (this._root && !this._busy) this._paint(); })
+        .catch(() => done(null));
+    }
+    return box.key === key ? box.data : null;
+  }
+  _hst(at) {  // a capture time (UTC ISO) as 'Nov 8 15:20 HST' (HST is UTC-10 all year)
+    const s = String(at || "");
+    const t = s ? Date.parse(/(Z|[+-]\d{2}:?\d{2})$/i.test(s) ? s : s + "Z") : NaN;
+    if (isNaN(t)) return this._esc(s.slice(0, 10));
+    const d = new Date(t - 10 * 3600e3), p = (n) => String(n).padStart(2, "0");
+    return `${MONTHS[d.getUTCMonth()].slice(0, 3)} ${d.getUTCDate()} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())} HST`;
+  }
+  // FW-0069: the versions bar for the pilot and month the card shows: {html, rec} (rec: the older version picked, null
+  // for the current one), or null when the sensor has no versions for that month (an older Watcher, a pick list)
+  _vstate(a, month) {
+    const emp = String(a.emp || "");
+    const vs = a.versions && typeof a.versions === "object" ? a.versions : {};
+    const vm = emp && month ? vs[month] : null;
+    if (!vm || typeof vm !== "object") return null;
+    const f = this._vfile(a);
+    const p = f && typeof f === "object" ? f[emp] : null;
+    const ml = p && p.months && typeof p.months === "object" ? p.months[month] : null;
+    const list = (Array.isArray(ml) ? ml : []).filter((r) => r && typeof r === "object" && r.ver);
+    const n = Number(vm.count) > 0 ? Math.round(Number(vm.count)) : list.length;
+    if (!n) return null;
+    const k = `${emp}|${month}`, last = list.length - 1;
+    if (this._vsel && this._vsel.k !== k) this._vsel = null;  // a new pilot or month starts at the current version
+    const s = this._vsel;
+    let i = last;
+    if (s) { const j = list.findIndex((r) => r.ver === s.ver && r.at === s.at); if (j >= 0) i = j; }
+    const cur = i >= last, shown = i >= 0 ? list[i] : null, e = (x) => this._esc(x);
+    this._vnow = { k, list, i };
+    const ver = cur ? vm.current || (shown && shown.ver) || "" : shown.ver;
+    const lab = cur ? `<span class="nw">${n} version${n === 1 ? "" : "s"} (current)</span>`
+      : `${n} versions · viewing <span class="nw">${this._hst(shown.at)}</span> <span class="nw">(${e(VER_SRC[shown.source] || shown.source || "?")})</span>`;
+    let html = `<div class="vbar"><span class="nw"><span class="vb${i <= 0 ? " off" : ""}" data-v="prev" title="Older version">&#9664;</span> <b>v${e(ver)}</b> <span class="vb${cur ? " off" : ""}" data-v="next" title="Newer version">&#9654;</span> <span class="vb${cur ? " here" : ""}" data-v="home" title="Current version">&#127968;</span></span> <span class="k">${lab}</span></div>`;
+    if (shown && (!cur || !vm.current || shown.ver === vm.current)) {  // a file a rev behind the sensor: no changes list for "current"
+      const chg = (Array.isArray(shown.changes) ? shown.changes : []).map(String);
+      html += `<details class="chg"${this._chgOpen ? " open" : ""}><summary>Changes in v${e(shown.ver)}${shown.at ? ` (${this._hst(shown.at)})` : ""}</summary>` +
+        (chg.length ? `<ul>${chg.map((c) => `<li>${e(c)}</li>`).join("")}</ul>` : "<div>No pairing changes.</div>") + "</details>";
+    }
+    return { html, rec: cur ? null : shown };
+  }
+  _vstep(d) {  // FW-0069: the arrows step older / newer and stop at the ends; the house returns to the current version
+    const v = this._vnow;
+    if (!v || !v.list.length) return;
+    const last = v.list.length - 1;
+    const i = d === "home" ? last : d === "prev" ? Math.max(0, v.i - 1) : d === "next" ? Math.min(last, v.i + 1) : v.i;
+    this._vsel = i >= last ? null : { k: v.k, ver: v.list[i].ver, at: v.list[i].at };
+    this._paint();
+  }
+  // FW-0069: an older version: its own days and trips in the same grid. A trip still on the live line (same pairing and
+  // start) shows the live block, credit and crew; the totals are the version's own (FLICA's, for a lookup).
+  _vold(a, rec, month) {
+    const key = (it) => `${String(it.trip || "").toUpperCase()}|${it.start || ""}`;
+    const live = {};
+    if (a.reconstructed_month === month) for (const it of this._rebuild(a).items) live[key(it)] = it;
+    if (a.month === month) for (const it of a.items || []) if (it) live[key(it)] = it;
+    const items = (Array.isArray(rec.items) ? rec.items : []).filter((it) => it && it.trip && ISO_RE.test(it.start || "")).map((it) => {
+      const o = { ...(live[key(it)] || {}) };
+      for (const [k, v] of Object.entries(it)) if (v != null && v !== "") o[k] = v;
+      if (!ISO_RE.test(o.end || "") || o.end < o.start) o.end = o.start;
+      return o;
+    });
+    let days = (Array.isArray(rec.days) ? rec.days : []).filter((d) => Array.isArray(d) && ISO_RE.test(d[0] || ""));
+    if (!days.length) days = this._rebuild({ reconstructed_month: month, reconstructed: items.map((it) => ({ pairing: it.trip, start: it.start, end: it.end, lay: it.lay })) }).days;
+    const t = rec.totals && typeof rec.totals === "object" ? rec.totals : {};
+    const from = `${month}-01`, to = days.length ? days[days.length - 1][0] : "";
+    const trips = items.filter((it) => /^[A-Z]\d{4}/.test(it.trip) && it.start >= from && (!to || it.start <= to)).length;
+    const e = (x) => this._esc(x);
+    const tot = [`<span>Trips<b>${trips}</b></span>`, t.block ? `<span>Block<b>${e(t.block)}</b></span>` : "", t.credit ? `<span>Credit<b>${e(t.credit)}</b></span>` : "",
+      t.days_off != null && t.days_off !== "" ? `<span>Days Off<b>${e(t.days_off)}</b></span>` : ""].join("");
+    const src = rec.source === "lookup" ? `FLICA Tools > Schedule Lookup${rec.updated ? ` (FLICA updated ${e(rec.updated)})` : ""}`
+      : rec.source === "rebuild" ? "rebuilt from pairing crew lists" : rec.source === "award" ? "the awarded line" : e(rec.source || "");
+    return `${this._grid(days, items, month)}<div class="tot">${tot}<span class="u vnote">v${e(rec.ver)} as captured ${this._hst(rec.at)}${src ? `, ${src}` : ""}. Block / Credit per trip, crew and pay shown are the live ones.</span></div>`;
+  }
   _contact(a, mini) {  // FW-0066: call / text / mail links for the looked-up pilot (attribute contact), '' when none
     const c = a && a.contact;
     if (!c || typeof c !== "object") return "";
@@ -273,20 +371,29 @@ class FlightWatcherPilotCard extends HTMLElement {
         .cts{display:inline-flex;flex-wrap:wrap;gap:6px}.ct{padding:4px 10px;border-radius:14px;background:var(--primary-color);color:var(--text-primary-color,#fff);text-decoration:none;font-size:12px;font-weight:600;line-height:1.3}
         .cts.mini{gap:6px;margin-left:4px}.cts.mini .ct{padding:4px 8px;font-size:11px;font-weight:400;line-height:16px}
         .pk{padding:6px 10px;border:1px solid var(--divider-color,#ccc);border-radius:6px;background:var(--card-background-color,#fff);color:var(--primary-text-color);cursor:pointer;font-size:13px}
+        .vbar{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 14px;font-size:12px;margin:0 0 4px}.vbar .nw{white-space:nowrap}.vbar .k{color:var(--secondary-text-color);font-size:11.5px}
+        .vbar .vb{cursor:pointer;padding:0 6px;color:var(--primary-color);user-select:none}.vbar .vb.here{opacity:.5}.vbar .vb.off{opacity:.3;cursor:default}
+        .chg{margin:0 0 6px;font-size:11px;color:var(--secondary-text-color)}.chg summary{cursor:pointer;font-weight:600;list-style:none}.chg summary::-webkit-details-marker{display:none}
+        .chg summary::before{content:"\\25B8\\a0"}.chg[open] summary::before{content:"\\25BE\\a0"}.chg ul{margin:4px 0 0;padding-left:16px}.chg li{margin:1px 0}.vnote{display:block;margin-top:2px}
         @media (prefers-color-scheme: dark){
           .cal tr.bx td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb}
           .cal tr.bxs td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb}
           .cal tr.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 -2px 0 #bbb}
           .cal tr.bxs.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb,inset 0 -2px 0 #bbb}}
-        @media (max-width:700px){ha-card{font-size:10.5px;padding:6px 3px 8px}.cal td{padding:1px 3px}.ptot{font-size:12px;gap:3px 12px}.ptot .tgrp{gap:3px 12px}}
+        @media (max-width:700px){ha-card{font-size:10.5px;padding:6px 3px 8px}.cal td{padding:1px 3px}.ptot{font-size:12px;gap:3px 12px}.ptot .tgrp{gap:3px 12px}.vbar{font-size:11px;column-gap:10px}.vbar .vb{font-size:12px}}
       </style><ha-card><div class="body"></div></ha-card>`;
       this._root.addEventListener("click", (e) => {
         if (e.target.closest(".x")) { this._hidden = true; this._paint(); return; }
+        const vb = e.target.closest(".vb");  // FW-0069: schedule versions
+        if (vb) { this._vstep(vb.dataset.v); return; }
         const pk = e.target.closest(".pk");
         if (pk) window.dispatchEvent(new CustomEvent(PILOT_EV, { detail: { emp: pk.dataset.emp, name: pk.dataset.name } }));
       });
     }
     const body = this._root.querySelector(".body");
+    const was = typeof body.querySelector === "function" ? body.querySelector("details.chg") : null;
+    if (was) this._chgOpen = !!was.open;  // FW-0069: an opened changes list stays open while stepping through versions
+    this._vnow = null;
     const st = this._h && this._h.states[this._config.entity];
     const a = (st && st.attributes) || {};
     if (this._hidden || (!a.emp && !a.status && !loading)) { body.innerHTML = ""; this.style.display = "none"; return; }  // v4: a "no match" or pick-list reply shows too
@@ -302,15 +409,28 @@ class FlightWatcherPilotCard extends HTMLElement {
       body.innerHTML = `<div class="hd"><h3>${this._esc(name || "Pilot")} (${this._esc(emp)})</h3>${ct}<span class="u">reading this pilot's month from FLICA (Schedule Lookup, read only), 20 to 40 s</span><span class="x" title="close">&times;</span></div>`;
       return;
     }
+    // FW-0069: the versions bar for the month shown (FLICA's, else the crew index's rebuilt month); "" without versions
+    let vs = null;
+    try { vs = this._vstate(a, a.month || a.reconstructed_month || ""); } catch (err) { vs = null; this._vnow = null; }
+    const vb = vs ? vs.html : "";
+    let old = "";  // an older version picked: its own grid (a record the card cannot draw says so, never throws)
+    if (vs && vs.rec) try { old = this._vold(a, vs.rec, a.month || a.reconstructed_month); } catch (err) { old = `<div class="none">This version could not be drawn.</div>`; }
     if (!a.month) {
       const picks = (a.matches || []).map((m) => `<button class="pk" data-emp="${this._esc(m.emp)}" data-name="${this._esc(m.name)}">${this._esc(m.name)} <span class="u">${this._esc(m.pos)} ${this._esc(m.emp)}</span></button>`).join("");
-      body.innerHTML = `<div class="hd"><h3>${this._esc(name || "Pilot")}${emp ? " (" + this._esc(emp) + ")" : ""}</h3>${ct}<span class="u">${this._esc(/application error|customer care/i.test(a.status || "") ? "FLICA showed its error page for this schedule (often a pilot who has hidden it, or a FLICA hiccup). Nothing to read; try again later." : (a.status || "no data"))}</span><span class="x" title="close">&times;</span></div>${picks ? `<div class="picks">${picks}</div>` : ""}`;
+      body.innerHTML = `<div class="hd"><h3>${this._esc(name || "Pilot")}${emp ? " (" + this._esc(emp) + ")" : ""}</h3>${ct}<span class="u">${this._esc(/application error|customer care/i.test(a.status || "") ? "FLICA showed its error page for this schedule (often a pilot who has hidden it, or a FLICA hiccup). Nothing to read; try again later." : (a.status || "no data"))}</span><span class="x" title="close">&times;</span></div>${vb}${picks ? `<div class="picks">${picks}</div>` : ""}`;
+      if (old) { body.insertAdjacentHTML("beforeend", old + this._recon(a, true)); return; }  // the live rebuild, folded under it
       body.insertAdjacentHTML("beforeend", this._recon(a, false));  // 0.10.1 crew index; FW-0002: in the schedule grid
       return;
     }
     const [y, m] = a.month.split("-").map(Number);
     const t = a.totals || {};
-    body.innerHTML = `<div class="hd"><h3>${this._esc(name)} (${this._esc(emp)})</h3>${ct}<span class="u">${MONTHS[m - 1]} ${y} · FLICA updated ${this._esc(a.updated || "?")} · read ${a.fetched ? new Date(a.fetched).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}${a.status === "cached" ? " (cached)" : ""}</span><span class="x" title="close">&times;</span></div>
+    const hd = `<div class="hd"><h3>${this._esc(name)} (${this._esc(emp)})</h3>${ct}<span class="u">${MONTHS[m - 1]} ${y} · FLICA updated ${this._esc(a.updated || "?")} · read ${a.fetched ? new Date(a.fetched).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}${a.status === "cached" ? " (cached)" : ""}</span><span class="x" title="close">&times;</span></div>`;
+    if (old) {  // FW-0069: an older version of a readable month
+      body.innerHTML = hd + vb + old;
+      body.insertAdjacentHTML("beforeend", this._recon(a, true));
+      return;
+    }
+    body.innerHTML = `${hd}${vb}
       ${this._grid(a.days, a.items || [], a.month)}
       <div class="tot"><span>Block<b>${this._esc(t.block || "?")}</b></span><span>Credit<b>${this._esc(t.credit || "?")}</b></span><span>Days Off<b>${t.days_off != null ? t.days_off : "?"}</b></span><span class="u">Source: FLICA Tools > Schedule Lookup, read only. Block / Credit per trip from the pairing pages.</span></div>`;
     body.insertAdjacentHTML("beforeend", this._recon(a, true));  // 0.10.1: crew index (reconstructed from pairing crew lists), folded under a readable month
