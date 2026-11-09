@@ -99,7 +99,33 @@ def test_every_entity_a_card_reads_is_one_discovery_creates(tmp_path, monkeypatc
     for text in f.values():
         used |= set(_re.findall(r"\b(?:sensor|switch|button|number|select|binary_sensor)\.flight_watcher_[a-z0-9_]+", text))
     missing = {e for e in used if e not in made and not e.startswith("switch.flight_watcher_rule")}
-    assert not missing, sorted(missing)
+    # 1.5.0 (FW-0063): a pilot copy may name an entity of a feature only the admin has (Would drop): discovery never
+    # creates it on a pilot instance, and the card reads it only behind its role check (a line that tests admin)
+    W = _load(tmp_path / "pilot2", monkeypatch, "pilot2", opts)
+    gated = {cfg["default_entity_id"] for comp, oid, cfg, feat in W.entity_defs() if not W.has(feat)}
+    sys.modules.pop("watcher", None)
+    assert gated and missing <= gated, sorted(missing - gated)
+    for e in missing:
+        orig = e.replace("flight_watcher_pilot2_", "flight_watcher_")
+        lines = [ln for t in cards.sources().values() for ln in t.splitlines() if orig in ln]
+        assert lines and all("admin" in ln for ln in lines), (e, lines)
+
+
+def test_pilot_copy_equals_the_original_apart_from_the_prefix():
+    """1.5.0 (FW-0063): every role decision a card makes reads the Watcher's own state sensor, so a pilot's copy keeps
+    every line of the original: undoing the prefix and name changes of pilot_copy() gives the original back (less
+    the word Ryan, which pilot_copy takes out)."""
+    import re as _re
+    f = cards.build("1", ["pilot2"])
+    for base, orig in cards.sources().items():
+        cp = f[f"{base}-pilot2.js"]
+        back = cp.replace("flight_watcher_pilot2", "flight_watcher").replace("/local/flight-watcher/pilot2/", "/local/flight-watcher/")
+        back = back.replace('"/flight-watcher-pilot2/recall"', '"/flight-watcher/recall"').replace(' (pilot2)"', '"')
+        back = _re.sub(r'(flight-watcher-[a-z-]+?)-pilot2"', r'\1"', back)
+        assert back == cards.set_doh(orig, cards.PLACEHOLDER_DOH).replace("Ryan", ""), base
+    sch = f["flight-watcher-schedule-card-pilot2.js"]
+    # FW-0048 + FW-0063: the drop mark needs both the admin role (never true on a pilot's Watcher) and the HA owner
+    assert '"sensor.flight_watcher_pilot2_state"' in sch and 'role === "admin" && hh.user && hh.user.is_owner' in sch
 
 
 def test_finds_card_time_format_is_browser_independent(tmp_path):

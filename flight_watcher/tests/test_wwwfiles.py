@@ -218,7 +218,7 @@ def test_state_attr_carries_the_doh_from_data_only(tmp_path, monkeypatch):
     (tmp_path / "data_default" / "cards.json").write_text('{"doh": "1999-02-03"}')
     W.set_machine("watching", "ok")
     assert sent[-1] == ("state_attr", {"note": "ok", "version": W.VERSION, "since": W.S["since"], "instance": "",
-                                       "doh": "1999-02-03"})
+                                       "doh": "1999-02-03", "role": "admin", "features": list(W.ROLES.FEATURES)})
     for bad in ('{"doh": "soon"}', '["1999-02-03"]', "not json"):
         (tmp_path / "data_default" / "cards.json").write_text(bad)
         assert W.pilot_doh() == ""

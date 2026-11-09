@@ -277,3 +277,17 @@ def test_drop_draft_is_labelled(W):
     rec = W.S["drop_tests"][-1]
     assert rec["draft"] == "draft only, never sent" and rec["why"].startswith("draft only, never sent")
     assert rec["sent"] is False and rec["mode"] == "Test"
+
+
+# ------------------------------------------------------------------ FW-0063 (1.5.0)
+def test_state_attr_carries_role_and_features(W, monkeypatch):
+    """sensor.<prefix>_state says which role the Watcher has and its features; the schedule card draws the drop mark
+    from role == "admin" (and the HA owner viewing)."""
+    W.set_machine("idle", "ok")
+    a = json.loads(W.MQ.last("flight_watcher/state_attr"))
+    assert a["role"] == "admin" and a["features"] == list(W.ROLES.FEATURES) and a["instance"] == ""
+    assert a["version"] == W.VERSION and set(a) == {"note", "version", "since", "instance", "doh", "role", "features"}
+    monkeypatch.setattr(W, "INSTANCE", "pilot2")
+    W.set_machine("needs_settings", "send username and password")
+    a = json.loads(W.MQ.last("flight_watcher/state_attr"))
+    assert a["role"] == "pilot" and a["features"] == ["core", "prefs", "tickets", "uploads"] and a["instance"] == "pilot2"

@@ -268,6 +268,7 @@ def test_every_sensor_under_12_kb_on_a_busy_month(tmp_path, monkeypatch, instanc
     sizes = {t: len(json.dumps(got[t], separators=(",", ":"))) for t in topics}
     over = {t: n for t, n in sizes.items() if n + HA_OWN > LIMIT}
     assert over == {}, over
+    assert got["state_attr"]["role"] == ("pilot" if instance else "admin") and got["state_attr"]["features"]  # FW-0063
     for t in W.ATTR_TRIM:  # the backstop holds every capped sensor at ATTR_MAX
         if t in got:
             assert sizes.get(t, len(json.dumps(got[t], separators=(",", ":")))) <= W.ATTR_MAX, t

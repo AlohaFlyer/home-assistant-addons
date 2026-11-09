@@ -1,0 +1,13 @@
+{
+  "_comment": "Who the push isolation guard (ha/check_push_isolation.py) knows: the admin (the default Watcher, prefix flight_watcher) and each pilot (prefix flight_watcher_<name>), with the notify targets and notification action prefixes that are theirs, as in the redacted automations snapshot. Add a pilot here when it is added to the app's pilots option; no code change.",
+  "admin": "ryan",
+  "pilots": ["james"],
+  "targets": {
+    "ryan": ["notify.mobile_app_ryans_iphone_16", "notify.mobile_app_ryans_iphone", "notify.mobile_app_ryan_macbook"],
+    "james": []
+  },
+  "action_prefixes": {
+    "ryan": ["RECALL_", "FLIGHT_WATCHER_"],
+    "james": ["JRECALL_", "FLIGHT_WATCHER_JAMES_"]
+  }
+}

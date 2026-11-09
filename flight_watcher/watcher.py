@@ -46,8 +46,9 @@ import contacts as CT
 import working as WK
 import pilotver as PV
 import smart as SMART
+import roles as ROLES
 
-VERSION = "1.4.13"
+VERSION = "1.5.0"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -59,6 +60,8 @@ COOKIES = f"{DATA}/storage_state.json"
 # options stay Ryan's.
 T = os.environ.get("FLIGHT_WATCHER_PREFIX", "flight_watcher")
 INSTANCE = os.environ.get("FLIGHT_WATCHER_INSTANCE", "")
+# 1.5.0 (FW-0063): the pilot's portal is on (1.6.0 sets it; 1.5.0 never does, and no subscription depends on it yet)
+PORTAL = os.environ.get("FLIGHT_WATCHER_PORTAL", "") == "1"
 OPTIONS_FILE = os.environ.get("FLIGHT_WATCHER_OPTIONS", f"{DATA}/options.json")
 CREDS_FILE = f"{DATA}/creds.json"
 KEY_FILE = f"{DATA}/settings_key.pem"  # 1.1.0: this instance's key for sealed settings from the dashboard card
@@ -81,6 +84,12 @@ def www_key():
 CRED_KEYS = ("username", "password", "ctweb_username", "ctweb_password", "my_name")
 
 
+def has(feature):
+    """1.5.0 (FW-0063): this instance has the feature (roles.FEATURES): the default instance is the admin, every other
+    one a pilot. Reads INSTANCE when called."""
+    return ROLES.allowed(feature, INSTANCE)
+
+
 def load_creds():
     """creds.json: the per-pilot values set over {T}/settings/set (never the add-on options). {} when absent."""
     try:
@@ -96,7 +105,7 @@ def load_opts():
     """Add-on options; an instance drops Ryan's credentials from them, then creds.json (non-empty keys only)
     overlays for any instance."""
     o = json.load(open(OPTIONS_FILE))
-    if INSTANCE:
+    if not has("addon_config"):
         for k in CRED_KEYS:
             o.pop(k, None)
         o.pop("second_pilot", None)
@@ -219,7 +228,21 @@ def mqtt_creds():
     return r.json()["data"]
 
 
+def refused_sub(topic):
+    """1.5.0 (FW-0063): True (one log line, nothing changed) when <prefix>/<sub> belongs to a feature this instance
+    lacks (roles.SUBS). A pilot instance does not subscribe to those; this guards a stray message all the same."""
+    if not topic.startswith(f"{T}/"):
+        return False
+    sub = topic[len(T) + 1:]
+    if ROLES.sub_allowed(sub, INSTANCE):
+        return False
+    log.info("MQTT %s refused: not for a pilot instance (%s)", sub, ROLES.SUBS.get(ROLES.sub_key(sub)))
+    return True
+
+
 def on_message(c, u, msg):
+    if refused_sub(msg.topic):
+        return
     if msg.topic == f"{T}/email/alert":
         email_alert(msg.payload.decode(errors="replace"))
         return
@@ -288,7 +311,7 @@ def on_message(c, u, msg):
     elif msg.topic == f"{T}/pilot/set":
         pilot_cmd(msg.payload.decode(errors="replace"))
     elif msg.topic == f"{T}/crew_scan/press":
-        if not INSTANCE:
+        if has("crew_index"):
             FLAGS["crew_scan"] = True  # 0.10.1: one crew index run, read in chunks over the next checks
             log.info("crew index run requested")
     elif msg.topic == f"{T}/charter_scan/press":
@@ -594,6 +617,8 @@ DROP_PUB = {"at": 0}
 
 
 def publish_drop():
+    if not has("drop_mark"):  # 1.5.0 (FW-0063): no would_drop sensor on a pilot instance
+        return
     DROP_PUB["at"] = time.time()
     today = local_now().date().isoformat()
     live = {f"{it['trip']}|{it['start']}" for it in _sched_items() if it["start"] > today}  # 0.6.1: a started trip cannot be dropped
@@ -608,7 +633,9 @@ def drop_scan():
     """0.6.0 Test mode: for each 'would drop' trip, check NET RESERVES on every day of the trip. The first
     time all days are green the Watcher pushes event/drop_ready and composes the drop request (logged, a
     draft only, never sent); a day turning red again re-arms the push. FW-0028: FLICA stays read-only, so the
-    draft is all there is; Ryan files the drop himself."""
+    draft is all there is; Ryan files the drop himself. 1.5.0 (FW-0063): the admin's only (drop_mark)."""
+    if not has("drop_mark"):
+        return
     marks = S.get("drop_away") or []
     if not marks:
         if not DROP_PUB["at"] or S.get("drop_ready"):  # FW-0024: Would drop reads 0, not 'unknown', with nothing marked
@@ -745,7 +772,7 @@ def finds_files_cleanup():
     key = None
     try:
         key = www_key()
-        others = [] if INSTANCE else WF.subdirs(CARD_PAIRINGS) + [WWW_OLD] + WF.subdirs(WWW_OLD)
+        others = WF.subdirs(CARD_PAIRINGS) + [WWW_OLD] + WF.subdirs(WWW_OLD) if has("one_writer") else []
         n = WF.cleanup(finds_dir(), key, others)
         if n:
             log.info("FW-0010: removed %d finds file(s) with a guessable /local/ name; the month files now carry a key", n)
@@ -784,9 +811,11 @@ ENTITY_SUFFIX = {
 RETIRED_ENTITIES = (("select", "swap_mode"),)  # FW-0028: the Test / Confirm / Live select, now a read-only sensor
 
 
-def discovery(c):
-    dev = DEV
-    base = {"availability_topic": AVAIL, "device": dev}
+def entity_defs():
+    """1.5.0 (FW-0063): every MQTT discovery entity as (comp, oid, cfg, feature), whatever this instance's role; cfg is
+    the full discovery config. feature (roles.ENTITY_FEATURE, else core) says who gets it: discovery() publishes the
+    ones this instance has."""
+    base = {"availability_topic": AVAIL, "device": DEV}
     ents = [
         ("sensor", "state", {"name": "State", "state_topic": f"{T}/state", "icon": "mdi:airplane-search",
                              "json_attributes_topic": f"{T}/state_attr"}),
@@ -907,24 +936,42 @@ def discovery(c):
                                    "json_attributes_topic": f"{T}/ot_requests", "icon": "mdi:swap-horizontal-circle-outline"}),
         ("sensor", "tickets", {"name": "Tickets", "state_topic": f"{T}/tickets", "value_template": "{{ value_json.open }}",
                                "json_attributes_topic": f"{T}/tickets", "icon": "mdi:ticket-outline"}),
+        # 0.10.1: the crew index runs on Ryan's instance only (roles: crew_index)
+        ("sensor", "crew_index", {"name": "Crew index", "state_topic": f"{T}/crew_index",
+                                  "value_template": "{{ value_json.coverage_pct }}", "unit_of_measurement": "%",
+                                  "json_attributes_topic": f"{T}/crew_index", "icon": "mdi:account-search"}),
+        ("button", "crew_scan", {"name": "Update schedules", "command_topic": f"{T}/crew_scan/press",
+                                 "icon": "mdi:account-sync"}),
     ]
-    if not INSTANCE:  # 0.10.1: the crew index runs on Ryan's instance only
-        ents += [
-            ("sensor", "crew_index", {"name": "Crew index", "state_topic": f"{T}/crew_index",
-                                      "value_template": "{{ value_json.coverage_pct }}", "unit_of_measurement": "%",
-                                      "json_attributes_topic": f"{T}/crew_index", "icon": "mdi:account-search"}),
-            ("button", "crew_scan", {"name": "Update schedules", "command_topic": f"{T}/crew_scan/press",
-                                     "icon": "mdi:account-sync"}),
-        ]
+    out = []
     for comp, oid, cfg in ents:
         # 0.10.3: HA ignores object_id now; default_entity_id sets the id, object_id stays for older HA.
         # 1.0.0: the id keeps the name-based suffix the entity has always had (ENTITY_SUFFIX), which the cards,
         # automations and recorder history use; the unique_id and topics keep the short oid.
         eid = f"{T}_{ENTITY_SUFFIX.get(oid, oid)}"
         cfg = {**base, **cfg, "unique_id": f"{T}_{oid}", "object_id": eid, "default_entity_id": f"{comp}.{eid}"}
-        c.publish(f"homeassistant/{comp}/{T}/{oid}/config", json.dumps(cfg), retain=True)
+        out.append((comp, oid, cfg, ROLES.ENTITY_FEATURE.get(oid, "core")))
+    return out
+
+
+def discovery(c):
+    """Publishes this instance's entities (entity_defs). 1.5.0 (FW-0063): on a pilot instance the entities of a feature
+    it lacks get an empty retained config, which removes them from HA (Would drop, Auto swap, Map swap pages)."""
+    for comp, oid, cfg, feature in entity_defs():
+        if has(feature):
+            c.publish(f"homeassistant/{comp}/{T}/{oid}/config", json.dumps(cfg), retain=True)
+        else:
+            c.publish(f"homeassistant/{comp}/{T}/{oid}/config", "", retain=True)
     for comp, oid in RETIRED_ENTITIES:  # an empty retained config removes the entity from HA
         c.publish(f"homeassistant/{comp}/{T}/{oid}/config", "", retain=True)
+
+
+def subscribe_all(cl):
+    """1.5.0 (FW-0063): this instance's subscriptions (roles.subscriptions). The admin's are the 1.4.12 list; a pilot
+    instance does not take email/alert, auto_swap/set, swap_map/press, drop/set or crew_scan/press. upload/chunk at
+    qos 1 (FW-0066: an upload in chunks, mqtt.publish from the uploads card)."""
+    for t, qos in ROLES.subscriptions(INSTANCE, PORTAL):
+        cl.subscribe((f"{T}/{t}", qos) if qos else f"{T}/{t}")
 
 
 def mqtt_start():
@@ -937,20 +984,14 @@ def mqtt_start():
     def on_connect(cl, u, f, rc, p=None):
         cl.publish(AVAIL, "online", retain=True)
         discovery(cl)
-        for t in ("hunt/set", "pause/set", "rearm/press", "hunt/state", "pause/state", "rule/+/live/set",
-                  "check_now/press", "freq/normal_min/set", "freq/hunt_s/set", "email/alert", "blocked/set",
-                  "trade/set", "auto_swap/set", "swap_map/press", "drop/set", "charter_scan/press", "pilot/set",
-                  "improved/set", "recall/set", "recall/act", "settings/set",
-                  "ticket/new", "ticket/image", "ticket/act", "ticket/edit",
-                  "ticket/delete") + (() if INSTANCE else ("crew_scan/press",)):
-            cl.subscribe(f"{T}/{t}")
-        cl.subscribe((f"{T}/upload/chunk", 1))  # FW-0066 (qos 1): an upload in chunks (mqtt.publish from the uploads card)
+        subscribe_all(cl)
         publish_settings(cl)
         fq = freq()
         cl.publish(f"{T}/freq/normal_min/state", str(fq["normal_min"]), retain=True)
         cl.publish(f"{T}/freq/hunt_s/state", str(fq["hunt_s"]), retain=True)
         publish_rules(cl)
-        cl.publish(f"{T}/auto_swap/state", "ON" if S.get("auto_swap") else "OFF", retain=True)
+        if has("auto_swap"):
+            cl.publish(f"{T}/auto_swap/state", "ON" if S.get("auto_swap") else "OFF", retain=True)
         publish_swap_mode(cl)
         publish_swap_tests()
         publish_uploads(cl, force=True)  # FW-0066
@@ -1028,6 +1069,9 @@ def cap_attrs(topic, payload):
 
 
 def pub(topic, payload, retain=True):
+    if topic.startswith("event/") and not ROLES.event_allowed(topic[6:], INSTANCE):  # 1.5.0 (FW-0063): a backstop
+        log.info("%s not sent: not for a pilot instance", topic)
+        return
     if not isinstance(payload, str):
         payload = json.dumps(cap_attrs(topic, payload) if topic in ATTR_TRIM else payload)
     MQ.publish(f"{T}/{topic}", payload, retain=retain)
@@ -1091,7 +1135,8 @@ def set_machine(state, note=""):
     S["note"] = note
     save_state(S)
     pub("state", state)
-    pub("state_attr", {"note": note, "version": VERSION, "since": S["since"], "instance": INSTANCE, "doh": pilot_doh()})
+    pub("state_attr", {"note": note, "version": VERSION, "since": S["since"], "instance": INSTANCE, "doh": pilot_doh(),
+                       "role": ROLES.role(INSTANCE), "features": ROLES.features(INSTANCE)})  # 1.5.0 (FW-0063)
 
 
 def pilot_doh():
@@ -1808,7 +1853,7 @@ def versions_check(force_pub=False):
                 continue
             wait.pop(mk, None)
             ready[mk] = sch
-        if not INSTANCE and not S.get("ver_seeded"):  # 0.9.0: Nov 2-4 versions rebuilt from HA's recorder (before the Watcher kept versions); Ryan only
+        if has("one_writer") and not S.get("ver_seeded"):  # 0.9.0: Nov 2-4 versions rebuilt from HA's recorder (before the Watcher kept versions); Ryan only
             for mk, v in VER.seed(DB, "/share/flight_watcher/versions_seed.json",
                                   lambda ts: datetime.fromtimestamp(ts or time.time(), timezone.utc).isoformat()):
                 log.info("schedule version %s (%s) imported from the recorder", v, mk)
@@ -1890,7 +1935,7 @@ def seniority_refresh():
     (web._save_seniority). Each file's signature is recorded before it is read (an award's under 'sen:<file>', its own
     key belongs to uploads_check), so a file that is slow or fails is not read again at every start. Default instance
     only, so the files have one writer; counts only in the log."""
-    if INSTANCE:
+    if not has("one_writer"):
         return
     try:
         names = os.listdir(UPLOADS_SHARED)
@@ -2420,7 +2465,7 @@ def _recall_verdict(vid):
 def recall_file_refusal(vid, a, v, narrative=None):
     """Why a CCR request for this act may not go to Hark, or '' when it may. narrative: the text the card's box held
     when Ryan tapped (1.4.6 review: it must be what he approved)."""
-    if INSTANCE:
+    if not has("hark_ccr"):
         return "only Ryan's Watcher asks Hark to file CCRs in this release"
     if not a:
         return "no CCR draft for this row"
@@ -2456,7 +2501,7 @@ def recall_file_request(d):
         why = recall_file_refusal(vid, a, v, d.get("narrative"))
         if why:
             log.info("CCR request for %s refused: %s", vid, why)
-            if a and a.get("status") != "superseded" and not INSTANCE:
+            if a and a.get("status") != "superseded" and has("hark_ccr"):
                 a["hark_note"] = f"Not sent to Hark: {why}."
                 DB.put("recall_acts", acts)
                 recall_eval()
@@ -2576,9 +2621,12 @@ def ccr_poll():
 
 
 def ccr_thread():
-    """1.4.6: ccr_poll() every CCR_POLL_S in its own thread, so it keeps running while the FLICA loop waits."""
+    """1.4.6: ccr_poll() every CCR_POLL_S in its own thread, so it keeps running while the FLICA loop waits. 1.5.0
+    (FW-0063): idle on a pilot instance, which never asks Hark (hark_ccr), so it never reads Hark's folder."""
     while True:
         time.sleep(CCR_POLL_S)
+        if not has("hark_ccr"):
+            continue
         try:
             ccr_poll()
         except Exception as e:
@@ -2596,7 +2644,7 @@ def publish_recall():
     # the recorder's 16 KB); the sensor keeps the newest days that fit (cap_attrs) and the counts over all of them
     key, rev = write_list_file("recall", {"days": days[::-1]})
     pub("recall", {"open": len(opn), "alert": len(alert), "me": recall_me(), "last": days[-1]["date"] if days else "",
-                   "checked": now_iso(), "received": received, "hark_files": not INSTANCE, "days": days[::-1],
+                   "checked": now_iso(), "received": received, "hark_files": has("hark_ccr"), "days": days[::-1],
                    "days_total": len(days), "file_key": key, "rev": rev})
 
 
@@ -3983,7 +4031,10 @@ def swap_map_probe(fl):
     """0.4.10, read only (t1243): walk from the main menu, the pot, the OT drop view and the
     Tradeboard to the open time request pages, GET each page that swapmap.safe_get allows (never a
     POST, never a URL carrying Add/Drop lists or an action word), and save the HTML plus a summary
-    of every form to the private captures folder so the live swap can be built from real pages."""
+    of every form to the private captures folder so the live swap can be built from real pages.
+    1.5.0 (FW-0063): the admin's only (auto_swap); a pilot instance loads nothing."""
+    if not has("auto_swap"):
+        return
     os.makedirs(f"{CAPTURE_DIR}/swapmap", exist_ok=True)
     b = (bcid(MOBILE_POT) or "003.152").split(".")[-1]
     queue = [("main menu", BASE + "/online/mainmenu.cgi"), ("mobile pot", MOBILE_POT),
@@ -4169,7 +4220,7 @@ def lookup_prev_month(fl, emp, cur):
     on it that end on or after the day before this month starts (a bid period can start on the 31st) for the crew
     index (note_sched_trips). Once per pilot and month (DB 'pilot_prev:<emp>:<YYYY-MM>'; a failed read is tried again
     at most PREV_LOOKUP_TRIES times). Ryan's instance only (the crew index's). Returns the number of new trips."""
-    if INSTANCE:
+    if not has("crew_index"):
         return 0
     first = date(cur.year, cur.month, 1)
     prev = first - timedelta(days=1)
@@ -4283,7 +4334,7 @@ def pilotver_run_end(insts=None):
     """FW-0069: after each crew index run, a rebuilt version for every pilot Ryan looked up, for each bid month the
     index holds from the current one on (Ryan's instance only, as the crew index is). The card's pilot is
     republished when he got one. Never raises. Returns the number of pilot-months that got a version."""
-    if INSTANCE:
+    if not has("crew_index"):
         return 0
     try:
         emps = PV.registered(DB)
@@ -4437,7 +4488,7 @@ def note_sched_trips(items, src):
     Items are the schedule parsers' {trip, start[, end]}; anything not a pairing id (VAC, SCR...) is skipped. Kept in
     the DB (CREW_SCHED_KEY); a trip that ended more than CREW_SCHED_KEEP_D days ago is dropped. Ryan's instance only
     (the crew index's). Returns the number of new trips."""
-    if INSTANCE:
+    if not has("crew_index"):
         return 0
     try:
         reg = DB.get(CREW_SCHED_KEY) or {}
@@ -4472,7 +4523,7 @@ def crew_instances():
     """FW-0056 / FW-0057: the crew index's trip instances: every pairing file's, plus the trips on the schedules the
     Watcher read that no file lists on that date (note_sched_trips; Ryan's own months are noted here, so a trade on
     his schedule is read at the next run). A trip that starts before CREW_FROM and runs into it is kept."""
-    if INSTANCE:
+    if not has("crew_index"):
         return CI.instances(CARD_PAIRINGS)
     try:  # a pilot lookup publishes from the MQTT thread while the main thread may be storing a schedule
         own = _sched_items()
@@ -4523,7 +4574,7 @@ def crew_split_repair():
     """FW-0058 one-shot (at start, Ryan's instance): crew lines stored before the seat code fix and cut at a seat code
     inside a name (crewidx.split_suspect) are queued for one re-read, ahead of everything else; a failed re-read keeps
     the stored line. Returns the number queued, or None when already done."""
-    if INSTANCE or DB.get("crew_split_v") == 1:
+    if not has("crew_index") or DB.get("crew_split_v") == 1:
         return None
     try:
         keys = sorted(k for k, r in DB.crew_rows().items() if r.get("status") == "ok" and CI.split_suspect(r.get("crew")))
@@ -4604,7 +4655,7 @@ def crew_variants(fl, insts, rows, budget):
     1.4.12 whose copies leave seats unnamed is probed once more; a fetch error leaves the trip for a later run. insts and rows are
     updated in place. Returns (pages read, 'ok' or 'killed' / 'needs_login' / 'stop' when a page said so, halted by
     pause / re-arm). Ryan's instance only. Logs pairing ids and dates, never names."""
-    if INSTANCE or budget <= 0:
+    if not has("crew_index") or budget <= 0:
         return 0, "ok", False
     now = local_now()
     try:
@@ -4712,7 +4763,7 @@ def crew_index_check(fl):
     re-read that fails keeps the trip's last good read. FW-0068: during a run, each chunk first probes up to
     VARIANT_PER_CHECK departed package trips that name no pilot for the rebuilt copy the crew flew (crew_variants).
     Returns 'ok', or 'killed' / 'needs_login' / 'stop' when a page says so (the run is ended there)."""
-    if INSTANCE:
+    if not has("crew_index"):
         return "ok"
     slot, _ = crew_slot()
     run = S.get("crew_run")
@@ -4851,7 +4902,7 @@ def crew_index_check(fl):
 
 def publish_crew_index(insts=None, write=False):
     """{T}/crew_index (retained) and, after a run, the month Markdown files."""
-    if INSTANCE:
+    if not has("crew_index"):
         return
     insts = crew_instances() if insts is None else insts
     rows = DB.crew_rows()
@@ -5389,7 +5440,7 @@ def swap_scan(pot_rows):
         seen.add(k)
         ev = dict(i, key=k, at=now_iso())
         swap_test(dict(i, key=k, report=next((r.get("report", "") for r in rows if r.get("pairing") == i["pairing"] and r.get("start") == i["start"]), "")))
-        if S.get("auto_swap"):
+        if S.get("auto_swap") and has("auto_swap"):
             done = S.setdefault("auto_swap_log", {})
             if done.get(today, 0) < AUTO_SWAP_PER_DAY:
                 done[today] = done.get(today, 0) + 1
@@ -5551,7 +5602,10 @@ FP_VERSION = 2  # bump when header_fingerprint changes, so stored hashes are re-
 
 def email_alert(payload):
     """0.4.1: HA forwards each FLICA alert email (imap_content) here. Pairings it names that the
-    pot watch never saw are queued; the next check (woken now) reads them and adds them to finds."""
+    pot watch never saw are queued; the next check (woken now) reads them and adds them to finds. 1.5.0 (FW-0063):
+    the admin's only (admin_pushes)."""
+    if not has("admin_pushes"):
+        return
     try:
         d = json.loads(payload)
     except ValueError:
@@ -5573,7 +5627,10 @@ def email_alert(payload):
 def email_check(fl, pot_all):
     """Add pairings from alert emails that are not finds yet (the pot moved faster than a check).
     One read-only detail GET each, so CA, times and the crew roster are known; a pairing not in
-    the pot any more is stamped gone now and its pickup is tracked like any other find."""
+    the pot any more is stamped gone now and its pickup is tracked like any other find. 1.5.0 (FW-0063): the admin's
+    only (admin_pushes): a pilot instance never reads the queue."""
+    if not has("admin_pushes"):
+        return False
     q = S.get("email_queue") or []
     if not q:
         return False
@@ -5745,7 +5802,7 @@ def check(fl):
     grid_check(fl, full)
     swap_scan(flat)
     drop_scan()
-    if FLAGS.pop("swap_map", False):
+    if FLAGS.pop("swap_map", False) and has("auto_swap"):
         swap_map_probe(fl)
     publish_tickets()  # 0.10.1: cheap folder re-scan, the other instance may have written
     cr = crew_index_check(fl)  # 0.10.1: at most CREW_PER_CHECK pages per check, so pot checks keep their cadence
@@ -5759,14 +5816,24 @@ def check(fl):
     return "ok"
 
 
+def enforce_role():
+    """1.5.0 (FW-0063): a pilot instance has no auto swap (auto_swap); a value an older version stored is turned off
+    once, at start, before on_connect would publish it."""
+    if not has("auto_swap") and S.get("auto_swap"):
+        S["auto_swap"] = False
+        save_state(S)
+        log.info("auto swap off: not for a pilot instance")
+
+
 def main():
     global MQ
     migrate_swap_mode()  # FW-0028: before on_connect publishes the mode
+    enforce_role()
     MQ = mqtt_start()
     start_upload_janitor()  # FW-0066: chunks arrive as soon as MQTT is up, even while a second pilot waits for settings
     time.sleep(2)
     if not OPTS.get("username") or not OPTS.get("password"):
-        if INSTANCE:  # 0.10.0: a second pilot gets credentials over MQTT; wait for them (settings/set restarts us)
+        if not has("addon_config"):  # 0.10.0: a pilot gets credentials over MQTT; wait for them (settings/set restarts us)
             set_machine("needs_settings", f"send username and password to {T}/settings/set")
             no_next_check()
             pub("session", "OFF")

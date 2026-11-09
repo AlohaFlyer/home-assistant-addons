@@ -1,5 +1,5 @@
 """Cards: FW-0025 (one pilot lookup publishes once), FW-0047 (Improved-Pay Gross / Net tick box), FW-0048 (auto drop
-mark for the HA owner only). Synthetic data and made-up names only."""
+mark for the HA owner on the admin Watcher only since FW-0063). Synthetic data and made-up names only."""
 import json
 import os
 import shutil
@@ -240,8 +240,9 @@ def test_improved_card_net_matches_schedule_card_pay_net():
     assert "total * (1 - (fed + stt) / 100)" in sch and "1 - (fed + stt) / 100" in imp
 
 
-def _sched_states(who):
-    """Synthetic November: a trip that starts after 'today' (Nov 6 HST), one in the past, a VAC day."""
+def _sched_states(who, role=None):
+    """Synthetic November: a trip that starts after 'today' (Nov 6 HST), one in the past, a VAC day. role: the
+    Watcher's role in sensor.flight_watcher_state (None: no state sensor yet)."""
     days = [[f"2026-11-{d:02d}", "", ""] for d in range(1, 31)]
     days[2] = ["2026-11-03", "H9001", "LAX"]
     days[3] = ["2026-11-04", "", "HNL"]
@@ -258,16 +259,20 @@ def _sched_states(who):
           "sensor.flight_watcher_would_trade": {"last_updated": "a", "attributes": {"keys": []}},
           "input_number.flight_watcher_federal_tax_pct": {"state": "22", "last_updated": "a"},
           "input_number.flight_watcher_state_tax_pct": {"state": "0", "last_updated": "a"}}
+    if role is not None:
+        st["sensor.flight_watcher_state"] = {"state": "idle", "last_updated": "a", "attributes": {"role": role}}
     h = {"states": st}
     if who is not None:  # HA's hass.user: the owner is always an admin too; HA has exactly one owner
         h["user"] = {"name": "Doe, Jane", "is_owner": who == "owner", "is_admin": who in ("owner", "admin")}
     return h
 
 
-def test_schedule_card_drop_mark_for_owner_only():
-    """FW-0048 (Ryan): the auto drop mark (it composes a drop request) shows for the HA owner (Ryan) only. Another
-    admin login (Pako has one), a plain user or a hass without a user yet keeps the read-only parts and the trade
-    mark. The user arriving later redraws."""
+def test_schedule_card_drop_mark_for_the_owner_on_the_admin_role_only():
+    """FW-0048 (Ryan), FW-0063 (1.5.0): the auto drop mark (it composes a drop request) shows only for the HA owner
+    (Ryan) AND only on the admin Watcher's card (sensor.flight_watcher_state role "admin"). Another admin login (Pako
+    has one), a plain user or a hass without a user yet keeps the read-only parts and the trade mark on Ryan's card,
+    as in 1.4.12; a pilot's Watcher (role "pilot") or a state sensor not there yet never shows it, even to the owner.
+    The owner arriving later, or the role arriving later, redraws."""
     sync_api = pytest.importorskip("playwright.sync_api")
     page_html = ("<!doctype html><html><body><script>customElements.define('ha-card', class extends HTMLElement {});"
                  "window.calls = [];</script><script>" + _src("flight-watcher-schedule-card.js") + "</script></body></html>")
@@ -285,24 +290,37 @@ def test_schedule_card_drop_mark_for_owner_only():
                     " return {drb: r.querySelectorAll('.drb').length, drbOn: r.querySelectorAll('.drb.on').length,"
                     " trb: r.querySelectorAll('.trb').length, lock: r.querySelector('.lock').title,"
                     " key: [...r.querySelectorAll('.lt td')].map((t) => t.textContent).find((t) => t.includes('The lock')) || ''}; }")
-            for who in ("owner", "admin", "user", None):
-                pg.evaluate("(h) => { window.mk(h); }", _sched_states(who))
-            owner, admin, user, nobody = (pg.evaluate(look, i) for i in range(4))
+            cases = (("owner", "admin"), ("admin", "admin"), ("user", "admin"), (None, "admin"), ("owner", "pilot"),
+                     ("admin", "pilot"), ("owner", None))
+            for who, role in cases:
+                pg.evaluate("(h) => { window.mk(h); }", _sched_states(who, role))
+            got = [pg.evaluate(look, i) for i in range(len(cases))]
+            owner = got[0]  # the HA owner on the admin Watcher's card: the drop mark
             assert owner["drb"] == 1 and owner["drbOn"] == 1 and owner["trb"] == 1  # H9002 (Nov 12); H9001 has started
             assert "availability, trade and drop marks" in owner["lock"] and "availability, trade and drop taps" in owner["key"]
-            for x in (admin, user, nobody):
-                assert x["drb"] == 0 and x["trb"] == 1
-                assert "availability and trade marks" in x["lock"] and "drop" not in x["lock"]
-                assert "availability and trade taps" in x["key"]
-            # unlock and tap the trade mark as a non-owner admin: it publishes; there is no drop mark to tap
+            for (who, role), x in zip(cases[1:], got[1:]):  # anyone else, or a pilot's card: no drop mark
+                assert x["drb"] == 0 and x["drbOn"] == 0 and x["trb"] == 1, (who, role)
+                assert "availability and trade marks" in x["lock"] and "drop" not in x["lock"], (who, role)
+                assert "availability and trade taps" in x["key"], (who, role)
+            # a non-owner admin on Ryan's card unlocks and taps: only the trade mark publishes; no drop mark to tap
             r = "document.querySelectorAll('flight-watcher-schedule-card')[1].shadowRoot"
             pg.evaluate(f"{r}.querySelector('.lock').click()")
             pg.evaluate(f"{r}.querySelector('.trb').click()")
             assert pg.evaluate("window.calls.map((c) => c[2].topic)") == ["flight_watcher/trade/set"]
-            # the user (the owner) arrives after the first states: the card redraws with the drop mark
+            # the same on the pilot card the HA owner opened
+            r = "document.querySelectorAll('flight-watcher-schedule-card')[4].shadowRoot"
+            pg.evaluate(f"{r}.querySelector('.lock').click()")
+            pg.evaluate(f"{r}.querySelector('.trb').click()")
+            assert pg.evaluate("window.calls.map((c) => c[2].topic)") == ["flight_watcher/trade/set"] * 2
+            # the user (the owner) arrives after the first states on the admin Watcher's card: it redraws with the mark
             pg.evaluate("() => { const c = document.querySelectorAll('flight-watcher-schedule-card')[3];"
                         " c.hass = {...c._h, user: {name: 'Doe, Jane', is_owner: true, is_admin: true}}; }")
             assert pg.evaluate(look, 3)["drb"] == 1
+            # the state sensor (role admin) arrives after the first states for the owner: it redraws with the mark
+            pg.evaluate("() => { const c = document.querySelectorAll('flight-watcher-schedule-card')[6];"
+                        " c.hass = {...c._h, states: {...c._h.states, 'sensor.flight_watcher_state':"
+                        " {state: 'idle', last_updated: 'b', attributes: {role: 'admin'}}}}; }")
+            assert pg.evaluate(look, 6)["drb"] == 1
         finally:
             b.close()
 

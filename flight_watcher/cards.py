@@ -8,7 +8,7 @@ watchers start:
   sensor.<prefix>_state (attribute doh) and the schedule card reads it there; every card file carries the placeholder.
   On the first deploy a DOH an older version wrote into the card on disk is moved to /data/cards.json (load_doh)
   before that card is replaced;
-- a second pilot (option second_pilot) gets a copy of every card (flight-watcher-*-<name>.js, from pilot_copy(), formerly
+- each pilot (option pilots, or second_pilot) gets a copy of every card (flight-watcher-*-<name>.js, from pilot_copy(), formerly
   /config/www/make_pilot_cards.py) reading that pilot's entities, topics, helpers and finds files;
 - flight-watcher-cards.json lists the cards and the app version, and flight-watcher-loader.js (the one dashboard
   resource, /local/flight-watcher-loader.js) reads that list with cache "no-store" and imports each card with
@@ -19,6 +19,8 @@ import json
 import os
 import re
 
+import roles
+
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "www")
 DST = "/homeassistant/www"
 SETTINGS = "/data/cards.json"
@@ -26,7 +28,7 @@ LOADER = "flight-watcher-loader.js"
 MANIFEST = "flight-watcher-cards.json"
 DOH_RE = re.compile(r'DOH = "(\d{4}-\d{2}-\d{2})"')
 PLACEHOLDER_DOH = "2000-01-01"
-NAME_RE = re.compile(r"^[a-z0-9_]{1,32}$")
+NAME_RE = roles.NAME_RE  # 1.5.0: the pilot name rule (single underscores between words)
 CARD_RE = re.compile(r"flight-watcher-[a-z]+(-[a-z]+)*-card|flight-watcher-row-colors")
 
 LOADER_JS = """// Flight Watcher card loader, written by the add-on (cards.py). The only dashboard resource the cards need:

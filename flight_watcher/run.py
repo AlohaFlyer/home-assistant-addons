@@ -1,12 +1,18 @@
 """Flight Watcher launcher (0.10.0; cards deployed since 0.10.2): one watcher.py per pilot from the same add-on.
 
 The default instance is Ryan's and runs exactly as before (add-on options, /data, flight_watcher/... topics,
-the ingress Web UI). When the option `second_pilot` names another pilot (lowercase letters, digits and
-underscores), a second watcher.py runs beside it with its own data folder (/data/<name>), its own MQTT
+the ingress Web UI). When the option `second_pilot` names another pilot (lowercase letters and digits, single
+underscores between words), a second watcher.py runs beside it with its own data folder (/data/<name>), its own MQTT
 prefix (flight_watcher_<name>) and its own credentials (sent to flight_watcher_<name>/settings/set, kept
 in /data/<name>/creds.json). Either child that exits is started again: after 10 s, or 60 s when it died
 within 30 s of starting (a crash loop). SIGTERM / SIGINT go to both children; the launcher exits when
 they have stopped.
+
+1.5.0 (FW-0063): option `pilots` [{name}] names every pilot (at most roles.MAX_PILOTS besides the default instance,
+which is the admin); each runs exactly like the second pilot above. While `pilots` is empty the older `second_pilot`
+is read instead (at read time: the options are never rewritten). A name that does not match roles.NAME_RE, starts with
+one of the admin's reserved words (roles.RESERVED), repeats or mixes with another pilot's ids is left out with a log
+line, and so is any pilot past the cap.
 """
 import json
 import os
@@ -16,9 +22,11 @@ import subprocess
 import sys
 import time
 
+import roles
+
 OPTIONS = "/data/options.json"
 WATCHER = "/app/watcher.py"
-NAME_RE = re.compile(r"^[a-z0-9_]{1,32}$")
+NAME_RE = roles.NAME_RE
 RESTART_S = 10
 CRASH_WINDOW_S = 30
 CRASH_RESTART_S = 60
@@ -30,21 +38,44 @@ def log(msg):
 
 
 def second_pilot_name(opts):
-    """The validated `second_pilot` option, or '' (blank, missing or not [a-z0-9_])."""
+    """The validated `second_pilot` option, or '' (blank, missing or not roles.NAME_RE)."""
     v = str((opts or {}).get("second_pilot") or "").strip().lower()
     if not v:
         return ""
     if not NAME_RE.match(v):
-        log(f"second_pilot {v!r} ignored: use lowercase letters, digits and underscores only")
+        log(f"second_pilot {v!r} ignored: use 1 to 32 lowercase letters, digits and single underscores between words")
         return ""
     return v
 
 
+def pilot_names(opts):
+    """1.5.0 (FW-0063): the pilots to run besides the admin, in option order: `pilots` [{name}] when it lists any,
+    else `second_pilot`. Invalid, reserved, repeated and mixing names are left out (logged), then the cap applies."""
+    opts = opts or {}
+    raw = opts.get("pilots")
+    if isinstance(raw, list) and raw:
+        names = [str((p.get("name") if isinstance(p, dict) else p) or "").strip().lower() for p in raw]
+        old = second_pilot_name(opts)
+        if old and old not in names:
+            log(f"second_pilot {old!r} ignored: the pilots option is set")
+    else:
+        names = [n for n in (second_pilot_name(opts),) if n]
+    out = []
+    for n in names:
+        why = roles.name_refusal(n, out)
+        if why:
+            log(f"pilot {n!r} left out: {why}")
+        elif len(out) >= roles.MAX_PILOTS:
+            log(f"pilot {n!r} left out: at most {roles.MAX_PILOTS} pilots besides the admin")
+        else:
+            out.append(n)
+    return out
+
+
 def child_specs(opts, data="/data"):
-    """[{name, env}] for every watcher.py to run: the default instance, then the second pilot's."""
+    """[{name, env}] for every watcher.py to run: the default instance (the admin), then each pilot's."""
     specs = [{"name": "", "env": {}}]
-    name = second_pilot_name(opts)
-    if name:
+    for name in pilot_names(opts):
         specs.append({"name": name, "env": {
             "FLIGHT_WATCHER_DATA": f"{data}/{name}",
             "FLIGHT_WATCHER_PREFIX": f"flight_watcher_{name}",
