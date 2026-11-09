@@ -109,6 +109,92 @@ def test_config_yaml_option_and_schema():
     yaml = pytest.importorskip("yaml")
     cfg = yaml.safe_load(open(os.path.join(HERE, "config.yaml"), encoding="utf-8"))
     assert cfg["options"]["pilots"] == [] and cfg["options"]["second_pilot"] == ""
-    assert cfg["schema"]["pilots"] == [{"name": "match(^(?=.{1,32}$)[a-z0-9]+(?:_[a-z0-9]+)*$)"}]
+    # 1.6.0 (FW-0061): each entry may turn its portal on; the Funnel origin is optional (dark by default)
+    assert cfg["schema"]["pilots"] == [{"name": "match(^(?=.{1,32}$)[a-z0-9]+(?:_[a-z0-9]+)*$)", "portal": "bool?"}]
     assert cfg["schema"]["second_pilot"] == "str?"
     assert cfg["schema"]["pilots"][0]["name"] == f"match({roles.NAME_RE.pattern})"
+    assert cfg["options"]["fw_portal_origin"] == "" and cfg["schema"]["fw_portal_origin"] == "str?"
+
+
+# ---------------------------------------------------------------- 1.6.0 (FW-0061): the portal flag
+def test_portal_flag_only_for_an_entry_that_says_true(capsys):
+    opts = {"pilots": [{"name": "james", "portal": True}, {"name": "demo", "portal": "yes"}, {"name": "pilot3"}],
+            "fw_portal_origin": "https://hom.tail0000.ts.net"}
+    assert run.pilot_entries(opts) == [("james", True), ("demo", False), ("pilot3", False)]
+    specs = {s["name"]: s["env"] for s in run.child_specs(opts, data="/d")}
+    assert specs[""] == {}  # no public key handed over unless run.main made one
+    assert specs["james"] == {**_env("james", "/d"), "FLIGHT_WATCHER_PORTAL": "1",
+                              "FLIGHT_WATCHER_PORTAL_DIR": "/share/fw_portal/james",
+                              "FLIGHT_WATCHER_PORTAL_KEY": "/d/portal_ed25519.pem",
+                              "FLIGHT_WATCHER_PORTAL_ORIGIN": "https://hom.tail0000.ts.net"}
+    assert specs["demo"] == _env("demo", "/d") and specs["pilot3"] == _env("pilot3", "/d")
+    # only the pilots whose folders run.main made ready get the portal; the admin gets the public key for the Web UI
+    specs = {s["name"]: s["env"] for s in run.child_specs(opts, data="/d", portal_ready=[], pub="ed25519:" + "A" * 43)}
+    assert specs["james"] == _env("james", "/d") and specs[""] == {"FLIGHT_WATCHER_PORTAL_PUB": "ed25519:" + "A" * 43}
+    assert _names({"second_pilot": "james"}) == ["", "james"] and run.pilot_entries({"second_pilot": "james"}) == [
+        ("james", False)]  # the older option never has a portal
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("bad", ["http://hom.tail0000.ts.net", "https://hom.example.com", "https://evil.ts.net.x.io",
+                                 "https://hom.tail0000.ts.net/", "https://HOM.tail0000.ts.net", "javascript:x"])
+def test_portal_origin_must_be_a_funnel_origin(capsys, bad):
+    opts = {"pilots": [{"name": "james", "portal": True}], "fw_portal_origin": bad}
+    assert run.portal_origin(opts) == ""
+    assert "fw_portal_origin ignored" in capsys.readouterr().out
+    env = run.child_specs(opts)[1]["env"]
+    assert env["FLIGHT_WATCHER_PORTAL"] == "1" and "FLIGHT_WATCHER_PORTAL_ORIGIN" not in env
+    capsys.readouterr()
+    assert run.portal_origin({}) == "" and capsys.readouterr().out == ""  # unset: nothing said
+
+
+def test_main_without_a_portal_makes_no_key_and_no_folder(monkeypatch, tmp_path, capsys):
+    """Dark by default: with no portal entry run.main never calls setup_portal's key or folder code; only the
+    portal-off check (portal.retire) looks for leftovers, and with no /share/fw_portal it does nothing at all."""
+    import cards
+    import migrate
+    calls = []
+    monkeypatch.setattr(run, "read_options", lambda path=None: {"pilots": [{"name": "james"}]})
+    monkeypatch.setattr(migrate, "run", lambda: None)
+    monkeypatch.setattr(cards, "deploy", lambda version, pilots: None)
+    monkeypatch.setattr(run.portal, "load_key", lambda *a, **k: calls.append("key"))
+    monkeypatch.setattr(run.portal, "prepare", lambda *a, **k: calls.append("prepare"))
+    monkeypatch.setattr(run.portal, "retire", lambda root, keep, log=None: calls.append(("retire", root, keep)) or [])
+    started = []
+    monkeypatch.setattr(run, "start", lambda spec: started.append(spec) or (_ for _ in ()).throw(SystemExit(0)))
+    monkeypatch.setattr(run.signal, "signal", lambda *a: None)
+    with pytest.raises(SystemExit):
+        run.main()
+    assert calls == [("retire", run.PORTAL_ROOT, [])] and started[0] == {"name": "", "env": {}}
+    assert "portal" not in capsys.readouterr().out
+
+
+def test_main_with_a_portal_makes_key_and_folders_before_any_child(monkeypatch):
+    import cards
+    import migrate
+    order = []
+    monkeypatch.setattr(run, "read_options", lambda path=None: {
+        "pilots": [{"name": "james", "portal": True}, {"name": "demo"}], "fw_portal_origin": "https://hom.t0.ts.net"})
+    monkeypatch.setattr(migrate, "run", lambda: None)
+    monkeypatch.setattr(cards, "deploy", lambda version, pilots: order.append(("cards", list(pilots))))
+    pub = "ed25519:" + "B" * 43
+    monkeypatch.setattr(run, "setup_portal", lambda names: order.append(("portal", list(names))) or (["james"], pub))
+    started = []
+
+    def start(spec):
+        order.append(("start", spec["name"]))
+        started.append(spec)
+        if len(started) == 3:
+            raise SystemExit(0)
+        return {"p": None, "started": 0, "restart_at": None}
+    monkeypatch.setattr(run, "start", start)
+    monkeypatch.setattr(run.signal, "signal", lambda *a: None)
+    with pytest.raises(SystemExit):
+        run.main()
+    assert order == [("cards", ["james", "demo"]), ("portal", ["james"]), ("start", ""), ("start", "james"),
+                     ("start", "demo")]
+    env = {s["name"]: s["env"] for s in started}
+    assert env[""] == {"FLIGHT_WATCHER_PORTAL_PUB": pub}
+    assert env["james"]["FLIGHT_WATCHER_PORTAL"] == "1" and env["james"]["FLIGHT_WATCHER_PORTAL_ORIGIN"] == \
+        "https://hom.t0.ts.net"
+    assert "FLIGHT_WATCHER_PORTAL" not in env["demo"]

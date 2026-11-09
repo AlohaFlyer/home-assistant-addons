@@ -1,5 +1,69 @@
 # Changelog
 
+## 1.6.0
+
+- FW-0061 (the Flight Watcher half of James's portal): a pilot entry in the option `pilots` may say `portal: true`
+  (new schema field), plus the optional `fw_portal_origin` (only `https://<host>.<tailnet>.ts.net`, else ignored with
+  a log line). Everything below is dark until an entry says so; with none, nothing of it runs and the admin (Ryan's
+  instance) keeps the 1.5.0 subscriptions, entities, settings sensor and log lines exactly (tests pin them).
+- Launcher: before any child starts, for the portal pilots only, `/share/fw_portal/<name>/` with `out/`,
+  `out/blobs/`, `out/files/` (root:2061 0750) and `in/` (2061:2061 0700), modes re-applied every start, a symlinked
+  folder refused (that pilot gets no portal); `/share/flight_watcher` becomes 0700; the Ed25519 signing key
+  `/data/portal_ed25519.pem` (0600, made when missing, a corrupt one moved to `.bad`; never under `/share`) and the log
+  line `portal signing key ed25519:...`, also shown on the Web UI for HOM's `fw_signing_key` option.
+- New `portal.py`: signed envelopes (`fwp1` bytes, base64url Ed25519 signature, seq strictly increasing and kept in
+  `/data/<name>/portal_seq.json`), atomic `out/` writes (0640), size caps, the `in/` spool checks and the event
+  formatter. New `roles.py` contract tables: `PORTAL_CMDS`, `PORTAL_REFUSED`, `PORTAL_EVENTS`, `MACHINE_EVENTS`,
+  `EVENT_FIELDS`, `PREF_KEYS`, `LOCAL_HELPERS`, `FILE_KINDS`. The interface is `PORTAL_CONTRACT.md` and
+  `tests/fixtures/portal_contract_v1.json`, generated from those tables and pinned by sha256 (HOM keeps the same file).
+- A portal pilot's Watcher exports, from a thread started before it waits for its first logins: `state.json` (its
+  own entities only, read back from HA one GET each, 2 s after a change and all every 5 min; file keys zeroed,
+  `contact` removed, HA's `context` never copied), `events.json` (the last 100 of new pairing, rule match, recall
+  miss (PWA 22.G.2), request decided, schedule changed, charter, hidden, needs settings and stopped: whitelisted
+  fields only, so no crew names, employee numbers, URLs, `comm_why`, `value` or pay), `results.json`, its list files
+  (finds months, versions, pickers, recall, pilot versions, school calendar and the shared pairings packages; never
+  tickets) and `manifest.json` with the card bundle (its own card copies as content-addressed blobs, the layout in the
+  new `portal_layout.json`, the services and the subs the cards publish).
+- The spool (every second) accepts only the allowlisted subs from `in/` (plain files owned by uid 2061, at most 64 KB
+  and 300 s old, unseen ids, 30 a minute, `settings/set` sealed only) and republishes each on the pilot's own MQTT
+  topic; every refusal is logged and answered in `results.json`. Uploads, tickets, drop marks, auto swap, the crew
+  index and alert emails are never reachable from a portal.
+- Prefs: new subscription `pref/set` on a portal pilot only; `/data/<name>/prefs.json` (0600) holds the federal and
+  state tax %, longevity year (PWA 3.B.1, 3.D.6) and ER trips (PWA 4.O.1.b), seeded once from the HA helpers; the
+  pilot's pay line reads it before the helpers. The admin never reads a `prefs.json`. `pref` joins `roles.RESERVED`.
+- ntfy (new `ntfy.py`): a portal pilot may save an ntfy topic and access token on its Settings card (sealed only; the
+  card shows the fields only when `sensor.<prefix>_settings` says `ntfy`, never on Ryan's card, and never sends them
+  on the plain-http fallback). Pushes go to the constant `https://ntfy.sh/<topic>` with the event's name-free title
+  and body, priority 5 for a new pairing that fits and is FAR 117 legal, a tap target only with `fw_portal_origin`,
+  dedupe, at most 30 an hour, 3 tries; the token and topic are never logged. The admin never posts.
+- Review fixes (before release): a folder in `in/` is refused without leaving a file descriptor open or stopping the
+  poll (it stalled every later command and leaked one fd a second); an empty one is removed, one that is not empty is
+  refused once and then skipped. One bad entry never ends a poll. `freq/*/set` from the portal must be a finite number
+  in the slider's range (`roles.FREQ_LIMITS`; `inf` was OverflowError inside on_message, which ends paho's network
+  thread), the freq handler refuses it too, and paho's callback (`on_message_safe`) logs a handler's error by type
+  instead of re-raising it, on every instance. A `pref/set` with a 400-digit number, or JSON nested too deep, is a
+  refusal, not an uncaught error. The list file export reads plain files only (no symlink, FIFO or device; bounded
+  read) from folders that are not symlinks, so nothing planted in HA's config folder can make it copy a file of this
+  container or stall. The prefs seed waits for Home Assistant (retried on each 5-minute sweep) instead of being used
+  up empty, and keeps a `pref/set` that came first. A card blob is kept 1 h after the manifest stops naming it (it was
+  timed from the file's age, so an update deleted the old cards at once). urllib3's debug request line no longer
+  writes the ntfy topic into the log. `PORTAL_CONTRACT.md` now says state.json and files/ are the pilot's own
+  dashboard data (crew names, employee numbers, `value`, `comm_why` stay there; events.json and ntfy never carry
+  them). The contract fixture gains the freq limits and two refused freq samples (new sha256).
+- Review fixes, round 2: an event's dedupe id now covers its own time (`seen`, `at`, `updated`, `since`), so a pot
+  pairing that is picked up and dropped back, or a rule that matches again, is pushed and listed again (a replay of
+  one publish still dedupes). Dotfiles in `in/` never count toward a poll's 200-entry cap (200 abandoned portal temp
+  files stopped the spool for good, silently); one older than 5 minutes is removed (logged once). The prefs seed takes
+  a never-set ER list (`input_text` reading `unknown` for good) as empty instead of retrying every sweep forever. A
+  state HA had no answer for (a 404 right after a start or in an HA restart, or no answer with nothing cached) is read
+  again after 15 s, doubling up to the 5-minute sweep, so the settings sensor and its key are back within seconds.
+  The portal's copy of the Settings card (`FW_PORTAL` on, `portal.portal_card`; the cards under `/local/` and Ryan's
+  card are unchanged) sends a login sealed or not at all: with no key loaded yet or no WebCrypto, Save is disabled and
+  sends nothing. Turning a portal off is fail-closed: at each start the launcher empties `out/` and `in/` of a pilot
+  folder whose portal is no longer on (`portal.retire`; never follows a link; nothing at all without
+  `/share/fw_portal`).
+- No FLICA page loads are added; FLICA stays read only.
+
 ## 1.5.0
 
 - FW-0063 (pilots and roles): new `roles.py` holds one table, `FEATURES`, of what each Watcher may do; README.md

@@ -61,7 +61,7 @@ nav a{{margin-right:14px}}.set label{{display:block;margin:6px 0}}.set input{{wi
 <h2>Flight Watcher {version}</h2>
 <nav><a href="#settings">Settings</a><a href="#pdfs">Monthly PDFs</a><a href="#rules">Rules</a><a href="#finds">Recent finds</a></nav>
 <h3 id="settings">Settings</h3>
-{settings_msg}{settings}
+{settings_msg}{settings}{portal}
 <h3 id="pdfs">Monthly PDFs</h3>
 <p class="note">0.9.0 (Ryan): upload the month's award (your line as awarded) and the pilot pairings package. They are
 kept in /share/flight_watcher/uploads (never committed) with a text copy, and parsed for the month's starting
@@ -671,10 +671,21 @@ def parse_settings(body):
     return out
 
 
+def portal_section(key):
+    """1.6.0 (FW-0061): the pilot portal's signing key (public half) for HOM's fw_signing_key option; '' (the page
+    exactly as before) when no pilot has a portal."""
+    if not key:
+        return ""
+    return ("<h3 id='portal'>Pilot portal</h3><p class='note'>Signing key of this app's pilot portal export. Put it in "
+            "the HOM app's <b>fw_signing_key</b> option (Configuration tab); the portal serves nothing until it "
+            "matches.</p><p><code>" + html.escape(key) + "</code></p>")
+
+
 def serve(port, version, get_rules, save_rules, store, log, get_settings=None, save_settings=None,
-          clear_settings=None, on_saved=None):
+          clear_settings=None, on_saved=None, portal_key=""):
     """The ingress page and its JSON endpoints. on_saved (1.4.8) runs after an upload is saved (the Watcher then
-    publishes sensor.<prefix>_uploads); its failure never fails the upload."""
+    publishes sensor.<prefix>_uploads); its failure never fails the upload. portal_key (1.6.0): the portal signing
+    key's public half, shown when a pilot has a portal."""
     def saved(r):
         if r.get("ok") and on_saved:
             try:
@@ -698,7 +709,7 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
                 version=html.escape(version), msg=msg, month=_month_default(), uploads=_uploads_table(),
                 max_mb=f"{INGRESS_MAX / 1048576:.1f}",
                 seniority=_seniority_status(),
-                settings_msg=settings_msg,
+                settings_msg=settings_msg, portal=portal_section(portal_key),
                 settings=_settings_form(get_settings() if get_settings else {}) if save_settings else
                 "<p class='note'>Not available on this instance.</p>",
                 rules=html.escape(draft if draft is not None else json.dumps(get_rules(), indent=2)),

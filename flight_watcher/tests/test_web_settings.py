@@ -58,3 +58,37 @@ def test_settings_post_end_to_end():
         assert "Saved values cleared" in reply and cleared == [1] and len(saved) == 1
     finally:
         srv.shutdown()
+
+
+def test_portal_key_shown_only_when_a_pilot_has_a_portal():
+    """1.6.0 (FW-0061): the Web UI shows the portal signing key's public half for HOM's fw_signing_key option; with no
+    portal the page is exactly as in 1.5.0."""
+    import logging
+    import socket
+    import urllib.request
+
+    class Store:
+        def recent_finds(self, n):
+            return []
+
+        def recent_matches(self, n):
+            return []
+
+    assert web.portal_section("") == ""
+    key = "ed25519:" + "Ab_-" * 10 + "xyz"
+    s = web.portal_section(key)
+    assert key in s and "fw_signing_key" in s and "Pilot portal" in s
+    assert "&lt;b&gt;" in web.portal_section("<b>")
+    pages = {}
+    for k in ("", key):
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        srv = web.serve(port, "9.9.9", lambda: [], lambda d: [], Store(), logging.getLogger("t"), portal_key=k)
+        try:
+            pages[k] = urllib.request.urlopen(f"http://127.0.0.1:{port}/").read().decode()
+        finally:
+            srv.shutdown()
+    assert "Pilot portal" not in pages[""] and "ed25519:" not in pages[""]
+    assert pages[key].replace(web.portal_section(key), "") == pages[""]  # the only difference

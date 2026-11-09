@@ -88,6 +88,43 @@ when its Watcher's role is `admin` and the HA user is the owner (Ryan), as in 1.
 whoever is looking). The admin's subscriptions, entities, cards and pushes are the 1.4.12 ones (`tests/test_roles.py`,
 `tests/test_instance.py`).
 
+## Pilot portal (1.6.0, FW-0061)
+
+A pilot can use Flight Watcher without a Home Assistant account through a portal the HOM app serves (HOM 1.6.0,
+passkeys on the Tailscale Funnel host). This app's half is dark until a pilot entry says so:
+
+```yaml
+pilots:
+  - name: james
+    portal: true
+fw_portal_origin: "https://hom.<tailnet>.ts.net"   # optional: the ntfy tap target
+```
+
+With `portal: true` the launcher makes `/share/fw_portal/<name>/` (`out/` for that pilot's Watcher, `in/` for the
+portal, uid/gid 2061), sets `/share/flight_watcher` to 0700, makes the signing key `/data/portal_ed25519.pem` (never
+under `/share`) and logs `portal signing key ed25519:...`; the Web UI shows the same key under Settings. Put it in
+HOM's `fw_signing_key` option. That pilot's Watcher then:
+
+- exports its entities (read back from HA, file keys zeroed, contacts removed), events, command results, list files
+  and card bundle to `out/` as Ed25519-signed envelopes (`portal.py`);
+- reads the portal's commands from `in/` (every second; only the allowlisted subs, sealed settings only, at most 30 a
+  minute) and republishes each on its own MQTT topic, so the same checks run as for a dashboard card;
+- keeps its pay and tax helpers (federal and state tax %, longevity year, ER trips) in `/data/<name>/prefs.json`,
+  set from the portal (`pref/set`) and read first by its pay line; seeded once from the HA helpers (on a later
+  export sweep when HA is down at the first start);
+- pushes its events to ntfy.sh when the pilot saves an ntfy topic and access token on the Settings card (sealed; the
+  fields show only on a portal pilot's card). Pushes carry no crew names, URLs, commute reasons or pay amounts.
+
+In the portal the Settings card sends logins sealed or not at all (no plain fallback). Turning a portal off
+(`portal: false`, or the entry removed) takes effect at the next app start and is fail-closed: the launcher empties
+that pilot's `out/` and `in/` (never following a link), so the portal stops serving its last state and files. HOM's
+revoke or kill switch is still the immediate cut; removing `/share/fw_portal/<name>` is optional cleanup.
+
+The admin (Ryan's instance) never has a portal: no folder, no spool, no export, no ntfy, and the same subscriptions,
+entities and log lines as 1.5.0. FLICA stays read only; the portal adds no FLICA page loads. The interface, its
+allowlists, caps and masks are in `PORTAL_CONTRACT.md` (contract 1) and `tests/fixtures/portal_contract_v1.json`,
+which HOM keeps byte for byte.
+
 ## Settings
 
 Enter the FLICA and CrewTrac logins and your last name on the dashboard **Settings card** (Credentials, on the
