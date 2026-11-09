@@ -70,8 +70,10 @@ def pilot_copy(s, name):
     (/local/flight-watcher/, the dashboard /flight-watcher/, elements flight-watcher-*) are handled one by one."""
     s = s.replace("flight_watcher", f"flight_watcher_{name}")
     # the pilot's own files under www/flight-watcher/<name>/: finds months, the school calendar and (FW-0060) the
-    # tickets, versions, pickers and recall list files; the pairings package stays shared
-    s = re.sub(r"/local/flight-watcher/(finds|school|tickets|versions|pickers|recall)_", rf"/local/flight-watcher/{name}/\1_", s)
+    # tickets, versions, pickers and recall list files, and (FW-0069) the pilot card's pilotver list file; the
+    # pairings package stays shared
+    s = re.sub(r"/local/flight-watcher/(finds|school|tickets|versions|pickers|recall|pilotver)_",
+               rf"/local/flight-watcher/{name}/\1_", s)
     s = s.replace('"/flight-watcher/recall"', f'"/flight-watcher-{name}/recall"')
     s = s.replace('"flight-watcher-pilot"', f'"flight-watcher-pilot-{name}"')
     s = re.sub(r'customElements\.define\("(flight-watcher-[a-z-]+)"', rf'customElements.define("\1-{name}"', s)

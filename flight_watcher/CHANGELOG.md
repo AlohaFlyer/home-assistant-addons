@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.4.11
+
+- FW-0069 (Ryan, Nov 9: "When we look at pilots' schedules, can we make it like when I view mine, where we give
+  schedules a version and we can cycle through them as you capture them? MM.01 style?"): the pilot card keeps
+  schedule versions for every pilot Ryan looks up, numbered like his own (11.001, 11.002, ... per bid month). New
+  module `pilotver.py`; nothing in it reads FLICA (no new page loads), and Ryan's own versions (`versions.py`) are
+  unchanged.
+- What makes a version: only the pilot's pairings, each one its id and start date (H3631B Nov 6). Seat, crew, end
+  date, block and credit, reserve and VAC days, FLICA's totals and the source do not, so the same trips seen two ways
+  never make two versions. Captures: a readable Schedule Lookup (source "FLICA schedule"); a lookup FLICA hides, from
+  the crew index's rebuild ("rebuilt"); and after every crew index run, a rebuild for each pilot Ryan looked up, for
+  each bid month the index holds from the current one on (Ryan's instance only, like the crew index). A rebuild
+  covers only the trips the index read, so it keeps every trip of the latest version that the index does not
+  contradict (a crew read of that trip taken after the version whose crew line does not hold the pilot), and it does
+  not add a trip whose read is older than the latest version.
+- Version .001 is the awarded line when the bid month's award text is on file (uploads, `pdfs.parse_award` for that
+  pilot's employee number); the first capture is then .002 only when its trips differ. An award uploaded later goes
+  in as .001 and the rest are renumbered, as for Ryan's own versions. Each version keeps its trips, its days (FLICA's,
+  the award's, or built the way the card draws a rebuilt month), FLICA's totals for a lookup, and the changes from
+  the one before ("added H3631B Nov 6-8 LAX", "removed H3631 Nov 6").
+- Kept in the DB: pilots Ryan looked up (`pilot_versions_index`, the 60 most recent; an older one goes with his
+  versions), up to 4 bid months a pilot, and per month the first version plus the latest 24. The versions of the
+  pilot on the card go to `www/flight-watcher/pilotver_<key>.json` (keyed and swept like the other list files;
+  James's copy reads its own folder), and `sensor.flight_watcher_pilot_schedule` gains `versions_file_key`,
+  `versions_rev` and `versions` (count, current and awarded version per month).
+- Pilot card: a versions bar under the header, as on the schedule card: older and newer arrows, the version, the
+  house back to the current one, "N versions (current)" or "viewing <capture time HST> (FLICA schedule | rebuilt |
+  awarded line)", and "Changes in v11.003". The current version is the card as before; an older one draws its own
+  days and trips in the same grid with its own totals, and says that block and credit per trip, crew and pay shown
+  are the live ones. The choice is kept per pilot and month while the page is open.
+
 ## 1.4.10
 
 - FW-0068 (Ryan, Nov 8: a pilot card's schedule rebuilt from pairing crew lines missed an LAX trip Nov 6-8): FLICA
