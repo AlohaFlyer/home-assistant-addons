@@ -25,6 +25,13 @@ publishes what it finds to Home Assistant over MQTT.
   period (117.25(e), 117.25(b), 117.23(b)(1), 117.23(c)(1) and (2): `FDP 65h/168h`, `FDP 191h/672h`; PWA 10.E.1.a
   as the `OK (CBA rest 10:30)` note). Anything not on file (a neighbour's times, training or reserve days, a customs
   release) reads `?`, never OK; `far_why` on the row cites the rule.
+- Smart push fields (1.4.13, FW-0042): pot, Tradeboard and finds rows (in the finds DB and month files, not on the
+  sensors), `last_new` and `event/new_pairing` carry `comm` (the home airports you can commute from: two scheduled
+  nonstops arriving HNL before report, PWA 26.QQ.2, and one home 60+ min after release; or `No`), `value` (credit x
+  your rate) and `month_rule` (your bid line or reserve month's rules, per bid period: days off, VAC, credit cap,
+  rest, SCR days). They read `/share/flight_watcher/smart.json` (a second pilot's
+  `/share/flight_watcher/<name>/smart.json`), which is never in git; without it they are blank. The finds card shows
+  Comm and Value.
 - Request decisions: reads FLICA's Open Time Requests list and the Tradeboard's My Requests page (crew-to-crew
   trades), and pushes each Approved or Denied request once, with Pay-Gross. A trade no list shows (1.4.7, FW-0064):
   trips dropped and added on your schedule the same HST day that no decided request explains are pushed once as an
