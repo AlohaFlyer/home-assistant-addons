@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.4.10
+
+- FW-0068 (Ryan, Nov 8: a pilot card's schedule rebuilt from pairing crew lines missed an LAX trip Nov 6-8): FLICA
+  rebuilds a package pairing it changes under the same id plus a letter (H3631 becomes H3631A, H3631B, ...; Ryan's
+  H3815B and pot finds such as H3676A are the same thing) and the crew moves to it. The package trip's page then names
+  no pilot (seats OPEN), and the new id was in no package, on no schedule the Watcher could read (that pilot's FLICA
+  schedule shows an application error) and never in the pot, so the crew index never read it. Now each chunk of a
+  crew index run first probes up to 2 package trips (`VARIANT_PER_CHECK`) for the copy the crew flew: a trip whose id
+  has no letter, that departed no more than 35 days ago (`VARIANT_MAX_AGE_D`), whose last read was taken after
+  departure (the final crew) and names no pilot, in a bid period whose award is out, and that was not probed before;
+  most recently departed first. The probe reads the same pairing page URL with the ids H3631A to H3631D
+  (`crewidx.VARIANT_LETTERS`), GET only, each URL through both read-only guards, 1.5 to 3.5 s before every read; the
+  reads count in the run's 300 pages and the chunk's 50 (8 while hunting). An id already in the index is not read
+  (one whose read names a pilot is the copy). A page that names that id on that date (`crewidx.page_names`, from the
+  header `pairing details h3631b:06nov`; an error page or another date's trip is skipped) with a pilot on its crew line
+  is the trip flown: it is noted with the schedule trips (src `variant`; end, route and report from its page), its
+  crew read is stored, and from then on it shows on the pilot card and in the month Markdown like any other trip.
+  The letters after it are not read. The package trip keeps its own read.
+- Each probe is recorded in the DB (`crew_variants`: the trip, when, and the id found or none) once every letter was
+  tried or one was found, so a trip is probed once (at most 4 FLICA loads, once, per departed trip whose crew line
+  names no pilot); a fetch error leaves it for a later run (not again in the same run). A captcha, a session taken
+  over or an expired session on a probe page ends the run as on any crew index read; pause and re-arm stop the probe
+  and the run goes on later. Records older than 65 days are dropped. Ryan's instance only, like the rest of the crew
+  index. The log names pairing ids and dates only (`crew index: H3631 2026-11-06 flew as H3631B (read)`).
+- `sensor.flight_watcher_crew_index` gains `from_variants` (rebuilt copies in the index; `from_schedules` still counts
+  the trips from schedules). New in `crewidx.py`: `variant_ids`, `page_names`, `variant_candidates` and
+  `extra_instance` (the schedule trip builder `instances()` already used, now keeping src `variant`).
+
 ## 1.4.9
 
 - FW-0067 (Ryan, Nov 8: "When other users use Flight Watcher the new Working Flight view should point to their

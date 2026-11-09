@@ -37,7 +37,9 @@ publishes what it finds to Home Assistant over MQTT.
 - Crew index and pilot lookup, charter watch (CrewTrac, read only), tickets (below). Since 1.4.7 the crew index
   also reads trips on any schedule the Watcher reads that the pairing package does not list (FW-0056), trips that
   start in the previous bid period and run into it (FW-0057), keeps names such as "Lee, So Young" (made up) whole
-  (FW-0058), and flags a pilot on two overlapping trips, reading both again first (FW-0059).
+  (FW-0058), and flags a pilot on two overlapping trips, reading both again first (FW-0059). Since 1.4.10 it finds
+  a package trip FLICA rebuilt under a lettered id (H3631 flown as H3631B) by reading the lettered ids of a departed
+  trip whose crew line names no pilot, once per trip (FW-0068).
 - A second pilot: option `second_pilot` runs a second Watcher with its own data, MQTT prefix
   (`flight_watcher_<name>`), entities and card copies.
 

@@ -145,8 +145,9 @@ class FakeFl:
         pid = url.split("PID=")[1].split("&")[0]
         if pid in self.fail:
             return "<html><p>pairing not found</p></html>"
-        emp = 10000 + int(pid[1:]) % 1000
-        fo = 11000 + int(pid[1:]) % 1000 if self.fo_by_pid else 10999  # FW-0059: one FO a pairing, so no overlaps
+        num = int(pid[1:5])  # FW-0068: a rebuilt id (H9501A) too
+        emp = 10000 + num % 1000
+        fo = 11000 + num % 1000 if self.fo_by_pid else 10999  # FW-0059: one FO a pairing, so no overlaps
         return f"<html><p>pairing {pid} crew: ca {emp} doe, jane fo {fo} roe, rick ro open</p></html>"
 
 
@@ -535,6 +536,9 @@ def test_crawl_awarded_period_with_open_trips(W, tmp_path, monkeypatch):
                           OPEN2 if it["pairing"] == "H9501" else NAMED, "2026-11-09T00:00:00", "ok")
     periods = {k: CI.period_of(it) for k, it in insts.items()}
     assert W.DB.crew_fix(CI.has_crew, periods, "2026-11-10") == (0, 0)
+    # FW-0068: the departed open trips were probed for a rebuilt copy already (test_crew_variants.py)
+    W.DB.put(W.CREW_VARIANT_KEY, {k: {"at": "2026-11-09T00:00:00", "found": ""}
+                                  for k in ("H9501|2026-11-02", "H9501|2026-11-03")})
     fl = AwardFl(open_=("H9501", "H9502"))
     W.crew_index_check(fl)
     got = [(u.split("PID=")[1][:5], u.split("DATE=")[1][6:8]) for u in fl.urls]
