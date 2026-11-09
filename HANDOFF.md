@@ -1,14 +1,10 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-09, release 1.4.12; 1.5.0 built)
+# HANDOFF: Flight Watcher (refreshed 2026-11-09, release 1.5.0)
 
-Built, not yet merged or live: **1.5.0** (FW-0063 pilots and roles: `roles.py`, option `pilots` with `second_pilot`
-still read, a pilot instance loses Would drop, Auto swap and Map swap pages, `ha/pilots.json` for the push guard).
-After the update: `sensor.flight_watcher_state` version 1.5.0 role admin, `sensor.flight_watcher_james_state` role
-pilot, Ryan's `*.flight_watcher_*` entity list unchanged, James's three retired entities gone.
-
-State: app **1.4.12** on Pako HI (1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
+State: app **1.5.0** on Pako HI (1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
 per pilot Nov 8, 1.4.10 FW-0068 crew index finds FLICA-rebuilt pairings like H3631B Nov 9, 1.4.11 FW-0069 schedule versions
 for looked-up pilots on the pilot card Nov 9 (`pilotver.py`, list file `pilotver_<key>.json`), 1.4.12 the probe reads
-every rebuilt copy until all pilot seats are named Nov 9; each instance publishes `sensor.<prefix>_working_flight`, read by the Working Flight view on each
+every rebuilt copy until all pilot seats are named Nov 9, 1.4.13 FW-0042 comm / month rule / value from
+`/share/flight_watcher/smart.json` Nov 9, 1.5.0 FW-0063 pilots list and roles (`roles.py`, `ha/pilots.json`) Nov 9; each instance publishes `sensor.<prefix>_working_flight`, read by the Working Flight view on each
 dashboard, see `ha/README.md`). The git history was cleaned on Nov 7 (`ha/` files carry placeholder user ids). Slug `43b22650_flight_watcher`,
 two instances: Ryan (`flight_watcher`, `/data`) and
 James (`second_pilot: james`, `flight_watcher_james`, `/data/james`). James's HA user exists; his Watcher waits for
@@ -57,7 +53,13 @@ his FLICA and CrewTrac logins on his own Settings tab. The work list is the tick
    page with its reCAPTCHA, never bypassed), so the menu tree both rely on may never be read; check the log for
    "close-in folder not on the menu yet" and `captures/menu_closein.html`, then Ryan decides how the close-in BCID is
    found (nothing is guessed).
-6. **Features:** FW-0042 smart push (commute, month-type rules), FW-0044 FLICA DROP review page mapped read only.
+6. **Features:** FW-0042 smart push is built in 1.4.13 (`smart.py`: `comm`, `value`, `month_rule` in the DB, the
+   finds files, `last_new` and `event/new_pairing`, not on the finds, pot or Tradeboard sensors; not deployed yet).
+   It needs `/share/flight_watcher/smart.json` on Pako (Hark's tables, never in git; blank fields without it) and a
+   separate HA step to use the fields in the new-pairing push (CHANGELOG 1.4.13). Comm or Value in the pot_table
+   macro needs a Watcher release that puts the fields back on `pot/state` (12 KB cap) as well as the macro edit.
+   Hark to confirm the overnight-release cut-off (a release from midnight to 05:00 has no same-day home;
+   `home_day_start` in smart.json moves it). FW-0044 FLICA DROP review page mapped read only.
 7. **Ryan-owned:** FW-0021 paycheck check Dec 22 (PWA 2.A.56, 3.D, 4.C.3, 4.O.1, 6.J); FW-0040 upload the December
    award and January pairings PDFs when posted; FW-0057 upload the October 2026 pairings package (the uploads card
    on the Settings tab asks for it from 1.4.7); FW-0033 delete the merged `claude/*` branches in the GitHub UI

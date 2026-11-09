@@ -9,7 +9,10 @@
 // short rows (HA's recorder limit), so the month file is the full source and a sensor row only adds to it (a new
 // find, a fresher pickup); the sensor's rev changes with every change to this month's or last month's file, which
 // makes the card fetch the month it shows again; a sensor change inside the 60 s refetch guard schedules one refetch
-// when it ends.
+// when it ends. FW-0042 (1.4.13): Comm (Hark's commute check from the pilot's own smart.json: two scheduled nonstops
+// arriving HNL before report, PWA 26.QQ.2, and one home 60+ min after release; the airports that work, joined with
+// "/", or No; hover for the times) and Value (credit x the pilot's rate) after Credit; both blank when the Watcher has
+// no smart.json.
 class FlightWatcherFindsCard extends HTMLElement {
   setConfig(c) { this._c = { entity: "sensor.flight_watcher_finds", ...c }; this._files = {}; this._m = this._hstMonth(Date.now()); }
   getCardSize() { return 8; }
@@ -133,6 +136,19 @@ class FlightWatcherFindsCard extends HTMLElement {
     const tip = av != null ? `picker avg ${av >= 60 ? Math.floor(av / 60) + "m " + String(av % 60).padStart(2, "0") + "s" : av + "s"} over ${f.picker_n} pickup${f.picker_n !== 1 ? "s" : ""}` : "";
     return `<span title="${this._e(tip)}">${f.picker_approx ? "~" : ""}${a < 60 ? `<b>${txt}</b>` : txt}<sub>${pmt}</sub></span>`;
   }
+  // FW-0042: the commute result ('' blank), green when an airport works, red on No; the why on hover. A blank result
+  // with a why is an unknown (the last leg's origin is not on file and only a customs release decides it): '?'.
+  _comm(f) {
+    const c = f.comm == null ? "" : String(f.comm);
+    if (!c && !f.comm_why) return "";
+    const why = [f.comm_why, f.month_rule ? `Month: ${f.month_rule}` : ""].filter(Boolean).join(" | ");
+    return `<span class="cm${c ? (c === "No" ? " no" : " ok") : ""}" title="${this._e(why)}">${c ? this._e(c) : "?"}</span>`;
+  }
+  _value(f) {
+    const v = f.value;
+    if (v === "" || v == null || isNaN(Number(v))) return "";
+    return `$${Math.round(Number(v)).toLocaleString("en-US")}`;
+  }
   _row(f) {
     const st = f.pickup_status || "";
     let by;
@@ -145,7 +161,7 @@ class FlightWatcherFindsCard extends HTMLElement {
     const prem = f.prem && f.gone && st === "filled" ? `<ha-icon icon="mdi:alpha-x"></ha-icon>` : f.prem ? "X" : "";
     const lay = f.layover && !["-none-", "none"].includes(f.layover) ? this._e(f.layover) : (f.turn ? `<b>${this._e(f.turn)}</b>` : "none");
     const cls = st === "open" && f.gone ? "hid" : (f.prem && f.gone && st === "filled" ? "prem" : "");
-    return `<tr class="${cls}"><td>${this._t(f.seen)}</td><td>${this._t(f.gone)}</td><td><b>${this._e(f.pairing)}</b>${f.source === "email" ? ` <ha-icon icon="mdi:email-outline"></ha-icon>` : ""}</td><td>${this._dates(f)}</td><td>${lay}</td><td class="n">${this._e(f.days)}</td><td class="n">${this._e(f.credit)}</td><td>${this._e(f.captain)}</td><td>${by}</td><td class="c">${inflt}</td><td class="n">${this._speed(f)}</td><td class="c">${prem}</td></tr>`;
+    return `<tr class="${cls}"><td>${this._t(f.seen)}</td><td>${this._t(f.gone)}</td><td><b>${this._e(f.pairing)}</b>${f.source === "email" ? ` <ha-icon icon="mdi:email-outline"></ha-icon>` : ""}</td><td>${this._dates(f)}</td><td>${lay}</td><td class="n">${this._e(f.days)}</td><td class="n">${this._e(f.credit)}</td><td class="n">${this._value(f)}</td><td class="c">${this._comm(f)}</td><td>${this._e(f.captain)}</td><td>${by}</td><td class="c">${inflt}</td><td class="n">${this._speed(f)}</td><td class="c">${prem}</td></tr>`;
   }
   _rows() {
     const cur = this._m === this._hstMonth(Date.now());
@@ -169,7 +185,7 @@ class FlightWatcherFindsCard extends HTMLElement {
     // would only repeat the header count and cost a second tap).
     const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const [y, m] = this._m.split("-").map(Number);
-    const head = `<tr><th>Seen</th><th>Picked up</th><th>Trip</th><th>Dates</th><th>Layover</th><th>Days</th><th>Credit</th><th>CA</th><th>Picked up by</th><th>InFlt</th><th>Pickup Speed</th><th>Prem</th></tr>`;
+    const head = `<tr><th>Seen</th><th>Picked up</th><th>Trip</th><th>Dates</th><th>Layover</th><th>Days</th><th>Credit</th><th title="Credit x your hourly rate (smart.json)">Value</th><th title="Commute: 2 nonstops arriving HNL before report (PWA 26.QQ.2) and 1 home 60+ min after release">Comm</th><th>CA</th><th>Picked up by</th><th>InFlt</th><th>Pickup Speed</th><th>Prem</th></tr>`;
     const rows = (a) => a.map((f) => this._row(f)).join("");
     if (this._m !== this._hstMonth(now)) return all.length ? `<div class="wrap"><table><thead>${head}</thead><tbody>${rows(all)}</tbody></table></div>` : (loading ? "" : `<div class="k">Nothing added in ${MON[m - 1]} ${y}.</div>`);
     const { today, earlier } = this._split(all, now);
@@ -181,7 +197,7 @@ class FlightWatcherFindsCard extends HTMLElement {
     // nothing today the header row moves into the fold, so a closed fold is one line.
     const open = this._earlierOpen();
     const top = today.length ? `<thead>${head}</thead><tbody>${rows(today)}</tbody>` : "";
-    const fold = earlier.length ? `<tbody class="fold"><tr><td colspan="12"><button type="button" class="fb" aria-expanded="${open}">${earlier.length} earlier this month</button></td></tr></tbody><tbody class="old"${open ? "" : " hidden"}>${today.length ? "" : head}${rows(earlier)}</tbody>` : "";
+    const fold = earlier.length ? `<tbody class="fold"><tr><td colspan="14"><button type="button" class="fb" aria-expanded="${open}">${earlier.length} earlier this month</button></td></tr></tbody><tbody class="old"${open ? "" : " hidden"}>${today.length ? "" : head}${rows(earlier)}</tbody>` : "";
     return `${h}<div class="wrap"><table>${top}${fold}</table></div>`;
   }
   _render() {
@@ -205,6 +221,7 @@ class FlightWatcherFindsCard extends HTMLElement {
       th,td{border:1px solid var(--divider-color);padding:4px 6px;text-align:left;white-space:nowrap}th{font-weight:700}
       td.n{text-align:right}td.c{text-align:center}
       tr.hid td{background:rgba(244,67,54,.14)}tr.prem td{background:rgba(76,175,80,.16)}
+      .cm{font-weight:600}.cm.ok{color:var(--success-color,#2e7d32)}.cm.no{color:var(--error-color,#c62828)}
       a{color:var(--primary-color);text-decoration:underline}
       tbody.fold td{border:0;padding:0}
       .fb{position:sticky;left:0;appearance:none;-webkit-appearance:none;background:none;border:0;margin:0;padding:8px 6px 6px 0;font:inherit;font-size:13px;font-weight:600;color:var(--secondary-text-color);cursor:pointer;-webkit-tap-highlight-color:transparent}
@@ -223,6 +240,7 @@ class FlightWatcherFindsCard extends HTMLElement {
           <div>InFlt <ha-icon icon="mdi:airplane"></ha-icon> = picked up while airborne (from the picker's own trip); no = on the ground; - = not checked yet</div>
           <div>Pickup Speed = how long the trip sat in open time, ± half the check window; ~ = timed from your alert email; bold under 1 min. Hover for the picker's average.</div>
           <div>Red row: seat still open but not in the pot (hidden?). Green row: Premium trip picked up.</div>
+          <div>Comm = airports you can commute from: 2 scheduled nonstops arriving HNL before report (PWA 26.QQ.2) and 1 home 60+ min after release, same day; No = neither works; ? = not known yet (only a customs release, origin not on file, decides it). Hover for the times and the month rule. Value = credit x your hourly rate. Both blank until your smart.json is on file.</div>
           <div>Today's finds (HST) show; the rest of the month folds under "earlier this month" (this device remembers it open or closed). A past month opens in full. History kept 24 months.</div></div></details>
       </details>
       <span class="mp"><span class="nv" data-m="-1">&#8249;</span>${MON[m - 1]} ${y}<span class="nv" data-m="1">&#8250;</span></span></div>

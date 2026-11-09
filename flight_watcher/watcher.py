@@ -45,6 +45,7 @@ import chunks as UP
 import contacts as CT
 import working as WK
 import pilotver as PV
+import smart as SMART
 import roles as ROLES
 
 VERSION = "1.5.0"
@@ -132,6 +133,9 @@ AVAIL = f"{T}/status"
 # Rule switches: <T>_rule_<id>_live for every instance (switch.flight_watcher_rule_<id>_live for Ryan)
 RULE_UID = f"{T}_rule"
 SHARE = f"/share/flight_watcher/{INSTANCE}" if INSTANCE else "/share/flight_watcher"
+# FW-0042: the smart push config (home airports, nonstop tables, month types, VAC, rate) lives only on the pilot's
+# share, never in git; without it the comm / value / month_rule fields stay blank (smart.py)
+SMART_FILE = f"{SHARE}/smart.json"
 
 
 def now_iso():
@@ -1505,6 +1509,7 @@ def enrich(fl, ev):
     ev["vac"] = touches_vac(ev)
     ev["blocked"] = touches_blocked(ev)
     ev["far"] = far_for(ev)
+    smart_fields(ev)  # FW-0042
 
 
 def _span(ev):
@@ -1588,6 +1593,135 @@ def far_for(ev, exclude=None):
     if exclude is None:
         ev["far_why"] = r["why"]
     return r["far"]
+
+
+# FW-0042: the smart push fields every row with fit and far carries (pot, Tradeboard, close-in, finds, the
+# event/new_pairing payload); each '' without smart.json
+SMART_FIELDS = ("comm", "comm_why", "value", "month_rule")
+# Off the pot and Tradeboard sensors: far_why (long) and the smart fields, which no card reads from those sensors yet
+# (the pot_table macro and the schedule card show neither); on them they would cost rows under cap_attrs' 12 KB. The
+# DB, the finds month files, last_new and event/new_pairing keep all of them; the finds sensor carries FINDS_ATTR_KEYS
+# only, so none of them either. Showing Comm or Value in the pot_table macro needs a Watcher release that takes them
+# out of SENSOR_DROP for pot/state (minding the 12 KB cap) as well as the HA macro edit.
+SENSOR_DROP = ("far_why",) + SMART_FIELDS
+# FW-0042 review: stations a last leg into HNL comes from without clearing customs (the US stations of pot.TZ; a
+# pilot's smart.json "domestic" adds more). Any other origin means a release 30 min after block-in (PWA 2.19.b), the
+# one the commute HOME check uses; an origin not on file is judged both ways (smart.comm, far.py's sure / worst rule).
+US_STATIONS = frozenset(("HNL", "OGG", "KOA", "ITO", "LIH", "ANC", "LAX", "SFO", "SEA", "SAN", "OAK", "SMF", "LAS",
+                         "PDX", "SJC", "ONT", "LGB", "PHX", "SLC", "DEN", "ORD", "DFW", "AUS", "MSP", "IAH", "JFK",
+                         "BOS", "MCO", "IAD", "ATL", "MIA", "EWR"))
+
+
+def report_release(ev):
+    """FW-0042: (report, release) of a pot / Tradeboard / close-in / finds row as naive HST datetimes, from the best on
+    file: report = the row's check-in (its pairing page), else the pairings package's report (BASE REPT), else 1:00
+    before the first duty's departure (its duty periods: pairing page, details cache or the bid period's package; PWA
+    2.19.b), else 1:00 before the pot row's first departure; release = the final block-in ('arrive' on the pot row,
+    'last_arr' from the pairing page) on the last day, else the last duty's, plus 15 min (PWA 2.19.b, as far.window;
+    a customs release is release_customs()'s to judge). (None, None) when either is unknown."""
+    s, e = _span(ev)
+    if not s:
+        return None, None
+    base = datetime.combine(s, datetime.min.time())
+    rep_t, arr_t = FAR._t(ev.get("report")), FAR._t(ev.get("arrive") or ev.get("last_arr"))
+    rep = datetime.combine(s, rep_t) if rep_t else None
+    rel = datetime.combine(e or s, arr_t) + FAR.DEBRIEF if arr_t else None
+    if rep is None:  # the pairings package's BASE REPT (pairing file column report)
+        try:
+            pr = FAR._t(RC.package_entry(ev.get("pairing"), s, pkg_details_for).get("report"))
+            rep = datetime.combine(s, pr) if pr else None
+        except Exception:
+            rep = None
+    if rep is None or rel is None:
+        try:
+            duties = _pickup_duties(ev, s)
+            if duties:
+                if rep is None:
+                    rep = base + timedelta(minutes=min(int(x["dep"]) for x in duties) - 60)
+                if rel is None:
+                    rel = base + timedelta(minutes=max(int(x["arr"]) for x in duties)) + FAR.DEBRIEF
+        except (KeyError, TypeError, ValueError):
+            pass
+    if rep is None and FAR._t(ev.get("depart")):
+        rep = datetime.combine(s, FAR._t(ev.get("depart"))) - timedelta(hours=1)
+    if rep is None or rel is None:
+        return None, None
+    while rel <= rep:  # a block-in printed for the day after the end date (as far.window)
+        rel += timedelta(days=1)
+    return rep, rel
+
+
+def last_origin(ev):
+    """The origin of the row's last leg (the one into HNL): the route from its pairing page ('HNL-LAX-HNL' -> 'LAX'),
+    else the bid period's pairings package route; '' when neither is on file."""
+    route = ev.get("route") or ""
+    if not route:
+        try:
+            s, _ = _span(ev)
+            route = (RC.package_entry(ev.get("pairing"), s, pkg_details_for).get("route") or "") if s else ""
+        except Exception:
+            route = ""
+    parts = [p.strip().upper() for p in str(route).split("-") if p.strip()]
+    return parts[-2] if len(parts) >= 2 else ""
+
+
+def release_customs(ev, cfg=None):
+    """FW-0042 review: whether the row's release is 30 min after block-in, not 15 (PWA 2.19.b, clearing customs), as
+    far.py's sure / worst rule needs it: True when its last leg comes from a station outside the US, False for a known
+    US origin (US_STATIONS and the pilot's smart.json "domestic"), None when the origin is not on file (smart.comm then
+    judges HOME at both releases: a No needs the sure one to fail)."""
+    o = last_origin(ev)
+    if not o:
+        return None
+    return o not in (US_STATIONS | set((cfg or {}).get("domestic") or ()))
+
+
+BID_PERIODS = {"at": 0.0, "bounds": {}, "files": {}}  # crewidx.period_for's cache of the pairing files' bounds
+BID_PERIODS_TTL_S = 600
+
+
+def bid_period_of(d):
+    """FW-0042 review: the bid month ('YYYY-MM') a day belongs to by the pairing files' period bounds, the ones the
+    crew index and the cards use (crewidx.period_for: Dec 1, 2026 is November's, whose period runs Nov 1 to Dec 1),
+    or None when no pairing file speaks for it (no file for that month, and none made it another month than the
+    calendar's): smart.bid_month then reads the bid month off the schedule pages. The bounds are cached 10 min."""
+    if time.time() - BID_PERIODS["at"] > BID_PERIODS_TTL_S:
+        BID_PERIODS.update(at=time.time(), bounds={}, files={})
+    mon = CI.period_for(CARD_PAIRINGS, d.isoformat(), BID_PERIODS["bounds"])
+    if mon not in BID_PERIODS["files"]:
+        BID_PERIODS["files"][mon] = os.path.exists(os.path.join(CARD_PAIRINGS, f"pairings_{mon}.json"))
+    return mon if mon != f"{d:%Y-%m}" or BID_PERIODS["files"][mon] else None
+
+
+def smart_fields(ev):
+    """FW-0042: comm, comm_why (Hark's commute check, PWA 26.QQ.2), value (credit x rate, dollars) and month_rule (the
+    bid month's line / reserve rules, each day in its bid period: bid_period_of) on a row, after its fit and far are
+    set. All '' without smart.json, so nothing else changes. Never raises (a malformed smart.json loads as none). The
+    HOME leg uses the customs release (block-in + 30 min, PWA 2.19.b) for a last leg from outside the US, and both
+    releases when the origin is not on file (release_customs)."""
+    out = dict.fromkeys(SMART_FIELDS, "")
+    try:
+        cfg = SMART.load(SMART_FILE, warn=log.info)
+        if cfg:
+            rep, rel = report_release(ev)
+            out["comm"], out["comm_why"] = SMART.comm(rep, rel, cfg, customs=release_customs(ev, cfg))
+            out["value"] = SMART.value(ev.get("credit"), cfg)
+            s, e = _span(ev)
+            out["month_rule"] = SMART.month_rule(s, e, ev.get("credit"), ev.get("fit"), ev.get("far"),
+                                                 S.get("schedule") or {}, cfg, period=bid_period_of)
+    except Exception as ex:
+        log.info("smart fields skipped for %s: %s", ev.get("pairing"), ex)
+        out = dict.fromkeys(SMART_FIELDS, "")
+    ev.update(out)
+    return out
+
+
+def sensor_row(r):
+    """FW-0042: a pot / Tradeboard row as its sensor carries it: no far_why and none of the smart fields (SENSOR_DROP),
+    so the sensor rows are byte for byte what they were in 1.4.12 and a busy month keeps as many rows under the 12 KB
+    cap. Showing them in the pot_table macro or the schedule card needs a Watcher release that puts them back on
+    these sensors (SENSOR_DROP), not only the HA edit."""
+    return {k: v for k, v in r.items() if k not in SENSOR_DROP}
 
 
 OWN_PER_CHECK = 3
@@ -2614,6 +2748,7 @@ def pot_details(fl, pot, full=False):
         row["vac"] = touches_vac(row)
         row["blocked"] = touches_blocked(row)
         row["far"] = far_for(row)
+        smart_fields(row)  # FW-0042
     if fetched:
         log.info("pot details fetched: %d (cached %d)", fetched, len(cache))
 
@@ -3826,8 +3961,8 @@ def publish_tradeboard(live=None):
             r["far"] = far_for(r)
         except Exception as e:
             log.info("tradeboard screen %s skipped: %s", k, e)
-        r.pop("far_why", None)  # off the sensor, as on pot/state
-        rows.append(r)
+        # far_why and the smart fields off the sensor, as on pot/state (a new post's event/new_pairing carries them)
+        rows.append(sensor_row(r))
     pub("tradeboard/state", {"count": len(rows), "pairings": rows})
 
 
@@ -5538,6 +5673,13 @@ def email_check(fl, pot_all):
     return added
 
 
+def publish_pot(flat):
+    """sensor.<prefix>_pot_count: the first 60 pot rows (close-in first). far_why and the FW-0042 smart fields stay off
+    the sensor (sensor_row: no card reads them there yet; they would cost rows under cap_attrs' 12 KB): the DB, the
+    finds month files, last_new and event/new_pairing keep them (the finds sensor carries FINDS_ATTR_KEYS only)."""
+    pub("pot/state", {"count": len(flat), "pairings": [sensor_row(r) for r in flat[:60]]})
+
+
 def check(fl):
     """One pass. Returns next action hint. After Check now (FLAGS full) every cached read is
     refreshed too: schedule, own trip times, pot details, pending pickups, tradeboard."""
@@ -5651,10 +5793,7 @@ def check(fl):
     save_state(S)
     flat = [dict(v, month=m) for m, p in pot_all.items() for v in p.values()]
     flat.sort(key=lambda r: r.get("src") != "C")  # FW-0034: close-in trips (under 16 h to report) first
-    # far_why stays off the sensor (no card shows it yet; it would cost rows under cap_attrs' 12 KB): the DB, the
-    # finds files and event/new_pairing keep it
-    pub("pot/state", {"count": len(flat), "pairings": [{k: v for k, v in r.items() if k != "far_why"}
-                                                       for r in flat[:60]]})
+    publish_pot(flat)
     email_check(fl, pot_all)
     pickup_check(fl, full)
     publish_finds()  # rows carry live CA / details now, so publish every check

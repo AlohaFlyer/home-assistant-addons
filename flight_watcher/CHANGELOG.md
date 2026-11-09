@@ -35,6 +35,75 @@
   A test pins the exact subscribe calls `on_connect` makes for the admin (the 1.4.12 list) and for a pilot.
 - No FLICA page loads are added or changed; FLICA stays read only.
 
+## 1.4.13
+
+- FW-0042 (roadmap items 2 and 3, Hark's rules of Nov 1, Ryan's go-ahead Nov 8): smart push fields. Every row that
+  carries `fit` and `far` (pot, Tradeboard, close-in, the finds history and the `event/new_pairing` payload) now also
+  carries `comm`, `comm_why`, `value` and `month_rule`. New module `smart.py` (pure functions and a loader cached by
+  the file's contents, so a same-size rewrite inside one file time tick is still seen; it never raises). No new
+  FLICA page loads: the fields are built from what the Watcher already reads.
+- `comm`, Hark's commute check per home airport: IN = at least two scheduled nonstops (any airline) from that airport
+  the same day as the report, scheduled to arrive HNL before the report time (arrival = departure + the route's
+  longest block; PWA 26.QQ.2, the two-flight rule; an overnight report before the first arrival is No); HOME = at
+  least one scheduled nonstop HNL to that airport departing 60+ min after the release (block-in + 15 min, PWA 2.19.b),
+  the same day. An overnight release has no same-day home (the mirror of the overnight report): one whose 60 min runs
+  past midnight, or one after midnight and before 05:00 (`home_day_start` in `smart.json` moves that; Hark to
+  confirm whether a 04:00 to 05:00 release counts). When the last leg comes from outside the US (its origin, from the
+  route or the pairings package; `domestic` in `smart.json` adds US stations), HOME uses the PWA 2.19.b customs
+  release, block-in + 30 min, and `comm_why` says `(customs, PWA 2.19.b)`. When the origin is not on file, HOME is
+  judged at both releases, far.py's sure / worst rule (a No needs the sure case to fail): an airport that makes it
+  with customs counts, one that misses it without customs fails, and one that makes it only without customs is
+  unknown (`home 21:00 only if no customs`, and `comm_why` gives the customs time). An airport counts only with both.
+  The value is the airports that count joined with `/` (both, one), `No` when every airport surely fails, or `''`
+  when none counts but one is unknown (the finds card shows `?`); `comm_why` gives the report, the release and each
+  airport's count and first flight home.
+  Report and release come from the best on file: the pairing page's check-in and the pot row's final arrival, else
+  the duty periods (pairing page, details cache or the bid period's pairings package), else 1:00 before the pot
+  row's first departure; `''` when either is unknown.
+- `month_rule`, the type of each bid month the trip touches (a trip across a bid period's end is judged in both,
+  each by its own type). A bid month is the bid period, not the calendar month (November 2026 runs Nov 1 to Dec 1,
+  December Dec 2 to 31): each day goes to its bid month by the pairing files' period bounds (the ones the crew index
+  and the cards use), else by the schedule pages on file (a page lists a day outside its bid period only for a
+  carried trip, so a page that lists a day with no pairing on it owns it), else the calendar month; that bid month's
+  type, schedule, days off and cap judge the day. `line` (adds only on days off, from the fit tag's Conflict and the
+  schedule's own days; a day off code the fit tag names, `Conflict GDO` or `OFF` or one in `off_codes`, is a day
+  off, not a Conflict; the 11 h minimum rest, PWA 10.E.1.a, from the FAR column's CBA rest note; at least
+  `min_days_off` days off after the add over that bid period, from FLICA's own Days Off total (which counts VAC days
+  as off) less the days off the add uses, a recount of the bid period's days without it; the month's credit plus the
+  trip's, split by its days across a bid period's end, at most `cap_credit`) or `reserve` (pickups over SCR days
+  only). VAC days are never pickup days, also in a month with no type yet (`VAC` alone). `OK`, or what fails joined
+  with `, ` (`VAC`, `Conflict H3659`, `Days off 11`, `Over cap`, `Rest 10:30`, `Not SCR`). The unknowns are never
+  `OK` and never a fail: `No sched` (a month the trip touches is not on file), `Rest ?` (the rest next to a trip is
+  not on file yet), `Rest 10:50?` (short only if the neighbour clears customs, PWA 2.19.b) and `Cap ?` (the month's
+  credit or the trip's is not on file, or the split across a month end decides it). Not checked: reserve's 48 h in
+  the pot, R-14 and no-GDO conditions.
+- `value`: the trip's credit times the hourly rate, whole dollars.
+- Privacy (the repo is public): the home airports, the nonstop tables, the month types, VAC dates, the rate and the
+  break-even live only in `smart.json` on the pilot's share (`/share/flight_watcher/smart.json`; a second pilot's
+  `/share/flight_watcher/<name>/smart.json`, like his captures), format `v: 1`. No defaults ship: without the file
+  every new field is `''`, the pot and Tradeboard sensors carry exactly what they did, and a malformed file is logged
+  once and treated as none. Tests use made-up airports and times.
+- Sensors: the four fields stay off the pot and Tradeboard sensors (like `far_why`), which publish exactly what they
+  did in 1.4.12, so a busy month keeps as many rows under the 12 KB cap. The DB, the finds month files, `last_new` and
+  `event/new_pairing` carry all four; the finds, pot and Tradeboard sensors carry none of them (the finds sensor
+  keeps its short rows). Showing Comm or Value in the pot_table macro needs two things: a Watcher release that takes
+  the fields out of `SENSOR_DROP` for `pot/state` (minding the 12 KB cap), and the HA macro edit.
+- Finds card: Comm and Value columns after Credit (blank when the field is `''`, so finds from before 1.4.13 and an
+  install without `smart.json` show nothing new); Comm is green when an airport works and red on No, and its hover
+  gives `comm_why` and the month rule.
+- Push (a separate HA step, not in this release; no automation or `ha/*.yaml` changed): `event/new_pairing` carries
+  `comm`, `comm_why`, `value` and `month_rule` next to `fit` and `far`. The new-pairing automation can add them to the
+  message (`Comm {{ trigger.payload_json.comm }} | ${{ trigger.payload_json.value }} | {{
+  trigger.payload_json.month_rule }}`, each with `| default('')`) and lower a trip to a quiet push only on a real
+  fail: `comm == 'No'`, or a `month_rule` part that is not an unknown (`VAC`, `Conflict`, `Days off`, `Over cap`,
+  `Rest h:mm`, `Not SCR`). Everything else keeps the critical buzzer: a blank `comm`, and the `month_rule` parts
+  `''`, `OK`, `No sched` and any with a `?` (`Rest ?`, `Rest 10:50?`, `Cap ?`), as the automation's "'?' still
+  pushes" rule does. In a template: `{% set p = trigger.payload_json %}{% set mr = (p.month_rule |
+  default('')).split(', ') | reject('in', ['', 'OK', 'No sched']) | reject('search', '[?]') | list %}` and quiet when
+  `p.comm | default('') == 'No' or mr`. A combined `VAC, No sched` still goes quiet. Blank fields mean no
+  `smart.json`, a time not on file, or a commute that only a customs release decides (the last leg's origin not on
+  file): treat them as unknown, never as a pass or a fail.
+
 ## 1.4.12
 
 - FW-0068 follow-up (Nov 9, live check of 1.4.10): the probe found H3631 Nov 6 flown as H3631B, but that copy's crew
