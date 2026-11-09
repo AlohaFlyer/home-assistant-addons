@@ -46,7 +46,7 @@ import contacts as CT
 import working as WK
 import pilotver as PV
 
-VERSION = "1.4.11"
+VERSION = "1.4.12"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -4289,7 +4289,8 @@ CREW_SCHED_KEEP_D = 62  # a schedule trip that ended this long ago is forgotten
 CREW_REREAD_KEY = "crew_reread"  # FW-0058 / FW-0059: {key: {why, at}} trips to read once more, first
 CREW_OVERLAP_KEY = "crew_overlaps"  # FW-0059: {id: {emp, name, keys, found_at, state}} pilots on two overlapping trips
 CREW_REREAD_PER_CHECK = 10  # re-reads per check while no run is going (a run reads them first, in its own chunks)
-CREW_VARIANT_KEY = "crew_variants"  # FW-0068: {base key: {at, found}} package trips probed for a rebuilt copy
+CREW_VARIANT_KEY = "crew_variants"  # FW-0068: {base key: {at, found, v}} package trips probed for a rebuilt copy
+# (found: the copies, comma separated; v 2 from 1.4.12, when the copies must name every pilot seat)
 VARIANT_PER_CHECK = 2  # package trips probed per check (each up to len(CI.VARIANT_LETTERS) pages)
 VARIANT_MAX_AGE_D = 35  # a trip that departed longer ago than this is not probed
 
@@ -4461,8 +4462,11 @@ def crew_variants(fl, insts, rows, budget):
     page URL with each lettered id (crewidx.variant_ids; an id already in the index is not read, and when its read
     names a pilot it is the one), GET only, each URL through SUB.safe_get and SM.safe_get, 1.5 to 3.5 s before every
     read, at most `budget` reads. A page that names that id on that date (crewidx.page_names) with a pilot on its crew
-    line is the trip flown: crew_variant_keep indexes it. The probe is recorded (CREW_VARIANT_KEY {base: {at, found}})
-    once every letter was tried or one was found; a fetch error leaves the trip for a later run. insts and rows are
+    line is the trip flown: crew_variant_keep indexes it. 1.4.12: the letters are read on until the copies found name as
+    many pilots as the package trip has pilot seats (FLICA rebuilt H3631 Nov 6 for the captain alone as H3631B), and a
+    copy that leaves seats unnamed is logged with its crew line masked (crewidx.crew_mask). The probe is recorded
+    (CREW_VARIANT_KEY {base: {at, found, v}}) once every letter was tried or every seat was named; a record from before
+    1.4.12 whose copies leave seats unnamed is probed once more; a fetch error leaves the trip for a later run. insts and rows are
     updated in place. Returns (pages read, 'ok' or 'killed' / 'needs_login' / 'stop' when a page said so, halted by
     pause / re-arm). Ryan's instance only. Logs pairing ids and dates, never names."""
     if INSTANCE or budget <= 0:
@@ -4472,6 +4476,14 @@ def crew_variants(fl, insts, rows, budget):
         reg0 = DB.get(CREW_VARIANT_KEY) or {}
         cut = (now - timedelta(days=VARIANT_MAX_AGE_D + 30)).isoformat(timespec="seconds")
         probed = {k: v for k, v in reg0.items() if str((v or {}).get("at") or "") >= cut}
+        for k, v in list(probed.items()):  # 1.4.12: a copy found before 1.4.12 that left seats unnamed: probe again
+            if (v or {}).get("v") != 2 and (v or {}).get("found"):
+                d = k.split("|", 1)[1]
+                named = set()
+                for vid in str(v["found"]).split(","):
+                    named |= CI.named_pilots((rows.get(f"{vid}|{d}") or {}).get("crew"))
+                if len(named) < max(CI.pilot_seats((rows.get(k) or {}).get("crew")), 1):
+                    del probed[k]
         if probed != reg0:
             DB.put(CREW_VARIANT_KEY, probed)
         run = S.get("crew_run")
@@ -4485,11 +4497,17 @@ def crew_variants(fl, insts, rows, budget):
         it = insts[base]
         d, complete = it["date"], True
         ids = CI.variant_ids(it["pairing"])
-        # a copy indexed already (from a schedule) whose read names a pilot is the one: nothing to read
-        found = next((v for v in ids if f"{v}|{d}" in insts and (rows.get(f"{v}|{d}") or {}).get("status") == "ok"
-                      and CI.has_crew(rows[f"{v}|{d}"].get("crew"))), "")
-        if found:
-            log.info("crew index: %s %s flew as %s (indexed)", it["pairing"], d, found)
+        # 1.4.12: FLICA can split a rebuilt trip's crew over two copies (H3631B names the captain only): the copies are
+        # read until they name as many pilots as the package trip has pilot seats (its crew line, OPEN seats counted)
+        need = max(CI.pilot_seats((rows.get(base) or {}).get("crew")), 1)
+        found, got = [], set()
+        for v in ids:  # copies indexed already (from a schedule or an earlier probe) whose read names a pilot
+            r = rows.get(f"{v}|{d}") or {}
+            if f"{v}|{d}" in insts and r.get("status") == "ok" and CI.has_crew(r.get("crew")):
+                found.append(v)
+                got |= CI.named_pilots(r.get("crew"))
+        if found and len(got) >= need:
+            log.info("crew index: %s %s flew as %s (indexed)", it["pairing"], d, ",".join(found))
             ids = []
         for vid in ids:
             vk = f"{vid}|{d}"
@@ -4534,11 +4552,15 @@ def crew_variants(fl, insts, rows, budget):
                 tried.append(base)
                 complete = False
                 break
-            found = vid
+            found.append(vid)
+            got |= CI.named_pilots(crew)
             log.info("crew index: %s %s flew as %s (read)", it["pairing"], d, vid)
-            break
+            if len(got) >= need:
+                break
+            log.info("crew index: %s %s names %d of %d pilots, the next letters are read too (crew line: %s)", vid, d,
+                     len(got), need, CI.crew_mask(vt))
         if complete:
-            probed[base] = {"at": local_now().isoformat(timespec="seconds"), "found": found}
+            probed[base] = {"at": local_now().isoformat(timespec="seconds"), "found": ",".join(found), "v": 2}
             DB.put(CREW_VARIANT_KEY, probed)
             if not found:
                 log.info("crew index: %s %s, no rebuilt copy names a pilot (%s tried)", it["pairing"], d,
