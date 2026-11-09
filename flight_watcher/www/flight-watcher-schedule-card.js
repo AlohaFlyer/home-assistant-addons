@@ -56,7 +56,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       "sensor.flight_watcher_blocked_days", "sensor.flight_watcher_own_trip_times", "sensor.flight_watcher_tradeboard_pickups",
       "sensor.flight_watcher_would_trade", "sensor.flight_watcher_swap_ideas", "sensor.flight_watcher_reserve_grid",
       "input_number.flight_watcher_federal_tax_pct", "input_number.flight_watcher_state_tax_pct", "input_number.flight_watcher_longevity_year", "input_text.flight_watcher_er_trips", "sensor.flight_watcher_schedule_versions"]
-      .map((e) => h.states[e] && h.states[e].last_updated).join("|") + "|" + this._doh(h) + (h.user && h.user.is_owner ? "|owner" : "|user");
+      .map((e) => h.states[e] && h.states[e].last_updated).join("|") + "|" + this._doh(h) + (this._isAdmin(h) ? "|admin" : "|pilot");
     this._h = h;
     if (sig === this._sig) return;
     this._sig = sig;
@@ -160,10 +160,13 @@ class FlightWatcherScheduleCard extends HTMLElement {
   }
   // FW-0048 (Ryan, Nov 6): the auto swap / auto drop / auto add tools stay hidden for every user but Ryan until he
   // turns them on for others. Here that is the DROP mark (it composes a drop request, Test mode); the trade mark and the
-  // swap / pick-up ideas are read only and stay for everyone. Ryan is the HA owner (HA has exactly one), so the test is
-  // is_owner, not is_admin: Pako has another admin login, and a second pilot's account may be made an admin.
-  _owner() { return !!(this._h && this._h.user && this._h.user.is_owner); }
-  _marks() { return this._owner() ? "availability, trade and drop marks" : "availability and trade marks"; }
+  // swap / pick-up ideas are read only and stay for everyone. Ryan is the HA owner (HA has exactly one), so the viewer
+  // test is is_owner, not is_admin: Pako has another admin login, and a second pilot's account may be made an admin.
+  // 1.5.0 (FW-0063): the Watcher's role must say so too: sensor.<prefix>_state attribute role is "admin" on Ryan's
+  // instance only, so a pilot's copy of this card never shows the drop mark, even to the owner, and Ryan's card shows it
+  // to the owner only, as in 1.4.12. A hass with no user yet is not the owner (the card redraws when the user arrives).
+  _isAdmin(h) { const hh = h || this._h || {}; const s = (hh.states || {})["sensor.flight_watcher_state"]; return !!(s && s.attributes && s.attributes.role === "admin" && hh.user && hh.user.is_owner); }
+  _marks() { return this._isAdmin() ? "availability, trade and drop marks" : "availability and trade marks"; }
   _say(msg) { const box = this.shadowRoot.querySelector(".info"); if (box) { box.textContent = msg; box.style.whiteSpace = "pre-line"; box.style.display = "block"; } }
   _render() {
     if (this._locked === undefined) { let v = "1"; try { const g = localStorage.getItem("flight_watcher_lock"); v = g === null ? "1" : g; } catch (e) { v = "1"; } this._locked = v !== "0"; }  // v48: locked by default
@@ -183,7 +186,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         if (lk) { this._locked = !this._locked; try { localStorage.setItem("flight_watcher_lock", this._locked ? "1" : "0"); } catch (e2) { /* ignore */ } this._render(); return; }
         const locked = this._locked;
         const db = e.target.closest(".drb");
-        if (db && !this._owner()) return;  // FW-0048: not drawn for anyone but the owner; ignore a stale one
+        if (db && !this._isAdmin()) return;  // FW-0048, FW-0063: drawn for the owner on the admin's card only; ignore a stale one
         if (db && locked) { this._say(`Settings are locked: tap the lock at the top left to change ${this._marks().replace(" and ", " or ")}.`); return; }
         if (db && db.dataset.k) {
           db.classList.toggle("on");
@@ -235,7 +238,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const fed = num("input_number.flight_watcher_federal_tax_pct", 22), stt = num("input_number.flight_watcher_state_tax_pct", 0);
     const today = new Date(Date.now() - 10 * H).toISOString().slice(0, 10);
     const doh = this._doh();
-    const owner = this._owner();  // FW-0048: the drop mark (auto drop) for the HA owner (Ryan) only
+    const admin = this._isAdmin();  // FW-0048, FW-0063: the drop mark (auto drop) for the HA owner on the admin's (Ryan's) card only
     const lyr = num("input_number.flight_watcher_longevity_year", Math.min(12, dohYear(today, doh)));
     const RATE = rateFor(lyr, today);
     const erOv = String((S["input_text.flight_watcher_er_trips"] || {}).state || "").split(",").filter(Boolean);
@@ -244,7 +247,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const crewN = (c) => (String(c || "").match(/\d{2}/g) || []).reduce((a, x) => a + parseInt(x, 10), 0);
     const hx = (v) => hrs(String(v || "").replace("h", ":"));
     const blocked = new Set(((S["sensor.flight_watcher_blocked_days"] || {}).attributes || {}).days || []);
-    const dropA = (S["sensor.flight_watcher_would_drop"] || {}).attributes || {};
+    const dropA = admin ? (S["sensor.flight_watcher_would_drop"] || {}).attributes || {} : {};  // FW-0063: no Would drop on a pilot
     const dropM = new Set(dropA.keys || []), dropR = dropA.ready || {};
     const st = S["sensor.flight_watcher_schedule"];
     const { y, m, key } = this._key();
@@ -526,7 +529,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const dt = new Date(d + "T12:00:00"); const wk = dt.getDay() === 0 || dt.getDay() === 6;
         const other = dt.getMonth() !== m;
         const sc = this._school(d); const noSchool = !!(sc && sc.days.has(d));
-        const t = trip === "VAC" ? `<span class="vac">VAC</span>` : (trip ? `<span class="trip${trade.has(trip + "|" + d) ? " tr" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${this._esc(((ownT[`${trip}|${d}`] || {}).crew || []).join("\n") || "crew not read yet")}">${this._esc(trip)}</span>${d <= today ? "" : `<span class="trb${trade.has(trip + "|" + d) ? " on" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${trade.has(trip + "|" + d) ? "Marked: would trade this trip for a better one. Tap to unmark." : "Tap to mark this trip as one you would trade for a better one."}">&#8644;</span>`}${d <= today || !owner ? "" : `<span class="drb${dropM.has(trip + "|" + d) ? (dropR[trip + "|" + d] ? " on rdy" : " on") : ""}" data-k="${this._esc(trip + "|" + d)}" title="${dropR[trip + "|" + d] ? "Grid green on every day: drop request drafted (draft only, never sent: drop it yourself in FLICA). Tap to unmark." : dropM.has(trip + "|" + d) ? "Marked: would DROP this trip once the reserve grid is green on every day of it. Tap to unmark." : "Tap to mark this trip as one you would DROP when the grid allows it."}">&#8615;</span>`}` : "");
+        const t = trip === "VAC" ? `<span class="vac">VAC</span>` : (trip ? `<span class="trip${trade.has(trip + "|" + d) ? " tr" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${this._esc(((ownT[`${trip}|${d}`] || {}).crew || []).join("\n") || "crew not read yet")}">${this._esc(trip)}</span>${d <= today ? "" : `<span class="trb${trade.has(trip + "|" + d) ? " on" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${trade.has(trip + "|" + d) ? "Marked: would trade this trip for a better one. Tap to unmark." : "Tap to mark this trip as one you would trade for a better one."}">&#8644;</span>`}${d <= today || !admin ? "" : `<span class="drb${dropM.has(trip + "|" + d) ? (dropR[trip + "|" + d] ? " on rdy" : " on") : ""}" data-k="${this._esc(trip + "|" + d)}" title="${dropR[trip + "|" + d] ? "Grid green on every day: drop request drafted (draft only, never sent: drop it yourself in FLICA). Tap to unmark." : dropM.has(trip + "|" + d) ? "Marked: would DROP this trip once the reserve grid is green on every day of it. Tap to unmark." : "Tap to mark this trip as one you would DROP when the grid allows it."}">&#8615;</span>`}` : "");
         const sw = (swapFor[trip + "|" + d] || []).slice(0, 2).map((i) => `<span class="tag sw" title="${this._esc([`Swap ${trip} for ${i.pairing}`, `${i.dates}  ${i.layover || i.turn || ""}`, i.why, i.src === "T" ? "On the Tradeboard" : "In open time"].join("\n"))}">&#8644; ${this._esc(i.layover || i.turn || "")}(${this._esc(i.pairing)}) ${this._esc(i.soft_gain)}</span>`).join("<br>");
         const crewT = this._esc(((ownT[`${trip}|${d}`] || {}).crew || []).join("\n") || "crew not read yet");
         const rp = repOn[d] ? ` <span class="tm tag" title="${trip && trip !== "VAC" ? `${trip} crew:\n${crewT}\n\nReport ${repOn[d]}` : `Report ${repOn[d]}`}">R ${repOn[d]}</span>` : "";
@@ -739,7 +742,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     <tr><td>Legal next</td><td>Earliest report for another trip: release + 11 h (PWA 10.E.1.a). Tap for the 18 h case.</td></tr>
     <tr><td>Open</td><td>Open time trips starting that day: <span class="fit">fits</span>, <span class="clash">clashes or blocked</span>.</td></tr>
     <tr><td>Ideas</td><td>Tag-ons after your release with legal rest, <b>O</b> = in open time, <b>T</b> = on the Tradeboard. Orange = better trip for a marked one. Tap for details.</td></tr>
-    <tr><td>Day</td><td>Blue = weekend, yellow = no school at HPA (from the school year file), hatched yellow = US or Hawaii holiday with no school file loaded. Tap a day to block it (&#8856;), tap again to unblock; VAC days are always &#8856; and cannot be changed. The lock at the top left (&#128274;) freezes ${owner ? "availability, trade and drop" : "availability and trade"} taps. All times HNL.</td></tr>
+    <tr><td>Day</td><td>Blue = weekend, yellow = no school at HPA (from the school year file), hatched yellow = US or Hawaii holiday with no school file loaded. Tap a day to block it (&#8856;), tap again to unblock; VAC days are always &#8856; and cannot be changed. The lock at the top left (&#128274;) freezes ${admin ? "availability, trade and drop" : "availability and trade"} taps. All times HNL.</td></tr>
     </table>${note ? `<div>${note}</div>` : ""}</details>
     <details class="set"><summary>Pay settings</summary>
       <span>Federal tax <select data-e="input_number.flight_watcher_federal_tax_pct">${sel(0, 45, 0.5, fed, "%")}</select></span>

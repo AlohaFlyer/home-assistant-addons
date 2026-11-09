@@ -1,9 +1,10 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-09, release 1.4.13)
+# HANDOFF: Flight Watcher (refreshed 2026-11-09, release 1.5.0)
 
-State: app **1.4.12** on Pako HI (1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
+State: app **1.5.0** on Pako HI (1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
 per pilot Nov 8, 1.4.10 FW-0068 crew index finds FLICA-rebuilt pairings like H3631B Nov 9, 1.4.11 FW-0069 schedule versions
 for looked-up pilots on the pilot card Nov 9 (`pilotver.py`, list file `pilotver_<key>.json`), 1.4.12 the probe reads
-every rebuilt copy until all pilot seats are named Nov 9; each instance publishes `sensor.<prefix>_working_flight`, read by the Working Flight view on each
+every rebuilt copy until all pilot seats are named Nov 9, 1.4.13 FW-0042 comm / month rule / value from
+`/share/flight_watcher/smart.json` Nov 9, 1.5.0 FW-0063 pilots list and roles (`roles.py`, `ha/pilots.json`) Nov 9; each instance publishes `sensor.<prefix>_working_flight`, read by the Working Flight view on each
 dashboard, see `ha/README.md`). The git history was cleaned on Nov 7 (`ha/` files carry placeholder user ids). Slug `43b22650_flight_watcher`,
 two instances: Ryan (`flight_watcher`, `/data`) and
 James (`second_pilot: james`, `flight_watcher_james`, `/data/james`). James's HA user exists; his Watcher waits for
