@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.5.0
+
+- FW-0063 (pilots and roles): new `roles.py` holds one table, `FEATURES`, of what each Watcher may do; README.md
+  carries the same table ("Pilots and roles"). The default instance (Ryan's, prefix `flight_watcher`) is the only
+  admin; every other instance is a pilot. The role comes from the instance, never from an option. Ryan's instance
+  keeps exactly the 1.4.12 MQTT subscriptions, entities, cards and pushes (tests pin both lists).
+- New option `pilots` (a list of `name`, at most 3 besides the admin), read by the launcher; while it is empty,
+  `second_pilot` is read as before (at read time: the options are never rewritten, so James's setup needs no change).
+  A name that is invalid, repeats, starts with one of the admin's id, topic or folder words (`roles.RESERVED`: `state`,
+  `settings`, `ticket`, `hunt` ...) or would mix with another pilot's ids is left out with a log line. A third pilot
+  gets its prefix, data folder, entities and card copies with no code change.
+- A pilot's Watcher no longer subscribes to `email/alert`, `auto_swap/set`, `swap_map/press` or `drop/set` (nor
+  `crew_scan/press`, as before), refuses a stray message on one with one log line, and empties the retained discovery
+  config of Would drop, Auto swap (dry run) and Map swap pages (read only), so HA removes those three entities from
+  James's device; none is on his dashboard. Its drop scan, `event/drop_ready`, swap page mapping and alert email check
+  never run, and a stored auto swap is turned off at start. The crew index, Hark CCR requests (and now the CCR reply
+  poll, idle on a pilot) and the one-writer duties read the role instead of the instance name.
+- `sensor.<prefix>_state` gains `role` (`admin` or `pilot`) and `features`. The schedule card draws the drop mark only
+  when its Watcher's role is `admin` AND the HA user is the owner: on Ryan's card it shows to the HA owner only, as in
+  1.4.12 (FW-0048; another HA admin login sees no drop mark), and a pilot's copy never shows it, even to Ryan.
+- Push isolation guard: `ha/pilots.json` (new) lists the admin, the pilots, their notify targets and action prefixes;
+  `ha/check_push_isolation.py` reads it (`--pilots=` for another file), reads an id of a pilot it does not know as an
+  offender instead of Ryan's, matches pilot names with underscores (longest name first), and checks each pilot's
+  targets and action prefixes. It fails closed: a notify target `pilots.json` gives to nobody is an offender, as is a
+  neutral-trigger automation that reads several pilots and pushes, or a push to an unlisted target carrying any
+  pilot's action. The snapshot still reports 0 offenders.
+- Review fixes: an automation one pilot's Watcher triggers that pushes may read only that pilot's topics and entities
+  (a James trigger putting Jane's or Ryan's schedule into James's push is an offender), and a Ryan-triggered push no
+  pilot's. The guard reads `ha/pilots.json` and `roles.py` when it runs, not at import, so a broken file is exit 2
+  with one line naming it (it was a traceback with exit 1, the offenders code). Pilot names are words of lowercase
+  letters and digits joined by single underscores (`roles.NAME_RE`, also the `pilots` schema, `cards.py` and the
+  guard): `jane_` or `a__b` gave ids such as `sensor.flight_watcher_jane__state`, which Home Assistant does not keep.
+  A test pins the exact subscribe calls `on_connect` makes for the admin (the 1.4.12 list) and for a pilot.
+- No FLICA page loads are added or changed; FLICA stays read only.
+
 ## 1.4.12
 
 - FW-0068 follow-up (Nov 9, live check of 1.4.10): the probe found H3631 Nov 6 flown as H3631B, but that copy's crew

@@ -1,4 +1,9 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-09, release 1.4.12)
+# HANDOFF: Flight Watcher (refreshed 2026-11-09, release 1.4.12; 1.5.0 built)
+
+Built, not yet merged or live: **1.5.0** (FW-0063 pilots and roles: `roles.py`, option `pilots` with `second_pilot`
+still read, a pilot instance loses Would drop, Auto swap and Map swap pages, `ha/pilots.json` for the push guard).
+After the update: `sensor.flight_watcher_state` version 1.5.0 role admin, `sensor.flight_watcher_james_state` role
+pilot, Ryan's `*.flight_watcher_*` entity list unchanged, James's three retired entities gone.
 
 State: app **1.4.12** on Pako HI (1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
 per pilot Nov 8, 1.4.10 FW-0068 crew index finds FLICA-rebuilt pairings like H3631B Nov 9, 1.4.11 FW-0069 schedule versions

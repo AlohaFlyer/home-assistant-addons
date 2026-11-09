@@ -284,3 +284,56 @@ def test_ticket_fixed_event_on_the_instance_prefix(tmp_path, monkeypatch):
     fake.msgs.clear()
     assert W.ticket_act(json.dumps({"id": "FW-0001", "action": "fixed"})) is None  # Ryan's ticket: refused
     assert not [1 for tp, _, _ in fake.msgs if tp.endswith("/event/ticket_fixed")]
+
+
+# ---------------------------------------------------------------- 1.5.0 (FW-0063) roles
+# every entity Ryan's instance announced in 1.4.12 (discovery's default_entity_ids): 1.5.0 may not change one
+ADMIN_IDS_1412 = [
+    "binary_sensor.flight_watcher_session_ok", "button.flight_watcher_check_now",
+    "button.flight_watcher_map_swap_pages_read_only", "button.flight_watcher_re_arm",
+    "button.flight_watcher_scan_crewtrac_charters_now", "button.flight_watcher_update_schedules",
+    "number.flight_watcher_hunt_check_every", "number.flight_watcher_normal_check_every",
+    "sensor.flight_watcher_blocked_days", "sensor.flight_watcher_charters", "sensor.flight_watcher_crew_index",
+    "sensor.flight_watcher_finds", "sensor.flight_watcher_flica_fetches", "sensor.flight_watcher_improved_pay_gross",
+    "sensor.flight_watcher_last_check", "sensor.flight_watcher_last_match", "sensor.flight_watcher_last_new_pairing",
+    "sensor.flight_watcher_next_check", "sensor.flight_watcher_ot_requests", "sensor.flight_watcher_own_trip_times",
+    "sensor.flight_watcher_pickers", "sensor.flight_watcher_pilot_schedule", "sensor.flight_watcher_pot_count",
+    "sensor.flight_watcher_recall_o75", "sensor.flight_watcher_reserve_grid", "sensor.flight_watcher_rules_active",
+    "sensor.flight_watcher_schedule", "sensor.flight_watcher_schedule_versions", "sensor.flight_watcher_settings",
+    "sensor.flight_watcher_state", "sensor.flight_watcher_swap_ideas", "sensor.flight_watcher_swap_mode",
+    "sensor.flight_watcher_swap_test_requests", "sensor.flight_watcher_tickets",
+    "sensor.flight_watcher_tradeboard_pickups", "sensor.flight_watcher_upload_status",
+    "sensor.flight_watcher_uploads", "sensor.flight_watcher_working_flight", "sensor.flight_watcher_would_drop",
+    "sensor.flight_watcher_would_trade", "switch.flight_watcher_auto_swap_dry_run",
+    "switch.flight_watcher_hunt_mode", "switch.flight_watcher_pause"
+]
+PILOT_RETIRED_1500 = ("switch.flight_watcher_auto_swap_dry_run", "button.flight_watcher_map_swap_pages_read_only",
+                      "sensor.flight_watcher_would_drop")
+ADMIN_ONLY_1412 = ("sensor.flight_watcher_crew_index", "button.flight_watcher_update_schedules")  # never on a pilot
+
+
+def test_discovery_ids_by_role(tmp_path, monkeypatch):
+    """The admin announces exactly the 1.4.12 entities, one config each in entity_defs order; a pilot loses only Would
+    drop, Auto swap (dry run) and Map swap pages, whose retained configs it empties so HA removes them (the crew
+    index entities were never a pilot's)."""
+    W = _load(tmp_path, monkeypatch, "", OPTS)
+    c = FakeClient()
+    W.discovery(c)
+    made = [json.loads(p)["default_entity_id"] for t, p, _ in c.msgs if p]
+    assert sorted(made) == ADMIN_IDS_1412 and len(made) == len(set(made))
+    assert [t for t, p, _ in c.msgs if not p] == ["homeassistant/select/flight_watcher/swap_mode/config"]
+    defs = W.entity_defs()
+    assert [(t, json.loads(p)) for t, p, _ in c.msgs if p] == \
+        [(f"homeassistant/{comp}/flight_watcher/{oid}/config", cfg) for comp, oid, cfg, _ in defs]
+    assert {oid: f for _, oid, _, f in defs if f != "core"} == W.ROLES.ENTITY_FEATURE
+    tmp2 = tmp_path / "p"
+    tmp2.mkdir()
+    W = _load(tmp2, monkeypatch, "pilot2", OPTS)
+    c = FakeClient()
+    W.discovery(c)
+    made = {json.loads(p)["default_entity_id"].replace("flight_watcher_pilot2_", "flight_watcher_") for t, p, _ in c.msgs if p}
+    assert set(ADMIN_IDS_1412) - made == set(PILOT_RETIRED_1500) | set(ADMIN_ONLY_1412) and made <= set(ADMIN_IDS_1412)
+    emptied = [t for t, p, _ in c.msgs if not p]
+    assert emptied == [f"homeassistant/{t}/flight_watcher_pilot2/{o}/config" for t, o in (
+        ("sensor", "drop_away"), ("switch", "auto_swap"), ("button", "swap_map"), ("sensor", "crew_index"),
+        ("button", "crew_scan"), ("select", "swap_mode"))]

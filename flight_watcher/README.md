@@ -40,8 +40,46 @@ publishes what it finds to Home Assistant over MQTT.
   (FW-0058), and flags a pilot on two overlapping trips, reading both again first (FW-0059). Since 1.4.10 it finds
   a package trip FLICA rebuilt under a lettered id (H3631 flown as H3631B) by reading the lettered ids of a departed
   trip whose crew line names no pilot, once per trip (FW-0068).
-- A second pilot: option `second_pilot` runs a second Watcher with its own data, MQTT prefix
-  (`flight_watcher_<name>`), entities and card copies.
+- Pilots besides the admin (1.5.0): option `pilots` (or the older `second_pilot`) runs one more Watcher per pilot
+  with its own data, MQTT prefix (`flight_watcher_<name>`), entities and card copies (Pilots and roles, below).
+
+## Pilots and roles (1.5.0, FW-0063)
+
+The app runs one Watcher for the admin (Ryan: prefix `flight_watcher`, `/data`, the Configuration tab logins) and one
+per pilot in the option `pilots` (a list of `name`, at most 3; each pilot gets prefix `flight_watcher_<name>`,
+`/data/<name>`, its own entities, card copies and FLICA session, and enters its logins on its own Settings card).
+While `pilots` is empty, the older `second_pilot` is read instead; the options are never rewritten. A name must be 1
+to 32 lowercase letters and digits, with single underscores between words (`jane_doe`; not `jane_` or `a__b`, which
+Home Assistant cannot keep in an entity id), must not start with a word of the admin's ids, topics or folders
+(`state`, `settings`, `ticket`, `hunt` and the rest of `roles.RESERVED`) and must not start with another pilot's
+name and `_`; a name that breaks a rule is left out with a log line.
+
+The role comes from the instance, never from an option: the default instance is the only admin. What each role has
+is one table, `roles.py` `FEATURES` (Portal: whether a pilot's portal may offer it, from 1.6.0):
+
+| Feature | Who | Portal | Gates |
+|:--|:--|:--|:--|
+| `core` | all | yes | pot watch, schedule, finds, pickups, Tradeboard, recall check, versions, rules, pilot lookup, charters, swap ideas, trade and blocked marks, switches, buttons and sliders |
+| `prefs` | all | yes | the pay and tax helpers the schedule card and the Watcher read (federal and state tax %, longevity year, ER trips) |
+| `crew_index` | admin | no | the crew index runs (crew_scan/press, sensor crew_index, button update_schedules), previous-month lookups and pilot schedule versions from the index |
+| `hark_ccr` | admin | no | CCR requests to Hark (/share/flight_watcher/ccr_requests) and the poll of its replies |
+| `one_writer` | admin | no | files with one writer: the seniority list re-read, the versions seed, the finds file sweep of other folders |
+| `web_ui` | admin | no | the ingress Web UI (run.py starts it for the default instance only) |
+| `addon_config` | admin | no | the FLICA and CrewTrac logins from the add-on Configuration tab |
+| `drop_mark` | admin | no | would drop marks (drop/set), the drop scan, event/drop_ready, sensor would_drop |
+| `auto_swap` | admin | no | the auto swap dry run switch (auto_swap/set) and the swap page mapping (swap_map/press) |
+| `paycheck` | admin | no | the paycheck check card on Ryan's dashboard (no Watcher code) |
+| `admin_pushes` | admin | no | FLICA alert emails HA forwards (email/alert) and the email check |
+| `tickets` | all | no | tickets (ticket/new, image, act, edit, delete); a pilot sees and acts on his own |
+| `uploads` | all | no | uploads in chunks (upload/chunk) and the uploads sensors |
+
+A pilot's Watcher does not subscribe to `email/alert`, `auto_swap/set`, `swap_map/press`, `drop/set` or
+`crew_scan/press` (a stray message on one is refused with one log line) and has no Would drop, Auto swap (dry run),
+Map swap pages, Crew index or Update schedules entity (1.5.0 empties the retained config of the first three).
+`sensor.<prefix>_state` carries `role` (`admin` or `pilot`) and `features`; the schedule card draws the drop mark
+when its Watcher's role is `admin` and the HA user is the owner (Ryan), as in 1.4.12 (a pilot's copy never does,
+whoever is looking). The admin's subscriptions, entities, cards and pushes are the 1.4.12 ones (`tests/test_roles.py`,
+`tests/test_instance.py`).
 
 ## Settings
 

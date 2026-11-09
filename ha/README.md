@@ -85,6 +85,7 @@ household users (four, a guest login among them) can open `flight-watcher-james`
 | `dashboard_flight_watcher_james.json` | `/config/.storage/lovelace.flight_watcher_james` (dashboard `flight-watcher-james`) |
 | `packages/flight_watcher_wx.yaml` | `/config/packages/flight_watcher_wx.yaml` |
 | `check_push_isolation.py` | the push-isolation guard (below) |
+| `pilots.json` | none: who the guard knows (admin `ryan`, pilots `["james"]`), their notify targets and action prefixes (1.5.0) |
 | `sounds/flight-watcher-buzzer.wav` | `/config/www/flight-watcher-buzzer.wav` (`/local/`), the FW-0054 new-pairing buzzer; `sounds/make_buzzer.py` regenerates it byte for byte |
 
 ## Rules
@@ -117,16 +118,31 @@ household users (four, a guest login among them) can open `flight-watcher-james`
 
 ## Push-isolation guard
 
-`python3 ha/check_push_isolation.py [file] [--no-yaml]` checks the automations snapshot (FW-0038: each pilot's
-Watcher pushes only that pilot's phones). Exit 0 with a one-line summary when clean, 1 with one `OFFENDER` line per
-problem, 2 when the file cannot be read. It uses PyYAML when installed, else a small built-in reader
+`python3 ha/check_push_isolation.py [file] [--no-yaml] [--pilots=pilots.json]` checks the automations snapshot
+(FW-0038: each pilot's Watcher pushes only that pilot's phones). Exit 0 with a one-line summary when clean, 1 with one
+`OFFENDER` line per problem, 2 with one line naming the file when the automations file, the pilots file or
+`flight_watcher/roles.py` cannot be read (the guard reads them when it runs, not at import, so `--pilots=<file>` works
+while the default `ha/pilots.json` is broken). It uses PyYAML when installed, else a small built-in reader
 (`--no-yaml` forces it).
 
+- 1.5.0 (FW-0063): the pilots come from `ha/pilots.json` (admin `ryan`, pilots `["james"]`, each one's notify
+  targets and action prefixes); add a pilot there when it joins the app's `pilots` option, no code change. An id is
+  a pilot's when it starts with `flight_watcher_<name>` (the longest known name wins: `jane_doe` before `jane`),
+  Ryan's when its first word is one of the app's reserved words (`flight_watcher/roles.py` `RESERVED`), and an
+  unknown pilot's otherwise, which is an offender.
 - Ryan's notify targets: `notify.mobile_app_ryans_iphone_16`, `notify.mobile_app_ryans_iphone`,
-  `notify.mobile_app_ryan_macbook`. Every other target counts as not Ryan's.
-- Triggered by `flight_watcher_james/...` or a `*.flight_watcher_james_*` entity: never a Ryan target.
-- Triggered only by `flight_watcher/...` or Ryan's `*.flight_watcher_*` entities: Ryan targets only, or none.
-  Neutral triggers (time, webhook, IMAP) that push must push one pilot and read only that pilot's data.
+  `notify.mobile_app_ryan_macbook`. A target `pilots.json` gives a pilot is that pilot's. A notify target it gives to
+  nobody is an offender (1.5.0, fail closed: with several pilots the guard cannot tell whose phone it is), so list
+  each pilot's targets there before an automation pushes them.
+- Triggered by `flight_watcher_james/...` or a `*.flight_watcher_james_*` entity: never a Ryan target, nor another
+  pilot's; when it pushes, its conditions and actions read only James's topics and entities (1.5.0: reading Ryan's
+  or another pilot's schedule into James's push is an offender).
+- Triggered only by `flight_watcher/...` or Ryan's `*.flight_watcher_*` entities: Ryan targets only, or none; when it
+  pushes, it reads no pilot's topics or entities (1.5.0).
+  Neutral triggers (time, webhook, IMAP) that push must push one pilot and read only that pilot's data (an automation
+  that reads several pilots' data and pushes is an offender).
+- Pilot names in `pilots.json` follow the app's rule (`roles.NAME_RE`: 1 to 32 lowercase letters and digits, single
+  underscores between words); any other name is exit 2.
 - `<prefix>/event/ticket_fixed` pushing Ryan: needs a condition on `reporter == 'ryan'`.
 - `mobile_app_notification_action` handlers filter on their own pilot's action prefixes only (Ryan `RECALL_`,
   `FLIGHT_WATCHER_`; James `JRECALL_`, `FLIGHT_WATCHER_JAMES_`), and pushes carry only the receiving pilot's.
