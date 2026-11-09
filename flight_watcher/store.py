@@ -96,6 +96,9 @@ def is_prem(row):
     return any(str(row.get(k) or "").strip().upper() == "X" for k in ("x1", "prem"))
 
 
+FIND_SMART = ("comm", "comm_why", "value", "month_rule")  # FW-0042 (watcher.SMART_FIELDS)
+
+
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
@@ -208,7 +211,10 @@ class Store:
                         "turn": r.get("turn"), "captain": pk.get("ca") or r.get("captain") or "",
                         "prem": is_prem(r), "picked_by": pk.get("by", ""), "source": r.get("source", "pot"), "pickup_status": pk.get("status", ""), "pickup_known": bool(pk.get("known")),
                         "inflt": pk.get("inflt"), "inflt_trip": pk.get("inflt_trip", ""), "picker_approx": bool(pk.get("approx")),
-                        "month": month, "seen": first, "gone": gone})
+                        "month": month, "seen": first, "gone": gone,
+                        # FW-0042: the smart push fields as the row last had them in the pot ('' before 1.4.13 or
+                        # without smart.json)
+                        **{k: r.get(k, "") for k in FIND_SMART}})
         return out
 
     # ---- pickers (0.4.18, Ryan): how fast each FO/RO grabs a trip = seconds the find sat in open time
