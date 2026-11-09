@@ -178,7 +178,7 @@ def test_rebuilt_trip_found_and_indexed(W, tmp_path, monkeypatch, caplog, a_page
     assert (r["status"], r["date"], r["end_date"], r["route"]) == ("ok", "2026-11-06", "2026-11-08", "HNL-LAX-HNL")
     assert [(c["pos"], c["emp"]) for c in r["crew"]] == [("CA", "10001"), ("FO", "10003")]
     assert rows["H3999|2026-11-06"]["crew"] == OPEN2 and rows["H3999|2026-11-06"]["checked_at"] == "2026-11-07T00:00:00"
-    assert W.DB.get(W.CREW_VARIANT_KEY)["H3999|2026-11-06"] == {"at": "2026-11-10T12:05:00", "found": "H3999B"}
+    assert W.DB.get(W.CREW_VARIANT_KEY)["H3999|2026-11-06"] == {"at": "2026-11-10T12:05:00", "found": "H3999B", "v": 2}
     assert W.DB.find_crew("10003")[0]["name"] == "Roe, Rick"
     assert "crew index: H3999 2026-11-06 flew as H3999B (read)" in caplog.text
     assert "Roe" not in caplog.text and "Doe" not in caplog.text and "Lee" not in caplog.text
@@ -349,3 +349,71 @@ def test_old_probe_records_are_pruned(W, tmp_path):
     fl = VarFl({})
     assert W.crew_variants(fl, insts, W.DB.crew_rows(), 50) == (0, "ok", False)
     assert list(W.DB.get(W.CREW_VARIANT_KEY)) == ["H3999|2026-11-06"] and fl.urls == []
+
+
+# ---------------------------------------------------------------- 1.4.12: a crew split over two rebuilt copies
+OPEN3 = OPEN2 + [{"pos": "RO", "name": "OPEN", "emp": ""}]
+
+
+def _setup3(W, tmp_path):
+    """Like _setup, with a 3-pilot package trip (CA, FO, RO all OPEN after departure)."""
+    insts = _setup(W, tmp_path)
+    W.DB.crew_put("H3999|2026-11-06", "H3999", "2026-11-06", "2026-11-08", "HNL-LAX-HNL", OPEN3, "2026-11-07T00:00:00", "ok")
+    return insts
+
+
+def test_crew_split_over_two_copies_reads_on(W, tmp_path, monkeypatch, caplog):
+    """FLICA rebuilt H3999 for the captain as H3999B and for the FO and RO as H3999C: B names 1 of the 3 pilot seats,
+    so C is read too, and every pilot gets the trip on his rebuilt month; D is not read once all seats are named."""
+    insts = _setup3(W, tmp_path)
+    rows = W.DB.crew_rows()
+    _sleeps(W, monkeypatch, [])
+    fl = VarFl({("H3999B", "20261106"): page("H3999B", "06nov", "ca 10001 doe, jane"),
+                ("H3999C", "20261106"): page("H3999C", "06nov", "fo 10003 roe, rick ro 10004 poe, pat")})
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        assert W.crew_variants(fl, insts, rows, 50) == (3, "ok", False)
+    assert [p for p, _ in _read(fl)] == ["H3999A", "H3999B", "H3999C"]
+    assert W.DB.get(W.CREW_VARIANT_KEY)["H3999|2026-11-06"] == {"at": "2026-11-10T12:05:00", "found": "H3999B,H3999C",
+                                                                 "v": 2}
+    for emp, pid in (("10001", "H3999B"), ("10003", "H3999C"), ("10004", "H3999C")):
+        assert [r["pairing"] for r in W.DB.crew_by_emp(emp)] == [pid]
+    assert "crew index: H3999B 2026-11-06 names 1 of 3 pilots, the next letters are read too (crew line: ca 10001 x, x)" \
+        in caplog.text
+    assert "Doe" not in caplog.text and "doe" not in caplog.text and "Roe" not in caplog.text
+
+
+def test_a_copy_found_before_1_4_12_with_seats_unnamed_is_probed_again(W, tmp_path, monkeypatch):
+    """A probe record from 1.4.10 / 1.4.11 (no v) whose copy named fewer pilots than the trip's seats is probed once
+    more: the copy indexed already is not read again, the letters not indexed are; a complete one is left alone."""
+    insts = _setup3(W, tmp_path)
+    W.note_sched_trips([{"trip": "H3999B", "start": "2026-11-06", "end": "2026-11-08"}], "lookup")
+    W.DB.crew_put("H3999B|2026-11-06", "H3999B", "2026-11-06", "2026-11-08", "", [NAMED[0]], "2026-11-09T00:00:00", "ok")
+    W.DB.put(W.CREW_VARIANT_KEY, {"H3999|2026-11-06": {"at": "2026-11-09T00:00:00", "found": "H3999B"}})
+    insts, rows = W.crew_instances(), W.DB.crew_rows()
+    _sleeps(W, monkeypatch, [])
+    fl = VarFl({("H3999C", "20261106"): page("H3999C", "06nov", "fo 10003 roe, rick ro 10004 poe, pat")})
+    assert W.crew_variants(fl, insts, rows, 50) == (2, "ok", False)
+    assert [p for p, _ in _read(fl)] == ["H3999A", "H3999C"]
+    assert W.DB.get(W.CREW_VARIANT_KEY)["H3999|2026-11-06"]["found"] == "H3999B,H3999C"
+    # recorded with v 2: never again
+    assert W.crew_variants(fl, W.crew_instances(), W.DB.crew_rows(), 50) == (0, "ok", False) and len(fl.urls) == 2
+
+
+def test_an_old_record_whose_copy_names_every_seat_stays(W, tmp_path, monkeypatch):
+    insts = _setup(W, tmp_path)  # 2 pilot seats
+    W.note_sched_trips([{"trip": "H3999B", "start": "2026-11-06", "end": "2026-11-08"}], "lookup")
+    W.DB.crew_put("H3999B|2026-11-06", "H3999B", "2026-11-06", "2026-11-08", "", NAMED, "2026-11-09T00:00:00", "ok")
+    old = {"H3999|2026-11-06": {"at": "2026-11-09T00:00:00", "found": "H3999B"}}
+    W.DB.put(W.CREW_VARIANT_KEY, old)
+    fl = VarFl({})
+    assert W.crew_variants(fl, W.crew_instances(), W.DB.crew_rows(), 50) == (0, "ok", False)
+    assert fl.urls == [] and W.DB.get(W.CREW_VARIANT_KEY) == old
+
+
+def test_crew_mask_keeps_seats_and_numbers_only():
+    assert CI.crew_mask("pairing details h3631b:06nov crew: ca 9606 doe, jane fb 19852 roe jr, rick ro open") == \
+        "ca 9606 x, x fb 19852 x x, x ro open"
+    assert CI.crew_mask("crew: ca 10001 ng, jo ckp f/o 10002 li, al") == "ca 10001 x, x ckp f/o 10002 x, x"
+    assert CI.crew_mask("no crew line here") == "" and CI.crew_mask(None) == ""
+    assert CI.pilot_seats(OPEN3) == 3 and CI.pilot_seats(OPEN3 + [{"pos": "FA", "name": "x", "emp": "1"}]) == 3
+    assert CI.named_pilots(NAMED + OPEN2) == {"10005", "10006"}

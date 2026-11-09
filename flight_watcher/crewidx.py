@@ -191,6 +191,41 @@ def variant_ids(pid):
     return [pid.upper() + c for c in VARIANT_LETTERS] if BASE_ID_RE.match(pid) else []
 
 
+def pilot_seats(crew):
+    """FW-0068 (1.4.12): the pilot seats on a crew line, OPEN ones too: the trip's complement."""
+    return sum(1 for c in crew or [] if c.get("pos") in PILOT_POS)
+
+
+def named_pilots(crew):
+    """FW-0068 (1.4.12): the pilots a crew line names (employee number, else name); OPEN seats are not."""
+    return {c.get("emp") or c.get("name") for c in crew or []
+            if c.get("pos") in PILOT_POS and c.get("name") and c.get("name") != "OPEN"}
+
+
+SEAT_TOKEN_RE = re.compile(r"[a-z]{2}|[a-z]/[a-z]")
+
+
+def crew_mask(text, cap=240):
+    """FW-0068 (1.4.12): a pairing page's crew line for the log with every word masked ('x') except seat codes (two
+    letters, or 'f/o', followed by a number or 'open'), 'open' and 'ckp': it shows how FLICA laid out the seats (a seat
+    code the parser does not know, a seat with no number) without a name. Employee numbers stay, as elsewhere in the
+    log. '' when the page has no crew line."""
+    m = re.search(r"crew\s*:\s*(.*)$", text or "", re.I | re.S)
+    if not m:
+        return ""
+    toks = m.group(1)[:cap].lower().split()
+    out = []
+    for i, t in enumerate(toks):
+        nxt = toks[i + 1] if i + 1 < len(toks) else ""
+        if t.isdigit() or t in ("open", "ckp"):
+            out.append(t)
+        elif SEAT_TOKEN_RE.fullmatch(t) and (nxt.isdigit() or nxt == "open"):
+            out.append(t)
+        else:
+            out.append(re.sub(r"[a-z]+", "x", t))
+    return " ".join(out)
+
+
 def page_names(text, pid, iso):
     """FW-0068: True when a pairing page's visible text names exactly this pairing on this date. The mobile pairing
     page's header reads 'pairing details h3601:26nov' (lowercase visible text, the date as DDmon): 'h3631:06nov' is
