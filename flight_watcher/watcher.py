@@ -10,6 +10,7 @@ import logging
 import os
 import random
 import re
+import stat
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -47,8 +48,10 @@ import working as WK
 import pilotver as PV
 import smart as SMART
 import roles as ROLES
+import portal as PT
+import ntfy as NT
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -60,8 +63,13 @@ COOKIES = f"{DATA}/storage_state.json"
 # options stay Ryan's.
 T = os.environ.get("FLIGHT_WATCHER_PREFIX", "flight_watcher")
 INSTANCE = os.environ.get("FLIGHT_WATCHER_INSTANCE", "")
-# 1.5.0 (FW-0063): the pilot's portal is on (1.6.0 sets it; 1.5.0 never does, and no subscription depends on it yet)
+# 1.5.0 (FW-0063): the pilot's portal is on. 1.6.0 (FW-0061): run.py sets it, with the pilot's portal folder, the
+# signing key's path and the ntfy Click origin, only for a pilot entry with portal: true (portal_on())
 PORTAL = os.environ.get("FLIGHT_WATCHER_PORTAL", "") == "1"
+PORTAL_DIR = os.environ.get("FLIGHT_WATCHER_PORTAL_DIR", "")
+PORTAL_KEY_FILE = os.environ.get("FLIGHT_WATCHER_PORTAL_KEY", "")
+PORTAL_ORIGIN = PT.origin_ok(os.environ.get("FLIGHT_WATCHER_PORTAL_ORIGIN", ""))
+PORTAL_PUB = os.environ.get("FLIGHT_WATCHER_PORTAL_PUB", "")  # the admin's Web UI shows it (never a pilot's)
 OPTIONS_FILE = os.environ.get("FLIGHT_WATCHER_OPTIONS", f"{DATA}/options.json")
 CREDS_FILE = f"{DATA}/creds.json"
 KEY_FILE = f"{DATA}/settings_key.pem"  # 1.1.0: this instance's key for sealed settings from the dashboard card
@@ -82,6 +90,16 @@ def www_key():
         _KEY["w"] = WF.load_key(WWW_KEY_FILE)
     return _KEY["w"]
 CRED_KEYS = ("username", "password", "ctweb_username", "ctweb_password", "my_name")
+# 1.6.0 (FW-0061): a portal pilot's ntfy topic and token, kept in creds.json beside the logins; accepted only from a
+# sealed settings message and only on a pilot whose portal is on (never on the admin), never shown or logged
+NTFY_KEYS = NT.KEYS
+PREFS_FILE = f"{DATA}/prefs.json"  # 1.6.0: a portal pilot's pay and tax prefs (pref/set); the admin never reads it
+
+
+def portal_on():
+    """1.6.0 (FW-0061): this instance is a pilot whose portal is on (run.py: option pilots[].portal). Never the admin.
+    Reads its globals when called."""
+    return PORTAL and ROLES.role(INSTANCE) == ROLES.PILOT and bool(PORTAL_DIR)
 
 
 def has(feature):
@@ -178,7 +196,7 @@ FLAGS.update({k: bool((S.get("switches") or {}).get(k)) for k in SWITCHES})
 CONNECT_STATES_DELAY_S = 3.0
 # Check frequency from the dashboard sliders (number entities); persisted in state.
 # Each gap is randomized +-30 % around the setting so the checks never look machine-regular.
-FREQ_LIMITS = {"normal_min": (1, 20), "hunt_s": (5, 90)}
+FREQ_LIMITS = ROLES.FREQ_LIMITS  # normal_min 1 to 20, hunt_s 5 to 90 (roles.py; the portal spool checks these too)
 JITTER = 0.3
 CHECK_NOW_MIN_GAP_S = 10
 RULES = {"list": [], "published": set()}
@@ -234,9 +252,11 @@ def refused_sub(topic):
     if not topic.startswith(f"{T}/"):
         return False
     sub = topic[len(T) + 1:]
-    if ROLES.sub_allowed(sub, INSTANCE):
+    if ROLES.sub_allowed(sub, INSTANCE, portal_on()):
         return False
-    log.info("MQTT %s refused: not for a pilot instance (%s)", sub, ROLES.SUBS.get(ROLES.sub_key(sub)))
+    why = ("the portal is off on this instance" if ROLES.sub_key(sub) in ROLES.PORTAL_SUBS
+           else "not for a pilot instance")
+    log.info("MQTT %s refused: %s (%s)", sub, why, ROLES.SUBS.get(ROLES.sub_key(sub)))
     return True
 
 
@@ -260,6 +280,9 @@ def on_message(c, u, msg):
         return
     if msg.topic == f"{T}/settings/set":
         settings_cmd(msg.payload.decode(errors="replace"))
+        return
+    if msg.topic == f"{T}/pref/set":  # 1.6.0 (FW-0061): a portal pilot only (roles.PORTAL_SUBS)
+        pref_cmd(msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/upload/chunk":
         upload_chunk(msg.payload)
@@ -329,7 +352,7 @@ def on_message(c, u, msg):
         lo, hi = FREQ_LIMITS[key]
         try:
             v = int(round(float(p)))
-        except ValueError:
+        except (ValueError, OverflowError):  # 'inf' or '1e999' is OverflowError: it must not end paho's thread
             return
         S.setdefault("freq", {})[key] = max(lo, min(hi, v))
         save_state(S)
@@ -339,6 +362,19 @@ def on_message(c, u, msg):
         rule_live_cmd(c, msg.topic.split("/")[2], p == "ON")
         return
     WAKE.set()
+
+
+def on_message_safe(c, u, msg):
+    """paho's on_message (1.6.0): on_message, with any error a handler lets out logged once per message (its type and
+    the topic's sub only, never the payload) instead of re-raised. paho 2.1 re-raises a callback's error and its
+    network thread then ends: no MQTT command (settings/set, hunt, pause, a portal's command) would be read again
+    until a restart."""
+    try:
+        on_message(c, u, msg)
+    except Exception as e:  # noqa: BLE001
+        topic = str(getattr(msg, "topic", ""))
+        log.info("MQTT %s skipped: %s", topic[len(T) + 1:] if topic.startswith(T + "/") else "message",
+                 type(e).__name__)
 
 
 def remember_switch(key, on):
@@ -423,6 +459,10 @@ def settings_state(creds=None, result=""):
         st.update(SEAL.public_info(settings_key()))
     except Exception as e:  # noqa: BLE001 (no key: the card says so; Web UI and plain settings/set still work)
         log.info("settings key unavailable: %s", e)
+    if portal_on():  # 1.6.0 (FW-0061): the card shows the ntfy fields only then; set / not set, never a value
+        c = load_creds() if creds is None else creds
+        st.update({"ntfy": True, "has_ntfy_topic": bool(c.get("ntfy_topic")),
+                   "has_ntfy_token": bool(c.get("ntfy_token"))})
     return st
 
 
@@ -433,7 +473,8 @@ def publish_settings(c=None, creds=None, result=""):
 def settings_cmd(payload):
     """0.10.0: {T}/settings/set {username?, password?, ctweb_username?, ctweb_password?, my_name?} merges the
     non-empty values into creds.json (mode 600), publishes settings/state (no passwords) and restarts this
-    watcher after RESTART_DELAY_S so run.py brings it back with the new credentials."""
+    watcher after RESTART_DELAY_S so run.py brings it back with the new credentials. 1.6.0 (FW-0061): on a pilot
+    whose portal is on, a sealed message may also carry ntfy_topic and ntfy_token (a plain one never does)."""
     try:
         d = json.loads(payload)
         if not isinstance(d, dict):
@@ -441,9 +482,18 @@ def settings_cmd(payload):
     except (ValueError, TypeError) as e:
         log.info("settings ignored: %s", e)
         return False
+    keys = CRED_KEYS
     if "enc" in d:  # 1.1.0: sealed by the dashboard Settings card
         try:
             d = SEAL.open_sealed(settings_key(), d["enc"])
+            if portal_on():  # 1.6.0 (FW-0061): ntfy only sealed, only on a portal pilot
+                keys = CRED_KEYS + NTFY_KEYS
+                bad = [k for k, ok in (("ntfy_topic", NT.TOPIC_RE), ("ntfy_token", NT.TOKEN_RE))
+                       if isinstance(d.get(k), str) and d[k].strip() and not ok.fullmatch(d[k].strip())]
+                for k in bad:
+                    d.pop(k)
+                if bad:
+                    log.info("settings: %s not usable, left out", ", ".join(bad))
         except Exception as e:  # noqa: BLE001 (SealError, or no usable key: never let it reach paho's thread)
             msg = str(e) if isinstance(e, SEAL.SealError) else f"settings key unavailable ({type(e).__name__})"
             log.info("sealed settings refused: %s", msg)
@@ -454,13 +504,13 @@ def settings_cmd(payload):
             return False
     cur = load_creds()
     changed = []
-    for k in CRED_KEYS:
+    for k in keys:
         v = d.get(k)
         if isinstance(v, str) and v.strip() and cur.get(k) != v.strip():
             cur[k] = v.strip()
             changed.append(k)
     if not changed:
-        log.info("settings: nothing new (keys %s)", ", ".join(sorted(k for k in d if k in CRED_KEYS)) or "none")
+        log.info("settings: nothing new (keys %s)", ", ".join(sorted(k for k in d if k in keys)) or "none")
         publish_settings(creds=cur, result="nothing new")
         return False
     tmp = CREDS_FILE + ".tmp"
@@ -757,6 +807,7 @@ def write_finds_months():
                 if i < 2:
                     rev.update(f"{month}\n{text}\n".encode())
         FINDS_FILES["all"] = True
+        portal_files_dirty()  # 1.6.0: a portal pilot copies them to out/files (no-op otherwise)
         return rev.hexdigest()[:12]
     except Exception as e:
         log.info("finds month files skipped: %s", WF.scrub(e, key))  # an OSError names the file: never log the key
@@ -969,8 +1020,9 @@ def discovery(c):
 def subscribe_all(cl):
     """1.5.0 (FW-0063): this instance's subscriptions (roles.subscriptions). The admin's are the 1.4.12 list; a pilot
     instance does not take email/alert, auto_swap/set, swap_map/press, drop/set or crew_scan/press. upload/chunk at
-    qos 1 (FW-0066: an upload in chunks, mqtt.publish from the uploads card)."""
-    for t, qos in ROLES.subscriptions(INSTANCE, PORTAL):
+    qos 1 (FW-0066: an upload in chunks, mqtt.publish from the uploads card). 1.6.0: a pilot whose portal is on
+    also takes pref/set (roles.PORTAL_SUBS)."""
+    for t, qos in ROLES.subscriptions(INSTANCE, portal_on()):
         cl.subscribe((f"{T}/{t}", qos) if qos else f"{T}/{t}")
 
 
@@ -979,7 +1031,9 @@ def mqtt_start():
     c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=T)
     c.username_pw_set(m["username"], m["password"])
     c.will_set(AVAIL, "offline", retain=True)
-    c.on_message = on_message
+    c.on_message = on_message_safe
+    if portal_on():  # 1.6.0 (FW-0061): a portal pilot notes what it publishes for its export (portal_wrap)
+        portal_wrap(c)
 
     def on_connect(cl, u, f, rc, p=None):
         cl.publish(AVAIL, "online", retain=True)
@@ -1101,6 +1155,7 @@ def write_list_file(name, obj):
                     fh.write(text)
                 os.replace(tmp, path)
                 LIST_REV[name] = (key, rev)
+                portal_files_dirty()  # 1.6.0: a portal pilot copies it to out/files (no-op otherwise)
         return key, rev
     except Exception as e:
         log.info("%s file skipped: %s", name, WF.scrub(e, key))
@@ -1127,7 +1182,8 @@ def count_fetch():
 
 
 def set_machine(state, note=""):
-    if S.get("machine") != state:
+    moved = S.get("machine") != state
+    if moved:
         log.info("state %s -> %s %s", S.get("machine"), state, note)
     if S.get("machine") != state or not S.get("since"):
         S["since"] = now_iso()
@@ -1137,6 +1193,8 @@ def set_machine(state, note=""):
     pub("state", state)
     pub("state_attr", {"note": note, "version": VERSION, "since": S["since"], "instance": INSTANCE, "doh": pilot_doh(),
                        "role": ROLES.role(INSTANCE), "features": ROLES.features(INSTANCE)})  # 1.5.0 (FW-0063)
+    if moved and EXPORT["on"] and ROLES.machine_event(state):  # 1.6.0 (FW-0061): one portal event per new state
+        portal_event(ROLES.machine_event(state), {"state": state, "since": S["since"]})
 
 
 def pilot_doh():
@@ -2007,12 +2065,13 @@ TAX_CACHE_S = 600
 def tax_pct():
     """FW-0062: this instance's federal + state tax % for the pay line's Pay-Net estimate, from the same helpers the
     schedule card reads (input_number.<prefix>_federal_tax_pct, default 22; ..._state_tax_pct, default 0); read at
-    most every 10 min."""
+    most every 10 min. 1.6.0 (FW-0061): a portal pilot's prefs.json first (pref_get: None on any other instance)."""
     if TAX["pct"] is None or time.time() - TAX["at"] > TAX_CACHE_S:
         tot = 0.0
         for name, dflt in (("federal", 22.0), ("state", 0.0)):
+            v = pref_get(f"{name}_tax_pct")
             try:
-                tot += float(ha_state(f"input_number.{T}_{name}_tax_pct"))
+                tot += float(ha_state(f"input_number.{T}_{name}_tax_pct") if v is None else v)
             except (TypeError, ValueError):
                 tot += dflt
         TAX.update(at=time.time(), pct=round(tot, 2))
@@ -3134,19 +3193,22 @@ def ha_state(entity_id):
 
 def pay_settings():
     """(rate, longevity year, ER list) the way the schedule card reads them: the longevity year helper, else the
-    DOH in /data/cards.json; rate for today (HST); the per-trip Extended Range list helper."""
+    DOH in /data/cards.json; rate for today (HST); the per-trip Extended Range list helper. 1.6.0 (FW-0061): a portal
+    pilot's prefs.json first (pref_get: None on any other instance)."""
     today = local_now().date().isoformat()
-    yr = None
-    try:
-        yr = int(float(ha_state(f"input_number.{T}_longevity_year")))
-    except (TypeError, ValueError):
-        pass
+    yr = pref_get("longevity_year")
+    if yr is None:
+        try:
+            yr = int(float(ha_state(f"input_number.{T}_longevity_year")))
+        except (TypeError, ValueError):
+            pass
     if not yr:
         try:
             yr = min(12, PAY.doh_year(json.load(open(f"{DATA}/cards.json"))["doh"], today))
         except Exception:
             yr = None
-    er = [x for x in str(ha_state(f"input_text.{T}_er_trips") or "").split(",") if x]
+    er_pref = pref_get("er_trips")
+    er = [x for x in str((ha_state(f"input_text.{T}_er_trips") if er_pref is None else er_pref) or "").split(",") if x]
     return (PAY.rate_for(yr, today) if yr else None), yr, er
 
 
@@ -5816,6 +5878,708 @@ def check(fl):
     return "ok"
 
 
+# ---------------------------------------------------------------- 1.6.0 (FW-0061) pilot portal: export, spool, prefs
+# Only on a pilot whose option entry has portal: true (portal_on()); the admin never runs any of it. The export thread
+# writes this pilot's states (read back from HA, masked), events, command results, list files and card bundle to
+# /share/fw_portal/<name>/out/ as signed envelopes (portal.py, PORTAL_CONTRACT.md); the spool thread reads the HOM
+# portal's commands from in/ and republishes the allowed ones on this Watcher's own MQTT topics, so the usual handlers
+# and their checks run. No FLICA page loads are added.
+EXPORT = {"on": False, "lock": threading.Lock(), "wake": threading.Event(), "dirty": set(), "events": False,
+          "results": False, "files": True, "manifest": True, "cache": {}, "last": {}, "last_sweep": 0.0,
+          "writer": None, "seq": None, "topics": {}, "ids": [], "file_sigs": {}, "files_list": [], "cards": None,
+          "blobs": set(), "events_list": [], "results_list": [], "spool": None, "ntfy": None, "logged": set(),
+          "retry": {}}
+EXPORT_DEBOUNCE_S = 2.0  # a burst of publishes is one write, and writes are at least this far apart
+EXPORT_SWEEP_S = 300  # every state is read again (and the files rescanned) this often
+EXPORT_RETRY_S = 15  # a state HA had no answer for is read again after this, doubling while it stays missing
+SPOOL_POLL_S = 1.0
+SPOOL_MAX_PER_POLL = 200
+PORTAL_LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portal_layout.json")
+PORTAL_CARDS_OUT = ("tickets-card", "uploads-card", "row-colors")  # not in a portal (contract 1)
+PAIRINGS_BACK_M = 2  # the shared pairings packages exported: from this many months back (HST), and every later one
+
+
+def portal_once(key, msg, *a):
+    """A log line once per process (a portal problem that would repeat on every pass)."""
+    if key not in EXPORT["logged"]:
+        EXPORT["logged"].add(key)
+        log.info(msg, *a)
+
+
+def portal_entity_defs():
+    """(comp, oid, cfg) of this pilot's discovery entities a portal serves: the ones it has, minus the features the
+    portal does not offer (roles.entity_on_portal: tickets, uploads)."""
+    return [(c, o, cfg) for c, o, cfg, f in entity_defs() if has(f) and ROLES.entity_on_portal(o, INSTANCE)]
+
+
+def portal_ids():
+    """Every entity id state.json carries (contract 3.4): the portal's discovery entities (sensor.<T>_settings among
+    them), the rule live switches, and the pref helpers (synthesized from prefs.json, never read from HA)."""
+    ids = [cfg["default_entity_id"] for _, _, cfg in portal_entity_defs()]
+    with RULE_LOCK:
+        rules = list(RULES["list"])
+    ids += [f"switch.{RULE_UID}_{r['id']}_live" for r in rules if ROLES.PORTAL_RULE_ID_RE.fullmatch(str(r.get("id")))]
+    ids += [ROLES.pref_entity(k, T) for k in ROLES.PREF_KEYS]
+    return list(dict.fromkeys(ids))
+
+
+def portal_pref_ids():
+    return {ROLES.pref_entity(k, T) for k in ROLES.PREF_KEYS}
+
+
+def portal_topics():
+    """{full MQTT topic: {entity ids}} from each portal entity's state and attribute topics: a publish there marks
+    those ids for the next export."""
+    m = {}
+    for _, _, cfg in portal_entity_defs():
+        for k in ("state_topic", "json_attributes_topic"):
+            if cfg.get(k):
+                m.setdefault(cfg[k], set()).add(cfg["default_entity_id"])
+    return m
+
+
+def portal_wrap(c):
+    """Wraps c.publish so every publish of a portal pilot is noted (portal_note) after it goes out; a note never
+    fails a publish."""
+    orig = c.publish
+
+    def publish(topic, payload=None, *a, **k):
+        r = orig(topic, payload, *a, **k)
+        try:
+            portal_note(topic, payload)
+        except Exception as e:  # noqa: BLE001
+            portal_once("note", "portal note skipped: %s", type(e).__name__)
+        return r
+    c.publish = publish
+    return c
+
+
+def portal_note(topic, payload):
+    """A publish on this Watcher's prefix: an event in roles.PORTAL_EVENTS goes to events.json (and ntfy); a state or
+    attribute topic marks its ids dirty; the availability topic marks every id."""
+    if not EXPORT["on"] or not isinstance(topic, str) or not topic.startswith(T + "/"):
+        return
+    sub = topic[len(T) + 1:]
+    if sub.startswith("event/"):
+        if sub[6:] in ROLES.PORTAL_EVENTS:
+            try:
+                p = json.loads(payload) if isinstance(payload, (str, bytes)) else payload
+            except ValueError:
+                p = {}
+            portal_event(sub[6:], p if isinstance(p, dict) else {})
+        return
+    ids = set(EXPORT["topics"].get(topic) or ())
+    m = re.fullmatch(r"rule/([a-z0-9_]+)/live/state", sub)
+    if m:
+        ids.add(f"switch.{RULE_UID}_{m.group(1)}_live")
+    if topic == AVAIL:
+        ids |= set(EXPORT["ids"])
+    if sub == "rules/state":
+        EXPORT["manifest"] = True  # a rule came or went: its live switch is in the manifest's services
+    if ids:
+        with EXPORT["lock"]:
+            EXPORT["dirty"] |= ids
+        EXPORT["wake"].set()
+
+
+def portal_dirty(*ids):
+    if EXPORT["on"]:
+        with EXPORT["lock"]:
+            EXPORT["dirty"] |= set(ids)
+        EXPORT["wake"].set()
+
+
+def portal_files_dirty():
+    """A list or finds file was written: copy it to out/files on the next export (a portal pilot only)."""
+    if EXPORT["on"]:
+        EXPORT["files"] = True
+        EXPORT["wake"].set()
+
+
+def _portal_load(name, key):
+    try:
+        d = json.load(open(f"{DATA}/{name}", encoding="utf-8"))
+        v = d.get(key) if isinstance(d, dict) else None
+        return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def portal_event(kind, payload):
+    """One portal event (roles.PORTAL_EVENTS or a MACHINE_EVENTS kind): its record (portal.event_record, whitelisted
+    fields only) joins the last EVENTS_KEEP in <data>/portal_events.json and events.json, and goes to ntfy when this
+    pilot has it. Returns the record (None when the portal is off)."""
+    if not EXPORT["on"]:
+        return None
+    try:
+        return _portal_event(kind, payload)
+    except Exception as e:  # noqa: BLE001 (never fails set_machine, pub or the MQTT thread)
+        portal_once("event:" + type(e).__name__, "portal event skipped: %s", type(e).__name__)
+        return None
+
+
+def _portal_event(kind, payload):
+    p = dict(payload) if isinstance(payload, dict) else {}
+    if kind == "new_pairing" and not p.get("release"):
+        try:
+            _, rel = report_release(p)
+            if rel:
+                p["release"] = rel.strftime("%Y-%m-%d %H%M")
+        except Exception:  # noqa: BLE001 (the release is a nicety; never fail the event)
+            pass
+    rec = PT.event_record(kind, p, EXPORT["seq"].next("event"), now_iso())
+    with EXPORT["lock"]:
+        EXPORT["events_list"] = (EXPORT["events_list"] + [rec])[-PT.EVENTS_KEEP:]
+        try:
+            PT.write_private(f"{DATA}/portal_events.json", PT.dumps({"events": EXPORT["events_list"]}))
+        except OSError as e:
+            portal_once("events_save", "portal events not saved: %s", type(e).__name__)
+        EXPORT["events"] = True
+    EXPORT["wake"].set()
+    if EXPORT["ntfy"] is not None:
+        EXPORT["ntfy"].enqueue(rec)
+    return rec
+
+
+def portal_result(cid, ok, why=""):
+    """A command's result {id, ok, why} joins the last RESULTS_KEEP (results.json)."""
+    with EXPORT["lock"]:
+        EXPORT["results_list"] = (EXPORT["results_list"] + [{"id": cid, "ok": bool(ok), "why": str(why)[:200]}])[
+            -PT.RESULTS_KEEP:]
+        try:
+            PT.write_private(f"{DATA}/portal_results.json", PT.dumps({"results": EXPORT["results_list"]}))
+        except OSError as e:
+            portal_once("results_save", "portal results not saved: %s", type(e).__name__)
+        EXPORT["results"] = True
+    EXPORT["wake"].set()
+
+
+# ---- prefs (pref/set from the portal; contract 3.5)
+PREFS_LOCK = threading.Lock()
+
+
+def prefs_read():
+    """{values: {key: value}, updated: {key: iso}, seeded: iso} from prefs.json; a portal pilot only ({} otherwise,
+    and the file is never opened)."""
+    if not portal_on():
+        return {}
+    try:
+        d = json.load(open(PREFS_FILE, encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def pref_get(key):
+    """This portal pilot's pref (roles.PREF_KEYS) from prefs.json, or None: not set, out of bounds, or any instance
+    whose portal is off (the admin never reads prefs.json; tax_pct and pay_settings then read the HA helpers)."""
+    if not portal_on():
+        return None
+    v = (prefs_read().get("values") or {}).get(key)
+    if v is None:
+        return None
+    try:
+        return ROLES.pref_value(key, v)
+    except (ValueError, OverflowError, TypeError):
+        return None
+
+
+def _prefs_save(d):
+    PT.write_private(PREFS_FILE, json.dumps(d, separators=(",", ":")))
+
+
+def pref_cmd(payload):
+    """{T}/pref/set {"key", "value"} from the portal (republished by the spool): checked again here (bounds of
+    roles.PREF_KEYS), saved to prefs.json (0600). True when saved."""
+    if not portal_on():
+        log.info("pref/set ignored: the portal is off on this instance")
+        return False
+    try:
+        key, v = PT.check_pref(payload)
+    except PT.PortalError as e:
+        log.info("pref/set refused: %s", e)
+        return False
+    try:
+        with PREFS_LOCK:
+            d = prefs_read()
+            d.setdefault("values", {})[key] = v
+            d.setdefault("updated", {})[key] = now_iso()
+            _prefs_save(d)
+    except OSError as e:  # never reaches paho's thread
+        log.info("pref %s not saved: %s", key, type(e).__name__)
+        return False
+    TAX["pct"] = None  # the pay line's tax % is read again
+    log.info("pref %s set from the portal", key)
+    portal_dirty(ROLES.pref_entity(key, T))
+    return True
+
+
+def prefs_seed():
+    """Until it has once run to the end (prefs.json 'seeded'): the HA helpers' current values (the ones this pilot's
+    dashboard set) become its first prefs, each only within bounds and only for a key pref/set has not set already.
+    A helper HA answers 404 for is missing: nothing to seed for it. The ER list (an input_text, type text) reading
+    'unknown' was never set (HA keeps a never-set input_text 'unknown' for good, across restarts) and seeds as the
+    empty list. When HA does not answer for every helper (down, a 5xx, 'unavailable', or a number helper still
+    'unknown' while HA loads), nothing is written (logged once) and the next export sweep tries again
+    (portal_export_once), so an HA restart during the first portal start never uses the seed up empty.
+    Returns how many were taken (None when it did not run to the end, or already had)."""
+    if not portal_on() or prefs_read().get("seeded"):
+        return None
+    vals = {}
+    for key, spec in ROLES.PREF_KEYS.items():
+        code, d = ha_state_full(ROLES.pref_entity(key, T))
+        if code == 404:
+            continue
+        raw = d.get("state") if code == 200 and isinstance(d, dict) else None
+        if raw == "unknown" and spec["type"] == "text":
+            raw = ""  # never set: no ER trips, on the portal and in the Watcher's own pay line alike
+        if not isinstance(raw, str) or raw in ("unknown", "unavailable"):
+            portal_once("prefs_seed", "portal prefs not seeded yet: Home Assistant did not answer for every helper "
+                                      "(tried again on the next sweep)")
+            return None
+        try:
+            vals[key] = ROLES.pref_value(key, raw if key == "er_trips" else float(raw))
+        except (TypeError, ValueError, OverflowError):
+            pass
+    with PREFS_LOCK:
+        d = prefs_read()
+        if d.get("seeded"):
+            return None
+        have, upd = d.setdefault("values", {}), d.setdefault("updated", {})
+        took = [k for k in vals if k not in have]  # a pref/set saved before the seed wins
+        for k in took:
+            have[k], upd[k] = vals[k], now_iso()
+        d["seeded"] = now_iso()
+        _prefs_save(d)
+    TAX["pct"] = None  # the pay line's tax % is read again
+    log.info("portal prefs seeded from the HA helpers (%d of %d)", len(took), len(ROLES.PREF_KEYS))
+    for k in took:
+        portal_dirty(ROLES.pref_entity(k, T))
+    return len(took)
+
+
+def pref_states():
+    """The pref helpers as state.json shows them, from prefs.json (the HA helpers are not read for these)."""
+    d = prefs_read()
+    vals, upd = d.get("values") or {}, d.get("updated") or {}
+    out = {}
+    for key, spec in ROLES.PREF_KEYS.items():
+        v = pref_get(key) if key in vals else None
+        attrs = {"friendly_name": key.replace("_", " ").capitalize()}
+        if spec["type"] == "number":
+            st = "unknown" if v is None else str(float(v))
+            attrs.update({"min": spec["min"], "max": spec["max"], "step": spec["step"], "mode": "box"})
+            if spec["unit"]:
+                attrs["unit_of_measurement"] = spec["unit"]
+        else:
+            st = "" if v is None else v
+            attrs.update({"min": 0, "max": spec["max_len"], "mode": "text"})
+        out[ROLES.pref_entity(key, T)] = {"state": st, "attributes": attrs, "last_changed": upd.get(key),
+                                          "last_updated": upd.get(key)}
+    return out
+
+
+# ---- the export
+def ha_state_full(entity_id):
+    """(HTTP status, the state JSON) of one entity from HA (Supervisor API proxy, as ha_state); (0, None) when HA is
+    not reachable."""
+    try:
+        r = requests.get(f"http://supervisor/core/api/states/{entity_id}",
+                         headers={"Authorization": f"Bearer {os.environ.get('SUPERVISOR_TOKEN', '')}"}, timeout=5)
+        return r.status_code, (r.json() if r.ok else None)
+    except Exception:  # noqa: BLE001
+        return 0, None
+
+
+def _portal_write(kind, body):
+    """Sign and write one out/ file when its payload changed since the last write. True when written."""
+    text = body if isinstance(body, str) else PT.dumps(body)
+    if EXPORT["last"].get(kind) == text:
+        return False
+    EXPORT["writer"].write(kind, text)
+    EXPORT["last"][kind] = text
+    return True
+
+
+def portal_write_state(ids, read, now=None):
+    """state.json: the ids in read are fetched from HA again (one GET each), the rest come from the cache; masks of
+    contract 3.4 (portal.state_entry); prefs synthesized. Over the 2 MB cap nothing is written (logged once).
+    An id that leaves state.json without an answer (a 404: HA has not made the entity yet, as in its restart; or no
+    answer with nothing cached) is read again after EXPORT_RETRY_S, then 2x, 4x... while it stays missing, until the
+    wait reaches EXPORT_SWEEP_S (the sweep covers it from then on), so for example the settings sensor and its pubkey
+    are back within seconds, not 5 minutes, and an entity HA never has costs a few GETs, not one per pass."""
+    now = time.time() if now is None else now
+    cache, prefs, ok, retry = EXPORT["cache"], portal_pref_ids(), True, EXPORT["retry"]
+    for eid in ids:
+        if eid in prefs or eid not in read:
+            continue
+        code, d = ha_state_full(eid)
+        if code == 200 and isinstance(d, dict):
+            cache[eid] = PT.state_entry(d)
+            retry.pop(eid, None)
+            continue
+        if code == 404:
+            cache.pop(eid, None)
+        else:
+            ok = False
+            if eid in cache:
+                continue  # the last answer stays in state.json; the next sweep reads it again
+        n = retry.get(eid, (0, None))[0]
+        wait = EXPORT_RETRY_S * 2 ** n
+        retry[eid] = (n + 1, now + wait if wait < EXPORT_SWEEP_S else None)
+    for eid in [e for e in cache if e not in ids]:
+        cache.pop(eid, None)
+    for eid in [e for e in retry if e not in ids]:
+        retry.pop(eid, None)
+    states = {eid: cache[eid] for eid in ids if eid in cache}
+    states.update(pref_states())
+    text = PT.dumps({"states": states, "ha_ok": ok})
+    if len(text.encode("utf-8")) > PT.CAPS["state"]:
+        portal_once("state_cap", "portal state over %d KB: not written", PT.CAPS["state"] // 1024)
+        return False
+    return _portal_write("state", text)
+
+
+def _portal_src_dir(path):
+    """path when it is a real folder (lstat: not a symlink), else None (logged once): the list file folders are in
+    HA's config folder, which other apps can write, and a symlinked one could point the export anywhere."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        portal_once("src_dir:" + path, "portal list files in %s skipped: a symlink or not a folder", path)
+        return None
+    return path
+
+
+def portal_file_sources():
+    """[(kind, path)] of the list files this pilot's portal serves (roles.FILE_KINDS): its finds months and FW-0060 /
+    FW-0069 list files under its current key, its school calendar, and the shared pairings packages from
+    PAIRINGS_BACK_M months back on. No key goes into a kind. A folder that is a symlink is skipped (_portal_src_dir);
+    portal_export_files reads each file without following a symlink."""
+    out = []
+    key = None
+    try:
+        key = www_key()
+    except Exception:  # noqa: BLE001
+        pass
+    fdir = finds_dir() if _portal_src_dir(CARD_PAIRINGS) else None
+    fdir = _portal_src_dir(fdir) if fdir else None
+    try:
+        names = sorted(os.listdir(fdir)) if fdir else []
+    except OSError:
+        names = []
+    for n in names:
+        m = WF.FINDS_RE.fullmatch(n)
+        if m and key and n == WF.finds_name(m.group(1), key):
+            out.append((f"file:finds:{m.group(1)}", os.path.join(fdir, n)))
+            continue
+        m = WF.LIST_RE.fullmatch(n)
+        if m and key and n == WF.list_name(m.group(1), key) and m.group(1) in ROLES.FILE_KINDS:
+            out.append((f"file:{m.group(1)}", os.path.join(fdir, n)))
+            continue
+        m = re.fullmatch(r"school_(\d{4}-\d{2})\.json", n)
+        if m:
+            out.append((f"file:school:{m.group(1)}", os.path.join(fdir, n)))
+    t = local_now().date()
+    y, mo = divmod(t.year * 12 + t.month - 1 - PAIRINGS_BACK_M, 12)
+    first = f"{y:04d}-{mo + 1:02d}"
+    try:
+        shared = sorted(os.listdir(CARD_PAIRINGS)) if _portal_src_dir(CARD_PAIRINGS) else []
+    except OSError:
+        shared = []
+    for n in shared:
+        m = re.fullmatch(r"pairings_(\d{4}-\d{2})\.json", n)
+        if m and m.group(1) >= first:
+            out.append((f"file:pairings:{m.group(1)}", os.path.join(CARD_PAIRINGS, n)))
+    return out
+
+
+def portal_export_files():
+    """Copies each list file whose time, size or inode changed to out/files/ (payload: the file's text exactly) and
+    removes the ones gone. Only a plain file is read (lstat, then portal.read_plain: never through a symlink, never
+    blocking on a FIFO, at most the 8 MB cap), so nothing another app plants in HA's config folder can make the export
+    copy a file of this container (/data) or stall. True when the set of files changed (the manifest lists them)."""
+    sigs, present = EXPORT["file_sigs"], set()
+    for kind, path in portal_file_sources():
+        try:
+            st = os.lstat(path)
+            if not stat.S_ISREG(st.st_mode):
+                raise PT.PortalError("not a plain file")
+            if st.st_size > PT.CAPS["file"]:
+                portal_once("cap:" + kind, "portal file %s over %d KB: not served", kind, PT.CAPS["file"] // 1024)
+                continue
+            sig = (st.st_mtime_ns, st.st_size, st.st_ino)
+            if sigs.get(kind) != sig:
+                raw, fst = PT.read_plain(path, PT.CAPS["file"])
+                EXPORT["writer"].write(kind, raw.decode("utf-8"))
+                sigs[kind] = (fst.st_mtime_ns, fst.st_size, fst.st_ino)
+            present.add(kind)
+        except PT.PortalError as e:
+            if str(e).startswith("over "):
+                portal_once("cap:" + kind, "portal file %s over %d KB: not served", kind, PT.CAPS["file"] // 1024)
+            else:
+                portal_once("file:" + kind, "portal file %s skipped: %s", kind, e)
+        except (OSError, ValueError) as e:
+            portal_once("file:" + kind, "portal file %s skipped: %s", kind, type(e).__name__)
+    fdir = os.path.join(PORTAL_DIR, "out", "files")
+    try:
+        on_disk = os.listdir(fdir)
+    except OSError:
+        on_disk = []
+    for n in on_disk:
+        k = PT.kind_of("files/" + n)
+        if k and k not in present:
+            try:
+                os.unlink(os.path.join(fdir, n))
+            except FileNotFoundError:
+                pass
+            sigs.pop(k, None)
+    files = sorted(k[5:] for k in present)
+    if files != EXPORT["files_list"]:
+        EXPORT["files_list"] = files
+        return True
+    return False
+
+
+def portal_cards():
+    """{file name: text} of this pilot's card copies a portal serves (cards.build, as deployed under /local/, with
+    FW_PORTAL on: portal.portal_card), without the tickets and uploads cards and the row colors (contract 1); built
+    once per process."""
+    if EXPORT["cards"] is None:
+        import cards as CARDS
+        out = {}
+        for fn, text in CARDS.build(VERSION, [INSTANCE]).items():
+            m = re.fullmatch(r"flight-watcher-([a-z-]+)-%s\.js" % re.escape(INSTANCE), fn)
+            if m and m.group(1) not in PORTAL_CARDS_OUT:
+                out[fn] = PT.portal_card(text)  # FW_PORTAL on: the settings card sends sealed or nothing
+        EXPORT["cards"] = out
+    return EXPORT["cards"]
+
+
+def portal_layout():
+    """The tabs of portal_layout.json with this pilot's name in place of {name}."""
+    with open(PORTAL_LAYOUT, encoding="utf-8") as f:
+        return {"tabs": json.loads(f.read().replace("{name}", INSTANCE))["tabs"]}
+
+
+def _portal_svc(comp, sub):
+    if comp == "switch":
+        return {"toggle": {"sub": sub, "on": "ON", "off": "OFF"}, "turn_on": {"sub": sub, "payload": "ON"},
+                "turn_off": {"sub": sub, "payload": "OFF"}}
+    if comp == "button":
+        return {"press": {"sub": sub, "payload": "PRESS"}}
+    if comp == "number":
+        return {"set_value": {"sub": sub}}
+    return None
+
+
+def portal_services():
+    """{entity id: {service: how}} for the manifest: each portal entity whose command topic is an allowed portal sub
+    (entity_defs), the rule live switches, the pref helpers (pref/set with their key) and the local helpers."""
+    sv = {}
+    for comp, _, cfg in portal_entity_defs():
+        ct = cfg.get("command_topic") or ""
+        sub = ct[len(T) + 1:] if ct.startswith(T + "/") else ""
+        how = _portal_svc(comp, sub) if ROLES.portal_sub(sub) else None
+        if how:
+            sv[cfg["default_entity_id"]] = how
+    with RULE_LOCK:
+        rules = list(RULES["list"])
+    for r in rules:
+        sub = f"rule/{r.get('id')}/live/set"
+        if ROLES.portal_sub(sub):
+            sv[f"switch.{RULE_UID}_{r['id']}_live"] = _portal_svc("switch", sub)
+    for key in ROLES.PREF_KEYS:
+        sv[ROLES.pref_entity(key, T)] = {"set_value": {"sub": "pref/set", "key": key}}
+    for spec in ROLES.LOCAL_HELPERS.values():
+        sv[spec["entity"].format(prefix=T)] = {s: {"local": True} for s in spec["services"]}
+    return sv
+
+
+def portal_mqtt_subs(cards=None):
+    """The allowed subs the bundled cards publish to directly (mqtt.publish), sorted; drop/set (admin only) is not."""
+    subs = set()
+    for text in (cards if cards is not None else portal_cards()).values():
+        subs |= PT.card_subs(text, T)
+    return sorted(s for s in subs if ROLES.portal_sub(s))
+
+
+def portal_write_manifest():
+    """The card blobs (content-addressed, out/blobs/<sha256>.js) and manifest.json (contract 3.4)."""
+    w, shas = EXPORT["writer"], {}
+    for fn, text in sorted(portal_cards().items()):
+        shas[fn] = w.blob(text)
+    EXPORT["blobs"] = set(shas.values())
+    body = {"contract": ROLES.CONTRACT, "app_version": VERSION, "pilot": INSTANCE, "prefix": T,
+            "role": ROLES.role(INSTANCE), "cards": shas, "layout": portal_layout(), "services": portal_services(),
+            "mqtt_subs": portal_mqtt_subs(), "files": list(EXPORT["files_list"]), "ntfy": EXPORT["ntfy"] is not None}
+    return _portal_write("manifest", body)
+
+
+def portal_export_once(full=None, now=None):
+    """One export pass: changed states (all of them, the files and the blob sweep on a full pass, every
+    EXPORT_SWEEP_S), events, results, files and the manifest, each written only when it changed."""
+    now = time.time() if now is None else now
+    if full is None:
+        full = now - EXPORT["last_sweep"] >= EXPORT_SWEEP_S
+    ids = portal_ids()
+    with EXPORT["lock"]:
+        EXPORT["ids"] = ids
+        read = set(ids) if full else EXPORT["dirty"] & set(ids)
+        EXPORT["dirty"] = set()
+        ev, res, files, man = EXPORT["events"], EXPORT["results"], EXPORT["files"] or full, EXPORT["manifest"] or full
+        EXPORT["events"] = EXPORT["results"] = EXPORT["files"] = EXPORT["manifest"] = False
+        evs, rss = list(EXPORT["events_list"]), list(EXPORT["results_list"])
+    retry = EXPORT["retry"]  # the export thread's own (portal_write_state): no lock
+    for eid in [e for e, (_, at) in retry.items() if at is not None and at <= now and e in ids]:
+        read.add(eid)  # a state HA had no answer for: read again (portal_write_state sets the next try)
+        retry[eid] = (retry[eid][0], None)
+    if full:
+        try:
+            prefs_seed()  # returns at once once it has run to the end; until then each sweep tries again
+        except OSError as e:
+            portal_once("prefs_seed_save", "portal prefs not seeded: %s", type(e).__name__)
+    if read or full:
+        portal_write_state(ids, read, now)
+    if ev or full:
+        _portal_write("events", {"events": evs})
+    if res or full:
+        _portal_write("results", {"results": rss})
+    if files and portal_export_files():
+        man = True
+    if man:
+        portal_write_manifest()
+    if full:
+        EXPORT["last_sweep"] = now
+        EXPORT["writer"].sweep_blobs(EXPORT["blobs"], now)
+
+
+def portal_wait_s(now=None):
+    """How long the export thread waits when no publish wakes it: until the next sweep or the next retry of a state HA
+    had no answer for (portal_write_state), whichever comes first; at most EXPORT_SWEEP_S."""
+    now = time.time() if now is None else now
+    due = [EXPORT["last_sweep"] + EXPORT_SWEEP_S] + [at for _, at in EXPORT["retry"].values() if at is not None]
+    return max(0.0, min(EXPORT_SWEEP_S, min(due) - now))
+
+
+def portal_thread():
+    while True:
+        try:
+            EXPORT["wake"].wait(timeout=portal_wait_s())
+            EXPORT["wake"].clear()
+            time.sleep(EXPORT_DEBOUNCE_S)
+            portal_export_once()
+        except Exception as e:  # noqa: BLE001 (the export must never stop the Watcher)
+            log.info("portal export skipped: %s: %s", type(e).__name__, e)
+            time.sleep(EXPORT_DEBOUNCE_S)
+
+
+# ---- the spool (contract 3.5)
+def portal_spool_once():
+    """Reads every command file in in/ once (oldest name first): an accepted command is republished on {T}/{sub}
+    (qos 1, not retained), so on_message's own checks run; each file is deleted and gets a result. Returns how many
+    were accepted. The in/ folder must be a real folder, owned by the portal's uid when the Watcher runs as root."""
+    d = os.path.join(PORTAL_DIR, "in")
+    try:
+        st = os.lstat(d)
+    except OSError:
+        return 0
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode) or (
+            os.geteuid() == 0 and st.st_uid != PT.PORTAL_UID):
+        portal_once("in_dir", "portal in/ folder refused: not the portal's folder")
+        return 0
+    n, spool = 0, EXPORT["spool"]
+    names = spool.names(d)  # never a dotfile; one the portal abandoned long ago is removed
+    if spool.reaped:
+        portal_once("spool_reaped", "portal in/: temp files the portal left behind (over %d s old) are removed",
+                    PT.DOT_STALE_S)
+    for name in names[:SPOOL_MAX_PER_POLL]:
+        try:
+            r = spool.take(os.path.join(d, name))
+        except PT.PortalError as e:
+            log.info("portal command refused: %s", e)
+            if e.cid:
+                portal_result(e.cid, False, str(e))
+            if name in spool.stuck:
+                log.info("portal in/ folder left in place (not empty): skipped from now on")
+            continue
+        except Exception as e:  # noqa: BLE001 (one bad entry never ends the poll; the type only, once per type)
+            portal_once("spool_entry:" + type(e).__name__, "portal command skipped: %s", type(e).__name__)
+            continue
+        if r is None:
+            continue
+        cid, sub, payload = r
+        try:
+            MQ.publish(f"{T}/{sub}", payload, qos=1, retain=False)
+        except Exception as e:  # noqa: BLE001
+            log.info("portal command %s not republished: %s", sub, type(e).__name__)
+            portal_result(cid, False, "not republished")
+            continue
+        log.info("portal command %s accepted", sub)
+        portal_result(cid, True, "")
+        n += 1
+    return n
+
+
+def spool_thread():
+    while True:
+        try:
+            portal_spool_once()
+        except Exception as e:  # noqa: BLE001
+            portal_once("spool", "portal spool skipped: %s", type(e).__name__)
+        time.sleep(SPOOL_POLL_S)
+
+
+def ntfy_start():
+    """An ntfy sender when this portal pilot saved a usable topic and token (sealed settings), else None."""
+    c = load_creds()
+    topic, token = c.get("ntfy_topic"), c.get("ntfy_token")
+    if not topic or not token:
+        return None
+    if not NT.valid(topic, token):
+        log.info("ntfy off: the saved topic or token is not usable")
+        return None
+    log.info("ntfy on for this pilot's portal events")
+    return NT.Ntfy(topic, token, PORTAL_ORIGIN, log=log.info)
+
+
+def portal_start(threads=True):
+    """On a pilot whose portal is on, before the settings wait (James enters his first logins through the portal):
+    the signing key (made by run.py; never made or moved here), the writer, saved events and results, the spool, the
+    one-time prefs seed, ntfy and the two threads. False (silently) on any other instance."""
+    if not portal_on() or EXPORT["on"]:
+        return False
+    out = os.path.join(PORTAL_DIR, "out")
+    try:
+        key = PT.load_key(PORTAL_KEY_FILE, create=False)
+        st = os.lstat(out)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            raise PT.PortalError("out/ is not a folder")
+    except (OSError, PT.PortalError) as e:
+        log.info("pilot portal off: %s", e if isinstance(e, PT.PortalError) else type(e).__name__)
+        return False
+    seq = PT.SeqStore(f"{DATA}/portal_seq.json")
+    EXPORT.update(seq=seq, writer=PT.Writer(out, INSTANCE, key, seq), topics=portal_topics(),
+                  events_list=_portal_load("portal_events.json", "events")[-PT.EVENTS_KEEP:],
+                  results_list=_portal_load("portal_results.json", "results")[-PT.RESULTS_KEEP:],
+                  spool=PT.Spool(INSTANCE, f"{DATA}/portal_spool.json",
+                                 expect_uid=PT.PORTAL_UID if os.geteuid() == 0 else None))
+    EXPORT["on"] = True
+    try:
+        prefs_seed()
+    except OSError as e:
+        log.info("portal prefs not seeded: %s", type(e).__name__)
+    EXPORT["ntfy"] = ntfy_start()
+    log.info("pilot portal on: contract %d, export to %s", ROLES.CONTRACT, out)
+    if threads:
+        threading.Thread(target=portal_thread, daemon=True, name="portal").start()
+        threading.Thread(target=spool_thread, daemon=True, name="portal-spool").start()
+    EXPORT["wake"].set()
+    return True
+
+
 def enforce_role():
     """1.5.0 (FW-0063): a pilot instance has no auto swap (auto_swap); a value an older version stored is turned off
     once, at start, before on_connect would publish it."""
@@ -5831,6 +6595,7 @@ def main():
     enforce_role()
     MQ = mqtt_start()
     start_upload_janitor()  # FW-0066: chunks arrive as soon as MQTT is up, even while a second pilot waits for settings
+    portal_start()  # 1.6.0 (FW-0061): a portal pilot's export and spool, before the settings wait (no-op otherwise)
     time.sleep(2)
     if not OPTS.get("username") or not OPTS.get("password"):
         if not has("addon_config"):  # 0.10.0: a pilot gets credentials over MQTT; wait for them (settings/set restarts us)
@@ -5903,7 +6668,7 @@ def main():
         web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
                   save_rules_from_page, DB, log, get_settings=lambda: settings_state(load_creds()),
                   save_settings=lambda d: settings_cmd(json.dumps(d)), clear_settings=settings_clear,
-                  on_saved=lambda: publish_uploads(force=True))
+                  on_saved=lambda: publish_uploads(force=True), portal_key=PORTAL_PUB)
     last_month_check = None
     with sync_playwright() as pw:
         fl = Flica(pw)

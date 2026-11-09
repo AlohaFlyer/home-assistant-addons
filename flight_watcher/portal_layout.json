@@ -1,0 +1,42 @@
+{
+ "note": "1.6.0 (FW-0061): a pilot portal's tabs (contract 1). {name} is the pilot's name. Card types: the pilot's own card copies (custom:flight-watcher-<x>-card-{name}), heading, tile, entity, toggle and static markdown (text only, no templates). No tickets or uploads card.",
+ "tabs": [
+  {"id": "watcher", "title": "Watcher", "cards": [
+   {"type": "custom:flight-watcher-clock-card-{name}"},
+   {"type": "custom:flight-watcher-finds-card-{name}"},
+   {"type": "heading", "heading": "FLICA"},
+   {"type": "tile", "entity": "button.flight_watcher_{name}_check_now", "name": "Scan FLICA now"},
+   {"type": "toggle", "entity": "switch.flight_watcher_{name}_hunt_mode", "name": "Hunt mode"},
+   {"type": "toggle", "entity": "switch.flight_watcher_{name}_pause", "name": "Pause"},
+   {"type": "entity", "entity": "sensor.flight_watcher_{name}_state", "name": "State"},
+   {"type": "entity", "entity": "binary_sensor.flight_watcher_{name}_session_ok", "name": "FLICA session"},
+   {"type": "entity", "entity": "sensor.flight_watcher_{name}_last_check", "name": "Last check"},
+   {"type": "entity", "entity": "sensor.flight_watcher_{name}_next_check", "name": "Next check"},
+   {"type": "heading", "heading": "Charters"},
+   {"type": "entity", "entity": "sensor.flight_watcher_{name}_charters", "name": "Charters and unusual A330 flying (CrewTrac, next 30 days)"},
+   {"type": "tile", "entity": "button.flight_watcher_{name}_scan_crewtrac_charters_now", "name": "Scan CrewTrac now"},
+   {"type": "markdown", "content": "- **Scan FLICA now** reads the pot right away.\n- **Hunt mode** checks at hunt speed; off is normal speed.\n- Every wait varies by 30 %, so FLICA never sees a fixed rhythm.\n- **Pause** only if you log in to FLICA yourself for a long time. The Watcher also steps back for 30 min on its own when it sees your login.\n- FLICA is read only: the Watcher never submits, drops, swaps, adds or bids."}
+  ]},
+  {"id": "schedule", "title": "Schedule", "cards": [
+   {"type": "custom:flight-watcher-schedule-card-{name}"},
+   {"type": "custom:flight-watcher-improved-card-{name}", "entity": "sensor.flight_watcher_{name}_improved_pay_gross"}
+  ]},
+  {"id": "pilot", "title": "Pilot", "cards": [
+   {"type": "custom:flight-watcher-pilot-search-card-{name}"},
+   {"type": "custom:flight-watcher-pilot-card-{name}", "entity": "sensor.flight_watcher_{name}_pilot_schedule"},
+   {"type": "custom:flight-watcher-pickers-card-{name}", "entity": "sensor.flight_watcher_{name}_pickers"}
+  ]},
+  {"id": "recall", "title": "Recall/O75", "cards": [
+   {"type": "custom:flight-watcher-recall-card-{name}"},
+   {"type": "markdown", "content": "The Recall/O75 miss check follows the 2023 PWA, 22.G.2. A CCR is never filed for you from here: the card drafts the narrative only."}
+  ]},
+  {"id": "settings", "title": "Settings", "cards": [
+   {"type": "heading", "heading": "Credentials"},
+   {"type": "custom:flight-watcher-settings-card-{name}"},
+   {"type": "heading", "heading": "Check frequency"},
+   {"type": "tile", "entity": "number.flight_watcher_{name}_hunt_check_every", "name": "Hunt: check every"},
+   {"type": "tile", "entity": "number.flight_watcher_{name}_normal_check_every", "name": "Normal: check every"},
+   {"type": "tile", "entity": "button.flight_watcher_{name}_re_arm", "name": "Re-arm"}
+  ]}
+ ]
+}
