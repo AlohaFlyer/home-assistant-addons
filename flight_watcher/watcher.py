@@ -4360,6 +4360,9 @@ def crew_variants(fl, insts, rows, budget):
             vt = visible_text(page)
             crew = CI.crew_line(vt)
             if not CI.page_names(vt, vid, d) or not CI.has_crew(crew):
+                if CI.has_crew(crew):  # a page with crew whose header names another trip or date: say what it named
+                    hm = re.search(r"pairing details\s+(\S+)", vt or "")
+                    log.info("crew index: %s probe page names %s, not %s %s", vid, hm.group(1) if hm else "no pairing", vid, d)
                 continue  # no such trip that day (an error page, another date's page) or no pilot on it
             try:
                 crew_variant_keep(insts, rows, base, vid, vt, crew, at)
