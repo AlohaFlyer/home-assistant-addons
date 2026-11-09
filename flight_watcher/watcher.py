@@ -44,8 +44,9 @@ import trades as TR
 import chunks as UP
 import contacts as CT
 import working as WK
+import pilotver as PV
 
-VERSION = "1.4.10"
+VERSION = "1.4.11"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -1029,6 +1030,7 @@ def pub(topic, payload, retain=True):
 
 
 LIST_REV = {}  # FW-0060: name -> rev of the list file last written, so an unchanged list is not written again
+LIST_LOCK = threading.Lock()  # FW-0069: pub_pilot writes its list file from the MQTT thread too (cached replies)
 
 
 def write_list_file(name, obj):
@@ -1043,13 +1045,14 @@ def write_list_file(name, obj):
         rev = hashlib.sha256(text.encode()).hexdigest()[:12]
         fdir = finds_dir()
         path = os.path.join(fdir, WF.list_name(name, key))
-        if LIST_REV.get(name) != (key, rev) or not os.path.exists(path):
-            os.makedirs(fdir, exist_ok=True)
-            tmp = path + ".tmp"
-            with open(tmp, "w") as fh:
-                fh.write(text)
-            os.replace(tmp, path)
-            LIST_REV[name] = (key, rev)
+        with LIST_LOCK:  # FW-0069: one writer at a time (the .tmp name is shared)
+            if LIST_REV.get(name) != (key, rev) or not os.path.exists(path):
+                os.makedirs(fdir, exist_ok=True)
+                tmp = path + ".tmp"
+                with open(tmp, "w") as fh:
+                    fh.write(text)
+                os.replace(tmp, path)
+                LIST_REV[name] = (key, rev)
         return key, rev
     except Exception as e:
         log.info("%s file skipped: %s", name, WF.scrub(e, key))
@@ -1894,6 +1897,10 @@ def uploads_check():
                 else:
                     det = DB.get(f"pkg_details:{month}")
                     emp = S.get("own_emp") or ""
+                    pv = S.setdefault("pilotver_awards", {})
+                    if det and pv.get(f) != sig:  # FW-0069: an award after a looked-up pilot's first version is his
+                        pilotver_awards(month, text, det)  # .001 now (once per file version, even while this waits)
+                        pv[f] = sig
                     if not det or not emp:
                         log.info("upload %s: waiting for the %s pairing package and the employee number", f, month)
                         continue
@@ -3924,6 +3931,7 @@ def pilot_cmd(payload):
                 return
     if not emp:
         return
+    pilotver_register(emp, d.get("name") or "")  # FW-0069: Ryan looked this pilot up: his versions are kept
     S["pilot_req"] = {"emp": emp, "name": d.get("name") or "", "at": now_iso()}
     save_state(S)
     cached = DB.get(f"pilot_sched:{emp}")
@@ -3958,6 +3966,7 @@ def pilot_check(fl):
     emp = req["emp"]
     cur = local_now()
     bd = f"{cur.month:02d}{cur.year % 100:02d}"
+    captured = False
     try:
         sched, html = None, ""
         for i, url in enumerate((IF.CM_SCHED.format(base=BASE, emp=emp), IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bd))):
@@ -3969,6 +3978,7 @@ def pilot_check(fl):
                 break
             log.info("pilot %s: %s gave %s: %s", emp, url.split("?")[1], classify(html), visible_text(html)[:200])
         if not sched:
+            pilotver_capture_rebuild(emp, req.get("name") or "")  # FW-0069: the crew index's view, when it has one
             pub_pilot({"emp": emp, "name": req.get("name") or "", "status": f"not readable: {classify(html)} {visible_text(html)[:120]}",
                                    "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": now_iso()})
             log.info("pilot %s: schedule page not readable (%s)", emp, classify(html))
@@ -3997,11 +4007,15 @@ def pilot_check(fl):
         rec = {**sched, "emp": emp, "name": sched.get("name") or req.get("name") or "", "bd": bd,
                "fetched": now_iso(), "fetched_ts": time.time()}
         DB.put(f"pilot_sched:{emp}", rec)
+        captured = True  # FW-0069: a readable month is the version source (no rebuild below if a later step fails)
+        pilotver_capture_lookup(emp, rec)  # a new version when the pairings changed
         pub_pilot({**rec, "status": "ok"})
         log.info("pilot %s (%s): %s read, %d items, %d pairing pages", emp, rec["name"], sched["month"], len(sched["items"]), n)
         lookup_prev_month(fl, emp, cur)  # FW-0057: trips run into this month from the previous one (the next run reads them)
     except Exception as e:
         log.info("pilot %s: schedule read failed: %s", emp, e)
+        if not captured:
+            pilotver_capture_rebuild(emp, req.get("name") or "")  # FW-0069
         pub_pilot({"emp": emp, "name": req.get("name") or "", "status": f"error: {e}", "month": "", "days": [],
                                "items": [], "totals": {}, "updated": "", "fetched": now_iso()})
     S.pop("pilot_req", None)
@@ -4055,6 +4069,148 @@ def lookup_prev_month(fl, emp, cur):
     return n
 
 
+# ---------------------------------------------------------------- FW-0069 other pilots' schedule versions (pilotver.py)
+PILOT_PUB_LOCK = threading.Lock()  # pub_pilot's list file write and sensor publish, one thread at a time
+PILOT_SHOWN = {"p": {}}  # "p": the last pilot_schedule payload pub_pilot sent (before its crew index fields), swapped
+# whole (pub_pilot runs on the MQTT thread too); republished when a capture after a crew index run or a late award adds
+# a version for the pilot the card shows
+
+
+def shown_emp():
+    return str((PILOT_SHOWN["p"] or {}).get("emp") or "")
+
+
+def pilot_award(emp, month):
+    """FW-0069: one pilot's awarded line for a bid month from the award text on file (the shared uploads folder,
+    <YYYY-MM>_award.txt, as uploads_check reads it; pdfs.parse_award with that month's pairing package details and
+    period start), or None (no award or package on file, the pilot not in it, a header the parser cannot read)."""
+    path = os.path.join(UPLOADS, f"{month}_award.txt")
+    det = pkg_details_for(month) if os.path.exists(path) else None
+    if not det:
+        return None
+    try:
+        return PDF.parse_award(open(path, errors="replace").read(), emp, det, month, pairings_start(month))
+    except ValueError:
+        return None
+
+
+def pairings_start(month):
+    """The bid period's first day from the month's pairing file (FW-0015: the award's columns start there), else None."""
+    try:
+        return json.load(open(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json"))).get("start")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def pilotver_register(emp, name=""):
+    """FW-0069: Ryan looked this pilot up (pilot_cmd, on the MQTT thread): keep his versions from now on."""
+    try:
+        PV.register(DB, emp, name, now_iso())
+    except Exception as e:
+        log.info("pilot %s: versions registry skipped: %s", emp, e)
+
+
+def pilotver_capture_lookup(emp, rec):
+    """FW-0069: a readable Schedule Lookup (rec as pilot_check stores it) becomes a version when its pairings changed.
+    No FLICA traffic. Never raises."""
+    try:
+        PV.register(DB, emp, rec.get("name") or "", now_iso())
+        first, _, end = CI.grid_range(CARD_PAIRINGS, rec["month"])
+        made = PV.capture_lookup(DB, emp, rec.get("name") or "", rec, now_iso(), (first, end), pilot_award)
+        if made:
+            log.info("pilot %s: schedule version %s (%s, FLICA schedule)", emp, ", ".join(made), rec["month"])
+        return made
+    except Exception as e:
+        log.info("pilot %s: schedule version skipped: %s", emp, e)
+        return []
+
+
+def pilotver_capture_rebuild(emp, name="", month=None, insts=None, rows=None):
+    """FW-0069: the crew index's rebuild of one pilot's bid month (the current one by default) becomes a version when
+    it changes the pairings (pilotver.merge_rebuild). insts / rows: the crew index when the caller has it. No FLICA
+    traffic. Never raises. Returns the version labels made."""
+    try:
+        month = month or local_now().strftime("%Y-%m")
+        insts = crew_instances() if insts is None else insts
+        rows = DB.crew_rows() if rows is None else rows
+        first, start, end = CI.grid_range(CARD_PAIRINGS, month)
+        trips = CI.pilot_trips(insts, DB.crew_by_emp(emp), month, first, rows, pkg_details_for, end)
+        made = PV.capture_rebuild(DB, emp, name, month, trips, rows, now_iso(), (first, end), start, end, pilot_award)
+        if made:
+            log.info("pilot %s: schedule version %s (%s, rebuilt from crew lists)", emp, ", ".join(made), month)
+        return made
+    except Exception as e:
+        log.info("pilot %s: rebuilt schedule version skipped: %s", emp, e)
+        return []
+
+
+def pilotver_run_end(insts=None):
+    """FW-0069: after each crew index run, a rebuilt version for every pilot Ryan looked up, for each bid month the
+    index holds from the current one on (Ryan's instance only, as the crew index is). The card's pilot is
+    republished when he got one. Never raises. Returns the number of pilot-months that got a version."""
+    if INSTANCE:
+        return 0
+    try:
+        emps = PV.registered(DB)
+        if not emps:
+            return 0
+        insts = crew_instances() if insts is None else insts
+        rows = DB.crew_rows()
+        cur = local_now().strftime("%Y-%m")
+        months = sorted({m for m in (CI.period_of(it) for it in insts.values()) if m and m >= cur})
+        names = {e: (v.get("name") or "") for e, v in (DB.get(PV.INDEX_KEY) or {}).items()}
+        n, shown = 0, False
+        for emp in emps:
+            for month in months:
+                if pilotver_capture_rebuild(emp, names.get(emp, ""), month, insts, rows):
+                    n += 1
+                    shown = shown or emp == shown_emp()
+        if n:
+            log.info("crew index: %d pilot schedule version(s) from this run", n)
+        if shown:
+            pub_pilot(dict(PILOT_SHOWN["p"]))
+        return n
+    except Exception as e:
+        log.info("crew index: pilot schedule versions skipped: %s", e)
+        return 0
+
+
+def pilotver_awards(month, text, det):
+    """FW-0069: an award uploaded after pilots' versions of its month were made goes in as each one's .001 (the rest
+    renumbered). Never raises. Returns the number of pilots it changed."""
+    try:
+        start = pairings_start(month)
+        first, _, end = CI.grid_range(CARD_PAIRINGS, month)
+        n = 0
+        for emp in PV.registered(DB, month):
+            try:
+                aw = PDF.parse_award(text, emp, det, month, start)
+            except ValueError:
+                return n  # no date header: no pilot's line can be read
+            if aw and PV.set_award(DB, emp, month, aw, now_iso(), (first, end), first):
+                n += 1
+                log.info("pilot %s: awarded line is schedule version %s.001", emp, int(month[5:7]))
+                if emp == shown_emp():
+                    pub_pilot(dict(PILOT_SHOWN["p"]))
+        return n
+    except Exception as e:
+        log.info("pilot schedule versions: award skipped: %s", e)
+        return 0
+
+
+def pilotver_attrs(emp):
+    """FW-0069: the pilot card's versions: the list file pilotver_<key>.json (this pilot's versions, written only when
+    it changed) and the sensor's short form. {} when it fails (the card then shows no versions bar)."""
+    try:
+        emp = re.sub(r"\D", "", str(emp or ""))
+        key, rev = write_list_file("pilotver", PV.history(DB, emp) if emp else {})
+        return {"versions_file_key": key or "", "versions_rev": int(rev, 16) if rev else 0,
+                "versions": PV.summary(DB, emp) if emp else {}}
+    except Exception as e:
+        log.info("pilot lookup: versions skipped: %s", e)
+        return {}
+
+
 def pub_pilot(payload):
     """0.10.1: every pilot_schedule publish carries the crew index's view of that pilot's month too:
     reconstructed [{pairing, start, end, seat, route, checked_at, lay, blk, credit, soft, crew}],
@@ -4067,7 +4223,12 @@ def pub_pilot(payload):
     totals the rebuilt month with Pay-Gross for the seat flown on each trip, from the pilot's date of hire on the
     shared seniority list. A readable month (status ok) gets no pay line of its own: Schedule Lookup shows no seat,
     only PILOT_PAIRINGS_MAX of its pairing pages are read, and FLICA's credit total holds reserve and training days
-    that cannot be priced trip by trip."""
+    that cannot be priced trip by trip.
+    FW-0069: it also writes that pilot's schedule versions to pilotver_<key>.json and adds versions_file_key,
+    versions_rev (a number) and versions {YYYY-MM: {count, current, awarded}} (pilotver_attrs)."""
+    PILOT_SHOWN["p"] = {k: v for k, v in (payload or {}).items() if k not in (
+        "reconstructed", "reconstructed_coverage_pct", "reconstructed_month", "reconstructed_from", "reconstructed_to",
+        "pay_line", "contact", "versions_file_key", "versions_rev", "versions")}
     try:
         emp = re.sub(r"\D", "", str(payload.get("emp") or ""))
         month = str(payload.get("month") or "")
@@ -4098,11 +4259,13 @@ def pub_pilot(payload):
         ct = contact_for(emp, payload.get("name") or "") if emp else None
         if ct:
             payload["contact"] = ct
-    # FW-0066 review: a contact never stays in the broker. The retained copy (what HA reads after a restart) has none;
-    # the same payload with it follows, not retained, and that is the one the sensor and the card end on.
-    pub("pilot_schedule", {k: v for k, v in payload.items() if k != "contact"})
-    if payload.get("contact"):
-        pub("pilot_schedule", payload, retain=False)
+    with PILOT_PUB_LOCK:  # FW-0069: the list file and the sensor that names its rev go out together (two threads publish)
+        payload.update(pilotver_attrs(payload.get("emp")))
+        # FW-0066 review: a contact never stays in the broker. The retained copy (what HA reads after a restart) has
+        # none; the same payload with it follows, not retained, and that is the one the sensor and the card end on.
+        pub("pilot_schedule", {k: v for k, v in payload.items() if k != "contact"})
+        if payload.get("contact"):
+            pub("pilot_schedule", payload, retain=False)
 
 
 # ---------------------------------------------------------------- 0.10.1 crew index (Ryan)
@@ -4518,6 +4681,8 @@ def crew_index_check(fl):
             S["crew_last"] = {"at": now_iso(), "pages": run["pages"], "why": run["why"], "ended": res}
             log.info("crew index run done: %d pages (%s)", run["pages"], res)
         save_state(S)
+        if done:
+            pilotver_run_end(insts)  # FW-0069: looked-up pilots' rebuilt versions (DB only, no FLICA page)
     elif n:
         log.info("crew index: %d trips read again (no run going)", n)
     if n or done:
