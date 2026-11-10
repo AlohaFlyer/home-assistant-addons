@@ -247,26 +247,39 @@ min"; it replaces the pilot's 120 s floor of the first build, on the admin and o
   contract revision in Release C is the only step left. The admin's entity says 1 to 90 now.
 - The safety limits stay: a pilot's 100 FLICA loads an hour, the host's 480 an hour and 1.5 s gap (`gate.py`), the
   breakers. A pilot's hunt faster than his budget keeps up for an hour is spread over the hour (`budget_pace_s`: his
-  pot pages a check into 100 less the schedule read, one check's start and 12 loads an hour for the reads that may be
-  left out, `PACE_OPT_H`; about 89 s with 2 pot pages, jittered up to 30 % above), instead of spending the budget in
-  minutes and then waiting most of the hour blind. `opt_cap` counts a held hunt at that pace. The state note and the
+  pot pages a check into 100 less the schedule read, one check's start, 12 loads an hour for the reads that may be
+  left out, `PACE_OPT_H`, and, hunting, the close-in folder's reads, `close_in_h`; about 89 s with 2 pot pages and
+  105 s once the close-in folder is known, jittered up to 30 % above), instead of spending the budget in minutes and
+  then waiting most of the hour blind. Hunting reads the close-in folder at most every 5 min (FW-0035), so the pace
+  charges it as about 12 loads an hour, not a page of every check (counted per check it held every hunt to 133 s,
+  slower than the 120 s floor this replaces); in normal mode every check reads it, so it is a page of each check.
+  `opt_cap` counts a held hunt at that pace, and leaves the optional reads (a new find's pot details among them)
+  `PACE_OPT_H` an hour at it. The state note and the
   clock card say so plainly: "Hunting every 10 s is held to 100 FLICA loads an hour: checks wait for the budget, at
   least 89 s apart" (`held_note`; "Checking every 1 min ..." in normal mode; "(next at HH:MM HST)" while a load waits
   for the budget); the clock card labels it "Slowed." with the next check's time, never "Stuck". Simulated 2 h of a
   5 s pilot hunt in the real main loop: about 85 loads in the busiest hour, about 34 checks an hour, both pot pages every
-  check, never more than 2.5 min between pot reads, no budget wait.
+  check, never more than 2.5 min between pot reads, no budget wait. With the close-in folder known: about 29 checks an
+  hour (it was 23), the folder at most every 5 min, about 84 loads in the busiest hour.
+- `gate.py` keeps each load's time in full in its file (it was rounded to 1 ms, so a token could come back, or the
+  host gap end, up to 0.5 ms early: 101 loads in 3599.9995 s). The limits themselves are unchanged.
 - Clock card options: hunt 5, 10, 15, 20, 30, 45, 60, 90 s; normal 1, 2, 3, 5, 6, 10, 15, 20, 30, 45, 60, 90 min, within
   the entity's min and max (an entity without them: 5 to 90 s, 1 to 90 min).
 - `portal_layout.json`: the Settings tab has the "Hunt: check every" tile again (it was dropped only because 120 s could
   not be sent) and a line: hunt 5 to 90 s, normal 1 to 20 min (longer normal intervals come to the portal in a later
-  update), and the Watcher keeps a pilot within 100 FLICA page loads an hour, so very short hunts are slowed
-  automatically. The Watcher tab's help has no 2 min floor any more and says the same of the budget.
+  update), and the Watcher keeps a pilot within 100 FLICA page loads an hour, which keeps up about one check every
+  1.5 min (a little longer once the close-in folder is found), so a shorter hunt or normal interval runs at that pace.
+  The Watcher tab's help has no 2 min floor any more, says the same of the budget (a 5 s and a 60 s hunt check about
+  as often) and that each Scan FLICA now press uses a few of the 100 loads, so pressing it over and over can leave the
+  Watcher waiting up to an hour for the budget.
 - `freq()` falls back to config.yaml's defaults (6 min, 40 s) when an option is missing, so a frequency command never
   raises.
 - Tests: `test_freq_ranges.py` (new: the admin's and a pilot's ranges, the clamp at 5 and 90 s and 1 and 90 min, the
   timing floors and the pace, a portal pilot's entity at normal 20 max, a stored 40 s through a real start, the budget
-  holding a 5 s hunt to at most 100 loads an hour and spreading it, the held note); `test_release_a_flica`,
-  `test_release_a_review`, `test_release_a_cards` (a held hunt in the clock card, the Settings tab) and
+  holding a 5 s hunt to at most 100 loads an hour and spreading it, the held note, the close-in folder in the pace and
+  a 5 s hunt with it known through the real main loop); `test_flica_gate` (101 loads never inside one hour, the host
+  gap to the microsecond); `test_release_a_flica`, `test_release_a_review` (the worst rolling hour is now at most
+  100, not 101), `test_release_a_cards` (a held hunt in the clock card, the Settings tab and its new help wording) and
   `test_portal_spool` follow the new ranges.
 
 ## 1.6.1

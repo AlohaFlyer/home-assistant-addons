@@ -389,7 +389,7 @@ def test_three_hours_of_pilot_hunting_never_wait_inside_a_check(mk):
     kinds = collections.Counter("pot" if "opentimepot" in u else "other" for _, u in fl.loads)
     assert max(waits) <= GT.PACE_MAX_S + GT.HOST_GAP_S + 1e-6, max(waits)  # pacing only, never a budget wait
     # every check read both pot pages (none waited or was left out) and checks came at the hunt pace (90 to 117 s)
-    assert worst <= 101 and kinds["pot"] == 2 * checks and checks >= int(3 * 3600 / 130), (worst, kinds, checks)
+    assert worst <= 100 and kinds["pot"] == 2 * checks and checks >= int(3 * 3600 / 130), (worst, kinds, checks)
 
 
 # ------------------------------------------------------------------ 6: a CAPTCHA on the main menu is a stop

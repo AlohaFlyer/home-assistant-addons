@@ -486,7 +486,9 @@ def test_clock_card_says_a_held_hunt_plainly():
 
 def test_the_settings_tab_has_both_intervals_and_says_the_budget_slows_short_hunts():
     """Ryan 2026-11-10: the Hunt tile is back (5 to 90 s, all of which contract 1 sends); no markdown line speaks of a
-    120 s or 2 min floor; the Watcher keeps a pilot within 100 FLICA loads an hour, so very short hunts are slowed."""
+    120 s or 2 min floor; the Watcher keeps a pilot within 100 FLICA loads an hour, which keeps up about one check
+    every 1.5 min, and the help says plainly that a shorter hunt runs at that pace (1.6.2 review: not "very short
+    hunts": 5 to 85 s all run at it) and that pressing Scan FLICA now over and over uses up the hour."""
     settings = _tab("settings")
     names = {c.get("entity", ""): c.get("name") for c in settings if c["type"] == "tile"}
     assert names["number.flight_watcher_{name}_hunt_check_every"] == "Hunt: check every"
@@ -495,10 +497,17 @@ def test_the_settings_tab_has_both_intervals_and_says_the_budget_slows_short_hun
     assert not [m for m in md if re.search(r"\b120 s\b|\b2 min\b|fastest for a pilot", m)], md
     line = next(c["content"] for c in settings if c["type"] == "markdown")
     assert "5 to 90 s" in line and "1 to 20 min" in line
-    assert "within 100 FLICA page loads an hour, so very short hunts are slowed automatically" in line
+    pace = "keeps up about one check every 1.5 min (a little longer once the close-in folder is found)"
+    assert "within 100 FLICA page loads an hour, which " + pace in line
+    assert "a shorter hunt or normal interval runs at that pace, and the status line says so" in line
     help_md = next(c["content"] for c in _tab("watcher") if c["type"] == "markdown")
-    assert "within 100 FLICA page loads an hour, so very short hunts are slowed automatically" in help_md
+    assert "within 100 FLICA page loads an hour. That " + pace in help_md
+    assert "a shorter hunt runs at that pace: a 5 s and a 60 s hunt check about as often" in help_md
+    assert "or as often as your FLICA budget keeps up (below)" in help_md
+    assert not [m for m in md if "very short" in m or "slowed automatically" in m], md
     assert "a press within 10 s of the last check is ignored" in help_md
+    assert ("Each press uses a few of your 100 FLICA page loads an hour: pressing it over and over can leave the "
+            "Watcher waiting up to an hour for the budget") in help_md
     # every value the sliders offer passes the contract as sent: hunt is the same range, normal stops at 20 on a portal
     assert roles.WATCHER_FREQ_LIMITS["hunt_s"] == roles.FREQ_LIMITS["hunt_s"]
     assert roles.entity_freq_limits("pilot2", portal=True) == roles.FREQ_LIMITS

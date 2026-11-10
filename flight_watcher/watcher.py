@@ -1423,21 +1423,31 @@ GATE_KEEP = 4  # an optional load leaves this many of a pilot's budget free (the
 PACE_OPT_H = 12  # 1.6.2: a pilot's paced hunt leaves this many loads an hour to the reads that may be left out
 
 
+def close_in_h():
+    """1.6.2 review: the close-in folder's FLICA loads an hour that a hunt costs whatever its pace: hunting reads it at
+    most every CLOSE_IN_READ_S (FW-0035, about 12 an hour), not on every check. 0 when its BCID is not known, and in
+    normal mode (every check reads it then: pot_pages counts it)."""
+    return 3600.0 / CLOSE_IN_READ_S if FLAGS.get("hunt") and (S.get("close_in") or {}).get("bcid") else 0.0
+
+
 def pot_pages():
-    """The open time pages one check loads (the pot months, 2 until they are found, and the close-in folder)."""
-    return (len(S.get("pot_urls") or {}) or 2) + (1 if (S.get("close_in") or {}).get("bcid") else 0)
+    """The open time pages every check loads: the pot months (2 until they are found) and, in normal mode, the close-in
+    folder (hunting, it is an hourly cost instead: close_in_h)."""
+    ci = 1 if (S.get("close_in") or {}).get("bcid") and not FLAGS.get("hunt") else 0
+    return (len(S.get("pot_urls") or {}) or 2) + ci
 
 
 def budget_pace_s():
     """1.6.2 (Ryan 2026-11-10: hunt 5 to 90 s): on a pilot, the shortest wait between his checks that his FLICA budget
     keeps up for a whole hour: the pot's pages a check into his budget less his schedule read (2 loads every 30 min),
-    one check's start and PACE_OPT_H for the optional reads (about 89 s with 2 pot pages). A shorter hunt is spread
-    over the hour at this pace (gap) instead of using the budget in minutes and then waiting most of the hour. 0 on
-    the admin (no budget)."""
+    one check's start, PACE_OPT_H for the optional reads and, hunting, the close-in folder's reads (close_in_h):
+    about 89 s with 2 pot pages, 105 s once the close-in folder is known. A shorter hunt is spread over the hour at
+    this pace (gap) instead of using the budget in minutes and then waiting most of the hour. 0 on the admin (no
+    budget)."""
     if not GATE.budget:
         return 0.0
-    room = GATE.budget - 2 * SCHED_TRIES_PER_READ - GATE_CHECK_TOKENS - PACE_OPT_H
-    return pot_pages() * 3600.0 / max(1, room)
+    room = GATE.budget - 2 * SCHED_TRIES_PER_READ - GATE_CHECK_TOKENS - PACE_OPT_H - close_in_h()
+    return pot_pages() * 3600.0 / max(1.0, room)
 
 
 def held_note(until=None):
@@ -1464,13 +1474,14 @@ def held_apply():
 
 def opt_cap():
     """1.6.2 review: the optional loads a pilot may make in an hour: his budget less what the open time pot needs at
-    his check rate (its pages times checks an hour; a check rate his budget holds counts at its pace, budget_pace_s),
-    his schedule read (2 loads every 30 min) and one check's start."""
+    his check rate (its pages times checks an hour; a check rate his budget holds counts at its pace, budget_pace_s;
+    hunting, the close-in folder's reads an hour, close_in_h), his schedule read (2 loads every 30 min) and one check's
+    start."""
     if not GATE.budget:
         return None
     fq = freq()
     every = max(1.0, float(fq["hunt_s"] if FLAGS.get("hunt") else fq["normal_min"] * 60), budget_pace_s())
-    pot = pot_pages() * 3600.0 / every
+    pot = pot_pages() * 3600.0 / every + min(close_in_h(), 3600.0 / every)
     return max(0, GATE.budget - int(round(pot)) - 2 * SCHED_TRIES_PER_READ - GATE_CHECK_TOKENS)
 
 

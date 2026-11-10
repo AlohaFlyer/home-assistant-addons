@@ -187,7 +187,8 @@ FREQ_LIMITS = {"normal_min": (1, 20), "hunt_s": (5, 90)}
 # 1.6.2 (Ryan 2026-11-10, replacing the pilot's 120 s hunt floor): every instance, the admin and each pilot, hunts every
 # 5 to 90 s and checks every 1 to 90 min in normal mode. These are the number entities' ranges and the Watcher's clamp
 # of freq/*/set and of a stored value. A pilot's FLICA budget (gate.PILOT_BUDGET_H, 100 loads an hour), the host's cap
-# (480 an hour) and the 1.5 s host gap stay: they slow a very short hunt, and the state note says so.
+# (480 an hour) and the 1.5 s host gap stay: a pilot's hunt faster than his budget keeps up (about one check every
+# 1.5 min, watcher.budget_pace_s) runs at that pace, and the state note says so.
 WATCHER_FREQ_LIMITS = {"normal_min": (1, 90), "hunt_s": (5, 90)}
 
 
