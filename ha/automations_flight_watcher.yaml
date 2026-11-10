@@ -411,7 +411,8 @@
   alias: Flight Watcher dashboard month reset
   description: On the 1st of each month, point the Flight Watcher page back at the
     current month (input_number.flight_watcher_month_offset = 0). HOM t1218. James's
-    page too (input_number.flight_watcher_james_month_offset).
+    HA page was retired on 2026-11-10 (he uses the portal, where the month is view
+    state).
   triggers:
   - at: 00:01:00
     trigger: time
@@ -425,7 +426,6 @@
     target:
       entity_id:
       - input_number.flight_watcher_month_offset
-      - input_number.flight_watcher_james_month_offset
   mode: single
 - id: '1793585834839'
   alias: Flight Watcher FLICA alert email in

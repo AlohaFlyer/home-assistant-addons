@@ -4,6 +4,15 @@ Copies of the Flight Watcher pieces that live in Home Assistant on Pako HI rathe
 review and history (FW-0036). Nothing in this folder is loaded by Home Assistant or by the app, and the app store
 ignores it (no `config.yaml`).
 
+**Applied on Pako 2026-11-10 (James's HA page retired):** James uses the pilot portal (FW-0061) and his HA user is
+gone, so the `flight-watcher-james` dashboard and his seven HA helpers (`input_number.flight_watcher_james_*` federal
+and state tax, longevity year, month offset; `input_text.flight_watcher_james_*` ER trips, picker search;
+`input_boolean.flight_watcher_james_show_vac_trips`) were deleted through the HA connector, and "Flight Watcher
+dashboard month reset" now resets Ryan's month offset only. The portal never read those helpers (its prefs are the
+Watcher's own `/data/james/prefs.json`). `dashboard_flight_watcher_james.json` is removed from this folder; the
+sections below that mention it are history. Undo: restore the edits backups (dashboard, automation, seven helpers)
+with `ha_manage_backup(scope="edits", action="restore")`.
+
 **Snapshot refreshed 2026-11-06 about 13:50 HST** (Settings tab: "Settings" heading relabeled "Credentials" on both
 dashboards; Ryan's gets a "Monthly PDFs" heading and the 1.4.5 upload card above Tickets, Ryan only). Both dashboards
 were checked against Pako by sha256 of the redacted text; the automations are unchanged since the 09:30 HST refresh and
@@ -82,7 +91,6 @@ household users (four, a guest login among them) can open `flight-watcher-james`
 |:--|:--|
 | `automations_flight_watcher.yaml` | `/config/automations.yaml`: the 19 automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order |
 | `dashboard_flight_watcher.json` | `/config/.storage/lovelace.flight_watcher` (dashboard `flight-watcher`) |
-| `dashboard_flight_watcher_james.json` | `/config/.storage/lovelace.flight_watcher_james` (dashboard `flight-watcher-james`) |
 | `packages/flight_watcher_wx.yaml` | `/config/packages/flight_watcher_wx.yaml` |
 | `check_push_isolation.py` | the push-isolation guard (below) |
 | `pilots.json` | none: who the guard knows (admin `ryan`, pilots `["james"]`), their notify targets and action prefixes (1.5.0) |
