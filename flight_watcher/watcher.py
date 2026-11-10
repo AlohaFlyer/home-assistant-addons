@@ -53,7 +53,7 @@ import ntfy as NT
 import gate as GT
 import captures as CAPS
 
-VERSION = "1.6.1"
+VERSION = "1.6.2"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -837,7 +837,7 @@ FINDS_FILES = {"all": False}
 
 def write_finds_months():
     """0.9.4 (Ryan): one file per HST month for the finds card's month picker. This month and last month on every
-    check; all 24 months once per start. Read only, no FLICA traffic. FW-0010: the files carry crew names and
+    check (written even with no finds, 1.6.2); all 24 months once per start. Read only, no FLICA traffic. FW-0010: the files carry crew names and
     employee numbers and HA serves www with no login, so the name is finds_<YYYY-MM>_<key>.json (wwwfiles.py).
     FW-0026: returns rev, a short hash of this month's and last month's files as written (the two that change between
     starts), for the sensor; None when the files could not be written."""
@@ -857,7 +857,9 @@ def write_finds_months():
             rows = DB.finds_between(a.isoformat(), b.isoformat())
             month = f"{y:04d}-{m + 1:02d}"
             path = os.path.join(fdir, WF.finds_name(month, key))
-            if rows or os.path.exists(path):
+            # 1.6.2 (Release A item 15): this month and last month always have a file, empty or not, so the finds
+            # card (and a portal pilot's export) never asks for a month file that does not exist
+            if rows or i < 2 or os.path.exists(path):
                 text = json.dumps({"month": month, "count": len(rows), "finds": rows}, separators=(",", ":"))
                 tmp = path + ".tmp"
                 with open(tmp, "w") as fh:
@@ -7385,6 +7387,19 @@ def enforce_role():
         log.info("auto swap off: not for a pilot instance")
 
 
+# 1.6.2 (Release A item 14): machine notes a pilot reads in his portal: no Home Assistant step, no MQTT topic, and no
+# other pilot's name (the clock card puts "Someone signed into FLICA with your account." before a yield's note)
+NEEDS_SETTINGS_NOTE = "enter your FLICA username and password on the Settings tab"
+PAUSED_NOTE = "paused: the Pause switch is on"
+
+
+def yield_note(cool_s):
+    """The yielded note: the admin's as before ('Ryan logged in elsewhere, ...'); a pilot's names nobody."""
+    if ROLES.role(INSTANCE) == ROLES.ADMIN:
+        return f"Ryan logged in elsewhere, back in {int(cool_s / 60)} min"
+    return f"back in {int(cool_s / 60)} min"
+
+
 def main():
     global MQ
     migrate_swap_mode()  # FW-0028: before on_connect publishes the mode
@@ -7396,7 +7411,7 @@ def main():
     time.sleep(2)
     if not OPTS.get("username") or not OPTS.get("password"):
         if not has("addon_config"):  # 0.10.0: a pilot gets credentials over MQTT; wait for them (settings/set restarts us)
-            set_machine("needs_settings", f"send username and password to {T}/settings/set")
+            set_machine("needs_settings", NEEDS_SETTINGS_NOTE)  # 1.6.2: words a pilot can act on (no MQTT topic)
             no_next_check()
             pub("session", "OFF")
             log.info("no credentials for instance %s: waiting on %s/settings/set", INSTANCE, T)
@@ -7489,7 +7504,7 @@ def main():
                 continue
             if FLAGS["pause"]:
                 if st != "paused":
-                    set_machine("paused", "paused from HA")
+                    set_machine("paused", PAUSED_NOTE)
                 no_next_check()
                 sleep(3600)
                 continue
@@ -7565,7 +7580,7 @@ def main():
                 cool = min(OPTS["yield_cooldown_min"] * 60 * mult, 4 * 3600)
                 S["yield_until"] = now + cool
                 S["req_force"] = True  # 1.2.0: he was in FLICA, maybe filing a request: read the list first thing back
-                set_machine("yielded", f"Ryan logged in elsewhere, back in {int(cool / 60)} min")
+                set_machine("yielded", yield_note(cool))
                 continue
             if res == "stop":
                 pub("session", "OFF")

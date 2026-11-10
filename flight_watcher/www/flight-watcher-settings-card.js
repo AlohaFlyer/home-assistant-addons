@@ -100,10 +100,11 @@ class FlightWatcherSettingsCard extends HTMLElement {
       .nt{margin:12px 0;padding-top:8px;border-top:1px solid var(--divider-color,#ccc)}.nt .note b{opacity:1}
       .ack{font-size:13px;flex-wrap:nowrap;align-items:flex-start}.ack input{flex:0 0 auto;min-width:0;width:22px;height:22px;margin:0}.topic{margin:8px 0;padding:8px;border-radius:6px;background:rgba(46,125,50,.12);font-size:13px;overflow-wrap:anywhere}
       .topic code{font-size:15px;user-select:all}button.g{background:#757575}button{min-height:44px;margin:4px 0}</style>
-      <ha-card><div class="note">Saved on this Home Assistant only, encrypted before it leaves this screen. A blank field keeps
-      what is saved. Saving restarts the Watcher; with a new FLICA login it logs in within a minute.</div>
+      <ha-card><div class="note">${FW_PORTAL
+        ? "Encrypted in your browser; only your Watcher can read it (the portal passes on ciphertext only). A blank field keeps what is saved. Saving restarts your Watcher; with a new FLICA login it logs in within a minute."
+        : "Saved on this Home Assistant only, encrypted before it leaves this screen. A blank field keeps what is saved. Saving restarts the Watcher; with a new FLICA login it logs in within a minute."}</div>
       ${rows}<button id="save">Save credentials</button><div class="msg" id="msg"></div>
-      <div class="note" id="who"></div></ha-card>`;
+      <div class="note" id="ct"></div><div class="note" id="who"></div></ha-card>`;
     root.getElementById("save").addEventListener("click", () => this._save());
     if (this._ntfy) {
       root.getElementById("gen").addEventListener("click", () => this._gen());
@@ -127,6 +128,17 @@ class FlightWatcherSettingsCard extends HTMLElement {
     }
     const st = this._h && this._h.states["sensor.flight_watcher_state"];
     root.getElementById("who").textContent = st ? `Watcher: ${st.state}` : "";
+    // 1.6.2 (Release A item 14): whether CrewTrac takes the saved login (sensor.flight_watcher_charters, 1.6.1), next to
+    // the fields that fix it; red while CrewTrac refuses it
+    const ch = this._h && this._h.states["sensor.flight_watcher_charters"];
+    const ca = (ch && ch.attributes) || {}, cst = (ca.crewtrac || {}).state || "";
+    const ctEl = root.getElementById("ct");
+    if (ctEl) {
+      const said = String(ca.status || "");  // the Watcher's own words (crewtrac_text): they name CrewTrac already
+      const txt = !ch ? "" : cst === "ok" ? "CrewTrac: the saved login works." : said && !said.startsWith("ok") ? said : "";
+      ctEl.textContent = txt;
+      ctEl.className = `note${cst === "refused" ? " err" : cst === "ok" ? " ok" : ""}`;
+    }
     if (FW_PORTAL) root.getElementById("save").disabled = !a.pubkey;
   }
   async _save(only) {

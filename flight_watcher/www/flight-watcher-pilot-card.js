@@ -440,7 +440,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     }
     const [y, m] = a.month.split("-").map(Number);
     const t = a.totals || {};
-    const hd = `<div class="hd"><h3>${this._esc(name)} (${this._esc(emp)})</h3>${ct}<span class="u">${MONTHS[m - 1]} ${y} · FLICA updated ${this._esc(a.updated || "?")} · read ${a.fetched ? new Date(a.fetched).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}${a.status === "cached" ? " (cached)" : ""}</span><span class="x" title="close">&times;</span></div>`;
+    const hd = `<div class="hd"><h3>${this._esc(name)} (${this._esc(emp)})</h3>${ct}<span class="u">${MONTHS[m - 1]} ${y} · FLICA updated ${this._esc(a.updated || "?")} · read ${a.fetched ? this._hst(a.fetched) : ""}${a.status === "cached" ? " (cached)" : ""}</span><span class="x" title="close">&times;</span></div>`;
     if (old) {  // FW-0069: an older version of a readable month
       body.innerHTML = hd + vb + old;
       body.insertAdjacentHTML("beforeend", this._recon(a, true));

@@ -119,6 +119,46 @@ guardrails below. Built, not deployed.
   `test_release_a_prefs_card.py`; `test_ntfy` (a 30-character test topic), `test_prefs` and `test_portal_export` (no
   seed from the helpers), `test_crewtrac_stop` (per-instance capture folder) follow the changes above.
 
+Release A, group 3 (cards and layout, shipped by the Watcher). Built, not deployed.
+
+- Portal layout (`portal_layout.json`, the same 5 tabs, contract unchanged): the Watcher tab has the working flight,
+  the open time pot and Tradeboard pickups and the CrewTrac charters card; the Schedule tab has the FLICA requests,
+  where the Request decided alert opens. Four new cards ship like the others (`www/`, copied per pilot by `cards.py`,
+  bundled for the portal): `flight-watcher-pot-card.js` (a port of the HA pot_table macro: pot rows and Tradeboard
+  pickups marked T, with credit, soft time, report, captain, Fits ("needs your schedule" while the schedule is not
+  read), FAR 117 (117.25(e), 117.25(b), 117.23(b)(1), 117.23(c); CBA rest, PWA 10.E.1.a) and Value = credit x the PWA
+  3.D.6 rate for the longevity year in Pay settings (flagged while that year is not confirmed); rows on VAC or blocked
+  days behind Show VAC/blocked, kept on the device; "Pot last read ... HST" when the pot is over 15 min old),
+  `flight-watcher-working-card.js` (the Working Flight view without Hark's parts; "your FLICA schedule has not been
+  read" instead of No trip; only https links), `flight-watcher-charters-card.js` (the CrewTrac status in words from
+  the 1.6.1 crewtrac state: refused, outage, not set up, OK; the flights found; last scan HST; Scan CrewTrac now inside
+  it, off while CrewTrac's refusal stands or no details are saved) and `flight-watcher-requests-card.js` (open time
+  requests and trades as FLICA lists them: status, type, trips, date and time HST, newest first; read only).
+- Wording on a portal copy: the clock card (new `FW_PORTAL` flag) says "Watcher not answering ... ask the Flight
+  Watcher admin" instead of the Settings > Apps step and gives needs_settings its own line (Settings tab, no Re-arm);
+  the settings card says "Encrypted in your browser; only your Watcher can read it ... Saving restarts your Watcher" and
+  shows the CrewTrac status under the fields (red while refused); the finds card's Key leaves out the alert email and
+  smart.json lines in the portal; the improved card no longer says "app 0.9.0"; the school calendar (HPA) is read and
+  named on the admin's schedule card only. Help text: Scan FLICA now is a full check, the yield grows past 30 min (up
+  to 4 h), Scan CrewTrac now is one CrewTrac login and stops after a refusal. A pilot's notes name nobody and give no
+  MQTT topic or HA step ("back in 30 min", "enter your FLICA username and password on the Settings tab", "paused: the
+  Pause switch is on"); the admin's yield note is unchanged. sealed.py: "reload this page and save again". Alert
+  texts match their pages: a recall verdict in the Recall card's words (CHECK, SHOULD HAVE BEEN YOU), "Your alert rule
+  matched ..." without the internal rule id and with the layover, and a failed FLICA login points at the Settings save.
+  The new pairing text ("Fit Fits") is pinned by the contract sample and stays.
+- HST and touch: the clock card's Last and Next are HST (Pacific/Honolulu, labeled) on any phone; its buttons and
+  selects are at least 44 px tall on a phone; its interval selects offer only what the number entity allows (a pilot's
+  hunt is 120 to 300 s) and, in the portal, what contract 1 passes (hunt 5 to 90 s), so a pilot's portal shows "every
+  120 s" as text; an off-list value goes in its sorted place. The pilot card's "read" time is HST.
+- Finds: this month's and last month's finds files are written even when empty, so the finds card (and the portal
+  export, finds:<month>) never fetches a month file that does not exist.
+- Schedule card: its redraw signature includes each state, not only last_updated, so the month arrows work where the
+  month helper's last_updated does not move (the portal's local helper).
+- Tests: `test_release_a_cards.py` (layout, texts, notes, finds files, and Chromium renders at 390 px of the four new
+  cards, the clock card in Tokyo and Los Angeles time, the schedule card's month arrows, the portal settings and finds
+  cards and the pilot card); `test_portal_bundle`, `test_portal_events` and `test_wwwfiles` follow the changes above.
+  A mutation check (34 mutations, one per change) killed every one.
+
 ## 1.6.1
 
 Stage 0: stop retrying a login CrewTrac refused, and stop reading FLICA's schedule page every loop when it cannot be

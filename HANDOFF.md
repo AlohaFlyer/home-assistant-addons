@@ -1,4 +1,4 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-10, release 1.6.0 live; 1.6.1 stage 0 built, not deployed)
+# HANDOFF: Flight Watcher (refreshed 2026-11-10, release 1.6.0 live; 1.6.1 stage 0 and 1.6.2 Release A built on branch fw-1.6.2, not deployed)
 
 State: app **1.6.0** on Pako HI (1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
 per pilot Nov 8, 1.4.10 FW-0068 crew index finds FLICA-rebuilt pairings like H3631B Nov 9, 1.4.11 FW-0069 schedule versions
@@ -7,7 +7,11 @@ every rebuilt copy until all pilot seats are named Nov 9, 1.4.13 FW-0042 comm / 
 `/share/flight_watcher/smart.json` Nov 9, 1.5.0 FW-0063 pilots list and roles (`roles.py`, `ha/pilots.json`) Nov 9; each instance publishes `sensor.<prefix>_working_flight`, read by the Working Flight view on each
 dashboard, see `ha/README.md`). **1.6.0** (FW-0061, the Flight Watcher half of the pilot portal: `portal.py`,
 `ntfy.py`, `portal_layout.json`, `PORTAL_CONTRACT.md`) is live with `portal: true` for James, and Ryan's instance is
-unchanged by it. The git history was cleaned on Nov 7 (`ha/` files carry placeholder user ids). Slug `43b22650_flight_watcher`,
+unchanged by it. **1.6.2** (Release A, branch `fw-1.6.2` on top of 1.6.1, not pushed or deployed; CHANGELOG 1.6.2):
+the host-wide FLICA gate (`gate.py`; pilot 100 loads an hour and hunt 120 s, host 480, the admin's 376 kept), read-path
+breakers, the schedule read in at most 2 loads, the awarded line on the card, pilot captures off (`captures.py`),
+topic-only ntfy with guardrails, Recall/O75 seniority from the award, the minimal pilot name lookup, pref flags, and the
+portal's pot, working flight, CrewTrac and requests cards with HST times and portal wording. The git history was cleaned on Nov 7 (`ha/` files carry placeholder user ids). Slug `43b22650_flight_watcher`,
 two instances: Ryan (`flight_watcher`, `/data`) and
 James (`pilots` entry `james`, role pilot, `flight_watcher_james`, `/data/james`). James uses the pilot portal
 (homeofficemanager.app/fw, FW-0061), not Home Assistant: his HA user was retired on Nov 10 and his HA dashboard

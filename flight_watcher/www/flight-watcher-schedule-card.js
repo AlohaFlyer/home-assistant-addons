@@ -59,7 +59,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
       "sensor.flight_watcher_blocked_days", "sensor.flight_watcher_own_trip_times", "sensor.flight_watcher_tradeboard_pickups",
       "sensor.flight_watcher_would_trade", "sensor.flight_watcher_swap_ideas", "sensor.flight_watcher_reserve_grid",
       "input_number.flight_watcher_federal_tax_pct", "input_number.flight_watcher_state_tax_pct", "input_number.flight_watcher_longevity_year", "input_text.flight_watcher_er_trips", "sensor.flight_watcher_schedule_versions"]
-      .map((e) => h.states[e] && h.states[e].last_updated).join("|") + "|" + this._doh(h) + (this._isAdmin(h) ? "|admin" : "|pilot");
+      .map((e) => h.states[e] && `${h.states[e].last_updated}/${h.states[e].state}`).join("|") + "|" + this._doh(h) + (this._isAdmin(h) ? "|admin" : "|pilot") + "|" + this._role(h);
+    // 1.6.2 (Release A item 15): each state too, not only last_updated: the pilot portal keeps the month helper
+    // (input_number.flight_watcher_month_offset) in the page, and a step there need not move last_updated
     this._h = h;
     if (sig === this._sig) return;
     this._sig = sig;
@@ -128,6 +130,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const y = parseInt(iso.slice(0, 4), 10), m = parseInt(iso.slice(5, 7), 10);
     const sy = m >= 7 ? y : y - 1; const key = `${sy}-${String((sy + 1) % 100).padStart(2, "0")}`;
     this._sc = this._sc || {};
+    if (this._role() !== "admin") return false;  // 1.6.2: a pilot has no school calendar file; holidays only, no fetch
     if (this._sc[key] !== undefined) return this._sc[key];
     this._sc[key] = null;
     fetch(`/local/flight-watcher/school_${key}.json?v=1`, { cache: "no-cache" }).then((r) => (r.ok ? r.json() : false)).then((j) => {
@@ -168,6 +171,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
   // 1.5.0 (FW-0063): the Watcher's role must say so too: sensor.<prefix>_state attribute role is "admin" on Ryan's
   // instance only, so a pilot's copy of this card never shows the drop mark, even to the owner, and Ryan's card shows it
   // to the owner only, as in 1.4.12. A hass with no user yet is not the owner (the card redraws when the user arrives).
+  // 1.6.2 (item 14): the Watcher's role ("admin" on the admin's own instance only); the school calendar (HPA, the
+  // admin's household) is read and named on the admin's card only, never on a pilot's
+  _role(h) { const s = ((h || this._h || {}).states || {})["sensor.flight_watcher_state"]; return (s && s.attributes && s.attributes.role) || ""; }
   _isAdmin(h) { const hh = h || this._h || {}; const s = (hh.states || {})["sensor.flight_watcher_state"]; return !!(s && s.attributes && s.attributes.role === "admin" && hh.user && hh.user.is_owner); }
   _marks() { return this._isAdmin() ? "availability, trade and drop marks" : "availability and trade marks"; }
   _say(msg) { const box = this.shadowRoot.querySelector(".info"); if (box) { box.textContent = msg; box.style.whiteSpace = "pre-line"; box.style.display = "block"; } }
@@ -474,7 +480,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
           }
         }
       } else if (pk === false) note = `No ${MONTHS[m]} pairing package on file, so no tag-on ideas.`;
-      { const sc0 = this._school(key + "-15"); if (sc0 === false) note += (note ? " " : "") + `No HPA school calendar file for this school year (school_YYYY-YY.json); holidays shown instead.`; }
+      { const sc0 = this._school(key + "-15"); if (sc0 === false && this._role() === "admin") note += (note ? " " : "") + `No HPA school calendar file for this school year (school_YYYY-YY.json); holidays shown instead.`; }
       const sum = { blk: 0, cr: 0, soft: 0, gross: 0, net: 0, vac: 0, vacDays: 0 };
       const tripFull = (cr, blk, crew, lay, k, seat) => { const n = crewN(crew); seat = (seat || "FO").toUpperCase();
         const ov = blk != null ? (seat === "RO" ? blk * IRO_OVERRIDE : (seat !== "CA" && n === 3 ? blk * 3.00 : 0)) : 0;
@@ -761,7 +767,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     <tr><td>Legal next</td><td>Earliest report for another trip: release + 11 h (PWA 10.E.1.a). Tap for the 18 h case.</td></tr>
     <tr><td>Open</td><td>Open time trips starting that day: <span class="fit">fits</span>, <span class="clash">clashes or blocked</span>.</td></tr>
     <tr><td>Ideas</td><td>Tag-ons after your release with legal rest, <b>O</b> = in open time, <b>T</b> = on the Tradeboard. Orange = better trip for a marked one. Tap for details.</td></tr>
-    <tr><td>Day</td><td>Blue = weekend, yellow = no school at HPA (from the school year file), hatched yellow = US or Hawaii holiday with no school file loaded. Tap a day to block it (&#8856;), tap again to unblock; VAC days are always &#8856; and cannot be changed. The lock at the top left (&#128274;) freezes ${admin ? "availability, trade and drop" : "availability and trade"} taps. All times HNL.</td></tr>
+    <tr><td>Day</td><td>Blue = weekend, ${this._role() === "admin" ? "yellow = no school at HPA (from the school year file), hatched yellow = US or Hawaii holiday with no school file loaded" : "hatched yellow = US or Hawaii holiday"}. Tap a day to block it (&#8856;), tap again to unblock; VAC days are always &#8856; and cannot be changed. The lock at the top left (&#128274;) freezes ${admin ? "availability, trade and drop" : "availability and trade"} taps. All times HNL.</td></tr>
     </table>${note ? `<div>${note}</div>` : ""}</details>
     <details class="set"${unconf.length ? " open" : ""}><summary>Pay settings${unconf.length ? " (not set yet)" : ""}</summary>
       <span>Federal tax <select data-e="input_number.flight_watcher_federal_tax_pct">${sel(0, 45, 0.5, fed, "%")}</select></span>
