@@ -1,5 +1,5 @@
 {
- "note": "1.6.0 (FW-0061): a pilot portal's tabs (contract 1). {name} is the pilot's name. Card types: the pilot's own card copies (custom:flight-watcher-<x>-card-{name}), heading, tile, entity, toggle and static markdown (text only, no templates). No tickets or uploads card. 1.6.2 (Release A item 13): the Watcher tab has the working flight, the open time pot and Tradeboard pickups and the CrewTrac charters card; the Schedule tab has the FLICA requests, where the Request decided alert opens. 1.6.2 review: no Hunt interval tile on the Settings tab (a pilot hunts at 120 s, which contract 1's 5 to 90 s cannot send; a markdown line says so) and no State, Last check or Next check rows under the clock card.",
+ "note": "1.6.0 (FW-0061): a pilot portal's tabs (contract 1). {name} is the pilot's name. Card types: the pilot's own card copies (custom:flight-watcher-<x>-card-{name}), heading, tile, entity, toggle and static markdown (text only, no templates). No tickets or uploads card. 1.6.2 (Release A item 13): the Watcher tab has the working flight, the open time pot and Tradeboard pickups and the CrewTrac charters card; the Schedule tab has the FLICA requests, where the Request decided alert opens. 1.6.2 review: no State, Last check or Next check rows under the clock card. 1.6.2 (Ryan 2026-11-10): the Settings tab has the Hunt interval tile again (every instance hunts every 5 to 90 s, all of which contract 1 sends; the pilot's 120 s floor is gone) and a line that the Watcher keeps a pilot within 100 FLICA loads an hour; normal is 1 to 20 min from the portal until Release C revises contract 1 (the Watcher itself takes 1 to 90).",
  "tabs": [
   {"id": "watcher", "title": "Watcher", "cards": [
    {"type": "custom:flight-watcher-clock-card-{name}"},
@@ -12,7 +12,7 @@
    {"type": "toggle", "entity": "switch.flight_watcher_{name}_pause", "name": "Pause"},
    {"type": "entity", "entity": "binary_sensor.flight_watcher_{name}_session_ok", "name": "FLICA session"},
    {"type": "custom:flight-watcher-charters-card-{name}"},
-   {"type": "markdown", "content": "- **Scan FLICA now** reads the open time pot and the Tradeboard right away, and your schedule too unless a schedule read is backing off (the Schedule tab says when it tries next). It is a full check, so use it when you need it: at most one check starts every 2 min.\n- **Hunt mode** checks about every 2 min (120 s, the fastest for a pilot); off is normal speed.\n- Every wait varies by up to 30 % (never under 2 min), so FLICA never sees a fixed rhythm.\n- **Pause** only if you log in to FLICA yourself for a long time. The Watcher also steps back on its own when it sees your login: 30 min, longer if you log in again within 6 h (up to 4 h).\n- **Scan CrewTrac now** logs in to CrewTrac once to look for charters (at most one press every 30 min). If CrewTrac refuses your user ID or password, the Watcher stops trying until you save new CrewTrac details on the Settings tab.\n- FLICA is read only: the Watcher never submits, drops, swaps, adds or bids. CrewTrac is read only too."}
+   {"type": "markdown", "content": "- **Scan FLICA now** reads the open time pot and the Tradeboard right away, and your schedule too unless a schedule read is backing off (the Schedule tab says when it tries next). It is a full check, so use it when you need it (a press within 10 s of the last check is ignored).\n- **Hunt mode** checks at your hunt interval (5 to 90 s, on the Settings tab); off is normal speed.\n- Every wait varies by up to 30 %, so FLICA never sees a fixed rhythm.\n- The Watcher keeps you within 100 FLICA page loads an hour, so very short hunts are slowed automatically; the status line then says the hunt is held to that budget.\n- **Pause** only if you log in to FLICA yourself for a long time. The Watcher also steps back on its own when it sees your login: 30 min, longer if you log in again within 6 h (up to 4 h).\n- **Scan CrewTrac now** logs in to CrewTrac once to look for charters (at most one press every 30 min). If CrewTrac refuses your user ID or password, the Watcher stops trying until you save new CrewTrac details on the Settings tab.\n- FLICA is read only: the Watcher never submits, drops, swaps, adds or bids. CrewTrac is read only too."}
   ]},
   {"id": "schedule", "title": "Schedule", "cards": [
    {"type": "custom:flight-watcher-schedule-card-{name}"},
@@ -32,8 +32,9 @@
    {"type": "heading", "heading": "Credentials"},
    {"type": "custom:flight-watcher-settings-card-{name}"},
    {"type": "heading", "heading": "Check frequency"},
-   {"type": "markdown", "content": "Hunt mode checks every 120 s (the fastest for a pilot)."},
+   {"type": "tile", "entity": "number.flight_watcher_{name}_hunt_check_every", "name": "Hunt: check every"},
    {"type": "tile", "entity": "number.flight_watcher_{name}_normal_check_every", "name": "Normal: check every"},
+   {"type": "markdown", "content": "Hunt: every 5 to 90 s. Normal: every 1 to 20 min (longer normal intervals come to the portal in a later update). Every wait varies by up to 30 %. The Watcher keeps you within 100 FLICA page loads an hour, so very short hunts are slowed automatically."},
    {"type": "tile", "entity": "button.flight_watcher_{name}_re_arm", "name": "Re-arm"}
   ]}
  ]

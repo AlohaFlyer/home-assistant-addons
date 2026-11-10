@@ -3,8 +3,10 @@
 ## 1.6.2
 
 Release A, group 1 (FLICA load and the schedule read; watcher.py core). Ryan's decisions of 2026-11-10: his own budget
-stays about 376 FLICA loads an hour (FW-0035), the host cap is 480 an hour, a pilot's budget 100 an hour and his
-fastest hunt 120 s. Built, not deployed.
+stays about 376 FLICA loads an hour (FW-0035), the host cap is 480 an hour, a pilot's budget 100 an hour. His later
+instruction the same day replaced a pilot's fastest hunt of 120 s: "The hunt floor should be 5 sec to 90 sec. And
+normal should be 1 min to 90 min", on every instance (see "Check frequency ranges" at the end of this entry). Built,
+not deployed.
 
 - FLICA gate (`gate.py`, new; Dockerfile copies it): every Watcher in the container loads FLICA through one lock file,
   `/data/flica_gate.lock` (the admin's data folder, the parent of each pilot's; `FLIGHT_WATCHER_GATE` overrides). Each
@@ -19,11 +21,8 @@ fastest hunt 120 s. Built, not deployed.
   the future are dropped. Every load is on the file's rolling-hour log (time, instance) and on the fetch counter.
   The per-site 1.0 to 2.0 s pauses (schedule tries, the lookup prompt) are 1.5 to 3.5 s now; the pot read after a
   schedule read (about 0 s before) is paced like every other load.
-- A pilot hunts every 120 s at the fastest (normal checks every 2 min at the fastest, so normal is never quicker than
-  the hunt floor): his number entities' ranges are 120 to 300 s and 2 to 20 min (`roles.PILOT_FREQ_LIMITS`), his
-  `freq/*/set` is clamped into them, and a stored value below them (James had 40 s) is raised once at start with one log
-  line. The admin keeps 5 to 90 s and 1 to 20 min. The portal contract is unchanged (`roles.FREQ_LIMITS`): a portal value
-  in it below the pilot's floor is accepted there and raised by the Watcher.
+- Check frequency: hunt 5 to 90 s and normal 1 to 90 min on every instance (the 120 s pilot floor of the first build
+  is gone; see "Check frequency ranges" below).
 - Breakers (every instance): each FLICA read path (`gate.read_path`: schedule, schedule_detail, lookup, pairing,
   requests, tradeboard, menu, grid, other) stops for 6 h on a CAPTCHA or interstitial page, at once for 30 min on a page
   its parser does not know (the request list), and for 30 min after 3 failed reads in a row; each stop after the first
@@ -147,9 +146,9 @@ Release A, group 3 (cards and layout, shipped by the Watcher). Built, not deploy
   matched ..." without the internal rule id and with the layover, and a failed FLICA login points at the Settings save.
   The new pairing text ("Fit Fits") is pinned by the contract sample and stays.
 - HST and touch: the clock card's Last and Next are HST (Pacific/Honolulu, labeled) on any phone; its buttons and
-  selects are at least 44 px tall on a phone; its interval selects offer only what the number entity allows (a pilot's
-  hunt is 120 to 300 s) and, in the portal, what contract 1 passes (hunt 5 to 90 s), so a pilot's portal shows "every
-  120 s" as text; an off-list value goes in its sorted place. The pilot card's "read" time is HST.
+  selects are at least 44 px tall on a phone; its interval selects offer only what the number entity allows and, in
+  the portal, what contract 1 passes (hunt 5 to 90 s, normal 1 to 20 min); an off-list value goes in its sorted place.
+  The pilot card's "read" time is HST.
 - Finds: this month's and last month's finds files are written even when empty, so the finds card (and the portal
   export, finds:<month>) never fetches a month file that does not exist.
 - Schedule card: its redraw signature includes each state, not only last_updated, so the month arrows work where the
@@ -168,17 +167,18 @@ Release A review fixes (the reviewers' findings on the committed Release A). Bui
   (1.6.1). On a pilot, FLICA logins are at least 10 min apart (`LOGIN_MIN_GAP_S`) whatever asks (Re-arm, a re-login
   back-off, the end of a yield): the wait shows in the note. A pilot's un-pause checks with the session he has and logs
   in only if that check finds it gone. The admin's Re-arm and un-pause are unchanged.
-- A pilot's checks start at least 120 s apart whatever wakes the loop (`PILOT_CHECK_FLOOR_S`): a hunt change, an
-  un-pause or Check now inside that time wakes it at the floor instead (`WAKE_DUE`, one wake); his Check now gap is 120 s
-  (the admin's stays 10 s); Pause on still wakes at once (it loads nothing). His wait between checks is jittered upward
-  from the floor only (120 to 156 s at 120 s): never under it. The admin's jitter is unchanged.
+- A pilot's checks start at least his fastest hunt apart whatever wakes the loop (`PILOT_CHECK_FLOOR_S`, 5 s since
+  Ryan's ranges; 120 s in the first build): a hunt change, an un-pause or Check now inside that time wakes it at the
+  floor instead (`WAKE_DUE`, one wake); Pause on still wakes at once (it loads nothing). His Check now gap is the
+  admin's 10 s (a press or a check start inside it counts too). His wait between checks is never under 5 s or 1 min,
+  nor under his budget's pace (below). The admin's jitter is unchanged.
 - The gate gives up a waiting load when Pause goes on or the Watcher stops during a check (`GateAbort`): the check ends
   with nothing more loaded. On a pilot the reads that may be left out (Tradeboard, reserve grid, request lists, crew
   index, his own trips, pot details, pickups) skip a load that would wait for his budget (`GateSkip`, `GATE_KEEP` 4
   free) and never take the pot's share of the hour (`opt_cap`: 100 less the pot's pages times his checks an hour, his
   schedule and one check's start); the main loop starts a check only once the loads it needs fit (`check_tokens`), so a
   hunting check never waits inside the gate. A pilot's lookup still waits for his budget. Simulated 3 h of hunting at
-  120 s: about 86 loads an hour, about 51 of them the pot, no wait inside a check.
+  90 s: about 83 loads an hour, about 68 of them the pot, no wait inside a check.
 - A CAPTCHA page on the main menu (with no mobile pot to read), on the mobile pot, the open time pot or the close-in
   folder stops the Watcher ("FLICA showed a CAPTCHA page on the main menu (never answered); press Re-arm after you have
   opened FLICA yourself"): no new login is used to get past it (it was taken for an expired session, up to 6 logins).
@@ -208,9 +208,9 @@ Release A review fixes (the reviewers' findings on the committed Release A). Bui
   at most 20 name queries an hour (a status line says when the next may run); even one match is a pick list, so an
   employee number is used and shown only after the pick. The search placeholder on a pilot: "Last name (3+ letters),
   Last, First, or employee #".
-- Cards and layout: no Hunt interval tile on a pilot's Settings tab (a line says "Hunt mode checks every 120 s (the
-  fastest for a pilot)"; contract 1 sends 5 to 90 s only), and a clamped frequency's portal result says "set to 120 s,
-  the fastest this Watcher allows"; no State, Last check or Next check rows under the clock card. The clock card shows
+- Cards and layout: a frequency the Watcher clamps says so in its portal result ("set to 90 min, the slowest this
+  Watcher allows"; since Ryan's ranges nothing contract 1 passes is clamped); no State, Last check or Next check rows
+  under the clock card. The clock card shows
   the gate's and breakers' note while idle or hunting and, during a budget wait, "Waiting for the FLICA budget until
   HH:MM HST" instead of "Stuck. Press Re-arm". Settings: a save's result is said again for 10 min after the restart it
   causes ("saved: ... (Watcher restarted with them)", S `settings_last`); the card shows "Restarting with your
@@ -230,6 +230,44 @@ Release A review fixes (the reviewers' findings on the committed Release A). Bui
   `test_release_a_ntfy.py`, `test_release_a_schedule_card.py` and `test_release_a_recall.py`; `test_release_a_flica`,
   `test_other_months`, `test_watcher_state` and `test_cards` follow the changes above. Each new case fails on the
   committed Release A.
+
+Check frequency ranges (Ryan 2026-11-10: "The hunt floor should be 5 sec to 90 sec. And normal should be 1 min to 90
+min"; it replaces the pilot's 120 s floor of the first build, on the admin and on every pilot). Built, not deployed.
+
+- Ranges: hunt 5 to 90 s and normal 1 to 90 min on every instance (`roles.WATCHER_FREQ_LIMITS`, `roles.freq_limits`;
+  `roles.PILOT_FREQ_LIMITS` is gone): the number entities (`number.<prefix>_hunt_check_every`, `_normal_check_every`),
+  the clamp of `freq/*/set`, the clamp of a stored value when it is read, and the check timing floors (5 s, 1 min). The
+  admin's normal now goes to 90 min (20 before); his hunt range, jitter and budget are unchanged. The pilot's start-up
+  move of a stored hunt to 120 s (`freq_migrate`) is removed: a stored 40 s stays 40 s. A pilot's Check now gap is the
+  admin's 10 s.
+- Portal contract 1 is byte-identical (`tests/fixtures/portal_contract_v1.json`, its sha256, `PORTAL_CONTRACT.md`):
+  `roles.FREQ_LIMITS` stays normal 1 to 20 min and hunt 5 to 90 s, what a portal's `freq/*/set` must be within. So a
+  pilot whose portal is on advertises normal up to 20 min on his number entity (`roles.entity_freq_limits`) and the
+  clock card's portal copy offers up to 20 (`FC_PORTAL_MAX`), while his Watcher's own clamp already takes 1 to 90: the
+  contract revision in Release C is the only step left. The admin's entity says 1 to 90 now.
+- The safety limits stay: a pilot's 100 FLICA loads an hour, the host's 480 an hour and 1.5 s gap (`gate.py`), the
+  breakers. A pilot's hunt faster than his budget keeps up for an hour is spread over the hour (`budget_pace_s`: his
+  pot pages a check into 100 less the schedule read, one check's start and 12 loads an hour for the reads that may be
+  left out, `PACE_OPT_H`; about 89 s with 2 pot pages, jittered up to 30 % above), instead of spending the budget in
+  minutes and then waiting most of the hour blind. `opt_cap` counts a held hunt at that pace. The state note and the
+  clock card say so plainly: "Hunting every 10 s is held to 100 FLICA loads an hour: checks wait for the budget, at
+  least 89 s apart" (`held_note`; "Checking every 1 min ..." in normal mode; "(next at HH:MM HST)" while a load waits
+  for the budget); the clock card labels it "Slowed." with the next check's time, never "Stuck". Simulated 2 h of a
+  5 s pilot hunt in the real main loop: about 85 loads in the busiest hour, about 34 checks an hour, both pot pages every
+  check, never more than 2.5 min between pot reads, no budget wait.
+- Clock card options: hunt 5, 10, 15, 20, 30, 45, 60, 90 s; normal 1, 2, 3, 5, 6, 10, 15, 20, 30, 45, 60, 90 min, within
+  the entity's min and max (an entity without them: 5 to 90 s, 1 to 90 min).
+- `portal_layout.json`: the Settings tab has the "Hunt: check every" tile again (it was dropped only because 120 s could
+  not be sent) and a line: hunt 5 to 90 s, normal 1 to 20 min (longer normal intervals come to the portal in a later
+  update), and the Watcher keeps a pilot within 100 FLICA page loads an hour, so very short hunts are slowed
+  automatically. The Watcher tab's help has no 2 min floor any more and says the same of the budget.
+- `freq()` falls back to config.yaml's defaults (6 min, 40 s) when an option is missing, so a frequency command never
+  raises.
+- Tests: `test_freq_ranges.py` (new: the admin's and a pilot's ranges, the clamp at 5 and 90 s and 1 and 90 min, the
+  timing floors and the pace, a portal pilot's entity at normal 20 max, a stored 40 s through a real start, the budget
+  holding a 5 s hunt to at most 100 loads an hour and spreading it, the held note); `test_release_a_flica`,
+  `test_release_a_review`, `test_release_a_cards` (a held hunt in the clock card, the Settings tab) and
+  `test_portal_spool` follow the new ranges.
 
 ## 1.6.1
 

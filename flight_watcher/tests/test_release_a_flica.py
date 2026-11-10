@@ -1,5 +1,6 @@
 """1.6.2 (Release A, group 1): FLICA load and the schedule read in watcher.py. Items: 1 the host-wide gate in Flica
-(every load paced, a pilot's budget, the state note), 2 a pilot's hunt floor of 120 s, 3 the read-path breakers and
+(every load paced, a pilot's budget, the state note), 2 the check frequency ranges (every instance hunts every 5 to
+90 s and checks every 1 to 90 min in normal mode, Ryan 2026-11-10; a pilot's 120 s floor is gone), 3 the read-path breakers and
 pot.classify's CAPTCHA kind, 4 the schedule read (2 loads, pages already in use, a shape that survives the bid period
 rollover, the month asked for), 5 the awarded line published and the read status, 6 which commands wake a check, 7 the
 portal export order. FLICA is never reached: a fake browser context answers with synthetic pages (made-up names and
@@ -193,32 +194,33 @@ def test_the_main_loop_waits_out_an_empty_bucket_before_a_check(mk, monkeypatch)
     assert why == "budget" and 0 < w <= 3600 and abs(w - (log[1][0] + 3600 - now)) < 1e-6
 
 
-# ------------------------------------------------------------------ item 2: a pilot hunts every 120 s at the fastest
-def test_pilot_hunt_floor_slider_clamp_and_migration(mk, caplog):
-    W = mk("pilot2")
-    nums = {cfg["command_topic"].split("/")[-2]: (cfg["min"], cfg["max"]) for comp, _, cfg, _ in W.entity_defs()
+# ------------------------------------------------------------------ item 2: hunt 5 to 90 s, normal 1 to 90 min (both)
+def _nums(W):
+    return {cfg["command_topic"].split("/")[-2]: (cfg["min"], cfg["max"]) for comp, _, cfg, _ in W.entity_defs()
             if comp == "number" and "/freq/" in (cfg.get("command_topic") or "")}
-    assert nums["hunt_s"][0] == 120 and nums["normal_min"][0] == 2
+
+
+def test_pilot_hunt_range_clamp_and_no_migration(mk):
+    """Ryan 2026-11-10: a pilot hunts every 5 to 90 s like the admin; his stored 40 s is kept (no start-up move)."""
+    W = mk("pilot2")
+    assert _nums(W) == {"normal_min": (1, 90), "hunt_s": (5, 90)}  # no portal: the Watcher's own ranges
+    assert not hasattr(W, "freq_migrate")  # the 1.6.2 start-up move to 120 s is gone
     W.S["freq"] = {"hunt_s": 40, "normal_min": 6}  # a pilot's 40 s stored before 1.6.2
-    with caplog.at_level(logging.INFO, logger="flight_watcher"):
-        assert W.freq_migrate() == ["hunt_s 40 -> 120"]
-    assert W.S["freq"]["hunt_s"] == 120 and W.freq()["hunt_s"] == 120
-    assert len([r for r in caplog.records if "check frequency moved" in r.getMessage()]) == 1
-    assert W.freq_migrate() == []  # once
+    assert W.freq() == {"hunt_s": 40, "normal_min": 6} and W.S["freq"]["hunt_s"] == 40
     msg = types.SimpleNamespace(topic="flight_watcher_pilot2/freq/hunt_s/set", payload=b"30")  # the portal allows 5-90
     W.on_message(W.MQ, None, msg)
-    assert W.S["freq"]["hunt_s"] == 120 and ("flight_watcher_pilot2/freq/hunt_s/state", "120") in W.MQ.msgs
+    assert W.S["freq"]["hunt_s"] == 30 and ("flight_watcher_pilot2/freq/hunt_s/state", "30") in W.MQ.msgs
 
 
-def test_admin_keeps_his_hunt_range(mk):
+def test_admin_hunt_range_and_his_normal_now_to_90_min(mk):
     W = mk("")
-    nums = {cfg["command_topic"].split("/")[-2]: (cfg["min"], cfg["max"]) for comp, _, cfg, _ in W.entity_defs()
-            if comp == "number" and "/freq/" in (cfg.get("command_topic") or "")}
-    assert nums == {"normal_min": (1, 20), "hunt_s": (5, 90)}
+    assert _nums(W) == {"normal_min": (1, 90), "hunt_s": (5, 90)}
     W.S["freq"] = {"hunt_s": 40}
-    assert W.freq_migrate() == [] and W.freq()["hunt_s"] == 40
+    assert W.freq()["hunt_s"] == 40
     W.on_message(W.MQ, None, types.SimpleNamespace(topic="flight_watcher/freq/hunt_s/set", payload=b"30"))
     assert W.S["freq"]["hunt_s"] == 30
+    W.on_message(W.MQ, None, types.SimpleNamespace(topic="flight_watcher/freq/normal_min/set", payload=b"45"))
+    assert W.S["freq"]["normal_min"] == 45  # 1.6.2: 20 min was his longest before
 
 
 # ------------------------------------------------------------------ item 3: breakers and the CAPTCHA kind
@@ -443,7 +445,7 @@ def test_on_a_pilot_only_check_now_and_switch_changes_wake_a_check(mk, monkeypat
     W = mk("pilot2")
     monkeypatch.setattr(W, "charter_press", lambda: None)
     W.S["machine"] = "hunting"
-    W.S["last_check_ts"] = W.CLOCK.t - 130  # 1.6.2 review: past the pilot's 120 s floor
+    W.S["last_check_ts"] = W.CLOCK.t - 130  # past the check now gap and the pilot's check floor
     assert not _woke(W, "charter_scan/press")
     assert not _woke(W, "pilot/set", json.dumps({"q": "10001"}).encode())
     assert not _woke(W, "freq/hunt_s/set", b"150")
@@ -454,8 +456,10 @@ def test_on_a_pilot_only_check_now_and_switch_changes_wake_a_check(mk, monkeypat
     assert _woke(W, "pause/set", b"ON") and not _woke(W, "pause/set", b"ON")  # Pause on loads nothing: always wakes
     W.S["wake_ts"] = 0
     assert _woke(W, "check_now/press")
-    W.S["wake_ts"], W.S["last_check_ts"] = 0, W.CLOCK.t - 119
-    assert not _woke(W, "check_now/press")  # a pilot's gap is his 120 s floor (the admin's 10 s)
+    W.S["wake_ts"], W.S["last_check_ts"] = 0, W.CLOCK.t - 9
+    assert not _woke(W, "check_now/press")  # a pilot's gap is the admin's 10 s (it was his 120 s floor)
+    W.S["wake_ts"], W.S["last_check_ts"] = 0, W.CLOCK.t - 11
+    assert _woke(W, "check_now/press")
     W.S["machine"] = "stopped_unexpected"
     assert _woke(W, "rearm/press")
 

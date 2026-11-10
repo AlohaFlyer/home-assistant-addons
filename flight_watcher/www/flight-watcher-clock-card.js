@@ -4,16 +4,22 @@
 // Usage: type: custom:flight-watcher-clock-card (no options needed).
 // 1.6.2 (Release A items 14 and 15): Last and Next are HST (Pacific/Honolulu, labeled), whatever zone the phone is in;
 // buttons and selects are at least 44 px tall on a phone; the interval selects offer only what the number entities
-// allow (their min and max attributes: a pilot's hunt interval is 120 to 300 s, roles.PILOT_FREQ_LIMITS) and, in the
-// pilot portal (FW_PORTAL, turned on only in the portal's copy: portal.portal_card), only what the portal contract
-// passes (hunt 5 to 90 s): with nothing left the interval shows as text. No Home Assistant steps in the portal.
+// allow (their min and max attributes: hunt 5 to 90 s and normal 1 to 90 min on every instance since Ryan's ranges of
+// 2026-11-10, roles.WATCHER_FREQ_LIMITS) and, in the pilot portal (FW_PORTAL, turned on only in the portal's copy:
+// portal.portal_card), only what the portal contract passes (hunt 5 to 90 s, normal 1 to 20 min: contract 1's
+// freq_limits until Release C revises it; a portal pilot's number entity says 20 too): with nothing left the interval
+// shows as text. No Home Assistant steps in the portal.
 // 1.6.2 review: the state note (a FLICA budget wait, a stopped read path) shows while idle or hunting, and a budget
-// wait reads "Waiting for the FLICA budget until HH:MM HST", never "Stuck. Press Re-arm".
+// wait reads "Waiting for the FLICA budget until HH:MM HST", never "Stuck. Press Re-arm". A pilot's hunt faster than his
+// budget (100 FLICA loads an hour) says so plainly: "Hunting every 10 s is held to 100 FLICA loads an hour: checks wait
+// for the budget, at least 89 s apart" (the Watcher's held_note; the Watcher spreads it over the hour), with the next
+// check's time while it waits.
 const FW_PORTAL = false;
-const FC_HUNT = [5, 10, 15, 20, 30, 45, 60, 90, 120, 150, 180, 240, 300];  // seconds (number.flight_watcher_hunt_check_every)
-const FC_NORM = [1, 2, 3, 4, 5, 6, 8, 10, 15, 20];       // minutes (number.flight_watcher_normal_check_every 1-20)
-const FC_PORTAL_MAX = { hunt: 90, normal: 20 };           // portal contract 1 freq_limits (hunt_s 5-90, normal_min 1-20)
-const FC_DEFAULT = { hunt: [5, 90], normal: [1, 20] };    // an entity with no min / max attributes: roles.FREQ_LIMITS
+const FC_HUNT = [5, 10, 15, 20, 30, 45, 60, 90];  // seconds (number.flight_watcher_hunt_check_every 5-90)
+const FC_NORM = [1, 2, 3, 5, 6, 10, 15, 20, 30, 45, 60, 90];  // minutes (number.flight_watcher_normal_check_every 1-90)
+const FC_PORTAL_MAX = { hunt: 90, normal: 20 };  // portal contract 1 freq_limits (hunt_s 5-90, normal_min 1-20) until Release C
+const FC_DEFAULT = { hunt: [5, 90], normal: [1, 90] };  // an entity with no min / max attributes: roles.WATCHER_FREQ_LIMITS
+const FC_HELD = /^(Hunting every \d+ s|Checking every \d+ min) is held to \d+ FLICA loads an hour/;  // the Watcher's held_note
 const FC_TIME = new Intl.DateTimeFormat("en-US", { timeZone: "Pacific/Honolulu", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
 class FlightWatcherClockCard extends HTMLElement {
   setConfig(c) { this.c = c || {}; }
@@ -110,7 +116,8 @@ class FlightWatcherClockCard extends HTMLElement {
     const lim = hunt ? 600 : Math.max(1800, (isNaN(nmv) ? 20 : nmv) * 150);
     // 1.6.2 review: a wait for the FLICA budget (next_check ahead, the gate's note) is no stuck Watcher (Re-arm does
     // nothing for it); the gate's and the breakers' note shows in the idle and hunting lines
-    const gateWait = /^FLICA (budget|host limit)/.test(note) && !isNaN(nc) && nc > now;
+    const held = FC_HELD.test(note);
+    const gateWait = (held || /^FLICA (budget|host limit)/.test(note)) && !isNaN(nc) && nc > now;
     const blind = age != null && age > lim && !["paused", "yielded"].includes(st) && !gateWait;
     let cls = "ok", label = "", msg = "";
     const cap = (t) => String(t || "").replace(/^[a-z]/, (c) => c.toUpperCase());
@@ -120,6 +127,12 @@ class FlightWatcherClockCard extends HTMLElement {
     if (["unavailable", "unknown"].includes(st)) { cls = "err"; label = FW_PORTAL ? "Watcher not answering." : "App not running."; msg = FW_PORTAL ? "It normally restarts itself; if this stays red, ask the Flight Watcher admin to restart it." : "It normally restarts itself; if this stays red, restart Flight Watcher in Settings > Apps."; }
     else if (st === "needs_settings") { cls = "err"; label = "Needs your FLICA login."; msg = "Enter your FLICA username and password on the Settings tab; the Watcher logs in by itself."; }
     else if (st === "paused" || paused) { cls = "warn"; label = "Paused."; msg = "Not watching FLICA. Turn Pause off when you have signed out of FLICA."; }
+    else if (["idle", "hunting"].includes(st) && held && !blind) {  // 1.6.2: a hunt the budget holds, waiting or checking
+      const rest = note.split("; ").slice(1).join("; ");
+      cls = "info"; label = "Slowed.";
+      msg = note.split("; ")[0].replace(/ \(next at [0-9:]+ HST\)$/, "") + (gateWait ? `. Next check ${hm(nc)} HST.` : ".")
+        + (rest ? " " + cap(rest).replace(/\.?$/, ".") : "");
+    }
     else if (["idle", "hunting"].includes(st) && gateWait) {
       cls = "info"; label = "Waiting.";
       const rest = note.split("; ").slice(1).join("; ");

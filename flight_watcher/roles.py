@@ -180,19 +180,33 @@ PORTAL_CMDS = ("hunt/set", "pause/set", "rearm/press", "check_now/press", "chart
                "freq/hunt_s/set", "rule/+/live/set", "blocked/set", "trade/set", "pilot/set", "improved/set",
                "recall/set", "recall/act", "settings/set", "pref/set")
 PORTAL_RULE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
-# the check frequency sliders (number entities; freq/normal_min/set in minutes, freq/hunt_s/set in seconds): the
-# Watcher clamps a dashboard value into these, and a portal's freq/*/set must be a finite number within them
+# contract 1's check frequency ranges (freq/normal_min/set in minutes, freq/hunt_s/set in seconds): a portal's
+# freq/*/set must be a finite number within them (portal.check_freq). Contract 1 is pinned (its fixture and sha256):
+# these stay as they are until the contract revision in Release C.
 FREQ_LIMITS = {"normal_min": (1, 20), "hunt_s": (5, 90)}
-# 1.6.2 (Release A, Ryan 2026-11-10): a pilot instance hunts no faster than every 120 s (and checks no faster than every
-# 2 min in normal mode, so normal is never quicker than the hunt floor); the admin keeps FREQ_LIMITS. These are the
-# pilot's slider ranges and the clamp of his freq/*/set. The portal contract keeps FREQ_LIMITS (contract 1 is
-# unchanged): a portal value in it below the pilot's floor is accepted there and raised to the floor by the Watcher.
-PILOT_FREQ_LIMITS = {"normal_min": (2, 20), "hunt_s": (120, 300)}
+# 1.6.2 (Ryan 2026-11-10, replacing the pilot's 120 s hunt floor): every instance, the admin and each pilot, hunts every
+# 5 to 90 s and checks every 1 to 90 min in normal mode. These are the number entities' ranges and the Watcher's clamp
+# of freq/*/set and of a stored value. A pilot's FLICA budget (gate.PILOT_BUDGET_H, 100 loads an hour), the host's cap
+# (480 an hour) and the 1.5 s host gap stay: they slow a very short hunt, and the state note says so.
+WATCHER_FREQ_LIMITS = {"normal_min": (1, 90), "hunt_s": (5, 90)}
 
 
 def freq_limits(instance):
-    """The check frequency ranges of an instance: FREQ_LIMITS for the admin, PILOT_FREQ_LIMITS for a pilot."""
-    return PILOT_FREQ_LIMITS if role(instance) == PILOT else FREQ_LIMITS
+    """The check frequency ranges of an instance: WATCHER_FREQ_LIMITS on every instance since 1.6.2 (Ryan 2026-11-10;
+    a pilot had 120 to 300 s before)."""
+    return WATCHER_FREQ_LIMITS
+
+
+def entity_freq_limits(instance, portal=False):
+    """The ranges the number entities advertise: the instance's (freq_limits) and, on a pilot whose portal is on, kept
+    within contract 1's FREQ_LIMITS, so his portal offers only what it can send (normal up to 20 min until the contract
+    revision in Release C; the Watcher's own clamp already takes 1 to 90)."""
+    own = freq_limits(instance)
+    if not (portal and role(instance) == PILOT):
+        return own
+    return {k: (max(lo, FREQ_LIMITS[k][0]), min(hi, FREQ_LIMITS[k][1])) for k, (lo, hi) in own.items()}
+
+
 PORTAL_REFUSED = ("email/alert", "crew_scan/press", "ticket/new", "ticket/image", "ticket/act", "ticket/edit",
                   "ticket/delete", "upload/chunk", "drop/set", "auto_swap/set", "swap_map/press", "hunt/state",
                   "pause/state")

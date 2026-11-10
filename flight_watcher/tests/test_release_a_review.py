@@ -1,6 +1,7 @@
 """1.6.2 review fixes (Release A), group 1: account safety and FLICA load. A refused FLICA login is not retried by
 Re-arm and a pilot's logins are 10 min apart; a pilot's un-pause checks with the session it has; a pilot's checks
-start at least 120 s apart whatever wakes them (hunt, pause, Check now) and the jitter never takes him under it; a load
+start at least his fastest hunt (5 s since Ryan's 2026-11-10 ranges, 120 s before) apart whatever wakes them (hunt,
+pause, Check now) and the jitter never takes him under it; a load
 waiting for the budget gives up on Pause, and the reads that may be left out never eat the pot's budget; a CAPTCHA on
 the main menu or the pot stops the Watcher (no new login); the admin's learned mobile schedule shape survives one
 hiccup; a schedule read loads at most 2 pages in all and a listed month that fails backs off; a Tradeboard, pairing or
@@ -186,24 +187,26 @@ def test_the_admins_unpause_still_logs_in(mk, monkeypatch):
     assert len(logins) >= 1
 
 
-# ------------------------------------------------------------------ 3: a pilot's checks are 120 s apart
+# ------------------------------------------------------------------ 3: a pilot's checks are 5 s apart (his fastest hunt)
 def _woke(W, sub, payload=b"PRESS"):
     W.WAKE.clear()
     _cmd(W, sub, payload)
     return W.WAKE.is_set()
 
 
-def test_thirty_hunt_toggles_in_a_minute_give_at_most_one_wake(mk):
+def test_thirty_hunt_toggles_in_a_minute_wake_at_most_once_every_5_s(mk):
     W = mk("pilot2")
+    assert W.PILOT_CHECK_FLOOR_S == 5  # his fastest hunt (it was 120 s)
     W.S["machine"], W.S["last_check_ts"] = "hunting", W.CLOCK.t - 300
-    wakes = 0
+    woke = []
     for i in range(30):
-        wakes += _woke(W, "hunt/set", b"ON" if i % 2 == 0 else b"OFF")
+        if _woke(W, "hunt/set", b"ON" if i % 2 == 0 else b"OFF"):
+            woke.append(W.S["wake_ts"])
         W.CLOCK.t += 2
-    assert wakes == 1 and W.WAKE_DUE["at"] >= W.S["wake_ts"] + 120 - 1
+    assert 1 < len(woke) <= 60 // 5 + 1 and all(b - a >= 5 for a, b in zip(woke, woke[1:])), woke
 
 
-def test_thirty_portal_toggles_in_a_minute_start_at_most_one_check(mk, monkeypatch):
+def test_thirty_portal_toggles_in_a_minute_start_checks_at_least_5_s_apart(mk, monkeypatch):
     W = mk("pilot2")
     W.S["machine"], W.S["note"] = "hunting", ""
     W.S["last_check_ts"] = W.S["check_started_ts"] = W.CLOCK.t - 10
@@ -216,32 +219,47 @@ def test_thirty_portal_toggles_in_a_minute_start_at_most_one_check(mk, monkeypat
             sub = ("hunt/set", "pause/set", "check_now/press")[k["n"] % 3]
             _cmd(W, sub, b"PRESS" if "press" in sub else (b"ON" if k["n"] % 2 else b"OFF"))
     _, checks = _run_main(W, monkeypatch, script, check="ok", max_sleeps=200, step=2)
-    first_min = [c for c in checks if c - t0 < 110]
-    assert k["n"] >= 29 and len(first_min) == 0, (k["n"], [c - t0 for c in checks])  # 2 s apart: 29 in a minute
-    assert all(b - a >= 120 - 1e-6 for a, b in zip(checks, checks[1:])), [c - t0 for c in checks]
+    first_min = [c for c in checks if c - t0 < 60]
+    assert k["n"] >= 29 and 0 < len(first_min) <= 60 // 5 + 1, (k["n"], [c - t0 for c in checks])  # 29 in a minute
+    assert all(b - a >= 5 - 1e-6 for a, b in zip(checks, checks[1:])), [c - t0 for c in checks]
 
 
-def test_check_now_on_a_pilot_waits_120_s_the_admin_10(mk):
+def test_check_now_gap_is_10_s_on_a_pilot_as_on_the_admin(mk):
+    """Ryan 2026-11-10: a pilot's Check now gap is the admin's 10 s (it was his 120 s check floor)."""
     W = mk("pilot2")
-    W.S["machine"], W.S["last_check_ts"] = "hunting", W.CLOCK.t - 11
+    assert W.check_now_gap() == 10
+    W.S["machine"], W.S["last_check_ts"] = "hunting", W.CLOCK.t - 9
     assert not _woke(W, "check_now/press")
-    W.S["last_check_ts"] = W.CLOCK.t - 121
+    W.S["last_check_ts"] = W.CLOCK.t - 11
     assert _woke(W, "check_now/press")
+    assert not _woke(W, "check_now/press")  # a second press inside 10 s of the first is ignored on a pilot
     A = mk("")
-    A.S["machine"], A.S["last_check_ts"] = "hunting", A.CLOCK.t - 11
+    assert A.check_now_gap() == 10
+    A.S["machine"], A.S["last_check_ts"] = "hunting", A.CLOCK.t - 9
+    assert not _woke(A, "check_now/press")
+    A.S["last_check_ts"] = A.CLOCK.t - 11
     assert _woke(A, "check_now/press") and _woke(A, "hunt/set", b"ON")
 
 
-# ------------------------------------------------------------------ 4: the jitter never takes a pilot under 120 s
-def test_a_pilots_gap_never_goes_under_his_floor(mk):
+# ------------------------------------------------------------------ 4: the jitter never takes a pilot under 5 s / 1 min
+def test_a_pilots_gap_never_goes_under_his_floor(mk, monkeypatch):
     W = mk("pilot2")
-    W.S["freq"] = {"hunt_s": 120, "normal_min": 2}
+    W.S["freq"] = {"hunt_s": 5, "normal_min": 1}
+    pace = W.budget_pace_s()  # 1.6.2 (Ryan 2026-11-10): his budget spreads a short hunt over the hour
+    assert 88 < pace < 90  # 2 pot pages into 100 less the schedule, a check's start and the optional reads' share
     W.FLAGS["hunt"] = True
     hunt = [W.gap() for _ in range(3000)]
     W.FLAGS["hunt"] = False
     normal = [W.gap() for _ in range(3000)]
-    assert min(hunt) >= 120 and min(normal) >= 120 and max(hunt) <= 156 + 1e-6
-    assert len({round(g) for g in hunt}) > 20  # still irregular
+    assert min(hunt) >= pace and max(hunt) <= pace * 1.3 + 1e-6 and min(normal) >= pace
+    assert len({round(g) for g in hunt}) > 20 and len({round(g) for g in normal}) > 20  # still irregular
+    monkeypatch.setattr(W, "budget_pace_s", lambda: 0.0)  # under the pace: the floor itself (5 s, 1 min)
+    W.FLAGS["hunt"] = True
+    hunt = [W.gap() for _ in range(3000)]
+    W.FLAGS["hunt"] = False
+    normal = [W.gap() for _ in range(3000)]
+    assert min(hunt) >= 5 and max(hunt) <= 6.5 + 1e-6 and min(normal) >= 60 and max(normal) <= 78 + 1e-6
+    assert len({round(g, 1) for g in hunt}) > 10 and len({round(g) for g in normal}) > 10
     A = mk("")
     A.S["freq"] = {"hunt_s": 40}
     A.FLAGS["hunt"] = True
@@ -307,10 +325,12 @@ def test_optional_reads_skip_instead_of_waiting_and_the_pot_still_loads(mk):
 def test_optional_loads_never_take_the_pots_share_of_the_hour(mk):
     W = mk("pilot2")
     W.FLAGS["hunt"] = True
-    W.S["freq"] = {"hunt_s": 120}
+    W.S["freq"] = {"hunt_s": 5}
     W.S["pot_urls"] = {"mobile": W.MOBILE_POT, "mobile_003.153": W.MOBILE_POT + "&x=1"}
+    assert W.opt_cap() == 100 - 81 - 4 - 3  # a 5 s hunt is paced (about 89 s): the optional reads keep their share
+    W.S["freq"] = {"hunt_s": 90}
     cap = W.opt_cap()
-    assert cap == 100 - 60 - 4 - 3  # 2 pot pages x 30 checks an hour, the schedule, one check's start
+    assert cap == 100 - 80 - 4 - 3  # 2 pot pages x 40 checks an hour, the schedule, one check's start
     fl = real_fl(W, lambda u: "<html><body>Tradeboard</body></html>")
     W.RUN.update(check=True, optional=True)
     for i in range(cap):
@@ -326,7 +346,7 @@ def test_three_hours_of_pilot_hunting_never_wait_inside_a_check(mk):
     W = mk("pilot2")
     W.S["own_emp"] = "10001"
     W.FLAGS["hunt"] = True
-    W.S["freq"] = {"hunt_s": 120, "normal_min": 2}
+    W.S["freq"] = {"hunt_s": 90, "normal_min": 2}
     W.S["pot_urls"] = {"mobile": W.MOBILE_POT,
                        "mobile_003.153": f"{W.BASE}/full/mobileopentimepot.cgi?BCID=003.153&From=MainMenu"}
     pot_html = open(os.path.join(FX, "mobile_pot_rows.html")).read()
@@ -368,8 +388,8 @@ def test_three_hours_of_pilot_hunting_never_wait_inside_a_check(mk):
     worst = max(sum(1 for x in loads if t - 3600 < x <= t) for t in loads)
     kinds = collections.Counter("pot" if "opentimepot" in u else "other" for _, u in fl.loads)
     assert max(waits) <= GT.PACE_MAX_S + GT.HOST_GAP_S + 1e-6, max(waits)  # pacing only, never a budget wait
-    # every check read both pot pages (none waited or was left out) and checks came at the hunt pace (120 to 156 s)
-    assert worst <= 101 and kinds["pot"] == 2 * checks and checks >= int(3 * 3600 / 160), (worst, kinds, checks)
+    # every check read both pot pages (none waited or was left out) and checks came at the hunt pace (90 to 117 s)
+    assert worst <= 101 and kinds["pot"] == 2 * checks and checks >= int(3 * 3600 / 130), (worst, kinds, checks)
 
 
 # ------------------------------------------------------------------ 6: a CAPTCHA on the main menu is a stop

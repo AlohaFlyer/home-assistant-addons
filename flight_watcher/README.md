@@ -8,8 +8,9 @@ publishes what it finds to Home Assistant over MQTT.
 
 ## What it does
 
-- Pot watch: reloads the open time pot at random gaps (idle 2 to 10 min, hunt 20 to 60 s with
-  `switch.flight_watcher_hunt_mode`), for the current bid month and the next one once FLICA shows it. A new pairing
+- Pot watch: reloads the open time pot at random gaps (normal 1 to 90 min, hunt 5 to 90 s with
+  `switch.flight_watcher_hunt_mode`, each wait +-30 %; a pilot's 100 FLICA loads an hour spreads a short hunt over the
+  hour), for the current bid month and the next one once FLICA shows it. A new pairing
   fires `flight_watcher/event/new_pairing` and lands on the finds card.
 - Close-in folder (1.4.7, FW-0034): the "Close in Opentime: <16 Hrs to RPT" folder is read too, GET only, once a menu
   link that names it gives its BCID (never guessed) and its open time page reads as HNL 332 FO. Its trips are listed
