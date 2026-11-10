@@ -202,8 +202,9 @@ CONNECT_STATES_DELAY_S = 3.0
 # Check frequency from the dashboard sliders (number entities); persisted in state.
 # Each gap is randomized +-30 % around the setting so the checks never look machine-regular.
 FREQ_LIMITS = ROLES.freq_limits(INSTANCE)  # 1.6.2 (Ryan 2026-11-10): every instance normal_min 1 to 90, hunt_s 5 to 90
-# (roles.py; the portal spool checks the contract's ROLES.FREQ_LIMITS, normal 1 to 20 until Release C, the handler then
-# clamps into these; the number entities advertise ROLES.entity_freq_limits, within the contract on a portal pilot)
+# (roles.py; the portal spool checks the contract's ROLES.FREQ_LIMITS, normal 1 to 90 since revision 2 (1.7.0; 1 to 20
+# before), the handler then clamps into these; the number entities advertise ROLES.entity_freq_limits, within the
+# contract on a portal pilot)
 JITTER = 0.3
 CHECK_NOW_MIN_GAP_S = 10  # every instance's (check_now_gap; a pilot's was his 120 s floor before 2026-11-10)
 RULES = {"list": [], "published": set()}
@@ -4052,14 +4053,29 @@ def page_log(text):
     return CAPS.mask(t, cap_secrets())
 
 
+# 1.7.0 review: characters a log line never carries as they are (pilot text, e.g. a ticket title, could otherwise
+# start a line of its own in the add-on log that looks like the admin instance's): controls (a line feed, a carriage
+# return, ESC), lone surrogates, the line and paragraph separators and the bidi controls. They become visible escapes.
+LOG_CTRL_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029\u200e\u200f\u061c\u202a-\u202e\u2066-\u2069\ud800-\udfff]")
+
+
+def log_safe(v, n=None):
+    """v as text for one log line: LOG_CTRL_RE characters as escapes (\\n, \\x1b, \\u202e), cut to n code points
+    first when n is given. Ordinary text is unchanged."""
+    s = str(v if v is not None else "")
+    s = s[:n] if n else s
+    return LOG_CTRL_RE.sub(lambda m: m.group(0).encode("unicode_escape", "backslashreplace").decode("ascii"), s)
+
+
 class PilotLogMask(logging.Filter):
     """1.6.2 review: on a pilot, every log line (the add-on log the admin and Claude read) is masked as a capture is:
-    other pilots' names, employee numbers, e-mail addresses and phone numbers, and his own logins."""
+    other pilots' names, employee numbers, e-mail addresses and phone numbers, and his own logins. 1.7.0 review: and
+    kept to one line (log_safe), so nothing a pilot sends can write a line that looks like another instance's."""
 
     def filter(self, record):
         try:
             msg = record.getMessage()
-            out = CAPS.mask(msg, cap_secrets())
+            out = log_safe(CAPS.mask(msg, cap_secrets()))
             if out != msg:
                 record.msg, record.args = out, ()
         except Exception:  # noqa: BLE001 (a log line is never lost to the mask)
@@ -6390,8 +6406,9 @@ def ticket_new(payload):
             publish_tickets(force=True)
         return None
     ticket_answer(t.get("cid") or "", t["id"], "new", True)
-    log.info("ticket %s (%s) from %s: %s (%d photos to come)", t["id"], t["kind"], t["reporter"], t["title"],
-             t["images_expected"] - len(t["images"]))
+    # 1.7.0 review: the title on one line (log_safe; TK.create already keeps no control in it), whoever filed it
+    log.info("ticket %s (%s) from %s: %s (%d photos to come)", t["id"], t["kind"], t["reporter"],
+             log_safe(t["title"]), t["images_expected"] - len(t["images"]))
     pub("event/ticket_new", {"id": t["id"], "kind": t["kind"], "title": t["title"], "reporter": t["reporter"]}, retain=False)
     publish_tickets(force=True)
     return t
@@ -6483,7 +6500,8 @@ def ticket_act(payload):
         d = json.loads(payload or "{}")
     except ValueError:
         d = None
-    t, err = TK.act(TICKETS_DIR, d, reporter(), now_iso(), allowed_reporter=INSTANCE or None)
+    t, err = TK.act(TICKETS_DIR, d, reporter(), now_iso(), allowed_reporter=INSTANCE or None,
+                    limits=ticket_limits())  # 1.7.0 review: a pilot's change caps
     if not t:
         log.info("ticket action refused: %s", err)
         pub("event/ticket_error", {"error": err, "at": now_iso()}, retain=False)
@@ -6502,15 +6520,16 @@ def ticket_act(payload):
     return t
 
 
-def _ticket_change(fn, verb, payload):
+def _ticket_change(fn, verb, payload, **kw):
     """FW-0049: run TK.edit or TK.delete for this instance (a pilot instance: its own tickets only) and say how it
     went in "last" {rid, id, action, ok, error, at} on the next listing, so the card that sent the card-made rid can
-    show it. A refusal also goes out as event/ticket_error, like every other ticket message."""
+    show it. A refusal also goes out as event/ticket_error, like every other ticket message. kw goes to fn (1.7.0
+    review: limits for an edit)."""
     try:
         d = json.loads(payload or "{}")
     except ValueError:
         d = None
-    t, err = fn(TICKETS_DIR, d, reporter(), now_iso(), allowed_reporter=INSTANCE or None)
+    t, err = fn(TICKETS_DIR, d, reporter(), now_iso(), allowed_reporter=INSTANCE or None, **kw)
     d = d if isinstance(d, dict) else {}
     rid = str(d.get("rid") or "").strip()
     TICKETS_LAST.clear()
@@ -6527,17 +6546,23 @@ def _ticket_change(fn, verb, payload):
 def ticket_edit(payload):
     """FW-0049 {T}/ticket/edit {id, rid?, title?, narrative?, steps?, expected?, page?}: only while the ticket is new
     or reopened; only the fields sent change."""
-    t = _ticket_change(TK.edit, "edit", payload)
+    t = _ticket_change(TK.edit, "edit", payload, limits=ticket_limits())
     if t:
         log.info("ticket %s edited by %s: %s", t["id"], reporter(), ", ".join(t["history"][-1]["fields"]))
     return t
 
 
 def ticket_delete(payload):
-    """FW-0049 {T}/ticket/delete {id, rid?}: any status; the folder moves to tickets/.deleted/ and leaves the list."""
+    """FW-0049 {T}/ticket/delete {id, rid?}: any status; the folder moves to tickets/.deleted/ and leaves the list.
+    1.7.0 review: a pilot's only while it is new (TK.delete); when others had written on it (a note), the log says so,
+    so the admin sees why it left his list."""
     t = _ticket_change(TK.delete, "delete", payload)
     if t:
-        log.info("ticket %s (%s) deleted by %s", t["id"], t.get("status"), reporter())
+        others = sum(1 for h in t.get("history") or [] if isinstance(h, dict)
+                     and h.get("actor") not in (reporter(), None)) if is_pilot() else 0
+        log.info("ticket %s (%s) deleted by %s%s", t["id"], t.get("status"), reporter(),
+                 f" after {others} line{'' if others == 1 else 's'} from others (kept in tickets/.deleted/)"
+                 if others else "")
     return t
 
 

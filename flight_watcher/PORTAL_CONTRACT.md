@@ -214,8 +214,8 @@ the last 600 s (kept across restarts in `<data>/portal_spool.json`); fewer than 
 minute; `payload` is text; and `sub` is allowed:
 
 `hunt/set`, `pause/set`, `rearm/press`, `check_now/press`, `charter_scan/press`, `freq/normal_min/set`,
-`freq/hunt_s/set` (payload a finite number within `roles.FREQ_LIMITS`: `normal_min` 1 to 20 minutes, `hunt_s` 5 to
-90 seconds, the sliders' ranges; `inf`, `nan` or text is refused), `rule/<id>/live/set` (id `^[a-z0-9_]{1,40}$`),
+`freq/hunt_s/set` (payload a finite number within `roles.FREQ_LIMITS`: `normal_min` 1 to 90 minutes (revision 2; 1 to
+20 before), `hunt_s` 5 to 90 seconds, the sliders' ranges; `inf`, `nan` or text is refused), `rule/<id>/live/set` (id `^[a-z0-9_]{1,40}$`),
 `blocked/set`, `trade/set`, `pilot/set`, `improved/set`, `recall/set`, `recall/act`, `settings/set` (payload exactly
 `{"enc": {...}}`, sealed in the browser with the pilot's key from `sensor.<prefix>_settings`), `pref/set` (section
 5.3), and (revision 2) `ticket/new`, `ticket/image`, `ticket/act`, `ticket/edit`, `ticket/delete` (section 5.4).
@@ -258,6 +258,11 @@ it.
   (`roles.TICKET_RULES`): the payload is a JSON object whose keys are a subset of `keys` and include `required` (and
   one of `any_of`); `text` lengths are in Unicode code points (Python `len`, JavaScript `[...s].length`) and a
   `pattern` is a full match (Python `re.fullmatch`, JavaScript an anchored RegExp, so a trailing newline is refused);
+  every `text` is well-formed Unicode (no lone surrogate: Python `s.encode("utf-8")`, JavaScript `s.isWellFormed()`;
+  security review, as Home Assistant's JSON parser refuses one); a one-line field (title, page, version) has the
+  `roles.TICKET_LINE_PATTERN` pattern (no control character, no U+2028 or U+2029, no bidi control U+202A to U+202E or
+  U+2066 to U+2069) and a text field (narrative, steps, expected, a note) `roles.TICKET_TEXT_PATTERN` (the same but
+  tab, line feed and carriage return); ids are ASCII digits (`^FW-[0-9]{4,6}$`);
   `int` is a JSON number with a whole value (2.0 counts as 2; 2.5, `true` and `"2"` do not); `enum` one of `values`;
   `le` pairs and `nonempty_when` as written there. One generic checker on each side, driven by that data, so the two
   cannot drift; every accepted and refused ticket sample in the fixture goes through both.
@@ -270,17 +275,23 @@ it.
   fits 360000 characters, refused when its short side would fall under 400 px) and sends its chunks in order, one photo
   after the other. The pilot's Watcher (`photos.py`) puts one photo together at a time (the next chunk within 120 s,
   in order; the same chunk twice counts once; a first chunk of another ticket's photo while one is coming is refused),
-  then checks the whole base64 strictly, the JPEG or PNG magic bytes and the size, and re-encodes it (Pillow: no
-  EXIF, GPS or trailing bytes, the longest side at most 2048 px) before it stores it in the tickets folder. A photo is
+  then checks the whole base64 strictly, the JPEG or PNG magic bytes and the size, and re-encodes it (Pillow, from a
+  fresh image with no info: no EXIF, GPS, XMP, comment, ICC profile, text chunk or trailing bytes, and the saved file
+  is walked to prove it; the longest side at most 2048 px) before it stores it in the tickets folder. A photo is
   never served back: not in the export, not in the tickets list.
 - `ticket/act` {id, action, text, rid}: `action` one of `roles.PILOT_TICKET_ACTIONS`: `verify` (closes a fixed ticket),
   `reopen`, `note` (with text). `triage`, `progress`, `fixed` and `close` are refused at the spool, at HOM and by the
   Watcher: they belong to whoever works the ticket (the admin's instance and Claude's flow).
 - `ticket/edit` {id, rid, title, narrative, steps, expected, page} (at least one field; only while the ticket is new or
-  reopened) and `ticket/delete` {id, rid} (any status; the folder moves to `tickets/.deleted/`), his own only.
+  reopened) and `ticket/delete` {id, rid} (security review: only while the ticket is new, so a ticket somebody works
+  stays on the admin's list; the folder moves to `tickets/.deleted/`), his own only.
 - Quotas, kept by the pilot's Watcher whatever sent the command (`roles.PILOT_TICKET_LIMITS`, the fixture's
-  `commands.pilot_ticket_limits`): 10 new tickets in 24 h (deleted ones count), 25 open, 3 photos a ticket, 1.5 MB of
-  photos a ticket as stored, one photo upload in flight. The admin has none.
+  `commands.pilot_ticket_limits`): 10 new tickets in 24 h (deleted ones count), 25 open, 3 photos a ticket, 1.5 MB a
+  ticket in all as stored (`ticket_bytes`: its photos and its ticket.json), one photo upload in flight; and (security
+  review) `changes_per_day` 30 notes, reopens, verifies and edits in 24 h over all his tickets, `history` 50 of his
+  history lines on one ticket, `text_bytes` 256 KB of ticket.json (a verify or a reopen with no text is never refused
+  by these three: each follows a fix by whoever works the ticket). A refusal answers "ticket limit reached: ...". The
+  admin has none.
 - Answers: the pilot's `sensor.<prefix>_tickets` carries `answers`, the last 10 newest first, `{ref, id, action, i,
   ok, error, at}` (`ref` the card's `cid` or `rid`; `i` the photo number), so his card can say "FW-0071 filed", "Not
   filed: ticket limit reached ..." or "Photo 2 not saved: ...", and `limits` (photos, new_per_day, open,

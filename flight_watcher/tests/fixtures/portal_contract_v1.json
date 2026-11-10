@@ -5,7 +5,7 @@
  "generated_by": "flight_watcher/portal.py contract(); docs: flight_watcher/PORTAL_CONTRACT.md",
  "names": {
   "pilot_re": "^(?=.{1,32}$)[a-z0-9]+(?:_[a-z0-9]+)*$",
-  "cmd_file_re": "^\\d{13}-[0-9a-f]{16}\\.json$",
+  "cmd_file_re": "^[0-9]{13}-[0-9a-f]{16}\\.json$",
   "id_re": "^[0-9a-f]{16}$",
   "session_re": "^[0-9a-f]{16}$",
   "rule_id_re": "^[a-z0-9_]{1,40}$",
@@ -123,7 +123,7 @@
   "freq_limits": {
    "normal_min": [
     1,
-    20
+    90
    ],
    "hunt_s": [
     5,
@@ -159,32 +159,38 @@
      "title": {
       "type": "text",
       "min": 1,
-      "max": 200
+      "max": 200,
+      "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]*$"
      },
      "narrative": {
       "type": "text",
       "min": 1,
-      "max": 10000
+      "max": 10000,
+      "pattern": "^[^\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]*$"
      },
      "steps": {
       "type": "text",
       "min": 0,
-      "max": 5000
+      "max": 5000,
+      "pattern": "^[^\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]*$"
      },
      "expected": {
       "type": "text",
       "min": 0,
-      "max": 5000
+      "max": 5000,
+      "pattern": "^[^\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]*$"
      },
      "page": {
       "type": "text",
       "min": 0,
-      "max": 300
+      "max": 300,
+      "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]*$"
      },
      "version": {
       "type": "text",
       "min": 0,
-      "max": 40
+      "max": 40,
+      "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]*$"
      },
      "cid": {
       "type": "text",
@@ -277,7 +283,7 @@
       "type": "text",
       "min": 7,
       "max": 9,
-      "pattern": "^FW-\\d{4,6}$"
+      "pattern": "^FW-[0-9]{4,6}$"
      },
      "action": {
       "type": "enum",
@@ -290,7 +296,8 @@
      "text": {
       "type": "text",
       "min": 0,
-      "max": 5000
+      "max": 5000,
+      "pattern": "^[^\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]*$"
      },
      "rid": {
       "type": "text",
@@ -332,7 +339,7 @@
       "type": "text",
       "min": 7,
       "max": 9,
-      "pattern": "^FW-\\d{4,6}$"
+      "pattern": "^FW-[0-9]{4,6}$"
      },
      "rid": {
       "type": "text",
@@ -343,27 +350,32 @@
      "title": {
       "type": "text",
       "min": 1,
-      "max": 200
+      "max": 200,
+      "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]*$"
      },
      "narrative": {
       "type": "text",
       "min": 1,
-      "max": 10000
+      "max": 10000,
+      "pattern": "^[^\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]*$"
      },
      "steps": {
       "type": "text",
       "min": 0,
-      "max": 5000
+      "max": 5000,
+      "pattern": "^[^\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]*$"
      },
      "expected": {
       "type": "text",
       "min": 0,
-      "max": 5000
+      "max": 5000,
+      "pattern": "^[^\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]*$"
      },
      "page": {
       "type": "text",
       "min": 0,
-      "max": 300
+      "max": 300,
+      "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069]*$"
      }
     }
    },
@@ -380,7 +392,7 @@
       "type": "text",
       "min": 7,
       "max": 9,
-      "pattern": "^FW-\\d{4,6}$"
+      "pattern": "^FW-[0-9]{4,6}$"
      },
      "rid": {
       "type": "text",
@@ -396,6 +408,7 @@
    "Its keys are a subset of keys, include every key in required and, when any_of is given, at least one of any_of.",
    "Every key present is checked by its fields entry; a null value is the wrong type.",
    "text: a JSON string whose length in Unicode code points (Python len, JavaScript [...s].length) is from min to max; with pattern, the whole string matches it (Python re.fullmatch; JavaScript new RegExp(pattern) with no flags and the pattern's own ^ and $), so a trailing newline is refused.",
+   "text is well-formed Unicode: no lone surrogate (Python: s.encode('utf-8') succeeds; JavaScript: s.isWellFormed()).",
    "int: a JSON number, never a boolean or a string, with a whole value from min to max; 2.0 counts as 2 (JavaScript cannot tell them apart); 2.5, true, \"2\" and 1e999 are refused.",
    "enum: a JSON string equal to one of values.",
    "le: each [a, b] means the value of a is at most the value of b.",
@@ -415,7 +428,10 @@
    "chunk_chars": 60000,
    "chunk_parts": 8,
    "photo_side_max": 2048,
-   "photo_stale_s": 120
+   "photo_stale_s": 120,
+   "changes_per_day": 30,
+   "history": 50,
+   "text_bytes": 262144
   }
  },
  "prefs": {
@@ -447,7 +463,7 @@
    "entity": "input_text.{prefix}_er_trips",
    "type": "text",
    "max_len": 255,
-   "item_re": "[+-][A-Z0-9]{1,8}\\|\\d{4}-\\d{2}-\\d{2}"
+   "item_re": "[+-][A-Z0-9]{1,8}\\|[0-9]{4}-[0-9]{2}-[0-9]{2}"
   }
  },
  "local_helpers": {
@@ -1071,6 +1087,30 @@
       "ts": 1763600000311,
       "sub": "ticket/delete",
       "payload": "{\"id\":\"FW-0001\",\"rid\":\"rdemo0004\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000312-00000000c0de0138.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0138",
+      "pilot": "demo",
+      "ts": 1763600000312,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pay line \ud83d\udcb5 blank\",\"narrative\":\"Line one\\n\\tLine two\\r\\n\",\"steps\":\"1. Schedule tab\\n2. Pay line\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000313-00000000c0de0139.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0139",
+      "pilot": "demo",
+      "ts": 1763600000313,
+      "sub": "ticket/act",
+      "payload": "{\"id\":\"FW-0001\",\"action\":\"note\",\"text\":\"Seen again.\\nAt 10:05 HST.\"}",
       "session": "5e55105e55105e55"
      }
     }
@@ -1801,6 +1841,279 @@
       "ts": 1763600000434,
       "sub": "ticket/new",
       "payload": "{kind: bug",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "title with a line feed",
+     "name": "1763600000435-00000000c0de01b3.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01b3",
+      "pilot": "demo",
+      "ts": 1763600000435,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank\\n2026-11-10 21:00:00,000 INFO ticket FW-0042: fixed -> closed\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "title with a carriage return",
+     "name": "1763600000436-00000000c0de01b4.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01b4",
+      "pilot": "demo",
+      "ts": 1763600000436,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank\\r\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "title with a tab",
+     "name": "1763600000437-00000000c0de01b5.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01b5",
+      "pilot": "demo",
+      "ts": 1763600000437,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot\\tcard\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "title with an escape",
+     "name": "1763600000438-00000000c0de01b6.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01b6",
+      "pilot": "demo",
+      "ts": 1763600000438,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card \\u001b[2J blank\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "title with a bidi override",
+     "name": "1763600000439-00000000c0de01b7.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01b7",
+      "pilot": "demo",
+      "ts": 1763600000439,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card \u202eknalb\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "title with a bidi isolate",
+     "name": "1763600000440-00000000c0de01b8.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01b8",
+      "pilot": "demo",
+      "ts": 1763600000440,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card \u2066blank\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "title with a C1 control",
+     "name": "1763600000441-00000000c0de01b9.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01b9",
+      "pilot": "demo",
+      "ts": 1763600000441,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card \u0085blank\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "page with a line separator",
+     "name": "1763600000442-00000000c0de01ba.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01ba",
+      "pilot": "demo",
+      "ts": 1763600000442,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\u2028Settings\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "version with a line feed",
+     "name": "1763600000443-00000000c0de01bb.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01bb",
+      "pilot": "demo",
+      "ts": 1763600000443,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\\n\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "narrative with a NUL",
+     "name": "1763600000444-00000000c0de01bc.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01bc",
+      "pilot": "demo",
+      "ts": 1763600000444,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card\\u0000 shows no rows.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "narrative with an escape",
+     "name": "1763600000445-00000000c0de01bd.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01bd",
+      "pilot": "demo",
+      "ts": 1763600000445,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card\\u001b[31m shows no rows.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "narrative with a paragraph separator",
+     "name": "1763600000446-00000000c0de01be.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01be",
+      "pilot": "demo",
+      "ts": 1763600000446,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card\u2029shows none.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "title with a lone high surrogate",
+     "name": "1763600000447-00000000c0de01bf.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01bf",
+      "pilot": "demo",
+      "ts": 1763600000447,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"\\ud800 Pot card blank\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "narrative with a lone low surrogate",
+     "name": "1763600000448-00000000c0de01c0.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01c0",
+      "pilot": "demo",
+      "ts": 1763600000448,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"\\udc00 shows no rows\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "title with surrogates the wrong way round",
+     "name": "1763600000449-00000000c0de01c1.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01c1",
+      "pilot": "demo",
+      "ts": 1763600000449,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"\\udc00\\ud800 x\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "note with a lone surrogate",
+     "name": "1763600000450-00000000c0de01c2.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01c2",
+      "pilot": "demo",
+      "ts": 1763600000450,
+      "sub": "ticket/act",
+      "payload": "{\"id\":\"FW-0001\",\"action\":\"note\",\"text\":\"\\ud83d\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "edit title with a line feed",
+     "name": "1763600000451-00000000c0de01c3.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01c3",
+      "pilot": "demo",
+      "ts": 1763600000451,
+      "sub": "ticket/edit",
+      "payload": "{\"id\":\"FW-0001\",\"title\":\"Pot card\\nblank\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "edit narrative with a lone surrogate",
+     "name": "1763600000452-00000000c0de01c4.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01c4",
+      "pilot": "demo",
+      "ts": 1763600000452,
+      "sub": "ticket/edit",
+      "payload": "{\"id\":\"FW-0001\",\"narrative\":\"\\ud800\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "id with digits of another script",
+     "name": "1763600000453-00000000c0de01c5.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01c5",
+      "pilot": "demo",
+      "ts": 1763600000453,
+      "sub": "ticket/act",
+      "payload": "{\"id\":\"FW-\u0661\u0662\u0663\u0664\",\"action\":\"verify\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "images a huge integer",
+     "name": "1763600000454-00000000c0de01c6.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01c6",
+      "pilot": "demo",
+      "ts": 1763600000454,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "image i a huge integer",
+     "name": "1763600000455-00000000c0de01c7.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01c7",
+      "pilot": "demo",
+      "ts": 1763600000455,
+      "sub": "ticket/image",
+      "payload": "{\"cid\":\"cdemo0001\",\"i\":9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999,\"n\":2,\"part\":1,\"parts\":1,\"data\":\"/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==\"}",
       "session": "5e55105e55105e55"
      }
     }

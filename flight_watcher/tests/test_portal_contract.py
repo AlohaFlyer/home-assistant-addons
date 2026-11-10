@@ -16,7 +16,7 @@ import roles
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE = os.path.join(HERE, "tests", "fixtures", "portal_contract_v1.json")
 DOC = os.path.join(HERE, "PORTAL_CONTRACT.md")
-CONTRACT_SHA256 = "5d6cb245de10e50186e18ea8d565a23bc3fb955f63c8d5631e53099ac754a76e"
+CONTRACT_SHA256 = "c8d37db297553379ca4bf1676db2884dd9d61443690a9d3bdada867ddf9f0e0a"
 
 
 def _fx():

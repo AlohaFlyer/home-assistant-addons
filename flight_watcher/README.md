@@ -289,7 +289,8 @@ second pilot: `flight_watcher_<name>`):
   shows only then.
 - `<prefix>/ticket/delete` {id, rid?} (FW-0049): any status, the completed list too. The card asks first. The
   folder moves to `tickets/.deleted/<id>-<time>` (nothing is destroyed) and leaves every list; its number is not
-  used again. Ryan's instance edits or deletes any ticket, a second pilot's instance only his own.
+  used again. Ryan's instance edits or deletes any ticket, a second pilot's instance only his own (1.7.0 security
+  review: and deletes it only while it is new).
 - `<prefix>/tickets` (retained, `sensor.<prefix>_tickets`): the list (Ryan's instance: all; a second pilot: his own)
   goes to `tickets_<key>.json` (1.4.7, FW-0060), where a new or reopened ticket is listed `editable` with its whole
   text; the sensor keeps the counts, the newest 30 open tickets without their text, `file_key`, `rev` and `last`
@@ -314,11 +315,17 @@ card); his Watcher is the authority, whatever sent the command:
   refused (they are for whoever works the ticket: Ryan's instance and Claude's flow). Another reporter's ticket answers
   "<id> not found", the same as a missing one, for act, edit and delete.
 - Quotas (`roles.PILOT_TICKET_LIMITS`): 10 new tickets in 24 h (deleted ones count), 25 open, 3 photos a ticket, 1.5 MB
-  of photos a ticket, one photo upload in flight. Ryan has none.
+  a ticket in all (its photos and its ticket.json), one photo upload in flight; from the security review also 30
+  notes, reopens, verifies and edits in 24 h, 50 of his history lines on one ticket and 256 KB of ticket.json (a
+  verify or reopen with no text always goes through). He deletes a ticket only while it is new. Ryan has none.
+- Ticket text, whoever sent it: text that is not well-formed Unicode (a lone surrogate) is refused; a title, page or
+  version keeps no control character, line separator or bidi control (so it never starts a line of its own in the
+  add-on log); a description keeps only line breaks and tabs among the controls. ticket.json is UTF-8.
 - Photos (`photos.py`): the portal card shrinks each photo in the browser (FileReader, never a blob: URL) and sends
   it in chunks `{cid, i, n, part, parts, data}` of at most 60,000 base64 characters; the Watcher puts one photo
-  together at a time, checks the base64, the JPEG or PNG magic bytes and the size, and re-encodes it with Pillow (no
-  EXIF, GPS or trailing bytes) before it stores it in the ticket's folder. A photo is never served back.
+  together at a time, checks the base64, the JPEG or PNG magic bytes and the size, and re-encodes it with Pillow from a
+  fresh image (no EXIF, GPS, XMP, comment, ICC profile, text chunk or trailing bytes; the saved file is checked for
+  them) before it stores it in the ticket's folder. A photo is never served back.
 - His tickets sensor carries `answers` (the last 10: filed, refused, photo saved or not, with the card's cid or rid)
   and `limits`; Ryan's sensor is unchanged.
 - When one of his tickets moves to fixed (Ryan's instance or Claude's flow), his own Watcher alerts him on his portal
@@ -330,4 +337,6 @@ card); his Watcher is the authority, whatever sent the command:
 ## Tests
 
 `pip install pytest beautifulsoup4 && pytest tests` from this folder. Every fixture is synthetic, with made-up
-names; real FLICA or CrewTrac pages never go in git (see tests/fixtures/README.md).
+names; real FLICA or CrewTrac pages never go in git (see tests/fixtures/README.md). The ticket photo checks also run
+under the Pillow the Dockerfile pins (1.7.0 security review): `pip install --target <dir> Pillow==<pin>`, then
+`FW_PILLOW_PIN_PATH=<dir> pytest tests` (the shipped-Pillow test skips without it when the local Pillow differs).

@@ -151,7 +151,14 @@ def test_store_photo_limits(tmp_path):
     assert TK.store_photo(b, "cpilot01", 1, big, "jpg", "pilot2", "t1", limits=LIM)[0]
     assert TK.store_photo(b, "cpilot01", 2, big, "jpg", "pilot2", "t1", limits=LIM)[0]
     t, err = TK.store_photo(b, "cpilot01", 3, big, "jpg", "pilot2", "t1", limits=LIM)  # 2.1 MB in all
-    assert t is None and err.endswith("photos would be over 1.5 MB in all")
+    assert t is None and err == "FW-0001 would be over 1.5 MB in all with this photo"
+    # 1.7.0 review: the council's 1.5 MB is the ticket in all, its ticket.json counted with its photos
+    TK.create(b, {"kind": "bug", "title": "x", "narrative": "y", "cid": "cpilot02", "images": 2}, "pilot2", "t0",
+              limits=LIM)
+    room = LIM["ticket_bytes"] - 700 * 1024 - 3 - 100  # 100 bytes under the cap counting the photos alone
+    assert TK.store_photo(b, "cpilot02", 1, big, "jpg", "pilot2", "t1", limits=LIM)[0]
+    t, err = TK.store_photo(b, "cpilot02", 2, b"\xff\xd8\xff" + b"\x00" * (room - 3), "jpg", "pilot2", "t1", limits=LIM)
+    assert t is None and err == "FW-0002 would be over 1.5 MB in all with this photo"
     assert TK.store_photo(b, "cpilot01", 4, b"\xff\xd8\xff", "jpg", "pilot2", "t1", limits=LIM)[1] == \
         "photo number must be 1 to 3"
     assert TK.store_photo(b, "cpilot01", 0, b"\xff\xd8\xff", "jpg", "pilot2", "t1", limits=LIM)[1] == \
@@ -605,6 +612,14 @@ def test_untrusted_ticket_rule_in_claude_md_and_handoff():
         assert chr(0x2014) not in text, name
     h = open(os.path.join(REPO, "HANDOFF.md"), encoding="utf-8").read()
     assert "leave it fixed for its reporter to verify" in h and "reporter ryan" in h  # P1, D8, D9
+    # 1.7.0 security review: the 2026-11-06 pre-approval covers Ryan's own tickets only, a pilot's change needs a yes
+    # naming its ticket, a follow-up made from a pilot's ticket stays untrusted (test_release_c_review pins the rest)
+    flat = " ".join(h.split())
+    assert "merging and updating releases of fixed tickets reported by ryan" in flat
+    assert "does not cover a release that carries a change asked for in a pilot's ticket" in flat
+    assert "needs Ryan's explicit yes naming that ticket id" in flat
+    assert "or made from such a ticket" in flat and "or made from such a ticket" in " ".join(
+        open(os.path.join(REPO, "CLAUDE.md"), encoding="utf-8").read().split())
 
 
 def test_version_is_one_seven_zero():

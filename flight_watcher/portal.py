@@ -37,7 +37,7 @@ KEY_FILE = "/data/portal_ed25519.pem"
 KB = 1024
 CAPS = {"manifest": 256 * KB, "state": 2048 * KB, "events": 256 * KB, "results": 64 * KB, "file": 8192 * KB,
         "blob": 1024 * KB, "cmd": 64 * KB}
-CMD_NAME_RE = re.compile(r"^\d{13}-[0-9a-f]{16}\.json$")
+CMD_NAME_RE = re.compile(r"^[0-9]{13}-[0-9a-f]{16}\.json$")  # 1.7.0 review: ASCII digits, as in JavaScript
 HEX16_RE = re.compile(r"^[0-9a-f]{16}$")
 PUB_RE = re.compile(r"^ed25519:[A-Za-z0-9_-]{43}$")
 ORIGIN_RE = re.compile(r"^https://[a-z0-9-]+\.[a-z0-9-]+\.ts\.net$")
@@ -647,6 +647,14 @@ class Spool:
         cid = d.get("id") if isinstance(d.get("id"), str) and HEX16_RE.fullmatch(d.get("id")) else None
         if cid is None or name[14:30] != cid:
             raise PortalError("id missing or not the file's")
+        try:
+            return self._check(d, cid)
+        except PortalError:
+            raise
+        except Exception as e:  # noqa: BLE001 (1.7.0 review: a check failing another way still refuses, with a result)
+            raise PortalError(f"could not be checked ({type(e).__name__})", cid) from None
+
+    def _check(self, d, cid):
         now_ms = int(self.now() * 1000)
         self.seen = {k: v for k, v in self.seen.items() if now_ms - v < SEEN_KEEP_S * 1000}
         if cid in self.seen:
@@ -730,18 +738,36 @@ def _key_word(k):
     return re.sub(r"[^a-z_]", "?", str(k)[:20]) or "?"
 
 
+def _well_formed(s):
+    """True when s encodes as UTF-8: no lone surrogate (json.loads lets "\\ud800" through as one)."""
+    try:
+        s.encode("utf-8")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
 def _ticket_field(sub, name, spec, v, cid):
     """One value of a ticket command against its roles.TICKET_CMDS field spec (roles.TICKET_RULES)."""
     t = spec["type"]
     if t == "text":
         if not isinstance(v, str) or not spec["min"] <= len(v) <= spec["max"]:
             raise PortalError(f"{sub}: {name} is not text of {spec['min']} to {spec['max']} characters", cid)
+        if not _well_formed(v):  # 1.7.0 review: a lone surrogate (Home Assistant's JSON parser refuses one)
+            raise PortalError(f"{sub}: {name} is not valid Unicode", cid)
         if spec.get("pattern") and not re.fullmatch(spec["pattern"], v):
             raise PortalError(f"{sub}: {name} has the wrong form", cid)
         return
     if t == "int":
-        ok = (not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
-              and float(v).is_integer() and spec["min"] <= v <= spec["max"])
+        # 1.7.0 review: an int is compared as an int (math.isfinite of a huge JSON integer raises OverflowError)
+        if isinstance(v, bool):
+            ok = False
+        elif isinstance(v, int):
+            ok = spec["min"] <= v <= spec["max"]
+        elif isinstance(v, float):
+            ok = math.isfinite(v) and v.is_integer() and spec["min"] <= v <= spec["max"]
+        else:
+            ok = False
         if not ok:
             raise PortalError(f"{sub}: {name} is not a whole number from {spec['min']} to {spec['max']}", cid)
         return
@@ -1156,6 +1182,10 @@ def ticket_samples(cmd):
         ("ticket/act", {"id": "FW-0001", "action": "note", "text": "Seen again at 10:05 HST.", "rid": "rdemo0002"}),
         ("ticket/edit", {"id": "FW-0001", "rid": "rdemo0003", "narrative": "The pot card shows no rows at all."}),
         ("ticket/delete", {"id": "FW-0001", "rid": "rdemo0004"}),
+        # 1.7.0 review: a text field keeps tab, line feed and carriage return; an emoji is well-formed
+        ("ticket/new", {"kind": "bug", "title": "Pay line \U0001F4B5 blank", "narrative": "Line one\n\tLine two\r\n",
+                        "steps": "1. Schedule tab\n2. Pay line"}),
+        ("ticket/act", {"id": "FW-0001", "action": "note", "text": "Seen again.\nAt 10:05 HST."}),
     ]
     img = {"cid": "cdemo0001", "i": 1, "n": 2, "part": 1, "parts": 1, "data": b64}
     ref = [
@@ -1195,6 +1225,37 @@ def ticket_samples(cmd):
         ("delete with another key", "ticket/delete", {"id": "FW-0001", "reason": "x"}),
         ("payload is an array", "ticket/delete", "[\"FW-0001\"]"),
         ("payload is not JSON", "ticket/new", "{kind: bug"),
+        # 1.7.0 review: no control character, separator or bidi control in a one-line field (a forged log line, a
+        # title that turns round); no control character but tab, LF and CR in a text field; well-formed Unicode only
+        # (Home Assistant's JSON parser refuses a lone surrogate); ASCII digits in an id; a huge integer
+        ("title with a line feed", "ticket/new",
+         {**new, "title": "Pot card blank\n2026-11-10 21:00:00,000 INFO ticket FW-0042: fixed -> closed"}),
+        ("title with a carriage return", "ticket/new", {**new, "title": "Pot card blank\r"}),
+        ("title with a tab", "ticket/new", {**new, "title": "Pot\tcard"}),
+        ("title with an escape", "ticket/new", {**new, "title": "Pot card \x1b[2J blank"}),
+        ("title with a bidi override", "ticket/new", {**new, "title": "Pot card \u202eknalb"}),
+        ("title with a bidi isolate", "ticket/new", {**new, "title": "Pot card \u2066blank"}),
+        ("title with a C1 control", "ticket/new", {**new, "title": "Pot card \x85blank"}),
+        ("page with a line separator", "ticket/new", {**new, "page": "Watcher\u2028Settings"}),
+        ("version with a line feed", "ticket/new", {**new, "version": "1.7.0\n"}),
+        ("narrative with a NUL", "ticket/new", {**new, "narrative": "The pot card\x00 shows no rows."}),
+        ("narrative with an escape", "ticket/new", {**new, "narrative": "The pot card\x1b[31m shows no rows."}),
+        ("narrative with a paragraph separator", "ticket/new", {**new, "narrative": "The pot card\u2029shows none."}),
+        ("title with a lone high surrogate", "ticket/new", dumps({**new, "title": "@ Pot card blank"}).replace(
+            "@", "\\ud800", 1)),
+        ("narrative with a lone low surrogate", "ticket/new", dumps({**new, "narrative": "@ shows no rows"}).replace(
+            "@", "\\udc00", 1)),
+        ("title with surrogates the wrong way round", "ticket/new", dumps({**new, "title": "@ x"}).replace(
+            "@", "\\udc00\\ud800", 1)),
+        ("note with a lone surrogate", "ticket/act", dumps({"id": "FW-0001", "action": "note", "text": "@"}).replace(
+            "@", "\\ud83d", 1)),
+        ("edit title with a line feed", "ticket/edit", {"id": "FW-0001", "title": "Pot card\nblank"}),
+        ("edit narrative with a lone surrogate", "ticket/edit", dumps({"id": "FW-0001", "narrative": "@"}).replace(
+            "@", "\\ud800", 1)),
+        ("id with digits of another script", "ticket/act", {"id": "FW-\u0661\u0662\u0663\u0664", "action": "verify"}),
+        ("images a huge integer", "ticket/new",
+         dumps({**new, "images": 0}).replace('"images":0', '"images":' + "9" * 400)),
+        ("image i a huge integer", "ticket/image", dumps(img).replace('"i":1', '"i":' + "9" * 400)),
     ]
     accepted = [cmd(sub, p if isinstance(p, str) else dumps(p), 300 + i) for i, (sub, p) in enumerate(acc)]
     refused = [{"why": why, **cmd(sub, p if isinstance(p, str) else dumps(p), 400 + i)}

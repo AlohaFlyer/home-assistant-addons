@@ -335,8 +335,9 @@ NORM_OPTS = ["1", "2", "3", "5", "6", "10", "15", "20", "30", "45", "60", "90"]
 
 
 def test_clock_card_hst_touch_targets_and_the_intervals_a_pilot_has():
-    """Ryan 2026-11-10: hunt 5 to 90 s and normal 1 to 90 min on every instance; a portal pilot's normal stops at 20 min
-    (his number entity says 20, and the portal copy caps it at contract 1's 20 even if an entity said more)."""
+    """Ryan 2026-11-10: hunt 5 to 90 s and normal 1 to 90 min on every instance. On the portal the copy also keeps to
+    what the contract sends: revision 2 (1.7.0) sends normal up to 90 min too (20 before), and an entity that says less
+    (20) is followed."""
     src = _src("clock-card")
     portal = PT.portal_card(src)
     assert portal != src  # the clock card has the FW_PORTAL flag
@@ -355,8 +356,8 @@ def test_clock_card_hst_touch_targets_and_the_intervals_a_pilot_has():
     assert ha["pilot"]["opts"] == HUNT_OPTS and ha["pilot"]["nopts"] == NORM_OPTS  # a pilot on HA: the same ranges
     p = po["pilot"]
     assert p["lt"] == "01:29:30 HST" and p["hsShown"] and p["opts"] == HUNT_OPTS and p["val"] == "10"
-    assert p["nopts"] == NORM_OPTS[:8] and p["nopts"][-1] == "20"  # the portal sends normal up to 20 min (contract 1)
-    assert po["wide"]["nopts"] == NORM_OPTS[:8] and po["wide"]["val"] == "5"  # capped at 20 even if the entity says 90
+    assert p["nopts"] == NORM_OPTS[:8] and p["nopts"][-1] == "20"  # an entity that says 20: the copy follows it
+    assert po["wide"]["nopts"] == NORM_OPTS and po["wide"]["val"] == "5"  # revision 2: the portal sends up to 90 min
     assert min(p["heights"]) >= 44
     d = po["down"]
     assert "Settings > Apps" not in d["msg"] and "admin" in d["msg"] and d["st"] == "Watcher not answering."
@@ -496,7 +497,7 @@ def test_the_settings_tab_has_both_intervals_and_says_the_budget_slows_short_hun
     md = [c["content"] for t in _layout()["tabs"] for c in t["cards"] if c["type"] == "markdown"]
     assert not [m for m in md if re.search(r"\b120 s\b|\b2 min\b|fastest for a pilot", m)], md
     line = next(c["content"] for c in settings if c["type"] == "markdown")
-    assert "5 to 90 s" in line and "1 to 20 min" in line
+    assert "5 to 90 s" in line and "1 to 90 min" in line and "later update" not in line  # revision 2
     pace = "keeps up about one check every 1.5 min (a little longer once the close-in folder is found)"
     assert "within 100 FLICA page loads an hour, which " + pace in line
     assert "a shorter hunt or normal interval runs at that pace, and the status line says so" in line
@@ -508,8 +509,8 @@ def test_the_settings_tab_has_both_intervals_and_says_the_budget_slows_short_hun
     assert "a press within 10 s of the last check is ignored" in help_md
     assert ("Each press uses a few of your 100 FLICA page loads an hour: pressing it over and over can leave the "
             "Watcher waiting up to an hour for the budget") in help_md
-    # every value the sliders offer passes the contract as sent: hunt is the same range, normal stops at 20 on a portal
-    assert roles.WATCHER_FREQ_LIMITS["hunt_s"] == roles.FREQ_LIMITS["hunt_s"]
+    # every value the sliders offer passes the contract as sent: revision 2 sends the Watcher's own ranges
+    assert roles.WATCHER_FREQ_LIMITS == roles.FREQ_LIMITS
     assert roles.entity_freq_limits("pilot2", portal=True) == roles.FREQ_LIMITS
     watcher = [c.get("entity", "") for c in _tab("watcher")]
     for gone in ("_state", "_last_check", "_next_check"):  # the clock card shows them

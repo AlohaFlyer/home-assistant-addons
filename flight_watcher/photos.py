@@ -14,6 +14,10 @@ The spool checks only that shape (portal.check_ticket). Here, on the pilot's ins
 - check() takes the whole base64 (strict: the alphabet, padding only at the end), the JPEG or PNG magic bytes, the
   size, then re-encodes the picture with Pillow (EXIF, GPS, comments and any bytes after the image are gone; the
   longest side at most photo_side_max). Without Pillow a pilot's photo is refused (fail closed).
+  1.7.0 review: the picture is copied into a fresh image with no info at all before it is saved (Pillow 11.0.0, the
+  Dockerfile's pin, writes a decoded file's JPEG comment, XMP and ICC profile back out of im.info, and convert() keeps
+  them), and the saved file is walked: a JPEG holding any segment but JFIF, tables, frame and scan, or a PNG holding
+  any chunk but IHDR, PLTE, tRNS, IDAT and IEND (iCCP, tEXt, zTXt, iTXt, eXIf ...), is refused.
 The result goes to tickets.store_photo with the pilot's limits (3 photos, 1.5 MB a ticket). Nothing here touches the
 admin's photos: his cards send whole photos and tickets.add_image stores them as before.
 
@@ -89,18 +93,72 @@ def reencode(raw, ext):
             im.load()
             out = io.BytesIO()
             if fmt == "JPEG":
-                im.convert("RGB").save(out, "JPEG", quality=JPEG_QUALITY, optimize=True)
+                mode = "RGB"
             else:
                 alpha = im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info)
-                im.convert("RGBA" if alpha else "RGB").save(out, "PNG", optimize=True)
+                mode = "RGBA" if alpha else "RGB"
+            x = im.convert(mode)
+            # 1.7.0 review: only the pixels go on; im.info (comment, xmp, icc_profile, exif, dpi, text) stays behind
+            clean = Image.frombytes(mode, x.size, x.tobytes())
+            if fmt == "JPEG":
+                clean.save(out, "JPEG", quality=JPEG_QUALITY, optimize=True)
+            else:
+                clean.save(out, "PNG", optimize=True)
     except Refused:
         raise
     except Exception as e:  # noqa: BLE001 (Pillow raises many types for a broken file: the type only, never bytes)
         raise Refused(f"photo does not decode as a {fmt} ({type(e).__name__})") from None
     data = out.getvalue()
-    if magic(data) != ext:
-        raise Refused("photo is not a JPEG or PNG")
+    if magic(data) != ext or not (bare_jpeg(data) if ext == "jpg" else bare_png(data)):
+        raise Refused("photo could not be cleaned")
     return data, ext
+
+
+# 1.7.0 review: what a re-encoded photo may hold, nothing else. JPEG markers before the scan: APP0 (JFIF), DQT, SOF0
+# to SOF2, DHT, DRI, SOS (everything after SOS is the scan up to EOI). PNG chunks: IHDR, PLTE, tRNS, IDAT, IEND.
+JPEG_OK = {0xE0, 0xDB, 0xC0, 0xC1, 0xC2, 0xC4, 0xDD}
+PNG_OK = {b"IHDR", b"PLTE", b"tRNS", b"IDAT", b"IEND"}
+
+
+def bare_jpeg(data):
+    """True when the JPEG's segments before its scan are only JPEG_OK ones (an APP0 being JFIF), and it ends at EOI:
+    no comment (COM), EXIF or XMP (APP1), ICC profile (APP2), Photoshop block (APP13) or anything else."""
+    if data[:2] != b"\xff\xd8" or data[-2:] != b"\xff\xd9":
+        return False
+    i = 2
+    while i + 4 <= len(data):
+        if data[i] != 0xFF:
+            return False
+        m = data[i + 1]
+        if m == 0xFF:  # fill byte
+            i += 1
+            continue
+        n = int.from_bytes(data[i + 2:i + 4], "big")
+        if n < 2 or i + 2 + n > len(data):
+            return False
+        if m == 0xDA:
+            return True
+        if m not in JPEG_OK or (m == 0xE0 and data[i + 4:i + 9] != b"JFIF\x00"):
+            return False
+        i += 2 + n
+    return False
+
+
+def bare_png(data):
+    """True when every PNG chunk is a PNG_OK one, IEND last with nothing after it: no iCCP, tEXt, zTXt, iTXt, eXIf,
+    or any other chunk."""
+    if data[:8] != PNG_MAGIC:
+        return False
+    i = 8
+    while i + 12 <= len(data):
+        n = int.from_bytes(data[i:i + 4], "big")
+        kind = data[i + 4:i + 8]
+        if kind not in PNG_OK or i + 12 + n > len(data):
+            return False
+        i += 12 + n
+        if kind == b"IEND":
+            return i == len(data)
+    return False
 
 
 def check(b64, max_bytes=PHOTO_MAX_BYTES):

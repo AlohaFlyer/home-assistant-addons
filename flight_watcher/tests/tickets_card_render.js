@@ -149,11 +149,13 @@ function page(withCsp) {
       await pg.waitForFunction((n) => window.pubs.length > n, before);
       P.verify = await pg.evaluate(() => window.pubs[window.pubs.length - 1]);
       P.verify_row = await sr(pg, tag, "return r.querySelector('[data-rowmsg=\"FW-0100\"]').textContent;");
+      // 1.7.0 review: no Delete on a ticket that is being worked (fixed here); the new one keeps it
+      P.del_fixed = await sr(pg, tag, "return r.querySelectorAll('[data-del=\"FW-0100\"]').length;");
       const rid = JSON.parse(P.verify.payload).rid;
       await pg.evaluate((rid) => window.setHass({ answers: [{ ref: rid, id: "FW-0100", action: "act", ok: true, error: "", at: "t" }] }), rid);
       P.verify_done = await sr(pg, tag, "return r.querySelector('[data-rowmsg=\"FW-0100\"]').textContent;");
       // a refused send: the row says so, the button never says Sent
-      await pg.evaluate(() => { window.REJECT = "Not available here: test refusal"; });
+      await pg.evaluate(() => { window.REJECT = "Not available here: test refusal."; });  // HOM ends its own with "."
       await pg.locator(`${tag} button[data-a=reopen]`).first().click();
       await pg.waitForFunction(() => { const e = window.card.shadowRoot.querySelector('[data-rowmsg="FW-0100"]'); return e && e.textContent.startsWith("Didn't send"); });
       P.reject = await sr(pg, tag, "const b = r.querySelector('button[data-a=reopen]'); return [r.querySelector('[data-rowmsg=\"FW-0100\"]').textContent, b.textContent];");
@@ -230,6 +232,7 @@ function page(withCsp) {
       await sr(pg, tag, "r.querySelector('details.done').open = true; return 1;");
       await pg.waitForFunction(() => window.card._doneOpen === true);
       await sr(pg, tag, "r.querySelector('[data-t=\"FW-0100\"]').click(); return 1;");
+      A.del_fixed = await sr(pg, tag, "return r.querySelectorAll('[data-del=\"FW-0100\"]').length;");
       await pg.locator(`${tag} button[data-a=verify]`).click();
       A.verify = await pg.evaluate(() => window.pubs[window.pubs.length - 1].payload);
       A.verify_button = await sr(pg, tag, "return r.querySelector('button[data-a=verify]').textContent;");

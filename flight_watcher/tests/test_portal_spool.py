@@ -332,7 +332,7 @@ def test_one_bad_entry_never_ends_the_poll(demo, monkeypatch):
 @pytest.mark.parametrize("sub,payload", [
     ("freq/hunt_s/set", "inf"), ("freq/hunt_s/set", "1e999"), ("freq/hunt_s/set", "nan"), ("freq/hunt_s/set", "-inf"),
     ("freq/hunt_s/set", "Infinity"), ("freq/hunt_s/set", "4"), ("freq/hunt_s/set", "91"), ("freq/hunt_s/set", "fast"),
-    ("freq/normal_min/set", "inf"), ("freq/normal_min/set", "0"), ("freq/normal_min/set", "21"),
+    ("freq/normal_min/set", "inf"), ("freq/normal_min/set", "0"), ("freq/normal_min/set", "91"),
     ("freq/normal_min/set", ""),
 ])
 def test_freq_must_be_a_finite_number_in_range(demo, sub, payload):
@@ -408,15 +408,15 @@ def test_deeply_nested_json_is_refused_not_raised(demo):
 
 
 def test_freq_limits_are_the_sliders_ranges(demo):
-    """1.6.2 (Ryan 2026-11-10): a portal pilot's sliders are what contract 1 sends (hunt 5 to 90 s, normal 1 to 20 min
-    until Release C revises the contract); the Watcher's own clamp is the wider WATCHER_FREQ_LIMITS (normal up to
-    90 min), so every value the spool passes is applied as sent. The contract's FREQ_LIMITS stay what the spool checks."""
+    """1.6.2 (Ryan 2026-11-10): a portal pilot's sliders are what contract 1 sends (hunt 5 to 90 s; normal 1 to 90 min
+    since revision 2, 1.7.0, 1 to 20 before); the Watcher's own clamp is WATCHER_FREQ_LIMITS, the same ranges, so every
+    value the spool passes is applied as sent. The contract's FREQ_LIMITS stay what the spool checks."""
     W = demo
     got = {}
     for comp, _, cfg, _ in W.entity_defs():
         ct = cfg.get("command_topic") or ""
         if comp == "number" and "/freq/" in ct:
             got[ct.split("/")[-2]] = (cfg["min"], cfg["max"])
-    assert got == roles.FREQ_LIMITS == {"normal_min": (1, 20), "hunt_s": (5, 90)}
+    assert got == roles.FREQ_LIMITS == {"normal_min": (1, 90), "hunt_s": (5, 90)}
     assert W.FREQ_LIMITS is roles.WATCHER_FREQ_LIMITS == {"normal_min": (1, 90), "hunt_s": (5, 90)}
     assert not hasattr(roles, "PILOT_FREQ_LIMITS")

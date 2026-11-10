@@ -76,6 +76,69 @@ Claude Code prompt now ends "except a pilot's ticket: leave it fixed for its rep
   least 400 px, and the commands put through the spool and the Watcher end to end; the HA copy's 1.6.x path); the
   contract, spool, bundle, envelope, events, export, instance, roles and tickets tests follow the changes above.
 
+### 1.7.0 security review fixes (Release C review, 2026-11-10)
+
+Rebased onto `origin/main` 1.6.3 (f9ac1fa): 1.6.2's Watcher-wide check ranges (hunt 5 to 90 s, normal 1 to 90 min on
+every instance; no PILOT_FREQ_LIMITS), the Settings Hunt tile and the 1.6.3 schedule card fix are kept, and this
+entry sits above 1.6.3. The fixture changed (contract 1 revision 2, same file name): sha256
+`c8d37db297553379ca4bf1676db2884dd9d61443690a9d3bdada867ddf9f0e0a`; HOM 1.8.0 must copy the new bytes and add the
+well-formed text rule before it merges. Ryan's instance and his HA card work as before (his card's Claude Code prompt
+now carries the untrusted-ticket rule itself).
+
+- A pilot's changes are capped, in his Watcher (`tickets.py`, `roles.PILOT_TICKET_LIMITS`): `changes_per_day` 30
+  notes, reopens, verifies and edits in 24 h over all his tickets (the times in `tickets/.quota/<pilot>.json`, so a
+  delete does not reset them and no command rereads every ticket), `history` 50 of his lines on one ticket,
+  `text_bytes` 256 KB of ticket.json, and `ticket_bytes` 1.5 MB for ticket.json and its photos together (the
+  council's total; a photo is counted the same way). A verify or a reopen with no text always goes through (each
+  follows a fix by whoever works the ticket). Refusals answer "ticket limit reached: ..." on his sensor. Before, one
+  portal session could grow one ticket.json by about 108 MB an hour with notes or 322 MB an hour with edits on /share,
+  each write under the folder lock both instances take. The admin has no caps. ticket.json is written as UTF-8
+  (ensure_ascii off, read back as UTF-8), so an astral character costs 4 bytes, not a 12-byte escape.
+  `count_recent` reads newest first and stops a day back, so a ticket/new no longer parses every ticket.json ever
+  written (deleted ones included).
+- Ticket text, whoever sends it (`tickets.py`; portal and fixture): text that is not well-formed Unicode is refused
+  ("text is not valid Unicode": a lone surrogate passed both checkers, and Home Assistant's orjson refuses one, so a
+  single pilot ticket froze the admin's tickets sensor and card); a one-line field (title, page, version) keeps no
+  control character, line or paragraph separator or bidi control and no run of spaces; a text field (narrative,
+  steps, expected, a note) keeps only line breaks and tabs. The contract says the same: every text field has a pattern
+  (`roles.TICKET_LINE_PATTERN`, `TICKET_TEXT_PATTERN`, BMP escapes that Python and an unflagged JavaScript RegExp read
+  alike) and a new rule in `ticket_rules` (well-formed Unicode; HOM: `isWellFormed()`). A listing row or the FW-0007
+  fixed event never carries a lone surrogate from an older ticket (U+FFFD instead).
+- Log lines (`watcher.py`): a ticket title is logged on one line (`log_safe`), and on a pilot every log line has its
+  controls, separators, bidi controls and lone surrogates as visible escapes (`PilotLogMask`), so a pilot can no
+  longer write lines into the add-on log that look like the admin instance's (accepted commands, ticket closes). The
+  admin's own multi-line lines (page dumps) are unchanged.
+- The spool answers every file it read: a check that fails in an unexpected way (a JSON integer of 400 digits made
+  `math.isfinite` raise OverflowError) is a refusal with a result, and `check_ticket` compares an int as an int.
+  Ticket ids, command file names and the ER list take ASCII digits only (`[0-9]`, not Python's Unicode `\d`), as
+  JavaScript does.
+- A pilot deletes his ticket only while it is new (the council lets him verify, reopen and note; once someone works
+  it, it stays on the admin's list: "FW-nnnn is in progress: it is being worked, so it stays (add a note instead)");
+  a pilot's delete of a ticket others wrote on says so in the log. His card draws Delete only on a new ticket. Ryan's
+  instance and card delete in any status, as before.
+- Photos (`photos.py`): the re-encode copies only the pixels into a fresh image (Pillow 11.0.0, the Dockerfile's pin,
+  wrote a decoded JPEG's comment, XMP and ICC profile and a PNG's ICC profile back out, so made-up text survived), and
+  the saved file is walked: a JPEG with any segment but JFIF, tables, frame and scan, or a PNG with any chunk but
+  IHDR, PLTE, tRNS, IDAT and IEND, is refused. The photo tests also run under the shipped Pillow
+  (`FW_PILLOW_PIN_PATH`).
+- Contract revision 2 also brings normal 1 to 90 min to the portal (`roles.FREQ_LIMITS`; 1 to 20 before), Ryan's Nov
+  10 range on every instance, which 1.6.2 left for this revision: the Settings help line and the portal's clock card
+  say 1 to 90 min. Safe in the HOM-first order: a 1.6.x Watcher still refuses over 20 with its own copy.
+- The portal card no longer doubles a period ("Didn't send: <the portal's message>. Try again."); the Home Assistant
+  card's text is unchanged.
+- Docs: CLAUDE.md and HANDOFF.md word the untrusted rule as "reporter is not ryan, or made from such a ticket"; a
+  follow-up made from a pilot's ticket says "From FW-nnnn by <pilot>" and stays untrusted; nothing a pilot's ticket
+  asks for is built or released without Ryan's yes naming it (the 2026-11-06 pre-approval covers tickets reported by
+  ryan only); the yes list adds the add-on's code and its releases and the portal's security boundary. The card's
+  Claude Code prompt carries the rule itself. HANDOFF item 10 lists the rollback residue (`out/files/tickets.json`,
+  a saved ticket_fixed alert, a lost `tickets_fixed_seen.json`).
+- Tests: the W fixture of `test_crew_index.py` ties `now_iso` to its frozen HST clock, so
+  `test_a_crew_index_run_versions_the_looked_up_pilots_only` no longer fails after 22:05 UTC; new
+  `test_release_c_review.py` (the caps through the real spool, the admin unlimited, one log line, lone surrogates on
+  both checkers and an old ticket on the admin's sensor, the huge integer and an unexpected error answered, ASCII ids,
+  a pilot's delete, photo metadata, the card's period and Delete, the docs); the contract, spool, freq, card and
+  tickets tests follow the changes above.
+
 ## 1.6.3
 
 - Schedule card: a trip whose own times are not read yet takes its credit from the pairings package, which writes it

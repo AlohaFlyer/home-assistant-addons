@@ -121,7 +121,8 @@ def test_portal_answers_acts_and_refusals(rendered):
     assert P["verify"]["topic"] == "flight_watcher_demo/ticket/act" and v["id"] == "FW-0100" and v["action"] == "verify"
     assert set(v) == {"id", "action", "rid"} and PT.check_ticket("ticket/act", P["verify"]["payload"])
     assert P["verify_row"] == "Sent. Waiting for the Watcher..." and P["verify_done"] == "Verified and closed."
-    assert P["reject"] == ["Didn't send: Not available here: test refusal.", "Still broken"]
+    assert P["reject"] == ["Didn't send: Not available here: test refusal.", "Still broken"]  # one period (review)
+    assert P["del_fixed"] == 0  # 1.7.0 review: a pilot deletes a new ticket only
     assert P["too_big"] == "Too long for the portal: shorten the description." and P["too_big_sent"] == 0
     e, dl = json.loads(P["edit"]), json.loads(P["del"])
     assert e == {"id": "FW-0099", "narrative": "The arrows do nothing on the portal.", "rid": e["rid"]}
@@ -134,6 +135,7 @@ def test_portal_answers_acts_and_refusals(rendered):
 def test_ha_copy_keeps_its_path(rendered):
     A = rendered["ha"]
     assert A["cc"] == 1 and A["photo_label"] == "Photos (optional, up to 10)" and A["blobs"] == 2
+    assert A["del_fixed"] == 1  # Ryan's card deletes in any status, as before
     assert A["pages"] == ["Watcher", "Schedule", "Recall/O75", "Details", "Settings", "Aviation Wx", "Phone alert",
                           "Other"]
     assert [p["topic"] for p in A["pubs"]] == ["flight_watcher/ticket/new"] + ["flight_watcher/ticket/image"] * 2

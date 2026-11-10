@@ -2,7 +2,7 @@
 import json
 import os
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -125,7 +125,11 @@ def W(tmp_path, monkeypatch):
     monkeypatch.setattr(W, "DB", Store(str(tmp_path / "t.db")))
     monkeypatch.setattr(W, "CARD_PAIRINGS", str(tmp_path / "www"))
     monkeypatch.setattr(W, "CREW_DIR", str(tmp_path / "crew_index"))
-    monkeypatch.setattr(W, "local_now", lambda: datetime(2026, 11, 10, 12, 5))
+    # 1.7.0 review: one test clock for both of the Watcher's clocks (the frozen HST wall clock and the UTC stamp that
+    # pilot versions carry), so a test never depends on the real time of day; W.TEST_CLOCK["t"] moves both
+    clock = W.TEST_CLOCK = {"t": datetime(2026, 11, 10, 12, 5)}
+    monkeypatch.setattr(W, "local_now", lambda: clock["t"])
+    monkeypatch.setattr(W, "now_iso", lambda: (clock["t"] + timedelta(hours=10)).replace(tzinfo=timezone.utc).isoformat())
     sent = []
     monkeypatch.setattr(W, "pub", lambda t, p, retain=True: sent.append((t, p)))
     W.S.clear()

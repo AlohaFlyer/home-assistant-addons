@@ -189,9 +189,10 @@ PORTAL_CMDS = ("hunt/set", "pause/set", "rearm/press", "check_now/press", "chart
                "ticket/edit", "ticket/delete")
 PORTAL_RULE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 # contract 1's check frequency ranges (freq/normal_min/set in minutes, freq/hunt_s/set in seconds): a portal's
-# freq/*/set must be a finite number within them (portal.check_freq). Contract 1 is pinned (its fixture and sha256):
-# these stay as they are until the contract revision in Release C.
-FREQ_LIMITS = {"normal_min": (1, 20), "hunt_s": (5, 90)}
+# freq/*/set must be a finite number within them (portal.check_freq). Contract 1 is pinned (its fixture and sha256).
+# Revision 2 (1.7.0, Release C) brings normal up to 90 min, Ryan's Nov 10 range on every instance (1 to 20 before); in
+# the HOM-first order a 1.6.x Watcher still refuses over 20 with its own copy and its slider stops at 20.
+FREQ_LIMITS = {"normal_min": (1, 90), "hunt_s": (5, 90)}
 # 1.6.2 (Ryan 2026-11-10, replacing the pilot's 120 s hunt floor): every instance, the admin and each pilot, hunts every
 # 5 to 90 s and checks every 1 to 90 min in normal mode. These are the number entities' ranges and the Watcher's clamp
 # of freq/*/set and of a stored value. A pilot's FLICA budget (gate.PILOT_BUDGET_H, 100 loads an hour), the host's cap
@@ -208,8 +209,8 @@ def freq_limits(instance):
 
 def entity_freq_limits(instance, portal=False):
     """The ranges the number entities advertise: the instance's (freq_limits) and, on a pilot whose portal is on, kept
-    within contract 1's FREQ_LIMITS, so his portal offers only what it can send (normal up to 20 min until the contract
-    revision in Release C; the Watcher's own clamp already takes 1 to 90)."""
+    within contract 1's FREQ_LIMITS, so his portal offers only what it can send (revision 2: the same 1 to 90 min and 5
+    to 90 s; normal stopped at 20 min on the portal before Release C)."""
     own = freq_limits(instance)
     if not (portal and role(instance) == PILOT):
         return own
@@ -248,7 +249,7 @@ PREF_KEYS = {
     "longevity_year": {"entity": "input_number.{prefix}_longevity_year", "type": "number", "min": 1, "max": 12,
                        "step": 1, "unit": ""},
     "er_trips": {"entity": "input_text.{prefix}_er_trips", "type": "text", "max_len": 255,
-                 "item_re": r"[+-][A-Z0-9]{1,8}\|\d{4}-\d{2}-\d{2}"},
+                 "item_re": r"[+-][A-Z0-9]{1,8}\|[0-9]{4}-[0-9]{2}-[0-9]{2}"},  # 1.7.0 review: ASCII digits
 }
 # helpers the cards read and set that stay in the portal's page (never sent to the Watcher)
 LOCAL_HELPERS = {"month_offset": {"entity": "input_number.{prefix}_month_offset",
@@ -269,16 +270,28 @@ FILE_KINDS = {"finds": r"\d{4}-\d{2}", "pairings": r"\d{4}-\d{2}", "school": r"\
 PILOT_TICKET_ACTIONS = ("verify", "reopen", "note")
 # a pilot instance's ticket quotas, kept by his Watcher whatever sent the command (portal or a dashboard card); the
 # admin has none. new_per_day: tickets filed in the last 24 h (deleted ones count); open: open at once; photos: a
-# ticket; ticket_bytes: the photos of one ticket as stored (1.5 MB, after the Watcher re-encodes them); in_flight: photo
-# uploads being put together at once; chunk_chars and chunk_parts: one photo comes in at most chunk_parts ticket/image
-# commands of at most chunk_chars base64 characters each (under the 64 KB command cap); photo_side_max: the longest
-# side the Watcher re-encodes (the portal card sends at most 1600 px); photo_stale_s: a photo whose next chunk does not
-# come within this time is dropped.
+# ticket; ticket_bytes: one ticket as stored, its photos (after the Watcher re-encodes them) and its ticket.json
+# together (1.5 MB, the council's total); in_flight: photo uploads being put together at once; chunk_chars and
+# chunk_parts: one photo comes in at most chunk_parts ticket/image commands of at most chunk_chars base64 characters
+# each (under the 64 KB command cap); photo_side_max: the longest side the Watcher re-encodes (the portal card sends at
+# most 1600 px); photo_stale_s: a photo whose next chunk does not come within this time is dropped.
+# 1.7.0 review: his notes, reopens, verifies and edits are capped as well (each rewrites ticket.json in the folder both
+# instances share): changes_per_day in 24 h over all his tickets, history of his own history lines on one ticket, and
+# text_bytes of one ticket.json; a verify or a reopen with no text is never refused by these (it follows a fix by
+# whoever works the ticket, so he cannot repeat one on his own).
 PILOT_TICKET_LIMITS = {"new_per_day": 10, "open": 25, "photos": 3, "ticket_bytes": 1536 * 1024, "in_flight": 1,
-                       "chunk_chars": 60000, "chunk_parts": 8, "photo_side_max": 2048, "photo_stale_s": 120}
-TICKET_ID_PATTERN = r"^FW-\d{4,6}$"
+                       "chunk_chars": 60000, "chunk_parts": 8, "photo_side_max": 2048, "photo_stale_s": 120,
+                       "changes_per_day": 30, "history": 50, "text_bytes": 256 * 1024}
+TICKET_ID_PATTERN = r"^FW-[0-9]{4,6}$"  # 1.7.0 review: ASCII digits (Python's \d also takes other scripts' digits)
 TICKET_CID_PATTERN = r"^[A-Za-z0-9_-]{6,40}$"  # tickets.CID_RE; also a card-made rid
 TICKET_DATA_PATTERN = r"^[A-Za-z0-9+/]+={0,2}$"  # one chunk: a slice of the photo's base64 (no data: prefix)
+# 1.7.0 review: what ticket text may hold (BMP escapes only, so Python's re and a JavaScript RegExp with no flags read
+# them the same). A one-line field (title, page, version): no control character (U+0000 to U+001F, U+007F to U+009F),
+# no line or paragraph separator (U+2028, U+2029) and no bidi embedding, override or isolate (U+202A to U+202E, U+2066
+# to U+2069), so ticket text never starts a line of its own in the add-on log or turns round on a card. A text field
+# (narrative, steps, expected, a note): the same, but tab, line feed and carriage return are allowed.
+TICKET_LINE_PATTERN = r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]*$"
+TICKET_TEXT_PATTERN = r"^[^\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]*$"
 # How the HOM portal and the spool read TICKET_CMDS (the same words in the fixture, commands.ticket_rules): one generic
 # checker on each side, so the two cannot drift.
 TICKET_RULES = (
@@ -288,12 +301,17 @@ TICKET_RULES = (
     "text: a JSON string whose length in Unicode code points (Python len, JavaScript [...s].length) is from min to "
     "max; with pattern, the whole string matches it (Python re.fullmatch; JavaScript new RegExp(pattern) with no flags "
     "and the pattern's own ^ and $), so a trailing newline is refused.",
+    "text is well-formed Unicode: no lone surrogate (Python: s.encode('utf-8') succeeds; JavaScript: "
+    "s.isWellFormed()).",
     "int: a JSON number, never a boolean or a string, with a whole value from min to max; 2.0 counts as 2 (JavaScript "
     "cannot tell them apart); 2.5, true, \"2\" and 1e999 are refused.",
     "enum: a JSON string equal to one of values.",
     "le: each [a, b] means the value of a is at most the value of b.",
     "nonempty_when: each {field, is, then} means that when field equals is, then is present with at least 1 code point.",
 )
+
+
+_LINE, _TEXT = TICKET_LINE_PATTERN, TICKET_TEXT_PATTERN
 
 
 def _text(lo, hi, pattern=None):
@@ -312,10 +330,10 @@ TICKET_CMDS = {
     "ticket/new": {
         "keys": ["kind", "title", "narrative", "steps", "expected", "page", "version", "cid", "images"],
         "required": ["kind", "title", "narrative"],
-        "fields": {"kind": {"type": "enum", "values": ["bug", "feature"]}, "title": _text(1, 200),
-                   "narrative": _text(1, 10000), "steps": _text(0, 5000), "expected": _text(0, 5000),
-                   "page": _text(0, 300), "version": _text(0, 40), "cid": _text(6, 40, TICKET_CID_PATTERN),
-                   "images": _int(0, _PHOTOS)}},
+        "fields": {"kind": {"type": "enum", "values": ["bug", "feature"]}, "title": _text(1, 200, _LINE),
+                   "narrative": _text(1, 10000, _TEXT), "steps": _text(0, 5000, _TEXT),
+                   "expected": _text(0, 5000, _TEXT), "page": _text(0, 300, _LINE), "version": _text(0, 40, _LINE),
+                   "cid": _text(6, 40, TICKET_CID_PATTERN), "images": _int(0, _PHOTOS)}},
     "ticket/image": {
         "keys": ["cid", "i", "n", "part", "parts", "data"],
         "required": ["cid", "i", "n", "part", "parts", "data"],
@@ -327,15 +345,15 @@ TICKET_CMDS = {
         "keys": ["id", "action", "text", "rid"],
         "required": ["id", "action"],
         "fields": {"id": _text(7, 9, TICKET_ID_PATTERN), "action": {"type": "enum", "values": list(PILOT_TICKET_ACTIONS)},
-                   "text": _text(0, 5000), "rid": _text(6, 40, TICKET_CID_PATTERN)},
+                   "text": _text(0, 5000, _TEXT), "rid": _text(6, 40, TICKET_CID_PATTERN)},
         "nonempty_when": [{"field": "action", "is": "note", "then": "text"}]},
     "ticket/edit": {
         "keys": ["id", "rid", "title", "narrative", "steps", "expected", "page"],
         "required": ["id"],
         "any_of": ["title", "narrative", "steps", "expected", "page"],
         "fields": {"id": _text(7, 9, TICKET_ID_PATTERN), "rid": _text(6, 40, TICKET_CID_PATTERN),
-                   "title": _text(1, 200), "narrative": _text(1, 10000), "steps": _text(0, 5000),
-                   "expected": _text(0, 5000), "page": _text(0, 300)}},
+                   "title": _text(1, 200, _LINE), "narrative": _text(1, 10000, _TEXT),
+                   "steps": _text(0, 5000, _TEXT), "expected": _text(0, 5000, _TEXT), "page": _text(0, 300, _LINE)}},
     "ticket/delete": {
         "keys": ["id", "rid"],
         "required": ["id"],
