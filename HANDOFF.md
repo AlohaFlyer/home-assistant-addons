@@ -11,7 +11,7 @@ unchanged by it. **1.6.2** (Release A, branch `fw-1.6.2` on top of 1.6.1, not pu
 the host-wide FLICA gate (`gate.py`; pilot 100 loads an hour and hunt 120 s, host 480, the admin's 376 kept), read-path
 breakers, the schedule read in at most 2 loads, the awarded line on the card, pilot captures off (`captures.py`),
 topic-only ntfy with guardrails, Recall/O75 seniority from the award, the minimal pilot name lookup, pref flags, and the
-portal's pot, working flight, CrewTrac and requests cards with HST times and portal wording. The git history was cleaned on Nov 7 (`ha/` files carry placeholder user ids). Slug `43b22650_flight_watcher`,
+portal's pot, working flight, CrewTrac and requests cards with HST times and portal wording. The reviewers' findings on it are fixed in the same branch (CHANGELOG 1.6.2, Release A review fixes: FLICA refusal block and 10 min login floor on a pilot, his 120 s check floor, the gate's abort and the pot's share, CAPTCHA stops, 2 loads per schedule read, masked pilot logs, the card fixes). The git history was cleaned on Nov 7 (`ha/` files carry placeholder user ids). Slug `43b22650_flight_watcher`,
 two instances: Ryan (`flight_watcher`, `/data`) and
 James (`pilots` entry `james`, role pilot, `flight_watcher_james`, `/data/james`). James uses the pilot portal
 (homeofficemanager.app/fw, FW-0061), not Home Assistant: his HA user was retired on Nov 10 and his HA dashboard

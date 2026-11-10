@@ -195,3 +195,19 @@ def test_pilot_card_wording_at_390_px(tmp_path):
     assert [json.loads(x) for x in tries["1234"]] == [{"me": {"sen": 1234}}]  # no seat sent
     assert [json.loads(x) for x in tries[""]] == [{"me": {"sen": None}}]
     assert r["nosen"]["attrs"] == {"min": "1", "max": "99999", "mode": "numeric"} and r["nosen"]["wide"] <= 390
+    # 1.6.2 review: days before the first schedule version are never 'until the Watcher has read it'
+    assert ("Your line as held on the days of 2 rows is not on file (schedule versions start Tue Nov 10): these rows "
+            "stay CHECK, with no CCR draft or alert.") in t
+    # the month arrows are buttons a thumb can hit; the raw JSON paste tool is the admin's only
+    assert [x[0] for x in r["nosen"]["nav"]] == ["BUTTON", "BUTTON"] and min(min(x[1:]) for x in r["nosen"]["nav"]) >= 44
+    assert r["nosen"]["paste"] is False
+
+
+def test_rows_before_the_first_version_are_counted_apart(load):
+    W, sent, _ = load(line=False)
+    W.recall_act(json.dumps({"me": {"sen": 500}}))
+    W.DB.put("sched_versions:2026-11", [{"ver": "11.001", "award": True, "at": "2026-11-10T21:04:25+00:00",
+                                         "items": [], "days": []}])
+    W.recall_cmd(json.dumps({"date": "2026-11-05", "rows": [_row()]}))
+    st, _ = _last(sent)
+    assert st["versions_from"] == "2026-11-10" and st["missing_line_old"] == 1 and st["missing_line"] == 0

@@ -11,6 +11,10 @@ each), and lets the load go only when:
     hour after the load that used it (a token bucket of 100 that refills by the rolling hour).
 Otherwise it waits (in chunks of at most WAIT_CHUNK_S, reading the file again each time); a load is never skipped.
 A wait for a budget (not plain pacing) is told through on_wait, so the Watcher's state note says why the loop slowed.
+1.6.2 review: abort (a callable, checked before the load and after every chunk of a wait) ends a wait with GateAbort
+and nothing loaded (the Watcher: Pause, or a stop, while a check waits). keep > 0 marks a load that may be left out:
+when it would have to wait for a budget with `keep` loads still kept free (for the next check's open time pot), it
+raises GateSkip at once instead of waiting.
 
 Never a deadlock: the lock is held only for the read and write of the small file (never during a wait or a load); it
 is taken with LOCK_NB in a bounded loop (LOCK_TRIES x LOCK_POLL_S, about 10 s), and when it cannot be had (or the file
@@ -129,58 +133,71 @@ class Gate:
         out.sort()
         return out
 
-    def _need(self, log, own, now, pace):
-        """(seconds to wait, why) for a load now: why is 'pace', 'host' or 'budget'; 0 when it may go."""
+    def _need(self, log, own, now, pace, keep=0):
+        """(seconds to wait, why) for a load now: why is 'pace', 'host' or 'budget'; 0 when it may go. keep: loads of
+        the host cap and of the budget that must stay free after this one (a load that may be left out)."""
         waits = [(max(own[-1:] + [self.last_own]) + pace - now, "pace")]
         if log:
             waits.append((log[-1][0] + HOST_GAP_S - now, "pace"))
-        if self.cap and len(log) >= self.cap:
-            waits.append((log[len(log) - self.cap][0] + WINDOW_S - now, "host"))
-        if self.budget and len(own) >= self.budget:
-            waits.append((own[len(own) - self.budget] + WINDOW_S - now, "budget"))
+        for lim, times, why in ((self.cap, [t for t, _ in log], "host"), (self.budget, own, "budget")):
+            if not lim:
+                continue
+            room = lim - keep  # with keep loads left free after this one
+            if len(times) >= room:
+                i = len(times) - room  # this oldest load must leave the hour first (none: wait the whole hour)
+                waits.append(((times[i] if 0 <= i < len(times) else now) + WINDOW_S - now, why))
         w, why = max(waits)
         return (w, why) if w > 0 else (0.0, "")
 
-    def _try(self, data, now, pace, take=True):
+    def _try(self, data, now, pace, take=True, keep=0):
         log = self._entries(data, now)
         own = [t for t, w in log if w == self.who]
-        w, why = self._need(log, own, now, pace)
+        w, why = self._need(log, own, now, pace, keep)
         if w > 0 or not take:
             return (w, why, len(log), len(own)), None
         log.append((now, self.who))
         return (0.0, "", len(log), len(own) + 1), {"v": 1, "last": now, "log": [[round(t, 3), x] for t, x in log]}
 
-    def _try_local(self, now, pace, take=True):
+    def _try_local(self, now, pace, take=True, keep=0):
         self.local = [t for t in self.local if now - WINDOW_S < t <= now + FUTURE_SLACK_S]
-        w, why = self._need([], sorted(self.local), now, pace)
+        w, why = self._need([], sorted(self.local), now, pace, keep)
         if w > 0 or not take:
             return w, why, len(self.local), len(self.local)
         return 0.0, "", len(self.local) + 1, len(self.local) + 1
 
     # ---- the API
-    def acquire(self):
-        """Wait until one FLICA load may go, record it and return the seconds waited."""
+    def acquire(self, keep=0, abort=None):
+        """Wait until one FLICA load may go, record it and return the seconds waited. abort (a callable): checked
+        before the load and after each wait chunk; when it gives a reason the wait ends with GateAbort (nothing
+        loaded). keep > 0: a load that may be left out; it raises GateSkip instead of waiting for a budget."""
         pace = self.rand()
         start = self.clock()
         noted = False
-        for _ in range(MAX_ROUNDS):
-            now = self.clock()
-            res = self._locked(lambda d: self._try(d, now, pace))
-            if res is None:
-                res = self._try_local(now, pace)
-            w, why = res[0], res[1]
-            if w <= 0:
-                self.last_own = now
-                self.local = [t for t in self.local if now - t < WINDOW_S] + [now]
-                break
-            if why in ("host", "budget") and w > NOTE_AFTER_S and self.on_wait and not noted:
-                noted = True
-                self.on_wait(why, now + w)
-            step = min(w, WAIT_CHUNK_S)
-            self.waited[why] = self.waited.get(why, 0.0) + step
-            self.sleep(step)
-        if noted and self.on_wait:
-            self.on_wait("", None)
+        try:
+            for _ in range(MAX_ROUNDS):
+                why_abort = abort() if abort else None
+                if why_abort:
+                    raise GateAbort(why_abort)
+                now = self.clock()
+                res = self._locked(lambda d: self._try(d, now, pace, keep=keep))
+                if res is None:
+                    res = self._try_local(now, pace, keep=keep)
+                w, why = res[0], res[1]
+                if w <= 0:
+                    self.last_own = now
+                    self.local = [t for t in self.local if now - t < WINDOW_S] + [now]
+                    break
+                if keep and why in ("host", "budget"):
+                    raise GateSkip(why, now + w)
+                if why in ("host", "budget") and w > NOTE_AFTER_S and self.on_wait and not noted:
+                    noted = True
+                    self.on_wait(why, now + w)
+                step = min(w, WAIT_CHUNK_S)
+                self.waited[why] = self.waited.get(why, 0.0) + step
+                self.sleep(step)
+        finally:
+            if noted and self.on_wait:
+                self.on_wait("", None)
         return self.clock() - start
 
     def free_in(self, want=1):
@@ -224,6 +241,24 @@ class BreakerOpen(Exception):
     def __init__(self, path, until):
         super().__init__(f"FLICA {path} read stopped until {until}")
         self.path = path
+
+
+class GateAbort(BreakerOpen):
+    """1.6.2 review: a load given up while it waited, because the Watcher was paused or stopped (nothing loaded). The
+    check it belongs to ends; handled like BreakerOpen by the read paths, never a failed read."""
+
+    def __init__(self, why="paused"):
+        Exception.__init__(self, f"FLICA load given up: {why}")
+        self.path, self.why = "gate", why
+
+
+class GateSkip(BreakerOpen):
+    """1.6.2 review: a load that may be left out (the Tradeboard, the grid, the request lists...) skipped for this
+    check, because it would have to wait for a budget the next check's open time pot needs. Never a failed read."""
+
+    def __init__(self, why, until):
+        Exception.__init__(self, f"FLICA {why} kept for the open time pot")
+        self.path, self.why, self.until = "gate", why, until
 
 
 class Breakers:

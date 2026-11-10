@@ -171,13 +171,13 @@ def test_a_pilot_waits_for_his_hourly_budget_and_the_note_says_so(mk):
     assert W.GATE.budget == 100
     fl = real_fl(W, lambda u: "<html>ok</html>")
     t0 = W.CLOCK.t
-    for i in range(100):
-        fl.fetch(f"{W.BASE}/full/mobilepairing.cgi?PID=H9{i:03d}&DATE=20261106")
+    for i in range(100):  # a path no parser judges (a pairing page must now read as one: 1.6.2 review)
+        fl.fetch(f"{W.BASE}/full/other.cgi?n={i:03d}")
     W.S["machine"], W.S["note"] = "hunting", ""
     notes = []
     real = W.set_machine
     W.set_machine = lambda st, note="": (notes.append(note), real(st, note))
-    fl.fetch(f"{W.BASE}/full/mobilepairing.cgi?PID=H9999&DATE=20261106")  # the 101st: waits, never skipped
+    fl.fetch(f"{W.BASE}/full/other.cgi?n=999")  # the 101st: waits, never skipped
     assert len(fl.loads) == 101 and fl.loads[-1][0] >= t0 + 3600
     assert notes[0].startswith("FLICA budget: 100 page loads in the last hour; the next one waits until ")
     assert notes[0].endswith(" HST") and notes[-1] == ""  # cleared once the load went
@@ -259,7 +259,8 @@ def test_the_pot_page_has_no_breaker(mk):
 def test_three_failed_reads_stop_a_path_30_min_then_60_and_a_good_read_resets(mk):
     W = mk()
     state = {"err": True}
-    fl = real_fl(W, lambda u: RuntimeError("synthetic: net::ERR_TIMED_OUT") if state["err"] else "<html>ok</html>")
+    fl = real_fl(W, lambda u: RuntimeError("synthetic: net::ERR_TIMED_OUT") if state["err"] else
+                 "<html><frameset><frame src='tb_otherrequests.cgi?BCID=001.152'></frameset></html>")
     url = f"{W.BASE}/online/tb_frame.cgi?BCID=001.152&dp=mr"
     for i in range(3):
         with pytest.raises(RuntimeError):
@@ -442,7 +443,7 @@ def test_on_a_pilot_only_check_now_and_switch_changes_wake_a_check(mk, monkeypat
     W = mk("pilot2")
     monkeypatch.setattr(W, "charter_press", lambda: None)
     W.S["machine"] = "hunting"
-    W.S["last_check_ts"] = W.CLOCK.t - 60
+    W.S["last_check_ts"] = W.CLOCK.t - 130  # 1.6.2 review: past the pilot's 120 s floor
     assert not _woke(W, "charter_scan/press")
     assert not _woke(W, "pilot/set", json.dumps({"q": "10001"}).encode())
     assert not _woke(W, "freq/hunt_s/set", b"150")
@@ -450,10 +451,11 @@ def test_on_a_pilot_only_check_now_and_switch_changes_wake_a_check(mk, monkeypat
     assert not _woke(W, "rearm/press")  # hunting: Re-arm does nothing, so no check either
     assert not _woke(W, "anything/else")
     assert _woke(W, "hunt/set", b"ON") and not _woke(W, "hunt/set", b"ON")  # a change wakes; the same value does not
-    assert _woke(W, "pause/set", b"ON") and not _woke(W, "pause/set", b"ON")
+    assert _woke(W, "pause/set", b"ON") and not _woke(W, "pause/set", b"ON")  # Pause on loads nothing: always wakes
+    W.S["wake_ts"] = 0
     assert _woke(W, "check_now/press")
-    W.S["last_check_ts"] = W.CLOCK.t - 2
-    assert not _woke(W, "check_now/press")  # its gap
+    W.S["wake_ts"], W.S["last_check_ts"] = 0, W.CLOCK.t - 119
+    assert not _woke(W, "check_now/press")  # a pilot's gap is his 120 s floor (the admin's 10 s)
     W.S["machine"] = "stopped_unexpected"
     assert _woke(W, "rearm/press")
 

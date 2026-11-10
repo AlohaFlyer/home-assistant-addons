@@ -137,7 +137,7 @@ class FlightWatcherRecallCard extends HTMLElement {
       textarea{width:100%;min-height:150px;font:12px/1.4 var(--paper-font-body1_-_font-family,sans-serif);box-sizing:border-box;margin:6px 0}
       pre.n{white-space:pre-wrap;font:12px/1.4 var(--paper-font-body1_-_font-family,sans-serif);margin:4px 0}
       .me{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
-      .me input[type=number]{width:70px}.mp{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:15px}.mp .nv{cursor:pointer;font-size:20px;color:var(--primary-color);padding:0 6px;user-select:none}.k{color:var(--secondary-text-color);font-size:12px}
+      .me input[type=number]{width:70px}.mp{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:15px}.mp .nv{cursor:pointer;font:inherit;font-size:22px;color:var(--primary-color);padding:0 6px;user-select:none;min-width:44px;min-height:44px;border:1px solid var(--divider-color);border-radius:8px;background:none}.k{color:var(--secondary-text-color);font-size:12px}
       .st{font-weight:700;text-transform:uppercase;font-size:11px}
     </style>`;
   }
@@ -174,13 +174,18 @@ class FlightWatcherRecallCard extends HTMLElement {
         <span class="k">last list ${this._e(a.last || "none yet")}${a.received ? ` (came in ${this._e(this._hst(a.received))} HST)` : ""}</span>
         <button class="g" data-refresh${this._busy ? " disabled" : ""}>&#8635; ${this._busy ? "Refreshing..." : "Refresh"}</button>
         <span class="k" data-checked>${this._note ? `<span style="color:var(--error-color,#c62828)">${this._e(this._note)}</span>` : a.checked ? `checked ${this._e(this._hst(a.checked))} HST` : ""}</span>
-        <span class="mp"><span class="nv" data-m="-1">&#8249;</span><b>${RC_MON[mm - 1]} ${my}</b><span class="nv" data-m="1">&#8250;</span>${nmiss ? `<span class="chip MISSED">${nmiss} missed</span>` : ""}</span></div>
+        <span class="mp"><button type="button" class="nv" data-m="-1" aria-label="Previous month">&#8249;</button><b>${RC_MON[mm - 1]} ${my}</b><button type="button" class="nv" data-m="1" aria-label="Next month">&#8250;</button>${nmiss ? `<span class="chip MISSED">${nmiss} missed</span>` : ""}</span></div>
       ${this._needs(a, me)}
       <div class="k">Hark reads the daily HNL recall list from Flight Ops SharePoint and posts it here. Each award to a pilot junior to you is checked against your line as you held it that day (the schedule version in force then, not today's): open days, no blocked day, trip or vacation in the way (22.G.2.e first, 22.G.2.f/g after), FAR 117.25(e) 10 h rest, 117.25(b) 30 h free in 168 h, 117.23(b)(1) 100 h in 672 h, 117.23(c) FDP 60 h in 168 h and 190 h in 672 h, PWA 10.E.1.a 11 h domicile rest. Anything not on file makes it CHECK, never SHOULD HAVE BEEN YOU; so does an Over 75 row in a month you have not said whether you were on reserve.</div>
       ${rows || `<div class="day why">No recall lists on file for ${RC_MON[mm - 1]} ${my}.</div>`}
-      <details style="margin-top:8px"><summary class="k">Paste a recall list (manual)</summary><textarea data-paste placeholder='{"date":"2026-11-04","rows":[{"kind":"recall","seat":"FO","pilot":"","sen":900,"pairing":"H3601"}]}'></textarea><button data-paste-go>Check this list</button></details>
+      ${this._admin() ? `<details style="margin-top:8px"><summary class="k">Paste a recall list (manual)</summary><textarea data-paste placeholder='{"date":"2026-11-04","rows":[{"kind":"recall","seat":"FO","pilot":"","sen":900,"pairing":"H3601"}]}'></textarea><button data-paste-go>Check this list</button></details>` : ""}
     </ha-card>`;
     this._wire();
+  }
+  // 1.6.2 review: the raw JSON paste tool is the admin's (Hark posts the lists); a pilot's card has none
+  _admin() {
+    const st = this._h && this._h.states["sensor.flight_watcher_state"];
+    return ((st && st.attributes) || {}).role !== "pilot";
   }
   // 1.6.2: where the seniority # comes from, beside the box
   _srcLine(a) {
@@ -193,6 +198,8 @@ class FlightWatcherRecallCard extends HTMLElement {
   _needs(a, me) {
     const out = [];
     if (me.sen == null) out.push("Your seniority # is not on file: type it above (the number before your employee number on the award). Until then no row is judged against it and none gets a CCR draft or an alert.");
+    // 1.6.2 review: a day before the first schedule version on file can never be read back: no 'until it is read'
+    if (a.missing_line_old) out.push(`Your line as held on the days of ${a.missing_line_old} row${a.missing_line_old > 1 ? "s" : ""} is not on file (schedule versions start ${this._e(this._day(a.versions_from))}): ${a.missing_line_old > 1 ? "these rows stay" : "this row stays"} CHECK, with no CCR draft or alert.`);
     if (a.missing_line) out.push(`Your FLICA schedule is not on file for the days of ${a.missing_line} row${a.missing_line > 1 ? "s" : ""}: they stay CHECK, with no CCR draft or alert, until the Watcher has read it.`);
     return out.map((t) => `<div class="hk bad">${this._e(t)}</div>`).join("");
   }

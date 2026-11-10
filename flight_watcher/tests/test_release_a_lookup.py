@@ -78,7 +78,7 @@ def test_name_directory_is_the_award_and_the_seniority_list(load):
 
 @pytest.mark.parametrize("q,why", [("Do", "at least 3 letters"), ("D*", "letters only"), ("%oe", "letters only"),
                                    ("Doe?", "letters only"), ("Zed", "No pilot named 'Zed'"),
-                                   ("Smit", "More than 5 pilots match")])
+                                   ("Smit", "No pilot named 'Smit'")])
 def test_a_query_that_lists_nothing(load, q, why):
     W, sent = load()
     p = _ask(W, sent, q=q)
@@ -86,14 +86,51 @@ def test_a_query_that_lists_nothing(load, q, why):
     assert not W.S.get("pilot_req")
 
 
-def test_one_match_runs_the_lookup(load):
+def test_one_match_is_a_pick_list_of_one(load):
+    """1.6.2 review: one match is not run at once: its employee number is used (and shown) only after the pick."""
     W, sent = load()
     p = _ask(W, sent, q="roe")
-    assert (p["emp"], p["name"], p["status"]) == ("10004", "Roe", "loading") and W.S["pilot_req"]["emp"] == "10004"
+    assert p["emp"] == "" and [m["name"] for m in p["matches"]] == ["Roe"] and "10004" not in json.dumps(p)
+    assert "tap the name" in p["status"] and not W.S.get("pilot_req")
+    q = _ask(W, sent, pick=p["matches"][0]["pick"], name="Roe")
+    assert (q["emp"], q["name"], q["status"]) == ("10004", "Roe", "loading") and W.S["pilot_req"]["emp"] == "10004"
     p = _ask(W, sent, q="Doe, Jane")
-    assert (p["emp"], p["name"]) == ("10001", "Doe, Jane")
+    assert p["emp"] == "" and [m["name"] for m in p["matches"]] == ["Doe, Jane"]
     p = _ask(W, sent, q="#10002")  # an employee number with '#'
     assert p["emp"] == "10002"
+
+
+def test_a_prefix_needs_5_letters_so_the_roster_cannot_be_walked(load):
+    W, sent = load()
+    assert _ask(W, sent, q="Doer")["matches"] == []  # 4 letters: the whole last name only (DOERR is not listed)
+    assert [m["name"] for m in _ask(W, sent, q="Doerr")["matches"]] == ["Doerr"]
+    assert [m["name"] for m in _ask(W, sent, q="Smiths")["matches"]] == ["Smithson"]  # 5 letters on: a prefix too
+    # walking every 3-letter start of the synthetic roster finds only whole names typed (none of these)
+    found = set()
+    for a in "DRS":
+        for b in "MO":
+            for c in "EIT":
+                found |= {m["name"] for m in _ask(W, sent, q=a + b + c)["matches"]}
+    assert found <= {"Doe, Jane", "Doe, John", "Roe"}
+
+
+def test_more_than_5_matches_is_no_list(load, monkeypatch):
+    W, sent = load()
+    rows = [{"emp": str(20001 + i), "last": f"Hallo{c}", "first": "", "seat": "FO", "name": f"Hallo{c}"}
+            for i, c in enumerate("abcdef")]
+    monkeypatch.setattr(W, "name_directory", lambda: rows)
+    p = _ask(W, sent, q="Hallo")
+    assert p["matches"] == [] and "More than 5 pilots match" in p["status"]
+
+
+def test_name_queries_are_capped_at_20_an_hour(load):
+    W, sent = load()
+    for i in range(W.LOOKUP_PER_H):
+        _ask(W, sent, q="Zed")
+    p = _ask(W, sent, q="Roe")
+    assert p["matches"] == [] and p["status"].startswith("20 name lookups in the last hour: the next one at ")
+    assert "HST" in p["status"]
+    assert _ask(W, sent, q="10004")["emp"] == "10004"  # an employee number is no name query
 
 
 def test_several_matches_give_name_and_seat_and_a_pick_id(load):
@@ -152,3 +189,6 @@ def test_pilot_card_states_at_390_px(tmp_path):
     assert [json.loads(x) for x in r["pickSent"]] == [{"pick": "a1b2c3d4e5f6", "name": "Moe, Kai"}]
     assert r["pickLoading"].startswith("Moe, Kai\n")
     assert "Still waiting after 5 min: the Watcher is paused" in r["overdue"] and r["wide"] <= 390
+    # 1.6.2 review: opened cold on a lookup asked 10 min ago (next check 4 min past): it gives up, from the sensor's at
+    assert "Still waiting after 10 min" in r["coldOld"] and "about" not in r["coldOld"]
+    assert "on the Watcher's next check" in r["coldNew"] and " HST" not in r["coldNew"].split("next check")[1]

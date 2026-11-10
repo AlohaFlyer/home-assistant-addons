@@ -38,7 +38,10 @@ class FlightWatcherChartersCard extends HTMLElement {
     const ls = ccHst(a.last_scan);
     const rows = items.map((r) => `<div class="r${r.gone ? " gone" : ""}"><div><b>${this._e(r.flight)}</b> ${this._e(r.route)} <span class="k">${this._e(r.date)} ${this._e(r.scheduled || "")}</span></div>`
       + `<div class="k">${[r.eqpt, r.tail, r.why, r.first_seen ? `seen ${r.first_seen}` : ""].filter(Boolean).map((x) => this._e(x)).join(" &middot; ")}${r.gone ? " &middot; no longer on the schedule" : ""}</div></div>`).join("");
-    const none = s && !items.length ? `<div class="k">No unusual A330 flying found${ls ? ` (scanned ${ls})` : ""}.</div>` : "";
+    // 1.6.2 review: 'nothing found' only after a scan; before one (or while CrewTrac is refused or not set up) it says so
+    const ctSt = (a.crewtrac || {}).state || "";
+    const none = !s || items.length ? "" : ls ? `<div class="k">No unusual A330 flying found (scanned ${ls}).</div>`
+      : ["refused", "not_configured"].includes(ctSt) ? "" : `<div class="k">Not scanned yet.</div>`;
     const btnWhy = can ? "Logs in to CrewTrac once and scans the next 30 days (at most one press every 30 min)."
       : "Off until CrewTrac details that work are saved on the Settings tab.";
     this.shadowRoot.innerHTML = `<style>

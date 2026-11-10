@@ -1,7 +1,8 @@
 // Flight Watcher: the working flight (1.6.2, Release A item 13), from sensor.flight_watcher_working_flight (FW-0067:
 // the leg of the pilot's own FLICA schedule he is working, or works next). A port of the HA "Working Flight" view for
 // the pilot portal, without Hark's parts (release, MEL, NOTAM, GIN), which are the admin's only. With no FLICA
-// schedule read yet it says so, instead of "No trip". Times as the Watcher gives them: local and HST.
+// schedule read yet it says so, instead of "No trip". Times as the Watcher gives them: local and HST. 1.6.2 review: on a
+// trip whose legs are not read yet it says "On H3681: its legs are not read yet." (not "No trip ... right now").
 // Usage: type: custom:flight-watcher-working-card
 class FlightWatcherWorkingCard extends HTMLElement {
   setConfig(c) { this.c = c || {}; }
@@ -27,8 +28,12 @@ class FlightWatcherWorkingCard extends HTMLElement {
     if (!w || ["unknown", "unavailable"].includes(w.state)) {
       body = `<div class="k">Waiting for your Watcher.</div>`;
     } else if (!a.pairing) {
-      const why = read ? "No trip on your schedule right now." : "No working flight yet: your FLICA schedule has not been read.";
-      body = `<div>${this._e(why)}</div>${a.next ? `<div class="k">Next: ${this._e(a.next)}</div>` : ""}`;
+      // 1.6.2 review: a 'next' pairing that has started already (its legs not read yet) is the trip he is on
+      const nm = /^([A-Z]\d{4}[A-Z]?)\b.*?(\d{4}-\d{2}-\d{2})/.exec(String(a.next || ""));
+      const today = new Date(Date.now() - 10 * 3600e3).toISOString().slice(0, 10);
+      const onIt = nm && nm[2] <= today;
+      const why = onIt ? `On ${nm[1]}: its legs are not read yet.` : read ? "No trip on your schedule right now." : "No working flight yet: your FLICA schedule has not been read.";
+      body = `<div>${this._e(why)}</div>${a.next && !onIt ? `<div class="k">Next: ${this._e(a.next)}</div>` : ""}`;
     } else {
       const links = [this._link(a.flightaware_url, "FlightAware"), this._link(a.sigwx_url, "Sig Wx")].filter(Boolean).join(" &middot; ");
       body = `<div class="fl"><b>${this._e(a.flight || a.pairing)}</b> ${this._e(a.origin || "")} &rarr; ${this._e(a.dest || "")}</div>
@@ -41,7 +46,8 @@ class FlightWatcherWorkingCard extends HTMLElement {
         ${links ? `<div class="lk">${links}</div>` : ""}
         ${a.next ? `<div class="k">Next: ${this._e(a.next)}</div>` : ""}`;
     }
-    const upd = a.updated ? `<div class="k u">From your FLICA schedule, updated ${this._e(a.updated)}.</div>` : "";
+    // 1.6.2 review: 'from your FLICA schedule' only once a month of it is on file
+    const upd = a.updated && read ? `<div class="k u">From your FLICA schedule, updated ${this._e(a.updated)}.</div>` : "";
     this.shadowRoot.innerHTML = `<style>
       ha-card{padding:10px 12px;font-size:13px;line-height:1.4}h3{margin:0 0 4px;font-size:15px}
       .k{color:var(--secondary-text-color);font-size:12px}.fl{font-size:16px}.u{margin-top:4px}

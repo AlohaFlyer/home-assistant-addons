@@ -189,3 +189,50 @@ def test_card_warns_generates_once_and_refuses_a_weak_topic():
     assert t not in r["ok"]["payload"] and r["ok"]["after"] == "" and r["ok"]["box"] == ""  # shown once
     assert "Rotate topic" in r["rotate"] and "too easy to guess" in r["rotate"] and "Turn off phone alerts" in r["rotate"]
     assert 'id="ack"' not in r["rotate"]
+
+
+# ---------------------------------------------------------------- 1.6.2 review: the save's confirmation
+CONFIRM_CASES = """
+const ENT = "sensor.flight_watcher_pilot2_settings";
+const st = (state, attrs) => ({ states: { [ENT]: { state, attributes: attrs } }, callService: async () => {} });
+const msg = (c) => c.shadowRoot.getElementById("msg").innerHTML;
+const base = { has_password: true, ntfy: true, has_ntfy_topic: false, pubkey: "x", kid: "k1" };
+const out = {};
+// the export caught 'saved', then the restart's unavailable window, then the reconnect's result ''
+let c = new FlightWatcherSettingsCard();
+c.setConfig({ entity: ENT, topic: "t" });
+c.hass = st("ok", { ...base, at: "A", result: "" });
+c._sentAt = "A";
+c.hass = st("ok", { ...base, has_ntfy_topic: true, ntfy_topic_ok: true, at: "B", result: "saved: ntfy_topic" });
+out.a1 = msg(c);
+c.hass = st("unavailable", {});
+out.a2 = msg(c);
+c.hass = st("ok", { ...base, has_ntfy_topic: true, ntfy_topic_ok: true, at: "C", result: "" });
+out.a3 = msg(c);
+// the realistic run: the Watcher restarts before the export sees 'saved'
+c = new FlightWatcherSettingsCard();
+c.setConfig({ entity: ENT, topic: "t" });
+c.hass = st("ok", { ...base, at: "A", result: "" });
+c._sentAt = "A";
+c.hass = st("unavailable", {});
+out.b1 = msg(c);
+c.hass = st("ok", { ...base, has_ntfy_topic: true, ntfy_topic_ok: true, at: "C",
+                    result: "saved: ntfy_topic (Watcher restarted with them)" });
+out.b2 = msg(c);
+console.log(JSON.stringify(out));
+"""
+
+
+def test_the_save_confirmation_outlives_the_restart():
+    r = _node(CONFIRM_CASES, _portal_copy())
+    assert "saved: ntfy_topic" in r["a1"] and r["a2"] == r["a1"] and r["a3"] == r["a1"]  # ends on the saved line
+    assert "Restarting with your settings" in r["b1"] and "saved: ntfy_topic (Watcher restarted with them)" in r["b2"]
+
+
+def test_the_watcher_says_the_saved_result_again_after_its_restart(portal_pilot, monkeypatch):
+    W, _ = portal_pilot("pilot2")
+    monkeypatch.setattr(W, "restart_later", lambda: None)
+    assert W.settings_cmd(_sealed(W, {"ntfy_topic": TOPIC}))
+    assert W.settings_last_result() == "saved: ntfy_topic (Watcher restarted with them)"
+    assert W.S["settings_last"]["result"] == "saved: ntfy_topic" and TOPIC not in json.dumps(W.S["settings_last"])
+    assert W.settings_last_result(now=W.S["settings_last"]["at"] + W.SETTINGS_LAST_S + 1) == ""  # 10 min only

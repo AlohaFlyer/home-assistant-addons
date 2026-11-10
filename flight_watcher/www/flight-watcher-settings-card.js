@@ -13,7 +13,9 @@
    that anyone who learns the topic can read the alerts on ntfy.sh for about 12 h and asks for a tick; Generate (Rotate
    once one is saved) makes a 32-character random topic (crypto.getRandomValues) shown once, to subscribe to in the ntfy
    app; a typed topic needs at least 24 characters with letters and digits (else nothing is sent, with the reason);
-   Turn off forgets the topic and token. The topic is never shown again after Save (the Watcher keeps set / not set). */
+   Turn off forgets the topic and token. The topic is never shown again after Save (the Watcher keeps set / not set).
+   1.6.2 review: the confirmation outlives the restart a save causes: "Restarting with your settings..." while the Watcher
+   is unavailable, then its "saved: ... (Watcher restarted with them)"; a rebuild keeps the message line. */
 const FW_PORTAL = false;
 const FW_SET_FIELDS = [
   ["username", "FLICA username", false], ["password", "FLICA password", true],
@@ -49,13 +51,21 @@ class FlightWatcherSettingsCard extends HTMLElement {
   getCardSize() { return 6; }
   set hass(h) {
     this._h = h;
-    if (!this._built || this._bkey !== this._buildKey()) this._build();
+    if (!this._built || this._bkey !== this._buildKey()) {
+      // 1.6.2 review: a rebuild keeps the message line (a save's confirmation must outlive the restart it causes)
+      const old = this.shadowRoot && this.shadowRoot.getElementById("msg");
+      const keep = old ? old.innerHTML : "";
+      this._build();
+      if (keep) this.shadowRoot.getElementById("msg").innerHTML = keep;
+    }
     this._status();
   }
   _st() { return (this._h && this._h.states[this._c.entity]) || { attributes: {} }; }
   _ntfyOn() { return (this._st().attributes || {}).ntfy === true; }
   _buildKey() {  // 1.6.2: the ntfy section follows whether a topic is saved (Generate / Rotate, the status line)
     const a = this._st().attributes || {};
+    // 1.6.2 review: while the Watcher restarts (unavailable: no ntfy attribute) the form stays as it is
+    if (this._built && typeof a.ntfy !== "boolean" && this._ntfy) return this._bkey;
     return JSON.stringify([this._ntfyOn(), !!a.has_ntfy_topic, a.ntfy_topic_ok]);
   }
   _fields() { return this._ntfyOn() ? FW_SET_FIELDS.concat(FW_NTFY_FIELDS) : FW_SET_FIELDS; }
@@ -121,7 +131,10 @@ class FlightWatcherSettingsCard extends HTMLElement {
       const b = root.querySelector(`b[data-s="${k}"]`);
       if (b) { b.className = has ? "set" : "unset"; b.textContent = has ? "set" : "not set"; }
     }
-    if (this._sentAt && a.at && a.at !== this._sentAt && a.result) {
+    const down = ["unavailable", "unknown"].includes(this._st().state);
+    if (this._sentAt && down) {  // 1.6.2 review: a save restarts the Watcher; its confirmation comes after
+      root.getElementById("msg").innerHTML = `<span class="ok">Restarting with your settings...</span>`;
+    } else if (this._sentAt && a.at && a.at !== this._sentAt && a.result) {
       const ok = String(a.result).startsWith("saved") || String(a.result).startsWith("nothing");
       root.getElementById("msg").innerHTML = `<span class="${ok ? "ok" : "err"}">${this._e(a.result)}</span>`;
       this._sentAt = null;

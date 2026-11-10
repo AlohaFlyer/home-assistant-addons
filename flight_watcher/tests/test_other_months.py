@@ -55,11 +55,13 @@ def test_other_months_read_and_cached(W):
     assert oct_["totals"] == {"block": "80:10", "days_off": 14} and oct_["src"] == "lookup"
     assert "2026-11" not in W.S["schedule"]  # the current month is the schedule check's job
     n = len(fl.urls)
-    assert W.other_months_check(fl, "2026-11") is True and len(fl.urls) == n + 1  # month list only, October cached
-    # December appears in the list once published
+    # 1.6.2 review: the month list is kept 6 h (S lookup_months) and October is cached: no load at all
+    assert W.other_months_check(fl, "2026-11") is True and len(fl.urls) == n
+    # December appears in the list once published (the next current-month lookup page, or 6 h on, brings the list)
     months3 = ("1026", "1126", "1226")
     pages["bd=1126"] = _page("1126", months3, [("01", "H3647", "PHX", "20261101")])
     pages["bd=1226"] = _page("1226", months3, [("05", "H3700", "SYD", "20261205")])
+    W.S["lookup_months"]["at"] -= 6 * 3600 + 1
     assert W.other_months_check(fl, "2026-11") is True
     assert [i["trip"] for i in W.S["schedule"]["2026-12"]["items"]] == ["H3700"]
 

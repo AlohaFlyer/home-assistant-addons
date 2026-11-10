@@ -11,6 +11,7 @@ function attrs(sen, src) {
   return {
     open: 1, alert: 0, me: { sen, seat: "FO", o75_months: {} }, last: "2026-11-09", checked: "2026-11-10T20:00:00+00:00",
     received: "2026-11-09T03:30:00+00:00", hark_files: false, sen_source: src, missing_sen: 0, missing_line: 1,
+    missing_line_old: 2, versions_from: "2026-11-10",
     days: [
       { date: "2026-11-09", file: "ok", verdicts: [
         v("2026-11-09", "H3601", "POSSIBLE", { missing: "line", why: ["went to #900, junior to you (#500)", "your line is not on file"] }),
@@ -37,7 +38,8 @@ window.sent = [];
     c.setConfig({ entity: "sensor.flight_watcher_james_recall_o75" });
     c._m = "2026-11";
     document.body.appendChild(c);
-    c.hass = { states: { "sensor.flight_watcher_james_recall_o75": { state: "1", last_updated: "2026-11-10T20:00:01+00:00", attributes: a } },
+    c.hass = { states: { "sensor.flight_watcher_james_recall_o75": { state: "1", last_updated: "2026-11-10T20:00:01+00:00", attributes: a },
+                         "sensor.flight_watcher_james_state": { state: "idle", attributes: { role: "pilot" } } },
                callService: (d, s, data) => window.sent.push(data) };
     c.shadowRoot.querySelectorAll("details.day").forEach((d) => { d.open = true; });
     const text = c.shadowRoot.querySelector("ha-card").innerText;
@@ -49,7 +51,9 @@ window.sent = [];
       box.onchange();
       tries[val] = window.sent.map((x) => x.payload);
     }
-    return { text, tries, attrs: { min: box.min, max: box.max, mode: box.inputMode }, wide: document.documentElement.scrollWidth };
+    const nav = [...c.shadowRoot.querySelectorAll("[data-m]")].map((x) => [x.tagName, Math.round(x.getBoundingClientRect().height), Math.round(x.getBoundingClientRect().width)]);
+    return { text, tries, attrs: { min: box.min, max: box.max, mode: box.inputMode }, wide: document.documentElement.scrollWidth,
+             nav, paste: !!c.shadowRoot.querySelector("[data-paste]") };
   }, [attrs(sen, src)]);
   const out = { nosen: await run(null, ""), award: await run(512, "award 2026-11") };
   await b.close();

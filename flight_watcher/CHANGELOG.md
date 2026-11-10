@@ -159,6 +159,78 @@ Release A, group 3 (cards and layout, shipped by the Watcher). Built, not deploy
   cards and the pilot card); `test_portal_bundle`, `test_portal_events` and `test_wwwfiles` follow the changes above.
   A mutation check (34 mutations, one per change) killed every one.
 
+Release A review fixes (the reviewers' findings on the committed Release A). Built, not deployed.
+
+- Account safety, FLICA login: a refused FLICA login (the form came back, no load error) is kept as a hash of the
+  details (S `flica_refused`, never the values); while stopped_login_failed holds those same details, Re-arm logs in no
+  more and says "FLICA refused these login details at HH:MM HST; save new ones on the Settings tab". New details saved
+  in Settings lift the block (and the login floor); the same ones saved again give one more try, as CrewTrac's block
+  (1.6.1). On a pilot, FLICA logins are at least 10 min apart (`LOGIN_MIN_GAP_S`) whatever asks (Re-arm, a re-login
+  back-off, the end of a yield): the wait shows in the note. A pilot's un-pause checks with the session he has and logs
+  in only if that check finds it gone. The admin's Re-arm and un-pause are unchanged.
+- A pilot's checks start at least 120 s apart whatever wakes the loop (`PILOT_CHECK_FLOOR_S`): a hunt change, an
+  un-pause or Check now inside that time wakes it at the floor instead (`WAKE_DUE`, one wake); his Check now gap is 120 s
+  (the admin's stays 10 s); Pause on still wakes at once (it loads nothing). His wait between checks is jittered upward
+  from the floor only (120 to 156 s at 120 s): never under it. The admin's jitter is unchanged.
+- The gate gives up a waiting load when Pause goes on or the Watcher stops during a check (`GateAbort`): the check ends
+  with nothing more loaded. On a pilot the reads that may be left out (Tradeboard, reserve grid, request lists, crew
+  index, his own trips, pot details, pickups) skip a load that would wait for his budget (`GateSkip`, `GATE_KEEP` 4
+  free) and never take the pot's share of the hour (`opt_cap`: 100 less the pot's pages times his checks an hour, his
+  schedule and one check's start); the main loop starts a check only once the loads it needs fit (`check_tokens`), so a
+  hunting check never waits inside the gate. A pilot's lookup still waits for his budget. Simulated 3 h of hunting at
+  120 s: about 86 loads an hour, about 51 of them the pot, no wait inside a check.
+- A CAPTCHA page on the main menu (with no mobile pot to read), on the mobile pot, the open time pot or the close-in
+  folder stops the Watcher ("FLICA showed a CAPTCHA page on the main menu (never answered); press Re-arm after you have
+  opened FLICA yourself"): no new login is used to get past it (it was taken for an expired session, up to 6 logins).
+  The admin's menu CAPTCHA with a mobile pot that reads still falls back to it, as before.
+- Schedule read: the mobile shape that worked is kept apart (S `sched_shape_mobile`) and tried second, so one hiccup that
+  let Schedule Lookup answer never loses the admin's BCID page. One read loads at most 2 pages in all: the follow-on
+  reads (FLICA's totals, the other months, last month) use what the current month left, the rest waits for the next due
+  read (stored totals are kept meanwhile); the Schedule Lookup month list is kept 6 h (S `lookup_months`). A listed
+  month that fails waits 1 h, 2, 4, at most 6 h (S `sched_other_fail`), and a failing other-months pass is counted on
+  the lookup path once per read unless another lookup page of that read was a schedule; a pass that missed a month waits
+  like the mobile one (S `sched_prev_at`).
+- Breakers: Tradeboard, pairing and reserve grid pages are judged by what their parsers know (`page_verdict`): a page
+  none knows (FLICA's "Service Temporarily Unavailable") stops the path for 30 min; the asked pairing's own page with
+  nothing readable is a failed read (3 in a row stop); a good page closes the breaker. The request list still publishes
+  while the Tradeboard path is stopped.
+- Captures and logs: a pilot's captures are masked by the page's structure too: runs of capitalized words that are no
+  page words ("JANE DOE", "Jane Doe", "DE LA CRUZ, MARIA"), every person argument of a Tradeboard row (flica, e-mail,
+  phone, first, last, comments) and any JS string literal that is no known token, e-mail addresses, 7 to 15 digit phone
+  numbers, and 3 to 7 digits after Emp; the Tradeboard posters and trade employee numbers join the masked strings. On a
+  pilot every log line is masked the same way (`PilotLogMask`), and the raw page dumps (after login, mobile pot probe,
+  detail probe, schedule not parsed, Tradeboard, reserve grid JSON) only go in while his captures are on (else their
+  size). Once at start (DB `caps_cleanup_v`): the admin deletes what 1.6.1's pilot code wrote into his captures folder
+  (leftmenu, scheduledetail_*, cmschedules_prompt, ctweb_*, cmschedule_*; his own come back with his next scans); each
+  pilot deletes his unmasked last_login.png, makes his captures folder 0700 and prunes it; only a count is logged.
+  `prune()` never follows a symlinked pilot folder.
+- Pilot name lookup: a last name matches whole; its start only from 5 letters on (3-letter prefixes listed the roster);
+  at most 20 name queries an hour (a status line says when the next may run); even one match is a pick list, so an
+  employee number is used and shown only after the pick. The search placeholder on a pilot: "Last name (3+ letters),
+  Last, First, or employee #".
+- Cards and layout: no Hunt interval tile on a pilot's Settings tab (a line says "Hunt mode checks every 120 s (the
+  fastest for a pilot)"; contract 1 sends 5 to 90 s only), and a clamped frequency's portal result says "set to 120 s,
+  the fastest this Watcher allows"; no State, Last check or Next check rows under the clock card. The clock card shows
+  the gate's and breakers' note while idle or hunting and, during a budget wait, "Waiting for the FLICA budget until
+  HH:MM HST" instead of "Stuck. Press Re-arm". Settings: a save's result is said again for 10 min after the restart it
+  causes ("saved: ... (Watcher restarted with them)", S `settings_last`); the card shows "Restarting with your
+  settings..." meanwhile and keeps its message across a rebuild. Schedule card: with no longevity year and no real DOH
+  no rate is used (the placeholder DOH gave year 12): the banner asks for it, the pay figures and Improved-Pay-Gross wait
+  for it; a pilot's unset taxes are named in the banner too; the RO+15% toggle inside the Pay-Gross box can be tapped;
+  the award-only view labels its totals check "award", not "FLICA". Pilot card: a lookup seen on a fresh page open is
+  timed from the sensor's own time and promises no past next-check time. Working flight: "On H3681: its legs are not
+  read yet." on a trip whose legs are not read, and "From your FLICA schedule" only once a month is on file. Charters:
+  "Not scanned yet." before a scan, never "No unusual A330 flying found". Recall/O75: rows before the first schedule
+  version on file say the line as held that day is not on file (versions start <date>), not "until the Watcher has
+  read it" (`missing_line_old`, `versions_from`); the month arrows are 44 px buttons; the raw JSON paste tool is the
+  admin's only. Help: Scan FLICA now reads the schedule too unless a schedule read is backing off.
+- Tests: `test_release_a_review.py` (new: the main loop with a fake browser for Re-arm, un-pause and toggles, the
+  gate's abort and skip, a 3 h pilot simulation, CAPTCHA stops, the schedule shape and 2-load cap, the judged
+  breakers), and new cases in `test_release_a_captures.py`, `test_release_a_lookup.py`, `test_release_a_cards.py`,
+  `test_release_a_ntfy.py`, `test_release_a_schedule_card.py` and `test_release_a_recall.py`; `test_release_a_flica`,
+  `test_other_months`, `test_watcher_state` and `test_cards` follow the changes above. Each new case fails on the
+  committed Release A.
+
 ## 1.6.1
 
 Stage 0: stop retrying a login CrewTrac refused, and stop reading FLICA's schedule page every loop when it cannot be

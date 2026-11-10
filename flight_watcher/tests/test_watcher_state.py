@@ -111,14 +111,23 @@ def test_current_month_gets_block_and_credit_from_schedule_lookup(W):
     assert len(look) == 1, fl.urls  # other_months_check reuses the page the totals read loaded
     assert SUB.safe_get(look[0]) and SM.safe_get(look[0]) and "cmschedules.cgi" in look[0]
     assert all(1.5 <= s <= 3.5 for s in W.SLEEPS[-2:]) and len([s for s in W.SLEEPS if 1.5 <= s <= 3.5]) >= 2
+    # 1.6.2 review: a read loads at most 2 pages (the mobile page and the totals): October waits for the next read,
+    # which loads it (from the month list the totals page brought) and keeps November's stored totals for that read
+    assert len(fl.urls) == 2 and "2026-10" not in W.S["schedule"]
+    n = len(fl.urls)
+    _read(W, fl)
+    assert len(fl.urls) - n == 2 and "bd=1026" in fl.urls[-1]
     assert W.S["schedule"]["2026-10"]["totals"]["credit"] == "78:17"  # October still via the lookup
+    assert W.S["schedule"]["2026-11"]["totals"]["credit"] == "105:47"
     sched = json.loads(W.MQ.last("flight_watcher/schedule"))
     assert sched["months"]["2026-11"]["totals"]["block"] == "96:16"
 
 
 def test_schedule_versions_record_a_credit_change(W):
     W.S["own_emp"] = "10008"
-    _read(W, FakeFl(_pages()))
+    fl = FakeFl(_pages())
+    _read(W, fl)
+    _read(W, fl)  # 1.6.2 review: the second read loads October (2 loads a read); November's totals are kept
     assert VER.update(W.DB, {"2026-11": W.S["schedule"]["2026-11"]}, {}, "2026-11-06T18:00:00+00:00")
     _read(W, FakeFl(_pages(nov_credit="106.00")))
     made = VER.update(W.DB, {"2026-11": W.S["schedule"]["2026-11"]}, {}, "2026-11-06T18:30:00+00:00")

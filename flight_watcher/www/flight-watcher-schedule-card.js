@@ -32,7 +32,7 @@ const PAY_PREFS = ["input_number.flight_watcher_federal_tax_pct", "input_number.
 const PAY_PREF_LABEL = { [PAY_PREFS[0]]: "federal tax", [PAY_PREFS[1]]: "state tax", [PAY_PREFS[2]]: "longevity year" };
 const dohYear = (iso, doh) => { const [a, b] = [doh || DOH, iso].map((s) => String(s).slice(0, 10).split("-").map(Number)); return b[0] - a[0] - (b[1] < a[1] || (b[1] === a[1] && b[2] < a[2]) ? 1 : 0) + 1; };
 const hrs = (t) => { const mm = /^(\d+):(\d{2})$/.exec(String(t || "").trim()); return mm ? Number(mm[1]) + Number(mm[2]) / 60 : null; };
-const usd = (v) => (v == null ? "" : "$" + Math.round(v).toLocaleString("en-US"));
+const usd = (v) => (v == null || Number.isNaN(v) ? "" : "$" + Math.round(v).toLocaleString("en-US"));  // 1.6.2 review: no rate, no figure
 
 // FW-0060: a sensor's full list from its file under /local/ (<url><file_key>.json, the pilot's own www folder). Fetched
 // again whenever the sensor's rev changes; null until it is in (or when the sensor has no key), so the caller falls
@@ -210,7 +210,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/trade/set", payload: JSON.stringify({ key: tp.dataset.k }) });
           return;
         }
-        const ib = e.target.closest(".info"); if (ib) { ib.style.display = "none"; return; }
+        // 1.6.2 review: the RO+15% toggle sits inside the Pay-Gross info box, so it is read before a tap there closes it
         const er = e.target.closest(".er");
         if (er && er.dataset.k) {
           const cur = String((this._h.states["input_text.flight_watcher_er_trips"] || {}).state || "").split(",").filter(Boolean);
@@ -219,6 +219,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
           this._h.callService("input_text", "set_value", { entity_id: "input_text.flight_watcher_er_trips", value: next.join(",") });
           return;
         }
+        const ib = e.target.closest(".info"); if (ib) { ib.style.display = "none"; return; }
         const nv = e.target.closest(".nav");
         if (nv) {
           const d = parseInt(nv.dataset.nav, 10), ent = { entity_id: "input_number.flight_watcher_month_offset" };
@@ -248,8 +249,12 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const today = new Date(Date.now() - 10 * H).toISOString().slice(0, 10);
     const doh = this._doh();
     const admin = this._isAdmin();  // FW-0048, FW-0063: the drop mark (auto drop) for the HA owner on the admin's (Ryan's) card only
-    const lyr = num("input_number.flight_watcher_longevity_year", Math.min(12, dohYear(today, doh)));
-    const RATE = rateFor(lyr, today);
+    // 1.6.2 review: no longevity year set and no real DOH: no rate at all (the placeholder DOH gave year 12), the
+    // banner asks for it and no Improved-Pay-Gross goes out until it is set
+    const noYear = isNaN(parseFloat((S["input_number.flight_watcher_longevity_year"] || {}).state)) && !doh;
+    const lyr = noYear ? null : num("input_number.flight_watcher_longevity_year", Math.min(12, dohYear(today, doh)));
+    const RATE = noYear ? NaN : rateFor(lyr, today);
+    const rateTxt = noYear ? "your rate (set your longevity year)" : `$${RATE.toFixed(2)}`;
     const erOv = String((S["input_text.flight_watcher_er_trips"] || {}).state || "").split(",").filter(Boolean);
     const erOn = (k, lay, n) => erOv.includes("-" + k) ? false : erOv.includes("+" + k) ? true : (n ? n >= 4 : /\bSIN\b/.test(lay || ""));
     // v51: pilots on the pairing from the package crew line (CA01FO01RO01 = 3 = IRO crew; CA02FO02 = 4 = Extended Range crew, PWA 2.A.25)
@@ -592,7 +597,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         if (trip && trip !== "VAC") tripPay[trip + "|" + d] = tripFull(hrs(bcsAll[1]) != null ? hrs(bcsAll[1]) : hx(pkr.credit), hrs(bcsAll[0]) != null ? hrs(bcsAll[0]) : hx(pkr.block), pkr.crew, l, trip + "|" + d, seat);
         if (trip && trip !== "VAC" && d.slice(0, 7) === key) { sum.blk += bH || 0; sum.cr += cH || 0; sum.soft += hrs(bcs[2]) || 0; sum.gross += total || 0; sum.net += net || 0; }
         if (trip === "VAC" && d.slice(0, 7) === key) { sum.vacDays += 1; sum.vac += VAC_H; sum.gross += VAC_H * RATE; sum.net += VAC_H * RATE * (1 - (fed + stt) / 100); }
-        const lines = gross != null ? [`Pay-Credit ${usd(gross)} (${bcs[1]} x $${RATE.toFixed(2)})`]
+        const lines = gross != null ? [`Pay-Credit ${usd(gross)} (${bcs[1]} x ${rateTxt})`]
           .concat(seat === "RO" ? [`IRO override ${usd(roV)} (${bcs[0]} block x $${IRO_OVERRIDE.toFixed(2)}, PWA 4.O.1.a)`] : (roV ? [`IRO crew FO override ${usd(roV)} (${bcs[0]} block x $3.00, PWA 4.O.1.a)`] : []))
           .concat(erIs ? [`Extended Range type-rated FO +15% ${usd(erV)} (PWA 4.O.1.b)`] : []) : [];
         const payT = lines.join("\n");
@@ -608,7 +613,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
       const tt = mon.totals || {};
       const fl = (v) => { const m = /^(\d+)[.:](\d{2})$/.exec(String(v || "")); return m ? parseInt(m[1], 10) + parseInt(m[2], 10) / 60 : null; };
       const fBlk = fl(tt.block), fCr = fl(tt.credit), crAll = sum.cr + sum.vac;
-      const chk = (mine, flica) => flica == null ? "" : Math.abs(mine - flica) < 1 / 60 ? ` <span class="okc" title="matches FLICA">&#10003;</span>` : ` <span class="bad" title="FLICA shows ${hm(flica)}">FLICA ${hm(flica)}</span>`;
+      // 1.6.2 review: in the award-only view the figures checked against come from the award file, not FLICA
+      const srcW = awd0 ? "award" : "FLICA", srcT = awd0 ? "the award file shows" : "FLICA shows";
+      const chk = (mine, flica) => flica == null ? "" : Math.abs(mine - flica) < 1 / 60 ? ` <span class="okc" title="matches ${awd0 ? "the award file" : "FLICA"}">&#10003;</span>` : ` <span class="bad" title="${srcT} ${hm(flica)}">${srcW} ${hm(flica)}</span>`;
       const bAv = 98 - (fBlk != null ? fBlk : sum.blk);
       const n30 = need30 ? `<span class="${need30 - nowHst < 48 * H ? "bad" : ""}" title="The first report after which you need 30 h off first (FAR 117.25(b)), from the schedule on file">${this._d(need30).slice(5).replace("-", "/")} ${this._hm(need30)}</span>` : `<span title="FAR 117.25(b) met for any report through the end of the schedule on file">end of sched</span>`;
       // FW-0009 (Ryan, Nov 6): three groups (hours, pay, days) that wrap as units; Pay-Gross and Pay-Net share one
@@ -617,16 +624,16 @@ class FlightWatcherScheduleCard extends HTMLElement {
         .map(([k, v]) => `<span class="ti"><span class="k">${k}</span> ${v}</span>`).join(""); return s ? `<span class="tgrp ${cls}">${s}</span>` : ""; };
       const tot = tgrp("thrs", [["Credit", hm(crAll) + chk(crAll, fCr)], ["Block", hm(sum.blk) + chk(sum.blk, fBlk)], ["Block Avail", `<span class="${bAv <= 0 ? "bad" : ""}" title="98:00 bid-month block cap (crew scheduling) minus FLICA's bid-period Block">${bAv < 0 ? "-" + hm(-bAv) : hm(bAv)}</span>`], ["Soft", hm(sum.soft)],
         ["Vacation", sum.vacDays ? `${hm(sum.vac)} <span class="k">(${sum.vacDays} d x ${hm(VAC_H)})</span>` : ""]]) +
-        tgrp("tpay", [["Pay-Gross", usd(sum.gross)], ["Pay-Net", usd(sum.net)]]) +
+        tgrp("tpay", noYear ? [["Pay", "set your longevity year in Pay settings"]] : [["Pay-Gross", usd(sum.gross)], ["Pay-Net", usd(sum.net)]]) +
         tgrp("tdays", [["Days Off", tt.days_off == null ? "" : this._esc(tt.days_off)], ["Need 30 h off by", n30]]);
       if (this._idea && this._idea.key === key) {
         const r = ideasFor(this._idea.d, this._idea.trip);
         const md = (iso) => `${MON3[parseInt(iso.slice(5, 7), 10) - 1].slice(0, 1)}${MON3[parseInt(iso.slice(5, 7), 10) - 1].slice(1).toLowerCase()} ${parseInt(iso.slice(8), 10)}`;
         if (r) {
-          const rowsI = r.list.slice(0, 25).map((x) => `<tr class="${x.src ? "on" : "off"}"><td><b>${this._esc(x.p.id)}</b></td><td>${md(x.sd)}${x.end !== x.sd ? " - " + md(x.end) : ""}</td><td>${this._esc(x.lay || x.p.route)}</td><td class="t">${(x.p.relDays || 0) + 1}</td><td class="t">${this._esc(String(x.p.credit).replace("h", ":"))}</td><td class="t">${usd(x.pay)}</td><td class="t ${x.delta >= 0 ? "up" : "dn"}">${x.delta >= 0 ? "+" : "-"}${usd(Math.abs(x.delta))}</td><td>${x.src === "O" ? "Open time" : x.src === "T" ? "Tradeboard" : "not open now"}</td><td class="k">R ${this._esc(x.p.report)} ${x.p.crew ? "· " + this._esc(x.p.crew) : ""}${x.rest ? " · " + x.rest : ""}</td></tr>`).join("");
+          const rowsI = r.list.slice(0, 25).map((x) => `<tr class="${x.src ? "on" : "off"}"><td><b>${this._esc(x.p.id)}</b></td><td>${md(x.sd)}${x.end !== x.sd ? " - " + md(x.end) : ""}</td><td>${this._esc(x.lay || x.p.route)}</td><td class="t">${(x.p.relDays || 0) + 1}</td><td class="t">${this._esc(String(x.p.credit).replace("h", ":"))}</td><td class="t">${usd(x.pay)}</td><td class="t ${x.delta >= 0 ? "up" : "dn"}">${Number.isNaN(x.delta) ? "" : (x.delta >= 0 ? "+" : "-") + usd(Math.abs(x.delta))}</td><td>${x.src === "O" ? "Open time" : x.src === "T" ? "Tradeboard" : "not open now"}</td><td class="k">R ${this._esc(x.p.report)} ${x.p.crew ? "· " + this._esc(x.p.crew) : ""}${x.rest ? " · " + x.rest : ""}</td></tr>`).join("");
           panel = `<div class="ipanel"><div class="ihd"><b>${r.o ? `Swap ideas for ${this._esc(r.o.it.trip)} ${md(r.o.it.start)} (yours ${usd(r.cur)})` : `Pick-up ideas starting ${md(this._idea.d)}`}</b> <span class="k">window ${md(r.a)} - ${md(r.b)}: days you have not blocked and have nothing else on</span><span class="ix" title="Close">&#10005;</span></div>` +
             (rowsI ? `<div class="wrap"><table class="itab"><tr><th>Trip</th><th>Dates</th><th>Layover</th><th>Days</th><th>Credit</th><th>Pay-Gross</th><th>${r.o ? "vs yours" : "adds"}</th><th>Where</th><th>Report · crew · rest</th></tr>${rowsI}</table></div>` : `<div class="k">Nothing fits that window.</div>`) +
-            `<div class="k">Pay-Gross = package credit x $${RATE.toFixed(2)} (min 5:00 per calendar day, PWA 4.C.3) + IRO crew FO $3.00 per block hour or Extended Range type-rated FO +15% (PWA 4.O.1). Rest: 11 h at domicile (PWA 10.E.1.a). FAR 117 is not checked here: see the FAR columns once it is on your line. Swaps go through FLICA; nothing is filed from here.</div></div>`;
+            `<div class="k">Pay-Gross = package credit x ${rateTxt} (min 5:00 per calendar day, PWA 4.C.3) + IRO crew FO $3.00 per block hour or Extended Range type-rated FO +15% (PWA 4.O.1). Rest: 11 h at domicile (PWA 10.E.1.a). FAR 117 is not checked here: see the FAR columns once it is on your line. Swaps go through FLICA; nothing is filed from here.</div></div>`;
         }
       }
       // versions bar: Awarded-Pay-Gross (version .001, the awarded line) and Improved-Pay-Gross (current minus awarded)
@@ -638,28 +645,31 @@ class FlightWatcherScheduleCard extends HTMLElement {
         // FW-0008 (Ryan, Nov 6): two groups that wrap as units: the version arrows, then Awarded-Pay-Gross with
         // Improved-Pay-Gross (on an iPhone their own line); a label never wraps away from its value
         vhtml = `<div class="vbar"><span class="vg"><span class="nw"><span class="vb" data-v="prev" title="Older version">&#9664;</span> <b>v${this._esc(shown.ver)}</b> <span class="vb" data-v="next" title="Newer version">&#9654;</span> <span class="vb${isCur ? " here" : ""}" data-v="home" title="Current version">&#127968;</span></span> <span class="k">${isCur ? `<span class="nw">${vl.length} versions (current)</span>` : `${vl.length} versions · viewing <span class="nw">${this._esc((shown.at || "").slice(0, 10))},</span> <span class="nw">Pay-Gross ${usd(cg)}</span>`}</span></span>` +
+          (noYear ? `<span class="vg vpay"><span class="k">Pay: set your longevity year in Pay settings</span></span>` :
           `<span class="vg vpay"><span class="nw"><span class="k">Awarded-Pay-Gross</span> <b>${usd(awd)}</b> <span class="k">(v${this._esc(vl[0].ver)})</span></span>` +
-          `<span class="nw"><span class="k">Improved-Pay-Gross</span> <b class="${imp >= 0 ? "up" : "dn"}">${imp >= 0 ? "+" : "-"}${usd(Math.abs(imp))}</b></span></span>` +
+          `<span class="nw"><span class="k">Improved-Pay-Gross</span> <b class="${imp >= 0 ? "up" : "dn"}">${imp >= 0 ? "+" : "-"}${usd(Math.abs(imp))}</b></span></span>`) +
           `</div>`;
         const chg = (shown.changes || []).filter((c) => !/ \? -> /.test(c));
         chtml = `<details class="chg"><summary>Changes in v${this._esc(shown.ver)}${shown.at ? " (" + this._esc(String(shown.at).slice(0, 10)) + ")" : ""}</summary>${chg.length ? "<ul>" + chg.map((c) => "<li>" + this._esc(c) + "</li>").join("") + "</ul>" : "<div>No trip or pay changes (first reads of seat or times only).</div>"}</details>`;
         const sig = `${key}|${Math.round(awd)}|${Math.round(curG)}|${vl[vl.length - 1].ver}`;
         this._impSig = this._impSig || {};
-        if (this._impSig[key] !== sig && this._h) {
+        if (this._impSig[key] !== sig && this._h && !noYear) {
           this._impSig[key] = sig;
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/improved/set", payload: JSON.stringify({ month: key, awarded: Math.round(awd * 100) / 100, current: Math.round(curG * 100) / 100, ver: vl[vl.length - 1].ver, awarded_ver: vl[0].ver }) });
         }
       }
       const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th>Block</th><th>Credit</th><th>Soft</th><th title="Credit pay + RO + RO+15%; hover or tap for the breakdown">Pay-Gross</th><th>Pay-Net</th><th title="Reserve grid net reserves">Res Grid</th><th title="Check MM/DD = a 30 h break falls in the 168 h before a report that day and ended on MM/DD, FAR 117.25(b). The teal edge on a day marks the break itself. Hover for the hours and 'covered until'.">FAR-30/7</th><th title="Block flown in the 672 h ending that day, FAR 117.23(b)(1)">FAR-100/672</th><th title="100:00 minus the busiest 672 h window the day falls in, back and forward">Room</th><th title="Earliest report for another trip">Legal next</th><th>Open</th><th title="Tap the airplane: swap or pick-up ideas for that day, with the Pay-Gross difference">Ideas</th></tr>`;
-      body = `<div class="wrap"><table class="cal">${head}${rows}</table></div><div class="tot" title="${this._esc(`${MONTHS[m]} totals: flying credited to the month each segment originates (PWA 4.A) plus vacation days at ${hm(VAC_H)} (PWA 6.J). Pay at $${RATE.toFixed(2)}/credit h incl. RO and RO+15% where on; net after the tax settings. Checked against FLICA's Block and Credit.`)}">${tot}</div>`;
+      body = `<div class="wrap"><table class="cal">${head}${rows}</table></div><div class="tot" title="${this._esc(`${MONTHS[m]} totals: flying credited to the month each segment originates (PWA 4.A) plus vacation days at ${hm(VAC_H)} (PWA 6.J). Pay at ${rateTxt}/credit h incl. RO and RO+15% where on; net after the tax settings. Checked against FLICA's Block and Credit.`)}">${tot}</div>`;
     }
     const upd = awd0 ? "" : st && st.attributes ? (st.attributes.updated || "") : "";
     // 1.6.2: the award label and the read status sit above the grid (or the 'No schedule' line)
     // 1.6.2 (item 12): pay settings copied from never-set helpers (0 %, 0 %, year 1) are flagged, never silently used
-    const unconf = PAY_PREFS.filter((e) => ((S[e] || {}).attributes || {}).unconfirmed === true);
+    const unconf = PAY_PREFS.filter((e) => ((S[e] || {}).attributes || {}).unconfirmed === true ||
+      (e === PAY_PREFS[2] && noYear) || (e !== PAY_PREFS[2] && this._role() !== "admin" && isNaN(parseFloat((S[e] || {}).state))));
     const shead = (awd0 ? `<div class="awl">Awarded line from the award file. FLICA schedule not read yet.</div>` : "") +
       (rsLine ? `<div class="rsl">${this._esc(rsLine)}</div>` : "") +
-      (unconf.length ? `<div class="unc ubn">Set your tax and longevity in Pay settings (below): ${unconf.map((e) => PAY_PREF_LABEL[e]).join(", ")} ${unconf.length > 1 ? "are" : "is"} not set yet; pay is estimated with them as shown.</div>` : "");
+      (unconf.length ? `<div class="unc ubn">Set your tax and longevity in Pay settings (below): ${unconf.map((e) => PAY_PREF_LABEL[e]).join(", ")} ${unconf.length > 1 ? "are" : "is"} not set yet; ${noYear ? "no pay is figured until your longevity year is set" : "pay is estimated with them as shown"}.</div>` : "");
+    const flagged = PAY_PREFS.filter((e) => ((S[e] || {}).attributes || {}).unconfirmed === true);  // values to keep
     const sel = (lo, hi, step, cur, suf) => { const o = []; for (let v = lo; v <= hi + 1e-9; v += step) { const r = Math.round(v * 100) / 100; o.push(`<option value="${r}"${Math.abs(r - cur) < 1e-9 ? " selected" : ""}>${r}${suf}</option>`); } return o.join(""); };
     this.shadowRoot.innerHTML = `<style>
       ha-card{padding:10px 8px 12px;font-size:12.5px;line-height:1.25;box-sizing:border-box}
@@ -759,7 +769,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     <tr><td>Layover</td><td>Layover city. <b>Bold</b> = turn, no layover. Rel = release time (block-in + 15 min).</td></tr>
     <tr><td>Block / Credit / Soft</td><td>Your trip's block, credit and soft time (credit minus block), from FLICA's pairing page. Purple = this month's share only; the rest pays next month (PWA 4.A), hover for the split.</td></tr>
     <tr><td>Totals</td><td>Month totals incl. vacation at ${hm(VAC_H)} a day (PWA 6.J); &#10003; = matches FLICA's figure, red = FLICA differs.</td></tr>
-    <tr><td>Pay-Gross / Pay-Net</td><td>Gross = credit x $${RATE.toFixed(2)} + RO + RO+15%; hover or tap it for the breakdown. Net = gross after the tax settings below.</td></tr>
+    <tr><td>Pay-Gross / Pay-Net</td><td>Gross = credit x ${rateTxt} + RO + RO+15%; hover or tap it for the breakdown. Net = gross after the tax settings below.</td></tr>
     <tr><td>Teal edge</td><td>Thin teal mark left of the day = that day falls inside a break of 30+ consecutive hours free of all duty (FAR 117.25(b)), between duty periods, a long layover included. Hover the date for the break's start, end and 'covers reports until'. The FAR-30/7 column gives the date that counts: &#10003; MM/DD = the day the qualifying break ended (on a day still inside a break, usually that day's own date).</td></tr>
     <tr><td>RO / RO+15%</td><td>Add-ons inside Pay-Gross. RO = only on trips where you are listed RO: block x $${IRO_OVERRIDE.toFixed(2)} (PWA 4.O.1.a). RO+15% = Extended Range crew, 4 pilots, type-rated FO: 15% of pay (PWA 4.O.1.b); on by itself for SIN, tap Pay-Gross to switch any trip on or off.</td></tr>
     <tr><td>Res Grid</td><td>FLICA net reserves. <span class="g green">Green</span> = drop or swap off this day OK. <span class="g red">Red</span> = add only.</td></tr>
@@ -772,9 +782,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
     <details class="set"${unconf.length ? " open" : ""}><summary>Pay settings${unconf.length ? " (not set yet)" : ""}</summary>
       <span>Federal tax <select data-e="input_number.flight_watcher_federal_tax_pct">${sel(0, 45, 0.5, fed, "%")}</select></span>
       <span>State tax <select data-e="input_number.flight_watcher_state_tax_pct">${sel(0, 15, 0.25, stt, "%")}</select></span>
-      <span>Longevity year <select data-e="input_number.flight_watcher_longevity_year">${sel(1, 12, 1, lyr, "")}</select></span>
-      ${unconf.length ? `<div class="r unc">These came from settings that were never set. Pick your own, or <button type="button" class="keep">Keep these</button></div>` : ""}
-      <div class="r">Rate $${RATE.toFixed(2)}/credit h: A330 PAX FO, PWA 3.D.6, year ${lyr} ${doh ? `(DOH ${doh} = year ${dohYear(today, doh)}, table caps at 12)` : "(set your longevity year here; table caps at 12)"}, effective ${RATE_DATES.filter((x) => x <= today).pop()}. Net = gross less federal and state only; estimate.</div>
+      <span>Longevity year <select data-e="input_number.flight_watcher_longevity_year">${noYear ? `<option value="" selected disabled>set</option>` : ""}${sel(1, 12, 1, lyr, "")}</select></span>
+      ${flagged.length ? `<div class="r unc">These came from settings that were never set. Pick your own, or <button type="button" class="keep">Keep these</button></div>` : ""}
+      <div class="r">${noYear ? "Rate: set your longevity year here (A330 PAX FO, PWA 3.D.6; the table caps at 12). No pay is figured until it is set." : `Rate $${RATE.toFixed(2)}/credit h: A330 PAX FO, PWA 3.D.6, year ${lyr} ${doh ? `(DOH ${doh} = year ${dohYear(today, doh)}, table caps at 12)` : "(set your longevity year here; table caps at 12)"}, effective ${RATE_DATES.filter((x) => x <= today).pop()}. Net = gross less federal and state only; estimate.`}</div>
     </details>${chtml}</ha-card>`;
     this._wire();
   }

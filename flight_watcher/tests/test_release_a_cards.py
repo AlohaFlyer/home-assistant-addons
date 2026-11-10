@@ -414,3 +414,93 @@ def test_pilot_card_read_time_is_hst_on_any_phone():
       return c.shadowRoot.querySelector('.hd .u').textContent; })()"""
     got = _run([("p", js)], src, tz="UTC")["p"]
     assert "read Nov 10 01:40 HST" in got
+
+
+# ---------------------------------------------------------------- 1.6.2 review
+def test_clock_card_shows_the_budget_note_and_no_stuck_during_a_budget_wait():
+    src = PT.portal_card(_src("clock-card"))
+    note = ("FLICA budget: 100 page loads in the last hour; the next one waits until 01:44 HST; FLICA tradeboard read "
+            "paused until 02:00 HST: tradeboard: unknown page")
+    wait = _clock_states(hs="120", hmin=120, hmax=300, nmin=2)
+    wait["sensor.flight_watcher_state"] = _st("hunting", {"note": note, "role": "pilot"})
+    wait["sensor.flight_watcher_last_check"] = _st("2026-11-10T11:18:51+00:00")  # 11 min 9 s old
+    wait["sensor.flight_watcher_next_check"] = _st("2026-11-10T11:44:00+00:00")  # the gate's wait, ahead
+    brk = _clock_states(hs="120", hmin=120, hmax=300, nmin=2)
+    brk["sensor.flight_watcher_state"] = _st("hunting", {"note": "FLICA grid read paused until 02:00 HST: x",
+                                                         "role": "pilot"})
+    login = _clock_states()
+    login["sensor.flight_watcher_state"] = _st("hunting", {"note": "logged in (re-arm)", "role": "pilot"})
+    got = _run([("wait", f"({CLOCK_JS})({json.dumps(wait)})"), ("brk", f"({CLOCK_JS})({json.dumps(brk)})"),
+                ("login", f"({CLOCK_JS})({json.dumps(login)})")], src)
+    w = got["wait"]
+    assert w["st"] == "Waiting." and w["msg"].startswith("Waiting for the FLICA budget until 01:44 HST.")
+    assert "tradeboard read paused until 02:00 HST" in w["msg"] and "Stuck" not in w["msg"] and not w["rearm"]
+    assert got["brk"]["st"] == "Hunting." and "FLICA grid read paused until 02:00 HST" in got["brk"]["msg"]
+    assert got["login"]["msg"] == "Checking about every 40 s."  # a login note is no news
+
+
+def test_the_settings_tab_offers_no_frequency_the_portal_or_the_watcher_changes():
+    settings = _tab("settings")
+    assert not [c for c in settings if "hunt_check_every" in c.get("entity", "")]
+    assert any(c["type"] == "markdown" and "Hunt mode checks every 120 s (the fastest for a pilot)" in c["content"]
+               for c in settings)
+    tiles = [c for c in settings if "normal_check_every" in c.get("entity", "")]
+    assert tiles and roles.PILOT_FREQ_LIMITS["normal_min"][0] >= roles.FREQ_LIMITS["normal_min"][0]
+    assert roles.PILOT_FREQ_LIMITS["normal_min"][1] <= roles.FREQ_LIMITS["normal_min"][1]  # all its values pass as sent
+    watcher = [c.get("entity", "") for c in _tab("watcher")]
+    for gone in ("_state", "_last_check", "_next_check"):  # the clock card shows them
+        assert not [e for e in watcher if e.startswith("sensor.") and e.endswith(gone)], gone
+    md = next(c["content"] for c in _tab("watcher") if c["type"] == "markdown")
+    assert "and your schedule too unless a schedule read is backing off" in md
+
+
+def test_a_clamped_frequency_says_so_in_the_result(monkeypatch, tmp_path):
+    import sys
+    monkeypatch.setenv("FLIGHT_WATCHER_DATA", str(tmp_path))
+    monkeypatch.setenv("FLIGHT_WATCHER_INSTANCE", "pilot2")
+    monkeypatch.setenv("FLIGHT_WATCHER_PREFIX", "flight_watcher_pilot2")
+    (tmp_path / "options.json").write_text(json.dumps({"username": "u", "password": "p"}))
+    sys.modules.pop("watcher", None)
+    import watcher as W
+    try:
+        assert W.freq_clamp_note("freq/hunt_s/set", "60") == "set to 120 s, the fastest this Watcher allows"
+        assert W.freq_clamp_note("freq/normal_min/set", "1") == "set to 2 min, the fastest this Watcher allows"
+        assert W.freq_clamp_note("freq/normal_min/set", "6") == "" and W.freq_clamp_note("hunt/set", "ON") == ""
+    finally:
+        sys.modules.pop("watcher", None)
+
+
+def test_working_card_on_a_trip_with_unread_legs_and_no_updated_line_without_a_schedule():
+    src = _src("working-card")
+    months = {"2026-11": {"items": []}}
+    cases = [  # today Nov 10 HST: H9681 started Nov 9
+        ("on", f"({WORK_JS})({json.dumps({'sensor.flight_watcher_working_flight': _st('No trip', {'next': 'H9681 SYD 2026-11-09', 'updated': '2026-11-10 01:30 HST'}), 'sensor.flight_watcher_schedule': _st('Nov 9', {'months': months})})})"),
+        ("unread", f"({WORK_JS})({json.dumps({'sensor.flight_watcher_working_flight': _st('No trip', {'next': '', 'updated': '2026-11-10 01:30 HST'}), 'sensor.flight_watcher_schedule': _st('unknown')})})"),
+    ]
+    got = _run(cases, src)
+    assert "On H9681: its legs are not read yet." in got["on"]["text"] and "right now" not in got["on"]["text"]
+    assert "From your FLICA schedule, updated" in got["on"]["text"]
+    assert "has not been read" in got["unread"]["text"] and "From your FLICA schedule" not in got["unread"]["text"]
+
+
+def test_charters_card_says_not_scanned_yet_instead_of_a_clean_result():
+    src = _src("charters-card")
+    cases = [
+        ("refused", f"({CH_JS})({json.dumps({'sensor.flight_watcher_charters': _st('0', {'items': [], 'status': REFUSED, 'last_scan': '', 'crewtrac': {'state': 'refused'}})})})"),
+        ("fresh", f"({CH_JS})({json.dumps({'sensor.flight_watcher_charters': _st('0', {'items': [], 'status': '', 'last_scan': '', 'crewtrac': {'state': ''}})})})"),
+        ("clean", f"({CH_JS})({json.dumps({'sensor.flight_watcher_charters': _st('0', {'items': [], 'status': 'ok: 40 rows', 'last_scan': '2026-11-10T11:00:00+00:00', 'crewtrac': {'state': 'ok'}})})})"),
+    ]
+    got = _run(cases, src)
+    assert "No unusual A330 flying found" not in got["refused"]["text"] + got["fresh"]["text"]
+    assert "Not scanned yet." in got["fresh"]["text"]
+    assert "No unusual A330 flying found (scanned Nov 10 01:00 HST)." in got["clean"]["text"]
+
+
+def test_pilot_search_placeholder_says_what_a_pilots_lookup_takes():
+    src = _src("pilot-search-card")
+    js = """(role) => { const c = document.createElement('flight-watcher-pilot-search-card'); c.setConfig({});
+      document.body.appendChild(c); c.hass = {states: {'sensor.flight_watcher_state': {state: 'idle', attributes: {role}}}};
+      const p = c.shadowRoot.querySelector('input').placeholder; c.remove(); return p; }"""
+    got = _run([("pilot", f"({js})('pilot')"), ("admin", f"({js})('admin')")], src)
+    assert got["pilot"] == "Last name (3+ letters), Last, First, or employee #" and "first name" not in got["pilot"]
+    assert got["admin"] == "Anybody's schedule: last name, first name or employee #"  # the admin's crew directory

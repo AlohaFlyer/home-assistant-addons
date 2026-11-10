@@ -453,13 +453,16 @@ class FlightWatcherPilotCard extends HTMLElement {
   }
   // 1.6.2: the loading line from what was asked (_ask), when the Watcher reads it, and a reason once it is overdue
   _loadingHtml(a, ct) {
-    const ask = this._ask || { emp: String(a.emp || this._want || ""), name: String(a.name || ""), q: "", at: Date.now() };
+    // 1.6.2 review: a card opened on a lookup asked earlier times it from the sensor's own 'at' (pub_pilot), not now
+    const asked = Date.parse(a.at || "");
+    const ask = this._ask || { emp: String(a.emp || this._want || ""), name: String(a.name || ""), q: "", at: isNaN(asked) ? Date.now() : Math.min(asked, Date.now()) };
     const h3 = ask.name ? `${this._esc(ask.name)}${ask.emp ? ` (${this._esc(ask.emp)})` : ""}` : ask.emp ? `Pilot ${this._esc(ask.emp)}` : `Looking up '${this._esc(ask.q)}'`;
     const S = (this._h && this._h.states) || {};
     const nx = Date.parse((S["sensor.flight_watcher_next_check"] || {}).state || "");
     const state = String((S["sensor.flight_watcher_state"] || {}).state || "");
     const due = Math.max(ask.at, isNaN(nx) ? ask.at : nx) + PILOT_WAIT_MS;
-    let line = `reading this pilot's month from FLICA (Schedule Lookup, read only) on the Watcher's next check${isNaN(nx) ? ", usually under 2 minutes" : `, about ${hstHM(new Date(nx).toISOString())} HST`}`;
+    // a next check already past is no time to promise
+    let line = `reading this pilot's month from FLICA (Schedule Lookup, read only) on the Watcher's next check${isNaN(nx) ? ", usually under 2 minutes" : nx > Date.now() ? `, about ${hstHM(new Date(nx).toISOString())} HST` : ""}`;
     if (Date.now() > due) {
       const why = /^(paused|yielded|backoff|needs_settings|stopped)/.test(state) ? `the Watcher is ${state.replace(/_/g, " ")}; the lookup runs once it checks FLICA again` : state ? `no answer from the Watcher (it is ${state.replace(/_/g, " ")}); try again in a few minutes` : "no answer from the Watcher: it may not be running";
       line = `Still waiting after ${Math.round((Date.now() - ask.at) / 60000)} min: ${why}.`;

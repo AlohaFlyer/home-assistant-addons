@@ -28,6 +28,22 @@ def test_mask_hides_tokens_names_numbers_and_own_logins():
     assert "CA ##### xxx, xxxx FO ##### xxx xx, xxxx RO Open" in out  # crewidx.crew_mask style
 
 
+def test_mask_by_structure_tradeboard_names_mails_phones():
+    """1.6.2 review: the Tradeboard's 'FIRST LAST' cells and its JS rows ("JANE","DOE"), e-mail addresses, phone
+    numbers and 3-7 digit numbers after Emp are masked too; the page's shape (pairings, dates, times) stays."""
+    from test_tradeboard import HTML, JS
+    out = CAPS.mask(HTML, []) + CAPS.mask(JS, [])
+    for leak in ("JOHN ROE", "JOHN", "PAT POE", "DAN MOE", '"JANE"', '"DOE"', '"PAT"', '"POE"', "x@y.com",
+                 "5550100100", "10021", "Trade%20for"):
+        assert leak not in out, leak
+    assert "H3612:10NOV" in out and "Oct 25, 2026 07:30:44 HA" in out and '"H3606"' in out and '"14:45"' in out
+    assert "Propose Trade" in out and "HNL 332 FO" in out and '"20261104"' in out
+    for text, leak in (("Jane Doe 10001", "Jane Doe"), ("JANE DOE", "JANE DOE"), ("Name: Jane Doe", "Jane"),
+                       ("Posted by DOE J (10001)", "DOE"), ("DE LA CRUZ, MARIA", "CRUZ"), ("With Emp #: 1004", "1004"),
+                       ("Call 808-555-0100", "555-0100"), ("mail doe.j@example.com", "example")):
+        assert leak not in CAPS.mask(text, []), text
+
+
 def _pilot(tmp_path, name="pilot2", **k):
     logs = []
     c = CAPS.Captures(name, root=str(tmp_path / "share"), log=logs.append, secrets=lambda: ["doej2"], **k)
@@ -212,3 +228,76 @@ def test_the_admin_captures_as_before(load, tmp_path):
     assert open(d / "pot_2026-11.html").read() == POT and open(d / "cmschedule_10002.html").read() == PAGE
     assert json.load(open(d / "links_2026-11.json"))[0]["text"] == "H9001 view"
     assert fl.urls  # his pot capture still opens a pairing page, as in 1.6.1
+
+
+# ---------------------------------------------------------------- 1.6.2 review
+def test_prune_never_follows_a_symlinked_pilot_folder(tmp_path):
+    root = tmp_path / "share"
+    (root / "captures").mkdir(parents=True)
+    admin_old = root / "captures" / "admin_old.html"
+    admin_old.write_text("the admin's")
+    t = time.time() - 8 * 86400
+    os.utime(admin_old, (t, t))
+    os.symlink(root, root / "pilot2")  # <root>/pilot2 -> <root>: its 'captures' is the admin's folder
+    c = CAPS.Captures("pilot2", root=str(root), log=lambda m: None)
+    assert c.on() is False and c.prune(force=True) == 0 and c.cleanup_pilot() == 0
+    assert admin_old.exists()
+
+
+def test_the_one_time_cleanup_of_what_161_left(tmp_path):
+    root = tmp_path / "share"
+    adm = root / "captures"
+    adm.mkdir(parents=True)
+    for f in ("leftmenu.html", "scheduledetail_1126.html", "cmschedules_prompt.html", "ctweb_x.html",
+              "cmschedule_10002.html", "pot_2026-11.html", "swapmap"):
+        (adm / f).mkdir() if f == "swapmap" else (adm / f).write_text("x")
+    assert CAPS.cleanup_admin(str(adm)) == 5
+    assert sorted(os.listdir(adm)) == ["pot_2026-11.html", "swapmap"]  # his own other captures stay
+    p = root / "pilot2"
+    (p / "captures").mkdir(parents=True)
+    (p / "last_login.png").write_bytes(b"\x89PNG")
+    os.chmod(p / "captures", 0o755)
+    c = CAPS.Captures("pilot2", root=str(root), log=lambda m: None)
+    assert c.cleanup_pilot() == 1 and not (p / "last_login.png").exists()
+    assert stat.S_IMODE(os.stat(p / "captures").st_mode) == 0o700
+
+
+def test_the_watcher_runs_the_cleanup_once(load, tmp_path, monkeypatch):
+    W = load("")
+    adm = tmp_path / "share" / "captures"
+    adm.mkdir(parents=True)
+    (adm / "leftmenu.html").write_text("x")
+    assert W.captures_cleanup() == 1 and not (adm / "leftmenu.html").exists()
+    (adm / "leftmenu.html").write_text("x")
+    assert W.captures_cleanup() == 0 and (adm / "leftmenu.html").exists()  # once (DB caps_cleanup_v)
+
+
+def test_a_pilots_log_holds_no_page_names_mails_or_phones(load, tmp_path, caplog):
+    import logging
+    W = load("pilot2")
+    W.S["pot_urls"] = {"mobile": "https://ha2.flica.net/full/mobileopentimepot.cgi?BCID=003.152&From=MainMenu"}
+    page = ("<html><body>Tradeboard All Requests DOE, JANE JOHN ROE x@y.com 5550100100 Emp #: 10021"
+            "<script>r=[\"JANE\",\"DOE\"]</script></body></html>")
+
+    class F:
+        def fetch(self, url):
+            return page
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        W.S.pop("tb_raw_logged2", None)
+        W.tradeboard_check(F(), full=True)  # the 'no trip rows' dump, captures off
+        W.S["sched_probe_logged"] = False
+        W.S["own_emp"] = "10001"
+        W.schedule_check(F(), force=True)  # 'schedule page not parsed'
+        W.log.info("a page line: %s", "Posted by DOE J; Jane Doe; x@y.com; 808-555-0100; doej2")
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    for leak in ("JANE", "DOE", "Jane Doe", "JOHN ROE", "x@y.com", "5550100100", "555-0100", "10021", "doej2"):
+        assert leak not in text, leak
+    assert "not logged: page captures are off" in text
+
+
+def test_the_admins_log_is_as_before(load, caplog):
+    import logging
+    W = load("")
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        W.log.info("a page line: %s", "Doe, Jane 10001")
+    assert "Doe, Jane 10001" in caplog.text and W.page_log("Doe, Jane") == "Doe, Jane"

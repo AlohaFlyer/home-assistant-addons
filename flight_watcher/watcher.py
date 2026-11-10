@@ -202,7 +202,7 @@ CONNECT_STATES_DELAY_S = 3.0
 FREQ_LIMITS = ROLES.freq_limits(INSTANCE)  # admin: normal_min 1 to 20, hunt_s 5 to 90; 1.6.2: a pilot 2 to 20 min, 120 to 300 s
 # (roles.py; the portal spool checks the contract's ROLES.FREQ_LIMITS, the handler then clamps into these)
 JITTER = 0.3
-CHECK_NOW_MIN_GAP_S = 10
+CHECK_NOW_MIN_GAP_S = 10  # the admin's; a pilot's is his check floor (check_now_gap, 1.6.2 review)
 RULES = {"list": [], "published": set()}
 RULE_LOCK = threading.Lock()
 
@@ -323,16 +323,25 @@ def on_message(c, u, msg):
     # CHECK_NOW_MIN_GAP_S), a hunt or pause switch that changes, and Re-arm while stopped (else it would wait up to an
     # hour). On a pilot nothing else does (every portal command used to). The admin keeps his other wakes (pilot
     # lookup, frequency, swap map, crew index), except Scan CrewTrac now, which is no FLICA read at all.
+    # 1.6.2 review: on a pilot a hunt change, an un-pause and Check now wake a check at most once every
+    # PILOT_CHECK_FLOOR_S (120 s); inside it the check starts at the floor (wake_check). Pause on loads nothing: it
+    # always wakes the loop, so a check waiting in the gate is given up at once.
     admin = ROLES.role(INSTANCE) == ROLES.ADMIN
     wake = False
     if msg.topic == f"{T}/hunt/set":
-        wake = FLAGS["hunt"] != (p == "ON")
+        changed = FLAGS["hunt"] != (p == "ON")
         set_switch(c, "hunt", p == "ON")
         log.info("hunt mode %s", FLAGS["hunt"])
+        wake = changed and wake_check("hunt mode changed")
     elif msg.topic == f"{T}/pause/set":
-        wake = FLAGS["pause"] != (p == "ON")
+        changed = FLAGS["pause"] != (p == "ON")
         set_switch(c, "pause", p == "ON")
         log.info("pause %s", FLAGS["pause"])
+        if changed and FLAGS["pause"]:
+            wake = True  # nothing is loaded: the loop parks (and a load waiting in the gate gives up)
+        elif changed:
+            # paused, the loop sleeps an hour: it must see the un-pause (its check then waits for the floor itself)
+            wake = S.get("machine") == "paused" or wake_check("pause off")
     elif msg.topic == f"{T}/rearm/press":
         FLAGS["rearm"] = True
         wake = (S.get("machine") or "").startswith("stopped")
@@ -360,12 +369,14 @@ def on_message(c, u, msg):
             log.info("charter scan press: %s", e)
     elif msg.topic == f"{T}/check_now/press":
         # Waking the loop runs a check right away (only when idle or hunting; paused/stopped ignore it).
-        if time.time() - S.get("last_check_ts", 0) < CHECK_NOW_MIN_GAP_S:
-            log.info("check now ignored: last check under %d s ago", CHECK_NOW_MIN_GAP_S)
+        gap_s = check_now_gap()
+        if time.time() - max(S.get("last_check_ts", 0), S.get("wake_ts", 0) if PILOT_CHECK_FLOOR_S else 0,
+                             S.get("check_started_ts", 0) if PILOT_CHECK_FLOOR_S else 0) < gap_s:
+            log.info("check now ignored: last check under %d s ago", gap_s)
             return
         log.info("check now pressed: full refresh")
         FLAGS["full"] = True  # 0.3.9: re-read schedule, own trips, pot details, pickups, tradeboard
-        wake = True
+        wake = wake_check("check now")
     elif msg.topic in (f"{T}/freq/normal_min/set", f"{T}/freq/hunt_s/set"):
         key = msg.topic.split("/")[2]
         lo, hi = FREQ_LIMITS[key]
@@ -396,6 +407,11 @@ def on_message_safe(c, u, msg):
         topic = str(getattr(msg, "topic", ""))
         log.info("MQTT %s skipped: %s", topic[len(T) + 1:] if topic.startswith(T + "/") else "message",
                  type(e).__name__)
+
+
+def check_now_gap():
+    """Check now is ignored this soon after the last check: 10 s on the admin, a pilot's check floor (120 s)."""
+    return max(CHECK_NOW_MIN_GAP_S, PILOT_CHECK_FLOOR_S)
 
 
 def remember_switch(key, on):
@@ -552,11 +568,14 @@ def settings_cmd(payload):
             cur[k] = v
             changed.append(k)
     ct_saved = any(isinstance(d.get(k), str) and d[k].strip() for k in ("ctweb_username", "ctweb_password"))
+    fl_saved = any(isinstance(d.get(k), str) and d[k].strip() for k in ("username", "password"))
     if not changed:
         again = ct_saved and crewtrac_lift()  # 1.6.1: the same CrewTrac details saved again: one more try
+        fl_again = fl_saved and flica_lift()  # 1.6.2 review: the same for FLICA details FLICA refused
         log.info("settings: nothing new (keys %s)", ", ".join(sorted(k for k in d if k in keys)) or "none")
         publish_settings(creds=cur, result="nothing new" + ("; CrewTrac gets one more try with these details"
-                                                             if again else ""))
+                                                             if again else "") +
+                         ("; FLICA gets one more login try with these details" if fl_again else ""))
         if again:
             publish_charters()
             CHARTER_WAKE.set()
@@ -567,6 +586,10 @@ def settings_cmd(payload):
         json.dump(cur, f)
     os.chmod(tmp, 0o600)
     os.replace(tmp, CREDS_FILE)
+    if {"username", "password"} & set(changed):  # 1.6.2 review: new FLICA details: no refusal block, no login floor
+        S.pop("flica_refused", None)
+        S.pop("login_ts", None)
+        save_state(S)
     if creds_stop_cleared(changed):  # kills (the yield back-off count) stay; only Re-arm clears those
         S["machine"], S["note"] = "idle", "new settings"
         S["pot_urls"], S["parse_fail"], S["relogin_streak"] = {}, 0, 0
@@ -574,9 +597,43 @@ def settings_cmd(payload):
     if ct_saved:
         crewtrac_lift()  # 1.6.1: details CrewTrac refused before and saved again here get one more try
     publish_settings(creds=cur, result="saved: " + ", ".join(changed))
+    S["settings_last"] = {"result": "saved: " + ", ".join(changed), "at": time.time()}  # 1.6.2 review: after the restart
+    save_state(S)
     log.info("settings saved (%s); restarting in %d s to use them", ", ".join(changed), RESTART_DELAY_S)
     restart_later()
     return True
+
+
+SETTINGS_LAST_S = 600  # 1.6.2 review: a save's result is said again after the restart for this long
+
+
+def settings_last_result(now=None):
+    """The result to publish on (re)connect: the last save's, said again for SETTINGS_LAST_S after the restart it
+    caused, so a card that missed it (the restart came first) still gets its confirmation. '' otherwise."""
+    r = S.get("settings_last") or {}
+    now = time.time() if now is None else now
+    if r.get("result") and 0 <= now - float(r.get("at") or 0) < SETTINGS_LAST_S:
+        return f"{r['result']} (Watcher restarted with them)"
+    return ""
+
+
+def flica_lift():
+    """1.6.2 review: the same FLICA details saved again in Settings while FLICA's refusal blocks them: the pilot says
+    they are right. One more login try (Re-arm's path: still at most one login every LOGIN_MIN_GAP_S). True when the
+    block was lifted."""
+    try:
+        if flica_refused_at() is None:
+            return False
+        S.pop("flica_refused", None)
+        S["note"] = "FLICA details saved again: one more login try"
+        save_state(S)
+        FLAGS["rearm"] = True
+        WAKE.set()
+        log.info("FLICA details saved again in Settings; the refusal block is lifted for one more try")
+        return True
+    except Exception as e:  # noqa: BLE001 (never let it stop a settings save)
+        log.info("FLICA re-save not applied: %s", type(e).__name__)
+        return False
 
 
 def crewtrac_lift():
@@ -1102,7 +1159,7 @@ def mqtt_start():
         cl.publish(AVAIL, "online", retain=True)
         discovery(cl)
         subscribe_all(cl)
-        publish_settings(cl)
+        publish_settings(cl, result=settings_last_result())
         fq = freq()
         cl.publish(f"{T}/freq/normal_min/state", str(fq["normal_min"]), retain=True)
         cl.publish(f"{T}/freq/hunt_s/state", str(fq["hunt_s"]), retain=True)
@@ -1251,7 +1308,57 @@ def count_fetch():
 GATE_FILE = os.environ.get("FLIGHT_WATCHER_GATE") or (
     os.path.join(os.path.dirname(DATA.rstrip("/")) or "/", "flica_gate.lock") if INSTANCE else f"{DATA}/flica_gate.lock")
 GATE_CHECK_TOKENS = 3  # a check starts once this many loads fit the budget (it waits, WAKE-able, until they do)
+
+
+def check_tokens():
+    """1.6.2 review: the loads the next check needs whatever happens (its open time pages, or the discovery's main menu
+    and mobile pot; the schedule read when due; one more): it starts only once they fit, so it never waits inside."""
+    n = len(S.get("pot_urls") or {}) or 2
+    if (S.get("close_in") or {}).get("bcid"):
+        n += 1
+    try:
+        if schedule_due(FLAGS.get("full")):
+            n += SCHED_TRIES_PER_READ
+    except Exception:  # noqa: BLE001
+        n += SCHED_TRIES_PER_READ
+    return max(GATE_CHECK_TOKENS, n + 1)
 BRK_JUDGED = ("schedule", "lookup")  # paths whose callers judge each page (a good page is not a good read by itself)
+# 1.6.2 review: paths Flica judges by what their parsers know (page_verdict): name in the breaker's note
+BRK_PAGE_JUDGED = {"tradeboard": "Tradeboard", "pairing": "pairing", "grid": "reserve grid"}
+TB_KNOWN = ("tradeboard", "var g='pickup'", "var g=\"pickup\"", "pickup trip", "propose trade", "add to favorites",
+            "my requests", "all requests")
+
+
+def page_verdict(path, url, html):
+    """1.6.2 review: 'ok' (a page its parser reads), 'unknown' (none of its parsers knows the page: the path stops at
+    once), 'error' (the page is the one asked for but holds nothing readable: a failed read, 3 in a row stop) or ''
+    (no verdict). FLICA's 'Service Temporarily Unavailable' and other strange pages are 'unknown'."""
+    low = (html or "").lower()
+    u = (url or "").lower()
+    if path == "tradeboard":
+        if "tb_frame" in u:
+            return "ok" if ("<frame" in low or "tb_otherrequests" in low or any(k in low for k in TB_KNOWN)) \
+                else "unknown"
+        if TB.has_rows(html) or any(k in low for k in TB_KNOWN):
+            return "ok"
+        return "unknown"
+    if path == "pairing":
+        d = parse_detail(html)
+        if d.get("report") or d.get("crew") or d.get("credit"):
+            return "ok"
+        m = re.search(r"pid=([a-z]\d{4}[a-z]?)", u)
+        return "error" if m and m.group(1) in low else "unknown"
+    if path == "grid":
+        if "reservegridservice" in u:
+            try:
+                return "ok" if isinstance(json.loads(html), (dict, list)) else "unknown"
+            except ValueError:
+                return "unknown"
+        try:
+            return "ok" if G.parse_grid_html(html, local_now().year) else "error"
+        except Exception:  # noqa: BLE001
+            return "error"
+    return ""
 HEALTH = {"note": "", "gate": ""}  # the state note the gate and the breakers last put up (so it is theirs to clear)
 
 
@@ -1284,7 +1391,7 @@ def health_note_apply():
     if want == cur:
         return
     ours = cur in ("", HEALTH["note"]) and S.get("machine") in ("idle", "hunting")
-    if ours or cur == "starting" or cur.startswith("logged in"):
+    if ours or cur in ("starting", "un-paused") or cur.startswith("logged in"):
         HEALTH["note"] = want
         set_machine(S.get("machine", "idle"), want)
 
@@ -1293,16 +1400,69 @@ GATE = GT.Gate(GATE_FILE, INSTANCE or "admin", budget=GT.PILOT_BUDGET_H if ROLES
                log=log, on_wait=lambda why, until: gate_note(why, until))
 BRK = GT.Breakers(lambda: S.setdefault("breakers", {}), save=lambda: save_state(S), log=log, fmt=hst_hm,
                   on_change=lambda: health_note_apply())
+# 1.6.2 review: while a check runs, a load waiting for the gate is given up (GateAbort) once Pause is on or the Watcher
+# stopped, and the check ends with nothing more loaded. On a pilot the reads that may be left out (read_guard
+# optional=True: the Tradeboard, the reserve grid, the request lists, the crew index, his own trips, pot details,
+# pickups) skip a load that would wait for his budget (GATE_KEEP) or pass opt_cap() an hour: the pot keeps its share.
+RUN = {"check": False, "optional": False, "aborted": "", "skipped": set(), "opt": []}
+GATE_KEEP = 4  # an optional load leaves this many of a pilot's budget free (the next check's start)
 
 
-def read_guard(fn, *a, default=None, **k):
+def opt_cap():
+    """1.6.2 review: the optional loads a pilot may make in an hour: his budget less what the open time pot needs at
+    his check rate (its pages times checks an hour), his schedule read (2 loads every 30 min) and one check's start."""
+    if not GATE.budget:
+        return None
+    fq = freq()
+    every = max(1.0, float(fq["hunt_s"] if FLAGS.get("hunt") else fq["normal_min"] * 60))
+    pot = (len(S.get("pot_urls") or {}) or 2) * 3600.0 / every
+    return max(0, GATE.budget - int(round(pot)) - 2 * SCHED_TRIES_PER_READ - GATE_CHECK_TOKENS)
+
+
+def opt_load():
+    """Before an optional load on a pilot: GateSkip when his optional loads of the last hour reached opt_cap() (this
+    process's count; a restart starts it again, the gate's budget still holds)."""
+    now = time.time()
+    RUN["opt"] = [t for t in RUN["opt"] if now - GT.WINDOW_S < t <= now + 5]
+    cap = opt_cap()
+    if cap is not None and len(RUN["opt"]) >= cap:
+        raise GT.GateSkip("budget", RUN["opt"][len(RUN["opt"]) - cap] + GT.WINDOW_S if cap else now + GT.WINDOW_S)
+
+
+def gate_abort():
+    """Why a load waiting in the gate must be given up ('' when it may wait): only while a check runs."""
+    if not RUN["check"]:
+        return ""
+    if FLAGS.get("pause"):
+        return "Pause is on"
+    if str(S.get("machine") or "").startswith("stopped"):
+        return "the Watcher stopped"
+    return ""
+
+
+def read_guard(fn, *a, default=None, optional=False, **k):
     """1.6.2: a read path called from check(): a load its breaker refused ends that read only (logged), never the
-    check (the pot watch keeps its own stop rules)."""
+    check (the pot watch keeps its own stop rules). Review: a load given up for Pause or a stop (GateAbort) ends the
+    check; optional=True marks a read whose loads a pilot's budget may leave out (GateSkip, logged once a check)."""
+    was, RUN["optional"] = RUN["optional"], bool(optional) or RUN["optional"]
     try:
-        return fn(*a, **k)
+        res = fn(*a, **k)
+    except GT.GateAbort:
+        raise
+    except GT.GateSkip as e:
+        name = getattr(fn, "__name__", "read")
+        if name not in RUN["skipped"]:
+            RUN["skipped"].add(name)
+            log.info("%s left out of this check: %s", name, e)
+        res = default
     except GT.BreakerOpen as e:
         log.info("%s skipped: %s", getattr(fn, "__name__", "read"), e)
-        return default
+        res = default
+    finally:
+        RUN["optional"] = was
+    if RUN["aborted"]:  # a read that caught the GateAbort itself: the check still ends here
+        raise GT.GateAbort(RUN["aborted"])
+    return res
 
 
 def set_machine(state, note=""):
@@ -1353,7 +1513,9 @@ class Flica:
         self.ctx.storage_state(path=COOKIES)
 
     def login(self):
-        """Exactly one attempt. Returns 'ok', 'failed' or 'blocked'."""
+        """Exactly one attempt. Returns 'ok', 'failed' or 'blocked'. 1.6.2 review: login_error names a failure that is
+        no refusal by FLICA (a load error, no login form), so a pilot's refusal block is not set by it."""
+        self.login_error = None
         log.info("login attempt")
         S["last_login_attempt"] = now_iso()
         save_state(S)
@@ -1376,6 +1538,7 @@ class Flica:
             cands = [x for x in inputs if x["i"] < pw_idx and x["vis"] and x["type"] not in skip]
             if not cands:
                 log.warning("no username field found before the password field")
+                self.login_error = "no username field"
                 return "failed"
             user_in = page.locator(f"input[data-fwi='{cands[-1]['i']}']")
             pw_in = page.locator(f"input[data-fwi='{pw_idx}']")
@@ -1397,7 +1560,7 @@ class Flica:
                     os.makedirs(SHARE, exist_ok=True)
                     page.screenshot(path=f"{SHARE}/last_login.png", full_page=True)
                 vis = page.inner_text("body")[:600].replace("\n", " | ")
-                log.info("after login url=%s text=%s", page.url.split("?")[0], vis)
+                log.info("after login url=%s text=%s", page.url.split("?")[0], page_log(vis))
             except Exception as e:
                 log.info("diag capture failed: %s", e)
             if "forward to the main menu" in low or "/online/mainmenu.cgi" in page.url:
@@ -1432,6 +1595,7 @@ class Flica:
             return "failed"
         except Exception as e:
             log.warning("login error: %s", e)
+            self.login_error = type(e).__name__
             return "failed"
         finally:
             page.close()
@@ -1461,11 +1625,13 @@ class Flica:
                 html = self.fetch(MOBILE_POT)
                 mk = classify(html)
                 txt = visible_text(html)
-                log.info("mobile pot probe: classify=%s len=%d text=%s", mk, len(html), txt[:1500])
+                log.info("mobile pot probe: classify=%s len=%d text=%s", mk, len(html), page_log(txt[:1500]))
                 rows = re.findall(r"<tr[^>]*>.*?</tr>", html, re.S | re.I)
-                log.info("mobile pot rows=%d sample=%s", len(rows), [r[:400] for r in rows[:4]])
+                log.info("mobile pot rows=%d sample=%s", len(rows), page_log(str([r[:400] for r in rows[:4]])))
                 if mk in ("killed", "expired"):
                     return None
+                if mk in ("captcha", "blocked"):  # 1.6.2 review: never answered, and no new login to get around it
+                    return mk
                 if "open time" in txt or "opentime" in txt:
                     # key "mobile" kept for the first page so the v0.1.x baseline carries over
                     urls = {"mobile": MOBILE_POT}
@@ -1483,6 +1649,8 @@ class Flica:
                         if len(urls) < 2:
                             log.info("no next-month pot link on the mobile page yet (opens with the bid month)")
                     return urls
+                if kind in ("captcha", "blocked"):  # the main menu asks for a CAPTCHA and the mobile pot is no way round
+                    return kind
                 return None
             links = menu.evaluate(
                 """(sec) => {
@@ -1550,13 +1718,24 @@ class Flica:
         path = GT.read_path(url) if url else ""
         if path and path != "pot" and not BRK.allow(path):
             raise GT.BreakerOpen(path, hst_hm(BRK.until(path)) + " HST")
-        GATE.acquire()
+        optional = bool(RUN["check"] and RUN["optional"] and GATE.budget)
+        if optional:
+            opt_load()  # 1.6.2 review: the pot's share of a pilot's budget is never spent on optional reads
+        try:
+            GATE.acquire(keep=GATE_KEEP if optional else 0, abort=gate_abort)
+        except GT.GateAbort as e:
+            RUN["aborted"] = e.why
+            raise
+        if optional:
+            RUN["opt"].append(time.time())
         count_fetch()
         return path if path != "pot" else ""
 
-    def _loaded(self, path, html=None, error=None):
+    def _loaded(self, path, html=None, error=None, url=""):
         """1.6.2: a CAPTCHA or interstitial page stops its read path for 6 h (it is never answered). On a path whose
-        callers do not judge the page themselves, a load error is a failed read and any other page a good one."""
+        callers do not judge the page themselves, a load error is a failed read; review: the Tradeboard, pairing and
+        grid pages are judged here by what their parsers know (page_verdict), so a page none of them knows stops the
+        path for 30 min instead of counting as a good read."""
         if not path:
             return
         if error is not None:
@@ -1566,6 +1745,13 @@ class Flica:
         kind = classify(html or "")
         if kind == "captcha":
             BRK.fail(path, "a CAPTCHA page (never answered)", "captcha")
+        elif kind == "ok" and path in BRK_PAGE_JUDGED:
+            v = page_verdict(path, url, html or "")
+            if v == "ok":
+                BRK.ok(path)
+            elif v in ("unknown", "error"):
+                BRK.fail(path, f"not a {BRK_PAGE_JUDGED[path]} page" + (" (a page the parser does not know)"
+                                                                       if v == "unknown" else ""), v)
         elif kind == "ok" and path not in BRK_JUDGED:
             BRK.ok(path)
 
@@ -1576,7 +1762,7 @@ class Flica:
         except Exception as e:
             self._loaded(path, error=e)
             raise
-        self._loaded(path, html)
+        self._loaded(path, html, url=url)
         return html
 
     def menu_tree(self):
@@ -1626,7 +1812,7 @@ class Flica:
             raise
         finally:
             page.close()
-        self._loaded(path, html)
+        self._loaded(path, html, url=url)
         return html, calls
 
 
@@ -1663,7 +1849,11 @@ def freq_migrate():
 def gap():
     fq = freq()
     mid = fq["hunt_s"] if FLAGS["hunt"] else fq["normal_min"] * 60
-    return random.uniform(mid * (1 - JITTER), mid * (1 + JITTER))
+    lo, hi = mid * (1 - JITTER), mid * (1 + JITTER)
+    if ROLES.role(INSTANCE) == ROLES.PILOT:  # 1.6.2 review: the jitter never takes a pilot under his floor
+        lo = max(lo, FREQ_LIMITS["hunt_s"][0] if FLAGS["hunt"] else FREQ_LIMITS["normal_min"][0] * 60)
+        hi = max(hi, lo)
+    return random.uniform(lo, hi)
 
 
 def sleep(sec):
@@ -1672,8 +1862,13 @@ def sleep(sec):
     WAKE.clear()
     end = time.time() + sec
     while True:
-        left = end - time.time()
-        if left <= 0 or WAKE.wait(min(left, WORKING_TICK_S)):
+        now = time.time()
+        if WAKE_DUE["at"] and now >= WAKE_DUE["at"]:  # 1.6.2 review: a wake a pilot's check floor put off
+            WAKE_DUE["at"] = 0.0
+            return
+        left = end - now
+        due = WAKE_DUE["at"] - now if WAKE_DUE["at"] else left
+        if left <= 0 or WAKE.wait(max(0.0, min(left, due, WORKING_TICK_S))):
             return
         publish_working_flight()
 
@@ -1689,19 +1884,114 @@ def no_next_check():
     pub("next_check", "None")  # HA shows unknown: no check scheduled (paused/stopped)
 
 
+# 1.6.2 review (account safety): on a pilot, FLICA logins are at least LOGIN_MIN_GAP_S apart whatever asks for one
+# (Re-arm, un-pause, a re-login back-off, the end of a yield); only new FLICA details saved in Settings start one
+# sooner. Details FLICA refused (the login form came back, not a load error) are kept as a hash (S flica_refused, never
+# the values): while stopped_login_failed holds those same details, Re-arm logs in no more; saving new details in
+# Settings lifts the block, and saving the same ones again gives one more try (as CrewTrac's refusal block, 1.6.1).
+LOGIN_MIN_GAP_S = 600
+
+
+def is_pilot():
+    return ROLES.role(INSTANCE) == ROLES.PILOT
+
+
+def flica_creds_hash(o=None):
+    """sha256 of the FLICA user name and password in use: the refusal block's key. Never the values themselves."""
+    o = OPTS if o is None else o
+    return hashlib.sha256(json.dumps(["flica", o.get("username") or "", o.get("password") or ""]).encode()).hexdigest()
+
+
+def login_wait(now=None):
+    """Seconds until a pilot's next FLICA login may start (0 on the admin)."""
+    if not is_pilot():
+        return 0.0
+    now = time.time() if now is None else now
+    last = float(S.get("login_ts") or 0)
+    if last > now + 60:  # the clock went back: a stale time never blocks for good
+        return 0.0
+    return max(0.0, last + LOGIN_MIN_GAP_S - now)
+
+
+def flica_refused_at():
+    """A pilot's block: the unix time FLICA refused the details now in use, while stopped_login_failed; else None."""
+    if not is_pilot() or S.get("machine") != "stopped_login_failed":
+        return None
+    r = S.get("flica_refused") or {}
+    return float(r.get("at") or 0) if r.get("hash") and r.get("hash") == flica_creds_hash() else None
+
+
+def flica_refused_note(at):
+    return (f"FLICA refused these login details at {hst_hm(at)} HST; save new ones on the Settings tab "
+            "(saving the same ones again gives one more try)")
+
+
 def try_login(fl, reason):
     """Single attempt. Parks the watcher on anything but success."""
+    S["login_ts"] = time.time()
     res = fl.login()
     if res == "ok":
         S["pot_urls"] = {}
+        S.pop("flica_refused", None)
         pub("session", "ON")
         set_machine("hunting" if FLAGS["hunt"] else "idle", f"logged in ({reason})")
         return True
     pub("session", "OFF")
     if res == "blocked":
         set_machine("stopped_unexpected", "FLICA asked for captcha/MFA/password change during login")
+    elif is_pilot() and not getattr(fl, "login_error", None):  # the form came back: FLICA refused these details
+        S["flica_refused"] = {"hash": flica_creds_hash(), "at": time.time()}
+        log.info("FLICA refused the login (%s); no login with these details until others are saved", reason)
+        set_machine("stopped_login_failed", flica_refused_note(S["flica_refused"]["at"]))
     else:
         set_machine("stopped_login_failed", f"one login attempt failed ({reason})")
+    return False
+
+
+def login_deferred(st, base_note=None):
+    """1.6.2 review: True (after a WAKE-able wait with a note) when a pilot's next FLICA login must wait for
+    LOGIN_MIN_GAP_S; the caller then loops back and asks again."""
+    w = login_wait()
+    if w <= 0:
+        return False
+    at = hst_hm(time.time() + w)
+    note = (base_note or S.get("note") or "").split("; the FLICA login waits until")[0]
+    set_machine(st, (note + "; " if note else "") + f"the FLICA login waits until {at} HST (at most one every "
+                f"{LOGIN_MIN_GAP_S // 60} min)")
+    sleep_announced(w)
+    return True
+
+
+# 1.6.2 review: on a pilot no check starts within PILOT_CHECK_FLOOR_S (his fastest hunt, 120 s) of the last one,
+# whatever woke the loop; a hunt or pause change or Check now inside that time wakes it at the floor instead.
+PILOT_CHECK_FLOOR_S = FREQ_LIMITS["hunt_s"][0] if ROLES.role(INSTANCE) == ROLES.PILOT else 0
+WAKE_DUE = {"at": 0.0}
+
+
+def check_floor_wait(now=None, woken=False):
+    """Seconds until a pilot's next check may start (0 on the admin). woken: count a wake already asked for too."""
+    if not PILOT_CHECK_FLOOR_S:
+        return 0.0
+    now = time.time() if now is None else now
+    last = max(float(S.get("check_started_ts") or 0), float(S.get("last_check_ts") or 0),
+               float(S.get("wake_ts") or 0) if woken else 0.0)
+    if last > now + 60:
+        return 0.0
+    return max(0.0, last + PILOT_CHECK_FLOOR_S - now)
+
+
+def wake_check(why):
+    """Wake the loop for a FLICA check now, or (a pilot inside his floor) at the floor: True when woken now."""
+    w = check_floor_wait(woken=True)
+    if w <= 0:
+        S["wake_ts"] = time.time()
+        return True
+    due = time.time() + w
+    if not WAKE_DUE["at"] or WAKE_DUE["at"] > due:
+        if not WAKE_DUE["at"]:  # one line per put-off wake, not one per toggle
+            log.info("%s: the next check starts at %s HST (at most one every %d s)", why, hst_hm(due),
+                     PILOT_CHECK_FLOOR_S)
+        WAKE_DUE["at"] = due
     return False
 
 
@@ -1742,9 +2032,11 @@ def enrich(fl, ev):
                 DB.remember_crew(visible_text(page))  # 0.8.2: crew directory for name lookups
                 if not DETAIL_PROBE["done"]:
                     DETAIL_PROBE["done"] = True
-                    log.info("detail text %s: %s", ev.get("pairing"), visible_text(page)[:2500])
+                    log.info("detail text %s: %s", ev.get("pairing"), page_log(visible_text(page)[:2500]))
                 ev.update({k: v for k, v in d.items() if k == "captain" or not ev.get(k)})
                 ev["detail_url"] = url
+    except (GT.GateAbort, GT.GateSkip):
+        raise  # 1.6.2 review: given up (Pause) or left out (a pilot's budget): the caller decides, nothing is cached
     except Exception as e:
         log.info("detail skipped for %s: %s", ev.get("pairing"), e)
     ev.setdefault("captain", "")
@@ -2029,6 +2321,8 @@ def own_trip_times(fl, full=False):
                 else:
                     log.info("own trip %s: no times on the pairing page", k)
                     own[k] = {}
+        except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
+            raise
         except Exception as e:
             log.info("own trip %s skipped: %s", k, e)
     for k in [k for k in own if k not in keep]:
@@ -2989,12 +3283,28 @@ def publish_recall():
     # the recorder's 16 KB); the sensor keeps the newest days that fit (cap_attrs) and the counts over all of them
     key, rev = write_list_file("recall", {"days": days[::-1]})
     me, src = recall_me(with_source=True)
-    miss = [v.get("missing") for d in days for v in d.get("verdicts") or [] if v.get("verdict") in RECALL_LIVE]
+    # 1.6.2 review: a list day before the first schedule version on file (the award upload, or the first FLICA read)
+    # can never have its line read back; those rows are counted apart (missing_line_old), with the date versions start
+    vfrom = recall_versions_from(allr)
+    miss = [("line_old" if v.get("missing") == "line" and vfrom and str(d.get("date") or "") < vfrom else v.get("missing"))
+            for d in days for v in d.get("verdicts") or [] if v.get("verdict") in RECALL_LIVE]
     pub("recall", {"open": len(opn), "alert": len(alert), "me": me, "last": days[-1]["date"] if days else "",
                    "checked": now_iso(), "received": received, "hark_files": has("hark_ccr"), "days": days[::-1],
                    "days_total": len(days), "file_key": key, "rev": rev,
                    # 1.6.2 (item 10): where the seniority number comes from, and the rows held back for missing data
-                   "sen_source": src, "missing_sen": miss.count("seniority"), "missing_line": miss.count("line")})
+                   "sen_source": src, "missing_sen": miss.count("seniority"), "missing_line": miss.count("line"),
+                   "missing_line_old": miss.count("line_old"), "versions_from": vfrom})
+
+
+def recall_versions_from(allr):
+    """1.6.2 review: the HST date of the first schedule version on file (the award upload's or the first FLICA read's),
+    '' when there is none."""
+    try:
+        ts = [RC._at(v) for vs in recall_versions(allr).values() for v in vs or [] if isinstance(v, dict)]
+        ts = [t for t in ts if t]
+        return min(ts).astimezone(HST).date().isoformat() if ts else ""
+    except Exception:  # noqa: BLE001 (a nicety for the card's wording)
+        return ""
 
 
 def publish_improved():
@@ -3078,18 +3388,26 @@ def pot_details(fl, pot, full=False):
     leaves the pot; at most 8 new ones per check, 1.5-3.5 s apart. Fit is re-tagged every check
     because the schedule can change."""
     cache = S.setdefault("details", {})
-    fetched = 0
+    fetched, left_out = 0, False
     for k, row in pot.items():
         stale = k in cache and ("crew" not in cache[k] or "duties" not in cache[k])  # cached before 0.4.0 / FW-0039: re-read once
         if ((k not in cache or stale or full) and fetched < (FULL_MAX if full else DETAIL_MAX_PER_CHECK)
-                and BRK.allow("pairing")):  # 1.6.2: while pairing pages are stopped no empty detail is cached
+                and BRK.allow("pairing") and not left_out):  # 1.6.2: while pairing pages are stopped no empty detail is cached
             if fetched:
                 time.sleep(random.uniform(1.5, 3.5))
             ev = dict(row)
-            enrich(fl, ev)
-            fetched += 1
-            cache[k] = {f: ev.get(f, "") for f in DETAIL_FIELDS}
-            cache[k]["duties"] = ev.get("duties") or []  # FW-0039: the FAR screen's FDPs; kept off the published row
+            try:
+                enrich(fl, ev)
+            except GT.GateSkip as e:  # 1.6.2 review: a pilot's budget is kept for the pot: no empty detail cached
+                left_out = True  # no more detail loads this check (the rows are still tagged below)
+                if "pot_details" not in RUN["skipped"]:
+                    RUN["skipped"].add("pot_details")
+                    log.info("pot_details left out of this check: %s", e)
+                ev = None
+            if ev is not None:
+                fetched += 1
+                cache[k] = {f: ev.get(f, "") for f in DETAIL_FIELDS}
+                cache[k]["duties"] = ev.get("duties") or []  # FW-0039: the FAR screen's FDPs; kept off the published row
         if k in cache:
             row.update({f: v for f, v in cache[k].items() if f in DETAIL_FIELDS and (v or not row.get(f))})
             if not row.get("soft"):
@@ -3166,6 +3484,33 @@ def note_own(text):
 
 LOOKUP_KEYS = ("block", "credit")
 LOOKUP_PAGE = {"bd": "", "html": "", "at": 0}  # the last Schedule Lookup page read, so other_months_check does not load it twice
+# 1.6.2 review: one schedule read loads at most SCHED_TRIES_PER_READ pages in all: the current month's tries and then
+# the follow-on reads (FLICA's totals, the other months, last month). A follow-on that finds no load left waits for the
+# next due read (SchedFull). left None: no read is running (a direct call loads as before). lookup_ok: a Schedule Lookup
+# page of this read was a schedule (the path works, so one month's odd answer is not counted against it).
+SCHED_READ = {"left": None, "lookup_ok": False}
+LOOKUP_MONTHS_KEEP_S = 6 * 3600  # the Schedule Lookup month list is kept this long (S lookup_months)
+OTHER_FAIL_FIRST_S = 3600  # a listed month that fails waits 1 h, then 2, 4, at most 6 h (S sched_other_fail)
+
+
+class SchedFull(Exception):
+    """This schedule read has used its loads: the rest waits for the next due read."""
+
+
+def sched_fetch(fl, url):
+    if SCHED_READ["left"] is not None:
+        if SCHED_READ["left"] <= 0:
+            raise SchedFull()
+        SCHED_READ["left"] -= 1
+    return fl.fetch(url)
+
+
+def note_lookup_months(html):
+    """Keep the month list of a current-month Schedule Lookup page (S lookup_months), so the other months need no
+    second load of it within LOOKUP_MONTHS_KEEP_S."""
+    bds = re.findall(r'<option value="(\d{4})"', html or "")
+    if bds:
+        S["lookup_months"] = {"bds": bds, "at": time.time()}
 
 
 def lookup_totals(fl, month):
@@ -3182,13 +3527,15 @@ def lookup_totals(fl, month):
         log.info("schedule %s totals: lookup url refused by safe_get", month)
         return {}
     time.sleep(random.uniform(1.5, 3.5))
-    html = fl.fetch(url)
+    html = sched_fetch(fl, url)
     sp = IF.parse_cm_month(html) if classify(html) == "ok" else None
     if not sp or sp["month"] != month:
         log.info("schedule %s totals via Schedule Lookup (bd=%s): %s %s", month, bd, classify(html),
                  (sp and sp["month"]) or visible_text(html)[:120])
         return {}
     LOOKUP_PAGE.update(bd=bd, html=html, at=time.time())
+    note_lookup_months(html)
+    SCHED_READ["lookup_ok"] = True
     return {k: v for k, v in (sp.get("totals") or {}).items() if k in LOOKUP_KEYS and v not in (None, "")}
 
 
@@ -3200,7 +3547,9 @@ def merge_lookup_totals(fl, s, old=None):
     if all(k in tot for k in LOOKUP_KEYS):
         return
     try:
-        got = lookup_totals(fl, s.get("month"))
+        got = lookup_totals(fl, s.get("month")) if fl is not None else {}
+    except SchedFull:  # 1.6.2 review: no load left in this read: the last stored figures stay
+        got = {}
     except Exception as e:
         log.info("schedule %s totals via Schedule Lookup failed: %s", s.get("month"), e)
         got = {}
@@ -3222,19 +3571,33 @@ def other_months_check(fl, cur_month):
     store = S.setdefault("schedule", {})
     cur = local_now()
     bdc = f"{cur.month:02d}{cur.year % 100:02d}"
+    kept = S.get("lookup_months") or {}
+    bds = []
     if LOOKUP_PAGE["bd"] == bdc and time.time() - LOOKUP_PAGE["at"] < 300:
         html = LOOKUP_PAGE["html"]  # FW-0019: the schedule check's totals read just loaded this page
+    elif kept.get("bds") and 0 <= time.time() - float(kept.get("at") or 0) < LOOKUP_MONTHS_KEEP_S:
+        html, bds = "", list(kept["bds"])  # 1.6.2 review: the month list read earlier (no second load of it)
     else:
         time.sleep(random.uniform(1.5, 3.5))
-        html = fl.fetch(IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bdc))
-    if classify(html) != "ok":
-        log.info("own schedule lookup: %s", classify(html))
-        return False
-    bds = re.findall(r'<option value="(\d{4})"', html)
+        try:
+            html = sched_fetch(fl, IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bdc))
+        except SchedFull:
+            return None  # this read's loads are used: the next due read goes on
+        if classify(html) == "ok" and re.search(r'<option value="(\d{4})"', html):
+            note_lookup_months(html)
+            SCHED_READ["lookup_ok"] = True
+        else:
+            other_failed(None, "the month list page: " + classify(html))
+    if not bds:
+        if classify(html) != "ok":
+            log.info("own schedule lookup: %s", classify(html))
+            return False
+        bds = re.findall(r'<option value="(\d{4})"', html)
     if not bds:
         log.info("own schedule lookup: no month list: %s", visible_text(html)[:160])
         return False
-    got = []
+    got, waiting = [], False
+    fails = S.setdefault("sched_other_fail", {})
     for bd in bds:
         mon = f"20{bd[2:]}-{bd[:2]}"
         if mon == cur_month:
@@ -3242,17 +3605,42 @@ def other_months_check(fl, cur_month):
         if mon in store and store[mon].get("src") == "lookup" and time.time() - store[mon].get("read_ts", 0) < 6 * 3600:
             got.append(mon)
             continue
+        if time.time() < float((fails.get(mon) or {}).get("next") or 0):
+            continue  # 1.6.2 review: a month that failed waits its back-off (it was loaded again on every read)
         time.sleep(random.uniform(1.5, 3.5))
-        page = fl.fetch(IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bd))
+        try:
+            page = sched_fetch(fl, IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bd))
+        except SchedFull:
+            waiting = True
+            break
         sp = IF.parse_cm_month(page) if classify(page) == "ok" else None
+        if sp and sp["month"] == mon:
+            SCHED_READ["lookup_ok"] = True
         if not sp or sp["month"] != mon:
             log.info("own schedule %s (bd=%s): %s %s", mon, bd, classify(page), (sp and sp["month"]) or visible_text(page)[:160])
+            other_failed(mon, classify(page) if classify(page) != "ok" else "not that month's schedule")
             continue
+        fails.pop(mon, None)
         store[mon] = {"month": mon, "updated": sp.get("updated", ""), "days": sp["days"], "items": sp["items"],
                       "totals": sp.get("totals") or {}, "src": "lookup", "read_ts": time.time()}
         got.append(mon)
         log.info("schedule %s: %d items via Schedule Lookup (bd=%s), totals %s", mon, len(sp["items"]), bd, sp.get("totals"))
+    if waiting:
+        return None
     return len(got) == len([b for b in bds if f"20{b[2:]}-{b[:2]}" != cur_month])
+
+
+def other_failed(mon, why):
+    """1.6.2 review: a listed month (or, mon None, the month list page) that Schedule Lookup did not give: the month
+    waits OTHER_FAIL_FIRST_S doubling to 6 h, and the 'lookup' read path counts one failed read per schedule read
+    unless another Schedule Lookup page of the same read was a schedule (the path works)."""
+    if mon:
+        f = S.setdefault("sched_other_fail", {}).setdefault(mon, {"n": 0, "next": 0})
+        f["n"] = int(f.get("n") or 0) + 1
+        f["next"] = time.time() + min(6 * 3600, OTHER_FAIL_FIRST_S * 2 ** (f["n"] - 1))
+    if not SCHED_READ.get("lookup_ok") and not SCHED_READ.get("lookup_failed"):
+        SCHED_READ["lookup_failed"] = True
+        BRK.fail("lookup", f"Schedule Lookup, other months: {why}")
 
 
 def prev_month_check(fl, ok_url, cur_month):
@@ -3266,16 +3654,22 @@ def prev_month_check(fl, ok_url, cur_month):
     if time.time() - S.get("sched_prev_at", 0) < (6 * 3600 if S.get("sched_prev_v") == 6 else 1800):
         return
     try:  # 0.8.5: Schedule Lookup lists every month FLICA holds; October (and December when out) come from there
-        if other_months_check(fl, cur_month):
+        done = other_months_check(fl, cur_month)
+        if done is None:
+            return  # 1.6.2 review: this read's loads are used; the next due read goes on from here
+        if done:
             S["sched_prev_at"] = time.time()
             S["sched_prev_v"] = 6
             return
+    except GT.BreakerOpen as e:
+        log.info("own schedule lookup skipped: %s", e)
     except Exception as e:
         log.info("own schedule lookup failed: %s", e)
     if S.get("sched_prev_v") == 5 and prev in store and time.time() - S.get("sched_prev_at", 0) < 86400:
         return
     mo = re.search(r"BCID=\d{3}\.(\d+)", ok_url)
     if not mo:
+        S["sched_prev_at"] = time.time()  # 1.6.2 review: a pass that missed a month waits like the mobile one
         return
     n = f"{int(mo.group(1)) - 1:03d}"
     py, pm = int(prev[:4]), int(prev[5:7])
@@ -3288,7 +3682,7 @@ def prev_month_check(fl, ok_url, cur_month):
     for url in cands:
         try:
             time.sleep(random.uniform(1.5, 3.5))
-            html = fl.fetch(url)
+            html = sched_fetch(fl, url)
             if classify(html) != "ok":
                 seen.append((url.split("?")[1], classify(html)))
                 continue
@@ -3299,6 +3693,9 @@ def prev_month_check(fl, ok_url, cur_month):
                 log.info("schedule %s (previous month): %d items via %s", prev, len(sp["items"]), url.split("?")[1])
                 return
             seen.append((url.split("?")[1], (sp and sp["month"]) or visible_text(html)[:160]))
+        except SchedFull:
+            S["sched_prev_at"] = 0  # no load left in this read: the next due read tries it
+            return
         except Exception as e:
             seen.append((url.split("?")[1], str(e)))
     log.info("previous month schedule %s not found: %s", prev, seen)
@@ -3347,11 +3744,18 @@ def sched_cands(month):
     mobile schedule's BlockDate page. [(label, url)]; no BCID guesses, no scheduledetail."""
     if "sched_shape" not in S and S.get("sched_url_ok"):  # an older Watcher kept the literal URL: keep its shape (once)
         S["sched_shape"] = sched_shape_of(S["sched_url_ok"])
+        if S["sched_shape"].startswith("/full/mobileschedule.cgi?"):
+            S["sched_shape_mobile"] = S["sched_shape"]
         log.info("schedule: the URL that last worked is kept as a shape that follows the bid period (%s)",
                  S["sched_shape"].split("?")[-1] if S["sched_shape"] not in ("", "lookup") else S["sched_shape"] or "none")
+    if (S.get("sched_shape") or "").startswith("/full/mobileschedule.cgi?") and not S.get("sched_shape_mobile"):
+        S["sched_shape_mobile"] = S["sched_shape"]
     bd = f"{month[5:7]}{month[2:4]}"
     out = []
-    for shape in (S.get("sched_shape") or "", "lookup", "/full/mobileschedule.cgi?BlockDate={bd}&From=MainMenu"):
+    # 1.6.2 review: the mobile shape that worked last (S sched_shape_mobile) comes second, so one hiccup that let
+    # Schedule Lookup answer does not lose it for good
+    for shape in (S.get("sched_shape") or "", S.get("sched_shape_mobile") or "", "lookup",
+                  "/full/mobileschedule.cgi?BlockDate={bd}&From=MainMenu"):
         url = sched_shape_url(shape, month) if shape else ""
         if url and url not in [u for _, u in out]:
             out.append(("Schedule Lookup" if shape == "lookup" else "mobile schedule", url))
@@ -3384,6 +3788,33 @@ def schedule_check(fl, force=False):
     keeps last month as this one). Never stops the pot watch."""
     if not schedule_due(force):
         return
+    SCHED_READ.update(left=SCHED_TRIES_PER_READ, lookup_ok=False, lookup_failed=False)  # 1.6.2 review: all loads
+    try:
+        _schedule_read(fl, force)
+    finally:
+        SCHED_READ.update(left=None, lookup_ok=False, lookup_failed=False)
+
+
+def other_months_pending(cur_month):
+    """1.6.2 review: a listed other month needs a load now (the month list is kept, the month is not fresh and not
+    backing off), so this read's last load goes to it and FLICA's totals keep their stored figures one read."""
+    kept = S.get("lookup_months") or {}
+    if not S.get("own_emp") or not kept.get("bds") or time.time() - float(kept.get("at") or 0) >= LOOKUP_MONTHS_KEEP_S:
+        return False
+    if time.time() - S.get("sched_prev_at", 0) < (6 * 3600 if S.get("sched_prev_v") == 6 else 1800):
+        return False
+    store, fails = S.get("schedule") or {}, S.get("sched_other_fail") or {}
+    for bd in kept["bds"]:
+        mon = f"20{bd[2:]}-{bd[:2]}"
+        if mon == cur_month or time.time() < float((fails.get(mon) or {}).get("next") or 0):
+            continue
+        if not (mon in store and store[mon].get("src") == "lookup"
+                and time.time() - store[mon].get("read_ts", 0) < 6 * 3600):
+            return True
+    return False
+
+
+def _schedule_read(fl, force):
     if force:
         SCHED_FORCED["used"] = True
     S["sched_checked_at"] = time.time()
@@ -3396,7 +3827,10 @@ def schedule_check(fl, force=False):
         old = store.get(s["month"])
         read_at = now_iso()
         if s.get("src") != "lookup":
-            merge_lookup_totals(fl, s, old)  # FW-0019: the mobile page has no Block / Credit; Schedule Lookup does
+            if other_months_pending(s["month"]) and old and all(k in (old.get("totals") or {}) for k in LOOKUP_KEYS):
+                merge_lookup_totals(None, s, old)  # 1.6.2 review: the stored figures; this read's load is a month's
+            else:
+                merge_lookup_totals(fl, s, old)  # FW-0019: the mobile page has no Block / Credit; Schedule Lookup does
         if old and [(i["trip"], i["start"]) for i in old["items"]] != [(i["trip"], i["start"]) for i in s["items"]]:
             ev = {"month": s["month"], "updated": s["updated"],
                   "added": sorted({i["trip"] + " " + i["start"] for i in s["items"]} - {i["trip"] + " " + i["start"] for i in old["items"]}),
@@ -3414,6 +3848,8 @@ def schedule_check(fl, force=False):
         S["sched_read_at"] = read_at  # FW-0064: a trade seen on the schedule is decided one quiet read later
         S["sched_url_ok"] = url
         S["sched_shape"] = sched_shape_of(url)
+        if S["sched_shape"].startswith("/full/mobileschedule.cgi?"):
+            S["sched_shape_mobile"] = S["sched_shape"]  # 1.6.2 review: kept apart from the last shape used
         S["sched_fail"], S["sched_next_at"] = 0, 0  # 1.6.1: a read that works resets the back-off
         S["sched_source"] = "FLICA Schedule Lookup (Watcher)" if s.get("src") == "lookup" else "FLICA mobile schedule (Watcher)"
         S["sched_status"] = {"ok": True, "why": "", "at": read_at, "at_hst": hst_hm(time.time()), "next_try": "",
@@ -3452,7 +3888,9 @@ def schedule_check(fl, force=False):
             if tries:
                 time.sleep(random.uniform(1.5, 3.5))  # 1.6.2: the FLICA pacing rule (was 1.0 to 2.0 s)
             tries += 1
-            html = fl.fetch(url)
+            html = sched_fetch(fl, url)
+        except GT.GateAbort:
+            raise  # 1.6.2 review: Pause or a stop while the load waited: the check ends
         except GT.BreakerOpen as e:
             tries -= 1  # refused before the load: nothing reached FLICA
             why.append(f"{label} reads paused ({e})")
@@ -3475,6 +3913,8 @@ def schedule_check(fl, force=False):
                 sp = {"month": sp["month"], "updated": sp.get("updated", ""), "days": sp["days"], "items": sp["items"],
                       "totals": sp.get("totals") or {}, "src": "lookup", "read_ts": time.time()}
                 LOOKUP_PAGE.update(bd=f"{cur_month[5:7]}{cur_month[2:4]}", html=html, at=time.time())
+                note_lookup_months(html)
+                SCHED_READ["lookup_ok"] = True
         else:
             sp = parse_schedule(html)
         if not sp:
@@ -3485,7 +3925,7 @@ def schedule_check(fl, force=False):
             bfail(path, f"{label}: " + (f"FLICA answered '{said}'" if said else "not a schedule page"))
             if not S.get("sched_probe_logged"):
                 S["sched_probe_logged"] = True
-                log.info("schedule page not parsed (%s): %s", sched_label(url), text[:2000])
+                log.info("schedule page not parsed (%s): %s", sched_label(url), page_log(text[:2000]))
                 try:
                     cap_write("schedule.html", html)
                 except Exception:
@@ -3541,11 +3981,44 @@ def cap_on():
     return CAP.on()
 
 
-def cap_write(name, data):
+def cap_write(name, data, extra=()):
     """One page capture (name under the captures folder, e.g. 'schedule.html'): the admin's to CAPTURE_DIR as before
     (unmasked), a pilot's masked into his own folder or not at all. The path written, or None. Errors are the
-    caller's (each capture site keeps its own try)."""
-    return CAP.write(name, data, admin_dir=CAPTURE_DIR)
+    caller's (each capture site keeps its own try). extra: more strings a pilot's copy masks (names a parser read)."""
+    return CAP.write(name, data, admin_dir=CAPTURE_DIR, extra=extra)
+
+
+def page_log(text):
+    """1.6.2 review: FLICA page text for a log line. The admin's as before. A pilot's only while his captures are on
+    (and masked, as a capture); otherwise just its size. The pilot log filter (PilotLogMask) masks every line too."""
+    t = str(text or "")
+    if CAP.admin:
+        return t
+    if not cap_on():
+        return f"({len(t)} chars, not logged: page captures are off for this pilot)"
+    return CAPS.mask(t, cap_secrets())
+
+
+class PilotLogMask(logging.Filter):
+    """1.6.2 review: on a pilot, every log line (the add-on log the admin and Claude read) is masked as a capture is:
+    other pilots' names, employee numbers, e-mail addresses and phone numbers, and his own logins."""
+
+    def filter(self, record):
+        try:
+            msg = record.getMessage()
+            out = CAPS.mask(msg, cap_secrets())
+            if out != msg:
+                record.msg, record.args = out, ()
+        except Exception:  # noqa: BLE001 (a log line is never lost to the mask)
+            pass
+        return True
+
+
+for _f in list(log.filters):  # one per process (a re-import, as the tests do, replaces it)
+    if type(_f).__name__ == "PilotLogMask":
+        log.removeFilter(_f)
+if ROLES.role(INSTANCE) == ROLES.PILOT:
+    log.addFilter(PilotLogMask())
 
 
 IF.WRITE = cap_write
@@ -3889,7 +4362,7 @@ def close_in_check(fl, pot_all, full=False, moved_from=()):
     kind = classify(html)
     if kind != "ok":
         log.info("close-in %s: %s, skipped", b, kind)
-        return _close_in_cached(regular), kind if kind in STOP_KINDS else "ok"
+        return _close_in_cached(regular), kind if kind in STOP_KINDS + ("captcha",) else "ok"
     text = visible_text(html)
     cat = [c.lower() for c in (OPTS.get("category_check") or "").split()]
     if not (is_pot_page(html) and all(c in text for c in cat)):
@@ -4110,9 +4583,20 @@ def requests_check(fl):
             if b == ci:
                 done_first[b] = now_iso()
             read_ok = True
+        except GT.GateAbort:
+            raise
+        except GT.BreakerOpen as e:  # 1.6.2 review: left out by the gate: not a failed read; the rest still publishes
+            log.info("requests %s skipped: %s", b, e)
+            break
         except Exception as e:
             log.info("requests %s error: %s", b, e)
-    tb_ok = _trade_requests_check(fl, regular, trows_of, pushed, now)
+    try:
+        tb_ok = _trade_requests_check(fl, regular, trows_of, pushed, now)
+    except GT.GateAbort:
+        raise
+    except GT.BreakerOpen as e:  # 1.6.2 review: the Tradeboard path stopped or left out: the request list still publishes
+        log.info("trade requests skipped: %s", e)
+        tb_ok = False
     try:
         trade_check()  # FW-0064: a decision just read explains schedule changes; a pending one may match them
     except Exception as e:
@@ -4163,7 +4647,8 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
             odd = not rows and re.search(r"\btrade\b.*\bemp\b", text, re.I | re.S)
             if (not S.get("tbreq_captured", {}).get(n) or odd) and cap_on():
                 try:
-                    cap_write(f"tb_myrequests_{n}{'_latest' if odd else ''}.html", html)
+                    cap_write(f"tb_myrequests_{n}{'_latest' if odd else ''}.html", html,
+                              extra=[str(r.get("emp") or "") for r in rows])
                     S.setdefault("tbreq_captured", {})[n] = True
                     log.info("trade requests %s: %d rows, page captured; text: %s", n, len(rows), text[:600])
                 except Exception:
@@ -4189,6 +4674,8 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
                     pushed[SUB.push_key(r)] = now_iso()
             trows_of[n] = rows
             ok = True
+        except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
+            raise
         except Exception as e:
             log.info("trade requests %s error: %s", n, e)
     if ok:
@@ -4379,16 +4866,17 @@ def tradeboard_check(fl, full=False):
                     calls = [m.start() for m in re.finditer(r"\bA\s*\(", flat)]
                     i = calls[1] if len(calls) > 1 else (calls[0] if calls else 0)
                     log.info("tradeboard %s: no trip rows; %d A( calls; data: %s", n, len(calls),
-                             flat[max(0, i - 300):i + 5000])
+                             page_log(flat[max(0, i - 300):i + 5000]))
                     try:
-                        cap_write(f"tradeboard_{n}.html", fh + "\n<!--OTHER-->\n" + html)
+                        cap_write(f"tradeboard_{n}.html", fh + "\n<!--OTHER-->\n" + html,
+                                  extra=[str(r.get("poster") or "") for r in picks.values()])
                     except Exception:
                         pass
                 continue
             if not TB_PROBE["done"]:
                 TB_PROBE["done"] = True
                 log.info("tradeboard probe %s url=%s pickups=%s text=%s", n, url.split("?")[0],
-                         list(picks), visible_text(html)[:1500])
+                         page_log(str(list(picks))), page_log(visible_text(html)[:1500]))
             old = base.get(key)
             if old is None:
                 log.info("tradeboard baseline %s: %d pickup posts (no alert)", key, len(picks))
@@ -4409,6 +4897,8 @@ def tradeboard_check(fl, full=False):
                     enrich(fl, cached)
                     tb_cache[k] = cached
                 live[k] = cached
+        except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
+            raise
         except Exception as e:
             log.info("tradeboard %s error: %s", n, e)
     if read_ok:
@@ -4462,8 +4952,10 @@ def grid_check(fl, full=False):
             data = json.loads(raw)
             if not S.get("grid_json_logged"):
                 S["grid_json_logged"] = True
-                log.info("reserve grid json %s: %s", b, raw[:1500])
+                log.info("reserve grid json %s: %s", b, page_log(raw[:1500]))
             got = G.parse_grid_json(data, yr)
+        except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
+            raise
         except Exception as e:
             log.info("reserve grid json %s failed: %s", b, e)
             got = {}
@@ -4478,6 +4970,8 @@ def grid_check(fl, full=False):
                     log.info("reserve grid %s: json colors differ from the page, page wins", b)
                 if page:
                     got = {**got, **page}
+            except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
+                raise
             except Exception as e:
                 log.info("reserve grid render %s failed: %s", b, e)
         grid.update(got)
@@ -4563,6 +5057,8 @@ PILOT_PAIRINGS_MAX = 8
 
 # ---------------------------------------------------------------- 1.6.2 (Release A item 11): a pilot's name lookup
 LOOKUP_MIN_LETTERS = 3  # of the last name
+LOOKUP_PREFIX_MIN = 5  # 1.6.2 review: a last name matches whole; only this many letters or more also match its start
+LOOKUP_PER_H = 20  # 1.6.2 review: name queries an hour (the roster cannot be walked letter by letter)
 LOOKUP_MAX = 5  # matches shown (name and seat); more is no list: type more of the name
 PICK_TTL_S = 1800  # a pick-list entry stays usable this long
 LOOKUP_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z '.-]*(?:,\s*[A-Za-z][A-Za-z '.-]*)?$")  # letters only: no wildcard
@@ -4629,14 +5125,16 @@ def name_lookup(q):
     if len(lk) < LOOKUP_MIN_LETTERS:
         return [], f"Type at least {LOOKUP_MIN_LETTERS} letters of the last name (or the employee number)."
     rows = name_directory()
-    hits = [r for r in rows if _nkey(r["last"]).startswith(lk)]
-    exact = [r for r in hits if _nkey(r["last"]) == lk]
-    hits = exact or hits
+    exact = [r for r in rows if _nkey(r["last"]) == lk]
+    # 1.6.2 review: the start of a last name matches only from LOOKUP_PREFIX_MIN letters on (3-letter prefixes walked
+    # the whole roster); a whole last name always does, and wins over longer ones that start with it
+    hits = exact or ([r for r in rows if _nkey(r["last"]).startswith(lk)] if len(lk) >= LOOKUP_PREFIX_MIN else [])
     if fk:
         hits = [r for r in hits if not r["first"] or _nkey(r["first"]).startswith(fk)]
     hits.sort(key=lambda r: (r["name"], r["emp"]))
     if not hits:
-        return [], (f"No pilot named '{q}' on the award or seniority list on file. Type the employee number."
+        return [], (f"No pilot named '{q}' on the award or seniority list on file. Type the whole last name (or "
+                    f"{LOOKUP_PREFIX_MIN} letters of it), or the employee number."
                     if rows else "No award or seniority list is on file to look names up in. Type the employee number.")
     if len(hits) > LOOKUP_MAX:
         return [], (f"More than {LOOKUP_MAX} pilots match '{q}'. Type more of the last name, or Last, First, or the "
@@ -4680,19 +5178,29 @@ def pilot_cmd(payload):
             if digits.isdigit():
                 emp = digits
             else:
-                hits, why = name_lookup(q)
-                if len(hits) == 1:
-                    emp, d["name"] = hits[0]["emp"], hits[0]["name"]
-                else:
-                    picks = {pick_id(h["emp"]): {"emp": h["emp"], "name": h["name"], "at": time.time()} for h in hits}
-                    S["pilot_picks"] = picks
-                    save_state(S)
-                    pub_pilot({"emp": "", "name": q, "at": now_iso(),
-                               "status": why or f"{len(hits)} pilots match '{q}', pick one",
-                               "matches": [{"pick": k, "name": v["name"], "pos": h["seat"]}
-                                           for (k, v), h in zip(picks.items(), hits)],
-                               "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
+                now = time.time()
+                asked = [t for t in S.get("name_queries") or [] if 0 <= now - t < 3600]
+                if len(asked) >= LOOKUP_PER_H:  # 1.6.2 review: a per-hour cap, said as a status line
+                    pub_pilot({"emp": "", "name": q, "at": now_iso(), "matches": [], "month": "", "days": [],
+                               "items": [], "totals": {}, "updated": "", "fetched": "",
+                               "status": f"{LOOKUP_PER_H} name lookups in the last hour: the next one at "
+                                         f"{hst_hm(asked[len(asked) - LOOKUP_PER_H] + 3600)} HST (or type the "
+                                         "employee number)."})
                     return
+                S["name_queries"] = asked + [now]
+                hits, why = name_lookup(q)
+                # 1.6.2 review: even one match is a pick list (name and seat): its employee number is used, and shown,
+                # only once the pilot picks it
+                picks = {pick_id(h["emp"]): {"emp": h["emp"], "name": h["name"], "at": time.time()} for h in hits}
+                S["pilot_picks"] = picks
+                save_state(S)
+                pub_pilot({"emp": "", "name": q, "at": now_iso(),
+                           "status": why or (f"1 pilot matches '{q}': tap the name to read the month" if len(hits) == 1
+                                             else f"{len(hits)} pilots match '{q}', pick one"),
+                           "matches": [{"pick": k, "name": v["name"], "pos": h["seat"]}
+                                       for (k, v), h in zip(picks.items(), hits)],
+                           "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
+                return
         q = ""
     if not emp and q:  # 0.8.2 (Ryan): free text: an employee number, or a name from the crew directory
         if q.isdigit():
@@ -5449,6 +5957,10 @@ def crew_index_check(fl):
         at = local_now().isoformat(timespec="seconds")
         try:
             page = fl.fetch(url)
+        except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
+            if run:
+                run["pages"] -= 1
+            raise
         except Exception as e:
             if good:
                 log.info("crew index: re-read of %s failed (%s), last read kept; it stays queued", k, e)
@@ -6376,6 +6888,12 @@ def pickup_check(fl, full=False):
                     known = bool(seats)
                 ca = next((nm for pos, nm in crew if pos == "CA" and nm != "OPEN"), "")
                 who, ca = with_ids(who, ids), with_ids(f"CA {ca}", ids)[3:] if ca else ""
+        except GT.GateSkip:  # 1.6.2 review: left out for a pilot's budget: no try used, the rest wait for a later check
+            p["tries"] -= 1
+            break
+        except GT.BreakerOpen:  # given up (Pause) or the path stopped: not a failed read
+            p["tries"] -= 1
+            raise
         except Exception as e:
             log.info("pickup lookup %s skipped: %s", k, e)
         start = row_date(row.get("start") or (row.get("dates") or "").split("-")[0])
@@ -6419,10 +6937,17 @@ def pickup_check(fl, full=False):
         else:
             p["next"] = now + PICKUP_RETRY_S
     save_state(S)
-    if inflt_check(fl, FULL_MAX if full else INFLT_PER_CHECK):
-        done = True
-    if pilot_check(fl):  # 0.8.0: a tapped picker's month
-        done = True
+    try:
+        if inflt_check(fl, FULL_MAX if full else INFLT_PER_CHECK):
+            done = True
+    except GT.GateSkip:
+        pass  # 1.6.2 review: a pilot's budget is kept for the pot; the in-flight reads wait for a later check
+    was, RUN["optional"] = RUN["optional"], False  # a lookup the pilot asked for waits for his budget, never left out
+    try:
+        if pilot_check(fl):  # 0.8.0: a tapped picker's month
+            done = True
+    finally:
+        RUN["optional"] = was
     return done
 
 
@@ -6527,12 +7052,20 @@ def publish_pot(flat):
     pub("pot/state", {"count": len(flat), "pairings": [sensor_row(r) for r in flat[:60]]})
 
 
+CAPTCHA_STOP_NOTE = ("FLICA showed a CAPTCHA page on {where} (never answered); press Re-arm after you have opened "
+                     "FLICA yourself")
+
+
 def check(fl):
     """One pass. Returns next action hint. After Check now (FLAGS full) every cached read is
     refreshed too: schedule, own trip times, pot details, pending pickups, tradeboard."""
     full, FLAGS["full"] = FLAGS.get("full", False), False
     if not S.get("pot_urls"):
         urls = fl.discover_pot_urls()
+        if urls in ("captcha", "blocked"):  # 1.6.2 review: a stop, never a new login to get past the challenge
+            set_machine("stopped_unexpected", CAPTCHA_STOP_NOTE.format(where="the main menu") if urls == "captcha"
+                        else "FLICA showed a captcha/MFA/password page on the main menu")
+            return "stop"
         if urls is None:
             return "needs_login"
         if not urls:
@@ -6544,7 +7077,7 @@ def check(fl):
         log.info("pot pages: %s", list(urls))
     # 1.6.1: with no schedule stored, only the start's first pass forces the read (not every loop); then the back-off
     read_guard(schedule_check, fl, force=full or (not S.get("schedule") and not SCHED_FORCED["used"]))
-    read_guard(own_trip_times, fl, full)
+    read_guard(own_trip_times, fl, full, optional=True)  # 1.6.2 review: optional reads (a pilot's budget, GATE_KEEP)
     publish_working_flight()  # FW-0067
     versions_check()
     uploads_check()
@@ -6558,6 +7091,9 @@ def check(fl):
             return "killed"
         if kind == "blocked":
             set_machine("stopped_unexpected", "FLICA showed a captcha/MFA/password page")
+            return "stop"
+        if kind == "captcha":  # 1.6.2 review: a stop (it was a parse failure and a retry, loading it again)
+            set_machine("stopped_unexpected", CAPTCHA_STOP_NOTE.format(where="the open time pot"))
             return "stop"
         if kind == "expired":
             return "needs_login"
@@ -6595,8 +7131,8 @@ def check(fl):
         if not (S.get("close_in") or {}).get("verified"):
             close_in_scan(html, f"open time page {month}")  # FW-0034: a link to the close-in folder, if it has one
         read_guard(capture, fl, month, html)
-        read_guard(detail_probe, fl, pot)
-        read_guard(pot_details, fl, pot, full)
+        read_guard(detail_probe, fl, pot, optional=True)
+        read_guard(pot_details, fl, pot, full, optional=True)
         base = S["baseline"].get(month)
         new_keys = set()
         if base is None:
@@ -6631,6 +7167,9 @@ def check(fl):
     if ci_kind == "blocked":
         set_machine("stopped_unexpected", "FLICA showed a captcha/MFA/password page (close-in folder)")
         return "stop"
+    if ci_kind == "captcha":
+        set_machine("stopped_unexpected", CAPTCHA_STOP_NOTE.format(where="the close-in folder"))
+        return "stop"
     if ci_kind == "expired":
         return "needs_login"
     # drop months no longer published, and cached details of pairings no longer in any pot
@@ -6643,17 +7182,17 @@ def check(fl):
     flat.sort(key=lambda r: r.get("src") != "C")  # FW-0034: close-in trips (under 16 h to report) first
     publish_pot(flat)
     read_guard(email_check, fl, pot_all)
-    read_guard(pickup_check, fl, full)
+    read_guard(pickup_check, fl, full, optional=True)
     publish_finds()  # rows carry live CA / details now, so publish every check
-    read_guard(tradeboard_check, fl, full)
-    read_guard(requests_check, fl)  # 1.2.0: swap / add / drop request decisions -> push
-    read_guard(grid_check, fl, full)
+    read_guard(tradeboard_check, fl, full, optional=True)
+    read_guard(requests_check, fl, optional=True)  # 1.2.0: swap / add / drop request decisions -> push
+    read_guard(grid_check, fl, full, optional=True)
     swap_scan(flat)
     drop_scan()
     if FLAGS.pop("swap_map", False) and has("auto_swap"):
         read_guard(swap_map_probe, fl)
     publish_tickets()  # 0.10.1: cheap folder re-scan, the other instance may have written
-    cr = read_guard(crew_index_check, fl, default="ok")  # 0.10.1: at most CREW_PER_CHECK pages per check
+    cr = read_guard(crew_index_check, fl, default="ok", optional=True)  # 0.10.1: at most CREW_PER_CHECK pages per check
     if cr != "ok":
         return cr
     pub("last_check", now_iso())
@@ -7311,9 +7850,25 @@ def portal_spool_once():
             portal_result(cid, False, "not republished")
             continue
         log.info("portal command %s accepted", sub)
-        portal_result(cid, True, "")
+        portal_result(cid, True, freq_clamp_note(sub, payload))
         n += 1
     return n
+
+
+def freq_clamp_note(sub, payload):
+    """1.6.2 review: a check frequency the portal passed (contract 1's range) but this pilot's Watcher moves into his
+    own (FREQ_LIMITS, e.g. hunt 60 s -> 120 s): the result says so instead of a bare ok. '' otherwise."""
+    key = {"freq/normal_min/set": "normal_min", "freq/hunt_s/set": "hunt_s"}.get(sub)
+    if not key:
+        return ""
+    try:
+        v = int(round(float(payload)))
+    except (ValueError, TypeError, OverflowError):
+        return ""
+    lo, hi = FREQ_LIMITS[key]
+    got = max(lo, min(hi, v))
+    unit = "min" if key == "normal_min" else "s"
+    return f"set to {got} {unit}, the {'fastest' if got == lo else 'slowest'} this Watcher allows" if got != v else ""
 
 
 def spool_thread():
@@ -7400,10 +7955,27 @@ def yield_note(cool_s):
     return f"back in {int(cool_s / 60)} min"
 
 
+def captures_cleanup():
+    """1.6.2 review, once (DB caps_cleanup_v): 1.6.1 wrote a pilot's pages into the admin's captures folder and an
+    unmasked login screenshot into the pilot's folder. The admin deletes those names from his folder; each pilot
+    deletes his screenshot, makes his captures folder 0700 and prunes it. Only a count is logged."""
+    if DB.get("caps_cleanup_v") == 1:
+        return 0
+    try:
+        n = CAPS.cleanup_admin(CAPTURE_DIR) if CAP.admin else CAP.cleanup_pilot()
+    except Exception as e:  # noqa: BLE001 (never stops a start)
+        log.info("captures cleanup skipped: %s", type(e).__name__)
+        return 0
+    DB.put("caps_cleanup_v", 1)
+    log.info("captures cleanup (1.6.2): %d old file%s deleted", n, "" if n == 1 else "s")
+    return n
+
+
 def main():
     global MQ
     migrate_swap_mode()  # FW-0028: before on_connect publishes the mode
     enforce_role()
+    captures_cleanup()  # 1.6.2 review: what 1.6.1 left of a pilot in the admin's folder, his unmasked screenshot
     freq_migrate()  # 1.6.2: before on_connect publishes the frequencies
     MQ = mqtt_start()
     start_upload_janitor()  # FW-0066: chunks arrive as soon as MQTT is up, even while a second pilot waits for settings
@@ -7487,8 +8059,16 @@ def main():
         while True:
             st = S.get("machine", "idle")
             if FLAGS["rearm"]:
-                FLAGS["rearm"] = False
                 if st.startswith("stopped") or st in ("yielded", "backoff"):
+                    at = flica_refused_at()
+                    if at is not None:  # 1.6.2 review: FLICA refused these details: no login until others are saved
+                        FLAGS["rearm"] = False
+                        set_machine(st, flica_refused_note(at))
+                        log.info("re-arm: FLICA refused these login details; no login until others are saved")
+                        continue
+                    if login_deferred(st, "Re-arm pressed"):  # a pilot's logins are LOGIN_MIN_GAP_S apart
+                        continue  # FLAGS rearm stays set: the login runs once the wait is over
+                    FLAGS["rearm"] = False
                     S["kills"] = []
                     S["pot_urls"] = {}
                     S["parse_fail"] = 0
@@ -7498,6 +8078,7 @@ def main():
                         log.info("re-arm: pot header fingerprints cleared, re-learned on next check")
                     try_login(fl, "re-arm")
                     continue
+                FLAGS["rearm"] = False
             if st.startswith("stopped"):
                 no_next_check()
                 sleep(3600)
@@ -7509,7 +8090,11 @@ def main():
                 sleep(3600)
                 continue
             if st == "paused":
-                if not try_login(fl, "un-pause"):
+                if is_pilot():
+                    # 1.6.2 review: a pilot's un-pause checks with the session he has (its cookies are kept); a new
+                    # login follows only if that check finds the session gone (needs_login, the back-off below)
+                    set_machine("hunting" if FLAGS["hunt"] else "idle", "un-paused")
+                elif not try_login(fl, "un-pause"):
                     continue
                 st = S["machine"]
             if st == "yielded":
@@ -7517,12 +8102,16 @@ def main():
                 if time.time() < wait_until:
                     sleep_announced(wait_until - time.time())
                     continue
+                if login_deferred(st):
+                    continue
                 if not try_login(fl, "after yield cooldown"):
                     continue
             if st == "backoff":
                 wait_until = S.get("relogin_at", 0)
                 if time.time() < wait_until:
                     sleep_announced(wait_until - time.time())
+                    continue
+                if login_deferred(st):
                     continue
                 try_login(fl, f"backoff step {S.get('relogin_streak', 0)}")
                 continue
@@ -7541,15 +8130,25 @@ def main():
             last_month_check = mk
             # 1.6.2: a check starts once GATE_CHECK_TOKENS loads fit the budget (a pilot's 100 an hour, the host's 480);
             # until then the loop waits (WAKE-able: pause and Check now are still read) and the state note says so
-            wait, why = GATE.free_in(min(GATE_CHECK_TOKENS, GATE.budget or GATE_CHECK_TOKENS))
+            wait, why = GATE.free_in(min(check_tokens(), GATE.budget or GATE_CHECK_TOKENS))
             if wait > 0:
                 gate_note(why, time.time() + wait)
                 sleep_announced(wait)
                 continue
             if HEALTH["gate"]:
                 gate_note("", None)
+            floor = check_floor_wait()  # 1.6.2 review: a pilot's checks start at least 120 s apart, whatever woke us
+            if floor > 0:
+                sleep_announced(floor)
+                continue
+            WAKE_DUE["at"] = 0.0
+            S["check_started_ts"] = time.time()
+            RUN.update(check=True, aborted="", skipped=set())
             try:
                 res = check(fl)
+            except GT.GateAbort as e:  # Pause or a stop while a load waited: the check ends, nothing more loaded
+                log.info("check ended: %s", e)
+                continue
             except Exception as e:
                 log.warning("check error: %s", e)
                 S["net_fail"] = S.get("net_fail", 0) + 1
@@ -7557,6 +8156,8 @@ def main():
                     set_machine("stopped_unexpected", f"3 check errors in a row: {e}")
                 sleep_announced(gap())
                 continue
+            finally:
+                RUN["check"] = False
             S["net_fail"] = 0
             if res == "needs_login":
                 pub("session", "OFF")
@@ -7565,9 +8166,9 @@ def main():
                     set_machine("stopped_unexpected",
                                 f"session lost {streak} times in a row with no good check between; parked")
                     continue
-                wait = BACKOFF_MIN[streak]
+                wait = max(BACKOFF_MIN[streak], round(login_wait() / 60))  # 1.6.2 review: a pilot's login floor too
                 S["relogin_streak"] = streak + 1
-                S["relogin_at"] = time.time() + wait * 60
+                S["relogin_at"] = time.time() + max(wait * 60, login_wait())
                 set_machine("backoff", f"session expired, one login attempt in {wait} min "
                                        f"(step {streak + 1}/{len(BACKOFF_MIN)})")
                 continue

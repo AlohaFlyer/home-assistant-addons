@@ -7,6 +7,8 @@
 // allow (their min and max attributes: a pilot's hunt interval is 120 to 300 s, roles.PILOT_FREQ_LIMITS) and, in the
 // pilot portal (FW_PORTAL, turned on only in the portal's copy: portal.portal_card), only what the portal contract
 // passes (hunt 5 to 90 s): with nothing left the interval shows as text. No Home Assistant steps in the portal.
+// 1.6.2 review: the state note (a FLICA budget wait, a stopped read path) shows while idle or hunting, and a budget
+// wait reads "Waiting for the FLICA budget until HH:MM HST", never "Stuck. Press Re-arm".
 const FW_PORTAL = false;
 const FC_HUNT = [5, 10, 15, 20, 30, 45, 60, 90, 120, 150, 180, 240, 300];  // seconds (number.flight_watcher_hunt_check_every)
 const FC_NORM = [1, 2, 3, 4, 5, 6, 8, 10, 15, 20];       // minutes (number.flight_watcher_normal_check_every 1-20)
@@ -106,15 +108,26 @@ class FlightWatcherClockCard extends HTMLElement {
     const hs = parseFloat(this._st("number.flight_watcher_hunt_check_every"));
     const age = isNaN(lc) ? null : (now - lc) / 1000;
     const lim = hunt ? 600 : Math.max(1800, (isNaN(nmv) ? 20 : nmv) * 150);
-    const blind = age != null && age > lim && !["paused", "yielded"].includes(st);
+    // 1.6.2 review: a wait for the FLICA budget (next_check ahead, the gate's note) is no stuck Watcher (Re-arm does
+    // nothing for it); the gate's and the breakers' note shows in the idle and hunting lines
+    const gateWait = /^FLICA (budget|host limit)/.test(note) && !isNaN(nc) && nc > now;
+    const blind = age != null && age > lim && !["paused", "yielded"].includes(st) && !gateWait;
     let cls = "ok", label = "", msg = "";
     const cap = (t) => String(t || "").replace(/^[a-z]/, (c) => c.toUpperCase());
+    const quiet = /^(logged in|starting|un-paused|new settings)/i.test(note);
+    const extra = note && !quiet ? " " + cap(note).replace(/\.?$/, ".") : "";
+    const hm = (t) => this._time(new Date(t)).slice(0, 5);
     if (["unavailable", "unknown"].includes(st)) { cls = "err"; label = FW_PORTAL ? "Watcher not answering." : "App not running."; msg = FW_PORTAL ? "It normally restarts itself; if this stays red, ask the Flight Watcher admin to restart it." : "It normally restarts itself; if this stays red, restart Flight Watcher in Settings > Apps."; }
     else if (st === "needs_settings") { cls = "err"; label = "Needs your FLICA login."; msg = "Enter your FLICA username and password on the Settings tab; the Watcher logs in by itself."; }
     else if (st === "paused" || paused) { cls = "warn"; label = "Paused."; msg = "Not watching FLICA. Turn Pause off when you have signed out of FLICA."; }
+    else if (["idle", "hunting"].includes(st) && gateWait) {
+      cls = "info"; label = "Waiting.";
+      const rest = note.split("; ").slice(1).join("; ");
+      msg = `Waiting for the FLICA ${/^FLICA host/.test(note) ? "host limit" : "budget"} until ${hm(nc)} HST.` + (rest ? " " + cap(rest).replace(/\.?$/, ".") : "");
+    }
     else if (["idle", "hunting"].includes(st) && blind) { cls = "err"; label = "Stuck."; msg = `No check for ${this._dur(age)}. Press Re-arm.`; }
-    else if (st === "hunting") { cls = "ok"; label = "Hunting."; msg = `Checking about every ${isNaN(hs) ? "?" : Math.round(hs)} s.`; }
-    else if (st === "idle") { cls = "ok"; label = "Watching."; msg = `Checking about every ${isNaN(nmv) ? "?" : Math.round(nmv)} min.`; }
+    else if (st === "hunting") { cls = extra ? "info" : "ok"; label = "Hunting."; msg = `Checking about every ${isNaN(hs) ? "?" : Math.round(hs)} s.` + extra; }
+    else if (st === "idle") { cls = extra ? "info" : "ok"; label = "Watching."; msg = `Checking about every ${isNaN(nmv) ? "?" : Math.round(nmv)} min.` + extra; }
     else if (st === "yielded") { cls = "info"; label = "Stepped aside."; msg = "Someone signed into FLICA with your account. " + cap(note); }
     else if (st === "backoff") { cls = "info"; label = "Reconnecting."; msg = cap(note); }
     else { cls = "err"; label = "Stopped, needs you."; msg = cap(note || st.replace(/_/g, " ")) + ". Fix that, then press Re-arm."; }

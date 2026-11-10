@@ -81,3 +81,72 @@ def test_schedule_card_draws_the_awarded_line_labeled_and_the_read_status():
     r = got["read"]
     assert r["awl"] is None and r["rsl"] is None and r["trip"] and r["upd"]  # a read schedule: as before
     assert "flight_watcher/improved/set" not in calls  # the award alone never reports an Improved-Pay-Gross
+
+
+# ---------------------------------------------------------------- 1.6.2 review
+def _render(cases, src=None):
+    sync_api = pytest.importorskip("playwright.sync_api")
+    page = ("<!doctype html><html><body><script>customElements.define('ha-card', class extends HTMLElement {});"
+            "window.calls = [];</script><script>" + (src or _src()) + "</script></body></html>")
+    with sync_api.sync_playwright() as p:
+        b = _chromium(p)
+        if not b:
+            pytest.skip("no Chromium for Playwright")
+        try:
+            pg = b.new_page(viewport={"width": 390, "height": 844})
+            pg.clock.set_fixed_time("2026-11-10T11:30:00Z")
+            pg.set_content(page)
+            return {name: pg.evaluate(js, st) for name, js, st in cases}
+        finally:
+            b.close()
+
+
+READ_JS = """(h) => { window.calls = []; const c = document.createElement('flight-watcher-schedule-card');
+  c.setConfig({}); document.body.appendChild(c);
+  c.hass = {states: h, callService: async (d, s, data) => window.calls.push([d, s, data])};
+  const r = c.shadowRoot, q = (s) => r.querySelector(s);
+  const out = {text: r.textContent, ubn: q('.ubn') && q('.ubn').textContent, tot: (q('.tot') || {}).textContent || '',
+               improved: window.calls.some((x) => (x[2].topic || '').endsWith('improved/set'))};
+  const pay = [...r.querySelectorAll('.pay')].find((x) => x.dataset.btn);
+  if (pay) { pay.click(); const er = q('.info .er'); out.box = q('.info').style.display; out.er = !!er;
+    if (er) er.click(); out.after = q('.info') ? q('.info').style.display : 'gone';
+    out.erCalls = window.calls.filter((x) => x[2].entity_id === 'input_text.flight_watcher_er_trips').map((x) => x[2].value); }
+  c.remove(); return out; }"""
+
+
+def _read(prefs=True, doh=""):
+    st = _states({"2026-11": {"items": _award()["items"], "days": _award()["days"], "totals": {"credit": "86:32"},
+                              "updated": "Nov 9, 2026"}}, {"2026-11": {"count": 2, "versions": [
+                                  _award(), dict(_award(), ver="11.002", award=False)]}},
+                 {"ok": True, "why": ""}, "Nov 9, 2026")
+    st["sensor.flight_watcher_state"]["attributes"]["doh"] = doh
+    st["sensor.flight_watcher_own_trip_times"] = {"state": "1", "last_updated": "a", "attributes": {"trips": {
+        "H9101|2026-11-03": {"blk": "10:00", "credit": "12:00", "report": "08:00", "last_arr": "18:00"}}}}
+    if prefs:
+        for k, v in (("federal_tax_pct", "22.0"), ("state_tax_pct", "7.0"), ("longevity_year", "3.0")):
+            st[f"input_number.flight_watcher_{k}"] = {"state": v, "last_updated": "a", "attributes": {}}
+    return st
+
+
+def test_no_pay_settings_and_no_doh_give_the_banner_and_no_rate():
+    got = _render([("unset", READ_JS, _read(prefs=False)), ("set", READ_JS, _read(prefs=True))])
+    u = got["unset"]
+    assert u["ubn"] and u["ubn"].startswith("Set your tax and longevity in Pay settings")
+    assert "longevity year" in u["ubn"] and "federal tax" in u["ubn"] and "no pay is figured" in u["ubn"]
+    assert "$307.78" not in u["text"] and "year 12" not in u["text"] and not u["improved"]
+    assert "set your longevity year" in u["tot"] and "Pay-Gross" not in u["tot"]
+    s = got["set"]
+    assert s["ubn"] is None and "$" in s["tot"] and s["improved"]  # with a year: pay and Improved-Pay-Gross as before
+
+
+def test_the_ro15_toggle_inside_the_pay_box_can_be_tapped():
+    r = _render([("pay", READ_JS, _read())])["pay"]
+    assert r["box"] == "block" and r["er"] and r["erCalls"] == ["+H9101|2026-11-03"]
+
+
+def test_the_award_only_view_labels_its_totals_award_not_flica():
+    award = _states({}, {"2026-11": {"count": 1, "current": "11.001", "awarded": "11.001", "versions": [_award()]}},
+                    FAILED)
+    got = _render([("award", READ_JS, award), ("read", READ_JS, _read())])
+    assert "award 86:32" in got["award"]["tot"] and "FLICA 86:32" not in got["award"]["tot"]
+    assert "FLICA 86:32" in got["read"]["tot"]  # a FLICA read: still FLICA's figure

@@ -50,6 +50,21 @@ window.sent = [];
     c._paint(true);
     r.overdue = text();
     r.wide = document.documentElement.scrollWidth;
+    // 1.6.2 review: a card opened cold on a lookup already loading: timed from the sensor's 'at', no past time promised
+    const cold = (at, next) => {
+      const k = document.createElement("flight-watcher-pilot-card-james");
+      k.setConfig({ entity: ENT });
+      document.body.appendChild(k);
+      k.scrollIntoView = () => {};
+      k.hass = { states: { [ENT]: { state: "x", last_updated: at, attributes: { emp: "10004", name: "Roe", status: "loading",
+                 month: "", at } }, "sensor.flight_watcher_james_next_check": { state: next },
+                 "sensor.flight_watcher_james_state": { state: "hunting" } }, callService: () => {} };
+      const t = k.shadowRoot.querySelector(".body").innerText;
+      k.remove();
+      return t;
+    };
+    r.coldOld = cold(new Date(Date.now() - 600000).toISOString(), new Date(Date.now() - 240000).toISOString());
+    r.coldNew = cold(new Date(Date.now() - 20000).toISOString(), new Date(Date.now() - 10000).toISOString());
     return r;
   });
   await b.close();
