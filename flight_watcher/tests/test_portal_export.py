@@ -87,8 +87,7 @@ def test_portal_ids_exact_for_a_pilot(portal_pilot):
 def test_export_reads_only_portal_ids_and_masks(portal_pilot):
     W, ha = portal_pilot("pilot2", states=_states())
     assert W.portal_start(threads=False)
-    seeded = _asked(ha)
-    assert sorted(seeded) == sorted(PREF_IDS)  # the one-time prefs seed reads the four helpers, nothing else
+    assert _asked(ha) == []  # 1.6.2: the pref helpers are never read (no seed from HA any more)
     ha.urls.clear()
     W.portal_export_once(full=True)
     asked = _asked(ha)

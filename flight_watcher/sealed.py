@@ -65,7 +65,7 @@ def open_sealed(key, enc, now=None):
     if not isinstance(enc, dict) or enc.get("v") != 1:
         raise SealError("unknown sealed format")
     if enc.get("kid") and enc["kid"] != public_info(key)["kid"]:
-        raise SealError("sealed for another key (reload the dashboard)")
+        raise SealError("sealed for another key (reload this page and save again)")
     try:
         aes = key.decrypt(base64.b64decode(enc["key"]), padding.OAEP(
             mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None))

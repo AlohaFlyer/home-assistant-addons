@@ -1,6 +1,8 @@
-"""1.6.0 (FW-0061): a portal pilot's pay and tax prefs (pref/set, prefs.json; PORTAL_CONTRACT.md 5.3): bounds,
-precedence over the HA helpers in the Watcher's own pay line, a one-time seed from the helpers, and the admin never
-reading a prefs.json. Synthetic values only."""
+"""1.6.0 (FW-0061): a portal pilot's pay and tax prefs (pref/set, prefs.json; PORTAL_CONTRACT.md 5.3): bounds, the
+Watcher's own pay line reading them, and the admin never reading a prefs.json. 1.6.2 (Release A item 12): a portal
+pilot's HA helpers are never read (they were deleted with his HA dashboard), and the values the 1.6.0 seed copied from
+helpers that were never set (federal 0 %, state 0 %, longevity year 1) are flagged once for the card. Synthetic values
+only."""
 import json
 import os
 import stat
@@ -66,39 +68,6 @@ def test_pref_set_saved_private_and_marked(portal_pilot, caplog):
     assert "24.5" not in caplog.text  # the value is not logged
 
 
-def test_prefs_first_then_helpers(portal_pilot):
-    W, ha = portal_pilot("pilot2", states=_helpers(P))
-    W.portal_start(threads=False)  # seeds 30 / 5 / 4 / the ER list from the helpers
-    W.pref_cmd(json.dumps({"key": "federal_tax_pct", "value": 20}))
-    W.pref_cmd(json.dumps({"key": "longevity_year", "value": 9}))
-    W.pref_cmd(json.dumps({"key": "er_trips", "value": "-H9002|2026-11-24"}))
-    ha.states = _helpers(P, fed="40.0", st="9.0", yr="2.0", er="+H7777|2026-11-01")  # the helpers moved on
-    W.TAX["pct"] = None
-    assert W.tax_pct() == 25.0  # 20 from prefs + 5 seeded from the state helper
-    rate, yr, er = W.pay_settings()
-    assert yr == 9 and er == ["-H9002|2026-11-24"] and rate
-    # a pref that is not set falls back to its helper
-    d = json.load(open(W.PREFS_FILE))
-    d["values"].pop("state_tax_pct")
-    json.dump(d, open(W.PREFS_FILE, "w"))
-    W.TAX["pct"] = None
-    assert W.tax_pct() == 29.0  # 20 + the helper's 9
-
-
-def test_seed_once(portal_pilot):
-    W, ha = portal_pilot("pilot2", states=_helpers(P, fed="22.3", yr="13.0"))  # two helper values out of bounds
-    W.portal_start(threads=False)
-    d = json.load(open(W.PREFS_FILE))
-    assert d["values"] == {"state_tax_pct": 5, "er_trips": "+H9001|2026-11-20"} and d["seeded"]
-    asked = list(ha.urls)
-    import sys
-    sys.modules.pop("watcher", None)
-    W, ha = portal_pilot("pilot2", states=_helpers(P, fed="11.0"))  # a restart: the file exists
-    W.portal_start(threads=False)
-    assert ha.urls == [] and json.load(open(W.PREFS_FILE))["values"]["state_tax_pct"] == 5
-    assert sorted(u.rsplit("/", 1)[1] for u in asked) == sorted(_helpers(P))
-
-
 def test_state_json_shows_prefs(portal_pilot):
     W, _ = portal_pilot("pilot2")
     W.portal_start(threads=False)
@@ -146,80 +115,69 @@ def test_a_huge_integer_is_a_refusal_not_an_overflow(portal_pilot):
     assert open(W.PREFS_FILE).read() == before
 
 
-def test_seed_waits_for_home_assistant(portal_pilot, caplog):
-    """The first portal start meets an HA restart: nothing is seeded (no prefs.json, logged once) and the next export
-    sweep seeds all four once HA answers, instead of the seed being used up empty."""
-    import logging
+def _no_helper_asked(ha):
+    return not [u for u in ha.urls if u.endswith(("_tax_pct", "_longevity_year", "_er_trips"))]
+
+
+def test_prefs_are_read_and_the_helpers_never(portal_pilot):
+    """1.6.2: the helpers exist here (and differ) but are never asked for: not at the start, not by the pay line; a
+    pref that is not set is the code default (federal 22 %, state 0 %, the DOH's year, no ER trips)."""
     W, ha = portal_pilot("pilot2", states=_helpers(P))
-    ha.down = True
-    with caplog.at_level(logging.INFO, logger="flight_watcher"):
-        W.portal_start(threads=False)
-        W.portal_export_once(full=True)
-        W.portal_export_once(full=True)
-    assert not os.path.exists(W.PREFS_FILE)
-    assert caplog.text.count("portal prefs not seeded yet") == 1
-    assert W.pref_states()[f"input_number.{P}_federal_tax_pct"]["state"] == "unknown"
-    ha.down = False
+    W.portal_start(threads=False)
     W.portal_export_once(full=True)
-    d = json.load(open(W.PREFS_FILE))
-    assert d["values"] == {"federal_tax_pct": 30, "state_tax_pct": 5, "longevity_year": 4,
-                           "er_trips": "+H9001|2026-11-20"} and d["seeded"]
-    assert W.pref_states()[f"input_number.{P}_federal_tax_pct"]["state"] == "30.0"
+    assert _no_helper_asked(ha)
+    W.pref_cmd(json.dumps({"key": "federal_tax_pct", "value": 20}))
+    W.pref_cmd(json.dumps({"key": "longevity_year", "value": 9}))
+    W.pref_cmd(json.dumps({"key": "er_trips", "value": "-H9002|2026-11-24"}))
     W.TAX["pct"] = None
-    assert W.tax_pct() == 35.0
-    ha.urls.clear()
-    W.portal_export_once(full=True)
-    assert not [u for u in ha.urls if u.endswith(("_tax_pct", "_longevity_year", "_er_trips"))]  # done: never again
+    assert W.tax_pct() == 20.0  # 20 from prefs + the code's 0 for state (never the helper's 5)
+    rate, yr, er = W.pay_settings()
+    assert yr == 9 and er == ["-H9002|2026-11-24"] and rate
+    d = json.load(open(W.PREFS_FILE))
+    d["values"] = {}
+    json.dump(d, open(W.PREFS_FILE, "w"))
+    W.TAX["pct"] = None
+    assert W.tax_pct() == 22.0
+    assert W.pay_settings()[2] == []
+    assert _no_helper_asked(ha)
 
 
-@pytest.mark.parametrize("bad", ["unknown", "unavailable"])
-def test_seed_waits_while_a_helper_is_not_loaded(portal_pilot, bad):
-    W, ha = portal_pilot("pilot2", states=_helpers(P, st=bad))
-    W.portal_start(threads=False)
-    assert not os.path.exists(W.PREFS_FILE)
-    ha.states = _helpers(P)
-    W.portal_export_once(full=True)
-    assert json.load(open(W.PREFS_FILE))["values"]["state_tax_pct"] == 5
+def _planted(W, values, gap_s=0.00002, seeded="2026-11-09T20:14:01.051153+00:00"):
+    """prefs.json as the 1.6.0 seed left it: each value stamped a few microseconds before 'seeded' (gap_s apart)."""
+    from datetime import datetime, timedelta
+    t = datetime.fromisoformat(seeded)
+    upd = {k: (t - timedelta(seconds=gap_s)).isoformat() for k in values}
+    json.dump({"values": values, "updated": upd, "seeded": seeded}, open(W.PREFS_FILE, "w"))
 
 
-def test_seed_takes_a_never_set_er_list_as_empty(portal_pilot):
-    """HA keeps an input_text with no initial value that was never set at 'unknown' for good (restored as such after
-    a restart): a pilot who never tapped an ER toggle. It seeds as the empty list instead of holding the seed (and the
-    three number prefs) back on every sweep; the portal and the Watcher's own pay line then agree."""
-    W, ha = portal_pilot("pilot2", states=_helpers(P, er="unknown"))
+def test_values_from_never_set_helpers_are_flagged_once(portal_pilot):
+    W, ha = portal_pilot("pilot2")
+    _planted(W, {"federal_tax_pct": 0, "state_tax_pct": 0, "longevity_year": 1, "er_trips": ""})
     W.portal_start(threads=False)
     d = json.load(open(W.PREFS_FILE))
-    assert d["values"] == {"federal_tax_pct": 30, "state_tax_pct": 5, "longevity_year": 4, "er_trips": ""}
-    assert d["seeded"]
+    assert d["unconfirmed"] == ["federal_tax_pct", "longevity_year", "state_tax_pct"] and d["checked"]
+    assert d["values"]["federal_tax_pct"] == 0  # kept as they are, only flagged
     st = W.pref_states()
-    assert st[f"input_number.{P}_federal_tax_pct"]["state"] == "30.0" and st[f"input_text.{P}_er_trips"]["state"] == ""
-    W.TAX["pct"] = None
-    assert W.tax_pct() == 35.0
-    _, yr, er = W.pay_settings()
-    assert yr == 4 and er == []
-    ha.urls.clear()
-    W.portal_export_once(full=True)
-    assert not [u for u in ha.urls if u.endswith(("_tax_pct", "_longevity_year", "_er_trips"))]  # done: never again
-
-
-def test_seed_with_a_missing_helper_completes(portal_pilot):
-    helpers = _helpers(P)
-    helpers.pop(f"input_number.{P}_longevity_year")  # 404: nothing to seed for it
-    W, ha = portal_pilot("pilot2", states=helpers)
-    W.portal_start(threads=False)
+    assert st[f"input_number.{P}_federal_tax_pct"]["attributes"]["unconfirmed"] is True
+    assert "unconfirmed" not in st[f"input_text.{P}_er_trips"]["attributes"]
+    W.pref_cmd(json.dumps({"key": "federal_tax_pct", "value": 0}))  # the card's Keep these, or his own pick
     d = json.load(open(W.PREFS_FILE))
-    assert d["values"] == {"federal_tax_pct": 30, "state_tax_pct": 5, "er_trips": "+H9001|2026-11-20"}
-    assert d["seeded"]
-
-
-def test_a_pref_set_before_the_seed_is_kept(portal_pilot):
-    W, ha = portal_pilot("pilot2", states=_helpers(P))
-    ha.down = True
+    assert d["unconfirmed"] == ["longevity_year", "state_tax_pct"]
+    assert "unconfirmed" not in W.pref_states()[f"input_number.{P}_federal_tax_pct"]["attributes"]
+    import sys
+    sys.modules.pop("watcher", None)
+    W, ha = portal_pilot("pilot2")  # a restart: checked once only, what he confirmed stays confirmed
     W.portal_start(threads=False)
-    W.on_message(W.MQ, None, Msg(f"{P}/pref/set", '{"key": "federal_tax_pct", "value": 24.5}'))
-    assert "seeded" not in json.load(open(W.PREFS_FILE))
-    ha.down = False
-    W.portal_export_once(full=True)
-    d = json.load(open(W.PREFS_FILE))
-    assert d["values"] == {"federal_tax_pct": 24.5, "state_tax_pct": 5, "longevity_year": 4,
-                           "er_trips": "+H9001|2026-11-20"} and d["seeded"]
+    assert json.load(open(W.PREFS_FILE))["unconfirmed"] == ["longevity_year", "state_tax_pct"]
+    assert _no_helper_asked(ha)
+
+
+def test_values_the_pilot_set_are_not_flagged(portal_pilot):
+    W, _ = portal_pilot("pilot2")
+    _planted(W, {"federal_tax_pct": 0, "state_tax_pct": 4.25, "longevity_year": 7}, gap_s=60)  # a pref/set before
+    W.portal_start(threads=False)
+    assert json.load(open(W.PREFS_FILE))["unconfirmed"] == []
+    W, _ = portal_pilot("pilot3")
+    _planted(W, {"federal_tax_pct": 24, "state_tax_pct": 4.25, "longevity_year": 7})  # seeded, not at the minimum
+    W.portal_start(threads=False)
+    assert json.load(open(W.PREFS_FILE))["unconfirmed"] == []

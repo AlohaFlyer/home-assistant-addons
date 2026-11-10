@@ -710,8 +710,9 @@ def check_pref(payload, cid=None):
 
 
 def check_freq(key, payload, cid=None):
-    """freq/<key>/set (key normal_min or hunt_s): a finite number within roles.FREQ_LIMITS[key], the slider's range
-    (the handler rounds it); 'inf', 'nan', '1e999' or text are refused. Returns the number."""
+    """freq/<key>/set (key normal_min or hunt_s): a finite number within roles.FREQ_LIMITS[key], contract 1's range
+    (the handler rounds it and clamps it into the Watcher's own, roles.WATCHER_FREQ_LIMITS, which is wider: normal up
+    to 90 min, Release C); 'inf', 'nan', '1e999' or text are refused. Returns the number."""
     lo, hi = roles.FREQ_LIMITS[key]
     try:
         v = float(payload)
@@ -762,12 +763,21 @@ def _j(*parts):
     return " ".join(str(x) for x in parts if x not in (None, "", [], False)).strip()
 
 
+# 1.6.2 (Release A item 14): a recall verdict in the words the Recall/O75 card shows for it
+RECALL_WORDS = {"MISSED": "SHOULD HAVE BEEN YOU", "POSSIBLE": "CHECK", "NO": "NO MISS"}
+
+
 def event_text(kind, d):
-    """(title, body) of an event from its data alone (event_data), so neither can carry a field data does not."""
+    """(title, body) of an event from its data alone (event_data), so neither can carry a field data does not.
+    1.6.2: the words match the pages they open (a recall verdict as the Recall card names it, no internal rule id, the
+    layover even without days, a failed login that points at the Settings save). The new pairing text is pinned by the
+    contract sample (tests/fixtures/portal_contract_v1.json) and stays as it is."""
     when = d.get("dates") or d.get("start") or d.get("date") or ""
     facts = []
     if d.get("days"):
         facts.append(f"{d['days']} days" + (f", layover {d['layover']}" if d.get("layover") else ""))
+    elif d.get("layover") and kind == "rule_match":
+        facts.append(f"Layover {d['layover']}")
     for k, label in (("report", "Report"), ("release", "Release"), ("credit", "Credit"), ("block", "Block"),
                      ("fit", "Fit"), ("far", "FAR 117"), ("comm", "Commute"), ("month_rule", "Month")):
         if d.get(k) not in (None, ""):
@@ -777,10 +787,11 @@ def event_text(kind, d):
     if kind == "new_pairing":
         return _j("New pairing", d.get("pairing"), when), ". ".join(facts)
     if kind == "rule_match":
-        return _j("Rule", d.get("rule_id"), "matched", d.get("pairing"), when), ". ".join(facts)
+        return _j("Your alert rule matched", d.get("pairing"), when), ". ".join(facts)
     if kind == "recall_miss":
-        return (_j("Recall/O75", d.get("verdict"), d.get("date"), d.get("pairing")),
-                "Check it on the Recall tab (PWA 22.G.2).")
+        v = d.get("verdict")
+        return (_j("Recall/O75", RECALL_WORDS.get(v, v), d.get("date"), d.get("pairing")),
+                "Check it on the Recall/O75 tab (PWA 22.G.2).")
     if kind == "request_decided":
         return _j("Request", d.get("status"), d.get("type")), _j(d.get("pairing"), when) or "See the Schedule tab."
     if kind == "schedule_changed":
@@ -795,7 +806,8 @@ def event_text(kind, d):
     if kind == "needs_settings":
         return "Flight Watcher needs your FLICA login", "Enter your FLICA username and password on the Settings tab."
     if kind == "stopped_*":
-        why = ("One FLICA login attempt failed: check your password on the Settings tab, then press Re-arm."
+        why = ("One FLICA login attempt failed. If your password changed, save the new one on the Settings tab: the "
+               "Watcher logs in by itself. Otherwise check FLICA yourself, then press Re-arm on the Watcher tab."
                if d.get("state") == "stopped_login_failed" else
                "Check FLICA yourself, then press Re-arm on the Watcher tab (a CAPTCHA or MFA is never worked around).")
         return "Flight Watcher stopped", why

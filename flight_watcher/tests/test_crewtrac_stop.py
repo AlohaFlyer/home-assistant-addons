@@ -134,6 +134,8 @@ def load(tmp_path, monkeypatch):
         import watcher as W
         monkeypatch.setattr(W, "local_now", lambda: NOW)
         monkeypatch.setattr(W, "restart_later", lambda: None)
+        monkeypatch.setattr(W, "CAPTURE_DIR", str(tmp_path / "captures"))  # 1.6.2: the charter capture is per instance
+        monkeypatch.setattr(W.CAP, "root", str(tmp_path / "share"))
         W.MQ = FakeMQ()
         ct = FakeCrewTrac(mode)
         monkeypatch.setattr(W.requests, "Session", ct.session)

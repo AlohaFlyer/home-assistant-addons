@@ -487,12 +487,13 @@ def test_schedule_card_keeps_pay_labels_with_values():
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "www", "flight-watcher-schedule-card.js"),
                encoding="utf-8").read()
     # totals: hours, pay, days groups; Pay-Gross and Pay-Net share the unbreakable pay group
-    assert 'tgrp("tpay", [["Pay-Gross", usd(sum.gross)], ["Pay-Net", usd(sum.net)]])' in src
+    # 1.6.2 review: with no longevity year (and no DOH) the pay group says so instead of figures
+    assert 'tgrp("tpay", noYear ? [["Pay", "set your longevity year in Pay settings"]] : [["Pay-Gross", usd(sum.gross)], ["Pay-Net", usd(sum.net)]])' in src
     assert '<span class="ti"><span class="k">${k}</span> ${v}</span>' in src
     assert ".tot .tpay{flex-wrap:nowrap}.tot .ti{white-space:nowrap}" in src
     # version bar: the arrows group, then the pay group holding both labelled values
     vb = src[src.index('vhtml = `<div class="vbar">'):src.index("const chg = (shown.changes")]
-    pay = vb[vb.index('<span class="vg vpay">'):]
+    pay = vb[vb.index('<span class="vg vpay"><span class="nw">'):]
     assert pay.index("Awarded-Pay-Gross") < pay.index("Improved-Pay-Gross") and pay.count('<span class="nw">') == 2
     assert '<span class="nw">Pay-Gross ${usd(cg)}</span>' in vb
     assert ".vbar{display:flex;flex-wrap:wrap" in src and ".vbar .nw{white-space:nowrap}" in src
