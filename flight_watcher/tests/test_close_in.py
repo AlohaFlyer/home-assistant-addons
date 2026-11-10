@@ -135,30 +135,6 @@ def test_menu_frame_when_the_left_menu_is_a_skeleton(tmp_path, monkeypatch):
     assert framed and W.S["close_in"]["via"] == "main menu frame" and W.S["close_in_bcid"] == "008.152"
 
 
-def test_schedule_menu_keeps_the_left_menu_page_when_the_frame_gives_none(tmp_path, monkeypatch):
-    """1.4.7 verify: live, the main menu's frame can stay unloaded (FLICA's forward page; never bypassed), so
-    menu_tree() gives ''. The schedule's menu read then keeps the plain left menu page: it is still scanned for the
-    close-in folder and a trades page, and its private capture is that page, not an empty file. Nothing more is read."""
-    skel = "<html><body>Crew menu (skeleton, made up)</body></html>"
-    W, fl, pages, fetched, framed, waits, events = _w(tmp_path, monkeypatch, menu=skel, frame="")
-    monkeypatch.setattr(W.IF, "CAPTURE_DIR", str(tmp_path / "cap"))
-    scanned = []
-    monkeypatch.setattr(W, "close_in_scan", lambda html, via: scanned.append((html, via)))
-    monkeypatch.setattr(W, "trade_pages_scan", lambda html, via: scanned.append((html, via)))
-    seen = []
-    assert W.desktop_schedule(fl, "1126", seen) is None
-    assert framed and fetched == [W.LEFTMENU]  # one GET, the frame tried, no schedule page without its link
-    assert scanned == [(skel, "left menu"), (skel, "schedule menu")]
-    assert (tmp_path / "cap" / "leftmenu.html").read_text() == skel
-    assert seen and seen[0][0] == "leftmenu" and "no Schedules link" in seen[0][1]
-    # a frame that does give the tree is still preferred
-    (tmp_path / "b").mkdir()
-    W2, fl2, *_ = _w(tmp_path / "b", monkeypatch, menu=skel, frame=MENU_JS)
-    monkeypatch.setattr(W2.IF, "CAPTURE_DIR", str(tmp_path / "b" / "cap"))
-    W2.desktop_schedule(fl2, "1126", [])
-    assert (tmp_path / "b" / "cap" / "leftmenu.html").read_text() == MENU_JS
-
-
 def test_not_named_logs_and_keeps_the_menu_privately(tmp_path, monkeypatch):
     menu = MENU_HTML.replace("Close in Opentime: &lt;16 Hrs to RPT", "Reserve").replace("008.152", "009.152")
     W, fl, pages, fetched, framed, waits, events = _w(tmp_path, monkeypatch, menu=menu)

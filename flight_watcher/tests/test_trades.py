@@ -62,6 +62,9 @@ def W(tmp_path, monkeypatch):
                                                   "input_text.flight_watcher_er_trips": ""}.get(e))
     clock = {"t": "2026-11-06T19:30:00+00:00"}
     monkeypatch.setattr(W, "now_iso", lambda: clock["t"])
+    from datetime import datetime
+    # 1.6.2: the schedule read refuses a page for another month than the current one, so the test's November is "now"
+    monkeypatch.setattr(W, "local_now", lambda: datetime(2026, 11, 6, 9, 30))
     W.CLOCK, W.FAKE, W.PAGE = clock, fake, {"html": ""}
 
     class FL:
@@ -142,7 +145,7 @@ def test_nov6_trade_pushed_once_as_request_decided_with_pay(W):
     sys.modules.pop("watcher", None)
     import watcher as W2
     W2.MQ, W2.now_iso = W.FAKE, W.now_iso
-    W2.prev_month_check, W2.ha_state = W.prev_month_check, W.ha_state
+    W2.prev_month_check, W2.ha_state, W2.local_now = W.prev_month_check, W.ha_state, W.local_now
     assert W2.S["sched_trades_pushed"] and W2.S["sched_moves"]  # kept in the state across the restart
     W2.trade_check()
     W.PAGE["html"] = _html(t3, "Nov 6, 2026 14:01:09")

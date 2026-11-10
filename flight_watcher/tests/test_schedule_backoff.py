@@ -79,7 +79,10 @@ def test_failed_reads_back_off_10_then_30_min_and_a_success_resets(W, caplog):
         _at(W, s)
         W.schedule_check(fl, force=force)
         assert len(fl.sched()) == n, s
-    plan = [(600, 2, 1800), (2399, None, None), (2400, 3, 1800), (4199, None, None), (4200, 4, 1800)]
+    # 1.6.2: the 3rd failed read in a row also stops the read path for 30 min (the same due time), and the 4th, with
+    # no good read between, for 60 min (the breaker doubles up to 6 h), so the next read is due 60 min later
+    plan = [(600, 2, 1800), (2399, None, None), (2400, 3, 1800), (4199, None, None), (4200, 4, 3600),
+            (7799, None, None)]
     for s, fails, gap in plan:
         _at(W, s)
         before = len(fl.sched())
@@ -90,17 +93,18 @@ def test_failed_reads_back_off_10_then_30_min_and_a_success_resets(W, caplog):
             assert len(fl.sched()) > before and W.S["sched_fail"] == fails
             assert W.S["sched_next_at"] == W.CLOCK["t"] + gap
     fl.good = True
-    _at(W, 6000)
+    _at(W, 7800)
     W.schedule_check(fl)
     assert W.S["sched_fail"] == 0 and W.S["sched_next_at"] == 0 and "2026-11" in W.S["schedule"]
+    assert W.BRK.allow("schedule") and not W.S["breakers"]["schedule"]["trips"]  # a good read closes the breaker
     before = len(fl.sched())
-    _at(W, 6060)
+    _at(W, 7860)
     W.schedule_check(fl)
     assert len(fl.sched()) == before  # back to the normal 30 min gap
     W.schedule_check(fl, force=True)  # Check now after a good read re-reads, as before
     assert len(fl.sched()) > before
     fl.good = False
-    _at(W, 9000)
+    _at(W, 11000)
     W.schedule_check(fl)
     assert W.S["sched_fail"] == 1 and W.S["sched_next_at"] == W.CLOCK["t"] + 600  # the sequence starts over
 
@@ -156,6 +160,7 @@ def test_tries_that_failed_before_a_good_page_are_logged_in_one_line(W, caplog):
             return (FX / "mobile_schedule_nov.html").read_text()
 
     fl = Fl()
+    W.S["sched_url_ok"] = "https://ha2.flica.net/full/mobileschedule.cgi?BCID=001.152&From=MainMenu"  # learned before
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
         W.schedule_check(fl, force=True)
     assert W.S["sched_fail"] == 0 and "2026-11" in W.S["schedule"]

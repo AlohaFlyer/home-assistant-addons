@@ -122,6 +122,9 @@ def test_error_page_and_empty_read_never_repush_or_zero_the_sensor(tmp_path, mon
         pages["text"] = bad
         read()
         assert len(sensor()) == 1  # a failed pass publishes nothing: the sensor keeps 1 pending
+    # 1.6.2: a page the list parser does not know stops the list reads for 30 min (the breaker); then they go on
+    assert not W.BRK.allow("requests") and W.S["breakers"]["requests"]["kind"] == "unknown"
+    W.S["breakers"]["requests"]["open_until"] = 0
     pages["text"] = _page("")  # a list gone empty is believed only on the second read
     read()
     assert len(sensor()) == 1 and W.S["ot_req_rows"]["003.152"]

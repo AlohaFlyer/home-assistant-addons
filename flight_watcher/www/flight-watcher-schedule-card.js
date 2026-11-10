@@ -250,8 +250,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const dropA = admin ? (S["sensor.flight_watcher_would_drop"] || {}).attributes || {} : {};  // FW-0063: no Would drop on a pilot
     const dropM = new Set(dropA.keys || []), dropR = dropA.ready || {};
     const st = S["sensor.flight_watcher_schedule"];
+    const SM = (st && st.attributes && st.attributes.months) || {};  // 1.6.2: no month read yet is no error
     const { y, m, key } = this._key();
-    let mon = st && st.attributes.months ? st.attributes.months[key] : null;
+    let mon = SM[key] || null;
     // v51 (Ryan): schedule versions MM.NNN; arrows step through them, the house returns to the current one
     const VS = this._vmonths();
     const vl = (VS[key] || {}).versions || [];
@@ -260,13 +261,20 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const vsel = vi != null ? vl[vi] : null;
     const liveMon = mon;
     if (vsel && mon) mon = { ...mon, items: vsel.items || [], days: vsel.days || [], totals: vsel.totals || {}, updated: vsel.updated || "" };
+    // 1.6.2 (Release A): no FLICA read of this month yet, but the award file's line is on file (version .001): draw it,
+    // labeled, until a read lands (no versions bar and no Improved-Pay-Gross report from it)
+    const awd0 = !mon ? (vl.find((v) => v.award) || null) : null;
+    if (awd0) mon = { items: awd0.items || [], days: awd0.days || [], totals: awd0.totals || {}, updated: awd0.updated || "" };
+    // 1.6.2: the last FLICA read's status (sensor read_status): why it was not read, when, and the next try (HST)
+    const rs = (st && st.attributes && st.attributes.read_status) || {};
+    const rsLine = rs.ok === false ? `FLICA schedule not read: ${rs.why || "no page accepted"}${rs.at_hst ? ` at ${rs.at_hst} HST` : ""}${rs.next_hst ? `; next try ${rs.next_hst} HST` : ""}` : "";
     const pot = ((S["sensor.flight_watcher_pot_count"] || {}).attributes || {}).pairings || [];
     const tb = ((S["sensor.flight_watcher_tradeboard_pickups"] || {}).attributes || {}).pairings || [];
     const liveOwnT = ((S["sensor.flight_watcher_own_trip_times"] || {}).attributes || {}).trips || {};
     // v51c: a version keeps its own block / credit / times but inherits fields it never recorded (seat, crew) from the live
     // record of the same trip, so an early version of a trip still pays the seat override (PWA 4.O.1)
     const mergeT = (live, ver) => { const o = { ...live }; for (const [k, v] of Object.entries(ver || {})) o[k] = { ...(live[k] || {}), ...v }; return o; };
-    const ownT = vsel ? mergeT(liveOwnT, vsel.trips) : liveOwnT;
+    const ownT = vsel ? mergeT(liveOwnT, vsel.trips) : awd0 ? mergeT(liveOwnT, awd0.trips) : liveOwnT;
     const pk = this._pack(key);
     const grid = ((S["sensor.flight_watcher_reserve_grid"] || {}).attributes || {}).days || {};
     const trade = new Set(((S["sensor.flight_watcher_would_trade"] || {}).attributes || {}).keys || []);
@@ -292,9 +300,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
       // own trips: report / release (app times first, then the pairing package)
       const own = [];
       const prevKey = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0, 7);
-      const prevItems = (st.attributes.months[prevKey] || {}).items || [];
+      const prevItems = (SM[prevKey] || {}).items || [];
       const nextKey = new Date(Date.UTC(y, m + 1, 1)).toISOString().slice(0, 7);
-      const nextItems = (st.attributes.months[nextKey] || {}).items || [];
+      const nextItems = (SM[nextKey] || {}).items || [];
       for (const it of [...prevItems, ...items, ...nextItems]) {
         if (it.trip === "VAC" || !/^[A-Z]\d{4}/.test(it.trip || "")) continue;
         const t = ownT[`${it.trip}|${it.start}`] || {};
@@ -338,13 +346,13 @@ class FlightWatcherScheduleCard extends HTMLElement {
       // v49 (Ryan, Nov 5): training and reserve days are duty too (FAR 117.25(b) needs 30 h free from ALL duty): whole day HST.
       // VAC, SICK, GDO, O/K, RISK and other codes stay free.
       const DUTY_CODE = /^(SIM|OEB|OE\b|IOE|GS|GRD|TRN|TRG|TRAIN|CQ|RQ|PC|PT\b|LOE|LOFT|CBT|SCR|RSV|RES|SBY|ASB|AIR)/;
-      for (const mk of Object.keys(st.attributes.months || {})) for (const it of (st.attributes.months[mk].items || [])) {
+      for (const mk of Object.keys(SM)) for (const it of (SM[mk].items || [])) {
         if (!it.trip || /^[A-Z]\d{4}/.test(it.trip) || !DUTY_CODE.test(it.trip)) continue;
         duties.push({ start: this._t(it.start, "0:0"), end: this._t(it.end || it.start, "0:0") + 24 * H, stn: "", trip: it.trip });
       }
       duties.sort((a, b) => a.start - b.start);
       const nowHst = Date.now() - 10 * H;
-      const mkeys = Object.keys(st.attributes.months || {}).sort();
+      const mkeys = Object.keys(SM).sort();
       const dataStart = Date.parse((mkeys[0] || key) + "-01T00:00:00Z");
       const lastK = mkeys[mkeys.length - 1] || key;
       const dataEnd = Date.UTC(+lastK.slice(0, 4), +lastK.slice(5, 7), 1);
@@ -636,7 +644,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
       const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th>Block</th><th>Credit</th><th>Soft</th><th title="Credit pay + RO + RO+15%; hover or tap for the breakdown">Pay-Gross</th><th>Pay-Net</th><th title="Reserve grid net reserves">Res Grid</th><th title="Check MM/DD = a 30 h break falls in the 168 h before a report that day and ended on MM/DD, FAR 117.25(b). The teal edge on a day marks the break itself. Hover for the hours and 'covered until'.">FAR-30/7</th><th title="Block flown in the 672 h ending that day, FAR 117.23(b)(1)">FAR-100/672</th><th title="100:00 minus the busiest 672 h window the day falls in, back and forward">Room</th><th title="Earliest report for another trip">Legal next</th><th>Open</th><th title="Tap the airplane: swap or pick-up ideas for that day, with the Pay-Gross difference">Ideas</th></tr>`;
       body = `<div class="wrap"><table class="cal">${head}${rows}</table></div><div class="tot" title="${this._esc(`${MONTHS[m]} totals: flying credited to the month each segment originates (PWA 4.A) plus vacation days at ${hm(VAC_H)} (PWA 6.J). Pay at $${RATE.toFixed(2)}/credit h incl. RO and RO+15% where on; net after the tax settings. Checked against FLICA's Block and Credit.`)}">${tot}</div>`;
     }
-    const upd = st ? (st.attributes.updated || "") : "";
+    const upd = awd0 ? "" : st && st.attributes ? (st.attributes.updated || "") : "";
+    // 1.6.2: the award label and the read status sit above the grid (or the 'No schedule' line)
+    const shead = (awd0 ? `<div class="awl">Awarded line from the award file. FLICA schedule not read yet.</div>` : "") +
+      (rsLine ? `<div class="rsl">${this._esc(rsLine)}</div>` : "");
     const sel = (lo, hi, step, cur, suf) => { const o = []; for (let v = lo; v <= hi + 1e-9; v += step) { const r = Math.round(v * 100) / 100; o.push(`<option value="${r}"${Math.abs(r - cur) < 1e-9 ? " selected" : ""}>${r}${suf}</option>`); } return o.join(""); };
     this.shadowRoot.innerHTML = `<style>
       ha-card{padding:10px 8px 12px;font-size:12.5px;line-height:1.25;box-sizing:border-box}
@@ -727,7 +738,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .info{display:none;position:fixed;left:8px;right:8px;bottom:14px;z-index:9;margin:0 auto;max-width:460px;font-size:12px;padding:8px 10px 8px;border-radius:8px;background:var(--secondary-background-color);color:var(--primary-text-color);box-shadow:0 4px 18px rgba(0,0,0,.35);cursor:pointer}
       .info::after{content:"tap to close";display:block;margin-top:6px;font-size:10px;color:var(--secondary-text-color);text-align:right}
       .none{text-align:center;color:var(--secondary-text-color);padding:12px}
-    </style><ha-card><div class="frame"><div class="hd2"><span class="lock ${this._locked ? "shut" : "open"}" title="${this._locked ? `Locked: ${this._marks()} cannot be changed by a tap. Tap to unlock.` : `Unlocked: taps change ${this._marks()}. Tap to lock.`}">${this._locked ? "&#128274;" : "&#128275;"}</span><span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span><span class="u">updated ${this._esc(upd)}</span></div>${vhtml}${body}</div>${panel}
+      .awl,.rsl{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.awl{font-weight:600}.rsl{color:var(--warning-color,#b26a00)}
+    </style><ha-card><div class="frame"><div class="hd2"><span class="lock ${this._locked ? "shut" : "open"}" title="${this._locked ? `Locked: ${this._marks()} cannot be changed by a tap. Tap to unlock.` : `Unlocked: taps change ${this._marks()}. Tap to lock.`}">${this._locked ? "&#128274;" : "&#128275;"}</span><span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${upd ? `<span class="u">updated ${this._esc(upd)}</span>` : ""}</div>${shead}${vhtml}${body}</div>${panel}
     <div class="info"></div>
     <details class="leg"><summary>Key</summary><table class="lt">
     <tr><td>Trip</td><td>Your pairing. R = report time. Tap &#8644; to mark it "would trade" (orange).</td></tr>

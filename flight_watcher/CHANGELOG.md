@@ -1,5 +1,67 @@
 # Changelog
 
+## 1.6.2
+
+Release A, group 1 (FLICA load and the schedule read; watcher.py core). Ryan's decisions of 2026-11-10: his own budget
+stays about 376 FLICA loads an hour (FW-0035), the host cap is 480 an hour, a pilot's budget 100 an hour and his
+fastest hunt 120 s. Built, not deployed.
+
+- FLICA gate (`gate.py`, new; Dockerfile copies it): every Watcher in the container loads FLICA through one lock file,
+  `/data/flica_gate.lock` (the admin's data folder, the parent of each pilot's; `FLIGHT_WATCHER_GATE` overrides). Each
+  load (`Flica.fetch`, `render`, `menu_tree`, the login page and its submit, the pot discovery and each pot link it
+  opens) waits until this Watcher's previous load is uniform(1.5, 3.5) s old, the host's previous load (any Watcher)
+  1.5 s old, the host made fewer than 480 loads in the last hour and, on a pilot, he made fewer than 100 (a token comes
+  back an hour after its load). A load is never skipped: it waits. A check starts only once 3 loads fit (the loop
+  sleeps meanwhile, Pause and Check now still read), and a budget wait shows in the state note ("FLICA budget: 100 page
+  loads in the last hour; the next one waits until 10:42 HST"). The lock is held only to read and write the small file,
+  taken with a bounded non-blocking loop (about 10 s); when it cannot be had the load is paced by this Watcher alone
+  (logged at most every 10 min). A Watcher that dies releases its lock; a broken file reads as empty and log times in
+  the future are dropped. Every load is on the file's rolling-hour log (time, instance) and on the fetch counter.
+  The per-site 1.0 to 2.0 s pauses (schedule tries, the lookup prompt) are 1.5 to 3.5 s now; the pot read after a
+  schedule read (about 0 s before) is paced like every other load.
+- A pilot hunts every 120 s at the fastest (normal checks every 2 min at the fastest, so normal is never quicker than
+  the hunt floor): his number entities' ranges are 120 to 300 s and 2 to 20 min (`roles.PILOT_FREQ_LIMITS`), his
+  `freq/*/set` is clamped into them, and a stored value below them (James had 40 s) is raised once at start with one log
+  line. The admin keeps 5 to 90 s and 1 to 20 min. The portal contract is unchanged (`roles.FREQ_LIMITS`): a portal value
+  in it below the pilot's floor is accepted there and raised by the Watcher.
+- Breakers (every instance): each FLICA read path (`gate.read_path`: schedule, schedule_detail, lookup, pairing,
+  requests, tradeboard, menu, grid, other) stops for 6 h on a CAPTCHA or interstitial page, at once for 30 min on a page
+  its parser does not know (the request list), and for 30 min after 3 failed reads in a row; each stop after the first
+  with no good read between doubles, up to 6 h. A stopped path loads nothing (`Flica` refuses before the load); one
+  log line, and the state note while idle or hunting ("FLICA requests read paused until 16:05 HST: a CAPTCHA page
+  (never answered)"). Kept in the state, so a restart keeps a stop. The open time pot, the login and the pot discovery
+  have no breaker: the pot watch keeps its own stop rules. Read paths in a check are guarded, so a stopped path ends
+  only its read; while pairing pages are stopped no empty pot detail is cached, no pickup or in-flight try is used up and
+  the crew index waits; a pilot lookup waits with a status line.
+- `pot.classify` has a new kind, `captcha`: a reCAPTCHA challenge (grecaptcha.getResponse, the g-recaptcha box, "not a
+  robot") or the api.js page that says it is going to forward (FLICA's scheduledetail forward page). It was "ok"
+  before (only visible text was checked). The api.js script alone (the main menu and every pot page load it) stays "ok".
+- Schedule read (`schedule_check`): at most 2 loads a read, pages already in use only: the shape of the URL that last
+  worked (`S['sched_shape']`: the bid period number as {n}, filled from the month, 152 = November 2026, so a learned
+  BCID=001.152 reads BCID=001.153 in December; an older literal `sched_url_ok` is turned into its shape once), else
+  Tools > Schedule Lookup for the pilot's own number and the current month (`IF.CM_SCHED_MONTH`, `IF.parse_cm_month`,
+  both safe_get guards, the page kept for other_months_check), else the mobile schedule's BlockDate page.
+  scheduledetail.cgi and the BCID guesses are gone from the read, from the daily probe (removed) and from the previous
+  month's read (`desktop_schedule` removed with its test). A page for another month than the current one is refused
+  (the month rollover bug, both instances). The 1.6.1 back-off stays (10 min, 30 min); from the 3rd failed read in a row
+  the breaker stops the read 30 min, then 60, 120... up to 6 h (`test_schedule_backoff` follows it). A month read on
+  Schedule Lookup each time records trades seen between two reads, as the mobile page does.
+- `sensor.<prefix>_schedule` is published after a failed read too, with the months on file and a new attribute
+  `read_status` {ok, why, at, at_hst, next_try, next_hst, tries}: the reason in words (no URL, no employee number).
+  The Schedule card shows "FLICA schedule not read: <reason> at HH:MM HST; next try HH:MM HST", and, while no FLICA
+  month is read but the award file's line is on file, draws that line labeled "Awarded line from the award file.
+  FLICA schedule not read yet." (no versions bar or Improved-Pay-Gross from it; "updated" shows only with a time).
+- Schedule versions: a month whose first version is the PBS award (last month to two ahead) is published even with no
+  FLICA read of it (`versions_months`): James's 11.001 was stored but never shown. The admin's months are unchanged.
+- Commands: on a pilot only Check now (its 10 s gap), a hunt or pause switch that changes and Re-arm while stopped wake
+  the loop into a FLICA check; a pilot lookup, a frequency change, Scan CrewTrac now or any other portal command no
+  longer does (every one did). The admin keeps his wakes, except Scan CrewTrac now (no FLICA read) and a switch set to
+  the value it has.
+- Portal export: list files first, then the manifest when the file set changed, then state.json, so a state that names a
+  new rev never points at a file not written yet.
+- Tests: `test_flica_gate.py`, `test_release_a_flica.py`, `test_release_a_schedule_card.py`; `test_schedule_backoff`,
+  `test_watcher_state`, `test_trades`, `test_requests`, `test_portal_spool` follow the changes above.
+
 ## 1.6.1
 
 Stage 0: stop retrying a login CrewTrac refused, and stop reading FLICA's schedule page every loop when it cannot be

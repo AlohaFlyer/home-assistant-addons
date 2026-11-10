@@ -14,6 +14,10 @@ KILLED_TXT = "new session under this account was detected"
 EXPIRED_HINTS = ("session has expired", "session expired", "please log in", "please sign in")
 BLOCK_HINTS = ("captcha", "verification code", "one-time", "one time pass", "change your password",
                "password has expired", "account is locked", "account locked")
+# 1.6.2: a reCAPTCHA challenge or forward page (FLICA's scheduledetail.cgi answers this session with one: a
+# grecaptcha.getResponse() check box, "I'm not a robot", then a forward). The api.js script alone is no challenge: FLICA's
+# main menu and open time pages load it on every visit.
+CAPTCHA_MARKS = ("grecaptcha.getresponse", "grecaptcha.render", "g-recaptcha", "not a robot", "i`m not a robot")
 PAIRING_RE = re.compile(r"^[A-Z]\d{4}[A-Z]?$")  # 0.4.8: FLICA adds a letter to a changed pairing (H3815B)
 PAIRING_ANY = re.compile(r"\b([A-Z]\d{4}[A-Z]?)\b")
 DAY_MON = re.compile(r"^(\d{1,2})\s*([A-Za-z]{3})")
@@ -40,6 +44,7 @@ def visible_text(html):
 
 
 def classify(html):
+    """'killed', 'blocked', 'expired', 'captcha' (1.6.2) or 'ok'."""
     low = html.lower()
     if KILLED_TXT in low:
         return "killed"
@@ -47,7 +52,18 @@ def classify(html):
         return "blocked"
     if 'type="password"' in low or "type=password" in low or any(h in low for h in EXPIRED_HINTS):
         return "expired"
+    if captcha_page(html):
+        return "captcha"  # 1.6.2: never "ok"; not "blocked" either (that stops the whole Watcher): its read path stops
     return "ok"
+
+
+def captcha_page(html):
+    """1.6.2: True for a reCAPTCHA challenge or interstitial (a check box to tick, or the api.js forward page that says
+    it is going to forward). Never answered, never bypassed: the read path that met it stops (gate.Breakers)."""
+    low = (html or "").lower()
+    if any(m in low for m in CAPTCHA_MARKS):
+        return True
+    return "recaptcha/api.js" in low and "going to forward" in visible_text(html)
 
 
 def is_pot_page(html, mobile=True):

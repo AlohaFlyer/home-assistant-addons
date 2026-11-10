@@ -95,7 +95,9 @@ def _pages(nov_credit="105.47"):
 
 
 def _read(W, fl):
-    W.S["sched_alt_at"] = time.time()  # no daily probe of the other URL shapes in the test
+    # 1.6.2: an instance whose mobile schedule page worked before (as the admin's does) tries that page's shape first;
+    # Schedule Lookup then only fills its Block / Credit
+    W.S.setdefault("sched_url_ok", f"{W.BASE}/full/mobileschedule.cgi?BCID=001.152&From=MainMenu")
     W.schedule_check(fl, force=True)
     return W.S["schedule"]["2026-11"]
 
