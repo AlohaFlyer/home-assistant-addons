@@ -54,7 +54,7 @@ import ntfy as NT
 import gate as GT
 import captures as CAPS
 
-VERSION = "1.6.2"
+VERSION = "1.6.3"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"

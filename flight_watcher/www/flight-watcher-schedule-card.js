@@ -573,7 +573,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const gcell = g ? `<span class="g ${gc}" title="Net reserves ${g.net}: ${gb ? "drop or swap off this day OK" : "add only (no drop/swap off this day)"}">${g.net}</span>` : "";
         const ot = trip && trip !== "VAC" ? (ownT[`${trip}|${d}`] || {}) : {};
         const pkr = trip && trip !== "VAC" && pk ? (pk[trip.slice(0, 5)] || {}) : {};
-        const bcsAll = trip && trip !== "VAC" ? [ot.blk || "", ot.credit || pkr.credit || "", ot.soft || ""] : ["", "", ""];
+        // 1.6.3: the pairings package writes credit as "15h00"; hrs() reads "15:00", so a trip whose own times are not
+        // read yet (a pilot's first days, or any new trip) counted 0:00 and $0 in the row and the month totals
+        const pkC = pkr.credit ? String(pkr.credit).trim().replace(/^(\d+)h(\d{2})$/, "$1:$2") : "";
+        const bcsAll = trip && trip !== "VAC" ? [ot.blk || "", ot.credit || pkC || "", ot.soft || ""] : ["", "", ""];
         // PWA 4.A: a segment pays on the date it originates, so duties that start next month are next month's pay
         let share = 1, blkOut = 0, nextMon = "";
         if (trip && trip !== "VAC" && ot.duties && ot.duties.length && ot.duties[0].blk != null) {
