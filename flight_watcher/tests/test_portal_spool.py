@@ -256,6 +256,8 @@ def test_the_admin_never_reads_a_spool(portal_pilot, monkeypatch, tmp_path):
 
 
 def _fds():
+    import gc
+    gc.collect()  # 1.6.1: an earlier test's watcher module (its SQLite files) closed by the collector is no leak here
     return len(os.listdir("/proc/self/fd"))
 
 
