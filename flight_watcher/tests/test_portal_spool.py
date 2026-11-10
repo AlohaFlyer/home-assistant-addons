@@ -40,29 +40,40 @@ def _published(W):
     return [(t, p, q, r) for t, p, q, r in W.MQ.msgs if not t.startswith("flight_watcher_demo/event")]
 
 
+def _batches(samples, n=20):
+    """1.7.0: the samples in polls of n (30 commands a minute and 50 results are the spool's caps, not under test)."""
+    samples = sorted(samples, key=lambda s: s["name"])
+    return [samples[i:i + n] for i in range(0, len(samples), n)]
+
+
 def test_every_accepted_sample_republishes_exactly_its_sub(demo):
     W = demo
-    for s in SAMPLES["accepted"]:
-        _put(W, s["name"], s["cmd"])
-    assert W.portal_spool_once() == len(SAMPLES["accepted"])
-    got = [(t, p, q, r) for t, p, q, r in W.MQ.msgs if t.startswith("flight_watcher_demo/") and q == 1]
-    assert got == [(f"flight_watcher_demo/{s['cmd']['sub']}", s["cmd"]["payload"], 1, False)
-                   for s in sorted(SAMPLES["accepted"], key=lambda s: s["name"])]
-    assert os.listdir(os.path.join(W.PORTAL_DIR, "in")) == []
-    assert [r["ok"] for r in W.EXPORT["results_list"]] == [True] * len(SAMPLES["accepted"])
+    for batch in _batches(SAMPLES["accepted"]):
+        W.MQ.msgs.clear()
+        W.EXPORT["spool"].accepted.clear()
+        W.EXPORT["results_list"] = []
+        for s in batch:
+            _put(W, s["name"], s["cmd"])
+        assert W.portal_spool_once() == len(batch)
+        got = [(t, p, q, r) for t, p, q, r in W.MQ.msgs if t.startswith("flight_watcher_demo/") and q == 1]
+        assert got == [(f"flight_watcher_demo/{s['cmd']['sub']}", s["cmd"]["payload"], 1, False) for s in batch]
+        assert os.listdir(os.path.join(W.PORTAL_DIR, "in")) == []
+        assert [r["ok"] for r in W.EXPORT["results_list"]] == [True] * len(batch)
     assert {roles.portal_sub(s["cmd"]["sub"]) for s in SAMPLES["accepted"]} == set(roles.PORTAL_CMDS)
 
 
 def test_every_refused_sample_publishes_nothing(demo):
     W = demo
-    for s in SAMPLES["refused"]:
-        _put(W, s["name"], s["cmd"])
-    assert W.portal_spool_once() == 0
-    assert _published(W) == [] and os.listdir(os.path.join(W.PORTAL_DIR, "in")) == []
-    res = {r["id"]: r for r in W.EXPORT["results_list"]}
-    for s in SAMPLES["refused"]:
-        r = res[s["cmd"]["id"]]
-        assert r["ok"] is False and r["why"], s
+    for batch in _batches(SAMPLES["refused"]):
+        W.EXPORT["results_list"] = []
+        for s in batch:
+            _put(W, s["name"], s["cmd"])
+        assert W.portal_spool_once() == 0
+        assert _published(W) == [] and os.listdir(os.path.join(W.PORTAL_DIR, "in")) == []
+        res = {r["id"]: r for r in W.EXPORT["results_list"]}
+        for s in batch:
+            r = res[s["cmd"]["id"]]
+            assert r["ok"] is False and r["why"], s
     named = {s["cmd"]["sub"] for s in SAMPLES["refused"] if s["why"] == "sub not allowed"}
     assert set(roles.PORTAL_REFUSED) <= named  # each refused sub is in the fixture and proven here
 

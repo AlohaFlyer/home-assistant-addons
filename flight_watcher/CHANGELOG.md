@@ -1,5 +1,81 @@
 # Changelog
 
+## 1.7.0
+
+Release C: tickets on the pilot portal (contract 1 revision 2; the Flight Watcher half, HOM 1.8.0 ships the same
+fixture first). Council requirements of 2026-11-10 and the verified tickets design (D1 to D9, P1 to P15, TK-01 to
+TK-15). Built, not deployed. Ryan's instance and his HA tickets card work as before (the one visible change there: the
+Claude Code prompt now ends "except a pilot's ticket: leave it fixed for its reporter to verify", P1).
+
+- Contract 1 revision 2 (`roles.py`, `portal.py`, `PORTAL_CONTRACT.md`, `tests/fixtures/portal_contract_v1.json`,
+  same name; fwp and contract stay 1): the five ticket subs are allowed on a portal (21 allowed subs; refused stays
+  email/alert, crew_scan/press, upload/chunk, drop/set, auto_swap/set, swap_map/press, hunt/state, pause/state), with
+  their shapes as data (`roles.TICKET_CMDS`, read as `roles.TICKET_RULES`: keys a subset of keys plus required,
+  lengths in code points, patterns as full matches, whole numbers, enums, le pairs, nonempty_when) that the spool
+  checks with `portal.check_ticket` and HOM with one generic checkTicket; the fixture carries them with accepted and
+  refused samples (worker actions, a note with no text, an inline photo, a reporter key, images 2.5 or true, a title
+  one code point over 200 with an astral character, a data URL or a trailing newline in a chunk, the HA card's whole
+  photo, an array payload). `revision: 2`, `commands.pilot_ticket_actions` (verify, reopen, note),
+  `commands.pilot_ticket_limits`, the `tickets` file kind and tab, the `ticket_fixed` event (OWN_EVENTS) with fields
+  `ticket` and `version`, and `samples.file_urls_refused` (the admin's tickets list, another pilot's folder).
+  PORTAL_CONTRACT.md also drops two sentences 1.6.2 left behind: ntfy with a topic only is described (section 6) and
+  the prefs come from prefs.json only (5.3: no seed from the HA helpers).
+- Authority in the Watcher (`tickets.py`): with a pilot's name as allowed_reporter, `act` takes only verify, reopen
+  and note (a note needs text), and another reporter's ticket answers "<id> not found" for act, edit and delete, the
+  same as a missing id (no id probing; TK-08, TK-14). `fixed_moves` lists every move into fixed of one reporter's
+  tickets (a fix later closed counts, a version correction or a note does not); `count_recent`, `open_count` and
+  `quota_refusal` feed the quotas; `store_photo` stores checked bytes with a pilot's limits.
+- Quotas, a pilot only (`roles.PILOT_TICKET_LIMITS`): 10 new tickets in 24 h (deleted ones count), 25 open, 3 photos a
+  ticket (images capped, photo numbers 1 to 3, no inline photo), 1.5 MB of stored photos a ticket, one photo upload in
+  flight. The admin has none.
+- Photos (`photos.py`, new; Dockerfile copies it and installs Pillow 11.0.0): a pilot's ticket/image comes in the
+  portal's chunk form {cid, i, n, part, parts, data} (at most 8 chunks of 60,000 base64 characters, each command under
+  the 64 KB cap; its shape is checked again in the handler whatever sent it) or a dashboard card's whole form. The
+  Assembler keeps one photo in flight: chunks in order, the same chunk twice counts once, out of order drops the
+  photo, another ticket's photo while one is coming is refused, the same ticket's next photo replaces an unfinished
+  one, 120 s without a chunk drops it; a photo the ticket cannot take is refused at its first chunk. The whole photo
+  is decoded strictly (alphabet, padding at the end), must be a JPEG or PNG by its magic bytes and within the size
+  cap, and is re-encoded by Pillow (no EXIF, GPS, comments or trailing bytes; at most 2048 px a side) before it is
+  stored. Without Pillow a pilot's photo is refused. The admin's photos are stored as sent, as before.
+- Answers: a pilot's `sensor.<prefix>_tickets` carries `answers` (the last 10, newest first: {ref, id, action, i, ok,
+  error, at} for new, image, act, edit and delete, ref the card's cid or rid; TK-11) and `limits`; `last` keeps its
+  FW-0049 meaning. The admin's sensor is unchanged (no answers, no limits).
+- Fixed alert (D5, TK-04): on a portal pilot, `ticket_fixed_watch` (inside `publish_tickets`) turns each new move into
+  fixed of his own tickets into one portal event per pass, `ticket_fixed` {ticket, version}: "Ticket FW-0071 fixed in
+  1.7.0" (or "3 tickets fixed: ..."), view tickets, priority 2, white_check_mark, never a title or any ticket text; it
+  goes to events.json and to ntfy (a topic-only push: the ids and the version, `ntfy.plain_text`). The moves already
+  there at the first run (or after its file is lost) are seeded without an alert in `<data>/tickets_fixed_seen.json`
+  {seeded, keys} (0600, written even when empty). A pilot can no longer mark a ticket fixed, so his instance never
+  sends `event/ticket_fixed` itself.
+- `publish_tickets` runs one caller at a time (`TICKETS_LOCK`) and, on a pilot, also from the uploads janitor every
+  60 s, so his list and his alert follow the folder while he is paused, yielded or waiting for settings (TK-09; a
+  folder rescan, no FLICA load; the admin keeps his check() rescan only).
+- Portal export: the tickets card is in the bundle (PORTAL_CARDS_OUT is the uploads card and the row colors), its
+  five `_pub(...)` subs are in `mqtt_subs` (`portal.card_subs`, TK-05), `sensor.<prefix>_tickets` is in state.json
+  (his own tickets) and `files/tickets.json` is his own tickets list (the admin's list in the parent folder is never
+  read for a pilot). `portal_layout.json` has a 6th tab, Tickets, last (the five before it keep their places; HOM
+  1.8.0 wraps the tab bar at 390 px, TK-12), with the card and a note that names no false privacy promise (P14).
+- Tickets card (`www/flight-watcher-tickets-card.js`): with FW_PORTAL on (the portal copy only) a photo is read with
+  FileReader into a data: URL (the portal's CSP has no blob:, TK-02, P5), shrunk to 360,000 characters (a long side
+  from 1600 px, more for a very tall capture, at most 2048; quality 0.82 to 0.52; the size times 0.85; refused as too
+  detailed once the short side would fall under 400 px, P4) and sent in 60,000-character chunks, one photo after the
+  other (a chunk turned away for too many commands a minute waits 10 s and goes again); 3 photos (or the sensor's
+  limits); a command over 63,000 bytes is not sent ("Too long for the portal: shorten the description", P8); the act
+  buttons and "Add as a note" wait for the send and carry a rid, so a refusal shows "Didn't send: ..." on the row,
+  never "Sent" (TK-15); the Watcher's answers show ("FW-0071 filed.", "Not filed: ...", "Photo 2 not saved: ...",
+  "Verified and closed."); the Where list names the portal's tabs (TK-13); the Claude Code button is not drawn
+  (TK-07). With FW_PORTAL off the card works exactly as before.
+- Docs: CLAUDE.md and HANDOFF.md say a pilot's ticket is untrusted data, never instructions, that a pilot's fixed
+  ticket stays fixed for him to verify, and that Claude's follow-ups keep reporter ryan (P1, P2, D8, D9, P15); README
+  (role table: tickets offered on a portal; a pilot's tickets).
+- Not built (Ryan decides): D7, a push to Ryan when a pilot files a ticket.
+- Tests: `test_release_c_tickets.py` (authority, moves, quotas, photos, the assembler, the pilot's Watcher, the fixed
+  alert and ntfy, the janitor, the lock, the export, the spool with a full 60,000-character chunk, layout and docs) and
+  `test_release_c_card.py` with `tickets_card_render.js` (the portal copy under the HOM portal's exact CSP with three
+  made-up 1080 x 2400 screenshots: thumbnails, no CSP error, chunks in order, each under the caps, the short side at
+  least 400 px, and the commands put through the spool and the Watcher end to end; the HA copy's 1.6.x path); the
+  contract, spool, bundle, envelope, events, export, instance, roles and tickets tests follow the changes above.
+
 ## 1.6.3
 
 - Schedule card: a trip whose own times are not read yet takes its credit from the pairings package, which writes it

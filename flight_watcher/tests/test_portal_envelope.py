@@ -55,7 +55,9 @@ def test_wrong_key_rollback_and_caps(key, tmp_path):
     with pytest.raises(PT.PortalError, match="over 64 KB"):
         PT.envelope(key, "results", "demo", 11, "x" * (64 * 1024 + 1))
     PT.envelope(key, "results", "demo", 11, "x" * (64 * 1024))  # at the cap is fine
-    for bad_kind in ("file:tickets", "file:finds", "file:finds:2026", "file:versions:2026-11", "blob", "../state"):
+    PT.envelope(key, "file:tickets", "demo", 1, "{}")  # 1.7.0 (contract 1 revision 2): a list file kind now
+    for bad_kind in ("file:uploads", "file:finds", "file:finds:2026", "file:versions:2026-11", "file:tickets:x", "blob",
+                     "../state"):
         with pytest.raises(PT.PortalError, match="unknown kind"):
             PT.envelope(key, bad_kind, "demo", 1, "{}")
     with pytest.raises(PT.PortalError, match="bad pilot"):
@@ -70,9 +72,9 @@ def test_file_names_and_kinds():
                        ("file:pairings:2026-12", "files/pairings_2026-12.json"),
                        ("file:school:2026-27", "files/school_2026-27.json"), ("file:pickers", "files/pickers.json"),
                        ("file:versions", "files/versions.json"), ("file:recall", "files/recall.json"),
-                       ("file:pilotver", "files/pilotver.json")):
+                       ("file:pilotver", "files/pilotver.json"), ("file:tickets", "files/tickets.json")):
         assert PT.out_name(kind) == name and PT.kind_of(name) == kind
-    for bad in ("files/tickets.json", "files/finds.json", "files/pickers_2026-11.json", "blobs/x.js", "../state.json",
+    for bad in ("files/uploads.json", "files/tickets_2026-11.json", "files/finds.json", "files/pickers_2026-11.json", "blobs/x.js", "../state.json",
                 "files/finds_2026-11_" + "0" * 32 + ".json"):
         assert PT.kind_of(bad) is None, bad
 

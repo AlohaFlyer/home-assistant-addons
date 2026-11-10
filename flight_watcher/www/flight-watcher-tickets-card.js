@@ -14,14 +14,30 @@
 // FW-0060 (1.4.7): the full ticket log (every ticket with its text) comes from tickets_<key>.json under /local/; the
 // sensor keeps the counts, "last" and a short row per open ticket (it ran about 39 KB with every ticket's text, over
 // HA's 16 KB recorder limit). The key is only in the sensor's attributes, which need HA's login.
+// 1.7.0 (Release C): in the pilot portal (FW_PORTAL, turned on only in the portal's copy: portal.portal_card) a photo
+// is read with FileReader into a data: URL (the portal's CSP has no blob:), shrunk to FW_TICKET_PORTAL_URL characters
+// with its short side kept at 400 px or more, and sent in chunks of FW_TICKET_CHUNK base64 characters, one
+// ticket/image command each ({cid, i, n, part, parts, data}), one photo after the other; the pilot's Watcher puts them
+// together, checks and re-encodes them. Up to 3 photos (the sensor's "limits"), a command over FW_TICKET_MAX_BYTES is
+// not sent, the act buttons wait for the send and carry a rid, the Watcher's "answers" show on the card ("FW-0071
+// filed", "Photo 2 not saved: ..."), the Where list names the portal's tabs and the Claude Code button is not there.
+// With FW_PORTAL off (every card under /local/, Ryan's own) the card works exactly as before.
+const FW_PORTAL = false;
 const FW_TICKET_MAX_PHOTOS = 10;
 const FW_TICKET_MAX_URL = 1.75e6;  // one photo's data URL; its whole message stays under about 1.8e6 chars
+const FW_TICKET_PORTAL_PHOTOS = 3;  // roles.PILOT_TICKET_LIMITS photos
+const FW_TICKET_PORTAL_URL = 360000;  // portal: one photo's data URL, 6 chunks at most
+const FW_TICKET_CHUNK = 60000;  // roles.PILOT_TICKET_LIMITS chunk_chars: one ticket/image command's base64
+const FW_TICKET_MAX_BYTES = 63000;  // portal: a command's {sub, payload} in UTF-8, under the 64 KB command cap
+const FW_TICKET_RETRY_MS = 10000;  // portal: a chunk refused for too many commands a minute waits this long
 // FW-0006: the choice at the top of the one ticket form (Bug first): its label, the description prompt, a title hint
-const FW_TICKET_PAGES = ["Watcher", "Schedule", "Recall/O75", "Details", "Settings", "Aviation Wx", "Phone alert", "Other"];
+const FW_TICKET_PAGES = FW_PORTAL
+  ? ["Watcher", "Schedule", "Pilot", "Recall/O75", "Settings", "Tickets", "Phone alert (ntfy)", "Other"]
+  : ["Watcher", "Schedule", "Recall/O75", "Details", "Settings", "Aviation Wx", "Phone alert", "Other"];
 // Ryan (Nov 6): "Process Tickets in Claude Code", far right of Submit a ticket. 1.4.5 (Ryan): it copies the prompt
 // below to the clipboard (Ryan pastes it into his own Claude Code window) instead of opening a new session. Card
-// option claude_code_prompt replaces the text.
-const FW_TICKET_CC_PROMPT = "Process all Flight Watcher tickets on Pako HI: fix every new or reopened one, release it, mark it fixed, then confirm and close your completed fixes.";
+// option claude_code_prompt replaces the text. 1.7.0: a pilot's fixed ticket waits for that pilot's verify.
+const FW_TICKET_CC_PROMPT = "Process all Flight Watcher tickets on Pako HI: fix every new or reopened one, release it, mark it fixed, then confirm and close your completed fixes, except a pilot's ticket: leave it fixed for its reporter to verify.";
 const FW_TICKET_EDIT = { title: 200, narrative: 10000, steps: 5000, expected: 5000, page: 300 };  // tickets.MAX_TEXT
 const FW_TICKET_KINDS = {
   bug: { label: "&#128027; Bug", narrative: "What happened?", title: "e.g. Pay-Gross wrong on v11.003" },
@@ -49,6 +65,14 @@ class FlightWatcherTicketsCard extends HTMLElement {
     this._c = { prefix: "flight_watcher", ...c };
     this._form = null; this._imgs = []; this._prep = null; this._note = ""; this._gen = 0; this._send = null; this._sending = false;
     this._open = {}; this._doneOpen = false; this._req = null; this._dlg = false; this._fk = ""; this._unsaved = null;
+    this._acts = {};  // 1.7.0 portal: ticket id -> the last verify / reopen / note this card sent for it {rid, action}
+  }
+  // 1.7.0 portal: the line under a ticket's buttons: the Watcher's answer to the last act this card sent for it
+  _rowMsg(id) {
+    const q = this._acts[id], a = q ? this._answer(q.rid, "act") : null;
+    const words = { verify: "Verified and closed", reopen: "Reopened", note: "Note added" };
+    const t = !q ? "" : !a ? "Sent. Waiting for the Watcher..." : a.ok ? `${words[q.action] || "Done"}.` : `Not done: ${a.error || "refused"}.`;
+    return `<div data-rowmsg="${this._e(id)}" class="${a && !a.ok ? "warn" : "u"}">${this._e(t)}</div>`;
   }
   getCardSize() { return 6; }
   _ccPrompt() { return this._c.claude_code_prompt || FW_TICKET_CC_PROMPT; }
@@ -144,8 +168,80 @@ class FlightWatcherTicketsCard extends HTMLElement {
     try { crypto.getRandomValues(b); } catch (e) { b.forEach((_, i) => { b[i] = Math.floor(Math.random() * 256); }); }
     return "c" + Date.now().toString(36) + Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
   }
+  // 1.7.0: how many photos a ticket takes here: the Watcher's own limit when its sensor says (a pilot's), else 3 in
+  // the portal and 10 on Home Assistant (Ryan's sensor has no limits: unchanged)
+  _max() {
+    const st = this._h && this._h.states[`sensor.${this._c.prefix}_tickets`];
+    const lim = st && st.attributes && st.attributes.limits;
+    const n = lim && Number.isInteger(lim.photos) && lim.photos > 0 ? lim.photos : 0;
+    return n ? Math.min(n, FW_TICKET_MAX_PHOTOS) : FW_PORTAL ? FW_TICKET_PORTAL_PHOTOS : FW_TICKET_MAX_PHOTOS;
+  }
+  // 1.7.0 portal: a command the portal would refuse for its size (its {sub, payload} over FW_TICKET_MAX_BYTES in
+  // UTF-8) is not sent; the card says why instead. Never on Home Assistant.
+  _tooBig(topic, obj) {
+    if (!FW_PORTAL) return "";
+    const n = new TextEncoder().encode(JSON.stringify({ sub: topic, payload: JSON.stringify(obj) })).length;
+    return n > FW_TICKET_MAX_BYTES ? "Too long for the portal: shorten the description." : "";
+  }
+  _wait(ms) { return new Promise((res) => setTimeout(res, ms)); }
+  // 1.7.0 portal: the Watcher's answers to this pilot's own ticket commands (newest first), from the sensor
+  _answers() {
+    const st = this._h && this._h.states[`sensor.${this._c.prefix}_tickets`];
+    const a = st && st.attributes && st.attributes.answers;
+    return Array.isArray(a) ? a : [];
+  }
+  _answer(ref, action, i) {
+    return this._answers().find((x) => x && x.ref === ref && x.action === action && (i === undefined || x.i === i)) || null;
+  }
+  // 1.7.0 portal: FileReader into a data: URL (allowed by the portal's img-src; a blob: URL is not), then an Image.
+  _readUrl(file) {
+    return new Promise((res, rej) => {
+      const fr = new FileReader();
+      fr.onload = () => res(String(fr.result || ""));
+      fr.onerror = () => rej(new Error("unreadable"));
+      fr.readAsDataURL(file);
+    });
+  }
+  _thumb(img, W, H) {
+    const tc = document.createElement("canvas"), s = Math.min(W, H);
+    tc.width = tc.height = 144;
+    const tg = tc.getContext("2d");
+    tg.fillStyle = "#fff"; tg.fillRect(0, 0, 144, 144);
+    tg.drawImage(img, (W - s) / 2, (H - s) / 2, s, s, 0, 0, 144, 144);
+    return tc.toDataURL("image/jpeg", 0.7);
+  }
+  // 1.7.0 portal: a picked photo -> { url: JPEG data URL of at most FW_TICKET_PORTAL_URL characters, thumb }. From a
+  // long side of 1600 px (more for a very tall capture, so its short side can stay 400 px, never over 2048), quality
+  // 0.82, 0.72, 0.62, 0.52 at each size, then the size times 0.85; refused ("too detailed") once the short side would
+  // fall under 400 px (or the original's, when smaller).
+  async _shrinkPortal(file) {
+    const src = await this._readUrl(file);
+    if (!/^data:image\//.test(src)) throw new Error("unreadable");
+    const img = await new Promise((res, rej) => {
+      const im = new Image();
+      im.onload = () => res(im); im.onerror = () => rej(new Error("unreadable"));
+      im.src = src;
+    });
+    const W = img.naturalWidth || img.width, H = img.naturalHeight || img.height;
+    if (!W || !H) throw new Error("unreadable");
+    const L = Math.max(W, H), S = Math.min(W, H), floor = Math.min(400, S);
+    const cv = document.createElement("canvas"), g = cv.getContext("2d");
+    let side = Math.min(L, 2048, Math.max(1600, Math.ceil(floor * L / S))), url = "";
+    for (let pass = 0; pass < 12; pass++, side *= 0.85) {
+      const k = side / L, w = Math.max(1, Math.round(W * k)), h = Math.max(1, Math.round(H * k));
+      if (Math.min(w, h) < floor) break;
+      cv.width = w; cv.height = h;
+      g.fillStyle = "#fff"; g.fillRect(0, 0, w, h);  // a transparent PNG turns white, not black
+      g.drawImage(img, 0, 0, w, h);
+      for (const q of [0.82, 0.72, 0.62, 0.52]) { url = cv.toDataURL("image/jpeg", q); if (url.length <= FW_TICKET_PORTAL_URL) break; }
+      if (url.length <= FW_TICKET_PORTAL_URL) break;
+    }
+    if (!url.startsWith("data:image/jpeg;base64,") || url.length > FW_TICKET_PORTAL_URL) throw new Error("too detailed");
+    return { url, thumb: this._thumb(img, W, H) };
+  }
   // A picked photo -> { url: JPEG data URL under FW_TICKET_MAX_URL (longest side 1600 px or less), thumb }.
   _shrink(file) {
+    if (FW_PORTAL) return this._shrinkPortal(file);
     return new Promise((res, rej) => {
       const img = new Image(), src = URL.createObjectURL(file);
       img.onload = () => {
@@ -178,14 +274,14 @@ class FlightWatcherTicketsCard extends HTMLElement {
   _photos() {
     const box = this.shadowRoot && this.shadowRoot.querySelector("[data-photos]");
     if (!box) return;
-    const n = this._imgs.length, full = n >= FW_TICKET_MAX_PHOTOS, p = this._prep;
+    const max = this._max(), n = this._imgs.length, full = n >= max, p = this._prep;
     const bytes = this._imgs.reduce((a, x) => a + x.url.length * 0.75, 0);
-    box.innerHTML = `<div class="lbl">Photos <span class="u">(optional, up to ${FW_TICKET_MAX_PHOTOS})</span></div>
+    box.innerHTML = `<div class="lbl">Photos <span class="u">(optional, up to ${max})</span></div>
       ${n ? `<div class="thumbs">${this._imgs.map((x, i) => `<div class="ph"><img src="${x.thumb}" alt="Photo ${i + 1}"><button class="x" data-rm="${i}" aria-label="Remove photo ${i + 1}">&times;</button></div>`).join("")}</div>` : ""}
-      <button class="g" data-add${full || p ? " disabled" : ""}>&#128247; ${full ? `${FW_TICKET_MAX_PHOTOS} of ${FW_TICKET_MAX_PHOTOS} photos` : n ? "Add more photos" : "Add photos"}</button>${n ? `<button class="g" data-clear${p ? " disabled" : ""}>Remove all</button>` : ""}
+      <button class="g" data-add${full || p ? " disabled" : ""}>&#128247; ${full ? `${max} of ${max} photos` : n ? "Add more photos" : "Add photos"}</button>${n ? `<button class="g" data-clear${p ? " disabled" : ""}>Remove all</button>` : ""}
       <div class="u" data-count>${p ? `Preparing photo ${p.i} of ${p.n}...` : n ? `${n} photo${n === 1 ? "" : "s"} attached (${this._kb(bytes)})` : "Photo library, camera or files, or paste a screenshot (\u2318V)."}</div>
       ${this._note ? `<div class="warn">${this._e(this._note)}</div>` : ""}`;
-    box.querySelector("[data-add]").onclick = () => { if (!this._prep && this._imgs.length < FW_TICKET_MAX_PHOTOS) this.shadowRoot.querySelector("[data-img]").click(); };
+    box.querySelector("[data-add]").onclick = () => { if (!this._prep && this._imgs.length < this._max()) this.shadowRoot.querySelector("[data-img]").click(); };
     const cl = box.querySelector("[data-clear]");
     if (cl) cl.onclick = () => { this._imgs = []; this._note = ""; this._photos(); };
     box.querySelectorAll("[data-rm]").forEach((b) => b.onclick = () => { this._imgs.splice(+b.dataset.rm, 1); this._note = ""; this._photos(); });
@@ -195,28 +291,33 @@ class FlightWatcherTicketsCard extends HTMLElement {
   // Every picked file is tried in order: an unreadable one is skipped and takes no slot, and reading stops once the
   // ticket holds FW_TICKET_MAX_PHOTOS. "Left out" counts only the files that were not tried because it was full.
   async _addFiles(list) {
-    const files = Array.from(list || []);
+    const files = Array.from(list || []), max = this._max();
     if (!files.length || this._prep) return;
-    if (this._imgs.length >= FW_TICKET_MAX_PHOTOS) {
-      this._note = `Already ${FW_TICKET_MAX_PHOTOS} photos, the most a ticket takes. Remove one to add another.`;
+    if (this._imgs.length >= max) {
+      this._note = `Already ${max} photos, the most a ticket takes. Remove one to add another.`;
       this._photos();
       return;
     }
     this._note = "";
-    const gen = this._gen, bad = [];
+    const gen = this._gen, bad = [], big = [];
     let i = 0;
-    for (; i < files.length && this._imgs.length < FW_TICKET_MAX_PHOTOS; i++) {
-      this._prep = { i: i + 1, n: Math.min(files.length, i + FW_TICKET_MAX_PHOTOS - this._imgs.length) };
+    for (; i < files.length && this._imgs.length < max; i++) {
+      this._prep = { i: i + 1, n: Math.min(files.length, i + max - this._imgs.length) };
       this._photos();
       try {
         const x = await this._shrink(files[i]);
         if (gen !== this._gen) return;  // the form was closed meanwhile
         this._imgs.push(x);
-      } catch (e) { if (gen !== this._gen) return; bad.push(files[i].name || `file ${i + 1}`); }
+      } catch (e) {
+        if (gen !== this._gen) return;
+        if (FW_PORTAL && e && e.message === "too detailed") big.push(this._imgs.length + big.length + 1);
+        else bad.push(files[i].name || `file ${i + 1}`);
+      }
     }
     this._prep = null;
     const left = files.length - i, notes = [];
-    if (left) notes.push(`A ticket takes ${FW_TICKET_MAX_PHOTOS} photos at most: left out ${left} of the ${files.length} you picked.`);
+    if (left) notes.push(`A ticket takes ${max} photos at most: left out ${left} of the ${files.length} you picked.`);
+    if (big.length) notes.push(`Photo ${this._and(big)} ${big.length === 1 ? "is" : "are"} too detailed for the portal: crop ${big.length === 1 ? "it" : "them"} and add ${big.length === 1 ? "it" : "them"} again.`);
     if (bad.length) notes.push(`Couldn't read ${bad.length === 1 ? "this one as an image" : `${bad.length} of them as images`}: ${bad.join(", ")}.`);
     this._note = notes.join(" ");
     this._photos();
@@ -235,17 +336,39 @@ class FlightWatcherTicketsCard extends HTMLElement {
     this._closeForm(); this._sig = null;
     // s is this ticket's own progress: only it is written here, and it is shown only while it is still this._send
     // (the Submit buttons stay off until its photos are done, so a second ticket cannot take over the status line).
-    const s = this._send = { n, i: 0, failed: [], done: !n };
+    const s = this._send = { n, i: 0, failed: [], done: !n, cid };
     const show = () => { if (this._send === s) this._status(); };
     this._render();
     for (let i = 0; i < n; i++) {  // one photo per message, in order, each after the one before has gone
       s.i = i + 1; show();
+      if (FW_PORTAL) { if (!(await this._sendPhoto(cid, i + 1, n, imgs[i].url, s, show))) s.failed.push(i + 1); continue; }
       try { await this._pub("ticket/image", { cid, i: i + 1, n, image: imgs[i].url }); }
       catch (e) { s.failed.push(i + 1); }
     }
     s.done = true; show();
-    // a success line clears itself; a failed photo stays until the next ticket is started
-    if (!s.failed.length) setTimeout(() => { if (this._send === s) { this._send = null; this._status(); } }, 10000);
+    // a success line clears itself; a failed photo stays until the next ticket is started (in the portal the line
+    // stays until the Watcher's answers are in, so a refusal is seen)
+    if (!s.failed.length) setTimeout(() => { if (this._send === s && !this._sendBad(s)) { this._send = null; this._status(); } }, FW_PORTAL ? 30000 : 10000);
+  }
+  // 1.7.0 portal: photo i as chunks of FW_TICKET_CHUNK base64 characters, each its own ticket/image command, in order,
+  // each after the one before has gone. A chunk the portal turns away for too many commands a minute waits
+  // FW_TICKET_RETRY_MS and goes again (up to 6 times; the Watcher takes the same chunk twice as once); any other
+  // failure gives the photo up (true when every chunk went).
+  async _sendPhoto(cid, i, n, url, s, show) {
+    const b64 = url.slice(url.indexOf(",") + 1), parts = Math.max(1, Math.ceil(b64.length / FW_TICKET_CHUNK));
+    for (let p = 1; p <= parts; p++) {
+      s.part = p; s.parts = parts; show();
+      const data = b64.slice((p - 1) * FW_TICKET_CHUNK, p * FW_TICKET_CHUNK);
+      for (let tries = 1; ; tries++) {
+        try { await this._pub("ticket/image", { cid, i, n, part: p, parts, data }); break; }
+        catch (e) {
+          const m = String((e && e.message) || "");
+          if (tries < 6 && /too many|429|a minute/i.test(m)) { s.wait = true; show(); await this._wait(FW_TICKET_RETRY_MS); s.wait = false; continue; }
+          return false;
+        }
+      }
+    }
+    return true;
   }
   _busy() { return !!(this._send && !this._send.done); }
   // "1", "1 and 2", "1, 2 and 5"
@@ -253,6 +376,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
   _statusText() {
     const s = this._send;
     if (!s) return "";
+    if (FW_PORTAL) return this._portalStatus(s);
     if (!s.done) return s.n ? `Ticket sent. Sending photo ${s.i} of ${s.n}...` : "Ticket sent.";
     const f = s.failed;
     if (f.length) {
@@ -262,9 +386,32 @@ class FlightWatcherTicketsCard extends HTMLElement {
     }
     return s.n ? `Ticket sent with ${s.n} photo${s.n === 1 ? "" : "s"}.` : "Ticket sent.";
   }
+  // 1.7.0 portal: what was sent, then the pilot's Watcher's own answers to it ("FW-0071 filed.", "Not filed: ...",
+  // "Photo 2 not saved: ...")
+  _portalStatus(s) {
+    const out = [];
+    if (!s.done) {
+      out.push(s.n ? `Ticket sent. Sending photo ${s.i} of ${s.n}${s.parts > 1 ? ` (part ${s.part} of ${s.parts})` : ""}${s.wait ? ", waiting a moment for the portal" : ""}...` : "Ticket sent.");
+    } else if (s.failed.length) {
+      out.push(s.n === 1 ? "Ticket sent, but the photo didn't go through." : s.failed.length === s.n ? `Ticket sent, but none of the ${s.n} photos went through.`
+        : `Ticket sent, but photo${s.failed.length === 1 ? "" : "s"} ${this._and(s.failed)} of ${s.n} didn't go through.`);
+    } else out.push(s.n ? `Ticket sent with ${s.n} photo${s.n === 1 ? "" : "s"}.` : "Ticket sent.");
+    const a = this._answer(s.cid, "new");
+    if (a) out.push(a.ok ? `${a.id} filed.` : `Not filed: ${a.error || "refused"}.`);
+    for (let i = 1; i <= s.n; i++) {
+      const p = this._answer(s.cid, "image", i);
+      if (p && !p.ok) out.push(`Photo ${i} not saved: ${p.error || "refused"}.`);
+    }
+    return out.join(" ");
+  }
+  _sendBad(s) {
+    if (!s) return false;
+    if (s.failed.length) return true;
+    return !!(FW_PORTAL && this._answers().some((x) => x && x.ref === s.cid && !x.ok));
+  }
   _status() {
     const r = this.shadowRoot, el = r && r.querySelector("[data-status]");
-    if (el) { el.textContent = this._statusText(); el.className = this._send && this._send.failed.length ? "warn" : "u"; }
+    if (el) { el.textContent = this._statusText(); el.className = this._sendBad(this._send) ? "warn" : "u"; }
     if (r) r.querySelectorAll("[data-new]").forEach((b) => { b.disabled = this._busy(); });
   }
   // FW-0049: the edit message, {id, ...only the fields that changed}, or why there is nothing to send. t is the
@@ -405,7 +552,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
         <span class="chip" style="background:${chip[t.status] || "#757575"}">${this._e(String(t.status).replace("_", " "))}${t.version_fixed ? (/^\d+(\.\d+)+$/.test(String(t.version_fixed)) ? " v" : " in ") + this._e(t.version_fixed) : ""}</span>
         <span class="u">${this._e(t.reporter)} · ${this._e(String(t.created_at || "").slice(0, 10))}${np ? ` · <span title="${np} photo${np === 1 ? "" : "s"}">&#128247;${np > 1 ? " " + np : ""}</span>` : ""}</span></div>
         ${editing ? `<div class="tb">${this._editForm(f.t)}</div>` : op ? `<div class="tb">${rqRow === t.id ? rqHtml : ""}<div class="n">${this._e(t.narrative)}</div>${np ? `<div class="u" style="margin-bottom:6px">&#128247; ${np} photo${np === 1 ? "" : "s"} attached</div>` : ""}${acts}
-          <div><input data-note="${this._e(t.id)}" placeholder="Add a note" style="width:70%"> <button class="g" data-a="note" data-id="${this._e(t.id)}">Add</button></div>${eds}</div>` : ""}</div>`;
+          <div><input data-note="${this._e(t.id)}" placeholder="Add a note" style="width:70%"> <button class="g" data-a="note" data-id="${this._e(t.id)}">Add</button></div>${FW_PORTAL ? this._rowMsg(t.id) : ""}${eds}</div>` : ""}</div>`;
     };
     const rows = active.map(row).join("");
     const doneRows = done.length ? `<details class="done"${this._doneOpen ? " open" : ""}><summary>${done.length} completed${waiting ? ` <span class="u">(${waiting} waiting for your verify)</span>` : ""}</summary>${done.map(row).join("")}</details>` : "";
@@ -448,9 +595,9 @@ class FlightWatcherTicketsCard extends HTMLElement {
     </style><ha-card>
       <div class="hd"><button class="big" data-new${this._busy() ? " disabled" : ""}>&#127915; Submit a ticket</button>
         <span class="u">${tix.length ? `${active.length} open · ${done.length} completed` : ""}</span>
-        <button class="cc" data-cc type="button" title="Copies the prompt; paste it in Claude Code">Process Tickets in Claude Code</button></div>
+        ${FW_PORTAL ? "" : `<button class="cc" data-cc type="button" title="Copies the prompt; paste it in Claude Code">Process Tickets in Claude Code</button>`}</div>
       <div data-ccmsg></div>
-      <div data-status class="${this._send && this._send.failed.length ? "warn" : "u"}">${this._e(this._statusText())}</div>
+      <div data-status class="${this._sendBad(this._send) ? "warn" : "u"}">${this._e(this._statusText())}</div>
       ${rqRow ? "" : rqHtml}
       ${this._unsaved ? `<div class="form ef" data-unsaved><div class="warn">${this._e(this._unsaved.why)}</div>
         <div class="u">Your text was not saved. Copy it${this._unsaved.live ? `, or add it to ${this._e(this._unsaved.id)} as a note` : ""}.</div>
@@ -484,7 +631,16 @@ class FlightWatcherTicketsCard extends HTMLElement {
         else { ta.select(); try { if (document.execCommand("copy")) done(); } catch (e) {} }
       };
       const nb = ub.querySelector("[data-u-note]");
-      if (nb) nb.onclick = () => { this._pub("ticket/act", { id: u.id, action: "note", text: `Unsaved edit: ${u.text}`.slice(0, 5000) }); this._unsaved = null; this._sig = null; this._render(); };
+      if (nb) nb.onclick = async () => {
+        const m = { id: u.id, action: "note", text: `Unsaved edit: ${u.text}`.slice(0, 5000) };
+        if (!FW_PORTAL) { this._pub("ticket/act", m); this._unsaved = null; this._sig = null; this._render(); return; }
+        m.rid = this._cid();  // 1.7.0 portal: wait for the send; on a failure the text stays offered
+        nb.disabled = true;
+        try { await this._pub("ticket/act", m); }
+        catch (e) { nb.disabled = false; nb.textContent = `Didn't send: ${(e && e.message) || "no connection"}`; return; }
+        this._acts[u.id] = { rid: m.rid, action: "note" };
+        this._unsaved = null; this._sig = null; this._render();
+      };
       ub.querySelector("[data-u-close]").onclick = () => { this._unsaved = null; this._render(); };
     }
     r.querySelectorAll("[data-t]").forEach((el) => el.onclick = () => { this._open[el.dataset.t] = !this._open[el.dataset.t]; this._render(); });
@@ -504,10 +660,22 @@ class FlightWatcherTicketsCard extends HTMLElement {
       const t = tix.find((x) => x.id === b.dataset.del);
       if (t) this._askDelete(t);
     });
-    r.querySelectorAll("button[data-a]").forEach((b) => b.onclick = () => {
+    r.querySelectorAll("button[data-a]").forEach((b) => b.onclick = async () => {
       const m = { id: b.dataset.id, action: b.dataset.a };
       if (b.dataset.a === "note") { const i = r.querySelector(`input[data-note="${CSS.escape(b.dataset.id)}"]`); if (!i || !i.value.trim()) return; m.text = i.value.trim(); }
-      this._pub("ticket/act", m); b.textContent = "Sent";
+      if (!FW_PORTAL) { this._pub("ticket/act", m); b.textContent = "Sent"; return; }
+      // 1.7.0 portal: a rid, a size check, and the send waited for: a refusal shows on the row, never "Sent"
+      const line = r.querySelector(`[data-rowmsg="${CSS.escape(b.dataset.id)}"]`), say = (t, bad) => { if (line) { line.textContent = t; line.className = bad ? "warn" : "u"; } };
+      m.rid = this._cid();
+      const big = this._tooBig("ticket/act", m);
+      if (big) { say(big, true); return; }
+      const label = b.textContent;
+      b.disabled = true; b.textContent = "Sending...";
+      try { await this._pub("ticket/act", m); }
+      catch (e) { b.disabled = false; b.textContent = label; say(`Didn't send: ${(e && e.message) || "no connection"}.`, true); return; }
+      b.textContent = "Sent";
+      this._acts[m.id] = { rid: m.rid, action: m.action };
+      say("Sent. Waiting for the Watcher...", false);
     });
     if (f && f.mode === "edit") {
       const box = r.querySelector("[data-editform]");
@@ -521,6 +689,8 @@ class FlightWatcherTicketsCard extends HTMLElement {
           const m = this._editMsg(f.t, vals);
           if (typeof m === "string") { msg.textContent = m; return; }
           m.rid = this._cid();
+          const big = this._tooBig("ticket/edit", m);  // 1.7.0 portal only ('' on Home Assistant)
+          if (big) { msg.textContent = big; return; }
           save.disabled = true; save.textContent = "Saving...";
           try { await this._pub("ticket/edit", m); }
           catch (e) { save.disabled = false; save.textContent = "Save"; msg.textContent = `Didn't send: ${(e && e.message) || "no connection"}. Try again.`; return; }
@@ -551,6 +721,8 @@ class FlightWatcherTicketsCard extends HTMLElement {
         if (!v("title") || !v("narrative")) { msg.textContent = "Add a title and a description."; return; }
         const bug = f.kind === "bug";  // a feature request sends no steps / expected, even if typed under Bug first
         const t = { kind: f.kind, title: v("title", 200), narrative: v("narrative", 10000), steps: bug ? v("steps", 5000) : "", expected: bug ? v("expected", 5000) : "", page: v("page", 300), version: ver };
+        const big = this._tooBig("ticket/new", { ...t, cid: "c".repeat(40), images: this._imgs.length });  // 1.7.0 portal only
+        if (big) { msg.textContent = big; return; }
         this._submit(t, this._imgs.slice());
       };
     }

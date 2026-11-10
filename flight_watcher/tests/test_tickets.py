@@ -60,7 +60,11 @@ def test_actions(tmp_path):
     h = t["history"]
     assert [x["action"] for x in h] == ["triage", "progress", "note", "fixed", "verify", "reopen"]
     assert h[3]["version"] == "0.10.2" and h[4]["actor"] == "james" and h[5]["text"] == "back again" and h[0]["to"] == "triaged"
-    assert TK.act(b, {"id": tid, "action": "close"}, "ryan", "t6", allowed_reporter="maria")[1] == f"{tid} is not maria's ticket"
+    # 1.7.0 (Release C): a pilot's instance takes only his actions, and another reporter's ticket reads as missing
+    assert TK.act(b, {"id": tid, "action": "close"}, "ryan", "t6", allowed_reporter="maria")[1] == \
+        "a pilot may only verify, reopen or add a note, not close"
+    assert TK.act(b, {"id": tid, "action": "note", "text": "x"}, "maria", "t6", allowed_reporter="maria")[1] == \
+        f"{tid} not found"
     assert TK.act(b, {"id": "FW-9999", "action": "close"}, "ryan", "t6")[1] == "FW-9999 not found"
     assert TK.act(b, {"id": tid, "action": "explode"}, "ryan", "t6")[1] == "unknown action explode"
 

@@ -16,6 +16,13 @@ new or reopened (EDITABLE), so nothing changes under whoever is working it; each
 history line. delete() works in any status and moves the folder to tickets/.deleted/<id>-<stamp> (nothing is
 destroyed); listings skip it and its number is never given out again. Both take allowed_reporter like act(): a
 pilot instance only touches its own tickets, Ryan's instance any.
+
+1.7.0 (Release C, tickets on a pilot's portal): with allowed_reporter set (a pilot instance) act() takes only the
+pilot's own actions (roles.PILOT_TICKET_ACTIONS: verify, reopen, note), and a ticket of another reporter answers
+"<id> not found", the same as a missing one, so a pilot cannot tell which ids exist. create() and store_photo() take
+the pilot's quotas (roles.PILOT_TICKET_LIMITS) as limits; count_recent() and open_count() feed the daily and open
+caps; fixed_moves() lists every move into fixed of one reporter's tickets for the Watcher's own ticket_fixed alert.
+The admin (allowed_reporter None, limits None) works exactly as before.
 """
 import base64
 import binascii
@@ -24,6 +31,9 @@ import json
 import os
 import re
 from contextlib import contextmanager
+from datetime import datetime, timezone
+
+import roles
 
 KINDS = ("bug", "feature")
 ID_RE = re.compile(r"^FW-(\d{4,})$")
@@ -135,12 +145,17 @@ def images(t):
     return [t["image"]] if t.get("image") else []
 
 
-def create(base, payload, reporter, now):
+def create(base, payload, reporter, now, limits=None):
     """(ticket, '') or (None, error). payload {kind, title, narrative, steps?, expected?, page?, version?, image?,
     cid?, images?}. image is photo 1 sent inline (cards before FW-0003). cid (client-made) and images (how many
-    photos the card will send on ticket/image, 0 to 10; 10 when left out) open the ticket for add_image."""
+    photos the card will send on ticket/image, 0 to 10; 10 when left out) open the ticket for add_image.
+    1.7.0: limits (a pilot's roles.PILOT_TICKET_LIMITS): at most limits["photos"] photos, no inline image (his photos
+    come on ticket/image, where the Watcher checks and re-encodes them), and the daily and open caps are the caller's
+    (count_recent, open_count, under the same lock: create_limited)."""
     if not isinstance(payload, dict):
         return None, "not an object"
+    if limits and payload.get("image"):
+        return None, "photos are sent after the ticket, one by one"
     kind = str(payload.get("kind") or "").strip().lower()
     if kind not in KINDS:
         return None, "kind must be bug or feature"
@@ -159,9 +174,14 @@ def create(base, payload, reporter, now):
     if not CID_RE.match(cid):
         cid = ""  # the ticket still files; it just takes no photos later
     want = 1 if img else 0
+    top = min(MAX_IMAGES, int(limits["photos"])) if limits else MAX_IMAGES
     if cid:
-        want = max(want, min(MAX_IMAGES, _int(payload.get("images"), MAX_IMAGES)))
+        want = max(want, min(top, _int(payload.get("images"), top)))
     with _locked(base):
+        if limits:
+            why = quota_refusal(base, reporter, limits, now)
+            if why:
+                return None, why
         tid = _next_id(base)
         d = os.path.join(base, tid)
         os.makedirs(d, exist_ok=True)
@@ -197,23 +217,67 @@ def add_image(base, payload, reporter, now):
         raw, ext = decode_image(payload.get("image"))
     except ValueError as e:
         return None, str(e)
+    return store_photo(base, cid, i, raw, ext, reporter, now)
+
+
+def photo_target(base, cid, i, reporter, limits=None):
+    """'' when photo i may still be stored on the newest ticket this reporter filed with cid, else why not (the same
+    words store_photo gives). The Watcher asks before it puts a pilot's chunks together, so a photo that cannot be
+    stored is refused at its first chunk."""
     with _locked(base):
-        t = None
-        for tid in sorted(_ids(base), key=lambda x: int(x[3:]), reverse=True):  # newest first: just filed
-            x = load(base, tid)
-            if x and x.get("cid") == cid and x.get("reporter") == reporter:
-                t = x
-                break
+        t, err = _photo_ticket(base, cid, i, reporter, limits)
+    return err
+
+
+def _photo_ticket(base, cid, i, reporter, limits):
+    """(ticket, '') or (None, why) for photo i of cid. Call under _locked."""
+    top = min(MAX_IMAGES, int(limits["photos"])) if limits else MAX_IMAGES
+    if not isinstance(i, int) or isinstance(i, bool) or not 1 <= i <= top:
+        return None, f"photo number must be 1 to {top}"
+    t = None
+    for tid in sorted(_ids(base), key=lambda x: int(x[3:]), reverse=True):  # newest first: just filed
+        x = load(base, tid)
+        if x and x.get("cid") == cid and x.get("reporter") == reporter:
+            t = x
+            break
+    if not t:
+        return None, "no ticket for that photo"
+    names = images(t)
+    want = min(_int(t.get("images_expected") or 0, 0), top)
+    if i > want:
+        return None, f"{t['id']} takes {want} photos, not photo {i}"
+    if any(_photo_no(n) == i for n in names):
+        return None, f"{t['id']} already has photo {i}"
+    if len(names) >= top:
+        return None, f"{t['id']} already has {top} photos"
+    return t, ""
+
+
+def photo_bytes(base, t):
+    """The bytes of the photos a ticket holds now (its folder's files named in images)."""
+    n = 0
+    for name in images(t):
+        try:
+            n += os.path.getsize(os.path.join(base, t["id"], os.path.basename(name)))
+        except OSError:
+            pass
+    return n
+
+
+def store_photo(base, cid, i, raw, ext, reporter, now, limits=None):
+    """(ticket, '') or (None, error): photo i (raw bytes, ext jpg or png) on the newest ticket this reporter filed
+    with cid. 1.7.0: limits (a pilot's): at most limits["photos"] photos and limits["ticket_bytes"] bytes of photos in
+    the ticket, counted with this one."""
+    if ext not in ("jpg", "png") or not isinstance(raw, (bytes, bytearray)) or not raw:
+        return None, "image is not a JPEG or PNG"
+    with _locked(base):
+        t, err = _photo_ticket(base, cid, i, reporter, limits)
         if not t:
-            return None, "no ticket for that photo"
+            return None, err
         names = images(t)
-        want = _int(t.get("images_expected") or 0, 0)
-        if i > want:
-            return None, f"{t['id']} takes {want} photos, not photo {i}"
-        if any(_photo_no(n) == i for n in names):
-            return None, f"{t['id']} already has photo {i}"
-        if len(names) >= MAX_IMAGES:
-            return None, f"{t['id']} already has {MAX_IMAGES} photos"
+        if limits and photo_bytes(base, t) + len(raw) > int(limits["ticket_bytes"]):
+            mb = int(limits["ticket_bytes"]) / (1024 * 1024)
+            return None, f"{t['id']} photos would be over {mb:g} MB in all"
         name = image_name(i, ext)
         path = os.path.join(base, t["id"], name)
         with open(path + ".tmp", "wb") as fh:
@@ -242,12 +306,14 @@ def act(base, payload, actor, now, allowed_reporter=None):
         return None, "bad id"
     if action not in ACTIONS:
         return None, f"unknown action {action}"
+    if allowed_reporter and action not in roles.PILOT_TICKET_ACTIONS:  # 1.7.0: the worker statuses are not his
+        return None, f"a pilot may only {', '.join(roles.PILOT_TICKET_ACTIONS[:-1])} or add a note, not {action}"
+    if allowed_reporter and action == "note" and not str(payload.get("text") or "").strip():
+        return None, "a note needs text"
     with _locked(base):
         t = load(base, tid)
-        if not t:
-            return None, f"{tid} not found"
-        if allowed_reporter and t.get("reporter") != allowed_reporter:
-            return None, f"{tid} is not {allowed_reporter}'s ticket"
+        if not t or (allowed_reporter and t.get("reporter") != allowed_reporter):
+            return None, f"{tid} not found"  # 1.7.0: another reporter's ticket reads as missing (no id probing)
         st = t.get("status")
         if action == "verify" and st != "fixed":
             return None, f"{tid} is {st}, not fixed"
@@ -278,10 +344,8 @@ def _own(base, payload, allowed_reporter):
     if not ID_RE.match(tid):
         return tid, None, "bad id"
     t = load(base, tid)
-    if not t:
-        return tid, None, f"{tid} not found"
-    if allowed_reporter and t.get("reporter") != allowed_reporter:
-        return tid, None, f"{tid} is not {allowed_reporter}'s ticket"
+    if not t or (allowed_reporter and t.get("reporter") != allowed_reporter):
+        return tid, None, f"{tid} not found"  # 1.7.0: another reporter's ticket reads as missing (no id probing)
     return tid, t, ""
 
 
@@ -384,6 +448,74 @@ def listing(base, reporter=None):
             rows.append(summary(t))
     rows.sort(key=lambda r: int(r["id"][3:]), reverse=True)
     return {"open": sum(1 for r in rows if r["status"] in OPEN), "total": len(rows), "tickets": rows}
+
+
+def _ts(v):
+    """An ISO time as a UTC timestamp, or None."""
+    try:
+        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        return (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _all_tickets(base):
+    """Every ticket.json in the folder, live and deleted (tickets/.deleted/<id>-<stamp>/)."""
+    out = [load(base, tid) for tid in _ids(base)]
+    try:
+        dels = sorted(os.listdir(os.path.join(base, DELETED)))
+    except OSError:
+        dels = []
+    for d in dels:
+        if DELETED_RE.match(d):
+            out.append(load(os.path.join(base, DELETED), d))
+    return [t for t in out if isinstance(t, dict)]
+
+
+def count_recent(base, reporter, since):
+    """1.7.0: how many tickets reporter filed at or after since (a UTC timestamp), deleted ones too, so filing and
+    deleting cannot get past the daily cap."""
+    n = 0
+    for t in _all_tickets(base):
+        at = _ts(t.get("created_at"))
+        if t.get("reporter") == reporter and at is not None and at >= since:
+            n += 1
+    return n
+
+
+def open_count(base, reporter):
+    """1.7.0: how many of reporter's tickets are open (OPEN) now."""
+    return sum(1 for tid in _ids(base) for t in [load(base, tid)]
+               if t and t.get("reporter") == reporter and t.get("status") in OPEN)
+
+
+def quota_refusal(base, reporter, limits, now):
+    """1.7.0: why a pilot may not file another ticket now ('' when he may): limits["new_per_day"] in the last 24 h,
+    or limits["open"] open at once. now is the ISO time of the new ticket."""
+    t = _ts(now)
+    t = datetime.now(timezone.utc).timestamp() if t is None else t
+    if count_recent(base, reporter, t - 86400) >= int(limits["new_per_day"]):
+        return f"ticket limit reached: {int(limits['new_per_day'])} new tickets in 24 h"
+    if open_count(base, reporter) >= int(limits["open"]):
+        return f"ticket limit reached: {int(limits['open'])} open tickets"
+    return ""
+
+
+def fixed_moves(base, reporter):
+    """1.7.0: [{key "<id>|<at>", id, at, version, status}] for every history line that moved one of reporter's
+    tickets into fixed (action fixed from another status), whatever its status is now (a fix then closed still
+    counts), oldest first. A note, a version correction (fixed while fixed) or a deleted ticket adds none."""
+    out = []
+    for tid in _ids(base):
+        t = load(base, tid)
+        if not t or t.get("reporter") != reporter:
+            continue
+        for h in t.get("history") or []:
+            if isinstance(h, dict) and h.get("action") == "fixed" and h.get("from") != "fixed" and h.get("at"):
+                out.append({"key": f"{tid}|{h['at']}", "id": tid, "at": str(h["at"]),
+                            "version": str(h.get("version") or "")[:40], "status": t.get("status")})
+    out.sort(key=lambda m: (_ts(m["at"]) or 0, m["id"]))
+    return out
 
 
 def signature(base):

@@ -1,5 +1,6 @@
 {
  "contract": 1,
+ "revision": 2,
  "fwp": 1,
  "generated_by": "flight_watcher/portal.py contract(); docs: flight_watcher/PORTAL_CONTRACT.md",
  "names": {
@@ -99,16 +100,16 @@
    "recall/set",
    "recall/act",
    "settings/set",
-   "pref/set"
-  ],
-  "refused": [
-   "email/alert",
-   "crew_scan/press",
+   "pref/set",
    "ticket/new",
    "ticket/image",
    "ticket/act",
    "ticket/edit",
-   "ticket/delete",
+   "ticket/delete"
+  ],
+  "refused": [
+   "email/alert",
+   "crew_scan/press",
    "upload/chunk",
    "drop/set",
    "auto_swap/set",
@@ -128,6 +129,293 @@
     5,
     90
    ]
+  },
+  "tickets": {
+   "ticket/new": {
+    "keys": [
+     "kind",
+     "title",
+     "narrative",
+     "steps",
+     "expected",
+     "page",
+     "version",
+     "cid",
+     "images"
+    ],
+    "required": [
+     "kind",
+     "title",
+     "narrative"
+    ],
+    "fields": {
+     "kind": {
+      "type": "enum",
+      "values": [
+       "bug",
+       "feature"
+      ]
+     },
+     "title": {
+      "type": "text",
+      "min": 1,
+      "max": 200
+     },
+     "narrative": {
+      "type": "text",
+      "min": 1,
+      "max": 10000
+     },
+     "steps": {
+      "type": "text",
+      "min": 0,
+      "max": 5000
+     },
+     "expected": {
+      "type": "text",
+      "min": 0,
+      "max": 5000
+     },
+     "page": {
+      "type": "text",
+      "min": 0,
+      "max": 300
+     },
+     "version": {
+      "type": "text",
+      "min": 0,
+      "max": 40
+     },
+     "cid": {
+      "type": "text",
+      "min": 6,
+      "max": 40,
+      "pattern": "^[A-Za-z0-9_-]{6,40}$"
+     },
+     "images": {
+      "type": "int",
+      "min": 0,
+      "max": 3
+     }
+    }
+   },
+   "ticket/image": {
+    "keys": [
+     "cid",
+     "i",
+     "n",
+     "part",
+     "parts",
+     "data"
+    ],
+    "required": [
+     "cid",
+     "i",
+     "n",
+     "part",
+     "parts",
+     "data"
+    ],
+    "fields": {
+     "cid": {
+      "type": "text",
+      "min": 6,
+      "max": 40,
+      "pattern": "^[A-Za-z0-9_-]{6,40}$"
+     },
+     "i": {
+      "type": "int",
+      "min": 1,
+      "max": 3
+     },
+     "n": {
+      "type": "int",
+      "min": 1,
+      "max": 3
+     },
+     "part": {
+      "type": "int",
+      "min": 1,
+      "max": 8
+     },
+     "parts": {
+      "type": "int",
+      "min": 1,
+      "max": 8
+     },
+     "data": {
+      "type": "text",
+      "min": 1,
+      "max": 60000,
+      "pattern": "^[A-Za-z0-9+/]+={0,2}$"
+     }
+    },
+    "le": [
+     [
+      "i",
+      "n"
+     ],
+     [
+      "part",
+      "parts"
+     ]
+    ]
+   },
+   "ticket/act": {
+    "keys": [
+     "id",
+     "action",
+     "text",
+     "rid"
+    ],
+    "required": [
+     "id",
+     "action"
+    ],
+    "fields": {
+     "id": {
+      "type": "text",
+      "min": 7,
+      "max": 9,
+      "pattern": "^FW-\\d{4,6}$"
+     },
+     "action": {
+      "type": "enum",
+      "values": [
+       "verify",
+       "reopen",
+       "note"
+      ]
+     },
+     "text": {
+      "type": "text",
+      "min": 0,
+      "max": 5000
+     },
+     "rid": {
+      "type": "text",
+      "min": 6,
+      "max": 40,
+      "pattern": "^[A-Za-z0-9_-]{6,40}$"
+     }
+    },
+    "nonempty_when": [
+     {
+      "field": "action",
+      "is": "note",
+      "then": "text"
+     }
+    ]
+   },
+   "ticket/edit": {
+    "keys": [
+     "id",
+     "rid",
+     "title",
+     "narrative",
+     "steps",
+     "expected",
+     "page"
+    ],
+    "required": [
+     "id"
+    ],
+    "any_of": [
+     "title",
+     "narrative",
+     "steps",
+     "expected",
+     "page"
+    ],
+    "fields": {
+     "id": {
+      "type": "text",
+      "min": 7,
+      "max": 9,
+      "pattern": "^FW-\\d{4,6}$"
+     },
+     "rid": {
+      "type": "text",
+      "min": 6,
+      "max": 40,
+      "pattern": "^[A-Za-z0-9_-]{6,40}$"
+     },
+     "title": {
+      "type": "text",
+      "min": 1,
+      "max": 200
+     },
+     "narrative": {
+      "type": "text",
+      "min": 1,
+      "max": 10000
+     },
+     "steps": {
+      "type": "text",
+      "min": 0,
+      "max": 5000
+     },
+     "expected": {
+      "type": "text",
+      "min": 0,
+      "max": 5000
+     },
+     "page": {
+      "type": "text",
+      "min": 0,
+      "max": 300
+     }
+    }
+   },
+   "ticket/delete": {
+    "keys": [
+     "id",
+     "rid"
+    ],
+    "required": [
+     "id"
+    ],
+    "fields": {
+     "id": {
+      "type": "text",
+      "min": 7,
+      "max": 9,
+      "pattern": "^FW-\\d{4,6}$"
+     },
+     "rid": {
+      "type": "text",
+      "min": 6,
+      "max": 40,
+      "pattern": "^[A-Za-z0-9_-]{6,40}$"
+     }
+    }
+   }
+  },
+  "ticket_rules": [
+   "The payload is the JSON text of an object (not an array, a string or null).",
+   "Its keys are a subset of keys, include every key in required and, when any_of is given, at least one of any_of.",
+   "Every key present is checked by its fields entry; a null value is the wrong type.",
+   "text: a JSON string whose length in Unicode code points (Python len, JavaScript [...s].length) is from min to max; with pattern, the whole string matches it (Python re.fullmatch; JavaScript new RegExp(pattern) with no flags and the pattern's own ^ and $), so a trailing newline is refused.",
+   "int: a JSON number, never a boolean or a string, with a whole value from min to max; 2.0 counts as 2 (JavaScript cannot tell them apart); 2.5, true, \"2\" and 1e999 are refused.",
+   "enum: a JSON string equal to one of values.",
+   "le: each [a, b] means the value of a is at most the value of b.",
+   "nonempty_when: each {field, is, then} means that when field equals is, then is present with at least 1 code point."
+  ],
+  "pilot_ticket_actions": [
+   "verify",
+   "reopen",
+   "note"
+  ],
+  "pilot_ticket_limits": {
+   "new_per_day": 10,
+   "open": 25,
+   "photos": 3,
+   "ticket_bytes": 1572864,
+   "in_flight": 1,
+   "chunk_chars": 60000,
+   "chunk_parts": 8,
+   "photo_side_max": 2048,
+   "photo_stale_s": 120
   }
  },
  "prefs": {
@@ -182,7 +470,8 @@
    "charter",
    "hidden",
    "needs_settings",
-   "stopped_*"
+   "stopped_*",
+   "ticket_fixed"
   ],
   "views": {
    "new_pairing": "watcher",
@@ -193,7 +482,8 @@
    "charter": "watcher",
    "hidden": "watcher",
    "needs_settings": "settings",
-   "stopped_*": "watcher"
+   "stopped_*": "watcher",
+   "ticket_fixed": "tickets"
   },
   "fields": [
    "pairing",
@@ -221,7 +511,9 @@
    "flight",
    "route",
    "rule_id",
-   "state"
+   "state",
+   "ticket",
+   "version"
   ],
   "entry": [
    "seq",
@@ -250,7 +542,8 @@
   "schedule",
   "pilot",
   "recall",
-  "settings"
+  "settings",
+  "tickets"
  ],
  "file_kinds": {
   "finds": "\\d{4}-\\d{2}",
@@ -259,7 +552,8 @@
   "versions": "",
   "pickers": "",
   "recall": "",
-  "pilotver": ""
+  "pilotver": "",
+  "tickets": ""
  },
  "masks": {
   "zero": [
@@ -635,6 +929,150 @@
       "payload": "{\"key\":\"er_trips\",\"value\":\"+H9001|2026-11-20,-H9002|2026-11-24\"}",
       "session": "5e55105e55105e55"
      }
+    },
+    {
+     "name": "1763600000300-00000000c0de012c.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de012c",
+      "pilot": "demo",
+      "ts": 1763600000300,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000301-00000000c0de012d.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de012d",
+      "pilot": "demo",
+      "ts": 1763600000301,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"feature\",\"title\":\"Show reserve days\",\"narrative\":\"Reserve days on the card.\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000302-00000000c0de012e.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de012e",
+      "pilot": "demo",
+      "ts": 1763600000302,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"t\",\"narrative\":\"n\",\"cid\":\"cdemo0002\",\"images\":2.0}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000303-00000000c0de012f.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de012f",
+      "pilot": "demo",
+      "ts": 1763600000303,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"\ud83d\udeebxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"narrative\":\"the title is 200 code points\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000304-00000000c0de0130.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0130",
+      "pilot": "demo",
+      "ts": 1763600000304,
+      "sub": "ticket/image",
+      "payload": "{\"cid\":\"cdemo0001\",\"i\":1,\"n\":2,\"part\":1,\"parts\":1,\"data\":\"/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000305-00000000c0de0131.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0131",
+      "pilot": "demo",
+      "ts": 1763600000305,
+      "sub": "ticket/image",
+      "payload": "{\"cid\":\"cdemo0001\",\"i\":2,\"n\":2,\"part\":1,\"parts\":2,\"data\":\"/9j/4AAQSkZJRgAB\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000306-00000000c0de0132.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0132",
+      "pilot": "demo",
+      "ts": 1763600000306,
+      "sub": "ticket/image",
+      "payload": "{\"cid\":\"cdemo0001\",\"i\":2,\"n\":2,\"part\":2,\"parts\":2,\"data\":\"AQAAAQABAAD/2Q==\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000307-00000000c0de0133.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0133",
+      "pilot": "demo",
+      "ts": 1763600000307,
+      "sub": "ticket/act",
+      "payload": "{\"id\":\"FW-0001\",\"action\":\"verify\",\"rid\":\"rdemo0001\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000308-00000000c0de0134.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0134",
+      "pilot": "demo",
+      "ts": 1763600000308,
+      "sub": "ticket/act",
+      "payload": "{\"id\":\"FW-0001\",\"action\":\"reopen\",\"text\":\"Still blank after the fix.\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000309-00000000c0de0135.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0135",
+      "pilot": "demo",
+      "ts": 1763600000309,
+      "sub": "ticket/act",
+      "payload": "{\"id\":\"FW-0001\",\"action\":\"note\",\"text\":\"Seen again at 10:05 HST.\",\"rid\":\"rdemo0002\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000310-00000000c0de0136.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0136",
+      "pilot": "demo",
+      "ts": 1763600000310,
+      "sub": "ticket/edit",
+      "payload": "{\"id\":\"FW-0001\",\"rid\":\"rdemo0003\",\"narrative\":\"The pot card shows no rows at all.\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "name": "1763600000311-00000000c0de0137.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0137",
+      "pilot": "demo",
+      "ts": 1763600000311,
+      "sub": "ticket/delete",
+      "payload": "{\"id\":\"FW-0001\",\"rid\":\"rdemo0004\"}",
+      "session": "5e55105e55105e55"
+     }
     }
    ],
    "refused": [
@@ -672,7 +1110,7 @@
       "id": "00000000c0de0066",
       "pilot": "demo",
       "ts": 1763600000102,
-      "sub": "ticket/new",
+      "sub": "upload/chunk",
       "payload": "x",
       "session": "5e55105e55105e55"
      }
@@ -685,7 +1123,7 @@
       "id": "00000000c0de0067",
       "pilot": "demo",
       "ts": 1763600000103,
-      "sub": "ticket/image",
+      "sub": "drop/set",
       "payload": "x",
       "session": "5e55105e55105e55"
      }
@@ -698,7 +1136,7 @@
       "id": "00000000c0de0068",
       "pilot": "demo",
       "ts": 1763600000104,
-      "sub": "ticket/act",
+      "sub": "auto_swap/set",
       "payload": "x",
       "session": "5e55105e55105e55"
      }
@@ -711,7 +1149,7 @@
       "id": "00000000c0de0069",
       "pilot": "demo",
       "ts": 1763600000105,
-      "sub": "ticket/edit",
+      "sub": "swap_map/press",
       "payload": "x",
       "session": "5e55105e55105e55"
      }
@@ -724,7 +1162,7 @@
       "id": "00000000c0de006a",
       "pilot": "demo",
       "ts": 1763600000106,
-      "sub": "ticket/delete",
+      "sub": "hunt/state",
       "payload": "x",
       "session": "5e55105e55105e55"
      }
@@ -737,71 +1175,6 @@
       "id": "00000000c0de006b",
       "pilot": "demo",
       "ts": 1763600000107,
-      "sub": "upload/chunk",
-      "payload": "x",
-      "session": "5e55105e55105e55"
-     }
-    },
-    {
-     "why": "sub not allowed",
-     "name": "1763600000108-00000000c0de006c.json",
-     "cmd": {
-      "fwp": 1,
-      "id": "00000000c0de006c",
-      "pilot": "demo",
-      "ts": 1763600000108,
-      "sub": "drop/set",
-      "payload": "x",
-      "session": "5e55105e55105e55"
-     }
-    },
-    {
-     "why": "sub not allowed",
-     "name": "1763600000109-00000000c0de006d.json",
-     "cmd": {
-      "fwp": 1,
-      "id": "00000000c0de006d",
-      "pilot": "demo",
-      "ts": 1763600000109,
-      "sub": "auto_swap/set",
-      "payload": "x",
-      "session": "5e55105e55105e55"
-     }
-    },
-    {
-     "why": "sub not allowed",
-     "name": "1763600000110-00000000c0de006e.json",
-     "cmd": {
-      "fwp": 1,
-      "id": "00000000c0de006e",
-      "pilot": "demo",
-      "ts": 1763600000110,
-      "sub": "swap_map/press",
-      "payload": "x",
-      "session": "5e55105e55105e55"
-     }
-    },
-    {
-     "why": "sub not allowed",
-     "name": "1763600000111-00000000c0de006f.json",
-     "cmd": {
-      "fwp": 1,
-      "id": "00000000c0de006f",
-      "pilot": "demo",
-      "ts": 1763600000111,
-      "sub": "hunt/state",
-      "payload": "x",
-      "session": "5e55105e55105e55"
-     }
-    },
-    {
-     "why": "sub not allowed",
-     "name": "1763600000112-00000000c0de0070.json",
-     "cmd": {
-      "fwp": 1,
-      "id": "00000000c0de0070",
-      "pilot": "demo",
-      "ts": 1763600000112,
       "sub": "pause/state",
       "payload": "x",
       "session": "5e55105e55105e55"
@@ -975,6 +1348,461 @@
       "payload": "ON",
       "session": "5e55105e55105e55"
      }
+    },
+    {
+     "why": "worker action fixed",
+     "name": "1763600000400-00000000c0de0190.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0190",
+      "pilot": "demo",
+      "ts": 1763600000400,
+      "sub": "ticket/act",
+      "payload": "{\"id\":\"FW-0001\",\"action\":\"fixed\",\"version\":\"1.7.0\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "worker action fixed",
+     "name": "1763600000401-00000000c0de0191.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0191",
+      "pilot": "demo",
+      "ts": 1763600000401,
+      "sub": "ticket/act",
+      "payload": "{\"id\":\"FW-0001\",\"action\":\"fixed\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "worker action triage",
+     "name": "1763600000402-00000000c0de0192.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0192",
+      "pilot": "demo",
+      "ts": 1763600000402,
+      "sub": "ticket/act",
+      "payload": "{\"id\":\"FW-0001\",\"action\":\"triage\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "worker action progress",
+     "name": "1763600000403-00000000c0de0193.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0193",
+      "pilot": "demo",
+      "ts": 1763600000403,
+      "sub": "ticket/act",
+      "payload": "{\"id\":\"FW-0001\",\"action\":\"progress\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "worker action close",
+     "name": "1763600000404-00000000c0de0194.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0194",
+      "pilot": "demo",
+      "ts": 1763600000404,
+      "sub": "ticket/act",
+      "payload": "{\"id\":\"FW-0001\",\"action\":\"close\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "note with no text",
+     "name": "1763600000405-00000000c0de0195.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0195",
+      "pilot": "demo",
+      "ts": 1763600000405,
+      "sub": "ticket/act",
+      "payload": "{\"id\":\"FW-0001\",\"action\":\"note\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "note with empty text",
+     "name": "1763600000406-00000000c0de0196.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0196",
+      "pilot": "demo",
+      "ts": 1763600000406,
+      "sub": "ticket/act",
+      "payload": "{\"id\":\"FW-0001\",\"action\":\"note\",\"text\":\"\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "id not FW-nnnn",
+     "name": "1763600000407-00000000c0de0197.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0197",
+      "pilot": "demo",
+      "ts": 1763600000407,
+      "sub": "ticket/act",
+      "payload": "{\"id\":\"FW-1\",\"action\":\"verify\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "id not FW-nnnn",
+     "name": "1763600000408-00000000c0de0198.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0198",
+      "pilot": "demo",
+      "ts": 1763600000408,
+      "sub": "ticket/act",
+      "payload": "{\"id\":\"fw-0001\",\"action\":\"verify\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "new with an inline image",
+     "name": "1763600000409-00000000c0de0199.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de0199",
+      "pilot": "demo",
+      "ts": 1763600000409,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2,\"image\":\"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "new names a reporter",
+     "name": "1763600000410-00000000c0de019a.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de019a",
+      "pilot": "demo",
+      "ts": 1763600000410,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2,\"reporter\":\"ryan\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "new with images 2.5",
+     "name": "1763600000411-00000000c0de019b.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de019b",
+      "pilot": "demo",
+      "ts": 1763600000411,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2.5}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "new with images true",
+     "name": "1763600000412-00000000c0de019c.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de019c",
+      "pilot": "demo",
+      "ts": 1763600000412,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":true}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "new with images as text",
+     "name": "1763600000413-00000000c0de019d.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de019d",
+      "pilot": "demo",
+      "ts": 1763600000413,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":\"2\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "new over the photo limit",
+     "name": "1763600000414-00000000c0de019e.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de019e",
+      "pilot": "demo",
+      "ts": 1763600000414,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":4}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "new with an unknown kind",
+     "name": "1763600000415-00000000c0de019f.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de019f",
+      "pilot": "demo",
+      "ts": 1763600000415,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"question\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "new with an empty title",
+     "name": "1763600000416-00000000c0de01a0.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01a0",
+      "pilot": "demo",
+      "ts": 1763600000416,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "new title over 200 code points",
+     "name": "1763600000417-00000000c0de01a1.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01a1",
+      "pilot": "demo",
+      "ts": 1763600000417,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"\ud83d\udeebxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "new with a null page",
+     "name": "1763600000418-00000000c0de01a2.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01a2",
+      "pilot": "demo",
+      "ts": 1763600000418,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":null,\"version\":\"1.7.0\",\"cid\":\"cdemo0001\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "new without a narrative",
+     "name": "1763600000419-00000000c0de01a3.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01a3",
+      "pilot": "demo",
+      "ts": 1763600000419,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"t\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "new with a bad cid",
+     "name": "1763600000420-00000000c0de01a4.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01a4",
+      "pilot": "demo",
+      "ts": 1763600000420,
+      "sub": "ticket/new",
+      "payload": "{\"kind\":\"bug\",\"title\":\"Pot card blank on the Watcher tab\",\"narrative\":\"The pot card shows no rows after a scan.\",\"steps\":\"Watcher tab, Scan FLICA now\",\"expected\":\"The pot rows\",\"page\":\"Watcher\",\"version\":\"1.7.0\",\"cid\":\"bad cid!\",\"images\":2}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "image over the photo limit",
+     "name": "1763600000421-00000000c0de01a5.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01a5",
+      "pilot": "demo",
+      "ts": 1763600000421,
+      "sub": "ticket/image",
+      "payload": "{\"cid\":\"cdemo0001\",\"i\":4,\"n\":4,\"part\":1,\"parts\":1,\"data\":\"/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "image i over n",
+     "name": "1763600000422-00000000c0de01a6.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01a6",
+      "pilot": "demo",
+      "ts": 1763600000422,
+      "sub": "ticket/image",
+      "payload": "{\"cid\":\"cdemo0001\",\"i\":2,\"n\":1,\"part\":1,\"parts\":1,\"data\":\"/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "image part over parts",
+     "name": "1763600000423-00000000c0de01a7.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01a7",
+      "pilot": "demo",
+      "ts": 1763600000423,
+      "sub": "ticket/image",
+      "payload": "{\"cid\":\"cdemo0001\",\"i\":1,\"n\":2,\"part\":2,\"parts\":1,\"data\":\"/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "image over the chunk limit",
+     "name": "1763600000424-00000000c0de01a8.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01a8",
+      "pilot": "demo",
+      "ts": 1763600000424,
+      "sub": "ticket/image",
+      "payload": "{\"cid\":\"cdemo0001\",\"i\":1,\"n\":2,\"part\":9,\"parts\":9,\"data\":\"/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "image data is a data URL",
+     "name": "1763600000425-00000000c0de01a9.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01a9",
+      "pilot": "demo",
+      "ts": 1763600000425,
+      "sub": "ticket/image",
+      "payload": "{\"cid\":\"cdemo0001\",\"i\":1,\"n\":2,\"part\":1,\"parts\":1,\"data\":\"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "image data with a trailing newline",
+     "name": "1763600000426-00000000c0de01aa.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01aa",
+      "pilot": "demo",
+      "ts": 1763600000426,
+      "sub": "ticket/image",
+      "payload": "{\"cid\":\"cdemo0001\",\"i\":1,\"n\":2,\"part\":1,\"parts\":1,\"data\":\"/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==\\n\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "image without part",
+     "name": "1763600000427-00000000c0de01ab.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01ab",
+      "pilot": "demo",
+      "ts": 1763600000427,
+      "sub": "ticket/image",
+      "payload": "{\"cid\":\"cdemo0001\",\"i\":1,\"n\":2,\"parts\":1,\"data\":\"/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "image in the HA card's whole form",
+     "name": "1763600000428-00000000c0de01ac.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01ac",
+      "pilot": "demo",
+      "ts": 1763600000428,
+      "sub": "ticket/image",
+      "payload": "{\"cid\":\"cdemo0001\",\"i\":1,\"n\":1,\"image\":\"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2Q==\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "edit with nothing to change",
+     "name": "1763600000429-00000000c0de01ad.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01ad",
+      "pilot": "demo",
+      "ts": 1763600000429,
+      "sub": "ticket/edit",
+      "payload": "{\"id\":\"FW-0001\",\"rid\":\"rdemo0003\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "edit blanks the title",
+     "name": "1763600000430-00000000c0de01ae.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01ae",
+      "pilot": "demo",
+      "ts": 1763600000430,
+      "sub": "ticket/edit",
+      "payload": "{\"id\":\"FW-0001\",\"title\":\"\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "edit sets the status",
+     "name": "1763600000431-00000000c0de01af.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01af",
+      "pilot": "demo",
+      "ts": 1763600000431,
+      "sub": "ticket/edit",
+      "payload": "{\"id\":\"FW-0001\",\"status\":\"closed\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "delete with another key",
+     "name": "1763600000432-00000000c0de01b0.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01b0",
+      "pilot": "demo",
+      "ts": 1763600000432,
+      "sub": "ticket/delete",
+      "payload": "{\"id\":\"FW-0001\",\"reason\":\"x\"}",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "payload is an array",
+     "name": "1763600000433-00000000c0de01b1.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01b1",
+      "pilot": "demo",
+      "ts": 1763600000433,
+      "sub": "ticket/delete",
+      "payload": "[\"FW-0001\"]",
+      "session": "5e55105e55105e55"
+     }
+    },
+    {
+     "why": "payload is not JSON",
+     "name": "1763600000434-00000000c0de01b2.json",
+     "cmd": {
+      "fwp": 1,
+      "id": "00000000c0de01b2",
+      "pilot": "demo",
+      "ts": 1763600000434,
+      "sub": "ticket/new",
+      "payload": "{kind: bug",
+      "session": "5e55105e55105e55"
+     }
     }
    ]
   },
@@ -1020,6 +1848,26 @@
     "kind": "pilotver",
     "arg": "",
     "api": "/fw/api/file/pilotver"
+   },
+   {
+    "url": "/local/flight-watcher/demo/tickets_00000000000000000000000000000000.json?r=abc",
+    "kind": "tickets",
+    "arg": "",
+    "api": "/fw/api/file/tickets"
+   }
+  ],
+  "file_urls_refused": [
+   {
+    "url": "/local/flight-watcher/tickets_00000000000000000000000000000000.json?r=abc",
+    "why": "the admin's tickets list (no pilot folder)"
+   },
+   {
+    "url": "/local/flight-watcher/pilot3/tickets_00000000000000000000000000000000.json?r=abc",
+    "why": "another pilot's folder"
+   },
+   {
+    "url": "/local/flight-watcher/pilot3/versions_00000000000000000000000000000000.json?r=abc",
+    "why": "another pilot's folder"
    }
   ]
  }

@@ -53,8 +53,9 @@ import portal as PT
 import ntfy as NT
 import gate as GT
 import captures as CAPS
+import photos as PH
 
-VERSION = "1.6.3"
+VERSION = "1.7.0"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -6133,6 +6134,34 @@ TICKETS_DIR = "/share/flight_watcher/tickets"  # shared by every instance
 TICKETS_SIG = {"sig": None}
 TICKETS_LAST = {}  # FW-0049: the last edit / delete answer, sent as "last" on the listing for the card
 RID_RE = TK.CID_RE
+# 1.7.0 (Release C): publish_tickets runs from the MQTT thread (the handlers), the main loop (check) and, on a pilot,
+# the uploads janitor: one at a time
+TICKETS_LOCK = threading.Lock()
+# 1.7.0: a pilot's answers to his own ticket commands (new, image, act, edit, delete), newest first, the last
+# TICKET_ANSWERS_KEEP, sent as "answers" on his tickets sensor so his portal card can say "FW-0071 filed" or "Photo 2
+# not saved: <why>". The admin's sensor has no answers (his card is unchanged); "last" keeps its FW-0049 meaning.
+TICKET_ANSWERS = []
+TICKET_ANSWERS_KEEP = 10
+PHOTO_ASM = PH.Assembler()  # 1.7.0: a pilot's one photo upload in flight
+TICKETS_FIXED_SEEN = "tickets_fixed_seen.json"  # 1.7.0: under DATA; the fixed moves already announced (portal pilot)
+TICKETS_FIXED_KEEP = 500
+
+
+def ticket_limits():
+    """1.7.0: this instance's ticket quotas: roles.PILOT_TICKET_LIMITS on a pilot, None (unlimited) on the admin."""
+    return ROLES.PILOT_TICKET_LIMITS if is_pilot() else None
+
+
+def ticket_answer(ref, tid, action, ok, error="", i=None):
+    """1.7.0: one answer on a pilot's tickets sensor (never on the admin's). ref is the card's cid or rid."""
+    if not is_pilot():
+        return
+    a = {"ref": ref if isinstance(ref, str) and RID_RE.match(ref) else "", "id": str(tid or "")[:12],
+         "action": action, "ok": bool(ok), "error": str(error or "")[:200], "at": now_iso()}
+    if i is not None:
+        a["i"] = i
+    TICKET_ANSWERS.insert(0, a)
+    del TICKET_ANSWERS[TICKET_ANSWERS_KEEP:]
 
 
 def reporter():
@@ -6272,6 +6301,11 @@ def upload_janitor():
             if n * UPLOAD_SWEEP_S >= UPLOADS_PUB_S:
                 n = 0
                 publish_uploads()
+                if is_pilot():
+                    # 1.7.0 (Release C): a pilot's ticket list (and its fixed alert) follows the folder every
+                    # UPLOADS_PUB_S, not only after a FLICA check (paused, yielded or waiting for settings he has
+                    # none); a folder rescan, no FLICA load. The admin keeps his check() rescan only.
+                    publish_tickets()
         except Exception as e:  # noqa: BLE001
             log.info("upload janitor: %s", type(e).__name__)
 
@@ -6333,18 +6367,29 @@ def ticket_safe(fn, payload):
         return None
 
 
+def _cid_of(d, key="cid"):
+    v = d.get(key) if isinstance(d, dict) else None
+    return v if isinstance(v, str) and RID_RE.match(v) else ""
+
+
 def ticket_new(payload):
     """{T}/ticket/new {kind, title, narrative, steps?, expected?, page?, version?, image?, cid?, images?}.
-    FW-0003: the card sends photos after this, one per {T}/ticket/image message (ticket_image)."""
+    FW-0003: the card sends photos after this, one per {T}/ticket/image message (ticket_image).
+    1.7.0: on a pilot the quotas apply (roles.PILOT_TICKET_LIMITS: 10 new tickets in 24 h, 25 open, 3 photos, no
+    inline photo) and the answer goes on his sensor; the admin is unlimited."""
     try:
         d = json.loads(payload or "{}")
     except ValueError:
         d = None
-    t, err = TK.create(TICKETS_DIR, d, reporter(), now_iso())
+    t, err = TK.create(TICKETS_DIR, d, reporter(), now_iso(), limits=ticket_limits())
     if not t:
         log.info("ticket refused: %s", err)
         pub("event/ticket_error", {"error": err, "at": now_iso()}, retain=False)
+        if is_pilot():
+            ticket_answer(_cid_of(d), "", "new", False, err)
+            publish_tickets(force=True)
         return None
+    ticket_answer(t.get("cid") or "", t["id"], "new", True)
     log.info("ticket %s (%s) from %s: %s (%d photos to come)", t["id"], t["kind"], t["reporter"], t["title"],
              t["images_expected"] - len(t["images"]))
     pub("event/ticket_new", {"id": t["id"], "kind": t["kind"], "title": t["title"], "reporter": t["reporter"]}, retain=False)
@@ -6354,7 +6399,10 @@ def ticket_new(payload):
 
 def ticket_image(payload):
     """FW-0003 {T}/ticket/image {cid, i, image}: photo i (1 to 10) of the ticket this instance filed with that
-    cid, one photo per message. An unknown cid or a bad photo is refused and nothing is written."""
+    cid, one photo per message. An unknown cid or a bad photo is refused and nothing is written.
+    1.7.0: a pilot's photo goes through ticket_photo_pilot (chunks, checks, re-encoding, his limits)."""
+    if is_pilot():
+        return ticket_photo_pilot(payload)
     try:
         d = json.loads(payload or "{}")
     except ValueError:
@@ -6365,6 +6413,61 @@ def ticket_image(payload):
         pub("event/ticket_error", {"error": err, "at": now_iso()}, retain=False)
         return None
     log.info("ticket %s: photo %s (%d of %d)", t["id"], d.get("i"), len(t["images"]), t["images_expected"])
+    publish_tickets(force=True)
+    return t
+
+
+def ticket_photo_pilot(payload):
+    """1.7.0 (Release C): a pilot's ticket/image. The portal's chunk form {cid, i, n, part, parts, data} (checked
+    again here with portal.check_ticket, whatever sent it) is put together by PHOTO_ASM, one photo at a time; a
+    dashboard card's whole form {cid, i, n?, image} is one complete photo. Either way the photo is decoded strictly,
+    must be a JPEG or PNG by its magic bytes and within the size cap, is re-encoded (photos.check) and stored with his
+    limits (3 photos, 1.5 MB a ticket). A refused chunk or photo leaves nothing written and answers on his sensor."""
+    try:
+        d = json.loads(payload or "{}")
+    except ValueError:
+        d = None
+    d = d if isinstance(d, dict) else {}
+    cid, i = _cid_of(d), d.get("i") if isinstance(d.get("i"), int) and not isinstance(d.get("i"), bool) else None
+    lim = ticket_limits()
+
+    def refuse(err):
+        if i is not None and any(a.get("ref") == cid and a.get("action") == "image" and a.get("i") == i and not a["ok"]
+                                 for a in TICKET_ANSWERS):
+            return None  # the rest of a photo already refused (its next chunks): one answer and one log line a photo
+        log.info("ticket photo refused: %s", err)
+        pub("event/ticket_error", {"error": err, "at": now_iso()}, retain=False)
+        ticket_answer(cid, "", "image", False, err, i=i)
+        publish_tickets(force=True)
+        return None
+
+    try:
+        if "part" in d or "data" in d:
+            PT.check_ticket("ticket/image", payload)
+            if int(d["part"]) == 1:
+                why = TK.photo_target(TICKETS_DIR, cid, int(d["i"]), reporter(), lim)
+                if why:
+                    PHOTO_ASM.drop(cid)
+                    return refuse(why)
+            done = PHOTO_ASM.add(d)
+            if done is None:
+                return None  # more chunks to come (or a resend of one already taken)
+            _, i, b64 = done
+            raw, ext = PH.check(b64)
+        else:
+            if not cid or i is None:
+                return refuse("bad cid or photo number")
+            s_ = str(d.get("image") or "")
+            b64 = s_.partition(",")[2] if s_.startswith("data:") else s_
+            raw, ext = PH.check(b64.strip(), max_bytes=int(lim["ticket_bytes"]))
+    except (PT.PortalError, PH.Refused) as e:
+        return refuse(str(e))
+    t, err = TK.store_photo(TICKETS_DIR, cid, int(i), raw, ext, reporter(), now_iso(), limits=lim)
+    if not t:
+        return refuse(err)
+    log.info("ticket %s: photo %s (%d of %d, %d KB re-encoded)", t["id"], i, len(t["images"]), t["images_expected"],
+             len(raw) // 1024)
+    ticket_answer(cid, t["id"], "image", True, i=int(i))
     publish_tickets(force=True)
     return t
 
@@ -6384,8 +6487,13 @@ def ticket_act(payload):
     if not t:
         log.info("ticket action refused: %s", err)
         pub("event/ticket_error", {"error": err, "at": now_iso()}, retain=False)
+        if is_pilot():  # 1.7.0: his card shows the refusal on the row (the admin's card is unchanged)
+            dd = d if isinstance(d, dict) else {}
+            ticket_answer(_cid_of(dd, "rid"), str(dd.get("id") or "")[:12], "act", False, err)
+            publish_tickets(force=True)
         return None
     log.info("ticket %s: %s -> %s", t["id"], d.get("action"), t["status"])
+    ticket_answer(_cid_of(d, "rid"), t["id"], "act", True)
     publish_tickets(force=True)
     ev = TK.fixed_event(t)
     if ev:
@@ -6408,6 +6516,7 @@ def _ticket_change(fn, verb, payload):
     TICKETS_LAST.clear()
     TICKETS_LAST.update({"rid": rid if RID_RE.match(rid) else "", "id": str(d.get("id") or "")[:20], "action": verb,
                          "ok": bool(t), "error": err, "at": now_iso()})
+    ticket_answer(rid, str(d.get("id") or "")[:12], verb, bool(t), err)  # 1.7.0: a pilot's sensor only
     if not t:
         log.info("ticket %s refused: %s", verb, err)
         pub("event/ticket_error", {"error": err, "at": now_iso()}, retain=False)
@@ -6447,25 +6556,70 @@ def tickets_payload(listing, key, rev, last):
     for r in rows:
         r["title"] = str(r.get("title") or "")[:80]
         r["created_at"] = str(r.get("created_at") or "")[:10]
-    return {"open": listing.get("open", 0), "total": listing.get("total", 0), "tickets": rows, "rows": "open",
-            "file_key": key, "rev": rev, "last": dict(last or {})}
+    out = {"open": listing.get("open", 0), "total": listing.get("total", 0), "tickets": rows, "rows": "open",
+           "file_key": key, "rev": rev, "last": dict(last or {})}
+    if is_pilot():  # 1.7.0: his answers and limits for his card (the admin's sensor is unchanged)
+        out["answers"] = [dict(a) for a in TICKET_ANSWERS]
+        out["limits"] = {k: ROLES.PILOT_TICKET_LIMITS[k] for k in ("new_per_day", "open", "photos", "ticket_bytes")}
+    return out
 
 
 def publish_tickets(force=False):
     """{T}/tickets (retained): Ryan's instance lists every ticket, a pilot instance only its own. Re-published
     when the folder changed (the other instance may have written to it) or when forced. FW-0049: "last" is this
     instance's last edit / delete answer ({} until one). FW-0060: the listing goes to tickets_<key>.json first, then
-    the sensor (tickets_payload) announces it with rev."""
+    the sensor (tickets_payload) announces it with rev. 1.7.0: one caller at a time (TICKETS_LOCK); on a portal pilot
+    a new move into fixed of his own tickets becomes one ticket_fixed alert (ticket_fixed_watch)."""
+    with TICKETS_LOCK:
+        try:
+            sig = TK.signature(TICKETS_DIR)
+            if not force and sig == TICKETS_SIG["sig"]:
+                return
+            TICKETS_SIG["sig"] = sig
+            listing = TK.listing(TICKETS_DIR, INSTANCE or None)
+            key, rev = write_list_file("tickets", listing)
+            pub("tickets", tickets_payload(listing, key, rev, TICKETS_LAST))
+        except Exception as e:
+            log.info("tickets publish skipped: %s", e)
+        try:
+            ticket_fixed_watch()
+        except Exception as e:  # noqa: BLE001 (an alert never stops the listing)
+            log.info("ticket fixed alert skipped: %s", type(e).__name__)
+
+
+def ticket_fixed_watch():
+    """1.7.0 (Release C), a portal pilot only: every move into fixed of his own tickets (tickets.fixed_moves, whoever
+    made it: Ryan's instance or Claude's flow) not seen before becomes a portal event ticket_fixed (events.json, and
+    ntfy once he has it) carrying only the ticket id(s) and the version; the moves of one pass are one event. The keys
+    seen are kept in <data>/tickets_fixed_seen.json {seeded, keys} (0600). A missing or unreadable file seeds the moves
+    already there without an alert (no backlog push at the first run or after a restart), and it is written even when
+    there is nothing to seed. Returns the event record or None."""
+    if not EXPORT["on"] or not is_pilot():
+        return None
+    moves = TK.fixed_moves(TICKETS_DIR, INSTANCE)
+    path = os.path.join(DATA, TICKETS_FIXED_SEEN)
     try:
-        sig = TK.signature(TICKETS_DIR)
-        if not force and sig == TICKETS_SIG["sig"]:
-            return
-        TICKETS_SIG["sig"] = sig
-        listing = TK.listing(TICKETS_DIR, INSTANCE or None)
-        key, rev = write_list_file("tickets", listing)
-        pub("tickets", tickets_payload(listing, key, rev, TICKETS_LAST))
-    except Exception as e:
-        log.info("tickets publish skipped: %s", e)
+        d = json.load(open(path, encoding="utf-8"))
+        seen = [k for k in d.get("keys") if isinstance(k, str)] if isinstance(d, dict) and d.get("seeded") and \
+            isinstance(d.get("keys"), list) else None
+    except (OSError, ValueError):
+        seen = None
+    if seen is None:
+        PT.write_private(path, PT.dumps({"seeded": now_iso(), "keys": [m["key"] for m in moves][-TICKETS_FIXED_KEEP:]}))
+        log.info("ticket fixed alerts seeded (%d earlier fix%s, no alert)", len(moves), "" if len(moves) == 1 else "es")
+        return None
+    known = set(seen)
+    new = [m for m in moves if m["key"] not in known]
+    if not new:
+        return None
+    keep = [k for k in seen if k in {m["key"] for m in moves}] + [m["key"] for m in new]
+    PT.write_private(path, PT.dumps({"seeded": d["seeded"], "keys": keep[-TICKETS_FIXED_KEEP:]}))
+    ids = sorted({m["id"] for m in new}, key=lambda x: int(x[3:]))
+    rec = portal_event("ticket_fixed", {"key": "|".join(sorted(m["key"] for m in new)),
+                                        "ticket": ids[0] if len(ids) == 1 else ids[:20],
+                                        "version": new[-1]["version"]})
+    log.info("ticket fixed alert: %s", ", ".join(ids))
+    return rec
 
 
 # ---------------------------------------------------------------- 0.7.0 charter watch (CrewTrac, read only)
@@ -7271,7 +7425,7 @@ EXPORT_RETRY_S = 15  # a state HA had no answer for is read again after this, do
 SPOOL_POLL_S = 1.0
 SPOOL_MAX_PER_POLL = 200
 PORTAL_LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portal_layout.json")
-PORTAL_CARDS_OUT = ("tickets-card", "uploads-card", "row-colors")  # not in a portal (contract 1)
+PORTAL_CARDS_OUT = ("uploads-card", "row-colors")  # not in a portal (1.7.0: the tickets card is, revision 2)
 PAIRINGS_BACK_M = 2  # the shared pairings packages exported: from this many months back (HST), and every later one
 
 
@@ -7284,7 +7438,7 @@ def portal_once(key, msg, *a):
 
 def portal_entity_defs():
     """(comp, oid, cfg) of this pilot's discovery entities a portal serves: the ones it has, minus the features the
-    portal does not offer (roles.entity_on_portal: tickets, uploads)."""
+    portal does not offer (roles.entity_on_portal: uploads; 1.7.0: his tickets sensor is served)."""
     return [(c, o, cfg) for c, o, cfg, f in entity_defs() if has(f) and ROLES.entity_on_portal(o, INSTANCE)]
 
 
@@ -7727,8 +7881,8 @@ def portal_export_files():
 
 def portal_cards():
     """{file name: text} of this pilot's card copies a portal serves (cards.build, as deployed under /local/, with
-    FW_PORTAL on: portal.portal_card), without the tickets and uploads cards and the row colors (contract 1); built
-    once per process."""
+    FW_PORTAL on: portal.portal_card), without the uploads card and the row colors (1.7.0: the tickets card is in,
+    contract 1 revision 2); built once per process."""
     if EXPORT["cards"] is None:
         import cards as CARDS
         out = {}

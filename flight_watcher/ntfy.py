@@ -16,6 +16,9 @@ can read the pilot's alerts on ntfy.sh (it keeps them about 12 h), so: the topic
 at least 24 characters with both letters and digits; the Settings card generates a 32-character random one), and a
 topic-only push carries only the pairing number, the date and the fit (plain_text): no crew name, employee number,
 URL (no Click header either), ticket text, report times or rule ids. With a token the 1.6.0 push is unchanged.
+
+1.7.0 (Release C): the ticket_fixed alert (the pilot's own ticket moved to fixed) carries only the ticket id(s) and the
+version, with a token or without (plain_text); never a ticket's title or text. Priority 2 (quiet).
 """
 import collections
 import logging
@@ -96,7 +99,9 @@ def valid(topic, token=None):
 KIND_WORDS = {"new_pairing": "New pairing", "rule_match": "Rule match", "recall_miss": "Recall/O75 to check",
               "request_decided": "Request decided", "schedule_changed": "Schedule changed", "charter": "Charter",
               "hidden": "Hidden trip?", "needs_settings": "Flight Watcher needs your FLICA login",
-              "stopped_*": "Flight Watcher stopped"}
+              "stopped_*": "Flight Watcher stopped", "ticket_fixed": "Ticket fixed"}
+TICKET_RE = re.compile(r"^FW-\d{4,6}$")
+VERSION_RE = re.compile(r"^\d{1,3}(?:\.\d{1,4}){1,3}$")
 PAIRING_RE = re.compile(r"^[A-Z]\d{4}[A-Z]?$")
 WHEN_RE = re.compile(r"^(?:\d{4}-\d{2}(?:-\d{2})?|\d{1,2}[A-Z]{3}(?:-\d{1,2}[A-Z]{3})?|[A-Z][a-z]{2} \d{1,2})$")
 FIT_RE = re.compile(r"^(?:Fits|Conflict|Check rest|Days off)(?: [A-Za-z0-9()+/.,:-]{1,24}){0,3}$")  # pot.fit_tag
@@ -107,6 +112,13 @@ def plain_text(rec):
     the date and the fit, each only when it has its own shape (a name, a number or a URL never matches)."""
     d = rec.get("data") if isinstance(rec.get("data"), dict) else {}
     kind = str(rec.get("kind") or "")
+    if kind == "ticket_fixed":  # 1.7.0: the ticket ids (FW-nnnn) and the version, each only in its own shape
+        t = d.get("ticket")
+        ids = [x for x in (t if isinstance(t, list) else [t]) if isinstance(x, str) and TICKET_RE.fullmatch(x)][:5]
+        ver = str(d.get("version") or "")
+        title = " ".join(x for x in ("Ticket", ", ".join(ids), "fixed", f"in {ver}" if VERSION_RE.fullmatch(ver)
+                                      else "") if x)
+        return title, "Open the Tickets tab of your Flight Watcher portal to check it."
     pid = str(d.get("pairing") or "")
     when = next((str(d[k]) for k in ("dates", "start", "date", "month") if WHEN_RE.fullmatch(str(d.get(k) or ""))), "")
     fit = str(d.get("fit") or "")

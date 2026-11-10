@@ -52,7 +52,7 @@ def test_edit_only_while_new_or_reopened(tmp_path):
     assert TK.edit(b, "not a dict", "ryan", "t3")[1] == "not an object"
     assert TK.edit(b, {"id": "../FW-0001", "title": "y"}, "ryan", "t3")[1] == "bad id"
     assert TK.edit(b, {"id": "FW-9999", "title": "y"}, "ryan", "t3")[1] == "FW-9999 not found"
-    assert TK.edit(b, {"id": tid, "title": "y"}, "pilot2", "t3", allowed_reporter="pilot2")[1] == f"{tid} is not pilot2's ticket"
+    assert TK.edit(b, {"id": tid, "title": "y"}, "pilot2", "t3", allowed_reporter="pilot2")[1] == f"{tid} not found"  # 1.7.0: as a missing id
     assert (tmp_path / tid / "ticket.json").read_text() == before
     # once worked: no edits in triaged, in_progress, fixed or closed; reopened takes them again
     for action, st in (("triage", "triaged"), ("progress", "in progress"), ("fixed", "fixed"), ("verify", "closed")):
@@ -67,7 +67,7 @@ def test_edit_pilot_own_ryan_any(tmp_path):
     """A pilot instance edits only its own tickets; Ryan's instance (no allowed_reporter) any."""
     b = str(tmp_path)
     mine, his = _new(b, "ryan")["id"], _new(b, "pilot2")["id"]
-    assert TK.edit(b, {"id": mine, "title": "z"}, "pilot2", "t1", allowed_reporter="pilot2")[1] == f"{mine} is not pilot2's ticket"
+    assert TK.edit(b, {"id": mine, "title": "z"}, "pilot2", "t1", allowed_reporter="pilot2")[1] == f"{mine} not found"  # 1.7.0: as a missing id
     assert TK.edit(b, {"id": his, "title": "his fix"}, "pilot2", "t1", allowed_reporter="pilot2")[0]["title"] == "his fix"
     t, _ = TK.edit(b, {"id": his, "title": "typo fixed"}, "ryan", "t2")
     assert t["title"] == "typo fixed" and t["reporter"] == "pilot2" and t["history"][-1]["actor"] == "ryan"
@@ -94,7 +94,7 @@ def test_delete_moves_the_folder_any_status(tmp_path):
     assert [r["id"] for r in TK.listing(b)["tickets"]] == [t3["id"], t2["id"]] and TK.listing(b)["total"] == 2
     assert TK.signature(b) != sig and TK.load(b, t1["id"]) is None
     # a pilot instance deletes only its own; a photo for a deleted ticket finds no ticket
-    assert TK.delete(b, {"id": t3["id"]}, "pilot2", "t2", allowed_reporter="pilot2")[1] == f"{t3['id']} is not pilot2's ticket"
+    assert TK.delete(b, {"id": t3["id"]}, "pilot2", "t2", allowed_reporter="pilot2")[1] == f"{t3['id']} not found"  # 1.7.0: as a missing id
     assert TK.delete(b, {"id": t2["id"]}, "pilot2", "t2", allowed_reporter="pilot2")[0]["id"] == t2["id"]
     assert TK.add_image(b, {"cid": "abcdef12", "i": 1, "image": _url(JPEG)}, "pilot2", "t3")[1] == "no ticket for that photo"
     # refused: twice, bad id, not an object
@@ -171,8 +171,8 @@ def test_watcher_ticket_edit_and_delete(W, monkeypatch):
     assert W.ticket_edit(json.dumps({"id": "FW-0001", "rid": "card0001", "title": "mine now"})) is None
     last = lst(n)["last"]
     assert last == {"rid": "card0001", "id": "FW-0001", "action": "edit", "ok": False,
-                    "error": "FW-0001 is not pilot2's ticket", "at": last["at"]}
-    assert [p["error"] for t, p, _ in W.SENT[n:] if t == "event/ticket_error"] == ["FW-0001 is not pilot2's ticket"]
+                    "error": "FW-0001 not found", "at": last["at"]}  # 1.7.0: as a missing id
+    assert [p["error"] for t, p, _ in W.SENT[n:] if t == "event/ticket_error"] == ["FW-0001 not found"]
     assert W.ticket_delete(json.dumps({"id": "FW-0001", "rid": "card0002"})) is None
     assert TK.load(W.TICKETS_DIR, "FW-0001")["title"] == "Grid blank"
     t = W.ticket_edit(json.dumps({"id": "FW-0002", "rid": "card0003", "narrative": "Please, quietly."}))
@@ -387,7 +387,8 @@ def test_card_claude_code_button_copies_the_prompt(tmp_path):
           "})();")
     a, m1, b, d, m3, copied, prompt = _card_node(tmp_path, js)
     assert prompt == ("Process all Flight Watcher tickets on Pako HI: fix every new or reopened one, release it, "
-                      "mark it fixed, then confirm and close your completed fixes.")
+                      "mark it fixed, then confirm and close your completed fixes, except a pilot's ticket: leave it fixed "
+                      "for its reporter to verify.")  # 1.7.0 (P1): a pilot verifies his own fix
     assert (a, m1, b, d, m3) == (True, "ok", True, False, "fail")
     assert copied == [prompt, "other"]
     src = open(CARD, encoding="utf-8").read()

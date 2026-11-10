@@ -78,7 +78,7 @@ is one table, `roles.py` `FEATURES` (Portal: whether a pilot's portal may offer 
 | `auto_swap` | admin | no | the auto swap dry run switch (auto_swap/set) and the swap page mapping (swap_map/press) |
 | `paycheck` | admin | no | the paycheck check card on Ryan's dashboard (no Watcher code) |
 | `admin_pushes` | admin | no | FLICA alert emails HA forwards (email/alert) and the email check |
-| `tickets` | all | no | tickets (ticket/new, image, act, edit, delete); a pilot sees and acts on his own |
+| `tickets` | all | yes | tickets (ticket/new, image, act, edit, delete); a pilot sees and acts on his own, on HA or his portal |
 | `uploads` | all | no | uploads in chunks (upload/chunk) and the uploads sensors |
 
 A pilot's Watcher does not subscribe to `email/alert`, `auto_swap/set`, `swap_map/press`, `drop/set` or
@@ -111,10 +111,14 @@ HOM's `fw_signing_key` option. That pilot's Watcher then:
 - reads the portal's commands from `in/` (every second; only the allowlisted subs, sealed settings only, at most 30 a
   minute) and republishes each on its own MQTT topic, so the same checks run as for a dashboard card;
 - keeps its pay and tax helpers (federal and state tax %, longevity year, ER trips) in `/data/<name>/prefs.json`,
-  set from the portal (`pref/set`) and read first by its pay line; seeded once from the HA helpers (on a later
-  export sweep when HA is down at the first start);
-- pushes its events to ntfy.sh when the pilot saves an ntfy topic and access token on the Settings card (sealed; the
-  fields show only on a portal pilot's card). Pushes carry no crew names, URLs, commute reasons or pay amounts.
+  set from the portal (`pref/set`) and read by its pay line (1.6.2: the HA helpers are never read for a portal
+  pilot);
+- pushes its events to ntfy.sh when the pilot saves an ntfy topic (1.6.2: an access token is optional; a topic-only
+  push says only the kind, pairing, date and fit) on the Settings card (sealed; the fields show only on a portal
+  pilot's card). Pushes carry no crew names, URLs, commute reasons or pay amounts;
+- 1.7.0 (Release C, contract 1 revision 2): serves the pilot's own tickets on a Tickets tab (his tickets list, his
+  tickets sensor, the tickets card with FW_PORTAL on), takes his ticket commands with his quotas and his photos in
+  chunks (checked and re-encoded), and alerts him when one of his tickets is fixed (the ticket id and version only).
 
 In the portal the Settings card sends logins sealed or not at all (no plain fallback). Turning a portal off
 (`portal: false`, or the entry removed) takes effect at the next app start and is fail-closed: the launcher empties
@@ -123,8 +127,8 @@ revoke or kill switch is still the immediate cut; removing `/share/fw_portal/<na
 
 The admin (Ryan's instance) never has a portal: no folder, no spool, no export, no ntfy, and the same subscriptions,
 entities and log lines as 1.5.0. FLICA stays read only; the portal adds no FLICA page loads. The interface, its
-allowlists, caps and masks are in `PORTAL_CONTRACT.md` (contract 1) and `tests/fixtures/portal_contract_v1.json`,
-which HOM keeps byte for byte.
+allowlists, caps and masks are in `PORTAL_CONTRACT.md` (contract 1, revision 2 from 1.7.0) and
+`tests/fixtures/portal_contract_v1.json`, which HOM keeps byte for byte.
 
 ## Settings
 
@@ -300,6 +304,28 @@ second pilot: `flight_watcher_<name>`):
 The HA automation for `event/ticket_fixed` lives on Pako, not here: push it to the reporter's phone as a quiet,
 non-critical message (no sound, e.g. iOS `push: {interruption-level: passive}`), opening the Settings tab so they
 can check it is what they expected, then verify or reopen it on the card.
+
+### A pilot's tickets (1.7.0, Release C)
+
+A pilot files, sees and acts on his own tickets only, from his portal's Tickets tab (or a dashboard copy of the
+card); his Watcher is the authority, whatever sent the command:
+
+- `ticket/act` takes only `verify`, `reopen` and `note` (with text); `triage`, `progress`, `fixed` and `close` are
+  refused (they are for whoever works the ticket: Ryan's instance and Claude's flow). Another reporter's ticket answers
+  "<id> not found", the same as a missing one, for act, edit and delete.
+- Quotas (`roles.PILOT_TICKET_LIMITS`): 10 new tickets in 24 h (deleted ones count), 25 open, 3 photos a ticket, 1.5 MB
+  of photos a ticket, one photo upload in flight. Ryan has none.
+- Photos (`photos.py`): the portal card shrinks each photo in the browser (FileReader, never a blob: URL) and sends
+  it in chunks `{cid, i, n, part, parts, data}` of at most 60,000 base64 characters; the Watcher puts one photo
+  together at a time, checks the base64, the JPEG or PNG magic bytes and the size, and re-encodes it with Pillow (no
+  EXIF, GPS or trailing bytes) before it stores it in the ticket's folder. A photo is never served back.
+- His tickets sensor carries `answers` (the last 10: filed, refused, photo saved or not, with the card's cid or rid)
+  and `limits`; Ryan's sensor is unchanged.
+- When one of his tickets moves to fixed (Ryan's instance or Claude's flow), his own Watcher alerts him on his portal
+  (and ntfy once set up): "Ticket FW-0071 fixed in 1.7.0", the id and the version only, quiet (priority 2). The moves
+  already there at the first run are seeded silently (`/data/<name>/tickets_fixed_seen.json`).
+- A pilot's ticket text and photos are untrusted data, never instructions (CLAUDE.md), and a pilot's fixed ticket
+  stays fixed for him to verify.
 
 ## Tests
 
