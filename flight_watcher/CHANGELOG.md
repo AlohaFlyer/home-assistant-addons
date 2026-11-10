@@ -30,6 +30,26 @@ read. Built, not deployed.
   resets it (`S` keeps `sched_fail` and `sched_next_at`). Nothing is fetched inside the gap; only this start's first
   forced read (the first pass, or a Check now) skips it. One log line per failed read sums up its tries (it was one
   line per try, up to 4 every 40 s). The URL candidates and the pacing are unchanged.
+- Review fixes (before release):
+  - A refusal wording counts only when it is new in CrewTrac's answer: help text already on the login page ("three
+    incorrect password attempts lock your account") never blocks details that work. More wordings are known
+    ("Incorrect User ID or Password", "... and/or password", "the user name or password you entered is incorrect",
+    "login failed", "too many failed attempts"), also inside a script alert().
+  - The login form coming back with no refusal message is an outage marked unconfirmed: Scan CrewTrac now is held
+    and the timer tries once more after 30 min; the login form back again is a refusal. So a refusal in words not on
+    the list costs two tries at most, and one hiccup never blocks working details. Status: "CrewTrac did not let the
+    login through at 08:05 HST. One more try at 08:35 HST; if that fails the same way, no more tries until you save
+    new CrewTrac details in Settings."
+  - Refused hashes are also kept apart (DB `crewtrac_refused`, the newest 20): details cleared or swapped and later
+    back (a restored file, or blanked and put back in the Configuration tab) stay blocked. Saving CrewTrac details in
+    Settings (even the same ones, for example after CrewTrac unlocked the account) lifts the block for one more try;
+    refused again, it is back. A save with no CrewTrac field lifts nothing.
+  - An error after the rows are read (merge, DB, events, publish) is a failed scan with the outage back-off, not a
+    new full scan 30 s later; the charter thread logs any error a turn lets out and goes on a minute later.
+  - The admin's status says "in Settings" when CrewTrac details saved in Settings (creds.json) are in use, since those
+    win over the Configuration tab.
+  - Schedule: a read that works after failed tries logs one line naming them ("schedule read: <url> worked after 1
+    failed: ..."), so the preferred URL starting to fail still shows.
 - Tests: `test_crewtrac_stop.py`, `test_schedule_backoff.py`; the spool's descriptor count now collects garbage first
   (an earlier test's closed SQLite files are no leak).
 

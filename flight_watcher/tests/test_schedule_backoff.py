@@ -136,3 +136,33 @@ def test_a_restart_reads_once_then_keeps_the_back_off(W):
     _at(W, 60)
     W.schedule_check(fl, force=True)
     assert len(fl.sched()) == n
+
+
+def test_a_failed_read_is_saved_for_the_next_start(W):
+    W.schedule_check(FakeFl(), force=True)
+    st = W.DB.get("state")
+    assert st["sched_fail"] == 1 and st["sched_next_at"] == W.CLOCK["t"] + 600
+
+
+def test_tries_that_failed_before_a_good_page_are_logged_in_one_line(W, caplog):
+    """A read that works after a failed try still says which URL failed (one line), so a preferred URL that starts
+    failing shows in the log."""
+
+    class Fl(FakeFl):
+        def fetch(self, url):
+            self.urls.append(url)
+            if len(self.urls) == 1:
+                raise RuntimeError("synthetic: net::ERR_TIMED_OUT")
+            return (FX / "mobile_schedule_nov.html").read_text()
+
+    fl = Fl()
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        W.schedule_check(fl, force=True)
+    assert W.S["sched_fail"] == 0 and "2026-11" in W.S["schedule"]
+    first, second = fl.urls[0].split("?")[-1], fl.urls[1].split("?")[-1]
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("schedule read")]
+    assert lines == [f"schedule read: {second} worked after 1 failed: {first}: error synthetic: net::ERR_TIMED_OUT"]
+    caplog.clear()
+    _at(W, 4000)
+    W.schedule_check(fl)  # a read that works first time: no such line
+    assert not [r for r in caplog.records if r.getMessage().startswith("schedule read")]

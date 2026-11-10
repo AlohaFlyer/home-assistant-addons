@@ -10,10 +10,12 @@ other end is not a regular A330 station. The field strip above the table is stal
 Login: plain form at /Pilot/ctwc.aspx (Username = employee number, CrewTrac password), lands on
 /Pilot/ctwcmainmenu.aspx, session under 2 h: one login per scan. Read only, GET only after login.
 1.6.1: a login has three outcomes (OK, REFUSED, OUTAGE); the Watcher never tries again after CrewTrac refused the same
-user ID and password (creds_hash), and backs off after an outage (backoff_s)."""
+user ID and password (creds_hash), and backs off after an outage (backoff_s). The login form coming back with no new
+refusal wording is an OUTAGE marked unconfirmed (Scanner.unconfirmed): twice in a row is a refusal."""
 import hashlib
 import json
 import re
+from collections import Counter
 from datetime import date, timedelta
 
 from bs4 import BeautifulSoup
@@ -37,11 +39,16 @@ HEADERS = ("cancelled", "flight", "route", "scheduled", "estimated", "actual", "
 # 1.6.1: what one login try came to. REFUSED is CrewTrac's own answer to a wrong user ID or password (or a locked
 # account); anything else that is not the menu (no login form, an unexpected page, a network error, a timeout) is OUTAGE.
 OK, REFUSED, OUTAGE = "ok", "refused", "outage"
+_WHO = r"(?:user\s*(?:id|name)?|username|log\s*-?\s*in(?:\s*id)?|employee\s*(?:id|number|#)?)"
+_AND = r"\s*(?:and\s*/\s*or|and|or|/|&)\s*"
+_BAD = r"(?:invalid|incorrect|wrong|bad|not\s+valid|not\s+correct|not\s+recogni[sz]ed)"
+_WAS = r"\s+(?:you\s+(?:have\s+)?entered\s+|entered\s+|provided\s+)?(?:is\s+|was\s+|are\s+|were\s+)?"
 REFUSAL_RE = re.compile(
-    r"invalid\s+(?:user\s*(?:id|name)?|username|login|employee\s*(?:id|number|#)?)\s*(?:and|or|/|&)\s*password"
-    r"|(?:invalid|incorrect|wrong)\s+password|password\s+(?:is\s+|was\s+)?(?:invalid|incorrect|wrong|not\s+valid)"
-    r"|(?:user\s*(?:id|name)?|username|login)\s*(?:and|or|/|&)\s*password\s+(?:is\s+|are\s+)?"
-    r"(?:invalid|incorrect|wrong|not\s+valid)"
+    rf"(?:invalid|incorrect|wrong|bad)\s+{_WHO}{_AND}password"  # Invalid User ID or Password, Incorrect ... and/or
+    rf"|(?:invalid|incorrect|wrong|bad)\s+password"
+    rf"|(?:{_WHO}{_AND})?password{_WAS}{_BAD}"  # The user name or password you entered is incorrect
+    r"|(?:log\s*-?\s*in|sign\s*-?\s*in|authentication)\s+(?:has\s+|was\s+)?(?:failed|unsuccessful|denied)"
+    r"|too\s+many\s+(?:failed|unsuccessful|invalid|incorrect|bad)"
     r"|account\s+(?:is\s+|has\s+been\s+)?(?:locked|disabled)", re.I)
 BACKOFF_FIRST_S = 30 * 60  # after the first outage in a row; doubling each further one
 BACKOFF_MAX_S = 6 * 3600
@@ -51,6 +58,20 @@ PRESS_GAP_S = 30 * 60  # Scan CrewTrac now: at most one scan per 30 min (the fir
 def refused(text):
     """True when a page's text carries CrewTrac's credential refusal ("Invalid User ID or Password")."""
     return bool(REFUSAL_RE.search(text or ""))
+
+
+def refusals(text):
+    """Each refusal wording in a page's text, lower case, counted (a Counter): the login page's own help text (say
+    "three incorrect password attempts lock your account") is taken away from the answer's, so only a new one counts."""
+    return Counter(re.sub(r"\s+", " ", m.group(0).lower()) for m in REFUSAL_RE.finditer(text or ""))
+
+
+def page_text(html):
+    """(visible text, visible text plus script text): bs4 leaves script text out, and a refusal may come as an alert()."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    text = re.sub(r"\s+", " ", soup.get_text(" "))
+    scripts = " ".join(t.get_text(" ") for t in soup.find_all("script"))
+    return text, re.sub(r"\s+", " ", f"{text} {scripts}")
 
 
 def creds_hash(user, password):
@@ -218,11 +239,15 @@ class Scanner:
         self.s, self.u, self.p, self.log, self.sleep = session, username, password, log, sleep
         self.capture = capture or (lambda name, html: None)  # 0.7.3: private page captures for debugging
         self._reported = False
+        self.unconfirmed = False  # 1.6.1: the last login's answer was the login form again, with no new refusal
 
     def login(self):
         """One login try: OK, REFUSED (CrewTrac refused the user ID or password) or OUTAGE (no login form, an
         unexpected page, a network error or a timeout). 1.6.1: the log lines keep their 1.6.0 shape; no value typed
-        in the form is ever logged."""
+        in the form is ever logged. A refusal wording counts only when it is new in the answer (not the login page's
+        own help text). An answer that is the login form again with no new refusal is OUTAGE with self.unconfirmed
+        set: the caller takes the second one in a row as a refusal."""
+        self.unconfirmed = False
         try:
             r = self.s.get(LOGIN, timeout=30)
         except Exception as e:  # noqa: BLE001 (network error, timeout: an outage)
@@ -231,6 +256,7 @@ class Scanner:
         self.capture("login", r.text)
         if logged_in(r.text):
             return OK
+        before = refusals(page_text(r.text)[1])  # the login page's own wording (help text) is no refusal
         action, f = login_form(r.text)
         self.log.info("charter: login page %s (%d chars), form action %r, fields %s, user field %r, pass field %r",
                       r.url.split("?")[0], len(r.text), action, sorted(f.get("fields", {}).keys()) if f else [],
@@ -254,10 +280,15 @@ class Scanner:
         self.log.info("charter: login response %s (%d chars, logged in: %s)", r.url.split("?")[0], len(r.text), ok)
         if ok:
             return OK
-        text = re.sub(r"\s+", " ", BeautifulSoup(r.text, "html.parser").get_text(" "))
-        if refused(text):
+        text, full = page_text(r.text)
+        if refusals(full) - before:
             self.log.info("charter: login refused (%s, %d chars): %s", r.url.split("?")[0], len(r.text), text[:200])
             return REFUSED
+        if (login_form(r.text)[1] or {}).get("pass"):
+            self.unconfirmed = True
+            self.log.info("charter: login not confirmed, the login form came back (%s, %d chars): %s",
+                          r.url.split("?")[0], len(r.text), text[:200])
+            return OUTAGE
         self.log.info("charter: login not confirmed, unexpected page (%s, %d chars): %s", r.url.split("?")[0],
                       len(r.text), text[:200])
         return OUTAGE

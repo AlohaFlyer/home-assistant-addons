@@ -35,6 +35,7 @@ class FakeCrewTrac:
 
     def __init__(self, mode="ok", on_login=None):
         self.mode, self.calls, self.on_login = mode, [], on_login
+        self.page = self.answer = None  # the login page GET gives / the page a login POST gives (overrides mode)
 
     def session(self):
         ct = self
@@ -51,7 +52,9 @@ class FakeCrewTrac:
                     return R(LOGIN if ct.mode == "dropped" else TABLE, url)
                 if ct.mode == "noform":
                     return R("<html><body>CrewTrac is down for maintenance</body></html>", url)
-                return R(LOGIN, url)
+                if ct.mode == "menu":  # a session that is still logged in
+                    return R(MENU, MENU_URL)
+                return R(ct.page or LOGIN, url)
 
             def post(self, url, data=None, timeout=0, allow_redirects=True):
                 ct.calls.append(("POST", url, dict(data or {})))
@@ -59,6 +62,8 @@ class FakeCrewTrac:
                     ct.on_login()
                 if ct.mode == "timeout":
                     raise requests.Timeout("synthetic: read timed out")
+                if ct.answer is not None:
+                    return R(ct.answer, CH.LOGIN)
                 if ct.mode == "refused":
                     return R(REFUSAL, CH.LOGIN)
                 if ct.mode == "unexpected":
@@ -167,7 +172,8 @@ def test_refusal_text_and_backoff_steps():
     assert [CH.backoff_s(n) for n in range(1, 8)] == [1800, 3600, 7200, 14400, 21600, 21600, 21600]
     assert CH.backoff_s(10 ** 6) == 6 * 3600
     h = CH.creds_hash(USER, BAD)
-    assert len(h) == 64 and USER not in h and h != CH.creds_hash(USER, BAD + " ") != CH.creds_hash(USER + "1", BAD)
+    assert len(h) == 64 and USER not in h and h != CH.creds_hash(USER, BAD + " ")
+    assert h != CH.creds_hash(USER + "1", BAD)  # the user name is part of the key too
 
 
 # ---------------------------------------------------------------- the refusal block
@@ -379,3 +385,224 @@ console.log(JSON.stringify({ sent: calls.map((c) => c.payload) }));
 """, open(CARD, encoding="utf-8").read())
     assert [json.loads(p) for p in r["sent"]] == [{"username": "doej", "password": "  pw synthetic 1 ",
                                                    "ctweb_username": "10001"}]
+
+
+# ---------------------------------------------------------------- review fixes (1.6.1 before release)
+HELP = "<p>Passwords are case sensitive. Three incorrect password attempts lock your account. Wrong password? " \
+       "Call the help desk.</p>"
+WORDINGS = ("Incorrect User ID or Password", "Invalid username and/or password.", "Invalid user id and/or password",
+            "The user name or password you entered is incorrect.", "Login failed. Please try again.",
+            "Too many failed login attempts. Try again later.")
+
+
+def _login(ct, caplog=None):
+    sc = CH.Scanner(ct.session(), USER, GOOD, logging.getLogger("t"))
+    return sc.login(), sc
+
+
+def test_static_help_text_on_the_login_page_is_no_refusal(caplog):
+    """The login page's own help text ("three incorrect password attempts ...") never counts as CrewTrac refusing:
+    the same page back is unconfirmed (one more try), a new message on it is a refusal."""
+    ct = FakeCrewTrac()
+    ct.page = LOGIN.replace("<form", HELP + "<form")
+    ct.answer = ct.page
+    with caplog.at_level(logging.INFO, logger="t"):
+        got, sc = _login(ct)
+    assert got == CH.OUTAGE and sc.unconfirmed and len(ct.logins()) == 1
+    assert "charter: login not confirmed, the login form came back (" in caplog.text
+    assert "charter: login refused" not in caplog.text
+    ct.answer = ct.page.replace("<form", "<span id='lblError'>Incorrect password</span><form")
+    got, sc = _login(ct)
+    assert got == CH.REFUSED and not sc.unconfirmed  # "incorrect password" twice now, once in the help text
+    ct.answer = "<html><body>Server Error " + HELP + "</body></html>"  # a site footer on an error page
+    got, sc = _login(ct)
+    assert got == CH.OUTAGE and not sc.unconfirmed
+
+
+@pytest.mark.parametrize("wording", WORDINGS)
+@pytest.mark.parametrize("shape", ["label", "page", "alert"])
+def test_other_refusal_wordings_are_refusals(wording, shape):
+    assert CH.refused(wording), wording
+    ct = FakeCrewTrac()
+    ct.answer = {"label": LOGIN.replace("<form", f"<span id='lblMsg'>{wording}</span><form"),
+                 "page": f"<html><body><h2>{wording}</h2><a href='ctwc.aspx'>Back</a></body></html>",
+                 "alert": LOGIN.replace("</body>", f"<script>alert('{wording}');</script></body>")}[shape]
+    got, sc = _login(ct)
+    assert got == CH.REFUSED, (shape, wording)
+
+
+def test_a_session_still_logged_in_is_ok_without_a_login_post():
+    ct = FakeCrewTrac("menu")
+    got, sc = _login(ct)
+    assert got == CH.OK and ct.logins() == []
+
+
+def test_the_login_form_back_twice_is_a_refusal_and_presses_wait_for_it(load):
+    """A refusal CrewTrac words in a way not on the list (or with no message at all) is not retried on and on: the
+    first time the login form comes back is an outage marked unconfirmed (presses held), the second is a refusal."""
+    import time
+    W, ct = _pilot(load, mode="ok", password=BAD)
+    ct.answer = LOGIN  # the same login form back, no message
+    W.CHARTER_WAKE = FakeEvent()
+    t0 = time.time()
+    assert W.charter_scan() is False and len(ct.logins()) == 1
+    rec = W.DB.get("crewtrac")
+    assert rec["state"] == "outage" and rec["unconfirmed"] == 1 and 1795 <= W.charter_wait() <= 1800
+    st = W.MQ.charters("flight_watcher_pilot2")[-1]
+    assert st["status"] == ("CrewTrac did not let the login through at 08:05 HST. One more try at 08:35 HST; if that "
+                            "fails the same way, no more tries until you save new CrewTrac details in Settings.")
+    for i in range(4):  # Scan CrewTrac now, 30 min apart: held, the timer's next try decides
+        assert W.charter_press(now=t0 + 1800 * (i + 1)) is False
+    assert len(ct.logins()) == 1 and not W.CHARTER_WAKE.is_set()
+    assert W.charter_scan() is False and len(ct.logins()) == 2  # the timer's try
+    rec = W.DB.get("crewtrac")
+    assert rec["state"] == "refused" and rec["block"] == CH.creds_hash(USER, BAD) and W.charter_wait() is None
+    for _ in range(72):  # three days of timer turns and presses: nothing more is sent
+        W.charter_scan()
+        W.charter_press()
+    assert len(ct.logins()) == 2
+
+
+def test_the_unconfirmed_mark_is_cleared_by_a_success(load):
+    W, ct = _pilot(load, mode="ok", password=GOOD)
+    ct.answer = LOGIN
+    W.charter_scan()
+    assert W.DB.get("crewtrac")["unconfirmed"] == 1
+    ct.answer = None
+    assert W.charter_scan() is True and W.DB.get("crewtrac")["unconfirmed"] == 0
+    ct.answer = LOGIN
+    W.charter_scan()
+    assert W.DB.get("crewtrac")["state"] == "outage"  # one hiccup again: not a refusal
+
+
+def test_an_error_after_a_good_login_backs_off(load, monkeypatch):
+    W, ct = load("", opts={"ctweb_username": USER, "ctweb_password": GOOD}, mode="ok")
+    W.DB.put("charter_scan_at", "2026-11-01T00:00:00+00:00")
+    monkeypatch.setattr(W.CH, "merge", lambda *a: (_ for _ in ()).throw(KeyError("synthetic")))
+    W.CHARTER_WAKE = FakeEvent()  # its wait() returns at once: each turn scans; what counts is what it waited
+    assert W.charter_turn() is False and len(ct.logins()) == 1
+    rec = W.DB.get("crewtrac")
+    assert rec["state"] == "outage" and 1795 <= W.charter_wait() <= 1800
+    W.charter_turn()
+    W.charter_turn()
+    w = W.CHARTER_WAKE.waits
+    assert w[0] == 30 and 1795 <= w[1] <= 1800 and 3595 <= w[2] <= 3600  # the back-off, not 30 s each time
+
+
+def test_a_scan_error_after_a_good_login_is_an_outage(load, monkeypatch):
+    W, ct = _pilot(load, mode="ok", password=GOOD)
+    monkeypatch.setattr(W.CH.Scanner, "scan", lambda self, today: (_ for _ in ()).throw(ValueError("synthetic")))
+    assert W.charter_scan() is False and len(ct.logins()) == 1
+    assert W.DB.get("crewtrac")["state"] == "outage" and 1795 <= W.charter_wait() <= 1800
+
+
+def test_admin_details_saved_in_settings_are_changed_in_settings(load):
+    W, ct = load("", opts={"ctweb_username": USER, "ctweb_password": GOOD},
+                 creds={"ctweb_password": BAD}, mode="refused")
+    W.charter_scan()
+    assert W.MQ.charters("flight_watcher")[-1]["status"] == (
+        "CrewTrac refused your user ID or password at 08:05 HST. No more tries until you save new CrewTrac details in "
+        "Settings.")
+
+
+def test_the_charter_thread_survives_an_error(load, monkeypatch):
+    W, ct = _pilot(load, mode="ok", password="")  # no details: the turn that only republishes the status
+
+    class Stop(BaseException):
+        pass
+
+    real, turns = W.charter_turn, []
+
+    def turn():
+        turns.append(1)
+        if len(turns) > 2:
+            raise Stop()
+        return real()
+
+    def boom(*a, **k):
+        raise OSError("synthetic: broker gone")
+
+    monkeypatch.setattr(W, "charter_turn", turn)
+    monkeypatch.setattr(W, "pub", boom)
+    W.CHARTER_WAKE = FakeEvent()
+    with pytest.raises(Stop):
+        W.charter_thread()
+    assert len(turns) == 3 and W.CHARTER_WAKE.waits == [60, 60]
+
+
+def test_a_press_error_never_reaches_mqtt(load, monkeypatch, caplog):
+    W, _ = _pilot(load, mode="ok", password=GOOD)
+    monkeypatch.setattr(W, "charter_press", lambda: (_ for _ in ()).throw(OSError("synthetic")))
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        W.on_message(None, None, type("M", (), {"topic": "flight_watcher_pilot2/charter_scan/press",
+                                                "payload": b"PRESS"})())
+    assert "charter scan press: synthetic" in caplog.text
+
+
+def test_a_new_user_name_alone_lifts_the_block(load):
+    W, ct = _pilot(load)
+    W.charter_scan()
+    assert W.charter_wait() is None
+    assert W.settings_cmd(json.dumps({"ctweb_username": USER + "9"}))
+    W, ct = load("pilot2", mode="ok")
+    assert W.crewtrac_login() == (USER + "9", BAD) and W.charter_wait() == 0
+    assert W.charter_scan() is True and len(ct.logins()) == 1
+
+
+def test_a_refusal_stays_after_the_details_are_cleared_and_come_back(load):
+    """Cleared (not configured) and the same refused details back later (restored file, or the admin's Configuration
+    tab) still send nothing: the refused hash is kept apart from the per-details record."""
+    import os
+    W, ct = _pilot(load)
+    W.charter_scan()
+    os.remove(W.CREDS_FILE)
+    W, ct = load("pilot2", mode="ok")
+    assert W.crewtrac_info()["state"] == "not_configured"
+    W, ct = load("pilot2", creds={"ctweb_username": USER, "ctweb_password": BAD}, mode="ok")  # restored file
+    assert W.charter_wait() is None and W.charter_scan() is False and W.charter_press() is False
+    assert ct.logins() == [] and W.crewtrac_info()["state"] == "refused"
+    assert W.MQ.charters("flight_watcher_pilot2")[-1]["status"].startswith("CrewTrac refused your user ID or "
+                                                                          "password at 08:05 HST.")
+    # the admin: blanked in the Configuration tab, then the same password put back
+    W, ct = load("", opts={"ctweb_username": USER, "ctweb_password": BAD}, mode="refused")
+    W.charter_scan()
+    W, ct = load("", opts={"ctweb_username": USER, "ctweb_password": ""}, mode="ok")
+    assert W.crewtrac_info()["state"] == "not_configured"
+    W, ct = load("", opts={"ctweb_username": USER, "ctweb_password": BAD}, mode="ok")
+    assert W.charter_wait() is None and W.charter_scan() is False and ct.logins() == []
+
+
+def test_saving_the_same_details_again_in_settings_allows_one_more_try(load):
+    """After CrewTrac unlocked an account (or a refusal that was not one), saving the same details in Settings is the
+    way back without sending a wrong password: one more try; refused again, blocked again."""
+    W, ct = _pilot(load)
+    W.charter_scan()
+    W.CHARTER_WAKE = FakeEvent()
+    assert W.settings_cmd(json.dumps({"ctweb_password": BAD})) is False  # nothing new: no restart
+    st = json.loads([p for t, p, _, _ in W.MQ.msgs if t == "flight_watcher_pilot2/settings/state"][-1])
+    assert st["result"] == "nothing new; CrewTrac gets one more try with these details"
+    assert W.CHARTER_WAKE.is_set() and W.charter_wait() == 0
+    assert W.DB.get("charter_status") == "CrewTrac details saved again: the next scan tries them once more."
+    assert W.charter_scan() is False and len(ct.logins()) == 2
+    assert W.charter_wait() is None and W.charter_scan() is False and len(ct.logins()) == 2
+    # a plain settings save that carries no CrewTrac field lifts nothing
+    assert W.settings_cmd(json.dumps({"my_name": "Doe"}))
+    W, ct = load("pilot2", mode="ok")
+    assert W.charter_wait() is None and ct.logins() == []
+    assert W.settings_cmd(json.dumps({"my_name": "Doe"})) is False  # nothing new, no CrewTrac field either
+    assert W.charter_wait() is None and ct.logins() == []
+    # cleared, then the same details typed in Settings again: a save, so one more try (the restart uses them)
+    import os
+    os.remove(W.CREDS_FILE)
+    W, ct = load("pilot2", mode="ok")
+    assert W.settings_cmd(json.dumps({"ctweb_username": USER, "ctweb_password": BAD}))
+    W, ct = load("pilot2", mode="ok")
+    assert W.charter_wait() == 0 and W.charter_scan() is True and len(ct.logins()) == 1
+
+
+@pytest.mark.parametrize("last", ["not a date", 12345])
+def test_a_first_start_with_an_unreadable_last_scan(load, last):
+    W, _ = _pilot(load, mode="ok", password=GOOD)
+    W.DB.put("charter_scan_at", last)
+    W.DB.put("crewtrac", None)
+    assert W.crewtrac_info()["state"] == ""
