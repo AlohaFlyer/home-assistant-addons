@@ -1,4 +1,4 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-10, release 1.6.0 live)
+# HANDOFF: Flight Watcher (refreshed 2026-11-10, release 1.6.0 live; 1.6.1 stage 0 built, not deployed)
 
 State: app **1.6.0** on Pako HI (1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
 per pilot Nov 8, 1.4.10 FW-0068 crew index finds FLICA-rebuilt pairings like H3631B Nov 9, 1.4.11 FW-0069 schedule versions

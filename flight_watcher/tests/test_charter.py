@@ -93,6 +93,6 @@ class FakeSession:
 def test_scanner_logs_in_and_scans():
     s = FakeSession()
     sc = C.Scanner(s, "12345", "pw", logging.getLogger("t"))
-    assert sc.login()
+    assert sc.login() == C.OK  # 1.6.1: every outcome is a truthy string, so the value itself
     rows = sc.scan(date(2026, 11, 4), ahead=1)
     assert len(rows) == 5 * 6 * 2 and len([u for u in s.urls if "ctw4190" in u]) == 12

@@ -3,8 +3,8 @@
    Usernames are shown; a password only as set / not set.
    On Save the form is sealed in the browser (AES-256-GCM, the key wrapped with this Watcher's RSA-OAEP public key
    from sensor.flight_watcher_settings) and published to flight_watcher/settings/set, so Home Assistant's history,
-   logs and MQTT only ever see ciphertext. A blank field keeps what is saved. On a plain http address (no
-   crypto.subtle) it sends the fields unencrypted instead (Ryan: trusted users only).
+   logs and MQTT only ever see ciphertext. A blank field keeps what is saved (1.6.1: a password goes exactly as typed).
+   On a plain http address (no crypto.subtle) it sends the fields unencrypted instead (Ryan: trusted users only).
    1.6.0 (FW-0061): on a pilot whose portal is on (sensor attribute ntfy true) it also offers the ntfy topic and access
    token, shown as set / not set only and sent sealed only: never on the plain fallback. Ryan's card never shows them.
    In the pilot portal (FW_PORTAL, turned on only in the portal's copy: portal.portal_card) nothing is ever sent
@@ -75,7 +75,11 @@ class FlightWatcherSettingsCard extends HTMLElement {
     const root = this.shadowRoot, msg = root.getElementById("msg");
     const a = this._st().attributes || {};
     const fields = {};
-    root.querySelectorAll("input[data-k]").forEach((i) => { const v = i.value.trim(); if (v) fields[i.dataset.k] = v; });
+    // 1.6.1: a password-type field goes exactly as typed (a space may be part of it); the others are trimmed
+    root.querySelectorAll("input[data-k]").forEach((i) => {
+      const v = i.type === "password" ? i.value : i.value.trim();
+      if (v.trim()) fields[i.dataset.k] = v;
+    });
     for (const [k, , secret] of FW_SET_FIELDS) if (!secret && fields[k] === String(a[k] || "")) delete fields[k];
     if (!Object.keys(fields).length) { msg.innerHTML = `<span class="err">Nothing to save: no field changed.</span>`; return; }
     const subtle = !!(window.crypto && crypto.subtle);

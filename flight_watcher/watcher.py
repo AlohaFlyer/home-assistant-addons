@@ -51,7 +51,7 @@ import roles as ROLES
 import portal as PT
 import ntfy as NT
 
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -90,6 +90,7 @@ def www_key():
         _KEY["w"] = WF.load_key(WWW_KEY_FILE)
     return _KEY["w"]
 CRED_KEYS = ("username", "password", "ctweb_username", "ctweb_password", "my_name")
+SECRET_KEYS = ("password", "ctweb_password")  # 1.6.1: kept exactly as typed (a space may be part of a password)
 # 1.6.0 (FW-0061): a portal pilot's ntfy topic and token, kept in creds.json beside the logins; accepted only from a
 # sealed settings message and only on a pilot whose portal is on (never on the admin), never shown or logged
 NTFY_KEYS = NT.KEYS
@@ -129,7 +130,7 @@ def load_opts():
         o.pop("second_pilot", None)
     for k, v in load_creds().items():
         if k in CRED_KEYS and isinstance(v, str) and v.strip():
-            o[k] = v.strip()
+            o[k] = v if k in SECRET_KEYS else v.strip()  # 1.6.1: a password exactly as saved
     return o
 
 
@@ -338,8 +339,10 @@ def on_message(c, u, msg):
             FLAGS["crew_scan"] = True  # 0.10.1: one crew index run, read in chunks over the next checks
             log.info("crew index run requested")
     elif msg.topic == f"{T}/charter_scan/press":
-        CHARTER_WAKE.set()  # 0.7.0: scan CrewTrac now
-        log.info("charter scan pressed")
+        try:
+            charter_press()  # 0.7.0: scan CrewTrac now; 1.6.1: only when one may run, else the status is republished
+        except Exception as e:  # noqa: BLE001 (never let it reach paho's thread)
+            log.info("charter scan press: %s", e)
     elif msg.topic == f"{T}/check_now/press":
         # Waking the loop runs a check right away (only when idle or hunting; paused/stopped ignore it).
         if time.time() - S.get("last_check_ts", 0) < CHECK_NOW_MIN_GAP_S:
@@ -474,7 +477,9 @@ def settings_cmd(payload):
     """0.10.0: {T}/settings/set {username?, password?, ctweb_username?, ctweb_password?, my_name?} merges the
     non-empty values into creds.json (mode 600), publishes settings/state (no passwords) and restarts this
     watcher after RESTART_DELAY_S so run.py brings it back with the new credentials. 1.6.0 (FW-0061): on a pilot
-    whose portal is on, a sealed message may also carry ntfy_topic and ntfy_token (a plain one never does)."""
+    whose portal is on, a sealed message may also carry ntfy_topic and ntfy_token (a plain one never does).
+    1.6.1: a password is kept byte for byte (plain or sealed); the other values are trimmed. CrewTrac details sent
+    here (even the same ones) lift a refusal block on the details then in use for one more try (crewtrac_resaved)."""
     try:
         d = json.loads(payload)
         if not isinstance(d, dict):
@@ -506,12 +511,21 @@ def settings_cmd(payload):
     changed = []
     for k in keys:
         v = d.get(k)
-        if isinstance(v, str) and v.strip() and cur.get(k) != v.strip():
-            cur[k] = v.strip()
+        if not isinstance(v, str) or not v.strip():
+            continue
+        v = v if k in SECRET_KEYS else v.strip()  # 1.6.1: a password exactly as typed; names and ntfy values trimmed
+        if cur.get(k) != v:
+            cur[k] = v
             changed.append(k)
+    ct_saved = any(isinstance(d.get(k), str) and d[k].strip() for k in ("ctweb_username", "ctweb_password"))
     if not changed:
+        again = ct_saved and crewtrac_lift()  # 1.6.1: the same CrewTrac details saved again: one more try
         log.info("settings: nothing new (keys %s)", ", ".join(sorted(k for k in d if k in keys)) or "none")
-        publish_settings(creds=cur, result="nothing new")
+        publish_settings(creds=cur, result="nothing new" + ("; CrewTrac gets one more try with these details"
+                                                             if again else ""))
+        if again:
+            publish_charters()
+            CHARTER_WAKE.set()
         return False
     tmp = CREDS_FILE + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # never readable by others, even briefly
@@ -523,10 +537,21 @@ def settings_cmd(payload):
         S["machine"], S["note"] = "idle", "new settings"
         S["pot_urls"], S["parse_fail"], S["relogin_streak"] = {}, 0, 0
         save_state(S)
+    if ct_saved:
+        crewtrac_lift()  # 1.6.1: details CrewTrac refused before and saved again here get one more try
     publish_settings(creds=cur, result="saved: " + ", ".join(changed))
     log.info("settings saved (%s); restarting in %d s to use them", ", ".join(changed), RESTART_DELAY_S)
     restart_later()
     return True
+
+
+def crewtrac_lift():
+    """crewtrac_resaved(), never letting an error stop a settings save."""
+    try:
+        return crewtrac_resaved()
+    except Exception as e:  # noqa: BLE001
+        log.info("charter: CrewTrac re-save not applied: %s", type(e).__name__)
+        return False
 
 
 def still_waiting(now=None):
@@ -2813,6 +2838,31 @@ def pot_details(fl, pot, full=False):
 
 
 SCHED_GAP_S = 30 * 60
+# 1.6.1: after a failed read (no page accepted) the next one is due 10 min later, then 30, then every SCHED_GAP_S; a
+# read that works resets it. S keeps the count (sched_fail) and the due time (sched_next_at).
+SCHED_FAIL_GAPS_S = (10 * 60, 30 * 60)
+SCHED_FORCED = {"used": False}  # 1.6.1: one forced read per start (first pass, Check now) may skip that back-off
+
+
+def schedule_due(force, now=None):
+    """1.6.1: may schedule_check read now. While reads fail, only the back-off's due time (or the first forced read
+    of this start) lets one through; otherwise as before: forced, or SCHED_GAP_S after the last read."""
+    now = time.time() if now is None else now
+    if int(S.get("sched_fail") or 0):
+        if now >= float(S.get("sched_next_at") or 0):
+            return True
+        return bool(force) and not SCHED_FORCED["used"]
+    return bool(force) or now - S.get("sched_checked_at", 0) >= SCHED_GAP_S
+
+
+def schedule_failed(seen):
+    """1.6.1: one log line for a read where no page was accepted, and the next read's due time."""
+    n = int(S.get("sched_fail") or 0) + 1
+    gap = SCHED_FAIL_GAPS_S[n - 1] if n <= len(SCHED_FAIL_GAPS_S) else SCHED_GAP_S
+    S["sched_fail"], S["sched_next_at"] = n, time.time() + gap
+    log.info("schedule read failed (%d in a row, %d tries: %s); next read in %d min", n, len(seen),
+             "; ".join(seen) or "none", gap // 60)
+    save_state(S)
 
 
 LEFTMENU = f"{BASE}/online/leftmenu.cgi?whosepage=Crewmember"
@@ -3023,8 +3073,10 @@ def prev_month_check(fl, ok_url, cur_month):
 def schedule_check(fl, force=False):
     """Read only: GET Ryan's month schedule (mobileschedule.cgi), publish sensor.flight_watcher_schedule
     and an event when trips change. Never stops the pot watch."""
-    if not force and time.time() - S.get("sched_checked_at", 0) < SCHED_GAP_S:
+    if not schedule_due(force):
         return
+    if force:
+        SCHED_FORCED["used"] = True
     S["sched_checked_at"] = time.time()
     b = sorted({bcid(u) for u in S.get("pot_urls", {}).values() if bcid(u)}, key=bcid_key)
     b = b[0] if b else "003.152"
@@ -3046,6 +3098,8 @@ def schedule_check(fl, force=False):
     # 0.4.19: prefer the view that carries FLICA's Block / Credit totals (the OT drop view has none); the
     # winning URL is tried first next time. At most 3 fetches per read, 1-2 s apart.
     def accept(url, s):
+        if seen:  # 1.6.1: tries that failed before this page, one line (Release A needs to see the URL drift)
+            log.info("schedule read: %s worked after %d failed: %s", url.split("?")[-1], len(seen), "; ".join(seen))
         old = store.get(s["month"])
         read_at = now_iso()
         merge_lookup_totals(fl, s, old)  # FW-0019: the mobile page has no Block / Credit; Schedule Lookup does
@@ -3063,6 +3117,7 @@ def schedule_check(fl, force=False):
                 log.info("schedule moves not recorded: %s", e)
         S["sched_read_at"] = read_at  # FW-0064: a trade seen on the schedule is decided one quiet read later
         S["sched_url_ok"] = url
+        S["sched_fail"], S["sched_next_at"] = 0, 0  # 1.6.1: a read that works resets the back-off
         store[s["month"]] = s
         prev_month_check(fl, url, s["month"])  # 0.4.16: last month too, for 30 in 7 / 100 in 672 windows
         keep = sorted(store)[-3:]
@@ -3078,7 +3133,7 @@ def schedule_check(fl, force=False):
             log.info("schedule trade check skipped: %s", e)
         save_state(S)
 
-    fallback, tries = None, 0
+    fallback, tries, seen = None, 0, []  # 1.6.1: seen: what each try found, logged as one line when none is accepted
     probe_alts = time.time() - S.get("sched_alt_at", 0) > 86400  # 0.5.0: other URL shapes once a day, not every read
     if probe_alts:
         S["sched_alt_at"] = time.time()
@@ -3091,7 +3146,7 @@ def schedule_check(fl, force=False):
             tries += 1
             html = fl.fetch(url)
             if classify(html) != "ok":
-                log.info("schedule %s: %s", url.split("?")[1], classify(html))
+                seen.append(f"{url.split('?')[1]}: {classify(html)}")
                 continue
             s = parse_schedule(html)
             if "scheduledetail" in url and not S.get("sched_detail_saved"):
@@ -3103,7 +3158,7 @@ def schedule_check(fl, force=False):
                 except Exception:
                     pass
             if not s:
-                log.info("schedule try %s: %s", url.split("?")[1], visible_text(html)[:120])
+                seen.append(f"{url.split('?')[1]}: {visible_text(html)[:120]}")
                 if not S.get("sched_probe_logged"):
                     S["sched_probe_logged"] = True
                     log.info("schedule page not parsed (%s): %s", url, visible_text(html)[:2000])
@@ -3119,9 +3174,11 @@ def schedule_check(fl, force=False):
             if fallback is None or url == S.get("sched_url_ok"):
                 fallback = (url, s)  # parses but has no totals: keep looking, use it if nothing better turns up
         except Exception as e:
-            log.info("schedule error %s: %s", url, e)
+            seen.append(f"{url.split('?')[-1]}: error {e}")
     if fallback:
         accept(*fallback)
+        return
+    schedule_failed(seen)
 
 
 def detail_probe(fl, pot):
@@ -5348,25 +5405,181 @@ def publish_tickets(force=False):
 
 # ---------------------------------------------------------------- 0.7.0 charter watch (CrewTrac, read only)
 CHARTER_WAKE = threading.Event()
+CHARTER_BUSY = threading.Event()  # 1.6.1: a scan is running; a press then never queues a second one
+CHARTER_IDLE_S = CH.SCAN_EVERY_S  # 1.6.1: no login may run (refused, none saved): the status is republished this often
+CT_REFUSED_KEEP = 20  # 1.6.1: DB 'crewtrac_refused' keeps this many refused hashes (the newest)
+
+
+def crewtrac_login(o=None):
+    """1.6.1: the CrewTrac (user name, password) in use (or in the options o): the user name stripped, the password
+    exactly as saved."""
+    o = OPTS if o is None else o
+    return (o.get("ctweb_username") or "").strip(), o.get("ctweb_password") or ""
+
+
+def _hst_iso(dt):
+    return dt.replace(tzinfo=HST).isoformat(timespec="seconds")
+
+
+def crewtrac_where():
+    """1.6.1: where new CrewTrac details are saved: Settings for a pilot; for the admin the app Configuration tab,
+    unless CrewTrac details saved in Settings (creds.json, which overlays the options) are in use."""
+    if INSTANCE:
+        return "in Settings"
+    c = load_creds()
+    if any(isinstance(c.get(k), str) and c[k].strip() for k in ("ctweb_username", "ctweb_password")):
+        return "in Settings"
+    return "in the app Configuration tab"
+
+
+def crewtrac_text(state, at=None, nxt=None):
+    """1.6.1: the charters status in plain words for a pilot (Settings) or the admin (the app Configuration tab).
+    at / nxt are local_now() times (HST). 'unconfirmed': the login form came back once with no refusal message."""
+    where = crewtrac_where()
+    if state == "not_configured":
+        return f"Enter your CrewTrac user ID and password {where}."
+    if state == "refused":
+        return (f"CrewTrac refused your user ID or password at {at:%H:%M} HST. No more tries until you save new "
+                f"CrewTrac details {where}.")
+    if state == "unconfirmed":
+        return (f"CrewTrac did not let the login through at {at:%H:%M} HST. One more try at {nxt:%H:%M} HST; if that "
+                f"fails the same way, no more tries until you save new CrewTrac details {where}.")
+    return f"CrewTrac could not be reached at {at:%H:%M} HST. Next try at {nxt:%H:%M} HST."
+
+
+def crewtrac_state():
+    """1.6.1: DB 'crewtrac' for the details in use: {creds (their sha256, never the values), state ok | refused |
+    outage | not_configured | '' (not tried yet), at, next_try (HST ISO), block (the hash CrewTrac refused),
+    outages, retry_at, press_at, unconfirmed}. Details that differ from the ones it was kept for (saved in Settings
+    or the app Configuration tab) start a fresh record: the refusal block, the outage back-off and the press gap
+    belong to the old ones. A refusal is also kept in DB 'crewtrac_refused' {hash: at}, so details CrewTrac refused
+    stay blocked after they were cleared or swapped and later come back; only a save in Settings lifts that
+    (crewtrac_resaved)."""
+    u, p = crewtrac_login()
+    ct = dict(DB.get("crewtrac") or {})
+    if not u or not p:
+        if ct.get("state") != "not_configured":
+            ct = {"state": "not_configured", "at": _hst_iso(local_now()), "next_try": ""}
+            DB.put("crewtrac", ct)
+            DB.put("charter_status", crewtrac_text("not_configured"))
+        return ct
+    h = CH.creds_hash(u, p)
+    if ct.get("creds") != h:
+        fresh = {"state": "", "at": "", "next_try": "", "creds": h}
+        last = DB.get("charter_scan_at")
+        was = (DB.get("crewtrac_refused") or {}).get(h)
+        if was:  # CrewTrac refused these very details before (cleared or swapped since): still no login
+            fresh.update(state=CH.REFUSED, block=h, at=was)
+            log.info("charter: CrewTrac refused these details before; no login until other details are saved")
+            try:
+                when = datetime.fromisoformat(was)
+            except (ValueError, TypeError):
+                when = local_now()
+            DB.put("charter_status", crewtrac_text(CH.REFUSED, when))
+        elif ct:  # other details than before: the old ones' block, back-off and press gap do not apply
+            if ct.get("block"):
+                log.info("charter: new CrewTrac details in use; the refusal block is lifted")
+            DB.put("charter_status", "New CrewTrac details saved: the next scan tries them.")
+        elif last:  # first start on 1.6.1: the last scan was a success
+            try:
+                at = datetime.fromisoformat(last).astimezone(HST).replace(tzinfo=None)
+                fresh.update(state=CH.OK, at=_hst_iso(at), next_try=_hst_iso(at + timedelta(seconds=CH.SCAN_EVERY_S)))
+            except (ValueError, TypeError):
+                pass
+        ct = fresh
+        DB.put("crewtrac", ct)
+    return ct
+
+
+def crewtrac_resaved():
+    """1.6.1: CrewTrac details were saved in Settings (settings/set, even the same ones again): the pilot says they are
+    right (CrewTrac may have unlocked the account since). If CrewTrac refused the details now in use, that block is
+    lifted for one more try; refused again, it comes back. True when a block was lifted."""
+    u, p = crewtrac_login(load_opts())
+    if not u or not p:
+        return False
+    h = CH.creds_hash(u, p)
+    seen = dict(DB.get("crewtrac_refused") or {})
+    ct = dict(DB.get("crewtrac") or {})
+    if h not in seen and not (ct.get("creds") == h and ct.get("block") == h):
+        return False
+    seen.pop(h, None)
+    DB.put("crewtrac_refused", seen)
+    if ct.get("creds") == h:
+        ct.update(state="", at="", next_try="", block="", outages=0, retry_at=0, press_at=0, unconfirmed=0)
+        DB.put("crewtrac", ct)
+    DB.put("charter_status", "CrewTrac details saved again: the next scan tries them once more.")
+    log.info("charter: CrewTrac details saved again in Settings; the refusal block is lifted for one more try")
+    return True
+
+
+def crewtrac_stopped(ct):
+    """1.6.1: no login may run: no details saved, or CrewTrac refused these very ones (the block matches their hash)."""
+    return ct.get("state") == "not_configured" or bool(ct.get("block") and ct.get("block") == ct.get("creds"))
+
+
+def crewtrac_info():
+    """The charters sensor's crewtrac attribute: {state, at, next_try}."""
+    ct = crewtrac_state()
+    return {k: ct.get(k) or "" for k in ("state", "at", "next_try")}
 
 
 def publish_charters(status=""):
     known = DB.get("charters") or {}
     items = sorted(known.values(), key=lambda r: (r.get("date", ""), r.get("scheduled", "")))
+    crewtrac = crewtrac_info()
     pub("charters", {"count": len([r for r in items if not r.get("gone")]), "items": items,
                      "last_scan": DB.get("charter_scan_at") or "", "status": status or DB.get("charter_status") or "",
-                     "regular": sorted(CH.regular_set(OPTS.get("charter_regular")))})
+                     "regular": sorted(CH.regular_set(OPTS.get("charter_regular"))), "crewtrac": crewtrac})
+
+
+def crewtrac_failed(ct, kind, unconfirmed=False):
+    """1.6.1: after REFUSED, block these details (no login until others are saved); after an OUTAGE (or a scan that
+    failed after the login), back off 30 min, doubling, at most 6 h. unconfirmed: the login form came back with no
+    refusal message (an OUTAGE whose next try decides: the same again is a refusal)."""
+    now = local_now()
+    if kind == CH.REFUSED:
+        ct.update(state=CH.REFUSED, block=ct.get("creds", ""), at=_hst_iso(now), next_try="", outages=0, retry_at=0,
+                  unconfirmed=0)
+        seen = dict(DB.get("crewtrac_refused") or {})
+        seen[ct.get("creds", "")] = ct["at"]
+        DB.put("crewtrac_refused", dict(sorted(seen.items(), key=lambda kv: kv[1])[-CT_REFUSED_KEEP:]))
+        log.info("charter: CrewTrac refused the login; no more tries until new CrewTrac details are saved")
+        status = crewtrac_text(CH.REFUSED, now)
+    else:
+        n = int(ct.get("outages") or 0) + 1
+        wait = CH.backoff_s(n)
+        nxt = now + timedelta(seconds=wait)
+        ct.update(state=CH.OUTAGE, outages=n, retry_at=time.time() + wait, at=_hst_iso(now), next_try=_hst_iso(nxt))
+        if unconfirmed:
+            ct["unconfirmed"] = 1
+        log.info("charter: CrewTrac outage (%d in a row%s); next try in %d min", n,
+                 ", the login form came back" if unconfirmed else "", wait // 60)
+        status = crewtrac_text("unconfirmed" if unconfirmed else CH.OUTAGE, now, nxt)
+    DB.put("crewtrac", ct)
+    DB.put("charter_status", status)
+    publish_charters()
+    return False
 
 
 def charter_scan():
     """One read-only pass over CrewTrac Scheduled Service: HNL departures and arrivals for the next 30
     days, A330 rows that are 99xx or touch a non-regular station become sensor.flight_watcher_charters
-    entries; each new one fires event/charter once (HA pushes it)."""
-    u, p = (OPTS.get("ctweb_username") or "").strip(), OPTS.get("ctweb_password") or ""
-    if not u or not p:
-        DB.put("charter_status", "not configured: set ctweb_username and ctweb_password (CrewTrac) in the app Configuration tab")
+    entries; each new one fires event/charter once (HA pushes it). 1.6.1: no login at all while CrewTrac's refusal
+    of these details stands or none are saved (the status is only republished)."""
+    ct = crewtrac_state()
+    if crewtrac_stopped(ct):
         publish_charters()
         return False
+    CHARTER_BUSY.set()
+    try:
+        return _charter_scan(ct)
+    finally:
+        CHARTER_BUSY.clear()
+
+
+def _charter_scan(ct):
+    u, p = crewtrac_login()
     sess = requests.Session()
     sess.headers["User-Agent"] = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                                   "(KHTML, like Gecko) Chrome/130.0 Safari/537.36")
@@ -5379,53 +5592,123 @@ def charter_scan():
     sc = CH.Scanner(sess, u, p, log, sleep=lambda: time.sleep(random.uniform(1.0, 2.5)), capture=capture)
     today = local_now().date()
     try:
-        if not sc.login():
-            DB.put("charter_status", f"CrewTrac login failed at {local_now().strftime('%H:%M')} HST; one try per scan")
-            publish_charters()
-            return False
+        got = sc.login()
+        if got == CH.OUTAGE and sc.unconfirmed:
+            if ct.get("unconfirmed"):  # the login form came back twice in a row: CrewTrac is not taking these details
+                log.info("charter: the login form came back again; taken as CrewTrac refusing these details")
+                got = CH.REFUSED
+            else:
+                return crewtrac_failed(ct, CH.OUTAGE, unconfirmed=True)
+        if got != CH.OK:
+            return crewtrac_failed(ct, got)
         rows = sc.scan(today)
     except Exception as e:
-        DB.put("charter_status", f"scan error: {e}")
         log.info("charter scan error: %s", e)
-        publish_charters()
-        return False
+        return crewtrac_failed(ct, CH.OUTAGE)
     if rows is None:
-        DB.put("charter_status", "CrewTrac session dropped mid-scan")
+        log.info("charter: CrewTrac session dropped mid-scan")
+        return crewtrac_failed(ct, CH.OUTAGE)
+    try:  # 1.6.1: an error from here on is a failed scan too: it backs off instead of scanning again in 30 s
+        found = CH.unusual(rows, CH.regular_set(OPTS.get("charter_regular")))
+        regular = CH.regular_set(OPTS.get("charter_regular"))
+        known, new = CH.merge(CH.prune(DB.get("charters") or {}, regular), found, today.isoformat())
+        DB.put("charters", known)
+        DB.put("charter_scan_at", now_iso())
+        now = local_now()
+        ct.update(state=CH.OK, at=_hst_iso(now), next_try=_hst_iso(now + timedelta(seconds=CH.SCAN_EVERY_S)),
+                  block="", outages=0, retry_at=0, unconfirmed=0)
+        DB.put("crewtrac", ct)
+        DB.put("charter_status", f"ok: {len(rows)} rows, {len(found)} unusual A330, {len(new)} new")
+        log.info("charter scan: %d rows, %d unusual A330 flights, %d new", len(rows), len(found), len(new))
+        for k in new:
+            r = known[k]
+            log.info("CHARTER %s %s %s %s (%s)", r.get("date"), r.get("flight"), r.get("route"), r.get("eqpt"),
+                     r.get("why"))
+            pub("event/charter", {"key": k, **{f: r.get(f) for f in ("date", "flight", "route", "scheduled", "eqpt",
+                                                                        "tail", "why")}}, retain=False)
+        publish_charters()
+    except Exception as e:  # noqa: BLE001
+        log.info("charter scan error after the login: %s", e)
+        return crewtrac_failed(ct, CH.OUTAGE)
+    return True
+
+
+def charter_wait(now=None):
+    """1.6.1: seconds until the timer may scan (<= 0: due), or None when no login may run (none saved, or CrewTrac
+    refused these details). After an outage: its back-off; else 6 h after the last scan (none yet: now)."""
+    now = time.time() if now is None else now
+    ct = crewtrac_state()
+    if crewtrac_stopped(ct):
+        return None
+    if ct.get("state") == CH.OUTAGE:
+        return float(ct.get("retry_at") or 0) - now
+    last = DB.get("charter_scan_at")
+    if not last:
+        return 0  # 0.7.1: no scan yet = scan now (0.7.0 waited the full 6 h first)
+    try:
+        return CH.SCAN_EVERY_S - (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds()
+    except ValueError:
+        return 0
+
+
+def charter_press(now=None):
+    """Scan CrewTrac now (1.6.1): starts a scan only when one may run: never while one runs, never while CrewTrac's
+    refusal of these details stands or none are saved, at most one per PRESS_GAP_S (the first one after new details
+    excepted). Otherwise the status is only republished. True when the thread was woken for a scan."""
+    now = time.time() if now is None else now
+    ct = crewtrac_state()
+    why = ""
+    if CHARTER_BUSY.is_set():
+        why = "a scan is running"
+    elif crewtrac_stopped(ct):
+        why = "no CrewTrac details saved" if ct.get("state") == "not_configured" else "CrewTrac refused these details"
+    elif ct.get("unconfirmed"):
+        why = "the login form came back last time; the next timed try decides"
+    elif now - float(ct.get("press_at") or 0) < CH.PRESS_GAP_S:
+        why = f"the last pressed scan was under {CH.PRESS_GAP_S // 60} min ago"
+    if why:
+        log.info("charter scan pressed: %s; status republished, no scan", why)
         publish_charters()
         return False
-    found = CH.unusual(rows, CH.regular_set(OPTS.get("charter_regular")))
-    regular = CH.regular_set(OPTS.get("charter_regular"))
-    known, new = CH.merge(CH.prune(DB.get("charters") or {}, regular), found, today.isoformat())
-    DB.put("charters", known)
-    DB.put("charter_scan_at", now_iso())
-    DB.put("charter_status", f"ok: {len(rows)} rows, {len(found)} unusual A330, {len(new)} new")
-    log.info("charter scan: %d rows, %d unusual A330 flights, %d new", len(rows), len(found), len(new))
-    for k in new:
-        r = known[k]
-        log.info("CHARTER %s %s %s %s (%s)", r.get("date"), r.get("flight"), r.get("route"), r.get("eqpt"), r.get("why"))
-        pub("event/charter", {"key": k, **{f: r.get(f) for f in ("date", "flight", "route", "scheduled", "eqpt", "tail", "why")}},
-            retain=False)
-    publish_charters()
+    ct["press_at"] = now
+    DB.put("crewtrac", ct)
+    log.info("charter scan pressed")
+    CHARTER_WAKE.set()
     return True
+
+
+def charter_turn():
+    """One turn of the charter thread: wait as charter_wait() says (or for a press), then scan."""
+    wait = charter_wait()
+    if wait is None:
+        charter_scan()  # no login: the status only
+        CHARTER_WAKE.wait(CHARTER_IDLE_S)
+        CHARTER_WAKE.clear()
+        return False
+    if not CHARTER_WAKE.is_set():
+        CHARTER_WAKE.wait(max(30, wait + random.uniform(0, 600)))
+    CHARTER_WAKE.clear()
+    try:
+        return charter_scan()
+    except Exception as e:
+        log.info("charter thread: %s", e)
+        return False
+    finally:
+        CHARTER_WAKE.clear()  # a press while it ran never queues a second scan
 
 
 def charter_thread():
     """Every 6 h (or on the Scan button) in its own thread: CrewTrac is a separate site and session, so
-    this never touches the FLICA session or delays the pot checks."""
+    this never touches the FLICA session or delays the pot checks. 1.6.1: after a failed scan the wait follows
+    charter_wait() (refused: none until new details; outage: 30 min doubling to 6 h), not 30 s to 10 min. An error
+    a turn lets out is logged and the thread goes on a minute later (it never ends the charter watch)."""
     while True:
-        last = DB.get("charter_scan_at")
-        due = 0  # 0.7.1: no scan yet = scan now (0.7.0 waited the full 6 h first)
-        if last:
-            try:
-                due = CH.SCAN_EVERY_S - (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds()
-            except ValueError:
-                due = 0
-        CHARTER_WAKE.wait(max(30, due + random.uniform(0, 600)) if not CHARTER_WAKE.is_set() else 0)
-        CHARTER_WAKE.clear()
         try:
-            charter_scan()
-        except Exception as e:
+            charter_turn()
+        except Exception as e:  # noqa: BLE001
             log.info("charter thread: %s", e)
+            CHARTER_WAKE.wait(60)
+            CHARTER_WAKE.clear()
 
 
 def publish_swap_tests():
@@ -5757,7 +6040,8 @@ def check(fl):
         S["discovered_at"] = time.time()
         save_state(S)
         log.info("pot pages: %s", list(urls))
-    schedule_check(fl, force=full or not S.get("schedule"))
+    # 1.6.1: with no schedule stored, only the start's first pass forces the read (not every loop); then the back-off
+    schedule_check(fl, force=full or (not S.get("schedule") and not SCHED_FORCED["used"]))
     own_trip_times(fl, full)
     publish_working_flight()  # FW-0067
     versions_check()
