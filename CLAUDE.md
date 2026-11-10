@@ -31,7 +31,7 @@ Pako HI Home Assistant). Read `HANDOFF.md` next: it lists everything open.
 
 ## Architecture
 - `run.py` launcher starts `watcher.py` once per pilot. Ryan = default instance (MQTT prefix `flight_watcher`,
-  `/data`). Option `second_pilot: james` adds an instance with prefix `flight_watcher_james`, `/data/james`,
+  `/data`). The `pilots` option (1.5.0; `second_pilot: james` before) adds an instance with prefix `flight_watcher_james`, `/data/james`,
   creds over MQTT `<prefix>/settings/set`.
 - `watcher.py`: main loop, MQTT discovery (entities `*.flight_watcher_*`), pot / schedule / tradeboard / pairing
   detail reads via Playwright `fl.fetch`. Modules: `pot.py` (parsers), `far.py` (FAR 117), `recall.py`
@@ -46,7 +46,8 @@ Pako HI Home Assistant). Read `HANDOFF.md` next: it lists everything open.
   dashboard resource `/local/flight-watcher-loader.js` imports each with `?v=<app version>`. Edit cards in git,
   never on Pako (a start overwrites them). The pilot's DOH is in `/data/cards.json`, not in git.
 - Dashboard `flight-watcher` (title "Flight Watcher"), views: watcher, wx, flight (Working Flight, FW-0067), details, recall,
-  settings (tickets at its bottom, Ryan only). `flight-watcher-james` has the same views for James.
+  settings (tickets at its bottom, Ryan only). James has no HA dashboard (retired Nov 10, 2026): he uses the pilot
+  portal at homeofficemanager.app/fw (FW-0061), which runs the same cards.
 
 ## Release procedure
 1. Branch, change, `cd flight_watcher && python -m pytest -q` (all must pass), bump `version` in `config.yaml`

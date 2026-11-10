@@ -1,16 +1,18 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-09, release 1.6.0 built)
+# HANDOFF: Flight Watcher (refreshed 2026-11-10, release 1.6.0 live)
 
-State: app **1.5.0** on Pako HI (1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
+State: app **1.6.0** on Pako HI (1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
 per pilot Nov 8, 1.4.10 FW-0068 crew index finds FLICA-rebuilt pairings like H3631B Nov 9, 1.4.11 FW-0069 schedule versions
 for looked-up pilots on the pilot card Nov 9 (`pilotver.py`, list file `pilotver_<key>.json`), 1.4.12 the probe reads
 every rebuilt copy until all pilot seats are named Nov 9, 1.4.13 FW-0042 comm / month rule / value from
 `/share/flight_watcher/smart.json` Nov 9, 1.5.0 FW-0063 pilots list and roles (`roles.py`, `ha/pilots.json`) Nov 9; each instance publishes `sensor.<prefix>_working_flight`, read by the Working Flight view on each
 dashboard, see `ha/README.md`). **1.6.0** (FW-0061, the Flight Watcher half of the pilot portal: `portal.py`,
-`ntfy.py`, `portal_layout.json`, `PORTAL_CONTRACT.md`) is built in git and not deployed; it stays dark until a
-`pilots` entry has `portal: true`, and Ryan's instance is unchanged by it. The git history was cleaned on Nov 7 (`ha/` files carry placeholder user ids). Slug `43b22650_flight_watcher`,
+`ntfy.py`, `portal_layout.json`, `PORTAL_CONTRACT.md`) is live with `portal: true` for James, and Ryan's instance is
+unchanged by it. The git history was cleaned on Nov 7 (`ha/` files carry placeholder user ids). Slug `43b22650_flight_watcher`,
 two instances: Ryan (`flight_watcher`, `/data`) and
-James (`second_pilot: james`, `flight_watcher_james`, `/data/james`). James's HA user exists; his Watcher waits for
-his FLICA and CrewTrac logins on his own Settings tab. The work list is the tickets folder, not this file:
+James (`pilots` entry `james`, role pilot, `flight_watcher_james`, `/data/james`). James uses the pilot portal
+(homeofficemanager.app/fw, FW-0061), not Home Assistant: his HA user was retired on Nov 10 and his HA dashboard
+(`flight-watcher-james`) and HA helpers were deleted the same day (backups in the HA connector's edits store); his
+portal prefs live in `/data/james/prefs.json`. The work list is the tickets folder, not this file:
 `/share/flight_watcher/tickets/FW-nnnn/ticket.json` (card at the bottom of the Settings tab, Ryan only).
 
 ## How the work runs
@@ -67,12 +69,9 @@ his FLICA and CrewTrac logins on his own Settings tab. The work list is the tick
    on the Settings tab asks for it from 1.4.7); FW-0033 delete the merged `claude/*` branches in the GitHub UI
    (this session can push only its own branch).
 8. **Waiting on Hark:** FW-0020 (Nov 3 recall list blank), FW-0030 (HPA 2026-27 school calendar partial).
-9. **FW-0061 pilot portal (plan v2, R3 done in 1.6.0):** next is HOM 1.6.0 (R4: the portal process, passkeys,
-   `/fw-admin`, nginx `/fw` blocks), built against `flight_watcher/PORTAL_CONTRACT.md` and a byte-identical copy of
-   `tests/fixtures/portal_contract_v1.json` (sha256 pinned in both repos). Rollout (R5) is options only, each a
-   [DESTRUCTIVE] yes: FW `pilots: [{name: james, portal: true}]` and `fw_portal_origin`, then HOM
-   `fw_portal_enabled` and `fw_signing_key` (the `portal signing key ed25519:...` line in the FW app log). Before
-   R5: `find /share -uid 2061` on Pako must be empty (plan risk K3). Nobody contacts James until Ryan says so.
+9. **FW-0061 pilot portal (live Nov 10):** FW 1.6.0 and HOM 1.6.0 are deployed and the options are set. James got
+   his invite and guide from Ryan, and his Watcher left `needs_settings` (state `hunting` on Nov 10). Open: Ryan's
+   ntfy plan choice, then the first ntfy push to James. Close FW-0061 once that push is seen.
 
 ## Decided (do not reopen)
 
