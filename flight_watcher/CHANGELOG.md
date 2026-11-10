@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.3
+
+- Schedule card: a trip whose own times are not read yet takes its credit from the pairings package, which writes it
+  as "15h00". The card read only "15:00", so such a trip counted 0:00 and $0 in its row and in the month's Credit and
+  Pay-Gross (seen live on the second pilot's first schedule read: Credit 0:00 and Pay-Gross $0 beside FLICA's
+  150:28). The package credit is now read in either form. Both instances (the admin's card too, for a new trip).
+  Test: `tests/test_schedule_card_package_credit.py` (fails without the fix).
+
 ## 1.6.2
 
 Release A, group 1 (FLICA load and the schedule read; watcher.py core). Ryan's decisions of 2026-11-10: his own budget
