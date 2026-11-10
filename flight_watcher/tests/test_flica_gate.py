@@ -172,3 +172,28 @@ def test_the_watcher_wires_one_gate_file_for_every_instance(portal_pilot, tmp_pa
     assert W.GATE.budget == GT.PILOT_BUDGET_H and W.GATE.who == "pilot2"
     A, _ = portal_pilot("", portal=False)
     assert A.GATE_FILE == os.path.join(A.DATA, "flica_gate.lock") and A.GATE.budget is None and A.GATE.who == "admin"
+
+
+def test_the_budget_and_the_host_gap_hold_to_the_last_microsecond(tmp_path):
+    """1.6.2 review: the file keeps each load's time in full, so a token comes back no earlier than one hour after its
+    load and the host gap is never cut short by rounding (rounded to 1 ms, 101 loads fit in 3599.9995 s)."""
+    import random
+    rnd = random.Random(7)
+    c = Clock(1_800_000_000.123456789)
+    p, _ = _gate(tmp_path / "g.lock", "james", budget=100, clock=c, pace=1.5)
+    a, _ = _gate(tmp_path / "g.lock", "admin", clock=c, pace=1.5)
+    ts, host = [], []
+    while c.t < 1_800_000_000 + 2 * 3600:
+        p.acquire()
+        ts.append(c.t)
+        host.append(c.t)
+        c.t += rnd.uniform(0, 0.0009)
+        if rnd.random() < 0.1:
+            a.acquire()
+            host.append(c.t)
+            c.t += rnd.uniform(0, 0.0009)
+    assert len(ts) > 150
+    assert min(b - a for a, b in zip(ts, ts[100:])) >= GT.WINDOW_S  # 101 loads never inside one hour
+    assert max(sum(1 for x in ts if t - GT.WINDOW_S < x <= t) for t in ts) == GT.PILOT_BUDGET_H
+    assert min(b - a for a, b in zip(host, host[1:])) >= GT.HOST_GAP_S  # never a sub-ms short gap
+    assert _times(tmp_path / "g.lock")[-1] == host[-1]  # stored as loaded, not rounded

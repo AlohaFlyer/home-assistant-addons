@@ -321,32 +321,42 @@ CLOCK_JS = """(h) => { const c = document.createElement('flight-watcher-clock-ca
           wide: document.documentElement.scrollWidth}; }"""
 
 
-def _clock_states(st="hunting", hs="40", hmin=5, hmax=90, nmin=1):
+def _clock_states(st="hunting", hs="40", hmin=5, hmax=90, nmin=1, nmax=90):
     return {"sensor.flight_watcher_state": _st(st, {"note": "", "role": "pilot"}),
             "sensor.flight_watcher_last_check": _st("2026-11-10T11:29:30+00:00"),
             "sensor.flight_watcher_next_check": _st("2026-11-10T11:30:40+00:00"),
             "switch.flight_watcher_hunt_mode": _st("on"), "switch.flight_watcher_pause": _st("off"),
             "number.flight_watcher_hunt_check_every": _st(hs, {"min": hmin, "max": hmax, "step": 5}),
-            "number.flight_watcher_normal_check_every": _st("6", {"min": nmin, "max": 20, "step": 1})}
+            "number.flight_watcher_normal_check_every": _st("6", {"min": nmin, "max": nmax, "step": 1})}
+
+
+HUNT_OPTS = ["5", "10", "15", "20", "30", "45", "60", "90"]
+NORM_OPTS = ["1", "2", "3", "5", "6", "10", "15", "20", "30", "45", "60", "90"]
 
 
 def test_clock_card_hst_touch_targets_and_the_intervals_a_pilot_has():
+    """Ryan 2026-11-10: hunt 5 to 90 s and normal 1 to 90 min on every instance; a portal pilot's normal stops at 20 min
+    (his number entity says 20, and the portal copy caps it at contract 1's 20 even if an entity said more)."""
     src = _src("clock-card")
     portal = PT.portal_card(src)
     assert portal != src  # the clock card has the FW_PORTAL flag
     admin = [("admin", f"({CLOCK_JS})({json.dumps(_clock_states())})")]
-    pilot = [("pilot", f"({CLOCK_JS})({json.dumps(_clock_states(hs='120', hmin=120, hmax=300, nmin=2))})"),
+    pilot = [("pilot", f"({CLOCK_JS})({json.dumps(_clock_states(hs='10', nmax=20))})"),
              ("down", f"({CLOCK_JS})({json.dumps(_clock_states(st='unavailable'))})"),
-             ("needs", f"({CLOCK_JS})({json.dumps(_clock_states(st='needs_settings'))})")]
-    ha = _run(admin + pilot[:1], src, tz="Asia/Tokyo")  # the phone on a Tokyo layover: still HST
-    po = _run(pilot, portal, tz="America/Los_Angeles")
+             ("needs", f"({CLOCK_JS})({json.dumps(_clock_states(st='needs_settings'))})"),
+             ("wide", f"({CLOCK_JS})({json.dumps(_clock_states(hs='5'))})")]
+    ha = _run(admin + [("pilot", f"({CLOCK_JS})({json.dumps(_clock_states(hs='10'))})")], src, tz="Asia/Tokyo")
+    po = _run(pilot, portal, tz="America/Los_Angeles")  # the phone on a Tokyo layover / in LA: still HST
     a = ha["admin"]
     assert a["lt"] == "01:29:30 HST" and a["nt"] == "01:30:40 HST"
     assert a["opts"] == ["5", "10", "15", "20", "30", "40", "45", "60", "90"] and a["val"] == "40"  # 40 in its place
+    assert a["nopts"] == NORM_OPTS  # 1 to 90 min on the admin's HA dashboard
     assert min(a["heights"]) >= 44 and a["wide"] <= 390
-    assert ha["pilot"]["opts"] == ["120", "150", "180", "240", "300"] and ha["pilot"]["nopts"][0] == "2"  # HA: his range
+    assert ha["pilot"]["opts"] == HUNT_OPTS and ha["pilot"]["nopts"] == NORM_OPTS  # a pilot on HA: the same ranges
     p = po["pilot"]
-    assert p["lt"] == "01:29:30 HST" and not p["hsShown"] and p["hst"] == "120"  # the portal passes 5-90 only
+    assert p["lt"] == "01:29:30 HST" and p["hsShown"] and p["opts"] == HUNT_OPTS and p["val"] == "10"
+    assert p["nopts"] == NORM_OPTS[:8] and p["nopts"][-1] == "20"  # the portal sends normal up to 20 min (contract 1)
+    assert po["wide"]["nopts"] == NORM_OPTS[:8] and po["wide"]["val"] == "5"  # capped at 20 even if the entity says 90
     assert min(p["heights"]) >= 44
     d = po["down"]
     assert "Settings > Apps" not in d["msg"] and "admin" in d["msg"] and d["st"] == "Watcher not answering."
@@ -421,11 +431,11 @@ def test_clock_card_shows_the_budget_note_and_no_stuck_during_a_budget_wait():
     src = PT.portal_card(_src("clock-card"))
     note = ("FLICA budget: 100 page loads in the last hour; the next one waits until 01:44 HST; FLICA tradeboard read "
             "paused until 02:00 HST: tradeboard: unknown page")
-    wait = _clock_states(hs="120", hmin=120, hmax=300, nmin=2)
+    wait = _clock_states(hs="90", nmax=20)
     wait["sensor.flight_watcher_state"] = _st("hunting", {"note": note, "role": "pilot"})
     wait["sensor.flight_watcher_last_check"] = _st("2026-11-10T11:18:51+00:00")  # 11 min 9 s old
     wait["sensor.flight_watcher_next_check"] = _st("2026-11-10T11:44:00+00:00")  # the gate's wait, ahead
-    brk = _clock_states(hs="120", hmin=120, hmax=300, nmin=2)
+    brk = _clock_states(hs="90", nmax=20)
     brk["sensor.flight_watcher_state"] = _st("hunting", {"note": "FLICA grid read paused until 02:00 HST: x",
                                                          "role": "pilot"})
     login = _clock_states()
@@ -439,14 +449,68 @@ def test_clock_card_shows_the_budget_note_and_no_stuck_during_a_budget_wait():
     assert got["login"]["msg"] == "Checking about every 40 s."  # a login note is no news
 
 
-def test_the_settings_tab_offers_no_frequency_the_portal_or_the_watcher_changes():
+def test_clock_card_says_a_held_hunt_plainly():
+    """Ryan 2026-11-10: a pilot's hunt his 100 FLICA loads an hour holds says so in the clock card, in the Watcher's
+    words (held_note), with the next check's time; never "Stuck" or Re-arm while it waits."""
+    src = PT.portal_card(_src("clock-card"))
+    held = "Hunting every 10 s is held to 100 FLICA loads an hour: checks wait for the budget"
+    pace = _clock_states(hs="10", nmax=20)
+    pace["sensor.flight_watcher_state"] = _st("hunting", {"note": held + ", at least 89 s apart", "role": "pilot"})
+    pace["sensor.flight_watcher_next_check"] = _st("2026-11-10T11:31:10+00:00")
+    wait = _clock_states(hs="10", nmax=20)
+    wait["sensor.flight_watcher_state"] = _st("hunting", {
+        "note": held + " (next at 01:44 HST); FLICA grid read paused until 02:00 HST: x", "role": "pilot"})
+    wait["sensor.flight_watcher_last_check"] = _st("2026-11-10T11:18:51+00:00")  # 11 min old: no "Stuck"
+    wait["sensor.flight_watcher_next_check"] = _st("2026-11-10T11:44:00+00:00")
+    run = _clock_states(hs="10", nmax=20)  # the check it held is running: next_check is behind
+    run["sensor.flight_watcher_state"] = _st("hunting", {"note": held + ", at least 89 s apart", "role": "pilot"})
+    run["sensor.flight_watcher_next_check"] = _st("2026-11-10T11:29:59+00:00")
+    norm = _clock_states(hs="10", nmax=20)
+    norm["switch.flight_watcher_hunt_mode"] = _st("off")
+    norm["sensor.flight_watcher_state"] = _st("idle", {"note": "Checking every 1 min is held to 100 FLICA loads an hour: "
+                                                       "checks wait for the budget, at least 89 s apart", "role": "pilot"})
+    hung = _clock_states(hs="10", nmax=20)  # a held note on a Watcher that stopped checking is still "Stuck"
+    hung["sensor.flight_watcher_state"] = _st("hunting", {"note": held + ", at least 89 s apart", "role": "pilot"})
+    hung["sensor.flight_watcher_last_check"] = _st("2026-11-10T11:18:51+00:00")
+    hung["sensor.flight_watcher_next_check"] = _st("2026-11-10T11:20:30+00:00")
+    got = _run([(k, f"({CLOCK_JS})({json.dumps(v)})") for k, v in
+                (("pace", pace), ("wait", wait), ("run", run), ("norm", norm), ("hung", hung))], src)
+    p, w, r, n = got["pace"], got["wait"], got["run"], got["norm"]
+    assert got["hung"]["st"] == "Stuck." and got["hung"]["rearm"]
+    assert p["st"] == "Slowed." and p["msg"] == held + ", at least 89 s apart. Next check 01:31 HST."
+    assert w["st"] == "Slowed." and w["msg"] == held + ". Next check 01:44 HST. FLICA grid read paused until 02:00 HST: x."
+    assert not w["rearm"] and "Stuck" not in w["msg"]
+    assert r["st"] == "Slowed." and r["msg"] == held + ", at least 89 s apart."
+    assert n["st"] == "Slowed." and n["msg"].startswith("Checking every 1 min is held to 100 FLICA loads an hour")
+
+
+def test_the_settings_tab_has_both_intervals_and_says_the_budget_slows_short_hunts():
+    """Ryan 2026-11-10: the Hunt tile is back (5 to 90 s, all of which contract 1 sends); no markdown line speaks of a
+    120 s or 2 min floor; the Watcher keeps a pilot within 100 FLICA loads an hour, which keeps up about one check
+    every 1.5 min, and the help says plainly that a shorter hunt runs at that pace (1.6.2 review: not "very short
+    hunts": 5 to 85 s all run at it) and that pressing Scan FLICA now over and over uses up the hour."""
     settings = _tab("settings")
-    assert not [c for c in settings if "hunt_check_every" in c.get("entity", "")]
-    assert any(c["type"] == "markdown" and "Hunt mode checks every 120 s (the fastest for a pilot)" in c["content"]
-               for c in settings)
-    tiles = [c for c in settings if "normal_check_every" in c.get("entity", "")]
-    assert tiles and roles.PILOT_FREQ_LIMITS["normal_min"][0] >= roles.FREQ_LIMITS["normal_min"][0]
-    assert roles.PILOT_FREQ_LIMITS["normal_min"][1] <= roles.FREQ_LIMITS["normal_min"][1]  # all its values pass as sent
+    names = {c.get("entity", ""): c.get("name") for c in settings if c["type"] == "tile"}
+    assert names["number.flight_watcher_{name}_hunt_check_every"] == "Hunt: check every"
+    assert names["number.flight_watcher_{name}_normal_check_every"] == "Normal: check every"
+    md = [c["content"] for t in _layout()["tabs"] for c in t["cards"] if c["type"] == "markdown"]
+    assert not [m for m in md if re.search(r"\b120 s\b|\b2 min\b|fastest for a pilot", m)], md
+    line = next(c["content"] for c in settings if c["type"] == "markdown")
+    assert "5 to 90 s" in line and "1 to 20 min" in line
+    pace = "keeps up about one check every 1.5 min (a little longer once the close-in folder is found)"
+    assert "within 100 FLICA page loads an hour, which " + pace in line
+    assert "a shorter hunt or normal interval runs at that pace, and the status line says so" in line
+    help_md = next(c["content"] for c in _tab("watcher") if c["type"] == "markdown")
+    assert "within 100 FLICA page loads an hour. That " + pace in help_md
+    assert "a shorter hunt runs at that pace: a 5 s and a 60 s hunt check about as often" in help_md
+    assert "or as often as your FLICA budget keeps up (below)" in help_md
+    assert not [m for m in md if "very short" in m or "slowed automatically" in m], md
+    assert "a press within 10 s of the last check is ignored" in help_md
+    assert ("Each press uses a few of your 100 FLICA page loads an hour: pressing it over and over can leave the "
+            "Watcher waiting up to an hour for the budget") in help_md
+    # every value the sliders offer passes the contract as sent: hunt is the same range, normal stops at 20 on a portal
+    assert roles.WATCHER_FREQ_LIMITS["hunt_s"] == roles.FREQ_LIMITS["hunt_s"]
+    assert roles.entity_freq_limits("pilot2", portal=True) == roles.FREQ_LIMITS
     watcher = [c.get("entity", "") for c in _tab("watcher")]
     for gone in ("_state", "_last_check", "_next_check"):  # the clock card shows them
         assert not [e for e in watcher if e.startswith("sensor.") and e.endswith(gone)], gone
@@ -462,9 +526,11 @@ def test_a_clamped_frequency_says_so_in_the_result(monkeypatch, tmp_path):
     (tmp_path / "options.json").write_text(json.dumps({"username": "u", "password": "p"}))
     sys.modules.pop("watcher", None)
     import watcher as W
-    try:
-        assert W.freq_clamp_note("freq/hunt_s/set", "60") == "set to 120 s, the fastest this Watcher allows"
-        assert W.freq_clamp_note("freq/normal_min/set", "1") == "set to 2 min, the fastest this Watcher allows"
+    try:  # Ryan 2026-11-10: every value contract 1 passes is inside the Watcher's ranges, so nothing it sends is moved
+        assert W.freq_clamp_note("freq/hunt_s/set", "60") == "" and W.freq_clamp_note("freq/hunt_s/set", "5") == ""
+        assert W.freq_clamp_note("freq/normal_min/set", "1") == "" and W.freq_clamp_note("freq/normal_min/set", "20") == ""
+        assert W.freq_clamp_note("freq/hunt_s/set", "3") == "set to 5 s, the fastest this Watcher allows"
+        assert W.freq_clamp_note("freq/normal_min/set", "95") == "set to 90 min, the slowest this Watcher allows"
         assert W.freq_clamp_note("freq/normal_min/set", "6") == "" and W.freq_clamp_note("hunt/set", "ON") == ""
     finally:
         sys.modules.pop("watcher", None)

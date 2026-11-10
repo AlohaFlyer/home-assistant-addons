@@ -710,8 +710,9 @@ def check_pref(payload, cid=None):
 
 
 def check_freq(key, payload, cid=None):
-    """freq/<key>/set (key normal_min or hunt_s): a finite number within roles.FREQ_LIMITS[key], the slider's range
-    (the handler rounds it); 'inf', 'nan', '1e999' or text are refused. Returns the number."""
+    """freq/<key>/set (key normal_min or hunt_s): a finite number within roles.FREQ_LIMITS[key], contract 1's range
+    (the handler rounds it and clamps it into the Watcher's own, roles.WATCHER_FREQ_LIMITS, which is wider: normal up
+    to 90 min, Release C); 'inf', 'nan', '1e999' or text are refused. Returns the number."""
     lo, hi = roles.FREQ_LIMITS[key]
     try:
         v = float(payload)

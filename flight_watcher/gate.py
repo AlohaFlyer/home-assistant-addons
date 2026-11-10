@@ -156,7 +156,9 @@ class Gate:
         if w > 0 or not take:
             return (w, why, len(log), len(own)), None
         log.append((now, self.who))
-        return (0.0, "", len(log), len(own) + 1), {"v": 1, "last": now, "log": [[round(t, 3), x] for t, x in log]}
+        # 1.6.2 review: full precision (a time rounded to 1 ms could leave the hour, or end the host gap, up to 0.5 ms
+        # early: 101 loads in 3599.9995 s); JSON keeps a float exactly
+        return (0.0, "", len(log), len(own) + 1), {"v": 1, "last": now, "log": [[t, x] for t, x in log]}
 
     def _try_local(self, now, pace, take=True, keep=0):
         self.local = [t for t in self.local if now - WINDOW_S < t <= now + FUTURE_SLACK_S]

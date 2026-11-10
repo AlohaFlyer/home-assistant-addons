@@ -7,6 +7,7 @@ FLICA is read only: rules match and log, nothing is ever submitted to FLICA.
 import hashlib
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -199,10 +200,11 @@ FLAGS.update({k: bool((S.get("switches") or {}).get(k)) for k in SWITCHES})
 CONNECT_STATES_DELAY_S = 3.0
 # Check frequency from the dashboard sliders (number entities); persisted in state.
 # Each gap is randomized +-30 % around the setting so the checks never look machine-regular.
-FREQ_LIMITS = ROLES.freq_limits(INSTANCE)  # admin: normal_min 1 to 20, hunt_s 5 to 90; 1.6.2: a pilot 2 to 20 min, 120 to 300 s
-# (roles.py; the portal spool checks the contract's ROLES.FREQ_LIMITS, the handler then clamps into these)
+FREQ_LIMITS = ROLES.freq_limits(INSTANCE)  # 1.6.2 (Ryan 2026-11-10): every instance normal_min 1 to 90, hunt_s 5 to 90
+# (roles.py; the portal spool checks the contract's ROLES.FREQ_LIMITS, normal 1 to 20 until Release C, the handler then
+# clamps into these; the number entities advertise ROLES.entity_freq_limits, within the contract on a portal pilot)
 JITTER = 0.3
-CHECK_NOW_MIN_GAP_S = 10  # the admin's; a pilot's is his check floor (check_now_gap, 1.6.2 review)
+CHECK_NOW_MIN_GAP_S = 10  # every instance's (check_now_gap; a pilot's was his 120 s floor before 2026-11-10)
 RULES = {"list": [], "published": set()}
 RULE_LOCK = threading.Lock()
 
@@ -324,7 +326,8 @@ def on_message(c, u, msg):
     # hour). On a pilot nothing else does (every portal command used to). The admin keeps his other wakes (pilot
     # lookup, frequency, swap map, crew index), except Scan CrewTrac now, which is no FLICA read at all.
     # 1.6.2 review: on a pilot a hunt change, an un-pause and Check now wake a check at most once every
-    # PILOT_CHECK_FLOOR_S (120 s); inside it the check starts at the floor (wake_check). Pause on loads nothing: it
+    # PILOT_CHECK_FLOOR_S (his fastest hunt, 5 s since Ryan's 2026-11-10 ranges); inside it the check starts at the
+    # floor (wake_check). His FLICA budget (100 loads an hour) is what holds a fast pace. Pause on loads nothing: it
     # always wakes the loop, so a check waiting in the gate is given up at once.
     admin = ROLES.role(INSTANCE) == ROLES.ADMIN
     wake = False
@@ -332,6 +335,7 @@ def on_message(c, u, msg):
         changed = FLAGS["hunt"] != (p == "ON")
         set_switch(c, "hunt", p == "ON")
         log.info("hunt mode %s", FLAGS["hunt"])
+        held_apply()  # 1.6.2: the held-hunt note follows the switch at once
         wake = changed and wake_check("hunt mode changed")
     elif msg.topic == f"{T}/pause/set":
         changed = FLAGS["pause"] != (p == "ON")
@@ -369,9 +373,9 @@ def on_message(c, u, msg):
             log.info("charter scan press: %s", e)
     elif msg.topic == f"{T}/check_now/press":
         # Waking the loop runs a check right away (only when idle or hunting; paused/stopped ignore it).
-        gap_s = check_now_gap()
-        if time.time() - max(S.get("last_check_ts", 0), S.get("wake_ts", 0) if PILOT_CHECK_FLOOR_S else 0,
-                             S.get("check_started_ts", 0) if PILOT_CHECK_FLOOR_S else 0) < gap_s:
+        gap_s = check_now_gap()  # 10 s on every instance; on a pilot a press or a check start inside it counts too
+        if time.time() - max(S.get("last_check_ts", 0), S.get("wake_ts", 0) if not admin else 0,
+                             S.get("check_started_ts", 0) if not admin else 0) < gap_s:
             log.info("check now ignored: last check under %d s ago", gap_s)
             return
         log.info("check now pressed: full refresh")
@@ -388,6 +392,7 @@ def on_message(c, u, msg):
         save_state(S)
         c.publish(f"{T}/freq/{key}/state", str(S["freq"][key]), retain=True)
         log.info("frequency %s = %s", key, S["freq"][key])
+        held_apply()  # 1.6.2: a pilot's held-hunt note follows his new frequency at once
         wake = admin  # 1.6.2: a pilot's new frequency applies from his next check
     elif msg.topic.startswith(f"{T}/rule/") and msg.topic.endswith("/live/set"):
         rule_live_cmd(c, msg.topic.split("/")[2], p == "ON")
@@ -410,8 +415,9 @@ def on_message_safe(c, u, msg):
 
 
 def check_now_gap():
-    """Check now is ignored this soon after the last check: 10 s on the admin, a pilot's check floor (120 s)."""
-    return max(CHECK_NOW_MIN_GAP_S, PILOT_CHECK_FLOOR_S)
+    """Check now is ignored this soon after the last check: 10 s on every instance (1.6.2, Ryan 2026-11-10: a pilot's
+    gap was his 120 s check floor before; his FLICA budget still holds the pace)."""
+    return CHECK_NOW_MIN_GAP_S
 
 
 def remember_switch(key, on):
@@ -985,6 +991,9 @@ def entity_defs():
     the full discovery config. feature (roles.ENTITY_FEATURE, else core) says who gets it: discovery() publishes the
     ones this instance has."""
     base = {"availability_topic": AVAIL, "device": DEV}
+    # 1.6.2 (Ryan 2026-11-10): the interval sliders' ranges; on a pilot whose portal is on, within contract 1 (normal up
+    # to 20 min, what his portal can send, until Release C revises the contract; the Watcher's clamp takes 1 to 90)
+    efl = ROLES.entity_freq_limits(INSTANCE, portal_on())
     ents = [
         ("sensor", "state", {"name": "State", "state_topic": f"{T}/state", "icon": "mdi:airplane-search",
                              "json_attributes_topic": f"{T}/state_attr"}),
@@ -1082,12 +1091,12 @@ def entity_defs():
                                  "icon": "mdi:refresh"}),
         ("number", "normal_minutes", {"name": "Normal check every", "command_topic": f"{T}/freq/normal_min/set",
                                       "state_topic": f"{T}/freq/normal_min/state",
-                                      "min": FREQ_LIMITS["normal_min"][0], "max": FREQ_LIMITS["normal_min"][1],
+                                      "min": efl["normal_min"][0], "max": efl["normal_min"][1],
                                       "step": 1, "mode": "slider", "unit_of_measurement": "min",
                                       "icon": "mdi:timer-outline"}),
         ("number", "hunt_seconds", {"name": "Hunt check every", "command_topic": f"{T}/freq/hunt_s/set",
                                     "state_topic": f"{T}/freq/hunt_s/state",
-                                    "min": FREQ_LIMITS["hunt_s"][0], "max": FREQ_LIMITS["hunt_s"][1],
+                                    "min": efl["hunt_s"][0], "max": efl["hunt_s"][1],
                                     "step": 5, "mode": "slider", "unit_of_measurement": "s",
                                     "icon": "mdi:timer-alert-outline"}),
         ("sensor", "settings", {"name": "Settings", "state_topic": f"{T}/settings/state",
@@ -1359,7 +1368,7 @@ def page_verdict(path, url, html):
         except Exception:  # noqa: BLE001
             return "error"
     return ""
-HEALTH = {"note": "", "gate": ""}  # the state note the gate and the breakers last put up (so it is theirs to clear)
+HEALTH = {"note": "", "gate": "", "held": ""}  # the state note the gate, the pace and the breakers last put up
 
 
 def hst_hm(ts):
@@ -1368,8 +1377,11 @@ def hst_hm(ts):
 
 
 def gate_note(why, until):
-    """1.6.2: Gate.on_wait: the state note while a FLICA load waits for a budget ('' once it went)."""
-    if why == "budget":
+    """1.6.2: Gate.on_wait: the state note while a FLICA load waits for a budget ('' once it went). While a pilot hunts
+    the budget wait reads as his held hunt (held_note, with the next check's time)."""
+    if why == "budget" and FLAGS.get("hunt") and GATE.budget:
+        HEALTH["gate"] = held_note(until)
+    elif why == "budget":
         HEALTH["gate"] = (f"FLICA budget: {GT.PILOT_BUDGET_H} page loads in the last hour; the next one waits until "
                           f"{hst_hm(until)} HST")
     elif why == "host":
@@ -1381,7 +1393,7 @@ def gate_note(why, until):
 
 
 def health_note():
-    return "; ".join(x for x in (HEALTH["gate"], BRK.note()) if x)
+    return "; ".join(x for x in (HEALTH["gate"] or HEALTH["held"], BRK.note()) if x)
 
 
 def health_note_apply():
@@ -1408,14 +1420,68 @@ RUN = {"check": False, "optional": False, "aborted": "", "skipped": set(), "opt"
 GATE_KEEP = 4  # an optional load leaves this many of a pilot's budget free (the next check's start)
 
 
+PACE_OPT_H = 12  # 1.6.2: a pilot's paced hunt leaves this many loads an hour to the reads that may be left out
+
+
+def close_in_h():
+    """1.6.2 review: the close-in folder's FLICA loads an hour that a hunt costs whatever its pace: hunting reads it at
+    most every CLOSE_IN_READ_S (FW-0035, about 12 an hour), not on every check. 0 when its BCID is not known, and in
+    normal mode (every check reads it then: pot_pages counts it)."""
+    return 3600.0 / CLOSE_IN_READ_S if FLAGS.get("hunt") and (S.get("close_in") or {}).get("bcid") else 0.0
+
+
+def pot_pages():
+    """The open time pages every check loads: the pot months (2 until they are found) and, in normal mode, the close-in
+    folder (hunting, it is an hourly cost instead: close_in_h)."""
+    ci = 1 if (S.get("close_in") or {}).get("bcid") and not FLAGS.get("hunt") else 0
+    return (len(S.get("pot_urls") or {}) or 2) + ci
+
+
+def budget_pace_s():
+    """1.6.2 (Ryan 2026-11-10: hunt 5 to 90 s): on a pilot, the shortest wait between his checks that his FLICA budget
+    keeps up for a whole hour: the pot's pages a check into his budget less his schedule read (2 loads every 30 min),
+    one check's start, PACE_OPT_H for the optional reads and, hunting, the close-in folder's reads (close_in_h):
+    about 89 s with 2 pot pages, 105 s once the close-in folder is known. A shorter hunt is spread over the hour at
+    this pace (gap) instead of using the budget in minutes and then waiting most of the hour. 0 on the admin (no
+    budget)."""
+    if not GATE.budget:
+        return 0.0
+    room = GATE.budget - 2 * SCHED_TRIES_PER_READ - GATE_CHECK_TOKENS - PACE_OPT_H - close_in_h()
+    return pot_pages() * 3600.0 / max(1.0, room)
+
+
+def held_note(until=None):
+    """1.6.2 (Ryan 2026-11-10): a pilot's check frequency faster than his FLICA budget allows, in plain words ('Hunting
+    every 10 s is held to 100 FLICA loads an hour: checks wait for the budget'), with the pace it is held to or, while
+    the gate makes the loop wait, the next check's time. '' when nothing holds it (the admin, a slow enough setting)."""
+    fq, hunt = freq(), bool(FLAGS.get("hunt"))
+    pace = budget_pace_s()
+    want = fq["hunt_s"] if hunt else fq["normal_min"] * 60
+    if not GATE.budget or (not until and pace <= want):
+        return ""
+    head = (f"Hunting every {fq['hunt_s']} s" if hunt else f"Checking every {fq['normal_min']} min") + \
+        f" is held to {GATE.budget} FLICA loads an hour: checks wait for the budget"
+    return head + (f" (next at {hst_hm(until)} HST)" if until else f", at least {int(math.ceil(pace))} s apart")
+
+
+def held_apply():
+    """The held note (held_note) joins the state note while the Watcher is idle or hunting (health_note_apply)."""
+    want = held_note() if ROLES.role(INSTANCE) == ROLES.PILOT else ""
+    if want != HEALTH["held"]:
+        HEALTH["held"] = want
+        health_note_apply()
+
+
 def opt_cap():
     """1.6.2 review: the optional loads a pilot may make in an hour: his budget less what the open time pot needs at
-    his check rate (its pages times checks an hour), his schedule read (2 loads every 30 min) and one check's start."""
+    his check rate (its pages times checks an hour; a check rate his budget holds counts at its pace, budget_pace_s;
+    hunting, the close-in folder's reads an hour, close_in_h), his schedule read (2 loads every 30 min) and one check's
+    start."""
     if not GATE.budget:
         return None
     fq = freq()
-    every = max(1.0, float(fq["hunt_s"] if FLAGS.get("hunt") else fq["normal_min"] * 60))
-    pot = (len(S.get("pot_urls") or {}) or 2) * 3600.0 / every
+    every = max(1.0, float(fq["hunt_s"] if FLAGS.get("hunt") else fq["normal_min"] * 60), budget_pace_s())
+    pot = pot_pages() * 3600.0 / every + min(close_in_h(), 3600.0 / every)
     return max(0, GATE.budget - int(round(pot)) - 2 * SCHED_TRIES_PER_READ - GATE_CHECK_TOKENS)
 
 
@@ -1820,38 +1886,23 @@ class Flica:
 def freq():
     """Current settings. Defaults are the midpoints of the add-on options (6 min normal, 40 s hunt)."""
     f = dict(S.get("freq") or {})
-    f.setdefault("normal_min", max(1, round((OPTS["idle_min_s"] + OPTS["idle_max_s"]) / 2 / 60)))
-    f.setdefault("hunt_s", max(5, round((OPTS["hunt_min_s"] + OPTS["hunt_max_s"]) / 2)))
+    o = {"idle_min_s": 120, "idle_max_s": 600, "hunt_min_s": 20, "hunt_max_s": 60, **OPTS}  # config.yaml's defaults
+    f.setdefault("normal_min", max(1, round((o["idle_min_s"] + o["idle_max_s"]) / 2 / 60)))
+    f.setdefault("hunt_s", max(5, round((o["hunt_min_s"] + o["hunt_max_s"]) / 2)))
     for k, (lo, hi) in FREQ_LIMITS.items():  # stored values from wider old ranges are clamped
         f[k] = max(lo, min(hi, f[k]))
     return f
-
-
-def freq_migrate():
-    """1.6.2: on a pilot, a stored check frequency outside his range (a 40 s hunt stored before 1.6.2) is moved into it once at
-    start, with one log line. The admin's stored values are left alone (freq() clamps them as before)."""
-    if ROLES.role(INSTANCE) != ROLES.PILOT:
-        return []
-    f, moved = dict(S.get("freq") or {}), []
-    for k, (lo, hi) in FREQ_LIMITS.items():
-        v = f.get(k)
-        if isinstance(v, (int, float)) and not isinstance(v, bool) and not lo <= v <= hi:
-            f[k] = max(lo, min(hi, int(round(v))))
-            moved.append(f"{k} {v} -> {f[k]}")
-    if moved:
-        S["freq"] = f
-        save_state(S)
-        log.info("check frequency moved into this pilot's range (hunt every %d s at the fastest): %s",
-                 FREQ_LIMITS["hunt_s"][0], ", ".join(moved))
-    return moved
 
 
 def gap():
     fq = freq()
     mid = fq["hunt_s"] if FLAGS["hunt"] else fq["normal_min"] * 60
     lo, hi = mid * (1 - JITTER), mid * (1 + JITTER)
-    if ROLES.role(INSTANCE) == ROLES.PILOT:  # 1.6.2 review: the jitter never takes a pilot under his floor
+    if ROLES.role(INSTANCE) == ROLES.PILOT:  # 1.6.2 review: the jitter never takes a pilot under 5 s / 1 min
         lo = max(lo, FREQ_LIMITS["hunt_s"][0] if FLAGS["hunt"] else FREQ_LIMITS["normal_min"][0] * 60)
+        pace = budget_pace_s()  # 1.6.2 (Ryan 2026-11-10): a short hunt is spread over the hour, still irregular
+        if pace > lo:
+            lo, hi = pace, max(hi, pace * (1 + JITTER))
         hi = max(hi, lo)
     return random.uniform(lo, hi)
 
@@ -1962,8 +2013,9 @@ def login_deferred(st, base_note=None):
     return True
 
 
-# 1.6.2 review: on a pilot no check starts within PILOT_CHECK_FLOOR_S (his fastest hunt, 120 s) of the last one,
-# whatever woke the loop; a hunt or pause change or Check now inside that time wakes it at the floor instead.
+# 1.6.2 review: on a pilot no check starts within PILOT_CHECK_FLOOR_S (his fastest hunt: 5 s since Ryan's 2026-11-10
+# ranges, 120 s before) of the last one, whatever woke the loop; a hunt or pause change or Check now inside that time
+# wakes it at the floor instead. His FLICA budget (100 loads an hour, gate.py) is what holds a fast hunt's pace.
 PILOT_CHECK_FLOOR_S = FREQ_LIMITS["hunt_s"][0] if ROLES.role(INSTANCE) == ROLES.PILOT else 0
 WAKE_DUE = {"at": 0.0}
 
@@ -7857,7 +7909,8 @@ def portal_spool_once():
 
 def freq_clamp_note(sub, payload):
     """1.6.2 review: a check frequency the portal passed (contract 1's range) but this pilot's Watcher moves into his
-    own (FREQ_LIMITS, e.g. hunt 60 s -> 120 s): the result says so instead of a bare ok. '' otherwise."""
+    own (FREQ_LIMITS, e.g. hunt 95 s -> 90 s): the result says so instead of a bare ok. '' otherwise. Since Ryan's
+    2026-11-10 ranges every value contract 1 passes is inside the Watcher's own, so it says nothing for those."""
     key = {"freq/normal_min/set": "normal_min", "freq/hunt_s/set": "hunt_s"}.get(sub)
     if not key:
         return ""
@@ -7976,7 +8029,6 @@ def main():
     migrate_swap_mode()  # FW-0028: before on_connect publishes the mode
     enforce_role()
     captures_cleanup()  # 1.6.2 review: what 1.6.1 left of a pilot in the admin's folder, his unmasked screenshot
-    freq_migrate()  # 1.6.2: before on_connect publishes the frequencies
     MQ = mqtt_start()
     start_upload_janitor()  # FW-0066: chunks arrive as soon as MQTT is up, even while a second pilot waits for settings
     portal_start()  # 1.6.0 (FW-0061): a portal pilot's export and spool, before the settings wait (no-op otherwise)
@@ -8128,6 +8180,7 @@ def main():
             if last_month_check and last_month_check != mk:
                 S["pot_urls"] = {}
             last_month_check = mk
+            held_apply()  # 1.6.2 (Ryan 2026-11-10): a pilot's hunt his budget holds says so in the state note
             # 1.6.2: a check starts once GATE_CHECK_TOKENS loads fit the budget (a pilot's 100 an hour, the host's 480);
             # until then the loop waits (WAKE-able: pause and Check now are still read) and the state note says so
             wait, why = GATE.free_in(min(check_tokens(), GATE.budget or GATE_CHECK_TOKENS))
@@ -8137,7 +8190,7 @@ def main():
                 continue
             if HEALTH["gate"]:
                 gate_note("", None)
-            floor = check_floor_wait()  # 1.6.2 review: a pilot's checks start at least 120 s apart, whatever woke us
+            floor = check_floor_wait()  # 1.6.2 review: a pilot's checks start at least 5 s apart, whatever woke us
             if floor > 0:
                 sleep_announced(floor)
                 continue
