@@ -86,6 +86,9 @@ RECHECK_NO_V = 1  # FW-0013: 'not in flight' verdicts (some were read off the er
 
 
 CAPTURE_DIR = "/share/flight_watcher/captures"
+# 1.6.2 (Release A item 8): watcher.py sets CAPTURE_DIR to this instance's folder and WRITE to its capture policy
+# (captures.py: the admin's as before; a pilot's only while captures are on, masked, in his own folder)
+WRITE = None
 
 
 # FW-0013: FLICA's "Application Error" page ("An error has occurred, please contact CAE Customer Care ... No Schedule
@@ -110,8 +113,12 @@ def capture(html, emp, log):
     if PROBE.get("saved", 0) >= 2:
         return
     try:
-        os.makedirs(CAPTURE_DIR, exist_ok=True)
-        open(f"{CAPTURE_DIR}/cmschedule_{emp}.html", "w").write(html)
+        if WRITE is not None:
+            if not WRITE(f"cmschedule_{emp}.html", html):
+                return  # a pilot with captures off: nothing saved, nothing counted
+        else:
+            os.makedirs(CAPTURE_DIR, exist_ok=True)
+            open(f"{CAPTURE_DIR}/cmschedule_{emp}.html", "w").write(html)
         PROBE["saved"] = PROBE.get("saved", 0) + 1
         log.info("inflt: schedule page for %s saved (%d chars, %d pair links)", emp, len(html),
                  len(parse_cm_schedule(html)))

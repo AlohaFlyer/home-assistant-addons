@@ -51,6 +51,7 @@ import roles as ROLES
 import portal as PT
 import ntfy as NT
 import gate as GT
+import captures as CAPS
 
 VERSION = "1.6.1"
 BASE = "https://ha2.flica.net"
@@ -482,7 +483,9 @@ def settings_state(creds=None, result=""):
     if portal_on():  # 1.6.0 (FW-0061): the card shows the ntfy fields only then; set / not set, never a value
         c = load_creds() if creds is None else creds
         st.update({"ntfy": True, "has_ntfy_topic": bool(c.get("ntfy_topic")),
-                   "has_ntfy_token": bool(c.get("ntfy_token"))})
+                   "has_ntfy_token": bool(c.get("ntfy_token")),
+                   # 1.6.2 (item 9): a saved topic too easy to guess (saved before 1.6.2) is off; the card says so
+                   "ntfy_topic_ok": bool(c.get("ntfy_topic")) and not NT.topic_refusal(c.get("ntfy_topic"))})
     return st
 
 
@@ -505,17 +508,27 @@ def settings_cmd(payload):
         log.info("settings ignored: %s", e)
         return False
     keys = CRED_KEYS
+    ntfy_off = False
     if "enc" in d:  # 1.1.0: sealed by the dashboard Settings card
         try:
             d = SEAL.open_sealed(settings_key(), d["enc"])
             if portal_on():  # 1.6.0 (FW-0061): ntfy only sealed, only on a portal pilot
                 keys = CRED_KEYS + NTFY_KEYS
-                bad = [k for k, ok in (("ntfy_topic", NT.TOPIC_RE), ("ntfy_token", NT.TOKEN_RE))
-                       if isinstance(d.get(k), str) and d[k].strip() and not ok.fullmatch(d[k].strip())]
-                for k in bad:
-                    d.pop(k)
-                if bad:
-                    log.info("settings: %s not usable, left out", ", ".join(bad))
+                # 1.6.2 (item 9): the token is optional; a topic must be hard to guess (ntfy.topic_refusal). An
+                # unusable ntfy value refuses the whole message (nothing saved), with the reason; never the value.
+                why = ""
+                t = d.get("ntfy_topic")
+                if isinstance(t, str) and t.strip():
+                    why = NT.topic_refusal(t.strip())
+                    why = f"ntfy topic: {why}" if why else ""
+                k = d.get("ntfy_token")
+                if not why and isinstance(k, str) and k.strip() and not NT.TOKEN_RE.fullmatch(k.strip()):
+                    why = "ntfy access token: use 8 to 128 letters, digits, '.', '_' or '-'"
+                if why:
+                    log.info("settings refused: %s", why.split(":")[0] + " not usable")
+                    publish_settings(creds=load_creds(), result=f"refused: {why}; nothing was saved")
+                    return False
+                ntfy_off = d.get("ntfy_off") is True  # 1.6.2: the card's Turn off phone alerts
         except Exception as e:  # noqa: BLE001 (SealError, or no usable key: never let it reach paho's thread)
             msg = str(e) if isinstance(e, SEAL.SealError) else f"settings key unavailable ({type(e).__name__})"
             log.info("sealed settings refused: %s", msg)
@@ -526,6 +539,10 @@ def settings_cmd(payload):
             return False
     cur = load_creds()
     changed = []
+    if ntfy_off:  # 1.6.2: forget the topic and token (a later topic turns alerts on again)
+        for k in NTFY_KEYS:
+            if cur.pop(k, None) is not None:
+                changed.append(k)
     for k in keys:
         v = d.get(k)
         if not isinstance(v, str) or not v.strip():
@@ -1374,8 +1391,9 @@ class Flica:
                     pass
             low = html.lower()
             try:
-                os.makedirs(SHARE, exist_ok=True)
-                page.screenshot(path=f"{SHARE}/last_login.png", full_page=True)
+                if CAP.admin:  # 1.6.2 (item 8): a screenshot cannot be masked, so a pilot's login is never saved
+                    os.makedirs(SHARE, exist_ok=True)
+                    page.screenshot(path=f"{SHARE}/last_login.png", full_page=True)
                 vis = page.inner_text("body")[:600].replace("\n", " | ")
                 log.info("after login url=%s text=%s", page.url.split("?")[0], vis)
             except Exception as e:
@@ -2252,6 +2270,8 @@ def tax_pct():
         tot = 0.0
         for name, dflt in (("federal", 22.0), ("state", 0.0)):
             v = pref_get(f"{name}_tax_pct")
+            if v is None and portal_on():  # 1.6.2 (item 12): a portal pilot has no HA helpers: never read them
+                v = dflt
             try:
                 tot += float(ha_state(f"input_number.{T}_{name}_tax_pct") if v is None else v)
             except (TypeError, ValueError):
@@ -2367,25 +2387,97 @@ def improved_cmd(payload):
         log.info("improved pay skipped: %s", e)
 
 
-def recall_me():
+def sen_value(v, strict=True):
+    """1.6.2 (item 10): a seniority number as recall/act may set it: an int 1..99999 (recall.SEN_MAX); with strict
+    off (a list Hark posts), an all-digit text too. None for anything else."""
+    if isinstance(v, bool):
+        return None
+    if not strict and isinstance(v, str) and re.fullmatch(r"\d{1,5}", v.strip()):
+        v = int(v.strip())
+    return v if isinstance(v, int) and 1 <= v <= RC.SEN_MAX else None
+
+
+_AWARD_SEN = {}  # (path, mtime, emp) -> the pilot's seniority number on that award, or None
+
+
+def award_sen(path, emp):
+    """1.6.2: the pilot's seniority number on one PBS award text ('SSSSS / EMP' line, seniority.AWARD_PILOT_RE), by
+    his own employee number; None when he is not on it. Cached by the file's time."""
+    try:
+        key = (path, os.path.getmtime(path), emp)
+    except OSError:
+        return None
+    if key not in _AWARD_SEN:
+        got = None
+        try:
+            for ln in open(path, errors="replace"):
+                m = SEN.AWARD_PILOT_RE.match(ln)
+                if m and m["emp"].lstrip("0") == emp:
+                    got = sen_value(int(m["sen"]))
+                    break
+        except OSError:
+            pass
+        _AWARD_SEN[key] = got
+    return _AWARD_SEN[key]
+
+
+def own_seniority():
+    """1.6.2 (item 10): (seniority number, source) of this instance's own pilot from the files every instance already
+    has, by his own employee number (S['own_emp']): the PBS award of the current month or the newest before it
+    ('award YYYY-MM'), then a later one, else the shared seniority list ('seniority list'). (None, '') when neither
+    names him."""
+    emp = re.sub(r"\D", "", str(S.get("own_emp") or "")).lstrip("0")
+    if not emp:
+        return None, ""
+    try:
+        names = sorted(f for f in os.listdir(UPLOADS) if re.fullmatch(r"\d{4}-\d{2}_award\.txt", f))
+    except OSError:
+        names = []
+    cur = local_now().strftime("%Y-%m")
+    for f in [f for f in reversed(names) if f[:7] <= cur] + [f for f in names if f[:7] > cur]:
+        sen = award_sen(os.path.join(UPLOADS, f), emp)
+        if sen:
+            return sen, f"award {f[:7]}"
+    data = seniority_data()
+    rec = SEN.find(data, emp) if data else None
+    sen = sen_value((rec or {}).get("sen"), strict=False) if rec else None
+    return (sen, "seniority list") if sen else (None, "")
+
+
+def recall_me(with_source=False):
     """Ryan's recall settings: {sen, seat, o75_months {YYYY-MM: true | false}} (1.4.6 review: Over 75 eligibility,
-    PWA 22.G.2.d, is per month; the old single 'o75' flag defaulted to eligible and is no longer used)."""
+    PWA 22.G.2.d, is per month; the old single 'o75' flag defaulted to eligible and is no longer used). 1.6.2 (item
+    10): the number typed on the tab wins; when none is (or what is stored is not a number from 1 to 99999) it comes
+    from the award or the seniority list (own_seniority). with_source: (me, 'typed' | 'award YYYY-MM' |
+    'seniority list' | '')."""
     me = {"sen": None, "seat": "FO", "o75_months": {}, **(DB.get("recall_me") or {})}
     me.pop("o75", None)
     if not isinstance(me.get("o75_months"), dict):
         me["o75_months"] = {}
-    return me
+    me["sen"], src = sen_value(me.get("sen"), strict=False), "typed"
+    if me["sen"] is None:
+        me["sen"], src = own_seniority()
+    return (me, src) if with_source else me
 
 
-def recall_me_set(new):
+def recall_me_set(new, strict=True):
     """Merge a {me: {...}} change into recall_me: sen, seat, and o75_months {YYYY-MM: true | false | null} (null
-    forgets that month's answer). Anything else is ignored."""
+    forgets that month's answer). Anything else is ignored. 1.6.2 (item 10): sen only as an int 1..99999 (or null:
+    forget the typed one, so the award's or the list's applies; strict off also takes all-digit text), seat only FO or
+    CA; anything else is left as it was (logged, the value not)."""
     if not isinstance(new, dict):
         return
     cur = {k: v for k, v in (DB.get("recall_me") or {}).items() if k != "o75"}
-    for k in ("sen", "seat"):
-        if k in new:
-            cur[k] = new[k]
+    if "sen" in new:
+        v = sen_value(new["sen"], strict)
+        if v is not None or new["sen"] is None:
+            cur["sen"] = v
+        else:
+            log.info("recall: seniority # not taken: not a whole number from 1 to %d", RC.SEN_MAX)
+    if "seat" in new:
+        seat = str(new["seat"] or "").upper()
+        if seat in ("FO", "CA"):
+            cur["seat"] = seat
     om = new.get("o75_months")
     if isinstance(om, dict):
         months = dict(cur.get("o75_months") or {})
@@ -2411,7 +2503,10 @@ def recall_cmd(payload):
         days = d if isinstance(d, list) else [d]
         with RECALL_LOCK:
             if isinstance(d, dict) and d.get("me"):
-                recall_me_set(d["me"])
+                if ROLES.role(INSTANCE) == ROLES.ADMIN:
+                    recall_me_set(d["me"], strict=False)
+                else:  # 1.6.2: a forwarded list never sets a pilot's own seniority (only his tab, recall/act, does)
+                    log.info("recall list: its 'me' ignored on a pilot instance")
             allr = DB.get("recall_days") or {}
             for day in days:
                 dk = str(day.get("date") or "")[:10]
@@ -2530,9 +2625,15 @@ def recall_eval(notify=False):
         for vid, v in live.items():
             a = acts.get(vid)
             if not a:
+                if v.get("missing"):  # 1.6.2 (item 10): no CCR draft, no alert while his seniority or line is unknown
+                    continue
                 acts[vid] = {"status": "new", "narrative": RC.narrative(v, me, S.get("own_name") or "", S.get("own_emp") or ""),
                              "at": now_iso(), "missed_sent": False}
                 fresh.append(v)
+            elif a.get("status") in ("new", "confirmed") and not a.get("approved_at") and not v.get("missing"):
+                # 1.6.2: the Watcher's own text until it is approved (edits reach it only with approve): it follows
+                # the row, so a number or a line that came in later is in it
+                a["narrative"] = RC.narrative(v, me, S.get("own_name") or "", S.get("own_emp") or "")
             elif a.get("status") == "superseded":
                 a["status"], a["at"] = a.pop("was", None) or "new", now_iso()
                 a.pop("superseded_why", None)
@@ -2554,7 +2655,8 @@ def recall_eval(notify=False):
         push = []
         if notify:
             push = list(fresh) + [v for vid, v in live.items() if v not in fresh and v["verdict"] == "MISSED"
-                                  and acts[vid].get("missed_sent") is False and acts[vid].get("status") in RECALL_OPEN]
+                                  and vid in acts and acts[vid].get("missed_sent") is False
+                                  and acts[vid].get("status") in RECALL_OPEN]
             for v in push:
                 if v["verdict"] == "MISSED":
                     acts[v["id"]]["missed_sent"] = True
@@ -2884,9 +2986,13 @@ def publish_recall():
     # FW-0060: every day goes to recall_<key>.json for the recall card (about 380 bytes a verdict: 45 days would pass
     # the recorder's 16 KB); the sensor keeps the newest days that fit (cap_attrs) and the counts over all of them
     key, rev = write_list_file("recall", {"days": days[::-1]})
-    pub("recall", {"open": len(opn), "alert": len(alert), "me": recall_me(), "last": days[-1]["date"] if days else "",
+    me, src = recall_me(with_source=True)
+    miss = [v.get("missing") for d in days for v in d.get("verdicts") or [] if v.get("verdict") in RECALL_LIVE]
+    pub("recall", {"open": len(opn), "alert": len(alert), "me": me, "last": days[-1]["date"] if days else "",
                    "checked": now_iso(), "received": received, "hark_files": has("hark_ccr"), "days": days[::-1],
-                   "days_total": len(days), "file_key": key, "rev": rev})
+                   "days_total": len(days), "file_key": key, "rev": rev,
+                   # 1.6.2 (item 10): where the seniority number comes from, and the rows held back for missing data
+                   "sen_source": src, "missing_sen": miss.count("seniority"), "missing_line": miss.count("line")})
 
 
 def publish_improved():
@@ -3379,8 +3485,7 @@ def schedule_check(fl, force=False):
                 S["sched_probe_logged"] = True
                 log.info("schedule page not parsed (%s): %s", sched_label(url), text[:2000])
                 try:
-                    os.makedirs(CAPTURE_DIR, exist_ok=True)
-                    open(f"{CAPTURE_DIR}/schedule.html", "w").write(html)
+                    cap_write("schedule.html", html)
                 except Exception:
                     pass
             continue
@@ -3415,22 +3520,52 @@ def detail_probe(fl, pot):
 CAPTURE_DIR = f"{SHARE}/captures"
 
 
+def cap_secrets():
+    """1.6.2 (item 8): what a pilot's debug captures must never hold: his FLICA and CrewTrac logins, his name and his
+    employee number (captures.mask masks them as 'MASKED')."""
+    return [str(OPTS.get(k) or "") for k in CRED_KEYS] + [str(S.get("own_name") or ""), str(S.get("own_emp") or "")]
+
+
+# 1.6.2 (item 8): every page capture goes through this instance's policy (captures.py): the admin's as before, in
+# CAPTURE_DIR; a pilot's only while /share/flight_watcher/<pilot>/captures_on is under 24 h old, masked, 0600, in his
+# own 0700 folder, deleted after 7 days. inflt's own capture (cmschedule_<emp>.html) is wired in too, per instance.
+CAP = CAPS.Captures(INSTANCE, log=log.info, secrets=cap_secrets)
+IF.CAPTURE_DIR = CAPTURE_DIR
+
+
+def cap_on():
+    """True when this instance may write a page capture now (always the admin; a pilot only while captures_on is
+    fresh). Loads made only to be captured are skipped when False."""
+    return CAP.on()
+
+
+def cap_write(name, data):
+    """One page capture (name under the captures folder, e.g. 'schedule.html'): the admin's to CAPTURE_DIR as before
+    (unmasked), a pilot's masked into his own folder or not at all. The path written, or None. Errors are the
+    caller's (each capture site keeps its own try)."""
+    return CAP.write(name, data, admin_dir=CAPTURE_DIR)
+
+
+IF.WRITE = cap_write
+
+
 def capture(fl, month, html):
     """Read-only discovery for t1222 (soft time, captain, fits, FAR): every 6 h save the pot page,
     its links, one pairing detail page and any schedule page this session can already open, so
     the parsers get built from real HTML. Same session, GET only; never clicks or submits."""
     if time.time() - S.get("captured_at", 0) < 6 * 3600:
         return
+    if not cap_on():  # 1.6.2 (item 8): a pilot takes no captures (and loads no page for one) unless they are on
+        return
     S["captured_at"] = time.time()
     try:
         from bs4 import BeautifulSoup
         from urllib.parse import urljoin
-        os.makedirs(CAPTURE_DIR, exist_ok=True)
-        open(f"{CAPTURE_DIR}/pot_{month}.html", "w").write(html)
+        cap_write(f"pot_{month}.html", html)
         url = S["pot_urls"][month]
         links = [{"text": a.get_text(" ", strip=True)[:60], "href": urljoin(url, a["href"])}
                  for a in BeautifulSoup(html, "html.parser").find_all("a", href=True)]
-        json.dump(links, open(f"{CAPTURE_DIR}/links_{month}.json", "w"), indent=1)
+        cap_write(f"links_{month}.json", links)
         picks = [l for l in links if re.match(r"^[A-Z]\d{4}", l["text"])][:1]
         picks += [l for l in links if re.search(r"sched|my trips|calendar", l["text"], re.I)][:1]
         for l in picks:
@@ -3441,7 +3576,7 @@ def capture(fl, month, html):
                 log.info("capture: %s gave %s, skipped", l["text"], classify(page))
                 continue
             name = re.sub(r"[^A-Za-z0-9]+", "_", l["text"])[:30] or "page"
-            open(f"{CAPTURE_DIR}/{name}.html", "w").write(page)
+            cap_write(f"{name}.html", page)
         log.info("capture saved to %s: %d links, extra pages %s", CAPTURE_DIR, len(links),
                  [l["text"] for l in picks])
     except Exception as e:
@@ -3475,7 +3610,7 @@ def pay_settings():
     pilot's prefs.json first (pref_get: None on any other instance)."""
     today = local_now().date().isoformat()
     yr = pref_get("longevity_year")
-    if yr is None:
+    if yr is None and not portal_on():  # 1.6.2 (item 12): a portal pilot's HA helpers are gone: never read
         try:
             yr = int(float(ha_state(f"input_number.{T}_longevity_year")))
         except (TypeError, ValueError):
@@ -3486,6 +3621,8 @@ def pay_settings():
         except Exception:
             yr = None
     er_pref = pref_get("er_trips")
+    if er_pref is None and portal_on():
+        er_pref = ""
     er = [x for x in str((ha_state(f"input_text.{T}_er_trips") if er_pref is None else er_pref) or "").split(",") if x]
     return (PAY.rate_for(yr, today) if yr else None), yr, er
 
@@ -3644,8 +3781,7 @@ def trade_pages_scan(html, via):
         else:
             log.info("crew-to-crew trades page: the %s names none", via)
         try:  # a private copy of the menu that was scanned (/share, never git)
-            os.makedirs(CAPTURE_DIR, exist_ok=True)
-            open(f"{CAPTURE_DIR}/menu_trades.html", "w").write(re.sub(r"token=[0-9A-Za-z]+", "token=MASKED", html or ""))
+            cap_write("menu_trades.html", re.sub(r"token=[0-9A-Za-z]+", "token=MASKED", html or ""))
         except Exception:
             pass
     return found
@@ -3697,8 +3833,7 @@ def close_in_menu_read(fl):
     log.info("close-in folder not on the menu yet: %s", "; ".join(seen) or "nothing read")
     if keep:
         try:
-            os.makedirs(CAPTURE_DIR, exist_ok=True)
-            open(f"{CAPTURE_DIR}/menu_closein.html", "w").write(re.sub(r"token=[0-9A-Za-z]+", "token=MASKED", keep))
+            cap_write("menu_closein.html", re.sub(r"token=[0-9A-Za-z]+", "token=MASKED", keep))
         except Exception:
             pass
     return None, stop
@@ -3774,8 +3909,7 @@ def close_in_check(fl, pot_all, full=False, moved_from=()):
         log.info("close-in folder %s verified (found on the %s): its open time page reads; text: %s", b, ci.get("via"),
                  text[:300])
         try:  # a private copy for parser checks (/share, never git)
-            os.makedirs(CAPTURE_DIR, exist_ok=True)
-            open(f"{CAPTURE_DIR}/pot_closein_{b.split('.')[-1]}.html", "w").write(html)
+            cap_write(f"pot_closein_{b.split('.')[-1]}.html", html)
         except Exception:
             pass
     S["close_in_bcid"] = b
@@ -3828,11 +3962,10 @@ def _request_view(fl, b, ts):
             return {}
         text = visible_text(html)
         n = ("closein_" if b == S.get("close_in_bcid") else "") + b.split(".")[-1]
-        if not S.get("req_view_captured", {}).get(n):
+        if not S.get("req_view_captured", {}).get(n) and cap_on():
             S.setdefault("req_view_captured", {})[n] = True
             try:
-                os.makedirs(CAPTURE_DIR, exist_ok=True)
-                open(f"{CAPTURE_DIR}/otrequest_view_{n}.html", "w").write(html)
+                cap_write(f"otrequest_view_{n}.html", html)
                 log.info("request view %s captured; text: %s", ts, text[:600])
             except Exception:
                 pass
@@ -3915,10 +4048,9 @@ def requests_check(fl):
             text = visible_text(html)
             rows = SUB.parse_request_rows(text, html)
             n = ("closein_" if b == ci else "") + b.split(".")[-1]  # capture names; FW-0034: the close-in list apart
-            if not S.get("req_captured", {}).get(n):  # first read: a private copy for parser checks (/share)
+            if not S.get("req_captured", {}).get(n) and cap_on():  # first read: a private copy for parser checks
                 try:
-                    os.makedirs(CAPTURE_DIR, exist_ok=True)
-                    open(f"{CAPTURE_DIR}/otrequests_{n}.html", "w").write(html)
+                    cap_write(f"otrequests_{n}.html", html)
                     S.setdefault("req_captured", {})[n] = True
                     log.info("requests %s: %d rows, page captured; text: %s", b, len(rows), text[:600])
                 except Exception:
@@ -3928,8 +4060,7 @@ def requests_check(fl):
                 # 1.4.2: a row the parser does not know (Ryan's Nov 6 Trade was missed): keep a private copy of the
                 # latest such page (/share, never git) and say how many requests the page has against rows read
                 try:
-                    os.makedirs(CAPTURE_DIR, exist_ok=True)
-                    open(f"{CAPTURE_DIR}/otrequests_{n}_latest.html", "w").write(html)
+                    cap_write(f"otrequests_{n}_latest.html", html)
                 except Exception:
                     pass
                 if S.get("req_mismatch_logged", {}).get(n) != len(ids):
@@ -3966,7 +4097,7 @@ def requests_check(fl):
                 log.info("request %s %s %s", r["type"], r["status"], r["detail"][:80])
                 pub("event/request_decided", ev, retain=False)
                 note_decided(r, now)  # FW-0064: its schedule changes are this request's, not a trade's
-            if rows and rows[-1].get("ts") and not S.get("req_view_captured", {}).get(n):
+            if rows and rows[-1].get("ts") and not S.get("req_view_captured", {}).get(n) and cap_on():
                 _request_view(fl, b, rows[-1]["ts"])  # once: a private copy of a view page for parser checks
             for r in rows:
                 if r["status"] in SUB.DECIDED:
@@ -4028,10 +4159,9 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
             text = visible_text(html)
             rows = TB.parse_my_requests(text)
             odd = not rows and re.search(r"\btrade\b.*\bemp\b", text, re.I | re.S)
-            if not S.get("tbreq_captured", {}).get(n) or odd:
+            if (not S.get("tbreq_captured", {}).get(n) or odd) and cap_on():
                 try:
-                    os.makedirs(CAPTURE_DIR, exist_ok=True)
-                    open(f"{CAPTURE_DIR}/tb_myrequests_{n}{'_latest' if odd else ''}.html", "w").write(html)
+                    cap_write(f"tb_myrequests_{n}{'_latest' if odd else ''}.html", html)
                     S.setdefault("tbreq_captured", {})[n] = True
                     log.info("trade requests %s: %d rows, page captured; text: %s", n, len(rows), text[:600])
                 except Exception:
@@ -4249,8 +4379,7 @@ def tradeboard_check(fl, full=False):
                     log.info("tradeboard %s: no trip rows; %d A( calls; data: %s", n, len(calls),
                              flat[max(0, i - 300):i + 5000])
                     try:
-                        os.makedirs(CAPTURE_DIR, exist_ok=True)
-                        open(f"{CAPTURE_DIR}/tradeboard_{n}.html", "w").write(fh + "\n<!--OTHER-->\n" + html)
+                        cap_write(f"tradeboard_{n}.html", fh + "\n<!--OTHER-->\n" + html)
                     except Exception:
                         pass
                 continue
@@ -4430,16 +4559,139 @@ PILOT_CACHE_S = 6 * 3600
 PILOT_PAIRINGS_MAX = 8
 
 
+# ---------------------------------------------------------------- 1.6.2 (Release A item 11): a pilot's name lookup
+LOOKUP_MIN_LETTERS = 3  # of the last name
+LOOKUP_MAX = 5  # matches shown (name and seat); more is no list: type more of the name
+PICK_TTL_S = 1800  # a pick-list entry stays usable this long
+LOOKUP_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z '.-]*(?:,\s*[A-Za-z][A-Za-z '.-]*)?$")  # letters only: no wildcard
+AWARD_SEAT_RE = re.compile(r"\b[AB]\d{3}\s*(CA|FO)\b[^\n]{0,40}\bAWARD\b", re.I)
+_NAME_DIR = {"sig": None, "rows": []}
+PICK_SALT = os.urandom(8).hex()
+
+
+def _nkey(s):
+    return re.sub(r"[^A-Z]", "", str(s or "").upper())
+
+
+def name_directory():
+    """1.6.2 (item 11): [{emp, last, first, name, seat}] of every pilot on the files every instance already receives:
+    the shared seniority list (seniority.json: 'Last, First', seat) and the PBS award texts (<YYYY-MM>_award.txt: the
+    'SSSSS / EMP' line, the last name on it or on the next line, the seat from the award's title, e.g. 'A332FO ...
+    AWARD'). Never the admin's crew index or contact list. The list's record wins for an employee number on both.
+    Cached by the files' times."""
+    try:
+        awards = sorted(f for f in os.listdir(UPLOADS) if re.fullmatch(r"\d{4}-\d{2}_award\.txt", f))
+    except OSError:
+        awards = []
+    paths = [os.path.join(UPLOADS_SHARED, "seniority.json")] + [os.path.join(UPLOADS, f) for f in awards]
+    sig = tuple((p, os.path.getmtime(p)) for p in paths if os.path.exists(p))
+    if _NAME_DIR["sig"] == sig:
+        return _NAME_DIR["rows"]
+    rows = {}
+    for f in reversed(awards):  # the newest award first
+        try:
+            lines = open(os.path.join(UPLOADS, f), errors="replace").read().split("\n")
+        except OSError:
+            continue
+        m = AWARD_SEAT_RE.search("\n".join(lines[:40]))
+        seat = m.group(1).upper() if m else ""
+        for i, ln in enumerate(lines):
+            g = SEN.AWARD_PILOT_RE.match(ln)
+            if not g:
+                continue
+            emp = g["emp"].lstrip("0")
+            name = SEN._award_name(g["rest"]) or (SEN._award_name(lines[i + 1]) if i + 1 < len(lines) else "")
+            if emp and name and emp not in rows:
+                last, _, first = (x.strip() for x in name.partition(","))
+                rows[emp] = {"emp": emp, "last": last.title(), "first": first.title(), "seat": seat}
+    for k, rec in ((seniority_data() or {}).get("pilots") or {}).items():
+        for r in [rec] + list(rec.get("also") or []):
+            name = str(r.get("name") or "")
+            last, _, first = (x.strip() for x in name.partition(","))
+            if k and last:
+                rows[k] = {"emp": k, "last": last.title(), "first": first.title(),
+                           "seat": str(r.get("seat") or (rows.get(k) or {}).get("seat") or "").upper()[:2]}
+    out = [dict(r, name=f"{r['last']}, {r['first']}".strip(" ,")) for r in rows.values()]
+    _NAME_DIR.update(sig=sig, rows=out)
+    return out
+
+
+def name_lookup(q):
+    """1.6.2 (item 11): (matches, why) for a typed name on a pilot instance: at least LOOKUP_MIN_LETTERS letters of
+    the last name, letters only (no wildcard, no listing), 'Last' or 'Last, First'. A last name that matches exactly
+    wins over longer ones that start with it. why is '' or the reason no list is given."""
+    if not LOOKUP_NAME_RE.fullmatch(q):
+        return [], "Type letters only: a last name, or Last, First (or the employee number)."
+    last, _, first = (x.strip() for x in q.partition(","))
+    lk, fk = _nkey(last), _nkey(first)
+    if len(lk) < LOOKUP_MIN_LETTERS:
+        return [], f"Type at least {LOOKUP_MIN_LETTERS} letters of the last name (or the employee number)."
+    rows = name_directory()
+    hits = [r for r in rows if _nkey(r["last"]).startswith(lk)]
+    exact = [r for r in hits if _nkey(r["last"]) == lk]
+    hits = exact or hits
+    if fk:
+        hits = [r for r in hits if not r["first"] or _nkey(r["first"]).startswith(fk)]
+    hits.sort(key=lambda r: (r["name"], r["emp"]))
+    if not hits:
+        return [], (f"No pilot named '{q}' on the award or seniority list on file. Type the employee number."
+                    if rows else "No award or seniority list is on file to look names up in. Type the employee number.")
+    if len(hits) > LOOKUP_MAX:
+        return [], (f"More than {LOOKUP_MAX} pilots match '{q}'. Type more of the last name, or Last, First, or the "
+                    "employee number.")
+    return hits, ""
+
+
+def pick_id(emp):
+    """1.6.2: the opaque id a pick-list entry carries instead of the employee number (this process only)."""
+    return hashlib.sha256(f"{PICK_SALT}|{emp}".encode()).hexdigest()[:12]
+
+
+LOOKUP_WAIT_STATES = ("paused", "yielded", "backoff", "needs_settings")
+
+
 def pilot_cmd(payload):
     """MQTT flight_watcher/pilot/set {"emp": "10001", "name": "..."}: show that pilot's current month on the
     dashboard. Served from a 6 h cache when fresh, else read on the next check (Schedule Lookup + the
-    pairing pages, GET only)."""
+    pairing pages, GET only). 1.6.2 (item 11): on a pilot instance a name is looked up only on the award and
+    seniority list files (name_lookup: 3 letters at least, at most 5 matches, name and seat; each match carries an
+    opaque 'pick' id, never the employee number, and {"pick": id} runs it); '#10001' is an employee number."""
     try:
         d = json.loads(payload)
         emp = re.sub(r"\D", "", str(d.get("emp") or ""))
     except (ValueError, AttributeError):
         d, emp = {}, ""
-    q = str(d.get("q") or "").strip()
+    if not isinstance(d, dict):
+        d = {}
+    q = str(d.get("q") or "").strip()[:80]
+    if ROLES.role(INSTANCE) == ROLES.PILOT and not emp:
+        if d.get("pick"):
+            p = (S.get("pilot_picks") or {}).get(str(d["pick"]))
+            if not p or time.time() - float(p.get("at") or 0) > PICK_TTL_S:
+                pub_pilot({"emp": "", "name": str(d.get("name") or "")[:60], "matches": [], "month": "", "days": [],
+                           "items": [], "totals": {}, "updated": "", "fetched": "", "at": now_iso(),
+                           "status": "That pick list is old: type the name again."})
+                return
+            emp, d["name"] = p["emp"], p["name"]
+        elif q:
+            digits = re.sub(r"[#\s]", "", q)
+            if digits.isdigit():
+                emp = digits
+            else:
+                hits, why = name_lookup(q)
+                if len(hits) == 1:
+                    emp, d["name"] = hits[0]["emp"], hits[0]["name"]
+                else:
+                    picks = {pick_id(h["emp"]): {"emp": h["emp"], "name": h["name"], "at": time.time()} for h in hits}
+                    S["pilot_picks"] = picks
+                    save_state(S)
+                    pub_pilot({"emp": "", "name": q, "at": now_iso(),
+                               "status": why or f"{len(hits)} pilots match '{q}', pick one",
+                               "matches": [{"pick": k, "name": v["name"], "pos": h["seat"]}
+                                           for (k, v), h in zip(picks.items(), hits)],
+                               "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
+                    return
+        q = ""
     if not emp and q:  # 0.8.2 (Ryan): free text: an employee number, or a name from the crew directory
         if q.isdigit():
             emp = q
@@ -4470,8 +4722,16 @@ def pilot_cmd(payload):
         save_state(S)
         log.info("pilot %s: schedule served from cache", emp)
         return
+    m = S.get("machine") or ""
+    if ROLES.role(INSTANCE) == ROLES.PILOT and (m in LOOKUP_WAIT_STATES or m.startswith("stopped")):
+        # 1.6.2 (item 11): say why it waits, instead of a loading line that never ends (pilot_req is kept)
+        pub_pilot({"emp": emp, "name": d.get("name") or "", "month": "", "days": [], "items": [], "totals": {},
+                   "updated": "", "fetched": "", "at": now_iso(),
+                   "status": f"waiting: your Watcher is {m.replace('_', ' ')}; this lookup runs on its next FLICA check"})
+        log.info("pilot %s: schedule requested (waits: %s)", emp, m)
+        return
     pub_pilot({"emp": emp, "name": d.get("name") or "", "status": "loading", "month": "", "days": [], "items": [],
-                           "totals": {}, "updated": "", "fetched": ""})
+                           "totals": {}, "updated": "", "fetched": "", "at": now_iso()})
     log.info("pilot %s: schedule requested", emp)
     if ROLES.role(INSTANCE) == ROLES.ADMIN:  # 1.6.2: a pilot's lookup waits for his next check (no extra FLICA check)
         WAKE.set()
@@ -4491,11 +4751,12 @@ def pilot_check(fl):
                                  "this lookup runs then"})
         return False
     S.pop("pilot_paused_said", None)
-    if not S.get("cm_prompt_captured"):  # 0.8.4: does FLICA's Schedule Lookup prompt offer a name search? Save it once.
+    # 0.8.4: does FLICA's Schedule Lookup prompt offer a name search? Save it once. 1.6.2 (item 8): only while this
+    # instance takes captures (a pilot loads no page just to save it), and into its own folder (it was the admin's)
+    if not S.get("cm_prompt_captured") and cap_on():
         try:
             html = fl.fetch(f"{BASE}/full/cmschedules.cgi?Prompt=1&SchBrowser=1")
-            os.makedirs(IF.CAPTURE_DIR, exist_ok=True)
-            open(f"{IF.CAPTURE_DIR}/cmschedules_prompt.html", "w").write(html or "")
+            cap_write("cmschedules_prompt.html", html or "")
             log.info("schedule lookup prompt page saved (%d chars): %s", len(html or ""), visible_text(html)[:200])
             S["cm_prompt_captured"] = True
             save_state(S)
@@ -4779,7 +5040,9 @@ def pub_pilot(payload):
         marks = CI.overlap_marks(DB.get(CREW_OVERLAP_KEY) or {}, rows).get(emp) or {}  # FW-0059
         trips = CI.pilot_trips(insts, mine, month, first, rows, pkg_details_for, end, marks) if emp else []
         payload = {**payload, "reconstructed": trips,
-                   "reconstructed_coverage_pct": CI.coverage(insts, rows, None, first, end)[2],
+                   # 1.6.2 (item 11): no coverage on a pilot (no crew index runs there: only the crew lists of pages
+                   # his own Watcher read), so the card shows no 'Crew index ... 0% of trips read' line
+                   "reconstructed_coverage_pct": CI.coverage(insts, rows, None, first, end)[2] if has("crew_index") else None,
                    "reconstructed_month": month, "reconstructed_from": start, "reconstructed_to": end}
         payload.pop("contact", None)
         ct = contact_for(emp, payload.get("name") or "") if emp else None
@@ -4793,7 +5056,7 @@ def pub_pilot(payload):
                 log.info("pilot lookup: pay line skipped: %s", e)
     except Exception as e:
         log.info("pilot lookup: crew index skipped: %s", e)
-        payload = {**payload, "reconstructed": [], "reconstructed_coverage_pct": 0.0}
+        payload = {**payload, "reconstructed": [], "reconstructed_coverage_pct": 0.0 if has("crew_index") else None}
         emp = re.sub(r"\D", "", str(payload.get("emp") or ""))
         ct = contact_for(emp, payload.get("name") or "") if emp else None
         if ct:
@@ -5820,9 +6083,8 @@ def _charter_scan(ct):
     sess.headers["User-Agent"] = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
                                   "(KHTML, like Gecko) Chrome/130.0 Safari/537.36")
     def capture(name, html):  # 0.7.3: first pages saved privately (never committed) to check the parser
-        try:
-            os.makedirs(IF.CAPTURE_DIR, exist_ok=True)
-            open(f"{IF.CAPTURE_DIR}/ctweb_{name}.html", "w").write(html or "")
+        try:  # 1.6.2 (item 8): this instance's folder and policy (a pilot's were landing in the admin's folder)
+            cap_write(f"ctweb_{name}.html", html or "")
         except Exception as e:
             log.info("charter capture skipped: %s", e)
     sc = CH.Scanner(sess, u, p, log, sleep=lambda: time.sleep(random.uniform(1.0, 2.5)), capture=capture)
@@ -6625,6 +6887,8 @@ def pref_cmd(payload):
             d = prefs_read()
             d.setdefault("values", {})[key] = v
             d.setdefault("updated", {})[key] = now_iso()
+            if key in (d.get("unconfirmed") or []):  # 1.6.2: the pilot set (or kept) it: no longer flagged
+                d["unconfirmed"] = [k for k in d["unconfirmed"] if k != key]
             _prefs_save(d)
     except OSError as e:  # never reaches paho's thread
         log.info("pref %s not saved: %s", key, type(e).__name__)
@@ -6635,58 +6899,62 @@ def pref_cmd(payload):
     return True
 
 
-def prefs_seed():
-    """Until it has once run to the end (prefs.json 'seeded'): the HA helpers' current values (the ones this pilot's
-    dashboard set) become its first prefs, each only within bounds and only for a key pref/set has not set already.
-    A helper HA answers 404 for is missing: nothing to seed for it. The ER list (an input_text, type text) reading
-    'unknown' was never set (HA keeps a never-set input_text 'unknown' for good, across restarts) and seeds as the
-    empty list. When HA does not answer for every helper (down, a 5xx, 'unavailable', or a number helper still
-    'unknown' while HA loads), nothing is written (logged once) and the next export sweep tries again
-    (portal_export_once), so an HA restart during the first portal start never uses the seed up empty.
-    Returns how many were taken (None when it did not run to the end, or already had)."""
-    if not portal_on() or prefs_read().get("seeded"):
+PREF_FLAG_KEYS = ("federal_tax_pct", "state_tax_pct", "longevity_year")  # the numbers a never-set helper left at its min
+SEED_NEAR_S = 5  # 1.6.0's seed stamped each value a few microseconds apart from 'seeded'
+
+
+def _iso_ts(v):
+    try:
+        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        return (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).timestamp()
+    except (TypeError, ValueError):
         return None
-    vals = {}
-    for key, spec in ROLES.PREF_KEYS.items():
-        code, d = ha_state_full(ROLES.pref_entity(key, T))
-        if code == 404:
-            continue
-        raw = d.get("state") if code == 200 and isinstance(d, dict) else None
-        if raw == "unknown" and spec["type"] == "text":
-            raw = ""  # never set: no ER trips, on the portal and in the Watcher's own pay line alike
-        if not isinstance(raw, str) or raw in ("unknown", "unavailable"):
-            portal_once("prefs_seed", "portal prefs not seeded yet: Home Assistant did not answer for every helper "
-                                      "(tried again on the next sweep)")
-            return None
-        try:
-            vals[key] = ROLES.pref_value(key, raw if key == "er_trips" else float(raw))
-        except (TypeError, ValueError, OverflowError):
-            pass
+
+
+def prefs_seed():
+    """1.6.2 (Release A item 12): the HA helpers are never read any more (a portal pilot's were deleted with his HA
+    dashboard; his prefs come only from pref/set). What the 1.6.0 one-time seed copied from helpers that were never set
+    (an input_number starts at its minimum: federal 0 %, state 0 %, longevity year 1) is flagged once (prefs.json
+    'checked'): a number pref at its minimum whose time is the seed's and that no pref/set changed since goes into
+    'unconfirmed'. It is kept, and the schedule card says 'Set your tax and longevity in Pay settings' until a pref/set
+    (or the card's Keep these) confirms it. Returns the keys flagged (None when there was nothing to do)."""
+    if not portal_on():
+        return None
     with PREFS_LOCK:
         d = prefs_read()
-        if d.get("seeded"):
+        if d.get("checked"):
             return None
-        have, upd = d.setdefault("values", {}), d.setdefault("updated", {})
-        took = [k for k in vals if k not in have]  # a pref/set saved before the seed wins
-        for k in took:
-            have[k], upd[k] = vals[k], now_iso()
-        d["seeded"] = now_iso()
+        vals, upd, seeded = d.get("values") or {}, d.get("updated") or {}, _iso_ts(d.get("seeded"))
+        took = []
+        for key in PREF_FLAG_KEYS:
+            t = _iso_ts(upd.get(key))
+            try:
+                at_min = float(vals.get(key)) == float(ROLES.PREF_KEYS[key]["min"])
+            except (TypeError, ValueError):
+                at_min = False
+            if seeded is not None and t is not None and at_min and abs(t - seeded) <= SEED_NEAR_S:
+                took.append(key)
+        d["unconfirmed"] = sorted(set(d.get("unconfirmed") or []) | set(took))
+        d["checked"] = now_iso()
         _prefs_save(d)
-    TAX["pct"] = None  # the pay line's tax % is read again
-    log.info("portal prefs seeded from the HA helpers (%d of %d)", len(took), len(ROLES.PREF_KEYS))
-    for k in took:
-        portal_dirty(ROLES.pref_entity(k, T))
-    return len(took)
+    if took:
+        log.info("portal prefs: %d copied from never-set HA helpers flagged for the pilot to set", len(took))
+        for k in took:
+            portal_dirty(ROLES.pref_entity(k, T))
+    return took
 
 
 def pref_states():
     """The pref helpers as state.json shows them, from prefs.json (the HA helpers are not read for these)."""
     d = prefs_read()
     vals, upd = d.get("values") or {}, d.get("updated") or {}
+    flag = set(d.get("unconfirmed") or [])
     out = {}
     for key, spec in ROLES.PREF_KEYS.items():
         v = pref_get(key) if key in vals else None
         attrs = {"friendly_name": key.replace("_", " ").capitalize()}
+        if key in flag and v is not None:
+            attrs["unconfirmed"] = True  # 1.6.2 (item 12): copied from a never-set helper; the card asks him to set it
         if spec["type"] == "number":
             st = "unknown" if v is None else str(float(v))
             attrs.update({"min": spec["min"], "max": spec["max"], "step": spec["step"], "mode": "box"})
@@ -6959,9 +7227,9 @@ def portal_export_once(full=None, now=None):
         retry[eid] = (retry[eid][0], None)
     if full:
         try:
-            prefs_seed()  # returns at once once it has run to the end; until then each sweep tries again
+            prefs_seed()  # 1.6.2: the one-time flag of never-set helper values (no HA read); at once once done
         except OSError as e:
-            portal_once("prefs_seed_save", "portal prefs not seeded: %s", type(e).__name__)
+            portal_once("prefs_seed_save", "portal prefs not checked: %s", type(e).__name__)
     # 1.6.2 (Release A): the list files first, then the manifest when the file set changed, then the state: a state that
     # names a new rev never points at a file not written yet (a card that fetched the old one never asked again)
     if files and portal_export_files():
@@ -7056,15 +7324,20 @@ def spool_thread():
 
 
 def ntfy_start():
-    """An ntfy sender when this portal pilot saved a usable topic and token (sealed settings), else None."""
+    """An ntfy sender when this portal pilot saved a usable topic (sealed settings), else None. 1.6.2 (item 9, Ryan:
+    topic-only is allowed): the token is optional; without one each push carries only the pairing, the date and the
+    fit (ntfy.plain_text). A saved topic too easy to guess (ntfy.topic_refusal) keeps ntfy off."""
     c = load_creds()
-    topic, token = c.get("ntfy_topic"), c.get("ntfy_token")
-    if not topic or not token:
+    topic, token = c.get("ntfy_topic"), c.get("ntfy_token") or ""
+    if not topic:
         return None
     if not NT.valid(topic, token):
-        log.info("ntfy off: the saved topic or token is not usable")
+        log.info("ntfy off: the saved topic or token is not usable" + (
+            " (a topic needs at least 24 letters and digits: generate a new one on Settings)"
+            if NT.topic_refusal(topic) else ""))
         return None
-    log.info("ntfy on for this pilot's portal events")
+    log.info("ntfy on for this pilot's portal events (%s)", "with an access token" if token else
+             "topic only: pairing, date and fit in each push")
     return NT.Ntfy(topic, token, PORTAL_ORIGIN, log=log.info)
 
 
@@ -7093,7 +7366,7 @@ def portal_start(threads=True):
     try:
         prefs_seed()
     except OSError as e:
-        log.info("portal prefs not seeded: %s", type(e).__name__)
+        log.info("portal prefs not checked: %s", type(e).__name__)
     EXPORT["ntfy"] = ntfy_start()
     log.info("pilot portal on: contract %d, export to %s", ROLES.CONTRACT, out)
     if threads:

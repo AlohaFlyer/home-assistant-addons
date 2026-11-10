@@ -27,6 +27,9 @@ const RATE_TABLE = [
   [266.03, 276.67, 287.74, 299.24, 308.22], [270.00, 280.80, 292.03, 303.71, 312.82], [273.62, 284.56, 295.95, 307.78, 317.02]];
 const rateFor = (year, iso) => { let i = 0; RATE_DATES.forEach((d, k) => { if (iso >= d) i = k; }); return RATE_TABLE[Math.min(12, Math.max(1, year)) - 1][i]; };
 // Longevity year: year 1 from the DOH, a new year on each anniversary (PWA 3.B.1, 3.D.2); pay.doh_year counts the same way
+// 1.6.2 (item 12): the pay settings the Watcher may flag as copied from never-set helpers (attribute unconfirmed)
+const PAY_PREFS = ["input_number.flight_watcher_federal_tax_pct", "input_number.flight_watcher_state_tax_pct", "input_number.flight_watcher_longevity_year"];
+const PAY_PREF_LABEL = { [PAY_PREFS[0]]: "federal tax", [PAY_PREFS[1]]: "state tax", [PAY_PREFS[2]]: "longevity year" };
 const dohYear = (iso, doh) => { const [a, b] = [doh || DOH, iso].map((s) => String(s).slice(0, 10).split("-").map(Number)); return b[0] - a[0] - (b[1] < a[1] || (b[1] === a[1] && b[2] < a[2]) ? 1 : 0) + 1; };
 const hrs = (t) => { const mm = /^(\d+):(\d{2})$/.exec(String(t || "").trim()); return mm ? Number(mm[1]) + Number(mm[2]) / 60 : null; };
 const usd = (v) => (v == null ? "" : "$" + Math.round(v).toLocaleString("en-US"));
@@ -646,8 +649,11 @@ class FlightWatcherScheduleCard extends HTMLElement {
     }
     const upd = awd0 ? "" : st && st.attributes ? (st.attributes.updated || "") : "";
     // 1.6.2: the award label and the read status sit above the grid (or the 'No schedule' line)
+    // 1.6.2 (item 12): pay settings copied from never-set helpers (0 %, 0 %, year 1) are flagged, never silently used
+    const unconf = PAY_PREFS.filter((e) => ((S[e] || {}).attributes || {}).unconfirmed === true);
     const shead = (awd0 ? `<div class="awl">Awarded line from the award file. FLICA schedule not read yet.</div>` : "") +
-      (rsLine ? `<div class="rsl">${this._esc(rsLine)}</div>` : "");
+      (rsLine ? `<div class="rsl">${this._esc(rsLine)}</div>` : "") +
+      (unconf.length ? `<div class="unc ubn">Set your tax and longevity in Pay settings (below): ${unconf.map((e) => PAY_PREF_LABEL[e]).join(", ")} ${unconf.length > 1 ? "are" : "is"} not set yet; pay is estimated with them as shown.</div>` : "");
     const sel = (lo, hi, step, cur, suf) => { const o = []; for (let v = lo; v <= hi + 1e-9; v += step) { const r = Math.round(v * 100) / 100; o.push(`<option value="${r}"${Math.abs(r - cur) < 1e-9 ? " selected" : ""}>${r}${suf}</option>`); } return o.join(""); };
     this.shadowRoot.innerHTML = `<style>
       ha-card{padding:10px 8px 12px;font-size:12.5px;line-height:1.25;box-sizing:border-box}
@@ -739,6 +745,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .info::after{content:"tap to close";display:block;margin-top:6px;font-size:10px;color:var(--secondary-text-color);text-align:right}
       .none{text-align:center;color:var(--secondary-text-color);padding:12px}
       .awl,.rsl{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.awl{font-weight:600}.rsl{color:var(--warning-color,#b26a00)}
+      .unc{color:var(--warning-color,#b26a00);font-weight:700}.ubn{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.set .keep{min-height:44px;padding:6px 12px;font:inherit;border-radius:6px;cursor:pointer}
     </style><ha-card><div class="frame"><div class="hd2"><span class="lock ${this._locked ? "shut" : "open"}" title="${this._locked ? `Locked: ${this._marks()} cannot be changed by a tap. Tap to unlock.` : `Unlocked: taps change ${this._marks()}. Tap to lock.`}">${this._locked ? "&#128274;" : "&#128275;"}</span><span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${upd ? `<span class="u">updated ${this._esc(upd)}</span>` : ""}</div>${shead}${vhtml}${body}</div>${panel}
     <div class="info"></div>
     <details class="leg"><summary>Key</summary><table class="lt">
@@ -756,10 +763,11 @@ class FlightWatcherScheduleCard extends HTMLElement {
     <tr><td>Ideas</td><td>Tag-ons after your release with legal rest, <b>O</b> = in open time, <b>T</b> = on the Tradeboard. Orange = better trip for a marked one. Tap for details.</td></tr>
     <tr><td>Day</td><td>Blue = weekend, yellow = no school at HPA (from the school year file), hatched yellow = US or Hawaii holiday with no school file loaded. Tap a day to block it (&#8856;), tap again to unblock; VAC days are always &#8856; and cannot be changed. The lock at the top left (&#128274;) freezes ${admin ? "availability, trade and drop" : "availability and trade"} taps. All times HNL.</td></tr>
     </table>${note ? `<div>${note}</div>` : ""}</details>
-    <details class="set"><summary>Pay settings</summary>
+    <details class="set"${unconf.length ? " open" : ""}><summary>Pay settings${unconf.length ? " (not set yet)" : ""}</summary>
       <span>Federal tax <select data-e="input_number.flight_watcher_federal_tax_pct">${sel(0, 45, 0.5, fed, "%")}</select></span>
       <span>State tax <select data-e="input_number.flight_watcher_state_tax_pct">${sel(0, 15, 0.25, stt, "%")}</select></span>
       <span>Longevity year <select data-e="input_number.flight_watcher_longevity_year">${sel(1, 12, 1, lyr, "")}</select></span>
+      ${unconf.length ? `<div class="r unc">These came from settings that were never set. Pick your own, or <button type="button" class="keep">Keep these</button></div>` : ""}
       <div class="r">Rate $${RATE.toFixed(2)}/credit h: A330 PAX FO, PWA 3.D.6, year ${lyr} ${doh ? `(DOH ${doh} = year ${dohYear(today, doh)}, table caps at 12)` : "(set your longevity year here; table caps at 12)"}, effective ${RATE_DATES.filter((x) => x <= today).pop()}. Net = gross less federal and state only; estimate.</div>
     </details>${chtml}</ha-card>`;
     this._wire();
@@ -774,6 +782,15 @@ class FlightWatcherScheduleCard extends HTMLElement {
   _wire() {
     this.shadowRoot.querySelectorAll(".set select").forEach((inp) => {
       inp.addEventListener("change", () => { this._h.callService("input_number", "set_value", { entity_id: inp.dataset.e, value: parseFloat(inp.value) }); });
+    });
+    const keep = this.shadowRoot.querySelector(".set .keep");  // 1.6.2: confirm the flagged values as they are
+    if (keep) keep.addEventListener("click", () => {
+      this.shadowRoot.querySelectorAll(".set select").forEach((inp) => {
+        const st = this._h.states[inp.dataset.e];
+        if (st && st.attributes && st.attributes.unconfirmed === true) this._h.callService("input_number", "set_value", { entity_id: inp.dataset.e, value: parseFloat(inp.value) });
+      });
+      keep.disabled = true;
+      keep.textContent = "Kept";
     });
   }
   getCardSize() { return 12; }

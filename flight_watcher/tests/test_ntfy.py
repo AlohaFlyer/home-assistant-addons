@@ -17,7 +17,7 @@ import portal as PT
 import sealed as SEAL
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TOPIC, TOKEN = "fw-test-topic-0001", "tk_faketokenfaketokenfaketoken0"
+TOPIC, TOKEN = "fw-test-topic-0001-synthetic00", "tk_faketokenfaketokenfaketoken0"
 NAME = "Doe, Jane"
 
 
@@ -309,11 +309,11 @@ jp.hass = hass("sensor.flight_watcher_pilot2_settings", { has_password: false, n
 const after = jp.shadowRoot.innerHTML.includes('data-k="ntfy_token"') && jp.shadowRoot.innerHTML.includes('data-k="ntfy_topic"');
 // plain http (no WebCrypto here): the ntfy fields are dropped, the rest goes
 const set = (card, k, v) => card.shadowRoot._inputs.find((i) => i.dataset.k === k).value = v;
-set(jp, "ntfy_topic", "fw-test-topic-0001"); set(jp, "ntfy_token", "tk_faketokenfaketokenfaketoken0"); set(jp, "password", "pw-x");
+set(jp, "ntfy_topic", "fw-test-topic-0001-synthetic00"); set(jp, "ntfy_token", "tk_faketokenfaketokenfaketoken0"); set(jp, "password", "pw-x");
 await jp._save();
 const sent = calls.map((c) => c.payload);
 // only ntfy fields: nothing goes, and the card says why
-set(jp, "ntfy_topic", "fw-test-topic-0001"); set(jp, "ntfy_token", "tk_faketokenfaketokenfaketoken0");
+set(jp, "ntfy_topic", "fw-test-topic-0001-synthetic00"); set(jp, "ntfy_token", "tk_faketokenfaketokenfaketoken0");
 await jp._save();
 console.log(JSON.stringify({ ryan: ryan.shadowRoot.innerHTML.includes("ntfy"), before, after, sent, n: calls.length,
   msg: jp.shadowRoot.getElementById("msg").innerHTML }));

@@ -62,6 +62,63 @@ fastest hunt 120 s. Built, not deployed.
 - Tests: `test_flica_gate.py`, `test_release_a_flica.py`, `test_release_a_schedule_card.py`; `test_schedule_backoff`,
   `test_watcher_state`, `test_trades`, `test_requests`, `test_portal_spool` follow the changes above.
 
+Release A, group 2 (a pilot's data paths). Ryan's decision of 2026-11-10: ntfy topic-only is allowed, with the
+guardrails below. Built, not deployed.
+
+- Page captures per instance (`captures.py`, new; Dockerfile copies it). The admin's are unchanged: his own pages, as
+  read, in /share/flight_watcher/captures. A pilot takes none by default, and loads no FLICA page only to save it (the
+  6-hourly pot capture's extra pages, the request view probe, the Schedule Lookup prompt probe), and never writes into
+  the admin's folder (CrewTrac `ctweb_*`, `cmschedules_prompt` and inflt's `cmschedule_<emp>` used to land there:
+  `IF.CAPTURE_DIR` and every capture site go through `cap_write`; inflt has a `WRITE` hook). Debug captures of a pilot
+  run only while `/share/flight_watcher/<pilot>/captures_on` exists and is under 24 h old (the admin creates it by hand;
+  one log line when they turn on or off): then session tokens, hidden form values, crew names (crewidx.crew_mask style),
+  employee numbers and the pilot's own logins and name are masked in the page and the file name; the files go only to
+  `/share/flight_watcher/<pilot>/captures` (the name checked with `roles.NAME_RE` and the reserved words, the path
+  resolved and kept inside, no symlink followed, the folder 0700, each file 0600); files there older than 7 days are
+  deleted (checked at most hourly, also while captures are off). A pilot's login screenshot (`last_login.png`) is
+  never taken (a picture cannot be masked).
+- ntfy topic-only (`ntfy.py`): the access token is optional. A topic must be at least 24 characters with both letters
+  and digits (`ntfy.topic_refusal`); an unusable topic or token refuses the whole sealed save with the reason ("refused:
+  ntfy topic: ...; nothing was saved"), never the value. A topic-only push carries only the kind, the pairing number,
+  the date and the fit (`ntfy.plain_text`): no crew name, employee number, URL (no Click header), report time, rule id
+  or ticket text. With a token the 1.6.0 push is unchanged. The manifest says `ntfy` true with a usable topic alone; a
+  topic saved before 1.6.2 that is too easy to guess keeps ntfy off and the Settings card says so
+  (`ntfy_topic_ok`, a boolean; the topic itself is never logged, never in settings/state, MQTT or state.json). Settings
+  card: before a first topic it explains that anyone who learns the topic can read the alerts on ntfy.sh for about 12 h
+  and asks for a tick; Generate (Rotate once one is saved) makes a 32-character random topic with
+  `crypto.getRandomValues` (no modulo bias), shown once to subscribe to in the ntfy app and cleared after Save; a typed
+  topic under the rule is refused on the card too; Turn off phone alerts forgets the topic and token (sealed
+  `ntfy_off`). PORTAL_CONTRACT.md is unchanged (its section 6 still names the token; contract 1 needs no HOM change).
+- Recall/O75 (PWA 22.G.2): the pilot's seniority number comes from the PBS award of the month (or the newest before it)
+  by his own employee number, else the shared seniority list; a typed number wins (`recall_me`, `sen_source` on the
+  sensor: typed, award YYYY-MM, seniority list). recall/act `me.sen` takes only an int 1..99999 (null forgets the typed
+  one), `seat` only FO or CA; a list forwarded to a pilot never sets his `me`. No CCR draft and no recall_miss alert is
+  made while his seniority or his line for the row's days is not on file: the row is CHECK with `missing` (seniority or
+  line) and says so, and the card shows what is missing at the top. A draft not yet approved follows its row (rebuilt on
+  each check: a number or a line that came in later is in it). The narrative never prints None, says "an FO", and a
+  CHECK draft starts with what to check first. Card: the Hark hint only where Hark files (not on a pilot); day rows say
+  "Flight Ops did not post a list for this day." or "The posted list was empty."; "came in ... HST"; the seniority box
+  sends only a whole number 1 to 99999 (or blank), no seat, and is not redrawn while typed in.
+- Pilot name lookup on a pilot instance: names only from the award and seniority files every instance already receives
+  (`name_directory`; never the admin's crew index or contact list, nor his own crew directory); at least 3 letters of
+  the last name, letters only (no wildcard), at most 5 matches with name and seat; each match carries an opaque pick id
+  (`{"pick": id}` runs it) and the employee number shows only once a pilot is chosen; `#10001` is an employee number. A
+  lookup while his Watcher is paused, yielded, in back-off, waiting for settings or stopped says it waits. No crew index
+  coverage on a pilot (`reconstructed_coverage_pct` null: the "Crew index ... 0% of trips read" line is gone). Pilot
+  card: the header names the pilot asked for (never the sensor's previous one), a reply with no month shows its status
+  line with its time (HST), the loading line says when the Watcher reads it and, 2 minutes past that, gives the reason.
+  The admin's lookup is unchanged.
+- Prefs: a portal pilot's HA helpers (`input_*.flight_watcher_<pilot>_*`, James's were deleted) are never read: not by
+  the pay line (`tax_pct`, `pay_settings`: a pref not set is the code default) and not at the start (the 1.6.0 seed from
+  the helpers is gone; PORTAL_CONTRACT.md 5.3's seed sentence is left as is). Once (`prefs.json` checked), values that
+  seed copied from never-set helpers (at their minimum: federal 0 %, state 0 %, longevity year 1, stamped at the seed)
+  are flagged `unconfirmed`: kept, and the Schedule card says "Set your tax and longevity in Pay settings", opens Pay
+  settings and offers Keep these; a pref/set clears the flag.
+- Tests: `test_release_a_captures.py`, `test_release_a_ntfy.py`, `test_release_a_recall.py` (with
+  `release_a_recall_render.js`), `test_release_a_lookup.py` (with `release_a_pilot_render.js`),
+  `test_release_a_prefs_card.py`; `test_ntfy` (a 30-character test topic), `test_prefs` and `test_portal_export` (no
+  seed from the helpers), `test_crewtrac_stop` (per-instance capture folder) follow the changes above.
+
 ## 1.6.1
 
 Stage 0: stop retrying a login CrewTrac refused, and stop reading FLICA's schedule page every loop when it cannot be

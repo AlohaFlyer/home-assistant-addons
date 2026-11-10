@@ -1,4 +1,4 @@
-"""ntfy pushes for a pilot's portal (1.6.0, FW-0061).
+"""ntfy pushes for a pilot's portal (1.6.0, FW-0061; 1.6.2 topic-only, Ryan 2026-11-10).
 
 Loaded only on a pilot instance whose portal is on (option pilots[].portal) and only when that pilot has saved both an
 ntfy topic and an access token through the sealed Settings form (creds.json keys ntfy_topic, ntfy_token; never from a
@@ -10,6 +10,12 @@ Funnel origin. Dedupe on (kind, id), at most PER_HOUR pushes an hour, RETRIES tr
 topic are never logged: scrub() for this module's own lines, and a filter on urllib3's loggers for the request line
 it writes at log_level debug (which carries the URL path, so the topic), installed by the first real sender (never on
 the admin, which builds none).
+
+1.6.2 (Release A item 9, Ryan's decision): the access token is optional. With a topic only, anyone who learns the topic
+can read the pilot's alerts on ntfy.sh (it keeps them about 12 h), so: the topic must be hard to guess (topic_refusal:
+at least 24 characters with both letters and digits; the Settings card generates a 32-character random one), and a
+topic-only push carries only the pairing number, the date and the fit (plain_text): no crew name, employee number,
+URL (no Click header either), ticket text, report times or rule ids. With a token the 1.6.0 push is unchanged.
 """
 import collections
 import logging
@@ -24,6 +30,8 @@ import requests
 HOST = "https://ntfy.sh"
 TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{8,128}$")
+TOPIC_MIN = 24  # 1.6.2: a topic anyone could read if they guess it: long and mixed (the card makes 32 random)
+GEN_LEN = 32
 PER_HOUR = 30
 RETRIES = 3
 BACKOFF_S = (2, 4, 8)
@@ -65,9 +73,47 @@ def hide(*secrets):
             lg.addFilter(SCRUB)
 
 
-def valid(topic, token):
-    return bool(isinstance(topic, str) and TOPIC_RE.fullmatch(topic) and isinstance(token, str)
-                and TOKEN_RE.fullmatch(token))
+def topic_refusal(topic):
+    """Why a topic may not be used ('' when it may): ntfy's characters (A-Z a-z 0-9 _ -, at most 64, so it can never
+    change the host or the path), and 1.6.2: at least TOPIC_MIN characters with both letters and digits."""
+    if not isinstance(topic, str) or not TOPIC_RE.fullmatch(topic):
+        return "use only letters, digits, - and _ (at most 64)"
+    if len(topic) < TOPIC_MIN or not re.search(r"[A-Za-z]", topic) or not re.search(r"\d", topic):
+        return f"use at least {TOPIC_MIN} characters with both letters and digits (or Generate one)"
+    return ""
+
+
+def token_ok(token):
+    """1.6.2: the token is optional: none ('' or None) or one of TOKEN_RE."""
+    return token in (None, "") or bool(isinstance(token, str) and TOKEN_RE.fullmatch(token))
+
+
+def valid(topic, token=None):
+    return not topic_refusal(topic) and token_ok(token)
+
+
+# 1.6.2: what a topic-only push may say: the kind in words, the pairing number, the date and the fit, nothing else
+KIND_WORDS = {"new_pairing": "New pairing", "rule_match": "Rule match", "recall_miss": "Recall/O75 to check",
+              "request_decided": "Request decided", "schedule_changed": "Schedule changed", "charter": "Charter",
+              "hidden": "Hidden trip?", "needs_settings": "Flight Watcher needs your FLICA login",
+              "stopped_*": "Flight Watcher stopped"}
+PAIRING_RE = re.compile(r"^[A-Z]\d{4}[A-Z]?$")
+WHEN_RE = re.compile(r"^(?:\d{4}-\d{2}(?:-\d{2})?|\d{1,2}[A-Z]{3}(?:-\d{1,2}[A-Z]{3})?|[A-Z][a-z]{2} \d{1,2})$")
+FIT_RE = re.compile(r"^(?:Fits|Conflict|Check rest|Days off)(?: [A-Za-z0-9()+/.,:-]{1,24}){0,3}$")  # pot.fit_tag
+
+
+def plain_text(rec):
+    """(title, body) of a topic-only push from the event record's data: the kind in words, the pairing number (H1234),
+    the date and the fit, each only when it has its own shape (a name, a number or a URL never matches)."""
+    d = rec.get("data") if isinstance(rec.get("data"), dict) else {}
+    kind = str(rec.get("kind") or "")
+    pid = str(d.get("pairing") or "")
+    when = next((str(d[k]) for k in ("dates", "start", "date", "month") if WHEN_RE.fullmatch(str(d.get(k) or ""))), "")
+    fit = str(d.get("fit") or "")
+    title = " ".join(x for x in (KIND_WORDS.get(kind, "Flight Watcher"), pid if PAIRING_RE.fullmatch(pid) else "",
+                                 when) if x)
+    body = f"Fit: {fit}" if FIT_RE.fullmatch(fit) else "Open your Flight Watcher portal for the details."
+    return title, body
 
 
 def _ascii(s, n):
@@ -80,15 +126,15 @@ class Ntfy:
     """One pilot's ntfy sender. send(rec) posts one portal event record synchronously (tests); enqueue(rec) hands it
     to a worker thread so the Watcher's loop never waits on ntfy.sh."""
 
-    def __init__(self, topic, token, origin="", log=None, post=None, sleep=time.sleep, now=time.time):
+    def __init__(self, topic, token="", origin="", log=None, post=None, sleep=time.sleep, now=time.time):
         if not valid(topic, token):
             raise ValueError("ntfy topic or token not usable")
-        self._topic, self._token = topic, token
+        self._topic, self._token = topic, token or ""
         self.url = f"{HOST}/{topic}"
-        self.origin = origin or ""
+        self.origin = (origin or "") if self._token else ""  # 1.6.2: a topic-only push carries no URL (no Click)
         self.log = log or (lambda *a: None)
         if post is None:  # the real requests.post: urllib3 must not log the topic (a test's stub logs nothing)
-            hide(topic, token)
+            hide(topic, self._token)
         self._post = post or requests.post
         self.sleep, self.now = sleep, now
         self.sent = {}  # (kind, id) -> time
@@ -99,13 +145,21 @@ class Ntfy:
     def scrub(self, text):
         s = str(text)
         for secret in (self._token, self._topic):
-            s = s.replace(secret, "<hidden>")
+            if secret:
+                s = s.replace(secret, "<hidden>")
         return s
 
+    def text(self, rec):
+        """(title, body) as pushed: the event's own with a token (1.6.0), plain_text with a topic only (1.6.2)."""
+        if self._token:
+            return rec.get("title"), rec.get("body") or rec.get("title")
+        return plain_text(rec)
+
     def headers(self, rec):
-        h = {"Title": _ascii(rec.get("title"), 120) or "Flight Watcher",
-             "Priority": str(int(rec.get("priority") or 3)),
-             "Authorization": f"Bearer {self._token}"}
+        h = {"Title": _ascii(self.text(rec)[0], 120) or "Flight Watcher",
+             "Priority": str(int(rec.get("priority") or 3))}
+        if self._token:
+            h["Authorization"] = f"Bearer {self._token}"
         if rec.get("tags"):
             h["Tags"] = _ascii(rec["tags"], 60)
         if self.origin and rec.get("view"):
@@ -127,7 +181,7 @@ class Ntfy:
                 return "capped"
             self.sent[(kind, eid)] = now
             self.times.append(now)
-        body = str(rec.get("body") or rec.get("title") or "").encode("utf-8")
+        body = str(self.text(rec)[1] or "").encode("utf-8")
         why = ""
         for i in range(RETRIES):
             try:

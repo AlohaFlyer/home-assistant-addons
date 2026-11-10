@@ -9,6 +9,10 @@
 // still file a draft (sent, blocked, cancelled), a warning names the HOM task and Withdraw from Hark, Not a miss and
 // Mark filed wait for "I completed HOM task ... as skipped" (they send hom_cleared); no second request once HOM made a
 // task; Over 75 eligibility is answered per month (me.o75_months).
+// 1.6.2 (Release A item 10): the seniority # is a whole number 1 to 99999 (nothing else is sent; blank forgets the typed
+// one), its source is shown (typed, the award, the seniority list); a row whose seniority or line is not on file says
+// so and gets no CCR draft; the Hark hint only where Hark files (hark_files); day rows tell a list not posted from an
+// empty one; "came in" carries HST.
 // FW-0060 (1.4.7): every list day comes from recall_<key>.json under /local/ too; the sensor keeps the newest days that
 // fit HA's 16 KB recorder limit (and the counts over all of them), and its days win over the file's.
 // FW-0060: a sensor's full list from its file under /local/ (<url><file_key>.json, the pilot's own www folder). Fetched
@@ -43,7 +47,7 @@ class FlightWatcherRecallCard extends HTMLElement {
     const sig = st ? st.last_updated + JSON.stringify(st.attributes.me || {}) : "none";
     if (sig === this._sig) return;
     const ae = this.shadowRoot && this.shadowRoot.activeElement;  // never redraw under someone typing
-    if (ae && (ae.tagName === "TEXTAREA" || (ae.tagName === "INPUT" && ae.dataset.ccr !== undefined) || ae.tagName === "SELECT")) return;
+    if (ae && (ae.tagName === "TEXTAREA" || (ae.tagName === "INPUT" && (ae.dataset.ccr !== undefined || ae.dataset.me !== undefined)) || ae.tagName === "SELECT")) return;
     this._sig = sig;
     this._render(st);
   }
@@ -164,18 +168,33 @@ class FlightWatcherRecallCard extends HTMLElement {
     this.shadowRoot.innerHTML = `${css}<ha-card>
       ${this._bar(alert, false)}
       <div class="me"><b>Recall / Over 75</b>
-        <span>My seniority # <input type="number" data-me="sen" value="${this._e(me.sen ?? "")}"></span>
+        <span>My seniority # <input type="number" data-me="sen" min="1" max="99999" step="1" inputmode="numeric" value="${this._e(me.sen ?? "")}">${this._srcLine(a)}</span>
         <span><label><input type="checkbox" data-show="FO"${show.FO ? " checked" : ""}> FO</label> <label><input type="checkbox" data-show="CA"${show.CA ? " checked" : ""}> CA</label></span>
         <span><label>Over 75 in ${RC_MON[mm - 1]} (Reserve Run only, 22.G.2.d): <select data-o75="${this._e(this._m)}">${[["", "not set (CHECK)"], ["yes", "I was on reserve"], ["no", "not on reserve"]].map(([k, t]) => `<option value="${k}"${o75 === k ? " selected" : ""}>${t}</option>`).join("")}</select></label></span>
-        <span class="k">last list ${this._e(a.last || "none yet")}${a.received ? ` (came in ${this._e(this._hst(a.received))})` : ""}</span>
+        <span class="k">last list ${this._e(a.last || "none yet")}${a.received ? ` (came in ${this._e(this._hst(a.received))} HST)` : ""}</span>
         <button class="g" data-refresh${this._busy ? " disabled" : ""}>&#8635; ${this._busy ? "Refreshing..." : "Refresh"}</button>
         <span class="k" data-checked>${this._note ? `<span style="color:var(--error-color,#c62828)">${this._e(this._note)}</span>` : a.checked ? `checked ${this._e(this._hst(a.checked))} HST` : ""}</span>
         <span class="mp"><span class="nv" data-m="-1">&#8249;</span><b>${RC_MON[mm - 1]} ${my}</b><span class="nv" data-m="1">&#8250;</span>${nmiss ? `<span class="chip MISSED">${nmiss} missed</span>` : ""}</span></div>
+      ${this._needs(a, me)}
       <div class="k">Hark reads the daily HNL recall list from Flight Ops SharePoint and posts it here. Each award to a pilot junior to you is checked against your line as you held it that day (the schedule version in force then, not today's): open days, no blocked day, trip or vacation in the way (22.G.2.e first, 22.G.2.f/g after), FAR 117.25(e) 10 h rest, 117.25(b) 30 h free in 168 h, 117.23(b)(1) 100 h in 672 h, 117.23(c) FDP 60 h in 168 h and 190 h in 672 h, PWA 10.E.1.a 11 h domicile rest. Anything not on file makes it CHECK, never SHOULD HAVE BEEN YOU; so does an Over 75 row in a month you have not said whether you were on reserve.</div>
       ${rows || `<div class="day why">No recall lists on file for ${RC_MON[mm - 1]} ${my}.</div>`}
       <details style="margin-top:8px"><summary class="k">Paste a recall list (manual)</summary><textarea data-paste placeholder='{"date":"2026-11-04","rows":[{"kind":"recall","seat":"FO","pilot":"","sen":900,"pairing":"H3601"}]}'></textarea><button data-paste-go>Check this list</button></details>
     </ha-card>`;
     this._wire();
+  }
+  // 1.6.2: where the seniority # comes from, beside the box
+  _srcLine(a) {
+    const s = String(a.sen_source || "");
+    const m = /^award (\d{4})-(\d{2})$/.exec(s);
+    const t = s === "typed" ? "typed here" : m ? `from your ${RC_MON[+m[2] - 1]} ${m[1]} award` : s === "seniority list" ? "from the seniority list" : "";
+    return t ? ` <span class="k">${this._e(t)}</span>` : "";
+  }
+  // 1.6.2: what keeps rows at CHECK with no CCR draft (seniority first, then the line)
+  _needs(a, me) {
+    const out = [];
+    if (me.sen == null) out.push("Your seniority # is not on file: type it above (the number before your employee number on the award). Until then no row is judged against it and none gets a CCR draft or an alert.");
+    if (a.missing_line) out.push(`Your FLICA schedule is not on file for the days of ${a.missing_line} row${a.missing_line > 1 ? "s" : ""}: they stay CHECK, with no CCR draft or alert, until the Watcher has read it.`);
+    return out.map((t) => `<div class="hk bad">${this._e(t)}</div>`).join("");
   }
   _dayHtml(d, show, hark) {
     const vs = d.verdicts || [];
@@ -185,7 +204,12 @@ class FlightWatcherRecallCard extends HTMLElement {
     const tag = n("MISSED") ? `<span class="chip MISSED">${n("MISSED")} should have been you</span>` : "";
     const tag2 = n("POSSIBLE") ? `<span class="chip POSSIBLE">${n("POSSIBLE")} check</span>` : "";
     const quiet = !tag && !tag2 && file === "ok" ? `<span class="k">${vs.length ? "no miss" : "no rows"}</span>` : "";
-    const body = shown.length ? shown.map((v) => this._row(v, hark)).join("") : `<div class="row why">No ${["FO", "CA"].filter((k) => show[k]).join(" or ") || "seat"} Recall or Over 75 awards on this list.</div>`;
+    const seats = ["FO", "CA"].filter((k) => show[k]);
+    const none = file === "not posted" || !file ? "Flight Ops did not post a list for this day."
+      : file === "blank" ? "The posted list was empty."
+      : !seats.length ? "Tick FO or CA above to see the awards."
+      : `No ${seats.join(" or ")} Recall or Over 75 awards on this list.`;
+    const body = shown.length ? shown.map((v) => this._row(v, hark)).join("") : `<div class="row why">${none}</div>`;
     return `<details class="day" data-day="${this._e(d.date)}"${this._isOpen(d) ? " open" : ""}><summary><b>${this._e(this._day(d.date))}</b> <span class="k">list ${this._e(file || "not posted")}</span> ${tag}${tag2}${quiet}</summary>${body}</details>`;
   }
   _harkLine(act) {
@@ -227,7 +251,7 @@ class FlightWatcherRecallCard extends HTMLElement {
       ctl = `<div><span class="st">${this._e(RC_STATUS[s] || s)}</span>${act.ccr && s !== "filed" ? ` <span class="k">CCR ${this._e(act.ccr)}</span>` : ""}</div>
         ${this._harkLine(act)}${late}
         ${s === "new" ? `<button class="r" data-a="confirm" data-id="${id}">Yes, I missed this</button><button class="g" data-a="dismiss" data-id="${id}">Not a miss</button>` : ""}
-        ${edit ? `<div class="k">CCR narrative: edit until it is right, then approve. Nothing is filed until you approve it. Then Have Hark file this CCR sends the approved text to Hark, who files it on hal.alpa.org and sends back the CCR number; or file it yourself.</div><textarea data-n="${id}">${this._e(txt)}</textarea>
+        ${edit ? `<div class="k">${hark ? "CCR narrative: edit until it is right, then approve. Nothing is filed until you approve it. Then Have Hark file this CCR sends the approved text to Hark, who files it on hal.alpa.org and sends back the CCR number; or file it yourself." : "CCR narrative: edit until it is right, then approve. Nothing is filed for you. After you approve it, File it myself copies the text and opens hal.alpa.org."}</div><textarea data-n="${id}">${this._e(txt)}</textarea>
           <button data-a="approve" data-id="${id}" data-approve="${id}" data-st="${this._e(s)}">${differs ? "Re-approve edited narrative" : "Approve narrative"}</button>
           ${canHark ? `<button class="h" data-hark="${id}"${pend || differs ? " disabled" : ""}>${pend ? "Sending to Hark..." : "Have Hark file this CCR"}</button><div class="dn" data-diff="${id}"${differs ? "" : " hidden"}>Re-approve first: the box differs from what you approved.</div>` : ""}
           ${warn}
@@ -242,6 +266,7 @@ class FlightWatcherRecallCard extends HTMLElement {
       const hw = act.hark_alert || (RC_HARK.includes(act.was) && act.rid ? `Hark still has ${act.task_id ? `HOM task ${act.task_id}` : "the request"} for this CCR: complete it as skipped in HOM, or Hark files a CCR for a row that is no longer a miss.` : "");
       ctl = `<div class="k"><span class="st">superseded</span> CCR draft closed, no longer a miss (was ${this._e(RC_STATUS[act.was] || act.was || "new")}${act.ccr ? `, CCR ${this._e(act.ccr)}` : ""}). It comes back if the row turns into a miss again.</div>${hw ? `<div class="hw">${this._e(hw)}</div>` : ""}`;
     }
+    if (v.missing && !live) ctl += `<div class="dn">No CCR draft and no alert until ${v.missing === "seniority" ? "your seniority # is on file (type it above)" : "your FLICA schedule for these days is on file"}.</div>`;
     const lab = { MISSED: "SHOULD HAVE BEEN YOU", POSSIBLE: "CHECK", NO: "NO MISS" }[v.verdict] || v.verdict;
     return `<div class="row v${this._e(v.verdict)}"><span class="chip ${this._e(v.verdict)}">${this._e(lab)}</span><b>${this._e(this._kind(v))} ${this._e(v.pairing)}</b> ${this._e(v.seat)} to #${this._e(v.sen)} ${this._e(v.pilot)}
       <div class="why">${(v.why || []).map((w) => this._e(w)).join(" · ")}${(v.refs || []).length ? ` <i>(${(v.refs || []).map((r) => this._e(r)).join(", ")})</i>` : ""}</div>${ctl}</div>`;
@@ -290,8 +315,19 @@ class FlightWatcherRecallCard extends HTMLElement {
       try { localStorage.setItem("flight_watcher_recall_show", JSON.stringify(this._show)); } catch (e) {}
       this._render(this._h.states[this._c.entity]);
     });
+    // 1.6.2: a whole number 1..99999 or blank (forget the typed one); nothing else is sent, and no seat (no control)
     r.querySelectorAll("[data-me]").forEach((el) => el.onchange = () => {
-      this._send("recall/act", { me: { sen: parseInt(r.querySelector('[data-me="sen"]').value, 10) || null, seat: "FO" } });
+      const raw = String(el.value || "").trim();
+      const n = Number(raw);
+      if (raw && !(Number.isInteger(n) && n >= 1 && n <= 99999)) {
+        this._note = "Seniority # is a whole number from 1 to 99999. Nothing was sent.";
+        const k = r.querySelector("[data-checked]");
+        if (k) k.innerHTML = `<span style="color:var(--error-color,#c62828)">${this._e(this._note)}</span>`;
+        this._note = "";
+        return;
+      }
+      this._send("recall/act", { me: { sen: raw ? n : null } });
+      el.blur();
     });
     // 1.4.6 review: Over 75 (PWA 22.G.2.d) is answered per month; not set leaves an Over 75 miss at CHECK
     r.querySelectorAll("select[data-o75]").forEach((el) => el.onchange = () => {
