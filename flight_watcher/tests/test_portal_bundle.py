@@ -60,8 +60,9 @@ def test_blobs_are_the_pilot_card_copies_by_hash(pilot):
     import cards
     built = cards.build(W.VERSION, ["pilot2"])
     assert sorted(m["cards"]) == sorted(f"flight-watcher-{b}-pilot2.js" for b in (
-        "clock-card", "finds-card", "improved-card", "pickers-card", "pilot-card", "pilot-search-card", "recall-card",
-        "schedule-card", "settings-card"))  # no tickets, uploads or row colors card
+        "charters-card", "clock-card", "finds-card", "improved-card", "pickers-card", "pilot-card", "pilot-search-card",
+        "pot-card", "recall-card", "requests-card", "schedule-card", "settings-card", "working-card"))
+    # no tickets, uploads or row colors card; 1.6.2: the pot, working flight, charters and requests cards
     for fn, sha in m["cards"].items():
         raw = open(os.path.join(W.PORTAL_DIR, "out", "blobs", f"{sha}.js"), "rb").read()
         assert hashlib.sha256(raw).hexdigest() == sha and raw.decode() == PT.portal_card(built[fn])

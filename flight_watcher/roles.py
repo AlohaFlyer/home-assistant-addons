@@ -183,6 +183,16 @@ PORTAL_RULE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 # the check frequency sliders (number entities; freq/normal_min/set in minutes, freq/hunt_s/set in seconds): the
 # Watcher clamps a dashboard value into these, and a portal's freq/*/set must be a finite number within them
 FREQ_LIMITS = {"normal_min": (1, 20), "hunt_s": (5, 90)}
+# 1.6.2 (Release A, Ryan 2026-11-10): a pilot instance hunts no faster than every 120 s (and checks no faster than every
+# 2 min in normal mode, so normal is never quicker than the hunt floor); the admin keeps FREQ_LIMITS. These are the
+# pilot's slider ranges and the clamp of his freq/*/set. The portal contract keeps FREQ_LIMITS (contract 1 is
+# unchanged): a portal value in it below the pilot's floor is accepted there and raised to the floor by the Watcher.
+PILOT_FREQ_LIMITS = {"normal_min": (2, 20), "hunt_s": (120, 300)}
+
+
+def freq_limits(instance):
+    """The check frequency ranges of an instance: FREQ_LIMITS for the admin, PILOT_FREQ_LIMITS for a pilot."""
+    return PILOT_FREQ_LIMITS if role(instance) == PILOT else FREQ_LIMITS
 PORTAL_REFUSED = ("email/alert", "crew_scan/press", "ticket/new", "ticket/image", "ticket/act", "ticket/edit",
                   "ticket/delete", "upload/chunk", "drop/set", "auto_swap/set", "swap_map/press", "hunt/state",
                   "pause/state")

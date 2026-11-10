@@ -149,7 +149,8 @@ def test_machine_events_once_per_state(portal_pilot):
     assert kinds == [("needs_settings", "needs_settings"), ("stopped_*", "stopped_login_failed"),
                      ("stopped_*", "stopped_unexpected")]
     assert NAME not in json.dumps(W.EXPORT["events_list"])  # the note is never copied
-    assert "password on the Settings tab" in W.EXPORT["events_list"][1]["body"]
+    body = W.EXPORT["events_list"][1]["body"]
+    assert "save the new one on the Settings tab" in body and "logs in by itself" in body  # 1.6.2: the save is the fix
 
 
 def test_seq_and_events_survive_a_restart(portal_pilot):
@@ -204,14 +205,17 @@ def test_list_files_copied_exactly_and_without_keys(portal_pilot, monkeypatch):
     W.portal_export_once(full=True)
     out = os.path.join(W.PORTAL_DIR, "out", "files")
     names = sorted(os.listdir(out))
-    assert names == sorted([f"finds_{month}.json", "pickers.json", "versions.json", "school_2026-27.json",
-                            f"pairings_{month}.json"])
+    first = W.local_now().date().replace(day=1)
+    prev = f"{first.year - (first.month == 1):04d}-{(first.month - 2) % 12 + 1:02d}"  # 1.6.2: written even when empty
+    assert names == sorted([f"finds_{month}.json", f"finds_{prev}.json", "pickers.json", "versions.json",
+                            "school_2026-27.json", f"pairings_{month}.json"])
     assert not [n for n in names if key in n]
     src = open(os.path.join(fdir, W.WF.list_name("pickers", key)), encoding="utf-8").read()
     assert PT.verify(PT.public_id(PT.load_key(W.PORTAL_KEY_FILE)), _env(W, "files/pickers.json"),
                      "file:pickers", "pilot2") == src  # the file exactly as the card fetches it
     man = _payload(W, "manifest.json", "manifest")
-    assert man["files"] == sorted([f"finds:{month}", "pickers", "versions", "school:2026-27", f"pairings:{month}"])
+    assert man["files"] == sorted([f"finds:{month}", f"finds:{prev}", "pickers", "versions", "school:2026-27",
+                                   f"pairings:{month}"])
     # a file that goes away leaves out/files and the manifest
     os.remove(os.path.join(fdir, "school_2026-27.json"))
     W.portal_export_once(full=True)

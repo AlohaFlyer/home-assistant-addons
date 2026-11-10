@@ -107,8 +107,12 @@ def test_month_files_keyed_and_old_names_swept_on_start(tmp_path, monkeypatch, c
     W.write_finds_months()
     key = W.www_key()
     assert re.fullmatch(r"[0-9a-f]{32}", key) and (tmp_path / "data_default" / "www_key").read_text().strip() == key
-    assert sorted(os.listdir(fw)) == sorted([f"finds_{month}_{key}.json", "pairings_2026-11.json", "school_2026-27.json",
-                                            "pilot2"])
+    first = W.local_now().date().replace(day=1)
+    prev = f"{first.year - (first.month == 1):04d}-{(first.month - 2) % 12 + 1:02d}"
+    # 1.6.2: last month's file is written too, empty or not (the finds card never asks for a month with no file)
+    assert sorted(os.listdir(fw)) == sorted([f"finds_{month}_{key}.json", f"finds_{prev}_{key}.json",
+                                            "pairings_2026-11.json", "school_2026-27.json", "pilot2"])
+    assert json.loads((fw / f"finds_{prev}_{key}.json").read_text()) == {"month": prev, "count": 0, "finds": []}
     assert os.listdir(fw / "pilot2") == [f"finds_{month}_{OTHER}.json"]  # the second pilot's keyed file is his
     assert os.listdir(old / "pilot2") == [] and [x for x in os.listdir(old) if x.startswith("finds_")] == []
     assert json.loads((fw / f"finds_{month}_{key}.json").read_text())["finds"][0]["pairing"] == "H9001"

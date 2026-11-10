@@ -33,7 +33,10 @@ from datetime import date, datetime, time, timedelta, timezone
 
 from far import LEGAL_REFS, legality, window
 
-PAIRING = re.compile(r"^[A-Z]\d{4}[A-Z]?$")  # pot.PAIRING_RE (kept here so this module stays free of bs4)
+PAIRING = re.compile(r"^[A-Z]\d{4}[A-Z]?$")
+SEN_MAX = 99999  # 1.6.2: a seniority number is an int 1..99999 (the award's column is five digits)
+# 1.6.2 (item 10): what a row needs before a CCR draft or an alert is made for it (verdict 'missing')
+MISSING = {"seniority": "your seniority number", "line": "your line for these days"}  # pot.PAIRING_RE (kept here so this module stays free of bs4)
 HST = timezone(timedelta(hours=-10))
 NEAR = 8   # days after the list day where a month not yet on file is unknown, not "not awarded yet"
 TRIP_MARGIN = 7  # days a pairing can run past the day it starts (the held line reaches this far past LOOK)
@@ -462,10 +465,16 @@ def _evaluate(row, me, sched_items, own_trips, blocked, details, held=None):
                           f"{rd:%b %Y}")
         return out
     try:
-        their, mine = int(row.get("sen")), int(me.get("sen"))
+        their = int(row.get("sen"))
     except (TypeError, ValueError):
         out["verdict"] = "POSSIBLE"
-        out["why"].append("seniority unknown")
+        out["why"].append("seniority unknown (the list row has no seniority number)")
+        return out
+    mine = me.get("sen")
+    if isinstance(mine, bool) or not isinstance(mine, int) or not 1 <= mine <= SEN_MAX:
+        # 1.6.2 (Release A item 10): the pilot's own number is missing: no CCR draft and no alert, the row says why
+        out.update(verdict="POSSIBLE", missing="seniority")
+        out["why"].append("seniority unknown: your seniority number is not on file (type it under My seniority #)")
         return out
     if their == mine:  # 1.4.6 review: his own award (the version showing it may come in after the list day)
         out["why"].append(f"awarded to you (#{mine})")
@@ -513,6 +522,7 @@ def _evaluate(row, me, sched_items, own_trips, blocked, details, held=None):
     in_way = [(x, y) for x, y in gaps if _overlaps(s, e, _d(x) or s, _d(y) or e)]
     if in_way:
         out["verdict"] = "POSSIBLE"
+        out["missing"] = "line"  # 1.6.2 (item 10): his line for these days is unknown: no CCR draft and no alert
         out["why"].append(f"{line} is not on file for {_spans(in_way)}: cannot tell whether a trip, vacation or "
                           f"reserve was in the way (PWA 22.G.2.e-g) or check rest and FAR 117")
         return out
@@ -541,11 +551,15 @@ def _evaluate(row, me, sched_items, own_trips, blocked, details, held=None):
 
 def judge(row, me, helds, blocked, details):
     """The row against every line Ryan held during the list day (helds_on()). One answer when they agree; POSSIBLE
-    when they do not (the line changed that day and the award time is not on the list)."""
+    when they do not (the line changed that day and the award time is not on the list). 1.6.2: missing when any of
+    them lacks data (the line not on file on one of them)."""
     vs = [evaluate(row, me, None, None, blocked, details, held=h) for h in helds or [None]]
     if len(vs) == 1:
         return vs[0]
     out = dict(vs[0])
+    miss = next((v["missing"] for v in vs if v.get("missing")), "")
+    if miss:
+        out["missing"] = miss
     if len({v["verdict"] for v in vs}) == 1:
         out["why"] = out["why"][:-1] + [f"{out['why'][-1]} (the same on each of the {len(vs)} versions of your line in "
                                          f"force that day)"]
@@ -558,14 +572,26 @@ def judge(row, me, helds, blocked, details):
     return out
 
 
+def _article(word):
+    """'an FO' / 'a CA' (the seat code read aloud: F, R, S begin with a vowel sound)."""
+    w = str(word or "FO")
+    return f"{'an' if w[:1].upper() in 'AEFHILMNORSX' else 'a'} {w}"
+
+
 def narrative(v, me, name="", emp=""):
-    """CCR narrative Ryan reviews and edits on the Recall/O75 tab before anything is filed."""
+    """CCR narrative Ryan reviews and edits on the Recall/O75 tab before anything is filed. 1.6.2: never prints None
+    (a number not on file reads 'not on file'); 'an FO'; a CHECK row starts with a line saying what to check first."""
     lab, ref = KINDS.get(v.get("kind"), ("Recall", ""))
-    who = f"{name} (#{me.get('sen')})" if name else f"I (seniority #{me.get('sen')})"
+    sen = me.get("sen") if isinstance(me.get("sen"), int) and not isinstance(me.get("sen"), bool) else None
+    mine = f"#{sen}" if sen else "# not on file"
+    who = f"{name} ({mine})" if name else f"I (seniority {mine})"
     held = f" on my schedule as I held it that day (version {v['line']})" if str(v.get("line") or "")[:1].isdigit() else ""
-    lines = [
+    lines = [] if v.get("verdict") != "POSSIBLE" else [
+        "DRAFT TO CHECK: the Watcher could not confirm this one (" + "; ".join(v.get("why") or [])[:400] +
+        "). Check availability and legality yourself before filing."]
+    lines += [
         f"On {v.get('date')}, {lab} pairing {v.get('pairing')} ({v.get('start', v.get('date'))} to {v.get('end', v.get('date'))}, "
-        f"report {v.get('report') or 'per pairing'}) was awarded to a {v.get('seat')} with seniority #{v.get('sen')}, junior to me.",
+        f"report {v.get('report') or 'per pairing'}) was awarded to {_article(v.get('seat'))} with seniority #{v.get('sen')}, junior to me.",
         f"{who} was available on those days with no Flight Grouping, Reserve day or vacation in the way, and was legal"
         f"{held} under FAR 117 (117.25(b) 30 h free in 168 h, 117.25(e) 10 h rest, 117.23(b)(1) 100 h flight time in "
         f"672 h, 117.23(c) 60 h FDP in 168 h and 190 h in 672 h) and PWA 10.E.1.a (11 h domicile rest): "

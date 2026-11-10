@@ -13,6 +13,10 @@
 // arriving HNL before report, PWA 26.QQ.2, and one home 60+ min after release; the airports that work, joined with
 // "/", or No; hover for the times) and Value (credit x the pilot's rate) after Credit; both blank when the Watcher has
 // no smart.json.
+// 1.6.2 (Release A item 14): in the pilot portal (FW_PORTAL, turned on only in the portal's copy: portal.portal_card)
+// the Key leaves out what a portal pilot does not have: the FLICA alert email and, until a row carries Comm or Value,
+// the smart.json line.
+const FW_PORTAL = false;
 class FlightWatcherFindsCard extends HTMLElement {
   setConfig(c) { this._c = { entity: "sensor.flight_watcher_finds", ...c }; this._files = {}; this._m = this._hstMonth(Date.now()); }
   getCardSize() { return 8; }
@@ -236,11 +240,11 @@ class FlightWatcherFindsCard extends HTMLElement {
         ${loading ? `<div class="k">Loading ${MON[m - 1]} ${y}...</div>` : ""}
         ${this._list(all, Date.now(), loading || nokey)}
         <details class="key"><summary>Key</summary><div class="k">
-          <div><ha-icon icon="mdi:email-outline"></ha-icon> caught from your FLICA alert email (gone before a pot check)</div>
+          ${FW_PORTAL ? "" : `<div><ha-icon icon="mdi:email-outline"></ha-icon> caught from your FLICA alert email (gone before a pot check)</div>`}
           <div>InFlt <ha-icon icon="mdi:airplane"></ha-icon> = picked up while airborne (from the picker's own trip); no = on the ground; - = not checked yet</div>
-          <div>Pickup Speed = how long the trip sat in open time, ± half the check window; ~ = timed from your alert email; bold under 1 min. Hover for the picker's average.</div>
+          <div>Pickup Speed = how long the trip sat in open time, ± half the check window;${FW_PORTAL ? "" : " ~ = timed from your alert email;"} bold under 1 min. Hover for the picker's average.</div>
           <div>Red row: seat still open but not in the pot (hidden?). Green row: Premium trip picked up.</div>
-          <div>Comm = airports you can commute from: 2 scheduled nonstops arriving HNL before report (PWA 26.QQ.2) and 1 home 60+ min after release, same day; No = neither works; ? = not known yet (only a customs release, origin not on file, decides it). Hover for the times and the month rule. Value = credit x your hourly rate. Both blank until your smart.json is on file.</div>
+          ${FW_PORTAL && !all.some((f) => f.comm || f.value) ? "" : `<div>Comm = airports you can commute from: 2 scheduled nonstops arriving HNL before report (PWA 26.QQ.2) and 1 home 60+ min after release, same day; No = neither works; ? = not known yet (only a customs release, origin not on file, decides it). Hover for the times and the month rule. Value = credit x your hourly rate. Both blank until your smart.json is on file.</div>`}
           <div>Today's finds (HST) show; the rest of the month folds under "earlier this month" (this device remembers it open or closed). A past month opens in full. History kept 24 months.</div></div></details>
       </details>
       <span class="mp"><span class="nv" data-m="-1">&#8249;</span>${MON[m - 1]} ${y}<span class="nv" data-m="1">&#8250;</span></span></div>

@@ -1,6 +1,6 @@
 // Flight Watcher: Improved-Pay-Gross by month (Ryan, 2026-11-05). Bars = current version's Pay-Gross minus the awarded
 // line (version .001) for each month, both priced with today's pay settings by the schedule card; dashed line = least
-// squares trend. Reads sensor.flight_watcher_improved_pay_gross (app 0.9.0+). Read only.
+// squares trend. Reads sensor.flight_watcher_improved_pay_gross. Read only.
 // FW-0047 (Ryan, Nov 6): a Net tick box switches the bars, the title and the total to Improved-Pay-Net, priced exactly
 // as the schedule card's Pay-Net: gross x (1 - (federal + state) / 100) from input_number.flight_watcher_federal_tax_pct
 // and _state_tax_pct (22 and 0 while a helper has no number). Gross by default; the choice is kept per browser.
@@ -49,7 +49,7 @@ class FlightWatcherImprovedCard extends HTMLElement {
     const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     let svg = "";
     if (!rows.length) {
-      svg = `<div class="none">No months priced yet. Open the schedule card on each month once app 0.9.0 is running; it reports Awarded and current Pay-Gross here.</div>`;
+      svg = `<div class="none">No months priced yet. A month shows here once its awarded line and a FLICA read of your schedule are both on file and the schedule card has shown that month.</div>`;
     } else {
       const W = 640, Ht = 220, pl = 56, pr = 12, pt = 14, pb = 34;
       const vals = rows.map((r) => (Number(r.improved) || 0) * k);

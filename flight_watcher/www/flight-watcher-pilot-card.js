@@ -10,7 +10,11 @@
    (older / newer arrows, the version, the house back to the current one, "Changes in v11.003") for the month the card
    shows; the counts come from the sensor (attribute versions), each version's days and trips from pilotver_<key>.json
    under /local/ (only the pilot on the card). The current version draws the live payload as before; an older one
-   draws its own days and trips in the same grid, with the live block, credit, crew and pay. */
+   draws its own days and trips in the same grid, with the live block, credit, crew and pay.
+   1.6.2 (Release A item 11): the header names the pilot asked for (never the sensor's previous one); a reply with no
+   month (no match, a pick list, a wait) always shows its status line with its time (HST); a pick-list entry may carry an
+   opaque pick id instead of the employee number (a pilot instance), and the number is shown only once a pilot is
+   chosen; the loading line says when the Watcher reads it and gives up after 2 minutes past that, with a reason. */
 const DOW = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const PILOT_EV = "flight-watcher-pilot";  // the lookup event (pickers, pilot lookup, the pick list, #pilot= links)
@@ -31,6 +35,8 @@ const pilotNameKey = (n) => {  // 'Doe, Jane A' / 'DOE, JANE' -> 'doe,jane' (con
 const PILOTVER_URL = "/local/flight-watcher/pilotver_";
 const VER_SRC = { lookup: "FLICA schedule", rebuild: "rebuilt", award: "awarded line" };
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
+const PILOT_WAIT_MS = 120000;  // 1.6.2: the loading line gives up this long after the Watcher's next check
+const hstHM = (iso) => { const t = Date.parse(iso || ""); return isNaN(t) ? "" : new Date(t - 10 * 3600e3).toISOString().slice(11, 16); };
 
 class FlightWatcherPilotCard extends HTMLElement {
   // FW-0025: HA calls setConfig more than once per card and keeps replaced card elements alive, and each call used to
@@ -85,6 +91,9 @@ class FlightWatcherPilotCard extends HTMLElement {
     const d = (e && e.detail) || {};
     this._hidden = false;
     this._want = d.emp || d.q;
+    // 1.6.2: what was asked for draws the loading header (the sensor still holds the previous answer)
+    const q0 = String(d.q || "").trim();
+    this._ask = { emp: String(d.emp || "") || (/^\d+$/.test(q0) ? q0 : ""), name: String(d.name || ""), q: /^\d+$/.test(q0) ? "" : q0, at: Date.now() };
     if (!this._h) return;
     const q = String(d.q || "").trim();
     this._askQ = !d.emp && q && !/^\d+$/.test(q) ? q.toLowerCase() : "";  // a name: learn which pilot it found (_shows)
@@ -116,6 +125,7 @@ class FlightWatcherPilotCard extends HTMLElement {
       if (tsig !== this._tsig) { this._tsig = tsig; if (!this._busy) this._paint(); }
       return;
     }
+    if (sig !== this._sig && st && st.attributes && st.attributes.status !== "loading") this._ask = null;  // 1.6.2: answered
     if (sig !== this._sig && this._askQ && st && st.attributes) {  // the reply to a name lookup: remember the pilot it found
       if (st.attributes.emp) (FlightWatcherPilotCard._qEmp = FlightWatcherPilotCard._qEmp || {})[this._askQ] = String(st.attributes.emp);
       this._askQ = "";
@@ -132,7 +142,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     const g = this._rebuild(a);
     const [y, m] = String(a.reconstructed_month || "").split("-").map(Number);
     const mon = m >= 1 && m <= 12 ? `${MONTHS[m - 1]} ${y}` : (a.reconstructed_month || "");
-    const head = `<b>Reconstructed from pairing crew lists</b> <span class="u">${this._esc(mon)} · ${this._esc(cov)}% of trips read · updated 00/06/12/18 HST</span>`;
+    const head = `<b>Reconstructed from pairing crew lists</b> <span class="u">${this._esc(mon)}${cov != null ? ` · ${this._esc(cov)}% of trips read · updated 00/06/12/18 HST` : ""}</span>`;  // 1.6.2: no coverage on a pilot
     const tot = g.items.filter((it) => it.start >= g.from);  // totals: trips in the bid period, as drawn (not the day-before row, not the overlaps below)
     const sum = (k) => { let t = 0; for (const it of tot) { const x = /^(\d+):(\d{2})$/.exec(it[k] || ""); if (!x) return "?"; t += +x[1] * 60 + +x[2]; } return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
     const md = (d) => `${MONTHS[+d.slice(5, 7) - 1].slice(0, 3)} ${+d.slice(8)}`;
@@ -386,8 +396,8 @@ class FlightWatcherPilotCard extends HTMLElement {
         if (e.target.closest(".x")) { this._hidden = true; this._paint(); return; }
         const vb = e.target.closest(".vb");  // FW-0069: schedule versions
         if (vb) { this._vstep(vb.dataset.v); return; }
-        const pk = e.target.closest(".pk");
-        if (pk) window.dispatchEvent(new CustomEvent(PILOT_EV, { detail: { emp: pk.dataset.emp, name: pk.dataset.name } }));
+        const pk = e.target.closest(".pk");  // 1.6.2: a pilot instance's pick list carries an opaque pick id, not the number
+        if (pk) window.dispatchEvent(new CustomEvent(PILOT_EV, { detail: pk.dataset.pick ? { pick: pk.dataset.pick, name: pk.dataset.name } : { emp: pk.dataset.emp, name: pk.dataset.name } }));
       });
     }
     const body = this._root.querySelector(".body");
@@ -406,9 +416,10 @@ class FlightWatcherPilotCard extends HTMLElement {
     this._ctKeys = ct ? [pilotNameKey(name), pilotNameKey(a.contact && a.contact.name)].filter(Boolean) : [];
     this._ctMini = ct ? this._contact(a, true) : "";
     if (loading || a.status === "loading") {
-      body.innerHTML = `<div class="hd"><h3>${this._esc(name || "Pilot")} (${this._esc(emp)})</h3>${ct}<span class="u">reading this pilot's month from FLICA (Schedule Lookup, read only), 20 to 40 s</span><span class="x" title="close">&times;</span></div>`;
+      body.innerHTML = this._loadingHtml(a, ct);
       return;
     }
+    clearTimeout(this._waitT);
     // FW-0069: the versions bar for the month shown (FLICA's, else the crew index's rebuilt month); "" without versions
     let vs = null;
     try { vs = this._vstate(a, a.month || a.reconstructed_month || ""); } catch (err) { vs = null; this._vnow = null; }
@@ -416,15 +427,20 @@ class FlightWatcherPilotCard extends HTMLElement {
     let old = "";  // an older version picked: its own grid (a record the card cannot draw says so, never throws)
     if (vs && vs.rec) try { old = this._vold(a, vs.rec, a.month || a.reconstructed_month); } catch (err) { old = `<div class="none">This version could not be drawn.</div>`; }
     if (!a.month) {
-      const picks = (a.matches || []).map((m) => `<button class="pk" data-emp="${this._esc(m.emp)}" data-name="${this._esc(m.name)}">${this._esc(m.name)} <span class="u">${this._esc(m.pos)} ${this._esc(m.emp)}</span></button>`).join("");
-      body.innerHTML = `<div class="hd"><h3>${this._esc(name || "Pilot")}${emp ? " (" + this._esc(emp) + ")" : ""}</h3>${ct}<span class="u">${this._esc(/application error|customer care/i.test(a.status || "") ? "FLICA showed its error page for this schedule (often a pilot who has hidden it, or a FLICA hiccup). Nothing to read; try again later." : (a.status || "no data"))}</span><span class="x" title="close">&times;</span></div>${vb}${picks ? `<div class="picks">${picks}</div>` : ""}`;
+      const picks = (a.matches || []).map((m) => `<button class="pk" data-emp="${this._esc(m.emp || "")}" data-pick="${this._esc(m.pick || "")}" data-name="${this._esc(m.name)}">${this._esc(m.name)} <span class="u">${this._esc(m.pos)}${m.emp ? " " + this._esc(m.emp) : ""}</span></button>`).join("");
+      // 1.6.2: the header names a pilot only from the reply itself (its emp), never from an earlier lookup; a reply
+      // with no pilot (no match, a pick list) names the query; the status line always shows, with its time (HST)
+      const h3 = a.emp ? `${this._esc(name || "Pilot")} (${this._esc(a.emp)})` : (a.matches || []).length ? `Pick the pilot for '${this._esc(name)}'` : name ? `No pilot found for '${this._esc(name)}'` : "Pilot lookup";
+      const when = hstHM(a.at || (st && st.last_updated));
+      const said = /application error|customer care/i.test(a.status || "") ? "FLICA showed its error page for this schedule (often a pilot who has hidden it, or a FLICA hiccup). Nothing to read; try again later." : (a.status || "no data");
+      body.innerHTML = `<div class="hd"><h3>${h3}</h3>${ct}<span class="u st">${this._esc(said)}${when ? ` (${when} HST)` : ""}</span><span class="x" title="close">&times;</span></div>${vb}${picks ? `<div class="picks">${picks}</div>` : ""}`;
       if (old) { body.insertAdjacentHTML("beforeend", old + this._recon(a, true)); return; }  // the live rebuild, folded under it
       body.insertAdjacentHTML("beforeend", this._recon(a, false));  // 0.10.1 crew index; FW-0002: in the schedule grid
       return;
     }
     const [y, m] = a.month.split("-").map(Number);
     const t = a.totals || {};
-    const hd = `<div class="hd"><h3>${this._esc(name)} (${this._esc(emp)})</h3>${ct}<span class="u">${MONTHS[m - 1]} ${y} · FLICA updated ${this._esc(a.updated || "?")} · read ${a.fetched ? new Date(a.fetched).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}${a.status === "cached" ? " (cached)" : ""}</span><span class="x" title="close">&times;</span></div>`;
+    const hd = `<div class="hd"><h3>${this._esc(name)} (${this._esc(emp)})</h3>${ct}<span class="u">${MONTHS[m - 1]} ${y} · FLICA updated ${this._esc(a.updated || "?")} · read ${a.fetched ? this._hst(a.fetched) : ""}${a.status === "cached" ? " (cached)" : ""}</span><span class="x" title="close">&times;</span></div>`;
     if (old) {  // FW-0069: an older version of a readable month
       body.innerHTML = hd + vb + old;
       body.insertAdjacentHTML("beforeend", this._recon(a, true));
@@ -434,6 +450,28 @@ class FlightWatcherPilotCard extends HTMLElement {
       ${this._grid(a.days, a.items || [], a.month)}
       <div class="tot"><span>Block<b>${this._esc(t.block || "?")}</b></span><span>Credit<b>${this._esc(t.credit || "?")}</b></span><span>Days Off<b>${t.days_off != null ? t.days_off : "?"}</b></span><span class="u">Source: FLICA Tools > Schedule Lookup, read only. Block / Credit per trip from the pairing pages.</span></div>`;
     body.insertAdjacentHTML("beforeend", this._recon(a, true));  // 0.10.1: crew index (reconstructed from pairing crew lists), folded under a readable month
+  }
+  // 1.6.2: the loading line from what was asked (_ask), when the Watcher reads it, and a reason once it is overdue
+  _loadingHtml(a, ct) {
+    // 1.6.2 review: a card opened on a lookup asked earlier times it from the sensor's own 'at' (pub_pilot), not now
+    const asked = Date.parse(a.at || "");
+    const ask = this._ask || { emp: String(a.emp || this._want || ""), name: String(a.name || ""), q: "", at: isNaN(asked) ? Date.now() : Math.min(asked, Date.now()) };
+    const h3 = ask.name ? `${this._esc(ask.name)}${ask.emp ? ` (${this._esc(ask.emp)})` : ""}` : ask.emp ? `Pilot ${this._esc(ask.emp)}` : `Looking up '${this._esc(ask.q)}'`;
+    const S = (this._h && this._h.states) || {};
+    const nx = Date.parse((S["sensor.flight_watcher_next_check"] || {}).state || "");
+    const state = String((S["sensor.flight_watcher_state"] || {}).state || "");
+    const due = Math.max(ask.at, isNaN(nx) ? ask.at : nx) + PILOT_WAIT_MS;
+    // a next check already past is no time to promise
+    let line = `reading this pilot's month from FLICA (Schedule Lookup, read only) on the Watcher's next check${isNaN(nx) ? ", usually under 2 minutes" : nx > Date.now() ? `, about ${hstHM(new Date(nx).toISOString())} HST` : ""}`;
+    if (Date.now() > due) {
+      const why = /^(paused|yielded|backoff|needs_settings|stopped)/.test(state) ? `the Watcher is ${state.replace(/_/g, " ")}; the lookup runs once it checks FLICA again` : state ? `no answer from the Watcher (it is ${state.replace(/_/g, " ")}); try again in a few minutes` : "no answer from the Watcher: it may not be running";
+      line = `Still waiting after ${Math.round((Date.now() - ask.at) / 60000)} min: ${why}.`;
+    } else {
+      clearTimeout(this._waitT);
+      this._waitT = setTimeout(() => { if (this._ask && this._root) this._paint(this._busy); }, Math.min(due - Date.now() + 500, 2147483000));
+      if (this._waitT && this._waitT.unref) this._waitT.unref();  // a test's node process need not wait for it
+    }
+    return `<div class="hd"><h3>${h3}</h3>${ct}<span class="u st">${this._esc(line)}</span><span class="x" title="close">&times;</span></div>`;
   }
   _grid(days, items, month) {  // the calendar: one row per day, trips boxed in the Layover column (readable and rebuilt months)
     const byStart = {}; for (const it of items) byStart[it.start] = it;

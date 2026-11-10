@@ -1,8 +1,18 @@
 /* Flight Watcher: pilot lookup card (v2, Ryan 2026-11-04). Type a last name, first name or employee number and
-   press Go (or Enter): the pilot schedule card asks the Watcher for that pilot's month (read only). */
+   press Go (or Enter): the pilot schedule card asks the Watcher for that pilot's month (read only). 1.6.2 review: on a
+   pilot (state role 'pilot') the placeholder says what his lookup takes: Last name (3+ letters), Last, First, or #. */
 class FlightWatcherPilotSearchCard extends HTMLElement {
   setConfig(config) { this._config = { ...config }; }
-  set hass(h) { this._h = h; if (!this._root) this._render(); }
+  set hass(h) {
+    this._h = h;
+    if (!this._root) this._render();
+    // 1.6.2 review: a pilot's lookup takes a last name (3+ letters), Last, First, or an employee number: no first name
+    const st = h && h.states && h.states["sensor.flight_watcher_state"];
+    const pilot = ((st && st.attributes) || {}).role === "pilot";
+    const ph = pilot ? "Last name (3+ letters), Last, First, or employee #" : "Anybody's schedule: last name, first name or employee #";
+    const inp = this._root.querySelector("input");
+    if (inp.placeholder !== ph) inp.placeholder = ph;
+  }
   getCardSize() { return 1; }
   _go() {  // FW-0025: one lookup per press; a double tap on Go or a held Enter inside 2 s asks once
     const q = this._root.querySelector("input").value.trim();

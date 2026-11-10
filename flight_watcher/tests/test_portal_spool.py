@@ -397,10 +397,13 @@ def test_deeply_nested_json_is_refused_not_raised(demo):
 
 
 def test_freq_limits_are_the_sliders_ranges(demo):
+    """1.6.2: a pilot's sliders are his own ranges (hunt 120 s at the fastest); the contract's FREQ_LIMITS stay what the
+    spool checks (contract 1 unchanged), and the handler clamps an accepted value up to the pilot's floor."""
     W = demo
     got = {}
     for comp, _, cfg, _ in W.entity_defs():
         ct = cfg.get("command_topic") or ""
         if comp == "number" and "/freq/" in ct:
             got[ct.split("/")[-2]] = (cfg["min"], cfg["max"])
-    assert got == roles.FREQ_LIMITS and W.FREQ_LIMITS is roles.FREQ_LIMITS
+    assert got == roles.PILOT_FREQ_LIMITS and W.FREQ_LIMITS is roles.PILOT_FREQ_LIMITS
+    assert got["hunt_s"][0] == 120 and roles.FREQ_LIMITS == {"normal_min": (1, 20), "hunt_s": (5, 90)}
