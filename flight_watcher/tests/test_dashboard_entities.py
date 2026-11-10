@@ -45,15 +45,15 @@ def _used(name, prefix, others=()):
     return {e for e in ids if not NOT_THE_WATCHERS.match(e) and not any(f"{prefix}_{o}_" in e for o in others)}
 
 
-def test_james_dashboard_reads_only_what_a_pilot_instance_creates(tmp_path, monkeypatch):
+def test_a_pilot_instance_skips_the_admin_only_entities(tmp_path, monkeypatch):
+    """James's HA dashboard was retired on 2026-11-10 (he uses the pilot portal, FW-0061), so there is no pilot
+    dashboard snapshot left; the role gate on a pilot instance's discovery still holds."""
     made = _made(tmp_path, monkeypatch, "james")
-    used = _used("dashboard_flight_watcher_james.json", "flight_watcher_james")
-    assert used and used - made == set(), sorted(used - made)
-    # the three entities 1.5.0 retires on a pilot are not on his dashboard (swap ideas and the charter button are core)
+    # the three entities 1.5.0 retires on a pilot (swap ideas and the charter button are core)
     for gone in ("switch.flight_watcher_james_auto_swap_dry_run", "button.flight_watcher_james_map_swap_pages_read_only",
                  "sensor.flight_watcher_james_would_drop"):
-        assert gone not in made and gone not in used
-    assert {"sensor.flight_watcher_james_swap_ideas", "button.flight_watcher_james_scan_crewtrac_charters_now"} <= used & made
+        assert gone not in made
+    assert {"sensor.flight_watcher_james_swap_ideas", "button.flight_watcher_james_scan_crewtrac_charters_now"} <= made
 
 
 def test_ryans_dashboard_reads_only_what_the_admin_creates(tmp_path, monkeypatch):

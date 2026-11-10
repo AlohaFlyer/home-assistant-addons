@@ -295,7 +295,7 @@ def test_every_id_in_the_ha_snapshot_belongs_to_a_known_pilot():
     """Every Flight Watcher topic and entity in the automations, dashboards and package snapshots maps to Ryan or a
     pilot in ha/pilots.json (none to an unknown pilot), so the snapshot still reports 0 offenders."""
     found = set()
-    for name in ("automations_flight_watcher.yaml", "dashboard_flight_watcher.json", "dashboard_flight_watcher_james.json",
+    for name in ("automations_flight_watcher.yaml", "dashboard_flight_watcher.json",
                  os.path.join("packages", "flight_watcher_wx.yaml")):
         found |= G._pilots_in(open(os.path.join(ROOT, "ha", name), encoding="utf-8").read())
     assert found == {"ryan", "james"}, found
