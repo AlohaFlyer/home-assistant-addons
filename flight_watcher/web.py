@@ -661,13 +661,14 @@ def _settings_form(state):
 
 
 def parse_settings(body):
-    """Form body -> {key: value} for the non-blank settings fields (values stripped)."""
+    """Form body -> {key: value} for the non-blank settings fields (values stripped; 1.6.1: a password exactly as
+    typed)."""
     q = parse_qs(body, keep_blank_values=True)
     out = {}
-    for k, _label, _secret in SETTINGS_FIELDS:
-        v = (q.get(k) or [""])[0].strip()
-        if v:
-            out[k] = v
+    for k, _label, secret in SETTINGS_FIELDS:
+        v = (q.get(k) or [""])[0]
+        if v.strip():
+            out[k] = v if secret else v.strip()
     return out
 
 
