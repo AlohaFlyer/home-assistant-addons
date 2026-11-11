@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.6.4
+
+Ryan, 2026-11-11: "You can have DOH be a field in the settings tab." The second pilot's portal showed longevity year 1
+($90.00/h): no date of hire was on file for him (no seniority list uploaded, the award carries none) and his longevity
+pref was the one copied from a never-set helper (flagged unconfirmed in 1.6.2). Built, not deployed.
+
+- Settings card (`www/flight-watcher-settings-card.js`, the admin's HA card and a pilot's portal copy alike): a **Date
+  of hire** field, a date input filled with the saved value, optional (blank keeps what is saved), with its longevity
+  year beside it and the note "Your date of hire sets your longevity year for pay estimates (PWA 3.B.1); it stays on
+  this Watcher only". The card checks it (YYYY-MM-DD, a real date, not after today HST, not before 1960; else nothing
+  is sent, with the reason) and sends it like the other non-secret fields on `settings/set`: sealed when it can be,
+  inside the sealed payload only in the portal (the portal relays ciphertext only, so no HOM change; the contract
+  fixture, its pinned sha256 and `PORTAL_CONTRACT.md` are byte for byte as in 1.6.3). An unchanged date is not sent.
+- Watcher (`settings_cmd`): checks the date again (`doh_refusal`); a bad one refuses the whole message, nothing saved,
+  with the reason in the result line ("refused: date of hire: it is in the future; nothing was saved"; the value is
+  never logged). A good one goes to the instance's own `<data>/cards.json` `doh` (`doh_save`: every other key kept,
+  atomic, mode 0600), which `pilot_doh()` reads, so `sensor.<prefix>_state` attribute `doh` carries it;
+  `sensor.<prefix>_settings` shows it too (attribute `doh`, on the admin's sensor as well). A date of hire alone
+  restarts nothing: "saved: date of hire (no restart needed)" and the new state attributes go out at once (a portal
+  pilot's export picks both up on its next pass). With a login change it is saved too and the restart is the login's.
+- Longevity follows the DOH (PWA 3.B.1, 3.D.2; the PWA 3.D.6 table caps at 12): on the schedule card, the pot card's
+  Value and the Watcher's pay figures (`pay_settings`: the Pay-Gross of decided requests and of trades seen on the
+  schedule), a longevity year still flagged unconfirmed yields to the DOH's year; one the pilot chose himself (Pay
+  settings, or Keep these) still wins. The rate line shows "DOH YYYY-MM-DD = year N", and the "Set your tax and
+  longevity" banner and Keep these leave longevity out once a DOH is saved. The admin's figures are unchanged (his
+  longevity helper when set, else his DOH from `/data/cards.json`; his helper is never flagged): his schedule and pot
+  cards render byte for byte as in 1.6.3 across helper, DOH and tax combinations.
+- Review fixes: (1) the Settings card's status beside the date says which year pay uses: "longevity year N" only when
+  the date decides it, else "year N from this date; pay uses year M, set in Pay settings" (the admin's helper, or a
+  year the pilot chose or kept, wins as on the schedule card). (2) A date of hire saved together with the same FLICA or
+  CrewTrac details again still lifts their refusal block for one more try, as those details alone do ("saved: date of
+  hire (no restart needed); FLICA gets one more login try with these details"); before, the date-only path returned
+  first and the block stayed on with no word. (3) The portal copy no longer says the date "stays on this Watcher
+  only": it is sealed on the way in but shown back on his page from the exported state, so the field note and the
+  header say the portal can read that one (the admin's HA card keeps the 1.6.4 wording).
+- Tests: `tests/test_doh_settings.py` (the field and what it sends, sealed only in the portal, in Chromium and Node;
+  the Watcher's check, cards.json kept, no restart for a date alone, the longevity year from the DOH over an
+  unconfirmed pref, a chosen year still winning, the admin's figures, the contract files unchanged). The admin's
+  settings sensor key pin (`tests/test_portal_export.py`) gains `doh`. `tests/test_pilotver_watcher.py`: one test
+  stamped its versions on the real clock and failed from 22:05 UTC on 2026-11-10 on; it now uses the fixture's clock.
+
 ## 1.6.3
 
 - Schedule card: a trip whose own times are not read yet takes its credit from the pairings package, which writes it

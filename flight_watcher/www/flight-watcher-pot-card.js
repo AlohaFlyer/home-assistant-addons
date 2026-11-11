@@ -3,7 +3,8 @@
 //  - sensor.flight_watcher_pot_count (attribute pairings: the open time pot) and
 //    sensor.flight_watcher_tradeboard_pickups (attribute pairings: Tradeboard pickup posts, marked T);
 //  - sensor.flight_watcher_last_check and sensor.flight_watcher_state: a pot not read for 15 min is flagged;
-//  - input_number.flight_watcher_longevity_year (Pay settings) or the DOH (sensor.flight_watcher_state doh) for Value.
+//  - input_number.flight_watcher_longevity_year (Pay settings) or the DOH (sensor.flight_watcher_state doh) for Value
+//    (1.6.4: the DOH also over a year still flagged unconfirmed).
 // Each row: trip, dates, layover or turn, days, credit, soft time, captain, Fits (no overlap with your trips, VAC or
 // blocked days), FAR 117 (117.25(e) 10 h rest, 117.25(b) 30 h free in 168 h, 117.23(b)(1) 100 h in 672 h, 117.23(c)
 // FDP limits; PWA 10.E.1.a 11 h domicile rest, as the Watcher's far.py screens them) and Value (credit x your hourly
@@ -79,10 +80,14 @@ class FlightWatcherPotCard extends HTMLElement {
     // Value: credit x the PWA 3.D.6 rate for the longevity year in Pay settings, else the one the DOH gives
     const lys = h.states["input_number.flight_watcher_longevity_year"];
     const doh = String(this._a("sensor.flight_watcher_state").doh || "");
-    let lyr = parseFloat(lys && lys.state);
-    if (isNaN(lyr)) lyr = /^\d{4}-\d{2}-\d{2}$/.test(doh) ? Math.min(12, pcDohYear(today, doh)) : NaN;
+    // 1.6.4: with a DOH on file, a year still flagged unconfirmed (copied from a never-set helper) yields to the DOH's
+    // year, as on the schedule card; a year the pilot chose still wins
+    const dohOk = /^\d{4}-\d{2}-\d{2}$/.test(doh);
+    const unconf0 = !!(lys && lys.attributes && lys.attributes.unconfirmed);
+    let lyr = dohOk && unconf0 ? NaN : parseFloat(lys && lys.state);
+    if (isNaN(lyr)) lyr = dohOk ? Math.min(12, pcDohYear(today, doh)) : NaN;
     const rate = isNaN(lyr) ? null : pcRate(lyr, today);
-    const unconf = !!(lys && lys.attributes && lys.attributes.unconfirmed);
+    const unconf = unconf0 && !dohOk;
     const usd = (v) => "$" + Math.round(v).toLocaleString("en-US");
     // freshness, as the HA macro: a pot not read in 15 min, or a Watcher that is not idle or hunting
     const st = (h.states["sensor.flight_watcher_state"] || {}).state || "unavailable";

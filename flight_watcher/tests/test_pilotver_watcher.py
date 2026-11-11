@@ -85,7 +85,11 @@ def test_a_lookup_flica_hides_takes_the_crew_indexs_rebuild(W, tmp_path):
     assert _file_of(W, tmp_path, p)["10001"]["name"] == "Doe, Jane"
 
 
-def test_a_crew_index_run_versions_the_looked_up_pilots_only(W, tmp_path):
+def test_a_crew_index_run_versions_the_looked_up_pilots_only(W, tmp_path, monkeypatch):
+    # 1.6.4: the versions' stamp (now_iso) on the fixture's clock too, an hour before its crew reads (local_now, 12:05
+    # HST); on the real clock this test failed from 22:05 UTC on 2026-11-10 (every crew read then looked older than
+    # the version)
+    monkeypatch.setattr(W, "now_iso", lambda: "2026-11-10T21:00:00+00:00")
     _file(tmp_path / "www", "2026-11", [_row("H9001", "20", rel=0), _row("H9002", "24", rel=0)])
     W.pilot_cmd(json.dumps({"emp": "10001", "name": "Doe, Jane"}))  # Ryan looked her up (read on the next check)
     assert PV.registered(W.DB) == ["10001"]

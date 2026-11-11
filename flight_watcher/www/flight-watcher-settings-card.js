@@ -15,7 +15,13 @@
    app; a typed topic needs at least 24 characters with letters and digits (else nothing is sent, with the reason);
    Turn off forgets the topic and token. The topic is never shown again after Save (the Watcher keeps set / not set).
    1.6.2 review: the confirmation outlives the restart a save causes: "Restarting with your settings..." while the Watcher
-   is unavailable, then its "saved: ... (Watcher restarted with them)"; a rebuild keeps the message line. */
+   is unavailable, then its "saved: ... (Watcher restarted with them)"; a rebuild keeps the message line.
+   1.6.4: a Date of hire field (optional, a date input filled with the saved value from the settings sensor's doh). It
+   sets the longevity year of the pay estimates (PWA 3.B.1) and goes like the other non-secret fields (sealed when it
+   can be, inside the sealed payload only in the portal). Checked here and again by the Watcher (fwDohWhy: YYYY-MM-DD, a
+   real date, not after today HST, not before 1960). The Watcher keeps it in its own cards.json; a date of hire alone
+   does not restart it. 1.6.4 review: beside it the year pay uses (a year set in Pay settings wins, as on the schedule
+   card); the portal copy says the date is shown back on the page (state.json), so the portal can read it. */
 const FW_PORTAL = false;
 const FW_SET_FIELDS = [
   ["username", "FLICA username", false], ["password", "FLICA password", true],
@@ -33,6 +39,21 @@ function fwTopicWhy(t) {
   if (t.length < FW_TOPIC_MIN || !/[A-Za-z]/.test(t) || !/\d/.test(t)) return `use at least ${FW_TOPIC_MIN} characters with both letters and digits, or tap Generate`;
   return "";
 }
+// 1.6.4: the Watcher's DOH_MIN and doh_refusal (watcher.py) check the same again
+const FW_DOH_MIN = "1960-01-01";
+const fwHstToday = () => new Date(Date.now() - 10 * 3600e3).toISOString().slice(0, 10);
+function fwDohWhy(v, today) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  if (!m) return "use YYYY-MM-DD";
+  const [y, mo, d] = [m[1], m[2], m[3]].map(Number), t = new Date(Date.UTC(y, mo - 1, d));
+  if (t.getUTCFullYear() !== y || t.getUTCMonth() !== mo - 1 || t.getUTCDate() !== d) return "not a real date";
+  if (v > (today || fwHstToday())) return "it is in the future";
+  if (v < FW_DOH_MIN) return `it is before ${FW_DOH_MIN.slice(0, 4)}`;
+  return "";
+}
+// longevity year on iso from the DOH: year 1 from the DOH, a new year on each anniversary (PWA 3.B.1, 3.D.2), as the
+// schedule card's dohYear() and pay.doh_year() count; the rate table caps at 12 (PWA 3.D.6)
+const fwDohYear = (doh, iso) => { const [a, b] = [doh, iso].map((x) => x.split("-").map(Number)); return b[0] - a[0] - (b[1] < a[1] || (b[1] === a[1] && b[2] < a[2]) ? 1 : 0) + 1; };
 function fwNewTopic() {  // 32 characters from 62, no modulo bias (bytes of 248 and up are drawn again), letters and digits both
   for (;;) {
     let out = "";
@@ -82,6 +103,12 @@ class FlightWatcherSettingsCard extends HTMLElement {
       <label><span>ntfy topic</span><input type="text" data-k="ntfy_topic" autocomplete="off" spellcheck="false" placeholder="Generate, or type 24+ letters and digits"></label>
       <label><span>ntfy access token</span><input type="password" data-k="ntfy_token" autocomplete="new-password" placeholder="optional; blank keeps"><b data-s="ntfy_token"></b></label></div>`;
   }
+  _dohHtml(a) {  // 1.6.4: the date of hire (optional; the pay estimates' longevity year)
+    const doh = /^\d{4}-\d{2}-\d{2}$/.test(a.doh || "") ? a.doh : "";
+    this._dohShown = doh;
+    return `<label><span>Date of hire</span><input type="date" data-k="doh" min="${FW_DOH_MIN}" max="${fwHstToday()}" value="${this._e(doh)}"><b data-s="doh"></b></label>
+      <div class="note" id="dohnote">Your date of hire sets your longevity year for pay estimates (PWA 3.B.1); ${FW_PORTAL ? "your Watcher keeps it and shows it back to you on this page, so unlike your logins the portal can read it" : "it stays on this Watcher only"}. Optional; a blank field keeps what is saved, and saving only a date of hire does not restart the Watcher.</div>`;
+  }
   _gen() {  // 1.6.2: a new random topic, shown once until Save
     const root = this.shadowRoot;
     if (!(window.crypto && crypto.getRandomValues)) { root.getElementById("msg").innerHTML = `<span class="err">This browser cannot make a random topic: type one of at least ${FW_TOPIC_MIN} letters and digits.</span>`; return; }
@@ -99,7 +126,7 @@ class FlightWatcherSettingsCard extends HTMLElement {
     this._bkey = this._buildKey();
     const rows = FW_SET_FIELDS.map(([k, label, secret]) => secret
       ? `<label><span>${label}</span><input type="password" data-k="${k}" autocomplete="new-password" placeholder="leave blank to keep"><b data-s="${k}"></b></label>`
-      : `<label><span>${label}</span><input type="text" data-k="${k}" autocomplete="off" spellcheck="false" value="${this._e(a[k])}"></label>`).join("") + (this._ntfy ? this._ntfyHtml(a) : "");
+      : `<label><span>${label}</span><input type="text" data-k="${k}" autocomplete="off" spellcheck="false" value="${this._e(a[k])}"></label>`).join("") + this._dohHtml(a) + (this._ntfy ? this._ntfyHtml(a) : "");
     root.innerHTML = `<style>
       ha-card{padding:16px}label{display:flex;align-items:center;gap:8px;margin:8px 0;flex-wrap:wrap}
       label span{width:150px}input{flex:1;min-width:160px;max-width:320px;padding:6px;font:inherit;
@@ -111,8 +138,8 @@ class FlightWatcherSettingsCard extends HTMLElement {
       .ack{font-size:13px;flex-wrap:nowrap;align-items:flex-start}.ack input{flex:0 0 auto;min-width:0;width:22px;height:22px;margin:0}.topic{margin:8px 0;padding:8px;border-radius:6px;background:rgba(46,125,50,.12);font-size:13px;overflow-wrap:anywhere}
       .topic code{font-size:15px;user-select:all}button.g{background:#757575}button{min-height:44px;margin:4px 0}</style>
       <ha-card><div class="note">${FW_PORTAL
-        ? "Encrypted in your browser; only your Watcher can read it (the portal passes on ciphertext only). A blank field keeps what is saved. Saving restarts your Watcher; with a new FLICA login it logs in within a minute."
-        : "Saved on this Home Assistant only, encrypted before it leaves this screen. A blank field keeps what is saved. Saving restarts the Watcher; with a new FLICA login it logs in within a minute."}</div>
+        ? "Encrypted in your browser; only your Watcher can read it (the portal passes on ciphertext only). Your date of hire is shown back to you on this page, so the portal can read that one. A blank field keeps what is saved. Saving restarts your Watcher (a date of hire alone does not); with a new FLICA login it logs in within a minute."
+        : "Saved on this Home Assistant only, encrypted before it leaves this screen. A blank field keeps what is saved. Saving restarts the Watcher (a date of hire alone does not); with a new FLICA login it logs in within a minute."}</div>
       ${rows}<button id="save">Save credentials</button><div class="msg" id="msg"></div>
       <div class="note" id="ct"></div><div class="note" id="who"></div></ha-card>`;
     root.getElementById("save").addEventListener("click", () => this._save());
@@ -131,6 +158,7 @@ class FlightWatcherSettingsCard extends HTMLElement {
       const b = root.querySelector(`b[data-s="${k}"]`);
       if (b) { b.className = has ? "set" : "unset"; b.textContent = has ? "set" : "not set"; }
     }
+    this._dohStatus(a);
     const down = ["unavailable", "unknown"].includes(this._st().state);
     if (this._sentAt && down) {  // 1.6.2 review: a save restarts the Watcher; its confirmation comes after
       root.getElementById("msg").innerHTML = `<span class="ok">Restarting with your settings...</span>`;
@@ -154,6 +182,22 @@ class FlightWatcherSettingsCard extends HTMLElement {
     }
     if (FW_PORTAL) root.getElementById("save").disabled = !a.pubkey;
   }
+  _dohStatus(a) {  // 1.6.4: the saved date of hire's longevity year beside the field; a new saved value fills an untouched field
+    // 1.6.4 review: the year pay uses, as the schedule card picks it: a longevity year set in Pay settings (the admin's
+    // helper, or one the pilot chose or kept) wins over the DOH; one still flagged unconfirmed yields to it
+    const root = this.shadowRoot, inp = root.querySelector('input[data-k="doh"]'), b = root.querySelector('b[data-s="doh"]');
+    if (typeof a.has_password !== "boolean") return;  // the Watcher restarting (no attributes): keep what is shown
+    const doh = /^\d{4}-\d{2}-\d{2}$/.test(a.doh || "") ? a.doh : "";
+    if (inp && doh && doh !== this._dohShown && (inp.value === (this._dohShown || "") || inp.value === doh)) { inp.value = doh; this._dohShown = doh; }
+    if (!b) return;
+    const today = fwHstToday();
+    b.className = doh ? "set" : "";
+    if (!(doh && doh <= today)) { b.textContent = "not set"; return; }
+    const dy = Math.min(12, fwDohYear(doh, today));
+    const ly = (this._h && this._h.states["input_number.flight_watcher_longevity_year"]) || {};
+    const py = (ly.attributes || {}).unconfirmed === true ? NaN : parseFloat(ly.state);
+    b.textContent = isNaN(py) ? `longevity year ${dy}` : `year ${dy} from this date; pay uses year ${py}, set in Pay settings`;
+  }
   async _save(only) {
     const root = this.shadowRoot, msg = root.getElementById("msg");
     const a = this._st().attributes || {};
@@ -165,7 +209,12 @@ class FlightWatcherSettingsCard extends HTMLElement {
       if (v.trim()) fields[i.dataset.k] = v;
     });
     for (const [k, , secret] of FW_SET_FIELDS) if (!secret && fields[k] === String(a[k] || "")) delete fields[k];
+    if (fields.doh !== undefined && fields.doh === String(a.doh || "")) delete fields.doh;  // 1.6.4: unchanged
     if (!Object.keys(fields).length) { msg.innerHTML = `<span class="err">Nothing to save: no field changed.</span>`; return; }
+    if (fields.doh !== undefined) {  // 1.6.4: the Watcher checks the same again
+      const why = fwDohWhy(fields.doh);
+      if (why) { msg.innerHTML = `<span class="err">Date of hire: ${this._e(why)}. Nothing was sent.</span>`; return; }
+    }
     const subtle = !!(window.crypto && crypto.subtle);
     if (FW_PORTAL && (!subtle || !a.pubkey)) {
       // 1.6.0 (FW-0061): the portal only ever relays ciphertext, so a login goes sealed or not at all.

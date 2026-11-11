@@ -54,7 +54,7 @@ import ntfy as NT
 import gate as GT
 import captures as CAPS
 
-VERSION = "1.6.3"
+VERSION = "1.6.4"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -497,7 +497,8 @@ def settings_state(creds=None, result=""):
     o = {**OPTS, **{k: v for k, v in (creds or {}).items() if k in CRED_KEYS and isinstance(v, str) and v.strip()}}
     st = {"instance": INSTANCE, "username": o.get("username") or "", "my_name": o.get("my_name") or "",
           "ctweb_username": o.get("ctweb_username") or "", "has_password": bool(o.get("password")),
-          "has_ctweb_password": bool(o.get("ctweb_password")), "at": now_iso(), "result": result}
+          "has_ctweb_password": bool(o.get("ctweb_password")), "at": now_iso(), "result": result,
+          "doh": pilot_doh()}  # 1.6.4: the Settings card's Date of hire field (the pilot's own, not a secret)
     try:
         st.update(SEAL.public_info(settings_key()))
     except Exception as e:  # noqa: BLE001 (no key: the card says so; Web UI and plain settings/set still work)
@@ -559,6 +560,17 @@ def settings_cmd(payload):
             except Exception:  # noqa: BLE001
                 pass
             return False
+    # 1.6.4: the date of hire (Settings card), plain or sealed like the other non-secret fields. Checked again here; an
+    # unusable one refuses the whole message (nothing saved), with the reason. Saved to <data>/cards.json, not creds.
+    doh = d.get("doh")
+    doh = doh.strip() if isinstance(doh, str) else ("" if doh is None else doh)
+    if doh != "":
+        why = doh_refusal(doh)
+        if why:
+            log.info("settings refused: date of hire not usable (%s)", why)
+            publish_settings(creds=load_creds(), result=f"refused: date of hire: {why}; nothing was saved")
+            return False
+    doh_new = bool(doh) and doh != pilot_doh()
     cur = load_creds()
     changed = []
     if ntfy_off:  # 1.6.2: forget the topic and token (a later topic turns alerts on again)
@@ -575,17 +587,33 @@ def settings_cmd(payload):
             changed.append(k)
     ct_saved = any(isinstance(d.get(k), str) and d[k].strip() for k in ("ctweb_username", "ctweb_password"))
     fl_saved = any(isinstance(d.get(k), str) and d[k].strip() for k in ("username", "password"))
+    if doh_new:  # 1.6.4: first, so a failed write leaves everything as it was
+        try:
+            doh_save(doh)
+        except OSError as e:
+            log.info("settings: date of hire not saved: %s", type(e).__name__)
+            publish_settings(creds=cur, result="refused: the date of hire could not be saved; nothing was saved")
+            return False
     if not changed:
         again = ct_saved and crewtrac_lift()  # 1.6.1: the same CrewTrac details saved again: one more try
         fl_again = fl_saved and flica_lift()  # 1.6.2 review: the same for FLICA details FLICA refused
-        log.info("settings: nothing new (keys %s)", ", ".join(sorted(k for k in d if k in keys)) or "none")
-        publish_settings(creds=cur, result="nothing new" + ("; CrewTrac gets one more try with these details"
-                                                             if again else "") +
-                         ("; FLICA gets one more login try with these details" if fl_again else ""))
+        lifted = (("; CrewTrac gets one more try with these details" if again else "") +
+                  ("; FLICA gets one more login try with these details" if fl_again else ""))
+        if doh_new:  # 1.6.4: only the date of hire: no restart, the new state goes out at once (1.6.4 review: the
+            # same logins saved with it still lift their refusal blocks, as they do alone)
+            log.info("settings: date of hire saved (no restart needed)")
+            publish_settings(creds=cur, result="saved: date of hire (no restart needed)" + lifted)
+            pub("state_attr", state_attrs(S.get("note", "")))
+        else:
+            log.info("settings: nothing new (keys %s)", ", ".join(sorted(k for k in d if k in keys or k == "doh")) or
+                     "none")
+            publish_settings(creds=cur, result="nothing new" + lifted)
         if again:
             publish_charters()
             CHARTER_WAKE.set()
-        return False
+        return doh_new
+    if doh_new:
+        changed.append("date of hire")
     tmp = CREDS_FILE + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # never readable by others, even briefly
     with os.fdopen(fd, "w") as f:
@@ -1541,22 +1569,66 @@ def set_machine(state, note=""):
     S["note"] = note
     save_state(S)
     pub("state", state)
-    pub("state_attr", {"note": note, "version": VERSION, "since": S["since"], "instance": INSTANCE, "doh": pilot_doh(),
-                       "role": ROLES.role(INSTANCE), "features": ROLES.features(INSTANCE)})  # 1.5.0 (FW-0063)
+    pub("state_attr", state_attrs(note))
     if moved and EXPORT["on"] and ROLES.machine_event(state):  # 1.6.0 (FW-0061): one portal event per new state
         portal_event(ROLES.machine_event(state), {"state": state, "since": S["since"]})
+
+
+def state_attrs(note):
+    """sensor.<prefix>_state's attributes (set_machine; 1.6.4: also right after a date of hire is saved)."""
+    return {"note": note, "version": VERSION, "since": S.get("since") or "", "instance": INSTANCE, "doh": pilot_doh(),
+            "role": ROLES.role(INSTANCE), "features": ROLES.features(INSTANCE)}  # 1.5.0 (FW-0063)
 
 
 def pilot_doh():
     """FW-0010: the pilot's date of hire (YYYY-MM-DD) from <data>/cards.json for the schedule card's longevity year,
     "" when none. Published in sensor.<prefix>_state (behind HA's login); the deployed card file under /local/ (no
-    login) carries the placeholder only (cards.py)."""
+    login) carries the placeholder only (cards.py). 1.6.4: the Settings card saves it here (settings_cmd, doh_save)."""
     try:
         with open(f"{DATA}/cards.json", encoding="utf-8") as f:
             d = json.load(f).get("doh", "")
     except (OSError, ValueError, AttributeError):
         return ""
     return d if isinstance(d, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", d) else ""
+
+
+DOH_MIN = "1960-01-01"  # 1.6.4: the earliest date of hire the Settings card and the Watcher take
+
+
+def doh_refusal(v, today=None):
+    """1.6.4: why a date of hire from the Settings card cannot be saved ("" when it can): YYYY-MM-DD, a real date, not
+    after today (HST) and not before DOH_MIN. The card checks the same (fwDohWhy). The value is never in the reason."""
+    if not isinstance(v, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+        return "use YYYY-MM-DD"
+    try:
+        d = date.fromisoformat(v)
+    except ValueError:
+        return "not a real date"
+    today = today or local_now().date()
+    if d > today:
+        return "it is in the future"
+    if v < DOH_MIN:
+        return f"it is before {DOH_MIN[:4]}"
+    return ""
+
+
+def doh_save(doh):
+    """1.6.4: the date of hire into <data>/cards.json ("doh"), every other key there kept; atomic, mode 0600. A file
+    that is not a JSON object is replaced (it had nothing pilot_doh could read); one that cannot be read raises OSError
+    (nothing is written)."""
+    path = f"{DATA}/cards.json"
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except FileNotFoundError:
+        d = {}
+    except ValueError:
+        d = None
+    if not isinstance(d, dict):
+        log.info("%s was not readable as settings: written again with the date of hire only", os.path.basename(path))
+        d = {}
+    d["doh"] = doh
+    PT.write_private(path, json.dumps(d))
 
 
 # ---------------------------------------------------------------- browser
@@ -4134,9 +4206,14 @@ def ha_state(entity_id):
 def pay_settings():
     """(rate, longevity year, ER list) the way the schedule card reads them: the longevity year helper, else the
     DOH in /data/cards.json; rate for today (HST); the per-trip Extended Range list helper. 1.6.0 (FW-0061): a portal
-    pilot's prefs.json first (pref_get: None on any other instance)."""
+    pilot's prefs.json first (pref_get: None on any other instance). 1.6.4: with a date of hire on file, a longevity
+    year still flagged unconfirmed (copied from a never-set helper, prefs_seed) yields to the DOH's year; a year the
+    pilot chose himself (pref/set, or Keep these) still wins, as the admin's own helper does."""
     today = local_now().date().isoformat()
+    doh = pilot_doh()
     yr = pref_get("longevity_year")
+    if yr is not None and doh and pref_unconfirmed("longevity_year"):
+        yr = None
     if yr is None and not portal_on():  # 1.6.2 (item 12): a portal pilot's HA helpers are gone: never read
         try:
             yr = int(float(ha_state(f"input_number.{T}_longevity_year")))
@@ -4144,7 +4221,7 @@ def pay_settings():
             pass
     if not yr:
         try:
-            yr = min(12, PAY.doh_year(json.load(open(f"{DATA}/cards.json"))["doh"], today))
+            yr = min(12, PAY.doh_year(doh, today))
         except Exception:
             yr = None
     er_pref = pref_get("er_trips")
@@ -7458,6 +7535,12 @@ def pref_get(key):
         return ROLES.pref_value(key, v)
     except (ValueError, OverflowError, TypeError):
         return None
+
+
+def pref_unconfirmed(key):
+    """1.6.4: this portal pilot's pref is still flagged unconfirmed (prefs_seed: copied from a never-set helper, not
+    set or kept since). False on any instance whose portal is off (prefs.json is never opened there)."""
+    return portal_on() and key in (prefs_read().get("unconfirmed") or [])
 
 
 def _prefs_save(d):
