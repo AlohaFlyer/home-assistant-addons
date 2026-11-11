@@ -128,10 +128,12 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
     the second mqtt.publish to `flight_watcher_james/recall/set` from "Flight Watcher recall list in (Hark webhook)"
     (the Watcher forwards it itself now, F#75; keeping it meanwhile is harmless). Started after Nov 11 08:00, the first
     start logs December's five bid calendar alerts once each as not sent and the sensor reads Dec 3 08:00 HST. Check in
-    the app log after the update: about 2 min after the start "recall history replayed once to flight_watcher_james"
-    (Ryan's log) and "recall history from the admin: N days taken" (James's), and "charters: the scan of ... shared
+    the app log after the update: about 2 min after the start "recall history sent to flight_watcher_james", about 2
+    min later "recall history replayed once to flight_watcher_james" (Ryan's log; sent only while James's Watcher
+    reads online, and again if it restarted in between) and "recall history from the admin: N days taken" (James's),
+    and "charters: the scan of ... shared
     with the pilot Watchers" (Ryan's) and "makes no CrewTrac login" (James's); James's Charters card then reads
-    "From the admin's CrewTrac scan at ...". For
+    "From the admin's CrewTrac scan at ..." (a warning instead once Ryan's last scan is over 13 h old). For
     HOM: an ignored Check now or Re-arm now answers ok false with a plain why (show "Not taken: <why>"), and with the
     5 min heartbeat staleAfter can be about 10 min in every state. Not in 1.7.1 (contract changes): an alert for a new
     swap idea (F#107) and bid calendar alerts on the portal (FW-0070); also open: the clock card's state-worded Re-arm

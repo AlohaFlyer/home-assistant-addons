@@ -9,15 +9,20 @@
 // (attribute source "admin", last_scan the admin's scan time, crewtrac.state not_used). The card then says where the
 // list comes from and when it was scanned, and has no Scan button (his Watcher would answer that it does not scan).
 // A flight gone from the schedule is struck through at full color (it was faded to 60 %, under WCAG AA contrast).
+// 1.7.1 review: the admin shares only after a scan that read CrewTrac, so when its scans stop (CrewTrac refused its
+// login, or the login removed) the list stays as it was. Once the admin's scan is over CC_STALE_MS old (two 6 h scans
+// and their jitter missed), the status turns to a warning that says newer charters are not shown.
 // Usage: type: custom:flight-watcher-charters-card
 const CC_MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const CC_STALE_MS = 13 * 3600e3;
+const ccStale = (a) => a.source === "admin" && Date.now() - Date.parse(a.last_scan || "") > CC_STALE_MS;
 const ccHst = (iso) => { const t = Date.parse(iso || ""); if (isNaN(t)) return ""; const d = new Date(t - 10 * 3600e3), p = (n) => String(n).padStart(2, "0"); return `${CC_MON[d.getUTCMonth()]} ${d.getUTCDate()} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())} HST`; };
 class FlightWatcherChartersCard extends HTMLElement {
   setConfig(c) { this.c = c || {}; }
   set hass(h) {
     this._h = h;
     const s = h.states["sensor.flight_watcher_charters"];
-    const sig = s ? `${s.last_updated}/${s.state}/${JSON.stringify(s.attributes || {}).length}/${((s.attributes || {}).crewtrac || {}).state}/${(s.attributes || {}).status}` : "-";
+    const sig = s ? `${s.last_updated}/${s.state}/${JSON.stringify(s.attributes || {}).length}/${((s.attributes || {}).crewtrac || {}).state}/${(s.attributes || {}).status}/${ccStale(s.attributes || {})}` : "-";
     if (sig === this._sig) return;
     this._sig = sig;
     this._render();
@@ -41,6 +46,7 @@ class FlightWatcherChartersCard extends HTMLElement {
     const shared = a.source === "admin";  // 1.7.1 (F#22): the admin's scan, shown on a pilot's card
     const ls = ccHst(a.last_scan);
     const [cls, words, can] = !s ? ["info", "Waiting for your Watcher.", false]
+      : shared && ccStale(a) ? ["warn", `The admin's last CrewTrac scan was ${ls}, over 13 h ago. Charters added or cancelled since then are not shown until it scans again.`, false]
       : shared ? ["info", ls ? `From the admin's CrewTrac scan at ${ls}.` : "Waiting for the admin's CrewTrac scan.", false]
       : this._status(a);
     const rows = items.map((r) => `<div class="r${r.gone ? " gone" : ""}"><div><b>${this._e(r.flight)}</b> ${this._e(r.route)} <span class="k">${this._e(r.date)} ${this._e(r.scheduled || "")}</span></div>`

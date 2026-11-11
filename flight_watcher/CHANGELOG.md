@@ -10,8 +10,8 @@ entity, which contract 1 allows). Built from three branches (fw171-core, fw171-c
 Ryan's decisions of Nov 11 are in it too (branch fw171-r2): the publish alert at 08:00, the recall history replayed
 once to each pilot, shared charters (F#22), the health line (F#10), the push text of FW-0042 (Home Assistant, pending)
 and the dashboard snapshot after he removed the weather view. Still no contract change: an exported sensor gains two
-plain attributes, a pilot reads one retained topic under the admin's prefix (no command topic, so not in `roles.SUBS`),
-and a portal pilot's Scan CrewTrac now answers ok false with the reason, the shape F#12 gave ignored presses.
+plain attributes, a pilot reads one retained topic under the admin's prefix and the admin each pilot's retained
+availability (no command topics, so not in `roles.SUBS`), and a portal pilot's Scan CrewTrac now answers ok false with the reason, the shape F#12 gave ignored presses.
 
 ### The Watcher
 
@@ -71,6 +71,17 @@ and a portal pilot's Scan CrewTrac now answers ok false with the reason, the sha
   no `event/recall_miss` now or on any later evaluation, and the RECALL ALERT count (sensor `alert`, the alert bar)
   leaves replayed days out. One log line ("recall history from the admin: N days taken, M already held"). The mark
   means nothing on the admin (its lists come from Hark) and is never forwarded live.
+  Review fix: every Watcher's MQTT session is clean and the replay is not retained, so one published while the
+  pilot's Watcher was down (a Settings save restarts it, a crash, a broker reconnect) was dropped by the broker with
+  no error and still marked done for good. The admin now subscribes to each pilot's own availability,
+  `<prefix>/status` (retained: "online" from his connect, "offline" from the broker's will when his connection ends),
+  outside `roles.subscriptions` (no command; the role lists and the portal contract are unchanged; `pilot_status_subs`,
+  `pilot_status_in`, the payload only compared with "online"). It sends a pilot's replay only once his Watcher has read
+  online for 30 s (`RECALL_REPLAY_SETTLE_S`; his subscriptions follow his "online") and marks it done only once he
+  stayed online 2 min after the send (`RECALL_REPLAY_CONFIRM_S`); if he went offline or restarted in that time, it goes
+  again when he is back (a replay twice changes nothing on him). The admin's own reconnect starts the counts again.
+  Log lines: "waits until its Watcher is online" (once a pilot), "sent to ...", "restarted after the send; sending it
+  again", and "replayed once to ..." when done.
 - F#22, shared charters (Ryan, Nov 11): a pilot's Watcher runs no CrewTrac scan and makes no CrewTrac login at all
   (`charter_scan`, `_charter_scan`, `charter_press`, `crewtrac_lift` do nothing on a pilot; `start_charter_watch`
   publishes his status and starts no charter thread). The admin, after each scan that read CrewTrac and once at start,
@@ -135,7 +146,11 @@ and a portal pilot's Scan CrewTrac now answers ok false with the reason, the sha
   get when it came in): checked against your line, with no alert or push."
 - F#22: the charters card on a pilot (`source` "admin") says "From the admin's CrewTrac scan at Nov 10 14:05 HST."
   (or that it waits for one), has no Scan CrewTrac now button, and says his Watcher never logs in to CrewTrac; the
-  admin's card is as before. A flight gone from the schedule is struck through at full color (it was faded to 60 %,
+  admin's card is as before. Review fix: the admin shares only after a scan that read CrewTrac, so when its scans stop
+  (its CrewTrac login refused or removed) the pilot's list stayed as it was with no warning. Over 13 h after the
+  admin's scan (two 6 h scans and their jitter missed) the status turns to a warning: "The admin's last CrewTrac scan
+  was Nov 9 12:00 HST, over 13 h ago. Charters added or cancelled since then are not shown until it scans again." The
+  card's signature carries that state, so the same sensor turns it on as time passes. A flight gone from the schedule is struck through at full color (it was faded to 60 %,
   under AA contrast). The settings card, when the Watcher says it makes no CrewTrac login (`crewtrac.state`
   "not_used"), has no CrewTrac fields and says "Not needed: your charters come from the admin's CrewTrac scan, and
   your Watcher never logs in to CrewTrac."; a CrewTrac login still saved keeps its Remove CrewTrac login button. The
@@ -218,7 +233,10 @@ and a portal pilot's Scan CrewTrac now answers ok false with the reason, the sha
   card sends nothing and the Watcher ignores a plain `ctweb_off`.
 - `tests/test_fw171_r2.py` (Ryan's Nov 11 decisions): the admin replays its recall history once to each pilot (the
   delay, the body: date, file, rows, the first time and the mark, never `me` or verdicts; once, and a pilot added later
-  gets his own; a pilot replays nothing); the admin's real replay body into a pilot: older days taken, judged, drafted
+  gets his own; a pilot replays nothing; review fix: sent only while the pilot's Watcher reads online, done only once
+  it stayed online after the send, sent again after a restart in that time, the admin's reconnect counting again, a
+  status payload read only as the exact word "online" and from this add-on's pilots only, a pilot reading none);
+  the admin's real replay body into a pilot: older days taken, judged, drafted
   and shown with the admin's time, the held day untouched, no `event/recall_miss`, the alert count his own, a replay
   twice changes nothing, a later live list alerts for its own miss only; the admin ignores the mark and never forwards
   it; the recall card leaves a replayed day out of the bar; the admin shares only the card's flight fields, retained on
@@ -226,7 +244,8 @@ and a portal pilot's Scan CrewTrac now answers ok false with the reason, the sha
   list (source, time, not_used), the first list quiet, a new flight alerting once, malformed or extra data dropped, his
   own old scans counting as seen; a pilot makes no CrewTrac login (no thread, scan, press or retry; his subscriptions
   his own plus the shared list, the admin never reads it); a portal Scan CrewTrac now answers ok false with the
-  reason; the charters card and the settings card (no CrewTrac fields, Remove kept, the health line) in Chromium at
+  reason; the charters card (review fix: the warning once the admin's scan is over 13 h old, in light and dark, and
+  as time passes on the same sensor; the admin's own card never) and the settings card (no CrewTrac fields, Remove kept, the health line) in Chromium at
   390 px light and dark with AA contrast; the fetches sensor's `hour` and `budget` and the janitor's resend; the
   new-pairing message rendered with Jinja (the fields shown, blanks left out, a long why kept off) and its conditions
   and targets unchanged; the dashboard snapshot without the weather view at the sha `ha/README.md` records.

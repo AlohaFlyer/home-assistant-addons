@@ -43,26 +43,52 @@ def _history(A):
     A.MQ.msgs.clear()
 
 
+def _status(A, prefix, text):
+    """The pilot Watcher's availability as the broker hands it to the admin (retained <prefix>/status)."""
+    A.on_message(A.MQ, None, types.SimpleNamespace(topic=f"{prefix}/status", payload=text.encode()))
+
+
+def _online(A, *prefixes):
+    """Each pilot's Watcher online long enough for his replay (RECALL_REPLAY_SETTLE_S)."""
+    for p in prefixes:
+        _status(A, p, "online")
+    A.CLOCK.t += A.RECALL_REPLAY_SETTLE_S
+
+
+def _confirm(A):
+    """The pilots stay online RECALL_REPLAY_CONFIRM_S after the send, a tick a minute: the replay is marked done."""
+    for _ in range(A.RECALL_REPLAY_CONFIRM_S // 60):
+        A.CLOCK.t += 60
+        assert A.recall_replay_tick() == []
+
+
 def test_the_admin_replays_its_recall_history_once_to_each_pilot(mk, monkeypatch, caplog):
     A = mk("")
     _judge(monkeypatch, A)
     A.OPTS["pilots"] = [{"name": "pilot2"}]
     _history(A)
+    _online(A, "flight_watcher_pilot2")
     A._REPLAY["since"] = A.CLOCK.t - 60
     assert A.recall_replay_tick() == [] and not A.MQ.msgs  # not before RECALL_REPLAY_DELAY_S after the start
     A._REPLAY["since"] = A.CLOCK.t - A.RECALL_REPLAY_DELAY_S
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
         assert A.recall_replay_tick() == ["flight_watcher_pilot2"]
-    (topic, body), = [(t, json.loads(p)) for t, p in A.MQ.msgs]
-    assert topic == "flight_watcher_pilot2/recall/set"
-    assert [d["date"] for d in body] == ["2026-10-30", "2026-10-31", "2026-11-01", "2026-11-02", "2026-11-10"]
-    stored = A.DB.get("recall_days")
-    for d in body:  # the list as it came in, its first time, the mark; never 'me', the verdicts or the CCR drafts
-        assert set(d) == {"date", "file", "rows", "at", "replay"} and d["replay"] is True
-        assert d["rows"] == stored[d["date"]]["rows"] and d["at"] == stored[d["date"]]["at"] and d["file"] == "ok"
+        (topic, body), = [(t, json.loads(p)) for t, p in A.MQ.msgs]
+        assert topic == "flight_watcher_pilot2/recall/set"
+        assert [d["date"] for d in body] == ["2026-10-30", "2026-10-31", "2026-11-01", "2026-11-02", "2026-11-10"]
+        stored = A.DB.get("recall_days")
+        for d in body:  # the list as it came in, its first time, the mark; never 'me', the verdicts or the CCR drafts
+            assert set(d) == {"date", "file", "rows", "at", "replay"} and d["replay"] is True
+            assert d["rows"] == stored[d["date"]]["rows"] and d["at"] == stored[d["date"]]["at"] and d["file"] == "ok"
+        assert not A.DB.get(A.RECALL_REPLAY)  # done only once his Watcher stayed online after it
+        A.MQ.msgs.clear()
+        _confirm(A)
+    assert not A.MQ.msgs  # sent once while he stayed online
     assert A.DB.get(A.RECALL_REPLAY)["flight_watcher_pilot2"]["days"] == 5
-    assert caplog.text.count("recall history replayed once to flight_watcher_pilot2: 5 stored days") == 1
+    assert caplog.text.count("recall history replayed once to flight_watcher_pilot2: 5 stored days "
+                             "(2026-10-30 to 2026-11-10)") == 1
     A.MQ.msgs.clear()
+    A.CLOCK.t += 3600
     assert A.recall_replay_tick() == [] and not A.MQ.msgs  # once: the DB flag holds across ticks (and restarts)
     # a long history goes in parts (no one message grows with the 120 days kept), all of it, in date order
     A.DB.put(A.RECALL_REPLAY, {})
@@ -72,14 +98,80 @@ def test_the_admin_replays_its_recall_history_once_to_each_pilot(mk, monkeypatch
     parts = [json.loads(p) for _, p in A.MQ.msgs]
     assert [len(x) for x in parts] == [20, 10] and [d["date"] for x in parts for d in x] == sorted(
         A.DB.get("recall_days"))
+    _confirm(A)
     A.MQ.msgs.clear()
     A.OPTS["pilots"] = [{"name": "pilot2"}, {"name": "demo"}]  # a pilot added later gets his own replay, once
+    _online(A, "flight_watcher_demo")
     assert A.recall_replay_tick() == ["flight_watcher_demo"]
     assert {t for t, _ in A.MQ.msgs} == {"flight_watcher_demo/recall/set"}
     # a pilot replays nothing
     Pi = mk("pilot2")
     Pi._REPLAY["since"] = Pi.CLOCK.t - 999
     assert Pi.recall_replay_tick() == [] and not Pi.MQ.msgs
+
+
+def test_a_replay_waits_for_the_pilots_watcher_and_goes_again_if_he_restarts(mk, monkeypatch, caplog):
+    """1.7.1 review: a replay published while the pilot's Watcher is down is dropped by the broker (clean sessions,
+    not retained) without an error, so the admin sends it only while his availability reads online and marks it done
+    only once he stayed online after it. A restart in that time (a Settings save, a crash) sends it again."""
+    A = mk("")
+    _judge(monkeypatch, A)
+    A.OPTS["pilots"] = [{"name": "pilot2"}]
+    _history(A)
+    A._REPLAY["since"] = A.CLOCK.t - A.RECALL_REPLAY_DELAY_S
+    sends = lambda: [t for t, _ in A.MQ.msgs if t == "flight_watcher_pilot2/recall/set"]  # noqa: E731
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        assert A.recall_replay_tick() == [] and sends() == []  # never seen online: nothing sent, nothing done
+        _status(A, "flight_watcher_pilot2", "offline")  # his will (the restart a Settings save makes)
+        A.CLOCK.t += 60
+        assert A.recall_replay_tick() == [] and sends() == [] and not A.DB.get(A.RECALL_REPLAY)
+        assert caplog.text.count("recall history replay to flight_watcher_pilot2 waits until its Watcher is online") == 1
+        _status(A, "flight_watcher_pilot2", "online")  # back, but his subscriptions follow his "online"
+        assert A.recall_replay_tick() == [] and sends() == []
+        A.CLOCK.t += A.RECALL_REPLAY_SETTLE_S
+        assert A.recall_replay_tick() == ["flight_watcher_pilot2"] and len(sends()) == 1
+        A.CLOCK.t += 60
+        assert A.recall_replay_tick() == [] and not A.DB.get(A.RECALL_REPLAY)  # not done yet: he may still go down
+        _status(A, "flight_watcher_pilot2", "offline")  # he restarts before the confirm time: the replay may be lost
+        A.CLOCK.t += 60
+        assert A.recall_replay_tick() == [] and len(sends()) == 1 and not A.DB.get(A.RECALL_REPLAY)
+        _online(A, "flight_watcher_pilot2")
+        assert A.recall_replay_tick() == ["flight_watcher_pilot2"] and len(sends()) == 2  # sent again
+        assert "its Watcher restarted after the send; sending it again" in caplog.text
+        _confirm(A)
+    assert len(sends()) == 2 and A.DB.get(A.RECALL_REPLAY)["flight_watcher_pilot2"]["days"] == 5
+    # the admin's own reconnect starts the counts again (a restart it missed counts as one): nothing more once done
+    subs = []
+    A.subscribe_all(types.SimpleNamespace(subscribe=lambda t, *a: subs.append(t)))
+    assert subs[-1] == ("flight_watcher_pilot2/status", 1) and A.PILOT_UP == {}
+    assert subs[:-1] == [(f"flight_watcher/{t}", q) if q else f"flight_watcher/{t}"
+                         for t, q in A.ROLES.subscriptions("")]  # the role list itself is unchanged
+    _online(A, "flight_watcher_pilot2")
+    A.CLOCK.t += 600
+    assert A.recall_replay_tick() == [] and len(sends()) == 2
+
+
+def test_a_pilots_status_is_only_data_and_a_pilot_reads_none(mk):
+    A = mk("")
+    A.OPTS["pilots"] = [{"name": "pilot2"}]
+    for text in ("ONLINE", "on", '{"cmd": "online"}', ""):
+        _status(A, "flight_watcher_pilot2", text)
+        assert A.PILOT_UP["flight_watcher_pilot2"] is None, text  # only the exact word starts the count
+    assert A.pilot_status_in("flight_watcher_other/status", b"online") is False  # not a pilot of this add-on
+    assert A.pilot_status_in("flight_watcher/status", b"online") is False  # the admin's own
+    assert A.pilot_status_in("flight_watcher_pilot2/recall", b"online") is False
+    assert set(A.PILOT_UP) == {"flight_watcher_pilot2"}
+    _status(A, "flight_watcher_pilot2", "online")
+    t0 = A.PILOT_UP["flight_watcher_pilot2"]
+    A.CLOCK.t += 300
+    _status(A, "flight_watcher_pilot2", "online")  # the retained copy again: his count goes on
+    assert A.PILOT_UP["flight_watcher_pilot2"] == t0
+    Pi = mk("pilot2")
+    Pi.OPTS["pilots"] = [{"name": "pilot2"}]
+    assert Pi.pilot_status_subs() == [] and Pi.pilot_status_in("flight_watcher_pilot2/status", b"online") is False
+    subs = []
+    Pi.subscribe_all(types.SimpleNamespace(subscribe=lambda t, *a: subs.append(t)))
+    assert not [s for s in subs if (s[0] if isinstance(s, tuple) else s).endswith("/status")]
 
 
 def test_a_replay_is_judged_and_shown_but_never_alerts_or_pushes(mk, monkeypatch, caplog):
@@ -92,6 +184,7 @@ def test_a_replay_is_judged_and_shown_but_never_alerts_or_pushes(mk, monkeypatch
     A.OPTS["pilots"] = [{"name": "pilot2"}]
     _history(A)
     A._REPLAY["since"] = A.CLOCK.t - A.RECALL_REPLAY_DELAY_S
+    _online(A, "flight_watcher_pilot2")
     A.recall_replay_tick()
     (_, replay), = A.MQ.msgs
     admin_at = {d: v["at"] for d, v in A.DB.get("recall_days").items()}
@@ -347,6 +440,43 @@ def test_the_charters_card_says_where_the_list_comes_from_and_has_no_scan_button
         own = dict(a, source=None, crewtrac={"state": "ok"}, status="ok: 400 rows")
         assert pg.evaluate("(st) => !!mount('flight-watcher-charters-card', {}, st).shadowRoot.getElementById('scan')",
                            {"sensor.flight_watcher_charters": _s("1", own)}) is True
+
+
+def test_the_charters_card_warns_when_the_admins_scans_stop():
+    """1.7.1 review: the admin shares only after a scan that read CrewTrac, so when its scans stop (its CrewTrac login
+    refused or removed) the pilot's list stays as it was. Over 13 h after the admin's scan (two 6 h scans and their
+    jitter missed) his card says so as a warning, in light and dark, and the same sensor turns it on as time passes."""
+    def st(last):
+        return _pilot({"sensor.flight_watcher_charters": _s("1", {
+            "count": 1, "items": [{k: r[k] for k in CARD_FIELDS} for r in FLIGHTS.values()], "last_scan": last,
+            "status": "", "source": "admin", "crewtrac": {"state": "not_used", "at": "", "next_try": ""}})})
+    js = """(st) => { window.C = mount('flight-watcher-charters-card-pilot2', {}, st); const r = C.shadowRoot;
+      return {cls: r.getElementById('st').className, st: r.getElementById('st').textContent,
+              rows: r.querySelectorAll('.r').length, con: fwContrast(C), fit: fwFits(C)}; }"""
+    with _browser() as b:
+        for scheme in ("light", "dark"):
+            pg = _page(b, [_card("charters-card")], scheme=scheme)  # the time fixed at Nov 10 11:30 UTC
+            got = pg.evaluate(js, st("2026-11-09T22:00:00+00:00"))  # 13.5 h before
+            assert got["cls"] == "st warn" and got["rows"] == 2
+            assert got["st"] == ("The admin's last CrewTrac scan was Nov 9 12:00 HST, over 13 h ago. Charters added or "
+                                 "cancelled since then are not shown until it scans again.")
+            assert not got["con"]["fails"], got["con"]["fails"]
+            assert got["fit"]["page"] <= 390
+            got = pg.evaluate(js, st("2026-11-09T23:00:00+00:00"))  # 12.5 h before: the scan is still current
+            assert got["cls"] == "st info" and got["st"] == "From the admin's CrewTrac scan at Nov 9 13:00 HST."
+            pg.context.close()
+        # the same sensor (no new list) turns to the warning once 13 h pass: the card re-renders on the next update
+        pg = _page(b, [_card("charters-card")], clock=True)
+        assert pg.evaluate(js, st("2026-11-09T23:00:00+00:00"))["cls"] == "st info"
+        pg.clock.run_for(31 * 60 * 1000)
+        pg.evaluate("(st) => { C.hass = mkHass(st); }", st("2026-11-09T23:00:00+00:00"))
+        assert pg.evaluate("C.shadowRoot.getElementById('st').className") == "st warn"
+        # the admin's own card is never marked from its scan time (its CrewTrac state says what is wrong)
+        pg = _page(b, [_card("charters-card", pilot=False)])
+        own = {"sensor.flight_watcher_charters": _s("1", {"items": [], "last_scan": "2026-11-01T00:00:00+00:00",
+                                                           "crewtrac": {"state": "ok"}, "status": "ok: 400 rows"})}
+        assert pg.evaluate("(st) => mount('flight-watcher-charters-card', {}, st).shadowRoot.getElementById('st')"
+                           ".className", own) == "st ok"
 
 
 def _settings(ct_state="not_used", saved=True, version="1.7.1", hour=37, at="2026-11-10T11:29:00+00:00", budget=100):

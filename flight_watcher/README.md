@@ -44,7 +44,7 @@ publishes what it finds to Home Assistant over MQTT.
   on the tab (on reserve or not, PWA 22.G.2.d); while it is not set an Over 75 miss shows as CHECK.
 - Crew index and pilot lookup, charter watch (CrewTrac, read only; 1.7.1, F#22: the admin's Watcher scans and
   shares the flight list, retained on `flight_watcher/charters/shared`, and a pilot's Watcher shows it with the scan's
-  time and makes no CrewTrac login of its own), tickets (below). Since 1.4.7 the crew index
+  time, as a warning once that is over 13 h old, and makes no CrewTrac login of its own), tickets (below). Since 1.4.7 the crew index
   also reads trips on any schedule the Watcher reads that the pairing package does not list (FW-0056), trips that
   start in the previous bid period and run into it (FW-0057), keeps names such as "Lee, So Young" (made up) whole
   (FW-0058), and flags a pilot on two overlapping trips, reading both again first (FW-0059). Since 1.4.10 it finds

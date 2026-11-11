@@ -297,6 +297,8 @@ def on_message(c, u, msg):
     if msg.topic == CHARTERS_SHARED and is_pilot():  # 1.7.1 (F#22): a pilot reads the admin's list
         charters_shared_in(msg.payload)
         return
+    if pilot_status_in(msg.topic, msg.payload):  # 1.7.1 review: the admin notes a pilot Watcher online or not
+        return
     if refused_sub(msg.topic):
         return
     if msg.topic == f"{T}/email/alert":
@@ -1332,6 +1334,8 @@ def subscribe_all(cl):
         cl.subscribe((f"{T}/{t}", qos) if qos else f"{T}/{t}")
     if is_pilot():  # 1.7.1 (F#22): the admin's shared charter list (retained, the admin's prefix; never a command)
         cl.subscribe((CHARTERS_SHARED, 1))
+    for sub in pilot_status_subs():  # 1.7.1 review: the admin reads its pilots' availability (recall_replay_tick)
+        cl.subscribe(sub)
 
 
 def mqtt_start():
@@ -3276,7 +3280,42 @@ def recall_forward(days, replay=False, prefixes=None):
 RECALL_REPLAY = "recall_replay_done"  # DB on the admin: {pilot prefix: {at, days}}, one entry per pilot replayed to
 RECALL_REPLAY_DELAY_S = 120  # after the admin's start: the pilots' Watchers (started by run.py too) have subscribed
 RECALL_REPLAY_PART = 20  # days a message
-_REPLAY = {"since": time.time()}
+_REPLAY = {"since": time.time(), "sent": {}, "waited": set()}
+# 1.7.1 review: every Watcher's MQTT session is clean and the replay is not retained, so a replay published while the
+# pilot's Watcher is down (a Settings save restarts it, a crash, a broker reconnect) is dropped by the broker without
+# an error. The admin reads each pilot's own availability, <prefix>/status (retained; "online" from his on_connect, the
+# broker's will sets "offline" when his connection ends, os._exit and SIGTERM included), and sends his replay only while
+# it has read "online" for RECALL_REPLAY_SETTLE_S (his subscriptions follow his "online"). It marks the replay done (DB
+# RECALL_REPLAY) only once he stayed online RECALL_REPLAY_CONFIRM_S after the send (past the broker's keepalive
+# window); if he went offline or restarted in that time, the replay goes again when he is back (a replay twice
+# changes nothing on him). Never a command: the payload is only compared with "online", and a pilot's portal cannot write it.
+PILOT_UP = {}  # admin only: pilot prefix -> time.time() its status last turned "online"; None or absent: not online
+RECALL_REPLAY_SETTLE_S = 30
+RECALL_REPLAY_CONFIRM_S = 120
+
+
+def pilot_status_subs():
+    """The admin's subscriptions to its pilots' availability topics (1.7.1 review, recall_replay_tick), outside
+    roles.subscriptions: no command, nothing in the portal contract. A pilot subscribes to none. On every (re)connect
+    the counts start again (PILOT_UP cleared): a restart missed while the admin was offline then counts as one."""
+    if is_pilot():
+        return []
+    PILOT_UP.clear()
+    return [(f"{p}/status", 1) for p in pilot_prefixes()]
+
+
+def pilot_status_in(topic, payload):
+    """A pilot Watcher's availability, read as data (pilot_status_subs): "online" starts his count (an "online" again,
+    as the retained copy on a reconnect, keeps it), anything else stops it. True when the topic is one of them."""
+    p = str(topic)[:-len("/status")] if str(topic).endswith("/status") else ""
+    if not p or p == T or is_pilot() or p not in pilot_prefixes():
+        return False
+    text = payload.decode("utf-8", "replace") if isinstance(payload, bytes) else str(payload or "")
+    if text.strip() == "online":
+        PILOT_UP[p] = PILOT_UP.get(p) or time.time()
+    else:
+        PILOT_UP[p] = None
+    return True
 
 
 def recall_replay_tick(now=None):
@@ -3285,7 +3324,9 @@ def recall_replay_tick(now=None):
     only the days it holds no list for (recall_cmd), judges them against his own line and shows them on his Recall/O75
     tab, with no alert or push; a replay twice changes nothing there. Runs from the uploads janitor (once a minute) on
     the admin only, RECALL_REPLAY_DELAY_S after its start and while MQTT is up; a pilot added later gets his replay
-    then. A publish that fails is tried again the next minute. Returns the prefixes replayed to."""
+    then. 1.7.1 review: sent only while the pilot's Watcher is online (PILOT_UP), done only once it stayed online
+    RECALL_REPLAY_CONFIRM_S after the send, else sent again. A publish that fails is tried again the next minute.
+    Returns the prefixes the replay was sent to on this tick."""
     if ROLES.role(INSTANCE) != ROLES.ADMIN or MQ is None:
         return []
     now = time.time() if now is None else now
@@ -3295,22 +3336,45 @@ def recall_replay_tick(now=None):
     todo = [p for p in pilot_prefixes() if p not in done]
     if not todo:
         return []
-    with RECALL_LOCK:
-        allr = DB.get("recall_days") or {}
-        days = [{"date": dk, "file": d.get("file") or "", "rows": d.get("rows") or [], "at": d.get("at") or ""}
-                for dk, d in sorted(allr.items()) if isinstance(d, dict)]
-    sent = []
-    for p in todo:  # in parts of RECALL_REPLAY_PART days, so no one message grows with the history kept (120 days)
+    days = None
+    sent, confirmed = [], []
+    pend = _REPLAY["sent"]
+    for p in todo:
+        up = PILOT_UP.get(p)
+        if not up or now - up < RECALL_REPLAY_SETTLE_S:
+            if p not in _REPLAY["waited"]:
+                _REPLAY["waited"].add(p)
+                log.info("recall history replay to %s waits until its Watcher is online", p)
+            continue
+        was = pend.get(p)
+        if was and was["up"] == up:  # sent while this same connection was up: done once it stayed up long enough
+            if now - was["at"] >= RECALL_REPLAY_CONFIRM_S:
+                done[p] = {"at": now_iso(), "days": was["days"]}
+                confirmed.append((p, was))
+                pend.pop(p, None)
+            continue
+        if was:
+            log.info("recall history replay to %s: its Watcher restarted after the send; sending it again", p)
+        if days is None:
+            with RECALL_LOCK:
+                allr = DB.get("recall_days") or {}
+                days = [{"date": dk, "file": d.get("file") or "", "rows": d.get("rows") or [], "at": d.get("at") or ""}
+                        for dk, d in sorted(allr.items()) if isinstance(d, dict)]
+        # in parts of RECALL_REPLAY_PART days, so no one message grows with the history kept (120 days)
         parts = [days[i:i + RECALL_REPLAY_PART] for i in range(0, len(days), RECALL_REPLAY_PART)]
         if not all(recall_forward(part, replay=True, prefixes=[p]) for part in parts):
             continue
-        done[p] = {"at": now_iso(), "days": len(days)}
+        pend[p] = {"at": now, "up": up, "days": len(days),
+                   "span": f"{days[0]['date']} to {days[-1]['date']}" if days else "-"}
         sent.append(p)
-    if sent:
+    if confirmed:
         DB.put(RECALL_REPLAY, done)
-        log.info("recall history replayed once to %s: %d stored day%s (%s to %s), marked replay: no alert or push "
-                 "there", ", ".join(sent), len(days), "" if len(days) == 1 else "s",
-                 days[0]["date"] if days else "-", days[-1]["date"] if days else "-")
+        for p, was in confirmed:
+            log.info("recall history replayed once to %s: %d stored day%s (%s), marked replay: no alert or push there",
+                     p, was["days"], "" if was["days"] == 1 else "s", was["span"])
+    if sent:
+        log.info("recall history sent to %s; marked done once its Watcher stays online %d s", ", ".join(sent),
+                 RECALL_REPLAY_CONFIRM_S)
     return sent
 
 
