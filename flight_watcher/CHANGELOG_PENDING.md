@@ -76,3 +76,54 @@
   before release.
 - The alerts mailbox address and the earlier real values stay in git history: rewriting it is HANDOFF item 4 (a
   [DESTRUCTIVE] decision for Ryan).
+
+## 1.7.1, watcher core (branch fw171-core; the integrator folds these into CHANGELOG.md under 1.7.1)
+
+- LIVE-1 (seen in the live log Nov 11 on a pilot instance): his open time hunt paced to his whole 100 loads an hour
+  left the reads that may be left out one first come, first served pool (opt_cap), so his own trips, the pickups and
+  their in-flight lookups took every load that came free and the Tradeboard, the reserve grid, the pot details and
+  the trade requests were "left out of this check: FLICA budget kept for the open time pot" for hours. Each of those
+  four now has its own share of the hour on a pilot (`opt_shares`: one whole read an hour; the Tradeboard 2 loads a
+  bid number, the grid 2 a pot page, the requests 1 a folder and 1 a bid number, the pot details 2), the rest of his
+  optional loads stay a pool (`OPT_POOL_H` 4 at least), and the pace keeps room for both (`opt_hour`: 12 as before
+  with one bid month, so a 5 s hunt stays about 44 s apart; 18 with two, about 96 s instead of 89 s; about 2 min with
+  the close-in folder). A Tradeboard, grid or request read starts only when all its loads fit (`opt_fits`: its share
+  or the pool, and his budget and the host's cap with `GATE_KEEP` free); one that does not fit tries again at the next
+  check without moving its timer, and says so in the log at most every 30 min. A grid cross-check left out keeps the
+  JSON just read. The hard caps are the gate's, unchanged (a pilot's 100 an hour, the host's 480); the admin has no
+  budget, no shares and keeps his ~376 an hour (FW-0035). Tests: `test_pilot_secondary_share.py` (the real check()
+  for 3 h at the floor with a greedy optional read: each of the four reads in every hour, the pot on every check, no
+  rolling hour over 100), pacing tests in `test_freq_ranges.py` and `test_release_a_review.py` moved to the new
+  numbers (their fake request list and pairing pages are now pages the parsers know: those reads run now).
+- F#15: a pilot instance writes an empty rules.json (the SIN example rule only on the admin, as before). Once per
+  pilot (DB `example_rule_checked`), a rule that is exactly the seeded example (every field but created_at) is
+  removed from his rules.json, logged, and its live switch taken down; an edited one stays. Tests: `test_fw171_core.py`.
+- F#12, F#92, F#149: a Check now (Scan FLICA now) the Watcher would ignore (paused, stopped, waiting for settings,
+  stepped aside, in a re-login back-off, under 10 s since the last check, or held by the FLICA budget) answers the
+  portal ok false with the reason in plain words and is not republished (`check_now_refusal`, `press_answer` in the
+  spool); a press from Home Assistant logs the same words. Re-arm says what it does by state (`rearm_answer`): idle or
+  hunting with no check for the clock card's 'Stuck' limit (10 min hunting, 2.5 times the normal interval and at least
+  30 min otherwise) and none running, it runs a full check now (what 'Stuck. Press Re-arm.' asks for); idle or hunting
+  and checking, paused, waiting for settings, a check running, or the budget holding the next check: ok false with
+  why; stopped: the login as before; stepped aside: accepted, and the login waits for the step-aside's end (another
+  command waking the loop no longer cuts it short; only a stop wakes the loop for Re-arm, as documented in 1.6.2).
+  Tests: `test_fw171_core.py`, the wake test in `test_release_a_flica.py` (a Check now while paused is ignored).
+- F#7, F#110: the export's full sweep (every 300 s) writes state.json even when nothing changed: the same payload in a
+  new envelope, so its seq (the write time) moves at least every 5 min in every state, needs_settings included. No new
+  field (contract 1 as it is). Test: `test_portal_export.py`.
+- F#75: the admin forwards each recall list it takes to every pilot's Watcher itself (`recall_forward`:
+  `<prefix>/recall/set`, qos 1, never its 'me'; the pilots by run.py's own rules on the add-on options). A day that
+  comes again unchanged keeps the time it first came in (the card's 'received') and is no new list, so the second
+  copy (Ryan's HA automation still forwards too) changes nothing. Once this is live, the second mqtt.publish of the
+  HA automation "Flight Watcher recall list in (Hark webhook)" can be dropped (a [DESTRUCTIVE] HA change for Ryan,
+  then the `ha/` snapshot refreshed). Tests: `test_fw171_core.py`.
+- F#102: a pilot who saved only his CrewTrac details gets the charter watch while his FLICA watch waits for its login
+  (`start_charter_watch` before the needs_settings wait: CrewTrac is its own site and login), so Scan CrewTrac now
+  has a reader. Test: `test_fw171_core.py`.
+- F#155: a sealed settings message `{"ctweb_off": true}` (the card's Remove CrewTrac login; sealed only, like
+  `ntfy_off`; the portal relays the sealed message as it is, no contract change) removes ctweb_username and
+  ctweb_password from his creds.json, resets the CrewTrac record and restarts the instance like any save ("saved:
+  CrewTrac login removed"; "nothing new: no CrewTrac login is saved" when there is none). Test: `test_fw171_core.py`.
+- F#77: no Watcher-side cause found: a Recall/O75 Refresh from the portal is taken (ok) and answered with a new
+  `checked` time on `sensor.<prefix>_recall_o75` (test in `test_fw171_core.py`); the stuck note is the card's (a late
+  answer never clears it).
