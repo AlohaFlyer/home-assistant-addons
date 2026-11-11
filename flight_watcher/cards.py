@@ -83,8 +83,18 @@ def pilot_copy(s, name):
     s = re.sub(r'(customCards\.push\(\{ type: ")(flight-watcher-[a-z-]+)", name: "([^"]*)"',
                rf'\1\2-{name}", name: "\3 ({name})"', s)
     s = set_doh(s, PLACEHOLDER_DOH)  # FW-0010: the source holds the placeholder already; kept as a guard
-    s = s.replace("Ryan", "")
-    return s
+    return scrub_names(s)
+
+
+# 1.7.1 (F#96): the admin's name never reaches a pilot's copy. Deleting it left broken comments in the source a pilot
+# can view ("(1.4.5,  Nov 6: labeled ...", "'s card never shows them."), so it becomes a neutral word instead,
+# capitalized where it starts a sentence or a comment.
+_NAME_START_RE = re.compile(r"(^|[.!?]\s+|//\s*|/\*\s*)Ryan\b", re.M)
+
+
+def scrub_names(s):
+    """The admin's first name, in a pilot's card copy, as "the admin" ("The admin" at a sentence's start)."""
+    return _NAME_START_RE.sub(r"\1The admin", s).replace("Ryan", "the admin")
 
 
 def load_doh(settings=SETTINGS, dst=DST):

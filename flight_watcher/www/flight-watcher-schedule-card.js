@@ -9,6 +9,13 @@
 //    departs 1400-0359 local). Release = block-in + 15 min (PWA 2 Duty Period ends), report = 1 h
 //    before departure in domicile. Also keeps 11 h before his next trip and skips VAC / blocked days.
 // Pako HI, HOM t1218/t1225. Usage: type: custom:flight-watcher-schedule-card
+// 1.7.1 (F#32): the month's Improved-Pay-Gross goes to the Watcher once the pairings package is in or known missing,
+// never priced without it first. (F#119) The status text colors (green, red, orange, blue) are this card's own
+// variables, lighter on dark cards (prefers-color-scheme, as the portal's dark mode; the dark overrides written before
+// the light rules never applied): WCAG AA 4.5:1 on light and dark cards. For the same reason the reserve grid's tint
+// is lighter on a light card, a trip marked "would trade" is in the text color on its orange mark, the faint marks
+// (no ideas, the trade and drop arrows, FAR '-') use the secondary text color, and another month's days lose their
+// extra fade.
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const DOW = ["SU","MO","TU","WE","TH","FR","SA"];
 const MON3 = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
@@ -144,8 +151,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
   _pack(key) {
     if (this._pk[key] !== undefined) return this._pk[key];
     this._pk[key] = null;
+    // 1.7.1 (F#32): a package known to be missing redraws too, so the month's Improved-Pay-Gross is reported then
+    const gone = () => { this._pk[key] = false; this._sig = null; if (this._h) this.hass = this._h; };
     fetch(`/local/flight-watcher/pairings_${key}.json?v=1`, { cache: "no-cache" }).then((r) => (r.ok ? r.json() : null)).then((j) => {
-      if (!j) { this._pk[key] = false; return; }
+      if (!j) { gone(); return; }
       const [y, mo] = key.split("-").map(Number);
       const nxt = new Date(Date.UTC(y, mo, 1)).toISOString().slice(0, 7);
       const prv = new Date(Date.UTC(y, mo - 2, 1)).toISOString().slice(0, 7);
@@ -161,7 +170,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
           block: ix.block != null ? r[ix.block] : "", crew: ix.crew != null ? r[ix.crew] : "" };
       }
       this._pk[key] = map; this._sig = null; this.hass = this._h;
-    }).catch(() => { this._pk[key] = false; });
+    }).catch(gone);
     return null;
   }
   // FW-0048 (Ryan, Nov 6): the auto swap / auto drop / auto add tools stay hidden for every user but Ryan until he
@@ -662,7 +671,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
         chtml = `<details class="chg"><summary>Changes in v${this._esc(shown.ver)}${shown.at ? " (" + this._esc(String(shown.at).slice(0, 10)) + ")" : ""}</summary>${chg.length ? "<ul>" + chg.map((c) => "<li>" + this._esc(c) + "</li>").join("") + "</ul>" : "<div>No trip or pay changes (first reads of seat or times only).</div>"}</details>`;
         const sig = `${key}|${Math.round(awd)}|${Math.round(curG)}|${vl[vl.length - 1].ver}`;
         this._impSig = this._impSig || {};
-        if (this._impSig[key] !== sig && this._h && !noYear) {
+        // 1.7.1 (F#32): only once the pairings package is in or known to be missing (pk null = still loading). Priced
+        // before that, a trip without its own times pays 0 and no crew override, and the Watcher would store that low
+        // figure until the redraw sent the right one (two reports a load, one of them wrong)
+        if (this._impSig[key] !== sig && this._h && !noYear && pk !== null) {
           this._impSig[key] = sig;
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/improved/set", payload: JSON.stringify({ month: key, awarded: Math.round(awd * 100) / 100, current: Math.round(curG * 100) / 100, ver: vl[vl.length - 1].ver, awarded_ver: vl[0].ver }) });
         }
@@ -682,6 +694,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const flagged = PAY_PREFS.filter((e) => ((S[e] || {}).attributes || {}).unconfirmed === true && !(e === PAY_PREFS[2] && lyByDoh));  // values to keep
     const sel = (lo, hi, step, cur, suf) => { const o = []; for (let v = lo; v <= hi + 1e-9; v += step) { const r = Math.round(v * 100) / 100; o.push(`<option value="${r}"${Math.abs(r - cur) < 1e-9 ? " selected" : ""}>${r}${suf}</option>`); } return o.join(""); };
     this.shadowRoot.innerHTML = `<style>
+      @media (prefers-color-scheme: dark){:host{--fw-ok:#81c784;--fw-err:#ef9a9a;--fw-warn:#ffb74d;--fw-info:#90caf9}}
       ha-card{padding:10px 8px 12px;font-size:12.5px;line-height:1.25;box-sizing:border-box}
       .wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}
       .cal td:nth-child(1),.cal td:nth-child(2),.cal th:nth-child(1),.cal th:nth-child(2){position:sticky;background:var(--card-background-color,#fff);z-index:1}
@@ -691,8 +704,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
         .cal td:nth-child(1),.cal th:nth-child(1){position:static}.cal td:nth-child(2),.cal th:nth-child(2){left:0;border-left:none}
         .lt td:first-child{width:90px}.set span{display:block;margin:2px 0}.nav{font-size:20px}}
       .vbar{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 14px;text-align:left;font-size:12px;margin:0 0 6px;padding-left:0}.vbar .vpay{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 10px}.vbar .nw{white-space:nowrap}
-      @media (max-width:700px){.vbar{font-size:11px;column-gap:10px}.vbar .vpay{column-gap:8px}.vbar .vb{font-size:12px}}.vbar .vb{cursor:pointer;padding:0 6px;color:var(--primary-color)}.vbar .vb.here{opacity:.5}.vbar .vch{opacity:.7;font-size:11px}.vbar .up,.ipanel .up{color:#2e7d32}.vbar .dn,.ipanel .dn{color:#c62828}
-      .idb{cursor:pointer;color:#888;white-space:nowrap}.idb.live{color:var(--primary-color);font-weight:700}.idb small{color:#2e7d32}
+      @media (max-width:700px){.vbar{font-size:11px;column-gap:10px}.vbar .vpay{column-gap:8px}.vbar .vb{font-size:12px}}.vbar .vb{cursor:pointer;padding:0 6px;color:var(--primary-color)}.vbar .vb.here{opacity:.5}.vbar .vch{opacity:.7;font-size:11px}.vbar .up,.ipanel .up{color:var(--fw-ok,#2e7d32)}.vbar .dn,.ipanel .dn{color:var(--fw-err,#c62828)}
+      .idb{cursor:pointer;color:var(--secondary-text-color,#727272);white-space:nowrap}.idb.live{color:var(--primary-color);font-weight:700}.idb small{color:var(--fw-ok,#2e7d32)}
       .ipanel{margin:10px 0;padding:8px;border:1px solid var(--divider-color,#ccc);border-radius:8px}.ipanel .ihd{margin-bottom:6px}.ipanel .ix{float:right;cursor:pointer;padding:0 6px}
       .itab{border-collapse:collapse;font-size:12px;width:100%}.itab td,.itab th{border-bottom:1px solid var(--divider-color,#ddd);padding:3px 5px;text-align:left}.itab td.t{text-align:right}.itab tr.off{opacity:.55}
       .hd2{display:flex;align-items:center;gap:8px;margin:0 0 6px;flex-wrap:wrap}.hd2 .sp{flex:1}.frame{width:fit-content;max-width:100%;margin:0 auto}.chg{margin:6px auto 0;max-width:620px;font-size:11px;color:var(--secondary-text-color);text-align:center}.chg summary{cursor:pointer;font-weight:600;font-size:11px;list-style:none}.chg summary::-webkit-details-marker{display:none}.chg summary::before{content:"\\25B8 "}.chg[open] summary::before{content:"\\25BE "}.chg ul{display:inline-block;text-align:left;margin:4px 0 0;padding-left:16px}.chg li{margin:1px 0}
@@ -707,22 +720,21 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .cal td:nth-child(2){border-left:none}
       .cal th{padding:2px 6px;font-size:10.5px;font-weight:600;text-align:left;color:var(--secondary-text-color);border-bottom:1px solid var(--divider-color);white-space:nowrap}
       .cal th:nth-child(n+5):nth-child(-n+12){text-align:right}
-      .far{font-size:11px}.far.bad{color:#c62828;font-weight:700}.far.ok30{color:#2e7d32;font-weight:700;text-align:center;white-space:nowrap}.far.ok30 .k{font-weight:400;font-size:10px;color:#555}
+      .far{font-size:11px}.far.bad{color:var(--fw-err,#c62828);font-weight:700}.far.ok30{color:var(--fw-ok,#2e7d32);font-weight:700;text-align:center;white-space:nowrap}.far.ok30 .k{font-weight:400;font-size:10px;color:var(--secondary-text-color,#555)}
       .cal td.t{text-align:right;font-size:11px}
       .cal td.n{text-align:right;padding-right:10px}
       .cal tr.r30 td:nth-child(1){box-shadow:inset 4px 0 0 #00897b}
-      .cal td.far.mid{color:#999;text-align:center}
+      .cal td.far.mid{color:var(--secondary-text-color,#727272);text-align:center}
       .cal tr.bx td:nth-child(4){box-shadow:inset 2px 0 0 #444,inset -2px 0 0 #444}
       .cal tr.bxs td:nth-child(4){box-shadow:inset 2px 0 0 #444,inset -2px 0 0 #444,inset 0 2px 0 #444}
       .cal tr.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #444,inset -2px 0 0 #444,inset 0 -2px 0 #444}
       .cal tr.bxs.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #444,inset -2px 0 0 #444,inset 0 2px 0 #444,inset 0 -2px 0 #444}
       .tot1{font-weight:600}
-      .cal tr.gg td:nth-child(4),.cal tr.gg td:nth-child(10){background:rgba(76,175,80,.16)}
-      .cal tr.gx td:nth-child(4),.cal tr.gx td:nth-child(10){background:rgba(229,57,53,.16)}
+      .cal tr.gg td:nth-child(4),.cal tr.gg td:nth-child(10){background:rgba(76,175,80,.12)}
+      .cal tr.gx td:nth-child(4),.cal tr.gx td:nth-child(10){background:rgba(229,57,53,.12)}
       .cal tr.wk td:nth-child(1),.cal tr.wk td:nth-child(2){background:#dde6f3;color:#1f2a44}
       .cal tr.hol td:nth-child(1),.cal tr.hol td:nth-child(2){background:#fff0a8;color:#4e3b00}
       .cal tr.hol2 td:nth-child(1),.cal tr.hol2 td:nth-child(2){background:#fff0a8;color:#4e3b00;background-image:repeating-linear-gradient(135deg,transparent 0 5px,rgba(0,0,0,.06) 5px 7px)}
-      .cal tr.oth td:nth-child(1),.cal tr.oth td:nth-child(2){opacity:.75}
       @media (prefers-color-scheme: dark){
         .cal tr.gg td:nth-child(4),.cal tr.gg td:nth-child(10){background:rgba(76,175,80,.28)}
         .cal tr.gx td:nth-child(4),.cal tr.gx td:nth-child(10){background:rgba(229,57,53,.3)}
@@ -730,8 +742,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         .cal tr.bxs td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb}
         .cal tr.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 -2px 0 #bbb}
         .cal tr.bxs.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb,inset 0 -2px 0 #bbb}
-        .g.green{color:#81c784}.g.red{color:#ef9a9a}.far.bad{color:#ef9a9a}.tot .bad{color:#ef9a9a}.far.ok30{color:#81c784}.far.ok30 .k{color:#bdbdbd}.lgl{color:#90caf9}.er.on{color:#81c784}.sw{color:#ffb74d}.trb.on{color:#ffb74d}
-        .fit{color:#81c784}.tag.avail{color:#81c784}.trip.tr{background:rgba(255,160,0,.4)}
+        .trip.tr{background:rgba(255,160,0,.4)}
         .nav:hover{background:rgba(255,255,255,.1)}.trb:hover{background:rgba(255,255,255,.12)}
       }
       .cal tr.oth td{color:var(--secondary-text-color)}
@@ -743,35 +754,35 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .trip{color:var(--primary-color);font-weight:600}
       .vac{font-weight:600}
       .cal tr.gg td:nth-child(1),.cal tr.gg td:nth-child(2){font-weight:700}
-      .gr{text-align:right;font-size:11px}.g.green{color:#2e7d32;font-weight:700}.g.red{color:#c62828;font-weight:700}.g.black{color:var(--primary-text-color)}
-      .er{color:var(--secondary-text-color);cursor:pointer;text-decoration:underline dotted}.er.on{color:#2e7d32;font-weight:700}.pay{cursor:help}
+      .gr{text-align:right;font-size:11px}.g.green{color:var(--fw-ok,#2e7d32);font-weight:700}.g.red{color:var(--fw-err,#c62828);font-weight:700}.g.black{color:var(--primary-text-color)}
+      .er{color:var(--secondary-text-color);cursor:pointer;text-decoration:underline dotted}.er.on{color:var(--fw-ok,#2e7d32);font-weight:700}.pay{cursor:help}
       .set{margin:8px auto 0;max-width:620px;font-size:11px;color:var(--secondary-text-color);text-align:center}
       .set summary{cursor:pointer;font-weight:600;font-size:11px;list-style:none;margin-bottom:3px}.set summary::before{content:"\\25B8 "}.set[open] summary::before{content:"\\25BE "}
       .set span{margin:0 8px;white-space:nowrap}.set select{font-size:11px;margin-left:3px}.set .r{margin-top:3px}
-      .lg{font-size:11px}.lgl{color:#1565c0;font-weight:600;cursor:help}
-      .trip.tr{background:rgba(255,160,0,.28);border-radius:4px;padding:0 3px}
-      .trb{display:inline-block;font-size:19px;line-height:1;padding:0 6px;margin-left:2px;color:#b0b0b0;cursor:pointer;vertical-align:middle;border-radius:5px}
-      .trb.on{color:#ef6c00;background:rgba(255,160,0,.28)}
-      .drb{display:inline-block;font-size:17px;line-height:1;padding:0 5px;margin-left:1px;color:#b0b0b0;cursor:pointer;vertical-align:middle;border-radius:5px}
-      .drb.on{color:#c62828;background:rgba(229,57,53,.18)}.drb.on.rdy{color:#fff;background:#2e7d32}
+      .lg{font-size:11px}.lgl{color:var(--fw-info,#1565c0);font-weight:600;cursor:help}
+      .trip.tr{background:rgba(255,160,0,.28);border-radius:4px;padding:0 3px;color:var(--primary-text-color)}
+      .trb{display:inline-block;font-size:19px;line-height:1;padding:0 6px;margin-left:2px;color:var(--secondary-text-color,#727272);cursor:pointer;vertical-align:middle;border-radius:5px}
+      .trb.on{color:var(--fw-warn,#8a5300);background:rgba(255,160,0,.28)}
+      .drb{display:inline-block;font-size:17px;line-height:1;padding:0 5px;margin-left:1px;color:var(--secondary-text-color,#727272);cursor:pointer;vertical-align:middle;border-radius:5px}
+      .drb.on{color:var(--fw-err,#c62828);background:rgba(229,57,53,.18)}.drb.on.rdy{color:#fff;background:#2e7d32}
       .trb:hover{background:rgba(0,0,0,.08)}
-      .sw{color:#ef6c00;font-weight:600;cursor:help}
+      .sw{color:var(--fw-warn,#8a5300);font-weight:600;cursor:help}
       .tm{font-size:10.5px;color:var(--secondary-text-color)}
-      .o{font-size:11px}.fit{font-weight:700;color:var(--success-color,#2e7d32)}
+      .o{font-size:11px}.fit{font-weight:700;color:var(--fw-ok,#2e7d32)}
       .clash{text-decoration:line-through;color:var(--secondary-text-color)}
       .tg{font-size:10.5px;color:var(--secondary-text-color)}
       .tag{cursor:help}.lay{display:inline-block;min-width:28px}
-      .st{color:#2e7d32;font-weight:700;cursor:help}.st.fly{color:#1565c0}
-      @media (prefers-color-scheme: dark){.st{color:#81c784}.st.fly{color:#90caf9}}.more{color:var(--primary-color);font-weight:700;padding:0 3px}.tag.avail{color:var(--success-color,#2e7d32);font-weight:600}
-      .tot{margin-top:8px;font-size:14px;font-weight:700;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tgrp{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tpay{flex-wrap:nowrap}.tot .ti{white-space:nowrap}.tot .k{font-weight:600;color:var(--secondary-text-color);font-size:12px;margin-right:4px}.tot .bad{color:#c62828}
+      .st{color:var(--fw-ok,#2e7d32);font-weight:700;cursor:help}.st.fly{color:var(--fw-info,#1565c0)}
+      .more{color:var(--primary-color);font-weight:700;padding:0 3px}.tag.avail{color:var(--fw-ok,#2e7d32);font-weight:600}
+      .tot{margin-top:8px;font-size:14px;font-weight:700;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tgrp{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tpay{flex-wrap:nowrap}.tot .ti{white-space:nowrap}.tot .k{font-weight:600;color:var(--secondary-text-color);font-size:12px;margin-right:4px}.tot .bad{color:var(--fw-err,#c62828)}
       .lt{margin:0 auto;text-align:left}.lt td{padding:1px 6px;vertical-align:top}.lt td:first-child{font-weight:700;white-space:nowrap}
       .leg{font-size:10.5px;color:var(--secondary-text-color);text-align:center;margin-top:6px}
       .leg summary{cursor:pointer;font-weight:600;font-size:11px;list-style:none}.leg summary::before{content:"\\25B8 "}.leg[open] summary::before{content:"\\25BE "}
       .info{display:none;position:fixed;left:8px;right:8px;bottom:14px;z-index:9;margin:0 auto;max-width:460px;font-size:12px;padding:8px 10px 8px;border-radius:8px;background:var(--secondary-background-color);color:var(--primary-text-color);box-shadow:0 4px 18px rgba(0,0,0,.35);cursor:pointer}
       .info::after{content:"tap to close";display:block;margin-top:6px;font-size:10px;color:var(--secondary-text-color);text-align:right}
       .none{text-align:center;color:var(--secondary-text-color);padding:12px}
-      .awl,.rsl{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.awl{font-weight:600}.rsl{color:var(--warning-color,#b26a00)}
-      .unc{color:var(--warning-color,#b26a00);font-weight:700}.ubn{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.set .keep{min-height:44px;padding:6px 12px;font:inherit;border-radius:6px;cursor:pointer}
+      .awl,.rsl{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.awl{font-weight:600}.rsl{color:var(--fw-warn,#8a5300)}
+      .unc{color:var(--fw-warn,#8a5300);font-weight:700}.ubn{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.set .keep{min-height:44px;padding:6px 12px;font:inherit;border-radius:6px;cursor:pointer}
     </style><ha-card><div class="frame"><div class="hd2"><span class="lock ${this._locked ? "shut" : "open"}" title="${this._locked ? `Locked: ${this._marks()} cannot be changed by a tap. Tap to unlock.` : `Unlocked: taps change ${this._marks()}. Tap to lock.`}">${this._locked ? "&#128274;" : "&#128275;"}</span><span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${upd ? `<span class="u">updated ${this._esc(upd)}</span>` : ""}</div>${shead}${vhtml}${body}</div>${panel}
     <div class="info"></div>
     <details class="leg"><summary>Key</summary><table class="lt">

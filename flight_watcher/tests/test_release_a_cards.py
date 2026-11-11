@@ -567,7 +567,10 @@ def test_pilot_search_placeholder_says_what_a_pilots_lookup_takes():
     src = _src("pilot-search-card")
     js = """(role) => { const c = document.createElement('flight-watcher-pilot-search-card'); c.setConfig({});
       document.body.appendChild(c); c.hass = {states: {'sensor.flight_watcher_state': {state: 'idle', attributes: {role}}}};
-      const p = c.shadowRoot.querySelector('input').placeholder; c.remove(); return p; }"""
+      const p = c.shadowRoot.querySelector('input').placeholder, h = c.shadowRoot.querySelector('.hint');
+      const out = p + (h.hidden ? '' : ' | ' + h.textContent); c.remove(); return out; }"""
     got = _run([("pilot", f"({js})('pilot')"), ("admin", f"({js})('admin')")], src)
-    assert got["pilot"] == "Last name (3+ letters), Last, First, or employee #" and "first name" not in got["pilot"]
+    # 1.7.1 (F#43): a short placeholder on a phone; the line under the box says what a name finds
+    assert got["pilot"] == ("Last name or employee # | An employee number finds any pilot; a whole last name (or Last, "
+                            "First) finds pilots on the award or seniority list on file.") and "first name" not in got["pilot"]
     assert got["admin"] == "Anybody's schedule: last name, first name or employee #"  # the admin's crew directory

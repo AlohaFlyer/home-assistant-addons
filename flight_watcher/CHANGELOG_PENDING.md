@@ -76,3 +76,49 @@
   before release.
 - The alerts mailbox address and the earlier real values stay in git history: rewriting it is HANDOFF item 4 (a
   [DESTRUCTIVE] decision for Ryan).
+
+## 1.7.1 (cards: dashboard and portal cards, branch fw171-cards)
+
+The cards' part of 1.7.1, for CHANGELOG.md: the integrator folds it with the other 1.7.1 parts under one 1.7.1 heading
+(with the version bump). No portal contract change: no new sub, event, file kind or command shape (the layout gains
+a card of a bundled type, which contract 1 allows). Built, not deployed.
+
+- F#66: the pilot portal's Watcher tab starts with the recall card in alert mode (`portal_layout.json`), the RECALL
+  ALERT bar of the admin's main view. It takes no room while no MISSED recall has an open CCR draft, and its "Review and
+  file CCR on Recall/O75" button opens the Recall/O75 tab (`/flight-watcher-<name>/recall`, which the portal maps).
+- F#107: swap ideas on the pot card (the portal's Watcher tab), from `sensor.<prefix>_swap_ideas` and
+  `sensor.<prefix>_would_trade`, with the columns of the admin's table (Give up, For, Dates, Layover, Days, Credit,
+  Soft, Gain, Src, Grid) and its key; under 560 px each idea folds into labeled lines. No alert for a new idea here (a
+  portal event would be a contract change).
+- F#4: the clock card keeps an interval the pilot picks until the Watcher's state shows it (or 20 s, or the portal
+  settles the command without it), instead of jumping back on the next 1 s tick; its focus guard looks in the card's
+  shadow root. With the portal's pending marks (`hass.fwPending`) Check now, Hunt, Pause and Re-arm read "Sending..."
+  and take no second tap, and an interval waits for its command.
+- F#32: the schedule card reports a month's Improved-Pay-Gross (`improved/set`) only once the pairings package is in or
+  known to be missing (a 404 now redraws too), so no load sends a first, too low figure.
+- F#43: the pilot lookup is a form (Go is its submit): a phone keyboard's Go or Search key asks after the keyboard
+  commits what it was composing; `enterkeyhint="search"`, autocomplete off, 16 px text (no iOS zoom), the 2 s
+  same-name guard kept. On a pilot's card the placeholder is "Last name or employee #", with a line above ("Look up a
+  pilot's month (asks FLICA)") and one under it saying what a name finds.
+- F#52: the pickers card's box is labeled "Filter this list (it does not ask FLICA)". On a card 500 px wide or less (a
+  container query; the desktop table is unchanged) it shows Pilot, Pos, Best and Avg, with the employee number, the
+  pickup counts and the layovers on a small line under the name: the speeds show at 390 px with no sideways scroll.
+- F#93: each secret field on the settings card has a Show / Hide button and `autocomplete="off"` (no "new-password");
+  a password goes exactly as typed whether shown or not, and the fields empty and hide again after a send. The
+  Watcher's "nothing new" reads "No change: ..." in the text color, not as a green save.
+- F#155 (card side): while a pilot's CrewTrac login is saved, "Remove CrewTrac login" (after a confirm) sends the
+  sealed `{"ctweb_off": true}` on `settings/set` (sealed only, like Turn off phone alerts; never offered on the admin's
+  own instance, whose logins may be the add-on's options). The core half removes it.
+- F#77: a Refresh answer that comes after the recall card's 15 s note clears "No answer from the Watcher yet".
+- F#96: a pilot's card copy says "the admin" ("The admin" at a sentence's start) where the admin's name was, so the
+  comments in the source a pilot can view stay whole (`cards.scrub_names`).
+- F#119: status text on the clock, settings, schedule, pot and recall cards uses the cards' own color variables, a
+  lighter tone on dark cards (prefers-color-scheme, as the portal's dark mode; the schedule card's old dark overrides
+  never applied), so text keeps WCAG AA contrast (4.5:1) on the portal's light and dark cards. Also for AA: the Hunt
+  button and the CHECK chip a darker orange behind white, the NO chip darker gray, the reserve grid tint a little
+  lighter on light cards, a trip marked "would trade" in the text color on its orange mark, the faint marks in the
+  secondary text color, the settings notes in the secondary text color instead of a fade, the pickers' sorted header
+  in the text color. The portal's own primary buttons in dark mode (white on #3a9be0, 3.02:1) are HOM's palette.
+- Tests: `tests/test_fw171_cards.py` renders every changed card as the portal serves it (the pilot's copy, the
+  portal's theme variables and ha-card) in Chromium at 390 and 1100 px, light and dark, computes the contrast of every
+  visible text node from its rendered colors, and checks each fix above; the pilot lookup's node test follows the form.
