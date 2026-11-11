@@ -74,6 +74,12 @@ entity, which contract 1 allows). Built from three branches (fw171-core, fw171-c
   push that wants the tag adds `{{ p.b672 }}` or `{{ p.month_rule }}` to the new-pairing message (a separate HA step);
   a quiet rule built on the 1.4.13 template must not count `Fits 672` or `Over 98/672` as a fail (Ryan decides).
   Tests: `tests/test_fw171_b672.py`; `test_smart.py`'s cap tests now check the cap is gone.
+- FW-0042 part 2 review: a find stored before 1.7.1 that has left the pot (never screened again) drops `Over cap`
+  and `Cap ?` from its `month_rule` in the finds DB rows, month files and card hover (`store.find_month_rule`;
+  blank when nothing else is left, as the 672 h check never ran on it; Pako had 17 in November's file), and the
+  672 h most-it-can-be counts a block on file longer than its own span (a page's slip) in full next to a trip
+  across the window's start, which had read `Fits` up to that slip's excess too low
+  (`far.flight_time_to_release`; the FAR column's `_cum` is unchanged).
 
 ### The cards
 

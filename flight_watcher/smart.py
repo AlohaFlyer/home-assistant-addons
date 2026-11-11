@@ -601,7 +601,7 @@ def block_672(new, mine):
             return _b672(f"{UNK_672} (block not read)")
         if r["unknown_line"]:
             return _b672(f"{UNK_672} (line not on file)")
-        top = max(known, worst)  # worst, unless a block on file is longer than its own span (a page's slip)
+        top = max(known, worst)  # worst (far counts a block on file longer than its span, a page's slip, in full)
         if top <= lim:
             return _b672(f"{FITS_672} ({_hmm(top)})", _hmm(top), True)
         return _b672(f"{UNK_672} ({_hmm(known)} to {_hmm(top)})")

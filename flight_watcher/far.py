@@ -255,15 +255,18 @@ CUM = ((H672, FT_672, "flight time", "FAR 117.23(b)(1)", "FT"),
 def flight_time_to_release(new, mine, span=H672):
     """FW-0042 (Ryan, Nov 9): the flight time (block, not credit) in the one `span` window that ends at the new
     pairing's release: the pilot's own trips in it, flown and scheduled (mine, as legality() reads them), plus the new
-    pairing, with _cum's FAR 117.23(b)(1) machinery and its sure / worst rule. Returns {known: the blocks surely in it
-    (every span wholly inside, its block known), worst: the most it can be (each span's block, or its length when the
-    block is unknown, cut to its overlap), unknown_block: [labels of trips in it whose block is not on file],
+    pairing, with _cum's FAR 117.23(b)(1) machinery and its sure rule. Returns {known: the blocks surely in it
+    (every span wholly inside, its block known), worst: the most it can be (known, plus every other span's block, or
+    its length when the block is unknown, cut to its overlap; never under known), unknown_block: [labels of trips in it whose block is not on file],
     unknown_line: [the days in it whose line is not on file], edge: [labels of trips across the window's start, their
     block known but not how much of it flew inside]}. known == worst when all three lists are empty."""
     b = new["release"]
     a = b - span
     segs = _segs(mine + [new], new, "flight time", a, b)
-    lo, hi, _ = _in_window(segs, a, b, "flight time")
+    lo, _, _ = _in_window(segs, a, b, "flight time")
+    # the most it can be: every block surely in it in full (lo; one on file longer than its own span, a page's slip,
+    # included) plus the rest cut to their overlap (_cum's worst would count that slip only up to its span)
+    hi = lo + sum(min(sg[2], _ov(sg[0], sg[1], a, b)) for sg in segs if not _known_block(sg, a, b))
     blk, line, edge = [], [], []
     for seg in segs:
         s, e, _, bh, _, _, t = seg

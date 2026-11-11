@@ -97,6 +97,15 @@ def is_prem(row):
 
 
 FIND_SMART = ("comm", "comm_why", "value", "month_rule", "b672", "b672_ok")  # FW-0042, 1.7.1 (watcher.SMART_FIELDS)
+# 1.7.1 (FW-0042 part 2): the month_rule parts of the monthly credit cap, which is gone (Ryan, Nov 9: Hark's error).
+# Only a find still in the pot is screened again (record_pot), so one stored before 1.7.1 that has left it keeps them
+GONE_RULE_PARTS = ("Over cap", "Cap ?")
+
+
+def find_month_rule(rule):
+    """A stored find's month_rule without the retired credit cap's parts; '' when nothing else is left (the 672 h
+    block check never ran on that find, so it does not read OK either)."""
+    return ", ".join(p for p in str(rule or "").split(", ") if p and p not in GONE_RULE_PARTS)
 
 
 def now_iso():
@@ -214,7 +223,8 @@ class Store:
                         "month": month, "seen": first, "gone": gone,
                         # FW-0042: the smart push fields as the row last had them in the pot ('' before 1.4.13 or
                         # without smart.json)
-                        **{k: r.get(k, "") for k in FIND_SMART}})
+                        **{k: r.get(k, "") for k in FIND_SMART},
+                        "month_rule": find_month_rule(r.get("month_rule"))})  # 1.7.1: no 'Over cap' from before it
         return out
 
     # ---- pickers (0.4.18, Ryan): how fast each FO/RO grabs a trip = seconds the find sat in open time

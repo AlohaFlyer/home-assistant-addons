@@ -274,3 +274,43 @@ def test_docs_say_the_cap_is_gone():
     assert "cap_credit" in entry and "Fits 672" in entry and "Over 98/672" in entry
     smart_src = open(os.path.join(HERE, "smart.py"), encoding="utf-8").read()
     assert '"Over cap"' not in smart_src and '"Cap ?"' not in smart_src
+
+
+def test_a_block_longer_than_its_span_with_a_trip_across_the_window_start():
+    """A block on file longer than its own span (H9006: 10:00 in an 8 h day, a page's slip) counts in full in the
+    most it can be, next to a trip across the window's start (H9000, up to its overlap): 20:00 + 60:00 + 10:00 + the
+    pickup. Before the fix the slip counted only up to its span there, and an 8:01 pickup read 'Fits 672 (96:01)'
+    when the most it can be is 98:01."""
+    trips = [("H9000", "2030-02-28", "2030-03-02", "08:00", "16:00", "20:00")] + LINE90[2:4] + [
+        ("H9006", "2030-03-23", "2030-03-23", "08:00", "16:00", "10:00")]
+    assert b672(D(3, 29), "8:00", trips) == {"tag": "Fits 672 (98:00)", "b672": "98:00", "b672_ok": True}
+    assert b672(D(3, 29), "8:01", trips) == {"tag": "672 ? (78:01 to 98:01)", "b672": "", "b672_ok": ""}
+    sched, own = line(trips)
+    new = RC.pickup_trip("H9101", D(3, 29), D(3, 29), "06:00", "18:00", 8.0, [])
+    r = F.flight_time_to_release(new, RC.line_records(sched, own, D(3, 29), D(3, 29), D(3, 1)))
+    assert (r["known"], r["worst"], r["edge"]) == (78.0, 98.0, ["H9000 Feb 28"])
+    # the slip alone, no edge trip: known (its block in full) is the most it can be
+    assert b672(D(3, 29), "8:01", LINE90[2:4] + trips[-1:])["tag"] == "Fits 672 (78:01)"
+
+
+def test_a_find_stored_before_1_7_1_no_longer_reads_over_cap(tmp_path):
+    """Only a find still in the pot is screened again; one that left it before 1.7.1 keeps the month_rule it was
+    stored with ('Over cap' on 17 of November's line-month finds on Pako). The finds DB rows, and with them the month
+    files and the finds card's hover, drop the cap's parts; nothing left reads '' (the 672 h check never ran on that
+    find), not OK. Rows from 1.7.1 on are untouched."""
+    from store import Store
+    st = Store(str(tmp_path / "w.db"))
+    old = {"Over cap": "", "Cap ?": "", "Conflict H9001, Over cap": "Conflict H9001",
+           "Days off 9, Cap ?, Rest 10:30": "Days off 9, Rest 10:30", "VAC, Over cap, No sched": "VAC, No sched",
+           "OK": "OK", "": "", "OK, Fits 672 (97:59)": "OK, Fits 672 (97:59)",
+           "Over 98/672 (98:01), Rest 10:30": "Over 98/672 (98:01), Rest 10:30"}
+    for i, rule in enumerate(old):
+        row = {"pairing": f"H92{i:02d}", "dates": "12Mar", "days": "1", "credit": "9:00", "month_rule": rule}
+        st.add_find(f"H92{i:02d}|12Mar", "2030-03", row, f"2030-03-02T19:{i:02d}:00+00:00")
+    st.record_pot("2030-03", {}, set())  # every one of them has left the pot: never screened again
+    for rows in (st.recent_finds(50), st.finds_between("2030-03-01T10:00:00+00:00", "2030-04-01T10:00:00+00:00")):
+        got = {r["pairing"]: r["month_rule"] for r in rows}
+        assert got == {f"H92{i:02d}": want for i, want in enumerate(old.values())}
+        assert not any("cap" in r["month_rule"].lower() for r in rows)
+    assert json.loads(st.db.execute("SELECT row FROM finds WHERE key='H9200|12Mar'").fetchone()[0])["month_rule"] \
+        == "Over cap"  # the stored row itself is not rewritten
