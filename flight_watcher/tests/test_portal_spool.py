@@ -48,17 +48,26 @@ def _batches(samples, n=20):
 
 def test_every_accepted_sample_republishes_exactly_its_sub(demo):
     W = demo
+    # 1.7.1 review: a Scan CrewTrac now that starts no scan is answered ok false (press_answer). With F#22 a pilot's
+    # Watcher never scans, so even with an old CrewTrac login saved (made up) his press is answered ok false (below)
+    W.OPTS.update(ctweb_username="doej", ctweb_password="ct pw")
     for batch in _batches(SAMPLES["accepted"]):
         W.MQ.msgs.clear()
         W.EXPORT["spool"].accepted.clear()
         W.EXPORT["results_list"] = []
         for s in batch:
             _put(W, s["name"], s["cmd"])
-        assert W.portal_spool_once() == len(batch)
+        # 1.7.1 (F#22): Scan CrewTrac now passes the spool's checks, but a pilot's Watcher answers it ok false with
+        # the reason (his charters are the admin's scan) and does not republish it, like an ignored Check now (F#12)
+        taken = [s for s in batch if s["cmd"]["sub"] != "charter_scan/press"]
+        assert W.portal_spool_once() == len(taken)
         got = [(t, p, q, r) for t, p, q, r in W.MQ.msgs if t.startswith("flight_watcher_demo/") and q == 1]
-        assert got == [(f"flight_watcher_demo/{s['cmd']['sub']}", s["cmd"]["payload"], 1, False) for s in batch]
+        assert got == [(f"flight_watcher_demo/{s['cmd']['sub']}", s["cmd"]["payload"], 1, False) for s in taken]
         assert os.listdir(os.path.join(W.PORTAL_DIR, "in")) == []
-        assert [r["ok"] for r in W.EXPORT["results_list"]] == [True] * len(batch)
+        res = {r["id"]: r for r in W.EXPORT["results_list"]}
+        assert [res[s["cmd"]["id"]]["ok"] for s in batch] == [s["cmd"]["sub"] != "charter_scan/press" for s in batch]
+        assert all(res[s["cmd"]["id"]]["why"] == "ignored: charters come from the admin's CrewTrac scan; this Watcher "
+                   "does not log in to CrewTrac" for s in batch if s["cmd"]["sub"] == "charter_scan/press")
     assert {roles.portal_sub(s["cmd"]["sub"]) for s in SAMPLES["accepted"]} == set(roles.PORTAL_CMDS)
 
 
@@ -78,8 +87,9 @@ def test_every_refused_sample_publishes_nothing(demo):
     assert set(roles.PORTAL_REFUSED) <= named  # each refused sub is in the fixture and proven here
 
 
-@pytest.mark.parametrize("sub", roles.PORTAL_REFUSED + ("anything/else", "rule/x/y/live/set", "rule/A/live/set",
-                                                        "../hunt/set", "hunt/set/"))
+@pytest.mark.parametrize("sub", roles.PORTAL_REFUSED + roles.NOT_ON_PORTAL + ("anything/else", "rule/x/y/live/set",
+                                                                              "rule/A/live/set", "../hunt/set",
+                                                                              "hunt/set/"))
 def test_each_refused_sub(demo, sub):
     W = demo
     cmd = {"fwp": 1, "id": "00000000000000aa", "pilot": "demo", "ts": int(T0 * 1000), "sub": sub, "payload": "ON",

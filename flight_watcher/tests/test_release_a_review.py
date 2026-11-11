@@ -327,16 +327,23 @@ def test_optional_loads_never_take_the_pots_share_of_the_hour(mk):
     W.FLAGS["hunt"] = True
     W.S["freq"] = {"hunt_s": 5}
     W.S["pot_urls"] = {"mobile": W.MOBILE_POT, "mobile_003.153": W.MOBILE_POT + "&x=1"}
-    assert W.opt_cap() == 100 - 81 - 4 - 3  # a 5 s hunt is paced (about 89 s): the optional reads keep their share
+    # a 5 s hunt is paced (about 91 s): the optional reads keep their hour. 1.7.1 (LIVE-1): 14, the secondary reads'
+    # shares (10: one bid number, two pot pages) and the pool (4), so the pot is paced 100 - 14 - 4 - 3 = 79 an hour
+    assert W.opt_cap() == W.opt_hour() == 14
     W.S["freq"] = {"hunt_s": 90}
     cap = W.opt_cap()
-    assert cap == 100 - 80 - 4 - 3  # 2 pot pages x 40 checks an hour, the schedule, one check's start
+    assert cap == 100 - 79 - 4 - 3  # a 90 s hunt is held too: 2 pot pages at about 91 s, the schedule, a check's start
     fl = real_fl(W, lambda u: "<html><body>Tradeboard</body></html>")
     W.RUN.update(check=True, optional=True)
-    for i in range(cap):
-        fl.fetch(f"{W.BASE}/online/tb_frame.cgi?BCID=001.152&dp=mr")
-    with pytest.raises(GT.GateSkip):
-        fl.fetch(f"{W.BASE}/online/tb_frame.cgi?BCID=001.152&dp=mr")
+    shares = W.opt_shares()
+    for name, n in list(shares.items()) + [("", cap - sum(shares.values()))]:  # each share, then the pool
+        W.RUN["opt_name"] = name
+        for i in range(n):
+            fl.fetch(f"{W.BASE}/online/tb_frame.cgi?BCID=001.152&dp=mr")
+    for name in list(shares) + [""]:
+        W.RUN["opt_name"] = name
+        with pytest.raises(GT.GateSkip):
+            fl.fetch(f"{W.BASE}/online/tb_frame.cgi?BCID=001.152&dp=mr")
     assert len(fl.loads) == cap
 
 

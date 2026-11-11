@@ -146,8 +146,11 @@ def load(tmp_path, monkeypatch):
     sys.modules.pop("watcher", None)
 
 
-def _pilot(load, mode="refused", password=BAD):
-    return load("pilot2", creds={"ctweb_username": USER, "ctweb_password": password}, mode=mode)
+def _settings_login(load, mode="refused", password=BAD):
+    """1.7.1 (F#22): the CrewTrac details saved in Settings (creds.json) are the admin's now: a pilot's Watcher makes no
+    CrewTrac login (test_a_pilot_never_logs_in_to_crewtrac). These tests ran on a pilot before 1.7.1; the same rules
+    hold for the admin's Settings-saved login."""
+    return load("", creds={"ctweb_username": USER, "ctweb_password": password}, mode=mode)
 
 
 # ---------------------------------------------------------------- charter.Scanner.login: three outcomes
@@ -178,16 +181,31 @@ def test_refusal_text_and_backoff_steps():
     assert h != CH.creds_hash(USER + "1", BAD)  # the user name is part of the key too
 
 
+def test_a_pilot_never_logs_in_to_crewtrac(load):
+    """1.7.1 (F#22): whatever CrewTrac login a pilot saved, his Watcher never opens a CrewTrac session: no scan, no
+    press, no timer (charter_wait says none may run), the same saved again lifts nothing."""
+    W, ct = load("pilot2", creds={"ctweb_username": USER, "ctweb_password": GOOD}, mode="ok")
+    W.CHARTER_WAKE = FakeEvent()
+    assert W.charter_scan() is False and W.charter_press() is False and not W.CHARTER_WAKE.is_set()
+    W.CHARTER_WAKE.set()
+    assert W.charter_turn() is False
+    assert W.settings_cmd(json.dumps({"ctweb_password": GOOD})) is False  # nothing new, no "one more try"
+    st = json.loads([p for t, p, _, _ in W.MQ.msgs if t == "flight_watcher_pilot2/settings/state"][-1])
+    assert st["result"] == "nothing new"
+    assert ct.calls == [] and ct.logins() == []
+    assert W.MQ.charters("flight_watcher_pilot2")[-1]["crewtrac"]["state"] == "not_used"
+
+
 # ---------------------------------------------------------------- the refusal block
 def test_a_refusal_blocks_every_later_login_until_new_details(load, caplog):
-    W, ct = _pilot(load)
+    W, ct = _settings_login(load)
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
         assert W.charter_scan() is False
     assert len(ct.logins()) == 1
     rec = W.DB.get("crewtrac")
     assert rec["state"] == "refused" and rec["block"] == CH.creds_hash(USER, BAD) == rec["creds"]
     assert BAD not in json.dumps(rec) and USER not in json.dumps(rec)  # a hash, never the values
-    last = W.MQ.charters("flight_watcher_pilot2")[-1]
+    last = W.MQ.charters("flight_watcher")[-1]
     assert last["status"] == ("CrewTrac refused your user ID or password at 08:05 HST. No more tries until you save "
                               "new CrewTrac details in Settings.")
     assert last["crewtrac"] == {"state": "refused", "at": "2026-11-10T08:05:00-10:00", "next_try": ""}
@@ -199,19 +217,19 @@ def test_a_refusal_blocks_every_later_login_until_new_details(load, caplog):
     W.CHARTER_WAKE = FakeEvent()
     assert W.charter_turn() is False and W.CHARTER_WAKE.waits == [W.CHARTER_IDLE_S]
     # Scan CrewTrac now: the status again, never a login
-    n = len(W.MQ.charters("flight_watcher_pilot2"))
+    n = len(W.MQ.charters("flight_watcher"))
     assert W.charter_press() is False and not W.CHARTER_WAKE.is_set()
-    assert len(W.MQ.charters("flight_watcher_pilot2")) == n + 1
-    W.on_message(None, None, type("M", (), {"topic": "flight_watcher_pilot2/charter_scan/press", "payload": b"PRESS"})())
-    assert not W.CHARTER_WAKE.is_set() and len(W.MQ.charters("flight_watcher_pilot2")) == n + 2  # the MQTT button too
+    assert len(W.MQ.charters("flight_watcher")) == n + 1
+    W.on_message(None, None, type("M", (), {"topic": "flight_watcher/charter_scan/press", "payload": b"PRESS"})())
+    assert not W.CHARTER_WAKE.is_set() and len(W.MQ.charters("flight_watcher")) == n + 2  # the MQTT button too
     assert len(ct.logins()) == 1
     # a restart with the same details keeps the block
-    W, ct = _pilot(load)
+    W, ct = _settings_login(load)
     assert W.charter_wait() is None and W.charter_scan() is False and ct.logins() == []
     # new details saved in Settings (the card's sealed path) lift it
     sealed = SEAL.seal(SEAL.public_info(W.settings_key())["pubkey"], {"ctweb_password": GOOD})
     assert W.settings_cmd(json.dumps(sealed))
-    W, ct = load("pilot2", mode="ok")  # the restart settings_cmd asks for
+    W, ct = load("", mode="ok")  # the restart settings_cmd asks for
     assert W.OPTS["ctweb_password"] == GOOD
     assert W.charter_wait() == 0  # due now (no scan yet)
     rec = W.DB.get("crewtrac")
@@ -226,7 +244,7 @@ def test_a_refusal_blocks_every_later_login_until_new_details(load, caplog):
 
 
 def test_a_refusal_after_new_details_blocks_those_too(load):
-    W, ct = _pilot(load)
+    W, ct = _settings_login(load)
     W.charter_scan()
     W.OPTS["ctweb_password"] = BAD + "2"  # other details in use (as after a restart)
     assert W.charter_wait() == 0 and W.charter_scan() is False and len(ct.logins()) == 2
@@ -235,11 +253,12 @@ def test_a_refusal_after_new_details_blocks_those_too(load):
 
 
 def test_status_texts_for_pilot_and_admin(load):
-    W, _ = load("pilot2", creds={})
-    assert W.charter_scan() is False
+    # 1.7.1 (F#22): a pilot's Watcher shows the admin's scan and needs no CrewTrac login
+    W, ct = load("pilot2", creds={})
+    assert W.charter_scan() is False and ct.logins() == []
     last = W.MQ.charters("flight_watcher_pilot2")[-1]
-    assert last["status"] == "Enter your CrewTrac user ID and password in Settings."
-    assert last["crewtrac"]["state"] == "not_configured" and W.charter_wait() is None
+    assert last["status"] == "waiting for the admin's CrewTrac scan" and last["source"] == "admin"
+    assert last["crewtrac"]["state"] == "not_used"
     assert W.charter_press() is False
     W, ct = load("", mode="refused")  # the admin, nothing in the Configuration tab
     W.charter_scan()
@@ -260,7 +279,7 @@ def test_status_texts_for_pilot_and_admin(load):
 @pytest.mark.parametrize("mode", ["noform", "unexpected", "down", "timeout", "dropped"])
 def test_outage_backs_off_doubling_to_six_hours_and_a_success_resets_it(load, mode):
     import time
-    W, ct = _pilot(load, mode=mode, password=GOOD)
+    W, ct = _settings_login(load, mode=mode, password=GOOD)
     W.CHARTER_WAKE = FakeEvent()
     for want in (1800, 3600, 7200, 14400, 21600, 21600):
         t0 = time.time()
@@ -269,7 +288,7 @@ def test_outage_backs_off_doubling_to_six_hours_and_a_success_resets_it(load, mo
         assert rec["state"] == "outage" and t0 + want - 1 <= rec["retry_at"] <= time.time() + want + 1
         assert want - 5 <= W.charter_wait() <= want
     assert len(ct.logins()) == (0 if mode in ("noform", "down") else 6)
-    st = W.MQ.charters("flight_watcher_pilot2")[-1]
+    st = W.MQ.charters("flight_watcher")[-1]
     assert st["status"] == "CrewTrac could not be reached at 08:05 HST. Next try at 14:05 HST."
     assert st["crewtrac"] == {"state": "outage", "at": "2026-11-10T08:05:00-10:00", "next_try": "2026-11-10T14:05:00-10:00"}
     # the thread waits the back-off (not 30 s to 10 min)
@@ -284,23 +303,23 @@ def test_outage_backs_off_doubling_to_six_hours_and_a_success_resets_it(load, mo
     W.charter_scan()
     assert 1795 <= W.charter_wait() <= 1800  # the sequence starts again at 30 min
     if mode == "unexpected":
-        st = W.MQ.charters("flight_watcher_pilot2")[-1]
+        st = W.MQ.charters("flight_watcher")[-1]
         assert st["status"] == "CrewTrac could not be reached at 08:05 HST. Next try at 08:35 HST."
 
 
 # ---------------------------------------------------------------- Scan CrewTrac now
 def test_scan_now_keeps_30_min_between_its_scans_and_never_queues_a_second(load, caplog):
     import time
-    W, ct = _pilot(load, mode="ok", password=GOOD)
+    W, ct = _settings_login(load, mode="ok", password=GOOD)
     W.CHARTER_WAKE = FakeEvent()
     t = time.time()
     assert W.charter_press(now=t) is True and W.CHARTER_WAKE.is_set()
     assert W.charter_turn() is True and len(ct.logins()) == 1 and not W.CHARTER_WAKE.is_set()
-    n = len(W.MQ.charters("flight_watcher_pilot2"))
+    n = len(W.MQ.charters("flight_watcher"))
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
         assert W.charter_press(now=t + 60) is False and not W.CHARTER_WAKE.is_set()
         assert W.charter_press(now=t + 1799) is False
-    assert len(W.MQ.charters("flight_watcher_pilot2")) == n + 2  # the status republished, nothing more
+    assert len(W.MQ.charters("flight_watcher")) == n + 2  # the status republished, nothing more
     assert "the last pressed scan was under 30 min ago" in caplog.text
     assert W.charter_press(now=t + 1800) is True
     W.charter_turn()
@@ -347,7 +366,7 @@ def test_admin_working_login_scans_as_before(load, caplog):
 
 # ---------------------------------------------------------------- passwords kept exactly
 def test_passwords_are_kept_with_their_spaces_end_to_end(load):
-    W, _ = load("pilot2", creds={})
+    W, _ = load("", creds={})
     assert W.settings_cmd(json.dumps({"username": " doej ", "password": "  pw flica  ", "ctweb_username": f" {USER} ",
                                       "ctweb_password": GOOD, "my_name": " Doe "}))
     c = W.load_creds()
@@ -359,7 +378,7 @@ def test_passwords_are_kept_with_their_spaces_end_to_end(load):
     assert SEAL.open_sealed(W.settings_key(), sealed["enc"]) == {"ctweb_password": "\tpw séaled  "}
     assert W.settings_cmd(json.dumps(sealed))
     assert W.load_creds()["ctweb_password"] == "\tpw séaled  "
-    W, ct = load("pilot2", mode="ok")  # restarted with them
+    W, ct = load("", mode="ok")  # restarted with them
     assert W.OPTS["password"] == "  pw flica" and W.OPTS["username"] == "doej"
     assert W.crewtrac_login() == (USER, "\tpw séaled  ")
     W.charter_scan()
@@ -443,14 +462,14 @@ def test_the_login_form_back_twice_is_a_refusal_and_presses_wait_for_it(load):
     """A refusal CrewTrac words in a way not on the list (or with no message at all) is not retried on and on: the
     first time the login form comes back is an outage marked unconfirmed (presses held), the second is a refusal."""
     import time
-    W, ct = _pilot(load, mode="ok", password=BAD)
+    W, ct = _settings_login(load, mode="ok", password=BAD)
     ct.answer = LOGIN  # the same login form back, no message
     W.CHARTER_WAKE = FakeEvent()
     t0 = time.time()
     assert W.charter_scan() is False and len(ct.logins()) == 1
     rec = W.DB.get("crewtrac")
     assert rec["state"] == "outage" and rec["unconfirmed"] == 1 and 1795 <= W.charter_wait() <= 1800
-    st = W.MQ.charters("flight_watcher_pilot2")[-1]
+    st = W.MQ.charters("flight_watcher")[-1]
     assert st["status"] == ("CrewTrac did not let the login through at 08:05 HST. One more try at 08:35 HST; if that "
                             "fails the same way, no more tries until you save new CrewTrac details in Settings.")
     for i in range(4):  # Scan CrewTrac now, 30 min apart: held, the timer's next try decides
@@ -466,7 +485,7 @@ def test_the_login_form_back_twice_is_a_refusal_and_presses_wait_for_it(load):
 
 
 def test_the_unconfirmed_mark_is_cleared_by_a_success(load):
-    W, ct = _pilot(load, mode="ok", password=GOOD)
+    W, ct = _settings_login(load, mode="ok", password=GOOD)
     ct.answer = LOGIN
     W.charter_scan()
     assert W.DB.get("crewtrac")["unconfirmed"] == 1
@@ -492,7 +511,7 @@ def test_an_error_after_a_good_login_backs_off(load, monkeypatch):
 
 
 def test_a_scan_error_after_a_good_login_is_an_outage(load, monkeypatch):
-    W, ct = _pilot(load, mode="ok", password=GOOD)
+    W, ct = _settings_login(load, mode="ok", password=GOOD)
     monkeypatch.setattr(W.CH.Scanner, "scan", lambda self, today: (_ for _ in ()).throw(ValueError("synthetic")))
     assert W.charter_scan() is False and len(ct.logins()) == 1
     assert W.DB.get("crewtrac")["state"] == "outage" and 1795 <= W.charter_wait() <= 1800
@@ -508,7 +527,7 @@ def test_admin_details_saved_in_settings_are_changed_in_settings(load):
 
 
 def test_the_charter_thread_survives_an_error(load, monkeypatch):
-    W, ct = _pilot(load, mode="ok", password="")  # no details: the turn that only republishes the status
+    W, ct = _settings_login(load, mode="ok", password="")  # no details: the turn that only republishes the status
 
     class Stop(BaseException):
         pass
@@ -533,20 +552,20 @@ def test_the_charter_thread_survives_an_error(load, monkeypatch):
 
 
 def test_a_press_error_never_reaches_mqtt(load, monkeypatch, caplog):
-    W, _ = _pilot(load, mode="ok", password=GOOD)
+    W, _ = _settings_login(load, mode="ok", password=GOOD)
     monkeypatch.setattr(W, "charter_press", lambda: (_ for _ in ()).throw(OSError("synthetic")))
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
-        W.on_message(None, None, type("M", (), {"topic": "flight_watcher_pilot2/charter_scan/press",
+        W.on_message(None, None, type("M", (), {"topic": "flight_watcher/charter_scan/press",
                                                 "payload": b"PRESS"})())
     assert "charter scan press: synthetic" in caplog.text
 
 
 def test_a_new_user_name_alone_lifts_the_block(load):
-    W, ct = _pilot(load)
+    W, ct = _settings_login(load)
     W.charter_scan()
     assert W.charter_wait() is None
     assert W.settings_cmd(json.dumps({"ctweb_username": USER + "9"}))
-    W, ct = load("pilot2", mode="ok")
+    W, ct = load("", mode="ok")
     assert W.crewtrac_login() == (USER + "9", BAD) and W.charter_wait() == 0
     assert W.charter_scan() is True and len(ct.logins()) == 1
 
@@ -555,17 +574,18 @@ def test_a_refusal_stays_after_the_details_are_cleared_and_come_back(load):
     """Cleared (not configured) and the same refused details back later (restored file, or the admin's Configuration
     tab) still send nothing: the refused hash is kept apart from the per-details record."""
     import os
-    W, ct = _pilot(load)
+    W, ct = _settings_login(load)
     W.charter_scan()
     os.remove(W.CREDS_FILE)
-    W, ct = load("pilot2", mode="ok")
+    W, ct = load("", mode="ok")
     assert W.crewtrac_info()["state"] == "not_configured"
-    W, ct = load("pilot2", creds={"ctweb_username": USER, "ctweb_password": BAD}, mode="ok")  # restored file
+    W, ct = load("", creds={"ctweb_username": USER, "ctweb_password": BAD}, mode="ok")  # restored file
     assert W.charter_wait() is None and W.charter_scan() is False and W.charter_press() is False
     assert ct.logins() == [] and W.crewtrac_info()["state"] == "refused"
-    assert W.MQ.charters("flight_watcher_pilot2")[-1]["status"].startswith("CrewTrac refused your user ID or "
+    assert W.MQ.charters("flight_watcher")[-1]["status"].startswith("CrewTrac refused your user ID or "
                                                                           "password at 08:05 HST.")
     # the admin: blanked in the Configuration tab, then the same password put back
+    os.remove(W.CREDS_FILE)  # 1.7.1: the same /data as the Settings-saved login above
     W, ct = load("", opts={"ctweb_username": USER, "ctweb_password": BAD}, mode="refused")
     W.charter_scan()
     W, ct = load("", opts={"ctweb_username": USER, "ctweb_password": ""}, mode="ok")
@@ -577,11 +597,11 @@ def test_a_refusal_stays_after_the_details_are_cleared_and_come_back(load):
 def test_saving_the_same_details_again_in_settings_allows_one_more_try(load):
     """After CrewTrac unlocked an account (or a refusal that was not one), saving the same details in Settings is the
     way back without sending a wrong password: one more try; refused again, blocked again."""
-    W, ct = _pilot(load)
+    W, ct = _settings_login(load)
     W.charter_scan()
     W.CHARTER_WAKE = FakeEvent()
     assert W.settings_cmd(json.dumps({"ctweb_password": BAD})) is False  # nothing new: no restart
-    st = json.loads([p for t, p, _, _ in W.MQ.msgs if t == "flight_watcher_pilot2/settings/state"][-1])
+    st = json.loads([p for t, p, _, _ in W.MQ.msgs if t == "flight_watcher/settings/state"][-1])
     assert st["result"] == "nothing new; CrewTrac gets one more try with these details"
     assert W.CHARTER_WAKE.is_set() and W.charter_wait() == 0
     assert W.DB.get("charter_status") == "CrewTrac details saved again: the next scan tries them once more."
@@ -589,22 +609,22 @@ def test_saving_the_same_details_again_in_settings_allows_one_more_try(load):
     assert W.charter_wait() is None and W.charter_scan() is False and len(ct.logins()) == 2
     # a plain settings save that carries no CrewTrac field lifts nothing
     assert W.settings_cmd(json.dumps({"my_name": "Doe"}))
-    W, ct = load("pilot2", mode="ok")
+    W, ct = load("", mode="ok")
     assert W.charter_wait() is None and ct.logins() == []
     assert W.settings_cmd(json.dumps({"my_name": "Doe"})) is False  # nothing new, no CrewTrac field either
     assert W.charter_wait() is None and ct.logins() == []
     # cleared, then the same details typed in Settings again: a save, so one more try (the restart uses them)
     import os
     os.remove(W.CREDS_FILE)
-    W, ct = load("pilot2", mode="ok")
+    W, ct = load("", mode="ok")
     assert W.settings_cmd(json.dumps({"ctweb_username": USER, "ctweb_password": BAD}))
-    W, ct = load("pilot2", mode="ok")
+    W, ct = load("", mode="ok")
     assert W.charter_wait() == 0 and W.charter_scan() is True and len(ct.logins()) == 1
 
 
 @pytest.mark.parametrize("last", ["not a date", 12345])
 def test_a_first_start_with_an_unreadable_last_scan(load, last):
-    W, _ = _pilot(load, mode="ok", password=GOOD)
+    W, _ = _settings_login(load, mode="ok", password=GOOD)
     W.DB.put("charter_scan_at", last)
     W.DB.put("crewtrac", None)
     assert W.crewtrac_info()["state"] == ""

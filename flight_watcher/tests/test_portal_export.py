@@ -15,6 +15,7 @@ from conftest import ha_state
 
 PILOT2_IDS = sorted([
     "binary_sensor.flight_watcher_pilot2_session_ok", "button.flight_watcher_pilot2_check_now",
+    "sensor.flight_watcher_pilot2_bid_calendar",  # 1.7.1 (FW-0070): a core entity (contract 4.2: no HOM release)
     "button.flight_watcher_pilot2_re_arm", "button.flight_watcher_pilot2_scan_crewtrac_charters_now",
     "input_number.flight_watcher_pilot2_federal_tax_pct", "input_number.flight_watcher_pilot2_longevity_year",
     "input_number.flight_watcher_pilot2_state_tax_pct", "input_text.flight_watcher_pilot2_er_trips",
@@ -135,8 +136,14 @@ def test_unchanged_state_is_not_rewritten_and_ha_down_keeps_the_last(portal_pilo
     W.portal_start(threads=False)
     W.portal_export_once(full=True)
     first = _read(W, "state.json")
-    W.portal_export_once(full=True)
+    W.MQ.publish(f"{W.T}/pot/state", "{}")  # a publish that changes nothing HA answers
+    W.portal_export_once(full=False)
     assert _read(W, "state.json") == first  # same payload: no new write, no new seq
+    # 1.7.1 (F#7, F#110): the full sweep is the heartbeat: the same payload in a new envelope, a later seq
+    W.portal_export_once(full=True)
+    beat = _read(W, "state.json")
+    assert beat["seq"] > first["seq"] and beat["payload"] == first["payload"]
+    first = beat
     ha.down = True
     W.portal_export_once(full=True)
     body = _payload(W, "state.json", "state")

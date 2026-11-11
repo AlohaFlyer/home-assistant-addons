@@ -31,6 +31,7 @@ REPORT_DOMICILE_MIN, REPORT_AWAY_MIN = 60, 75
 VOLATILE = ("updated", "status_as_of")  # move on every call; a payload that differs only here is not news
 STN_RE = re.compile(r"^[A-Z]{3}$")
 # The zone of every station in pot.TZ (whose offsets are the standard ones): its local time with daylight time
+# (1.7.1: and of a few stations pot.TZ does not list; layover.py reads only this table)
 ZONES = {"HNL": "Pacific/Honolulu", "OGG": "Pacific/Honolulu", "KOA": "Pacific/Honolulu", "ITO": "Pacific/Honolulu",
          "LIH": "Pacific/Honolulu", "PPT": "Pacific/Tahiti", "RAR": "Pacific/Rarotonga", "PPG": "Pacific/Pago_Pago",
          "ANC": "America/Anchorage",
@@ -42,7 +43,10 @@ ZONES = {"HNL": "Pacific/Honolulu", "OGG": "Pacific/Honolulu", "KOA": "Pacific/H
          **{s: "Asia/Tokyo" for s in ("NRT", "HND", "KIX", "CTS", "FUK", "NGO")},
          "ICN": "Asia/Seoul", "SYD": "Australia/Sydney", "BNE": "Australia/Brisbane", "MEL": "Australia/Melbourne",
          "AKL": "Pacific/Auckland", "SIN": "Asia/Singapore", "MNL": "Asia/Manila", "CRK": "Asia/Manila",
-         "TPE": "Asia/Taipei", "PEK": "Asia/Shanghai", "PVG": "Asia/Shanghai", "HKG": "Asia/Hong_Kong"}
+         "TPE": "Asia/Taipei", "PEK": "Asia/Shanghai", "PVG": "Asia/Shanghai", "HKG": "Asia/Hong_Kong",
+         # 1.7.1 (FW-0072): stations in Ryan's pairing and finds files on Pako (Nov 11) that had no zone (charters)
+         "BFI": "America/Los_Angeles", "IND": "America/Indiana/Indianapolis", "LAN": "America/Detroit",
+         "LNK": "America/Chicago"}
 # An origin in neither table lies somewhere from UTC-11 to UTC+13, so its printed time read as HST runs 1 h early to
 # 23 h late: the arrival is looked for around that reading minus this many hours (the middle)
 UNKNOWN_MID_H = 11
@@ -296,6 +300,24 @@ def working_flight(items, own, now, roll_h=2):
     }
     state = " ".join(s for s in (flight, f"{cur['frm']}-{cur['to']}") if s)
     return {"state": state[:STATE_MAX], "attributes": attrs}
+
+
+def layover_leg(items, own, now):
+    """1.7.1 (FW-0072, the van time source): the leg a layover's van goes to, from the pilot's own read legs: the first
+    that starts a duty after a layover (not its trip's first leg) whose trip's previous leg has blocked in by now and
+    which has not departed yet. {pairing, start (the trip's first day), city (its origin, the layover station), flt,
+    dep ('HH:MM' as FLICA printed it at the origin, '' when not), date (its departure date at the origin)}, or None
+    (at home, flying, or no legs read)."""
+    now = now.astimezone(HST) if now.tzinfo else now.replace(tzinfo=HST)
+    own = own if isinstance(own, dict) else {}
+    for p in _pairings(items):
+        rec = own.get(p["key"])
+        legs = _legs(p, rec if isinstance(rec, dict) else {})
+        for j, x in enumerate(legs):
+            if j and x["duty_start"] and legs[j - 1]["arr"] <= now < x["dep"]:
+                return {"pairing": x["trip"], "start": p["start"], "city": x["frm"], "flt": x["flt"],
+                        "dep": _hhmm(_mins(x["dep_l"])) if _mins(x["dep_l"]) is not None else "", "date": x["date"]}
+    return None
 
 
 def news(payload):

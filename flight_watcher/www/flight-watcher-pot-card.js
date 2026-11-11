@@ -10,6 +10,14 @@
 // FDP limits; PWA 10.E.1.a 11 h domicile rest, as the Watcher's far.py screens them) and Value (credit x your hourly
 // rate, PWA 3.D.6). Rows on VAC or blocked days stay hidden until Show VAC/blocked is ticked (this card's own state on
 // this device; no helper). Read only: nothing here talks to FLICA. All times HST.
+// 1.7.1 (F#107): Swap ideas under the pot, as on the admin's Watcher view (its Jinja table, which the portal cannot
+// run): sensor.flight_watcher_swap_ideas (attribute ideas: better trips for the ones marked) and
+// sensor.flight_watcher_would_trade (attribute keys: the trips marked "would trade" on the Schedule tab). The same
+// columns as that table (Give up, For, Dates, Layover, Days, Credit, Soft, Gain, Src, Grid); on a card 560 px wide or
+// less each idea folds into labeled lines, so nothing scrolls sideways at 390 px. Read only: a new idea makes no alert
+// here (a portal event would be a contract change).
+// 1.7.1 (F#119): the chip colors are this card's own variables, lighter on dark cards (Home Assistant's dark mode, which the
+// portal sets from the device), so they keep WCAG AA contrast (4.5:1) on both (the portal's dark error red is 4.497:1).
 // Usage: type: custom:flight-watcher-pot-card
 // PWA 3.D.6 A330 PAX / B787 First Officer hourly rate by longevity year (1-12) and effective date (as the schedule card)
 const PC_RATE_DATES = ["2023-03-02", "2024-03-02", "2025-03-02", "2026-03-02", "2027-01-31"];
@@ -29,11 +37,15 @@ const pcHst = (iso) => { const t = Date.parse(iso || ""); if (isNaN(t)) return "
 class FlightWatcherPotCard extends HTMLElement {
   setConfig(c) { this.c = c || {}; }
   set hass(h) {
+    // review r4: the dark colors follow Home Assistant's own dark mode (hass.themes.darkMode, which the portal sets from the device), not the phone's: a profile forced to Light on a phone in dark mode kept the light-on-dark reds
+    if (typeof this.toggleAttribute === "function") this.toggleAttribute("dark", !!(h && h.themes && typeof h.themes.darkMode === "boolean" ? h.themes.darkMode : typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches));
     this._h = h;
     const ids = ["sensor.flight_watcher_pot_count", "sensor.flight_watcher_tradeboard_pickups", "sensor.flight_watcher_last_check",
-      "sensor.flight_watcher_state", "input_number.flight_watcher_longevity_year"];
+      "sensor.flight_watcher_state", "input_number.flight_watcher_longevity_year", "sensor.flight_watcher_swap_ideas",
+      "sensor.flight_watcher_would_trade"];
     // the state too, not only last_updated: a portal's own state copy may keep last_updated unchanged
-    const sig = ids.map((e) => { const s = h.states[e]; return s ? `${s.last_updated}/${e.endsWith("_state") ? (s.attributes || {}).doh : s.state}` : "-"; }).join("|")
+    // (1.7.1: the swap ideas and the marks by their content, which can change with the same count)
+    const sig = ids.map((e) => { const s = h.states[e]; return s ? `${s.last_updated}/${e.endsWith("_state") ? (s.attributes || {}).doh : /_(swap_ideas|would_trade)$/.test(e) ? JSON.stringify(s.attributes || {}) : s.state}` : "-"; }).join("|")
       + "|" + Math.floor(Date.now() / 60e3);  // the 15 min freshness line moves on with the clock
     if (sig === this._sig) return;
     this._sig = sig;
@@ -66,6 +78,32 @@ class FlightWatcherPotCard extends HTMLElement {
     if (s.startsWith("OK")) return ["warn", `FAR ${s}`];
     if (!s || s === "?") return ["mute", "FAR ?"];
     return ["bad", `FAR: ${s}`];
+  }
+  // 1.7.1 (F#107): the swap ideas for the trips marked "would trade", the admin's Watcher view table in HTML
+  _swaps() {
+    const ideas = this._a("sensor.flight_watcher_swap_ideas").ideas, marks = this._a("sensor.flight_watcher_would_trade").keys;
+    const list = Array.isArray(ideas) ? ideas : [], marked = Array.isArray(marks) ? marks : [];
+    const head = `<h4>Swap ideas${list.length ? ` <span class="k">${list.length}</span>` : ""}</h4>`;
+    if (!marked.length) return `${head}<div class="k">No trips marked. On the Schedule tab, tap &#8644; beside a trip you would trade for something better: better trips for it show up here.</div>`;
+    const mine = [...new Set(marked.map((k) => String(k).split("|")[0]))].join(", ");
+    if (!list.length) return `${head}<div class="k">Watching for better trips than <b>${this._e(mine)}</b>. Nothing better right now.</div>`;
+    const cols = ["Give up", "For", "Dates", "Layover", "Days", "Credit", "Soft", "Gain", "Src", "Grid"];
+    const none = (v) => v == null || v === "" || /^-?none-?$/i.test(String(v));
+    const rows = list.map((i) => {
+      const lay = !none(i.layover) ? this._e(i.layover) : i.turn ? `<b>${this._e(i.turn)}</b> turn` : "turn";
+      const src = i.src === "T" ? "Tradeboard" : "Open time";
+      const grid = i.grid_ok ? `<b class="ok">OK</b>` : this._e(String(i.grid || "?").replace(/^grid\s+/i, "") || "?");  // review r4: the cell is labeled Grid already
+      const cells = [this._e(i.for_trip), `<b>${this._e(i.pairing)}</b>`, this._e(i.dates), lay, this._e(i.days), this._e(i.credit),
+        this._e(i.soft), `<b>${this._e(i.soft_gain)}</b> soft, ${this._e(i.credit_gain)} cr`, src, grid];
+      return `<tr>${cells.map((c, n) => `<td data-l="${cols[n]}">${c}</td>`).join("")}</tr>`;
+    }).join("");
+    return `${head}<div class="swb"><table class="swt"><thead><tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`
+      + `<details><summary>Swap ideas key</summary><ul class="k">
+        <li>Better = soft time up 0:30 or more, or credit up 1:00 or more without losing soft time.</li>
+        <li>Legal with your trip gone: FAR 117 OK, 11 h home rest (PWA 10.E.1.a), no VAC or blocked day.</li>
+        <li><b>Grid</b>: the new trip must share a day with yours, and every day you move off must be green on the reserve grid; a red idea waits until it turns green.</li>
+        <li><b>Src</b>: Open time = the open time pot, Tradeboard = a Tradeboard pickup post.</li>
+        <li>Read only: a swap goes through FLICA, done by you; nothing is filed from here.</li></ul></details>`;
   }
   _render() {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
@@ -114,6 +152,7 @@ class FlightWatcherPotCard extends HTMLElement {
     const valNote = rate == null ? "Value: set your longevity year in Pay settings (Schedule tab)."
       : `Value = credit x $${rate.toFixed(2)}/h (PWA 3.D.6, longevity year ${lyr}${unconf ? ", not confirmed yet: check it in Pay settings on the Schedule tab" : ""}).`;
     this.shadowRoot.innerHTML = `<style>
+      :host([dark]){--fw-ok:#81c784;--fw-err:#ef9a9a;--fw-warn:#ffb74d}
       ha-card{padding:10px 12px;font-size:13px;line-height:1.35}
       h3{margin:0;font-size:15px}.hd{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:6px}
       .k{color:var(--secondary-text-color);font-size:12px}
@@ -123,13 +162,21 @@ class FlightWatcherPotCard extends HTMLElement {
       .l3{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
       .trip{font-size:14px}.t{font-weight:700;color:var(--primary-color);margin-left:2px}.val{margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums}
       .c{font-size:12px;padding:1px 7px;border-radius:10px;border:1px solid var(--divider-color)}
-      .c.ok{color:var(--success-color,#2e7d32);border-color:currentColor}.c.warn{color:var(--warning-color,#b26a00);border-color:currentColor}
-      .c.bad{color:var(--error-color,#c62828);border-color:currentColor}.c.mute{color:var(--secondary-text-color)}
+      .c.ok{color:var(--fw-ok,#2e7d32);border-color:currentColor}.c.warn{color:var(--fw-warn,#8a5300);border-color:currentColor}
+      .c.bad{color:var(--fw-err,#c62828);border-color:currentColor}.c.mute{color:var(--secondary-text-color)}
       .sv{display:inline-flex;align-items:center;gap:6px;min-height:44px;cursor:pointer}.sv input{width:22px;height:22px;margin:0}
-      details{margin-top:6px}summary{cursor:pointer;color:var(--secondary-text-color);font-size:12px;min-height:32px;line-height:32px}
+      details{margin-top:6px}summary{cursor:pointer;color:var(--secondary-text-color);font-size:12px;line-height:20px;padding:12px 0}
       ul{margin:4px 0;padding-left:18px}
+      .sw{margin-top:8px;padding-top:6px;border-top:1px solid var(--divider-color)}h4{margin:0 0 4px;font-size:14px}
+      .swb{container-type:inline-size}.swt{border-collapse:collapse;width:100%;font-size:12px}
+      .swt th,.swt td{text-align:left;padding:3px 5px;border-bottom:1px solid var(--divider-color);vertical-align:top}
+      .swt th{color:var(--secondary-text-color);font-weight:600;white-space:nowrap}.swt b.ok{color:var(--fw-ok,#2e7d32)}
+      @container (max-width:560px){.swt thead{display:none}.swt,.swt tbody{display:block}
+        .swt tr{display:flex;flex-wrap:wrap;gap:2px 12px;padding:6px 0;border-bottom:1px solid var(--divider-color)}
+        .swt td{display:block;padding:0;border:0}.swt td::before{content:attr(data-l) " ";color:var(--secondary-text-color);font-size:11px}}
     </style><ha-card><div class="hd"><h3>Open time pot and Tradeboard pickups</h3><span class="k">${head}</span></div>
       ${warn ? `<div class="warn">${this._e(warn)}</div>` : ""}${list}${vacBox}
+      <div class="sw">${this._swaps()}</div>
       <details><summary>Key</summary><ul class="k">
         <li><b>T</b> after a trip = Tradeboard pickup post; the rest are the open time pot.</li>
         <li><b>Fits</b> = no overlap with your trips, VAC or blocked days; <b>needs your schedule</b> = your FLICA schedule for those days is not read yet.</li>

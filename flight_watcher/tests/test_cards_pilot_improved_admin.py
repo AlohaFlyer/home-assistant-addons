@@ -142,28 +142,31 @@ console.log(JSON.stringify(r));
 
 
 def test_pilot_search_card_asks_once_per_press(tmp_path):
-    """FW-0025: Go and Enter both ask; a double tap on Go, a held Enter (auto-repeat) or an IME confirm does not ask
-    again. Another name, or the same one 2 s later, asks."""
+    """FW-0025: every submit of the form asks (Go, and Enter or a phone keyboard's Go / Search key, which submit the
+    form: 1.7.1, F#43); a double tap on Go or a held Enter (repeated submits) inside 2 s does not ask again. Another
+    name, or the same one 2 s later, asks. A keydown asks nothing by itself (an Enter sent while a phone keyboard is
+    still composing used to be dropped there): it only keeps HA's shortcuts out. The browser test of the real form is
+    test_fw171_cards.py::test_pilot_search_card_asks_once_per_press_through_its_form."""
     js = _DOM + _src("flight-watcher-pilot-search-card.js") + r"""
 const asks = []; window.addEventListener("flight-watcher-pilot", (e) => asks.push(e.detail));
-const el = () => { const l = {}; return { value: "", addEventListener: (t, f) => { l[t] = f; }, fire: (t, e) => l[t](e) }; };
-const input = el(), button = el();
-const root = { set innerHTML(v) {}, querySelector: (s) => (s === "input" ? input : button) };
+const el = () => { const l = {}; return { value: "", hidden: true, addEventListener: (t, f) => { l[t] = f; }, fire: (t, e) => l[t] && l[t](e) }; };
+const input = el(), form = el(), other = el();
+const root = { set innerHTML(v) {}, querySelector: (s) => (s === "input" ? input : s === "form" ? form : other) };
 const c = new FlightWatcherPilotSearchCard(); c.attachShadow = () => root; c.setConfig({}); c.hass = {}; c.hass = {};
+const submit = () => { let stopped = false; form.fire("submit", { preventDefault: () => { stopped = true; } }); return stopped; };
 const key = (k, more) => { let stopped = false; input.fire("keydown", { key: k, repeat: false, isComposing: false, stopPropagation: () => { stopped = true; }, ...more }); return stopped; };
 const r = {};
-input.value = "  "; button.fire("click"); r.blank = asks.length;
-input.value = " Doe "; button.fire("click"); button.fire("click"); r.dbl = asks.length;
-clock += 300; r.stop = key("Enter"); r.enterSoon = asks.length;   // Enter right after Go: the same press
-clock += 2500; key("Enter"); key("Enter", { repeat: true }); key("Enter", { repeat: true }); r.held = asks.length;
-clock += 2500; key("Enter", { isComposing: true }); r.ime = asks.length;
-key("a"); r.letter = asks.length;
-input.value = "Roe"; key("Enter"); r.other = asks.length;
+input.value = "  "; r.prevented = submit(); r.blank = asks.length;
+input.value = " Doe "; submit(); submit(); r.dbl = asks.length;
+clock += 300; submit(); r.enterSoon = asks.length;   // Enter right after Go: the same press
+clock += 2500; submit(); submit(); submit(); r.held = asks.length;
+clock += 2500; r.stop = key("Enter", { isComposing: true }); key("Enter"); r.keys = asks.length;   // keydown: never asks
+input.value = "Roe"; submit(); r.other = asks.length;
 console.log(JSON.stringify({ ...r, asks }));
 """
     r = _node(tmp_path, js)
-    assert r["blank"] == 0 and r["dbl"] == 1 and r["enterSoon"] == 1 and r["stop"] is True
-    assert r["held"] == 2 and r["ime"] == 2 and r["letter"] == 2 and r["other"] == 3
+    assert r["prevented"] is True and r["blank"] == 0 and r["dbl"] == 1 and r["enterSoon"] == 1
+    assert r["held"] == 2 and r["stop"] is True and r["keys"] == 2 and r["other"] == 3
     assert r["asks"] == [{"q": "Doe"}, {"q": "Doe"}, {"q": "Roe"}]
 
 

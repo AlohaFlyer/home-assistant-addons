@@ -61,6 +61,7 @@ SUBS = {
     "ticket/new": "tickets", "ticket/image": "tickets", "ticket/act": "tickets", "ticket/edit": "tickets",
     "ticket/delete": "tickets", "crew_scan/press": "crew_index",
     "upload/chunk": "uploads",
+    "layover/note": "one_writer",  # 1.7.1 (FW-0072): the admin's layover notes (one writer of the shared folder)
     "pref/set": "prefs",  # 1.6.0 (FW-0061): portal only (PORTAL_SUBS), never on the admin
 }
 QOS = {"upload/chunk": 1}  # FW-0066: chunks at qos 1; every other subscription at qos 0
@@ -76,11 +77,14 @@ EVENTS = {
     "recall_file_requested": "hark_ccr", "recall_ccr_filed": "hark_ccr", "recall_hark_alert": "hark_ccr",
     "drop_ready": "drop_mark", "swap_map": "auto_swap",
     "ticket_new": "tickets", "ticket_fixed": "tickets", "ticket_error": "tickets",
+    "bid_calendar": "core",  # 1.7.1 (FW-0070): every instance; only the admin's prefix has an HA push
+    "van": "admin_pushes",  # 1.7.1 (FW-0072): van alerts from Hark's working flight, the admin only
 }
 
 # discovery oids that are not core (every other entity is core)
 ENTITY_FEATURE = {"auto_swap": "auto_swap", "swap_map": "auto_swap", "drop_away": "drop_mark",
-                  "crew_index": "crew_index", "crew_scan": "crew_index"}
+                  "crew_index": "crew_index", "crew_scan": "crew_index",
+                  "layover_van": "admin_pushes", "layover_notes": "one_writer"}  # 1.7.1 (FW-0072)
 
 # Words of lowercase letters and digits joined by single underscores, 1 to 32 characters: HA keeps no entity id with
 # "__" or a trailing "_" (sensor.flight_watcher_jane__state), so "jane_", "a__b" and "_x" are refused. config.yaml
@@ -92,10 +96,10 @@ MAX_PILOTS = 3  # pilots besides the admin: each runs its own Chromium and its o
 # share folders or /data files would collide with them, so it is refused (run.py). ha/check_push_isolation.py reads
 # an id whose first word is here as the admin's.
 RESERVED = frozenset({
-    "admin", "auto", "blocked", "captures", "ccr", "charter", "charters", "check", "crew", "default", "drop",
+    "admin", "auto", "bid", "blocked", "captures", "ccr", "charter", "charters", "check", "crew", "default", "drop",
     "email", "er", "event", "federal", "fetches", "finds", "flica", "freq", "grid", "hunt", "improved", "last",
-    "longevity", "map", "month", "new", "next", "normal", "ot", "own", "pause", "pickers", "pilot", "pot", "pref",
-    "re", "rearm", "recall", "reserve", "rule", "rules", "ryan", "scan", "schedule", "session", "settings", "show",
+    "layover", "layovers", "longevity", "map", "month", "new", "next", "normal", "ot", "own", "pause", "pickers",
+    "pilot", "pot", "pref", "re", "rearm", "recall", "reserve", "rule", "rules", "ryan", "scan", "schedule", "session", "settings", "show",
     "state", "status", "swap", "ticket", "tickets", "trade", "tradeboard", "update", "upload", "uploads",
     "versions", "working", "would", "www",
 })
@@ -219,6 +223,10 @@ def entity_freq_limits(instance, portal=False):
 
 PORTAL_REFUSED = ("email/alert", "crew_scan/press", "upload/chunk", "drop/set", "auto_swap/set", "swap_map/press",
                   "hunt/state", "pause/state")
+# 1.7.1 (FW-0072): subs added after contract 1 revision 2 that a portal never offers. Contract 1 refuses "anything
+# else" besides PORTAL_CMDS (PORTAL_CONTRACT.md 5.2), so these are refused without naming them in the fixture, whose
+# bytes stay as revision 2 froze them (a later revision may list them in PORTAL_REFUSED)
+NOT_ON_PORTAL = ("layover/note",)
 # the tabs of the portal (portal_layout.json), and the one each event opens (ntfy Click, the events list); 1.7.0: the
 # Tickets tab last, so the five tabs before it keep their places in the tab bar
 PORTAL_TABS = ("watcher", "schedule", "pilot", "recall", "settings", "tickets")

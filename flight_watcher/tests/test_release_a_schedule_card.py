@@ -101,9 +101,10 @@ def _render(cases, src=None):
             b.close()
 
 
-READ_JS = """(h) => { window.calls = []; const c = document.createElement('flight-watcher-schedule-card');
+READ_JS = """async (h) => { window.calls = []; const c = document.createElement('flight-watcher-schedule-card');
   c.setConfig({}); document.body.appendChild(c);
   c.hass = {states: h, callService: async (d, s, data) => window.calls.push([d, s, data])};
+  await new Promise((ok) => setTimeout(ok, 50));  // 1.7.1 (F#32): the pairings package settles (none here) first
   const r = c.shadowRoot, q = (s) => r.querySelector(s);
   const out = {text: r.textContent, ubn: q('.ubn') && q('.ubn').textContent, tot: (q('.tot') || {}).textContent || '',
                improved: window.calls.some((x) => (x[2].topic || '').endsWith('improved/set'))};

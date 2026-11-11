@@ -455,6 +455,8 @@ def test_on_a_pilot_only_check_now_and_switch_changes_wake_a_check(mk, monkeypat
     assert _woke(W, "hunt/set", b"ON") and not _woke(W, "hunt/set", b"ON")  # a change wakes; the same value does not
     assert _woke(W, "pause/set", b"ON") and not _woke(W, "pause/set", b"ON")  # Pause on loads nothing: always wakes
     W.S["wake_ts"] = 0
+    assert not _woke(W, "check_now/press")  # 1.7.1 (F#12): paused, a press is ignored (a portal press says why)
+    W.FLAGS["pause"] = False
     assert _woke(W, "check_now/press")
     W.S["wake_ts"], W.S["last_check_ts"] = 0, W.CLOCK.t - 9
     assert not _woke(W, "check_now/press")  # a pilot's gap is the admin's 10 s (it was his 120 s floor)

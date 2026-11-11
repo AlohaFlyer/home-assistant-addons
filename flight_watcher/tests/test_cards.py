@@ -113,8 +113,8 @@ def test_every_entity_a_card_reads_is_one_discovery_creates(tmp_path, monkeypatc
 
 def test_pilot_copy_equals_the_original_apart_from_the_prefix():
     """1.5.0 (FW-0063): every role decision a card makes reads the Watcher's own state sensor, so a pilot's copy keeps
-    every line of the original: undoing the prefix and name changes of pilot_copy() gives the original back (less
-    the word Ryan, which pilot_copy takes out)."""
+    every line of the original: undoing the prefix and name changes of pilot_copy() gives the original back (with the
+    word Ryan as "the admin", 1.7.1 F#96: pilot_copy takes the name out)."""
     import re as _re
     f = cards.build("1", ["pilot2"])
     for base, orig in cards.sources().items():
@@ -122,7 +122,7 @@ def test_pilot_copy_equals_the_original_apart_from_the_prefix():
         back = cp.replace("flight_watcher_pilot2", "flight_watcher").replace("/local/flight-watcher/pilot2/", "/local/flight-watcher/")
         back = back.replace('"/flight-watcher-pilot2/recall"', '"/flight-watcher/recall"').replace(' (pilot2)"', '"')
         back = _re.sub(r'(flight-watcher-[a-z-]+?)-pilot2"', r'\1"', back)
-        assert back == cards.set_doh(orig, cards.PLACEHOLDER_DOH).replace("Ryan", ""), base
+        assert back == cards.scrub_names(cards.set_doh(orig, cards.PLACEHOLDER_DOH)), base
     sch = f["flight-watcher-schedule-card-pilot2.js"]
     # FW-0048 + FW-0063: the drop mark needs both the admin role (never true on a pilot's Watcher) and the HA owner
     assert '"sensor.flight_watcher_pilot2_state"' in sch and 'role === "admin" && hh.user && hh.user.is_owner' in sch

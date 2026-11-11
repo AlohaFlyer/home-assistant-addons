@@ -4,6 +4,74 @@ Copies of the Flight Watcher pieces that live in Home Assistant on Pako HI rathe
 review and history (FW-0036). Nothing in this folder is loaded by Home Assistant or by the app, and the app store
 ignores it (no `config.yaml`).
 
+## Pending on Pako (1.7.1, FW-0070): "Flight Watcher bid calendar"
+
+`automations_flight_watcher.yaml` ends with a new automation, **Flight Watcher bid calendar** (id `1794426120070`),
+that is not on Pako yet (Pako has the 19 Flight Watcher automations above it, read 2026-11-11). Apply it through the HA
+connector once 1.7.1 is live: a [DESTRUCTIVE] yes from Ryan. Triggered by `flight_watcher/event/bid_calendar` only
+(never `flight_watcher_<pilot>/...`), it sends the payload's `title` and `message` as a critical push (sound `default`,
+`critical: 1`, `volume: 1.0`, tag `flight_watcher_bid_calendar_<key>`) to `notify.mobile_app_ryans_iphone` and
+`notify.mobile_app_ryans_iphone_16`, exactly like "Flight Watcher charter". HA appends a new automation at the end of
+`/config/automations.yaml`, so the snapshot keeps file order; after applying, check by sha256 of the redacted text as
+in Refresh below, then drop this section. Until then the snapshot is ahead of Pako by this one and "Flight Watcher van
+time" below (21 here, 19 there, besides Pako's temporary van automation, which Claude deletes first so the order
+stays the snapshot's). Undo: delete the automation (its id above). The guard passes with it
+(`python3 ha/check_push_isolation.py`: 21 automations with the van one, 0 offenders).
+
+**Changed on Pako 2026-11-11 by Ryan (the weather view removed):** Ryan deleted the Aviation Wx view (path `wx`) from
+his dashboard `flight-watcher`; its other five views (Watcher, Working Flight, Details, Recall/O75, Settings) are as
+they were. `dashboard_flight_watcher.json` is refreshed from `/config/.storage/lovelace.flight_watcher` (read only,
+the redactions below) and matches Pako by sha256 of the redacted text, `3a5c1dbf315f0b46326630fb323e536a7d52e2220a12f1e821fac45eb115e061`
+(read 2026-11-11). Nothing else was removed: `packages/flight_watcher_wx.yaml`, its sensors and its helpers stay on Pako
+and here. With the view gone the dashboard snapshot has no Windy map left (see the last line). Since then the snapshot
+carries the pending layover card edit (FW-0072, below), so it is one edit ahead of Pako until that is applied.
+
+**Pending on Pako (FW-0042, show only, Ryan Nov 11): "Flight Watcher new pairing" push text.** In the snapshot the
+automation's message (the `msg` variable both iPhone pushes use) ends with three lines from the event payload, each
+left out when blank: `Commute: <comm>` (with `(<comm_why>)` when it is 60 characters or less), `Value: <value>` and
+(1.7.1, FW-0042 part 2) the find's 98 h in 672 h tag, its `month_rule` part ("Fits 672 (97:59)", "Over 98/672
+(98:01)", "672 ? (block not read)") or else one made from `b672` / `b672_ok`, e.g. "Commute: KOA/ITO", "Value: 4617"
+and "Fits 672 (97:59)". Its trigger, conditions, targets, sound and title are unchanged: nothing is silenced and no
+one else is pushed (`tests/test_fw171_b672.py` checks that only the message text reads `month_rule` and `b672`;
+the push guard passes). Not on Pako yet: Claude applies it (the `msg` variable and the description, one edit) through the HA
+connector with Ryan's [DESTRUCTIVE] yes once 1.7.1 is live (1.4.13 and later send `comm` and `value`, blank without
+smart.json; only 1.7.1 sends the 672 tag; before it that line is simply left out), then checks the automations by
+sha256 of the redacted text as in Refresh and drops this paragraph. Undo: the message without its last parts (the
+snapshot's git history).
+
+## Pending on Pako (1.7.1, FW-0072): "Flight Watcher van time" and the layover card
+
+Two edits, each applied through the HA connector once 1.7.1 is live (the card file and the two sensors must exist
+first), each a [DESTRUCTIVE] yes from Ryan; then check by sha256 of the redacted text as in Refresh below and drop
+this section.
+
+1. `automations_flight_watcher.yaml` ends with **Flight Watcher van time** (id `1794426120072`), after the bid
+   calendar one (the van from the pairings package's VAN when it gives one, else Hark's working flight: the Watcher
+   decides, the automation only pushes): triggered by `flight_watcher/event/van` only (never a pilot's prefix), it
+   sends the payload's `title` ("Van SYD 19:40 AEDT") and `message` ("Van in 30 min: 19:40 AEDT (22:40 HST),
+   <place>") as a critical push (sound `default`, `critical: 1`, `volume: 1.0`, tag `flight_watcher_van_<minutes>`)
+   to `notify.mobile_app_ryans_iphone` and `notify.mobile_app_ryans_iphone_16`, exactly like "Flight Watcher
+   charter". With the bid calendar one the snapshot is two automations ahead of Pako (21 here). Undo: delete it (its
+   id above). The guard passes with it (`python3 ha/check_push_isolation.py`: 21 automations, 0 offenders). Not in
+   the snapshot and not part of the release: **Flight Watcher van time (temporary, FW-0072)** (id `1794429970349`),
+   which Claude made on Pako on Nov 11 with Ryan's yes for that night's Sydney van (template triggers on Hark's
+   state, SYD only); Claude deletes it after that van, before applying item 1, so Ryan never gets the van pushed
+   twice.
+2. `dashboard_flight_watcher.json`, view `flight` (Working Flight): its one section's two cards (the markdown card
+   and the grid holding the "Ready to update?" button) become one card,
+   `{"grid_options": {"columns": "full"}, "type": "custom:flight-watcher-layover-card", "update_url": <the button's
+   tap_action url_path, Hark's project page, redacted here>}`. Through the connector:
+   `ha_config_set_dashboard(url_path="flight-watcher", python_transform=...)` with
+   `v = next(v for v in config["views"] if v.get("path") == "flight");
+   u = v["sections"][0]["cards"][1]["cards"][0]["tap_action"]["url_path"];
+   v["sections"] = [{"type": "grid", "cards": [{"type": "custom:flight-watcher-layover-card",
+   "grid_options": {"columns": "full"}, "update_url": u}]}]`. Undo: the connector's edits backup of the dashboard (or
+   put the two cards back from git history). This edit is the only difference between the snapshot (sha256
+   `78a4d55b0b66afaaae1d405f25347b3d7171acbe50b9acc77e873bfc3d964433`) and Pako's dashboard as read on 2026-11-11 (5
+   views, no Aviation Wx view; sha256 above). After applying, refresh the snapshot from Pako (Refresh below): its JSON
+   must equal this file's; if HA keeps the new card's keys in another order, the refreshed file and its sha256 replace
+   these.
+
 **Applied on Pako 2026-11-10 (James's HA page retired):** James uses the pilot portal (FW-0061) and his HA user is
 gone, so the `flight-watcher-james` dashboard and his seven HA helpers (`input_number.flight_watcher_james_*` federal
 and state tax, longevity year, month offset; `input_text.flight_watcher_james_*` ER trips, picker search;
@@ -89,7 +157,7 @@ household users (four, a guest login among them) can open `flight-watcher-james`
 
 | File | Live copy on Pako |
 |:--|:--|
-| `automations_flight_watcher.yaml` | `/config/automations.yaml`: the 19 automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order |
+| `automations_flight_watcher.yaml` | `/config/automations.yaml`: the automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order (19 on Pako; 20 here with the pending bid calendar one, above) |
 | `dashboard_flight_watcher.json` | `/config/.storage/lovelace.flight_watcher` (dashboard `flight-watcher`) |
 | `packages/flight_watcher_wx.yaml` | `/config/packages/flight_watcher_wx.yaml` |
 | `check_push_isolation.py` | the push-isolation guard (below) |
@@ -157,4 +225,4 @@ while the default `ha/pilots.json` is broken). It uses PyYAML when installed, el
 
 Tests: `flight_watcher/tests/test_push_isolation.py` (the real snapshot passes; synthetic crossings fail).
 
-- The Windy iframe coordinates in both dashboard snapshots are redacted (`lat=<redacted>`, `lon=<redacted>`): town-level home location stays out of git. The live dashboards keep them.
+- The Windy iframe coordinates were redacted in the dashboard snapshots (`lat=<redacted>`, `lon=<redacted>`): town-level home location stays out of git. Since Nov 11 (the wx view removed) no dashboard here has the map; redact them again if one comes back.

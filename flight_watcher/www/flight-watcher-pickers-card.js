@@ -4,13 +4,21 @@
    count as a small subscript, latest pickup's layover first when tied), Avg Pickup Speed.
    Search box filters by last name, first name or employee number. Read only.
    FW-0060 (1.4.7): every picker comes from pickers_<key>.json under /local/; the sensor keeps the count and the
-   fastest few (the list passed HA's 16 KB recorder limit as it grew). The key is only in the sensor's attributes. */
+   fastest few (the list passed HA's 16 KB recorder limit as it grew). The key is only in the sensor's attributes.
+   1.7.1 (F#52): the box is labeled as this list's filter (the pilot lookup card above it asks FLICA). On a card 500 px
+   wide or less (a phone; a container query, so the desktop table is unchanged) the table keeps Pilot, Pos, Best
+   (Fastest Pickup Speed) and Avg (Avg Pickup Speed), so the speeds show without a sideways scroll; the employee number,
+   the pickup counts and the common layovers go on a small line under the name. The sorted column's header is bold in
+   the text color (the theme's blue on the header's gray was under WCAG AA's 4.5:1, F#119). 1.7.1 review: on a phone
+   (700 px or less) the filter box is 16 px: iOS Safari zooms into a smaller one when it is tapped and leaves the page
+   wider than the screen (as F#43 found for the pilot lookup). */
 const FMT = (a) => a == null ? "-" : a >= 3600 ? `${Math.floor(a / 3600)}h ${String(Math.floor((a % 3600) / 60)).padStart(2, "0")}m`
   : a >= 60 ? `${Math.floor(a / 60)}m ${String(a % 60).padStart(2, "0")}s` : `${a}s`;
+// [key, header, sort kind, header on a narrow card ("" = folded under the name there)]
 const COLS = [
-  ["name", "Pilot", "s"], ["emp", "Emp", "s"], ["pos", "Pos", "s"], ["n", "Ttl Pickups", "n"],
-  ["month_n", "Month Pickups", "n"], ["year_n", "Year Pickups", "n"], ["inflt_n", "InFlt Pickups", "n"],
-  ["lays", "Common Layover", "l"], ["min_s", "Fastest Pickup Speed", "n"], ["avg_s", "Avg Pickup Speed", "n"],
+  ["name", "Pilot", "s", "Pilot"], ["emp", "Emp", "s", ""], ["pos", "Pos", "s", "Pos"], ["n", "Ttl Pickups", "n", ""],
+  ["month_n", "Month Pickups", "n", ""], ["year_n", "Year Pickups", "n", ""], ["inflt_n", "InFlt Pickups", "n", ""],
+  ["lays", "Common Layover", "l", ""], ["min_s", "Fastest Pickup Speed", "n", "Best"], ["avg_s", "Avg Pickup Speed", "n", "Avg"],
 ];
 
 // FW-0060: a sensor's full list from its file under /local/ (<url><file_key>.json, the pilot's own www folder). Fetched
@@ -85,24 +93,30 @@ class FlightWatcherPickersCard extends HTMLElement {
         .hd{display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;padding:4px 0}
         .hd .tri{display:inline-block;width:0;height:0;border-left:6px solid currentColor;border-top:5px solid transparent;border-bottom:5px solid transparent;transition:transform .15s}
         .hd.open .tri{transform:rotate(90deg)}
-        .body{display:none}.body.open{display:block}
-        input{width:100%;box-sizing:border-box;padding:8px 10px;margin:6px 0 8px;border:1px solid var(--divider-color,#ccc);border-radius:6px;background:var(--card-background-color,#fff);color:var(--primary-text-color);font-size:14px}
+        .body{display:none;container-type:inline-size}.body.open{display:block}
+        .fl{display:block;font-size:12px;color:var(--secondary-text-color);margin:6px 0 0}
+        input{width:100%;box-sizing:border-box;padding:8px 10px;margin:2px 0 8px;border:1px solid var(--divider-color,#ccc);border-radius:6px;background:var(--card-background-color,#fff);color:var(--primary-text-color);font-size:14px}
+        @media (max-width:700px){input{font-size:16px}}
         .wrap{overflow-x:auto}
         table{border-collapse:collapse;font-size:13px;width:100%}
         th,td{border:1px solid var(--divider-color,#ddd);padding:3px 6px;white-space:nowrap}
         th{text-align:left;cursor:pointer;user-select:none;background:var(--secondary-background-color,#f4f4f4);position:sticky;top:0}
-        th.on{color:var(--primary-color)}
+        th.on{color:var(--primary-text-color);font-weight:700}
         th.on:after{content:" \\25B2";font-size:9px}
         th.on.d:after{content:" \\25BC"}
         td.n{text-align:right}
         tr.fast td{font-weight:600}
-        sub{font-size:9px;opacity:.75;margin-right:5px}
+        sub{font-size:9px;opacity:.75;margin-right:5px}.sm sub{opacity:1}
         .lay b{font-weight:700}
-        td.pn{cursor:pointer;color:var(--primary-color);text-decoration:underline dotted}
+        td.pn{cursor:pointer}td.pn .nm{color:var(--primary-color);text-decoration:underline dotted}
+        .sm{display:none;font-size:11px;font-weight:400;color:var(--secondary-text-color)}th .sh{display:none}
+        @container (max-width:500px){.wide{display:none}th .lg{display:none}th .sh{display:inline}.sm{display:block}
+          td.pn{white-space:normal}table{font-size:12px}th,td{padding:3px 4px}}
         .key{font-size:11px;opacity:.8;margin:6px 0 0}
         details summary{cursor:pointer;font-size:12px}
       </style><ha-card><div class="hd"><span class="tri"></span><span class="ttl"></span></div><div class="body">
-        <input type="search" placeholder="Find a pilot (last name, first name, employee number or layover)">
+        <label class="fl" for="flt">Filter this list (it does not ask FLICA)</label>
+        <input id="flt" type="search" enterkeyhint="search" autocomplete="off" spellcheck="false" placeholder="Filter this list (name, emp or layover)">
         <div class="wrap"><table><thead><tr></tr></thead><tbody></tbody></table></div>
         <details><summary>&#9656; Key</summary><div class="key">Tap a column header to sort, tap again to flip. Bold row = 1 min or under. Ttl = all pickups seen; Month / Year = this HST month and year; InFlt = picked up while airborne; Common Layover = stations they pick up most, with how many (bold = their latest pickup); Fastest / Avg Pickup Speed = the pilot's quickest grab and their average time a trip sat in open time.</div></details>
       </div></ha-card>`;
@@ -114,7 +128,7 @@ class FlightWatcherPickersCard extends HTMLElement {
         if (td) window.dispatchEvent(new CustomEvent("flight-watcher-pilot", { detail: { emp: td.dataset.emp, name: td.dataset.name } }));
       });
       const tr = this._root.querySelector("thead tr");
-      tr.innerHTML = COLS.map((c) => `<th data-k="${c[0]}">${c[1]}</th>`).join("");
+      tr.innerHTML = COLS.map((c) => `<th data-k="${c[0]}"${c[3] ? "" : ` class="wide"`}><span class="lg">${c[1]}</span><span class="sh">${c[3]}</span></th>`).join("");
       tr.addEventListener("click", (e) => {
         const th = e.target.closest("th");
         if (!th) return;
@@ -138,9 +152,11 @@ class FlightWatcherPickersCard extends HTMLElement {
     });
     r.querySelector("tbody").innerHTML = rows.length ? rows.map((p) => {
       const lays = (p.lays || []).slice(0, 4).map((l) => `${l[0] === p.last_lay ? "<b>" + this._esc(l[0]) + "</b>" : this._esc(l[0])}<sub>${l[1]}</sub>`).join("");
-      return `<tr class="${p.avg_s != null && p.avg_s <= 60 ? "fast" : ""}"><td class="pn" data-emp="${this._esc(p.emp)}" data-name="${this._esc(p.name)}" title="tap: this pilot's month">${this._esc(p.name)}</td><td>${this._esc(p.emp)}</td><td>${this._esc(p.pos)}</td>
-        <td class="n">${p.n}</td><td class="n">${p.month_n || 0}</td><td class="n">${p.year_n || 0}</td><td class="n">${p.inflt_n || 0}</td>
-        <td class="lay">${lays || "-"}</td><td class="n">${FMT(p.min_s)}</td><td class="n">${FMT(p.avg_s)}</td></tr>`;
+      // 1.7.1 (F#52): what a narrow card folds under the name (the Emp to Common Layover columns)
+      const sm = `Emp ${this._esc(p.emp)} &middot; ${p.n} pickups: ${p.month_n || 0} this month, ${p.year_n || 0} this year, ${p.inflt_n || 0} in flight${lays ? ` &middot; <span class="lay">${lays}</span>` : ""}`;
+      return `<tr class="${p.avg_s != null && p.avg_s <= 60 ? "fast" : ""}"><td class="pn" data-emp="${this._esc(p.emp)}" data-name="${this._esc(p.name)}" title="tap: this pilot's month"><span class="nm">${this._esc(p.name)}</span><div class="sm">${sm}</div></td><td class="wide">${this._esc(p.emp)}</td><td>${this._esc(p.pos)}</td>
+        <td class="n wide">${p.n}</td><td class="n wide">${p.month_n || 0}</td><td class="n wide">${p.year_n || 0}</td><td class="n wide">${p.inflt_n || 0}</td>
+        <td class="lay wide">${lays || "-"}</td><td class="n">${FMT(p.min_s)}</td><td class="n">${FMT(p.avg_s)}</td></tr>`;
     }).join("") : `<tr><td colspan="10">${this._q ? "No match." : "No pickups scored yet."}</td></tr>`;
   }
 }

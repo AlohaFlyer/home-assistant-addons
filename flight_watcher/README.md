@@ -29,10 +29,15 @@ publishes what it finds to Home Assistant over MQTT.
 - Smart push fields (1.4.13, FW-0042): pot, Tradeboard and finds rows (in the finds DB and month files, not on the
   sensors), `last_new` and `event/new_pairing` carry `comm` (the home airports you can commute from: two scheduled
   nonstops arriving HNL before report, PWA 26.QQ.2, and one home 60+ min after release; or `No`), `value` (credit x
-  your rate) and `month_rule` (your bid line or reserve month's rules, per bid period: days off, VAC, credit cap,
-  rest, SCR days). They read `/share/flight_watcher/smart.json` (a second pilot's
-  `/share/flight_watcher/<name>/smart.json`), which is never in git; without it they are blank. The finds card shows
-  Comm and Value.
+  your rate) and `month_rule` (your bid line or reserve month's rules, per bid period: days off, VAC, rest, SCR days).
+  They read `/share/flight_watcher/smart.json` (a second pilot's `/share/flight_watcher/<name>/smart.json`), which is
+  never in git; without it they are blank. The finds card shows Comm and Value. 1.7.1: no monthly credit cap (an old
+  `cap_credit` in smart.json is ignored); instead `b672` / `b672_ok` and a `month_rule` part give your block hours in
+  the 672 h ending at the pickup's release (flown + scheduled + the pickup, block not credit) against the company's 98
+  h buffer (FAR 117.23(b)(1) allows 100 h): `Fits 672 (97:59)` at or under 98:00, `Over 98/672 (98:01)` above it, `672
+  ? (block not read)` when a block is not on file. A find over 98/672 is shown and tagged, never hidden. Ryan's
+  new-pairing push (HA, show only) adds lines for the commute, the value and this tag, each left out when blank;
+  nothing is silenced on them.
 - Request decisions: reads FLICA's Open Time Requests list and the Tradeboard's My Requests page (crew-to-crew
   trades), and pushes each Approved or Denied request once, with Pay-Gross. A trade no list shows (1.4.7, FW-0064):
   trips dropped and added on your schedule the same HST day that no decided request explains are pushed once as an
@@ -42,7 +47,9 @@ publishes what it finds to Home Assistant over MQTT.
   approved CCR narrative can go to Hark ("Have Hark file this CCR", through the HOM app and
   `/share/flight_watcher/ccr_requests/`); the app itself files nothing. Over 75 is judged per month from your answer
   on the tab (on reserve or not, PWA 22.G.2.d); while it is not set an Over 75 miss shows as CHECK.
-- Crew index and pilot lookup, charter watch (CrewTrac, read only), tickets (below). Since 1.4.7 the crew index
+- Crew index and pilot lookup, charter watch (CrewTrac, read only; 1.7.1, F#22: the admin's Watcher scans and
+  shares the flight list, retained on `flight_watcher/charters/shared`, and a pilot's Watcher shows it with the scan's
+  time, as a warning once that is over 13 h old, and makes no CrewTrac login of its own), tickets (below). Since 1.4.7 the crew index
   also reads trips on any schedule the Watcher reads that the pairing package does not list (FW-0056), trips that
   start in the previous bid period and run into it (FW-0057), keeps names such as "Lee, So Young" (made up) whole
   (FW-0058), and flags a pilot on two overlapping trips, reading both again first (FW-0059). Since 1.4.10 it finds
@@ -133,7 +140,11 @@ allowlists, caps and masks are in `PORTAL_CONTRACT.md` (contract 1, revision 2 f
 ## Settings
 
 Enter the FLICA and CrewTrac logins and your last name on the dashboard **Settings card** (Credentials, on the
-Settings tab; sealed in the browser, so HA's history and the MQTT broker only hold ciphertext). The Web UI Settings
+Settings tab; sealed in the browser, so HA's history and the MQTT broker only hold ciphertext). A pilot needs no
+CrewTrac login (1.7.1, F#22: his charters are the admin's scan); his card says so, and Remove CrewTrac login still
+clears one saved before. The card's last line is the Watcher's health (1.7.1, F#10): its version and state, and its
+FLICA page loads in the last hour against its budget (100 an hour on a pilot; `sensor.<prefix>_flica_fetches`
+attributes `hour` and `budget`). The Web UI Settings
 form and the app's Configuration tab work too; a saved value wins over the Configuration tab. Credentials never go in
 git.
 
@@ -275,6 +286,52 @@ Recent finds.
   read yet shows as `No trip` with that trip next while it comes first. The legs live in the state, not on
   `sensor.<prefix>_own_trip_times` (size). Hark's `sensor.hark_working_flight` (Ryan only: release, MEL, NOTAMs, live
   status) is separate.
+- Bid calendar (1.7.1, FW-0070, `bidcal.py`): alerts for each PBS bid cycle, all HST. The cycle for bid month M+1
+  runs in month M: the pairing package publishes on the 4th, practice runs on the 7th and the 10th, bids close on
+  the 11th at 08:00, unless that month's package is uploaded, whose Bid Calendar (page 1, left column) gives the
+  dates. Alerts: 08:00 the day before the package publishes, the 3rd by default ("adjust your vacation if needed";
+  `bidcal.PUBLISH_ALERT`, one constant; Ryan's Nov 11 answer), 20:00 the night before each practice run, 24 h before
+  the close and 20:00 the night before it. Checked once a minute whatever the Watcher is doing (no FLICA load); each
+  goes once on `<prefix>/event/bid_calendar` (not retained: `kind`, `key`, `bid_month`, `title`, `message`,
+  `at_hst`, `event_hst`, `source` package or default), the sent ones kept in the DB with the date they were for, so
+  a restart never repeats one and a date a late package moves is alerted once more under the same key (its push
+  replaces the wrong one). One missed while the app was off is sent late until its words stop being true (the
+  publish alert and the evening ones until their day starts, the 24 h one until the night-before one, that one until
+  the close), else dropped with a log line. `sensor.<prefix>_bid_calendar` (retained on `<prefix>/bid_calendar`)
+  shows the next alert's time, its cycle's dates (awards and open time too, from a package) and each alert's status.
+  Only Ryan's prefix has a phone push (HA automation "Flight Watcher bid calendar", critical); a second pilot's
+  Watcher makes the same alerts on its own prefix, which nothing pushes, and they are not portal events (contract 1).
+- Van alerts and layover notes (1.7.1, FW-0072, `layover.py`, the admin's instance only). Every 10 s, whatever the
+  Watcher is doing (no FLICA load), it takes the van time of the layover, in this order (Ryan, Nov 11): (a) the
+  pairings package's VAN for that pairing's layover, from the text copy of the uploaded package
+  (`uploads/<YYYY-MM>_pairings.txt`, read again whenever an upload or a revised package replaces it; the layover found
+  from Ryan's own schedule, else from Hark's layover, by pairing, station and the next leg's flight and departure),
+  taken only when it is not 00:00 (none given: the October to December 2026 packages on Pako read 00:00 on every hotel
+  line but four charter lines whose 00:30 is a ride time) and falls at most 3 h before that duty's report; (b) Hark's
+  `sensor.hark_working_flight` for the same pairing (read from HA at most once a minute: its `van`, "7:40 PM (19:40)
+  Thu 2026-11-12, <place>"); (c) none: no alert, and the sensor says why. The van goes on the layover station's clock
+  (the leg's origin; `working.ZONES`, daylight time included: AEDT in the southern summer). 30 and 10 min before the
+  van it sends one alert each on `flight_watcher/event/van` (not retained: `pairing`, `city`, `van_local`, `van_date`,
+  `abbr`, `van_hst`, `minutes` 30 or 10, `minutes_left`, `hotel`, `place`, `title`, `message` such as "Van in 30 min:
+  19:40 AEDT (22:40 HST), <place>"), once per pairing, van time and offset (kept in the DB, so a restart never repeats
+  one); a new van time arms both again; after a late start only the latest alert still before the van goes, worded
+  with the minutes really left; nothing after the van time. A station with no zone, a van text with no date and 24 h
+  time, a weekday that is not the date's, AM, PM or a zone after a 24 h time ("2026-11-12 7:40 PM"), or a time a
+  daylight time change skips is no alert and one log line, never a guess. `sensor.flight_watcher_layover_van`
+  (retained on `flight_watcher/layover_van`): state the van's instant; the station's abbreviation, the HST time, the
+  place, the source (`package` or `hark`, shown on the card as "from the pairings package" or "from Hark") and each
+  alert's status, for the layover card (not Hark's van text or hotel); without a van, `why` (the card says the van
+  time is not known). HA automation "Flight Watcher van time" makes the critical push to Ryan's phones. Layover notes:
+  `flight_watcher/layover/note` {city, text, rid} adds a note (plain text, at most 1000 characters, the city a
+  3-letter station code; {city, delete: <id>, rid} removes one), stored in
+  `/share/flight_watcher/layovers/<CITY>.json` (folder 0700, files 0600; never in git or a portal export);
+  `<CITY>.guide.md` there is the tidied guide Claude writes in the ticket flow (HANDOFF.md, "Layover notes"). The
+  folder is opened without following a link and a file in it is read only when it is a plain file (no symlink, no
+  FIFO, size capped; the HOM app maps /share too); a notes file that cannot be read refuses the next note with nothing
+  changed and is left off the sensor (`unreadable`). `sensor.flight_watcher_layover_notes` (retained on
+  `flight_watcher/layover_notes`): count, and by city the guide and the newest notes, the current layover station
+  first, within 12000 bytes, plus the answer to the last note command. A pilot's instance has none of this (roles:
+  `admin_pushes`, `one_writer`), and a portal refuses `layover/note`.
 
 ## Dashboard cards and pushes
 

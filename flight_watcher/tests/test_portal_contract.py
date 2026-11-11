@@ -52,7 +52,11 @@ def test_lists_are_the_roles_tables():
 def test_every_subscription_is_allowed_or_refused_and_none_is_both():
     allowed, refused = set(roles.PORTAL_CMDS), set(roles.PORTAL_REFUSED)
     assert not allowed & refused
-    assert set(roles.SUBS) == allowed | refused  # every MQTT command topic an instance takes is classified
+    later = set(roles.NOT_ON_PORTAL)  # 1.7.1: refused as "anything else", the fixture unchanged
+    assert not later & (allowed | refused)
+    assert set(roles.SUBS) == allowed | refused | later  # every MQTT command topic an instance takes is classified
+    for s in later:
+        assert roles.portal_sub(s) is None and roles.FEATURES[roles.SUBS[s]][1] is False, s
     for s in allowed:
         assert roles.FEATURES[roles.SUBS[s]][1] is True, s  # offered on a portal
     for s in refused:

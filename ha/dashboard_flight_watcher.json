@@ -249,116 +249,6 @@
           "type": "sections"
         },
         {
-          "icon": "mdi:airplane",
-          "max_columns": 2,
-          "path": "wx",
-          "sections": [
-            {
-              "cards": [
-                {
-                  "badges": [
-                    {
-                      "entity": "sensor.wx_station_icao",
-                      "name": "ICAO",
-                      "show_name": true,
-                      "show_state": true,
-                      "type": "entity"
-                    }
-                  ],
-                  "heading": "Aviation weather",
-                  "icon": "mdi:weather-windy",
-                  "type": "heading"
-                },
-                {
-                  "entities": [
-                    {
-                      "entity": "input_text.wx_station",
-                      "name": "Airport (ICAO or IATA, e.g. PHMU, KOA, LAX, NRT)"
-                    }
-                  ],
-                  "grid_options": {
-                    "columns": "full"
-                  },
-                  "type": "entities"
-                },
-                {
-                  "content": "{%- set icao = states('sensor.wx_station_icao') -%}\n{%- macro age(e) -%}{%- set t = states(e) -%}{%- if t not in ['none', 'unknown', 'unavailable', ''] -%}{{ ((now() - as_datetime(t)).total_seconds() / 60) | int }} min ago{%- else -%}no report{%- endif -%}{%- endmacro -%}\n{%- set mid = state_attr('sensor.wx_metar_station', 'icaoId') -%}\n## {{ icao }}{{ ' ' ~ state_attr('sensor.wx_metar_station', 'name') if mid == icao and state_attr('sensor.wx_metar_station', 'name') else '' }}{{ ' <sub>' ~ state_attr('sensor.wx_metar_station', 'fltCat') ~ '</sub>' if mid == icao and state_attr('sensor.wx_metar_station', 'fltCat') else '' }}\n### METAR <sub>{{ age('sensor.wx_metar_station') if mid == icao else '' }}</sub>\n```\n{{ state_attr('sensor.wx_metar_station', 'rawOb') if mid == icao and state_attr('sensor.wx_metar_station', 'rawOb') else 'No METAR for ' ~ icao ~ ' on the network right now' }}\n```\n### TAF <sub>{{ ('issued ' ~ age('sensor.wx_taf_station')) if state_attr('sensor.wx_taf_station', 'icaoId') == icao else '' }}</sub>\n```\n{{ (state_attr('sensor.wx_taf_station', 'rawTAF') | regex_replace(' (FM|TEMPO|BECMG|PROB)', '\\n  \\\\1')) if state_attr('sensor.wx_taf_station', 'icaoId') == icao and state_attr('sensor.wx_taf_station', 'rawTAF') else 'No TAF for ' ~ icao ~ (' (AWOS field; PHKO is the nearest TAF, below)' if icao == 'PHMU' else '') }}\n```\n### D-ATIS {{ states('sensor.wx_atis_station') if state_attr('sensor.wx_atis_station', 'airport') == icao else '' }}\n```\n{{ state_attr('sensor.wx_atis_station', 'datis') if state_attr('sensor.wx_atis_station', 'airport') == icao and state_attr('sensor.wx_atis_station', 'datis') else 'No D-ATIS for ' ~ icao ~ (' (AWOS-3 field)' if icao == 'PHMU' else '') }}\n```\n<sub>Type a code and press Enter. ICAO or IATA (KOA, LAX, NRT, SYD...); other 3-letter codes get a K. Resets to PHMU on restart. Sources: aviationweather.gov, atis.info. Read only.</sub>",
-                  "entity_id": [
-                    "sensor.wx_station_icao",
-                    "sensor.wx_metar_station",
-                    "sensor.wx_taf_station",
-                    "sensor.wx_atis_station"
-                  ],
-                  "grid_options": {
-                    "columns": "full"
-                  },
-                  "type": "markdown"
-                },
-                {
-                  "content": "<details><summary><ha-icon icon=\"mdi:map-marker-radius\"></ha-icon> <b>Nearby: PHKO Kona and PHNL Honolulu</b></summary>{{ '\\n\\n' }}{%- macro age(e) -%}{%- set t = states(e) -%}{%- if t not in ['none', 'unknown', 'unavailable', ''] -%}{%- set d = as_datetime(t) -%}{{ ((now() - d).total_seconds() / 60) | int }} min ago{%- else -%}no report{%- endif -%}{%- endmacro -%}\n### METAR\n{% for st in ['PHKO', 'PHNL'] %}{% set e = 'sensor.wx_metar_' ~ st | lower %}\n**{{ st }}** <sub>{{ age(e) }}</sub>\n```\n{{ state_attr(e, 'rawOb') or 'No METAR on the network right now' }}\n```\n{% endfor %}\n### TAF\n{% for st in ['PHKO', 'PHNL'] %}{% set e = 'sensor.wx_taf_' ~ st | lower %}{% if state_attr(e, 'rawTAF') %}\n**{{ st }}** <sub>issued {{ age(e) }}</sub>\n```\n{{ state_attr(e, 'rawTAF') | regex_replace(' (FM|TEMPO|BECMG|PROB)', '\\n  \\\\1') }}\n```\n{% endif %}{% endfor %}\n### ATIS\n**PHNL D-ATIS {{ states('sensor.wx_phnl_atis') }}**\n```\n{{ state_attr('sensor.wx_phnl_atis', 'datis') or 'unavailable' }}\n```\n<sub>Sources: aviationweather.gov (METAR / TAF, 10 to 15 min), atis.info (PHNL D-ATIS, 5 min). Read only.</sub>{{ '\\n\\n' }}</details>",
-                  "entity_id": [
-                    "sensor.wx_metar_phmu",
-                    "sensor.wx_metar_phko",
-                    "sensor.wx_metar_phnl",
-                    "sensor.wx_taf_phmu",
-                    "sensor.wx_taf_phko",
-                    "sensor.wx_taf_phnl",
-                    "sensor.wx_phnl_atis"
-                  ],
-                  "grid_options": {
-                    "columns": "full"
-                  },
-                  "type": "markdown"
-                }
-              ],
-              "column_span": 2,
-              "type": "grid"
-            },
-            {
-              "cards": [
-                {
-                  "heading": "Radar: PHKI Kohala (NWS, loop)",
-                  "icon": "mdi:radar",
-                  "type": "heading"
-                },
-                {
-                  "alt_text": "PHKI Kohala radar loop",
-                  "grid_options": {
-                    "columns": "full"
-                  },
-                  "image": "https://radar.weather.gov/ridge/standard/PHKI_loop.gif",
-                  "tap_action": {
-                    "action": "url",
-                    "url_path": "https://radar.weather.gov/station/phki/standard"
-                  },
-                  "type": "picture"
-                }
-              ],
-              "type": "grid"
-            },
-            {
-              "cards": [
-                {
-                  "heading": "Radar and wind: Windy (Big Island)",
-                  "icon": "mdi:map",
-                  "type": "heading"
-                },
-                {
-                  "aspect_ratio": "4:3",
-                  "grid_options": {
-                    "columns": "full"
-                  },
-                  "type": "iframe",
-                  "url": "https://embed.windy.com/embed2.html?lat=<redacted>&lon=<redacted>&detailLat=<redacted>&detailLon=<redacted>&width=650&height=450&zoom=8&level=surface&overlay=radar&product=radar&menu=&message=&marker=true&calendar=now&pressure=&type=map&location=coordinates&detail=&metricWind=kt&metricTemp=%C2%B0C&radarRange=-1"
-                }
-              ],
-              "type": "grid"
-            }
-          ],
-          "title": "Aviation Wx",
-          "type": "sections"
-        },
-        {
           "icon": "mdi:airplane-takeoff",
           "max_columns": 2,
           "path": "flight",
@@ -366,28 +256,11 @@
             {
               "cards": [
                 {
-                  "content": "{%- set w = states['sensor.flight_watcher_working_flight'] -%}\n{%- set h = states['sensor.hark_working_flight'] -%}\n{%- set wa = w.attributes if w else {} -%}\n{%- set st = h if h and (not wa.get('pairing') or h.attributes.get('pairing') == wa.get('pairing')) else w -%}\n{%- set a = st.attributes if st else {} -%}\n{%- set hark = st is not none and st.entity_id == 'sensor.hark_working_flight' -%}\n{%- if not a.get('pairing', '') -%}\n## ✈️ Working flight\n{{ 'No trip on your schedule.' if st else 'Waiting for Flight Watcher.' }}{% if a.get('next', '') %} Next: {{ a.get('next', '') }}{% endif %}\n{%- else -%}\n## ✈️ {{ a.get('flight', '') }} {{ a.get('origin', '') }} → {{ a.get('dest', '') }}\n**{{ a.get('pairing', '') }} leg {{ a.get('leg', '') }}** · {{ a.get('date', '') }}{% if a.get('tail', '') %} · {{ a.get('tail', '') }}{% endif %}\n**Status:** {{ a.get('status', '') }} <small>({{ a.get('status_as_of', '') }})</small>\n\n| | Out | In |\n|---|---|---|\n| Station | {{ a.get('origin', '') }}{% if a.get('origin_gate', '') %} gate {{ a.get('origin_gate', '') }}{% endif %} | {{ a.get('dest', '') }}{% if a.get('dest_gate', '') %} gate {{ a.get('dest_gate', '') }}{% endif %} |\n| Sched | {{ a.get('dep_sched', '') }} | {{ a.get('arr_sched', '') }} |\n{% if a.get('dep_est', '') or a.get('arr_est', '') %}| Est | {{ a.get('dep_est', '') }} | {{ a.get('arr_est', '') }} |\n{% endif %}\n{% if a.get('release_url', '') %}**[📄 Release]({{ a.get('release_url', '') }})** · {% endif %}**[FlightAware]({{ a.get('flightaware_url', '') }})** · **[Sig Wx]({{ a.get('sigwx_url', '') }})**\n\n**Report:** {{ a.get('report', '') }}\n{% if a.get('gin_dep', '') %}**GIN dep:** `{{ a.get('gin_dep', '') }}`\n{% endif %}{% if a.get('gin_arr', '') %}**GIN arr:** `{{ a.get('gin_arr', '') }}`\n{% endif %}\n{% if not hark %}> From your FLICA schedule. Release, MEL, NOTAM and GIN come from Hark: tap **Ready to update?**\n{% elif not a.get('release_updated', '') %}> ⚠️ Release, MEL, NOTAM and GIN not updated for this leg yet. Tap **Ready to update?**\n{% endif %}{% if hark %}\n### MEL\n{% for m in a.get('mel') or [] %}- {{ m }}\n{% endfor %}\n### NOTAMs\n{% for n in a.get('notam') or [] %}- {{ n }}\n{% endfor %}{% endif %}\n<small>Next: {{ a.get('next', '') }} · Updated {{ a.get('updated', '') }} by {{ a.get('updated_by', '') }}</small>\n{%- endif -%}",
                   "grid_options": {
                     "columns": "full"
                   },
-                  "type": "markdown"
-                },
-                {
-                  "cards": [
-                    {
-                      "icon": "mdi:account-key",
-                      "name": "Ready to update?",
-                      "show_state": false,
-                      "tap_action": {
-                        "action": "url",
-                        "url_path": "<redacted-hark-url>"
-                      },
-                      "type": "button"
-                    }
-                  ],
-                  "columns": 1,
-                  "square": false,
-                  "type": "grid"
+                  "type": "custom:flight-watcher-layover-card",
+                  "update_url": "<redacted-hark-url>"
                 }
               ],
               "type": "grid"
