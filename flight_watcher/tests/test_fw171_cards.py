@@ -172,7 +172,7 @@ def test_pilot_copy_names_nobody_and_leaves_no_broken_comment():
     built = cards.build("1", ["pilot2"])
     for base, orig in cards.sources().items():
         cp = built[f"{base}-pilot2.js"]
-        assert "Ryan" not in cp, base
+        assert not re.search(r"\bryan\b", cp, re.I), base  # review r4: in any letter case
         a_lines, b_lines = orig.splitlines(), cp.splitlines()
         assert len(a_lines) == len(b_lines), base
         for a, b in zip(a_lines, b_lines):
@@ -473,7 +473,7 @@ def test_pot_card_shows_the_swap_ideas_like_the_admins_table():
     assert watching["text"] == "Swap ideas Watching for better trips than H9102. Nothing better right now."
     assert wide["heads"] == ["Give up", "For", "Dates", "Layover", "Days", "Credit", "Soft", "Gain", "Src", "Grid"]
     assert wide["rows"] == ["H9102 H9205 21Nov-23Nov SFO 3 16:30 2:10 +1:05 soft, +0:40 cr Open time OK",
-                            "H9102 H9206 20Nov PPG turn 1 9:00 1:30 +0:35 soft, -1:10 cr Tradeboard grid red 11-21"]
+                            "H9102 H9206 20Nov PPG turn 1 9:00 1:30 +0:35 soft, -1:10 cr Tradeboard red 11-21"]  # review r4: not "Grid grid red"
     assert narrow["heads"] == [] and narrow["rows"] == wide["rows"]  # folded, the same cells
     assert narrow["fit"]["page"] <= 390 and narrow["fit"]["inner"] <= 0
     assert "Swap ideas 2" in wide["text"] and "nothing is filed from here" in wide["key"] and "PWA 10.E.1.a" in wide["key"]

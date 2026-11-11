@@ -227,7 +227,13 @@ def test_render_open_form_with_paste_box(browser, tmp_path, width, theme):
     _paste_into(pg, '[data-f="title"]')
     _wait_n(pg, 1)
     box = card.locator("[data-pastebox]").bounding_box()
-    assert box and box["width"] <= width - 32 + 1 and box["height"] <= 64
+    # review r4: on a phone the box is 16 px (iOS zooms into a smaller editable area), so its hint takes 3 lines there
+    assert box and box["width"] <= width - 32 + 1 and box["height"] <= (96 if width <= 700 else 64)
+    fs = pg.evaluate("parseFloat(getComputedStyle(window.root().querySelector('[data-pastebox]')).fontSize)")
+    assert fs == (16 if width <= 700 else 12)
+    if width <= 700:
+        assert pg.evaluate("[...window.root().querySelectorAll('.form input:not([type=file]):not([type=radio]),"
+                           ".form textarea,.form select')].every((e) => parseFloat(getComputedStyle(e).fontSize) >= 16)")
     assert pg.evaluate("document.documentElement.scrollWidth") <= width
     # the photo buttons stay inside the page at both widths (they wrap at 390 px) and are 44 px tall taps (UX review
     # r3: Paste photo was 27 px); the remove x on a thumbnail keeps its small round shape

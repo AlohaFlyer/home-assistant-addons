@@ -88,13 +88,20 @@ def pilot_copy(s, name):
 
 # 1.7.1 (F#96): the admin's name never reaches a pilot's copy. Deleting it left broken comments in the source a pilot
 # can view ("(1.4.5,  Nov 6: labeled ...", "'s card never shows them."), so it becomes a neutral word instead,
-# capitalized where it starts a sentence or a comment.
-_NAME_START_RE = re.compile(r"(^|[.!?]\s+|//\s*|/\*\s*)Ryan\b", re.M)
+# capitalized where it starts a sentence or a comment. Review r4: in any letter case (the tickets card's Claude prompt
+# says "reporter is not ryan", the stored reporter id), and the name of his house's Home Assistant ("Pako HI") too.
+_START = r"(^|[.!?]\s+|//\s*|/\*\s*)"
+_NAMES = ((re.compile(r"\bryan\b", re.I), "the admin"),
+          (re.compile(r"\bpako(?: hi)?\b", re.I), "the admin's Home Assistant"))
 
 
 def scrub_names(s):
-    """The admin's first name, in a pilot's card copy, as "the admin" ("The admin" at a sentence's start)."""
-    return _NAME_START_RE.sub(r"\1The admin", s).replace("Ryan", "the admin")
+    """The admin's first name and his Home Assistant's name, in a pilot's card copy, whole words in any case, as "the
+    admin" and "the admin's Home Assistant" (capitalized at a sentence's or a comment's start)."""
+    for rx, word in _NAMES:
+        s = re.sub(_START + rx.pattern, lambda m, w=word: m.group(1) + w[0].upper() + w[1:], s, flags=re.M | re.I)
+        s = rx.sub(word, s)
+    return s
 
 
 def load_doh(settings=SETTINGS, dst=DST):

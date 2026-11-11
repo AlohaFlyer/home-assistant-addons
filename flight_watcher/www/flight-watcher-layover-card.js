@@ -22,6 +22,13 @@
 // for it). Colors: text on the card's own background is the theme's primary text color; the countdown's urgent states
 // and the armed delete are white on a fixed dark orange or red, so they read in any theme (Home Assistant's
 // default warning and error colors are under 4.5:1 on white). Taps are 44 px at least.
+// Review r4: a pairing FLICA rebuilt (H3681B) and Hark's H3681 are the same trip here too (_same, layover.same_pairing),
+// so the card takes Hark's sensor, the package's van and the Watcher's van reading for it, and it never says "no van
+// alert comes" while the Watcher's van sensor has a van; a long link or word wraps instead of widening a phone's page;
+// when the package's van wins and Hark says another time, both show ("Hark says 19:40"); Report and Departs carry
+// HST (from the Watcher's sensor on the same trip when the times are Hark's) and the station's zone instead of "local";
+// the note and City fields are 16 px on a phone (iOS zooms into a smaller one); the Layover pill is white on a fixed
+// dark blue (Home Assistant's default blue was 3.26:1).
 // Usage: type: custom:flight-watcher-layover-card, update_url: https://... (optional)
 const FW_LAYOVER_NOTE_MAX = 1000;  // layover.NOTE_MAX
 class FlightWatcherLayoverCard extends HTMLElement {
@@ -39,6 +46,9 @@ class FlightWatcherLayoverCard extends HTMLElement {
   _https(u) { return /^https:\/\/[A-Za-z0-9.-]+(?::\d+)?(\/[^\s"<>]*)?$/.test(String(u || "")) ? String(u) : ""; }
   _link(u, t, cls) { const h = this._https(u); return h ? `<a${cls ? ` class="${cls}"` : ""} href="${this._e(h)}" target="_blank" rel="noopener noreferrer">${t}</a>` : ""; }
   _st(id) { return this._h && this._h.states[id]; }
+  // layover._base_id / same_pairing: H3681B (FLICA rebuilt it) is the same trip as H3681
+  _base(p) { const s = String(p || "").trim().toUpperCase(); return /^[A-Z]\d{3,5}[A-Z]$/.test(s) ? s.slice(0, -1) : s; }
+  _same(x, y) { const a = this._base(x); return !!a && a === this._base(y); }
   set hass(h) {
     this._h = h;
     const p = this._c.prefix, ids = ["sensor.hark_working_flight", `sensor.${p}_working_flight`, `sensor.${p}_layover_van`,
@@ -57,7 +67,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
     let h = role === "admin" ? this._st("sensor.hark_working_flight") : null;
     if (h && ["unknown", "unavailable"].includes(h.state)) h = null;
     const wa = (w && w.attributes) || {};
-    const use = h && (!wa.pairing || (h.attributes || {}).pairing === wa.pairing) ? h : w;
+    const use = h && (!wa.pairing || this._same((h.attributes || {}).pairing, wa.pairing)) ? h : w;
     return { s: use, a: (use && use.attributes) || {}, hark: !!(use && h && use === h), w };
   }
   // the weekday names in s ("Thu", "Thurs", "Thursday") as "Thu": layover.weekdays
@@ -95,19 +105,22 @@ class FlightWatcherLayoverCard extends HTMLElement {
   }
   // Hark's van text: "7:40 PM (19:40) Thu 2026-11-12, Example Hotel lobby", else, when that has no date at all, its
   // state's "van 2026-11-12 19:40" (layover.van_info's order); else the Watcher's own reading when it is for this pairing
-  _vanText(a, state) {
+  _harkVan(a, state) {
     const got = this._parseVan(a.van), dated = /\d{4}-\d{2}-\d{2}/.test(String(a.van || ""));
     const m = got || dated ? null : /\bvan\b(.*)$/i.exec(String(state || ""));
-    const vt = got || (m ? this._parseVan(m[1]) : null);
+    return got || (m ? this._parseVan(m[1]) : null);
+  }
+  _vanText(a, state) {
+    const vt = this._harkVan(a, state);
     if (vt) return vt;
     const v = this._st(`sensor.${this._c.prefix}_layover_van`), va = (v && v.attributes) || {};
-    return va.at && va.pairing === a.pairing && va.local && va.date
+    return va.at && this._same(va.pairing, a.pairing) && va.local && va.date
       ? { local: String(va.local), date: String(va.date), wd: String(va.weekday || ""), place: String(va.place || "") } : null;
   }
   // the Watcher's reading of the same van (its zone abbreviation, HST and instant), or null while it has not read it
   _vanSensor(a, vt) {
     const v = this._st(`sensor.${this._c.prefix}_layover_van`), va = (v && v.attributes) || {};
-    return vt && va.at && va.pairing === a.pairing && va.date === vt.date && va.local === vt.local ? va : null;
+    return vt && va.at && this._same(va.pairing, a.pairing) && va.date === vt.date && va.local === vt.local ? va : null;
   }
   // a note's date, in HST (its "at" is UTC: an evening note in Hawaii is already the next day there)
   _hstDate(at) {
@@ -134,6 +147,21 @@ class FlightWatcherLayoverCard extends HTMLElement {
     if (!m) return null;
     const rest = t.slice(m.index + m[0].length).replace(/\(\d{1,2}:\d{2}\s*[AP]M\)\s*/i, "").replace(/^[\s,]+/, "").trim();
     return { hm: `${m[1].padStart(2, "0")}:${m[2]}`, rest };
+  }
+  // review r4: a leg's time (k: report, dep_sched) with HST. Hark's "20:25 AEDT (8:25 PM) Thu 2026-11-12" gets the
+  // Watcher's HST part when the Watcher's sensor is on the same trip, station and local time ("20:25 local, 23:25
+  // HST"); the Watcher's own "local" (both times are at the leg's origin) becomes the zone the van sensor read for
+  // that station on this trip ("20:25 AEDT, 23:25 HST"), else it stays "local"
+  _when(k, a, hark, w, va) {
+    const t = String(a[k] || ""), wa = (w && w.attributes) || {}, o = String(a.origin || "").toUpperCase();
+    if (!t) return t;
+    if (hark) {
+      const x = this._timeParts(t), y = this._timeParts(wa[k]), m = /\b(\d{1,2}:\d{2})\s*HST\b/.exec(String(wa[k] || ""));
+      const same = this._same(wa.pairing, a.pairing) && String(wa.origin || "").toUpperCase() === o;
+      return /\bHST\b/.test(t) || !(x && y && m && same && x.hm === y.hm) ? t : `${t}, ${m[1]} HST`;
+    }
+    const z = va && va.at && this._same(va.pairing, a.pairing) && va.city === o && /^[A-Z]{2,5}$/.test(String(va.abbr || "")) ? va.abbr : "";
+    return z ? t.replace(/\blocal\b/, z) : t;
   }
   // the guide: escaped first, then headings, lists, bold, italics, code and https links (nothing else becomes markup)
   _md(src) {
@@ -210,7 +238,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     const r0 = this.shadowRoot, focus = r0.activeElement && r0.activeElement.matches && r0.activeElement.matches("[data-draft]");
     const prevCity = r0.querySelector("[data-city]");
-    const { s, a, hark } = this._pick();
+    const { s, a, hark, w } = this._pick();
     const p = this._c.prefix, n = this._st(`sensor.${p}_layover_notes`);
     let main;
     if (!a.pairing) {
@@ -219,7 +247,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
     } else {
       // the pairings package's van (the Watcher read it for this pairing's layover) comes first, then Hark's
       const va = (this._st(`sensor.${p}_layover_van`) || {}).attributes || {};
-      const pk = va.at && va.source === "package" && va.pairing === a.pairing && va.local && va.date
+      const pk = va.at && va.source === "package" && this._same(va.pairing, a.pairing) && va.local && va.date
         ? { local: String(va.local), date: String(va.date), wd: String(va.weekday || ""), place: String(va.place || "") } : null;
       const vt = pk || (hark ? this._vanText(a, s.state) : null), vs = this._vanSensor(a, vt);
       // Hark gave a van the Watcher could not place: its text shows, and that no alert comes for it
@@ -228,7 +256,11 @@ class FlightWatcherLayoverCard extends HTMLElement {
       // the van time is not known, so no van alert comes
       const o = String(a.origin || "").toUpperCase();
       const onLay = /^[A-Z]{3}$/.test(o) && o !== "HNL" && (hark ? a.mode === "layover" : !a.status || a.status === "Scheduled");
-      const unknown = !vt && !unread && onLay;
+      const unknown = !vt && !unread && onLay && !va.at;  // never while the Watcher has a van (and its alerts)
+      // the package's van wins; Hark's own van text, when it says another time, shows under it
+      const hv = pk && hark ? this._harkVan(a, s.state) : null;
+      const hsays = hv && (hv.local !== pk.local || hv.date !== pk.date) ? `Hark says ${hv.local}${hv.date !== pk.date ? ` ${hv.wd}` : ""}` : "";
+      const rep = this._when("report", a, hark, w, va), dsc = this._when("dep_sched", a, hark, w, va);
       let big;
       if (vt) {
         const l = vs ? this._left(vs.at) : { t: "", c: "" };
@@ -236,9 +268,10 @@ class FlightWatcherLayoverCard extends HTMLElement {
           <div class="vz">${this._e(vs ? vs.abbr : "local")}${vt.wd || (vs && vs.weekday) ? ` &middot; ${this._e(vt.wd || vs.weekday)}` : ""}</div>
           ${vs ? `<div class="vh">${this._e(vs.hst)} HST ${this._e(vs.hst_weekday || "")}</div>` : ""}
           <div class="cd ${l.c}" data-cd${vs ? ` data-at="${this._e(vs.at)}"` : ""}>${this._e(l.t)}</div>
-          <div class="u vsrc" data-vansrc>${pk ? "from the pairings package" : "from Hark"}</div></div>`;
+          <div class="u vsrc" data-vansrc>${pk ? "from the pairings package" : "from Hark"}</div>
+          ${hsays ? `<div class="u vsrc" data-harkvan>${this._e(hsays)}</div>` : ""}</div>`;
       } else {
-        const rp = this._timeParts(a.report);
+        const rp = this._timeParts(rep);
         big = rp ? `<div class="van rep" data-van><div class="vl">Report</div><div class="vt">${this._e(rp.hm)}</div><div class="vz">${this._e(rp.rest)}</div></div>` : "";
       }
       const dep = this._timeParts(a.dep_sched), arr = this._timeParts(a.arr_sched);
@@ -279,8 +312,8 @@ class FlightWatcherLayoverCard extends HTMLElement {
         ${vt && vt.place ? `<div class="vp">&#128656; Van at ${this._e(vt.place)}${alerts.length ? ` <span class="u">&middot; alerts ${alerts.map((x) => `${x.minutes} min ${x.status === "sent" ? "&#10003;" : x.status === "pending" ? `at ${this._e(x.at_hst)} HST` : this._e(x.status)}`).join(", ")}</span>` : ""}</div>` : ""}
         ${unread ? `<div class="vp" data-vanunread>&#128656; Van: ${this._e(unread)} <span class="u">&middot; no van alert: its time could not be read for sure</span></div>` : ""}
         ${unknown ? `<div class="vp" data-vanunknown>&#128656; Van time not known: not in the pairings package and not from Hark, so no van alert comes.${!va.at && va.why ? ` <span class="u">(${this._e(va.why)})</span>` : ""}</div>` : ""}
-        <div class="tm">${a.report ? `<div><span class="k">Report</span> ${this._e(a.report)}</div>` : ""}
-          ${dep ? `<div><span class="k">Departs</span> ${this._e(a.dep_sched)}</div>` : ""}${arr ? `<div><span class="k">Arrives</span> ${this._e(a.arr_sched)}</div>` : ""}</div>
+        <div class="tm">${rep ? `<div><span class="k">Report</span> ${this._e(rep)}</div>` : ""}
+          ${dep ? `<div><span class="k">Departs</span> ${this._e(dsc)}</div>` : ""}${arr ? `<div><span class="k">Arrives</span> ${this._e(a.arr_sched)}</div>` : ""}</div>
         ${status}${links ? `<div class="chips">${links}</div>` : ""}${rel}${lay}`;
     }
     const city = prevCity && prevCity.dataset.touched ? prevCity.value.toUpperCase() : this._cityNow(a, hark);
@@ -288,18 +321,18 @@ class FlightWatcherLayoverCard extends HTMLElement {
     const foot = a.updated ? `<div class="u ft">Updated ${this._e(a.updated)}${a.updated_by ? ` by ${this._e(a.updated_by)}` : ""}${a.next ? ` &middot; Next: ${this._e(a.next)}` : ""}</div>` : "";
     r0.innerHTML = `<style>
       :host{display:block}
-      ha-card{padding:12px 14px;font-size:14px;line-height:1.4;color:var(--primary-text-color)}
+      ha-card{padding:12px 14px;font-size:14px;line-height:1.4;color:var(--primary-text-color);overflow-wrap:anywhere}
       .u{color:var(--secondary-text-color);font-size:12px}
       .warn{color:#fff;background:#b71c1c;border-radius:6px;padding:4px 8px;margin:4px 0;font-size:12px;font-weight:600}
       .hd{display:flex;align-items:flex-start;gap:10px}.lt{flex:1;min-width:0}
       .fl{font-size:20px;font-weight:700;line-height:1.25;overflow-wrap:anywhere}
-      .mode{display:inline-block;margin-top:4px;border-radius:10px;padding:0 8px;font-size:11px;font-weight:700;color:var(--text-primary-color,#fff);background:var(--primary-color);text-transform:capitalize}
+      .mode{display:inline-block;margin-top:4px;border-radius:10px;padding:0 8px;font-size:11px;font-weight:700;color:#fff;background:#01579b;text-transform:capitalize}
       .van{flex:none;text-align:right;min-width:104px}
       .vl{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--secondary-text-color)}
       .vt{font-size:44px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
       .vz,.vh{font-size:12px;color:var(--secondary-text-color);white-space:nowrap}.vz{font-weight:700;color:var(--primary-text-color)}
       .rep .vt{font-size:36px}.rep .vz{white-space:normal;max-width:150px;font-weight:400}
-      .cd{font-size:14px;font-weight:700;margin-top:2px;color:var(--primary-text-color)}.vsrc{max-width:150px;margin-left:auto}
+      .cd{font-size:14px;font-weight:700;margin-top:2px;color:var(--primary-text-color)}.vsrc{max-width:104px;margin-left:auto}
       .cd.soon,.cd.now{color:#fff;border-radius:6px;padding:0 6px;display:inline-block}.cd.soon{background:#8a5300}.cd.now{background:#b71c1c}
       .cd.past{color:var(--secondary-text-color);font-weight:400}
       .vp{margin:8px 0 2px;font-weight:600}
@@ -332,6 +365,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
       button.x{background:none;color:var(--secondary-text-color);border:1px solid var(--divider-color);min-width:44px;min-height:44px;padding:0 8px;font-size:15px}
       button.x.arm{color:#fff;background:#b71c1c;border-color:transparent;font-size:12px}
       .ft{margin-top:8px}
+      @media (max-width:700px){textarea,.cl input{font-size:16px}}
     </style><ha-card>${main}${notes}${foot}</ha-card>`;
     const r = r0;
     r.querySelectorAll("details[data-k]").forEach((d) => { d.ontoggle = () => { this._open[d.dataset.k] = d.open; }; });

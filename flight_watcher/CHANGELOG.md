@@ -226,8 +226,10 @@ bytes unchanged). So no HOM release is needed first.
   older than 2 min says when it was counted, one over an hour old reads 0), on the portal's Settings tab and Ryan's.
 - The tickets card's page list on Ryan's dashboard offers Working Flight instead of Aviation Wx (he removed that view).
 - F#119: status text on the clock, settings, schedule, pot and recall cards uses the cards' own color variables, a
-  lighter tone on dark cards (prefers-color-scheme, as the portal's dark mode; the schedule card's old dark overrides
-  never applied), so text keeps WCAG AA contrast (4.5:1) on the portal's light and dark cards. Also for AA: the Hunt
+  lighter tone on dark cards (Home Assistant's dark mode, `hass.themes.darkMode`, which the portal sets from the
+  device; the phone's own setting only when that is not given (review r4: a profile forced to Light on a phone in dark
+  mode had the light-on-dark reds at 2.01:1); the schedule card's old dark overrides never applied), so text keeps WCAG
+  AA contrast (4.5:1) on the portal's light and dark cards. Also for AA: the Hunt
   button and the CHECK chip a darker orange behind white, the NO chip darker gray, the reserve grid tint a little
   lighter on light cards, a trip marked "would trade" in the text color on its orange mark, the faint marks in the
   secondary text color, the settings notes in the secondary text color instead of a fade, the pickers' sorted header
@@ -235,8 +237,15 @@ bytes unchanged). So no HOM release is needed first.
   warn text (#8a5300). The portal's own primary buttons in dark mode (white on #3a9be0, 3.02:1) are HOM's palette.
 - Review: The cards on a phone (700 px or less): every field and select of the settings, pickers, clock, schedule (Pay
   settings) and recall cards is 16 px, so iOS Safari no longer zooms into a tapped field and leaves the page wider
-  than the screen (the pilot lookup has been 16 px since F#43). Desktop sizes are unchanged. Not in this release: the
-  tickets card's fields (1.7.0) are 13 px.
+  than the screen (the pilot lookup has been 16 px since F#43). Desktop sizes are unchanged. Review r4: the tickets
+  card's fields (13 px since 1.7.0) and its paste box (12 px) too.
+- Review r4, the cards on Home Assistant's own light theme (2026.11, primary #009ac7; F#119 was checked on the portal's
+  palette): a SHOULD HAVE BEEN YOU row's reasons (3.98:1) and the recall card's month arrows (3.26:1), the clock
+  card's Last, Next and interval labels in the red Stuck state (4.07:1, 3.89:1) and its Check now (3.26:1) are the
+  primary text color; the recall card's buttons are 44 px tall on a phone (27 px). The pot card's fold-outs (Swap
+  ideas key, Key) are 44 px taps (32 px), and a folded swap idea's Grid line reads "red 11-21", not "grid red 11-21".
+- Review r4, privacy (F#96): a pilot's card copy names the admin in no letter case (the tickets card's Claude prompt
+  kept "reporter is not ryan", in the portal bundle) and says "the admin's Home Assistant" for his house's ("Pako HI").
 
 ### Bid calendar alerts (FW-0070, Ryan)
 
@@ -404,6 +413,21 @@ bytes unchanged). So no HOM release is needed first.
   no van time for H3681 SYD (VAN 00:00)"). The card shows "from the pairings package" or "from Hark" under the van
   time, and on a layover with no van "Van time not known: not in the pairings package and not from Hark, so no van
   alert comes." with that reason.
+- Review r4, van alerts: an alert's key is the pairing's base id, the van instant and the offset (`layover.key`). The
+  Watcher takes FLICA's rebuilt H3681B on Ryan's schedule and Hark's H3681 as the same trip, and the leg's spelling
+  changed when the layover leg came from the other one (Ryan's legs no longer read, or read between the 30 and 10 min
+  marks), so the same van could push twice. After an MQTT (re)connect the van and notes sensors go again at the next
+  sweep (`forget_layover_sigs`): one published while the broker was down was dropped (QoS 0) yet counted as sent, so a
+  van Hark revised or a note added during a Mosquitto restart did not reach the card until it changed again.
+- Review r4, the layover card: H3681B and H3681 are the same trip on the card too (`_same`: Hark's sensor, the
+  package's van and the Watcher's van reading; it showed REPORT and "Van time not known ... so no van alert comes"
+  and hid Hark's hotel while the alerts went), and it never says no van alert comes while the van sensor has a van. A
+  long link or word wraps (a bare URL in the guide, Hark's lists or status widened a 390 px page to 775 px). When the
+  package's van wins and Hark says another time, "Hark says 19:40" shows under the source. Report and Departs carry
+  HST (Hark's from the Watcher's sensor on the same trip, station and local time; the Watcher's own "local" is the
+  station's zone the van sensor read, "20:25 AEDT, 23:25 HST"). The note and City fields are 16 px on a phone, the
+  source line no longer pushes the route onto two lines at 390 px, and the Layover pill is white on a fixed dark blue
+  (7.4:1; Home Assistant's default blue was 3.26:1).
 
 ### Home Assistant (snapshots under `ha/`, pending on Pako: `ha/README.md`)
 
@@ -511,6 +535,16 @@ bytes unchanged). So no HOM release is needed first.
   reasons, Hark for another pairing is not used, Hark's layover finds the package van without Ryan's legs, a misnamed
   package is not used. `test_layover_card.py`: "from the pairings package" and "from Hark" on the card, and "Van time
   not known" with the reason (none at home). `test_layover.py`'s van sensor keys gain `source`.
+- `tests/test_fw171_r4.py` (review r4, the Watcher): one key for H3681B and H3681, the reviewer's probe (Ryan's legs
+  gone after the 30 min alert, or read between the marks) sends each alert once; a van and a note changed while the
+  broker drops what is published reach the sensors after the reconnect, then only on a change; a pilot's copies name
+  neither the admin (any case) nor his Home Assistant. `tests/test_fw171_r4_cards.py` (the cards in Chromium): the
+  rebuilt pairing on the layover card, no "no van alert" with a van, a bare URL at 390 px, "Hark says", 16 px fields,
+  the one-line route, the pill on Home Assistant's blue (light and dark), HST on Report and Departs and the zone for
+  "local", the pot card's 44 px fold-outs and Grid cell, the five cards' dark colors from `hass.themes.darkMode` (and
+  the device's without it), the recall and clock cards at AA on Home Assistant's light theme with 44 px taps. Each
+  fails before its fix (the 1100 px field size, unchanged, excepted). `test_tickets_paste.py` (16 px on a phone) and
+  `test_fw171_cards.py` (the name scrub in any case, the Grid cell) follow.
 - `tests/test_fw171_r2.py`: the new-pairing message with the 672 tag (from `month_rule`, from `b672` / `b672_ok`, the
   unknowns, other parts never taken for it). `test_fw171_b672.py`: the FAR column's 672 h worst counts a slipped
   block in full (fails before the fix: 98:01 "OK"), and is never under the sure sum in any window tried; its guard

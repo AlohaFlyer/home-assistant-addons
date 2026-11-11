@@ -16,8 +16,8 @@
 // columns as that table (Give up, For, Dates, Layover, Days, Credit, Soft, Gain, Src, Grid); on a card 560 px wide or
 // less each idea folds into labeled lines, so nothing scrolls sideways at 390 px. Read only: a new idea makes no alert
 // here (a portal event would be a contract change).
-// 1.7.1 (F#119): the chip colors are this card's own variables, lighter on dark cards (prefers-color-scheme, as the
-// portal's dark mode), so they keep WCAG AA contrast (4.5:1) on both (the portal's dark error red is 4.497:1).
+// 1.7.1 (F#119): the chip colors are this card's own variables, lighter on dark cards (Home Assistant's dark mode, which the
+// portal sets from the device), so they keep WCAG AA contrast (4.5:1) on both (the portal's dark error red is 4.497:1).
 // Usage: type: custom:flight-watcher-pot-card
 // PWA 3.D.6 A330 PAX / B787 First Officer hourly rate by longevity year (1-12) and effective date (as the schedule card)
 const PC_RATE_DATES = ["2023-03-02", "2024-03-02", "2025-03-02", "2026-03-02", "2027-01-31"];
@@ -37,6 +37,8 @@ const pcHst = (iso) => { const t = Date.parse(iso || ""); if (isNaN(t)) return "
 class FlightWatcherPotCard extends HTMLElement {
   setConfig(c) { this.c = c || {}; }
   set hass(h) {
+    // review r4: the dark colors follow Home Assistant's own dark mode (hass.themes.darkMode, which the portal sets from the device), not the phone's: a profile forced to Light on a phone in dark mode kept the light-on-dark reds
+    if (typeof this.toggleAttribute === "function") this.toggleAttribute("dark", !!(h && h.themes && typeof h.themes.darkMode === "boolean" ? h.themes.darkMode : typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches));
     this._h = h;
     const ids = ["sensor.flight_watcher_pot_count", "sensor.flight_watcher_tradeboard_pickups", "sensor.flight_watcher_last_check",
       "sensor.flight_watcher_state", "input_number.flight_watcher_longevity_year", "sensor.flight_watcher_swap_ideas",
@@ -90,7 +92,7 @@ class FlightWatcherPotCard extends HTMLElement {
     const rows = list.map((i) => {
       const lay = !none(i.layover) ? this._e(i.layover) : i.turn ? `<b>${this._e(i.turn)}</b> turn` : "turn";
       const src = i.src === "T" ? "Tradeboard" : "Open time";
-      const grid = i.grid_ok ? `<b class="ok">OK</b>` : this._e(i.grid || "?");
+      const grid = i.grid_ok ? `<b class="ok">OK</b>` : this._e(String(i.grid || "?").replace(/^grid\s+/i, "") || "?");  // review r4: the cell is labeled Grid already
       const cells = [this._e(i.for_trip), `<b>${this._e(i.pairing)}</b>`, this._e(i.dates), lay, this._e(i.days), this._e(i.credit),
         this._e(i.soft), `<b>${this._e(i.soft_gain)}</b> soft, ${this._e(i.credit_gain)} cr`, src, grid];
       return `<tr>${cells.map((c, n) => `<td data-l="${cols[n]}">${c}</td>`).join("")}</tr>`;
@@ -150,7 +152,7 @@ class FlightWatcherPotCard extends HTMLElement {
     const valNote = rate == null ? "Value: set your longevity year in Pay settings (Schedule tab)."
       : `Value = credit x $${rate.toFixed(2)}/h (PWA 3.D.6, longevity year ${lyr}${unconf ? ", not confirmed yet: check it in Pay settings on the Schedule tab" : ""}).`;
     this.shadowRoot.innerHTML = `<style>
-      @media (prefers-color-scheme: dark){:host{--fw-ok:#81c784;--fw-err:#ef9a9a;--fw-warn:#ffb74d}}
+      :host([dark]){--fw-ok:#81c784;--fw-err:#ef9a9a;--fw-warn:#ffb74d}
       ha-card{padding:10px 12px;font-size:13px;line-height:1.35}
       h3{margin:0;font-size:15px}.hd{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:6px}
       .k{color:var(--secondary-text-color);font-size:12px}
@@ -163,7 +165,7 @@ class FlightWatcherPotCard extends HTMLElement {
       .c.ok{color:var(--fw-ok,#2e7d32);border-color:currentColor}.c.warn{color:var(--fw-warn,#8a5300);border-color:currentColor}
       .c.bad{color:var(--fw-err,#c62828);border-color:currentColor}.c.mute{color:var(--secondary-text-color)}
       .sv{display:inline-flex;align-items:center;gap:6px;min-height:44px;cursor:pointer}.sv input{width:22px;height:22px;margin:0}
-      details{margin-top:6px}summary{cursor:pointer;color:var(--secondary-text-color);font-size:12px;min-height:32px;line-height:32px}
+      details{margin-top:6px}summary{cursor:pointer;color:var(--secondary-text-color);font-size:12px;line-height:20px;padding:12px 0}
       ul{margin:4px 0;padding-left:18px}
       .sw{margin-top:8px;padding-top:6px;border-top:1px solid var(--divider-color)}h4{margin:0 0 4px;font-size:14px}
       .swb{container-type:inline-size}.swt{border-collapse:collapse;width:100%;font-size:12px}

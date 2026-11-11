@@ -188,8 +188,11 @@ def van_info(attrs, state=""):
 
 
 def key(info, minutes):
-    """The DB key of one alert: pairing, the van instant (UTC) and the offset."""
-    return f"{info['pairing']}|{info['at'].astimezone(UTC).strftime('%Y-%m-%dT%H:%MZ')}|{minutes}"
+    """The DB key of one alert: pairing, the van instant (UTC) and the offset. The pairing is its base id (H3681 for
+    FLICA's rebuilt H3681B): watcher.van_source takes Hark's H3681 and Ryan's H3681B as the same trip, and the leg's
+    spelling changes when the layover leg comes from the other one, so the same van keeps the same key and is never
+    sent twice (1.7.1 review)."""
+    return f"{_base_id(str(info['pairing']))}|{info['at'].astimezone(UTC).strftime('%Y-%m-%dT%H:%MZ')}|{minutes}"
 
 
 def due(info, done, now):

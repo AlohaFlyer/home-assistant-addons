@@ -30,6 +30,8 @@ const FW_TICKET_PORTAL_URL = 360000;  // portal: one photo's data URL, 6 chunks 
 const FW_TICKET_CHUNK = 60000;  // roles.PILOT_TICKET_LIMITS chunk_chars: one ticket/image command's base64
 const FW_TICKET_MAX_BYTES = 63000;  // portal: a command's {sub, payload} in UTF-8, under the 64 KB command cap
 const FW_TICKET_RETRY_MS = 10000;  // portal: a chunk refused for too many commands a minute waits this long
+// Review r4: on a phone (700 px or less) the form's fields and the paste box are 16 px: iOS Safari zooms into a smaller
+// one when it is tapped (the release's 16 px rule; they were 13 px and 12 px).
 // FW-0071: what the paste box and Paste photo say when the clipboard holds no picture
 const FW_TICKET_NO_PICTURE = "No picture on the clipboard. Copy a screenshot first (on a Mac ⌘⌃⇧4 copies one; on iPhone or iPad open the screenshot and Copy it), or use Add photos.";
 // FW-0006: the choice at the top of the one ticket form (Bug first): its label, the description prompt, a title hint
@@ -677,6 +679,8 @@ class FlightWatcherTicketsCard extends HTMLElement {
       .hd button.cc{margin-left:auto;border-radius:6px;padding:8px 14px;font-size:14px;font-weight:600;background:#d97757;color:#fff;white-space:nowrap}
       .hd button.cc:focus-visible{outline:2px solid var(--primary-text-color);outline-offset:2px}
       [data-ccmsg]{text-align:right}[data-ccmsg] textarea{width:100%;box-sizing:border-box;font:13px sans-serif;margin-top:4px}
+      @media (max-width:700px){.form input:not([type=file]):not([type=radio]),.form textarea,.form select,[data-ccmsg] textarea{font-size:16px}
+        .pz{font-size:16px;max-height:120px}}
     </style><ha-card>
       <div class="hd"><button class="big" data-new${this._busy() ? " disabled" : ""}>&#127915; Submit a ticket</button>
         <span class="u">${tix.length ? `${active.length} open · ${done.length} completed` : ""}</span>

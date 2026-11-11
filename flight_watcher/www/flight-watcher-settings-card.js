@@ -27,7 +27,7 @@
    login); a password still goes exactly as typed, shown or not. The Watcher's "nothing new" reads as no change, in a
    neutral color, not as a green save. (F#155) While a CrewTrac login is saved, Remove CrewTrac login sends the sealed
    {ctweb_off: true} (sealed only, like Turn off phone alerts), after a confirm. (F#119) The status colors are this
-   card's own variables, lighter on dark cards (prefers-color-scheme, as the portal's dark mode): WCAG AA 4.5:1 on both.
+   card's own variables, lighter on dark cards (Home Assistant's dark mode, the portal's from the device): WCAG AA 4.5:1 on both.
    1.7.1 review: on a phone (700 px or less) every field is 16 px: iOS Safari zooms into a smaller one when it is tapped
    and leaves the page wider than the screen (as F#43 found for the pilot lookup).
    1.7.1 (F#22, shared charters): when the Watcher says it makes no CrewTrac login (sensor.flight_watcher_charters
@@ -84,6 +84,8 @@ class FlightWatcherSettingsCard extends HTMLElement {
   }
   getCardSize() { return 6; }
   set hass(h) {
+    // review r4: the dark colors follow Home Assistant's own dark mode (hass.themes.darkMode, which the portal sets from the device), not the phone's: a profile forced to Light on a phone in dark mode kept the light-on-dark reds
+    if (typeof this.toggleAttribute === "function") this.toggleAttribute("dark", !!(h && h.themes && typeof h.themes.darkMode === "boolean" ? h.themes.darkMode : typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches));
     this._h = h;
     if (!this._built || this._bkey !== this._buildKey()) {
       // 1.6.2 review: a rebuild keeps the message line (a save's confirmation must outlive the restart it causes)
@@ -165,7 +167,7 @@ class FlightWatcherSettingsCard extends HTMLElement {
       + (k === "ctweb_password" && ct ? rmBtn : "") + (k === "password" && ctNo ? ctNoHtml : "")).join("")
       + this._dohHtml(a) + (this._ntfy ? this._ntfyHtml(a) : "");
     root.innerHTML = `<style>
-      @media (prefers-color-scheme: dark){:host{--fw-ok:#81c784;--fw-err:#ef9a9a}}
+      :host([dark]){--fw-ok:#81c784;--fw-err:#ef9a9a}
       ha-card{padding:16px}label{display:flex;align-items:center;gap:8px;margin:8px 0;flex-wrap:wrap}
       label span{width:150px}input{flex:1;min-width:160px;max-width:320px;padding:6px;font:inherit;
       border:1px solid var(--divider-color,#ccc);border-radius:6px;background:var(--card-background-color);color:var(--primary-text-color)}

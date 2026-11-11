@@ -1382,6 +1382,7 @@ def mqtt_start():
         publish_swap_tests()
         publish_uploads(cl, force=True)  # FW-0066
         _BIDCAL["sig"] = None  # 1.7.1 review: the bid calendar sensor goes again at the next minute's bidcal_tick
+        forget_layover_sigs()  # 1.7.1 review: and the van and notes sensors at the next sweep's van_tick
         tm = threading.Timer(CONNECT_STATES_DELAY_S, connect_states, args=(cl,))  # FW-0024
         tm.daemon = True
         tm.start()
@@ -7239,6 +7240,14 @@ def van_tick(now=None, mono=None):
     publish_layover_van(info, why, done, now)
     layover_notes_tick(time.monotonic() if mono is None else mono)
     return send
+
+
+def forget_layover_sigs():
+    """After a (re)connect: the van and notes sensors go again at the next van_tick, even unchanged. A payload
+    published while MQTT was down (QoS 0) was dropped, yet its signature was kept, so a van or a note changed during a
+    broker restart would not reach the card until it changed again (1.7.1 review)."""
+    _VAN["sig"] = None
+    _LN["sig"] = _LN["files"] = _LN["checked"] = None
 
 
 def publish_layover_van(info, why, done, now, force=False):

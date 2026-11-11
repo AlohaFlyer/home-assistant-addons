@@ -19,9 +19,12 @@
 // 1.7.1 (Ryan, Nov 11): a day the admin's Watcher replayed from its history (day.replay) shows like any other, says so,
 // and never counts for the RECALL ALERT bar.
 // (F#119) Text on the card's own colors keeps WCAG AA contrast (4.5:1) on light and dark cards: the error text is a
-// lighter red on a dark card (prefers-color-scheme, as the portal's dark mode), the CHECK and NO chips are darker.
+// lighter red on a dark card (Home Assistant's dark mode, the portal's from the device), the CHECK and NO chips are darker.
 // 1.7.1 review: on a phone (700 px or less) every field, select and the CCR draft are 16 px: iOS Safari zooms into a
 // smaller one when it is tapped and leaves the page wider than the screen (as F#43 found for the pilot lookup).
+// Review r4: on a phone the buttons are 44 px tall; on Home Assistant's own light theme (primary #009ac7) a SHOULD HAVE
+// BEEN YOU row's reasons are the primary text color (the secondary one was 3.98:1 on the row's red tint) and the month
+// arrows too (the theme's blue was 3.26:1).
 // FW-0060: a sensor's full list from its file under /local/ (<url><file_key>.json, the pilot's own www folder). Fetched
 // again whenever the sensor's rev changes; null until it is in (or when the sensor has no key), so the caller falls
 // back to the sensor's own short list. A failed fetch is not retried until rev changes.
@@ -49,6 +52,8 @@ const RC_FOLD = "flight_watcher_recall_fold";
 class FlightWatcherRecallCard extends HTMLElement {
   setConfig(c) { this._c = { entity: "sensor.flight_watcher_recall_o75", mode: "tab", tab: "/flight-watcher/recall", ...c }; this._open = {}; this._drafts = {}; this._pending = {}; this._approved = {}; }
   set hass(h) {
+    // review r4: the dark colors follow Home Assistant's own dark mode (hass.themes.darkMode, which the portal sets from the device), not the phone's: a profile forced to Light on a phone in dark mode kept the light-on-dark reds
+    if (typeof this.toggleAttribute === "function") this.toggleAttribute("dark", !!(h && h.themes && typeof h.themes.darkMode === "boolean" ? h.themes.darkMode : typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches));
     this._h = h;
     const st = h.states[this._c.entity];
     const sig = st ? st.last_updated + JSON.stringify(st.attributes.me || {}) : "none";
@@ -126,7 +131,7 @@ class FlightWatcherRecallCard extends HTMLElement {
   _css() {
     return `<style>
       :host{display:block}
-      @media (prefers-color-scheme: dark){:host{--fw-err:#ef9a9a}}
+      :host([dark]){--fw-err:#ef9a9a}
       ha-card{padding:12px 14px;font-size:13px;overflow-wrap:anywhere}
       .bar{background:#b71c1c;color:#fff;border-radius:10px;padding:10px 12px;margin:0 0 10px;box-sizing:border-box;max-width:100%}
       .bh{font-weight:900;letter-spacing:1px;font-size:16px;display:flex;align-items:center;gap:8px}
@@ -142,15 +147,15 @@ class FlightWatcherRecallCard extends HTMLElement {
       .row{margin:4px 0 4px 8px}
       .chip{display:inline-block;border-radius:10px;padding:0 8px;font-size:11px;font-weight:700;color:#fff;margin-right:6px}
       .MISSED{background:#c62828}.POSSIBLE{background:#b84d00}.NO{background:#616161}.row.vMISSED{background:rgba(198,40,40,.12);border-left:4px solid #c62828;padding:4px 8px;border-radius:6px}.row.vNO{color:var(--secondary-text-color)}.row.vPOSSIBLE{border-left:4px solid #ef6c00;padding:2px 8px}
-      .why{color:var(--secondary-text-color);font-size:12px}
+      .why{color:var(--secondary-text-color);font-size:12px}.row.vMISSED .why{color:var(--primary-text-color)}
       .hk{margin:4px 0;padding:4px 8px;border-radius:6px;background:rgba(46,125,50,.12);border-left:4px solid #2e7d32}.hk.bad{background:rgba(239,108,0,.14);border-left-color:#ef6c00}
       .hw{margin:4px 0;padding:4px 8px;border-radius:6px;background:rgba(198,40,40,.10);border-left:4px solid #c62828;font-weight:600}
       .gate{display:block;margin:4px 0}.dn{color:var(--fw-err,#c62828);font-size:12px;margin:2px 0}.nerr{color:var(--fw-err,#c62828)}
       textarea{width:100%;min-height:150px;font:12px/1.4 var(--paper-font-body1_-_font-family,sans-serif);box-sizing:border-box;margin:6px 0}
-      @media (max-width:700px){input,select,textarea{font-size:16px}}
+      @media (max-width:700px){input,select,textarea{font-size:16px}button{min-height:44px}}
       pre.n{white-space:pre-wrap;font:12px/1.4 var(--paper-font-body1_-_font-family,sans-serif);margin:4px 0}
       .me{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
-      .me input[type=number]{width:70px}.mp{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:15px}.mp .nv{cursor:pointer;font:inherit;font-size:22px;color:var(--primary-color);padding:0 6px;user-select:none;min-width:44px;min-height:44px;border:1px solid var(--divider-color);border-radius:8px;background:none}.k{color:var(--secondary-text-color);font-size:12px}
+      .me input[type=number]{width:70px}.mp{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:15px}.mp .nv{cursor:pointer;font:inherit;font-size:22px;color:var(--primary-text-color);padding:0 6px;user-select:none;min-width:44px;min-height:44px;border:1px solid var(--divider-color);border-radius:8px;background:none}.k{color:var(--secondary-text-color);font-size:12px}
       .st{font-weight:700;text-transform:uppercase;font-size:11px}
     </style>`;
   }

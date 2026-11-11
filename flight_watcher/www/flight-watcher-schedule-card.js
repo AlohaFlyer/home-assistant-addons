@@ -11,7 +11,7 @@
 // Pako HI, HOM t1218/t1225. Usage: type: custom:flight-watcher-schedule-card
 // 1.7.1 (F#32): the month's Improved-Pay-Gross goes to the Watcher once the pairings package is in or known missing,
 // never priced without it first. (F#119) The status text colors (green, red, orange, blue) are this card's own
-// variables, lighter on dark cards (prefers-color-scheme, as the portal's dark mode; the dark overrides written before
+// variables, lighter on dark cards (Home Assistant's dark mode, the portal's from the device; the dark overrides written before
 // the light rules never applied): WCAG AA 4.5:1 on light and dark cards. For the same reason the reserve grid's tint
 // is lighter on a light card, a trip marked "would trade" is in the text color on its orange mark, the faint marks
 // (no ideas, the trade and drop arrows, FAR '-') use the secondary text color, and another month's days lose their
@@ -64,6 +64,8 @@ function fwListFile(box, url, st, redraw) {
 class FlightWatcherScheduleCard extends HTMLElement {
   setConfig(c) { this.c = c || {}; this._pk = {}; }
   set hass(h) {
+    // review r4: the dark colors follow Home Assistant's own dark mode (hass.themes.darkMode, which the portal sets from the device), not the phone's: a profile forced to Light on a phone in dark mode kept the light-on-dark reds
+    if (typeof this.toggleAttribute === "function") this.toggleAttribute("dark", !!(h && h.themes && typeof h.themes.darkMode === "boolean" ? h.themes.darkMode : typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches));
     const sig = ["sensor.flight_watcher_schedule", "input_number.flight_watcher_month_offset", "sensor.flight_watcher_pot_count",
       "sensor.flight_watcher_blocked_days", "sensor.flight_watcher_own_trip_times", "sensor.flight_watcher_tradeboard_pickups",
       "sensor.flight_watcher_would_trade", "sensor.flight_watcher_swap_ideas", "sensor.flight_watcher_reserve_grid",
@@ -696,7 +698,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const flagged = PAY_PREFS.filter((e) => ((S[e] || {}).attributes || {}).unconfirmed === true && !(e === PAY_PREFS[2] && lyByDoh));  // values to keep
     const sel = (lo, hi, step, cur, suf) => { const o = []; for (let v = lo; v <= hi + 1e-9; v += step) { const r = Math.round(v * 100) / 100; o.push(`<option value="${r}"${Math.abs(r - cur) < 1e-9 ? " selected" : ""}>${r}${suf}</option>`); } return o.join(""); };
     this.shadowRoot.innerHTML = `<style>
-      @media (prefers-color-scheme: dark){:host{--fw-ok:#81c784;--fw-err:#ef9a9a;--fw-warn:#ffb74d;--fw-info:#90caf9}}
+      :host([dark]){--fw-ok:#81c784;--fw-err:#ef9a9a;--fw-warn:#ffb74d;--fw-info:#90caf9}
       ha-card{padding:10px 8px 12px;font-size:12.5px;line-height:1.25;box-sizing:border-box}
       .wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}
       .cal td:nth-child(1),.cal td:nth-child(2),.cal th:nth-child(1),.cal th:nth-child(2){position:sticky;background:var(--card-background-color,#fff);z-index:1}
