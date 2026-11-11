@@ -4,6 +4,7 @@ Login rule: never two login attempts in a row without a success in between.
 A failed login, or anything unexpected, parks the watcher until re-armed from HA.
 FLICA is read only: rules match and log, nothing is ever submitted to FLICA.
 """
+import collections
 import hashlib
 import json
 import logging
@@ -212,11 +213,23 @@ RULE_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------- rules file
+def is_seeded_example(rule):
+    """1.7.1 (F#15): True when a stored rule is the example load_rules seeded (rules.EXAMPLE as validate fills it in),
+    never edited: every field the same but created_at (stamped when it was written)."""
+    seed = R.validate(R.EXAMPLE)[0][0]
+    return isinstance(rule, dict) and {k: v for k, v in rule.items() if k != "created_at"} == \
+        {k: v for k, v in seed.items() if k != "created_at"}
+
+
 def load_rules():
+    pilot = ROLES.role(INSTANCE) == ROLES.PILOT
     if not os.path.exists(RULES_FILE):
-        clean, _ = R.validate(R.EXAMPLE)
+        # 1.7.1 (F#15): a pilot gets no example rule: his portal has no rules view, so he could neither see nor turn
+        # off a SIN alert he never asked for (an alert rule raises a Rule match alert even in dry run)
+        clean = [] if pilot else R.validate(R.EXAMPLE)[0]
         write_rules(clean)
-        log.info("rules.json created with the example SIN alert rule (alert only, dry run)")
+        log.info("rules.json created empty (a pilot gets no example rule)" if pilot else
+                 "rules.json created with the example SIN alert rule (alert only, dry run)")
         return clean
     try:
         clean, errs = R.validate(json.load(open(RULES_FILE)))
@@ -224,6 +237,17 @@ def load_rules():
         clean, errs = [], [f"rules.json unreadable: {e}"]
     if errs:
         log.warning("rules.json has errors, running with NO rules until fixed: %s", errs)
+    elif pilot and not DB.get("example_rule_checked"):
+        # 1.7.1 (F#15), once per pilot: the example a 1.7.0 or older start seeded for him goes, only while it is
+        # exactly the seed (an edited rule is his and stays); its live switch is taken down by the next publish_rules
+        drop = [r["id"] for r in clean if is_seeded_example(r)]
+        if drop:
+            clean = [r for r in clean if r["id"] not in drop]
+            write_rules(clean)
+            RULES["published"] |= set(drop)
+            log.info("rules.json: the example rule %s seeded before 1.7.1 removed (a pilot gets no example rule)",
+                     ", ".join(drop))
+        DB.put("example_rule_checked", 1)
     return clean
 
 
@@ -349,9 +373,14 @@ def on_message(c, u, msg):
             # paused, the loop sleeps an hour: it must see the un-pause (its check then waits for the floor itself)
             wake = S.get("machine") == "paused" or wake_check("pause off")
     elif msg.topic == f"{T}/rearm/press":
-        FLAGS["rearm"] = True
-        wake = (S.get("machine") or "").startswith("stopped")
-        log.info("re-arm pressed")
+        act, _, why = rearm_answer()  # 1.7.1 (F#92, F#149): what it does depends on the state
+        if act == "login":
+            FLAGS["rearm"] = True
+            wake = (S.get("machine") or "").startswith("stopped")
+        elif act == "check":  # idle or hunting with no check for too long: the full check the card's 'Stuck' asks for
+            FLAGS["full"] = True
+            wake = wake_check("re-arm")
+        log.info("re-arm pressed" + (f": {why}" if why else ""))
     elif msg.topic in (f"{T}/hunt/state", f"{T}/pause/state"):
         if p in ("ON", "OFF"):  # the retained state restores the switch after a restart (an empty payload is no state)
             remember_switch("hunt" if "hunt" in msg.topic else "pause", p == "ON")
@@ -375,10 +404,9 @@ def on_message(c, u, msg):
             log.info("charter scan press: %s", e)
     elif msg.topic == f"{T}/check_now/press":
         # Waking the loop runs a check right away (only when idle or hunting; paused/stopped ignore it).
-        gap_s = check_now_gap()  # 10 s on every instance; on a pilot a press or a check start inside it counts too
-        if time.time() - max(S.get("last_check_ts", 0), S.get("wake_ts", 0) if not admin else 0,
-                             S.get("check_started_ts", 0) if not admin else 0) < gap_s:
-            log.info("check now ignored: last check under %d s ago", gap_s)
+        why = check_now_refusal(admin)  # 1.7.1 (F#12): the same reason a portal press is answered with
+        if why:
+            log.info("check now %s", why)
             return
         log.info("check now pressed: full refresh")
         FLAGS["full"] = True  # 0.3.9: re-read schedule, own trips, pot details, pickups, tradeboard
@@ -420,6 +448,96 @@ def check_now_gap():
     """Check now is ignored this soon after the last check: 10 s on every instance (1.6.2, Ryan 2026-11-10: a pilot's
     gap was his 120 s check floor before; his FLICA budget still holds the pace)."""
     return CHECK_NOW_MIN_GAP_S
+
+
+def stuck_after_s():
+    """1.7.1 (F#149): idle or hunting with no check for this long reads as 'Stuck' on the clock card (its limit): 10 min
+    hunting, else 2.5 times the normal interval and at least 30 min."""
+    return 600 if FLAGS.get("hunt") else max(1800, freq()["normal_min"] * 150)
+
+
+def budget_hold():
+    """(seconds, 'budget' or 'host') the FLICA budget or the host's cap holds the next check: the main loop's wait
+    before a check (GATE_CHECK_TOKENS loads must fit). (0, '') when a check may start now."""
+    return GATE.free_in(min(check_tokens(), GATE.budget or GATE_CHECK_TOKENS))
+
+
+def _hold_words(wait, why):
+    return (f"the FLICA {'budget' if why == 'budget' else 'host limit'} holds the next check until "
+            f"{hst_hm(time.time() + wait)} HST")
+
+
+def check_now_refusal(admin):
+    """1.7.1 (F#12, F#149): why a Check now press does nothing now, in plain words ('' when it wakes a check). It answers
+    a portal press (portal_spool_once: ok false, the press is not republished) and goes to the log for one from Home
+    Assistant. Paused, stopped, waiting for settings, stepped aside, in a re-login back-off, under check_now_gap() since
+    the last check, or held by the FLICA budget: each of those would leave the press unread until its wait ended."""
+    st = S.get("machine") or "idle"
+    if FLAGS.get("pause") or st == "paused":
+        return "ignored: the Watcher is paused (turn Pause off first)"
+    if st.startswith("stopped"):
+        return "ignored: the Watcher is stopped (see why on the Watcher tab, then Re-arm)"
+    if st == "needs_settings":
+        return "ignored: the Watcher waits for your FLICA login on the Settings tab"
+    if st == "yielded":
+        return (f"ignored: the Watcher stepped aside for your own FLICA login until "
+                f"{hst_hm(S.get('yield_until'))} HST")
+    if st == "backoff":
+        return f"ignored: the Watcher logs in again at {hst_hm(S.get('relogin_at'))} HST"
+    gap_s = check_now_gap()  # 10 s on every instance; on a pilot a press or a check start inside it counts too
+    if time.time() - max(S.get("last_check_ts", 0), S.get("wake_ts", 0) if not admin else 0,
+                         S.get("check_started_ts", 0) if not admin else 0) < gap_s:
+        return f"ignored: last check under {gap_s} s ago"
+    wait, why = budget_hold()
+    if wait > 0:
+        return "ignored: " + _hold_words(wait, why)
+    return ""
+
+
+def rearm_answer():
+    """1.7.1 (F#92, F#149): what a Re-arm press does now: (action, ok, why). action 'login': stopped, yielded or in a
+    back-off, the login Re-arm has always made (only a stop wakes the loop for it, as before, so a step-aside for the
+    pilot's own FLICA login is never cut short: the login waits for its end); ok is false while FLICA refused these
+    details (the loop says so in the note and logs in no more). action 'check': idle or hunting with no check for
+    stuck_after_s() and none running, what the clock card's 'Stuck. Press Re-arm.' asks for: a full check now.
+    action '': nothing to re-arm (ok false, why says what the Watcher is doing)."""
+    st = S.get("machine") or "idle"
+    if st.startswith("stopped") or st in ("yielded", "backoff"):
+        if flica_refused_at() is not None:
+            return "login", False, "nothing to re-arm: FLICA refused these login details; save new ones on Settings"
+        if st == "yielded":
+            return "login", True, (f"logs in when the step-aside for your own FLICA login ends, "
+                                   f"{hst_hm(S.get('yield_until'))} HST")
+        if st == "backoff":
+            return "login", True, f"logs in at the next login try, {hst_hm(S.get('relogin_at'))} HST at the latest"
+        return "login", True, ""
+    if st == "needs_settings":
+        return "", False, "nothing to re-arm: enter your FLICA login on the Settings tab"
+    if FLAGS.get("pause") or st == "paused":
+        return "", False, "nothing to re-arm while paused: turn Pause off"
+    last = float(S.get("last_check_ts") or 0)
+    if time.time() - last < stuck_after_s():
+        return "", False, f"nothing to re-arm: the Watcher is checking (last check {hst_hm(last)} HST)"
+    if RUN["check"]:
+        return "", False, (f"nothing to re-arm: a check is running (since "
+                           f"{hst_hm(S.get('check_started_ts'))} HST)")
+    wait, why = budget_hold()
+    if wait > 0:
+        return "", False, "nothing to re-arm: " + _hold_words(wait, why)
+    return "check", True, "a full check starts now"
+
+
+def press_answer(sub):
+    """1.7.1 (F#12, F#92, F#149): (ok, why) for a portal command before it is republished. A Check now or a Re-arm the
+    Watcher would ignore answers ok false with the reason and is not republished; a Re-arm that acts says what it does.
+    Any other command: (True, '')."""
+    if sub == "check_now/press":
+        why = check_now_refusal(ROLES.role(INSTANCE) == ROLES.ADMIN)
+        return not why, why
+    if sub == "rearm/press":
+        _, ok, why = rearm_answer()
+        return ok, why
+    return True, ""
 
 
 def remember_switch(key, on):
@@ -533,10 +651,13 @@ def settings_cmd(payload):
         log.info("settings ignored: %s", e)
         return False
     keys = CRED_KEYS
-    ntfy_off = False
+    ntfy_off = ct_off = False
     if "enc" in d:  # 1.1.0: sealed by the dashboard Settings card
         try:
             d = SEAL.open_sealed(settings_key(), d["enc"])
+            # 1.7.1 (F#155): the card's Remove CrewTrac login, sealed only like ntfy_off (the portal relays the sealed
+            # message as it is: no contract change)
+            ct_off = d.get("ctweb_off") is True
             if portal_on():  # 1.6.0 (FW-0061): ntfy only sealed, only on a portal pilot
                 keys = CRED_KEYS + NTFY_KEYS
                 # 1.6.2 (item 9): the token is optional; a topic must be hard to guess (ntfy.topic_refusal). An
@@ -579,15 +700,24 @@ def settings_cmd(payload):
         for k in NTFY_KEYS:
             if cur.pop(k, None) is not None:
                 changed.append(k)
+    ct_keys = ("ctweb_username", "ctweb_password")
+    gone = [k for k in ct_keys if k in cur] if ct_off else []
+    if gone:
+        # 1.7.1 (F#155): forget the saved CrewTrac login (the charter watch then has none: no CrewTrac login at all);
+        # its record goes too, so a refusal or a back-off of the old login says nothing about the next one
+        for k in gone:
+            cur.pop(k)
+        changed.append("CrewTrac login removed")
+        DB.put("crewtrac", {})
     for k in keys:
         v = d.get(k)
-        if not isinstance(v, str) or not v.strip():
+        if not isinstance(v, str) or not v.strip() or (ct_off and k in ct_keys):
             continue
         v = v if k in SECRET_KEYS else v.strip()  # 1.6.1: a password exactly as typed; names and ntfy values trimmed
         if cur.get(k) != v:
             cur[k] = v
             changed.append(k)
-    ct_saved = any(isinstance(d.get(k), str) and d[k].strip() for k in ("ctweb_username", "ctweb_password"))
+    ct_saved = not ct_off and any(isinstance(d.get(k), str) and d[k].strip() for k in ct_keys)
     fl_saved = any(isinstance(d.get(k), str) and d[k].strip() for k in ("username", "password"))
     if doh_new:  # 1.6.4: first, so a failed write leaves everything as it was
         try:
@@ -609,7 +739,8 @@ def settings_cmd(payload):
         else:
             log.info("settings: nothing new (keys %s)", ", ".join(sorted(k for k in d if k in keys or k == "doh")) or
                      "none")
-            publish_settings(creds=cur, result="nothing new" + lifted)
+            publish_settings(creds=cur, result="nothing new" + (": no CrewTrac login is saved" if ct_off else "") +
+                             lifted)
         if again:
             publish_charters()
             CHARTER_WAKE.set()
@@ -1446,11 +1577,18 @@ BRK = GT.Breakers(lambda: S.setdefault("breakers", {}), save=lambda: save_state(
 # stopped, and the check ends with nothing more loaded. On a pilot the reads that may be left out (read_guard
 # optional=True: the Tradeboard, the reserve grid, the request lists, the crew index, his own trips, pot details,
 # pickups) skip a load that would wait for his budget (GATE_KEEP) or pass opt_cap() an hour: the pot keeps its share.
-RUN = {"check": False, "optional": False, "aborted": "", "skipped": set(), "opt": []}
+RUN = {"check": False, "optional": False, "aborted": "", "skipped": set(), "opt": [], "opt_name": ""}
 GATE_KEEP = 4  # an optional load leaves this many of a pilot's budget free (the next check's start)
 
 
-PACE_OPT_H = 12  # 1.6.2: a pilot's paced hunt leaves this many loads an hour to the reads that may be left out
+PACE_OPT_H = 12  # 1.6.2: a pilot's paced hunt leaves at least this many loads an hour to the reads that may be left out
+# 1.7.1 (LIVE-1): those loads were one first come, first served pool, so the reads early in a check (his own trips, the
+# pickups and their in-flight lookups) took every load that came free, and the Tradeboard, the reserve grid, the request
+# lists and the pot details were left out for hours. Each of those four now has its own share (opt_shares: one whole
+# read an hour), the rest is a pool any optional read may use, and the pace keeps room for all of it (opt_hour).
+OPT_POOL_H = 4  # loads an hour left to the pool when the shares alone reach PACE_OPT_H
+OPT_WAIT_LOG_S = 1800  # a read that waits for room in a pilot's budget says so in the log at most this often
+OPT_WAIT_LOGGED = {}
 
 
 def close_in_h():
@@ -1470,14 +1608,44 @@ def pot_pages():
 def budget_pace_s():
     """1.6.2 (Ryan 2026-11-10: hunt 5 to 90 s): on a pilot, the shortest wait between his checks that his FLICA budget
     keeps up for a whole hour: the pot's pages a check into his budget less his schedule read (2 loads every 30 min),
-    one check's start, PACE_OPT_H for the optional reads and, hunting, the close-in folder's reads (close_in_h):
-    about 89 s with 2 pot pages, 105 s once the close-in folder is known. A shorter hunt is spread over the hour at
-    this pace (gap) instead of using the budget in minutes and then waiting most of the hour. 0 on the admin (no
-    budget)."""
+    one check's start, the optional reads (opt_hour: PACE_OPT_H, 1.7.1 more for two bid months) and, hunting, the
+    close-in folder's reads (close_in_h): about 44 s with 1 pot page, 96 s with 2, about 2 min once the close-in folder
+    is known. A shorter hunt is spread over the hour at this pace (gap) instead of using the budget in minutes and then
+    waiting most of the hour. 0 on the admin (no budget)."""
     if not GATE.budget:
         return 0.0
-    room = GATE.budget - 2 * SCHED_TRIES_PER_READ - GATE_CHECK_TOKENS - PACE_OPT_H - close_in_h()
+    room = GATE.budget - 2 * SCHED_TRIES_PER_READ - GATE_CHECK_TOKENS - opt_hour() - close_in_h()
     return pot_pages() * 3600.0 / max(1.0, room)
+
+
+def _bid_folders():
+    """(the BCIDs of his pot pages, the request folders requests_check reads: those and, once verified, the close-in
+    folder)."""
+    regular = sorted({x for x in (bcid(u) for u in (S.get("pot_urls") or {}).values()) if x})
+    ci = S.get("close_in_bcid") if (S.get("close_in") or {}).get("verified") else None
+    return regular, regular + ([ci] if ci and ci not in regular else [])
+
+
+def opt_shares():
+    """1.7.1 (LIVE-1): {read: loads an hour kept for it} on a pilot, {} on the admin: one whole read an hour of each
+    secondary read. The Tradeboard costs 2 loads a bid number (its frame and its list), the reserve grid 2 a pot page
+    (its JSON and the page cross-check), the requests 1 a folder (the open time list) and 1 a bid number (his trades
+    on the Tradeboard), the pot details 2 (a new trip's page or two). Whatever more they read comes out of the pool,
+    like every other optional read."""
+    if not GATE.budget:
+        return {}
+    regular, folders = _bid_folders()
+    nums = {b.split(".")[-1] for b in regular}
+    grid = sum(1 for u in (S.get("pot_urls") or {}).values() if bcid(u))
+    return {"tradeboard_check": 2 * len(nums), "grid_check": 2 * grid, "requests_check": len(folders) + len(nums),
+            "pot_details": 2}
+
+
+def opt_hour():
+    """1.7.1 (LIVE-1): the optional loads an hour a pilot's pace keeps room for: PACE_OPT_H, or the shares plus a small
+    pool (OPT_POOL_H) when they need more (two bid months: 18, so a hunt at the floor goes from about 89 s to 96 s
+    apart; one bid month stays at 12, about 44 s)."""
+    return max(PACE_OPT_H, sum(opt_shares().values()) + OPT_POOL_H)
 
 
 def held_note(until=None):
@@ -1515,14 +1683,49 @@ def opt_cap():
     return max(0, GATE.budget - int(round(pot)) - 2 * SCHED_TRIES_PER_READ - GATE_CHECK_TOKENS)
 
 
-def opt_load():
-    """Before an optional load on a pilot: GateSkip when his optional loads of the last hour reached opt_cap() (this
-    process's count; a restart starts it again, the gate's budget still holds)."""
-    now = time.time()
-    RUN["opt"] = [t for t in RUN["opt"] if now - GT.WINDOW_S < t <= now + 5]
+def _opt_room(name, now):
+    """1.7.1 (LIVE-1): (loads the read `name` may still make in this hour, when the oldest optional load leaves it):
+    its own share (opt_shares) first, then the pool (opt_cap less every share), never past opt_cap in all. (None, now)
+    when nothing limits it (the admin). RUN['opt'] holds (time, read) of this process's optional loads."""
+    RUN["opt"] = [(t, n) for t, n in RUN["opt"] if now - GT.WINDOW_S < t <= now + 5]
     cap = opt_cap()
-    if cap is not None and len(RUN["opt"]) >= cap:
-        raise GT.GateSkip("budget", RUN["opt"][len(RUN["opt"]) - cap] + GT.WINDOW_S if cap else now + GT.WINDOW_S)
+    if cap is None:
+        return None, now
+    shares = opt_shares()
+    used = collections.Counter(n for _, n in RUN["opt"])
+    pool = max(0, cap - sum(shares.values()))
+    pool_used = sum(max(0, c - shares.get(n, 0)) for n, c in used.items())
+    own = max(0, shares.get(name, 0) - used.get(name, 0))
+    room = min(cap - len(RUN["opt"]), own + max(0, pool - pool_used))
+    return max(0, room), (RUN["opt"][0][0] if RUN["opt"] else now) + GT.WINDOW_S
+
+
+def opt_load():
+    """Before an optional load on a pilot: GateSkip when the read it belongs to (RUN['opt_name'], set by read_guard)
+    has used its share of the last hour and the pool is used up too, or the optional loads reached opt_cap() in all
+    (this process's count; a restart starts it again, the gate's budget still holds)."""
+    room, until = _opt_room(RUN.get("opt_name") or "", time.time())
+    if room is not None and room < 1:
+        raise GT.GateSkip("budget", until)
+
+
+def opt_fits(n):
+    """1.7.1 (LIVE-1): True when an optional read can make its n loads now (its share or the pool, and his budget and
+    the host's cap with GATE_KEEP left free), so a Tradeboard read never loads its frame and is then left out of its
+    list. A read calls it before its own timer moves: one that does not fit tries again at a later check, quietly (one
+    log line at most every OPT_WAIT_LOG_S). Always True on the admin and outside a check's optional reads."""
+    if not (RUN["check"] and RUN["optional"] and GATE.budget) or n <= 0:
+        return True
+    name = RUN.get("opt_name") or ""
+    room, _ = _opt_room(name, time.time())
+    c = GATE.counts()
+    ok = (room is None or room >= n) and c["own"] + n <= GATE.budget - GATE_KEEP and \
+        c["host"] + n <= (GATE.cap or GT.HOST_CAP_H) - GATE_KEEP
+    if not ok and time.time() - OPT_WAIT_LOGGED.get(name, 0) >= OPT_WAIT_LOG_S:
+        OPT_WAIT_LOGGED[name] = time.time()
+        log.info("%s waits for room in this pilot's FLICA budget (%d loads an hour kept for it, %d needed now)",
+                 name, opt_shares().get(name, 0), n)
+    return ok
 
 
 def gate_abort():
@@ -1541,6 +1744,9 @@ def read_guard(fn, *a, default=None, optional=False, **k):
     check (the pot watch keeps its own stop rules). Review: a load given up for Pause or a stop (GateAbort) ends the
     check; optional=True marks a read whose loads a pilot's budget may leave out (GateSkip, logged once a check)."""
     was, RUN["optional"] = RUN["optional"], bool(optional) or RUN["optional"]
+    was_name = RUN.get("opt_name") or ""
+    if optional and not was:  # 1.7.1 (LIVE-1): its loads count against this read's share (opt_shares)
+        RUN["opt_name"] = getattr(fn, "__name__", "read")
     try:
         res = fn(*a, **k)
     except GT.GateAbort:
@@ -1555,7 +1761,7 @@ def read_guard(fn, *a, default=None, optional=False, **k):
         log.info("%s skipped: %s", getattr(fn, "__name__", "read"), e)
         res = default
     finally:
-        RUN["optional"] = was
+        RUN["optional"], RUN["opt_name"] = was, was_name
     if RUN["aborted"]:  # a read that caught the GateAbort itself: the check still ends here
         raise GT.GateAbort(RUN["aborted"])
     return res
@@ -1867,7 +2073,7 @@ class Flica:
             RUN["aborted"] = e.why
             raise
         if optional:
-            RUN["opt"].append(time.time())
+            RUN["opt"].append((time.time(), RUN.get("opt_name") or ""))
         count_fetch()
         return path if path != "pot" else ""
 
@@ -2919,10 +3125,14 @@ def recall_cmd(payload):
     MQTT recall/set): {"date": "YYYY-MM-DD", "file": "ok|blank|not posted", "rows": [{kind recall|o75|junior,
     seat, pilot, sen, pairing, report?, last_arr?, days?, blk?}], "me": {sen, seat, o75_months}?}. A list of such
     days is accepted too. Each row is judged against Ryan's line as he held it that day (recall.py, PWA 22.G.2 /
-    FAR 117) and kept in the DB."""
+    FAR 117) and kept in the DB.
+    1.7.1 (F#75): the same day again (the admin's forward and Ryan's HA automation both sending it) changes nothing: it
+    keeps the time it first came in ('at', the card's 'received'), and no miss is counted or pushed twice (recall_eval
+    keys its drafts by row). On the admin, the days it took go on to every pilot's Watcher (recall_forward)."""
     try:
         d = json.loads(payload or "{}")
         days = d if isinstance(d, list) else [d]
+        took = []
         with RECALL_LOCK:
             if isinstance(d, dict) and d.get("me"):
                 if ROLES.role(INSTANCE) == ROLES.ADMIN:
@@ -2934,12 +3144,51 @@ def recall_cmd(payload):
                 dk = str(day.get("date") or "")[:10]
                 if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", dk):
                     continue
-                allr[dk] = {"date": dk, "file": day.get("file") or ("ok" if day.get("rows") else "blank"),
-                            "rows": day.get("rows") or [], "at": now_iso()}
+                new = {"date": dk, "file": day.get("file") or ("ok" if day.get("rows") else "blank"),
+                       "rows": day.get("rows") or []}
+                took.append({k: v for k, v in day.items() if k != "me"})
+                old = allr.get(dk) or {}
+                if {k: old.get(k) for k in new} == new:
+                    continue  # 1.7.1 (F#75): the same list again: its first 'at' stays
+                allr[dk] = {**new, "at": now_iso()}
             DB.put("recall_days", dict(sorted(allr.items())[-120:]))
             recall_eval(notify=True)
+        if took and ROLES.role(INSTANCE) == ROLES.ADMIN:
+            recall_forward(took)
     except Exception as e:
         log.info("recall list skipped: %s", e)
+
+
+def pilot_prefixes():
+    """1.7.1 (F#75): the MQTT prefixes of the pilots this add-on runs besides the admin (flight_watcher_<name>), by
+    run.py's own rules on the add-on options (`pilots`, else `second_pilot`; a name it leaves out is not here). Its
+    log lines about a left-out name are not repeated here (run.py says them at start)."""
+    import contextlib
+    import io
+    import run as RUNNER
+    with contextlib.redirect_stdout(io.StringIO()):
+        return [f"flight_watcher_{n}" for n in RUNNER.pilot_names(OPTS)]
+
+
+def recall_forward(days):
+    """1.7.1 (F#75): the admin hands each recall list it took to every pilot's Watcher (<prefix>/recall/set, qos 1,
+    not retained) itself, so a pilot's lists no longer hang on a second action in Ryan's HA automation that fails
+    silently. Never its 'me' (a pilot's own seniority is his tab's). A pilot takes the same day again as a no-op, so
+    the HA forward, while it is still there, does no harm. A pilot forwards nothing."""
+    if ROLES.role(INSTANCE) != ROLES.ADMIN or MQ is None:
+        return 0
+    body = json.dumps(days)
+    n = 0
+    for prefix in pilot_prefixes():
+        try:
+            MQ.publish(f"{prefix}/recall/set", body, qos=1, retain=False)
+            n += 1
+        except Exception as e:  # noqa: BLE001 (one pilot's forward never stops the others)
+            log.info("recall list not forwarded to %s: %s", prefix, type(e).__name__)
+    if n:
+        log.info("recall list (%d day%s) forwarded to %d pilot Watcher%s", len(days), "" if len(days) == 1 else "s",
+                 n, "" if n == 1 else "s")
+    return n
 
 
 RECALL_LIVE = ("MISSED", "POSSIBLE")  # FW-0012: a CCR draft is open, counted and shown only while its row says this
@@ -4645,7 +4894,12 @@ def requests_check(fl):
     pending = any(r.get("status") in SUB.OPEN for b in folders for r in rows_of.get(b) or []) or \
         any(r.get("status") in SUB.OPEN for rs in trows_of.values() for r in rs or [])
     gap = REQ_PENDING_GAP_S if pending else REQ_IDLE_GAP_S
-    if not S.pop("req_force", False) and time.time() - S.get("req_checked_at", 0) < gap:
+    force = S.pop("req_force", False)
+    if not force and time.time() - S.get("req_checked_at", 0) < gap:
+        return
+    if not opt_fits(len(folders) + len({b.split(".")[-1] for b in regular})):  # 1.7.1 (LIVE-1): the lists and trades
+        if force:
+            S["req_force"] = True  # still owed: the next check with room reads it
         return
     S["req_checked_at"] = time.time()
     pushed = S.setdefault("ot_req_pushed", {})
@@ -4984,8 +5238,10 @@ def tradeboard_check(fl, full=False):
     response method is 'Pickup Trip'. Any failure is logged and never stops the pot watch."""
     if not full and time.time() - S.get("tb_checked_at", 0) < TB_MIN_GAP_S:
         return
-    S["tb_checked_at"] = time.time()
     nums = sorted({b.split(".")[-1] for b in (bcid(u) for u in S.get("pot_urls", {}).values()) if b})
+    if not opt_fits(2 * len(nums)):  # 1.7.1 (LIVE-1): a pilot's read waits for room for its frame and its list
+        return
+    S["tb_checked_at"] = time.time()
     base = S.setdefault("tb_baseline", {})
     tb_cache = S.setdefault("tb_details", {})  # 0.4.6: enriched pickup posts, one detail GET each
     live = {}
@@ -5086,6 +5342,10 @@ def grid_check(fl, full=False):
     30 min. Publishes {date: {net, color}} on flight_watcher/grid/state. Read only."""
     if not full and time.time() - S.get("grid_at", 0) < GRID_MIN_GAP_S:
         return
+    pages = sum(1 for u in S.get("pot_urls", {}).values() if bcid(u))
+    render_due = full or time.time() - S.get("grid_rendered_at", 0) > GRID_RENDER_GAP_S
+    if not opt_fits(pages * (2 if render_due else 1)):  # 1.7.1 (LIVE-1): a pilot's read waits for room for all of it
+        return
     S["grid_at"] = time.time()
     grid = {}
     for u in S.get("pot_urls", {}).values():
@@ -5116,6 +5376,10 @@ def grid_check(fl, full=False):
                     log.info("reserve grid %s: json colors differ from the page, page wins", b)
                 if page:
                     got = {**got, **page}
+            except GT.GateSkip as e:  # 1.7.1 (LIVE-1): the cross-check left out keeps the JSON just read
+                if not got:
+                    raise
+                log.info("reserve grid render %s left out: %s (the JSON read is kept)", b, e)
             except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
                 raise
             except Exception as e:
@@ -7017,6 +7281,20 @@ def charter_turn():
         CHARTER_WAKE.clear()  # a press while it ran never queues a second scan
 
 
+CHARTER_STARTED = threading.Event()
+
+
+def start_charter_watch():
+    """The charters status, then charter_thread, once per process (main: before the wait for a pilot's FLICA login,
+    1.7.1 F#102, and at the usual place otherwise)."""
+    if CHARTER_STARTED.is_set():
+        return False
+    CHARTER_STARTED.set()
+    publish_charters()
+    threading.Thread(target=charter_thread, daemon=True, name="charter").start()
+    return True
+
+
 def charter_thread():
     """Every 6 h (or on the Scan button) in its own thread: CrewTrac is a separate site and session, so
     this never touches the FLICA session or delays the pot checks. 1.6.1: after a failed scan the wait follows
@@ -7835,19 +8113,22 @@ def ha_state_full(entity_id):
         return 0, None
 
 
-def _portal_write(kind, body):
-    """Sign and write one out/ file when its payload changed since the last write. True when written."""
+def _portal_write(kind, body, force=False):
+    """Sign and write one out/ file when its payload changed since the last write (or force). True when written."""
     text = body if isinstance(body, str) else PT.dumps(body)
-    if EXPORT["last"].get(kind) == text:
+    if EXPORT["last"].get(kind) == text and not force:
         return False
     EXPORT["writer"].write(kind, text)
     EXPORT["last"][kind] = text
     return True
 
 
-def portal_write_state(ids, read, now=None):
+def portal_write_state(ids, read, now=None, beat=False):
     """state.json: the ids in read are fetched from HA again (one GET each), the rest come from the cache; masks of
     contract 3.4 (portal.state_entry); prefs synthesized. Over the 2 MB cap nothing is written (logged once).
+    1.7.1 (F#7, F#110): beat (the full sweep, every EXPORT_SWEEP_S) writes it even when nothing changed: the same
+    payload in a new envelope, so its seq (the write time) moves at least every 5 min and the portal can tell a live
+    Watcher from a dead one in every state, needs_settings too. No new field: contract 1 as it is.
     An id that leaves state.json without an answer (a 404: HA has not made the entity yet, as in its restart; or no
     answer with nothing cached) is read again after EXPORT_RETRY_S, then 2x, 4x... while it stays missing, until the
     wait reaches EXPORT_SWEEP_S (the sweep covers it from then on), so for example the settings sensor and its pubkey
@@ -7881,7 +8162,7 @@ def portal_write_state(ids, read, now=None):
     if len(text.encode("utf-8")) > PT.CAPS["state"]:
         portal_once("state_cap", "portal state over %d KB: not written", PT.CAPS["state"] // 1024)
         return False
-    return _portal_write("state", text)
+    return _portal_write("state", text, force=beat)
 
 
 def _portal_src_dir(path):
@@ -8092,7 +8373,7 @@ def portal_export_once(full=None, now=None):
     if man:
         portal_write_manifest()
     if read or full:
-        portal_write_state(ids, read, now)
+        portal_write_state(ids, read, now, beat=full)  # 1.7.1 (F#7, F#110): the full sweep is the heartbeat
     if ev or full:
         _portal_write("events", {"events": evs})
     if res or full:
@@ -8157,6 +8438,11 @@ def portal_spool_once():
         if r is None:
             continue
         cid, sub, payload = r
+        ok, why = press_answer(sub)  # 1.7.1 (F#12, F#92, F#149): a press the Watcher would ignore says so, ok false
+        if not ok:
+            log.info("portal command %s not taken: %s", sub, why)
+            portal_result(cid, False, why)
+            continue
         try:
             MQ.publish(f"{T}/{sub}", payload, qos=1, retain=False)
         except Exception as e:  # noqa: BLE001
@@ -8164,7 +8450,7 @@ def portal_spool_once():
             portal_result(cid, False, "not republished")
             continue
         log.info("portal command %s accepted", sub)
-        portal_result(cid, True, freq_clamp_note(sub, payload))
+        portal_result(cid, True, why or freq_clamp_note(sub, payload))
         n += 1
     return n
 
@@ -8301,6 +8587,9 @@ def main():
             no_next_check()
             pub("session", "OFF")
             log.info("no credentials for instance %s: waiting on %s/settings/set", INSTANCE, T)
+            # 1.7.1 (F#102): CrewTrac is its own site and login (charter_thread): a pilot who saved only his CrewTrac
+            # details gets its scans and his Scan CrewTrac now while the FLICA watch waits for its login
+            start_charter_watch()
             while True:
                 time.sleep(3600)
         set_machine("stopped_unexpected", "enter your FLICA username and password: dashboard Settings tab")
@@ -8360,7 +8649,7 @@ def main():
     versions_check(force_pub=True)
     uploads_check()
     recall_eval()
-    threading.Thread(target=charter_thread, daemon=True, name="charter").start()
+    start_charter_watch()
     threading.Thread(target=ccr_thread, daemon=True, name="ccr").start()  # 1.4.6: Hark's answers to CCR requests
     if os.environ.get("FLIGHT_WATCHER_WEB", "1") == "1":  # 0.10.0: only the default instance serves the ingress page
         web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
@@ -8372,7 +8661,9 @@ def main():
         fl = Flica(pw)
         while True:
             st = S.get("machine", "idle")
-            if FLAGS["rearm"]:
+            # 1.7.1 (F#92): a Re-arm pressed while stepped aside for the pilot's own FLICA login waits for the
+            # step-aside's end (another command waking the loop meanwhile no longer cuts it short); FLAGS rearm stays
+            if FLAGS["rearm"] and not (st == "yielded" and time.time() < float(S.get("yield_until") or 0)):
                 if st.startswith("stopped") or st in ("yielded", "backoff"):
                     at = flica_refused_at()
                     if at is not None:  # 1.6.2 review: FLICA refused these details: no login until others are saved
@@ -8445,7 +8736,7 @@ def main():
             held_apply()  # 1.6.2 (Ryan 2026-11-10): a pilot's hunt his budget holds says so in the state note
             # 1.6.2: a check starts once GATE_CHECK_TOKENS loads fit the budget (a pilot's 100 an hour, the host's 480);
             # until then the loop waits (WAKE-able: pause and Check now are still read) and the state note says so
-            wait, why = GATE.free_in(min(check_tokens(), GATE.budget or GATE_CHECK_TOKENS))
+            wait, why = budget_hold()
             if wait > 0:
                 gate_note(why, time.time() + wait)
                 sleep_announced(wait)

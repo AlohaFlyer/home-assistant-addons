@@ -139,7 +139,9 @@ def _pilot_pages(W):
             return "<html><body>Tradeboard All Requests</body></html>"
         if "reservegridservice" in u.lower():
             return "{}"
-        return "<html><body>Pairing H9001 Check-In 08:00</body></html>"
+        if "mobileotrequest" in u.lower():  # 1.7.1 (LIVE-1): the request lists now get their share, so they are read
+            return "<html><body>Open Time Requests: no requests</body></html>"
+        return "<html><body>Pairing H9001 Check In: 08:00</body></html>"  # a page the pairing parser knows
     return ans
 
 
@@ -187,7 +189,7 @@ def test_the_budget_holds_a_5_s_hunt_to_100_loads_an_hour_spread_over_the_hour(m
     pot_t = [t for t, u in fl.loads if "opentimepot" in u]
     assert max(b - a for a, b in zip(pot_t, pot_t[1:])) < 3 * 60  # spread: never most of an hour blind
     assert max(waits) <= GT.PACE_MAX_S + GT.HOST_GAP_S + 1e-6, max(waits)  # pacing only inside a check
-    held = "Hunting every 5 s is held to 100 FLICA loads an hour: checks wait for the budget, at least 89 s apart"
+    held = "Hunting every 5 s is held to 100 FLICA loads an hour: checks wait for the budget, at least 96 s apart"
     hunting = [n for m, n in notes[3:] if m == "hunting"]
     assert hunting and all(n.startswith(held) for n in hunting), hunting[:3]
     assert not [n for _, n in notes if "(next at" in n]  # the pace kept it: the budget never had to stop a check
@@ -231,33 +233,36 @@ CLOSE_IN = "007.153"  # a made-up close-in BCID
 def test_the_close_in_folder_is_an_hourly_cost_of_a_hunt_and_a_page_of_each_normal_check(mk):
     """Hunting, the close-in folder is read at most every CLOSE_IN_READ_S (about 12 loads an hour), so the pace charges
     it by the hour, not on every check: 105 s with 2 pot pages, under the 120 s floor Ryan removed. In normal mode
-    every check reads it, so it is a page of each check. The optional reads keep PACE_OPT_H an hour at the pace (opt_cap)
-    either way: the pot details of a new find are optional reads, so that share is not dropped."""
+    every check reads it, so it is a page of each check. The optional reads keep their hour at the pace (opt_cap)
+    either way: the pot details of a new find are optional reads, so that share is not dropped. 1.7.1 (LIVE-1): with
+    two bid months the secondary reads' shares (opt_shares) need 18 loads an hour, not 12, so the pace is 96 s (89 s
+    before) and 115 s with the folder (105 s before), still under the removed 120 s floor."""
     W = mk("pilot2")
     W.S["freq"] = {"hunt_s": 5, "normal_min": 1}
     W.S["pot_urls"] = {"mobile": W.MOBILE_POT,
                        "mobile_003.153": f"{W.BASE}/full/mobileopentimepot.cgi?BCID=003.153&From=MainMenu"}
     W.FLAGS["hunt"] = True
     assert W.close_in_h() == 0 and W.pot_pages() == 2
-    assert W.budget_pace_s() == pytest.approx(2 * 3600 / 81)  # about 89 s, about one check every 1.5 min
-    assert W.opt_cap() == W.PACE_OPT_H
+    assert W.opt_hour() == 18
+    assert W.budget_pace_s() == pytest.approx(2 * 3600 / 75)  # 96 s, about one check every 1.6 min
+    assert W.opt_cap() == W.opt_hour()
     W.S["close_in"] = {"bcid": CLOSE_IN, "verified": True}
     assert W.close_in_h() == pytest.approx(3600 / W.CLOSE_IN_READ_S) == pytest.approx(12)
     assert W.pot_pages() == 2  # hunting: the folder is no page of every check
     pace = W.budget_pace_s()
-    assert pace == pytest.approx(2 * 3600 / 69) and 100 < pace < 120  # about 104 s (it was 133 s)
+    assert pace == pytest.approx(2 * 3600 / 63) and 100 < pace < 120  # about 114 s (it was 133 s in 1.6.2)
     assert all(pace - 1e-6 <= W.gap() <= pace * 1.3 + 1e-6 for _ in range(500))  # every hunt from 5 to 90 s
     W.S["freq"]["hunt_s"] = 90
     assert all(pace - 1e-6 <= W.gap() <= pace * 1.3 + 1e-6 for _ in range(500))
-    assert W.opt_cap() == W.PACE_OPT_H  # the pot (69 an hour), the folder (12), the schedule (4), a check's start (3)
+    assert W.opt_cap() == W.opt_hour()  # the pot (63 an hour), the folder (12), the schedule (4), a check's start (3)
     assert W.held_note() == ("Hunting every 90 s is held to 100 FLICA loads an hour: checks wait for the budget, at "
-                             "least 105 s apart")
+                             "least 115 s apart")
     W.FLAGS["hunt"] = False  # normal mode: every check reads the folder
     assert W.close_in_h() == 0 and W.pot_pages() == 3
-    assert W.budget_pace_s() == pytest.approx(3 * 3600 / 81)
+    assert W.budget_pace_s() == pytest.approx(3 * 3600 / 75)
     assert W.held_note() == ("Checking every 1 min is held to 100 FLICA loads an hour: checks wait for the budget, at "
-                             "least 134 s apart")
-    assert W.opt_cap() == W.PACE_OPT_H
+                             "least 144 s apart")
+    assert W.opt_cap() == W.opt_hour()
     W.S["freq"]["normal_min"] = 6
     assert W.held_note() == "" and W.opt_cap() == 100 - 30 - 4 - 3  # 3 pages every 6 min: free
     A = mk("")
@@ -268,9 +273,10 @@ def test_the_close_in_folder_is_an_hourly_cost_of_a_hunt_and_a_page_of_each_norm
 
 def test_a_5_s_hunt_with_the_close_in_folder_paces_under_120_s_and_holds_the_budget(mk, monkeypatch):
     """The real main loop and check(), a pilot whose close-in folder is known hunting every 5 s for 2 h: checks come
-    faster than the removed 120 s floor allowed (about 29 an hour, not 23 as before this fix), every check reads both
-    pot pages, the folder at most every CLOSE_IN_READ_S, no rolling hour passes his 100 FLICA loads and the state note
-    says the hunt is held at 105 s."""
+    faster than the removed 120 s floor allowed (about 26 an hour; 23 before 1.6.2's fix), every check reads both pot
+    pages, the folder at most every CLOSE_IN_READ_S, no rolling hour passes his 100 FLICA loads and the state note says
+    the hunt is held at 117 s (1.7.1, LIVE-1: 105 s before the secondary reads, the folder's request list among them,
+    got their shares)."""
     W = mk("pilot2")
     W.S["own_emp"] = "10001"
     W.S["freq"] = {"hunt_s": 5, "normal_min": 6}
@@ -279,6 +285,7 @@ def test_a_5_s_hunt_with_the_close_in_folder_paces_under_120_s_and_holds_the_bud
     W.S["pot_urls"] = {"mobile": W.MOBILE_POT,
                        "mobile_003.153": f"{W.BASE}/full/mobileopentimepot.cgi?BCID=003.153&From=MainMenu"}
     W.S["close_in"] = {"bcid": CLOSE_IN, "verified": True, "menu_at": W.CLOCK.t}
+    W.S["close_in_bcid"] = CLOSE_IN  # as close_in_check keeps it: its request list is read too
     fl = real_fl(W, _pilot_pages(W))
     W.Flica.render = lambda self, url, wait_for=None, timeout=30000: (self.fetch(url), [])
     real_check = W.check
@@ -308,14 +315,17 @@ def test_a_5_s_hunt_with_the_close_in_folder_paces_under_120_s_and_holds_the_bud
     worst = max(sum(1 for x in own if t - GT.WINDOW_S < x <= t) for t in own)
     assert worst <= GT.PILOT_BUDGET_H, worst
     assert pots and all(p == 2 for p in pots), pots  # every check read both pot pages
-    assert 2 * 28 <= len(pots) <= 2 * 36, len(pots)  # about 29 checks an hour (the 120 s floor gave at most 26)
-    ci = [t for t, u in fl.loads if CLOSE_IN in u]
+    assert 2 * 26 <= len(pots) <= 2 * 33, len(pots)  # about 26 checks an hour (the 120 s floor gave at most 26)
+    # the folder's open time page (1.7.1: its request list is read too now, within the requests' share)
+    ci = [t for t, u in fl.loads if CLOSE_IN in u and "opentimepot" in u]
     assert ci and min(b - a for a, b in zip(ci, ci[1:])) >= W.CLOSE_IN_READ_S - 1e-6  # at most every 5 min
     assert max(sum(1 for x in ci if t - GT.WINDOW_S < x <= t) for t in ci) <= 12
     pot_t = [t for t, u in fl.loads if "opentimepot" in u and CLOSE_IN not in u]
-    assert max(b - a for a, b in zip(pot_t, pot_t[1:])) < 3 * 60  # spread over the hour
+    # spread over the hour: at most the pace +30 % and one check that also read the Tradeboard, the grid and the
+    # request lists of three folders (1.7.1, LIVE-1: those now run within their shares, about 40 s of paced loads)
+    assert max(b - a for a, b in zip(pot_t, pot_t[1:])) < 4 * 60
     assert max(waits) <= GT.PACE_MAX_S + GT.HOST_GAP_S + 1e-6, max(waits)  # pacing only inside a check
-    held = "Hunting every 5 s is held to 100 FLICA loads an hour: checks wait for the budget, at least 105 s apart"
+    held = "Hunting every 5 s is held to 100 FLICA loads an hour: checks wait for the budget, at least 117 s apart"
     hunting = [n for m, n in notes[3:] if m == "hunting"]
     assert hunting and all(n.startswith(held) for n in hunting), hunting[:3]
     assert not [n for _, n in notes if "(next at" in n]  # the pace kept it: the budget never had to stop a check

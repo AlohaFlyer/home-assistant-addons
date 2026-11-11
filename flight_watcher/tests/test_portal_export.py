@@ -135,8 +135,14 @@ def test_unchanged_state_is_not_rewritten_and_ha_down_keeps_the_last(portal_pilo
     W.portal_start(threads=False)
     W.portal_export_once(full=True)
     first = _read(W, "state.json")
-    W.portal_export_once(full=True)
+    W.MQ.publish(f"{W.T}/pot/state", "{}")  # a publish that changes nothing HA answers
+    W.portal_export_once(full=False)
     assert _read(W, "state.json") == first  # same payload: no new write, no new seq
+    # 1.7.1 (F#7, F#110): the full sweep is the heartbeat: the same payload in a new envelope, a later seq
+    W.portal_export_once(full=True)
+    beat = _read(W, "state.json")
+    assert beat["seq"] > first["seq"] and beat["payload"] == first["payload"]
+    first = beat
     ha.down = True
     W.portal_export_once(full=True)
     body = _payload(W, "state.json", "state")
