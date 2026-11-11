@@ -5,7 +5,8 @@ test_fw171_cards.py, Remove CrewTrac login in test_fw171_core.py). Synthetic pag
 - A pilot's Tradeboard read whose post details his FLICA budget leaves out (GateSkip) still saves its baseline, reads
   every bid month and publishes the board, so a post goes out once on event/new_pairing, never again on the next read;
   a new post costs one detail load, not two.
-- Scan CrewTrac now from the portal answers ok false with the reason when it would start no scan.
+- Scan CrewTrac now from the portal answers ok false with the reason when it would start no scan (on a pilot, F#22:
+  always, since his Watcher never scans; the admin's reasons are checked on press_answer itself).
 """
 import json
 import time
@@ -130,24 +131,37 @@ def test_the_admins_tradeboard_reads_every_new_posts_details_once(mk):
 
 # ---------------------------------------------------------------- Scan CrewTrac now from the portal
 def test_an_ignored_scan_crewtrac_now_answers_ok_false_with_the_reason(demo):
+    """Merged with F#22 (shared charters): a pilot's Watcher never scans CrewTrac, so his portal's press is answered
+    ok false with that reason whether a CrewTrac login is saved or not, and is never republished."""
     W = demo
+    no_scan = f"ignored: {W.CHARTERS_NO_SCAN}"
     res, sent = _press(W, "charter_scan/press", 1)
-    assert res == {"id": res["id"], "ok": False, "why": "ignored: no CrewTrac details saved"} and sent == []
-    W.OPTS.update(ctweb_username="doej", ctweb_password="ct pw")  # made up
+    assert res == {"id": res["id"], "ok": False, "why": no_scan} and sent == []
+    W.OPTS.update(ctweb_username="doej", ctweb_password="ct pw")  # made up: an old saved login, never used
     res, sent = _press(W, "charter_scan/press", 2)
-    assert res["ok"] and res["why"] == "" and sent == [f"{W.T}/charter_scan/press"]  # taken: republished as before
+    assert res == {"id": res["id"], "ok": False, "why": no_scan} and sent == []
     W.CHARTER_WAKE.clear()
-    assert W.charter_press() is True and W.CHARTER_WAKE.is_set()  # the republished press starts the scan
-    res, sent = _press(W, "charter_scan/press", 3)  # tapped again: inside the press gap, no scan comes
-    assert res == {"id": res["id"], "ok": False,
-                   "why": f"ignored: the last pressed scan was under {CH.PRESS_GAP_S // 60} min ago"} and sent == []
-    ct = W.DB.get("crewtrac")
-    W.DB.put("crewtrac", dict(ct, press_at=time.time() - CH.PRESS_GAP_S - 1))
-    W.CHARTER_BUSY.set()  # the scan of a timed turn is running
+    assert W.charter_press() is False and not W.CHARTER_WAKE.is_set()
+
+
+def test_a_scan_press_on_the_admin_says_why_it_starts_no_scan(mk):
+    """The review fix's reasons (charter_press_refusal in press_answer) on an instance that scans CrewTrac (the admin):
+    no details, the press gap, a scan running; a press that starts one is taken."""
+    A = mk("")
+    A.OPTS.pop("ctweb_username", None)
+    A.OPTS.pop("ctweb_password", None)
+    assert A.press_answer("charter_scan/press") == (False, "ignored: no CrewTrac details saved")
+    A.OPTS.update(ctweb_username="doej", ctweb_password="ct pw")  # made up
+    assert A.press_answer("charter_scan/press") == (True, "")
+    A.CHARTER_WAKE.clear()
+    assert A.charter_press() is True and A.CHARTER_WAKE.is_set()  # the press starts the scan
+    assert A.press_answer("charter_scan/press") == (
+        False, f"ignored: the last pressed scan was under {CH.PRESS_GAP_S // 60} min ago")
+    ct = A.DB.get("crewtrac")
+    A.DB.put("crewtrac", dict(ct, press_at=time.time() - CH.PRESS_GAP_S - 1))
+    A.CHARTER_BUSY.set()  # the scan of a timed turn is running
     try:
-        res, sent = _press(W, "charter_scan/press", 4)
-        assert res["why"] == "ignored: a scan is running" and not res["ok"] and sent == []
+        assert A.press_answer("charter_scan/press") == (False, "ignored: a scan is running")
     finally:
-        W.CHARTER_BUSY.clear()
-    res, sent = _press(W, "charter_scan/press", 5)
-    assert res["ok"] and sent == [f"{W.T}/charter_scan/press"]
+        A.CHARTER_BUSY.clear()
+    assert A.press_answer("charter_scan/press") == (True, "")

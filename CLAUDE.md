@@ -60,8 +60,9 @@ Pako HI Home Assistant). Read `HANDOFF.md` next: it lists everything open.
   start (plus `flight-watcher-*-<name>.js` copies for a second pilot) and writes `flight-watcher-cards.json`; the one
   dashboard resource `/local/flight-watcher-loader.js` imports each with `?v=<app version>`. Edit cards in git,
   never on Pako (a start overwrites them). The pilot's DOH is in `/data/cards.json`, not in git.
-- Dashboard `flight-watcher` (title "Flight Watcher"), views: watcher, wx, flight (Working Flight, FW-0067), details, recall,
-  settings (tickets at its bottom, Ryan only). James has no HA dashboard (retired Nov 10, 2026): he uses the pilot
+- Dashboard `flight-watcher` (title "Flight Watcher"), views: watcher, flight (Working Flight, FW-0067), details, recall,
+  settings (tickets at its bottom, Ryan only). Ryan removed the Aviation Wx view (`wx`) on Nov 11, 2026; the wx package,
+  its sensors and helpers stay. James has no HA dashboard (retired Nov 10, 2026): he uses the pilot
   portal at homeofficemanager.app/fw (FW-0061), which runs the same cards.
 
 ## Release procedure

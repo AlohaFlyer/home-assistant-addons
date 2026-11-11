@@ -17,6 +17,22 @@ in Refresh below, then drop this section. Until then the snapshot is one automat
 Undo: delete the automation (its id above). The guard passes with it (`python3 ha/check_push_isolation.py`: 20
 automations, 0 offenders).
 
+**Changed on Pako 2026-11-11 by Ryan (the weather view removed):** Ryan deleted the Aviation Wx view (path `wx`) from
+his dashboard `flight-watcher`; its other five views (Watcher, Working Flight, Details, Recall/O75, Settings) are as
+they were. `dashboard_flight_watcher.json` is refreshed from `/config/.storage/lovelace.flight_watcher` (read only,
+the redactions below) and matches Pako by sha256 of the redacted text, `3a5c1dbf315f0b46326630fb323e536a7d52e2220a12f1e821fac45eb115e061`
+(read 2026-11-11). Nothing else was removed: `packages/flight_watcher_wx.yaml`, its sensors and its helpers stay on Pako
+and here. With the view gone the dashboard snapshot has no Windy map left (see the last line).
+
+**Pending on Pako (FW-0042, show only, Ryan Nov 11): "Flight Watcher new pairing" push text.** In the snapshot the
+automation's message (the `msg` variable both iPhone pushes use) ends with two lines from the event payload, each
+left out when blank: `Commute: <comm>` (with `(<comm_why>)` when it is 60 characters or less) and `Value: <value>`,
+e.g. "Commute: KOA/ITO" and "Value: 4617". Its conditions, targets, sound and title are unchanged: nothing is
+silenced and no one else is pushed. Not on Pako yet: Claude applies it through the HA connector with Ryan's
+[DESTRUCTIVE] yes (any app version from 1.4.13 sends `comm` and `value`; blank without smart.json), then checks the
+automations by sha256 of the redacted text as in Refresh and drops this paragraph. Undo: the message without its last
+part (the snapshot's git history).
+
 **Applied on Pako 2026-11-10 (James's HA page retired):** James uses the pilot portal (FW-0061) and his HA user is
 gone, so the `flight-watcher-james` dashboard and his seven HA helpers (`input_number.flight_watcher_james_*` federal
 and state tax, longevity year, month offset; `input_text.flight_watcher_james_*` ER trips, picker search;
@@ -170,4 +186,4 @@ while the default `ha/pilots.json` is broken). It uses PyYAML when installed, el
 
 Tests: `flight_watcher/tests/test_push_isolation.py` (the real snapshot passes; synthetic crossings fail).
 
-- The Windy iframe coordinates in both dashboard snapshots are redacted (`lat=<redacted>`, `lon=<redacted>`): town-level home location stays out of git. The live dashboards keep them.
+- The Windy iframe coordinates were redacted in the dashboard snapshots (`lat=<redacted>`, `lon=<redacted>`): town-level home location stays out of git. Since Nov 11 (the wx view removed) no dashboard here has the map; redact them again if one comes back.

@@ -294,6 +294,11 @@ def refused_sub(topic):
 
 
 def on_message(c, u, msg):
+    if msg.topic == CHARTERS_SHARED and is_pilot():  # 1.7.1 (F#22): a pilot reads the admin's list
+        charters_shared_in(msg.payload)
+        return
+    if pilot_status_in(msg.topic, msg.payload):  # 1.7.1 review: the admin notes a pilot Watcher online or not
+        return
     if refused_sub(msg.topic):
         return
     if msg.topic == f"{T}/email/alert":
@@ -538,10 +543,15 @@ def press_answer(sub):
     if sub == "rearm/press":
         _, ok, why = rearm_answer()
         return ok, why
-    if sub == "charter_scan/press":  # 1.7.1 review: a press that starts no scan says why, like Check now
-        why = charter_press_refusal()
+    if sub == "charter_scan/press":
+        if is_pilot():  # 1.7.1 (F#22): the admin's scan is his; a pilot's Watcher never logs in to CrewTrac
+            return False, f"ignored: {CHARTERS_NO_SCAN}"
+        why = charter_press_refusal()  # 1.7.1 review: a press that starts no scan says why, like Check now
         return not why, ("ignored: " + why) if why else ""
     return True, ""
+
+
+CHARTERS_NO_SCAN = "charters come from the admin's CrewTrac scan; this Watcher does not log in to CrewTrac"
 
 
 def remember_switch(key, on):
@@ -813,7 +823,10 @@ def flica_lift():
 
 
 def crewtrac_lift():
-    """crewtrac_resaved(), never letting an error stop a settings save."""
+    """crewtrac_resaved(), never letting an error stop a settings save. 1.7.1 (F#22): nothing on a pilot, whose
+    Watcher never logs in to CrewTrac (a login saved there stays unused, and Remove CrewTrac login still clears it)."""
+    if is_pilot():
+        return False
     try:
         return crewtrac_resaved()
     except Exception as e:  # noqa: BLE001
@@ -1327,6 +1340,10 @@ def subscribe_all(cl):
     also takes pref/set (roles.PORTAL_SUBS)."""
     for t, qos in ROLES.subscriptions(INSTANCE, portal_on()):
         cl.subscribe((f"{T}/{t}", qos) if qos else f"{T}/{t}")
+    if is_pilot():  # 1.7.1 (F#22): the admin's shared charter list (retained, the admin's prefix; never a command)
+        cl.subscribe((CHARTERS_SHARED, 1))
+    for sub in pilot_status_subs():  # 1.7.1 review: the admin reads its pilots' availability (recall_replay_tick)
+        cl.subscribe(sub)
 
 
 def mqtt_start():
@@ -1466,7 +1483,23 @@ def write_list_file(name, obj):
         return None, None
 
 
-FETCHES = {"n": None, "pub_at": 0}
+FETCHES = {"n": None, "pub_at": 0, "hour": None}
+
+
+def fetches_payload():
+    """sensor.<prefix>_flica_fetches: {total, at} and (1.7.1, F#10) hour, this Watcher's FLICA loads in the hour up
+    to at (the host gate's own count, gate.counts), and budget, his loads an hour (100 on a pilot, None on the admin):
+    plain numbers of this instance, for the health line on the settings card."""
+    if FETCHES["n"] is None:
+        FETCHES["n"] = int(DB.get("fetches_total") or 0)
+    p = {"total": FETCHES["n"], "at": now_iso()}
+    try:
+        c = GATE.counts()
+        p["hour"], p["budget"] = int(c["own"]), c["budget"]
+        FETCHES["hour"] = p["hour"]
+    except Exception as e:  # noqa: BLE001 (the count is a nicety; the total goes out regardless)
+        log.info("FLICA loads this hour not read: %s", type(e).__name__)
+    return p
 
 
 def count_fetch():
@@ -1480,9 +1513,25 @@ def count_fetch():
         if time.time() - FETCHES["pub_at"] >= 5:
             FETCHES["pub_at"] = time.time()
             DB.put("fetches_total", FETCHES["n"])
-            pub("fetches", {"total": FETCHES["n"], "at": now_iso()})
+            pub("fetches", fetches_payload())
     except Exception as e:
         log.info("fetch count skipped: %s", e)
+
+
+def fetches_tick():
+    """1.7.1 (F#10): on a pilot, the uploads janitor's minute: the fetches sensor again when his loads in the last
+    hour changed (loads age out of the hour while he is paused or between checks), so his health line stays true.
+    Nothing when the count is the same (no recorder row a minute)."""
+    if not is_pilot():
+        return False
+    try:
+        own = int(GATE.counts()["own"])
+    except Exception:  # noqa: BLE001
+        return False
+    if own == FETCHES.get("hour"):
+        return False
+    pub("fetches", fetches_payload())
+    return True
 
 
 # ---------------------------------------------------------------- 1.6.2 (Release A): FLICA gate and breakers
@@ -3149,11 +3198,17 @@ def recall_cmd(payload):
     FAR 117) and kept in the DB.
     1.7.1 (F#75): the same day again (the admin's forward and Ryan's HA automation both sending it) changes nothing: it
     keeps the time it first came in ('at', the card's 'received'), and no miss is counted or pushed twice (recall_eval
-    keys its drafts by row). On the admin, the days it took go on to every pilot's Watcher (recall_forward)."""
+    keys its drafts by row). On the admin, the days it took go on to every pilot's Watcher (recall_forward).
+    1.7.1 (Ryan, Nov 11, the recall history replay): on a pilot, a day marked "replay": true (the admin's history,
+    recall_replay_tick) is taken only when this Watcher holds no list for that date (a day it holds is never touched, so
+    a replay twice changes nothing); it keeps the admin's 'at' (when the list first came in) and its "replay" mark, is
+    judged and shown like any day, and raises no alert or push (recall_eval, publish_recall). One log line a replay.
+    The mark means nothing on the admin (its lists come from Hark) and is never forwarded."""
     try:
         d = json.loads(payload or "{}")
         days = d if isinstance(d, list) else [d]
-        took = []
+        took, replayed, held = [], [], 0
+        pilot = ROLES.role(INSTANCE) != ROLES.ADMIN
         with RECALL_LOCK:
             if isinstance(d, dict) and d.get("me"):
                 if ROLES.role(INSTANCE) == ROLES.ADMIN:
@@ -3167,13 +3222,24 @@ def recall_cmd(payload):
                     continue
                 new = {"date": dk, "file": day.get("file") or ("ok" if day.get("rows") else "blank"),
                        "rows": day.get("rows") or []}
-                took.append({k: v for k, v in day.items() if k != "me"})
+                if pilot and day.get("replay") is True:  # 1.7.1: the admin's history, once
+                    if dk in allr:
+                        held += 1
+                        continue  # a day this Watcher holds stays exactly as it is
+                    allr[dk] = {**new, "at": replay_at(day.get("at")), "replay": True}
+                    replayed.append(dk)
+                    continue
+                took.append({k: v for k, v in day.items() if k not in ("me", "replay", "at")})
                 old = allr.get(dk) or {}
                 if {k: old.get(k) for k in new} == new:
                     continue  # 1.7.1 (F#75): the same list again: its first 'at' stays
                 allr[dk] = {**new, "at": now_iso()}
             DB.put("recall_days", dict(sorted(allr.items())[-120:]))
             recall_eval(notify=True)
+        if replayed or held:
+            log.info("recall history from the admin: %d day%s taken (%s to %s), %d already held; judged and shown, "
+                     "no alert or push for them", len(replayed), "" if len(replayed) == 1 else "s",
+                     min(replayed) if replayed else "-", max(replayed) if replayed else "-", held)
         if took and ROLES.role(INSTANCE) == ROLES.ADMIN:
             recall_forward(took)
     except Exception as e:
@@ -3191,25 +3257,141 @@ def pilot_prefixes():
         return [f"flight_watcher_{n}" for n in RUNNER.pilot_names(OPTS)]
 
 
-def recall_forward(days):
+def replay_at(v):
+    """1.7.1: the 'at' a replayed day keeps: the admin's (when that list first came in), when it is an ISO time no
+    later than now; else now."""
+    try:
+        t = datetime.fromisoformat(str(v))
+        if t.tzinfo and t <= datetime.now(timezone.utc) + timedelta(minutes=5):
+            return str(v)[:40]
+    except (TypeError, ValueError):
+        pass
+    return now_iso()
+
+
+def recall_forward(days, replay=False, prefixes=None):
     """1.7.1 (F#75): the admin hands each recall list it took to every pilot's Watcher (<prefix>/recall/set, qos 1,
     not retained) itself, so a pilot's lists no longer hang on a second action in Ryan's HA automation that fails
     silently. Never its 'me' (a pilot's own seniority is his tab's). A pilot takes the same day again as a no-op, so
-    the HA forward, while it is still there, does no harm. A pilot forwards nothing."""
+    the HA forward, while it is still there, does no harm. A pilot forwards nothing. replay (recall_replay_tick): each
+    day goes marked "replay": true, to prefixes only (default every pilot)."""
     if ROLES.role(INSTANCE) != ROLES.ADMIN or MQ is None:
         return 0
-    body = json.dumps(days)
+    body = json.dumps([{**d, "replay": True} for d in days] if replay else days)
     n = 0
-    for prefix in pilot_prefixes():
+    for prefix in (pilot_prefixes() if prefixes is None else prefixes):
         try:
             MQ.publish(f"{prefix}/recall/set", body, qos=1, retain=False)
             n += 1
         except Exception as e:  # noqa: BLE001 (one pilot's forward never stops the others)
             log.info("recall list not forwarded to %s: %s", prefix, type(e).__name__)
-    if n:
+    if n and not replay:
         log.info("recall list (%d day%s) forwarded to %d pilot Watcher%s", len(days), "" if len(days) == 1 else "s",
                  n, "" if n == 1 else "s")
     return n
+
+
+# 1.7.1 (Ryan's yes, Nov 11): the admin's recall history replayed once to each pilot's Watcher. Ryan's instance held
+# the lists from Oct 30 on; a pilot's Watcher (James's started Nov 10) got only the lists that came after it started.
+RECALL_REPLAY = "recall_replay_done"  # DB on the admin: {pilot prefix: {at, days}}, one entry per pilot replayed to
+RECALL_REPLAY_DELAY_S = 120  # after the admin's start: the pilots' Watchers (started by run.py too) have subscribed
+RECALL_REPLAY_PART = 20  # days a message
+_REPLAY = {"since": time.time(), "sent": {}, "waited": set()}
+# 1.7.1 review: every Watcher's MQTT session is clean and the replay is not retained, so a replay published while the
+# pilot's Watcher is down (a Settings save restarts it, a crash, a broker reconnect) is dropped by the broker without
+# an error. The admin reads each pilot's own availability, <prefix>/status (retained; "online" from his on_connect, the
+# broker's will sets "offline" when his connection ends, os._exit and SIGTERM included), and sends his replay only while
+# it has read "online" for RECALL_REPLAY_SETTLE_S (his subscriptions follow his "online"). It marks the replay done (DB
+# RECALL_REPLAY) only once he stayed online RECALL_REPLAY_CONFIRM_S after the send (past the broker's keepalive
+# window); if he went offline or restarted in that time, the replay goes again when he is back (a replay twice
+# changes nothing on him). Never a command: the payload is only compared with "online", and a pilot's portal cannot write it.
+PILOT_UP = {}  # admin only: pilot prefix -> time.time() its status last turned "online"; None or absent: not online
+RECALL_REPLAY_SETTLE_S = 30
+RECALL_REPLAY_CONFIRM_S = 120
+
+
+def pilot_status_subs():
+    """The admin's subscriptions to its pilots' availability topics (1.7.1 review, recall_replay_tick), outside
+    roles.subscriptions: no command, nothing in the portal contract. A pilot subscribes to none. On every (re)connect
+    the counts start again (PILOT_UP cleared): a restart missed while the admin was offline then counts as one."""
+    if is_pilot():
+        return []
+    PILOT_UP.clear()
+    return [(f"{p}/status", 1) for p in pilot_prefixes()]
+
+
+def pilot_status_in(topic, payload):
+    """A pilot Watcher's availability, read as data (pilot_status_subs): "online" starts his count (an "online" again,
+    as the retained copy on a reconnect, keeps it), anything else stops it. True when the topic is one of them."""
+    p = str(topic)[:-len("/status")] if str(topic).endswith("/status") else ""
+    if not p or p == T or is_pilot() or p not in pilot_prefixes():
+        return False
+    text = payload.decode("utf-8", "replace") if isinstance(payload, bytes) else str(payload or "")
+    if text.strip() == "online":
+        PILOT_UP[p] = PILOT_UP.get(p) or time.time()
+    else:
+        PILOT_UP[p] = None
+    return True
+
+
+def recall_replay_tick(now=None):
+    """1.7.1: once per pilot (DB RECALL_REPLAY), the admin sends every recall day it stores (date, file and rows only:
+    never its 'me', verdicts or CCR drafts) to that pilot's Watcher with recall_forward, marked replay. The pilot takes
+    only the days it holds no list for (recall_cmd), judges them against his own line and shows them on his Recall/O75
+    tab, with no alert or push; a replay twice changes nothing there. Runs from the uploads janitor (once a minute) on
+    the admin only, RECALL_REPLAY_DELAY_S after its start and while MQTT is up; a pilot added later gets his replay
+    then. 1.7.1 review: sent only while the pilot's Watcher is online (PILOT_UP), done only once it stayed online
+    RECALL_REPLAY_CONFIRM_S after the send, else sent again. A publish that fails is tried again the next minute.
+    Returns the prefixes the replay was sent to on this tick."""
+    if ROLES.role(INSTANCE) != ROLES.ADMIN or MQ is None:
+        return []
+    now = time.time() if now is None else now
+    if now - _REPLAY["since"] < RECALL_REPLAY_DELAY_S or not getattr(MQ, "is_connected", lambda: True)():
+        return []
+    done = dict(DB.get(RECALL_REPLAY) or {})
+    todo = [p for p in pilot_prefixes() if p not in done]
+    if not todo:
+        return []
+    days = None
+    sent, confirmed = [], []
+    pend = _REPLAY["sent"]
+    for p in todo:
+        up = PILOT_UP.get(p)
+        if not up or now - up < RECALL_REPLAY_SETTLE_S:
+            if p not in _REPLAY["waited"]:
+                _REPLAY["waited"].add(p)
+                log.info("recall history replay to %s waits until its Watcher is online", p)
+            continue
+        was = pend.get(p)
+        if was and was["up"] == up:  # sent while this same connection was up: done once it stayed up long enough
+            if now - was["at"] >= RECALL_REPLAY_CONFIRM_S:
+                done[p] = {"at": now_iso(), "days": was["days"]}
+                confirmed.append((p, was))
+                pend.pop(p, None)
+            continue
+        if was:
+            log.info("recall history replay to %s: its Watcher restarted after the send; sending it again", p)
+        if days is None:
+            with RECALL_LOCK:
+                allr = DB.get("recall_days") or {}
+                days = [{"date": dk, "file": d.get("file") or "", "rows": d.get("rows") or [], "at": d.get("at") or ""}
+                        for dk, d in sorted(allr.items()) if isinstance(d, dict)]
+        # in parts of RECALL_REPLAY_PART days, so no one message grows with the history kept (120 days)
+        parts = [days[i:i + RECALL_REPLAY_PART] for i in range(0, len(days), RECALL_REPLAY_PART)]
+        if not all(recall_forward(part, replay=True, prefixes=[p]) for part in parts):
+            continue
+        pend[p] = {"at": now, "up": up, "days": len(days),
+                   "span": f"{days[0]['date']} to {days[-1]['date']}" if days else "-"}
+        sent.append(p)
+    if confirmed:
+        DB.put(RECALL_REPLAY, done)
+        for p, was in confirmed:
+            log.info("recall history replayed once to %s: %d stored day%s (%s), marked replay: no alert or push there",
+                     p, was["days"], "" if was["days"] == 1 else "s", was["span"])
+    if sent:
+        log.info("recall history sent to %s; marked done once its Watcher stays online %d s", ", ".join(sent),
+                 RECALL_REPLAY_CONFIRM_S)
+    return sent
 
 
 RECALL_LIVE = ("MISSED", "POSSIBLE")  # FW-0012: a CCR draft is open, counted and shown only while its row says this
@@ -3345,10 +3527,13 @@ def recall_eval(notify=False):
                     f"{_act_label(vid)} is no longer a miss ({why}), but Hark still has {task}. Complete it as "
                     f"skipped in HOM so Hark does not file this CCR.")))
         push = []
+        # 1.7.1: a replayed day (the admin's history, recall_cmd) is judged and shown, never pushed, now or later
+        quiet = {v["id"] for day in allr.values() if day.get("replay") for v in day["verdicts"]}
         if notify:
             push = list(fresh) + [v for vid, v in live.items() if v not in fresh and v["verdict"] == "MISSED"
                                   and vid in acts and acts[vid].get("missed_sent") is False
                                   and acts[vid].get("status") in RECALL_OPEN]
+            push = [v for v in push if v["id"] not in quiet]
             for v in push:
                 if v["verdict"] == "MISSED":
                     acts[v["id"]]["missed_sent"] = True
@@ -3673,7 +3858,9 @@ def publish_recall():
     days = [{k: v for k, v in allr[k].items() if k != "rows"} for k in sorted(allr)[-45:]]
     opn = [v for d in days for v in d.get("verdicts") or []
            if v.get("verdict") in RECALL_LIVE and (v.get("act") or {}).get("status") in RECALL_OPEN]
-    alert = [v for v in opn if v["verdict"] == "MISSED"]  # 1.4.6 (Ryan): RECALL ALERT = the Watcher says he should have been called
+    alert = [v for d in days if not d.get("replay") for v in d.get("verdicts") or []  # 1.7.1: none from a replay
+             if v.get("verdict") == "MISSED" and (v.get("act") or {}).get("status") in RECALL_OPEN]
+    # 1.4.6 (Ryan): RECALL ALERT = the Watcher says he should have been called
     received = max((d.get("at") or "" for d in allr.values()), default="")  # when the newest list post came in
     # FW-0060: every day goes to recall_<key>.json for the recall card (about 380 bytes a verdict: 45 days would pass
     # the recorder's 16 KB); the sensor keeps the newest days that fit (cap_attrs) and the counts over all of them
@@ -6711,6 +6898,14 @@ def upload_janitor():
                     bidcal_tick()  # 1.7.1 (FW-0070): first and on its own, so an uploads error never skips it
                 except Exception as e:  # noqa: BLE001
                     log.info("bid calendar: %s", type(e).__name__)
+                try:
+                    recall_replay_tick()  # 1.7.1: the admin's recall history, once to each pilot
+                except Exception as e:  # noqa: BLE001
+                    log.info("recall history replay: %s", type(e).__name__)
+                try:
+                    fetches_tick()  # 1.7.1 (F#10): a pilot's FLICA loads this hour, for his health line
+                except Exception as e:  # noqa: BLE001
+                    log.info("FLICA loads this hour: %s", type(e).__name__)
                 publish_uploads()
                 if is_pilot():
                     # 1.7.0 (Release C): a pilot's ticket list (and its fixed alert) follows the folder every
@@ -6722,8 +6917,8 @@ def upload_janitor():
 
 
 # ---------------------------------------------------------------- 1.7.1 FW-0070 bid calendar alerts (Ryan)
-# Ryan's ticket: a critical push the evening before the pairing package publishes ("adjust your vacation if needed"),
-# the night before each practice run, 24 h before bids close and the night before they close (bidcal.py). The uploads
+# Ryan's ticket: a critical push at 08:00 HST the day before the pairing package publishes ("adjust your vacation if
+# needed"; Ryan's Nov 11 answer, bidcal.PUBLISH_ALERT), the night before each practice run, 24 h before bids close and the night before they close (bidcal.py). The uploads
 # janitor checks once a minute, whatever the state (paused, yielded, hunting, waiting for settings): no FLICA load, and
 # page 1 of the shared package is read only when its file changes. Each alert goes once on {T}/event/bid_calendar
 # (not retained). Only Ryan's prefix has an HA automation ("Flight Watcher bid calendar"), so a pilot's instance makes
@@ -7274,7 +7469,102 @@ def crewtrac_info():
     return {k: ct.get(k) or "" for k in ("state", "at", "next_try")}
 
 
+# 1.7.1 (F#22, Ryan Nov 11): shared charters. A pilot's Watcher runs no CrewTrac scan and makes no CrewTrac login: it
+# shows the charter flights the admin's scan finds. The admin publishes the flight list its Charters card shows (each
+# flight's key, date, flight, route, scheduled time, equipment, tail, why unusual, first seen and gone: CrewTrac's
+# Scheduled Service, never anything of the admin's own schedule, fit or CrewTrac login) retained on CHARTERS_SHARED,
+# under the admin's own prefix: a pilot's portal publishes only under his prefix (portal_spool_once), so it can never
+# write it. Every pilot subscribes to it (subscribe_all) and publishes his charters sensor from it (source admin).
+CHARTERS_SHARED = "flight_watcher/charters/shared"
+CHARTERS_SHARED_DB = "charters_shared"  # DB on a pilot: {at (the admin's scan), items, got}
+CHARTERS_SEEN_DB = "charters_shared_seen"  # DB on a pilot: the keys he was alerted to (or seeded), newest last
+SHARED_FIELDS = ("key", "date", "flight", "route", "scheduled", "eqpt", "tail", "why", "first_seen")
+SHARED_MAX = 200  # flights in one list (a 30-day scan finds a handful)
+SHARED_SEEN_KEEP = 500
+CT_NOT_USED = "not_used"  # a pilot's crewtrac state: no CrewTrac login is ever made
+
+
+def shared_item(r):
+    """One flight of the shared list: SHARED_FIELDS as short text and gone, nothing else (the admin's records also
+    carry CrewTrac's cancelled, estimated, actual and orig columns, which no card shows)."""
+    it = {k: str(r.get(k) if r.get(k) is not None else "")[:80] for k in SHARED_FIELDS}
+    it["gone"] = r.get("gone") is True
+    return it
+
+
+def charters_share():
+    """1.7.1 (F#22): the admin's last charter scan for every pilot's Watcher, retained on CHARTERS_SHARED (qos 1):
+    {v, at (the scan's time), items (shared_item each)}. After each scan that read CrewTrac and once at start; only
+    while the add-on runs a pilot, and only after a first scan. False when nothing was sent."""
+    if is_pilot() or MQ is None:
+        return False
+    at = DB.get("charter_scan_at") or ""
+    if not at or not pilot_prefixes():
+        return False
+    known = DB.get("charters") or {}
+    items = [shared_item(r) for r in sorted(known.values(), key=lambda r: (r.get("date", ""), r.get("scheduled", "")))]
+    MQ.publish(CHARTERS_SHARED, json.dumps({"v": 1, "at": at, "items": items[:SHARED_MAX]}), qos=1, retain=True)
+    log.info("charters: the scan of %s (%d flight%s) shared with the pilot Watchers", at, len(items),
+             "" if len(items) == 1 else "s")
+    return True
+
+
+def charters_shared_in(payload):
+    """1.7.1 (F#22): a pilot takes the admin's shared list (CHARTERS_SHARED). Read as data: a JSON object with an
+    items list, each flight cut to SHARED_FIELDS and gone (anything else is dropped), at most SHARED_MAX. A flight new
+    to this pilot (not gone, its key not seen) fires his event/charter once, as his own scan did; the first list on an
+    instance that never had one is taken quietly (logged), so a start never sends a burst. Returns the new keys."""
+    try:
+        d = json.loads(payload.decode("utf-8", "replace") if isinstance(payload, bytes) else payload or "")
+    except ValueError:
+        d = None
+    if not isinstance(d, dict) or not isinstance(d.get("items"), list):
+        log.info("charters: the admin's shared list skipped: not a list of flights")
+        return []
+    at = str(d.get("at") or "")[:40]
+    try:
+        datetime.fromisoformat(at)
+    except ValueError:
+        at = ""
+    items = [shared_item(r) for r in d["items"][:SHARED_MAX] if isinstance(r, dict) and r.get("key") and r.get("flight")]
+    seen_l = DB.get(CHARTERS_SEEN_DB)
+    first = seen_l is None and not DB.get("charters")  # never a list, nor a scan of his own before 1.7.1
+    seen = set(seen_l or []) | set(DB.get("charters") or {})  # the flights his own scans found before 1.7.1 count
+    new = [r for r in items if not r["gone"] and r["key"] not in seen]
+    DB.put(CHARTERS_SHARED_DB, {"at": at, "items": items, "got": now_iso()})
+    keep = list(dict.fromkeys(list(seen_l or []) + [r["key"] for r in items]))[-SHARED_SEEN_KEEP:]
+    DB.put(CHARTERS_SEEN_DB, keep)
+    if first and new:
+        log.info("charters: the admin's first shared list taken quietly (%d flights, no alert)", len(new))
+        new = []
+    for r in new:
+        log.info("CHARTER %s %s %s %s (%s), from the admin's scan", r["date"], r["flight"], r["route"], r["eqpt"], r["why"])
+        pub("event/charter", {"key": r["key"], **{f: r[f] for f in ("date", "flight", "route", "scheduled", "eqpt",
+                                                                     "tail", "why")}}, retain=False)
+    publish_charters()
+    return [r["key"] for r in new]
+
+
+def charters_shared_text(at):
+    """'from the admin's scan at 14:05 HST' (the date too when the scan was not today, HST); before any list:
+    'waiting for the admin's CrewTrac scan'."""
+    try:
+        t = datetime.fromisoformat(at).astimezone(HST)
+    except (TypeError, ValueError):
+        return "waiting for the admin's CrewTrac scan"
+    day = "" if t.date() == local_now().date() else f"{t:%b} {t.day} "
+    return f"from the admin's scan at {day}{t:%H:%M} HST"
+
+
 def publish_charters(status=""):
+    if is_pilot():  # 1.7.1 (F#22): the admin's list, never a scan of his own
+        sh = DB.get(CHARTERS_SHARED_DB) or {}
+        items = sorted(sh.get("items") or [], key=lambda r: (r.get("date", ""), r.get("scheduled", "")))
+        pub("charters", {"count": len([r for r in items if not r.get("gone")]), "items": items,
+                         "last_scan": sh.get("at") or "", "status": charters_shared_text(sh.get("at")),
+                         "source": "admin", "regular": sorted(CH.regular_set(OPTS.get("charter_regular"))),
+                         "crewtrac": {"state": CT_NOT_USED, "at": "", "next_try": ""}})
+        return
     known = DB.get("charters") or {}
     items = sorted(known.values(), key=lambda r: (r.get("date", ""), r.get("scheduled", "")))
     crewtrac = crewtrac_info()
@@ -7317,6 +7607,9 @@ def charter_scan():
     days, A330 rows that are 99xx or touch a non-regular station become sensor.flight_watcher_charters
     entries; each new one fires event/charter once (HA pushes it). 1.6.1: no login at all while CrewTrac's refusal
     of these details stands or none are saved (the status is only republished)."""
+    if is_pilot():  # 1.7.1 (F#22): a pilot never logs in to CrewTrac (his charters are the admin's)
+        publish_charters()
+        return False
     ct = crewtrac_state()
     if crewtrac_stopped(ct):
         publish_charters()
@@ -7329,6 +7622,8 @@ def charter_scan():
 
 
 def _charter_scan(ct):
+    if is_pilot():
+        return False
     u, p = crewtrac_login()
     sess = requests.Session()
     sess.headers["User-Agent"] = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -7376,6 +7671,10 @@ def _charter_scan(ct):
             pub("event/charter", {"key": k, **{f: r.get(f) for f in ("date", "flight", "route", "scheduled", "eqpt",
                                                                         "tail", "why")}}, retain=False)
         publish_charters()
+        try:
+            charters_share()  # 1.7.1 (F#22): the pilots' Watchers show this list
+        except Exception as e:  # noqa: BLE001 (sharing never fails the admin's own scan)
+            log.info("charters not shared: %s", type(e).__name__)
     except Exception as e:  # noqa: BLE001
         log.info("charter scan error after the login: %s", e)
         return crewtrac_failed(ct, CH.OUTAGE)
@@ -7422,6 +7721,10 @@ def charter_press(now=None):
     details is not held by PRESS_GAP_S). Otherwise the status is only republished. True when the thread was woken for
     a scan."""
     now = time.time() if now is None else now
+    if is_pilot():  # 1.7.1 (F#22)
+        log.info("charter scan pressed: %s; status republished, no scan", CHARTERS_NO_SCAN)
+        publish_charters()
+        return False
     ct = crewtrac_state()
     why = charter_press_refusal(now, ct)
     if why:
@@ -7465,6 +7768,13 @@ def start_charter_watch():
         return False
     CHARTER_STARTED.set()
     publish_charters()
+    if is_pilot():  # 1.7.1 (F#22): no charter thread, no CrewTrac login; the admin's list comes over MQTT
+        log.info("charters: shown from the admin's CrewTrac scan; this Watcher makes no CrewTrac login")
+        return True
+    try:
+        charters_share()  # 1.7.1 (F#22): the last scan again for the pilots (retained)
+    except Exception as e:  # noqa: BLE001
+        log.info("charters not shared: %s", type(e).__name__)
     threading.Thread(target=charter_thread, daemon=True, name="charter").start()
     return True
 

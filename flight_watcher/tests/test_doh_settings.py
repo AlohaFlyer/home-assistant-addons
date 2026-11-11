@@ -156,10 +156,12 @@ def _refused(W, flica=True, crewtrac=True):
     W.CHARTER_WAKE.clear()
 
 
+# 1.7.1 (F#22): a pilot's Watcher makes no CrewTrac login, so his saved CrewTrac details have no try to give back:
+# only the FLICA lift is said (the admin's CrewTrac lift: test_crewtrac_stop.py)
 @pytest.mark.parametrize("flica,crewtrac,tail", [
-    (True, True, "; CrewTrac gets one more try with these details; FLICA gets one more login try with these details"),
+    (True, True, "; FLICA gets one more login try with these details"),
     (True, False, "; FLICA gets one more login try with these details"),
-    (False, True, "; CrewTrac gets one more try with these details"),
+    (False, True, ""),
     (False, False, ""),
 ])
 @pytest.mark.parametrize("sealed", [True, False])
@@ -174,8 +176,8 @@ def test_the_same_logins_saved_with_a_date_of_hire_still_get_one_more_try(portal
     assert _result(W)["result"] == "saved: date of hire (no restart needed)" + tail
     assert W.pilot_doh() == DOH and restarts == [] and W.load_creds() == FL_CREDS
     assert "flica_refused" not in W.S and W.FLAGS["rearm"] is flica and W.WAKE.is_set() is flica  # lifted, or none
-    assert not W.DB.get("crewtrac_refused") and W.CHARTER_WAKE.is_set() is crewtrac
-    assert charters == ([1] if crewtrac else [])
+    assert bool(W.DB.get("crewtrac_refused")) is crewtrac and W.CHARTER_WAKE.is_set() is False  # 1.7.1: untouched
+    assert charters == []
     if flica:  # the state attributes that go out at once say so too
         attr = json.loads([p for t, p, *_ in W.MQ.raw.msgs if t == "flight_watcher_pilot2/state_attr"][-1])
         assert attr["note"] == "FLICA details saved again: one more login try" and attr["doh"] == DOH
@@ -187,9 +189,9 @@ def test_the_same_logins_alone_still_say_nothing_new(portal_pilot, monkeypatch):
     _refused(W)
     monkeypatch.setattr(W, "publish_charters", lambda *a: None)
     assert W.settings_cmd(_sealed(W, FL_CREDS)) is False
-    assert _result(W)["result"] == ("nothing new; CrewTrac gets one more try with these details; FLICA gets one more "
-                                    "login try with these details")
-    assert "flica_refused" not in W.S and W.CHARTER_WAKE.is_set() and restarts == [] and W.pilot_doh() == ""
+    # 1.7.1 (F#22): no CrewTrac try on a pilot (his Watcher makes no CrewTrac login)
+    assert _result(W)["result"] == "nothing new; FLICA gets one more login try with these details"
+    assert "flica_refused" not in W.S and not W.CHARTER_WAKE.is_set() and restarts == [] and W.pilot_doh() == ""
 
 
 # ---------------------------------------------------------------- the longevity year follows it

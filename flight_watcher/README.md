@@ -42,7 +42,9 @@ publishes what it finds to Home Assistant over MQTT.
   approved CCR narrative can go to Hark ("Have Hark file this CCR", through the HOM app and
   `/share/flight_watcher/ccr_requests/`); the app itself files nothing. Over 75 is judged per month from your answer
   on the tab (on reserve or not, PWA 22.G.2.d); while it is not set an Over 75 miss shows as CHECK.
-- Crew index and pilot lookup, charter watch (CrewTrac, read only), tickets (below). Since 1.4.7 the crew index
+- Crew index and pilot lookup, charter watch (CrewTrac, read only; 1.7.1, F#22: the admin's Watcher scans and
+  shares the flight list, retained on `flight_watcher/charters/shared`, and a pilot's Watcher shows it with the scan's
+  time, as a warning once that is over 13 h old, and makes no CrewTrac login of its own), tickets (below). Since 1.4.7 the crew index
   also reads trips on any schedule the Watcher reads that the pairing package does not list (FW-0056), trips that
   start in the previous bid period and run into it (FW-0057), keeps names such as "Lee, So Young" (made up) whole
   (FW-0058), and flags a pilot on two overlapping trips, reading both again first (FW-0059). Since 1.4.10 it finds
@@ -133,7 +135,11 @@ allowlists, caps and masks are in `PORTAL_CONTRACT.md` (contract 1, revision 2 f
 ## Settings
 
 Enter the FLICA and CrewTrac logins and your last name on the dashboard **Settings card** (Credentials, on the
-Settings tab; sealed in the browser, so HA's history and the MQTT broker only hold ciphertext). The Web UI Settings
+Settings tab; sealed in the browser, so HA's history and the MQTT broker only hold ciphertext). A pilot needs no
+CrewTrac login (1.7.1, F#22: his charters are the admin's scan); his card says so, and Remove CrewTrac login still
+clears one saved before. The card's last line is the Watcher's health (1.7.1, F#10): its version and state, and its
+FLICA page loads in the last hour against its budget (100 an hour on a pilot; `sensor.<prefix>_flica_fetches`
+attributes `hour` and `budget`). The Web UI Settings
 form and the app's Configuration tab work too; a saved value wins over the Configuration tab. Credentials never go in
 git.
 
@@ -276,20 +282,21 @@ Recent finds.
   `sensor.<prefix>_own_trip_times` (size). Hark's `sensor.hark_working_flight` (Ryan only: release, MEL, NOTAMs, live
   status) is separate.
 - Bid calendar (1.7.1, FW-0070, `bidcal.py`): alerts for each PBS bid cycle, all HST. The cycle for bid month M+1
-  runs in month M: the pairing package publishes on the 4th, practice runs on the 7th and the 10th, bids close on the
-  11th at 08:00, unless that month's package is uploaded, whose Bid Calendar (page 1, left column) gives the dates.
-  Alerts: 20:00 the night before the package publishes ("adjust your vacation if needed"; `bidcal.PUBLISH_ALERT`, one
-  constant), 20:00 the night before each practice run, 24 h before the close and 20:00 the night before it. Checked
-  once a minute whatever the Watcher is doing (no FLICA load); each goes once on `<prefix>/event/bid_calendar` (not
-  retained: `kind`, `key`, `bid_month`, `title`, `message`, `at_hst`, `event_hst`, `source` package or default), the
-  sent ones kept in the DB with the date they were for, so a restart never repeats one and a date a late package
-  moves is alerted once more under the same key (its push replaces the wrong one). One missed while the app was off
-  is sent late until its words stop being true (the evening ones until their day starts, the 24 h one until the
-  night-before one, that one until the close), else dropped with a log line. `sensor.<prefix>_bid_calendar`
-  (retained on `<prefix>/bid_calendar`) shows the next alert's time, its cycle's dates (awards and open time too, from
-  a package) and each alert's status.
+  runs in month M: the pairing package publishes on the 4th, practice runs on the 7th and the 10th, bids close on
+  the 11th at 08:00, unless that month's package is uploaded, whose Bid Calendar (page 1, left column) gives the
+  dates. Alerts: 08:00 the day before the package publishes, the 3rd by default ("adjust your vacation if needed";
+  `bidcal.PUBLISH_ALERT`, one constant; Ryan's Nov 11 answer), 20:00 the night before each practice run, 24 h before
+  the close and 20:00 the night before it. Checked once a minute whatever the Watcher is doing (no FLICA load); each
+  goes once on `<prefix>/event/bid_calendar` (not retained: `kind`, `key`, `bid_month`, `title`, `message`,
+  `at_hst`, `event_hst`, `source` package or default), the sent ones kept in the DB with the date they were for, so
+  a restart never repeats one and a date a late package moves is alerted once more under the same key (its push
+  replaces the wrong one). One missed while the app was off is sent late until its words stop being true (the
+  publish alert and the evening ones until their day starts, the 24 h one until the night-before one, that one until
+  the close), else dropped with a log line. `sensor.<prefix>_bid_calendar` (retained on `<prefix>/bid_calendar`)
+  shows the next alert's time, its cycle's dates (awards and open time too, from a package) and each alert's status.
   Only Ryan's prefix has a phone push (HA automation "Flight Watcher bid calendar", critical); a second pilot's
-  Watcher makes the same alerts on its own prefix, which nothing pushes, and they are not portal events (contract 1).
+  Watcher makes the same alerts on its own prefix, which nothing pushes, and they are not portal events (contract
+  1).
 
 ## Dashboard cards and pushes
 

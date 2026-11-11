@@ -16,6 +16,8 @@
 // FW-0060 (1.4.7): every list day comes from recall_<key>.json under /local/ too; the sensor keeps the newest days that
 // fit HA's 16 KB recorder limit (and the counts over all of them), and its days win over the file's.
 // 1.7.1 (F#66): the alert card is the first card of the pilot portal's Watcher tab too; with no alert it takes no room.
+// 1.7.1 (Ryan, Nov 11): a day the admin's Watcher replayed from its history (day.replay) shows like any other, says so,
+// and never counts for the RECALL ALERT bar.
 // (F#119) Text on the card's own colors keeps WCAG AA contrast (4.5:1) on light and dark cards: the error text is a
 // lighter red on a dark card (prefers-color-scheme, as the portal's dark mode), the CHECK and NO chips are darker.
 // 1.7.1 review: on a phone (700 px or less) every field, select and the CCR draft are 16 px: iOS Safari zooms into a
@@ -112,8 +114,9 @@ class FlightWatcherRecallCard extends HTMLElement {
   }
   _dayOpenByDefault(d) { return (d.verdicts || []).some((v) => RC_LIVE.includes(v.verdict)); }
   _isOpen(d) { const f = this._folds(); return Object.prototype.hasOwnProperty.call(f, d.date) ? !!f[d.date] : this._dayOpenByDefault(d); }
+  // 1.7.1: a day replayed from the admin's history (d.replay, Ryan's Nov 11 yes) is shown, never an alert
   _alerts(days) {
-    return days.flatMap((d) => (d.verdicts || []).filter((v) => v.verdict === "MISSED" && RC_OPEN.includes((v.act || {}).status)).map((v) => ({ ...v, listDay: d.date })));
+    return days.filter((d) => !d.replay).flatMap((d) => (d.verdicts || []).filter((v) => v.verdict === "MISSED" && RC_OPEN.includes((v.act || {}).status)).map((v) => ({ ...v, listDay: d.date })));
   }
   _bar(alert, withJump) {
     if (!alert.length) return "";
@@ -231,7 +234,8 @@ class FlightWatcherRecallCard extends HTMLElement {
       : !seats.length ? "Tick FO or CA above to see the awards."
       : `No ${seats.join(" or ")} Recall or Over 75 awards on this list.`;
     const body = shown.length ? shown.map((v) => this._row(v, hark)).join("") : `<div class="row why">${none}</div>`;
-    return `<details class="day" data-day="${this._e(d.date)}"${this._isOpen(d) ? " open" : ""}><summary><b>${this._e(this._day(d.date))}</b> <span class="k">list ${this._e(file || "not posted")}</span> ${tag}${tag2}${quiet}</summary>${body}</details>`;
+    const rp = d.replay ? `<div class="row k">From the admin's recall history (a list your Watcher did not get when it came in): checked against your line, with no alert or push.</div>` : "";
+    return `<details class="day" data-day="${this._e(d.date)}"${this._isOpen(d) ? " open" : ""}><summary><b>${this._e(this._day(d.date))}</b> <span class="k">list ${this._e(file || "not posted")}${d.replay ? ", history" : ""}</span> ${tag}${tag2}${quiet}</summary>${rp}${body}</details>`;
   }
   _harkLine(act) {
     const s = act.status, tid = act.task_id;

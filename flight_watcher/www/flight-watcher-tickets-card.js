@@ -33,7 +33,7 @@ const FW_TICKET_RETRY_MS = 10000;  // portal: a chunk refused for too many comma
 // FW-0006: the choice at the top of the one ticket form (Bug first): its label, the description prompt, a title hint
 const FW_TICKET_PAGES = FW_PORTAL
   ? ["Watcher", "Schedule", "Pilot", "Recall/O75", "Settings", "Tickets", "Phone alert (ntfy)", "Other"]
-  : ["Watcher", "Schedule", "Recall/O75", "Details", "Settings", "Aviation Wx", "Phone alert", "Other"];
+  : ["Watcher", "Schedule", "Working Flight", "Recall/O75", "Details", "Settings", "Phone alert", "Other"];  // 1.7.1: Ryan removed the Aviation Wx view on Nov 11
 // Ryan (Nov 6): "Process Tickets in Claude Code", far right of Submit a ticket. 1.4.5 (Ryan): it copies the prompt
 // below to the clipboard (Ryan pastes it into his own Claude Code window) instead of opening a new session. Card
 // option claude_code_prompt replaces the text. 1.7.0: a pilot's fixed ticket waits for that pilot's verify. 1.7.0
