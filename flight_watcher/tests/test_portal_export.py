@@ -257,7 +257,8 @@ def test_export_runs_while_waiting_for_settings(portal_pilot, monkeypatch):
 
 # ---------------------------------------------------------------- the admin stays exactly 1.5.0
 ADMIN_SETTINGS_KEYS = {"instance", "username", "my_name", "ctweb_username", "has_password", "has_ctweb_password", "at",
-                       "result", "pubkey", "kid"}
+                       "result", "pubkey", "kid",
+                       "doh"}  # 1.6.4: the Settings card's Date of hire field, on the admin's card too (Ryan, Nov 11)
 
 
 def test_admin_never_has_a_portal_even_with_the_env(portal_pilot, monkeypatch, caplog, tmp_path):

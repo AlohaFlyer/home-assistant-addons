@@ -137,6 +137,17 @@ Settings tab; sealed in the browser, so HA's history and the MQTT broker only ho
 form and the app's Configuration tab work too; a saved value wins over the Configuration tab. Credentials never go in
 git.
 
+The same card has a **Date of hire** field (1.6.4, optional): it sets the longevity year of the pay estimates (PWA
+3.B.1: year 1 from the date of hire, a new year on each anniversary; the PWA 3.D.6 table caps at 12). It goes like the
+other non-secret fields (inside the sealed payload on the portal) and the Watcher checks it again (YYYY-MM-DD, a real
+date, not after today HST, not before 1960) and keeps it in its own `<data>/cards.json` (`doh`), the file
+`sensor.<prefix>_state` (attribute `doh`) and `sensor.<prefix>_settings` read it from. A date of hire alone restarts
+nothing: the new state goes out at once (the same logins saved with it still get their one more try). A longevity year
+the pilot chose himself (Pay settings, or Keep these) still wins over it; one copied from a never-set helper (flagged
+unconfirmed in 1.6.2) yields to it. Beside the field the card shows the year pay uses: the date's year, or "year N from
+this date; pay uses year M, set in Pay settings" when a set year wins. Sealed on the way in, the date is shown back on
+the pilot's page, so the portal can read it (the portal copy says so); a login or ntfy value it never can.
+
 ## Uploads on the dashboard (1.4.5; any user since 1.4.8)
 
 The monthly award, the pilot pairings package, the pilot seniority list and (1.4.8) the pilot contact list are
@@ -249,8 +260,9 @@ Recent finds.
   pickers and recall days go to `tickets|versions|pickers|recall_<key>.json` under the same key (a second pilot's in
   `www/flight-watcher/<name>/`); the sensors keep counts, a short list, `file_key` and `rev`, and their cards fetch
   the file. Any other list over 12000 bytes loses its oldest or least useful items and says how many in `trimmed`.
-- The pilot's date of hire stays in `/data/cards.json` and reaches the schedule card as the `doh` attribute of
-  `sensor.flight_watcher_state`; the card files carry a placeholder only.
+- The pilot's date of hire stays in `/data/cards.json` (a second pilot's in `/data/<name>/cards.json`; 1.6.4: set on
+  the Settings card) and reaches the schedule card as the `doh` attribute of `sensor.flight_watcher_state`; the card
+  files carry a placeholder only.
 - Working flight (1.4.9, FW-0067): `sensor.<prefix>_working_flight` (`sensor.flight_watcher_working_flight`, a second
   pilot's `sensor.flight_watcher_<name>_working_flight`), retained on `<prefix>/working_flight`, is the leg of the
   pilot's own schedule he is working, from his own trips' pairing pages (`working.py`). State `HA865 HNL-PPG` or `No
