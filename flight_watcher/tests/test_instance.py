@@ -323,8 +323,10 @@ ADMIN_IDS_1412 = [
     "sensor.flight_watcher_would_trade", "switch.flight_watcher_auto_swap_dry_run",
     "switch.flight_watcher_hunt_mode", "switch.flight_watcher_pause"
 ]
-# added since, each on every instance (core): 1.7.1 (FW-0070) the bid calendar sensor
-ADMIN_IDS = sorted(ADMIN_IDS_1412 + ["sensor.flight_watcher_bid_calendar"])
+# added since: 1.7.1 (FW-0070) the bid calendar sensor, on every instance (core); 1.7.1 (FW-0072) the layover van
+# and layover notes sensors, the admin's only (ADMIN_ONLY_171)
+ADMIN_ONLY_171 = ("sensor.flight_watcher_layover_van", "sensor.flight_watcher_layover_notes")
+ADMIN_IDS = sorted(ADMIN_IDS_1412 + ["sensor.flight_watcher_bid_calendar"] + list(ADMIN_ONLY_171))
 PILOT_RETIRED_1500 = ("switch.flight_watcher_auto_swap_dry_run", "button.flight_watcher_map_swap_pages_read_only",
                       "sensor.flight_watcher_would_drop")
 ADMIN_ONLY_1412 = ("sensor.flight_watcher_crew_index", "button.flight_watcher_update_schedules")  # never on a pilot
@@ -350,8 +352,9 @@ def test_discovery_ids_by_role(tmp_path, monkeypatch):
     c = FakeClient()
     W.discovery(c)
     made = {json.loads(p)["default_entity_id"].replace("flight_watcher_pilot2_", "flight_watcher_") for t, p, _ in c.msgs if p}
-    assert set(ADMIN_IDS) - made == set(PILOT_RETIRED_1500) | set(ADMIN_ONLY_1412) and made <= set(ADMIN_IDS)
+    assert set(ADMIN_IDS) - made == set(PILOT_RETIRED_1500) | set(ADMIN_ONLY_1412) | set(ADMIN_ONLY_171)
+    assert made <= set(ADMIN_IDS)
     emptied = [t for t, p, _ in c.msgs if not p]
     assert emptied == [f"homeassistant/{t}/flight_watcher_pilot2/{o}/config" for t, o in (
-        ("sensor", "drop_away"), ("switch", "auto_swap"), ("button", "swap_map"), ("sensor", "crew_index"),
-        ("button", "crew_scan"), ("select", "swap_mode"))]
+        ("sensor", "drop_away"), ("switch", "auto_swap"), ("sensor", "layover_van"), ("sensor", "layover_notes"),
+        ("button", "swap_map"), ("sensor", "crew_index"), ("button", "crew_scan"), ("select", "swap_mode"))]

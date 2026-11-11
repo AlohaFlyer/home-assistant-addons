@@ -30,6 +30,8 @@ const FW_TICKET_PORTAL_URL = 360000;  // portal: one photo's data URL, 6 chunks 
 const FW_TICKET_CHUNK = 60000;  // roles.PILOT_TICKET_LIMITS chunk_chars: one ticket/image command's base64
 const FW_TICKET_MAX_BYTES = 63000;  // portal: a command's {sub, payload} in UTF-8, under the 64 KB command cap
 const FW_TICKET_RETRY_MS = 10000;  // portal: a chunk refused for too many commands a minute waits this long
+// FW-0071: what the paste box and Paste photo say when the clipboard holds no picture
+const FW_TICKET_NO_PICTURE = "No picture on the clipboard. Copy a screenshot first (on a Mac ⌘⌃⇧4 copies one; on iPhone or iPad open the screenshot and Copy it), or use Add photos.";
 // FW-0006: the choice at the top of the one ticket form (Bug first): its label, the description prompt, a title hint
 const FW_TICKET_PAGES = FW_PORTAL
   ? ["Watcher", "Schedule", "Pilot", "Recall/O75", "Settings", "Tickets", "Phone alert (ntfy)", "Other"]
@@ -116,6 +118,15 @@ class FlightWatcherTicketsCard extends HTMLElement {
   // FW-0053 (Ryan, Mac): Cmd+V (Ctrl+V) pastes a copied screenshot into an open New ticket form as a photo. The
   // listener sits on the document, because a paste with nothing focused never reaches the card; it takes image
   // files only (text still pastes into a field as usual) and does nothing unless this card's new-ticket form is open.
+  // FW-0071 (Ryan, Chrome on a Mac, and iOS): the document listener alone heard a paste only when it crossed the
+  // card's shadow root to the document (a paste event a page or a wrapper makes is not composed, and stops at the
+  // shadow root) and, in Safari, the Home Assistant app and iOS, only with a text field focused, where iOS offers no
+  // Paste for a picture at all. Now the card's own shadow root listens too (title, text boxes, the form itself, which
+  // takes focus when its background is clicked), a paste box (an editable area that keeps nothing typed: Cmd+V there,
+  // or on iOS touch and hold, then Paste) and a drop on the form, and a Paste photo button reads the clipboard
+  // (navigator.clipboard.read, inside the tap as Safari asks). Each paste is taken once (a WeakSet of events), and every
+  // way goes through _addFiles: the same shrink, checks and photo limit as Add photos (in the portal FileReader into a
+  // data: URL, never a blob: URL).
   connectedCallback() {
     if (!this._onPaste) this._onPaste = (e) => this._paste(e);
     document.addEventListener("paste", this._onPaste);
@@ -127,14 +138,70 @@ class FlightWatcherTicketsCard extends HTMLElement {
     const fl = Array.from(cd.items || []).filter((it) => it.kind === "file" && img(it.type)).map((it) => it.getAsFile()).filter(Boolean);
     return fl.length ? fl : Array.from(cd.files || []).filter((x) => img(x.type));
   }
+  _inBox(e) {
+    const p = e && typeof e.composedPath === "function" ? e.composedPath() : [];
+    return p.some((n) => n && n.dataset && n.dataset.pastebox !== undefined);
+  }
   _paste(e) {
+    if (!e || typeof e !== "object") return;
+    const seen = this._pasted || (this._pasted = new WeakSet());
+    if (seen.has(e)) return;  // FW-0071: the shadow root and the document both hear a composed paste: one photo
+    seen.add(e);
     const f = this._form;
     if (!f || f.mode === "edit" || this._sending) return;
-    const cd = e.clipboardData, fl = this._pastedImages(cd);
-    if (!fl.length) return;
+    const cd = e.clipboardData, fl = this._pastedImages(cd), box = this._inBox(e);
+    if (!fl.length) {
+      if (box) {  // the paste box keeps nothing: say why nothing was added
+        e.preventDefault();
+        this._note = FW_TICKET_NO_PICTURE;
+        this._photos();
+      }
+      return;
+    }
     // a copy that also carries plain text (rare for a screenshot) still pastes its text into the focused field
-    if (!Array.from((cd && cd.items) || []).some((it) => it.kind === "string" && it.type === "text/plain")) e.preventDefault();
+    if (box || !Array.from((cd && cd.items) || []).some((it) => it.kind === "string" && it.type === "text/plain")) e.preventDefault();
     this._addFiles(fl);
+  }
+  // FW-0071: Paste photo. navigator.clipboard.read() is called in the tap itself (Safari and iOS ask only inside a user
+  // gesture); each picture on it becomes a File for _addFiles. A refusal or an empty clipboard says so in plain words.
+  _canRead() { return typeof navigator !== "undefined" && !!navigator.clipboard && typeof navigator.clipboard.read === "function"; }
+  _pasteButton() {
+    if (this._prep || this._sending || !this._form || this._imgs.length >= this._max()) return Promise.resolve();
+    const gen = this._gen;
+    let read;
+    try { read = navigator.clipboard.read(); } catch (e) { read = Promise.reject(e); }
+    return Promise.resolve(read).then(async (items) => {
+      const files = [];
+      for (const it of Array.from(items || [])) {
+        const t = Array.from((it && it.types) || []).find((x) => /^image\//.test(x));
+        if (!t) continue;
+        const b = await it.getType(t);
+        const ext = (t.slice(6).replace(/[^a-z0-9]/gi, "") || "png").toLowerCase();
+        files.push(new File([b], `pasted-${files.length + 1}.${ext}`, { type: t }));
+      }
+      if (gen !== this._gen) return;  // the form was closed meanwhile
+      if (!files.length) { this._note = FW_TICKET_NO_PICTURE; this._photos(); return; }
+      await this._addFiles(files);
+    }, (e) => {
+      if (gen !== this._gen) return;
+      const n = (e && e.name) || "";
+      this._note = n === "NotAllowedError" || n === "SecurityError"
+        ? "The browser did not let the card read the clipboard. Allow clipboard access for this site, or click the paste box and press ⌘V (on iPhone or iPad: touch and hold the paste box, then Paste)."
+        : `Couldn't read the clipboard${n ? ` (${n})` : ""}. Click the paste box and press ⌘V, or use Add photos.`;
+      this._photos();
+    });
+  }
+  // FW-0071: a picture dragged onto the open form (the Mac's screenshot preview, a file from Finder) is added like a
+  // paste, and the browser never opens it in place of the dashboard
+  _hasFiles(e) { return Array.from((e && e.dataTransfer && e.dataTransfer.types) || []).includes("Files"); }
+  _drop(e) {
+    if (!this._hasFiles(e)) return;
+    e.preventDefault();
+    if (this._sending || !this._form || this._form.mode === "edit") return;
+    const fl = this._pastedImages(e.dataTransfer);
+    if (fl.length) { this._addFiles(fl); return; }
+    this._note = "Only pictures can be added to a ticket.";
+    this._photos();
   }
   _e(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
   // FW-0060: the ticket log. The file has every ticket with its text; the sensor's short rows (open tickets) are newer,
@@ -283,10 +350,12 @@ class FlightWatcherTicketsCard extends HTMLElement {
     const bytes = this._imgs.reduce((a, x) => a + x.url.length * 0.75, 0);
     box.innerHTML = `<div class="lbl">Photos <span class="u">(optional, up to ${max})</span></div>
       ${n ? `<div class="thumbs">${this._imgs.map((x, i) => `<div class="ph"><img src="${x.thumb}" alt="Photo ${i + 1}"><button class="x" data-rm="${i}" aria-label="Remove photo ${i + 1}">&times;</button></div>`).join("")}</div>` : ""}
-      <button class="g" data-add${full || p ? " disabled" : ""}>&#128247; ${full ? `${max} of ${max} photos` : n ? "Add more photos" : "Add photos"}</button>${n ? `<button class="g" data-clear${p ? " disabled" : ""}>Remove all</button>` : ""}
-      <div class="u" data-count>${p ? `Preparing photo ${p.i} of ${p.n}...` : n ? `${n} photo${n === 1 ? "" : "s"} attached (${this._kb(bytes)})` : "Photo library, camera or files, or paste a screenshot (\u2318V)."}</div>
+      <button class="g" data-add${full || p ? " disabled" : ""}>&#128247; ${full ? `${max} of ${max} photos` : n ? "Add more photos" : "Add photos"}</button>${this._canRead() ? `<button class="g" data-pastebtn${full || p ? " disabled" : ""}>&#128203; Paste photo</button>` : ""}${n ? `<button class="g" data-clear${p ? " disabled" : ""}>Remove all</button>` : ""}
+      <div class="u" data-count>${p ? `Preparing photo ${p.i} of ${p.n}...` : n ? `${n} photo${n === 1 ? "" : "s"} attached (${this._kb(bytes)})` : "Photo library, camera or files. Or paste a screenshot: \u2318V anywhere in this form, or the paste box below."}</div>
       ${this._note ? `<div class="warn">${this._e(this._note)}</div>` : ""}`;
     box.querySelector("[data-add]").onclick = () => { if (!this._prep && this._imgs.length < this._max()) this.shadowRoot.querySelector("[data-img]").click(); };
+    const pb = box.querySelector("[data-pastebtn]");
+    if (pb) pb.onclick = () => { this._pasteButton(); };  // FW-0071
     const cl = box.querySelector("[data-clear]");
     if (cl) cl.onclick = () => { this._imgs = []; this._note = ""; this._photos(); };
     box.querySelectorAll("[data-rm]").forEach((b) => b.onclick = () => { this._imgs.splice(+b.dataset.rm, 1); this._note = ""; this._photos(); });
@@ -503,7 +572,11 @@ class FlightWatcherTicketsCard extends HTMLElement {
     catch (e) { q.err = this._why(e); if (!this._form && !this._dlg) this._render(); }
   }
   _render() {
-    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    if (!this.shadowRoot) {
+      this.attachShadow({ mode: "open" });
+      // FW-0071: a paste in any of the card's fields reaches the card itself, composed or not (each taken once)
+      this.shadowRoot.addEventListener("paste", (e) => this._paste(e));
+    }
     // what is typed in an open form survives a redraw of the same form (a ticket opened or closed under it)
     const fk = this._form ? (this._form.mode === "edit" ? `edit:${this._form.id}` : "new") : "";
     const keep = {};
@@ -523,7 +596,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
     const chip = { new: "#1976d2", triaged: "#6a1b9a", in_progress: "#ef6c00", fixed: "#2e7d32", closed: "#757575", reopened: "#c62828" };
     const f = this._form, nf = f && f.mode !== "edit" ? f : null, K = nf ? FW_TICKET_KINDS[nf.kind] || FW_TICKET_KINDS.bug : null;
     const last = a.last || {};
-    const form = nf ? `<div class="form">
+    const form = nf ? `<div class="form" data-newform tabindex="-1">
         <h4>&#127915; New ticket</h4>
         <div class="seg" role="radiogroup" aria-label="Ticket type">${Object.keys(FW_TICKET_KINDS).map((k) =>
           `<label><input type="radio" name="fw-ticket-kind" value="${k}" data-kind${k === nf.kind ? " checked" : ""}><span>${FW_TICKET_KINDS[k].label}</span></label>`).join("")}</div>
@@ -533,6 +606,8 @@ class FlightWatcherTicketsCard extends HTMLElement {
         <label>What did you expect?<textarea data-f="expected" rows="2"></textarea></label></div>
         <label>Where<select data-f="page">${FW_TICKET_PAGES.map((p) => `<option>${p}</option>`).join("")}</select></label>
         <div class="photos" data-photos></div>
+        <div class="pz" data-pastebox contenteditable="true" inputmode="none" role="textbox" tabindex="0" spellcheck="false"
+          aria-label="Paste a screenshot here" data-ph="Paste a screenshot here: click, then \u2318V. On iPhone or iPad: touch and hold here, then Paste."></div>
         <input class="vh" type="file" accept="image/*" multiple data-img tabindex="-1" aria-hidden="true">
         <button data-send>Submit</button> <button class="g" data-cancel>Cancel</button> <span class="u" data-msg></span>
       </div>` : "";
@@ -583,6 +658,9 @@ class FlightWatcherTicketsCard extends HTMLElement {
       .ph img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid var(--divider-color);display:block}
       .ph button.x{position:absolute;top:-7px;right:-7px;width:24px;height:24px;padding:0;margin:0;border-radius:50%;background:rgba(0,0,0,.72);border:2px solid #fff;font-size:15px;line-height:18px}
       .vh{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none}
+      .form[data-newform]:focus{outline:none}
+      .pz{border:1.5px dashed var(--divider-color);border-radius:8px;padding:10px 12px;margin:0 0 10px;min-height:20px;font-size:12px;line-height:1.4;color:var(--secondary-text-color);cursor:text;caret-color:transparent;outline:none;-webkit-user-select:text;user-select:text;overflow:hidden;max-height:60px}
+      .pz:empty::before{content:attr(data-ph)}.pz:focus{border-color:var(--primary-color);border-style:solid}
       .warn{color:var(--error-color,#c62828);font-size:12px;font-weight:600}
       .u{color:var(--secondary-text-color);font-size:12px}
       .t{border-top:1px solid var(--divider-color);padding:6px 0}.th{cursor:pointer}
@@ -719,6 +797,16 @@ class FlightWatcherTicketsCard extends HTMLElement {
         r.querySelector("[data-narr]").textContent = k.narrative;
         r.querySelector('[data-f="title"]').placeholder = k.title;
       });
+      // FW-0071: the form takes focus when its background is clicked (so Cmd+V there is a paste in the card), a picture
+      // dropped on it is added, and the paste box keeps nothing typed or pasted into it
+      const fe = r.querySelector("[data-newform]");
+      fe.addEventListener("mousedown", (e) => { if (e.target === fe || (e.target.matches && e.target.matches("h4, .photos, .thumbs, .lbl, [data-count]"))) fe.focus({ preventScroll: true }); });
+      fe.addEventListener("dragover", (e) => { if (this._hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; } });
+      fe.addEventListener("drop", (e) => this._drop(e));
+      const pz = r.querySelector("[data-pastebox]");
+      pz.addEventListener("beforeinput", (e) => e.preventDefault());
+      pz.addEventListener("input", () => { pz.textContent = ""; });
+      pz.addEventListener("keydown", (e) => { if (!(e.metaKey || e.ctrlKey) && e.key !== "Tab") e.preventDefault(); });
       const inp = r.querySelector("[data-img]");
       inp.onchange = () => { const fl = Array.from(inp.files || []); inp.value = ""; this._addFiles(fl); };  // cleared so the same photo can be picked again
       r.querySelector("[data-send]").onclick = () => {

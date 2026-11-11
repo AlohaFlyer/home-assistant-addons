@@ -17,6 +17,31 @@ in Refresh below, then drop this section. Until then the snapshot is one automat
 Undo: delete the automation (its id above). The guard passes with it (`python3 ha/check_push_isolation.py`: 20
 automations, 0 offenders).
 
+## Pending on Pako (1.7.1, FW-0072): "Flight Watcher van time" and the layover card
+
+Two edits, each applied through the HA connector once 1.7.1 is live (the card file and the two sensors must exist
+first), each a [DESTRUCTIVE] yes from Ryan; then check by sha256 of the redacted text as in Refresh below and drop
+this section.
+
+1. `automations_flight_watcher.yaml` ends with **Flight Watcher van time** (id `1794426120072`), after the bid
+   calendar one: triggered by `flight_watcher/event/van` only (never a pilot's prefix), it sends the payload's
+   `title` ("Van SYD 19:40 AEDT") and `message` ("Van in 30 min: 19:40 AEDT (22:40 HST), <place>") as a critical push
+   (sound `default`, `critical: 1`, `volume: 1.0`, tag `flight_watcher_van_<minutes>`) to
+   `notify.mobile_app_ryans_iphone` and `notify.mobile_app_ryans_iphone_16`, exactly like "Flight Watcher charter".
+   With the bid calendar one the snapshot is two automations ahead of Pako (21 here). Undo: delete it (its id above).
+   The guard passes with it (`python3 ha/check_push_isolation.py`: 21 automations, 0 offenders).
+2. `dashboard_flight_watcher.json`, view `flight` (Working Flight): its one section's two cards (the markdown card
+   and the grid holding the "Ready to update?" button) become one card,
+   `{"grid_options": {"columns": "full"}, "type": "custom:flight-watcher-layover-card", "update_url": <the button's
+   tap_action url_path, Hark's project page, redacted here>}`. Through the connector:
+   `ha_config_set_dashboard(url_path="flight-watcher", python_transform=...)` with
+   `v = next(v for v in config["views"] if v.get("path") == "flight");
+   u = v["sections"][0]["cards"][1]["cards"][0]["tap_action"]["url_path"];
+   v["sections"] = [{"type": "grid", "cards": [{"type": "custom:flight-watcher-layover-card",
+   "grid_options": {"columns": "full"}, "update_url": u}]}]`. Undo: the connector's edits backup of the dashboard (or
+   put the two cards back from git history). Pako's dashboard had 5 views when read on 2026-11-11 (no Aviation Wx
+   view; this snapshot still lists it): refresh the snapshot from Pako after applying.
+
 **Applied on Pako 2026-11-10 (James's HA page retired):** James uses the pilot portal (FW-0061) and his HA user is
 gone, so the `flight-watcher-james` dashboard and his seven HA helpers (`input_number.flight_watcher_james_*` federal
 and state tax, longevity year, month offset; `input_text.flight_watcher_james_*` ER trips, picker search;

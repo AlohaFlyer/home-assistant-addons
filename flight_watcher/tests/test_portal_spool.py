@@ -78,8 +78,9 @@ def test_every_refused_sample_publishes_nothing(demo):
     assert set(roles.PORTAL_REFUSED) <= named  # each refused sub is in the fixture and proven here
 
 
-@pytest.mark.parametrize("sub", roles.PORTAL_REFUSED + ("anything/else", "rule/x/y/live/set", "rule/A/live/set",
-                                                        "../hunt/set", "hunt/set/"))
+@pytest.mark.parametrize("sub", roles.PORTAL_REFUSED + roles.NOT_ON_PORTAL + ("anything/else", "rule/x/y/live/set",
+                                                                              "rule/A/live/set", "../hunt/set",
+                                                                              "hunt/set/"))
 def test_each_refused_sub(demo, sub):
     W = demo
     cmd = {"fwp": 1, "id": "00000000000000aa", "pilot": "demo", "ts": int(T0 * 1000), "sub": sub, "payload": "ON",
