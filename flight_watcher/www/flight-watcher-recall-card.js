@@ -15,6 +15,9 @@
 // empty one; "came in" carries HST.
 // FW-0060 (1.4.7): every list day comes from recall_<key>.json under /local/ too; the sensor keeps the newest days that
 // fit HA's 16 KB recorder limit (and the counts over all of them), and its days win over the file's.
+// 1.7.1 (F#66): the alert card is the first card of the pilot portal's Watcher tab too; with no alert it takes no room.
+// (F#119) Text on the card's own colors keeps WCAG AA contrast (4.5:1) on light and dark cards: the error text is a
+// lighter red on a dark card (prefers-color-scheme, as the portal's dark mode), the CHECK and NO chips are darker.
 // FW-0060: a sensor's full list from its file under /local/ (<url><file_key>.json, the pilot's own www folder). Fetched
 // again whenever the sensor's rev changes; null until it is in (or when the sensor has no key), so the caller falls
 // back to the sensor's own short list. A failed fetch is not retried until rev changes.
@@ -81,15 +84,18 @@ class FlightWatcherRecallCard extends HTMLElement {
   _kind(v) { return v.kind === "o75" ? "Over 75" : v.kind === "junior" ? "Junior manning" : "Recall"; }
   // Ryan (Nov 6): Refresh asks the Watcher to re-judge every list on file (recall/act {refresh}); the card redraws
   // when the sensor comes back with a new "checked" time, or says so after 15 s.
+  // 1.7.1 (F#77): an answer that comes after those 15 s (the portal's export round trip can take longer) clears that
+  // note too: the timeout keeps the old "checked" value (_late), and any other value means the Watcher answered.
   _refresh() {
     if (this._busy) return;
     const st = this._h.states[this._c.entity];
     this._busy = { since: Date.now(), was: st ? st.attributes.checked || st.last_updated : "" };
+    this._late = undefined;
     this._send("recall/act", { refresh: true });
     this._sig = null;
     this._render(st);
     clearTimeout(this._busyT);
-    this._busyT = setTimeout(() => { if (this._busy) { this._busy = null; this._note = "No answer from the Watcher yet. Is it running?"; this._render(this._h.states[this._c.entity]); } }, 15000);
+    this._busyT = setTimeout(() => { if (this._busy) { this._late = this._busy.was; this._busy = null; this._note = "No answer from the Watcher yet. Is it running?"; this._sig = null; this._render(this._h.states[this._c.entity]); } }, 15000);
   }
   _go() { history.pushState(null, "", this._c.tab); window.dispatchEvent(new CustomEvent("location-changed")); }
   // 1.4.6: fold state per list day, kept only where it differs from the default (closed unless a row is MISSED / POSSIBLE)
@@ -115,6 +121,7 @@ class FlightWatcherRecallCard extends HTMLElement {
   _css() {
     return `<style>
       :host{display:block}
+      @media (prefers-color-scheme: dark){:host{--fw-err:#ef9a9a}}
       ha-card{padding:12px 14px;font-size:13px;overflow-wrap:anywhere}
       .bar{background:#b71c1c;color:#fff;border-radius:10px;padding:10px 12px;margin:0 0 10px;box-sizing:border-box;max-width:100%}
       .bh{font-weight:900;letter-spacing:1px;font-size:16px;display:flex;align-items:center;gap:8px}
@@ -129,11 +136,11 @@ class FlightWatcherRecallCard extends HTMLElement {
       details.day>summary{cursor:pointer;font-size:14px;padding:2px 0;list-style-position:inside}
       .row{margin:4px 0 4px 8px}
       .chip{display:inline-block;border-radius:10px;padding:0 8px;font-size:11px;font-weight:700;color:#fff;margin-right:6px}
-      .MISSED{background:#c62828}.POSSIBLE{background:#ef6c00}.NO{background:#9e9e9e}.row.vMISSED{background:rgba(198,40,40,.12);border-left:4px solid #c62828;padding:4px 8px;border-radius:6px}.row.vNO{opacity:.55}.row.vPOSSIBLE{border-left:4px solid #ef6c00;padding:2px 8px}
+      .MISSED{background:#c62828}.POSSIBLE{background:#b84d00}.NO{background:#616161}.row.vMISSED{background:rgba(198,40,40,.12);border-left:4px solid #c62828;padding:4px 8px;border-radius:6px}.row.vNO{color:var(--secondary-text-color)}.row.vPOSSIBLE{border-left:4px solid #ef6c00;padding:2px 8px}
       .why{color:var(--secondary-text-color);font-size:12px}
       .hk{margin:4px 0;padding:4px 8px;border-radius:6px;background:rgba(46,125,50,.12);border-left:4px solid #2e7d32}.hk.bad{background:rgba(239,108,0,.14);border-left-color:#ef6c00}
       .hw{margin:4px 0;padding:4px 8px;border-radius:6px;background:rgba(198,40,40,.10);border-left:4px solid #c62828;font-weight:600}
-      .gate{display:block;margin:4px 0}.dn{color:#c62828;font-size:12px;margin:2px 0}
+      .gate{display:block;margin:4px 0}.dn{color:var(--fw-err,#c62828);font-size:12px;margin:2px 0}.nerr{color:var(--fw-err,#c62828)}
       textarea{width:100%;min-height:150px;font:12px/1.4 var(--paper-font-body1_-_font-family,sans-serif);box-sizing:border-box;margin:6px 0}
       pre.n{white-space:pre-wrap;font:12px/1.4 var(--paper-font-body1_-_font-family,sans-serif);margin:4px 0}
       .me{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
@@ -148,12 +155,16 @@ class FlightWatcherRecallCard extends HTMLElement {
     const alert = this._alerts(days);
     const css = this._css();
     if (this._c.mode === "alert") {
-      this.shadowRoot.innerHTML = alert.length ? `${css}<ha-card style="padding:0;background:none;box-shadow:none">${this._bar(alert, true)}</ha-card>` : "";
+      this.shadowRoot.innerHTML = alert.length ? `${css}<ha-card style="padding:0;background:none;box-shadow:none;border:0">${this._bar(alert, true)}</ha-card>` : "";
+      // 1.7.1 (F#66): with no alert the card takes no room (the portal's Watcher tab is a grid with gaps)
+      this.style.display = alert.length ? "" : "none";
       const b = this.shadowRoot.querySelector("[data-go]");
       if (b) b.onclick = () => this._go();
       return;
     }
-    if (this._busy && (a.checked || (st && st.last_updated)) !== this._busy.was) { this._busy = null; this._note = ""; clearTimeout(this._busyT); }
+    const chk = a.checked || (st && st.last_updated);
+    if (this._busy && chk !== this._busy.was) { this._busy = null; this._note = ""; clearTimeout(this._busyT); }
+    if (this._late !== undefined && chk !== this._late) { this._late = undefined; this._note = ""; }  // 1.7.1 (F#77): a late answer
     const me = a.me || {};
     if (!this._m) { const n = new Date(Date.now() - 10 * 3600e3); this._m = n.toISOString().slice(0, 7); }
     const [my, mm] = this._m.split("-").map(Number);
@@ -173,7 +184,7 @@ class FlightWatcherRecallCard extends HTMLElement {
         <span><label>Over 75 in ${RC_MON[mm - 1]} (Reserve Run only, 22.G.2.d): <select data-o75="${this._e(this._m)}">${[["", "not set (CHECK)"], ["yes", "I was on reserve"], ["no", "not on reserve"]].map(([k, t]) => `<option value="${k}"${o75 === k ? " selected" : ""}>${t}</option>`).join("")}</select></label></span>
         <span class="k">last list ${this._e(a.last || "none yet")}${a.received ? ` (came in ${this._e(this._hst(a.received))} HST)` : ""}</span>
         <button class="g" data-refresh${this._busy ? " disabled" : ""}>&#8635; ${this._busy ? "Refreshing..." : "Refresh"}</button>
-        <span class="k" data-checked>${this._note ? `<span style="color:var(--error-color,#c62828)">${this._e(this._note)}</span>` : a.checked ? `checked ${this._e(this._hst(a.checked))} HST` : ""}</span>
+        <span class="k" data-checked>${this._note ? `<span class="nerr">${this._e(this._note)}</span>` : a.checked ? `checked ${this._e(this._hst(a.checked))} HST` : ""}</span>
         <span class="mp"><button type="button" class="nv" data-m="-1" aria-label="Previous month">&#8249;</button><b>${RC_MON[mm - 1]} ${my}</b><button type="button" class="nv" data-m="1" aria-label="Next month">&#8250;</button>${nmiss ? `<span class="chip MISSED">${nmiss} missed</span>` : ""}</span></div>
       ${this._needs(a, me)}
       <div class="k">Hark reads the daily HNL recall list from Flight Ops SharePoint and posts it here. Each award to a pilot junior to you is checked against your line as you held it that day (the schedule version in force then, not today's): open days, no blocked day, trip or vacation in the way (22.G.2.e first, 22.G.2.f/g after), FAR 117.25(e) 10 h rest, 117.25(b) 30 h free in 168 h, 117.23(b)(1) 100 h in 672 h, 117.23(c) FDP 60 h in 168 h and 190 h in 672 h, PWA 10.E.1.a 11 h domicile rest. Anything not on file makes it CHECK, never SHOULD HAVE BEEN YOU; so does an Over 75 row in a month you have not said whether you were on reserve.</div>
@@ -329,7 +340,7 @@ class FlightWatcherRecallCard extends HTMLElement {
       if (raw && !(Number.isInteger(n) && n >= 1 && n <= 99999)) {
         this._note = "Seniority # is a whole number from 1 to 99999. Nothing was sent.";
         const k = r.querySelector("[data-checked]");
-        if (k) k.innerHTML = `<span style="color:var(--error-color,#c62828)">${this._e(this._note)}</span>`;
+        if (k) k.innerHTML = `<span class="nerr">${this._e(this._note)}</span>`;
         this._note = "";
         return;
       }

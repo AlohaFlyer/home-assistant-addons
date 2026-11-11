@@ -14,11 +14,20 @@
 // budget (100 FLICA loads an hour) says so plainly: "Hunting every 10 s is held to 100 FLICA loads an hour: checks wait
 // for the budget, at least 89 s apart" (the Watcher's held_note; the Watcher spreads it over the hour), with the next
 // check's time while it waits.
+// 1.7.1 (F#4): an interval the pilot picks stays shown until the Watcher's state shows it (or 20 s pass, or the portal
+// settles the command another way: refused or no answer), instead of jumping back to the old value on the next 1 s
+// tick; the focus guard looks in the card's own shadow root (document.activeElement is the card itself). In the portal
+// (hass.fwPending: commands in flight, keyed by entity) Check now, Hunt, Pause and Re-arm read "Sending..." and take no
+// second tap while theirs is in flight, and an interval select waits for its command too.
+// 1.7.1 (F#119): the red status text is this card's own variable, as before on a light card and a lighter red on a
+// dark one (prefers-color-scheme, as the portal's dark mode), so it keeps WCAG AA contrast (4.5:1) on both; the Hunt
+// button's orange is darker so its white label reads too (3.1:1 before); the | separators are decoration only.
 const FW_PORTAL = false;
 const FC_HUNT = [5, 10, 15, 20, 30, 45, 60, 90];  // seconds (number.flight_watcher_hunt_check_every 5-90)
 const FC_NORM = [1, 2, 3, 5, 6, 10, 15, 20, 30, 45, 60, 90];  // minutes (number.flight_watcher_normal_check_every 1-90)
 const FC_PORTAL_MAX = { hunt: 90, normal: 90 };  // portal contract 1 revision 2 freq_limits (hunt_s 5-90, normal_min 1-90)
 const FC_DEFAULT = { hunt: [5, 90], normal: [1, 90] };  // an entity with no min / max attributes: roles.WATCHER_FREQ_LIMITS
+const FC_WANT_MS = 20000;  // 1.7.1 (F#4): how long a picked interval waits for the state to show it
 const FC_HELD = /^(Hunting every \d+ s|Checking every \d+ min) is held to \d+ FLICA loads an hour/;  // the Watcher's held_note
 const FC_TIME = new Intl.DateTimeFormat("en-US", { timeZone: "Pacific/Honolulu", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
 class FlightWatcherClockCard extends HTMLElement {
@@ -28,16 +37,18 @@ class FlightWatcherClockCard extends HTMLElement {
     if (!this._root) {
       this._root = this.shadowRoot || this.attachShadow({ mode: "open" });
       this._root.innerHTML = `<style>
+        @media (prefers-color-scheme: dark){:host{--fw-err:#ef9a9a}}
         ha-card{padding:5px 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;line-height:1.3;border-left:5px solid var(--divider-color)}
         ha-card.ok{border-left-color:#2e7d32}ha-card.warn{border-left-color:#f9a825}ha-card.err{border-left-color:#c62828;background:rgba(198,40,40,.08)}ha-card.info{border-left-color:#1565c0}
         .st{font-weight:700}.m{color:var(--primary-text-color)}
         .k{color:var(--secondary-text-color)}.t{font-weight:600;font-variant-numeric:tabular-nums}
         .sep{color:var(--divider-color)}
-        .blind{color:#c62828;font-weight:700}
+        .blind{color:var(--fw-err,#c62828);font-weight:700}
         .ctl{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
         button{font:inherit;font-size:12px;padding:3px 9px;border-radius:14px;border:1px solid var(--divider-color);background:var(--card-background-color);color:var(--primary-text-color);cursor:pointer;white-space:nowrap}
         button:hover{background:rgba(0,0,0,.05)}
-        button.on{background:#ef6c00;border-color:#ef6c00;color:#fff}
+        button:disabled{cursor:default;opacity:1;border-style:dashed}
+        button.on{background:#b84d00;border-color:#b84d00;color:#fff}
         button.pz.on{background:#f9a825;border-color:#f9a825;color:#111}
         button.rearm{background:#2e7d32;border-color:#2e7d32;color:#fff}
         button.chk{color:var(--primary-color)}
@@ -47,8 +58,8 @@ class FlightWatcherClockCard extends HTMLElement {
         @media (max-width:700px){ha-card{font-size:12px;gap:6px}.ctl{margin-left:0;width:100%}
           button{min-height:44px;min-width:44px;padding:6px 12px;font-size:13px}select{min-height:44px;min-width:56px;font-size:14px}}
       </style><ha-card><span class="st" id="st"></span><span class="m" id="msg"></span>
-      <span class="sep">|</span><span class="k">Last</span> <span class="t" id="lt">-</span> <span class="k" id="la"></span>
-      <span class="sep">|</span><span class="k">Next</span> <span class="t" id="nt">-</span> <span class="k" id="na"></span>
+      <span class="sep" aria-hidden="true">|</span><span class="k">Last</span> <span class="t" id="lt">-</span> <span class="k" id="la"></span>
+      <span class="sep" aria-hidden="true">|</span><span class="k">Next</span> <span class="t" id="nt">-</span> <span class="k" id="na"></span>
       <span class="ctl">
         <button class="chk" id="chk" title="Read the pot right away">&#8635; Check now</button>
         <button id="hunt" title="Hunt: check at hunt speed; off = normal speed">&#127939; Hunt</button>
@@ -62,8 +73,8 @@ class FlightWatcherClockCard extends HTMLElement {
       $("hunt").addEventListener("click", () => this._h.callService("switch", "toggle", { entity_id: "switch.flight_watcher_hunt_mode" }));
       $("pz").addEventListener("click", () => this._h.callService("switch", "toggle", { entity_id: "switch.flight_watcher_pause" }));
       $("rearm").addEventListener("click", () => { if (confirm("Re-arm the Watcher? It logs into FLICA once.")) this._h.callService("button", "press", { entity_id: "button.flight_watcher_re_arm" }); });
-      $("hs").addEventListener("change", (e) => this._h.callService("number", "set_value", { entity_id: "number.flight_watcher_hunt_check_every", value: parseFloat(e.target.value) }));
-      $("ns").addEventListener("change", (e) => this._h.callService("number", "set_value", { entity_id: "number.flight_watcher_normal_check_every", value: parseFloat(e.target.value) }));
+      $("hs").addEventListener("change", (e) => { const v = this._wish("number.flight_watcher_hunt_check_every", e.target.value); this._h.callService("number", "set_value", { entity_id: "number.flight_watcher_hunt_check_every", value: v }); });
+      $("ns").addEventListener("change", (e) => { const v = this._wish("number.flight_watcher_normal_check_every", e.target.value); this._h.callService("number", "set_value", { entity_id: "number.flight_watcher_normal_check_every", value: v }); });
       this._tick = setInterval(() => this._render(), 1000);
     }
     this._render();
@@ -78,12 +89,33 @@ class FlightWatcherClockCard extends HTMLElement {
     const lo = isNaN(a) ? dflt[0] : a, hi = isNaN(b) ? dflt[1] : b;
     return list.filter((v) => v >= lo && v <= hi && (!FW_PORTAL || v <= FC_PORTAL_MAX[kind]));
   }
-  _menu(el, txt, opts, v) {
+  _menu(el, txt, opts, v, id) {
     const key = opts.join(",");
     if (el.dataset.opts !== key) { el.innerHTML = opts.map((o) => `<option value="${o}">${o}</option>`).join(""); el.dataset.opts = key; }
     el.style.display = opts.length ? "" : "none";
     txt.textContent = opts.length ? "" : (isNaN(v) ? "?" : String(Math.round(v)));
-    if (opts.length) this._sel(el, v);
+    const busy = this._pending(id);
+    if (el.disabled !== busy) el.disabled = busy;
+    if (opts.length) this._sel(el, this._shown(id, v, busy));
+  }
+  // 1.7.1 (F#4): the interval just picked, kept until the state shows it
+  _wish(id, raw) {
+    const v = parseFloat(raw);
+    (this._want = this._want || {})[id] = { v, at: Date.now(), seen: false };
+    return v;
+  }
+  _pending(id) { const p = this._h && this._h.fwPending; return !!(p && Object.prototype.hasOwnProperty.call(p, id)); }
+  // what an interval select shows: the value picked, until the state matches it, FC_WANT_MS pass, or the portal settles
+  // the command without it (its pending mark was there and is gone: refused, or no answer)
+  _shown(id, v, busy) {
+    const w = (this._want || {})[id];
+    if (!w) return v;
+    if (busy) w.seen = true;
+    if ((!isNaN(v) && Math.round(v) === Math.round(w.v)) || Date.now() - w.at > FC_WANT_MS || (w.seen && !busy)) {
+      delete this._want[id];
+      return v;
+    }
+    return w.v;
   }
   _dur(sec) {
     sec = Math.max(0, Math.round(sec));
@@ -91,7 +123,8 @@ class FlightWatcherClockCard extends HTMLElement {
     return (h ? h + " h " : "") + (h || m ? m + " min " : "") + s + " s";
   }
   _sel(el, v) {
-    if (isNaN(v) || document.activeElement === el) return;
+    // 1.7.1 (F#4): the select is in this card's shadow root, where document.activeElement never is (it is the card)
+    if (isNaN(v) || (this._root && this._root.activeElement === el)) return;
     const want = String(Math.round(v));
     if (![...el.options].some((o) => o.value === want)) {  // 1.6.2: an off-list value goes in its sorted place
       const o = document.createElement("option"); o.value = want; o.textContent = want;
@@ -159,11 +192,18 @@ class FlightWatcherClockCard extends HTMLElement {
     // controls
     $("hunt").classList.toggle("on", hunt);
     $("pz").classList.toggle("on", paused);
-    this._menu($("hs"), $("hst"), this._opts(FC_HUNT, "number.flight_watcher_hunt_check_every", "hunt"), hs);
-    this._menu($("ns"), $("nst"), this._opts(FC_NORM, "number.flight_watcher_normal_check_every", "normal"), nmv);
+    this._menu($("hs"), $("hst"), this._opts(FC_HUNT, "number.flight_watcher_hunt_check_every", "hunt"), hs, "number.flight_watcher_hunt_check_every");
+    this._menu($("ns"), $("nst"), this._opts(FC_NORM, "number.flight_watcher_normal_check_every", "normal"), nmv, "number.flight_watcher_normal_check_every");
     const needRearm = ["stopped_unexpected", "stopped_login_failed", "yielded", "backoff"].includes(st) || blind;
     $("rearm").style.display = needRearm ? "" : "none";
     $("chk").style.display = ["idle", "hunting"].includes(st) && !paused ? "" : "none";
+    // 1.7.1 (F#4): a command in flight (the portal's hass.fwPending) reads "Sending..." and takes no second tap
+    for (const [bid, id] of [["chk", "button.flight_watcher_check_now"], ["hunt", "switch.flight_watcher_hunt_mode"],
+      ["pz", "switch.flight_watcher_pause"], ["rearm", "button.flight_watcher_re_arm"]]) {
+      const b = $(bid), busy = this._pending(id);
+      if (b.dataset.l === undefined) b.dataset.l = b.innerHTML;
+      if (b.disabled !== busy) { b.disabled = busy; b.innerHTML = busy ? "Sending..." : b.dataset.l; b.setAttribute("aria-busy", String(busy)); }
+    }
   }
   getCardSize() { return 1; }
 }
