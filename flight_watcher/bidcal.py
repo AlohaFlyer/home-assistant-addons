@@ -1,7 +1,7 @@
 """Bid calendar alerts (1.7.1, FW-0070, Ryan): the PBS bid cycle's dates and the pushes around them.
 
-Ryan's ticket: a critical alert the evening before the pairing package publishes ("adjust your vacation if needed"),
-one at 20:00 HST the night before each practice run, one 24 h before bids close and one at 20:00 HST the night before
+Ryan's ticket: a critical alert the day before the pairing package publishes, at 08:00 HST ("adjust your vacation if
+needed"; Ryan, Nov 11: the morning of the 3rd, not 20:00), one at 20:00 HST the night before each practice run, one 24 h before bids close and one at 20:00 HST the night before
 they close. The package for bid month M+1 (uploads/<M+1>_pairings.txt, the text copy the uploads make) prints its Bid
 Calendar on page 1, with dates in month M: "Pairing Package Published" (the 4th), "Practice Run #1" and "#2", "CA & FO
 Bids Close" (the 11th, 0800HST on a following line), "All Monthly Awards Posted ... no later than 1700HST on <date>"
@@ -20,9 +20,10 @@ MONTHS = ("January", "February", "March", "April", "May", "June", "July", "Augus
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 # Ryan asked for the alert on the 4th for a package he expected on the 5th. The packages publish on the 4th (Sep 4,
-# Oct 4, Nov 4 on their own Bid Calendars), so the same lead time is the evening of the 3rd. One constant, (days before
-# the publish date, HH:MM HST), so his answer is a one-line change.
-PUBLISH_ALERT = (1, "20:00")
+# Oct 4, Nov 4 on their own Bid Calendars), so the same lead time is the day before. Ryan's answer (Nov 11): 08:00 HST
+# the day before the publish date, the 3rd by default (20:00 before). One constant, (days before the publish date,
+# HH:MM HST). Its kind keeps the name publish_eve (the keys in the DB and the payloads), though it is a morning alert.
+PUBLISH_ALERT = (1, "08:00")
 EVE_AT = "20:00"  # the night before a practice run and before the close (FW-0070)
 CLOSE_LEAD_H = 24  # and this many hours before the close
 # A cycle whose package is not on file (it cannot be before it publishes) uses the usual days of month M.
@@ -269,9 +270,9 @@ def _alert(c, kind, src, fire_at, event, deadline):
 def schedule(bid_month, parsed=None):
     """The alerts of the bid cycle for bid_month, in fire order: each {key, kind, bid_month, fire_at, event, deadline,
     source, title, message}, times as ISO text with the HST offset. title and message are as sent on time (render()
-    words them again for a late one). An alert is sent from fire_at until its deadline, then dropped: the evening
-    alerts until their day starts (they say "tomorrow" and "tonight"), close_24h until close_eve takes over (or the
-    close), close_eve until the close."""
+    words them again for a late one). An alert is sent from fire_at until its deadline, then dropped: the publish
+    alert (08:00 the day before) and the evening alerts until their day starts (they say "tomorrow" and "tonight"),
+    close_24h until close_eve takes over (or the close), close_eve until the close."""
     c = cycle_dates(bid_month, parsed)
     s = c["sources"]
     out = []

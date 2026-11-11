@@ -219,7 +219,10 @@ def test_the_same_list_twice_keeps_its_first_time(mk, monkeypatch):
 
 
 # ------------------------------------------------------------------ F#102: only CrewTrac details saved
-def test_a_pilot_with_only_crewtrac_details_gets_the_charter_watch(mk, monkeypatch):
+def test_a_pilot_with_only_crewtrac_details_gets_the_charters_status_and_no_scan(mk, monkeypatch):
+    """1.7.1 (F#22 replaces F#102's pilot scan): his charters status goes out before the wait for his FLICA login, as
+    F#102 made it, but no charter thread starts and Scan CrewTrac now never wakes one: his Watcher makes no CrewTrac
+    login (the admin's scan is shared, test_fw171_r2.py)."""
     W = mk("pilot2")
     assert not W.OPTS.get("username")  # a pilot's FLICA login comes from his Settings only: none saved
     W.OPTS.update(ctweb_username="doej", ctweb_password="pw")
@@ -235,11 +238,12 @@ def test_a_pilot_with_only_crewtrac_details_gets_the_charter_watch(mk, monkeypat
     monkeypatch.setattr("time.sleep", sleep)
     with pytest.raises(Stop):
         W.main()
-    assert W.S["machine"] == "needs_settings" and ran.wait(5)
-    assert any(t == f"{W.T}/charters" for t, _ in W.MQ.msgs)  # the charters status went out too
+    assert W.S["machine"] == "needs_settings" and not ran.wait(0.2)  # no charter thread on a pilot
+    st = [json.loads(p) for t, p in W.MQ.msgs if t == f"{W.T}/charters"]
+    assert st and st[-1]["source"] == "admin" and st[-1]["crewtrac"]["state"] == "not_used"  # the status went out
     assert W.start_charter_watch() is False  # once per process
     W.CHARTER_WAKE.clear()
-    assert W.charter_press() is True and W.CHARTER_WAKE.is_set()  # Scan CrewTrac now: the thread reads the wake
+    assert W.charter_press() is False and not W.CHARTER_WAKE.is_set()  # Scan CrewTrac now: nothing to wake
 
 
 # ------------------------------------------------------------------ F#155: Remove CrewTrac login (sealed)

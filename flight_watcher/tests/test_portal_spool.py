@@ -54,11 +54,17 @@ def test_every_accepted_sample_republishes_exactly_its_sub(demo):
         W.EXPORT["results_list"] = []
         for s in batch:
             _put(W, s["name"], s["cmd"])
-        assert W.portal_spool_once() == len(batch)
+        # 1.7.1 (F#22): Scan CrewTrac now passes the spool's checks, but a pilot's Watcher answers it ok false with
+        # the reason (his charters are the admin's scan) and does not republish it, like an ignored Check now (F#12)
+        taken = [s for s in batch if s["cmd"]["sub"] != "charter_scan/press"]
+        assert W.portal_spool_once() == len(taken)
         got = [(t, p, q, r) for t, p, q, r in W.MQ.msgs if t.startswith("flight_watcher_demo/") and q == 1]
-        assert got == [(f"flight_watcher_demo/{s['cmd']['sub']}", s["cmd"]["payload"], 1, False) for s in batch]
+        assert got == [(f"flight_watcher_demo/{s['cmd']['sub']}", s["cmd"]["payload"], 1, False) for s in taken]
         assert os.listdir(os.path.join(W.PORTAL_DIR, "in")) == []
-        assert [r["ok"] for r in W.EXPORT["results_list"]] == [True] * len(batch)
+        res = {r["id"]: r for r in W.EXPORT["results_list"]}
+        assert [res[s["cmd"]["id"]]["ok"] for s in batch] == [s["cmd"]["sub"] != "charter_scan/press" for s in batch]
+        assert all(res[s["cmd"]["id"]]["why"] == "ignored: charters come from the admin's CrewTrac scan; this Watcher "
+                   "does not log in to CrewTrac" for s in batch if s["cmd"]["sub"] == "charter_scan/press")
     assert {roles.portal_sub(s["cmd"]["sub"]) for s in SAMPLES["accepted"]} == set(roles.PORTAL_CMDS)
 
 

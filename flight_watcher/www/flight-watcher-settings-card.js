@@ -27,7 +27,12 @@
    login); a password still goes exactly as typed, shown or not. The Watcher's "nothing new" reads as no change, in a
    neutral color, not as a green save. (F#155) While a CrewTrac login is saved, Remove CrewTrac login sends the sealed
    {ctweb_off: true} (sealed only, like Turn off phone alerts), after a confirm. (F#119) The status colors are this
-   card's own variables, lighter on dark cards (prefers-color-scheme, as the portal's dark mode): WCAG AA 4.5:1 on both. */
+   card's own variables, lighter on dark cards (prefers-color-scheme, as the portal's dark mode): WCAG AA 4.5:1 on both.
+   1.7.1 (F#22, shared charters): when the Watcher says it makes no CrewTrac login (sensor.flight_watcher_charters
+   crewtrac.state "not_used": a pilot, whose charters are the admin's scan) the card has no CrewTrac fields and says
+   CrewTrac is not needed; a CrewTrac login still saved there is unused and keeps its Remove CrewTrac login button.
+   (F#10) The line at the bottom is the Watcher's health: its version and state, and its FLICA page loads in the last
+   hour against its budget (sensor.flight_watcher_flica_fetches hour and budget; 100 an hour on a pilot). */
 const FW_PORTAL = false;
 const FW_SET_FIELDS = [
   ["username", "FLICA username", false], ["password", "FLICA password", true],
@@ -94,9 +99,15 @@ class FlightWatcherSettingsCard extends HTMLElement {
     // 1.6.2 review: while the Watcher restarts (unavailable: no ntfy attribute) the form stays as it is; 1.7.1: the same
     // with no attributes at all, now that a saved CrewTrac login (its Remove button, F#155) is part of the form too
     if (this._built && ((typeof a.ntfy !== "boolean" && this._ntfy) || typeof a.has_password !== "boolean")) return this._bkey;
-    return JSON.stringify([this._ntfyOn(), !!a.has_ntfy_topic, a.ntfy_topic_ok, this._ctSaved(a)]);
+    return JSON.stringify([this._ntfyOn(), !!a.has_ntfy_topic, a.ntfy_topic_ok, this._ctSaved(a), this._ctNotUsed()]);
   }
-  _fields() { return this._ntfyOn() ? FW_SET_FIELDS.concat(FW_NTFY_FIELDS) : FW_SET_FIELDS; }
+  // 1.7.1 (F#22): this Watcher makes no CrewTrac login (a pilot: his charters are the admin's scan)
+  _ctNotUsed() {
+    const ch = this._h && this._h.states["sensor.flight_watcher_charters"];
+    return (((ch && ch.attributes) || {}).crewtrac || {}).state === "not_used";
+  }
+  _setFields() { return this._ctNotUsed() ? FW_SET_FIELDS.filter(([k]) => !k.startsWith("ctweb_")) : FW_SET_FIELDS; }
+  _fields() { return this._ntfyOn() ? this._setFields().concat(FW_NTFY_FIELDS) : this._setFields(); }
   _e(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m])); }
   _ntfyHtml(a) {  // 1.6.2: the phone alert section (a portal pilot only)
     const has = !!a.has_ntfy_topic;
@@ -140,12 +151,16 @@ class FlightWatcherSettingsCard extends HTMLElement {
     const root = this.shadowRoot || this.attachShadow({ mode: "open" });
     this._ntfy = this._ntfyOn();
     this._bkey = this._buildKey();
-    const ct = this._ctSaved(a);
-    const rows = FW_SET_FIELDS.map(([k, label, secret]) => (secret
+    const ct = this._ctSaved(a), ctNo = this._ctNotUsed();
+    const rmBtn = `<div class="rm"><button type="button" class="g" id="ctoff">Remove CrewTrac login</button><div class="note">Deletes the CrewTrac user ID and password saved on ${FW_PORTAL ? "your" : "this"} Watcher; charters are not read until new ones are saved.</div></div>`;
+    // 1.7.1 (F#22): no CrewTrac fields when the Watcher makes no CrewTrac login; an old saved login can still go
+    const ctNoHtml = `<div class="ctno" id="ctno"><b>CrewTrac</b><div class="note">Not needed: your charters come from the admin's CrewTrac scan, and your Watcher never logs in to CrewTrac.</div>`
+      + (ct ? `<div class="rm"><button type="button" class="g" id="ctoff">Remove CrewTrac login</button><div class="note">A CrewTrac login is still saved on ${FW_PORTAL ? "your" : "this"} Watcher. It is not used; this deletes it.</div></div>` : "") + `</div>`;
+    const rows = this._setFields().map(([k, label, secret]) => (secret
       ? `<label><span>${label}</span>${this._secret(k, "leave blank to keep")}<b data-s="${k}"></b></label>`
       : `<label><span>${label}</span><input type="text" data-k="${k}" autocomplete="off" spellcheck="false" value="${this._e(a[k])}"></label>`)
       // 1.7.1 (F#155): forget the saved CrewTrac login (sealed ctweb_off), offered only while one is saved
-      + (k === "ctweb_password" && ct ? `<div class="rm"><button type="button" class="g" id="ctoff">Remove CrewTrac login</button><div class="note">Deletes the CrewTrac user ID and password saved on ${FW_PORTAL ? "your" : "this"} Watcher; charters are not read until new ones are saved.</div></div>` : "")).join("")
+      + (k === "ctweb_password" && ct ? rmBtn : "") + (k === "password" && ctNo ? ctNoHtml : "")).join("")
       + this._dohHtml(a) + (this._ntfy ? this._ntfyHtml(a) : "");
     root.innerHTML = `<style>
       @media (prefers-color-scheme: dark){:host{--fw-ok:#81c784;--fw-err:#ef9a9a}}
@@ -160,12 +175,12 @@ class FlightWatcherSettingsCard extends HTMLElement {
       .ack{font-size:13px;flex-wrap:nowrap;align-items:flex-start}.ack input{flex:0 0 auto;min-width:0;width:22px;height:22px;margin:0}.topic{margin:8px 0;padding:8px;border-radius:6px;background:rgba(46,125,50,.12);font-size:13px;overflow-wrap:anywhere}
       .topic code{font-size:15px;user-select:all}button.g{background:#757575}button{min-height:44px;margin:4px 0}
       button.eye{flex:0 0 auto;min-width:64px;padding:6px 10px;margin:0;background:none;color:var(--primary-text-color);border:1px solid var(--divider-color,#ccc)}
-      .rm{margin:0 0 8px}</style>
+      .rm{margin:0 0 8px}.ctno{margin:8px 0}.hl{margin-top:8px;overflow-wrap:anywhere}</style>
       <ha-card><div class="note">${FW_PORTAL
         ? "Encrypted in your browser; only your Watcher can read it (the portal passes on ciphertext only). Your date of hire is shown back to you on this page, so the portal can read that one. A blank field keeps what is saved. Saving restarts your Watcher (a date of hire alone does not); with a new FLICA login it logs in within a minute."
         : "Saved on this Home Assistant only, encrypted before it leaves this screen. A blank field keeps what is saved. Saving restarts the Watcher (a date of hire alone does not); with a new FLICA login it logs in within a minute."}</div>
       ${rows}<button id="save">Save credentials</button><div class="msg" id="msg"></div>
-      <div class="note" id="ct"></div><div class="note" id="who"></div></ha-card>`;
+      <div class="note" id="ct"></div><div class="note hl" id="who" role="status"></div></ha-card>`;
     root.getElementById("save").addEventListener("click", () => this._save());
     root.querySelectorAll("button[data-eye]").forEach((b) => b.addEventListener("click", () => this._eye(b)));
     const ctoff = root.getElementById("ctoff");
@@ -202,19 +217,35 @@ class FlightWatcherSettingsCard extends HTMLElement {
       this._sentAt = null;
     }
     const st = this._h && this._h.states["sensor.flight_watcher_state"];
-    root.getElementById("who").textContent = st ? `Watcher: ${st.state}` : "";
+    root.getElementById("who").textContent = this._health(st);
     // 1.6.2 (Release A item 14): whether CrewTrac takes the saved login (sensor.flight_watcher_charters, 1.6.1), next to
     // the fields that fix it; red while CrewTrac refuses it
     const ch = this._h && this._h.states["sensor.flight_watcher_charters"];
     const ca = (ch && ch.attributes) || {}, cst = (ca.crewtrac || {}).state || "";
     const ctEl = root.getElementById("ct");
-    if (ctEl) {
+    if (ctEl && this._ctNotUsed()) { ctEl.textContent = ""; ctEl.className = "note"; }  // 1.7.1: said above the fields
+    else if (ctEl) {
       const said = String(ca.status || "");  // the Watcher's own words (crewtrac_text): they name CrewTrac already
       const txt = !ch ? "" : cst === "ok" ? "CrewTrac: the saved login works." : said && !said.startsWith("ok") ? said : "";
       ctEl.textContent = txt;
       ctEl.className = `note${cst === "refused" ? " err" : cst === "ok" ? " ok" : ""}`;
     }
     if (FW_PORTAL) root.getElementById("save").disabled = !a.pubkey;
+  }
+  // 1.7.1 (F#10): "Watcher 1.7.1, idle. FLICA pages in the last hour: 37 of 100." The count is the Watcher's own
+  // (gate) up to the sensor's time: no load since an hour or more reads 0; a count older than 2 min says its time
+  _health(st) {
+    if (!st) return "";
+    const v = (st.attributes || {}).version;
+    let out = `Watcher${v ? ` ${v}` : ""}: ${st.state}.`;
+    const f = this._h.states["sensor.flight_watcher_flica_fetches"], fa = (f && f.attributes) || {};
+    if (typeof fa.hour === "number") {
+      const at = Date.parse(fa.at || ""), age = isNaN(at) ? Infinity : Date.now() - at;
+      const n = age >= 3600e3 ? 0 : fa.hour, of = typeof fa.budget === "number" ? ` of ${fa.budget}` : "";
+      const p = (x) => String(x).padStart(2, "0"), h = new Date(at - 10 * 3600e3);
+      out += ` FLICA pages in the last hour: ${n}${of}${age > 120e3 && age < 3600e3 ? ` (counted ${p(h.getUTCHours())}:${p(h.getUTCMinutes())} HST)` : ""}.`;
+    }
+    return out;
   }
   _dohStatus(a) {  // 1.6.4: the saved date of hire's longevity year beside the field; a new saved value fills an untouched field
     // 1.6.4 review: the year pay uses, as the schedule card picks it: a longevity year set in Pay settings (the admin's

@@ -67,7 +67,9 @@ def test_new_cards_ship_like_the_others():
 def test_help_markdown_says_what_the_controls_really_do():
     md = next(c["content"] for c in _tab("watcher") if c["type"] == "markdown")
     assert "longer if you log in again within 6 h (up to 4 h)" in md  # the yield doubles (watcher.py, kills in 6 h)
-    assert "**Scan CrewTrac now** logs in to CrewTrac once" in md and "save new CrewTrac details on the Settings tab" in md
+    # 1.7.1 (F#22): the charters are the admin's scan; a pilot's Watcher has no CrewTrac login or Scan button
+    assert "**Charters** come from the admin's CrewTrac scan" in md and "you need no CrewTrac login" in md
+    assert "Scan CrewTrac now" not in md
     assert "reads the pot right away" not in md and "the Tradeboard right away" in md  # check_now is a full check
     assert chr(0x2014) not in json.dumps(_layout())
 

@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -138,7 +138,7 @@ def test_schedule_without_a_package_uses_the_usual_days_and_says_so():
     a = _by_kind(BC.schedule("2026-12"))
     assert tuple(a) == BC.KINDS == ("publish_eve", "practice_eve_1", "practice_eve_2", "close_24h", "close_eve")
     assert {k: (v["fire_at"], v["deadline"]) for k, v in a.items()} == {
-        "publish_eve": ("2026-11-03T20:00:00-10:00", "2026-11-04T00:00:00-10:00"),
+        "publish_eve": ("2026-11-03T08:00:00-10:00", "2026-11-04T00:00:00-10:00"),
         "practice_eve_1": ("2026-11-06T20:00:00-10:00", "2026-11-07T00:00:00-10:00"),
         "practice_eve_2": ("2026-11-09T20:00:00-10:00", "2026-11-10T00:00:00-10:00"),
         "close_24h": ("2026-11-10T08:00:00-10:00", "2026-11-10T20:00:00-10:00"),
@@ -177,7 +177,8 @@ def test_schedule_takes_the_dates_of_the_cycles_own_package():
 
 
 def test_the_publish_alert_time_is_one_constant(monkeypatch):
-    assert BC.PUBLISH_ALERT == (1, "20:00")
+    # Ryan, Nov 11 (FW-0070): 08:00 HST the day before the publish date (the 3rd by default), not 20:00
+    assert BC.PUBLISH_ALERT == (1, "08:00")
     monkeypatch.setattr(BC, "PUBLISH_ALERT", (0, "08:00"))  # Ryan's answer could be the morning of the 4th
     a = _by_kind(BC.schedule("2026-12"))["publish_eve"]
     assert (a["fire_at"], a["deadline"]) == ("2026-11-04T08:00:00-10:00", "2026-11-05T00:00:00-10:00")
@@ -205,7 +206,29 @@ def test_due_sends_late_until_the_deadline_then_drops():
     send, drop = BC.due(alerts, {}, _t(11, "08:00"))
     assert send == [] and len(drop) == 5
     assert BC.due(alerts, {a["key"]: {} for a in alerts}, _t(11, "08:00")) == ([], [])
-    assert BC.due(alerts, {}, _t(3, "19:59")) == ([], [])  # nothing before its time
+    assert BC.due(alerts, {}, _t(3, "07:59")) == ([], [])  # nothing before its time
+
+
+def test_the_publish_alert_goes_at_0800_the_day_before_and_holds_until_the_publish_day():
+    """FW-0070, Ryan's Nov 11 answer: the 'pairing package publishes tomorrow, adjust your vacation' alert fires at
+    08:00 HST the day before the publish date (Nov 3 for the usual 4th), not at 20:00; one sent late (the app was off
+    that morning) still goes out until the publish day starts."""
+    alerts = BC.schedule("2026-12")
+    assert BC.due(alerts, {}, _t(3, "07:59")) == ([], [])
+    send, drop = BC.due(alerts, {}, _t(3, "08:00"))
+    assert [a["kind"] for a in send] == ["publish_eve"] and drop == []
+    assert send[0]["fire_at"] == "2026-11-03T08:00:00-10:00"
+    assert BC.render(send[0], _t(3, "08:00")) == (
+        "December pairing package tomorrow",
+        "The December pairing package publishes tomorrow, Wed Nov 4. Adjust your vacation if needed.")
+    send, _ = BC.due(alerts, {}, _t(3, "21:00"))  # late, still the day before: sent, worded the same
+    assert [a["kind"] for a in send] == ["publish_eve"]
+    send, drop = BC.due(alerts, {}, _t(4, "00:00"))  # the publish day has started: dropped
+    assert send == [] and [a["kind"] for a in drop] == ["publish_eve"]
+    # the package's own publish date moves it with it: published Dec 4 on January's cover page, so 08:00 Dec 3
+    a = _by_kind(BC.schedule("2027-01", BC.parse(JAN)))["publish_eve"]
+    assert a["fire_at"] == BC._at(date.fromisoformat(BC.parse(JAN)["published"]) - timedelta(days=1),
+                                  "08:00").isoformat()
 
 
 def test_cycles_are_next_month_and_the_one_after():
@@ -328,8 +351,8 @@ def test_the_sensor_shows_the_next_alert_and_its_cycle(tmp_path, monkeypatch):
     W.bidcal_tick(_t(11, "10:00"))  # December's cycle is over (all dropped): January's is next
     s, retain = _sensor(fake)
     assert retain is True
-    assert s["next_at"] == "2026-12-03T20:00:00-10:00" and s["bid_month"] == "2027-01" and s["source"] == "default"
-    assert s["next"]["at_hst"] == "Thu Dec 3 20:00 HST" and s["next"]["title"] == "January pairing package tomorrow"
+    assert s["next_at"] == "2026-12-03T08:00:00-10:00" and s["bid_month"] == "2027-01" and s["source"] == "default"
+    assert s["next"]["at_hst"] == "Thu Dec 3 08:00 HST" and s["next"]["title"] == "January pairing package tomorrow"
     assert s["close"] == {"date": "2026-12-11", "time": "08:00"} and s["practice"] == ["2026-12-07", "2026-12-10"]
     assert [a["status"] for a in s["alerts"]] == ["pending"] * 5
     n = len(fake.msgs)

@@ -27,6 +27,9 @@ ADMIN_SUBS_1412 = [
     "flight_watcher/crew_scan/press", ("flight_watcher/upload/chunk", 1),
 ]
 PILOT_LOSES = ("email/alert", "auto_swap/set", "swap_map/press", "drop/set", "crew_scan/press")
+# 1.7.1 (F#22): a pilot also reads the admin's shared charter list (retained, under the admin's prefix, never a
+# command: his portal publishes only under his own prefix)
+PILOT_GAINS = [("flight_watcher/charters/shared", 1)]
 
 
 class FakeClient:
@@ -129,7 +132,8 @@ def test_subscribe_all_on_a_fake_client(load, instance):
         want = [(t[0].replace("flight_watcher/", "flight_watcher_pilot2/", 1), 1) if isinstance(t, tuple)
                 else t.replace("flight_watcher/", "flight_watcher_pilot2/", 1) for t in ADMIN_SUBS_1412
                 if (t[0] if isinstance(t, tuple) else t).split("/", 1)[1] not in PILOT_LOSES]
-        assert c.subs == want and len(want) == len(ADMIN_SUBS_1412) - len(PILOT_LOSES)
+        want += PILOT_GAINS  # 1.7.1 (F#22): the admin's shared charter list, after his own
+        assert c.subs == want and len(want) == len(ADMIN_SUBS_1412) - len(PILOT_LOSES) + len(PILOT_GAINS)
 
 
 class _Timer:
@@ -183,7 +187,7 @@ def test_on_connect_subscribes_exactly_the_role_list(load, monkeypatch, instance
         want = [(t[0].replace("flight_watcher/", "flight_watcher_pilot2/", 1), 1) if isinstance(t, tuple)
                 else t.replace("flight_watcher/", "flight_watcher_pilot2/", 1) for t in ADMIN_SUBS_1412
                 if (t[0] if isinstance(t, tuple) else t).split("/", 1)[1] not in PILOT_LOSES]
-        assert subs == want
+        assert subs == want + PILOT_GAINS  # 1.7.1 (F#22): and the admin's shared charter list, read only
         assert not [t for t in pubs if t.endswith("/auto_swap/state")]  # the admin-only switch is not published
     assert pubs and all(t.startswith(W.T + "/") or t.startswith("homeassistant/") for t in pubs)
 

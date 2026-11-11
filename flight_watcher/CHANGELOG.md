@@ -7,6 +7,11 @@ Ryan's FW-0070 bid calendar alerts. No portal contract change: `roles.py` PORTAL
 FEATURES, PILOT_TICKET_LIMITS and the FLICA budgets, `tests/fixtures/portal_contract_v1.json` and `PORTAL_CONTRACT.md`
 are as in 1.7.0, and no command changes shape (the layout gains a card of a bundled type and the export a core
 entity, which contract 1 allows). Built from three branches (fw171-core, fw171-cards, fw171-bidcal), not deployed.
+Ryan's decisions of Nov 11 are in it too (branch fw171-r2): the publish alert at 08:00, the recall history replayed
+once to each pilot, shared charters (F#22), the health line (F#10), the push text of FW-0042 (Home Assistant, pending)
+and the dashboard snapshot after he removed the weather view. Still no contract change: an exported sensor gains two
+plain attributes, a pilot reads one retained topic under the admin's prefix (no command topic, so not in `roles.SUBS`),
+and a portal pilot's Scan CrewTrac now answers ok false with the reason, the shape F#12 gave ignored presses.
 
 ### The Watcher
 
@@ -52,7 +57,41 @@ entity, which contract 1 allows). Built from three branches (fw171-core, fw171-c
   changes and pushes nothing; a changed list is news again.
 - F#102: a pilot who saved only his CrewTrac details gets the charter watch while his FLICA watch waits for its login
   (`start_charter_watch`, before the needs_settings wait: CrewTrac is its own site and login), so his Scan CrewTrac now
-  has a reader.
+  has a reader. (Superseded the same release by F#22 below: a pilot's charters status still goes out before that wait,
+  but his Watcher no longer scans.)
+- The recall history replay (Ryan's yes, Nov 11): the admin's Watcher held recall lists from Oct 30 that a pilot's
+  Watcher never got (James's started Nov 10). Once per pilot (DB `recall_replay_done`, keyed by his prefix, so a pilot
+  added later gets his own), from the uploads janitor's minute on the admin only, 2 min after its start
+  (`RECALL_REPLAY_DELAY_S`, the pilots' Watchers have subscribed by then) and while MQTT is up, the admin sends every
+  recall day it stores through F#75's `recall_forward` (date, file, rows and the time it first came in; never its
+  `me`, verdicts or CCR drafts), each marked `"replay": true`, to that pilot's `<prefix>/recall/set`; one log line
+  (`recall_replay_tick`). The pilot (`recall_cmd`) takes a replayed day only when he holds no list for that date (a day
+  he holds is never touched, so a replay twice changes nothing), keeps the admin's received time and the mark, judges
+  it against his own line and shows it on his Recall/O75 tab with its CCR draft, but raises no alert or push for it:
+  no `event/recall_miss` now or on any later evaluation, and the RECALL ALERT count (sensor `alert`, the alert bar)
+  leaves replayed days out. One log line ("recall history from the admin: N days taken, M already held"). The mark
+  means nothing on the admin (its lists come from Hark) and is never forwarded live.
+- F#22, shared charters (Ryan, Nov 11): a pilot's Watcher runs no CrewTrac scan and makes no CrewTrac login at all
+  (`charter_scan`, `_charter_scan`, `charter_press`, `crewtrac_lift` do nothing on a pilot; `start_charter_watch`
+  publishes his status and starts no charter thread). The admin, after each scan that read CrewTrac and once at start,
+  publishes the flight list its Charters card shows, retained, qos 1, on `flight_watcher/charters/shared`
+  (`charters_share`: {v, at, items}, each flight's key, date, flight, route, scheduled, eqpt, tail, why, first_seen
+  and gone; never CrewTrac's other columns, the admin's CrewTrac login state or status, his own schedule or fit), only
+  while the add-on runs a pilot and after a first scan. Every pilot subscribes to it (under the admin's prefix, which
+  his portal can never publish on) and publishes `sensor.<prefix>_charters` from it (`charters_shared_in`, the payload
+  read as data: a JSON object, each flight cut to those fields, at most 200): `source` "admin", `last_scan` the admin's
+  scan time, `status` "from the admin's scan at HH:MM HST" (the date too when not today), `crewtrac.state`
+  "not_used". A flight new to him (not gone, not seen, nor found by his own scans before 1.7.1) still fires his
+  `event/charter` once, his portal's charter alert; the first list on an instance that never had one is taken
+  quietly. A Scan CrewTrac now on a pilot does nothing (logged); from his portal it answers ok false: "ignored:
+  charters come from the admin's CrewTrac scan; this Watcher does not log in to CrewTrac" (`press_answer`). What
+  else a pilot's CrewTrac login was for: nothing (it is read only by the charter watch), so a saved one stays unused
+  and harmless; Remove CrewTrac login (F#155) still clears it, and saving the same one again no longer says
+  "CrewTrac gets one more try".
+- F#10, health line: `sensor.<prefix>_flica_fetches` (exported to a pilot's portal already) gains `hour` (this
+  Watcher's FLICA loads in the hour up to `at`, the host gate's own count) and `budget` (100 on a pilot, null on the
+  admin): plain numbers of his own instance (`fetches_payload`). On a pilot the uploads janitor's minute sends it again
+  when that count changed (loads age out of the hour while nothing loads; `fetches_tick`), never when it is the same.
 
 ### The cards
 
@@ -91,6 +130,20 @@ entity, which contract 1 allows). Built from three branches (fw171-core, fw171-c
   Watcher's "nothing new" reads "No change: ..." in the text color, not as a green save.
 - F#96: a pilot's card copy says "the admin" ("The admin" at a sentence's start) where the admin's name was, so the
   comments in the source a pilot can view stay whole (`cards.scrub_names`).
+- Recall history replay: the recall card leaves a replayed day (`replay`) out of the RECALL ALERT bar (alert mode
+  and tab), marks it "list ok, history" and says on it: "From the admin's recall history (a list your Watcher did not
+  get when it came in): checked against your line, with no alert or push."
+- F#22: the charters card on a pilot (`source` "admin") says "From the admin's CrewTrac scan at Nov 10 14:05 HST."
+  (or that it waits for one), has no Scan CrewTrac now button, and says his Watcher never logs in to CrewTrac; the
+  admin's card is as before. A flight gone from the schedule is struck through at full color (it was faded to 60 %,
+  under AA contrast). The settings card, when the Watcher says it makes no CrewTrac login (`crewtrac.state`
+  "not_used"), has no CrewTrac fields and says "Not needed: your charters come from the admin's CrewTrac scan, and
+  your Watcher never logs in to CrewTrac."; a CrewTrac login still saved keeps its Remove CrewTrac login button. The
+  portal's Watcher tab help says the same instead of the Scan CrewTrac now line (`portal_layout.json`).
+- F#10: the settings card's last line is the Watcher's health, "Watcher 1.7.1: hunting. FLICA pages in the last hour:
+  37 of 100." (version and state from `sensor.<prefix>_state`, the count and budget from the fetches sensor; a count
+  older than 2 min says when it was counted, one over an hour old reads 0), on the portal's Settings tab and Ryan's.
+- The tickets card's page list on Ryan's dashboard offers Working Flight instead of Aviation Wx (he removed that view).
 - F#119: status text on the clock, settings, schedule, pot and recall cards uses the cards' own color variables, a
   lighter tone on dark cards (prefers-color-scheme, as the portal's dark mode; the schedule card's old dark overrides
   never applied), so text keeps WCAG AA contrast (4.5:1) on the portal's light and dark cards. Also for AA: the Hunt
@@ -108,9 +161,10 @@ entity, which contract 1 allows). Built from three branches (fw171-core, fw171-c
   Posted (no later than 1700HST on) and Flica Open Time Window Opens (1200HST on), dated from the page's "<Month>
   <YYYY> Pairing Package" heading (a January package's dates are December of the year before); anything not found is
   None. Read right on the October, November and December 2026 packages on Pako (read only).
-- `bidcal.schedule` makes each cycle's alerts, all HST: 20:00 the night before the package publishes ("adjust your
-  vacation if needed"; `PUBLISH_ALERT = (1, "20:00")`, one constant: the packages publish on the 4th, so this is the
-  evening of the 3rd), 20:00 the night before each practice run, 24 h before the close and 20:00 the night before it.
+- `bidcal.schedule` makes each cycle's alerts, all HST: 08:00 the day before the package publishes ("adjust your
+  vacation if needed"; `PUBLISH_ALERT = (1, "08:00")`, one constant: the packages publish on the 4th, so this is the
+  morning of the 3rd, Ryan's answer of Nov 11; built first as 20:00 that evening), 20:00 the night before each
+  practice run, 24 h before the close and 20:00 the night before it.
   The cycle for bid month M+1 runs in month M; without that month's package (it cannot be on file before it
   publishes) the usual days apply: published the 4th, practice runs the 7th and the 10th, close the 11th 08:00. A date
   the package gives replaces its default; a date outside the 62 days before the bid month is never used. Each alert
@@ -121,8 +175,8 @@ entity, which contract 1 allows). Built from three branches (fw171-core, fw171-c
   (not retained: kind, key, bid_month, title, message, at_hst, event_hst, source); the sent and dropped keys are in
   the DB (`bid_calendar_done`) before the publish, so a restart never repeats one. A due alert waits while MQTT is
   down; one late (the app was off) is still sent, worded from the time it goes out ("Bids close in 22 h"), until its
-  words stop being true (the evening ones until their day starts, the 24 h one until the night-before one, that one
-  until the close), else it is dropped with a log line.
+  words stop being true (the publish alert and the evening ones until their day starts, the 24 h one until the
+  night-before one, that one until the close), else it is dropped with a log line.
 - `sensor.<prefix>_bid_calendar` (new, core, every instance; a timestamp sensor, retained on `<prefix>/bid_calendar`):
   the next alert's time (HST), and as attributes that alert, its cycle's dates (awards and open time from a package),
   source and sources, and each of the cycle's alerts with its status (pending, sent, dropped). Published when it
@@ -133,6 +187,17 @@ entity, which contract 1 allows). Built from three branches (fw171-core, fw171-c
 - A pilot's Watcher makes the same alerts on its own prefix, which no automation reads; they are not portal events
   (that is a contract change, not in this release). His `sensor.<prefix>_bid_calendar` is in his portal's state.json
   like any core entity (PORTAL_CONTRACT.md 4.1 and 4.2: a new entity needs no HOM release).
+
+### Home Assistant (Ryan's Nov 11 decisions; snapshots under `ha/`)
+
+- FW-0042, show only: "Flight Watcher new pairing" (`ha/automations_flight_watcher.yaml`) ends its message with the
+  commute result and the value from the event payload, each left out when blank: "Commute: KOA/ITO" (and
+  " (<comm_why>)" when that is 60 characters or less) and "Value: 4617". Its trigger, conditions, targets, sound and
+  title are unchanged: nothing is silenced and no one else is pushed. Pending on Pako (`ha/README.md`): Claude applies
+  it through the HA connector with Ryan's [DESTRUCTIVE] yes. The push guard passes (20 automations, 0 offenders).
+- Ryan removed the Aviation Wx view (`wx`) from his dashboard `flight-watcher` on Nov 11. `ha/dashboard_flight_watcher.json`
+  is refreshed from Pako (read only, redacted as `ha/README.md` says) and matches it by sha256 of the redacted text;
+  the wx package, its sensors and helpers stay. CLAUDE.md's views list follows.
 
 ### Tests
 
@@ -151,8 +216,27 @@ entity, which contract 1 allows). Built from three branches (fw171-core, fw171-c
 - `tests/test_fw171_crewtrac_remove.py` (F#155 across both halves): the card on the real Watcher's settings state and
   key, its sealed message into the real `settings_cmd`, and the Watcher's answer back on the card; without the key the
   card sends nothing and the Watcher ignores a plain `ctweb_off`.
-- `tests/test_bidcal.py` (parse on synthetic cover pages in the real layout, schedule, late and dropped alerts, once
-  per key across a restart, MQTT down, the package's dates, the sensor, a pilot's prefix, the janitor, the
+- `tests/test_fw171_r2.py` (Ryan's Nov 11 decisions): the admin replays its recall history once to each pilot (the
+  delay, the body: date, file, rows, the first time and the mark, never `me` or verdicts; once, and a pilot added later
+  gets his own; a pilot replays nothing); the admin's real replay body into a pilot: older days taken, judged, drafted
+  and shown with the admin's time, the held day untouched, no `event/recall_miss`, the alert count his own, a replay
+  twice changes nothing, a later live list alerts for its own miss only; the admin ignores the mark and never forwards
+  it; the recall card leaves a replayed day out of the bar; the admin shares only the card's flight fields, retained on
+  its own prefix (none of its login, status, line or fit), after a scan and at start; a pilot's sensor from the shared
+  list (source, time, not_used), the first list quiet, a new flight alerting once, malformed or extra data dropped, his
+  own old scans counting as seen; a pilot makes no CrewTrac login (no thread, scan, press or retry; his subscriptions
+  his own plus the shared list, the admin never reads it); a portal Scan CrewTrac now answers ok false with the
+  reason; the charters card and the settings card (no CrewTrac fields, Remove kept, the health line) in Chromium at
+  390 px light and dark with AA contrast; the fetches sensor's `hour` and `budget` and the janitor's resend; the
+  new-pairing message rendered with Jinja (the fields shown, blanks left out, a long why kept off) and its conditions
+  and targets unchanged; the dashboard snapshot without the weather view at the sha `ha/README.md` records.
+  `test_crewtrac_stop.py` runs its refusal, back-off and press rules on the admin's Settings-saved CrewTrac login (they
+  ran on a pilot) and adds that a pilot never logs in; `test_doh_settings.py`, `test_fw171_core.py` (F#102),
+  `test_portal_spool.py` (the accepted samples: Scan CrewTrac now answered ok false), `test_roles.py` (a pilot's
+  subscriptions), `test_release_a_cards.py` (the help text) and `test_release_c_card.py` (the page list) follow.
+- `tests/test_bidcal.py` (parse on synthetic cover pages in the real layout, schedule, the publish alert at 08:00 the
+  day before (late until the publish day, the package's date moving it), late and dropped alerts, once per key across
+  a restart, MQTT down, the package's dates, the sensor, a pilot's prefix, the janitor, the
   Dockerfile, the HA push and the guard); the entity lists in `test_instance.py` and `test_portal_export.py` and the
   busy-month sensor sizes take the new sensor. `test_release_c_tickets.py` checks the version 1.7.1.
 

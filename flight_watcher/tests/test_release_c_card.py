@@ -136,7 +136,8 @@ def test_ha_copy_keeps_its_path(rendered):
     A = rendered["ha"]
     assert A["cc"] == 1 and A["photo_label"] == "Photos (optional, up to 10)" and A["blobs"] == 2
     assert A["del_fixed"] == 1  # Ryan's card deletes in any status, as before
-    assert A["pages"] == ["Watcher", "Schedule", "Recall/O75", "Details", "Settings", "Aviation Wx", "Phone alert",
+    # 1.7.1: Ryan removed the Aviation Wx view (Nov 11); his Working Flight view is offered instead
+    assert A["pages"] == ["Watcher", "Schedule", "Working Flight", "Recall/O75", "Details", "Settings", "Phone alert",
                           "Other"]
     assert [p["topic"] for p in A["pubs"]] == ["flight_watcher/ticket/new"] + ["flight_watcher/ticket/image"] * 2
     assert all(p["keys"] == ["cid", "i", "image", "n"] and p["image"] == "data:image/jpeg;base64," for p in A["pubs"][1:])
