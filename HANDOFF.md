@@ -1,6 +1,6 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-11, release 1.6.4 live (Date of hire on the Settings card); 1.7.0 Release C on branch fw-1.7.0 on top of 1.6.4, not deployed)
+# HANDOFF: Flight Watcher (refreshed 2026-11-11, release 1.7.0 live (Release C, tickets on the pilot portal); 1.7.1 built on branch claude/quirky-thompson-p94wms on top of 1.7.0, not deployed)
 
-State: app **1.6.4** on Pako HI (1.6.4 Date of hire field Nov 11, 1.6.3 schedule card package credit Nov 11, 1.6.1 CrewTrac stop and schedule backoff Nov 10, 1.6.2 Release A Nov 10, 1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
+State: app **1.7.0** on Pako HI (1.7.0 Release C, tickets on the pilot portal, contract 1 revision 2; **1.7.1** built, not pushed or deployed, CHANGELOG 1.7.1 and item 11: pilot read shares (LIVE-1), ignored presses answer why, Re-arm by state, the export heartbeat, the admin forwards recall lists, the card fixes F#4 to F#155, FW-0070 bid calendar alerts; 1.6.4 Date of hire field Nov 11, 1.6.3 schedule card package credit Nov 11, 1.6.1 CrewTrac stop and schedule backoff Nov 10, 1.6.2 Release A Nov 10, 1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
 per pilot Nov 8, 1.4.10 FW-0068 crew index finds FLICA-rebuilt pairings like H3631B Nov 9, 1.4.11 FW-0069 schedule versions
 for looked-up pilots on the pilot card Nov 9 (`pilotver.py`, list file `pilotver_<key>.json`), 1.4.12 the probe reads
 every rebuilt copy until all pilot seats are named Nov 9, 1.4.13 FW-0042 comm / month rule / value from
@@ -12,7 +12,7 @@ the host-wide FLICA gate (`gate.py`; pilot 100 loads an hour, host 480, the admi
 breakers, the schedule read in at most 2 loads, the awarded line on the card, pilot captures off (`captures.py`),
 topic-only ntfy with guardrails, Recall/O75 seniority from the award, the minimal pilot name lookup, pref flags, and the
 portal's pot, working flight, CrewTrac and requests cards with HST times and portal wording. **1.7.0** (Release C,
-branch `fw-1.7.0` on top of 1.6.3, not pushed or deployed; CHANGELOG 1.7.0): tickets on the pilot portal, contract 1
+live; CHANGELOG 1.7.0): tickets on the pilot portal, contract 1
 revision 2 (a Tickets tab, the pilot's own tickets only, his quotas, photos in chunks checked and re-encoded by his
 Watcher, a fixed alert with the id and version only); HOM 1.8.0 must ship the new fixture first. The reviewers' findings on 1.6.2 are fixed in the same branch (CHANGELOG 1.6.2, Release A review fixes: FLICA refusal block and 10 min login floor on a pilot, his check floor (5 s since Ryan's Nov 10 ranges), the gate's abort and the pot's share, CAPTCHA stops, 2 loads per schedule read, masked pilot logs, the card fixes). The git history was cleaned on Nov 7 (`ha/` files carry placeholder user ids). Slug `43b22650_flight_watcher`,
 two instances: Ryan (`flight_watcher`, `/data`) and
@@ -114,6 +114,19 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
     for) until it ages out after EVENTS_KEEP newer events. A rollback that restores `/data` also loses
     `/data/james/tickets_fixed_seen.json`: the next 1.7.0 start then seeds silently, so a fix made in between is not
     alerted (say so to Ryan).
+11. **Release 1.7.1 (built Nov 11, not deployed; CHANGELOG 1.7.1):** merged from fw171-core, fw171-cards and
+    fw171-bidcal on branch `claude/quirky-thompson-p94wms`, not pushed. No portal contract change, so no HOM release
+    is needed first. Merge and update are each a [DESTRUCTIVE] yes from Ryan. Ryan to decide: the publish alert's time
+    (`bidcal.PUBLISH_ALERT`, built as 20:00 HST the evening before the 4th, so the evening of the 3rd). After 1.7.1 is
+    live, each a [DESTRUCTIVE] HA change for Ryan through the connector, then the `ha/` snapshot refreshed and checked
+    by sha256: apply "Flight Watcher bid calendar" (`ha/README.md`, Pending on Pako; then drop that section), and drop
+    the second mqtt.publish to `flight_watcher_james/recall/set` from "Flight Watcher recall list in (Hark webhook)"
+    (the Watcher forwards it itself now, F#75; keeping it meanwhile is harmless). Started after Nov 11 08:00, the first
+    start logs December's five bid calendar alerts once each as not sent and the sensor reads Dec 3 20:00 HST. For
+    HOM: an ignored Check now or Re-arm now answers ok false with a plain why (show "Not taken: <why>"), and with the
+    5 min heartbeat staleAfter can be about 10 min in every state. Not in 1.7.1 (contract changes): an alert for a new
+    swap idea (F#107) and bid calendar alerts on the portal (FW-0070); also open: the clock card's state-worded Re-arm
+    confirm and the hidden Settings tile (F#92, card and HOM work).
 
 ## Decided (do not reopen)
 

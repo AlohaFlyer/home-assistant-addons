@@ -57,7 +57,7 @@ import captures as CAPS
 import photos as PH
 import bidcal as BC
 
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"

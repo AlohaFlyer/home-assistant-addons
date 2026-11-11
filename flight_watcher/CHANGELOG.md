@@ -1,5 +1,161 @@
 # Changelog
 
+## 1.7.1
+
+Fixes after 1.7.0 went live (the live log of Nov 11 on the second pilot's instance, LIVE-1, and the findings F#n), and
+Ryan's FW-0070 bid calendar alerts. No portal contract change: `roles.py` PORTAL_CMDS, PORTAL_REFUSED, PORTAL_EVENTS,
+FEATURES, PILOT_TICKET_LIMITS and the FLICA budgets, `tests/fixtures/portal_contract_v1.json` and `PORTAL_CONTRACT.md`
+are as in 1.7.0, and no command changes shape (the layout gains a card of a bundled type and the export a core
+entity, which contract 1 allows). Built from three branches (fw171-core, fw171-cards, fw171-bidcal), not deployed.
+
+### The Watcher
+
+- LIVE-1: a pilot's open time hunt paced to his whole 100 loads an hour left the reads that may be left out in one
+  first come, first served pool (opt_cap), so his own trips, the pickups and their in-flight lookups took every load
+  that came free and the Tradeboard, the reserve grid, the pot details and the trade requests were "left out of this
+  check: FLICA budget kept for the open time pot" for hours. Each of those four now has its own share of the hour on a
+  pilot (`opt_shares`: one whole read an hour; the Tradeboard 2 loads a bid number, the grid 2 a pot page, the
+  requests 1 a folder and 1 a bid number, the pot details 2); the rest of his optional loads stay a pool (`OPT_POOL_H`,
+  4 at least), and the pace keeps room for both (`opt_hour`: 12 as before with one bid month, so a 5 s hunt stays
+  about 44 s apart; 18 with two, about 96 s instead of 89 s; about 2 min with the close-in folder). A Tradeboard, grid
+  or request read starts only when all its loads fit (`opt_fits`: its share or the pool, and his budget and the
+  host's cap with `GATE_KEEP` free); one that does not fit tries again at the next check without moving its timer and
+  says so in the log at most every 30 min. A grid cross-check left out keeps the JSON just read. The hard caps are the
+  gate's, unchanged (a pilot's 100 an hour, the host's 480); the admin has no budget, no shares and keeps his ~376 an
+  hour (FW-0035).
+- F#15: a pilot instance writes an empty rules.json (the SIN example rule only on the admin, as before; a pilot's
+  portal has no rules view, so he could neither see nor turn it off). Once per pilot (DB `example_rule_checked`), a
+  rule that is exactly the seeded example (every field but created_at) is removed from his rules.json, logged, and
+  its live switch taken down; an edited one stays, and so does the same rule written again later.
+- F#12: a Check now (Scan FLICA now) the Watcher would ignore (paused, stopped, waiting for settings, stepped aside,
+  in a re-login back-off, under 10 s since the last check, or held by the FLICA budget or the host's cap) answers the
+  portal ok false with the reason in plain words and is not republished (`check_now_refusal`, `press_answer` in the
+  spool; the result keeps its {id, ok, why} shape). A press from Home Assistant logs the same words and changes
+  nothing.
+- F#149: Re-arm does what the clock card's "Stuck. Press Re-arm." asks for (`rearm_answer`): idle or hunting with no
+  check for the card's own limit (10 min hunting, otherwise 2.5 times the normal interval and at least 30 min), no
+  check running and no budget hold, it runs a full check now ("a full check starts now"). Idle or hunting and checking
+  normally, paused, waiting for settings, a check running or the budget holding the next check: ok false with why.
+- F#92: in a stop, a step-aside or a back-off Re-arm keeps its login path, and only a stop wakes the loop for it, as
+  1.6.2 documents. Its result says what happens ("logs in when the step-aside for your own FLICA login ends, HH:MM
+  HST"; a back-off "at the next login try"; details FLICA refused: "save new ones on Settings"). New in the main loop:
+  while stepped aside, a Re-arm waits for the step-aside's end, so another command waking the loop no longer cuts the
+  30 min short (in 1.7.0 it did).
+- F#7, F#110: the export's full sweep (every 300 s) writes state.json even when nothing changed: the same payload in
+  a new signed envelope (atomic, about 44 KB), so its seq moves at least every 5 min in every state, needs_settings
+  included, and the portal can tell a Watcher that is up from one that stopped. No new field. Passes that are not
+  full still skip unchanged text.
+- F#75: the admin forwards each recall list it takes to every pilot's Watcher itself (`recall_forward`:
+  `<prefix>/recall/set`, qos 1, not retained, never its 'me'; the pilots by run.py's own rules on the add-on options).
+  A pilot forwards nothing. A day that comes again unchanged keeps the time it first came in (the card's "received")
+  and is no new list, and drafts are keyed by row, so the second copy (Ryan's HA automation still forwards too)
+  changes and pushes nothing; a changed list is news again.
+- F#102: a pilot who saved only his CrewTrac details gets the charter watch while his FLICA watch waits for its login
+  (`start_charter_watch`, before the needs_settings wait: CrewTrac is its own site and login), so his Scan CrewTrac now
+  has a reader.
+
+### The cards
+
+- F#155: Remove CrewTrac login on the settings card. While a pilot's CrewTrac login is saved the card shows "Remove
+  CrewTrac login" and, after a confirm, sends the sealed `{"ctweb_off": true}` on `settings/set` (sealed only, like
+  Turn off phone alerts: on a page without the Watcher's key it sends nothing and says why; never offered on the
+  admin's own instance, whose logins may be the add-on's options). The Watcher (`settings_cmd`) takes it sealed only:
+  it removes ctweb_username and ctweb_password from his creds.json, resets the CrewTrac record, ignores CrewTrac fields
+  sent with it and restarts like any save ("saved: CrewTrac login removed", in green; "nothing new: no CrewTrac login
+  is saved" when there is none, shown as "No change: no CrewTrac login is saved"). His FLICA login stays.
+- F#77: a Recall/O75 Refresh answer that comes after the recall card's 15 s note clears "No answer from the Watcher
+  yet" (the card keeps the old checked time and clears the note when checked or last_updated moves). The Watcher side
+  was right already: a Refresh from the portal is taken and answered with a new `checked` time.
+- F#66: the pilot portal's Watcher tab starts with the recall card in alert mode (`portal_layout.json`), the RECALL
+  ALERT bar of the admin's main view. It takes no room while no MISSED recall has an open CCR draft, and its "Review
+  and file CCR on Recall/O75" button opens the Recall/O75 tab (`/flight-watcher-<name>/recall`, which the portal maps).
+- F#107: swap ideas on the pot card (the portal's Watcher tab), from `sensor.<prefix>_swap_ideas` and
+  `sensor.<prefix>_would_trade`, with the columns of the admin's table (Give up, For, Dates, Layover, Days, Credit,
+  Soft, Gain, Src, Grid) and its key in portal wording; under 560 px each idea folds into labeled lines. An alert for a
+  new idea is not in this release: it needs a portal event, which is a contract change.
+- F#4: the clock card keeps an interval the pilot picks until the Watcher's state shows it (or 20 s, or the portal
+  settles the command without it), instead of jumping back on the next 1 s tick; its focus guard looks in the card's
+  shadow root. With the portal's pending marks (`hass.fwPending`) Check now, Hunt, Pause and Re-arm read "Sending..."
+  and take no second tap, and an interval waits for its command.
+- F#32: the schedule card reports a month's Improved-Pay-Gross (`improved/set`) only once the pairings package is in or
+  known to be missing (a 404 now redraws too), so no load sends a first, too low figure.
+- F#43: the pilot lookup is a form (Go is its submit): a phone keyboard's Go or Search key asks after the keyboard
+  commits what it was composing; `enterkeyhint="search"`, autocomplete off, 16 px text (no iOS zoom), the 2 s
+  same-name guard kept. On a pilot's card the placeholder is "Last name or employee #", with a line above ("Look up a
+  pilot's month (asks FLICA)") and one under it saying what a name finds. The admin's card keeps its placeholder.
+- F#52: the pickers card's box is labeled "Filter this list (it does not ask FLICA)". On a card 500 px wide or less (a
+  container query; the desktop table is unchanged) it shows Pilot, Pos, Best and Avg, with the employee number, the
+  pickup counts and the layovers on a small line under the name: the speeds show at 390 px with no sideways scroll.
+- F#93: each secret field on the settings card has a Show / Hide button and `autocomplete="off"` (no "new-password");
+  a password goes exactly as typed whether shown or not, and the fields empty and hide again after a send. The
+  Watcher's "nothing new" reads "No change: ..." in the text color, not as a green save.
+- F#96: a pilot's card copy says "the admin" ("The admin" at a sentence's start) where the admin's name was, so the
+  comments in the source a pilot can view stay whole (`cards.scrub_names`).
+- F#119: status text on the clock, settings, schedule, pot and recall cards uses the cards' own color variables, a
+  lighter tone on dark cards (prefers-color-scheme, as the portal's dark mode; the schedule card's old dark overrides
+  never applied), so text keeps WCAG AA contrast (4.5:1) on the portal's light and dark cards. Also for AA: the Hunt
+  button and the CHECK chip a darker orange behind white, the NO chip darker gray, the reserve grid tint a little
+  lighter on light cards, a trip marked "would trade" in the text color on its orange mark, the faint marks in the
+  secondary text color, the settings notes in the secondary text color instead of a fade, the pickers' sorted header
+  in the text color. These show on Ryan's HA dashboard as well; his light-theme status colors are unchanged except
+  warn text (#8a5300). The portal's own primary buttons in dark mode (white on #3a9be0, 3.02:1) are HOM's palette.
+
+### Bid calendar alerts (FW-0070, Ryan)
+
+- `bidcal.py` (new; the Dockerfile copies it). `bidcal.parse` reads a pairing package's Bid Calendar from page 1 of
+  its text copy (the left column of the two-column cover page, so the reserve and credit tables after a date never
+  count): Pairing Package Published, Practice Run #1 and #2, CA & FO Bids Close with its 0800HST, All Monthly Awards
+  Posted (no later than 1700HST on) and Flica Open Time Window Opens (1200HST on), dated from the page's "<Month>
+  <YYYY> Pairing Package" heading (a January package's dates are December of the year before); anything not found is
+  None. Read right on the October, November and December 2026 packages on Pako (read only).
+- `bidcal.schedule` makes each cycle's alerts, all HST: 20:00 the night before the package publishes ("adjust your
+  vacation if needed"; `PUBLISH_ALERT = (1, "20:00")`, one constant: the packages publish on the 4th, so this is the
+  evening of the 3rd), 20:00 the night before each practice run, 24 h before the close and 20:00 the night before it.
+  The cycle for bid month M+1 runs in month M; without that month's package (it cannot be on file before it
+  publishes) the usual days apply: published the 4th, practice runs the 7th and the 10th, close the 11th 08:00. A date
+  the package gives replaces its default; a date outside the 62 days before the bid month is never used. Each alert
+  says which (`source` package or default; a usual date also says so in its text).
+- The Watcher (`bidcal_tick`): the uploads janitor checks once a minute, first and on its own (an uploads error never
+  skips it), whatever the state (paused, stepped aside, hunting, waiting for settings); no FLICA load, and page 1 of
+  the shared package is read only when its file changes. Each due alert goes once on `<prefix>/event/bid_calendar`
+  (not retained: kind, key, bid_month, title, message, at_hst, event_hst, source); the sent and dropped keys are in
+  the DB (`bid_calendar_done`) before the publish, so a restart never repeats one. A due alert waits while MQTT is
+  down; one late (the app was off) is still sent, worded from the time it goes out ("Bids close in 22 h"), until its
+  words stop being true (the evening ones until their day starts, the 24 h one until the night-before one, that one
+  until the close), else it is dropped with a log line.
+- `sensor.<prefix>_bid_calendar` (new, core, every instance; a timestamp sensor, retained on `<prefix>/bid_calendar`):
+  the next alert's time (HST), and as attributes that alert, its cycle's dates (awards and open time from a package),
+  source and sources, and each of the cycle's alerts with its status (pending, sent, dropped). Published when it
+  changes. "bid" joins `roles.RESERVED` (a pilot name may not start with it) and `bid_calendar` `roles.EVENTS` (core).
+- Phone push, Ryan only: the new HA automation "Flight Watcher bid calendar" (`ha/automations_flight_watcher.yaml`,
+  pending on Pako: `ha/README.md`), triggered by `flight_watcher/event/bid_calendar` only, a critical push to Ryan's
+  two iPhones exactly like "Flight Watcher charter", title and message from the payload. The push guard passes.
+- A pilot's Watcher makes the same alerts on its own prefix, which no automation reads; they are not portal events
+  (that is a contract change, not in this release). His `sensor.<prefix>_bid_calendar` is in his portal's state.json
+  like any core entity (PORTAL_CONTRACT.md 4.1 and 4.2: a new entity needs no HOM release).
+
+### Tests
+
+- `tests/test_pilot_secondary_share.py` (LIVE-1: the real check() for 3 h at the 5 s floor on a pilot with one and two
+  bid months and a greedy optional read: each of the four reads in every hour, the pot on every check, no rolling hour
+  over 100, checks at least the pace apart; the admin has no shares). The pacing tests in `test_freq_ranges.py` and
+  `test_release_a_review.py` follow the new numbers (their fake request list and pairing pages are now pages the
+  parsers know: those reads run now).
+- `tests/test_fw171_core.py` (F#15, F#12, F#149, F#92 with the real main() woken every minute in a step-aside, F#75,
+  F#102 with the real main() up to the settings wait, F#155, F#77); `test_portal_export.py` (F#7: a non-full pass
+  writes nothing new, a full sweep the same payload with a later seq); the wake test in `test_release_a_flica.py` (a
+  Check now while paused is ignored).
+- `tests/test_fw171_cards.py` renders every changed card as the portal serves it (the pilot's copy, the portal's theme
+  variables and ha-card) in Chromium at 390 and 1100 px, light and dark, computes the contrast of every visible text
+  node from its rendered colors, and checks each card fix above; the pilot lookup's node test follows the form.
+- `tests/test_fw171_crewtrac_remove.py` (F#155 across both halves): the card on the real Watcher's settings state and
+  key, its sealed message into the real `settings_cmd`, and the Watcher's answer back on the card; without the key the
+  card sends nothing and the Watcher ignores a plain `ctweb_off`.
+- `tests/test_bidcal.py` (parse on synthetic cover pages in the real layout, schedule, late and dropped alerts, once
+  per key across a restart, MQTT down, the package's dates, the sensor, a pilot's prefix, the janitor, the
+  Dockerfile, the HA push and the guard); the entity lists in `test_instance.py` and `test_portal_export.py` and the
+  busy-month sensor sizes take the new sensor. `test_release_c_tickets.py` checks the version 1.7.1.
+
 ## 1.7.0
 
 Release C: tickets on the pilot portal (contract 1 revision 2; the Flight Watcher half, HOM 1.8.0 ships the same
