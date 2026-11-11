@@ -15,6 +15,7 @@ from conftest import ha_state
 
 PILOT2_IDS = sorted([
     "binary_sensor.flight_watcher_pilot2_session_ok", "button.flight_watcher_pilot2_check_now",
+    "sensor.flight_watcher_pilot2_bid_calendar",  # 1.7.1 (FW-0070): a core entity (contract 4.2: no HOM release)
     "button.flight_watcher_pilot2_re_arm", "button.flight_watcher_pilot2_scan_crewtrac_charters_now",
     "input_number.flight_watcher_pilot2_federal_tax_pct", "input_number.flight_watcher_pilot2_longevity_year",
     "input_number.flight_watcher_pilot2_state_tax_pct", "input_text.flight_watcher_pilot2_er_trips",

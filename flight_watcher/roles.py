@@ -76,6 +76,7 @@ EVENTS = {
     "recall_file_requested": "hark_ccr", "recall_ccr_filed": "hark_ccr", "recall_hark_alert": "hark_ccr",
     "drop_ready": "drop_mark", "swap_map": "auto_swap",
     "ticket_new": "tickets", "ticket_fixed": "tickets", "ticket_error": "tickets",
+    "bid_calendar": "core",  # 1.7.1 (FW-0070): every instance; only the admin's prefix has an HA push
 }
 
 # discovery oids that are not core (every other entity is core)
@@ -92,7 +93,7 @@ MAX_PILOTS = 3  # pilots besides the admin: each runs its own Chromium and its o
 # share folders or /data files would collide with them, so it is refused (run.py). ha/check_push_isolation.py reads
 # an id whose first word is here as the admin's.
 RESERVED = frozenset({
-    "admin", "auto", "blocked", "captures", "ccr", "charter", "charters", "check", "crew", "default", "drop",
+    "admin", "auto", "bid", "blocked", "captures", "ccr", "charter", "charters", "check", "crew", "default", "drop",
     "email", "er", "event", "federal", "fetches", "finds", "flica", "freq", "grid", "hunt", "improved", "last",
     "longevity", "map", "month", "new", "next", "normal", "ot", "own", "pause", "pickers", "pilot", "pot", "pref",
     "re", "rearm", "recall", "reserve", "rule", "rules", "ryan", "scan", "schedule", "session", "settings", "show",

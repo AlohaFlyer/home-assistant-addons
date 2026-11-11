@@ -54,6 +54,7 @@ import ntfy as NT
 import gate as GT
 import captures as CAPS
 import photos as PH
+import bidcal as BC
 
 VERSION = "1.7.0"
 BASE = "https://ha2.flica.net"
@@ -1077,6 +1078,10 @@ def entity_defs():
                                       "json_attributes_topic": f"{T}/working_flight",
                                       "json_attributes_template": "{{ value_json.attributes | tojson }}",
                                       "icon": "mdi:airplane-takeoff"}),
+        # 1.7.1 (FW-0070): the next bid calendar alert (bidcal.py), with its cycle's dates and where they came from
+        ("sensor", "bid_calendar", {"name": "Bid calendar", "state_topic": f"{T}/bid_calendar",
+                                    "value_template": "{{ value_json.next_at }}", "device_class": "timestamp",
+                                    "json_attributes_topic": f"{T}/bid_calendar", "icon": "mdi:calendar-clock"}),
         ("sensor", "tradeboard", {"name": "Tradeboard pickups", "state_topic": f"{T}/tradeboard/state",
                                   "value_template": "{{ value_json.count }}",
                                   "json_attributes_topic": f"{T}/tradeboard/state",
@@ -6393,6 +6398,10 @@ def upload_janitor():
             n += 1
             if n * UPLOAD_SWEEP_S >= UPLOADS_PUB_S:
                 n = 0
+                try:
+                    bidcal_tick()  # 1.7.1 (FW-0070): first and on its own, so an uploads error never skips it
+                except Exception as e:  # noqa: BLE001
+                    log.info("bid calendar: %s", type(e).__name__)
                 publish_uploads()
                 if is_pilot():
                     # 1.7.0 (Release C): a pilot's ticket list (and its fixed alert) follows the folder every
@@ -6401,6 +6410,112 @@ def upload_janitor():
                     publish_tickets()
         except Exception as e:  # noqa: BLE001
             log.info("upload janitor: %s", type(e).__name__)
+
+
+# ---------------------------------------------------------------- 1.7.1 FW-0070 bid calendar alerts (Ryan)
+# Ryan's ticket: a critical push the evening before the pairing package publishes ("adjust your vacation if needed"),
+# the night before each practice run, 24 h before bids close and the night before they close (bidcal.py). The uploads
+# janitor checks once a minute, whatever the state (paused, yielded, hunting, waiting for settings): no FLICA load, and
+# page 1 of the shared package is read only when its file changes. Each alert goes once on {T}/event/bid_calendar
+# (not retained). Only Ryan's prefix has an HA automation ("Flight Watcher bid calendar"), so a pilot's instance makes
+# the same alerts on his own prefix and nothing pushes them (they are not portal events in contract 1).
+BIDCAL_DONE = "bid_calendar_done"  # DB: {alert key: {how: sent | dropped, at}}, written before the publish
+BIDCAL_KEEP = 40  # keys kept (5 a cycle)
+_BIDCAL = {"pkg": {}, "sig": None}  # bid month -> (file time, bidcal.parse of its package); the sensor's last payload
+
+
+def bidcal_package(bid_month):
+    """bidcal.parse of the bid month's pairing package (uploads/<YYYY-MM>_pairings.txt, shared by every instance),
+    cached by file time; None when it is not on file (it cannot be before it publishes) or names another month."""
+    path = os.path.join(UPLOADS_SHARED, f"{bid_month}_pairings.txt")
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return None
+    c = _BIDCAL["pkg"].get(bid_month)
+    if c and c[0] == mt:
+        return c[1]
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            parsed = BC.parse(f.read(BC.HEAD_BYTES), bid_month)
+    except Exception as e:  # noqa: BLE001
+        log.info("bid calendar: the %s pairing package was not read: %s", bid_month, type(e).__name__)
+        parsed = None
+    if parsed and parsed.get("bid_month") != bid_month:
+        log.info("bid calendar: %s_pairings.txt is the %s package: the usual dates stay", bid_month,
+                 parsed.get("bid_month") or "unnamed")
+        parsed = None
+    elif parsed:
+        cl = parsed.get("close") or {}
+        log.info("bid calendar: %s from its pairing package: published %s, practice runs %s, bids close %s %s",
+                 bid_month, parsed.get("published") or "?", " and ".join(d or "?" for d in parsed["practice"]),
+                 cl.get("date") or "?", cl.get("time") or "?")
+    _BIDCAL["pkg"][bid_month] = (mt, parsed)
+    return parsed
+
+
+def mqtt_up():
+    """MQ is connected (a client with no is_connected, as in the tests, counts as up)."""
+    f = getattr(MQ, "is_connected", None)
+    return MQ is not None and (not callable(f) or bool(f()))
+
+
+def bidcal_tick(now=None):
+    """Send each bid calendar alert that is due, once: next month's cycle and the one after (bidcal.cycles), from the
+    package's Bid Calendar when it is on file, else the usual dates. A due alert waits while MQTT is down; one missed
+    past its deadline (the app was off) is dropped with a log line, never sent late with words no longer true. The
+    sent and dropped keys are in the DB before the publish, so a restart never repeats one. Returns the alerts sent."""
+    now = now or datetime.now(HST)
+    alerts = []
+    for bm in BC.cycles(now):
+        alerts += BC.schedule(bm, bidcal_package(bm))
+    done = DB.get(BIDCAL_DONE) or {}
+    send, drop = BC.due(alerts, done, now)
+    if send and not mqtt_up():
+        send = []  # tried again next minute, until its deadline
+    for a in drop:
+        done[a["key"]] = {"how": "dropped", "at": now.isoformat()}
+        log.info("bid calendar: %s not sent: its time (%s, kept until %s) passed while the app was off or MQTT down",
+                 a["key"], BC.hst_text(a["fire_at"]), BC.hst_text(a["deadline"]))
+    for a in send:
+        done[a["key"]] = {"how": "sent", "at": now.isoformat()}
+    if send or drop:
+        DB.put(BIDCAL_DONE, dict(sorted(done.items())[-BIDCAL_KEEP:]))
+    for a in send:
+        title, message = BC.render(a, now)  # worded from now: a late one still says the hours really left
+        pub("event/bid_calendar", {"kind": "bid_calendar", "key": a["key"], "bid_month": a["bid_month"],
+                                   "title": title, "message": message,
+                                   "at_hst": now.astimezone(HST).isoformat(timespec="seconds"),
+                                   "event_hst": a["event"], "source": a["source"]}, retain=False)
+        log.info("bid calendar: %s sent: %s", a["key"], title)
+    publish_bid_calendar(alerts, done)
+    return send
+
+
+def publish_bid_calendar(alerts, done, force=False):
+    """{T}/bid_calendar (retained), sensor.{T}_bid_calendar: state the next alert's time (HST, a timestamp sensor);
+    attributes the next alert, its cycle's dates, source (package or default, each date's own in sources) and that
+    cycle's alerts with their status (pending, sent, dropped). Published when it changes (or force)."""
+    nxt = BC.next_alert(alerts, done)
+    bm = nxt["bid_month"] if nxt else (alerts[-1]["bid_month"] if alerts else None)
+    if bm is None:
+        return False
+    c = BC.cycle_dates(bm, bidcal_package(bm))
+    nd = None
+    if nxt:
+        nd = {"key": nxt["key"], "title": nxt["title"], "message": nxt["message"], "at_hst": BC.hst_text(nxt["fire_at"])}
+    d = {"next_at": nxt["fire_at"] if nxt else None, "next": nd, "bid_month": bm, "source": c["source"],
+         "sources": c["sources"], "published": c["published"], "practice": c["practice"], "close": c["close"],
+         "awards_by": c["awards_by"], "open_time_opens": c["open_time_opens"],
+         "alerts": [{"key": a["key"], "kind": a["kind"], "fire_at": a["fire_at"], "at_hst": BC.hst_text(a["fire_at"]),
+                     "title": a["title"], "status": (done.get(a["key"]) or {}).get("how") or "pending"}
+                    for a in alerts if a["bid_month"] == bm]}
+    sig = json.dumps(d, sort_keys=True)
+    if not force and sig == _BIDCAL["sig"]:
+        return False
+    _BIDCAL["sig"] = sig
+    pub("bid_calendar", d)
+    return True
 
 
 def start_upload_janitor():

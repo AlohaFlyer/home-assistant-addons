@@ -76,3 +76,52 @@
   before release.
 - The alerts mailbox address and the earlier real values stay in git history: rewriting it is HANDOFF item 4 (a
   [DESTRUCTIVE] decision for Ryan).
+
+## 1.7.1, bid calendar alerts (branch fw171-bidcal; the integrator folds these into CHANGELOG.md under 1.7.1)
+
+- FW-0070 (Ryan): bid calendar alerts (`bidcal.py`, new). `bidcal.parse` reads a pairing package's Bid Calendar from
+  page 1 of its text copy (the left column of the two-column cover page, so the reserve and credit tables after a date
+  never count): Pairing Package Published, Practice Run #1 and #2, CA & FO Bids Close with its 0800HST, All Monthly
+  Awards Posted (no later than 1700HST on) and Flica Open Time Window Opens (1200HST on), dated from the page's
+  "<Month> <YYYY> Pairing Package" heading (a January package's dates are December of the year before); anything not
+  found is None. Read right on the three packages on Pako (October, November and December 2026; Pako read only).
+- `bidcal.schedule` makes each cycle's alerts, all HST: 20:00 the night before the package publishes ("adjust your
+  vacation if needed"; `PUBLISH_ALERT = (1, "20:00")`, days before and time, one constant to change after Ryan
+  confirms: the packages publish on the 4th, not the 5th his ticket expected, so this is the evening of the 3rd),
+  20:00 the night before each practice run, 24 h before the close and 20:00 the night before it. The cycle for bid
+  month M+1 runs in month M; without that month's package (it cannot be on file before it publishes) the usual days
+  apply: published the 4th, practice runs the 7th and the 10th, close the 11th 08:00. A date the package gives
+  replaces its default; a date outside the 62 days before the bid month is never used. Each alert says which
+  (`source` package or default; a usual date also says so in its text).
+- The Watcher (`watcher.py`, `bidcal_tick`): the uploads janitor checks once a minute, first and on its own (an
+  uploads list error never skips it), whatever the state (paused, yielded, hunting, waiting for settings); no FLICA
+  load, and page 1 of the shared package is read only when its file changes. Each due alert goes once on
+  `<prefix>/event/bid_calendar` (not retained: kind, key, bid_month, title, message, at_hst, event_hst, source); the
+  sent and dropped keys are written to the DB (`bid_calendar_done`) before the publish, so a restart never repeats
+  one. A due alert waits while MQTT is down; one late (the app was off) is still sent, worded from the time it goes
+  out ("Bids close in 22 h"), until its words stop being true (the evening ones until their day starts, the 24 h one
+  until the night-before one, that one until the close), else it is dropped with a log line.
+- `sensor.<prefix>_bid_calendar` (new, core, every instance; a timestamp sensor, retained on `<prefix>/bid_calendar`):
+  the next alert's time (HST), and as attributes that alert, its cycle's dates (awards and open time from a package),
+  source and sources, and each of the cycle's alerts with its status (pending, sent, dropped). Published when it
+  changes. "bid" joins `roles.RESERVED` (a pilot name may not start with it) and `bid_calendar` `roles.EVENTS` (core).
+- Phone push, Ryan only: the new HA automation "Flight Watcher bid calendar" (`ha/automations_flight_watcher.yaml`,
+  pending on Pako: `ha/README.md`), triggered by `flight_watcher/event/bid_calendar` only, a critical push to Ryan's
+  two iPhones exactly like "Flight Watcher charter", title and message from the payload. The push guard passes (20
+  automations, 0 offenders).
+- A pilot's Watcher makes the same alerts on its own prefix, which no automation reads; they are not portal events
+  (that is a contract change, not in this release). His `sensor.<prefix>_bid_calendar` is in his portal's state.json
+  like any core entity (PORTAL_CONTRACT.md 4.2 and 4.1: a new entity needs no HOM release; the fixture is unchanged).
+- Dockerfile: `bidcal.py` is copied; a test checks that every local module the Watcher imports is.
+- Tests: `tests/test_bidcal.py` (parse on synthetic cover pages in the real layout, schedule, late and dropped
+  alerts, once per key across a restart, MQTT down, the package's dates, the sensor, a pilot's prefix, the janitor,
+  the Dockerfile, the HA push and the guard); the 1.4.12 entity lists in `test_instance.py` and
+  `test_portal_export.py` and the busy-month sensor sizes take the new sensor.
+
+## Integrator notes for the bid calendar (not for CHANGELOG.md)
+
+- Ryan to confirm the publish alert's time (`bidcal.PUBLISH_ALERT`): built as 20:00 HST the evening before the 4th.
+- After 1.7.1 is live: apply "Flight Watcher bid calendar" on Pako (a [DESTRUCTIVE] yes), then check the snapshot by
+  sha256 and drop the "Pending on Pako" section of `ha/README.md`. Started in November after the 11th, the first
+  start logs December's five alerts once each as "bid calendar: 2026-12_<kind> not sent" (that cycle is over), never
+  again, and `sensor.flight_watcher_bid_calendar` reads Dec 3 20:00 HST (January's package).
