@@ -992,3 +992,46 @@
         title: 'Hark CCR: {{ ''Over 75'' if ev.kind == ''o75'' else ''Recall'' }}
           {{ ev.pairing }} {{ ev.date }}'
   mode: queued
+- id: '1794426120070'
+  alias: Flight Watcher bid calendar
+  description: 'FW-0070 (Ryan, 1.7.1): the Watcher''s bid calendar alerts (bidcal.py):
+    the evening before the pairing package publishes (adjust your vacation if needed),
+    the evening before each practice run, 24 h before bids close and 20:00 HST the night
+    before they close. One push per alert, critical like the charter alert. Push isolation
+    (FW-0038): Ryan''s prefix only, to Ryan''s phones only; a pilot''s Watcher sends
+    the same alerts on its own prefix, which no automation reads.'
+  triggers:
+  - topic: flight_watcher/event/bid_calendar
+    trigger: mqtt
+  actions:
+  - variables:
+      p: '{{ trigger.payload_json }}'
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: critical
+            sound:
+              name: default
+              critical: 1
+              volume: 1.0
+          tag: flight_watcher_bid_calendar_{{ p.key }}
+        message: '{{ p.message }}'
+        title: '{{ p.title }}'
+    - action: notify.mobile_app_ryans_iphone_16
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: critical
+            sound:
+              name: default
+              critical: 1
+              volume: 1.0
+          tag: flight_watcher_bid_calendar_{{ p.key }}
+        message: '{{ p.message }}'
+        title: '{{ p.title }}'
+  max: 10
+  mode: queued

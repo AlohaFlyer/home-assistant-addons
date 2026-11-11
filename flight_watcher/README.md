@@ -275,6 +275,19 @@ Recent finds.
   read yet shows as `No trip` with that trip next while it comes first. The legs live in the state, not on
   `sensor.<prefix>_own_trip_times` (size). Hark's `sensor.hark_working_flight` (Ryan only: release, MEL, NOTAMs, live
   status) is separate.
+- Bid calendar (1.7.1, FW-0070, `bidcal.py`): alerts for each PBS bid cycle, all HST. The cycle for bid month M+1
+  runs in month M: the pairing package publishes on the 4th, practice runs on the 7th and the 10th, bids close on the
+  11th at 08:00, unless that month's package is uploaded, whose Bid Calendar (page 1, left column) gives the dates.
+  Alerts: 20:00 the night before the package publishes ("adjust your vacation if needed"; `bidcal.PUBLISH_ALERT`, one
+  constant), 20:00 the night before each practice run, 24 h before the close and 20:00 the night before it. Checked
+  once a minute whatever the Watcher is doing (no FLICA load); each goes once on `<prefix>/event/bid_calendar` (not
+  retained: `kind`, `key`, `bid_month`, `title`, `message`, `at_hst`, `event_hst`, `source` package or default), the
+  sent ones kept in the DB so a restart never repeats one. One missed while the app was off is sent late until its
+  words stop being true (the evening ones until their day starts, the 24 h one until the night-before one, that one
+  until the close), else dropped with a log line. `sensor.<prefix>_bid_calendar` (retained on `<prefix>/bid_calendar`)
+  shows the next alert's time, its cycle's dates (awards and open time too, from a package) and each alert's status.
+  Only Ryan's prefix has a phone push (HA automation "Flight Watcher bid calendar", critical); a second pilot's
+  Watcher makes the same alerts on its own prefix, which nothing pushes, and they are not portal events (contract 1).
 
 ## Dashboard cards and pushes
 

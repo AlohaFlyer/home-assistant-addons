@@ -4,6 +4,19 @@ Copies of the Flight Watcher pieces that live in Home Assistant on Pako HI rathe
 review and history (FW-0036). Nothing in this folder is loaded by Home Assistant or by the app, and the app store
 ignores it (no `config.yaml`).
 
+## Pending on Pako (1.7.1, FW-0070): "Flight Watcher bid calendar"
+
+`automations_flight_watcher.yaml` ends with a new automation, **Flight Watcher bid calendar** (id `1794426120070`),
+that is not on Pako yet (Pako has the 19 Flight Watcher automations above it, read 2026-11-11). Apply it through the HA
+connector once 1.7.1 is live: a [DESTRUCTIVE] yes from Ryan. Triggered by `flight_watcher/event/bid_calendar` only
+(never `flight_watcher_<pilot>/...`), it sends the payload's `title` and `message` as a critical push (sound `default`,
+`critical: 1`, `volume: 1.0`, tag `flight_watcher_bid_calendar_<key>`) to `notify.mobile_app_ryans_iphone` and
+`notify.mobile_app_ryans_iphone_16`, exactly like "Flight Watcher charter". HA appends a new automation at the end of
+`/config/automations.yaml`, so the snapshot keeps file order; after applying, check by sha256 of the redacted text as
+in Refresh below, then drop this section. Until then the snapshot is one automation ahead of Pako (20 here, 19 there).
+Undo: delete the automation (its id above). The guard passes with it (`python3 ha/check_push_isolation.py`: 20
+automations, 0 offenders).
+
 **Applied on Pako 2026-11-10 (James's HA page retired):** James uses the pilot portal (FW-0061) and his HA user is
 gone, so the `flight-watcher-james` dashboard and his seven HA helpers (`input_number.flight_watcher_james_*` federal
 and state tax, longevity year, month offset; `input_text.flight_watcher_james_*` ER trips, picker search;
@@ -89,7 +102,7 @@ household users (four, a guest login among them) can open `flight-watcher-james`
 
 | File | Live copy on Pako |
 |:--|:--|
-| `automations_flight_watcher.yaml` | `/config/automations.yaml`: the 19 automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order |
+| `automations_flight_watcher.yaml` | `/config/automations.yaml`: the automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order (19 on Pako; 20 here with the pending bid calendar one, above) |
 | `dashboard_flight_watcher.json` | `/config/.storage/lovelace.flight_watcher` (dashboard `flight-watcher`) |
 | `packages/flight_watcher_wx.yaml` | `/config/packages/flight_watcher_wx.yaml` |
 | `check_push_isolation.py` | the push-isolation guard (below) |

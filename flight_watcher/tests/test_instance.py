@@ -323,20 +323,22 @@ ADMIN_IDS_1412 = [
     "sensor.flight_watcher_would_trade", "switch.flight_watcher_auto_swap_dry_run",
     "switch.flight_watcher_hunt_mode", "switch.flight_watcher_pause"
 ]
+# added since, each on every instance (core): 1.7.1 (FW-0070) the bid calendar sensor
+ADMIN_IDS = sorted(ADMIN_IDS_1412 + ["sensor.flight_watcher_bid_calendar"])
 PILOT_RETIRED_1500 = ("switch.flight_watcher_auto_swap_dry_run", "button.flight_watcher_map_swap_pages_read_only",
                       "sensor.flight_watcher_would_drop")
 ADMIN_ONLY_1412 = ("sensor.flight_watcher_crew_index", "button.flight_watcher_update_schedules")  # never on a pilot
 
 
 def test_discovery_ids_by_role(tmp_path, monkeypatch):
-    """The admin announces exactly the 1.4.12 entities, one config each in entity_defs order; a pilot loses only Would
-    drop, Auto swap (dry run) and Map swap pages, whose retained configs it empties so HA removes them (the crew
-    index entities were never a pilot's)."""
+    """The admin announces exactly the 1.4.12 entities (plus the ones added since, ADMIN_IDS), one config each in
+    entity_defs order; a pilot loses only Would drop, Auto swap (dry run) and Map swap pages, whose retained configs it
+    empties so HA removes them (the crew index entities were never a pilot's)."""
     W = _load(tmp_path, monkeypatch, "", OPTS)
     c = FakeClient()
     W.discovery(c)
     made = [json.loads(p)["default_entity_id"] for t, p, _ in c.msgs if p]
-    assert sorted(made) == ADMIN_IDS_1412 and len(made) == len(set(made))
+    assert sorted(made) == ADMIN_IDS and len(made) == len(set(made))
     assert [t for t, p, _ in c.msgs if not p] == ["homeassistant/select/flight_watcher/swap_mode/config"]
     defs = W.entity_defs()
     assert [(t, json.loads(p)) for t, p, _ in c.msgs if p] == \
@@ -348,7 +350,7 @@ def test_discovery_ids_by_role(tmp_path, monkeypatch):
     c = FakeClient()
     W.discovery(c)
     made = {json.loads(p)["default_entity_id"].replace("flight_watcher_pilot2_", "flight_watcher_") for t, p, _ in c.msgs if p}
-    assert set(ADMIN_IDS_1412) - made == set(PILOT_RETIRED_1500) | set(ADMIN_ONLY_1412) and made <= set(ADMIN_IDS_1412)
+    assert set(ADMIN_IDS) - made == set(PILOT_RETIRED_1500) | set(ADMIN_ONLY_1412) and made <= set(ADMIN_IDS)
     emptied = [t for t, p, _ in c.msgs if not p]
     assert emptied == [f"homeassistant/{t}/flight_watcher_pilot2/{o}/config" for t, o in (
         ("sensor", "drop_away"), ("switch", "auto_swap"), ("button", "swap_map"), ("sensor", "crew_index"),

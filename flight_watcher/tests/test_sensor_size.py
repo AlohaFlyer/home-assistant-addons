@@ -8,7 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -195,6 +195,8 @@ def _fill(W, fake, tmp_path, monkeypatch):
     W.publish_tradeboard()
     W.publish_own_trips()
     W.publish_working_flight(force=True)  # FW-0067
+    monkeypatch.setattr(W, "UPLOADS_SHARED", str(tmp_path / "uploads_shared"))  # no package: the usual dates
+    W.bidcal_tick(datetime(2026, 11, 5, 12, 0, tzinfo=W.HST))  # 1.7.1 (FW-0070): the bid calendar sensor
     W.publish_charters()
     W.publish_improved()
     W.publish_tickets(force=True)
