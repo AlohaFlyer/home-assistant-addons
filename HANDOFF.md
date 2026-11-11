@@ -1,6 +1,6 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-11, release 1.7.0 live (Release C, tickets on the pilot portal); 1.7.1 built on branch claude/quirky-thompson-p94wms on top of 1.7.0, Ryan's Nov 11 decisions on branch fw171-r2 on top of it, not deployed)
+# HANDOFF: Flight Watcher (refreshed 2026-11-11, release 1.7.0 live (Release C, tickets on the pilot portal); 1.7.1 built on branch claude/quirky-thompson-p94wms on top of 1.7.0, all its branches merged, not pushed or deployed)
 
-State: app **1.7.0** on Pako HI (1.7.0 Release C, tickets on the pilot portal, contract 1 revision 2; **1.7.1** built, not pushed or deployed, CHANGELOG 1.7.1 and item 11: pilot read shares (LIVE-1), ignored presses answer why, Re-arm by state, the export heartbeat, the admin forwards recall lists, the card fixes F#4 to F#155, FW-0070 bid calendar alerts; 1.6.4 Date of hire field Nov 11, 1.6.3 schedule card package credit Nov 11, 1.6.1 CrewTrac stop and schedule backoff Nov 10, 1.6.2 Release A Nov 10, 1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
+State: app **1.7.0** on Pako HI (1.7.0 Release C, tickets on the pilot portal, contract 1 revision 2; **1.7.1** built, not pushed or deployed, CHANGELOG 1.7.1 and item 11: pilot read shares (LIVE-1), ignored presses answer why, Re-arm by state, the export heartbeat, the admin forwards recall lists, the card fixes F#4 to F#155, FW-0070 bid calendar alerts, Ryan's Nov 11 decisions, FW-0042 part 2 (no credit cap, 98 h in 672 h), FW-0071 ticket paste, FW-0072 layover card and van alerts with the van time from the pairings package first; 1.6.4 Date of hire field Nov 11, 1.6.3 schedule card package credit Nov 11, 1.6.1 CrewTrac stop and schedule backoff Nov 10, 1.6.2 Release A Nov 10, 1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
 per pilot Nov 8, 1.4.10 FW-0068 crew index finds FLICA-rebuilt pairings like H3631B Nov 9, 1.4.11 FW-0069 schedule versions
 for looked-up pilots on the pilot card Nov 9 (`pilotver.py`, list file `pilotver_<key>.json`), 1.4.12 the probe reads
 every rebuilt copy until all pilot seats are named Nov 9, 1.4.13 FW-0042 comm / month rule / value from
@@ -105,8 +105,8 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
    `home_day_start` in smart.json moves it). FW-0042 part 2 (1.7.1, branch fw171-cap, Ryan's rule of Nov 9): the 90 h
    monthly credit cap was Hark's error and is gone (Pako's `cap_credit` is ignored, logged once); each find now carries
    `b672` / `b672_ok` and a `month_rule` part with the block in the 672 h ending at its release against the company's
-   98 h buffer (`Fits 672 (97:59)`, `Over 98/672 (98:01)`, `672 ? (block not read)`). The push shows it only after a
-   separate HA step adds `p.b672` or `p.month_rule` to the new-pairing message (Ryan's call). FW-0044 FLICA DROP
+   98 h buffer (`Fits 672 (97:59)`, `Over 98/672 (98:01)`, `672 ? (block not read)`). The new-pairing push shows the
+   tag (show only, a line after Commute and Value) once the pending HA edit is applied (item 11). FW-0044 FLICA DROP
    review page mapped read only.
 7. **Ryan-owned:** FW-0021 paycheck check Dec 22 (PWA 2.A.56, 3.D, 4.C.3, 4.O.1, 6.J); FW-0040 upload the December
    award and January pairings PDFs when posted; FW-0057 upload the October 2026 pairings package (the uploads card
@@ -135,35 +135,48 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
     for) until it ages out after EVENTS_KEEP newer events. A rollback that restores `/data` also loses
     `/data/james/tickets_fixed_seen.json`: the next 1.7.0 start then seeds silently, so a fix made in between is not
     alerted (say so to Ryan).
-11. **Release 1.7.1 (built Nov 11, not deployed; CHANGELOG 1.7.1):** merged from fw171-core, fw171-cards and
-    fw171-bidcal on branch `claude/quirky-thompson-p94wms`, not pushed. No portal contract change, so no HOM release
-    is needed first. Merge and update are each a [DESTRUCTIVE] yes from Ryan. Ryan's Nov 11 decisions are built on
-    branch `fw171-r2` (on top of that integration commit; CHANGELOG 1.7.1): the publish alert at 08:00 HST the day
-    before the publish date (`bidcal.PUBLISH_ALERT = (1, "08:00")`, the 3rd by default), the recall history replayed
-    once to each pilot (no alert or push for those days), shared charters (F#22: James's Watcher makes no CrewTrac
-    login and shows Ryan's scan), the health line on the settings card (F#10). After 1.7.1 is
-    live, each a [DESTRUCTIVE] HA change for Ryan through the connector, then the `ha/` snapshot refreshed and checked
-    by sha256: apply "Flight Watcher bid calendar" (`ha/README.md`, Pending on Pako; then drop that section), apply the
-    FW-0042 push text on "Flight Watcher new pairing" (Commute and Value lines, show only; `ha/README.md`), and drop
-    the second mqtt.publish to `flight_watcher_james/recall/set` from "Flight Watcher recall list in (Hark webhook)"
-    (the Watcher forwards it itself now, F#75; keeping it meanwhile is harmless). Started after Nov 11 08:00, the first
-    start logs December's five bid calendar alerts once each as not sent and the sensor reads Dec 3 08:00 HST. Check in
-    the app log after the update: about 2 min after the start "recall history sent to flight_watcher_james", about 2
-    min later "recall history replayed once to flight_watcher_james" (Ryan's log; sent only while James's Watcher
-    reads online, and again if it restarted in between) and "recall history from the admin: N days taken" (James's),
-    and "charters: the scan of ... shared
-    with the pilot Watchers" (Ryan's) and "makes no CrewTrac login" (James's); James's Charters card then reads
-    "From the admin's CrewTrac scan at ..." (a warning instead once Ryan's last scan is over 13 h old). For
-    HOM: an ignored Check now or Re-arm now answers ok false with a plain why (show "Not taken: <why>"), and with the
-    5 min heartbeat staleAfter can be about 10 min in every state. Not in 1.7.1 (contract changes): an alert for a new
-    swap idea (F#107) and bid calendar alerts on the portal (FW-0070); also open: the clock card's state-worded Re-arm
-    confirm and the hidden Settings tile (F#92, card and HOM work). Also in 1.7.1 (branch fw171-r3): FW-0071 (paste a
-    screenshot into a ticket: paste box, Paste photo, drop) and FW-0072 (the layover card, van alerts 30 and 10 min
-    before the van, layover notes with Tidy with AI). After 1.7.1 is live, two more [DESTRUCTIVE] HA changes for Ryan
-    (`ha/README.md`, Pending on Pako, FW-0072): the "Flight Watcher van time" automation, and the Working Flight view's
-    two cards replaced by `custom:flight-watcher-layover-card` with the Ready to update? button's Hark link as
-    `update_url`. Verify after: the app log's "van: ..." line on a layover, `sensor.flight_watcher_layover_van` and
-    `sensor.flight_watcher_layover_notes`, and the view rendered at 390 px with the van at the top right.
+11. **Release 1.7.1 (built Nov 11, not pushed or deployed; CHANGELOG 1.7.1):** one branch,
+    `claude/quirky-thompson-p94wms`, holds fw171-core, fw171-cards, fw171-bidcal and the review fixes, then fw171-r2
+    (Ryan's Nov 11 decisions), fw171-cap (FW-0042 part 2) and fw171-r3 (FW-0071, FW-0072), merged with each side's
+    fixes kept, plus the van time from the pairings package, the 98/672 tag in the new-pairing push and the FAR column's
+    672 h worst bound. No portal contract change, so no HOM release is needed first. Merge and update are each a
+    [DESTRUCTIVE] yes from Ryan; then verify `sensor.flight_watcher_state` version 1.7.1 and the app log.
+    - **Before the release, not part of it:** "Flight Watcher van time (temporary, FW-0072)" (automation id
+      `1794429970349`, on Pako, not in the snapshot) pushes tonight's Sydney van; Claude deletes it after that van, as
+      its description says, and before the permanent van automation goes in, so no van is pushed twice.
+    - **Pako changes after 1.7.1 is live** (each through the HA connector, each a [DESTRUCTIVE] yes from Ryan, in this
+      order; then the `ha/` snapshot checked by sha256 as `ha/README.md` says, and its Pending sections dropped):
+      1. Add "Flight Watcher bid calendar" (id `1794426120070`; FW-0070; critical push to Ryan's two iPhones from
+         `flight_watcher/event/bid_calendar`).
+      2. Add "Flight Watcher van time" (id `1794426120072`; FW-0072; critical push from `flight_watcher/event/van`,
+         30 and 10 min before the van).
+      3. Edit "Flight Watcher new pairing": its `msg` variable and description as in the snapshot (FW-0042, show
+         only: Commute, Value and the 98/672 tag lines, each left out when blank; triggers, conditions and targets
+         unchanged).
+      4. Dashboard `flight-watcher`, view `flight` (Working Flight): the markdown card and the "Ready to update?" grid
+         become one `custom:flight-watcher-layover-card` with the button's Hark link as `update_url` (the
+         `python_transform` in `ha/README.md`); then refresh the dashboard snapshot from Pako (its JSON must equal
+         the snapshot's, sha256 `78a4d55b...` if HA keeps the key order).
+      5. Optional, any time after: drop the second mqtt.publish to `flight_watcher_james/recall/set` from "Flight
+         Watcher recall list in (Hark webhook)" (the Watcher forwards recall lists itself, F#75; keeping it is
+         harmless: a second copy changes and pushes nothing). Not in the snapshot yet; refresh it when applied.
+    - **Check after the update** (app log and entities): started after Nov 11 08:00, the first start logs December's
+      five bid calendar alerts once each as not sent and `sensor.flight_watcher_bid_calendar` reads Dec 3 08:00 HST.
+      About 2 min after the start "recall history sent to flight_watcher_james", about 2 min later "recall history
+      replayed once to flight_watcher_james" (Ryan's log; sent only while James's Watcher reads online) and "recall
+      history from the admin: N days taken" (James's); "charters: the scan of ... shared with the pilot Watchers"
+      (Ryan's) and "makes no CrewTrac login" (James's), and James's Charters card "From the admin's CrewTrac scan at
+      ...". "van times: the 2026-11 pairings package read: ... layovers, 0 with a van time" (none has one yet: every
+      hotel line reads VAN 00:00 but four charter ride times, so vans come from Hark), "van: ... (from Hark)" on a
+      layover, `sensor.flight_watcher_layover_van` (`source`) and `sensor.flight_watcher_layover_notes`, and the
+      Working Flight view rendered at 390 px with the van at the top right and "from Hark" under it. When a package
+      does print a van time, the log says "(from the pairings package)" and a revised package re-arms the alerts.
+    - **For HOM:** an ignored Check now, Re-arm now or Scan CrewTrac now answers ok false with a plain why (show "Not
+      taken: <why>"; a pilot's Scan CrewTrac now always does, F#22), and with the 5 min heartbeat staleAfter can be
+      about 10 min in every state.
+    - **Not in 1.7.1** (contract changes): an alert for a new swap idea (F#107) and bid calendar alerts on the portal
+      (FW-0070); also open: the clock card's state-worded Re-arm confirm and the hidden Settings tile (F#92, card and
+      HOM work).
 
 ## Decided (do not reopen)
 
@@ -182,7 +195,11 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
     no alert or push for them (built in 1.7.1).
   - FW-0034: FLICA's alert email is the close-in channel.
   - FW-0042 is show only: the new-pairing push gains the commute result and the value (Commute and Value lines);
-    nothing is silenced by them (the HA edit is in `ha/automations_flight_watcher.yaml`, pending on Pako).
+    nothing is silenced by them (the HA edit is in `ha/automations_flight_watcher.yaml`, pending on Pako). The 98 h
+    in 672 h tag joins them, show only too (1.7.1).
+  - FW-0072 van times: "van times are published in the pairings pack monthly and can be updated from time to time".
+    The van alerts and the layover card take the package's VAN for the layover first (not 00:00), then Hark's van
+    for the same pairing, else none (built in 1.7.1).
 
 - FLICA read only, forever: no submit, drop, swap, add or bid; the swap "mode" is a read-only sensor (FW-0028).
 - Hunt load stays about 376 FLICA loads an hour (FW-0035).

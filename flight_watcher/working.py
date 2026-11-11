@@ -302,6 +302,24 @@ def working_flight(items, own, now, roll_h=2):
     return {"state": state[:STATE_MAX], "attributes": attrs}
 
 
+def layover_leg(items, own, now):
+    """1.7.1 (FW-0072, the van time source): the leg a layover's van goes to, from the pilot's own read legs: the first
+    that starts a duty after a layover (not its trip's first leg) whose trip's previous leg has blocked in by now and
+    which has not departed yet. {pairing, start (the trip's first day), city (its origin, the layover station), flt,
+    dep ('HH:MM' as FLICA printed it at the origin, '' when not), date (its departure date at the origin)}, or None
+    (at home, flying, or no legs read)."""
+    now = now.astimezone(HST) if now.tzinfo else now.replace(tzinfo=HST)
+    own = own if isinstance(own, dict) else {}
+    for p in _pairings(items):
+        rec = own.get(p["key"])
+        legs = _legs(p, rec if isinstance(rec, dict) else {})
+        for j, x in enumerate(legs):
+            if j and x["duty_start"] and legs[j - 1]["arr"] <= now < x["dep"]:
+                return {"pairing": x["trip"], "start": p["start"], "city": x["frm"], "flt": x["flt"],
+                        "dep": _hhmm(_mins(x["dep_l"])) if _mins(x["dep_l"]) is not None else "", "date": x["date"]}
+    return None
+
+
 def news(payload):
     """The payload without the fields that move on every call (VOLATILE), to tell a real change from a re-stamp."""
     a = (payload or {}).get("attributes") or {}

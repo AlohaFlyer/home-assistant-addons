@@ -2,17 +2,23 @@
 
 ## 1.7.1
 
-Fixes after 1.7.0 went live (the live log of Nov 11 on the second pilot's instance, LIVE-1, and the findings F#n),
-Ryan's FW-0070 bid calendar alerts, FW-0071 (paste a screenshot into a ticket) and FW-0072 (the layover page, van
-alerts and layover notes). No portal contract change: `roles.py` PORTAL_CMDS, PORTAL_REFUSED, PORTAL_EVENTS,
-FEATURES, PILOT_TICKET_LIMITS and the FLICA budgets, `tests/fixtures/portal_contract_v1.json` and `PORTAL_CONTRACT.md`
-are as in 1.7.0, and no command changes shape (the layout gains a card of a bundled type and the export a core
-entity, which contract 1 allows). Built from three branches (fw171-core, fw171-cards, fw171-bidcal), not deployed.
-Ryan's decisions of Nov 11 are in it too (branch fw171-r2): the publish alert at 08:00, the recall history replayed
-once to each pilot, shared charters (F#22), the health line (F#10), the push text of FW-0042 (Home Assistant, pending)
-and the dashboard snapshot after he removed the weather view. Still no contract change: an exported sensor gains two
-plain attributes, a pilot reads one retained topic under the admin's prefix and the admin each pilot's retained
-availability (no command topics, so not in `roles.SUBS`), and a portal pilot's Scan CrewTrac now answers ok false with the reason, the shape F#12 gave ignored presses.
+Fixes after 1.7.0 went live (the live log of Nov 11 on the second pilot's instance, LIVE-1, and the review findings
+F#n), Ryan's decisions of Nov 11, and his tickets FW-0042 part 2 (no monthly credit cap; the 98 h block in 672 h
+check), FW-0070 (bid calendar alerts), FW-0071 (paste a screenshot into a ticket) and FW-0072 (the layover page, van
+alerts and layover notes; the van time from the pairings package first). Built, not deployed: branch
+claude/quirky-thompson-p94wms merges fw171-core, fw171-cards and fw171-bidcal, the review fixes, then fw171-r2 (Ryan's
+Nov 11 decisions), fw171-cap (FW-0042 part 2) and fw171-r3 (FW-0071, FW-0072), with each side's fixes kept where they
+met.
+
+No portal contract change: `roles.py` PORTAL_CMDS, PORTAL_REFUSED, PORTAL_EVENTS, FEATURES, PILOT_TICKET_LIMITS and
+the FLICA budgets, `tests/fixtures/portal_contract_v1.json` and `PORTAL_CONTRACT.md` are as in 1.7.0, and no command
+changes shape. What the portal sees that is new is all allowed by contract 1: the layout gains the recall card in alert
+mode (a bundled type) and the export a core entity (`sensor.<prefix>_bid_calendar`); the fetches sensor gains two plain
+attributes; a pilot reads one retained topic under the admin's prefix (the shared charters) and the admin each
+pilot's retained availability (neither is a command topic, so neither is in `roles.SUBS`); an ignored press (Check
+now, Re-arm, Scan CrewTrac now) answers ok false with the reason in the result's existing {id, ok, why}; and the new
+admin-only command `layover/note` is refused on a portal as "anything else" (`roles.NOT_ON_PORTAL`, the fixture's
+bytes unchanged). So no HOM release is needed first.
 
 ### The Watcher
 
@@ -124,10 +130,10 @@ availability (no command topics, so not in `roles.SUBS`), and a portal pilot's S
   and `b672_ok` (true, false, '' unknown) in the finds DB and month files, `last_new` and `event/new_pairing`, not on
   the pot, Tradeboard or finds sensors (`SENSOR_DROP`). Only the window ending at the pickup's release is held to
   98 h; FAR's 100 h in every 672 h window stays the FAR column's. Nothing quiets, ranks or hides a find on
-  `month_rule`: the HA automations (in git, and on Pako as read Nov 11) read VAC, blocked days, fit and far only, the
-  finds card shows `month_rule` on hover only, there is no value score, and the portal's priority reads fit and far. A
-  push that wants the tag adds `{{ p.b672 }}` or `{{ p.month_rule }}` to the new-pairing message (a separate HA step);
-  a quiet rule built on the 1.4.13 template must not count `Fits 672` or `Over 98/672` as a fail (Ryan decides).
+  `month_rule`: the HA automations (in git, and on Pako as read Nov 11) read VAC, blocked days, fit and far only (the
+  new-pairing push's message text shows the tag, below under Home Assistant), the finds card shows `month_rule` on
+  hover only, there is no value score, and the portal's priority reads fit and far. A quiet rule built on the 1.4.13
+  template must not count `Fits 672` or `Over 98/672` as a fail (Ryan decides).
   Tests: `tests/test_fw171_b672.py`; `test_smart.py`'s cap tests now check the cap is gone.
 - FW-0042 part 2 review: a find stored before 1.7.1 that has left the pot (never screened again) drops `Over cap`
   and `Cap ?` from its `month_rule` in the finds DB rows, month files and card hover (`store.find_month_rule`;
@@ -135,6 +141,33 @@ availability (no command topics, so not in `roles.SUBS`), and a portal pilot's S
   672 h most-it-can-be counts a block on file longer than its own span (a page's slip) in full next to a trip
   across the window's start, which had read `Fits` up to that slip's excess too low
   (`far.flight_time_to_release`; the FAR column's `_cum` is unchanged).
+- Review: Tradeboard on a pilot: a detail load his FLICA budget left out (GateSkip) ended the whole Tradeboard read
+  before its baseline was saved, so a new post already pushed on event/new_pairing was pushed again by the next read
+  (his portal and ntfy), the next bid month was not read and the board was not published. With 1.7.1's Tradeboard
+  share this was the usual path at the hunt floor. Now a detail left out only screens that post from its list (fit,
+  vacation, FAR, the smart fields: `screen_row`) and is not cached, so a later read reads it; the read saves its
+  baseline, reads every bid month and publishes. A detail load waits while it would leave no room for the frames and
+  lists of the bid months still to read; a new post joins the baseline as soon as it is pushed (a read that ends
+  later, Pause, never pushes it again); and its details are cached from the push, so a new post costs one detail load,
+  not two (the admin's too). One log line a check says the details were left out.
+- Review: F#155: Remove CrewTrac login also drops the login from a pilot's options in memory, which hold creds.json's
+  values from the start: the state published with "saved: CrewTrac login removed" still showed the old user ID,
+  "CrewTrac password: set" and the Remove button, and the charter watch could use the login until the restart. The
+  admin's options (the add-on's own) stay.
+- Review: Scan CrewTrac now from the portal: a press that starts no scan (one running, no CrewTrac details or ones
+  CrewTrac refused, the login form came back last time, or the last pressed scan under 30 min ago) answers ok false
+  with the reason ("ignored: the last pressed scan was under 30 min ago") and is not republished, like Check now
+  (`charter_press_refusal` in `press_answer`; the result keeps its {id, ok, why} shape). A press from Home Assistant
+  is unchanged. Merged with F#22: a pilot's Watcher never scans, so his portal's press always answers "ignored:
+  charters come from the admin's CrewTrac scan; this Watcher does not log in to CrewTrac" (a CrewTrac login saved or
+  not); these reasons are what the admin's `press_answer` gives.
+- FAR column, 672 h flight time (the same gap the FW-0042 part 2 review found in `far.flight_time_to_release`):
+  `far._cum`'s most-it-can-be counted a block on file longer than its own span (a page's slip, H9006's 10:00 in an
+  8 h day) only up to its span, so next to a trip across the window's start a 10:01 pickup read "flight time at most
+  98:01 of 100 h" (OK) when the most it can be is 100:01, which is "may pass 100 h" (?). `far._in_window` now counts a
+  block surely in the window in full in the worst too, so the worst is never under the sure sum; the rest still count
+  up to their overlap. Only such a slip changes a result (a block no longer than its span counted in full already);
+  FDP and every other check are unchanged, and `flight_time_to_release` uses the same bound (FAR 117.23(b)(1)).
 
 ### The cards
 
@@ -176,17 +209,18 @@ availability (no command topics, so not in `roles.SUBS`), and a portal pilot's S
 - Recall history replay: the recall card leaves a replayed day (`replay`) out of the RECALL ALERT bar (alert mode
   and tab), marks it "list ok, history" and says on it: "From the admin's recall history (a list your Watcher did not
   get when it came in): checked against your line, with no alert or push."
-- F#22: the charters card on a pilot (`source` "admin") says "From the admin's CrewTrac scan at Nov 10 14:05 HST."
-  (or that it waits for one), has no Scan CrewTrac now button, and says his Watcher never logs in to CrewTrac; the
-  admin's card is as before. Review fix: the admin shares only after a scan that read CrewTrac, so when its scans stop
-  (its CrewTrac login refused or removed) the pilot's list stayed as it was with no warning. Over 13 h after the
-  admin's scan (two 6 h scans and their jitter missed) the status turns to a warning: "The admin's last CrewTrac scan
-  was Nov 9 12:00 HST, over 13 h ago. Charters added or cancelled since then are not shown until it scans again." The
-  card's signature carries that state, so the same sensor turns it on as time passes. A flight gone from the schedule is struck through at full color (it was faded to 60 %,
-  under AA contrast). The settings card, when the Watcher says it makes no CrewTrac login (`crewtrac.state`
-  "not_used"), has no CrewTrac fields and says "Not needed: your charters come from the admin's CrewTrac scan, and
-  your Watcher never logs in to CrewTrac."; a CrewTrac login still saved keeps its Remove CrewTrac login button. The
-  portal's Watcher tab help says the same instead of the Scan CrewTrac now line (`portal_layout.json`).
+- F#22: the charters card on a pilot (`source` "admin") says "From the admin's CrewTrac scan at Nov 10 14:05 HST." (or
+  that it waits for one), has no Scan CrewTrac now button, and says his Watcher never logs in to CrewTrac; the admin's
+  card is as before. Review fix: the admin shares only after a scan that read CrewTrac, so when its scans stop (its
+  CrewTrac login refused or removed) the pilot's list stayed as it was with no warning. Over 13 h after the admin's
+  scan (two 6 h scans and their jitter missed) the status turns to a warning: "The admin's last CrewTrac scan was Nov
+  9 12:00 HST, over 13 h ago. Charters added or cancelled since then are not shown until it scans again." The card's
+  signature carries that state, so the same sensor turns it on as time passes. A flight gone from the schedule is
+  struck through at full color (it was faded to 60 %, under AA contrast). The settings card, when the Watcher says it
+  makes no CrewTrac login (`crewtrac.state` "not_used"), has no CrewTrac fields and says "Not needed: your charters
+  come from the admin's CrewTrac scan, and your Watcher never logs in to CrewTrac."; a CrewTrac login still saved
+  keeps its Remove CrewTrac login button. The portal's Watcher tab help says the same instead of the Scan CrewTrac now
+  line (`portal_layout.json`).
 - F#10: the settings card's last line is the Watcher's health, "Watcher 1.7.1: hunting. FLICA pages in the last hour:
   37 of 100." (version and state from `sensor.<prefix>_state`, the count and budget from the fetches sensor; a count
   older than 2 min says when it was counted, one over an hour old reads 0), on the portal's Settings tab and Ryan's.
@@ -199,6 +233,10 @@ availability (no command topics, so not in `roles.SUBS`), and a portal pilot's S
   secondary text color, the settings notes in the secondary text color instead of a fade, the pickers' sorted header
   in the text color. These show on Ryan's HA dashboard as well; his light-theme status colors are unchanged except
   warn text (#8a5300). The portal's own primary buttons in dark mode (white on #3a9be0, 3.02:1) are HOM's palette.
+- Review: The cards on a phone (700 px or less): every field and select of the settings, pickers, clock, schedule (Pay
+  settings) and recall cards is 16 px, so iOS Safari no longer zooms into a tapped field and leaves the page wider
+  than the screen (the pilot lookup has been 16 px since F#43). Desktop sizes are unchanged. Not in this release: the
+  tickets card's fields (1.7.0) are 13 px.
 
 ### Bid calendar alerts (FW-0070, Ryan)
 
@@ -234,63 +272,17 @@ availability (no command topics, so not in `roles.SUBS`), and a portal pilot's S
 - A pilot's Watcher makes the same alerts on its own prefix, which no automation reads; they are not portal events
   (that is a contract change, not in this release). His `sensor.<prefix>_bid_calendar` is in his portal's state.json
   like any core entity (PORTAL_CONTRACT.md 4.1 and 4.2: a new entity needs no HOM release).
-
-### Review fixes
-
-- Tradeboard on a pilot: a detail load his FLICA budget left out (GateSkip) ended the whole Tradeboard read before its
-  baseline was saved, so a new post already pushed on event/new_pairing was pushed again by the next read (his portal
-  and ntfy), the next bid month was not read and the board was not published. With 1.7.1's Tradeboard share this was
-  the usual path at the hunt floor. Now a detail left out only screens that post from its list (fit, vacation, FAR, the
-  smart fields: `screen_row`) and is not cached, so a later read reads it; the read saves its baseline, reads every
-  bid month and publishes. A detail load waits while it would leave no room for the frames and lists of the bid months
-  still to read; a new post joins the baseline as soon as it is pushed (a read that ends later, Pause, never pushes it
-  again); and its details are cached from the push, so a new post costs one detail load, not two (the admin's too).
-  One log line a check says the details were left out.
-- Bid calendar: an alert's record keeps the event it was for (`bid_calendar_done`: how, at, event; `bidcal.is_done`).
+- Review: an alert's record keeps the event it was for (`bid_calendar_done`: how, at, event; `bidcal.is_done`).
   A date the package moves after its usual-date alert went out (a package uploaded late, as December's was on Nov 7;
   October's Practice Run #1 was on the 8th, not the 7th) is alerted once more at its own time under the same key (the
   phone's push of the same tag replaces the wrong one), and the sensor shows it pending until then, not sent. An
   unchanged date is never sent twice. The same for a close the package moves (its 24 h and night-before alerts).
-- Bid calendar: a usual date in a package that is on file but does not show that date says "Usual date: not found in
+- Review: a usual date in a package that is on file but does not show that date says "Usual date: not found in
   the pairing package." instead of "the pairing package is not uploaded yet" (each alert carries its cycle's source,
   `cycle_source`).
-- Bid calendar: `sensor.<prefix>_bid_calendar` is not published (nor kept as sent) while MQTT is down, and a
+- Review: `sensor.<prefix>_bid_calendar` is not published (nor kept as sent) while MQTT is down, and a
   reconnect sends it again at the next minute, so a broker restart across an alert's deadline no longer leaves the
   sensor on the dropped alert's past time, pending.
-- F#155: Remove CrewTrac login also drops the login from a pilot's options in memory, which hold creds.json's values
-  from the start: the state published with "saved: CrewTrac login removed" still showed the old user ID, "CrewTrac
-  password: set" and the Remove button, and the charter watch could use the login until the restart. The admin's
-  options (the add-on's own) stay.
-- Scan CrewTrac now from the portal: a press that starts no scan (one running, no CrewTrac details or ones CrewTrac
-  refused, the login form came back last time, or the last pressed scan under 30 min ago) answers ok false with the
-  reason ("ignored: the last pressed scan was under 30 min ago") and is not republished, like Check now
-  (`charter_press_refusal` in `press_answer`; the result keeps its {id, ok, why} shape). A press from Home Assistant is
-  unchanged.
-- The cards on a phone (700 px or less): every field and select of the settings, pickers, clock, schedule (Pay
-  settings) and recall cards is 16 px, so iOS Safari no longer zooms into a tapped field and leaves the page wider
-  than the screen (the pilot lookup has been 16 px since F#43). Desktop sizes are unchanged. Not in this release: the
-  tickets card's fields (1.7.0) are 13 px.
-
-### Home Assistant (Ryan's Nov 11 decisions; snapshots under `ha/`)
-
-- FW-0042, show only: "Flight Watcher new pairing" (`ha/automations_flight_watcher.yaml`) ends its message with the
-  commute result and the value from the event payload, each left out when blank: "Commute: KOA/ITO" (and
-  " (<comm_why>)" when that is 60 characters or less) and "Value: 4617". Its trigger, conditions, targets, sound and
-  title are unchanged: nothing is silenced and no one else is pushed. Pending on Pako (`ha/README.md`): Claude applies
-  it through the HA connector with Ryan's [DESTRUCTIVE] yes. The push guard passes (20 automations, 0 offenders).
-- Ryan removed the Aviation Wx view (`wx`) from his dashboard `flight-watcher` on Nov 11. `ha/dashboard_flight_watcher.json`
-  is refreshed from Pako (read only, redacted as `ha/README.md` says) and matches it by sha256 of the redacted text;
-  the wx package, its sensors and helpers stay. CLAUDE.md's views list follows.
-
-### Tests
-
-- `tests/test_fw171_review.py` (the review fixes: a pilot's Tradeboard at the hunt floor with one load of the pool
-  left, two new posts pushed once each across two reads; two bid months with none left, both read; the admin's one
-  detail load per new post; Scan CrewTrac now refused and taken from the portal). `tests/test_bidcal.py` (a date the
-  package moves after its usual alert, in bidcal and in the Watcher across a restart; the usual-date words; the
-  sensor while MQTT is down and after a reconnect). `test_fw171_core.py` and `test_fw171_crewtrac_remove.py` load the
-  options after creds.json is written, as a start does; `test_fw171_cards.py` checks every field at 390 px for 16 px;
-  the accepted portal samples test gives the demo pilot a CrewTrac login (a scan press without one is refused now).
 
 ### Paste a screenshot into a ticket (FW-0071, Ryan)
 
@@ -326,17 +318,18 @@ availability (no command topics, so not in `roles.SUBS`), and a portal pilot's S
   thumbnails (https only, alt text), transport. Release, MEL, NOTAM and GIN fold away under one status line. It reads
   Hark's sensor when it covers the Watcher's pairing (the markdown card's rule), else the Watcher's working flight,
   and Hark's only on the admin's instance (its state sensor's role).
-- Van alerts (`layover.py`, new; the Dockerfile copies it): the admin's Watcher reads `sensor.hark_working_flight`
-  through the Supervisor API (at most once a minute), puts its van on the layover station's clock (`working.ZONES`,
-  daylight time included) and sends `flight_watcher/event/van` 30 and 10 min before it, once per pairing, van time and
-  offset (DB `van_alerts_done`, written before the publish, so a restart never repeats one). A new van time arms both
-  again; after a late start only the latest alert still before the van goes, worded with the minutes really left; at
-  or after the van time nothing. The uploads janitor runs it every 10 s on its own, whatever the state (paused,
-  stepped aside, hunting, waiting for settings), no FLICA load; a due alert waits while MQTT is down. A station with no
-  zone, a van with no date and 24 h time, or a local time a daylight time change skips is no alert and one log line,
-  never a guess (a time that happens twice is the first of the two: early, not late). BFI, IND, LAN and LNK (in Ryan's
-  pairing and finds files on Pako, no zone before) join `working.ZONES`. `sensor.flight_watcher_layover_van` (new,
-  admin only, a timestamp sensor): the van's instant, its abbreviation, HST and each alert's status for the card.
+- Van alerts (`layover.py`, new; the Dockerfile copies it; where the van time comes from: the last item below): the
+  admin's Watcher reads `sensor.hark_working_flight` through the Supervisor API (at most once a minute), puts its van
+  on the layover station's clock (`working.ZONES`, daylight time included) and sends `flight_watcher/event/van` 30 and
+  10 min before it, once per pairing, van time and offset (DB `van_alerts_done`, written before the publish, so a
+  restart never repeats one). A new van time arms both again; after a late start only the latest alert still before
+  the van goes, worded with the minutes really left; at or after the van time nothing. The uploads janitor runs it
+  every 10 s on its own, whatever the state (paused, stepped aside, hunting, waiting for settings), no FLICA load; a
+  due alert waits while MQTT is down. A station with no zone, a van with no date and 24 h time, or a local time a
+  daylight time change skips is no alert and one log line, never a guess (a time that happens twice is the first of
+  the two: early, not late). BFI, IND, LAN and LNK (in Ryan's pairing and finds files on Pako, no zone before) join
+  `working.ZONES`. `sensor.flight_watcher_layover_van` (new, admin only, a timestamp sensor): the van's instant, its
+  abbreviation, HST and each alert's status for the card.
 - HA automation "Flight Watcher van time" (`ha/automations_flight_watcher.yaml`, pending on Pako: `ha/README.md`):
   triggered by `flight_watcher/event/van` only, a critical push to Ryan's two iPhones exactly like "Flight Watcher
   charter": "Van in 30 min: 19:40 AEDT (22:40 HST), <place>". The push guard passes.
@@ -388,18 +381,73 @@ availability (no command topics, so not in `roles.SUBS`), and a portal pilot's S
   44 px tall (the delete x 44 by 44; a chip stays 34 px to the eye with a 44 px tap area). A note's date is its HST
   date (its time is UTC: an evening note showed the next day) and the guide's tidied time says HST. With only the
   Watcher's working flight (no Hark), the release line is a plain line, not a fold-out with nothing in it.
+- The van time's source (Ryan, Nov 11: "remember van times are published in the pairings pack monthly and can be
+  updated from time to time"): the van alerts and the layover card now take the van, in this order: (a) the pairings
+  package's VAN for that pairing's layover, (b) Hark's sensor for the same pairing, (c) nothing (no alert; the card
+  says the van time is not known and why). (a) `layover.package_vans` reads the text copy every upload makes
+  (`uploads/<YYYY-MM>_pairings.txt`): inside each pairing, after a duty that ends away from base, the hotel line
+  ("<HOTEL>   <phone>   VAN HH:MM", calendar cells may follow), the next duty's report and its first leg; per pairing
+  and layover it keeps the station, that leg's flight and local departure, the report, the VAN and the hotel's name
+  (never the phone number). `layover.package_van` finds Ryan's layover in it (the pairing, else a FLICA-rebuilt
+  copy's base id; the station; the next leg's flight and departure where known; only a package whose bid period holds
+  the trip's first day) and puts the VAN on the station's clock on the day of that report (the day before for a
+  report before midnight or a van before it). VAN 00:00 means none given, and so does a VAN more than 3 h before the
+  report or after it: on Pako every hotel line of the October to December 2026 packages reads 00:00 except four
+  "HOTEL TBA" charter lines reading 00:30 next to 21:10, 21:15, 23:45 and 05:48 reports, a ride time rather than a
+  pickup, so today every van still comes from Hark. The Watcher (`van_source`, `van_packages`) re-reads a package only
+  when its file changes (an upload or a revised package replaces it, so a revision's VAN is used from the next 10 s
+  sweep; one log line a read) and finds the layover from Ryan's own schedule (`working.layover_leg`: his next leg out
+  of a station he has landed at), else from Hark's layover. Hark's van is used only for the pairing on his schedule
+  (Hark still on another trip is no van). A different VAN is a new van time, so it re-arms both alerts; the same VAN
+  again re-arms nothing. `sensor.flight_watcher_layover_van` gains `source` (package or hark), and its `why` names
+  Hark's reason and then the package's ("Hark's working flight is not in Home Assistant; the pairings package gives
+  no van time for H3681 SYD (VAN 00:00)"). The card shows "from the pairings package" or "from Hark" under the van
+  time, and on a layover with no van "Van time not known: not in the pairings package and not from Hark, so no van
+  alert comes." with that reason.
+
+### Home Assistant (snapshots under `ha/`, pending on Pako: `ha/README.md`)
+
+- FW-0042, show only: "Flight Watcher new pairing" (`ha/automations_flight_watcher.yaml`) ends its message with the
+  commute result and the value from the event payload, each left out when blank: "Commute: KOA/ITO" (and "
+  (<comm_why>)" when that is 60 characters or less) and "Value: 4617". Its trigger, conditions, targets, sound and
+  title are unchanged: nothing is silenced and no one else is pushed. Pending on Pako (`ha/README.md`): Claude applies
+  it through the HA connector with Ryan's [DESTRUCTIVE] yes. The push guard passes (21 automations with the bid
+  calendar and van ones, 0 offenders).
+- Ryan removed the Aviation Wx view (`wx`) from his dashboard `flight-watcher` on Nov 11.
+  `ha/dashboard_flight_watcher.json` was refreshed from Pako (read only, redacted as `ha/README.md` says) and matched
+  it by sha256 of the redacted text (3a5c1dbf...); the wx package, its sensors and helpers stay. CLAUDE.md's views
+  list follows. With FW-0072's pending layover card on the `flight` view the snapshot is one edit ahead of Pako (its
+  own sha256 78a4d55b..., both in `ha/README.md`).
+- FW-0042 part 2, show only: "Flight Watcher new pairing" also ends its message with the find's 98 h in 672 h tag,
+  after Commute and Value: the tag in its `month_rule` ("Fits 672 (97:59)", "Over 98/672 (98:01)", "672 ? (block not
+  read)"), else one made from `b672` and `b672_ok` when `month_rule` has none (no month type set), left out when
+  blank or unknown. It is text only: its trigger, conditions, targets, sound and title are unchanged, nothing is
+  silenced, ranked or hidden on it, and no one else is pushed. Pending on Pako with the Commute and Value lines (one
+  edit, after 1.7.1 is live: `ha/README.md`).
+- "Flight Watcher van time" (FW-0072, pending on Pako) says in its description that the van comes from the pairings
+  package's VAN when it gives one, else Hark's working flight; the push itself is unchanged. The temporary "Flight
+  Watcher van time (temporary, FW-0072)" automation Claude made for tonight's Sydney van (Ryan's yes, Nov 11) is not
+  part of this release: Claude deletes it after that van.
 
 ### Tests
 
+- `tests/test_fw171_review.py` (the review fixes: a pilot's Tradeboard at the hunt floor with one load of the pool
+  left, two new posts pushed once each across two reads; two bid months with none left, both read; the admin's one
+  detail load per new post; a pilot's portal Scan CrewTrac now refused with F#22's reason, a login saved or not, and
+  the admin's refusal reasons on `press_answer` itself). `tests/test_bidcal.py` (a date the
+  package moves after its usual alert, in bidcal and in the Watcher across a restart; the usual-date words; the
+  sensor while MQTT is down and after a reconnect). `test_fw171_core.py` and `test_fw171_crewtrac_remove.py` load the
+  options after creds.json is written, as a start does; `test_fw171_cards.py` checks every field at 390 px for 16 px;
+  the accepted portal samples test gives the demo pilot a CrewTrac login, and his press is still refused (F#22).
 - `tests/test_tickets_paste.py` (FW-0071, Chromium, the HA and the portal copy): a PNG pasted (a DataTransfer in a
   paste event, not composed) into the title, a text box, the form and the paste box adds it through the same path,
-  three at most in the portal and no blob: URL there; a composed paste counts once; a drop on the form; Paste photo with
-  a stubbed `navigator.clipboard.read` (a picture, a refusal, text only, no API); a real Ctrl+V into the paste box;
-  screenshots at 390 and 1100 px, light and dark. Each fails on the 1.7.0 card.
+  three at most in the portal and no blob: URL there; a composed paste counts once; a drop on the form; Paste photo
+  with a stubbed `navigator.clipboard.read` (a picture, a refusal, text only, no API); a real Ctrl+V into the paste
+  box; screenshots at 390 and 1100 px, light and dark. Each fails on the 1.7.0 card.
 - `tests/test_layover.py` (FW-0072: van parsing, a DST zone (AEDT) and DST-free ones, the year and month edge, the
-  skipped and repeated hours, unknown zones, due once, a late start, re-arm; the Watcher once across a restart,
-  paused or stepped aside, MQTT down, one log line, a pilot never reads or sends, the janitor every sweep; notes 0600
-  in 0700, refusals, plain text, the sensor cap, the portal never gets the card or the sensors; the HA push and the
+  skipped and repeated hours, unknown zones, due once, a late start, re-arm; the Watcher once across a restart, paused
+  or stepped aside, MQTT down, one log line, a pilot never reads or sends, the janitor every sweep; notes 0600 in
+  0700, refusals, plain text, the sensor cap, the portal never gets the card or the sensors; the HA push and the
   guard) and `tests/test_layover_card.py` (the card in Chromium: the van at the top right in headline size at 390 px,
   the countdown, the chip, the layover lists and links, the folded release, the fallbacks, the escaped guide, add,
   tidy and delete, screenshots at 390 and 1100 px, light and dark). Review r3: date-first vans with AM, PM or a zone,
@@ -409,7 +457,8 @@ availability (no command topics, so not in `roles.SUBS`), and a portal pilot's S
   and a refusal, 44 px taps at 390 px, HST note dates, a 12 h van and one only the Watcher read, a van neither can
   place, the card's van reading equal to `layover.parse_van` on 19 texts, a damaged file named, no state sensor; the
   tickets card's 44 px photo buttons and hint. Each fails on the r3 build before these fixes. `test_roles.py`,
-  `test_instance.py`, `test_portal_contract.py` and `test_portal_spool.py` take the new sub, sensors and `NOT_ON_PORTAL`.
+  `test_instance.py`, `test_portal_contract.py` and `test_portal_spool.py` take the new sub, sensors and
+  `NOT_ON_PORTAL`.
 - `tests/test_pilot_secondary_share.py` (LIVE-1: the real check() for 3 h at the 5 s floor on a pilot with one and two
   bid months and a greedy optional read: each of the four reads in every hour, the pot on every check, no rolling hour
   over 100, checks at least the pace apart; the admin has no shares). The pacing tests in `test_freq_ranges.py` and
@@ -426,25 +475,25 @@ availability (no command topics, so not in `roles.SUBS`), and a portal pilot's S
   key, its sealed message into the real `settings_cmd`, and the Watcher's answer back on the card; without the key the
   card sends nothing and the Watcher ignores a plain `ctweb_off`.
 - `tests/test_fw171_r2.py` (Ryan's Nov 11 decisions): the admin replays its recall history once to each pilot (the
-  delay, the body: date, file, rows, the first time and the mark, never `me` or verdicts; once, and a pilot added later
-  gets his own; a pilot replays nothing; review fix: sent only while the pilot's Watcher reads online, done only once
-  it stayed online after the send, sent again after a restart in that time, the admin's reconnect counting again, a
-  status payload read only as the exact word "online" and from this add-on's pilots only, a pilot reading none);
-  the admin's real replay body into a pilot: older days taken, judged, drafted
-  and shown with the admin's time, the held day untouched, no `event/recall_miss`, the alert count his own, a replay
-  twice changes nothing, a later live list alerts for its own miss only; the admin ignores the mark and never forwards
-  it; the recall card leaves a replayed day out of the bar; the admin shares only the card's flight fields, retained on
-  its own prefix (none of its login, status, line or fit), after a scan and at start; a pilot's sensor from the shared
-  list (source, time, not_used), the first list quiet, a new flight alerting once, malformed or extra data dropped, his
-  own old scans counting as seen; a pilot makes no CrewTrac login (no thread, scan, press or retry; his subscriptions
-  his own plus the shared list, the admin never reads it); a portal Scan CrewTrac now answers ok false with the
-  reason; the charters card (review fix: the warning once the admin's scan is over 13 h old, in light and dark, and
-  as time passes on the same sensor; the admin's own card never) and the settings card (no CrewTrac fields, Remove kept, the health line) in Chromium at
-  390 px light and dark with AA contrast; the fetches sensor's `hour` and `budget` and the janitor's resend; the
+  delay, the body: date, file, rows, the first time and the mark, never `me` or verdicts; once, and a pilot added
+  later gets his own; a pilot replays nothing; review fix: sent only while the pilot's Watcher reads online, done only
+  once it stayed online after the send, sent again after a restart in that time, the admin's reconnect counting again,
+  a status payload read only as the exact word "online" and from this add-on's pilots only, a pilot reading none); the
+  admin's real replay body into a pilot: older days taken, judged, drafted and shown with the admin's time, the held
+  day untouched, no `event/recall_miss`, the alert count his own, a replay twice changes nothing, a later live list
+  alerts for its own miss only; the admin ignores the mark and never forwards it; the recall card leaves a replayed
+  day out of the bar; the admin shares only the card's flight fields, retained on its own prefix (none of its login,
+  status, line or fit), after a scan and at start; a pilot's sensor from the shared list (source, time, not_used), the
+  first list quiet, a new flight alerting once, malformed or extra data dropped, his own old scans counting as seen; a
+  pilot makes no CrewTrac login (no thread, scan, press or retry; his subscriptions his own plus the shared list, the
+  admin never reads it); a portal Scan CrewTrac now answers ok false with the reason; the charters card (review fix:
+  the warning once the admin's scan is over 13 h old, in light and dark, and as time passes on the same sensor; the
+  admin's own card never) and the settings card (no CrewTrac fields, Remove kept, the health line) in Chromium at 390
+  px light and dark with AA contrast; the fetches sensor's `hour` and `budget` and the janitor's resend; the
   new-pairing message rendered with Jinja (the fields shown, blanks left out, a long why kept off) and its conditions
   and targets unchanged; the dashboard snapshot without the weather view at the sha `ha/README.md` records.
-  `test_crewtrac_stop.py` runs its refusal, back-off and press rules on the admin's Settings-saved CrewTrac login (they
-  ran on a pilot) and adds that a pilot never logs in; `test_doh_settings.py`, `test_fw171_core.py` (F#102),
+  `test_crewtrac_stop.py` runs its refusal, back-off and press rules on the admin's Settings-saved CrewTrac login
+  (they ran on a pilot) and adds that a pilot never logs in; `test_doh_settings.py`, `test_fw171_core.py` (F#102),
   `test_portal_spool.py` (the accepted samples: Scan CrewTrac now answered ok false), `test_roles.py` (a pilot's
   subscriptions), `test_release_a_cards.py` (the help text) and `test_release_c_card.py` (the page list) follow.
 - `tests/test_bidcal.py` (parse on synthetic cover pages in the real layout, schedule, the publish alert at 08:00 the
@@ -452,6 +501,21 @@ availability (no command topics, so not in `roles.SUBS`), and a portal pilot's S
   a restart, MQTT down, the package's dates, the sensor, a pilot's prefix, the janitor, the
   Dockerfile, the HA push and the guard); the entity lists in `test_instance.py` and `test_portal_export.py` and the
   busy-month sensor sizes take the new sensor. `test_release_c_tickets.py` checks the version 1.7.1.
+- `tests/test_van_package.py` (the van time's source, a synthetic package with a made-up hotel and phone number):
+  the parser keeps each layover and never the phone number; 00:00 is no van time; the van on the station's clock
+  before the report (and across midnight), found by station and flight or departure, not in another period's package,
+  a rebuilt copy's base id; a VAN that is no pickup before the report (00:30 by a 21:10 report, as on Pako) is none;
+  `working.layover_leg` from Ryan's own legs; in the Watcher a non-zero VAN wins over Hark's (alerts at 19:25, not
+  19:40, Hark's place words kept, source package), a revised package with another VAN re-arms both alerts and the same
+  one again re-arms nothing, 00:00 or a ride time falls through to Hark, no van from either is no alert with both
+  reasons, Hark for another pairing is not used, Hark's layover finds the package van without Ryan's legs, a misnamed
+  package is not used. `test_layover_card.py`: "from the pairings package" and "from Hark" on the card, and "Van time
+  not known" with the reason (none at home). `test_layover.py`'s van sensor keys gain `source`.
+- `tests/test_fw171_r2.py`: the new-pairing message with the 672 tag (from `month_rule`, from `b672` / `b672_ok`, the
+  unknowns, other parts never taken for it). `test_fw171_b672.py`: the FAR column's 672 h worst counts a slipped
+  block in full (fails before the fix: 98:01 "OK"), and is never under the sure sum in any window tried; its guard
+  that nothing quiets on the tag now checks every automation's triggers, conditions and other variables (the
+  new-pairing message text is the only reader).
 
 ## 1.7.0
 

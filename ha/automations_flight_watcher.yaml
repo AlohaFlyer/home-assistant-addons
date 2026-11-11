@@ -203,7 +203,10 @@
     it is imported in the Home Assistant app). FW-0042 (Nov 11, Ryan: show only):
     the message adds the commute result and the pairing value from the event (comm,
     value; comm_why too when 60 characters or less), e.g. ''Commute: KOA/ITO'' and
-    ''Value: 4617'', each left out when blank. Nothing is silenced by them.'
+    ''Value: 4617'', each left out when blank. Nothing is silenced by them. 1.7.1
+    (FW-0042 part 2, show only): and the 98 h in 672 h block tag of the find (its
+    month_rule part, else b672 / b672_ok), e.g. ''Fits 672 (97:59)'', ''Over 98/672
+    (98:01)'' or ''672 ? (block not read)'', left out when blank.'
   triggers:
   - topic: flight_watcher/event/new_pairing
     trigger: mqtt
@@ -245,7 +248,16 @@
         endif %}{% set v = p.value if p.value is defined and p.value is not none else
         '''' %}{% if v | string %}
 
-        Value: {{ v }}{% endif %}'
+        Value: {{ v }}{% endif %}{% set ns = namespace(t='''') %}{% for x in (p.month_rule
+        if p.month_rule is defined and p.month_rule else '''').split('', '') %}{% if
+        not ns.t and x.startswith((''Fits 672'', ''Over 98/672'', ''672 ?'')) %}{% set
+        ns.t = x %}{% endif %}{% endfor %}{% set b = p.b672 if p.b672 is defined and
+        p.b672 else '''' %}{% set ok = p.b672_ok if p.b672_ok is defined else '''' %}{%
+        if not ns.t and b and ok is sameas true %}{% set ns.t = ''Fits 672 ('' ~ b ~
+        '')'' %}{% elif not ns.t and b and ok is sameas false %}{% set ns.t =
+        ''Over 98/672 ('' ~ b ~ '')'' %}{% endif %}{% if ns.t %}
+
+        {{ ns.t }}{% endif %}'
   - parallel:
     - action: notify.mobile_app_ryans_iphone
       continue_on_error: true
@@ -1050,10 +1062,11 @@
 - id: '1794426120072'
   alias: Flight Watcher van time
   description: 'FW-0072 (Ryan, 1.7.1): the Watcher''s van alerts (layover.py), 30 and
-    10 min before the van at the layover station, from Hark''s working flight. One
-    push per alert, critical like the charter alert: "Van in 30 min: 19:40 AEDT (22:40
-    HST), <hotel> lobby". Push isolation (FW-0038): Ryan''s prefix only, to Ryan''s
-    phones only; only the admin''s Watcher sends van alerts.'
+    10 min before the van at the layover station: the pairings package''s VAN for
+    that layover when it gives one, else Hark''s working flight. One push per alert,
+    critical like the charter alert: "Van in 30 min: 19:40 AEDT (22:40 HST), <hotel>
+    lobby". Push isolation (FW-0038): Ryan''s prefix only, to Ryan''s phones only;
+    only the admin''s Watcher sends van alerts.'
   triggers:
   - topic: flight_watcher/event/van
     trigger: mqtt

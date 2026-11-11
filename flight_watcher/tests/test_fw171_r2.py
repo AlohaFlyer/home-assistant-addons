@@ -605,6 +605,26 @@ def test_the_push_shows_the_commute_and_the_value_when_known():
     assert _msg({**EV, "value": 0}) == base + "\nValue: 0"
 
 
+def test_the_push_shows_the_98_in_672_tag_when_known():
+    """1.7.1 (FW-0042 part 2, show only): the find's 98 h in 672 h block tag, its month_rule part (the unknowns say
+    why), else built from b672 / b672_ok when month_rule has none (no month type set), after Commute and Value; left
+    out when blank, and nothing else in the text changes."""
+    base = "Sa Nov 14 - Mo Nov 16 | Doe\nDep 8:00am - Ret 6:30pm\nCr 15:00 | ST 1:30 | Fits"
+    assert _msg({**EV, "month_rule": "", "b672": "", "b672_ok": ""}) == base
+    assert _msg({**EV, "month_rule": "OK, Fits 672 (97:59)", "b672": "97:59", "b672_ok": True, "comm": "KOA/ITO",
+                 "value": 4617}) == base + "\nCommute: KOA/ITO\nValue: 4617\nFits 672 (97:59)"
+    assert _msg({**EV, "month_rule": "Days off 11, Over 98/672 (98:01), Rest 10:30", "b672": "98:01",
+                 "b672_ok": False}) == base + "\nOver 98/672 (98:01)"
+    assert _msg({**EV, "month_rule": "Rest ?, 672 ? (block not read)", "b672": "", "b672_ok": ""}) == (
+        base + "\n672 ? (block not read)")
+    assert _msg({**EV, "month_rule": "OK, 672 ? (78:01 to 98:01)"}) == base + "\n672 ? (78:01 to 98:01)"
+    # no month type set: month_rule has no tag, the row's own b672 / b672_ok still show
+    assert _msg({**EV, "month_rule": "", "b672": "97:59", "b672_ok": True}) == base + "\nFits 672 (97:59)"
+    assert _msg({**EV, "b672": "101:30", "b672_ok": False}) == base + "\nOver 98/672 (101:30)"
+    assert _msg({**EV, "b672": "97:59", "b672_ok": ""}) == base  # not known: never guessed
+    assert _msg({**EV, "month_rule": "VAC, Conflict H3659"}) == base  # other parts are not the tag
+
+
 def test_the_push_change_silences_nothing_and_pushes_no_one_new():
     a = _new_pairing()
     assert [c["alias"][:24] for c in a["conditions"]] == ["Skip trips touching VAC ", "Skip trips Ryan cannot l"]

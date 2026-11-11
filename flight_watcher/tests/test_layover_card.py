@@ -447,3 +447,50 @@ def test_the_dashboard_snapshot_puts_the_card_on_the_working_flight_view():
     # the card ships with the app
     import cards
     assert "flight-watcher-layover-card.js" in json.loads(cards.build("1")[cards.MANIFEST])["cards"]
+
+
+# ---------------------------------------------------------------- 1.7.1: the van time's source (Ryan, Nov 11)
+def test_the_card_shows_where_the_van_time_comes_from(browser, tmp_path):
+    """The pairings package's VAN (19:25 here) comes before Hark's (19:40) and the card says "from the pairings
+    package"; Hark's alone says "from Hark"."""
+    from test_van_package import package
+    leg = {"pairing": "H3681", "start": "2026-11-10", "city": "SYD", "flt": "852", "dep": "21:40", "date": "2026-11-12"}
+    info, _ = LO.package_van([LO.package_vans(package())], leg)
+    st = _states(tmp_path)
+    st["sensor.flight_watcher_layover_van"]["attributes"] = LO.sensor(info, "", {}, NOW)
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(st))
+    card = pg.locator("flight-watcher-layover-card")
+    v = card.locator("[data-van]")
+    assert v.locator(".vt").inner_text() == "19:25" and "AEDT" in v.locator(".vz").inner_text()
+    assert v.locator(".vh").inner_text().strip() == "22:25 HST Wed"
+    assert v.locator("[data-vansrc]").inner_text() == "from the pairings package"
+    assert v.locator("[data-cd]").inner_text() == "in 1 h 55 min"
+    assert "30 min at 21:55 HST" in card.locator(".vp").first.inner_text()
+    assert pg.evaluate("document.documentElement.scrollWidth") <= 390
+    pg.close()
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(_states(tmp_path / "h")))
+    assert pg.locator("flight-watcher-layover-card [data-vansrc]").inner_text() == "from Hark"
+    pg.close()
+
+
+def test_with_no_van_time_the_card_says_it_is_not_known(browser, tmp_path):
+    """(c): no package van and nothing from Hark: no van time and no alert, and the card says so with the Watcher's
+    reason, the report time in the van's place."""
+    why = "Hark's working flight is not in Home Assistant; the pairings package gives no van time for H3681 SYD (VAN 00:00)"
+    st = _states(tmp_path, hark_attrs={})
+    st["sensor.flight_watcher_layover_van"] = {"state": "unknown", "last_updated": "v2", "attributes": {"at": None, "why": why}}
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(st))
+    card = pg.locator("flight-watcher-layover-card")
+    assert card.locator("[data-van] .vl").inner_text().lower() == "report"
+    line = card.locator("[data-vanunknown]").inner_text()
+    assert "Van time not known" in line and "no van alert comes" in line and "VAN 00:00" in line
+    assert card.locator("[data-vansrc]").count() == 0
+    # at home (the next leg leaves HNL) the card says nothing about a van
+    st["sensor.flight_watcher_working_flight"]["attributes"]["origin"] = "HNL"
+    st["sensor.flight_watcher_working_flight"]["last_updated"] = "w2"
+    pg.evaluate("(p) => window.setStates(p)", {"sensor.flight_watcher_working_flight": st["sensor.flight_watcher_working_flight"]})
+    assert card.locator("[data-vanunknown]").count() == 0
+    pg.close()

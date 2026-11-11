@@ -226,6 +226,7 @@ def _load(tmp_path, monkeypatch, instance="", fake=None, states=None):
     fake = fake or FakeClient()
     monkeypatch.setattr(W, "MQ", fake)
     monkeypatch.setattr(W, "LAYOVERS_DIR", str(tmp_path / "share" / "layovers"))
+    monkeypatch.setattr(W, "UPLOADS_SHARED", str(tmp_path / "share" / "uploads"))  # 1.7.1: no package unless a test puts one
     st = states if states is not None else {}
     reads = []
 
@@ -343,7 +344,8 @@ def test_the_van_sensor_keeps_only_what_the_card_reads(tmp_path, monkeypatch):
     W.van_tick(VAN_UTC - timedelta(minutes=30), mono=0)
     s = _last(fake, "layover_van")
     assert set(s) == {"at", "why", "pairing", "city", "abbr", "date", "local", "weekday", "hst", "hst_weekday", "place",
-                      "alerts"}
+                      "source", "alerts"}  # 1.7.1: source, package or hark, for the card's "from ..." line
+    assert s["source"] == "hark"
     assert "7:40 PM" not in json.dumps(s) and s["place"] == "Example Harbour Hotel lobby"
     (ev, _), = _vans(fake)
     assert ev["hotel"] == "Example Harbour Hotel" and ev["place"] == "Example Harbour Hotel lobby"

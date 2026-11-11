@@ -13,8 +13,10 @@
 //   Claude writes <CITY>.guide.md in the ticket flow, shown above the notes (its markdown escaped, then a few
 //   formats: headings, lists, bold, italics, https links). Notes for other cities fold away below.
 // Data: sensor.hark_working_flight (Hark's) when it covers the same pairing as sensor.<prefix>_working_flight, else
-// the Watcher's (the markdown card's rule); sensor.<prefix>_layover_van (the Watcher's reading of Hark's van on the
-// station's clock: abbreviation, HST, the instant for the countdown, the alerts' status). Hark's data shows only
+// the Watcher's (the markdown card's rule); sensor.<prefix>_layover_van (the Watcher's van on the station's clock:
+// abbreviation, HST, the instant for the countdown, the alerts' status, and its source). The van, in the Watcher's
+// order (Ryan, Nov 11): the pairings package's VAN for this layover (source "package"), else Hark's van text, else
+// none: the card says the van time is not known (and why), so no van alert comes. The source shows under the time. Hark's data shows only
 // while sensor.<prefix>_state says role admin (not while that sensor is missing or has no role), so a pilot's copy
 // never shows another pilot's trip. Admin only in this release: not in the pilot portal's layout (and not bundled
 // for it). Colors: text on the card's own background is the theme's primary text color; the countdown's urgent states
@@ -215,16 +217,26 @@ class FlightWatcherLayoverCard extends HTMLElement {
       main = `<div class="hd"><div class="lt"><div class="fl">&#9992;&#65039; Working flight</div>
         <div class="u">${s ? "No trip on your schedule." : "Waiting for Flight Watcher."}${a.next ? ` Next: ${this._e(a.next)}` : ""}</div></div></div>`;
     } else {
-      const vt = hark ? this._vanText(a, s.state) : null, vs = this._vanSensor(a, vt);
+      // the pairings package's van (the Watcher read it for this pairing's layover) comes first, then Hark's
+      const va = (this._st(`sensor.${p}_layover_van`) || {}).attributes || {};
+      const pk = va.at && va.source === "package" && va.pairing === a.pairing && va.local && va.date
+        ? { local: String(va.local), date: String(va.date), wd: String(va.weekday || ""), place: String(va.place || "") } : null;
+      const vt = pk || (hark ? this._vanText(a, s.state) : null), vs = this._vanSensor(a, vt);
       // Hark gave a van the Watcher could not place: its text shows, and that no alert comes for it
       const unread = hark && !vt && String(a.van || "").trim() ? String(a.van).trim() : "";
+      // on a layover (Hark's layover mode, or the Watcher's next leg out of a station that is not home) with no van:
+      // the van time is not known, so no van alert comes
+      const o = String(a.origin || "").toUpperCase();
+      const onLay = /^[A-Z]{3}$/.test(o) && o !== "HNL" && (hark ? a.mode === "layover" : !a.status || a.status === "Scheduled");
+      const unknown = !vt && !unread && onLay;
       let big;
       if (vt) {
         const l = vs ? this._left(vs.at) : { t: "", c: "" };
         big = `<div class="van" data-van><div class="vl">Van</div><div class="vt">${this._e(vt.local)}</div>
           <div class="vz">${this._e(vs ? vs.abbr : "local")}${vt.wd || (vs && vs.weekday) ? ` &middot; ${this._e(vt.wd || vs.weekday)}` : ""}</div>
           ${vs ? `<div class="vh">${this._e(vs.hst)} HST ${this._e(vs.hst_weekday || "")}</div>` : ""}
-          <div class="cd ${l.c}" data-cd${vs ? ` data-at="${this._e(vs.at)}"` : ""}>${this._e(l.t)}</div></div>`;
+          <div class="cd ${l.c}" data-cd${vs ? ` data-at="${this._e(vs.at)}"` : ""}>${this._e(l.t)}</div>
+          <div class="u vsrc" data-vansrc>${pk ? "from the pairings package" : "from Hark"}</div></div>`;
       } else {
         const rp = this._timeParts(a.report);
         big = rp ? `<div class="van rep" data-van><div class="vl">Report</div><div class="vt">${this._e(rp.hm)}</div><div class="vz">${this._e(rp.rest)}</div></div>` : "";
@@ -266,6 +278,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
           ${a.mode ? `<span class="mode">${this._e(a.mode === "layover" ? `Layover ${a.origin || ""}` : a.mode)}</span>` : ""}</div>${big}</div>
         ${vt && vt.place ? `<div class="vp">&#128656; Van at ${this._e(vt.place)}${alerts.length ? ` <span class="u">&middot; alerts ${alerts.map((x) => `${x.minutes} min ${x.status === "sent" ? "&#10003;" : x.status === "pending" ? `at ${this._e(x.at_hst)} HST` : this._e(x.status)}`).join(", ")}</span>` : ""}</div>` : ""}
         ${unread ? `<div class="vp" data-vanunread>&#128656; Van: ${this._e(unread)} <span class="u">&middot; no van alert: its time could not be read for sure</span></div>` : ""}
+        ${unknown ? `<div class="vp" data-vanunknown>&#128656; Van time not known: not in the pairings package and not from Hark, so no van alert comes.${!va.at && va.why ? ` <span class="u">(${this._e(va.why)})</span>` : ""}</div>` : ""}
         <div class="tm">${a.report ? `<div><span class="k">Report</span> ${this._e(a.report)}</div>` : ""}
           ${dep ? `<div><span class="k">Departs</span> ${this._e(a.dep_sched)}</div>` : ""}${arr ? `<div><span class="k">Arrives</span> ${this._e(a.arr_sched)}</div>` : ""}</div>
         ${status}${links ? `<div class="chips">${links}</div>` : ""}${rel}${lay}`;
@@ -286,7 +299,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
       .vt{font-size:44px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
       .vz,.vh{font-size:12px;color:var(--secondary-text-color);white-space:nowrap}.vz{font-weight:700;color:var(--primary-text-color)}
       .rep .vt{font-size:36px}.rep .vz{white-space:normal;max-width:150px;font-weight:400}
-      .cd{font-size:14px;font-weight:700;margin-top:2px;color:var(--primary-text-color)}
+      .cd{font-size:14px;font-weight:700;margin-top:2px;color:var(--primary-text-color)}.vsrc{max-width:150px;margin-left:auto}
       .cd.soon,.cd.now{color:#fff;border-radius:6px;padding:0 6px;display:inline-block}.cd.soon{background:#8a5300}.cd.now{background:#b71c1c}
       .cd.past{color:var(--secondary-text-color);font-weight:400}
       .vp{margin:8px 0 2px;font-weight:600}

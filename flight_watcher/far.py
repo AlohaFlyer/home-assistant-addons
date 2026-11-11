@@ -196,8 +196,11 @@ def _in_window(segs, a, b, what):
             hi += ov
             add = ov if sure else 0.0
         else:
-            hi += min(cap, ov)
             add = blk if _known_block(seg, a, b) else 0.0
+            # 1.7.1: a block surely in the window counts in full in the worst too, so worst is never under sure (a
+            # block on file longer than its own span, a page's slip, counted only up to its span there, and next to a
+            # trip across the window's start the FAR column read OK under the true worst); the rest up to their overlap
+            hi += add if add else min(cap, ov)
         lo += add
         lo_mine += 0.0 if is_new else add
     return lo, hi, lo_mine
@@ -206,10 +209,12 @@ def _in_window(segs, a, b, what):
 def _cum(trips, new, span, lim, what, ref):
     """FAR 117.23: the most flight time / FDP hours in any `span` window that holds part of the new pairing.
     sure (lo): FDP = overlap of known duty periods; flight time = block of every span wholly inside the window.
-    worst (hi): FDP = overlap of every span; flight time = the lesser of each span's block (its length when the block
-    is unknown) and its overlap. Both are piecewise linear in the window's position, so their maxima are at the
-    windows that start at a span's start or at its end less its cap, or end at a span's end or at its start plus its
-    cap; only those windows are tried. Returns (result 'OK' | 'NO' | '?', line, hours: when NO or '?' over, the worst
+    worst (hi): FDP = overlap of every span; flight time = the block of every span wholly inside the window with its
+    block known (as in sure, 1.7.1: in full even when it is longer than its span), else the lesser of the span's block
+    (its length when the block is unknown) and its overlap. Both are piecewise linear in the window's position (a
+    known block steps up where its span comes wholly inside, at a window starting at its start or ending at its end),
+    so their maxima are at the windows that start at a span's start or at its end less its cap, or end at a span's
+    end or at its start plus its cap; only those windows are tried. Returns (result 'OK' | 'NO' | '?', line, hours: when NO or '?' over, the worst
     failing window's of the kind the first one in time decided (the pairing's own excess, or the line's), else the most
     it can be)."""
     segs = _segs(trips, new, what, new["report"] - span, new["release"] + span)
@@ -263,10 +268,9 @@ def flight_time_to_release(new, mine, span=H672):
     b = new["release"]
     a = b - span
     segs = _segs(mine + [new], new, "flight time", a, b)
-    lo, _, _ = _in_window(segs, a, b, "flight time")
     # the most it can be: every block surely in it in full (lo; one on file longer than its own span, a page's slip,
-    # included) plus the rest cut to their overlap (_cum's worst would count that slip only up to its span)
-    hi = lo + sum(min(sg[2], _ov(sg[0], sg[1], a, b)) for sg in segs if not _known_block(sg, a, b))
+    # included) plus the rest cut to their overlap: _in_window's worst, the same bound as the FAR column's (1.7.1)
+    lo, hi, _ = _in_window(segs, a, b, "flight time")
     blk, line, edge = [], [], []
     for seg in segs:
         s, e, _, bh, _, _, t = seg

@@ -236,8 +236,18 @@ def test_nothing_quiets_or_hides_a_find_over_98_672(tmp_path, monkeypatch):
     on them (the finds card shows month_rule on hover only), there is no value score, and the portal's push priority
     reads fit and far alone. An Over 98/672 find still goes out on event/new_pairing and into the finds DB."""
     import portal
+    import yaml
     ha = open(os.path.join(os.path.dirname(HERE), "ha", "automations_flight_watcher.yaml"), encoding="utf-8").read()
-    assert not any(w in ha for w in ("month_rule", "b672", "Over cap", "cap_credit", "672 ?"))
+    assert not any(w in ha for w in ("Over cap", "cap_credit"))
+    # 1.7.1 (FW-0042 part 2, show only): the new pairing push's message text shows the tag; nothing else in any
+    # automation (triggers, conditions, targets, the other variables) reads month_rule or b672
+    for a in yaml.safe_load(ha):
+        a = json.loads(json.dumps(a))
+        if a["alias"] == "Flight Watcher new pairing":
+            msg = a["actions"][1]["variables"].pop("msg")
+            assert "b672" in msg and "month_rule" in msg
+            a.pop("description")
+        assert not any(w in json.dumps(a) for w in ("month_rule", "b672", "672 ?", "Fits 672", "Over 98")), a["alias"]
     for name in os.listdir(os.path.join(HERE, "www")):
         if name.endswith(".js"):
             src = open(os.path.join(HERE, "www", name), encoding="utf-8").read()
@@ -291,6 +301,33 @@ def test_a_block_longer_than_its_span_with_a_trip_across_the_window_start():
     assert (r["known"], r["worst"], r["edge"]) == (78.0, 98.0, ["H9000 Feb 28"])
     # the slip alone, no edge trip: known (its block in full) is the most it can be
     assert b672(D(3, 29), "8:01", LINE90[2:4] + trips[-1:])["tag"] == "Fits 672 (78:01)"
+
+
+def test_the_far_columns_672_worst_counts_a_slipped_block_in_full_too():
+    """1.7.1 (the same gap in far._cum): the FAR 117.23(b)(1) column's worst counted a block on file longer than its
+    own span (H9006's 10:00 in an 8 h day) only up to its span, so next to a trip across the window's start (H9000)
+    a 10:01 pickup read 'flight time at most 98:01 of 100 h' when the most it can be is 100:01. Now the worst counts
+    a block surely in the window in full, as the sure sum and flight_time_to_release do: never under the sure sum."""
+    trips = [("H9000", "2030-02-28", "2030-03-02", "08:00", "16:00", "20:00")] + LINE90[2:4] + [
+        ("H9006", "2030-03-23", "2030-03-23", "08:00", "16:00", "10:00")]
+    sched, own = line(trips)
+    mine = RC.line_records(sched, own, D(3, 29), D(3, 29), D(3, 1))
+
+    def cum(blk):
+        new = RC.pickup_trip("H9101", D(3, 29), D(3, 29), "06:00", "18:00", blk, [])
+        return F._cum(mine + [new], new, F.H672, F.FT_672, "flight time", "FAR 117.23(b)(1)")
+    res, txt, h = cum(10 + 1 / 60)
+    assert res == "?" and round(h, 2) == 100.02 and "80:01 h known, up to 100:01 h" in txt
+    assert cum(10.0)[:2] == ("OK", "flight time at most 100:00 of 100 h in 672 h (FAR 117.23(b)(1))")
+    assert cum(8.0)[2] == 98.0  # 96:00 before the fix
+    new = RC.pickup_trip("H9101", D(3, 29), D(3, 29), "06:00", "18:00", 8.0, [])
+    assert F.flight_time_to_release(new, mine)["worst"] == cum(8.0)[2]  # one bound for both
+    # in every window the worst is at least the sure sum
+    segs = F._segs(mine + [new], new, "flight time", new["report"] - F.H672, new["release"] + F.H672)
+    for s, e, *_ in segs:
+        for a in (s, e - F.H672, s - F.H672 / 2):
+            lo, hi, _ = F._in_window(segs, a, a + F.H672, "flight time")
+            assert hi >= lo, (a, lo, hi)
 
 
 def test_a_find_stored_before_1_7_1_no_longer_reads_over_cap(tmp_path):

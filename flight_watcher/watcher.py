@@ -7106,30 +7106,119 @@ def van_read(mono):
     _VAN["state"] = str(js.get("state") or "") if st == 200 else ""
 
 
+_PKG_VANS = {}  # 1.7.1: bid month -> ((mtime_ns, size), layover.package_vans of its pairings package, or None)
+
+
+def van_packages(months):
+    """layover.package_vans of each month's pairings package (uploads/<YYYY-MM>_pairings.txt, the text copy every
+    upload makes, shared), read again only when its file changes: an uploaded or revised package replaces that file,
+    so its van times are the ones used from the next sweep (10 s) on. One log line a read. [] for none on file."""
+    out = []
+    for mo in months:
+        path = os.path.join(UPLOADS_SHARED, f"{mo}_pairings.txt")
+        try:
+            st = os.stat(path)
+        except OSError:
+            _PKG_VANS.pop(mo, None)
+            continue
+        sig = (st.st_mtime_ns, st.st_size)
+        c = _PKG_VANS.get(mo)
+        if not c or c[0] != sig:
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    got = LO.package_vans(f.read())
+            except Exception as e:  # noqa: BLE001
+                log.info("van times: the %s pairings package was not read: %s", mo, type(e).__name__)
+                got = None
+            if got and got["month"] != mo:
+                log.info("van times: %s_pairings.txt is the %s package: not used", mo, got["month"] or "unnamed")
+                got = None
+            elif got:
+                log.info("van times: the %s pairings package read: %d layovers, %d with a van time", mo,
+                         got["layovers"], got["with_van"])
+            c = _PKG_VANS[mo] = (sig, got)
+        if c[1]:
+            out.append(c[1])
+    return out
+
+
+def _van_months(leg):
+    """The bid months whose package may hold the leg's trip: the month of the trip's first day and of the leg's date,
+    and the month before each (November's period runs to Dec 1)."""
+    out = []
+    for d in (leg.get("start") or "", leg.get("date") or ""):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+            continue
+        y, m = int(d[:4]), int(d[5:7])
+        for k in (0, -1):
+            y2, m2 = divmod(y * 12 + m - 1 + k, 12)
+            mo = f"{y2}-{m2 + 1:02d}"
+            if mo not in out:
+                out.append(mo)
+    return out
+
+
+def hark_leg(a):
+    """The leg Hark's working flight is on during a layover (mode layover): pairing, city (its origin), flt (digits),
+    dep and date of its departure ('21:40 AEDT (9:40 PM) Thu 2026-11-12'); start '' (not in it). None otherwise."""
+    if not isinstance(a, dict) or a.get("mode") != "layover":
+        return None
+    m = re.search(r"\b(\d{1,2}):(\d{2})\b.*?(\d{4}-\d{2}-\d{2})", str(a.get("dep_sched") or ""))
+    return {"pairing": str(a.get("pairing") or "").strip().upper(), "start": "",
+            "city": str(a.get("origin") or "").strip().upper(), "flt": re.sub(r"\D", "", str(a.get("flight") or "")),
+            "dep": f"{int(m.group(1)):02d}:{m.group(2)}" if m else "", "date": m.group(3) if m else ""}
+
+
+def van_source(own, a, state):
+    """(info, why) in Ryan's order (Nov 11, FW-0072): (a) the pairings package's VAN for this pairing's layover when it
+    is not 00:00 (layover.package_van; the layover from his own schedule, else from Hark's sensor in layover mode),
+    (b) Hark's van for the same pairing (when his own schedule shows another pairing, Hark's is not used), (c) none:
+    no alert, and why (Hark's reason, then the package's when it has the layover but no usable time)."""
+    leg = own or hark_leg(a)
+    pinfo, pwhy = LO.package_van(van_packages(_van_months(leg)), leg) if leg else (None, "")
+    hinfo = None
+    if a is None:
+        hwhy = "Hark's working flight is not in Home Assistant" if _VAN["status"] == 404 else "Home Assistant did not answer"
+    elif own and not LO.same_pairing(a.get("pairing"), own["pairing"]):
+        hwhy = f"Hark's working flight is for another pairing than {own['pairing']}"
+    else:
+        hinfo, hwhy = LO.van_info(a, state)
+    if pinfo:
+        if hinfo and hinfo["city"] == pinfo["city"]:  # Hark's words for the place ("... lobby") on the same layover
+            pinfo.update(place=hinfo["place"] or pinfo["place"], hotel=hinfo["hotel"] or pinfo["hotel"])
+        return pinfo, ""
+    if hinfo:
+        return hinfo, ""
+    return None, hwhy + (f"; the pairings package {pwhy}" if pwhy else "")
+
+
 def van_tick(now=None, mono=None):
     """Send the van alert that is due, once (layover.due: 30 and 10 min before the van, only before it, the latest
     one alone after a late start), publish the layover_van sensor and look at the notes folder. Returns the offsets
-    sent. Nothing on a pilot's instance."""
+    sent. Nothing on a pilot's instance. The van comes from van_source: the pairings package's VAN, else Hark's."""
     if not has("admin_pushes"):
         return []
     now = now or datetime.now(HST)
     van_read(time.monotonic() if mono is None else mono)
     a = _VAN["attrs"]
-    if a is None:
-        info, why = None, ("Hark's working flight is not in Home Assistant" if _VAN["status"] == 404
-                           else "Home Assistant did not answer")
-    else:
-        info, why = LO.van_info(a, _VAN["state"])
-    seen = LO.key(info, 0) if info else why  # one log line each time the van or the reason changes
+    try:
+        own = WK.layover_leg(_sched_items(), S.get("own_trips") or {}, now)
+    except Exception as e:  # noqa: BLE001
+        log.info("van: own layover not read: %s", type(e).__name__)
+        own = None
+    info, why = van_source(own, a, _VAN["state"])
+    seen = (LO.key(info, 0), info["source"]) if info else why  # one log line each time the van or the reason changes
     if seen != _VAN["why"]:
         _VAN["why"] = seen
         if info:
-            log.info("van: %s %s %s at %s %s (%s HST %s), alerts %s min before", info["pairing"], info["city"],
-                     info["date"], info["local"], info["abbr"], info["hst"], info["hst_date"],
-                     " and ".join(str(m) for m in LO.OFFSETS))
+            log.info("van: %s %s %s at %s %s (%s HST %s), alerts %s min before (from %s)", info["pairing"],
+                     info["city"], info["date"], info["local"], info["abbr"], info["hst"], info["hst_date"],
+                     " and ".join(str(m) for m in LO.OFFSETS),
+                     "the pairings package" if info["source"] == "package" else "Hark")
         else:
             log.info("van alerts: none (%s)", why)
-    city = info["city"] if info else (str(a.get("origin") or "").upper() if a and a.get("mode") == "layover" else "")
+    city = info["city"] if info else own["city"] if own else (
+        str(a.get("origin") or "").upper() if a and a.get("mode") == "layover" else "")
     _VAN["city"] = city if LO.STATION_RE.match(city) else ""
     done = DB.get(VAN_DONE) or {}
     send, skip = LO.due(info, done, now) if info else ([], [])

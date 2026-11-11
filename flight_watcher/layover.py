@@ -184,7 +184,7 @@ def van_info(attrs, state=""):
     return {"pairing": pairing, "city": city, "zone": ZONES[city], "abbr": abbr(loc), "date": date_s, "local": hhmm,
             "weekday": loc.strftime("%a"), "hst": hst.strftime("%H:%M"), "hst_date": hst.strftime("%Y-%m-%d"),
             "hst_weekday": hst.strftime("%a"), "at": loc.astimezone(UTC), "place": place or hotel, "hotel": hotel,
-            "text": _line(text, 200)}, ""
+            "text": _line(text, 200), "source": "hark"}, ""
 
 
 def key(info, minutes):
@@ -232,7 +232,8 @@ def event(info, minutes, now):
 
 def sensor(info, why, done, now):
     """The layover_van sensor's payload: state the van instant (a timestamp, None without one); the van as the card
-    shows it and each alert's status (pending, sent, skipped, missed). Only what the card reads from it: not Hark's
+    shows it, where it comes from (source: package or hark) and each alert's status (pending, sent, skipped, missed).
+    Only what the card reads from it: not Hark's
     van text or hotel (the card shows those from Hark's own sensor), so the retained topic and HA's recorder keep no
     more of Hark's sensor than the card shows."""
     if not info:
@@ -247,7 +248,163 @@ def sensor(info, why, done, now):
     return {"at": info["at"].astimezone(UTC).isoformat(timespec="seconds"), "why": "",
             **{k: info[k] for k in ("pairing", "city", "abbr", "date", "local", "weekday", "hst", "hst_weekday",
                                     "place")},
-            "alerts": alerts}
+            "source": info.get("source") or "hark", "alerts": alerts}
+
+
+# ---------------------------------------------------------------- the pairings package's van times
+# Ryan, Nov 11: "remember van times are published in the pairings pack monthly and can be updated from time to time".
+# The package's text copy (uploads/<YYYY-MM>_pairings.txt, pdftotext -layout of each uploaded PDF) prints, inside each
+# pairing, after a duty that ends away from base: the "D-END:" line, the hotel line ("<HOTEL>   <phone>   VAN HH:MM";
+# calendar cells may follow on the right), the next duty's "REPT: HH:MML/HH:MMGMT" and its legs. VAN 00:00 is no van
+# time given (every hotel line of the Oct to Dec 2026 packages reads 00:00 but four "HOTEL TBA" charter lines reading
+# 00:30, which is no pickup before their reports: a ride time, not a clock time). So a VAN is taken as the van's
+# local time at the layover station only when it is not 00:00 and falls at most VAN_BEFORE_REPT_MIN before the next
+# duty's report (the van takes the crew to that report); anything else is no van time from the package, with the
+# reason, and the van falls through to Hark's. Phone numbers are never read.
+PKG_LEG_RE = re.compile(r"^\s*(\S+)\s+(DH\s+)?(\d{1,4})[A-Z]?\*?\s+([A-Z]{3})\s*-\s*([A-Z]{3})\s+(\d{1,2}):(\d{2})/"
+                        r"\d{1,2}:\d{2}\s+\d{1,2}:\d{2}/\d{1,2}:\d{2}")
+PKG_DEND_RE = re.compile(r"^\s*D-END:\s+\d{1,2}:\d{2}L")
+PKG_REPT_RE = re.compile(r"^\s+REPT:\s+(\d{1,2}):(\d{2})L")
+PKG_VAN_RE = re.compile(r"\bVAN\s+(\d{1,2}):(\d{2})\b")
+VAN_BEFORE_REPT_MIN = 180  # a package VAN this long before the next report at most is the van to that report
+HOTEL_MAX = 80
+
+
+def _hm(h, m):
+    h, m = int(h), int(m)
+    return f"{h:02d}:{m:02d}" if 0 <= h <= 23 and 0 <= m <= 59 else ""
+
+
+def _mins(hm):
+    return int(hm[:2]) * 60 + int(hm[3:]) if hm else None
+
+
+def pickup_ok(x):
+    """A layover's package VAN is a pickup time: given (not 00:00) and at most VAN_BEFORE_REPT_MIN before its report."""
+    return bool(x["van"] and x["rept"]) and (_mins(x["rept"]) - _mins(x["van"])) % 1440 <= VAN_BEFORE_REPT_MIN
+
+
+def package_vans(text):
+    """The van times of a pairings package's text copy: {month ('2026-12'), start, end (the bid period, ISO), pairings
+    ({id: [layover]}), layovers, with_van}. A layover: stn (the station the next duty leaves from), flt (its first
+    leg's flight number), dep (that leg's local departure 'HH:MM'), rept (the duty's local report), van ('HH:MM' as
+    printed, '' for 00:00), hotel (the name before the phone, never the phone), day (the DAY cell), n (its order in the
+    pairing). with_van counts the layovers whose VAN is a pickup time (pickup_ok). Only blocks with a pairing header (pdfs._blocks: 'Hxxxx BASE REPT'); a layover whose next leg leaves
+    another station than the one the duty ended at is left out."""
+    import pdfs as PDF
+    out = {}
+    n_lay = n_van = 0
+    for b in PDF._blocks(text):
+        lays, last_to, pend = [], "", None
+        for ln in b["lines"]:
+            m = PKG_LEG_RE.match(ln)
+            if m:
+                if pend is not None and pend["rept"] and pend["stn"] == m.group(4):
+                    dep = _hm(m.group(6), m.group(7))
+                    if dep:
+                        lays.append({**pend, "flt": m.group(3).lstrip("0") or "0", "dep": dep, "day": m.group(1),
+                                     "n": len(lays) + 1})
+                pend = None
+                last_to = m.group(5)
+                continue
+            if PKG_DEND_RE.match(ln):
+                pend = {"stn": last_to, "hotel": "", "van": "", "rept": "", "hv": False} if last_to else None
+                continue
+            if pend is None:
+                continue
+            v = PKG_VAN_RE.search(ln)
+            if v and not pend["hv"]:
+                pend["hv"] = True
+                van = _hm(v.group(1), v.group(2))
+                pend["van"] = "" if van in ("", "00:00") else van
+                # the name ends at a run of spaces, a parenthesis or a phone-like run of digits (never kept)
+                name = re.split(r"\s{2,}|\(|\+?\d[\d\s().-]{6,}", ln[:v.start()].strip(), maxsplit=1)[0]
+                pend["hotel"] = _line(name, HOTEL_MAX)
+                continue
+            r = PKG_REPT_RE.match(ln)
+            if r and not pend["rept"]:
+                pend["rept"] = _hm(r.group(1), r.group(2))
+        for x in lays:
+            x.pop("hv", None)
+        if lays:
+            out.setdefault(b["id"], []).extend(lays)
+            n_lay += len(lays)
+            n_van += sum(1 for x in lays if pickup_ok(x))
+    start, end = PDF.period_bounds(text)
+    return {"month": PDF.package_month(text), "start": start, "end": end, "pairings": out, "layovers": n_lay,
+            "with_van": n_van}
+
+
+def _base_id(pairing):
+    return re.sub(r"[A-Z]$", "", pairing) if re.match(r"^[A-Z]\d{3,5}[A-Z]$", pairing) else pairing
+
+
+def same_pairing(a, b):
+    """True when two pairing ids are the same trip: equal, or one a FLICA-rebuilt copy of the other (H3631B, H3631)."""
+    a, b = str(a or "").strip().upper(), str(b or "").strip().upper()
+    return bool(a and b) and _base_id(a) == _base_id(b)
+
+
+def package_van(packages, leg):
+    """(info, '') or (None, why): the van of the layover the leg leaves from, from the pairings packages (package_vans
+    each). leg: pairing, start (the trip's first day, '' when not known), city (the leg's origin, the layover station),
+    flt (its flight number, digits), dep ('HH:MM' local, '' when not known), date (its departure date at the origin).
+    The layover is the one of that pairing (the exact id, else a rebuilt copy's base id) at that station whose next leg
+    is this one: the same flight number and local departure where both are known, at least one of them. A package
+    whose bid period does not hold the trip's first day is not looked in. info is van_info's, source 'package'. why is
+    '' when no package covers the layover (none on file, or not in it); when one does but gives no van time, why
+    follows "the pairings package" in a sentence ("gives no van time for H3681 SYD (VAN 00:00)", "VAN 00:30 for ...
+    is no pickup before the 21:10 report", two that differ)."""
+    pairing = str(leg.get("pairing") or "").strip().upper()
+    city = str(leg.get("city") or "").strip().upper()
+    flt = str(leg.get("flt") or "").strip().lstrip("0")
+    dep = str(leg.get("dep") or "").strip()
+    start = str(leg.get("start") or "")
+    if not PAIRING_RE.match(pairing) or not STATION_RE.match(city) or not packages:
+        return None, ""
+    hits = []
+    for pk in packages:
+        if start and pk.get("start") and pk.get("end") and not pk["start"] <= start <= pk["end"]:
+            continue
+        lays = (pk.get("pairings") or {}).get(pairing)
+        if lays is None:
+            lays = (pk.get("pairings") or {}).get(_base_id(pairing)) or []
+        for x in lays:
+            if x["stn"] != city:
+                continue
+            checks = [(flt, x["flt"]), (dep, x["dep"])]
+            known = [(a, b) for a, b in checks if a and b]
+            if known and all(a == b for a, b in known):
+                hits.append((pk.get("month") or "", x))
+    if not hits:
+        return None, ""
+    if len({(x["van"], x["rept"], x["dep"]) for _, x in hits}) > 1:
+        return None, f"lists more than one {city} layover of {pairing} for this leg"
+    month, x = hits[0]
+    if not x["van"]:
+        return None, f"gives no van time for {pairing} {city} (VAN 00:00)"
+    van, rept, depm = _mins(x["van"]), _mins(x["rept"]), _mins(x["dep"])
+    if not pickup_ok(x):
+        return None, f"VAN {x['van']} for {pairing} {city} is no pickup before the {x['rept']} report"
+    try:
+        day = datetime.strptime(str(leg.get("date") or ""), "%Y-%m-%d")
+    except ValueError:
+        return None, "has the layover, but the leg's date is not known"
+    rept_day = day - timedelta(days=1 if rept > depm else 0)  # a report before midnight for a departure after it
+    van_day = rept_day - timedelta(days=1 if van > rept else 0)  # a van before midnight for a report after it
+    zone = zone_of(city)
+    if zone is None:
+        return None, f"has the layover, but no time zone is known for {city}"
+    date_s = van_day.strftime("%Y-%m-%d")
+    loc = local_instant(date_s, x["van"], zone)
+    if loc is None:
+        return None, f"VAN {date_s} {x['van']} does not exist at {city} (a daylight time change)"
+    hst = loc.astimezone(HST)
+    return {"pairing": pairing, "city": city, "zone": ZONES[city], "abbr": abbr(loc), "date": date_s, "local": x["van"],
+            "weekday": loc.strftime("%a"), "hst": hst.strftime("%H:%M"), "hst_date": hst.strftime("%Y-%m-%d"),
+            "hst_weekday": hst.strftime("%a"), "at": loc.astimezone(UTC), "place": x["hotel"], "hotel": x["hotel"],
+            "text": f"VAN {x['van']} in the {month or 'uploaded'} pairings package", "source": "package",
+            "package": month, "report": x["rept"]}, ""
 
 
 # ---------------------------------------------------------------- layover notes
