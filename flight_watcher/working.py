@@ -31,6 +31,7 @@ REPORT_DOMICILE_MIN, REPORT_AWAY_MIN = 60, 75
 VOLATILE = ("updated", "status_as_of")  # move on every call; a payload that differs only here is not news
 STN_RE = re.compile(r"^[A-Z]{3}$")
 # The zone of every station in pot.TZ (whose offsets are the standard ones): its local time with daylight time
+# (1.7.1: and of a few stations pot.TZ does not list; layover.py reads only this table)
 ZONES = {"HNL": "Pacific/Honolulu", "OGG": "Pacific/Honolulu", "KOA": "Pacific/Honolulu", "ITO": "Pacific/Honolulu",
          "LIH": "Pacific/Honolulu", "PPT": "Pacific/Tahiti", "RAR": "Pacific/Rarotonga", "PPG": "Pacific/Pago_Pago",
          "ANC": "America/Anchorage",
@@ -42,7 +43,10 @@ ZONES = {"HNL": "Pacific/Honolulu", "OGG": "Pacific/Honolulu", "KOA": "Pacific/H
          **{s: "Asia/Tokyo" for s in ("NRT", "HND", "KIX", "CTS", "FUK", "NGO")},
          "ICN": "Asia/Seoul", "SYD": "Australia/Sydney", "BNE": "Australia/Brisbane", "MEL": "Australia/Melbourne",
          "AKL": "Pacific/Auckland", "SIN": "Asia/Singapore", "MNL": "Asia/Manila", "CRK": "Asia/Manila",
-         "TPE": "Asia/Taipei", "PEK": "Asia/Shanghai", "PVG": "Asia/Shanghai", "HKG": "Asia/Hong_Kong"}
+         "TPE": "Asia/Taipei", "PEK": "Asia/Shanghai", "PVG": "Asia/Shanghai", "HKG": "Asia/Hong_Kong",
+         # 1.7.1 (FW-0072): stations in Ryan's pairing and finds files on Pako (Nov 11) that had no zone (charters)
+         "BFI": "America/Los_Angeles", "IND": "America/Indiana/Indianapolis", "LAN": "America/Detroit",
+         "LNK": "America/Chicago"}
 # An origin in neither table lies somewhere from UTC-11 to UTC+13, so its printed time read as HST runs 1 h early to
 # 23 h late: the arrival is looked for around that reading minus this many hours (the middle)
 UNKNOWN_MID_H = 11

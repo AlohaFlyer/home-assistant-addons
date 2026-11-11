@@ -299,8 +299,30 @@ Recent finds.
   the close), else dropped with a log line. `sensor.<prefix>_bid_calendar` (retained on `<prefix>/bid_calendar`)
   shows the next alert's time, its cycle's dates (awards and open time too, from a package) and each alert's status.
   Only Ryan's prefix has a phone push (HA automation "Flight Watcher bid calendar", critical); a second pilot's
-  Watcher makes the same alerts on its own prefix, which nothing pushes, and they are not portal events (contract
-  1).
+  Watcher makes the same alerts on its own prefix, which nothing pushes, and they are not portal events (contract 1).
+- Van alerts and layover notes (1.7.1, FW-0072, `layover.py`, the admin's instance only). Every 10 s, whatever the
+  Watcher is doing (no FLICA load), it reads Hark's `sensor.hark_working_flight` from HA (at most once a minute) and
+  puts its `van` ("7:40 PM (19:40) Thu 2026-11-12, <place>") on the layover station's clock (the leg's origin;
+  `working.ZONES`, daylight time included: AEDT in the southern summer). 30 and 10 min before the van it sends one
+  alert each on `flight_watcher/event/van` (not retained: `pairing`, `city`, `van_local`, `van_date`, `abbr`,
+  `van_hst`, `minutes` 30 or 10, `minutes_left`, `hotel`, `place`, `title`, `message` such as "Van in 30 min: 19:40
+  AEDT (22:40 HST), <place>"), once per pairing, van time and offset (kept in the DB, so a restart never repeats one);
+  a new van time arms both again; after a late start only the latest alert still before the van goes, worded with the
+  minutes really left; nothing after the van time. A station with no zone, a van text with no date and 24 h time, a
+  weekday that is not the date's, AM, PM or a zone after a 24 h time ("2026-11-12 7:40 PM"), or a time a daylight time
+  change skips is no alert and one log line, never a guess. `sensor.flight_watcher_layover_van` (retained on
+  `flight_watcher/layover_van`): state the van's instant; the station's abbreviation, the HST time, the place and each
+  alert's status, for the layover card (not Hark's van text or hotel). HA automation "Flight Watcher van time" makes
+  the critical push to Ryan's phones. Layover notes: `flight_watcher/layover/note` {city, text, rid} adds a note
+  (plain text, at most 1000 characters, the city a 3-letter station code; {city, delete: <id>, rid} removes one),
+  stored in `/share/flight_watcher/layovers/<CITY>.json` (folder 0700, files 0600; never in git or a portal export);
+  `<CITY>.guide.md` there is the tidied guide Claude writes in the ticket flow (HANDOFF.md, "Layover notes"). The
+  folder is opened without following a link and a file in it is read only when it is a plain file (no symlink, no
+  FIFO, size capped; the HOM app maps /share too); a notes file that cannot be read refuses the next note with nothing
+  changed and is left off the sensor (`unreadable`). `sensor.flight_watcher_layover_notes` (retained on
+  `flight_watcher/layover_notes`): count, and by city the guide and the newest notes, the current layover station
+  first, within 12000 bytes, plus the answer to the last note command. A pilot's instance has none of this (roles:
+  `admin_pushes`, `one_writer`), and a portal refuses `layover/note`.
 
 ## Dashboard cards and pushes
 

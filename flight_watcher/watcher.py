@@ -56,6 +56,7 @@ import gate as GT
 import captures as CAPS
 import photos as PH
 import bidcal as BC
+import layover as LO
 
 VERSION = "1.7.1"
 BASE = "https://ha2.flica.net"
@@ -324,6 +325,9 @@ def on_message(c, u, msg):
         return
     if msg.topic == f"{T}/upload/chunk":
         upload_chunk(msg.payload)
+        return
+    if msg.topic == f"{T}/layover/note":  # 1.7.1 (FW-0072): the admin only (roles: one_writer)
+        layover_note_cmd(msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/ticket/new":
         ticket_safe(ticket_new, msg.payload.decode(errors="replace"))
@@ -1234,6 +1238,14 @@ def entity_defs():
         ("sensor", "bid_calendar", {"name": "Bid calendar", "state_topic": f"{T}/bid_calendar",
                                     "value_template": "{{ value_json.next_at }}", "device_class": "timestamp",
                                     "json_attributes_topic": f"{T}/bid_calendar", "icon": "mdi:calendar-clock"}),
+        # 1.7.1 (FW-0072, admin only): the van at the layover station from Hark's working flight (layover.py), with
+        # its time zone, HST and the 30 and 10 min alerts; and Ryan's layover notes by station, with Claude's guides
+        ("sensor", "layover_van", {"name": "Layover van", "state_topic": f"{T}/layover_van",
+                                   "value_template": "{{ value_json.at }}", "device_class": "timestamp",
+                                   "json_attributes_topic": f"{T}/layover_van", "icon": "mdi:van-passenger"}),
+        ("sensor", "layover_notes", {"name": "Layover notes", "state_topic": f"{T}/layover_notes",
+                                     "value_template": "{{ value_json.count }}",
+                                     "json_attributes_topic": f"{T}/layover_notes", "icon": "mdi:notebook-edit"}),
         ("sensor", "tradeboard", {"name": "Tradeboard pickups", "state_topic": f"{T}/tradeboard/state",
                                   "value_template": "{{ value_json.count }}",
                                   "json_attributes_topic": f"{T}/tradeboard/state",
@@ -6914,6 +6926,10 @@ def upload_janitor():
     while True:
         time.sleep(UPLOAD_SWEEP_S)
         try:
+            van_tick()  # 1.7.1 (FW-0072): every sweep (10 s), on its own, whatever the state; the admin only
+        except Exception as e:  # noqa: BLE001
+            log.info("van alerts: %s", type(e).__name__)
+        try:
             for st in assembler().sweep():
                 log.info("upload %s (%s): %s", st["id"][:6], st.get("kind") or "?", st["message"])
                 publish_upload_status(st)
@@ -7051,6 +7067,179 @@ def publish_bid_calendar(alerts, done, force=False):
     _BIDCAL["sig"] = sig
     pub("bid_calendar", d)
     return True
+
+
+# ---------------------------------------------------------------- 1.7.1 FW-0072 van alerts and layover notes (Ryan)
+# Ryan's ticket: "a critical alert 30 min prior to van time and 10 min prior to van time pushed to my phone", and "an
+# area to leave notes for future layovers in the same cities". The admin's instance only (roles: admin_pushes for the
+# van, one_writer for the notes; a pilot has neither). The uploads janitor calls van_tick every UPLOAD_SWEEP_S whatever
+# the state (paused, yielded, hunting, waiting for settings): no FLICA load. Hark's sensor is read from HA (the
+# Supervisor API, as the export reads states) at most every VAN_READ_S; layover.py parses the van on the layover
+# station's clock and says which alert is due. Each alert goes once on {T}/event/van (not retained), its key in the DB
+# before the publish, so a restart never repeats one; a new van time is a new key. A van it cannot place (no zone for
+# the station, no date in the text, a time a daylight time change skips) is no alert and one log line, never a guess.
+# HA's "Flight Watcher van time" automation makes the critical push to Ryan's phones.
+HARK_FLIGHT = "sensor.hark_working_flight"
+VAN_DONE = "van_alerts_done"  # DB: {alert key: {how: sent | skipped, at}}, written before the publish
+VAN_KEEP = 40  # keys kept (2 a van)
+VAN_READ_S = 60  # Hark writes its sensor about every 30 min; a changed van is seen within a minute
+LAYOVERS_DIR = "/share/flight_watcher/layovers"  # <CITY>.json notes and <CITY>.guide.md (layover.py); never in git
+LAYOVER_NOTE_BYTES = 8192  # a layover/note command's payload, at most
+LAYOVER_SCAN_S = 30  # the notes folder is looked at this often (a guide Claude wrote shows within it)
+_VAN = {"read": None, "status": None, "attrs": None, "state": "", "why": None, "sig": None, "city": ""}
+_LN = {"sig": None, "files": None, "checked": None, "last": {}, "city": None}
+# the uploads janitor (layover_notes_tick) and the MQTT thread (layover_note_cmd) both publish the notes sensor: one at
+# a time, each building its payload under the lock, so a payload built before a note was written is never the last one
+# published (it would drop the note and its answer, the card on "Saving..." until the next look at the folder)
+_LN_LOCK = threading.Lock()
+
+
+def van_read(mono):
+    """Hark's sensor from HA, at most every VAN_READ_S (mono: time.monotonic())."""
+    if _VAN["read"] is not None and mono - _VAN["read"] < VAN_READ_S:
+        return
+    _VAN["read"] = mono
+    st, js = ha_state_full(HARK_FLIGHT)
+    _VAN["status"] = st
+    js = js if isinstance(js, dict) else {}
+    _VAN["attrs"] = js.get("attributes") if st == 200 and isinstance(js.get("attributes"), dict) else None
+    _VAN["state"] = str(js.get("state") or "") if st == 200 else ""
+
+
+def van_tick(now=None, mono=None):
+    """Send the van alert that is due, once (layover.due: 30 and 10 min before the van, only before it, the latest
+    one alone after a late start), publish the layover_van sensor and look at the notes folder. Returns the offsets
+    sent. Nothing on a pilot's instance."""
+    if not has("admin_pushes"):
+        return []
+    now = now or datetime.now(HST)
+    van_read(time.monotonic() if mono is None else mono)
+    a = _VAN["attrs"]
+    if a is None:
+        info, why = None, ("Hark's working flight is not in Home Assistant" if _VAN["status"] == 404
+                           else "Home Assistant did not answer")
+    else:
+        info, why = LO.van_info(a, _VAN["state"])
+    seen = LO.key(info, 0) if info else why  # one log line each time the van or the reason changes
+    if seen != _VAN["why"]:
+        _VAN["why"] = seen
+        if info:
+            log.info("van: %s %s %s at %s %s (%s HST %s), alerts %s min before", info["pairing"], info["city"],
+                     info["date"], info["local"], info["abbr"], info["hst"], info["hst_date"],
+                     " and ".join(str(m) for m in LO.OFFSETS))
+        else:
+            log.info("van alerts: none (%s)", why)
+    city = info["city"] if info else (str(a.get("origin") or "").upper() if a and a.get("mode") == "layover" else "")
+    _VAN["city"] = city if LO.STATION_RE.match(city) else ""
+    done = DB.get(VAN_DONE) or {}
+    send, skip = LO.due(info, done, now) if info else ([], [])
+    if send and not mqtt_up():
+        send = []  # tried again at the next sweep, until the van time
+    for m in skip:
+        done[LO.key(info, m)] = {"how": "skipped", "at": now.isoformat()}
+        log.info("van alert %d min before %s not sent: the app was not running then (a later one goes instead)",
+                 m, LO.key(info, m))
+    for m in send:
+        done[LO.key(info, m)] = {"how": "sent", "at": now.isoformat()}
+    if send or skip:
+        DB.put(VAN_DONE, dict(sorted(done.items(), key=lambda kv: str((kv[1] or {}).get("at") or ""))[-VAN_KEEP:]))
+    for m in send:
+        ev = LO.event(info, m, now)
+        pub("event/van", ev, retain=False)
+        log.info("van alert sent: %s", ev["message"])
+    publish_layover_van(info, why, done, now)
+    layover_notes_tick(time.monotonic() if mono is None else mono)
+    return send
+
+
+def publish_layover_van(info, why, done, now, force=False):
+    """{T}/layover_van (retained), sensor.{T}_layover_van: layover.sensor; published when it changes."""
+    d = LO.sensor(info, why, done, now)
+    sig = json.dumps(d, sort_keys=True)
+    if not force and sig == _VAN["sig"]:
+        return False
+    _VAN["sig"] = sig
+    pub("layover_van", d)
+    return True
+
+
+def layover_notes_tick(mono, force=False):
+    """Re-publish the notes sensor when a notes file or a guide changed (Claude writes the guides on Pako) or the
+    layover station did; the folder is looked at every LAYOVER_SCAN_S."""
+    if not has("one_writer"):
+        return False
+    if not force and _LN["checked"] is not None and mono - _LN["checked"] < LAYOVER_SCAN_S \
+            and _LN["city"] == _VAN["city"]:
+        return False
+    _LN["checked"] = mono
+    sig = LO.signature(LAYOVERS_DIR)
+    if not force and sig == _LN["files"] and _LN["city"] == _VAN["city"]:
+        return False
+    _LN["files"], _LN["city"] = sig, _VAN["city"]
+    return publish_layover_notes()
+
+
+def publish_layover_notes(force=False):
+    """{T}/layover_notes (retained), sensor.{T}_layover_notes: layover.sensor_payload (the current layover station
+    first, within layover.SENSOR_BYTES) and the answer to the last note command."""
+    if not has("one_writer"):
+        return False
+    with _LN_LOCK:
+        try:
+            d = LO.sensor_payload(LAYOVERS_DIR, _VAN["city"], _LN["last"])
+        except Exception as e:  # noqa: BLE001
+            log.info("layover notes not published: %s", type(e).__name__)
+            return False
+        sig = json.dumps(d, sort_keys=True)
+        if not force and sig == _LN["sig"]:
+            return False
+        _LN["sig"] = sig
+        if d.get("unreadable"):
+            log.info("layover notes: %s left out, the notes file could not be read (nothing changed in it)",
+                     ", ".join(d["unreadable"]))
+        pub("layover_notes", d)
+    return True
+
+
+def layover_note_cmd(payload):
+    """{T}/layover/note {city, text, rid?} adds a note; {city, delete: <note id>, rid?} removes one. Plain text, at most
+    layover.NOTE_MAX characters, the city a 3-letter station code; stored in LAYOVERS_DIR/<CITY>.json (0600, folder
+    0700). The answer {rid, ok, error, city, action} goes on the notes sensor as "last". Never logs a note's text."""
+    if not has("one_writer"):
+        log.info("layover note refused: not for a pilot instance")
+        return False
+    d = None
+    if len(payload or "") <= LAYOVER_NOTE_BYTES:
+        try:
+            d = json.loads(payload or "{}")
+        except ValueError:
+            d = None
+    d = d if isinstance(d, dict) else {}
+    rid = str(d.get("rid") or "")
+    rid = rid if RID_RE.match(rid) else ""
+    city = str(d.get("city") or "").strip().upper()[:3]
+    action = "delete" if "delete" in d else "add"
+    ok, err = False, ""
+    try:
+        if not d:
+            raise LO.Bad("not a note (JSON with city and text, at most 8 KB)")
+        if action == "delete":
+            LO.delete(LAYOVERS_DIR, d.get("city"), d.get("delete"), now_iso())
+        else:
+            LO.add(LAYOVERS_DIR, d.get("city"), d.get("text"), now_iso())
+        ok = True
+    except LO.Bad as e:
+        err = str(e)
+    except OSError as e:
+        err = f"not saved ({type(e).__name__})"
+    except Exception as e:  # noqa: BLE001  anything else still answers, so the card never waits on "Saving..."
+        err = f"not saved ({type(e).__name__})"
+    _LN["last"] = {"rid": rid, "ok": ok, "error": err, "city": city if LO.STATION_RE.match(city) else "",
+                   "action": action, "at": now_iso()}
+    log.info("layover note %s %s: %s", action, log_safe(city, 3) or "?", "saved" if ok else err)
+    _LN["files"] = None
+    publish_layover_notes(force=True)
+    return ok
 
 
 def start_upload_janitor():
@@ -8315,7 +8504,8 @@ EXPORT_RETRY_S = 15  # a state HA had no answer for is read again after this, do
 SPOOL_POLL_S = 1.0
 SPOOL_MAX_PER_POLL = 200
 PORTAL_LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portal_layout.json")
-PORTAL_CARDS_OUT = ("uploads-card", "row-colors")  # not in a portal (1.7.0: the tickets card is, revision 2)
+PORTAL_CARDS_OUT = ("uploads-card", "row-colors", "layover-card")  # not in a portal (1.7.0: the tickets card is,
+# revision 2; 1.7.1 FW-0072: the layover card is the admin's only in this release)
 PAIRINGS_BACK_M = 2  # the shared pairings packages exported: from this many months back (HST), and every later one
 
 

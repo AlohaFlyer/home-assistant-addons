@@ -25,8 +25,9 @@ ADMIN_SUBS_1412 = [
     "flight_watcher/settings/set", "flight_watcher/ticket/new", "flight_watcher/ticket/image",
     "flight_watcher/ticket/act", "flight_watcher/ticket/edit", "flight_watcher/ticket/delete",
     "flight_watcher/crew_scan/press", ("flight_watcher/upload/chunk", 1),
+    "flight_watcher/layover/note",  # 1.7.1 (FW-0072): the admin's layover notes, after the 1.4.12 list
 ]
-PILOT_LOSES = ("email/alert", "auto_swap/set", "swap_map/press", "drop/set", "crew_scan/press")
+PILOT_LOSES = ("email/alert", "auto_swap/set", "swap_map/press", "drop/set", "crew_scan/press", "layover/note")
 # 1.7.1 (F#22): a pilot also reads the admin's shared charter list (retained, under the admin's prefix, never a
 # command: his portal publishes only under his own prefix)
 PILOT_GAINS = [("flight_watcher/charters/shared", 1)]

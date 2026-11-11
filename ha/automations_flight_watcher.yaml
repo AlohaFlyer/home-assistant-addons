@@ -1047,3 +1047,45 @@
         title: '{{ p.title }}'
   max: 10
   mode: queued
+- id: '1794426120072'
+  alias: Flight Watcher van time
+  description: 'FW-0072 (Ryan, 1.7.1): the Watcher''s van alerts (layover.py), 30 and
+    10 min before the van at the layover station, from Hark''s working flight. One
+    push per alert, critical like the charter alert: "Van in 30 min: 19:40 AEDT (22:40
+    HST), <hotel> lobby". Push isolation (FW-0038): Ryan''s prefix only, to Ryan''s
+    phones only; only the admin''s Watcher sends van alerts.'
+  triggers:
+  - topic: flight_watcher/event/van
+    trigger: mqtt
+  actions:
+  - variables:
+      p: '{{ trigger.payload_json }}'
+  - parallel:
+    - action: notify.mobile_app_ryans_iphone
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: critical
+            sound:
+              name: default
+              critical: 1
+              volume: 1.0
+          tag: flight_watcher_van_{{ p.minutes }}
+        message: '{{ p.message }}'
+        title: '{{ p.title }}'
+    - action: notify.mobile_app_ryans_iphone_16
+      continue_on_error: true
+      data:
+        data:
+          push:
+            interruption-level: critical
+            sound:
+              name: default
+              critical: 1
+              volume: 1.0
+          tag: flight_watcher_van_{{ p.minutes }}
+        message: '{{ p.message }}'
+        title: '{{ p.title }}'
+  max: 10
+  mode: queued

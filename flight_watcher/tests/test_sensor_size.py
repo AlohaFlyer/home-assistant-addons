@@ -197,6 +197,18 @@ def _fill(W, fake, tmp_path, monkeypatch):
     W.publish_working_flight(force=True)  # FW-0067
     monkeypatch.setattr(W, "UPLOADS_SHARED", str(tmp_path / "uploads_shared"))  # no package: the usual dates
     W.bidcal_tick(datetime(2026, 11, 5, 12, 0, tzinfo=W.HST))  # 1.7.1 (FW-0070): the bid calendar sensor
+    # 1.7.1 (FW-0072, the admin only): the van sensor from a synthetic Hark sensor, and a busy layover notes folder
+    # (six cities, 40 long notes and a long guide each)
+    lay = tmp_path / "layovers_busy"
+    for ci, c in enumerate(("SYD", "LAX", "AKL", "NRT", "BNE", "PPT")):
+        for k in range(40):
+            W.LO.add(str(lay), c, f"{c} note {k}: " + "z" * 300, f"2026-11-0{1 + ci}T{k % 24:02d}:00:00+00:00")
+        (lay / f"{c}.guide.md").write_text(f"# {c}\n" + "- a tip from the notes\n" * 600, encoding="utf-8")
+    monkeypatch.setattr(W, "LAYOVERS_DIR", str(lay))
+    hark = {"mode": "layover", "pairing": "H3681", "origin": "SYD", "dest": "HNL", "hotel": "Example Hotel",
+            "van": "7:40 PM (19:40) Thu 2026-11-12, Example Hotel lobby"}
+    monkeypatch.setattr(W, "ha_state_full", lambda eid: (200, {"state": "x", "attributes": hark}))
+    W.van_tick(datetime(2026, 11, 12, 6, 0, tzinfo=W.HST), mono=0)
     W.publish_charters()
     W.publish_improved()
     W.publish_tickets(force=True)
