@@ -12,6 +12,7 @@ import os
 import re
 import stat
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -47,6 +48,48 @@ def test_parse_van_reads_harks_text_iso_and_12_hour():
         assert LO.parse_van(bad) is None, bad
     # control characters and bidi overrides never reach the push
     assert LO.parse_van("(19:40) 2026-11-12, lob\u202eby\nx") == ("2026-11-12", "19:40", "lob by x")
+
+
+def test_a_date_first_van_with_am_pm_or_a_zone_after_it_is_never_read_as_station_time():
+    """Review r3 #1: 'YYYY-MM-DD H:MM PM' read as 07:40 sent the 30 min push 12 h early; '...T08:40:00Z' is UTC, not the
+    station's clock. Both are no alert and a reason; the plain 24 h forms still read."""
+    for bad in ("2026-11-12 7:40 PM, Example lobby", "2026-11-12 7:40 p.m.", "2026-11-12 07:40am",
+                "2026-11-12T08:40:00Z", "2026-11-12T08:40Z", "2026-11-12 08:40 UTC", "2026-11-12 08:40 GMT",
+                "2026-11-12T19:40+11:00", "2026-11-12 19:40:00"):
+        assert LO.parse_van(bad) is None, bad
+    assert LO.parse_van("2026-11-12 19:40") == ("2026-11-12", "19:40", "")
+    assert LO.parse_van("2026-11-12 19:40, Example lobby") == ("2026-11-12", "19:40", "Example lobby")
+    assert LO.parse_van("Thu, 2026-11-12 19:40, lobby") == ("2026-11-12", "19:40", "lobby")
+    assert LO.parse_van("2026-11-12 19:40 AEDT, lobby") == ("2026-11-12", "19:40", "")
+    info, why = LO.van_info(hark(van="2026-11-12 7:40 PM, Example Harbour Hotel lobby"), "x")
+    assert info is None and why.startswith("van time not read")
+    # Hark's live forms (attribute and state) still read
+    assert LO.van_info(hark(), "Layover SYD, van 2026-11-12 19:40")[0]["local"] == "19:40"
+
+
+def test_a_weekday_that_is_not_the_dates_is_no_alert():
+    """Review r3 #2: '12:05 AM (00:05) Fri 2026-11-12' (a Thursday) put both alerts about 24 h early. A weekday that
+    contradicts the date is no alert, in each of the three forms; a matching one, a long one or none still reads, and a
+    word that is no weekday ('van', 'Saturn') is not one."""
+    for bad in ("12:05 AM (00:05) Fri 2026-11-12, lobby", "(19:40) Friday 2026-11-12", "7:40 PM Fri 2026-11-12, X",
+                "7:40 PM Thu/Fri 2026-11-12", "Fri 2026-11-12 19:40", "Wed, 2026-11-12 19:40"):
+        assert LO.parse_van(bad) is None, bad
+    for good, want in (("12:05 AM (00:05) Thu 2026-11-12, lobby", ("2026-11-12", "00:05", "lobby")),
+                       ("(19:40) Thursday 2026-11-12", ("2026-11-12", "19:40", "")),
+                       ("(19:40) Thurs. 2026-11-12", ("2026-11-12", "19:40", "")),
+                       ("7:40 PM Thu 2026-11-12, X", ("2026-11-12", "19:40", "X")),
+                       ("7:40 PM at the Saturn Hotel desk 2026-11-12", ("2026-11-12", "19:40", "")),
+                       ("Thu 2026-11-12 19:40", ("2026-11-12", "19:40", "")),
+                       (" 2026-11-12 19:40", ("2026-11-12", "19:40", ""))):
+        assert LO.parse_van(good) == want, good
+    assert LO.weekdays("Saturn van Thurs Tue") == {"Thu", "Tue"}
+    info, why = LO.van_info(hark(van="12:05 AM (00:05) Fri 2026-11-12, lobby"), "x")
+    assert info is None and why.startswith("van time not read")
+    # Hark's state names the same (likely wrong) date: it never stands in for a van text that has a date
+    for van, state in (("12:05 AM (00:05) Fri 2026-11-12, lobby", "Layover SYD, van 2026-11-12 00:05"),
+                       ("2026-11-12 7:40 PM, lobby", "Layover SYD, van 2026-11-12 07:40")):
+        info, why = LO.van_info(hark(van=van), state)
+        assert info is None and why.startswith("van time not read"), van
 
 
 def test_a_dst_zone_aedt_and_hst():
@@ -279,6 +322,33 @@ def test_unknown_zone_or_no_hark_is_no_alert_and_one_log_line(tmp_path, monkeypa
     assert _last(fake, "layover_van")["why"] == "Hark's working flight is not in Home Assistant"
 
 
+def test_an_am_pm_van_after_the_date_sends_no_alert_12_h_early(tmp_path, monkeypatch, caplog):
+    """Review r3 #1, the probe's failure: at 2026-11-11 20:11 UTC (07:11 AEDT) the 1.7.1 build read '2026-11-12 7:40
+    PM' as 07:40 and sent "Van in 29 min". Now nothing goes, the reason is logged once and the sensor says it."""
+    states = {"sensor.hark_working_flight": ("Layover SYD, van 2026-11-12 07:40",
+                                             hark(van="2026-11-12 7:40 PM, Example Harbour Hotel lobby"))}
+    W, fake, st, _ = _load(tmp_path, monkeypatch, states=states)
+    with caplog.at_level(logging.INFO, logger=W.log.name):
+        assert W.van_tick(datetime(2026, 11, 11, 20, 11, tzinfo=UTC), mono=0) == []
+        assert W.van_tick(VAN_UTC - timedelta(minutes=30), mono=100) == []
+    assert _vans(fake) == [] and caplog.text.count("van alerts: none (van time not read") == 1
+    assert _last(fake, "layover_van")["at"] is None
+
+
+def test_the_van_sensor_keeps_only_what_the_card_reads(tmp_path, monkeypatch):
+    """Review r3 (B3): the retained layover_van topic and HA's recorder get the van's place, times and alerts, not
+    Hark's van text, hotel or the zone name; the push event still names the hotel and place."""
+    states = {"sensor.hark_working_flight": ("x", hark())}
+    W, fake, st, _ = _load(tmp_path, monkeypatch, states=states)
+    W.van_tick(VAN_UTC - timedelta(minutes=30), mono=0)
+    s = _last(fake, "layover_van")
+    assert set(s) == {"at", "why", "pairing", "city", "abbr", "date", "local", "weekday", "hst", "hst_weekday", "place",
+                      "alerts"}
+    assert "7:40 PM" not in json.dumps(s) and s["place"] == "Example Harbour Hotel lobby"
+    (ev, _), = _vans(fake)
+    assert ev["hotel"] == "Example Harbour Hotel" and ev["place"] == "Example Harbour Hotel lobby"
+
+
 def test_a_pilot_instance_never_reads_hark_or_sends_a_van(tmp_path, monkeypatch):
     states = {"sensor.hark_working_flight": ("x", hark())}
     W, fake, st, reads = _load(tmp_path, monkeypatch, "pilot2", states=states)
@@ -364,6 +434,123 @@ def test_bad_notes_are_refused_with_a_reason(tmp_path, monkeypatch, cmd, why):
     assert last["ok"] is False and why in last["error"]
     assert not os.path.exists(os.path.join(W.LAYOVERS_DIR, "SYD.json"))
     assert W.layover_note_cmd("x" * 9000) is False  # over 8 KB: not even parsed
+
+
+def test_a_notes_file_that_will_not_load_is_never_taken_as_empty(tmp_path, monkeypatch, caplog):
+    """Review r3 #3: a SYD.json with a trailing comma (a hand edit) was read as empty, so the next note replaced every
+    earlier one; a file holding [] raised in sensor_payload for every city, freezing the sensor. Now a file that is
+    there but cannot be read refuses the note with nothing changed, and the sensor leaves only that city out."""
+    W, fake, st, _ = _load(tmp_path, monkeypatch)
+    root = W.LAYOVERS_DIR
+    LO.add(root, "LAX", "Beach path run.", "t1")
+    broken = '{"city": "SYD", "notes": [{"id": "0123456789ab", "at": "t0", "text": "first"},], "updated": "t0"}'
+    with open(os.path.join(root, "SYD.json"), "w", encoding="utf-8") as f:
+        f.write(broken)
+    with pytest.raises(LO.Bad, match="SYD notes file could not be read"):
+        LO.add(root, "SYD", "third", "t2")
+    with caplog.at_level(logging.INFO, logger=W.log.name):
+        assert W.layover_note_cmd(json.dumps({"city": "SYD", "text": "third", "rid": "r11112222"})) is False
+    assert open(os.path.join(root, "SYD.json"), encoding="utf-8").read() == broken  # untouched
+    s = _last(fake, "layover_notes")
+    assert s["last"]["ok"] is False and "could not be read: nothing changed" in s["last"]["error"]
+    assert s["unreadable"] == ["SYD"] and list(s["cities"]) == ["LAX"]
+    assert "SYD left out, the notes file could not be read" in caplog.text
+    for bad in ("[]", '{"notes": "x"}', "\xff\xfe", '"text"'):
+        with open(os.path.join(root, "SYD.json"), "w", encoding="utf-8", errors="surrogateescape") as f:
+            f.write(bad)
+        p = LO.sensor_payload(root, "SYD")  # never raises for one bad file
+        assert p["unreadable"] == ["SYD"] and p["cities"]["LAX"]["total"] == 1, bad
+        with pytest.raises(LO.Bad):
+            LO.delete(root, "SYD", "0123456789ab", "t3")
+    os.unlink(os.path.join(root, "SYD.json"))  # a missing file is empty, as before
+    assert LO.load(root, "SYD")["notes"] == [] and LO.add(root, "SYD", "new", "t4")["notes"][0]["text"] == "new"
+
+
+def test_a_lone_surrogate_or_any_error_still_answers_the_card(tmp_path, monkeypatch):
+    """Review r3 #4: {"text": "ok \\ud83d"} passed clean_note, then the UTF-8 write raised UnicodeEncodeError before the
+    answer, so the card waited on "Saving..." for good. The surrogate goes like a control character, and any other
+    error is an answer too."""
+    W, fake, st, _ = _load(tmp_path, monkeypatch)
+    assert W.layover_note_cmd('{"city": "SYD", "text": "ok \\ud83d \\ude00x", "rid": "r1234abcd"}')
+    doc = json.load(open(os.path.join(W.LAYOVERS_DIR, "SYD.json"), encoding="utf-8"))
+    assert doc["notes"][0]["text"] == "ok  x"  # both lone halves gone, the text kept
+    assert LO.clean_note("caf\u00e9 \U0001f600") == "caf\u00e9 \U0001f600"  # a real emoji stays
+    monkeypatch.setattr(W.LO, "add", lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert W.layover_note_cmd(json.dumps({"city": "SYD", "text": "x", "rid": "r9999aaaa"})) is False
+    last = _last(fake, "layover_notes")["last"]
+    assert (last["rid"], last["ok"], last["error"]) == ("r9999aaaa", False, "not saved (RuntimeError)")
+
+
+def test_the_notes_sensor_is_published_one_thread_at_a_time(tmp_path, monkeypatch):
+    """Review r3 #5: the janitor built the payload, the MQTT thread then wrote a note and published, and the janitor's
+    stale payload went last, dropping the note and its answer. Now each publish builds and sends under one lock."""
+    W, fake, st, _ = _load(tmp_path, monkeypatch)
+    real, built, go = LO.sensor_payload, threading.Event(), threading.Event()
+
+    def slow(*a, **k):
+        d = real(*a, **k)
+        if threading.current_thread().name == "janitor":
+            built.set()
+            go.wait(1.0)  # the note command runs now (it would finish first without the lock)
+        return d
+    monkeypatch.setattr(W.LO, "sensor_payload", slow)
+    j = threading.Thread(target=W.publish_layover_notes, kwargs={"force": True}, name="janitor")
+    j.start()
+    assert built.wait(5)
+    m = threading.Thread(target=W.layover_note_cmd, args=(json.dumps({"city": "SYD", "text": "x", "rid": "r5555aaaa"}),))
+    m.start()
+    m.join(0.5)
+    go.set()
+    j.join(5)
+    m.join(5)
+    s = _last(fake, "layover_notes")
+    assert s["last"]["rid"] == "r5555aaaa" and s["cities"]["SYD"]["total"] == 1
+
+
+def _fifo_or_skip(path):
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("no FIFOs here")
+    os.mkfifo(path)
+
+
+def test_links_and_fifos_in_the_notes_folder_are_never_followed(tmp_path):
+    """Review r3 (B1): the HOM app maps /share, so it can plant files in the notes folder. A guide that is a symlink to
+    a secret (as /data/options.json) never reaches the sensor; a FIFO guide never hangs it (the janitor and the MQTT
+    thread call it); a symlinked notes file is refused, not followed; a symlinked folder is never chmod'ed, read or
+    written through."""
+    root = tmp_path / "layovers"
+    LO.add(str(root), "SYD", "Coffee at the corner cart.", "t1")
+    secret = tmp_path / "options.json"
+    secret.write_text('{"password": "made-up-secret-123"}', encoding="utf-8")
+    os.symlink(secret, root / "SYD.guide.md")
+    os.symlink(secret, root / "AKL.json")
+    _fifo_or_skip(str(root / "NRT.guide.md"))
+    box = {}
+    t = threading.Thread(target=lambda: box.update(p=LO.sensor_payload(str(root), "SYD")), daemon=True)
+    t.start()
+    t.join(5)
+    assert not t.is_alive(), "sensor_payload hung on a FIFO"
+    p = box["p"]
+    assert "made-up-secret" not in json.dumps(p)
+    assert p["cities"]["SYD"]["guide"] == "" and p["cities"]["SYD"]["total"] == 1
+    assert p["unreadable"] == ["AKL"] and p["cities"]["NRT"]["guide"] == ""
+    assert LO.guide(str(root), "SYD") == ("", "") and LO.guide(str(root), "NRT") == ("", "")
+    with pytest.raises(LO.Bad):
+        LO.add(str(root), "AKL", "x", "t2")
+    assert secret.read_text(encoding="utf-8") == '{"password": "made-up-secret-123"}' and os.path.islink(root / "AKL.json")
+    assert LO.signature(str(root))  # names and kinds, never through the links
+    # the folder itself a symlink (to a folder served with no login, say): refused, never chmod'ed or written through
+    www = tmp_path / "www"
+    www.mkdir(mode=0o755)
+    (www / "SYD.json").write_text(json.dumps({"notes": [{"id": "0123456789ab", "at": "t", "text": "planted"}]}))
+    link = tmp_path / "linked_layovers"
+    os.symlink(www, link)
+    with pytest.raises(LO.Bad, match="link or not a folder"):
+        LO.add(str(link), "SYD", "x", "t3")
+    with pytest.raises(LO.Bad):
+        LO.ensure_dir(str(link))
+    assert stat.S_IMODE(os.stat(www).st_mode) == 0o755 and sorted(os.listdir(www)) == ["SYD.json"]
+    assert LO.cities(str(link)) == [] and LO.sensor_payload(str(link))["cities"] == {} and LO.signature(str(link)) == []
 
 
 def test_notes_text_is_plain_and_its_controls_go(tmp_path):

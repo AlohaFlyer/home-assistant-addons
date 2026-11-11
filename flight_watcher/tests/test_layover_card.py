@@ -14,7 +14,11 @@ import pytest
 
 import layover as LO
 from test_cards import _chromium
+from test_fw171_cards import HARNESS_JS
 from test_layover import hark
+
+# the contrast check of test_fw171_cards (WCAG AA from the rendered colors), without its harness's ha-card
+FW_CONTRAST = HARNESS_JS[HARNESS_JS.index("window.fwContrast"):HARNESS_JS.index("window.fwFits")]
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = open(os.path.join(HERE, "www", "flight-watcher-layover-card.js"), encoding="utf-8").read()
@@ -22,12 +26,20 @@ UTC = timezone.utc
 VAN = datetime(2026, 11, 12, 8, 40, tzinfo=UTC)
 NOW = VAN - timedelta(hours=2, minutes=10)
 URL = "https://example.invalid/project/demo"
-DARK = ("--primary-color:#03a9f4;--secondary-text-color:#9b9b9b;--divider-color:rgba(255,255,255,.12);"
+DARK = ("--primary-color:#03a9f4;--text-primary-color:#ffffff;--secondary-text-color:#9b9b9b;--divider-color:rgba(255,255,255,.12);"
         "--card-background-color:#1c1c1c;--primary-text-color:#e1e1e1;--error-color:#ef5350;--warning-color:#ffa726;"
         "background:#111;color:#e1e1e1")
-LIGHT = ("--primary-color:#03a9f4;--secondary-text-color:#727272;--divider-color:rgba(0,0,0,.12);"
+LIGHT = ("--primary-color:#03a9f4;--text-primary-color:#ffffff;--secondary-text-color:#727272;--divider-color:rgba(0,0,0,.12);"
          "--card-background-color:#fff;--primary-text-color:#212121;--error-color:#c62828;--warning-color:#ef6c00;"
          "background:#f4f4f4;color:#212121")
+# Home Assistant 2026.11's own default theme (Pako runs it; read from its frontend bundle): primary #009ac7, warning
+# #ffa600, error #db4437, white text on primary. The countdown's urgent colors and the release warning failed AA here.
+HA_LIGHT = ("--primary-color:#009ac7;--text-primary-color:#ffffff;--secondary-text-color:#727272;"
+            "--divider-color:rgba(0,0,0,.12);--card-background-color:#ffffff;--primary-text-color:#212121;"
+            "--error-color:#db4437;--warning-color:#ffa600;background:#fafafa;color:#212121")
+HA_DARK = ("--primary-color:#009ac7;--text-primary-color:#ffffff;--secondary-text-color:#9b9b9b;"
+           "--divider-color:rgba(225,225,225,.12);--card-background-color:#1c1c1c;--primary-text-color:#e1e1e1;"
+           "--error-color:#db4437;--warning-color:#ffa600;background:#111111;color:#e1e1e1")
 GUIDE = ("# SYD layover\n\n## Coffee\n- The corner cart on George St, **6 AM**\n- [Map](https://example.invalid/map?a=1&b=2)\n\n"
          "Run: the harbour loop, *about 5 km*.\n\n<img src=x onerror=\"window.pwned=1\"> [bad](javascript:alert(1))\n")
 
@@ -49,18 +61,21 @@ def _hark_full(**kw):
     return a
 
 
-def _states(tmp_path, role="admin", hark_attrs=None, watcher_pairing="H3681", notes=True, van_sensor=True):
+def _states(tmp_path, role="admin", hark_attrs=None, watcher_pairing="H3681", notes=True, van_sensor=True,
+            hark_state="Layover SYD, van 2026-11-12 19:40"):
     st = {"sensor.flight_watcher_state": {"state": "idle", "last_updated": "s1", "attributes": {"role": role, "version": "1.7.1"}},
           "sensor.flight_watcher_working_flight": {"state": "HA852 SYD-HNL", "last_updated": "w1", "attributes": {
               "pairing": watcher_pairing, "flight": "HA852" if watcher_pairing == "H3681" else "HA11", "origin": "SYD", "dest": "HNL",
               "leg": "2 of 2", "date": "2026-11-12", "dep_sched": "21:40 local, 00:40 HST", "arr_sched": "10:45 local, 10:45 HST",
               "report": "20:25 local, 23:25 HST", "status": "Scheduled", "updated": "2026-11-11 10:36 HST",
               "updated_by": "Flight Watcher", "flightaware_url": "https://www.flightaware.com/live/flight/HAL852"}}}
+    if role is None:  # no state sensor (missing, or HA restarting): no role
+        del st["sensor.flight_watcher_state"]
     a = _hark_full() if hark_attrs is None else hark_attrs
     if a:
-        st["sensor.hark_working_flight"] = {"state": "Layover SYD, van 2026-11-12 19:40", "last_updated": "h1", "attributes": a}
+        st["sensor.hark_working_flight"] = {"state": hark_state, "last_updated": "h1", "attributes": a}
         if van_sensor:
-            info, why = LO.van_info(a)
+            info, why = LO.van_info(a, hark_state)  # the Watcher's reading, as van_tick makes it
             st["sensor.flight_watcher_layover_van"] = {"state": "x", "last_updated": "v1",
                                                        "attributes": LO.sensor(info, why, {}, NOW)}
     if notes:
@@ -79,6 +94,7 @@ def _page(states, theme=LIGHT, url=URL):
     cfg = {"update_url": url} if url else {}
     return ("<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"<style>body{{margin:0;padding:8px 16px;font-family:Roboto,sans-serif;{theme}}}</style></head><body><script>"
+            + FW_CONTRAST +
             f"const FIXED = {int(NOW.timestamp() * 1000)}; Date.now = () => FIXED;"
             "customElements.define('ha-card', class extends HTMLElement { constructor() { super(); this.attachShadow({mode: 'open'}).innerHTML ="
             " '<style>:host{display:block;background:var(--card-background-color);border-radius:12px}</style><slot></slot>'; } });"
@@ -168,15 +184,20 @@ def test_layover_lists_links_photos_and_folded_release(browser, tmp_path):
 
 
 def test_falls_back_to_the_watcher_and_hides_hark_from_a_pilot(browser, tmp_path):
+    """Hark's data only while the state sensor says admin: a pilot's copy keeps sensor.hark_working_flight's id, so a
+    missing state sensor (or one with no role, as while HA restarts) shows the Watcher's own (review r3, B2). With only
+    the Watcher's data the release line is a plain line, not a fold-out with nothing in it (UX review r3, #4)."""
     for kw, why in (({"hark_attrs": {}}, "no Hark sensor"), ({"watcher_pairing": "H3700"}, "Hark on another pairing"),
-                    ({"role": "pilot"}, "a pilot's instance")):
+                    ({"role": "pilot"}, "a pilot's instance"), ({"role": None}, "no state sensor"),
+                    ({"role": ""}, "a state sensor with no role")):
         pg = browser.new_page(viewport={"width": 390, "height": 844})
         pg.set_content(_page(_states(tmp_path / why.replace(" ", "_"), **kw)))
         card = pg.locator("flight-watcher-layover-card")
         van = card.locator("[data-van]")
         assert van.locator(".vl").inner_text().lower() == "report", why
         assert van.locator(".vt").inner_text() == "20:25" and "23:25 HST" in van.locator(".vz").inner_text(), why
-        assert "From your FLICA schedule" in card.locator("details.rel summary").inner_text(), why
+        assert "From your FLICA schedule" in card.locator("[data-rel]").inner_text(), why
+        assert card.locator("details.rel").count() == 0 and card.locator("details summary", has_text="FLICA").count() == 0, why
         assert card.locator(".sec h3", has_text="Example Harbour Hotel").count() == 0, why
         assert "Example" not in card.locator("ha-card").inner_text().split("My notes")[0], why
         pg.close()
@@ -255,19 +276,161 @@ def test_add_tidy_and_delete_notes(browser, tmp_path):
     pg.close()
 
 
+SHOTS = os.environ.get("FW_171_SHOTS", "")  # a folder: the renders are saved there too
+
+
+def _contrast(pg):
+    return pg.evaluate("window.fwContrast(window.root().host)")
+
+
 @pytest.mark.parametrize("width", [390, 1100])
-@pytest.mark.parametrize("theme", ["light", "dark"])
+@pytest.mark.parametrize("theme", ["light", "dark", "ha-light", "ha-dark"])
 def test_render_layover_card(browser, tmp_path, width, theme):
+    """At 390 and 1100 px, light and dark (the tests' colors and Home Assistant 2026.11's own): no sideways scroll, the
+    van in the top 300 px, and every visible text node at WCAG AA (4.5:1, 3:1 large) from its rendered colors, the
+    release warning, chips, links and countdown included (UX review r3, #1)."""
     pg = browser.new_page(viewport={"width": width, "height": 844})
-    pg.set_content(_page(_states(tmp_path), theme=LIGHT if theme == "light" else DARK))
+    pg.set_content(_page(_states(tmp_path), theme={"light": LIGHT, "dark": DARK, "ha-light": HA_LIGHT, "ha-dark": HA_DARK}[theme]))
     card = pg.locator("flight-watcher-layover-card")
     assert pg.evaluate("document.documentElement.scrollWidth") <= width
     bb = card.locator("[data-van]").bounding_box()
     assert bb and bb["y"] + bb["height"] < 300
-    # the headline is legible against the card in both themes
-    fg, bg = pg.evaluate("[getComputedStyle(window.root().querySelector('.vt')).color, getComputedStyle(document.body).backgroundColor]")
-    assert fg != bg
-    pg.screenshot(path=str(tmp_path / f"fw0072_layover_{width}_{theme}.png"), full_page=True)
+    con = _contrast(pg)
+    assert con["n"] > 20 and not con["fails"], json.dumps(con["fails"], indent=1)
+    for d in (tmp_path, SHOTS):
+        if d:
+            pg.screenshot(path=os.path.join(str(d), f"fw0072_layover_{width}_{theme}.png"), full_page=True)
+    pg.close()
+
+
+@pytest.mark.parametrize("theme", ["ha-light", "ha-dark"])
+def test_urgent_countdown_armed_delete_and_errors_read_on_home_assistants_theme(browser, tmp_path, theme):
+    """UX review r3 #1 on Pako's real colors: "in 25 min" (orange) was 1.96:1, "in 8 min" (red) 4.29:1 and 3.97:1, the
+    armed Delete? 4.29:1. Now white on a fixed dark orange or red, AA in light and dark at 130, 25 and 8 min, and so is
+    a refusal message."""
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    st = _states(tmp_path)
+    pg.set_content(_page(st, theme=HA_LIGHT if theme == "ha-light" else HA_DARK))
+    cd = pg.locator("flight-watcher-layover-card [data-cd]")
+    for mins, cls in ((130, ""), (25, "soon"), (8, "now")):
+        pg.evaluate(f"Date.now = () => {int((VAN - timedelta(minutes=mins)).timestamp() * 1000)};"
+                    "window.root().host._countdown()")
+        assert cls in cd.get_attribute("class")
+        con = _contrast(pg)
+        assert not con["fails"], (mins, json.dumps(con["fails"], indent=1))
+    card = pg.locator("flight-watcher-layover-card")
+    card.locator(".notes > .nl [data-del]").first.click()  # armed: "Delete?"
+    assert card.locator("button.x.arm").inner_text() == "Delete?"
+    card.locator("[data-city]").fill("SY")
+    card.locator("[data-draft]").fill("x")
+    card.locator("[data-addnote]").click()  # refused in the card: a warning line
+    assert "3-letter code" in card.locator("[data-nmsg].warn").inner_text()
+    con = _contrast(pg)
+    assert not con["fails"], json.dumps(con["fails"], indent=1)
+    if SHOTS:
+        pg.screenshot(path=os.path.join(SHOTS, f"fw0072_layover_urgent_{theme}.png"), full_page=True)
+    pg.close()
+
+
+def test_every_tap_target_is_44_px_at_390(browser, tmp_path):
+    """UX review r3 #2: chips were 34 px, the address and phone links 16 px, the delete x 27 by 28, the city box 26,
+    Add note and Tidy 32, the fold-outs 32. Now every button, input, fold-out and block link is at least 44 px tall
+    (the delete x 44 wide too), and a chip stays small to the eye but takes a tap 4 px above and below it. Inline links
+    in the guide's text are text, not targets."""
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(_states(tmp_path), theme=HA_LIGHT))
+    pg.evaluate("window.root().querySelectorAll('details').forEach((d) => { d.open = true; })")
+    small = pg.evaluate("""() => [...window.root().querySelectorAll('a, button, summary, input, textarea')]
+        .filter((e) => e.getClientRects().length && !e.closest('.guide, .nt') && !e.matches('a.chip'))
+        .map((e) => { const r = e.getBoundingClientRect(); return {t: (e.textContent || e.getAttribute('aria-label') || e.tagName).trim().slice(0, 30),
+          h: Math.round(r.height), w: Math.round(r.width), x: e.matches('button.x')}; })
+        .filter((b) => b.h < 44 || (b.x && b.w < 44))""")
+    assert small == [], small
+    n = pg.evaluate("window.root().querySelectorAll('a, button, summary, input').length")
+    assert n >= 12
+    chips = pg.evaluate("""() => [...window.root().querySelectorAll('a.chip')].map((c) => { const r = c.getBoundingClientRect(), x = r.left + r.width / 2;
+        return {h: r.height, up: window.root().elementFromPoint(x, r.top - 4) === c, down: window.root().elementFromPoint(x, r.bottom + 4) === c}; })""")
+    assert len(chips) == 3 and all(c["h"] <= 40 and c["up"] and c["down"] for c in chips), chips
+    pg.close()
+
+
+def test_note_dates_are_hst_and_the_guide_time_says_hst(browser, tmp_path):
+    """UX review r3 #3: a note's "at" is UTC, so a note written 2026-11-10 20:00 HST showed 2026-11-11. Its date is
+    now the HST one, and the guide's tidied time is labeled HST."""
+    st = _states(tmp_path)
+    na = st["sensor.flight_watcher_layover_notes"]["attributes"]
+    na["cities"]["SYD"]["notes"][0]["at"] = "2026-11-11T06:00:00+00:00"  # 2026-11-10 20:00 HST
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(st))
+    card = pg.locator("flight-watcher-layover-card")
+    assert card.locator(".notes > .nl .nm .u").first.inner_text() == "2026-11-10"
+    assert card.locator(".notes > .guide > .u").first.inner_text().endswith(" HST")
+    pg.close()
+
+
+def test_a_12_hour_van_and_one_only_the_watcher_read_show_on_the_card(browser, tmp_path):
+    """Review r3 #6: a van Hark wrote as "7:40 PM Thu 2026-11-12, ..." got its alerts but the card showed Report and
+    no van. The card reads the same three forms as the Watcher, and when it still cannot, it shows the Watcher's own
+    reading (here Hark's text says "see crew desk" and its state has the time)."""
+    for van, state, place in (("7:40 PM Thu 2026-11-12, Example Harbour Hotel lobby", "x", "Example Harbour Hotel lobby"),
+                              ("see crew desk", "Layover SYD, van 2026-11-12 19:40", "")):
+        pg = browser.new_page(viewport={"width": 390, "height": 844})
+        pg.set_content(_page(_states(tmp_path / place.replace(" ", "_"), hark_attrs=_hark_full(van=van), hark_state=state)))
+        card = pg.locator("flight-watcher-layover-card")
+        v = card.locator("[data-van]")
+        assert v.locator(".vl").inner_text().lower() == "van", van
+        assert v.locator(".vt").inner_text() == "19:40" and "AEDT" in v.locator(".vz").inner_text(), van
+        assert v.locator("[data-cd]").inner_text() == "in 2 h 10 min", van
+        assert card.locator("[data-vanunread]").count() == 0
+        if place:
+            assert f"Van at {place}" in card.locator(".vp").first.inner_text()
+            assert "30 min at 22:10 HST" in card.locator(".vp").first.inner_text()
+        pg.close()
+
+
+def test_a_van_the_watcher_cannot_place_shows_its_text_and_no_alert(browser, tmp_path):
+    """Review r3 #1 and #2 on the card: a date-first van with PM after it, or a weekday that is not the date's, is no
+    alert in the Watcher; the card shows Hark's text and says no van alert comes, never a time of its own."""
+    for van, state in (("2026-11-12 7:40 PM, Example lobby", "Layover SYD, van 2026-11-12 07:40"),
+                       ("12:05 AM (00:05) Fri 2026-11-12, Example lobby", "Layover SYD, van 2026-11-12 00:05")):
+        pg = browser.new_page(viewport={"width": 390, "height": 844})
+        pg.set_content(_page(_states(tmp_path / str(len(van)), hark_attrs=_hark_full(van=van), hark_state=state)))
+        card = pg.locator("flight-watcher-layover-card")
+        assert card.locator("[data-van] .vl").inner_text().lower() == "report", van
+        line = card.locator("[data-vanunread]").inner_text()
+        assert van in line and "no van alert" in line, van
+        pg.close()
+
+
+def test_the_cards_van_reading_matches_the_watchers(browser):
+    """The card's _parseVan and layover.parse_van read the same texts the same way (date, time, and none)."""
+    texts = ["7:40 PM (19:40) Thu 2026-11-12, Example Harbour Hotel lobby", "2026-11-12 19:40", "7:05 am Fri 2026-11-13, front door",
+             "12:30 AM Sat 2026-11-14", " 2026-11-12 19:40", "Thu, 2026-11-12 19:40, lobby", "2026-11-12 19:40 AEDT, lobby",
+             "2026-11-12 7:40 PM, X", "2026-11-12T08:40:00Z", "2026-11-12 08:40 UTC", "2026-11-12T19:40+11:00",
+             "12:05 AM (00:05) Fri 2026-11-12, lobby", "7:40 PM Thu/Fri 2026-11-12", "(19:40) Thurs. 2026-11-12",
+             "7:40 PM at the Saturn Hotel desk 2026-11-12", "(25:10) 2026-11-12", "(19:40) 2026-02-30", "TBD", ""]
+    pg = browser.new_page()
+    pg.set_content(_page({}))
+    got = pg.evaluate("(ts) => ts.map((t) => { const v = window.root().host._parseVan(t); return v ? [v.date, v.local, v.place] : null; })", texts)
+    for t, g in zip(texts, got):
+        want = LO.parse_van(t)
+        assert (list(want) if want else None) == g, t
+    pg.close()
+
+
+def test_a_damaged_notes_file_is_said_not_shown_as_no_notes(browser, tmp_path):
+    """Review r3 #3 on the card: the sensor's "unreadable" cities are named, and the current one is not "No notes
+    yet"."""
+    st = _states(tmp_path)
+    na = st["sensor.flight_watcher_layover_notes"]["attributes"]
+    na["cities"].pop("SYD")
+    na["order"].remove("SYD")
+    na["unreadable"] = ["SYD"]
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(st))
+    card = pg.locator("flight-watcher-layover-card")
+    assert "notes file for SYD could not be read" in card.locator("[data-unread]").inner_text()
+    assert "No notes for SYD yet" not in card.locator(".notes").inner_text()
     pg.close()
 
 

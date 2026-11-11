@@ -229,9 +229,18 @@ def test_render_open_form_with_paste_box(browser, tmp_path, width, theme):
     box = card.locator("[data-pastebox]").bounding_box()
     assert box and box["width"] <= width - 32 + 1 and box["height"] <= 64
     assert pg.evaluate("document.documentElement.scrollWidth") <= width
-    # the photo buttons stay inside the page at both widths (they wrap at 390 px)
+    # the photo buttons stay inside the page at both widths (they wrap at 390 px) and are 44 px tall taps (UX review
+    # r3: Paste photo was 27 px); the remove x on a thumbnail keeps its small round shape
     for sel in ("[data-add]", "[data-pastebtn]", "[data-clear]"):
         bb = card.locator(sel).bounding_box()
-        assert bb and bb["height"] >= 26 and bb["x"] + bb["width"] <= width, sel
-    pg.screenshot(path=str(tmp_path / f"fw0071_tickets_{width}_{theme}.png"), full_page=True)
+        assert bb and bb["height"] >= 44 and bb["x"] + bb["width"] <= width, sel
+    rm = card.locator("[data-rm]").first.bounding_box()
+    assert rm["height"] == rm["width"] == 24
+    shots = [str(tmp_path)] + ([os.environ["FW_171_SHOTS"]] if os.environ.get("FW_171_SHOTS") else [])
+    for d in shots:
+        pg.screenshot(path=os.path.join(d, f"fw0071_tickets_{width}_{theme}.png"), full_page=True)
+    # the hint promises only what works everywhere: Safari and the HA app paste only into a box (UX review r3)
+    hint = card.locator("[data-photos] [data-count]")
+    pg.evaluate("window.root().querySelector('[data-clear]').click()")
+    assert "in any box of this form, or in the paste box below" in hint.inner_text() and "anywhere" not in hint.inner_text()
     pg.close()

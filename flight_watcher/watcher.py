@@ -6817,6 +6817,10 @@ LAYOVER_NOTE_BYTES = 8192  # a layover/note command's payload, at most
 LAYOVER_SCAN_S = 30  # the notes folder is looked at this often (a guide Claude wrote shows within it)
 _VAN = {"read": None, "status": None, "attrs": None, "state": "", "why": None, "sig": None, "city": ""}
 _LN = {"sig": None, "files": None, "checked": None, "last": {}, "city": None}
+# the uploads janitor (layover_notes_tick) and the MQTT thread (layover_note_cmd) both publish the notes sensor: one at
+# a time, each building its payload under the lock, so a payload built before a note was written is never the last one
+# published (it would drop the note and its answer, the card on "Saving..." until the next look at the folder)
+_LN_LOCK = threading.Lock()
 
 
 def van_read(mono):
@@ -6909,16 +6913,20 @@ def publish_layover_notes(force=False):
     first, within layover.SENSOR_BYTES) and the answer to the last note command."""
     if not has("one_writer"):
         return False
-    try:
-        d = LO.sensor_payload(LAYOVERS_DIR, _VAN["city"], _LN["last"])
-    except Exception as e:  # noqa: BLE001
-        log.info("layover notes not published: %s", type(e).__name__)
-        return False
-    sig = json.dumps(d, sort_keys=True)
-    if not force and sig == _LN["sig"]:
-        return False
-    _LN["sig"] = sig
-    pub("layover_notes", d)
+    with _LN_LOCK:
+        try:
+            d = LO.sensor_payload(LAYOVERS_DIR, _VAN["city"], _LN["last"])
+        except Exception as e:  # noqa: BLE001
+            log.info("layover notes not published: %s", type(e).__name__)
+            return False
+        sig = json.dumps(d, sort_keys=True)
+        if not force and sig == _LN["sig"]:
+            return False
+        _LN["sig"] = sig
+        if d.get("unreadable"):
+            log.info("layover notes: %s left out, the notes file could not be read (nothing changed in it)",
+                     ", ".join(d["unreadable"]))
+        pub("layover_notes", d)
     return True
 
 
@@ -6952,6 +6960,8 @@ def layover_note_cmd(payload):
     except LO.Bad as e:
         err = str(e)
     except OSError as e:
+        err = f"not saved ({type(e).__name__})"
+    except Exception as e:  # noqa: BLE001  anything else still answers, so the card never waits on "Saving..."
         err = f"not saved ({type(e).__name__})"
     _LN["last"] = {"rid": rid, "ok": ok, "error": err, "city": city if LO.STATION_RE.match(city) else "",
                    "action": action, "at": now_iso()}

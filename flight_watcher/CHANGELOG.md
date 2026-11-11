@@ -152,6 +152,9 @@ entity, which contract 1 allows). Built from three branches (fw171-core, fw171-c
   is missing, such as plain http). Each paste is taken once (the shadow root and the document both hear a composed
   one). Every way goes through the same shrink, checks and photo limit as Add photos; in the portal copy that is
   FileReader into a data: URL, never a blob: URL, so its CSP is unchanged.
+- Review r3: the hint says "Cmd+V in any box of this form, or in the paste box below" (it said "anywhere in this
+  form", which Safari and the Home Assistant app do not do), and Add photos, Paste photo and Remove all are 44 px tall
+  taps (Paste photo was 27 px; the round remove x on a thumbnail keeps its size).
 
 ### The layover page, van alerts and layover notes (FW-0072, Ryan)
 
@@ -195,6 +198,39 @@ entity, which contract 1 allows). Built from three branches (fw171-core, fw171-c
   PORTAL_REFUSED, FEATURES and the fixture are unchanged.
 - Dashboard (`ha/dashboard_flight_watcher.json`, pending on Pako: `ha/README.md`): the `flight` view's two cards become
   the one layover card, its `update_url` the button's Hark link (redacted here).
+- Review r3, van alerts: a date-first van with AM or PM, seconds or a zone after its time ("2026-11-12 7:40 PM",
+  "2026-11-12T08:40:00Z") was read as the station's 24 h time, so the 30 min push could go 12 h early and the real van
+  get none; it is now no alert and one log line. So is a van whose weekday is not its date's ("12:05 AM (00:05) Fri
+  2026-11-12", a Thursday: both alerts about 24 h early), in each of the three forms ("Thu", "Thurs", "Thursday"
+  match; a word that is no weekday is ignored). Hark's state ("van 2026-11-12 19:40") stands in only when the van text
+  has no date at all, so it never re-reads the same doubtful date. The card reads the van with the same three patterns
+  as the Watcher (it had no 12 h one, so a van Hark wrote that way got its alerts but no van on the card), falls back
+  to the Watcher's own reading of it, and shows Hark's van text with "no van alert" when neither can place it.
+- Review r3, layover notes: the folder is under /share, which the HOM app maps too, so it is opened without following
+  a link and every file in it is read only when it is a plain file (never through a symlink, never waiting on a FIFO,
+  size capped; `portal.read_plain`'s rules): a guide linked to `/data/options.json` no longer becomes the guide on the
+  sensor, and a FIFO guide no longer hangs the janitor (van alerts) and the MQTT thread. A folder that is a symlink is
+  refused, never chmod'ed or written through; notes are written with `*at` calls on the folder's fd. A notes file that
+  is there but cannot be read (a hand edit that broke its JSON, `[]`) is no longer taken as empty and overwritten by
+  the next note: the note is refused ("the SYD notes file could not be read: nothing changed"), the sensor leaves that
+  city out (`unreadable`, named on the card) and still publishes the others (`[]` made it fail for every city). A lone
+  surrogate in a note (`"\ud83d"` from a hand-made MQTT message) is stripped like a control character, and any error
+  in a note command still answers, so the card never waits on "Saving..." for good. The janitor and the MQTT thread
+  publish the notes sensor one at a time (a lock), so a payload built before a note was written is never the last one
+  sent.
+- Review r3, privacy: the card shows Hark's data only while `sensor.<prefix>_state` says role admin (it showed it
+  unless the role was "pilot", so a pilot's copy with its state sensor missing or restarting showed Ryan's trip), and
+  `sensor.flight_watcher_layover_van` keeps only what the card reads from it (not Hark's van text, the hotel, the zone
+  name or the HST date; the push event still names the hotel and place). HANDOFF's "Tidy the <CITY> layover notes"
+  steps are for a ticket reported by ryan only: the same title from a pilot is a third party's report.
+- Review r3, the card on Home Assistant's own theme (2026.11: primary #009ac7, warning #ffa600, error #db4437): the
+  countdown, "in 25 min" in orange (1.96:1), "in 8 min" in red (4.29:1), the release warning (1.96:1), the chips and
+  links (3.26:1) and the armed Delete? (4.29:1) were under WCAG AA. Text on the card is now the theme's primary text
+  color (links keep their underline), the urgent countdown and the armed delete are white on a fixed dark orange or
+  red (AA in light and dark), and a refusal is a white on red line. Every button, input, fold-out and block link is
+  44 px tall (the delete x 44 by 44; a chip stays 34 px to the eye with a 44 px tap area). A note's date is its HST
+  date (its time is UTC: an evening note showed the next day) and the guide's tidied time says HST. With only the
+  Watcher's working flight (no Hark), the release line is a plain line, not a fold-out with nothing in it.
 
 ### Tests
 
@@ -209,8 +245,14 @@ entity, which contract 1 allows). Built from three branches (fw171-core, fw171-c
   in 0700, refusals, plain text, the sensor cap, the portal never gets the card or the sensors; the HA push and the
   guard) and `tests/test_layover_card.py` (the card in Chromium: the van at the top right in headline size at 390 px,
   the countdown, the chip, the layover lists and links, the folded release, the fallbacks, the escaped guide, add,
-  tidy and delete, screenshots at 390 and 1100 px, light and dark). `test_roles.py`, `test_instance.py`,
-  `test_portal_contract.py` and `test_portal_spool.py` take the new sub, sensors and `NOT_ON_PORTAL`.
+  tidy and delete, screenshots at 390 and 1100 px, light and dark). Review r3: date-first vans with AM, PM or a zone,
+  contradicting weekdays, the probe's 12 h early push, the van sensor's keys, a damaged notes file, a lone surrogate
+  and any error answering, two threads publishing, a symlinked guide, notes file and folder and a FIFO guide; on the
+  card WCAG AA from the rendered colors on Home Assistant 2026.11's theme at 130, 25 and 8 min with the armed delete
+  and a refusal, 44 px taps at 390 px, HST note dates, a 12 h van and one only the Watcher read, a van neither can
+  place, the card's van reading equal to `layover.parse_van` on 19 texts, a damaged file named, no state sensor; the
+  tickets card's 44 px photo buttons and hint. Each fails on the r3 build before these fixes. `test_roles.py`,
+  `test_instance.py`, `test_portal_contract.py` and `test_portal_spool.py` take the new sub, sensors and `NOT_ON_PORTAL`.
 - `tests/test_pilot_secondary_share.py` (LIVE-1: the real check() for 3 h at the 5 s floor on a pilot with one and two
   bid months and a greedy optional read: each of the four reads in every hour, the pot on every check, no rolling hour
   over 100, checks at least the pace apart; the admin has no shares). The pacing tests in `test_freq_ranges.py` and

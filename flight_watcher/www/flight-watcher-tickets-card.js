@@ -351,7 +351,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
     box.innerHTML = `<div class="lbl">Photos <span class="u">(optional, up to ${max})</span></div>
       ${n ? `<div class="thumbs">${this._imgs.map((x, i) => `<div class="ph"><img src="${x.thumb}" alt="Photo ${i + 1}"><button class="x" data-rm="${i}" aria-label="Remove photo ${i + 1}">&times;</button></div>`).join("")}</div>` : ""}
       <button class="g" data-add${full || p ? " disabled" : ""}>&#128247; ${full ? `${max} of ${max} photos` : n ? "Add more photos" : "Add photos"}</button>${this._canRead() ? `<button class="g" data-pastebtn${full || p ? " disabled" : ""}>&#128203; Paste photo</button>` : ""}${n ? `<button class="g" data-clear${p ? " disabled" : ""}>Remove all</button>` : ""}
-      <div class="u" data-count>${p ? `Preparing photo ${p.i} of ${p.n}...` : n ? `${n} photo${n === 1 ? "" : "s"} attached (${this._kb(bytes)})` : "Photo library, camera or files. Or paste a screenshot: \u2318V anywhere in this form, or the paste box below."}</div>
+      <div class="u" data-count>${p ? `Preparing photo ${p.i} of ${p.n}...` : n ? `${n} photo${n === 1 ? "" : "s"} attached (${this._kb(bytes)})` : "Photo library, camera or files. Or paste a screenshot: \u2318V in any box of this form, or in the paste box below."}</div>
       ${this._note ? `<div class="warn">${this._e(this._note)}</div>` : ""}`;
     box.querySelector("[data-add]").onclick = () => { if (!this._prep && this._imgs.length < this._max()) this.shadowRoot.querySelector("[data-img]").click(); };
     const pb = box.querySelector("[data-pastebtn]");
@@ -652,7 +652,7 @@ class FlightWatcherTicketsCard extends HTMLElement {
       .seg span{display:flex;align-items:center;justify-content:center;gap:4px;min-height:40px;padding:0 6px;text-align:center;color:var(--primary-color)}
       .seg input:checked+span{background:var(--primary-color);color:#fff}
       .seg input:focus-visible+span{outline:2px solid var(--primary-text-color);outline-offset:-4px}
-      .photos{margin:8px 0}.photos .lbl{font-weight:600;font-size:12px;margin-bottom:4px}
+      .photos{margin:8px 0}.photos .lbl{font-weight:600;font-size:12px;margin-bottom:4px}.photos>button{min-height:44px}
       .thumbs{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px}
       .ph{position:relative;width:64px;height:64px}
       .ph img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid var(--divider-color);display:block}
