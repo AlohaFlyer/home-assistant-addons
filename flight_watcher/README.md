@@ -29,10 +29,14 @@ publishes what it finds to Home Assistant over MQTT.
 - Smart push fields (1.4.13, FW-0042): pot, Tradeboard and finds rows (in the finds DB and month files, not on the
   sensors), `last_new` and `event/new_pairing` carry `comm` (the home airports you can commute from: two scheduled
   nonstops arriving HNL before report, PWA 26.QQ.2, and one home 60+ min after release; or `No`), `value` (credit x
-  your rate) and `month_rule` (your bid line or reserve month's rules, per bid period: days off, VAC, credit cap,
-  rest, SCR days). They read `/share/flight_watcher/smart.json` (a second pilot's
+  your rate) and `month_rule` (your bid line or reserve month's rules, per bid period: days off, VAC, rest, SCR
+  days). They read `/share/flight_watcher/smart.json` (a second pilot's
   `/share/flight_watcher/<name>/smart.json`), which is never in git; without it they are blank. The finds card shows
-  Comm and Value.
+  Comm and Value. 1.7.1: no monthly credit cap (an old `cap_credit` in smart.json is ignored); instead `b672` /
+  `b672_ok` and a `month_rule` part give your block hours in the 672 h ending at the pickup's release (flown +
+  scheduled + the pickup, block not credit) against the company's 98 h buffer (FAR 117.23(b)(1) allows 100 h):
+  `Fits 672 (97:59)` at or under 98:00, `Over 98/672 (98:01)` above it, `672 ? (block not read)` when a block is not
+  on file. A find over 98/672 is shown and tagged, never hidden.
 - Request decisions: reads FLICA's Open Time Requests list and the Tradeboard's My Requests page (crew-to-crew
   trades), and pushes each Approved or Denied request once, with Pay-Gross. A trade no list shows (1.4.7, FW-0064):
   trips dropped and added on your schedule the same HST day that no decided request explains are pushed once as an

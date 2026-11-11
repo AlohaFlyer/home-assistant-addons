@@ -107,6 +107,33 @@ availability (no command topics, so not in `roles.SUBS`), and a portal pilot's S
   Watcher's FLICA loads in the hour up to `at`, the host gate's own count) and `budget` (100 on a pilot, null on the
   admin): plain numbers of his own instance (`fetches_payload`). On a pilot the uploads janitor's minute sends it again
   when that count changed (loads age out of the hour while nothing loads; `fetches_tick`), never when it is the same.
+- FW-0042 part 2 (Ryan's rule, relayed by Hark on the HOM bus Nov 9; branch fw171-cap): no monthly credit cap. The
+  90 h cap was Hark's error, not Ryan's rule (the PWA does not cap voluntary adds): a `cap_credit` still in smart.json
+  (Pako's has one) is read and ignored, logged once per change of the file, and no find reads `Over cap` or `Cap ?`
+  any more (in 1.7.0 every line-month find did). In its place Ryan's rolling block check: the pilot's block (flight)
+  time, never credit, in the 672 h ending at the pickup's last release, flown + scheduled + the pickup
+  (`smart.block_672` on the FAR column's own trips, `watcher.far_trips`, summed by `far.flight_time_to_release` with
+  the FAR 117.23(b)(1) machinery, whose window sum `_cum` now shares), against the company's 98 h buffer
+  (`smart.BUFFER_672_H`, one constant apart from FAR's 100 h, `far.FT_672`): `Fits 672 (97:59)` at or under 98:00,
+  `Over 98/672 (98:01)` above it, `672 ? (block not read)`, `(line not on file)` or `(times not read)` when a needed
+  block, a day of the line or the pickup's own times are not on file (never guessed; blocks on file already over 98:00
+  stay Over), and `672 ? (78:01 to 98:01)` when only a trip across the window's start decides it (a Fits counts that
+  trip's block up to its overlap). The tag sits in `month_rule` where `Over cap` was, for a line or a reserve month
+  (a Fits alone reads `OK, Fits 672 (97:59)`; `RULE_MAX` 80 keeps the rest part), and on the row as `b672` ('97:59')
+  and `b672_ok` (true, false, '' unknown) in the finds DB and month files, `last_new` and `event/new_pairing`, not on
+  the pot, Tradeboard or finds sensors (`SENSOR_DROP`). Only the window ending at the pickup's release is held to
+  98 h; FAR's 100 h in every 672 h window stays the FAR column's. Nothing quiets, ranks or hides a find on
+  `month_rule`: the HA automations (in git, and on Pako as read Nov 11) read VAC, blocked days, fit and far only, the
+  finds card shows `month_rule` on hover only, there is no value score, and the portal's priority reads fit and far. A
+  push that wants the tag adds `{{ p.b672 }}` or `{{ p.month_rule }}` to the new-pairing message (a separate HA step);
+  a quiet rule built on the 1.4.13 template must not count `Fits 672` or `Over 98/672` as a fail (Ryan decides).
+  Tests: `tests/test_fw171_b672.py`; `test_smart.py`'s cap tests now check the cap is gone.
+- FW-0042 part 2 review: a find stored before 1.7.1 that has left the pot (never screened again) drops `Over cap`
+  and `Cap ?` from its `month_rule` in the finds DB rows, month files and card hover (`store.find_month_rule`;
+  blank when nothing else is left, as the 672 h check never ran on it; Pako had 17 in November's file), and the
+  672 h most-it-can-be counts a block on file longer than its own span (a page's slip) in full next to a trip
+  across the window's start, which had read `Fits` up to that slip's excess too low
+  (`far.flight_time_to_release`; the FAR column's `_cum` is unchanged).
 
 ### The cards
 

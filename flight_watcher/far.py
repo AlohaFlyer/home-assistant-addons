@@ -7,6 +7,8 @@ What it checks (14 CFR 117, unaugmented, all trips start and end at HNL so times
 - 117.23(c)(1) and (2): FDP at most 60 h in any 168 h and 190 h in any 672 h.
 - PWA 10.E.1.a: 11 h rest in domicile; PWA 2.19.b: a release 30 min after block-in when clearing customs.
 legality() (1.4.6, the Recall / Over 75 miss check) says OK, NO or '?' (data not on file), never guessing.
+flight_time_to_release() (1.7.1, FW-0042): the flight time in the one 672 h window ending at a pickup's release, for
+the smart push's company 98 h block buffer (smart.block_672), with the same 117.23(b)(1) machinery.
 screen() (FW-0039) is the FAR column of pot, Tradeboard and finds rows: the same checks, in the column's short words
 (a pickup that broke 117.23(c) read OK under the old far_check, which is gone). The 11 h PWA rest stays a note there
 ('OK (CBA rest 10:30)'), as before. The pairing's own FDP is built legal by scheduling and is not re-checked.
@@ -160,6 +162,47 @@ def _segments(t, what):
     return t["duties"] if what == "FDP" else (t.get("ft") or t["duties"])
 
 
+def _segs(trips, new, what, lo_h, hi_h):
+    """The FDP or flight time spans of the trips that touch [lo_h, hi_h]: [(start, end, cap h, block h or None, sure,
+    is_new, trip)]; cap is what the span can add to a window (its length for FDP; its block, or its length when the
+    block is unknown, for flight time)."""
+    segs = []
+    for t in trips:
+        for s, e, blk in _segments(t, what):
+            if e <= lo_h or s >= hi_h:
+                continue
+            dur = _hrs(e - s)
+            cap = dur if what == "FDP" or blk is None else min(blk, dur)
+            segs.append((s, e, cap, blk, _sure(t), t is new, t))
+    return segs
+
+
+def _known_block(seg, a, b):
+    """True when a flight time span's block surely falls in the window [a, b]: the block is known and the span is
+    wholly inside (a span across the window's edge may have flown on either side)."""
+    s, e, _, blk, _, _, t = seg
+    return blk is not None and s >= a and e <= b and not t.get("approx") and not t.get("unknown_line")
+
+
+def _in_window(segs, a, b, what):
+    """(lo, hi, lo without the new pairing): the hours of the spans in the window [a, b] by _cum's sure / worst rule."""
+    lo = hi = lo_mine = 0.0
+    for seg in segs:
+        s, e, cap, blk, sure, is_new, t = seg
+        ov = _ov(s, e, a, b)
+        if ov <= 0:
+            continue
+        if what == "FDP":
+            hi += ov
+            add = ov if sure else 0.0
+        else:
+            hi += min(cap, ov)
+            add = blk if _known_block(seg, a, b) else 0.0
+        lo += add
+        lo_mine += 0.0 if is_new else add
+    return lo, hi, lo_mine
+
+
 def _cum(trips, new, span, lim, what, ref):
     """FAR 117.23: the most flight time / FDP hours in any `span` window that holds part of the new pairing.
     sure (lo): FDP = overlap of known duty periods; flight time = block of every span wholly inside the window.
@@ -169,15 +212,7 @@ def _cum(trips, new, span, lim, what, ref):
     cap; only those windows are tried. Returns (result 'OK' | 'NO' | '?', line, hours: when NO or '?' over, the worst
     failing window's of the kind the first one in time decided (the pairing's own excess, or the line's), else the most
     it can be)."""
-    lo_h, hi_h = new["report"] - span, new["release"] + span
-    segs = []  # (start, end, cap h, block h or None, sure, is_new, trip)
-    for t in trips:
-        for s, e, blk in _segments(t, what):
-            if e <= lo_h or s >= hi_h:
-                continue
-            dur = _hrs(e - s)
-            cap = dur if what == "FDP" or blk is None else min(blk, dur)
-            segs.append((s, e, cap, blk, _sure(t), t is new, t))
+    segs = _segs(trips, new, what, new["report"] - span, new["release"] + span)
     cands = set()
     for s, e, cap, _, _, _, _ in segs:
         c = timedelta(hours=cap)
@@ -189,20 +224,7 @@ def _cum(trips, new, span, lim, what, ref):
     for a, b in sorted(cands):
         if not (a < new["release"] and new["report"] < b):
             continue
-        lo = hi = lo_mine = 0.0
-        for s, e, cap, blk, sure, is_new, t in segs:
-            ov = _ov(s, e, a, b)
-            if ov <= 0:
-                continue
-            if what == "FDP":
-                hi += ov
-                add = ov if sure else 0.0
-            else:
-                hi += min(cap, ov)
-                add = blk if (blk is not None and s >= a and e <= b and not t.get("approx")
-                              and not t.get("unknown_line")) else 0.0
-            lo += add
-            lo_mine += 0.0 if is_new else add
+        lo, hi, lo_mine = _in_window(segs, a, b, what)
         if hi > best_hi:
             best_hi, worst_w = hi, (a, b)
         best_lo = max(best_lo, lo)
@@ -228,6 +250,32 @@ def _cum(trips, new, span, lim, what, ref):
 CUM = ((H672, FT_672, "flight time", "FAR 117.23(b)(1)", "FT"),
        (H168, FDP_168, "FDP", "FAR 117.23(c)(1)", "FDP"),
        (H672, FDP_672, "FDP", "FAR 117.23(c)(2)", "FDP"))
+
+
+def flight_time_to_release(new, mine, span=H672):
+    """FW-0042 (Ryan, Nov 9): the flight time (block, not credit) in the one `span` window that ends at the new
+    pairing's release: the pilot's own trips in it, flown and scheduled (mine, as legality() reads them), plus the new
+    pairing, with _cum's FAR 117.23(b)(1) machinery and its sure rule. Returns {known: the blocks surely in it
+    (every span wholly inside, its block known), worst: the most it can be (known, plus every other span's block, or
+    its length when the block is unknown, cut to its overlap; never under known), unknown_block: [labels of trips in it whose block is not on file],
+    unknown_line: [the days in it whose line is not on file], edge: [labels of trips across the window's start, their
+    block known but not how much of it flew inside]}. known == worst when all three lists are empty."""
+    b = new["release"]
+    a = b - span
+    segs = _segs(mine + [new], new, "flight time", a, b)
+    lo, _, _ = _in_window(segs, a, b, "flight time")
+    # the most it can be: every block surely in it in full (lo; one on file longer than its own span, a page's slip,
+    # included) plus the rest cut to their overlap (_cum's worst would count that slip only up to its span)
+    hi = lo + sum(min(sg[2], _ov(sg[0], sg[1], a, b)) for sg in segs if not _known_block(sg, a, b))
+    blk, line, edge = [], [], []
+    for seg in segs:
+        s, e, _, bh, _, _, t = seg
+        if _ov(s, e, a, b) <= 0 or _known_block(seg, a, b):
+            continue
+        where = line if t.get("unknown_line") else blk if bh is None or t.get("approx") else edge
+        if t["label"] not in where:
+            where.append(t["label"])
+    return {"known": lo, "worst": hi, "unknown_block": blk, "unknown_line": line, "edge": edge}
 
 
 def _checks(new, mine):

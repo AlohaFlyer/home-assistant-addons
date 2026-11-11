@@ -19,9 +19,16 @@
   schedule pages on file (bid_month()), else the calendar month. line (bid line): adds only on days off (the fit
   tag's Conflict and the schedule's own days), 11 h minimum rest (PWA 10.E.1.a, the FAR column's CBA rest note), at
   least min_days_off days off after the add over that bid period (FLICA's own Days Off total, which counts VAC days
-  as off, less the days off the add uses), the month's credit plus the trip's at most cap_credit ('Cap ?' when
-  either is not on file). reserve: pickups over SCR days only. VAC days are never pickup days (either type, or a
-  month with no type). Not checked here: reserve's 48 h in the pot, R-14 and no-GDO conditions.
+  as off, less the days off the add uses). reserve: pickups over SCR days only. VAC days are never pickup days
+  (either type, or a month with no type). Not checked here: reserve's 48 h in the pot, R-14 and no-GDO conditions.
+  No monthly credit cap (1.7.1, Ryan via Hark, Nov 9: the 90 h cap was Hark's error; the PWA does not cap voluntary
+  adds): a cap_credit in smart.json is read and ignored (logged once per file change), never 'Over cap' or 'Cap ?'.
+- block_672() (1.7.1, Ryan's rule of Nov 9): the pilot's block hours in the 672 h ending at the pickup's release
+  (flown + scheduled + the pickup, far.flight_time_to_release: the FAR column's flight time in 672 h machinery)
+  against the company's 98 h buffer in that rolling window (BUFFER_672_H; FAR's own limit is 100 h, far.FT_672):
+  'Fits 672 (97:59)', 'Over 98/672 (98:01)' or '672 ? (block not read)', in month_rule's parts where 'Over cap' was
+  and as the row's own b672 / b672_ok fields. Block (flight) time, never credit. A find over 98/672 is shown and
+  tagged, never hidden.
 - value(): the trip's credit times the hourly rate, whole dollars.
 
 Nothing personal ships with the code: the airports, the nonstop tables, the month types, VAC dates, the rate and the
@@ -31,6 +38,8 @@ which caches by the file's contents and never raises. Times are naive HST dateti
 import json
 import re
 from datetime import date, datetime, timedelta, timezone
+
+import far as FAR
 
 FORMAT = 1  # smart.json "v"
 LINE, RESERVE = "line", "reserve"
@@ -44,7 +53,16 @@ RESERVE_CODES = ("SCR",)  # day codes a reserve pickup may cover (smart.json res
 OFF_CODES = ("OFF", "GDO")  # day codes that are days off on a line (smart.json off_codes overrides)
 IN_NEEDED = 2  # PWA 26.QQ.2: two scheduled flights
 WHY_MAX = 240
-RULE_MAX = 60
+RULE_MAX = 80  # 1.7.1: room for 'Over 98/672 (101:30)' with the parts 'Over cap' used to sit among
+# 1.7.1 (FW-0042, Ryan, Nov 9): the company holds a pilot to 98 h of block in any 672 consecutive hours, a buffer under
+# FAR 117's 100 h of flight time in 672 h (far.FT_672, which the FAR column checks); one constant, apart from FAR's
+BUFFER_672_H = 98
+FITS_672 = "Fits 672"
+OVER_672 = f"Over {BUFFER_672_H}/672"
+UNK_672 = "672 ?"
+# smart.json keys that no longer mean anything: read and ignored, logged once per file change (load())
+IGNORED = {"cap_credit": "no monthly credit cap (Ryan, Nov 9: the PWA does not cap voluntary adds); the 672 h block "
+                         "check (Fits 672 / Over 98/672) replaces it"}
 AP_RE = re.compile(r"^[A-Z]{3}$")
 # a pairing id (pot.PAIRING_RE): a schedule page lists a day outside its bid period only for a pairing carried across
 # the period's edge, so a day it lists with no pairing on it is a day of that page's own bid period
@@ -170,7 +188,8 @@ def normalize(raw):
     rate = _num(raw.get("rate"))
     cfg["rate"] = rate if rate and rate > 0 else None
     cfg["breakeven"] = _pos_hours(raw.get("breakeven"))
-    cfg["cap_credit"] = _pos_hours(raw.get("cap_credit"))
+    # 1.7.1: cap_credit (the 90 h cap, Hark's error) is not read into the config: no rule can use it
+    cfg["ignored"] = tuple(k for k in IGNORED if k in raw)
     try:
         mdo = int(raw.get("min_days_off")) if raw.get("min_days_off") not in (None, "") else None
     except (TypeError, ValueError):
@@ -203,7 +222,8 @@ def load(path, warn=None):
     """smart.json at path, normalized; {} when the file is missing, unreadable, not JSON or another format. Cached
     by the file's contents: the few KB are read every call (once per pass) and parsed again only when they change, so
     a same-size rewrite inside one file time tick (a coarse kernel clock) is never missed. warn(text) is called once
-    per change that does not load (never with the file's contents). Never raises."""
+    per change that does not load (never with the file's contents), and once per change for each key it reads and
+    ignores (IGNORED: cap_credit, 1.7.1). Never raises."""
     try:
         with open(path, "rb") as fh:
             data = fh.read(MAX_BYTES + 1)
@@ -229,6 +249,12 @@ def load(path, warn=None):
             warn(f"smart.json not used ({err}); the commute, month and value fields stay blank")
         except Exception:  # noqa: BLE001
             pass
+    for k in (cfg or {}).get("ignored") or ():  # once per change of the file, like the warning above
+        if warn:
+            try:
+                warn(f"smart.json {k} ignored: {IGNORED[k]}")
+            except Exception:  # noqa: BLE001
+                pass
     return cfg
 
 
@@ -359,8 +385,8 @@ def _page(sch):
 
 
 def bid_month(months, period=None):
-    """day -> the key ('YYYY-MM') of the bid month that day belongs to, which judges it (its type, its schedule, its
-    days off and cap). Hawaiian's bid periods are not calendar months (November 2026 runs Nov 1 to Dec 1, December
+    """day -> the key ('YYYY-MM') of the bid month that day belongs to, which judges it (its type, its schedule and
+    its days off). Hawaiian's bid periods are not calendar months (November 2026 runs Nov 1 to Dec 1, December
     Dec 2 to 31), and FLICA's Days Off total counts the bid period. In order:
     1. period(day), the pilot's pairing files' period bounds (the Watcher passes crewidx.period_for's), when it
        gives a 'YYYY-MM' (None: those bounds are not on file);
@@ -447,19 +473,22 @@ def _join(items):
     return out or (items[0][:RULE_MAX] if items else "")
 
 
-def month_rule(start, end, credit, fit, far, months, cfg, period=None):
+def month_rule(start, end, credit, fit, far, months, cfg, period=None, b672=""):
     """The row against the type of each bid month it touches (a trip across a bid period's end is judged in both, each
-    by its own type): 'OK', or what fails joined with ', ' ('VAC', 'Conflict H3659', 'Days off 11', 'Over cap',
-    'Rest 10:30', 'Not SCR'), the unknowns ('Rest ?', 'Rest 10:50?', 'Cap ?', 'No sched' when a schedule month is not
-    on file) never read as OK; 'VAC' alone for a VAC day in a month with no type; '' with no config, or with no type
-    for any of its months and no VAC day. start / end: dates. Never raises.
+    by its own type): 'OK', or what fails joined with ', ' ('VAC', 'Conflict H3659', 'Days off 11', 'Over 98/672
+    (98:01)', 'Rest 10:30', 'Not SCR'), the unknowns ('Rest ?', 'Rest 10:50?', '672 ? (block not read)', 'No sched'
+    when a schedule month is not on file) never read as OK; 'VAC' alone for a VAC day in a month with no type; '' with
+    no config, or with no type for any of its months and no VAC day. start / end: dates. Never raises.
+    b672 (1.7.1): block_672()'s tag, put among the parts where 'Over cap' was (after the months' own parts, before the
+    rest) when a month the trip touches has a type; a 'Fits 672 (97:59)' is no fail ('OK, Fits 672 (97:59)' when
+    nothing else is said). credit: no longer read (1.7.1: no monthly credit cap; a cap_credit in smart.json is
+    ignored), kept for the callers.
     Each day's bid month is bid_month(months, period)'s: period(day) gives the pairing files' bounds (the Watcher's),
-    else the schedule pages and the calendar month decide; that month's type, schedule page, days off and cap judge it.
+    else the schedule pages and the calendar month decide; that month's type, schedule page and days off judge it.
     line: a day holding a trip or a duty code (not an off code, not VAC) is a Conflict, read from the schedule itself
     as well as the fit tag (which says 'No sched' for a trip across a month end, and names an off code such as GDO
-    as a Conflict, which a line is free to fly on); days off and the cap per bid month (the trip's credit split by its
-    days; 'Cap ?' when the split decides it). reserve: every day of that month is SCR. A month with no type next to
-    one with a type: a day holding a trip is still a Conflict."""
+    as a Conflict, which a line is free to fly on); days off per bid month. reserve: every day of that month is SCR.
+    A month with no type next to one with a type: a day holding a trip is still a Conflict."""
     try:
         a, b = _date(start), _date(end or start)
         if not cfg or not a:
@@ -481,8 +510,7 @@ def month_rule(start, end, credit, fit, far, months, cfg, period=None):
         res = set(cfg.get("reserve_codes") or RESERVE_CODES)
         f = str(fit or "")
         fcode = f.split(" ", 1)[1].strip().upper() if f.startswith("Conflict ") else ""
-        h = hours(credit)
-        cap, mdo = cfg.get("cap_credit"), cfg.get("min_days_off")
+        mdo = cfg.get("min_days_off")
 
         def code(d, mk):  # the day's code on its own bid month's page, else on any page that lists it
             rows, codes = bid.pages.get(mk, ((), {}))
@@ -515,15 +543,8 @@ def month_rule(start, end, credit, fit, far, months, cfg, period=None):
                 n = _days_off(mk, months, cfg, set(md), bid)
                 if n is not None and n < mdo:
                     out.append(f"Days off {n}")
-            if cap is not None:
-                have = hours(((months.get(mk) or {}).get("totals") or {}).get("credit"))
-                share = h * len(md) / len(days) if h is not None else None
-                if share is None:
-                    out.append("Cap ?")  # the trip's credit is not readable
-                elif share > cap + 1e-9 or (have is not None and have + share > cap + 1e-9):
-                    out.append("Over cap")
-                elif have is None or have + h > cap + 1e-9:
-                    out.append("Cap ?")  # the month's credit is not on file, or the split across months decides it
+        if b672:
+            out.append(str(b672))  # the 672 h block buffer, one per trip, where 'Over cap' was (1.7.1)
         if line:
             r = _rest(far)
             near = [a - timedelta(days=1), b + timedelta(days=1)]  # the days either side: a trip there needs rest
@@ -535,9 +556,57 @@ def month_rule(start, end, credit, fit, far, months, cfg, period=None):
         if nosched:
             out.append("No sched")
         out = [x for i, x in enumerate(out) if x not in out[:i]]
-        return _join(out) if out else "OK"
+        if all(x.startswith(FITS_672) for x in out):
+            out.insert(0, "OK")  # nothing fails: the 672 tag is a note
+        return _join(out)
     except Exception:  # noqa: BLE001: a field, never an error
         return ""
+
+
+# ---------------------------------------------------------------- the 672 h block buffer (1.7.1, FW-0042)
+def _hmm(m):
+    """Minutes as H:MM, the hours unpadded (97:59, 6:00, 101:30)."""
+    return f"{m // 60}:{m % 60:02d}"
+
+
+def _b672(tag, hm="", ok=""):
+    return {"tag": tag, "b672": hm, "b672_ok": ok}
+
+
+def block_672(new, mine):
+    """Ryan's rule (Nov 9, via Hark): the pilot's block hours in the 672 consecutive hours ending at the pickup's last
+    release, flown + scheduled + the pickup, against the company's 98 h buffer (BUFFER_672_H; FAR 117's own flight
+    time limit is 100 h in 672 h, far.FT_672, whose section far.py cites). Block (flight) time, never credit.
+    new / mine: the pickup and the pilot's line as far.py reads them (the Watcher's far_trips(), the FAR column's
+    own); far.flight_time_to_release() sums them with the FAR column's flight time machinery. Returns {tag, b672,
+    b672_ok}:
+    - 'Fits 672 (97:59)', b672 '97:59', b672_ok True: at most 98:00 (exactly 98:00 fits);
+    - 'Over 98/672 (98:01)', b672 '98:01', b672_ok False: over it; with a block not on file, the blocks on file are
+      over already (an unknown can only add);
+    - '672 ? (block not read)': a block in the window is not on file (a trip of the pilot's whose pairing page was not
+      read, or the pickup's own), '672 ? (line not on file)': days in the window with no schedule month on file,
+      '672 ? (times not read)': the pickup's report or release is not known (new is None), '672 ? (97:30 to 98:40)':
+      only a trip across the window's start decides it (its block known, not how much of it flew inside); b672 '',
+      b672_ok '' (never guessed). A trip across the window's start counts in a Fits up to its overlap (the most it can
+      be), so that Fits holds whatever the split.
+    Never raises."""
+    try:
+        if not new:
+            return _b672(f"{UNK_672} (times not read)")
+        r = FAR.flight_time_to_release(new, mine or [])
+        known, worst, lim = int(round(r["known"] * 60)), int(round(r["worst"] * 60)), BUFFER_672_H * 60
+        if known > lim:
+            return _b672(f"{OVER_672} ({_hmm(known)})", _hmm(known), False)
+        if r["unknown_block"]:
+            return _b672(f"{UNK_672} (block not read)")
+        if r["unknown_line"]:
+            return _b672(f"{UNK_672} (line not on file)")
+        top = max(known, worst)  # worst (far counts a block on file longer than its span, a page's slip, in full)
+        if top <= lim:
+            return _b672(f"{FITS_672} ({_hmm(top)})", _hmm(top), True)
+        return _b672(f"{UNK_672} ({_hmm(known)} to {_hmm(top)})")
+    except Exception:  # noqa: BLE001: a field, never an error
+        return _b672(f"{UNK_672} (block not read)")
 
 
 # ---------------------------------------------------------------- pairing value

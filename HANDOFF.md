@@ -87,7 +87,12 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
    and Value lines are in the snapshot, pending on Pako, item 11). Comm or Value in the pot_table
    macro needs a Watcher release that puts the fields back on `pot/state` (12 KB cap) as well as the macro edit.
    Hark to confirm the overnight-release cut-off (a release from midnight to 05:00 has no same-day home;
-   `home_day_start` in smart.json moves it). FW-0044 FLICA DROP review page mapped read only.
+   `home_day_start` in smart.json moves it). FW-0042 part 2 (1.7.1, branch fw171-cap, Ryan's rule of Nov 9): the 90 h
+   monthly credit cap was Hark's error and is gone (Pako's `cap_credit` is ignored, logged once); each find now carries
+   `b672` / `b672_ok` and a `month_rule` part with the block in the 672 h ending at its release against the company's
+   98 h buffer (`Fits 672 (97:59)`, `Over 98/672 (98:01)`, `672 ? (block not read)`). The push shows it only after a
+   separate HA step adds `p.b672` or `p.month_rule` to the new-pairing message (Ryan's call). FW-0044 FLICA DROP
+   review page mapped read only.
 7. **Ryan-owned:** FW-0021 paycheck check Dec 22 (PWA 2.A.56, 3.D, 4.C.3, 4.O.1, 6.J); FW-0040 upload the December
    award and January pairings PDFs when posted; FW-0057 upload the October 2026 pairings package (the uploads card
    on the Settings tab asks for it from 1.4.7); FW-0033 delete the merged `claude/*` branches in the GitHub UI

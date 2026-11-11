@@ -2502,6 +2502,23 @@ def _pickup_duties(ev, s):
         return []
 
 
+def far_trips(ev, exclude=None):
+    """FW-0039: ((new, mine), '') the pickup and Ryan's own line as far.py reads them (recall.pickup_trip with the
+    pickup's block and duty periods; recall.line_records: his schedule items flown and to fly, their times and blocks
+    from own_trips, and the days around the pickup no schedule month on file covers), or (None, why) when the pickup's
+    dates, report or final arrival are not known. The FAR column (far_screen) and the 672 h block check (1.7.1,
+    smart.block_672) read the same trips. exclude: 'TRIP|YYYY-MM-DD' of his own trip to leave out (a swap)."""
+    s, e = _span(ev)
+    if not s:
+        return None, "pickup dates unknown"
+    rep, arr = ev.get("report"), ev.get("arrive") or ev.get("last_arr")
+    if not FAR.window(s, e, rep, arr):
+        return None, "pickup report or final arrival not read yet"
+    new = RC.pickup_trip(ev.get("pairing") or "pickup", s, e, rep, arr, hours(ev.get("blk")), _pickup_duties(ev, s))
+    mine = RC.line_records(S.get("schedule") or {}, S.get("own_trips") or {}, s, e, local_now().date(), exclude)
+    return (new, mine), ""
+
+
 def far_screen(ev, exclude=None):
     """FW-0039: FAR 117 and PWA rest screen of a pot, Tradeboard or finds row against Ryan's own line, with the same
     rules as the Recall check (far.legality(): 117.25(e), 117.25(b), 117.23(b)(1) and now 117.23(c)(1)/(2), the FDP
@@ -2510,16 +2527,10 @@ def far_screen(ev, exclude=None):
     '?' when the pickup's report or final arrival is not known yet or a check needs data not on file: never OK);
     why cites the rule behind it. exclude: 'TRIP|YYYY-MM-DD' of his own trip to leave out (a swap)."""
     try:
-        s, e = _span(ev)
-        if not s:
-            return {"far": "?", "why": "pickup dates unknown"}
-        rep, arr = ev.get("report"), ev.get("arrive") or ev.get("last_arr")
-        if not FAR.window(s, e, rep, arr):
-            return {"far": "?", "why": "pickup report or final arrival not read yet"}
-        new = RC.pickup_trip(ev.get("pairing") or "pickup", s, e, rep, arr, hours(ev.get("blk")),
-                             _pickup_duties(ev, s))
-        mine = RC.line_records(S.get("schedule") or {}, S.get("own_trips") or {}, s, e, local_now().date(), exclude)
-        r = FAR.screen(new, mine)
+        trips, why = far_trips(ev, exclude)
+        if not trips:
+            return {"far": "?", "why": why}
+        r = FAR.screen(*trips)
         return {"far": r["far"], "why": r["why"][:FAR_WHY_MAX]}
     except Exception as ex:
         log.info("far skipped for %s: %s", ev.get("pairing"), ex)
@@ -2535,8 +2546,9 @@ def far_for(ev, exclude=None):
 
 
 # FW-0042: the smart push fields every row with fit and far carries (pot, Tradeboard, close-in, finds, the
-# event/new_pairing payload); each '' without smart.json
-SMART_FIELDS = ("comm", "comm_why", "value", "month_rule")
+# event/new_pairing payload); each '' without smart.json. 1.7.1: b672 ('97:59', the block in the 672 h ending at the
+# pickup's release) and b672_ok (True at most 98:00, False over, '' unknown), smart.block_672
+SMART_FIELDS = ("comm", "comm_why", "value", "month_rule", "b672", "b672_ok")
 # Off the pot and Tradeboard sensors: far_why (long) and the smart fields, which no card reads from those sensors yet
 # (the pot_table macro and the schedule card show neither); on them they would cost rows under cap_attrs' 12 KB. The
 # DB, the finds month files, last_new and event/new_pairing keep all of them; the finds sensor carries FINDS_ATTR_KEYS
@@ -2632,12 +2644,24 @@ def bid_period_of(d):
     return mon if mon != f"{d:%Y-%m}" or BID_PERIODS["files"][mon] else None
 
 
+def block_672(ev):
+    """1.7.1 (FW-0042, Ryan's rule of Nov 9): smart.block_672 of a row, on the FAR column's own trips (far_trips):
+    {tag, b672, b672_ok}; '672 ? (times not read)' when the pickup's report or final arrival is not known."""
+    try:
+        trips, _ = far_trips(ev)
+    except Exception as ex:
+        log.info("672 h block check skipped for %s: %s", ev.get("pairing"), ex)
+        trips = None
+    return SMART.block_672(*(trips or (None, None)))
+
+
 def smart_fields(ev):
-    """FW-0042: comm, comm_why (Hark's commute check, PWA 26.QQ.2), value (credit x rate, dollars) and month_rule (the
-    bid month's line / reserve rules, each day in its bid period: bid_period_of) on a row, after its fit and far are
-    set. All '' without smart.json, so nothing else changes. Never raises (a malformed smart.json loads as none). The
-    HOME leg uses the customs release (block-in + 30 min, PWA 2.19.b) for a last leg from outside the US, and both
-    releases when the origin is not on file (release_customs)."""
+    """FW-0042: comm, comm_why (Hark's commute check, PWA 26.QQ.2), value (credit x rate, dollars), month_rule (the
+    bid month's line / reserve rules, each day in its bid period: bid_period_of) and, 1.7.1, b672 / b672_ok (the block
+    in the 672 h ending at the pickup's release against the company's 98 h buffer, block_672; its tag is in month_rule
+    too) on a row, after its fit and far are set. All '' without smart.json, so nothing else changes. Never raises (a
+    malformed smart.json loads as none). The HOME leg uses the customs release (block-in + 30 min, PWA 2.19.b) for a
+    last leg from outside the US, and both releases when the origin is not on file (release_customs)."""
     out = dict.fromkeys(SMART_FIELDS, "")
     try:
         cfg = SMART.load(SMART_FILE, warn=log.info)
@@ -2645,9 +2669,11 @@ def smart_fields(ev):
             rep, rel = report_release(ev)
             out["comm"], out["comm_why"] = SMART.comm(rep, rel, cfg, customs=release_customs(ev, cfg))
             out["value"] = SMART.value(ev.get("credit"), cfg)
+            b = block_672(ev)
+            out["b672"], out["b672_ok"] = b["b672"], b["b672_ok"]
             s, e = _span(ev)
             out["month_rule"] = SMART.month_rule(s, e, ev.get("credit"), ev.get("fit"), ev.get("far"),
-                                                 S.get("schedule") or {}, cfg, period=bid_period_of)
+                                                 S.get("schedule") or {}, cfg, period=bid_period_of, b672=b["tag"])
     except Exception as ex:
         log.info("smart fields skipped for %s: %s", ev.get("pairing"), ex)
         out = dict.fromkeys(SMART_FIELDS, "")
