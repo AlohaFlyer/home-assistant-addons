@@ -5,6 +5,7 @@ check loop. No FLICA page is read for a version. Synthetic data only (made-up pi
 import json
 import os
 import re
+from datetime import timedelta
 
 import pilotver as PV
 import wwwfiles as WF
@@ -103,6 +104,7 @@ def test_a_crew_index_run_versions_the_looked_up_pilots_only(W, tmp_path, monkey
     n = len(W.SENT)
     _file(tmp_path / "www", "2026-11", [_row("H9001", "20", rel=0), _row("H9002", "24", rel=0), _row("H9003", "26", rel=0)])
     fl.crew["H9003"] = "ca 10001 doe, jane fo 10002 roe, rick"  # a trip new to the package, read in the next run
+    W.TEST_CLOCK["t"] += timedelta(minutes=5)  # 1.7.0 review: the next run is later than the version it builds on
     _run(W, fl)
     v = PV.versions_of(W.DB, "10001", "2026-11")
     assert [x["ver"] for x in v] == ["11.001", "11.002"] and v[1]["changes"] == ["added H9003 Nov 26"]

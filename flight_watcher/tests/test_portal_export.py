@@ -31,6 +31,7 @@ PILOT2_IDS = sorted([
     "sensor.flight_watcher_pilot2_schedule_versions", "sensor.flight_watcher_pilot2_settings",
     "sensor.flight_watcher_pilot2_state", "sensor.flight_watcher_pilot2_swap_ideas",
     "sensor.flight_watcher_pilot2_swap_mode", "sensor.flight_watcher_pilot2_swap_test_requests",
+    "sensor.flight_watcher_pilot2_tickets",  # 1.7.0 (contract 1 revision 2): his own tickets
     "sensor.flight_watcher_pilot2_tradeboard_pickups", "sensor.flight_watcher_pilot2_working_flight",
     "sensor.flight_watcher_pilot2_would_trade", "switch.flight_watcher_pilot2_hunt_mode",
     "switch.flight_watcher_pilot2_pause"])
@@ -73,7 +74,7 @@ def test_portal_ids_exact_for_a_pilot(portal_pilot):
     assert sorted(W.portal_ids()) == PILOT2_IDS
     for e in W.portal_ids():
         assert ".flight_watcher_pilot2_" in e  # no admin id, no house id, no other pilot's
-    for gone in ("tickets", "uploads_on_file", "upload_status", "would_drop", "auto_swap_dry_run", "crew_index",
+    for gone in ("uploads_on_file", "upload_status", "would_drop", "auto_swap_dry_run", "crew_index",
                  "update_schedules", "map_swap_pages_read_only"):
         assert not [e for e in W.portal_ids() if e.endswith("_" + gone)], gone
     W.RULES["list"] = [{"id": "sin_alert", "name": "SIN", "enabled": True, "mode": "alert",

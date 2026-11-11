@@ -197,7 +197,7 @@ def test_list_files_copied_exactly_and_without_keys(portal_pilot, monkeypatch):
     W.write_finds_months()
     W.write_list_file("pickers", {"count": 1, "pickers": [{"emp": "10001", "name": NAME}]})
     W.write_list_file("versions", {"months": {}})
-    W.write_list_file("tickets", {"tickets": [{"id": "FW-0001"}]})  # not in contract 1
+    W.write_list_file("tickets", {"tickets": [{"id": "FW-0001"}]})  # 1.7.0: exported (contract 1 revision 2)
     open(os.path.join(fdir, "school_2026-27.json"), "w").write('{"days": []}')
     open(os.path.join(W.CARD_PAIRINGS, f"pairings_{month}.json"), "w").write('{"cols": [], "rows": []}')
     open(os.path.join(W.CARD_PAIRINGS, "pairings_2001-01.json"), "w").write('{"cols": [], "rows": []}')  # too old
@@ -208,14 +208,14 @@ def test_list_files_copied_exactly_and_without_keys(portal_pilot, monkeypatch):
     first = W.local_now().date().replace(day=1)
     prev = f"{first.year - (first.month == 1):04d}-{(first.month - 2) % 12 + 1:02d}"  # 1.6.2: written even when empty
     assert names == sorted([f"finds_{month}.json", f"finds_{prev}.json", "pickers.json", "versions.json",
-                            "school_2026-27.json", f"pairings_{month}.json"])
+                            "school_2026-27.json", f"pairings_{month}.json", "tickets.json"])
     assert not [n for n in names if key in n]
     src = open(os.path.join(fdir, W.WF.list_name("pickers", key)), encoding="utf-8").read()
     assert PT.verify(PT.public_id(PT.load_key(W.PORTAL_KEY_FILE)), _env(W, "files/pickers.json"),
                      "file:pickers", "pilot2") == src  # the file exactly as the card fetches it
     man = _payload(W, "manifest.json", "manifest")
     assert man["files"] == sorted([f"finds:{month}", f"finds:{prev}", "pickers", "versions", "school:2026-27",
-                                   f"pairings:{month}"])
+                                   f"pairings:{month}", "tickets"])
     # a file that goes away leaves out/files and the manifest
     os.remove(os.path.join(fdir, "school_2026-27.json"))
     W.portal_export_once(full=True)

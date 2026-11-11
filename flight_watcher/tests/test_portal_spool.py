@@ -40,29 +40,40 @@ def _published(W):
     return [(t, p, q, r) for t, p, q, r in W.MQ.msgs if not t.startswith("flight_watcher_demo/event")]
 
 
+def _batches(samples, n=20):
+    """1.7.0: the samples in polls of n (30 commands a minute and 50 results are the spool's caps, not under test)."""
+    samples = sorted(samples, key=lambda s: s["name"])
+    return [samples[i:i + n] for i in range(0, len(samples), n)]
+
+
 def test_every_accepted_sample_republishes_exactly_its_sub(demo):
     W = demo
-    for s in SAMPLES["accepted"]:
-        _put(W, s["name"], s["cmd"])
-    assert W.portal_spool_once() == len(SAMPLES["accepted"])
-    got = [(t, p, q, r) for t, p, q, r in W.MQ.msgs if t.startswith("flight_watcher_demo/") and q == 1]
-    assert got == [(f"flight_watcher_demo/{s['cmd']['sub']}", s["cmd"]["payload"], 1, False)
-                   for s in sorted(SAMPLES["accepted"], key=lambda s: s["name"])]
-    assert os.listdir(os.path.join(W.PORTAL_DIR, "in")) == []
-    assert [r["ok"] for r in W.EXPORT["results_list"]] == [True] * len(SAMPLES["accepted"])
+    for batch in _batches(SAMPLES["accepted"]):
+        W.MQ.msgs.clear()
+        W.EXPORT["spool"].accepted.clear()
+        W.EXPORT["results_list"] = []
+        for s in batch:
+            _put(W, s["name"], s["cmd"])
+        assert W.portal_spool_once() == len(batch)
+        got = [(t, p, q, r) for t, p, q, r in W.MQ.msgs if t.startswith("flight_watcher_demo/") and q == 1]
+        assert got == [(f"flight_watcher_demo/{s['cmd']['sub']}", s["cmd"]["payload"], 1, False) for s in batch]
+        assert os.listdir(os.path.join(W.PORTAL_DIR, "in")) == []
+        assert [r["ok"] for r in W.EXPORT["results_list"]] == [True] * len(batch)
     assert {roles.portal_sub(s["cmd"]["sub"]) for s in SAMPLES["accepted"]} == set(roles.PORTAL_CMDS)
 
 
 def test_every_refused_sample_publishes_nothing(demo):
     W = demo
-    for s in SAMPLES["refused"]:
-        _put(W, s["name"], s["cmd"])
-    assert W.portal_spool_once() == 0
-    assert _published(W) == [] and os.listdir(os.path.join(W.PORTAL_DIR, "in")) == []
-    res = {r["id"]: r for r in W.EXPORT["results_list"]}
-    for s in SAMPLES["refused"]:
-        r = res[s["cmd"]["id"]]
-        assert r["ok"] is False and r["why"], s
+    for batch in _batches(SAMPLES["refused"]):
+        W.EXPORT["results_list"] = []
+        for s in batch:
+            _put(W, s["name"], s["cmd"])
+        assert W.portal_spool_once() == 0
+        assert _published(W) == [] and os.listdir(os.path.join(W.PORTAL_DIR, "in")) == []
+        res = {r["id"]: r for r in W.EXPORT["results_list"]}
+        for s in batch:
+            r = res[s["cmd"]["id"]]
+            assert r["ok"] is False and r["why"], s
     named = {s["cmd"]["sub"] for s in SAMPLES["refused"] if s["why"] == "sub not allowed"}
     assert set(roles.PORTAL_REFUSED) <= named  # each refused sub is in the fixture and proven here
 
@@ -321,7 +332,7 @@ def test_one_bad_entry_never_ends_the_poll(demo, monkeypatch):
 @pytest.mark.parametrize("sub,payload", [
     ("freq/hunt_s/set", "inf"), ("freq/hunt_s/set", "1e999"), ("freq/hunt_s/set", "nan"), ("freq/hunt_s/set", "-inf"),
     ("freq/hunt_s/set", "Infinity"), ("freq/hunt_s/set", "4"), ("freq/hunt_s/set", "91"), ("freq/hunt_s/set", "fast"),
-    ("freq/normal_min/set", "inf"), ("freq/normal_min/set", "0"), ("freq/normal_min/set", "21"),
+    ("freq/normal_min/set", "inf"), ("freq/normal_min/set", "0"), ("freq/normal_min/set", "91"),
     ("freq/normal_min/set", ""),
 ])
 def test_freq_must_be_a_finite_number_in_range(demo, sub, payload):
@@ -397,15 +408,15 @@ def test_deeply_nested_json_is_refused_not_raised(demo):
 
 
 def test_freq_limits_are_the_sliders_ranges(demo):
-    """1.6.2 (Ryan 2026-11-10): a portal pilot's sliders are what contract 1 sends (hunt 5 to 90 s, normal 1 to 20 min
-    until Release C revises the contract); the Watcher's own clamp is the wider WATCHER_FREQ_LIMITS (normal up to
-    90 min), so every value the spool passes is applied as sent. The contract's FREQ_LIMITS stay what the spool checks."""
+    """1.6.2 (Ryan 2026-11-10): a portal pilot's sliders are what contract 1 sends (hunt 5 to 90 s; normal 1 to 90 min
+    since revision 2, 1.7.0, 1 to 20 before); the Watcher's own clamp is WATCHER_FREQ_LIMITS, the same ranges, so every
+    value the spool passes is applied as sent. The contract's FREQ_LIMITS stay what the spool checks."""
     W = demo
     got = {}
     for comp, _, cfg, _ in W.entity_defs():
         ct = cfg.get("command_topic") or ""
         if comp == "number" and "/freq/" in ct:
             got[ct.split("/")[-2]] = (cfg["min"], cfg["max"])
-    assert got == roles.FREQ_LIMITS == {"normal_min": (1, 20), "hunt_s": (5, 90)}
+    assert got == roles.FREQ_LIMITS == {"normal_min": (1, 90), "hunt_s": (5, 90)}
     assert W.FREQ_LIMITS is roles.WATCHER_FREQ_LIMITS == {"normal_min": (1, 90), "hunt_s": (5, 90)}
     assert not hasattr(roles, "PILOT_FREQ_LIMITS")

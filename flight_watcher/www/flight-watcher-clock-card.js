@@ -6,9 +6,9 @@
 // buttons and selects are at least 44 px tall on a phone; the interval selects offer only what the number entities
 // allow (their min and max attributes: hunt 5 to 90 s and normal 1 to 90 min on every instance since Ryan's ranges of
 // 2026-11-10, roles.WATCHER_FREQ_LIMITS) and, in the pilot portal (FW_PORTAL, turned on only in the portal's copy:
-// portal.portal_card), only what the portal contract passes (hunt 5 to 90 s, normal 1 to 20 min: contract 1's
-// freq_limits until Release C revises it; a portal pilot's number entity says 20 too): with nothing left the interval
-// shows as text. No Home Assistant steps in the portal.
+// portal.portal_card), only what the portal contract passes (hunt 5 to 90 s, normal 1 to 90 min: contract 1
+// revision 2's freq_limits, 1.7.0; normal stopped at 20 min before): with nothing left the interval shows as text. No
+// Home Assistant steps in the portal.
 // 1.6.2 review: the state note (a FLICA budget wait, a stopped read path) shows while idle or hunting, and a budget
 // wait reads "Waiting for the FLICA budget until HH:MM HST", never "Stuck. Press Re-arm". A pilot's hunt faster than his
 // budget (100 FLICA loads an hour) says so plainly: "Hunting every 10 s is held to 100 FLICA loads an hour: checks wait
@@ -17,7 +17,7 @@
 const FW_PORTAL = false;
 const FC_HUNT = [5, 10, 15, 20, 30, 45, 60, 90];  // seconds (number.flight_watcher_hunt_check_every 5-90)
 const FC_NORM = [1, 2, 3, 5, 6, 10, 15, 20, 30, 45, 60, 90];  // minutes (number.flight_watcher_normal_check_every 1-90)
-const FC_PORTAL_MAX = { hunt: 90, normal: 20 };  // portal contract 1 freq_limits (hunt_s 5-90, normal_min 1-20) until Release C
+const FC_PORTAL_MAX = { hunt: 90, normal: 90 };  // portal contract 1 revision 2 freq_limits (hunt_s 5-90, normal_min 1-90)
 const FC_DEFAULT = { hunt: [5, 90], normal: [1, 90] };  // an entity with no min / max attributes: roles.WATCHER_FREQ_LIMITS
 const FC_HELD = /^(Hunting every \d+ s|Checking every \d+ min) is held to \d+ FLICA loads an hour/;  // the Watcher's held_note
 const FC_TIME = new Intl.DateTimeFormat("en-US", { timeZone: "Pacific/Honolulu", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });

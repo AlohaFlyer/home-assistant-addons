@@ -13,6 +13,11 @@ no imports from the app, so ha/check_push_isolation.py can read RESERVED too.
 1.6.0 (FW-0061): the pilot portal's contract 1 (the bottom of this file): what a portal may send, which events and
 fields it gets, the prefs it may set and the files it serves. portal.py builds tests/fixtures/portal_contract_v1.json
 from these; PORTAL_CONTRACT.md documents them.
+
+1.7.0 (Release C): contract 1 revision 2 adds tickets on the portal: the five ticket subs with their shape rules
+(TICKET_CMDS, data the HOM portal checks with one generic checker), the actions a pilot may take on his own tickets
+(PILOT_TICKET_ACTIONS), his quotas (PILOT_TICKET_LIMITS), the tickets list file, the Tickets tab and the Watcher's own
+ticket_fixed event (OWN_EVENTS). Additive: fwp and contract stay 1.
 """
 import math
 import re
@@ -40,7 +45,8 @@ FEATURES = {
                                 "(swap_map/press)"),
     "paycheck": (ADMIN, False, "the paycheck check card on Ryan's dashboard (no Watcher code)"),
     "admin_pushes": (ADMIN, False, "FLICA alert emails HA forwards (email/alert) and the email check"),
-    "tickets": (ALL, False, "tickets (ticket/new, image, act, edit, delete); a pilot sees and acts on his own"),
+    "tickets": (ALL, True, "tickets (ticket/new, image, act, edit, delete); a pilot sees and acts on his own, on HA or "
+                           "his portal"),
     "uploads": (ALL, False, "uploads in chunks (upload/chunk) and the uploads sensors"),
 }
 
@@ -176,14 +182,17 @@ def name_refusal(name, taken=()):
 # list files it serves (FILE_KINDS). portal.py builds the contract fixture (tests/fixtures/portal_contract_v1.json)
 # from these; PORTAL_CONTRACT.md documents it. The admin has no portal: none of this runs on the default instance.
 CONTRACT = 1
+CONTRACT_REVISION = 2  # 1.7.0 (Release C): tickets on the portal, additive within contract 1
 PORTAL_CMDS = ("hunt/set", "pause/set", "rearm/press", "check_now/press", "charter_scan/press", "freq/normal_min/set",
                "freq/hunt_s/set", "rule/+/live/set", "blocked/set", "trade/set", "pilot/set", "improved/set",
-               "recall/set", "recall/act", "settings/set", "pref/set")
+               "recall/set", "recall/act", "settings/set", "pref/set", "ticket/new", "ticket/image", "ticket/act",
+               "ticket/edit", "ticket/delete")
 PORTAL_RULE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 # contract 1's check frequency ranges (freq/normal_min/set in minutes, freq/hunt_s/set in seconds): a portal's
-# freq/*/set must be a finite number within them (portal.check_freq). Contract 1 is pinned (its fixture and sha256):
-# these stay as they are until the contract revision in Release C.
-FREQ_LIMITS = {"normal_min": (1, 20), "hunt_s": (5, 90)}
+# freq/*/set must be a finite number within them (portal.check_freq). Contract 1 is pinned (its fixture and sha256).
+# Revision 2 (1.7.0, Release C) brings normal up to 90 min, Ryan's Nov 10 range on every instance (1 to 20 before); in
+# the HOM-first order a 1.6.x Watcher still refuses over 20 with its own copy and its slider stops at 20.
+FREQ_LIMITS = {"normal_min": (1, 90), "hunt_s": (5, 90)}
 # 1.6.2 (Ryan 2026-11-10, replacing the pilot's 120 s hunt floor): every instance, the admin and each pilot, hunts every
 # 5 to 90 s and checks every 1 to 90 min in normal mode. These are the number entities' ranges and the Watcher's clamp
 # of freq/*/set and of a stored value. A pilot's FLICA budget (gate.PILOT_BUDGET_H, 100 loads an hour), the host's cap
@@ -200,30 +209,34 @@ def freq_limits(instance):
 
 def entity_freq_limits(instance, portal=False):
     """The ranges the number entities advertise: the instance's (freq_limits) and, on a pilot whose portal is on, kept
-    within contract 1's FREQ_LIMITS, so his portal offers only what it can send (normal up to 20 min until the contract
-    revision in Release C; the Watcher's own clamp already takes 1 to 90)."""
+    within contract 1's FREQ_LIMITS, so his portal offers only what it can send (revision 2: the same 1 to 90 min and 5
+    to 90 s; normal stopped at 20 min on the portal before Release C)."""
     own = freq_limits(instance)
     if not (portal and role(instance) == PILOT):
         return own
     return {k: (max(lo, FREQ_LIMITS[k][0]), min(hi, FREQ_LIMITS[k][1])) for k, (lo, hi) in own.items()}
 
 
-PORTAL_REFUSED = ("email/alert", "crew_scan/press", "ticket/new", "ticket/image", "ticket/act", "ticket/edit",
-                  "ticket/delete", "upload/chunk", "drop/set", "auto_swap/set", "swap_map/press", "hunt/state",
-                  "pause/state")
-# the tabs of the portal (portal_layout.json), and the one each event opens (ntfy Click, the events list)
-PORTAL_TABS = ("watcher", "schedule", "pilot", "recall", "settings")
+PORTAL_REFUSED = ("email/alert", "crew_scan/press", "upload/chunk", "drop/set", "auto_swap/set", "swap_map/press",
+                  "hunt/state", "pause/state")
+# the tabs of the portal (portal_layout.json), and the one each event opens (ntfy Click, the events list); 1.7.0: the
+# Tickets tab last, so the five tabs before it keep their places in the tab bar
+PORTAL_TABS = ("watcher", "schedule", "pilot", "recall", "settings", "tickets")
 PORTAL_EVENTS = ("new_pairing", "rule_match", "recall_miss", "request_decided", "schedule_changed", "charter",
                  "hidden")
 MACHINE_EVENTS = ("needs_settings", "stopped_*")  # sensor.<prefix>_state turning to one of these (stopped_ any)
+# 1.7.0 (Release C): events the Watcher makes from its own files, never from an MQTT event topic (so a publish can never
+# become one): ticket_fixed, from a move into fixed in the pilot's own tickets (tickets.fixed_moves)
+OWN_EVENTS = ("ticket_fixed",)
 EVENT_VIEWS = {"new_pairing": "watcher", "rule_match": "watcher", "recall_miss": "recall",
                "request_decided": "schedule", "schedule_changed": "schedule", "charter": "watcher",
-               "hidden": "watcher", "needs_settings": "settings", "stopped_*": "watcher"}
+               "hidden": "watcher", "needs_settings": "settings", "stopped_*": "watcher", "ticket_fixed": "tickets"}
 # the only fields an event's data (events.json) carries; the title and body are built from these alone, so no name,
-# employee number, captain, contact, URL, commute reason or pay amount (value, pay) ever leaves the Watcher in one
+# employee number, captain, contact, URL, commute reason or pay amount (value, pay) ever leaves the Watcher in one.
+# 1.7.0: ticket (a ticket id, or a list of them) and version (the release that fixed it); never a ticket's title or text
 EVENT_FIELDS = ("pairing", "dates", "start", "end", "days", "month", "date", "layover", "report", "release",
                 "credit", "block", "fit", "far", "vac", "comm", "month_rule", "verdict", "type", "status", "added",
-                "removed", "flight", "route", "rule_id", "state")
+                "removed", "flight", "route", "rule_id", "state", "ticket", "version")
 # the pay and tax helpers the portal sets with pref/set (feature prefs); the Watcher keeps them in <data>/prefs.json
 # and shows them as these entities. Bounds: the schedule card's own pickers (federal 0 to 45 % by 0.5, state 0 to
 # 15 % by 0.25), the longevity year 1 to 12 (PWA 3.B.1, 3.D.6 table caps at 12), the Extended Range list the schedule
@@ -236,15 +249,116 @@ PREF_KEYS = {
     "longevity_year": {"entity": "input_number.{prefix}_longevity_year", "type": "number", "min": 1, "max": 12,
                        "step": 1, "unit": ""},
     "er_trips": {"entity": "input_text.{prefix}_er_trips", "type": "text", "max_len": 255,
-                 "item_re": r"[+-][A-Z0-9]{1,8}\|\d{4}-\d{2}-\d{2}"},
+                 "item_re": r"[+-][A-Z0-9]{1,8}\|[0-9]{4}-[0-9]{2}-[0-9]{2}"},  # 1.7.0 review: ASCII digits
 }
 # helpers the cards read and set that stay in the portal's page (never sent to the Watcher)
 LOCAL_HELPERS = {"month_offset": {"entity": "input_number.{prefix}_month_offset",
                                   "services": ["set_value", "increment", "decrement"]}}
 # the list files a portal serves: kind -> its argument's pattern ("" = none). finds_<YYYY-MM>, the shared
-# pairings_<YYYY-MM> package, school_<YYYY-YY> and FW-0060 / FW-0069's list files (tickets are not in contract 1)
+# pairings_<YYYY-MM> package, school_<YYYY-YY> and FW-0060 / FW-0069's list files; 1.7.0 (contract 1 revision 2): the
+# pilot's own tickets list (tickets.listing for his name only)
 FILE_KINDS = {"finds": r"\d{4}-\d{2}", "pairings": r"\d{4}-\d{2}", "school": r"\d{4}-\d{2}", "versions": "",
-              "pickers": "", "recall": "", "pilotver": ""}
+              "pickers": "", "recall": "", "pilotver": "", "tickets": ""}
+
+
+# ---------------------------------------------------------------- 1.7.0 (Release C): tickets on the portal
+# A pilot files, sees and acts on his own tickets only: his Watcher is the authority (reporter is the instance, never
+# the payload; tickets.listing, act, edit and delete take allowed_reporter). The portal and the spool check the shape
+# below and nothing else, so they can narrow what reaches the Watcher but never widen it.
+# ticket/act on a pilot: verify (closes a fixed ticket), reopen and note. triage, progress, fixed and close are for
+# whoever works the ticket (the admin's instance and Claude's process-tickets flow), never a pilot.
+PILOT_TICKET_ACTIONS = ("verify", "reopen", "note")
+# a pilot instance's ticket quotas, kept by his Watcher whatever sent the command (portal or a dashboard card); the
+# admin has none. new_per_day: tickets filed in the last 24 h (deleted ones count); open: open at once; photos: a
+# ticket; ticket_bytes: one ticket as stored, its photos (after the Watcher re-encodes them) and its ticket.json
+# together (1.5 MB, the council's total); in_flight: photo uploads being put together at once; chunk_chars and
+# chunk_parts: one photo comes in at most chunk_parts ticket/image commands of at most chunk_chars base64 characters
+# each (under the 64 KB command cap); photo_side_max: the longest side the Watcher re-encodes (the portal card sends at
+# most 1600 px); photo_stale_s: a photo whose next chunk does not come within this time is dropped.
+# 1.7.0 review: his notes, reopens, verifies and edits are capped as well (each rewrites ticket.json in the folder both
+# instances share): changes_per_day in 24 h over all his tickets, history of his own history lines on one ticket, and
+# text_bytes of one ticket.json; a verify or a reopen with no text is never refused by these (it follows a fix by
+# whoever works the ticket, so he cannot repeat one on his own).
+PILOT_TICKET_LIMITS = {"new_per_day": 10, "open": 25, "photos": 3, "ticket_bytes": 1536 * 1024, "in_flight": 1,
+                       "chunk_chars": 60000, "chunk_parts": 8, "photo_side_max": 2048, "photo_stale_s": 120,
+                       "changes_per_day": 30, "history": 50, "text_bytes": 256 * 1024}
+TICKET_ID_PATTERN = r"^FW-[0-9]{4,6}$"  # 1.7.0 review: ASCII digits (Python's \d also takes other scripts' digits)
+TICKET_CID_PATTERN = r"^[A-Za-z0-9_-]{6,40}$"  # tickets.CID_RE; also a card-made rid
+TICKET_DATA_PATTERN = r"^[A-Za-z0-9+/]+={0,2}$"  # one chunk: a slice of the photo's base64 (no data: prefix)
+# 1.7.0 review: what ticket text may hold (BMP escapes only, so Python's re and a JavaScript RegExp with no flags read
+# them the same). A one-line field (title, page, version): no control character (U+0000 to U+001F, U+007F to U+009F),
+# no line or paragraph separator (U+2028, U+2029) and no bidi embedding, override or isolate (U+202A to U+202E, U+2066
+# to U+2069), so ticket text never starts a line of its own in the add-on log or turns round on a card. A text field
+# (narrative, steps, expected, a note): the same, but tab, line feed and carriage return are allowed.
+TICKET_LINE_PATTERN = r"^[^\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]*$"
+TICKET_TEXT_PATTERN = r"^[^\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]*$"
+# How the HOM portal and the spool read TICKET_CMDS (the same words in the fixture, commands.ticket_rules): one generic
+# checker on each side, so the two cannot drift.
+TICKET_RULES = (
+    "The payload is the JSON text of an object (not an array, a string or null).",
+    "Its keys are a subset of keys, include every key in required and, when any_of is given, at least one of any_of.",
+    "Every key present is checked by its fields entry; a null value is the wrong type.",
+    "text: a JSON string whose length in Unicode code points (Python len, JavaScript [...s].length) is from min to "
+    "max; with pattern, the whole string matches it (Python re.fullmatch; JavaScript new RegExp(pattern) with no flags "
+    "and the pattern's own ^ and $), so a trailing newline is refused.",
+    "text is well-formed Unicode: no lone surrogate (Python: s.encode('utf-8') succeeds; JavaScript: "
+    "s.isWellFormed()).",
+    "int: a JSON number, never a boolean or a string, with a whole value from min to max; 2.0 counts as 2 (JavaScript "
+    "cannot tell them apart); 2.5, true, \"2\" and 1e999 are refused.",
+    "enum: a JSON string equal to one of values.",
+    "le: each [a, b] means the value of a is at most the value of b.",
+    "nonempty_when: each {field, is, then} means that when field equals is, then is present with at least 1 code point.",
+)
+
+
+_LINE, _TEXT = TICKET_LINE_PATTERN, TICKET_TEXT_PATTERN
+
+
+def _text(lo, hi, pattern=None):
+    d = {"type": "text", "min": lo, "max": hi}
+    if pattern:
+        d["pattern"] = pattern
+    return d
+
+
+def _int(lo, hi):
+    return {"type": "int", "min": lo, "max": hi}
+
+
+_PHOTOS, _PARTS = PILOT_TICKET_LIMITS["photos"], PILOT_TICKET_LIMITS["chunk_parts"]
+TICKET_CMDS = {
+    "ticket/new": {
+        "keys": ["kind", "title", "narrative", "steps", "expected", "page", "version", "cid", "images"],
+        "required": ["kind", "title", "narrative"],
+        "fields": {"kind": {"type": "enum", "values": ["bug", "feature"]}, "title": _text(1, 200, _LINE),
+                   "narrative": _text(1, 10000, _TEXT), "steps": _text(0, 5000, _TEXT),
+                   "expected": _text(0, 5000, _TEXT), "page": _text(0, 300, _LINE), "version": _text(0, 40, _LINE),
+                   "cid": _text(6, 40, TICKET_CID_PATTERN), "images": _int(0, _PHOTOS)}},
+    "ticket/image": {
+        "keys": ["cid", "i", "n", "part", "parts", "data"],
+        "required": ["cid", "i", "n", "part", "parts", "data"],
+        "fields": {"cid": _text(6, 40, TICKET_CID_PATTERN), "i": _int(1, _PHOTOS), "n": _int(1, _PHOTOS),
+                   "part": _int(1, _PARTS), "parts": _int(1, _PARTS),
+                   "data": _text(1, PILOT_TICKET_LIMITS["chunk_chars"], TICKET_DATA_PATTERN)},
+        "le": [["i", "n"], ["part", "parts"]]},
+    "ticket/act": {
+        "keys": ["id", "action", "text", "rid"],
+        "required": ["id", "action"],
+        "fields": {"id": _text(7, 9, TICKET_ID_PATTERN), "action": {"type": "enum", "values": list(PILOT_TICKET_ACTIONS)},
+                   "text": _text(0, 5000, _TEXT), "rid": _text(6, 40, TICKET_CID_PATTERN)},
+        "nonempty_when": [{"field": "action", "is": "note", "then": "text"}]},
+    "ticket/edit": {
+        "keys": ["id", "rid", "title", "narrative", "steps", "expected", "page"],
+        "required": ["id"],
+        "any_of": ["title", "narrative", "steps", "expected", "page"],
+        "fields": {"id": _text(7, 9, TICKET_ID_PATTERN), "rid": _text(6, 40, TICKET_CID_PATTERN),
+                   "title": _text(1, 200, _LINE), "narrative": _text(1, 10000, _TEXT),
+                   "steps": _text(0, 5000, _TEXT), "expected": _text(0, 5000, _TEXT), "page": _text(0, 300, _LINE)}},
+    "ticket/delete": {
+        "keys": ["id", "rid"],
+        "required": ["id"],
+        "fields": {"id": _text(7, 9, TICKET_ID_PATTERN), "rid": _text(6, 40, TICKET_CID_PATTERN)}},
+}
 
 
 def portal_sub(sub):
@@ -299,7 +413,8 @@ def pref_value(key, value):
     return value
 
 
-# discovery oids a pilot has whose feature its portal does not offer (contract 1 has no tickets or uploads)
+# discovery oids a pilot has whose feature a portal may not offer: the uploads sensors (uploads stay off the portal).
+# 1.7.0: sensor.<prefix>_tickets passes now (the tickets feature is offered), with his own tickets only
 ENTITY_PORTAL_FEATURE = {"tickets": "tickets", "uploads": "uploads", "upload_status": "uploads"}
 
 

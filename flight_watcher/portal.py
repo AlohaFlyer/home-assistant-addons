@@ -37,7 +37,7 @@ KEY_FILE = "/data/portal_ed25519.pem"
 KB = 1024
 CAPS = {"manifest": 256 * KB, "state": 2048 * KB, "events": 256 * KB, "results": 64 * KB, "file": 8192 * KB,
         "blob": 1024 * KB, "cmd": 64 * KB}
-CMD_NAME_RE = re.compile(r"^\d{13}-[0-9a-f]{16}\.json$")
+CMD_NAME_RE = re.compile(r"^[0-9]{13}-[0-9a-f]{16}\.json$")  # 1.7.0 review: ASCII digits, as in JavaScript
 HEX16_RE = re.compile(r"^[0-9a-f]{16}$")
 PUB_RE = re.compile(r"^ed25519:[A-Za-z0-9_-]{43}$")
 ORIGIN_RE = re.compile(r"^https://[a-z0-9-]+\.[a-z0-9-]+\.ts\.net$")
@@ -647,6 +647,14 @@ class Spool:
         cid = d.get("id") if isinstance(d.get("id"), str) and HEX16_RE.fullmatch(d.get("id")) else None
         if cid is None or name[14:30] != cid:
             raise PortalError("id missing or not the file's")
+        try:
+            return self._check(d, cid)
+        except PortalError:
+            raise
+        except Exception as e:  # noqa: BLE001 (1.7.0 review: a check failing another way still refuses, with a result)
+            raise PortalError(f"could not be checked ({type(e).__name__})", cid) from None
+
+    def _check(self, d, cid):
         now_ms = int(self.now() * 1000)
         self.seen = {k: v for k, v in self.seen.items() if now_ms - v < SEEN_KEEP_S * 1000}
         if cid in self.seen:
@@ -681,6 +689,8 @@ class Spool:
             check_pref(payload, cid)
         elif key in ("freq/normal_min/set", "freq/hunt_s/set"):
             check_freq(key.split("/")[1], payload, cid)
+        elif key in roles.TICKET_CMDS:
+            check_ticket(key, payload, cid)  # 1.7.0: the shape only; the Watcher's handlers own whose ticket it is
         self.accepted.append(now_ms)
         return cid, sub, payload
 
@@ -723,10 +733,87 @@ def check_freq(key, payload, cid=None):
     return v
 
 
+def _key_word(k):
+    """A payload key as it may appear in a refusal (letters and _ only, at most 20)."""
+    return re.sub(r"[^a-z_]", "?", str(k)[:20]) or "?"
+
+
+def _well_formed(s):
+    """True when s encodes as UTF-8: no lone surrogate (json.loads lets "\\ud800" through as one)."""
+    try:
+        s.encode("utf-8")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def _ticket_field(sub, name, spec, v, cid):
+    """One value of a ticket command against its roles.TICKET_CMDS field spec (roles.TICKET_RULES)."""
+    t = spec["type"]
+    if t == "text":
+        if not isinstance(v, str) or not spec["min"] <= len(v) <= spec["max"]:
+            raise PortalError(f"{sub}: {name} is not text of {spec['min']} to {spec['max']} characters", cid)
+        if not _well_formed(v):  # 1.7.0 review: a lone surrogate (Home Assistant's JSON parser refuses one)
+            raise PortalError(f"{sub}: {name} is not valid Unicode", cid)
+        if spec.get("pattern") and not re.fullmatch(spec["pattern"], v):
+            raise PortalError(f"{sub}: {name} has the wrong form", cid)
+        return
+    if t == "int":
+        # 1.7.0 review: an int is compared as an int (math.isfinite of a huge JSON integer raises OverflowError)
+        if isinstance(v, bool):
+            ok = False
+        elif isinstance(v, int):
+            ok = spec["min"] <= v <= spec["max"]
+        elif isinstance(v, float):
+            ok = math.isfinite(v) and v.is_integer() and spec["min"] <= v <= spec["max"]
+        else:
+            ok = False
+        if not ok:
+            raise PortalError(f"{sub}: {name} is not a whole number from {spec['min']} to {spec['max']}", cid)
+        return
+    if t == "enum":
+        if not isinstance(v, str) or v not in spec["values"]:
+            raise PortalError(f"{sub}: {name} is not one of {', '.join(spec['values'])}", cid)
+        return
+    raise PortalError(f"{sub}: {name} cannot be checked", cid)  # a spec type this code does not know: fail closed
+
+
+def check_ticket(sub, payload, cid=None):
+    """1.7.0 (Release C): a ticket command's payload against its roles.TICKET_CMDS entry, read as roles.TICKET_RULES
+    says (the HOM portal runs the same rules from the fixture). Shape only: whose ticket it is, its status and the
+    pilot's quotas are the Watcher's (tickets.py, watcher.py). Returns the parsed object; PortalError saying why."""
+    spec = roles.TICKET_CMDS.get(sub)
+    if spec is None:
+        raise PortalError("not a ticket command", cid)
+    try:
+        d = json.loads(payload) if isinstance(payload, str) else None
+    except (ValueError, RecursionError):
+        d = None
+    if not isinstance(d, dict):
+        raise PortalError(f"{sub}: the payload is not a JSON object", cid)
+    extra = sorted(k for k in d if k not in spec["keys"])
+    if extra:
+        raise PortalError(f"{sub}: {_key_word(extra[0])} is not allowed", cid)
+    for k in spec["required"]:
+        if k not in d:
+            raise PortalError(f"{sub}: {k} is missing", cid)
+    if spec.get("any_of") and not any(k in d for k in spec["any_of"]):
+        raise PortalError(f"{sub}: nothing to change", cid)
+    for k, v in d.items():
+        _ticket_field(sub, k, spec["fields"][k], v, cid)
+    for a, b in spec.get("le", []):
+        if a in d and b in d and d[a] > d[b]:
+            raise PortalError(f"{sub}: {a} is over {b}", cid)
+    for w in spec.get("nonempty_when", []):
+        if d.get(w["field"]) == w["is"] and not (isinstance(d.get(w["then"]), str) and len(d[w["then"]]) >= 1):
+            raise PortalError(f"{sub}: a {w['is']} needs {w['then']}", cid)
+    return d
+
+
 # ---------------------------------------------------------------- events (events.json and ntfy share them)
 _TAGS = {"new_pairing": "airplane", "rule_match": "dart", "recall_miss": "warning", "request_decided": "envelope",
          "schedule_changed": "calendar", "charter": "airplane", "hidden": "eyes", "needs_settings": "key",
-         "stopped_*": "rotating_light"}
+         "stopped_*": "rotating_light", "ticket_fixed": "white_check_mark"}
 
 
 def _clean(v, n=120):
@@ -805,6 +892,17 @@ def event_text(kind, d):
                 ". ".join(["Seat still open on the pairing page, gone from the pot"] + facts))
     if kind == "needs_settings":
         return "Flight Watcher needs your FLICA login", "Enter your FLICA username and password on the Settings tab."
+    if kind == "ticket_fixed":  # 1.7.0: the ticket id(s) and the version only, never a title or any ticket text
+        t = d.get("ticket")
+        ids = [x for x in (t if isinstance(t, list) else [t]) if isinstance(x, str) and x]
+        ver = d.get("version") if isinstance(d.get("version"), str) else ""
+        if len(ids) <= 1:
+            title = f"Ticket {ids[0] if ids else ''} fixed".replace("  ", " ") + (
+                f" in {ver}" if ver else " in the latest version")
+        else:
+            title = f"{len(ids)} tickets fixed: {', '.join(ids)}" + (f" in {ver}" if ver else "")
+        return title, ("Check it on the Tickets tab, then tap Verified, close if it works or Still broken if it does "
+                       "not. A ticket already closed has Reopen.")
     if kind == "stopped_*":
         why = ("One FLICA login attempt failed. If your password changed, save the new one on the Settings tab: the "
                "Watcher logs in by itself. Otherwise check FLICA yourself, then press Re-arm on the Watcher tab."
@@ -816,7 +914,9 @@ def event_text(kind, d):
 
 def event_priority(kind, d):
     """ntfy priority: 5 for a new pairing that fits the schedule and is FAR 117 legal, 4 for a rule match, a recall
-    miss or a stop, else 3."""
+    miss or a stop, 2 (quiet, 1.7.0) for a ticket fixed, else 3."""
+    if kind == "ticket_fixed":
+        return 2
     if kind == "new_pairing":
         fits = str(d.get("fit") or "").startswith("Fits")
         legal = str(d.get("far") or "").startswith("OK")
@@ -883,9 +983,11 @@ def portal_card(text):
 
 
 def card_subs(text, prefix):
-    """The subs a card publishes to with mqtt.publish under prefix (literal topics, the recall card's _send(...))."""
+    """The subs a card publishes to with mqtt.publish under prefix (literal topics, the recall card's _send(...) and,
+    1.7.0, the tickets card's _pub(...), which puts the prefix in front itself)."""
     subs = set(re.findall(r'"%s/([a-z_]+(?:/[a-z_]+)*)"' % re.escape(prefix), text))
     subs |= set(re.findall(r'_send\("([a-z_]+(?:/[a-z_]+)*)"', text))
+    subs |= set(re.findall(r'_pub\("([a-z_]+(?:/[a-z_]+)*)"', text))
     return subs
 
 
@@ -986,6 +1088,9 @@ def contract():
         {"why": "wrong pilot", **cmd("hunt/set", "ON", 209, who="james")},
         {"why": "too old or clock off", **cmd("hunt/set", "ON", 210, ts=seq0 - (CMD_MAX_AGE_S + 1) * 1000)},
     ]
+    t_acc, t_ref = ticket_samples(cmd)
+    accepted += t_acc
+    refused += t_ref
     file_urls = [
         {"url": f"/local/flight-watcher/{pilot}/finds_2026-11_{'ab' * 16}.json?t=1", "kind": "finds", "arg": "2026-11",
          "api": "/fw/api/file/finds/2026-11"},
@@ -994,9 +1099,16 @@ def contract():
         {"url": f"/local/flight-watcher/{pilot}/school_2026-27.json?v=1", "kind": "school", "arg": "2026-27",
          "api": "/fw/api/file/school/2026-27"},
     ] + [{"url": f"/local/flight-watcher/{pilot}/{k}_{zeros}.json?r=abc", "kind": k, "arg": "",
-          "api": f"/fw/api/file/{k}"} for k in ("versions", "pickers", "recall", "pilotver")]
+          "api": f"/fw/api/file/{k}"} for k in ("versions", "pickers", "recall", "pilotver", "tickets")]
+    # 1.7.0: URLs a pilot's portal never maps (the shim answers null): the admin's tickets list (no pilot folder, his
+    # key) and another pilot's folder
+    file_urls_refused = [
+        {"url": f"/local/flight-watcher/tickets_{zeros}.json?r=abc", "why": "the admin's tickets list (no pilot folder)"},
+        {"url": f"/local/flight-watcher/pilot3/tickets_{zeros}.json?r=abc", "why": "another pilot's folder"},
+        {"url": f"/local/flight-watcher/pilot3/versions_{zeros}.json?r=abc", "why": "another pilot's folder"},
+    ]
     return {
-        "contract": roles.CONTRACT, "fwp": FWP,
+        "contract": roles.CONTRACT, "revision": roles.CONTRACT_REVISION, "fwp": FWP,
         "generated_by": "flight_watcher/portal.py contract(); docs: flight_watcher/PORTAL_CONTRACT.md",
         "names": {"pilot_re": roles.NAME_RE.pattern, "cmd_file_re": CMD_NAME_RE.pattern, "id_re": HEX16_RE.pattern,
                   "session_re": HEX16_RE.pattern, "rule_id_re": roles.PORTAL_RULE_ID_RE.pattern,
@@ -1022,9 +1134,13 @@ def contract():
                      "settings_set": "payload is exactly {\"enc\": {...}}",
                      "pref_set": "payload is {\"key\", \"value\"}",
                      "freq_set": "payload is a finite number within freq_limits[<normal_min|hunt_s>]",
-                     "freq_limits": roles.FREQ_LIMITS},
+                     "freq_limits": roles.FREQ_LIMITS,
+                     "tickets": roles.TICKET_CMDS, "ticket_rules": list(roles.TICKET_RULES),
+                     "pilot_ticket_actions": list(roles.PILOT_TICKET_ACTIONS),
+                     "pilot_ticket_limits": roles.PILOT_TICKET_LIMITS},
         "prefs": roles.PREF_KEYS, "local_helpers": roles.LOCAL_HELPERS,
-        "events": {"kinds": list(roles.PORTAL_EVENTS) + list(roles.MACHINE_EVENTS), "views": roles.EVENT_VIEWS,
+        "events": {"kinds": list(roles.PORTAL_EVENTS) + list(roles.MACHINE_EVENTS) + list(roles.OWN_EVENTS),
+                   "views": roles.EVENT_VIEWS,
                    "fields": list(roles.EVENT_FIELDS),
                    "entry": ["seq", "ts", "kind", "id", "view", "priority", "title", "body", "data", "tags"],
                    "keep": EVENTS_KEEP},
@@ -1035,8 +1151,116 @@ def contract():
         "blob_keep_s": BLOB_KEEP_S,
         "test_key": {"label": TEST_SEED_LABEL, "seed": "sha256(label)", "public_key": public_id(key)},
         "samples": {"envelopes": envs, "bad_envelopes": bad,
-                    "commands": {"accepted": accepted, "refused": refused}, "file_urls": file_urls},
+                    "commands": {"accepted": accepted, "refused": refused}, "file_urls": file_urls,
+                    "file_urls_refused": file_urls_refused},
     }
+
+
+# 1.7.0: a made-up JPEG start and end (FF D8 FF ... FF D9), not a picture: the shape samples need base64, not a photo
+SAMPLE_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9"
+
+
+def ticket_samples(cmd):
+    """(accepted, refused) ticket command samples of contract 1 revision 2 (made-up text, ids and images), numbered
+    from 300 on. Every one goes through Spool and check_ticket in this repo and HOM's checkTicket in that one."""
+    b64 = base64.b64encode(SAMPLE_JPEG).decode("ascii")
+    half = len(b64) // 2
+    astral = "\U0001F6EB"  # one code point, two UTF-16 units: the length cap counts it once
+    new = {"kind": "bug", "title": "Pot card blank on the Watcher tab", "narrative": "The pot card shows no rows "
+           "after a scan.", "steps": "Watcher tab, Scan FLICA now", "expected": "The pot rows", "page": "Watcher",
+           "version": "1.7.0", "cid": "cdemo0001", "images": 2}
+    acc = [
+        ("ticket/new", new),
+        ("ticket/new", {"kind": "feature", "title": "Show reserve days", "narrative": "Reserve days on the card."}),
+        ("ticket/new", dumps({"kind": "bug", "title": "t", "narrative": "n", "cid": "cdemo0002", "images": 2.0})),
+        ("ticket/new", {"kind": "bug", "title": astral + "x" * 199, "narrative": "the title is 200 code points"}),
+        ("ticket/image", {"cid": "cdemo0001", "i": 1, "n": 2, "part": 1, "parts": 1, "data": b64}),
+        ("ticket/image", {"cid": "cdemo0001", "i": 2, "n": 2, "part": 1, "parts": 2, "data": b64[:half]}),
+        ("ticket/image", {"cid": "cdemo0001", "i": 2, "n": 2, "part": 2, "parts": 2, "data": b64[half:]}),
+        ("ticket/act", {"id": "FW-0001", "action": "verify", "rid": "rdemo0001"}),
+        ("ticket/act", {"id": "FW-0001", "action": "reopen", "text": "Still blank after the fix."}),
+        ("ticket/act", {"id": "FW-0001", "action": "note", "text": "Seen again at 10:05 HST.", "rid": "rdemo0002"}),
+        ("ticket/edit", {"id": "FW-0001", "rid": "rdemo0003", "narrative": "The pot card shows no rows at all."}),
+        ("ticket/delete", {"id": "FW-0001", "rid": "rdemo0004"}),
+        # 1.7.0 review: a text field keeps tab, line feed and carriage return; an emoji is well-formed
+        ("ticket/new", {"kind": "bug", "title": "Pay line \U0001F4B5 blank", "narrative": "Line one\n\tLine two\r\n",
+                        "steps": "1. Schedule tab\n2. Pay line"}),
+        ("ticket/act", {"id": "FW-0001", "action": "note", "text": "Seen again.\nAt 10:05 HST."}),
+    ]
+    img = {"cid": "cdemo0001", "i": 1, "n": 2, "part": 1, "parts": 1, "data": b64}
+    ref = [
+        ("worker action fixed", "ticket/act", {"id": "FW-0001", "action": "fixed", "version": "1.7.0"}),
+        ("worker action fixed", "ticket/act", {"id": "FW-0001", "action": "fixed"}),
+        ("worker action triage", "ticket/act", {"id": "FW-0001", "action": "triage"}),
+        ("worker action progress", "ticket/act", {"id": "FW-0001", "action": "progress"}),
+        ("worker action close", "ticket/act", {"id": "FW-0001", "action": "close"}),
+        ("note with no text", "ticket/act", {"id": "FW-0001", "action": "note"}),
+        ("note with empty text", "ticket/act", {"id": "FW-0001", "action": "note", "text": ""}),
+        ("id not FW-nnnn", "ticket/act", {"id": "FW-1", "action": "verify"}),
+        ("id not FW-nnnn", "ticket/act", {"id": "fw-0001", "action": "verify"}),
+        ("new with an inline image", "ticket/new", {**new, "image": "data:image/jpeg;base64," + b64}),
+        ("new names a reporter", "ticket/new", {**new, "reporter": "ryan"}),
+        ("new with images 2.5", "ticket/new", {**new, "images": 2.5}),
+        ("new with images true", "ticket/new", {**new, "images": True}),
+        ("new with images as text", "ticket/new", {**new, "images": "2"}),
+        ("new over the photo limit", "ticket/new", {**new, "images": 4}),
+        ("new with an unknown kind", "ticket/new", {**new, "kind": "question"}),
+        ("new with an empty title", "ticket/new", {**new, "title": ""}),
+        ("new title over 200 code points", "ticket/new", {**new, "title": astral + "x" * 200}),
+        ("new with a null page", "ticket/new", {**new, "page": None}),
+        ("new without a narrative", "ticket/new", {"kind": "bug", "title": "t"}),
+        ("new with a bad cid", "ticket/new", {**new, "cid": "bad cid!"}),
+        ("image over the photo limit", "ticket/image", {**img, "i": 4, "n": 4}),
+        ("image i over n", "ticket/image", {**img, "i": 2, "n": 1}),
+        ("image part over parts", "ticket/image", {**img, "part": 2, "parts": 1}),
+        ("image over the chunk limit", "ticket/image", {**img, "part": 9, "parts": 9}),
+        ("image data is a data URL", "ticket/image", {**img, "data": "data:image/jpeg;base64," + b64}),
+        ("image data with a trailing newline", "ticket/image", {**img, "data": b64 + "\n"}),
+        ("image without part", "ticket/image", {k: v for k, v in img.items() if k != "part"}),
+        ("image in the HA card's whole form", "ticket/image", {"cid": "cdemo0001", "i": 1, "n": 1,
+                                                               "image": "data:image/jpeg;base64," + b64}),
+        ("edit with nothing to change", "ticket/edit", {"id": "FW-0001", "rid": "rdemo0003"}),
+        ("edit blanks the title", "ticket/edit", {"id": "FW-0001", "title": ""}),
+        ("edit sets the status", "ticket/edit", {"id": "FW-0001", "status": "closed"}),
+        ("delete with another key", "ticket/delete", {"id": "FW-0001", "reason": "x"}),
+        ("payload is an array", "ticket/delete", "[\"FW-0001\"]"),
+        ("payload is not JSON", "ticket/new", "{kind: bug"),
+        # 1.7.0 review: no control character, separator or bidi control in a one-line field (a forged log line, a
+        # title that turns round); no control character but tab, LF and CR in a text field; well-formed Unicode only
+        # (Home Assistant's JSON parser refuses a lone surrogate); ASCII digits in an id; a huge integer
+        ("title with a line feed", "ticket/new",
+         {**new, "title": "Pot card blank\n2026-11-10 21:00:00,000 INFO ticket FW-0042: fixed -> closed"}),
+        ("title with a carriage return", "ticket/new", {**new, "title": "Pot card blank\r"}),
+        ("title with a tab", "ticket/new", {**new, "title": "Pot\tcard"}),
+        ("title with an escape", "ticket/new", {**new, "title": "Pot card \x1b[2J blank"}),
+        ("title with a bidi override", "ticket/new", {**new, "title": "Pot card \u202eknalb"}),
+        ("title with a bidi isolate", "ticket/new", {**new, "title": "Pot card \u2066blank"}),
+        ("title with a C1 control", "ticket/new", {**new, "title": "Pot card \x85blank"}),
+        ("page with a line separator", "ticket/new", {**new, "page": "Watcher\u2028Settings"}),
+        ("version with a line feed", "ticket/new", {**new, "version": "1.7.0\n"}),
+        ("narrative with a NUL", "ticket/new", {**new, "narrative": "The pot card\x00 shows no rows."}),
+        ("narrative with an escape", "ticket/new", {**new, "narrative": "The pot card\x1b[31m shows no rows."}),
+        ("narrative with a paragraph separator", "ticket/new", {**new, "narrative": "The pot card\u2029shows none."}),
+        ("title with a lone high surrogate", "ticket/new", dumps({**new, "title": "@ Pot card blank"}).replace(
+            "@", "\\ud800", 1)),
+        ("narrative with a lone low surrogate", "ticket/new", dumps({**new, "narrative": "@ shows no rows"}).replace(
+            "@", "\\udc00", 1)),
+        ("title with surrogates the wrong way round", "ticket/new", dumps({**new, "title": "@ x"}).replace(
+            "@", "\\udc00\\ud800", 1)),
+        ("note with a lone surrogate", "ticket/act", dumps({"id": "FW-0001", "action": "note", "text": "@"}).replace(
+            "@", "\\ud83d", 1)),
+        ("edit title with a line feed", "ticket/edit", {"id": "FW-0001", "title": "Pot card\nblank"}),
+        ("edit narrative with a lone surrogate", "ticket/edit", dumps({"id": "FW-0001", "narrative": "@"}).replace(
+            "@", "\\ud800", 1)),
+        ("id with digits of another script", "ticket/act", {"id": "FW-\u0661\u0662\u0663\u0664", "action": "verify"}),
+        ("images a huge integer", "ticket/new",
+         dumps({**new, "images": 0}).replace('"images":0', '"images":' + "9" * 400)),
+        ("image i a huge integer", "ticket/image", dumps(img).replace('"i":1', '"i":' + "9" * 400)),
+    ]
+    accepted = [cmd(sub, p if isinstance(p, str) else dumps(p), 300 + i) for i, (sub, p) in enumerate(acc)]
+    refused = [{"why": why, **cmd(sub, p if isinstance(p, str) else dumps(p), 400 + i)}
+               for i, (why, sub, p) in enumerate(ref)]
+    return accepted, refused
 
 
 def contract_text():

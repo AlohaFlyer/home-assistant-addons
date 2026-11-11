@@ -45,7 +45,8 @@ def test_manifest_verifies_and_names_the_pilot(pilot):
                       "files", "ntfy"}
     assert [t["id"] for t in m["layout"]["tabs"]] == list(roles.PORTAL_TABS)
     assert m["mqtt_subs"] == ["blocked/set", "improved/set", "pilot/set", "recall/act", "recall/set", "settings/set",
-                              "trade/set"]
+                              "ticket/act", "ticket/delete", "ticket/edit", "ticket/image", "ticket/new",
+                              "trade/set"]  # 1.7.0: the tickets card's five subs (its _pub calls)
     assert set(m["mqtt_subs"]) <= set(roles.PORTAL_CMDS)
 
 
@@ -61,8 +62,8 @@ def test_blobs_are_the_pilot_card_copies_by_hash(pilot):
     built = cards.build(W.VERSION, ["pilot2"])
     assert sorted(m["cards"]) == sorted(f"flight-watcher-{b}-pilot2.js" for b in (
         "charters-card", "clock-card", "finds-card", "improved-card", "pickers-card", "pilot-card", "pilot-search-card",
-        "pot-card", "recall-card", "requests-card", "schedule-card", "settings-card", "working-card"))
-    # no tickets, uploads or row colors card; 1.6.2: the pot, working flight, charters and requests cards
+        "pot-card", "recall-card", "requests-card", "schedule-card", "settings-card", "tickets-card", "working-card"))
+    # no uploads or row colors card; 1.6.2: the pot, working flight, charters and requests cards; 1.7.0: tickets
     for fn, sha in m["cards"].items():
         raw = open(os.path.join(W.PORTAL_DIR, "out", "blobs", f"{sha}.js"), "rb").read()
         assert hashlib.sha256(raw).hexdigest() == sha and raw.decode() == PT.portal_card(built[fn])
@@ -89,7 +90,7 @@ def test_every_layout_card_is_bundled_or_plain(pilot):
             assert c["entity"] in ids | local, c["entity"]
     text = open(os.path.join(HERE, "portal_layout.json"), encoding="utf-8").read()
     assert chr(0x2014) not in text and "flight_watcher_{name}_" in text
-    assert "tickets-card" not in text and "uploads-card" not in text
+    assert "flight-watcher-tickets-card-{name}" in text and "uploads-card" not in text  # 1.7.0: the Tickets tab
 
 
 def _admin_only(W):
@@ -131,6 +132,10 @@ def test_every_call_service_maps_to_the_manifest(pilot):
                 elif "`%s/${topic" % P in data:  # the recall card's _send(topic, ...)
                     sends = set(re.findall(r'_send\("([a-z_/]+)"', text))
                     assert sends and sends <= subs, sends
+                elif "`${this._c.prefix}" in data:  # 1.7.0: the tickets card's _pub(topic, obj)
+                    pubs = set(re.findall(r'_pub\("([a-z_/]+)"', text))
+                    assert "tickets-card" in fn and pubs == {"ticket/new", "ticket/image", "ticket/act", "ticket/edit",
+                                                             "ticket/delete"} and pubs <= subs, pubs
                 else:
                     pytest.fail(f"unmapped mqtt publish in {fn}: {data}")
                 continue

@@ -1,8 +1,8 @@
 """1.6.2 (Ryan 2026-11-10, replacing the pilot's 120 s hunt floor): every instance hunts every 5 to 90 s and checks
 every 1 to 90 min in normal mode. The number entities, the Watcher's clamp of freq/*/set and of a stored value, and
 the check timing floors follow it on the admin and on a pilot; a stored 40 s survives a start; a pilot's Check now gap
-is the admin's 10 s. Contract 1 is unchanged (roles.FREQ_LIMITS, normal 1 to 20, hunt 5 to 90): a pilot whose portal
-is on advertises normal up to 20 min. The safety limits stay: a pilot's 100 FLICA loads an hour holds a 5 s hunt, and
+is the admin's 10 s. Contract 1 revision 2 (1.7.0, Release C) brings the portal's normal to 1 to 90 min as well
+(roles.FREQ_LIMITS; 1 to 20 before): a pilot whose portal is on advertises the same ranges. The safety limits stay: a pilot's 100 FLICA loads an hour holds a 5 s hunt, and
 his state note says so plainly. FLICA is never reached: synthetic pages only ("Doe, Jane" 10001)."""
 import json
 import logging
@@ -35,7 +35,7 @@ def test_admin_and_pilot_ranges(mk, instance):
     W = mk(instance)
     assert W.FREQ_LIMITS == ADMIN_AND_PILOT and roles.freq_limits(instance) == ADMIN_AND_PILOT
     assert _nums(W) == ADMIN_AND_PILOT  # the number entities (no portal on either)
-    assert roles.FREQ_LIMITS == {"normal_min": (1, 20), "hunt_s": (5, 90)}  # contract 1, unchanged
+    assert roles.FREQ_LIMITS == ADMIN_AND_PILOT  # contract 1 revision 2 (normal 1 to 20 before)
     assert W.check_now_gap() == 10
     assert W.PILOT_CHECK_FLOOR_S == (5 if instance else 0)  # a pilot's checks start at least his fastest hunt apart
 
@@ -84,12 +84,12 @@ def test_the_check_timing_floors_follow_the_ranges(mk, monkeypatch):
     assert W.check_floor_wait() == 0
 
 
-def test_a_portal_pilots_entity_says_normal_up_to_20_min(portal_pilot):
-    """Contract 1 sends normal 1 to 20 min: a pilot whose portal is on advertises 20 (his portal offers only what it can
-    send) while his Watcher's own clamp already takes 1 to 90, so Release C's contract change is the only step left."""
+def test_a_portal_pilots_entity_says_normal_up_to_90_min(portal_pilot):
+    """Contract 1 revision 2 (1.7.0) sends normal 1 to 90 min: a pilot whose portal is on advertises 90, the same as his
+    Watcher's own clamp (his portal offers only what it can send; it stopped at 20 before Release C)."""
     W, _ = portal_pilot("pilot2")
     assert W.portal_on()
-    assert _nums(W) == {"normal_min": (1, 20), "hunt_s": (5, 90)} == roles.FREQ_LIMITS
+    assert _nums(W) == {"normal_min": (1, 90), "hunt_s": (5, 90)} == roles.FREQ_LIMITS
     assert roles.entity_freq_limits("pilot2", portal=True) == roles.FREQ_LIMITS
     assert roles.entity_freq_limits("pilot2", portal=False) == ADMIN_AND_PILOT
     assert roles.entity_freq_limits("", portal=True) == ADMIN_AND_PILOT  # the admin has no portal
@@ -98,7 +98,7 @@ def test_a_portal_pilots_entity_says_normal_up_to_20_min(portal_pilot):
     assert _set(W, "normal_min", b"45") == 45 and _set(W, "hunt_s", b"5") == 5  # the Watcher takes 1 to 90
     W.discovery(W.MQ)
     disc = [json.loads(p) for t, p, *_ in W.MQ.raw.msgs if t.endswith("normal_minutes/config") and p]
-    assert disc and disc[-1]["min"] == 1 and disc[-1]["max"] == 20
+    assert disc and disc[-1]["min"] == 1 and disc[-1]["max"] == 90
 
 
 # ------------------------------------------------------------------ a start keeps a stored 40 s
