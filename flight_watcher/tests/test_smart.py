@@ -193,10 +193,11 @@ def test_line_days_off_count_vac_as_off():
     assert SM.month_rule(D(3, 24), D(3, 29), "10:00", "Fits", "OK", m, SM.normalize(dict(RAW, min_days_off=None))) == "OK"
 
 
-def test_line_cap_conflict_and_rest():
+def test_line_conflict_and_rest_and_no_credit_cap():
     m = months()
-    assert SM.month_rule(D(3, 24), D(3, 24), "10:00", "Fits", "OK", m, CFG) == "OK"  # 30 + 10 = 40, at the cap
-    assert SM.month_rule(D(3, 24), D(3, 24), "10:01", "Fits", "OK", m, CFG) == "Over cap"
+    assert SM.month_rule(D(3, 24), D(3, 24), "10:00", "Fits", "OK", m, CFG) == "OK"
+    # 1.7.1: no monthly credit cap (RAW's old cap_credit 40:00 is ignored): 30 + 10:01 is no fail
+    assert SM.month_rule(D(3, 24), D(3, 24), "10:01", "Fits", "OK", m, CFG) == "OK"
     assert SM.month_rule(D(3, 4), D(3, 5), "5:00", "Conflict H9001", "Conflict", m, CFG) == "Conflict H9001"
     assert SM.month_rule(D(3, 24), D(3, 24), "5:00", "Fits", "OK (CBA rest 10:30)", m, CFG) == "Rest 10:30"
     # short only if the neighbour clears customs (PWA 2.19.b): possible, not certain, and it says so
@@ -206,20 +207,28 @@ def test_line_cap_conflict_and_rest():
     assert SM.month_rule(D(3, 24), D(3, 24), "5:00", "Fits", "Rest 9:00 before", m, CFG) == "Rest 9:00 before"
     assert SM.month_rule(D(3, 24), D(3, 24), "5:00", "Check rest H9004", "?", m, CFG) == "Rest ?"  # times not on file
     assert SM.month_rule(D(3, 24), D(3, 24), "5:00", "Check rest H9004", "OK", m, CFG) == "OK"
-    assert SM.month_rule(D(3, 24), D(3, 29), "12:00", "Fits", "OK", m, CFG) == "Days off 9, Over cap"
+    assert SM.month_rule(D(3, 24), D(3, 29), "12:00", "Fits", "OK", m, CFG) == "Days off 9"
 
 
-def test_the_cap_unchecked_is_never_ok():
-    """The month's credit not on file (a failed Schedule Lookup read) or the row's own credit unreadable: 'Cap ?',
-    like 'Rest ?'; a trip whose own credit is over the cap is Over cap without the month's figure."""
-    m = months()
-    for tot in ({"days_off": 25}, {}, {"credit": ""}):
+def test_an_old_cap_credit_is_ignored_never_over_cap_or_cap_unknown():
+    """1.7.1 (Ryan via Hark, Nov 9): the 90 h monthly credit cap was Hark's error; the PWA does not cap voluntary adds.
+    A smart.json that still has cap_credit (RAW's 40:00, Pako's 90:00) is read and the key ignored: the month's credit
+    on file or not, the row's credit readable or not, no 'Over cap' and no 'Cap ?' ever."""
+    assert "cap_credit" not in CFG and CFG["ignored"] == ("cap_credit",)
+    assert SM.normalize(dict(RAW, cap_credit=None))["ignored"] == ("cap_credit",)
+    assert SM.normalize({k: v for k, v in RAW.items() if k != "cap_credit"})["ignored"] == ()
+    for tot in ({"credit": "30:00"}, {"credit": "89:00"}, {"days_off": 25}, {}, {"credit": ""}):
+        m = months()
         m["2030-03"]["totals"] = tot
-        assert SM.month_rule(D(3, 24), D(3, 24), "10:00", "Fits", "OK", m, CFG) == "Cap ?", tot
-        assert SM.month_rule(D(3, 24), D(3, 24), "45:00", "Fits", "OK", m, CFG) == "Over cap", tot
-    m = months()
-    assert SM.month_rule(D(3, 24), D(3, 24), "x", "Fits", "OK", m, CFG) == "Cap ?"
-    assert SM.month_rule(D(3, 24), D(3, 24), "x", "Fits", "OK", m, SM.normalize(dict(RAW, cap_credit=None))) == "OK"
+        for credit in ("10:00", "45:00", "99:00", "x", ""):
+            for cfg in (CFG, SM.normalize(dict(RAW, cap_credit="90:00")), SM.normalize(dict(RAW, cap_credit=None))):
+                got = SM.month_rule(D(3, 24), D(3, 24), credit, "Fits", "OK", m, cfg)
+                assert got == "OK", (tot, credit, got)
+    # across a month end, where the old split by days decided the cap: nothing either
+    m = _xm([], apr_credit="89:59")
+    cfg = SM.normalize(dict(RAW, month_types=XCFG["month_types"], vac=[], min_days_off=None, cap_credit="90:00"))
+    for credit in ("9:00", "12:00", "16:30", "40:00"):
+        assert SM.month_rule(D(3, 31), D(4, 2), credit, "No sched", "OK", m, cfg) == "OK"
 
 
 def test_reserve_pickups_over_scr_days_only():
@@ -271,12 +280,11 @@ def test_a_trip_across_a_month_end_is_judged_in_both_months():
     # a line April into a reserve May: May's days must be SCR days
     assert SM.month_rule(D(4, 30), D(5, 2), "15:00", "No sched", "OK", m, XCFG) == "Days off 11, Not SCR"
     assert SM.month_rule(D(5, 1), D(5, 2), "15:00", "", "OK", m, XCFG) == "Not SCR"
-    # the cap per month, the trip's credit split by its days (2 of 3 in April); 'Cap ?' when the split decides it
+    # 1.7.1: no credit cap per month any more (the old split by days, 'Cap ?' and 'Over cap', are gone)
     m = _xm([], apr_credit="80:00")
     nomin = SM.normalize(dict(RAW, month_types=XCFG["month_types"], vac=[], min_days_off=None, cap_credit="90:00"))
-    assert SM.month_rule(D(3, 31), D(4, 2), "9:00", "No sched", "OK", m, nomin) == "OK"  # 80 + 6, or 89 whole
-    assert SM.month_rule(D(3, 31), D(4, 2), "12:00", "No sched", "OK", m, nomin) == "Cap ?"  # 88 split, 92 whole
-    assert SM.month_rule(D(3, 31), D(4, 2), "16:30", "No sched", "OK", m, nomin) == "Over cap"  # 91 split
+    for credit in ("9:00", "12:00", "16:30"):
+        assert SM.month_rule(D(3, 31), D(4, 2), credit, "No sched", "OK", m, nomin) == "OK"
     # a month with no type next to a typed one: a trip there is still a conflict
     m = _xm([{"trip": "H9002", "start": "2030-04-01", "end": "2030-04-05"}])
     marl = SM.normalize(dict(RAW, month_types={"2030-03": "line"}, vac=[], min_days_off=None, cap_credit=None))
@@ -293,9 +301,12 @@ def test_a_trip_across_a_month_end_is_judged_in_both_months():
 
 
 def test_the_rule_is_cut_between_parts():
-    assert SM._join(["VAC", "Conflict H9002", "Days off 10", "Over cap", "Rest 10:50?", "No sched"]) == \
-        "VAC, Conflict H9002, Days off 10, Over cap, Rest 10:50?"
-    assert len(SM._join(["x" * 70])) == SM.RULE_MAX and SM._join([]) == ""
+    # 1.7.1: RULE_MAX 80 keeps the rest with the longest 672 tag in place of 'Over cap'
+    assert SM._join(["VAC", "Conflict H9002", "Days off 10", "Over 98/672 (101:30)", "Rest 10:50?", "No sched"]) == \
+        "VAC, Conflict H9002, Days off 10, Over 98/672 (101:30), Rest 10:50?, No sched"
+    assert SM._join(["VAC", "Conflict H9002", "Days off 10", "Over 98/672 (101:30)", "Rest 10:50?", "No sched",
+                     "Not SCR"]) == "VAC, Conflict H9002, Days off 10, Over 98/672 (101:30), Rest 10:50?, No sched"
+    assert len(SM._join(["x" * 90])) == SM.RULE_MAX and SM._join([]) == ""
 
 
 def test_month_type_and_unknowns():
@@ -458,7 +469,9 @@ def test_loader_never_raises_and_reloads_on_change(tmp_path):
     assert SM.load(p, warned.append) == {} and len(warned) == 2  # another format version
     open(p, "w").write(json.dumps(RAW))
     cfg = SM.load(p, warned.append)
-    assert cfg["airports"] == ["AAA", "BBB"] and cfg["rate"] == 100.0 and len(warned) == 2
+    assert cfg["airports"] == ["AAA", "BBB"] and cfg["rate"] == 100.0 and len(warned) == 3
+    assert warned[2].startswith("smart.json cap_credit ignored: no monthly credit cap")  # 1.7.1: RAW's old cap
+    assert SM.load(p, warned.append) == cfg and len(warned) == 3  # cached: said once
     open(p, "w").write(json.dumps(dict(RAW, rate=200.0, source="synthetic two")))
     assert SM.load(p)["rate"] == 200.0
     for bad in ("[]", "null", '{"v": 1, "airports": 7, "in": [], "home": "x", "vac": 3, "month_types": []}'):
@@ -505,7 +518,7 @@ def test_nothing_personal_ships_in_the_module_or_the_card():
     import re
     cfg = SM.normalize({"v": 1})
     assert (cfg["airports"], cfg["in"], cfg["home"], cfg["month_types"], cfg["vac"]) == ([], {}, {}, {}, [])
-    assert cfg["rate"] is cfg["breakeven"] is cfg["cap_credit"] is cfg["min_days_off"] is None
+    assert cfg["rate"] is cfg["breakeven"] is cfg["min_days_off"] is None and "cap_credit" not in cfg
     words = {"HNL", "AAA", "BBB", "HST", "DST", "UTC", "ISO", "PWA", "FAR", "CBA", "SCR", "VAC", "OFF", "GDO", "MON"}
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for f in ("smart.py", "www/flight-watcher-finds-card.js"):
@@ -579,7 +592,9 @@ def test_pot_rows_carry_the_fields_the_sensor_does_not(tmp_path, monkeypatch):
     W.pot_details(None, pot)  # cached: no page load
     row = pot["H9101|24Mar"]
     assert row["comm"] == "AAA/BBB" and "PWA 26.QQ.2" in row["comm_why"]
-    assert row["value"] == 600 and row["month_rule"] == "OK" and row["fit"] and row["far"]
+    # 1.7.1: months()'s own trips have no times or blocks on file, so the 672 h block check says so (never guessed)
+    assert row["value"] == 600 and row["month_rule"] == "672 ? (block not read)" and row["fit"] and row["far"]
+    assert (row["b672"], row["b672_ok"]) == ("", "")
     W.publish_pot([dict(row, month="2030-03")])
     s = [p for t, p in sent if t == "pot/state"][-1]["pairings"][0]
     assert not set(W.SMART_FIELDS) & set(s) and "far_why" not in s and s["far"] == row["far"]
@@ -587,7 +602,7 @@ def test_pot_rows_carry_the_fields_the_sensor_does_not(tmp_path, monkeypatch):
     late = {"H9102|21Mar": dict(ROW, pairing="H9102", start="21Mar", end="21Mar", arrive="17:30")}
     _cache(W, "H9102|21Mar")
     W.pot_details(None, late)
-    assert late["H9102|21Mar"]["comm"] == "No" and late["H9102|21Mar"]["month_rule"] == "VAC"
+    assert late["H9102|21Mar"]["comm"] == "No" and late["H9102|21Mar"]["month_rule"] == "VAC, 672 ? (block not read)"
 
 
 def test_the_tradeboard_sensor_rows_stay_as_they_were(tmp_path, monkeypatch):
@@ -596,7 +611,7 @@ def test_the_tradeboard_sensor_rows_stay_as_they_were(tmp_path, monkeypatch):
     W, sent = _w(tmp_path, monkeypatch)
     post = dict(ROW, pairing="H9103", report="08:30", source="tradeboard", poster="Doe, Jane")
     W.smart_fields(post)  # as enrich() leaves it in tb_details
-    assert (post["comm"], post["value"], post["month_rule"]) == ("AAA/BBB", 600, "OK")
+    assert (post["comm"], post["value"], post["month_rule"]) == ("AAA/BBB", 600, "672 ? (block not read)")
     W.publish_tradeboard({"000000001|H9103": post})
     r = [p for t, p in sent if t == "tradeboard/state"][-1]["pairings"][0]
     assert not set(W.SMART_FIELDS) & set(r) and "far_why" not in r and r["fit"] and r["far"]
@@ -676,11 +691,12 @@ def test_the_watcher_reads_the_bid_period_off_the_pairing_files(tmp_path, monkey
     row = dict(ROW, pairing="H9106", start="01Dec", end="01Dec", dates="01Dec", report="08:30")
     row["fit"] = W.schedule_fit(row)
     W.smart_fields(row)
-    assert row["fit"] == "Fits" and row["month_rule"] == "OK"  # November's line day off, not December's 'Not SCR'
+    # November's line day off, not December's 'Not SCR' (the 672 tag: the trips' blocks are not on file)
+    assert row["fit"] == "Fits" and row["month_rule"] == "672 ? (block not read)"
     # December's own day, by the same bounds
     row = dict(ROW, pairing="H9107", start="25Dec", end="25Dec", dates="25Dec", report="08:30", fit="Fits")
     W.smart_fields(row)
-    assert row["month_rule"] == "Not SCR"
+    assert row["month_rule"] == "Not SCR, 672 ? (block not read)"
     # the files win over the pages: a December file that starts Dec 1 makes Dec 1 December's (its page lacks it)
     (www / "pairings_2030-12.json").write_text(json.dumps({"month": "2030-12", "start": "2030-12-01",
                                                           "end": "2030-12-31", "cols": ["id", "days"], "rows": []}))
@@ -688,7 +704,7 @@ def test_the_watcher_reads_the_bid_period_off_the_pairing_files(tmp_path, monkey
     assert W.bid_period_of(D(12, 1)) == "2030-12"
     row = dict(ROW, pairing="H9106", start="01Dec", end="01Dec", dates="01Dec", report="08:30", fit="Fits")
     W.smart_fields(row)
-    assert row["month_rule"] == "No sched"
+    assert row["month_rule"] == "672 ? (block not read), No sched"
 
 
 def test_a_find_on_a_vac_day_of_a_month_with_no_type_reads_vac(tmp_path, monkeypatch):
@@ -718,7 +734,7 @@ def test_enrich_sets_the_fields_for_the_push(tmp_path, monkeypatch):
             return page
     ev = dict(ROW)
     W.enrich(Fl(), ev)
-    assert ev["report"] == "8:30" and ev["comm"] == "AAA/BBB" and ev["value"] == 600 and ev["month_rule"] == "OK"
+    assert ev["report"] == "8:30" and ev["comm"] == "AAA/BBB" and ev["value"] == 600 and ev["month_rule"] == "672 ? (block not read)"
     assert "PWA 26.QQ.2" in ev["comm_why"]
 
 
@@ -787,14 +803,16 @@ def test_check_pushes_and_records_the_fields(tmp_path, monkeypatch):
     W, ev, pot = _check_env(tmp_path, monkeypatch, RAW)
     assert [e["pairing"] for e in ev] == ["H9202"]
     e = ev[0]
-    assert (e["comm"], e["value"], e["month_rule"]) == ("AAA", 617, "No sched") and e["fit"] and e["far"]
+    assert (e["comm"], e["value"], e["month_rule"]) == ("AAA", 617, "672 ? (block not read), No sched")
+    assert e["fit"] and e["far"] and (e["b672"], e["b672_ok"]) == ("", "")
     assert "PWA 26.QQ.2" in e["comm_why"]
     assert ("rel 11-07 15:15 (15:30 if customs, origin not on file, PWA 2.19.b): AAA in 2 by 06:20, home 18:00"
             in e["comm_why"])
     row = next(r for r in pot if r["pairing"] == "H9202")
     assert not set(W.SMART_FIELDS) & set(row) and row["fit"]  # off the pot sensor
     find = next(f for f in W.DB.recent_finds() if f["pairing"] == "H9202")
-    assert (find["comm"], find["value"], find["month_rule"]) == ("AAA", 617, "No sched") and find["comm_why"]
+    assert (find["comm"], find["value"], find["month_rule"]) == ("AAA", 617, "672 ? (block not read), No sched")
+    assert find["comm_why"] and (find["b672"], find["b672_ok"]) == ("", "")
 
 
 def test_check_without_smart_json_pushes_blank_fields(tmp_path, monkeypatch):

@@ -96,7 +96,7 @@ def is_prem(row):
     return any(str(row.get(k) or "").strip().upper() == "X" for k in ("x1", "prem"))
 
 
-FIND_SMART = ("comm", "comm_why", "value", "month_rule")  # FW-0042 (watcher.SMART_FIELDS)
+FIND_SMART = ("comm", "comm_why", "value", "month_rule", "b672", "b672_ok")  # FW-0042, 1.7.1 (watcher.SMART_FIELDS)
 
 
 def now_iso():
