@@ -251,8 +251,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const admin = this._isAdmin();  // FW-0048, FW-0063: the drop mark (auto drop) for the HA owner on the admin's (Ryan's) card only
     // 1.6.2 review: no longevity year set and no real DOH: no rate at all (the placeholder DOH gave year 12), the
     // banner asks for it and no Improved-Pay-Gross goes out until it is set
-    const noYear = isNaN(parseFloat((S["input_number.flight_watcher_longevity_year"] || {}).state)) && !doh;
-    const lyr = noYear ? null : num("input_number.flight_watcher_longevity_year", Math.min(12, dohYear(today, doh)));
+    // 1.6.4: with a DOH on file (the Settings card's Date of hire), a year still flagged unconfirmed (copied from a
+    // never-set helper) yields to the DOH's year; a year the pilot chose (set here, or Keep these) still wins, as the
+    // admin's own helper does (it is never flagged)
+    const lySt = S["input_number.flight_watcher_longevity_year"] || {};
+    const lyByDoh = !!doh && (lySt.attributes || {}).unconfirmed === true;
+    const lyPicked = !lyByDoh && !isNaN(parseFloat(lySt.state));
+    const noYear = !lyPicked && !doh;
+    const lyr = noYear ? null : lyPicked ? parseFloat(lySt.state) : Math.min(12, dohYear(today, doh));
     const RATE = noYear ? NaN : rateFor(lyr, today);
     const rateTxt = noYear ? "your rate (set your longevity year)" : `$${RATE.toFixed(2)}`;
     const erOv = String((S["input_text.flight_watcher_er_trips"] || {}).state || "").split(",").filter(Boolean);
@@ -667,12 +673,13 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const upd = awd0 ? "" : st && st.attributes ? (st.attributes.updated || "") : "";
     // 1.6.2: the award label and the read status sit above the grid (or the 'No schedule' line)
     // 1.6.2 (item 12): pay settings copied from never-set helpers (0 %, 0 %, year 1) are flagged, never silently used
-    const unconf = PAY_PREFS.filter((e) => ((S[e] || {}).attributes || {}).unconfirmed === true ||
-      (e === PAY_PREFS[2] && noYear) || (e !== PAY_PREFS[2] && this._role() !== "admin" && isNaN(parseFloat((S[e] || {}).state))));
+    // 1.6.4: once a DOH is saved the longevity year comes from it (unless he picked one): no longer asked for
+    const unconf = PAY_PREFS.filter((e) => e === PAY_PREFS[2] ? !doh && (((S[e] || {}).attributes || {}).unconfirmed === true || noYear)
+      : ((S[e] || {}).attributes || {}).unconfirmed === true || (this._role() !== "admin" && isNaN(parseFloat((S[e] || {}).state))));
     const shead = (awd0 ? `<div class="awl">Awarded line from the award file. FLICA schedule not read yet.</div>` : "") +
       (rsLine ? `<div class="rsl">${this._esc(rsLine)}</div>` : "") +
       (unconf.length ? `<div class="unc ubn">Set your tax and longevity in Pay settings (below): ${unconf.map((e) => PAY_PREF_LABEL[e]).join(", ")} ${unconf.length > 1 ? "are" : "is"} not set yet; ${noYear ? "no pay is figured until your longevity year is set" : "pay is estimated with them as shown"}.</div>` : "");
-    const flagged = PAY_PREFS.filter((e) => ((S[e] || {}).attributes || {}).unconfirmed === true);  // values to keep
+    const flagged = PAY_PREFS.filter((e) => ((S[e] || {}).attributes || {}).unconfirmed === true && !(e === PAY_PREFS[2] && lyByDoh));  // values to keep
     const sel = (lo, hi, step, cur, suf) => { const o = []; for (let v = lo; v <= hi + 1e-9; v += step) { const r = Math.round(v * 100) / 100; o.push(`<option value="${r}"${Math.abs(r - cur) < 1e-9 ? " selected" : ""}>${r}${suf}</option>`); } return o.join(""); };
     this.shadowRoot.innerHTML = `<style>
       ha-card{padding:10px 8px 12px;font-size:12.5px;line-height:1.25;box-sizing:border-box}
@@ -783,9 +790,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
     <tr><td>Day</td><td>Blue = weekend, ${this._role() === "admin" ? "yellow = no school at HPA (from the school year file), hatched yellow = US or Hawaii holiday with no school file loaded" : "hatched yellow = US or Hawaii holiday"}. Tap a day to block it (&#8856;), tap again to unblock; VAC days are always &#8856; and cannot be changed. The lock at the top left (&#128274;) freezes ${admin ? "availability, trade and drop" : "availability and trade"} taps. All times HNL.</td></tr>
     </table>${note ? `<div>${note}</div>` : ""}</details>
     <details class="set"${unconf.length ? " open" : ""}><summary>Pay settings${unconf.length ? " (not set yet)" : ""}</summary>
-      <span>Federal tax <select data-e="input_number.flight_watcher_federal_tax_pct">${sel(0, 45, 0.5, fed, "%")}</select></span>
-      <span>State tax <select data-e="input_number.flight_watcher_state_tax_pct">${sel(0, 15, 0.25, stt, "%")}</select></span>
-      <span>Longevity year <select data-e="input_number.flight_watcher_longevity_year">${noYear ? `<option value="" selected disabled>set</option>` : ""}${sel(1, 12, 1, lyr, "")}</select></span>
+      <span>Federal tax <select data-e="input_number.flight_watcher_federal_tax_pct"${flagged.includes(PAY_PREFS[0]) ? ' data-f="1"' : ""}>${sel(0, 45, 0.5, fed, "%")}</select></span>
+      <span>State tax <select data-e="input_number.flight_watcher_state_tax_pct"${flagged.includes(PAY_PREFS[1]) ? ' data-f="1"' : ""}>${sel(0, 15, 0.25, stt, "%")}</select></span>
+      <span>Longevity year <select data-e="input_number.flight_watcher_longevity_year"${flagged.includes(PAY_PREFS[2]) ? ' data-f="1"' : ""}>${noYear ? `<option value="" selected disabled>set</option>` : ""}${sel(1, 12, 1, lyr, "")}</select></span>
       ${flagged.length ? `<div class="r unc">These came from settings that were never set. Pick your own, or <button type="button" class="keep">Keep these</button></div>` : ""}
       <div class="r">${noYear ? "Rate: set your longevity year here (A330 PAX FO, PWA 3.D.6; the table caps at 12). No pay is figured until it is set." : `Rate $${RATE.toFixed(2)}/credit h: A330 PAX FO, PWA 3.D.6, year ${lyr} ${doh ? `(DOH ${doh} = year ${dohYear(today, doh)}, table caps at 12)` : "(set your longevity year here; table caps at 12)"}, effective ${RATE_DATES.filter((x) => x <= today).pop()}. Net = gross less federal and state only; estimate.`}</div>
     </details>${chtml}</ha-card>`;
@@ -804,7 +811,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
     });
     const keep = this.shadowRoot.querySelector(".set .keep");  // 1.6.2: confirm the flagged values as they are
     if (keep) keep.addEventListener("click", () => {
-      this.shadowRoot.querySelectorAll(".set select").forEach((inp) => {
+      // 1.6.4: only the values listed as flagged (data-f): a longevity year the DOH now gives is not kept as a fixed year
+      this.shadowRoot.querySelectorAll(".set select[data-f]").forEach((inp) => {
         const st = this._h.states[inp.dataset.e];
         if (st && st.attributes && st.attributes.unconfirmed === true) this._h.callService("input_number", "set_value", { entity_id: inp.dataset.e, value: parseFloat(inp.value) });
       });
