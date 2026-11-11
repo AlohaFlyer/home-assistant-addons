@@ -32,6 +32,7 @@ def test_the_cards_remove_crewtrac_login_is_what_the_watcher_takes(portal_pilot,
     monkeypatch.setattr(W, "restart_later", lambda: restarts.append(1))
     json.dump({"username": "doej2", "password": "fl pw", "ctweb_username": "doej", "ctweb_password": "ct pw"},
               open(W.CREDS_FILE, "w"))
+    W.OPTS = W.load_opts()  # 1.7.1 review: as at a start, the options hold creds.json's logins
     st = {**W.settings_state(creds=W.load_creds()), "at": EARLIER}
     assert st["instance"] == "pilot2" and st["ctweb_username"] == "doej" and st["has_ctweb_password"] and st["pubkey"]
 

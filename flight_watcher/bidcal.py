@@ -235,7 +235,11 @@ def render(alert, at):
     so one sent late (a restart) is still true. Plain words for a pilot, the date and time in HST."""
     ev = datetime.fromisoformat(alert["event"])
     month = MONTHS[int(alert["bid_month"][5:7]) - 1]
-    usual = "" if alert["source"] == "package" else " Usual date: the pairing package is not uploaded yet."
+    usual = ""
+    if alert["source"] != "package":
+        # 1.7.1 review: a package on file whose page did not give this one date (cycle_source package) is uploaded
+        usual = (" Usual date: not found in the pairing package." if alert.get("cycle_source") == "package"
+                 else " Usual date: the pairing package is not uploaded yet.")
     kind = alert["kind"]
     if kind == "publish_eve":
         rel = _rel(at, ev.date())
@@ -261,14 +265,15 @@ def render(alert, at):
 
 def _alert(c, kind, src, fire_at, event, deadline):
     a = {"key": f"{c['bid_month']}_{kind}", "kind": kind, "bid_month": c["bid_month"], "fire_at": fire_at.isoformat(),
-         "event": event.isoformat(), "deadline": deadline.isoformat(), "source": src}
+         "event": event.isoformat(), "deadline": deadline.isoformat(), "source": src, "cycle_source": c["source"]}
     a["title"], a["message"] = render(a, fire_at)
     return a
 
 
 def schedule(bid_month, parsed=None):
     """The alerts of the bid cycle for bid_month, in fire order: each {key, kind, bid_month, fire_at, event, deadline,
-    source, title, message}, times as ISO text with the HST offset. title and message are as sent on time (render()
+    source, cycle_source, title, message}, times as ISO text with the HST offset; source is the alert's own date's,
+    cycle_source the cycle's (package when its package is on file). title and message are as sent on time (render()
     words them again for a late one). An alert is sent from fire_at until its deadline, then dropped: the evening
     alerts until their day starts (they say "tomorrow" and "tonight"), close_24h until close_eve takes over (or the
     close), close_eve until the close."""
@@ -292,21 +297,29 @@ def schedule(bid_month, parsed=None):
     return sorted(out, key=lambda a: a["fire_at"])
 
 
+def is_done(alert, done):
+    """The alert was sent or dropped already: done ({key: {how, at, event}}, the keys sent or dropped) holds its key for
+    this same event. 1.7.1 review: a date that changed after its alert went out (a package uploaded late moves a
+    practice run off its usual day) is a new event, so the right alert still goes, once, under the same key (the
+    phone's push of the same tag replaces the wrong one); an unchanged date is never sent twice."""
+    r = done.get(alert["key"])
+    return isinstance(r, dict) and r.get("event") == alert["event"]
+
+
 def due(alerts, done, now):
-    """(send, drop) at now (an aware datetime): the alerts whose fire time has come and whose key done (the keys
-    already sent or dropped) does not hold. One whose deadline passed is dropped, never sent: its words would no longer
-    be true."""
+    """(send, drop) at now (an aware datetime): the alerts whose fire time has come and that done does not hold
+    (is_done). One whose deadline passed is dropped, never sent: its words would no longer be true."""
     send, drop = [], []
     for a in sorted(alerts, key=lambda x: x["fire_at"]):
-        if a["key"] in done or now < datetime.fromisoformat(a["fire_at"]):
+        if is_done(a, done) or now < datetime.fromisoformat(a["fire_at"]):
             continue
         (send if now < datetime.fromisoformat(a["deadline"]) else drop).append(a)
     return send, drop
 
 
 def next_alert(alerts, done):
-    """The first alert not sent or dropped yet, in fire order, or None."""
-    return next((a for a in sorted(alerts, key=lambda x: x["fire_at"]) if a["key"] not in done), None)
+    """The first alert not sent or dropped yet (is_done), in fire order, or None."""
+    return next((a for a in sorted(alerts, key=lambda x: x["fire_at"]) if not is_done(a, done)), None)
 
 
 def hst_text(iso):

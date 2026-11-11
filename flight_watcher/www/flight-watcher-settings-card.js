@@ -27,7 +27,9 @@
    login); a password still goes exactly as typed, shown or not. The Watcher's "nothing new" reads as no change, in a
    neutral color, not as a green save. (F#155) While a CrewTrac login is saved, Remove CrewTrac login sends the sealed
    {ctweb_off: true} (sealed only, like Turn off phone alerts), after a confirm. (F#119) The status colors are this
-   card's own variables, lighter on dark cards (prefers-color-scheme, as the portal's dark mode): WCAG AA 4.5:1 on both. */
+   card's own variables, lighter on dark cards (prefers-color-scheme, as the portal's dark mode): WCAG AA 4.5:1 on both.
+   1.7.1 review: on a phone (700 px or less) every field is 16 px: iOS Safari zooms into a smaller one when it is tapped
+   and leaves the page wider than the screen (as F#43 found for the pilot lookup). */
 const FW_PORTAL = false;
 const FW_SET_FIELDS = [
   ["username", "FLICA username", false], ["password", "FLICA password", true],
@@ -160,7 +162,7 @@ class FlightWatcherSettingsCard extends HTMLElement {
       .ack{font-size:13px;flex-wrap:nowrap;align-items:flex-start}.ack input{flex:0 0 auto;min-width:0;width:22px;height:22px;margin:0}.topic{margin:8px 0;padding:8px;border-radius:6px;background:rgba(46,125,50,.12);font-size:13px;overflow-wrap:anywhere}
       .topic code{font-size:15px;user-select:all}button.g{background:#757575}button{min-height:44px;margin:4px 0}
       button.eye{flex:0 0 auto;min-width:64px;padding:6px 10px;margin:0;background:none;color:var(--primary-text-color);border:1px solid var(--divider-color,#ccc)}
-      .rm{margin:0 0 8px}</style>
+      .rm{margin:0 0 8px}@media (max-width:700px){input,select,textarea{font-size:16px}}</style>
       <ha-card><div class="note">${FW_PORTAL
         ? "Encrypted in your browser; only your Watcher can read it (the portal passes on ciphertext only). Your date of hire is shown back to you on this page, so the portal can read that one. A blank field keeps what is saved. Saving restarts your Watcher (a date of hire alone does not); with a new FLICA login it logs in within a minute."
         : "Saved on this Home Assistant only, encrypted before it leaves this screen. A blank field keeps what is saved. Saving restarts the Watcher (a date of hire alone does not); with a new FLICA login it logs in within a minute."}</div>

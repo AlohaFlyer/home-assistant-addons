@@ -253,6 +253,8 @@ def test_remove_crewtrac_login_forgets_it_and_restarts(portal_pilot, monkeypatch
     monkeypatch.setattr(W, "restart_later", lambda: restarts.append(1))
     json.dump({"username": "doej2", "password": "fl pw", "ctweb_username": "doej", "ctweb_password": "ct pw"},
               open(W.CREDS_FILE, "w"))
+    W.OPTS = W.load_opts()  # 1.7.1 review: as at a start, the options hold creds.json's logins (OPTS too must forget)
+    assert W.OPTS["ctweb_username"] == "doej"
     W.DB.put("crewtrac", {"creds": "x" * 64, "state": "refused", "at": "2026-11-10T20:34:01+00:00"})
     assert W.settings_cmd(json.dumps({"ctweb_off": True})) is False  # plain: never (sealed only, like ntfy_off)
     assert W.load_creds()["ctweb_username"] == "doej" and not restarts
@@ -262,6 +264,8 @@ def test_remove_crewtrac_login_forgets_it_and_restarts(portal_pilot, monkeypatch
     assert W.DB.get("crewtrac") == {} and restarts == [1]
     st = json.loads([p for t, p, *_ in W.MQ.raw.msgs if t.endswith("/settings/state")][-1])
     assert st["result"] == "saved: CrewTrac login removed" and st["ctweb_username"] == "" and not st["has_ctweb_password"]
+    assert st["username"] == "doej2" and st["has_password"]  # his FLICA login stays
+    assert "ctweb_username" not in W.OPTS and "ctweb_password" not in W.OPTS  # nor does the charter watch use it now
     assert "ct pw" not in caplog.text and "doej" not in caplog.text.replace("doej2", "")
     assert W.settings_cmd(_sealed(W, {"ctweb_off": True})) is False  # nothing saved: nothing to remove, no restart
     st = json.loads([p for t, p, *_ in W.MQ.raw.msgs if t.endswith("/settings/state")][-1])

@@ -632,3 +632,34 @@ def test_changed_cards_read_at_390_and_1100_px_in_light_and_dark(width, scheme):
             pg.context.close()
     assert not bad, json.dumps(bad, indent=1)
     assert not wide, wide
+
+
+# ---------------------------------------------------------------- 1.7.1 review: no iOS zoom on a tapped field
+FIELDS_JS = """([tag, cfg, st, after]) => { const c = mount(tag, cfg, st); if (after) new Function('c', after)(c);
+  return new Promise((ok) => setTimeout(() => { const out = [];
+    const walk = (root) => { for (const e of root.querySelectorAll('input,select,textarea')) {
+        if (e.matches('[type=checkbox],[type=radio],[type=hidden],[type=button],[type=submit]')) continue;
+        if (!e.checkVisibility({ checkVisibilityCSS: true })) continue;
+        const name = e.tagName.toLowerCase() + ':' + (e.dataset.k || e.id || e.type || '');
+        out.push([name, getComputedStyle(e).fontSize]); }
+      for (const e of root.querySelectorAll('*')) if (e.shadowRoot) walk(e.shadowRoot); };
+    walk(c.shadowRoot); ok(out); }, 80)); }"""
+
+
+def test_every_field_on_the_changed_cards_is_16_px_on_a_phone():
+    """iOS Safari zooms into a field or select under 16 px when it is tapped, and the portal page (width=device-width,
+    no maximum-scale) then stays wider than the screen: at 390 px every visible text field, select and text area of
+    the changed cards is 16 px or more (F#43 did it for the pilot lookup)."""
+    small, seen = {}, {}
+    with _browser() as b:
+        for name, (card, cfg, states, after) in RENDERS.items():
+            pg = _page(b, [_card(card)], width=390)
+            got = pg.evaluate(FIELDS_JS, [f"flight-watcher-{card}-pilot2", cfg, states(), after])
+            pg.context.close()
+            seen[name] = len(got)
+            bad = [f for f in got if float(f[1][:-2]) < 16]
+            if bad:
+                small[name] = bad
+    assert not small, small
+    for name in ("clock", "settings", "schedule unset", "pickers", "pilot search", "recall"):
+        assert seen[name] > 0, name  # each of these cards has fields to check

@@ -22,6 +22,8 @@
 // 1.7.1 (F#119): the red status text is this card's own variable, as before on a light card and a lighter red on a
 // dark one (prefers-color-scheme, as the portal's dark mode), so it keeps WCAG AA contrast (4.5:1) on both; the Hunt
 // button's orange is darker so its white label reads too (3.1:1 before); the | separators are decoration only.
+// 1.7.1 review: on a phone the interval selects are 16 px: iOS Safari zooms into a smaller one when it is tapped and
+// leaves the page wider than the screen (as F#43 found for the pilot lookup).
 const FW_PORTAL = false;
 const FC_HUNT = [5, 10, 15, 20, 30, 45, 60, 90];  // seconds (number.flight_watcher_hunt_check_every 5-90)
 const FC_NORM = [1, 2, 3, 5, 6, 10, 15, 20, 30, 45, 60, 90];  // minutes (number.flight_watcher_normal_check_every 1-90)
@@ -56,7 +58,7 @@ class FlightWatcherClockCard extends HTMLElement {
         .iv{display:inline-flex;align-items:center;gap:3px;font-size:12px;color:var(--secondary-text-color)}
         .ivt{font-weight:600;color:var(--primary-text-color)}
         @media (max-width:700px){ha-card{font-size:12px;gap:6px}.ctl{margin-left:0;width:100%}
-          button{min-height:44px;min-width:44px;padding:6px 12px;font-size:13px}select{min-height:44px;min-width:56px;font-size:14px}}
+          button{min-height:44px;min-width:44px;padding:6px 12px;font-size:13px}select{min-height:44px;min-width:56px;font-size:16px}}
       </style><ha-card><span class="st" id="st"></span><span class="m" id="msg"></span>
       <span class="sep" aria-hidden="true">|</span><span class="k">Last</span> <span class="t" id="lt">-</span> <span class="k" id="la"></span>
       <span class="sep" aria-hidden="true">|</span><span class="k">Next</span> <span class="t" id="nt">-</span> <span class="k" id="na"></span>

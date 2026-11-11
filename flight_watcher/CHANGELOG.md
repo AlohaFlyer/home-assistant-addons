@@ -37,10 +37,14 @@ entity, which contract 1 allows). Built from three branches (fw171-core, fw171-c
   check running and no budget hold, it runs a full check now ("a full check starts now"). Idle or hunting and checking
   normally, paused, waiting for settings, a check running or the budget holding the next check: ok false with why.
 - F#92: in a stop, a step-aside or a back-off Re-arm keeps its login path, and only a stop wakes the loop for it, as
-  1.6.2 documents. Its result says what happens ("logs in when the step-aside for your own FLICA login ends, HH:MM
-  HST"; a back-off "at the next login try"; details FLICA refused: "save new ones on Settings"). New in the main loop:
-  while stepped aside, a Re-arm waits for the step-aside's end, so another command waking the loop no longer cuts the
-  30 min short (in 1.7.0 it did).
+  1.6.2 documents. Its result's why says what happens ("logs in when the step-aside for your own FLICA login ends,
+  HH:MM HST"; a back-off "at the next login try"; details FLICA refused, ok false: "save new ones on Settings"). New in
+  the main loop: while stepped aside, a Re-arm waits for the step-aside's end, so another command waking the loop no
+  longer cuts the 30 min short (in 1.7.0 it did).
+- What the pilot reads of these answers: HOM 1.8 shows the why of a refused command ("Not applied: Re-arm. The Watcher
+  said: ..."), but for a taken one only "Sent: the Watcher took Re-arm.", so the why of a Re-arm that acts ("a full
+  check starts now", "logs in when the step-aside ... ends") reaches him once HOM shows a taken result's why too. That
+  is a HOM change, not a contract change: results already carry {id, ok, why}.
 - F#7, F#110: the export's full sweep (every 300 s) writes state.json even when nothing changed: the same payload in
   a new signed envelope (atomic, about 44 KB), so its seq moves at least every 5 min in every state, needs_settings
   included, and the portal can tell a Watcher that is up from one that stopped. No new field. Passes that are not
@@ -134,8 +138,51 @@ entity, which contract 1 allows). Built from three branches (fw171-core, fw171-c
   (that is a contract change, not in this release). His `sensor.<prefix>_bid_calendar` is in his portal's state.json
   like any core entity (PORTAL_CONTRACT.md 4.1 and 4.2: a new entity needs no HOM release).
 
+### Review fixes
+
+- Tradeboard on a pilot: a detail load his FLICA budget left out (GateSkip) ended the whole Tradeboard read before its
+  baseline was saved, so a new post already pushed on event/new_pairing was pushed again by the next read (his portal
+  and ntfy), the next bid month was not read and the board was not published. With 1.7.1's Tradeboard share this was
+  the usual path at the hunt floor. Now a detail left out only screens that post from its list (fit, vacation, FAR, the
+  smart fields: `screen_row`) and is not cached, so a later read reads it; the read saves its baseline, reads every
+  bid month and publishes. A detail load waits while it would leave no room for the frames and lists of the bid months
+  still to read; a new post joins the baseline as soon as it is pushed (a read that ends later, Pause, never pushes it
+  again); and its details are cached from the push, so a new post costs one detail load, not two (the admin's too).
+  One log line a check says the details were left out.
+- Bid calendar: an alert's record keeps the event it was for (`bid_calendar_done`: how, at, event; `bidcal.is_done`).
+  A date the package moves after its usual-date alert went out (a package uploaded late, as December's was on Nov 7;
+  October's Practice Run #1 was on the 8th, not the 7th) is alerted once more at its own time under the same key (the
+  phone's push of the same tag replaces the wrong one), and the sensor shows it pending until then, not sent. An
+  unchanged date is never sent twice. The same for a close the package moves (its 24 h and night-before alerts).
+- Bid calendar: a usual date in a package that is on file but does not show that date says "Usual date: not found in
+  the pairing package." instead of "the pairing package is not uploaded yet" (each alert carries its cycle's source,
+  `cycle_source`).
+- Bid calendar: `sensor.<prefix>_bid_calendar` is not published (nor kept as sent) while MQTT is down, and a
+  reconnect sends it again at the next minute, so a broker restart across an alert's deadline no longer leaves the
+  sensor on the dropped alert's past time, pending.
+- F#155: Remove CrewTrac login also drops the login from a pilot's options in memory, which hold creds.json's values
+  from the start: the state published with "saved: CrewTrac login removed" still showed the old user ID, "CrewTrac
+  password: set" and the Remove button, and the charter watch could use the login until the restart. The admin's
+  options (the add-on's own) stay.
+- Scan CrewTrac now from the portal: a press that starts no scan (one running, no CrewTrac details or ones CrewTrac
+  refused, the login form came back last time, or the last pressed scan under 30 min ago) answers ok false with the
+  reason ("ignored: the last pressed scan was under 30 min ago") and is not republished, like Check now
+  (`charter_press_refusal` in `press_answer`; the result keeps its {id, ok, why} shape). A press from Home Assistant is
+  unchanged.
+- The cards on a phone (700 px or less): every field and select of the settings, pickers, clock, schedule (Pay
+  settings) and recall cards is 16 px, so iOS Safari no longer zooms into a tapped field and leaves the page wider
+  than the screen (the pilot lookup has been 16 px since F#43). Desktop sizes are unchanged. Not in this release: the
+  tickets card's fields (1.7.0) are 13 px.
+
 ### Tests
 
+- `tests/test_fw171_review.py` (the review fixes: a pilot's Tradeboard at the hunt floor with one load of the pool
+  left, two new posts pushed once each across two reads; two bid months with none left, both read; the admin's one
+  detail load per new post; Scan CrewTrac now refused and taken from the portal). `tests/test_bidcal.py` (a date the
+  package moves after its usual alert, in bidcal and in the Watcher across a restart; the usual-date words; the
+  sensor while MQTT is down and after a reconnect). `test_fw171_core.py` and `test_fw171_crewtrac_remove.py` load the
+  options after creds.json is written, as a start does; `test_fw171_cards.py` checks every field at 390 px for 16 px;
+  the accepted portal samples test gives the demo pilot a CrewTrac login (a scan press without one is refused now).
 - `tests/test_pilot_secondary_share.py` (LIVE-1: the real check() for 3 h at the 5 s floor on a pilot with one and two
   bid months and a greedy optional read: each of the four reads in every hour, the pot on every check, no rolling hour
   over 100, checks at least the pace apart; the admin has no shares). The pacing tests in `test_freq_ranges.py` and

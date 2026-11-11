@@ -529,15 +529,18 @@ def rearm_answer():
 
 
 def press_answer(sub):
-    """1.7.1 (F#12, F#92, F#149): (ok, why) for a portal command before it is republished. A Check now or a Re-arm the
-    Watcher would ignore answers ok false with the reason and is not republished; a Re-arm that acts says what it does.
-    Any other command: (True, '')."""
+    """1.7.1 (F#12, F#92, F#149): (ok, why) for a portal command before it is republished. A Check now, a Re-arm or
+    (1.7.1 review) a Scan CrewTrac now the Watcher would ignore answers ok false with the reason and is not republished;
+    a Re-arm that acts says what it does. Any other command: (True, '')."""
     if sub == "check_now/press":
         why = check_now_refusal(ROLES.role(INSTANCE) == ROLES.ADMIN)
         return not why, why
     if sub == "rearm/press":
         _, ok, why = rearm_answer()
         return ok, why
+    if sub == "charter_scan/press":  # 1.7.1 review: a press that starts no scan says why, like Check now
+        why = charter_press_refusal()
+        return not why, ("ignored: " + why) if why else ""
     return True, ""
 
 
@@ -708,6 +711,11 @@ def settings_cmd(payload):
         # its record goes too, so a refusal or a back-off of the old login says nothing about the next one
         for k in gone:
             cur.pop(k)
+            if not has("addon_config"):
+                # 1.7.1 review: on a pilot the options in memory hold creds.json's values from the start (load_opts),
+                # so the state published now (settings_state) and the charter watch until the restart forget it too;
+                # the admin's may be the add-on's own options, which stay
+                OPTS.pop(k, None)
         changed.append("CrewTrac login removed")
         DB.put("crewtrac", {})
     for k in keys:
@@ -1344,6 +1352,7 @@ def mqtt_start():
         publish_swap_mode(cl)
         publish_swap_tests()
         publish_uploads(cl, force=True)  # FW-0066
+        _BIDCAL["sig"] = None  # 1.7.1 review: the bid calendar sensor goes again at the next minute's bidcal_tick
         tm = threading.Timer(CONNECT_STATES_DELAY_S, connect_states, args=(cl,))  # FW-0024
         tm.daemon = True
         tm.start()
@@ -2376,6 +2385,13 @@ def enrich(fl, ev):
         raise  # 1.6.2 review: given up (Pause) or left out (a pilot's budget): the caller decides, nothing is cached
     except Exception as e:
         log.info("detail skipped for %s: %s", ev.get("pairing"), e)
+    screen_row(ev)
+
+
+def screen_row(ev):
+    """The screens enrich() puts on a row after its detail GET (soft time, fit, vacation, blocked days, FAR, smart
+    fields), alone: a row whose details a pilot's budget left out (1.7.1 review) is still screened, from what its list
+    shows."""
     ev.setdefault("captain", "")
     st = soft_time(ev.get("credit"), ev.get("blk"))
     ev["soft"] = st or ""
@@ -5251,8 +5267,31 @@ def tradeboard_check(fl, full=False):
     tb_cache = S.setdefault("tb_details", {})  # 0.4.6: enriched pickup posts, one detail GET each
     live = {}
     read_ok = False
-    for n in nums:
+    left = {"out": False, "keep": 0}
+    fresh = set()  # the new posts whose details this read just read
+
+    def detail(ev):
+        """1.7.1 review: enrich() while this read has room for the detail and for the frames and lists of the bid
+        months still to read (a pilot's budget; the admin always has room). A detail left out (GateSkip, or no room)
+        only screens the row from its list (screen_row) and never ends the read, so its baseline is saved, every bid
+        month is read and the board is published: a post pushed is never pushed again by the next read. True when the
+        detail was read (the row may be cached)."""
+        why = "no room for them in this pilot's FLICA budget"
+        if not left["out"] and opt_fits(1 + left["keep"]):
+            try:
+                enrich(fl, ev)
+                return True
+            except GT.GateSkip as e:
+                left["out"], why = True, str(e)  # no more detail loads in this read
+        if "tradeboard_check details" not in RUN["skipped"]:
+            RUN["skipped"].add("tradeboard_check details")
+            log.info("tradeboard_check details left out of this check (%s): %s", why, ev.get("pairing"))
+        screen_row(ev)
+        return False
+
+    for pos, n in enumerate(nums):
         key = f"tb2_{n}"
+        left["keep"] = 2 * (len(nums) - pos - 1)  # the frames and lists of the bid months after this one
         try:
             furl = f"{BASE}/online/tb_frame.cgi?BCID=001.{n}&dp=mr"
             fh = fl.fetch(furl)
@@ -5290,19 +5329,25 @@ def tradeboard_check(fl, full=False):
             else:
                 for k in sorted(set(picks) - set(old)):
                     ev = {**picks[k], "month": key, "seen": now_iso()}
-                    enrich(fl, ev)
+                    if detail(ev):  # 1.7.1 review: its details kept, so the post costs one detail GET, not two
+                        tb_cache[k] = {f: v for f, v in ev.items() if f not in ("month", "seen")}
+                        fresh.add(k)
                     log.info("NEW tradeboard pickup %s", ev)
                     pub("event/new_pairing", ev, retain=False)
                     pub("last_tradeboard", ev)
+                    # 1.7.1 review: in the baseline at once, so a read that ends later (Pause) never pushes it again
+                    base[key] = sorted(set(base.get(key) or ()) | {k})
             base[key] = sorted(picks)
             pub(f"tradeboard/{key}", {"count": len(picks), "posts": list(picks.values())[:40]})
             read_ok = True
             for k, row in picks.items():
                 cached = tb_cache.get(k)
-                if cached is None or full:
-                    cached = {**row}
-                    enrich(fl, cached)
-                    tb_cache[k] = cached
+                if cached is None or (full and k not in fresh):
+                    row = {**row}
+                    if detail(row):
+                        tb_cache[k] = cached = row
+                    else:
+                        cached = cached or row  # left out: the details read before, else the list's row, not cached
                 live[k] = cached
         except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
             raise
@@ -6683,7 +6728,7 @@ def upload_janitor():
 # page 1 of the shared package is read only when its file changes. Each alert goes once on {T}/event/bid_calendar
 # (not retained). Only Ryan's prefix has an HA automation ("Flight Watcher bid calendar"), so a pilot's instance makes
 # the same alerts on his own prefix and nothing pushes them (they are not portal events in contract 1).
-BIDCAL_DONE = "bid_calendar_done"  # DB: {alert key: {how: sent | dropped, at}}, written before the publish
+BIDCAL_DONE = "bid_calendar_done"  # DB: {alert key: {how: sent | dropped, at, event}}, written before the publish
 BIDCAL_KEEP = 40  # keys kept (5 a cycle)
 _BIDCAL = {"pkg": {}, "sig": None}  # bid month -> (file time, bidcal.parse of its package); the sensor's last payload
 
@@ -6738,11 +6783,11 @@ def bidcal_tick(now=None):
     if send and not mqtt_up():
         send = []  # tried again next minute, until its deadline
     for a in drop:
-        done[a["key"]] = {"how": "dropped", "at": now.isoformat()}
+        done[a["key"]] = {"how": "dropped", "at": now.isoformat(), "event": a["event"]}  # bidcal.is_done
         log.info("bid calendar: %s not sent: its time (%s, kept until %s) passed while the app was off or MQTT down",
                  a["key"], BC.hst_text(a["fire_at"]), BC.hst_text(a["deadline"]))
     for a in send:
-        done[a["key"]] = {"how": "sent", "at": now.isoformat()}
+        done[a["key"]] = {"how": "sent", "at": now.isoformat(), "event": a["event"]}
     if send or drop:
         DB.put(BIDCAL_DONE, dict(sorted(done.items())[-BIDCAL_KEEP:]))
     for a in send:
@@ -6759,7 +6804,11 @@ def bidcal_tick(now=None):
 def publish_bid_calendar(alerts, done, force=False):
     """{T}/bid_calendar (retained), sensor.{T}_bid_calendar: state the next alert's time (HST, a timestamp sensor);
     attributes the next alert, its cycle's dates, source (package or default, each date's own in sources) and that
-    cycle's alerts with their status (pending, sent, dropped). Published when it changes (or force)."""
+    cycle's alerts with their status (pending, sent, dropped). Published when it changes (or force). 1.7.1 review:
+    never while MQTT is down (paho drops it at qos 0), so the payload kept as sent is one that went out; on_connect
+    clears it too, so the next tick sends it again after any reconnect."""
+    if not mqtt_up():
+        return False
     nxt = BC.next_alert(alerts, done)
     bm = nxt["bid_month"] if nxt else (alerts[-1]["bid_month"] if alerts else None)
     if bm is None:
@@ -6772,7 +6821,8 @@ def publish_bid_calendar(alerts, done, force=False):
          "sources": c["sources"], "published": c["published"], "practice": c["practice"], "close": c["close"],
          "awards_by": c["awards_by"], "open_time_opens": c["open_time_opens"],
          "alerts": [{"key": a["key"], "kind": a["kind"], "fire_at": a["fire_at"], "at_hst": BC.hst_text(a["fire_at"]),
-                     "title": a["title"], "status": (done.get(a["key"]) or {}).get("how") or "pending"}
+                     "title": a["title"],
+                     "status": (BC.is_done(a, done) and done[a["key"]].get("how")) or "pending"}
                     for a in alerts if a["bid_month"] == bm]}
     sig = json.dumps(d, sort_keys=True)
     if not force and sig == _BIDCAL["sig"]:
@@ -7350,21 +7400,30 @@ def charter_wait(now=None):
         return 0
 
 
+def charter_press_refusal(now=None, ct=None):
+    """Why a Scan CrewTrac now press starts no scan now ('' when it does): one is running, CrewTrac's refusal of these
+    details stands or none are saved, the login form came back last time, or the last pressed scan was under
+    PRESS_GAP_S ago. 1.7.1 review: it also answers a portal press (press_answer), so the pilot reads why."""
+    now = time.time() if now is None else now
+    ct = crewtrac_state() if ct is None else ct
+    if CHARTER_BUSY.is_set():
+        return "a scan is running"
+    if crewtrac_stopped(ct):
+        return "no CrewTrac details saved" if ct.get("state") == "not_configured" else "CrewTrac refused these details"
+    if ct.get("unconfirmed"):
+        return "the login form came back last time; the next timed try decides"
+    if now - float(ct.get("press_at") or 0) < CH.PRESS_GAP_S:
+        return f"the last pressed scan was under {CH.PRESS_GAP_S // 60} min ago"
+    return ""
+
+
 def charter_press(now=None):
-    """Scan CrewTrac now (1.6.1): starts a scan only when one may run: never while one runs, never while CrewTrac's
-    refusal of these details stands or none are saved, at most one per PRESS_GAP_S (the first one after new details
-    excepted). Otherwise the status is only republished. True when the thread was woken for a scan."""
+    """Scan CrewTrac now (1.6.1): starts a scan only when one may run (charter_press_refusal; the first press after new
+    details is not held by PRESS_GAP_S). Otherwise the status is only republished. True when the thread was woken for
+    a scan."""
     now = time.time() if now is None else now
     ct = crewtrac_state()
-    why = ""
-    if CHARTER_BUSY.is_set():
-        why = "a scan is running"
-    elif crewtrac_stopped(ct):
-        why = "no CrewTrac details saved" if ct.get("state") == "not_configured" else "CrewTrac refused these details"
-    elif ct.get("unconfirmed"):
-        why = "the login form came back last time; the next timed try decides"
-    elif now - float(ct.get("press_at") or 0) < CH.PRESS_GAP_S:
-        why = f"the last pressed scan was under {CH.PRESS_GAP_S // 60} min ago"
+    why = charter_press_refusal(now, ct)
     if why:
         log.info("charter scan pressed: %s; status republished, no scan", why)
         publish_charters()

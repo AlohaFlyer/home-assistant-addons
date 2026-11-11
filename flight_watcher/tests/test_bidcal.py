@@ -204,7 +204,7 @@ def test_due_sends_late_until_the_deadline_then_drops():
     assert title == "Bids close today 08:00 HST" and "Finish your PBS bid now." in msg
     send, drop = BC.due(alerts, {}, _t(11, "08:00"))
     assert send == [] and len(drop) == 5
-    assert BC.due(alerts, {a["key"]: {} for a in alerts}, _t(11, "08:00")) == ([], [])
+    assert BC.due(alerts, {a["key"]: {"how": "sent", "event": a["event"]} for a in alerts}, _t(11, "08:00")) == ([], [])
     assert BC.due(alerts, {}, _t(3, "19:59")) == ([], [])  # nothing before its time
 
 
@@ -390,6 +390,140 @@ def test_the_dockerfile_copies_every_module_the_watcher_imports():
     copy_line = next(ln for ln in open(os.path.join(HERE, "Dockerfile"), encoding="utf-8").read().splitlines()
                      if ln.startswith("COPY run.py"))
     assert "bidcal" in local and {m + ".py" for m in local} <= set(copy_line.split())
+
+
+# ---------------------------------------------------------------- 1.7.1 review
+DEC_MOVED = DEC.replace("November 7                     Practice Run #1",
+                        "November 8                     Practice Run #1")
+
+
+def test_a_date_the_package_moves_after_its_usual_alert_went_out_is_alerted_once():
+    # no package on Nov 6: the usual Practice Run #1 (Sat Nov 7) goes out Fri Nov 6 20:00
+    send, _ = BC.due(BC.schedule("2026-12"), {}, _t(6, "20:00"))
+    assert [a["kind"] for a in send] == ["practice_eve_1"] and "Sat Nov 7" in send[0]["message"]
+    done = {a["key"]: {"how": "sent", "at": "x", "event": a["event"]} for a in send}
+    # the package comes in late (as December's did, Nov 7 01:34) and puts the run on Sun Nov 8
+    moved = BC.parse(DEC_MOVED)
+    assert moved["practice"] == ["2026-11-08", "2026-11-10"]
+    alerts = BC.schedule("2026-12", moved)
+    p1 = _by_kind(alerts)["practice_eve_1"]
+    assert not BC.is_done(p1, done) and p1["fire_at"] == "2026-11-07T20:00:00-10:00"  # pending again, not "sent"
+    assert BC.due(alerts, done, _t(7, "19:59"))[0] == []
+    send, _ = BC.due(alerts, done, _t(7, "20:01"))
+    assert [a["key"] for a in send] == ["2026-12_practice_eve_1"]  # the same key: its push replaces the wrong one
+    assert "tomorrow, Sun Nov 8" in BC.render(send[0], _t(7, "20:01"))[1]
+    done.update({a["key"]: {"how": "sent", "at": "y", "event": a["event"]} for a in send})
+    assert BC.due(alerts, done, _t(7, "23:00"))[0] == []  # once
+    # a date the package keeps as the usual one is never sent twice
+    assert BC.due(BC.schedule("2026-12", BC.parse(DEC)), done, _t(9, "20:00"))[0][0]["kind"] == "practice_eve_2"
+    send, _ = BC.due(BC.schedule("2026-12", BC.parse(DEC)),
+                     {a["key"]: {"how": "sent", "event": a["event"]} for a in BC.schedule("2026-12")}, _t(9, "21:00"))
+    assert send == []
+    # a close the package moves gets its 24 h alert again, for the right close
+    late = dict(BC.parse(DEC), close={"date": "2026-11-12", "time": "08:00"})
+    sent24 = {a["key"]: {"how": "sent", "event": a["event"]} for a in BC.schedule("2026-12")
+              if a["kind"] == "close_24h"}
+    send, _ = BC.due(BC.schedule("2026-12", late), sent24, _t(11, "08:00"))
+    assert [a["kind"] for a in send] == ["close_24h"] and "Thu Nov 12 08:00 HST" in send[0]["message"]
+
+
+def test_the_watcher_sends_the_moved_date_once_and_the_sensor_shows_it_pending(tmp_path, monkeypatch):
+    W, fake, uploads = _load(tmp_path, monkeypatch)
+    assert [e["key"] for e in W.bidcal_tick(_t(6, "20:00"))] == ["2026-12_practice_eve_1"]
+    assert W.DB.get(W.BIDCAL_DONE)["2026-12_practice_eve_1"]["event"] == "2026-11-07T00:00:00-10:00"
+    (uploads / "2026-12_pairings.txt").write_text(DEC_MOVED, encoding="utf-8")
+    assert W.bidcal_tick(_t(7, "01:34")) == []
+    s, _ = _sensor(fake)
+    p1 = next(a for a in s["alerts"] if a["kind"] == "practice_eve_1")
+    assert (p1["status"], p1["fire_at"]) == ("pending", "2026-11-07T20:00:00-10:00")
+    assert s["next"]["key"] == "2026-12_practice_eve_1" and s["next_at"] == "2026-11-07T20:00:00-10:00"
+    sent = W.bidcal_tick(_t(7, "20:01"))
+    assert [a["key"] for a in sent] == ["2026-12_practice_eve_1"]
+    ev = _events(fake)[-1][0]
+    assert ev["source"] == "package" and "Sun Nov 8" in ev["message"] and "Usual date" not in ev["message"]
+    assert W.bidcal_tick(_t(7, "20:02")) == []
+    W, fake, _ = _load(tmp_path, monkeypatch)  # a restart repeats nothing
+    assert W.bidcal_tick(_t(7, "21:00")) == [] and _events(fake) == []
+    assert next(a for a in _sensor(fake)[0]["alerts"] if a["kind"] == "practice_eve_1")["status"] == "sent"
+
+
+def test_a_usual_date_says_whether_the_package_is_on_file():
+    a = _by_kind(BC.schedule("2026-12"))
+    assert a["practice_eve_2"]["message"].endswith(" Usual date: the pairing package is not uploaded yet.")
+    # on file, but Practice Run #2 not on its page (a new wording): uploaded, only that date is the usual one
+    no_run2 = BC.parse(DEC.replace("Practice Run #2", "Practice Bid Window"))
+    assert no_run2["practice"] == ["2026-11-07", None]
+    a = _by_kind(BC.schedule("2026-12", no_run2))
+    assert a["practice_eve_2"]["source"] == "default" and a["practice_eve_2"]["cycle_source"] == "package"
+    assert a["practice_eve_2"]["message"].endswith(" Usual date: not found in the pairing package.")
+    assert "not uploaded" not in a["practice_eve_2"]["message"]
+    assert "Usual date" not in a["practice_eve_1"]["message"] + a["close_eve"]["message"]
+    late = BC.render(a["practice_eve_2"], _t(9, "23:00"))[1]  # worded again when sent late: still true
+    assert late.endswith(" Usual date: not found in the pairing package.")
+
+
+class Lossy(FakeClient):
+    """paho at qos 0: a publish while the broker is down is lost."""
+
+    def publish(self, topic, payload="", retain=False):
+        if self.up:
+            FakeClient.publish(self, topic, payload, retain)
+
+
+def test_the_sensor_is_never_kept_as_sent_while_mqtt_is_down(tmp_path, monkeypatch):
+    W, fake, _ = _load(tmp_path, monkeypatch, fake=Lossy())
+    W.bidcal_tick(_t(6, "19:00"))
+    assert _sensor(fake)[0]["next"]["key"] == "2026-12_practice_eve_1"
+    fake.up = False  # the broker restarts across the alert's time and its deadline
+    assert W.bidcal_tick(_t(6, "20:00")) == []  # held
+    W.bidcal_tick(_t(7, "00:01"))  # its deadline passed: dropped
+    assert W.DB.get(W.BIDCAL_DONE)["2026-12_practice_eve_1"]["how"] == "dropped"
+    fake.up = True
+    W.bidcal_tick(_t(7, "00:30"))  # back: the sensor shows the next alert, not the dropped one still pending
+    s, _ = _sensor(fake)
+    assert s["next"]["key"] == "2026-12_practice_eve_2" and s["next_at"] == "2026-11-09T20:00:00-10:00"
+    assert next(a for a in s["alerts"] if a["kind"] == "practice_eve_1")["status"] == "dropped"
+
+
+def test_a_reconnect_sends_the_bid_calendar_sensor_again(tmp_path, monkeypatch):
+    W, fake, _ = _load(tmp_path, monkeypatch)
+    W.bidcal_tick(_t(11, "10:00"))
+    n = len([1 for t, _, _ in fake.msgs if t == "flight_watcher/bid_calendar"])
+    W.bidcal_tick(_t(11, "10:01"))
+    assert len([1 for t, _, _ in fake.msgs if t == "flight_watcher/bid_calendar"]) == n  # unchanged: not again
+
+    class Client(FakeClient):
+        def __init__(self, *a, **k):
+            FakeClient.__init__(self)
+
+        def username_pw_set(self, *a):
+            pass
+
+        def will_set(self, *a, **k):
+            pass
+
+        def connect(self, *a):
+            pass
+
+        def loop_start(self):
+            pass
+
+        def subscribe(self, *a, **k):
+            pass
+
+    class Timer:
+        def __init__(self, *a, **k):
+            self.daemon = False
+
+        def start(self):
+            pass
+    monkeypatch.setattr(W.mqtt, "Client", Client)
+    monkeypatch.setattr(W, "mqtt_creds", lambda: {"username": "u", "password": "p", "host": "h", "port": 1883})
+    monkeypatch.setattr(W.threading, "Timer", Timer)
+    c = W.mqtt_start()
+    c.on_connect(c, None, None, 0)  # the broker came back (it may have lost its retained copy)
+    W.bidcal_tick(_t(11, "10:02"))
+    assert len([1 for t, _, _ in fake.msgs if t == "flight_watcher/bid_calendar"]) == n + 1
 
 
 # ---------------------------------------------------------------- the HA push (Ryan's phones only)

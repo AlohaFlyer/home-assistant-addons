@@ -282,10 +282,12 @@ Recent finds.
   constant), 20:00 the night before each practice run, 24 h before the close and 20:00 the night before it. Checked
   once a minute whatever the Watcher is doing (no FLICA load); each goes once on `<prefix>/event/bid_calendar` (not
   retained: `kind`, `key`, `bid_month`, `title`, `message`, `at_hst`, `event_hst`, `source` package or default), the
-  sent ones kept in the DB so a restart never repeats one. One missed while the app was off is sent late until its
-  words stop being true (the evening ones until their day starts, the 24 h one until the night-before one, that one
-  until the close), else dropped with a log line. `sensor.<prefix>_bid_calendar` (retained on `<prefix>/bid_calendar`)
-  shows the next alert's time, its cycle's dates (awards and open time too, from a package) and each alert's status.
+  sent ones kept in the DB with the date they were for, so a restart never repeats one and a date a late package
+  moves is alerted once more under the same key (its push replaces the wrong one). One missed while the app was off
+  is sent late until its words stop being true (the evening ones until their day starts, the 24 h one until the
+  night-before one, that one until the close), else dropped with a log line. `sensor.<prefix>_bid_calendar`
+  (retained on `<prefix>/bid_calendar`) shows the next alert's time, its cycle's dates (awards and open time too, from
+  a package) and each alert's status.
   Only Ryan's prefix has a phone push (HA automation "Flight Watcher bid calendar", critical); a second pilot's
   Watcher makes the same alerts on its own prefix, which nothing pushes, and they are not portal events (contract 1).
 

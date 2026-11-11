@@ -9,7 +9,9 @@
    wide or less (a phone; a container query, so the desktop table is unchanged) the table keeps Pilot, Pos, Best
    (Fastest Pickup Speed) and Avg (Avg Pickup Speed), so the speeds show without a sideways scroll; the employee number,
    the pickup counts and the common layovers go on a small line under the name. The sorted column's header is bold in
-   the text color (the theme's blue on the header's gray was under WCAG AA's 4.5:1, F#119). */
+   the text color (the theme's blue on the header's gray was under WCAG AA's 4.5:1, F#119). 1.7.1 review: on a phone
+   (700 px or less) the filter box is 16 px: iOS Safari zooms into a smaller one when it is tapped and leaves the page
+   wider than the screen (as F#43 found for the pilot lookup). */
 const FMT = (a) => a == null ? "-" : a >= 3600 ? `${Math.floor(a / 3600)}h ${String(Math.floor((a % 3600) / 60)).padStart(2, "0")}m`
   : a >= 60 ? `${Math.floor(a / 60)}m ${String(a % 60).padStart(2, "0")}s` : `${a}s`;
 // [key, header, sort kind, header on a narrow card ("" = folded under the name there)]
@@ -94,6 +96,7 @@ class FlightWatcherPickersCard extends HTMLElement {
         .body{display:none;container-type:inline-size}.body.open{display:block}
         .fl{display:block;font-size:12px;color:var(--secondary-text-color);margin:6px 0 0}
         input{width:100%;box-sizing:border-box;padding:8px 10px;margin:2px 0 8px;border:1px solid var(--divider-color,#ccc);border-radius:6px;background:var(--card-background-color,#fff);color:var(--primary-text-color);font-size:14px}
+        @media (max-width:700px){input{font-size:16px}}
         .wrap{overflow-x:auto}
         table{border-collapse:collapse;font-size:13px;width:100%}
         th,td{border:1px solid var(--divider-color,#ddd);padding:3px 6px;white-space:nowrap}

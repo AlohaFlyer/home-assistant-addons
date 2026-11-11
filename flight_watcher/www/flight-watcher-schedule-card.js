@@ -16,6 +16,8 @@
 // is lighter on a light card, a trip marked "would trade" is in the text color on its orange mark, the faint marks
 // (no ideas, the trade and drop arrows, FAR '-') use the secondary text color, and another month's days lose their
 // extra fade.
+// 1.7.1 review: on a phone (700 px or less) the Pay settings selects are 16 px: iOS Safari zooms into a smaller one
+// when it is tapped and leaves the page wider than the screen (as F#43 found for the pilot lookup).
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const DOW = ["SU","MO","TU","WE","TH","FR","SA"];
 const MON3 = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
@@ -759,6 +761,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .set{margin:8px auto 0;max-width:620px;font-size:11px;color:var(--secondary-text-color);text-align:center}
       .set summary{cursor:pointer;font-weight:600;font-size:11px;list-style:none;margin-bottom:3px}.set summary::before{content:"\\25B8 "}.set[open] summary::before{content:"\\25BE "}
       .set span{margin:0 8px;white-space:nowrap}.set select{font-size:11px;margin-left:3px}.set .r{margin-top:3px}
+      @media (max-width:700px){.set select{font-size:16px}}
       .lg{font-size:11px}.lgl{color:var(--fw-info,#1565c0);font-weight:600;cursor:help}
       .trip.tr{background:rgba(255,160,0,.28);border-radius:4px;padding:0 3px;color:var(--primary-text-color)}
       .trb{display:inline-block;font-size:19px;line-height:1;padding:0 6px;margin-left:2px;color:var(--secondary-text-color,#727272);cursor:pointer;vertical-align:middle;border-radius:5px}

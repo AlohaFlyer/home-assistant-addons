@@ -48,6 +48,9 @@ def _batches(samples, n=20):
 
 def test_every_accepted_sample_republishes_exactly_its_sub(demo):
     W = demo
+    # 1.7.1 review: a Scan CrewTrac now with no CrewTrac login saved is answered ok false (press_answer), so the demo
+    # pilot has one here (made up) and his press is taken
+    W.OPTS.update(ctweb_username="doej", ctweb_password="ct pw")
     for batch in _batches(SAMPLES["accepted"]):
         W.MQ.msgs.clear()
         W.EXPORT["spool"].accepted.clear()

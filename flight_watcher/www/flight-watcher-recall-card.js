@@ -18,6 +18,8 @@
 // 1.7.1 (F#66): the alert card is the first card of the pilot portal's Watcher tab too; with no alert it takes no room.
 // (F#119) Text on the card's own colors keeps WCAG AA contrast (4.5:1) on light and dark cards: the error text is a
 // lighter red on a dark card (prefers-color-scheme, as the portal's dark mode), the CHECK and NO chips are darker.
+// 1.7.1 review: on a phone (700 px or less) every field, select and the CCR draft are 16 px: iOS Safari zooms into a
+// smaller one when it is tapped and leaves the page wider than the screen (as F#43 found for the pilot lookup).
 // FW-0060: a sensor's full list from its file under /local/ (<url><file_key>.json, the pilot's own www folder). Fetched
 // again whenever the sensor's rev changes; null until it is in (or when the sensor has no key), so the caller falls
 // back to the sensor's own short list. A failed fetch is not retried until rev changes.
@@ -142,6 +144,7 @@ class FlightWatcherRecallCard extends HTMLElement {
       .hw{margin:4px 0;padding:4px 8px;border-radius:6px;background:rgba(198,40,40,.10);border-left:4px solid #c62828;font-weight:600}
       .gate{display:block;margin:4px 0}.dn{color:var(--fw-err,#c62828);font-size:12px;margin:2px 0}.nerr{color:var(--fw-err,#c62828)}
       textarea{width:100%;min-height:150px;font:12px/1.4 var(--paper-font-body1_-_font-family,sans-serif);box-sizing:border-box;margin:6px 0}
+      @media (max-width:700px){input,select,textarea{font-size:16px}}
       pre.n{white-space:pre-wrap;font:12px/1.4 var(--paper-font-body1_-_font-family,sans-serif);margin:4px 0}
       .me{display:flex;gap:8px 12px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
       .me input[type=number]{width:70px}.mp{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:15px}.mp .nv{cursor:pointer;font:inherit;font-size:22px;color:var(--primary-color);padding:0 6px;user-select:none;min-width:44px;min-height:44px;border:1px solid var(--divider-color);border-radius:8px;background:none}.k{color:var(--secondary-text-color);font-size:12px}
