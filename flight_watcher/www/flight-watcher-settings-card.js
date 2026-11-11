@@ -20,7 +20,8 @@
    sets the longevity year of the pay estimates (PWA 3.B.1) and goes like the other non-secret fields (sealed when it
    can be, inside the sealed payload only in the portal). Checked here and again by the Watcher (fwDohWhy: YYYY-MM-DD, a
    real date, not after today HST, not before 1960). The Watcher keeps it in its own cards.json; a date of hire alone
-   does not restart it. */
+   does not restart it. 1.6.4 review: beside it the year pay uses (a year set in Pay settings wins, as on the schedule
+   card); the portal copy says the date is shown back on the page (state.json), so the portal can read it. */
 const FW_PORTAL = false;
 const FW_SET_FIELDS = [
   ["username", "FLICA username", false], ["password", "FLICA password", true],
@@ -106,7 +107,7 @@ class FlightWatcherSettingsCard extends HTMLElement {
     const doh = /^\d{4}-\d{2}-\d{2}$/.test(a.doh || "") ? a.doh : "";
     this._dohShown = doh;
     return `<label><span>Date of hire</span><input type="date" data-k="doh" min="${FW_DOH_MIN}" max="${fwHstToday()}" value="${this._e(doh)}"><b data-s="doh"></b></label>
-      <div class="note" id="dohnote">Your date of hire sets your longevity year for pay estimates (PWA 3.B.1); it stays on this Watcher only. Optional; a blank field keeps what is saved, and saving only a date of hire does not restart the Watcher.</div>`;
+      <div class="note" id="dohnote">Your date of hire sets your longevity year for pay estimates (PWA 3.B.1); ${FW_PORTAL ? "your Watcher keeps it and shows it back to you on this page, so unlike your logins the portal can read it" : "it stays on this Watcher only"}. Optional; a blank field keeps what is saved, and saving only a date of hire does not restart the Watcher.</div>`;
   }
   _gen() {  // 1.6.2: a new random topic, shown once until Save
     const root = this.shadowRoot;
@@ -137,7 +138,7 @@ class FlightWatcherSettingsCard extends HTMLElement {
       .ack{font-size:13px;flex-wrap:nowrap;align-items:flex-start}.ack input{flex:0 0 auto;min-width:0;width:22px;height:22px;margin:0}.topic{margin:8px 0;padding:8px;border-radius:6px;background:rgba(46,125,50,.12);font-size:13px;overflow-wrap:anywhere}
       .topic code{font-size:15px;user-select:all}button.g{background:#757575}button{min-height:44px;margin:4px 0}</style>
       <ha-card><div class="note">${FW_PORTAL
-        ? "Encrypted in your browser; only your Watcher can read it (the portal passes on ciphertext only). A blank field keeps what is saved. Saving restarts your Watcher (a date of hire alone does not); with a new FLICA login it logs in within a minute."
+        ? "Encrypted in your browser; only your Watcher can read it (the portal passes on ciphertext only). Your date of hire is shown back to you on this page, so the portal can read that one. A blank field keeps what is saved. Saving restarts your Watcher (a date of hire alone does not); with a new FLICA login it logs in within a minute."
         : "Saved on this Home Assistant only, encrypted before it leaves this screen. A blank field keeps what is saved. Saving restarts the Watcher (a date of hire alone does not); with a new FLICA login it logs in within a minute."}</div>
       ${rows}<button id="save">Save credentials</button><div class="msg" id="msg"></div>
       <div class="note" id="ct"></div><div class="note" id="who"></div></ha-card>`;
@@ -182,6 +183,8 @@ class FlightWatcherSettingsCard extends HTMLElement {
     if (FW_PORTAL) root.getElementById("save").disabled = !a.pubkey;
   }
   _dohStatus(a) {  // 1.6.4: the saved date of hire's longevity year beside the field; a new saved value fills an untouched field
+    // 1.6.4 review: the year pay uses, as the schedule card picks it: a longevity year set in Pay settings (the admin's
+    // helper, or one the pilot chose or kept) wins over the DOH; one still flagged unconfirmed yields to it
     const root = this.shadowRoot, inp = root.querySelector('input[data-k="doh"]'), b = root.querySelector('b[data-s="doh"]');
     if (typeof a.has_password !== "boolean") return;  // the Watcher restarting (no attributes): keep what is shown
     const doh = /^\d{4}-\d{2}-\d{2}$/.test(a.doh || "") ? a.doh : "";
@@ -189,7 +192,11 @@ class FlightWatcherSettingsCard extends HTMLElement {
     if (!b) return;
     const today = fwHstToday();
     b.className = doh ? "set" : "";
-    b.textContent = doh && doh <= today ? `longevity year ${Math.min(12, fwDohYear(doh, today))}` : "not set";
+    if (!(doh && doh <= today)) { b.textContent = "not set"; return; }
+    const dy = Math.min(12, fwDohYear(doh, today));
+    const ly = (this._h && this._h.states["input_number.flight_watcher_longevity_year"]) || {};
+    const py = (ly.attributes || {}).unconfirmed === true ? NaN : parseFloat(ly.state);
+    b.textContent = isNaN(py) ? `longevity year ${dy}` : `year ${dy} from this date; pay uses year ${py}, set in Pay settings`;
   }
   async _save(only) {
     const root = this.shadowRoot, msg = root.getElementById("msg");

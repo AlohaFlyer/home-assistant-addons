@@ -594,23 +594,24 @@ def settings_cmd(payload):
             log.info("settings: date of hire not saved: %s", type(e).__name__)
             publish_settings(creds=cur, result="refused: the date of hire could not be saved; nothing was saved")
             return False
-    if not changed and doh_new:  # 1.6.4: only the date of hire: no restart, the new state goes out at once
-        log.info("settings: date of hire saved (no restart needed)")
-        publish_settings(creds=cur, result="saved: date of hire (no restart needed)")
-        pub("state_attr", state_attrs(S.get("note", "")))
-        return True
     if not changed:
         again = ct_saved and crewtrac_lift()  # 1.6.1: the same CrewTrac details saved again: one more try
         fl_again = fl_saved and flica_lift()  # 1.6.2 review: the same for FLICA details FLICA refused
-        log.info("settings: nothing new (keys %s)", ", ".join(sorted(k for k in d if k in keys or k == "doh")) or
-                 "none")
-        publish_settings(creds=cur, result="nothing new" + ("; CrewTrac gets one more try with these details"
-                                                             if again else "") +
-                         ("; FLICA gets one more login try with these details" if fl_again else ""))
+        lifted = (("; CrewTrac gets one more try with these details" if again else "") +
+                  ("; FLICA gets one more login try with these details" if fl_again else ""))
+        if doh_new:  # 1.6.4: only the date of hire: no restart, the new state goes out at once (1.6.4 review: the
+            # same logins saved with it still lift their refusal blocks, as they do alone)
+            log.info("settings: date of hire saved (no restart needed)")
+            publish_settings(creds=cur, result="saved: date of hire (no restart needed)" + lifted)
+            pub("state_attr", state_attrs(S.get("note", "")))
+        else:
+            log.info("settings: nothing new (keys %s)", ", ".join(sorted(k for k in d if k in keys or k == "doh")) or
+                     "none")
+            publish_settings(creds=cur, result="nothing new" + lifted)
         if again:
             publish_charters()
             CHARTER_WAKE.set()
-        return False
+        return doh_new
     if doh_new:
         changed.append("date of hire")
     tmp = CREDS_FILE + ".tmp"

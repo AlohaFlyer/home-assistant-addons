@@ -138,6 +138,60 @@ def test_a_portal_pilots_sealed_date_of_hire_reaches_his_state_at_once(portal_pi
     assert {"sensor.flight_watcher_pilot2_state", "sensor.flight_watcher_pilot2_settings"} <= W.EXPORT["dirty"]
 
 
+# 1.6.4 review: a date of hire saved with the same logins again still lifts their refusal blocks, as they do alone
+FL_CREDS = {"username": "doej2", "password": "made-up pw 1", "ctweb_username": "doej2ct", "ctweb_password": "made-up 2"}
+
+
+def _refused(W, flica=True, crewtrac=True):
+    json.dump(FL_CREDS, open(W.CREDS_FILE, "w"))
+    W.OPTS.clear()
+    W.OPTS.update(W.load_opts())
+    if flica:
+        W.S["machine"], W.S["note"] = "stopped_login_failed", "x"
+        W.S["flica_refused"] = {"hash": W.flica_creds_hash(), "at": 1794400000.0}
+    if crewtrac:
+        W.DB.put("crewtrac_refused", {W.CH.creds_hash(FL_CREDS["ctweb_username"], FL_CREDS["ctweb_password"]): 1})
+    W.FLAGS["rearm"] = False
+    W.WAKE.clear()
+    W.CHARTER_WAKE.clear()
+
+
+@pytest.mark.parametrize("flica,crewtrac,tail", [
+    (True, True, "; CrewTrac gets one more try with these details; FLICA gets one more login try with these details"),
+    (True, False, "; FLICA gets one more login try with these details"),
+    (False, True, "; CrewTrac gets one more try with these details"),
+    (False, False, ""),
+])
+@pytest.mark.parametrize("sealed", [True, False])
+def test_the_same_logins_saved_with_a_date_of_hire_still_get_one_more_try(portal_pilot, monkeypatch, flica, crewtrac,
+                                                                          tail, sealed):
+    W, _, restarts = _watcher(portal_pilot, monkeypatch)
+    _refused(W, flica, crewtrac)
+    charters = []
+    monkeypatch.setattr(W, "publish_charters", lambda *a: charters.append(1))
+    msg = {**FL_CREDS, "doh": DOH}
+    assert W.settings_cmd(_sealed(W, msg) if sealed else json.dumps(msg)) is True
+    assert _result(W)["result"] == "saved: date of hire (no restart needed)" + tail
+    assert W.pilot_doh() == DOH and restarts == [] and W.load_creds() == FL_CREDS
+    assert "flica_refused" not in W.S and W.FLAGS["rearm"] is flica and W.WAKE.is_set() is flica  # lifted, or none
+    assert not W.DB.get("crewtrac_refused") and W.CHARTER_WAKE.is_set() is crewtrac
+    assert charters == ([1] if crewtrac else [])
+    if flica:  # the state attributes that go out at once say so too
+        attr = json.loads([p for t, p, *_ in W.MQ.raw.msgs if t == "flight_watcher_pilot2/state_attr"][-1])
+        assert attr["note"] == "FLICA details saved again: one more login try" and attr["doh"] == DOH
+
+
+def test_the_same_logins_alone_still_say_nothing_new(portal_pilot, monkeypatch):
+    """The nothing-new path is as in 1.6.3: the lifts, the words, no restart, False."""
+    W, _, restarts = _watcher(portal_pilot, monkeypatch)
+    _refused(W)
+    monkeypatch.setattr(W, "publish_charters", lambda *a: None)
+    assert W.settings_cmd(_sealed(W, FL_CREDS)) is False
+    assert _result(W)["result"] == ("nothing new; CrewTrac gets one more try with these details; FLICA gets one more "
+                                    "login try with these details")
+    assert "flica_refused" not in W.S and W.CHARTER_WAKE.is_set() and restarts == [] and W.pilot_doh() == ""
+
+
 # ---------------------------------------------------------------- the longevity year follows it
 def _prefs(W, values, unconfirmed):
     json.dump({"values": values, "updated": {k: "2026-11-09T20:14:01+00:00" for k in values},
@@ -195,10 +249,10 @@ def _settings_page(src):
             "window.calls = [];</script><script>" + src + "</script></body></html>")
 
 
-SETTINGS_JS = """async ([tag, ent, attrs, typed]) => { window.calls = [];
+SETTINGS_JS = """async ([tag, ent, attrs, typed, extra]) => { window.calls = [];
   const c = document.createElement(tag); c.setConfig({}); document.body.appendChild(c);
   const st = {state: 'True', attributes: attrs, last_updated: 'a'};
-  c.hass = {states: {[ent]: st}, callService: async (d, s, data) => window.calls.push([d, s, data])};
+  c.hass = {states: {[ent]: st, ...(extra || {})}, callService: async (d, s, data) => window.calls.push([d, s, data])};
   const r = c.shadowRoot, inp = r.querySelector('input[data-k="doh"]');
   const out = {type: inp.type, value: inp.value, min: inp.min, max: inp.max, status: r.querySelector('b[data-s="doh"]').textContent,
                note: r.getElementById('dohnote').textContent.replace(/\\s+/g, ' '), top: r.querySelector('.note').textContent,
@@ -275,6 +329,43 @@ def test_the_portal_copy_sends_the_date_sealed_only(tmp_path):
     assert empty["value"] == "" and empty["status"] == "not set"
     assert "Encrypted in your browser" in sealed["top"] and "a date of hire alone does not" in sealed["top"]
     assert "Home Assistant" not in sealed["note"]
+    # 1.6.4 review: the portal holds the date readable (state.json shows it back on his page), so the copy says so
+    assert sealed["note"] == ("Your date of hire sets your longevity year for pay estimates (PWA 3.B.1); your Watcher "
+                              "keeps it and shows it back to you on this page, so unlike your logins the portal can "
+                              "read it. Optional; a blank field keeps what is saved, and saving only a date of hire "
+                              "does not restart the Watcher.")
+    assert ("only your Watcher can read it (the portal passes on ciphertext only). Your date of hire is shown back to "
+            "you on this page, so the portal can read that one.") in sealed["top"]
+
+
+def _ly(prefix, state, unconfirmed=False):
+    return {f"input_number.{prefix}_longevity_year": {"state": state, "last_updated": "a",
+                                                      "attributes": {"unconfirmed": True} if unconfirmed else {}}}
+
+
+def test_the_status_says_which_longevity_year_pay_uses(tmp_path):
+    """1.6.4 review: a year set in Pay settings wins over the DOH (the admin's helper; a year the pilot chose or kept),
+    as on the schedule card and in the Watcher's pay figures, so the Settings card says that year is the one pay uses;
+    the DOH's own year alone only when the DOH decides it (no year set, or one still flagged unconfirmed)."""
+    _, info = _key(tmp_path)
+    base = {"has_password": True, "doh": DOH, **info}
+    picked = "year 8 from this date; pay uses year {}, set in Pay settings"
+    ent, tag = "sensor.flight_watcher_settings", "flight-watcher-settings-card"
+    helper, nohelper, unknown = _settings_run(_src("settings-card"), [
+        [tag, ent, base, None, _ly("flight_watcher", "6.0")], [tag, ent, base, None, {}],
+        [tag, ent, base, None, _ly("flight_watcher", "unavailable")]])
+    assert helper["status"] == picked.format(6) and helper["wide"] <= 390  # the admin's own helper
+    assert nohelper["status"] == unknown["status"] == "longevity year 8"
+    src = PT.portal_card(cards.build("1.6.4", ["pilot2"])["flight-watcher-settings-card-pilot2.js"])
+    P, ent, tag = "flight_watcher_pilot2", "sensor.flight_watcher_pilot2_settings", "flight-watcher-settings-card-pilot2"
+    chosen, kept1, flagged, unset, nodoh = _settings_run(src, [
+        [tag, ent, base, None, _ly(P, "5.0")], [tag, ent, base, None, _ly(P, "1.0")],
+        [tag, ent, base, None, _ly(P, "1.0", unconfirmed=True)], [tag, ent, base, None, _ly(P, "unknown")],
+        [tag, ent, {**base, "doh": ""}, None, _ly(P, "5.0")]])
+    assert chosen["status"] == picked.format(5) and chosen["wide"] <= 390
+    assert kept1["status"] == picked.format(1)  # year 1 confirmed with Keep these: it still wins, and the card says so
+    assert flagged["status"] == unset["status"] == "longevity year 8"  # the DOH decides
+    assert nodoh["status"] == "not set"
 
 
 def test_the_card_refuses_what_a_date_input_cannot_hold():

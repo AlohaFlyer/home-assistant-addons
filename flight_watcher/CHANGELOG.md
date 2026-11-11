@@ -27,6 +27,14 @@ pref was the one copied from a never-set helper (flagged unconfirmed in 1.6.2). 
   longevity" banner and Keep these leave longevity out once a DOH is saved. The admin's figures are unchanged (his
   longevity helper when set, else his DOH from `/data/cards.json`; his helper is never flagged): his schedule and pot
   cards render byte for byte as in 1.6.3 across helper, DOH and tax combinations.
+- Review fixes: (1) the Settings card's status beside the date says which year pay uses: "longevity year N" only when
+  the date decides it, else "year N from this date; pay uses year M, set in Pay settings" (the admin's helper, or a
+  year the pilot chose or kept, wins as on the schedule card). (2) A date of hire saved together with the same FLICA or
+  CrewTrac details again still lifts their refusal block for one more try, as those details alone do ("saved: date of
+  hire (no restart needed); FLICA gets one more login try with these details"); before, the date-only path returned
+  first and the block stayed on with no word. (3) The portal copy no longer says the date "stays on this Watcher
+  only": it is sealed on the way in but shown back on his page from the exported state, so the field note and the
+  header say the portal can read that one (the admin's HA card keeps the 1.6.4 wording).
 - Tests: `tests/test_doh_settings.py` (the field and what it sends, sealed only in the portal, in Chromium and Node;
   the Watcher's check, cards.json kept, no restart for a date alone, the longevity year from the DOH over an
   unconfirmed pref, a chosen year still winning, the admin's figures, the contract files unchanged). The admin's

@@ -138,8 +138,11 @@ The same card has a **Date of hire** field (1.6.4, optional): it sets the longev
 other non-secret fields (inside the sealed payload on the portal) and the Watcher checks it again (YYYY-MM-DD, a real
 date, not after today HST, not before 1960) and keeps it in its own `<data>/cards.json` (`doh`), the file
 `sensor.<prefix>_state` (attribute `doh`) and `sensor.<prefix>_settings` read it from. A date of hire alone restarts
-nothing: the new state goes out at once. A longevity year the pilot chose himself (Pay settings, or Keep these) still
-wins over it; one copied from a never-set helper (flagged unconfirmed in 1.6.2) yields to it.
+nothing: the new state goes out at once (the same logins saved with it still get their one more try). A longevity year
+the pilot chose himself (Pay settings, or Keep these) still wins over it; one copied from a never-set helper (flagged
+unconfirmed in 1.6.2) yields to it. Beside the field the card shows the year pay uses: the date's year, or "year N from
+this date; pay uses year M, set in Pay settings" when a set year wins. Sealed on the way in, the date is shown back on
+the pilot's page, so the portal can read it (the portal copy says so); a login or ntfy value it never can.
 
 ## Uploads on the dashboard (1.4.5; any user since 1.4.8)
 
