@@ -107,6 +107,22 @@ Watcher makes no CrewTrac login at all.
   its check had finished, the answer it gave), and the uploads card stops waiting 3 min after its last part.
 - A removed award is no longer a looked-up pilot's version .001 either (`pilotver.clear_award`).
 
+### The card loader picks up new cards on an open page (Ryan, Nov 12, in Sydney)
+
+- Ryan's phone showed "Configuration error" on the Working Flight page. The layover card's code and his data were
+  fine (it renders in Chromium with his live sensors): the phone app kept a page open from before 1.7.1, and the
+  loader imports the card list only once per page, so the card the dashboard asked for was never imported.
+- `cards.py` LOADER_JS now reads `flight-watcher-cards.json` again whenever the page comes back to the screen and
+  every 5 min, imports a card not imported yet, and tries a card whose import failed again (under `&r=<n>`, since a
+  browser keeps a failed module). A card already imported is never imported twice (`tests/test_cards_loader.py`
+  runs the real loader in Chromium against a fake `/local/`).
+- The phones hold the old loader up to 31 days (HA's `/local/` cache), so after this release is live the one
+  dashboard resource becomes `/local/flight-watcher-loader.js?v=1.7.2` (`ha/README.md`). Until then a full reload
+  of the app (pull down) fixes such a page. The Working Flight view also has the built-in markdown card and the
+  "Ready to update?" button back above the layover card (applied on Pako Nov 12), so it reads with no custom card.
+- James's portal is not affected: it loads its card bundle on every page load, and its Watcher tab uses the
+  working-flight card, which renders with his live export (checked Nov 12).
+
 ### Rollback to 1.7.1
 
 - 1.7.1 cannot read 1.7.2's HMAC-keyed CrewTrac records: it takes them for other details and lifts a refusal block, so

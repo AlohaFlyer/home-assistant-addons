@@ -646,7 +646,7 @@ def test_the_dashboard_snapshot_has_no_weather_view_and_matches_its_sha():
     # the snapshot's sha256 is in the README: the one the refresh checked on Pako (2026-11-12, with the layover card
     # applied, Pako and the snapshot are the same text)
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() in readme
-    assert "0e34d7986d52e77ff4c8685fe50fb3dcea85b4828117bc04428764a95327a5fa" in readme  # Pako's, read 2026-11-12
+    assert "3cb382788becf1c2349d2bbce68d0c0c4a004b8d0f5dc256adbcacbebe5e1566" in readme  # Pako's, read 2026-11-12 23:5x HST
     assert "lat=" not in text and "windy" not in text.lower()
     assert os.path.exists(os.path.join(ROOT, "ha", "packages", "flight_watcher_wx.yaml"))  # the wx package stays
     claude = open(os.path.join(ROOT, "CLAUDE.md"), encoding="utf-8").read()

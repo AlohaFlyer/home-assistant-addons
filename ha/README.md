@@ -55,16 +55,32 @@ only) by sha256 of the redacted text as in Refresh below:
    sample payload as "Commute: KOA/ITO (rpt 08:00)", "Value: 4617", "Fits 672 (92:55)". HA folded the template's
    long lines at other places; the snapshot now has HA's text (the same YAML value). Undo: the message without its
    last parts (the snapshot's git history).
-3. **Layover card** (FW-0072): `dashboard_flight_watcher.json`, view `flight` (Working Flight), whose one section is
-   now one card, `{"type": "custom:flight-watcher-layover-card", "grid_options": {"columns": "full"}, "update_url":
+3. **Layover card** (FW-0072): `dashboard_flight_watcher.json`, view `flight` (Working Flight), whose one section
+   was one card (until Nov 12, below), `{"type": "custom:flight-watcher-layover-card", "grid_options": {"columns": "full"}, "update_url":
    <Hark's project page, redacted here>}` in place of the markdown card and the "Ready to update?" button grid. Undo:
    the connector's edits backup of the dashboard (or the two cards from git history).
 
 The 20 automations here that are on Pako (all but the pending van time and pilot upload ones) match Pako's 20
 Flight Watcher automations (besides its temporary van one) in file order, sha256 of the redacted text of the 20
 items `d7d182583b6c9f4cf625927a24b0dc4944bfa8557e765d99cd07ba6244dec5a2`. The dashboard matches Pako's
-`/config/.storage/lovelace.flight_watcher`, sha256 `0e34d7986d52e77ff4c8685fe50fb3dcea85b4828117bc04428764a95327a5fa`
+`/config/.storage/lovelace.flight_watcher`, sha256 `3cb382788becf1c2349d2bbce68d0c0c4a004b8d0f5dc256adbcacbebe5e1566`
 (5 views: Watcher, Working Flight, Details, Recall/O75, Settings).
+
+**Changed on Pako 2026-11-12 about 22:55 HST (Ryan, in Sydney: "My flight page is not working ... Please get it
+going"):** his phone showed "Configuration error" where the layover card should be. The card's code and his data were
+fine (it renders in Chromium with his live sensors, no error): the phone app kept a page open from before 1.7.1, so
+the loader had never imported the card the dashboard now asked for. Claude put the built-in markdown card (the
+Working Flight template from before 1.7.1) and the "Ready to update?" button back at the top of the view, above the
+layover card, so the page shows the flight with no custom card at all; HA stored those two cards with sorted keys.
+The fix for the cause is the 1.7.2 loader (`cards.py` LOADER_JS: it reads the card list again when the page comes
+back to the screen and every 5 min). The dashboard matches Pako by sha256 of the redacted text (below). Undo: remove
+the first two cards of the view's section (the layover card stays).
+
+**Pending on Pako (1.7.2): the loader resource URL.** The one dashboard resource is `/local/flight-watcher-loader.js`
+with no version, and HA serves `/local/` with a 31-day cache, so a phone keeps the old loader. After Flight Watcher
+1.7.2 is live (it writes the new loader on start), Claude changes the resource URL to
+`/local/flight-watcher-loader.js?v=1.7.2` through the HA connector (not before: a phone would then cache the old
+loader under the new URL). Undo: the URL without `?v=`.
 
 **Changed on Pako 2026-11-11 by Ryan (the weather view removed):** Ryan deleted the Aviation Wx view (path `wx`) from
 his dashboard `flight-watcher`; its other five views are as they were. Nothing else was removed:

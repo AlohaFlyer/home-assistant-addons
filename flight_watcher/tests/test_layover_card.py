@@ -440,10 +440,16 @@ def test_the_dashboard_snapshot_puts_the_card_on_the_working_flight_view():
     d = json.loads(text)
     v = next(v for v in d["data"]["config"]["views"] if v.get("path") == "flight")
     assert v["title"] == "Working Flight" and v["icon"] == "mdi:airplane-takeoff"
-    assert [c for s in v["sections"] for c in s["cards"]] == [
-        {"grid_options": {"columns": "full"}, "type": "custom:flight-watcher-layover-card",
-         "update_url": "<redacted-hark-url>"}]  # the Ready to update? tile is gone; its link stays out of git
-    assert "hark.com/project" not in text and "Ready to update?" not in json.dumps(v)
+    cs = [c for s in v["sections"] for c in s["cards"]]
+    # Nov 12 (Ryan, in Sydney: the page said "Configuration error" on his phone): the built-in markdown card and the
+    # Ready to update? button are back above the layover card, so the page reads with no custom card at all
+    assert [c["type"] for c in cs] == ["markdown", "grid", "custom:flight-watcher-layover-card"]
+    assert "sensor.flight_watcher_working_flight" in cs[0]["content"] and "sensor.hark_working_flight" in cs[0]["content"]
+    assert cs[1]["cards"][0]["name"] == "Ready to update?"
+    assert cs[1]["cards"][0]["tap_action"] == {"action": "url", "url_path": "<redacted-hark-url>"}
+    assert cs[2] == {"grid_options": {"columns": "full"}, "type": "custom:flight-watcher-layover-card",
+                     "update_url": "<redacted-hark-url>"}
+    assert "hark.com/project" not in text  # Hark's project link stays out of git
     # the card ships with the app
     import cards
     assert "flight-watcher-layover-card.js" in json.loads(cards.build("1")[cards.MANIFEST])["cards"]
