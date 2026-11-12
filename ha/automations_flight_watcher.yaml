@@ -249,13 +249,13 @@
         '''' %}{% if v | string %}
 
         Value: {{ v }}{% endif %}{% set ns = namespace(t='''') %}{% for x in (p.month_rule
-        if p.month_rule is defined and p.month_rule else '''').split('', '') %}{% if
-        not ns.t and x.startswith((''Fits 672'', ''Over 98/672'', ''672 ?'')) %}{% set
-        ns.t = x %}{% endif %}{% endfor %}{% set b = p.b672 if p.b672 is defined and
-        p.b672 else '''' %}{% set ok = p.b672_ok if p.b672_ok is defined else '''' %}{%
-        if not ns.t and b and ok is sameas true %}{% set ns.t = ''Fits 672 ('' ~ b ~
-        '')'' %}{% elif not ns.t and b and ok is sameas false %}{% set ns.t =
-        ''Over 98/672 ('' ~ b ~ '')'' %}{% endif %}{% if ns.t %}
+        if p.month_rule is defined and p.month_rule else '''').split('', '') %}{%
+        if not ns.t and x.startswith((''Fits 672'', ''Over 98/672'', ''672 ?'')) %}{%
+        set ns.t = x %}{% endif %}{% endfor %}{% set b = p.b672 if p.b672 is defined
+        and p.b672 else '''' %}{% set ok = p.b672_ok if p.b672_ok is defined else
+        '''' %}{% if not ns.t and b and ok is sameas true %}{% set ns.t = ''Fits 672
+        ('' ~ b ~ '')'' %}{% elif not ns.t and b and ok is sameas false %}{% set ns.t
+        = ''Over 98/672 ('' ~ b ~ '')'' %}{% endif %}{% if ns.t %}
 
         {{ ns.t }}{% endif %}'
   - parallel:
@@ -1038,9 +1038,9 @@
           push:
             interruption-level: critical
             sound:
-              name: default
               critical: 1
-              volume: 1.0
+              name: default
+              volume: 1
           tag: flight_watcher_bid_calendar_{{ p.key }}
         message: '{{ p.message }}'
         title: '{{ p.title }}'
@@ -1051,9 +1051,9 @@
           push:
             interruption-level: critical
             sound:
-              name: default
               critical: 1
-              volume: 1.0
+              name: default
+              volume: 1
           tag: flight_watcher_bid_calendar_{{ p.key }}
         message: '{{ p.message }}'
         title: '{{ p.title }}'

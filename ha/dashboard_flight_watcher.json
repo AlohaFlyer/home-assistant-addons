@@ -254,16 +254,16 @@
           "path": "flight",
           "sections": [
             {
+              "type": "grid",
               "cards": [
                 {
+                  "type": "custom:flight-watcher-layover-card",
                   "grid_options": {
                     "columns": "full"
                   },
-                  "type": "custom:flight-watcher-layover-card",
                   "update_url": "<redacted-hark-url>"
                 }
-              ],
-              "type": "grid"
+              ]
             }
           ],
           "title": "Working Flight",

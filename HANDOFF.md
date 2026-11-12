@@ -1,6 +1,6 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-12, release 1.7.1 live; 1.7.2 (portal contract 1 revision 3, pilot PDF uploads) built on branch fw-1.7.2 on top of 1.7.1, not pushed or deployed)
+# HANDOFF: Flight Watcher (refreshed 2026-11-12, release 1.7.1 live; 1.7.2 (portal contract 1 revision 3, pilot PDF uploads) on its PR on top of 1.7.1, not deployed)
 
-State: app **1.7.0** on Pako HI (1.7.0 Release C, tickets on the pilot portal, contract 1 revision 2; **1.7.1** built, not pushed or deployed, CHANGELOG 1.7.1 and item 11: pilot read shares (LIVE-1), ignored presses answer why, Re-arm by state, the export heartbeat, the admin forwards recall lists, the card fixes F#4 to F#155, FW-0070 bid calendar alerts, Ryan's Nov 11 decisions, FW-0042 part 2 (no credit cap, 98 h in 672 h), FW-0071 ticket paste, FW-0072 layover card and van alerts with the van time from the pairings package first; 1.6.4 Date of hire field Nov 11, 1.6.3 schedule card package credit Nov 11, 1.6.1 CrewTrac stop and schedule backoff Nov 10, 1.6.2 Release A Nov 10, 1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
+State: app **1.7.1** on Pako HI since 2026-11-11 23:50 UTC (both instances; its Pako edits applied: bid calendar automation, new pairing push text, layover card, `ha/README.md`; the van time automation follows the Nov 11 temporary one), on top of 1.7.0 Release C (tickets on the pilot portal, contract 1 revision 2); **1.7.2** (contract 1 revision 3, pilot PDF uploads) on its PR, not deployed. CHANGELOG 1.7.1 and item 11: pilot read shares (LIVE-1), ignored presses answer why, Re-arm by state, the export heartbeat, the admin forwards recall lists, the card fixes F#4 to F#155, FW-0070 bid calendar alerts, Ryan's Nov 11 decisions, FW-0042 part 2 (no credit cap, 98 h in 672 h), FW-0071 ticket paste, FW-0072 layover card and van alerts with the van time from the pairings package first; 1.6.4 Date of hire field Nov 11, 1.6.3 schedule card package credit Nov 11, 1.6.1 CrewTrac stop and schedule backoff Nov 10, 1.6.2 Release A Nov 10, 1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
 per pilot Nov 8, 1.4.10 FW-0068 crew index finds FLICA-rebuilt pairings like H3631B Nov 9, 1.4.11 FW-0069 schedule versions
 for looked-up pilots on the pilot card Nov 9 (`pilotver.py`, list file `pilotver_<key>.json`), 1.4.12 the probe reads
 every rebuilt copy until all pilot seats are named Nov 9, 1.4.13 FW-0042 comm / month rule / value from
@@ -99,7 +99,7 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
    finds files, `last_new` and `event/new_pairing`, not on the finds, pot or Tradeboard sensors; not deployed yet).
    It needs `/share/flight_watcher/smart.json` on Pako (Hark's tables, never in git; blank fields without it) and a
    separate HA step to use the fields in the new-pairing push (CHANGELOG 1.4.13; Ryan Nov 11: show only, the Commute
-   and Value lines are in the snapshot, pending on Pako, item 11). Comm or Value in the pot_table
+   and Value lines, applied on Pako Nov 11, item 11). Comm or Value in the pot_table
    macro needs a Watcher release that puts the fields back on `pot/state` (12 KB cap) as well as the macro edit.
    Hark to confirm the overnight-release cut-off (a release from midnight to 05:00 has no same-day home;
    `home_day_start` in smart.json moves it). FW-0042 part 2 (1.7.1, branch fw171-cap, Ryan's rule of Nov 9): the 90 h
@@ -223,7 +223,7 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
     no alert or push for them (built in 1.7.1).
   - FW-0034: FLICA's alert email is the close-in channel.
   - FW-0042 is show only: the new-pairing push gains the commute result and the value (Commute and Value lines);
-    nothing is silenced by them (the HA edit is in `ha/automations_flight_watcher.yaml`, pending on Pako). The 98 h
+    nothing is silenced by them (the HA edit is in `ha/automations_flight_watcher.yaml`, applied on Pako Nov 11). The 98 h
     in 672 h tag joins them, show only too (1.7.1).
   - FW-0072 van times: "van times are published in the pairings pack monthly and can be updated from time to time".
     The van alerts and the layover card take the package's VAN for the layover first (not 00:00), then Hark's van
