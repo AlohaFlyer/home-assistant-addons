@@ -61,6 +61,13 @@ class FlightWatcherLayoverCard extends HTMLElement {
   _https(u) { return /^https:\/\/[A-Za-z0-9.-]+(?::\d+)?(\/[^\s"<>]*)?$/.test(String(u || "")) ? String(u) : ""; }
   _link(u, t, cls) { const h = this._https(u); return h ? `<a${cls ? ` class="${cls}"` : ""} href="${this._e(h)}" target="_blank" rel="noopener noreferrer">${t}</a>` : ""; }
   _st(id) { return this._h && this._h.states[id]; }
+  // Ryan, Nov 12: "Gin code should be on its own line so it doesn't get cut off." Hark writes "HNL gate C5 (Non-Mauka):
+  // *-2-1-1-7-3-1-4-5-2-#": the place stays on the label's line and the code gets a line of its own, never broken
+  _gin(label, v) {
+    const s = String(v || ""), i = s.lastIndexOf(": ");
+    const where = i >= 0 ? s.slice(0, i) : "", code = i >= 0 ? s.slice(i + 2) : s;
+    return `<div class="gin"><b>${label}:</b>${where ? ` ${this._e(where)}` : ""}<br><code>${this._e(code)}</code></div>`;
+  }
   // layover._base_id / same_pairing: H3681B (FLICA rebuilt it) is the same trip as H3681
   _base(p) { const s = String(p || "").trim().toUpperCase(); return /^[A-Z]\d{3,5}[A-Z]$/.test(s) ? s.slice(0, -1) : s; }
   _same(x, y) { const a = this._base(x); return !!a && a === this._base(y); }
@@ -349,7 +356,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
       const rel = !(hark || relUrl || a.gin_dep || a.gin_arr) ? `<div class="u rl" data-rel>${relLine}</div>`
         : `<details class="rel" data-rel data-k="rel"${this._open.rel ? " open" : ""}><summary class="${hark && !a.release_updated ? "wn" : ""}">${relLine}</summary>
         ${relUrl ? `<div>${this._link(relUrl, "&#128196; Release")}</div>` : ""}
-        ${a.gin_dep ? `<div><b>GIN dep:</b> <code>${this._e(a.gin_dep)}</code></div>` : ""}${a.gin_arr ? `<div><b>GIN arr:</b> <code>${this._e(a.gin_arr)}</code></div>` : ""}
+        ${a.gin_dep ? this._gin("GIN dep", a.gin_dep) : ""}${a.gin_arr ? this._gin("GIN arr", a.gin_arr) : ""}
         ${hark ? `<div class="bh">MEL</div><ul>${mel.map((x) => `<li>${this._e(x)}</li>`).join("") || "<li>None listed</li>"}</ul>
         <div class="bh">NOTAMs</div><ul>${notam.map((x) => `<li>${this._e(x)}</li>`).join("") || "<li>None listed</li>"}</ul>` : ""}</details>`;
       let lay = "";
@@ -384,7 +391,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
     const notes = n ? this._notesHtml(n, city) : "";
     const foot = a.updated ? `<div class="u ft">Updated ${this._e(a.updated)}${a.updated_by ? ` by ${this._e(a.updated_by)}` : ""}${a.next ? ` &middot; Next: ${this._e(a.next)}` : ""}</div>` : "";
     r0.innerHTML = `<style>
-      :host{display:block}
+      :host{display:block} .gin code{white-space:nowrap;display:inline-block;max-width:100%;overflow-x:auto;vertical-align:bottom}
       ha-card{padding:12px 14px;font-size:14px;line-height:1.4;color:var(--primary-text-color);overflow-wrap:anywhere}
       .u{color:var(--secondary-text-color);font-size:12px}
       .warn{color:#fff;background:#b71c1c;border-radius:6px;padding:4px 8px;margin:4px 0;font-size:12px;font-weight:600}

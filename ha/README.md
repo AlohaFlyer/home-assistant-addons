@@ -102,10 +102,15 @@ The 22 automations here that are on Pako (all but the pending pilot upload one) 
 automations (besides its disabled temporary van one) in file order, sha256 of the redacted text of the 22 items
 `0f677ba7a3118ff682acc82907d4fc02e4f062d5b25bfa0007395f50ea9084c3` (read 2026-11-12 02:2x HST). The dashboard snapshot
 matched Pako's `/config/.storage/lovelace.flight_watcher`, sha256
-`0e12f42634beafd0eb476743edd795ac78644b30cc41581876fa9000e8341480` (5 views: Watcher, Working Flight, Details,
-Recall/O75, Settings), until the pending van alert settings edit (above): the snapshot is now ahead of Pako by that
-edit alone, sha256 `ddd32c46c24a4d59e6a9140a80f245ffb6fce11afee089e0fa8eee9fd3aede89`, and Pako matches it again once
-the edit is applied.
+`8ecbf39743ce49951ffc08cdaf2379c061de3207115d72dfd2f3d729e093c8fd` (5 views: Watcher, Working Flight, Details,
+Recall/O75, Settings; read 2026-11-12 03:4x HST, with the GIN line edit below), until the pending van alert settings
+edit (above): the snapshot is now ahead of Pako by that edit alone, sha256
+`3bfd73bcdc798df66a79c0ecf1cb63f6f2dcae271f814f2a890f6ac991000d7e`, and Pako matches it again once the edit is applied.
+
+**Changed on Pako 2026-11-12 about 03:30 HST (Ryan: "Gin code should be on its own line so it doesn't get cut
+off"):** the Working Flight markdown card shows `GIN dep` and `GIN arr` as the label and place, then the code alone
+on the next line (`rsplit(': ', 1)` of Hark's text, `<br>`, the code in backticks). Undo: the two lines from git
+history.
 
 **Changed on Pako 2026-11-12 about 22:55 HST (Ryan, in Sydney: "My flight page is not working ... Please get it
 going"):** his phone showed "Configuration error" where the layover card should be. The card's code and his data were

@@ -504,3 +504,30 @@ def test_with_no_van_time_the_card_says_it_is_not_known(browser, tmp_path):
     pg.evaluate("(p) => window.setStates(p)", {"sensor.flight_watcher_working_flight": st["sensor.flight_watcher_working_flight"]})
     assert card.locator("[data-vanunknown]").count() == 0
     pg.close()
+
+
+# ---------------------------------------------------------------- Nov 12: the GIN code on its own line (Ryan)
+def test_the_gin_code_has_a_line_of_its_own_at_390(browser, tmp_path):
+    """Ryan, Nov 12: "Gin code should be on its own line so it doesn't get cut off." The place stays after the label,
+    the code goes under it on one unbroken line; a code with no place shows alone under its label."""
+    a = _hark_full()
+    a.update({"gin_arr": "HNL gate C5 (Non-Mauka): *-2-1-1-7-3-1-4-5-2-#", "gin_dep": "4-4-2-#", "release_updated": True,
+              "mel": ["Example MEL item"], "notam": ["Example NOTAM"]})
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(_states(tmp_path, hark_attrs=a)))
+    card = pg.locator("flight-watcher-layover-card")
+    card.locator("details.rel summary").click()
+    arr = card.locator(".gin", has_text="GIN arr:")
+    assert arr.locator("b").inner_text() == "GIN arr:"
+    assert "HNL gate C5 (Non-Mauka)" in arr.inner_text() and ": *" not in arr.inner_text()
+    code = arr.locator("code")
+    assert code.inner_text() == "*-2-1-1-7-3-1-4-5-2-#"
+    lb, cb = arr.locator("b").bounding_box(), code.bounding_box()
+    assert cb["y"] >= lb["y"] + lb["height"] - 1  # under the label, on its own line
+    line_h = pg.evaluate("(e) => parseFloat(getComputedStyle(e).lineHeight) || parseFloat(getComputedStyle(e).fontSize) * 1.4",
+                         code.element_handle())
+    assert cb["height"] <= line_h * 1.6  # one line, never broken inside the code
+    assert cb["x"] + cb["width"] <= card.bounding_box()["x"] + card.bounding_box()["width"] + 1  # inside the card
+    dep = card.locator(".gin", has_text="GIN dep:")
+    assert dep.locator("code").inner_text() == "4-4-2-#"
+    pg.close()

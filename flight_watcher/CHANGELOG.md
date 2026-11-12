@@ -198,6 +198,12 @@ Watcher makes no CrewTrac login at all.
   rule, bounded keys, roles and the contract, the card at 390 px with the Watcher unavailable, away from the page and
   by keyboard, the Settings tiles).
 
+### The GIN code on its own line (Ryan, Nov 12)
+
+- "Gin code should be on its own line so it doesn't get cut off." The layover card shows Hark's GIN as the label and
+  place ("GIN arr: HNL gate C5 (Non-Mauka)") with the code under it on one unbroken line (`_gin`,
+  tests/test_layover_card.py). The same change is live on Pako in the Working Flight view's markdown card.
+
 ### Rollback to 1.7.1
 
 - 1.7.1 cannot read 1.7.2's HMAC-keyed CrewTrac records: it takes them for other details and lifts a refusal block, so
