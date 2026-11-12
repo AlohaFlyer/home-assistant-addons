@@ -1061,12 +1061,12 @@
   mode: queued
 - id: '1794426120072'
   alias: Flight Watcher van time
-  description: 'FW-0072 (Ryan, 1.7.1): the Watcher''s van alerts (layover.py), 30 and
-    10 min before the van at the layover station: the pairings package''s VAN for
-    that layover when it gives one, else Hark''s working flight. One push per alert,
-    critical like the charter alert: "Van in 30 min: 19:40 AEDT (22:40 HST), <hotel>
-    lobby". Push isolation (FW-0038): Ryan''s prefix only, to Ryan''s phones only;
-    only the admin''s Watcher sends van alerts.'
+  description: 'FW-0072 (Ryan, 1.7.1): the Watcher''s van alerts (layover.py), 30
+    and 10 min before the van at the layover station: the pairings package''s VAN
+    for that layover when it gives one, else Hark''s working flight. One push per
+    alert, critical like the charter alert: "Van in 30 min: 19:40 AEDT (22:40 HST),
+    <hotel> lobby". Push isolation (FW-0038): Ryan''s prefix only, to Ryan''s phones
+    only; only the admin''s Watcher sends van alerts.'
   triggers:
   - topic: flight_watcher/event/van
     trigger: mqtt
@@ -1081,9 +1081,9 @@
           push:
             interruption-level: critical
             sound:
-              name: default
               critical: 1
-              volume: 1.0
+              name: default
+              volume: 1
           tag: flight_watcher_van_{{ p.minutes }}
         message: '{{ p.message }}'
         title: '{{ p.title }}'
@@ -1094,9 +1094,9 @@
           push:
             interruption-level: critical
             sound:
-              name: default
               critical: 1
-              volume: 1.0
+              name: default
+              volume: 1
           tag: flight_watcher_van_{{ p.minutes }}
         message: '{{ p.message }}'
         title: '{{ p.title }}'

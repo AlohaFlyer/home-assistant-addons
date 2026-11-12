@@ -21,20 +21,20 @@ Watcher takes. The guard passes and counts it (`python3 ha/check_push_isolation.
 notification-action handlers, 0 offenders). Then check by sha256 of the redacted text as in Refresh below and drop
 this section. Undo: delete the automation (its id above); Ryan's Settings uploads card still has the buttons.
 
-## Pending on Pako (1.7.1, FW-0072): "Flight Watcher van time"
+## Applied on Pako 2026-11-12 about 23:58 HST (1.7.1, FW-0072): "Flight Watcher van time"
 
-`automations_flight_watcher.yaml` has **Flight Watcher van time** (id `1794426120072`) after the bid calendar one,
-not on Pako yet (the van from the pairings package's VAN when it gives one, else Hark's working flight: the Watcher
-decides, the automation only pushes). Triggered by `flight_watcher/event/van` only (never a pilot's prefix), it sends
-the payload's `title` ("Van SYD 19:40 AEDT") and `message` ("Van in 30 min: 19:40 AEDT (22:40 HST), <place>") as a
-critical push (sound `default`, `critical: 1`, `volume: 1.0`, tag `flight_watcher_van_<minutes>`) to
-`notify.mobile_app_ryans_iphone` and `notify.mobile_app_ryans_iphone_16`, exactly like "Flight Watcher charter".
-Not in the snapshot and not part of the release: **Flight Watcher van time (temporary, FW-0072)** (id
-`1794429970349`), which Claude made on Pako on Nov 11 with Ryan's yes for that night's Sydney van (template triggers
-on Hark's state, SYD only). Claude deletes it after that van and then applies this one through the HA connector, so
-Ryan never gets the van pushed twice; then checks by sha256 of the redacted text as in Refresh below (HA writes the
-sound keys sorted and `volume: 1`, so the refreshed text replaces this one) and drops this section. Undo: delete it
-(its id above). The guard passes with it (`python3 ha/check_push_isolation.py`).
+`automations_flight_watcher.yaml` has **Flight Watcher van time** (id `1794426120072`) after the bid calendar one
+(the van from the pairings package's VAN when it gives one, else Hark's working flight: the Watcher decides, the
+automation only pushes). Triggered by `flight_watcher/event/van` only (never a pilot's prefix; the event is not
+retained, so adding it pushed nothing old), it sends the payload's `title` and `message` as a critical push (sound
+`default`, tag `flight_watcher_van_<minutes>`) to `notify.mobile_app_ryans_iphone` and
+`notify.mobile_app_ryans_iphone_16`, exactly like "Flight Watcher charter". HA wrote its sound keys sorted, `volume:
+1` and its own description wrap; the snapshot has HA's text. Undo: delete it (its id above).
+
+Not in the snapshot: **Flight Watcher van time (temporary, FW-0072)** (id `1794429970349`), made Nov 11 with Ryan's yes
+for that night's Sydney van. Its two pushes went out at 22:10 and 22:30 HST to both iPhones (traces checked, no
+error). It is **disabled** (not deleted) so the van is never pushed twice; deleting it waits for Ryan's tap on the
+delete prompt (the first one was interrupted). The guard passes (`python3 ha/check_push_isolation.py`).
 
 ## Applied on Pako 2026-11-11 (1.7.1): bid calendar, new pairing text, layover card
 
@@ -60,9 +60,9 @@ only) by sha256 of the redacted text as in Refresh below:
    <Hark's project page, redacted here>}` in place of the markdown card and the "Ready to update?" button grid. Undo:
    the connector's edits backup of the dashboard (or the two cards from git history).
 
-The 20 automations here that are on Pako (all but the pending van time and pilot upload ones) match Pako's 20
-Flight Watcher automations (besides its temporary van one) in file order, sha256 of the redacted text of the 20
-items `d7d182583b6c9f4cf625927a24b0dc4944bfa8557e765d99cd07ba6244dec5a2`. The dashboard matches Pako's
+The 21 automations here that are on Pako (all but the pending pilot upload one) match Pako's 21 Flight Watcher
+automations (besides its disabled temporary van one) in file order, sha256 of the redacted text of the 21 items
+`920b27236b8e0c43a2094be2e9d0237b45497809ccbd9393848a8d4e17a46e25` (read 2026-11-12 23:59 HST). The dashboard matches Pako's
 `/config/.storage/lovelace.flight_watcher`, sha256 `3cb382788becf1c2349d2bbce68d0c0c4a004b8d0f5dc256adbcacbebe5e1566`
 (5 views: Watcher, Working Flight, Details, Recall/O75, Settings).
 
@@ -172,7 +172,7 @@ household users (four, a guest login among them) can open `flight-watcher-james`
 
 | File | Live copy on Pako |
 |:--|:--|
-| `automations_flight_watcher.yaml` | `/config/automations.yaml`: the automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order (read 2026-11-12: 20 on Pako besides its temporary van automation; 22 here with the pending van time and pilot upload ones, above) |
+| `automations_flight_watcher.yaml` | `/config/automations.yaml`: the automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order (read 2026-11-12 23:59 HST: 21 on Pako besides its disabled temporary van automation; 22 here with the pending pilot upload one, above) |
 | `dashboard_flight_watcher.json` | `/config/.storage/lovelace.flight_watcher` (dashboard `flight-watcher`) |
 | `packages/flight_watcher_wx.yaml` | `/config/packages/flight_watcher_wx.yaml` |
 | `check_push_isolation.py` | the push-isolation guard (below) |
