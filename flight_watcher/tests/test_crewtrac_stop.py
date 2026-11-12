@@ -176,9 +176,13 @@ def test_refusal_text_and_backoff_steps():
         assert not CH.refused(t), t
     assert [CH.backoff_s(n) for n in range(1, 8)] == [1800, 3600, 7200, 14400, 21600, 21600, 21600]
     assert CH.backoff_s(10 ** 6) == 6 * 3600
-    h = CH.creds_hash(USER, BAD)
-    assert len(h) == 64 and USER not in h and h != CH.creds_hash(USER, BAD + " ")
-    assert h != CH.creds_hash(USER + "1", BAD)  # the user name is part of the key too
+    key = bytes(range(32))  # 1.7.2: HMAC with the instance's key (a made-up one here)
+    h = CH.creds_hash(USER, BAD, key)
+    assert len(h) == 64 and USER not in h and h != CH.creds_hash(USER, BAD + " ", key)
+    assert h != CH.creds_hash(USER + "1", BAD, key)  # the user name is part of the key too
+    assert h != CH.creds_hash(USER, BAD, bytes(32)) and h != CH.legacy_hash(USER, BAD)  # the key is part of it
+    with pytest.raises(ValueError):
+        CH.creds_hash(USER, BAD, b"short")
 
 
 def test_a_pilot_never_logs_in_to_crewtrac(load):
@@ -203,7 +207,7 @@ def test_a_refusal_blocks_every_later_login_until_new_details(load, caplog):
         assert W.charter_scan() is False
     assert len(ct.logins()) == 1
     rec = W.DB.get("crewtrac")
-    assert rec["state"] == "refused" and rec["block"] == CH.creds_hash(USER, BAD) == rec["creds"]
+    assert rec["state"] == "refused" and rec["block"] == W.crewtrac_hash(USER, BAD) == rec["creds"]
     assert BAD not in json.dumps(rec) and USER not in json.dumps(rec)  # a hash, never the values
     last = W.MQ.charters("flight_watcher")[-1]
     assert last["status"] == ("CrewTrac refused your user ID or password at 08:05 HST. No more tries until you save "
@@ -233,7 +237,7 @@ def test_a_refusal_blocks_every_later_login_until_new_details(load, caplog):
     assert W.OPTS["ctweb_password"] == GOOD
     assert W.charter_wait() == 0  # due now (no scan yet)
     rec = W.DB.get("crewtrac")
-    assert not rec.get("block") and rec["state"] == "" and rec["creds"] == CH.creds_hash(USER, GOOD)
+    assert not rec.get("block") and rec["state"] == "" and rec["creds"] == W.crewtrac_hash(USER, GOOD)
     assert W.DB.get("charter_status") == "New CrewTrac details saved: the next scan tries them."
     assert W.charter_press() is True  # the first press after new details is never held by the gap
     W.CHARTER_WAKE = FakeEvent()
@@ -248,7 +252,7 @@ def test_a_refusal_after_new_details_blocks_those_too(load):
     W.charter_scan()
     W.OPTS["ctweb_password"] = BAD + "2"  # other details in use (as after a restart)
     assert W.charter_wait() == 0 and W.charter_scan() is False and len(ct.logins()) == 2
-    assert W.DB.get("crewtrac")["block"] == CH.creds_hash(USER, BAD + "2")
+    assert W.DB.get("crewtrac")["block"] == W.crewtrac_hash(USER, BAD + "2")
     assert W.charter_scan() is False and len(ct.logins()) == 2
 
 
@@ -477,7 +481,7 @@ def test_the_login_form_back_twice_is_a_refusal_and_presses_wait_for_it(load):
     assert len(ct.logins()) == 1 and not W.CHARTER_WAKE.is_set()
     assert W.charter_scan() is False and len(ct.logins()) == 2  # the timer's try
     rec = W.DB.get("crewtrac")
-    assert rec["state"] == "refused" and rec["block"] == CH.creds_hash(USER, BAD) and W.charter_wait() is None
+    assert rec["state"] == "refused" and rec["block"] == W.crewtrac_hash(USER, BAD) and W.charter_wait() is None
     for _ in range(72):  # three days of timer turns and presses: nothing more is sent
         W.charter_scan()
         W.charter_press()

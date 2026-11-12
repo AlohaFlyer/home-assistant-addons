@@ -58,7 +58,8 @@ def test_uploads_list_and_upload(srv, tmp_path):
     assert json.loads(data) == {"files": [], "seniority": None, "contacts": None, "version": "9.9.9",
                                 "max_bytes": web.INGRESS_MAX, "mqtt_max_bytes": web.UPLOAD_MAX,
                                 "wanted": [{"kind": "pairings", "month": "2026-10", "why": "previous"},
-                                           {"kind": "pairings", "month": "2026-11", "why": "current"}]}
+                                           {"kind": "pairings", "month": "2026-11", "why": "current"}],
+                                "pilot_uploads": []}  # 1.7.2 (FW-0066): the admin's Web UI lists pilots' uploads
     st, ct, data = _post(srv, {"kind": "pairings", "month": "2026-12"})
     r = json.loads(data)
     assert (st, r["ok"], r["file"], r["message"]) == (200, True, "2026-12_pairings.pdf", "Saved 2026-12_pairings.pdf (0 KB).")

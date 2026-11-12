@@ -19,6 +19,10 @@ URL (no Click header either), ticket text, report times or rule ids. With a toke
 
 1.7.0 (Release C): the ticket_fixed alert (the pilot's own ticket moved to fixed) carries only the ticket id(s) and the
 version, with a token or without (plain_text); never a ticket's title or text. Priority 2 (quiet).
+
+1.7.2 (contract 1 revision 3): the bid calendar alert carries the admin's push words (only dates and what to do,
+bidcal.alert_text from its own fields, each in its own shape), and a schedule not read says for how long (a whole number
+of hours); with a token or without. Never a ticket's or a crew member's text.
 """
 import collections
 import logging
@@ -29,6 +33,8 @@ import time
 import unicodedata
 
 import requests
+
+import bidcal
 
 HOST = "https://ntfy.sh"
 TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -99,7 +105,8 @@ def valid(topic, token=None):
 KIND_WORDS = {"new_pairing": "New pairing", "rule_match": "Rule match", "recall_miss": "Recall/O75 to check",
               "request_decided": "Request decided", "schedule_changed": "Schedule changed", "charter": "Charter",
               "hidden": "Hidden trip?", "needs_settings": "Flight Watcher needs your FLICA login",
-              "stopped_*": "Flight Watcher stopped", "ticket_fixed": "Ticket fixed"}
+              "stopped_*": "Flight Watcher stopped", "ticket_fixed": "Ticket fixed", "bid_calendar": "Bid calendar",
+              "schedule_unread": "Schedule not read"}
 TICKET_RE = re.compile(r"^FW-\d{4,6}$")
 VERSION_RE = re.compile(r"^\d{1,3}(?:\.\d{1,4}){1,3}$")
 PAIRING_RE = re.compile(r"^[A-Z]\d{4}[A-Z]?$")
@@ -119,6 +126,13 @@ def plain_text(rec):
         title = " ".join(x for x in ("Ticket", ", ".join(ids), "fixed", f"in {ver}" if VERSION_RE.fullmatch(ver)
                                       else "") if x)
         return title, "Open the Tickets tab of your Flight Watcher portal to check it."
+    if kind == "bid_calendar":  # 1.7.2: the admin's push words, rebuilt from the alert's own fields (dates only)
+        return bidcal.alert_text(d) or ("Bid calendar", "Open your Flight Watcher portal for the bid calendar.")
+    if kind == "schedule_unread":  # 1.7.2: a whole number of hours, nothing else
+        h = d.get("hours")
+        ok = isinstance(h, int) and not isinstance(h, bool) and 0 < h < 10000
+        return (f"Schedule not read for {h} h" if ok else "Schedule not read",
+                "Open the Schedule tab of your Flight Watcher portal to see why.")
     pid = str(d.get("pairing") or "")
     when = next((str(d[k]) for k in ("dates", "start", "date", "month") if WHEN_RE.fullmatch(str(d.get(k) or ""))), "")
     fit = str(d.get("fit") or "")

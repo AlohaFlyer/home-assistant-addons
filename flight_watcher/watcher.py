@@ -5,6 +5,7 @@ A failed login, or anything unexpected, parks the watcher until re-armed from HA
 FLICA is read only: rules match and log, nothing is ever submitted to FLICA.
 """
 import collections
+import contextlib
 import hashlib
 import json
 import logging
@@ -12,7 +13,10 @@ import math
 import os
 import random
 import re
+import secrets
+import shutil
 import stat
+import tempfile
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -57,8 +61,9 @@ import captures as CAPS
 import photos as PH
 import bidcal as BC
 import layover as LO
+import pilotpdf as PP
 
-VERSION = "1.7.1"
+VERSION = "1.7.2"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -325,6 +330,12 @@ def on_message(c, u, msg):
         return
     if msg.topic == f"{T}/upload/chunk":
         upload_chunk(msg.payload)
+        return
+    if msg.topic == f"{T}/upload/pdf":  # 1.7.2 (FW-0066): a portal pilot only (roles.PORTAL_SUBS)
+        pilot_upload_chunk(msg.payload)
+        return
+    if msg.topic == f"{T}/upload/decide":  # 1.7.2 (FW-0066): the admin only (roles: upload_review)
+        upload_decide_cmd(msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/layover/note":  # 1.7.1 (FW-0072): the admin only (roles: one_writer)
         layover_note_cmd(msg.payload.decode(errors="replace"))
@@ -3041,12 +3052,26 @@ def finds_dir():
     return os.path.join(CARD_PAIRINGS, INSTANCE) if INSTANCE else CARD_PAIRINGS
 
 
+UPLOADS_LOCK = threading.RLock()  # 1.7.2: the main loop and the uploads janitor both run uploads_check
+
+
 def uploads_check():
     """0.9.1 (Ryan): parse the monthly PDFs uploaded on the Web UI (text copies made by pdftotext). Pairings
     package -> the schedule card's pairing file (www/flight-watcher/pairings_<YYYY-MM>.json) and trip details; award ->
     this month's version .001. Each file is handled again only when it changes. No FLICA traffic.
     FW-0062: the seniority list is parsed by the Web UI as it is uploaded; seniority_refresh re-reads it after a
-    parser change."""
+    parser change. 1.7.2 (FW-0066): a file whose generation changed (a pilot's upload, the admin's approve or remove:
+    upload_gens_check) is read again, or forgotten when it is gone. Only the shared uploads folder is read: never the
+    quarantine folder (a pilot's copy waiting for the admin)."""
+    with UPLOADS_LOCK:
+        _uploads_check()
+
+
+def _uploads_check():
+    try:
+        upload_gens_check()
+    except Exception as e:  # noqa: BLE001
+        log.info("upload changes not followed: %s", type(e).__name__)
     try:
         seniority_refresh()
     except Exception as e:
@@ -5841,7 +5866,16 @@ def pilot_cmd(payload):
     dashboard. Served from a 6 h cache when fresh, else read on the next check (Schedule Lookup + the
     pairing pages, GET only). 1.6.2 (item 11): on a pilot instance a name is looked up only on the award and
     seniority list files (name_lookup: 3 letters at least, at most 5 matches, name and seat; each match carries an
-    opaque 'pick' id, never the employee number, and {"pick": id} runs it); '#10001' is an employee number."""
+    opaque 'pick' id, never the employee number, and {"pick": id} runs it); '#10001' is an employee number.
+    1.7.2 (contract 1 revision 3, F#49): on every instance the payload must have the pilot/set shape (roles.SHAPE_CMDS:
+    keys emp, q, name and pick only; emp 1 to 7 digits; q and name at most 60 code points on one line; pick 12 hex),
+    the same the portal's spool and HOM check; anything else is refused with one log line that never carries the
+    text."""
+    try:
+        PT.check_shape("pilot/set", payload)
+    except PT.PortalError as e:
+        log.info("pilot lookup refused: %s", e)
+        return
     try:
         d = json.loads(payload)
         emp = re.sub(r"\D", "", str(d.get("emp") or ""))
@@ -6888,7 +6922,7 @@ def upload_finish(ready):
         return
     publish_upload_status({**base, "state": "reading", "message": f"Reading {UP.WHAT.get(m['kind'], 'the file')}..."})
     try:
-        r = web.save_upload(fields, data, log)
+        r = web.save_upload(fields, data, log, who=reporter())  # 1.7.2: who saved it is its provenance
     except Exception as e:  # noqa: BLE001
         r = {"ok": False, "message": f"Upload failed ({type(e).__name__})."}
     log.info("upload %s (%s, %d KB, %s): %s", m["id"][:6], m["kind"], len(data) // 1024,
@@ -6905,7 +6939,7 @@ def publish_uploads(c=None, force=False):
     """{T}/uploads (retained), sensor.{T}_uploads: web.uploads_json plus count and chunk_bytes. Published when it
     changes (or force); no file content and no contact entry (contacts: counts and the file name only)."""
     try:
-        d = web.uploads_json(VERSION)
+        d = web.uploads_json(VERSION, review=has("upload_review"))  # 1.7.2: pilots' uploads, the admin's
     except Exception as e:  # noqa: BLE001
         log.info("uploads list skipped: %s", type(e).__name__)
         return False
@@ -6919,6 +6953,345 @@ def publish_uploads(c=None, force=False):
     else:
         pub("uploads", d)
     return True
+
+
+# ---------------------------------------------------------------- 1.7.2 (FW-0066, Ryan Nov 11) a pilot's PDF uploads
+# A portal pilot uploads the month's pairings package or award from his portal (upload/pdf, contract 1 revision 3): his
+# own Watcher puts it together and checks it (pilotpdf.py), then it is used at once when nothing is on file for that
+# month and kind, else held in the quarantine folder for the admin (no instance reads it, nothing serves it). The
+# admin's Watcher sees each new one in the shared provenance file and publishes {T}/event/pilot_upload once (the HA
+# automation "Flight Watcher pilot upload" pushes Ryan's phones, time-sensitive, with Remove or Approve / Reject), and
+# takes his answer on {T}/upload/decide (from that push or his Settings uploads card). Every instance follows a
+# file's generation (uploads_check): a file removed is forgotten (its pairing details, award version and pairing file),
+# a file swapped in is read again.
+PILOT_UP_FILE = f"{DATA}/pilot_uploads.json"  # this pilot's upload times (per_day) and the answers his card shows
+PILOT_UP_TMP = f"{DATA}/pilot_upload_tmp"  # the extractor's private work folder (0700)
+PILOT_UP_ANSWERS = 10
+PILOT_UP_ANNOUNCED = "pilot_upload_announced"  # admin DB: {upload id: at}, an upload pushed once
+PDF_ASM = PP.Assembler()
+_PUP = {"lock": threading.Lock(), "sig": None, "progress_at": 0.0, "refused": collections.OrderedDict()}
+
+
+def _pup_refuse(uid):
+    """An upload refused: its later chunks are ignored (the last 50 ids, this process)."""
+    _PUP["refused"][uid] = time.time()
+    while len(_PUP["refused"]) > 50:
+        _PUP["refused"].popitem(last=False)
+
+
+def review():
+    """The shared provenance and quarantine store: /share/flight_watcher/upload_review/ beside the uploads folder
+    (provenance.json, quarantine/, rollback/; 0700, files 0600), as web.review_dir() names it."""
+    return PP.Review(UPLOADS_SHARED, os.path.join(os.path.dirname(UPLOADS_SHARED), "upload_review"))
+
+
+def pilot_uploads_eid():
+    return f"sensor.{T}_pilot_uploads"
+
+
+def _pup_read():
+    try:
+        with open(PILOT_UP_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def pilot_upload_answer(uid, ok, state, message):
+    """One answer for the pilot's uploads card (the last PILOT_UP_ANSWERS, newest first): {uid, ok, state, message,
+    at}. Plain text, never file content."""
+    with _PUP["lock"]:
+        d = _pup_read()
+        ans = [a for a in d.get("answers") or [] if isinstance(a, dict) and a.get("uid") != uid]
+        d["answers"] = ([{"uid": str(uid or "")[:40], "ok": bool(ok), "state": state, "message": str(message)[:300],
+                          "at": now_iso()}] + ans)[:PILOT_UP_ANSWERS]
+        try:
+            PT.write_private(PILOT_UP_FILE, json.dumps(d))
+        except OSError as e:
+            log.info("pilot upload answer not saved: %s", type(e).__name__)
+    portal_dirty(pilot_uploads_eid())
+
+
+def _pup_times(now=None):
+    now = time.time() if now is None else now
+    return [t for t in (_pup_read().get("times") or []) if isinstance(t, (int, float)) and 0 <= now - t < 86400]
+
+
+def _pup_count(now=None):
+    """This upload, put together whole, counts toward per_day (refused or not), before any check runs."""
+    now = time.time() if now is None else now
+    with _PUP["lock"]:
+        d = _pup_read()
+        d["times"] = _pup_times(now) + [now]
+        PT.write_private(PILOT_UP_FILE, json.dumps(d))
+
+
+def pilot_upload_chunk(payload):
+    """One upload/pdf chunk on a portal pilot (the spool republished it after its shape check; any MQTT client could
+    publish here, so the shape is checked again). Never raises. The log has the upload's id prefix, kind, month and
+    counts only."""
+    try:
+        if not (is_pilot() and portal_on()):
+            return
+        text = payload.decode("utf-8", errors="replace") if isinstance(payload, (bytes, bytearray)) else str(payload)
+        try:
+            d = PT.check_shape("upload/pdf", text)
+        except PT.PortalError as e:
+            log.info("pilot upload chunk refused: %s", e)
+            return
+        uid = d["uid"]
+        if uid in _PUP["refused"]:
+            return  # an upload refused already: its later chunks say nothing more (the card shows the first answer)
+        why = PP.month_refusal(d["month"], local_now().replace(tzinfo=HST))
+        if not why and int(d["part"]) == 1 and len(_pup_times()) >= ROLES.PILOT_UPLOAD_LIMITS["per_day"]:
+            why = (f"{ROLES.PILOT_UPLOAD_LIMITS['per_day']} uploads in the last 24 h already: the next one at "
+                   f"{hst_hm(min(_pup_times()) + 86400)} HST")
+        if why:
+            if (PDF_ASM.progress() or ("",))[0] == uid:
+                PDF_ASM.drop()
+            _pup_refuse(uid)
+            log.info("pilot upload %s (%s %s): refused: %s", uid[:6], d["kind"], d["month"], why)
+            pilot_upload_answer(uid, False, "error", f"Not stored: {why}.")
+            return
+        try:
+            done = PDF_ASM.add(d)
+        except PP.Refused as e:
+            _pup_refuse(uid)
+            log.info("pilot upload %s (%s %s): refused: %s", uid[:6], d["kind"], d["month"], e)
+            pilot_upload_answer(uid, False, "error", f"Not stored: {e}.")
+            return
+        if done is None:
+            pr = PDF_ASM.progress()
+            if pr and (pr[1] == 1 or time.time() - _PUP["progress_at"] >= 10):
+                _PUP["progress_at"] = time.time()
+                if pr[1] == 1:
+                    log.info("pilot upload %s (%s %s): receiving %d parts", uid[:6], d["kind"], d["month"], pr[2])
+                pilot_upload_answer(uid, True, "receiving", f"Receiving part {pr[1]} of {pr[2]}.")
+            return
+        meta, raw = done
+        _pup_count()
+        pilot_upload_answer(uid, True, "checking", "All parts in: checking the file.")
+        _bg(pilot_upload_finish, meta, raw)
+    except Exception as e:  # noqa: BLE001
+        log.warning("pilot upload chunk failed: %s", type(e).__name__)
+
+
+def pilot_upload_finish(meta, raw):
+    """A whole upload: the PDF's shape, its text (pilotpdf.extract: a child process under limits), the parsers for its
+    kind, then Review.store (used at once, or held for the admin). Runs on its own thread. The answer says what
+    happened in plain words; the log has counts only."""
+    uid, kind, month = meta["uid"], meta["kind"], meta["month"]
+    tag = f"pilot upload {uid[:6]} ({kind} {month}, {len(raw) // 1024} KB)"
+    work = None
+    try:
+        PP.pdf_shape(raw)
+        text, work = PP.extract(raw, PILOT_UP_TMP)
+        if kind == "pairings":
+            info = PP.check_pairings(text, month)
+        else:
+            info = PP.check_award(text, month, S.get("own_emp") or "", pkg_details_for(month))
+        with web.save_lock():
+            rec = review().store(INSTANCE, kind, month, raw, os.path.join(work, "out.txt"), uid, info)
+    except PP.Refused as e:
+        log.info("%s: refused: %s", tag, e)
+        pilot_upload_answer(uid, False, "error", f"Not stored: {e}.")
+        return
+    except Exception as e:  # noqa: BLE001
+        log.warning("%s: check failed: %s", tag, type(e).__name__)
+        pilot_upload_answer(uid, False, "error", f"Not stored: the check failed ({type(e).__name__}).")
+        return
+    finally:
+        if work:
+            shutil.rmtree(work, ignore_errors=True)
+    what = f"{PP.month_name(month)} {PP.WHAT[kind]}"
+    if rec["state"] == "same":
+        log.info("%s: the same file is on file already; nothing stored", tag)
+        pilot_upload_answer(uid, True, "same", f"The {what} on file is this same file: nothing to do.")
+    elif rec["state"] == "live":
+        log.info("%s: nothing was on file: in use now (%s)", tag, ", ".join(f"{k} {v}" for k, v in info.items()))
+        pilot_upload_answer(uid, True, "live", f"Stored: the {what} is on file now and in use. The admin was told and "
+                                               "may remove it.")
+    else:
+        log.info("%s: a file is on file: held for the admin (read by no instance until he approves it)", tag)
+        pilot_upload_answer(uid, True, "pending", f"Held for the admin: a {what} is on file already. Yours is used "
+                                                  "only if the admin approves it.")
+    try:
+        publish_uploads(force=True)
+    except Exception as e:  # noqa: BLE001
+        log.info("uploads list not published: %s", type(e).__name__)
+
+
+def pilot_uploads_state():
+    """{sensor.<T>_pilot_uploads: entry} for a portal pilot's state.json (synthesized from his own records and the
+    shared folder, never read from HA): this month and the next two, each kind on file or not and from whom (you, the
+    admin or another pilot: never a name), his own uploads (state, month, kind, size, when), the answers and his limits.
+    No file content, no sha256, no other pilot's upload."""
+    lim = ROLES.PILOT_UPLOAD_LIMITS
+    rv = review()
+    try:
+        recs = rv.records()
+        files = rv.load()["files"]
+    except OSError:
+        recs, files = [], {}
+
+    def by(who):
+        return "" if not who else "you" if who == INSTANCE else "the admin" if who == PP.ADMIN else "another pilot"
+    months = []
+    for m in PP.months_allowed(local_now().replace(tzinfo=HST)):
+        row = {"month": m, "name": PP.month_name(m)}
+        for k in PP.KINDS:
+            on = os.path.exists(os.path.join(UPLOADS_SHARED, f"{m}_{k}.pdf"))
+            mine = [r for r in recs if r.get("who") == INSTANCE and (r.get("month"), r.get("kind")) == (m, k)
+                    and r.get("state") == "pending"]
+            row[k] = {"on_file": on, "by": by((files.get(f"{m}_{k}") or {}).get("who")) if on else "",
+                      "pending": bool(mine)}
+        months.append(row)
+    mine = [{k: r.get(k) for k in ("id", "kind", "month", "state", "size", "at", "decided_at")}
+            for r in recs if r.get("who") == INSTANCE][-10:][::-1]
+    d = _pup_read()
+    used = len(_pup_times())
+    pr = PDF_ASM.progress()
+    attrs = {"friendly_name": "Pilot uploads", "months": months, "mine": mine,
+             "answers": [a for a in d.get("answers") or [] if isinstance(a, dict)][:PILOT_UP_ANSWERS],
+             "busy": bool(pr), "receiving": {"uid": pr[0], "got": pr[1], "total": pr[2]} if pr else None,
+             "limits": {"file_bytes": lim["file_bytes"], "per_day": lim["per_day"], "used_today": used,
+                        "left_today": max(0, lim["per_day"] - used), "chunk_chars": lim["chunk_chars"],
+                        "chunk_parts": lim["chunk_parts"], "stale_s": lim["stale_s"], "kinds": list(PP.KINDS)}}
+    at = (attrs["answers"][0]["at"] if attrs["answers"] else None)
+    return {pilot_uploads_eid(): {"state": str(sum(1 for r in mine if r.get("state") == "pending")),
+                                  "attributes": attrs, "last_changed": at, "last_updated": at}}
+
+
+def pilot_uploads_tick():
+    """A portal pilot, once a minute: his uploads view changed (the admin decided, a file came or went): export it."""
+    if not EXPORT["on"]:
+        return False
+    sig = json.dumps(pilot_uploads_state(), sort_keys=True)
+    if sig == _PUP["sig"]:
+        return False
+    _PUP["sig"] = sig
+    portal_dirty(pilot_uploads_eid())
+    return True
+
+
+def pilot_upload_announce():
+    """The admin, every UPLOADS_PUB_S: each pilot's upload used at once or held (a provenance record of another
+    instance, state live or pending) goes once on {T}/event/pilot_upload (the HA automation pushes Ryan's phones with
+    Remove, or Approve and Reject). The ids sent are in the DB before the publish. Returns the events sent."""
+    if not has("upload_review") or not mqtt_up():
+        return []
+    try:
+        recs = review().records()
+    except OSError:
+        return []
+    done = DB.get(PILOT_UP_ANNOUNCED) or {}
+    out = []
+    for r in recs:
+        if r.get("who") in ("", PP.ADMIN, None) or r.get("state") not in ("live", "pending") or r.get("id") in done:
+            continue
+        done[r["id"]] = now_iso()
+        DB.put(PILOT_UP_ANNOUNCED, dict(sorted(done.items(), key=lambda kv: kv[1])[-200:]))
+        what = f"{PP.month_name(r['month'])} {PP.WHAT.get(r['kind'], r['kind'])}"
+        size = f"{r.get('size', 0) / 1e6:.1f} MB"
+        facts = (f"{r['pairings']} pairings, {r.get('a332', 0)} A332 HNL" if r.get("kind") == "pairings"
+                 and r.get("pairings") else f"{r.get('items', 0)} items on his line" if r.get("kind") == "award" else "")
+        if r["state"] == "live":
+            msg = (f"Nothing was on file, so it is in use now ({size}{', ' + facts if facts else ''}). Tap Remove to "
+                   "take it off: nothing is on file then and both Watchers read again.")
+        else:
+            msg = (f"A file is on file already, so his copy is held ({size}{', ' + facts if facts else ''}). Approve "
+                   "uses it and keeps the old file for rollback; Reject deletes his copy.")
+        ev = {"id": r["id"], "who": r["who"], "kind": r["kind"], "month": r["month"], "state": r["state"],
+              "file": f"{r['month']}_{r['kind']}.pdf", "size": r.get("size", 0), "at": r.get("at"),
+              "title": f"{r['who'].capitalize()} uploaded the {what}", "message": msg}
+        pub("event/pilot_upload", ev, retain=False)
+        log.info("pilot upload %s (%s %s by %s, %s): pushed to the admin", r["id"][:6], r["kind"], r["month"],
+                 r["who"], r["state"])
+        out.append(ev)
+    return out
+
+
+def upload_decide_cmd(payload):
+    """{T}/upload/decide on the admin: {"id": upload id, "action": approve | remove | reject} from his push's buttons
+    (the HA automation) or his Settings uploads card. Review.decide does it under the uploads lock; a file removed with
+    nothing to restore also takes its pairing file off the shared www folder. Never raises."""
+    try:
+        if not has("upload_review"):
+            return
+        try:
+            d = json.loads(payload or "{}")
+        except ValueError:
+            d = None
+        if not (isinstance(d, dict) and set(d) == {"id", "action"} and isinstance(d["id"], str)
+                and re.fullmatch(ROLES.UPLOAD_ID_PATTERN, d["id"]) and d["action"] in ("approve", "remove", "reject")):
+            log.info("upload decision refused: not {id, action}")
+            return
+        with web.save_lock():
+            ok, msg, rec = review().decide(d["id"], d["action"], PP.ADMIN)
+            if ok and d["action"] == "remove" and rec and rec.get("kind") == "pairings" and not os.path.exists(
+                    os.path.join(UPLOADS_SHARED, f"{rec['month']}_pairings.pdf")):
+                try:
+                    os.unlink(os.path.join(CARD_PAIRINGS, f"pairings_{rec['month']}.json"))
+                except FileNotFoundError:
+                    pass
+        log.info("upload decision %s %s: %s", d["action"], d["id"][:6], msg)
+        if ok:
+            UPLOADS_RECHECK.set()
+        publish_uploads(force=True)
+    except Exception as e:  # noqa: BLE001
+        log.info("upload decision failed: %s", type(e).__name__)
+
+
+UPLOADS_RECHECK = threading.Event()  # a decision changed a shared file: uploads_check runs at the next minute
+
+
+def upload_gens_pending():
+    """A shared file's generation differs from the one this instance last followed (cheap: one small file read)."""
+    try:
+        gens = review().gens()
+    except OSError:
+        return False
+    seen = S.get("upload_gen") or {}
+    return any(seen.get(n) != g for n, g in gens.items())
+
+
+def upload_gens_check():
+    """1.7.2: a file's generation changed (a pilot's upload, an approve, a remove): its 'done' mark goes, so uploads_check
+    reads it again; when it is gone (removed with nothing to restore) this instance forgets what it had from it: the
+    pairing details and the bid calendar / van caches (pairings) or the awarded line's version (award). Returns the
+    names that changed."""
+    try:
+        gens = review().gens()
+    except OSError:
+        return []
+    seen = S.setdefault("upload_gen", {})
+    changed = [n for n, g in gens.items() if seen.get(n) != g and re.fullmatch(r"\d{4}-\d{2}_(pairings|award)", n)]
+    if not changed:
+        return []
+    done = S.setdefault("uploads_done", {})
+    for name in changed:
+        month, kind = name[:7], name[8:]
+        done.pop(f"{name}.txt", None)
+        (S.get("pilotver_awards") or {}).pop(f"{name}.txt", None)
+        if not os.path.exists(os.path.join(UPLOADS_SHARED, f"{name}.txt")):
+            if kind == "pairings":
+                DB.put(f"pkg_details:{month}", None)
+                _PKG_CACHE.pop(month, None)
+                try:
+                    os.unlink(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json"))
+                except OSError:
+                    pass
+            else:
+                vers = VER.clear_award(DB, month)
+                log.info("upload %s removed: the awarded line is no longer version .001 (%d versions)", name, len(vers))
+                versions_check(force_pub=True)
+            log.info("upload %s: removed from the shared folder; forgotten here", name)
+        else:
+            log.info("upload %s: changed in the shared folder; read again", name)
+        seen[name] = gens[name]
+    save_state(S)
+    return changed
 
 
 def upload_janitor():
@@ -6949,6 +7322,18 @@ def upload_janitor():
                     fetches_tick()  # 1.7.1 (F#10): a pilot's FLICA loads this hour, for his health line
                 except Exception as e:  # noqa: BLE001
                     log.info("FLICA loads this hour: %s", type(e).__name__)
+                try:
+                    schedule_unread_tick()  # 1.7.2 (contract 1 revision 3): a portal pilot's schedule not read
+                except Exception as e:  # noqa: BLE001
+                    log.info("schedule not read alert: %s", type(e).__name__)
+                try:  # 1.7.2 (FW-0066): a pilot's upload or the admin's decision, followed whatever the state
+                    if UPLOADS_RECHECK.is_set() or upload_gens_pending():
+                        UPLOADS_RECHECK.clear()
+                        uploads_check()
+                    pilot_upload_announce()
+                    pilot_uploads_tick()
+                except Exception as e:  # noqa: BLE001
+                    log.info("pilot uploads: %s", type(e).__name__)
                 publish_uploads()
                 if is_pilot():
                     # 1.7.0 (Release C): a pilot's ticket list (and its fixed alert) follows the folder every
@@ -6964,8 +7349,9 @@ def upload_janitor():
 # needed"; Ryan's Nov 11 answer, bidcal.PUBLISH_ALERT), the night before each practice run, 24 h before bids close and the night before they close (bidcal.py). The uploads
 # janitor checks once a minute, whatever the state (paused, yielded, hunting, waiting for settings): no FLICA load, and
 # page 1 of the shared package is read only when its file changes. Each alert goes once on {T}/event/bid_calendar
-# (not retained). Only Ryan's prefix has an HA automation ("Flight Watcher bid calendar"), so a pilot's instance makes
-# the same alerts on his own prefix and nothing pushes them (they are not portal events in contract 1).
+# (not retained). Only Ryan's prefix has an HA automation ("Flight Watcher bid calendar"); a pilot's instance makes the
+# same alerts on his own prefix, and from 1.7.2 (contract 1 revision 3) each is a portal event (his Alerts list and
+# ntfy) with the same words, built from its fields (portal.event_text, bidcal.alert_text).
 BIDCAL_DONE = "bid_calendar_done"  # DB: {alert key: {how: sent | dropped, at, event}}, written before the publish
 BIDCAL_KEEP = 40  # keys kept (5 a cycle)
 _BIDCAL = {"pkg": {}, "sig": None}  # bid month -> (file time, bidcal.parse of its package); the sensor's last payload
@@ -7028,12 +7414,16 @@ def bidcal_tick(now=None):
         done[a["key"]] = {"how": "sent", "at": now.isoformat(), "event": a["event"]}
     if send or drop:
         DB.put(BIDCAL_DONE, dict(sorted(done.items())[-BIDCAL_KEEP:]))
+    at = now.astimezone(HST).replace(microsecond=0)  # 1.7.2: the time the words are from is the at_hst sent
     for a in send:
-        title, message = BC.render(a, now)  # worded from now: a late one still says the hours really left
+        title, message = BC.render(a, at)  # worded from now: a late one still says the hours really left
+        # 1.7.2 (contract 1 revision 3): alert and cycle_source too, so a pilot's portal event words the same text from
+        # the fields alone (bidcal.alert_text); every instance sends the same keys
         pub("event/bid_calendar", {"kind": "bid_calendar", "key": a["key"], "bid_month": a["bid_month"],
-                                   "title": title, "message": message,
-                                   "at_hst": now.astimezone(HST).isoformat(timespec="seconds"),
-                                   "event_hst": a["event"], "source": a["source"]}, retain=False)
+                                   "alert": a["kind"], "title": title, "message": message,
+                                   "at_hst": at.isoformat(timespec="seconds"),
+                                   "event_hst": a["event"], "source": a["source"],
+                                   "cycle_source": a["cycle_source"]}, retain=False)
         log.info("bid calendar: %s sent: %s", a["key"], title)
     publish_bid_calendar(alerts, done)
     return send
@@ -7721,7 +8111,7 @@ def crewtrac_state():
             DB.put("crewtrac", ct)
             DB.put("charter_status", crewtrac_text("not_configured"))
         return ct
-    h = CH.creds_hash(u, p)
+    h = crewtrac_hash(u, p)
     if ct.get("creds") != h:
         fresh = {"state": "", "at": "", "next_try": "", "creds": h}
         last = DB.get("charter_scan_at")
@@ -7734,6 +8124,8 @@ def crewtrac_state():
             except (ValueError, TypeError):
                 when = local_now()
             DB.put("charter_status", crewtrac_text(CH.REFUSED, when))
+        elif DB.get(CT_KEY_LOST):  # 1.7.2: the block key was lost with a refusal on record: no login until a save
+            DB.put("charter_status", CT_KEY_LOST_TEXT)
         elif ct:  # other details than before: the old ones' block, back-off and press gap do not apply
             if ct.get("block"):
                 log.info("charter: new CrewTrac details in use; the refusal block is lifted")
@@ -7749,6 +8141,90 @@ def crewtrac_state():
     return ct
 
 
+CT_KEY_FILE = f"{DATA}/crewtrac_hmac.key"  # 1.7.2: the CrewTrac block key, 32 random bytes, 0600, this instance only
+CT_HMAC_V = "crewtrac_hmac_v"  # DB: 1 once the records are keyed with it (the 1.7.2 migration ran)
+CT_KEY_LOST = "crewtrac_key_lost"  # DB: when the key was found gone with a refusal on record: blocked until a save
+CT_KEY_LOST_TEXT = ("CrewTrac is not tried: its refusal record could not be checked. Save your CrewTrac details again "
+                    "in Settings to try once.")
+_CTK = {"key": None}
+
+
+def _ct_key_read():
+    try:
+        fd = os.open(CT_KEY_FILE, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        raw = os.read(fd, 64) if stat.S_ISREG(st.st_mode) else b""
+        if stat.S_IMODE(st.st_mode) != 0o600:
+            os.fchmod(fd, 0o600)
+    except OSError:
+        raw = b""
+    finally:
+        os.close(fd)
+    return raw if len(raw) == 32 else None
+
+
+def crewtrac_key():
+    """1.7.2 (contract 1 revision 3, the council's change): the random 32-byte key of this instance's CrewTrac refusal
+    block (CH.creds_hash, HMAC-SHA256), in its own data folder (CT_KEY_FILE, mode 0600), made on first use; never
+    exported, logged or sent. Made for the first time (1.7.2's first start), it re-keys the 1.7.1 records: the details
+    in use get their new key, a bare sha256 of any other details is dropped (it cannot be re-keyed without them).
+    Found gone later (a restored or wiped data folder) with a refusal on record, no stored key can be matched any more:
+    CrewTrac stays blocked until the next save in Settings (CT_KEY_LOST, crewtrac_stopped, crewtrac_resaved)."""
+    if _CTK["key"] is not None:
+        return _CTK["key"]
+    key = _ct_key_read()
+    if key is None:
+        key = secrets.token_bytes(32)
+        fd, tmp = tempfile.mkstemp(prefix=".crewtrac_hmac.", dir=DATA)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(key)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, CT_KEY_FILE)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+        _CTK["key"] = key
+        ct, seen = dict(DB.get("crewtrac") or {}), dict(DB.get("crewtrac_refused") or {})
+        if DB.get(CT_HMAC_V) == 1:  # records made with a key that is gone
+            if seen or ct.get("block"):
+                DB.put(CT_KEY_LOST, now_iso())
+                DB.put("charter_status", CT_KEY_LOST_TEXT)
+                log.info("charter: the CrewTrac block key was lost with a refusal on record; no CrewTrac login until "
+                         "CrewTrac details are saved again in Settings")
+            DB.put("crewtrac_refused", {})
+            if ct.get("creds") or ct.get("block"):
+                ct.pop("creds", None)
+                ct.pop("block", None)
+                DB.put("crewtrac", ct)
+        else:  # 1.7.2's first start: the 1.7.1 records were bare sha256 values
+            u, p = crewtrac_login()
+            old = CH.legacy_hash(u, p) if u and p else None
+            new = CH.creds_hash(u, p, key) if u and p else None
+            re_seen = {new: at for h, at in seen.items() if old and h == old}
+            for k in ("creds", "block"):
+                if ct.get(k):
+                    ct[k] = new if old and ct[k] == old else ""
+            if ct:
+                DB.put("crewtrac", ct)
+            DB.put("crewtrac_refused", re_seen)
+            log.info("charter: CrewTrac block records keyed with this instance's own key (%d kept, %d dropped)",
+                     len(re_seen), len(seen) - len(re_seen))
+        DB.put(CT_HMAC_V, 1)
+        return key
+    _CTK["key"] = key
+    return key
+
+
+def crewtrac_hash(u, p):
+    """The refusal block's key of these CrewTrac details (HMAC with this instance's key)."""
+    return CH.creds_hash(u, p, crewtrac_key())
+
+
 def crewtrac_resaved():
     """1.6.1: CrewTrac details were saved in Settings (settings/set, even the same ones again): the pilot says they are
     right (CrewTrac may have unlocked the account since). If CrewTrac refused the details now in use, that block is
@@ -7756,7 +8232,12 @@ def crewtrac_resaved():
     u, p = crewtrac_login(load_opts())
     if not u or not p:
         return False
-    h = CH.creds_hash(u, p)
+    h = crewtrac_hash(u, p)
+    if DB.get(CT_KEY_LOST):  # 1.7.2: the block key was lost: this save is the one the block waited for
+        DB.put(CT_KEY_LOST, None)
+        DB.put("charter_status", "CrewTrac details saved again: the next scan tries them.")
+        log.info("charter: CrewTrac details saved again in Settings; the block kept since the key was lost is lifted")
+        return True
     seen = dict(DB.get("crewtrac_refused") or {})
     ct = dict(DB.get("crewtrac") or {})
     if h not in seen and not (ct.get("creds") == h and ct.get("block") == h):
@@ -7772,7 +8253,10 @@ def crewtrac_resaved():
 
 
 def crewtrac_stopped(ct):
-    """1.6.1: no login may run: no details saved, or CrewTrac refused these very ones (the block matches their hash)."""
+    """1.6.1: no login may run: no details saved, or CrewTrac refused these very ones (the block matches their hash).
+    1.7.2: or the block key was lost with a refusal on record (crewtrac_key), until the next save in Settings."""
+    if DB.get(CT_KEY_LOST):
+        return True
     return ct.get("state") == "not_configured" or bool(ct.get("block") and ct.get("block") == ct.get("creds"))
 
 
@@ -8628,11 +9112,13 @@ def portal_ids():
         rules = list(RULES["list"])
     ids += [f"switch.{RULE_UID}_{r['id']}_live" for r in rules if ROLES.PORTAL_RULE_ID_RE.fullmatch(str(r.get("id")))]
     ids += [ROLES.pref_entity(k, T) for k in ROLES.PREF_KEYS]
+    ids.append(pilot_uploads_eid())  # 1.7.2 (FW-0066): synthesized from his upload records, never read from HA
     return list(dict.fromkeys(ids))
 
 
 def portal_pref_ids():
-    return {ROLES.pref_entity(k, T) for k in ROLES.PREF_KEYS}
+    """The ids state.json synthesizes (never read from HA): the pref helpers and (1.7.2) the pilot's uploads view."""
+    return {ROLES.pref_entity(k, T) for k in ROLES.PREF_KEYS} | {pilot_uploads_eid()}
 
 
 def portal_topics():
@@ -8747,6 +9233,38 @@ def _portal_event(kind, payload):
     if EXPORT["ntfy"] is not None:
         EXPORT["ntfy"].enqueue(rec)
     return rec
+
+
+PROC_START = time.time()
+SCHED_UNREAD_DONE = "schedule_unread_day"  # DB: the HST day the last schedule_unread event went (once a day)
+
+
+def schedule_unread_tick(now=None):
+    """1.7.2 (contract 1 revision 3, audit F#3, F#112): a portal pilot whose Watcher has had no good FLICA schedule
+    read for roles.SCHEDULE_UNREAD_H hours (since the last good read, or since this start when none came after it)
+    gets one schedule_unread event a day (HST): his Alerts list and ntfy, view schedule, data only its state (failing:
+    reads fail; waiting: none could run) and the hours. Not while paused, waiting for his FLICA login or stopped: those
+    have their own alert or are his own doing. The day is in the DB before the event. Returns the record or None."""
+    if not EXPORT["on"]:
+        return None
+    now = time.time() if now is None else now
+    st = S.get("machine") or ""
+    if FLAGS.get("pause") or st in ("paused", "needs_settings") or st.startswith("stopped"):
+        return None
+    try:
+        last = datetime.fromisoformat(S["sched_read_at"]).timestamp() if S.get("sched_read_at") else 0.0
+    except (TypeError, ValueError):
+        last = 0.0
+    if now - max(last, PROC_START) < ROLES.SCHEDULE_UNREAD_H * 3600:
+        return None
+    day = datetime.fromtimestamp(now, HST).strftime("%Y-%m-%d")
+    if DB.get(SCHED_UNREAD_DONE) == day:
+        return None
+    DB.put(SCHED_UNREAD_DONE, day)
+    hours = int((now - (last or PROC_START)) // 3600)
+    state = "failing" if int(S.get("sched_fail") or 0) else "waiting"
+    log.info("schedule not read for %d h (%s): portal alert", hours, state)
+    return portal_event("schedule_unread", {"state": state, "hours": hours, "key": day})
 
 
 def portal_result(cid, ok, why=""):
@@ -8956,6 +9474,10 @@ def portal_write_state(ids, read, now=None, beat=False):
         retry.pop(eid, None)
     states = {eid: cache[eid] for eid in ids if eid in cache}
     states.update(pref_states())
+    try:
+        states.update(pilot_uploads_state())  # 1.7.2 (FW-0066)
+    except Exception as e:  # noqa: BLE001 (never stops the export)
+        portal_once("pilot_uploads_state", "portal pilot uploads view skipped: %s", type(e).__name__)
     text = PT.dumps({"states": states, "ha_ok": ok})
     if len(text.encode("utf-8")) > PT.CAPS["state"]:
         portal_once("state_cap", "portal state over %d KB: not written", PT.CAPS["state"] // 1024)
@@ -9135,7 +9657,8 @@ def portal_write_manifest():
     for fn, text in sorted(portal_cards().items()):
         shas[fn] = w.blob(text)
     EXPORT["blobs"] = set(shas.values())
-    body = {"contract": ROLES.CONTRACT, "app_version": VERSION, "pilot": INSTANCE, "prefix": T,
+    body = {"contract": ROLES.CONTRACT, "revision": ROLES.CONTRACT_REVISION, "app_version": VERSION,
+            "pilot": INSTANCE, "prefix": T,
             "role": ROLES.role(INSTANCE), "cards": shas, "layout": portal_layout(), "services": portal_services(),
             "mqtt_subs": portal_mqtt_subs(), "files": list(EXPORT["files_list"]), "ntfy": EXPORT["ntfy"] is not None}
     return _portal_write("manifest", body)

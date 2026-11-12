@@ -49,7 +49,9 @@ publishes what it finds to Home Assistant over MQTT.
   on the tab (on reserve or not, PWA 22.G.2.d); while it is not set an Over 75 miss shows as CHECK.
 - Crew index and pilot lookup, charter watch (CrewTrac, read only; 1.7.1, F#22: the admin's Watcher scans and
   shares the flight list, retained on `flight_watcher/charters/shared`, and a pilot's Watcher shows it with the scan's
-  time, as a warning once that is over 13 h old, and makes no CrewTrac login of its own), tickets (below). Since 1.4.7 the crew index
+  time, as a warning once that is over 13 h old, and makes no CrewTrac login of its own; 1.7.2: the details CrewTrac
+  refused are kept as an HMAC-SHA256 with the instance's own random key, `<data>/crewtrac_hmac.key`, never a bare
+  hash), tickets (below). Since 1.4.7 the crew index
   also reads trips on any schedule the Watcher reads that the pairing package does not list (FW-0056), trips that
   start in the previous bid period and run into it (FW-0057), keeps names such as "Lee, So Young" (made up) whole
   (FW-0058), and flags a pilot on two overlapping trips, reading both again first (FW-0059). Since 1.4.10 it finds
@@ -87,6 +89,8 @@ is one table, `roles.py` `FEATURES` (Portal: whether a pilot's portal may offer 
 | `admin_pushes` | admin | no | FLICA alert emails HA forwards (email/alert) and the email check |
 | `tickets` | all | yes | tickets (ticket/new, image, act, edit, delete); a pilot sees and acts on his own, on HA or his portal |
 | `uploads` | all | no | uploads in chunks (upload/chunk) and the uploads sensors |
+| `pilot_uploads` | all | yes | a pilot's upload of the monthly pairings package or award from his portal (upload/pdf), checked by his own Watcher; used at once when nothing is on file, else held for the admin |
+| `upload_review` | admin | no | the admin's Approve, Remove and Reject of a pilot's upload (upload/decide) and its push (event/pilot_upload) |
 
 A pilot's Watcher does not subscribe to `email/alert`, `auto_swap/set`, `swap_map/press`, `drop/set` or
 `crew_scan/press` (a stray message on one is refused with one log line) and has no Would drop, Auto swap (dry run),
@@ -125,7 +129,24 @@ HOM's `fw_signing_key` option. That pilot's Watcher then:
   pilot's card). Pushes carry no crew names, URLs, commute reasons or pay amounts;
 - 1.7.0 (Release C, contract 1 revision 2): serves the pilot's own tickets on a Tickets tab (his tickets list, his
   tickets sensor, the tickets card with FW_PORTAL on), takes his ticket commands with his quotas and his photos in
-  chunks (checked and re-encoded), and alerts him when one of his tickets is fixed (the ticket id and version only).
+  chunks (checked and re-encoded), and alerts him when one of his tickets is fixed (the ticket id and version only);
+- 1.7.2 (contract 1 revision 3): alerts him with the bid calendar alerts (the admin's push words) and when his FLICA
+  schedule has not been read for 6 h (once a day); takes the pilot lookup only in its shape (emp, q, name, pick);
+  never takes `recall/set` from the portal (his recall lists come from the admin's forward); and takes his upload of
+  the month's pairings package or award (`upload/pdf`, below).
+
+**A pilot's pairings package and award (1.7.2, FW-0066, Ryan Nov 11).** Either pilot may upload them: the portal's
+Settings tab ends with the pilot uploads card (this month and the next two; the pairings package or the award only,
+never the seniority list or the contact list; 4 MB a file, 4 uploads a day). His own Watcher puts the parts together
+and checks the whole file before anything is stored (`pilotpdf.py`: its size and sha256, `%PDF-` and `%%EOF`, its text
+from `pdftotext -layout` in a child process with a 30 s timeout and memory and CPU limits, then that month's pairing
+package with at least 100 pairings and an A332 HNL one, or that month's award with his own line). With nothing on file
+for that month and kind it is used at once and Ryan's phones get a time-sensitive push naming the file and the pilot
+with Remove; with a file on file the pilot's copy is held in `/share/flight_watcher/upload_review/quarantine/`, which
+no instance reads and nothing serves, and the push has Approve (swap it in, the old file kept for rollback) and Reject.
+The same buttons are in the "Pilot uploads" part of Ryan's Settings uploads card. Provenance (who, when, sha256) is
+kept per file in `upload_review/provenance.json`. The push is the HA automation "Flight Watcher pilot upload"
+(`ha/automations_flight_watcher.yaml`, Ryan's prefix only; its buttons publish `flight_watcher/upload/decide`).
 
 In the portal the Settings card sends logins sealed or not at all (no plain fallback). Turning a portal off
 (`portal: false`, or the entry removed) takes effect at the next app start and is fail-closed: the launcher empties
@@ -134,7 +155,7 @@ revoke or kill switch is still the immediate cut; removing `/share/fw_portal/<na
 
 The admin (Ryan's instance) never has a portal: no folder, no spool, no export, no ntfy, and the same subscriptions,
 entities and log lines as 1.5.0. FLICA stays read only; the portal adds no FLICA page loads. The interface, its
-allowlists, caps and masks are in `PORTAL_CONTRACT.md` (contract 1, revision 2 from 1.7.0) and
+allowlists, caps and masks are in `PORTAL_CONTRACT.md` (contract 1, revision 2 from 1.7.0, revision 3 from 1.7.2) and
 `tests/fixtures/portal_contract_v1.json`, which HOM keeps byte for byte.
 
 ## Settings
@@ -292,8 +313,9 @@ Recent finds.
   dates. Alerts: 08:00 the day before the package publishes, the 3rd by default ("adjust your vacation if needed";
   `bidcal.PUBLISH_ALERT`, one constant; Ryan's Nov 11 answer), 20:00 the night before each practice run, 24 h before
   the close and 20:00 the night before it. Checked once a minute whatever the Watcher is doing (no FLICA load); each
-  goes once on `<prefix>/event/bid_calendar` (not retained: `kind`, `key`, `bid_month`, `title`, `message`,
-  `at_hst`, `event_hst`, `source` package or default), the sent ones kept in the DB with the date they were for, so
+  goes once on `<prefix>/event/bid_calendar` (not retained: `kind`, `key`, `bid_month`, `alert` (1.7.2), `title`,
+  `message`, `at_hst`, `event_hst`, `source` package or default, `cycle_source` (1.7.2)), and from 1.7.2 is a portal
+  event of a portal pilot's with the same words; the sent ones kept in the DB with the date they were for, so
   a restart never repeats one and a date a late package moves is alerted once more under the same key (its push
   replaces the wrong one). One missed while the app was off is sent late until its words stop being true (the
   publish alert and the evening ones until their day starts, the 24 h one until the night-before one, that one until

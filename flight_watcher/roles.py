@@ -18,6 +18,12 @@ from these; PORTAL_CONTRACT.md documents them.
 (TICKET_CMDS, data the HOM portal checks with one generic checker), the actions a pilot may take on his own tickets
 (PILOT_TICKET_ACTIONS), his quotas (PILOT_TICKET_LIMITS), the tickets list file, the Tickets tab and the Watcher's own
 ticket_fixed event (OWN_EVENTS). Additive: fwp and contract stay 1.
+
+1.7.2: contract 1 revision 3 (council Nov 11, Ryan's decisions): two pilot alerts (bid_calendar from his own bid calendar
+publish, schedule_unread after 6 h without a good schedule read), the pilot/set shape (SHAPE_CMDS), recall/set off the
+portal (a pilot's recall lists come only from the admin's forward), and a pilot's upload of the monthly pairings package
+or award (upload/pdf, PILOT_UPLOAD_LIMITS; FW-0066) with the admin's Approve, Remove and Reject (upload/decide, never on
+a portal). Additive again: fwp and contract stay 1.
 """
 import math
 import re
@@ -48,6 +54,11 @@ FEATURES = {
     "tickets": (ALL, True, "tickets (ticket/new, image, act, edit, delete); a pilot sees and acts on his own, on HA or "
                            "his portal"),
     "uploads": (ALL, False, "uploads in chunks (upload/chunk) and the uploads sensors"),
+    "pilot_uploads": (ALL, True, "a pilot's upload of the monthly pairings package or award from his portal "
+                                 "(upload/pdf), checked by his own Watcher; used at once when nothing is on file, else "
+                                 "held for the admin"),
+    "upload_review": (ADMIN, False, "the admin's Approve, Remove and Reject of a pilot's upload (upload/decide) and its "
+                                    "push (event/pilot_upload)"),
 }
 
 # every MQTT command topic (after <prefix>/) an instance subscribes to, in the 1.4.12 order, and its feature
@@ -63,11 +74,13 @@ SUBS = {
     "upload/chunk": "uploads",
     "layover/note": "one_writer",  # 1.7.1 (FW-0072): the admin's layover notes (one writer of the shared folder)
     "pref/set": "prefs",  # 1.6.0 (FW-0061): portal only (PORTAL_SUBS), never on the admin
+    "upload/decide": "upload_review",  # 1.7.2 (FW-0066): the admin's Approve / Remove / Reject of a pilot's upload
+    "upload/pdf": "pilot_uploads",  # 1.7.2 (FW-0066): portal only (PORTAL_SUBS), a pilot's upload in chunks
 }
-QOS = {"upload/chunk": 1}  # FW-0066: chunks at qos 1; every other subscription at qos 0
+QOS = {"upload/chunk": 1, "upload/pdf": 1}  # FW-0066: chunks at qos 1; every other subscription at qos 0
 # 1.6.0 (FW-0061): subscriptions taken only on a pilot instance whose portal is on (option pilots[].portal); the
-# admin never takes them, so its list stays the 1.4.12 one
-PORTAL_SUBS = ("pref/set",)
+# admin never takes them, so its list stays the 1.4.12 one. 1.7.2: upload/pdf too (a pilot uploads from his portal only)
+PORTAL_SUBS = ("pref/set", "upload/pdf")
 
 # every event topic (after <prefix>/event/) and its feature
 EVENTS = {
@@ -79,6 +92,7 @@ EVENTS = {
     "ticket_new": "tickets", "ticket_fixed": "tickets", "ticket_error": "tickets",
     "bid_calendar": "core",  # 1.7.1 (FW-0070): every instance; only the admin's prefix has an HA push
     "van": "admin_pushes",  # 1.7.1 (FW-0072): van alerts from Hark's working flight, the admin only
+    "pilot_upload": "upload_review",  # 1.7.2 (FW-0066): a pilot's upload for the admin's push (Approve / Remove / Reject)
 }
 
 # discovery oids that are not core (every other entity is core)
@@ -186,11 +200,18 @@ def name_refusal(name, taken=()):
 # list files it serves (FILE_KINDS). portal.py builds the contract fixture (tests/fixtures/portal_contract_v1.json)
 # from these; PORTAL_CONTRACT.md documents it. The admin has no portal: none of this runs on the default instance.
 CONTRACT = 1
-CONTRACT_REVISION = 2  # 1.7.0 (Release C): tickets on the portal, additive within contract 1
+CONTRACT_REVISION = 3  # 1.7.0 (Release C): tickets (2); 1.7.2: pilot alerts, shapes, uploads (3); additive within 1
+# 1.7.2 (revision 3): recall/set leaves the list (F#78: a crafted paste from the portal could replace or blank a day on
+# the pilot's own instance; his lists come only from the admin's forward, 1.7.1) and upload/pdf joins it (FW-0066)
 PORTAL_CMDS = ("hunt/set", "pause/set", "rearm/press", "check_now/press", "charter_scan/press", "freq/normal_min/set",
                "freq/hunt_s/set", "rule/+/live/set", "blocked/set", "trade/set", "pilot/set", "improved/set",
-               "recall/set", "recall/act", "settings/set", "pref/set", "ticket/new", "ticket/image", "ticket/act",
-               "ticket/edit", "ticket/delete")
+               "recall/act", "settings/set", "pref/set", "ticket/new", "ticket/image", "ticket/act",
+               "ticket/edit", "ticket/delete", "upload/pdf")
+# the revision each portal command came in (HOM refuses a newer command to a Watcher that names an older revision in its
+# manifest, with a plain message; a manifest with no revision is revision 2 or older) and the one it left in
+COMMAND_SINCE = {"ticket/new": 2, "ticket/image": 2, "ticket/act": 2, "ticket/edit": 2, "ticket/delete": 2,
+                 "upload/pdf": 3}
+COMMAND_REMOVED = {"recall/set": 3}
 PORTAL_RULE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 # contract 1's check frequency ranges (freq/normal_min/set in minutes, freq/hunt_s/set in seconds): a portal's
 # freq/*/set must be a finite number within them (portal.check_freq). Contract 1 is pinned (its fixture and sha256).
@@ -222,29 +243,39 @@ def entity_freq_limits(instance, portal=False):
 
 
 PORTAL_REFUSED = ("email/alert", "crew_scan/press", "upload/chunk", "drop/set", "auto_swap/set", "swap_map/press",
-                  "hunt/state", "pause/state")
-# 1.7.1 (FW-0072): subs added after contract 1 revision 2 that a portal never offers. Contract 1 refuses "anything
-# else" besides PORTAL_CMDS (PORTAL_CONTRACT.md 5.2), so these are refused without naming them in the fixture, whose
-# bytes stay as revision 2 froze them (a later revision may list them in PORTAL_REFUSED)
-NOT_ON_PORTAL = ("layover/note",)
+                  "hunt/state", "pause/state", "recall/set", "layover/note", "upload/decide")
+# 1.7.1 (FW-0072): subs added after a contract revision that a portal never offers, refused as "anything else" until a
+# later revision names them in PORTAL_REFUSED (1.7.2, revision 3: layover/note is named there now)
+NOT_ON_PORTAL = ()
 # the tabs of the portal (portal_layout.json), and the one each event opens (ntfy Click, the events list); 1.7.0: the
 # Tickets tab last, so the five tabs before it keep their places in the tab bar
 PORTAL_TABS = ("watcher", "schedule", "pilot", "recall", "settings", "tickets")
 PORTAL_EVENTS = ("new_pairing", "rule_match", "recall_miss", "request_decided", "schedule_changed", "charter",
-                 "hidden")
+                 "hidden", "bid_calendar")  # 1.7.2 (revision 3): bid_calendar, the pilot's own (FW-0070)
 MACHINE_EVENTS = ("needs_settings", "stopped_*")  # sensor.<prefix>_state turning to one of these (stopped_ any)
 # 1.7.0 (Release C): events the Watcher makes from its own files, never from an MQTT event topic (so a publish can never
 # become one): ticket_fixed, from a move into fixed in the pilot's own tickets (tickets.fixed_moves)
-OWN_EVENTS = ("ticket_fixed",)
+# 1.7.2 (revision 3): schedule_unread, from the Watcher's own schedule read times (after SCHEDULE_UNREAD_H without a
+# good FLICA schedule read, at most once an HST day)
+OWN_EVENTS = ("ticket_fixed", "schedule_unread")
 EVENT_VIEWS = {"new_pairing": "watcher", "rule_match": "watcher", "recall_miss": "recall",
                "request_decided": "schedule", "schedule_changed": "schedule", "charter": "watcher",
-               "hidden": "watcher", "needs_settings": "settings", "stopped_*": "watcher", "ticket_fixed": "tickets"}
+               "hidden": "watcher", "needs_settings": "settings", "stopped_*": "watcher", "ticket_fixed": "tickets",
+               "bid_calendar": "watcher", "schedule_unread": "schedule"}
+SCHEDULE_UNREAD_H = 6
 # the only fields an event's data (events.json) carries; the title and body are built from these alone, so no name,
 # employee number, captain, contact, URL, commute reason or pay amount (value, pay) ever leaves the Watcher in one.
 # 1.7.0: ticket (a ticket id, or a list of them) and version (the release that fixed it); never a ticket's title or text
 EVENT_FIELDS = ("pairing", "dates", "start", "end", "days", "month", "date", "layover", "report", "release",
                 "credit", "block", "fit", "far", "vac", "comm", "month_rule", "verdict", "type", "status", "added",
                 "removed", "flight", "route", "rule_id", "state", "ticket", "version")
+# 1.7.2 (revision 3): fields one event kind carries besides EVENT_FIELDS (event_data adds them for that kind only, so
+# another kind's payload never brings them along): the bid calendar alert's own keys (the same as the admin's push:
+# its month, which alert, the event's and the send's HST time, where the date came from) and the hours a schedule went
+# unread. Never a title or a message: the text is built from these (portal.event_text renders the bid calendar's words
+# with bidcal.render, as the admin's push has them).
+EVENT_KIND_FIELDS = {"bid_calendar": ("bid_month", "alert", "event_hst", "at_hst", "source", "cycle_source"),
+                     "schedule_unread": ("hours",)}
 # the pay and tax helpers the portal sets with pref/set (feature prefs); the Watcher keeps them in <data>/prefs.json
 # and shows them as these entities. Bounds: the schedule card's own pickers (federal 0 to 45 % by 0.5, state 0 to
 # 15 % by 0.25), the longevity year 1 to 12 (PWA 3.B.1, 3.D.6 table caps at 12), the Extended Range list the schedule
@@ -366,6 +397,50 @@ TICKET_CMDS = {
         "keys": ["id", "rid"],
         "required": ["id"],
         "fields": {"id": _text(7, 9, TICKET_ID_PATTERN), "rid": _text(6, 40, TICKET_CID_PATTERN)}},
+}
+
+
+# ---------------------------------------------------------------- 1.7.2 (revision 3): command shapes and pilot uploads
+# The same rules as TICKET_CMDS (TICKET_RULES, one generic checker on each side) for two more portal commands.
+# pilot/set (F#49): what the pilot lookup cards send, nothing else: an employee number (1 to 7 ASCII digits), a typed
+# query or a name (at most 60 code points, one line), or a pick id (pilot.pick_id: 12 lowercase hex). The Watcher
+# refuses the same (watcher.pilot_cmd, every instance), and its log line never carries the text.
+# upload/pdf (FW-0066, Ryan Nov 11): one chunk of a pilot's upload of the monthly pairings package or the award (never
+# the seniority list or the contact list: they hold other pilots' phone numbers), cut like ticket photos so each
+# command stays under the 64 KB cap. Every chunk carries the upload's fields; the pilot's Watcher (pilotpdf.py) puts
+# one upload together at a time and checks it whole before anything is stored.
+PRINTABLE_PATTERN = TICKET_LINE_PATTERN  # one line: no control character, line or paragraph separator, bidi control
+PICK_PATTERN = r"^[0-9a-f]{12}$"
+UPLOAD_ID_PATTERN = r"^[A-Za-z0-9_-]{16,40}$"
+MONTH_PATTERN = r"^[0-9]{4}-(0[1-9]|1[0-2])$"
+SHA256_PATTERN = r"^[0-9a-f]{64}$"
+# a pilot's uploads, kept by his Watcher whatever sent them: kinds (pairings and award only), file_bytes (4 MB a file),
+# per_day (uploads put together in 24 h, refused or not), in_flight (one at a time), chunk_chars (base64 characters a
+# chunk) and chunk_parts (the most chunks a 4 MB file needs), stale_s (an upload whose next chunk does not come within
+# this time is dropped), months_ahead (the month is this HST month or one of the next two), and the text extraction's
+# limits (pdftotext -layout in a child process: extract_timeout_s, extract_mem_mb, extract_cpu_s), then
+# min_pairings: a pairings package must hold at least this many pairings (every base and fleet), at least one of them
+# an A332 HNL one, and name that month; an award must name that month and hold the pilot's own line.
+PILOT_UPLOAD_LIMITS = {"kinds": ["pairings", "award"], "file_bytes": 4 * 1024 * 1024, "per_day": 4, "in_flight": 1,
+                       "chunk_chars": 60000, "chunk_parts": 94, "stale_s": 120, "months_ahead": 2,
+                       "extract_timeout_s": 30, "extract_mem_mb": 512, "extract_cpu_s": 30, "min_pairings": 100}
+_UL = PILOT_UPLOAD_LIMITS
+SHAPE_CMDS = {
+    "pilot/set": {
+        "keys": ["emp", "q", "name", "pick"],
+        "required": [],
+        "any_of": ["emp", "q", "pick"],
+        "fields": {"emp": _text(1, 7, r"^[0-9]{1,7}$"), "q": _text(1, 60, PRINTABLE_PATTERN),
+                   "name": _text(0, 60, PRINTABLE_PATTERN), "pick": _text(12, 12, PICK_PATTERN)}},
+    "upload/pdf": {
+        "keys": ["uid", "kind", "month", "size", "sha", "part", "parts", "data"],
+        "required": ["uid", "kind", "month", "size", "sha", "part", "parts", "data"],
+        "fields": {"uid": _text(16, 40, UPLOAD_ID_PATTERN), "kind": {"type": "enum", "values": list(_UL["kinds"])},
+                   "month": _text(7, 7, MONTH_PATTERN), "size": _int(1, _UL["file_bytes"]),
+                   "sha": _text(64, 64, SHA256_PATTERN), "part": _int(1, _UL["chunk_parts"]),
+                   "parts": _int(1, _UL["chunk_parts"]),
+                   "data": _text(1, _UL["chunk_chars"], TICKET_DATA_PATTERN)},
+        "le": [["part", "parts"]]},
 }
 
 

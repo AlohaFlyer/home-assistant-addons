@@ -23,11 +23,13 @@ import tempfile
 import threading
 import time
 import unicodedata
+from datetime import datetime
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
+import bidcal
 import roles
 
 FWP = 1  # the envelope and command format; equals roles.CONTRACT in contract 1
@@ -691,6 +693,8 @@ class Spool:
             check_freq(key.split("/")[1], payload, cid)
         elif key in roles.TICKET_CMDS:
             check_ticket(key, payload, cid)  # 1.7.0: the shape only; the Watcher's handlers own whose ticket it is
+        elif key in roles.SHAPE_CMDS:
+            check_shape(key, payload, cid)  # 1.7.2 (revision 3): pilot/set and upload/pdf, the same generic rules
         self.accepted.append(now_ms)
         return cid, sub, payload
 
@@ -785,6 +789,20 @@ def check_ticket(sub, payload, cid=None):
     spec = roles.TICKET_CMDS.get(sub)
     if spec is None:
         raise PortalError("not a ticket command", cid)
+    return _check_spec(spec, sub, payload, cid)
+
+
+def check_shape(sub, payload, cid=None):
+    """1.7.2 (revision 3): pilot/set or upload/pdf against its roles.SHAPE_CMDS entry, by the same rules as a ticket
+    command (roles.TICKET_RULES; HOM's generic checker reads commands.shapes from the fixture). Returns the parsed
+    object; PortalError saying why, which never quotes the payload's text."""
+    spec = roles.SHAPE_CMDS.get(sub)
+    if spec is None:
+        raise PortalError("not a shaped command", cid)
+    return _check_spec(spec, sub, payload, cid)
+
+
+def _check_spec(spec, sub, payload, cid):
     try:
         d = json.loads(payload) if isinstance(payload, str) else None
     except (ValueError, RecursionError):
@@ -798,7 +816,8 @@ def check_ticket(sub, payload, cid=None):
         if k not in d:
             raise PortalError(f"{sub}: {k} is missing", cid)
     if spec.get("any_of") and not any(k in d for k in spec["any_of"]):
-        raise PortalError(f"{sub}: nothing to change", cid)
+        raise PortalError(f"{sub}: nothing to change" if sub.startswith("ticket/") else
+                          f"{sub}: one of {', '.join(spec['any_of'])} is needed", cid)
     for k, v in d.items():
         _ticket_field(sub, k, spec["fields"][k], v, cid)
     for a, b in spec.get("le", []):
@@ -813,7 +832,8 @@ def check_ticket(sub, payload, cid=None):
 # ---------------------------------------------------------------- events (events.json and ntfy share them)
 _TAGS = {"new_pairing": "airplane", "rule_match": "dart", "recall_miss": "warning", "request_decided": "envelope",
          "schedule_changed": "calendar", "charter": "airplane", "hidden": "eyes", "needs_settings": "key",
-         "stopped_*": "rotating_light", "ticket_fixed": "white_check_mark"}
+         "stopped_*": "rotating_light", "ticket_fixed": "white_check_mark", "bid_calendar": "spiral_calendar",
+         "schedule_unread": "hourglass"}
 
 
 def _clean(v, n=120):
@@ -831,14 +851,15 @@ def _clean(v, n=120):
 
 
 def event_data(kind, payload):
-    """The EVENT_FIELDS of an event payload (blk read as block), cleaned (_clean); nothing else ever."""
+    """The EVENT_FIELDS of an event payload (blk read as block), and 1.7.2 the kind's own EVENT_KIND_FIELDS, cleaned
+    (_clean); nothing else ever."""
     p = dict(payload) if isinstance(payload, dict) else {}
     if "block" not in p and "blk" in p:
         p["block"] = p.get("blk")
     if isinstance(p.get("row"), dict):  # rule_match: the matched row
         p = {**{k: v for k, v in p["row"].items() if k not in p}, **p}
     out = {}
-    for k in roles.EVENT_FIELDS:
+    for k in tuple(roles.EVENT_FIELDS) + tuple(roles.EVENT_KIND_FIELDS.get(kind, ())):
         if k in p:
             v = _clean(p[k])
             if v is not None:
@@ -858,7 +879,9 @@ def event_text(kind, d):
     """(title, body) of an event from its data alone (event_data), so neither can carry a field data does not.
     1.6.2: the words match the pages they open (a recall verdict as the Recall card names it, no internal rule id, the
     layover even without days, a failed login that points at the Settings save). The new pairing text is pinned by the
-    contract sample (tests/fixtures/portal_contract_v1.json) and stays as it is."""
+    contract sample (tests/fixtures/portal_contract_v1.json). 1.7.2 (revision 3, F#161): the fit is its value alone
+    ("Fits", "Conflict ..."), not "Fit Fits"; the bid calendar alert has the admin's push words (bidcal.alert_text) and a
+    schedule not read says for how long."""
     when = d.get("dates") or d.get("start") or d.get("date") or ""
     facts = []
     if d.get("days"):
@@ -866,9 +889,9 @@ def event_text(kind, d):
     elif d.get("layover") and kind == "rule_match":
         facts.append(f"Layover {d['layover']}")
     for k, label in (("report", "Report"), ("release", "Release"), ("credit", "Credit"), ("block", "Block"),
-                     ("fit", "Fit"), ("far", "FAR 117"), ("comm", "Commute"), ("month_rule", "Month")):
+                     ("fit", ""), ("far", "FAR 117"), ("comm", "Commute"), ("month_rule", "Month")):
         if d.get(k) not in (None, ""):
-            facts.append(f"{label} {d[k]}")
+            facts.append(f"{label} {d[k]}" if label else str(d[k]))  # 1.7.2 (F#161): the fit alone
     if d.get("vac"):
         facts.append("touches VAC")
     if kind == "new_pairing":
@@ -892,6 +915,16 @@ def event_text(kind, d):
                 ". ".join(["Seat still open on the pairing page, gone from the pot"] + facts))
     if kind == "needs_settings":
         return "Flight Watcher needs your FLICA login", "Enter your FLICA username and password on the Settings tab."
+    if kind == "bid_calendar":  # 1.7.2 (revision 3): the admin's push words, from the alert's own fields
+        return bidcal.alert_text(d) or ("Bid calendar", "See the bid calendar dates in your pairing package.")
+    if kind == "schedule_unread":  # 1.7.2 (revision 3): how long, and whether reads fail or wait; nothing else
+        h = d.get("hours") if isinstance(d.get("hours"), int) and not isinstance(d.get("hours"), bool) else None
+        title = f"Schedule not read for {h} h" if h else "Schedule not read"
+        if d.get("state") == "failing":
+            return title, ("Flight Watcher could not read your FLICA schedule. It keeps trying; the Schedule tab says "
+                           "why and when it tries next.")
+        return title, ("Flight Watcher has not read your FLICA schedule: it was waiting (stepped aside for your own "
+                       "FLICA login, a login back-off or the FLICA budget). The Schedule tab says when it tries next.")
     if kind == "ticket_fixed":  # 1.7.0: the ticket id(s) and the version only, never a title or any ticket text
         t = d.get("ticket")
         ids = [x for x in (t if isinstance(t, list) else [t]) if isinstance(x, str) and x]
@@ -914,9 +947,11 @@ def event_text(kind, d):
 
 def event_priority(kind, d):
     """ntfy priority: 5 for a new pairing that fits the schedule and is FAR 117 legal, 4 for a rule match, a recall
-    miss or a stop, 2 (quiet, 1.7.0) for a ticket fixed, else 3."""
+    miss, a stop or (1.7.2) a bid calendar alert, 2 (quiet, 1.7.0) for a ticket fixed, else 3."""
     if kind == "ticket_fixed":
         return 2
+    if kind == "bid_calendar":  # 1.7.2: a deadline (the admin's own push is critical)
+        return 4
     if kind == "new_pairing":
         fits = str(d.get("fit") or "").startswith("Fits")
         legal = str(d.get("far") or "").startswith("OK")
@@ -932,6 +967,8 @@ def event_id(kind, payload, d):
     hash of its data and its own time (EVENT_TIME_FIELDS: the first one set), so one occurrence is one id: a replay of
     the same publish dedupes, while a pairing that leaves the pot and comes back (a new 'seen') is a new event."""
     p = payload if isinstance(payload, dict) else {}
+    if kind == "bid_calendar" and isinstance(p.get("key"), str):  # 1.7.2: a date that moved is a new alert (bidcal)
+        return hashlib.sha256(f"{kind}|{p['key']}|{p.get('event_hst')}".encode()).hexdigest()[:16]
     for k in ("key", "id"):
         if isinstance(p.get(k), str) and p[k]:
             return hashlib.sha256(f"{kind}|{p[k]}".encode()).hexdigest()[:16]
@@ -1015,7 +1052,19 @@ def contract():
                                       "month_rule": "", "captain": "Doe, Jane (10001)", "value": 1234.5,
                                       "comm_why": "home by 1800", "detail_url": "https://example.invalid/x"},
                       seq0 + 10, "2026-11-09T20:00:10+00:00")
-    manifest = {"contract": 1, "app_version": "1.6.0", "pilot": pilot, "prefix": prefix, "role": "pilot",
+    # 1.7.2 (revision 3): the bid calendar alert (the admin's payload keys) and a schedule not read
+    bid = bidcal.schedule("2026-12")[0]
+    bid_at = datetime.fromisoformat(bid["fire_at"])
+    bid_title, bid_msg = bidcal.render(bid, bid_at)
+    ev_bid = event_record("bid_calendar", {"kind": "bid_calendar", "key": bid["key"], "bid_month": bid["bid_month"],
+                                           "alert": bid["kind"], "title": bid_title, "message": bid_msg,
+                                           "at_hst": bid_at.isoformat(timespec="seconds"), "event_hst": bid["event"],
+                                           "source": bid["source"], "cycle_source": bid["cycle_source"]},
+                          seq0 + 11, "2026-11-03T18:00:00+00:00")
+    ev_unread = event_record("schedule_unread", {"state": "failing", "hours": 7, "key": "2026-11-09"}, seq0 + 12,
+                             "2026-11-09T20:00:12+00:00")
+    manifest = {"contract": 1, "revision": roles.CONTRACT_REVISION, "app_version": "1.7.2", "pilot": pilot,
+                "prefix": prefix, "role": "pilot",
                 "cards": {f"flight-watcher-clock-card-{pilot}.js": hashlib.sha256(b"// sample card\n").hexdigest()},
                 "layout": {"tabs": [{"id": "watcher", "title": "Watcher", "cards": [
                     {"type": f"custom:flight-watcher-clock-card-{pilot}"}, {"type": "heading", "heading": "Finds"}]}]},
@@ -1029,11 +1078,11 @@ def contract():
                              f"input_number.{prefix}_month_offset": {"set_value": {"local": True},
                                                                       "increment": {"local": True},
                                                                       "decrement": {"local": True}}},
-                "mqtt_subs": ["blocked/set", "improved/set", "pilot/set", "recall/act", "recall/set", "settings/set",
-                              "trade/set"],
+                "mqtt_subs": ["blocked/set", "improved/set", "pilot/set", "recall/act", "settings/set", "trade/set",
+                              "upload/pdf"],
                 "files": ["finds:2026-11", "pairings:2026-11", "pickers", "pilotver", "recall", "school:2026-27",
                           "versions"], "ntfy": False}
-    bodies = [("manifest", manifest), ("state", state), ("events", {"events": [ev]}),
+    bodies = [("manifest", manifest), ("state", state), ("events", {"events": [ev, ev_bid, ev_unread]}),
               ("results", {"results": [{"id": "0123456789abcdef", "ok": True, "why": ""},
                                        {"id": "fedcba9876543210", "ok": False, "why": "sub not allowed: drop/set"}]}),
               ("file:finds:2026-11", {"month": "2026-11", "count": 0, "finds": []}),
@@ -1067,7 +1116,6 @@ def contract():
                 cmd("trade/set", dumps({"key": "H9001|2026-11-20"}), 10),
                 cmd("pilot/set", dumps({"q": "10001"}), 11),
                 cmd("improved/set", dumps({"month": "2026-11", "awarded": 1, "current": 2}), 12),
-                cmd("recall/set", dumps({"date": "2026-11-03", "rows": []}), 13),
                 cmd("recall/act", dumps({"refresh": True}), 14), cmd("settings/set", sealed, 15),
                 cmd("pref/set", dumps({"key": "federal_tax_pct", "value": 22.5}), 16),
                 cmd("pref/set", dumps({"key": "longevity_year", "value": 7}), 17),
@@ -1091,6 +1139,9 @@ def contract():
     t_acc, t_ref = ticket_samples(cmd)
     accepted += t_acc
     refused += t_ref
+    s_acc, s_ref = shape_samples(cmd)  # 1.7.2 (revision 3): pilot/set and upload/pdf
+    accepted += s_acc
+    refused += s_ref
     file_urls = [
         {"url": f"/local/flight-watcher/{pilot}/finds_2026-11_{'ab' * 16}.json?t=1", "kind": "finds", "arg": "2026-11",
          "api": "/fw/api/file/finds/2026-11"},
@@ -1137,16 +1188,31 @@ def contract():
                      "freq_limits": roles.FREQ_LIMITS,
                      "tickets": roles.TICKET_CMDS, "ticket_rules": list(roles.TICKET_RULES),
                      "pilot_ticket_actions": list(roles.PILOT_TICKET_ACTIONS),
-                     "pilot_ticket_limits": roles.PILOT_TICKET_LIMITS},
+                     "pilot_ticket_limits": roles.PILOT_TICKET_LIMITS,
+                     "shapes": roles.SHAPE_CMDS,
+                     "shape_rules": "commands.shapes are read with commands.ticket_rules, as commands.tickets are",
+                     "pilot_upload_limits": roles.PILOT_UPLOAD_LIMITS,
+                     "pilot_upload_checks": list(UPLOAD_CHECKS),
+                     "since_revision": roles.COMMAND_SINCE, "removed_in_revision": roles.COMMAND_REMOVED},
         "prefs": roles.PREF_KEYS, "local_helpers": roles.LOCAL_HELPERS,
         "events": {"kinds": list(roles.PORTAL_EVENTS) + list(roles.MACHINE_EVENTS) + list(roles.OWN_EVENTS),
                    "views": roles.EVENT_VIEWS,
                    "fields": list(roles.EVENT_FIELDS),
+                   "kind_fields": {k: list(v) for k, v in roles.EVENT_KIND_FIELDS.items()},
+                   "bid_calendar_alerts": list(bidcal.KINDS), "schedule_unread_after_h": roles.SCHEDULE_UNREAD_H,
                    "entry": ["seq", "ts", "kind", "id", "view", "priority", "title", "body", "data", "tags"],
                    "keep": EVENTS_KEEP},
         "results": {"entry": ["id", "ok", "why"], "keep": RESULTS_KEEP},
         "tabs": list(roles.PORTAL_TABS),
         "file_kinds": roles.FILE_KINDS,
+        "synthesized_states": {"prefs": [roles.PREF_KEYS[k]["entity"].replace("{prefix}", "<prefix>")
+                                          for k in roles.PREF_KEYS],
+                               "pilot_uploads": "sensor.<prefix>_pilot_uploads"},
+        "revisions": {"1": "Flight Watcher 1.6.0, HOM 1.6.0: first version",
+                      "2": "Flight Watcher 1.7.0, HOM 1.8.0: tickets on the portal",
+                      "3": "Flight Watcher 1.7.2, HOM 1.8.2: bid_calendar and schedule_unread alerts, the pilot/set "
+                           "shape, recall/set refused, a pilot's pairings package and award uploads (upload/pdf), the "
+                           "fit alone in the new pairing text, the manifest's revision"},
         "masks": {"zero": list(MASK_ZERO), "drop": list(MASK_DROP), "never_copied": ["context"]},
         "blob_keep_s": BLOB_KEEP_S,
         "test_key": {"label": TEST_SEED_LABEL, "seed": "sha256(label)", "public_key": public_id(key)},
@@ -1259,6 +1325,94 @@ def ticket_samples(cmd):
     ]
     accepted = [cmd(sub, p if isinstance(p, str) else dumps(p), 300 + i) for i, (sub, p) in enumerate(acc)]
     refused = [{"why": why, **cmd(sub, p if isinstance(p, str) else dumps(p), 400 + i)}
+               for i, (why, sub, p) in enumerate(ref)]
+    return accepted, refused
+
+
+# 1.7.2 (revision 3): what the pilot's Watcher checks on a whole upload/pdf upload, in order, before anything is stored
+UPLOAD_CHECKS = (
+    "one upload at a time; chunks in order (the same chunk again counts once), the next within stale_s",
+    "every chunk carries the same uid, kind, month, size, sha and parts; parts is the base64 length over chunk_chars",
+    "kind pairings or award; month this HST month or one of the next months_ahead",
+    "at most per_day uploads put together in 24 h",
+    "the whole base64 decodes strictly, to size bytes (at most file_bytes) whose sha256 is sha",
+    "%PDF- at the start and %%EOF in the last 1024 bytes",
+    "text from pdftotext -layout in a child process: extract_timeout_s, extract_mem_mb of memory, extract_cpu_s of CPU",
+    "pairings: names that month's Pairing Package, at least min_pairings pairings, at least one A332 HNL pairing",
+    "award: names that month and holds the pilot's own line (his employee number from his FLICA schedule)",
+    "the same file as the one on file is not stored again",
+    "nothing on file for that month and kind: used at once; else held for the admin, read by no instance",
+)
+
+
+def shape_samples(cmd):
+    """(accepted, refused) samples of contract 1 revision 3's shaped commands (roles.SHAPE_CMDS: pilot/set and
+    upload/pdf; made-up values), numbered from 500 on. Every one goes through Spool and check_shape here and HOM's
+    generic checker there."""
+    astral = "\U0001F6EB"
+    b64 = base64.b64encode(b"%PDF-1.4 made-up test bytes, not a pairing package\n%%EOF\n").decode("ascii")
+    up = {"uid": "udemo00000000001", "kind": "pairings", "month": "2026-12", "size": 4096, "sha": "ab" * 32,
+          "part": 1, "parts": 2, "data": b64}
+    lim = roles.PILOT_UPLOAD_LIMITS
+    acc = [
+        ("pilot/set", {"q": "10001"}),
+        ("pilot/set", {"q": "Doe"}),
+        ("pilot/set", {"emp": "10001", "name": "Doe, Jane"}),
+        ("pilot/set", {"emp": "1234567", "name": ""}),
+        ("pilot/set", {"pick": "0123456789ab", "name": "Doe, Jane"}),
+        ("pilot/set", {"q": astral + "x" * 59}),
+        ("pilot/set", {"q": "#10001"}),
+        ("upload/pdf", up),
+        ("upload/pdf", {**up, "kind": "award", "part": 2}),
+        ("upload/pdf", {**up, "size": lim["file_bytes"], "part": lim["chunk_parts"], "parts": lim["chunk_parts"],
+                        "data": "A" * lim["chunk_chars"]}),
+    ]
+    ref = [
+        ("pilot/set with no emp, q or pick", "pilot/set", {"name": "Doe, Jane"}),
+        ("pilot/set empty", "pilot/set", {}),
+        ("pilot/set emp of 8 digits", "pilot/set", {"emp": "12345678"}),
+        ("pilot/set emp empty", "pilot/set", {"emp": ""}),
+        ("pilot/set emp with a letter", "pilot/set", {"emp": "10a01"}),
+        ("pilot/set emp a number", "pilot/set", {"emp": 10001}),
+        ("pilot/set emp in another script's digits", "pilot/set", {"emp": "\u0661\u0662\u0663"}),
+        ("pilot/set q over 60 code points", "pilot/set", {"q": astral + "x" * 60}),
+        ("pilot/set q empty", "pilot/set", {"q": ""}),
+        ("pilot/set q with a line feed", "pilot/set", {"q": "Doe\nJane"}),
+        ("pilot/set q with a bidi override", "pilot/set", {"q": "Doe \u202eenaJ"}),
+        ("pilot/set q with an escape", "pilot/set", {"q": "Doe\x1b[2J"}),
+        ("pilot/set name over 60 code points", "pilot/set", {"emp": "10001", "name": "x" * 61}),
+        ("pilot/set name null", "pilot/set", {"emp": "10001", "name": None}),
+        ("pilot/set pick in capitals", "pilot/set", {"pick": "0123456789AB"}),
+        ("pilot/set pick too short", "pilot/set", {"pick": "0123"}),
+        ("pilot/set another key", "pilot/set", {"q": "Doe", "url": "https://example.invalid/"}),
+        ("pilot/set payload an array", "pilot/set", "[\"10001\"]"),
+        ("pilot/set payload not JSON", "pilot/set", "{q: 10001"),
+        ("pilot/set name with a lone surrogate", "pilot/set",
+         dumps({"emp": "10001", "name": "@"}).replace("@", "\\ud800", 1)),
+        ("upload kind seniority", "upload/pdf", {**up, "kind": "seniority"}),
+        ("upload kind contacts", "upload/pdf", {**up, "kind": "contacts"}),
+        ("upload month 13", "upload/pdf", {**up, "month": "2026-13"}),
+        ("upload month without its zero", "upload/pdf", {**up, "month": "2026-1"}),
+        ("upload size 0", "upload/pdf", {**up, "size": 0}),
+        ("upload size over 4 MB", "upload/pdf", {**up, "size": lim["file_bytes"] + 1}),
+        ("upload size true", "upload/pdf", {**up, "size": True}),
+        ("upload part over the chunk limit", "upload/pdf", {**up, "part": lim["chunk_parts"] + 1,
+                                                            "parts": lim["chunk_parts"] + 1}),
+        ("upload part over parts", "upload/pdf", {**up, "part": 3}),
+        ("upload data over the chunk size", "upload/pdf", {**up, "data": "A" * (lim["chunk_chars"] + 1)}),
+        ("upload data a data URL", "upload/pdf", {**up, "data": "data:application/pdf;base64," + b64}),
+        ("upload data with a trailing newline", "upload/pdf", {**up, "data": b64 + "\n"}),
+        ("upload sha in capitals", "upload/pdf", {**up, "sha": "AB" * 32}),
+        ("upload sha too short", "upload/pdf", {**up, "sha": "ab" * 16}),
+        ("upload uid too short", "upload/pdf", {**up, "uid": "short"}),
+        ("upload uid with a slash", "upload/pdf", {**up, "uid": "udemo/0000000001"}),
+        ("upload names a pilot", "upload/pdf", {**up, "pilot": "demo"}),
+        ("upload without data", "upload/pdf", {k: v for k, v in up.items() if k != "data"}),
+        ("upload without sha", "upload/pdf", {k: v for k, v in up.items() if k != "sha"}),
+        ("upload payload not an object", "upload/pdf", "\"%PDF\""),
+    ]
+    accepted = [cmd(sub, p if isinstance(p, str) else dumps(p), 500 + i) for i, (sub, p) in enumerate(acc)]
+    refused = [{"why": why, **cmd(sub, p if isinstance(p, str) else dumps(p), 600 + i)}
                for i, (why, sub, p) in enumerate(ref)]
     return accepted, refused
 

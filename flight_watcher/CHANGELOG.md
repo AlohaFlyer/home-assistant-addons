@@ -1,5 +1,91 @@
 # Changelog
 
+## 1.7.2
+
+Portal contract 1 revision 3 (the council's plan of Nov 11 and Ryan's decisions the same day), from the audit of the
+live portal and FW-0066 (Ryan: "either I or James can upload them; the pairings and awards are the same doc for each
+of us"). Built on branch fw-1.7.2 on top of 1.7.1 (live), not pushed or deployed. A contract change: HOM 1.8.2 (takes
+revision 2 and 3 exports and commands) ships first, then this release; each with Ryan's yes, a backup and a 30 min
+live watch; rollback Flight Watcher first. The fixture `tests/fixtures/portal_contract_v1.json` is regenerated (its new
+sha256 is pinned in `tests/test_portal_contract.py`; HOM's `fwportal/contract/v1.json` must be the same bytes) and
+`PORTAL_CONTRACT.md` says revision 3. Revision 2's crewtrac_refused pilot event is not in it: since 1.7.1 a pilot's
+Watcher makes no CrewTrac login at all.
+
+### Contract 1 revision 3 (`roles.py`, `portal.py`, `ntfy.py`, `bidcal.py`)
+
+- `bid_calendar` on the pilot's portal (FW-0070 for the pilot): 1.7.1 computes the bid calendar alerts on every
+  instance and only Ryan's prefix had a push. Each alert is now a portal event of the pilot's (his Alerts list and
+  ntfy) with the admin's push words, built from the alert's own fields only (`bidcal.alert_text`: bid_month, alert,
+  event_hst, at_hst, source, cycle_source; `roles.EVENT_KIND_FIELDS`, carried for that kind only), view watcher,
+  priority 4. The `event/bid_calendar` payload gains `alert` and `cycle_source` on every instance (the same keys on
+  both; the admin's automation reads title, message and key as before), and its `at_hst` is the time the words are
+  from.
+- `schedule_unread`, the Watcher's own event (never from an MQTT topic): after 6 h without a good FLICA schedule read
+  (since the last good read, or since this start when none came after it), at most once an HST day, not while paused,
+  waiting for the FLICA login or stopped; data only `state` (failing or waiting) and `hours`, view schedule, ntfy
+  "Schedule not read for 7 h".
+- `pilot/set` shape (F#49, `roles.SHAPE_CMDS`, `portal.check_shape`, the ticket commands' generic rules): keys only
+  emp, q, name and pick; emp 1 to 7 ASCII digits; q 1 to 60 and name 0 to 60 code points of one line; pick 12 hex.
+  The spool, HOM and the Watcher (every instance, `pilot_cmd`) refuse anything else; the Watcher's log line never
+  carries the text. The pilot lookup card sends only that shape (a long name is cut to 60, a line break is a space).
+- `recall/set` leaves `PORTAL_CMDS` (F#78) and is named in `PORTAL_REFUSED`, with `layover/note` and the new
+  `upload/decide`: a pilot's recall lists come only from the admin's forward (1.7.1). The admin's own paste on his
+  dashboard asks first when it would replace a day on file, naming those dates ("Replace the recall lists already on
+  file for Tue Nov 3, Wed Nov 4?"); Cancel sends nothing.
+- The fit alone in the new pairing text (F#161): "... Credit 15:20. Fits. FAR 117 OK", not "Fit Fits".
+- The manifest names its `revision` (3); HOM refuses a revision 3 command to a Watcher whose manifest names none or 2
+  (`commands.since_revision`), with a plain message. The fixture also carries `commands.shapes`,
+  `commands.pilot_upload_limits`, `commands.pilot_upload_checks`, `commands.removed_in_revision`,
+  `events.kind_fields`, `events.bid_calendar_alerts`, `synthesized_states` and `revisions`, and refused samples for
+  every shape rule.
+
+### A pilot's pairings package and award uploads (FW-0066, Ryan's decision)
+
+- New portal command `upload/pdf` (feature `pilot_uploads`, taken only on a pilot whose portal is on, at qos 1): one
+  chunk of the month's pairings package or award PDF (never the seniority list or the contact list), each under the
+  64 KB command cap (60000 base64 characters, at most 94 parts for 4 MB). The pilot uploads card (new, the portal's
+  Settings tab, 390 px light and dark) reads the file with FileReader, takes its sha256 with WebCrypto and sends one
+  part every 2.5 s; it shows what is on file for this month and the next two (from you, the admin or another pilot:
+  never a name), his uploads and the Watcher's answers, from `sensor.<prefix>_pilot_uploads`, which the Watcher
+  synthesizes in his portal's state.json (never a Home Assistant entity).
+- `pilotpdf.py` on the pilot's Watcher, before anything is stored: one upload at a time, chunks in order, 120 s
+  without a chunk drops it, the month this HST month or one of the next two, 4 uploads a day, 4 MB, the whole base64
+  to its size and sha256, `%PDF-` and `%%EOF`, then `pdftotext -layout` (the admin's extractor) in a child process
+  with a 30 s timeout and memory (512 MB), CPU (30 s), file size and core limits set in the child (setrlimit), then
+  the existing parsers: that month's pairing package (its title, at least 100 pairings over every base and fleet, at
+  least one A332 HNL one; the real November and December packages hold 257 and 225 pairings, 84 of them A332 HNL) or
+  that month's award holding his own line. A refusal says why in plain words; an upload refused stays refused (its
+  later chunks are ignored).
+- Nothing on file for that month and kind: used at once, both instances read it as an upload of the admin's. A file
+  on file: the pilot's copy goes to `/share/flight_watcher/upload_review/quarantine/` (0700, files 0600), which no
+  instance reads and nothing serves (not the uploads list, not the portal export, not the Web UI) until Ryan approves
+  it; the same file again is not stored. Provenance per file (who, when, sha256) in
+  `upload_review/provenance.json`, the admin's own uploads included (`web.save_upload`, `Review.record_admin`).
+- Ryan's push: his Watcher publishes `flight_watcher/event/pilot_upload` once per upload (feature `upload_review`,
+  the admin only) and the new HA automation "Flight Watcher pilot upload" (`ha/automations_flight_watcher.yaml`, not
+  on Pako yet) pushes his two iPhones, time-sensitive, naming the file and the pilot: Remove for one used at once,
+  Approve and Reject for one held. A button publishes `{id, action}` to `flight_watcher/upload/decide`, the
+  admin-only command his Watcher takes (also from the new "Pilot uploads" part of his Settings uploads card, which
+  asks first). Approve swaps the held copy in and keeps the old file in `upload_review/rollback/`; Remove takes a
+  pilot's file off (the file it replaced comes back when there was one, else nothing is on file; the pairing file
+  goes too); Reject deletes the held copy. Each change bumps the file's generation, which every instance follows
+  within a minute whatever its state (`upload_gens_check`: a removed package's details and a removed award's version
+  .001 are forgotten, `versions.clear_award`; a swapped file is read again). The push guard passes and counts the new
+  handler (22 automations, 3 notification-action handlers, 0 offenders).
+
+### CrewTrac refusal block keyed with an HMAC (the council's change)
+
+- The admin's stored CrewTrac retry block (1.6.1, a bare sha256 of the user ID and password) is HMAC-SHA256 with a
+  random 32-byte key of the instance's own (`<data>/crewtrac_hmac.key`, 0600; never exported, logged or sent). The
+  first 1.7.2 start re-keys the record of the details in use and drops a bare sha256 of any other. A key found gone
+  later with a refusal on record keeps CrewTrac blocked until the next save in Settings ("CrewTrac is not tried: its
+  refusal record could not be checked ..."); with no refusal on record nothing is blocked.
+
+### Also
+
+- The admin's uploads card keeps WCAG AA contrast on a dark card (its green "read" was 3.1:1).
+- `Dockerfile` copies `pilotpdf.py`.
+
 ## 1.7.1
 
 Fixes after 1.7.0 went live (the live log of Nov 11 on the second pilot's instance, LIVE-1, and the review findings

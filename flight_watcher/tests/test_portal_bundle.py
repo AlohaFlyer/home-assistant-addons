@@ -41,12 +41,14 @@ def test_manifest_verifies_and_names_the_pilot(pilot):
     assert env["kind"] == "manifest" and env["pilot"] == "pilot2"
     assert {k: m[k] for k in ("contract", "app_version", "pilot", "prefix", "role", "ntfy")} == {
         "contract": 1, "app_version": W.VERSION, "pilot": "pilot2", "prefix": P, "role": "pilot", "ntfy": False}
-    assert set(m) == {"contract", "app_version", "pilot", "prefix", "role", "cards", "layout", "services", "mqtt_subs",
-                      "files", "ntfy"}
+    assert set(m) == {"contract", "revision", "app_version", "pilot", "prefix", "role", "cards", "layout", "services",
+                      "mqtt_subs", "files", "ntfy"} and m["revision"] == roles.CONTRACT_REVISION == 3  # 1.7.2
     assert [t["id"] for t in m["layout"]["tabs"]] == list(roles.PORTAL_TABS)
-    assert m["mqtt_subs"] == ["blocked/set", "improved/set", "pilot/set", "recall/act", "recall/set", "settings/set",
+    # 1.7.0: the tickets card's five subs (its _pub calls); 1.7.2 (revision 3): no recall/set (the admin's paste is
+    # behind its role check, and the portal refuses it), and the pilot uploads card's upload/pdf
+    assert m["mqtt_subs"] == ["blocked/set", "improved/set", "pilot/set", "recall/act", "settings/set",
                               "ticket/act", "ticket/delete", "ticket/edit", "ticket/image", "ticket/new",
-                              "trade/set"]  # 1.7.0: the tickets card's five subs (its _pub calls)
+                              "trade/set", "upload/pdf"]
     assert set(m["mqtt_subs"]) <= set(roles.PORTAL_CMDS)
 
 
@@ -62,8 +64,10 @@ def test_blobs_are_the_pilot_card_copies_by_hash(pilot):
     built = cards.build(W.VERSION, ["pilot2"])
     assert sorted(m["cards"]) == sorted(f"flight-watcher-{b}-pilot2.js" for b in (
         "charters-card", "clock-card", "finds-card", "improved-card", "pickers-card", "pilot-card", "pilot-search-card",
-        "pot-card", "recall-card", "requests-card", "schedule-card", "settings-card", "tickets-card", "working-card"))
-    # no uploads or row colors card; 1.6.2: the pot, working flight, charters and requests cards; 1.7.0: tickets
+        "pilot-uploads-card", "pot-card", "recall-card", "requests-card", "schedule-card", "settings-card", "tickets-card",
+        "working-card"))
+    # no uploads or row colors card; 1.6.2: the pot, working flight, charters and requests cards; 1.7.0: tickets;
+    # 1.7.2 (FW-0066): the pilot's own uploads card
     for fn, sha in m["cards"].items():
         raw = open(os.path.join(W.PORTAL_DIR, "out", "blobs", f"{sha}.js"), "rb").read()
         assert hashlib.sha256(raw).hexdigest() == sha and raw.decode() == PT.portal_card(built[fn])
@@ -90,7 +94,8 @@ def test_every_layout_card_is_bundled_or_plain(pilot):
             assert c["entity"] in ids | local, c["entity"]
     text = open(os.path.join(HERE, "portal_layout.json"), encoding="utf-8").read()
     assert chr(0x2014) not in text and "flight_watcher_{name}_" in text
-    assert "flight-watcher-tickets-card-{name}" in text and "uploads-card" not in text  # 1.7.0: the Tickets tab
+    assert "flight-watcher-tickets-card-{name}" in text and "custom:flight-watcher-uploads-card" not in text  # 1.7.0
+    assert "custom:flight-watcher-pilot-uploads-card-{name}" in text  # 1.7.2 (FW-0066): his own uploads, Settings tab
 
 
 def _admin_only(W):
@@ -124,9 +129,11 @@ def test_every_call_service_maps_to_the_manifest(pilot):
             if dom == "mqtt":
                 lit = re.search(r'topic: "%s/([a-z_/]+)"' % P, data)
                 if lit:
-                    assert lit.group(1) in subs or lit.group(1) == "drop/set", (fn, lit.group(1))
+                    assert lit.group(1) in subs or lit.group(1) in ("drop/set", "recall/set"), (fn, lit.group(1))
                     if lit.group(1) == "drop/set":
                         assert "schedule-card" in fn  # drawn only for the admin's role (_isAdmin), refused anyway
+                    if lit.group(1) == "recall/set":  # 1.7.2 (revision 3): the admin's paste, behind _admin()
+                        assert "recall-card" in fn and "recall/set" in roles.PORTAL_REFUSED
                 elif "this._c.topic" in data:
                     assert "settings-card" in fn and "settings/set" in subs
                 elif "`%s/${topic" % P in data:  # the recall card's _send(topic, ...)

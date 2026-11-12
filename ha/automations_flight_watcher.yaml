@@ -1102,3 +1102,113 @@
         title: '{{ p.title }}'
   max: 10
   mode: queued
+- id: '1794500000201'
+  alias: Flight Watcher pilot upload
+  description: '1.7.2 (FW-0066, Ryan Nov 11): a pilot uploaded the pairings package
+    or the award from his portal. One time-sensitive push to Ryan''s two iPhones naming
+    the file and the pilot: used at once (nothing was on file) with Remove, or held
+    (a file was on file) with Approve and Reject. A button publishes {id, action}
+    to flight_watcher/upload/decide; Ryan''s Watcher does it (Approve swaps the copy
+    in and keeps the old file, Remove leaves nothing on file or brings the old file
+    back, Reject deletes the copy). Push isolation (FW-0038): Ryan''s prefix only;
+    only Ryan''s Watcher sends event/pilot_upload and takes upload/decide.'
+  triggers:
+  - id: up
+    topic: flight_watcher/event/pilot_upload
+    trigger: mqtt
+  - event_type: mobile_app_notification_action
+    id: act
+    trigger: event
+  conditions:
+  - condition: template
+    value_template: '{{ trigger.id == ''up'' or (trigger.id == ''act'' and (trigger.event.data.action
+      | default('''')).startswith(''FLIGHT_WATCHER_UPLOAD_'')) }}'
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id: up
+      sequence:
+      - variables:
+          ev: '{{ trigger.payload_json }}'
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: '{{ ev.state == ''live'' }}'
+          sequence:
+          - parallel:
+            - action: notify.mobile_app_ryans_iphone
+              continue_on_error: true
+              data:
+                data:
+                  actions:
+                  - action: FLIGHT_WATCHER_UPLOAD_REMOVE|{{ ev.id }}
+                    title: Remove
+                    destructive: true
+                  push:
+                    interruption-level: time-sensitive
+                  tag: flight_watcher_upload_{{ ev.id }}
+                  url: /flight-watcher/settings
+                message: '{{ ev.message }}'
+                title: '{{ ev.title }}'
+            - action: notify.mobile_app_ryans_iphone_16
+              continue_on_error: true
+              data:
+                data:
+                  actions:
+                  - action: FLIGHT_WATCHER_UPLOAD_REMOVE|{{ ev.id }}
+                    title: Remove
+                    destructive: true
+                  push:
+                    interruption-level: time-sensitive
+                  tag: flight_watcher_upload_{{ ev.id }}
+                  url: /flight-watcher/settings
+                message: '{{ ev.message }}'
+                title: '{{ ev.title }}'
+        default:
+        - parallel:
+          - action: notify.mobile_app_ryans_iphone
+            continue_on_error: true
+            data:
+              data:
+                actions:
+                - action: FLIGHT_WATCHER_UPLOAD_APPROVE|{{ ev.id }}
+                  title: Approve
+                - action: FLIGHT_WATCHER_UPLOAD_REJECT|{{ ev.id }}
+                  title: Reject
+                  destructive: true
+                push:
+                  interruption-level: time-sensitive
+                tag: flight_watcher_upload_{{ ev.id }}
+                url: /flight-watcher/settings
+              message: '{{ ev.message }}'
+              title: '{{ ev.title }}'
+          - action: notify.mobile_app_ryans_iphone_16
+            continue_on_error: true
+            data:
+              data:
+                actions:
+                - action: FLIGHT_WATCHER_UPLOAD_APPROVE|{{ ev.id }}
+                  title: Approve
+                - action: FLIGHT_WATCHER_UPLOAD_REJECT|{{ ev.id }}
+                  title: Reject
+                  destructive: true
+                push:
+                  interruption-level: time-sensitive
+                tag: flight_watcher_upload_{{ ev.id }}
+                url: /flight-watcher/settings
+              message: '{{ ev.message }}'
+              title: '{{ ev.title }}'
+    - conditions:
+      - condition: trigger
+        id: act
+      sequence:
+      - action: mqtt.publish
+        data:
+          payload: '{{ {''id'': trigger.event.data.action.split(''|'', 1)[1], ''action'':
+            (''approve'' if trigger.event.data.action.startswith(''FLIGHT_WATCHER_UPLOAD_APPROVE'')
+            else ''reject'' if trigger.event.data.action.startswith(''FLIGHT_WATCHER_UPLOAD_REJECT'')
+            else ''remove'')} | tojson }}'
+          topic: flight_watcher/upload/decide
+  max: 10
+  mode: queued

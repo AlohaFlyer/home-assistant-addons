@@ -4,6 +4,23 @@ Copies of the Flight Watcher pieces that live in Home Assistant on Pako HI rathe
 review and history (FW-0036). Nothing in this folder is loaded by Home Assistant or by the app, and the app store
 ignores it (no `config.yaml`).
 
+## Pending on Pako (1.7.2, FW-0066): "Flight Watcher pilot upload"
+
+`automations_flight_watcher.yaml` ends with **Flight Watcher pilot upload** (id `1794500000201`), after the van
+time one; not on Pako yet. Apply it through the HA connector once Flight Watcher 1.7.2 is live (the event and the
+command topic exist only from 1.7.2): a [DESTRUCTIVE] yes from Ryan. Triggered by `flight_watcher/event/pilot_upload`
+only (never a pilot's prefix: only the admin's Watcher sends it), it pushes the payload's `title` ("James uploaded the
+December 2026 pairings package") and `message` to `notify.mobile_app_ryans_iphone` and
+`notify.mobile_app_ryans_iphone_16`, `interruption-level: time-sensitive` (not critical), tag
+`flight_watcher_upload_<id>`, url `/flight-watcher/settings`, with one button for a file used at once (`state` live:
+Remove, `FLIGHT_WATCHER_UPLOAD_REMOVE|<id>`) or two for a held copy (Approve `FLIGHT_WATCHER_UPLOAD_APPROVE|<id>`, Reject
+`FLIGHT_WATCHER_UPLOAD_REJECT|<id>`). The same automation handles the buttons (`mobile_app_notification_action`, its
+condition on the `FLIGHT_WATCHER_UPLOAD_` prefix, Ryan's own: the re-arm and recall-miss pattern) and publishes
+`{"id": <id>, "action": approve | reject | remove}` to `flight_watcher/upload/decide`, the admin-only command Ryan's
+Watcher takes. The guard passes and counts it (`python3 ha/check_push_isolation.py`: 22 automations, 3
+notification-action handlers, 0 offenders). Then check by sha256 of the redacted text as in Refresh below and drop
+this section. Undo: delete the automation (its id above); Ryan's Settings uploads card still has the buttons.
+
 ## Pending on Pako (1.7.1, FW-0070): "Flight Watcher bid calendar"
 
 `automations_flight_watcher.yaml` ends with a new automation, **Flight Watcher bid calendar** (id `1794426120070`),
@@ -157,7 +174,7 @@ household users (four, a guest login among them) can open `flight-watcher-james`
 
 | File | Live copy on Pako |
 |:--|:--|
-| `automations_flight_watcher.yaml` | `/config/automations.yaml`: the automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order (19 on Pako; 20 here with the pending bid calendar one, above) |
+| `automations_flight_watcher.yaml` | `/config/automations.yaml`: the automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order (read 2026-11-12: 20 on Pako besides its temporary van automation, the bid calendar one among them; 22 here with the pending van time and pilot upload ones, above) |
 | `dashboard_flight_watcher.json` | `/config/.storage/lovelace.flight_watcher` (dashboard `flight-watcher`) |
 | `packages/flight_watcher_wx.yaml` | `/config/packages/flight_watcher_wx.yaml` |
 | `check_push_isolation.py` | the push-isolation guard (below) |

@@ -327,3 +327,24 @@ def hst_text(iso):
     """'Wed Nov 11 08:00 HST' of an ISO time."""
     t = datetime.fromisoformat(iso).astimezone(HST)
     return f"{day_text(t.date())} {t.strftime('%H:%M')} HST"
+
+
+def alert_text(d):
+    """1.7.2 (contract 1 revision 3): (title, message) of a bid calendar alert from the fields its event carries (the
+    pilot's portal event data and ntfy push: bid_month, alert, event_hst, at_hst, source, cycle_source), worded by
+    render() exactly as the admin's push is; None when a field does not have its own shape (a month YYYY-MM, one of
+    KINDS, ISO times), so nothing else can ever be worded into one."""
+    if not isinstance(d, dict):
+        return None
+    bm, kind, ev, at = d.get("bid_month"), d.get("alert"), d.get("event_hst"), d.get("at_hst")
+    if not (isinstance(bm, str) and re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", bm)) or kind not in KINDS:
+        return None
+    try:
+        evt, att = datetime.fromisoformat(str(ev)), datetime.fromisoformat(str(at))
+    except (TypeError, ValueError):
+        return None
+    if evt.tzinfo is None or att.tzinfo is None:
+        return None
+    src = d.get("source") if d.get("source") in ("package", "default") else "default"
+    cyc = d.get("cycle_source") if d.get("cycle_source") in ("package", "default") else "default"
+    return render({"kind": kind, "bid_month": bm, "event": evt.isoformat(), "source": src, "cycle_source": cyc}, att)

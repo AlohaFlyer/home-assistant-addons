@@ -81,6 +81,19 @@ class FlightWatcherPilotCard extends HTMLElement {
     try { name = decodeURIComponent(name); } catch (e) { /* a stray % : keep it as typed */ }
     window.dispatchEvent(new CustomEvent(PILOT_EV, { detail: { emp: m[1], name } }));
   }
+  // 1.7.2 (contract 1 revision 3, F#49): what pilot/set may carry, as the portal and the Watcher check it: emp 1 to 7
+  // digits, q and name one line of at most 60 code points (no control, separator or bidi character), pick 12 hex
+  static _clean(d) {
+    const one = (s) => Array.from(String(s == null ? "" : s).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, " ").trim()).slice(0, 60).join("").trim();
+    const out = {}, src = d || {};
+    const emp = String(src.emp == null ? "" : src.emp).replace(/[^0-9]/g, "");
+    if (/^[0-9]{1,7}$/.test(emp)) out.emp = emp;
+    const q = one(src.q);
+    if (q) out.q = q;
+    if (/^[0-9a-f]{12}$/.test(String(src.pick || ""))) out.pick = String(src.pick);
+    if (src.name != null && (out.emp || out.pick)) out.name = one(src.name);
+    return out;
+  }
   static _first(detail) {  // true for the first card to hear a lookup; false for the same lookup again inside PILOT_SAME_MS
     const p = JSON.stringify(detail || {}), now = Date.now(), last = FlightWatcherPilotCard._sent;
     if (last && last.p === p && now - last.t >= 0 && now - last.t < PILOT_SAME_MS) return false;
@@ -97,7 +110,8 @@ class FlightWatcherPilotCard extends HTMLElement {
     if (!this._h) return;
     const q = String(d.q || "").trim();
     this._askQ = !d.emp && q && !/^\d+$/.test(q) ? q.toLowerCase() : "";  // a name: learn which pilot it found (_shows)
-    if (FlightWatcherPilotCard._first(d)) this._h.callService("mqtt", "publish", { topic: "flight_watcher/pilot/set", payload: JSON.stringify(d) });
+    const c = FlightWatcherPilotCard._clean(d);  // 1.7.2: the pilot/set shape only (contract 1 revision 3)
+    if ((c.emp || c.q || c.pick) && FlightWatcherPilotCard._first(c)) this._h.callService("mqtt", "publish", { topic: "flight_watcher/pilot/set", payload: JSON.stringify(c) });
     // FW-0025: the loading line only while the reply is still to come. When the sensor already holds the answer (a
     // double tap after a quick cached reply, the same pilot asked again), draw it: HA fires no state change for an
     // identical reply, so the loading line would never clear. A stale cache still answers "loading" (a change).
