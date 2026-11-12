@@ -19,11 +19,13 @@ the earlier ones, worded with the minutes really left; after the van time nothin
 
 1.7.2 (Ryan, Nov 12: "add a tick box to turn on the van time alerts and also add van time alert settings in the form of
 sliders"): the lead times come from the Watcher's settings (offsets_of: the distinct non-zero values of the first and
-second alert, largest first; OFFSETS stays the default for old callers). armed says when each lead time was set or
-alerts were switched on: an offset whose mark had already passed then is never due (set_late names it, the Watcher
-marks it skipped), so a setting changed or switched on late never sends an alert late. A lead time with no armed time
-has been on since before that (the late-start rule after a restart is unchanged). The key keeps its form, so an alert
-sent once is never sent again, whatever the switch or the sliders do after it.
+second alert, largest first; OFFSETS stays the default for old callers). A setting changes only the van in hand when it
+is made (settle, which the Watcher writes into the DB as skipped keys at once): a lead time switched on or moved after
+its mark is skipped while another alert for that van is still ahead or one has gone, so no late alert comes on top of
+them; when none has gone and none is ahead, the latest one still before the van goes now (the late-start rule), so a
+setting never leaves the van in hand with no alert. A slider moved after its own alert went for that van does not send
+another (slot_sent: one alert a slider a van). A van learned or moved after the setting is a new key and follows the
+1.7.1 rules. The key keeps its form, so an alert sent once is never sent again, whatever the switch or the sliders do.
 
 Layover notes. Ryan's notes per layover station (the IATA code, e.g. SYD), one JSON file each under
 /share/flight_watcher/layovers (directory 0700, files 0600; never in git, never in a portal export): plain text, each
@@ -218,29 +220,57 @@ def mark(info, minutes):
     return info["at"] - timedelta(minutes=minutes)
 
 
-def _set_after_mark(info, m, armed):
-    t = (armed or {}).get(m)
-    return t is not None and mark(info, m) < t
+def slot_of(minutes, first):
+    """1.7.2: the slider a lead time stands for: 'first' when the first alert is set to it, else 'second' (the same
+    value on both is one alert, the first's)."""
+    return "first" if minutes == first else "second"
 
 
-def set_late(info, done, now, offsets=OFFSETS, armed=None):
-    """1.7.2: the offsets whose mark had already passed when that lead time was set or alerts were switched on (armed:
-    {minutes: aware time}), not in done, while the van is still ahead. Never sent late: the caller marks each skipped
-    (due() never sends one either). After the van time: none (the sensor says missed)."""
-    if now >= info["at"]:
-        return []
-    return [m for m in offsets if key(info, m) not in done and _set_after_mark(info, m, armed)]
+def _mine(info, done):
+    pre = key(info, 0).rsplit("|", 1)[0] + "|"
+    return [(k, v if isinstance(v, dict) else {}) for k, v in done.items() if k.startswith(pre)]
 
 
-def due(info, done, now, offsets=OFFSETS, armed=None):
+def slot_went(info, done, slot):
+    """1.7.2: True when the van's alert for that slider has gone: a key of this van sent for it, or skipped because it
+    had (why slot_sent). A key from before 1.7.2 names no slider and counts for none."""
+    return any(v.get("slot") == slot and (v.get("how") == "sent" or v.get("why") == "slot_sent")
+               for _, v in _mine(info, done))
+
+
+def settle(info, done, now, before, after, first):
+    """1.7.2: what a van setting does to the van in hand: {minutes: why} of the lead times that became active (in after,
+    not in before: the active lead times before and after the change, none while off) to mark skipped now. first: the
+    first alert's minutes after the change (slot_of).
+    - slot_sent: its slider's alert has already gone for this van (one alert a slider a van; a slider moved after its
+      alert went sends no other).
+    - set_after_mark: its mark has passed and the van has passed, or another alert for this van is still ahead, or one
+      has gone: never sent late on top of those.
+    Left out (so due() decides): one whose mark is ahead (it goes at it), and, when the van is ahead and nothing has
+    gone or is ahead, the smallest of those whose mark passed (due() sends it now, worded with the minutes left, as
+    after a late start): a setting never leaves the van in hand with no alert."""
+    if not info:
+        return {}
+    new = [m for m in after if m not in before and key(info, m) not in done]
+    out = {m: "slot_sent" for m in new if slot_went(info, done, slot_of(m, first))}
+    late = [m for m in new if m not in out and now >= mark(info, m)]
+    if not late:
+        return out
+    ahead = any(now < mark(info, m) and key(info, m) not in done and m not in out for m in after)
+    gone = any(v.get("how") == "sent" for _, v in _mine(info, done))
+    keep = () if now >= info["at"] or ahead or gone else (min(late),)
+    out.update({m: "set_after_mark" for m in late if m not in keep})
+    return out
+
+
+def due(info, done, now, offsets=OFFSETS):
     """(send, skip): the offsets to send now (at most one) and the earlier ones a late start skips. An offset is due
     from its mark until the van time and only while its key is not in done. 1.7.2: offsets are the current lead times
-    (none while alerts are off), and one set or switched on after its mark (armed, set_late) is never due."""
+    (none while alerts are off); a setting's skips are in done (settle)."""
     at = info["at"]
     if now >= at:
         return [], []
-    ready = [m for m in offsets if now >= mark(info, m) and key(info, m) not in done
-             and not _set_after_mark(info, m, armed)]
+    ready = [m for m in offsets if now >= mark(info, m) and key(info, m) not in done]
     if not ready:
         return [], []
     last = min(ready)
@@ -273,28 +303,24 @@ def event(info, minutes, now, offsets=OFFSETS):
             "at_hst": now.astimezone(HST).isoformat(timespec="seconds"), "offsets": list(offsets)}
 
 
-def sensor(info, why, done, now, offsets=OFFSETS, on=True, armed=None):
+def sensor(info, why, done, now, offsets=OFFSETS, on=True):
     """The layover_van sensor's payload: state the van instant (a timestamp, None without one); the van as the card
     shows it, where it comes from (source: package or hark) and each alert's status (pending, sent, skipped, missed;
     1.7.2: off while alerts are off). Only what the card reads from it: not Hark's
     van text or hotel (the card shows those from Hark's own sensor), so the retained topic and HA's recorder keep no
     more of Hark's sensor than the card shows. 1.7.2: alerts_on and offsets (the lead times set, largest first, even
-    while off and without a van); the alerts list is the current offsets, a skipped one with its why when the DB has
-    one (late_start, set_after_mark)."""
+    while off and without a van); the alerts list is the current offsets, a skipped one with its why (late_start,
+    set_after_mark, slot_sent)."""
     base = {"alerts_on": bool(on), "offsets": [int(m) for m in offsets]}
     if not info:
         return {"at": None, "why": why, **base}
     alerts = []
     for m in offsets:
         rec = done.get(key(info, m)) or {}
-        st = rec.get("how")
-        if not st:
-            st = "off" if not on else "missed" if now >= info["at"] else \
-                "skipped" if _set_after_mark(info, m, armed) else "pending"
+        st = rec.get("how") or ("off" if not on else "missed" if now >= info["at"] else "pending")
         a = {"minutes": m, "status": st, "at_hst": mark(info, m).astimezone(HST).strftime("%H:%M")}
-        why_m = rec.get("why") or ("set_after_mark" if st == "skipped" and not rec else "")
-        if why_m:
-            a["why"] = str(why_m)
+        if rec.get("why"):
+            a["why"] = str(rec["why"])
         alerts.append(a)
     return {"at": info["at"].astimezone(UTC).isoformat(timespec="seconds"), "why": "",
             **{k: info[k] for k in ("pairing", "city", "abbr", "date", "local", "weekday", "hst", "hst_weekday",

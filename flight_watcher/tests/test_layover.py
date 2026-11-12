@@ -292,7 +292,7 @@ def test_a_new_van_time_re_arms_and_a_late_start_skips_the_earlier(tmp_path, mon
         assert W.van_tick(new - timedelta(minutes=5), mono=100) == [10]  # a late start for the new van: 10 only
     assert [(e["minutes"], e["minutes_left"], e["van_local"]) for e, _ in _vans(fake)] == [(30, 30, "19:40"),
                                                                                          (10, 5, "20:10")]
-    assert "not sent: the app was not running then" in caplog.text
+    assert "not sent: its mark passed with no alert (the app or MQTT was down, or the van time came later)" in caplog.text
     assert W.DB.get(W.VAN_DONE)[LO.key(LO.van_info(st["sensor.hark_working_flight"][1])[0], 30)]["how"] == "skipped"
     assert W.van_tick(new + timedelta(minutes=1), mono=200) == []
 

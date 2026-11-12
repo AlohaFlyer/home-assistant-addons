@@ -148,23 +148,43 @@ Watcher makes no CrewTrac login at all.
 - The alerts follow the settings: the lead times are the distinct values above 0 of first and second, largest first
   (`layover.offsets_of`; `due`, `event` and `sensor` take them, `OFFSETS` stays the default). Off sends nothing; the
   van sensor still shows the van.
-- Safety: each lead time that becomes active (alerts switched on, or a slider moved to a new value) gets an armed
-  time in `S["van"]["armed"]`. One whose mark had already passed then is never sent late: `layover.set_late` names it
-  and the Watcher marks its DB key skipped (`why` `set_after_mark`, one log line); `due` never sends it either. One
-  whose mark is still ahead simply goes at it. A lead time with no armed time has been on since before its van, so the
-  late-start rule after a restart is exactly 1.7.1's (the latest alert still before the van, the earlier ones skipped,
-  `why` `late_start`). The DB key keeps its form (pairing, van instant, minutes), so an alert sent once is never sent
-  again, whatever the tick box or the sliders do after it, and nothing goes after the van time. The kept keys stay
-  bounded: the newest 40, and always every key of the van in hand (at most one a lead time), so a run of slider moves
-  can never push out an alert already sent and send it again (`van_keep`).
+- Safety: a setting changes only the van in hand when it is made (the last van the Watcher placed), never a van it
+  learns later. `layover.settle` says what happens to each lead time that became active (alerts switched on, or a
+  slider moved to a new value), and the Watcher writes its skips into the DB at once (one log line each):
+  - its mark is ahead: it goes at its mark;
+  - its mark has passed and another alert for that van is still ahead or one has gone (or the van has passed): skipped,
+    `why` `set_after_mark`, never sent late on top of them;
+  - its mark has passed and nothing has gone or is ahead: the latest such one goes at the next sweep, worded with the
+    minutes left (the late-start rule), so a setting never leaves the van in hand with no alert (raising both alerts
+    past their marks at 35 min before used to silence the van);
+  - its slider's alert has already gone for that van: skipped, `why` `slot_sent`. One alert a slider a van: moving the
+    first slider after its alert went sends no other for that van (it used to send one for each move). The same value
+    on both sliders is one alert, the first's, so splitting them again still sends the second. A sent key names its
+    slider (`slot`); a key from 1.7.1 names none and counts for none.
+
+  A van Hark moves or writes after a setting is a new key and follows the 1.7.1 rules (a late-learned van sends its
+  latest alert still due; tying the setting's time to every later van could leave a moved van with no alert at all).
+  Before the Watcher's first look at the van after a start (one sweep, 10 s) there is no van in hand, so a setting then
+  changes nothing already decided and a van follows the 1.7.1 late-start rule (an alert late, never none). The
+  late-start rule after a restart is exactly 1.7.1's (`why` `late_start`); its log line now says the mark passed with
+  no alert (the app or MQTT was down, or the van time came later), not that the app was not running. The DB key keeps
+  its form (pairing, van instant, minutes), so an alert sent once is never sent again, whatever the tick box or the
+  sliders do after it, and nothing goes after the van time. The kept keys stay bounded: the newest 40, and always
+  every key of the van in hand (at most one a lead time), so a run of slider moves can never push out an alert already
+  sent and send it again (`van_keep`).
 - `sensor.flight_watcher_layover_van` gains `alerts_on` and `offsets` (even without a van), and its alerts list is the
-  current lead times (status `off` while off; a skipped one with its `why`). A setting republishes it at once. The
+  current lead times (status `off` while off; a skipped one with its `why`; switched on only after the van, skipped,
+  not missed). A setting republishes it at once. The
   `event/van` payload gains `offsets`; the push automation is unchanged (title, message, minutes).
-- Layover card: under the van time, a "Van alerts" tick box (checked from the sensor's `alerts_on`, else the switch,
-  else checked); a tap publishes `flight_watcher/van/alerts/set` ON or OFF, shows "Saving..." until the sensor says
-  the new state, and puts the box back with a short message on a publish error or no answer in 30 s. Under it "30 and
-  10 min before" ("Off" when off) and "Change in Settings" (the Settings tab, in the app). 44 px taps, a box white on a
-  fixed dark blue when ticked, AA contrast in light and dark, no sideways scroll at 390 px.
+- Layover card: under the van time, a "Van alerts" tick box (checked from the sensor's `alerts_on`, else the switch;
+  when neither says, as while the Watcher is unavailable, "Not known yet" and not tappable, never shown as on); a tap
+  publishes `flight_watcher/van/alerts/set` ON or OFF, shows "Saving..." until the sensor says the new state (the line
+  under the van lists no alert times while saving off), and puts the box back with a short message on a publish error
+  or no answer in 30 s (also when the card was off the page meanwhile); the message goes once the Watcher's state
+  changes. The box keeps the keyboard focus through a tap and its answer (`aria-disabled` while waiting, not
+  `disabled`). Under it "30 and 10 min before" ("Off" when off) and "Change in Settings" (the Settings tab, in the
+  app). 44 px taps, a box white on a fixed dark blue when ticked, AA contrast in light and dark, no sideways scroll at
+  390 px.
 - Settings tab: a "Van time alerts" heading and tiles for the switch and the two sliders (`numeric-input` slider
   feature). These entities exist from 1.7.2, so the dashboard edit is applied on Pako after this release is live
   (`ha/README.md`, Pending); the snapshot is one edit ahead of Pako until then.
@@ -173,8 +193,10 @@ Watcher makes no CrewTrac login at all.
   "van"; the push guard reads `*.flight_watcher_van_*` as Ryan's). The portal contract fixture and
   `PORTAL_CONTRACT.md` are byte for byte unchanged (revision 3).
 - Tests: `tests/test_van_settings.py` (commands, clamps, restart, discovery by role, custom lead times, off, switched
-  on or moved after a mark, toggles and sliders back and forth, the restart rule, bounded keys, roles and the contract,
-  the card at 390 px, the Settings tiles).
+  on or moved after a mark, a van moved or learned after a setting, lead times raised past their marks, one alert a
+  slider a van, switched on after the van, MQTT down over both marks, toggles and sliders back and forth, the restart
+  rule, bounded keys, roles and the contract, the card at 390 px with the Watcher unavailable, away from the page and
+  by keyboard, the Settings tiles).
 
 ### Rollback to 1.7.1
 

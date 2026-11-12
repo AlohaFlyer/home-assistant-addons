@@ -349,9 +349,11 @@ Recent finds.
   the van, default 30) and `number.flight_watcher_van_alert_second` (0 to 60, default 10; 0 is no second alert); MQTT
   `flight_watcher/van/alerts/set` ON or OFF, `flight_watcher/van/first_min/set` and `.../second_min/set` minutes
   (clamped), retained states `flight_watcher/van/*/state`, kept in the Watcher's state across restarts. Off sends no
-  alert (the sensor still shows the van, `alerts_on` false). A lead time switched on or moved after its mark is
-  skipped, never sent late; one whose mark is ahead goes at it; an alert already sent is never sent again; the late
-  start after a restart is as above. The van sensor carries `alerts_on` and `offsets` (the lead times, largest first)
+  alert (the sensor still shows the van, `alerts_on` false). A setting changes only the van in hand: a lead time
+  switched on or moved after its mark is skipped while another alert for that van is ahead or one has gone, else the
+  latest one goes at once (a setting never leaves the van with no alert); one whose mark is ahead goes at it; a slider
+  moved after its own alert went sends no other for that van; an alert already sent is never sent again; a van moved
+  or learned later, and the late start after a restart, are as above. The van sensor carries `alerts_on` and `offsets` (the lead times, largest first)
   and an alert per lead time. Layover notes:
   `flight_watcher/layover/note` {city, text, rid} adds a note (plain text, at most 1000 characters, the city a
   3-letter station code; {city, delete: <id>, rid} removes one), stored in

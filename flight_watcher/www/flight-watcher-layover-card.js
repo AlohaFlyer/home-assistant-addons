@@ -31,10 +31,13 @@
 // dark blue (Home Assistant's default blue was 3.26:1).
 // 1.7.2 (Ryan, Nov 12: "I like the layover card. Can you add a tick box to turn on the van time alerts and also add van
 // time alert settings in the form of sliders in the settings tab?"): under the van time, a "Van alerts" tick box
-// (checked from sensor.<prefix>_layover_van's alerts_on, else switch.<prefix>_van_alerts, else checked) that publishes
-// <prefix>/van/alerts/set ON or OFF; "Saving..." until the sensor says the new state (a publish error says so and puts
-// the box back; no answer in 30 s does too). Under it the lead times ("30 and 10 min before", "Off") and "Change in
-// Settings" (the sliders, /flight-watcher/settings). The box, its label and the link are 44 px taps.
+// (checked from sensor.<prefix>_layover_van's alerts_on, else switch.<prefix>_van_alerts; neither says: "Not known yet",
+// the box not tappable, never a claim that alerts are on) that publishes <prefix>/van/alerts/set ON or OFF; "Saving..."
+// until the sensor says the new state (a publish error says so and puts the box back; no answer in 30 s does too, also
+// after the card was away from the page; a message goes once the Watcher's state changes). Under it the lead times
+// ("30 and 10 min before", "Off") and "Change in Settings" (the sliders, /flight-watcher/settings). The box, its label
+// and the link are 44 px taps; the box keeps the keyboard focus through a tap and its answer (aria-disabled while
+// waiting, never disabled, which would drop the focus).
 // Usage: type: custom:flight-watcher-layover-card, update_url: https://... (optional)
 const FW_LAYOVER_NOTE_MAX = 1000;  // layover.NOTE_MAX
 class FlightWatcherLayoverCard extends HTMLElement {
@@ -43,10 +46,12 @@ class FlightWatcherLayoverCard extends HTMLElement {
     this._draft = this._draft || ""; this._open = this._open || {}; this._sent = this._sent || null; this._arm = "";
     this._tidied = this._tidied || {};
     this._vaWant = this._vaWant === undefined ? null : this._vaWant; this._vaMsg = this._vaMsg || "";
+    this._vaMsgOn = this._vaMsgOn === undefined ? null : this._vaMsgOn;
   }
   getCardSize() { return 8; }
   connectedCallback() {
     if (!this._tick) this._tick = setInterval(() => this._countdown(), 30000);
+    if (this._vaWant !== null && this._vaWant !== undefined && !this._vaT) this._vaWait();  // back while still waiting
   }
   disconnectedCallback() {
     if (this._tick) { clearInterval(this._tick); this._tick = null; }
@@ -244,13 +249,27 @@ class FlightWatcherLayoverCard extends HTMLElement {
         ${others.map((c) => `<details data-k="c_${this._e(c)}"${this._open[`c_${c}`] ? " open" : ""}><summary>${this._e(c)} <span class="u">${cities[c].total || 0} note${cities[c].total === 1 ? "" : "s"}${cities[c].guide ? ", guide" : ""}</span></summary>${body(c, cities[c])}</details>`).join("")}</details>` : ""}
       ${(na.left_out || []).length ? `<div class="u">Not shown here (too much for one sensor): ${this._e(na.left_out.join(", "))}.</div>` : ""}</div>`;
   }
-  // 1.7.2: the van alerts' switch as the Watcher has it: the van sensor's alerts_on, else the switch entity, else on
+  // 1.7.2: the van alerts' switch as the Watcher has it: the van sensor's alerts_on, else the switch entity; null when
+  // neither says (unavailable, unknown, not there yet): never taken as on
   _vaOn() {
     const p = this._c.prefix, va = (this._st(`sensor.${p}_layover_van`) || {}).attributes || {};
     if (typeof va.alerts_on === "boolean") return va.alerts_on;
     const sw = this._st(`switch.${p}_van_alerts`);
-    return sw && (sw.state === "on" || sw.state === "off") ? sw.state === "on" : true;
+    return sw && (sw.state === "on" || sw.state === "off") ? sw.state === "on" : null;
   }
+  // what the box shows: the asked state while waiting, else the Watcher's (null: not known)
+  _vaShown() { return this._vaWant !== null ? this._vaWant : this._vaOn(); }
+  // no answer in 30 s (a publish that never returns too): the box goes back and says so
+  _vaWait() {
+    if (this._vaT) clearTimeout(this._vaT);
+    this._vaT = setTimeout(() => {
+      this._vaT = null;
+      if (this._vaWant === null) return;
+      this._vaWant = null; this._vaSay("The Watcher did not confirm it. Is Flight Watcher running? Try again.");
+      this._render();
+    }, 30000);
+  }
+  _vaSay(m) { this._vaMsg = m; this._vaMsgOn = this._vaOn(); }
   // "30 and 10 min before", "10 min before": the sensor's offsets (1.7.1's alerts list, else 30 and 10)
   _vaWords(on) {
     if (!on) return "Off";
@@ -265,9 +284,11 @@ class FlightWatcherLayoverCard extends HTMLElement {
       this._vaWant = null;
       if (this._vaT) { clearTimeout(this._vaT); this._vaT = null; }
     }
-    const pend = this._vaWant !== null, shown = pend ? this._vaWant : on;
-    return `<div class="va" data-va><label class="vck${pend ? " pend" : ""}"><input type="checkbox" data-vaon${shown ? " checked" : ""}${pend ? " disabled" : ""} aria-describedby="vasub"><span class="bx" aria-hidden="true"></span><span class="vlb">Van alerts</span>${pend ? `<span class="u" data-vapend>Saving...</span>` : ""}</label>
-      <div class="u vas" id="vasub"><span data-vawords>${this._e(this._vaWords(shown))}</span> &middot; <a href="/flight-watcher/settings" data-vaset>Change in Settings</a></div>
+    if (this._vaMsg && on !== this._vaMsgOn) this._vaMsg = "";  // the Watcher's state changed since: the message is old
+    const pend = this._vaWant !== null, unk = !pend && on === null, shown = this._vaShown(), off = pend || unk;
+    const words = unk ? "Not known yet: Flight Watcher has not said" : this._vaWords(shown);
+    return `<div class="va" data-va><label class="vck${off ? " pend" : ""}"><input type="checkbox" data-vaon${shown ? " checked" : ""}${off ? ' aria-disabled="true"' : ""} aria-describedby="vasub"><span class="bx" aria-hidden="true"></span><span class="vlb">Van alerts</span>${pend ? `<span class="u" data-vapend>Saving...</span>` : ""}</label>
+      <div class="u vas" id="vasub"><span data-vawords>${this._e(words)}</span> &middot; <a href="/flight-watcher/settings" data-vaset>Change in Settings</a></div>
       ${this._vaMsg ? `<div class="warn" data-vamsg>${this._e(this._vaMsg)}</div>` : ""}</div>`;
   }
   _go(e, href) {
@@ -278,6 +299,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
   _render() {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     const r0 = this.shadowRoot, focus = r0.activeElement && r0.activeElement.matches && r0.activeElement.matches("[data-draft]");
+    const vaFocus = !!(r0.activeElement && r0.activeElement.matches && r0.activeElement.matches("[data-vaon]"));
     const prevCity = r0.querySelector("[data-city]");
     const { s, a, hark, w } = this._pick();
     const p = this._c.prefix, n = this._st(`sensor.${p}_layover_notes`);
@@ -351,7 +373,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
           <div class="u">${this._e(a.pairing)}${a.leg ? ` &middot; leg ${this._e(a.leg)}` : ""}${a.date ? ` &middot; ${this._e(a.date)}` : ""}${a.tail ? ` &middot; ${this._e(a.tail)}` : ""}</div>
           ${a.mode ? `<span class="mode">${this._e(a.mode === "layover" ? `Layover ${a.origin || ""}` : a.mode)}</span>` : ""}</div>${big}</div>
         ${vt ? this._vaHtml() : ""}
-        ${vt && vt.place ? `<div class="vp">&#128656; Van at ${this._e(vt.place)}${alerts.length && this._vaOn() ? ` <span class="u">&middot; alerts ${alerts.map((x) => `${x.minutes} min ${x.status === "sent" ? "&#10003;" : x.status === "pending" ? `at ${this._e(x.at_hst)} HST` : this._e(x.status)}`).join(", ")}</span>` : ""}</div>` : ""}
+        ${vt && vt.place ? `<div class="vp">&#128656; Van at ${this._e(vt.place)}${alerts.length && this._vaShown() ? ` <span class="u">&middot; alerts ${alerts.map((x) => `${x.minutes} min ${x.status === "sent" ? "&#10003;" : x.status === "pending" ? `at ${this._e(x.at_hst)} HST` : this._e(x.status)}`).join(", ")}</span>` : ""}</div>` : ""}
         ${unread ? `<div class="vp" data-vanunread>&#128656; Van: ${this._e(unread)} <span class="u">&middot; no van alert: its time could not be read for sure</span></div>` : ""}
         ${unknown ? `<div class="vp" data-vanunknown>&#128656; Van time not known: not in the pairings package and not from Hark, so no van alert comes.${!va.at && va.why ? ` <span class="u">(${this._e(va.why)})</span>` : ""}</div>` : ""}
         <div class="tm">${rep ? `<div><span class="k">Report</span> ${this._e(rep)}</div>` : ""}
@@ -384,7 +406,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
       .vck .bx{flex:none;width:20px;height:20px;box-sizing:border-box;border:2px solid var(--primary-text-color);border-radius:4px;display:inline-flex;align-items:center;justify-content:center}
       .vck input:checked+.bx{background:#01579b}.vck input:checked+.bx::after{content:"\\2713";color:#fff;font-size:14px;font-weight:800;line-height:1}
       .vck input:focus-visible+.bx{outline:2px solid var(--primary-color);outline-offset:2px}
-      .vck.pend{cursor:default}.vck.pend .bx{opacity:.6}
+      .vck.pend,.vck.pend input{cursor:default}.vck.pend .bx{opacity:.6}
       .vas a{display:inline-flex;align-items:center;min-height:44px}
       .tm{margin:8px 0;display:grid;gap:2px}.k{display:inline-block;min-width:62px;color:var(--secondary-text-color);font-size:12px;font-weight:600}
       .stt{font-size:13px;margin:4px 0}
@@ -432,22 +454,17 @@ class FlightWatcherLayoverCard extends HTMLElement {
       ci.onchange = () => { if (/^[A-Z]{3}$/.test(ci.value)) this._render(); };
     }
     const vi = r.querySelector("[data-vaon]");
+    if (vi && vaFocus) vi.focus({ preventScroll: true });  // a tap or Space keeps the focus on the box
     if (vi) vi.onchange = async () => {
+      if (vi.getAttribute("aria-disabled") === "true") { vi.checked = !vi.checked; return; }  // waiting, or not known
       const want = vi.checked;
       this._vaWant = want; this._vaMsg = "";
-      if (this._vaT) clearTimeout(this._vaT);
-      // no answer in 30 s (a publish that never returns too): the box goes back and says so
-      this._vaT = setTimeout(() => {
-        this._vaT = null;
-        if (this._vaWant === null) return;
-        this._vaWant = null; this._vaMsg = "The Watcher did not confirm it. Is Flight Watcher running? Try again.";
-        this._render();
-      }, 30000);
+      this._vaWait();
       this._render();
       try { await this._h.callService("mqtt", "publish", { topic: `${p}/van/alerts/set`, payload: want ? "ON" : "OFF" }); }
       catch (e) {
         if (this._vaT) { clearTimeout(this._vaT); this._vaT = null; }
-        this._vaWant = null; this._vaMsg = `Didn't send: ${(e && e.message) || "no connection"}. Try again.`; this._render();
+        this._vaWant = null; this._vaSay(`Didn't send: ${(e && e.message) || "no connection"}. Try again.`); this._render();
       }
     };
     const vl = r.querySelector("[data-vaset]");
