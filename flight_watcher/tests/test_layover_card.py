@@ -445,8 +445,12 @@ def test_the_dashboard_snapshot_puts_the_card_on_the_working_flight_view():
     # Ready to update? button are back above the layover card, so the page reads with no custom card at all
     assert [c["type"] for c in cs] == ["markdown", "grid", "custom:flight-watcher-layover-card"]
     assert "sensor.flight_watcher_working_flight" in cs[0]["content"] and "sensor.hark_working_flight" in cs[0]["content"]
-    assert cs[1]["cards"][0]["name"] == "Ready to update?"
-    assert cs[1]["cards"][0]["tap_action"] == {"action": "url", "url_path": "<redacted-hark-url>"}
+    # Nov 12 (Ryan: "When I click ready to update I want you to trigger hark without my help"): the button runs the
+    # ask-Hark automation instead of opening Hark's project page
+    assert cs[1]["cards"][0]["name"] == "Ready to update"
+    assert cs[1]["cards"][0]["tap_action"] == {"action": "perform-action", "perform_action": "automation.trigger",
+                                              "target": {"entity_id": "automation.flight_watcher_ready_to_update_ask_hark"}}
+    assert "flight_watcher_ready_to_update_ask_hark" in cs[0]["content"]  # the card shows "Asked Hark at ..." 
     assert cs[2] == {"grid_options": {"columns": "full"}, "type": "custom:flight-watcher-layover-card",
                      "update_url": "<redacted-hark-url>"}
     assert "hark.com/project" not in text  # Hark's project link stays out of git

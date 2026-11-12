@@ -108,12 +108,14 @@ MAX_PILOTS = 3  # pilots besides the admin: each runs its own Chromium and its o
 # A pilot's ids are <comp>.flight_watcher_<name>_<suffix> and its folders /data/<name>, /share/flight_watcher/<name>:
 # a name whose first word starts one of the admin's entity ids (sensor.flight_watcher_last_check), topics, helpers,
 # share folders or /data files would collide with them, so it is refused (run.py). ha/check_push_isolation.py reads
-# an id whose first word is here as the admin's.
+# an id whose first word is here as the admin's. 1.7.2: "ready" (automation.flight_watcher_ready_to_update_ask_hark,
+# the Working Flight button that asks Hark, Ryan Nov 12).
 RESERVED = frozenset({
     "admin", "auto", "bid", "blocked", "captures", "ccr", "charter", "charters", "check", "crew", "default", "drop",
     "email", "er", "event", "federal", "fetches", "finds", "flica", "freq", "grid", "hunt", "improved", "last",
     "layover", "layovers", "longevity", "map", "month", "new", "next", "normal", "ot", "own", "pause", "pickers",
-    "pilot", "pot", "pref", "re", "rearm", "recall", "reserve", "rule", "rules", "ryan", "scan", "schedule", "session", "settings", "show",
+    "pilot", "pot", "pref", "re", "rearm", "ready", "recall", "reserve", "rule", "rules", "ryan", "scan", "schedule", "session",
+    "settings", "show",
     "state", "status", "swap", "ticket", "tickets", "trade", "tradeboard", "update", "upload", "uploads",
     "versions", "working", "would", "www",
 })

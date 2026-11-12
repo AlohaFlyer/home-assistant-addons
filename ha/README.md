@@ -17,9 +17,34 @@ Remove, `FLIGHT_WATCHER_UPLOAD_REMOVE|<id>`) or two for a held copy (Approve `FL
 `FLIGHT_WATCHER_UPLOAD_REJECT|<id>`). The same automation handles the buttons (`mobile_app_notification_action`, its
 condition on the `FLIGHT_WATCHER_UPLOAD_` prefix, Ryan's own: the re-arm and recall-miss pattern) and publishes
 `{"id": <id>, "action": approve | reject | remove}` to `flight_watcher/upload/decide`, the admin-only command Ryan's
-Watcher takes. The guard passes and counts it (`python3 ha/check_push_isolation.py`: 22 automations, 3
+Watcher takes. The guard passes and counts it (`python3 ha/check_push_isolation.py`: 23 automations with the Nov 12 ask-Hark one, 3
 notification-action handlers, 0 offenders). Then check by sha256 of the redacted text as in Refresh below and drop
 this section. Undo: delete the automation (its id above); Ryan's Settings uploads card still has the buttons.
+
+## Applied on Pako 2026-11-12 about 02:20 HST: "Ready to update" asks Hark (Ryan, Nov 12)
+
+Ryan: "When I click ready to update I want you to trigger hark without my help. Get the info and bring it back
+automatically." Before this the button opened Hark's project page and Ryan typed "ready" there.
+
+1. **Flight Watcher ready to update (ask Hark)** (id `1794500000301`), before the pending pilot upload one in
+   `automations_flight_watcher.yaml` (HA appended it last on Pako). Run by the button (`automation.trigger`) or a
+   publish to `flight_watcher/hark/ready_to_update` (Ryan's prefix). `mode: restart`. It waits up to 30 min for
+   `sensor.hark_working_flight` with `release_updated` true and a `last_updated` after the tap, then pushes Ryan's two
+   iPhones (time-sensitive, tag `flight_watcher_hark_update`): "Hark updated <flight>" with Hark's `release_name`,
+   or "Hark has not updated <flight> yet" with a link to Hark's project (redacted here). Two templates stay on
+   purpose: `wait_template` (it must see a write after the tap, which `wait_for_trigger` on the attribute cannot
+   tell from Hark's routine refresh) and the `wait.completed` check. The guard passes.
+2. **Dashboard** `flight-watcher`, view `flight`: the button is "Ready to update" with `tap_action`
+   `perform-action` `automation.trigger` on that automation; the markdown card says "(it asks Hark for you)" and
+   shows "Asked Hark at HH:MM HST: waiting" or ": updated HH:MM" for 3 h after a tap (from the automation's
+   `last_triggered`). The layover card's "Update with Hark" chip still opens Hark's page (its `update_url`).
+3. **Hark's side** (bus ASK `m_01M77V1DWJ3MYFKDGX0NEZC3QN`, Nov 12): Hark watches the automation's `last_triggered`
+   over HA REST (at least every 5 min, or a webhook HA can call) and, when it is newer than its last release fill
+   for the leg, runs its "ready" flow and writes `sensor.hark_working_flight`. Until Hark confirms, a tap still
+   reaches Hark only at its next scheduled run; the 30 min push then tells Ryan if it has not landed. A PingID
+   approval, if Outlook asks for one, stays Ryan's tap.
+
+Undo: put the button's `tap_action` back to the url (Hark's project page, git history) and delete the automation.
 
 ## Applied on Pako 2026-11-12 about 23:58 HST (1.7.1, FW-0072): "Flight Watcher van time"
 
@@ -60,10 +85,10 @@ only) by sha256 of the redacted text as in Refresh below:
    <Hark's project page, redacted here>}` in place of the markdown card and the "Ready to update?" button grid. Undo:
    the connector's edits backup of the dashboard (or the two cards from git history).
 
-The 21 automations here that are on Pako (all but the pending pilot upload one) match Pako's 21 Flight Watcher
-automations (besides its disabled temporary van one) in file order, sha256 of the redacted text of the 21 items
-`920b27236b8e0c43a2094be2e9d0237b45497809ccbd9393848a8d4e17a46e25` (read 2026-11-12 23:59 HST). The dashboard matches Pako's
-`/config/.storage/lovelace.flight_watcher`, sha256 `3cb382788becf1c2349d2bbce68d0c0c4a004b8d0f5dc256adbcacbebe5e1566`
+The 22 automations here that are on Pako (all but the pending pilot upload one) match Pako's 22 Flight Watcher
+automations (besides its disabled temporary van one) in file order, sha256 of the redacted text of the 22 items
+`0f677ba7a3118ff682acc82907d4fc02e4f062d5b25bfa0007395f50ea9084c3` (read 2026-11-12 02:2x HST). The dashboard matches Pako's
+`/config/.storage/lovelace.flight_watcher`, sha256 `0e12f42634beafd0eb476743edd795ac78644b30cc41581876fa9000e8341480`
 (5 views: Watcher, Working Flight, Details, Recall/O75, Settings).
 
 **Changed on Pako 2026-11-12 about 22:55 HST (Ryan, in Sydney: "My flight page is not working ... Please get it
@@ -172,7 +197,7 @@ household users (four, a guest login among them) can open `flight-watcher-james`
 
 | File | Live copy on Pako |
 |:--|:--|
-| `automations_flight_watcher.yaml` | `/config/automations.yaml`: the automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order (read 2026-11-12 23:59 HST: 21 on Pako besides its disabled temporary van automation; 22 here with the pending pilot upload one, above) |
+| `automations_flight_watcher.yaml` | `/config/automations.yaml`: the automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order (read 2026-11-12 02:2x HST: 22 on Pako besides its disabled temporary van automation; 23 here with the pending pilot upload one, above) |
 | `dashboard_flight_watcher.json` | `/config/.storage/lovelace.flight_watcher` (dashboard `flight-watcher`) |
 | `packages/flight_watcher_wx.yaml` | `/config/packages/flight_watcher_wx.yaml` |
 | `check_push_isolation.py` | the push-isolation guard (below) |

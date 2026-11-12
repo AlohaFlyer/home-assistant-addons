@@ -71,7 +71,7 @@ Watcher makes no CrewTrac login at all.
   goes too); Reject deletes the held copy. Each change bumps the file's generation, which every instance follows
   within a minute whatever its state (`upload_gens_check`: a removed package's details and a removed award's version
   .001 are forgotten, `versions.clear_award`; a swapped file is read again). The push guard passes and counts the new
-  handler (22 automations, 3 notification-action handlers, 0 offenders).
+  handler (23 automations with the Nov 12 ask-Hark one, 3 notification-action handlers, 0 offenders).
 
 ### CrewTrac refusal block keyed with an HMAC (the council's change)
 
@@ -122,6 +122,15 @@ Watcher makes no CrewTrac login at all.
   "Ready to update?" button back above the layover card (applied on Pako Nov 12), so it reads with no custom card.
 - James's portal is not affected: it loads its card bundle on every page load, and its Watcher tab uses the
   working-flight card, which renders with his live export (checked Nov 12).
+
+### "Ready to update" asks Hark by itself (Ryan, Nov 12)
+
+- Ryan: "When I click ready to update I want you to trigger hark without my help. Get the info and bring it back
+  automatically." On Pako (HA config, not the app): the Working Flight button runs a new automation, "Flight Watcher
+  ready to update (ask Hark)", that waits up to 30 min for Hark's release, MEL and NOTAM write and pushes Ryan
+  either way; Hark watches the automation's `last_triggered` (bus ASK, Nov 12). Details in `ha/README.md`.
+- `roles.RESERVED` gains "ready", so the push guard reads `automation.flight_watcher_ready_to_update_ask_hark` as
+  the admin's (a pilot can no longer be named "ready").
 
 ### Rollback to 1.7.1
 

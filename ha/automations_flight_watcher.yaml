@@ -1102,6 +1102,84 @@
         title: '{{ p.title }}'
   max: 10
   mode: queued
+- id: '1794500000301'
+  alias: Flight Watcher ready to update (ask Hark)
+  description: 'Ryan, Nov 12: "When I click ready to update I want you to trigger
+    hark without my help. Get the info and bring it back automatically." The Working
+    Flight "Ready to update" button runs this automation (automation.trigger), or
+    a publish to flight_watcher/hark/ready_to_update. Hark watches this automation''s
+    last_triggered over HA REST and, when it is newer than its last release fill for
+    the leg, runs its ready flow (release, MEL, NOTAM, GIN) and writes sensor.hark_working_flight
+    with release_updated true; no chat message from Ryan. This automation waits up
+    to 30 min for that write and pushes Ryan''s two iPhones either way (updated, or
+    not yet with a link to Hark). Push isolation (FW-0038): Ryan''s prefix and Hark''s
+    sensor only, Ryan''s phones only.'
+  triggers:
+  - topic: flight_watcher/hark/ready_to_update
+    trigger: mqtt
+  actions:
+  - continue_on_timeout: true
+    timeout: 00:30:00
+    wait_template: '{% set h = states.sensor.hark_working_flight %}{{ h is not none
+      and h.attributes.get(''release_updated'') is sameas true and h.last_updated
+      > as_datetime(asked) }}'
+  - else:
+    - parallel:
+      - action: notify.mobile_app_ryans_iphone
+        continue_on_error: true
+        data:
+          data:
+            push:
+              interruption-level: time-sensitive
+            tag: flight_watcher_hark_update
+            url: <redacted-hark-url>
+          message: Asked 30 min ago. Tap to open Hark.
+          title: Hark has not updated {{ flight }} yet
+      - action: notify.mobile_app_ryans_iphone_16
+        continue_on_error: true
+        data:
+          data:
+            push:
+              interruption-level: time-sensitive
+            tag: flight_watcher_hark_update
+            url: <redacted-hark-url>
+          message: Asked 30 min ago. Tap to open Hark.
+          title: Hark has not updated {{ flight }} yet
+    if:
+    - condition: template
+      value_template: '{{ wait.completed }}'
+    then:
+    - parallel:
+      - action: notify.mobile_app_ryans_iphone
+        continue_on_error: true
+        data:
+          data:
+            push:
+              interruption-level: time-sensitive
+            tag: flight_watcher_hark_update
+            url: /flight-watcher/flight
+          message: '{% set h = state_attr(''sensor.hark_working_flight'', ''release_name'')
+            %}Release{{ '' '' ~ h if h else '''' }}, MEL and NOTAMs are on the Working
+            Flight page.'
+          title: Hark updated {{ flight }}
+      - action: notify.mobile_app_ryans_iphone_16
+        continue_on_error: true
+        data:
+          data:
+            push:
+              interruption-level: time-sensitive
+            tag: flight_watcher_hark_update
+            url: /flight-watcher/flight
+          message: '{% set h = state_attr(''sensor.hark_working_flight'', ''release_name'')
+            %}Release{{ '' '' ~ h if h else '''' }}, MEL and NOTAMs are on the Working
+            Flight page.'
+          title: Hark updated {{ flight }}
+  mode: restart
+  variables:
+    asked: '{{ now().isoformat() }}'
+    flight: '{% set w = states.sensor.flight_watcher_working_flight %}{% set a = w.attributes
+      if w else {} %}{{ (a.get(''flight'', '''') ~ '' '' ~ a.get(''origin'', '''')
+      ~ ''-'' ~ a.get(''dest'', '''')) | trim('' -'') or ''your working flight'' }}'
 - id: '1794500000201'
   alias: Flight Watcher pilot upload
   description: '1.7.2 (FW-0066, Ryan Nov 11): a pilot uploaded the pairings package

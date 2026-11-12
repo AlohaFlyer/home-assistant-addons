@@ -520,7 +520,7 @@ def test_the_push_isolation_guard_counts_the_new_handler():
     r = subprocess.run([sys.executable, os.path.join(ROOT, "ha", "check_push_isolation.py")], capture_output=True,
                        text=True)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "22 automations (5 neutral, 17 ryan), 3 notification-action handler(s), 0 offender(s)" in r.stdout
+    assert "23 automations (5 neutral, 18 ryan), 3 notification-action handler(s), 0 offender(s)" in r.stdout  # 23: + the Nov 12 ask-Hark automation
 
 
 def test_a_held_award_never_becomes_the_awarded_line(inst):
