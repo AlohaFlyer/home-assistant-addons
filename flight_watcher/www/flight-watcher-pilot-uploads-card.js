@@ -17,6 +17,11 @@ const FW_PUP_CHUNK = 60000;  // chunk_chars: one command's base64
 const FW_PUP_GAP_MS = 2500;  // one part every 2.5 s: 24 a minute of the portal's 30
 const FW_PUP_RETRY_MS = 10000;  // a part the portal refused (too many commands a minute) is sent again after this
 const FW_PUP_TRIES = 4;
+// 1.7.2 (review): with every part sent and no final answer this long after the last one (the Watcher drops an upload
+// with no part for stale_s, then a check takes up to 30 s), the card stops waiting: its Watcher restarted, or a part
+// was lost on the way, and Upload is offered again
+const FW_PUP_ANSWER_S = 60;  // beyond stale_s
+const fwPupWaitMs = (lim) => ((Number.isFinite(lim && lim.stale_s) ? lim.stale_s : 120) + FW_PUP_ANSWER_S) * 1000;
 const FW_PUP_KINDS = [["pairings", "Pairings package"], ["award", "Award"]];
 const FW_PUP_WHAT = { pairings: "pairings package", award: "award" };
 const FW_PUP_MON = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
@@ -138,11 +143,18 @@ class FlightWatcherPilotUploadsCard extends HTMLElement {
     if (btn) btn.disabled = !!(s && !s.done);
     if (!s) { if (this._note) this._say(this._note[0], this._note[1]); return; }
     const ans = this._answer(s.uid);
-    if (s.done || (ans && ["live", "pending", "same", "error"].includes(ans.state))) {
+    const fin = !!(ans && ["live", "pending", "same", "error"].includes(ans.state));
+    if (!s.done && !fin && s.lastAt && Date.now() - s.lastAt > fwPupWaitMs(this._lim())) {
       s.done = true;
+      s.error = "No answer from your Watcher: it may have restarted, or a part was lost on the way. Nothing is used " +
+        "until it answers; upload the file again.";
+    }
+    if (s.done || fin) {
+      s.done = true;
+      if (s.timer) { clearTimeout(s.timer); s.timer = null; }
       if (btn) btn.disabled = false;
       if (prog) prog.textContent = "";
-      if (ans) this._say(ans.message, !!ans.ok);
+      if (fin) this._say(ans.message, !!ans.ok);  // a final answer wins, even one that came after the card stopped waiting
       else if (s.error) this._say(s.error, false);
       else this._say("All parts sent: your Watcher is checking the file (up to a minute).", true);
       return;
@@ -202,6 +214,10 @@ class FlightWatcherPilotUploadsCard extends HTMLElement {
       s.sent = p;
       this._status();
       if (p < parts) await new Promise((ok) => setTimeout(ok, FW_PUP_GAP_MS));
+    }
+    if (!s.done && this._send === s) {
+      s.lastAt = Date.now();
+      s.timer = setTimeout(() => { s.timer = null; this._status(); }, fwPupWaitMs(this._lim()) + 1000);
     }
     this._status();
   }

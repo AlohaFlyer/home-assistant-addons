@@ -157,8 +157,9 @@ subscriptions, entities and log lines as 1.5.0. FLICA stays read only: the porta
   helpers; the fixture's `synthesized_states`), for the pilot uploads card: `months` (this HST month and the next two,
   each with `pairings` and `award`: `on_file`, `by` ("you", "the admin", "another pilot" or "": never a name) and
   `pending`, his copy waiting for the admin), `mine` (his last 10 uploads: id, kind, month, state, size, at,
-  decided_at), `answers` (the last 10: uid, ok, state `receiving`, `checking`, `live`, `pending`, `same` or `error`,
-  message, at), `busy`, `receiving` and `limits` (file_bytes, per_day, used_today, left_today, chunk_chars,
+  decided_at; the id is the Watcher's own record id, never his upload's uid), `answers` (the last 10: uid, ok, state
+  `receiving`, `checking`, `live`, `pending`, `same` or `error`, message, at; an upload dropped for no part in
+  `stale_s`, or cut off by a restart, gets an `error` answer), `busy`, `receiving` and `limits` (file_bytes, per_day, used_today, left_today, chunk_chars,
   chunk_parts, stale_s, kinds). No file content, no sha256 and no other pilot's upload.
 
 ### 4.3 events.json (kind `events`)
@@ -369,7 +370,12 @@ from `pdftotext -layout` (the extractor the admin's uploads use) in a child proc
 package must name that month ("December 2026 Pairing Package"), hold at least 100 pairings (every base and fleet) and
 at least one A332 HNL pairing; an award must name that month in its head and hold the pilot's own line (his employee
 number from his FLICA schedule). Anything else is refused with a plain reason in `sensor.<prefix>_pilot_uploads`
-`answers`; nothing is stored.
+`answers`; nothing is stored. Inside the Watcher, past the fixture's list: when the Watcher runs as root (the add-on
+does) the extractor runs as nobody (65534, no groups) in a folder of its own, and its text is copied out (never through
+a link) and bounded before any parser sees it (`pilotpdf.text_shape`: at most 60000 lines of at most 1000 characters,
+8 million characters in all; the real packages and awards are 11,600 to 20,100 lines of at most 676 characters). The
+record's id (the quarantined copy's name, the admin's push and his decision) is minted by the Watcher; the pilot's
+`uid` names his answers only, and a `uid` already on record is refused.
 
 - Nothing on file for that month and kind: the upload is used at once (both instances read it as the admin's upload).
 - A file on file (the same file again changes nothing): the pilot's copy goes to the quarantine folder

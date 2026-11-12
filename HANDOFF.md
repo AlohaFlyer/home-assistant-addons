@@ -190,7 +190,14 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
       fixture byte for byte, takes revision 2 and 3 exports and commands, refuses `upload/pdf` to a manifest with no
       revision or revision 2 with a plain message, its generic checker reads `commands.shapes` too, its rate limits
       allow the uploads card's 24 commands a minute), then merge and update Flight Watcher 1.7.2, then apply "Flight
-      Watcher pilot upload" on Pako through the HA connector (`ha/README.md`, Pending). Rollback: Flight Watcher first.
+      Watcher pilot upload" on Pako through the HA connector (`ha/README.md`, Pending). Rollback: Flight Watcher first;
+      before it, restore /data from the backup taken before the update, or, when CrewTrac refused the details in use
+      while on 1.7.2, blank the CrewTrac password in Settings first (1.7.1 takes the HMAC records for other details and
+      would lift the refusal block: one more login with refused details).
+    - **Review fixes (three adversarial reviews, Nov 12):** CHANGELOG 1.7.2 "Review fixes": minted upload record ids
+      (a reused uid refused), Remove after Approve, linear package parsers and bounded pilot text, an award line cut
+      off, the extractor as nobody, schedule_unread's held clock and 24 h spacing, answers for dropped uploads, a
+      removed award off the looked-up pilots' versions.
     - **Check after the update:** `sensor.flight_watcher_state` version 1.7.2; the log's "charter: CrewTrac block
       records keyed with this instance's own key (N kept, M dropped)" once on Ryan's instance and
       `/data/crewtrac_hmac.key` (0600, 32 bytes; never read out); James's manifest says revision 3 (HOM's log or the

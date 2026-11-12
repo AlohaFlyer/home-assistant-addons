@@ -6216,7 +6216,7 @@ def pilotver_awards(month, text, det):
             try:
                 aw = PDF.parse_award(text, emp, det, month, start)
             except ValueError:
-                return n  # no date header: no pilot's line can be read
+                continue  # no date header above his line, or (1.7.2) his line cut off: the next pilot's may read
             if aw and PV.set_award(DB, emp, month, aw, now_iso(), (first, end), first):
                 n += 1
                 log.info("pilot %s: awarded line is schedule version %s.001", emp, int(month[5:7]))
@@ -7104,22 +7104,72 @@ def pilot_upload_finish(meta, raw):
     finally:
         if work:
             shutil.rmtree(work, ignore_errors=True)
-    what = f"{PP.month_name(month)} {PP.WHAT[kind]}"
     if rec["state"] == "same":
         log.info("%s: the same file is on file already; nothing stored", tag)
-        pilot_upload_answer(uid, True, "same", f"The {what} on file is this same file: nothing to do.")
     elif rec["state"] == "live":
         log.info("%s: nothing was on file: in use now (%s)", tag, ", ".join(f"{k} {v}" for k, v in info.items()))
-        pilot_upload_answer(uid, True, "live", f"Stored: the {what} is on file now and in use. The admin was told and "
-                                               "may remove it.")
     else:
         log.info("%s: a file is on file: held for the admin (read by no instance until he approves it)", tag)
-        pilot_upload_answer(uid, True, "pending", f"Held for the admin: a {what} is on file already. Yours is used "
-                                                  "only if the admin approves it.")
+    _pup_final(uid, kind, month, rec["state"])
     try:
         publish_uploads(force=True)
     except Exception as e:  # noqa: BLE001
         log.info("uploads list not published: %s", type(e).__name__)
+
+
+def _pup_final(uid, kind, month, state):
+    """The answer for a checked upload: same (nothing to do), live (in use now) or pending (held for the admin)."""
+    what = f"{PP.month_name(month)} {PP.WHAT.get(kind, kind)}"
+    if state == "same":
+        pilot_upload_answer(uid, True, "same", f"The {what} on file is this same file: nothing to do.")
+    elif state == "live":
+        pilot_upload_answer(uid, True, "live", f"Stored: the {what} is on file now and in use. The admin was told and "
+                                               "may remove it.")
+    else:
+        pilot_upload_answer(uid, True, "pending", f"Held for the admin: a {what} is on file already. Yours is used "
+                                                  "only if the admin approves it.")
+
+
+def pilot_upload_stale():
+    """1.7.2 (review): an upload the Assembler dropped because no part came within stale_s (a last part lost on the
+    way, or the pilot's page closed) gets an error answer, so his card stops waiting. Every sweep, a portal pilot.
+    Returns the ids answered."""
+    out = []
+    for uid, got, parts in PDF_ASM.take_stale():
+        if uid in _PUP["refused"]:
+            continue
+        _pup_refuse(uid)
+        log.info("pilot upload %s: dropped, no part for %d s (%d of %d in)", uid[:6], ROLES.PILOT_UPLOAD_LIMITS[
+            "stale_s"], got, parts)
+        pilot_upload_answer(uid, False, "error", f"Not stored: no part came for {ROLES.PILOT_UPLOAD_LIMITS['stale_s']} s "
+                                                 f"({got} of {parts} in), so the upload was dropped. Upload the file "
+                                                 "again.")
+        out.append(uid)
+    return out
+
+
+def pilot_upload_restarted():
+    """1.7.2 (review): at a portal pilot's start, an answer still 'receiving' or 'checking' belonged to the process
+    before (its parts were in memory, its check was cut off), so his card would wait on it for good: it gets the
+    answer its provenance record gives when the check had finished, else an error. Returns the ids answered."""
+    with _PUP["lock"]:
+        ans = [a for a in _pup_read().get("answers") or [] if isinstance(a, dict)]
+    open_ = [a for a in ans if a.get("state") in ("receiving", "checking") and isinstance(a.get("uid"), str)]
+    if not open_:
+        return []
+    try:
+        recs = {r.get("uid"): r for r in review().records() if r.get("who") == INSTANCE and r.get("uid")}
+    except OSError:
+        recs = {}
+    for a in open_:
+        r = recs.get(a["uid"])
+        if r and r.get("kind") in PP.KINDS:
+            _pup_final(a["uid"], r["kind"], r.get("month") or "", "live" if r.get("how") == "first" else "pending")
+        else:
+            pilot_upload_answer(a["uid"], False, "error", "Not stored: your Watcher restarted before the upload was in "
+                                                         "and checked. Upload the file again.")
+    log.info("pilot uploads: %d answer(s) left open by the last run settled", len(open_))
+    return [a["uid"] for a in open_]
 
 
 def pilot_uploads_state():
@@ -7286,6 +7336,12 @@ def upload_gens_check():
                 vers = VER.clear_award(DB, month)
                 log.info("upload %s removed: the awarded line is no longer version .001 (%d versions)", name, len(vers))
                 versions_check(force_pub=True)
+                for emp in PV.registered(DB, month):  # 1.7.2 (review): a looked-up pilot's .001 came from it too
+                    if PV.clear_award(DB, emp, month):
+                        log.info("pilot %s: the removed award is no longer schedule version %s.001", emp,
+                                 int(month[5:7]))
+                        if emp == shown_emp():
+                            pub_pilot(dict(PILOT_SHOWN["p"]))
             log.info("upload %s: removed from the shared folder; forgotten here", name)
         else:
             log.info("upload %s: changed in the shared folder; read again", name)
@@ -7307,6 +7363,8 @@ def upload_janitor():
             for st in assembler().sweep():
                 log.info("upload %s (%s): %s", st["id"][:6], st.get("kind") or "?", st["message"])
                 publish_upload_status(st)
+            if is_pilot() and portal_on():
+                pilot_upload_stale()  # 1.7.2 (review): a pilot's PDF upload dropped for no part gets its answer
             n += 1
             if n * UPLOAD_SWEEP_S >= UPLOADS_PUB_S:
                 n = 0
@@ -9236,31 +9294,37 @@ def _portal_event(kind, payload):
 
 
 PROC_START = time.time()
-SCHED_UNREAD_DONE = "schedule_unread_day"  # DB: the HST day the last schedule_unread event went (once a day)
+SCHED_UNREAD_DONE = "schedule_unread_day"  # DB: {day (HST), at} of the last schedule_unread event (one in 24 h)
+_SU = {"held_at": 0.0}  # 1.7.2 (review): the last tick that saw him paused, stopped or waiting for his login
 
 
 def schedule_unread_tick(now=None):
     """1.7.2 (contract 1 revision 3, audit F#3, F#112): a portal pilot whose Watcher has had no good FLICA schedule
     read for roles.SCHEDULE_UNREAD_H hours (since the last good read, or since this start when none came after it)
-    gets one schedule_unread event a day (HST): his Alerts list and ntfy, view schedule, data only its state (failing:
-    reads fail; waiting: none could run) and the hours. Not while paused, waiting for his FLICA login or stopped: those
-    have their own alert or are his own doing. The day is in the DB before the event. Returns the record or None."""
+    gets one schedule_unread event a day (at least 24 h apart, 1.7.2 review: not again at 00:00 HST): his Alerts list
+    and ntfy, view schedule, data only its state (failing: reads fail; waiting: none could run) and the hours since
+    the last good read. Not while paused, waiting for his FLICA login or stopped: those have their own alert or are his
+    own doing, and (1.7.2 review) the 6 h count again from the last tick that saw one, so his Pause off or Re-arm gets
+    its first read in before any alert. The time is in the DB before the event. Returns the record or None."""
     if not EXPORT["on"]:
         return None
     now = time.time() if now is None else now
     st = S.get("machine") or ""
     if FLAGS.get("pause") or st in ("paused", "needs_settings") or st.startswith("stopped"):
+        _SU["held_at"] = max(_SU["held_at"], now)
         return None
     try:
         last = datetime.fromisoformat(S["sched_read_at"]).timestamp() if S.get("sched_read_at") else 0.0
     except (TypeError, ValueError):
         last = 0.0
-    if now - max(last, PROC_START) < ROLES.SCHEDULE_UNREAD_H * 3600:
+    if now - max(last, PROC_START, _SU["held_at"]) < ROLES.SCHEDULE_UNREAD_H * 3600:
         return None
     day = datetime.fromtimestamp(now, HST).strftime("%Y-%m-%d")
-    if DB.get(SCHED_UNREAD_DONE) == day:
+    done = DB.get(SCHED_UNREAD_DONE)
+    prev = done.get("at") if isinstance(done, dict) else None
+    if (isinstance(prev, (int, float)) and now - prev < 86400) or done == day:
         return None
-    DB.put(SCHED_UNREAD_DONE, day)
+    DB.put(SCHED_UNREAD_DONE, {"day": day, "at": now})
     hours = int((now - (last or PROC_START)) // 3600)
     state = "failing" if int(S.get("sched_fail") or 0) else "waiting"
     log.info("schedule not read for %d h (%s): portal alert", hours, state)
@@ -9847,6 +9911,10 @@ def portal_start(threads=True):
     except OSError as e:
         log.info("portal prefs not checked: %s", type(e).__name__)
     EXPORT["ntfy"] = ntfy_start()
+    try:
+        pilot_upload_restarted()  # 1.7.2 (review): an upload cut off by the restart gets its answer
+    except Exception as e:  # noqa: BLE001
+        log.info("pilot upload answers not settled: %s", type(e).__name__)
     log.info("pilot portal on: contract %d, export to %s", ROLES.CONTRACT, out)
     if threads:
         threading.Thread(target=portal_thread, daemon=True, name="portal").start()

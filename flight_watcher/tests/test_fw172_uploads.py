@@ -53,6 +53,11 @@ def _answer(W, uid="uDemo0000000000001"):
     return next((x for x in a if x["uid"] == uid), None)
 
 
+def _rid(inst, uid="uDemo0000000000001"):
+    """The record id the Watcher minted for the pilot's upload uid (1.7.2 review: never his own id)."""
+    return next(r["id"] for r in PP.Review(inst.up, inst.review).records() if r.get("uid") == uid)
+
+
 PKG = make_pdf(package_lines())  # December 2026: 110 pairings, 3 of them A332 HNL (H9000 to H9002)
 PKG_NEW = make_pdf(package_lines(n=120, a332=5))  # a revised copy: 5 A332 ones (H9003, H9004 new)
 AWARD = make_pdf(award_lines())
@@ -164,10 +169,19 @@ CHILD = textwrap.dedent("""
 
 
 @pytest.fixture
-def child(tmp_path):
-    p = tmp_path / "child.py"
-    p.write_text(CHILD)
-    return lambda mode: (sys.executable, str(p), mode)
+def child():
+    """The stand-in extractor, in a folder the extractor's own user can read (it runs as nobody when the tests run as
+    root, as the add-on does: pytest's tmp_path is root's only)."""
+    import shutil
+    import tempfile
+    d = tempfile.mkdtemp(prefix="fwchild.")
+    os.chmod(d, 0o755)
+    p = os.path.join(d, "child.py")
+    with open(p, "w") as f:
+        f.write(CHILD)
+    os.chmod(p, 0o644)
+    yield lambda mode: (sys.executable, p, mode)
+    shutil.rmtree(d, ignore_errors=True)
 
 
 def test_extract_runs_in_a_child_under_limits(tmp_path, child):
@@ -180,7 +194,8 @@ def test_extract_runs_in_a_child_under_limits(tmp_path, child):
     assert set(eval(env)) <= {"PATH", "LANG", "LC_CTYPE"} and eval(stdin) == ""  # noqa: S307
     src = open(os.path.join(HERE, "pilotpdf.py"), encoding="utf-8").read()
     assert "preexec_fn=" not in src  # 1.7.2: no preexec_fn in the Watcher's many-threaded process
-    assert stat.S_IMODE(os.stat(d).st_mode) == 0o700 and stat.S_IMODE(os.stat(os.path.join(d, "in.pdf")).st_mode) == 0o600
+    assert stat.S_IMODE(os.stat(d).st_mode) == 0o700 and os.listdir(d) == ["out.txt"]  # the extractor's folder is gone
+    assert stat.S_IMODE(os.stat(os.path.join(d, "out.txt")).st_mode) == 0o600
 
 
 def test_extract_refuses_a_slow_a_spinning_a_failed_or_an_empty_read(tmp_path, child):
@@ -397,7 +412,7 @@ def test_an_award_needs_his_own_line_and_becomes_version_001_until_removed(inst)
     vers = W.DB.get("sched_versions:2026-12")
     assert vers and vers[0]["award"] and vers[0]["ver"] == "12.001"
     A = inst("")
-    A.upload_decide_cmd(json.dumps({"id": "uDemo0000000000004", "action": "remove"}))
+    A.upload_decide_cmd(json.dumps({"id": _rid(inst, "uDemo0000000000004"), "action": "remove"}))
     W2 = inst("pilot2")
     W2.uploads_check()
     assert not [v for v in W2.DB.get("sched_versions:2026-12") or [] if v.get("award")]
@@ -451,7 +466,7 @@ def test_the_admins_own_upload_is_its_provenance_and_replaces_a_pilots(inst):
     f = rv.load()["files"]["2026-12_pairings"]
     assert f["who"] == "ryan" and f["how"] == "admin" and f["sha256"] == hashlib.sha256(PKG_NEW).hexdigest()
     assert rv.records()[-1]["state"] == "replaced"
-    ok, msg, _ = rv.decide("uDemo0000000000001", "remove")
+    ok, msg, _ = rv.decide(_rid(inst), "remove")
     assert not ok and "not the file in use" in msg  # the admin's file is never removed by a pilot's record
 
 

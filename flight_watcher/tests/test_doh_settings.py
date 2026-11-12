@@ -31,7 +31,7 @@ NOW_UTC = "2026-11-11T20:00:00Z"  # the same moment for the browser's clock
 TODAY = "2026-11-11"
 DOH = "2019-03-01"  # made up: year 8 on TODAY
 # PORTAL_CONTRACT.md as 1.6.3 shipped it: the portal only relays ciphertext, so a date of hire changes no contract
-CONTRACT_DOC_SHA256 = "5e50692bc2863cd3baf97658eb5ea9ce832117149bb0d7ed59d9d9cf7961d1b4"  # 1.7.2: contract 1 revision 3
+CONTRACT_DOC_SHA256 = "621f5d71d7abe71d4eccf464da658e27ec5b973558cbecd4277381bc13ad63b7"  # 1.7.2: contract 1 revision 3 (review fixes)
 
 
 def _src(name):

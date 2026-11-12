@@ -518,6 +518,22 @@ def set_award(db, emp, month, aw, now_iso, window=None, first=""):
         return True
 
 
+def clear_award(db, emp, month):
+    """1.7.2 (review of contract 1 revision 3): the month's award file was removed (the admin's Remove of a pilot's
+    upload with nothing to restore): this pilot's award record for it goes and the rest are numbered again from .001
+    (versions.clear_award does the same for the instance's own pilot). True when one went."""
+    emp = re.sub(r"\D", "", str(emp or ""))
+    if not emp or not MONTH_RE.fullmatch(str(month or "")):
+        return False
+    with _LOCK:
+        vers = versions_of(db, emp, month)
+        rest = [v for v in vers if v.get("source") != "award"]
+        if len(rest) == len(vers):
+            return False
+        db.put(rec_key(emp, month), cap_month(renumber(month, rest)))
+        return True
+
+
 def history(db, emp):
     """The list file's content for one pilot: {emp: {name, months: {YYYY-MM: [record, ...]}}}, records oldest first
     without fp / win; {} for a pilot not in the registry."""

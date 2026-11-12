@@ -6,7 +6,7 @@ Portal contract 1 revision 3 (the council's plan of Nov 11 and Ryan's decisions 
 live portal and FW-0066 (Ryan: "either I or James can upload them; the pairings and awards are the same doc for each
 of us"). Built on branch fw-1.7.2 on top of 1.7.1 (live), not pushed or deployed. A contract change: HOM 1.8.2 (takes
 revision 2 and 3 exports and commands) ships first, then this release; each with Ryan's yes, a backup and a 30 min
-live watch; rollback Flight Watcher first. The fixture `tests/fixtures/portal_contract_v1.json` is regenerated (its new
+live watch; rollback Flight Watcher first (see "Rollback to 1.7.1" below). The fixture `tests/fixtures/portal_contract_v1.json` is regenerated (its new
 sha256 is pinned in `tests/test_portal_contract.py`; HOM's `fwportal/contract/v1.json` must be the same bytes) and
 `PORTAL_CONTRACT.md` says revision 3. Revision 2's crewtrac_refused pilot event is not in it: since 1.7.1 a pilot's
 Watcher makes no CrewTrac login at all.
@@ -80,6 +80,39 @@ Watcher makes no CrewTrac login at all.
   first 1.7.2 start re-keys the record of the details in use and drops a bare sha256 of any other. A key found gone
   later with a refusal on record keeps CrewTrac blocked until the next save in Settings ("CrewTrac is not tried: its
   refusal record could not be checked ..."); with no refusal on record nothing is blocked.
+
+### Review fixes (three adversarial reviews of revision 3)
+
+- A pilot's upload id is never a record's id: `Review.store` mints the id (24 hex) that names the quarantined copy,
+  Ryan's push and his Approve / Remove / Reject, keeps the pilot's own `uid` beside it for his card, and refuses a uid
+  already on record. Before, a uid sent again by a crafted client overwrote a held copy (Ryan's Approve of December's
+  package put another file in use) or put a file in use with no push and no Remove. Approve also installs only bytes
+  whose sha256 is the record's.
+- Remove after an Approve: the pilot's file that comes back is in use again (`live` or `approved`, not `replaced`), so
+  Ryan can Remove it in turn; a file back from rollback that is not its record's is "restored" with no pilot's name.
+- The package parsers take linear time on a pilot's text: the bid period pattern (`pdfs.PERIOD_RE`, the same text as
+  before) no longer takes cubic time ("January 1" then 1200 empty pages took 28 s in the check and 86 s in each
+  instance's uploads check, the Watcher frozen meanwhile), the calendar cells are read in one pass (`pdfs._cal_tail`,
+  what `CAL_RE` found), and the lines before a header are appended, not copied. A pilot's text is bounded before any
+  parser sees it (`pilotpdf.text_shape`: at most 60000 lines of at most 1000 characters, 8 million characters in all;
+  the real files on file are 11,600 to 20,100 lines of at most 676 characters).
+- An award whose last line is the start of a pilot's line (the next four lines cut off) is "not read" for him
+  (`ValueError`), not an `IndexError` that stopped every later award's read on each instance.
+- The extractor runs as nobody (65534, no groups) when the Watcher runs as root (it does in the add-on), in a folder of
+  its own, and its text is copied to a new file of the Watcher's (never read through a link, a FIFO or another user's
+  file) before that folder goes.
+- schedule_unread counts its 6 h from the last tick that saw the pilot paused, stopped or waiting for his login (his
+  Pause off or Re-arm gets its first read in first) and goes at most once in 24 h (not again at 00:00 HST).
+- An upload the pilot's Watcher drops for no part in 120 s, or one a restart cut off, gets an error answer (or, when
+  its check had finished, the answer it gave), and the uploads card stops waiting 3 min after its last part.
+- A removed award is no longer a looked-up pilot's version .001 either (`pilotver.clear_award`).
+
+### Rollback to 1.7.1
+
+- 1.7.1 cannot read 1.7.2's HMAC-keyed CrewTrac records: it takes them for other details and lifts a refusal block, so
+  it would make one more CrewTrac login with details CrewTrac refused. Before a rollback, restore /data from the backup
+  taken before the update, or, when CrewTrac refused the details in use while on 1.7.2, blank the CrewTrac password in
+  Settings first (then save the right password on 1.7.1).
 
 ### Also
 

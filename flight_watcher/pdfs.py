@@ -15,6 +15,10 @@ LEG_RE = re.compile(r"^\s*\S+\s+(DH\s+)?(?:\d{1,4}[A-Z]?\*?)\s+([A-Z]{3})\s*-\s*
 DEND_RE = re.compile(r"D-END:\s+(\d{1,2}:\d{2})L")
 TOT_RE = re.compile(r"TOTALS\s+BLOCK\s+(\d+h\d{2}).*?CREDIT\s+(\d+h\d{2})\s+T\.A\.F\.B\.\s+(\d+h\d{2})")
 CAL_RE = re.compile(r"((?:\s+(?:\d{2}|--))+)\s*$")
+# 1.7.2 (review of contract 1 revision 3): CAL_RE.search takes time quadratic in a line's length (every start position
+# backtracks through the run after it), so a pilot's crafted package with long lines kept a thread busy for minutes.
+# _cal_tail finds the same run in one pass: CAL_TAIL_RE matched once at the start of the line reversed.
+CAL_TAIL_RE = re.compile(r"\s*((?:(?:\d{2}|--)\s+)+)")
 MONTHS = ["JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER",
           "NOVEMBER", "DECEMBER"]
 
@@ -34,6 +38,20 @@ def package_month(text):
     return f"{m.group(2)}-{MONTHS.index(m.group(1).upper()) + 1:02d}" if m else ""
 
 
+# The bid period line ('December 2', a dash, 'December 31 (30 Days)'). 1.7.2 (review): \W+ between the two dates,
+# as before (\s*\W+\s* matched exactly the same text, since a space is a \W too), but its three overlapping runs took
+# cubic time to fail: "January 1" then 1200 empty pages froze the Watcher (re holds the GIL) for minutes
+PERIOD_RE = re.compile(r"(" + "|".join(MONTHS) + r")\s+(\d{1,2})\W+(?:" + "|".join(MONTHS) + r")\s+\d{1,2}\s*\(\d{2} Days\)",
+                       re.I)
+
+
+def _cal_tail(ln):
+    """What CAL_RE.search(ln).group(1) gives (the run of day cells at the line's right end, each after whitespace),
+    or None, in time linear in the line: the run read backwards from the end (CAL_TAIL_RE on the reversed line)."""
+    m = CAL_TAIL_RE.match(ln[::-1])
+    return m.group(1)[::-1] if m else None
+
+
 def _blocks(text):
     """Split the package into pairing blocks: from a 'Hxxxx BASE REPT' line to the '====' rule."""
     cur, pre = None, []
@@ -45,7 +63,10 @@ def _blocks(text):
             pre = []
             continue
         if cur is None:
-            pre = [] if ln.strip().startswith("=====") else pre + [ln]
+            if ln.strip().startswith("====="):
+                pre = []
+            else:
+                pre.append(ln)  # 1.7.2: append, not pre + [ln] (a copy per line: quadratic in the lines before a header)
             continue
         if ln.strip().startswith("====="):
             yield cur
@@ -66,9 +87,9 @@ def _cal_days(lines, ndays, start, month):
     for ln in lines:
         if "Mo Tu We" in ln:
             continue
-        m = CAL_RE.search(ln)
-        if m and ln.rfind(m.group(1).strip()) >= 100:
-            toks += m.group(1).split()
+        run = _cal_tail(ln)  # 1.7.2: CAL_RE's run in linear time
+        if run and ln.rfind(run.strip()) >= 100:
+            toks += run.split()
     days = []
     for i, t in enumerate(toks[:ndays]):
         if t == "--":
@@ -98,7 +119,7 @@ def period_start(text, month=""):
     if not month:
         return None
     y, m = int(month[:4]), int(month[5:7])
-    hit = re.search(r"(" + "|".join(MONTHS) + r")\s+(\d{1,2})\s*\W+\s*(?:" + "|".join(MONTHS) + r")\s+\d{1,2}\s*\(\d{2} Days\)", text, re.I)
+    hit = PERIOD_RE.search(text)
     if hit:
         sm = MONTHS.index(hit.group(1).upper()) + 1
         for k in (0, -1, 1):  # the package month, the month before (Dec 31 for January), the month after
@@ -251,11 +272,14 @@ def parse_award(text, emp, details, month, pstart=None):
     the Watcher stores a FLICA month (items {trip,start,end,lay}; days [[iso, code, lay]]), trips carrying
     block / credit / seat / duties from the pairing package. None when the pilot is not in the award.
     FW-0015: the date header runs from the bid period's first day (Dec 2 in December), one column per day;
-    `pstart` is the package's period start when known (award_start). ValueError when no header is found."""
+    `pstart` is the package's period start when known (award_start). ValueError when no header is found or the
+    pilot's line is cut off by the end of the text (1.7.2)."""
     lines = text.splitlines()
     i = next((k for k, ln in enumerate(lines) if re.match(rf"^\d{{5}}\s*/\s*{emp}\b", ln)), None)
     if i is None:
         return None
+    if i + 4 >= len(lines):  # 1.7.2: its credit, pairing and seat lines are the next four; a line cut off by the end of
+        raise ValueError("the pilot's line is cut off at the end of the award")  # the text was an IndexError
     cols = next((c for c in (_day_header(lines[k]) for k in range(i, -1, -1)) if c), None)
     if not cols:
         raise ValueError("no date header (a line of day numbers) above the pilot's line")

@@ -116,9 +116,10 @@ def test_schedule_unread_since_the_start_when_no_read_came_and_never_when_paused
     for st in ("paused", "needs_settings", "stopped_login_failed"):
         W.S["machine"] = st
         assert W.schedule_unread_tick(now) is None, st
-    W.S["machine"] = "yielded"
-    rec = W.schedule_unread_tick(now)
-    assert rec["data"] == {"state": "waiting", "hours": 48} and "waiting" in rec["body"]
+    W.S["machine"] = "yielded"  # a yield is waiting (his own FLICA login elsewhere): it counts
+    assert W.schedule_unread_tick(now) is None  # review: 6 h from the last tick that saw him held, not from the read
+    rec = W.schedule_unread_tick(now + 6 * 3600 + 60)
+    assert rec["data"] == {"state": "waiting", "hours": 54} and "waiting" in rec["body"]  # since the last good read
 
 
 def test_schedule_unread_is_never_made_from_a_publish(unread):

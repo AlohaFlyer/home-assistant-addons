@@ -32,11 +32,14 @@ import binascii
 import contextlib
 import fcntl
 import hashlib
+import io
 import json
 import math
 import os
 import re
+import secrets
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -57,6 +60,13 @@ MONTHS = ("January", "February", "March", "April", "May", "June", "July", "Augus
 WHAT = {"pairings": "pairings package", "award": "award"}
 TEXT_MAX = 64 * 1024 * 1024  # the most text a 4 MB PDF may give (RLIMIT_FSIZE in the child too)
 KEEP = 60  # records kept in provenance.json (a live or pending one is never dropped)
+# 1.7.2 (review of contract 1 revision 3): the extractor's text a pilot's upload may give. The parsers run in the Watcher
+# itself (on every instance, the admin's too) with no time bound, so the text is bounded first: the real packages and
+# awards on file are 11,600 to 20,100 lines of at most 676 characters, 1.1 to 1.5 million characters in all.
+TEXT_LINES = 60000  # lines (str.splitlines, as the parsers split them: a form feed ends a line too)
+LINE_CHARS = 1000  # characters a line
+TEXT_CHARS = 8 * 1000 * 1000  # characters in all
+EXTRACT_UID = 65534  # nobody: the extractor runs as this user when the Watcher runs as root (it does in the add-on)
 ADMIN = "ryan"  # the admin's name in provenance (tickets' reporter): a pilot's card shows "the admin"
 STATES = ("live", "pending", "approved", "rejected", "removed", "replaced", "superseded")
 
@@ -104,10 +114,20 @@ class Assembler:
         self.now, self.lock = now, threading.Lock()
         self.cur = None  # {meta, got, data: [str], last: sha of the last chunk, at}
         self.done = None  # (uid, last chunk's sha): a resend of a finished upload's last chunk is ignored
+        self.stale = []  # 1.7.2: (uid, got, parts) of uploads dropped for stale_s without a chunk, until take_stale()
 
     def _expire(self):
         if self.cur and self.now() - self.cur["at"] > LIM["stale_s"]:
-            self.cur = None
+            c, self.cur = self.cur, None
+            self.stale = (self.stale + [(c["meta"]["uid"], c["got"], c["meta"]["parts"])])[-10:]
+
+    def take_stale(self):
+        """1.7.2 (review): the uploads dropped since the last call because no chunk came within stale_s, as
+        [(uid, parts got, parts)], so the pilot's card gets an answer (a last part lost on the way gave none)."""
+        with self.lock:
+            self._expire()
+            out, self.stale = self.stale, []
+            return out
 
     def busy(self):
         with self.lock:
@@ -191,6 +211,20 @@ def pdf_shape(raw):
         raise Refused(f"the file is over {LIM['file_bytes'] // (1024 * 1024)} MB")
 
 
+def text_shape(text):
+    """1.7.2 (review): Refused when the extractor's text is more than the parsers should ever be given (TEXT_CHARS,
+    TEXT_LINES, LINE_CHARS), before any parser sees it."""
+    if len(text) > TEXT_CHARS:
+        raise Refused("the PDF gave far more text than a pairings package or an award has; nothing was stored")
+    lines = text.splitlines()
+    if len(lines) > TEXT_LINES:
+        raise Refused(f"the PDF gave {len(lines)} lines of text, more than a pairings package or an award has (at most "
+                      f"{TEXT_LINES}); nothing was stored")
+    if any(len(ln) > LINE_CHARS for ln in lines):
+        raise Refused(f"the PDF has a line of text over {LINE_CHARS} characters, which a pairings package or an award "
+                      "never has; nothing was stored")
+
+
 def child_limits(mem_mb=None, cpu_s=None, fsize=TEXT_MAX):
     """The limits the extractor runs under: address space mem_mb, CPU cpu_s seconds, files it writes at most fsize
     bytes, no core file (extract_mem_mb, extract_cpu_s)."""
@@ -200,37 +234,67 @@ def child_limits(mem_mb=None, cpu_s=None, fsize=TEXT_MAX):
 
 # The child the extractor runs in: a fresh interpreter with no threads (the Watcher has many, so a preexec_fn could
 # deadlock between fork and exec) sets its own limits (setrlimit), puts SIGXFSZ and SIGPIPE back to their defaults
-# (Python ignores them, and an exec keeps an ignored signal ignored) and execs the extractor, which keeps the limits.
+# (Python ignores them, and an exec keeps an ignored signal ignored), 1.7.2 (review): when it runs as root (the add-on
+# does) drops to user u (EXTRACT_UID, no groups; exit 70 if it could not), and execs the extractor, which keeps the
+# limits and the user: a PDF that broke the extractor reaches nothing of the Watcher's (its FLICA login, its data).
 LIMIT_SHIM = (
     "import os,resource,signal,sys\n"
-    "a,c,f=(int(x) for x in sys.argv[1:4])\n"
+    "a,c,f,u=(int(x) for x in sys.argv[1:5])\n"
     "resource.setrlimit(resource.RLIMIT_AS,(a,a))\n"
     "resource.setrlimit(resource.RLIMIT_CPU,(c,c+1))\n"
     "resource.setrlimit(resource.RLIMIT_FSIZE,(f,f))\n"
     "resource.setrlimit(resource.RLIMIT_CORE,(0,0))\n"
     "signal.signal(signal.SIGXFSZ,signal.SIG_DFL)\n"
     "signal.signal(signal.SIGPIPE,signal.SIG_DFL)\n"
-    "os.execvp(sys.argv[5],sys.argv[5:])\n")
+    "if u>=0 and os.geteuid()==0:\n"
+    " os.setgroups([]);os.setgid(u);os.setuid(u)\n"
+    " if 0 in os.getresuid() or 0 in os.getresgid():sys.exit(70)\n"
+    "os.execvp(sys.argv[6],sys.argv[6:])\n")
 EXTRACTOR = ("pdftotext", "-layout")  # web._save_monthly's own
 
 
-def extract(raw, workdir, timeout=None, cmd=EXTRACTOR, limits=None):
+def _read_child_text(path, uid, cap):
+    """The extractor's output, at most cap bytes: never through a link, a regular file, owned by the extractor's user
+    when it ran as one (uid; None: any owner)."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode) or (uid is not None and st.st_uid != uid) or st.st_nlink != 1:
+            raise OSError("not the extractor's own file")
+        blob = f.read(cap + 1)
+    if len(blob) > cap:
+        raise Refused("the PDF gave too much text; nothing was stored")
+    return blob
+
+
+def extract(raw, workdir, timeout=None, cmd=EXTRACTOR, limits=None, user=EXTRACT_UID):
     """The PDF's text from pdftotext -layout run in a child process: the PDF written to a private folder under workdir
     (0700, the file 0600), no shell, stdin closed, its output discarded, a timeout (extract_timeout_s) and the limits of
-    child_limits() set in the child (LIMIT_SHIM). Returns (text, the folder holding in.pdf and out.txt); Refused with a
-    plain reason when it fails, times out or gives no text. The caller removes the folder."""
+    child_limits() set in the child (LIMIT_SHIM). 1.7.2 (review): when the Watcher runs as root the extractor runs as
+    user (EXTRACT_UID) in a folder of its own inside that private one (cwd, in.pdf and out.txt by relative name), and
+    its text is copied out to a new file of the Watcher's own (text_shape() checked first) before that folder goes.
+    Returns (text, the folder holding out.txt); Refused with a plain reason when it fails, times out, gives no text or
+    too much. The caller removes the folder."""
     import sys
     lim = limits or child_limits()
+    drop = user is not None and os.geteuid() == 0
     os.makedirs(workdir, mode=0o700, exist_ok=True)
     d = tempfile.mkdtemp(prefix="up.", dir=workdir)  # mode 0700
-    src, out = os.path.join(d, "in.pdf"), os.path.join(d, "out.txt")
+    x = os.path.join(d, "x")  # the extractor's own folder (its user owns it when it runs as one)
+    src, child_out, out = os.path.join(x, "in.pdf"), os.path.join(x, "out.txt"), os.path.join(d, "out.txt")
     try:
+        os.mkdir(x, 0o700)
         fd = os.open(src, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(raw)
-        argv = [sys.executable, "-I", "-c", LIMIT_SHIM, str(lim["as"]), str(lim["cpu"]), str(lim["fsize"]), "--"]
+        if drop:
+            os.chown(x, user, user)
+            os.chown(src, user, user)
+        argv = [sys.executable, "-I", "-c", LIMIT_SHIM, str(lim["as"]), str(lim["cpu"]), str(lim["fsize"]),
+                str(user if drop else -1), "--"]
         try:
-            subprocess.run(argv + list(cmd) + [src, out], check=True, timeout=timeout or LIM["extract_timeout_s"],
+            subprocess.run(argv + list(cmd) + ["in.pdf", "out.txt"], check=True, cwd=x,
+                           timeout=timeout or LIM["extract_timeout_s"],
                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                            close_fds=True, env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8"})
         except subprocess.TimeoutExpired:
@@ -242,14 +306,15 @@ def extract(raw, workdir, timeout=None, cmd=EXTRACTOR, limits=None):
         except OSError as e:
             raise Refused(f"the PDF reader could not run ({type(e).__name__}); nothing was stored") from None
         try:
-            if os.path.getsize(out) >= min(TEXT_MAX, lim["fsize"]):
-                raise Refused("the PDF gave too much text; nothing was stored")
-            with open(out, encoding="utf-8", errors="replace") as f:
-                text = f.read()
+            blob = _read_child_text(child_out, user if drop else None, min(TEXT_MAX, lim["fsize"]) - 1)
         except OSError:
             raise Refused("the PDF gave no text, so the Watcher cannot read it; nothing was stored") from None
+        shutil.rmtree(x, ignore_errors=True)
+        text = io.TextIOWrapper(io.BytesIO(blob), encoding="utf-8", errors="replace").read()  # as every reader opens it
         if not text.strip():
             raise Refused("the PDF gave no text (a scan?), so the Watcher cannot read it; nothing was stored")
+        text_shape(text)
+        _write_private(out, blob)  # the text checked here is the text stored: a new file, the Watcher's own
         return text, d
     except BaseException:
         shutil.rmtree(d, ignore_errors=True)
@@ -312,6 +377,14 @@ def check_award(text, month, emp, details=None):
     if not aw:
         raise Refused("your line is not in this award")
     return {"items": len(aw["items"])}
+
+
+def new_id(taken=()):
+    """A record id minted by the Watcher (24 hex: roles.UPLOAD_ID_PATTERN), none of taken."""
+    while True:
+        rid = secrets.token_hex(12)
+        if rid not in taken:
+            return rid
 
 
 def sha_file(path):
@@ -409,13 +482,20 @@ class Review:
     def store(self, who, kind, month, raw, text_path, uid, info=None):
         """A checked upload of pilot who: used at once when nothing is on file for month and kind, else quarantined
         (an earlier pending copy of his for the same file is superseded). text_path is the extractor's output (moved,
-        never read again here). Returns its record (state live, pending, or same: the file on file already)."""
+        never read again here). Returns its record (state live, pending, or same: the file on file already).
+        1.7.2 (review): the record's id (its quarantine file's name, the admin's push and his Approve / Remove / Reject)
+        is minted here, never the pilot's own upload id (uid, kept beside it for his card): a uid he sent again could
+        put other bytes under an approval given for another file, or a file in use with no push. A uid already on
+        record is refused."""
         name = f"{month}_{kind}"
         sha = hashlib.sha256(raw).hexdigest()
         with self.lock():
             d = self.load()
+            if any(uid in (r.get("uid"), r.get("id")) for r in d["uploads"]):
+                raise Refused("that upload's id was used before; nothing was stored (upload the file again)")
+            rid = new_id({r.get("id") for r in d["uploads"]})
             pdf, txt = self.live(name)
-            rec = {"id": uid, "who": who, "kind": kind, "month": month, "at": self._iso(), "sha256": sha,
+            rec = {"id": rid, "uid": uid, "who": who, "kind": kind, "month": month, "at": self._iso(), "sha256": sha,
                    "size": len(raw), **(info or {})}
             if os.path.exists(pdf):
                 if sha_file(pdf) == sha:
@@ -427,7 +507,7 @@ class Review:
                         for p in self.q(r["id"]):
                             with contextlib.suppress(OSError):
                                 os.unlink(p)
-                qp, qt = self.q(uid)
+                qp, qt = self.q(rid)
                 _write_private(qp, raw)
                 shutil.move(text_path, qt)
                 os.chmod(qt, 0o600)
@@ -447,7 +527,7 @@ class Review:
                         with contextlib.suppress(OSError):
                             os.unlink(p)
                 rec.update(state="live", how="first")
-                d["files"][name] = {"id": uid, "who": who, "at": rec["at"], "sha256": sha, "size": len(raw),
+                d["files"][name] = {"id": rid, "who": who, "at": rec["at"], "sha256": sha, "size": len(raw),
                                     "how": "first"}
                 self._bump(d, name)
             d["uploads"].append(rec)
@@ -497,6 +577,13 @@ class Review:
                     rec.update(state="rejected", decided_at=at, decided_by=by)
                     self._save(d)
                     return False, f"{what}: its copy is gone; nothing changed", rec
+                if sha_file(qp) != rec.get("sha256"):  # 1.7.2 (review): only the bytes that were checked go in
+                    for p in (qp, qt):
+                        with contextlib.suppress(OSError):
+                            os.unlink(p)
+                    rec.update(state="rejected", decided_at=at, decided_by=by)
+                    self._save(d)
+                    return False, f"{what}: its copy is not the file that was checked (deleted); nothing changed", rec
                 prev, kept = d["files"].get(name), ""
                 if os.path.exists(pdf):
                     kept = f"{name}.{int(self.now())}.{uid[:8]}"
@@ -535,8 +622,19 @@ class Review:
                 shutil.move(bt, txt)
                 os.utime(pdf)
                 os.utime(txt)
-                d["files"][name] = rec.get("prev_file") or {"id": "", "who": "", "at": at, "sha256": sha_file(pdf),
-                                                            "size": os.path.getsize(pdf), "how": "restored"}
+                pf, got = rec.get("prev_file") or {}, sha_file(pdf)
+                if isinstance(pf, dict) and pf.get("sha256") == got:
+                    d["files"][name] = pf
+                    # 1.7.2 (review): a pilot's file that comes back is in use again (it was 'replaced' by the approve),
+                    # so the admin can Remove it in turn and the pilot's card says so
+                    for r in d["uploads"]:
+                        if pf.get("id") and r.get("id") == pf["id"] and r.get("state") == "replaced" and (
+                                r.get("month"), r.get("kind")) == (rec["month"], rec["kind"]):
+                            r.update(state="approved" if pf.get("how") == "approved" else "live", decided_at=at,
+                                     decided_by=by)
+                else:
+                    d["files"][name] = {"id": "", "who": "", "at": at, "sha256": got, "size": os.path.getsize(pdf),
+                                        "how": "restored"}
                 msg = f"removed {what}: the file it replaced is back"
             else:
                 d["files"].pop(name, None)
