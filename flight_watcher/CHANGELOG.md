@@ -4,7 +4,7 @@
 
 Portal contract 1 revision 3 (the council's plan of Nov 11 and Ryan's decisions the same day), from the audit of the
 live portal and FW-0066 (Ryan: "either I or James can upload them; the pairings and awards are the same doc for each
-of us"). Built on branch fw-1.7.2 on top of 1.7.1 (live), not pushed or deployed. A contract change: HOM 1.8.2 (takes
+of us"). On top of 1.7.1 (live). A contract change: HOM 1.8.2 (takes
 revision 2 and 3 exports and commands) ships first, then this release; each with Ryan's yes, a backup and a 30 min
 live watch; rollback Flight Watcher first (see "Rollback to 1.7.1" below). The fixture `tests/fixtures/portal_contract_v1.json` is regenerated (its new
 sha256 is pinned in `tests/test_portal_contract.py`; HOM's `fwportal/contract/v1.json` must be the same bytes) and
