@@ -76,6 +76,8 @@ SUBS = {
     "pref/set": "prefs",  # 1.6.0 (FW-0061): portal only (PORTAL_SUBS), never on the admin
     "upload/decide": "upload_review",  # 1.7.2 (FW-0066): the admin's Approve / Remove / Reject of a pilot's upload
     "upload/pdf": "pilot_uploads",  # 1.7.2 (FW-0066): portal only (PORTAL_SUBS), a pilot's upload in chunks
+    # 1.7.2 (Ryan, Nov 12): the van alerts' switch and lead times, the admin's (a pilot has no van alerts)
+    "van/alerts/set": "admin_pushes", "van/first_min/set": "admin_pushes", "van/second_min/set": "admin_pushes",
 }
 QOS = {"upload/chunk": 1, "upload/pdf": 1}  # FW-0066: chunks at qos 1; every other subscription at qos 0
 # 1.6.0 (FW-0061): subscriptions taken only on a pilot instance whose portal is on (option pilots[].portal); the
@@ -98,7 +100,9 @@ EVENTS = {
 # discovery oids that are not core (every other entity is core)
 ENTITY_FEATURE = {"auto_swap": "auto_swap", "swap_map": "auto_swap", "drop_away": "drop_mark",
                   "crew_index": "crew_index", "crew_scan": "crew_index",
-                  "layover_van": "admin_pushes", "layover_notes": "one_writer"}  # 1.7.1 (FW-0072)
+                  "layover_van": "admin_pushes", "layover_notes": "one_writer",  # 1.7.1 (FW-0072)
+                  # 1.7.2 (Ryan, Nov 12): the van alerts' switch and sliders
+                  "van_alerts": "admin_pushes", "van_alert_first": "admin_pushes", "van_alert_second": "admin_pushes"}
 
 # Words of lowercase letters and digits joined by single underscores, 1 to 32 characters: HA keeps no entity id with
 # "__" or a trailing "_" (sensor.flight_watcher_jane__state), so "jane_", "a__b" and "_x" are refused. config.yaml
@@ -109,14 +113,15 @@ MAX_PILOTS = 3  # pilots besides the admin: each runs its own Chromium and its o
 # a name whose first word starts one of the admin's entity ids (sensor.flight_watcher_last_check), topics, helpers,
 # share folders or /data files would collide with them, so it is refused (run.py). ha/check_push_isolation.py reads
 # an id whose first word is here as the admin's. 1.7.2: "ready" (automation.flight_watcher_ready_to_update_ask_hark,
-# the Working Flight button that asks Hark, Ryan Nov 12).
+# the Working Flight button that asks Hark, Ryan Nov 12) and "van" (switch.flight_watcher_van_alerts and
+# number.flight_watcher_van_alert_first and _second, the van alert settings, Ryan Nov 12).
 RESERVED = frozenset({
     "admin", "auto", "bid", "blocked", "captures", "ccr", "charter", "charters", "check", "crew", "default", "drop",
     "email", "er", "event", "federal", "fetches", "finds", "flica", "freq", "grid", "hunt", "improved", "last",
     "layover", "layovers", "longevity", "map", "month", "new", "next", "normal", "ot", "own", "pause", "pickers",
     "pilot", "pot", "pref", "re", "rearm", "ready", "recall", "reserve", "rule", "rules", "ryan", "scan", "schedule", "session",
     "settings", "show",
-    "state", "status", "swap", "ticket", "tickets", "trade", "tradeboard", "update", "upload", "uploads",
+    "state", "status", "swap", "ticket", "tickets", "trade", "tradeboard", "update", "upload", "uploads", "van",
     "versions", "working", "would", "www",
 })
 
@@ -247,8 +252,9 @@ def entity_freq_limits(instance, portal=False):
 PORTAL_REFUSED = ("email/alert", "crew_scan/press", "upload/chunk", "drop/set", "auto_swap/set", "swap_map/press",
                   "hunt/state", "pause/state", "recall/set", "layover/note", "upload/decide")
 # 1.7.1 (FW-0072): subs added after a contract revision that a portal never offers, refused as "anything else" until a
-# later revision names them in PORTAL_REFUSED (1.7.2, revision 3: layover/note is named there now)
-NOT_ON_PORTAL = ()
+# later revision names them in PORTAL_REFUSED (1.7.2, revision 3: layover/note is named there now). 1.7.2 (after
+# revision 3, Ryan Nov 12): the admin's van alert settings (the spool refuses anything not in PORTAL_CMDS)
+NOT_ON_PORTAL = ("van/alerts/set", "van/first_min/set", "van/second_min/set")
 # the tabs of the portal (portal_layout.json), and the one each event opens (ntfy Click, the events list); 1.7.0: the
 # Tickets tab last, so the five tabs before it keep their places in the tab bar
 PORTAL_TABS = ("watcher", "schedule", "pilot", "recall", "settings", "tickets")

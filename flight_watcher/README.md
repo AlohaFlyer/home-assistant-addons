@@ -343,7 +343,16 @@ Recent finds.
   (retained on `flight_watcher/layover_van`): state the van's instant; the station's abbreviation, the HST time, the
   place, the source (`package` or `hark`, shown on the card as "from the pairings package" or "from Hark") and each
   alert's status, for the layover card (not Hark's van text or hotel); without a van, `why` (the card says the van
-  time is not known). HA automation "Flight Watcher van time" makes the critical push to Ryan's phones. Layover notes:
+  time is not known). HA automation "Flight Watcher van time" makes the critical push to Ryan's phones. Van alert
+  settings (1.7.2, Ryan Nov 12): `switch.flight_watcher_van_alerts` "Van time alerts" (also the layover card's "Van
+  alerts" tick box) and two sliders on the Settings tab, `number.flight_watcher_van_alert_first` (5 to 120 min before
+  the van, default 30) and `number.flight_watcher_van_alert_second` (0 to 60, default 10; 0 is no second alert); MQTT
+  `flight_watcher/van/alerts/set` ON or OFF, `flight_watcher/van/first_min/set` and `.../second_min/set` minutes
+  (clamped), retained states `flight_watcher/van/*/state`, kept in the Watcher's state across restarts. Off sends no
+  alert (the sensor still shows the van, `alerts_on` false). A lead time switched on or moved after its mark is
+  skipped, never sent late; one whose mark is ahead goes at it; an alert already sent is never sent again; the late
+  start after a restart is as above. The van sensor carries `alerts_on` and `offsets` (the lead times, largest first)
+  and an alert per lead time. Layover notes:
   `flight_watcher/layover/note` {city, text, rid} adds a note (plain text, at most 1000 characters, the city a
   3-letter station code; {city, delete: <id>, rid} removes one), stored in
   `/share/flight_watcher/layovers/<CITY>.json` (folder 0700, files 0600; never in git or a portal export);
@@ -353,7 +362,8 @@ Recent finds.
   changed and is left off the sensor (`unreadable`). `sensor.flight_watcher_layover_notes` (retained on
   `flight_watcher/layover_notes`): count, and by city the guide and the newest notes, the current layover station
   first, within 12000 bytes, plus the answer to the last note command. A pilot's instance has none of this (roles:
-  `admin_pushes`, `one_writer`), and a portal refuses `layover/note`.
+  `admin_pushes`, `one_writer`), a portal refuses `layover/note`, and the van setting commands are never a portal's
+  (`roles.NOT_ON_PORTAL`).
 
 ## Dashboard cards and pushes
 

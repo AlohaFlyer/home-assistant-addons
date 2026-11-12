@@ -132,12 +132,58 @@ Watcher makes no CrewTrac login at all.
 - `roles.RESERVED` gains "ready", so the push guard reads `automation.flight_watcher_ready_to_update_ask_hark` as
   the admin's (a pilot can no longer be named "ready").
 
+### Van alert settings (Ryan, Nov 12)
+
+- Ryan: "I like the layover card. Can you add a tick box to turn on the van time alerts and also add van time alert
+  settings in the form of sliders in the settings tab?" Ryan's Watcher only (roles `admin_pushes`, like the alerts).
+- The Watcher keeps `S["van"]`: `on`, `first` and `second` (minutes before the van; defaults on, 30 and 10, 1.7.1's
+  alerts), saved with the state so a restart keeps them. New admin-only MQTT commands: `flight_watcher/van/alerts/set`
+  ON or OFF (on, off, true, false too), `flight_watcher/van/first_min/set` 5 to 120 and
+  `flight_watcher/van/second_min/set` 0 to 60 (0 is no second alert), a whole number of minutes, clamped; 'abc',
+  'inf' or 'nan' is ignored like the frequency sliders. Retained states `flight_watcher/van/alerts/state`,
+  `.../first_min/state` and `.../second_min/state` at connect and after each command; one log line a change.
+- New entities (Ryan's only; a pilot's Watcher empties their configs): `switch.flight_watcher_van_alerts` "Van time
+  alerts", `number.flight_watcher_van_alert_first` "First van alert" (5 to 120 min, step 5, slider) and
+  `number.flight_watcher_van_alert_second` "Second van alert (0 is off)" (0 to 60 min, step 5, slider).
+- The alerts follow the settings: the lead times are the distinct values above 0 of first and second, largest first
+  (`layover.offsets_of`; `due`, `event` and `sensor` take them, `OFFSETS` stays the default). Off sends nothing; the
+  van sensor still shows the van.
+- Safety: each lead time that becomes active (alerts switched on, or a slider moved to a new value) gets an armed
+  time in `S["van"]["armed"]`. One whose mark had already passed then is never sent late: `layover.set_late` names it
+  and the Watcher marks its DB key skipped (`why` `set_after_mark`, one log line); `due` never sends it either. One
+  whose mark is still ahead simply goes at it. A lead time with no armed time has been on since before its van, so the
+  late-start rule after a restart is exactly 1.7.1's (the latest alert still before the van, the earlier ones skipped,
+  `why` `late_start`). The DB key keeps its form (pairing, van instant, minutes), so an alert sent once is never sent
+  again, whatever the tick box or the sliders do after it, and nothing goes after the van time. The kept keys stay
+  bounded: the newest 40, and always every key of the van in hand (at most one a lead time), so a run of slider moves
+  can never push out an alert already sent and send it again (`van_keep`).
+- `sensor.flight_watcher_layover_van` gains `alerts_on` and `offsets` (even without a van), and its alerts list is the
+  current lead times (status `off` while off; a skipped one with its `why`). A setting republishes it at once. The
+  `event/van` payload gains `offsets`; the push automation is unchanged (title, message, minutes).
+- Layover card: under the van time, a "Van alerts" tick box (checked from the sensor's `alerts_on`, else the switch,
+  else checked); a tap publishes `flight_watcher/van/alerts/set` ON or OFF, shows "Saving..." until the sensor says
+  the new state, and puts the box back with a short message on a publish error or no answer in 30 s. Under it "30 and
+  10 min before" ("Off" when off) and "Change in Settings" (the Settings tab, in the app). 44 px taps, a box white on a
+  fixed dark blue when ticked, AA contrast in light and dark, no sideways scroll at 390 px.
+- Settings tab: a "Van time alerts" heading and tiles for the switch and the two sliders (`numeric-input` slider
+  feature). These entities exist from 1.7.2, so the dashboard edit is applied on Pako after this release is live
+  (`ha/README.md`, Pending); the snapshot is one edit ahead of Pako until then.
+- `roles.py`: the three set topics in `SUBS` (admin_pushes) and `NOT_ON_PORTAL` (a portal never sends them; the spool
+  refuses them), the three entities in `ENTITY_FEATURE`, and "van" in `RESERVED` (a pilot can no longer be named
+  "van"; the push guard reads `*.flight_watcher_van_*` as Ryan's). The portal contract fixture and
+  `PORTAL_CONTRACT.md` are byte for byte unchanged (revision 3).
+- Tests: `tests/test_van_settings.py` (commands, clamps, restart, discovery by role, custom lead times, off, switched
+  on or moved after a mark, toggles and sliders back and forth, the restart rule, bounded keys, roles and the contract,
+  the card at 390 px, the Settings tiles).
+
 ### Rollback to 1.7.1
 
 - 1.7.1 cannot read 1.7.2's HMAC-keyed CrewTrac records: it takes them for other details and lifts a refusal block, so
   it would make one more CrewTrac login with details CrewTrac refused. Before a rollback, restore /data from the backup
   taken before the update, or, when CrewTrac refused the details in use while on 1.7.2, blank the CrewTrac password in
   Settings first (then save the right password on 1.7.1).
+- 1.7.1 ignores `S["van"]` (its alerts are always on, 30 and 10) and leaves the van setting entities without a
+  Watcher behind them; the Settings tiles show them unavailable until they are removed (`ha/README.md`).
 
 ### Also
 

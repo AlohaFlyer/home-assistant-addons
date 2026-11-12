@@ -643,10 +643,11 @@ def test_the_dashboard_snapshot_has_no_weather_view_and_matches_its_sha():
     views = [v.get("path") for v in json.loads(text)["data"]["config"]["views"]]
     assert views == ["watcher", "flight", "details", "recall", "settings"]
     readme = open(os.path.join(ROOT, "ha", "README.md"), encoding="utf-8").read()
-    # the snapshot's sha256 is in the README: the one the refresh checked on Pako (2026-11-12, with the layover card
-    # applied, Pako and the snapshot are the same text)
+    # the snapshot's sha256 is in the README. 1.7.2 (Ryan, Nov 12): the snapshot is one edit ahead of Pako (the van
+    # alert settings tiles, pending until 1.7.2 is live); Pako's own sha256 from the last refresh stays named there
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() in readme
     assert "0e12f42634beafd0eb476743edd795ac78644b30cc41581876fa9000e8341480" in readme  # Pako's, read 2026-11-12 02:2x HST
+    assert "Pending on Pako (1.7.2): van alert settings" in readme and "ahead of Pako" in readme
     assert "lat=" not in text and "windy" not in text.lower()
     assert os.path.exists(os.path.join(ROOT, "ha", "packages", "flight_watcher_wx.yaml"))  # the wx package stays
     claude = open(os.path.join(ROOT, "CLAUDE.md"), encoding="utf-8").read()

@@ -187,7 +187,7 @@ def test_no_package_van_and_no_hark_is_no_alert_and_says_why(tmp_path, monkeypat
     assert W.van_tick(HARK_VAN - timedelta(minutes=30), mono=0) == [] and _vans(fake) == []
     assert _last(fake, "layover_van") == {
         "at": None, "why": "Hark's working flight is not in Home Assistant; the pairings package gives no van time for "
-                           "H3681 SYD (VAN 00:00)"}
+                           "H3681 SYD (VAN 00:00)", "alerts_on": True, "offsets": [30, 10]}  # 1.7.2: the settings
     assert W._VAN["city"] == "SYD"  # the notes still follow the layover station
 
 

@@ -638,6 +638,47 @@
                   }
                 },
                 {
+                  "heading": "Van time alerts",
+                  "icon": "mdi:van-passenger",
+                  "type": "heading"
+                },
+                {
+                  "entity": "switch.flight_watcher_van_alerts",
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "name": "Van alerts",
+                  "type": "tile"
+                },
+                {
+                  "entity": "number.flight_watcher_van_alert_first",
+                  "features": [
+                    {
+                      "style": "slider",
+                      "type": "numeric-input"
+                    }
+                  ],
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "name": "First alert",
+                  "type": "tile"
+                },
+                {
+                  "entity": "number.flight_watcher_van_alert_second",
+                  "features": [
+                    {
+                      "style": "slider",
+                      "type": "numeric-input"
+                    }
+                  ],
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "name": "Second alert (0 is off)",
+                  "type": "tile"
+                },
+                {
                   "type": "markdown",
                   "text_only": true,
                   "content": "---",

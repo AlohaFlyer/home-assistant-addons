@@ -21,6 +21,19 @@ Watcher takes. The guard passes and counts it (`python3 ha/check_push_isolation.
 notification-action handlers, 0 offenders). Then check by sha256 of the redacted text as in Refresh below and drop
 this section. Undo: delete the automation (its id above); Ryan's Settings uploads card still has the buttons.
 
+## Pending on Pako (1.7.2): van alert settings
+
+Ryan, Nov 12: "I like the layover card. Can you add a tick box to turn on the van time alerts and also add van time
+alert settings in the form of sliders in the settings tab?" Flight Watcher 1.7.2 adds `switch.flight_watcher_van_alerts`
+(the layover card's "Van alerts" tick box sets it too), `number.flight_watcher_van_alert_first` (5 to 120 min, step 5)
+and `number.flight_watcher_van_alert_second` (0 to 60 min, 0 is no second alert); Ryan's Watcher only.
+`dashboard_flight_watcher.json`, view `settings`: after the Monthly files uploads card, a "Van time alerts" heading
+(`mdi:van-passenger`), a tile for the switch ("Van alerts") and a tile for each number ("First alert", "Second alert (0
+is off)") with the `numeric-input` slider feature, each `grid_options` columns full (keys sorted, as HA stores a card
+the connector writes). These entities exist only once 1.7.2 is live, so Claude applies this dashboard edit through the
+HA connector after 1.7.2 is live (a dashboard edit; undo: remove those four cards), then checks by sha256 of the
+redacted text as in Refresh below and drops this section. Until then the snapshot is one edit ahead of Pako (below).
+
 ## Applied on Pako 2026-11-12 about 02:20 HST: "Ready to update" asks Hark (Ryan, Nov 12)
 
 Ryan: "When I click ready to update I want you to trigger hark without my help. Get the info and bring it back
@@ -87,9 +100,12 @@ only) by sha256 of the redacted text as in Refresh below:
 
 The 22 automations here that are on Pako (all but the pending pilot upload one) match Pako's 22 Flight Watcher
 automations (besides its disabled temporary van one) in file order, sha256 of the redacted text of the 22 items
-`0f677ba7a3118ff682acc82907d4fc02e4f062d5b25bfa0007395f50ea9084c3` (read 2026-11-12 02:2x HST). The dashboard matches Pako's
-`/config/.storage/lovelace.flight_watcher`, sha256 `0e12f42634beafd0eb476743edd795ac78644b30cc41581876fa9000e8341480`
-(5 views: Watcher, Working Flight, Details, Recall/O75, Settings).
+`0f677ba7a3118ff682acc82907d4fc02e4f062d5b25bfa0007395f50ea9084c3` (read 2026-11-12 02:2x HST). The dashboard snapshot
+matched Pako's `/config/.storage/lovelace.flight_watcher`, sha256
+`0e12f42634beafd0eb476743edd795ac78644b30cc41581876fa9000e8341480` (5 views: Watcher, Working Flight, Details,
+Recall/O75, Settings), until the pending van alert settings edit (above): the snapshot is now ahead of Pako by that
+edit alone, sha256 `ddd32c46c24a4d59e6a9140a80f245ffb6fce11afee089e0fa8eee9fd3aede89`, and Pako matches it again once
+the edit is applied.
 
 **Changed on Pako 2026-11-12 about 22:55 HST (Ryan, in Sydney: "My flight page is not working ... Please get it
 going"):** his phone showed "Configuration error" where the layover card should be. The card's code and his data were
@@ -98,7 +114,8 @@ the loader had never imported the card the dashboard now asked for. Claude put t
 Working Flight template from before 1.7.1) and the "Ready to update?" button back at the top of the view, above the
 layover card, so the page shows the flight with no custom card at all; HA stored those two cards with sorted keys.
 The fix for the cause is the 1.7.2 loader (`cards.py` LOADER_JS: it reads the card list again when the page comes
-back to the screen and every 5 min). The dashboard matches Pako by sha256 of the redacted text (below). Undo: remove
+back to the screen and every 5 min). The dashboard matched Pako by sha256 of the redacted text after it (above; the
+van alert settings edit is pending). Undo: remove
 the first two cards of the view's section (the layover card stays).
 
 **Pending on Pako (1.7.2): the loader resource URL.** The one dashboard resource is `/local/flight-watcher-loader.js`

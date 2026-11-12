@@ -340,6 +340,9 @@ def on_message(c, u, msg):
     if msg.topic == f"{T}/layover/note":  # 1.7.1 (FW-0072): the admin only (roles: one_writer)
         layover_note_cmd(msg.payload.decode(errors="replace"))
         return
+    if msg.topic in (f"{T}/van/alerts/set", f"{T}/van/first_min/set", f"{T}/van/second_min/set"):  # 1.7.2: admin
+        van_setting_cmd(c, msg.topic[len(T) + 1:], msg.payload.decode(errors="replace"))
+        return
     if msg.topic == f"{T}/ticket/new":
         ticket_safe(ticket_new, msg.payload.decode(errors="replace"))
         return
@@ -1257,6 +1260,20 @@ def entity_defs():
         ("sensor", "layover_notes", {"name": "Layover notes", "state_topic": f"{T}/layover_notes",
                                      "value_template": "{{ value_json.count }}",
                                      "json_attributes_topic": f"{T}/layover_notes", "icon": "mdi:notebook-edit"}),
+        # 1.7.2 (Ryan, Nov 12, admin only): the van alerts' switch (the layover card's tick box) and their two lead
+        # times as sliders on the Settings tab (van_setting_cmd; second 0 is no second alert)
+        ("switch", "van_alerts", {"name": "Van time alerts", "command_topic": f"{T}/van/alerts/set",
+                                  "state_topic": f"{T}/van/alerts/state", "icon": "mdi:van-passenger"}),
+        ("number", "van_alert_first", {"name": "First van alert", "command_topic": f"{T}/van/first_min/set",
+                                       "state_topic": f"{T}/van/first_min/state",
+                                       "min": VAN_LIMITS["first"][0], "max": VAN_LIMITS["first"][1], "step": 5,
+                                       "mode": "slider", "unit_of_measurement": "min", "icon": "mdi:timer-outline"}),
+        ("number", "van_alert_second", {"name": "Second van alert (0 is off)",
+                                        "command_topic": f"{T}/van/second_min/set",
+                                        "state_topic": f"{T}/van/second_min/state",
+                                        "min": VAN_LIMITS["second"][0], "max": VAN_LIMITS["second"][1], "step": 5,
+                                        "mode": "slider", "unit_of_measurement": "min",
+                                        "icon": "mdi:timer-outline"}),
         ("sensor", "tradeboard", {"name": "Tradeboard pickups", "state_topic": f"{T}/tradeboard/state",
                                   "value_template": "{{ value_json.count }}",
                                   "json_attributes_topic": f"{T}/tradeboard/state",
@@ -1389,6 +1406,7 @@ def mqtt_start():
         publish_rules(cl)
         if has("auto_swap"):
             cl.publish(f"{T}/auto_swap/state", "ON" if S.get("auto_swap") else "OFF", retain=True)
+        publish_van_settings(cl)  # 1.7.2: the van alerts switch and sliders (the admin only)
         publish_swap_mode(cl)
         publish_swap_tests()
         publish_uploads(cl, force=True)  # FW-0066
@@ -7535,12 +7553,151 @@ VAN_READ_S = 60  # Hark writes its sensor about every 30 min; a changed van is s
 LAYOVERS_DIR = "/share/flight_watcher/layovers"  # <CITY>.json notes and <CITY>.guide.md (layover.py); never in git
 LAYOVER_NOTE_BYTES = 8192  # a layover/note command's payload, at most
 LAYOVER_SCAN_S = 30  # the notes folder is looked at this often (a guide Claude wrote shows within it)
-_VAN = {"read": None, "status": None, "attrs": None, "state": "", "why": None, "sig": None, "city": ""}
+_VAN = {"read": None, "status": None, "attrs": None, "state": "", "why": None, "sig": None, "city": "", "last": None}
 _LN = {"sig": None, "files": None, "checked": None, "last": {}, "city": None}
 # the uploads janitor (layover_notes_tick) and the MQTT thread (layover_note_cmd) both publish the notes sensor: one at
 # a time, each building its payload under the lock, so a payload built before a note was written is never the last one
 # published (it would drop the note and its answer, the card on "Saving..." until the next look at the folder)
 _LN_LOCK = threading.Lock()
+
+# 1.7.2 (Ryan, Nov 12: "I like the layover card. Can you add a tick box to turn on the van time alerts and also add van
+# time alert settings in the form of sliders in the settings tab?"). S["van"]: on (the layover card's tick box, switch
+# van_alerts), first and second (the sliders, number van_alert_first and van_alert_second: minutes before the van;
+# second 0 is no second alert) and armed ({"<minutes>": UTC ISO time} each lead time was set or alerts switched on, so
+# a mark already passed then is never sent late; a lead time with none has been on since before its van). Defaults are
+# 1.7.1's alerts: on, 30 and 10. The admin only (roles: admin_pushes), like the alerts.
+VAN_DEFAULTS = {"on": True, "first": LO.OFFSETS[0], "second": LO.OFFSETS[1]}
+VAN_LIMITS = {"first": (5, 120), "second": (0, 60)}  # minutes; the sliders' ranges and the clamp of a command
+VAN_SET_SUBS = {"van/alerts/set": "on", "van/first_min/set": "first", "van/second_min/set": "second"}
+VAN_STATE_TOPICS = {"on": "van/alerts/state", "first": "van/first_min/state", "second": "van/second_min/state"}
+# van_tick (the uploads janitor) and a van setting (the MQTT thread) one at a time: a setting's armed time is in place
+# before the next decision, and the sensor a setting republishes is never overwritten by one built before it
+_VAN_LOCK = threading.Lock()
+
+
+def van_clock():
+    return datetime.now(timezone.utc)
+
+
+def van_settings():
+    """S["van"] with its defaults: on, first and second clamped to VAN_LIMITS (a hand-edited state cannot widen them),
+    armed as {minutes: aware time} (an entry that does not read is left out)."""
+    v = S.get("van") if isinstance(S.get("van"), dict) else {}
+    out = {"on": v["on"] if isinstance(v.get("on"), bool) else VAN_DEFAULTS["on"]}
+    for k, (lo, hi) in VAN_LIMITS.items():
+        x = v.get(k)
+        out[k] = max(lo, min(hi, x)) if isinstance(x, int) and not isinstance(x, bool) else VAN_DEFAULTS[k]
+    armed = {}
+    for k, t in (v.get("armed") if isinstance(v.get("armed"), dict) else {}).items():
+        try:
+            m, at = int(k), datetime.fromisoformat(str(t))
+        except (TypeError, ValueError):
+            continue
+        armed[m] = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+    out["armed"] = armed
+    return out
+
+
+def van_offsets(vs=None):
+    """The lead times set (layover.offsets_of first and second), largest first, whether alerts are on or not."""
+    vs = vs or van_settings()
+    return LO.offsets_of(vs["first"], vs["second"])
+
+
+def van_words(vs):
+    """'alerts 30 and 10 min before' or 'alerts off', for a log line."""
+    offs = van_offsets(vs)
+    if not vs["on"]:
+        return "alerts off"
+    return "alerts " + " and ".join(str(m) for m in offs) + " min before" if offs else "alerts on, no lead time set"
+
+
+def publish_van_settings(c=None):
+    """{T}/van/alerts/state (ON or OFF), {T}/van/first_min/state and {T}/van/second_min/state, retained: the switch and
+    the sliders in HA. At connect and after each van setting command. The admin only."""
+    if not has("admin_pushes"):
+        return False
+    c = c or MQ
+    if c is None:
+        return False
+    vs = van_settings()
+    c.publish(f"{T}/{VAN_STATE_TOPICS['on']}", "ON" if vs["on"] else "OFF", retain=True)
+    c.publish(f"{T}/{VAN_STATE_TOPICS['first']}", str(vs["first"]), retain=True)
+    c.publish(f"{T}/{VAN_STATE_TOPICS['second']}", str(vs["second"]), retain=True)
+    return True
+
+
+def van_setting_cmd(c, sub, payload, now=None):
+    """1.7.2: {T}/van/alerts/set ON or OFF (on, off, true, false too), {T}/van/first_min/set (5 to 120 min) and
+    {T}/van/second_min/set (0 to 60, 0 is no second alert): a whole number of minutes, clamped, like the check
+    frequency sliders ('inf' or 'abc' is ignored). Kept in S["van"] (save_state, so a restart keeps it), one log line
+    a change, the state topics published after every command (so HA's switch and sliders show what was kept). Each
+    lead time that becomes active (switched on, or a new value) is armed now: its mark, when already passed, is
+    skipped and never sent late (layover.set_late), and one whose mark is ahead simply goes at it. A lead time already
+    sent for this van is never sent again (its DB key stays), whatever the switch or the sliders do. Returns True
+    when a setting changed. Nothing on a pilot's instance."""
+    if not has("admin_pushes"):
+        log.info("van alert setting refused: not for a pilot instance")
+        return False
+    what = VAN_SET_SUBS.get(sub)
+    if what is None:
+        return False
+    p = str(payload or "").strip()
+    with _VAN_LOCK:
+        vs = van_settings()
+        if what == "on":
+            w = p.lower()
+            if w not in ("on", "off", "true", "false"):
+                log.info("van alerts: a switch command that is not ON or OFF ignored")
+                publish_van_settings(c)
+                return False
+            new = w in ("on", "true")
+        else:
+            lo, hi = VAN_LIMITS[what]
+            try:
+                new = max(lo, min(hi, int(round(float(p)))))
+            except (ValueError, OverflowError):  # 'nan', 'inf' or '1e999' must not end paho's thread
+                publish_van_settings(c)
+                return False
+        if new == vs[what]:
+            publish_van_settings(c)
+            return False
+        before = van_offsets(vs) if vs["on"] else ()
+        vs[what] = new
+        after = van_offsets(vs) if vs["on"] else ()
+        t = (now or van_clock()).astimezone(timezone.utc)
+        armed = {}
+        for m in after:
+            if m not in before:
+                armed[m] = t  # set or switched on now
+            elif m in vs["armed"]:
+                armed[m] = vs["armed"][m]  # on all along: it keeps its time (none: on since before its van)
+        S["van"] = {"on": vs["on"], "first": vs["first"], "second": vs["second"],
+                    "armed": {str(m): x.isoformat() for m, x in sorted(armed.items(), reverse=True)}}
+        save_state(S)
+        vs = van_settings()
+        name = {"on": "switched " + ("on" if new else "off"), "first": f"first alert {new} min before",
+                "second": f"second alert {new} min before" if new else "second alert off"}[what]
+        log.info("van alerts: %s (%s)", name, van_words(vs))
+        publish_van_settings(c)
+        last = _VAN.get("last")
+        if last is not None:  # the van sensor says the new settings at once (the card's tick box stops waiting)
+            publish_layover_van(last[0], last[1], DB.get(VAN_DONE) or {}, now or datetime.now(HST), vs=vs)
+    return True
+
+
+def van_keep(done, info):
+    """VAN_DONE bounded: the newest VAN_KEEP keys by when each was written, and always every key of the van in hand, so
+    a run of lead time changes (each a skipped key) can never push out an alert already sent for it and send it
+    again. The van in hand has at most one key a lead time (1 to 120 min)."""
+    pre = LO.key(info, 0).rsplit("|", 1)[0] + "|" if info else None
+    when = lambda kv: str((kv[1] or {}).get("at") or "")  # noqa: E731
+    mine = {k: v for k, v in done.items() if pre and k.startswith(pre)}
+    rest = sorted(((k, v) for k, v in done.items() if k not in mine), key=when)
+    n = max(0, VAN_KEEP - len(mine))
+    keep = dict(rest[-n:]) if n else {}
+    keep.update(mine)
+    return dict(sorted(keep.items(), key=when))
 
 
 def van_read(mono):
@@ -7642,9 +7799,11 @@ def van_source(own, a, state):
 
 
 def van_tick(now=None, mono=None):
-    """Send the van alert that is due, once (layover.due: 30 and 10 min before the van, only before it, the latest
-    one alone after a late start), publish the layover_van sensor and look at the notes folder. Returns the offsets
-    sent. Nothing on a pilot's instance. The van comes from van_source: the pairings package's VAN, else Hark's."""
+    """Send the van alert that is due, once (layover.due: 30 and 10 min before the van by default, only before it, the
+    latest one alone after a late start), publish the layover_van sensor and look at the notes folder. Returns the
+    offsets sent. Nothing on a pilot's instance. The van comes from van_source: the pairings package's VAN, else
+    Hark's. 1.7.2: the lead times and the switch are Ryan's settings (van_settings): off sends nothing, and a lead
+    time set or switched on after its mark is skipped, never sent late (layover.set_late)."""
     if not has("admin_pushes"):
         return []
     now = now or datetime.now(HST)
@@ -7656,36 +7815,46 @@ def van_tick(now=None, mono=None):
         log.info("van: own layover not read: %s", type(e).__name__)
         own = None
     info, why = van_source(own, a, _VAN["state"])
-    seen = (LO.key(info, 0), info["source"]) if info else why  # one log line each time the van or the reason changes
-    if seen != _VAN["why"]:
-        _VAN["why"] = seen
-        if info:
-            log.info("van: %s %s %s at %s %s (%s HST %s), alerts %s min before (from %s)", info["pairing"],
-                     info["city"], info["date"], info["local"], info["abbr"], info["hst"], info["hst_date"],
-                     " and ".join(str(m) for m in LO.OFFSETS),
-                     "the pairings package" if info["source"] == "package" else "Hark")
-        else:
-            log.info("van alerts: none (%s)", why)
-    city = info["city"] if info else own["city"] if own else (
-        str(a.get("origin") or "").upper() if a and a.get("mode") == "layover" else "")
-    _VAN["city"] = city if LO.STATION_RE.match(city) else ""
-    done = DB.get(VAN_DONE) or {}
-    send, skip = LO.due(info, done, now) if info else ([], [])
-    if send and not mqtt_up():
-        send = []  # tried again at the next sweep, until the van time
-    for m in skip:
-        done[LO.key(info, m)] = {"how": "skipped", "at": now.isoformat()}
-        log.info("van alert %d min before %s not sent: the app was not running then (a later one goes instead)",
-                 m, LO.key(info, m))
-    for m in send:
-        done[LO.key(info, m)] = {"how": "sent", "at": now.isoformat()}
-    if send or skip:
-        DB.put(VAN_DONE, dict(sorted(done.items(), key=lambda kv: str((kv[1] or {}).get("at") or ""))[-VAN_KEEP:]))
-    for m in send:
-        ev = LO.event(info, m, now)
-        pub("event/van", ev, retain=False)
-        log.info("van alert sent: %s", ev["message"])
-    publish_layover_van(info, why, done, now)
+    with _VAN_LOCK:
+        vs = van_settings()
+        offs = van_offsets(vs)
+        active = offs if vs["on"] else ()
+        # one log line each time the van or the reason changes
+        seen = (LO.key(info, 0), info["source"]) if info else why
+        if seen != _VAN["why"]:
+            _VAN["why"] = seen
+            if info:
+                log.info("van: %s %s %s at %s %s (%s HST %s), %s (from %s)", info["pairing"],
+                         info["city"], info["date"], info["local"], info["abbr"], info["hst"], info["hst_date"],
+                         van_words(vs), "the pairings package" if info["source"] == "package" else "Hark")
+            else:
+                log.info("van alerts: none (%s)", why)
+        city = info["city"] if info else own["city"] if own else (
+            str(a.get("origin") or "").upper() if a and a.get("mode") == "layover" else "")
+        _VAN["city"] = city if LO.STATION_RE.match(city) else ""
+        _VAN["last"] = (info, why)
+        done = DB.get(VAN_DONE) or {}
+        late = LO.set_late(info, done, now, active, vs["armed"]) if info else []
+        send, skip = LO.due(info, done, now, active, vs["armed"]) if info else ([], [])
+        if send and not mqtt_up():
+            send = []  # tried again at the next sweep, until the van time
+        for m in late:
+            done[LO.key(info, m)] = {"how": "skipped", "at": now.isoformat(), "why": "set_after_mark"}
+            log.info("van alert %d min before %s not sent: that lead time was set or alerts switched on after its "
+                     "mark, so it is never sent late", m, LO.key(info, m))
+        for m in skip:
+            done[LO.key(info, m)] = {"how": "skipped", "at": now.isoformat(), "why": "late_start"}
+            log.info("van alert %d min before %s not sent: the app was not running then (a later one goes instead)",
+                     m, LO.key(info, m))
+        for m in send:
+            done[LO.key(info, m)] = {"how": "sent", "at": now.isoformat()}
+        if send or skip or late:
+            DB.put(VAN_DONE, van_keep(done, info))
+        for m in send:
+            ev = LO.event(info, m, now, offs)
+            pub("event/van", ev, retain=False)
+            log.info("van alert sent: %s", ev["message"])
+        publish_layover_van(info, why, done, now, vs=vs)
     layover_notes_tick(time.monotonic() if mono is None else mono)
     return send
 
@@ -7698,9 +7867,11 @@ def forget_layover_sigs():
     _LN["sig"] = _LN["files"] = _LN["checked"] = None
 
 
-def publish_layover_van(info, why, done, now, force=False):
-    """{T}/layover_van (retained), sensor.{T}_layover_van: layover.sensor; published when it changes."""
-    d = LO.sensor(info, why, done, now)
+def publish_layover_van(info, why, done, now, force=False, vs=None):
+    """{T}/layover_van (retained), sensor.{T}_layover_van: layover.sensor; published when it changes. 1.7.2: with the
+    van settings (vs, van_settings): alerts_on, offsets and the alerts of the lead times set."""
+    vs = vs or van_settings()
+    d = LO.sensor(info, why, done, now, van_offsets(vs), vs["on"], vs["armed"])
     sig = json.dumps(d, sort_keys=True)
     if not force and sig == _VAN["sig"]:
         return False

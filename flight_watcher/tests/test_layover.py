@@ -317,7 +317,9 @@ def test_unknown_zone_or_no_hark_is_no_alert_and_one_log_line(tmp_path, monkeypa
         for i in range(5):
             assert W.van_tick(VAN_UTC - timedelta(minutes=30 - i), mono=i * 100) == []
     assert caplog.text.count("van alerts: none (no time zone known for XYZ)") == 1
-    assert _vans(fake) == [] and _last(fake, "layover_van") == {"at": None, "why": "no time zone known for XYZ"}
+    # 1.7.2: the van alert settings ride along even without a van (Ryan's Nov 12 tick box and sliders)
+    assert _vans(fake) == [] and _last(fake, "layover_van") == {"at": None, "why": "no time zone known for XYZ",
+                                                                "alerts_on": True, "offsets": [30, 10]}
     st.clear()
     assert W.van_tick(VAN_UTC, mono=1000) == []
     assert _last(fake, "layover_van")["why"] == "Hark's working flight is not in Home Assistant"
@@ -344,7 +346,8 @@ def test_the_van_sensor_keeps_only_what_the_card_reads(tmp_path, monkeypatch):
     W.van_tick(VAN_UTC - timedelta(minutes=30), mono=0)
     s = _last(fake, "layover_van")
     assert set(s) == {"at", "why", "pairing", "city", "abbr", "date", "local", "weekday", "hst", "hst_weekday", "place",
-                      "source", "alerts"}  # 1.7.1: source, package or hark, for the card's "from ..." line
+                      "source", "alerts",  # 1.7.1: source, package or hark, for the card's "from ..." line
+                      "alerts_on", "offsets"}  # 1.7.2: the van alert settings (Ryan, Nov 12)
     assert s["source"] == "hark"
     assert "7:40 PM" not in json.dumps(s) and s["place"] == "Example Harbour Hotel lobby"
     (ev, _), = _vans(fake)

@@ -198,6 +198,8 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
       (a reused uid refused), Remove after Approve, linear package parsers and bounded pilot text, an award line cut
       off, the extractor as nobody, schedule_unread's held clock and 24 h spacing, answers for dropped uploads, a
       removed award off the looked-up pilots' versions.
+    - **Van alert settings (Ryan, Nov 12, in 1.7.2; CHANGELOG "Van alert settings"):** after 1.7.2 is live, add the
+      Settings tab's van alert tiles through the HA connector (`ha/README.md`, Pending) and check the log's "van alerts:".
     - **Check after the update:** `sensor.flight_watcher_state` version 1.7.2; the log's "charter: CrewTrac block
       records keyed with this instance's own key (N kept, M dropped)" once on Ryan's instance and
       `/data/crewtrac_hmac.key` (0600, 32 bytes; never read out); James's manifest says revision 3 (HOM's log or the

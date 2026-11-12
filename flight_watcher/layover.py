@@ -17,6 +17,14 @@ time, once per (pairing, van instant, offset), the key in the DB. A new van time
 late start (the app was off at the 30 min mark) sends only the latest alert still due before the van time and skips
 the earlier ones, worded with the minutes really left; after the van time nothing is sent.
 
+1.7.2 (Ryan, Nov 12: "add a tick box to turn on the van time alerts and also add van time alert settings in the form of
+sliders"): the lead times come from the Watcher's settings (offsets_of: the distinct non-zero values of the first and
+second alert, largest first; OFFSETS stays the default for old callers). armed says when each lead time was set or
+alerts were switched on: an offset whose mark had already passed then is never due (set_late names it, the Watcher
+marks it skipped), so a setting changed or switched on late never sends an alert late. A lead time with no armed time
+has been on since before that (the late-start rule after a restart is unchanged). The key keeps its form, so an alert
+sent once is never sent again, whatever the switch or the sliders do after it.
+
 Layover notes. Ryan's notes per layover station (the IATA code, e.g. SYD), one JSON file each under
 /share/flight_watcher/layovers (directory 0700, files 0600; never in git, never in a portal export): plain text, each
 note at most NOTE_MAX characters, at most NOTES_MAX a station. <CITY>.guide.md is the tidied guide Claude writes in
@@ -195,13 +203,44 @@ def key(info, minutes):
     return f"{_base_id(str(info['pairing']))}|{info['at'].astimezone(UTC).strftime('%Y-%m-%dT%H:%MZ')}|{minutes}"
 
 
-def due(info, done, now):
+def offsets_of(first, second):
+    """1.7.2: the alerts' lead times from the two settings: the distinct values above 0, largest first ((30, 10); a
+    second alert of 0 is none, the same value twice is one alert)."""
+    out = set()
+    for m in (first, second):
+        if isinstance(m, int) and not isinstance(m, bool) and m > 0:
+            out.add(m)
+    return tuple(sorted(out, reverse=True))
+
+
+def mark(info, minutes):
+    """The instant an alert's lead time before the van falls on."""
+    return info["at"] - timedelta(minutes=minutes)
+
+
+def _set_after_mark(info, m, armed):
+    t = (armed or {}).get(m)
+    return t is not None and mark(info, m) < t
+
+
+def set_late(info, done, now, offsets=OFFSETS, armed=None):
+    """1.7.2: the offsets whose mark had already passed when that lead time was set or alerts were switched on (armed:
+    {minutes: aware time}), not in done, while the van is still ahead. Never sent late: the caller marks each skipped
+    (due() never sends one either). After the van time: none (the sensor says missed)."""
+    if now >= info["at"]:
+        return []
+    return [m for m in offsets if key(info, m) not in done and _set_after_mark(info, m, armed)]
+
+
+def due(info, done, now, offsets=OFFSETS, armed=None):
     """(send, skip): the offsets to send now (at most one) and the earlier ones a late start skips. An offset is due
-    from its mark until the van time and only while its key is not in done."""
+    from its mark until the van time and only while its key is not in done. 1.7.2: offsets are the current lead times
+    (none while alerts are off), and one set or switched on after its mark (armed, set_late) is never due."""
     at = info["at"]
     if now >= at:
         return [], []
-    ready = [m for m in OFFSETS if now >= at - timedelta(minutes=m) and key(info, m) not in done]
+    ready = [m for m in offsets if now >= mark(info, m) and key(info, m) not in done
+             and not _set_after_mark(info, m, armed)]
     if not ready:
         return [], []
     last = min(ready)
@@ -222,36 +261,45 @@ def render(info, minutes, now):
     return title, message
 
 
-def event(info, minutes, now):
-    """The {T}/event/van payload."""
+def event(info, minutes, now, offsets=OFFSETS):
+    """The {T}/event/van payload. 1.7.2: offsets, the lead times set when it went (the push reads title, message and
+    minutes)."""
     title, message = render(info, minutes, now)
     return {"kind": "van", "key": key(info, minutes), "pairing": info["pairing"], "city": info["city"],
             "van_local": info["local"], "van_date": info["date"], "abbr": info["abbr"], "van_hst": info["hst"],
             "van_hst_date": info["hst_date"], "minutes": minutes, "minutes_left": minutes_left(info, now),
             "hotel": info["hotel"], "place": info["place"], "title": title, "message": message,
             "van_utc": info["at"].astimezone(UTC).isoformat(timespec="seconds"),
-            "at_hst": now.astimezone(HST).isoformat(timespec="seconds")}
+            "at_hst": now.astimezone(HST).isoformat(timespec="seconds"), "offsets": list(offsets)}
 
 
-def sensor(info, why, done, now):
+def sensor(info, why, done, now, offsets=OFFSETS, on=True, armed=None):
     """The layover_van sensor's payload: state the van instant (a timestamp, None without one); the van as the card
-    shows it, where it comes from (source: package or hark) and each alert's status (pending, sent, skipped, missed).
-    Only what the card reads from it: not Hark's
+    shows it, where it comes from (source: package or hark) and each alert's status (pending, sent, skipped, missed;
+    1.7.2: off while alerts are off). Only what the card reads from it: not Hark's
     van text or hotel (the card shows those from Hark's own sensor), so the retained topic and HA's recorder keep no
-    more of Hark's sensor than the card shows."""
+    more of Hark's sensor than the card shows. 1.7.2: alerts_on and offsets (the lead times set, largest first, even
+    while off and without a van); the alerts list is the current offsets, a skipped one with its why when the DB has
+    one (late_start, set_after_mark)."""
+    base = {"alerts_on": bool(on), "offsets": [int(m) for m in offsets]}
     if not info:
-        return {"at": None, "why": why}
+        return {"at": None, "why": why, **base}
     alerts = []
-    for m in OFFSETS:
-        st = (done.get(key(info, m)) or {}).get("how")
+    for m in offsets:
+        rec = done.get(key(info, m)) or {}
+        st = rec.get("how")
         if not st:
-            st = "missed" if now >= info["at"] else "pending"
-        alerts.append({"minutes": m, "status": st,
-                       "at_hst": (info["at"] - timedelta(minutes=m)).astimezone(HST).strftime("%H:%M")})
+            st = "off" if not on else "missed" if now >= info["at"] else \
+                "skipped" if _set_after_mark(info, m, armed) else "pending"
+        a = {"minutes": m, "status": st, "at_hst": mark(info, m).astimezone(HST).strftime("%H:%M")}
+        why_m = rec.get("why") or ("set_after_mark" if st == "skipped" and not rec else "")
+        if why_m:
+            a["why"] = str(why_m)
+        alerts.append(a)
     return {"at": info["at"].astimezone(UTC).isoformat(timespec="seconds"), "why": "",
             **{k: info[k] for k in ("pairing", "city", "abbr", "date", "local", "weekday", "hst", "hst_weekday",
                                     "place")},
-            "source": info.get("source") or "hark", "alerts": alerts}
+            "source": info.get("source") or "hark", "alerts": alerts, **base}
 
 
 # ---------------------------------------------------------------- the pairings package's van times
