@@ -1602,6 +1602,10 @@ BRK_JUDGED = ("schedule", "lookup")  # paths whose callers judge each page (a go
 BRK_PAGE_JUDGED = {"tradeboard": "Tradeboard", "pairing": "pairing", "grid": "reserve grid"}
 TB_KNOWN = ("tradeboard", "var g='pickup'", "var g=\"pickup\"", "pickup trip", "propose trade", "add to favorites",
             "my requests", "all requests")
+# 1.7.3: on while crew_variants reads a lettered copy (H3646D) that may not exist. FLICA answers a missing one with a
+# page that names the id and holds nothing (page_verdict 'error'): a miss, not a failed pairing read (three in a row
+# stopped every pairing read for 30 min on each crew index run, Nov 12-13)
+PROBE = {"miss_ok": False}
 
 
 def page_verdict(path, url, html):
@@ -2200,6 +2204,8 @@ class Flica:
             v = page_verdict(path, url, html or "")
             if v == "ok":
                 BRK.ok(path)
+            elif v == "error" and PROBE["miss_ok"]:
+                pass  # 1.7.3: a probed lettered copy that does not exist: the breaker counts nothing
             elif v in ("unknown", "error"):
                 BRK.fail(path, f"not a {BRK_PAGE_JUDGED[path]} page" + (" (a page the parser does not know)"
                                                                        if v == "unknown" else ""), v)
@@ -6381,6 +6387,9 @@ CREW_VARIANT_KEY = "crew_variants"  # FW-0068: {base key: {at, found, v}} packag
 # (found: the copies, comma separated; v 2 from 1.4.12, when the copies must name every pilot seat)
 VARIANT_PER_CHECK = 2  # package trips probed per check (each up to len(CI.VARIANT_LETTERS) pages)
 VARIANT_MAX_AGE_D = 35  # a trip that departed longer ago than this is not probed
+CREW_VARIANT_TRIES_KEY = "crew_variant_tries"  # 1.7.3: {base key: {n, at}} probes cut short so far
+VARIANT_MAX_TRIES = 3  # 1.7.3: a probe cut short this often (a fetch error, the budget, a stopped pairing path) is
+# recorded with what it found: before, it was probed again every run until VARIANT_MAX_AGE_D
 
 
 def note_sched_trips(items, src):
@@ -6554,9 +6563,13 @@ def crew_variants(fl, insts, rows, budget):
     many pilots as the package trip has pilot seats (FLICA rebuilt H3631 Nov 6 for the captain alone as H3631B), and a
     copy that leaves seats unnamed is logged with its crew line masked (crewidx.crew_mask). The probe is recorded
     (CREW_VARIANT_KEY {base: {at, found, v}}) once every letter was tried or every seat was named; a record from before
-    1.4.12 whose copies leave seats unnamed is probed once more; a fetch error leaves the trip for a later run. insts and rows are
-    updated in place. Returns (pages read, 'ok' or 'killed' / 'needs_login' / 'stop' when a page said so, halted by
-    pause / re-arm). Ryan's instance only. Logs pairing ids and dates, never names."""
+    1.4.12 whose copies leave seats unnamed is probed once more; a fetch error leaves the trip for a later run. 1.7.3: a
+    copy that does not exist (a page naming the id with nothing on it) is a miss, never a failed pairing read (PROBE); a
+    probe cut short after a read (a fetch error, the budget, the pairing path stopped) counts one try
+    (CREW_VARIANT_TRIES_KEY) and the VARIANT_MAX_TRIES-th records the trip with what it found; a stopped path or a load
+    the gate gave up ends the probe (halted). insts and rows are updated in place. Returns (pages read, 'ok' or
+    'killed' / 'needs_login' / 'stop' when a page said so, halted by pause / re-arm or a stopped path). Ryan's instance
+    only. Logs pairing ids and dates, never names."""
     if not has("crew_index") or budget <= 0:
         return 0, "ok", False
     now = local_now()
@@ -6574,6 +6587,10 @@ def crew_variants(fl, insts, rows, budget):
                     del probed[k]
         if probed != reg0:
             DB.put(CREW_VARIANT_KEY, probed)
+        short0 = DB.get(CREW_VARIANT_TRIES_KEY) or {}  # 1.7.3: probes cut short, dropped once recorded or old
+        short = {k: v for k, v in short0.items() if k not in probed and str((v or {}).get("at") or "") >= cut}
+        if short != short0:
+            DB.put(CREW_VARIANT_TRIES_KEY, short)
         run = S.get("crew_run")
         tried = run.setdefault("variant_tried", []) if run else []  # a fetch error: not again in this run
         cands = CI.variant_candidates(insts, rows, now, set(probed) | set(tried), VARIANT_MAX_AGE_D)[:VARIANT_PER_CHECK]
@@ -6584,6 +6601,7 @@ def crew_variants(fl, insts, rows, budget):
     for base in cands:
         it = insts[base]
         d, complete = it["date"], True
+        reads, stop = 0, None  # 1.7.3: this trip's pages read; the BreakerOpen that ended the probe
         ids = CI.variant_ids(it["pairing"])
         # 1.4.12: FLICA can split a rebuilt trip's crew over two copies (H3631B names the captain only): the copies are
         # read until they name as many pilots as the package trip has pilot seats (its crew line, OPEN seats counted)
@@ -6614,14 +6632,21 @@ def crew_variants(fl, insts, rows, budget):
                 continue
             time.sleep(random.uniform(1.5, 3.5))  # before every read, the first too (pages read before this check)
             n += 1
+            reads += 1
             at = local_now().isoformat(timespec="seconds")
+            PROBE["miss_ok"] = True  # 1.7.3: a copy that does not exist is a miss, not a failed pairing read
             try:
                 page = fl.fetch(url)
+            except GT.BreakerOpen as e:  # 1.7.3: nothing loaded (the pairing path stopped, or the gate gave it up)
+                n, reads, stop, complete = n - 1, reads - 1, e, False
+                break
             except Exception as e:
                 log.info("crew index: %s %s probe of %s failed (%s), tried again in a later run", it["pairing"], d, vid, e)
                 tried.append(base)
                 complete = False
                 break
+            finally:
+                PROBE["miss_ok"] = False
             kind = classify(page)
             if kind != "ok":
                 log.info("crew index: %s page on %s, run ended", kind, vk)
@@ -6647,12 +6672,31 @@ def crew_variants(fl, insts, rows, budget):
                 break
             log.info("crew index: %s %s names %d of %d pilots, the next letters are read too (crew line: %s)", vid, d,
                      len(got), need, CI.crew_mask(vt))
+        parked = 0
+        if not complete and reads and (stop is None or type(stop) is GT.BreakerOpen):
+            # 1.7.3: cut short after a read (not by a pause or a load the gate left out): one try, the last records it
+            if stop is not None:
+                tried.append(base)  # the path stopped during its probe: not again in this run
+            t = int((short.get(base) or {}).get("n") or 0) + 1
+            if t >= VARIANT_MAX_TRIES:
+                complete, parked = True, t
+                log.info("crew index: %s %s probe cut short %d times, not probed again", it["pairing"], d, t)
+            else:
+                short[base] = {"n": t, "at": local_now().isoformat(timespec="seconds")}
+                DB.put(CREW_VARIANT_TRIES_KEY, short)
         if complete:
             probed[base] = {"at": local_now().isoformat(timespec="seconds"), "found": ",".join(found), "v": 2}
+            if parked:
+                probed[base]["parked"] = parked
             DB.put(CREW_VARIANT_KEY, probed)
-            if not found:
+            if short.pop(base, None) is not None:
+                DB.put(CREW_VARIANT_TRIES_KEY, short)
+            if not found and not parked:
                 log.info("crew index: %s %s, no rebuilt copy names a pilot (%s tried)", it["pairing"], d,
                          "/".join(CI.variant_ids(it["pairing"])))
+        if stop is not None:
+            log.info("crew index: variant probe stopped (%s), run continues later", stop)
+            return n, "ok", True
     return n, "ok", False
 
 
