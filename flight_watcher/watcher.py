@@ -58,7 +58,7 @@ import photos as PH
 import bidcal as BC
 import layover as LO
 
-VERSION = "1.7.1"
+VERSION = "1.7.1.1"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -2710,7 +2710,9 @@ def own_trip_times(fl, full=False):
     """Read only (0.3.8): check-in, final arrival and block of Ryan's own trips from their pairing
     pages, cached per trip and start date, so the FAR column can measure rest."""
     own = S.setdefault("own_trips", {})
-    keep, n = set(), 0
+    # 1.7.2 (Ryan, Nov 13): first, with no FLICA load and before the trips gone from the schedule are pruned below, a
+    # PAYP keeps the removed trip's credit (payp_refresh); a read stopped half way still leaves it on file
+    keep, n = payp_refresh(own), 0
     for it in _sched_items():
         trip = it.get("trip") or ""
         if not PAIRING_RE.match(trip):
@@ -2772,6 +2774,34 @@ def own_trip_times(fl, full=False):
         save_state(S)
         time.sleep(random.uniform(1.5, 3.5))  # ... and after the last, before the check loads the pot
     publish_own_trips()
+
+
+def payp_refresh(own=None):
+    """1.7.2 (Ryan, Nov 13: "My LAS trip today was cancelled and PAYP pay protected. Why did your pay calculations
+    drop?"): every PAYP item on the schedule gets an own trips record PAYP|<start> holding the removed trip's credit
+    (PWA Definitions 57: the pilot retains the Pay and Credit of a Flight Grouping removed from his schedule), so the
+    schedule card, the versions and every pay figure count it; block 0:00 (never in the block total, Block Avail, FAR
+    117 or the 98/672 checks: nothing is flown). versions.payp_entries() finds the removed trip: an own trips record no
+    longer on the schedule over the PAYP's days (call this before they are pruned), else the newest stored version
+    before the PAYP; else no record (the card estimates it from FLICA's month credit). Kept while the PAYP item is on
+    the schedule (or, PWA 4.R.1, while a trip added over all its days is); pruned with it. Each instance does this for
+    its own schedule. Pure bookkeeping, never a FLICA load. Returns the PAYP keys to keep (every one on file when this
+    step fails)."""
+    own = S.setdefault("own_trips", {}) if own is None else own
+    try:
+        got = VER.payp_entries(_sched_items(), own, lambda mk: DB.get(f"sched_versions:{mk}") or [], PAIRING_RE.match)
+    except Exception as e:  # never stops the trip reads; what is on file stays while its PAYP is on the schedule
+        log.info("pay protection skipped: %s", e)
+        return {k for k in own if k.startswith(f"{VER.PAYP}|")}
+    moved = False
+    for k, rec in got.items():
+        if own.get(k) != rec:
+            own[k] = rec
+            moved = True
+            log.info("pay protection %s: credit %s kept from %s (%s)", k, rec["credit"], rec["protected"], rec["src"])
+    if moved:
+        save_state(S)
+    return set(got)
 
 
 def my_seat(crew):
@@ -5374,6 +5404,14 @@ def sched_moves_record(month, old_items, new_items, updated, read_at):
     dropped = keys(old_items) - keys(new_items)
     recs = {k: _move_rec(*k.split("|"), month) for k in dropped}
     mv = TR.moves(old_items, new_items, month, updated, read_at, recs)
+    # 1.7.2 fix pass: a trip removed for pay protection (its first day now PAYP; it keeps its Pay and Credit, PWA
+    # Definitions 57) was not given away, so it is never part of a trade, priced as a loss; a trip added on the PAYP
+    # days pays on top (PWA 4.R.1). Also an earlier read's drop whose PAYP shows only now
+    pp = [(i["start"], i.get("end") or i["start"]) for i in new_items or [] if i.get("trip") == VER.PAYP and i.get("start")]
+    for m in (S.get("sched_moves") or []) + mv:
+        if (pp and m.get("side") == "drop" and m.get("state") == "open" and m.get("month") == month
+                and any(s <= str(m.get("start") or "") <= e for s, e in pp)):
+            m.update(state="explained", by="pay protected")
     if mv:
         S["sched_moves"] = TR.prune(S.get("sched_moves") or [], read_at) + mv
         log.info("schedule moves %s: %s", month, ", ".join(f"{m['side']} {m['trip']} {m['start']}" for m in mv))
