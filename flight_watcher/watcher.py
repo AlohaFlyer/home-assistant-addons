@@ -2710,7 +2710,9 @@ def own_trip_times(fl, full=False):
     """Read only (0.3.8): check-in, final arrival and block of Ryan's own trips from their pairing
     pages, cached per trip and start date, so the FAR column can measure rest."""
     own = S.setdefault("own_trips", {})
-    keep, n = set(), 0
+    # 1.7.2 (Ryan, Nov 13): first, with no FLICA load and before the trips gone from the schedule are pruned below, a
+    # PAYP keeps the removed trip's credit (payp_refresh); a read stopped half way still leaves it on file
+    keep, n = payp_refresh(own), 0
     for it in _sched_items():
         trip = it.get("trip") or ""
         if not PAIRING_RE.match(trip):
@@ -2772,6 +2774,33 @@ def own_trip_times(fl, full=False):
         save_state(S)
         time.sleep(random.uniform(1.5, 3.5))  # ... and after the last, before the check loads the pot
     publish_own_trips()
+
+
+def payp_refresh(own=None):
+    """1.7.2 (Ryan, Nov 13: "My LAS trip today was cancelled and PAYP pay protected. Why did your pay calculations
+    drop?"): every PAYP item on the schedule gets an own trips record PAYP|<start> holding the removed trip's credit
+    (PWA Definitions 57: the pilot retains the Pay and Credit of a Flight Grouping removed from his schedule), so the
+    schedule card, the versions and every pay figure count it; block 0:00 (never in the block total, Block Avail, FAR
+    117 or the 98/672 checks: nothing is flown). versions.payp_entries() finds the removed trip: an own trips record no
+    longer on the schedule over the PAYP's days (call this before they are pruned), else the newest stored version
+    before the PAYP; else no record (the card estimates it from FLICA's month credit). Kept while the PAYP item is on
+    the schedule; pruned with it. Each instance does this for its own schedule. Pure bookkeeping, never a FLICA load.
+    Returns the PAYP keys to keep."""
+    own = S.setdefault("own_trips", {}) if own is None else own
+    try:
+        got = VER.payp_entries(_sched_items(), own, lambda mk: DB.get(f"sched_versions:{mk}") or [], PAIRING_RE.match)
+    except Exception as e:  # never stops the trip reads; what is on file stays while its PAYP is on the schedule
+        log.info("pay protection skipped: %s", e)
+        return {f"{VER.PAYP}|{it.get('start')}" for it in _sched_items() if it.get("trip") == VER.PAYP}
+    moved = False
+    for k, rec in got.items():
+        if own.get(k) != rec:
+            own[k] = rec
+            moved = True
+            log.info("pay protection %s: credit %s kept from %s (%s)", k, rec["credit"], rec["protected"], rec["src"])
+    if moved:
+        save_state(S)
+    return set(got)
 
 
 def my_seat(crew):
