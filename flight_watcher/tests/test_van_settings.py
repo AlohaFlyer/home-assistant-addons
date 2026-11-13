@@ -646,9 +646,10 @@ def test_the_settings_tab_snapshot_has_the_van_alert_tiles():
     for c in (sw, first, second):
         assert c["grid_options"] == {"columns": "full"} and "visibility" not in c
     readme = open(os.path.join(ROOT, "ha", "README.md"), encoding="utf-8").read()
-    pend = readme[readme.index("## Pending on Pako (1.7.2): van alert settings"):]
-    pend = pend[:pend.index("\n## ", 5)]
-    assert "after 1.7.2 is live" in pend and "undo: remove those four cards" in pend and "ahead of Pako" in pend
+    # 1.7.2 live (Nov 13): applied through the HA connector right after the update, the snapshot equal to Pako's
+    sec = readme[readme.index("## Applied on Pako 2026-11-13 about 05:47 HST (1.7.2): van alert settings"):]
+    sec = sec[:sec.index("\n## ", 5)]
+    assert "after 1.7.2 went live" in sec and "Undo: remove those four cards" in sec and "Pending" not in sec
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() in readme
     assert chr(0x2014) not in readme and chr(0x2014) not in text
 
