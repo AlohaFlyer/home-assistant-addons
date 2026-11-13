@@ -1634,7 +1634,8 @@ def page_verdict(path, url, html):
         except Exception:  # noqa: BLE001
             return "error"
     return ""
-HEALTH = {"note": "", "gate": "", "held": ""}  # the state note the gate, the pace and the breakers last put up
+HEALTH = {"note": "", "gate": "", "held": "", "brk": ""}  # the state note the gate, the pace and the breakers last put
+# up; 1.7.3: brk is the breakers' part of it as health_note last saw it (health_note_tick)
 
 
 def hst_hm(ts):
@@ -1659,7 +1660,17 @@ def gate_note(why, until):
 
 
 def health_note():
-    return "; ".join(x for x in (HEALTH["gate"] or HEALTH["held"], BRK.note()) if x)
+    HEALTH["brk"] = BRK.note()
+    return "; ".join(x for x in (HEALTH["gate"] or HEALTH["held"], HEALTH["brk"]) if x)
+
+
+def health_note_tick():
+    """1.7.3: a stop's end (open_until passing) moves no read, trip or gate, so nothing put the note together again and
+    'FLICA pairing read paused until 05:52 HST' was still up at 06:25 (seen live). sleep() calls this every tick: once
+    the breakers' note differs from the one health_note last saw, the note is applied again (published only when it
+    changed; a stop, pause or yield note stays, health_note_apply). No FLICA load."""
+    if BRK.note() != HEALTH["brk"]:
+        health_note_apply()
 
 
 def health_note_apply():
@@ -2307,6 +2318,7 @@ def sleep(sec):
         if left <= 0 or WAKE.wait(max(0.0, min(left, due, WORKING_TICK_S))):
             return
         publish_working_flight()
+        health_note_tick()  # 1.7.3: a read path's stop leaves the state note within a tick of its end
 
 
 
