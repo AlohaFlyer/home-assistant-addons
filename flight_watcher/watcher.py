@@ -2813,14 +2813,15 @@ def payp_refresh(own=None):
     117 or the 98/672 checks: nothing is flown). versions.payp_entries() finds the removed trip: an own trips record no
     longer on the schedule over the PAYP's days (call this before they are pruned), else the newest stored version
     before the PAYP; else no record (the card estimates it from FLICA's month credit). Kept while the PAYP item is on
-    the schedule; pruned with it. Each instance does this for its own schedule. Pure bookkeeping, never a FLICA load.
-    Returns the PAYP keys to keep."""
+    the schedule (or, PWA 4.R.1, while a trip added over all its days is); pruned with it. Each instance does this for
+    its own schedule. Pure bookkeeping, never a FLICA load. Returns the PAYP keys to keep (every one on file when this
+    step fails)."""
     own = S.setdefault("own_trips", {}) if own is None else own
     try:
         got = VER.payp_entries(_sched_items(), own, lambda mk: DB.get(f"sched_versions:{mk}") or [], PAIRING_RE.match)
     except Exception as e:  # never stops the trip reads; what is on file stays while its PAYP is on the schedule
         log.info("pay protection skipped: %s", e)
-        return {f"{VER.PAYP}|{it.get('start')}" for it in _sched_items() if it.get("trip") == VER.PAYP}
+        return {k for k in own if k.startswith(f"{VER.PAYP}|")}
     moved = False
     for k, rec in got.items():
         if own.get(k) != rec:
@@ -5446,6 +5447,14 @@ def sched_moves_record(month, old_items, new_items, updated, read_at):
     dropped = keys(old_items) - keys(new_items)
     recs = {k: _move_rec(*k.split("|"), month) for k in dropped}
     mv = TR.moves(old_items, new_items, month, updated, read_at, recs)
+    # 1.7.2 fix pass: a trip removed for pay protection (its first day now PAYP; it keeps its Pay and Credit, PWA
+    # Definitions 57) was not given away, so it is never part of a trade, priced as a loss; a trip added on the PAYP
+    # days pays on top (PWA 4.R.1). Also an earlier read's drop whose PAYP shows only now
+    pp = [(i["start"], i.get("end") or i["start"]) for i in new_items or [] if i.get("trip") == VER.PAYP and i.get("start")]
+    for m in (S.get("sched_moves") or []) + mv:
+        if (pp and m.get("side") == "drop" and m.get("state") == "open" and m.get("month") == month
+                and any(s <= str(m.get("start") or "") <= e for s, e in pp)):
+            m.update(state="explained", by="pay protected")
     if mv:
         S["sched_moves"] = TR.prune(S.get("sched_moves") or [], read_at) + mv
         log.info("schedule moves %s: %s", month, ", ".join(f"{m['side']} {m['trip']} {m['start']}" for m in mv))
