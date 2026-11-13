@@ -1685,8 +1685,16 @@ def health_note_apply():
         set_machine(S.get("machine", "idle"), want)
 
 
+def gate_sleep(sec):
+    """1.7.3 review: a wait inside a check (a load waiting in the gate for pacing or a budget) never goes through the
+    loop's sleep(), so it looks at the note after each wait chunk too (health_note_tick: no FLICA load, published only
+    on a change)."""
+    time.sleep(sec)
+    health_note_tick()
+
+
 GATE = GT.Gate(GATE_FILE, INSTANCE or "admin", budget=GT.PILOT_BUDGET_H if ROLES.role(INSTANCE) == ROLES.PILOT else None,
-               log=log, on_wait=lambda why, until: gate_note(why, until))
+               log=log, on_wait=lambda why, until: gate_note(why, until), sleep=gate_sleep)
 BRK = GT.Breakers(lambda: S.setdefault("breakers", {}), save=lambda: save_state(S), log=log, fmt=hst_hm,
                   on_change=lambda: health_note_apply())
 # 1.6.2 review: while a check runs, a load waiting for the gate is given up (GateAbort) once Pause is on or the Watcher
@@ -2190,6 +2198,7 @@ class Flica:
             raise
         if optional:
             RUN["opt"].append((time.time(), RUN.get("opt_name") or ""))
+        health_note_tick()  # 1.7.3 review: pages slower than the pace never wait in the gate; a stop's end shows here
         count_fetch()
         return path if path != "pot" else ""
 

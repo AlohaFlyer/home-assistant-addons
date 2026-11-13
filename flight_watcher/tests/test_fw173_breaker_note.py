@@ -5,7 +5,10 @@ looks again every tick and publishes once when the note changed. A fake clock an
 no page is loaded."""
 import json
 
-from test_release_a_flica import mk  # noqa: F401
+import pytest
+
+import gate as GT
+from test_release_a_flica import mk, real_fl  # noqa: F401
 
 
 class FakeWake:
@@ -107,3 +110,55 @@ def test_a_yield_or_pause_note_is_never_replaced_when_a_stop_ends(mk):
     n = len(_notes(W))
     W.sleep(until - W.CLOCK.t + 5 * 60)
     assert W.S["note"] == "you are in FLICA: the Watcher waits 30 min" and len(_notes(W)) == n
+
+
+# ---- 1.7.3 review: inside a check the loop's sleep() never runs, so a stop that ended while a load waited in the gate
+# (or while a check's paced loads ran) stayed in the note until that wait or the check ended.
+def _timed(W):
+    """(fake clock, note) of every state note published from now on."""
+    seen, publish = [], W.MQ.publish
+
+    def timed(topic, payload=None, qos=0, retain=False):
+        if topic == f"{W.T}/state_attr":
+            seen.append((W.CLOCK.t, json.loads(payload)["note"]))
+        publish(topic, payload, qos, retain)
+    W.MQ.publish = timed
+    return seen
+
+
+def test_a_stop_that_ends_while_a_load_waits_for_the_budget_drops_within_a_wait_chunk(mk):
+    W = mk("pilot2")
+    fl = real_fl(W, lambda u: "<html>ok</html>")
+    t0 = W.CLOCK.t
+    for i in range(100):  # his whole hour's budget: the next load waits about 56 min
+        fl.fetch(f"{W.BASE}/full/other.cgi?n={i:03d}")
+    W.set_machine("hunting", "")
+    until = _stopped(W, "pairing", "not a pairing page")
+    stop = f"FLICA pairing read paused until {W.hst_hm(until)} HST: not a pairing page"
+    seen = _timed(W)
+    fl.fetch(f"{W.BASE}/full/other.cgi?n=999")  # the 101st waits for the budget; the 30 min stop ends meanwhile
+    assert len(fl.loads) == 101 and fl.loads[-1][0] >= t0 + 3600  # no extra FLICA load
+    notes = [n for _, n in seen]
+    budget = notes[0][:-len("; " + stop)]
+    assert budget.startswith("FLICA budget: 100 page loads in the last hour") and notes[0] == budget + "; " + stop
+    assert notes == [budget + "; " + stop, budget, ""]  # each change published once, the budget note stays
+    assert until <= seen[1][0] <= until + GT.WAIT_CHUNK_S
+
+
+@pytest.mark.parametrize("load_s", [0.0, 4.0])  # pages the gate paces, and pages slower than the pace (no gate wait)
+def test_a_stop_that_ends_during_a_checks_paced_loads_drops_by_the_next_load(mk, load_s):
+    W = mk()
+    W.set_machine("idle", "")
+
+    def page(u):
+        W.CLOCK.t += load_s
+        return "<html>ok</html>"
+    fl = real_fl(W, page)
+    until = _stopped(W, "tradeboard", "not a Tradeboard page")
+    W.CLOCK.t = until - 5  # the stop ends 5 s into the check's 60 loads of other pages (the crew index's, say)
+    seen = _timed(W)
+    for i in range(60):
+        fl.fetch(f"{W.BASE}/full/other.cgi?n={i:03d}")
+    assert len(fl.loads) == 60 and fl.loads[-1][0] > until + 60
+    assert [n for _, n in seen] == [""]  # published once, nothing while unchanged
+    assert until <= seen[0][0] <= until + max(GT.PACE_MAX_S, load_s)
