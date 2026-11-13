@@ -51,6 +51,10 @@ HOME_DAY_START = 5 * 60
 CUSTOMS_MIN = 15  # PWA 2.19.b: a release 30 min after block-in, not 15, when clearing customs (far.CUSTOMS)
 RESERVE_CODES = ("SCR",)  # day codes a reserve pickup may cover (smart.json reserve_codes overrides)
 OFF_CODES = ("OFF", "GDO")  # day codes that are days off on a line (smart.json off_codes overrides)
+# 1.7.2 (Ryan, Nov 13): a PAYP day is free for a pickup on a line (PWA 4.R.1: a pilot may add a Flight Grouping on PAYP
+# days, paid for both; PWA Definitions 57) and FLICA counts it in Days Off (13 to 15 when two trip days became PAYP),
+# whatever smart.json off_codes lists
+FREE_CODES = ("PAYP",)
 IN_NEEDED = 2  # PWA 26.QQ.2: two scheduled flights
 WHY_MAX = 240
 RULE_MAX = 80  # 1.7.1: room for 'Over 98/672 (101:30)' with the parts 'Over cap' used to sit among
@@ -365,7 +369,8 @@ def _codes(months):
         rows, codes = _page(sch)
         covered |= rows
         for d, c in codes.items():
-            busy.setdefault(d, c)
+            if busy.get(d) in (None,) + FREE_CODES:  # a trip added on a PAYP day is that day's code (PWA 4.R.1)
+                busy[d] = c
     return busy, covered
 
 
@@ -380,7 +385,8 @@ def _page(sch):
         a, b = _date(it.get("start")), _date(it.get("end") or it.get("start"))
         if a and b:
             for d in _span(a, b):
-                codes.setdefault(d, str(it.get("trip") or "").upper())
+                if codes.get(d) in (None,) + FREE_CODES:  # a trip added on a PAYP day is that day's code (PWA 4.R.1)
+                    codes[d] = str(it.get("trip") or "").upper()
     return rows, codes
 
 
@@ -434,7 +440,7 @@ def days_off(mk, months, cfg, add=(), period=None):
 def _days_off(mk, months, cfg, add, bid):
     rows, codes = bid.pages[mk]
     vac = vac_days(cfg, months)
-    off_codes = set((cfg or {}).get("off_codes") or OFF_CODES)
+    off_codes = set((cfg or {}).get("off_codes") or OFF_CODES) | set(FREE_CODES)
 
     def off(d):
         c = codes.get(d)
@@ -506,7 +512,7 @@ def month_rule(start, end, credit, fit, far, months, cfg, period=None, b672=""):
             return "VAC" if vac else ""
         out, nosched, line = (["VAC"] if vac else []), False, False
         busy, covered = _codes(months)
-        off = set(cfg.get("off_codes") or OFF_CODES)
+        off = set(cfg.get("off_codes") or OFF_CODES) | set(FREE_CODES)  # PAYP too (PWA 4.R.1)
         res = set(cfg.get("reserve_codes") or RESERVE_CODES)
         f = str(fit or "")
         fcode = f.split(" ", 1)[1].strip().upper() if f.startswith("Conflict ") else ""

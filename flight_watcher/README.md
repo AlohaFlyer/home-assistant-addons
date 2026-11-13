@@ -25,7 +25,9 @@ publishes what it finds to Home Assistant over MQTT.
   its credit in Credit, Pay-Gross and Pay-Net (1.7.2, PWA Definitions 57), never in Block or the FAR 117 checks;
   a trip over the month boundary counts each month's share (PWA 4.A), and a trip added on PAYP days pays on top (PWA
   4.R.1). With the removed trip not on file the card estimates it from FLICA's month credit and says "estimate", when
-  it counts everything else in the month; otherwise it says "PAYP credit unknown".
+  it counts everything else in the month; otherwise it says "PAYP credit unknown". Open time over PAYP days fits
+  (1.7.2, PWA 4.R.1): no "Conflict PAYP", no FAR overlap with the removed trip, and the PAYP days count as days off
+  as FLICA counts them.
 - FAR column (1.4.7, FW-0039): pot, Tradeboard and finds rows run the Recall check's FAR 117 and PWA rules per duty
   period (117.25(e), 117.25(b), 117.23(b)(1), 117.23(c)(1) and (2): `FDP 65h/168h`, `FDP 191h/672h`; PWA 10.E.1.a
   as the `OK (CBA rest 10:30)` note). Anything not on file (a neighbour's times, training or reserve days, a customs

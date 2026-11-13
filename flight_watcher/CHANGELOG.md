@@ -270,8 +270,17 @@ Watcher makes no CrewTrac login at all.
   - Left as it was: the removed trip's IRO override and Extended Range +15% (PWA 4.O.1) are not added to the PAYP's
     pay (whether Definitions 57's "Pay" includes them is Ryan's call against the contract text); `protected` changing
     alone makes no new version (cosmetic).
+- Open time over PAYP days (Ryan: "make way for the fact that I can also pick up a trip over the top of PAYP for
+  additional pay"; PWA 4.R.1). On Pako H3607 Nov 13 to 15 and H3839 Nov 13 to 14 over PAYP Nov 12 to 14 were tagged
+  "Conflict PAYP" and their FAR column said "may overlap PAYP Nov 12: PAYP Nov 12 times not on file". A PAYP day is
+  now free for a pickup: the fit tag (`pot.fit_tag`, `FREE_ITEMS`), the month rules (`smart.month_rule`,
+  `FREE_CODES`, whatever smart.json `off_codes` lists) and the FAR line (`recall.line_records`) leave the PAYP out,
+  since its trip is not flown. FLICA counts PAYP days in Days Off (Pako: 13 before, 15 with the PAYP), so a pickup on
+  them uses days off as on any day (10.G, `min_days_off`). A trip already added on a PAYP day still holds that day
+  (a Conflict), and a trip either side still needs its rest ("Check rest"). The Recall / Over 75 miss check is
+  unchanged: it still counts a PAYP as possible duty (POSSIBLE, never MISSED). Tests: `tests/test_payp_pickup.py`.
 - Limits: a trip from last month running into this month is still not counted in this month's totals (as before
-  1.7.2); the open time fit marks still treat PAYP days as taken.
+  1.7.2); a reserve month still asks for SCR on every pickup day (a PAYP day there reads "Not SCR").
 - Tests: `tests/test_payp.py` (synthetic v11.028 to v11.029: Credit 131:15 with the FLICA check passing, Pay-Gross
   and Pay-Net as in v11.028, the estimate, PWA 4.R.1, block and Block Avail, the Watcher on both instances across
   refreshes and pruning, the versions, the card at 390 px; the fix pass adds the month boundary, the partial
