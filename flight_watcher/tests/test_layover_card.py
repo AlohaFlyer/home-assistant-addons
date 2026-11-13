@@ -440,10 +440,20 @@ def test_the_dashboard_snapshot_puts_the_card_on_the_working_flight_view():
     d = json.loads(text)
     v = next(v for v in d["data"]["config"]["views"] if v.get("path") == "flight")
     assert v["title"] == "Working Flight" and v["icon"] == "mdi:airplane-takeoff"
-    assert [c for s in v["sections"] for c in s["cards"]] == [
-        {"grid_options": {"columns": "full"}, "type": "custom:flight-watcher-layover-card",
-         "update_url": "<redacted-hark-url>"}]  # the Ready to update? tile is gone; its link stays out of git
-    assert "hark.com/project" not in text and "Ready to update?" not in json.dumps(v)
+    cs = [c for s in v["sections"] for c in s["cards"]]
+    # Nov 12 (Ryan, in Sydney: the page said "Configuration error" on his phone): the built-in markdown card and the
+    # Ready to update? button are back above the layover card, so the page reads with no custom card at all
+    assert [c["type"] for c in cs] == ["markdown", "grid", "custom:flight-watcher-layover-card"]
+    assert "sensor.flight_watcher_working_flight" in cs[0]["content"] and "sensor.hark_working_flight" in cs[0]["content"]
+    # Nov 12 (Ryan: "When I click ready to update I want you to trigger hark without my help"): the button runs the
+    # ask-Hark automation instead of opening Hark's project page
+    assert cs[1]["cards"][0]["name"] == "Ready to update"
+    assert cs[1]["cards"][0]["tap_action"] == {"action": "perform-action", "perform_action": "automation.trigger",
+                                              "target": {"entity_id": "automation.flight_watcher_ready_to_update_ask_hark"}}
+    assert "flight_watcher_ready_to_update_ask_hark" in cs[0]["content"]  # the card shows "Asked Hark at ..." 
+    assert cs[2] == {"grid_options": {"columns": "full"}, "type": "custom:flight-watcher-layover-card",
+                     "update_url": "<redacted-hark-url>"}
+    assert "hark.com/project" not in text  # Hark's project link stays out of git
     # the card ships with the app
     import cards
     assert "flight-watcher-layover-card.js" in json.loads(cards.build("1")[cards.MANIFEST])["cards"]
@@ -493,4 +503,31 @@ def test_with_no_van_time_the_card_says_it_is_not_known(browser, tmp_path):
     st["sensor.flight_watcher_working_flight"]["last_updated"] = "w2"
     pg.evaluate("(p) => window.setStates(p)", {"sensor.flight_watcher_working_flight": st["sensor.flight_watcher_working_flight"]})
     assert card.locator("[data-vanunknown]").count() == 0
+    pg.close()
+
+
+# ---------------------------------------------------------------- Nov 12: the GIN code on its own line (Ryan)
+def test_the_gin_code_has_a_line_of_its_own_at_390(browser, tmp_path):
+    """Ryan, Nov 12: "Gin code should be on its own line so it doesn't get cut off." The place stays after the label,
+    the code goes under it on one unbroken line; a code with no place shows alone under its label."""
+    a = _hark_full()
+    a.update({"gin_arr": "HNL gate C5 (Non-Mauka): *-2-1-1-7-3-1-4-5-2-#", "gin_dep": "4-4-2-#", "release_updated": True,
+              "mel": ["Example MEL item"], "notam": ["Example NOTAM"]})
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(_states(tmp_path, hark_attrs=a)))
+    card = pg.locator("flight-watcher-layover-card")
+    card.locator("details.rel summary").click()
+    arr = card.locator(".gin", has_text="GIN arr:")
+    assert arr.locator("b").inner_text() == "GIN arr:"
+    assert "HNL gate C5 (Non-Mauka)" in arr.inner_text() and ": *" not in arr.inner_text()
+    code = arr.locator("code")
+    assert code.inner_text() == "*-2-1-1-7-3-1-4-5-2-#"
+    lb, cb = arr.locator("b").bounding_box(), code.bounding_box()
+    assert cb["y"] >= lb["y"] + lb["height"] - 1  # under the label, on its own line
+    line_h = pg.evaluate("(e) => parseFloat(getComputedStyle(e).lineHeight) || parseFloat(getComputedStyle(e).fontSize) * 1.4",
+                         code.element_handle())
+    assert cb["height"] <= line_h * 1.6  # one line, never broken inside the code
+    assert cb["x"] + cb["width"] <= card.bounding_box()["x"] + card.bounding_box()["width"] + 1  # inside the card
+    dep = card.locator(".gin", has_text="GIN dep:")
+    assert dep.locator("code").inner_text() == "4-4-2-#"
     pg.close()

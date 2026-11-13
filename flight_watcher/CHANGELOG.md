@@ -1,5 +1,306 @@
 # Changelog
 
+## 1.7.2
+
+Portal contract 1 revision 3 (the council's plan of Nov 11 and Ryan's decisions the same day), from the audit of the
+live portal and FW-0066 (Ryan: "either I or James can upload them; the pairings and awards are the same doc for each
+of us"). On top of 1.7.1 (live). A contract change: HOM 1.8.2 (takes
+revision 2 and 3 exports and commands) ships first, then this release; each with Ryan's yes, a backup and a 30 min
+live watch; rollback Flight Watcher first (see "Rollback to 1.7.1" below). The fixture `tests/fixtures/portal_contract_v1.json` is regenerated (its new
+sha256 is pinned in `tests/test_portal_contract.py`; HOM's `fwportal/contract/v1.json` must be the same bytes) and
+`PORTAL_CONTRACT.md` says revision 3. Revision 2's crewtrac_refused pilot event is not in it: since 1.7.1 a pilot's
+Watcher makes no CrewTrac login at all.
+
+### Contract 1 revision 3 (`roles.py`, `portal.py`, `ntfy.py`, `bidcal.py`)
+
+- `bid_calendar` on the pilot's portal (FW-0070 for the pilot): 1.7.1 computes the bid calendar alerts on every
+  instance and only Ryan's prefix had a push. Each alert is now a portal event of the pilot's (his Alerts list and
+  ntfy) with the admin's push words, built from the alert's own fields only (`bidcal.alert_text`: bid_month, alert,
+  event_hst, at_hst, source, cycle_source; `roles.EVENT_KIND_FIELDS`, carried for that kind only), view watcher,
+  priority 4. The `event/bid_calendar` payload gains `alert` and `cycle_source` on every instance (the same keys on
+  both; the admin's automation reads title, message and key as before), and its `at_hst` is the time the words are
+  from.
+- `schedule_unread`, the Watcher's own event (never from an MQTT topic): after 6 h without a good FLICA schedule read
+  (since the last good read, or since this start when none came after it), at most once an HST day, not while paused,
+  waiting for the FLICA login or stopped; data only `state` (failing or waiting) and `hours`, view schedule, ntfy
+  "Schedule not read for 7 h".
+- `pilot/set` shape (F#49, `roles.SHAPE_CMDS`, `portal.check_shape`, the ticket commands' generic rules): keys only
+  emp, q, name and pick; emp 1 to 7 ASCII digits; q 1 to 60 and name 0 to 60 code points of one line; pick 12 hex.
+  The spool, HOM and the Watcher (every instance, `pilot_cmd`) refuse anything else; the Watcher's log line never
+  carries the text. The pilot lookup card sends only that shape (a long name is cut to 60, a line break is a space).
+- `recall/set` leaves `PORTAL_CMDS` (F#78) and is named in `PORTAL_REFUSED`, with `layover/note` and the new
+  `upload/decide`: a pilot's recall lists come only from the admin's forward (1.7.1). The admin's own paste on his
+  dashboard asks first when it would replace a day on file, naming those dates ("Replace the recall lists already on
+  file for Tue Nov 3, Wed Nov 4?"); Cancel sends nothing.
+- The fit alone in the new pairing text (F#161): "... Credit 15:20. Fits. FAR 117 OK", not "Fit Fits".
+- The manifest names its `revision` (3); HOM refuses a revision 3 command to a Watcher whose manifest names none or 2
+  (`commands.since_revision`), with a plain message. The fixture also carries `commands.shapes`,
+  `commands.pilot_upload_limits`, `commands.pilot_upload_checks`, `commands.removed_in_revision`,
+  `events.kind_fields`, `events.bid_calendar_alerts`, `synthesized_states` and `revisions`, and refused samples for
+  every shape rule.
+
+### A pilot's pairings package and award uploads (FW-0066, Ryan's decision)
+
+- New portal command `upload/pdf` (feature `pilot_uploads`, taken only on a pilot whose portal is on, at qos 1): one
+  chunk of the month's pairings package or award PDF (never the seniority list or the contact list), each under the
+  64 KB command cap (60000 base64 characters, at most 94 parts for 4 MB). The pilot uploads card (new, the portal's
+  Settings tab, 390 px light and dark) reads the file with FileReader, takes its sha256 with WebCrypto and sends one
+  part every 2.5 s; it shows what is on file for this month and the next two (from you, the admin or another pilot:
+  never a name), his uploads and the Watcher's answers, from `sensor.<prefix>_pilot_uploads`, which the Watcher
+  synthesizes in his portal's state.json (never a Home Assistant entity).
+- `pilotpdf.py` on the pilot's Watcher, before anything is stored: one upload at a time, chunks in order, 120 s
+  without a chunk drops it, the month this HST month or one of the next two, 4 uploads a day, 4 MB, the whole base64
+  to its size and sha256, `%PDF-` and `%%EOF`, then `pdftotext -layout` (the admin's extractor) in a child process
+  with a 30 s timeout and memory (512 MB), CPU (30 s), file size and core limits set in the child (setrlimit), then
+  the existing parsers: that month's pairing package (its title, at least 100 pairings over every base and fleet, at
+  least one A332 HNL one; the real November and December packages hold 257 and 225 pairings, 84 of them A332 HNL) or
+  that month's award holding his own line. A refusal says why in plain words; an upload refused stays refused (its
+  later chunks are ignored).
+- Nothing on file for that month and kind: used at once, both instances read it as an upload of the admin's. A file
+  on file: the pilot's copy goes to `/share/flight_watcher/upload_review/quarantine/` (0700, files 0600), which no
+  instance reads and nothing serves (not the uploads list, not the portal export, not the Web UI) until Ryan approves
+  it; the same file again is not stored. Provenance per file (who, when, sha256) in
+  `upload_review/provenance.json`, the admin's own uploads included (`web.save_upload`, `Review.record_admin`).
+- Ryan's push: his Watcher publishes `flight_watcher/event/pilot_upload` once per upload (feature `upload_review`,
+  the admin only) and the new HA automation "Flight Watcher pilot upload" (`ha/automations_flight_watcher.yaml`, not
+  on Pako yet) pushes his two iPhones, time-sensitive, naming the file and the pilot: Remove for one used at once,
+  Approve and Reject for one held. A button publishes `{id, action}` to `flight_watcher/upload/decide`, the
+  admin-only command his Watcher takes (also from the new "Pilot uploads" part of his Settings uploads card, which
+  asks first). Approve swaps the held copy in and keeps the old file in `upload_review/rollback/`; Remove takes a
+  pilot's file off (the file it replaced comes back when there was one, else nothing is on file; the pairing file
+  goes too); Reject deletes the held copy. Each change bumps the file's generation, which every instance follows
+  within a minute whatever its state (`upload_gens_check`: a removed package's details and a removed award's version
+  .001 are forgotten, `versions.clear_award`; a swapped file is read again). The push guard passes and counts the new
+  handler (23 automations with the Nov 12 ask-Hark one, 3 notification-action handlers, 0 offenders).
+
+### CrewTrac refusal block keyed with an HMAC (the council's change)
+
+- The admin's stored CrewTrac retry block (1.6.1, a bare sha256 of the user ID and password) is HMAC-SHA256 with a
+  random 32-byte key of the instance's own (`<data>/crewtrac_hmac.key`, 0600; never exported, logged or sent). The
+  first 1.7.2 start re-keys the record of the details in use and drops a bare sha256 of any other. A key found gone
+  later with a refusal on record keeps CrewTrac blocked until the next save in Settings ("CrewTrac is not tried: its
+  refusal record could not be checked ..."); with no refusal on record nothing is blocked.
+
+### Review fixes (three adversarial reviews of revision 3)
+
+- A pilot's upload id is never a record's id: `Review.store` mints the id (24 hex) that names the quarantined copy,
+  Ryan's push and his Approve / Remove / Reject, keeps the pilot's own `uid` beside it for his card, and refuses a uid
+  already on record. Before, a uid sent again by a crafted client overwrote a held copy (Ryan's Approve of December's
+  package put another file in use) or put a file in use with no push and no Remove. Approve also installs only bytes
+  whose sha256 is the record's.
+- Remove after an Approve: the pilot's file that comes back is in use again (`live` or `approved`, not `replaced`), so
+  Ryan can Remove it in turn; a file back from rollback that is not its record's is "restored" with no pilot's name.
+- The package parsers take linear time on a pilot's text: the bid period pattern (`pdfs.PERIOD_RE`, the same text as
+  before) no longer takes cubic time ("January 1" then 1200 empty pages took 28 s in the check and 86 s in each
+  instance's uploads check, the Watcher frozen meanwhile), the calendar cells are read in one pass (`pdfs._cal_tail`,
+  what `CAL_RE` found), and the lines before a header are appended, not copied. A pilot's text is bounded before any
+  parser sees it (`pilotpdf.text_shape`: at most 60000 lines of at most 1000 characters, 8 million characters in all;
+  the real files on file are 11,600 to 20,100 lines of at most 676 characters).
+- An award whose last line is the start of a pilot's line (the next four lines cut off) is "not read" for him
+  (`ValueError`), not an `IndexError` that stopped every later award's read on each instance.
+- The extractor runs as nobody (65534, no groups) when the Watcher runs as root (it does in the add-on), in a folder of
+  its own, and its text is copied to a new file of the Watcher's (never read through a link, a FIFO or another user's
+  file) before that folder goes.
+- schedule_unread counts its 6 h from the last tick that saw the pilot paused, stopped or waiting for his login (his
+  Pause off or Re-arm gets its first read in first) and goes at most once in 24 h (not again at 00:00 HST).
+- An upload the pilot's Watcher drops for no part in 120 s, or one a restart cut off, gets an error answer (or, when
+  its check had finished, the answer it gave), and the uploads card stops waiting 3 min after its last part.
+- A removed award is no longer a looked-up pilot's version .001 either (`pilotver.clear_award`).
+
+### The card loader picks up new cards on an open page (Ryan, Nov 12, in Sydney)
+
+- Ryan's phone showed "Configuration error" on the Working Flight page. The layover card's code and his data were
+  fine (it renders in Chromium with his live sensors): the phone app kept a page open from before 1.7.1, and the
+  loader imports the card list only once per page, so the card the dashboard asked for was never imported.
+- `cards.py` LOADER_JS now reads `flight-watcher-cards.json` again whenever the page comes back to the screen and
+  every 5 min, imports a card not imported yet, and tries a card whose import failed again (under `&r=<n>`, since a
+  browser keeps a failed module). A card already imported is never imported twice (`tests/test_cards_loader.py`
+  runs the real loader in Chromium against a fake `/local/`).
+- The phones hold the old loader up to 31 days (HA's `/local/` cache), so after this release is live the one
+  dashboard resource becomes `/local/flight-watcher-loader.js?v=1.7.2` (`ha/README.md`). Until then a full reload
+  of the app (pull down) fixes such a page. The Working Flight view also has the built-in markdown card and the
+  "Ready to update?" button back above the layover card (applied on Pako Nov 12), so it reads with no custom card.
+- James's portal is not affected: it loads its card bundle on every page load, and its Watcher tab uses the
+  working-flight card, which renders with his live export (checked Nov 12).
+
+### "Ready to update" asks Hark by itself (Ryan, Nov 12)
+
+- Ryan: "When I click ready to update I want you to trigger hark without my help. Get the info and bring it back
+  automatically." On Pako (HA config, not the app): the Working Flight button runs a new automation, "Flight Watcher
+  ready to update (ask Hark)", that waits up to 30 min for Hark's release, MEL and NOTAM write and pushes Ryan
+  either way; Hark watches the automation's `last_triggered` (bus ASK, Nov 12). Details in `ha/README.md`.
+- `roles.RESERVED` gains "ready", so the push guard reads `automation.flight_watcher_ready_to_update_ask_hark` as
+  the admin's (a pilot can no longer be named "ready").
+
+### Van alert settings (Ryan, Nov 12)
+
+- Ryan: "I like the layover card. Can you add a tick box to turn on the van time alerts and also add van time alert
+  settings in the form of sliders in the settings tab?" Ryan's Watcher only (roles `admin_pushes`, like the alerts).
+- The Watcher keeps `S["van"]`: `on`, `first` and `second` (minutes before the van; defaults on, 30 and 10, 1.7.1's
+  alerts), saved with the state so a restart keeps them. New admin-only MQTT commands: `flight_watcher/van/alerts/set`
+  ON or OFF (on, off, true, false too), `flight_watcher/van/first_min/set` 5 to 120 and
+  `flight_watcher/van/second_min/set` 0 to 60 (0 is no second alert), a whole number of minutes, clamped; 'abc',
+  'inf' or 'nan' is ignored like the frequency sliders. Retained states `flight_watcher/van/alerts/state`,
+  `.../first_min/state` and `.../second_min/state` at connect and after each command; one log line a change.
+- New entities (Ryan's only; a pilot's Watcher empties their configs): `switch.flight_watcher_van_alerts` "Van time
+  alerts", `number.flight_watcher_van_alert_first` "First van alert" (5 to 120 min, step 5, slider) and
+  `number.flight_watcher_van_alert_second` "Second van alert (0 is off)" (0 to 60 min, step 5, slider).
+- The alerts follow the settings: the lead times are the distinct values above 0 of first and second, largest first
+  (`layover.offsets_of`; `due`, `event` and `sensor` take them, `OFFSETS` stays the default). Off sends nothing; the
+  van sensor still shows the van.
+- Safety: a setting changes only the van in hand when it is made (the last van the Watcher placed), never a van it
+  learns later. `layover.settle` says what happens to each lead time that became active (alerts switched on, or a
+  slider moved to a new value), and the Watcher writes its skips into the DB at once (one log line each):
+  - its mark is ahead: it goes at its mark;
+  - its mark has passed and another alert for that van is still ahead or one has gone (or the van has passed): skipped,
+    `why` `set_after_mark`, never sent late on top of them;
+  - its mark has passed and nothing has gone or is ahead: the latest such one goes at the next sweep, worded with the
+    minutes left (the late-start rule), so a setting never leaves the van in hand with no alert (raising both alerts
+    past their marks at 35 min before used to silence the van);
+  - its slider's alert has already gone for that van: skipped, `why` `slot_sent`. One alert a slider a van: moving the
+    first slider after its alert went sends no other for that van (it used to send one for each move). The same value
+    on both sliders is one alert, the first's, so splitting them again still sends the second. A sent key names its
+    slider (`slot`); a key from 1.7.1 names none and counts for none.
+
+  A van Hark moves or writes after a setting is a new key and follows the 1.7.1 rules (a late-learned van sends its
+  latest alert still due; tying the setting's time to every later van could leave a moved van with no alert at all).
+  Before the Watcher's first look at the van after a start (one sweep, 10 s) there is no van in hand, so a setting then
+  changes nothing already decided and a van follows the 1.7.1 late-start rule (an alert late, never none). The
+  late-start rule after a restart is exactly 1.7.1's (`why` `late_start`); its log line now says the mark passed with
+  no alert (the app or MQTT was down, or the van time came later), not that the app was not running. The DB key keeps
+  its form (pairing, van instant, minutes), so an alert sent once is never sent again, whatever the tick box or the
+  sliders do after it, and nothing goes after the van time. The kept keys stay bounded: the newest 40, and always
+  every key of the van in hand (at most one a lead time), so a run of slider moves can never push out an alert already
+  sent and send it again (`van_keep`).
+- `sensor.flight_watcher_layover_van` gains `alerts_on` and `offsets` (even without a van), and its alerts list is the
+  current lead times (status `off` while off; a skipped one with its `why`; switched on only after the van, skipped,
+  not missed). A setting republishes it at once. The
+  `event/van` payload gains `offsets`; the push automation is unchanged (title, message, minutes).
+- Layover card: under the van time, a "Van alerts" tick box (checked from the sensor's `alerts_on`, else the switch;
+  when neither says, as while the Watcher is unavailable, "Not known yet" and not tappable, never shown as on); a tap
+  publishes `flight_watcher/van/alerts/set` ON or OFF, shows "Saving..." until the sensor says the new state (the line
+  under the van lists no alert times while saving off), and puts the box back with a short message on a publish error
+  or no answer in 30 s (also when the card was off the page meanwhile); the message goes once the Watcher's state
+  changes. The box keeps the keyboard focus through a tap and its answer (`aria-disabled` while waiting, not
+  `disabled`). Under it "30 and 10 min before" ("Off" when off) and "Change in Settings" (the Settings tab, in the
+  app). 44 px taps, a box white on a fixed dark blue when ticked, AA contrast in light and dark, no sideways scroll at
+  390 px.
+- Settings tab: a "Van time alerts" heading and tiles for the switch and the two sliders (`numeric-input` slider
+  feature). These entities exist from 1.7.2, so the dashboard edit is applied on Pako after this release is live
+  (`ha/README.md`, Pending); the snapshot is one edit ahead of Pako until then.
+- `roles.py`: the three set topics in `SUBS` (admin_pushes) and `NOT_ON_PORTAL` (a portal never sends them; the spool
+  refuses them), the three entities in `ENTITY_FEATURE`, and "van" in `RESERVED` (a pilot can no longer be named
+  "van"; the push guard reads `*.flight_watcher_van_*` as Ryan's). The portal contract fixture and
+  `PORTAL_CONTRACT.md` are byte for byte unchanged (revision 3).
+- Tests: `tests/test_van_settings.py` (commands, clamps, restart, discovery by role, custom lead times, off, switched
+  on or moved after a mark, a van moved or learned after a setting, lead times raised past their marks, one alert a
+  slider a van, switched on after the van, MQTT down over both marks, toggles and sliders back and forth, the restart
+  rule, bounded keys, roles and the contract, the card at 390 px with the Watcher unavailable, away from the page and
+  by keyboard, the Settings tiles).
+
+### The GIN code on its own line (Ryan, Nov 12)
+
+- "Gin code should be on its own line so it doesn't get cut off." The layover card shows Hark's GIN as the label and
+  place ("GIN arr: HNL gate C5 (Non-Mauka)") with the code under it on one unbroken line (`_gin`,
+  tests/test_layover_card.py). The same change is live on Pako in the Working Flight view's markdown card.
+
+### Pay protection (PAYP) counts its credit (Ryan, Nov 13)
+
+- Ryan: "My LAS trip today was cancelled and PAYP pay protected. Why did your pay calculations drop?" In v11.029
+  H3620 Nov 12 to 14 (credit 15:00) became PAYP Nov 12 to 14; FLICA's month credit stayed 131:15 (block 94:42 to
+  82:23), but the schedule card showed Credit 116:15 beside a red "FLICA 131:15", and Pay-Gross and Pay-Net fell by
+  the 15:00. 2023 PWA Definitions item 57: "PAY PROTECT/PAY PROTECTION (PAYP): A Flight Grouping that has been
+  removed from a pilot's schedule, however the pilot shall retain the Pay and Credit for such Flight Grouping." PWA
+  4.R.1: "Should a pilot elect to Add a Flight Grouping on a PAYP day(s), the pay shall be: a. Pay and Credit of the
+  PAYP Day, and b. Pay and Credit of the added Flight Grouping". (NQ pay protection, PWA 4.Q, is not this case.)
+- Why it dropped: the card adds up each trip's credit from `sensor.flight_watcher_own_trip_times`, which held only
+  pairings read from their FLICA pairing pages. PAYP is a code with no pairing page, so it counted 0:00 and $0.
+- The Watcher (`payp_refresh`, `versions.payp_entries`; every instance for its own schedule, no FLICA load): each
+  PAYP item on the schedule gets an own trips record `PAYP|<start>` with the removed trip's credit, block and soft
+  0:00, `payp`, `protected` (the removed trip's key), its seat, the PAYP's end and where the credit came from. The
+  removed trip is the own trips record no longer on the schedule that starts on one of the PAYP's days (looked at
+  before those records are pruned), else the pairings that start on those days in the newest stored version before
+  the PAYP; else there is no record (a credit is never guessed here). One PAYP over parts of two removed trips sums
+  both credits, each in full; a removed trip counts for one PAYP only. The record stays while the PAYP item is on the
+  schedule (the removed trip being gone, or a trip added on the PAYP days and dropped again, changes nothing) and is
+  pruned with it. On Pako H3620's own record was already pruned, so the first check after the update takes its 15:00
+  from v11.028 (checked read only on Pako's versions file: H3681, home on Nov 12, stays out).
+- Versions: the record is stored in each new version's trips like any trip (`TRIP_FIELDS` gains `payp`,
+  `protected`, `split` and `of`), so the version browser, Awarded-Pay-Gross and Improved-Pay-Gross count it. Its first version says so
+  ("PAYP 2026-11-12 keeps H3620 2026-11-12's credit 15:00 (pay protected)"); on Pako that is one new version (11.030)
+  right after the update, the same line as 11.029 with the credit kept.
+- The schedule card: a PAYP's credit counts in Credit, Pay-Gross and Pay-Net on its first day, at the hourly rate,
+  with no block and no soft; the PAYP label and the Credit cell say "Pay protected: H3620 Nov 12 (PWA Definitions 57;
+  4.R.1 if you add a trip on these days)"; a PAYP has no trade or drop mark; the totals show "PAYP 15:00". No IRO or
+  Extended Range override is added by itself (PWA 4.O.1 pays them per block hour or for the seat flown, and a PAYP
+  flies none); the RO+15% tap in the Pay-Gross box still turns one on. With no record (v11.029 as stored on Pako, or a
+  Watcher before 1.7.2) the card estimates the credit: FLICA's month credit less everything else it counted, only when
+  that is above zero and the month has a PAYP, split by days over the PAYP items without a record, marked "est" on the
+  row, "estimate" in the totals and "est" beside Credit (no check mark: it equals FLICA's by construction). A trip
+  added on PAYP days counts in full on top (PWA 4.R.1). The Block total, Block Avail (98 h), the FAR columns and the
+  98/672 checks never count a PAYP (not flown).
+- Fix pass (two reviews of the change, each finding reproduced with a synthetic test first):
+  - A trip that only comes home on the PAYP's first day (H3681 Nov 9 to 12 on Pako, beside PAYP Nov 12 to 14) joined
+    the record when it left the schedule in the same read (35:55 instead of 15:00). A removed trip now counts only
+    when it starts on one of the PAYP's days, in both the own trips and the versions paths.
+  - A partial cancellation counted the flown part twice: H3620 Nov 12 to 14 becoming H3620A Nov 12 to 13 (7:30) plus
+    PAYP Nov 14 kept the full 15:00 on top (Credit 138:45 against FLICA 131:15). Now there is no record for it (the
+    card's estimate, 7:30); when FLICA puts a lettered pairing over the removed trip's days and the PAYP starts first,
+    the record holds what is left of the credit once that pairing is read, and none before.
+  - PWA 4.R.1: a trip added over every PAYP day (FLICA shows it, no PAYP) pruned the record and the 15:00 was lost
+    again (Credit 134:15 against FLICA 149:15). The record now stays while a pairing other than the removed one starts
+    on its days; the card counts it in the totals only when FLICA's month credit holds it, so a reassignment that ends
+    the protection (FLICA 126:15) counts nothing.
+  - A PAYP over the month boundary (like H3607 Nov 30 to Dec 2 on Pako, duty blocks 600 and 455 minutes) kept all
+    17:35 in November and December estimated 7:35 more. The record now carries `split` (PWA 4.A, the card's own block
+    share: November 10:00, December 7:35), the card counts each month's share, and the PAYP December's page lists
+    again gets a record of its own for its share (`of`). Every day of a PAYP names its record, the next month's too.
+  - With no record on file, a trip added on PAYP days and then dropped became the protected trip (6:00). A trip a
+    stored version shows taken on days already PAYP is never the protected trip now.
+  - FLICA showing the days empty one read before PAYP lost the trip (no record). The versions path now looks past
+    such a read when the days went empty at most a day before the PAYP showed; a PAYP that grows also takes the trip
+    removed on its new days from the versions.
+  - The estimate took credit that is not the PAYP's (an unread trip, SIM or SICK days, last month's trip running into
+    this one: "PAYP 45:00 est" for 15:00, and the red Credit check turned into a check mark). The card now estimates,
+    and counts a PAYP kept under an added trip, only when it counts everything else in the month; otherwise the totals
+    say "PAYP credit unknown" and the red check stays. With no FLICA total it says so too (it counted 0:00 silently).
+  - FW-0064: H3620 cancelled to PAYP and H3999 added the same HST day was pushed as "Trade, Approved, Pay-Gross
+    -$2,331". A trip whose first day is now PAYP is marked explained ("pay protected"), also when the PAYP shows a read
+    after the drop, so it is never priced as given away.
+  - Left as it was: the removed trip's IRO override and Extended Range +15% (PWA 4.O.1) are not added to the PAYP's
+    pay (whether Definitions 57's "Pay" includes them is Ryan's call against the contract text); `protected` changing
+    alone makes no new version (cosmetic).
+- Open time over PAYP days (Ryan: "make way for the fact that I can also pick up a trip over the top of PAYP for
+  additional pay"; PWA 4.R.1). On Pako H3607 Nov 13 to 15 and H3839 Nov 13 to 14 over PAYP Nov 12 to 14 were tagged
+  "Conflict PAYP" and their FAR column said "may overlap PAYP Nov 12: PAYP Nov 12 times not on file". A PAYP day is
+  now free for a pickup: the fit tag (`pot.fit_tag`, `FREE_ITEMS`), the month rules (`smart.month_rule`,
+  `FREE_CODES`, whatever smart.json `off_codes` lists) and the FAR line (`recall.line_records`) leave the PAYP out,
+  since its trip is not flown. FLICA counts PAYP days in Days Off (Pako: 13 before, 15 with the PAYP), so a pickup on
+  them uses days off as on any day (10.G, `min_days_off`). A trip already added on a PAYP day still holds that day
+  (a Conflict), and a trip either side still needs its rest ("Check rest"). The Recall / Over 75 miss check is
+  unchanged: it still counts a PAYP as possible duty (POSSIBLE, never MISSED). Tests: `tests/test_payp_pickup.py`.
+- Limits: a trip from last month running into this month is still not counted in this month's totals (as before
+  1.7.2); a reserve month still asks for SCR on every pickup day (a PAYP day there reads "Not SCR").
+- Tests: `tests/test_payp.py` (synthetic v11.028 to v11.029: Credit 131:15 with the FLICA check passing, Pay-Gross
+  and Pay-Net as in v11.028, the estimate, PWA 4.R.1, block and Block Avail, the Watcher on both instances across
+  refreshes and pruning, the versions, the card at 390 px; the fix pass adds the month boundary, the partial
+  cancellation, the trip added over every PAYP day, the adjacent trip, the read before the PAYP, the estimate guard
+  and the trade push).
+
+### Rollback to 1.7.1
+
+- 1.7.1 cannot read 1.7.2's HMAC-keyed CrewTrac records: it takes them for other details and lifts a refusal block, so
+  it would make one more CrewTrac login with details CrewTrac refused. Before a rollback, restore /data from the backup
+  taken before the update, or, when CrewTrac refused the details in use while on 1.7.2, blank the CrewTrac password in
+  Settings first (then save the right password on 1.7.1).
+- 1.7.1 ignores `S["van"]` (its alerts are always on, 30 and 10) and leaves the van setting entities without a
+  Watcher behind them; the Settings tiles show them unavailable until they are removed (`ha/README.md`).
+
+### Also
+
+- The admin's uploads card keeps WCAG AA contrast on a dark card (its green "read" was 3.1:1).
+- `Dockerfile` copies `pilotpdf.py`.
+
 ## 1.7.1.1
 
 Hotfix on 1.7.1: pay protection (PAYP) keeps the removed trip's exact Pay and Credit (Ryan, Nov 13: "My LAS trip today

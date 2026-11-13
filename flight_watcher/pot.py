@@ -714,10 +714,17 @@ def _span(a, b):
     return out
 
 
+# 1.7.2 (Ryan, Nov 13: "make way for the fact that I can also pick up a trip over the top of PAYP for additional pay"):
+# schedule items a pickup may cover. PAYP is a Flight Grouping removed with its Pay and Credit kept (PWA Definitions 57)
+FREE_ITEMS = ("PAYP",)
+
+
 def fit_tag(start, end, sched):
     """'Fits', 'Conflict H3659', 'Check rest H3628', 'Days off 11' or '' when the schedule
     doesn't cover those dates. start/end are dates. Days off: 12 in a 30-day month, 13 in a
-    31-day month (10.G). Rest next to a trip needs times the schedule page lacks, so it is flagged."""
+    31-day month (10.G). Rest next to a trip needs times the schedule page lacks, so it is flagged.
+    1.7.2: a PAYP item is free for a pickup (PWA 4.R.1: a pilot may add a Flight Grouping on PAYP days and is paid
+    for both), never a Conflict; FLICA counts its days in Days Off, so a pickup on them uses days off as on any."""
     from datetime import timedelta
     if not sched or not start:
         return ""
@@ -727,6 +734,8 @@ def fit_tag(start, end, sched):
         return ""
     busy = {}
     for it in sched.get("items", []):
+        if it.get("trip") in FREE_ITEMS:
+            continue
         for d in _span(date.fromisoformat(it["start"]), date.fromisoformat(it["end"])):
             busy[d] = it["trip"]
     mine = _span(start, end)

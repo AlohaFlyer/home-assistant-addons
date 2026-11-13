@@ -19,7 +19,11 @@
      slept, the signal dropped) is sent again once Home Assistant is back, for up to FW_UP_RETRY_MS. An admin's file
      past the app proxy's cap goes this way too.
    FW-0057: a pairings package the crew index still needs ('wanted') is asked for above the files. Card options: slug
-   (the app's slug), title. */
+   (the app's slug), title.
+   1.7.2 (FW-0066, Ryan Nov 11): "Pilot uploads": the pairings packages and awards a pilot uploaded from his portal
+   (api/uploads and the admin's sensor carry pilot_uploads; a pilot's copy of this card never has it). One used at once
+   (nothing was on file) has Remove; one held for the admin (a file was on file) has Approve and Reject. Each button
+   asks first, then publishes {id, action} to flight_watcher/upload/decide (the same as the push's buttons). */
 const FW_UP_SLUG = ["43b22650", "flight", "watcher"].join("_");  // in parts: a second pilot's copy keeps the one app's slug
 const FW_UP_KINDS = [["award", "Monthly award"], ["pairings", "Pairings package"], ["seniority", "Pilot seniority list"], ["contacts", "Pilot contact list"]];
 const FW_UP_LABEL = { award: "Award", pairings: "Pairings package", seniority: "Seniority list", contacts: "Contact list", other: "Other file" };
@@ -28,6 +32,10 @@ const FW_UP_TOPIC = "flight_watcher/upload/chunk";
 const FW_UP_LIST = "sensor.flight_watcher_uploads";
 const FW_UP_STATUS = "sensor.flight_watcher_upload_status";
 const FW_UP_SETTINGS = "sensor.flight_watcher_settings";
+const FW_UP_DECIDE = "flight_watcher/upload/decide";  // 1.7.2 (FW-0066): the admin's Approve / Remove / Reject
+const FW_UP_PSTATE = { live: "in use (nothing was on file)", pending: "waiting for you (a file was on file)",
+  approved: "approved, in use", rejected: "rejected", removed: "removed", replaced: "replaced by a later file",
+  superseded: "replaced by his later upload" };
 const FW_UP_CHUNK = 192 * 1024;  // chunks.CHUNK_MAX: raw bytes per mqtt.publish (about 256 KiB of base64)
 const FW_UP_MQTT_MAX = 25000000;  // web.UPLOAD_MAX
 // the Watcher's answer after the last chunk: past chunks.TIMEOUT_S (120 s) and the janitor's 10 s sweep, so the
@@ -150,6 +158,8 @@ class FlightWatcherUploadsCard extends HTMLElement {
   _e(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m])); }
   _admin() { return !!(this._h && this._h.user && this._h.user.is_admin === true); }
   set hass(h) {
+    // 1.7.2: the green and red words keep WCAG AA contrast on a dark card (Home Assistant's dark mode)
+    if (typeof this.toggleAttribute === "function") this.toggleAttribute("dark", !!(h && h.themes && typeof h.themes.darkMode === "boolean" ? h.themes.darkMode : typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches));
     this._h = h;
     const mode = this._admin() ? "admin" : "user";
     if (mode !== this._mode) {
@@ -191,13 +201,49 @@ class FlightWatcherUploadsCard extends HTMLElement {
       mail link on a looked-up pilot. Nothing is sent to FLICA.</div>${how}
       ${this._formHtml()}
       <div class="hd"><b>On file</b><button class="g" data-reload>Refresh</button></div>
-      <div data-list>${this._listHtml(null)}</div><div data-sen></div></ha-card>`;
+      <div data-list>${this._listHtml(null)}</div><div data-pilot></div><div data-sen></div></ha-card>`;
     const kind = this._q("[data-kind]");
     if (kind) kind.addEventListener("change", () => this._kind());
     const up = this._q("[data-up]");
     if (up) up.addEventListener("click", () => this._upload());
     const rl = this._q("[data-reload]");
     if (rl) rl.addEventListener("click", () => (this._mode === "admin" ? this._load() : this._fromSensor(true)));
+    const pl = this._q("[data-pilot]");
+    if (pl) pl.addEventListener("click", (ev) => { const b = ev.target.closest("button[data-act]"); if (b) this._decide(b); });
+  }
+  // 1.7.2 (FW-0066): a pilot's upload, decided by the admin (the push's buttons do the same)
+  _pilotHtml(d) {
+    const e = (s) => this._e(s);
+    const list = Array.isArray(d && d.pilot_uploads) ? d.pilot_uploads : null;
+    if (!list) return "";
+    const head = `<div class="lbl">Pilot uploads</div>`;
+    if (!list.length) return `<div class="sen">${head}<div class="u">No pilot has uploaded a pairings package or an award from his portal.</div></div>`;
+    const row = (r) => {
+      const what = `${FW_UP_LABEL[r.kind] || FW_UP_LABEL.other} ${fwUpMonth(r.month) || r.month}`;
+      const who = String(r.who || "?");
+      const btn = (a, label, cls) => `<button class="${cls}" data-act="${a}" data-id="${e(r.id)}" data-what="${e(what)}" data-who="${e(who)}">${label}</button>`;
+      const acts = r.state === "pending" ? btn("approve", "Approve", "") + btn("reject", "Reject", "g")
+        : r.state === "live" || r.state === "approved" ? btn("remove", "Remove", "g") : "";
+      return `<div class="f"><div><b>${e(what)}</b> from ${e(who)}: ${e(FW_UP_PSTATE[r.state] || r.state)}</div>
+        <div class="u">${e(fwUpSize(r.size))} · uploaded ${e(fwUpHst(r.at) || "?")} HST${r.decided_at ? ` · decided ${e(fwUpHst(r.decided_at))} HST` : ""}${r.sha ? ` · sha256 ${e(r.sha)}...` : ""}</div>
+        ${acts ? `<div class="act">${acts}</div>` : ""}</div>`;
+    };
+    return `<div class="sen">${head}${list.map(row).join("")}<div class="msg" data-pmsg role="status" aria-live="polite"></div></div>`;
+  }
+  async _decide(b) {
+    const a = b.dataset.act, what = b.dataset.what, who = b.dataset.who;
+    const ask = a === "approve" ? `Use ${who}'s ${what} instead of the one on file? The file on file is kept for rollback.`
+      : a === "reject" ? `Delete ${who}'s ${what}? The file on file stays.`
+        : `Remove ${who}'s ${what}? The file it replaced comes back if there was one, else nothing is on file for that month.`;
+    if (typeof confirm === "function" && !confirm(ask)) return;
+    const m = this._q("[data-pmsg]");
+    try {
+      await this._h.callService("mqtt", "publish", { topic: FW_UP_DECIDE, payload: JSON.stringify({ id: b.dataset.id, action: a }), qos: 1, retain: false });
+      if (m) m.innerHTML = `<span class="ok">Sent: ${this._e(a)} ${this._e(what)}. The list updates in a few seconds.</span>`;
+      setTimeout(() => (this._mode === "admin" ? this._load() : this._fromSensor(true)), 3000);
+    } catch (err) {
+      if (m) m.innerHTML = `<span class="err">Not sent: ${this._e(this._why(err))}</span>`;
+    }
   }
   _css() {
     return `ha-card{padding:12px 14px;font-size:13px;overflow-wrap:anywhere}
@@ -212,6 +258,7 @@ class FlightWatcherUploadsCard extends HTMLElement {
       button.g{background:#757575;padding:4px 10px;font-size:12px}button:disabled{opacity:.5;cursor:default}
       .act{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
       .msg{margin-top:6px}.ok{color:#2e7d32}.err{color:var(--error-color,#c62828)}
+      :host([dark]) .ok{color:#81c784}:host([dark]) .err{color:#ef9a9a}
       .hd{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:10px 0 2px}
       .f{border-top:1px solid var(--divider-color,#ccc);padding:5px 0}
       .w{border-left:3px solid var(--warning-color,#f57c00);padding:4px 8px;margin:6px 0}
@@ -290,8 +337,9 @@ class FlightWatcherUploadsCard extends HTMLElement {
     return `<div class="sen">${head}<div>${parts.join(" · ")}</div></div>`;
   }
   _render() {
-    const list = this._q("[data-list]"), sen = this._q("[data-sen]");
+    const list = this._q("[data-list]"), sen = this._q("[data-sen]"), pl = this._q("[data-pilot]");
     if (list) list.innerHTML = this._listHtml(this._data);
+    if (pl) pl.innerHTML = this._data && !this._err ? this._pilotHtml(this._data) : "";
     if (sen) sen.innerHTML = this._data && !this._err ? this._senHtml(this._data.seniority) + ("contacts" in this._data ? this._ctHtml(this._data.contacts) : "") + (this._data.version ? `<div class="u">Flight Watcher ${this._e(this._data.version)}</div>` : "") : "";
   }
   _why(err) {

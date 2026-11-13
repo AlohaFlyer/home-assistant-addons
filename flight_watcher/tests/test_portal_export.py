@@ -27,6 +27,7 @@ PILOT2_IDS = sorted([
     "sensor.flight_watcher_pilot2_next_check", "sensor.flight_watcher_pilot2_ot_requests",
     "sensor.flight_watcher_pilot2_own_trip_times", "sensor.flight_watcher_pilot2_pickers",
     "sensor.flight_watcher_pilot2_pilot_schedule", "sensor.flight_watcher_pilot2_pot_count",
+    "sensor.flight_watcher_pilot2_pilot_uploads",  # 1.7.2 (revision 3): synthesized from his uploads, never from HA
     "sensor.flight_watcher_pilot2_recall_o75", "sensor.flight_watcher_pilot2_reserve_grid",
     "sensor.flight_watcher_pilot2_rules_active", "sensor.flight_watcher_pilot2_schedule",
     "sensor.flight_watcher_pilot2_schedule_versions", "sensor.flight_watcher_pilot2_settings",
@@ -36,7 +37,8 @@ PILOT2_IDS = sorted([
     "sensor.flight_watcher_pilot2_tradeboard_pickups", "sensor.flight_watcher_pilot2_working_flight",
     "sensor.flight_watcher_pilot2_would_trade", "switch.flight_watcher_pilot2_hunt_mode",
     "switch.flight_watcher_pilot2_pause"])
-PREF_IDS = {roles.pref_entity(k, "flight_watcher_pilot2") for k in roles.PREF_KEYS}
+PREF_IDS = {roles.pref_entity(k, "flight_watcher_pilot2") for k in roles.PREF_KEYS} | {
+    "sensor.flight_watcher_pilot2_pilot_uploads"}  # the ids state.json synthesizes (never a GET to HA)
 # what HA also holds and the pilot's export must never ask for: the house, the admin's, another pilot's
 OTHERS = ["lock.front_door", "sensor.flight_watcher_state", "sensor.flight_watcher_finds",
           "sensor.flight_watcher_james_state", "input_number.flight_watcher_federal_tax_pct"]

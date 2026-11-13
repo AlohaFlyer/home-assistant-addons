@@ -31,7 +31,7 @@ NOW_UTC = "2026-11-11T20:00:00Z"  # the same moment for the browser's clock
 TODAY = "2026-11-11"
 DOH = "2019-03-01"  # made up: year 8 on TODAY
 # PORTAL_CONTRACT.md as 1.6.3 shipped it: the portal only relays ciphertext, so a date of hire changes no contract
-CONTRACT_DOC_SHA256 = "8060970d02f54e4a5bbda5d97be0bdef5eb646235c38484d1a58e7aa1dd67665"  # 1.7.0: contract 1 revision 2
+CONTRACT_DOC_SHA256 = "621f5d71d7abe71d4eccf464da658e27ec5b973558cbecd4277381bc13ad63b7"  # 1.7.2: contract 1 revision 3 (review fixes)
 
 
 def _src(name):
@@ -150,7 +150,7 @@ def _refused(W, flica=True, crewtrac=True):
         W.S["machine"], W.S["note"] = "stopped_login_failed", "x"
         W.S["flica_refused"] = {"hash": W.flica_creds_hash(), "at": 1794400000.0}
     if crewtrac:
-        W.DB.put("crewtrac_refused", {W.CH.creds_hash(FL_CREDS["ctweb_username"], FL_CREDS["ctweb_password"]): 1})
+        W.DB.put("crewtrac_refused", {W.crewtrac_hash(FL_CREDS["ctweb_username"], FL_CREDS["ctweb_password"]): 1})
     W.FLAGS["rearm"] = False
     W.WAKE.clear()
     W.CHARTER_WAKE.clear()

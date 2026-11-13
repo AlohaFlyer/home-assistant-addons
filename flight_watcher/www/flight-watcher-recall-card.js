@@ -18,6 +18,9 @@
 // 1.7.1 (F#66): the alert card is the first card of the pilot portal's Watcher tab too; with no alert it takes no room.
 // 1.7.1 (Ryan, Nov 11): a day the admin's Watcher replayed from its history (day.replay) shows like any other, says so,
 // and never counts for the RECALL ALERT bar.
+// 1.7.2 (contract 1 revision 3, F#78): the admin's manual paste asks first when it would replace a day already on file,
+// naming those dates ("Replace the lists on file for Tue Nov 3, Wed Nov 4?"); Cancel sends nothing. (A pilot's card has
+// no paste, and his portal refuses recall/set: his lists come only from the admin's forward.)
 // (F#119) Text on the card's own colors keeps WCAG AA contrast (4.5:1) on light and dark cards: the error text is a
 // lighter red on a dark card (Home Assistant's dark mode, the portal's from the device), the CHECK and NO chips are darker.
 // 1.7.1 review: on a phone (700 px or less) every field, select and the CCR draft are 16 px: iOS Safari zooms into a
@@ -204,6 +207,13 @@ class FlightWatcherRecallCard extends HTMLElement {
     </ha-card>`;
     this._wire();
   }
+  // 1.7.2 (F#78): the pasted days (YYYY-MM-DD) that already have a list on file, sorted, each once
+  _onFile(list) {
+    const have = new Set(this._days(this._h && this._h.states[this._c.entity]).map((d) => String(d.date || "")));
+    return [...new Set(list.map((d) => String((d && d.date) || "").slice(0, 10)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d) && have.has(d)))].sort();
+  }
+  _day(iso) { const t = new Date(`${iso}T12:00:00Z`); return `${RC_DOW[t.getUTCDay()]} ${RC_MON[t.getUTCMonth()]} ${t.getUTCDate()}`; }
+  _ask(text) { return typeof window.confirm !== "function" || window.confirm(text); }
   // 1.6.2 review: the raw JSON paste tool is the admin's (Hark posts the lists); a pilot's card has none
   _admin() {
     const st = this._h && this._h.states["sensor.flight_watcher_state"];
@@ -410,8 +420,15 @@ class FlightWatcherRecallCard extends HTMLElement {
     });
     const pg = r.querySelector("[data-paste-go]");
     if (pg) pg.onclick = () => {
-      try { let j = JSON.parse(r.querySelector("[data-paste]").value); const fix = (d) => ({ ...d, rows: (d.rows || []).map((x) => ({ date: d.date, ...x })) }); j = Array.isArray(j) ? j.map(fix) : fix(j); this._h.callService("mqtt", "publish", { topic: "flight_watcher/recall/set", payload: JSON.stringify(j) }); pg.textContent = "Sent"; }
-      catch (e) { pg.textContent = "Not valid JSON"; }
+      let j;
+      try { j = JSON.parse(r.querySelector("[data-paste]").value); }
+      catch (e) { pg.textContent = "Not valid JSON"; return; }
+      const fix = (d) => ({ ...d, rows: ((d && d.rows) || []).map((x) => ({ date: d.date, ...x })) });
+      j = Array.isArray(j) ? j.map(fix) : fix(j);
+      const on = this._onFile(Array.isArray(j) ? j : [j]);
+      if (on.length && !this._ask(`Replace the recall lists already on file for ${on.map((d) => this._day(d)).join(", ")}? The pasted list takes their place.`)) { pg.textContent = "Not sent"; return; }
+      this._h.callService("mqtt", "publish", { topic: "flight_watcher/recall/set", payload: JSON.stringify(j) });
+      pg.textContent = "Sent";
     };
   }
 }

@@ -26,8 +26,12 @@ ADMIN_SUBS_1412 = [
     "flight_watcher/ticket/act", "flight_watcher/ticket/edit", "flight_watcher/ticket/delete",
     "flight_watcher/crew_scan/press", ("flight_watcher/upload/chunk", 1),
     "flight_watcher/layover/note",  # 1.7.1 (FW-0072): the admin's layover notes, after the 1.4.12 list
+    "flight_watcher/upload/decide",  # 1.7.2 (FW-0066): the admin's Approve / Remove / Reject of a pilot's upload
+    # 1.7.2 (Ryan, Nov 12): the van alerts' switch and sliders
+    "flight_watcher/van/alerts/set", "flight_watcher/van/first_min/set", "flight_watcher/van/second_min/set",
 ]
-PILOT_LOSES = ("email/alert", "auto_swap/set", "swap_map/press", "drop/set", "crew_scan/press", "layover/note")
+PILOT_LOSES = ("email/alert", "auto_swap/set", "swap_map/press", "drop/set", "crew_scan/press", "layover/note",
+               "upload/decide", "van/alerts/set", "van/first_min/set", "van/second_min/set")
 # 1.7.1 (F#22): a pilot also reads the admin's shared charter list (retained, under the admin's prefix, never a
 # command: his portal publishes only under his own prefix)
 PILOT_GAINS = [("flight_watcher/charters/shared", 1)]
@@ -94,7 +98,7 @@ def test_readme_table_equals_features():
 def test_roles_basics():
     assert roles.role("") == "admin" and roles.role("james") == roles.role("pilot3") == "pilot"
     assert roles.features("") == list(roles.FEATURES)
-    assert roles.features("pilot2") == ["core", "prefs", "tickets", "uploads"]
+    assert roles.features("pilot2") == ["core", "prefs", "tickets", "uploads", "pilot_uploads"]
     assert roles.allowed("core", "pilot2") and not roles.allowed("drop_mark", "pilot2") and roles.allowed("drop_mark", "")
     assert not roles.allowed("no_such_feature", "") and not roles.allowed("no_such_feature", "pilot2")  # fail closed
     for f, (who, portal, gates) in roles.FEATURES.items():
@@ -115,8 +119,13 @@ def test_admin_subscriptions_are_the_1412_list_verbatim():
     assert roles.subscriptions("", portal=True) == roles.subscriptions("")
     pilot = [s for s, q in roles.subscriptions("pilot2")]
     assert pilot == [s for s, q in roles.subscriptions("") if s not in PILOT_LOSES]
-    # 1.6.0 (FW-0061): a pilot whose portal is on also takes pref/set, after the rest; the admin never does
-    assert roles.subscriptions("pilot2", portal=True) == roles.subscriptions("pilot2") + [("pref/set", 0)]
+    # 1.6.0 (FW-0061): a pilot whose portal is on also takes pref/set, after the rest; the admin never does.
+    # 1.7.2 (FW-0066): and upload/pdf at qos 1 (his uploads come from his portal only)
+    assert roles.subscriptions("pilot2", portal=True) == roles.subscriptions("pilot2") + [("pref/set", 0),
+                                                                                          ("upload/pdf", 1)]
+    assert "upload/pdf" not in [s for s, q in roles.subscriptions("", portal=True)]
+    assert not roles.sub_allowed("upload/pdf", "") and not roles.sub_allowed("upload/pdf", "pilot2")
+    assert roles.sub_allowed("upload/pdf", "pilot2", portal=True) and not roles.sub_allowed("upload/decide", "pilot2")
     assert "pref/set" not in [s for s, q in roles.subscriptions("", portal=True)]
     assert not roles.sub_allowed("pref/set", "") and not roles.sub_allowed("pref/set", "", portal=True)
     assert not roles.sub_allowed("pref/set", "pilot2") and roles.sub_allowed("pref/set", "pilot2", portal=True)

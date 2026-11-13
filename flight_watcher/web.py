@@ -13,6 +13,7 @@ pilot contact list) is read into /share/flight_watcher/contacts.json (mode 600; 
 (chunks.py, watcher.upload_chunk), and every save runs under one lock shared by the pilot instances (save_lock)."""
 import contextlib
 import fcntl
+import hashlib
 import html
 import json
 import os
@@ -27,6 +28,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import contacts as CT
 import crewidx as CI
+import pilotpdf as PP
 import seniority as SEN
 
 INGRESS_IP = "172.30.32.2"
@@ -360,14 +362,20 @@ def save_lock():
                 os.close(fd)
 
 
-def save_upload(fields, data, log):
+def review_dir():
+    """1.7.2 (FW-0066): the provenance and quarantine folder beside the uploads folder (pilotpdf.REVIEW on Pako)."""
+    return os.path.join(os.path.dirname(UPLOAD_DIR), "upload_review")
+
+
+def save_upload(fields, data, log, who=PP.ADMIN):
     """The one save path of the Web UI page, the dashboard card's ingress path and (1.4.8) an upload sent in chunks
     over MQTT: {ok, message (plain text), file?, seniority?, contacts?}. Stores one PDF as
     <YYYY-MM>_<award|pairings>.pdf plus a pdftotext -layout copy; a PDF that gives no text copy is refused and the
     month's file on file is kept. An award's text is also read for dates of hire (award_seniority; it never fails the
     upload). FW-0062: kind 'seniority' (no month) goes to _save_seniority: kept as seniority_<YYYY-MM-DD, HST upload
     day>.pdf and read into seniority.json only when it gives pilot rows. FW-0066: kind 'contacts' goes to
-    _save_contacts."""
+    _save_contacts. 1.7.2 (FW-0066): who saved a monthly file is its provenance (pilotpdf.Review.record_admin: who,
+    when, sha256), which a pilot's file it replaces gives way to."""
     month, kind = fields.get("month", ""), fields.get("kind", "")
     if kind not in KINDS or (kind in ("award", "pairings") and not re.fullmatch(r"\d{4}-\d{2}", month)):
         return {"ok": False, "message": "Pick a month and a kind."}
@@ -382,10 +390,10 @@ def save_upload(fields, data, log):
             return _save_contacts(data, log)
         if kind == "seniority":
             return _save_seniority(data, fields, log)
-        return _save_monthly(data, month, kind, log)
+        return _save_monthly(data, month, kind, log, who)
 
 
-def _save_monthly(data, month, kind, log):
+def _save_monthly(data, month, kind, log, who=PP.ADMIN):
     """An award or a pairings package (save_upload, under save_lock)."""
     path, kb = os.path.join(UPLOAD_DIR, f"{month}_{kind}.pdf"), len(data) // 1024
     tmp, txt = path[:-4] + ".new.pdf", path[:-4] + ".txt"
@@ -412,6 +420,11 @@ def _save_monthly(data, month, kind, log):
             except OSError:
                 pass
     log.info("upload: %s %s saved (%d KB)", month, kind, kb)
+    try:  # 1.7.2 (FW-0066): its provenance; never fails the save
+        PP.Review(UPLOAD_DIR, review_dir()).record_admin(kind, month, hashlib.sha256(data).hexdigest(), len(data),
+                                                         who or PP.ADMIN)
+    except Exception as e:  # noqa: BLE001
+        log.info("upload: %s %s provenance not kept: %s", month, kind, type(e).__name__)
     out = {"ok": True, "message": f"Saved {os.path.basename(path)} ({kb} KB).", "file": os.path.basename(path)}
     if kind == "award":
         try:
@@ -617,16 +630,40 @@ def uploads_wanted(today=None, pdir=None, files=None):
     return out
 
 
-def uploads_json(version):
+def pilot_uploads(limit=20):
+    """1.7.2 (FW-0066): the pilots' uploads for the admin's Settings uploads card, newest first: {id, who, kind, month,
+    state (live: used at once; pending: held for him; approved, rejected, removed, replaced, superseded), at, size,
+    decided_at, sha (the first 12 hex), restores (a Remove brings the file it replaced back)}. Never file content."""
+    try:
+        recs = PP.Review(UPLOAD_DIR, review_dir()).records()
+    except OSError:
+        return []
+    out = []
+    for r in reversed(recs):
+        if r.get("who") in (None, "", PP.ADMIN):
+            continue
+        out.append({"id": r.get("id"), "who": r.get("who"), "kind": r.get("kind"), "month": r.get("month"),
+                    "state": r.get("state"), "at": r.get("at"), "size": r.get("size"),
+                    "decided_at": r.get("decided_at") or "", "sha": str(r.get("sha256") or "")[:12],
+                    "restores": bool(r.get("prev"))})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def uploads_json(version, review=False):
     """api/uploads (and, 1.4.8, sensor.<prefix>_uploads): {files, seniority (seniority_summary of seniority.json, or
     None), contacts (contacts.summary of contacts.json: counts and its file name only, or None), version, max_bytes
     (the largest file that gets through Home Assistant's ingress proxy, INGRESS_MAX), mqtt_max_bytes (the largest file
     sent in chunks over MQTT, UPLOAD_MAX), wanted (uploads_wanted: the pairings packages the crew index still
     needs)}."""
     files = uploads_list()
-    return {"files": files, "seniority": seniority_summary(_load_json(seniority_file())),
-            "contacts": CT.summary(CT.load(CONTACTS_FILE)), "version": version,
-            "max_bytes": min(UPLOAD_MAX, INGRESS_MAX), "mqtt_max_bytes": UPLOAD_MAX, "wanted": uploads_wanted(files=files)}
+    d = {"files": files, "seniority": seniority_summary(_load_json(seniority_file())),
+         "contacts": CT.summary(CT.load(CONTACTS_FILE)), "version": version,
+         "max_bytes": min(UPLOAD_MAX, INGRESS_MAX), "mqtt_max_bytes": UPLOAD_MAX, "wanted": uploads_wanted(files=files)}
+    if review:  # 1.7.2 (FW-0066): the admin's only (his sensor and his Web UI)
+        d["pilot_uploads"] = pilot_uploads()
+    return d
 
 
 SETTINGS_FIELDS = (  # (key, label, secret)
@@ -747,7 +784,7 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
                 return
             api = self._api()
             if api == "uploads":
-                return self._json(200, uploads_json(version))
+                return self._json(200, uploads_json(version, review=True))
             if api is not None:
                 return self._json(404, {"ok": False, "message": "Not found."})
             self._page()

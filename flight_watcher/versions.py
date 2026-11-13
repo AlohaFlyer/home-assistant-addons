@@ -215,6 +215,24 @@ def set_award(db, month, sched, iso_now):
     return out
 
 
+def clear_award(db, month):
+    """1.7.2 (FW-0066): the month's award file was removed (the admin's Remove of a pilot's upload with nothing to
+    restore): the awarded line is no longer version .001, and the rest are numbered again from .001 in order. Returns
+    the version list (unchanged when no award was in it)."""
+    key = f"sched_versions:{month}"
+    old = db.get(key) or []
+    vers = [v for v in old if not v.get("award")]
+    if len(vers) == len(old):
+        return old
+    out = []
+    for n, v in enumerate(vers, 1):
+        v = {**v, "ver": f"{int(month[5:7])}.{n:03d}", "n": n}
+        v["changes"] = diff(out[-1], v) if out else ["first version on file (the award was removed)"]
+        out.append(v)
+    db.put(key, out)
+    return out
+
+
 # ---------------------------------------------------------------- 1.7.2: pay protection (Ryan, Nov 13)
 # "My LAS trip today was cancelled and PAYP pay protected. Why did your pay calculations drop?" 2023 PWA Definitions
 # item 57: "PAY PROTECT/PAY PROTECTION (PAYP): A Flight Grouping that has been removed from a pilot's schedule, however

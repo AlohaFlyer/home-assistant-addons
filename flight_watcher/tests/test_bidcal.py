@@ -304,9 +304,11 @@ def test_each_alert_goes_once_and_a_restart_never_repeats_one(tmp_path, monkeypa
     assert [a["kind"] for a in sent] == ["practice_eve_1"]
     (ev, retain), = _events(fake)
     assert retain is False
+    # 1.7.2 (contract 1 revision 3): alert and cycle_source too, on every instance (a pilot's portal words them)
     assert ev == {"kind": "bid_calendar", "key": "2026-12_practice_eve_1", "bid_month": "2026-12",
-                  "title": "PBS Practice Run #1 tomorrow", "message": ev["message"],
-                  "at_hst": "2026-11-06T20:00:00-10:00", "event_hst": "2026-11-07T00:00:00-10:00", "source": "default"}
+                  "alert": "practice_eve_1", "title": "PBS Practice Run #1 tomorrow", "message": ev["message"],
+                  "at_hst": "2026-11-06T20:00:00-10:00", "event_hst": "2026-11-07T00:00:00-10:00", "source": "default",
+                  "cycle_source": "default"}
     assert ev["message"].startswith("Practice Run #1 for December is tomorrow, Sat Nov 7.")
     # the publish alert of Nov 3 was missed (the app was off): dropped with a log line, never sent
     assert "2026-12_publish_eve not sent" in caplog.text
@@ -367,7 +369,8 @@ def test_the_sensor_shows_the_next_alert_and_its_cycle(tmp_path, monkeypatch):
 
 def test_a_pilot_makes_the_same_alerts_on_his_own_prefix(tmp_path, monkeypatch):
     W, fake, _ = _load(tmp_path, monkeypatch, "pilot2")
-    assert roles.event_allowed("bid_calendar", "pilot2") and "bid_calendar" not in roles.PORTAL_EVENTS
+    # 1.7.2 (contract 1 revision 3): a portal event too (tests/test_fw172_rev3.py)
+    assert roles.event_allowed("bid_calendar", "pilot2") and "bid_calendar" in roles.PORTAL_EVENTS
     W.bidcal_tick(_t(6, "20:00"))
     assert [e["key"] for e, _ in _events(fake, "flight_watcher_pilot2")] == ["2026-12_practice_eve_1"]
     assert not [t for t, _, _ in fake.msgs if t.startswith("flight_watcher/")]  # never on the admin's prefix

@@ -84,8 +84,10 @@ def test_alert_texts_match_the_pages_they_open():
     assert t == "Your alert rule matched H9002 24Nov-27Nov" and "sin_hunt" not in t and b == "Layover SIN"
     b = PT.event_text("stopped_*", {"state": "stopped_login_failed"})[1]
     assert "save the new one on the Settings tab" in b and "logs in by itself" in b
-    # the new pairing text is pinned by the contract sample (portal_contract_v1.json): unchanged
-    assert PT.event_text("new_pairing", {"pairing": "H9001", "fit": "Fits"}) == ("New pairing H9001", "Fit Fits")
+    # the new pairing text is pinned by the contract sample (portal_contract_v1.json); 1.7.2 (revision 3, F#161): the
+    # fit is its value alone, not "Fit Fits"
+    assert PT.event_text("new_pairing", {"pairing": "H9001", "fit": "Fits"}) == ("New pairing H9001", "Fits")
+    assert PT.event_text("new_pairing", {"pairing": "H9001", "fit": "Conflict H9002"})[1] == "Conflict H9002"
 
 
 def test_a_pilots_machine_notes_name_nobody_and_no_ha_step(portal_pilot):

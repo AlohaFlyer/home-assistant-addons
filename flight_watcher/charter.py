@@ -11,8 +11,12 @@ Login: plain form at /Pilot/ctwc.aspx (Username = employee number, CrewTrac pass
 /Pilot/ctwcmainmenu.aspx, session under 2 h: one login per scan. Read only, GET only after login.
 1.6.1: a login has three outcomes (OK, REFUSED, OUTAGE); the Watcher never tries again after CrewTrac refused the same
 user ID and password (creds_hash), and backs off after an outage (backoff_s). The login form coming back with no new
-refusal wording is an OUTAGE marked unconfirmed (Scanner.unconfirmed): twice in a row is a refusal."""
+refusal wording is an OUTAGE marked unconfirmed (Scanner.unconfirmed): twice in a row is a refusal.
+1.7.2 (contract 1 revision 3, the council's change): the refusal block's key is HMAC-SHA256 of the user ID and password
+with a random 32-byte key of the instance's own (watcher.crewtrac_key: <data>/crewtrac_hmac.key, 0600, never exported,
+logged or sent), no longer a bare sha256 anyone holding the database could test passwords against."""
 import hashlib
+import hmac
 import json
 import re
 from collections import Counter
@@ -74,8 +78,17 @@ def page_text(html):
     return text, re.sub(r"\s+", " ", f"{text} {scripts}")
 
 
-def creds_hash(user, password):
-    """sha256 of the CrewTrac user name and password in use: the refusal block's key. Never the values themselves."""
+def creds_hash(user, password, key):
+    """1.7.2: HMAC-SHA256, with the instance's own 32-byte key, of the CrewTrac user name and password in use: the
+    refusal block's key. Never the values themselves; without the key it cannot be tested against a guess."""
+    if not isinstance(key, (bytes, bytearray)) or len(key) != 32:
+        raise ValueError("the CrewTrac block key must be 32 bytes")
+    return hmac.new(bytes(key), json.dumps(["crewtrac", user or "", password or ""]).encode(), hashlib.sha256).hexdigest()
+
+
+def legacy_hash(user, password):
+    """The 1.6.1 to 1.7.1 key (a bare sha256), read once by the 1.7.2 migration (watcher.crewtrac_key) and never
+    stored again."""
     return hashlib.sha256(json.dumps(["crewtrac", user or "", password or ""]).encode()).hexdigest()
 
 

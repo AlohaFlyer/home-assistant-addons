@@ -1,6 +1,6 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-11, release 1.7.0 live (Release C, tickets on the pilot portal); 1.7.1 built on branch claude/quirky-thompson-p94wms on top of 1.7.0, all its branches merged, not pushed or deployed)
+# HANDOFF: Flight Watcher (refreshed 2026-11-12, release 1.7.1 live; 1.7.2 (portal contract 1 revision 3, pilot PDF uploads) on its PR on top of 1.7.1, not deployed)
 
-State: app **1.7.0** on Pako HI (1.7.0 Release C, tickets on the pilot portal, contract 1 revision 2; **1.7.1** built, not pushed or deployed, CHANGELOG 1.7.1 and item 11: pilot read shares (LIVE-1), ignored presses answer why, Re-arm by state, the export heartbeat, the admin forwards recall lists, the card fixes F#4 to F#155, FW-0070 bid calendar alerts, Ryan's Nov 11 decisions, FW-0042 part 2 (no credit cap, 98 h in 672 h), FW-0071 ticket paste, FW-0072 layover card and van alerts with the van time from the pairings package first; 1.6.4 Date of hire field Nov 11, 1.6.3 schedule card package credit Nov 11, 1.6.1 CrewTrac stop and schedule backoff Nov 10, 1.6.2 Release A Nov 10, 1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
+State: app **1.7.1** on Pako HI since 2026-11-11 23:50 UTC (both instances; its Pako edits applied: bid calendar automation, new pairing push text, layover card, `ha/README.md`; the van time automation follows the Nov 11 temporary one), on top of 1.7.0 Release C (tickets on the pilot portal, contract 1 revision 2); **1.7.2** (contract 1 revision 3, pilot PDF uploads) on its PR, not deployed. CHANGELOG 1.7.1 and item 11: pilot read shares (LIVE-1), ignored presses answer why, Re-arm by state, the export heartbeat, the admin forwards recall lists, the card fixes F#4 to F#155, FW-0070 bid calendar alerts, Ryan's Nov 11 decisions, FW-0042 part 2 (no credit cap, 98 h in 672 h), FW-0071 ticket paste, FW-0072 layover card and van alerts with the van time from the pairings package first; 1.6.4 Date of hire field Nov 11, 1.6.3 schedule card package credit Nov 11, 1.6.1 CrewTrac stop and schedule backoff Nov 10, 1.6.2 Release A Nov 10, 1.4.7 Nov 7, 1.4.8 FW-0066 uploads and contacts Nov 7, 1.4.9 FW-0067 working flight
 per pilot Nov 8, 1.4.10 FW-0068 crew index finds FLICA-rebuilt pairings like H3631B Nov 9, 1.4.11 FW-0069 schedule versions
 for looked-up pilots on the pilot card Nov 9 (`pilotver.py`, list file `pilotver_<key>.json`), 1.4.12 the probe reads
 every rebuilt copy until all pilot seats are named Nov 9, 1.4.13 FW-0042 comm / month rule / value from
@@ -99,7 +99,7 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
    finds files, `last_new` and `event/new_pairing`, not on the finds, pot or Tradeboard sensors; not deployed yet).
    It needs `/share/flight_watcher/smart.json` on Pako (Hark's tables, never in git; blank fields without it) and a
    separate HA step to use the fields in the new-pairing push (CHANGELOG 1.4.13; Ryan Nov 11: show only, the Commute
-   and Value lines are in the snapshot, pending on Pako, item 11). Comm or Value in the pot_table
+   and Value lines, applied on Pako Nov 11, item 11). Comm or Value in the pot_table
    macro needs a Watcher release that puts the fields back on `pot/state` (12 KB cap) as well as the macro edit.
    Hark to confirm the overnight-release cut-off (a release from midnight to 05:00 has no same-day home;
    `home_day_start` in smart.json moves it). FW-0042 part 2 (1.7.1, branch fw171-cap, Ryan's rule of Nov 9): the 90 h
@@ -177,6 +177,36 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
     - **Not in 1.7.1** (contract changes): an alert for a new swap idea (F#107) and bid calendar alerts on the portal
       (FW-0070); also open: the clock card's state-worded Re-arm confirm and the hidden Settings tile (F#92, card and
       HOM work).
+12. **Release 1.7.2 (built Nov 12, branch `fw-1.7.2` on top of 1.7.1, not pushed or deployed; CHANGELOG 1.7.2):**
+    portal contract 1 revision 3 (the council's plan of Nov 11 and Ryan's decisions): `bid_calendar` and
+    `schedule_unread` pilot events, the `pilot/set` shape, `recall/set` refused from the portal (the admin's paste
+    asks first, naming the dates on file), the fit alone in the new pairing text, the manifest's `revision`, a
+    pilot's pairings package and award uploads (`upload/pdf`, `pilotpdf.py`; used at once when nothing is on file,
+    else held in `/share/flight_watcher/upload_review/quarantine/` for Ryan's Approve or Reject; Remove from the
+    push or the Settings uploads card), and the CrewTrac refusal block as an HMAC with a key of the instance's own
+    (`<data>/crewtrac_hmac.key`). Revision 2's crewtrac_refused event is dropped (1.7.1 already makes no CrewTrac
+    login on a pilot). The fixture changed (new sha256 in `flight_watcher/tests/test_portal_contract.py`).
+    - **Order, each a [DESTRUCTIVE] yes from Ryan, with a backup and a 30 min live watch:** HOM 1.8.2 first (copies the
+      fixture byte for byte, takes revision 2 and 3 exports and commands, refuses `upload/pdf` to a manifest with no
+      revision or revision 2 with a plain message, its generic checker reads `commands.shapes` too, its rate limits
+      allow the uploads card's 24 commands a minute), then merge and update Flight Watcher 1.7.2, then apply "Flight
+      Watcher pilot upload" on Pako through the HA connector (`ha/README.md`, Pending). Rollback: Flight Watcher first;
+      before it, restore /data from the backup taken before the update, or, when CrewTrac refused the details in use
+      while on 1.7.2, blank the CrewTrac password in Settings first (1.7.1 takes the HMAC records for other details and
+      would lift the refusal block: one more login with refused details).
+    - **Review fixes (three adversarial reviews, Nov 12):** CHANGELOG 1.7.2 "Review fixes": minted upload record ids
+      (a reused uid refused), Remove after Approve, linear package parsers and bounded pilot text, an award line cut
+      off, the extractor as nobody, schedule_unread's held clock and 24 h spacing, answers for dropped uploads, a
+      removed award off the looked-up pilots' versions.
+    - **Van alert settings (Ryan, Nov 12, in 1.7.2; CHANGELOG "Van alert settings"):** after 1.7.2 is live, add the
+      Settings tab's van alert tiles through the HA connector (`ha/README.md`, Pending) and check the log's "van alerts:".
+    - **Check after the update:** `sensor.flight_watcher_state` version 1.7.2; the log's "charter: CrewTrac block
+      records keyed with this instance's own key (N kept, M dropped)" once on Ryan's instance and
+      `/data/crewtrac_hmac.key` (0600, 32 bytes; never read out); James's manifest says revision 3 (HOM's log or the
+      export), his portal's Settings tab ends with the pilot uploads card at 390 px, light and dark. A live upload
+      test needs James (nobody contacts him for it) or a made-up PDF Claude would send through the portal only with
+      Ryan's yes. Not in this release: the FLICA refusal block (`S.flica_refused`, a bare sha256 on a pilot) is not
+      HMAC-keyed yet.
 
 ## Decided (do not reopen)
 
@@ -184,8 +214,8 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
   - FW-0070: the "pairing package publishes tomorrow, adjust your vacation" alert goes at 08:00 HST the day before the
     publish date (the 3rd by default), not 20:00 (built in 1.7.1, `fw171-r2`).
   - FW-0066: either pilot may upload the pairings package and the award; an upload is used at once when nothing is on
-    file for that month, else it is quarantined until Ryan approves it. Comes in portal contract revision 3 (not
-    built; a contract change, HOM first).
+    file for that month, else it is quarantined until Ryan approves it. Comes in portal contract revision 3 (built in
+    1.7.2, open item 12; a contract change, HOM first).
   - F#22 shared charters: James's Watcher runs no CrewTrac scan and needs no CrewTrac login; it shows the charter
     flights Ryan's scan finds (the flight list only), with the scan's time (built in 1.7.1).
   - F#10: a small health line for James (his Watcher version and FLICA pages in the last hour against his 100 an
@@ -195,7 +225,7 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
     no alert or push for them (built in 1.7.1).
   - FW-0034: FLICA's alert email is the close-in channel.
   - FW-0042 is show only: the new-pairing push gains the commute result and the value (Commute and Value lines);
-    nothing is silenced by them (the HA edit is in `ha/automations_flight_watcher.yaml`, pending on Pako). The 98 h
+    nothing is silenced by them (the HA edit is in `ha/automations_flight_watcher.yaml`, applied on Pako Nov 11). The 98 h
     in 672 h tag joins them, show only too (1.7.1).
   - FW-0072 van times: "van times are published in the pairings pack monthly and can be updated from time to time".
     The van alerts and the layover card take the package's VAN for the layover first (not 00:00), then Hark's van

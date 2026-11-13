@@ -2,7 +2,8 @@
 portal.contract_text() from roles.py and portal.py, byte for byte, and its sha256 is pinned here (the HOM repo pins
 the same value for its copy, fwportal/contract/v1.json): changing the contract means regenerating the fixture,
 updating this constant, PORTAL_CONTRACT.md and HOM's copy together. 1.7.0 (Release C): contract 1 revision 2, tickets
-on the portal (the same file name: fwp and contract stay 1). Synthetic data only."""
+on the portal (the same file name: fwp and contract stay 1). 1.7.2: revision 3 (pilot alerts, the pilot/set shape,
+recall/set refused, a pilot's PDF uploads). Synthetic data only."""
 import hashlib
 import json
 import os
@@ -16,7 +17,7 @@ import roles
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE = os.path.join(HERE, "tests", "fixtures", "portal_contract_v1.json")
 DOC = os.path.join(HERE, "PORTAL_CONTRACT.md")
-CONTRACT_SHA256 = "c8d37db297553379ca4bf1676db2884dd9d61443690a9d3bdada867ddf9f0e0a"
+CONTRACT_SHA256 = "e8e437fe9f9ccd7822158c080351d31d98a7825ff3669bf2ba4cb9cb2f8bb9fa"
 
 
 def _fx():
@@ -33,7 +34,15 @@ def test_fixture_regenerates_byte_for_byte_and_is_pinned():
 def test_lists_are_the_roles_tables():
     fx = _fx()
     assert fx["contract"] == fx["fwp"] == roles.CONTRACT == PT.FWP == 1
-    assert fx["revision"] == roles.CONTRACT_REVISION == 2
+    assert fx["revision"] == roles.CONTRACT_REVISION == 3
+    assert fx["commands"]["shapes"] == json.loads(json.dumps(roles.SHAPE_CMDS))
+    assert fx["commands"]["pilot_upload_limits"] == roles.PILOT_UPLOAD_LIMITS
+    assert fx["commands"]["since_revision"] == roles.COMMAND_SINCE and fx["commands"]["since_revision"]["upload/pdf"] == 3
+    assert fx["commands"]["removed_in_revision"] == roles.COMMAND_REMOVED == {"recall/set": 3}
+    assert fx["events"]["kind_fields"] == {k: list(v) for k, v in roles.EVENT_KIND_FIELDS.items()}
+    assert {"bid_calendar", "schedule_unread"} <= set(fx["events"]["kinds"])
+    man = json.loads(fx["samples"]["envelopes"][0]["envelope"]["payload"])
+    assert man["revision"] == 3 and "recall/set" not in man["mqtt_subs"] and "upload/pdf" in man["mqtt_subs"]
     assert fx["commands"]["allowed"] == list(roles.PORTAL_CMDS)
     assert fx["commands"]["refused"] == list(roles.PORTAL_REFUSED)
     assert fx["prefs"] == json.loads(json.dumps(roles.PREF_KEYS)) and fx["file_kinds"] == roles.FILE_KINDS
@@ -52,8 +61,8 @@ def test_lists_are_the_roles_tables():
 def test_every_subscription_is_allowed_or_refused_and_none_is_both():
     allowed, refused = set(roles.PORTAL_CMDS), set(roles.PORTAL_REFUSED)
     assert not allowed & refused
-    later = set(roles.NOT_ON_PORTAL)  # 1.7.1: refused as "anything else", the fixture unchanged
-    assert not later & (allowed | refused)
+    later = set(roles.NOT_ON_PORTAL)  # 1.7.1: refused as "anything else"; 1.7.2 (revision 3) names layover/note
+    assert not later & (allowed | refused) and "layover/note" in refused
     assert set(roles.SUBS) == allowed | refused | later  # every MQTT command topic an instance takes is classified
     for s in later:
         assert roles.portal_sub(s) is None and roles.FEATURES[roles.SUBS[s]][1] is False, s
@@ -61,7 +70,11 @@ def test_every_subscription_is_allowed_or_refused_and_none_is_both():
         assert roles.FEATURES[roles.SUBS[s]][1] is True, s  # offered on a portal
     for s in refused:
         f = roles.SUBS[s]
-        assert f == roles.INTERNAL or roles.FEATURES[f][1] is False, s
+        # 1.7.2 (revision 3, F#78): recall/set is a core feature the portal no longer offers (the admin's forward only)
+        assert f == roles.INTERNAL or roles.FEATURES[f][1] is False or s in roles.COMMAND_REMOVED, s
+        assert roles.portal_sub(s) is None, s
+    assert "recall/set" in refused and "recall/set" not in allowed and "upload/decide" in refused
+    assert "upload/pdf" in allowed and roles.portal_sub("upload/pdf") == "upload/pdf"
     for f in ("value", "comm_why", "pay", "captain", "contact", "detail_url", "url", "picked_by", "emp", "name",
               "title", "narrative", "text", "reporter", "kind"):
         assert f not in roles.EVENT_FIELDS, f  # plan risk K1: pay and personal data never leave the instance
@@ -161,13 +174,14 @@ def test_doc_names_everything_in_the_contract():
     assert chr(0x2014) not in doc
     assert "| contract 1 (`fwp` 1) | 1.6.0 | 1.6.0 |" in doc
     assert "| contract 1 rev 2 (`fwp` 1) | 1.7.0 | 1.8.0 | tickets on the portal |" in doc
+    assert "| contract 1 rev 3 (`fwp` 1) | 1.7.2 | 1.8.2 |" in doc  # 1.7.2
     for s in roles.PORTAL_CMDS:
         assert f"`{s if s != 'rule/+/live/set' else 'rule/<id>/live/set'}`" in doc, s
     for s in roles.PORTAL_REFUSED:
         assert f"`{s}`" in doc, s
     for k in roles.PORTAL_EVENTS + roles.MACHINE_EVENTS + roles.OWN_EVENTS:
         assert f"`{k}`" in doc, k
-    for f in roles.EVENT_FIELDS:
+    for f in roles.EVENT_FIELDS + tuple(x for v in roles.EVENT_KIND_FIELDS.values() for x in v):
         assert re.search(r"\b%s\b" % f, doc), f
     for k in roles.FILE_KINDS:
         assert f"`{k}`" in doc, k
@@ -178,7 +192,12 @@ def test_doc_names_everything_in_the_contract():
                  "portal_contract_v1.json", "fwportal/contract/v1.json",
                  # 1.7.0 (Release C)
                  "revision 2", "check_ticket", "checkTicket", "ticket_rules", "pilot_ticket_limits", "re-encode",
-                 "60000", "1.5 MB", "untrusted", "tickets_fixed_seen.json", "priority 2"):
+                 "60000", "1.5 MB", "untrusted", "tickets_fixed_seen.json", "priority 2",
+                 # 1.7.2 (revision 3)
+                 "revision 3", "check_shape", "since_revision", "pilot_upload_limits", "pilot_upload_checks",
+                 "kind_fields", "%%EOF", "setrlimit", "30 s", "512 MB", "at least 100 pairings", "quarantine",
+                 "provenance.json", "upload/decide", "event/", "time-sensitive", "Approve", "Reject", "Remove",
+                 "sensor.<prefix>_pilot_uploads", "Fit\n  Fits", "SCHEDULE_UNREAD_H", "HOM 1.8.2"):
         assert word in doc, word
     for a in roles.PILOT_TICKET_ACTIONS:
         assert f"`{a}`" in doc, a

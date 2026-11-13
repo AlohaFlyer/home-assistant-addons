@@ -101,6 +101,8 @@ def test_every_entity_a_card_reads_is_one_discovery_creates(tmp_path, monkeypatc
     missing = {e for e in used if e not in made and not e.startswith("switch.flight_watcher_rule")}
     # 1.5.0 (FW-0063): a pilot copy may name an entity of a feature only the admin has (Would drop): discovery never
     # creates it on a pilot instance, and the card reads it only behind its role check (a line that tests admin)
+    # 1.7.2 (FW-0066): the pilot uploads card's sensor is synthesized in his portal's state.json, never a discovery one
+    missing -= {"sensor.flight_watcher_pilot_uploads", "sensor.flight_watcher_pilot2_pilot_uploads"}
     W = _load(tmp_path / "pilot2", monkeypatch, "pilot2", opts)
     gated = {cfg["default_entity_id"] for comp, oid, cfg, feat in W.entity_defs() if not W.has(feat)}
     sys.modules.pop("watcher", None)

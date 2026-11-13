@@ -301,4 +301,4 @@ def test_state_attr_carries_role_and_features(W, monkeypatch):
     monkeypatch.setattr(W, "INSTANCE", "pilot2")
     W.set_machine("needs_settings", "send username and password")
     a = json.loads(W.MQ.last("flight_watcher/state_attr"))
-    assert a["role"] == "pilot" and a["features"] == ["core", "prefs", "tickets", "uploads"] and a["instance"] == "pilot2"
+    assert a["role"] == "pilot" and a["features"] == ["core", "prefs", "tickets", "uploads", "pilot_uploads"] and a["instance"] == "pilot2"

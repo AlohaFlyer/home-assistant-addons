@@ -33,16 +33,36 @@ CARD_RE = re.compile(r"flight-watcher-[a-z]+(-[a-z]+)*-card|flight-watcher-row-c
 
 LOADER_JS = """// Flight Watcher card loader, written by the add-on (cards.py). The only dashboard resource the cards need:
 // it reads the card list and app version fresh on every page load and imports each card with ?v=<version>.
+// 1.7.2 (Ryan, Nov 12, Sydney: the Working Flight page said "Configuration error"): the phone app keeps one page open
+// for days, so a card a release adds (the 1.7.1 layover card) was never imported while the dashboard already asked
+// for it. The list is read again whenever the page comes back to the screen and every 5 min; a card not imported yet
+// is imported then, and one whose import failed is tried again (a new URL, since a browser keeps a failed module).
 (async () => {
-  try {
-    const r = await fetch("/local/%s", { cache: "no-store" });
-    const m = await r.json();
-    for (const f of m.cards || []) {
-      import(`/local/${f}?v=${encodeURIComponent(m.version)}`).catch((e) => console.error("Flight Watcher card", f, e));
+  const done = new Set();
+  const tries = {};
+  let busy = false;
+  const load = async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      const r = await fetch("/local/%s", { cache: "no-store" });
+      const m = await r.json();
+      for (const f of m.cards || []) {
+        if (done.has(f)) continue;
+        done.add(f);
+        const n = (tries[f] = (tries[f] || 0) + 1);
+        const q = `?v=${encodeURIComponent(m.version)}${n > 1 ? `&r=${n}` : ""}`;
+        import(`/local/${f}${q}`).catch((e) => { done.delete(f); console.error("Flight Watcher card", f, e); });
+      }
+    } catch (e) {
+      console.error("Flight Watcher loader", e);
+    } finally {
+      busy = false;
     }
-  } catch (e) {
-    console.error("Flight Watcher loader", e);
-  }
+  };
+  await load();
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") load(); });
+  setInterval(load, 300000);
 })();
 """ % MANIFEST
 

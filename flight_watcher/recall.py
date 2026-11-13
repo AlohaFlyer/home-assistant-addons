@@ -386,11 +386,15 @@ def pickup_trip(label, start, end, report, last_arr, blk_h, duties):
 def line_records(months, own_trips, start, end, today, exclude=None):
     """FW-0039: Ryan's current line as far.legality() trips, for the FAR column of a pickup from start to end: his
     items (own_records; `exclude` 'TRIP|YYYY-MM-DD' left out, for a swap) plus the days LOOK + TRIP_MARGIN around the
-    pickup that no schedule month on file covers (line_gaps), which can only make a check unknown, never OK."""
+    pickup that no schedule month on file covers (line_gaps), which can only make a check unknown, never OK.
+    1.7.2: a PAYP item is left out (its trip was removed and is not flown; PWA 4.R.1 lets a pickup cover its days).
+    The miss check (verdict) reads own_records directly and still counts it as possible duty."""
     items, seen = [], {exclude}
     for m in (months or {}).values():
         for it in (m or {}).get("items") or []:
             k = f"{it.get('trip')}|{it.get('start')}"
+            if it.get("trip") == "PAYP":
+                continue
             if k not in seen:  # a trip listed by two months counts once
                 seen.add(k)
                 items.append(it)

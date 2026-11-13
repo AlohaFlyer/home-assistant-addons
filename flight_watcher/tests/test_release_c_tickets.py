@@ -622,16 +622,17 @@ def test_untrusted_ticket_rule_in_claude_md_and_handoff():
         open(os.path.join(REPO, "CLAUDE.md"), encoding="utf-8").read().split())
 
 
-def test_version_is_one_seven_one():
-    """1.7.1 (the release after Release C): the add-on and the Watcher say the same version, the changelog starts with
-    it and keeps 1.7.0 under it, and the image still carries Release C's photos module and Pillow pin."""
+def test_version_is_one_seven_two():
+    """1.7.2 (contract 1 revision 3): the add-on and the Watcher say the same version, the changelog starts with it and
+    keeps 1.7.1 and 1.7.0 under it, and the image still carries Release C's photos module and Pillow pin, and 1.7.2's
+    pilotpdf module."""
     import re as _re
     cfg = open(os.path.join(HERE, "config.yaml"), encoding="utf-8").read()
-    # 1.7.1.1 (Nov 13): the PAYP pay hotfix on 1.7.1
-    assert _re.search(r'^version: "1\.7\.1\.1"$', cfg, _re.M)
-    assert _re.search(r'^VERSION = "1\.7\.1\.1"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
+    assert _re.search(r'^version: "1\.7\.2"$', cfg, _re.M)
+    assert _re.search(r'^VERSION = "1\.7\.2"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.7.1.1\n") and "\n## 1.7.1\n" in log and "\n## 1.7.0\n" in log
+    assert log.startswith("# Changelog\n\n## 1.7.2\n") and "\n## 1.7.1.1\n" in log and "\n## 1.7.1\n" in log and "\n## 1.7.0\n" in log
     assert chr(0x2014) not in log
     dock = open(os.path.join(HERE, "Dockerfile"), encoding="utf-8").read()
-    assert "photos.py" in dock and "bidcal.py" in dock and "Pillow==11.0.0" in dock and "PIL.Image" in dock
+    assert "photos.py" in dock and "bidcal.py" in dock and "pilotpdf.py" in dock and "Pillow==11.0.0" in dock
+    assert "PIL.Image" in dock
