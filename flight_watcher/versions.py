@@ -7,10 +7,16 @@ Awarded-Pay-Gross = version .001, Improved-Pay-Gross = current minus awarded.
 What counts as a change (Ryan: anything at all): trips added, dropped or swapped, day codes (VAC, SCR,
 SICK...), FLICA's totals, and any trip's block, credit, seat, report or final arrival, including the
 actuals that move after a trip flies. Versions live in the DB (kv sched_versions:<YYYY-MM>) and are
-published on flight_watcher/schedule_versions. Read only; nothing here touches FLICA."""
-import json
+published on flight_watcher/schedule_versions. Read only; nothing here touches FLICA.
 
-TRIP_FIELDS = ("blk", "credit", "soft", "seat", "report", "last_arr", "duties")
+1.7.2 (Ryan, Nov 13): a pay protected trip (PAYP) keeps the removed trip's credit (payp_entries), stored in each
+version's trips under PAYP|<start> like any trip, so every pay figure counts it."""
+import json
+import re
+from datetime import date, timedelta
+
+# 1.7.2: payp / protected mark a PAYP record (payp_entries); they ride along with the version, not in the fingerprint
+TRIP_FIELDS = ("blk", "credit", "soft", "seat", "report", "last_arr", "duties", "payp", "protected")
 FP_FIELDS = ("blk", "credit", "seat", "report", "last_arr")
 MAX_PUBLISHED = 25  # per month: the awarded version plus the latest ones (keeps the sensor small)
 
@@ -60,6 +66,11 @@ def diff(old, new):
             continue
         out.append(f"{d[0]}: {a or 'off'} -> {b or 'off'}")
     ot, nt = old.get("trips") or {}, new.get("trips") or {}
+    for k in sorted(set(nt) - set(ot)):  # 1.7.2: a PAYP's kept credit, the first version that has it
+        if isinstance(nt[k], dict) and nt[k].get("payp") and nt[k].get("credit"):
+            prot = ", ".join(p.replace("|", " ") for p in str(nt[k].get("protected") or "").split(",") if p)
+            out.append(f"PAYP {k.split('|')[1]} keeps {prot or 'the removed trip'}'s credit {nt[k]['credit']} "
+                       "(pay protected)")
     for k in sorted(set(ot) & set(nt)):
         for f, lab in (("blk", "block"), ("credit", "credit"), ("seat", "seat"), ("report", "report"), ("last_arr", "arrival")):
             a, b = ot[k].get(f), nt[k].get(f)
@@ -215,4 +226,172 @@ def clear_award(db, month):
         v["changes"] = diff(out[-1], v) if out else ["first version on file (the award was removed)"]
         out.append(v)
     db.put(key, out)
+    return out
+
+
+# ---------------------------------------------------------------- 1.7.2: pay protection (Ryan, Nov 13)
+# "My LAS trip today was cancelled and PAYP pay protected. Why did your pay calculations drop?" 2023 PWA Definitions
+# item 57: "PAY PROTECT/PAY PROTECTION (PAYP): A Flight Grouping that has been removed from a pilot's schedule, however
+# the pilot shall retain the Pay and Credit for such Flight Grouping." FLICA shows the days as PAYP (a code, no pairing
+# page), so the removed trip's credit has to come from what the Watcher held before: its own trips record, else the
+# schedule versions. PWA 4.R.1: a trip added on PAYP days pays in full on top (it is a trip of its own).
+PAYP = "PAYP"
+
+
+def _mins(v):
+    """'15:00' -> 900 (minutes, exact sums); None when it is not H:MM."""
+    m = re.fullmatch(r"\s*(\d+):(\d{2})\s*", str(v or ""))
+    return int(m.group(1)) * 60 + int(m.group(2)) if m else None
+
+
+def _hm(n):
+    return f"{n // 60}:{n % 60:02d}"
+
+
+def _overlaps(a0, a1, b0, b1):
+    return bool(a0 and b0) and a0 <= (b1 or b0) and b0 <= (a1 or a0)
+
+
+def _duty_end(start, rec):
+    """A cached trip's last day from its duty periods (arr: HST minutes from the trip's first day), else ''."""
+    arr = [d.get("arr") for d in (rec.get("duties") or []) if isinstance(d, dict) and isinstance(d.get("arr"), (int, float))]
+    try:
+        return (date.fromisoformat(start) + timedelta(days=int(max(arr) // 1440))).isoformat() if arr else ""
+    except ValueError:
+        return ""
+
+
+def _prot(rec):
+    return [p for p in str((rec or {}).get("protected") or "").split(",") if p]
+
+
+def _valid(rec):
+    return isinstance(rec, dict) and bool(rec.get("payp")) and _mins(rec.get("credit")) is not None
+
+
+def _payp_spans(items):
+    """[(start, end)] of the PAYP items on the schedule, once each (a month boundary can list one twice), by start."""
+    out = {}
+    for it in items or []:
+        if isinstance(it, dict) and it.get("trip") == PAYP and it.get("start"):
+            out[it["start"]] = max(out.get(it["start"], ""), it.get("end") or it["start"])
+    return sorted(out.items())
+
+
+def _months(s, e):
+    out, y, m = [], int(s[:4]), int(s[5:7])
+    while f"{y:04d}-{m:02d}" <= e[:7] and len(out) < 3:
+        out.append(f"{y:04d}-{m:02d}")
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
+def _from_versions(s, e, versions_of, is_pairing, on, taken, own):
+    """The trips the PAYP s..e took the place of, from the stored versions: in the newest version of each month the
+    PAYP touches that has no PAYP item over these days (the line just before the PAYP), the pairings over these days
+    that are no longer on the schedule. [(key, minutes, seat)] with their credit from that version (else own trips),
+    and that version's number; ([], '') when none is on file."""
+    got, ver = {}, ""
+    for mk in _months(s, e):
+        vers = [v for v in (versions_of(mk) or []) if isinstance(v, dict)]
+        before = next((v for v in reversed(vers) if not any(
+            isinstance(i, dict) and i.get("trip") == PAYP and _overlaps(i.get("start"), i.get("end"), s, e)
+            for i in v.get("items") or [])), None)
+        if not before:
+            continue
+        for it in before.get("items") or []:
+            k = f"{it.get('trip')}|{it.get('start')}" if isinstance(it, dict) else ""
+            if (not k or k in got or k in on or k in taken or not is_pairing(it.get("trip") or "")
+                    or not _overlaps(it.get("start"), it.get("end"), s, e)):
+                continue
+            rec = (before.get("trips") or {}).get(k) or {}
+            n = _mins(rec.get("credit"))
+            if n is None:
+                rec = own.get(k) if isinstance(own.get(k), dict) else {}
+                n = _mins(rec.get("credit"))
+            if n is not None:
+                got[k] = (k, n, rec.get("seat") or "")
+                ver = ver or str(before.get("ver") or "")
+    return list(got.values()), ver
+
+
+def payp_entries(items, own, versions_of, is_pairing):
+    """{PAYP|<start>: record} for the PAYP items on the schedule whose removed trip's credit is known. own: the own
+    trips records keyed TRIP|start, taken before the ones no longer on the schedule are pruned; versions_of(month) ->
+    that month's stored versions (oldest first); is_pairing(trip) -> truthy for a pairing id. Pure, never reads FLICA.
+
+    record: credit (the removed Flight Grouping's credit, PWA Definitions 57), blk and soft "0:00" (nothing is flown:
+    the block total, Block Avail and FAR 117 never count a PAYP), payp True, protected (the removed trip's key, or keys
+    joined by commas), end (the PAYP's last day), seat (when all removed trips had the same one) and src ("own trips"
+    or the version the credit was read from, "v11.028").
+
+    Which trip: an own trips record no longer on the schedule whose days overlap the PAYP's; else the newest stored
+    version before the PAYP (no PAYP item over these days) and its pairings over these days that are no longer on the
+    schedule; else none (no record: the schedule card estimates it from FLICA's month credit). Several removed trips
+    (one PAYP over parts of two) sum their credits, each one counted in full; a removed trip counts for one PAYP only
+    (the first by start date), never twice. A record on file whose PAYP has the same days is kept as it is while the
+    PAYP is on the schedule (never dropped because the removed trip is gone, never changed by a trip added on the PAYP
+    days and dropped again, PWA 4.R.1). When its days change, it keeps its credit and adds any trip removed over the
+    new days; a record whose PAYP start moved (a new key) hands its trips and credit on to the PAYP now over its days.
+    Never invents a credit: no removed trip with a credit on file gives no record."""
+    own = own if isinstance(own, dict) else {}
+    spans = _payp_spans(items)
+    on = {f"{it.get('trip')}|{it.get('start')}" for it in items or [] if isinstance(it, dict) and it.get("trip")}
+    cur = {f"{PAYP}|{s}" for s, _ in spans}
+    out, taken = {}, set()
+    for s, e in spans:  # first: the records on file whose PAYP kept its days, as they are
+        rec = own.get(f"{PAYP}|{s}")
+        if _valid(rec) and rec.get("end") == e:
+            out[f"{PAYP}|{s}"] = rec
+            taken.update(_prot(rec))
+    ends = {}  # a removed trip's last day, from the stored versions (else its duty periods)
+    for mk in sorted({mk for s, e in spans for mk in _months(s, e)} | {mk for s, _ in spans for mk in _months(
+            (date.fromisoformat(s) - timedelta(days=20)).isoformat(), s)}):
+        for v in versions_of(mk) or []:
+            for it in (v.get("items") or []) if isinstance(v, dict) else []:
+                if isinstance(it, dict) and it.get("trip") and it.get("start"):
+                    ends[f"{it['trip']}|{it['start']}"] = it.get("end") or it["start"]
+    for s, e in spans:
+        k = f"{PAYP}|{s}"
+        if k in out:
+            continue
+        old = own.get(k) if _valid(own.get(k)) else None
+        parts = [(p, None, None) for p in _prot(old)] if old else []
+        mins, seats, src = (_mins(old["credit"]) if old else 0), ([old.get("seat") or ""] if old else []), \
+            ((old or {}).get("src") or "")
+        for ok, orec in sorted(own.items()):  # a PAYP whose start moved: its trips and credit move with it
+            if (ok.startswith(f"{PAYP}|") and ok not in cur and _valid(orec)
+                    and _overlaps(ok.split("|", 1)[1], orec.get("end"), s, e)
+                    and not any(p in taken or p in {q for q, _, _ in parts} for p in _prot(orec))):
+                parts += [(p, None, None) for p in _prot(orec)]
+                mins += _mins(orec["credit"])
+                seats.append(orec.get("seat") or "")
+                src = src or orec.get("src") or ""
+        held = taken | {p for p, _, _ in parts}
+        new = []
+        for ok, orec in sorted(own.items()):
+            trip, _, st = ok.partition("|")
+            if (not isinstance(orec, dict) or ok in on or ok in held or not is_pairing(trip)
+                    or _mins(orec.get("credit")) is None):
+                continue
+            if _overlaps(st, ends.get(ok) or _duty_end(st, orec) or st, s, e):
+                new.append((ok, _mins(orec["credit"]), orec.get("seat") or ""))
+        if new:
+            src = src or "own trips"
+        elif not parts:
+            new, ver = _from_versions(s, e, versions_of, is_pairing, on, held, own)
+            src = f"v{ver}" if new and ver else src
+        if not parts and not new:
+            continue
+        for p, n, seat in new:
+            parts.append((p, n, seat))
+            mins += n
+            seats.append(seat)
+        taken.update(p for p, _, _ in parts)
+        seat = seats[0] if seats and all(x == seats[0] for x in seats) else ""
+        rec = {"credit": _hm(mins), "blk": "0:00", "soft": "0:00", "payp": True,
+               "protected": ",".join(p for p, _, _ in parts), "end": e, "src": src}
+        if seat:
+            rec["seat"] = seat
+        out[k] = rec
     return out

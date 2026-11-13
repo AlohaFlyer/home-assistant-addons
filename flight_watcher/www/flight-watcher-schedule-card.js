@@ -27,6 +27,16 @@ const H = 3600e3;
 // never written here; the Watcher publishes it in sensor.flight_watcher_state (attribute doh, from /data/cards.json).
 const IRO_OVERRIDE = 4.00, ER_PCT = 0.15, DOH = "2000-01-01";
 const VAC_H = 4.0;  // PWA 6.J.1.c: vacation day Paid and Credited at 4:00 from 1 Jan 2026 (3.75 if the AA/DL/UA trigger had failed); FLICA's totals confirm 4:00
+// 1.7.2 (Ryan, Nov 13: "My LAS trip today was cancelled and PAYP pay protected. Why did your pay calculations drop?"):
+// PWA Definitions 57, a Flight Grouping removed from the schedule keeps its Pay and Credit. The Watcher's own trips
+// record PAYP|<start> carries the removed trip's credit (block 0:00): it counts in Credit, Pay-Gross and Pay-Net on the
+// PAYP's first day at the hourly rate (no IRO or Extended Range override by itself: they go with block flown in a seat,
+// PWA 4.O.1, and a PAYP flies none; the RO+15% tap still turns one on), never in Block, Block Avail or FAR 117. With no
+// record (a version stored before 1.7.2, or the removed trip not on file) the credit is estimated: FLICA's month credit
+// minus everything else counted, when above zero, split by days over the PAYP items without one, labeled "est". A trip
+// added on PAYP days counts in full on top (PWA 4.R.1).
+const PAYP = "PAYP";
+const PAYP_REF = "PWA Definitions 57; 4.R.1 if you add a trip on these days";
 // PWA 3.D.6 A330 PAX / B787 First Officer hourly rate by longevity year (1-12) and effective date
 const RATE_DATES = ["2023-03-02", "2024-03-02", "2025-03-02", "2026-03-02", "2027-01-31"];
 const RATE_TABLE = [
@@ -320,7 +330,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     } else {
       const items = mon.items || [];
       const busy = (a, b) => items.find((it) => a <= it.end && b >= it.start);
-      const inTrip = (d) => items.some((it) => it.trip !== "VAC" && it.start <= d && d <= it.end);
+      const inTrip = (d) => items.some((it) => it.trip !== "VAC" && it.trip !== PAYP && it.start <= d && d <= it.end);
       const opens = {};
       for (const p of pot) {
         const a = this._iso(p.start || (p.dates || "").split("-")[0], y);
@@ -505,18 +515,82 @@ class FlightWatcherScheduleCard extends HTMLElement {
         }
       } else if (pk === false) note = `No ${MONTHS[m]} pairing package on file, so no tag-on ideas.`;
       { const sc0 = this._school(key + "-15"); if (sc0 === false && this._role() === "admin") note += (note ? " " : "") + `No HPA school calendar file for this school year (school_YYYY-YY.json); holidays shown instead.`; }
-      const sum = { blk: 0, cr: 0, soft: 0, gross: 0, net: 0, vac: 0, vacDays: 0 };
+      const sum = { blk: 0, cr: 0, soft: 0, gross: 0, net: 0, vac: 0, vacDays: 0, payp: 0, ppEst: false };
+      const tt = mon.totals || {};
+      const fl = (v) => { const m = /^(\d+)[.:](\d{2})$/.exec(String(v || "")); return m ? parseInt(m[1], 10) + parseInt(m[2], 10) / 60 : null; };
+      const mdy = (iso) => { const mo = MON3[parseInt(String(iso).slice(5, 7), 10) - 1] || ""; return `${mo.slice(0, 1)}${mo.slice(1).toLowerCase()} ${parseInt(String(iso).slice(8, 10), 10) || ""}`.trim(); };
+      const srcFl = awd0 ? "the award file" : "FLICA";
+      // 1.7.2 (Ryan, Nov 13): the PAYP items with days in this month. p.rec = the Watcher's PAYP|<start> record (the
+      // removed trip's credit, PWA Definitions 57), counted on the PAYP's first day (p.row) when that day is this month's;
+      // with none, p.h = the estimate: FLICA's month credit less everything else counted (other: the trips and VAC, got:
+      // the records), only when above zero, split by days over the PAYP items without a record (p.est)
+      const paypPlan = (mm, tr, other, flica) => {
+        const out = [];
+        for (const it of (mm && mm.items) || []) {
+          if (!it || it.trip !== PAYP || !it.start) continue;
+          const ds = ((mm && mm.days) || []).filter(([d, t]) => t === PAYP && it.start <= d && d <= (it.end || it.start) && d.slice(0, 7) === key).map(([d]) => d);
+          if (!ds.length) continue;
+          const rec = tr[`${PAYP}|${it.start}`] || null, c = rec ? hrs(rec.credit) : null;
+          out.push({ it, ds, row: ds.includes(it.start) ? it.start : ds[0], rec: c != null ? rec : null, h: c != null && ds.includes(it.start) ? c : null, est: false });
+        }
+        const need = out.filter((p) => !p.rec), got = out.reduce((a, p) => a + (p.h || 0), 0);
+        const left = flica == null ? 0 : Math.round((flica - other - got) * 60);
+        if (need.length && left > 0) {
+          const nd = need.reduce((a, p) => a + p.ds.length, 0); let rest = left;
+          need.forEach((p, i) => { const mm2 = i === need.length - 1 ? rest : Math.round(left * p.ds.length / nd); rest -= mm2; p.h = mm2 / 60; p.est = true; });
+        }
+        return out;
+      };
+      const ppTitle = (p) => {
+        const prot = String((p && p.rec && p.rec.protected) || "").split(",").filter(Boolean).map((k) => `${k.split("|")[0]} ${mdy(k.split("|")[1] || "")}`).join(" and ");
+        const head = `Pay protected: ${prot || "the removed trip is not on file"} (${PAYP_REF})`;
+        if (!p) return head;
+        if (p.rec && p.h == null) return `${head}\nIts credit ${p.rec.credit} counts in ${MONTHS[parseInt(p.it.start.slice(5, 7), 10) - 1]}, the month the PAYP starts.`;
+        if (p.rec) return `${head}\nCredit ${p.rec.credit} kept${p.rec.src ? ` (from ${p.rec.src})` : ""}; no block (not flown).`;
+        if (p.est) return `${head}\nCredit ${hm(p.h)} is an estimate: ${srcFl}'s month credit ${hm(fl(tt.credit))} less everything else counted${p.ds.length ? `, over ${p.ds.length} PAYP day${p.ds.length > 1 ? "s" : ""}` : ""}.`;
+        return `${head}\nNo credit counted: ${srcFl}'s month credit leaves none for it.`;
+      };
+      // a row's Block / Credit / Soft as the month counts them (PWA 4.A share), for the rows and the PAYP estimate
+      const figs = (d, trip) => {
+        const ot = trip && trip !== "VAC" ? (ownT[`${trip}|${d}`] || {}) : {};
+        const pkr = trip && trip !== "VAC" && trip !== PAYP && pk ? (pk[trip.slice(0, 5)] || {}) : {};
+        // 1.6.3: the pairings package writes credit as "15h00"; hrs() reads "15:00", so a trip whose own times are not
+        // read yet (a pilot's first days, or any new trip) counted 0:00 and $0 in the row and the month totals
+        const pkC = pkr.credit ? String(pkr.credit).trim().replace(/^(\d+)h(\d{2})$/, "$1:$2") : "";
+        const bcsAll = trip && trip !== "VAC" ? [ot.blk || "", ot.credit || pkC || "", ot.soft || ""] : ["", "", ""];
+        // PWA 4.A: a segment pays on the date it originates, so duties that start next month are next month's pay
+        let share = 1, blkOut = 0, nextMon = "";
+        if (trip && trip !== "VAC" && ot.duties && ot.duties.length && ot.duties[0].blk != null) {
+          const base = this._t(d, "0:0"); let inM = 0, all = 0;
+          for (const du of ot.duties) { const dm = this._d(base + du.dep * 60e3).slice(0, 7); all += du.blk; if (dm === key) inM += du.blk; else { blkOut += du.blk; nextMon = dm; } }
+          share = all ? inM / all : 1;
+        }
+        const bcs = share < 1 ? [hm((hrs(bcsAll[0]) || 0) * share), hm((hrs(bcsAll[1]) || 0) * share), hm(Math.max(0, (hrs(bcsAll[1]) || 0) * share - (hrs(bcsAll[0]) || 0) * share))] : bcsAll;
+        return { ot, pkr, bcsAll, bcs, share, blkOut, nextMon };
+      };
+      let crOther = 0;
+      for (const [d, trip] of (mon.days || [])) {
+        if (d.slice(0, 7) !== key || !trip || trip === PAYP) continue;
+        crOther += trip === "VAC" ? VAC_H : (hrs(figs(d, trip).bcs[1]) || 0);
+      }
+      const ppl = paypPlan(mon, ownT, crOther, fl(tt.credit));
+      const ppOn = {}, ppDay = {};
+      for (const p of ppl) { ppOn[p.row] = p; for (const d of p.ds) ppDay[d] = p; }
       const tripFull = (cr, blk, crew, lay, k, seat) => { const n = crewN(crew); seat = (seat || "FO").toUpperCase();
         const ov = blk != null ? (seat === "RO" ? blk * IRO_OVERRIDE : (seat !== "CA" && n === 3 ? blk * 3.00 : 0)) : 0;
         return cr == null ? null : cr * RATE + ov + (erOn(k, lay, n) ? cr * RATE * ER_PCT : 0); };
       // month price of a version (same rules as the rows): Awarded-Pay-Gross and Improved-Pay-Gross
-      const price = (mm, tr) => { let g = 0; for (const [d, trip, lay] of ((mm && mm.days) || [])) { if (d.slice(0, 7) !== key) continue;
-          if (trip === "VAC") { g += VAC_H * RATE; continue; } if (!trip || !/^[A-Z]\d{4}/.test(trip)) continue;
+      // 1.7.2: a PAYP is priced as on the rows (paypPlan: the record's credit, else the estimate from the version's own
+      // FLICA credit), so Awarded-Pay-Gross, Improved-Pay-Gross and a version's Pay-Gross count it too
+      const price = (mm, tr) => { let g = 0, other = 0; for (const [d, trip, lay] of ((mm && mm.days) || [])) { if (d.slice(0, 7) !== key) continue;
+          if (trip === "VAC") { g += VAC_H * RATE; other += VAC_H; continue; } if (!trip || !/^[A-Z]\d{4}/.test(trip)) continue;
           const ot = tr[`${trip}|${d}`] || {}; const pr = pk ? (pk[trip.slice(0, 5)] || {}) : {};
           let cH = hrs(ot.credit); if (cH == null) cH = hx(pr.credit); let bH = hrs(ot.blk); if (bH == null) bH = hx(pr.block);
           let share = 1; if (ot.duties && ot.duties.length && ot.duties[0].blk != null) { const base = this._t(d, "0:0"); let inM = 0, all = 0;
             for (const du of ot.duties) { all += du.blk; if (this._d(base + du.dep * 60e3).slice(0, 7) === key) inM += du.blk; } share = all ? inM / all : 1; }
+          other += cH == null ? 0 : cH * share;
           const v = tripFull(cH == null ? null : cH * share, bH == null ? null : bH * share, pr.crew, lay, `${trip}|${d}`, ot.seat); g += v || 0; }
+        for (const p of paypPlan(mm, tr, other, fl(((mm && mm.totals) || {}).credit))) if (p.h != null) g += tripFull(p.h, 0, "", "", `${PAYP}|${p.row}`, "") || 0;
         return g; };
       const tripPay = {};
       // v51 (Ryan): swap / pick-up ideas. A swap may move off the trip's footprint onto any neighbouring day that is not
@@ -570,7 +644,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const dt = new Date(d + "T12:00:00"); const wk = dt.getDay() === 0 || dt.getDay() === 6;
         const other = dt.getMonth() !== m;
         const sc = this._school(d); const noSchool = !!(sc && sc.days.has(d));
-        const t = trip === "VAC" ? `<span class="vac">VAC</span>` : (trip ? `<span class="trip${trade.has(trip + "|" + d) ? " tr" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${this._esc(((ownT[`${trip}|${d}`] || {}).crew || []).join("\n") || "crew not read yet")}">${this._esc(trip)}</span>${d <= today ? "" : `<span class="trb${trade.has(trip + "|" + d) ? " on" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${trade.has(trip + "|" + d) ? "Marked: would trade this trip for a better one. Tap to unmark." : "Tap to mark this trip as one you would trade for a better one."}">&#8644;</span>`}${d <= today || !admin ? "" : `<span class="drb${dropM.has(trip + "|" + d) ? (dropR[trip + "|" + d] ? " on rdy" : " on") : ""}" data-k="${this._esc(trip + "|" + d)}" title="${dropR[trip + "|" + d] ? "Grid green on every day: drop request drafted (draft only, never sent: drop it yourself in FLICA). Tap to unmark." : dropM.has(trip + "|" + d) ? "Marked: would DROP this trip once the reserve grid is green on every day of it. Tap to unmark." : "Tap to mark this trip as one you would DROP when the grid allows it."}">&#8615;</span>`}` : "");
+        const pp = trip === PAYP ? (ppDay[d] || null) : null;  // 1.7.2: a PAYP day (pay protected, PWA Definitions 57)
+        const t = trip === "VAC" ? `<span class="vac">VAC</span>` : trip === PAYP ? `<span class="payp tag" title="${this._esc(ppTitle(pp))}">PAYP</span>` : (trip ? `<span class="trip${trade.has(trip + "|" + d) ? " tr" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${this._esc(((ownT[`${trip}|${d}`] || {}).crew || []).join("\n") || "crew not read yet")}">${this._esc(trip)}</span>${d <= today ? "" : `<span class="trb${trade.has(trip + "|" + d) ? " on" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${trade.has(trip + "|" + d) ? "Marked: would trade this trip for a better one. Tap to unmark." : "Tap to mark this trip as one you would trade for a better one."}">&#8644;</span>`}${d <= today || !admin ? "" : `<span class="drb${dropM.has(trip + "|" + d) ? (dropR[trip + "|" + d] ? " on rdy" : " on") : ""}" data-k="${this._esc(trip + "|" + d)}" title="${dropR[trip + "|" + d] ? "Grid green on every day: drop request drafted (draft only, never sent: drop it yourself in FLICA). Tap to unmark." : dropM.has(trip + "|" + d) ? "Marked: would DROP this trip once the reserve grid is green on every day of it. Tap to unmark." : "Tap to mark this trip as one you would DROP when the grid allows it."}">&#8615;</span>`}` : "");
         const sw = (swapFor[trip + "|" + d] || []).slice(0, 2).map((i) => `<span class="tag sw" title="${this._esc([`Swap ${trip} for ${i.pairing}`, `${i.dates}  ${i.layover || i.turn || ""}`, i.why, i.src === "T" ? "On the Tradeboard" : "In open time"].join("\n"))}">&#8644; ${this._esc(i.layover || i.turn || "")}(${this._esc(i.pairing)}) ${this._esc(i.soft_gain)}</span>`).join("<br>");
         const crewT = this._esc(((ownT[`${trip}|${d}`] || {}).crew || []).join("\n") || "crew not read yet");
         const rp = repOn[d] ? ` <span class="tm tag" title="${trip && trip !== "VAC" ? `${trip} crew:\n${crewT}\n\nReport ${repOn[d]}` : `Report ${repOn[d]}`}">R ${repOn[d]}</span>` : "";
@@ -580,7 +655,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const turn = pkt && pkt.route ? [...new Set(pkt.route.split("-").slice(1, -1).filter((x) => x !== "HNL"))].join("/") : "";
         const l0 = lay === "-" && !inTrip(d) ? "" : (lay === "-" && turn ? `<b>${this._esc(turn)}</b>` : this._esc(lay));
         // v44 (Ryan): the layover cell carries the trip's crew (tap on a phone, hover on a Mac)
-        const cov = items.find((it) => it.trip !== "VAC" && it.start <= d && d <= it.end);
+        const cov = items.find((it) => it.trip !== "VAC" && it.trip !== PAYP && it.start <= d && d <= it.end);
         const covT = cov ? (ownT[`${cov.trip}|${cov.start}`] || {}) : null;
         const nowH = new Date(Date.now() - 10 * H); const nowHM = `${String(nowH.getUTCHours()).padStart(2, "0")}:${String(nowH.getUTCMinutes()).padStart(2, "0")}`;
         const tOwn = cov ? (ownT[`${cov.trip}|${cov.start}`] || {}) : {};
@@ -590,25 +665,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const l = l0 && cov ? `<span class="tag lay" title="${this._esc(`${cov.trip} ${cov.start} crew:\n${(covT && covT.crew || []).join("\n") || "crew not read yet"}`)}">${l0}</span>${st}` : l0;
         const g = grid[d]; const gc = g ? g.color : ""; const gb = gc === "green";
         const gcell = g ? `<span class="g ${gc}" title="Net reserves ${g.net}: ${gb ? "drop or swap off this day OK" : "add only (no drop/swap off this day)"}">${g.net}</span>` : "";
-        const ot = trip && trip !== "VAC" ? (ownT[`${trip}|${d}`] || {}) : {};
-        const pkr = trip && trip !== "VAC" && pk ? (pk[trip.slice(0, 5)] || {}) : {};
-        // 1.6.3: the pairings package writes credit as "15h00"; hrs() reads "15:00", so a trip whose own times are not
-        // read yet (a pilot's first days, or any new trip) counted 0:00 and $0 in the row and the month totals
-        const pkC = pkr.credit ? String(pkr.credit).trim().replace(/^(\d+)h(\d{2})$/, "$1:$2") : "";
-        const bcsAll = trip && trip !== "VAC" ? [ot.blk || "", ot.credit || pkC || "", ot.soft || ""] : ["", "", ""];
-        // PWA 4.A: a segment pays on the date it originates, so duties that start next month are next month's pay
-        let share = 1, blkOut = 0, nextMon = "";
-        if (trip && trip !== "VAC" && ot.duties && ot.duties.length && ot.duties[0].blk != null) {
-          const base = this._t(d, "0:0"); let inM = 0, all = 0;
-          for (const du of ot.duties) { const dm = this._d(base + du.dep * 60e3).slice(0, 7); all += du.blk; if (dm === key) inM += du.blk; else { blkOut += du.blk; nextMon = dm; } }
-          share = all ? inM / all : 1;
-        }
-        const hm2 = (h) => { const mm = Math.round(h * 60); return `${Math.floor(mm / 60)}:${String(mm % 60).padStart(2, "0")}`; };
-        const bcs = share < 1 ? [hm2((hrs(bcsAll[0]) || 0) * share), hm2((hrs(bcsAll[1]) || 0) * share), hm2(Math.max(0, (hrs(bcsAll[1]) || 0) * share - (hrs(bcsAll[0]) || 0) * share))] : bcsAll;
-        const splitNote = share < 1 ? `${trip}: ${bcsAll[0]} block / ${bcsAll[1]} credit in all; ${hm2(blkOut / 60)} block flown from ${nextMon} pays next month (PWA 4.A). Credit split by block share${hrs(bcsAll[2]) ? ", estimate" : ""}.` : "";
+        const F = figs(d, trip), ot = F.ot, pkr = F.pkr, share = F.share;
+        // 1.7.2: a PAYP's credit on its first day (the record's, or the estimate), no block and no soft (not flown)
+        const ppH = pp && pp.row === d && pp.h != null ? pp.h : null;
+        const bcsAll = trip === PAYP ? ["", ppH != null ? hm(ppH) : "", ""] : F.bcsAll, bcs = trip === PAYP ? bcsAll : F.bcs;
+        const splitNote = trip === PAYP ? ppTitle(pp) : share < 1 ? `${trip}: ${bcsAll[0]} block / ${bcsAll[1]} credit in all; ${hm(F.blkOut / 60)} block flown from ${F.nextMon} pays next month (PWA 4.A). Credit split by block share${hrs(bcsAll[2]) ? ", estimate" : ""}.` : "";
         const cH = hrs(bcs[1]), bH = hrs(bcs[0]);
         const gross = cH != null ? cH * RATE : null;
-        const seat = (ot.seat || "").toUpperCase();
+        const seat = trip === PAYP ? "" : (ot.seat || "").toUpperCase();  // 1.7.2: a PAYP flies no seat (no override)
         const nP = crewN(pkr.crew);
         const roV = bH != null ? (seat === "RO" ? bH * IRO_OVERRIDE : (seat !== "CA" && nP === 3 ? bH * 3.00 : 0)) : 0;
         const ro = bH != null && roV ? usd(roV) : "";
@@ -616,12 +680,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const erV = erIs ? cH * RATE * ER_PCT : 0;
         const total = gross != null ? gross + roV + erV : null;
         const net = total != null ? total * (1 - (fed + stt) / 100) : null;
-        if (trip && trip !== "VAC") tripPay[trip + "|" + d] = tripFull(hrs(bcsAll[1]) != null ? hrs(bcsAll[1]) : hx(pkr.credit), hrs(bcsAll[0]) != null ? hrs(bcsAll[0]) : hx(pkr.block), pkr.crew, l, trip + "|" + d, seat);
+        if (trip && trip !== "VAC" && trip !== PAYP) tripPay[trip + "|" + d] = tripFull(hrs(bcsAll[1]) != null ? hrs(bcsAll[1]) : hx(pkr.credit), hrs(bcsAll[0]) != null ? hrs(bcsAll[0]) : hx(pkr.block), pkr.crew, l, trip + "|" + d, seat);
         if (trip && trip !== "VAC" && d.slice(0, 7) === key) { sum.blk += bH || 0; sum.cr += cH || 0; sum.soft += hrs(bcs[2]) || 0; sum.gross += total || 0; sum.net += net || 0; }
+        if (trip === PAYP && d.slice(0, 7) === key && cH != null) { sum.payp += cH; sum.ppEst = sum.ppEst || !!pp.est; }
         if (trip === "VAC" && d.slice(0, 7) === key) { sum.vacDays += 1; sum.vac += VAC_H; sum.gross += VAC_H * RATE; sum.net += VAC_H * RATE * (1 - (fed + stt) / 100); }
         const lines = gross != null ? [`Pay-Credit ${usd(gross)} (${bcs[1]} x ${rateTxt})`]
           .concat(seat === "RO" ? [`IRO override ${usd(roV)} (${bcs[0]} block x $${IRO_OVERRIDE.toFixed(2)}, PWA 4.O.1.a)`] : (roV ? [`IRO crew FO override ${usd(roV)} (${bcs[0]} block x $3.00, PWA 4.O.1.a)`] : []))
-          .concat(erIs ? [`Extended Range type-rated FO +15% ${usd(erV)} (PWA 4.O.1.b)`] : []) : [];
+          .concat(erIs ? [`Extended Range type-rated FO +15% ${usd(erV)} (PWA 4.O.1.b)`] : [])
+          .concat(trip === PAYP ? [ppTitle(pp)] : []) : [];
         const payT = lines.join("\n");
         const erBtn = cH != null ? `<span class="er tag${erIs ? " on" : ""}" data-k="${this._esc(erK)}">RO+15% ${erIs ? "ON, tap to turn off" : "off, tap to turn on (4-pilot Extended Range trip, not IOE)"}</span>` : "";
         const fo = farOn[d] || null;
@@ -630,10 +696,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const bx = tripSpan ? " bx" + (tripSpan.it.start === d ? " bxs" : "") + ((o => o.rel ? this._d(o.rel) : o.it.end)(tripSpan) === d ? " bxe" : "") : "";
         const lg = legalOn[d]; const lcell = lg ? `<span class="tag lgl" title="${this._esc([`Released ${lg.rel}`, `Legal to report ${lg.t} (11 h, PWA 10.E.1.a)`, `For a 12 h+ duty leaving 1400-0359: ${lg.t18} (18 h, PWA 10.E.1.b)`].join("\n"))}">${lg.t}</span>` : "";
         return `<tr data-d="${d}" class="${wk ? "wk" : ""}${noSchool ? " hol" : (this._hol(d) ? " hol2" : "")}${other ? " oth" : ""}${blocked.has(d) ? " blk" : ""}${trip === "VAC" ? " vac" : ""}${gb ? " gg" : (gc ? " gx" : "")}${r30.has(d) ? " r30" : ""}${bx}"><td>${DOW[dt.getDay()]}</td><td class="n" title="${r30.has(d) ? this._esc(r30Notes[d]) : ""}">${d.slice(8)}</td>` +
-          `<td>${t}</td><td>${l}${rp}${rl}</td><td class="t${splitNote ? " split" : ""}" title="${this._esc(splitNote)}">${this._esc(bcs[0])}</td><td class="t${splitNote ? " split" : ""}" title="${this._esc(splitNote)}">${this._esc(bcs[1])}</td><td class="t">${this._esc(bcs[2])}</td><td class="t tot1"><span class="pay" data-info="${this._esc(payT)}" data-btn="${this._esc(erBtn)}" title="${this._esc(payT)}">${usd(total)}</span></td><td class="t" title="Pay-Gross less ${fed}% federal and ${stt}% state">${usd(net)}</td><td class="gr">${gcell}</td><td class="t far${fo && fo.bad30 ? " bad" : ""}${fo && fo.ok30 ? " ok30" : ""}${fo && fo.t30 === "&#8211;" ? " mid" : ""}" title="${fo ? this._esc(fo.t30t) : ""}">${fo ? fo.t30 : ""}</td><td class="t far${fo && fo.over ? " bad" : ""}" title="${fo ? this._esc(fo.bt) : ""}">${fo ? fo.b : ""}</td><td class="t far${fo && fo.rbad ? " bad" : ""}" title="${fo ? this._esc(fo.rt) : ""}">${fo ? fo.room : ""}</td><td class="lg">${lcell}</td><td class="o">${(opens[d] || []).join("<br>")}</td><td class="tg">${ideaBtn(d, trip)}</td></tr>`;
+          `<td>${t}</td><td>${l}${rp}${rl}</td><td class="t${splitNote && trip !== PAYP ? " split" : ""}" title="${this._esc(splitNote)}">${this._esc(bcs[0])}</td><td class="t${splitNote && trip !== PAYP ? " split" : ""}${trip === PAYP ? " ppc" : ""}" title="${this._esc(splitNote)}">${this._esc(bcs[1])}${ppH != null && pp.est ? ' <span class="k">est</span>' : ""}</td><td class="t">${this._esc(bcs[2])}</td><td class="t tot1"><span class="pay" data-info="${this._esc(payT)}" data-btn="${this._esc(erBtn)}" title="${this._esc(payT)}">${usd(total)}</span></td><td class="t" title="Pay-Gross less ${fed}% federal and ${stt}% state">${usd(net)}</td><td class="gr">${gcell}</td><td class="t far${fo && fo.bad30 ? " bad" : ""}${fo && fo.ok30 ? " ok30" : ""}${fo && fo.t30 === "&#8211;" ? " mid" : ""}" title="${fo ? this._esc(fo.t30t) : ""}">${fo ? fo.t30 : ""}</td><td class="t far${fo && fo.over ? " bad" : ""}" title="${fo ? this._esc(fo.bt) : ""}">${fo ? fo.b : ""}</td><td class="t far${fo && fo.rbad ? " bad" : ""}" title="${fo ? this._esc(fo.rt) : ""}">${fo ? fo.room : ""}</td><td class="lg">${lcell}</td><td class="o">${(opens[d] || []).join("<br>")}</td><td class="tg">${ideaBtn(d, trip)}</td></tr>`;
       }).join("");
-      const tt = mon.totals || {};
-      const fl = (v) => { const m = /^(\d+)[.:](\d{2})$/.exec(String(v || "")); return m ? parseInt(m[1], 10) + parseInt(m[2], 10) / 60 : null; };
       const fBlk = fl(tt.block), fCr = fl(tt.credit), crAll = sum.cr + sum.vac;
       // 1.6.2 review: in the award-only view the figures checked against come from the award file, not FLICA
       const srcW = awd0 ? "award" : "FLICA", srcT = awd0 ? "the award file shows" : "FLICA shows";
@@ -645,7 +709,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
       const tgrp = (cls, list) => { const s = list.filter(([, v]) => v !== undefined && v !== null && v !== "")
         .map(([k, v]) => `<span class="ti"><span class="k">${k}</span> ${v}</span>`).join(""); return s ? `<span class="tgrp ${cls}">${s}</span>` : ""; };
       const tot = tgrp("thrs", [["Credit", hm(crAll) + chk(crAll, fCr)], ["Block", hm(sum.blk) + chk(sum.blk, fBlk)], ["Block Avail", `<span class="${bAv <= 0 ? "bad" : ""}" title="98:00 bid-month block cap (crew scheduling) minus FLICA's bid-period Block">${bAv < 0 ? "-" + hm(-bAv) : hm(bAv)}</span>`], ["Soft", hm(sum.soft)],
-        ["Vacation", sum.vacDays ? `${hm(sum.vac)} <span class="k">(${sum.vacDays} d x ${hm(VAC_H)})</span>` : ""]]) +
+        ["Vacation", sum.vacDays ? `${hm(sum.vac)} <span class="k">(${sum.vacDays} d x ${hm(VAC_H)})</span>` : ""],
+        // 1.7.2: the pay protected credit inside Credit (never in Block or Block Avail: not flown)
+        ["PAYP", sum.payp ? `<span class="ppt" title="${this._esc(`Pay protected credit inside Credit, Pay-Gross and Pay-Net (${PAYP_REF}). Not in Block or Block Avail: not flown.${sum.ppEst ? ` Estimate: ${srcFl}'s month credit less everything else counted.` : ""}`)}">${hm(sum.payp)}${sum.ppEst ? ' <span class="k">estimate</span>' : ""}</span>` : ""]]) +
         tgrp("tpay", noYear ? [["Pay", "set your longevity year in Pay settings"]] : [["Pay-Gross", usd(sum.gross)], ["Pay-Net", usd(sum.net)]]) +
         tgrp("tdays", [["Days Off", tt.days_off == null ? "" : this._esc(tt.days_off)], ["Need 30 h off by", n30]]);
       if (this._idea && this._idea.key === key) {
@@ -684,7 +750,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         }
       }
       const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th>Block</th><th>Credit</th><th>Soft</th><th title="Credit pay + RO + RO+15%; hover or tap for the breakdown">Pay-Gross</th><th>Pay-Net</th><th title="Reserve grid net reserves">Res Grid</th><th title="Check MM/DD = a 30 h break falls in the 168 h before a report that day and ended on MM/DD, FAR 117.25(b). The teal edge on a day marks the break itself. Hover for the hours and 'covered until'.">FAR-30/7</th><th title="Block flown in the 672 h ending that day, FAR 117.23(b)(1)">FAR-100/672</th><th title="100:00 minus the busiest 672 h window the day falls in, back and forward">Room</th><th title="Earliest report for another trip">Legal next</th><th>Open</th><th title="Tap the airplane: swap or pick-up ideas for that day, with the Pay-Gross difference">Ideas</th></tr>`;
-      body = `<div class="wrap"><table class="cal">${head}${rows}</table></div><div class="tot" title="${this._esc(`${MONTHS[m]} totals: flying credited to the month each segment originates (PWA 4.A) plus vacation days at ${hm(VAC_H)} (PWA 6.J). Pay at ${rateTxt}/credit h incl. RO and RO+15% where on; net after the tax settings. Checked against FLICA's Block and Credit.`)}">${tot}</div>`;
+      body = `<div class="wrap"><table class="cal">${head}${rows}</table></div><div class="tot" title="${this._esc(`${MONTHS[m]} totals: flying credited to the month each segment originates (PWA 4.A) plus vacation days at ${hm(VAC_H)} (PWA 6.J) and pay protected (PAYP) credit (PWA Definitions 57). Pay at ${rateTxt}/credit h incl. RO and RO+15% where on; net after the tax settings. Checked against FLICA's Block and Credit.`)}">${tot}</div>`;
     }
     const upd = awd0 ? "" : st && st.attributes ? (st.attributes.updated || "") : "";
     // 1.6.2: the award label and the read status sit above the grid (or the 'No schedule' line)
@@ -756,7 +822,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .lock{cursor:pointer;font-size:16px;line-height:1;padding:2px 6px;border-radius:6px;user-select:none;margin-right:auto}.lock:hover{background:rgba(0,0,0,.06)}
       .lock.open{opacity:.9}.lock.shut{opacity:.6}
       .trip{color:var(--primary-color);font-weight:600}
-      .vac{font-weight:600}
+      .vac{font-weight:600}.payp{font-weight:600;color:var(--fw-info,#1565c0)}.ppt{cursor:help}.ppc .k{font-size:9.5px;color:var(--secondary-text-color)}
       .cal tr.gg td:nth-child(1),.cal tr.gg td:nth-child(2){font-weight:700}
       .gr{text-align:right;font-size:11px}.g.green{color:var(--fw-ok,#2e7d32);font-weight:700}.g.red{color:var(--fw-err,#c62828);font-weight:700}.g.black{color:var(--primary-text-color)}
       .er{color:var(--secondary-text-color);cursor:pointer;text-decoration:underline dotted}.er.on{color:var(--fw-ok,#2e7d32);font-weight:700}.pay{cursor:help}
@@ -795,6 +861,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     <tr><td>Layover</td><td>Layover city. <b>Bold</b> = turn, no layover. Rel = release time (block-in + 15 min).</td></tr>
     <tr><td>Block / Credit / Soft</td><td>Your trip's block, credit and soft time (credit minus block), from FLICA's pairing page. Purple = this month's share only; the rest pays next month (PWA 4.A), hover for the split.</td></tr>
     <tr><td>Totals</td><td>Month totals incl. vacation at ${hm(VAC_H)} a day (PWA 6.J); &#10003; = matches FLICA's figure, red = FLICA differs.</td></tr>
+    <tr><td>PAYP</td><td>Pay protected: a trip removed from your schedule keeps its Pay and Credit (PWA Definitions 57). Its credit counts in Credit, Pay-Gross and Pay-Net on the PAYP's first day, at your rate; never in Block, Block Avail or the FAR columns (not flown). est = the removed trip is not on file, so the credit is FLICA's month credit less everything else. A trip you add on PAYP days pays on top (PWA 4.R.1).</td></tr>
     <tr><td>Pay-Gross / Pay-Net</td><td>Gross = credit x ${rateTxt} + RO + RO+15%; hover or tap it for the breakdown. Net = gross after the tax settings below.</td></tr>
     <tr><td>Teal edge</td><td>Thin teal mark left of the day = that day falls inside a break of 30+ consecutive hours free of all duty (FAR 117.25(b)), between duty periods, a long layover included. Hover the date for the break's start, end and 'covers reports until'. The FAR-30/7 column gives the date that counts: &#10003; MM/DD = the day the qualifying break ended (on a day still inside a break, usually that day's own date).</td></tr>
     <tr><td>RO / RO+15%</td><td>Add-ons inside Pay-Gross. RO = only on trips where you are listed RO: block x $${IRO_OVERRIDE.toFixed(2)} (PWA 4.O.1.a). RO+15% = Extended Range crew, 4 pilots, type-rated FO: 15% of pay (PWA 4.O.1.b); on by itself for SIN, tap Pay-Gross to switch any trip on or off.</td></tr>

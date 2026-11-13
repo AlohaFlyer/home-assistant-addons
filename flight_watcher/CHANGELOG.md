@@ -204,6 +204,45 @@ Watcher makes no CrewTrac login at all.
   place ("GIN arr: HNL gate C5 (Non-Mauka)") with the code under it on one unbroken line (`_gin`,
   tests/test_layover_card.py). The same change is live on Pako in the Working Flight view's markdown card.
 
+### Pay protection (PAYP) counts its credit (Ryan, Nov 13)
+
+- Ryan: "My LAS trip today was cancelled and PAYP pay protected. Why did your pay calculations drop?" In v11.029
+  H3620 Nov 12 to 14 (credit 15:00) became PAYP Nov 12 to 14; FLICA's month credit stayed 131:15 (block 94:42 to
+  82:23), but the schedule card showed Credit 116:15 beside a red "FLICA 131:15", and Pay-Gross and Pay-Net fell by
+  the 15:00. 2023 PWA Definitions item 57: "PAY PROTECT/PAY PROTECTION (PAYP): A Flight Grouping that has been
+  removed from a pilot's schedule, however the pilot shall retain the Pay and Credit for such Flight Grouping." PWA
+  4.R.1: "Should a pilot elect to Add a Flight Grouping on a PAYP day(s), the pay shall be: a. Pay and Credit of the
+  PAYP Day, and b. Pay and Credit of the added Flight Grouping". (NQ pay protection, PWA 4.Q, is not this case.)
+- Why it dropped: the card adds up each trip's credit from `sensor.flight_watcher_own_trip_times`, which held only
+  pairings read from their FLICA pairing pages. PAYP is a code with no pairing page, so it counted 0:00 and $0.
+- The Watcher (`payp_refresh`, `versions.payp_entries`; every instance for its own schedule, no FLICA load): each
+  PAYP item on the schedule gets an own trips record `PAYP|<start>` with the removed trip's credit, block and soft
+  0:00, `payp`, `protected` (the removed trip's key), its seat, the PAYP's end and where the credit came from. The
+  removed trip is the own trips record no longer on the schedule whose days overlap the PAYP (looked at before those
+  records are pruned), else the pairings over those days in the newest stored version before the PAYP; else there is
+  no record (a credit is never guessed here). One PAYP over parts of two removed trips sums both credits, each in
+  full; a removed trip counts for one PAYP only. The record stays while the PAYP item is on the schedule (the removed
+  trip being gone, or a trip added on the PAYP days and dropped again, changes nothing) and is pruned with it. On Pako
+  H3620's own record was already pruned, so the first check after the update takes its 15:00 from v11.028.
+- Versions: the record is stored in each new version's trips like any trip (`TRIP_FIELDS` gains `payp` and
+  `protected`), so the version browser, Awarded-Pay-Gross and Improved-Pay-Gross count it. Its first version says so
+  ("PAYP 2026-11-12 keeps H3620 2026-11-12's credit 15:00 (pay protected)"); on Pako that is one new version (11.030)
+  right after the update, the same line as 11.029 with the credit kept.
+- The schedule card: a PAYP's credit counts in Credit, Pay-Gross and Pay-Net on its first day, at the hourly rate,
+  with no block and no soft; the PAYP label and the Credit cell say "Pay protected: H3620 Nov 12 (PWA Definitions 57;
+  4.R.1 if you add a trip on these days)"; a PAYP has no trade or drop mark; the totals show "PAYP 15:00". No IRO or
+  Extended Range override is added by itself (PWA 4.O.1 pays them per block hour or for the seat flown, and a PAYP
+  flies none); the RO+15% tap in the Pay-Gross box still turns one on. With no record (v11.029 as stored on Pako, or a
+  Watcher before 1.7.2) the card estimates the credit: FLICA's month credit less everything else it counted, only when
+  that is above zero and the month has a PAYP, split by days over the PAYP items without a record, marked "est" on the
+  row and "estimate" in the totals; the FLICA check still shows. A trip added on PAYP days counts in full on top (PWA
+  4.R.1). The Block total, Block Avail (98 h), the FAR columns and the 98/672 checks never count a PAYP (not flown).
+- Limits: the credit counts in the month the PAYP starts (no PWA 4.A split by duty period); the open time fit marks
+  still treat PAYP days as taken.
+- Tests: `tests/test_payp.py` (synthetic v11.028 to v11.029: Credit 131:15 with the FLICA check passing, Pay-Gross
+  and Pay-Net as in v11.028, the estimate, PWA 4.R.1, block and Block Avail, the Watcher on both instances across
+  refreshes and pruning, the versions, the card at 390 px).
+
 ### Rollback to 1.7.1
 
 - 1.7.1 cannot read 1.7.2's HMAC-keyed CrewTrac records: it takes them for other details and lifts a refusal block, so

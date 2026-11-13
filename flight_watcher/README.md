@@ -21,7 +21,9 @@ publishes what it finds to Home Assistant over MQTT.
   repeat). A failed login, a layout change or anything unexpected parks it until Re-arm.
 - Schedule: your line, numbered schedule versions (MM.NNN), FAR 117 columns, pay from the PWA tables, pairing
   details, and the monthly award and pairings PDFs uploaded on the dashboard (or the Web UI). A trip that comes home
-  the day the next one starts keeps its real end (1.4.7).
+  the day the next one starts keeps its real end (1.4.7). A trip the company removed and FLICA shows as PAYP keeps
+  its credit in Credit, Pay-Gross and Pay-Net (1.7.2, PWA Definitions 57), never in Block or the FAR 117 checks;
+  with the removed trip not on file the card estimates it from FLICA's month credit and says "estimate".
 - FAR column (1.4.7, FW-0039): pot, Tradeboard and finds rows run the Recall check's FAR 117 and PWA rules per duty
   period (117.25(e), 117.25(b), 117.23(b)(1), 117.23(c)(1) and (2): `FDP 65h/168h`, `FDP 191h/672h`; PWA 10.E.1.a
   as the `OK (CBA rest 10:30)` note). Anything not on file (a neighbour's times, training or reserve days, a customs
