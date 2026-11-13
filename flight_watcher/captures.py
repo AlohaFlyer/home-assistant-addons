@@ -37,8 +37,10 @@ HIDDEN_RE2 = re.compile(r"(?i)(<input\b[^>]*\bvalue\s*=\s*[\"']?)([^\"'>\s]*)([\
 EMP_KEY_RE = re.compile(r"(?i)\b(emp(?:loyee)?\s*(?:id|no\.?|num(?:ber)?|#)?\s*[=:#]+\s*)(\d{3,7})")
 SEAT_EMP_RE = re.compile(r"(?i)(?<![\w'.,-])(CA|FO|RO|FA|SO|F/O)(\s+)(\d{3,7})\b")
 EMP_RE = re.compile(r"(?<![\d.:/\-])\d{5,7}(?![\d.:/\-])")
-# 'DOE, JANE' / 'Doe Jr, Jane A' / 'DOE, CKP JANE': a capitalized last name, a comma, a capitalized first name
-COMMA_NAME_RE = re.compile(r"(?<![\w'])([A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+)?)\s*,\s*((?:CKP\s+)?[A-Z][A-Za-z'\-]+"
+# 'DOE, JANE' / 'Doe Jr, Jane A' / 'DOE, CKP JANE': a capitalized last name, a comma, a capitalized first name.
+# 1.7.3: a name right after a quote is a name too (a log line's %r: captain='Doe, Jane'), so the lookbehind takes
+# only a word character, not a quote
+COMMA_NAME_RE = re.compile(r"(?<!\w)([A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+)?)\s*,\s*((?:CKP\s+)?[A-Z][A-Za-z'\-]+"
                            r"(?:\s+[A-Z]\.?(?![\w]))?)")
 # the words after a seat code and a (masked) employee number, up to the next seat code: 'CA ##### DOE JANE FO open'
 CREW_NAME_RE = re.compile(r"(?i)(?<![\w'.,-])((?:CA|FO|RO|FA|SO|F/O)\s+#{3,7}\s+)(.+?)(?=\s+(?:CA|FO|RO|FA|SO|F/O)\s+"
@@ -71,7 +73,9 @@ UI_WORDS = {w.lower() for w in (
     "Recent", "Updates", "Session", "Expired", "Login", "Password", "User", "Welcome", "Emp", "Employee",
     "ID") + MONTHS}
 NAME_WORD = r"(?:[A-Z][A-Za-z'\-]+|[A-Z]\.?)"
-NAME_RUN_RE = re.compile(rf"(?<![\w'])({NAME_WORD}(?:(?:\s*,\s*|\s+){NAME_WORD})+)(?![\w'])")
+NAME_RUN_RE = re.compile(rf"(?<!\w)({NAME_WORD}(?:(?:\s*,\s*|\s+){NAME_WORD})+)(?![\w'])")  # 1.7.3: after a quote too
+# 1.7.3: a name with its employee number in parentheses ('Doe, Jane (6598)'; 3 to 7 digits, EMP_RE takes only 5 to 7)
+NAME_EMP_RE = re.compile(rf"(?<!\w)({NAME_WORD}(?:(?:\s*,\s*|\s+){NAME_WORD})*)(\s*\(\s*)(\d{{3,7}})(\s*\))")
 KNOWN_LIT_RE = re.compile(
     r"^(?:|[\s_,.;:/()&#%-]*|&nbsp;|true|false|null|[A-Z]\d{4}[A-Z]?(?::\d{2}[A-Z]{3})?|\d{1,2}[A-Z]{3}(?:\d{2,4})?"
     r"|\d{1,4}(?:[.:]\d{1,2})*|\d{1,2}:\d{2}(?::\d{2})?|20\d{6}(?:\d{6})?|[A-Z]{2,4}"
@@ -95,6 +99,23 @@ def _name_runs(t):
     return NAME_RUN_RE.sub(one, t)
 
 
+def _name_emps(t):
+    """1.7.3: a name followed by its employee number in parentheses ('Doe, Jane (6598)', 'DOE J (10001)') is a crew
+    name: the number becomes '#', every word that is no page word is masked and so is a page word next to the comma
+    (a surname like 'Day, Pat'); page words before it (a seat code) stay, and words that are all page words
+    ('Version (1720)') are no name."""
+    def one(m):
+        words = re.split(r"(\s*,\s*|\s+)", m.group(1))
+        if all(w.lower() in UI_WORDS for w in words[::2]):
+            return m.group(0)
+        out = []
+        for i, w in enumerate(words):
+            comma = any("," in words[j] for j in (i - 1, i + 1) if 0 <= j < len(words))
+            out.append(w if i % 2 or (w.lower() in UI_WORDS and not comma) else _x(w))
+        return "".join(out) + m.group(2) + "#" * len(m.group(3)) + m.group(4)
+    return NAME_EMP_RE.sub(one, t)
+
+
 def _phones(t):
     def one(m):
         digits = re.sub(r"\D", "", m.group(0))
@@ -109,6 +130,7 @@ def _phones(t):
 
 
 def _mask_text(t):
+    t = _name_emps(t)  # 1.7.3: a name and its employee number in parentheses, before the 5 to 7 digit numbers go
     t = SEAT_EMP_RE.sub(lambda m: m.group(1) + m.group(2) + "#" * len(m.group(3)), t)
     t = EMP_RE.sub(lambda m: "#" * len(m.group(0)), t)
     t = CREW_NAME_RE.sub(lambda m: m.group(1) + (m.group(2) if m.group(2).lower() == "open" else _x(m.group(2))), t)
