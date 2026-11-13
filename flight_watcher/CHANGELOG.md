@@ -292,6 +292,84 @@ Watcher makes no CrewTrac login at all.
 - The admin's uploads card keeps WCAG AA contrast on a dark card (its green "read" was 3.1:1).
 - `Dockerfile` copies `pilotpdf.py`.
 
+## 1.7.1.1
+
+Hotfix on 1.7.1: pay protection (PAYP) keeps the removed trip's exact Pay and Credit (Ryan, Nov 13: "My LAS trip today
+was cancelled and PAYP pay protected. Why did your pay calculations drop?", "Fix it now", then "I want it to keep the
+exact cancelled trip credit. Also make way for the fact that I can also pick up a trip over the top of PAYP for
+additional pay."). The same change is in 1.7.2 (PR 107).
+
+- Ryan: "My LAS trip today was cancelled and PAYP pay protected. Why did your pay calculations drop?" In v11.029
+  H3620 Nov 12 to 14 (credit 15:00) became PAYP Nov 12 to 14; FLICA's month credit stayed 131:15 (block 94:42 to
+  82:23), but the schedule card showed Credit 116:15 beside a red "FLICA 131:15", and Pay-Gross and Pay-Net fell by
+  the 15:00. 2023 PWA Definitions item 57: "PAY PROTECT/PAY PROTECTION (PAYP): A Flight Grouping that has been
+  removed from a pilot's schedule, however the pilot shall retain the Pay and Credit for such Flight Grouping." PWA
+  4.R.1: "Should a pilot elect to Add a Flight Grouping on a PAYP day(s), the pay shall be: a. Pay and Credit of the
+  PAYP Day, and b. Pay and Credit of the added Flight Grouping". (NQ pay protection, PWA 4.Q, is not this case.)
+- Why it dropped: the card adds up each trip's credit from `sensor.flight_watcher_own_trip_times`, which held only
+  pairings read from their FLICA pairing pages. PAYP is a code with no pairing page, so it counted 0:00 and $0.
+- The Watcher (`payp_refresh`, `versions.payp_entries`; every instance for its own schedule, no FLICA load): each
+  PAYP item on the schedule gets an own trips record `PAYP|<start>` with the removed trip's credit, block and soft
+  0:00, `payp`, `protected` (the removed trip's key), its seat, the PAYP's end and where the credit came from. The
+  removed trip is the own trips record no longer on the schedule that starts on one of the PAYP's days (looked at
+  before those records are pruned), else the pairings that start on those days in the newest stored version before
+  the PAYP; else there is no record (a credit is never guessed here). One PAYP over parts of two removed trips sums
+  both credits, each in full; a removed trip counts for one PAYP only. The record stays while the PAYP item is on the
+  schedule (the removed trip being gone, or a trip added on the PAYP days and dropped again, changes nothing) and is
+  pruned with it. On Pako H3620's own record was already pruned, so the first check after the update takes its 15:00
+  from v11.028 (checked read only on Pako's versions file: H3681, home on Nov 12, stays out).
+- Versions: the record is stored in each new version's trips like any trip (`TRIP_FIELDS` gains `payp`,
+  `protected`, `split` and `of`), so the version browser, Awarded-Pay-Gross and Improved-Pay-Gross count it. Its first version says so
+  ("PAYP 2026-11-12 keeps H3620 2026-11-12's credit 15:00 (pay protected)"); on Pako that is one new version (11.030)
+  right after the update, the same line as 11.029 with the credit kept.
+- The schedule card: a PAYP's credit counts in Credit, Pay-Gross and Pay-Net on its first day, at the hourly rate,
+  with no block and no soft; the PAYP label and the Credit cell say "Pay protected: H3620 Nov 12 (PWA Definitions 57;
+  4.R.1 if you add a trip on these days)"; a PAYP has no trade or drop mark; the totals show "PAYP 15:00". No IRO or
+  Extended Range override is added by itself (PWA 4.O.1 pays them per block hour or for the seat flown, and a PAYP
+  flies none); the RO+15% tap in the Pay-Gross box still turns one on. With no record (v11.029 as stored on Pako, or a
+  Watcher before 1.7.1.1) the card estimates the credit: FLICA's month credit less everything else it counted, only when
+  that is above zero and the month has a PAYP, split by days over the PAYP items without a record, marked "est" on the
+  row, "estimate" in the totals and "est" beside Credit (no check mark: it equals FLICA's by construction). A trip
+  added on PAYP days counts in full on top (PWA 4.R.1). The Block total, Block Avail (98 h), the FAR columns and the
+  98/672 checks never count a PAYP (not flown).
+- Fix pass (two reviews of the change, each finding reproduced with a synthetic test first):
+  - A trip that only comes home on the PAYP's first day (H3681 Nov 9 to 12 on Pako, beside PAYP Nov 12 to 14) joined
+    the record when it left the schedule in the same read (35:55 instead of 15:00). A removed trip now counts only
+    when it starts on one of the PAYP's days, in both the own trips and the versions paths.
+  - A partial cancellation counted the flown part twice: H3620 Nov 12 to 14 becoming H3620A Nov 12 to 13 (7:30) plus
+    PAYP Nov 14 kept the full 15:00 on top (Credit 138:45 against FLICA 131:15). Now there is no record for it (the
+    card's estimate, 7:30); when FLICA puts a lettered pairing over the removed trip's days and the PAYP starts first,
+    the record holds what is left of the credit once that pairing is read, and none before.
+  - PWA 4.R.1: a trip added over every PAYP day (FLICA shows it, no PAYP) pruned the record and the 15:00 was lost
+    again (Credit 134:15 against FLICA 149:15). The record now stays while a pairing other than the removed one starts
+    on its days; the card counts it in the totals only when FLICA's month credit holds it, so a reassignment that ends
+    the protection (FLICA 126:15) counts nothing.
+  - A PAYP over the month boundary (like H3607 Nov 30 to Dec 2 on Pako, duty blocks 600 and 455 minutes) kept all
+    17:35 in November and December estimated 7:35 more. The record now carries `split` (PWA 4.A, the card's own block
+    share: November 10:00, December 7:35), the card counts each month's share, and the PAYP December's page lists
+    again gets a record of its own for its share (`of`). Every day of a PAYP names its record, the next month's too.
+  - With no record on file, a trip added on PAYP days and then dropped became the protected trip (6:00). A trip a
+    stored version shows taken on days already PAYP is never the protected trip now.
+  - FLICA showing the days empty one read before PAYP lost the trip (no record). The versions path now looks past
+    such a read when the days went empty at most a day before the PAYP showed; a PAYP that grows also takes the trip
+    removed on its new days from the versions.
+  - The estimate took credit that is not the PAYP's (an unread trip, SIM or SICK days, last month's trip running into
+    this one: "PAYP 45:00 est" for 15:00, and the red Credit check turned into a check mark). The card now estimates,
+    and counts a PAYP kept under an added trip, only when it counts everything else in the month; otherwise the totals
+    say "PAYP credit unknown" and the red check stays. With no FLICA total it says so too (it counted 0:00 silently).
+  - FW-0064: H3620 cancelled to PAYP and H3999 added the same HST day was pushed as "Trade, Approved, Pay-Gross
+    -$2,331". A trip whose first day is now PAYP is marked explained ("pay protected"), also when the PAYP shows a read
+    after the drop, so it is never priced as given away.
+  - Left as it was: the removed trip's IRO override and Extended Range +15% (PWA 4.O.1) are not added to the PAYP's
+    pay (whether Definitions 57's "Pay" includes them is Ryan's call against the contract text); `protected` changing
+    alone makes no new version (cosmetic).
+- Limits: a trip from last month running into this month is still not counted in this month's totals (as before); the open time fit marks still treat PAYP days as taken.
+- Tests: `tests/test_payp.py` (synthetic v11.028 to v11.029: Credit 131:15 with the FLICA check passing, Pay-Gross
+  and Pay-Net as in v11.028, the estimate, PWA 4.R.1, block and Block Avail, the Watcher on both instances across
+  refreshes and pruning, the versions, the card at 390 px; the fix pass adds the month boundary, the partial
+  cancellation, the trip added over every PAYP day, the adjacent trip, the read before the PAYP, the estimate guard
+  and the trade push).
+
 ## 1.7.1
 
 Fixes after 1.7.0 went live (the live log of Nov 11 on the second pilot's instance, LIVE-1, and the review findings
