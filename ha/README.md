@@ -4,11 +4,11 @@ Copies of the Flight Watcher pieces that live in Home Assistant on Pako HI rathe
 review and history (FW-0036). Nothing in this folder is loaded by Home Assistant or by the app, and the app store
 ignores it (no `config.yaml`).
 
-## Pending on Pako (1.7.2, FW-0066): "Flight Watcher pilot upload"
+## Applied on Pako 2026-11-13 about 05:45 HST (1.7.2, FW-0066): "Flight Watcher pilot upload"
 
 `automations_flight_watcher.yaml` ends with **Flight Watcher pilot upload** (id `1794500000201`), after the van
-time one; not on Pako yet. Apply it through the HA connector once Flight Watcher 1.7.2 is live (the event and the
-command topic exist only from 1.7.2): a [DESTRUCTIVE] yes from Ryan. Triggered by `flight_watcher/event/pilot_upload`
+time one, applied through the HA connector with Ryan's yes for the 1.7.2 rollout, right after 1.7.2 went live (the
+event and the command topic exist only from 1.7.2); HA's own text (its key order and wraps) is the snapshot's. Triggered by `flight_watcher/event/pilot_upload`
 only (never a pilot's prefix: only the admin's Watcher sends it), it pushes the payload's `title` ("James uploaded the
 December 2026 pairings package") and `message` to `notify.mobile_app_ryans_iphone` and
 `notify.mobile_app_ryans_iphone_16`, `interruption-level: time-sensitive` (not critical), tag
@@ -18,10 +18,9 @@ Remove, `FLIGHT_WATCHER_UPLOAD_REMOVE|<id>`) or two for a held copy (Approve `FL
 condition on the `FLIGHT_WATCHER_UPLOAD_` prefix, Ryan's own: the re-arm and recall-miss pattern) and publishes
 `{"id": <id>, "action": approve | reject | remove}` to `flight_watcher/upload/decide`, the admin-only command Ryan's
 Watcher takes. The guard passes and counts it (`python3 ha/check_push_isolation.py`: 23 automations with the Nov 12 ask-Hark one, 3
-notification-action handlers, 0 offenders). Then check by sha256 of the redacted text as in Refresh below and drop
-this section. Undo: delete the automation (its id above); Ryan's Settings uploads card still has the buttons.
+notification-action handlers, 0 offenders). Undo: delete the automation (its id above); Ryan's Settings uploads card still has the buttons.
 
-## Pending on Pako (1.7.2): van alert settings
+## Applied on Pako 2026-11-13 about 05:47 HST (1.7.2): van alert settings
 
 Ryan, Nov 12: "I like the layover card. Can you add a tick box to turn on the van time alerts and also add van time
 alert settings in the form of sliders in the settings tab?" Flight Watcher 1.7.2 adds `switch.flight_watcher_van_alerts`
@@ -30,31 +29,32 @@ and `number.flight_watcher_van_alert_second` (0 to 60 min, 0 is no second alert)
 `dashboard_flight_watcher.json`, view `settings`: after the Monthly files uploads card, a "Van time alerts" heading
 (`mdi:van-passenger`), a tile for the switch ("Van alerts") and a tile for each number ("First alert", "Second alert (0
 is off)") with the `numeric-input` slider feature, each `grid_options` columns full (keys sorted, as HA stores a card
-the connector writes). These entities exist only once 1.7.2 is live, so Claude applies this dashboard edit through the
-HA connector after 1.7.2 is live (a dashboard edit; undo: remove those four cards), then checks by sha256 of the
-redacted text as in Refresh below and drops this section. Until then the snapshot is one edit ahead of Pako (below).
+the connector writes). These entities exist only once 1.7.2 is live, so Claude applied this dashboard edit through the
+HA connector right after 1.7.2 went live (a JSON patch after the uploads card, guarded by a test of that card); the
+dashboard then matched the snapshot by sha256 of the redacted text (below). Undo: remove those four cards.
 
 ## Applied on Pako 2026-11-12 about 02:20 HST: "Ready to update" asks Hark (Ryan, Nov 12)
 
 Ryan: "When I click ready to update I want you to trigger hark without my help. Get the info and bring it back
 automatically." Before this the button opened Hark's project page and Ryan typed "ready" there.
 
-1. **Flight Watcher ready to update (ask Hark)** (id `1794500000301`), before the pending pilot upload one in
+1. **Flight Watcher ready to update (ask Hark)** (id `1794500000301`), before the pilot upload one in
    `automations_flight_watcher.yaml` (HA appended it last on Pako). Run by the button (`automation.trigger`) or a
    publish to `flight_watcher/hark/ready_to_update` (Ryan's prefix). `mode: restart`. It waits up to 30 min for
    `sensor.hark_working_flight` with `release_updated` true and a `last_updated` after the tap, then pushes Ryan's two
    iPhones (time-sensitive, tag `flight_watcher_hark_update`): "Hark updated <flight>" with Hark's `release_name`,
-   or "Hark has not updated <flight> yet" with a link to Hark's project (redacted here). Two templates stay on
+   or, since Nov 13 (Ryan's pick of Hark's wording), "Release not updated: <flight>", "Message Hark ready. Tap to open
+   Hark." with a link to Hark's project (redacted here; it was "Hark has not updated <flight> yet"). Two templates stay on
    purpose: `wait_template` (it must see a write after the tap, which `wait_for_trigger` on the attribute cannot
    tell from Hark's routine refresh) and the `wait.completed` check. The guard passes.
 2. **Dashboard** `flight-watcher`, view `flight`: the button is "Ready to update" with `tap_action`
    `perform-action` `automation.trigger` on that automation; the markdown card says "(it asks Hark for you)" and
    shows "Asked Hark at HH:MM HST: waiting" or ": updated HH:MM" for 3 h after a tap (from the automation's
    `last_triggered`). The layover card's "Update with Hark" chip still opens Hark's page (its `update_url`).
-3. **Hark's side** (bus ASK `m_01M77V1DWJ3MYFKDGX0NEZC3QN`, Nov 12): Hark watches the automation's `last_triggered`
-   over HA REST (at least every 5 min, or a webhook HA can call) and, when it is newer than its last release fill
-   for the leg, runs its "ready" flow and writes `sensor.hark_working_flight`. Until Hark confirms, a tap still
-   reaches Hark only at its next scheduled run; the 30 min push then tells Ryan if it has not landed. A PingID
+3. **Hark's side** (bus ASK `m_01M77V1DWJ3MYFKDGX0NEZC3QN`, answered Nov 12 04:10 HST, Ryan's decision with Hark):
+   Hark does not poll and has no webhook. Its daily planner (08:00 HST) sets two one-shot fills per leg, 60 and 30 min
+   before departure (the second skips when the first landed within 45 min), and it fills on demand when Ryan messages
+   it "ready". So a tap waits for the next fill; the 30 min push tells Ryan to message Hark when none landed. A PingID
    approval, if Outlook asks for one, stays Ryan's tap.
 
 Undo: put the button's `tap_action` back to the url (Hark's project page, git history) and delete the automation.
@@ -71,8 +71,8 @@ retained, so adding it pushed nothing old), it sends the payload's `title` and `
 
 Not in the snapshot: **Flight Watcher van time (temporary, FW-0072)** (id `1794429970349`), made Nov 11 with Ryan's yes
 for that night's Sydney van. Its two pushes went out at 22:10 and 22:30 HST to both iPhones (traces checked, no
-error). It is **disabled** (not deleted) so the van is never pushed twice; deleting it waits for Ryan's tap on the
-delete prompt (the first one was interrupted). The guard passes (`python3 ha/check_push_isolation.py`).
+error). It was disabled so the van was never pushed twice, and
+deleted 2026-11-13 about 06:00 HST with Ryan's yes. The guard passes (`python3 ha/check_push_isolation.py`).
 
 ## Applied on Pako 2026-11-11 (1.7.1): bid calendar, new pairing text, layover card
 
@@ -98,14 +98,12 @@ only) by sha256 of the redacted text as in Refresh below:
    <Hark's project page, redacted here>}` in place of the markdown card and the "Ready to update?" button grid. Undo:
    the connector's edits backup of the dashboard (or the two cards from git history).
 
-The 22 automations here that are on Pako (all but the pending pilot upload one) match Pako's 22 Flight Watcher
-automations (besides its disabled temporary van one) in file order, sha256 of the redacted text of the 22 items
-`0f677ba7a3118ff682acc82907d4fc02e4f062d5b25bfa0007395f50ea9084c3` (read 2026-11-12 02:2x HST). The dashboard snapshot
-matched Pako's `/config/.storage/lovelace.flight_watcher`, sha256
-`8ecbf39743ce49951ffc08cdaf2379c061de3207115d72dfd2f3d729e093c8fd` (5 views: Watcher, Working Flight, Details,
-Recall/O75, Settings; read 2026-11-12 03:4x HST, with the GIN line edit below), until the pending van alert settings
-edit (above): the snapshot is now ahead of Pako by that edit alone, sha256
-`3bfd73bcdc798df66a79c0ecf1cb63f6f2dcae271f814f2a890f6ac991000d7e`, and Pako matches it again once the edit is applied.
+The 23 automations here match Pako's 23 Flight Watcher automations in file order, sha256 of the redacted text of the
+23 items `0a7ff0d9f8aac055fef0b2a41350e9cb657896bbca1e04759bc48ce543dcc8c4` (read 2026-11-13 06:2x HST, after 1.7.2 went
+live, the pilot upload automation was added, the "Ready to update" push wording changed and the temporary van one was
+deleted). The dashboard snapshot matches Pako's `/config/.storage/lovelace.flight_watcher`, sha256
+`3bfd73bcdc798df66a79c0ecf1cb63f6f2dcae271f814f2a890f6ac991000d7e` (5 views: Watcher, Working Flight, Details,
+Recall/O75, Settings; read 2026-11-13 06:2x HST, with the van alert settings tiles).
 
 **Changed on Pako 2026-11-12 about 03:30 HST (Ryan: "Gin code should be on its own line so it doesn't get cut
 off"):** the Working Flight markdown card shows `GIN dep` and `GIN arr` as the label and place, then the code alone
@@ -119,15 +117,16 @@ the loader had never imported the card the dashboard now asked for. Claude put t
 Working Flight template from before 1.7.1) and the "Ready to update?" button back at the top of the view, above the
 layover card, so the page shows the flight with no custom card at all; HA stored those two cards with sorted keys.
 The fix for the cause is the 1.7.2 loader (`cards.py` LOADER_JS: it reads the card list again when the page comes
-back to the screen and every 5 min). The dashboard matched Pako by sha256 of the redacted text after it (above; the
-van alert settings edit is pending). Undo: remove
+back to the screen and every 5 min). The dashboard matched Pako by sha256 of the redacted text after it (and again with the
+van alert settings tiles, above). Undo: remove
 the first two cards of the view's section (the layover card stays).
 
-**Pending on Pako (1.7.2): the loader resource URL.** The one dashboard resource is `/local/flight-watcher-loader.js`
-with no version, and HA serves `/local/` with a 31-day cache, so a phone keeps the old loader. After Flight Watcher
-1.7.2 is live (it writes the new loader on start), Claude changes the resource URL to
-`/local/flight-watcher-loader.js?v=1.7.2` through the HA connector (not before: a phone would then cache the old
-loader under the new URL). Undo: the URL without `?v=`.
+**Changed on Pako 2026-11-13 about 05:47 HST (1.7.2): the loader resource URL.** The one dashboard resource was
+`/local/flight-watcher-loader.js` with no version, and HA serves `/local/` with a 31-day cache, so a phone kept the old
+loader. Once 1.7.2 was live (it writes the new loader on start), Claude changed the resource URL to
+`/local/flight-watcher-loader.js?v=1.7.2` through the HA connector (not before: a phone would then have cached the old
+loader under the new URL). Ryan confirmed on his phone that the layover card shows (FW-0072 closed). Undo: the URL
+without `?v=`.
 
 **Changed on Pako 2026-11-11 by Ryan (the weather view removed):** Ryan deleted the Aviation Wx view (path `wx`) from
 his dashboard `flight-watcher`; its other five views are as they were. Nothing else was removed:
@@ -219,7 +218,7 @@ household users (four, a guest login among them) can open `flight-watcher-james`
 
 | File | Live copy on Pako |
 |:--|:--|
-| `automations_flight_watcher.yaml` | `/config/automations.yaml`: the automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order (read 2026-11-12 02:2x HST: 22 on Pako besides its disabled temporary van automation; 23 here with the pending pilot upload one, above) |
+| `automations_flight_watcher.yaml` | `/config/automations.yaml`: the automations whose alias starts with "Flight Watcher" (or that mention `flight_watcher`), in file order (read 2026-11-13 06:2x HST: 23, all on Pako; the temporary van automation was deleted that morning) |
 | `dashboard_flight_watcher.json` | `/config/.storage/lovelace.flight_watcher` (dashboard `flight-watcher`) |
 | `packages/flight_watcher_wx.yaml` | `/config/packages/flight_watcher_wx.yaml` |
 | `check_push_isolation.py` | the push-isolation guard (below) |

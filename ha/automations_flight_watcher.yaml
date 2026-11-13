@@ -1107,13 +1107,14 @@
   description: 'Ryan, Nov 12: "When I click ready to update I want you to trigger
     hark without my help. Get the info and bring it back automatically." The Working
     Flight "Ready to update" button runs this automation (automation.trigger), or
-    a publish to flight_watcher/hark/ready_to_update. Hark watches this automation''s
-    last_triggered over HA REST and, when it is newer than its last release fill for
-    the leg, runs its ready flow (release, MEL, NOTAM, GIN) and writes sensor.hark_working_flight
-    with release_updated true; no chat message from Ryan. This automation waits up
-    to 30 min for that write and pushes Ryan''s two iPhones either way (updated, or
-    not yet with a link to Hark). Push isolation (FW-0038): Ryan''s prefix and Hark''s
-    sensor only, Ryan''s phones only.'
+    a publish to flight_watcher/hark/ready_to_update. Hark does not poll (Ryan''s
+    decision with Hark, Nov 12 04:10 HST): it fills the release, MEL, NOTAM and GIN
+    60 and 30 min before each departure (planner e15666ae), or when Ryan messages
+    it ready, and writes sensor.hark_working_flight with release_updated true. This
+    automation waits up to 30 min for that write and pushes Ryan''s two iPhones either
+    way (updated, or not yet with a link to Hark). Push isolation (FW-0038): Ryan''s
+    prefix and Hark''s sensor only, Ryan''s phones only. Nov 13 (Ryan): the not-updated
+    push says "Release not updated: <flight>", "Message Hark ready."'
   triggers:
   - topic: flight_watcher/hark/ready_to_update
     trigger: mqtt
@@ -1133,8 +1134,8 @@
               interruption-level: time-sensitive
             tag: flight_watcher_hark_update
             url: <redacted-hark-url>
-          message: Asked 30 min ago. Tap to open Hark.
-          title: Hark has not updated {{ flight }} yet
+          message: Message Hark ready. Tap to open Hark.
+          title: 'Release not updated: {{ flight }}'
       - action: notify.mobile_app_ryans_iphone_16
         continue_on_error: true
         data:
@@ -1143,8 +1144,8 @@
               interruption-level: time-sensitive
             tag: flight_watcher_hark_update
             url: <redacted-hark-url>
-          message: Asked 30 min ago. Tap to open Hark.
-          title: Hark has not updated {{ flight }} yet
+          message: Message Hark ready. Tap to open Hark.
+          title: 'Release not updated: {{ flight }}'
     if:
     - condition: template
       value_template: '{{ wait.completed }}'
@@ -1221,8 +1222,8 @@
                 data:
                   actions:
                   - action: FLIGHT_WATCHER_UPLOAD_REMOVE|{{ ev.id }}
-                    title: Remove
                     destructive: true
+                    title: Remove
                   push:
                     interruption-level: time-sensitive
                   tag: flight_watcher_upload_{{ ev.id }}
@@ -1235,8 +1236,8 @@
                 data:
                   actions:
                   - action: FLIGHT_WATCHER_UPLOAD_REMOVE|{{ ev.id }}
-                    title: Remove
                     destructive: true
+                    title: Remove
                   push:
                     interruption-level: time-sensitive
                   tag: flight_watcher_upload_{{ ev.id }}
@@ -1253,8 +1254,8 @@
                 - action: FLIGHT_WATCHER_UPLOAD_APPROVE|{{ ev.id }}
                   title: Approve
                 - action: FLIGHT_WATCHER_UPLOAD_REJECT|{{ ev.id }}
-                  title: Reject
                   destructive: true
+                  title: Reject
                 push:
                   interruption-level: time-sensitive
                 tag: flight_watcher_upload_{{ ev.id }}
@@ -1269,8 +1270,8 @@
                 - action: FLIGHT_WATCHER_UPLOAD_APPROVE|{{ ev.id }}
                   title: Approve
                 - action: FLIGHT_WATCHER_UPLOAD_REJECT|{{ ev.id }}
-                  title: Reject
                   destructive: true
+                  title: Reject
                 push:
                   interruption-level: time-sensitive
                 tag: flight_watcher_upload_{{ ev.id }}
