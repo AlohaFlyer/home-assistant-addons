@@ -37,11 +37,15 @@ HIDDEN_RE2 = re.compile(r"(?i)(<input\b[^>]*\bvalue\s*=\s*[\"']?)([^\"'>\s]*)([\
 EMP_KEY_RE = re.compile(r"(?i)\b(emp(?:loyee)?\s*(?:id|no\.?|num(?:ber)?|#)?\s*[=:#]+\s*)(\d{3,7})")
 SEAT_EMP_RE = re.compile(r"(?i)(?<![\w'.,-])(CA|FO|RO|FA|SO|F/O)(\s+)(\d{3,7})\b")
 EMP_RE = re.compile(r"(?<![\d.:/\-])\d{5,7}(?![\d.:/\-])")
+# 1.7.3 review: a name's letters outside ASCII too ('Pe\u00f1a, Jos\u00e9', 'Ka\u02bbaihue', '\u014cta'): Latin-1 and
+# Latin Extended letters, the okina and combining accents
+NAME_UP = r"A-Z\u00c0-\u00d6\u00d8-\u00de\u0100-\u024f"
+NAME_LOW = r"A-Za-z\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u024f\u02bb\u0300-\u036f'\-"
 # 'DOE, JANE' / 'Doe Jr, Jane A' / 'DOE, CKP JANE': a capitalized last name, a comma, a capitalized first name.
 # 1.7.3: a name right after a quote is a name too (a log line's %r: captain='Doe, Jane'), so the lookbehind takes
 # only a word character, not a quote
-COMMA_NAME_RE = re.compile(r"(?<!\w)([A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+)?)\s*,\s*((?:CKP\s+)?[A-Z][A-Za-z'\-]+"
-                           r"(?:\s+[A-Z]\.?(?![\w]))?)")
+COMMA_NAME_RE = re.compile(rf"(?<!\w)(\u02bb?[{NAME_UP}][{NAME_LOW}]+(?:\s+\u02bb?[{NAME_UP}][{NAME_LOW}]+)?)\s*,\s*"
+                           rf"((?:CKP\s+)?\u02bb?[{NAME_UP}][{NAME_LOW}]+(?:\s+[{NAME_UP}]\.?(?![\w]))?)")
 # the words after a seat code and a (masked) employee number, up to the next seat code: 'CA ##### DOE JANE FO open'
 CREW_NAME_RE = re.compile(r"(?i)(?<![\w'.,-])((?:CA|FO|RO|FA|SO|F/O)\s+#{3,7}\s+)(.+?)(?=\s+(?:CA|FO|RO|FA|SO|F/O)\s+"
                           r"(?:#|open\b)|\s*$)")
@@ -72,10 +76,12 @@ UI_WORDS = {w.lower() for w in (
     "Would", "Like", "To", "The", "And", "For", "With", "By", "Of", "On", "At", "Posted", "Pick", "Up", "Please",
     "Recent", "Updates", "Session", "Expired", "Login", "Password", "User", "Welcome", "Emp", "Employee",
     "ID") + MONTHS}
-NAME_WORD = r"(?:[A-Z][A-Za-z'\-]+|[A-Z]\.?)"
+NAME_WORD = rf"(?:\u02bb?[{NAME_UP}][{NAME_LOW}]+|[{NAME_UP}]\.?)"  # 1.7.3 review: outside ASCII too
 NAME_RUN_RE = re.compile(rf"(?<!\w)({NAME_WORD}(?:(?:\s*,\s*|\s+){NAME_WORD})+)(?![\w'])")  # 1.7.3: after a quote too
-# 1.7.3: a name with its employee number in parentheses ('Doe, Jane (6598)'; 3 to 7 digits, EMP_RE takes only 5 to 7)
-NAME_EMP_RE = re.compile(rf"(?<!\w)({NAME_WORD}(?:(?:\s*,\s*|\s+){NAME_WORD})*)(\s*\(\s*)(\d{{3,7}})(\s*\))")
+# 1.7.3: a name with its employee number in parentheses ('Doe, Jane (6598)'; 3 to 7 digits, EMP_RE takes only 5 to 7).
+# 1.7.3 review: up to 8 words, so a long run of capitalized words with no number after it costs linear time
+NAME_EMP_RE = re.compile(rf"(?<!\w)({NAME_WORD}(?:(?:\s*,\s*|\s+){NAME_WORD}){{0,7}})(\s*\(\s*)(\d{{3,7}})(\s*\))")
+SEAT_CODES = {"CA", "FO", "RO", "FA", "SO"}
 KNOWN_LIT_RE = re.compile(
     r"^(?:|[\s_,.;:/()&#%-]*|&nbsp;|true|false|null|[A-Z]\d{4}[A-Z]?(?::\d{2}[A-Z]{3})?|\d{1,2}[A-Z]{3}(?:\d{2,4})?"
     r"|\d{1,4}(?:[.:]\d{1,2})*|\d{1,2}:\d{2}(?::\d{2})?|20\d{6}(?:\d{6})?|[A-Z]{2,4}"
@@ -83,8 +89,28 @@ KNOWN_LIT_RE = re.compile(
 
 
 def _x(s):
-    """crewidx.crew_mask style: every letter becomes 'x', digits '#', the rest (spaces, commas) stays."""
-    return re.sub(r"\d", "#", re.sub(r"[A-Za-z]", "x", s))
+    """crewidx.crew_mask style: every letter becomes 'x', digits '#', the rest (spaces, commas) stays. 1.7.3 review:
+    letters outside ASCII too (the okina, a combining accent)."""
+    return re.sub(r"\d", "#", re.sub(r"[^\W\d_]|[\u0300-\u036f]", "x", s))
+
+
+def _comma_words(words):
+    """1.7.3 review: in a run split by re.split (words at even indexes), the words of a 'Last, First' name, page
+    words too ('Day Jr, Pat', 'Block, Pat', 'Doe, Jane May'): the one or two words before each comma (COMMA_NAME_RE's
+    surname; a seat code first stays: 'CA Doe, Jane') and every word after it up to the next comma or seat code."""
+    out = set()
+    for c in range(1, len(words), 2):
+        if "," not in words[c]:
+            continue
+        out.add(c - 1)
+        if c >= 3 and "," not in words[c - 2] and words[c - 3] not in SEAT_CODES:
+            out.add(c - 3)
+        j = c + 1
+        out.add(j)
+        while j + 2 < len(words) and "," not in words[j + 1] and words[j + 2] not in SEAT_CODES:
+            j += 2
+            out.add(j)
+    return out
 
 
 def _name_runs(t):
@@ -92,26 +118,25 @@ def _name_runs(t):
     known page word (UI_WORDS, months, seats) is masked."""
     def one(m):
         words = re.split(r"(\s*,\s*|\s+)", m.group(1))
-        names = [w for w in words[::2] if w.lower() not in UI_WORDS]
-        if not names:
+        name = _comma_words(words)  # 1.7.3 review: a 'Last, First' name's page words too ('Day, Pat', 'RO Block, Jan')
+        if not name and all(w.lower() in UI_WORDS for w in words[::2]):
             return m.group(1)
-        return "".join(w if (i % 2 or w.lower() in UI_WORDS) else _x(w) for i, w in enumerate(words))
+        return "".join(w if (i % 2 or (w.lower() in UI_WORDS and i not in name)) else _x(w)
+                       for i, w in enumerate(words))
     return NAME_RUN_RE.sub(one, t)
 
 
 def _name_emps(t):
     """1.7.3: a name followed by its employee number in parentheses ('Doe, Jane (6598)', 'DOE J (10001)') is a crew
-    name: the number becomes '#', every word that is no page word is masked and so is a page word next to the comma
-    (a surname like 'Day, Pat'); page words before it (a seat code) stay, and words that are all page words
-    ('Version (1720)') are no name."""
+    name: the number becomes '#', every word that is no page word is masked and so are the page words of a 'Last,
+    First' name (_comma_words: 'Day Jr, Pat'); page words before it (a seat code) stay, and words that are all page
+    words with no comma ('Version (1720)') are no name."""
     def one(m):
         words = re.split(r"(\s*,\s*|\s+)", m.group(1))
-        if all(w.lower() in UI_WORDS for w in words[::2]):
+        name = _comma_words(words)
+        if not name and all(w.lower() in UI_WORDS for w in words[::2]):
             return m.group(0)
-        out = []
-        for i, w in enumerate(words):
-            comma = any("," in words[j] for j in (i - 1, i + 1) if 0 <= j < len(words))
-            out.append(w if i % 2 or (w.lower() in UI_WORDS and not comma) else _x(w))
+        out = [w if i % 2 or (w.lower() in UI_WORDS and i not in name) else _x(w) for i, w in enumerate(words)]
         return "".join(out) + m.group(2) + "#" * len(m.group(3)) + m.group(4)
     return NAME_EMP_RE.sub(one, t)
 

@@ -5,6 +5,7 @@ whether a captain was parsed. The admin's log is as before. Synthetic names only
 import json
 import logging
 import sys
+import time
 
 import pytest
 
@@ -45,6 +46,39 @@ def test_the_live_detail_probe_line_is_masked():
 ])
 def test_times_dates_pairings_flights_and_credits_stay(line):
     assert CAPS.mask(line, []) == line
+
+
+def test_mask_takes_linear_time_on_a_long_run_of_capitalized_words():
+    """1.7.3 review: a long run of capitalized words with no '(digits)' after it (a page's text node) costs linear
+    time, not quadratic (NAME_EMP_RE's run is bounded)."""
+    for text in ("Doe Jane " * 4000, "Doe, Jane " * 4000, "CA Day Jr, Pat " * 3000):
+        t = time.perf_counter()
+        CAPS.mask(text, [])
+        assert time.perf_counter() - t < 2.0, text[:20]
+
+
+@pytest.mark.parametrize("text,want", [
+    # 1.7.3 review: a surname (or first or middle name) that is also a page word is masked in a 'Last, First' name;
+    # a seat code first stays
+    ("captain='Day Jr, Pat (6598)'", "captain='xxx xx, xxx (####)'"),
+    ("pickup H3607:13NOV: FO Doe, Jane (6598) (CA Block Jr, Pat (10007))",
+     "pickup H3607:13NOV: FO xxx, xxxx (####) (CA xxxxx xx, xxx (#####))"),
+    ("captain='Day, Pat'", "captain='xxx, xxx'"),
+    ("pickup H3607:13NOV: FO Day, Pat (CA ?)", "pickup H3607:13NOV: FO xxx, xxx (CA ?)"),
+    ("captain='Doe, Jane May (6598)'", "captain='xxx, xxxx xxx (####)'"),
+    ("picker FO Day, Pat (10003); RO Block, Jan: 12 in open time",
+     "picker FO xxx, xxx (#####); RO xxxxx, xxx: 12 in open time"),
+    ("captain='Day, May (6598)'", "captain='xxx, xxx (####)'"),  # page words only, but a comma and a number
+    ("CA De La Cruz Jr, Maria Ann (6598)", "CA xx xx xxxx xx, xxxxx xxx (####)"),
+    ("CA DOE, JANE FO OPEN", "CA xxx, xxxx FO OPEN"),
+    # 1.7.3 review: letters outside ASCII (Latin-1, Latin Extended, the okina) are name letters too
+    ("captain='Pe\u00f1a, Jos\u00e9 (6598)'", "captain='xxxx, xxxx (####)'"),
+    ("captain='Ka\u02bbaihue, Keoni (6598)'", "captain='xxxxxxxx, xxxxx (####)'"),
+    ("pickup H3607:13NOV: FO \u014cta, K\u0113hau (CA ?)", "pickup H3607:13NOV: FO xxx, xxxxx (CA ?)"),
+    ("Jos\u00e9 Pe\u00f1a (6598)", "xxxx xxxx (####)"),
+])
+def test_page_word_and_non_ascii_names_are_masked(text, want):
+    assert CAPS.mask(text, []) == want
 
 
 @pytest.fixture
@@ -99,3 +133,17 @@ def test_the_admins_detail_probe_is_as_before(load, caplog):
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
         W.detail_probe(None, POT)
     assert "detail probe H3607: captain='Doe, Jane (6598)' blk=17:35 credit=17:35 soft=0:00" in caplog.text
+
+
+def test_a_pilots_pickup_lines_name_no_crew(load, caplog):
+    """1.7.3 review: the pilot's pickup and picker lines ('Last, First' with page-word surnames, a name outside
+    ASCII) are masked by PilotLogMask."""
+    W = load("pilot2")
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        W.log.info("pickup %s: %s (CA %s)", "H3607:13NOV", "FO Day, Pat (6598)", "Block Jr, Pat (10007)")
+        W.log.info("picker %s: %s in open time", "FO Pe\u00f1a, Jos\u00e9 (6598)", 12)
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    for leak in ("Day", "Pat", "Block", "Jr", "6598", "10007", "Pe\u00f1a", "Jos\u00e9", "\u00f1", "\u00e9"):
+        assert leak not in text, (leak, text)
+    assert "pickup H3607:13NOV: FO xxx, xxx (####) (CA xxxxx xx, xxx (#####))" in text
+    assert "picker FO xxxx, xxxx (####): 12 in open time" in text
