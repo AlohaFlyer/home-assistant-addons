@@ -66,7 +66,7 @@ import bidcal as BC
 import layover as LO
 import pilotpdf as PP
 
-VERSION = "1.7.5.1"
+VERSION = "1.7.6.1"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -5432,6 +5432,7 @@ CLOSE_IN_RECHECK_S = 86400  # once a day once it is (a new bid period can bring 
 CLOSE_IN_BAD_MAX = 3  # reads that are not its open time page before its BCID is dropped
 CLOSE_IN_READ_S = 300  # FW-0035: hunting, the close-in page is read at most every 5 min (about 12 loads an hour; every check otherwise)
 CLOSE_IN_LAST = {"bcid": None, "at": 0.0, "rows": {}}  # its last good read in this process (the rows between reads)
+SESSION_LOST_TXT = "initializesessiondata() failed"  # 1.7.6 (t1301): FLICA's page when the session is gone
 STOP_KINDS = ("killed", "expired", "blocked")  # pages that end the pass (classify())
 
 
@@ -9848,6 +9849,13 @@ def check(fl):
             set_machine("stopped_unexpected", CAPTCHA_STOP_NOTE.format(where="the open time pot"))
             return "stop"
         if kind == "expired":
+            return "needs_login"
+        if not is_pot_page(html, mobile=month.startswith("mobile")) and SESSION_LOST_TXT in visible_text(html):
+            # 1.7.6 (t1301): FLICA dropped the session (Nov 8 15:02 HST). Its open time page came back as
+            # "application error initializesessiondata() failed"; that used to count as a layout miss ("retry"), so
+            # the Watcher slept a full gap with state idle and session ON. Log in again now instead. Only the pot page
+            # is read this way: a hidden Schedule Lookup prints the same error on a live session (FW-0069).
+            log.info("open time page %s: FLICA session lost (%s); logging in again", month, SESSION_LOST_TXT)
             return "needs_login"
         if not is_pot_page(html, mobile=month.startswith("mobile")):
             S["pot_urls"] = {}
