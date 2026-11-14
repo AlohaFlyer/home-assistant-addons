@@ -7,6 +7,7 @@ FLICA is read only: rules match and log, nothing is ever submitted to FLICA.
 import collections
 import contextlib
 import hashlib
+import hmac
 import json
 import logging
 import math
@@ -528,6 +529,9 @@ def rearm_answer():
     st = S.get("machine") or "idle"
     if st.startswith("stopped") or st in ("yielded", "backoff"):
         if flica_refused_at() is not None:
+            if S.get(FL_KEY_LOST):  # 1.7.4: the refusal on record can no longer be checked: only a save lifts it
+                return "login", False, ("nothing to re-arm: FLICA's refusal on record can no longer be checked; save "
+                                        "your FLICA details on Settings again")
             return "login", False, "nothing to re-arm: FLICA refused these login details; save new ones on Settings"
         if st == "yielded":
             return "login", True, (f"logs in when the step-aside for your own FLICA login ends, "
@@ -792,6 +796,7 @@ def settings_cmd(payload):
     os.replace(tmp, CREDS_FILE)
     if {"username", "password"} & set(changed):  # 1.6.2 review: new FLICA details: no refusal block, no login floor
         S.pop("flica_refused", None)
+        S.pop(FL_KEY_LOST, None)  # 1.7.4: nor the block kept since the key was lost
         S.pop("login_ts", None)
         save_state(S)
     if creds_stop_cleared(changed):  # kills (the yield back-off count) stay; only Re-arm clears those
@@ -824,11 +829,12 @@ def settings_last_result(now=None):
 def flica_lift():
     """1.6.2 review: the same FLICA details saved again in Settings while FLICA's refusal blocks them: the pilot says
     they are right. One more login try (Re-arm's path: still at most one login every LOGIN_MIN_GAP_S). True when the
-    block was lifted."""
+    block was lifted. 1.7.4: the block kept since its key was lost (FL_KEY_LOST) is lifted the same way."""
     try:
         if flica_refused_at() is None:
             return False
         S.pop("flica_refused", None)
+        S.pop(FL_KEY_LOST, None)
         S["note"] = "FLICA details saved again: one more login try"
         save_state(S)
         FLAGS["rearm"] = True
@@ -2355,17 +2361,146 @@ def no_next_check():
 # sooner. Details FLICA refused (the login form came back, not a load error) are kept as a hash (S flica_refused, never
 # the values): while stopped_login_failed holds those same details, Re-arm logs in no more; saving new details in
 # Settings lifts the block, and saving the same ones again gives one more try (as CrewTrac's refusal block, 1.6.1).
+# 1.7.4: that hash is an HMAC-SHA256 with the pilot instance's own random key (flica_key), as CrewTrac's since 1.7.2: a
+# bare sha256 of the details let anyone who could read the state test password guesses against it offline.
 LOGIN_MIN_GAP_S = 600
+FL_KEY_FILE = f"{DATA}/flica_hmac.key"  # 1.7.4: a pilot's FLICA block key, 32 random bytes, 0600, this instance only
+FL_HMAC_V = "flica_hmac_v"  # S: 1 once the refusal record is keyed with it (the 1.7.4 migration ran)
+FL_KEY_LOST = "flica_key_lost"  # S: the refusal's time when its key was lost with it on record: blocked until a save
+_FLK = {"key": None}
+_FLK_LOCK = threading.RLock()
 
 
 def is_pilot():
     return ROLES.role(INSTANCE) == ROLES.PILOT
 
 
+def _key_file_read(path):
+    """1.7.2 (CrewTrac), 1.7.4 (FLICA): an instance's 32-byte HMAC key from its file, or None when there is none to
+    use: missing, a link (O_NOFOLLOW: never followed), not a plain file, unreadable or not 32 bytes. A mode other than
+    0600 is put back to 0600."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        if stat.S_IMODE(st.st_mode) != 0o600:
+            os.fchmod(fd, 0o600)
+        raw = os.read(fd, 64)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return raw if len(raw) == 32 else None
+
+
+def _key_file_make(path, prefix):
+    """A new random 32-byte key at path: written to a private temporary file beside it (mode 0600), synced, then moved
+    into place (os.replace: a link or anything else at path is replaced, never written through). OSError on failure,
+    with nothing left behind."""
+    key = secrets.token_bytes(32)
+    fd, tmp = tempfile.mkstemp(prefix=prefix, dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(key)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    return key
+
+
+def _flica_msg(o):
+    return json.dumps(["flica", o.get("username") or "", o.get("password") or ""]).encode()
+
+
+def _same_hash(a, b):
+    """Two refusal hashes equal (compared as bytes: a stored value that is not plain text never raises)."""
+    return bool(a) and bool(b) and hmac.compare_digest(str(a).encode(), str(b).encode())
+
+
+def flica_legacy_hash(o=None):
+    """The 1.6.2 to 1.7.3 refusal record (a bare sha256 of the details), read only when the record is keyed
+    (flica_key: the 1.7.4 migration) and never stored again."""
+    return hashlib.sha256(_flica_msg(OPTS if o is None else o)).hexdigest()
+
+
+def flica_key():
+    """1.7.4: the random 32-byte key of a pilot's FLICA refusal record (flica_creds_hash, HMAC-SHA256), in his own data
+    folder (FL_KEY_FILE, mode 0600, read with O_NOFOLLOW), made when he first needs it (a refusal on record at the
+    start, or FLICA's first refusal); never logged, exported, published or sent. The admin has no block, so no key
+    (None). The first time a process has the key, the record on file is put right: an HMAC of the details in use is
+    kept, a bare sha256 of them (1.7.3's, on the first 1.7.4 start or after a rollback) is keyed with its time kept,
+    anything else is dropped (it blocks nothing and cannot be keyed without its details); the first time ever is
+    marked (FL_HMAC_V) and logged with counts only. A key found gone or unreadable after that, with a refusal on
+    record: no record can be matched any more, so the pilot stays blocked while stopped_login_failed until FLICA
+    details are saved again in Settings (FL_KEY_LOST; flica_refused_at, flica_lift, settings_cmd), never one more
+    login on its own. Raises OSError when no key can be made."""
+    if not is_pilot():
+        return None
+    with _FLK_LOCK:
+        if _FLK["key"] is not None:
+            return _FLK["key"]
+        key = _key_file_read(FL_KEY_FILE)
+        made = key is None
+        if made:
+            key = _key_file_make(FL_KEY_FILE, ".flica_hmac.")
+        _FLK["key"] = key
+        first = S.get(FL_HMAC_V) != 1
+        r = dict(S.get("flica_refused") or {})
+        kept = dropped = 0
+        if made and not first:  # records made with a key that is gone
+            if r.get("hash"):
+                S.pop("flica_refused", None)
+                S[FL_KEY_LOST] = float(r.get("at") or 0) or time.time()
+                log.info("the FLICA block key was lost with a refusal on record; no FLICA login until FLICA details "
+                         "are saved again in Settings")
+        elif r.get("hash"):
+            new = hmac.new(key, _flica_msg(OPTS), hashlib.sha256).hexdigest()
+            if _same_hash(r["hash"], new):
+                kept = 1
+            elif _same_hash(r["hash"], flica_legacy_hash()):
+                S["flica_refused"] = {**r, "hash": new}
+                kept = 1
+                if not first:
+                    log.info("a FLICA refusal kept as a bare hash (1.7.3) was keyed with this instance's own key")
+            else:
+                S.pop("flica_refused", None)
+                dropped = 1
+        if first:
+            S[FL_HMAC_V] = 1
+            if kept or dropped:  # a record was on file (none at a pilot's first refusal: nothing to say)
+                log.info("FLICA refusal record keyed with this instance's own key (%d kept, %d dropped)", kept,
+                         dropped)
+        save_state(S)
+        return key
+
+
+def flica_key_start():
+    """1.7.4: at a pilot's start with a FLICA refusal on record, its key is had (the 1.7.4 migration, or the key-lost
+    rule) before anything compares the record. No record, no key: it is made at FLICA's first refusal."""
+    if not is_pilot() or not (S.get("flica_refused") or {}).get("hash"):
+        return
+    try:
+        flica_key()
+    except OSError as e:  # flica_refused_at holds the block while no key can be had
+        log.info("the FLICA block key could not be read or made (%s)", type(e).__name__)
+
+
 def flica_creds_hash(o=None):
-    """sha256 of the FLICA user name and password in use: the refusal block's key. Never the values themselves."""
-    o = OPTS if o is None else o
-    return hashlib.sha256(json.dumps(["flica", o.get("username") or "", o.get("password") or ""]).encode()).hexdigest()
+    """The refusal record's key of the FLICA user name and password in use: 1.7.4, an HMAC-SHA256 with this pilot
+    instance's own key (flica_key); never the values, never a bare hash. None on the admin (no block, no key)."""
+    key = flica_key()
+    if key is None:
+        return None
+    return hmac.new(key, _flica_msg(OPTS if o is None else o), hashlib.sha256).hexdigest()
 
 
 def login_wait(now=None):
@@ -2380,14 +2515,31 @@ def login_wait(now=None):
 
 
 def flica_refused_at():
-    """A pilot's block: the unix time FLICA refused the details now in use, while stopped_login_failed; else None."""
+    """A pilot's block: the unix time FLICA refused the details now in use, while stopped_login_failed; else None.
+    1.7.4: or, whatever details are in use, the refusal's time when its key was lost with it on record (FL_KEY_LOST),
+    until FLICA details are saved again in Settings. The key is had first (flica_key may key or drop the record); while
+    none can be had, the record holds the block (never one more login on a doubt)."""
     if not is_pilot() or S.get("machine") != "stopped_login_failed":
         return None
+    h = None
     r = S.get("flica_refused") or {}
-    return float(r.get("at") or 0) if r.get("hash") and r.get("hash") == flica_creds_hash() else None
+    if r.get("hash"):
+        try:
+            h = flica_creds_hash()
+        except OSError as e:
+            log.info("the FLICA block key could not be read or made (%s); the refusal on record holds",
+                     type(e).__name__)
+            return float(r.get("at") or 0)
+    if S.get(FL_KEY_LOST):
+        return float(S[FL_KEY_LOST])
+    r = S.get("flica_refused") or {}  # read again: having the key may have keyed or dropped it
+    return float(r.get("at") or 0) if _same_hash(r.get("hash"), h) else None
 
 
 def flica_refused_note(at):
+    if S.get(FL_KEY_LOST):  # 1.7.4: the record cannot be checked any more; only a save in Settings lifts the block
+        return (f"FLICA refused a login at {hst_hm(at)} HST and that refusal can no longer be checked; save your FLICA "
+                "details on the Settings tab again (the same ones or new ones) to try once more")
     return (f"FLICA refused these login details at {hst_hm(at)} HST; save new ones on the Settings tab "
             "(saving the same ones again gives one more try)")
 
@@ -2399,6 +2551,7 @@ def try_login(fl, reason):
     if res == "ok":
         S["pot_urls"] = {}
         S.pop("flica_refused", None)
+        S.pop(FL_KEY_LOST, None)
         pub("session", "ON")
         set_machine("hunting" if FLAGS["hunt"] else "idle", f"logged in ({reason})")
         return True
@@ -2406,9 +2559,17 @@ def try_login(fl, reason):
     if res == "blocked":
         set_machine("stopped_unexpected", "FLICA asked for captcha/MFA/password change during login")
     elif is_pilot() and not getattr(fl, "login_error", None):  # the form came back: FLICA refused these details
-        S["flica_refused"] = {"hash": flica_creds_hash(), "at": time.time()}
+        at = time.time()
+        try:
+            S["flica_refused"] = {"hash": flica_creds_hash(), "at": at}
+            S.pop(FL_KEY_LOST, None)  # this refusal's own record replaces one whose key was lost
+        except OSError as e:  # 1.7.4: no key to keep the record with: blocked until a save in Settings all the same
+            S.pop("flica_refused", None)
+            S[FL_KEY_LOST] = at
+            log.info("the FLICA block key could not be made (%s); no FLICA login until FLICA details are saved again "
+                     "in Settings", type(e).__name__)
         log.info("FLICA refused the login (%s); no login with these details until others are saved", reason)
-        set_machine("stopped_login_failed", flica_refused_note(S["flica_refused"]["at"]))
+        set_machine("stopped_login_failed", flica_refused_note(at))
     else:
         set_machine("stopped_login_failed", f"one login attempt failed ({reason})")
     return False
@@ -8518,20 +8679,7 @@ _CTK = {"key": None}
 
 
 def _ct_key_read():
-    try:
-        fd = os.open(CT_KEY_FILE, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    except OSError:
-        return None
-    try:
-        st = os.fstat(fd)
-        raw = os.read(fd, 64) if stat.S_ISREG(st.st_mode) else b""
-        if stat.S_IMODE(st.st_mode) != 0o600:
-            os.fchmod(fd, 0o600)
-    except OSError:
-        raw = b""
-    finally:
-        os.close(fd)
-    return raw if len(raw) == 32 else None
+    return _key_file_read(CT_KEY_FILE)  # 1.7.4: the same reader as the FLICA block key's
 
 
 def crewtrac_key():
@@ -8545,17 +8693,7 @@ def crewtrac_key():
         return _CTK["key"]
     key = _ct_key_read()
     if key is None:
-        key = secrets.token_bytes(32)
-        fd, tmp = tempfile.mkstemp(prefix=".crewtrac_hmac.", dir=DATA)
-        try:
-            with os.fdopen(fd, "wb") as f:
-                f.write(key)
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, CT_KEY_FILE)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-            raise
+        key = _key_file_make(CT_KEY_FILE, ".crewtrac_hmac.")
         _CTK["key"] = key
         ct, seen = dict(DB.get("crewtrac") or {}), dict(DB.get("crewtrac_refused") or {})
         if DB.get(CT_HMAC_V) == 1:  # records made with a key that is gone
@@ -10275,6 +10413,7 @@ def main():
     global MQ
     migrate_swap_mode()  # FW-0028: before on_connect publishes the mode
     enforce_role()
+    flica_key_start()  # 1.7.4: a pilot's refusal record keyed (or its key found lost) before any command reads it
     captures_cleanup()  # 1.6.2 review: what 1.6.1 left of a pilot in the admin's folder, his unmasked screenshot
     MQ = mqtt_start()
     start_upload_janitor()  # FW-0066: chunks arrive as soon as MQTT is up, even while a second pilot waits for settings
@@ -10293,7 +10432,11 @@ def main():
                 time.sleep(3600)
         set_machine("stopped_unexpected", "enter your FLICA username and password: dashboard Settings tab")
     elif S.get("machine", "").startswith("stopped"):
-        set_machine(S["machine"], S.get("note", "") + " (still stopped after restart, press Re-arm)")
+        lost = flica_refused_at() if S.get(FL_KEY_LOST) else None
+        if lost is not None:  # 1.7.4: Re-arm cannot lift a block whose key was lost; a save in Settings can
+            set_machine(S["machine"], flica_refused_note(lost))
+        else:
+            set_machine(S["machine"], S.get("note", "") + " (still stopped after restart, press Re-arm)")
     elif still_waiting():
         # 1.0.1 review: a restart (a Settings save, an app restart) keeps a yield to Ryan's own FLICA login
         # and a re-login back-off running instead of loading FLICA at once
