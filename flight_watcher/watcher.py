@@ -394,6 +394,8 @@ def on_message(c, u, msg):
         changed = FLAGS["pause"] != (p == "ON")
         set_switch(c, "pause", p == "ON")
         log.info("pause %s", FLAGS["pause"])
+        if FLAGS["pause"]:
+            pause_cancels_login("Pause turned on")  # 1.7.5 (Ryan, Nov 14: "Pause wins"): a login still waiting is off
         if changed and FLAGS["pause"]:
             wake = True  # nothing is loaded: the loop parks (and a load waiting in the gate gives up)
         elif changed:
@@ -526,7 +528,9 @@ def rearm_answer():
     """1.7.1 (F#92, F#149): what a Re-arm press does now: (action, ok, why). action 'login': stopped, yielded or in a
     back-off, the login Re-arm has always made (only a stop wakes the loop for it, as before, so a step-aside for the
     pilot's own FLICA login is never cut short: the login waits for its end); ok is false while FLICA refused these
-    details (the loop says so in the note and logs in no more). action 'check': idle or hunting with no check for
+    details (the loop says so in the note and logs in no more). 1.7.5 (Ryan, Nov 14: "Pause wins"): while Pause is
+    on, action '' and ok false (no login is queued: Pause would cancel it; pause_cancels_login), on every instance.
+    action 'check': idle or hunting with no check for
     stuck_after_s() and none running, what the clock card's 'Stuck. Press Re-arm.' asks for: a full check now.
     action '': nothing to re-arm (ok false, why says what the Watcher is doing)."""
     st = S.get("machine") or "idle"
@@ -538,6 +542,9 @@ def rearm_answer():
                 return "login", False, ("nothing to re-arm: FLICA's refusal on record can no longer be checked; save "
                                         "your FLICA details on Settings again")
             return "login", False, "nothing to re-arm: FLICA refused these login details; save new ones on Settings"
+        if FLAGS.get("pause"):  # 1.7.5 (Ryan, Nov 14: "Pause wins"): no login is queued while paused
+            return "", False, ("nothing to re-arm while paused: turn Pause off, then press Re-arm"
+                               if st.startswith("stopped") else "nothing to re-arm while paused: turn Pause off")
         if st == "yielded":
             return "login", True, (f"logs in when the step-aside for your own FLICA login ends, "
                                    f"{hst_hm(S.get('yield_until'))} HST")
@@ -887,6 +894,64 @@ def flica_again_due(now=None):
         S.pop(FL_AGAIN, None)
         save_state(S)
     return due
+
+
+# 1.7.5 (Ryan, Nov 14: "Pause wins"): Pause on cancels a FLICA login still waiting to run (Re-arm's, or the one more
+# try a save of the same FLICA details gave); a Re-arm of the pilot's own after Pause is off logs in again
+PAUSE_CANCEL_LOCK = threading.RLock()
+PAUSE_CANCEL_REARM = "Re-arm's FLICA login"
+PAUSE_CANCEL_SAVE = "the one more FLICA login try from your Settings save"
+
+
+def pause_cancel_note(what):
+    return f"{what} was cancelled by Pause; press Re-arm after turning Pause off"
+
+
+def pause_cancels_login(where):
+    """1.7.5 (Ryan, Nov 14: "Pause wins"): Pause on cancels a FLICA login still waiting to run: Re-arm's (FLAGS rearm,
+    waiting for a pilot's login floor, a step-aside's end or a back-off's) and the one more try a save of the same FLICA
+    details gave (FLAGS rearm_note, S flica_again_at, before or after the restart that save asked for). Called by the
+    pause/set handler, at a start that finds Pause on and by the main loop's Re-arm branch (Pause turned on in the last
+    instant before its login). The save's lift of FLICA's refusal block stands (it is what the save asked for; before
+    the restart it is applied here, as main would have): only its login is cancelled, so once Pause is off a Re-arm
+    logs in (still at most one login every LOGIN_MIN_GAP_S on a pilot). A stopped Watcher stays stopped and its note
+    says so; one stepped aside or in a back-off is paused by the loop at once (its un-pause as before). The same on
+    the admin. True when something was cancelled (one log line; the lock keeps the handler and the loop from both
+    saying it)."""
+    with PAUSE_CANCEL_LOCK:
+        again = S.get(FL_AGAIN) is not None
+        if not (FLAGS.get("rearm") or again):
+            return False
+        what = PAUSE_CANCEL_SAVE if again or FLAGS.get("rearm_note") == FLICA_AGAIN_NOTE else PAUSE_CANCEL_REARM
+        FLAGS["rearm"] = False
+        FLAGS["rearm_note"] = None
+        st = S.get("machine") or "idle"
+        if again:
+            S.pop(FL_AGAIN, None)
+            if st == "stopped_login_failed":  # the restart the save asked for has not come yet: its lift, now
+                S.pop("flica_refused", None)
+                S.pop(FL_KEY_LOST, None)
+        if st.startswith("stopped"):
+            set_machine(st, pause_cancel_note(what))
+        else:
+            save_state(S)
+        log.info("pause: %s cancelled (%s); Re-arm after Pause is off logs in", what, where)
+        return True
+
+
+def rearm_claim():
+    """1.7.5: the main loop takes the pending Re-arm for its login: True to log in now. False when Pause is on (the
+    login is cancelled here, pause_cancels_login) or it was cancelled meanwhile: the Re-arm branch never logs in while
+    Pause is on, even one turned on in the last instant (its handler sets the switch before it cancels)."""
+    with PAUSE_CANCEL_LOCK:
+        if FLAGS["pause"]:
+            pause_cancels_login("Pause on before the login")
+            return False
+        if not FLAGS["rearm"]:
+            return False
+        FLAGS["rearm"] = False
+        FLAGS["rearm_note"] = None
+        return True
 
 
 def crewtrac_lift():
@@ -10615,6 +10680,8 @@ def main():
         at = flica_refused_at()
         if at is not None:  # 1.7.4 review: Re-arm cannot lift FLICA's refusal (nor one whose key was lost); a save can
             set_machine(S["machine"], flica_refused_note(at))
+        elif again and FLAGS["pause"]:  # 1.7.5 ("Pause wins"): Pause found on at this start cancels that try
+            pause_cancels_login("Pause on at start")
         elif again:  # 1.7.4 review: the same FLICA details saved again with other settings: the one more try, now
             FLAGS["rearm"] = True  # Re-arm's path: still at most one login every LOGIN_MIN_GAP_S
             FLAGS["rearm_note"] = FLICA_AGAIN_NOTE  # its note while it waits for the floor
@@ -10698,11 +10765,14 @@ def main():
                         set_machine(st, flica_refused_note(at))
                         log.info("re-arm: FLICA refused these login details; no login until others are saved")
                         continue
+                    if FLAGS["pause"]:  # 1.7.5 ("Pause wins"): no wait for the floor and no login while paused
+                        pause_cancels_login("Pause on before the login")  # nothing left when its handler did it
+                        continue
                     # a pilot's logins are LOGIN_MIN_GAP_S apart; 1.7.4 review: a save's one more try says so
                     if login_deferred(st, FLAGS.get("rearm_note") or "Re-arm pressed"):
                         continue  # FLAGS rearm stays set: the login runs once the wait is over
-                    FLAGS["rearm"] = False
-                    FLAGS["rearm_note"] = None
+                    if not rearm_claim():  # 1.7.5: Pause turned on in the last instant cancels it too
+                        continue
                     S["kills"] = []
                     S["pot_urls"] = {}
                     S["parse_fail"] = 0

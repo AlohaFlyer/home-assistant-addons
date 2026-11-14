@@ -24,7 +24,10 @@ publishes what it finds to Home Assistant over MQTT.
   hash. If that key is lost, replaced or unreadable with a refusal on record (or the state is put back from a copy),
   the pilot stays stopped until his FLICA details are saved again (the same ones or new ones, alone or with other
   settings); a read error keeps the key and the block. The first 1.7.4 start rewrites the database files so the old
-  bare hash is gone from them too (a backup made before the update still holds it).
+  bare hash is gone from them too (a backup made before the update still holds it). Pause wins (1.7.5): Pause on
+  cancels a FLICA login still waiting to run (Re-arm's, waiting for the 10 min login floor or a back-off, and the one
+  more try a save of the same FLICA details gave), and a Re-arm pressed while paused does nothing (it says why).
+  After Pause is off a stopped Watcher stays stopped until a new Re-arm, which logs in at the floor.
 - Schedule: your line, numbered schedule versions (MM.NNN), FAR 117 columns, pay from the PWA tables, pairing
   details, and the monthly award and pairings PDFs uploaded on the dashboard (or the Web UI). A trip that comes home
   the day the next one starts keeps its real end (1.4.7). A trip the company removed and FLICA shows as PAYP keeps
