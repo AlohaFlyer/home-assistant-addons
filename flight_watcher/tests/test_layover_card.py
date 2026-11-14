@@ -441,17 +441,11 @@ def test_the_dashboard_snapshot_puts_the_card_on_the_working_flight_view():
     v = next(v for v in d["data"]["config"]["views"] if v.get("path") == "flight")
     assert v["title"] == "Working Flight" and v["icon"] == "mdi:airplane-takeoff"
     cs = [c for s in v["sections"] for c in s["cards"]]
-    # Nov 12 (Ryan, in Sydney: the page said "Configuration error" on his phone): the built-in markdown card and the
-    # Ready to update? button are back above the layover card, so the page reads with no custom card at all
-    assert [c["type"] for c in cs] == ["markdown", "grid", "custom:flight-watcher-layover-card"]
-    assert "sensor.flight_watcher_working_flight" in cs[0]["content"] and "sensor.hark_working_flight" in cs[0]["content"]
-    # Nov 12 (Ryan: "When I click ready to update I want you to trigger hark without my help"): the button runs the
-    # ask-Hark automation instead of opening Hark's project page
-    assert cs[1]["cards"][0]["name"] == "Ready to update"
-    assert cs[1]["cards"][0]["tap_action"] == {"action": "perform-action", "perform_action": "automation.trigger",
-                                              "target": {"entity_id": "automation.flight_watcher_ready_to_update_ask_hark"}}
-    assert "flight_watcher_ready_to_update_ask_hark" in cs[0]["content"]  # the card shows "Asked Hark at ..." 
-    assert cs[2] == {"grid_options": {"columns": "full"}, "type": "custom:flight-watcher-layover-card",
+    # Nov 12 the built-in markdown card and the Ready to update button went back above the layover card while Ryan's
+    # phone said "Configuration error"; Nov 13 (Ryan, after the 1.7.2 loader made the card show on his phone: "Layover
+    # card only") they are gone again: the layover card alone, its "Update with Hark" chip opens Hark for "ready"
+    assert [c["type"] for c in cs] == ["custom:flight-watcher-layover-card"]
+    assert cs[0] == {"grid_options": {"columns": "full"}, "type": "custom:flight-watcher-layover-card",
                      "update_url": "<redacted-hark-url>"}
     assert "hark.com/project" not in text  # Hark's project link stays out of git
     # the card ships with the app

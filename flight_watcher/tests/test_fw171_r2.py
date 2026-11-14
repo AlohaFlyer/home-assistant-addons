@@ -643,10 +643,11 @@ def test_the_dashboard_snapshot_has_no_weather_view_and_matches_its_sha():
     views = [v.get("path") for v in json.loads(text)["data"]["config"]["views"]]
     assert views == ["watcher", "flight", "details", "recall", "settings"]
     readme = open(os.path.join(ROOT, "ha", "README.md"), encoding="utf-8").read()
-    # the snapshot's sha256 is in the README. 1.7.2 live (Nov 13): the van alert settings tiles are applied, so the
-    # snapshot and Pako's dashboard have the same sha256 again (read 2026-11-13 06:2x HST) and nothing is pending
+    # the snapshot's sha256 is in the README. 1.7.2 live (Nov 13): the van alert settings tiles are applied, then the
+    # Working Flight view keeps the layover card only; the snapshot and Pako's dashboard have the same sha256 (read
+    # 2026-11-14) and nothing is pending
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    assert sha == "3bfd73bcdc798df66a79c0ecf1cb63f6f2dcae271f814f2a890f6ac991000d7e" and sha in readme
+    assert sha == "828ee141cb06d8d613d9ab8c9441a1d865202c7191433c4b045336cbb52117bf" and sha in readme
     assert "Applied on Pako 2026-11-13 about 05:47 HST (1.7.2): van alert settings" in readme
     assert "Pending on Pako" not in readme and "ahead of Pako" not in readme
     assert "lat=" not in text and "windy" not in text.lower()

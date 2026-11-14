@@ -102,8 +102,16 @@ The 23 automations here match Pako's 23 Flight Watcher automations in file order
 23 items `0a7ff0d9f8aac055fef0b2a41350e9cb657896bbca1e04759bc48ce543dcc8c4` (read 2026-11-13 06:2x HST, after 1.7.2 went
 live, the pilot upload automation was added, the "Ready to update" push wording changed and the temporary van one was
 deleted). The dashboard snapshot matches Pako's `/config/.storage/lovelace.flight_watcher`, sha256
-`3bfd73bcdc798df66a79c0ecf1cb63f6f2dcae271f814f2a890f6ac991000d7e` (5 views: Watcher, Working Flight, Details,
-Recall/O75, Settings; read 2026-11-13 06:2x HST, with the van alert settings tiles).
+`828ee141cb06d8d613d9ab8c9441a1d865202c7191433c4b045336cbb52117bf` (5 views: Watcher, Working Flight, Details,
+Recall/O75, Settings; read 2026-11-14 HST, with the van alert settings tiles and the Working Flight view below).
+
+**Changed on Pako 2026-11-13 about 08:30 HST (Ryan: "Layover card only"):** once the 1.7.2 loader made the layover
+card show on his phone (FW-0072 closed), the Working Flight view showed the flight twice: the Nov 12 stand-in markdown
+card, the big "Ready to update" button, then the layover card. Claude removed the first two cards through the HA
+connector (a JSON patch guarded by tests of all three card types); the view's one section now holds the layover card
+alone. Its "Update with Hark" chip opens Hark's project for "ready"; Hark fills the release 60 and 30 min before each
+departure anyway. The "Flight Watcher ready to update (ask Hark)" automation stays (MQTT
+`flight_watcher/hark/ready_to_update` still runs it). Undo: put the two cards back from git history.
 
 **Changed on Pako 2026-11-12 about 03:30 HST (Ryan: "Gin code should be on its own line so it doesn't get cut
 off"):** the Working Flight markdown card shows `GIN dep` and `GIN arr` as the label and place, then the code alone
