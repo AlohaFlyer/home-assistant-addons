@@ -312,13 +312,13 @@ Recent finds.
   Extended Range +15% as on your own schedule. Pay-Net is an estimate at your own federal and state tax settings. Days
   Off counts bid period days with no trip on the crew lists (reserve and training are not on crew lists). No date of
   hire on file: hours and days only, and the card says to upload the list.
-- Pay of a month FLICA showed (1.7.6, Ryan, Nov 14): another pilot's month read from Schedule Lookup is priced the same
+- Pay of a month FLICA showed (1.7.7, Ryan, Nov 14): another pilot's month read from Schedule Lookup is priced the same
   way. Each pairing's item gets `seat` (from the crew line of the pairing page the lookup already read, by his employee
   number; else the crew index's; else the seniority list's seat; else FO, said in `seat_src`) and `gross`, and
   `items_pay` holds the month's Credit, Block, Soft, Pay-Gross, Pay-Net and FLICA's own Days Off. Credit and block come
   from the pairing page read, else the pairings package, else the crew index. Each schedule version of that pilot is
   priced in `pilotver_<key>.json` (each item's `gross`, the record's `pay`: amounts and hours, never a date of hire). No
-  FLICA page is loaded for any of it. The month is the schedule card's (1.7.6 review): the pairings that start in the
+  FLICA page is loaded for any of it. The month is the schedule card's (1.7.7 review): the pairings that start in the
   calendar month, each its PWA 4.A share (a segment pays on the date it originates: a trip into the next month counts
   the block share of its duties departing this month, from the package's duties or the legs of its pairing page;
   `split` on the item), the vacation days at 4:00 credit a day (PWA 6.J.1.c, `vac`), and a PAYP (PWA Definitions 57)
@@ -329,10 +329,10 @@ Recent finds.
   and in its version. The Watcher has the A330 PAX tables only (PWA 3.D.6 FO, PWA 3.C.4 A330 and B787 Captain): a
   pilot the list puts on another fleet is not priced (`equip`, `no_rate`; a 787 pilot in the Captain seat only).
   `rate_steps` names the day inside the month a new longevity year or rate date changes his rates. On a pilot instance
-  both pay lines (`items_pay` and the rebuilt month's `pay_line`) leave out the date of hire, the list's dates, the year
-  he turns and the day his rates step up: the year, not the date. Each trip's Pay-Gross still shows a rate step between
-  two trips; Ryan decides whether `year_to` may go back on a pilot's portal.
-- `seniority.md` (1.7.6, Ryan, Nov 14: "keep that in an MD card for reference"): each time `seniority.json` is written
+  both pay lines (`items_pay` and the rebuilt month's `pay_line`) carry the date of hire, the list's dates, `year_to`
+  and `rate_steps` as on Ryan's (1.7.7, Ryan, Nov 14: "james and I are on a high level of trust. he can be trusted";
+  James may see a looked-up pilot's Sen, DOH, status, retirement and seat), as the rebuilt month's line did in 1.7.5.
+- `seniority.md` (1.7.7, Ryan, Nov 14: "keep that in an MD card for reference"): each time `seniority.json` is written
   (a list, an award's dates of hire, a re-read) the Watcher writes `/share/flight_watcher/seniority.md`: a heading with
   the list date, source and count, then a table (Seniority #, Name, Emp, DOH, Seat, Equip, Pay year today: the
   longevity year from the DOH, PWA 3.B.1, capped at 12) sorted by seniority. Personal data: mode 600, outside the
@@ -366,9 +366,10 @@ Recent finds.
   `sensor.<prefix>_own_trip_times` (size). Hark's `sensor.hark_working_flight` (Ryan only: release, MEL, NOTAMs, live
   status) is separate.
 - Bid calendar (1.7.1, FW-0070, `bidcal.py`): alerts for each PBS bid cycle, all HST. The cycle for bid month M+1
-  runs in month M: the pairing package publishes on the 4th, practice runs on the 7th and the 10th, bids close on
+  runs in month M: the pairing package publishes on the 5th (1.7.7, Ryan, Nov 14: "pairings post on the 5th of the
+  month and close on the 11th monthly"; the 4th before), practice runs on the 7th and the 10th, bids close on
   the 11th at 08:00, unless that month's package is uploaded, whose Bid Calendar (page 1, left column) gives the
-  dates. Alerts: 08:00 the day before the package publishes, the 3rd by default ("adjust your vacation if needed";
+  dates. Alerts: 08:00 the day before the package publishes, the 4th by default ("adjust your vacation if needed";
   `bidcal.PUBLISH_ALERT`, one constant; Ryan's Nov 11 answer), 20:00 the night before each practice run, 24 h before
   the close and 20:00 the night before it. Checked once a minute whatever the Watcher is doing (no FLICA load); each
   goes once on `<prefix>/event/bid_calendar` (not retained: `kind`, `key`, `bid_month`, `alert` (1.7.2), `title`,
@@ -432,7 +433,7 @@ through `/local/flight-watcher-loader.js`. Phone pushes are HA automations on Pa
 events (`<prefix>/event/...`: new_pairing, request_decided, recall_miss, recall_file_requested, recall_ccr_filed,
 ticket_fixed and others).
 
-**Pairing detail** (1.7.6, Ryan, Nov 14): on the schedule card a tap on a pairing (or Enter on it) opens its detail
+**Pairing detail** (1.7.7, Ryan, Nov 14): on the schedule card a tap on a pairing (or Enter on it) opens its detail
 like FLICA's pairing printout: the header (pairing, start date, the days it operates, base report, base and
 equipment), one line per leg (day, date, deadhead, flight, from and to, departure and arrival local as the package
 prints them, block, ground), each duty's TBLK, TDHD, TCRD, duty and FDP (FDP from report to the last flight's block-in,
@@ -444,7 +445,7 @@ swipe down on its handle or header closes it). The same pairing again, the close
 pairing swaps it. It only reads, so the lock does not apply; "would trade" moved to the arrow mark alone. The data is
 the pairings file (`pairings_<YYYY-MM>.json`, key `detail`, parser version `dv`; the Watcher reads a package text copy
 on file again when the parser changes). That file is served at a fixed address with no login and copied to every
-pilot's portal, so (1.7.6 review) it keeps routes and times only: the hotels and van times stay in the Watcher's DB
+pilot's portal, so (1.7.7 review) it keeps routes and times only: the hotels and van times stay in the Watcher's DB
 (`pkg_hotels:<YYYY-MM>`) and reach only your own trips, on your own trip times sensor (`hotels`); another pilot's
 detail has no hotel line. Ryan can choose to put them in the shared file. A crafted upload cannot make the file larger
 than the portal takes: past 1.5 MB of detail (or 600 pairings) the rest have none (`dcut`) and their detail says so.
@@ -453,7 +454,7 @@ H3604B; a month with no package) shows FLICA's duties and says the package detai
 the panel are one block of code (`// ---- shared schedule grid ...`) every month card carries byte for byte
 (`tests/test_sched_grid_shared.py`).
 
-**One look for every month** (1.7.6, Ryan, Nov 14: "my schedule and other pilots schedule and reconstructed schedules
+**One look for every month** (1.7.7, Ryan, Nov 14: "my schedule and other pilots schedule and reconstructed schedules
 should be exactly the same style including this latest detail panel"): the pilot card draws another pilot's month as
 FLICA showed it, its older versions and the month reconstructed from pairing crew lists with that same block: the
 schedule card's day column and colours, the bold blue pairing, the layover box with R and Rel times (from the pairings
@@ -465,6 +466,32 @@ columns are Trip, Layover, Block, Credit, Soft,
 Pay-Gross (that pilot's, when his date of hire is on file) and Crew; the seat and legs are in the pairing's hint and
 detail, and the rate, seat and source notes sit under the grid. Ryan's planning columns (Pay-Net, Res Grid, the FAR
 columns, Room, Legal next, Open, Ideas, the trade and drop marks) stay on his own schedule.
+
+**Picked up by** (1.7.7, Ryan, Nov 14: "the person picking up should be blue and clickable... the other person who was
+already on the pairing should be black and not clickable"): on the finds card only the picker is the blue link to his
+month; any other name in the cell is plain text. The picker is the newcomer in the find's open seat: when a find leaves
+the pot the pickup check compares the roster seen in the pot with the one after (an Open seat that went, or a seat
+FLICA had left out that appeared, is a seat filled; a newcomer in a seat that was not open is a crew swap) and stores
+the picker's employee number (`pickers` on the pickup, in the finds month files and on the finds sensor). A find
+recorded before 1.7.7 is read from its open seats (`open_seats`, from the roster in the pot) and the seat before each
+name: a seat's names are its pickers when they are no more than its open seats, a lone name when no open seat is on
+file; anything else links nobody rather than the wrong pilot. The FO / RO pickers table and the in-flight check use the
+same picker(s), each picker once per pickup (both pickers of a pickup with both seats open). Before, a two-name pickup
+was scored to the last number under a merged name ("Doe, Jane (10001); RO Roe, Rick" with Rick's number); the first
+start of 1.7.7 rebuilds the pickers table and its log from the stored pickups once (`pickers_rebuild_v`), and an
+in-flight verdict that was looked up for a pilot who was not the picker is looked up again for the picker (the usual
+in-flight budget, 3 a check).
+
+**InFlt** (1.7.7, Ryan, Nov 14: "I want to know what flight he was flying to be certain. Add the flight number... i.e
+AS808/06NOV and date"): an in-flight pickup shows the airplane and the flight, `AS808/06NOV`: the flight number of the
+leg the picker was airborne on (block out to block in; a deadhead counts, he is airborne) and its departure date, local
+at its origin (a leg out of LAX at 00:30 local left 22:30 HST the day before: the LAX date). Hover: "picked up while
+airborne on AS808 HNL-LAS, departed 06NOV 23:00 local (pairing H3648 Nov 3)", with "(DH, deadhead)" for a deadhead.
+The in-flight check keeps the leg from the pairing page it already reads (`inflt_leg`: flt, frm, to, dep_l, date, dh,
+src `page`; no extra page). A verdict from before 1.7.7 gets its leg from the pairings package with no FLICA load, on
+each start and after a package upload, only when the package lists the picker's pairing on that start date and one of
+its legs holds the pickup time (src `package`, "flight from the pairings package" on hover); otherwise the airplane
+stays alone and the hover says the flight is not on file. Blank: no picker on file to look up.
 
 ## Tickets (FW-nnnn)
 

@@ -15,7 +15,7 @@
    month (no match, a pick list, a wait) always shows its status line with its time (HST); a pick-list entry may carry an
    opaque pick id instead of the employee number (a pilot instance), and the number is shown only once a pilot is
    chosen; the loading line says when the Watcher reads it and gives up after 2 minutes past that, with a reason.
-   1.7.6 (Ryan, Nov 14: "my schedule and other pilots schedule and reconstructed schedules should be exactly the same
+   1.7.7 (Ryan, Nov 14: "my schedule and other pilots schedule and reconstructed schedules should be exactly the same
    style including this latest detail panel"): another pilot's month FLICA showed, an older version of it, and the month
    reconstructed from pairing crew lists are drawn with the schedule card's own grid (the shared block below, byte for
    byte the schedule card's: day column colours, the bold blue pairing, the layover box with R and Rel times from the
@@ -45,11 +45,11 @@ const VER_SRC = { lookup: "FLICA schedule", rebuild: "rebuilt", award: "awarded 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 const PILOT_WAIT_MS = 120000;  // 1.6.2: the loading line gives up this long after the Watcher's next check
 const hstHM = (iso) => { const t = Date.parse(iso || ""); return isNaN(t) ? "" : new Date(t - 10 * 3600e3).toISOString().slice(11, 16); };
-// 1.7.6: the shared pairings package files (pairings_YYYY-MM.json; cards.pilot_copy keeps them shared), the schedule card's
+// 1.7.7: the shared pairings package files (pairings_YYYY-MM.json; cards.pilot_copy keeps them shared), the schedule card's
 const PAIRINGS_URL = "/local/flight-watcher/pairings_";
 
 // ---- shared schedule grid: keep identical in every card that holds it (tests/test_sched_grid_shared.py) ----
-// 1.7.6 (Nov 14: "my schedule and other pilots schedule and reconstructed schedules should be exactly the same style
+// 1.7.7 (Nov 14: "my schedule and other pilots schedule and reconstructed schedules should be exactly the same style
 // including this latest detail panel"): one look for every month grid and one pairing detail panel, in each card that
 // draws a month. FWG_CSS: the grid (sticky day and date columns, weekend and holiday colours, the trip box in the
 // Layover column, the trip, R / Rel, layover and totals marks, light and dark) and the panel; .fwgf gives a grid the
@@ -424,7 +424,7 @@ const FWG_CSS = `
       @media (prefers-reduced-motion: reduce){.fwss{transition:none}}
 `;
 // ---- end shared schedule grid ----
-// 1.7.6: FLICA's pairing page writes times as '0830' and block as '0530'; the grid writes '08:30' and '5:30'
+// 1.7.7: FLICA's pairing page writes times as '0830' and block as '0530'; the grid writes '08:30' and '5:30'
 const pcHM = (s) => { const t = String(s == null ? "" : s).trim(); return /^\d{4}$/.test(t) ? `${t.slice(0, 2)}:${t.slice(2)}` : t; };
 const pcDur = (s) => { const t = String(s == null ? "" : s).trim(); return /^\d{3,4}$/.test(t) ? `${Number(t.slice(0, -2))}:${t.slice(-2)}` : fwgHM(t) || t; };
 const pcMin = (hm) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(hm || "")); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
@@ -467,7 +467,7 @@ class FlightWatcherPilotCard extends HTMLElement {
   constructor() {
     super();
     this._onPilot = (e) => this._lookup(e);
-    this._pk = {};  // 1.7.6: the pairings package files (fwgPack)
+    this._pk = {};  // 1.7.7: the pairings package files (fwgPack)
     this._pkRedraw = () => { if (this._root && !this._busy) { try { this._paint(); } catch (err) { /* the next update draws it */ } } };
   }
   setConfig(config) {
@@ -476,7 +476,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     FlightWatcherPilotCard._hook();
   }
   connectedCallback() {
-    // 1.7.6: Esc closes the pairing detail, Tab stays inside its sheet; a rotation or resize past the phone width redraws it
+    // 1.7.7: Esc closes the pairing detail, Tab stays inside its sheet; a rotation or resize past the phone width redraws it
     if (!this._kd) {
       this._kd = (e) => { if (!this._pd) return; if (e.key === "Escape") { this._pdClose(true); return; } if (this._sheet) this._sheet.trap(e); };
       this._rz = () => { if (this._pd && this._h && this._root && fwgNarrow(this._hc()) !== this._pdNarrow) this._paint(); };
@@ -563,7 +563,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     return (FlightWatcherPilotCard._qEmp || {})[q.toLowerCase()] === String(a.emp);  // one match: the pilot this name found before
   }
   set hass(h) {
-    // 1.7.6: the schedule card's dark colours (hass.themes.darkMode, which the portal sets from the device), the same way
+    // 1.7.7: the schedule card's dark colours (hass.themes.darkMode, which the portal sets from the device), the same way
     if (typeof this.toggleAttribute === "function") this.toggleAttribute("dark", !!(h && h.themes && typeof h.themes.darkMode === "boolean" ? h.themes.darkMode : typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches));
     this._h = h;
     const st = h.states[this._config.entity];
@@ -635,7 +635,7 @@ class FlightWatcherPilotCard extends HTMLElement {
       const rt = (x, ca, fo) => [seats.includes("CA") && x.CA != null ? `$${e(Number(x.CA).toFixed(2))}/cr h CA${ca}` : "",
         seats.some((s) => s !== "CA") && x.FO != null ? `$${e(Number(x.FO).toFixed(2))}/cr h ${seats.includes("RO") ? "FO/RO" : "FO"}${fo}` : ""].filter(Boolean);
       const parts = rt(r, " (PWA 3.C.4)", " (PWA 3.D.6)");
-      // 1.7.6 review: the list's fleet when the Watcher has no rates for it (the A330 PAX tables only), and the day a
+      // 1.7.7 review: the list's fleet when the Watcher has no rates for it (the A330 PAX tables only), and the day a
       // new longevity year or rate date changes the rates inside the month (each trip is priced on its own day)
       const miss = pl.equip ? [...new Set(seats.map((s) => (s === "CA" ? "CA" : "FO")))].filter((s) => r[s] == null) : [];
       if (miss.length) parts.push(`rates for the ${e(pl.equip)} ${e(miss.join("/"))} seat${miss.length > 1 ? "s" : ""} are not on file (only the A330 PAX tables, PWA 3.C.4 and 3.D.6): ${parts.length ? "those trips are not priced" : "no Pay-Gross"}`);
@@ -643,7 +643,7 @@ class FlightWatcherPilotCard extends HTMLElement {
         const y = x ? rt(x, "", "") : [];
         if (x && ISO_RE.test(x.from || "") && y.length) parts.push(`from ${e(fwgMd(x.from))}${x.year != null ? ` year ${e(x.year)}` : ""}: ${y.join(", ")}`);
       }
-      // 1.7.6: a pilot instance's Watcher leaves another pilot's DOH out: the year alone
+      // the DOH when the line carries it (1.7.7: a pilot instance's Watcher sends it again, Ryan, Nov 14)
       return [`Year ${e(pl.year)}${pl.year_to ? ` to ${e(pl.year_to)}` : ""}${pl.doh ? ` (DOH ${e(pl.doh)})` : ""}`, ...parts].join(" · ");
     }
     if (pl.list_status === "not_on_list") {
@@ -671,7 +671,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     return { tot: `<div class="tot" title="${e(why)}">${hrsG}${this._tgrp("tpay", this._payG(pl, m))}${daysG}</div>`,
       notes: `<div class="u prate">${this._rate(pl)}</div>${notes.length ? `<div class="u prate">${notes.join(" · ")}</div>` : ""}<div class="u psrc">${src}</div>` };
   }
-  // 1.7.6: a month FLICA showed: Credit and Block over its pairings (checked against FLICA's), Soft, Pay-Gross and
+  // 1.7.7: a month FLICA showed: Credit and Block over its pairings (checked against FLICA's), Soft, Pay-Gross and
   // Pay-Net (items_pay, the Watcher's), FLICA's Days Off; the rate and source notes go under it
   _readTot(a) {
     const e = (s) => this._esc(s), t = a.totals || {}, ip = a.items_pay && typeof a.items_pay === "object" ? a.items_pay : null;
@@ -694,7 +694,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     return { tot, notes: `<div class="u prate">${[this._rate(ip), seatN].filter(Boolean).join(" · ")}</div>${notes.length ? `<div class="u prate">${notes.join(" · ")}</div>` : ""}` +
       `<div class="u psrc">Source: FLICA Tools > Schedule Lookup, read only. Block / Credit per pairing from its pairing page (the first few), else the pairings package.</div>` };
   }
-  // 1.7.6 review: a month's hours and pay groups, the schedule card's (its order, check marks, Vacation and PAYP):
+  // 1.7.7 review: a month's hours and pay groups, the schedule card's (its order, check marks, Vacation and PAYP):
   // Credit (with the vacation and PAYP credit), Block, Soft, Vacation, PAYP, Pay-Gross, Pay-Net, Days Off. ip: the
   // Watcher's price (items_pay, or a version's pay); t: FLICA's totals it is checked against; m: the trips counted
   _hoursPay(ip, t, m, daysT) {
@@ -742,7 +742,7 @@ class FlightWatcherPilotCard extends HTMLElement {
       const base = st[0] || "HNL";
       const outs = [...new Set(st.filter((s) => s !== base))];
       const lay = x.start === x.end ? base : (x.lay || (outs.length === 1 ? outs[0] : ""));  // out and back: the one outstation
-      // 1.7.6 review: the days after the first show where the pilot is that night, as FLICA's grid does: the station the
+      // 1.7.7 review: the days after the first show where the pilot is that night, as FLICA's grid does: the station the
       // duty departing that day ends at (a layover), '-' on the day the last duty leaves for base, the base on the last
       // day; from the package's duties when it lists this pairing on that day, else '-' as before
       const pe = this._packOf(x.start), pp = pe && Object.prototype.hasOwnProperty.call(pe.map, x.pairing) ? pe.map[x.pairing] : null;
@@ -766,7 +766,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     for (let d = first, k = 0; d <= last && k < 45; d = add(d, 1), k++) days.push([d, ...(at[d] || ["", ""])]);
     return { month, from, days, items, also };
   }
-  // 1.7.6 review: the trips that started before FLICA's grid and run into it (FLICA's grid gives them no code day, so
+  // 1.7.7 review: the trips that started before FLICA's grid and run into it (FLICA's grid gives them no code day, so
   // the month has no item for them): the crew index's (a.reconstructed keeps a trip running into the grid), so their
   // days are boxed with their release, as the schedule card boxes Ryan's from the month before. Drawn, never totaled.
   _carry(a, days, items) {
@@ -843,7 +843,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     this._paint();
   }
   // FW-0069: an older version: its own days and trips in the same grid. A trip still on the live line (same pairing and
-  // start) shows the live block, credit and crew; the totals are the version's own (FLICA's, for a lookup), and 1.7.6
+  // start) shows the live block, credit and crew; the totals are the version's own (FLICA's, for a lookup), and 1.7.7
   // its Pay-Gross the Watcher's price of this version (pilotver_<key>.json: each item's gross and the record's pay)
   _vold(a, rec, month) {
     const key = (it) => `${String(it.trip || "").toUpperCase()}|${it.start || ""}`;
@@ -865,7 +865,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     const e = (x) => this._esc(x);
     const m = Number(pv.trips) || trips;
     const pay = pv.gross != null && items.some((it) => it.gross != null);
-    // 1.7.6 review: the live month's groups in its order; a versions file from before the review (no hours in its pay)
+    // 1.7.7 review: the live month's groups in its order; a versions file from before the review (no hours in its pay)
     // shows FLICA's own Credit and Block, and Soft from them
     const ip = { ...pv, trips: m, doh_known: pv.gross != null && !!pay };
     if (pv.credit == null) {
@@ -895,17 +895,17 @@ class FlightWatcherPilotCard extends HTMLElement {
     for (const m of mails.slice(0, mini ? 1 : 2)) out.push(`<a class="ct" href="mailto:${this._esc(m)}" title="Mail ${this._esc(m)}">Mail</a>`);
     return out.length ? `<span class="cts${mini ? " mini" : ""}">${out.join("")}</span>` : "";
   }
-  // 1.7.6: US federal and Hawaii state holidays, the shared grid's (never the admin's school calendar on another pilot)
+  // 1.7.7: US federal and Hawaii state holidays, the shared grid's (never the admin's school calendar on another pilot)
   _hol(iso) { return fwgHol(iso); }
   _hc() { return this._root && typeof this._root.querySelector === "function" ? this._root.querySelector("ha-card") : null; }
   _paint(loading) {
     this._busy = !!loading;  // FW-0062: a tax setting change does not redraw over the loading line
     if (!this._root) {
       this._root = this.attachShadow({ mode: "open" });
-      // 1.7.6: .body is redrawn; .fwsh holds the phone's bottom sheet (FwgSheet), kept across the redraws
+      // 1.7.7: .body is redrawn; .fwsh holds the phone's bottom sheet (FwgSheet), kept across the redraws
       this._root.innerHTML = `<style>${FWG_CSS}${PILOT_CSS}</style><ha-card><div class="body"></div></ha-card><div class="fwsh" hidden></div>`;
       this._root.addEventListener("click", (e) => {
-        // 1.7.6: a tap on a pairing opens its detail (below its grid, or a sheet on a phone); the same pairing again, the
+        // 1.7.7: a tap on a pairing opens its detail (below its grid, or a sheet on a phone); the same pairing again, the
         // close button, the sheet's backdrop or Esc closes it, another pairing swaps it. It only reads.
         if (e.target.closest(".pdx, .fwsb")) { this._pdClose(true); return; }
         const pt = e.target.closest(".trip[data-k]");
@@ -926,14 +926,14 @@ class FlightWatcherPilotCard extends HTMLElement {
     const was = q("details.chg");
     if (was) this._chgOpen = !!was.open;  // FW-0069: an opened changes list stays open while stepping through versions
     const rbw = q("details.rb");
-    if (rbw) this._rbOpen = !!rbw.open;  // 1.7.6: an unfolded rebuild stays unfolded through a redraw
+    if (rbw) this._rbOpen = !!rbw.open;  // 1.7.7: an unfolded rebuild stays unfolded through a redraw
     const ae = this._root.activeElement;
     const fk = ae && ae.matches && ae.matches(".body .trip[data-k]") ? [ae.dataset.k, ae.dataset.g] : null;  // the pairing that has the focus
     this._vnow = null;
     this._pdM = null;
     const st = this._h && this._h.states[this._config.entity];
     const a = (st && st.attributes) || {};
-    // 1.7.6: the pairing detail belongs to the pilot and month it was opened on
+    // 1.7.7: the pairing detail belongs to the pilot and month it was opened on
     const ctx = `${a.emp || ""}|${a.month || a.reconstructed_month || ""}`;
     this._bp = { month: a.month || a.reconstructed_month || "", from: a.reconstructed_from || "", to: a.reconstructed_to || "" };
     if (this._pd && (this._pd.ctx !== ctx || loading || a.status === "loading" || this._hidden)) this._pd = null;
@@ -988,7 +988,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     body.innerHTML = `${hd}${vb}<div class="frame">${this._grid(a.days, items, a.month, { g: "main", pay, carry: this._carry(a, a.days, items) })}${rt.tot}</div>${rt.notes}`;
     body.insertAdjacentHTML("beforeend", this._recon(a, true));  // 0.10.1: crew index (reconstructed from pairing crew lists), folded under a readable month
   }
-  // 1.7.6: after a redraw: the sheet (narrow) shown, updated or hidden; the wide panel scrolled into view once a
+  // 1.7.7: after a redraw: the sheet (narrow) shown, updated or hidden; the wide panel scrolled into view once a
   // pairing; a detail whose pairing is no longer drawn closed; the focus back on the pairing that had it
   _pdAfter(body, fk) {
     if (this._pd && !this._pdM) this._pd = null;
@@ -1011,7 +1011,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     }
     return this._sheet || null;
   }
-  // 1.7.6: the pairing detail: open, swap to another pairing, or close (the same one again)
+  // 1.7.7: the pairing detail: open, swap to another pairing, or close (the same one again)
   _pdToggle(k, g) {
     g = g || "main";
     if (this._pd && this._pd.k === k && this._pd.g === g) { this._pdClose(true); return; }
@@ -1053,7 +1053,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     }
     return `<div class="hd"><h3>${h3}</h3>${ct}<span class="u pst">${this._esc(line)}</span><span class="x" title="close">&times;</span></div>`;
   }
-  // 1.7.6: a trip's report and release (HST) and the day it is released: from the pairings package when it lists the
+  // 1.7.7: a trip's report and release (HST) and the day it is released: from the pairings package when it lists the
   // pairing (the id without a trailing letter, as the schedule card times a trip) on that day, else from the legs the
   // pairing page gave (report = first departure - 1:00, release = last arrival + 0:15, PWA 2), else none (FLICA's end)
   _times(it) {
@@ -1078,7 +1078,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     }
     return out;
   }
-  // 1.7.6 review: the package of the bid period a trip's first day belongs to (the grid's month, the month before for a
+  // 1.7.7 review: the package of the bid period a trip's first day belongs to (the grid's month, the month before for a
   // day before its bid period, the month after past it; this._bp from the sensor), and only that one: a plain render
   // never fetches a neighbouring month's file for a pairing the package lacks. null while it loads, false when none.
   _packOf(st) {
@@ -1091,7 +1091,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     const e = fwgPack(this._pk, PAIRINGS_URL, k, this._pkRedraw);
     return e && e.start <= st && st <= e.end ? e : e === null ? null : false;
   }
-  // 1.7.6: the pairing detail model (the shared fwgDetail) for another pilot's trip: the package's legs and layovers
+  // 1.7.7: the pairing detail model (the shared fwgDetail) for another pilot's trip: the package's legs and layovers
   // when it lists this exact pairing on that day, else the legs the pairing page gave, and why
   _pdModel(it, tm) {
     const id = String(it.trip || ""), st = it.start;

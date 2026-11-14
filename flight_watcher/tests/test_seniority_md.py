@@ -1,4 +1,4 @@
-"""1.7.6 (Ryan, Nov 14: "you should be able to calculate their pay by looking at their date of hire and seniority. I
+"""1.7.7 (Ryan, Nov 14: "you should be able to calculate their pay by looking at their date of hire and seniority. I
 can upload the pilot list that has that data. Then you can keep that in an MD card for reference"): every time
 seniority.json is written the Watcher writes seniority.md from it, a heading (list date, source, count) and one row per
 pilot sorted by seniority, with the pay year today (PWA 3.B.1, capped at 12). It is personal data: mode 600, beside the
@@ -136,7 +136,7 @@ def test_the_md_is_never_exported_or_a_file_kind(W, tmp_path, monkeypatch):  # n
 
 
 def test_pay_year_column_follows_the_day(tmp_path, monkeypatch):
-    """1.7.6 review: seniority.md's 'Pay year today' is rewritten once a day (the uploads check runs the backfill), so a
+    """1.7.7 review: seniority.md's 'Pay year today' is rewritten once a day (the uploads check runs the backfill), so a
     pilot whose DOH anniversary passed shows his new year without a new upload. Synthetic row."""
     from datetime import datetime, timedelta, timezone
     up = tmp_path / "uploads"

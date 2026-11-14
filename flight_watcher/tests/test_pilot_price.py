@@ -1,4 +1,4 @@
-"""1.7.6 (Ryan, Nov 14: "you should be able to calculate their pay by looking at their date of hire and seniority"):
+"""1.7.7 (Ryan, Nov 14: "you should be able to calculate their pay by looking at their date of hire and seniority"):
 another pilot's month as FLICA's Schedule Lookup showed it is priced like the rebuilt month: each pairing for the
 seat that pilot flies on it (from the pairing page already read, else the crew index, else the seniority list's seat,
 else FO), at his longevity year from the date of hire (PWA 3.B.1; CA PWA 3.C.4, FO and RO PWA 3.D.6) with the PWA
@@ -74,7 +74,7 @@ def test_a_readable_month_is_priced_for_the_seat_flown(W, tmp_path, monkeypatch)
     assert "gross" not in by["VAC"] and "seat" not in by["VAC"]
     ip = p["items_pay"]
     assert (ip["doh_known"], ip["doh"], ip["year"], ip["trips"], ip["trips_priced"]) == (True, "2018-10-03", 9, 2, 2)
-    # 1.7.6 review: the VAC day (Nov 22) is in Credit and Pay-Gross at 4:00 (PWA 6.J.1.c), at the list seat's rate,
+    # 1.7.7 review: the VAC day (Nov 22) is in Credit and Pay-Gross at 4:00 (PWA 6.J.1.c), at the list seat's rate,
     # as on the schedule card's totals line (Vacation 4:00, 1 d)
     vac = 4 * PAY.rate_for(9, "2026-11-22", "FO")
     assert ip["gross"] == pytest.approx(by["H9001"]["gross"] + by["H9002"]["gross"] + vac, abs=0.02)
@@ -114,7 +114,9 @@ def test_older_versions_are_priced_in_the_versions_file(W, tmp_path, monkeypatch
     assert "2018-10-03" not in text and "doh" not in text  # served under /local/: amounts, never a date of hire
 
 
-def test_a_pilot_instance_never_sends_another_pilot_s_doh_in_items_pay(W, tmp_path, monkeypatch):  # noqa: F811
+def test_a_pilot_instance_sends_another_pilot_s_doh_in_items_pay(W, tmp_path, monkeypatch):  # noqa: F811
+    """1.7.7 (Ryan, Nov 14: "james and I are on a high level of trust. he can be trusted"): a pilot instance's items_pay
+    carries the looked-up pilot's DOH and the list's dates, as Ryan's does."""
     _file(tmp_path / "www", "2026-11", [_row("H9001", "2", rel=2)])
     monkeypatch.setattr(W, "UPLOADS_SHARED", _sen(tmp_path, {"10999": ROE}))
     monkeypatch.setattr(W, "ha_state", lambda e: None)
@@ -123,5 +125,6 @@ def test_a_pilot_instance_never_sends_another_pilot_s_doh_in_items_pay(W, tmp_pa
               "seat": "FO", "n": 2}]
     line, info = W.pilot_price(items, "10999", "Roe, Rick", "2026-11", "2026-11-01", "2026-12-01", None, 22)
     assert line["year"] == 9 and line["gross"] == pytest.approx(12.5 * PAY.rate_for(9, "2026-11-02"), abs=0.01)
-    assert not set(W.PRICE_PILOT_DROP) & set(line) and "2018-10-03" not in json.dumps(line)
+    assert line["doh"] == "2018-10-03" and "list_date" in line and "list_newest_doh" in line
+    assert not hasattr(W, "PRICE_PILOT_DROP")
     assert line["days_off"] == 22 and info["H9001|2026-11-02"]["seat_src"] == "pairing page"

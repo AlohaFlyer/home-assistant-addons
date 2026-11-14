@@ -457,6 +457,11 @@ LEG_FULL_RE = re.compile(r"\b(su|mo|tu|we|th|fr|sa)\s+\d{1,4}\s+([A-Za-z]{3})-([
 # FW-0067: the same leg with its flight number captured too (LEG_FULL_RE keeps its 6 groups for watcher.py)
 LEG_FLT_RE = re.compile(r"\b(su|mo|tu|we|th|fr|sa)\s+(\d{1,4})\s+([A-Za-z]{3})-([A-Za-z]{3})\s+(\d{4})\s+(\d{4})\s+(\d{4})\b",
                         re.I)
+# 1.7.7: the same leg with an optional deadhead mark before the flight number (the pairings package prints "DH 1127*";
+# FLICA's mobile pairing page has not been seen with a deadhead yet, so its form is a guess) and a flight number with a
+# trailing '*'. Read only by parse_legs(dh=True) (the in-flight check): every other reader keeps LEG_FLT_RE's legs.
+LEG_DH_RE = re.compile(r"\b(su|mo|tu|we|th|fr|sa)\s+(?:(dh)\s+)?(\d{1,4})\*?\s+([A-Za-z]{3})-([A-Za-z]{3})\s+(\d{4})\s+(\d{4})"
+                       r"\s+(\d{4})\b", re.I)
 LAYOVER_MIN_H = 8  # a gap this long between legs is a layover, so a new duty period
 # Standard UTC offsets (hours) of the stations on the HNL A330 package; DST is absorbed by snapping the
 # printed arrival to the nearest day candidate (an hour off never moves it a day).
@@ -468,13 +473,16 @@ TZ = {"HNL": -10, "OGG": -10, "KOA": -10, "ITO": -10, "LIH": -10, "PPT": -10, "R
       "AKL": 12, "SIN": 8, "MNL": 8, "CRK": 8, "TPE": 8, "PEK": 8, "PVG": 8, "HKG": 8}
 
 
-def parse_legs(text):
+def parse_legs(text, dh=False):
     """0.5.2: every leg of a pairing page in HST minutes from the trip's first day (00:00 HST):
     [{dep, arr, to, blk, dep_l, arr_l, flt, frm}], same conversion as parse_duties. A pickup made between a
     leg's dep and arr happened in flight (blocked out, away from the gate). FW-0067: flt is the flight number
-    ("865", leading zeros dropped) and frm the origin station, for the working flight sensor."""
+    ("865", leading zeros dropped) and frm the origin station, for the working flight sensor. 1.7.7: dh=True (the
+    in-flight check) also reads a leg marked DH (LEG_DH_RE) and gives every leg its "dh" (True for a deadhead)."""
     legs, off, last_idx = [], 0, None
-    for dow, flt, a, b, dep, arr, blk in LEG_FLT_RE.findall(text or ""):
+    found = ([(d, f, a, b, dp, ar, bk, bool(x)) for d, x, f, a, b, dp, ar, bk in LEG_DH_RE.findall(text or "")] if dh
+             else [(*g, None) for g in LEG_FLT_RE.findall(text or "")])
+    for dow, flt, a, b, dep, arr, blk, isdh in found:
         idx = LEG_DOW.index(dow.upper())
         if last_idx is not None:
             off += (idx - last_idx) % 7
@@ -493,7 +501,23 @@ def parse_legs(text):
             arr_h = min(cands, key=lambda c: abs(c - est))
         legs.append({"dep": dep_h, "arr": arr_h, "to": b, "blk": bmin, "dep_l": f"{dmin // 60:02d}:{dmin % 60:02d}",
                      "arr_l": f"{amin // 60:02d}:{amin % 60:02d}", "flt": str(int(flt)), "frm": a})
+        if isdh is not None:
+            legs[-1]["dh"] = isdh
     return legs
+
+
+def leg_shift(frm, to):
+    """1.7.7: minutes from HST to the origin's standard local time, as parse_legs placed a leg: (TZ + 10) h when both
+    of its stations are in TZ, else 0 (parse_legs then took the printed times as HST)."""
+    return (TZ[frm] + 10) * 60 if frm in TZ and to in TZ else 0
+
+
+def leg_local_date(start_iso, leg):
+    """1.7.7: the local departure date at the origin (ISO) of a parse_legs leg of a trip that started on start_iso:
+    the trip's first day 00:00 HST plus the leg's dep (HST minutes) plus the origin's offset from HST (leg_shift).
+    A leg out of LAX at 00:30 local departs 22:30 HST the evening before: its date is the LAX one."""
+    t = datetime.strptime(start_iso, "%Y-%m-%d") + timedelta(minutes=leg["dep"] + leg_shift(leg.get("frm"), leg.get("to")))
+    return t.date().isoformat()
 
 
 def parse_duties(text):
@@ -562,7 +586,7 @@ PILOT_SEATS = ("CA", "FO", "RO", "SO")  # the pilot seats on a crew line (crewid
 
 
 def crew_seat(text, emp):
-    """1.7.6: (seat, n) from a pairing page's crew line: the seat of the pilot with employee number emp (leading zeros
+    """1.7.7: (seat, n) from a pairing page's crew line: the seat of the pilot with employee number emp (leading zeros
     ignored; '' when he is not on it) and the pilots on the line (CA, FO, RO and SO seats, an OPEN one too; flight
     attendants not), as the crew index counts n for the PWA 4.O.1 overrides. ('', 0) without a crew line."""
     m = re.search(r"crew\s*:\s*(.*)$", text or "", re.I | re.S)
@@ -600,6 +624,37 @@ def pickup_result(crew, seats):
     if seats and any(n == "OPEN" for p, n in rows):
         return "open", "; ".join(filled)
     return ("filled", "; ".join(filled)) if filled else ("open", "")
+
+
+def pickup_pickers(parts, seats=(), before=None, after=None):
+    """1.7.7 (Ryan, Nov 14: "the person picking up should be blue and clickable ... the other person who was already on
+    the pairing should be black and not clickable"): which names of a pickup (parts: [(pos, name)], its 'by' text in
+    order) took the find's open seat(s). With both rosters (before: the one seen while the trip was in the pot; after:
+    the one after it left), the seats filled in each FO / RO position are the Open seats that went plus the seats that
+    appeared (FLICA shows an open seat as 'FO Open' or not at all); without them, the row's open seats (seats, from the
+    roster in the pot: ['FO'], ['FO', 'RO']). A position's names are its pickers when they are no more than the seats
+    filled there; more names than seats is ambiguous and none there is a picker (no link rather than the wrong one), and
+    a name in a position with no open seat is not one (a crew swap). No open seat known at all: a lone FO / RO name is
+    the picker, two or more none. Returns the indexes into parts, in order."""
+    fr = ("FO", "RO")
+    if before is not None and after is not None:
+        filled = {}
+        for pos in fr:
+            b = [n for p, n in before if p == pos]
+            a = [n for p, n in after if p == pos]
+            filled[pos] = max(0, b.count("OPEN") - a.count("OPEN")) + max(0, len(a) - len(b))
+    else:
+        sl = [str(x).strip().upper() for x in (seats or ()) if str(x or "").strip()]
+        filled = {pos: sl.count(pos) for pos in fr}
+    idx = [i for i, (p, _n) in enumerate(parts or ()) if p in fr]
+    if not any(filled.values()):
+        return idx if len(idx) == 1 else []
+    out = []
+    for pos in fr:
+        cand = [i for i in idx if parts[i][0] == pos]
+        if cand and len(cand) <= filled[pos]:
+            out += cand
+    return sorted(out)
 
 
 def pickup_diff(before, after):
@@ -826,19 +881,36 @@ def parse_cm_schedule(html):
     return out
 
 
-def inflight_at(legs, start_iso, at_utc_iso):
-    """True when the UTC instant falls inside a leg (block out to block in) of a pairing that
-    started on start_iso (HST day 0); False otherwise; None when the inputs do not parse."""
+def trip_minute(start_iso, at_utc_iso):
+    """The UTC instant as HST minutes from 00:00 HST of start_iso (a trip's first day); None when either does not
+    parse."""
     try:
         start = datetime.strptime(start_iso, "%Y-%m-%d")
         at = datetime.fromisoformat(at_utc_iso.replace("Z", "+00:00"))
         if at.tzinfo is not None:
             at = at.astimezone(timezone.utc).replace(tzinfo=None)
         at_hst = at - timedelta(hours=10)
-        m = (at_hst - start).total_seconds() / 60
-    except (TypeError, ValueError):
+        return (at_hst - start).total_seconds() / 60
+    except (TypeError, ValueError, AttributeError):
         return None
-    return any(lg["dep"] <= m <= lg["arr"] for lg in legs or [])
+
+
+def inflight_leg(legs, start_iso, at_utc_iso):
+    """1.7.7 (Ryan, Nov 14: "I want to know what flight he was flying to be certain"): the leg (block out to block
+    in, a deadhead too: he is airborne) of a pairing that started on start_iso (HST day 0) that the UTC instant falls
+    inside, else None (also when the inputs do not parse)."""
+    m = trip_minute(start_iso, at_utc_iso)
+    if m is None:
+        return None
+    return next((lg for lg in legs or [] if lg["dep"] <= m <= lg["arr"]), None)
+
+
+def inflight_at(legs, start_iso, at_utc_iso):
+    """True when the UTC instant falls inside a leg (block out to block in) of a pairing that
+    started on start_iso (HST day 0); False otherwise; None when the inputs do not parse."""
+    if trip_minute(start_iso, at_utc_iso) is None:
+        return None
+    return inflight_leg(legs, start_iso, at_utc_iso) is not None
 
 
 def parse_schedule_desktop(html, domicile="HNL"):

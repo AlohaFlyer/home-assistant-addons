@@ -1,4 +1,4 @@
-"""1.7.6 (Ryan, Nov 14): tap a pairing on the schedule and its detail opens, like FLICA's pairing printout. On a wide
+"""1.7.7 (Ryan, Nov 14): tap a pairing on the schedule and its detail opens, like FLICA's pairing printout. On a wide
 card (MacBook 1280 px, iPad 820 px) a panel directly below the grid, the trip's rows tinted, scrolled into view;
 another pairing swaps it; the same pairing again, the close button or Esc closes it. On a phone (390 px) a bottom
 sheet over the schedule (about 60% high, a drag handle, a modal dialog): the backdrop, the close button, Esc or a
@@ -42,7 +42,7 @@ OWN = {
                               {"d": 0, "dep": 480, "arr": 810, "stn": "LAX", "blk": 330, "dep_l": "08:00", "arr_l": "15:30"},
                               {"d": 1, "dep": 2340, "arr": 2685, "stn": "HNL", "blk": 345, "dep_l": "19:00", "arr_l": "22:45"}]},
 }
-# 1.7.6 review: the hotels are not in the public pairing file; the Watcher adds each own trip's (publish_own_trips)
+# 1.7.7 review: the hotels are not in the public pairing file; the Watcher adds each own trip's (publish_own_trips)
 for _k, _hs in pdfs.package_hotels(package()).items():
     for _ok in [k for k in OWN if k.split("|")[0] == _k]:
         OWN[_ok]["hotels"] = _hs

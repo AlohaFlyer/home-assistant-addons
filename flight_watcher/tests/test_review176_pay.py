@@ -1,10 +1,10 @@
-"""1.7.6 review fixes, another pilot's pay (Ryan, Nov 14: the totals line shows the month's Pay-Gross "as Ryan's
+"""1.7.7 review fixes, another pilot's pay (Ryan, Nov 14: the totals line shows the month's Pay-Gross "as Ryan's
 does"). Synthetic pilots and pairings only (Roe, Rick 10999; Doe, Jane 10001; H9001...).
 - The month is the schedule card's: trips that start in the calendar month, each its PWA 4.A share (a segment pays on
   the date it originates), vacation days at 4:00 (PWA 6.J.1.c), a PAYP at FLICA's credit less the rest (estimate).
 - A version is priced from the live read of the same trip (crew count, page credit), as the live month is.
 - Each trip's package is its own bid period's; another fleet's pilot is not priced at the A330 rates; the rate note
-  carries a mid-month step; a pilot instance never publishes another pilot's DOH, in either pay line."""
+  carries a mid-month step; a pilot instance publishes another pilot's DOH in both pay lines again (1.7.7)."""
 import json
 import os
 import sys
@@ -180,8 +180,10 @@ def test_the_rate_note_carries_a_mid_month_step(W, tmp_path, monkeypatch):  # no
     assert PAY.rate_steps("2017-11-15", "2027-01-20", "2027-02-10")[0]["from"] == "2027-01-31"  # a rate date step
 
 
-# ---------------------------------------------------------------- a pilot instance: no DOH in either pay line
-def test_a_pilot_instance_never_sends_another_pilots_doh(W, tmp_path, monkeypatch):  # noqa: F811
+# ---------------------------------------------------------------- a pilot instance: the DOH in both pay lines (1.7.7)
+def test_a_pilot_instance_sends_another_pilots_doh_as_1_7_5_did(W, tmp_path, monkeypatch):  # noqa: F811
+    """1.7.7 (Ryan, Nov 14: "james and I are on a high level of trust. he can be trusted"): both pay lines on a pilot
+    instance carry the DOH, the list's dates, year_to and rate_steps, the same as Ryan's own instance."""
     _file(tmp_path / "www", "2026-11", [_row("H9001", "9", rel=2), _row("H9002", "20", rel=0, route="HNL-OGG-HNL")])
     W.crew_index_check(FakeFl())
     monkeypatch.setattr(W, "UPLOADS_SHARED", _sen(tmp_path, {"10999": dict(ROE, doh="2018-11-12")}))
@@ -192,17 +194,18 @@ def test_a_pilot_instance_never_sends_another_pilots_doh(W, tmp_path, monkeypatc
              {"trip": "H9002", "start": "2026-11-20", "end": "2026-11-20", "credit": "12:00", "blk": "10:00", "seat": "FO", "n": 2}]
     W.pub_pilot({"emp": "10999", "name": "Roe, Rick", "status": "ok", "month": "2026-11", "days": [], "items": items,
                  "totals": {"days_off": 20}})
-    p = [p for t, p in W.SENT if t == "pilot_schedule"][-1]
-    for line in (p["items_pay"], p["pay_line"]):
-        assert not set(W.PRICE_PILOT_DROP) & set(line)
-        assert line["year"] == 8 and line["doh_known"] is True
-    assert "2018-11-12" not in json.dumps(p) and "11-12" not in json.dumps({k: p[k] for k in ("items_pay", "pay_line")})
-    # Ryan's own instance keeps them (his card shows the DOH and the step)
+    pilot = [p for t, p in W.SENT if t == "pilot_schedule"][-1]
+    for line in (pilot["items_pay"], pilot["pay_line"]):
+        assert line["year"] == 8 and line["doh_known"] is True and line["doh"] == "2018-11-12"
+        assert line["year_to"] == 9 and line["rate_steps"][0]["from"] == "2026-11-12" and line["rate_steps"][0]["year"] == 9
+        assert "list_date" in line and "list_newest_doh" in line
+    # Ryan's own instance: the same lines
     monkeypatch.setattr(W, "INSTANCE", "")
     W.pub_pilot({"emp": "10999", "name": "Roe, Rick", "status": "ok", "month": "2026-11", "days": [], "items": items,
                  "totals": {"days_off": 20}})
     p = [p for t, p in W.SENT if t == "pilot_schedule"][-1]
     assert p["items_pay"]["doh"] == p["pay_line"]["doh"] == "2018-11-12" and p["items_pay"]["year_to"] == 9
+    assert {k: p[k] for k in ("items_pay", "pay_line")} == {k: pilot[k] for k in ("items_pay", "pay_line")}
 
 
 def test_split_rule_matches_versions_split():

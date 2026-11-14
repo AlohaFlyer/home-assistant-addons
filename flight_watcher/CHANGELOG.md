@@ -1,5 +1,83 @@
 # Changelog
 
+## 1.7.7
+
+The pairing detail panel, one look for every month, other pilots' pay and seniority.md (Ryan, Nov 14), then Ryan's
+Nov 14 follow-ups: only the picker is a link, the flight of an in-flight pickup, the bid calendar's 5th and the DOH on
+a pilot's portal. Built on 1.7.6.1 and 1.7.6 (t1301); with tests that failed first. No new FLICA page loads, no portal
+contract change, no change to the `roles.py` lists.
+
+### Pairing detail panel (Ryan: "click on a pairing and have the actual pairing pop open below the schedule")
+- A tap (or Enter) on a pairing on the schedule card opens its detail like FLICA's pairing printout: the header (the
+  days it operates, base report, base and equipment), each leg (day, date, DH, flight, from-to, local departure and
+  arrival as printed, block, ground), each duty's TBLK, TDHD, TCRD, duty and FDP (from report to the last flight's
+  block-in, FAR 117.3; a deadhead after it is duty, not FDP), D-END, the next report, the layover and the totals (trip
+  rig as printed, else credit less the legs' credit) and the crew. Below the grid on a wide card (the trip's rows
+  tinted); a bottom sheet on a phone (a modal dialog about 60% high; the backdrop, the close button, Esc or a swipe
+  down closes it). "Would trade" is the arrow mark alone; the lock still guards trade, drop and blocked days.
+- The pairings package parse keeps each A330 HNL pairing's legs, duties, layovers and totals in the card's pairing
+  file (`detail`, parser `dv` 2; the text copies on file are read again once); the file is written whole (a temporary
+  file, then moved). Hotel names and van times stay out of that public file (`/local/` with no login, copied to every
+  portal): they are kept in the DB (`pkg_hotels`) and Ryan's own panel shows his hotel from his trip times. A detail
+  budget (1.5 MB or 600 pairings, `dcut`) keeps a crafted upload under the portal's file cap; lines, legs and duties
+  are capped (a pilot's upload is untrusted). A pairing the package does not list that day shows FLICA's duties and
+  says why.
+
+### One look for every month (Ryan: "exactly the same style including this latest detail panel")
+- Another pilot's month FLICA showed, its older versions and a month reconstructed from crew lists are drawn with the
+  schedule card's own grid block (carried byte for byte, `tests/test_sched_grid_shared.py`): day colours and holidays,
+  the bold blue pairing, the layover box with R and Rel, row heights, the totals line, VAC and PAYP days, the trip
+  status mark, a trip carried in from the month before, light and dark, and the same pairing detail. Ryan's own card
+  is unchanged.
+
+### Other pilots' pay (Ryan: "calculate their pay by looking at their date of hire and seniority")
+- A month FLICA showed for another pilot, and each of its versions, is priced like the rebuilt month: each pairing at
+  the seat he flies on its crew line (Captain PWA 3.C.4, FO and RO PWA 3.D.6) for his longevity year from the date of
+  hire on the seniority list (PWA 3.B.1; `rate_steps` names a step inside the month), with the PWA 4.O.1 overrides.
+  The month is the schedule card's: trips that start in the calendar month, each its PWA 4.A share (a segment pays on
+  the date it originates), vacation days at 4:00 a day (PWA 6.J.1.c) and a PAYP (PWA Definitions 57) at FLICA's month
+  credit less the rest (an estimate). Each trip's package is its own bid period's; a pilot on another fleet is not
+  priced at the A330 rates. No FLICA page is loaded for it.
+
+### seniority.md (Ryan: "keep that in an MD card for reference")
+- Each time `seniority.json` is written the Watcher writes `/share/flight_watcher/seniority.md` (the list date, then
+  Seniority #, Name, Emp, DOH, Seat, Equip and the pay year today, PWA 3.B.1): private, mode 600, written whole, beside
+  the uploads folder (never in the Web UI's list, `www` or a portal export), and rewritten once a day (HST).
+
+### Picked up by: only the picker is a link (Ryan: "the other person who was already on the pairing should be black")
+- The finds card links only the open-seat picker (blue); a pilot already on the pairing is plain text. The pickup check
+  stores the picker's employee number (`pickers`: the newcomer in a seat that was Open, or that FLICA had left out and
+  appeared; a newcomer in a seat that was not open is a crew swap); an older find is read from its `open_seats` and the
+  seat before each name, and an ambiguous one links nobody rather than the wrong pilot.
+- Bug fixed: `store.picker_of` read a two-name "by" ("FO A (n1); RO B (n2)") as the first name with the last number, so
+  the FO / RO pickers table showed merged rows ("A (n1); RO B" under n2) and the in-flight check looked up B. The table,
+  its log and the in-flight check now use the open-seat picker(s), each once per pickup (both when both seats were
+  open). The first start rebuilds the pickers table from the stored pickups once (`pickers_rebuild_v`); an in-flight
+  verdict made for a pilot who was not the picker is looked up again for the picker (the usual budget, 3 a check).
+
+### InFlt names the flight (Ryan: "i.e AS808/06NOV and date")
+- An in-flight pickup shows the airplane and `AS808/06NOV`: the leg the picker was airborne on (a deadhead counts) and
+  its departure date local at its origin; hover: "picked up while airborne on AS808 HNL-LAS, departed 06NOV 23:00 local
+  (pairing H3648 Nov 3)", with "(DH, deadhead)" for a deadhead. The check keeps the leg from the pairing page it
+  already reads (`inflt_leg`), no extra page.
+- An in-flight pickup from before 1.7.7 gets its leg from the pairings package, with no FLICA load, at start and after
+  a package upload, only when the package lists the picker's pairing on that start date and one of its legs holds the
+  pickup time; else the airplane stays alone and the hover says "flight not on file".
+
+### Bid calendar (Ryan: "pairings post on the 5th of the month and close on the 11th monthly")
+- The usual publish day is the 5th (it was the 4th), so the "adjust your vacation" alert goes at 08:00 HST on the 4th;
+  the close stays the 11th 08:00 HST. A package's printed Bid Calendar still wins.
+
+### DOH on a pilot's portal (Ryan: "james and I are on a high level of trust. he can be trusted")
+- A pilot instance's pay lines (`items_pay` and the rebuilt month's `pay_line`) carry the looked-up pilot's date of
+  hire, the list's dates, `year_to` and `rate_steps` again, as 1.7.5 sent them; the first build of this release had
+  left them out. Every other review fix stays.
+
+Tests: `tests/test_pairing_detail.py`, `tests/test_pairing_panel_card.py`, `tests/test_pilot_grid_look.py`,
+`tests/test_sched_grid_shared.py`, `tests/test_pilot_price.py`, `tests/test_seniority_md.py`,
+`tests/test_review176_{pairings,pay,cards}.py`, `tests/test_fw177_{pickers,inflt,cards}.py`, `tests/test_bidcal.py`
+(synthetic only).
+
 ## 1.7.6.1
 
 The union's seniority list (Ryan, Nov 14: "what format does it need? make the settings page work with this format. it is

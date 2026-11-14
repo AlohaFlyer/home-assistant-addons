@@ -66,7 +66,7 @@ def test_pay_line_in_the_totals_style(tmp_path):
     assert r["items"] == [[t["pairing"], t["start"]] for t in grid] and r["also"] == [t["pairing"] for t in also]
     assert r["tot"] == pl["trips"] == 5
     h = r["plain"]
-    # 1.7.6: the schedule card's own totals line (div.tot), right under the grid in its frame
+    # 1.7.7: the schedule card's own totals line (div.tot), right under the grid in its frame
     bar = h[h.index('<div class="tot"'):h.index("</div>", h.index('<div class="tot"'))]
     assert h.index('<div class="wrap">') < h.index('<div class="tot"') < h.index("Also on crew lists") < h.index('<div class="u prate">')
     labels = [x.split("</span>")[0] for x in bar.split('<span class="k">')[1:] if not x.startswith("(") and not x.startswith("est.")]

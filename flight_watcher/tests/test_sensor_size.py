@@ -247,7 +247,7 @@ def _fill(W, fake, tmp_path, monkeypatch):
          "start": "12Nov", "end": "15Nov", "dates": "12Nov-15Nov", "days": "3", "layover": "LAS", "turn": "", "credit": "15:00",
          "soft": "2:41", "src": "O", "soft_gain": "+2:30", "credit_gain": "-6:06", "why": "w" * 80,
          "detail_url": _pot_row(i)["detail_url"], "gain_h": 1.9} for i in range(30)]})
-    # 1.7.6: a readable month carries each pairing's seat and gross, and the month's pay (items_pay), a full one here
+    # 1.7.7: a readable month carries each pairing's seat and gross, and the month's pay (items_pay), a full one here
     pay_full = {"doh_known": True, "doh": "2018-10-03", "year": 9, "year_to": 10, "seat_rates": {"CA": 431.04, "FO": 295.26},
                 "seats": ["CA", "FO", "RO"], "trips": 12, "trips_priced": 11, "credit": "160:35", "credit_n": 11,
                 "block": "140:20", "block_n": 11, "soft": "20:15", "soft_n": 11, "gross": 61234.56, "net": 47763.0,

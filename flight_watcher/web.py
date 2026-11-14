@@ -217,7 +217,7 @@ def seniority_award(out=None):
 def seniority_rebuild(lst, aw, out=None):
     """1.4.5: write seniority.json = seniority.combine(list, award) (atomic). Under an award on top the list is kept
     as seniority_list.json; with the list on top seniority.json is the list, and a leftover seniority_list.json goes.
-    Returns what seniority.json now holds (None when there is neither). 1.7.6: seniority.md (seniority_md_write) is
+    Returns what seniority.json now holds (None when there is neither). 1.7.7: seniority.md (seniority_md_write) is
     written from it each time, so every source of seniority.json (a list, an award, a later one) keeps it current."""
     out = out or seniority_file()
     keep = os.path.join(os.path.dirname(out), SEN_LIST)
@@ -233,11 +233,11 @@ def seniority_rebuild(lst, aw, out=None):
     return view
 
 
-SEN_MD = "seniority.md"  # 1.7.6: the markdown reference of seniority.json (seniority.render_md)
+SEN_MD = "seniority.md"  # 1.7.7: the markdown reference of seniority.json (seniority.render_md)
 
 
 def seniority_md_path(out=None):
-    """1.7.6: where seniority.md goes for seniority.json at `out`: the folder above the uploads folder
+    """1.7.7: where seniority.md goes for seniority.json at `out`: the folder above the uploads folder
     (/share/flight_watcher/seniority.md on the admin's Home Assistant), else beside `out` (a test's own folder). Never
     under www, never in the uploads folder the Web UI lists, never a file the portal export reads."""
     out = out or seniority_file()
@@ -246,7 +246,7 @@ def seniority_md_path(out=None):
 
 
 def seniority_md_write(view, out=None):
-    """1.7.6 (Ryan, Nov 14: "keep that in an MD card for reference"): write seniority.md from `view` (what
+    """1.7.7 (Ryan, Nov 14: "keep that in an MD card for reference"): write seniority.md from `view` (what
     seniority.json now holds): a temporary file beside it (mkstemp: mode 600, a new name, never through a link), then
     moved into place, so a reader never sees half a file. Personal data: mode 600, nothing about it is logged. Never
     raises (an upload never fails on it). Returns the path, or '' when nothing was written."""
@@ -279,8 +279,8 @@ def _md_day(path):
 
 
 def seniority_md_backfill(out=None):
-    """1.7.6: at start, a seniority.json written before seniority.md existed (or after it, by an older Watcher) gets
-    its markdown reference: written when the md is missing or older than the json. 1.7.6 review: and once a day, so its
+    """1.7.7: at start, a seniority.json written before seniority.md existed (or after it, by an older Watcher) gets
+    its markdown reference: written when the md is missing or older than the json. 1.7.7 review: and once a day, so its
     "Pay year today" column follows each pilot's DOH anniversary: rewritten when the day it names (HST) is not today.
     Returns the path written or ''."""
     out = out or seniority_file()

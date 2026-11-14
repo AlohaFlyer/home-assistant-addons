@@ -1,4 +1,4 @@
-"""1.7.6 (Ryan, Nov 14: "my schedule and other pilots schedule and reconstructed schedules should be exactly the same
+"""1.7.7 (Ryan, Nov 14: "my schedule and other pilots schedule and reconstructed schedules should be exactly the same
 style including this latest detail panel"). In Chromium at 390 x 844 (iPhone), 820 x 1180 (iPad) and 1280 x 800
 (MacBook), light and dark: Ryan's own month (the schedule card), another pilot's month as FLICA showed it and the month
 reconstructed from pairing crew lists (the pilot card), with the same synthetic trips, have the same look: the same
@@ -170,7 +170,7 @@ def _same(a, b, what):
 
 
 def _no_hotels(lines):
-    """1.7.6 review: Ryan's detail lines without the hotel and van (another pilot's panel has none: they are not in the
+    """1.7.7 review: Ryan's detail lines without the hotel and van (another pilot's panel has none: they are not in the
     public pairing file, only on Ryan's own trip times)."""
     import re
     return [re.sub(r"(?: ·)? (?:EXAMPLE(?: (?!VAN\b)[A-Z]+)+|VAN \d{2}:\d{2}L)", "", x) for x in lines]
@@ -213,14 +213,14 @@ def test_one_look_for_every_month_grid(width, height, scheme):
                 _same(o["tag"], q["tag"], (d, "layover", "rebuilt"))
             # FLICA's month: the very same layover box, layover text and R / Rel times as Ryan's own month
             assert (o["cls"], o["lay"], o["tm"]) == (p["cls"], p["lay"], p["tm"]), (d, o, p)
-            # the trip status mark (a check once flown) on the same day, in the same style (1.7.6 review)
+            # the trip status mark (a check once flown) on the same day, in the same style (1.7.7 review)
             assert o["st"] == p["st"] == q["st"], (d, o["st"], p["st"], q["st"])
             if o["st"]:
                 _same(o["stStyle"], p["stStyle"], (d, "status mark"))
             # the rebuilt month: the same boxes; R / Rel where the package times the trip (the crew index has no times of
             # its own, so H3604B, not in the package, has none)
             assert o["cls"] == q["cls"], (d, o["cls"], q["cls"])
-            # and the same layover text on every day (1.7.6 review: a rebuilt trip's nights from the package's duties)
+            # and the same layover text on every day (1.7.7 review: a rebuilt trip's nights from the package's duties)
             assert p["lay"] == q["lay"], (d, p["lay"], q["lay"])
             assert o["tm"] == q["tm"] or (d in ("2026-11-23", "2026-11-24") and q["tm"] == []), (d, o["tm"], q["tm"])
             if o["tm"]:

@@ -75,7 +75,7 @@ function fwListFile(box, url, st, redraw) {
 }
 
 // ---- shared schedule grid: keep identical in every card that holds it (tests/test_sched_grid_shared.py) ----
-// 1.7.6 (Nov 14: "my schedule and other pilots schedule and reconstructed schedules should be exactly the same style
+// 1.7.7 (Nov 14: "my schedule and other pilots schedule and reconstructed schedules should be exactly the same style
 // including this latest detail panel"): one look for every month grid and one pairing detail panel, in each card that
 // draws a month. FWG_CSS: the grid (sticky day and date columns, weekend and holiday colours, the trip box in the
 // Layover column, the trip, R / Rel, layover and totals marks, light and dark) and the panel; .fwgf gives a grid the
@@ -538,7 +538,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     if (this._locked === undefined) { let v = "1"; try { const g = localStorage.getItem("flight_watcher_lock"); v = g === null ? "1" : g; } catch (e) { v = "1"; } this._locked = v !== "0"; }  // v48: locked by default
     if (!this.shadowRoot) {
       this.attachShadow({ mode: "open" });
-      // 1.7.6: the redraws write .fwm only; .fwsh holds the narrow card's bottom sheet (FwgSheet), kept across them
+      // 1.7.7: the redraws write .fwm only; .fwsh holds the narrow card's bottom sheet (FwgSheet), kept across them
       this.shadowRoot.innerHTML = '<div class="fwm"></div><div class="fwsh" hidden></div>';
       this._sheet = new FwgSheet(this.shadowRoot.querySelector(".fwsh"), () => this._pdClose(true));
       this.shadowRoot.addEventListener("keydown", (e) => {  // a pairing is a button: Enter or Space opens its detail
@@ -546,7 +546,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         if (t && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); this._pdToggle(t.dataset.k); }
       });
       this.shadowRoot.addEventListener("click", (e) => {
-        // 1.7.6 (Ryan, Nov 14): a tap on a pairing opens its detail (below the grid, or a bottom sheet on a phone); the
+        // 1.7.7 (Ryan, Nov 14): a tap on a pairing opens its detail (below the grid, or a bottom sheet on a phone); the
         // same pairing again, the close button, the sheet's backdrop or Esc closes it, another pairing swaps it. It only
         // reads, so the lock does not apply; "would trade" is the arrow mark's (.trb) alone
         if (e.target.closest(".pdx, .fwsb")) { this._pdClose(true); return; }
@@ -572,7 +572,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/drop/set", payload: JSON.stringify({ key: db.dataset.k }) });
           return;
         }
-        const tp = e.target.closest(".trb");  // 1.7.6: the pairing itself opens its detail
+        const tp = e.target.closest(".trb");  // 1.7.7: the pairing itself opens its detail
         if (tp && tp.dataset.k && tp.dataset.k.split("|")[1] <= new Date(Date.now() - 10 * H).toISOString().slice(0, 10)) return;  // v46: a started trip cannot be traded
         if (tp && tp.dataset.k && locked) { this._say(`Settings are locked: tap the lock at the top left to change ${this._marks().replace(" and ", " or ")}.`); return; }
         if (tp && tp.dataset.k) {
@@ -642,7 +642,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const st = S["sensor.flight_watcher_schedule"];
     const SM = (st && st.attributes && st.attributes.months) || {};  // 1.6.2: no month read yet is no error
     const { y, m, key } = this._key();
-    if (this._pd && this._pd.key !== key) this._pd = null;  // 1.7.6: the pairing detail closes on a month change
+    if (this._pd && this._pd.key !== key) this._pd = null;  // 1.7.7: the pairing detail closes on a month change
     const narrow = !!this._pd && fwgNarrow(this._hc());
     let mon = SM[key] || null;
     // v51 (Ryan): schedule versions MM.NNN; arrows step through them, the house returns to the current one
@@ -1019,12 +1019,12 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const nO = r.list.filter((x) => x.src).length, best = Math.max(...r.list.map((x) => x.delta));
         return `<span class="idb${nO ? " live" : ""}" data-d="${d}" data-trip="${this._esc(trip || "")}" title="${r.o ? "Swap ideas" : "Pick-up ideas"}: ${nO} open now, ${r.list.length} in the package">&#9992;&#xFE0E;${nO ? " " + nO : ""}${best > 0 ? ` <small>+${usd(best)}</small>` : ""}</span>`;
       };
-      // 1.7.6: the open pairing detail (this._pd {key, k}): its model (the package's legs when it lists this exact pairing
+      // 1.7.7: the open pairing detail (this._pd {key, k}): its model (the package's legs when it lists this exact pairing
       // on that day; else what FLICA's pairing page gave, with why) and its rows, the report day to the release day
       if (this._pd) {
         pdK = this._pd.k;
         const [ptr, pst] = pdK.split("|");
-        // 1.7.6 review: a version (or month) that does not draw this trip on that day closes its detail
+        // 1.7.7 review: a version (or month) that does not draw this trip on that day closes its detail
         if (!(mon.days || []).some(([d, tr]) => d === pst && tr === ptr) && !own.some((x) => x.it.trip === ptr && x.it.start === pst)) { this._pd = null; pdK = ""; }
       }
       if (this._pd) {
@@ -1263,7 +1263,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       <div class="r">${noYear ? "Rate: set your longevity year here (A330 PAX FO, PWA 3.D.6; the table caps at 12). No pay is figured until it is set." : `Rate $${RATE.toFixed(2)}/credit h: A330 PAX FO, PWA 3.D.6, year ${lyr} ${doh ? `(DOH ${doh} = year ${dohYear(today, doh)}, table caps at 12)` : "(set your longevity year here; table caps at 12)"}, effective ${RATE_DATES.filter((x) => x <= today).pop()}. Net = gross less federal and state only; estimate.`}</div>
     </details>${chtml}</ha-card>`;
     this._wire();
-    // 1.7.6: the pairing detail after the redraw: the sheet (narrow) shown, updated or hidden; the wide panel scrolled into
+    // 1.7.7: the pairing detail after the redraw: the sheet (narrow) shown, updated or hidden; the wide panel scrolled into
     // view once a pairing; the focus back on the pairing that had it
     this._pdNarrow = narrow;
     if (pdM && narrow) this._sheet.show(pdM.k, JSON.stringify(pdM), fwgSheetHtml(pdM)); else this._sheet.hide();
@@ -1275,7 +1275,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     }
     if (fk && !this._sheet.open) { const t = this._tripEl(fk); if (t) t.focus({ preventScroll: true }); }
   }
-  // 1.7.6: the pairing detail: open, swap to another pairing, or close (the same one again)
+  // 1.7.7: the pairing detail: open, swap to another pairing, or close (the same one again)
   _pdToggle(k) {
     const key = this._key().key;
     if (this._pd && this._pd.k === k && this._pd.key === key) { this._pdClose(true); return; }

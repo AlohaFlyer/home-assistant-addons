@@ -1,4 +1,4 @@
-"""1.7.6 (Ryan, Nov 14: "when looking at schedules I want to be able to click on a pairing and have the actual pairing
+"""1.7.7 (Ryan, Nov 14: "when looking at schedules I want to be able to click on a pairing and have the actual pairing
 pop open below the schedule so I can see the schedule detail"): the pairings package parse keeps each pairing's legs,
 duties, layovers (station, time, hotel name, VAN) and totals in the card's pairing file (pairings_<YYYY-MM>.json,
 "detail", parser version "dv"), so the schedule card can draw it like FLICA's pairing printout. A synthetic package
@@ -77,7 +77,7 @@ def test_package_detail_keeps_legs_duties_layovers_and_totals():
     j = pdfs.package_json(package(), "test")
     assert [r[0] for r in j["rows"]] == ["H9101", "H9102"] and j["dv"] == pdfs.PKG_PARSER >= 2
     assert sorted(j["detail"]) == ["H9101", "H9102"]  # exactly the rows' pairings (the 717 turn is not ours)
-    full = pdfs.package_legs(package())  # 1.7.6 review: the hotels and vans stay out of the public file (DB only)
+    full = pdfs.package_legs(package())  # 1.7.7 review: the hotels and vans stay out of the public file (DB only)
     assert sorted(full) == ["H9101", "H9102"]
     assert j["detail"]["H9101"] == dict(full["H9101"], duties=[{k: v for k, v in du.items() if k not in ("hotel", "van")}
                                                                for du in full["H9101"]["duties"]])

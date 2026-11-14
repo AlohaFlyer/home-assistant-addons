@@ -628,11 +628,12 @@ def test_version_is_one_seven_two():
     pilotpdf module."""
     import re as _re
     cfg = open(os.path.join(HERE, "config.yaml"), encoding="utf-8").read()
-    # 1.7.6.1 (Nov 14): the Settings page reads the union's seniority list (on top of 1.7.6, t1301)
-    assert _re.search(r'^version: "1\.7\.6\.1"$', cfg, _re.M)
-    assert _re.search(r'^VERSION = "1\.7\.6\.1"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
+    # 1.7.7 (Nov 14): the pairing detail panel, one look for every month, other pilots' pay, seniority.md, the picker
+    # link, the in-flight flight, the bid calendar's 5th, the DOH on a pilot's portal (on top of 1.7.6.1 and 1.7.6)
+    assert _re.search(r'^version: "1\.7\.7"$', cfg, _re.M)
+    assert _re.search(r'^VERSION = "1\.7\.7"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.7.6.1\n") and "\n## 1.7.6\n" in log and "\n## 1.7.5\n" in log and "\n## 1.7.4\n" in log and "\n## 1.7.3\n" in log and "\n## 1.7.2\n" in log and "\n## 1.7.1.1\n" in log and "\n## 1.7.1\n" in log and "\n## 1.7.0\n" in log
+    assert log.startswith("# Changelog\n\n## 1.7.7\n") and "\n## 1.7.6.1\n" in log and "\n## 1.7.6\n" in log and "\n## 1.7.5\n" in log and "\n## 1.7.4\n" in log and "\n## 1.7.3\n" in log and "\n## 1.7.2\n" in log and "\n## 1.7.1.1\n" in log and "\n## 1.7.1\n" in log and "\n## 1.7.0\n" in log
     assert chr(0x2014) not in log
     dock = open(os.path.join(HERE, "Dockerfile"), encoding="utf-8").read()
     assert "photos.py" in dock and "bidcal.py" in dock and "pilotpdf.py" in dock and "Pillow==11.0.0" in dock

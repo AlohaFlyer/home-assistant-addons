@@ -1,4 +1,4 @@
-"""1.7.6 review fixes, the pairings package side (synthetic packages only: made-up pairings, flights and hotels).
+"""1.7.7 review fixes, the pairings package side (synthetic packages only: made-up pairings, flights and hotels).
 - The pairing file is served at a fixed URL with no login and copied to every pilot's portal: it keeps routes and
   times, never the crew hotels or their van times (those reach the pilot's own trips through his own trip times).
 - A pilot's upload is untrusted: the detail has a whole-file budget, so a crafted package cannot push the month's

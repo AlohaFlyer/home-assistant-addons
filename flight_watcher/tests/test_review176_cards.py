@@ -1,4 +1,4 @@
-"""1.7.6 review fixes, the cards (Chromium; synthetic pilots, pairings and crew only: "Doe, John" 10001, H9101).
+"""1.7.7 review fixes, the cards (Chromium; synthetic pilots, pairings and crew only: "Doe, John" 10001, H9101).
 Another pilot's month, its versions and the rebuilt month keep the schedule card's look in the cases the first pass
 missed: VAC and PAYP days, the trip status mark, a trip carried in from the month before, the rebuilt trip's nights,
 row heights while the trips are still ahead, the totals line of an older version, and the trip box in Home Assistant's

@@ -313,7 +313,7 @@ def test_pilot_card_draws_rebuilt_month_in_the_schedule_grid(tmp_path):
     h = r["open"]
     assert h.count("<tr") == 33 and h.count(" bxs") == 5 and h.count(" bxe") == 4
     assert h.count(' bx"') + h.count(" bx ") == 11  # Oct 31-Nov 2, Nov 5-6, Nov 20, Nov 27-30, Dec 1
-    # 1.7.6: the schedule card's look: the bold blue pairing opens its detail; seat, legs and the crew read time are its
+    # 1.7.7: the schedule card's look: the bold blue pairing opens its detail; seat, legs and the crew read time are its
     # hint; a day trip shows its turn station in bold (HNL-OGG-HNL: OGG), a layover station plain in the trip's box
     assert "CA Doe, Jane · FO Roe, Rick" in h
     assert ('<span class="trip" data-k="H9001|2026-10-31" data-g="rb" role="button" tabindex="0" aria-expanded="false" '

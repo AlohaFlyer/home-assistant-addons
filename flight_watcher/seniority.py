@@ -605,7 +605,7 @@ def combine(lst, aw):
     return out
 
 
-# ---------------------------------------------------------------- 1.7.6: the seniority list as a markdown reference
+# ---------------------------------------------------------------- 1.7.7: the seniority list as a markdown reference
 # Ryan (Nov 14): "you should be able to calculate their pay by looking at their date of hire and seniority. I can
 # upload the pilot list that has that data. Then you can keep that in an MD card for reference". Every time
 # seniority.json is written (web.seniority_rebuild) the Watcher also writes /share/flight_watcher/seniority.md from

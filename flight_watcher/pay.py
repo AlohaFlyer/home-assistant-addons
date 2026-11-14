@@ -120,7 +120,7 @@ def _days(start, end, cap=15):
 
 
 def rate_steps(doh, period_from, period_to):
-    """1.7.6 review: the days after period_from on which this pilot's hourly rates change inside the period (a DOH
+    """1.7.7 review: the days after period_from on which this pilot's hourly rates change inside the period (a DOH
     anniversary: a new longevity year, PWA 3.B.1; or a PWA 3.C.4 / 3.D.6 rate date), each {from, year, CA, FO}; [] when
     the first day's rates hold all period (or a date is unreadable)."""
     try:
@@ -147,7 +147,7 @@ def pay_line(trips, doh, period_from, period_to, tax_pct, ca_rules=True, month=N
     priced for its own seat (rate_for: CA PWA 3.C.4, FO and RO PWA 3.D.6) on its own start date, for the longevity
     year from doh (doh_year, capped at 12, PWA 3.B.1), with the PWA 4.O.1 overrides and the Extended Range +15% per
     er_on (no per-trip list: that list is Ryan's own). No doh: no amounts. Returns (pay_line, {'PID|start': gross}).
-    1.7.6 review (a month FLICA showed, or a version of it; the schedule card's rules): month 'YYYY-MM' totals the trips
+    1.7.7 review (a month FLICA showed, or a version of it; the schedule card's rules): month 'YYYY-MM' totals the trips
     that start in that calendar month (each trip's credit and block already its PWA 4.A share), plus vac (ISO days of
     vacation in the month, PWA 6.J.1.c: VAC_H credit a day at the vac_seat rate) and payp (the PAYP days, PWA
     Definitions 57): their credit is FLICA's month credit (flica_credit, hours) less everything else counted, an

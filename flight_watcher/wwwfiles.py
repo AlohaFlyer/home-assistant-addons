@@ -15,7 +15,7 @@ every list file not under its current key goes. FW-0069 (1.4.11): pilotver_<key>
 the pilot on the pilot card (names and employee numbers, so keyed like the rest).
 
 The other files the Watcher writes under www hold no names: pairings_<YYYY-MM>.json (the company's pairing package:
-times, routes, crew complement codes such as CA01FO01; 1.7.6: each pairing's legs with flight numbers and local times,
+times, routes, crew complement codes such as CA01FO01; 1.7.7: each pairing's legs with flight numbers and local times,
 its layover stations, hotel names and VAN times, never a phone number or a crew name) and the cards. The cards carry no date of hire either: the
 pilot's DOH stays in /data/cards.json and goes out in sensor.<prefix>_state (cards.py). school_<YYYY-YY>.json is a
 school calendar put there by hand. The crew index and tickets live in /share, which HA does not serve.

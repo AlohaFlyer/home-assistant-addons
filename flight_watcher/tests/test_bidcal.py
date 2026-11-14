@@ -138,14 +138,14 @@ def test_schedule_without_a_package_uses_the_usual_days_and_says_so():
     a = _by_kind(BC.schedule("2026-12"))
     assert tuple(a) == BC.KINDS == ("publish_eve", "practice_eve_1", "practice_eve_2", "close_24h", "close_eve")
     assert {k: (v["fire_at"], v["deadline"]) for k, v in a.items()} == {
-        "publish_eve": ("2026-11-03T08:00:00-10:00", "2026-11-04T00:00:00-10:00"),
+        "publish_eve": ("2026-11-04T08:00:00-10:00", "2026-11-05T00:00:00-10:00"),
         "practice_eve_1": ("2026-11-06T20:00:00-10:00", "2026-11-07T00:00:00-10:00"),
         "practice_eve_2": ("2026-11-09T20:00:00-10:00", "2026-11-10T00:00:00-10:00"),
         "close_24h": ("2026-11-10T08:00:00-10:00", "2026-11-10T20:00:00-10:00"),
         "close_eve": ("2026-11-10T20:00:00-10:00", "2026-11-11T08:00:00-10:00")}
     assert {v["source"] for v in a.values()} == {"default"}
     assert a["publish_eve"]["key"] == "2026-12_publish_eve"
-    assert a["publish_eve"]["message"] == ("The December pairing package publishes tomorrow, Wed Nov 4. Adjust your "
+    assert a["publish_eve"]["message"] == ("The December pairing package publishes tomorrow, Thu Nov 5. Adjust your "
                                            "vacation if needed.")
     assert a["practice_eve_1"]["title"] == "PBS Practice Run #1 tomorrow"
     assert a["practice_eve_1"]["message"].startswith(
@@ -177,15 +177,15 @@ def test_schedule_takes_the_dates_of_the_cycles_own_package():
 
 
 def test_the_publish_alert_time_is_one_constant(monkeypatch):
-    # Ryan, Nov 11 (FW-0070): 08:00 HST the day before the publish date (the 3rd by default), not 20:00
+    # Ryan, Nov 11 (FW-0070): 08:00 HST the day before the publish date (the 4th by default from 1.7.7), not 20:00
     assert BC.PUBLISH_ALERT == (1, "08:00")
-    monkeypatch.setattr(BC, "PUBLISH_ALERT", (0, "08:00"))  # Ryan's answer could be the morning of the 4th
+    monkeypatch.setattr(BC, "PUBLISH_ALERT", (0, "08:00"))  # the morning of the publish day itself
     a = _by_kind(BC.schedule("2026-12"))["publish_eve"]
-    assert (a["fire_at"], a["deadline"]) == ("2026-11-04T08:00:00-10:00", "2026-11-05T00:00:00-10:00")
+    assert (a["fire_at"], a["deadline"]) == ("2026-11-05T08:00:00-10:00", "2026-11-06T00:00:00-10:00")
     assert a["title"] == "December pairing package today"
     monkeypatch.setattr(BC, "PUBLISH_ALERT", (2, "20:00"))
     a = _by_kind(BC.schedule("2026-12"))["publish_eve"]
-    assert a["fire_at"] == "2026-11-02T20:00:00-10:00" and "publishes in 2 days, Wed Nov 4" in a["message"]
+    assert a["fire_at"] == "2026-11-03T20:00:00-10:00" and "publishes in 2 days, Thu Nov 5" in a["message"]
 
 
 def _t(d, hm):
@@ -194,7 +194,7 @@ def _t(d, hm):
 
 def test_due_sends_late_until_the_deadline_then_drops():
     alerts = BC.schedule("2026-12")
-    send, drop = BC.due(alerts, {}, _t(10, "10:00"))  # off since before Nov 3: back at 10:00 on the 10th
+    send, drop = BC.due(alerts, {}, _t(10, "10:00"))  # off since before Nov 4: back at 10:00 on the 10th
     assert [a["kind"] for a in send] == ["close_24h"]
     assert [a["kind"] for a in drop] == ["publish_eve", "practice_eve_1", "practice_eve_2"]
     title, msg = BC.render(send[0], _t(10, "10:00"))
@@ -206,24 +206,26 @@ def test_due_sends_late_until_the_deadline_then_drops():
     send, drop = BC.due(alerts, {}, _t(11, "08:00"))
     assert send == [] and len(drop) == 5
     assert BC.due(alerts, {a["key"]: {"how": "sent", "event": a["event"]} for a in alerts}, _t(11, "08:00")) == ([], [])
-    assert BC.due(alerts, {}, _t(3, "07:59")) == ([], [])  # nothing before its time
+    assert BC.due(alerts, {}, _t(4, "07:59")) == ([], [])  # nothing before its time
 
 
 def test_the_publish_alert_goes_at_0800_the_day_before_and_holds_until_the_publish_day():
     """FW-0070, Ryan's Nov 11 answer: the 'pairing package publishes tomorrow, adjust your vacation' alert fires at
-    08:00 HST the day before the publish date (Nov 3 for the usual 4th), not at 20:00; one sent late (the app was off
-    that morning) still goes out until the publish day starts."""
+    08:00 HST the day before the publish date (Nov 4 for the usual 5th: Ryan, Nov 14, "pairings post on the 5th of
+    the month"), not at 20:00; one sent late (the app was off that morning) still goes out until the publish day
+    starts."""
+    assert BC.DEFAULT_PUBLISHED == 5 and BC.DEFAULT_CLOSE == (11, "08:00")
     alerts = BC.schedule("2026-12")
-    assert BC.due(alerts, {}, _t(3, "07:59")) == ([], [])
-    send, drop = BC.due(alerts, {}, _t(3, "08:00"))
+    assert BC.due(alerts, {}, _t(3, "08:00")) == ([], []) and BC.due(alerts, {}, _t(4, "07:59")) == ([], [])
+    send, drop = BC.due(alerts, {}, _t(4, "08:00"))
     assert [a["kind"] for a in send] == ["publish_eve"] and drop == []
-    assert send[0]["fire_at"] == "2026-11-03T08:00:00-10:00"
-    assert BC.render(send[0], _t(3, "08:00")) == (
+    assert send[0]["fire_at"] == "2026-11-04T08:00:00-10:00"
+    assert BC.render(send[0], _t(4, "08:00")) == (
         "December pairing package tomorrow",
-        "The December pairing package publishes tomorrow, Wed Nov 4. Adjust your vacation if needed.")
-    send, _ = BC.due(alerts, {}, _t(3, "21:00"))  # late, still the day before: sent, worded the same
+        "The December pairing package publishes tomorrow, Thu Nov 5. Adjust your vacation if needed.")
+    send, _ = BC.due(alerts, {}, _t(4, "21:00"))  # late, still the day before: sent, worded the same
     assert [a["kind"] for a in send] == ["publish_eve"]
-    send, drop = BC.due(alerts, {}, _t(4, "00:00"))  # the publish day has started: dropped
+    send, drop = BC.due(alerts, {}, _t(5, "00:00"))  # the publish day has started: dropped
     assert send == [] and [a["kind"] for a in drop] == ["publish_eve"]
     # the package's own publish date moves it with it: published Dec 4 on January's cover page, so 08:00 Dec 3
     a = _by_kind(BC.schedule("2027-01", BC.parse(JAN)))["publish_eve"]
@@ -310,7 +312,7 @@ def test_each_alert_goes_once_and_a_restart_never_repeats_one(tmp_path, monkeypa
                   "at_hst": "2026-11-06T20:00:00-10:00", "event_hst": "2026-11-07T00:00:00-10:00", "source": "default",
                   "cycle_source": "default"}
     assert ev["message"].startswith("Practice Run #1 for December is tomorrow, Sat Nov 7.")
-    # the publish alert of Nov 3 was missed (the app was off): dropped with a log line, never sent
+    # the publish alert of Nov 4 was missed (the app was off): dropped with a log line, never sent
     assert "2026-12_publish_eve not sent" in caplog.text
     assert W.DB.get(W.BIDCAL_DONE)["2026-12_publish_eve"]["how"] == "dropped"
     assert W.bidcal_tick(_t(6, "20:01")) == [] and len(_events(fake)) == 1
@@ -353,8 +355,8 @@ def test_the_sensor_shows_the_next_alert_and_its_cycle(tmp_path, monkeypatch):
     W.bidcal_tick(_t(11, "10:00"))  # December's cycle is over (all dropped): January's is next
     s, retain = _sensor(fake)
     assert retain is True
-    assert s["next_at"] == "2026-12-03T08:00:00-10:00" and s["bid_month"] == "2027-01" and s["source"] == "default"
-    assert s["next"]["at_hst"] == "Thu Dec 3 08:00 HST" and s["next"]["title"] == "January pairing package tomorrow"
+    assert s["next_at"] == "2026-12-04T08:00:00-10:00" and s["bid_month"] == "2027-01" and s["source"] == "default"
+    assert s["next"]["at_hst"] == "Fri Dec 4 08:00 HST" and s["next"]["title"] == "January pairing package tomorrow"
     assert s["close"] == {"date": "2026-12-11", "time": "08:00"} and s["practice"] == ["2026-12-07", "2026-12-10"]
     assert [a["status"] for a in s["alerts"]] == ["pending"] * 5
     n = len(fake.msgs)

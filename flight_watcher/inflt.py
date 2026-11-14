@@ -11,7 +11,8 @@ import time
 from datetime import date, datetime
 from urllib.parse import unquote
 
-from pot import CM_PAIR_RE, classify, inflight_at, parse_legs, schedule_items, visible_text
+from pot import (TZ, CM_PAIR_RE, classify, inflight_leg, leg_local_date, parse_legs, schedule_items, trip_minute,
+                 visible_text)
 
 # 0.5.5: the page builds its rows in JS: TAry[...]=new Task(1, "SU", "01", "H3647", "PHX", "20261101", 1, 0, 'H3647');
 TASK_RE = re.compile(r'new Task\(\s*\d+,\s*"[A-Z]{2}",\s*"\d{2}",\s*"([A-Z]\d{4}[A-Z]?)",\s*"[^"]*",\s*"(\d{8})"')
@@ -76,6 +77,49 @@ def parse_cm_month(html):
     up = re.search(r"Last Updated:\s*([A-Za-z]{3}\s+\d{1,2},\s*\d{4}\s+\d{1,2}:\d{2}(?::\d{2})?)", h)
     return {"month": f"{yy}-{mm:02d}", "name": nm.group(1).strip().title() if nm else "", "emp": nm.group(2) if nm else "",
             "updated": up.group(1) if up else "", "days": days, "items": items, "totals": tot}
+
+
+# 1.7.7 (Ryan, Nov 14: "when it says picked up in flight. I want to know what flight he was flying to be certain. Add
+# the flight number... i.e AS808/06NOV and date"): the leg a pickup was made on, kept on the pickup as inflt_leg
+# {flt, frm, to, dep_l, date, dh, src}: flt the flight number, dep_l its printed local departure, date its local
+# departure date at its origin (ISO), dh True for a deadhead (airborne all the same), src "page" (FLICA's pairing page
+# the check read) or "package" (the pairings package, a backfill with no FLICA load).
+def page_leg(leg, start_iso):
+    """inflt_leg from a parse_legs leg of a trip that started on start_iso."""
+    return {"flt": leg["flt"], "frm": leg["frm"], "to": leg["to"], "dep_l": leg["dep_l"],
+            "date": leg_local_date(start_iso, leg), "dh": bool(leg.get("dh")), "src": "page"}
+
+
+def _pkg_min(v):
+    hit = re.fullmatch(r"(\d{1,3})[:h](\d{2})", str(v or "").strip())
+    return int(hit.group(1)) * 60 + int(hit.group(2)) if hit else None
+
+
+def package_leg(detail, start_iso, at_utc_iso):
+    """1.7.7 backfill, no FLICA load: inflt_leg from the pairings package's detail of the picker's pairing
+    (pdfs.package_legs: duties with legs [DAY, DH, flight, from, to, departure L, arrival L, BLKT, ...], DAY the trip
+    day, times local at each station as printed) for a trip that started on start_iso, when the UTC instant falls
+    inside one of its legs (departure plus block): the leg's departure in HST minutes is (DAY - 1) days plus its local
+    departure less the origin's offset from HST (pot.TZ; a station not in TZ: that leg is not placed). None when no leg
+    holds it."""
+    m = trip_minute(start_iso, at_utc_iso)
+    if m is None or not isinstance(detail, dict):
+        return None
+    for du in detail.get("duties") or []:
+        for lg in (du.get("legs") if isinstance(du, dict) else None) or []:
+            if not isinstance(lg, list) or len(lg) < 8:
+                continue
+            day, dh, flt, frm, to, depl, _arrl, blkt = (str(x or "") for x in lg[:8])
+            dep, blk = _pkg_min(depl), _pkg_min(blkt)
+            if not day.isdigit() or not 1 <= int(day) <= 40 or frm not in TZ or dep is None or blk is None:
+                continue
+            dep_h = (int(day) - 1) * 1440 + dep - (TZ[frm] + 10) * 60
+            if dep_h <= m <= dep_h + blk:
+                f = re.sub(r"\*+$", "", flt).lstrip("0") or flt
+                return {"flt": f, "frm": frm, "to": to, "dep_l": depl.zfill(5),
+                        "date": date.fromordinal(date.fromisoformat(start_iso).toordinal() + int(day) - 1).isoformat(),
+                        "dh": dh == "DH", "src": "package"}
+    return None
 
 
 CM_SCHED = "{base}/full/cmschedules.cgi?GO=1&SchBrowser=1&Prompt=1&EmployeeID={emp}"
@@ -192,19 +236,21 @@ def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
                         log.info("inflt %s: schedule trips not passed on: %s", key, e)
             day = d.date()
             cands = [p for p in cache[ck] if 0 <= (day - date.fromisoformat(p["start"])).days <= 6]
-            verdict, trip = False, ""
+            verdict, trip, leg = False, "", None
             for pr in cands:
                 time.sleep(random.uniform(1.5, 3.5))
                 page = fl.fetch(f"{base}/full/mobilepairing.cgi?PID={pr['trip']}&DATE={pr['start'].replace('-', '')}"
                                 "&FROM=MobileOpentimePot&CurrentPage=1")
                 if classify(page) != "ok":
                     continue
-                if inflight_at(parse_legs(visible_text(page)), pr["start"], gone):
-                    verdict, trip = True, f"{pr['trip']} {pr['start']}"
+                lg = inflight_leg(parse_legs(visible_text(page), dh=True), pr["start"], gone)
+                if lg is not None:  # 1.7.7: the leg itself, a deadhead too
+                    verdict, trip, leg = True, f"{pr['trip']} {pr['start']}", page_leg(lg, pr["start"])
                     break
-            db.set_inflt(key, verdict, trip, tries=tries + 1)
-            log.info("inflt %s: picker %s %s at pickup (%s)", key, emp,
-                     "IN FLIGHT on " + trip if verdict else "not in flight",
+            db.set_inflt(key, verdict, trip, tries=tries + 1, emp=emp, leg=leg)
+            on = (f"IN FLIGHT on {trip} ({'DH ' if leg['dh'] else ''}{leg['flt']} {leg['frm']}-{leg['to']} "
+                  f"{leg['date']})" if verdict else "not in flight")
+            log.info("inflt %s: picker %s %s at pickup (%s)", key, emp, on,
                      ", ".join(p["trip"] + " " + p["start"] for p in cands) or "no trip that day")
             changed = True
         except Exception as e:

@@ -359,7 +359,7 @@ def _mins(hm):
 def hotel_name(text):
     """The hotel's name from the part of a package hotel line before its VAN: it ends at a run of spaces, a parenthesis
     or a phone-like run of digits (the phone is never kept), control characters out, HOTEL_MAX characters at most.
-    1.7.6: pdfs.package_legs (the pairing detail panel) reads the hotel with the same rule."""
+    1.7.7: pdfs.package_legs (the pairing detail panel) reads the hotel with the same rule."""
     name = re.split(r"\s{2,}|\(|\+?\d[\d\s().-]{6,}", str(text or "").strip()[:400], maxsplit=1)[0]
     return _line(name, HOTEL_MAX)
 

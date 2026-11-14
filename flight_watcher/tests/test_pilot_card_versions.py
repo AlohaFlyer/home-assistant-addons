@@ -27,7 +27,7 @@ globalThis.window = {addEventListener() {}, removeEventListener() {}, dispatchEv
 globalThis.location = {hash: "", pathname: "/", search: ""}; globalThis.history = {replaceState() {}};
 globalThis.CustomEvent = class { constructor(t, o) { this.type = t; this.detail = (o || {}).detail; } };
 const FETCHED = []; let FILE = null;
-// 1.7.6: the grid also asks for the pairings package files (R / Rel times, the detail): none here (404), not counted
+// 1.7.7: the grid also asks for the pairings package files (R / Rel times, the detail): none here (404), not counted
 globalThis.fetch = (u, o) => { if (String(u).includes("/pairings_")) return Promise.resolve({ ok: false, json: () => Promise.resolve(null) });
   FETCHED.push([u, (o || {}).cache]); return Promise.resolve({ ok: !!FILE, json: () => Promise.resolve(FILE) }); };
 const tick = () => new Promise((r) => setTimeout(r, 10));
@@ -113,7 +113,7 @@ def _bar(h):
 
 
 def _ti(label, value):
-    """1.7.6: one item of the schedule card's totals line."""
+    """1.7.7: one item of the schedule card's totals line."""
     return f'<span class="ti"><span class="k">{label}</span> {value}</span>'
 
 
@@ -170,7 +170,7 @@ def test_older_version_draws_its_own_trips(tmp_path):
     cur, v1 = _grid(r["cur"]), _grid(r["v1"])
     assert ">H3205</span>" in cur and ">H3300</span>" not in cur
     assert ">H3300</span>" in v1 and ">H3205</span>" not in v1 and ">H3101</span>" in v1  # the award's line, not the live one
-    # 1.7.6: the schedule card's layover cell: the station plain in the trip's box (bold is a turn station)
+    # 1.7.7: the schedule card's layover cell: the station plain in the trip's box (bold is a turn station)
     assert 'title="H3300 2026-11-20 crew:\ncrew not read yet">NRT</span>' in v1 and ">SFO</span>" not in v1
     assert v1.count(" bxs") == 2 and v1.count(" bxe") == 2  # each of its trips boxed, like the live grid
     # H3101 is still on the live line: its live block, credit and crew; H3300 is not: no crew, no block
@@ -178,7 +178,7 @@ def test_older_version_draws_its_own_trips(tmp_path):
     assert "9:58" in row and "12:34" in row and "CA Roe, Rick · FO Doe, Jane" in row
     row = [x for x in v1.split("<tr")[1:] if ">H3300</span>" in x][0]
     assert "Roe, Rick" not in row and "9:58" not in row
-    # its own totals in the live month's order (1.7.6 review: Credit, Block, Soft, Pay-Gross, Pay-Net, Days Off, the
+    # its own totals in the live month's order (1.7.7 review: Credit, Block, Soft, Pay-Gross, Pay-Net, Days Off, the
     # schedule card's line): the award has none from FLICA and this file no pay, so none; the note says what is live
     assert '<span class="k">Trips</span>' not in v1 and '<span class="k">Block</span>' not in v1
     assert ("v11.001 as captured Oct 19 16:00 HST, the awarded line. Block / Credit per trip and crew shown are the live "

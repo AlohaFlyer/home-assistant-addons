@@ -23,7 +23,6 @@ import tempfile
 import threading
 import time
 import unicodedata
-from datetime import datetime
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -1052,14 +1051,15 @@ def contract():
                                       "month_rule": "", "captain": "Doe, Jane (10001)", "value": 1234.5,
                                       "comm_why": "home by 1800", "detail_url": "https://example.invalid/x"},
                       seq0 + 10, "2026-11-09T20:00:10+00:00")
-    # 1.7.2 (revision 3): the bid calendar alert (the admin's payload keys) and a schedule not read
-    bid = bidcal.schedule("2026-12")[0]
-    bid_at = datetime.fromisoformat(bid["fire_at"])
-    bid_title, bid_msg = bidcal.render(bid, bid_at)
-    ev_bid = event_record("bid_calendar", {"kind": "bid_calendar", "key": bid["key"], "bid_month": bid["bid_month"],
-                                           "alert": bid["kind"], "title": bid_title, "message": bid_msg,
-                                           "at_hst": bid_at.isoformat(timespec="seconds"), "event_hst": bid["event"],
-                                           "source": bid["source"], "cycle_source": bid["cycle_source"]},
+    # 1.7.2 (revision 3): the bid calendar alert (the admin's payload keys) and a schedule not read. 1.7.7: the example
+    # keeps the words and dates revision 3 was pinned with (a package published Nov 4, so the alert at 08:00 Nov 3);
+    # the usual publish day moved to the 5th (bidcal.DEFAULT_PUBLISHED, Ryan, Nov 14), which the contract does not fix
+    ev_bid = event_record("bid_calendar", {"kind": "bid_calendar", "key": "2026-12_publish_eve", "bid_month": "2026-12",
+                                           "alert": "publish_eve", "title": "December pairing package tomorrow",
+                                           "message": "The December pairing package publishes tomorrow, Wed Nov 4. "
+                                                      "Adjust your vacation if needed.",
+                                           "at_hst": "2026-11-03T08:00:00-10:00", "event_hst": "2026-11-04T00:00:00-10:00",
+                                           "source": "default", "cycle_source": "default"},
                           seq0 + 11, "2026-11-03T18:00:00+00:00")
     ev_unread = event_record("schedule_unread", {"state": "failing", "hours": 7, "key": "2026-11-09"}, seq0 + 12,
                              "2026-11-09T20:00:12+00:00")

@@ -1,4 +1,4 @@
-"""1.7.6 (Ryan, Nov 14: "my schedule and other pilots schedule and reconstructed schedules should be exactly the same
+"""1.7.7 (Ryan, Nov 14: "my schedule and other pilots schedule and reconstructed schedules should be exactly the same
 style including this latest detail panel"): the month grid's look and the pairing detail panel live in one block of
 code that every card drawing a month carries byte for byte (the cards load one file each, as ES modules, on Home
 Assistant and on the portal, so a shared file would change the portal's card bundle). This keeps the copies equal,

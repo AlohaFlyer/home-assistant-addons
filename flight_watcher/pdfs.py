@@ -1,7 +1,7 @@
 """Monthly PDFs (0.9.1, Ryan 2026-11-05): parse `pdftotext -layout` text of
   * the Pilot Pairings package ("11 - November 2026 Pilot Pairings Rev. 1.pdf") into the schedule card's pairing
     file /config/www/flight-watcher/pairings_<YYYY-MM>.json (cols id, report, dep, release, rel_days, first_duty_min,
-    route, credit, tafb, days), A332 HNL pairings only, and (1.7.6) each one's legs, duties, layovers and totals for
+    route, credit, tafb, days), A332 HNL pairings only, and (1.7.7) each one's legs, duties, layovers and totals for
     the pairing detail panel (package_legs);
   * the PBS bid-run award ("A332FO PBS BID RUN Award--NOV 2026 ...") into one pilot's awarded line (the
     month's .001 starting schedule).
@@ -186,7 +186,7 @@ def parse_package(text, base="HNL", eqp="33"):
 
 def package_json(text, source, base="HNL", eqp="33"):
     """The card's pairing file. FW-0014: start / end are the bid period's first and last day (ISO), so a reader
-    can place a last-month day ('31' in January = Dec 31) without guessing. 1.7.6: "detail" holds each row's legs,
+    can place a last-month day ('31' in January = Dec 31) without guessing. 1.7.7: "detail" holds each row's legs,
     duties, layovers and totals (package_legs) for the pairing detail panel, "dv" the parser that wrote it
     (PKG_PARSER); cols and rows are as before."""
     start, end = period_bounds(text)
@@ -200,7 +200,7 @@ def package_json(text, source, base="HNL", eqp="33"):
     return out
 
 
-# 1.7.6 review: the pairing file is served at a fixed URL with no login (/local/flight-watcher/pairings_<YYYY-MM>.json)
+# 1.7.7 review: the pairing file is served at a fixed URL with no login (/local/flight-watcher/pairings_<YYYY-MM>.json)
 # and every pilot's portal copies it, so it keeps the routes and times only: never the crew hotels or their van
 # times (DETAIL_PRIVATE), which stay in the DB (package_hotels) for the pilot's own trips. And it has a whole-file
 # budget: a pilot's upload is untrusted, and the portal skips any file over its 8 MB cap (portal.CAPS['file']), rows
@@ -237,7 +237,7 @@ def package_hotels(text, base="HNL", eqp="33"):
     return out
 
 
-# ---------------------------------------------------------------- 1.7.6: the pairing detail panel
+# ---------------------------------------------------------------- 1.7.7: the pairing detail panel
 # Ryan, Nov 14: "click on a pairing and have the actual pairing pop open below the schedule", like FLICA's pairing
 # printout. Each A330 HNL pairing of the package keeps its legs ([DAY, DH, flight, from, to, departure L, arrival L,
 # BLKT, SGCRD, GRNT, EQP], local times as printed), its duties (report and D-END local, TBLK, TCRD, DUTY and LAYO as
@@ -279,7 +279,7 @@ def package_legs(text, ids=None, base="HNL", eqp="33"):
     """{pairing: {eq, crew, rept, duties, tot}} for the pairing blocks whose id is in ids (all when None): the pairing
     detail panel's data (see the note above). eq = the flown legs' equipment, crew = the crew complement code
     ('CA01FO01'), rept = the base report (local). A duty: {legs, rept (its report, local, '' when the package prints
-    none), dend, tblk, tcrd, duty, layo, tdhd, fdp, stn (where it ends), hotel, van}. 1.7.6 review: only the blocks the
+    none), dend, tblk, tcrd, duty, layo, tdhd, fdp, stn (where it ends), hotel, van}. 1.7.7 review: only the blocks the
     pairing file keeps (_accepted: the base, the A330 legs), and the first of them per id, so another fleet's block with
     the same number never replaces an A330 pairing's detail."""
     import layover as LO
