@@ -181,5 +181,74 @@ def test_flicas_error_page_gives_a_plain_status(load):
     st = W.pilot_unreadable_status(html)
     assert st.startswith("not readable:") and "FLICA" in st and "try again later" in st
     assert "http/1.1" not in st.lower() and "\n" not in st and "cae" not in st.lower()
+    # review: the Pilot card (since 1.6.2) turns a status matching its own pattern into its friendly line; the plain
+    # status must still match it, or the card would print the status raw
+    import os
+    import re
+    card = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "www",
+                             "flight-watcher-pilot-card.js"), encoding="utf-8").read()
+    pat = re.search(r"const said = /([^/]+)/i\.test\(a\.status", card).group(1)
+    assert re.search(pat, st, re.I), (pat, st)
+    ctl = W.pilot_unreadable_status("<p>ok&#27;[31m red &#8238;txet</p>")
+    assert not re.search("[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]", ctl), ctl
     other = W.pilot_unreadable_status("<html><body>Something else entirely</body></html>")
     assert other.startswith("not readable:") and "\n" not in other and len(other) <= 140
+
+
+# ---------------------------------------------------------------- 1.7.3 review of the F#55 follow-up
+def test_a_pickers_number_is_masked_on_a_pilot_line():
+    out = CAPS.mask("inflt H3647|07Nov: picker 1234 not in flight at pickup (H3647 2026-11-01)", [])
+    assert "1234" not in out and "picker ####" in out
+    assert CAPS.mask("a pilot 100 loads an hour", []) == "a pilot 100 loads an hour"
+
+
+def test_the_log_filter_masks_a_lookup_line_on_a_pilot(load, caplog):
+    """Through PilotLogMask itself (not only CAPS.mask): a 4-digit number after 'pilot' on a pilot instance."""
+    W = load("pilot2")
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        W.log.info("pilot %s: schedule requested", "1234")
+        W.log.info("inflt %s: picker %s %s at pickup (%s)", "H3647|07Nov", "1234", "not in flight", "no trip that day")
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "1234" not in text and "pilot ####: schedule requested" in text and "picker ####" in text
+
+
+class _FakeFl:
+    def __init__(self, html):
+        self.html = html
+
+    def fetch(self, url):
+        return self.html
+
+
+def test_a_pilots_lookup_logs_no_page_text_of_a_failed_read(load, caplog, monkeypatch):
+    """visible_text lowercases the page, and the name masks need a capital letter: a failed lookup page that names the
+    pilot ('doe, jane (emp# 1234)') reached the log. A pilot logs page text only through page_log (only while his
+    captures are on, and masked); the admin's line is as before."""
+    W = load("pilot2")
+    monkeypatch.setattr(W.time, "sleep", lambda s: None)
+    pubs = []
+    monkeypatch.setattr(W, "pub_pilot", pubs.append)
+    monkeypatch.setattr(W, "pilotver_capture_rebuild", lambda *a: None)
+    page = "<html><body>DOE, JANE (Emp# 1234) Schedule for November</body></html>"
+    W.S["pilot_req"] = {"emp": "1234", "name": "Doe, Jane"}
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        W.pilot_check(_FakeFl(page))
+    text = "\n".join(r.getMessage() for r in caplog.records).lower()
+    assert "doe" not in text and "jane" not in text and "1234" not in text, text
+    assert "gave ok: (" in text and "not logged: page captures are off" in text  # the line is there, its text is not
+    assert pubs and pubs[-1]["status"].startswith("not readable:")
+
+
+def test_inflt_logs_page_text_through_the_hook(load, monkeypatch):
+    W = load("pilot2")
+    assert IF.PAGE_LOG is W.page_log  # the Watcher sets it, as it sets IF.WRITE
+    lines = []
+
+    class L:
+        def info(self, fmt, *a):
+            lines.append(fmt % a)
+    monkeypatch.setattr(IF.time, "sleep", lambda s: None)
+    monkeypatch.setitem(IF.PROBE, "logged", 0)
+    IF.fetch_schedule(_FakeFl("<html><body>DOE, PAT (Emp# 1234) no schedule</body></html>"), "https://x", "1234",
+                      "1126", "1126", L(), "H3647|07Nov")
+    assert lines and not any("doe" in ln.lower() for ln in lines), lines

@@ -89,6 +89,8 @@ CAPTURE_DIR = "/share/flight_watcher/captures"
 # 1.6.2 (Release A item 8): watcher.py sets CAPTURE_DIR to this instance's folder and WRITE to its capture policy
 # (captures.py: the admin's as before; a pilot's only while captures are on, masked, in his own folder)
 WRITE = None
+# 1.7.3 review: set by the Watcher (watcher.page_log): page text for a log line, a pilot's only while his captures are on
+PAGE_LOG = None
 
 
 # FW-0013: FLICA's "Application Error" page ("An error has occurred, please contact CAE Customer Care ... No Schedule
@@ -139,8 +141,9 @@ def fetch_schedule(fl, base, emp, bd, cur_bd, log, key):
             return parse_cm_schedule(html)
         if PROBE["logged"] < 3:
             PROBE["logged"] += 1
+            txt = visible_text(html)[:300]
             log.info("inflt %s: schedule lookup %s gave %s: %s", key, url.split("?")[1], classify(html),
-                     visible_text(html)[:300])
+                     PAGE_LOG(txt) if PAGE_LOG else txt)
     return None
 
 

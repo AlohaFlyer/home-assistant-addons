@@ -4764,6 +4764,7 @@ if ROLES.role(INSTANCE) == ROLES.PILOT:
 
 
 IF.WRITE = cap_write
+IF.PAGE_LOG = page_log  # 1.7.3 review: inflt logs page text as the Watcher does
 
 
 def capture(fl, month, html):
@@ -5953,9 +5954,10 @@ def pilot_unreadable_status(html):
     """1.7.3 (F#55's live run, Nov 14): the Pilot card's line when the lookup's schedule page is not readable. FLICA's
     application error page (inflt.ERROR_HINTS) was shown raw ('not readable: ok flica.net - application error ... http/1.1
     200 ok\\nex'); it is a plain line now, and any other page's text is kept to one short line."""
-    text = re.sub(r"\s+", " ", visible_text(html or "")).strip()
+    text = LOG_CTRL_RE.sub("", re.sub(r"\s+", " ", visible_text(html or ""))).strip()
     if any(h in text.lower() for h in IF.ERROR_HINTS):
-        return "not readable: FLICA's Schedule Lookup answered with an error for this month, try again later"
+        # review: the Pilot card turns a status matching /application error|customer care/ into its own friendly line
+        return "not readable: FLICA application error, try again later"
     return f"not readable: {classify(html or '')} {text[:100]}".strip()[:140]
 
 
@@ -6104,7 +6106,9 @@ def pilot_check(fl):
             sched = IF.parse_cm_month(html) if classify(html) == "ok" and IF.schedule_ok(html) else None
             if sched:
                 break
-            log.info("pilot %s: %s gave %s: %s", emp, url.split("?")[1], classify(html), visible_text(html)[:200])
+            # 1.7.3 review: page text through page_log (a pilot's only while his captures are on, masked): visible_text
+            # lowercases the page and the name masks need a capital letter
+            log.info("pilot %s: %s gave %s: %s", emp, url.split("?")[1], classify(html), page_log(visible_text(html)[:200]))
         if not sched:
             pilotver_capture_rebuild(emp, req.get("name") or "")  # FW-0069: the crew index's view, when it has one
             pub_pilot({"emp": emp, "name": req.get("name") or "", "status": pilot_unreadable_status(html),
