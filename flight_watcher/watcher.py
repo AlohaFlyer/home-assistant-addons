@@ -4659,8 +4659,10 @@ def detail_probe(fl, pot):
         return
     row = dict(next(iter(pot.values())))
     enrich(fl, row)
-    log.info("detail probe %s: captain=%r blk=%s credit=%s soft=%s", row.get("pairing"),
-             row.get("captain"), row.get("blk"), row.get("credit"), row.get("soft"))
+    # 1.7.3: a pilot's log never names the captain (another pilot), only whether one was parsed; PilotLogMask too
+    who = repr(row.get("captain")) if CAP.admin else ("parsed" if row.get("captain") else "none")
+    log.info("detail probe %s: captain=%s blk=%s credit=%s soft=%s", row.get("pairing"),
+             who, row.get("blk"), row.get("credit"), row.get("soft"))
 
 
 CAPTURE_DIR = f"{SHARE}/captures"
