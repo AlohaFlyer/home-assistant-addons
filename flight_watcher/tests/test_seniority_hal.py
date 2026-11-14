@@ -400,7 +400,8 @@ def test_a_pilots_status_is_not_stored_and_the_files_are_private(tmp_path, monke
                                    "2026-11-20T09:00:00-10:00")
         assert info["decision"] == "on-top"
         modes = {f.name: stat.S_IMODE(f.stat().st_mode) for f in tmp_path.iterdir() if "seniority" in f.name}
-        assert sorted(modes) == ["seniority.json", "seniority_2026-11-14.pdf", "seniority_2026-11-14.txt",
+        # 1.7.7: seniority.md (the markdown reference) is written beside seniority.json, private like it
+        assert sorted(modes) == ["seniority.json", "seniority.md", "seniority_2026-11-14.pdf", "seniority_2026-11-14.txt",
                                  "seniority_award.json", "seniority_list.json"]
         assert set(modes.values()) == {0o600}, modes
     finally:
