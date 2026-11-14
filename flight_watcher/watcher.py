@@ -66,7 +66,7 @@ import bidcal as BC
 import layover as LO
 import pilotpdf as PP
 
-VERSION = "1.7.4"
+VERSION = "1.7.5"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
