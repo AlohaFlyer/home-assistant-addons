@@ -352,7 +352,9 @@ def test_the_same_flica_details_saved_with_another_change_give_one_more_try(mk, 
     W.FLAGS["rearm"] = False
     W.WAKE.clear()
     assert W.settings_cmd(json.dumps({"username": "u", "password": "p", "my_name": "Doe, Jane"})) is True
-    assert W.flica_refused_at() is None and "flica_key_lost" not in W.S
+    # the block holds until the restart (a Re-arm before it logs in no more); the start after it lifts the block
+    assert W.flica_refused_at() is not None and W.rearm_answer()[1] is False
+    assert bool(W.S.get("flica_key_lost")) is lost
     res = W.S["settings_last"]["result"]
     assert res.startswith("saved: my_name") and "FLICA gets one more login try with these details" in res
     assert not W.FLAGS["rearm"] and not W.WAKE.is_set()  # nothing logs in before the restart cuts it short

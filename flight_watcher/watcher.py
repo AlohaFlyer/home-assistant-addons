@@ -403,6 +403,7 @@ def on_message(c, u, msg):
         act, _, why = rearm_answer()  # 1.7.1 (F#92, F#149): what it does depends on the state
         if act == "login":
             FLAGS["rearm"] = True
+            FLAGS["rearm_note"] = None  # 1.7.4 review: a press of his own (the note says so while it waits)
             wake = (S.get("machine") or "").startswith("stopped")
         elif act == "check":  # idle or hunting with no check for too long: the full check the card's 'Stuck' asks for
             FLAGS["full"] = True
@@ -531,6 +532,8 @@ def rearm_answer():
     st = S.get("machine") or "idle"
     if st.startswith("stopped") or st in ("yielded", "backoff"):
         if flica_refused_at() is not None:
+            if S.get(FL_AGAIN):  # 1.7.4 review: a save gave one more try; the restart it asked for lifts the block
+                return "login", False, "nothing to re-arm: the one more FLICA login try runs after the restart"
             if S.get(FL_KEY_LOST):  # 1.7.4: the refusal on record can no longer be checked: only a save lifts it
                 return "login", False, ("nothing to re-arm: FLICA's refusal on record can no longer be checked; save "
                                         "your FLICA details on Settings again")
@@ -842,22 +845,25 @@ def flica_lift(restart=False):
     they are right. One more login try (Re-arm's path: still at most one login every LOGIN_MIN_GAP_S). True when the
     block was lifted. 1.7.4: the block kept since its key was lost (FL_KEY_LOST) is lifted the same way. 1.7.4
     review: restart, the save changed other settings too and restarts the Watcher: the try waits for the restart
-    (FL_AGAIN, main), so no login starts only to be cut short by it."""
+    (FL_AGAIN, main), so no login starts only to be cut short by it; the block stays in force until then (main lifts
+    it), so a Re-arm in the RESTART_DELAY_S before it logs in no more either."""
     try:
         if flica_refused_at() is None:
             return False
-        S.pop("flica_refused", None)
-        S.pop(FL_KEY_LOST, None)
         if restart:
             S[FL_AGAIN] = time.time()
             S["note"] = FLICA_AGAIN_NOTE + " after the restart"
             save_state(S)
         else:
+            S.pop("flica_refused", None)
+            S.pop(FL_KEY_LOST, None)
             S["note"] = FLICA_AGAIN_NOTE
             save_state(S)
             FLAGS["rearm"] = True
+            FLAGS["rearm_note"] = FLICA_AGAIN_NOTE  # the note while it waits for the floor (no Re-arm was pressed)
             WAKE.set()
-        log.info("FLICA details saved again in Settings; the refusal block is lifted for one more try")
+        log.info("FLICA details saved again in Settings; the refusal block is lifted for one more try%s",
+                 " at the restart" if restart else "")
         return True
     except Exception as e:  # noqa: BLE001 (never let it stop a settings save)
         log.info("FLICA re-save not applied: %s", type(e).__name__)
@@ -865,17 +871,22 @@ def flica_lift(restart=False):
 
 
 def flica_again_due(now=None):
-    """1.7.4 review: True at the start that follows a save of the same FLICA details with other settings
-    (flica_lift(restart=True)), within SETTINGS_LAST_S of it; the mark is cleared at every start."""
-    t = S.pop(FL_AGAIN, None)
+    """1.7.4 review: True at a start that follows a save of the same FLICA details with other settings
+    (flica_lift(restart=True)), within SETTINGS_LAST_S + LOGIN_MIN_GAP_S of it (the try's login floor and a restart's
+    delay). The mark is cleared when the try runs (try_login), so a restart while it waits for its floor keeps it; one
+    too old is dropped here."""
+    t = S.get(FL_AGAIN)
     if t is None:
         return False
-    save_state(S)
     now = time.time() if now is None else now
     try:
-        return 0 <= now - float(t) < SETTINGS_LAST_S
+        due = 0 <= now - float(t) < SETTINGS_LAST_S + LOGIN_MIN_GAP_S
     except (TypeError, ValueError):
-        return False
+        due = False
+    if not due:
+        S.pop(FL_AGAIN, None)
+        save_state(S)
+    return due
 
 
 def crewtrac_lift():
@@ -2399,6 +2410,7 @@ LOGIN_MIN_GAP_S = 600
 FL_KEY_FILE = f"{DATA}/flica_hmac.key"  # 1.7.4: a pilot's FLICA block key, 32 random bytes, 0600, this instance only
 FL_HMAC_V = "flica_hmac_v"  # S: 1 once the refusal record is keyed with it (the 1.7.4 migration ran)
 FL_KEY_LOST = "flica_key_lost"  # S: the refusal's time when its key was lost with it on record: blocked until a save
+FL_SCRUB_DUE = "flica_scrub_due"  # S: 1 while the database files may still hold a bare sha256 (until a scrub is done)
 _FLK = {"key": None}
 _FLK_LOCK = threading.RLock()
 
@@ -2487,13 +2499,18 @@ def _flica_unchecked(r, why):
 def _flica_scrub():
     """1.7.4 review: the bare sha256 a record held stays readable in the database files (the old WAL frames, free
     pages) after the row is rewritten; they are rewritten too (Store.scrub). Never stops anything: a failure is
-    logged."""
+    logged, and FL_SCRUB_DUE (set before the migration's save) stays, so the next start tries again
+    (flica_key_start); it is cleared once a scrub is done."""
     try:
         done = DB.scrub()
         log.info("database files rewritten without the old FLICA refusal hash%s", "" if done else
-                 " (the WAL could not be emptied yet)")
+                 " (the WAL could not be emptied yet; tried again at the next start)")
     except (sqlite3.Error, OSError) as e:
-        log.info("database files not rewritten (%s)", type(e).__name__)
+        log.info("database files not rewritten (%s); tried again at the next start", type(e).__name__)
+        return False
+    if done and S.pop(FL_SCRUB_DUE, None) is not None:
+        save_state(S)
+    return done
 
 
 def flica_key():
@@ -2551,6 +2568,8 @@ def flica_key():
             if kept or dropped:  # a record was on file (none at a pilot's first refusal: nothing to say)
                 log.info("FLICA refusal record keyed with this instance's own key (%d kept, %d dropped)", kept,
                          dropped)
+        if scrub:
+            S[FL_SCRUB_DUE] = 1  # 1.7.4 review: saved with the migration, so a scrub that fails is tried again
         save_state(S)
         if scrub:
             _flica_scrub()
@@ -2588,10 +2607,13 @@ def flica_key_lost_stale():
 def flica_key_start():
     """1.7.4: at a pilot's start, a key-lost flag outlived by a login is dropped (flica_key_lost_stale) and, with a
     FLICA refusal on record, its key is had (the 1.7.4 migration, or the key-lost rule) before anything compares the
-    record. No record, no key: it is made at FLICA's first refusal."""
+    record. No record, no key: it is made at FLICA's first refusal. 1.7.4 review: a database scrub that failed at an
+    earlier start (FL_SCRUB_DUE) is tried again first."""
     if not is_pilot():
         return
     flica_key_lost_stale()
+    if S.get(FL_SCRUB_DUE):  # 1.7.4 review: a scrub that failed at an earlier start, tried again
+        _flica_scrub()
     if not (S.get("flica_refused") or {}).get("hash"):
         return
     try:
@@ -2643,6 +2665,8 @@ def flica_refused_at():
 
 
 def flica_refused_note(at):
+    if S.get(FL_AGAIN):  # 1.7.4 review: the same details saved again with other settings: the restart lifts the block
+        return FLICA_AGAIN_NOTE + " after the restart"
     if S.get(FL_KEY_LOST):  # 1.7.4: the record cannot be checked any more; only a save in Settings lifts the block
         return (f"FLICA refused a login at {hst_hm(at)} HST and that refusal can no longer be checked; save your FLICA "
                 "details on the Settings tab again (the same ones or new ones) to try once more")
@@ -2651,8 +2675,12 @@ def flica_refused_note(at):
 
 
 def try_login(fl, reason):
-    """Single attempt. Parks the watcher on anything but success."""
+    """Single attempt. Parks the watcher on anything but success. 1.7.4 review: the login's time is saved before it
+    starts, so one cut short (a restart) still counts for the login floor; the one more try a save gave (FL_AGAIN)
+    is this login."""
     S["login_ts"] = time.time()
+    S.pop(FL_AGAIN, None)
+    save_state(S)
     res = fl.login()
     if res == "ok":
         S["pot_urls"] = {}
@@ -8782,6 +8810,7 @@ CT_KEY_LOST = "crewtrac_key_lost"  # DB: when the key was found gone with a refu
 CT_KEY_LOST_TEXT = ("CrewTrac is not tried: its refusal record could not be checked. Save your CrewTrac details again "
                     "in Settings to try once.")
 _CTK = {"key": None}
+_CTK_LOCK = threading.RLock()  # 1.7.4 review: one key per process (main, the charter thread and paho's may all ask)
 
 
 def _ct_key_read():
@@ -8794,7 +8823,13 @@ def crewtrac_key():
     exported, logged or sent. Made for the first time (1.7.2's first start), it re-keys the 1.7.1 records: the details
     in use get their new key, a bare sha256 of any other details is dropped (it cannot be re-keyed without them).
     Found gone later (a restored or wiped data folder) with a refusal on record, no stored key can be matched any more:
-    CrewTrac stays blocked until the next save in Settings (CT_KEY_LOST, crewtrac_stopped, crewtrac_resaved)."""
+    CrewTrac stays blocked until the next save in Settings (CT_KEY_LOST, crewtrac_stopped, crewtrac_resaved). 1.7.4
+    review: under _CTK_LOCK, so two callers that both find no key never make two."""
+    with _CTK_LOCK:
+        return _crewtrac_key()
+
+
+def _crewtrac_key():
     if _CTK["key"] is not None:
         return _CTK["key"]
     key = _ct_key_read()  # 1.7.4 review: OSError on a read error (the key kept, never replaced; the caller retries)
@@ -8848,12 +8883,14 @@ def crewtrac_resaved():
     u, p = crewtrac_login(load_opts())
     if not u or not p:
         return False
-    h = crewtrac_hash(u, p)
     if DB.get(CT_KEY_LOST):  # 1.7.2: the block key was lost: this save is the one the block waited for
+        # 1.7.4 review: before the hash: the records it waited on are gone, so no key is needed (a read error
+        # meanwhile never keeps the block past this save)
         DB.put(CT_KEY_LOST, None)
         DB.put("charter_status", "CrewTrac details saved again: the next scan tries them.")
         log.info("charter: CrewTrac details saved again in Settings; the block kept since the key was lost is lifted")
         return True
+    h = crewtrac_hash(u, p)
     seen = dict(DB.get("crewtrac_refused") or {})
     ct = dict(DB.get("crewtrac") or {})
     if h not in seen and not (ct.get("creds") == h and ct.get("block") == h):
@@ -8876,16 +8913,28 @@ def crewtrac_stopped(ct):
     return ct.get("state") == "not_configured" or bool(ct.get("block") and ct.get("block") == ct.get("creds"))
 
 
-def crewtrac_info():
-    """The charters sensor's crewtrac attribute: {state, at, next_try}. 1.7.4 review: while the block key cannot be
-    read (crewtrac_key raises: it is kept, never replaced), the record as last kept."""
+CT_KEY_HELD_S = 60  # charter_thread tries again this long after a turn that let an error out
+CT_KEY_HELD_TEXT = "CrewTrac scans held: the CrewTrac block key could not be read (next try in 1 min)"
+_CT_HELD = {"on": False}  # the charters sensor last published says the scans are held (publish_charters)
+
+
+def _crewtrac_info():
+    """(crewtrac attribute, held). 1.7.4 review: while the block key cannot be read (crewtrac_key raises: it is kept,
+    never replaced), no scan runs: state outage, the next try a minute away (charter_thread's), held True."""
     try:
         ct = crewtrac_state()
     except OSError as e:
-        log.info("charter: the CrewTrac block key could not be read (%s); the status shown is the last kept",
-                 type(e).__name__)
-        ct = dict(DB.get("crewtrac") or {})
-    return {k: ct.get(k) or "" for k in ("state", "at", "next_try")}
+        if not _CT_HELD["on"]:  # once while it lasts (charter_thread logs each turn's error too)
+            log.info("charter: the CrewTrac block key could not be read (%s); CrewTrac scans held", type(e).__name__)
+        now = local_now()
+        return {"state": CH.OUTAGE, "at": _hst_iso(now),
+                "next_try": _hst_iso(now + timedelta(seconds=CT_KEY_HELD_S))}, True
+    return {k: ct.get(k) or "" for k in ("state", "at", "next_try")}, False
+
+
+def crewtrac_info():
+    """The charters sensor's crewtrac attribute: {state, at, next_try} (_crewtrac_info)."""
+    return _crewtrac_info()[0]
 
 
 # 1.7.1 (F#22, Ryan Nov 11): shared charters. A pilot's Watcher runs no CrewTrac scan and makes no CrewTrac login: it
@@ -8986,9 +9035,11 @@ def publish_charters(status=""):
         return
     known = DB.get("charters") or {}
     items = sorted(known.values(), key=lambda r: (r.get("date", ""), r.get("scheduled", "")))
-    crewtrac = crewtrac_info()
+    crewtrac, held = _crewtrac_info()  # 1.7.4 review: held, the key cannot be read: the status says so (not kept)
+    _CT_HELD["on"] = held
+    status = status or (CT_KEY_HELD_TEXT if held else DB.get("charter_status") or "")
     pub("charters", {"count": len([r for r in items if not r.get("gone")]), "items": items,
-                     "last_scan": DB.get("charter_scan_at") or "", "status": status or DB.get("charter_status") or "",
+                     "last_scan": DB.get("charter_scan_at") or "", "status": status,
                      "regular": sorted(CH.regular_set(OPTS.get("charter_regular"))), "crewtrac": crewtrac})
 
 
@@ -9158,8 +9209,16 @@ def charter_press(now=None):
 
 
 def charter_turn():
-    """One turn of the charter thread: wait as charter_wait() says (or for a press), then scan."""
-    wait = charter_wait()
+    """One turn of the charter thread: wait as charter_wait() says (or for a press), then scan. 1.7.4 review: while
+    the CrewTrac block key cannot be read, the charters sensor says the scans are held (publish_charters) and the
+    error goes on to charter_thread (tried again a minute later); once it reads again, the status as kept goes out."""
+    try:
+        wait = charter_wait()
+    except OSError:
+        publish_charters()
+        raise
+    if _CT_HELD["on"]:
+        publish_charters()
     if wait is None:
         charter_scan()  # no login: the status only
         CHARTER_WAKE.wait(CHARTER_IDLE_S)
@@ -10549,11 +10608,16 @@ def main():
                 time.sleep(3600)
         set_machine("stopped_unexpected", "enter your FLICA username and password: dashboard Settings tab")
     elif S.get("machine", "").startswith("stopped"):
+        if again and S.get("machine") == "stopped_login_failed":  # 1.7.4 review: the save's lift, at this start
+            S.pop("flica_refused", None)
+            S.pop(FL_KEY_LOST, None)
+            save_state(S)
         at = flica_refused_at()
         if at is not None:  # 1.7.4 review: Re-arm cannot lift FLICA's refusal (nor one whose key was lost); a save can
             set_machine(S["machine"], flica_refused_note(at))
         elif again:  # 1.7.4 review: the same FLICA details saved again with other settings: the one more try, now
             FLAGS["rearm"] = True  # Re-arm's path: still at most one login every LOGIN_MIN_GAP_S
+            FLAGS["rearm_note"] = FLICA_AGAIN_NOTE  # its note while it waits for the floor
             set_machine(S["machine"], FLICA_AGAIN_NOTE)
         else:
             note = S.get("note", "")
@@ -10634,9 +10698,11 @@ def main():
                         set_machine(st, flica_refused_note(at))
                         log.info("re-arm: FLICA refused these login details; no login until others are saved")
                         continue
-                    if login_deferred(st, "Re-arm pressed"):  # a pilot's logins are LOGIN_MIN_GAP_S apart
+                    # a pilot's logins are LOGIN_MIN_GAP_S apart; 1.7.4 review: a save's one more try says so
+                    if login_deferred(st, FLAGS.get("rearm_note") or "Re-arm pressed"):
                         continue  # FLAGS rearm stays set: the login runs once the wait is over
                     FLAGS["rearm"] = False
+                    FLAGS["rearm_note"] = None
                     S["kills"] = []
                     S["pot_urls"] = {}
                     S["parse_fail"] = 0
