@@ -157,6 +157,16 @@ class Store:
     def save_state(self, s):
         self.put("state", s)
 
+    def scrub(self):
+        """1.7.4: rewrite the database files so a value no row holds any more is gone from them too: a checkpoint, a
+        VACUUM (the free pages and the free space inside pages still hold old row bytes) and a TRUNCATE checkpoint
+        (the WAL emptied). True when the last checkpoint completed. sqlite3.Error when it could not run."""
+        with self.lock:
+            self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self.db.execute("VACUUM")
+            busy = self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        return not (busy and busy[0])
+
     # ---- finds
     def record_pot(self, month, pot, new_keys):
         """Upsert every row seen; stamp gone_at on rows no longer in this month's pot."""
