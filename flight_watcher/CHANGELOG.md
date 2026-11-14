@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.7.6
+
+Session lost on the open time page (HOM t1301; Ryan approved shipping Nov 8).
+
+- Before: at 15:02 HST on Nov 8 FLICA answered the open time page with "application error initializesessiondata()
+  failed". That page counted as a pot layout miss ("retry"), so the Watcher cleared its pot links, added one to the
+  layout count and slept a full check gap with state idle and Session OK on; the pot went stale until Check now.
+- Now: that page on the open time read ends the pass as an expired session (`needs_login`): one login attempt on the
+  usual backoff, pot links and the layout count kept. Any other unknown page is still a layout miss.
+- Schedule Lookup is unchanged: a hidden lookup prints the same error on a live session (FW-0069), so the text is not
+  added to `pot.EXPIRED_HINTS`.
+- Test: `test_session_lost_page_on_the_pot_logs_in_again` (tests/test_close_in.py).
+
 ## 1.7.5
 
 "Pause wins" (Ryan, Nov 14): Pause cancels a FLICA login still waiting to run. Built with tests that failed first, then
