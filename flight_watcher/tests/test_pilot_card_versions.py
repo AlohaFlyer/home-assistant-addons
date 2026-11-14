@@ -27,7 +27,9 @@ globalThis.window = {addEventListener() {}, removeEventListener() {}, dispatchEv
 globalThis.location = {hash: "", pathname: "/", search: ""}; globalThis.history = {replaceState() {}};
 globalThis.CustomEvent = class { constructor(t, o) { this.type = t; this.detail = (o || {}).detail; } };
 const FETCHED = []; let FILE = null;
-globalThis.fetch = (u, o) => { FETCHED.push([u, (o || {}).cache]); return Promise.resolve({ ok: !!FILE, json: () => Promise.resolve(FILE) }); };
+// 1.7.6: the grid also asks for the pairings package files (R / Rel times, the detail): none here (404), not counted
+globalThis.fetch = (u, o) => { if (String(u).includes("/pairings_")) return Promise.resolve({ ok: false, json: () => Promise.resolve(null) });
+  FETCHED.push([u, (o || {}).cache]); return Promise.resolve({ ok: !!FILE, json: () => Promise.resolve(FILE) }); };
 const tick = () => new Promise((r) => setTimeout(r, 10));
 const html = (c) => c.shadowRoot.body.innerHTML;
 const tap = (c, v) => c.shadowRoot.on.click({ target: { closest: (s) => (s === ".vb" ? { dataset: { v } } : null) } });
@@ -110,6 +112,11 @@ def _bar(h):
     return h[i:j]
 
 
+def _ti(label, value):
+    """1.7.6: one item of the schedule card's totals line."""
+    return f'<span class="ti"><span class="k">{label}</span> {value}</span>'
+
+
 def _grid(h):
     """The main grid only (not the live rebuild folded under it)."""
     return h.split('<details class="rb">')[0]
@@ -163,7 +170,8 @@ def test_older_version_draws_its_own_trips(tmp_path):
     cur, v1 = _grid(r["cur"]), _grid(r["v1"])
     assert ">H3205</span>" in cur and ">H3300</span>" not in cur
     assert ">H3300</span>" in v1 and ">H3205</span>" not in v1 and ">H3101</span>" in v1  # the award's line, not the live one
-    assert "<b>NRT</b>" in v1 and "<b>SFO</b>" not in v1
+    # 1.7.6: the schedule card's layover cell: the station plain in the trip's box (bold is a turn station)
+    assert 'title="H3300 2026-11-20 crew:\ncrew not read yet">NRT</span>' in v1 and ">SFO</span>" not in v1
     assert v1.count(" bxs") == 2 and v1.count(" bxe") == 2  # each of its trips boxed, like the live grid
     # H3101 is still on the live line: its live block, credit and crew; H3300 is not: no crew, no block
     row = [x for x in v1.split("<tr")[1:] if ">H3101</span>" in x][0]
@@ -171,8 +179,9 @@ def test_older_version_draws_its_own_trips(tmp_path):
     row = [x for x in v1.split("<tr")[1:] if ">H3300</span>" in x][0]
     assert "Roe, Rick" not in row and "9:58" not in row
     # its own totals (the award has none from FLICA): the trip count; the note says what is live
-    assert "<span>Trips<b>2</b></span>" in v1 and "Block<b>20:00</b>" not in v1
-    assert "v11.001 as captured Oct 19 16:00 HST, the awarded line. Block / Credit per trip, crew and pay shown are the live ones." in v1
+    assert _ti("Trips", "2") in v1 and '<span class="k">Block</span>' not in v1
+    assert ("v11.001 as captured Oct 19 16:00 HST, the awarded line. Block / Credit per trip and crew shown are the live "
+            "ones; Pay-Gross is this version's.") in v1
     assert "Source: FLICA Tools > Schedule Lookup" not in v1  # the live totals line belongs to the current version
 
 
@@ -210,7 +219,7 @@ def test_lookup_version_shows_flica_totals_and_rebuilt_month_gets_the_bar(tmp_pa
     assert r["cur"].index('<div class="vbar">') < r["cur"].index('<div class="rb">')
     v3 = r["v3"]
     assert "<b>v11.003</b>" in _bar(v3) and "(FLICA schedule)" in _bar(v3)
-    assert "Block<b>20:00</b>" in v3 and "Credit<b>24:00</b>" in v3 and "Days Off<b>24</b>" in v3
+    assert _ti("Block", "20:00") in v3 and _ti("Credit", "24:00") in v3 and _ti("Days Off", "24") in v3
     assert "FLICA Tools > Schedule Lookup (FLICA updated 11/08/2026 15:10)" in v3
     assert ">H3300</span>" not in _grid(v3)
     assert '<details class="rb"><summary>' in v3 and '<div class="rb"><div class="rbh">' not in v3  # the live rebuild, folded

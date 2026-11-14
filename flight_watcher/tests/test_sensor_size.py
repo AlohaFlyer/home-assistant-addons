@@ -247,8 +247,18 @@ def _fill(W, fake, tmp_path, monkeypatch):
          "start": "12Nov", "end": "15Nov", "dates": "12Nov-15Nov", "days": "3", "layover": "LAS", "turn": "", "credit": "15:00",
          "soft": "2:41", "src": "O", "soft_gain": "+2:30", "credit_gain": "-6:06", "why": "w" * 80,
          "detail_url": _pot_row(i)["detail_url"], "gain_h": 1.9} for i in range(30)]})
+    # 1.7.6: a readable month carries each pairing's seat and gross, and the month's pay (items_pay), a full one here
+    pay_full = {"doh_known": True, "doh": "2018-10-03", "year": 9, "year_to": 10, "seat_rates": {"CA": 431.04, "FO": 295.26},
+                "seats": ["CA", "FO", "RO"], "trips": 12, "trips_priced": 11, "credit": "160:35", "credit_n": 11,
+                "block": "140:20", "block_n": 11, "soft": "20:15", "soft_n": 11, "gross": 61234.56, "net": 47763.0,
+                "tax_pct": 22.0, "days_off": 12, "missing": [{"pairing": "H9123", "start": "2026-11-28"}],
+                "no_block": [{"pairing": "H9124", "start": "2026-11-29"}], "list_status": "ok", "list_date": "2026-03-01",
+                "list_newest_doh": "2026-01-05", "seat_list": "FO", "list_source": "award 2026-12",
+                "seat_src": {"pairing page": 8, "crew index": 3, "assumed": 1}}
     W.pub("pilot_schedule", {"emp": "12345", "name": "Doe, Jane", "status": "ok", "month": months[1], "days": sched[months[1]]["days"],
-                             "items": sched[months[1]]["items"], "totals": sched[months[1]]["totals"], "updated": "x", "fetched": W.now_iso(),
+                             "items": [dict(it, seat="FO", seat_src="pairing page", gross=6123.45, n=3, credit="15:00", blk="12:19",
+                                            soft="2:41", figs="package") for it in sched[months[1]]["items"]],
+                             "items_pay": pay_full, "totals": sched[months[1]]["totals"], "updated": "x", "fetched": W.now_iso(),
                              "reconstructed": [{"pairing": f"H9{i:03d}", "start": "2026-11-12", "end": "2026-11-15", "seat": "FO",
                                                 "route": "HNL-LAS-HNL", "checked_at": W.now_iso(), "lay": "LAS", "blk": "12:19",
                                                 "credit": "15:00", "soft": "2:41", "crew": [["CA", f"{PAD} (1)"], ["FO", "Doe, Jane (2)"]]}

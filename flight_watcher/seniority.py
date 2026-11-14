@@ -416,3 +416,65 @@ def combine(lst, aw):
                    base={"source": "list", "file": lst.get("file", ""), "list_date": lst.get("list_date", ""),
                          "uploaded_at": lst.get("uploaded_at", ""), "as_of": as_of(lst), "count": lst.get("count", 0)})
     return out
+
+
+# ---------------------------------------------------------------- 1.7.6: the seniority list as a markdown reference
+# Ryan (Nov 14): "you should be able to calculate their pay by looking at their date of hire and seniority. I can
+# upload the pilot list that has that data. Then you can keep that in an MD card for reference". Every time
+# seniority.json is written (web.seniority_rebuild) the Watcher also writes /share/flight_watcher/seniority.md from
+# it. Personal data: it lives only on the admin's Home Assistant (mode 600, never under www, never exported to a
+# pilot's portal, never in git); tests use made-up rows.
+MD_COLS = ("Seniority #", "Name", "Emp", "DOH", "Seat", "Equip", "Pay year today")
+
+
+def _md_cell(v):
+    """One table cell: one line, no pipe that would split the cell, no control character."""
+    s = re.sub(r"[\x00-\x1f\x7f  ]+", " ", str("" if v is None else v)).strip()
+    return s.replace("\\", "\\\\").replace("|", "\\|")
+
+
+def render_md(view, today, written=""):
+    """The markdown reference of seniority.json (`view`, what combine() gives): a heading with the list date, the
+    source and the count, then one row per pilot (each 'also' record too) sorted by seniority number, then name.
+    Pay year today = the longevity year on `today` (ISO, HST) from the DOH, capped at 12 (PWA 3.B.1; the PWA 3.C.4
+    and 3.D.6 rate tables stop at year 12); blank for a DOH that cannot be read. `written`: the time it was written
+    (HST text). Pure: no I/O. '' when there is no view."""
+    import pay as PAY  # pure as well; imported here so seniority stays importable on its own
+    view = view or {}
+    pilots = view.get("pilots") or {}
+    if not isinstance(pilots, dict) or not view:
+        return ""
+    recs = []
+    for emp, p in pilots.items():
+        for r in [p] + list((p or {}).get("also") or []):
+            if isinstance(r, dict):
+                recs.append((emp, r))
+
+    def sen_key(x):
+        s = str(x[1].get("sen") if x[1].get("sen") is not None else "")
+        return (int(s) if s.isdigit() else 10 ** 9, str(x[1].get("name") or "").upper(), x[0])
+
+    def year(doh):
+        try:
+            return min(12, max(1, PAY.doh_year(str(doh), today)))
+        except (TypeError, ValueError):
+            return ""
+    src = str(view.get("source") or "list")
+    if src == "list":
+        what = "seniority list" + (f" ({_md_cell(view['file'])})" if view.get("file") else "")
+    else:
+        base = view.get("base") or {}
+        what = _md_cell(src) + (f", {int(view.get('carried') or 0)} more carried from the seniority list of "
+                                f"{_md_cell(base.get('as_of') or '?')}" if view.get("carried") else "")
+    date_s = _md_cell(view.get("list_date") or as_of(view) or "not printed")
+    lines = ["# Pilot seniority list", "",
+             f"List date {date_s} · Source: {what} · {len(recs)} pilots"
+             + (f" · Written {_md_cell(written)}" if written else ""), "",
+             f"Pay year today ({_md_cell(today)}, HST) is the longevity year from the date of hire (PWA 3.B.1), capped at "
+             "12 (the PWA 3.C.4 Captain and PWA 3.D.6 First Officer tables stop there). Personal data: kept on this "
+             "Home Assistant only.", "",
+             "| " + " | ".join(MD_COLS) + " |", "|---:|---|---:|---|---|---|---:|"]
+    for emp, r in sorted(recs, key=sen_key):
+        lines.append("| " + " | ".join(_md_cell(v) for v in (r.get("sen"), r.get("name"), emp, r.get("doh"), r.get("seat"),
+                                                                r.get("equip"), year(r.get("doh")))) + " |")
+    return "\n".join(lines) + "\n"

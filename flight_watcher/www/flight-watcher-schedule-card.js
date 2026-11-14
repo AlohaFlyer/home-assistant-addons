@@ -189,8 +189,10 @@ function fwgOperates(days) {
 }
 // The pairing detail model. o: {id, start (ISO), p (the package's entry when it lists this exact pairing on start,
 // else null), why (why the package detail is not shown), own (what the card read from FLICA's pairing page: report,
-// duties [{d, dep_l, arr_l, stn, blk}], blk, credit, soft, seat, crew), rep / rel (report and release, HST, as the card
-// gives them), seat, crew ([string] or [[pos, name]]), base, notes ([string])}. Every field is text, escaped when drawn.
+// duties [{d, dep_l, arr_l, stn, blk}], blk, credit, soft, seat, crew; or, with no duties, plegs [{dow, flt, dps, ars,
+// dep, arr, blk}] as another pilot's pairing page lists them, one duty a day), rep / rel (report and release, HST, as
+// the card gives them), seat, crew ([string] or [[pos, name]]), base, notes ([string])}. Every field is text, escaped
+// when drawn.
 function fwgDetail(o) {
   const own = (o && o.own) || {}, p = (o && o.p) || null;
   const det = p && p.det && typeof p.det === "object" && Array.isArray(p.det.duties) ? p.det : null;
@@ -226,7 +228,28 @@ function fwgDetail(o) {
       rigC: !!t.rig_c, fdp: fwgHM(t.fdp), duty: dutyOk && m.duties.length ? fwgDur(dutyAll) : "", dend: m.duties.length ? m.duties[m.duties.length - 1].dend : "" };
   } else {
     const ds = Array.isArray(own.duties) ? own.duties.slice(0, 12) : [];
+    const ol = ds.length || !Array.isArray(own.plegs) ? [] : own.plegs.slice(0, 30);
     if (ds.length || own.report || own.blk || own.credit) m.src = "own";
+    if (!ds.length && ol.length) m.src = "legs";
+    let at = st, cur = null;
+    ol.forEach((l) => {  // each leg on the first day from the last one on whose weekday is its own; a duty a day
+      l = l && typeof l === "object" ? l : {};
+      const w = FWG_DOW.indexOf(fwgStr(l.dow, 2).toUpperCase());
+      let date = "";
+      for (let k = 0; at && w >= 0 && k < 7 && !date; k++) if (fwgWday(fwgDay(at, k)) === w) date = fwgDay(at, k);
+      if (date) at = date;
+      const leg = { date, dd: date ? fwgDd(date) : fwgStr(l.dow, 2).toUpperCase(), dh: false, flt: fwgStr(l.flt, 6),
+        dps: fwgStr(l.dps, 4), ars: fwgStr(l.ars, 4), dep: fwgStr(l.dep, 5), arr: fwgStr(l.arr, 5), blk: fwgHM(l.blk), grnt: "", eq: "" };
+      if (!cur || cur.dd !== leg.dd) {
+        if (m.duties.length >= 12) return;
+        cur = { n: m.duties.length + 1, dd: leg.dd, rept: m.duties.length ? "" : fwgStr(own.report, 5), legs: [], dend: "", stn: "",
+          layo: "", hotel: "", van: "", tblk: "", tdhd: "", tcrd: "", duty: "", fdp: "", bm: 0 };
+        m.duties.push(cur);
+      }
+      cur.legs.push(leg); cur.stn = leg.ars;
+      const b = fwgMins(l.blk); cur.bm = cur.bm == null || b == null ? null : cur.bm + b; cur.tblk = fwgDur(cur.bm);
+    });
+    for (const du of m.duties) delete du.bm;
     ds.forEach((du, i) => {
       du = du && typeof du === "object" ? du : {};
       const date = st && Number.isInteger(du.d) && du.d >= 0 && du.d < 40 ? fwgDay(st, du.d) : "";
@@ -247,7 +270,8 @@ function fwgDetail(o) {
   return m;
 }
 const FWG_SRC = { pkg: "From the pairings package: local times (L) at each station, as the package prints them (HNL = HST). TDHD and FDP are figured from its GMT columns: FDP runs from report to the last flight's block-in (FAR 117.3); a deadhead after it is duty, not FDP.",
-  own: "From FLICA's pairing page: each duty's first departure to its last arrival, local times.", none: "" };
+  own: "From FLICA's pairing page: each duty's first departure to its last arrival, local times.",
+  legs: "From FLICA's pairing page: each leg's departure and arrival as the page shows them (local times), a duty a day.", none: "" };
 const fwgRig = (t) => (t.rig ? `${t.rig}${t.rigC ? " (credit less the legs' credit)" : ""}` : "");
 // wide: a FLICA style printout below the grid (role region, labelled by its title; the close button is .pdx)
 function fwgPanelHtml(m) {
@@ -270,7 +294,7 @@ function fwgPanelHtml(m) {
   const t = m.tot;
   const foot = m.src === "pkg" ? `<tr class="ft"><td colspan="8">Total</td><td class="r">${e(t.block)}</td><td class="r">${e(t.dhd)}</td><td class="r">${e(t.credit)}</td><td class="r">${e(t.duty)}${t.fdp ? "/" + e(t.fdp) : ""}</td><td></td></tr>` : "";
   const sum = [t.dend ? `D-END: ${e(t.dend)}L` : "", t.tafb ? `T.A.F.B.: ${e(t.tafb)}` : "", t.rig ? `TRIP RIG: ${e(fwgRig(t))}` : "",
-    m.src === "own" && t.block ? `Block ${e(t.block)}` : "", m.src === "own" && t.credit ? `Credit ${e(t.credit)}` : "", m.src === "own" && t.soft ? `Soft ${e(t.soft)}` : "",
+    m.src !== "pkg" && t.block ? `Block ${e(t.block)}` : "", m.src !== "pkg" && t.credit ? `Credit ${e(t.credit)}` : "", m.src !== "pkg" && t.soft ? `Soft ${e(t.soft)}` : "",
     m.rep ? `Report ${e(m.rep)} HST` : "", m.rel ? `Release ${e(m.rel)} HST` : ""].filter(Boolean);
   return `<div class="fwgp" role="region" aria-labelledby="fwgpt"><div class="fwgph">${head}<button type="button" class="pdx" aria-label="Close the pairing detail">&#10005;</button></div>` +
     (m.duties.length ? `<div class="fwgpw"><table class="fwgpt"><thead><tr>${cols.map((c, i) => `<th${i >= 4 && i <= 11 ? ' class="r"' : ""}>${c}</th>`).join("")}</tr></thead><tbody>${rows}</tbody>${foot ? `<tfoot>${foot}</tfoot>` : ""}</table></div>` : "") +

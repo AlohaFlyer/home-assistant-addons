@@ -558,6 +558,27 @@ def crew_ids(text):
     return out
 
 
+PILOT_SEATS = ("CA", "FO", "RO", "SO")  # the pilot seats on a crew line (crewidx.PILOT_POS); FA is cabin crew
+
+
+def crew_seat(text, emp):
+    """1.7.6: (seat, n) from a pairing page's crew line: the seat of the pilot with employee number emp (leading zeros
+    ignored; '' when he is not on it) and the pilots on the line (CA, FO, RO and SO seats, an OPEN one too; flight
+    attendants not), as the crew index counts n for the PWA 4.O.1 overrides. ('', 0) without a crew line."""
+    m = re.search(r"crew\s*:\s*(.*)$", text or "", re.I | re.S)
+    if not m:
+        return "", 0
+    want = re.sub(r"\D", "", str(emp or "")).lstrip("0")
+    seat, n = "", 0
+    for pos, num, _name in CREW_RE.findall(m.group(1)):
+        pos = pos.upper()
+        if pos in PILOT_SEATS:
+            n += 1
+            if not seat and want and num.lstrip("0") == want:
+                seat = pos
+    return seat, n
+
+
 def with_ids(who, ids):
     """'FO Roe, Rick; RO Poe, Pat' -> 'FO Roe, Rick (10003); RO Poe, Pat (10005)' when known."""
     parts = []

@@ -66,7 +66,9 @@ def test_pay_line_in_the_totals_style(tmp_path):
     assert r["items"] == [[t["pairing"], t["start"]] for t in grid] and r["also"] == [t["pairing"] for t in also]
     assert r["tot"] == pl["trips"] == 5
     h = r["plain"]
-    bar = h[h.index('<div class="ptot"'):h.index("</div>", h.index('<div class="ptot"'))]
+    # 1.7.6: the schedule card's own totals line (div.tot), right under the grid in its frame
+    bar = h[h.index('<div class="tot"'):h.index("</div>", h.index('<div class="tot"'))]
+    assert h.index('<div class="wrap">') < h.index('<div class="tot"') < h.index("Also on crew lists") < h.index('<div class="u prate">')
     labels = [x.split("</span>")[0] for x in bar.split('<span class="k">')[1:] if not x.startswith("(") and not x.startswith("est.")]
     assert labels == ["Trips", "Credit", "Block", "Soft", "Pay-Gross", "Pay-Net", "Days Off"]
     assert '<span class="tgrp thrs">' in bar and '<span class="tgrp tpay">' in bar and '<span class="tgrp tdays">' in bar
@@ -95,7 +97,8 @@ def test_old_publish_keeps_the_old_line(tmp_path):
     a = _payload()
     a.pop("pay_line")
     r = _node(f"const c = new FlightWatcherPilotCard(); console.log(JSON.stringify(c._recon({json.dumps(a)}, false)));", tmp_path)
-    assert '<div class="tot"><span>Trips<b>5</b>' in r and "ptot" not in r
+    assert '<div class="tot"><span class="tgrp thrs"><span class="ti"><span class="k">Trips</span> 5 ' in r
+    assert "Pay-Gross" not in r and "prate" not in r
 
 
 def test_second_pilot_copy_reads_its_own_tax_helpers():
@@ -131,7 +134,7 @@ def test_pay_line_fits_a_phone():
                 pg.set_content(page)
                 m = pg.evaluate("""() => {
                   const r = document.querySelector('flight-watcher-pilot-card').shadowRoot;
-                  const bar = r.querySelector('.ptot'), card = r.querySelector('ha-card');
+                  const bar = r.querySelector('.tot'), card = r.querySelector('ha-card');
                   const items = [...bar.querySelectorAll('.ti')].map((x) => [x.getBoundingClientRect().height, x.getBoundingClientRect().right]);
                   return {doc: document.documentElement.scrollWidth, win: window.innerWidth, card: card.getBoundingClientRect().right,
                           bar: bar.scrollWidth - bar.clientWidth, items, line: r.querySelector('.ti .k').getBoundingClientRect().height};

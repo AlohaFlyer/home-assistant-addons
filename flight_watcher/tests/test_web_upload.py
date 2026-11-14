@@ -101,7 +101,9 @@ def test_a_refused_seniority_upload_leaves_the_list_on_file(tmp_path, monkeypatc
             raise OSError("pdftotext missing")
         monkeypatch.setattr(web.subprocess, "run", fail)
         assert "gave no text copy" in web._save_upload(*wrong, logging.getLogger("t"))
-    assert sorted(f.name for f in tmp_path.iterdir()) == ["seniority.json", "seniority_2026-11-06.pdf", "seniority_2026-11-06.txt"]
+    # 1.7.6: seniority.md (the markdown reference) is written beside seniority.json in a folder not named uploads
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["seniority.json", "seniority.md", "seniority_2026-11-06.pdf",
+                                                          "seniority_2026-11-06.txt"]
     assert (tmp_path / "seniority_2026-11-06.pdf").read_bytes() == b"%PDF-1.4 the real list"
     assert (tmp_path / "seniority_2026-11-06.txt").read_text() == good_txt
     d = json.loads((tmp_path / "seniority.json").read_text())

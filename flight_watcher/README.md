@@ -297,6 +297,20 @@ Recent finds.
   Extended Range +15% as on your own schedule. Pay-Net is an estimate at your own federal and state tax settings. Days
   Off counts bid period days with no trip on the crew lists (reserve and training are not on crew lists). No date of
   hire on file: hours and days only, and the card says to upload the list.
+- Pay of a month FLICA showed (1.7.6, Ryan, Nov 14): another pilot's month read from Schedule Lookup is priced the same
+  way. Each pairing's item gets `seat` (from the crew line of the pairing page the lookup already read, by his employee
+  number; else the crew index's; else the seniority list's seat; else FO, said in `seat_src`) and `gross`, and
+  `items_pay` holds the month's Credit, Block, Soft, Pay-Gross, Pay-Net and FLICA's own Days Off. Credit and block come
+  from the pairing page read, else the pairings package, else the crew index. Each schedule version of that pilot is
+  priced in `pilotver_<key>.json` (each item's `gross`, the record's `pay`: amounts and hours, never a date of hire). No
+  FLICA page is loaded for any of it. On a pilot instance `items_pay` leaves out the date of hire and the list's dates
+  (the year and the rates stay).
+- `seniority.md` (1.7.6, Ryan, Nov 14: "keep that in an MD card for reference"): each time `seniority.json` is written
+  (a list, an award's dates of hire, a re-read) the Watcher writes `/share/flight_watcher/seniority.md`: a heading with
+  the list date, source and count, then a table (Seniority #, Name, Emp, DOH, Seat, Equip, Pay year today: the
+  longevity year from the DOH, PWA 3.B.1, capped at 12) sorted by seniority. Personal data: mode 600, outside the
+  uploads list and `www`, never exported to a pilot's portal; at start a `seniority.json` with no (or an older) md
+  gets one.
 - Rules live in `/data/rules.json` and are edited there (the schema is on the page). They are checked against each
   new pairing; a match publishes `flight_watcher/event/rule_match` and `sensor.flight_watcher_last_match`.
 - Every rule starts in dry run, and `switch.flight_watcher_rule_<id>_live` stays off until the rule is 7 days old.
@@ -406,6 +420,16 @@ on file again when the parser changes); a pairing the package does not list on t
 H3604B; a month with no package) shows FLICA's duties and says the package detail is not on file. The grid's look and
 the panel are one block of code (`// ---- shared schedule grid ...`) every month card carries byte for byte
 (`tests/test_sched_grid_shared.py`).
+
+**One look for every month** (1.7.6, Ryan, Nov 14: "my schedule and other pilots schedule and reconstructed schedules
+should be exactly the same style including this latest detail panel"): the pilot card draws another pilot's month as
+FLICA showed it, its older versions and the month reconstructed from pairing crew lists with that same block: the
+schedule card's day column and colours, the bold blue pairing, the layover box with R and Rel times (from the pairings
+package, else the legs his pairing page gave), row heights, the totals line, light and dark, and the same pairing
+detail (a panel below that grid, or a bottom sheet on a phone). Its columns are Trip, Layover, Block, Credit, Soft,
+Pay-Gross (that pilot's, when his date of hire is on file) and Crew; the seat and legs are in the pairing's hint and
+detail, and the rate, seat and source notes sit under the grid. Ryan's planning columns (Pay-Net, Res Grid, the FAR
+columns, Room, Legal next, Open, Ideas, the trade and drop marks) stay on his own schedule.
 
 ## Tickets (FW-nnnn)
 

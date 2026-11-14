@@ -31,7 +31,7 @@ from playwright.sync_api import sync_playwright
 import rules as R
 import web
 import far as FAR
-from pot import PAIRING_RE, LEG_FULL_RE, schedule_items, parse_schedule_desktop, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, CLOSE_IN_RE, close_in_folders, pick_close_in, trade_pages, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+from pot import PAIRING_RE, LEG_FULL_RE, LEG_FLT_RE, crew_seat, schedule_items, parse_schedule_desktop, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, CLOSE_IN_RE, close_in_folders, pick_close_in, trade_pages, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
 from store import Store
 import tradeboard as TB
 import swap as SW
@@ -3506,6 +3506,8 @@ def seniority_refresh():
     only, so the files have one writer; counts only in the log."""
     if not has("one_writer"):
         return
+    # 1.7.6: seniority.md (the markdown reference, web.seniority_md_write) for a seniority.json written before it came
+    web.seniority_md_backfill(os.path.join(UPLOADS_SHARED, "seniority.json"))
     try:
         names = os.listdir(UPLOADS_SHARED)
     except OSError:
@@ -3603,10 +3605,80 @@ def pilot_pay_line(trips, emp, name, start, end):
         g = per.get(f"{t.get('pairing')}|{t.get('start')}")
         if g is not None:
             t["gross"] = g
-    line.update(list_status="ok" if rec else ("not_on_list" if data else "none"), list_date=data.get("list_date") or "",
+    line.update(_sen_fields(data, rec))
+    return line
+
+
+def _sen_fields(data, rec):
+    """What a pay line says about the seniority data it was priced from (pilot_pay_line, pilot_price)."""
+    return dict(list_status="ok" if rec else ("not_on_list" if data else "none"), list_date=data.get("list_date") or "",
                 list_newest_doh=data.get("newest_doh") or "", seat_list=(rec or {}).get("seat") or "",
                 list_source=(data.get("source") or "list") if data else "")
-    return line
+
+
+PRICE_PILOT_DROP = ("doh", "list_newest_doh", "list_date")  # 1.7.6: what a pilot instance's items_pay leaves out
+
+
+def pilot_price(items, emp, name, month, start, end, recon=None, days_off=None):
+    """1.7.6 (Ryan, Nov 14: "you should be able to calculate their pay by looking at their date of hire and
+    seniority"): the pay of a month FLICA's Schedule Lookup showed for another pilot (or an older version of it),
+    priced as the rebuilt month is (pay.pay_line, ca_rules): each pairing for the seat that pilot flies on it at his
+    longevity year from the date of hire on the shared seniority list (PWA 3.B.1; CA PWA 3.C.4, FO and RO PWA
+    3.D.6) with the PWA 4.O.1 overrides. Per pairing: credit and block from the pairing page read (items), else the
+    pairing package of the trip's bid period (the id, else the id without its trailing letter), else the crew index's
+    trip on the same day (recon); the seat from the pairing page's crew line, else the crew index's, else the list's
+    seat, else FO (seat_src says which); the pilots on the crew line from the page, else the crew index. days_off:
+    FLICA's own count for the month (Schedule Lookup's totals; None when it gave none), never one from the trips,
+    which would count reserve, training and vacation days as days off. No FLICA
+    load. Returns (line, {'PID|start': {seat, seat_src, gross?, credit?, blk?, soft?, figs?}}): figs names where a
+    credit or block the page did not give came from. On a pilot instance the line leaves out the DOH and the list's
+    dates (PRICE_PILOT_DROP): his portal shows the year and the rates, never another pilot's date of hire."""
+    data = seniority_data()
+    rec = SEN.find(data, emp, name) if data else None
+    rk = {f"{t.get('pairing')}|{t.get('start')}": t for t in (recon or []) if isinstance(t, dict)}
+    trips, info, srcs = [], {}, {}
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        pid, st = str(it.get("trip") or ""), str(it.get("start") or "")
+        if not PAIRING_RE.match(pid) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", st):
+            continue
+        r = rk.get(f"{pid}|{st}") or {}
+        per = month if start and end and start <= st <= end else st[:7]
+        dets = pkg_details_for(per) or {}
+        det = dets.get(pid) or dets.get(re.sub(r"(?<=\d)[A-Z]$", "", pid)) or {}
+        got = {"credit": CI._hm(it.get("credit")), "blk": CI._hm(it.get("blk"))}
+        fill = {"credit": CI._hm(det.get("credit")) or CI._hm(r.get("credit")), "blk": CI._hm(det.get("block")) or CI._hm(r.get("blk"))}
+        figs = ("package" if det else "crew index") if any(not got[k] and fill[k] for k in got) else ""
+        credit, blk = got["credit"] or fill["credit"], got["blk"] or fill["blk"]
+        seat, src = str(it.get("seat") or "").upper(), "pairing page"
+        if not seat and r.get("seat"):
+            seat, src = str(r["seat"]).upper(), "crew index"
+        if not seat and (rec or {}).get("seat"):
+            seat, src = str(rec["seat"]).upper(), "seniority list"
+        if not seat:
+            seat, src = "FO", "assumed"
+        try:
+            n = int(it.get("n") or 0) or int(r.get("n") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        trips.append({"pairing": pid, "start": st, "end": str(it.get("end") or st), "seat": seat, "credit": credit,
+                      "blk": blk, "soft": soft_time(credit, blk) or "", "n": n,
+                      "lay": str(it.get("lay") or det.get("lay") or r.get("lay") or ""),
+                      "route": str(det.get("route") or r.get("route") or "")})
+        k = f"{pid}|{st}"
+        info[k] = {"seat": seat, "seat_src": src}
+        if figs:
+            info[k].update(credit=credit, blk=blk, soft=soft_time(credit, blk) or "", figs=figs)
+        if not st < start:
+            srcs[src] = srcs.get(src, 0) + 1
+    line, per = PAY.pay_line(trips, (rec or {}).get("doh") or "", start, end, tax_pct())
+    for k, g in per.items():
+        info[k]["gross"] = g
+    line.update(_sen_fields(data, rec), seat_src=srcs, days_off=days_off)
+    if ROLES.role(INSTANCE) != ROLES.ADMIN:
+        line = {k: v for k, v in line.items() if k not in PRICE_PILOT_DROP}
+    return line, info
 
 
 def finds_dir():
@@ -6636,9 +6708,17 @@ def pilot_check(fl):
             it["soft"] = soft_time(it.get("credit"), it.get("blk")) or ""
             txt = visible_text(page)
             DB.remember_crew(txt)
-            it["legs"] = [{"dow": dw, "route": f"{a}-{b}".upper(), "dep": dep, "arr": arr, "blk": blk}
-                          for dw, a, b, dep, arr, blk in LEG_FULL_RE.findall(txt)][:12]
+            # 1.7.6: with the flight number (LEG_FLT_RE, the same legs), for the card's pairing detail
+            it["legs"] = [{"dow": dw, "flt": flt, "route": f"{a}-{b}".upper(), "dep": dep, "arr": arr, "blk": blk}
+                          for dw, flt, a, b, dep, arr, blk in LEG_FLT_RE.findall(txt)][:12]
             it["crew"] = parse_crew(txt)[:6]
+            # 1.7.6: the seat this pilot flies and the pilots on the crew line, from the page just read (no other
+            # load), so his Pay-Gross is priced for that seat (PWA 3.C.4 / 3.D.6) with the PWA 4.O.1 overrides
+            seat, crew_n = crew_seat(txt, emp)
+            if seat:
+                it["seat"] = seat
+            if crew_n:
+                it["n"] = crew_n
         rec = {**sched, "emp": emp, "name": sched.get("name") or req.get("name") or "", "bd": bd,
                "fetched": now_iso(), "fetched_ts": time.time()}
         DB.put(f"pilot_sched:{emp}", rec)
@@ -6833,12 +6913,46 @@ def pilotver_awards(month, text, det):
         return 0
 
 
+def pilotver_price(emp, ent):
+    """1.7.6: each version of another pilot's month priced as the live month is (pilot_price): each item gets its
+    gross (and its seat when the record had none), each record a pay summary {gross, trips, trips_priced, credit,
+    credit_n, block, block_n, soft, soft_n}. Amounts and hours only: never a date of hire (the list file is served
+    under /local/). In place, on the list file's copy (PV.history), never the stored records. Never raises."""
+    for month, recs in ((ent or {}).get("months") or {}).items():
+        try:
+            _first, start, end = CI.grid_range(CARD_PAIRINGS, month)
+        except Exception:  # noqa: BLE001
+            continue
+        for rec in recs or []:
+            try:
+                items = [it for it in (rec.get("items") or []) if isinstance(it, dict)]
+                line, info = pilot_price(items, emp, (ent or {}).get("name") or "", month, start, end, None,
+                                         (rec.get("totals") or {}).get("days_off"))
+                for it in items:
+                    got = info.get(f"{it.get('trip')}|{it.get('start')}")
+                    if not got:
+                        continue
+                    if got.get("gross") is not None:
+                        it["gross"] = got["gross"]
+                    if not it.get("seat"):
+                        it["seat"] = got["seat"]
+                    it["seat_src"] = got["seat_src"]
+                rec["pay"] = {k: line.get(k) for k in ("gross", "trips", "trips_priced", "credit", "credit_n", "block",
+                                                       "block_n", "soft", "soft_n")}
+            except Exception as e:  # noqa: BLE001
+                log.info("pilot %s: version pay skipped: %s", emp, e)
+
+
 def pilotver_attrs(emp):
     """FW-0069: the pilot card's versions: the list file pilotver_<key>.json (this pilot's versions, written only when
-    it changed) and the sensor's short form. {} when it fails (the card then shows no versions bar)."""
+    it changed) and the sensor's short form. {} when it fails (the card then shows no versions bar). 1.7.6: each
+    version is priced in the file (pilotver_price)."""
     try:
         emp = re.sub(r"\D", "", str(emp or ""))
-        key, rev = write_list_file("pilotver", PV.history(DB, emp) if emp else {})
+        hist = PV.history(DB, emp) if emp else {}
+        if emp and hist.get(emp):
+            pilotver_price(emp, hist[emp])
+        key, rev = write_list_file("pilotver", hist)
         return {"versions_file_key": key or "", "versions_rev": int(rev, 16) if rev else 0,
                 "versions": PV.summary(DB, emp) if emp else {}}
     except Exception as e:
@@ -6856,14 +6970,15 @@ def pub_pilot(payload):
     FW-0059: a trip that overlaps another of the pilot's carries overlap / overlap_with (crewidx.pilot_trips).
     FW-0062: each trip's package details come from its own bid period (pkg_details_for), and pay_line (pilot_pay_line)
     totals the rebuilt month with Pay-Gross for the seat flown on each trip, from the pilot's date of hire on the
-    shared seniority list. A readable month (status ok) gets no pay line of its own: Schedule Lookup shows no seat,
-    only PILOT_PAIRINGS_MAX of its pairing pages are read, and FLICA's credit total holds reserve and training days
-    that cannot be priced trip by trip.
+    shared seniority list. 1.7.6: a readable month (status ok or cached) is priced too (pilot_price): each item
+    carries its seat (seat_src: the pairing page's crew line, the crew index, the seniority list or assumed FO) and
+    gross, items_pay the month's totals (Days Off FLICA's). Schedule Lookup shows no seat and only
+    PILOT_PAIRINGS_MAX of its pairing pages are read, so the card says how many trips were priced and from what.
     FW-0069: it also writes that pilot's schedule versions to pilotver_<key>.json and adds versions_file_key,
     versions_rev (a number) and versions {YYYY-MM: {count, current, awarded}} (pilotver_attrs)."""
     PILOT_SHOWN["p"] = {k: v for k, v in (payload or {}).items() if k not in (
         "reconstructed", "reconstructed_coverage_pct", "reconstructed_month", "reconstructed_from", "reconstructed_to",
-        "pay_line", "contact", "versions_file_key", "versions_rev", "versions")}
+        "pay_line", "items_pay", "contact", "versions_file_key", "versions_rev", "versions")}
     try:
         emp = re.sub(r"\D", "", str(payload.get("emp") or ""))
         month = str(payload.get("month") or "")
@@ -6883,12 +6998,23 @@ def pub_pilot(payload):
         ct = contact_for(emp, payload.get("name") or "") if emp else None
         if ct:  # FW-0066: the one looked-up pilot's phone and email, for the card's call / text / mail links
             payload["contact"] = ct
+        name = payload.get("name") or next((r.get("name") for r in mine if r.get("name")), "")
         if trips:
             try:
-                name = payload.get("name") or next((r.get("name") for r in mine if r.get("name")), "")
                 payload["pay_line"] = pilot_pay_line(trips, emp, name, start, end)
             except Exception as e:
                 log.info("pilot lookup: pay line skipped: %s", e)
+        # 1.7.6: a month FLICA showed gets its pay too (pilot_price): each pairing's seat and gross on a copy of its
+        # item (the record pilot_check stored stays as read), the month's totals in items_pay
+        if emp and payload.get("month") and str(payload.get("status") or "") in ("ok", "cached") and payload.get("items"):
+            try:
+                tot = payload.get("totals") if isinstance(payload.get("totals"), dict) else {}
+                line, info = pilot_price(payload["items"], emp, name, month, start, end, trips, tot.get("days_off"))
+                payload["items"] = [dict(it, **info.get(f"{it.get('trip')}|{it.get('start')}", {})) if isinstance(it, dict)
+                                    else it for it in payload["items"]]
+                payload["items_pay"] = line
+            except Exception as e:
+                log.info("pilot lookup: pay of the month skipped: %s", e)
     except Exception as e:
         log.info("pilot lookup: crew index skipped: %s", e)
         payload = {**payload, "reconstructed": [], "reconstructed_coverage_pct": 0.0 if has("crew_index") else None}
