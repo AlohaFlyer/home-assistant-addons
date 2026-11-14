@@ -1,5 +1,55 @@
 # Changelog
 
+## 1.7.4
+
+A pilot's FLICA refusal record keyed with an HMAC of his own instance key (Ryan, Nov 13: the backlog item "the FLICA
+refusal block on a pilot as an HMAC like CrewTrac's"). Built with tests that failed first, then three adversarial
+reviews (security and migration, login flows, then a fresh pair on the rework); every reproduced finding is fixed.
+
+### The block's record
+- Before: a pilot's FLICA refusal block (`S["flica_refused"]`: FLICA refused these details, no login with them until
+  others are saved, CHANGELOG 1.6.2) held a bare sha256 of his FLICA user name and password: anyone reading his state
+  could test password guesses against it offline.
+- Now: an HMAC-SHA256 with a random 32-byte key of that instance (`<data>/flica_hmac.key`, mode 0600, read with
+  O_NOFOLLOW, made atomically on first need, a lock against two makers, never logged, exported, published or
+  captured), as CrewTrac's since 1.7.2. The admin never makes a key and has no block.
+- The first 1.7.4 start of a pilot re-keys a 1.7.3 record of the details in use (the block holds, same time) and drops
+  any other; one log line gives the counts. The old bare sha256 is then scrubbed from the database files too
+  (`Store.scrub`: checkpoint, VACUUM, TRUNCATE checkpoint; retried at each start until it completes): a checkpoint alone
+  left copies in free pages.
+
+### The block never lifts on a doubt
+- A key gone, unreadable or replaced, or a state copy put back onto a remade key, with a refusal on record: no stored
+  record can be matched, so the pilot stays blocked while stopped_login_failed until FLICA details are saved again in
+  Settings (`flica_key_lost`); the note, the restart note and Re-arm's answer say so. A read error on the key file
+  (EIO, EMFILE, EACCES) keeps the key and the block (only a missing file, a link, a socket, a non-regular file or a
+  wrong size count as no key).
+- The same FLICA details saved together with another change (my name, CrewTrac) now give the one more try too: the
+  block holds until the restart that save makes, then the try runs once, through Re-arm's path and the 10 min login
+  floor, announced as the save's try; a login cut short by a restart counts for the floor.
+- A restart of a refused pilot says the refusal note, never "press Re-arm" (refused then).
+
+### CrewTrac (the admin's charter scan too)
+- The CrewTrac key now has a lock (two callers make one key), its key-lost verdict is saved before a new key is
+  written, a read error keeps the key, and while it cannot be read the Charters sensor says "CrewTrac scans held: the
+  CrewTrac block key could not be read (next try in 1 min)" instead of the last good status. A CrewTrac save during a
+  read error still lifts a lost-key block.
+
+### Not changed (Ryan's call)
+- Pause turned on while a Re-arm (or the save's try) waits for its login floor does not stop that login (so since
+  1.6.2). Whether an explicit Re-arm or save beats Pause is Ryan's decision.
+
+### Rollback to 1.7.3 (read first)
+- 1.7.3 compares a bare sha256, so it never matches a 1.7.4 record and ignores `flica_key_lost`: a pilot stopped by a
+  FLICA refusal is no longer blocked there, and his next Re-arm makes one more FLICA login with details FLICA refused.
+  Before a rollback, restore /data from the backup taken before the 1.7.4 update; without it, check whether the pilot
+  is stopped_login_failed with a FLICA refusal note and make sure nobody presses Re-arm for him until his details are
+  right. Blanking the password in Settings does not work (blank values are ignored). Going forward to 1.7.4 again
+  re-keys anything 1.7.3 wrote.
+
+Tests: `tests/test_fw174_flica_hmac.py`, `tests/test_fw174_review.py`, `tests/test_fw174_review2.py` (synthetic
+details only).
+
 ## 1.7.3
 
 Fixes for three low bugs the post-deploy check of 1.7.2 found live on Nov 13 (all older than 1.7.2). Each was

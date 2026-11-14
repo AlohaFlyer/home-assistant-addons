@@ -18,7 +18,13 @@ publishes what it finds to Home Assistant over MQTT.
   pot is the same find, not a new one); its request list joins the request-decided push. Hunting, its page is read
   at most every 5 min (about 12 FLICA loads an hour, keeping FW-0035's ~376); every check otherwise.
 - One session: FLICA allows one login. When you log in elsewhere the Watcher steps aside for 30 min (doubling on
-  repeat). A failed login, a layout change or anything unexpected parks it until Re-arm.
+  repeat). A failed login, a layout change or anything unexpected parks it until Re-arm. On a pilot, details FLICA
+  refused get no more logins from Re-arm until details are saved again in Settings; they are kept only as an
+  HMAC-SHA256 with the instance's own random key (1.7.4: `<data>/flica_hmac.key`, 0600), never the values or a bare
+  hash. If that key is lost, replaced or unreadable with a refusal on record (or the state is put back from a copy),
+  the pilot stays stopped until his FLICA details are saved again (the same ones or new ones, alone or with other
+  settings); a read error keeps the key and the block. The first 1.7.4 start rewrites the database files so the old
+  bare hash is gone from them too (a backup made before the update still holds it).
 - Schedule: your line, numbered schedule versions (MM.NNN), FAR 117 columns, pay from the PWA tables, pairing
   details, and the monthly award and pairings PDFs uploaded on the dashboard (or the Web UI). A trip that comes home
   the day the next one starts keeps its real end (1.4.7). A trip the company removed and FLICA shows as PAYP keeps
