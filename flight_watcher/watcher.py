@@ -66,7 +66,7 @@ import bidcal as BC
 import layover as LO
 import pilotpdf as PP
 
-VERSION = "1.7.5"
+VERSION = "1.7.6.1"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -3578,6 +3578,8 @@ def seniority_refresh():
         f = own if own in lists else lists[-1]
         path = os.path.join(UPLOADS_SHARED, f)
         if fresh(f, path):
+            for x in (path, path[:-4] + ".pdf"):  # 1.7.5.1 review: a list's files are readable by this app only
+                web._private(x)
             same = (lst or {}).get("file") == f[:-4] + ".pdf"
             try:
                 d = web.seniority_write(path, f[:-4] + ".pdf", lst.get("uploaded_at") if same else f"{f[10:20]}T00:00:00",
@@ -5660,6 +5662,7 @@ CLOSE_IN_RECHECK_S = 86400  # once a day once it is (a new bid period can bring 
 CLOSE_IN_BAD_MAX = 3  # reads that are not its open time page before its BCID is dropped
 CLOSE_IN_READ_S = 300  # FW-0035: hunting, the close-in page is read at most every 5 min (about 12 loads an hour; every check otherwise)
 CLOSE_IN_LAST = {"bcid": None, "at": 0.0, "rows": {}}  # its last good read in this process (the rows between reads)
+SESSION_LOST_TXT = "initializesessiondata() failed"  # 1.7.6 (t1301): FLICA's page when the session is gone
 STOP_KINDS = ("killed", "expired", "blocked")  # pages that end the pass (classify())
 
 
@@ -6586,6 +6589,14 @@ def _nkey(s):
     return re.sub(r"[^A-Z]", "", str(s or "").upper())
 
 
+def _lkey(s):
+    """1.7.5.1 review: a last name's lookup key, letters only with a Jr / Sr / II / III / IV word left out ('Doe Jr.'
+    -> 'DOE', as seniority._last), so 'Doe, Robert' finds the union list's 'Doe Jr., Robert K.'; a name made only of
+    such words keeps them."""
+    words = re.sub(r"[^A-Z ]", "", str(s or "").upper().replace("-", " ")).split()
+    return "".join([w for w in words if w not in SEN.SUFFIX] or words)
+
+
 def name_directory():
     """1.6.2 (item 11): [{emp, last, first, name, seat}] of every pilot on the files every instance already receives:
     the shared seniority list (seniority.json: 'Last, First', seat) and the PBS award texts (<YYYY-MM>_award.txt: the
@@ -6620,9 +6631,11 @@ def name_directory():
     for k, rec in ((seniority_data() or {}).get("pilots") or {}).items():
         for r in [rec] + list(rec.get("also") or []):
             name = str(r.get("name") or "")
+            # 1.7.5.1: the union's list prints names in mixed case ('McDoe'): kept; all capitals (or none) title-cased
+            name = name.title() if name in (name.upper(), name.lower()) else name
             last, _, first = (x.strip() for x in name.partition(","))
-            if k and last:
-                rows[k] = {"emp": k, "last": last.title(), "first": first.title(),
+            if k and last:  # the union's list has no seat: the award's, when it names the pilot
+                rows[k] = {"emp": k, "last": last, "first": first,
                            "seat": str(r.get("seat") or (rows.get(k) or {}).get("seat") or "").upper()[:2]}
     out = [dict(r, name=f"{r['last']}, {r['first']}".strip(" ,")) for r in rows.values()]
     _NAME_DIR.update(sig=sig, rows=out)
@@ -6632,18 +6645,20 @@ def name_directory():
 def name_lookup(q):
     """1.6.2 (item 11): (matches, why) for a typed name on a pilot instance: at least LOOKUP_MIN_LETTERS letters of
     the last name, letters only (no wildcard, no listing), 'Last' or 'Last, First'. A last name that matches exactly
-    wins over longer ones that start with it. why is '' or the reason no list is given."""
+    wins over longer ones that start with it. why is '' or the reason no list is given. 1.7.5.1 review: last names
+    are compared without Jr / Sr / II (_lkey), and the curly apostrophe a phone types is taken as "'"."""
+    q = str(q or "").replace("\u2019", "'").replace("\u2018", "'")
     if not LOOKUP_NAME_RE.fullmatch(q):
         return [], "Type letters only: a last name, or Last, First (or the employee number)."
     last, _, first = (x.strip() for x in q.partition(","))
-    lk, fk = _nkey(last), _nkey(first)
+    lk, fk = _lkey(last), _nkey(first)
     if len(lk) < LOOKUP_MIN_LETTERS:
         return [], f"Type at least {LOOKUP_MIN_LETTERS} letters of the last name (or the employee number)."
     rows = name_directory()
-    exact = [r for r in rows if _nkey(r["last"]) == lk]
+    exact = [r for r in rows if _lkey(r["last"]) == lk]
     # 1.6.2 review: the start of a last name matches only from LOOKUP_PREFIX_MIN letters on (3-letter prefixes walked
     # the whole roster); a whole last name always does, and wins over longer ones that start with it
-    hits = exact or ([r for r in rows if _nkey(r["last"]).startswith(lk)] if len(lk) >= LOOKUP_PREFIX_MIN else [])
+    hits = exact or ([r for r in rows if _lkey(r["last"]).startswith(lk)] if len(lk) >= LOOKUP_PREFIX_MIN else [])
     if fk:
         hits = [r for r in hits if not r["first"] or _nkey(r["first"]).startswith(fk)]
     hits.sort(key=lambda r: (r["name"], r["emp"]))
@@ -10140,6 +10155,13 @@ def check(fl):
             set_machine("stopped_unexpected", CAPTCHA_STOP_NOTE.format(where="the open time pot"))
             return "stop"
         if kind == "expired":
+            return "needs_login"
+        if not is_pot_page(html, mobile=month.startswith("mobile")) and SESSION_LOST_TXT in visible_text(html):
+            # 1.7.6 (t1301): FLICA dropped the session (Nov 8 15:02 HST). Its open time page came back as
+            # "application error initializesessiondata() failed"; that used to count as a layout miss ("retry"), so
+            # the Watcher slept a full gap with state idle and session ON. Log in again now instead. Only the pot page
+            # is read this way: a hidden Schedule Lookup prints the same error on a live session (FW-0069).
+            log.info("open time page %s: FLICA session lost (%s); logging in again", month, SESSION_LOST_TXT)
             return "needs_login"
         if not is_pot_page(html, mobile=month.startswith("mobile")):
             S["pot_urls"] = {}

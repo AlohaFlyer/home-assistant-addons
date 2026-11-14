@@ -303,3 +303,17 @@ def test_menu_reads_name_the_trades_page_without_following_it(tmp_path, monkeypa
     kept = (tmp_path / "cap" / "menu_trades.html").read_text()
     assert "Crew Trades" in kept and "Ab12" not in kept
     assert P.trade_pages(MENU_HTML) == [] and P.trade_pages(MENU_JS) == []
+
+
+def test_session_lost_page_on_the_pot_logs_in_again(tmp_path, monkeypatch):
+    """1.7.6 (t1301): FLICA's 'application error initializesessiondata() failed' on the open time page is a lost
+    session, not a layout miss: the pass ends with needs_login, pot_urls and the layout count are kept."""
+    W, fl, pages, fetched, framed, waits, events = _w(tmp_path, monkeypatch)
+    _checks(W, monkeypatch)
+    pages["003.152"] = _pot_page([("H3628", "07Nov")])
+    assert W.check(fl) == "ok"
+    pages["003.152"] = "<html><body><p>flica.net - Application Error</p><p>InitializeSessionData() failed</p></body></html>"
+    assert W.check(fl) == "needs_login"
+    assert W.S["pot_urls"] == {"mobile": REG} and W.S.get("parse_fail", 0) == 0
+    pages["003.152"] = "<html><body>something else entirely</body></html>"
+    assert W.check(fl) == "retry"  # any other unknown page is still a layout miss

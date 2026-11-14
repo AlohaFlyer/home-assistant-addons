@@ -208,7 +208,7 @@ def test_escaping_and_dates():
         {name: "2026-12_pairings.pdf", kind: "pairings", month: "2026-12", size: 900000, uploaded_at: "2026-11-20T19:31:00Z", has_text: true},
         {name: "2027-01_award.pdf", kind: "award", month: "2027-01", size: 1, uploaded_at: "", has_text: false},
         {name: "seniority_2026-11-06.pdf", kind: "seniority", day: "2026-11-06", size: 5000, uploaded_at: "2026-11-06T09:00:00-10:00", has_text: true}]});
-      const sen = c._senHtml({pilots: bad, source: bad, list_date: bad, uploaded_at: "2026-11-20T09:30:00-10:00", carried: 3, base: {as_of: bad}, rejects: 2});
+      const sen = c._senHtml({pilots: bad, source: bad, list_date: bad, uploaded_at: "2026-11-20T09:30:00-10:00", carried: 3, base: {as_of: bad}, rejects: 2, note: bad + "1 seniority number missing from the list"});
       const aw = c._senHtml({pilots: 42, source: "award 2026-12", as_of: "2026-12-01", carried: 12, base: {as_of: "2026-03-01"}});
       c.hass = hass(false);
       console.log(JSON.stringify({list, sen, aw, none: c._senHtml(null), title: c.shadowRoot.innerHTML,
@@ -226,6 +226,8 @@ def test_escaping_and_dates():
     assert "not read: no text copy" in r["list"] and "uploaded ? HST" in r["list"]
     assert "<b>42 pilots</b> from the Dec 2026 award · as of 2026-12-01" in r["aw"] and "12 more kept from the seniority list of 2026-03-01" in r["aw"]
     assert "None on file yet" in r["none"]
+    # 1.7.5.1 review: rows read with a note are said apart from the lines not read (escaped like every value)
+    assert "2 lines not read · &lt;img src=x onerror=alert(1)&gt;1 seniority number missing from the list" in r["sen"]
     assert r["next"] == ["2027-01", "2026-12", "2026-12"]  # Dec 31 19:00 HST is still December; Nov 30 HST: December
     assert r["hst"] == "Nov 20 09:31" and r["size"] == ["2 KB", "2.4 MB"]
 
@@ -302,7 +304,10 @@ def test_renders_and_uploads_in_a_browser(tmp_path):
         m = r["fit"][w]
         assert m["doc"] <= m["win"] and m["card"] <= int(w) + 0.5 and m["inner"] <= 0, (w, m)
     assert r["month"] == r["expect_month"] and r["kinds"] == ["award", "pairings", "seniority", "contacts"]
-    assert r["sen_toggle"] == {"month_hidden": True, "date_hidden": False} and r["award_toggle"] == {"month_hidden": False, "date_hidden": True}
+    help_ = r["sen_toggle"].pop("help")  # 1.7.5.1: the seniority list's help says which lists are read (fits 390 px)
+    assert "Pilot's System Seniority List" in help_ and "SEN / EMP / DOH" in help_ and r["award_toggle"].pop("help") == ""
+    assert r["sen_toggle"] == {"month_hidden": True, "date_hidden": False, "help_hidden": False, "fits": True}
+    assert r["award_toggle"] == {"month_hidden": False, "date_hidden": True, "help_hidden": True, "fits": True}
     assert r["rows_before"] == 4 and r["rows_after"] == 5 and r["pwned"] is None and r["imgs"] == 0
     assert r["wanted"] == ["Wanted: the Oct 2026 pairings packageTrips other pilots started in Oct 2026 that run into Nov 2026 "
                            "reach the crew index only from pilot lookups until it is on file."]  # FW-0057

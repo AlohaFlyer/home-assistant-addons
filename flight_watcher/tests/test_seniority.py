@@ -39,7 +39,8 @@ def test_two_digit_years_and_conflicts():
          "ALPHABETICAL\n" + hdr + "  1   DOE, J.   901   990001   DOE   JANE   05/02/88   May-28 330 CA\n")
     p = SEN.parse(t, 2026)
     assert [r["doh"] for r in p["rows"]] == ["1988-05-01", "2025-03-19"]  # 88 is 1988, 25 (not after the list) 2025
-    assert SEN.parse(t, 2024)["rows"][1]["doh"] == "1925-03-19"  # a list from 2024 cannot hold a 2025 hire
+    # a list from 2024 cannot hold a 2025 hire, nor (1.7.5.1 review: 99 years of longevity) one from 1925
+    assert [r["sen"] for r in SEN.parse(t, 2024)["rows"]] == [1] and ("bad-date", 4) in SEN.parse(t, 2024)["rejects"]
     assert p["rejects"] == [("conflict-doh", 7)]  # a repeat that disagrees is reported, the first listing is kept
     assert SEN.parse("1   DOE, J.   901   990001   DOE   JANE   05/01/88   May-28 330 CA\n")["rows"] == []  # no header
     assert SEN.parse("")["rows"] == [] and SEN.parse("Minutes of the meeting, 3/1/2026")["rows"] == []
