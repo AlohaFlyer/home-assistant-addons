@@ -1,6 +1,15 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-14, release 1.7.3 live)
+# HANDOFF: Flight Watcher (refreshed 2026-11-14, release 1.7.5 live)
 
-State (Nov 14): app **1.7.3** on Pako HI since 2026-11-14 05:56 UTC (Nov 13 19:56 HST), both instances (backup before
+State (Nov 14, later): app **1.7.5** on Pako HI since 2026-11-14 15:44 UTC (05:44 HST), both instances (backup before it:
+`8586edb5`, Flight Watcher 1.7.4 data). **1.7.4** (live 10:29 UTC, backup before it `4c5405aa`): a pilot's FLICA refusal
+record is an HMAC with the instance's own key (`<data>/flica_hmac.key`), re-keyed from 1.7.3 and scrubbed from the
+database files; the block never lifts on a doubt; CrewTrac key lock and read-error handling. **1.7.5**: "Pause wins"
+(Ryan, Nov 14): Pause cancels a FLICA login still waiting to run (Re-arm or a re-save's try), a login waiting in the
+gate gives up on Pause, and the 10 min login floor counts from when FLICA is reached. The 1.7.3 crew index fix was
+confirmed on live runs (Nov 14 07:09 and 09:14 UTC: every lettered copy probed, H3604B and H3632A found, no stop).
+CHANGELOG 1.7.4 and 1.7.5.
+
+Earlier (Nov 14): app **1.7.3** on Pako HI since 2026-11-14 05:56 UTC (Nov 13 19:56 HST), both instances (backup before
 it: `55761d28`, Flight Watcher 1.7.2 data). 1.7.3 = the fixes the 1.7.2 post-deploy check and the F#55 live run found
 (all older than 1.7.2): crew index probes of lettered copies that do not exist are misses, not failed pairing reads (they
 stopped every pairing read for 30 min about 4 times a day), resumed and parked; a pilot's log masks crew names and
@@ -89,13 +98,11 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
 
 ## Open items (ticket numbers)
 
-1. **Claude, after the 1.7.3 update:** confirm the first crew index run under 1.7.3 probes without "FLICA pairing read
-   stopped" (none had run by Nov 13 20:15 HST; a check is scheduled for Nov 14 04:00 HST). F#55 ran live on Nov 14 with
-   Ryan's yes (a lookup of his own line on James's session, by name, then the pick): the path works end to end, but
-   FLICA's Schedule Lookup answers its application error page for November on every instance, so run it once more when
-   FLICA serves lookups again. Still open from the 1.7.2 checks: James's portal uploads card seen at 390 px light and
-   dark (the bundle equals git by sha256); a live upload test needs James (nobody contacts him for it) or a made-up PDF
-   sent through the portal only with Ryan's yes.
+1. **Claude:** F#55 ran live on Nov 14 with Ryan's yes (a lookup of his own line on James's session, by name, then the
+   pick): the path works end to end, but FLICA's Schedule Lookup answered its application error page for November on
+   every instance, so run it once more when FLICA serves lookups again. Still open from the 1.7.2 checks: James's portal
+   uploads card seen at 390 px light and dark (the bundle equals git by sha256); a live upload test needs James (nobody
+   contacts him for it) or a made-up PDF sent through the portal only with Ryan's yes.
 2. **FW-0061 ntfy (Ryan chose James's own ntfy account, Nov 13):** James's saved topic fails the 1.6.2 rule (the log
    says "ntfy off: ... a topic needs at least 24 letters and digits"). The steps for him (install ntfy, his own
    account and reserved topic, Generate in his portal Settings, subscribe) are a Gmail **draft** in Ryan's account
@@ -119,12 +126,18 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
    FW-0042 overnight-release cut-off (`home_day_start` in smart.json).
 8. **Backlog, not built:** FW-0044 map FLICA's DROP review page read only; an alert for a new swap idea on the portal
    (F#107, a contract change); the clock card's state-worded Re-arm confirm and the hidden Settings tile (F#92, card
-   and HOM work); the FLICA refusal block on a pilot (`S.flica_refused`) as an HMAC like CrewTrac's; optional, drop
+   and HOM work); Ryan's call if wanted: Pause turned on after a login page has passed the gate does not give up the credentials' submit
+   (it waits only when the pilot's hourly FLICA budget is used up; CHANGELOG 1.7.5); optional, drop
    the second mqtt.publish to `flight_watcher_james/recall/set` from "Flight Watcher recall list in (Hark webhook)"
    (harmless: the Watcher forwards recall lists itself, F#75).
 
 ## Rollback notes
 
+- **1.7.5 to 1.7.4:** safe, no data format change (`8586edb5` is the backup before it).
+- **1.7.4 to 1.7.3 (read first):** 1.7.3 cannot read a 1.7.4 FLICA refusal record (an HMAC), so a pilot stopped by a
+  FLICA refusal is no longer blocked there and his next Re-arm logs in once more with refused details. Restore /data
+  from `4c5405aa` first; without it, make sure nobody presses Re-arm for him until his details are right (blanking the
+  password in Settings does not work). CHANGELOG 1.7.4.
 - **1.7.3 to 1.7.2:** restore /data from `55761d28` or keep it: 1.7.2 ignores the `crew_variant_tries` record and the
   `parked` / `fail` fields 1.7.3 adds to the crew variant records. The crew index probe breaker trips come back.
 - **1.7.2 to 1.7.1.1 or 1.7.1:** roll Flight Watcher back first (HOM 1.8.2 takes revision 2 and 3). Before it,
@@ -141,6 +154,11 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
 
 ## Decided (do not reopen)
 
+- Ryan, Nov 14, 2026:
+  - Pause wins over a waiting FLICA login (Re-arm or a re-save's try); after un-pausing, a stopped Watcher needs a
+    Re-arm. Un-pause during a step-aside for the owner's own FLICA login still ends it (the Paused card's "Turn Pause
+    off when you have signed out of FLICA").
+  - The FLICA refusal block on a pilot is an HMAC (built in 1.7.4).
 - Ryan, Nov 12 and 13, 2026:
   - The Working Flight view holds the layover card only (Nov 13, once the 1.7.2 loader made it show on his phone):
     the Nov 12 stand-in markdown card and the big "Ready to update" button are gone; the card's "Update with Hark" chip
@@ -186,6 +204,8 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
 
 ## Recent releases
 
+1.7.5 Nov 14 (Pause wins over a waiting FLICA login, login floor from when FLICA is reached), 1.7.4 Nov 14 (FLICA
+refusal block HMAC),
 1.7.3 Nov 14 (crew index probes no longer stop pairing reads, pilot log mask, pause note, plain FLICA error line),
 1.7.2 Nov 13 (portal contract 1 revision 3, pilot uploads, card loader, van settings, PAYP pickups), 1.7.1.1 Nov 13
 (PAYP keeps the exact credit), 1.7.1 Nov 11 (pilot read shares, bid calendar alerts, layover card and van alerts,
