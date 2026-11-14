@@ -27,7 +27,9 @@ publishes what it finds to Home Assistant over MQTT.
   bare hash is gone from them too (a backup made before the update still holds it). Pause wins (1.7.5): Pause on
   cancels a FLICA login still waiting to run (Re-arm's, waiting for the 10 min login floor or a back-off, and the one
   more try a save of the same FLICA details gave), and a Re-arm pressed while paused does nothing (it says why).
-  After Pause is off a stopped Watcher stays stopped until a new Re-arm, which logs in at the floor.
+  After Pause is off a stopped Watcher stays stopped until a new Re-arm, which logs in at the floor. The same FLICA
+  details saved while Pause is on lift the block with no login try (the result says so). Pause turned on and off
+  during a step-aside for your own FLICA login keeps the step-aside to its end.
 - Schedule: your line, numbered schedule versions (MM.NNN), FAR 117 columns, pay from the PWA tables, pairing
   details, and the monthly award and pairings PDFs uploaded on the dashboard (or the Web UI). A trip that comes home
   the day the next one starts keeps its real end (1.4.7). A trip the company removed and FLICA shows as PAYP keeps

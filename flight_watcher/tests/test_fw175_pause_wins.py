@@ -151,9 +151,10 @@ def test_pause_before_the_saves_restart_drops_the_try_and_keeps_its_lift(mk, mon
 def test_pause_found_on_at_start_cancels_the_saves_try(mk, monkeypatch, caplog):  # noqa: F811
     W = _pilot_up(mk)
     _refuse(W)
-    _cmd(W, "pause/set", b"ON")  # Pause first: nothing is waiting yet
     assert _save(W, monkeypatch, {"password": "p", "my_name": "Doe, Jane"}) is True
     assert W.S.get("flica_again_at")
+    # the switch put back from its retained state, no pause/set (1.7.5 review: a save while Pause is on queues no try)
+    W.remember_switch("pause", True)
     W2 = _restart(mk, W, "u", "p")
     assert W2.FLAGS["pause"]
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
@@ -171,8 +172,8 @@ def test_pause_in_the_last_instant_before_the_login_makes_none(mk, monkeypatch):
     real = W.login_deferred
     hit = {"n": 0}
 
-    def deferred(st, base_note=None):
-        r = real(st, base_note)
+    def deferred(st, base_note=None, **kw):
+        r = real(st, base_note, **kw)
         if not r and W.FLAGS["rearm"]:
             hit["n"] += 1
             W.remember_switch("pause", True)  # paho's thread: the switch is set, its handler has not cancelled yet
@@ -258,8 +259,8 @@ def test_the_admins_rearm_in_the_last_instant_makes_none(mk, monkeypatch):  # no
     W.save_state(W.S)
     real = W.login_deferred
 
-    def deferred(st, base_note=None):
-        r = real(st, base_note)  # the admin never waits
+    def deferred(st, base_note=None, **kw):
+        r = real(st, base_note, **kw)  # the admin never waits
         if not r and W.FLAGS["rearm"]:
             W.remember_switch("pause", True)
         return r
