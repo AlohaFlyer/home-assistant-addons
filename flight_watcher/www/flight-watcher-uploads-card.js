@@ -29,7 +29,7 @@ const FW_UP_KINDS = [["award", "Monthly award"], ["pairings", "Pairings package"
 const FW_UP_LABEL = { award: "Award", pairings: "Pairings package", seniority: "Seniority list", contacts: "Contact list", other: "Other file" };
 // 1.7.5.1 (Ryan, Nov 14: "what format does it need? ... it is what the union provides"): the lists the Watcher reads
 const FW_UP_SEN_HELP = "Reads the company's Pilot's System Seniority List PDF as the union posts it (Sen #, Name, Employee #, DOH, Remarks; " +
-  "its Effective date is the list date), or the older SEN / EMP / DOH list. The union's list gives each pilot's date of hire and status (it has no seat).";
+  "its Effective date is the list date), or the older SEN / EMP / DOH list. The union's list gives each pilot's date of hire (it has no seat).";
 // FW-0066: the path for a user who is not an admin (a second pilot's copy reads its own entities and topic)
 const FW_UP_TOPIC = "flight_watcher/upload/chunk";
 const FW_UP_LIST = "sensor.flight_watcher_uploads";
@@ -331,7 +331,8 @@ class FlightWatcherUploadsCard extends HTMLElement {
       s.list_date ? `list date ${e(s.list_date)}` : s.as_of ? `as of ${e(s.as_of)}` : "",
       s.uploaded_at ? `uploaded ${e(fwUpHst(s.uploaded_at))} HST` : "",
       s.carried ? `${e(s.carried)} more kept from the seniority list${s.base && s.base.as_of ? ` of ${e(s.base.as_of)}` : ""}` : "",
-      s.rejects ? `${e(s.rejects)} lines not read` : ""].filter(Boolean);
+      s.rejects ? `${e(s.rejects)} lines not read` : "",
+      s.note ? e(s.note) : ""].filter(Boolean);  // 1.7.5.1 review: rows read with a note, said apart from lines not read
     return `<div class="sen">${head}<div>${parts.join(" · ")}</div></div>`;
   }
   _ctHtml(c) {  // FW-0066: counts only (the sensor carries no contact)

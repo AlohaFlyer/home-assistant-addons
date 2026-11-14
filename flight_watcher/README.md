@@ -282,17 +282,27 @@ Recent finds.
   `/share/flight_watcher/uploads/seniority.json`: each pilot's seniority number, name, seat, equipment and date of
   hire, keyed on the employee number. 1.7.5.1: two layouts are read. The company's Pilot's System Seniority List PDF
   as the union posts it (every page: the title block with "Effective <date> (Rev. n)" and the header `Sen # Name
-  Employee # DOH Remarks`; the DOH as D-Mon-YY; the Remarks code is kept as `status`, e.g. A, SLOA, MLOA; there is no
-  seat or equipment, so those stay empty; the `*` changed-number mark is not read; the removed pilots, the status
-  legend and the footnote on its last page are never rows), and the older SEN / EMP / DOH list. The page then says
-  how many pilots were read, the list date (typed in the List date box, else found in the cover text or the union
-  list's Effective date, else "no list date in the file") and the newest date of hire on the list. A PDF with no
-  pilot rows (or with its columns in another order: the reader needs EMP # before ALPA # and DOH as the first date
-  column, or Sen #, Name, Employee #, DOH in that order on the union's list) is refused and deleted; the list on
-  file keeps its PDF, text copy and seniority.json, even when the refused upload is on the same day. Lines the
-  reader skips are counted as "lines not read" (a row whose DOH wrapped onto the next line is joined and read; a DOH
-  after the list date is not read). The log has counts only. Every pilot instance (Ryan's and a second pilot's)
-  reads the same file. Upload a newer list when new hires are missing.
+  Employee # DOH Remarks`; the DOH as D-Mon-YY; there is no seat or equipment, so those stay empty; the `*`
+  changed-number mark, or another mark such as `**` or a dagger, is not read; the removed pilots, the status legend
+  and the footnote on its last page are never rows), and the older SEN / EMP / DOH list. A pilot's Remarks code
+  (SLOA is sick leave, MLOA military leave) is not kept: nothing uses it, so seniority.json has only the count per
+  code (`statuses`). The century of a D-Mon-YY date comes from the date the list prints (its Effective date), else
+  the typed list date, else the upload year; a DOH 60 years or more before the list is a misread and is not read
+  (a pilot retires at 65, 14 CFR 121.383(d)). The page then says how many pilots were read, the list date (typed in
+  the List date box, else found in the cover text or the union list's Effective date, else "no list date in the
+  file"; a typed date that differs from the printed one is kept, and the page says so) and the newest date of hire
+  on the list. A PDF with no pilot rows (or with its columns in another order: Sen #, Name, Employee #, DOH,
+  Remarks in that order on the union's list; EMP # before ALPA # and DOH as the first date column on the older
+  list; the refusal names the rule of the list it saw) is refused and deleted; the list on file keeps its PDF, text
+  copy and seniority.json, even when the refused upload is on the same day. Lines that give no pilot are counted as
+  "lines not read" (a row whose DOH wrapped onto the next line is joined and read; a DOH after the list date is not
+  read; on the union's list a dated line that is not a row is counted too). Rows read with a note (a status code
+  the legend does not list, a column this version does not know, a repeat listing that differs) and seniority
+  numbers missing from the union's list (it is numbered 1 to n with no gaps) are said apart, on the page and on the
+  uploads card. The seniority files (the PDF, its text copy, seniority.json, seniority_list.json and
+  seniority_award.json) are readable by this app only (mode 600), as the contact list is. The log has counts only.
+  Every pilot instance (Ryan's and a second pilot's) reads the same file. Upload a newer list when new hires are
+  missing.
 - Pay line under a rebuilt month: when the pilot card shows a month "Reconstructed from pairing crew lists", the
   Watcher adds `pay_line` to `sensor.<prefix>_pilot_schedule`: Trips, Credit, Block, Soft, Pay-Gross, Pay-Net and Days
   Off over the trips the grid draws, each trip priced for the seat on its crew line (Captain PWA 3.C.4, FO and RO PWA

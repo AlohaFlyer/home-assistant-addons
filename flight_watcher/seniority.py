@@ -20,7 +20,9 @@ PARSER = 3  # bump when a parse rule changes: the Watcher re-reads the list on f
 DASHES = dict.fromkeys((0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2212), "-")  # the hyphens and dashes pdftotext prints
 SECTION_RE = re.compile(r"^(?:SENIORITY|ALPHABETICAL|MANDATORY AGE 65 RETIREMENT AGE|[AB]?\d{3}\s+(?:Captains|First Officers))$", re.I)
 DATE_RE = re.compile(r"\d{1,2}/\d{1,2}/\d{2,4}")
-HEADER_RE = re.compile(r"^\s*SEN\b.*\bEMP\b.*\bDOH\b", re.I)
+# 1.7.5.1 review: '.{0,400}' (MAX_LINE), not '.*': on a long line '.*\bEMP\b.*\bDOH\b' was quadratic (seconds per
+# 100 KB line); lines longer than MAX_LINE are set aside before any of these run (_candidates)
+HEADER_RE = re.compile(r"^\s*SEN\b.{0,400}?\bEMP\b.{0,400}?\bDOH\b", re.I)
 ROW_START_RE = re.compile(r"^\s*\d+\s")      # a line that starts with a seniority number
 GROUP_RE = re.compile(r"^\s*\d{4}\s*=")       # 'YYYY = n PILOTS' group lines of the retirement section
 PAGE_OF_RE = re.compile(r"^\s*\d+\s+of\s+\d+\s*$", re.I)  # a 'n of m' page footer
@@ -50,6 +52,9 @@ LIST_DATE_RES = (  # a date in the cover text, only next to 'effective', 'as of'
     re.compile(r"(?:effective|as of|dated|seniority list)\D{0,40}?(\d{1,2})\s*" + MON + r"\s*(\d{4})", re.I),
     re.compile(r"(?:effective|as of|dated|seniority list)\D{0,40}?(\d{1,2})/(\d{1,2})/(\d{4})", re.I))
 SUFFIX = {"JR", "SR", "II", "III", "IV"}
+# 1.7.5.1 review: a pilot retires at 65 (14 CFR 121.383(d)), so a DOH this many years or more before the list is a
+# misread ('bad-date'), never decades of longevity; with two-digit years it also catches a century taken wrong
+DOH_MAX_YEARS = 60
 # 1.7.5.1: the company's Pilot's System Seniority List as the union posts it (pdftotext -layout). Every page repeats a
 # title block (the company, "Pilot's System Seniority List", 'Effective July 1, 2026 (Rev. 1)': the list date, read
 # by list_date) and the header '*  Sen #  Name  Employee #  DOH  Remarks'; then one row per pilot,
@@ -58,29 +63,49 @@ SUFFIX = {"JR", "SR", "II", "III", "IV"}
 # (HAL_STATUS, the list's STATUS LEGEND). The '*' (a changed seniority number) is not read. There is no seat or
 # equipment column. Columns drift a few characters from page to page ('Page n of m' footers). The last page lists the
 # pilots removed from the list ('Employee #  Name' rows: never pilots on it), the legend and a footnote: HAL_END_RE
-# ends the rows there, and nothing after it is read until another row header.
-HAL_HEADER_RE = re.compile(r"^\s*\*?\s*Sen(?:iority)?\s*(?:#|No\b\.?)\s.*\bEmployee\b.*\bDOH\b", re.I)
+# ends the rows there, and nothing after it is read until another row header (a union list's rows only).
+# Review fixes: the leading space runs are [^\S\n] and unambiguous (a '*' then spaces), so the header search of
+# list_date never spans lines (2,000 blank lines took 12 s); the '.*' parts are bounded like HEADER_RE's.
+HAL_HEADER_RE = re.compile(r"^[^\S\n]*(?:\*[^\S\n]*)?Sen(?:iority)?[^\S\n]*(?:#|No\b\.?)[^\S\n]"
+                           r".{0,400}?\bEmployee\b.{0,400}?\bDOH\b", re.I)
 HAL_HEADER_ML = re.compile(HAL_HEADER_RE.pattern, re.I | re.M)
-HAL_START_RE = re.compile(r"^\s*\*?\s*\d{1,5}\s")  # a line that starts with a seniority number (the '*' optional)
+# the changed-number mark: '*' on the list; review fix: any 1 to 3 marks that are not letters or digits ('**', a
+# dagger) before the number, or after it ('12*'), so a row with another mark is read, not dropped
+HAL_MARK = r"^\s*(?:[^\w\s]{1,3}\s*)?"
+HAL_START_RE = re.compile(HAL_MARK + r"\d{1,5}[^\w\s]{0,3}\s")  # a line that starts with a seniority number
 HAL_DATE = r"\d{1,2}-[A-Za-z]{3,9}\.?-(?:\d{4}|\d{2})(?!\d)"
 HAL_DATE_RE = re.compile(HAL_DATE)
+HAL_ROWISH_RE = re.compile(r"\d{3,6}\s+" + HAL_DATE)  # an employee number, then a D-Mon-YY date: a row's shape
 HAL_ROW_RE = re.compile(  # zones as in ROW_RE: the name starts and ends on a non-space, so a bad line fails fast
-    r"^\s*\*?\s*(?P<sen>\d{1,5})\s+"                   # the changed-number mark, the seniority number
+    HAL_MARK + r"(?P<sen>\d{1,5})[^\w\s]{0,3}\s+"        # the changed-number mark, the seniority number
     r"(?P<name>[^\d\s](?:\D*[^\d\s])?)\s*"              # 'Last, First M.' as printed
     r"(?P<emp>\d{3,6})\s+"                               # employee number
     r"(?P<doh>" + HAL_DATE + r")"                       # date of hire, D-Mon-YY
     r"(?P<tail>(?:\s+\S+)*)\s*$")                       # Remarks (a status code), and any new column
-HAL_END_RE = re.compile(r"^(?:.*\bremoved from the\b.*\blist\b|employee\s*#\s+name\b|status legend\b)", re.I)
+HAL_END_RE = re.compile(r"^(?:.{0,400}?\bremoved from the\b.{0,400}?\blist\b|employee\s*#\s+name\b|status legend\b)",
+                        re.I)
 HAL_STATUS = {"A", "ALPA", "EXEC", "FUR", "LOA", "MLOA", "MRET", "PESL", "SLOA"}  # the STATUS LEGEND's codes
 HAL_STATUS_RE = re.compile(r"^[A-Za-z]{1,6}$")
 HAL_SECTION = "SYSTEM SENIORITY LIST"
+# Review fix: what to_json counts as 'lines not read' is every reject but these, which note a row that was read
+# (or, sen-gap, a seniority number missing from a union list, which is numbered 1..n with no gaps)
+NOTE_REASONS = ("tail-unknown-token", "status-unknown", "sen-gap")
+
+
+def is_note(reason):
+    """True for a reject that notes a row read (or a missing number), not a line that gave no pilot."""
+    return reason in NOTE_REASONS or reason.startswith("conflict-")
 
 
 def _year(y, ref_year):
+    """A DOH's year: a two-digit one in the latest century that keeps it at or before ref_year (the list's year).
+    ValueError (a 'bad-date' reject) for a year DOH_MAX_YEARS or more before ref_year: no pilot on the list has it."""
     y = int(y)
-    if y >= 100:
-        return y
-    return 2000 + y if 2000 + y <= ref_year else 1900 + y
+    if y < 100:
+        y = 2000 + y if 2000 + y <= ref_year else 1900 + y
+    if ref_year - y >= DOH_MAX_YEARS:
+        raise ValueError(y)
+    return y
 
 
 def _doh(s, ref_year):
@@ -102,7 +127,7 @@ def list_date(text):
     """The list's date from its cover text ('Seniority list effective March 1, 2026', 'as of 01 MAR 2026',
     'dated 3/1/2026'), ISO; '' when the text gives none (the lists seen so far do not)."""
     head = (text or "").translate(DASHES)
-    cuts = [m.start() for m in (HEADER_RE.search(head), re.search(r"^\s*SEN\b", head, re.M),
+    cuts = [m.start() for m in (HEADER_RE.search(head), re.search(r"^[^\S\n]*SEN\b", head, re.M),
                                 HAL_HEADER_ML.search(head)) if m]  # 1.7.5.1: the union list's 'Sen #' header too
     head = head[:min(cuts)] if cuts else head[:4000]
     for i, rx in enumerate(LIST_DATE_RES):
@@ -149,7 +174,7 @@ def header_order_ok(line):
 
 def hal_header_order_ok(line):
     """1.7.5.1: True when a union list header puts its columns in the order HAL_ROW_RE reads them: Sen #, Name,
-    Employee #, DOH (then Remarks, when there is one). Another order is not read ('header-order')."""
+    Employee #, DOH (then Remarks, when there is one). Another order is not read ('header-order-hal')."""
     u = line.upper()
     cols = [re.search(rx, u) for rx in (r"\bSEN", r"\bNAME\b", r"\bEMPLOYEE\b", r"\bDOH\b")]
     if not all(cols):
@@ -175,16 +200,28 @@ def _candidates(lines, rejects):
     joined to that next line; a numbered line with no date that is not joined is reported ('no-date') rather than
     dropped silently. Cover text, 'YYYY = n PILOTS' group lines, page footers and the summary page are not rows.
     1.7.5.1: the header picks the layout of the rows under it (_header); the union list's removed pilots, status
-    legend and footnote (HAL_END_RE) end the rows until the next header."""
+    legend and footnote (HAL_END_RE) end its rows until the next header. Review fixes: a line longer than MAX_LINE is
+    set aside first ('too-long' when it starts with a seniority number under a header), so no other check runs on it;
+    the end words end a union list's rows only; under a union list header a line with an employee number and a
+    D-Mon-YY date that does not start with a seniority number is counted ('no-match'), never skipped (a title with a
+    date is not a row)."""
     section, header, layout, pending = "", None, "sen", None
     for no, raw in enumerate(lines, 1):
         line = raw.replace("\f", "").rstrip()
         s = line.strip()
         if not s:
             continue
+        if len(line) > MAX_LINE:
+            starts = header is not None and bool((HAL_START_RE if layout == "hal" else ROW_START_RE).match(line))
+            if pending:
+                rejects.append(("no-date" if starts else "too-long", pending[0]))  # not starts: it would be joined
+                pending = None
+            if starts:
+                rejects.append(("too-long", no))
+            continue
         sec = bool(SECTION_RE.match(s))
         hdr = None if sec else _header(line)
-        end = not sec and not hdr and bool(HAL_END_RE.match(s))
+        end = not sec and not hdr and layout == "hal" and header is not None and bool(HAL_END_RE.match(s))
         if sec or hdr or end:
             if pending:
                 rejects.append(("no-date", pending[0]))
@@ -211,6 +248,8 @@ def _candidates(lines, rejects):
                 continue
             rejects.append(("no-date", pno))
         if not starts:
+            if layout == "hal" and dated and HAL_ROWISH_RE.search(line):
+                rejects.append(("no-match", no))  # a row's shape under the header, not a row this version reads
             continue
         if not dated:
             if len(line) <= MAX_LINE:
@@ -301,27 +340,32 @@ def parse(text, ref_year=None):
     """{'list_date': ISO or '', 'rows': [...], 'rejects': [(reason, line_no)], 'sections': {label: rows}}.
     One row per seniority number, the list's only unique key (a few employee numbers belong to two pilots). The
     first listing of a pilot is kept and the repeats in the other sections are checked against it; a repeat whose
-    names split more cleanly replaces the names. ref_year sets the century of two-digit years (the list's year,
-    else this year); a DOH after it (or after the list date the text gives) is not read ('future-doh'). A row is
+    names split more cleanly replaces the names. The century of a two-digit year comes from the year of the list
+    date the text prints (1.7.5.1 review: the file's own date first, so a typed date that is off cannot move it),
+    else ref_year (the typed list date's year, else the upload's), else this year; a DOH after that year (or after the
+    printed list date) is not read ('future-doh'), nor one DOH_MAX_YEARS or more before it ('bad-date'). A row is
     {sen, emp, last, first, name, doh, equip, seat, status, listed}. Rejects: no-match, too-long, header-order,
-    no-date, bad-date, future-doh, no-name (the line is not read); tail-unknown-token, status-unknown and conflict-*
-    (the row is kept). 1.7.5.1: the rows under a union list header (HAL_*) are read as that layout: status is the
-    Remarks code, seat and equip are empty, the section is HAL_SECTION; a SEN / EMP / DOH row has status ''."""
+    header-order-hal, no-date, bad-date, future-doh, no-name (the line is not read); tail-unknown-token,
+    status-unknown, conflict-* (the row is kept) and sen-gap (a number missing from a union list): is_note().
+    1.7.5.1: the rows under a union list header (HAL_*) are read as that layout: status is the Remarks code, seat
+    and equip are empty, the section is HAL_SECTION; a SEN / EMP / DOH row has status ''."""
     text = (text or "").translate(DASHES).replace(" ", " ")
     when = list_date(text)
-    ref = ref_year or (int(when[:4]) if when else date.today().year)
-    by_sen, rejects, sections = {}, [], {}
+    ref = int(when[:4]) if when else (ref_year or date.today().year)
+    by_sen, rejects, sections, hal_at = {}, [], {}, {}
     for no, line, section, header_ok, layout in _candidates(text.split("\n"), rejects):
         if len(line) > MAX_LINE:
             rejects.append(("too-long", no))
             continue
         if not header_ok:
-            rejects.append(("header-order", no))
+            rejects.append(("header-order-hal" if layout == "hal" else "header-order", no))
             continue
         row = (_hal_row if layout == "hal" else _sen_row)(line, no, ref, when, rejects)
         if row is None:
             continue
         sections[section] = sections.get(section, 0) + 1
+        if layout == "hal":
+            hal_at.setdefault(row["sen"], no)
         old = by_sen.get(row["sen"])
         if old is None:
             by_sen[row["sen"]] = dict(row, listed=1)
@@ -338,6 +382,13 @@ def parse(text, ref_year=None):
     rows = [by_sen[k] for k in sorted(by_sen)]
     for r in rows:
         r.pop("_q", None)
+    if hal_at:  # review fix: the union list is numbered 1..n with no gaps; each number missing is noted at the next row
+        nxt = None
+        for k in range(max(hal_at), 0, -1):
+            if k in by_sen:
+                nxt = hal_at.get(k, nxt)
+            else:
+                rejects.append(("sen-gap", nxt))
     rejects.sort(key=lambda x: x[1])
     return {"list_date": when, "rows": rows, "rejects": rejects, "sections": sections}
 
@@ -348,15 +399,16 @@ def _emp(v):
 
 def to_json(parsed, file, uploaded_at, list_date_given=""):
     """What /share/flight_watcher/uploads/seniority.json holds: {list_date, uploaded_at, file, parser, count,
-    newest_doh, sections, rejects, pilots: {emp: {sen, name, last, doh, seat, equip, status?, also?}}}. Keyed on the
-    employee number without leading zeros; a number two pilots share keeps the first under the key and the other in
-    'also'. 1.7.5.1: status (the union list's Remarks code, e.g. A, SLOA) only when the list gives one; the union list
-    has no seat or equipment ('')."""
-    pilots = {}
+    newest_doh, sections, rejects, notes, statuses?, pilots: {emp: {sen, name, last, doh, seat, equip, also?}}}. Keyed
+    on the employee number without leading zeros; a number two pilots share keeps the first under the key and the
+    other in 'also'. 1.7.5.1: the union list has no seat or equipment (''). Review fixes: rejects counts the lines
+    not read only, notes the rest ({reason: n}, is_note); a pilot's Remarks code (SLOA is sick leave, MLOA military
+    leave) is not kept, since nothing reads it: statuses has the count per code only."""
+    pilots, statuses = {}, {}
     for r in parsed["rows"]:
         rec = {k: r[k] for k in ("sen", "name", "last", "doh", "seat", "equip")}
         if r.get("status"):
-            rec["status"] = r["status"]
+            statuses[r["status"]] = statuses.get(r["status"], 0) + 1
         k = _emp(r["emp"])
         if not k:
             continue
@@ -365,9 +417,18 @@ def to_json(parsed, file, uploaded_at, list_date_given=""):
         else:
             pilots[k] = rec
     dohs = [r["doh"] for r in parsed["rows"]]
-    return {"list_date": list_date_given or parsed.get("list_date") or "", "uploaded_at": uploaded_at, "file": file,
-            "parser": PARSER, "count": len(parsed["rows"]), "newest_doh": max(dohs) if dohs else "",
-            "sections": parsed.get("sections") or {}, "rejects": len(parsed.get("rejects") or []), "pilots": pilots}
+    rej = parsed.get("rejects") or []
+    notes = {}
+    for x, _ in rej:
+        if is_note(x):
+            notes[x] = notes.get(x, 0) + 1
+    out = {"list_date": list_date_given or parsed.get("list_date") or "", "uploaded_at": uploaded_at, "file": file,
+           "parser": PARSER, "count": len(parsed["rows"]), "newest_doh": max(dohs) if dohs else "",
+           "sections": parsed.get("sections") or {}, "rejects": sum(1 for x, _ in rej if not is_note(x)),
+           "notes": notes, "pilots": pilots}
+    if statuses:
+        out["statuses"] = dict(sorted(statuses.items()))
+    return out
 
 
 def _last(name):
@@ -477,7 +538,7 @@ def award_parse(text, ref_year=None):
     goes to the seniority section), plus 'reader' ('seniority section' or 'pilot lines')."""
     norm = (text or "").translate(DASHES).replace(" ", " ")
     when = list_date(norm)
-    ref = ref_year or (int(when[:4]) if when else date.today().year)
+    ref = int(when[:4]) if when else (ref_year or date.today().year)  # as parse()'s (1.7.5.1 review)
     sec = parse(norm, ref)
     blk = _award_blocks(norm, ref)
     best, reader = max(((sec, "seniority section"), (blk, "pilot lines")), key=lambda x: len(x[0]["rows"]))

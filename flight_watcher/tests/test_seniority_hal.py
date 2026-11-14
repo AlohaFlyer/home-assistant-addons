@@ -91,7 +91,7 @@ def test_reads_the_union_list():
 @pytest.mark.parametrize("shifts", [(0, 3), (-4, 6), (5, -3)])
 def test_drifting_columns_and_more_pages(shifts):
     """The columns move a few characters from page to page; every page has its title block, header and footer."""
-    many = [(i, f"Doe{chr(65 + i % 26)}, Jane {chr(65 + i % 7)}.", f"{10000 + i}", f"{1 + i % 28}-{'JanFebMarAprMayJunJulAugSepOctNovDec'[3 * (i % 12):3 * (i % 12) + 3]}-{(85 + i) % 100:02d}",
+    many = [(i, f"Doe{chr(65 + i % 26)}, Jane {chr(65 + i % 7)}.", f"{10000 + i}", f"{1 + i % 28}-{'JanFebMarAprMayJunJulAugSepOctNovDec'[3 * (i % 12):3 * (i % 12) + 3]}-{(85 + i % 40) % 100:02d}",
              CODES[i % len(CODES)], i % 3 != 0) for i in range(13, 13 + 60)]
     pages = ((PAGE1, shifts[0]), (PAGE2, shifts[1]), (many[:30], shifts[0] + 1), (many[30:], shifts[1] - 1))
     p = SEN.parse(hal_text(pages), 2026)
@@ -114,15 +114,18 @@ def test_dates_statuses_and_rejects():
     assert [(r["sen"], r["doh"], r["status"]) for r in p["rows"]] == [
         (1, "1986-03-03", "A"), (6, "1989-05-08", "ZZZ"), (7, "1989-05-08", ""), (8, "1989-05-08", "A")]
     assert p["rejects"] == [("future-doh", 7), ("bad-date", 8), ("bad-date", 9), ("no-date", 10),
-                            ("status-unknown", 11), ("tail-unknown-token", 13)]
-    assert SEN.parse(t + row(1, "1-Jun-26") + "\n", 2024)["rows"][0]["doh"] == "1926-06-01"  # the century rule
+                            ("status-unknown", 11)] + [("sen-gap", 11)] * 4 + [("tail-unknown-token", 13)]
+    # review fix: the century comes from the printed Effective date (2026), not the year given; with no date in the
+    # file, the year given sets it, and a 1926 DOH (100 years of longevity) is not read
+    assert SEN.parse(t + row(1, "1-Jun-26") + "\n", 2024)["rows"][0]["doh"] == "2026-06-01"
+    assert SEN.parse(_header(0) + "\n" + row(1, "1-Jun-26") + "\n", 2024)["rejects"] == [("bad-date", 2)]
 
 
 def test_header_order_and_no_header():
     rows = "\n".join(_row(r, 0) for r in PAGE1)
     swapped = "*   Sen #     Employee #      Name                    DOH      Remarks"
     p = SEN.parse(swapped + "\n" + rows + "\n", 2026)
-    assert p["rows"] == [] and {r for r, _ in p["rejects"]} == {"header-order"} and len(p["rejects"]) == len(PAGE1)
+    assert p["rows"] == [] and {r for r, _ in p["rejects"]} == {"header-order-hal"} and len(p["rejects"]) == len(PAGE1)
     assert not SEN.hal_header_order_ok(swapped) and SEN.hal_header_order_ok(_header(0))
     assert SEN.hal_header_order_ok("Sen #   Name   Employee #   DOH")  # no Remarks column, no '*'
     assert SEN.parse(rows + "\n", 2026)["rows"] == []  # rows with no header above them are not read
@@ -138,9 +141,9 @@ def test_the_typed_list_date_wins_and_the_printed_one_is_used_otherwise():
 
 def test_json_and_find():
     d = SEN.to_json(SEN.parse(hal_text()), "seniority_2026-11-14.pdf", "2026-11-14T09:00:00-10:00")
-    assert (d["count"], d["newest_doh"], d["rejects"], d["parser"]) == (12, "2026-06-01", 0, SEN.PARSER)
+    assert (d["count"], d["newest_doh"], d["rejects"], d["notes"], d["parser"]) == (12, "2026-06-01", 0, {}, SEN.PARSER)
     assert d["pilots"]["10005"] == {"sen": 5, "name": "Doe Jr., Robert K.", "last": "Doe Jr.", "doh": "1988-06-02",
-                                    "seat": "", "equip": "", "status": "LOA"}
+                                    "seat": "", "equip": ""}  # review fix: no Remarks code per pilot
     assert d["pilots"]["9011"]["sen"] == 11
     assert SEN.find(d, "010005")["sen"] == 5
     assert SEN.find(d, "", "DOE JR, ROBERT")["sen"] == 5 and SEN.find(d, "", "Doe, Robert")["sen"] == 5  # Jr. or not
@@ -152,7 +155,8 @@ def test_json_and_find():
 def test_the_old_list_rows_carry_no_status(fx):
     p = SEN.parse(fx("seniority_synthetic.txt"), 2026)
     assert {r["status"] for r in p["rows"]} == {""}
-    assert all("status" not in rec for rec in SEN.to_json(p, "s.pdf", "2026-11-06T09:00:00-10:00")["pilots"].values())
+    d = SEN.to_json(p, "s.pdf", "2026-11-06T09:00:00-10:00")
+    assert all("status" not in rec for rec in d["pilots"].values()) and "statuses" not in d
 
 
 def test_a_malformed_wide_line_fails_fast():
@@ -168,9 +172,9 @@ def test_a_malformed_wide_line_fails_fast():
     assert {r for r, _ in p["rejects"]} <= {"no-date", "no-match", "too-long"} and len(p["rejects"]) == 1200
 
 
-def _up(tmp_path, monkeypatch, text, list_date=""):
+def _up(tmp_path, monkeypatch, text, list_date="", day=(2026, 11, 14)):
     monkeypatch.setattr(web, "UPLOAD_DIR", str(tmp_path))
-    monkeypatch.setattr(web, "_hst_now", lambda: dt.datetime(2026, 11, 14, 9, 30, tzinfo=HST))
+    monkeypatch.setattr(web, "_hst_now", lambda: dt.datetime(*day, 9, 30, tzinfo=HST))
     monkeypatch.setattr(web.subprocess, "run", _fake_pdftotext(text))
     fields = {"month": "", "kind": "seniority"}
     if list_date:
@@ -185,7 +189,7 @@ def test_the_settings_page_takes_the_union_list(tmp_path, monkeypatch, caplog):
     assert "12 pilots read, list date 2026-07-01, newest date of hire on it 2026-06-01 (0 lines not read)" in r["message"]
     d = json.loads((tmp_path / "seniority.json").read_text())
     assert (d["source"], d["count"], d["list_date"], d["file"]) == ("list", 12, "2026-07-01", "seniority_2026-11-14.pdf")
-    assert d["pilots"]["10002"]["status"] == "SLOA" and d["pilots"]["10002"]["seat"] == ""
+    assert "status" not in d["pilots"]["10002"] and d["pilots"]["10002"]["seat"] == "" and d["statuses"]["SLOA"] == 1
     assert "Doe" not in caplog.text and "1986" not in caplog.text and "10001" not in caplog.text
     r = _up(tmp_path, monkeypatch, hal_text(), list_date="2026-07-15")  # a typed date wins over the printed one
     assert r["ok"] and json.loads((tmp_path / "seniority.json").read_text())["list_date"] == "2026-07-15"
@@ -252,7 +256,7 @@ def test_the_award_seat_fills_in_and_an_award_on_top_keeps_the_list(W, tmp_path,
     aw.update(source="award 2026-12", award_month="2026-12")
     out = SEN.combine(dict(lst, source="list"), aw)
     assert (out["source"], out["carried"], out["count"]) == ("award 2026-12", 12, 38)
-    assert SEN.find(out, "10005", "Doe Jr., Robert")["status"] == "LOA" and SEN.find(out, "20003")["seat"] == ""
+    assert SEN.find(out, "10005", "Doe Jr., Robert")["doh"] == "1988-06-02" and SEN.find(out, "20003")["seat"] == ""
 
 
 def test_the_watcher_reads_a_union_list_text_copy_at_start(W, tmp_path, monkeypatch):
@@ -270,4 +274,161 @@ def test_the_watcher_reads_a_union_list_text_copy_at_start(W, tmp_path, monkeypa
     W.seniority_refresh()
     d = json.loads((up / "seniority.json").read_text())
     assert (d["count"], d["list_date"], d["parser"], d["rejects"]) == (12, "2026-07-01", SEN.PARSER, 0)
-    assert d["pilots"]["10003"]["status"] == "MLOA" and d["uploaded_at"] == "2026-11-14T09:30:00-10:00"
+    assert d["statuses"]["MLOA"] == 1 and "status" not in d["pilots"]["10003"]
+    assert d["uploaded_at"] == "2026-11-14T09:30:00-10:00"
+
+
+# ---------------------------------------------------------------- 1.7.5.1 review fixes (made-up rows only)
+def _page(rows, eff="Effective July 1, 2026 (Rev. 1)"):
+    return "\n".join(_title(28, eff) + [_header(0)] + rows) + "\n"
+
+
+def _r(sen, name="Doe, Jane A.", doh="3-Mar-86", st="A"):
+    return _row((sen, name, str(10000 + sen), doh, st, True), 0)
+
+
+def test_the_century_comes_from_the_printed_list_date(tmp_path, monkeypatch):
+    """Review fix: the union list prints every DOH as D-Mon-YY. The century comes from the list's own Effective date
+    (else the typed date, else the upload year): the Jan 1, 2027 list uploaded on Dec 28, 2026 reads '1-Jan-27' as
+    2027, and a typed date a year off does not turn this year's hires into 1926 (the page says the dates differ)."""
+    text = _page([_r(1), _r(2, "Roe, John C.", "1-Jan-27")], "Effective January 1, 2027 (Rev. 1)")
+    r = _up(tmp_path, monkeypatch, text, day=(2026, 12, 28))
+    d = json.loads((tmp_path / "seniority.json").read_text())
+    assert r["ok"] and (d["list_date"], d["pilots"]["10002"]["doh"], d["rejects"]) == ("2027-01-01", "2027-01-01", 0)
+    assert "Check the list date" not in r["message"]
+    r = _up(tmp_path, monkeypatch, _page([_r(1), _r(2, "Roe, John C.", "1-Jun-26")]), list_date="2025-07-01")
+    d = json.loads((tmp_path / "seniority.json").read_text())
+    assert r["ok"] and (d["list_date"], d["pilots"]["10002"]["doh"], d["rejects"]) == ("2025-07-01", "2026-06-01", 0)
+    assert "Check the list date: the PDF prints 2026-07-01, the typed 2025-07-01 is kept." in r["message"]
+    # the Watcher's re-read of a text copy at start takes the same path (web.seniority_read)
+    (tmp_path / "x.txt").write_text(text, encoding="utf-8")
+    p = web.seniority_read(str(tmp_path / "x.txt"), "2026-12-28T09:30:00-10:00")
+    assert [r["doh"] for r in p["rows"]] == ["1986-03-03", "2027-01-01"] and p["rejects"] == []
+
+
+def test_a_doh_the_list_cannot_hold_is_not_read():
+    """Review fix: a pilot retires at 65, so a DOH 60 years or more before the list is a misread ('bad-date'), never
+    decades of longevity. With no date in the file, the year given (typed, else the upload's) sets the century."""
+    t = "\n".join([_header(0), _r(1, doh="1-Jun-26"), _r(2, doh="1-Jun-67"), _r(3, doh="1-Jun-66"),
+                   _r(4, doh="3-Mar-1950")]) + "\n"
+    p = SEN.parse(t, 2026)
+    assert [(r["sen"], r["doh"]) for r in p["rows"]] == [(1, "2026-06-01"), (2, "1967-06-01")]
+    assert p["rejects"] == [("bad-date", 4), ("bad-date", 5)]
+    p = SEN.parse(t, 2025)  # 1-Jun-26 on a 2025 list would be 1926: not read (1966 is 59 years before it: read)
+    assert [r["sen"] for r in p["rows"]] == [2, 3]
+    assert p["rejects"] == [("bad-date", 2), ("sen-gap", 3), ("bad-date", 5)]  # sen 1 not read: a number missing
+    old = ("SEN   NAME, Initial   EMP #   ALPA #   LAST NAME   FIRST NAME   DOH   DOR   EQUIP   SEAT\n"
+           "  1  DOE, J.  10001  1000001  DOE  JANE  3/1/1950  Mar-55  330  FO\n"
+           "  2  ROE, J.  10002  1000002  ROE  JOHN  3/1/1991  Mar-56  330  CA\n")
+    p = SEN.parse(old, 2026)  # the older list too
+    assert [r["sen"] for r in p["rows"]] == [2] and p["rejects"] == [("bad-date", 2)]
+
+
+def test_other_marks_are_read_and_a_missing_number_is_reported():
+    """Review fix: a changed-number mark other than one leading '*' ('**', a dagger, '4*') still reads the row; a dated
+    line under the header that is not a row is counted as not read ('no-match'), never skipped; a seniority number
+    missing between 1 and the last one read is reported ('sen-gap', a note: the union list has no gaps)."""
+    rows = [_r(1), "**" + _r(2, "Roe, John C.")[1:], "\u2020" + _r(3, "Poe, Mary L.")[1:],
+            _r(4, "Moe, Kimo").replace("     4 ", "    4* ", 1), _r(5, "Loe, Lee"), _r(7, "Noe, Nina"),
+            "x" + _r(8, "Zoe, Zed")[1:], " " * 27 + "Effective 1-Jul-26 (Rev. 2)"]  # a dated title: not a row
+    p = SEN.parse(_page(rows), 2026)
+    assert [r["sen"] for r in p["rows"]] == [1, 2, 3, 4, 5, 7]
+    assert p["rejects"] == [("sen-gap", 11), ("no-match", 12)]
+    d = SEN.to_json(p, "s.pdf", "2026-11-14T09:00:00-10:00")
+    assert (d["count"], d["rejects"], d["notes"]) == (6, 1, {"sen-gap": 1})
+    assert SEN.parse(hal_text(), 2026)["rejects"] == []  # a list numbered 1..n has no gap
+
+
+def test_the_union_lists_end_words_do_not_end_an_old_layout_list():
+    """Review fix: 'removed from the list' and 'STATUS LEGEND' end the rows of a union list only; an older SEN / EMP /
+    DOH list with such a line mid page reads every row as 1.7.5 did."""
+    hdr = "SEN   NAME, Initial   EMP #   ALPA #   LAST NAME   FIRST NAME   DOH   DOR   EQUIP   SEAT\n"
+    r1 = "  1  DOE, J.  10001  1000001  DOE  JANE  3/1/1990  Mar-55  330  FO\n"
+    r2 = "  2  ROE, J.  10002  1000002  ROE  JOHN  3/1/1991  Mar-56  330  CA\n"
+    for mid in ("STATUS LEGEND: CA captain, FO first officer\n", "Pilots removed from the list this month: none\n",
+                "Employee #  Name\n"):
+        p = SEN.parse(hdr + r1 + mid + r2, 2026)
+        assert [r["sen"] for r in p["rows"]] == [1, 2] and p["rejects"] == [], mid
+
+
+def test_a_union_list_in_another_column_order_is_refused_with_its_own_rule(tmp_path, monkeypatch):
+    """Review fix: the refusal names the union list's column order, not the older list's EMP # / ALPA # rule."""
+    swapped = "*   Sen #     Employee #      Name                    DOH      Remarks"
+    text = "\n".join(_title(28) + [swapped] + [_row(r, 0) for r in PAGE1]) + "\n"
+    assert {x for x, _ in SEN.parse(text, 2026)["rejects"]} == {"header-order-hal"}
+    r = _up(tmp_path, monkeypatch, text)
+    assert not r["ok"] and "Sen #, Name, Employee #, DOH, Remarks in that order" in r["message"]
+    assert "ALPA" not in r["message"] and not (tmp_path / "seniority.json").exists()
+
+
+@pytest.mark.parametrize("junk", ["removed from the " * 6000, "Sen # Employee " * 6000, "SEN EMP " * 6000,
+                                  "*   Sen #   Name" + " " * 100000, "  12" + " " * 100000 + "x"])
+def test_a_long_line_fails_fast(junk):
+    """Review fix: a line longer than MAX_LINE is set aside before the section, header and end checks (a 100 KB line
+    took seconds; a 1 MB one would take minutes in the upload lock); a numbered one is counted ('too-long')."""
+    t = time.perf_counter()
+    p = SEN.parse(_header(0) + "\n" + junk + "\n", 2026)
+    SEN.list_date(junk + "\n")
+    assert time.perf_counter() - t < 0.5 and p["rows"] == []
+    assert [x for x, _ in p["rejects"]] == (["too-long"] if junk.startswith("  12") else [])
+
+
+def test_blank_lines_fail_fast():
+    """Review fix: the header search in the cover text no longer spans lines (2,000 blank lines took 12 s)."""
+    t = time.perf_counter()
+    SEN.list_date("\n" * 20000 + "x\n")
+    SEN.parse(" \n" * 20000, 2026)
+    assert time.perf_counter() - t < 0.5
+
+
+def test_a_pilots_status_is_not_stored_and_the_files_are_private(tmp_path, monkeypatch):
+    """Review fix: nothing reads a pilot's Remarks code (SLOA is sick leave, MLOA military leave), so seniority.json
+    keeps only the count per code; the seniority files are readable by this app only, as the contact list is."""
+    import os
+    import stat
+    mask = os.umask(0o022)
+    try:
+        assert _up(tmp_path, monkeypatch, hal_text())["ok"]
+        d = json.loads((tmp_path / "seniority.json").read_text())
+        assert all("status" not in v for v in d["pilots"].values())
+        assert d["statuses"] == {"A": 4, "ALPA": 1, "EXEC": 1, "FUR": 1, "LOA": 1, "MLOA": 1, "MRET": 1, "PESL": 1,
+                                 "SLOA": 1}
+        blocks = ["A332FO PBS BIDLINE AWARD"] + [f"{i:05d} / {20000 + i}   ROE{chr(65 + i % 26)}, JOHN    DOH 01/{i:02d}/95"
+                                                 for i in range(1, 27)]
+        (tmp_path / "2026-12_award.txt").write_text("\n".join(blocks) + "\n")
+        info = web.award_seniority(str(tmp_path / "2026-12_award.txt"), "2026-12", "2026-12_award.pdf",
+                                   "2026-11-20T09:00:00-10:00")
+        assert info["decision"] == "on-top"
+        modes = {f.name: stat.S_IMODE(f.stat().st_mode) for f in tmp_path.iterdir() if "seniority" in f.name}
+        assert sorted(modes) == ["seniority.json", "seniority_2026-11-14.pdf", "seniority_2026-11-14.txt",
+                                 "seniority_award.json", "seniority_list.json"]
+        assert set(modes.values()) == {0o600}, modes
+    finally:
+        os.umask(mask)
+
+
+def test_a_row_read_with_a_note_is_not_a_line_not_read(tmp_path, monkeypatch):
+    """Review fix: 'lines not read' counts only lines that gave no pilot; a row read with a status code the legend does
+    not list (or another note) is said apart, on the page and on the uploads card."""
+    rows = [r if r[0] != 4 else (4, "Moe, Kimo", "10004", "8-May-89", "RET", True) for r in PAGE1]
+    r = _up(tmp_path, monkeypatch, hal_text(pages=((rows, 0), (PAGE2, 3))))
+    note = "1 row read with a status code the legend does not list"
+    assert r["ok"] and ("12 pilots read, list date 2026-07-01, newest date of hire on it 2026-06-01 (0 lines not read; "
+                        f"{note})") in r["message"]
+    s = web.uploads_json("x")["seniority"]
+    assert (s["rejects"], s["note"]) == (0, note)
+    assert note in web._seniority_status()
+    p = SEN.parse(hal_text(pages=((rows, 0), (PAGE2, 3))), 2026)
+    assert [x for x, _ in p["rejects"]] == ["status-unknown"]  # parse still lists every reason
+
+
+def test_the_name_lookup_takes_a_suffix_and_a_curly_apostrophe(W, tmp_path, monkeypatch):
+    """Review fix: the union list prints 'Last Jr., First', so the lookup compares last names without Jr / Sr / II
+    ('Doe, Robert' finds 'Doe Jr., Robert K.'), and takes the apostrophe a phone types (O\u2019Doe)."""
+    _list_on_file(W, tmp_path, monkeypatch)
+    assert [h["name"] for h in W.name_lookup("Doe, Robert")[0]] == ["Doe Jr., Robert K."]
+    assert [h["name"] for h in W.name_lookup("Doe")[0]] == ["Doe Jr., Robert K.", "Doe, Jane A."]
+    assert [h["name"] for h in W.name_lookup("Doe Jr., Rob")[0]] == ["Doe Jr., Robert K."]
+    assert [h["name"] for h in W.name_lookup("O\u2019Doe")[0]] == ["O'Doe, Sean P."]
+    assert [h["name"] for h in W.name_lookup("O'Doe, Sean")[0]] == ["O'Doe, Sean P."]
+    assert W.name_lookup("Do*")[0] == []  # still letters only

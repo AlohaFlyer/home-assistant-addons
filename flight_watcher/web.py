@@ -148,7 +148,9 @@ def seniority_file():
 
 def seniority_read(txt_path, uploaded_at, list_date=""):
     """Parse a seniority list text copy (pdftotext -layout): seniority.parse's dict (rows, rejects, ...). The century
-    of a two-digit year comes from the list date, else the upload's year."""
+    of a two-digit year comes from the list date the file prints (1.7.5.1 review: the union list's Effective date, so
+    a Jan 1 list uploaded in December, or a typed date a year off, keeps this year's hires), else the typed list
+    date, else the upload's year (seniority.parse)."""
     ref = int(list_date[:4]) if list_date else int(uploaded_at[:4])
     return SEN.parse(open(txt_path, encoding="utf-8", errors="replace").read(), ref)
 
@@ -156,6 +158,10 @@ def seniority_read(txt_path, uploaded_at, list_date=""):
 # 1.7.5.1 (Ryan, Nov 14: "what format does it need? ... it is what the union provides"): the lists the reader takes
 SEN_FORMATS = ("It reads the company's Pilot's System Seniority List PDF as the union posts it (Sen #, Name, "
                "Employee #, DOH, Remarks) or the older SEN / EMP / DOH list")
+# 1.7.5.1 review: a refused header's column rule, by the layout it belongs to (seniority.parse's reject reasons)
+SEN_ORDER = (("header-order-hal", "Sen #, Name, Employee #, DOH, Remarks in that order on the union's list"),
+             ("header-order", "EMP # before ALPA #, and DOH as the first date column, on the older SEN / EMP / DOH "
+                              "list"))
 SEN_LIST = "seniority_list.json"    # 1.4.5: the dedicated list, kept while an award's dates of hire are on top
 SEN_AWARD = "seniority_award.json"  # 1.4.5: the newest award's dates of hire (25 pilot rows or more)
 HST = timezone(timedelta(hours=-10))
@@ -175,9 +181,13 @@ def _load_json(path):
 
 
 def _dump(path, d):
+    """Write a seniority JSON file atomically. 1.7.5.1 review: mode 600 (readable by this app only, as the contact
+    list is): seniority.json, seniority_list.json and seniority_award.json hold every pilot's name and date of hire."""
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(d, f, separators=(",", ":"))
+    _private(tmp)  # a .tmp left by an older version keeps its mode through O_TRUNC
     os.replace(tmp, path)
 
 
@@ -288,8 +298,27 @@ def seniority_summary(view):
     return {"pilots": view.get("count", 0), "list_date": view.get("list_date") or "",
             "uploaded_at": view.get("uploaded_at") or "", "source": view.get("source") or "list",
             "file": view.get("file") or "", "as_of": SEN.as_of(view), "newest_doh": view.get("newest_doh") or "",
-            "rejects": view.get("rejects", 0), "carried": view.get("carried", 0),
+            "rejects": view.get("rejects", 0), "note": _sen_notes(view.get("notes")), "carried": view.get("carried", 0),
             "base": {"source": base.get("source"), "as_of": base.get("as_of"), "file": base.get("file")} if base else None}
+
+
+def _plural(n, one, many):
+    return f"{n} {one if n == 1 else many}"
+
+
+def _sen_notes(notes):
+    """1.7.5.1 review: the notes on rows that were read (seniority.is_note), as one phrase; '' for none. Never counted
+    as lines not read."""
+    notes = notes if isinstance(notes, dict) else {}
+    n = lambda *ks: sum(int(v or 0) for k, v in notes.items() if k in ks)  # noqa: E731
+    conflicts = sum(int(v or 0) for k, v in notes.items() if str(k).startswith("conflict-"))
+    parts = [(n("status-unknown"), "row read with a status code the legend does not list",
+              "rows read with a status code the legend does not list"),
+             (n("tail-unknown-token"), "row read with a column this version does not know",
+              "rows read with a column this version does not know"),
+             (conflicts, "repeat listing that differs from the first", "repeat listings that differ from the first"),
+             (n("sen-gap"), "seniority number missing from the list", "seniority numbers missing from the list")]
+    return "; ".join(_plural(k, one, many) for k, one, many in parts if k)
 
 
 def _seniority_line(d):
@@ -299,8 +328,9 @@ def _seniority_line(d):
         when = f"as of {SEN.as_of(d)} (the award's bid period)"
     else:
         when = "no list date in the file"
+    note = _sen_notes(d.get("notes"))
     return (f"{d.get('count', 0)} pilots read, {when}, newest date of hire on it {d.get('newest_doh') or '?'}"
-            f" ({d.get('rejects', 0)} lines not read)")
+            f" ({d.get('rejects', 0)} lines not read{'; ' + note if note else ''})")
 
 
 def _view_note(view):
@@ -471,10 +501,13 @@ def _save_seniority(data, fields, log):
     kb = len(data) // 1024
     kept = "the list on file is kept."
     try:
-        with open(tmp, "wb") as f:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # 1.7.5.1 review: this app only, as contacts
+        with os.fdopen(fd, "wb") as f:
             f.write(data)
+        _private(tmp)
         try:
             subprocess.run(["pdftotext", "-layout", tmp, tmp[:-4] + ".txt"], check=True, timeout=120)
+            _private(tmp[:-4] + ".txt")
         except Exception as e:
             log.info("upload: seniority list (%d KB) gave no text copy; not kept", kb)
             return {"ok": False, "message": f"Not kept: {name}.pdf ({kb} KB) gave no text copy ({_why_no_text(e)}), so "
@@ -487,10 +520,11 @@ def _save_seniority(data, fields, log):
             why = {r for r, _ in parsed.get("rejects") or []}
             log.info("upload: seniority list (%d KB) read no pilot rows (%d lines not read); not kept", kb,
                      len(parsed.get("rejects") or []))
-            if "header-order" in why:
+            rules = [rule for reason, rule in SEN_ORDER if reason in why]  # 1.7.5.1 review: the rule of that layout
+            if rules:
                 return {"ok": False, "message": f"Not kept: {name}.pdf ({kb} KB). No pilot rows were read: its header "
-                        "puts the columns in an order this version does not read (it needs EMP # before ALPA #, and "
-                        f"DOH as the first date column); {kept}"}
+                        f"puts the columns in an order this version does not read (it needs {'; '.join(rules)}); "
+                        f"{kept}"}
             return {"ok": False, "message": f"Not kept: {name}.pdf ({kb} KB). No pilot rows were found in it (is it "
                                             f"the pilot seniority list? {SEN_FORMATS}); {kept}"}
         os.replace(tmp, final)
@@ -504,7 +538,11 @@ def _save_seniority(data, fields, log):
                 pass
     log.info("upload: seniority list read, %d pilots, %d lines not read; saved (%d KB)", d["count"], d["rejects"], kb)
     view = _load_json(seniority_file())
-    return {"ok": True, "message": f"Saved {name}.pdf ({kb} KB). {_seniority_line(d)}.{_view_note(view)}",
+    printed = parsed.get("list_date") or ""
+    # 1.7.5.1 review: a typed date wins as the list date; when the PDF prints another one, say so
+    check = (f" Check the list date: the PDF prints {printed}, the typed {given} is kept." if given and printed
+             and given != printed else "")
+    return {"ok": True, "message": f"Saved {name}.pdf ({kb} KB). {_seniority_line(d)}.{check}{_view_note(view)}",
             "file": name + ".pdf", "seniority": {"view": seniority_summary(view)}}
 
 

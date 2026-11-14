@@ -3549,6 +3549,8 @@ def seniority_refresh():
         f = own if own in lists else lists[-1]
         path = os.path.join(UPLOADS_SHARED, f)
         if fresh(f, path):
+            for x in (path, path[:-4] + ".pdf"):  # 1.7.5.1 review: a list's files are readable by this app only
+                web._private(x)
             same = (lst or {}).get("file") == f[:-4] + ".pdf"
             try:
                 d = web.seniority_write(path, f[:-4] + ".pdf", lst.get("uploaded_at") if same else f"{f[10:20]}T00:00:00",
@@ -6356,6 +6358,14 @@ def _nkey(s):
     return re.sub(r"[^A-Z]", "", str(s or "").upper())
 
 
+def _lkey(s):
+    """1.7.5.1 review: a last name's lookup key, letters only with a Jr / Sr / II / III / IV word left out ('Doe Jr.'
+    -> 'DOE', as seniority._last), so 'Doe, Robert' finds the union list's 'Doe Jr., Robert K.'; a name made only of
+    such words keeps them."""
+    words = re.sub(r"[^A-Z ]", "", str(s or "").upper().replace("-", " ")).split()
+    return "".join([w for w in words if w not in SEN.SUFFIX] or words)
+
+
 def name_directory():
     """1.6.2 (item 11): [{emp, last, first, name, seat}] of every pilot on the files every instance already receives:
     the shared seniority list (seniority.json: 'Last, First', seat) and the PBS award texts (<YYYY-MM>_award.txt: the
@@ -6404,18 +6414,20 @@ def name_directory():
 def name_lookup(q):
     """1.6.2 (item 11): (matches, why) for a typed name on a pilot instance: at least LOOKUP_MIN_LETTERS letters of
     the last name, letters only (no wildcard, no listing), 'Last' or 'Last, First'. A last name that matches exactly
-    wins over longer ones that start with it. why is '' or the reason no list is given."""
+    wins over longer ones that start with it. why is '' or the reason no list is given. 1.7.5.1 review: last names
+    are compared without Jr / Sr / II (_lkey), and the curly apostrophe a phone types is taken as "'"."""
+    q = str(q or "").replace("\u2019", "'").replace("\u2018", "'")
     if not LOOKUP_NAME_RE.fullmatch(q):
         return [], "Type letters only: a last name, or Last, First (or the employee number)."
     last, _, first = (x.strip() for x in q.partition(","))
-    lk, fk = _nkey(last), _nkey(first)
+    lk, fk = _lkey(last), _nkey(first)
     if len(lk) < LOOKUP_MIN_LETTERS:
         return [], f"Type at least {LOOKUP_MIN_LETTERS} letters of the last name (or the employee number)."
     rows = name_directory()
-    exact = [r for r in rows if _nkey(r["last"]) == lk]
+    exact = [r for r in rows if _lkey(r["last"]) == lk]
     # 1.6.2 review: the start of a last name matches only from LOOKUP_PREFIX_MIN letters on (3-letter prefixes walked
     # the whole roster); a whole last name always does, and wins over longer ones that start with it
-    hits = exact or ([r for r in rows if _nkey(r["last"]).startswith(lk)] if len(lk) >= LOOKUP_PREFIX_MIN else [])
+    hits = exact or ([r for r in rows if _lkey(r["last"]).startswith(lk)] if len(lk) >= LOOKUP_PREFIX_MIN else [])
     if fk:
         hits = [r for r in hits if not r["first"] or _nkey(r["first"]).startswith(fk)]
     hits.sort(key=lambda r: (r["name"], r["emp"]))
