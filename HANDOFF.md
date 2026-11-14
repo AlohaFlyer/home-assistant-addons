@@ -1,6 +1,14 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-13, release 1.7.2 live)
+# HANDOFF: Flight Watcher (refreshed 2026-11-14, release 1.7.3 live)
 
-State (Nov 13): app **1.7.2** on Pako HI since 2026-11-13 15:40 UTC (05:40 HST), both instances, with HOM 1.8.2 live
+State (Nov 14): app **1.7.3** on Pako HI since 2026-11-14 05:56 UTC (Nov 13 19:56 HST), both instances (backup before
+it: `55761d28`, Flight Watcher 1.7.2 data). 1.7.3 = the fixes the 1.7.2 post-deploy check and the F#55 live run found
+(all older than 1.7.2): crew index probes of lettered copies that do not exist are misses, not failed pairing reads (they
+stopped every pairing read for 30 min about 4 times a day), resumed and parked; a pilot's log masks crew names and
+employee numbers in every form the Watcher logs them and logs page text only through `page_log`; the state note drops a
+pause when it ends (seen live: cleared at 20:13 HST, a minute after the stop); a plain Pilot card line for FLICA's error
+page. The Working Flight view holds the layover card only (Ryan, Nov 13). CHANGELOG 1.7.3.
+
+Before that (Nov 13): app **1.7.2** on Pako HI since 2026-11-13 15:40 UTC (05:40 HST), both instances, with HOM 1.8.2 live
 since Nov 12 (portal contract 1 revision 3 on both halves). 1.7.2 = contract 1 revision 3 (pilot PDF uploads, the
 `bid_calendar` and `schedule_unread` pilot events, the `pilot/set` shape, `recall/set` off the portal, the CrewTrac
 refusal block as an HMAC), the card loader that picks up new cards on an open page, van alert settings (switch and two
@@ -81,11 +89,13 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
 
 ## Open items (ticket numbers)
 
-1. **Claude, after the 1.7.2 update:** the 30 min watch, then F#55 (the employee-number test lookup on James's
-   instance). From the 1.7.2 checks: the log's "charter: CrewTrac block records keyed with this instance's own key"
-   once on Ryan's instance, James's manifest at revision 3, his portal's pilot uploads card at 390 px light and dark.
-   A live upload test needs James (nobody contacts him for it) or a made-up PDF sent through the portal only with
-   Ryan's yes.
+1. **Claude, after the 1.7.3 update:** confirm the first crew index run under 1.7.3 probes without "FLICA pairing read
+   stopped" (none had run by Nov 13 20:15 HST; a check is scheduled for Nov 14 04:00 HST). F#55 ran live on Nov 14 with
+   Ryan's yes (a lookup of his own line on James's session, by name, then the pick): the path works end to end, but
+   FLICA's Schedule Lookup answers its application error page for November on every instance, so run it once more when
+   FLICA serves lookups again. Still open from the 1.7.2 checks: James's portal uploads card seen at 390 px light and
+   dark (the bundle equals git by sha256); a live upload test needs James (nobody contacts him for it) or a made-up PDF
+   sent through the portal only with Ryan's yes.
 2. **FW-0061 ntfy (Ryan chose James's own ntfy account, Nov 13):** James's saved topic fails the 1.6.2 rule (the log
    says "ntfy off: ... a topic needs at least 24 letters and digits"). The steps for him (install ntfy, his own
    account and reserved topic, Generate in his portal Settings, subscribe) are a Gmail **draft** in Ryan's account
@@ -115,6 +125,8 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
 
 ## Rollback notes
 
+- **1.7.3 to 1.7.2:** restore /data from `55761d28` or keep it: 1.7.2 ignores the `crew_variant_tries` record and the
+  `parked` / `fail` fields 1.7.3 adds to the crew variant records. The crew index probe breaker trips come back.
 - **1.7.2 to 1.7.1.1 or 1.7.1:** roll Flight Watcher back first (HOM 1.8.2 takes revision 2 and 3). Before it,
   restore /data from the backup taken before the update (`cb137ddf`), or, when CrewTrac refused the details in use
   while on 1.7.2, blank the CrewTrac password in Settings first (1.7.1 takes the HMAC records for other details and
@@ -130,6 +142,10 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
 ## Decided (do not reopen)
 
 - Ryan, Nov 12 and 13, 2026:
+  - The Working Flight view holds the layover card only (Nov 13, once the 1.7.2 loader made it show on his phone):
+    the Nov 12 stand-in markdown card and the big "Ready to update" button are gone; the card's "Update with Hark" chip
+    opens Hark for "ready".
+  - F#55: run the employee-number lookup on James's session (done Nov 14; FLICA's error page blocked the data).
   - Pay protection (PWA Definitions 57): a PAYP keeps the removed trip's exact credit (its own record, else the newest
     stored version before the PAYP; never estimated when the trip is on file), in Credit, Pay-Gross and Pay-Net,
     never in Block, Block Avail, FAR or 98/672. A trip added on PAYP days pays on top (PWA 4.R.1), and open time on
@@ -170,6 +186,7 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
 
 ## Recent releases
 
+1.7.3 Nov 14 (crew index probes no longer stop pairing reads, pilot log mask, pause note, plain FLICA error line),
 1.7.2 Nov 13 (portal contract 1 revision 3, pilot uploads, card loader, van settings, PAYP pickups), 1.7.1.1 Nov 13
 (PAYP keeps the exact credit), 1.7.1 Nov 11 (pilot read shares, bid calendar alerts, layover card and van alerts,
 FW-0042 part 2), 1.7.0 Release C (tickets on the portal), 1.6.x pilot portal and Release A.
