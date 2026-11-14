@@ -269,7 +269,7 @@ def test_at_most_two_trips_a_check_most_recent_first(W, tmp_path, monkeypatch):
     assert sorted(W.DB.get(W.CREW_VARIANT_KEY)) == ["H3992|2026-11-06", "H3993|2026-11-08"]
     assert W.crew_variants(fl, insts, rows, 50) == (4, "ok", False)
     assert {p[:5] for p, _ in _read(fl)[8:]} == {"H3991"} and len(W.DB.get(W.CREW_VARIANT_KEY)) == 3
-    # the budget: a probe cut short is not recorded, and is taken up again from its first letter
+    # the budget: a probe cut short is not recorded (1.7.3 review: its next try reads on from D)
     W.DB.put(W.CREW_VARIANT_KEY, {})
     fl2 = VarFl({})
     assert W.crew_variants(fl2, insts, rows, 3) == (3, "ok", False)
@@ -278,19 +278,18 @@ def test_at_most_two_trips_a_check_most_recent_first(W, tmp_path, monkeypatch):
 
 def test_fetch_error_leaves_the_trip_for_a_later_run(W, tmp_path, monkeypatch):
     """A fetch error ends that trip's probe without recording it: it is not tried again in this run, and the next run
-    probes it from its first letter."""
+    probes it again (1.7.3 review: the letters not read yet first, the one that failed last)."""
     _setup(W, tmp_path)
     fl = VarFl({("H3999A", "20261106"): OSError("timed out"), ("H9001", "20261120"): page("H9001", "20nov", B_LINE)})
     assert W.crew_index_check(fl) == "ok"
     assert _read(fl) == [("H3999A", "20261106"), ("H9001", "20261120")]
     assert "H3999|2026-11-06" not in (W.DB.get(W.CREW_VARIANT_KEY) or {})
     assert "crew_run" not in W.S  # the run ended (its queue ran dry)
-    fl.pages[("H3999A", "20261106")] = ERR
     fl.pages[("H3999B", "20261106")] = page("H3999B", "06nov", B_LINE)
     W.FLAGS["crew_scan"] = True
     n0 = len(fl.urls)
     W.crew_index_check(fl)
-    assert _read(fl)[n0:n0 + 2] == [("H3999A", "20261106"), ("H3999B", "20261106")]
+    assert _read(fl)[n0:n0 + 1] == [("H3999B", "20261106")]  # B names every seat: A is not read again
     assert W.DB.get(W.CREW_VARIANT_KEY)["H3999|2026-11-06"]["found"] == "H3999B"
 
 
@@ -417,3 +416,229 @@ def test_crew_mask_keeps_seats_and_numbers_only():
     assert CI.crew_mask("no crew line here") == "" and CI.crew_mask(None) == ""
     assert CI.pilot_seats(OPEN3) == 3 and CI.pilot_seats(OPEN3 + [{"pos": "FA", "name": "x", "emp": "1"}]) == 3
     assert CI.named_pilots(NAMED + OPEN2) == {"10005", "10006"}
+
+
+# ---------------------------------------------------------------- 1.7.3: a lettered copy that does not exist is a miss
+# a FLICA page no parser knows (synthetic): it still stops the pairing path at once, on a probe too
+UNAVAIL = ("<html><head><title>503 Service Temporarily Unavailable</title></head><body><h1>Service Temporarily "
+           "Unavailable</h1></body></html>")
+
+
+def _miss(pid, ddmon):
+    """FLICA's answer for a lettered copy that does not exist (synthetic): the page names the id and date, and holds no
+    report, no crew and no credit (page_verdict 'error')."""
+    return f"<html><p>flica.net - mobile pairing pairing details {pid.lower()}:{ddmon}</p></html>"
+
+
+def _real_fl(W, monkeypatch, pages):
+    """W.Flica (its real _load / _loaded, so the read-path breaker judges every page) with a fake browser context:
+    pages[(pid, 'YYYYMMDD')] is the page (an Exception is raised); anything else is the miss page. .urls keeps every
+    load that reached the context (FLICA). The gate's pacing is left out (the probe sleeps 1.5 to 3.5 s itself)."""
+    import types
+    monkeypatch.setattr(W.GATE, "acquire", lambda keep=0, abort=None: 0.0)
+    fl = W.Flica.__new__(W.Flica)
+    fl.urls = []
+
+    def get(url, timeout=None):
+        fl.urls.append(url)
+        pid, d = url.split("PID=")[1].split("&")[0], url.split("DATE=")[1][:8]
+        v = pages.get((pid, d), _miss(pid, datetime.strptime(d, "%Y%m%d").strftime("%d%b").lower()))
+        if isinstance(v, Exception):
+            raise v
+        return types.SimpleNamespace(text=lambda: v)
+    fl.ctx = types.SimpleNamespace(request=types.SimpleNamespace(get=get))
+    return fl
+
+
+def _setup9646(W, tmp_path):
+    """November awarded (H9001 Nov 20 names crew); H9646 Nov 6-8 read after departure with every seat OPEN."""
+    _file(tmp_path / "www", "2026-11", [_row("H9646", "6", rel=2), _row("H9001", "20", rel=0)])
+    W.DB.crew_put("H9646|2026-11-06", "H9646", "2026-11-06", "2026-11-08", "HNL-LAX-HNL", OPEN2, "2026-11-07T00:00:00",
+                  "ok")
+    W.DB.crew_put("H9001|2026-11-20", "H9001", "2026-11-20", "2026-11-20", "HNL-LAX-HNL", NAMED, "2026-11-09T00:00:00",
+                  "ok")
+    return W.crew_instances()
+
+
+def test_missing_lettered_copies_never_trip_the_pairing_breaker(W, tmp_path, monkeypatch, caplog):
+    """Live Nov 12-13: H9646A..D do not exist; each answers a page naming the id with nothing on it. Before 1.7.3 the
+    third such page stopped every pairing read for 30 min and D was refused. Now all four are read as misses, the
+    breaker counts none of them, and the probe is recorded (found '')."""
+    insts = _setup9646(W, tmp_path)
+    fl = _real_fl(W, monkeypatch, {})
+    url = f"{W.BASE}/full/mobilepairing.cgi?PID=H9646A&DATE=20261106&FROM=MobileOpentimePot&CurrentPage=1"
+    assert W.page_verdict("pairing", url, _miss("H9646A", "06nov")) == "error"  # the shape seen live
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        assert W.crew_variants(fl, insts, W.DB.crew_rows(), 50) == (4, "ok", False)
+    assert [p for p, _ in _read(fl)] == ["H9646A", "H9646B", "H9646C", "H9646D"]
+    assert W.BRK.allow("pairing") and not (W.S.get("breakers") or {}).get("pairing", {}).get("fails")
+    assert "read stopped" not in caplog.text and "probe of" not in caplog.text
+    assert W.DB.get(W.CREW_VARIANT_KEY)["H9646|2026-11-06"]["found"] == ""
+    assert "no rebuilt copy names a pilot" in caplog.text
+
+
+def test_a_trip_probed_with_misses_is_not_probed_next_run(W, tmp_path, monkeypatch):
+    """Two crew index runs (the live path: read_guard around crew_index_check). The first probes H9646's four letters
+    (misses) and reads the queue; the second, 6 h later, loads no H9646 copy again (before 1.7.3 the breaker stopped
+    the first run, the trip was never recorded, and every run probed it again)."""
+    _setup9646(W, tmp_path)
+    fl = _real_fl(W, monkeypatch, {("H9001", "20261120"): page("H9001", "20nov", B_LINE)})
+    assert W.read_guard(W.crew_index_check, fl, default="ok", optional=True) == "ok"
+    first = _read(fl)
+    assert first[:4] == [("H9646A", "20261106"), ("H9646B", "20261106"), ("H9646C", "20261106"),
+                         ("H9646D", "20261106")] and ("H9001", "20261120") in first
+    assert "crew_run" not in W.S and W.BRK.allow("pairing")
+    later = W.time.time() + 6 * 3600
+    monkeypatch.setattr(W.BRK, "clock", lambda: later)  # a breaker stop (if any) is long over
+    W.TEST_CLOCK["t"] = datetime(2026, 11, 10, 18, 5)  # the next slot's run
+    assert W.read_guard(W.crew_index_check, fl, default="ok", optional=True) == "ok"
+    assert W.S["crew_last"]["why"] == "slot"
+    assert not [x for x in _read(fl)[len(first):] if x[0].startswith("H9646")]
+
+
+def test_a_probe_cut_short_is_parked_after_bounded_tries(W, tmp_path, monkeypatch, caplog):
+    """A probe a fetch error cuts short is left for a later run, but only VARIANT_MAX_TRIES times: then the trip is
+    recorded with what it found and not probed again (before 1.7.3 it was probed every run until it aged out). 1.7.3
+    review: the second try reads B, C and D before A again, so the trip is parked only once every letter had a try."""
+    insts = _setup9646(W, tmp_path)
+    rows = W.DB.crew_rows()
+    fl = VarFl({("H9646A", "20261106"): OSError("timed out")})
+    for i, want in enumerate((1, 4, 1)):
+        W.S["crew_run"] = {"started": f"2026-11-10T{i:02d}:00:00", "pages": 0, "why": "slot", "slot": f"r{i}"}  # new run
+        with caplog.at_level(logging.INFO, logger="flight_watcher"):
+            assert W.crew_variants(fl, insts, rows, 50) == (want, "ok", False)
+        if i == 1:
+            assert W.DB.get(W.CREW_VARIANT_TRIES_KEY) == {"H9646|2026-11-06": {"n": 2, "at": "2026-11-10T12:05:00",
+                                                                               "done": "BCD", "fail": "A"}}
+    assert [p for p, _ in _read(fl)] == ["H9646A", "H9646B", "H9646C", "H9646D", "H9646A", "H9646A"]
+    assert W.DB.get(W.CREW_VARIANT_KEY)["H9646|2026-11-06"] == {"at": "2026-11-10T12:05:00", "found": "", "v": 2,
+                                                                "parked": 3, "fail": "A"}
+    assert "H9646 2026-11-06 probe cut short 3 times, not probed again (H9646A never answered)" in caplog.text
+    W.S["crew_run"] = {"started": "2026-11-10T12:00:00", "pages": 0, "why": "slot", "slot": "r9"}
+    assert W.crew_variants(fl, insts, rows, 50) == (0, "ok", False) and len(fl.urls) == 6
+    assert W.VARIANT_MAX_TRIES == 3 and not W.DB.get(W.CREW_VARIANT_TRIES_KEY)
+
+
+def test_a_budget_cut_counts_a_try_only_for_the_trip_it_cut(W, tmp_path, monkeypatch):
+    """The budget ends a probe after B: that trip has one try and its next try reads on from C (1.7.3 review); the
+    next candidate, with no page read, has none."""
+    _file(tmp_path / "www", "2026-11", [_row("H3992", "6", rel=0), _row("H3993", "8", rel=0), _row("H9001", "20", rel=0)])
+    for pid, d in (("H3992", "06"), ("H3993", "08")):
+        W.DB.crew_put(f"{pid}|2026-11-{d}", pid, f"2026-11-{d}", f"2026-11-{d}", "", OPEN2, "2026-11-09T00:00:00", "ok")
+    W.DB.crew_put("H9001|2026-11-20", "H9001", "2026-11-20", "2026-11-20", "", NAMED, "2026-11-09T00:00:00", "ok")
+    insts, rows = W.crew_instances(), W.DB.crew_rows()
+    fl = VarFl({})
+    assert W.crew_variants(fl, insts, rows, 2) == (2, "ok", False)
+    assert [p for p, _ in _read(fl)] == ["H3993A", "H3993B"]
+    assert W.DB.get(W.CREW_VARIANT_TRIES_KEY) == {"H3993|2026-11-08": {"n": 1, "at": "2026-11-10T12:05:00", "done": "AB",
+                                                                       "fail": ""}}
+    assert W.crew_variants(fl, insts, rows, 2) == (2, "ok", False)
+    assert [p for p, _ in _read(fl)][2:] == ["H3993C", "H3993D"]
+    assert sorted(W.DB.get(W.CREW_VARIANT_KEY) or {}) == ["H3993|2026-11-08"] and not W.DB.get(W.CREW_VARIANT_TRIES_KEY)
+    assert W.crew_variants(fl, insts, rows, 2) == (2, "ok", False)
+    assert [p for p, _ in _read(fl)][-2:] == ["H3992A", "H3992B"]
+
+
+def test_a_stopped_pairing_path_ends_the_probe(W, tmp_path, monkeypatch, caplog):
+    """A page no parser knows (FLICA's 'Service Temporarily Unavailable') still stops the pairing path, on a probe
+    too, and is no answer for its letter: the trip it cut short has one try (A failed) and is not probed again in this
+    run, the probe ends there (halted, the run goes on later), and the next trip is neither read nor charged a try."""
+    _file(tmp_path / "www", "2026-11", [_row("H3992", "6", rel=0), _row("H3993", "8", rel=0), _row("H9001", "20", rel=0)])
+    for pid, d in (("H3992", "06"), ("H3993", "08")):
+        W.DB.crew_put(f"{pid}|2026-11-{d}", pid, f"2026-11-{d}", f"2026-11-{d}", "", OPEN2, "2026-11-09T00:00:00", "ok")
+    W.DB.crew_put("H9001|2026-11-20", "H9001", "2026-11-20", "2026-11-20", "", NAMED, "2026-11-09T00:00:00", "ok")
+    insts, rows = W.crew_instances(), W.DB.crew_rows()
+    fl = _real_fl(W, monkeypatch, {("H3993A", "20261108"): UNAVAIL})
+    W.S["crew_run"] = {"started": "2026-11-10T12:00:00", "pages": 0, "why": "slot", "slot": "2026-11-10T12"}
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        assert W.crew_variants(fl, insts, rows, 50) == (1, "ok", True)
+    assert [p for p, _ in _read(fl)] == ["H3993A"] and not W.BRK.allow("pairing")
+    one = {"H3993|2026-11-08": {"n": 1, "at": "2026-11-10T12:05:00", "done": "", "fail": "A"}}
+    assert W.DB.get(W.CREW_VARIANT_TRIES_KEY) == one and W.S["crew_run"]["variant_tried"] == ["H3993|2026-11-08"]
+    assert "crew index: variant probe stopped (FLICA pairing read stopped until" in caplog.text
+    # still stopped at the next chunk: nothing reaches FLICA and no trip is charged
+    assert W.crew_variants(fl, insts, rows, 50) == (0, "ok", True)
+    assert len(fl.urls) == 1 and W.DB.get(W.CREW_VARIANT_TRIES_KEY) == one and not W.DB.get(W.CREW_VARIANT_KEY)
+
+
+def test_a_real_error_page_on_a_detail_read_still_trips_the_breaker(W, tmp_path, monkeypatch, caplog):
+    """Outside a probe (a detail read, the queue's read of a package trip) a pairing page that holds nothing is still a
+    failed read: the third in a row stops the path for 30 min, also right after a probe's misses."""
+    insts = _setup9646(W, tmp_path)
+    fl = _real_fl(W, monkeypatch, {})
+    assert W.crew_variants(fl, insts, W.DB.crew_rows(), 50) == (4, "ok", False)  # misses, not counted
+    url = f"{W.BASE}/full/mobilepairing.cgi?PID=H9001&DATE=20261120&FROM=MobileOpentimePot&CurrentPage=1"
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        for _ in range(3):
+            fl.fetch(url)
+        with pytest.raises(W.GT.BreakerOpen):
+            fl.fetch(url)
+    assert not W.BRK.allow("pairing") and len(fl.urls) == 7
+    assert "FLICA pairing read stopped for 30 min" in caplog.text and "not a pairing page" in caplog.text
+
+
+# ---------------------------------------------------------------- 1.7.3 review: FLICA's error page, letters resumed
+
+
+def test_an_application_error_page_on_a_probe_is_a_miss(W, tmp_path, monkeypatch, caplog):
+    """FLICA may answer a lettered copy that does not exist with its application error page (FW-0068 counts it a miss).
+    On a probe the breaker counts it as nothing too: B, the real copy, is read in the same run and indexed. Outside a
+    probe the same page still stops the pairing path at once (a page the parser does not know)."""
+    insts = _setup9646(W, tmp_path)
+    fl = _real_fl(W, monkeypatch, {("H9646A", "20261106"): ERR, ("H9646B", "20261106"): page("H9646B", "06nov", B_LINE)})
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        assert W.crew_variants(fl, insts, W.DB.crew_rows(), 50) == (2, "ok", False)
+    assert [p for p, _ in _read(fl)] == ["H9646A", "H9646B"]
+    assert W.BRK.allow("pairing") and not (W.S.get("breakers") or {}).get("pairing", {}).get("fails")
+    assert "read stopped" not in caplog.text
+    assert W.DB.get(W.CREW_VARIANT_KEY)["H9646|2026-11-06"]["found"] == "H9646B"
+    url = f"{W.BASE}/full/mobilepairing.cgi?PID=H9001&DATE=20261120&FROM=MobileOpentimePot&CurrentPage=1"
+    fl.ctx.request.get = lambda u, timeout=None: (fl.urls.append(u), __import__("types").SimpleNamespace(
+        text=lambda: ERR))[1]
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        fl.fetch(url)
+    assert not W.BRK.allow("pairing") and "a page the parser does not know" in caplog.text
+
+
+def test_a_letter_that_failed_is_tried_after_the_letters_not_read_yet(W, tmp_path, monkeypatch):
+    """A times out on every read and B is the real copy: the next try reads B before A again, so B is found on the
+    second run (before, every try started at A and the trip was parked with B never read)."""
+    insts = _setup9646(W, tmp_path)
+    rows = W.DB.crew_rows()
+    fl = VarFl({("H9646A", "20261106"): OSError("timed out"), ("H9646B", "20261106"): page("H9646B", "06nov", B_LINE)})
+    assert W.crew_variants(fl, insts, rows, 50) == (1, "ok", False)
+    assert W.crew_variants(fl, insts, rows, 50) == (1, "ok", False)
+    assert [p for p, _ in _read(fl)] == ["H9646A", "H9646B"]
+    assert W.DB.get(W.CREW_VARIANT_KEY)["H9646|2026-11-06"] == {"at": "2026-11-10T12:05:00", "found": "H9646B", "v": 2}
+    assert not W.DB.get(W.CREW_VARIANT_TRIES_KEY)
+    assert W.crew_variants(fl, insts, rows, 50) == (0, "ok", False) and len(fl.urls) == 2
+
+
+def test_a_probe_cut_by_the_budget_reads_on_from_the_next_letter(W, tmp_path, monkeypatch):
+    """A budget of one read a run: each try reads the next letter, never one answered already, and the trip is recorded
+    once every letter answered (not parked after VARIANT_MAX_TRIES with C and D never read)."""
+    insts = _setup9646(W, tmp_path)
+    rows = W.DB.crew_rows()
+    fl = VarFl({})
+    for _ in range(4):
+        assert W.crew_variants(fl, insts, rows, 1) == (1, "ok", False)
+    assert [p for p, _ in _read(fl)] == ["H9646A", "H9646B", "H9646C", "H9646D"]
+    assert W.DB.get(W.CREW_VARIANT_KEY)["H9646|2026-11-06"] == {"at": "2026-11-10T12:05:00", "found": "", "v": 2}
+    assert not W.DB.get(W.CREW_VARIANT_TRIES_KEY)
+    assert W.crew_variants(fl, insts, rows, 1) == (0, "ok", False) and len(fl.urls) == 4
+
+
+def test_a_page_nothing_knows_is_no_answer_for_its_letter(W, tmp_path, monkeypatch):
+    """A page no parser knows stops the pairing path during a probe and is no answer: once the stop is over the next
+    run reads B (the real copy) first, and A is never counted as read."""
+    insts = _setup9646(W, tmp_path)
+    rows = W.DB.crew_rows()
+    fl = _real_fl(W, monkeypatch, {("H9646A", "20261106"): UNAVAIL, ("H9646B", "20261106"): page("H9646B", "06nov",
+                                                                                                    B_LINE)})
+    assert W.crew_variants(fl, insts, rows, 50) == (1, "ok", True)
+    assert [p for p, _ in _read(fl)] == ["H9646A"] and not W.BRK.allow("pairing")
+    later = W.time.time() + 3600
+    monkeypatch.setattr(W.BRK, "clock", lambda: later)  # the 30 min stop is over
+    assert W.crew_variants(fl, insts, rows, 50) == (1, "ok", False)
+    assert [p for p, _ in _read(fl)] == ["H9646A", "H9646B"]
+    assert W.DB.get(W.CREW_VARIANT_KEY)["H9646|2026-11-06"]["found"] == "H9646B"

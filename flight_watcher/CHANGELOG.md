@@ -1,5 +1,55 @@
 # Changelog
 
+## 1.7.3
+
+Fixes for three low bugs the post-deploy check of 1.7.2 found live on Nov 13 (all older than 1.7.2). Each was
+reproduced with a synthetic test that failed first, then reviewed adversarially; the review findings are fixed too.
+
+### Crew index probes no longer stop every pairing read
+- Seen live 7 times (Nov 12 to 13): a crew index run probed the lettered copies of a trip (FW-0068: H3646A to D,
+  H3604A to D). A copy that does not exist answers with a page that names the id but has no report, crew or credit
+  (or FLICA's application error page). The Watcher judged each one a failed pairing read; the third in a row stopped
+  every pairing read for 30 min ("FLICA pairing read stopped for 30 min ...: not a pairing page"), which also
+  blocked Ryan's detail reads, pickups and own trip times, and outlived a restart. The trip was never recorded, so
+  every run (about 4 a day) probed it again until VARIANT_MAX_AGE_D.
+- While crew_variants reads a lettered copy (`PROBE["miss_ok"]`), a no-such-trip page or FLICA's error page is a miss
+  and leaves the breaker alone. A page nothing knows, a CAPTCHA or a load error still counts, and every detail or
+  queue read is judged as before (a real error page there still trips the breaker).
+- A probe cut short (a stopped path, the budget, a fetch error) is a try (`crew_variant_tries`, letters done and
+  failed kept); the next run reads on from the letters not read yet, and a trip is recorded (parked) once every
+  letter had a try (VARIANT_MAX_TRIES 3), so it is never probed every run. Tests: `tests/test_crew_variants.py`.
+
+### A pilot's log masks crew names and employee numbers in every form
+- Seen live: the second pilot's "detail probe" line kept the captain's name and his 4-digit employee number readable
+  (the name came right after a quote; the number mask took only 5 to 7 digits); older lines kept a two-word surname's
+  first word. Only the admin and Claude read the add-on log, but PilotLogMask promises other pilots' names and
+  numbers are masked on every pilot line.
+- `captures.py`: a name after a quote is masked; a name followed by its employee number in parentheses (3 to 7
+  digits) is masked whole, page-word surnames, middle names and letters outside ASCII (accents, the okina) too; the
+  name run is bounded so the mask stays linear on long text. Times, dates, pairing ids, flight numbers, years and
+  credits stay. `watcher.detail_probe` on a pilot now says only whether a captain was parsed; the admin's line is as
+  before. Tests: `tests/test_fw173_log_mask.py` (synthetic names only).
+- F#55's live run (Nov 14, Ryan's yes: one lookup on the second pilot's session, by name, then the pick) worked end to
+  end (name lookup on the award files, the pick, the employee-number Schedule Lookup, the result on his portal), with
+  FLICA answering its application error page as it does for every November lookup that day. It showed more of the
+  same leak on a pilot's lines, now fixed and reviewed adversarially:
+  - the lookup's lines start "pilot <employee number>:" and the pickup check's "picker <employee number>"; a 4-digit
+    number stayed readable (`PILOT_EMP_RE`: masked after "pilot" before ":" or " (", and after "picker", 3 to 7
+    digits; "100 loads an hour" stays);
+  - a failed lookup page's text (lowercased by visible_text, so the name masks missed "doe, jane (emp# 1234)") was
+    logged as it was: a pilot now logs page text only through `page_log` (only while his captures are on, masked),
+    in the lookup and in the pickup check (`inflt.PAGE_LOG`); the admin's lines are as before;
+  - the Pilot card's status for FLICA's error page is one plain line ("not readable: FLICA application error, try
+    again later", which the card since 1.6.2 turns into its friendly line), any other page one short line with no
+    control or bidi character (`pilot_unreadable_status`).
+
+### The state note drops a pause when it ends
+- Seen live: `sensor.flight_watcher_state` kept "FLICA pairing read paused until 05:52 HST" at 06:25, until the next
+  good pairing read (up to Ryan's 90 min check).
+- `health_note_tick()` runs every loop tick (60 s), after each gate wait chunk and before each FLICA load: when the
+  breakers' part of the note changed, the note is applied again (published only on a change; a stop, pause or yield
+  note is never replaced). No FLICA load. Tests: `tests/test_fw173_breaker_note.py`.
+
 ## 1.7.2
 
 Portal contract 1 revision 3 (the council's plan of Nov 11 and Ryan's decisions the same day), from the audit of the
