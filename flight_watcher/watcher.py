@@ -2845,7 +2845,8 @@ def try_login(fl, reason, rearm=_NOT_REARM):
     while that time was saved cancels it before FLICA is reached (rearm_paused_at_login); False, no login. 1.7.5
     second review: Pause on while the login page waits in the gate (a pilot's budget, the host's cap, the pacing) gives
     that login up too, whatever asked for it (login_given_up), and the time is saved again once that page passes the
-    gate (login_reached), so the floor counts from when FLICA is reached."""
+    gate (login_reached), so the floor counts from when FLICA is reached. 1.7.5 third review: and once more at the
+    login's end, as its submit can wait in the gate for the budget too: the floor counts from its last FLICA load."""
     prev = {k: S[k] for k in ("login_ts", FL_AGAIN) if k in S}
     S["login_ts"] = time.time()
     S.pop(FL_AGAIN, None)
@@ -2861,6 +2862,9 @@ def try_login(fl, reason, rearm=_NOT_REARM):
         return False
     finally:
         RUN["login"] = False
+    # 1.7.5 third review: and again at its end (each branch below saves it): its submit can wait in the gate for his
+    # budget long after its page passed, and the floor counts from the login's last FLICA load
+    S["login_ts"] = time.time()
     if res == "ok":
         S["pot_urls"] = {}
         S.pop("flica_refused", None)

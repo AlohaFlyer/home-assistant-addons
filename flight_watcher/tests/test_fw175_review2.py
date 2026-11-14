@@ -186,7 +186,9 @@ def test_the_floor_starts_when_the_login_page_passes_the_gate(mk, monkeypatch): 
     W = _stopped_pilot(mk)
     _budget_full(W)
     logins, _ = _run_main_gated(W, monkeypatch, lambda i: _cmd(W, "rearm/press") if i == 1 else None, max_sleeps=3)
-    assert logins and W.S["login_ts"] == logins[0][0]
+    # from FLICA reached on, not from before the gate's wait; third review: the login's end, its submit a pace later
+    # (a login cut short after its page passed counts from that pass: test_fw175_review3)
+    assert logins and logins[0][0] <= W.S["login_ts"] < logins[0][0] + 10
 
 
 # ---------------------------------------------------------------- P8 backed out: an un-pause during a step-aside
