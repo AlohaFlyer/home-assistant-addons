@@ -3,7 +3,9 @@ and Watcher make from synthetic finds (made-up pilots "Doe, Jane" 10001 and pair
 - "Picked up by": only the open-seat picker is the blue link (Ryan, Nov 14); a pilot already on the pairing is plain
   text in the text color; an old row with no stored pickers links the one its open seat names, an ambiguous one none.
 - InFlt: the airplane then "AS808/06NOV" with the leg and the pairing on hover; a leg backfilled from the pairings
-  package (a deadhead: DH in the hover); the airplane alone and "flight not on file" when there is no leg.
+  package (a deadhead: DH in the hover); the airplane alone and "flight not on file" when there is no leg. Review R2
+  (no new FLICA load): a both-seats pickup's "no" names the first picker (one lookup a pickup), and a verdict from
+  before 1.7.7 that was for the other pilot on the pairing shows "-" with the reason on hover.
 - The pickers card: no merged two-name rows after the rebuild.
 FW_177_SHOTS=<dir> keeps the screenshots (device scale 2)."""
 import json
@@ -45,6 +47,7 @@ def _data(W, tmp_path):  # noqa: F811
         ("H9305|23Nov", f"FO {JANE}", "FO", {"pickers": ["10001"]}, 7),  # in flight, leg from the pairing page
         ("H9306|24Nov", f"FO {PAT}", "FO", {"pickers": ["10003"]}, 6),  # in flight before 1.7.7: backfilled
         ("H9307|25Nov", f"FO {MAX}", "FO", {"pickers": ["10004"]}, 5),  # in flight, flight not on file
+        ("H9308|26Nov", f"FO {LOU}; RO {RICK}", "FO", {}, 4),  # before 1.7.7: in flight looked up for Rick, not Lou
     ]
     for i, (k, by, seats, extra, h) in enumerate(rows):
         seen, gone = _at(14, h), _at(14, h, 2)
@@ -54,10 +57,15 @@ def _data(W, tmp_path):  # noqa: F811
         db.db.execute("UPDATE finds SET last_seen=? WHERE key=?", (_at(14, h, 1), k))
         db.set_pickup(k, dict({"status": "filled", "by": by, "ca": "Doe, John (10009)", "known": k != "H9304|22Nov"}, **extra))
     _old_style(db, "H9303|21Nov", f"FO {KIM}; RO {LOU}", 75)  # before 1.7.7 it was scored to Lou under a merged name
-    db.rebuild_pickers()
+    _old_style(db, "H9308|26Nov", f"FO {LOU}; RO {RICK}", 90)  # scored to Rick, the in-flight check looked Rick up
+    db.set_inflt("H9308|26Nov", True, "H3648 2026-11-03", tries=1)
+    assert db.rebuild_pickers()["inflt_dropped"] == 1  # Rick's verdict: dropped, not looked up again for Lou
     for k in ("H9301|19Nov", "H9302|20Nov", "H9305|23Nov", "H9306|24Nov", "H9307|25Nov"):
         db.score_pickup(k)
     db.set_inflt("H9301|19Nov", False, "", tries=1, emp="10001")
+    db.set_inflt("H9302|20Nov", False, "", tries=1, emp="10003")  # both seats: one lookup, the first picker (Pat)
+    queued = {k for k, *_ in db.pickups_without_inflt()}
+    assert not {"H9302|20Nov", "H9308|26Nov"} & queued  # Max (the other picker) and Lou are not looked up: no FLICA load
     db.set_inflt("H9305|23Nov", True, "H3648 2026-11-03", tries=1, emp="10001",
                  leg={"flt": "808", "frm": "HNL", "to": "LAS", "dep_l": "23:00", "date": "2026-11-06", "dh": False, "src": "page"})
     db.set_inflt("H9306|24Nov", True, "H9101 2026-11-05", tries=1)  # on the DH LAX-SFO, Fri Nov 6 20:00 HST
@@ -145,7 +153,11 @@ def _check(pg):
     assert rows["H9302"]["links"] == [PAT, MAX] and rows["H9302"]["plain"] == []  # both seats open: both
     assert rows["H9303"]["links"] == [LOU] and [p[0] for p in rows["H9303"]["plain"]] == [KIM]  # derived from open_seats
     assert rows["H9304"]["links"] == [] and [p[0] for p in rows["H9304"]["plain"]] == [KIM, LOU]  # ambiguous: none
-    assert rows["H9304"]["inflt"] == "" and rows["H9302"]["inflt"] == "-"  # nobody to look up / not looked up yet
+    assert rows["H9304"]["inflt"] == ""  # nobody to look up
+    assert rows["H9302"]["inflt"] == "no" and rows["H9302"]["tip"] == "FO Poe, Pat on the ground at pickup; the other picker not checked"
+    h = rows["H9308"]  # Lou the picker, Rick already on it; the old verdict was Rick's: dropped, not checked again
+    assert h["links"] == [LOU] and h["inflt"] == "-" and not h["icon"]
+    assert h["tip"] == "not checked for the picker: the check before 1.7.7 looked up the other pilot on the pairing"
     d = rows["H9305"]
     assert d["icon"] and d["inflt"] == "AS808/06NOV"
     assert d["tip"] == "picked up while airborne on AS808 HNL-LAS, departed 06NOV 23:00 local (pairing H3648 Nov 3)"
@@ -176,6 +188,7 @@ def test_the_finds_and_pickers_cards_on_a_phone_and_a_desktop(W, tmp_path):  # n
                 pg.evaluate("() => { FC.shadowRoot.querySelector('details.key').open = true; }")
                 key = pg.evaluate("() => FC.shadowRoot.querySelector('details.key').textContent")
                 assert "the picker (blue) opens his month" in key and "AS808/06NOV" in key and "flight not on file" in key
+                assert "two pickers: the first one" in key
                 _shot(pg, f"finds_{width}_{scheme}", "flight-watcher-finds-card")
                 # the table scrolls sideways inside the card: the Picked up by column, then InFlt, in view
                 for col, nm in ((10, "by"), (11, "inflt")):

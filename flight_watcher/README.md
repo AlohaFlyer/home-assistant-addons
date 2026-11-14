@@ -331,7 +331,8 @@ Recent finds.
   `rate_steps` names the day inside the month a new longevity year or rate date changes his rates. On a pilot instance
   both pay lines (`items_pay` and the rebuilt month's `pay_line`) carry the date of hire, the list's dates, `year_to`
   and `rate_steps` as on Ryan's (1.7.7, Ryan, Nov 14: "james and I are on a high level of trust. he can be trusted";
-  James may see a looked-up pilot's Sen, DOH, status, retirement and seat), as the rebuilt month's line did in 1.7.5.
+  James may see a looked-up pilot's Sen, DOH, status, retirement and seat): the DOH, list dates and `year_to` as
+  1.7.5's rebuilt-month line sent them, plus the new `rate_steps`.
 - `seniority.md` (1.7.7, Ryan, Nov 14: "keep that in an MD card for reference"): each time `seniority.json` is written
   (a list, an award's dates of hire, a re-read) the Watcher writes `/share/flight_watcher/seniority.md`: a heading with
   the list date, source and count, then a table (Seniority #, Name, Emp, DOH, Seat, Equip, Pay year today: the
@@ -475,12 +476,14 @@ FLICA had left out that appeared, is a seat filled; a newcomer in a seat that wa
 the picker's employee number (`pickers` on the pickup, in the finds month files and on the finds sensor). A find
 recorded before 1.7.7 is read from its open seats (`open_seats`, from the roster in the pot) and the seat before each
 name: a seat's names are its pickers when they are no more than its open seats, a lone name when no open seat is on
-file; anything else links nobody rather than the wrong pilot. The FO / RO pickers table and the in-flight check use the
-same picker(s), each picker once per pickup (both pickers of a pickup with both seats open). Before, a two-name pickup
-was scored to the last number under a merged name ("Doe, Jane (10001); RO Roe, Rick" with Rick's number); the first
-start of 1.7.7 rebuilds the pickers table and its log from the stored pickups once (`pickers_rebuild_v`), and an
-in-flight verdict that was looked up for a pilot who was not the picker is looked up again for the picker (the usual
-in-flight budget, 3 a check).
+file; anything else links nobody rather than the wrong pilot (also a find whose pot detail read had no crew line: an
+empty roster is no roster). The FO / RO pickers table counts the same picker(s), each picker once per pickup (both
+pickers of a pickup with both seats open); the in-flight check looks up the first one, one lookup a pickup as before
+1.7.7 (a both-seats pickup's "no" names him on hover). Before, a two-name pickup was scored to the last number under a
+merged name ("Doe, Jane (10001); RO Roe, Rick" with Rick's number); the first start of 1.7.7 rebuilds the pickers table
+and its log from the stored pickups once (`pickers_rebuild_v`; a pickup whose trip came back into the pot keeps its
+count). An in-flight verdict made before 1.7.7 for a pilot who was not the picker is dropped and not checked again, so
+the rebuild loads no FLICA page (`inflt_skip`; "-" with the reason on hover); one made for a picker stays his.
 
 **InFlt** (1.7.7, Ryan, Nov 14: "I want to know what flight he was flying to be certain. Add the flight number... i.e
 AS808/06NOV and date"): an in-flight pickup shows the airplane and the flight, `AS808/06NOV`: the flight number of the
@@ -488,10 +491,11 @@ leg the picker was airborne on (block out to block in; a deadhead counts, he is 
 at its origin (a leg out of LAX at 00:30 local left 22:30 HST the day before: the LAX date). Hover: "picked up while
 airborne on AS808 HNL-LAS, departed 06NOV 23:00 local (pairing H3648 Nov 3)", with "(DH, deadhead)" for a deadhead.
 The in-flight check keeps the leg from the pairing page it already reads (`inflt_leg`: flt, frm, to, dep_l, date, dh,
-src `page`; no extra page). A verdict from before 1.7.7 gets its leg from the pairings package with no FLICA load, on
-each start and after a package upload, only when the package lists the picker's pairing on that start date and one of
-its legs holds the pickup time (src `package`, "flight from the pairings package" on hover); otherwise the airplane
-stays alone and the hover says the flight is not on file. Blank: no picker on file to look up.
+src `page`; no extra page); a first leg printed on the day after the trip's start date (a report before midnight, or an
+origin a day ahead of HST) is placed on that day. A verdict from before 1.7.7 gets its leg from the pairings package
+with no FLICA load, on each start and after a package upload, only when the package lists the picker's pairing on that
+start date and one of its legs holds the pickup time (src `package`, "flight from the pairings package" on hover);
+otherwise the airplane stays alone and the hover says the flight is not on file. Blank: no picker on file to look up.
 
 ## Tickets (FW-nnnn)
 

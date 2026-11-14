@@ -243,6 +243,7 @@ def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
                                 "&FROM=MobileOpentimePot&CurrentPage=1")
                 if classify(page) != "ok":
                     continue
+                # 1.7.7 review: inflight_leg puts a first leg that leaves after midnight of the start day on its own day
                 lg = inflight_leg(parse_legs(visible_text(page), dh=True), pr["start"], gone)
                 if lg is not None:  # 1.7.7: the leg itself, a deadhead too
                     verdict, trip, leg = True, f"{pr['trip']} {pr['start']}", page_leg(lg, pr["start"])

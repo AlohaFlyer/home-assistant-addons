@@ -3636,7 +3636,7 @@ def pilot_pay_line(trips, emp, name, start, end):
         if g is not None:
             t["gross"] = g
     line.update(_sen_fields(data, rec))
-    return line  # 1.7.7: on a pilot instance too, as 1.7.5 sent it (DOH, list dates, year_to; rate_steps too)
+    return line  # 1.7.7: on a pilot instance too (DOH, list dates, year_to as 1.7.5 sent them; the new rate_steps too)
 
 
 def _sen_fields(data, rec):
@@ -3648,8 +3648,8 @@ def _sen_fields(data, rec):
 
 # 1.7.7 (Ryan, Nov 14: "james and I are on a high level of trust. he can be trusted"; James may see a looked-up
 # pilot's Sen, DOH, status, retirement and seat): a pilot instance's pay lines (pilot_price, pilot_pay_line) carry
-# the date of hire, the list's dates, year_to and rate_steps, as 1.7.5 sent them (this release's first build left
-# them out).
+# the date of hire, the list's dates and year_to, as 1.7.5's rebuilt-month line sent them, plus the new rate_steps
+# (this release's first build left them out).
 
 
 def _equip_ok(rec):
@@ -9941,10 +9941,12 @@ def pickup_check(fl, full=False):
                     d = parse_detail(page)
                     DB.patch_row(k, {f: d[f] for f in ("credit", "days", "blk", "tafb") if d.get(f)})
                 seats = [x for x in (row.get("open_seats") or "").split(",") if x]
-                before = row.get("crew")
+                # 1.7.7 review: an empty roster ('' when the pot detail read had no crew line) is no roster: nothing says
+                # who was on the pairing before, so every FO / RO is not 'new' (known False, the open-seat rule decides)
+                before = row.get("crew") or None
                 if before is not None:
                     status, who, known = pickup_diff([tuple(x) for x in before], crew)
-                else:  # found before 0.4.0: no roster to compare, fall back to open_seats
+                else:  # found before 0.4.0 (or no crew line read in the pot): no roster to compare, fall back to open_seats
                     status, who = pickup_result(crew, seats)
                     known = bool(seats)
                 # 1.7.7 (Ryan, Nov 14): the open-seat picker(s) among the names, by employee number: the card links only
@@ -11262,7 +11264,8 @@ def main():
         try:
             r = DB.rebuild_pickers()
             log.info("FO / RO pickers rebuilt from %d scored pickups (each open-seat picker once): %d pilots; %d in-flight "
-                     "verdicts to look up again for the right picker", r["pickups"], r["pickers"], r["inflt_reset"])
+                     "verdicts made for another pilot dropped (not looked up again: no FLICA load)", r["pickups"],
+                     r["pickers"], r["inflt_dropped"])
         except Exception as e:  # never stops the start; tried again on the next one
             log.warning("pickers rebuild skipped: %s: %s", type(e).__name__, e)
     try:

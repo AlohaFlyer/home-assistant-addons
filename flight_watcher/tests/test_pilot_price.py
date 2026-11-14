@@ -3,8 +3,8 @@ another pilot's month as FLICA's Schedule Lookup showed it is priced like the re
 seat that pilot flies on it (from the pairing page already read, else the crew index, else the seniority list's seat,
 else FO), at his longevity year from the date of hire (PWA 3.B.1; CA PWA 3.C.4, FO and RO PWA 3.D.6) with the PWA
 4.O.1 overrides; the month's totals in items_pay with FLICA's own Days Off. An older version of it is priced in the
-versions file (amounts only, never a date of hire). A pilot instance's items_pay leaves out the DOH. No FLICA page is
-read for any of it. Made-up pilots and pairings only."""
+versions file (amounts only, never a date of hire). A pilot instance's items_pay carries the DOH (1.7.7, Ryan, Nov 14:
+James can be trusted with it). No FLICA page is read for any of it. Made-up pilots and pairings only."""
 import json
 
 import pytest

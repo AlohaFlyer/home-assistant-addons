@@ -50,16 +50,21 @@ contract change, no change to the `roles.py` lists.
   appeared; a newcomer in a seat that was not open is a crew swap); an older find is read from its `open_seats` and the
   seat before each name, and an ambiguous one links nobody rather than the wrong pilot.
 - Bug fixed: `store.picker_of` read a two-name "by" ("FO A (n1); RO B (n2)") as the first name with the last number, so
-  the FO / RO pickers table showed merged rows ("A (n1); RO B" under n2) and the in-flight check looked up B. The table,
-  its log and the in-flight check now use the open-seat picker(s), each once per pickup (both when both seats were
-  open). The first start rebuilds the pickers table from the stored pickups once (`pickers_rebuild_v`); an in-flight
-  verdict made for a pilot who was not the picker is looked up again for the picker (the usual budget, 3 a check).
+  the FO / RO pickers table showed merged rows ("A (n1); RO B" under n2) and the in-flight check looked up B. The table
+  and its log now count the open-seat picker(s), each once per pickup (both when both seats were open), and the
+  in-flight check looks up the first one, one lookup a pickup as before. The first start rebuilds the pickers table
+  from the stored pickups once (`pickers_rebuild_v`; a pickup whose trip is back in the pot keeps its count). An
+  in-flight verdict made before 1.7.7 for a pilot who was not the picker is dropped and not checked again (no FLICA
+  load; the card's "-" says why on hover); one made for a picker stays his.
+- A find whose pot detail read had no crew line is read without a roster: of two names, nobody is the picker (linked,
+  scored or looked up), never both.
 
 ### InFlt names the flight (Ryan: "i.e AS808/06NOV and date")
 - An in-flight pickup shows the airplane and `AS808/06NOV`: the leg the picker was airborne on (a deadhead counts) and
   its departure date local at its origin; hover: "picked up while airborne on AS808 HNL-LAS, departed 06NOV 23:00 local
   (pairing H3648 Nov 3)", with "(DH, deadhead)" for a deadhead. The check keeps the leg from the pairing page it
-  already reads (`inflt_leg`), no extra page.
+  already reads (`inflt_leg`), no extra page. A trip whose first leg leaves after midnight of its start day (or from a
+  station whose local date is a day ahead) has its legs on that day, not 24 hours early.
 - An in-flight pickup from before 1.7.7 gets its leg from the pairings package, with no FLICA load, at start and after
   a package upload, only when the package lists the picker's pairing on that start date and one of its legs holds the
   pickup time; else the airplane stays alone and the hover says "flight not on file".
@@ -69,9 +74,9 @@ contract change, no change to the `roles.py` lists.
   the close stays the 11th 08:00 HST. A package's printed Bid Calendar still wins.
 
 ### DOH on a pilot's portal (Ryan: "james and I are on a high level of trust. he can be trusted")
-- A pilot instance's pay lines (`items_pay` and the rebuilt month's `pay_line`) carry the looked-up pilot's date of
-  hire, the list's dates, `year_to` and `rate_steps` again, as 1.7.5 sent them; the first build of this release had
-  left them out. Every other review fix stays.
+- A pilot instance's pay lines carry the looked-up pilot's date of hire, the list's dates and `year_to` again, as
+  1.7.5's rebuilt-month line (`pay_line`) sent them, plus the new `rate_steps`; `items_pay` (new in this release)
+  carries the same. The first build of this release had left them out. Every other review fix stays.
 
 Tests: `tests/test_pairing_detail.py`, `tests/test_pairing_panel_card.py`, `tests/test_pilot_grid_look.py`,
 `tests/test_sched_grid_shared.py`, `tests/test_pilot_price.py`, `tests/test_seniority_md.py`,

@@ -100,7 +100,10 @@ def by_parts(by):
 
 
 PICKERS_V = 1  # 1.7.7: the pickers table and picker_log rebuilt once from the stored pickups (Store.rebuild_pickers)
-INFLT_KEYS = ("inflt", "inflt_trip", "inflt_tries", "inflt_leg", "inflt_emp", "inflt_no")  # a pickup's in-flight fields
+# a pickup's in-flight fields; inflt_skip (1.7.7 review): a verdict from before 1.7.7 that was for another pilot, dropped
+# and not looked up again (no new FLICA load)
+INFLT_KEYS = ("inflt", "inflt_trip", "inflt_tries", "inflt_leg", "inflt_emp", "inflt_skip")
+INFLT_MAX_TRIES = 3  # pickups_without_inflt's max_tries: a pickup with this many in-flight tries is never looked up again
 
 
 def pickers_of(pk, row=None):
@@ -278,6 +281,8 @@ class Store:
                         "pickers": [e for _p, _n, e in pks], "open_seats": r.get("open_seats") or "",
                         "inflt_leg": pk.get("inflt_leg") if isinstance(pk.get("inflt_leg"), dict) else None,
                         "inflt_emp": pk.get("inflt_emp", ""),
+                        # 1.7.7 review: a verdict from before 1.7.7 for another pilot, dropped and not checked again
+                        "inflt_skip": bool(pk.get("inflt_skip")),
                         "month": month, "seen": first, "gone": gone,
                         # FW-0042: the smart push fields as the row last had them in the pot ('' before 1.4.13 or
                         # without smart.json)
@@ -310,18 +315,25 @@ class Store:
         picker (pickers_of) counted once per pickup. Before, a pickup whose 'by' named two pilots ('FO A (n1); RO B
         (n2)') was scored to the last number under a merged name ('A (n1); RO B', emp n2), in the FO / RO pickers table
         and in the in-flight check. Each scored pickup keeps its seconds; its pickers are stored on it (pickers); the
-        log's rows of the finds on file are written again (key|emp), older ones whose find is gone stay. The pickers
-        table is rebuilt from the log, each name from that pilot's newest pickup (else the crew directory, else the
-        old row's name when it is not a merged one). An in-flight verdict made for a number that is not a picker is
-        dropped (looked up again for the right pilot); one for one of two pickers that said 'not in flight' leaves the
-        other to be looked up. Returns {pickups, pickers, inflt_reset}."""
+        log's rows of the finds on file are written again (key|emp), older ones whose find is gone stay; a scored
+        pickup whose trip is back in the pot (gone_at cleared, its score kept) keeps its row at the time it was logged
+        (review R3). The pickers table is rebuilt from the log, each name from that pilot's newest pickup (else the crew
+        directory, else the old row's name when it is not a merged one). Review R2, no new FLICA load: an in-flight
+        verdict made for the last number of a two-name 'by' who is not a picker is dropped and kept final (inflt None,
+        inflt_skip, tries at INFLT_MAX_TRIES: never looked up again; the card says why); one made for a picker stays
+        his (inflt_emp), and the other picker of a both-seats pickup is not looked up (one lookup a pickup, as before).
+        Returns {pickups, pickers, inflt_dropped}."""
         with self.lock:
             self.db.execute("BEGIN")
             try:
                 finds = self.db.execute("SELECT key,gone_at,pickup,row FROM finds WHERE pickup IS NOT NULL").fetchall()
                 fkeys = {k for k, *_ in finds}
-                for (lk,) in self.db.execute("SELECT key FROM picker_log").fetchall():
-                    if lk in fkeys or lk.rsplit("|", 1)[0] in fkeys:
+                logged = {}  # find key -> when its pickup was logged (a find back in the pot has no gone_at)
+                for lk, at in self.db.execute("SELECT key,at FROM picker_log").fetchall():
+                    fk = lk if lk in fkeys else lk.rsplit("|", 1)[0]
+                    if fk in fkeys:
+                        if at and (fk not in logged or at > logged[fk]):
+                            logged[fk] = at
                         self.db.execute("DELETE FROM picker_log WHERE key=?", (lk,))
                 names, scored, reset = {}, 0, 0
                 for k, gone, pk, row in finds:
@@ -334,25 +346,23 @@ class Store:
                     old = picker_of(pk.get("by", ""))  # the number the in-flight check used before 1.7.7
                     emps = [e for _p, _n, e in pks]
                     if "inflt" in pk and old and not pk.get("inflt_emp"):
-                        if old[2] in emps and (pk["inflt"] is True or len(emps) == 1):
-                            pk["inflt_emp"] = old[2]  # the verdict was this picker's
-                        elif ";" in (pk.get("by") or ""):  # the last number of two names: not (only) the picker's
-                            was = pk.pop("inflt")
-                            for f in ("inflt_trip", "inflt_leg"):
-                                pk.pop(f, None)
-                            pk["inflt_tries"] = 0
-                            if old[2] in emps and was is False:  # one of two pickers on the ground: the other next
-                                pk["inflt_no"] = [old[2]]
+                        if old[2] in emps:
+                            pk["inflt_emp"] = old[2]  # the verdict was this picker's (of two: the other is not checked)
+                        elif ";" in (pk.get("by") or ""):  # the last number of two names, who was not the picker
+                            pk["inflt"], pk["inflt_trip"], pk["inflt_emp"], pk["inflt_skip"] = None, "", "", True
+                            pk.pop("inflt_leg", None)
+                            pk["inflt_tries"] = max(int(pk.get("inflt_tries") or 0), INFLT_MAX_TRIES)
                             reset += 1
                     self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), k))
-                    if pk.get("scored") is None or not gone:
+                    at = gone or logged.get(k)  # review R3: a trip back in the pot keeps its pickup's log time
+                    if pk.get("scored") is None or not at:
                         continue
                     scored += 1
                     for pos, name, emp in pks:
                         self.db.execute("INSERT OR IGNORE INTO picker_log(key,emp,at,secs,approx,lay) VALUES(?,?,?,?,?,?)",
-                                        (log_key(k, emp), emp, gone, pk.get("scored"), int(bool(pk.get("approx"))), lay_of(r)))
-                        if emp not in names or gone >= names[emp][0]:
-                            names[emp] = (gone, name, pos)
+                                        (log_key(k, emp), emp, at, pk.get("scored"), int(bool(pk.get("approx"))), lay_of(r)))
+                        if emp not in names or at >= names[emp][0]:
+                            names[emp] = (at, name, pos)
                 old_rows = {e: (nm, ps) for e, nm, ps in self.db.execute("SELECT emp,name,pos FROM pickers").fetchall()}
                 crew = dict(self.db.execute("SELECT emp,name FROM crew_dir").fetchall())
                 self.db.execute("DELETE FROM pickers")
@@ -369,7 +379,7 @@ class Store:
                 raise
             self.db.execute("COMMIT")
         self.put("pickers_rebuild_v", PICKERS_V)
-        return {"pickups": scored, "pickers": count, "inflt_reset": reset}
+        return {"pickups": scored, "pickers": count, "inflt_dropped": reset}
 
     def picker_stats(self, now=None):
         """{emp: {name, pos, n, total_s, last_at, inflt_n, month_n, year_n, lays, last_lay}}; month and
@@ -591,10 +601,11 @@ class Store:
                 pickup = dict(pickup, scored=old["scored"])  # 0.4.21: a re-check never scores the picker twice
             if "inflt" in old and "inflt" not in pickup:  # 0.5.2: a re-check keeps the in-flight verdict
                 pickup = dict(pickup, inflt=old["inflt"], inflt_trip=old.get("inflt_trip", ""), inflt_tries=old.get("inflt_tries", 0))
-                pickup.update({f: old[f] for f in ("inflt_leg", "inflt_emp") if f in old})  # 1.7.7: its leg and picker
+                # 1.7.7: its leg and picker; review: a dropped verdict's reason (inflt_skip) too
+                pickup.update({f: old[f] for f in ("inflt_leg", "inflt_emp", "inflt_skip") if f in old})
             self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pickup), key))
 
-    def pickups_without_inflt(self, n=50, max_tries=3):
+    def pickups_without_inflt(self, n=50, max_tries=INFLT_MAX_TRIES):
         """0.5.2 (Ryan): filled pickups with a known picker (employee number) and no in-flight verdict yet:
         [(key, emp, gone_at, tries)], newest first. A pickup that failed max_tries lookups is skipped."""
         with self.lock:
@@ -605,36 +616,29 @@ class Store:
             pk = json.loads(pk) if pk else {}
             if pk.get("status") != "filled" or "inflt" in pk or pk.get("inflt_tries", 0) >= max_tries:
                 continue
-            # 1.7.7: an open-seat picker (pickers_of) not yet found on the ground, never the last number of a 'by'
-            # that names two pilots
-            no = set(pk.get("inflt_no") or [])
-            emp = next((e for _p, _n, e in pickers_of(pk, json.loads(row) if row else {}) if e not in no), None)
+            # 1.7.7: the first open-seat picker (pickers_of), never the last number of a 'by' that names two pilots;
+            # review R2: one lookup a pickup, as before 1.7.7 (no new FLICA load for the other of two pickers)
+            emp = next((e for _p, _n, e in pickers_of(pk, json.loads(row) if row else {}) if e), None)
             if emp:
                 out.append((k, emp, gone, pk.get("inflt_tries", 0)))
         return out
 
     def set_inflt(self, key, inflt, trip="", tries=None, emp=None, leg=None):
         """Record the in-flight verdict (True / False / None = unknown after max tries) on the pickup. 1.7.7: emp the
-        picker it was looked up for (inflt_emp) and leg the leg he was airborne on (inflt_leg, inflt.page_leg); a
-        'not in flight' for one of two pickers is kept in inflt_no and the other one is looked up next."""
+        picker it was looked up for (inflt_emp) and leg the leg he was airborne on (inflt_leg, inflt.page_leg). The
+        verdict is the pickup's (one lookup a pickup, review R2)."""
         with self.lock:
-            r = self.db.execute("SELECT pickup, row FROM finds WHERE key=?", (key,)).fetchone()
+            r = self.db.execute("SELECT pickup FROM finds WHERE key=?", (key,)).fetchone()
             if not r or not r[0]:
                 return
             pk = json.loads(r[0])
             if tries is not None:
                 pk["inflt_tries"] = tries
-                if inflt is None and tries < 3:
-                    self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), key))
-                    return
-            if inflt is False and emp:
-                no = list(dict.fromkeys([*(pk.get("inflt_no") or []), emp]))
-                left = [e for _p, _n, e in pickers_of(pk, json.loads(r[1]) if r[1] else {}) if e not in no]
-                if left and (tries is None or tries < 3):
-                    pk["inflt_no"] = no
+                if inflt is None and tries < INFLT_MAX_TRIES:
                     self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), key))
                     return
             pk["inflt"], pk["inflt_trip"] = inflt, trip
+            pk.pop("inflt_skip", None)
             if emp:
                 pk["inflt_emp"] = emp
             if isinstance(leg, dict):

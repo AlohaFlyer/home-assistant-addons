@@ -64,6 +64,55 @@ def test_a_deadhead_is_airborne_and_says_so():
     assert pot.inflight_at(pot.parse_legs(PAGE), "bad", "2026-11-05T16:00:00+00:00") is None
 
 
+# review R4: H9001 on the picker's schedule from Tue Nov 3 (report 23:05 HST), its first leg We 808 HNL-LAS 00:05 Wed
+AFTER_MIDNIGHT = ("pairing details h9001:03nov check in: 23:05 dy flt dps-ars dep arr blk "
+                  "we 808 hnl-las 0005 0735 0530 fr 809 las-hnl 0800 1030 0530 crew: fo 10008 doe, pat")
+
+
+def test_a_first_leg_after_midnight_of_the_start_day_is_placed_on_its_own_day():
+    """Review R4: the first leg's printed weekday is the day after the start date's, so the legs start on day 1 (not
+    on day 0, 24 h early): a pickup at 02:00 HST Wednesday is airborne on 808, dated 04NOV; at 02:00 HST Tuesday, before
+    the report, it is not. Every other reader of the page keeps its legs as before."""
+    legs = pot.parse_legs(AFTER_MIDNIGHT, dh=True)
+    assert pot.day0_shift(legs, "2026-11-03") == 1440
+    lg = pot.inflight_leg(legs, "2026-11-03", _utc(2026, 11, 4, 2, 0))
+    assert lg is not None and (lg["dep"], lg["arr"]) == (1440 + 5, 1440 + 5 + 330)
+    assert inflt.page_leg(lg, "2026-11-03") == {"flt": "808", "frm": "HNL", "to": "LAS", "dep_l": "00:05",
+                                                "date": "2026-11-04", "dh": False, "src": "page"}
+    assert legs[0]["dep"] == 5  # the parsed list itself is not moved (a copy is returned)
+    assert pot.inflight_leg(legs, "2026-11-03", _utc(2026, 11, 3, 2, 0)) is None  # before the report: not airborne
+    # LAS 08:00 local Friday = 06:00 HST, airborne at 07:00 HST
+    assert pot.inflight_leg(legs, "2026-11-03", _utc(2026, 11, 6, 7, 0))["dep"] == 3 * 1440 + 6 * 60
+    # the trip dated by its first leg's day (Wed): no shift
+    assert pot.day0_shift(legs, "2026-11-04") == 0
+    assert pot.inflight_leg(legs, "2026-11-04", _utc(2026, 11, 4, 2, 0))["dep"] == 5
+    # a West Coast origin whose local date is the next day's (LAX 00:30 Wed = 22:30 HST Tue, the trip from Tue)
+    west = pot.parse_legs("we 9003 lax-hnl 0030 0400 0530", dh=True)
+    lw = pot.inflight_leg(west, "2026-11-03", _utc(2026, 11, 3, 23, 0))
+    assert lw["dep"] == 22 * 60 + 30 and pot.leg_local_date("2026-11-03", lw) == "2026-11-04"
+    # without the weekday (every other reader), a start two or more days off, or a bad start: nothing moves
+    assert "wd0" not in pot.parse_legs(AFTER_MIDNIGHT)[0]
+    assert pot.inflight_leg(pot.parse_legs(AFTER_MIDNIGHT), "2026-11-03", _utc(2026, 11, 4, 2, 0)) is None
+    assert pot.day0_shift(legs, "2026-11-01") == 0 and pot.day0_shift(legs, "bad") == 0 and pot.day0_shift([], "2026-11-03") == 0
+
+
+def test_the_check_dates_a_first_leg_after_midnight(tmp_path, monkeypatch):
+    monkeypatch.setattr(inflt.time, "sleep", lambda s: None)
+    db = Store(str(tmp_path / "m.db"))
+    db.put("score_email_v", 1)
+    gone = _utc(2026, 11, 4, 2, 0)
+    db.add_find("H9002|20Nov", "2026-11", {"pairing": "H9002", "open_seats": "FO"}, gone, gone=gone)
+    db.set_pickup("H9002|20Nov", {"status": "filled", "by": "FO Doe, Pat (10008)", "ca": "", "known": True, "pickers": ["10008"]})
+    sched = SCHED.replace('"H3648", "LAX"', '"H9001", "LAS"').replace("'H3648'", "'H9001'")
+
+    class Fl:
+        def fetch(self, url):
+            return sched if "cmschedules.cgi" in url else AFTER_MIDNIGHT if "mobilepairing.cgi" in url else "<html></html>"
+    assert inflt.run(Fl(), db, 3, logging.getLogger("t"), lambda: datetime(2026, 11, 4, 8, 0), "https://x", HST)
+    f = db.recent_finds()[0]
+    assert f["inflt"] is True and f["inflt_trip"] == "H9001 2026-11-03" and f["inflt_leg"]["date"] == "2026-11-04"
+
+
 class _Fl:
     def __init__(self):
         self.urls = []

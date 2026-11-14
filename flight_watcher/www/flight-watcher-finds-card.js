@@ -163,18 +163,22 @@ class FlightWatcherFindsCard extends HTMLElement {
   // AS808/06NOV and date"): the airplane, then AS<flight>/<DDMON> (the leg's local departure date at its origin); the
   // leg, its local departure and the pairing on hover; DH for a deadhead (airborne all the same). No leg on file: the
   // airplane alone, "flight not on file".
+  // 1.7.7 review: a pickup gets one in-flight lookup (no new FLICA load): with two pickers the verdict is the first
+  // one's, and the hover names him; a verdict from before 1.7.7 that was for the other pilot on the pairing is dropped
+  // and not checked again ("-", the hover says why).
   _inflt(f) {
     const st = f.pickup_status || "";
-    if (f.inflt === false) return "no";
-    // not looked up yet; never, when no open-seat picker with an employee number is known (blank)
-    if (f.inflt !== true) return st === "filled" && f.picked_by && this._pickers(f).size ? "-" : "";
-    const tr = String(f.inflt_trip || "").match(/^([A-Z]\d{4}[A-Z]?)\s+(\d{4}-\d{2}-\d{2})$/);
-    const pr = tr ? ` (pairing ${tr[1]} ${this._mdy(tr[2])})` : "";
-    const nm = (() => {  // two pickers: name the one who was airborne
+    const nm = (() => {  // two pickers: name the one the verdict is for
       if (this._pickers(f).size < 2 || !f.inflt_emp) return "";
       const p = String(f.picked_by || "").split("; ").find((x) => x.endsWith(`(${f.inflt_emp})`));
       return p ? `${p.replace(/\s*\(\d+\)\s*$/, "")} ` : "";
     })();
+    if (f.inflt === false) return nm ? `<span class="if" title="${this._e(`${nm}on the ground at pickup; the other picker not checked`)}">no</span>` : "no";
+    if (f.inflt !== true && f.inflt_skip && st === "filled") return `<span class="if" title="not checked for the picker: the check before 1.7.7 looked up the other pilot on the pairing">-</span>`;
+    // not looked up yet; never, when no open-seat picker with an employee number is known (blank)
+    if (f.inflt !== true) return st === "filled" && f.picked_by && this._pickers(f).size ? "-" : "";
+    const tr = String(f.inflt_trip || "").match(/^([A-Z]\d{4}[A-Z]?)\s+(\d{4}-\d{2}-\d{2})$/);
+    const pr = tr ? ` (pairing ${tr[1]} ${this._mdy(tr[2])})` : "";
     const lg = f.inflt_leg && typeof f.inflt_leg === "object" ? f.inflt_leg : null;
     const flt = lg && /^\d{1,4}[A-Z]?$/.test(String(lg.flt || "")) ? `AS${lg.flt}` : "";
     const dd = lg ? this._ddmon(lg.date) : "";
@@ -297,7 +301,7 @@ class FlightWatcherFindsCard extends HTMLElement {
         <details class="key"><summary>Key</summary><div class="k">
           ${FW_PORTAL ? "" : `<div><ha-icon icon="mdi:email-outline"></ha-icon> caught from your FLICA alert email (gone before a pot check)</div>`}
           <div>Picked up by: the picker (blue) opens his month; a pilot who was already on the pairing is plain text.</div>
-          <div>InFlt <ha-icon icon="mdi:airplane"></ha-icon> AS808/06NOV = picked up while airborne on flight AS808, which departed on 06NOV (the local date at its origin), from the picker's own trip; hover for the leg and the pairing (DH = a deadhead, airborne all the same). <ha-icon icon="mdi:airplane"></ha-icon> alone = airborne, flight not on file; no = on the ground; - = not checked yet; blank = no picker known to check</div>
+          <div>InFlt <ha-icon icon="mdi:airplane"></ha-icon> AS808/06NOV = picked up while airborne on flight AS808, which departed on 06NOV (the local date at its origin), from the picker's own trip; hover for the leg and the pairing (DH = a deadhead, airborne all the same). <ha-icon icon="mdi:airplane"></ha-icon> alone = airborne, flight not on file; no = on the ground (two pickers: the first one, hover); - = not checked (yet; hover says why when it will not be); blank = no picker known to check</div>
           <div>Pickup Speed = how long the trip sat in open time, ± half the check window;${FW_PORTAL ? "" : " ~ = timed from your alert email;"} bold under 1 min. Hover for the picker's average.</div>
           <div>Red row: seat still open but not in the pot (hidden?). Green row: Premium trip picked up.</div>
           ${FW_PORTAL && !all.some((f) => f.comm || f.value) ? "" : `<div>Comm = airports you can commute from: 2 scheduled nonstops arriving HNL before report (PWA 26.QQ.2) and 1 home 60+ min after release, same day; No = neither works; ? = not known yet (only a customs release, origin not on file, decides it). Hover for the times and the month rule. Value = credit x your hourly rate. Both blank until your smart.json is on file.</div>`}

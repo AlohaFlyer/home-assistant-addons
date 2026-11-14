@@ -478,7 +478,9 @@ def parse_legs(text, dh=False):
     [{dep, arr, to, blk, dep_l, arr_l, flt, frm}], same conversion as parse_duties. A pickup made between a
     leg's dep and arr happened in flight (blocked out, away from the gate). FW-0067: flt is the flight number
     ("865", leading zeros dropped) and frm the origin station, for the working flight sensor. 1.7.7: dh=True (the
-    in-flight check) also reads a leg marked DH (LEG_DH_RE) and gives every leg its "dh" (True for a deadhead)."""
+    in-flight check) also reads a leg marked DH (LEG_DH_RE) and gives every leg its "dh" (True for a deadhead) and,
+    1.7.7 review, "wd0": the first leg's printed weekday (LEG_DOW index), so inflight_leg can check day 0 against the
+    trip's start date."""
     legs, off, last_idx = [], 0, None
     found = ([(d, f, a, b, dp, ar, bk, bool(x)) for d, x, f, a, b, dp, ar, bk in LEG_DH_RE.findall(text or "")] if dh
              else [(*g, None) for g in LEG_FLT_RE.findall(text or "")])
@@ -503,6 +505,7 @@ def parse_legs(text, dh=False):
                      "arr_l": f"{amin // 60:02d}:{amin % 60:02d}", "flt": str(int(flt)), "frm": a})
         if isdh is not None:
             legs[-1]["dh"] = isdh
+            legs[-1]["wd0"] = LEG_DOW.index(found[0][0].upper())
     return legs
 
 
@@ -635,9 +638,11 @@ def pickup_pickers(parts, seats=(), before=None, after=None):
     roster in the pot: ['FO'], ['FO', 'RO']). A position's names are its pickers when they are no more than the seats
     filled there; more names than seats is ambiguous and none there is a picker (no link rather than the wrong one), and
     a name in a position with no open seat is not one (a crew swap). No open seat known at all: a lone FO / RO name is
-    the picker, two or more none. Returns the indexes into parts, in order."""
+    the picker, two or more none. Returns the indexes into parts, in order. 1.7.7 review: an empty roster ('' or [],
+    what a pot detail read with no crew line leaves) is no roster: the rule without rosters decides, never 'every seat
+    in the roster after the pickup was filled'."""
     fr = ("FO", "RO")
-    if before is not None and after is not None:
+    if before and after:
         filled = {}
         for pos in fr:
             b = [n for p, n in before if p == pos]
@@ -895,14 +900,33 @@ def trip_minute(start_iso, at_utc_iso):
         return None
 
 
+def day0_shift(legs, start_iso):
+    """1.7.7 review: minutes to add to parse_legs(dh=True) legs of a trip that started on start_iso. parse_legs puts
+    the first leg on day 0; when its printed weekday (wd0) is the day after the start date's (a report before midnight
+    with the first departure after it, or an origin whose local date is a day ahead of HST's), the legs start on day 1:
+    1440. Else 0 (legs without wd0, any other weekday, a start that does not parse: as before)."""
+    wd0 = (legs or [{}])[0].get("wd0")
+    if not isinstance(wd0, int):
+        return 0
+    try:
+        sd = datetime.strptime(str(start_iso), "%Y-%m-%d").date()
+    except ValueError:
+        return 0
+    return 1440 if (wd0 - (sd.weekday() + 1) % 7) % 7 == 1 else 0
+
+
 def inflight_leg(legs, start_iso, at_utc_iso):
     """1.7.7 (Ryan, Nov 14: "I want to know what flight he was flying to be certain"): the leg (block out to block
     in, a deadhead too: he is airborne) of a pairing that started on start_iso (HST day 0) that the UTC instant falls
-    inside, else None (also when the inputs do not parse)."""
+    inside, else None (also when the inputs do not parse). 1.7.7 review: a first leg printed on the day after the start
+    date puts the legs on day 1 (day0_shift); the leg returned is then a copy with its dep and arr moved, so
+    leg_local_date dates it from the same start."""
     m = trip_minute(start_iso, at_utc_iso)
     if m is None:
         return None
-    return next((lg for lg in legs or [] if lg["dep"] <= m <= lg["arr"]), None)
+    sh = day0_shift(legs, start_iso)
+    lg = next((x for x in legs or [] if x["dep"] + sh <= m <= x["arr"] + sh), None)
+    return dict(lg, dep=lg["dep"] + sh, arr=lg["arr"] + sh) if lg is not None and sh else lg
 
 
 def inflight_at(legs, start_iso, at_utc_iso):

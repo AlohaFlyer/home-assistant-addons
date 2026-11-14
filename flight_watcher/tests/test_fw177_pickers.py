@@ -33,6 +33,19 @@ def test_with_both_rosters_the_newcomer_in_the_open_seat_is_the_picker():
                               [("CA", "Doe, John"), ("FO", "Doe, Jane"), ("FO", "Poe, Pat")]) == []
 
 
+def test_an_empty_roster_is_no_roster():
+    """Review R1: a pot detail read with no crew line leaves the row's crew '' (pot_details caches '' defaults), so
+    nothing says who was on the pairing before: the rule without rosters decides (two names, no open seat: none),
+    never 'every seat in the crew list after the pickup was filled'."""
+    after = [("CA", "Doe, John"), ("FO", "Doe, Jane"), ("RO", "Roe, Rick")]
+    parts = [("FO", "Doe, Jane"), ("RO", "Roe, Rick")]
+    for empty in ([], (), "", None):
+        assert pot.pickup_pickers(parts, [], empty, after) == [], empty
+        assert pot.pickup_pickers(parts[:1], [], empty, after) == [0], empty  # a lone name is still the picker
+    assert pot.pickup_pickers(parts, ["FO"], [], after) == [0]  # the open seat on file still decides
+    assert pot.pickup_pickers(parts, [], [("CA", "Doe, John")], []) == []  # nothing read after the pickup
+
+
 def test_without_rosters_the_open_seats_and_the_seat_before_each_name_decide():
     parts = [("FO", "Doe, Jane"), ("RO", "Roe, Rick")]
     assert pot.pickup_pickers(parts, ["FO"]) == [0]
@@ -119,17 +132,20 @@ def test_the_rebuild_drops_the_merged_rows_and_counts_each_picker_once(tmp_path)
     assert ";" in merged and "(10001)" in merged  # the bug as it was on Pako
     assert db.get("pickers_rebuild_v") is None
     r = db.rebuild_pickers()
-    assert r == {"pickups": 3, "pickers": 3, "inflt_reset": 2} and db.get("pickers_rebuild_v") == PICKERS_V
+    assert r == {"pickups": 3, "pickers": 3, "inflt_dropped": 1} and db.get("pickers_rebuild_v") == PICKERS_V
     st = db.picker_stats()
     assert sorted(st) == ["10001", "10003", "10004"]  # no row for Rick: he was already on the pairing
     assert (st["10001"]["name"], st["10001"]["pos"], st["10001"]["n"], st["10001"]["total_s"]) == ("Doe, Jane", "FO", 2, 150)
     assert (st["10003"]["n"], st["10004"]["n"], st["10004"]["name"]) == (1, 1, "Moe, Max")
     assert not any(";" in v["name"] or "(" in v["name"] for v in st.values())
-    # the in-flight check now looks up the right pilots: Jane (the verdict was Rick's), then Pat (Max was on the ground)
-    assert sorted(t[:2] for t in db.pickups_without_inflt()) == [("H9001|20Nov", "10001"), ("H9002|21Nov", "10003"),
-                                                                  ("H9003|22Nov", "10001")]  # H9003: never looked up
+    # review R2, no new FLICA load: the verdict looked up for Rick (not the picker) is dropped and final, never
+    # looked up again for Jane; Max's 'on the ground' stays his (one of the two pickers); only H9003, never looked up
+    # before, is in the queue, as it was before 1.7.7
+    assert [t[:2] for t in db.pickups_without_inflt()] == [("H9003|22Nov", "10001")]
     f = {x["pairing"]: x for x in db.recent_finds()}
-    assert f["H9001"]["inflt"] is None and f["H9001"]["pickers"] == ["10001"] and f["H9004"]["pickers"] == []
+    assert f["H9001"]["inflt"] is None and f["H9001"]["inflt_skip"] is True and f["H9001"]["inflt_emp"] == ""
+    assert f["H9001"]["pickers"] == ["10001"] and f["H9004"]["pickers"] == []
+    assert (f["H9002"]["inflt"], f["H9002"]["inflt_emp"], f["H9002"]["inflt_skip"]) == (False, "10004", False)
     # once only, and a reopen (the log backfill on every start) adds nothing
     db.put("pickers_rebuild_v", None)
     assert db.rebuild_pickers()["pickers"] == 3 and db.picker_stats()["10001"]["n"] == 2
@@ -137,14 +153,20 @@ def test_the_rebuild_drops_the_merged_rows_and_counts_each_picker_once(tmp_path)
     assert db2.picker_stats()["10001"]["n"] == 2 and db2.db.execute("SELECT COUNT(*) FROM picker_log").fetchone()[0] == 4
 
 
-def test_two_pickers_in_flight_check_one_then_the_other(tmp_path):
+def test_two_pickers_get_one_in_flight_lookup_as_before(tmp_path):
+    """Review R2 (no new FLICA loads): a pickup gets one in-flight lookup, as before 1.7.7: the first open-seat picker
+    of a both-seats pickup. His 'on the ground' is the pickup's verdict (the card names him); the other picker is not
+    looked up."""
     db = Store(str(tmp_path / "i.db"))
     _find(db, "H9002|21Nov", f"FO {PAT}; RO {MAX}", "2026-11-04T22:14:00+00:00", "FO,RO", pickup={"pickers": ["10003", "10004"]})
     db.score_pickup("H9002|21Nov")
     (k, emp, _g, tries), = db.pickups_without_inflt()
     assert emp == "10003"
-    db.set_inflt(k, False, "", tries=tries + 1, emp=emp)  # Pat on the ground: Max is next, no verdict yet
-    assert [t[1] for t in db.pickups_without_inflt()] == ["10004"] and db.recent_finds()[0]["inflt"] is None
+    db.set_inflt(k, False, "", tries=tries + 1, emp=emp)  # Pat on the ground: final, Max is not looked up
+    assert db.pickups_without_inflt() == []
+    f = db.recent_finds()[0]
+    assert (f["inflt"], f["inflt_emp"]) == (False, "10003")
+    # a verdict in flight keeps its leg and its picker (Max here, as the check would store for its first picker)
     leg = {"flt": "808", "frm": "HNL", "to": "LAS", "dep_l": "23:00", "date": "2026-11-06", "dh": False, "src": "page"}
     db.set_inflt(k, True, "H3648 2026-11-03", tries=2, emp="10004", leg=leg)
     f = db.recent_finds()[0]
@@ -156,7 +178,78 @@ def test_two_pickers_in_flight_check_one_then_the_other(tmp_path):
     assert db.recent_finds()[0]["inflt_leg"] == leg
     db.reset_inflt()
     pk = json.loads(db.db.execute("SELECT pickup FROM finds WHERE key=?", (k,)).fetchone()[0])
-    assert not {"inflt", "inflt_leg", "inflt_emp", "inflt_no", "inflt_trip", "inflt_tries"} & set(pk)
+    assert not {"inflt", "inflt_leg", "inflt_emp", "inflt_skip", "inflt_trip", "inflt_tries"} & set(pk)
+
+
+class _CountFl:
+    def __init__(self):
+        self.urls = []
+
+    def fetch(self, url):
+        self.urls.append(url)
+        return "<html><body>nothing</body></html>"
+
+
+def _inflt_run(db, monkeypatch):
+    import logging
+    from datetime import datetime, timedelta, timezone
+
+    import inflt
+    monkeypatch.setattr(inflt.time, "sleep", lambda s: None)
+    fl = _CountFl()
+    inflt.run(fl, db, 3, logging.getLogger("t"), lambda: datetime(2026, 11, 14, 8, 0), "https://example.invalid",
+              timezone(timedelta(hours=-10)))
+    return fl.urls
+
+
+def test_the_rebuild_loads_no_flica_page(tmp_path, monkeypatch):
+    """Review R2: verdicts made before 1.7.7 (True, False or unknown) for the last number of a two-name 'by' who was
+    not the picker are dropped and kept final (inflt_skip; the card says why), so the first start of 1.7.7 queues no
+    FLICA lookup; one made for a picker stays his."""
+    import inflt
+    db = Store(str(tmp_path / "r.db"))
+    for k, v in (("score_email_v", 1), ("inflt_reset_v", inflt.RESET_V), ("inflt_recheck_no_v", inflt.RECHECK_NO_V)):
+        db.put(k, v)  # the older one-shots already ran on Pako
+    for i, verdict in enumerate((True, False, None)):
+        k = f"H900{i + 1}|2{i}Nov"
+        _find(db, k, f"FO {JANE}; RO {RICK}", f"2026-11-0{i + 3}T22:14:00+00:00", "FO")
+        _old_style(db, k, f"FO {JANE}; RO {RICK}", 120)
+        db.set_inflt(k, verdict, "H3648 2026-11-03" if verdict else "", tries=3 if verdict is None else 1)
+    _find(db, "H9004|23Nov", f"FO {PAT}; RO {MAX}", "2026-11-06T22:14:00+00:00", "FO,RO")  # Max's own verdict
+    _old_style(db, "H9004|23Nov", f"FO {PAT}; RO {MAX}", 60)
+    db.set_inflt("H9004|23Nov", False, "", tries=1)
+    assert db.pickups_without_inflt() == [] and _inflt_run(db, monkeypatch) == []  # 1.7.6.1: nothing to load
+    assert db.rebuild_pickers()["inflt_dropped"] == 3
+    assert db.pickups_without_inflt() == [] and _inflt_run(db, monkeypatch) == []  # 1.7.7: still nothing
+    f = {x["pairing"]: x for x in db.recent_finds()}
+    for p in ("H9001", "H9002", "H9003"):
+        assert (f[p]["inflt"], f[p]["inflt_skip"], f[p]["inflt_trip"], f[p]["inflt_leg"]) == (None, True, "", None), p
+    assert (f["H9004"]["inflt"], f["H9004"]["inflt_emp"], f["H9004"]["inflt_skip"]) == (False, "10004", False)
+    assert all(v["inflt_n"] == 0 for v in db.picker_stats().values())  # Rick's airborne verdict is nobody's
+    assert db.inflt_without_leg() == []  # nothing for the package backfill either
+    # a re-check of the pickup keeps the dropped verdict final and its reason
+    db.set_pickup("H9001|20Nov", {"status": "filled", "by": f"FO {JANE}; RO {RICK}", "ca": "", "known": True, "pickers": ["10001"]})
+    f = {x["pairing"]: x for x in db.recent_finds()}
+    assert (f["H9001"]["inflt"], f["H9001"]["inflt_skip"]) == (None, True) and db.pickups_without_inflt() == []
+
+
+def test_the_rebuild_keeps_a_scored_pickup_whose_trip_is_back_in_the_pot(tmp_path):
+    """Review R3: a picked-up trip that came back into the pot (record_pot clears gone_at and keeps the pickup with
+    its score, so score_pickup never scores it again) keeps its log row through the rebuild, at the time it was
+    logged."""
+    db = Store(str(tmp_path / "p.db"))
+    _find(db, "H9001|20Nov", f"FO {JANE}", "2026-11-03T22:14:00+00:00", "FO")
+    _old_style(db, "H9001|20Nov", f"FO {JANE}", 120)
+    _find(db, "H9002|21Nov", f"FO {JANE}; RO {RICK}", "2026-11-04T22:14:00+00:00", "FO")
+    _old_style(db, "H9002|21Nov", f"FO {JANE}; RO {RICK}", 60)  # logged to Rick under the merged name
+    db.db.execute("UPDATE finds SET gone_at=NULL WHERE key='H9002|21Nov'")  # back in the pot
+    db.rebuild_pickers()
+    st = db.picker_stats()
+    assert sorted(st) == ["10001"] and (st["10001"]["n"], st["10001"]["total_s"]) == (2, 180)
+    assert db.db.execute("SELECT at FROM picker_log WHERE key='H9002|21Nov|10001'").fetchone()[0] == "2026-11-04T22:14:00+00:00"
+    # it leaves the pot again: not scored twice
+    db.db.execute("UPDATE finds SET gone_at='2026-11-05T01:00:00+00:00' WHERE key='H9002|21Nov'")
+    assert db.score_pickup("H9002|21Nov") is None and db.picker_stats()["10001"]["n"] == 2
 
 
 # ---------------------------------------------------------------- the Watcher's pickup check and start
@@ -187,6 +280,37 @@ def test_the_pickup_check_stores_the_open_seat_picker(W, monkeypatch):  # noqa: 
     f = W.DB.recent_finds()[0]
     assert f["picked_by"] == f"FO {JANE}; RO {RICK}" and f["pickers"] == ["10001"]
     assert sorted(W.DB.picker_stats()) == ["10001"]
+
+
+def test_the_pickup_check_with_no_roster_from_the_pot_links_nobody_of_two(W, monkeypatch):  # noqa: F811
+    """Review R1: the pot detail read gave no crew line (crew '' and open_seats '' on the row): the pickup check reads
+    the two names without a roster (pickup_result, known False), so neither is a picker: none linked, none scored,
+    none looked up in flight. The old-row rule (pickers_of) says the same."""
+    monkeypatch.setattr(W, "inflt_check", lambda fl, limit=3: False)
+    monkeypatch.setattr(W, "pilot_check", lambda fl: False)
+    for f in ("email_unchanged_fixed", "email_details_fixed", "pickup_backfilled", "pickers_scored", "ids_backfilled"):
+        W.S[f] = True
+    for k, crew in (("H9001|20Nov", ""), ("H9002|21Nov", [])):
+        row = {"pairing": k[:5], "start": k[6:], "dates": "20NOV-21NOV", "open_seats": "", "crew": crew,
+               "detail_url": f"https://{W.SM.HOST}/full/mobilepairing.cgi?PID={k[:5]}&DATE=20261120"}
+        W.DB.add_find(k, "2026-11", row, "2026-11-10T20:00:00+00:00", gone="2026-11-10T21:00:00+00:00")
+        W.S.setdefault("pickup_pending", {})[k] = {"tries": 0, "next": 0}
+    W.pickup_check(_Fl())
+    for f in W.DB.recent_finds():
+        assert f["picked_by"] == f"FO {JANE}; RO {RICK}" and f["pickers"] == [], f
+        assert f["pickup_known"] is False and pickers_of({"by": f["picked_by"]}, {"open_seats": ""}) == []
+    assert W.DB.picker_stats() == {} and W.DB.pickups_without_inflt() == []
+
+
+def test_the_release_text_says_what_the_code_does():
+    """Review: the CHANGELOG's 1.7.7 entry and the test docstrings match the code (no re-lookup of old verdicts, one
+    in-flight lookup a pickup, and 1.7.5 had no rate_steps)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    log = open(os.path.join(here, "..", "CHANGELOG.md")).read()
+    entry = log[log.index("## 1.7.7"):log.index("## 1.7.6.1")]
+    assert "No new FLICA page loads" in entry and "looked up again" not in entry and "as 1.7.5 sent them" not in entry
+    import test_pilot_price
+    assert "leaves out the DOH" not in test_pilot_price.__doc__ and "carries the DOH" in test_pilot_price.__doc__
 
 
 def test_the_start_rebuilds_the_pickers_once(W):  # noqa: F811
