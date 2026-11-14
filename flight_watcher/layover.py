@@ -356,6 +356,14 @@ def _mins(hm):
     return int(hm[:2]) * 60 + int(hm[3:]) if hm else None
 
 
+def hotel_name(text):
+    """The hotel's name from the part of a package hotel line before its VAN: it ends at a run of spaces, a parenthesis
+    or a phone-like run of digits (the phone is never kept), control characters out, HOTEL_MAX characters at most.
+    1.7.6: pdfs.package_legs (the pairing detail panel) reads the hotel with the same rule."""
+    name = re.split(r"\s{2,}|\(|\+?\d[\d\s().-]{6,}", str(text or "").strip()[:400], maxsplit=1)[0]
+    return _line(name, HOTEL_MAX)
+
+
 def pickup_ok(x):
     """A layover's package VAN is a pickup time: given (not 00:00) and at most VAN_BEFORE_REPT_MIN before its report."""
     return bool(x["van"] and x["rept"]) and (_mins(x["rept"]) - _mins(x["van"])) % 1440 <= VAN_BEFORE_REPT_MIN
@@ -394,9 +402,7 @@ def package_vans(text):
                 pend["hv"] = True
                 van = _hm(v.group(1), v.group(2))
                 pend["van"] = "" if van in ("", "00:00") else van
-                # the name ends at a run of spaces, a parenthesis or a phone-like run of digits (never kept)
-                name = re.split(r"\s{2,}|\(|\+?\d[\d\s().-]{6,}", ln[:v.start()].strip(), maxsplit=1)[0]
-                pend["hotel"] = _line(name, HOTEL_MAX)
+                pend["hotel"] = hotel_name(ln[:v.start()])
                 continue
             r = PKG_REPT_RE.match(ln)
             if r and not pend["rept"]:

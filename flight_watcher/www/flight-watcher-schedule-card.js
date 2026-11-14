@@ -54,6 +54,7 @@ const PAY_PREF_LABEL = { [PAY_PREFS[0]]: "federal tax", [PAY_PREFS[1]]: "state t
 const dohYear = (iso, doh) => { const [a, b] = [doh || DOH, iso].map((s) => String(s).slice(0, 10).split("-").map(Number)); return b[0] - a[0] - (b[1] < a[1] || (b[1] === a[1] && b[2] < a[2]) ? 1 : 0) + 1; };
 const hrs = (t) => { const mm = /^(\d+):(\d{2})$/.exec(String(t || "").trim()); return mm ? Number(mm[1]) + Number(mm[2]) / 60 : null; };
 const usd = (v) => (v == null || Number.isNaN(v) ? "" : "$" + Math.round(v).toLocaleString("en-US"));  // 1.6.2 review: no rate, no figure
+const PAIRINGS_URL = "/local/flight-watcher/pairings_";  // the shared pairings package files (pairings_YYYY-MM.json)
 
 // FW-0060: a sensor's full list from its file under /local/ (<url><file_key>.json, the pilot's own www folder). Fetched
 // again whenever the sensor's rev changes; null until it is in (or when the sensor has no key), so the caller falls
@@ -72,6 +73,356 @@ function fwListFile(box, url, st, redraw) {
   }
   return box.key === key ? box.data : null;
 }
+
+// ---- shared schedule grid: keep identical in every card that holds it (tests/test_sched_grid_shared.py) ----
+// 1.7.6 (Nov 14: "my schedule and other pilots schedule and reconstructed schedules should be exactly the same style
+// including this latest detail panel"): one look for every month grid and one pairing detail panel, in each card that
+// draws a month. FWG_CSS: the grid (sticky day and date columns, weekend and holiday colours, the trip box in the
+// Layover column, the trip, R / Rel, layover and totals marks, light and dark) and the panel; .fwgf gives a grid the
+// font sizes of the schedule card's ha-card. fwgHol: US and Hawaii holidays. fwgPack / fwgPackFor: the month's pairings
+// package file and the one whose bid period holds a date. fwgDetail: the pairing detail model (the package's legs,
+// duties, layovers and totals, else what the card read from FLICA), drawn by fwgPanelHtml (a wide card: below the grid,
+// the trip's rows tr[data-d].pdh tinted) or fwgSheetHtml in an FwgSheet (a narrow card: a bottom sheet in a host the
+// card never redraws). Pure: no entity ids, topics, file names or people; each card passes what it reads. The cards
+// load as ES modules (import() on Home Assistant, type=module on the portal), so these names stay inside each card.
+const FWG_DOW = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+const FWG_MON = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+const FWG_WD = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+const FWG_ISO = /^\d{4}-\d{2}-\d{2}$/;
+const fwgEsc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fwgDay = (iso, n) => new Date(Date.parse(String(iso).slice(0, 10) + "T00:00:00Z") + n * 864e5).toISOString().slice(0, 10);
+const fwgWday = (iso) => new Date(String(iso).slice(0, 10) + "T00:00:00Z").getUTCDay();
+const fwgDd = (iso) => `${FWG_DOW[fwgWday(iso)]} ${String(iso).slice(8, 10)}`;  // 'TH 05', FLICA's DY DD
+const fwgMd = (iso) => { const mo = FWG_MON[Number(String(iso).slice(5, 7)) - 1] || ""; return `${mo.slice(0, 1)}${mo.slice(1).toLowerCase()} ${Number(String(iso).slice(8, 10)) || ""}`.trim(); };
+const fwgMins = (v) => { const m = /^(\d{1,3})[h:](\d{2})$/.exec(String(v == null ? "" : v).trim()); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+const fwgDur = (m) => (m == null || !(m >= 0) ? "" : `${Math.floor(m / 60)}:${String(Math.round(m) % 60).padStart(2, "0")}`);
+const fwgHM = (v) => fwgDur(fwgMins(v));  // the package's '5h42' (or '5:42') as '5:42'
+const fwgStr = (v, n) => String(v == null ? "" : v).slice(0, n || 80);
+function fwgEaster(y) { // Anonymous Gregorian algorithm -> [month, day]
+  const a = y % 19, b = Math.floor(y / 100), c = y % 100, dd = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - dd - g + 15) % 30, i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, mm = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * mm + 114) / 31), day = ((h + l - 7 * mm + 114) % 31) + 1;
+  return [month, day];
+}
+// US federal holidays (observed on the actual date) and Hawaii state holidays (Prince Kuhio Mar 26, Good Friday,
+// Kamehameha Jun 11, Statehood 3rd Fri Aug): the hatched yellow day and date cells
+function fwgHol(iso) {
+  const [y, m, d] = String(iso).split("-").map(Number);
+  const nth = (mo, dow, n) => { const f = new Date(Date.UTC(y, mo - 1, 1)).getUTCDay(); return 1 + ((dow - f + 7) % 7) + (n - 1) * 7; };
+  const last = (mo, dow) => { const l = new Date(Date.UTC(y, mo, 0)); return l.getUTCDate() - ((l.getUTCDay() - dow + 7) % 7); };
+  if (m === 1 && (d === 1 || d === nth(1, 1, 3))) return true;
+  if (m === 2 && d === nth(2, 1, 3)) return true;
+  if (m === 5 && d === last(5, 1)) return true;
+  if (m === 6 && d === 19) return true;
+  if (m === 7 && d === 4) return true;
+  if (m === 9 && d === nth(9, 1, 1)) return true;
+  if (m === 10 && d === nth(10, 1, 2)) return true;
+  if (m === 11 && (d === 11 || d === nth(11, 4, 4))) return true;
+  if (m === 12 && d === 25) return true;
+  if (m === 3 && d === 26) return true;
+  if (m === 6 && d === 11) return true;
+  if (m === 8 && d === nth(8, 5, 3)) return true;
+  const e = fwgEaster(y); const gf = new Date(Date.UTC(y, e[0] - 1, e[1] - 2));
+  if (m === gf.getUTCMonth() + 1 && d === gf.getUTCDate()) return true;
+  return false;
+}
+// The month's pairings package (url + 'YYYY-MM.json', the Watcher's file): box[key] is undefined until asked, null while
+// it loads, false when there is none, else {key, map, start, end, dv}: map {id: {id, report, dep, release, relDays,
+// firstDuty, route, credit, tafb, days (a Set of ISO dates), block, crew, det (the pairing's detail, or null)}}, start
+// and end the bid period (ISO), dv the parser that wrote the file (0 before the detail came). redraw() runs once it
+// settles, either way (1.7.1, F#32: a package known to be missing redraws too), outside the fetch's error path, so a
+// redraw that fails never marks a package it read as missing.
+function fwgPack(box, url, key, redraw) {
+  if (box[key] !== undefined) return box[key];
+  box[key] = null;
+  fetch(`${url}${key}.json?v=1`, { cache: "no-cache" }).then((r) => (r.ok ? r.json() : null)).then((j) => {
+    if (!j) { box[key] = false; return; }
+    const [y, mo] = key.split("-").map(Number);
+    const nxt = new Date(Date.UTC(y, mo, 1)).toISOString().slice(0, 7);
+    const prv = new Date(Date.UTC(y, mo - 2, 1)).toISOString().slice(0, 7);
+    // FW-0014: a period that starts last month ("start": "2026-12-31" in January): a day from its first day up is last month's
+    const sd = typeof j.start === "string" && j.start.slice(0, 7) === prv ? Number(j.start.slice(8, 10)) : 99;
+    const ix = Object.fromEntries(j.cols.map((c, i) => [c, i]));
+    const det = j.detail && typeof j.detail === "object" && !Array.isArray(j.detail) ? j.detail : {};
+    const map = {};
+    for (const r of j.rows) {
+      const days = String(r[ix.days]).split(" ").filter(Boolean)
+        .map((d) => (d[0] === "D" ? `${nxt}-${d.slice(1).padStart(2, "0")}` : `${Number(d) >= sd ? prv : key}-${d.padStart(2, "0")}`));
+      map[r[ix.id]] = { id: r[ix.id], report: r[ix.report], dep: r[ix.dep], release: r[ix.release], relDays: r[ix.rel_days],
+        firstDuty: r[ix.first_duty_min], route: r[ix.route], credit: r[ix.credit], tafb: r[ix.tafb], days: new Set(days),
+        block: ix.block != null ? r[ix.block] : "", crew: ix.crew != null ? r[ix.crew] : "",
+        det: Object.prototype.hasOwnProperty.call(det, r[ix.id]) ? det[r[ix.id]] : null };
+    }
+    const last = new Date(Date.UTC(y, mo, 0)).toISOString().slice(0, 10);
+    box[key] = { key, map, start: FWG_ISO.test(j.start || "") ? j.start : `${key}-01`, end: FWG_ISO.test(j.end || "") ? j.end : last,
+      dv: Number(j.dv) || 0 };
+  }).catch(() => { box[key] = false; }).then(() => redraw());
+  return null;
+}
+// The package whose bid period holds iso (a trip's first day): that month's, else the next month's (a period that
+// starts on the last day of the month before, Dec 31 in January), else the month before's; with id, the first of them
+// that lists that pairing on iso, else the first whose period holds iso. null while one it needs loads.
+function fwgPackFor(box, url, iso, redraw, id) {
+  const ym = String(iso).slice(0, 7), [y, m] = ym.split("-").map(Number);
+  let hold = false;
+  for (const k of [ym, new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 7), new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 7)]) {
+    const e = fwgPack(box, url, k, redraw);
+    if (e === null) return null;
+    if (!e || !(e.start <= iso && iso <= e.end)) continue;
+    if (!id || (Object.prototype.hasOwnProperty.call(e.map, id) && e.map[id].days.has(iso))) return e;
+    hold = hold || e;
+  }
+  return hold;
+}
+// "Operates": the first to the last day the package lists the pairing, and FLICA's pattern (DAILY, EXCEPT SUN,
+// THU ONLY, or how many dates)
+function fwgOperates(days) {
+  const ds = [...(days || [])].filter((d) => FWG_ISO.test(d)).sort();
+  if (!ds.length) return { range: "", pat: "" };
+  const a = ds[0], b = ds[ds.length - 1], on = new Set(ds), wk = new Set(ds.map(fwgWday));
+  let all = 0, every = true;
+  for (let d = a; d <= b && all < 400; d = fwgDay(d, 1)) { all += 1; if (wk.has(fwgWday(d)) !== on.has(d)) every = false; }
+  const pat = ds.length === 1 ? "" : ds.length === all ? "DAILY" : !every ? `${ds.length} DATES`
+    : wk.size >= 4 ? "EXCEPT " + [0, 1, 2, 3, 4, 5, 6].filter((w) => !wk.has(w)).map((w) => FWG_WD[w]).join(" ")
+      : [...wk].sort().map((w) => FWG_WD[w]).join(" ") + " ONLY";
+  return { range: a === b ? fwgMd(a) : `${fwgMd(a)}-${fwgMd(b)}`, pat };
+}
+// The pairing detail model. o: {id, start (ISO), p (the package's entry when it lists this exact pairing on start,
+// else null), why (why the package detail is not shown), own (what the card read from FLICA's pairing page: report,
+// duties [{d, dep_l, arr_l, stn, blk}], blk, credit, soft, seat, crew), rep / rel (report and release, HST, as the card
+// gives them), seat, crew ([string] or [[pos, name]]), base, notes ([string])}. Every field is text, escaped when drawn.
+function fwgDetail(o) {
+  const own = (o && o.own) || {}, p = (o && o.p) || null;
+  const det = p && p.det && typeof p.det === "object" && Array.isArray(p.det.duties) ? p.det : null;
+  const st = FWG_ISO.test(String(o.start || "")) ? String(o.start) : "";
+  const base = fwgStr(o.base || "HNL", 4);
+  const m = { id: fwgStr(o.id, 12), start: st, k: `${fwgStr(o.id, 12)}|${st}`, src: det ? "pkg" : "none", head: [], duties: [], tot: {},
+    rep: fwgStr(o.rep, 40), rel: fwgStr(o.rel, 40), seat: fwgStr(o.seat || own.seat, 4).toUpperCase(), crew: [], notes: [] };
+  const ops = p ? fwgOperates(p.days) : { range: "", pat: "" };
+  m.head.push(["", `${m.id}${st ? ` : ${st.slice(8, 10)}${FWG_MON[Number(st.slice(5, 7)) - 1] || ""}` : ""}`]);
+  if (ops.pat) m.head.push(["", ops.pat]);
+  const rep = det ? det.rept : p ? p.report : own.report;
+  if (rep) m.head.push(["BSE REPT", `${fwgStr(rep, 5)}L`]);
+  if (ops.range) m.head.push(["Operates", ops.range]);
+  if (det) m.head.push(["Base/Equip", `${base}/${fwgStr(det.eq || "", 4)}`]);
+  if (det) {
+    let dutyAll = 0, dutyOk = true;
+    det.duties.slice(0, 12).forEach((du, i) => {
+      du = du && typeof du === "object" ? du : {};
+      const legs = (Array.isArray(du.legs) ? du.legs : []).slice(0, 30).map((l) => {
+        const [day, dh, flt, dps, ars, depl, arrl, blk, , gr, eq] = (Array.isArray(l) ? l : []).map((x) => fwgStr(x, 8));
+        const n = Number(day);
+        const date = st && Number.isInteger(n) && n >= 1 && n <= 40 ? fwgDay(st, n - 1) : "";
+        return { date, dd: date ? fwgDd(date) : day, dh: dh === "DH", flt, dps, ars, dep: depl, arr: arrl, blk: fwgHM(blk), grnt: fwgHM(gr), eq };
+      });
+      const dm = fwgMins(du.duty);
+      if (dm == null) dutyOk = false; else dutyAll += dm;
+      m.duties.push({ n: i + 1, dd: legs.length ? legs[0].dd : "", rept: fwgStr(du.rept, 5), legs, dend: fwgStr(du.dend, 5),
+        stn: fwgStr(du.stn, 4), layo: fwgHM(du.layo), hotel: fwgStr(du.hotel, 80), van: fwgStr(du.van, 5), tblk: fwgHM(du.tblk),
+        tdhd: fwgHM(du.tdhd), tcrd: fwgHM(du.tcrd), duty: fwgHM(du.duty), fdp: fwgHM(du.fdp) });
+    });
+    const t = det.tot && typeof det.tot === "object" ? det.tot : {};
+    m.tot = { block: fwgHM(t.block), dhd: fwgHM(t.dhd), credit: fwgHM(t.credit), tafb: fwgHM(t.tafb), rig: fwgHM(t.rig),
+      rigC: !!t.rig_c, fdp: fwgHM(t.fdp), duty: dutyOk && m.duties.length ? fwgDur(dutyAll) : "", dend: m.duties.length ? m.duties[m.duties.length - 1].dend : "" };
+  } else {
+    const ds = Array.isArray(own.duties) ? own.duties.slice(0, 12) : [];
+    if (ds.length || own.report || own.blk || own.credit) m.src = "own";
+    ds.forEach((du, i) => {
+      du = du && typeof du === "object" ? du : {};
+      const date = st && Number.isInteger(du.d) && du.d >= 0 && du.d < 40 ? fwgDay(st, du.d) : "";
+      const blk = Number.isFinite(du.blk) ? fwgDur(du.blk) : "";
+      m.duties.push({ n: i + 1, dd: date ? fwgDd(date) : "", rept: i === 0 ? fwgStr(own.report, 5) : "",
+        legs: [{ date, dd: date ? fwgDd(date) : "", dh: false, flt: "", dps: "", ars: fwgStr(du.stn, 4), dep: fwgStr(du.dep_l, 5), arr: fwgStr(du.arr_l, 5), blk, grnt: "", eq: "", sum: true }],
+        dend: "", stn: fwgStr(du.stn, 4), layo: "", hotel: "", van: "", tblk: blk, tdhd: "", tcrd: "", duty: "", fdp: "" });
+    });
+    m.tot = { block: fwgHM(own.blk), credit: fwgHM(own.credit), soft: fwgHM(own.soft) };
+  }
+  m.crew = (Array.isArray(o.crew) ? o.crew : Array.isArray(own.crew) ? own.crew : []).slice(0, 12).map((c) => {
+    if (Array.isArray(c)) return fwgStr(`${c[0] || ""} ${c[1] || ""}`.trim(), 60);
+    const s = fwgStr(c, 60), mm = /^([A-Z]{2,3})\s+(.+?)\s*\((\d{3,7})\)\s*$/.exec(s);
+    return mm ? `${mm[1]} ${mm[3]} ${mm[2]}` : s;
+  }).filter(Boolean);
+  if (o.why) m.notes.push(fwgStr(o.why, 300));
+  for (const n of (Array.isArray(o.notes) ? o.notes : []).slice(0, 4)) m.notes.push(fwgStr(n, 300));
+  return m;
+}
+const FWG_SRC = { pkg: "From the pairings package: local times (L) at each station, as the package prints them (HNL = HST). TDHD and FDP are figured from its GMT columns: FDP runs from report to the last flight's block-in (FAR 117.3); a deadhead after it is duty, not FDP.",
+  own: "From FLICA's pairing page: each duty's first departure to its last arrival, local times.", none: "" };
+const fwgRig = (t) => (t.rig ? `${t.rig}${t.rigC ? " (credit less the legs' credit)" : ""}` : "");
+// wide: a FLICA style printout below the grid (role region, labelled by its title; the close button is .pdx)
+function fwgPanelHtml(m) {
+  const e = fwgEsc, cols = ["DY DD", "DH", "FLTNO", "DPS-ARS", "DEPL", "ARRL", "BLKT", "GRNT", "TBLK", "TDHD", "TCRD", "TDUTY/FDP", "LAYOVER"];
+  const head = m.head.map(([k, v], i) => (i === 0 ? `<h4 id="fwgpt">${e(v)}</h4>` : `<span>${k ? `<span class="k">${e(k)}:</span> ` : ""}${e(v)}</span>`)).join("");
+  let rows = "";
+  m.duties.forEach((du, i) => {
+    du.legs.forEach((l, j) => {
+      const end = j === du.legs.length - 1;
+      rows += `<tr class="lg${l.dh ? " dh" : ""}"><td>${e(l.dd)}</td><td>${l.dh ? "DH" : ""}</td><td>${l.sum ? "Duty" : e(l.flt)}</td><td>${l.sum ? `to ${e(l.ars)}` : `${e(l.dps)}-${e(l.ars)}`}</td>` +
+        `<td class="r">${e(l.dep)}</td><td class="r">${e(l.arr)}</td><td class="r">${e(l.blk)}</td><td class="r">${e(l.grnt)}</td>` +
+        (end ? `<td class="r">${e(du.tblk)}</td><td class="r">${e(du.tdhd)}</td><td class="r">${e(du.tcrd)}</td><td class="r">${e(du.duty)}${du.fdp ? "/" + e(du.fdp) : ""}</td><td>${du.layo ? `${e(du.stn)} ${e(du.layo)}` : ""}</td>`
+          : "<td></td><td></td><td></td><td></td><td></td>") + "</tr>";
+    });
+    const nx = m.duties[i + 1];
+    const bits = [du.dend ? `D-END: ${e(du.dend)}L` : "", nx && nx.rept ? `<b>REPT: ${e(nx.rept)}L</b>` : "",
+      du.hotel ? `<b>${e(du.hotel)}</b>` : "", du.van ? `VAN ${e(du.van)}L` : ""].filter(Boolean);
+    if (bits.length && i < m.duties.length - 1) rows += `<tr class="de"><td colspan="13">${bits.join(" &nbsp; ")}</td></tr>`;
+  });
+  const t = m.tot;
+  const foot = m.src === "pkg" ? `<tr class="ft"><td colspan="8">Total</td><td class="r">${e(t.block)}</td><td class="r">${e(t.dhd)}</td><td class="r">${e(t.credit)}</td><td class="r">${e(t.duty)}${t.fdp ? "/" + e(t.fdp) : ""}</td><td></td></tr>` : "";
+  const sum = [t.dend ? `D-END: ${e(t.dend)}L` : "", t.tafb ? `T.A.F.B.: ${e(t.tafb)}` : "", t.rig ? `TRIP RIG: ${e(fwgRig(t))}` : "",
+    m.src === "own" && t.block ? `Block ${e(t.block)}` : "", m.src === "own" && t.credit ? `Credit ${e(t.credit)}` : "", m.src === "own" && t.soft ? `Soft ${e(t.soft)}` : "",
+    m.rep ? `Report ${e(m.rep)} HST` : "", m.rel ? `Release ${e(m.rel)} HST` : ""].filter(Boolean);
+  return `<div class="fwgp" role="region" aria-labelledby="fwgpt"><div class="fwgph">${head}<button type="button" class="pdx" aria-label="Close the pairing detail">&#10005;</button></div>` +
+    (m.duties.length ? `<div class="fwgpw"><table class="fwgpt"><thead><tr>${cols.map((c, i) => `<th${i >= 4 && i <= 11 ? ' class="r"' : ""}>${c}</th>`).join("")}</tr></thead><tbody>${rows}</tbody>${foot ? `<tfoot>${foot}</tfoot>` : ""}</table></div>` : "") +
+    (sum.length ? `<div class="fwgpl">${sum.join(" &nbsp; ")}</div>` : "") +
+    (m.crew.length || m.seat ? `<div class="fwgpl">${m.crew.length ? `<span class="k">Crew:</span> ${m.crew.map(e).join(" &nbsp; ")}` : ""}${m.seat ? `${m.crew.length ? " &nbsp; " : ""}<span class="k">Seat:</span> ${e(m.seat)}` : ""}</div>` : "") +
+    m.notes.map((n) => `<div class="fwgpn">${e(n)}</div>`).join("") + (FWG_SRC[m.src] ? `<div class="fwgpn">${e(FWG_SRC[m.src])}</div>` : "") + "</div>";
+}
+// narrow: the same detail as stacked lines for the bottom sheet ("900 HNL-SEA 23:00-06:42 blk 5:42"); the header
+// (.fwgsh) is the sheet's drag area, its title labels the dialog
+function fwgSheetHtml(m) {
+  const e = fwgEsc, t = m.tot;
+  const meta = m.head.slice(1).map(([k, v]) => (k ? `${e(k)} ${e(v)}` : e(v))).join(" · ");
+  const duties = m.duties.map((du, i) => {
+    const nx = m.duties[i + 1];
+    const legs = du.legs.map((l) => `<div class="fwgsl${l.dh ? " dh" : ""}">${l.sum ? `Duty to ${e(l.ars)}` : `${l.dh ? "DH " : ""}${e(l.flt)} ${e(l.dps)}-${e(l.ars)}`} ${e(l.dep)}-${e(l.arr)}${l.blk ? ` blk ${e(l.blk)}` : ""}${l.grnt ? ` · grnd ${e(l.grnt)}` : ""}</div>`).join("");
+    const end = [du.dend ? `D-END ${e(du.dend)}L` : "", du.duty ? `duty ${e(du.duty)}` : "", du.fdp ? `FDP ${e(du.fdp)}` : "",
+      du.tblk && !du.legs.every((l) => l.sum) ? `block ${e(du.tblk)}` : "", du.tdhd ? `DH ${e(du.tdhd)}` : "", du.tcrd ? `credit ${e(du.tcrd)}` : ""].filter(Boolean).join(" · ");
+    const lay = i < m.duties.length - 1 && (du.layo || du.hotel || du.van) ? [du.layo ? `<b>${e(du.stn)} ${e(du.layo)}</b>` : `<b>${e(du.stn)}</b>`, du.hotel ? e(du.hotel) : "", du.van ? `VAN ${e(du.van)}L` : "", nx && nx.rept ? `REPT ${e(nx.rept)}L` : ""].filter(Boolean).join(" · ") : "";
+    return `<div class="fwgsd"><div class="fwgsdh">${e(du.dd)}${du.rept ? ` · Report ${e(du.rept)}L` : ""}</div>${legs}${end ? `<div class="fwgse">${end}</div>` : ""}${lay ? `<div class="fwgso">${lay}</div>` : ""}</div>`;
+  }).join("");
+  const tot = [t.block ? `Block ${e(t.block)}` : "", t.dhd && t.dhd !== "0:00" ? `DH ${e(t.dhd)}` : "", t.credit ? `Credit ${e(t.credit)}` : "", t.soft ? `Soft ${e(t.soft)}` : "",
+    t.tafb ? `TAFB ${e(t.tafb)}` : "", t.rig ? `Trip rig ${e(fwgRig(t))}` : "", t.duty || t.fdp ? `Duty/FDP ${e(t.duty)}/${e(t.fdp)}` : "",
+    m.rep ? `Report ${e(m.rep)} HST` : "", m.rel ? `Release ${e(m.rel)} HST` : ""].filter(Boolean).join(" · ");
+  return `<div class="fwgs"><div class="fwgsh"><h4 id="fwgst">${e(m.head[0] ? m.head[0][1] : m.id)}</h4><span class="sp"></span><button type="button" class="pdx" aria-label="Close the pairing detail">&#10005;</button></div>` +
+    (meta ? `<div class="fwgsm">${meta}</div>` : "") + duties + (tot ? `<div class="fwgstot">${tot}</div>` : "") +
+    (m.crew.length || m.seat ? `<div class="fwgsc">${m.crew.length ? `Crew: ${m.crew.map(e).join(" · ")}` : ""}${m.seat ? `${m.crew.length ? " · " : ""}Seat ${e(m.seat)}` : ""}</div>` : "") +
+    m.notes.map((n) => `<div class="fwgsn">${e(n)}</div>`).join("") + (FWG_SRC[m.src] ? `<div class="fwgsn">${e(FWG_SRC[m.src])}</div>` : "") + "</div>";
+}
+// narrow = a phone (a viewport 700 px wide or less, the grid's own breakpoint) or a card under 560 px
+const fwgNarrow = (hc) => { const vw = (typeof innerWidth === "number" && innerWidth) || 0; const w = hc && hc.getBoundingClientRect ? hc.getBoundingClientRect().width : 0;
+  return (vw > 0 && vw <= 700) || (w > 0 && w < 560); };
+// The narrow card's bottom sheet: built once in host, an element of the card's shadow root that its redraws never
+// write, so a Watcher update keeps its scroll, its drag and the focus. show(k, sig, html) writes the content only when
+// sig changes (back to the top for another pairing); a drag down on the handle or the header past 80 px calls
+// onClose(); the card closes it on the backdrop (.fwsb), the close button (.pdx) and Esc, and keeps Tab inside (trap).
+class FwgSheet {
+  constructor(host, onClose) {
+    this.host = host; this.onClose = onClose; this.k = null; this.sig = null; this.y0 = null; this.dy = 0;
+    host.hidden = true;
+    host.innerHTML = '<div class="fwsb"></div><div class="fwss" role="dialog" aria-modal="true" aria-labelledby="fwgst" tabindex="-1">' +
+      '<div class="fwsg"><span class="fwsk"></span></div><div class="fwsc"></div></div>';
+    this.box = host.querySelector(".fwss"); this.body = host.querySelector(".fwsc");
+    this.box.addEventListener("pointerdown", (ev) => {
+      if (this.y0 != null || !ev.target.closest(".fwsg, .fwgsh") || ev.target.closest("button, a")) return;
+      this.y0 = ev.clientY; this.dy = 0; this.pid = ev.pointerId;
+      try { this.box.setPointerCapture(ev.pointerId); } catch (x) { /* an old browser: the drag still works while over the sheet */ }
+      this.box.style.transition = "none";
+    });
+    this.box.addEventListener("pointermove", (ev) => {
+      if (this.y0 == null || ev.pointerId !== this.pid) return;
+      this.dy = Math.max(0, ev.clientY - this.y0); this.box.style.transform = this.dy ? `translateY(${this.dy}px)` : "";
+    });
+    const up = (ev) => {
+      if (this.y0 == null || ev.pointerId !== this.pid) return;
+      const dy = this.dy; this.y0 = null; this.dy = 0; this.box.style.transition = ""; this.box.style.transform = "";
+      if (ev.type === "pointerup" && dy > 80) this.onClose("drag");
+    };
+    this.box.addEventListener("pointerup", up); this.box.addEventListener("pointercancel", up);
+  }
+  get open() { return !this.host.hidden; }
+  show(k, sig, html) {
+    if (sig !== this.sig) { this.body.innerHTML = html; this.sig = sig; if (k !== this.k) this.body.scrollTop = 0; this.k = k; }
+    if (this.host.hidden) {
+      this.host.hidden = false; void this.box.offsetHeight; this.host.classList.add("on");
+      const b = this.body.querySelector(".pdx"); (b || this.box).focus({ preventScroll: true });
+    }
+  }
+  hide() {
+    if (this.host.hidden) return;
+    this.host.classList.remove("on"); this.host.hidden = true; this.body.innerHTML = ""; this.k = null; this.sig = null;
+    this.y0 = null; this.box.style.transform = ""; this.box.style.transition = "";
+  }
+  trap(ev) {
+    if (this.host.hidden || ev.key !== "Tab") return;
+    const f = [...this.host.querySelectorAll("button, a[href]")], a = this.host.getRootNode().activeElement, i = f.indexOf(a);
+    if (!f.length) { ev.preventDefault(); this.box.focus(); return; }
+    if (i < 0 || (ev.shiftKey ? i === 0 : i === f.length - 1)) { ev.preventDefault(); f[ev.shiftKey ? f.length - 1 : 0].focus(); }
+  }
+}
+const FWG_CSS = `
+      :host([dark]){--fw-ok:#81c784;--fw-err:#ef9a9a;--fw-warn:#ffb74d;--fw-info:#90caf9}
+      :host{--fwg-hl:rgba(0,116,200,.13)}:host([dark]){--fwg-hl:rgba(120,180,255,.2)}
+      .fwgf{font-size:12.5px;line-height:1.25}
+      .wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}
+      .cal td:nth-child(1),.cal td:nth-child(2),.cal th:nth-child(1),.cal th:nth-child(2){position:sticky;background:var(--card-background-color,#fff);z-index:1}
+      .cal td:nth-child(1),.cal th:nth-child(1){left:0}.cal td:nth-child(2),.cal th:nth-child(2){left:34px}
+      .cal th{background:var(--card-background-color,#fff)}
+      @media (max-width:700px){.fwgf{font-size:10.5px}.cal td{padding:1px 3px}
+        .cal td:nth-child(1),.cal th:nth-child(1){position:static}.cal td:nth-child(2),.cal th:nth-child(2){left:0;border-left:none}}
+      .frame{width:fit-content;max-width:100%;margin:0 auto}
+      .u{font-size:11px;color:var(--secondary-text-color)}
+      .cal{border-collapse:collapse;margin:0 auto}
+      .cal{border:1px solid var(--divider-color)}
+      .cal td{padding:1px 6px;white-space:nowrap;vertical-align:top;border-left:1px solid var(--divider-color,#e0e0e0);border-bottom:1px solid var(--divider-color,#e0e0e0)}
+      .cal th{border-left:1px solid var(--divider-color,#e0e0e0)}.cal td:first-child,.cal th:first-child{border-left:none}
+      .cal td:nth-child(2){border-left:none}
+      .cal th{padding:2px 6px;font-size:10.5px;font-weight:600;text-align:left;color:var(--secondary-text-color);border-bottom:1px solid var(--divider-color);white-space:nowrap}
+      .cal td.t{text-align:right;font-size:11px}
+      .cal td.n{text-align:right;padding-right:10px}
+      .cal tr.bx td:nth-child(4){box-shadow:inset 2px 0 0 #444,inset -2px 0 0 #444}
+      .cal tr.bxs td:nth-child(4){box-shadow:inset 2px 0 0 #444,inset -2px 0 0 #444,inset 0 2px 0 #444}
+      .cal tr.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #444,inset -2px 0 0 #444,inset 0 -2px 0 #444}
+      .cal tr.bxs.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #444,inset -2px 0 0 #444,inset 0 2px 0 #444,inset 0 -2px 0 #444}
+      .cal tr.wk td:nth-child(1),.cal tr.wk td:nth-child(2){background:#dde6f3;color:#1f2a44}
+      .cal tr.hol td:nth-child(1),.cal tr.hol td:nth-child(2){background:#fff0a8;color:#4e3b00}
+      .cal tr.hol2 td:nth-child(1),.cal tr.hol2 td:nth-child(2){background:#fff0a8;color:#4e3b00;background-image:repeating-linear-gradient(135deg,transparent 0 5px,rgba(0,0,0,.06) 5px 7px)}
+      @media (prefers-color-scheme: dark){
+        .cal tr.bx td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb}
+        .cal tr.bxs td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb}
+        .cal tr.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 -2px 0 #bbb}
+        .cal tr.bxs.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb,inset 0 -2px 0 #bbb}
+      }
+      .cal tr.oth td{color:var(--secondary-text-color)}
+      .trip{color:var(--primary-color);font-weight:600}
+      .vac{font-weight:600}
+      .tm{font-size:10.5px;color:var(--secondary-text-color)}
+      .tag{cursor:help}.lay{display:inline-block;min-width:28px}
+      .st{color:var(--fw-ok,#2e7d32);font-weight:700;cursor:help}.st.fly{color:var(--fw-info,#1565c0)}
+      .tot{margin-top:8px;font-size:14px;font-weight:700;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tgrp{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tpay{flex-wrap:nowrap}.tot .ti{white-space:nowrap}.tot .k{font-weight:600;color:var(--secondary-text-color);font-size:12px;margin-right:4px}.tot .bad{color:var(--fw-err,#c62828)}
+      .trip[data-k]{cursor:pointer}.trip[aria-expanded="true"]{text-decoration:underline;text-underline-offset:2px}
+      .trip:focus-visible,.pdx:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px;border-radius:3px}
+      .cal tr.pdh[data-d] td:nth-child(n){background-image:linear-gradient(var(--fwg-hl),var(--fwg-hl))}
+      .cal tr.pdh.hol2[data-d] td:nth-child(-n+2){background-image:linear-gradient(var(--fwg-hl),var(--fwg-hl)),repeating-linear-gradient(135deg,transparent 0 5px,rgba(0,0,0,.06) 5px 7px)}
+      .fwgp{margin:8px 0 2px;padding:6px 8px 8px;border:1px solid var(--divider-color,#ccc);border-radius:8px;max-width:100%;box-sizing:border-box;text-align:left;font-size:12px;line-height:1.3;scroll-margin:12px}
+      .fwgph{display:flex;flex-wrap:wrap;align-items:center;gap:2px 14px;margin:0 0 4px}.fwgph h4{margin:0;font-size:14px;color:var(--primary-color)}
+      .fwgp .k,.fwgs .k{color:var(--secondary-text-color);font-weight:600}
+      .pdx{margin-left:auto;min-width:44px;min-height:44px;padding:0 10px;border:0;border-radius:8px;background:transparent;color:var(--primary-text-color);font:inherit;font-size:18px;line-height:1;cursor:pointer}.pdx:hover{background:rgba(127,127,127,.15)}
+      .fwgpw{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}
+      .fwgpt{border-collapse:collapse;margin:0;font-size:11.5px;font-variant-numeric:tabular-nums}
+      .fwgpt th{padding:2px 6px;font-size:10px;font-weight:600;text-align:left;color:var(--secondary-text-color);border-bottom:1px solid var(--divider-color,#e0e0e0);white-space:nowrap}
+      .fwgpt td{padding:1px 6px;white-space:nowrap;vertical-align:top}.fwgpt .r{text-align:right}
+      .fwgpt tr.dh td{color:var(--secondary-text-color);font-style:italic}
+      .fwgpt tr.de td{padding:0 6px 5px;color:var(--secondary-text-color);border-bottom:1px solid var(--divider-color,#e0e0e0);white-space:normal}.fwgpt tr.de b{color:var(--primary-text-color)}
+      .fwgpt tr.ft td{padding-top:3px;font-weight:700}
+      .fwgpl{margin-top:5px}.fwgpn{margin-top:4px;font-size:11px;color:var(--secondary-text-color)}
+      .fwm{display:contents}.fwsh[hidden]{display:none}
+      .fwsb{position:fixed;left:0;top:0;right:0;bottom:0;z-index:7;background:rgba(0,0,0,.35);touch-action:none}
+      .fwss{position:fixed;left:0;right:0;bottom:0;z-index:8;margin:0 auto;max-width:640px;height:60vh;height:60dvh;max-height:calc(100vh - 40px);display:flex;flex-direction:column;box-sizing:border-box;padding:0 12px calc(12px + env(safe-area-inset-bottom,0px));background:var(--card-background-color,#fff);color:var(--primary-text-color,#212121);border-radius:14px 14px 0 0;box-shadow:0 -6px 24px rgba(0,0,0,.35);transform:translateY(105%);transition:transform .22s ease-out;font-size:13px;line-height:1.35;outline:none}
+      .fwsh.on .fwss{transform:translateY(0)}
+      .fwsg{flex:none;display:flex;justify-content:center;padding:8px 0 6px;cursor:grab;touch-action:none}.fwsk{width:40px;height:5px;border-radius:3px;background:var(--secondary-text-color,#888);opacity:.6}
+      .fwsc{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+      .fwgs{font-variant-numeric:tabular-nums}
+      .fwgsh{display:flex;align-items:center;gap:8px;position:sticky;top:0;z-index:1;background:var(--card-background-color,#fff);touch-action:none;cursor:grab}.fwgsh h4{margin:0;font-size:16px;color:var(--primary-color)}.fwgsh .sp{flex:1}
+      .fwgsm{margin:0 0 6px;font-size:12px;color:var(--secondary-text-color)}
+      .fwgsd{padding:5px 0 6px;border-top:1px solid var(--divider-color,#e0e0e0)}.fwgsdh{font-weight:700;margin-bottom:2px}
+      .fwgsl{padding:1px 0 1px 8px}.fwgsl.dh{color:var(--secondary-text-color);font-style:italic}
+      .fwgse,.fwgso{padding-left:8px;font-size:12px;color:var(--secondary-text-color)}.fwgso b{color:var(--primary-text-color)}
+      .fwgstot{padding:6px 0 2px;border-top:1px solid var(--divider-color,#e0e0e0);font-weight:600}
+      .fwgsc{margin-top:4px;font-size:12px}.fwgsn{margin-top:4px;font-size:11.5px;color:var(--secondary-text-color)}
+      @media (prefers-reduced-motion: reduce){.fwss{transition:none}}
+`;
+// ---- end shared schedule grid ----
 
 class FlightWatcherScheduleCard extends HTMLElement {
   setConfig(c) { this.c = c || {}; this._pk = {}; }
@@ -114,34 +465,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const mm = MON3.indexOf((s || "").slice(2, 5).toUpperCase()); if (mm < 0) return "";
     return `${y}-${String(mm + 1).padStart(2, "0")}-${(s || "").slice(0, 2)}`;
   }
-  // US federal holidays (observed on the actual date): yellow day/date cells
-  _hol(iso) {
-    const [y, m, d] = iso.split("-").map(Number);
-    const nth = (mo, dow, n) => { const f = new Date(Date.UTC(y, mo - 1, 1)).getUTCDay(); return 1 + ((dow - f + 7) % 7) + (n - 1) * 7; };
-    const last = (mo, dow) => { const l = new Date(Date.UTC(y, mo, 0)); return l.getUTCDate() - ((l.getUTCDay() - dow + 7) % 7); };
-    if (m === 1 && (d === 1 || d === nth(1, 1, 3))) return true;
-    if (m === 2 && d === nth(2, 1, 3)) return true;
-    if (m === 5 && d === last(5, 1)) return true;
-    if (m === 6 && d === 19) return true;
-    if (m === 7 && d === 4) return true;
-    if (m === 9 && d === nth(9, 1, 1)) return true;
-    if (m === 10 && d === nth(10, 1, 2)) return true;
-    if (m === 11 && (d === 11 || d === nth(11, 4, 4))) return true;
-    if (m === 12 && d === 25) return true;
-    // Hawaii state holidays (Ryan, Nov 3 2026): Prince Kuhio Mar 26, Good Friday, Kamehameha Jun 11, Statehood 3rd Fri Aug
-    if (m === 3 && d === 26) return true;
-    if (m === 6 && d === 11) return true;
-    if (m === 8 && d === nth(8, 5, 3)) return true;
-    const e = this._easter(y); const gf = new Date(Date.UTC(y, e[0] - 1, e[1] - 2));
-    if (m === gf.getUTCMonth() + 1 && d === gf.getUTCDate()) return true;
-    return false;
-  }
-  _easter(y) { // Anonymous Gregorian algorithm -> [month, day]
-    const a = y % 19, b = Math.floor(y / 100), c = y % 100, dd = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
-    const h = (19 * a + b - dd - g + 15) % 30, i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, mm = Math.floor((a + 11 * h + 22 * l) / 451);
-    const month = Math.floor((h + l - 7 * mm + 114) / 31), day = ((h + l - 7 * mm + 114) % 31) + 1;
-    return [month, day];
-  }
+  // US federal and Hawaii state holidays: the shared grid's (fwgHol)
+  _hol(iso) { return fwgHol(iso); }
+  _easter(y) { return fwgEaster(y); }
   _esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
   // wall-clock HST as a UTC-based ms value (no time zone maths: everything is HNL local)
   _t(iso, hhmm) { const [h, m] = String(hhmm || "0:0").split(":").map((x) => parseInt(x, 10) || 0); return Date.parse(iso + "T00:00:00Z") + (h * 60 + m) * 60e3; }
@@ -164,31 +490,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
     }).catch(() => { this._sc[key] = false; });
     return null;
   }
-  _pack(key) {
-    if (this._pk[key] !== undefined) return this._pk[key];
-    this._pk[key] = null;
-    // 1.7.1 (F#32): a package known to be missing redraws too, so the month's Improved-Pay-Gross is reported then
-    const gone = () => { this._pk[key] = false; this._sig = null; if (this._h) this.hass = this._h; };
-    fetch(`/local/flight-watcher/pairings_${key}.json?v=1`, { cache: "no-cache" }).then((r) => (r.ok ? r.json() : null)).then((j) => {
-      if (!j) { gone(); return; }
-      const [y, mo] = key.split("-").map(Number);
-      const nxt = new Date(Date.UTC(y, mo, 1)).toISOString().slice(0, 7);
-      const prv = new Date(Date.UTC(y, mo - 2, 1)).toISOString().slice(0, 7);
-      // FW-0014: a period that starts last month ("start": "2026-12-31" in January): a day from its first day up is last month's
-      const sd = typeof j.start === "string" && j.start.slice(0, 7) === prv ? Number(j.start.slice(8, 10)) : 99;
-      const ix = Object.fromEntries(j.cols.map((c, i) => [c, i]));
-      const map = {};
-      for (const r of j.rows) {
-        const days = String(r[ix.days]).split(" ").filter(Boolean)
-          .map((d) => (d[0] === "D" ? `${nxt}-${d.slice(1).padStart(2, "0")}` : `${Number(d) >= sd ? prv : key}-${d.padStart(2, "0")}`));
-        map[r[ix.id]] = { id: r[ix.id], report: r[ix.report], dep: r[ix.dep], release: r[ix.release], relDays: r[ix.rel_days],
-          firstDuty: r[ix.first_duty_min], route: r[ix.route], credit: r[ix.credit], tafb: r[ix.tafb], days: new Set(days),
-          block: ix.block != null ? r[ix.block] : "", crew: ix.crew != null ? r[ix.crew] : "" };
-      }
-      this._pk[key] = map; this._sig = null; this.hass = this._h;
-    }).catch(gone);
-    return null;
-  }
+  // the month's pairings package (fwgPack): its {id: entry} map, null while it loads, false when there is none.
+  // 1.7.1 (F#32): a package known to be missing redraws too, so the month's Improved-Pay-Gross is reported then
+  _pack(key) { const e = this._packE(key); return e ? e.map : e; }
+  _packE(key) { return fwgPack(this._pk, PAIRINGS_URL, key, () => { this._sig = null; if (this._h) this.hass = this._h; }); }
   // FW-0048 (Ryan, Nov 6): the auto swap / auto drop / auto add tools stay hidden for every user but Ryan until he
   // turns them on for others. Here that is the DROP mark (it composes a drop request, Test mode); the trade mark and the
   // swap / pick-up ideas are read only and stay for everyone. Ryan is the HA owner (HA has exactly one), so the viewer
@@ -206,7 +511,20 @@ class FlightWatcherScheduleCard extends HTMLElement {
     if (this._locked === undefined) { let v = "1"; try { const g = localStorage.getItem("flight_watcher_lock"); v = g === null ? "1" : g; } catch (e) { v = "1"; } this._locked = v !== "0"; }  // v48: locked by default
     if (!this.shadowRoot) {
       this.attachShadow({ mode: "open" });
+      // 1.7.6: the redraws write .fwm only; .fwsh holds the narrow card's bottom sheet (FwgSheet), kept across them
+      this.shadowRoot.innerHTML = '<div class="fwm"></div><div class="fwsh" hidden></div>';
+      this._sheet = new FwgSheet(this.shadowRoot.querySelector(".fwsh"), () => this._pdClose(true));
+      this.shadowRoot.addEventListener("keydown", (e) => {  // a pairing is a button: Enter or Space opens its detail
+        const t = e.target && e.target.closest ? e.target.closest(".trip[data-k]") : null;
+        if (t && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); this._pdToggle(t.dataset.k); }
+      });
       this.shadowRoot.addEventListener("click", (e) => {
+        // 1.7.6 (Ryan, Nov 14): a tap on a pairing opens its detail (below the grid, or a bottom sheet on a phone); the
+        // same pairing again, the close button, the sheet's backdrop or Esc closes it, another pairing swaps it. It only
+        // reads, so the lock does not apply; "would trade" is the arrow mark's (.trb) alone
+        if (e.target.closest(".pdx, .fwsb")) { this._pdClose(true); return; }
+        const pt = e.target.closest(".trip[data-k]");
+        if (pt) { this._pdToggle(pt.dataset.k); return; }
         const vb = e.target.closest(".vb");  // v51: schedule versions
         if (vb) { const k = this._key().key; const n = ((this._vmonths()[k] || {}).versions || []).length;
           let i = this._vsel && this._vsel[k] != null ? this._vsel[k] : n - 1; const a = vb.dataset.v;
@@ -227,7 +545,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/drop/set", payload: JSON.stringify({ key: db.dataset.k }) });
           return;
         }
-        const tp = e.target.closest(".trip, .trb");
+        const tp = e.target.closest(".trb");  // 1.7.6: the pairing itself opens its detail
         if (tp && tp.dataset.k && tp.dataset.k.split("|")[1] <= new Date(Date.now() - 10 * H).toISOString().slice(0, 10)) return;  // v46: a started trip cannot be traded
         if (tp && tp.dataset.k && locked) { this._say(`Settings are locked: tap the lock at the top left to change ${this._marks().replace(" and ", " or ")}.`); return; }
         if (tp && tp.dataset.k) {
@@ -297,6 +615,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const st = S["sensor.flight_watcher_schedule"];
     const SM = (st && st.attributes && st.attributes.months) || {};  // 1.6.2: no month read yet is no error
     const { y, m, key } = this._key();
+    if (this._pd && this._pd.key !== key) this._pd = null;  // 1.7.6: the pairing detail closes on a month change
+    const narrow = !!this._pd && fwgNarrow(this._hc());
     let mon = SM[key] || null;
     // v51 (Ryan): schedule versions MM.NNN; arrows step through them, the house returns to the current one
     const VS = this._vmonths();
@@ -327,6 +647,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const swapFor = {};
     for (const i of swaps) (swapFor[i.for] = swapFor[i.for] || []).push(i);
     let body = "", note = "", chtml = "", vhtml = "", panel = "";
+    let pdM = null, pdK = "";
+    const pdDays = new Set();
     if (!mon) {
       body = `<div class="none">No schedule for ${MONTHS[m]} yet.</div>`;
     } else {
@@ -670,12 +992,36 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const nO = r.list.filter((x) => x.src).length, best = Math.max(...r.list.map((x) => x.delta));
         return `<span class="idb${nO ? " live" : ""}" data-d="${d}" data-trip="${this._esc(trip || "")}" title="${r.o ? "Swap ideas" : "Pick-up ideas"}: ${nO} open now, ${r.list.length} in the package">&#9992;&#xFE0E;${nO ? " " + nO : ""}${best > 0 ? ` <small>+${usd(best)}</small>` : ""}</span>`;
       };
+      // 1.7.6: the open pairing detail (this._pd {key, k}): its model (the package's legs when it lists this exact pairing
+      // on that day; else what FLICA's pairing page gave, with why) and its rows, the report day to the release day
+      if (this._pd) {
+        pdK = this._pd.k;
+        const [ptr, pst] = pdK.split("|");
+        const o = own.find((x) => x.it.trip === ptr && x.it.start === pst);
+        const t = ownT[pdK] || {};
+        const pe = /^\d{4}-\d{2}-\d{2}$/.test(pst || "") ? fwgPackFor(this._pk, PAIRINGS_URL, pst, () => { this._sig = null; if (this._h) this.hass = this._h; }, ptr) : false;
+        const has = !!pe && Object.prototype.hasOwnProperty.call(pe.map, ptr);
+        const p = has && pe.map[ptr].days.has(pst) ? pe.map[ptr] : null;
+        const pmo = pe ? `${MONTHS[parseInt(pe.key.slice(5, 7), 10) - 1]} ${pe.key.slice(0, 4)}` : "";
+        const wmd = (ms) => `${this._hm(ms)} ${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(ms).getUTCDay()]} ${mdy(this._d(ms))}`;
+        let why = p && p.det ? "" : pe === null ? "Loading the pairings package."
+          : pe === false ? `No pairings package on file for the bid period of ${mdy(pst)}: the package detail is not on file.`
+          : !has && /^[A-Z]\d{4}[A-Z]$/.test(ptr) && Object.prototype.hasOwnProperty.call(pe.map, ptr.slice(0, 5)) ? `${ptr} is a pairing FLICA rebuilt: the ${pmo} pairings package has ${ptr.slice(0, 5)}, not this trip, so the package detail is not on file.`
+          : !has ? `${ptr} is not in the ${pmo} pairings package: the package detail is not on file.`
+          : !p ? `The ${pmo} pairings package does not list ${ptr} on ${mdy(pst)}: the package detail is not on file.`
+          : `The ${pmo} pairings file has no leg detail yet: an older Watcher wrote it, and the next update reads the package again.`;
+        if (why && !(t.duties && t.duties.length) && !t.report) why += " FLICA's pairing page for this trip is not read yet either.";
+        pdM = fwgDetail({ id: ptr, start: pst, p, why, own: t, seat: t.seat, crew: t.crew,
+          rep: o && o.rep ? wmd(o.rep) : "", rel: o && o.rel ? wmd(o.rel) : "" });
+        const end = o ? (o.rel ? this._d(o.rel) : o.it.end) : pst;
+        for (let x = pst, n = 0; x && x <= end && n < 40; x = this._d(Date.parse(x + "T00:00:00Z") + 24 * H), n++) pdDays.add(x);
+      }
       const rows = (mon.days || []).map(([d, trip, lay]) => {
         const dt = new Date(d + "T12:00:00"); const wk = dt.getDay() === 0 || dt.getDay() === 6;
         const other = dt.getMonth() !== m;
         const sc = this._school(d); const noSchool = !!(sc && sc.days.has(d));
         const pp = trip === PAYP ? (ppDay[d] || null) : null;  // 1.7.2: a PAYP day (pay protected, PWA Definitions 57)
-        const t = trip === "VAC" ? `<span class="vac">VAC</span>` : trip === PAYP ? `<span class="payp tag" title="${this._esc(ppTitle(pp))}">PAYP</span>` : (trip ? `<span class="trip${trade.has(trip + "|" + d) ? " tr" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${this._esc(((ownT[`${trip}|${d}`] || {}).crew || []).join("\n") || "crew not read yet")}">${this._esc(trip)}</span>${d <= today ? "" : `<span class="trb${trade.has(trip + "|" + d) ? " on" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${trade.has(trip + "|" + d) ? "Marked: would trade this trip for a better one. Tap to unmark." : "Tap to mark this trip as one you would trade for a better one."}">&#8644;</span>`}${d <= today || !admin ? "" : `<span class="drb${dropM.has(trip + "|" + d) ? (dropR[trip + "|" + d] ? " on rdy" : " on") : ""}" data-k="${this._esc(trip + "|" + d)}" title="${dropR[trip + "|" + d] ? "Grid green on every day: drop request drafted (draft only, never sent: drop it yourself in FLICA). Tap to unmark." : dropM.has(trip + "|" + d) ? "Marked: would DROP this trip once the reserve grid is green on every day of it. Tap to unmark." : "Tap to mark this trip as one you would DROP when the grid allows it."}">&#8615;</span>`}` : "");
+        const t = trip === "VAC" ? `<span class="vac">VAC</span>` : trip === PAYP ? `<span class="payp tag" title="${this._esc(ppTitle(pp))}">PAYP</span>` : (trip ? `<span class="trip${trade.has(trip + "|" + d) ? " tr" : ""}" data-k="${this._esc(trip + "|" + d)}" role="button" tabindex="0" aria-expanded="${pdK === trip + "|" + d ? "true" : "false"}" title="${this._esc(((ownT[`${trip}|${d}`] || {}).crew || []).join("\n") || "crew not read yet")}">${this._esc(trip)}</span>${d <= today ? "" : `<span class="trb${trade.has(trip + "|" + d) ? " on" : ""}" data-k="${this._esc(trip + "|" + d)}" title="${trade.has(trip + "|" + d) ? "Marked: would trade this trip for a better one. Tap to unmark." : "Tap to mark this trip as one you would trade for a better one."}">&#8644;</span>`}${d <= today || !admin ? "" : `<span class="drb${dropM.has(trip + "|" + d) ? (dropR[trip + "|" + d] ? " on rdy" : " on") : ""}" data-k="${this._esc(trip + "|" + d)}" title="${dropR[trip + "|" + d] ? "Grid green on every day: drop request drafted (draft only, never sent: drop it yourself in FLICA). Tap to unmark." : dropM.has(trip + "|" + d) ? "Marked: would DROP this trip once the reserve grid is green on every day of it. Tap to unmark." : "Tap to mark this trip as one you would DROP when the grid allows it."}">&#8615;</span>`}` : "");
         const sw = (swapFor[trip + "|" + d] || []).slice(0, 2).map((i) => `<span class="tag sw" title="${this._esc([`Swap ${trip} for ${i.pairing}`, `${i.dates}  ${i.layover || i.turn || ""}`, i.why, i.src === "T" ? "On the Tradeboard" : "In open time"].join("\n"))}">&#8644; ${this._esc(i.layover || i.turn || "")}(${this._esc(i.pairing)}) ${this._esc(i.soft_gain)}</span>`).join("<br>");
         const crewT = this._esc(((ownT[`${trip}|${d}`] || {}).crew || []).join("\n") || "crew not read yet");
         const rp = repOn[d] ? ` <span class="tm tag" title="${trip && trip !== "VAC" ? `${trip} crew:\n${crewT}\n\nReport ${repOn[d]}` : `Report ${repOn[d]}`}">R ${repOn[d]}</span>` : "";
@@ -725,7 +1071,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const tripSpan = own.find((o) => o.it.start <= d && d <= (o.rel ? this._d(o.rel) : o.it.end));
         const bx = tripSpan ? " bx" + (tripSpan.it.start === d ? " bxs" : "") + ((o => o.rel ? this._d(o.rel) : o.it.end)(tripSpan) === d ? " bxe" : "") : "";
         const lg = legalOn[d]; const lcell = lg ? `<span class="tag lgl" title="${this._esc([`Released ${lg.rel}`, `Legal to report ${lg.t} (11 h, PWA 10.E.1.a)`, `For a 12 h+ duty leaving 1400-0359: ${lg.t18} (18 h, PWA 10.E.1.b)`].join("\n"))}">${lg.t}</span>` : "";
-        return `<tr data-d="${d}" class="${wk ? "wk" : ""}${noSchool ? " hol" : (this._hol(d) ? " hol2" : "")}${other ? " oth" : ""}${blocked.has(d) ? " blk" : ""}${trip === "VAC" ? " vac" : ""}${gb ? " gg" : (gc ? " gx" : "")}${r30.has(d) ? " r30" : ""}${bx}"><td>${DOW[dt.getDay()]}</td><td class="n" title="${r30.has(d) ? this._esc(r30Notes[d]) : ""}">${d.slice(8)}</td>` +
+        return `<tr data-d="${d}" class="${wk ? "wk" : ""}${noSchool ? " hol" : (this._hol(d) ? " hol2" : "")}${other ? " oth" : ""}${blocked.has(d) ? " blk" : ""}${trip === "VAC" ? " vac" : ""}${gb ? " gg" : (gc ? " gx" : "")}${r30.has(d) ? " r30" : ""}${bx}${pdDays.has(d) ? " pdh" : ""}"><td>${DOW[dt.getDay()]}</td><td class="n" title="${r30.has(d) ? this._esc(r30Notes[d]) : ""}">${d.slice(8)}</td>` +
           `<td>${t}</td><td>${l}${rp}${rl}</td><td class="t${splitNote && trip !== PAYP ? " split" : ""}" title="${this._esc(splitNote)}">${this._esc(bcs[0])}</td><td class="t${splitNote && trip !== PAYP ? " split" : ""}${trip === PAYP ? " ppc" : ""}" title="${this._esc(splitNote)}">${this._esc(bcs[1])}${ppH != null && pp.est ? ' <span class="k">est</span>' : ""}</td><td class="t">${this._esc(bcs[2])}</td><td class="t tot1"><span class="pay" data-info="${this._esc(payT)}" data-btn="${this._esc(erBtn)}" title="${this._esc(payT)}">${usd(total)}</span></td><td class="t" title="Pay-Gross less ${fed}% federal and ${stt}% state">${usd(net)}</td><td class="gr">${gcell}</td><td class="t far${fo && fo.bad30 ? " bad" : ""}${fo && fo.ok30 ? " ok30" : ""}${fo && fo.t30 === "&#8211;" ? " mid" : ""}" title="${fo ? this._esc(fo.t30t) : ""}">${fo ? fo.t30 : ""}</td><td class="t far${fo && fo.over ? " bad" : ""}" title="${fo ? this._esc(fo.bt) : ""}">${fo ? fo.b : ""}</td><td class="t far${fo && fo.rbad ? " bad" : ""}" title="${fo ? this._esc(fo.rt) : ""}">${fo ? fo.room : ""}</td><td class="lg">${lcell}</td><td class="o">${(opens[d] || []).join("<br>")}</td><td class="tg">${ideaBtn(d, trip)}</td></tr>`;
       }).join("");
       // fix pass (PWA 4.R.1): a PAYP with a trip added over all its days has no row; FLICA's month credit holds it
@@ -785,7 +1131,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         }
       }
       const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th>Block</th><th>Credit</th><th>Soft</th><th title="Credit pay + RO + RO+15%; hover or tap for the breakdown">Pay-Gross</th><th>Pay-Net</th><th title="Reserve grid net reserves">Res Grid</th><th title="Check MM/DD = a 30 h break falls in the 168 h before a report that day and ended on MM/DD, FAR 117.25(b). The teal edge on a day marks the break itself. Hover for the hours and 'covered until'.">FAR-30/7</th><th title="Block flown in the 672 h ending that day, FAR 117.23(b)(1)">FAR-100/672</th><th title="100:00 minus the busiest 672 h window the day falls in, back and forward">Room</th><th title="Earliest report for another trip">Legal next</th><th>Open</th><th title="Tap the airplane: swap or pick-up ideas for that day, with the Pay-Gross difference">Ideas</th></tr>`;
-      body = `<div class="wrap"><table class="cal">${head}${rows}</table></div><div class="tot" title="${this._esc(`${MONTHS[m]} totals: flying credited to the month each segment originates (PWA 4.A) plus vacation days at ${hm(VAC_H)} (PWA 6.J) and pay protected (PAYP) credit (PWA Definitions 57). Pay at ${rateTxt}/credit h incl. RO and RO+15% where on; net after the tax settings. Checked against FLICA's Block and Credit.`)}">${tot}</div>`;
+      body = `<div class="wrap"><table class="cal">${head}${rows}</table></div>${pdM && !narrow ? fwgPanelHtml(pdM) : ""}<div class="tot" title="${this._esc(`${MONTHS[m]} totals: flying credited to the month each segment originates (PWA 4.A) plus vacation days at ${hm(VAC_H)} (PWA 6.J) and pay protected (PAYP) credit (PWA Definitions 57). Pay at ${rateTxt}/credit h incl. RO and RO+15% where on; net after the tax settings. Checked against FLICA's Block and Credit.`)}">${tot}</div>`;
     }
     const upd = awd0 ? "" : st && st.attributes ? (st.attributes.updated || "") : "";
     // 1.6.2: the award label and the read status sit above the grid (or the 'No schedule' line)
@@ -798,66 +1144,42 @@ class FlightWatcherScheduleCard extends HTMLElement {
       (unconf.length ? `<div class="unc ubn">Set your tax and longevity in Pay settings (below): ${unconf.map((e) => PAY_PREF_LABEL[e]).join(", ")} ${unconf.length > 1 ? "are" : "is"} not set yet; ${noYear ? "no pay is figured until your longevity year is set" : "pay is estimated with them as shown"}.</div>` : "");
     const flagged = PAY_PREFS.filter((e) => ((S[e] || {}).attributes || {}).unconfirmed === true && !(e === PAY_PREFS[2] && lyByDoh));  // values to keep
     const sel = (lo, hi, step, cur, suf) => { const o = []; for (let v = lo; v <= hi + 1e-9; v += step) { const r = Math.round(v * 100) / 100; o.push(`<option value="${r}"${Math.abs(r - cur) < 1e-9 ? " selected" : ""}>${r}${suf}</option>`); } return o.join(""); };
-    this.shadowRoot.innerHTML = `<style>
-      :host([dark]){--fw-ok:#81c784;--fw-err:#ef9a9a;--fw-warn:#ffb74d;--fw-info:#90caf9}
+    const main = this.shadowRoot.querySelector(".fwm");
+    const ae = this.shadowRoot.activeElement;
+    const fk = ae && ae.matches && ae.matches(".fwm .trip[data-k]") ? ae.dataset.k : "";  // the pairing that has the focus
+    main.innerHTML = `<style>${FWG_CSS}
       ha-card{padding:10px 8px 12px;font-size:12.5px;line-height:1.25;box-sizing:border-box}
-      .wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}
-      .cal td:nth-child(1),.cal td:nth-child(2),.cal th:nth-child(1),.cal th:nth-child(2){position:sticky;background:var(--card-background-color,#fff);z-index:1}
-      .cal td:nth-child(1),.cal th:nth-child(1){left:0}.cal td:nth-child(2),.cal th:nth-child(2){left:34px}
-      .cal th{background:var(--card-background-color,#fff)}
-      @media (max-width:700px){ha-card{font-size:10.5px;padding:6px 3px 8px}.cal td{padding:1px 3px}
-        .cal td:nth-child(1),.cal th:nth-child(1){position:static}.cal td:nth-child(2),.cal th:nth-child(2){left:0;border-left:none}
+      @media (max-width:700px){ha-card{font-size:10.5px;padding:6px 3px 8px}
         .lt td:first-child{width:90px}.set span{display:block;margin:2px 0}.nav{font-size:20px}}
       .vbar{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 14px;text-align:left;font-size:12px;margin:0 0 6px;padding-left:0}.vbar .vpay{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 10px}.vbar .nw{white-space:nowrap}
       @media (max-width:700px){.vbar{font-size:11px;column-gap:10px}.vbar .vpay{column-gap:8px}.vbar .vb{font-size:12px}}.vbar .vb{cursor:pointer;padding:0 6px;color:var(--primary-color)}.vbar .vb.here{opacity:.5}.vbar .vch{opacity:.7;font-size:11px}.vbar .up,.ipanel .up{color:var(--fw-ok,#2e7d32)}.vbar .dn,.ipanel .dn{color:var(--fw-err,#c62828)}
       .idb{cursor:pointer;color:var(--secondary-text-color,#727272);white-space:nowrap}.idb.live{color:var(--primary-color);font-weight:700}.idb small{color:var(--fw-ok,#2e7d32)}
       .ipanel{margin:10px 0;padding:8px;border:1px solid var(--divider-color,#ccc);border-radius:8px}.ipanel .ihd{margin-bottom:6px}.ipanel .ix{float:right;cursor:pointer;padding:0 6px}
       .itab{border-collapse:collapse;font-size:12px;width:100%}.itab td,.itab th{border-bottom:1px solid var(--divider-color,#ddd);padding:3px 5px;text-align:left}.itab td.t{text-align:right}.itab tr.off{opacity:.55}
-      .hd2{display:flex;align-items:center;gap:8px;margin:0 0 6px;flex-wrap:wrap}.hd2 .sp{flex:1}.frame{width:fit-content;max-width:100%;margin:0 auto}.chg{margin:6px auto 0;max-width:620px;font-size:11px;color:var(--secondary-text-color);text-align:center}.chg summary{cursor:pointer;font-weight:600;font-size:11px;list-style:none}.chg summary::-webkit-details-marker{display:none}.chg summary::before{content:"\\25B8 "}.chg[open] summary::before{content:"\\25BE "}.chg ul{display:inline-block;text-align:left;margin:4px 0 0;padding-left:16px}.chg li{margin:1px 0}
+      .hd2{display:flex;align-items:center;gap:8px;margin:0 0 6px;flex-wrap:wrap}.hd2 .sp{flex:1}.chg{margin:6px auto 0;max-width:620px;font-size:11px;color:var(--secondary-text-color);text-align:center}.chg summary{cursor:pointer;font-weight:600;font-size:11px;list-style:none}.chg summary::-webkit-details-marker{display:none}.chg summary::before{content:"\\25B8 "}.chg[open] summary::before{content:"\\25BE "}.chg ul{display:inline-block;text-align:left;margin:4px 0 0;padding-left:16px}.chg li{margin:1px 0}
       .nav{cursor:pointer;font-size:22px;line-height:1;padding:0 8px;border-radius:6px;color:var(--primary-color);user-select:none}
       .nav.now{font-size:11px;padding:3px 8px;border:1px solid var(--divider-color)}.nav:hover{background:rgba(0,0,0,.06)}
       h3{margin:0;font-size:16px}
-      .u{font-size:11px;color:var(--secondary-text-color)}
       table{border-collapse:collapse;margin:0 auto}
-      .cal{border:1px solid var(--divider-color)}
-      .cal td{padding:1px 6px;white-space:nowrap;vertical-align:top;border-left:1px solid var(--divider-color,#e0e0e0);border-bottom:1px solid var(--divider-color,#e0e0e0)}
-      .cal th{border-left:1px solid var(--divider-color,#e0e0e0)}.cal td:first-child,.cal th:first-child{border-left:none}
-      .cal td:nth-child(2){border-left:none}
-      .cal th{padding:2px 6px;font-size:10.5px;font-weight:600;text-align:left;color:var(--secondary-text-color);border-bottom:1px solid var(--divider-color);white-space:nowrap}
       .cal th:nth-child(n+5):nth-child(-n+12){text-align:right}
       .far{font-size:11px}.far.bad{color:var(--fw-err,#c62828);font-weight:700}.far.ok30{color:var(--fw-ok,#2e7d32);font-weight:700;text-align:center;white-space:nowrap}.far.ok30 .k{font-weight:400;font-size:10px;color:var(--secondary-text-color,#555)}
-      .cal td.t{text-align:right;font-size:11px}
-      .cal td.n{text-align:right;padding-right:10px}
       .cal tr.r30 td:nth-child(1){box-shadow:inset 4px 0 0 #00897b}
       .cal td.far.mid{color:var(--secondary-text-color,#727272);text-align:center}
-      .cal tr.bx td:nth-child(4){box-shadow:inset 2px 0 0 #444,inset -2px 0 0 #444}
-      .cal tr.bxs td:nth-child(4){box-shadow:inset 2px 0 0 #444,inset -2px 0 0 #444,inset 0 2px 0 #444}
-      .cal tr.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #444,inset -2px 0 0 #444,inset 0 -2px 0 #444}
-      .cal tr.bxs.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #444,inset -2px 0 0 #444,inset 0 2px 0 #444,inset 0 -2px 0 #444}
       .tot1{font-weight:600}
       .cal tr.gg td:nth-child(4),.cal tr.gg td:nth-child(10){background:rgba(76,175,80,.12)}
       .cal tr.gx td:nth-child(4),.cal tr.gx td:nth-child(10){background:rgba(229,57,53,.12)}
-      .cal tr.wk td:nth-child(1),.cal tr.wk td:nth-child(2){background:#dde6f3;color:#1f2a44}
-      .cal tr.hol td:nth-child(1),.cal tr.hol td:nth-child(2){background:#fff0a8;color:#4e3b00}
-      .cal tr.hol2 td:nth-child(1),.cal tr.hol2 td:nth-child(2){background:#fff0a8;color:#4e3b00;background-image:repeating-linear-gradient(135deg,transparent 0 5px,rgba(0,0,0,.06) 5px 7px)}
       @media (prefers-color-scheme: dark){
         .cal tr.gg td:nth-child(4),.cal tr.gg td:nth-child(10){background:rgba(76,175,80,.28)}
         .cal tr.gx td:nth-child(4),.cal tr.gx td:nth-child(10){background:rgba(229,57,53,.3)}
-        .cal tr.bx td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb}
-        .cal tr.bxs td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb}
-        .cal tr.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 -2px 0 #bbb}
-        .cal tr.bxs.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb,inset 0 -2px 0 #bbb}
         .trip.tr{background:rgba(255,160,0,.4)}
         .nav:hover{background:rgba(255,255,255,.1)}.trb:hover{background:rgba(255,255,255,.12)}
       }
-      .cal tr.oth td{color:var(--secondary-text-color)}
       .cal tr[data-d] td:nth-child(-n+2){cursor:pointer}
       .cal tr.blk td.n::after{content:" \\2298";color:#e53935;font-weight:700}
       .cal tr.vac td.n::after{content:" \\2298";color:#e53935;font-weight:700;opacity:.8}
       .lock{cursor:pointer;font-size:16px;line-height:1;padding:2px 6px;border-radius:6px;user-select:none;margin-right:auto}.lock:hover{background:rgba(0,0,0,.06)}
       .lock.open{opacity:.9}.lock.shut{opacity:.6}
-      .trip{color:var(--primary-color);font-weight:600}
-      .vac{font-weight:600}.payp{font-weight:600;color:var(--fw-info,#1565c0)}.ppt{cursor:help}.ppc .k{font-size:9.5px;color:var(--secondary-text-color)}
+      .payp{font-weight:600;color:var(--fw-info,#1565c0)}.ppt{cursor:help}.ppc .k{font-size:9.5px;color:var(--secondary-text-color)}
       .cal tr.gg td:nth-child(1),.cal tr.gg td:nth-child(2){font-weight:700}
       .gr{text-align:right;font-size:11px}.g.green{color:var(--fw-ok,#2e7d32);font-weight:700}.g.red{color:var(--fw-err,#c62828);font-weight:700}.g.black{color:var(--primary-text-color)}
       .er{color:var(--secondary-text-color);cursor:pointer;text-decoration:underline dotted}.er.on{color:var(--fw-ok,#2e7d32);font-weight:700}.pay{cursor:help}
@@ -873,14 +1195,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .drb.on{color:var(--fw-err,#c62828);background:rgba(229,57,53,.18)}.drb.on.rdy{color:#fff;background:#2e7d32}
       .trb:hover{background:rgba(0,0,0,.08)}
       .sw{color:var(--fw-warn,#8a5300);font-weight:600;cursor:help}
-      .tm{font-size:10.5px;color:var(--secondary-text-color)}
       .o{font-size:11px}.fit{font-weight:700;color:var(--fw-ok,#2e7d32)}
       .clash{text-decoration:line-through;color:var(--secondary-text-color)}
       .tg{font-size:10.5px;color:var(--secondary-text-color)}
-      .tag{cursor:help}.lay{display:inline-block;min-width:28px}
-      .st{color:var(--fw-ok,#2e7d32);font-weight:700;cursor:help}.st.fly{color:var(--fw-info,#1565c0)}
       .more{color:var(--primary-color);font-weight:700;padding:0 3px}.tag.avail{color:var(--fw-ok,#2e7d32);font-weight:600}
-      .tot{margin-top:8px;font-size:14px;font-weight:700;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tgrp{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tpay{flex-wrap:nowrap}.tot .ti{white-space:nowrap}.tot .k{font-weight:600;color:var(--secondary-text-color);font-size:12px;margin-right:4px}.tot .bad{color:var(--fw-err,#c62828)}
       .lt{margin:0 auto;text-align:left}.lt td{padding:1px 6px;vertical-align:top}.lt td:first-child{font-weight:700;white-space:nowrap}
       .leg{font-size:10.5px;color:var(--secondary-text-color);text-align:center;margin-top:6px}
       .leg summary{cursor:pointer;font-weight:600;font-size:11px;list-style:none}.leg summary::before{content:"\\25B8 "}.leg[open] summary::before{content:"\\25BE "}
@@ -892,7 +1210,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     </style><ha-card><div class="frame"><div class="hd2"><span class="lock ${this._locked ? "shut" : "open"}" title="${this._locked ? `Locked: ${this._marks()} cannot be changed by a tap. Tap to unlock.` : `Unlocked: taps change ${this._marks()}. Tap to lock.`}">${this._locked ? "&#128274;" : "&#128275;"}</span><span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${upd ? `<span class="u">updated ${this._esc(upd)}</span>` : ""}</div>${shead}${vhtml}${body}</div>${panel}
     <div class="info"></div>
     <details class="leg"><summary>Key</summary><table class="lt">
-    <tr><td>Trip</td><td>Your pairing. R = report time. Tap &#8644; to mark it "would trade" (orange).</td></tr>
+    <tr><td>Trip</td><td>Your pairing. Tap it for the pairing detail (legs, layovers, hotel, totals and crew, from the pairings package; below the schedule, or a sheet from the bottom on a phone); tap it again, the &#10005; or Esc to close. R = report time. Tap &#8644; to mark it "would trade" (orange).</td></tr>
     <tr><td>Layover</td><td>Layover city. <b>Bold</b> = turn, no layover. Rel = release time (block-in + 15 min).</td></tr>
     <tr><td>Block / Credit / Soft</td><td>Your trip's block, credit and soft time (credit minus block), from FLICA's pairing page. Purple = this month's share only; the rest pays next month (PWA 4.A), hover for the split.</td></tr>
     <tr><td>Totals</td><td>Month totals incl. vacation at ${hm(VAC_H)} a day (PWA 6.J); &#10003; = matches FLICA's figure, red = FLICA differs.</td></tr>
@@ -915,6 +1233,47 @@ class FlightWatcherScheduleCard extends HTMLElement {
       <div class="r">${noYear ? "Rate: set your longevity year here (A330 PAX FO, PWA 3.D.6; the table caps at 12). No pay is figured until it is set." : `Rate $${RATE.toFixed(2)}/credit h: A330 PAX FO, PWA 3.D.6, year ${lyr} ${doh ? `(DOH ${doh} = year ${dohYear(today, doh)}, table caps at 12)` : "(set your longevity year here; table caps at 12)"}, effective ${RATE_DATES.filter((x) => x <= today).pop()}. Net = gross less federal and state only; estimate.`}</div>
     </details>${chtml}</ha-card>`;
     this._wire();
+    // 1.7.6: the pairing detail after the redraw: the sheet (narrow) shown, updated or hidden; the wide panel scrolled into
+    // view once a pairing; the focus back on the pairing that had it
+    this._pdNarrow = narrow;
+    if (pdM && narrow) this._sheet.show(pdM.k, JSON.stringify(pdM), fwgSheetHtml(pdM)); else this._sheet.hide();
+    if (pdM && !narrow && this._pd && !this._pd.shown) {
+      this._pd.shown = true;
+      const pn = main.querySelector(".fwgp");
+      const calm = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (pn && pn.scrollIntoView) pn.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "nearest" });
+    }
+    if (fk && !this._sheet.open) { const t = this._tripEl(fk); if (t) t.focus({ preventScroll: true }); }
+  }
+  // 1.7.6: the pairing detail: open, swap to another pairing, or close (the same one again)
+  _pdToggle(k) {
+    const key = this._key().key;
+    if (this._pd && this._pd.k === k && this._pd.key === key) { this._pdClose(true); return; }
+    this._pd = { key, k, shown: false };
+    this._render();
+  }
+  _pdClose(refocus) {
+    if (!this._pd) return;
+    const k = this._pd.k;
+    this._pd = null;
+    this._render();
+    if (refocus) { const t = this._tripEl(k); if (t) t.focus({ preventScroll: true }); }
+  }
+  _tripEl(k) { return [...this.shadowRoot.querySelectorAll(".fwm .trip[data-k]")].find((x) => x.dataset.k === k) || null; }
+  _hc() { return this.shadowRoot ? this.shadowRoot.querySelector(".fwm ha-card") : null; }
+  // Esc closes the pairing detail, Tab stays inside the sheet; a rotation or resize past the phone width redraws it
+  connectedCallback() {
+    if (!this._kd) {
+      this._kd = (e) => { if (!this._pd) return; if (e.key === "Escape") { this._pdClose(true); return; } if (this._sheet) this._sheet.trap(e); };
+      this._rz = () => { if (this._pd && this._h && fwgNarrow(this._hc()) !== this._pdNarrow) this._render(); };
+    }
+    document.addEventListener("keydown", this._kd);
+    window.addEventListener("resize", this._rz);
+  }
+  disconnectedCallback() {
+    if (!this._kd) return;
+    document.removeEventListener("keydown", this._kd);
+    window.removeEventListener("resize", this._rz);
   }
   // one line per day: the first item, then "+N" that opens the rest in the info box
   _one(items, what) {

@@ -1,7 +1,8 @@
 """Monthly PDFs (0.9.1, Ryan 2026-11-05): parse `pdftotext -layout` text of
   * the Pilot Pairings package ("11 - November 2026 Pilot Pairings Rev. 1.pdf") into the schedule card's pairing
     file /config/www/flight-watcher/pairings_<YYYY-MM>.json (cols id, report, dep, release, rel_days, first_duty_min,
-    route, credit, tafb, days), A332 HNL pairings only;
+    route, credit, tafb, days), A332 HNL pairings only, and (1.7.6) each one's legs, duties, layovers and totals for
+    the pairing detail panel (package_legs);
   * the PBS bid-run award ("A332FO PBS BID RUN Award--NOV 2026 ...") into one pilot's awarded line (the
     month's .001 starting schedule).
 Pure text parsing; nothing here touches FLICA."""
@@ -176,11 +177,161 @@ def parse_package(text, base="HNL", eqp="33"):
 
 def package_json(text, source, base="HNL", eqp="33"):
     """The card's pairing file. FW-0014: start / end are the bid period's first and last day (ISO), so a reader
-    can place a last-month day ('31' in January = Dec 31) without guessing."""
+    can place a last-month day ('31' in January = Dec 31) without guessing. 1.7.6: "detail" holds each row's legs,
+    duties, layovers and totals (package_legs) for the pairing detail panel, "dv" the parser that wrote it
+    (PKG_PARSER); cols and rows are as before."""
     start, end = period_bounds(text)
+    rows = parse_package(text, base, eqp)
     return {"month": package_month(text), "source": source, "start": start, "end": end,
             "cols": ["id", "report", "dep", "release", "rel_days", "first_duty_min", "route", "credit", "tafb", "days"],
-            "rows": parse_package(text, base, eqp)}
+            "rows": rows, "dv": PKG_PARSER, "detail": package_legs(text, {r[0] for r in rows})}
+
+
+# ---------------------------------------------------------------- 1.7.6: the pairing detail panel
+# Ryan, Nov 14: "click on a pairing and have the actual pairing pop open below the schedule", like FLICA's pairing
+# printout. Each A330 HNL pairing of the package keeps its legs ([DAY, DH, flight, from, to, departure L, arrival L,
+# BLKT, SGCRD, GRNT, EQP], local times as printed), its duties (report and D-END local, TBLK, TCRD, DUTY and LAYO as
+# printed, TDHD and FDP computed from the GMT columns: FDP from report to the last flight's block-in, FAR 117.3; a
+# deadhead after it is duty, not FDP), each layover's station, hotel name and VAN (layover.hotel_name: never the
+# phone; VAN 00:00 is no van time) and the TOTALS line, with TRIP RIG as printed or, when none is, credit less the
+# summed segment credit (rig_c). A pilot's approved upload is untrusted: lines are cut at DETAIL_LINE_MAX characters
+# before any pattern runs, each pattern is anchored with no nested repeats, and legs and duties are capped.
+PKG_PARSER = 2  # the pairing file's parser version; the Watcher reads a package text copy again when it changes
+DETAIL_MAX_LEGS = 30
+DETAIL_MAX_DUTIES = 12
+DETAIL_LINE_MAX = 400
+DLEG_RE = re.compile(r"^\s*(\S{1,3})\s+(DH\s+)?(\d{1,4}[A-Z]?\*?)\s+([A-Z]{3})\s*-\s*([A-Z]{3})\s+(\d{1,2}:\d{2})/(\d{1,2}:\d{2})\s+"
+                     r"(\d{1,2}:\d{2})/(\d{1,2}:\d{2})\s+(\d{1,3}h\d{2})(?:\s+(\d{1,3}:\d{2}))?(?:\s+(\d{1,3}:\d{2}))?\s+(\w{3})\b"
+                     r"((?:\s+\d{1,3}h\d{2}){0,4})")
+HREPT_RE = re.compile(r"BASE REPT:\s+(\d{1,2}:\d{2})L/(\d{1,2}:\d{2})GMT")
+DEND_LG_RE = re.compile(r"^\s*D-END:\s+(\d{1,2}:\d{2})L/(\d{1,2}:\d{2})GMT")
+REPT_LG_RE = re.compile(r"^\s*REPT:\s+(\d{1,2}:\d{2})L/(\d{1,2}:\d{2})GMT")
+CX_RE = re.compile(r"^\s*BASE\s*:\s*[A-Z]{3}\s+((?:[A-Z]{2}\d{2}){1,6})\b")
+TOTS_RE = {k: re.compile(p) for k, p in (("block", r"\bBLOCK\s+(\d{1,3}h\d{2})"), ("fdp", r"\bFDP\s+(\d{1,3}h\d{2})"),
+                                         ("dhd", r"\bDHD\s+(\d{1,3}h\d{2})"), ("ldgs", r"\bLDGS:\s*(\d{1,3})\b"),
+                                         ("credit", r"\bCREDIT\s+(\d{1,3}h\d{2})"), ("tafb", r"T\.A\.F\.B\.:?\s+(\d{1,3}h\d{2})"))}
+RIG_RE = re.compile(r"\bTRIP\s+RIG:?\s+(\d{1,3})[h:](\d{2})\b")
+
+
+def _dur(m):
+    """Minutes as the package prints a duration ('6h42'); '' for None or below zero."""
+    return "" if m is None or m < 0 else f"{m // 60}h{m % 60:02d}"
+
+
+def _hm2m(s):
+    """'5:42' or '5h42' -> 342; None for ''."""
+    hit = re.fullmatch(r"(\d{1,3})[:h](\d{2})", s or "")
+    return int(hit.group(1)) * 60 + int(hit.group(2)) if hit else None
+
+
+def package_legs(text, ids=None):
+    """{pairing: {eq, crew, rept, duties, tot}} for the pairing blocks whose id is in ids (all when None): the pairing
+    detail panel's data (see the note above). eq = the flown legs' equipment, crew = the crew complement code
+    ('CA01FO01'), rept = the base report (local). A duty: {legs, rept (its report, local, '' when the package prints
+    none), dend, tblk, tcrd, duty, layo, tdhd, fdp, stn (where it ends), hotel, van}."""
+    import layover as LO
+    out = {}
+    for b in _blocks(text):
+        if ids is not None and b["id"] not in ids:
+            continue
+        lines = [ln[:DETAIL_LINE_MAX] for ln in b["lines"]]
+        h = HREPT_RE.search(lines[0])
+        rep_l, rep_g = (h.group(1).zfill(5), _min(h.group(2))) if h else (b["report"].zfill(5), None)
+        crew, eq, duties, cur, nlegs = "", "", [], None, 0
+        pend = None  # the duty just ended: its hotel line and the next report follow
+        nxt = {"rept": rep_l, "g": rep_g}
+        tot_line, rig = "", None
+        for ln in lines:
+            if not crew:
+                c = CX_RE.match(ln)
+                if c:
+                    crew = c.group(1)
+                    continue
+            m = DLEG_RE.match(ln)
+            if m:
+                if nlegs >= DETAIL_MAX_LEGS:
+                    continue
+                if cur is None:
+                    if len(duties) >= DETAIL_MAX_DUTIES:
+                        continue
+                    if pend is not None and nxt["g"] is None and pend.get("_end") is not None and pend.get("_lay") is not None:
+                        nxt["g"] = (pend["_end"] + pend["_lay"]) % 1440  # no REPT line: the release plus the layover
+                    cur = {"legs": [], "rept": nxt["rept"], "_g": nxt["g"], "_fl": None, "_dh": 0, "_sg": 0, "_sgok": True}
+                    nxt = {"rept": "", "g": None}
+                    pend = None
+                dh = bool(m.group(2))
+                blk = _min(m.group(10))
+                sg, gr = m.group(11) or "", m.group(12) or ""
+                cur["legs"].append([m.group(1), "DH" if dh else "", m.group(3), m.group(4), m.group(5), m.group(6).zfill(5),
+                                    m.group(8).zfill(5), m.group(10), sg, gr, m.group(13)])
+                nlegs += 1
+                if dh:
+                    cur["_dh"] += blk
+                else:
+                    cur["_fl"] = _min(m.group(9))
+                    eq = eq or m.group(13)
+                if sg:
+                    cur["_sg"] += _hm2m(sg)
+                else:
+                    cur["_sgok"] = False
+                cur["stn"] = m.group(5)
+                tail = m.group(14).split()
+                if tail:
+                    for k, v in zip(("tblk", "tcrd", "duty", "layo"), tail):
+                        cur[k] = v
+                continue
+            d = DEND_LG_RE.match(ln)
+            if d and cur is not None:
+                cur["dend"] = d.group(1).zfill(5)
+                end = _min(d.group(2))
+                if cur["_g"] is not None and cur["_fl"] is not None:
+                    cur["fdp"] = _dur((cur["_fl"] - cur["_g"]) % 1440)
+                if "duty" not in cur and cur["_g"] is not None:
+                    cur["duty"] = _dur((end - cur["_g"]) % 1440)
+                cur["tdhd"] = _dur(cur["_dh"]) if cur["_dh"] else ""
+                duties.append(cur)
+                pend, cur = cur, None
+                pend["_end"] = end
+                pend["_lay"] = _hm2m(pend.get("layo", ""))
+                if rig is None:
+                    r = RIG_RE.search(ln)
+                    rig = int(r.group(1)) * 60 + int(r.group(2)) if r else None
+                continue
+            if pend is not None and "hotel" not in pend:
+                v = LO.PKG_VAN_RE.search(ln)
+                if v:
+                    van = LO._hm(v.group(1), v.group(2))
+                    pend["hotel"], pend["van"] = LO.hotel_name(ln[:v.start()]), "" if van in ("", "00:00") else van
+                    continue
+            r = REPT_LG_RE.match(ln)
+            if r:
+                nxt = {"rept": r.group(1).zfill(5), "g": _min(r.group(2))}
+                continue
+            if "TOTALS" in ln and not tot_line:
+                tot_line = ln
+                r = RIG_RE.search(ln)
+                if r:
+                    rig = int(r.group(1)) * 60 + int(r.group(2))
+        sgok = all(x["_sgok"] for x in duties)
+        sg_all = sum(x["_sg"] for x in duties)
+        for x in duties:
+            for k in [k for k in x if k.startswith("_")]:
+                del x[k]
+            for k in ("tblk", "tcrd", "duty", "layo", "tdhd", "fdp", "stn", "hotel", "van", "dend"):
+                x.setdefault(k, "")
+            if x["layo"] and x is duties[-1]:
+                x["layo"] = ""
+        tot = {}
+        for k, rx in TOTS_RE.items():
+            hit = rx.search(tot_line)
+            if hit:
+                tot[k] = int(hit.group(1)) if k == "ldgs" else hit.group(1)
+        if rig is not None:
+            tot["rig"] = _dur(rig)
+        elif sgok and duties and _hm2m(tot.get("credit")) is not None and _hm2m(tot["credit"]) - sg_all >= 0:
+            tot["rig"], tot["rig_c"] = _dur(_hm2m(tot["credit"]) - sg_all), True
+        out[b["id"]] = {"eq": eq, "crew": crew, "rept": rep_l, "duties": duties, "tot": tot}
+    return out
 
 
 FLEG_RE = re.compile(r"^\s*(\S+)\s+(DH\s+)?(?:\d{1,4}[A-Z]?\*?)\s+([A-Z]{3})\s*-\s*([A-Z]{3})\s+(\d{1,2}:\d{2})/(\d{1,2}:\d{2})\s+"

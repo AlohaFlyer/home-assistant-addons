@@ -3630,6 +3630,22 @@ def uploads_check():
         _uploads_check()
 
 
+def _write_pairings(path, pj):
+    """1.7.6: the card's pairing file written whole: a temporary file beside it (mkstemp: a new name, never through a
+    link), then moved into place, so the schedule card or the portal sweep never reads half a file (the detail made it
+    several times larger). Readable by Home Assistant as before (0644); nothing left behind on failure."""
+    fd, tmp = tempfile.mkstemp(prefix=".pairings_", suffix=".tmp", dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(pj, fh, separators=(",", ":"))
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
 def _uploads_check():
     try:
         upload_gens_check()
@@ -3646,6 +3662,8 @@ def _uploads_check():
             for f in [x for x in files if x.endswith(f"_{kind}.txt")]:
                 path = os.path.join(UPLOADS, f)
                 sig = f"{os.path.getmtime(path):.0f}"
+                if kind == "pairings":  # 1.7.6: a newer parser (the pairing detail) reads the text copies on file again
+                    sig += f"|p{PDF.PKG_PARSER}"
                 if done.get(f) == sig:
                     continue
                 month = f[:7]
@@ -3656,7 +3674,7 @@ def _uploads_check():
                         log.info("upload %s: not a %s A332 pairing package (%s, %d rows)", f, month, pj["month"], len(pj["rows"]))
                     else:
                         os.makedirs(CARD_PAIRINGS, exist_ok=True)
-                        json.dump(pj, open(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json"), "w"), separators=(",", ":"))
+                        _write_pairings(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json"), pj)
                         DB.put(f"pkg_details:{month}", PDF.package_details(text))
                         log.info("upload %s: %d A332 pairings -> www/flight-watcher/pairings_%s.json", f, len(pj["rows"]), month)
                 else:

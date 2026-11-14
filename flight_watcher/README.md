@@ -391,6 +391,22 @@ through `/local/flight-watcher-loader.js`. Phone pushes are HA automations on Pa
 events (`<prefix>/event/...`: new_pairing, request_decided, recall_miss, recall_file_requested, recall_ccr_filed,
 ticket_fixed and others).
 
+**Pairing detail** (1.7.6, Ryan, Nov 14): on the schedule card a tap on a pairing (or Enter on it) opens its detail
+like FLICA's pairing printout: the header (pairing, start date, the days it operates, base report, base and
+equipment), one line per leg (day, date, deadhead, flight, from and to, departure and arrival local as the package
+prints them, block, ground), each duty's TBLK, TDHD, TCRD, duty and FDP (FDP from report to the last flight's block-in,
+FAR 117.3, figured from the GMT columns), D-END and the next report, the layover station and time with the hotel name
+and VAN, the totals (block, deadhead, credit, duty and FDP, TAFB, trip rig) and the crew FLICA's pairing page gave. A
+wide card (700 px viewport and more, a card of 560 px and more) shows it directly below the grid with the trip's rows
+tinted; a phone shows it in a bottom sheet (a modal dialog, about 60% high: the backdrop, the close button, Esc or a
+swipe down on its handle or header closes it). The same pairing again, the close button or Esc closes it; another
+pairing swaps it. It only reads, so the lock does not apply; "would trade" moved to the arrow mark alone. The data is
+the pairings file (`pairings_<YYYY-MM>.json`, key `detail`, parser version `dv`; the Watcher reads a package text copy
+on file again when the parser changes); a pairing the package does not list on that day (a pairing FLICA rebuilt,
+H3604B; a month with no package) shows FLICA's duties and says the package detail is not on file. The grid's look and
+the panel are one block of code (`// ---- shared schedule grid ...`) every month card carries byte for byte
+(`tests/test_sched_grid_shared.py`).
+
 ## Tickets (FW-nnnn)
 
 The tickets card (`custom:flight-watcher-tickets-card`, bottom of the Settings tab under a divider, shown to Ryan only:
