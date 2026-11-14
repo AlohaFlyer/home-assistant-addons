@@ -35,6 +35,9 @@ TOKEN_RE = re.compile(r"(?i)\b(token|sid|session(?:id)?|jsessionid|csrf[a-z_]*|a
 HIDDEN_RE = re.compile(r"(?i)(<input\b[^>]*\btype\s*=\s*[\"']?hidden[\"']?[^>]*\bvalue\s*=\s*[\"']?)([^\"'>\s]*)")
 HIDDEN_RE2 = re.compile(r"(?i)(<input\b[^>]*\bvalue\s*=\s*[\"']?)([^\"'>\s]*)([\"']?[^>]*\btype\s*=\s*[\"']?hidden)")
 EMP_KEY_RE = re.compile(r"(?i)\b(emp(?:loyee)?\s*(?:id|no\.?|num(?:ber)?|#)?\s*[=:#]+\s*)(\d{3,7})")
+# 1.7.3 (F#55's live run, Nov 14): the pilot lookup's lines start 'pilot <employee number>:' or 'pilot <number> (<name>)',
+# and EMP_RE takes only 5 to 7 digits: the number there is masked whatever its length (3 to 7), a count is not
+PILOT_EMP_RE = re.compile(r"(?i)\b(pilot\s+)(\d{3,7})(?=\s*[:(])")
 SEAT_EMP_RE = re.compile(r"(?i)(?<![\w'.,-])(CA|FO|RO|FA|SO|F/O)(\s+)(\d{3,7})\b")
 EMP_RE = re.compile(r"(?<![\d.:/\-])\d{5,7}(?![\d.:/\-])")
 # 1.7.3 review: a name's letters outside ASCII too ('Pe\u00f1a, Jos\u00e9', 'Ka\u02bbaihue', '\u014cta'): Latin-1 and
@@ -218,6 +221,7 @@ def mask(text, extra=()):
     s = HIDDEN_RE.sub(lambda m: m.group(1) + "MASKED", s)
     s = HIDDEN_RE2.sub(lambda m: m.group(1) + "MASKED" + m.group(3), s)
     s = EMP_KEY_RE.sub(lambda m: m.group(1) + "#" * len(m.group(2)), s)
+    s = PILOT_EMP_RE.sub(lambda m: m.group(1) + "#" * len(m.group(2)), s)
     s = EMAIL_RE.sub(lambda m: _x(m.group(0)), s)  # 1.6.2 review: e-mail addresses and phone numbers
     s = _phones(s)
     parts = TAG_RE.split(s)

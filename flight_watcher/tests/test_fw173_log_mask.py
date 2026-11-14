@@ -147,3 +147,39 @@ def test_a_pilots_pickup_lines_name_no_crew(load, caplog):
         assert leak not in text, (leak, text)
     assert "pickup H3607:13NOV: FO xxx, xxx (####) (CA xxxxx xx, xxx (#####))" in text
     assert "picker FO xxxx, xxxx (####): 12 in open time" in text
+
+
+# ---------------------------------------------------------------- F#55's live run (Nov 14): the looked-up pilot's number
+@pytest.mark.parametrize("line,leak", [
+    ("pilot 1234: schedule requested", "1234"),
+    ("pilot 1234: schedule page not readable (ok)", "1234"),
+    ("pilot 12345 (Doe, Jane): 2026-11 read, 9 items, 4 pairing pages", "12345"),
+    ("pilot 123: schedule version 11.004 (2026-11, rebuilt from crew lists)", "123"),
+])
+def test_a_looked_up_pilots_number_is_masked_on_a_pilot_line(line, leak):
+    """Seen live (F#55, Nov 14): the second pilot's lookup lines start 'pilot <employee number>:' and a 4-digit number
+    stayed readable (EMP_RE takes 5 to 7 digits). The number after 'pilot' before ':' or ' (' is masked."""
+    out = CAPS.mask(line, [])
+    assert leak not in out and "pilot " in out, (line, out)
+
+
+@pytest.mark.parametrize("line", [
+    "Hunting every 40 s is held to 100 FLICA loads an hour",
+    "a pilot 100 loads an hour, host 480",
+    "pilot lookup refused: emp must be 1 to 7 digits",
+])
+def test_budget_and_count_lines_about_a_pilot_stay(line):
+    assert CAPS.mask(line, []) == line
+
+
+def test_flicas_error_page_gives_a_plain_status(load):
+    """F#55 (Nov 14): FLICA answered the lookup with its application error page and the second pilot's Pilot tab said
+    'not readable: ok flica.net - application error ... http/1.1 200 ok\\nex'. The status is a plain line now."""
+    W = load()
+    html = ("<html><title>flica.net - Application Error</title><body>An error has occurred, please contact CAE "
+            "customer care for assistance.<pre>HTTP/1.1 200 OK\nExpires: Sat</pre></body></html>")
+    st = W.pilot_unreadable_status(html)
+    assert st.startswith("not readable:") and "FLICA" in st and "try again later" in st
+    assert "http/1.1" not in st.lower() and "\n" not in st and "cae" not in st.lower()
+    other = W.pilot_unreadable_status("<html><body>Something else entirely</body></html>")
+    assert other.startswith("not readable:") and "\n" not in other and len(other) <= 140

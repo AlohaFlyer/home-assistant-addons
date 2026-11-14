@@ -29,6 +29,14 @@ reproduced with a synthetic test that failed first, then reviewed adversarially;
   name run is bounded so the mask stays linear on long text. Times, dates, pairing ids, flight numbers, years and
   credits stay. `watcher.detail_probe` on a pilot now says only whether a captain was parsed; the admin's line is as
   before. Tests: `tests/test_fw173_log_mask.py` (synthetic names only).
+- F#55's live run (Nov 14, Ryan's yes: one lookup on the second pilot's session, by name, then the pick) worked end to
+  end (name lookup on the award files, the pick, the employee-number Schedule Lookup, the result on his portal), with
+  FLICA answering its application error page as it does for every November lookup that day. It showed two more
+  things, now fixed: the lookup's log lines start "pilot <employee number>:" and a 4-digit number stayed readable on a
+  pilot line (`PILOT_EMP_RE`: the number after "pilot" before ":" or " (" is masked, 3 to 7 digits; "100 loads an hour"
+  stays), and the Pilot card showed FLICA's error page raw ("not readable: ok flica.net - application error ...
+  http/1.1 200 ok\nex"): `pilot_unreadable_status` says "FLICA's Schedule Lookup answered with an error for this
+  month, try again later", any other page one short line.
 
 ### The state note drops a pause when it ends
 - Seen live: `sensor.flight_watcher_state` kept "FLICA pairing read paused until 05:52 HST" at 06:25, until the next

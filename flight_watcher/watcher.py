@@ -5949,6 +5949,16 @@ def pick_id(emp):
 LOOKUP_WAIT_STATES = ("paused", "yielded", "backoff", "needs_settings")
 
 
+def pilot_unreadable_status(html):
+    """1.7.3 (F#55's live run, Nov 14): the Pilot card's line when the lookup's schedule page is not readable. FLICA's
+    application error page (inflt.ERROR_HINTS) was shown raw ('not readable: ok flica.net - application error ... http/1.1
+    200 ok\\nex'); it is a plain line now, and any other page's text is kept to one short line."""
+    text = re.sub(r"\s+", " ", visible_text(html or "")).strip()
+    if any(h in text.lower() for h in IF.ERROR_HINTS):
+        return "not readable: FLICA's Schedule Lookup answered with an error for this month, try again later"
+    return f"not readable: {classify(html or '')} {text[:100]}".strip()[:140]
+
+
 def pilot_cmd(payload):
     """MQTT flight_watcher/pilot/set {"emp": "10001", "name": "..."}: show that pilot's current month on the
     dashboard. Served from a 6 h cache when fresh, else read on the next check (Schedule Lookup + the
@@ -6097,7 +6107,7 @@ def pilot_check(fl):
             log.info("pilot %s: %s gave %s: %s", emp, url.split("?")[1], classify(html), visible_text(html)[:200])
         if not sched:
             pilotver_capture_rebuild(emp, req.get("name") or "")  # FW-0069: the crew index's view, when it has one
-            pub_pilot({"emp": emp, "name": req.get("name") or "", "status": f"not readable: {classify(html)} {visible_text(html)[:120]}",
+            pub_pilot({"emp": emp, "name": req.get("name") or "", "status": pilot_unreadable_status(html),
                                    "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": now_iso()})
             log.info("pilot %s: schedule page not readable (%s)", emp, classify(html))
             S.pop("pilot_req", None)
