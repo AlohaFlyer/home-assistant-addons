@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.7.5
+
+"Pause wins" (Ryan, Nov 14): Pause cancels a FLICA login still waiting to run. Built with tests that failed first, then
+three adversarial reviews; every reproduced finding is fixed.
+
+### Pause cancels a waiting login
+- Before (since 1.6.2): on a pilot, a FLICA login asked for by Re-arm, or by the one more try after re-saving the same
+  FLICA details (1.7.4), can wait up to 10 min for the login floor; Pause turned on during that wait did not stop it.
+- Now: turning Pause on (or Pause found on at start) cancels it (`pause_cancels_login`): the Re-arm and a save's
+  pending try are dropped, one log line, and a stopped Watcher's note says the login was cancelled by Pause: press
+  Re-arm after turning Pause off. A Re-arm while paused answers ok false ("nothing to re-arm while paused: turn Pause
+  off, then press Re-arm"); the clock card hides Re-arm while Pause is on. A save made while paused lifts FLICA's
+  refusal block but queues no try. The admin's Re-arm follows the same rule.
+- The races the reviews found are closed: Pause in the last instant before the login (`rearm_claim`, a last look in
+  `try_login` before FLICA is reached), Pause on and off in the first seconds of a start, a portal poll that holds a
+  Pause change and a Re-arm or Check now (answered against the poll's own Pause value), the floor-wait note written
+  only while the Re-arm is still pending.
+- A login waiting in the FLICA gate (a pilot's 100 an hour, the host cap, the pacing) now gives up when Pause comes on
+  (`RUN["login"]`, `gate_abort`), with no refusal block and the login time put back; a Re-arm's login gets the cancel
+  note, a back-off or step-aside login is left to the loop, which parks for Pause (older than 1.7.5).
+- The 10 min login floor now counts from when FLICA is reached (the login page past the gate, and again after the
+  credentials are submitted), not from before a gate wait: a gate-delayed login could be followed by a back-off login
+  a minute later (older than 1.7.5).
+
+### Not changed
+- Un-pause during a step-aside for the owner's own FLICA login ends the step-aside as before: the Paused card says
+  "Turn Pause off when you have signed out of FLICA" (a change made during review was backed out).
+- Known edge (Ryan's call if wanted): Pause turned on after the login page has passed the gate does not give up the
+  credentials' submit; it waits only when the pilot's hourly FLICA budget is used up.
+
+Tests: `tests/test_fw175_pause_wins.py`, `tests/test_fw175_review.py`, `tests/test_fw175_review2.py`,
+`tests/test_fw175_review3.py` (synthetic only).
+
 ## 1.7.4
 
 A pilot's FLICA refusal record keyed with an HMAC of his own instance key (Ryan, Nov 13: the backlog item "the FLICA
