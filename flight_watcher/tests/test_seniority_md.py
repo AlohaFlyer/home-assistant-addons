@@ -133,3 +133,26 @@ def test_the_md_is_never_exported_or_a_file_kind(W, tmp_path, monkeypatch):  # n
         os.chmod(d / "seniority.md", 0o600)
     monkeypatch.setattr(W, "portal_on", lambda: True)
     assert not any("seniority" in k or "seniority" in p for k, p in W.portal_file_sources())
+
+
+def test_pay_year_column_follows_the_day(tmp_path, monkeypatch):
+    """1.7.6 review: seniority.md's 'Pay year today' is rewritten once a day (the uploads check runs the backfill), so a
+    pilot whose DOH anniversary passed shows his new year without a new upload. Synthetic row."""
+    from datetime import datetime, timedelta, timezone
+    up = tmp_path / "uploads"
+    up.mkdir()
+    out = up / "seniority.json"
+    out.write_text(json.dumps({"source": "list", "list_date": "2026-03-01", "count": 1, "pilots": {
+        "10999": {"sen": 5, "name": "Roe, Rick", "doh": "2018-11-20", "seat": "FO", "equip": "330"}}}))
+    hst = timezone(timedelta(hours=-10))
+    clock = {"t": datetime(2026, 11, 14, 9, 0, tzinfo=hst)}
+    monkeypatch.setattr(web, "_hst_now", lambda: clock["t"])
+    md = web.seniority_md_backfill(str(out))
+    assert md and "| 5 | Roe, Rick | 10999 | 2018-11-20 | FO | 330 | 8 |" in open(md).read()
+    assert web.seniority_md_backfill(str(out)) == ""  # the same day: not written again
+    clock["t"] = datetime(2026, 12, 1, 9, 0, tzinfo=hst)  # past his Nov 20 anniversary: year 9 now
+    assert web.seniority_md_backfill(str(out)) == md
+    text = open(md).read()
+    assert "| 330 | 9 |" in text and "Pay year today (2026-12-01, HST)" in text
+    assert oct(os.stat(md).st_mode & 0o777) == "0o600"
+    assert web.seniority_md_backfill(str(out)) == ""

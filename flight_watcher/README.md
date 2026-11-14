@@ -303,14 +303,26 @@ Recent finds.
   `items_pay` holds the month's Credit, Block, Soft, Pay-Gross, Pay-Net and FLICA's own Days Off. Credit and block come
   from the pairing page read, else the pairings package, else the crew index. Each schedule version of that pilot is
   priced in `pilotver_<key>.json` (each item's `gross`, the record's `pay`: amounts and hours, never a date of hire). No
-  FLICA page is loaded for any of it. On a pilot instance `items_pay` leaves out the date of hire and the list's dates
-  (the year and the rates stay).
+  FLICA page is loaded for any of it. The month is the schedule card's (1.7.6 review): the pairings that start in the
+  calendar month, each its PWA 4.A share (a segment pays on the date it originates: a trip into the next month counts
+  the block share of its duties departing this month, from the package's duties or the legs of its pairing page;
+  `split` on the item), the vacation days at 4:00 credit a day (PWA 6.J.1.c, `vac`), and a PAYP (PWA Definitions 57)
+  at FLICA's month credit less everything else counted (`payp`, an estimate), else `payp_unk` (not counted; the card
+  shows FLICA's credit without the red mark). Each trip's package is that of its own bid period (Dec 1 on December's
+  grid is November's). A version's trip is priced from the live read of the same trip (the pairing page's credit,
+  block, seat and crew count), then the crew index, then the package, so an unchanged trip has the same Pay-Gross live
+  and in its version. The Watcher has the A330 PAX tables only (PWA 3.D.6 FO, PWA 3.C.4 A330 and B787 Captain): a
+  pilot the list puts on another fleet is not priced (`equip`, `no_rate`; a 787 pilot in the Captain seat only).
+  `rate_steps` names the day inside the month a new longevity year or rate date changes his rates. On a pilot instance
+  both pay lines (`items_pay` and the rebuilt month's `pay_line`) leave out the date of hire, the list's dates, the year
+  he turns and the day his rates step up: the year, not the date. Each trip's Pay-Gross still shows a rate step between
+  two trips; Ryan decides whether `year_to` may go back on a pilot's portal.
 - `seniority.md` (1.7.6, Ryan, Nov 14: "keep that in an MD card for reference"): each time `seniority.json` is written
   (a list, an award's dates of hire, a re-read) the Watcher writes `/share/flight_watcher/seniority.md`: a heading with
   the list date, source and count, then a table (Seniority #, Name, Emp, DOH, Seat, Equip, Pay year today: the
   longevity year from the DOH, PWA 3.B.1, capped at 12) sorted by seniority. Personal data: mode 600, outside the
   uploads list and `www`, never exported to a pilot's portal; at start a `seniority.json` with no (or an older) md
-  gets one.
+  gets one, and (review) the uploads check rewrites it once a day (HST), so the pay year follows each anniversary.
 - Rules live in `/data/rules.json` and are edited there (the schema is on the page). They are checked against each
   new pairing; a match publishes `flight_watcher/event/rule_match` and `sensor.flight_watcher_last_match`.
 - Every rule starts in dry run, and `switch.flight_watcher_rule_<id>_live` stays off until the rule is 7 days old.
@@ -410,13 +422,18 @@ like FLICA's pairing printout: the header (pairing, start date, the days it oper
 equipment), one line per leg (day, date, deadhead, flight, from and to, departure and arrival local as the package
 prints them, block, ground), each duty's TBLK, TDHD, TCRD, duty and FDP (FDP from report to the last flight's block-in,
 FAR 117.3, figured from the GMT columns), D-END and the next report, the layover station and time with the hotel name
-and VAN, the totals (block, deadhead, credit, duty and FDP, TAFB, trip rig) and the crew FLICA's pairing page gave. A
+and VAN (your own trips: see below), the totals (block, deadhead, credit, duty and FDP, TAFB, trip rig) and the crew FLICA's pairing page gave. A
 wide card (700 px viewport and more, a card of 560 px and more) shows it directly below the grid with the trip's rows
 tinted; a phone shows it in a bottom sheet (a modal dialog, about 60% high: the backdrop, the close button, Esc or a
 swipe down on its handle or header closes it). The same pairing again, the close button or Esc closes it; another
 pairing swaps it. It only reads, so the lock does not apply; "would trade" moved to the arrow mark alone. The data is
 the pairings file (`pairings_<YYYY-MM>.json`, key `detail`, parser version `dv`; the Watcher reads a package text copy
-on file again when the parser changes); a pairing the package does not list on that day (a pairing FLICA rebuilt,
+on file again when the parser changes). That file is served at a fixed address with no login and copied to every
+pilot's portal, so (1.7.6 review) it keeps routes and times only: the hotels and van times stay in the Watcher's DB
+(`pkg_hotels:<YYYY-MM>`) and reach only your own trips, on your own trip times sensor (`hotels`); another pilot's
+detail has no hotel line. Ryan can choose to put them in the shared file. A crafted upload cannot make the file larger
+than the portal takes: past 1.5 MB of detail (or 600 pairings) the rest have none (`dcut`) and their detail says so.
+Only the A330 HNL blocks the rows keep feed the detail, the first one per pairing number; a pairing the package does not list on that day (a pairing FLICA rebuilt,
 H3604B; a month with no package) shows FLICA's duties and says the package detail is not on file. The grid's look and
 the panel are one block of code (`// ---- shared schedule grid ...`) every month card carries byte for byte
 (`tests/test_sched_grid_shared.py`).
@@ -426,7 +443,10 @@ should be exactly the same style including this latest detail panel"): the pilot
 FLICA showed it, its older versions and the month reconstructed from pairing crew lists with that same block: the
 schedule card's day column and colours, the bold blue pairing, the layover box with R and Rel times (from the pairings
 package, else the legs his pairing page gave), row heights, the totals line, light and dark, and the same pairing
-detail (a panel below that grid, or a bottom sheet on a phone). Its columns are Trip, Layover, Block, Credit, Soft,
+detail (a panel below that grid, or a bottom sheet on a phone), with the VAC and PAYP day marks, the trip status mark
+(a check once flown, an airplane while it flies), a trip carried in from the month before boxed (from the crew index),
+the rebuilt trip's nights from the package's duties, and an older version's totals line in the live month's order. Its
+columns are Trip, Layover, Block, Credit, Soft,
 Pay-Gross (that pilot's, when his date of hire is on file) and Crew; the seat and legs are in the pairing's hint and
 detail, and the rate, seat and source notes sit under the grid. Ryan's planning columns (Pay-Net, Res Grid, the FAR
 columns, Room, Legal next, Open, Ideas, the trade and drop marks) stay on his own schedule.

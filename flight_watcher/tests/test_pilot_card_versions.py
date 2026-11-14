@@ -178,8 +178,9 @@ def test_older_version_draws_its_own_trips(tmp_path):
     assert "9:58" in row and "12:34" in row and "CA Roe, Rick · FO Doe, Jane" in row
     row = [x for x in v1.split("<tr")[1:] if ">H3300</span>" in x][0]
     assert "Roe, Rick" not in row and "9:58" not in row
-    # its own totals (the award has none from FLICA): the trip count; the note says what is live
-    assert _ti("Trips", "2") in v1 and '<span class="k">Block</span>' not in v1
+    # its own totals in the live month's order (1.7.6 review: Credit, Block, Soft, Pay-Gross, Pay-Net, Days Off, the
+    # schedule card's line): the award has none from FLICA and this file no pay, so none; the note says what is live
+    assert '<span class="k">Trips</span>' not in v1 and '<span class="k">Block</span>' not in v1
     assert ("v11.001 as captured Oct 19 16:00 HST, the awarded line. Block / Credit per trip and crew shown are the live "
             "ones; Pay-Gross is this version's.") in v1
     assert "Source: FLICA Tools > Schedule Lookup" not in v1  # the live totals line belongs to the current version

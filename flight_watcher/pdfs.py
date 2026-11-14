@@ -7,6 +7,7 @@
     month's .001 starting schedule).
 Pure text parsing; nothing here touches FLICA."""
 import calendar
+import json
 import re
 from datetime import date, timedelta
 
@@ -141,20 +142,18 @@ def period_bounds(text, month=""):
     return st.isoformat(), (st + timedelta(days=period_days(text) - 1)).isoformat()
 
 
-def parse_package(text, base="HNL", eqp="33"):
-    """Rows for the card's pairing file, in package order."""
-    rows, nd = [], period_days(text)
-    mk = package_month(text)
-    st = period_start(text, mk) or date(2000, 1, 1)
-    mk = mk or st.strftime("%Y-%m")
+def _accepted(text, base="HNL", eqp="33"):
+    """The pairing blocks the card's pairing file keeps, in package order: based at base, every flown leg on eqp
+    equipment (A330: 332, or 33L in December; deadheads ride other equipment, the 717 interisland), a TOTALS and a
+    D-END line, and a route from base back to base. Yields (block, legs, totals match, D-END match, route)."""
     for b in _blocks(text):
         body = "\n".join(b["lines"])
         bm = BASE_RE.search(body)
         if not bm or bm.group(1) != base:
             continue
         legs = [m for m in (LEG_RE.match(ln) for ln in b["lines"]) if m]
-        flown = [m for m in legs if not m.group(1)]  # deadheads ride other equipment (717 interisland)
-        if not flown or any(not m.group(5).startswith(eqp) for m in flown):  # A330: 332, or 33L in December
+        flown = [m for m in legs if not m.group(1)]
+        if not flown or any(not m.group(5).startswith(eqp) for m in flown):
             continue
         tot = TOT_RE.search(body)
         dend = DEND_RE.search(body)
@@ -167,6 +166,16 @@ def parse_package(text, base="HNL", eqp="33"):
             route.append(m.group(3))
         if route[0] != base or route[-1] != base:
             continue
+        yield b, legs, tot, dend, route
+
+
+def parse_package(text, base="HNL", eqp="33"):
+    """Rows for the card's pairing file, in package order (_accepted)."""
+    rows, nd = [], period_days(text)
+    mk = package_month(text)
+    st = period_start(text, mk) or date(2000, 1, 1)
+    mk = mk or st.strftime("%Y-%m")
+    for b, legs, tot, dend, route in _accepted(text, base, eqp):
         rep = _min(b["report"])
         end = rep + _min(tot.group(3))
         rows.append([b["id"], _hm(rep), legs[0].group(4).zfill(5), _hm(end % 1440), end // 1440,
@@ -182,9 +191,50 @@ def package_json(text, source, base="HNL", eqp="33"):
     (PKG_PARSER); cols and rows are as before."""
     start, end = period_bounds(text)
     rows = parse_package(text, base, eqp)
-    return {"month": package_month(text), "source": source, "start": start, "end": end,
-            "cols": ["id", "report", "dep", "release", "rel_days", "first_duty_min", "route", "credit", "tafb", "days"],
-            "rows": rows, "dv": PKG_PARSER, "detail": package_legs(text, {r[0] for r in rows})}
+    detail, cut = public_detail(package_legs(text, {r[0] for r in rows}, base, eqp))
+    out = {"month": package_month(text), "source": source, "start": start, "end": end,
+           "cols": ["id", "report", "dep", "release", "rel_days", "first_duty_min", "route", "credit", "tafb", "days"],
+           "rows": rows, "dv": PKG_PARSER, "detail": detail}
+    if cut:
+        out["dcut"] = cut
+    return out
+
+
+# 1.7.6 review: the pairing file is served at a fixed URL with no login (/local/flight-watcher/pairings_<YYYY-MM>.json)
+# and every pilot's portal copies it, so it keeps the routes and times only: never the crew hotels or their van
+# times (DETAIL_PRIVATE), which stay in the DB (package_hotels) for the pilot's own trips. And it has a whole-file
+# budget: a pilot's upload is untrusted, and the portal skips any file over its 8 MB cap (portal.CAPS['file']), rows
+# and all. Past DETAIL_FILE_MAX bytes of detail (or DETAIL_MAX_PAIRINGS pairings), the rest have no detail ('dcut'
+# counts them) and the card says the package detail is not on file; the rows stay as in 1.7.5.
+DETAIL_PRIVATE = ("hotel", "van")
+DETAIL_FILE_MAX = 1_500_000
+DETAIL_MAX_PAIRINGS = 600
+
+
+def public_detail(detail):
+    """(detail without DETAIL_PRIVATE, number of pairings left out by the budget), in package order."""
+    out, size, cut = {}, 0, 0
+    for pid, d in detail.items():
+        pub = dict(d, duties=[{k: v for k, v in du.items() if k not in DETAIL_PRIVATE} for du in d.get("duties") or []])
+        n = len(json.dumps(pub, separators=(",", ":"))) + len(pid) + 4
+        if len(out) >= DETAIL_MAX_PAIRINGS or size + n > DETAIL_FILE_MAX:
+            cut += 1
+            continue
+        out[pid] = pub
+        size += n
+    return out, cut
+
+
+def package_hotels(text, base="HNL", eqp="33"):
+    """{pairing: [[station, hotel, van], ...] one per duty with a layover after it} from package_legs: the hotel lines
+    the pairing detail draws for the pilot's own trips (publish_own_trips), kept out of the public pairing file."""
+    out = {}
+    for pid, d in package_legs(text, None, base, eqp).items():
+        du = d.get("duties") or []
+        hs = [[x.get("stn") or "", x.get("hotel") or "", x.get("van") or ""] for x in du[:-1]]
+        if any(h[1] or h[2] for h in hs):
+            out[pid] = hs
+    return out
 
 
 # ---------------------------------------------------------------- 1.7.6: the pairing detail panel
@@ -193,7 +243,8 @@ def package_json(text, source, base="HNL", eqp="33"):
 # BLKT, SGCRD, GRNT, EQP], local times as printed), its duties (report and D-END local, TBLK, TCRD, DUTY and LAYO as
 # printed, TDHD and FDP computed from the GMT columns: FDP from report to the last flight's block-in, FAR 117.3; a
 # deadhead after it is duty, not FDP), each layover's station, hotel name and VAN (layover.hotel_name: never the
-# phone; VAN 00:00 is no van time) and the TOTALS line, with TRIP RIG as printed or, when none is, credit less the
+# phone; VAN 00:00 is no van time; review: the DB's and the pilot's own trips only, never the public file,
+# public_detail) and the TOTALS line, with TRIP RIG as printed or, when none is, credit less the
 # summed segment credit (rig_c). A pilot's approved upload is untrusted: lines are cut at DETAIL_LINE_MAX characters
 # before any pattern runs, each pattern is anchored with no nested repeats, and legs and duties are capped.
 PKG_PARSER = 2  # the pairing file's parser version; the Watcher reads a package text copy again when it changes
@@ -224,15 +275,17 @@ def _hm2m(s):
     return int(hit.group(1)) * 60 + int(hit.group(2)) if hit else None
 
 
-def package_legs(text, ids=None):
+def package_legs(text, ids=None, base="HNL", eqp="33"):
     """{pairing: {eq, crew, rept, duties, tot}} for the pairing blocks whose id is in ids (all when None): the pairing
     detail panel's data (see the note above). eq = the flown legs' equipment, crew = the crew complement code
     ('CA01FO01'), rept = the base report (local). A duty: {legs, rept (its report, local, '' when the package prints
-    none), dend, tblk, tcrd, duty, layo, tdhd, fdp, stn (where it ends), hotel, van}."""
+    none), dend, tblk, tcrd, duty, layo, tdhd, fdp, stn (where it ends), hotel, van}. 1.7.6 review: only the blocks the
+    pairing file keeps (_accepted: the base, the A330 legs), and the first of them per id, so another fleet's block with
+    the same number never replaces an A330 pairing's detail."""
     import layover as LO
     out = {}
-    for b in _blocks(text):
-        if ids is not None and b["id"] not in ids:
+    for b, *_ in _accepted(text, base, eqp):
+        if (ids is not None and b["id"] not in ids) or b["id"] in out:
             continue
         lines = [ln[:DETAIL_LINE_MAX] for ln in b["lines"]]
         h = HREPT_RE.search(lines[0])

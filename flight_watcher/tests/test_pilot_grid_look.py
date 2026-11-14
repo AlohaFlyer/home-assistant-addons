@@ -139,7 +139,8 @@ MEASURE = """([cell, span]) => {
         day: pick(td[0], cell), date: pick(td[1], cell), tripTd: pick(td[2], cell), layTd: { ...pick(lay, cell), box: getComputedStyle(lay).boxShadow },
         num: pick(td[4], cell), trip: pick(td[2].querySelector('.trip'), span), tag: pick(lay.querySelector('.tag.lay'), span),
         tm: [...lay.querySelectorAll('.tm')].map((x) => x.textContent), tmStyle: pick(lay.querySelector('.tm'), span),
-        lay: lay.querySelector('.tag.lay') ? lay.querySelector('.tag.lay').innerHTML : '', dayText: td[0].textContent, dateText: td[1].textContent };
+        lay: lay.querySelector('.tag.lay') ? lay.querySelector('.tag.lay').innerHTML : '', dayText: td[0].textContent, dateText: td[1].textContent,
+        st: [...lay.querySelectorAll('.st')].map((x) => x.className + ' ' + x.textContent), stStyle: pick(lay.querySelector('.st'), span) };
     }
     const tot = r.querySelector('.rb .tot') && c === REC ? r.querySelector('.rb .tot') : r.querySelector('.tot');
     return { rows: out, tot: pick(tot, ['fontSize', 'fontWeight', 'textAlign', 'display', 'justifyContent', 'color', 'marginTop']),
@@ -166,6 +167,13 @@ def _shot(pg, name, sel=None):
 def _same(a, b, what):
     diff = {k: (a.get(k), b.get(k)) for k in a if a.get(k) != b.get(k)} if a and b else {"missing": (a, b)}
     assert not diff, (what, diff)
+
+
+def _no_hotels(lines):
+    """1.7.6 review: Ryan's detail lines without the hotel and van (another pilot's panel has none: they are not in the
+    public pairing file, only on Ryan's own trip times)."""
+    import re
+    return [re.sub(r"(?: ·)? (?:EXAMPLE(?: (?!VAN\b)[A-Z]+)+|VAN \d{2}:\d{2}L)", "", x) for x in lines]
 
 
 def _tap(pg, card, k):
@@ -205,9 +213,15 @@ def test_one_look_for_every_month_grid(width, height, scheme):
                 _same(o["tag"], q["tag"], (d, "layover", "rebuilt"))
             # FLICA's month: the very same layover box, layover text and R / Rel times as Ryan's own month
             assert (o["cls"], o["lay"], o["tm"]) == (p["cls"], p["lay"], p["tm"]), (d, o, p)
+            # the trip status mark (a check once flown) on the same day, in the same style (1.7.6 review)
+            assert o["st"] == p["st"] == q["st"], (d, o["st"], p["st"], q["st"])
+            if o["st"]:
+                _same(o["stStyle"], p["stStyle"], (d, "status mark"))
             # the rebuilt month: the same boxes; R / Rel where the package times the trip (the crew index has no times of
             # its own, so H3604B, not in the package, has none)
             assert o["cls"] == q["cls"], (d, o["cls"], q["cls"])
+            # and the same layover text on every day (1.7.6 review: a rebuilt trip's nights from the package's duties)
+            assert p["lay"] == q["lay"], (d, p["lay"], q["lay"])
             assert o["tm"] == q["tm"] or (d in ("2026-11-23", "2026-11-24") and q["tm"] == []), (d, o["tm"], q["tm"])
             if o["tm"]:
                 _same(o["tmStyle"], p["tmStyle"], (d, "R / Rel"))
@@ -228,7 +242,7 @@ def test_one_look_for_every_month_grid(width, height, scheme):
         assert r["recon"]["labels"] == ["Trips", "Credit", "Block", "Soft", "Pay-Gross", "Pay-Net", "Days Off"]
         assert r["own"]["labels"][:2] == ["Credit", "Block"]
         rows = _texts(pg, "PIL", ".cal tr[data-d='2026-11-16']")
-        assert rows == [f"MO 16 H9102 LAX R 07:00 11:15 13:15 2:00 ${round(PER['H9102|2026-11-16']):,} CA Doe, John · FO Roe, Jane"], rows
+        assert rows == [f"MO 16 H9102 LAX ✔ R 07:00 11:15 13:15 2:00 ${round(PER['H9102|2026-11-16']):,} CA Doe, John · FO Roe, Jane"], rows
         tot = _texts(pg, "PIL", ".frame > .tot")[0]
         assert tot.startswith("Credit 41:15 ✓ Block 35:52 ✓ Soft 5:23 Pay-Gross") and "Days Off 22" in tot, tot
         assert "Year 9 (DOH 2018-10-03)" in _texts(pg, "PIL", ".prate")[0]
@@ -258,7 +272,7 @@ def test_one_look_for_every_month_grid(width, height, scheme):
                                 " panel: r.querySelectorAll('.body .fwgp').length, pdh: [...r.querySelectorAll('tr.pdh')].map((x) => x.dataset.d)}; }", card)
                 assert s == {"role": "dialog", "modal": "true", "title": "H9101 : 05NOV", "focus": "pdx", "h": round(0.6 * height),
                              "bottom": height, "panel": 0, "pdh": ["2026-11-05", "2026-11-06", "2026-11-07", "2026-11-08"]}, s
-                assert _texts(pg, card, sel) == want
+                assert _texts(pg, card, sel) == _no_hotels(want)
                 if card == "PIL":
                     _shot(pg, f"pilot_sheet_{tag}")
                 pg.locator(f"{TAGS['pilot']} >> nth={0 if card == 'PIL' else 1}").locator(".fwss .pdx").click()
@@ -273,7 +287,7 @@ def test_one_look_for_every_month_grid(width, height, scheme):
                                 " crew: [...p.querySelectorAll('.fwgpl')].map((x) => x.innerText.replace(/\\s+/g, ' ').trim()).pop()}; }", card)
                 assert s == {"below": True, "next": "tot", "title": "H9101 : 05NOV", "sheet": True,
                              "pdh": ["2026-11-05", "2026-11-06", "2026-11-07", "2026-11-08"], "crew": "Crew: CA Doe, John FO Roe, Jane Seat: FO"}, s
-                assert _texts(pg, card, sel) == want
+                assert _texts(pg, card, sel) == _no_hotels(want)
                 if card == "PIL":
                     _shot(pg, f"pilot_panel_{tag}", "flight-watcher-pilot-card >> nth=0")
                 pg.keyboard.press("Escape")

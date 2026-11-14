@@ -74,8 +74,12 @@ def test_a_readable_month_is_priced_for_the_seat_flown(W, tmp_path, monkeypatch)
     assert "gross" not in by["VAC"] and "seat" not in by["VAC"]
     ip = p["items_pay"]
     assert (ip["doh_known"], ip["doh"], ip["year"], ip["trips"], ip["trips_priced"]) == (True, "2018-10-03", 9, 2, 2)
-    assert ip["gross"] == pytest.approx(by["H9001"]["gross"] + by["H9002"]["gross"], abs=0.02)
-    assert (ip["credit"], ip["block"], ip["list_status"], ip["seat_src"]) == ("24:30", "20:30", "ok", {"pairing page": 1, "seniority list": 1})
+    # 1.7.6 review: the VAC day (Nov 22) is in Credit and Pay-Gross at 4:00 (PWA 6.J.1.c), at the list seat's rate,
+    # as on the schedule card's totals line (Vacation 4:00, 1 d)
+    vac = 4 * PAY.rate_for(9, "2026-11-22", "FO")
+    assert ip["gross"] == pytest.approx(by["H9001"]["gross"] + by["H9002"]["gross"] + vac, abs=0.02)
+    assert (ip["vac"], ip["vac_days"]) == ("4:00", 1)
+    assert (ip["credit"], ip["block"], ip["list_status"], ip["seat_src"]) == ("28:30", "20:30", "ok", {"pairing page": 1, "seniority list": 1})
     assert ip["days_off"] == p["totals"].get("days_off")  # FLICA's own count, not the trips'
     assert "items_pay" not in W.PILOT_SHOWN["p"] and "gross" not in W.PILOT_SHOWN["p"]["items"][0]
     # the cached answer is priced the same way

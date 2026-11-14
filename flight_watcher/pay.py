@@ -119,15 +119,42 @@ def _days(start, end, cap=15):
     return [(d + timedelta(days=k)).isoformat() for k in range(cap) if d + timedelta(days=k) <= e]
 
 
-def pay_line(trips, doh, period_from, period_to, tax_pct, ca_rules=True):
+def rate_steps(doh, period_from, period_to):
+    """1.7.6 review: the days after period_from on which this pilot's hourly rates change inside the period (a DOH
+    anniversary: a new longevity year, PWA 3.B.1; or a PWA 3.C.4 / 3.D.6 rate date), each {from, year, CA, FO}; [] when
+    the first day's rates hold all period (or a date is unreadable)."""
+    try:
+        d, e = date.fromisoformat(period_from), date.fromisoformat(period_to)
+        prev = (min(12, doh_year(doh, period_from)), sum(1 for x in RATE_DATES if period_from >= x))
+    except (TypeError, ValueError):
+        return []
+    out = []
+    for k in range(1, min(62, (e - d).days) + 1):
+        iso = (d + timedelta(days=k)).isoformat()
+        cur = (min(12, doh_year(doh, iso)), sum(1 for x in RATE_DATES if iso >= x))
+        if cur != prev:
+            out.append({"from": iso, "year": max(1, cur[0]), "CA": rate_for(cur[0], iso, "CA"), "FO": rate_for(cur[0], iso, "FO")})
+            prev = cur
+    return out
+
+
+def pay_line(trips, doh, period_from, period_to, tax_pct, ca_rules=True, month=None, vac=(), payp=(), flica_credit=None,
+             rate_ok=None, vac_seat="FO"):
     """FW-0062: the pay line under another pilot's rebuilt month. trips: the trips the pilot card draws in its grid
     (crewidx.grid_pick), each {pairing, start, end, seat, credit, blk, soft, lay, route, n}. The totals cover the
     trips that start in the bid period (period_from..period_to, ISO), as the card's own totals do; Days Off are the
     bid period's days no drawn trip covers (reserve, training and days off look alike on crew lists). Each trip is
     priced for its own seat (rate_for: CA PWA 3.C.4, FO and RO PWA 3.D.6) on its own start date, for the longevity
     year from doh (doh_year, capped at 12, PWA 3.B.1), with the PWA 4.O.1 overrides and the Extended Range +15% per
-    er_on (no per-trip list: that list is Ryan's own). No doh: no amounts. Returns (pay_line, {'PID|start': gross})."""
-    tot = [t for t in trips if (t.get("start") or "") >= period_from]
+    er_on (no per-trip list: that list is Ryan's own). No doh: no amounts. Returns (pay_line, {'PID|start': gross}).
+    1.7.6 review (a month FLICA showed, or a version of it; the schedule card's rules): month 'YYYY-MM' totals the trips
+    that start in that calendar month (each trip's credit and block already its PWA 4.A share), plus vac (ISO days of
+    vacation in the month, PWA 6.J.1.c: VAC_H credit a day at the vac_seat rate) and payp (the PAYP days, PWA
+    Definitions 57): their credit is FLICA's month credit (flica_credit, hours) less everything else counted, an
+    estimate, when that leaves some and every trip has its credit; else unknown, not counted. rate_ok(seat): False for
+    a seat whose rates are not on file (another fleet): its trips are not priced (no_rate). rate_steps: the days the
+    rates change inside the period (rate_steps())."""
+    tot = [t for t in trips if ((t.get("start") or "")[:7] == month if month else (t.get("start") or "") >= period_from)]
     covered = {d for t in trips for d in _days(t.get("start"), t.get("end"))}
     period = _days(period_from, period_to, cap=62)
     sums = {"credit": [0.0, 0], "blk": [0.0, 0], "soft": [0.0, 0]}
@@ -144,19 +171,50 @@ def pay_line(trips, doh, period_from, period_to, tax_pct, ca_rules=True):
            "net": None, "tax_pct": tax_pct, "days_off": sum(1 for d in period if d not in covered) if period else None,
            "missing": [{"pairing": t.get("pairing") or "", "start": t.get("start") or ""}
                        for t in tot if hrs(t.get("credit")) is None], "no_block": []}
+    ok = rate_ok or (lambda seat: True)
+    vac = sorted(set(vac or ()))
+    # the vacation days and the PAYP's credit (the schedule card's Vacation and PAYP groups), inside Credit
+    if vac:
+        out["vac_days"], out["vac"] = len(vac), hm(len(vac) * VAC_H)
+    pp_h = None
+    if payp:
+        counted = sums["credit"][0] + len(vac) * VAC_H
+        if flica_credit is not None and not out["missing"] and flica_credit - counted > 1 / 120:
+            pp_h = round((flica_credit - counted) * 60) / 60
+            out.update(payp=hm(pp_h), payp_est=True)
+        else:
+            out["payp_unk"] = True
+    if vac or pp_h:
+        out["credit"] = hm(sums["credit"][0] + len(vac) * VAC_H + (pp_h or 0))
     per = {}
     try:
         yr, yr_to = (max(1, min(12, doh_year(doh, d))) for d in (period_from, period_to))
     except (TypeError, ValueError):
         return out, per
+    seats_ok = [s for s in ("CA", "FO") if ok(s)]
     out.update(doh_known=True, doh=doh, year=yr, year_to=yr_to if yr_to != yr else None,
-               seat_rates={"CA": rate_for(yr, period_from, "CA"), "FO": rate_for(yr, period_from, "FO")})
+               seat_rates={s: rate_for(yr, period_from, s) for s in seats_ok},
+               rate_steps=[{k: v for k, v in r.items() if k in ("from", "year") or k in seats_ok}
+                           for r in rate_steps(doh, period_from, period_to)])
+    if not out["rate_steps"]:
+        out.pop("rate_steps")
     gross = 0.0
+    vs = (vac_seat or "FO").upper()
+    for d in vac if ok(vs) else ():
+        gross += VAC_H * rate_for(min(12, doh_year(doh, d)), d, vs)
+    if pp_h and ok(vs):
+        d0 = min(str(p.get("start") or period_from) for p in payp)
+        gross += pp_h * rate_for(min(12, doh_year(doh, d0)), d0, vs)
+    if (vac or pp_h) and not ok(vs):
+        out.setdefault("no_rate", []).append({"pairing": "VAC" if vac else "PAYP", "start": (vac or [period_from])[0], "seat": vs})
     for t in tot:
         cr, bl = hrs(t.get("credit")), hrs(t.get("blk"))
         if cr is None:
             continue
         seat, n, key = (t.get("seat") or "FO").upper(), int(t.get("n") or 0), f"{t.get('pairing')}|{t['start']}"
+        if not ok(seat):
+            out.setdefault("no_rate", []).append({"pairing": t.get("pairing") or "", "start": t["start"], "seat": seat})
+            continue
         lay = t.get("lay") or "/".join(x for x in str(t.get("route") or "").split("-") if x and x != "HNL")
         rate = rate_for(min(12, doh_year(doh, t["start"])), t["start"], seat)
         g = trip_gross(cr, bl, n, lay, key, seat, rate, (), ca_rules=ca_rules)
@@ -165,7 +223,7 @@ def pay_line(trips, doh, period_from, period_to, tax_pct, ca_rules=True):
         out["trips_priced"] += 1
         if bl is None and overrides_due(seat, n):
             out["no_block"].append({"pairing": t.get("pairing") or "", "start": t["start"]})
-    if out["trips_priced"]:
+    if out["trips_priced"] or (gross and (vac or pp_h)):
         out["gross"] = round(gross, 2)
         out["net"] = round(gross * (1 - float(tax_pct or 0) / 100), 2)
     return out, per

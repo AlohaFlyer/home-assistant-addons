@@ -129,7 +129,7 @@ function fwgPack(box, url, key, redraw) {
     }
     const last = new Date(Date.UTC(y, mo, 0)).toISOString().slice(0, 10);
     box[key] = { key, map, start: FWG_ISO.test(j.start || "") ? j.start : `${key}-01`, end: FWG_ISO.test(j.end || "") ? j.end : last,
-      dv: Number(j.dv) || 0 };
+      dv: Number(j.dv) || 0, dcut: Number(j.dcut) || 0 };
   }).catch(() => { box[key] = false; }).then(() => redraw());
   return null;
 }
@@ -183,8 +183,11 @@ function fwgDetail(o) {
   if (det) m.head.push(["Base/Equip", `${base}/${fwgStr(det.eq || "", 4)}`]);
   if (det) {
     let dutyAll = 0, dutyOk = true;
+    // the hotel and van are not in the shared pairing file: the pilot's own trip carries them (own.hotels, a duty each)
+    const hs = Array.isArray(own.hotels) ? own.hotels : [];
     det.duties.slice(0, 12).forEach((du, i) => {
       du = du && typeof du === "object" ? du : {};
+      const h = Array.isArray(hs[i]) && fwgStr(hs[i][0], 4) === fwgStr(du.stn, 4) ? hs[i] : [];
       const legs = (Array.isArray(du.legs) ? du.legs : []).slice(0, 30).map((l) => {
         const [day, dh, flt, dps, ars, depl, arrl, blk, , gr, eq] = (Array.isArray(l) ? l : []).map((x) => fwgStr(x, 8));
         const n = Number(day);
@@ -194,7 +197,7 @@ function fwgDetail(o) {
       const dm = fwgMins(du.duty);
       if (dm == null) dutyOk = false; else dutyAll += dm;
       m.duties.push({ n: i + 1, dd: legs.length ? legs[0].dd : "", rept: fwgStr(du.rept, 5), legs, dend: fwgStr(du.dend, 5),
-        stn: fwgStr(du.stn, 4), layo: fwgHM(du.layo), hotel: fwgStr(du.hotel, 80), van: fwgStr(du.van, 5), tblk: fwgHM(du.tblk),
+        stn: fwgStr(du.stn, 4), layo: fwgHM(du.layo), hotel: fwgStr(du.hotel || h[1], 80), van: fwgStr(du.van || h[2], 5), tblk: fwgHM(du.tblk),
         tdhd: fwgHM(du.tdhd), tcrd: fwgHM(du.tcrd), duty: fwgHM(du.duty), fdp: fwgHM(du.fdp) });
     });
     const t = det.tot && typeof det.tot === "object" ? det.tot : {};
@@ -375,21 +378,21 @@ const FWG_CSS = `
       .cal tr.wk td:nth-child(1),.cal tr.wk td:nth-child(2){background:#dde6f3;color:#1f2a44}
       .cal tr.hol td:nth-child(1),.cal tr.hol td:nth-child(2){background:#fff0a8;color:#4e3b00}
       .cal tr.hol2 td:nth-child(1),.cal tr.hol2 td:nth-child(2){background:#fff0a8;color:#4e3b00;background-image:repeating-linear-gradient(135deg,transparent 0 5px,rgba(0,0,0,.06) 5px 7px)}
-      @media (prefers-color-scheme: dark){
-        .cal tr.bx td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb}
-        .cal tr.bxs td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb}
-        .cal tr.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 -2px 0 #bbb}
-        .cal tr.bxs.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb,inset 0 -2px 0 #bbb}
-      }
+      :host([dark]) .cal tr.bx td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb}
+      :host([dark]) .cal tr.bxs td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb}
+      :host([dark]) .cal tr.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 -2px 0 #bbb}
+      :host([dark]) .cal tr.bxs.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb,inset 0 -2px 0 #bbb}
       .cal tr.oth td{color:var(--secondary-text-color)}
       .trip{color:var(--primary-color);font-weight:600}
       .vac{font-weight:600}
+      .cal tr.vac[data-d] td.n::after{content:" \\2298";color:#e53935;font-weight:700;opacity:.8}
+      .payp{font-weight:600;color:var(--fw-info,#1565c0)}
       .tm{font-size:10.5px;color:var(--secondary-text-color)}
       .tag{cursor:help}.lay{display:inline-block;min-width:28px}
       .st{color:var(--fw-ok,#2e7d32);font-weight:700;cursor:help}.st.fly{color:var(--fw-info,#1565c0)}
       .tot{margin-top:8px;font-size:14px;font-weight:700;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tgrp{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tpay{flex-wrap:nowrap}.tot .ti{white-space:nowrap}.tot .k{font-weight:600;color:var(--secondary-text-color);font-size:12px;margin-right:4px}.tot .bad{color:var(--fw-err,#c62828)}
       .trip[data-k]{cursor:pointer}.trip[aria-expanded="true"]{text-decoration:underline;text-underline-offset:2px}
-      .trip:focus-visible,.pdx:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px;border-radius:3px}
+      .trip:focus-visible,.pdx:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px;border-radius:3px}.fwss .pdx:focus-visible{outline-offset:-3px}
       .cal tr.pdh[data-d] td:nth-child(n){background-image:linear-gradient(var(--fwg-hl),var(--fwg-hl))}
       .cal tr.pdh.hol2[data-d] td:nth-child(-n+2){background-image:linear-gradient(var(--fwg-hl),var(--fwg-hl)),repeating-linear-gradient(135deg,transparent 0 5px,rgba(0,0,0,.06) 5px 7px)}
       .fwgp{margin:8px 0 2px;padding:6px 8px 8px;border:1px solid var(--divider-color,#ccc);border-radius:8px;max-width:100%;box-sizing:border-box;text-align:left;font-size:12px;line-height:1.3;scroll-margin:12px}
@@ -629,9 +632,17 @@ class FlightWatcherPilotCard extends HTMLElement {
     if (pl.doh_known) {
       const seats = (pl.seats && pl.seats.length ? pl.seats : ["FO"]).map((s) => String(s).toUpperCase());
       const r = pl.seat_rates || {};
-      const parts = [];
-      if (seats.includes("CA") && r.CA != null) parts.push(`$${e(Number(r.CA).toFixed(2))}/cr h CA (PWA 3.C.4)`);
-      if (seats.some((s) => s !== "CA") && r.FO != null) parts.push(`$${e(Number(r.FO).toFixed(2))}/cr h ${seats.includes("RO") ? "FO/RO" : "FO"} (PWA 3.D.6)`);
+      const rt = (x, ca, fo) => [seats.includes("CA") && x.CA != null ? `$${e(Number(x.CA).toFixed(2))}/cr h CA${ca}` : "",
+        seats.some((s) => s !== "CA") && x.FO != null ? `$${e(Number(x.FO).toFixed(2))}/cr h ${seats.includes("RO") ? "FO/RO" : "FO"}${fo}` : ""].filter(Boolean);
+      const parts = rt(r, " (PWA 3.C.4)", " (PWA 3.D.6)");
+      // 1.7.6 review: the list's fleet when the Watcher has no rates for it (the A330 PAX tables only), and the day a
+      // new longevity year or rate date changes the rates inside the month (each trip is priced on its own day)
+      const miss = pl.equip ? [...new Set(seats.map((s) => (s === "CA" ? "CA" : "FO")))].filter((s) => r[s] == null) : [];
+      if (miss.length) parts.push(`rates for the ${e(pl.equip)} ${e(miss.join("/"))} seat${miss.length > 1 ? "s" : ""} are not on file (only the A330 PAX tables, PWA 3.C.4 and 3.D.6): ${parts.length ? "those trips are not priced" : "no Pay-Gross"}`);
+      for (const x of Array.isArray(pl.rate_steps) ? pl.rate_steps.slice(0, 3) : []) {
+        const y = x ? rt(x, "", "") : [];
+        if (x && ISO_RE.test(x.from || "") && y.length) parts.push(`from ${e(fwgMd(x.from))}${x.year != null ? ` year ${e(x.year)}` : ""}: ${y.join(", ")}`);
+      }
       // 1.7.6: a pilot instance's Watcher leaves another pilot's DOH out: the year alone
       return [`Year ${e(pl.year)}${pl.year_to ? ` to ${e(pl.year_to)}` : ""}${pl.doh ? ` (DOH ${e(pl.doh)})` : ""}`, ...parts].join(" · ");
     }
@@ -671,18 +682,35 @@ class FlightWatcherPilotCard extends HTMLElement {
         notes: `<div class="u psrc">Source: FLICA Tools > Schedule Lookup, read only. Block / Credit per trip from the pairing pages.</div>` };
     }
     const m = Number(ip.trips) || 0;
-    const of = (n) => (Number(n) < m ? ` <span class="k">(${e(n)} of ${e(m)})</span>` : "");
-    const why = `Credit, Block and Soft over the ${m} pairings that start in the bid period; FLICA's figures also hold reserve, training and other credited days.` +
+    const why = `Credit, Block and Soft over the ${m} pairings that start in the month, each its share flown in the month (PWA 4.A: a segment pays on the date it originates), plus vacation days at 4:00 (PWA 6.J.1.c) and the PAYP's pay protected credit (PWA Definitions 57); FLICA's figures also hold reserve, training and other credited days.` +
       (ip.doh_known && ip.gross != null ? " Pay-Gross = credit x the hourly rate of the seat flown on each pairing, for the pilot's longevity year from the date of hire (PWA 3.B.1; Captain PWA 3.C.4, First Officer and RO PWA 3.D.6), plus the PWA 4.O.1 overrides." : "");
-    const tot = `<div class="tot" title="${e(why)}">${this._tgrp("thrs", [["Credit", e(ip.credit) + of(ip.credit_n) + chk(ip.credit, t.credit)], ["Block", e(ip.block) + of(ip.block_n) + chk(ip.block, t.block)], ["Soft", e(ip.soft) + of(ip.soft_n)]])}` +
-      `${this._tgrp("tpay", this._payG(ip, m))}${this._tgrp("tdays", [["Days Off", t.days_off != null ? e(t.days_off) : "?", "FLICA's days off for the month"]])}</div>`;
+    const tot = `<div class="tot" title="${e(why)}">${this._hoursPay(ip, t, m, "FLICA's days off for the month")}</div>`;
     const ss = ip.seat_src && typeof ip.seat_src === "object" ? Object.entries(ip.seat_src).filter(([, n]) => Number(n) > 0) : [];
     const seatN = ss.length ? `Seat: ${ss.map(([k, n]) => `${e(n)} from ${e(PC_SEAT_SRC[k] || k)}`).join(", ")}` : "";
     const ds = (x) => `${e(x.pairing)} ${ISO_RE.test(x.start || "") ? e(fwgMd(x.start)) : e(x.start)}`;
     const notes = [(ip.missing || []).length ? `No credit for ${(ip.missing || []).map(ds).join(", ")}: not priced` : "",
-      (ip.no_block || []).length ? `No block for ${(ip.no_block || []).map(ds).join(", ")}: its PWA 4.O.1 override is not in Pay-Gross` : ""].filter(Boolean);
+      (ip.no_block || []).length ? `No block for ${(ip.no_block || []).map(ds).join(", ")}: its PWA 4.O.1 override is not in Pay-Gross` : "",
+      ip.payp_unk ? "A PAYP's credit is not known (FLICA's month credit leaves none, or a trip's credit is missing): not counted" : ""].filter(Boolean);
     return { tot, notes: `<div class="u prate">${[this._rate(ip), seatN].filter(Boolean).join(" · ")}</div>${notes.length ? `<div class="u prate">${notes.join(" · ")}</div>` : ""}` +
       `<div class="u psrc">Source: FLICA Tools > Schedule Lookup, read only. Block / Credit per pairing from its pairing page (the first few), else the pairings package.</div>` };
+  }
+  // 1.7.6 review: a month's hours and pay groups, the schedule card's (its order, check marks, Vacation and PAYP):
+  // Credit (with the vacation and PAYP credit), Block, Soft, Vacation, PAYP, Pay-Gross, Pay-Net, Days Off. ip: the
+  // Watcher's price (items_pay, or a version's pay); t: FLICA's totals it is checked against; m: the trips counted
+  _hoursPay(ip, t, m, daysT) {
+    const e = (s) => this._esc(s);
+    const mins = (v) => { const x = /^(\d+)[.:](\d{2})$/.exec(String(v == null ? "" : v).trim()); return x ? Number(x[1]) * 60 + Number(x[2]) : null; };
+    // a FLICA figure the month does not fully count (a PAYP of unknown credit) is shown, never flagged red
+    const chk = (mine, fl, skip) => { const a0 = mins(mine), b0 = mins(fl); return a0 == null || b0 == null ? "" : Math.abs(a0 - b0) < 1 ? ` <span class="okc" title="matches FLICA">&#10003;</span>` : skip ? ` <span class="k" title="${e(skip)}">FLICA ${e(fl)}</span>` : ` <span class="bad" title="FLICA shows ${e(fl)}">FLICA ${e(fl)}</span>`; };
+    const of = (n) => (n != null && Number(n) < m ? ` <span class="k">(${e(n)} of ${e(m)})</span>` : "");
+    const skip = ip.payp_unk ? "Not compared: a PAYP's credit is not known, so it is not counted" : "";
+    const est = ip.payp_est ? ` <span class="k" title="Not checked: the PAYP estimate is FLICA's month credit less everything else counted, so Credit matches it by construction.">est</span>` : "";
+    const pp = ip.payp || ip.payp_unk ? `<span class="ppt" title="${e(`Pay protected credit inside Credit and Pay-Gross (PWA Definitions 57). Not in Block: not flown.${ip.payp_est ? " Estimate: FLICA's month credit less everything else counted." : ""}${ip.payp_unk ? " A PAYP's credit is unknown and not counted." : ""}`)}">${ip.payp ? e(ip.payp) : ""}${ip.payp_est ? ' <span class="k">estimate</span>' : ""}${ip.payp_unk ? `${ip.payp ? " +" : ""} <span class="bad">credit unknown</span>` : ""}</span>` : "";
+    return this._tgrp("thrs", [["Credit", ip.credit != null ? e(ip.credit) + of(ip.credit_n) + (est || chk(ip.credit, t.credit, skip)) : t.credit ? e(t.credit) : ""],
+      ["Block", ip.block != null ? e(ip.block) + of(ip.block_n) + chk(ip.block, t.block) : t.block ? e(t.block) : ""],
+      ["Soft", ip.soft != null ? e(ip.soft) + of(ip.soft_n) : ""],
+      ["Vacation", ip.vac_days ? `${e(ip.vac)} <span class="k">(${e(ip.vac_days)} d x 4:00)</span>` : ""], ["PAYP", pp]]) +
+      `${this._tgrp("tpay", this._payG(ip, m))}${this._tgrp("tdays", [["Days Off", t.days_off != null && t.days_off !== "" ? e(t.days_off) : "", daysT]])}`;
   }
   _rebuild(a) {  // FW-0002: reconstructed trips -> the readable schedule's {days: [[iso, code, lay]], items} shape, plus also (overlaps)
     const ok = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || "");
@@ -714,7 +742,21 @@ class FlightWatcherPilotCard extends HTMLElement {
       const base = st[0] || "HNL";
       const outs = [...new Set(st.filter((s) => s !== base))];
       const lay = x.start === x.end ? base : (x.lay || (outs.length === 1 ? outs[0] : ""));  // out and back: the one outstation
-      for (let d = add(x.start, 1), k = 0; d <= x.end && k < 14; d = add(d, 1), k++) if (!(at[d] && at[d][0])) at[d] = ["", d === x.end ? base : "-"];
+      // 1.7.6 review: the days after the first show where the pilot is that night, as FLICA's grid does: the station the
+      // duty departing that day ends at (a layover), '-' on the day the last duty leaves for base, the base on the last
+      // day; from the package's duties when it lists this pairing on that day, else '-' as before
+      const pe = this._packOf(x.start), pp = pe && Object.prototype.hasOwnProperty.call(pe.map, x.pairing) ? pe.map[x.pairing] : null;
+      const det = pp && pp.days.has(x.start) && pp.det && Array.isArray(pp.det.duties) ? pp.det : null;
+      const dstn = {};
+      for (const du of det ? det.duties.slice(0, 12) : []) {
+        const n = Number(du && Array.isArray(du.legs) && Array.isArray(du.legs[0]) ? du.legs[0][0] : NaN);
+        if (Number.isInteger(n) && n >= 1 && n <= 15) dstn[add(x.start, n - 1)] = String(du.stn || "").slice(0, 4);
+      }
+      let cur = det ? (dstn[x.start] && dstn[x.start] !== base ? dstn[x.start] : "-") : "-";
+      for (let d = add(x.start, 1), k = 0; d <= x.end && k < 14; d = add(d, 1), k++) {
+        if (det && dstn[d] !== undefined) cur = dstn[d] && dstn[d] !== base ? dstn[d] : "-";
+        if (!(at[d] && at[d][0])) at[d] = ["", d === x.end ? base : det ? cur : "-"];
+      }
       at[x.start] = [x.pairing, lay];
       items.push({ trip: x.pairing, start: x.start, end: x.end, blk: x.blk || "", credit: x.credit || "", soft: x.soft || "", crew: x.crew || [],
         legs: st.slice(1).map((s, i) => ({ route: `${st[i]}-${s}` })), seat: x.seat || "", read: x.checked_at || "", route: x.route || "",
@@ -723,6 +765,17 @@ class FlightWatcherPilotCard extends HTMLElement {
     const days = [];
     for (let d = first, k = 0; d <= last && k < 45; d = add(d, 1), k++) days.push([d, ...(at[d] || ["", ""])]);
     return { month, from, days, items, also };
+  }
+  // 1.7.6 review: the trips that started before FLICA's grid and run into it (FLICA's grid gives them no code day, so
+  // the month has no item for them): the crew index's (a.reconstructed keeps a trip running into the grid), so their
+  // days are boxed with their release, as the schedule card boxes Ryan's from the month before. Drawn, never totaled.
+  _carry(a, days, items) {
+    const d0 = (days || []).map((x) => (Array.isArray(x) ? x[0] : "")).filter((d) => ISO_RE.test(d || "")).sort()[0];
+    if (!d0) return [];
+    const have = new Set((items || []).filter(Boolean).map((it) => `${it.trip}|${it.start}`));
+    return (Array.isArray(a.reconstructed) ? a.reconstructed : []).filter((x) => x && /^[A-Z]\d{4}/.test(x.pairing || "") && ISO_RE.test(x.start || "")
+      && x.start < d0 && ISO_RE.test(x.end || "") && x.end >= d0 && !have.has(`${x.pairing}|${x.start}`)).slice(0, 2)
+      .map((x) => ({ trip: x.pairing, start: x.start, end: x.end, route: x.route || "", crew: x.crew || [], legs: [], carry: true }));
   }
   _esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
   // FW-0069: the versions file, like the schedule card's fwListFile: <PILOTVER_URL><key>.json fetched once per key|rev
@@ -812,12 +865,18 @@ class FlightWatcherPilotCard extends HTMLElement {
     const e = (x) => this._esc(x);
     const m = Number(pv.trips) || trips;
     const pay = pv.gross != null && items.some((it) => it.gross != null);
-    const tot = `<div class="tot">${this._tgrp("thrs", [["Trips", e(trips)], ["Block", t.block ? e(t.block) : ""], ["Credit", t.credit ? e(t.credit) : ""]])}` +
-      `${this._tgrp("tpay", pv.gross != null ? [["Pay-Gross", e(usd(pv.gross)) + (Number(pv.trips_priced) < m ? ` <span class="k">(${e(pv.trips_priced)} of ${e(m)} trips)</span>` : ""), "This version's pairings priced as the live month is"]] : [])}` +
-      `${this._tgrp("tdays", [["Days Off", t.days_off != null && t.days_off !== "" ? e(t.days_off) : ""]])}</div>`;
+    // 1.7.6 review: the live month's groups in its order; a versions file from before the review (no hours in its pay)
+    // shows FLICA's own Credit and Block, and Soft from them
+    const ip = { ...pv, trips: m, doh_known: pv.gross != null && !!pay };
+    if (pv.credit == null) {
+      const mm = (v) => { const x = /^(\d+)[.:](\d{2})$/.exec(String(v == null ? "" : v).trim()); return x ? Number(x[1]) * 60 + Number(x[2]) : null; };
+      const c0 = mm(t.credit), b0 = mm(t.block);
+      ip.soft = c0 != null && b0 != null && c0 >= b0 ? `${Math.floor((c0 - b0) / 60)}:${String((c0 - b0) % 60).padStart(2, "0")}` : null;
+    }
+    const tot = `<div class="tot" title="${e(`This version's pairings priced as the live month is (each trip from the best figures on file for it: the live read, the crew index, the pairings package); the totals line of the live month, in the same order.`)}">${this._hoursPay(ip, t, m, "")}</div>`;
     const src = rec.source === "lookup" ? `FLICA Tools > Schedule Lookup${rec.updated ? ` (FLICA updated ${e(rec.updated)})` : ""}`
       : rec.source === "rebuild" ? "rebuilt from pairing crew lists" : rec.source === "award" ? "the awarded line" : e(rec.source || "");
-    return `<div class="frame">${this._grid(days, items, month, { g: "main", pay })}${tot}</div><div class="u vnote">v${e(rec.ver)} as captured ${this._hst(rec.at)}${src ? `, ${src}` : ""}. Block / Credit per trip and crew shown are the live ones; Pay-Gross is this version's.</div>`;
+    return `<div class="frame">${this._grid(days, items, month, { g: "main", pay, carry: this._carry(a, days, items) })}${tot}</div><div class="u vnote">v${e(rec.ver)} as captured ${this._hst(rec.at)}${src ? `, ${src}` : ""}. Block / Credit per trip and crew shown are the live ones; Pay-Gross is this version's.</div>`;
   }
   _contact(a, mini) {  // FW-0066: call / text / mail links for the looked-up pilot (attribute contact), '' when none
     const c = a && a.contact;
@@ -876,6 +935,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     const a = (st && st.attributes) || {};
     // 1.7.6: the pairing detail belongs to the pilot and month it was opened on
     const ctx = `${a.emp || ""}|${a.month || a.reconstructed_month || ""}`;
+    this._bp = { month: a.month || a.reconstructed_month || "", from: a.reconstructed_from || "", to: a.reconstructed_to || "" };
     if (this._pd && (this._pd.ctx !== ctx || loading || a.status === "loading" || this._hidden)) this._pd = null;
     this._narrow = !!this._pd && fwgNarrow(this._hc());
     this._draw(body, a, st, loading);
@@ -909,7 +969,7 @@ class FlightWatcherPilotCard extends HTMLElement {
       const h3 = a.emp ? `${this._esc(name || "Pilot")} (${this._esc(a.emp)})` : (a.matches || []).length ? `Pick the pilot for '${this._esc(name)}'` : name ? `No pilot found for '${this._esc(name)}'` : "Pilot lookup";
       const when = hstHM(a.at || (st && st.last_updated));
       const said = /application error|customer care/i.test(a.status || "") ? "FLICA showed its error page for this schedule (often a pilot who has hidden it, or a FLICA hiccup). Nothing to read; try again later." : (a.status || "no data");
-      body.innerHTML = `<div class="hd"><h3>${h3}</h3>${ct}<span class="u st">${this._esc(said)}${when ? ` (${when} HST)` : ""}</span><span class="x" title="close">&times;</span></div>${vb}${picks ? `<div class="picks">${picks}</div>` : ""}`;
+      body.innerHTML = `<div class="hd"><h3>${h3}</h3>${ct}<span class="u pst">${this._esc(said)}${when ? ` (${when} HST)` : ""}</span><span class="x" title="close">&times;</span></div>${vb}${picks ? `<div class="picks">${picks}</div>` : ""}`;
       if (old) { body.insertAdjacentHTML("beforeend", old + this._recon(a, true)); return; }  // the live rebuild, folded under it
       body.insertAdjacentHTML("beforeend", this._recon(a, false));  // 0.10.1 crew index; FW-0002: in the schedule grid
       return;
@@ -925,7 +985,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     const items = a.items || [];
     const pay = !!(ip && ip.doh_known) && items.some((it) => it && it.gross != null);
     const rt = this._readTot(a);
-    body.innerHTML = `${hd}${vb}<div class="frame">${this._grid(a.days, items, a.month, { g: "main", pay })}${rt.tot}</div>${rt.notes}`;
+    body.innerHTML = `${hd}${vb}<div class="frame">${this._grid(a.days, items, a.month, { g: "main", pay, carry: this._carry(a, a.days, items) })}${rt.tot}</div>${rt.notes}`;
     body.insertAdjacentHTML("beforeend", this._recon(a, true));  // 0.10.1: crew index (reconstructed from pairing crew lists), folded under a readable month
   }
   // 1.7.6: after a redraw: the sheet (narrow) shown, updated or hidden; the wide panel scrolled into view once a
@@ -991,14 +1051,14 @@ class FlightWatcherPilotCard extends HTMLElement {
       this._waitT = setTimeout(() => { if (this._ask && this._root) this._paint(this._busy); }, Math.min(due - Date.now() + 500, 2147483000));
       if (this._waitT && this._waitT.unref) this._waitT.unref();  // a test's node process need not wait for it
     }
-    return `<div class="hd"><h3>${h3}</h3>${ct}<span class="u st">${this._esc(line)}</span><span class="x" title="close">&times;</span></div>`;
+    return `<div class="hd"><h3>${h3}</h3>${ct}<span class="u pst">${this._esc(line)}</span><span class="x" title="close">&times;</span></div>`;
   }
   // 1.7.6: a trip's report and release (HST) and the day it is released: from the pairings package when it lists the
   // pairing (the id without a trailing letter, as the schedule card times a trip) on that day, else from the legs the
   // pairing page gave (report = first departure - 1:00, release = last arrival + 0:15, PWA 2), else none (FLICA's end)
   _times(it) {
     const id5 = String(it.trip || "").slice(0, 5), st = it.start, end = ISO_RE.test(it.end || "") && it.end >= st ? it.end : st;
-    const pe = fwgPackFor(this._pk, PAIRINGS_URL, st, this._pkRedraw, id5);
+    const pe = this._packOf(st);
     const p = pe && Object.prototype.hasOwnProperty.call(pe.map, id5) && pe.map[id5].days.has(st) ? pe.map[id5] : null;
     const out = { rep: "", rel: "", relDay: end, route: String((p && p.route) || it.route || "") };
     if (p && pcMin(p.report) != null) out.rep = p.report;
@@ -1018,6 +1078,19 @@ class FlightWatcherPilotCard extends HTMLElement {
     }
     return out;
   }
+  // 1.7.6 review: the package of the bid period a trip's first day belongs to (the grid's month, the month before for a
+  // day before its bid period, the month after past it; this._bp from the sensor), and only that one: a plain render
+  // never fetches a neighbouring month's file for a pairing the package lacks. null while it loads, false when none.
+  _packOf(st) {
+    const b = this._bp || {}, mon = /^\d{4}-\d{2}$/.test(b.month || "") ? b.month : "";
+    let k = String(st).slice(0, 7);
+    if (mon && ISO_RE.test(b.from || "") && ISO_RE.test(b.to || "")) {
+      const [y, m] = mon.split("-").map(Number);
+      k = st < b.from ? new Date(Date.UTC(y, m - 2, 1)).toISOString().slice(0, 7) : st > b.to ? new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 7) : mon;
+    }
+    const e = fwgPack(this._pk, PAIRINGS_URL, k, this._pkRedraw);
+    return e && e.start <= st && st <= e.end ? e : e === null ? null : false;
+  }
   // 1.7.6: the pairing detail model (the shared fwgDetail) for another pilot's trip: the package's legs and layovers
   // when it lists this exact pairing on that day, else the legs the pairing page gave, and why
   _pdModel(it, tm) {
@@ -1032,7 +1105,8 @@ class FlightWatcherPilotCard extends HTMLElement {
       : !has && /^[A-Z]\d{4}[A-Z]$/.test(id) && Object.prototype.hasOwnProperty.call(pe.map, id.slice(0, 5)) ? `${id} is a pairing FLICA rebuilt: the ${pmo} pairings package has ${id.slice(0, 5)}, not this trip, so the package detail is not on file.`
       : !has ? `${id} is not in the ${pmo} pairings package: the package detail is not on file.`
       : !p ? `The ${pmo} pairings package does not list ${id} on ${fwgMd(st)}: the package detail is not on file.`
-      : `The ${pmo} pairings file has no leg detail yet: an older Watcher wrote it, and the next update reads the package again.`;
+      : pe.dcut ? `The ${pmo} pairings file holds the leg detail of its first pairings only (a size limit): the package detail of ${id} is not on file.`
+        : `The ${pmo} pairings file has no leg detail yet: an older Watcher wrote it, and the next update reads the package again.`;
     if (why && !legs.length && !it.blk && !it.credit) why += " The Watcher read no pairing page for this trip either.";
     const wmd = (iso, hm) => (hm && ISO_RE.test(iso || "") ? `${hm} ${PC_WD[fwgWday(iso)]} ${fwgMd(iso)}` : "");
     const notes = [];
@@ -1049,8 +1123,10 @@ class FlightWatcherPilotCard extends HTMLElement {
   _grid(days, items, month, o) {
     o = o || {};
     const g = o.g || "main", e = (s) => this._esc(s);
-    const trips = (items || []).filter((it) => it && /^[A-Z]\d{4}/.test(it.trip || "") && ISO_RE.test(it.start || ""));
-    const byStart = {}; for (const it of trips) byStart[it.start] = it;
+    const trips = (items || []).concat(o.carry || []).filter((it) => it && /^[A-Z]\d{4}/.test(it.trip || "") && ISO_RE.test(it.start || ""));
+    const byStart = {}; for (const it of trips) if (!it.carry) byStart[it.start] = it;
+    // the trip status mark of the schedule card (its first day: a check once flown, an airplane while it flies), HST
+    const nowH = new Date(Date.now() - 10 * 3600e3), today = nowH.toISOString().slice(0, 10), nowHM = nowH.toISOString().slice(11, 16);
     const tm = new Map(trips.map((it) => [it, this._times(it)]));
     const repOn = {}, relOn = {};
     for (const it of trips) { const t = tm.get(it); if (t.rep) repOn[it.start] = t.rep; if (t.rel) relOn[t.relDay] = t.rel; }
@@ -1070,6 +1146,7 @@ class FlightWatcherPilotCard extends HTMLElement {
       const it = byStart[d] && byStart[d].trip === code ? byStart[d] : null;
       let tc = "";
       if (code === "VAC") tc = `<span class="vac">VAC</span>`;
+      else if (code === "PAYP") tc = `<span class="payp tag" title="Pay protected (PWA Definitions 57): a trip removed from this pilot's line, its pay kept">PAYP</span>`;
       else if (it) {
         const k = `${it.trip}|${it.start}`;
         const legs = Array.isArray(it.legs) ? it.legs : [];
@@ -1085,17 +1162,32 @@ class FlightWatcherPilotCard extends HTMLElement {
       const turn = it ? [...new Set(tm.get(it).route.split("-").slice(1, -1).filter((x) => x && x !== "HNL"))].join("/") : "";
       const dayTrip = it && it.start === (ISO_RE.test(it.end || "") ? it.end : it.start);
       const l0 = !lay ? "" : lay === "-" && !cv ? "" : (it && turn && (lay === "-" || (dayTrip && lay === "HNL"))) ? `<b>${e(turn)}</b>` : e(lay);
-      const l = l0 && cv ? `<span class="tag lay" title="${e(`${cv.trip} ${cv.start} crew:\n${crewT(cv)}`)}">${l0}</span>` : l0;
+      let stm = "";
+      if (cv && d === cv.start) {
+        const t = tm.get(cv), cend = ISO_RE.test(cv.end || "") ? cv.end : cv.start;
+        const lastArr = t.rel && t.relDay === cend ? pcClock((pcMin(t.rel) + 1440 - 15) % 1440) : "";  // block-in = release - 0:15
+        const done = cend < today || (cend === today && !!lastArr && nowHM >= lastArr);
+        const flying = !done && (cv.start < today || (cv.start === today && (!t.rep || nowHM >= t.rep)));
+        stm = done ? ` <span class="st" title="Trip complete">&#10004;</span>` : flying ? ` <span class="st fly" title="Trip in progress">&#9992;</span>` : "";
+      }
+      const l = l0 && cv ? `<span class="tag lay" title="${e(`${cv.trip} ${cv.start} crew:\n${crewT(cv)}`)}">${l0}</span>${stm}` : l0;
       const rp = repOn[d] && it ? ` <span class="tm tag" title="${e(`${it.trip} crew:\n${crewT(it)}\n\nReport ${repOn[d]}`)}">R ${e(repOn[d])}</span>` : "";
       const rl = relOn[d] ? ` <span class="tm">Rel ${e(relOn[d])}</span>` : "";
-      let blk = "", cr = "", soft = "", pay = "", crew = "";
+      let blk = "", cr = "", soft = "", pay = "", crew = "", split = "";
       if (it) {
         blk = e(it.blk || ""); cr = e(it.credit || ""); soft = e(it.soft || "");
+        // PWA 4.A (the Watcher's split, the schedule card's rule): this month's share of a trip into the next month
+        const sp = it.split && typeof it.split === "object" ? it.split : null;
+        if (sp && sp.credit) {
+          blk = e(sp.blk || ""); cr = e(sp.credit); soft = e(sp.soft || "");
+          split = `${it.trip}: ${sp.all_blk || "?"} block / ${sp.all_credit || "?"} credit in all; ${sp.out_blk || "?"} block flown from ${sp.next || "next month"} pays next month (PWA 4.A). Credit split by block share.`;
+        }
         if (it.gross != null) pay = `<span class="pay" title="${e(`Pay-Gross for the ${String(it.seat || "FO").toUpperCase()} seat${it.seat_src ? ` (${PC_SEAT_SRC[it.seat_src] || it.seat_src})` : ""}: credit x the seat's hourly rate for this pilot's longevity year, plus the PWA 4.O.1 overrides`)}">${e(usd(it.gross))}</span>`;
         crew = (it.crew || []).map(([p, n]) => `${e(p)} ${e(n)}${(this._ctKeys || []).includes(pilotNameKey(n)) ? this._ctMini : ""}`).join(" · ");
       }
-      rows += `<tr data-d="${d}" class="${wk ? "wk" : ""}${fwgHol(d) ? " hol2" : ""}${oth ? " oth" : ""}${bx}${pdDays.has(d) ? " pdh" : ""}"><td>${DOW[w]}</td><td class="n">${d.slice(8)}</td>` +
-        `<td>${tc}</td><td>${l}${rp}${rl}</td><td class="t">${blk}</td><td class="t">${cr}</td><td class="t">${soft}</td>${o.pay ? `<td class="t tot1">${pay}</td>` : ""}<td class="crew">${crew}</td></tr>`;
+      const sc = split ? ` split" title="${e(split)}` : "";
+      rows += `<tr data-d="${d}" class="${wk ? "wk" : ""}${fwgHol(d) ? " hol2" : ""}${oth ? " oth" : ""}${code === "VAC" ? " vac" : ""}${bx}${pdDays.has(d) ? " pdh" : ""}"><td>${DOW[w]}</td><td class="n">${d.slice(8)}</td>` +
+        `<td>${tc}</td><td>${l}${rp}${rl}</td><td class="t${sc}">${blk}</td><td class="t${sc}">${cr}</td><td class="t">${soft}</td>${o.pay ? `<td class="t tot1">${pay}</td>` : ""}<td class="crew">${crew}</td></tr>`;
     }
     const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th class="r">Block</th><th class="r">Credit</th><th class="r">Soft</th>${o.pay ? `<th class="r" title="This pilot's Pay-Gross for the seat flown on each pairing, from his date of hire on file; hover a figure for its seat">Pay-Gross</th>` : ""}<th>Crew</th></tr>`;
     let html = `<div class="wrap"><table class="cal">${head}${rows}</table></div>`;

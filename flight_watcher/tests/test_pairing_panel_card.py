@@ -42,6 +42,10 @@ OWN = {
                               {"d": 0, "dep": 480, "arr": 810, "stn": "LAX", "blk": 330, "dep_l": "08:00", "arr_l": "15:30"},
                               {"d": 1, "dep": 2340, "arr": 2685, "stn": "HNL", "blk": 345, "dep_l": "19:00", "arr_l": "22:45"}]},
 }
+# 1.7.6 review: the hotels are not in the public pairing file; the Watcher adds each own trip's (publish_own_trips)
+for _k, _hs in pdfs.package_hotels(package()).items():
+    for _ok in [k for k in OWN if k.split("|")[0] == _k]:
+        OWN[_ok]["hotels"] = _hs
 
 
 def states(lu="2026-11-01T19:00:00+00:00", role="admin"):
@@ -311,6 +315,8 @@ def test_package_detail_not_on_file(pkg, note):
         pg.evaluate("(st) => { window.C = mount('" + TAG + "', {}, st, " + OWNER + "); }", states())
         pg.wait_for_function("C._pk && C._pk['2026-11'] !== null && C._pk['2026-11'] !== undefined")
         _tap(pg, "H9101|2026-11-05")
+        # the neighbouring months' files (the bid period that holds Nov 5) may still be on their way: wait for them
+        pg.wait_for_function("(() => { const n = C.shadowRoot.querySelector('.fwgpn'); return n && n.textContent !== 'Loading the pairings package.'; })()")
         r = _q(pg, "return {notes: qa('.fwgpn').map((x) => x.textContent), legs: qa('.fwgpt tr.lg').length, head: q('.fwgph').textContent};")
         assert r["notes"][0] == note and r["legs"] == 3  # FLICA's three duties
         assert ("Operates: Nov 5-Nov 26" in r["head"]) == (pkg is not None)

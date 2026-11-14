@@ -155,7 +155,7 @@ function fwgPack(box, url, key, redraw) {
     }
     const last = new Date(Date.UTC(y, mo, 0)).toISOString().slice(0, 10);
     box[key] = { key, map, start: FWG_ISO.test(j.start || "") ? j.start : `${key}-01`, end: FWG_ISO.test(j.end || "") ? j.end : last,
-      dv: Number(j.dv) || 0 };
+      dv: Number(j.dv) || 0, dcut: Number(j.dcut) || 0 };
   }).catch(() => { box[key] = false; }).then(() => redraw());
   return null;
 }
@@ -209,8 +209,11 @@ function fwgDetail(o) {
   if (det) m.head.push(["Base/Equip", `${base}/${fwgStr(det.eq || "", 4)}`]);
   if (det) {
     let dutyAll = 0, dutyOk = true;
+    // the hotel and van are not in the shared pairing file: the pilot's own trip carries them (own.hotels, a duty each)
+    const hs = Array.isArray(own.hotels) ? own.hotels : [];
     det.duties.slice(0, 12).forEach((du, i) => {
       du = du && typeof du === "object" ? du : {};
+      const h = Array.isArray(hs[i]) && fwgStr(hs[i][0], 4) === fwgStr(du.stn, 4) ? hs[i] : [];
       const legs = (Array.isArray(du.legs) ? du.legs : []).slice(0, 30).map((l) => {
         const [day, dh, flt, dps, ars, depl, arrl, blk, , gr, eq] = (Array.isArray(l) ? l : []).map((x) => fwgStr(x, 8));
         const n = Number(day);
@@ -220,7 +223,7 @@ function fwgDetail(o) {
       const dm = fwgMins(du.duty);
       if (dm == null) dutyOk = false; else dutyAll += dm;
       m.duties.push({ n: i + 1, dd: legs.length ? legs[0].dd : "", rept: fwgStr(du.rept, 5), legs, dend: fwgStr(du.dend, 5),
-        stn: fwgStr(du.stn, 4), layo: fwgHM(du.layo), hotel: fwgStr(du.hotel, 80), van: fwgStr(du.van, 5), tblk: fwgHM(du.tblk),
+        stn: fwgStr(du.stn, 4), layo: fwgHM(du.layo), hotel: fwgStr(du.hotel || h[1], 80), van: fwgStr(du.van || h[2], 5), tblk: fwgHM(du.tblk),
         tdhd: fwgHM(du.tdhd), tcrd: fwgHM(du.tcrd), duty: fwgHM(du.duty), fdp: fwgHM(du.fdp) });
     });
     const t = det.tot && typeof det.tot === "object" ? det.tot : {};
@@ -401,21 +404,21 @@ const FWG_CSS = `
       .cal tr.wk td:nth-child(1),.cal tr.wk td:nth-child(2){background:#dde6f3;color:#1f2a44}
       .cal tr.hol td:nth-child(1),.cal tr.hol td:nth-child(2){background:#fff0a8;color:#4e3b00}
       .cal tr.hol2 td:nth-child(1),.cal tr.hol2 td:nth-child(2){background:#fff0a8;color:#4e3b00;background-image:repeating-linear-gradient(135deg,transparent 0 5px,rgba(0,0,0,.06) 5px 7px)}
-      @media (prefers-color-scheme: dark){
-        .cal tr.bx td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb}
-        .cal tr.bxs td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb}
-        .cal tr.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 -2px 0 #bbb}
-        .cal tr.bxs.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb,inset 0 -2px 0 #bbb}
-      }
+      :host([dark]) .cal tr.bx td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb}
+      :host([dark]) .cal tr.bxs td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb}
+      :host([dark]) .cal tr.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 -2px 0 #bbb}
+      :host([dark]) .cal tr.bxs.bxe td:nth-child(4){box-shadow:inset 2px 0 0 #bbb,inset -2px 0 0 #bbb,inset 0 2px 0 #bbb,inset 0 -2px 0 #bbb}
       .cal tr.oth td{color:var(--secondary-text-color)}
       .trip{color:var(--primary-color);font-weight:600}
       .vac{font-weight:600}
+      .cal tr.vac[data-d] td.n::after{content:" \\2298";color:#e53935;font-weight:700;opacity:.8}
+      .payp{font-weight:600;color:var(--fw-info,#1565c0)}
       .tm{font-size:10.5px;color:var(--secondary-text-color)}
       .tag{cursor:help}.lay{display:inline-block;min-width:28px}
       .st{color:var(--fw-ok,#2e7d32);font-weight:700;cursor:help}.st.fly{color:var(--fw-info,#1565c0)}
       .tot{margin-top:8px;font-size:14px;font-weight:700;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tgrp{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tpay{flex-wrap:nowrap}.tot .ti{white-space:nowrap}.tot .k{font-weight:600;color:var(--secondary-text-color);font-size:12px;margin-right:4px}.tot .bad{color:var(--fw-err,#c62828)}
       .trip[data-k]{cursor:pointer}.trip[aria-expanded="true"]{text-decoration:underline;text-underline-offset:2px}
-      .trip:focus-visible,.pdx:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px;border-radius:3px}
+      .trip:focus-visible,.pdx:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px;border-radius:3px}.fwss .pdx:focus-visible{outline-offset:-3px}
       .cal tr.pdh[data-d] td:nth-child(n){background-image:linear-gradient(var(--fwg-hl),var(--fwg-hl))}
       .cal tr.pdh.hol2[data-d] td:nth-child(-n+2){background-image:linear-gradient(var(--fwg-hl),var(--fwg-hl)),repeating-linear-gradient(135deg,transparent 0 5px,rgba(0,0,0,.06) 5px 7px)}
       .fwgp{margin:8px 0 2px;padding:6px 8px 8px;border:1px solid var(--divider-color,#ccc);border-radius:8px;max-width:100%;box-sizing:border-box;text-align:left;font-size:12px;line-height:1.3;scroll-margin:12px}
@@ -1021,6 +1024,11 @@ class FlightWatcherScheduleCard extends HTMLElement {
       if (this._pd) {
         pdK = this._pd.k;
         const [ptr, pst] = pdK.split("|");
+        // 1.7.6 review: a version (or month) that does not draw this trip on that day closes its detail
+        if (!(mon.days || []).some(([d, tr]) => d === pst && tr === ptr) && !own.some((x) => x.it.trip === ptr && x.it.start === pst)) { this._pd = null; pdK = ""; }
+      }
+      if (this._pd) {
+        const [ptr, pst] = pdK.split("|");
         const o = own.find((x) => x.it.trip === ptr && x.it.start === pst);
         const t = ownT[pdK] || {};
         const pe = /^\d{4}-\d{2}-\d{2}$/.test(pst || "") ? fwgPackFor(this._pk, PAIRINGS_URL, pst, () => { this._sig = null; if (this._h) this.hass = this._h; }, ptr) : false;
@@ -1033,7 +1041,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
           : !has && /^[A-Z]\d{4}[A-Z]$/.test(ptr) && Object.prototype.hasOwnProperty.call(pe.map, ptr.slice(0, 5)) ? `${ptr} is a pairing FLICA rebuilt: the ${pmo} pairings package has ${ptr.slice(0, 5)}, not this trip, so the package detail is not on file.`
           : !has ? `${ptr} is not in the ${pmo} pairings package: the package detail is not on file.`
           : !p ? `The ${pmo} pairings package does not list ${ptr} on ${mdy(pst)}: the package detail is not on file.`
-          : `The ${pmo} pairings file has no leg detail yet: an older Watcher wrote it, and the next update reads the package again.`;
+          : pe.dcut ? `The ${pmo} pairings file holds the leg detail of its first pairings only (a size limit): the package detail of ${ptr} is not on file.`
+            : `The ${pmo} pairings file has no leg detail yet: an older Watcher wrote it, and the next update reads the package again.`;
         if (why && !(t.duties && t.duties.length) && !t.report) why += " FLICA's pairing page for this trip is not read yet either.";
         pdM = fwgDetail({ id: ptr, start: pst, p, why, own: t, seat: t.seat, crew: t.crew,
           rep: o && o.rep ? wmd(o.rep) : "", rel: o && o.rel ? wmd(o.rel) : "" });
@@ -1192,18 +1201,15 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .tot1{font-weight:600}
       .cal tr.gg td:nth-child(4),.cal tr.gg td:nth-child(10){background:rgba(76,175,80,.12)}
       .cal tr.gx td:nth-child(4),.cal tr.gx td:nth-child(10){background:rgba(229,57,53,.12)}
-      @media (prefers-color-scheme: dark){
-        .cal tr.gg td:nth-child(4),.cal tr.gg td:nth-child(10){background:rgba(76,175,80,.28)}
-        .cal tr.gx td:nth-child(4),.cal tr.gx td:nth-child(10){background:rgba(229,57,53,.3)}
-        .trip.tr{background:rgba(255,160,0,.4)}
-        .nav:hover{background:rgba(255,255,255,.1)}.trb:hover{background:rgba(255,255,255,.12)}
-      }
+      :host([dark]) .cal tr.gg td:nth-child(4),:host([dark]) .cal tr.gg td:nth-child(10){background:rgba(76,175,80,.28)}
+      :host([dark]) .cal tr.gx td:nth-child(4),:host([dark]) .cal tr.gx td:nth-child(10){background:rgba(229,57,53,.3)}
+      :host([dark]) .trip.tr{background:rgba(255,160,0,.4)}
+      :host([dark]) .nav:hover{background:rgba(255,255,255,.1)}
       .cal tr[data-d] td:nth-child(-n+2){cursor:pointer}
       .cal tr.blk td.n::after{content:" \\2298";color:#e53935;font-weight:700}
-      .cal tr.vac td.n::after{content:" \\2298";color:#e53935;font-weight:700;opacity:.8}
       .lock{cursor:pointer;font-size:16px;line-height:1;padding:2px 6px;border-radius:6px;user-select:none;margin-right:auto}.lock:hover{background:rgba(0,0,0,.06)}
       .lock.open{opacity:.9}.lock.shut{opacity:.6}
-      .payp{font-weight:600;color:var(--fw-info,#1565c0)}.ppt{cursor:help}.ppc .k{font-size:9.5px;color:var(--secondary-text-color)}
+      .ppt{cursor:help}.ppc .k{font-size:9.5px;color:var(--secondary-text-color)}
       .cal tr.gg td:nth-child(1),.cal tr.gg td:nth-child(2){font-weight:700}
       .gr{text-align:right;font-size:11px}.g.green{color:var(--fw-ok,#2e7d32);font-weight:700}.g.red{color:var(--fw-err,#c62828);font-weight:700}.g.black{color:var(--primary-text-color)}
       .er{color:var(--secondary-text-color);cursor:pointer;text-decoration:underline dotted}.er.on{color:var(--fw-ok,#2e7d32);font-weight:700}.pay{cursor:help}
@@ -1213,11 +1219,11 @@ class FlightWatcherScheduleCard extends HTMLElement {
       @media (max-width:700px){.set select{font-size:16px}}
       .lg{font-size:11px}.lgl{color:var(--fw-info,#1565c0);font-weight:600;cursor:help}
       .trip.tr{background:rgba(255,160,0,.28);border-radius:4px;padding:0 3px;color:var(--primary-text-color)}
-      .trb{display:inline-block;font-size:19px;line-height:1;padding:0 6px;margin-left:2px;color:var(--secondary-text-color,#727272);cursor:pointer;vertical-align:middle;border-radius:5px}
+      .trb{display:inline-block;font-size:19px;line-height:1;padding:0 6px;margin:-4px 0 -4px 2px;color:var(--secondary-text-color,#727272);cursor:pointer;vertical-align:middle;border-radius:5px}
       .trb.on{color:var(--fw-warn,#8a5300);background:rgba(255,160,0,.28)}
-      .drb{display:inline-block;font-size:17px;line-height:1;padding:0 5px;margin-left:1px;color:var(--secondary-text-color,#727272);cursor:pointer;vertical-align:middle;border-radius:5px}
+      .drb{display:inline-block;font-size:17px;line-height:1;padding:0 5px;margin:-4px 0 -4px 1px;color:var(--secondary-text-color,#727272);cursor:pointer;vertical-align:middle;border-radius:5px}
       .drb.on{color:var(--fw-err,#c62828);background:rgba(229,57,53,.18)}.drb.on.rdy{color:#fff;background:#2e7d32}
-      .trb:hover{background:rgba(0,0,0,.08)}
+      .trb:hover{background:rgba(0,0,0,.08)}:host([dark]) .trb:hover{background:rgba(255,255,255,.12)}
       .sw{color:var(--fw-warn,#8a5300);font-weight:600;cursor:help}
       .o{font-size:11px}.fit{font-weight:700;color:var(--fw-ok,#2e7d32)}
       .clash{text-decoration:line-through;color:var(--secondary-text-color)}

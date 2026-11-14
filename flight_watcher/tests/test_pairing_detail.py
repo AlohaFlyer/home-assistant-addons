@@ -77,9 +77,13 @@ def test_package_detail_keeps_legs_duties_layovers_and_totals():
     j = pdfs.package_json(package(), "test")
     assert [r[0] for r in j["rows"]] == ["H9101", "H9102"] and j["dv"] == pdfs.PKG_PARSER >= 2
     assert sorted(j["detail"]) == ["H9101", "H9102"]  # exactly the rows' pairings (the 717 turn is not ours)
+    full = pdfs.package_legs(package())  # 1.7.6 review: the hotels and vans stay out of the public file (DB only)
+    assert sorted(full) == ["H9101", "H9102"]
+    assert j["detail"]["H9101"] == dict(full["H9101"], duties=[{k: v for k, v in du.items() if k not in ("hotel", "van")}
+                                                               for du in full["H9101"]["duties"]])
     row = dict(zip(j["cols"], j["rows"][0]))
     assert row["route"] == "HNL-SEA-LAX-SFO-HNL" and row["rel_days"] == 3 and row["days"] == "5 12 19 26"
-    d = j["detail"]["H9101"]
+    d = full["H9101"]
     assert (d["eq"], d["crew"], d["rept"]) == ("332", "CA01FO01", "22:00")
     assert len(d["duties"]) == 3
     d1, d2, d3 = d["duties"]
@@ -99,7 +103,7 @@ def test_package_detail_keeps_legs_duties_layovers_and_totals():
     assert (d3["fdp"], d3["duty"]) == ("6h50", "7h05")
     assert d["tot"] == {"block": "14h07", "fdp": "17h07", "dhd": "1h30", "ldgs": 3, "credit": "16h00", "tafb": "51h05",
                         "rig": "1h08", "rig_c": True}  # 16:00 credit less 14:52 segment credit, computed
-    text = json.dumps(j)
+    text = json.dumps(full)
     assert "555" not in text and "(" not in "".join(x["hotel"] for x in d["duties"])  # phone numbers are never kept
     # the rows are what they were before the detail came (the card's other readers see no change)
     assert j["cols"] == ["id", "report", "dep", "release", "rel_days", "first_duty_min", "route", "credit", "tafb", "days"]
@@ -107,7 +111,7 @@ def test_package_detail_keeps_legs_duties_layovers_and_totals():
 
 
 def test_printed_trip_rig_wins_and_hotel_with_spaced_phone():
-    j = pdfs.package_json(package("    TRIP RIG 2h00"), "test")
+    j = {"detail": pdfs.package_legs(package("    TRIP RIG 2h00"))}
     d = j["detail"]["H9102"]
     assert d["tot"]["rig"] == "2h00" and "rig_c" not in d["tot"]
     assert d["crew"] == "CA01FO01RO01" and d["duties"][0]["hotel"] == "EXAMPLE PIER HOTEL"
@@ -141,7 +145,7 @@ def test_caps_and_crafted_lines_stay_fast():
     dends = package().replace("D-END: 23:35L/07:35GMT", "\n".join(["D-END: 23:35L/07:35GMT", leg] * 40))
     assert len(pdfs.package_json(dends, "t")["detail"]["H9101"]["duties"]) <= pdfs.DETAIL_MAX_DUTIES == 12
     huge = "EXAMPLE " + "X" * 300 + "   VAN 16:15"
-    d1 = pdfs.package_json(package().replace("EXAMPLE LAKE HOTEL", huge.split("   VAN")[0]), "t")["detail"]["H9101"]
+    d1 = pdfs.package_legs(package().replace("EXAMPLE LAKE HOTEL", huge.split("   VAN")[0]))["H9101"]
     assert len(d1["duties"][0]["hotel"]) <= 80
     for bad in ("1 " + " 9" * 100000, "1          9001      HNL - SEA " + "1:00/" * 40000, "D-END: " + "1" * 200000,
                 "      TOTALS BLOCK " + "1h00 " * 40000, "   REPT: " + "9" * 200000, "x VAN " * 40000):

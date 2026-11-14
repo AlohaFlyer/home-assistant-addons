@@ -257,16 +257,26 @@ def seniority_md_write(view, out=None):
         return ""
 
 
+def _md_day(path):
+    """The day (ISO, HST) seniority.md's pay year column is for ('Pay year today (YYYY-MM-DD, HST)'), else ''."""
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        hit = re.search(r"Pay year today \((\d{4}-\d{2}-\d{2})", fh.read(4096))
+    return hit.group(1) if hit else ""
+
+
 def seniority_md_backfill(out=None):
     """1.7.6: at start, a seniority.json written before seniority.md existed (or after it, by an older Watcher) gets
-    its markdown reference: written when the md is missing or older than the json. Returns the path written or ''."""
+    its markdown reference: written when the md is missing or older than the json. 1.7.6 review: and once a day, so its
+    "Pay year today" column follows each pilot's DOH anniversary: rewritten when the day it names (HST) is not today.
+    Returns the path written or ''."""
     out = out or seniority_file()
     try:
         mj = os.path.getmtime(out)
     except OSError:
         return ""
+    md = seniority_md_path(out)
     try:
-        if os.path.getmtime(seniority_md_path(out)) >= mj:
+        if os.path.getmtime(md) >= mj and _md_day(md) == _hst_now().date().isoformat():
             return ""
     except OSError:
         pass
