@@ -497,13 +497,15 @@ def _hold_words(wait, why):
             f"{hst_hm(time.time() + wait)} HST")
 
 
-def check_now_refusal(admin):
+def check_now_refusal(admin, pause=None):
     """1.7.1 (F#12, F#149): why a Check now press does nothing now, in plain words ('' when it wakes a check). It answers
     a portal press (portal_spool_once: ok false, the press is not republished) and goes to the log for one from Home
     Assistant. Paused, stopped, waiting for settings, stepped aside, in a re-login back-off, under check_now_gap() since
-    the last check, or held by the FLICA budget: each of those would leave the press unread until its wait ended."""
+    the last check, or held by the FLICA budget: each of those would leave the press unread until its wait ended. 1.7.5
+    review: pause, as rearm_answer's; the loop's 'paused' with Pause off is an un-pause it has not seen yet (its check
+    comes next and is this full one)."""
     st = S.get("machine") or "idle"
-    if FLAGS.get("pause") or st == "paused":
+    if (FLAGS.get("pause") if pause is None else pause):
         return "ignored: the Watcher is paused (turn Pause off first)"
     if st.startswith("stopped"):
         return "ignored: the Watcher is stopped (see why on the Watcher tab, then Re-arm)"
@@ -524,6 +526,9 @@ def check_now_refusal(admin):
     return ""
 
 
+REARM_UNPAUSED_WHY = "nothing to re-arm: Pause is off, the Watcher starts again on its own"
+
+
 def rearm_answer(pause=None):
     """1.7.1 (F#92, F#149): what a Re-arm press does now: (action, ok, why). action 'login': stopped, yielded or in a
     back-off, the login Re-arm has always made (only a stop wakes the loop for it, as before, so a step-aside for the
@@ -531,7 +536,8 @@ def rearm_answer(pause=None):
     details (the loop says so in the note and logs in no more). 1.7.5 (Ryan, Nov 14: "Pause wins"): while Pause is
     on, action '' and ok false (no login is queued: Pause would cancel it; pause_cancels_login), on every instance.
     1.7.5 review: pause, the Pause a portal poll's own pause/set set before this press (portal_spool_once), when the
-    Watcher has not applied it yet (None: FLAGS pause). action 'check': idle or hunting with no check for
+    Watcher has not applied it yet (None: FLAGS pause); the loop's 'paused' with Pause off is an un-pause it has not
+    seen yet, which resumes the watch by itself (REARM_UNPAUSED_WHY). action 'check': idle or hunting with no check for
     stuck_after_s() and none running, what the clock card's 'Stuck. Press Re-arm.' asks for: a full check now.
     action '': nothing to re-arm (ok false, why says what the Watcher is doing)."""
     st = S.get("machine") or "idle"
@@ -555,8 +561,10 @@ def rearm_answer(pause=None):
         return "login", True, ""
     if st == "needs_settings":
         return "", False, "nothing to re-arm: enter your FLICA login on the Settings tab"
-    if paused or st == "paused":
+    if paused:
         return "", False, "nothing to re-arm while paused: turn Pause off"
+    if st == "paused":  # 1.7.5 review: Pause is off and the loop has not moved yet: the un-pause resumes the watch
+        return "", False, REARM_UNPAUSED_WHY
     last = float(S.get("last_check_ts") or 0)
     if time.time() - last < stuck_after_s():
         return "", False, f"nothing to re-arm: the Watcher is checking (last check {hst_hm(last)} HST)"
@@ -572,9 +580,10 @@ def rearm_answer(pause=None):
 def press_answer(sub, pause=None):
     """1.7.1 (F#12, F#92, F#149): (ok, why) for a portal command before it is republished. A Check now, a Re-arm or
     (1.7.1 review) a Scan CrewTrac now the Watcher would ignore answers ok false with the reason and is not republished;
-    a Re-arm that acts says what it does. Any other command: (True, ''). 1.7.5 review: pause, see rearm_answer."""
+    a Re-arm that acts says what it does. Any other command: (True, ''). 1.7.5 review: pause, see rearm_answer (for a
+    Check now too)."""
     if sub == "check_now/press":
-        why = check_now_refusal(ROLES.role(INSTANCE) == ROLES.ADMIN)
+        why = check_now_refusal(ROLES.role(INSTANCE) == ROLES.ADMIN, pause)
         return not why, why
     if sub == "rearm/press":
         _, ok, why = rearm_answer(pause)
@@ -942,10 +951,9 @@ def pause_cancels_login(where):
     1.7.5 review: a cancel ends the loop's wait for that login at once (WAKE_DUE, WAKE). The save's lift of FLICA's
     refusal block stands (it is what the save asked for; before the restart it is applied here, as main would have):
     only its login is cancelled, so once Pause is off a Re-arm logs in (still at most one login every LOGIN_MIN_GAP_S
-    on a pilot). A stopped Watcher stays stopped and its note says so; one in a back-off is paused by the loop at once
-    (its un-pause as before); one stepped aside is paused too and, 1.7.5 review, an un-pause before the step-aside's
-    end goes back to it. The same on the admin. True when something was cancelled (one log line; the lock keeps the
-    handler and the loop from both saying it)."""
+    on a pilot). A stopped Watcher stays stopped and its note says so; one stepped aside or in a back-off is paused by
+    the loop at once (its un-pause as before). The same on the admin. True when something was cancelled (one log line;
+    the lock keeps the handler and the loop from both saying it)."""
     with PAUSE_CANCEL_LOCK:
         again = S.get(FL_AGAIN) is not None
         if not (FLAGS.get("rearm") or again):
@@ -1002,13 +1010,35 @@ def rearm_paused_at_login(note, prev):
     with PAUSE_CANCEL_LOCK:
         if not FLAGS["pause"]:
             return False
+        login_given_up(note, prev, "Pause on as the login started")
+        return True
+
+
+def login_given_up(note, prev, where):
+    """1.7.5 review: a FLICA login Pause gave up before FLICA was reached (rearm_paused_at_login, or its login page's
+    wait in the gate, try_login). The saved login time and the save's mark (prev, as they were) are put back, so it
+    counts for no floor. A Re-arm's (note: its rearm_note; _NOT_REARM for any other) is cancelled like a waiting one
+    (pause_cancels_login: its note and log line; True). Any other (a step-aside's end, a back-off, the admin's
+    un-pause) is left to the loop, which parks for Pause and goes on as before once it is off (False)."""
+    with PAUSE_CANCEL_LOCK:
         for k in ("login_ts", FL_AGAIN):
             S.pop(k, None)
         S.update(prev)
-        FLAGS["rearm"], FLAGS["rearm_note"] = True, note
-        if not pause_cancels_login("Pause on as the login started"):
-            save_state(S)
-        return True
+        if note is not _NOT_REARM:
+            FLAGS["rearm"], FLAGS["rearm_note"] = True, note
+            if pause_cancels_login(where):
+                return True
+        save_state(S)
+        return False
+
+
+def login_reached():
+    """1.7.5 review: a FLICA login's page passed the gate (RUN login, try_login): FLICA is reached now. A pilot's login
+    floor counts from here: the time try_login saved before the login (kept, so one cut short still counts) can be long
+    before it when the login waited for his budget. Pause no longer gives that login up (its submit follows)."""
+    RUN["login"] = False
+    S["login_ts"] = time.time()
+    save_state(S)
 
 
 def crewtrac_lift():
@@ -1877,7 +1907,7 @@ BRK = GT.Breakers(lambda: S.setdefault("breakers", {}), save=lambda: save_state(
 # stopped, and the check ends with nothing more loaded. On a pilot the reads that may be left out (read_guard
 # optional=True: the Tradeboard, the reserve grid, the request lists, the crew index, his own trips, pot details,
 # pickups) skip a load that would wait for his budget (GATE_KEEP) or pass opt_cap() an hour: the pot keeps its share.
-RUN = {"check": False, "optional": False, "aborted": "", "skipped": set(), "opt": [], "opt_name": ""}
+RUN = {"check": False, "optional": False, "aborted": "", "skipped": set(), "opt": [], "opt_name": "", "login": False}
 GATE_KEEP = 4  # an optional load leaves this many of a pilot's budget free (the next check's start)
 
 
@@ -2029,7 +2059,10 @@ def opt_fits(n):
 
 
 def gate_abort():
-    """Why a load waiting in the gate must be given up ('' when it may wait): only while a check runs."""
+    """Why a load waiting in the gate must be given up ('' when it may wait): only while a check runs. 1.7.5 review
+    ("Pause wins"): and a FLICA login's page while it waits (RUN login, try_login), once Pause is on."""
+    if RUN.get("login"):
+        return "Pause is on" if FLAGS.get("pause") else ""
     if not RUN["check"]:
         return ""
     if FLAGS.get("pause"):
@@ -2168,7 +2201,8 @@ class Flica:
         self.new_context(fresh=True)  # old cookies can skip the login form and break the login
         page = self.ctx.new_page()
         try:
-            self._load()  # 1.6.2: the login page and its submit go through the gate too (no breaker)
+            self._load()  # 1.6.2: the login page and its submit go through the gate too (no breaker); 1.7.5 review:
+            # Pause gives up the login page's wait there (GateAbort: FLICA not reached, try_login)
             page.goto(BASE + "/", wait_until="domcontentloaded", timeout=45000)
             pw_in = page.locator("input[type=password]").first
             pw_in.wait_for(timeout=20000)
@@ -2239,6 +2273,8 @@ class Flica:
                 save_state(S)
                 return "ok"
             return "failed"
+        except GT.GateAbort:
+            raise  # 1.7.5 review: no failed login (nothing was loaded); try_login puts the login's time back
         except Exception as e:
             log.warning("login error: %s", e)
             self.login_error = type(e).__name__
@@ -2370,8 +2406,11 @@ class Flica:
         try:
             GATE.acquire(keep=GATE_KEEP if optional else 0, abort=gate_abort)
         except GT.GateAbort as e:
-            RUN["aborted"] = e.why
+            if not RUN.get("login"):
+                RUN["aborted"] = e.why
             raise
+        if RUN.get("login"):
+            login_reached()  # 1.7.5 review: a login's page passed the gate: FLICA is reached now
         if optional:
             RUN["opt"].append((time.time(), RUN.get("opt_name") or ""))
         health_note_tick()  # 1.7.3 review: pages slower than the pace never wait in the gate; a stop's end shows here
@@ -2803,14 +2842,25 @@ def try_login(fl, reason, rearm=_NOT_REARM):
     """Single attempt. Parks the watcher on anything but success. 1.7.4 review: the login's time is saved before it
     starts, so one cut short (a restart) still counts for the login floor; the one more try a save gave (FL_AGAIN)
     is this login. 1.7.5 review: rearm, the rearm_note of the Re-arm this login is (rearm_claim): Pause turned on
-    while that time was saved cancels it before FLICA is reached (rearm_paused_at_login); False, no login."""
+    while that time was saved cancels it before FLICA is reached (rearm_paused_at_login); False, no login. 1.7.5
+    second review: Pause on while the login page waits in the gate (a pilot's budget, the host's cap, the pacing) gives
+    that login up too, whatever asked for it (login_given_up), and the time is saved again once that page passes the
+    gate (login_reached), so the floor counts from when FLICA is reached."""
     prev = {k: S[k] for k in ("login_ts", FL_AGAIN) if k in S}
     S["login_ts"] = time.time()
     S.pop(FL_AGAIN, None)
     save_state(S)
     if rearm is not _NOT_REARM and rearm_paused_at_login(rearm, prev):
         return False
-    res = fl.login()
+    RUN["login"] = True  # 1.7.5 review: Pause gives up this login while its page waits in the gate (gate_abort)
+    try:
+        res = fl.login()
+    except GT.GateAbort:
+        if not login_given_up(rearm, prev, "Pause on while the login waited in the FLICA gate"):
+            log.info("FLICA login (%s) given up: Pause is on", reason)
+        return False
+    finally:
+        RUN["login"] = False
     if res == "ok":
         S["pot_urls"] = {}
         S.pop("flica_refused", None)
@@ -10878,12 +10928,6 @@ def main():
                 sleep(3600)
                 continue
             if st == "paused":
-                left = float(S.get("yield_until") or 0) - time.time()
-                if left > 0:
-                    # 1.7.5 review: Pause on and off during a step-aside for the pilot's own FLICA login (or Ryan's)
-                    # keeps it to its end (one FLICA session per login): its end's login as before, never sooner
-                    set_machine("yielded", yield_note(left))
-                    continue
                 if is_pilot():
                     # 1.6.2 review: a pilot's un-pause checks with the session he has (its cookies are kept); a new
                     # login follows only if that check finds the session gone (needs_login, the back-off below)

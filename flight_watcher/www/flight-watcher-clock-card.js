@@ -201,7 +201,8 @@ class FlightWatcherClockCard extends HTMLElement {
     $("pz").classList.toggle("on", paused);
     this._menu($("hs"), $("hst"), this._opts(FC_HUNT, "number.flight_watcher_hunt_check_every", "hunt"), hs, "number.flight_watcher_hunt_check_every");
     this._menu($("ns"), $("nst"), this._opts(FC_NORM, "number.flight_watcher_normal_check_every", "normal"), nmv, "number.flight_watcher_normal_check_every");
-    const needRearm = ["stopped_unexpected", "stopped_login_failed", "yielded", "backoff"].includes(st) || blind;
+    // 1.7.5 review ("Pause wins"): no Re-arm while Pause is on (the Watcher refuses it then), as Check now
+    const needRearm = (["stopped_unexpected", "stopped_login_failed", "yielded", "backoff"].includes(st) || blind) && !paused;
     $("rearm").style.display = needRearm ? "" : "none";
     $("chk").style.display = ["idle", "hunting"].includes(st) && !paused ? "" : "none";
     // 1.7.1 (F#4): a command in flight (the portal's hass.fwPending) reads "Sending..." and takes no second tap

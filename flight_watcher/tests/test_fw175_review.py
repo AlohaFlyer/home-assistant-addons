@@ -3,8 +3,8 @@ R1 a Pause turned on and off in the start's first seconds no longer brings back 
 save of the same FLICA details while Pause is on says Pause is on, lifts the block and queues no try. R3 a portal
 poll holding a Pause change and a Re-arm answers the Re-arm for the Pause it set. R4 a Pause as the loop enters the
 login floor wait leaves the cancel note and ends that wait at once. R5 a Pause landing while a Re-arm's login time is
-saved makes no login. P8 Pause on and off during a step-aside for the pilot's own FLICA login keeps the step-aside
-to its end (one FLICA session per login). Synthetic details only (u / p, "Doe, Jane")."""
+saved makes no login. Its P8 (a step-aside kept to its end across Pause on and off) was backed out in the second
+review for want of Ryan's yes (test_fw175_review2). Synthetic details only (u / p, "Doe, Jane")."""
 import sys
 import time
 import types
@@ -250,45 +250,7 @@ def test_pause_while_the_saves_try_logins_time_is_saved_keeps_the_try_cancelled(
     assert W2.S["note"] == W2.pause_cancel_note(W2.PAUSE_CANCEL_SAVE)
 
 
-# ---------------------------------------------------------------- P8: Pause on and off during a step-aside
-def test_pause_on_and_off_during_a_pilots_step_aside_keeps_it_to_its_end(mk, monkeypatch):  # noqa: F811
-    W = mk("pilot2")
-    W.OPTS.update(username="u", password="p")
-    end = W.CLOCK.t + 1800
-    W.S.update(machine="yielded", note="x", login_ts=W.CLOCK.t - 3600, yield_until=end)
-    W.save_state(W.S)
-    seen = {}
-
-    def script(i):
-        if i == 1:
-            _cmd(W, "pause/set", b"ON")
-        elif i == 2:
-            seen["paused"] = W.S["machine"]
-        elif i == 3:
-            _cmd(W, "pause/set", b"OFF")
-        elif i == 5:
-            seen["back"] = W.S["machine"]
-    logins, checks = _run_main(W, monkeypatch, script, login="ok", check="ok", max_sleeps=80, step=30)
-    assert seen == {"paused": "paused", "back": "yielded"}
-    assert [t for t in checks + logins if t < end] == []  # FLICA not reached inside the step-aside
-    assert logins and logins[0] >= end  # its end's login, as without the Pause
-
-
-def test_pause_on_and_off_during_the_admins_step_aside_keeps_it_to_its_end(mk, monkeypatch):  # noqa: F811
-    W = mk("")
-    end = W.CLOCK.t + 1800
-    W.S.update(machine="yielded", note="x", yield_until=end)
-    W.save_state(W.S)
-
-    def script(i):
-        if i == 1:
-            _cmd(W, "pause/set", b"ON")
-        elif i == 3:
-            _cmd(W, "pause/set", b"OFF")
-    logins, checks = _run_main(W, monkeypatch, script, login="ok", check="ok", max_sleeps=80, step=30)
-    assert [t for t in checks + logins if t < end] == [] and logins and logins[0] >= end
-
-
+# ---------------------------------------------------------------- after a step-aside: as before
 def test_pause_on_and_off_after_a_step_aside_ended_is_as_before(mk, monkeypatch):  # noqa: F811
     W = mk("pilot2")
     W.OPTS.update(username="u", password="p")
