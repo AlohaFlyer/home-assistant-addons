@@ -302,7 +302,10 @@ def test_renders_and_uploads_in_a_browser(tmp_path):
         m = r["fit"][w]
         assert m["doc"] <= m["win"] and m["card"] <= int(w) + 0.5 and m["inner"] <= 0, (w, m)
     assert r["month"] == r["expect_month"] and r["kinds"] == ["award", "pairings", "seniority", "contacts"]
-    assert r["sen_toggle"] == {"month_hidden": True, "date_hidden": False} and r["award_toggle"] == {"month_hidden": False, "date_hidden": True}
+    help_ = r["sen_toggle"].pop("help")  # 1.7.5.1: the seniority list's help says which lists are read (fits 390 px)
+    assert "Pilot's System Seniority List" in help_ and "SEN / EMP / DOH" in help_ and r["award_toggle"].pop("help") == ""
+    assert r["sen_toggle"] == {"month_hidden": True, "date_hidden": False, "help_hidden": False, "fits": True}
+    assert r["award_toggle"] == {"month_hidden": False, "date_hidden": True, "help_hidden": True, "fits": True}
     assert r["rows_before"] == 4 and r["rows_after"] == 5 and r["pwned"] is None and r["imgs"] == 0
     assert r["wanted"] == ["Wanted: the Oct 2026 pairings packageTrips other pilots started in Oct 2026 that run into Nov 2026 "
                            "reach the crew index only from pilot lookups until it is on file."]  # FW-0057

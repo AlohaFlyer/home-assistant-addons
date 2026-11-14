@@ -69,8 +69,9 @@ nav a{{margin-right:14px}}.set label{{display:block;margin:6px 0}}.set input{{wi
 kept in /share/flight_watcher/uploads (never committed) with a text copy, and parsed for the month's starting
 schedule and the tag-on ideas. 1.4.2 (FW-0062): the pilot seniority list (any month; the Month box is not used for
 it) gives each pilot's date of hire, so a pilot's month rebuilt from crew lists shows a pay line for every pilot
-instance. Give its list date if the PDF does not print one. Home Assistant's app proxy takes a PDF of up to
-{max_mb} MB.</p>
+instance. 1.7.5.1: it reads the company's Pilot's System Seniority List PDF as the union posts it (Sen #, Name,
+Employee #, DOH, Remarks; its Effective date is the list date) or the older SEN / EMP / DOH list. Give its list date
+if the PDF does not print one (a typed date wins). Home Assistant's app proxy takes a PDF of up to {max_mb} MB.</p>
 <form method="post" action="upload" enctype="multipart/form-data">
 Month <input type="month" name="month" value="{month}"> &nbsp;
 <select name="kind"><option value="award">Monthly award</option><option value="pairings">Pairings package</option><option value="seniority">Pilot seniority list</option><option value="contacts">Pilot contact list</option></select> &nbsp;
@@ -152,6 +153,9 @@ def seniority_read(txt_path, uploaded_at, list_date=""):
     return SEN.parse(open(txt_path, encoding="utf-8", errors="replace").read(), ref)
 
 
+# 1.7.5.1 (Ryan, Nov 14: "what format does it need? ... it is what the union provides"): the lists the reader takes
+SEN_FORMATS = ("It reads the company's Pilot's System Seniority List PDF as the union posts it (Sen #, Name, "
+               "Employee #, DOH, Remarks) or the older SEN / EMP / DOH list")
 SEN_LIST = "seniority_list.json"    # 1.4.5: the dedicated list, kept while an award's dates of hire are on top
 SEN_AWARD = "seniority_award.json"  # 1.4.5: the newest award's dates of hire (25 pilot rows or more)
 HST = timezone(timedelta(hours=-10))
@@ -488,7 +492,7 @@ def _save_seniority(data, fields, log):
                         "puts the columns in an order this version does not read (it needs EMP # before ALPA #, and "
                         f"DOH as the first date column); {kept}"}
             return {"ok": False, "message": f"Not kept: {name}.pdf ({kb} KB). No pilot rows were found in it (is it "
-                                            f"the pilot seniority list?); {kept}"}
+                                            f"the pilot seniority list? {SEN_FORMATS}); {kept}"}
         os.replace(tmp, final)
         os.replace(tmp[:-4] + ".txt", final[:-4] + ".txt")
         d = seniority_store(parsed, name + ".pdf", at, given)

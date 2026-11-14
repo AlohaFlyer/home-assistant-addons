@@ -7,11 +7,16 @@ per equipment and seat, MANDATORY AGE 65 RETIREMENT AGE) and a header line 'SEN 
 NAME FIRST NAME DOH DOR EQUIP SEAT'. The same pilots repeat in every section. Columns shift from page to page and
 crowded values run together ('J.A9999', 'ZACHARIAH04/22/19', 'MOEKAI'), so a row is read by the shape of its
 values, not by character positions: a seniority number, the short name, the employee number, an optional union
-number, the names, the DOH (m/d/yyyy or mm/dd/yy, month first), then DOR / EQUIP / SEAT in any order."""
+number, the names, the DOH (m/d/yyyy or mm/dd/yy, month first), then DOR / EQUIP / SEAT in any order.
+
+1.7.5.1 (Ryan, Nov 14: "it is what the union provides"): the company's Pilot's System Seniority List, as the union
+posts it, is read too (HAL_*, below). A header picks the reader for the rows under it, so both layouts are read by
+parse()."""
 import re
 from datetime import date
 
-PARSER = 2  # bump when a parse rule changes: the Watcher re-reads the list on file with the new rules
+PARSER = 3  # bump when a parse rule changes: the Watcher re-reads the list on file with the new rules
+# (3, 1.7.5.1: the union's Pilot's System Seniority List layout; rows carry the Remarks status)
 DASHES = dict.fromkeys((0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2212), "-")  # the hyphens and dashes pdftotext prints
 SECTION_RE = re.compile(r"^(?:SENIORITY|ALPHABETICAL|MANDATORY AGE 65 RETIREMENT AGE|[AB]?\d{3}\s+(?:Captains|First Officers))$", re.I)
 DATE_RE = re.compile(r"\d{1,2}/\d{1,2}/\d{2,4}")
@@ -37,12 +42,38 @@ TAIL = (("dor", re.compile(r"^[A-Z][a-z]{2}-\d{2}$")),          # mandatory reti
         ("equip", re.compile(r"^[AB]?\d{3}[A-Z]?$")),              # 330, 321, 717, 767 (A321N, B787 tolerated)
         ("base", re.compile(r"^[A-Z]{3}$")))                      # not on the lists seen so far; kept if added
 MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+FULL_MONTHS = ("JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER",
+               "NOVEMBER", "DECEMBER")
 MON = r"(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\.?"
 LIST_DATE_RES = (  # a date in the cover text, only next to 'effective', 'as of', 'dated' or 'seniority list'
     re.compile(r"(?:effective|as of|dated|seniority list)\D{0,40}?" + MON + r"\s+(\d{1,2}),?\s+(\d{4})", re.I),
     re.compile(r"(?:effective|as of|dated|seniority list)\D{0,40}?(\d{1,2})\s*" + MON + r"\s*(\d{4})", re.I),
     re.compile(r"(?:effective|as of|dated|seniority list)\D{0,40}?(\d{1,2})/(\d{1,2})/(\d{4})", re.I))
 SUFFIX = {"JR", "SR", "II", "III", "IV"}
+# 1.7.5.1: the company's Pilot's System Seniority List as the union posts it (pdftotext -layout). Every page repeats a
+# title block (the company, "Pilot's System Seniority List", 'Effective July 1, 2026 (Rev. 1)': the list date, read
+# by list_date) and the header '*  Sen #  Name  Employee #  DOH  Remarks'; then one row per pilot,
+# '*  12   Last, First M.   1234   3-Mar-86   A': the seniority number, the name as printed ('Last Jr., First M.', a
+# two-word last name, apostrophes, hyphens), the employee number, the DOH as D-Mon-YY and the Remarks status code
+# (HAL_STATUS, the list's STATUS LEGEND). The '*' (a changed seniority number) is not read. There is no seat or
+# equipment column. Columns drift a few characters from page to page ('Page n of m' footers). The last page lists the
+# pilots removed from the list ('Employee #  Name' rows: never pilots on it), the legend and a footnote: HAL_END_RE
+# ends the rows there, and nothing after it is read until another row header.
+HAL_HEADER_RE = re.compile(r"^\s*\*?\s*Sen(?:iority)?\s*(?:#|No\b\.?)\s.*\bEmployee\b.*\bDOH\b", re.I)
+HAL_HEADER_ML = re.compile(HAL_HEADER_RE.pattern, re.I | re.M)
+HAL_START_RE = re.compile(r"^\s*\*?\s*\d{1,5}\s")  # a line that starts with a seniority number (the '*' optional)
+HAL_DATE = r"\d{1,2}-[A-Za-z]{3,9}\.?-(?:\d{4}|\d{2})(?!\d)"
+HAL_DATE_RE = re.compile(HAL_DATE)
+HAL_ROW_RE = re.compile(  # zones as in ROW_RE: the name starts and ends on a non-space, so a bad line fails fast
+    r"^\s*\*?\s*(?P<sen>\d{1,5})\s+"                   # the changed-number mark, the seniority number
+    r"(?P<name>[^\d\s](?:\D*[^\d\s])?)\s*"              # 'Last, First M.' as printed
+    r"(?P<emp>\d{3,6})\s+"                               # employee number
+    r"(?P<doh>" + HAL_DATE + r")"                       # date of hire, D-Mon-YY
+    r"(?P<tail>(?:\s+\S+)*)\s*$")                       # Remarks (a status code), and any new column
+HAL_END_RE = re.compile(r"^(?:.*\bremoved from the\b.*\blist\b|employee\s*#\s+name\b|status legend\b)", re.I)
+HAL_STATUS = {"A", "ALPA", "EXEC", "FUR", "LOA", "MLOA", "MRET", "PESL", "SLOA"}  # the STATUS LEGEND's codes
+HAL_STATUS_RE = re.compile(r"^[A-Za-z]{1,6}$")
+HAL_SECTION = "SYSTEM SENIORITY LIST"
 
 
 def _year(y, ref_year):
@@ -57,12 +88,23 @@ def _doh(s, ref_year):
     return date(_year(y, ref_year), int(m), int(d)).isoformat()
 
 
+def _hal_doh(s, ref_year):
+    """'3-Mar-86' -> '1986-03-03' (the century as _doh's); ValueError for a month or day that is not one."""
+    d, mon, y = s.split("-")
+    mon = mon.rstrip(".").upper()
+    m = next((i for i, full in enumerate(FULL_MONTHS) if full.startswith(mon)), None) if len(mon) >= 3 else None
+    if m is None:
+        raise ValueError(s)
+    return date(_year(y, ref_year), m + 1, int(d)).isoformat()
+
+
 def list_date(text):
     """The list's date from its cover text ('Seniority list effective March 1, 2026', 'as of 01 MAR 2026',
     'dated 3/1/2026'), ISO; '' when the text gives none (the lists seen so far do not)."""
     head = (text or "").translate(DASHES)
-    m = HEADER_RE.search(head) or re.search(r"^\s*SEN\b", head, re.M)
-    head = head[:m.start()] if m else head[:4000]
+    cuts = [m.start() for m in (HEADER_RE.search(head), re.search(r"^\s*SEN\b", head, re.M),
+                                HAL_HEADER_ML.search(head)) if m]  # 1.7.5.1: the union list's 'Sen #' header too
+    head = head[:min(cuts)] if cuts else head[:4000]
     for i, rx in enumerate(LIST_DATE_RES):
         g = rx.search(head)
         if not g:
@@ -105,35 +147,67 @@ def header_order_ok(line):
     return min(dates) == doh.start()
 
 
+def hal_header_order_ok(line):
+    """1.7.5.1: True when a union list header puts its columns in the order HAL_ROW_RE reads them: Sen #, Name,
+    Employee #, DOH (then Remarks, when there is one). Another order is not read ('header-order')."""
+    u = line.upper()
+    cols = [re.search(rx, u) for rx in (r"\bSEN", r"\bNAME\b", r"\bEMPLOYEE\b", r"\bDOH\b")]
+    if not all(cols):
+        return False
+    at = [m.start() for m in cols]
+    rem = re.search(r"\bREMARKS?\b|\bSTATUS\b", u)
+    return at == sorted(at) and (not rem or rem.start() > at[-1])
+
+
+def _header(line):
+    """(layout, header_ok) of a row header line: 'hal' (the union's Pilot's System Seniority List) or 'sen' (the
+    SEN / EMP / DOH list); None for any other line."""
+    if HAL_HEADER_RE.match(line):
+        return "hal", hal_header_order_ok(line)
+    if HEADER_RE.match(line):
+        return "sen", header_order_ok(line)
+    return None
+
+
 def _candidates(lines, rejects):
-    """(line_no, line, section, header_ok) for each line under a header that starts with a seniority number. A row
-    that wraps (no date on its line, the DOH on the next line, which has no seniority number of its own) is joined to
-    that next line; a numbered line with no date that is not joined is reported ('no-date') rather than dropped
-    silently. Cover text, 'YYYY = n PILOTS' group lines, page footers and the summary page are not rows."""
-    section, header, pending = "", None, None
+    """(line_no, line, section, header_ok, layout) for each line under a header that starts with a seniority number.
+    A row that wraps (no date on its line, the DOH on the next line, which has no seniority number of its own) is
+    joined to that next line; a numbered line with no date that is not joined is reported ('no-date') rather than
+    dropped silently. Cover text, 'YYYY = n PILOTS' group lines, page footers and the summary page are not rows.
+    1.7.5.1: the header picks the layout of the rows under it (_header); the union list's removed pilots, status
+    legend and footnote (HAL_END_RE) end the rows until the next header."""
+    section, header, layout, pending = "", None, "sen", None
     for no, raw in enumerate(lines, 1):
         line = raw.replace("\f", "").rstrip()
         s = line.strip()
         if not s:
             continue
-        if SECTION_RE.match(s) or HEADER_RE.match(line):
+        sec = bool(SECTION_RE.match(s))
+        hdr = None if sec else _header(line)
+        end = not sec and not hdr and bool(HAL_END_RE.match(s))
+        if sec or hdr or end:
             if pending:
                 rejects.append(("no-date", pending[0]))
                 pending = None
-            if SECTION_RE.match(s):
+            if sec:
                 section = s.upper()
+            elif hdr:
+                layout, header = hdr
+                if layout == "hal":
+                    section = HAL_SECTION
             else:
-                header = header_order_ok(line)
+                header = None  # the removed pilots, the legend: not rows
             continue
         if header is None:
             continue  # cover letter, before the first header
-        starts = bool(ROW_START_RE.match(line)) and not GROUP_RE.match(line) and not PAGE_OF_RE.match(line)
-        dated = bool(DATE_RE.search(line))
+        start_re, date_re = (HAL_START_RE, HAL_DATE_RE) if layout == "hal" else (ROW_START_RE, DATE_RE)
+        starts = bool(start_re.match(line)) and not GROUP_RE.match(line) and not PAGE_OF_RE.match(line)
+        dated = bool(date_re.search(line))
         if pending:
             pno, pline = pending
             pending = None
             if not starts and dated:
-                yield pno, pline + "   " + s, section, header
+                yield pno, pline + "   " + s, section, header, layout
                 continue
             rejects.append(("no-date", pno))
         if not starts:
@@ -144,9 +218,83 @@ def _candidates(lines, rejects):
             else:
                 rejects.append(("too-long", no))
             continue
-        yield no, line, section, header
+        yield no, line, section, header, layout
     if pending:
         rejects.append(("no-date", pending[0]))
+
+
+def _future(doh, ref, when):
+    return int(doh[:4]) > ref or bool(when and doh > when)
+
+
+def _sen_row(line, no, ref, when, rejects):
+    """A SEN / EMP / DOH list row, or None (its reject noted)."""
+    r = ROW_RE.match(line)
+    if not r:
+        rejects.append(("no-match", no))
+        return None
+    try:
+        doh = _doh(r["doh"], ref)
+    except ValueError:
+        rejects.append(("bad-date", no))
+        return None
+    if _future(doh, ref, when):
+        rejects.append(("future-doh", no))  # a DOH after the list: a misread column, never priced
+        return None
+    short, names = r["short"] or "", r["names"] or ""
+    last, first = _split_names(short, names)
+    if not last:
+        rejects.append(("no-name", no))
+        return None
+    tail = {}
+    for tok in r["tail"].split():
+        k = next((k for k, rx in TAIL if k not in tail and rx.match(tok)), None)
+        if k is None:
+            tail["_unknown"] = tail.get("_unknown", 0) + 1
+        else:
+            tail[k] = tok
+    if tail.get("_unknown"):
+        rejects.append(("tail-unknown-token", no))  # the row is kept; the column layout may have changed
+    row = {"sen": int(r["sen"]), "emp": r["emp"], "last": last.title(), "first": first.title(),
+           "name": f"{last}, {first}".strip(" ,").title(), "doh": doh, "equip": tail.get("equip", ""),
+           "seat": tail.get("seat", ""), "status": ""}
+    # how cleanly the names split: crowded columns cut long names short or glue LAST to FIRST
+    row["_q"] = (bool(re.search(r"\S\s{2,}\S", names.strip())) + bool(first)
+                 + (short.split(",")[0].strip().upper() == last.upper()))
+    return row
+
+
+def _hal_row(line, no, ref, when, rejects):
+    """1.7.5.1: a union list row ('*  12   Last, First M.   1234   3-Mar-86   A'), or None (its reject noted). The
+    name is kept as printed (spaces closed up; title case only when it is all capitals or all lower case), the
+    Remarks code as the status; there is no seat or equipment."""
+    r = HAL_ROW_RE.match(line)
+    if not r:
+        rejects.append(("no-match", no))
+        return None
+    try:
+        doh = _hal_doh(r["doh"], ref)
+    except ValueError:
+        rejects.append(("bad-date", no))
+        return None
+    if _future(doh, ref, when):
+        rejects.append(("future-doh", no))
+        return None
+    name = re.sub(r"\s+", " ", r["name"]).strip()
+    if name in (name.upper(), name.lower()):
+        name = name.title()
+    last, _, first = (x.strip() for x in name.partition(","))
+    if not last:
+        rejects.append(("no-name", no))
+        return None
+    toks = r["tail"].split()
+    status = toks[0].upper() if toks and HAL_STATUS_RE.match(toks[0]) else ""
+    if toks and (not status or len(toks) > 1):
+        rejects.append(("tail-unknown-token", no))  # the row is kept; the column layout may have changed
+    elif status and status not in HAL_STATUS:
+        rejects.append(("status-unknown", no))  # kept with its code: the legend may have a new one
+    return {"sen": int(r["sen"]), "emp": r["emp"], "last": last, "first": first, "name": f"{last}, {first}".strip(" ,"),
+            "doh": doh, "equip": "", "seat": "", "status": status, "_q": 0}
 
 
 def parse(text, ref_year=None):
@@ -155,52 +303,25 @@ def parse(text, ref_year=None):
     first listing of a pilot is kept and the repeats in the other sections are checked against it; a repeat whose
     names split more cleanly replaces the names. ref_year sets the century of two-digit years (the list's year,
     else this year); a DOH after it (or after the list date the text gives) is not read ('future-doh'). A row is
-    {sen, emp, last, first, name, doh, equip, seat, listed}. Rejects: no-match, too-long, header-order, no-date,
-    bad-date, future-doh, no-name (the line is not read); tail-unknown-token and conflict-* (the row is kept)."""
+    {sen, emp, last, first, name, doh, equip, seat, status, listed}. Rejects: no-match, too-long, header-order,
+    no-date, bad-date, future-doh, no-name (the line is not read); tail-unknown-token, status-unknown and conflict-*
+    (the row is kept). 1.7.5.1: the rows under a union list header (HAL_*) are read as that layout: status is the
+    Remarks code, seat and equip are empty, the section is HAL_SECTION; a SEN / EMP / DOH row has status ''."""
     text = (text or "").translate(DASHES).replace(" ", " ")
     when = list_date(text)
     ref = ref_year or (int(when[:4]) if when else date.today().year)
     by_sen, rejects, sections = {}, [], {}
-    for no, line, section, header_ok in _candidates(text.split("\n"), rejects):
+    for no, line, section, header_ok, layout in _candidates(text.split("\n"), rejects):
         if len(line) > MAX_LINE:
             rejects.append(("too-long", no))
             continue
         if not header_ok:
             rejects.append(("header-order", no))
             continue
-        r = ROW_RE.match(line)
-        if not r:
-            rejects.append(("no-match", no))
+        row = (_hal_row if layout == "hal" else _sen_row)(line, no, ref, when, rejects)
+        if row is None:
             continue
-        try:
-            doh = _doh(r["doh"], ref)
-        except ValueError:
-            rejects.append(("bad-date", no))
-            continue
-        if int(doh[:4]) > ref or (when and doh > when):
-            rejects.append(("future-doh", no))  # a DOH after the list: a misread column, never priced
-            continue
-        short, names = r["short"] or "", r["names"] or ""
-        last, first = _split_names(short, names)
-        if not last:
-            rejects.append(("no-name", no))
-            continue
-        tail = {}
-        for tok in r["tail"].split():
-            k = next((k for k, rx in TAIL if k not in tail and rx.match(tok)), None)
-            if k is None:
-                tail["_unknown"] = tail.get("_unknown", 0) + 1
-            else:
-                tail[k] = tok
-        if tail.get("_unknown"):
-            rejects.append(("tail-unknown-token", no))  # the row is kept; the column layout may have changed
-        row = {"sen": int(r["sen"]), "emp": r["emp"], "last": last.title(), "first": first.title(),
-               "name": f"{last}, {first}".strip(" ,").title(), "doh": doh, "equip": tail.get("equip", ""),
-               "seat": tail.get("seat", "")}
         sections[section] = sections.get(section, 0) + 1
-        # how cleanly the names split: crowded columns cut long names short or glue LAST to FIRST
-        row["_q"] = (bool(re.search(r"\S\s{2,}\S", names.strip())) + bool(first)
-                     + (short.split(",")[0].strip().upper() == last.upper()))
         old = by_sen.get(row["sen"])
         if old is None:
             by_sen[row["sen"]] = dict(row, listed=1)
@@ -227,11 +348,15 @@ def _emp(v):
 
 def to_json(parsed, file, uploaded_at, list_date_given=""):
     """What /share/flight_watcher/uploads/seniority.json holds: {list_date, uploaded_at, file, parser, count,
-    newest_doh, sections, rejects, pilots: {emp: {sen, name, last, doh, seat, equip, also?}}}. Keyed on the employee
-    number without leading zeros; a number two pilots share keeps the first under the key and the other in 'also'."""
+    newest_doh, sections, rejects, pilots: {emp: {sen, name, last, doh, seat, equip, status?, also?}}}. Keyed on the
+    employee number without leading zeros; a number two pilots share keeps the first under the key and the other in
+    'also'. 1.7.5.1: status (the union list's Remarks code, e.g. A, SLOA) only when the list gives one; the union list
+    has no seat or equipment ('')."""
     pilots = {}
     for r in parsed["rows"]:
         rec = {k: r[k] for k in ("sen", "name", "last", "doh", "seat", "equip")}
+        if r.get("status"):
+            rec["status"] = r["status"]
         k = _emp(r["emp"])
         if not k:
             continue
@@ -340,7 +465,8 @@ def _award_blocks(text, ref):
             old["listed"] += 1
             continue
         by_key[key] = {"sen": key[0], "emp": m["emp"], "last": last.title(), "first": first.title(),
-                       "name": f"{last}, {first}".strip(" ,").title(), "doh": doh, "equip": "", "seat": "", "listed": 1}
+                       "name": f"{last}, {first}".strip(" ,").title(), "doh": doh, "equip": "", "seat": "", "status": "",
+                       "listed": 1}
     rows = [by_key[k] for k in sorted(by_key)]
     return {"list_date": when, "rows": rows, "rejects": sorted(rejects, key=lambda x: x[1]),
             "sections": {"AWARD PILOT LINES": len(rows)} if rows else {}}

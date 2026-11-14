@@ -280,14 +280,19 @@ Recent finds.
 - **Pilot seniority list** (FW-0062): kind "Pilot seniority list" needs no month (the Month box is ignored). It is
   saved as `seniority_<YYYY-MM-DD>.pdf` (the HST upload day) and read at once into
   `/share/flight_watcher/uploads/seniority.json`: each pilot's seniority number, name, seat, equipment and date of
-  hire, keyed on the employee number. The page then says how many pilots were read, the list date (typed in the
-  List date box, else found in the cover text, else "no list date in the file") and the newest date of hire on the
-  list. A PDF with no pilot rows (or with its columns in another order: the reader needs EMP # before ALPA # and DOH
-  as the first date column) is refused and deleted; the list on file keeps its PDF, text copy and seniority.json,
-  even when the refused upload is on the same day. Lines the reader skips are counted as "lines not read" (a row
-  whose DOH wrapped onto the next line is joined and read; a DOH after the list date is not read). The log has
-  counts only. Every pilot instance (Ryan's and a second pilot's) reads the same file. Upload a newer list when new
-  hires are missing.
+  hire, keyed on the employee number. 1.7.5.1: two layouts are read. The company's Pilot's System Seniority List PDF
+  as the union posts it (every page: the title block with "Effective <date> (Rev. n)" and the header `Sen # Name
+  Employee # DOH Remarks`; the DOH as D-Mon-YY; the Remarks code is kept as `status`, e.g. A, SLOA, MLOA; there is no
+  seat or equipment, so those stay empty; the `*` changed-number mark is not read; the removed pilots, the status
+  legend and the footnote on its last page are never rows), and the older SEN / EMP / DOH list. The page then says
+  how many pilots were read, the list date (typed in the List date box, else found in the cover text or the union
+  list's Effective date, else "no list date in the file") and the newest date of hire on the list. A PDF with no
+  pilot rows (or with its columns in another order: the reader needs EMP # before ALPA # and DOH as the first date
+  column, or Sen #, Name, Employee #, DOH in that order on the union's list) is refused and deleted; the list on
+  file keeps its PDF, text copy and seniority.json, even when the refused upload is on the same day. Lines the
+  reader skips are counted as "lines not read" (a row whose DOH wrapped onto the next line is joined and read; a DOH
+  after the list date is not read). The log has counts only. Every pilot instance (Ryan's and a second pilot's)
+  reads the same file. Upload a newer list when new hires are missing.
 - Pay line under a rebuilt month: when the pilot card shows a month "Reconstructed from pairing crew lists", the
   Watcher adds `pay_line` to `sensor.<prefix>_pilot_schedule`: Trips, Credit, Block, Soft, Pay-Gross, Pay-Net and Days
   Off over the trips the grid draws, each trip priced for the seat on its crew line (Captain PWA 3.C.4, FO and RO PWA

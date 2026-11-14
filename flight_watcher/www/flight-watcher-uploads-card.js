@@ -27,6 +27,9 @@
 const FW_UP_SLUG = ["43b22650", "flight", "watcher"].join("_");  // in parts: a second pilot's copy keeps the one app's slug
 const FW_UP_KINDS = [["award", "Monthly award"], ["pairings", "Pairings package"], ["seniority", "Pilot seniority list"], ["contacts", "Pilot contact list"]];
 const FW_UP_LABEL = { award: "Award", pairings: "Pairings package", seniority: "Seniority list", contacts: "Contact list", other: "Other file" };
+// 1.7.5.1 (Ryan, Nov 14: "what format does it need? ... it is what the union provides"): the lists the Watcher reads
+const FW_UP_SEN_HELP = "Reads the company's Pilot's System Seniority List PDF as the union posts it (Sen #, Name, Employee #, DOH, Remarks; " +
+  "its Effective date is the list date), or the older SEN / EMP / DOH list. The union's list gives each pilot's date of hire and status (it has no seat).";
 // FW-0066: the path for a user who is not an admin (a second pilot's copy reads its own entities and topic)
 const FW_UP_TOPIC = "flight_watcher/upload/chunk";
 const FW_UP_LIST = "sensor.flight_watcher_uploads";
@@ -273,6 +276,7 @@ class FlightWatcherUploadsCard extends HTMLElement {
       <label data-ml>Bid period <input type="month" data-month value="${this._e(fwUpNextMonth(Date.now()))}"></label>
       <label data-dl hidden>List date <span class="u">(optional, when the PDF does not print one)</span><input type="date" data-date></label>
       <label><span data-fl>PDF</span> <input type="file" data-pdf accept="${FW_UP_ACCEPT.pdf}"></label></div>
+      <div class="u" data-sh hidden>${FW_UP_SEN_HELP}</div>
       <div class="act"><button data-up>Upload</button><span class="u" data-prog aria-live="polite"></span></div>
       <div class="msg" data-msg role="status" aria-live="polite" aria-atomic="true"></div></div>`;
   }
@@ -281,6 +285,8 @@ class FlightWatcherUploadsCard extends HTMLElement {
     const ml = this._q("[data-ml]"), dl = this._q("[data-dl]"), fl = this._q("[data-fl]"), pdf = this._q("[data-pdf]");
     if (ml) ml.hidden = k === "seniority" || k === "contacts";
     if (dl) dl.hidden = k !== "seniority";
+    const sh = this._q("[data-sh]");
+    if (sh) sh.hidden = k !== "seniority";
     if (fl) fl.textContent = k === "contacts" ? "File (PDF, CSV or XLSX)" : "PDF";
     if (pdf) pdf.accept = k === "contacts" ? FW_UP_ACCEPT.contacts : FW_UP_ACCEPT.pdf;
   }
@@ -318,7 +324,7 @@ class FlightWatcherUploadsCard extends HTMLElement {
   _senHtml(s) {
     const e = (x) => this._e(x);
     const head = `<div class="lbl">Dates of hire (pay lines under other pilots' months)</div>`;
-    if (!s) return `<div class="sen">${head}<div class="u">None on file yet: upload the pilot seniority list, or an award whose packet lists the dates of hire.</div></div>`;
+    if (!s) return `<div class="sen">${head}<div class="u">None on file yet: upload the Pilot's System Seniority List (the union's PDF), or an award whose packet lists the dates of hire.</div></div>`;
     const src = String(s.source || "list");
     const from = src === "list" ? "the pilot seniority list" : /^award \d{4}-\d{2}$/.test(src) ? `the ${fwUpMonth(src.slice(6))} award` : src;
     const parts = [`<b>${e(s.pilots)} pilots</b> from ${e(from)}`,

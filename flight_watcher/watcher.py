@@ -6390,9 +6390,11 @@ def name_directory():
     for k, rec in ((seniority_data() or {}).get("pilots") or {}).items():
         for r in [rec] + list(rec.get("also") or []):
             name = str(r.get("name") or "")
+            # 1.7.5.1: the union's list prints names in mixed case ('McDoe'): kept; all capitals (or none) title-cased
+            name = name.title() if name in (name.upper(), name.lower()) else name
             last, _, first = (x.strip() for x in name.partition(","))
-            if k and last:
-                rows[k] = {"emp": k, "last": last.title(), "first": first.title(),
+            if k and last:  # the union's list has no seat: the award's, when it names the pilot
+                rows[k] = {"emp": k, "last": last, "first": first,
                            "seat": str(r.get("seat") or (rows.get(k) or {}).get("seat") or "").upper()[:2]}
     out = [dict(r, name=f"{r['last']}, {r['first']}".strip(" ,")) for r in rows.values()]
     _NAME_DIR.update(sig=sig, rows=out)
