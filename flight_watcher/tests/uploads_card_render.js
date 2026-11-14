@@ -115,7 +115,10 @@ c.hass = H;
     res.expect_month = m === 12 ? `${h.getUTCFullYear() + 1}-01` : `${h.getUTCFullYear()}-${String(m + 1).padStart(2, "0")}`;
     res.kinds = await card.locator("[data-kind] option").evaluateAll((os) => os.map((o) => o.value));
     const hid = () => pg.evaluate(() => { const r = document.querySelector("flight-watcher-uploads-card").shadowRoot;
-      return { month_hidden: r.querySelector("[data-ml]").hidden, date_hidden: r.querySelector("[data-dl]").hidden }; });
+      const c = r.querySelector("ha-card"), sh = r.querySelector("[data-sh]");  // 1.7.5.1: the lists the Watcher reads
+      return { month_hidden: r.querySelector("[data-ml]").hidden, date_hidden: r.querySelector("[data-dl]").hidden,
+        help_hidden: sh.hidden, help: sh.hidden ? "" : sh.textContent,
+        fits: document.documentElement.scrollWidth <= window.innerWidth && c.scrollWidth - c.clientWidth <= 0 }; });
     await card.locator("[data-kind]").selectOption("seniority");
     res.sen_toggle = await hid();
     await card.locator("[data-kind]").selectOption("award");

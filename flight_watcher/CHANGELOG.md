@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.7.6.1
+
+The union's seniority list (Ryan, Nov 14: "what format does it need? make the settings page work with this format. it is
+what the union provides"). Built with tests that failed first, then two adversarial reviews; every reproduced finding is
+fixed.
+
+### The Settings page reads the Pilot's System Seniority List
+- Before: an upload of the company's "Pilot's System Seniority List" PDF (Sen #, Name, Employee #, DOH as 17-Sep-85,
+  Remarks) was refused: "No pilot rows were found in it". The reader knew only the older SEN / EMP / DOH list.
+- Now both lists are read; the header line picks the reader. On the July 1, 2026 list every row is read (seniority
+  numbers with no gaps, 0 lines not read). The leading "*" (a changed seniority number) is ignored; "Jr." names, two-word
+  last names, apostrophes and hyphens read as printed; columns that drift page to page are fine. The pilots-removed
+  section, the status legend, page titles, "Page n of m" and the footnote are never read as pilots.
+- The list date comes from the printed "Effective July 1, 2026" when none is typed; a typed date still wins, and the
+  upload message says so when the two differ.
+- Two-digit hire years take their century from the printed list date (then the typed one, then the upload year), and a
+  date of hire 60 or more years before the list is refused as a misread (age 65 retirement, 14 CFR 121.383(d)). The
+  first build would have put a 2026 hire in 1926 under a mistyped list date.
+- A row with another mark ("**", a dagger, "12*") is read; a dated row that cannot be read counts as a line not read, and
+  each missing seniority number is noted as a gap. A union header in another column order is refused with the union
+  list's own rule (Sen #, Name, Employee #, DOH, Remarks).
+- The status codes (A, SLOA, MLOA, EXEC, LOA, ALPA, FUR, MRET, PESL) are counted, never stored per pilot. The seniority PDF,
+  its text copy and the three seniority JSON files are now mode 600, like the contact list.
+- The name lookup compares last names without Jr / Sr / II and takes a curly apostrophe. Pilots with a 2-letter last
+  name are still found by employee number only (the 3-letter minimum stays, 1.6.2).
+- PARSER 3: a list already on file is read again at start. The older list and the award's dates of hire read exactly as
+  in 1.7.6. The uploads card's help line names both lists.
+
+### Ryan
+- Upload the seniority PDF again on the Settings tab (Monthly files, What = Pilot seniority list): the refused one was
+  not kept.
+
 ## 1.7.6
 
 Session lost on the open time page (HOM t1301; Ryan approved shipping Nov 8).
