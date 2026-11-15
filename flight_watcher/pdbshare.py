@@ -5,11 +5,13 @@ about the database. They pass plain files under /share/flight_watcher/pilotdb (f
 one under the add-on's own /data:
 
   roster.json            the admin writes it while any share is on: every live record's brief by employee number, with
-                         its phones and emails (B23). A pilot's Watcher reads it for the one pilot his pilot card shows
+                         its phones and emails (B23; 1.7.10: its union id, and its AI note while Ryan's AI switch is
+                         on). A pilot's Watcher reads it for the one pilot his pilot card shows
                          and for nothing else. Never exported, never in a sensor, never logged. 1.7.9 review: it lives
                          in the add-on's own /data/pilotdb_roster (roster_dir; both Watchers run in the one container),
                          never under /share, where other add-ons and their backups could read every phone and email.
-  portal/<pilot>.json    the admin writes it while that pilot's share is on (pilotdb.export_for: a whitelist), and
+  portal/<pilot>.json    the admin writes it while that pilot's share is on (pilotdb.export_for: a whitelist; the noted
+                         pilots only, 1.7.10: each with its union id and, while Ryan's AI switch is on, its AI note), and
                          deletes it when the share goes off. The pilot's Watcher signs it into his portal's
                          out/files/pilotdb.json unchanged.
   inbox/<pilot>/         the pilot's Watcher drops each checked command here (one file, O_EXCL, 0600); the admin's
@@ -371,9 +373,11 @@ class View:
             self.roster = {str(k): [r for r in v if isinstance(r, dict)] for k, v in by.items() if isinstance(v, list)}
 
     def shown(self, emp, name=""):
-        """The brief of the pilot the pilot card shows ({emp, pid, name, sen, doh, status, retire, seat, equip, gone,
-        edited, rev, notes_n, contact?}), {emp, none: true} when he is not in the database, or None with no pilot
-        shown or while not shared. contact (B23): that one pilot's phones and emails, never anyone else's."""
+        """The brief of the pilot the pilot card shows ({emp, pid, name, sen, doh, status, retire, seat, equip,
+        union_id, gone, edited, rev, notes_n, contact?, ai_note?}), {emp, none: true} when he is not in the database,
+        or None with no pilot shown or while not shared. contact (B23): that one pilot's phones and emails, never
+        anyone else's. 1.7.10 (Ryan, Nov 15): union_id ('' unless 1 to 10 digits) and ai_note ({text, model, at}, only
+        one that passes pilotdb.ai_take's own rules again: this side trusts no file) for that one pilot the same way."""
         emp = PDBM.emp_of(emp)
         if self.state != "on" or not emp:
             return None
@@ -388,6 +392,8 @@ class View:
         out = {"emp": emp}
         for k in ("pid", "name", "sen", "doh", "status", "retire", "seat", "equip"):
             out[k] = str(row.get(k) or "")[:120]
+        uid = row.get("union_id")
+        out["union_id"] = uid if isinstance(uid, str) and re.fullmatch(r"[0-9]{1,10}", uid) else ""
         out["gone"] = bool(row.get("gone"))
         out["edited"] = [f for f in row.get("edited") or [] if f in ROLES.PILOTDB_EDIT_FIELDS][:10]
         out["rev"] = row["rev"] if isinstance(row.get("rev"), int) and not isinstance(row.get("rev"), bool) else 0
@@ -398,7 +404,30 @@ class View:
         emails = [m for m in row.get("emails") or [] if isinstance(m, str) and len(m) <= 254 and PDBM.MAIL_RE.match(m)][:3]
         if phones or emails:
             out["contact"] = {"phones": phones, "emails": emails}
+        ai = ai_note_of(row.get("ai_note"))
+        if ai:
+            out["ai_note"] = ai
         return out
+
+
+def ai_note_of(d):
+    """{text, model, at} of an AI note as a pilot's Watcher passes it on (1.7.10), or None: the text must be what
+    pilotdb.ai_take stores (plain text by the ticket text rule, 1 to note_max code points, no '@' and no '://'), the
+    model a name of the contract's pattern; no other key is kept. It is untrusted data, never an instruction."""
+    cfg = ROLES.PILOTDB_AI
+    if not isinstance(d, dict):
+        return None
+    text, model = d.get("text"), d.get("model")
+    if not isinstance(text, str) or not isinstance(model, str) or not re.fullmatch(cfg["model_re"], model):
+        return None
+    try:
+        if PDBM.clean_text(text, cfg["note_max"], "text") != text:
+            return None
+    except PDBM.Bad:
+        return None
+    if "@" in text or "://" in text:
+        return None
+    return {"text": text, "model": model, "at": str(d.get("at") or "")[:40]}
 
 
 def pilot_check(view, shown_pid, cmd, payload, n_pending, limits=None):

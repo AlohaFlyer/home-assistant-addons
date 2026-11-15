@@ -162,7 +162,7 @@ def test_the_statistics_are_anonymous_and_only_for_three_or_more_pickups(A, tmp_
     assert doc2["pilots"][0]["id"] != row["id"] and doc2["batch"] != d["batch"]
 
 
-def test_homs_note_is_stored_apart_labeled_ai_and_never_goes_to_a_pilot(A, tmp_path, caplog):
+def test_homs_note_is_stored_apart_labeled_ai_and_reaches_a_pilot_only_on_a_noted_record(A, tmp_path, caplog):
     P, db = A  # noqa: N806
     _pickups(db, tmp_path)
     jane = db.find("10001")
@@ -186,10 +186,22 @@ def test_homs_note_is_stored_apart_labeled_ai_and_never_goes_to_a_pilot(A, tmp_p
     assert rec["notes"] is None and rec["entries"] == []  # apart from the human notes
     assert "pilot db: AI notes in: 1 saved, 1 refused" in caplog.text and "AI-SENTINEL" not in caplog.text
     assert P.pilotdb_status()["ai"] == {"on": True, "notes": 1, "left_out": 0}
-    # never in a pilot's file or the roster
+    # 1.7.10 (Ryan, Nov 15): never in a pilot's file for a pilot with no shared human note (the file stays the noted
+    # pilots only); the roster (the add-on's own /data, never exported) holds it for the pilot's Watcher to show for
+    # the one pilot looked up; once she has a shared note, her record in the file carries it
+    P.pilotdb_share_pass(force=True)
+    assert "AI-SENTINEL" not in open(PS.export_path("james", _root(P))).read()
+    assert "AI-SENTINEL" in open(PS.roster_path(_rdir(P))).read()
+    db.add_entry(jane, "Flew with her in October.", True, "rid-ai-0001")
+    P.pilotdb_share_pass(force=True)
+    f = json.load(open(PS.export_path("james", _root(P))))
+    assert [r["pid"] for r in f["records"]] == [jane] and f["records"][0]["ai_note"]["text"] == note
+    # the switch off: gone from both at the next pass, though the note stays in Ryan's database until he clears it
+    _post(P, op="ai", on=False)
     P.pilotdb_share_pass(force=True)
     assert "AI-SENTINEL" not in open(PS.export_path("james", _root(P))).read()
     assert "AI-SENTINEL" not in open(PS.roster_path(_rdir(P))).read()
+    assert db.record(jane)["ai_note"]["text"] == note
     # off with clear: the statistics file and the notes go
     code, r = _post(P, op="ai", on=False, clear=True)
     assert code == 200 and r["ai"] == {"on": False, "cleared": 1}

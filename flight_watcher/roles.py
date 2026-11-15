@@ -29,6 +29,11 @@ a portal). Additive again: fwp and contract stay 1.
 feature pilotdb, the file kind pilotdb, the commands pilotdb/note and pilotdb/edit with their shapes, limits and fixed
 answers, the synthesized pilotdb state with the looked-up pilot's phones and emails), the swap alert for a new swap idea
 (F#107) and the AI note hand-off with HOM's consultant models (PILOTDB_AI). Additive: fwp and contract stay 1.
+
+1.7.10 (Ryan's Nov 15 decisions), still contract 1 revision 4: the shared pilot reads two more keys, union_id (his
+union id edit was blind) and ai_note (read only, labeled as an AI note, only while Ryan's AI switch is on), on the
+records of his pilotdb file and on the looked-up pilot's brief. Two boundary changes, both additive reads: PORTAL_CMDS,
+PORTAL_REFUSED, FEATURES, every limit, the noted-pilots-only file and the anti-walk rule are as in 1.7.9.
 """
 import math
 import re
@@ -555,7 +560,9 @@ PILOTDB_ANSWERS = (
 )
 # The AI note (Ryan, Nov 14: "Through HOM's models"): HOM's consultant models write one short note per pilot with at
 # least min_pickups pickups, from anonymous pickup statistics only. Ryan's own switch on his card (off by default)
-# turns it on; it is his data and never goes to a pilot's portal. Flight Watcher writes the statistics file; each pilot
+# turns it on; it is his data (1.7.10, Ryan Nov 15: a pilot he shares the database with reads a note, read only, on
+# the records of his file and on the looked-up pilot's brief; nobody but HOM's hand-off writes one). Flight Watcher
+# writes the statistics file; each pilot
 # in it has an id made new for every batch (random, kept only in Ryan's database, so nobody else can map it back), and
 # no name, employee number, record id, seniority number, date of hire, pairing number or exact date. HOM answers with
 # one file per batch; a note is note_max code points of plain text at most (the ticket text rule, no "@" and no

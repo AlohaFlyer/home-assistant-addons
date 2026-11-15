@@ -29,6 +29,10 @@
    - It shows the pilot he looked up (the record, call / text / mail links for that pilot only, the notes field, the
      log) and the list of pilots with shared notes (a filter by name or Sen #, tap one to open it; no phones or
      emails there).
+   - 1.7.10 (Ryan, Nov 15): the union ID is shown on both (in the record's line and in its field row, so its edit
+     starts from the value on file), and the AI note read only when the record has one and Ryan's AI switch is on:
+     its own dashed box under the log, labeled "AI note, from anonymous pickup statistics", plain text, with no
+     control in it. No command of this card writes an AI note.
    - It writes with two commands to his own Watcher (mqtt.publish, which the portal turns into a signed command):
      pilotdb/note (the notes field with compare-and-set on the version it was read at, a log entry, a take back of his
      own entry) and pilotdb/edit (one record field, compare-and-set on the record's revision; or back to the uploads'
@@ -122,6 +126,11 @@ const h = (tag, props, ...kids) => {
   }
   return el;
 };
+const fwPdbUid = (v) => (typeof v === "string" && /^[0-9]{1,10}$/.test(v) ? v : "");  // a union id as the contract has it
+const fwPdbAi = (a) => {  // an AI note a portal shows (1.7.10): {text, model, at} as text, or null
+  if (!a || typeof a !== "object" || typeof a.text !== "string" || !a.text.trim()) return null;
+  return { text: a.text.slice(0, 2400), model: typeof a.model === "string" ? a.model.slice(0, 80) : "", at: typeof a.at === "string" ? a.at.slice(0, 40) : "" };
+};
 const fwPdbLink = (kind, v, label, title) => {  // tel:, sms: or mailto:, only after the pilot card's checks
   const ok = kind === "mailto" ? FW_PDB_MAIL_RE.test(v) : FW_PDB_TEL_RE.test(v);
   if (!ok) return null;
@@ -157,6 +166,8 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{
  color:var(--secondary-text-color);margin-left:4px;white-space:nowrap}
 .tag.w{border-color:var(--warning-color,#b26a00);color:var(--primary-text-color)}
 .tag.ai{border-color:var(--primary-color);color:var(--primary-color);font-weight:600}
+.aib{border:1px dashed var(--primary-color);border-radius:8px;padding:8px 10px;margin-top:12px;min-width:0}
+.aib>h3{font-size:15px;font-weight:600;margin:0 0 4px}.aib .tx{margin-top:6px}
 .tag.wr{white-space:normal;overflow-wrap:anywhere;min-width:0;max-width:100%;box-sizing:border-box}
 .vh{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 .rfl{display:none;margin-top:2px}.rfl .tag{margin:2px 4px 0 0}
@@ -901,7 +912,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     const n = +ai.notes || 0, left = +ai.left_out || 0;
     // 1.7.9 review: a copy put back never turns a switch on again; say so until Ryan uses a switch
     const reset = st.share_reset ? h("div", { class: "ban", role: "status", "data-share-reset": "" }, "A copy of the database was put back: sharing and the AI notes were turned off. They stay off until you turn them on again here.") : null;
-    return [reset, h("div", { class: "u" }, "Off until you turn it on. A shared pilot sees the pilots with shared notes and the pilot he looks up (with that one pilot's phones and emails), and can edit the notes field, add to the log and edit every field. Each change is checked against the version he read, the earlier versions are kept (the newest 50 of the notes field per author, every field edit in the history) and you can put any back. Only me entries, hidden entries, the history, pickups and the AI note never leave this card."),
+    return [reset, h("div", { class: "u" }, "Off until you turn it on. A shared pilot sees the pilots with shared notes and the pilot he looks up (with that one pilot's phones and emails), each with the union ID and, while AI notes are on, the AI note read only. He can edit the notes field, add to the log and edit every field. Each change is checked against the version he read, the earlier versions are kept (the newest 50 of the notes field per author, every field edit in the history) and you can put any back. Only me entries, hidden entries, the history and pickups never leave this card."),
       rows.length ? rows : h("div", { class: "u" }, "No pilot with a portal is set up."),
       h("div", { class: "row", "data-ai": "" }, h("label", { class: "ck" }, aiBox, "AI notes ", h("span", { class: "tag ai" }, "AI")),
         h("span", { class: "u" }, `${ai.on ? "On" : "Off"}: HOM's consultant models write a short note per pilot with 3 or more pickups, from anonymous statistics only (no name, no employee number). ${n} written.${left ? ` ${left} pilot${left === 1 ? " was" : "s were"} left out of the last batch (no note came back).` : ""}`),
@@ -919,7 +930,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
   }
   async _setAi(box) {
     const on = !!box.checked;
-    if (on && !confirm("Turn the AI notes on? Anonymous pickup statistics (no name, no employee number) go to HOM's consultant models, at most once a day.")) { box.checked = false; return; }
+    if (on && !confirm("Turn the AI notes on? Anonymous pickup statistics (no name, no employee number) go to HOM's consultant models, at most once a day. A pilot you share the database with sees each note read only, labeled as an AI note.")) { box.checked = false; return; }
     const r = await this._post({ op: "ai", on }, "share", on ? "AI notes on." : "AI notes off. The notes already written stay until you remove them.");
     if (!r || !r.ok) box.checked = !on;
     await this._loadStatus();
@@ -1049,7 +1060,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     const str = (v) => String(v == null ? "" : v);
     if (src === "sel") {
       const r = this._pSelPid ? this._pRecs().find((x) => x.pid === this._pSelPid) : null;
-      return r ? { ...r, looked: false, contact: null, emp: "" } : null;
+      return r ? { ...r, looked: false, contact: null, emp: "", union_id: fwPdbUid(r.union_id), ai_note: fwPdbAi(r.ai_note) } : null;
     }
     const sh = this._pShown();
     if (!sh || sh.none || !FW_PDB_PID_RE.test(str(sh.pid))) return null;
@@ -1058,6 +1069,8 @@ class FlightWatcherPilotdbCard extends HTMLElement {
       rev: Math.max(+sh.rev || 0, +f.rev || 0), notes: f.notes || null, entries: Array.isArray(f.entries) ? f.entries : [],
       entries_total: +f.entries_total || 0, contact: sh.contact && typeof sh.contact === "object" ? sh.contact : null };
     for (const k of ["name", "sen", "doh", "status", "retire", "seat", "equip"]) rec[k] = str(sh[k] != null ? sh[k] : f[k]);
+    rec.union_id = fwPdbUid(sh.union_id != null ? sh.union_id : f.union_id);  // 1.7.10: shown, so its edit is not blind
+    rec.ai_note = fwPdbAi(sh.ai_note) || fwPdbAi(f.ai_note);  // 1.7.10: read only
     return rec;
   }
   _pSayPid(pid, part, text, cls) {  // a section's line, in whichever box shows that record now
@@ -1184,7 +1197,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
   }
   _pRecord(src, rec) {
     const m = (k) => this._msgNode(`${src}-${k}`);
-    const brief = [["Sen", rec.sen], ["Emp", rec.emp], ["DOH", rec.doh], ["Status", rec.status], ["Retires", rec.retire], ["Seat", rec.seat], ["Equipment", rec.equip]]
+    const brief = [["Sen", rec.sen], ["Emp", rec.emp], ["DOH", rec.doh], ["Status", rec.status], ["Retires", rec.retire], ["Seat", rec.seat], ["Equipment", rec.equip], ["Union ID", rec.union_id]]
       .filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(" · ");
     const head = h("div", { class: "rh" }, h("div", {}, h("div", { class: "rn", dir: "auto" }, String(rec.name || "(no name)"),
       rec.gone ? h("span", { class: "tag w" }, "gone from the list") : null), h("div", { class: "u" }, brief)),
@@ -1196,14 +1209,21 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     const fields = this._det(`${src}-fields`, "sec", "Edit a field",
       h("div", { class: "u" }, `An edit is checked against the record as you read it and logged with your name; every earlier value is kept.${rec.looked ? "" : " Phones and emails show only for the pilot you looked up."}`),
       m("rec"), rows.map(([k, label]) => this._pField(src, rec, k, label)));
-    return h("div", { class: "rec", "data-rec": rec.pid, "data-src": src }, head, links, this._pNotes(src, rec, m("notes")), this._pLog(src, rec, m("log")), fields);
+    return h("div", { class: "rec", "data-rec": rec.pid, "data-src": src }, head, links, this._pNotes(src, rec, m("notes")), this._pLog(src, rec, m("log")),
+      rec.ai_note ? this._pAiNode(rec.ai_note) : null, fields);
+  }
+  _pAiNode(ai) {  // 1.7.10: read only, apart from the human notes, every value a text node; nothing here can be typed in or sent
+    return h("div", { class: "aib", role: "group", "aria-label": "AI note", "data-ai-note": "" },
+      h("h3", {}, "AI note ", h("span", { class: "tag ai" }, "AI")),
+      h("div", { class: "u" }, `AI note, from anonymous pickup statistics. Written by ${ai.model || "a model"}${ai.at ? ` ${fwPdbHst(ai.at)}` : ""}. Read only: not a human note, and it cannot be changed here.`),
+      h("div", { class: "tx", dir: "auto", "data-ai-text": "" }, ai.text));
   }
   _pField(src, rec, k, label) {
     const pd = this._pDraft(rec.pid), ed = pd.edit && pd.edit.field === k ? pd.edit : null, c = rec.contact || {};
-    const raw = k === "phones" ? (Array.isArray(c.phones) ? c.phones : []) : k === "emails" ? (Array.isArray(c.emails) ? c.emails : []) : k === "union_id" ? "" : rec[k];
+    const raw = k === "phones" ? (Array.isArray(c.phones) ? c.phones : []) : k === "emails" ? (Array.isArray(c.emails) ? c.emails : []) : rec[k];
     const shown = this._show(k, raw), edited = (rec.edited || []).includes(k), busy = !!pd.wait.rec;
     const start = () => { pd.edit = { field: k, value: k === "phones" ? raw.map((p) => `${p.label || "other"} ${p.number || ""}`).join("\n") : k === "emails" ? raw.join("\n") : shown, why: "" }; this._pPaint(src); this._focus2(src, `${src}-edit-${k}`); };
-    const lines = [h("div", { class: "row" }, h("span", { class: "v", dir: "auto" }, shown || (k === "union_id" ? "not shown here" : "-")),
+    const lines = [h("div", { class: "row" }, h("span", { class: "v", dir: "auto" }, shown || "-"),
       edited ? h("span", { class: "tag w" }, "edited") : null,
       ed ? null : h("button", { class: "g s", type: "button", "data-k": `${src}-f-${k}-edit`, "aria-label": `Edit ${label}`, onclick: start }, "Edit"),
       edited && !ed ? h("button", { class: "g s", type: "button", "data-k": `${src}-f-${k}-unset`, disabled: busy,

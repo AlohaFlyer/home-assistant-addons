@@ -1611,20 +1611,32 @@ class PilotDB:
         return False, "Not saved: it could not be read, send it again", None
 
     def _shared_brief(self, v):
-        """A record's fields as a shared pilot may see them (no employee number, phones, emails or union id)."""
+        """A record's fields as a shared pilot may see them (no employee number, phones or emails). 1.7.10 (Ryan,
+        Nov 15, decision A): the union id is one of them ('' when none is on file), so his union id edit is not
+        blind, and edited names it when a hand set it."""
         f = v["fields"]
         return {"pid": v["pid"], "name": f["name"]["value"], "sen": f["sen"]["value"], "doh": f["doh"]["value"],
                 "status": f["status"]["value"], "retire": f["retire"]["value"], "seat": f["seat"]["value"],
-                "equip": f["equip"]["value"], "gone": v["gone"],
-                "edited": [k for k in FIELDS if f[k]["hand"] and k not in ("phones", "emails", "union_id")],
+                "equip": f["equip"]["value"], "union_id": f["union_id"]["value"] or "", "gone": v["gone"],
+                "edited": [k for k in FIELDS if f[k]["hand"] and k not in ("phones", "emails")],
                 "rev": v["rev"]}
+
+    def _shared_ai(self):
+        """{pid: {text, model, at}}: the AI notes a shared pilot may read (1.7.10, Ryan's Nov 15 decision B), and
+        none at all while Ryan's AI switch is off. The caller holds the lock. The callers decide which records they
+        go on (export_for: the noted pilots only; roster: the one a pilot's Watcher shows after a lookup)."""
+        if self._meta("ai_on", "0") != "1":
+            return {}
+        return {p: {"text": t, "model": m, "at": a}
+                for p, t, m, a in self.db.execute("SELECT pid,text,model,at FROM ai_notes")}
 
     def export_for(self, pilot, limits=None):
         """The pilotdb file of one shared pilot (spec 11.2; a whitelist: portal.PILOTDB_FILE_KEYS): every live record
         with a notes field or a shared entry that is not hidden (the noted pilots, never the roster), each with its
-        fields (no employee number, phones, emails, union id, sources or history), the notes field, the newest
-        entries (his own marked mine; a taken back one without its text; hidden, purged and only-me ones not at all)
-        and this pilot's own answers. Over export_bytes the entries drop to export_entries_min a record; still over,
+        fields (no employee number, phones, emails, sources or history; 1.7.10: with the union id), the notes field,
+        the newest entries (his own marked mine; a taken back one without its text; hidden, purged and only-me ones
+        not at all) and this pilot's own answers. 1.7.10: a record that is in the file anyway carries its AI note
+        (ai_note: text, model, at) while Ryan's AI switch is on; an AI note alone never puts a pilot in the file. Over export_bytes the entries drop to export_entries_min a record; still over,
         full is true (the admin then refuses his new notes)."""
         lim = limits or ROLES.PILOTDB_NOTE_LIMITS
         with self.lock:
@@ -1645,6 +1657,7 @@ class PilotDB:
                 ents.setdefault(pid, []).append(e)
             as_of = {"list": self._meta("list_as_of", ""), "contacts": self._meta("contacts_as_of", ""),
                      "award": self._meta("award_month", "")}
+            ai = self._shared_ai()
             answers = self.answers(pilot, lim["answers"])
             now = self.now()
         pids = sorted((p for p in set(notes) | set(ents) if p in views), key=lambda p: self._sen_key(views[p]))
@@ -1655,6 +1668,8 @@ class PilotDB:
                 r = self._shared_brief(views[p])
                 if p in notes:
                     r["notes"] = notes[p]
+                if p in ai:
+                    r["ai_note"] = ai[p]
                 r["entries"] = ents.get(p, [])[:n]
                 r["entries_total"] = len(ents.get(p, []))
                 recs.append(r)
@@ -1671,9 +1686,11 @@ class PilotDB:
         """roster.json for the shared pilots' Watchers (spec 11.1; never exported, logged or in a sensor): every live
         record by employee number, each {the shared brief, lk (the last name's key, for a number two records share),
         notes_n, phones, emails}. 1.7.9 (Ryan, Nov 14, B23): the phones and emails are here so a pilot's Watcher can
-        show them for the one pilot he looks up; it never passes on more than that one pilot's."""
+        show them for the one pilot he looks up; it never passes on more than that one pilot's. 1.7.10: the union id
+        (in the shared brief) and, while Ryan's AI switch is on, the record's AI note, for that one pilot the same way."""
         with self.lock:
             views = self._all_views()
+            ai = self._shared_ai()
             shared_n = dict(self.db.execute("SELECT pid,COUNT(*) FROM entries WHERE shared=1 AND gone_how IS NULL "
                                             "GROUP BY pid").fetchall())
             noted = {p for (p,) in self.db.execute("SELECT pid FROM notes WHERE text!=''")}
@@ -1682,6 +1699,8 @@ class PilotDB:
                 r = self._shared_brief(v)
                 r.update(lk=v["last_key"], notes_n=shared_n.get(pid, 0) + (1 if pid in noted else 0),
                          phones=v["fields"]["phones"]["value"] or [], emails=v["fields"]["emails"]["value"] or [])
+                if pid in ai:
+                    r["ai_note"] = ai[pid]
                 by_emp.setdefault(v["emp"], []).append(r)
             return {"v": 1, "generated": self.now(), "rev": int(self._meta("rev", "0")), "by_emp": by_emp}
 
@@ -1804,8 +1823,9 @@ class PilotDB:
                     continue
                 saved += 1
                 # 1.7.9 review: the same note handed in again (HOM sends its cached notes with every new batch) writes
-                # nothing, and an AI note never moves the record's rev (it is no record field and reaches no pilot), so
-                # a field edit somebody has open is not refused as stale and no shared file is rewritten for it
+                # nothing, and an AI note never moves the record's rev (it is no record field), so a field edit
+                # somebody has open is not refused as stale and no shared file is rewritten for the same note again
+                # (1.7.10: a new note moves the database's rev, so a shared pilot's file and the roster follow)
                 if self.db.execute("SELECT 1 FROM ai_notes WHERE pid=? AND text=? AND model=?",
                                    (pid, text, model)).fetchone():
                     continue

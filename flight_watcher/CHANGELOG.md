@@ -1,5 +1,59 @@
 # Changelog
 
+## 1.7.10
+
+Ryan's two decisions of Nov 15 on what James sees of the shared pilot database. No new command, no new FLICA page
+load, nothing shared that Ryan's own switches do not already gate. Synthetic data in every test.
+
+- **(A) James sees the union ID.** Before: `union_id` was a field James could edit on his portal (since 1.7.9) but
+  never read, so his edit was blind ("not shown here"). Now it is on each record of his file and on the looked-up
+  pilot's brief (`union_id`, an empty text when none is on file), shown in the record's line and in its field row;
+  Edit starts from the value on file and saves with compare-and-set as before. The edited mark names it.
+- **(B) James sees the AI note, read only.** Before: the AI note (HOM's consultant models, from anonymous pickup
+  statistics) was on Ryan's card only. Now a record that is already in James's file carries it (`ai_note`: text, model,
+  time), and so does the brief of the pilot he looked up. His card draws it in its own dashed box under the log,
+  labeled "AI note, from anonymous pickup statistics" with the model and the time in HST, as plain text, apart from
+  the human notes, with no field or button in it. No command writes, edits or removes an AI note.
+- **Only while Ryan's AI switch is on.** Off (the default), or a pilot with no AI note: nothing shows and no key is in
+  the file, the roster or the sensor. Turning the switch off takes the notes off James's portal at the next write
+  (about 2 s), though Ryan's database keeps them until he taps "Remove the AI notes".
+- **The file stays the noted pilots only.** A pilot with an AI note but no shared human note is not added to James's
+  file. He is read only through a lookup, and the brief keeps the anti-walk rule: only once that lookup really ran,
+  for at most 20 distinct pilots an hour.
+- The pilot's Watcher trusts no file: it passes on a union id only when it is 1 to 10 digits and an AI note only when
+  it still passes the hand-off's own rules (plain text of 1 to 600 characters, no "@", no "://", a model name of the
+  contract's pattern), with the three keys text, model and time and nothing else (`pdbshare.ai_note_of`).
+- Ryan's card: the Sharing text says what a shared pilot now sees, and the "Turn the AI notes on?" confirm says that
+  a pilot he shares the database with sees each note read only.
+
+### The contract: still contract 1 revision 4, two additive keys
+- `portal.PILOTDB_FILE_KEYS` (record: `union_id`, `ai_note`) and `PILOTDB_STATE_KEYS` (shown: `union_id`, `ai_note`);
+  the fixture is regenerated (sha256 `d7e31118bd2680fa50dc56191beb85eaeed21e2691786baa11d755afb91583af`) and
+  `PORTAL_CONTRACT.md` (5.7, 5.8, "Revision 4 as of 1.7.10") says the same.
+- Why not revision 5: HOM 1.9.0 relays the pilotdb file and the state export as signed and reads no key of either
+  (its `fwportal/server.mjs` state and file routes pass the verified payload through; its copy of the contract's
+  `pilotdb` section is read by no run-time code). No command, shape, limit, file kind or event kind changed. So 1.7.10
+  works with the live HOM 1.9.0 at once, and either order of the two changes is safe. HOM only re-pins the fixture
+  (its copy, its sha256, its test, its docs): a tests-and-docs PR with no version bump and no deploy.
+
+### Boundary changes (both by Ryan's decision of Nov 15, both additive reads)
+1. The union id leaves the "never on a portal" list: a shared pilot reads it on the records of his file and on the
+   looked-up pilot's brief.
+2. The AI note leaves the "never on a portal" list: a shared pilot reads it, read only, in the same two places, only
+   while Ryan's AI switch is on.
+
+Not changed: `roles.py` PORTAL_CMDS, PORTAL_REFUSED and FEATURES, every limit and quota, the FLICA budgets, the CSP,
+rate limits and routes (HOM's), push isolation, the anti-walk rule, the noted pilots only file, phones and emails
+only for the one pilot looked up, and no employee number in the file.
+
+### After the update: what Ryan does
+Each step is [DESTRUCTIVE] and needs its own yes; an earlier yes never covers a later one.
+1. Flight Watcher 1.7.10: merge its PR, store reload, update. It works with the live HOM 1.9.0.
+2. HOM's re-pin PR (tests and docs only): merge. No deploy. It can go before or after step 1.
+3. Nothing to tap for the union ID: it shows as soon as the share is on. The AI note shows on James's portal only
+   while **AI notes** is on (Pilots card, Sharing). Both switches stay as Ryan left them; Claude never taps either.
+4. No dashboard edit on Pako, and nothing for James to do: his portal takes the card from the add-on.
+
 ## 1.7.9
 
 Release order: HOM 1.9.0 first, then this add-on, each step with Ryan's own yes (see "After the update" at the end of

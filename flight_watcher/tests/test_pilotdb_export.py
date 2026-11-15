@@ -2,8 +2,9 @@
 for a pilot he shares it with, and how that pilot's notes and field edits come back.
 
 The Share switch is off by default and nothing is written while it is off. A shared pilot's file is a whitelist: the
-noted pilots only, no employee number, phone, email, union id, source or history, no only-me or hidden entry, only his
-own answers; 0600. The roster is for a pilot's Watcher only (B23: it carries the phones and emails so the Watcher can
+noted pilots only, no employee number, phone, email, source or history, no only-me or hidden entry, only his own
+answers; 0600 (1.7.10: the union id is on each record, and the AI note while Ryan's AI switch is on:
+tests/test_fw1710_union_ai.py). The roster is for a pilot's Watcher only (B23: it carries the phones and emails so the Watcher can
 show them for the one pilot looked up). The admin's inbox drain applies notes, log entries and field edits with the
 author taken from the folder's name, compare-and-set, quotas and fixed answers, and keeps every earlier version.
 Synthetic pilots only ("Doe, Jane", 10001, 555-01xx, example.com)."""
@@ -133,16 +134,17 @@ def test_the_file_holds_the_noted_pilots_only_and_whitelisted_keys(db, root):
     assert set(r) <= set(PT.PILOTDB_FILE_KEYS["record"])
     assert (r["name"], r["sen"], r["doh"], r["status"], r["seat"], r["gone"]) == (
         "Doe, Jane A.", "812", "2001-05-02", "SLOA", "", False)
-    assert r["edited"] == ["doh"]  # the hand marker only; never union_id, phones or emails
+    assert r["edited"] == ["doh", "union_id"]  # the hand marker only; never phones or emails
+    assert r["union_id"] == "424242"  # 1.7.10 (Ryan, Nov 15): shown, so his union id edit is not blind
     assert r["notes"]["text"] == "Commutes from the mainland." and r["notes"]["by"] == "ryan"
     assert [e["eid"] for e in r["entries"]] == [gone, shared] and r["entries_total"] == 2
     assert r["entries"][0] == {"eid": gone, "by": "ryan", "at": r["entries"][0]["at"], "gone": "taken back"}
     assert "mine" not in r["entries"][1]  # ryan's entry is not james's
     assert [a["rid"] for a in d["answers"]] == ["rid-james1"]
     assert d["limits"] == PT.pilotdb_limits()
-    # a byte scan: no employee number, phone, email, union id, only-me, hidden or taken back text, other's answer
-    for s in ("10001", "10002", "555-01", "example.com", "424242", "ONLY-ME-SENTINEL", "HIDDEN-SENTINEL",
-              "RETRACTED-SENTINEL", "rid-other1", "From her award line", "emp", "phones", "emails", "union_id"):
+    # a byte scan: no employee number, phone, email, only-me, hidden or taken back text, other's answer
+    for s in ("10001", "10002", "555-01", "example.com", "ONLY-ME-SENTINEL", "HIDDEN-SENTINEL",
+              "RETRACTED-SENTINEL", "rid-other1", "From her award line", "emp", "phones", "emails", "ai_note"):
         assert s not in text, s
 
 
@@ -191,11 +193,11 @@ def test_the_roster_is_by_employee_number_with_phones_and_emails_and_no_text(db,
     d = json.loads(text)
     assert set(d) == {"v", "generated", "rev", "by_emp"} and set(d["by_emp"]) == {"10001", "10002"}
     row = d["by_emp"]["10001"][0]
-    assert set(row) == {"pid", "name", "sen", "doh", "status", "retire", "seat", "equip", "gone", "edited", "rev", "lk",
-                        "notes_n", "phones", "emails"}
+    assert set(row) == {"pid", "name", "sen", "doh", "status", "retire", "seat", "equip", "union_id", "gone", "edited",
+                        "rev", "lk", "notes_n", "phones", "emails"}  # 1.7.10: union_id; no ai_note (the switch is off)
     assert row["pid"] == jane and row["lk"] == "DOE" and row["notes_n"] == 2
     assert row["phones"][0]["tel"] == "+18085550101" and row["emails"] == ["jane.doe@example.com"]  # B23
-    assert "SENTINEL" not in text and "union" not in text
+    assert "SENTINEL" not in text and "ai_note" not in text
 
 
 # ---------------------------------------------------------------- the drain: notes, log entries, field edits

@@ -377,10 +377,11 @@ Recent finds.
   taps "Share with <pilot>" on his own Pilots card (`POST api/pilotdb` op `share`; one switch per pilot with a portal;
   Claude never sends it). While it is off nothing of the database leaves Ryan's Watcher. On, Ryan's Watcher writes that
   pilot's file (`/share/flight_watcher/pilotdb/portal/<pilot>.json`, 0600: only the pilots with a notes field or a
-  shared log entry, a whitelist with no employee number, phone, email or union id) and
+  shared log entry, a whitelist with no employee number, phone or email; 1.7.10: each record with its union id and,
+  while the AI switch is on, its AI note, read only) and
   `/data/pilotdb_roster/roster.json` (0600, in the add-on's own data folder, never under `/share`: every live
-  record's brief by employee number with phones and emails, for the pilot's Watcher only, never exported, in a sensor
-  or logged). The brief of a looked-up pilot is given only once his lookup really ran (FLICA or its 6 h cache) and for
+  record's brief by employee number with phones and emails (1.7.10: its union id and, while the AI switch is on, its
+  AI note), for the pilot's Watcher only, never exported, in a sensor or logged). The brief of a looked-up pilot is given only once his lookup really ran (FLICA or its 6 h cache) and for
   at most 20 distinct pilots an hour. A daily copy put back comes back with every Share switch and the AI switch off. The pilot's
   Watcher never opens the database: it signs his file into his portal, synthesizes `sensor.<prefix>_pilotdb`
   (state.json only: the brief of the pilot his pilot card shows, with that one pilot's phones and emails for the call,
@@ -396,7 +397,9 @@ Recent finds.
   statistics of each pilot with 3 or more pickups under an id made new for every batch that only Ryan's database maps
   back, with no name, employee number, record id, seniority number, date of hire, pairing number or exact date. HOM's
   answer (`ai/in/<batch>.json`) is taken note by note (at most 600 characters of plain text, no link or address) into
-  `ai_notes`, apart from the human notes, shown on Ryan's card labeled AI and never sent to a pilot's portal.
+  `ai_notes`, apart from the human notes, shown on Ryan's card labeled AI. 1.7.10 (Ryan, Nov 15): a pilot Ryan shares
+  the database with reads it too, read only, on the records of his file and on the pilot he looked up, only while this
+  switch is on; a pilot with an AI note and no shared human note is not added to his file.
   `PORTAL_CONTRACT.md` section 5.8.
 - Rules live in `/data/rules.json` and are edited there (the schema is on the page). They are checked against each
   new pairing; a match publishes `flight_watcher/event/rule_match` and `sensor.flight_watcher_last_match`.
@@ -552,7 +555,9 @@ check), read only.
 tab under the pilot card, only while Ryan shares his pilot database with that pilot. The pilot looked up (his brief,
 Call, Text and Mail for that one pilot, the notes field, the log), the pilots with shared notes (a filter, tap to
 open; no phones or emails), the notes field saved against the version read (a stale save shows both texts), Add and
-Take back in the log, and field edits. It reads the pilot's own sensor and file and sends `pilotdb/note` and
+Take back in the log, and field edits. 1.7.10: the union ID shows in the record's line and in its field row (its Edit
+starts from the value on file), and the AI note shows read only in its own dashed box under the log, labeled "AI note,
+from anonymous pickup statistics", only while Ryan's AI switch is on and the pilot has one. It reads the pilot's own sensor and file and sends `pilotdb/note` and
 `pilotdb/edit` to his own Watcher; the draft stays until the Watcher's answer is in. Ryan's own card has a Sharing
 section in browse mode: "Share with <pilot>" per portal pilot and "AI notes", both off until Ryan taps them.
 

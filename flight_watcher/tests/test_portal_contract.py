@@ -19,7 +19,9 @@ import roles
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE = os.path.join(HERE, "tests", "fixtures", "portal_contract_v1.json")
 DOC = os.path.join(HERE, "PORTAL_CONTRACT.md")
-CONTRACT_SHA256 = "9b882fb6dd00a932e196359edc364ee8ecbe78da7077f5f29a7fdc06301a6176"
+# 1.7.10 (Ryan, Nov 15): still revision 4, two additive keys a shared pilot reads (union_id, ai_note); 1.7.9's bytes
+# were 9b882fb6dd00a932e196359edc364ee8ecbe78da7077f5f29a7fdc06301a6176
+CONTRACT_SHA256 = "d7e31118bd2680fa50dc56191beb85eaeed21e2691786baa11d755afb91583af"
 
 
 def _fx():
@@ -261,7 +263,8 @@ def test_revision_4_tables_are_in_the_fixture():
     f = next(json.loads(e["envelope"]["payload"]) for e in fx["samples"]["envelopes"] if e["file"] == "files/pilotdb.json")
     assert set(f) <= set(PT.PILOTDB_FILE_KEYS["top"]) and set(f["records"][0]) <= set(PT.PILOTDB_FILE_KEYS["record"])
     text = json.dumps(f)
-    for bad in ('"emp"', '"phones"', '"emails"', "union_id", '"contact"', "10001", "555-01", "example.com"):
+    assert f["records"][0]["union_id"] == "424242" and set(f["records"][0]["ai_note"]) == {"text", "model", "at"}  # 1.7.10
+    for bad in ('"emp"', '"phones"', '"emails"', '"contact"', "10001", "555-01", "example.com"):
         assert bad not in text, bad
 
 
