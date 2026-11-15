@@ -141,8 +141,11 @@ def test_the_card_source_follows_the_rendering_rule():
     for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "DOMParser", "createContextualFragment",
                 "eval(", "new Function"):
         assert bad not in code, bad
-    # never a Home Assistant service call (a note would land in HA's recorder) and never the pilot lookup
-    assert "callService" not in code and "mqtt" not in code and "pilot/set" not in code
+    # never the pilot lookup; one service call in the whole card, the portal copy's _pub (1.7.9: a shared pilot's
+    # pilotdb/note and pilotdb/edit to his own Watcher), which refuses on Home Assistant (FW_PORTAL off), so Ryan's
+    # notes never land in HA's recorder
+    assert code.count("callService") == 1 and "pilot/set" not in code
+    assert "if (!FW_PORTAL) return Promise.reject" in code
     # the only links: tel:, sms:, mailto:, through the href property after the checks
     assert re.findall(r"\.href\s*=", code) == [".href ="] and "a.href = `${kind}:${v}`" in code
     assert 'fwPdbLink("tel"' in code and 'fwPdbLink("sms"' in code and 'fwPdbLink("mailto"' in code

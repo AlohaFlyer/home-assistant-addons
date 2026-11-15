@@ -1,4 +1,4 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-15, release 1.7.8 live)
+# HANDOFF: Flight Watcher (refreshed 2026-11-15, release 1.7.8 live; 1.7.9 built, HOM 1.9.0 goes first)
 
 State (Nov 15): app **1.7.8** live on Pako HI since 2026-11-15 03:07 UTC (PR #118, squash bbf269a; app backup
 `83daa6bb` "Flight Watcher 1.7.7 before 1.7.8"). Ryan's pilot database, the pilot database spec's step 1 (CHANGELOG
@@ -20,7 +20,13 @@ container, gets 403 by design, so the live card's first API call is Ryan's own b
 has the Pilots card (Settings above Tickets; follow mode under the pilot card on Watcher), applied through the HA
 connector on Ryan's yes; `ha/` matches Pako by sha256 (`ha/README.md`).
 
-**Built, not released: 1.7.9 with HOM 1.9.0** (branch `fw-1.7.9`; CHANGELOG 1.7.9). Sharing the pilot database with
+**Built, not released: 1.7.9 with HOM 1.9.0** (branch `fw-1.7.9`, version 1.7.9 in `config.yaml` and `watcher.py`, not
+pushed; CHANGELOG 1.7.9). Also in it: Ryan's two in-flight follow-ups of Nov 15 (each pilot named on a pickup whose
+picker is not known gets his own in-flight lookup, once; no in-flight log line carries an employee number), the swap
+idea alert (F#107) and the clock card's state-worded Re-arm confirm (F#92). The Pilots card has its portal mode
+(`FW_PORTAL`, James's Pilot tab under the pilot card: the pilot looked up with call, text and mail links, the pilots
+with shared notes, notes with compare-and-set, the log, field edits) and Ryan's card has the Sharing section (the
+"Share with james" and "AI notes" switches). Sharing the pilot database with
 James, contract 1 revision 4 (`flight_watcher/PORTAL_CONTRACT.md` sections 4.3, 5.7 and 5.8; the fixture
 `flight_watcher/tests/fixtures/portal_contract_v1.json` is frozen once committed and HOM 1.9.0 pins the same bytes).
 Order (each step Ryan's own yes, [DESTRUCTIVE]): HOM 1.9.0 first (merge, then Hark's deploy), then Flight Watcher 1.7.9
@@ -178,8 +184,8 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
 7. **Waiting on Hark:** FW-0020 (Nov 3 recall list blank), FW-0030 (HPA 2026-27 school calendar partial), and the
    FW-0042 overnight-release cut-off (`home_day_start` in smart.json).
 8. **Backlog, not built:** FW-0044 map FLICA's DROP review page read only; an alert for a new swap idea on the portal
-   (F#107: built in 1.7.9, contract revision 4, event kind `swap`); the clock card's state-worded Re-arm confirm and the hidden Settings tile (F#92, card
-   and HOM work); Ryan's call if wanted: Pause turned on after a login page has passed the gate does not give up the credentials' submit
+   (F#107: built in 1.7.9, contract revision 4, event kind `swap`); the clock card's state-worded Re-arm confirm
+   (F#92: built in 1.7.9; the Re-arm tile on the portal's Settings tab is HOM's control, HOM 1.9.0's half); Ryan's call if wanted: Pause turned on after a login page has passed the gate does not give up the credentials' submit
    (it waits only when the pilot's hourly FLICA budget is used up; CHANGELOG 1.7.5); optional, drop
    the second mqtt.publish to `flight_watcher_james/recall/set` from "Flight Watcher recall list in (Hark webhook)"
    (harmless: the Watcher forwards recall lists itself, F#75).

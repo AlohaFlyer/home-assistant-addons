@@ -135,7 +135,7 @@ def test_the_results_flags_show_on_a_phone_and_the_column_is_named(seeded):  # n
             .map((t) => [t.textContent, t.getBoundingClientRect().right <= w.right + 1]); }""")
         assert vis and all(v for _t, v in vis), vis
         assert pg.evaluate("() => { const w = C.shadowRoot.querySelector('.wrap'); return w.scrollWidth <= w.clientWidth + 1; }")
-        th = pg.evaluate("() => [...C.shadowRoot.querySelectorAll('thead th')].map((x) => x.textContent)")
+        th = pg.evaluate("() => [...C.shadowRoot.querySelectorAll('table.rt thead th')].map((x) => x.textContent)")
         assert th[-1] == "Flags"
         _shot(pg, "pilotdb_results_flags_390_light")
         q = pg.evaluate("() => { const q = C.shadowRoot.querySelector('input[type=search]'); const c = document.createElement('canvas').getContext('2d'); "

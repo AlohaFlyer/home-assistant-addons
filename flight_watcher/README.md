@@ -545,6 +545,17 @@ the rebuild loads no FLICA page (`inflt_skip`; "-" with the reason on hover); on
 by employee number; the pickers table counts it), all within the paced in-flight budget (`INFLT_PER_CHECK` lookups a
 check), read only.
 
+**Pilots on a pilot's portal** (1.7.9, the same card file with `FW_PORTAL` on, contract 1 revision 4): on the Pilot
+tab under the pilot card, only while Ryan shares his pilot database with that pilot. The pilot looked up (his brief,
+Call, Text and Mail for that one pilot, the notes field, the log), the pilots with shared notes (a filter, tap to
+open; no phones or emails), the notes field saved against the version read (a stale save shows both texts), Add and
+Take back in the log, and field edits. It reads the pilot's own sensor and file and sends `pilotdb/note` and
+`pilotdb/edit` to his own Watcher; the draft stays until the Watcher's answer is in. Ryan's own card has a Sharing
+section in browse mode: "Share with <pilot>" per portal pilot and "AI notes", both off until Ryan taps them.
+
+**Clock card** (1.7.9, F#92): the Re-arm confirm names the state and what Re-arm does there (stuck: a full check, no
+new login; stepped aside: a login when the step-aside ends; reconnecting: at the next login try; stopped: one login).
+
 **Pilots** (1.7.8, `flight-watcher-pilotdb-card.js`, the pilot database above; admin only): on the Settings tab above
 the tickets (`type: custom:flight-watcher-pilotdb-card`), a status line (counts, source dates, seniority.md and copy
 times), a search (name words, an employee number, `s812` for a Sen #, "quoted" text in the notes) with filter chips

@@ -27,6 +27,10 @@
 // Review r4: in the red state ("Stuck. Press Re-arm.") the Last, Next and interval labels are the primary text color
 // (the secondary one was 4.07:1 and 3.89:1 on the red tint with Home Assistant's own light theme), and Check now is the
 // primary text color in bold (Home Assistant's default blue #009ac7 was 3.26:1 on a white card).
+// 1.7.9 (F#92): the Re-arm confirm names the state the Watcher is in and what Re-arm does there, as the Watcher's own
+// rearm_answer does: stuck (idle or hunting with no check): a full check now, no new FLICA login; stepped aside for
+// the pilot's own FLICA login: a login when the step-aside ends, not before; reconnecting: a login at the next login
+// try; stopped: one FLICA login, with the stop's note. The button's tooltip says the same.
 const FW_PORTAL = false;
 const FC_HUNT = [5, 10, 15, 20, 30, 45, 60, 90];  // seconds (number.flight_watcher_hunt_check_every 5-90)
 const FC_NORM = [1, 2, 3, 5, 6, 10, 15, 20, 30, 45, 60, 90];  // minutes (number.flight_watcher_normal_check_every 1-90)
@@ -79,7 +83,7 @@ class FlightWatcherClockCard extends HTMLElement {
       $("chk").addEventListener("click", () => this._h.callService("button", "press", { entity_id: "button.flight_watcher_check_now" }));
       $("hunt").addEventListener("click", () => this._h.callService("switch", "toggle", { entity_id: "switch.flight_watcher_hunt_mode" }));
       $("pz").addEventListener("click", () => this._h.callService("switch", "toggle", { entity_id: "switch.flight_watcher_pause" }));
-      $("rearm").addEventListener("click", () => { if (confirm("Re-arm the Watcher? It logs into FLICA once.")) this._h.callService("button", "press", { entity_id: "button.flight_watcher_re_arm" }); });
+      $("rearm").addEventListener("click", () => { if (confirm(`${this._rearmSays || "Re-arm logs into FLICA once."}\n\nRe-arm the Watcher now?`)) this._h.callService("button", "press", { entity_id: "button.flight_watcher_re_arm" }); });
       $("hs").addEventListener("change", (e) => { const v = this._wish("number.flight_watcher_hunt_check_every", e.target.value); this._h.callService("number", "set_value", { entity_id: "number.flight_watcher_hunt_check_every", value: v }); });
       $("ns").addEventListener("change", (e) => { const v = this._wish("number.flight_watcher_normal_check_every", e.target.value); this._h.callService("number", "set_value", { entity_id: "number.flight_watcher_normal_check_every", value: v }); });
       this._tick = setInterval(() => this._render(), 1000);
@@ -204,6 +208,15 @@ class FlightWatcherClockCard extends HTMLElement {
     // 1.7.5 review ("Pause wins"): no Re-arm while Pause is on (the Watcher refuses it then), as Check now
     const needRearm = (["stopped_unexpected", "stopped_login_failed", "yielded", "backoff"].includes(st) || blind) && !paused;
     $("rearm").style.display = needRearm ? "" : "none";
+    // 1.7.9 (F#92): what the confirm and the tooltip say, by state
+    const mins = Math.round((age || 0) / 60);
+    const stopNote = String(note || st.replace(/_/g, " ")).replace(/\s+/g, " ").slice(0, 140).replace(/\.$/, "");
+    this._rearmSays = ["idle", "hunting"].includes(st) && blind ? `The Watcher is stuck: no check for ${mins >= 60 ? `${Math.floor(mins / 60)} h ${mins % 60} min` : `${mins} min`}. Re-arm starts a full check now, with no new FLICA login.`
+      : st === "yielded" ? "The Watcher stepped aside for your own FLICA login. Re-arm logs into FLICA once when the step-aside ends, not before."
+      : st === "backoff" ? "The Watcher is reconnecting to FLICA. Re-arm logs in at its next login try."
+      : st === "stopped_login_failed" ? `The Watcher is stopped: the FLICA login failed (${stopNote}). Re-arm logs into FLICA once with the saved login.`
+      : `The Watcher is stopped (${stopNote}). Re-arm logs into FLICA once and resumes.`;
+    if ($("rearm").title !== this._rearmSays) $("rearm").title = this._rearmSays;
     $("chk").style.display = ["idle", "hunting"].includes(st) && !paused ? "" : "none";
     // 1.7.1 (F#4): a command in flight (the portal's hass.fwPending) reads "Sending..." and takes no second tap
     for (const [bid, id] of [["chk", "button.flight_watcher_check_now"], ["hunt", "switch.flight_watcher_hunt_mode"],

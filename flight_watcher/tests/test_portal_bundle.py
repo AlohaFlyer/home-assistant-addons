@@ -145,6 +145,10 @@ def test_every_call_service_maps_to_the_manifest(pilot):
                     pubs = set(re.findall(r'_pub\("([a-z_/]+)"', text))
                     assert "tickets-card" in fn and pubs == {"ticket/new", "ticket/image", "ticket/act", "ticket/edit",
                                                              "ticket/delete"} and pubs <= subs, pubs
+                elif "`${FW_PDB_PREFIX}" in data:  # 1.7.9 (revision 4): the Pilots card's _pub(sub, obj)
+                    pubs = set(re.findall(r'_pub\("([a-z_/]+)"', text))
+                    assert "pilotdb-card" in fn and pubs == {"pilotdb/note", "pilotdb/edit"} and pubs <= subs, pubs
+                    assert 'FW_PDB_PREFIX = "%s"' % P in text
                 else:
                     pytest.fail(f"unmapped mqtt publish in {fn}: {data}")
                 continue

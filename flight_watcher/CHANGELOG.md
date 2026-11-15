@@ -2,13 +2,34 @@
 
 ## 1.7.9
 
-Sharing Ryan's pilot database with James (the pilot database spec's steps 2 to 4, with HOM 1.9.0): contract 1
-revision 4. Ryan's decisions (Nov 14, HST): phones and emails on James's portal for the pilot he looks up only; James
+Release order: HOM 1.9.0 first, then this add-on, each step with Ryan's own yes (see "After the update" at the end of
+this section). Two parts: Ryan's two in-flight follow-ups of Nov 15, and sharing Ryan's pilot database with James (the
+pilot database spec's steps 2 to 4, with HOM 1.9.0): contract 1 revision 4, with the swap idea alert (F#107) and the
+clock card's Re-arm confirm (F#92). Ryan's decisions (Nov 14, HST): phones and emails on James's portal for the pilot he looks up only; James
 browses the pilots with shared notes plus the pilots he looks up (the 1.6.2 anti-walk limits stay); James edits the
 notes field, adds to the log and edits every record field ("he can be trusted and edit all"), each with
 compare-and-set, every version kept and Ryan's restore; the AI note comes from HOM's consultant models, from
 anonymous statistics only. Nothing is shared until Ryan taps his Share switch himself. Synthetic data in every test;
 FLICA is read only and nothing here loads a FLICA page.
+
+### Ryan's two follow-ups (Nov 15; `store.py`, `inflt.py`, `captures.py`, the finds card)
+- **Both named pilots get an in-flight lookup when the open-seat picker is not known.** Before: a pickup the pot
+  showed no open seat for, naming two pilots ("FO Doe, Jane (10001); RO Roe, John (10002)"), had no picker, so 1.7.7
+  dropped its verdict (`inflt_skip`) and 1.7.8 re-checked nobody. Now each pilot it names is looked up for himself
+  (`store.named_of`), his own verdict kept by employee number (`inflt_named`, the shape of `inflt_no`). They are queued
+  once (`inflt_named_v`, `queue_inflt_named`), the oldest too, listed first like the 1.7.8 re-check, within
+  `INFLT_PER_CHECK` and the existing pacing. FLICA read only (GET only). Nobody is made the picker: the pickup's own
+  verdict, its pickers and the pickers' in-flight counts do not change.
+- The finds export carries each named pilot's verdict (`inflt_named`, only while the picker is not known) and the finds
+  card shows one line a pilot by his seat ("FO no", "RO" with the airplane and the flight), marked "picker not known",
+  his name on hover. No blue link changes: only a known picker is a link. The Key says so.
+- **No in-flight log line carries an employee number.** Before: the verdict line named the pilot by seat order (1.7.8),
+  but the schedule lookup line quoted FLICA's page text, which prints the number ("... november (emp# n) schedule
+  last updated ..."). Now `captures.mask_emp` masks every labeled number ("emp# n", "Emp#n", "EmployeeID=n",
+  "employee id: n": the label stays, the digits become #) in the shared helper that quotes FLICA page text
+  (`watcher.page_log`) and in the in-flight lines, the admin's log included. The verdict line names "picker 2" as
+  1.7.8 does, or "named pilot 2 (picker not known)".
+- Everything else is as 1.7.8 decided.
 
 ### Sharing the pilot database (the backend; `pdbshare.py`, `pilotdb.py`, `watcher.py`)
 - **Off by default.** One Share switch per portal pilot on Ryan's own card (`POST api/pilotdb` op `share` `{pilot, on}`,
@@ -52,6 +73,42 @@ FLICA is read only and nothing here loads a FLICA page.
 - Ryan's status view (`GET api/pilotdb?view=status`) lists each portal pilot with his switch, how many of his commands
   wait and whether his file is full; `sensor.flight_watcher_pilotdb` adds `pending` (per pilot, counts) and `ai`.
 
+### The Pilots card on James's portal (`www/flight-watcher-pilotdb-card.js`, portal mode)
+- The same card file, with `FW_PORTAL` on only in the portal's copy (`portal.portal_card`). It sits on the Pilot tab
+  right under the pilot card (`portal_layout.json`). It reads James's own synthesized sensor and his own file (fetched
+  from his folder under `/local/`, which the portal serves as its `pilotdb` file, again whenever the sensor names a new
+  rev). It never calls the ingress API and never opens the database.
+- Not shared: one line ("Not shared: ..."), no request, nothing sent.
+- **The pilot he looked up**: the brief (Sen #, employee #, DOH, status, retirement, seat, equipment), Call, Text and
+  Mail links for that one pilot only (B23; `tel:`, `sms:` and `mailto:` set through the href property after the number
+  and address checks), the notes field and the log. A pilot who is not in the database: "Not in Ryan's pilot
+  database". Nobody looked up: "Look a pilot up above to see his record and notes".
+- **Pilots with shared notes**: the records of his file by Sen #, a filter by name or Sen #, tap one to open it. No
+  phone, email or employee number there, and none on a record opened from the list.
+- **The notes field**: Save sends `pilotdb/note` op `field` with the version it was read at. A stale save changes
+  nothing: the Watcher's answer ("Not saved: changed by ryan at 10:00 HST; your text is still in the box") shows with
+  both texts side by side, "Take theirs" and "Save mine over theirs".
+- **The log**: Add (a 2000 counter) and Take back on his own entries only.
+- **Field edits** (the fold "Edit a field"): name, Sen #, DOH, status, retirement, seat, equipment and the union id
+  (never shown), and phones and emails for the pilot looked up; a reason line; "Use upload value" on an edited field.
+  Each sends `pilotdb/edit` with the record's revision as read.
+- Every request has its own id; the draft stays in the box until the Watcher's answer for that id is in ("Sending...",
+  "Sent. Waiting for the Watcher...", then the fixed phrase). A command the portal does not send ("Not sent: ...") or
+  one with no answer keeps the draft. No author, name or employee number is ever sent.
+- Every value is drawn as text (text nodes), no markup is parsed from a string, text is never turned into a link.
+  Fields are 16 px and every control at least 44 px tall at every width. Not on the portal: the history, pickups, the
+  AI note, only-me and hidden entries, the notes versions, hide, purge, merge, renumber and delete.
+- The card's one `mqtt.publish` call (`_pub`) refuses on Home Assistant (`FW_PORTAL` off), so Ryan's notes still never
+  reach Home Assistant's recorder.
+
+### Ryan's card: the two switches and the AI note
+- Browse mode has a **Sharing** section: one "Share with <pilot>" switch per pilot with a portal (off; a confirm says
+  what he will see and edit; while on it says how many of his changes wait and whether his file is full; off deletes
+  his file at once) and the **AI notes** switch (off; a confirm; "Remove the AI notes" once it is off). Both post to
+  the ingress API as before; only Ryan's taps send them.
+- A record's AI note shows read only, labeled AI, with its model and time ("Read only; not a human note").
+- The "Only me" hint says what it does now: it keeps an entry off a shared pilot's portal.
+
 ### The looked-up pilot's phones and emails (B23)
 - Ryan's answer to Q1 reverses FW-0066 plan Q6 for one case: the synthesized `sensor.<prefix>_pilotdb` carries
   `shown.contact` (phones and emails) for the one pilot James's pilot card shows, from Ryan's database, only while Ryan
@@ -67,6 +124,15 @@ FLICA is read only and nothing here loads a FLICA page.
 - Its data holds the pickup (pairing, dates, days, layover, credit), the trip he would give up (`for_trip`,
   `for_date`), `soft_gain`, `credit_gain` and `src`; never the idea's reason text, a URL or the draft of a request.
   "Swap idea: H9002 20NOV-22NOV for your H9001". Nothing is ever submitted: FLICA stays read only.
+
+### The clock card's Re-arm confirm (F#92)
+- Before: "Re-arm the Watcher? It logs into FLICA once." in every state, also where Re-arm does something else.
+- Now the confirm, and the button's tooltip, name the state and what Re-arm does there, as the Watcher's own
+  `rearm_answer` does. Stuck: "The Watcher is stuck: no check for 1 h 30 min. Re-arm starts a full check now, with no
+  new FLICA login." Stepped aside: a login when the step-aside ends, not before. Reconnecting: a login at the next
+  login try. Stopped: one FLICA login, with the stop's note. The same on the portal's copy.
+- The Re-arm tile on the portal's Settings tab is HOM's own control (`fwportal/static/ha.js`), with its own confirm:
+  that half of F#92 is HOM 1.9.0's, not this add-on's.
 
 ### The AI note (the Flight Watcher side)
 - Ryan's own switch on his card (`POST api/pilotdb` op `ai` `{on, clear?}`), off by default; Claude never sends it.
@@ -102,6 +168,23 @@ Boundary changes, each approved by Ryan on Nov 14 (the spec's B7 to B17, changed
 - The fixture `tests/fixtures/portal_contract_v1.json` is regenerated as revision 4 (new samples numbered from 700:
   11 accepted and 38 refused pilotdb commands, 4 refused `pilotdb/` subs, the file URL forms, the manifest, the state,
   the file and the swap event). HOM 1.9.0 pins the same bytes.
+
+### Tests
+- New: `test_fw179_inflt_named.py` (follow-ups), `test_pilotdb_export.py`, `test_pilotdb_portal.py`,
+  `test_pilotdb_share_admin.py` (the backend, end to end), `test_fw179_pilotdb_portal_card.py` (the portal's copy of
+  the card in Chromium at 390, 820 and 1280 px, light and dark, on the real database, files, checks and drain: what
+  he sees, every command's keys against the contract's shape, the stale notes view, sizes, contrast; Ryan's two
+  switches) and `test_fw179_clock_rearm.py` (F#92). Synthetic pilots only ("Doe, Jane", 10001).
+
+### After the update: what Ryan does
+Each step is [DESTRUCTIVE] and needs its own yes; an earlier yes never covers a later one.
+1. HOM 1.9.0 first: merge its PR, then Hark's deploy on the Pako NUC. James's portal keeps working on 1.7.8.
+2. Flight Watcher 1.7.9: merge, store reload, update. Nothing is shared yet: both switches are off.
+3. Open the Pilots card on the Settings tab, section Sharing, and tap **Share with james**. Only Ryan taps it.
+4. Optional: tap **AI notes** to let HOM's consultant models write a note per pilot with 3 or more pickups.
+5. Tell James when ready (his first note needs his passkey). Claude never contacts James.
+6. No dashboard edit is needed on Pako: the Pilots card is already on Ryan's dashboard, and James's portal takes its
+   layout from the add-on.
 
 ## 1.7.8
 
