@@ -1,42 +1,35 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-15, release 1.7.8 live; 1.7.9 built, HOM 1.9.0 goes first)
+# HANDOFF: Flight Watcher (refreshed 2026-11-15, release 1.7.9 live with HOM 1.9.0)
 
-State (Nov 15): app **1.7.8** live on Pako HI since 2026-11-15 03:07 UTC (PR #118, squash bbf269a; app backup
-`83daa6bb` "Flight Watcher 1.7.7 before 1.7.8"). Ryan's pilot database, the pilot database spec's step 1 (CHANGELOG
-1.7.8): `pilotdb.py` on Ryan's instance only (`/data/pilotdb.sqlite`, 0600), seeded on its first start from the kept
-contact CSV on the share (`seniority.json` is merged when Ryan uploads the union list), each picker's pickup history,
-`seniority.md` written from it, nightly copies, the ingress API `api/pilotdb`, `sensor.flight_watcher_pilotdb`
-(counts only) and the Pilots card (`flight-watcher-pilotdb-card.js`, admin only, kept off every portal); the pilot
-card's `_esc` escapes `'`; the in-flight re-check; the reviewers' fixes (CHANGELOG 1.7.8 "Review fixes"); the pickers
-table fits Mac and iPad cards and the admin's lookup hint is short. Contract unchanged at revision 3, HOM untouched,
-nothing shared with James (that is 1.7.9 with HOM 1.9.0, its own yes). Open for Ryan's yes, not built: refusing the
-contacts and seniority upload kinds on a pilot's instance (a boundary change).
+State (Nov 15, later): app **1.7.9** live on Pako HI since 2026-11-15 18:56 UTC (08:56 HST), both instances (PR #120,
+squash 855cd29), on **HOM 1.9.0** (AlohaFlyer/home-office-manager PR #60, squash 7bf6d25, deployed by Hark about
+18:49 UTC). Backup before both: `2b3baadd` (HA config, HOM 1.8.3, Flight Watcher 1.7.8, share). Rollback: HOM 1.8.3
+and Flight Watcher 1.7.8 from that backup; HOM 1.9.0 still serves revision 3 exports, so Flight Watcher alone can go
+back to 1.7.8. CHANGELOG 1.7.9: Ryan's two in-flight follow-ups of Nov 15 (each pilot named on a pickup whose picker
+is not known gets his own in-flight lookup, once, marked "picker not known"; no in-flight log line carries an employee
+number, the page text it quotes included), sharing the pilot database with James (contract 1 revision 4, off until
+Ryan's tap), the Pilots card's portal mode and Ryan's Sharing section, the swap idea alert (F#107), the clock card's
+state-worded Re-arm confirm (F#92) and the review fixes (CHANGELOG 1.7.9 "Review fixes").
 
-Verified on Pako after the update: both instances report 1.7.8; the log has "pilot db: contacts 2026-11-14 merged:
-1228 added" and "pilot db: seeded: 1228 pilots (0 gone), 0 with hand edits, 0 conflicts, 112 pickups of 74 pickers"
-and no traceback; `sensor.flight_watcher_pilotdb` is 1228 with `db: ok`, `contacts: reparsed`; `seniority.md` and the
-first copy (`/share/flight_watcher/pilotdb/backup/pilotdb-2026-11-14.sqlite`) are 0600 and the folders 0700. The API
-answers only Home Assistant's ingress proxy (172.30.32.2): the HA connector's app proxy, which comes from its own
-container, gets 403 by design, so the live card's first API call is Ryan's own browser through ingress. The dashboard
-has the Pilots card (Settings above Tickets; follow mode under the pilot card on Watcher), applied through the HA
-connector on Ryan's yes; `ha/` matches Pako by sha256 (`ha/README.md`).
+Verified on Pako after the update and over a 30 min watch of both: both instances report 1.7.9, no traceback;
+`sensor.flight_watcher_pilotdb` is 1228 with `db: ok`, `shared_with: []`, AI notes off; the log queued 10 pickups
+whose picker is not known on Ryan's instance (the 8 of Nov 15 and 2 newer ones: the rule is a standing one) and 2 on
+James's, and about 20 verdicts came in as "named pilot N (picker not known)" within the paced budget; every page an
+in-flight line quotes shows `emp# #####`. James's `out/manifest.json` has contract 1 revision 4 and `mqtt_subs` with
+`pilotdb/note` and `pilotdb/edit`; his synthesized pilotdb sensor is `off`; `out/files/pilotdb.json` is absent,
+`/share/flight_watcher/pilotdb/portal/` and `inbox/` are empty and no `roster.json` is under `/share`. HOM:
+`[fwportal] 1.9.0 listening ... self-check passed (16 paths refused)`, /fw/ 200 (x-fw-portal 1 and its CSP), /FW 308,
+state without a session 401, bus health 200, MCP without a token 401, no errors in the add-on log. Not changed by
+1.7.9: Ryan's own log still quotes crew names and numbers in the pairing detail lines and in his own Schedule Lookup
+lines (they are not in-flight lines).
 
-**Built, not released: 1.7.9 with HOM 1.9.0** (branch `fw-1.7.9`, version 1.7.9 in `config.yaml` and `watcher.py`, not
-pushed; CHANGELOG 1.7.9). Also in it: Ryan's two in-flight follow-ups of Nov 15 (each pilot named on a pickup whose
-picker is not known gets his own in-flight lookup, once; no in-flight log line carries an employee number), the swap
-idea alert (F#107) and the clock card's state-worded Re-arm confirm (F#92). The Pilots card has its portal mode
-(`FW_PORTAL`, James's Pilot tab under the pilot card: the pilot looked up with call, text and mail links, the pilots
-with shared notes, notes with compare-and-set, the log, field edits) and Ryan's card has the Sharing section (the
-"Share with james" and "AI notes" switches). Review fixes are in (CHANGELOG 1.7.9 "Review fixes": no brief or
-contact before a lookup ran and at most 20 pilots an hour, a restore turns both switches off, the roster under
-`/data/pilotdb_roster`, the drain in one transaction). Open for Ryan (one question): the standing rule looks up every
-numbered name of a pickup with no known picker, also a lone name that is no candidate for the open seat; say if it
-should be only FO and RO names of a pickup with no open seat on file. Sharing the pilot database with
-James, contract 1 revision 4 (`flight_watcher/PORTAL_CONTRACT.md` sections 4.3, 5.7 and 5.8; the fixture
-`flight_watcher/tests/fixtures/portal_contract_v1.json` is frozen once committed and HOM 1.9.0 pins the same bytes).
-Order (each step Ryan's own yes, [DESTRUCTIVE]): HOM 1.9.0 first (merge, then Hark's deploy), then Flight Watcher 1.7.9
-(merge, store reload, update). After the update, with counts and keys only: James's `out/manifest.json` has revision 4
-and `mqtt_subs` with `pilotdb/note` and `pilotdb/edit`; `out/files/pilotdb.json` is absent and
-`/share/flight_watcher/pilotdb/portal/` is empty while the share is off; the admin's subscription list is unchanged.
+Next for Ryan: the "Share with james" tap on his Pilots card (Settings view); then Claude checks James's file (signed,
+whitelisted keys only, his sensor `on`). Open for Ryan (one question each): the standing rule also looks up a lone
+name that is no candidate for the open seat (say if it should be only FO and RO names of a pickup with no open seat
+on file); refusing the contacts and seniority upload kinds on a pilot's instance (a boundary change, not built).
+Contract 1 revision 4: `flight_watcher/PORTAL_CONTRACT.md` sections 4.3, 5.7 and 5.8; the fixture
+`flight_watcher/tests/fixtures/portal_contract_v1.json` (sha256 `9b882fb6dd00a932e196359edc364ee8ecbe78da7077f5f29a7fdc06301a6176`)
+is frozen and HOM 1.9.0 pins the same bytes.
+
 - **Ryan's two switches, his taps only** (Claude never sends either op): "Share with james" (`api/pilotdb` op `share`)
   and "AI notes" (op `ai`), both off by default. Nothing leaves Ryan's Watcher while Share is off; no statistics go to
   HOM's models while AI notes is off.
@@ -62,6 +55,26 @@ them). By hand, only with the app stopped and Ryan's yes
 restored) loses the notes made since that backup unless the newer /share copy is put back after it: the card then
 offers it ("a newer copy is on the share", `db: restore_offered`), and nothing is written over until Ryan says so.
 Taken-back or purged text stays up to 7 days in the daily copies (a purge replaces them at once) and in HA backups.
+
+Earlier (Nov 15): app **1.7.8** live on Pako HI since 2026-11-15 03:07 UTC (PR #118, squash bbf269a; app backup
+`83daa6bb` "Flight Watcher 1.7.7 before 1.7.8"). Ryan's pilot database, the pilot database spec's step 1 (CHANGELOG
+1.7.8): `pilotdb.py` on Ryan's instance only (`/data/pilotdb.sqlite`, 0600), seeded on its first start from the kept
+contact CSV on the share (`seniority.json` is merged when Ryan uploads the union list), each picker's pickup history,
+`seniority.md` written from it, nightly copies, the ingress API `api/pilotdb`, `sensor.flight_watcher_pilotdb`
+(counts only) and the Pilots card (`flight-watcher-pilotdb-card.js`, admin only, kept off every portal); the pilot
+card's `_esc` escapes `'`; the in-flight re-check; the reviewers' fixes (CHANGELOG 1.7.8 "Review fixes"); the pickers
+table fits Mac and iPad cards and the admin's lookup hint is short. Contract unchanged at revision 3, HOM untouched,
+nothing shared with James (that is 1.7.9 with HOM 1.9.0, its own yes). Open for Ryan's yes, not built: refusing the
+contacts and seniority upload kinds on a pilot's instance (a boundary change).
+
+Verified on Pako after the update: both instances report 1.7.8; the log has "pilot db: contacts 2026-11-14 merged:
+1228 added" and "pilot db: seeded: 1228 pilots (0 gone), 0 with hand edits, 0 conflicts, 112 pickups of 74 pickers"
+and no traceback; `sensor.flight_watcher_pilotdb` is 1228 with `db: ok`, `contacts: reparsed`; `seniority.md` and the
+first copy (`/share/flight_watcher/pilotdb/backup/pilotdb-2026-11-14.sqlite`) are 0600 and the folders 0700. The API
+answers only Home Assistant's ingress proxy (172.30.32.2): the HA connector's app proxy, which comes from its own
+container, gets 403 by design, so the live card's first API call is Ryan's own browser through ingress. The dashboard
+has the Pilots card (Settings above Tickets; follow mode under the pilot card on Watcher), applied through the HA
+connector on Ryan's yes; `ha/` matches Pako by sha256 (`ha/README.md`).
 
 State (Nov 14, later): app **1.7.5** on Pako HI since 2026-11-14 15:44 UTC (05:44 HST), both instances (backup before it:
 `8586edb5`, Flight Watcher 1.7.4 data). **1.7.4** (live 10:29 UTC, backup before it `4c5405aa`): a pilot's FLICA refusal
