@@ -14,16 +14,22 @@ Readers, all made for lists laid out one pilot per row:
 Only entries with a phone or an email are kept. A "City, ST 12345" address line is not a pilot (its ZIP is not an
 employee number). The XLSX reader is the standard library's (zipfile and ElementTree, streamed): a workbook that
 unpacks past XLSX_MAX, a sheet or string table past XLSX_PART_MAX, or a part that declares a DTD is refused, and only
-the first MAX_COLS columns are read (a cell reference far to the right cannot make a row huge)."""
+the first MAX_COLS columns are read (a cell reference far to the right cannot make a row huge).
+
+1.7.8 (pilot database, spec 8.4; Ryan, Nov 14): a sheet's Notes column ("HAL Emp# n | Sen# n (Mon YYYY) | DOH D-Mon-YY |
+Status X | Age-65 retirement Mon YYYY") is read by hal_notes into the entry's `hal` object (parsed values only: the
+raw Notes text is never kept), and the Middle Name and Suffix columns give `name_full` ("Last, First M Suffix"). A row
+with HAL Notes but no phone or email is kept apart in `hal_only` (never a contact the pilot card shows). PARSER 2."""
 import csv
 import io
 import json
 import os
 import re
 import zipfile
+from datetime import date, datetime, timedelta, timezone
 from xml.etree import ElementTree as ET
 
-PARSER = 1  # bump when a parse rule changes
+PARSER = 2  # bump when a parse rule changes (2, 1.7.8: the Notes column's HAL data, Middle Name and Suffix)
 XLSX_MAX = 60_000_000  # unpacked bytes an XLSX may hold
 XLSX_PART_MAX = 10_000_000  # unpacked bytes of the one worksheet or the shared strings read (each)
 MAX_ROWS = 20_000
@@ -134,7 +140,8 @@ def parse_text(text):
 
 
 def _role(h):
-    """A header cell -> (role, label): emp, name, last, first, phone (label), email; ('', '') for anything else."""
+    """A header cell -> (role, label): emp, name, last, first, phone (label), email, and (1.7.8) notes, middle,
+    suffix; ('', '') for anything else."""
     h = re.sub(r"\s+", " ", str(h or "").strip().lower())
     if not h:
         return "", ""
@@ -142,6 +149,12 @@ def _role(h):
         return "email", ""
     if "fax" in h:
         return "", ""
+    if re.fullmatch(r"notes?|remarks?|comments?", h):  # 1.7.8: the HAL data (hal_notes)
+        return "notes", ""
+    if re.fullmatch(r"middle(?: name| initial)?|m\.?i\.?", h):  # 1.7.8: was the name role (a second name column)
+        return "middle", ""
+    if re.fullmatch(r"suffix|name suffix", h):
+        return "suffix", ""
     if re.search(r"\bname\b", h) and not re.search(r"\b(last|first|sur|given)\b", h):
         return "name", ""  # 'Employee Name', 'Crew Name', 'Pilot Name' (not 'Employee #' or 'Employee ID')
     if re.search(r"\bemp\b|emp\s*(#|no|num|id)|employee|badge|file\s*(#|no|num)|^emp", h):
@@ -181,13 +194,105 @@ def _name_cell(v):
     return ""
 
 
-def parse_rows(rows):
-    """Contacts from a sheet (a list of rows, each a list of cell strings): {entries, rejects, lines}."""
+# ---------------------------------------------------------------- 1.7.8: the Notes column's HAL data (spec 8.4)
+HAL_STATUS = {"A", "ALPA", "EXEC", "FUR", "LOA", "MLOA", "MRET", "PESL", "SLOA"}  # seniority.HAL_STATUS (the legend)
+MON3 = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+_MON = r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?"
+NOTES_MAX = 2000  # characters of a Notes cell read; a segment longer than SEG_MAX is no segment this reads
+SEG_MAX = 120
+# each a whole segment ("HAL Emp# 10001", "Sen# 812 (Jul 2026)", "DOH 1-May-01", "Status SLOA",
+# "Age-65 retirement Mar 2041"; the real list prints "Age-65", the spec "Age 65": both read)
+HAL_SEGS = (("emp", re.compile(r"HAL\s*Emp\s*#\s*(\d{1,7})", re.I)),
+            ("sen", re.compile(r"Sen\s*#\s*(\d{1,5})\s*\(\s*" + _MON + r"\s+(\d{4})\s*\)", re.I)),
+            ("doh", re.compile(r"DOH\s+(\d{1,2})-" + _MON + r"-(\d{2})", re.I)),
+            ("status", re.compile(r"Status\s+([A-Za-z]{1,6})", re.I)),
+            ("retire", re.compile(r"Age[\s-]?65\s+retirement\s+" + _MON + r"\s+(\d{4})", re.I)))
+HST = timezone(timedelta(hours=-10))
+
+
+def _hst_today():
+    return datetime.now(HST).date()
+
+
+def hal_notes(text, today=None):
+    """({emp, sen, sen_month, doh, status, retire} as found, {reject reason: n}) from a Notes cell: split on '|',
+    each segment read whole. emp without leading zeros; sen_month YYYY-MM (the month the Sen# stands at); doh ISO, a
+    two-digit year is 20yy when it is at most this year's yy, else 19yy, and a DOH after today (HST) is refused
+    ('notes-doh-future'); status only a code the STATUS LEGEND has ('notes-status-unknown' otherwise); retire YYYY-MM
+    (age 65, 14 CFR 121.383(d)). A segment of no known shape is counted ('notes-unknown'), a second one of a kind too
+    ('notes-dup'); nothing of it is kept. Pure; never logs."""
+    today = today or _hst_today()
+    hal, rej = {}, {}
+
+    def bad(r):
+        rej[r] = rej.get(r, 0) + 1
+    for seg in str(text or "")[:NOTES_MAX].split("|"):
+        seg = re.sub(r"\s+", " ", seg).strip()
+        if not seg:
+            continue
+        hit = None if len(seg) > SEG_MAX else next(((k, m) for k, rx in HAL_SEGS for m in [rx.fullmatch(seg)] if m), None)
+        if not hit:
+            bad("notes-unknown")
+            continue
+        k, m = hit
+        if k in hal or (k == "sen" and "sen" in hal):
+            bad("notes-dup")
+            continue
+        try:
+            if k == "emp":
+                v = m.group(1).lstrip("0")
+                if not v:
+                    raise ValueError
+                hal["emp"] = v
+            elif k == "sen":
+                if int(m.group(1)) < 1:
+                    raise ValueError
+                hal["sen"] = str(int(m.group(1)))
+                hal["sen_month"] = f"{int(m.group(3)):04d}-{MON3.index(m.group(2)[:3].upper()) + 1:02d}"
+            elif k == "doh":
+                yy = int(m.group(3))
+                y = 2000 + yy if yy <= today.year % 100 else 1900 + yy
+                d = date(y, MON3.index(m.group(2)[:3].upper()) + 1, int(m.group(1)))
+                if d > today:
+                    bad("notes-doh-future")
+                    continue
+                hal["doh"] = d.isoformat()
+            elif k == "status":
+                code = m.group(1).upper()
+                if code not in HAL_STATUS:
+                    bad("notes-status-unknown")
+                    continue
+                hal["status"] = code
+            else:
+                y = int(m.group(2))
+                if not 1950 <= y <= 2100:
+                    raise ValueError
+                hal["retire"] = f"{y:04d}-{MON3.index(m.group(1)[:3].upper()) + 1:02d}"
+        except ValueError:
+            bad("notes-bad-date" if k in ("doh", "sen", "retire") else "notes-unknown")
+    return hal, rej
+
+
+def _full_name(last, first, middle, suffix):
+    """'Doe, Jane A Jr' (spec 6: "Last, First M Suffix") from a sheet's name columns, '' when there is no last name."""
+    clean = [re.sub(r"[^A-Za-z' .\-]", "", str(x or "")).strip() for x in (last, first, middle, suffix)]
+    last, first, middle, suffix = (re.sub(r"\s+", " ", x) for x in clean)
+    if not last:
+        return ""
+    mi = middle[:1].upper() if middle else ""
+    rest = " ".join(x for x in (_title(first) if first else "", mi, suffix.rstrip(".").title() if suffix else "") if x)
+    return f"{_title(last)}, {rest}".strip(" ,")
+
+
+def parse_rows(rows, today=None):
+    """Contacts from a sheet (a list of rows, each a list of cell strings): {entries, rejects, lines, hal_rejects}.
+    1.7.8: a Notes column's HAL data goes into each entry's `hal` (hal_notes), the Middle Name and Suffix columns into
+    `name_full`."""
     rows = [[str(c if c is not None else "").strip() for c in r] for r in rows[:MAX_ROWS]]
     hi, roles = _header(rows)
     if hi is None:  # no header: each row is read as a line ("Doe" and "Jane" in two cells read as "Doe, Jane")
         return parse_text("\n".join(", ".join(c for c in r if c) for r in rows))
-    entries, rejects = [], 0
+    entries, rejects, hal_rej = [], 0, {}
     has_phone_col = any(r == "phone" for r, _ in roles.values())
     has_email_col = any(r == "email" for r, _ in roles.values())
     for row in rows[hi + 1:]:
@@ -222,8 +327,20 @@ def parse_rows(rows):
             if phones or emails:
                 rejects += 1
             continue
-        entries.append({"emp": emp, "name": name, "phones": phones, "emails": emails})
-    return {"entries": entries, "rejects": rejects, "lines": len(rows)}
+        e = {"emp": emp, "name": name, "phones": phones, "emails": emails}
+        if cell.get("last") and (cell.get("middle") or cell.get("suffix")):
+            full = _full_name(cell["last"][0][0], (cell.get("first") or [("", "")])[0][0],
+                              (cell.get("middle") or [("", "")])[0][0], (cell.get("suffix") or [("", "")])[0][0])
+            if full and full != name:
+                e["name_full"] = full
+        if cell.get("notes"):
+            hal, rj = hal_notes(" | ".join(v for v, _ in cell["notes"] if v), today)
+            for k, n in rj.items():
+                hal_rej[k] = hal_rej.get(k, 0) + n
+            if hal:
+                e["hal"] = hal
+        entries.append(e)
+    return {"entries": entries, "rejects": rejects, "lines": len(rows), "hal_rejects": hal_rej}
 
 
 def csv_rows(data):
@@ -391,32 +508,44 @@ def _dedupe(e):
         if m.lower() not in seen:
             seen.add(m.lower())
             emails.append(m)
-    return {"emp": e["emp"], "name": e["name"], "phones": phones[:4], "emails": emails[:3]}
+    out = {"emp": e["emp"], "name": e["name"], "phones": phones[:4], "emails": emails[:3]}
+    for k in ("name_full", "hal"):  # 1.7.8
+        if e.get(k):
+            out[k] = e[k]
+    return out
 
 
-def parse(data, kind, text=None):
-    """{entries (with a phone or an email), rejects, lines, skipped (entries with neither)} from an upload's bytes;
-    kind is sniff()'s answer; a PDF is read from its text copy (text)."""
+def parse(data, kind, text=None, today=None):
+    """{entries (with a phone or an email), rejects, lines, skipped (entries with neither), hal_only, hal_rejects}
+    from an upload's bytes; kind is sniff()'s answer; a PDF is read from its text copy (text). 1.7.8: hal_only holds
+    the entries with neither a phone nor an email whose Notes carry HAL data ({emp, name, name_full?, hal}): the
+    pilot database reads them, the pilot card never (find reads entries only)."""
     if kind == "pdf":
         r = parse_text(text or "")
     elif kind == "xlsx":
-        r = parse_rows(xlsx_rows(data))
+        r = parse_rows(xlsx_rows(data), today)
     elif kind == "csv":
-        r = parse_rows(csv_rows(data))
+        r = parse_rows(csv_rows(data), today)
     else:
         raise ValueError("not a PDF, CSV or XLSX file")
     keep = [_dedupe(e) for e in r["entries"]]
     kept = [e for e in keep if e["phones"] or e["emails"]]
-    return {"entries": kept, "rejects": r["rejects"], "lines": r["lines"], "skipped": len(keep) - len(kept)}
+    hal_only = [{k: e[k] for k in ("emp", "name", "name_full", "hal") if k in e}
+                for e in keep if not (e["phones"] or e["emails"]) and e.get("hal")]
+    return {"entries": kept, "rejects": r["rejects"], "lines": r["lines"], "skipped": len(keep) - len(kept),
+            "hal_only": hal_only, "hal_rejects": dict(sorted((r.get("hal_rejects") or {}).items()))}
 
 
 def build(parsed, file, uploaded_at):
-    """contacts.json's content (personal data: mode 600, never logged, never in a sensor but for one pilot)."""
+    """contacts.json's content (personal data: mode 600, never logged, never in a sensor but for one pilot). 1.7.8:
+    with_hal counts the entries (and hal_only) carrying HAL Notes data, hal_rejects the Notes segments not read."""
     es = parsed["entries"]
+    ho = list(parsed.get("hal_only") or [])
     return {"v": 1, "parser": PARSER, "file": file, "uploaded_at": uploaded_at, "count": len(es),
             "with_phone": sum(1 for e in es if e["phones"]), "with_email": sum(1 for e in es if e["emails"]),
             "with_emp": sum(1 for e in es if e["emp"]), "rejects": parsed["rejects"], "skipped": parsed["skipped"],
-            "pilots": es}
+            "with_hal": sum(1 for e in es if e.get("hal")) + len(ho), "hal_rejects": dict(parsed.get("hal_rejects") or {}),
+            "pilots": es, "hal_only": ho}
 
 
 def store(path, d):

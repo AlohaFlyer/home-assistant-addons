@@ -63,9 +63,12 @@ def _data(W, tmp_path):  # noqa: F811
     for k in ("H9301|19Nov", "H9302|20Nov", "H9305|23Nov", "H9306|24Nov", "H9307|25Nov"):
         db.score_pickup(k)
     db.set_inflt("H9301|19Nov", False, "", tries=1, emp="10001")
-    db.set_inflt("H9302|20Nov", False, "", tries=1, emp="10003")  # both seats: one lookup, the first picker (Pat)
-    queued = {k for k, *_ in db.pickups_without_inflt()}
-    assert not {"H9302|20Nov", "H9308|26Nov"} & queued  # Max (the other picker) and Lou are not looked up: no FLICA load
+    db.set_inflt("H9302|20Nov", False, "", tries=1, emp="10003")  # both seats: the first picker (Pat)
+    queued = {(k, e) for k, e, *_ in db.pickups_without_inflt()}
+    # 1.7.8 (Ryan, Nov 15: "Re-check them"): Max, the other picker, gets his own lookup; Lou's dropped verdict is
+    # looked up again by the in-flight check's one-shot, not queued by the rebuild
+    assert ("H9302|20Nov", "10004") in queued and not any(k == "H9308|26Nov" for k, _e in queued)
+    db.set_inflt("H9302|20Nov", False, "", tries=1, emp="10004")
     db.set_inflt("H9305|23Nov", True, "H3648 2026-11-03", tries=1, emp="10001",
                  leg={"flt": "808", "frm": "HNL", "to": "LAS", "dep_l": "23:00", "date": "2026-11-06", "dh": False, "src": "page"})
     db.set_inflt("H9306|24Nov", True, "H9101 2026-11-05", tries=1)  # on the DH LAX-SFO, Fri Nov 6 20:00 HST

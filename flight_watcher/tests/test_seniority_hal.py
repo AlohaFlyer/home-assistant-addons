@@ -142,8 +142,9 @@ def test_the_typed_list_date_wins_and_the_printed_one_is_used_otherwise():
 def test_json_and_find():
     d = SEN.to_json(SEN.parse(hal_text()), "seniority_2026-11-14.pdf", "2026-11-14T09:00:00-10:00")
     assert (d["count"], d["newest_doh"], d["rejects"], d["notes"], d["parser"]) == (12, "2026-06-01", 0, {}, SEN.PARSER)
+    st5 = SEN.parse(hal_text())["rows"][4]["status"]
     assert d["pilots"]["10005"] == {"sen": 5, "name": "Doe Jr., Robert K.", "last": "Doe Jr.", "doh": "1988-06-02",
-                                    "seat": "", "equip": ""}  # review fix: no Remarks code per pilot
+                                    "seat": "", "equip": "", "status": st5}  # 1.7.8: the Remarks code, for the pilot database
     assert d["pilots"]["9011"]["sen"] == 11
     assert SEN.find(d, "010005")["sen"] == 5
     assert SEN.find(d, "", "DOE JR, ROBERT")["sen"] == 5 and SEN.find(d, "", "Doe, Robert")["sen"] == 5  # Jr. or not
@@ -189,7 +190,8 @@ def test_the_settings_page_takes_the_union_list(tmp_path, monkeypatch, caplog):
     assert "12 pilots read, list date 2026-07-01, newest date of hire on it 2026-06-01 (0 lines not read)" in r["message"]
     d = json.loads((tmp_path / "seniority.json").read_text())
     assert (d["source"], d["count"], d["list_date"], d["file"]) == ("list", 12, "2026-07-01", "seniority_2026-11-14.pdf")
-    assert "status" not in d["pilots"]["10002"] and d["pilots"]["10002"]["seat"] == "" and d["statuses"]["SLOA"] == 1
+    # 1.7.8 (pilot database; Ryan, Nov 14: "the seniority PDF wins on Sen#, DOH, status"): the code is kept per pilot
+    assert d["pilots"]["10002"]["status"] in SEN.HAL_STATUS and d["pilots"]["10002"]["seat"] == "" and d["statuses"]["SLOA"] == 1
     assert "Doe" not in caplog.text and "1986" not in caplog.text and "10001" not in caplog.text
     r = _up(tmp_path, monkeypatch, hal_text(), list_date="2026-07-15")  # a typed date wins over the printed one
     assert r["ok"] and json.loads((tmp_path / "seniority.json").read_text())["list_date"] == "2026-07-15"
@@ -274,7 +276,7 @@ def test_the_watcher_reads_a_union_list_text_copy_at_start(W, tmp_path, monkeypa
     W.seniority_refresh()
     d = json.loads((up / "seniority.json").read_text())
     assert (d["count"], d["list_date"], d["parser"], d["rejects"]) == (12, "2026-07-01", SEN.PARSER, 0)
-    assert d["statuses"]["MLOA"] == 1 and "status" not in d["pilots"]["10003"]
+    assert d["statuses"]["MLOA"] == 1 and d["pilots"]["10003"]["status"] in SEN.HAL_STATUS  # 1.7.8: kept per pilot
     assert d["uploaded_at"] == "2026-11-14T09:30:00-10:00"
 
 
@@ -381,16 +383,18 @@ def test_blank_lines_fail_fast():
     assert time.perf_counter() - t < 0.5
 
 
-def test_a_pilots_status_is_not_stored_and_the_files_are_private(tmp_path, monkeypatch):
-    """Review fix: nothing reads a pilot's Remarks code (SLOA is sick leave, MLOA military leave), so seniority.json
-    keeps only the count per code; the seniority files are readable by this app only, as the contact list is."""
+def test_a_pilots_status_is_kept_and_the_files_are_private(tmp_path, monkeypatch):
+    """Review fix: the seniority files are readable by this app only, as the contact list is. 1.7.8 (pilot database;
+    Ryan, Nov 14: "the seniority PDF wins on Sen#, DOH, status"): the pilot database reads each pilot's Remarks code
+    (SLOA is sick leave, MLOA military leave) from seniority.json, so it is kept per pilot there (mode 600), beside
+    the count per code."""
     import os
     import stat
     mask = os.umask(0o022)
     try:
         assert _up(tmp_path, monkeypatch, hal_text())["ok"]
         d = json.loads((tmp_path / "seniority.json").read_text())
-        assert all("status" not in v for v in d["pilots"].values())
+        assert all(v["status"] in SEN.HAL_STATUS for v in d["pilots"].values())
         assert d["statuses"] == {"A": 4, "ALPA": 1, "EXEC": 1, "FUR": 1, "LOA": 1, "MLOA": 1, "MRET": 1, "PESL": 1,
                                  "SLOA": 1}
         blocks = ["A332FO PBS BIDLINE AWARD"] + [f"{i:05d} / {20000 + i}   ROE{chr(65 + i % 26)}, JOHN    DOH 01/{i:02d}/95"

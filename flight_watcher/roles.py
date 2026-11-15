@@ -43,7 +43,8 @@ FEATURES = {
     "hark_ccr": (ADMIN, False, "CCR requests to Hark (/share/flight_watcher/ccr_requests) and the poll of its "
                                "replies"),
     "one_writer": (ADMIN, False, "files with one writer: the seniority list re-read, the versions seed, the finds "
-                                 "file sweep of other folders"),
+                                 "file sweep of other folders, and the pilot database (pilotdb: imports, hand edits, "
+                                 "notes, the ingress API, seniority.md, backups)"),
     "web_ui": (ADMIN, False, "the ingress Web UI (run.py starts it for the default instance only)"),
     "addon_config": (ADMIN, False, "the FLICA and CrewTrac logins from the add-on Configuration tab"),
     "drop_mark": (ADMIN, False, "would drop marks (drop/set), the drop scan, event/drop_ready, sensor would_drop"),
@@ -114,12 +115,13 @@ MAX_PILOTS = 3  # pilots besides the admin: each runs its own Chromium and its o
 # share folders or /data files would collide with them, so it is refused (run.py). ha/check_push_isolation.py reads
 # an id whose first word is here as the admin's. 1.7.2: "ready" (automation.flight_watcher_ready_to_update_ask_hark,
 # the Working Flight button that asks Hark, Ryan Nov 12) and "van" (switch.flight_watcher_van_alerts and
-# number.flight_watcher_van_alert_first and _second, the van alert settings, Ryan Nov 12).
+# number.flight_watcher_van_alert_first and _second, the van alert settings, Ryan Nov 12). 1.7.8: "pilotdb" (the pilot
+# database: /data/pilotdb_backup, /share/flight_watcher/pilotdb, sensor.flight_watcher_pilotdb and its topic).
 RESERVED = frozenset({
     "admin", "auto", "bid", "blocked", "captures", "ccr", "charter", "charters", "check", "crew", "default", "drop",
     "email", "er", "event", "federal", "fetches", "finds", "flica", "freq", "grid", "hunt", "improved", "last",
     "layover", "layovers", "longevity", "map", "month", "new", "next", "normal", "ot", "own", "pause", "pickers",
-    "pilot", "pot", "pref", "re", "rearm", "ready", "recall", "reserve", "rule", "rules", "ryan", "scan", "schedule", "session",
+    "pilot", "pilotdb", "pot", "pref", "re", "rearm", "ready", "recall", "reserve", "rule", "rules", "ryan", "scan", "schedule", "session",
     "settings", "show",
     "state", "status", "swap", "ticket", "tickets", "trade", "tradeboard", "update", "upload", "uploads", "van",
     "versions", "working", "would", "www",

@@ -58,7 +58,8 @@ def test_list_date_from_the_cover_text():
 def test_json_and_lookup(fx):
     d = SEN.to_json(_parsed(fx), "seniority_2026-11-06.pdf", "2026-11-06T09:00:00-10:00", "2026-03-01")
     assert (d["count"], d["list_date"], d["newest_doh"], d["parser"], d["rejects"]) == (12, "2026-03-01", "2019-08-05", SEN.PARSER, 0)
-    assert d["pilots"]["901"] == {"sen": 1, "name": "Doe, Jane", "last": "Doe", "doh": "1988-05-01", "seat": "CA", "equip": "330"}
+    assert d["pilots"]["901"] == {"sen": 1, "name": "Doe, Jane", "last": "Doe", "doh": "1988-05-01", "seat": "CA", "equip": "330",
+                                  "retire": "2028-05"}  # 1.7.8: the DOR (May-28) kept for the pilot database
     # two pilots share 90011 in the source list: the crew line's last name decides; the number alone does not
     assert [x["sen"] for x in [d["pilots"]["90011"]] + d["pilots"]["90011"]["also"]] == [11, 12]
     assert SEN.find(d, "90011", "Noe, Nina")["sen"] == 12 and SEN.find(d, "90011", "ZOE, ZACHARIAH")["sen"] == 11

@@ -127,6 +127,9 @@ CM_SCHED_MONTH = "{base}/full/cmschedules.cgi?Prompt=1&EmployeeID={emp}&bd={bd}&
 PROBE = {"logged": 0}
 RESET_V = 5  # bump when the parser changes so stored verdicts are re-checked once
 RECHECK_NO_V = 1  # FW-0013: 'not in flight' verdicts (some were read off the error page below) are looked up again, once
+# 1.7.8 (Ryan, Nov 15: "Re-check them"): the verdicts 1.7.7 dropped as made for another pilot (inflt_skip) are looked up
+# again once for the picker (store.recheck_inflt_skip); the other picker of a both-seats pickup gets his own lookup
+RECHECK_SKIP_V = 1
 
 
 CAPTURE_DIR = "/share/flight_watcher/captures"
@@ -207,6 +210,12 @@ def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
     if db.get("inflt_recheck_no_v") != RECHECK_NO_V:
         db.reset_inflt(only=False)
         db.put("inflt_recheck_no_v", RECHECK_NO_V)
+    if db.get("inflt_skip_recheck_v") != RECHECK_SKIP_V:
+        n_skip = db.recheck_inflt_skip()
+        db.put("inflt_skip_recheck_v", RECHECK_SKIP_V)
+        if n_skip:
+            log.info("in-flight: %d pickups whose verdict 1.7.7 dropped (made for another pilot) are looked up again "
+                     "once for the picker, within the paced in-flight budget", n_skip)
     todo = db.pickups_without_inflt(50)
     if not todo:
         return changed_early
@@ -226,7 +235,7 @@ def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
                     time.sleep(random.uniform(1.5, 3.5))
                 sched = fetch_schedule(fl, base, emp, bd, cur_bd, log, key)
                 if sched is None:
-                    db.set_inflt(key, None, tries=tries + 1)
+                    db.set_inflt(key, None, tries=tries + 1, emp=emp)  # 1.7.8: this picker's try
                     continue
                 cache[ck] = sched
                 if on_sched:
@@ -256,5 +265,5 @@ def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
             changed = True
         except Exception as e:
             log.info("inflt %s skipped: %s", key, e)
-            db.set_inflt(key, None, tries=tries + 1)
+            db.set_inflt(key, None, tries=tries + 1, emp=emp)
     return changed

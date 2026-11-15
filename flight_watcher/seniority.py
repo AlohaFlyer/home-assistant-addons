@@ -15,8 +15,9 @@ parse()."""
 import re
 from datetime import date
 
-PARSER = 3  # bump when a parse rule changes: the Watcher re-reads the list on file with the new rules
-# (3, 1.7.5.1: the union's Pilot's System Seniority List layout; rows carry the Remarks status)
+PARSER = 4  # bump when a parse rule changes: the Watcher re-reads the list on file with the new rules
+# (3, 1.7.5.1: the union's Pilot's System Seniority List layout; rows carry the Remarks status; 4, 1.7.8: to_json keeps
+# each pilot's status code and the DOR as retire, for the pilot database)
 DASHES = dict.fromkeys((0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2212), "-")  # the hyphens and dashes pdftotext prints
 SECTION_RE = re.compile(r"^(?:SENIORITY|ALPHABETICAL|MANDATORY AGE 65 RETIREMENT AGE|[AB]?\d{3}\s+(?:Captains|First Officers))$", re.I)
 DATE_RE = re.compile(r"\d{1,2}/\d{1,2}/\d{2,4}")
@@ -296,7 +297,7 @@ def _sen_row(line, no, ref, when, rejects):
         rejects.append(("tail-unknown-token", no))  # the row is kept; the column layout may have changed
     row = {"sen": int(r["sen"]), "emp": r["emp"], "last": last.title(), "first": first.title(),
            "name": f"{last}, {first}".strip(" ,").title(), "doh": doh, "equip": tail.get("equip", ""),
-           "seat": tail.get("seat", ""), "status": ""}
+           "seat": tail.get("seat", ""), "status": "", "dor": tail.get("dor", "")}
     # how cleanly the names split: crowded columns cut long names short or glue LAST to FIRST
     row["_q"] = (bool(re.search(r"\S\s{2,}\S", names.strip())) + bool(first)
                  + (short.split(",")[0].strip().upper() == last.upper()))
@@ -397,18 +398,34 @@ def _emp(v):
     return re.sub(r"\D", "", str(v or "")).lstrip("0")
 
 
+def dor_month(s):
+    """1.7.8: a DOR column value ('May-28', the mandatory age 65 retirement month, 14 CFR 121.383(d)) -> '2028-05'; a
+    yy below 70 is 20yy, else 19yy. '' for anything else."""
+    m = re.fullmatch(r"([A-Za-z]{3})-(\d{2})", str(s or "").strip())
+    if not m or m.group(1).upper() not in MONTHS:
+        return ""
+    yy = int(m.group(2))
+    return f"{2000 + yy if yy < 70 else 1900 + yy}-{MONTHS.index(m.group(1).upper()) + 1:02d}"
+
+
 def to_json(parsed, file, uploaded_at, list_date_given=""):
     """What /share/flight_watcher/uploads/seniority.json holds: {list_date, uploaded_at, file, parser, count,
-    newest_doh, sections, rejects, notes, statuses?, pilots: {emp: {sen, name, last, doh, seat, equip, also?}}}. Keyed
-    on the employee number without leading zeros; a number two pilots share keeps the first under the key and the
-    other in 'also'. 1.7.5.1: the union list has no seat or equipment (''). Review fixes: rejects counts the lines
-    not read only, notes the rest ({reason: n}, is_note); a pilot's Remarks code (SLOA is sick leave, MLOA military
-    leave) is not kept, since nothing reads it: statuses has the count per code only."""
+    newest_doh, sections, rejects, notes, statuses?, pilots: {emp: {sen, name, last, doh, seat, equip, status?,
+    retire?, also?}}}. Keyed on the employee number without leading zeros; a number two pilots share keeps the first
+    under the key and the other in 'also'. 1.7.5.1: the union list has no seat or equipment (''). Review fixes: rejects
+    counts the lines not read only, notes the rest ({reason: n}, is_note); statuses has the count per code. 1.7.8
+    (pilot database; Ryan, Nov 14: "the seniority PDF wins on Sen#, DOH, status"): a pilot's Remarks code is kept as
+    his status when the STATUS LEGEND has it (HAL_STATUS; SLOA is sick leave, MLOA military leave: the file stays mode
+    600), and the older list's DOR as retire (YYYY-MM, dor_month)."""
     pilots, statuses = {}, {}
     for r in parsed["rows"]:
         rec = {k: r[k] for k in ("sen", "name", "last", "doh", "seat", "equip")}
         if r.get("status"):
             statuses[r["status"]] = statuses.get(r["status"], 0) + 1
+            if r["status"] in HAL_STATUS:
+                rec["status"] = r["status"]
+        if dor_month(r.get("dor")):
+            rec["retire"] = dor_month(r["dor"])
         k = _emp(r["emp"])
         if not k:
             continue

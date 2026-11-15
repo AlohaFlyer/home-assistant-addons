@@ -229,11 +229,17 @@ def seniority_rebuild(lst, aw, out=None):
     if view:
         view["parser"] = SEN.PARSER
         _dump(out, view)
-        seniority_md_write(view, out)
+        if SENIORITY_MD_HOOK is not None:
+            SENIORITY_MD_HOOK()  # 1.7.8: the pilot database writes seniority.md (it merges this list first)
+        else:
+            seniority_md_write(view, out)
     return view
 
 
 SEN_MD = "seniority.md"  # 1.7.7: the markdown reference of seniority.json (seniority.render_md)
+# 1.7.8: set by the admin's Watcher while its pilot database is open (watcher.pilotdb_nudge): seniority.md is then written
+# from the database (pilotdb.render_md), so a seniority.json write only nudges it; None: written from seniority.json
+SENIORITY_MD_HOOK = None
 
 
 def seniority_md_path(out=None):
@@ -619,6 +625,50 @@ def _private(path):
         os.chmod(path, 0o600)
     except OSError:
         pass
+
+
+def contacts_reparse(log, today=None):
+    """1.7.8 (pilot database, spec 8.4.4): contacts.json written by an older parser (contacts.PARSER; 2 reads the
+    Notes column's HAL data) is read again once from the kept source upload (contacts_<YYYY-MM-DD>.<csv|xlsx|pdf>,
+    mode 600; a PDF from its text copy), under the save lock, keeping its file name and upload time. Returns
+    'reparsed', 'current' (already this parser), 'no-list' (no contacts.json) or 'no-source' (no kept file: upload
+    the contact list again). The admin's Watcher only (one_writer); counts only in the log."""
+    with save_lock():
+        old = CT.load(CONTACTS_FILE)
+        if old is None:
+            return "no-list"
+        if int(old.get("parser") or 0) >= CT.PARSER:
+            return "current"
+        try:
+            names = sorted(os.listdir(UPLOAD_DIR))
+        except OSError:
+            names = []
+        src = [f for f in names if CONTACTS_RE.fullmatch(f)]
+        pick = str(old.get("file") or "") if str(old.get("file") or "") in src else (src[-1] if src else "")
+        if not pick:
+            return "no-source"
+        path = os.path.join(UPLOAD_DIR, pick)
+        ext = pick.rsplit(".", 1)[1]
+        try:
+            st = os.lstat(path)
+            if not os.path.isfile(path) or os.path.islink(path) or st.st_size > UPLOAD_MAX:
+                return "no-source"
+            data = open(path, "rb").read()
+            text = None
+            if ext == "pdf":
+                text = open(path[:-4] + ".txt", encoding="utf-8", errors="replace").read()
+            parsed = CT.parse(data, CT.sniff(data) or ext, text, today=today)
+        except (OSError, ValueError) as e:
+            log.info("contact list not read again: %s", type(e).__name__)
+            return "no-source"
+        if not parsed["entries"] and not parsed.get("hal_only"):
+            return "no-source"
+        up = str(old.get("uploaded_at") or "") if pick == old.get("file") else hst_iso(st.st_mtime)
+        d = CT.build(parsed, pick, up)
+        CT.store(CONTACTS_FILE, d)
+    log.info("contact list read again (parser %d): %d pilots, %d with HAL Notes, %d Notes segments not read", CT.PARSER,
+             d["count"], d["with_hal"], sum(d["hal_rejects"].values()))
+    return "reparsed"
 
 
 def _save_contacts(data, log):
