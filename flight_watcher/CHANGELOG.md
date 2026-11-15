@@ -61,7 +61,7 @@ FLICA is read only and nothing here loads a FLICA page.
   only), a file older than 24 h is refused, the shape, the text rules, the op rules and the quotas are checked again
   (40 entries, 40 notes field saves or take backs and 40 field edits in 24 h; 500 entries a record), then the op is
   applied. The same request id again answers the same and changes nothing. From James's tap to "Saved": under 10 s.
-- **Compare-and-set, every version kept.** A notes field save on a stale revision answers "Not saved: changed by ryan
+- **Compare-and-set, nothing overwritten blind.** A notes field save on a stale revision answers "Not saved: changed by ryan
   at 10:00 HST; your text is still in the box"; a field edit on a stale record revision answers "Not saved: the record
   changed since you opened it; your change is still in the box". Nothing is overwritten blind. The replaced notes
   versions are kept (the newest 50 of each author, Ryan's Restore), and every field edit is in the record's log with who, when and the

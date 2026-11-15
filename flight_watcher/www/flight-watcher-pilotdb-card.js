@@ -8,8 +8,8 @@
      each field with its source and date and the other sources' values, a pencil to edit it (a hand edit stays shown
      through later uploads and is logged with your reason; on drift "Use upload value" or "Keep my edit"), call, text
      and mail links, the notes field (saved compare-and-set on the version it was read at: a newer save shows beside your draft, with
-     "Take theirs" and "Save mine over theirs"; every version kept, Restore any), the dated log (add, Only me, take
-     back your own, hide, restore, purge), the picker's pickup history (running count per layover station, trip
+     "Take theirs" and "Save mine over theirs"; the newest 50 versions of each author kept, Restore any), the dated
+     log (add, Only me, take back your own, hide, restore, purge), the picker's pickup history (running count per layover station, trip
      length, turn or layover, credit, report time, weekday, pickup speed), the AI note read only when there is one
      (written by HOM's consultant models from anonymous pickup statistics, labeled AI, 1.7.9), the history, merge,
      renumber and delete; the conflicts the uploads held for you; a new record; Sharing (1.7.9: one "Share with
