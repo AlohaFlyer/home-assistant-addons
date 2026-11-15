@@ -1,4 +1,28 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-14, release 1.7.5 live)
+# HANDOFF: Flight Watcher (refreshed 2026-11-15, release 1.7.7 live, 1.7.8 built)
+
+State (Nov 15): app **1.7.7** live on Pako HI. **1.7.8** (branch `fw-1.7.8`, not pushed, no PR yet): Ryan's pilot
+database, the pilot database spec's step 1 (CHANGELOG 1.7.8): `pilotdb.py` on Ryan's instance only (`/data/pilotdb.sqlite`,
+0600), seeded on its first start from the kept contact CSV on the share and `seniority.json`, each picker's pickup
+history, `seniority.md` written from it, nightly copies, the ingress API `api/pilotdb`, `sensor.flight_watcher_pilotdb`
+(counts only) and the Pilots card (`flight-watcher-pilotdb-card.js`, admin only, kept off every portal); the pilot
+card's `_esc` escapes `'`; the in-flight re-check. Contract unchanged at revision 3, HOM untouched, nothing shared with
+James (that is 1.7.9 with HOM 1.9.0, its own yes). Its steps, each a [DESTRUCTIVE] yes from Ryan: merge the PR, store
+reload and update, then verify on Pako (`sensor.flight_watcher_state` version 1.7.8, `sensor.flight_watcher_pilotdb`
+`db: ok` with counts, the log's "pilot db: seeded" and merge lines (counts only), `/data/pilotdb.sqlite`, the first
+copies and `seniority.md` at 0600 and the folders at 0700, a Playwright render of the card through ingress reporting
+layout and counts only). Then, on his yes, the dashboard edits: the Settings view gets
+`{"type": "custom:flight-watcher-pilotdb-card"}` above the tickets card, the watcher view gets
+`{"type": "custom:flight-watcher-pilotdb-card", "follow": true}` right under the pilot card, and `ha/` takes the new
+snapshot (`ha/README.md`). Until then the card is deployed but on no view.
+
+**Pilot database, restore by hand** (spec 18): the card's "Daily copies" puts a copy back (typed RESTORE; the file in
+use is set aside as `pilotdb.sqlite.before-restore-<time>` first). By hand, only with the app stopped and Ryan's yes
+([DESTRUCTIVE]): with the Pako HI Shell copy one of `/data/pilotdb_backup/pilotdb-<YYYY-MM-DD>.sqlite` or
+`/share/flight_watcher/pilotdb/backup/pilotdb-<YYYY-MM-DD>.sqlite` over `/data/pilotdb.sqlite` (remove a
+`pilotdb.sqlite-wal` and `-shm` left beside it; keep mode 600), then start the app. A /data rollback (an HA app backup
+restored) loses the notes made since that backup unless the newer /share copy is put back after it: the card then
+offers it ("a newer copy is on the share", `db: restore_offered`), and nothing is written over until Ryan says so.
+Taken-back or purged text stays up to 7 days in the daily copies (a purge replaces them at once) and in HA backups.
 
 State (Nov 14, later): app **1.7.5** on Pako HI since 2026-11-14 15:44 UTC (05:44 HST), both instances (backup before it:
 `8586edb5`, Flight Watcher 1.7.4 data). **1.7.4** (live 10:29 UTC, backup before it `4c5405aa`): a pilot's FLICA refusal
@@ -133,6 +157,10 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
 
 ## Rollback notes
 
+- **1.7.8 to 1.7.7:** safe. 1.7.7 never opens `/data/pilotdb.sqlite` (it waits for the next upgrade), and
+  `seniority.md` goes back to being written from `seniority.json`. contacts.json stays parser 2 (1.7.7 reads it; the
+  extra `hal` fields are ignored) and seniority.json parser 4 (its `status` and `retire` are ignored). Remove the two
+  Pilots cards from the dashboard if they were added (a card that is not deployed shows a configuration error).
 - **1.7.5 to 1.7.4:** safe, no data format change (`8586edb5` is the backup before it).
 - **1.7.4 to 1.7.3 (read first):** 1.7.3 cannot read a 1.7.4 FLICA refusal record (an HMAC), so a pilot stopped by a
   FLICA refusal is no longer blocked there and his next Re-arm logs in once more with refused details. Restore /data

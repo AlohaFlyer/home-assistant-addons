@@ -878,11 +878,38 @@ def portal_section(key):
             "matches.</p><p><code>" + html.escape(key) + "</code></p>")
 
 
+PILOTDB_BODY_MAX = 64 * 1024  # 1.7.8: a POST api/pilotdb body (spec 10.1)
+PILOTDB_CARD = "pilotdb"  # the X-FW-Card header the Pilots card sends: a plain cross-site form can send neither it nor JSON
+
+
+def _pilotdb_query(path):
+    """{key: value} of a GET api/pilotdb query string (the last value of a repeated key); None when it is not one."""
+    try:
+        q = parse_qs(urlsplit(path).query, keep_blank_values=True, strict_parsing=False, max_num_fields=16)
+    except ValueError:
+        return None
+    return {k: v[-1] for k, v in q.items()}
+
+
+def _json_object(raw):
+    """A JSON object from a request body (UTF-8, no NaN or Infinity), else None."""
+    def no_const(c):
+        raise ValueError(c)
+    try:
+        obj = json.loads(raw.decode("utf-8"), parse_constant=no_const)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
 def serve(port, version, get_rules, save_rules, store, log, get_settings=None, save_settings=None,
-          clear_settings=None, on_saved=None, portal_key=""):
+          clear_settings=None, on_saved=None, portal_key="", pilotdb_get=None, pilotdb_post=None):
     """The ingress page and its JSON endpoints. on_saved (1.4.8) runs after an upload is saved (the Watcher then
     publishes sensor.<prefix>_uploads); its failure never fails the upload. portal_key (1.6.0): the portal signing
-    key's public half, shown when a pilot has a portal."""
+    key's public half, shown when a pilot has a portal. pilotdb_get and pilotdb_post (1.7.8, the admin's Watcher
+    only): api/pilotdb for the Pilots card, each (query or object) -> (HTTP status, body); a POST needs
+    Content-Type application/json and the header X-FW-Card: pilotdb, and a body of at most PILOTDB_BODY_MAX bytes.
+    Every answer is Cache-Control: no-store; the same ingress-only guard as the page."""
     def saved(r):
         if r.get("ok") and on_saved:
             try:
@@ -931,6 +958,15 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
             self.end_headers()
             self.wfile.write(b)
 
+        def _pdb(self, fn, arg):
+            """A pilot database callback's (status, body); its failure is a 500 that names nothing."""
+            try:
+                code, body = fn(arg)
+                return int(code), body
+            except Exception as e:  # noqa: BLE001
+                log.info("pilot db: api failed: %s", type(e).__name__)
+                return 500, {"ok": False, "why": "The pilot database could not answer"}
+
         def _api(self):
             """1.4.5: 'uploads' / 'upload' for a path under api/ (as the ingress proxy passes it on), '' for an
             unknown one under api/, None for the page's own paths."""
@@ -944,6 +980,11 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
             api = self._api()
             if api == "uploads":
                 return self._json(200, uploads_json(version, review=True))
+            if api == "pilotdb" and pilotdb_get is not None:  # 1.7.8: the Pilots card's reads
+                q = _pilotdb_query(self.path)
+                if q is None:
+                    return self._json(400, {"ok": False, "field": "query", "why": "could not be read"})
+                return self._json(*self._pdb(pilotdb_get, q))
             if api is not None:
                 return self._json(404, {"ok": False, "message": "Not found."})
             self._page()
@@ -951,8 +992,28 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
         def do_POST(self):
             if not self._guard():
                 return
-            n = int(self.headers.get("Content-Length", 0) or 0)
+            try:
+                n = int(self.headers.get("Content-Length", 0) or 0)
+            except ValueError:
+                n = -1
             api = self._api()
+            if api == "pilotdb" and pilotdb_post is not None:  # 1.7.8: one op of the Pilots card
+                ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+                if ctype != "application/json":
+                    return self._json(415, {"ok": False, "field": "Content-Type", "why": "must be application/json"})
+                if self.headers.get("X-FW-Card", "") != PILOTDB_CARD:
+                    return self._json(403, {"ok": False, "field": "X-FW-Card", "why": "is missing"})
+                if n > PILOTDB_BODY_MAX:
+                    return self._json(413, {"ok": False, "field": "body", "why": f"is over {PILOTDB_BODY_MAX} bytes"})
+                if n <= 0:
+                    return self._json(400, {"ok": False, "field": "body", "why": "is empty"})
+                obj = _json_object(self.rfile.read(n))
+                if obj is None:
+                    return self._json(400, {"ok": False, "field": "body", "why": "must be a JSON object"})
+                return self._json(*self._pdb(pilotdb_post, obj))
+            if n < 0:  # a Content-Length that is not a number
+                self.send_error(400)
+                return
             if api is not None:  # 1.4.5: the dashboard uploads card
                 if api != "upload":
                     return self._json(404, {"ok": False, "message": "Not found."})

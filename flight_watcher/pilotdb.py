@@ -380,12 +380,17 @@ def field_view(field, rows):
            "at": shown["at"] if shown else "", "by": shown["by"] if shown else "",
            "why": (shown.get("why") or "") if shown else "", "hand": bool(hand),
            "drift": bool(hand and up and up["value"] != hand["value"] and up["value"] != (hand.get("kept") or None)),
-           "disagree": disagrees(field, rows), "stale": bool(shown and shown["stale"]), "cands": cands}
+           "disagree": disagrees(field, rows), "stale": bool(shown and shown["stale"]), "cands": cands,
+           # 1.7.8 (the card's drift line, "List of 2026-12-01 says 1234"): the value the upload rules pick
+           "up": {k: up[k] for k in ("source", "value", "as_of", "ref", "stale")} if up else None}
     if field in ("phones", "emails"):
         try:
             out["value"] = json.loads(out["value"]) if out["value"] else []
         except ValueError:
             out["value"] = []
+        if out["up"]:
+            with contextlib.suppress(ValueError):
+                out["up"]["value"] = json.loads(out["up"]["value"])
         for c in out["cands"]:
             with contextlib.suppress(ValueError):
                 c["value"] = json.loads(c["value"])
@@ -631,6 +636,8 @@ class PilotDB:
                 self._touch(pid)
             return "same"
         before = self._eff(pid, field) if source == "hand" else (old[0] if old else None)
+        if isinstance(before, list):  # phones and emails: the view's list, logged as stored (JSON)
+            before = json.dumps(before, separators=(",", ":")) if before else None
         self.db.execute("INSERT INTO vals(pid,field,source,value,as_of,ref,at,by,why,stale,kept) VALUES(?,?,?,?,?,?,?,?,?,0,NULL) "
                         "ON CONFLICT(pid,field,source) DO UPDATE SET value=excluded.value, as_of=excluded.as_of, "
                         "ref=excluded.ref, at=excluded.at, by=excluded.by, why=excluded.why, stale=0, kept=NULL",
@@ -1479,6 +1486,26 @@ class PilotDB:
             out = self._record(pid)
         out["pickups"] = self.pickups(pid)
         return out
+
+    def brief(self, pid):
+        """A live record's search row ({pid, emp, sen, name, status, doh, retire, seat, gone, notes_n, notes_at,
+        pickups_n, flags}: no phones or emails), or None. For the card's conflicts queue (the record a held row names)."""
+        with self.lock:
+            v = self._all_views().get(pid) if isinstance(pid, str) else None
+            return self._row(v) if v else None
+
+    def entry_pid(self, eid):
+        """The record an entry is on (the card redraws it after a retract, hide, restore or purge). Missing if none."""
+        with self.lock:
+            return self._entry(eid)["pid"]
+
+    def hist_pid(self, hist_id):
+        """The record a kept notes version is on. Missing if none."""
+        with self.lock:
+            r = self.db.execute("SELECT pid FROM notes_hist WHERE id=?", (hist_id,)).fetchone()
+        if not r:
+            raise Missing("version")
+        return r[0]
 
     def conflicts(self, open_only=True):
         """The conflicts queue (spec 7): [{id, kind, source, ref, emp, pid, at, resolved_at, resolved_how, row}]."""

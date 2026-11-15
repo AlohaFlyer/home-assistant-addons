@@ -103,7 +103,8 @@ ENTITY_FEATURE = {"auto_swap": "auto_swap", "swap_map": "auto_swap", "drop_away"
                   "crew_index": "crew_index", "crew_scan": "crew_index",
                   "layover_van": "admin_pushes", "layover_notes": "one_writer",  # 1.7.1 (FW-0072)
                   # 1.7.2 (Ryan, Nov 12): the van alerts' switch and sliders
-                  "van_alerts": "admin_pushes", "van_alert_first": "admin_pushes", "van_alert_second": "admin_pushes"}
+                  "van_alerts": "admin_pushes", "van_alert_first": "admin_pushes", "van_alert_second": "admin_pushes",
+                  "pilotdb": "one_writer"}  # 1.7.8 (B5): sensor.flight_watcher_pilotdb, the pilot database's counts
 
 # Words of lowercase letters and digits joined by single underscores, 1 to 32 characters: HA keeps no entity id with
 # "__" or a trailing "_" (sensor.flight_watcher_jane__state), so "jane_", "a__b" and "_x" are refused. config.yaml

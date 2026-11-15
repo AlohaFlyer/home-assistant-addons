@@ -365,7 +365,13 @@ Recent finds.
   offered; a newer database (user_version) is never opened; a /share copy newer than the live file (an older /data
   restored) is offered, never written over. The log carries counts only. Nothing of it loads FLICA, and nothing is
   shared with a pilot in 1.7.8 (the share tables and the AI note, written later by HOM's models from anonymous stats,
-  are in the schema, unused).
+  are in the schema, unused). Ryan reaches it through the Pilots card (below, "Dashboard cards") and the Web UI's
+  JSON endpoints `GET` / `POST api/pilotdb` (the same ingress-only guard as the page; a POST is one op as a JSON object
+  with `Content-Type: application/json` and the header `X-FW-Card: pilotdb`, at most 64 KB, known keys only, the author
+  always ryan; a stale write answers 409 with what is there now; an error names the field, never a value or a note;
+  `Cache-Control: no-store`). `sensor.flight_watcher_pilotdb` (admin only) carries the live record count, the counts,
+  source dates, seniority.md and copy times, the revision and the database state (`db`: ok, newer_db, error,
+  restore_offered, off): no name, number or text.
 - Rules live in `/data/rules.json` and are edited there (the schema is on the page). They are checked against each
   new pairing; a match publishes `flight_watcher/event/rule_match` and `sensor.flight_watcher_last_match`.
 - Every rule starts in dry run, and `switch.flight_watcher_rule_<id>_live` stays off until the rule is 7 days old.
@@ -515,6 +521,23 @@ the rebuild loads no FLICA page (`inflt_skip`; "-" with the reason on hover); on
 (`inflt_skip_recheck_v`), and the other picker of a both-seats pickup gets his own lookup (his verdict in `inflt_no`,
 by employee number; the pickers table counts it), all within the paced in-flight budget (`INFLT_PER_CHECK` lookups a
 check), read only.
+
+**Pilots** (1.7.8, `flight-watcher-pilotdb-card.js`, the pilot database above; admin only): on the Settings tab above
+the tickets (`type: custom:flight-watcher-pilotdb-card`), a status line (counts, source dates, seniority.md and copy
+times), a search (name words, an employee number, `s812` for a Sen #, "quoted" text in the notes) with filter chips
+(Notes, Edited, Drift, Disagree, Held, Gone) and the results by Sen #. A tap opens the record: each field with its
+source and date and the other sources' values; Edit (a value and a reason: it stays shown through later uploads and is
+logged), and on drift "Use upload value" or "Keep my edit"; call, text and mail links; the notes field (saved
+compare-and-set: when someone saved first, both texts show, with Take theirs and Save mine over theirs; earlier
+versions with Restore and Purge); the dated log (Add, Only me, Take back your own, Hide, Restore, Purge); the picker's
+pickups (count per layover station, trip length, report times, average credit and speed, in flight, every pickup);
+the AI note, read only, when HOM has written one; the history; Merge, a new employee number and Delete (typed
+DELETE). Below: the rows the uploads held for you (Same pilot, Attach, New record, Ignore, Mark them gone anyway),
+Add a record, and the daily copies with Put back (typed RESTORE). With `follow: true`, on the watcher tab right under
+the pilot lookup card, it shows the looked-up pilot's record and notes (or "Not in the pilot database" with Add a
+record); it never asks FLICA for anything. It talks to the app's ingress API like the uploads card; every value is
+drawn as text, never as markup. Anyone who is not a Home Assistant admin sees one line; the card is on no portal in
+1.7.8.
 
 **InFlt** (1.7.7, Ryan, Nov 14: "I want to know what flight he was flying to be certain. Add the flight number... i.e
 AS808/06NOV and date"): an in-flight pickup shows the airplane and the flight, `AS808/06NOV`: the flight number of the
