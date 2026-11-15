@@ -6,7 +6,7 @@ and is logged, Use upload value, the notes field saved compare-and-set (a newer 
 theirs, Save mine over theirs), its versions with Restore, the dated log (add, Only me, take back, hide, restore), the
 picker's pickup history with the count per layover station, the AI note shown read only when one is there, the held
 rows; follow mode under the pilot lookup card (never pilot/set); anyone else sees one read-only line. Every value is
-text: hostile notes and names never become markup or links. The card is kept off every portal (PORTAL_CARDS_OUT).
+text: hostile notes and names never become markup or links. 1.7.9: the card joins a pilot's portal bundle (B16).
 The pilot card's _esc escapes the single quote. FW_178_SHOTS=<dir> keeps the screenshots (device scale 2). Synthetic
 data only ("Doe, Jane" 10001, 808-555-01xx, example.com)."""
 import json
@@ -141,8 +141,11 @@ def test_the_card_source_follows_the_rendering_rule():
     for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "DOMParser", "createContextualFragment",
                 "eval(", "new Function"):
         assert bad not in code, bad
-    # never a Home Assistant service call (a note would land in HA's recorder) and never the pilot lookup
-    assert "callService" not in code and "mqtt" not in code and "pilot/set" not in code
+    # never the pilot lookup; one service call in the whole card, the portal copy's _pub (1.7.9: a shared pilot's
+    # pilotdb/note and pilotdb/edit to his own Watcher), which refuses on Home Assistant (FW_PORTAL off), so Ryan's
+    # notes never land in HA's recorder
+    assert code.count("callService") == 1 and "pilot/set" not in code
+    assert "if (!FW_PORTAL) return Promise.reject" in code
     # the only links: tel:, sms:, mailto:, through the href property after the checks
     assert re.findall(r"\.href\s*=", code) == [".href ="] and "a.href = `${kind}:${v}`" in code
     assert 'fwPdbLink("tel"' in code and 'fwPdbLink("sms"' in code and 'fwPdbLink("mailto"' in code
@@ -152,17 +155,22 @@ def test_the_card_source_follows_the_rendering_rule():
     assert "const FW_PORTAL = false;" in s and chr(0x2014) not in s
 
 
-def test_the_card_ships_and_stays_off_every_portal(W):  # noqa: F811
+def test_the_card_ships_and_joins_a_pilots_portal_bundle(W):  # noqa: F811
+    """1.7.9 (B16, contract 1 revision 4): the Pilots card left PORTAL_CARDS_OUT, so a pilot's portal bundle carries his
+    copy with FW_PORTAL on (it stayed off every portal in 1.7.8)."""
     built = cards.build("9.9.9", ["james"])
     assert "flight-watcher-pilotdb-card.js" in built and "flight-watcher-pilotdb-card-james.js" in built
     cp = built["flight-watcher-pilotdb-card-james.js"]
     assert 'customElements.define("flight-watcher-pilotdb-card-james"' in cp and "Ryan" not in cp and "ryan" not in cp.lower()
     assert 'FW_PDB_PREFIX = "flight_watcher_james"' in cp  # a pilot's copy is never the admin's (the read-only line)
-    assert "pilotdb-card" in W.PORTAL_CARDS_OUT
+    assert "pilotdb-card" not in W.PORTAL_CARDS_OUT
     W.INSTANCE = "james"
     try:
         W.EXPORT["cards"] = None
-        assert not any("pilotdb" in f for f in W.portal_cards()) and any("pilot-card" in f for f in W.portal_cards())
+        pc = W.portal_cards()
+        assert "const FW_PORTAL = true;" in pc["flight-watcher-pilotdb-card-james.js"]
+        assert any("pilot-card" in f for f in pc) and not any("uploads-card-james" in f and "pilot-uploads" not in f
+                                                              for f in pc)
     finally:
         W.INSTANCE = ""
         W.EXPORT["cards"] = None

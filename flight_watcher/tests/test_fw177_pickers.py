@@ -143,7 +143,9 @@ def test_the_rebuild_drops_the_merged_rows_and_counts_each_picker_once(tmp_path)
     # looked up before, is in the queue, as it was before 1.7.7. 1.7.8 (Ryan, Nov 15: "Re-check them"): Pat, the other
     # picker of the both-seats H9002, gets his own lookup (inflt_no); the dropped H9001 is re-queued by the in-flight
     # check's one-shot (store.recheck_inflt_skip), not by the rebuild
-    assert [t[:2] for t in db.pickups_without_inflt()] == [("H9003|22Nov", "10001"), ("H9002|21Nov", "10003")]
+    # 1.7.9 (Ryan, Nov 15): H9004, whose picker is not known, lists each pilot it names for his own verdict
+    assert [t[:2] for t in db.pickups_without_inflt()] == [("H9004|23Nov", "10003"), ("H9004|23Nov", "10002"),
+                                                           ("H9003|22Nov", "10001"), ("H9002|21Nov", "10003")]
     f = {x["pairing"]: x for x in db.recent_finds()}
     assert f["H9001"]["inflt"] is None and f["H9001"]["inflt_skip"] is True and f["H9001"]["inflt_emp"] == ""
     assert f["H9001"]["pickers"] == ["10001"] and f["H9004"]["pickers"] == []
@@ -297,8 +299,9 @@ def test_the_pickup_check_stores_the_open_seat_picker(W, monkeypatch):  # noqa: 
 
 def test_the_pickup_check_with_no_roster_from_the_pot_links_nobody_of_two(W, monkeypatch):  # noqa: F811
     """Review R1: the pot detail read gave no crew line (crew '' and open_seats '' on the row): the pickup check reads
-    the two names without a roster (pickup_result, known False), so neither is a picker: none linked, none scored,
-    none looked up in flight. The old-row rule (pickers_of) says the same."""
+    the two names without a roster (pickup_result, known False), so neither is a picker: none linked, none scored.
+    The old-row rule (pickers_of) says the same. 1.7.9 (Ryan, Nov 15): with the picker not known, each pilot named is
+    looked up in flight for his own verdict (inflt_named); nobody becomes the picker."""
     monkeypatch.setattr(W, "inflt_check", lambda fl, limit=3: False)
     monkeypatch.setattr(W, "pilot_check", lambda fl: False)
     for f in ("email_unchanged_fixed", "email_details_fixed", "pickup_backfilled", "pickers_scored", "ids_backfilled"):
@@ -312,7 +315,9 @@ def test_the_pickup_check_with_no_roster_from_the_pot_links_nobody_of_two(W, mon
     for f in W.DB.recent_finds():
         assert f["picked_by"] == f"FO {JANE}; RO {RICK}" and f["pickers"] == [], f
         assert f["pickup_known"] is False and pickers_of({"by": f["picked_by"]}, {"open_seats": ""}) == []
-    assert W.DB.picker_stats() == {} and W.DB.pickups_without_inflt() == []
+    assert W.DB.picker_stats() == {}
+    assert sorted(t[:2] for t in W.DB.pickups_without_inflt()) == [
+        ("H9001|20Nov", "10001"), ("H9001|20Nov", "10002"), ("H9002|21Nov", "10001"), ("H9002|21Nov", "10002")]
 
 
 def test_the_release_text_says_what_the_code_does():

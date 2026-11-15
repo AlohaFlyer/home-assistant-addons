@@ -8,33 +8,56 @@
      each field with its source and date and the other sources' values, a pencil to edit it (a hand edit stays shown
      through later uploads and is logged with your reason; on drift "Use upload value" or "Keep my edit"), call, text
      and mail links, the notes field (saved compare-and-set on the version it was read at: a newer save shows beside your draft, with
-     "Take theirs" and "Save mine over theirs"; every version kept, Restore any), the dated log (add, Only me, take
-     back your own, hide, restore, purge), the picker's pickup history (running count per layover station, trip
+     "Take theirs" and "Save mine over theirs"; the newest 50 versions of each author kept, Restore any), the dated
+     log (add, Only me, take back your own, hide, restore, purge), the picker's pickup history (running count per layover station, trip
      length, turn or layover, credit, report time, weekday, pickup speed), the AI note read only when there is one
-     (written later by HOM's models, labeled AI, never filled in 1.7.8), the history, merge, renumber and delete; the
-     conflicts the uploads held for you; a new record; the daily copies and Restore.
+     (written by HOM's consultant models from anonymous pickup statistics, labeled AI, 1.7.9), the history, merge,
+     renumber and delete; the conflicts the uploads held for you; a new record; Sharing (1.7.9: one "Share with
+     <pilot>" switch per pilot with a portal and the AI notes switch, both off until Ryan taps them); the daily copies
+     and Restore.
    - Follow (follow: true, the watcher tab right under the pilot lookup card): the record and notes of the pilot that
      card shows (sensor.flight_watcher_pilot_schedule's emp and name, debounced 1 s). It never publishes pilot/set.
-   Admin mode only (not FW_PORTAL, a Home Assistant admin, the admin's own copy): it talks to the app's ingress API
+   Admin mode (not FW_PORTAL, a Home Assistant admin, the admin's own copy): it talks to the app's ingress API
    (api/pilotdb) the way the uploads card does (an ingress session cookie, re-validated before it lapses), every POST
-   as JSON with the header X-FW-Card: pilotdb. Anyone else sees one read-only line. The card is kept off every portal
-   in 1.7.8 (watcher.PORTAL_CARDS_OUT); sharing with a portal pilot is 1.7.9.
+   as JSON with the header X-FW-Card: pilotdb. Anyone else on Home Assistant sees one read-only line.
+   Portal mode (1.7.9, contract 1 revision 4; FW_PORTAL, on only in a portal's copy: portal.portal_card), on a pilot's
+   Pilot tab right under the pilot card, only while Ryan shares his pilot database with that pilot:
+   - It reads the pilot's own synthesized sensor (state on, off or waiting; shown: the brief of the pilot his pilot
+     card shows, with that one pilot's phones and emails, B23; answers; pending; limits) and his own file of the
+     pilots with shared notes (fetched from his folder under /local/, which the portal serves as its pilotdb file).
+     It never calls the ingress API and never opens the database.
+   - It shows the pilot he looked up (the record, call / text / mail links for that pilot only, the notes field, the
+     log) and the list of pilots with shared notes (a filter by name or Sen #, tap one to open it; no phones or
+     emails there).
+   - It writes with two commands to his own Watcher (mqtt.publish, which the portal turns into a signed command):
+     pilotdb/note (the notes field with compare-and-set on the version it was read at, a log entry, a take back of his
+     own entry) and pilotdb/edit (one record field, compare-and-set on the record's revision; or back to the uploads'
+     value). Each carries a request id; the draft stays in the box until the Watcher's answer for that id is in (a
+     fixed phrase: "Saved", "Not saved: changed by ... at 10:00 HST; your text is still in the box"). A stale notes
+     save shows both texts, with "Take theirs" and "Save mine over theirs". No author, name or employee number is
+     ever sent: Ryan's Watcher takes the author from the pilot's instance.
+   - Fields are 16 px and every control at least 44 px tall, on every width.
    Rendering rule: every database value (notes, entries, and uploaded names, which are third-party PDF and CSV text
    too) goes in as text through h() (textContent and text nodes), never as markup; text is never turned into a link;
    the only links are tel:, sms: and mailto: set through the href property after the pilot card's number and address
    checks. No markup is ever parsed from a string here. */
-const FW_PORTAL = false;  // portal.portal_card turns it on in a portal's copy (none in 1.7.8)
+const FW_PORTAL = false;  // portal.portal_card turns it on in a portal's copy
 const FW_PDB_SLUG = ["43b22650", "flight", "watcher"].join("_");  // in parts: a pilot's copy keeps the one app's slug
 const FW_PDB_PREFIX = "flight_watcher";  // cards.pilot_copy makes it flight_watcher_<name> in a pilot's copy
 const FW_PDB_ADMIN_COPY = FW_PDB_PREFIX === ["flight", "watcher"].join("_");
 const FW_PDB_SENSOR = "sensor.flight_watcher_pilotdb";  // the admin's only (roles.ENTITY_FEATURE one_writer)
 const FW_PDB_PILOT = "sensor.flight_watcher_pilot_schedule";
+const FW_PDB_FILE = "/local/flight-watcher/pilotdb_";  // cards.pilot_copy makes it the pilot's own folder
 const FW_PDB_ZERO = "000000000000";
+const FW_PDB_PID_RE = /^p[0-9a-f]{10}$/, FW_PDB_EID_RE = /^n[0-9a-f]{10}$/, FW_PDB_REV_RE = /^[0-9a-f]{12}$/;
+const FW_PDB_LOST_MS = 150 * 1000;  // no answer and nothing waiting this long: the card says so (the Watcher answers a lost one after 120 s)
+const FW_PDB_LIST_MAX = 100;  // rows of the shared notes list drawn at once
 const FW_PDB_ENTRY_MAX = 2000, FW_PDB_FIELD_MAX = 4000, FW_PDB_WHY_MAX = 200, FW_PDB_Q_MAX = 60;
 const FW_PDB_REFRESH_MS = 5 * 60 * 1000;  // the Supervisor keeps an ingress session 15 min from its last validation
 const FW_PDB_URL_RE = /^\/api\/hassio_ingress\/[A-Za-z0-9_-]+\/?$/;
 const FW_PDB_TEL_RE = /^\+?\d{7,15}$/;  // the pilot card's PILOT_TEL_RE
-const FW_PDB_MAIL_RE = /^[^\s@<>"'&]+@[^\s@<>"'&]+\.[A-Za-z]{2,}$/;  // the pilot card's PILOT_MAIL_RE
+// the pilot card's PILOT_MAIL_RE; 1.7.9 review: no ? % # , ; (an address never carries mailto parameters into the link)
+const FW_PDB_MAIL_RE = /^[^\s@<>"'&?%#,;]+@[^\s@<>"'&?%#,;]+\.[A-Za-z]{2,}$/;
 const FW_PDB_FIELDS = [["name", "Name"], ["sen", "Sen #"], ["doh", "DOH"], ["status", "Status"], ["retire", "Retires"],
   ["seat", "Seat"], ["equip", "Equipment"], ["phones", "Phones"], ["emails", "Emails"], ["union_id", "Union ID"]];
 const FW_PDB_LABEL = Object.fromEntries(FW_PDB_FIELDS.concat([["text", "The text"], ["why", "The reason"], ["emp", "The employee #"],
@@ -181,6 +204,12 @@ label.ck{display:inline-flex;gap:6px;align-items:center;min-height:30px}
  .fcol{display:none}.rfl{display:block}
  .pkw{display:none}.pkl{display:block}
 }
+.prow{display:flex;flex-wrap:wrap;gap:2px 10px;align-items:center;padding:2px 0;border-bottom:1px solid var(--divider-color)}
+.prow:last-child{border-bottom:0}.prow.on .nm{text-decoration:underline}
+:host([portal]) input,:host([portal]) textarea,:host([portal]) select{font-size:16px}
+:host([portal]) button,:host([portal]) button.s,:host([portal]) .nm,:host([portal]) a.ct,:host([portal]) label.ck{min-height:44px}
+:host([portal]) details>summary{min-height:44px;line-height:44px}
+:host([portal]) input[type=search],:host([portal]) input[type=text]{min-height:44px}
 @media (max-width: 700px){
  input,textarea,select{font-size:16px}
  button,button.s,.chip,.nm,a.ct,label.ck{min-height:44px}
@@ -197,18 +226,23 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     this._q = ""; this._f = "all"; this._page = 0; this._res = null; this._rec = null; this._recWhy = "";
     this._conf = null; this._view = null; this._rev = null; this._msgEl = {}; this._d = {}; this._busy = false;
     this._follow = { sig: null, emp: "", name: "" };
+    this._pd = {}; this._sent = {}; this._pFile = null; this._pWant = ""; this._pBusy = false; this._pNext = 0;
+    this._pSig = null; this._pq = ""; this._pSelPid = ""; this._pPid = {};
   }
   getCardSize() { return this._c && this._c.follow ? 4 : 8; }
   _admin() { return !!(this._h && this._h.user && this._h.user.is_admin === true); }
   set hass(hs) {
     if (typeof this.toggleAttribute === "function") this.toggleAttribute("dark", !!(hs && hs.themes && typeof hs.themes.darkMode === "boolean" ? hs.themes.darkMode : typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches));
     this._h = hs;
-    const mode = !FW_PORTAL && FW_PDB_ADMIN_COPY && this._admin() ? "admin" : "other";
+    const mode = FW_PORTAL ? "portal" : FW_PDB_ADMIN_COPY && this._admin() ? "admin" : "other";
+    if (typeof this.toggleAttribute === "function") this.toggleAttribute("portal", mode === "portal");
     if (mode !== this._mode) {
       this._mode = mode;
+      this._pSig = null;
       this._build();
-      if (mode === "admin" && !this._c.follow) this._search(true);
+      if (mode === "admin" && !this._c.follow) { this._search(true); this._loadStatus(); }
     }
+    if (mode === "portal") { this._pFromSensor(); return; }
     if (mode !== "admin") return;
     this._fromSensor();
     if (this._c.follow) this._fromPilot();
@@ -230,6 +264,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     const box = h("div", { class: "c" });
     card.append(box);
     root.replaceChildren(style, card);
+    if (this._mode === "portal") { this._pBuild(box); return; }
     if (this._mode !== "admin") {
       box.append(h("div", { class: "ttl" }, "Pilot database"),
         h("div", { class: "u" }, "The pilot database is on Ryan's dashboard, for a Home Assistant admin."));
@@ -327,6 +362,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     if (!this._c.follow && this._res) await this._search(false);
     if (this._rec && this._rec.pid) await this._open(this._rec.pid, false);
     if (!this._c.follow && this._conf) await this._loadConflicts();
+    if (!this._c.follow && this._view) await this._loadStatus();  // 1.7.9: a shared pilot's waiting changes
   }
   _renderStatus() {
     const E = this._els, a = this._sensor;
@@ -677,7 +713,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     const more = rec.entries_total > (rec.entries || []).length ? h("div", { class: "u" }, `The newest ${(rec.entries || []).length} of ${rec.entries_total} are shown.`) : null;
     return h("div", { class: "sec" }, h("h3", {}, "Log"), ta,
       h("div", { class: "row" }, h("button", { type: "button", "data-k": "entry-add", onclick: () => this._addEntry() }, "Add"), cnt,
-        h("label", { class: "ck" }, only, "Only me"), h("span", { class: "u" }, "Nothing is shared with a pilot in 1.7.8; Only me stays yours when sharing comes.")),
+        h("label", { class: "ck" }, only, "Only me"), h("span", { class: "u" }, "Only me keeps an entry off a shared pilot's portal.")),
       msg, ents.length ? h("div", {}, ents) : h("div", { class: "u" }, "No entries yet."), more);
   }
   _entryNode(e) {
@@ -838,6 +874,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     const inp = (k, ph, mode) => h("input", { type: "text", "data-k": `new-${k}`, value: n[k], placeholder: ph, "aria-label": ph, inputMode: mode || null, autocomplete: "off", spellcheck: false, oninput: (ev) => { n[k] = ev.target.value; } });
     const copies = this._view ? this._copiesNodes() : [h("button", { class: "g s", type: "button", onclick: () => this._loadStatus() }, "Show the copies")];
     E.more.replaceChildren(
+      h("div", { class: "sec", "data-share": "" }, h("h3", {}, "Sharing"), this._shareNodes()),
       this._det("new", "sec", "Add a record", h("div", { class: "u" }, "A pilot the uploads do not have yet. Its values are your edits."),
         h("div", { class: "row" }, inp("emp", "Employee #", "numeric"), inp("name", "Last, First"), inp("doh", "DOH YYYY-MM-DD (optional)")),
         h("div", { class: "row" }, h("button", { type: "button", "data-k": "new-add", onclick: async () => {
@@ -846,7 +883,46 @@ class FlightWatcherPilotdbCard extends HTMLElement {
           const r = await this._post(body, "new", "Record added.", true);
           if (r && r.ok) { this._newRec = null; this._renderMore(); this._search(false); this._say("new", "Record added.", "ok"); }
         } }, "Add the record")), msgN),
-      h("details", { class: "sec", open: !!this._view }, h("summary", {}, "Daily copies"), copies));
+      this._det("copies", "sec", "Daily copies", copies));
+  }
+  // ---- 1.7.9: Ryan's own switches (never sent by anyone else): share with one portal pilot, the AI notes
+  _shareNodes() {
+    const st = this._view && this._view.status;
+    if (!st) return [h("div", { class: "u" }, "Reading the switches...")];
+    const pilots = Array.isArray(st.pilots) ? st.pilots : [], ai = st.ai || {};
+    const rows = pilots.map((p) => {
+      const name = String(p.name || "");
+      const box = h("input", { type: "checkbox", role: "switch", checked: !!p.shared, "data-k": `share-${name}`, onchange: (ev) => this._setShare(name, ev.target) });
+      const say = !p.shared ? "Off: nothing of the pilot database is on his portal."
+        : `On: he sees the pilots with shared notes and the pilot he looks up.${p.pending ? ` ${p.pending} of his changes wait.` : ""}${p.full ? " His file is full: his new notes are refused." : ""}`;
+      return h("div", { class: "row", "data-share-pilot": name }, h("label", { class: "ck" }, box, `Share with ${name}`), h("span", { class: "u" }, say));
+    });
+    const aiBox = h("input", { type: "checkbox", role: "switch", checked: !!ai.on, "data-k": "ai-on", onchange: (ev) => this._setAi(ev.target) });
+    const n = +ai.notes || 0, left = +ai.left_out || 0;
+    // 1.7.9 review: a copy put back never turns a switch on again; say so until Ryan uses a switch
+    const reset = st.share_reset ? h("div", { class: "ban", role: "status", "data-share-reset": "" }, "A copy of the database was put back: sharing and the AI notes were turned off. They stay off until you turn them on again here.") : null;
+    return [reset, h("div", { class: "u" }, "Off until you turn it on. A shared pilot sees the pilots with shared notes and the pilot he looks up (with that one pilot's phones and emails), and can edit the notes field, add to the log and edit every field. Each change is checked against the version he read, the earlier versions are kept (the newest 50 of the notes field per author, every field edit in the history) and you can put any back. Only me entries, hidden entries, the history, pickups and the AI note never leave this card."),
+      rows.length ? rows : h("div", { class: "u" }, "No pilot with a portal is set up."),
+      h("div", { class: "row", "data-ai": "" }, h("label", { class: "ck" }, aiBox, "AI notes ", h("span", { class: "tag ai" }, "AI")),
+        h("span", { class: "u" }, `${ai.on ? "On" : "Off"}: HOM's consultant models write a short note per pilot with 3 or more pickups, from anonymous statistics only (no name, no employee number). ${n} written.${left ? ` ${left} pilot${left === 1 ? " was" : "s were"} left out of the last batch (no note came back).` : ""}`),
+        n && !ai.on ? h("button", { class: "g s", type: "button", "data-k": "ai-clear", onclick: () => { if (confirm(`Remove the ${n} AI note${n === 1 ? "" : "s"}?`)) this._post({ op: "ai", on: false, clear: true }, "share", "The AI notes are removed.").then(() => this._loadStatus()); } }, "Remove the AI notes") : null),
+      this._msgNode("share")];
+  }
+  async _setShare(name, box) {
+    const on = !!box.checked;
+    const ask = on ? `Share the pilot database with ${name}? He sees the pilots with shared notes and the pilot he looks up, with that pilot's phones and emails, and can edit notes, the log and every field.`
+      : `Stop sharing with ${name}? His file is deleted at once and his waiting changes are refused.`;
+    if (!confirm(ask)) { box.checked = !on; return; }
+    const r = await this._post({ op: "share", pilot: name, on }, "share", on ? `Shared with ${name}.` : `No longer shared with ${name}.`);
+    if (!r || !r.ok) box.checked = !on;
+    await this._loadStatus();
+  }
+  async _setAi(box) {
+    const on = !!box.checked;
+    if (on && !confirm("Turn the AI notes on? Anonymous pickup statistics (no name, no employee number) go to HOM's consultant models, at most once a day.")) { box.checked = false; return; }
+    const r = await this._post({ op: "ai", on }, "share", on ? "AI notes on." : "AI notes off. The notes already written stay until you remove them.");
+    if (!r || !r.ok) box.checked = !on;
+    await this._loadStatus();
   }
   async _loadStatus() {
     try {
@@ -907,6 +983,330 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     } catch (e) {
       if (seq === this._fseq) this._say("main", this._err(e), "err");
     }
+  }
+
+  // ---- 1.7.9 portal mode (contract 1 revision 4): a shared pilot's view, from his own sensor and his own file
+  _pBuild(box) {
+    const E = this._els;
+    E.pTop = h("div", { "data-ptop": "" });
+    E.msg = h("div", { class: "msg", role: "status", "aria-live": "polite" });
+    E.sr = h("div", { class: "vh", role: "status", "aria-live": "polite", "data-live": "" });
+    E.pShown = h("div", { "data-pshown": "" });
+    E.pList = h("div", { "data-plist": "" });
+    E.pSel = h("div", { "data-psel": "" });
+    box.append(h("div", { class: "ttl" }, this._c.title || "Pilot database"), E.pTop, E.msg, E.sr, E.pShown, E.pList, E.pSel);
+  }
+  _pub(sub, obj) {  // a portal only: the pilot's own Watcher takes it (the portal signs it into a command)
+    if (!FW_PORTAL) return Promise.reject(new Error("not on a portal"));
+    return this._h.callService("mqtt", "publish", { topic: `${FW_PDB_PREFIX}/${sub}`, payload: JSON.stringify(obj) });
+  }
+  _pNote(body) { return this._pub("pilotdb/note", body); }
+  _pEdit(body) { return this._pub("pilotdb/edit", body); }
+  _pSensor() {
+    const st = this._state(FW_PDB_SENSOR);
+    return st ? { state: String(st.state || ""), a: st.attributes || {} } : null;
+  }
+  _pLim(k, dflt) {
+    const s = this._pSensor(), l = (s && s.a.limits) || (this._pFile && this._pFile.limits) || {};
+    return Number.isInteger(l[k]) && l[k] > 0 ? l[k] : dflt;
+  }
+  _pDraft(pid) { return this._pd[pid] || (this._pd[pid] = { wait: {} }); }
+  _pFromSensor() {
+    const s = this._pSensor(), a = s ? s.a : {};
+    this._pFetch(s);
+    this._pAnswers(a);
+    const sig = s ? JSON.stringify([s.state, a.rev, a.count, a.shown, a.pending, this._pWant]) : "none";
+    if (sig === this._pSig) return;
+    this._pSig = sig;
+    this._pRender();
+  }
+  _pFetch(s) {  // his file of the pilots with shared notes, again when the sensor names another rev
+    if (!s || s.state !== "on") { this._pFile = null; this._pWant = ""; return; }
+    const key = /^[0-9a-f]{32}$/.test(String(s.a.file_key || "")) ? s.a.file_key : "";
+    const rev = FW_PDB_REV_RE.test(String(s.a.rev || "")) ? s.a.rev : "";
+    const want = `${key}|${rev}`;
+    if (!key || !rev || want === this._pWant || this._pBusy || Date.now() < this._pNext) return;
+    this._pBusy = true;
+    fetch(`${FW_PDB_FILE}${key}.json?r=${rev}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        this._pBusy = false;
+        if (!j || typeof j !== "object" || !Array.isArray(j.records)) { this._pNext = Date.now() + 15000; return; }
+        this._pWant = want; this._pFile = j; this._pSig = null;
+        if (this._mode === "portal" && this._h) this._pFromSensor();
+      })
+      .catch(() => { this._pBusy = false; this._pNext = Date.now() + 15000; });
+  }
+  _pRecs() {
+    const f = this._pFile;
+    return f ? f.records.filter((r) => r && typeof r === "object" && FW_PDB_PID_RE.test(String(r.pid || ""))) : [];
+  }
+  _pShown() {
+    const s = this._pSensor(), sh = s && s.state === "on" ? s.a.shown : null;
+    return sh && typeof sh === "object" ? sh : null;
+  }
+  _pCur(src) {  // the record a box shows: the pilot looked up (the sensor's brief and the file's notes) or the one tapped
+    const str = (v) => String(v == null ? "" : v);
+    if (src === "sel") {
+      const r = this._pSelPid ? this._pRecs().find((x) => x.pid === this._pSelPid) : null;
+      return r ? { ...r, looked: false, contact: null, emp: "" } : null;
+    }
+    const sh = this._pShown();
+    if (!sh || sh.none || !FW_PDB_PID_RE.test(str(sh.pid))) return null;
+    const f = this._pRecs().find((x) => x.pid === sh.pid) || {};
+    const rec = { pid: sh.pid, emp: str(sh.emp), looked: true, gone: !!sh.gone, edited: Array.isArray(sh.edited) ? sh.edited : [],
+      rev: Math.max(+sh.rev || 0, +f.rev || 0), notes: f.notes || null, entries: Array.isArray(f.entries) ? f.entries : [],
+      entries_total: +f.entries_total || 0, contact: sh.contact && typeof sh.contact === "object" ? sh.contact : null };
+    for (const k of ["name", "sen", "doh", "status", "retire", "seat", "equip"]) rec[k] = str(sh[k] != null ? sh[k] : f[k]);
+    return rec;
+  }
+  _pSayPid(pid, part, text, cls) {  // a section's line, in whichever box shows that record now
+    for (const src of ["shown", "sel"]) if (this._pPid[src] === pid) this._say(`${src}-${part}`, text, cls);
+  }
+  _pAnswers(a) {  // the Watcher's answer to each request this card sent (fixed phrases, shown as text)
+    const ans = Array.isArray(a.answers) ? a.answers : [], pend = Array.isArray(a.pending) ? a.pending : [];
+    for (const [rid, s] of Object.entries(this._sent)) {
+      const x = ans.find((y) => y && y.rid === rid), pd = this._pDraft(s.pid);
+      if (!x) {
+        if (s.sent && Date.now() - s.at > FW_PDB_LOST_MS && !pend.includes(rid)) {
+          delete this._sent[rid]; delete pd.wait[s.part]; this._pSig = null;
+          this._pSayPid(s.pid, s.part, "No answer from the Watcher. Your text is still in the box: send it again.", "err");
+        }
+        continue;
+      }
+      delete this._sent[rid]; delete pd.wait[s.part]; this._pSig = null;
+      if (x.ok === true) {
+        if (s.kind === "add") pd.entry = null;
+        if (s.kind === "edit" || s.kind === "unset") pd.edit = null;
+        if (s.kind === "field") { pd.hold = { text: s.text, want: this._pWant }; pd.notes = null; pd.conflict = null; }
+        this._pSayPid(s.pid, s.part, s.okText, "ok");
+      } else {
+        const why = String(x.why || "Not saved").slice(0, 200);
+        const both = s.kind === "field" && /^Not saved: changed by /.test(why);
+        if (both) pd.conflict = why;  // the box under the notes says it, with both texts
+        this._pSayPid(s.pid, s.part, both ? "" : `${why}.`, "err");
+      }
+    }
+  }
+  _pSend(src, rec, part, kind, okText, make, text) {  // one request with its own id; the draft stays until its answer
+    const where = `${src}-${part}`, pd = this._pDraft(rec.pid);
+    if (pd.wait[part]) { this._say(where, "Wait for the Watcher's answer to the last change.", "err"); return; }
+    const rid = fwPdbRid();
+    pd.wait[part] = rid;
+    const s = (this._sent[rid] = { pid: rec.pid, part, kind, okText, text, at: Date.now(), sent: false });
+    this._say(where, "Sending...", "");
+    this._pPaint(src);
+    Promise.resolve().then(() => make(rid)).then(() => {
+      s.sent = true; s.at = Date.now();
+      if (this._sent[rid]) this._pSayPid(rec.pid, part, "Sent. Waiting for the Watcher...", "");
+    }).catch((e) => {
+      if (!this._sent[rid]) return;
+      delete this._sent[rid]; delete pd.wait[part];
+      this._pSayPid(rec.pid, part, `Not sent: ${this._err(e).replace(/\.$/, "")}. Your text is still in the box.`, "err");
+      this._pPaint(src);
+    });
+  }
+  _pRender() {
+    const E = this._els;
+    if (!E || !E.pTop) return;
+    const s = this._pSensor(), top = [];
+    if (!s) top.push(h("div", { class: "u" }, "The Watcher has not published the pilot database yet."));
+    else if (s.state === "off") top.push(h("div", { class: "u", "data-off": "" }, "Not shared: Ryan has not turned on his pilot database for you."));
+    else if (s.state !== "on") top.push(h("div", { class: "u" }, "The shared pilot database is being read. One moment."));
+    else {
+      top.push(h("div", { class: "u" }, "Shared with Ryan. Notes are read by Ryan and his assistant; write them as notes, not requests."));
+      if (this._pFile && this._pFile.full === true) top.push(h("div", { class: "ban", role: "alert" }, "The shared notes file is full: new notes are refused until it is trimmed."));
+    }
+    E.pTop.replaceChildren(...top);
+    if (!s || s.state !== "on") {
+      // 1.7.9 review: not shared (or not read yet): a line a save left behind ("Seat saved.") goes with the records
+      for (const b of [E.pShown, E.pList, E.pSel]) b.replaceChildren();
+      this._msgs = {}; this._msgEl = {};
+      if (E.msg) { E.msg.className = "msg"; E.msg.textContent = ""; }
+      return;
+    }
+    if (this._pSelPid && (!this._pRecs().some((r) => r.pid === this._pSelPid) || (this._pShown() || {}).pid === this._pSelPid)) this._pSelPid = "";
+    this._pPaint("shown"); this._pPaintList(); this._pPaint("sel");
+  }
+  _pPaint(src) {
+    const E = this._els, box = src === "shown" ? E.pShown : E.pSel;
+    if (!box) return;
+    const rec = this._pCur(src), pid = rec ? rec.pid : "";
+    if (pid !== this._pPid[src]) {  // another record in this box: its lines go
+      this._pPid[src] = pid;
+      for (const k of ["rec", "notes", "log"]) if (this._msgs) delete this._msgs[`${src}-${k}`];
+    }
+    const nodes = [];
+    if (src === "shown") {
+      const sh = this._pShown();
+      nodes.push(h("h3", {}, "The pilot you looked up"));
+      if (!sh) nodes.push(h("div", { class: "u" }, "Look a pilot up above to see his record and notes."));
+      else if (!rec) nodes.push(h("div", { class: "u", "data-none": "" }, "Not in Ryan's pilot database."));
+    }
+    if (rec) nodes.push(this._pRecord(src, rec));
+    this._keepFocus(box, () => box.replaceChildren(...(nodes.length ? [h("div", { class: "sec" }, nodes)] : [])));
+  }
+  _pPaintList() {
+    const E = this._els;
+    if (!E.pList) return;
+    this._keepFocus(E.pList, () => E.pList.replaceChildren(h("div", { class: "sec" }, this._pListNodes())));
+  }
+  _pListNodes() {
+    if (!this._pFile) return [h("h3", {}, "Pilots with shared notes"), h("div", { class: "u" }, "Reading the shared notes...")];
+    const recs = this._pRecs(), shown = (this._pShown() || {}).pid || "";
+    const q = this._pq.trim().toLowerCase(), words = q.split(/[\s,]+/).filter(Boolean);
+    const hit = (r) => !words.length || words.every((w) => String(r.name || "").toLowerCase().includes(w) || (/^\d+$/.test(w) && String(r.sen || "") === w));
+    const num = (r) => (/^\d+$/.test(String(r.sen || "")) ? +r.sen : 1e9);
+    const rows = recs.filter(hit).sort((x, y) => num(x) - num(y) || String(x.name || "").localeCompare(String(y.name || "")));
+    const inp = h("input", { type: "search", "data-k": "pq", value: this._pq, placeholder: "Filter by name or Sen #", autocomplete: "off", spellcheck: false,
+      "aria-label": "Filter the pilots with shared notes", oninput: (ev) => { this._pq = ev.target.value; this._pPaintList(); } });
+    const out = [h("h3", {}, `Pilots with shared notes (${recs.length})`)];
+    if (!recs.length) { out.push(h("div", { class: "u" }, "No pilot has shared notes yet. Look a pilot up above to add the first.")); return out; }
+    out.push(h("div", { class: "row" }, inp));
+    if (!rows.length) out.push(h("div", { class: "u" }, "No pilot matches."));
+    out.push(h("div", { role: "list" }, rows.slice(0, FW_PDB_LIST_MAX).map((r) => {
+      const n = +r.entries_total || 0, on = r.pid === this._pSelPid || r.pid === shown;
+      const brief = [r.sen ? `Sen ${r.sen}` : "", r.status || "", r.seat || ""].filter(Boolean).join(" · ");
+      return h("div", { class: `prow${on ? " on" : ""}`, role: "listitem" },
+        h("button", { class: "nm", type: "button", "data-k": `pl-${r.pid}`, dir: "auto", onclick: () => this._pOpen(r.pid) }, String(r.name || "(no name)")),
+        brief ? h("span", { class: "u" }, brief) : null,
+        r.notes ? h("span", { class: "tag" }, "notes") : null, n ? h("span", { class: "tag" }, `${n} in the log`) : null,
+        r.gone ? h("span", { class: "tag w" }, "gone") : null, r.pid === shown ? h("span", { class: "tag" }, "looked up") : null);
+    })));
+    if (rows.length > FW_PDB_LIST_MAX) out.push(h("div", { class: "u" }, `The first ${FW_PDB_LIST_MAX} of ${rows.length} are shown: type to narrow.`));
+    return out;
+  }
+  _pOpen(pid) {
+    const E = this._els, shown = (this._pShown() || {}).pid === pid;
+    if (!shown) { this._pSelPid = pid; this._pPaint("sel"); this._pPaintList(); }
+    const box = shown ? E.pShown : E.pSel;
+    if (box && box.scrollIntoView) box.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+  _pRecord(src, rec) {
+    const m = (k) => this._msgNode(`${src}-${k}`);
+    const brief = [["Sen", rec.sen], ["Emp", rec.emp], ["DOH", rec.doh], ["Status", rec.status], ["Retires", rec.retire], ["Seat", rec.seat], ["Equipment", rec.equip]]
+      .filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(" · ");
+    const head = h("div", { class: "rh" }, h("div", {}, h("div", { class: "rn", dir: "auto" }, String(rec.name || "(no name)"),
+      rec.gone ? h("span", { class: "tag w" }, "gone from the list") : null), h("div", { class: "u" }, brief)),
+      src === "sel" ? h("button", { class: "g s", type: "button", "data-k": `${src}-close`, onclick: () => { const pid = this._pSelPid; this._pSelPid = ""; this._pPaint("sel"); this._pPaintList(); const b = this._els.pList.querySelector(`[data-k="pl-${pid}"]`); if (b) b.focus(); } }, "Close") : null);
+    const c = rec.looked && rec.contact ? rec.contact : null;
+    const links = c ? this._contactNodes({ phones: { value: c.phones }, emails: { value: c.emails } }) : null;
+    const rows = [["name", "Name"], ["sen", "Sen #"], ["doh", "DOH"], ["status", "Status"], ["retire", "Retires"], ["seat", "Seat"], ["equip", "Equipment"]]
+      .concat(rec.looked ? [["phones", "Phones"], ["emails", "Emails"]] : [], [["union_id", "Union ID"]]);
+    const fields = this._det(`${src}-fields`, "sec", "Edit a field",
+      h("div", { class: "u" }, `An edit is checked against the record as you read it and logged with your name; every earlier value is kept.${rec.looked ? "" : " Phones and emails show only for the pilot you looked up."}`),
+      m("rec"), rows.map(([k, label]) => this._pField(src, rec, k, label)));
+    return h("div", { class: "rec", "data-rec": rec.pid, "data-src": src }, head, links, this._pNotes(src, rec, m("notes")), this._pLog(src, rec, m("log")), fields);
+  }
+  _pField(src, rec, k, label) {
+    const pd = this._pDraft(rec.pid), ed = pd.edit && pd.edit.field === k ? pd.edit : null, c = rec.contact || {};
+    const raw = k === "phones" ? (Array.isArray(c.phones) ? c.phones : []) : k === "emails" ? (Array.isArray(c.emails) ? c.emails : []) : k === "union_id" ? "" : rec[k];
+    const shown = this._show(k, raw), edited = (rec.edited || []).includes(k), busy = !!pd.wait.rec;
+    const start = () => { pd.edit = { field: k, value: k === "phones" ? raw.map((p) => `${p.label || "other"} ${p.number || ""}`).join("\n") : k === "emails" ? raw.join("\n") : shown, why: "" }; this._pPaint(src); this._focus2(src, `${src}-edit-${k}`); };
+    const lines = [h("div", { class: "row" }, h("span", { class: "v", dir: "auto" }, shown || (k === "union_id" ? "not shown here" : "-")),
+      edited ? h("span", { class: "tag w" }, "edited") : null,
+      ed ? null : h("button", { class: "g s", type: "button", "data-k": `${src}-f-${k}-edit`, "aria-label": `Edit ${label}`, onclick: start }, "Edit"),
+      edited && !ed ? h("button", { class: "g s", type: "button", "data-k": `${src}-f-${k}-unset`, disabled: busy,
+        onclick: () => this._pSend(src, rec, "rec", "unset", `${label}: back to the uploads' value.`, (rid) => this._pEdit({ op: "unset", pid: rec.pid, field: k, rev: rec.rev, rid })) }, "Use upload value") : null)];
+    if (ed) {
+      const multi = k === "phones" || k === "emails";
+      const input = multi
+        ? h("textarea", { rows: 3, "data-k": `${src}-edit-${k}`, value: ed.value, "aria-label": label, oninput: (ev) => { ed.value = ev.target.value; } })
+        : h("input", { type: "text", "data-k": `${src}-edit-${k}`, value: ed.value, "aria-label": label, autocomplete: "off", spellcheck: false, oninput: (ev) => { ed.value = ev.target.value; } });
+      lines.push(h("div", { class: "ed" }, input, h("div", { class: "u" }, `${(FW_PDB_HINT[k] || "").replace(/ or blank$/, "")}${k === "status" || k === "seat" ? " (to undo an edit, Use upload value)" : ""}${k === "phones" ? " (at most 4)" : k === "emails" ? " (at most 3)" : ""}`),
+        h("input", { type: "text", "data-k": `${src}-why-${k}`, value: ed.why, placeholder: "Reason (optional, one line)", "aria-label": "Reason", maxLength: FW_PDB_WHY_MAX, oninput: (ev) => { ed.why = ev.target.value; } }),
+        h("div", { class: "row" }, h("button", { type: "button", "data-k": `${src}-f-${k}-save`, disabled: busy, onclick: () => this._pSaveField(src, rec, k, label) }, "Save"),
+          h("button", { class: "g", type: "button", "data-k": `${src}-f-${k}-cancel`, onclick: () => { pd.edit = null; this._pPaint(src); } }, "Cancel"))));
+    }
+    return h("div", { class: "fl", "data-k": `${src}-f-${k}`, tabindex: "-1" }, h("div", { class: "fk" }, label), h("div", { class: "fv" }, lines));
+  }
+  _focus2(src, k) {
+    const box = src === "shown" ? this._els.pShown : this._els.pSel;
+    const n = box && Array.from(box.querySelectorAll("[data-k]")).find((x) => x.dataset.k === k);
+    if (n) n.focus();
+  }
+  _pSaveField(src, rec, k, label) {
+    const where = `${src}-rec`, ed = this._pDraft(rec.pid).edit;
+    if (!ed) return;
+    const bad = (t) => this._say(where, t, "err");
+    let value;
+    if (k === "phones" || k === "emails") {
+      const list = this._parseList(k, ed.value), max = k === "phones" ? 4 : 3;
+      if (list.length > max) return bad(`${label}: at most ${max}.`);
+      value = JSON.stringify(list);
+    } else {
+      value = String(ed.value || "").trim();
+      if (!value) return bad(`${label}: type a value.`);
+    }
+    const why = String(ed.why || "").trim();
+    if (/[\r\n]/.test(value) || /[\r\n]/.test(why)) return bad("One line only.");
+    if (fwPdbLen(value) > this._pLim("value_max", 1000)) return bad(`${label} is too long.`);
+    if (fwPdbLen(why) > this._pLim("why_max", FW_PDB_WHY_MAX)) return bad(`The reason is at most ${this._pLim("why_max", FW_PDB_WHY_MAX)} characters.`);
+    if (!(Number.isInteger(rec.rev) && rec.rev >= 1)) return bad("The record is not read yet: try again in a moment.");
+    this._pSend(src, rec, "rec", "edit", `${label} saved.`, (rid) => {
+      const body = { op: "set", pid: rec.pid, field: k, value, rev: rec.rev, rid };
+      if (why) body.why = why;
+      return this._pEdit(body);
+    });
+  }
+  _pNotes(src, rec, msg) {
+    const pd = this._pDraft(rec.pid), cur = rec.notes && typeof rec.notes === "object" ? rec.notes : null;
+    if (pd.hold && pd.hold.want !== this._pWant) pd.hold = null;  // the file with his own save is in
+    const held = pd.hold, d = pd.notes, curRev = cur && FW_PDB_REV_RE.test(String(cur.rev || "")) ? cur.rev : FW_PDB_ZERO;
+    const text = d ? d.text : held ? held.text : cur ? String(cur.text || "") : "";
+    const max = this._pLim("field_max", FW_PDB_FIELD_MAX), n = fwPdbLen(text), busy = !!pd.wait.notes;
+    const cnt = h("span", { class: `cnt${n > max ? " over" : ""}` }, `${n} / ${max}`);
+    const ta = h("textarea", { rows: 4, "data-k": `${src}-notes`, value: text, dir: "auto", "aria-label": "Notes",
+      oninput: (ev) => { pd.notes = { text: ev.target.value, base: pd.notes ? pd.notes.base : pd.hold ? null : curRev }; const k = fwPdbLen(ev.target.value); cnt.textContent = `${k} / ${max}`; cnt.className = `cnt${k > max ? " over" : ""}`; } });
+    const kids = [h("h3", {}, "Notes"), ta, h("div", { class: "row" },
+      h("button", { type: "button", "data-k": `${src}-notes-save`, disabled: busy, onclick: () => this._pSaveNotes(src, rec, null) }, "Save notes"), cnt,
+      cur && !held ? h("span", { class: "u" }, `Saved by ${String(cur.by || "")} ${fwPdbHst(cur.at)}`) : held ? h("span", { class: "u" }, "Saved") : h("span", { class: "u" }, "No notes yet")), msg];
+    const moved = d && d.base && curRev !== d.base;
+    if (pd.conflict && d) {
+      kids.push(h("div", { class: "ban", role: "alert", "data-conflict": "" },
+        h("div", {}, `${pd.conflict}.`),
+        h("div", { class: "two" }, h("div", { class: "box" }, h("div", { class: "u" }, "Theirs (saved)"), h("div", { class: "tx", dir: "auto" }, moved ? (cur ? String(cur.text || "") : "") || "(empty)" : "Reading their version...")),
+          h("div", { class: "box" }, h("div", { class: "u" }, "Yours (not saved)"), h("div", { class: "tx", dir: "auto" }, d.text || "(empty)"))),
+        h("div", { class: "row" }, h("button", { class: "g", type: "button", "data-k": `${src}-notes-theirs`, onclick: () => { pd.notes = null; pd.conflict = null; this._say(`${src}-notes`, ""); this._pPaint(src); this._focus2(src, `${src}-notes`); } }, "Take theirs"),
+          h("button", { type: "button", "data-k": `${src}-notes-mine`, disabled: !moved || busy, onclick: () => { pd.conflict = null; this._pSaveNotes(src, rec, curRev); } }, "Save mine over theirs"))));
+    } else if (moved) kids.push(h("div", { class: "u" }, "The notes changed since you started typing: Save shows both."));
+    return h("div", { class: "sec" }, kids);
+  }
+  _pSaveNotes(src, rec, over) {
+    const where = `${src}-notes`, pd = this._pDraft(rec.pid), d = pd.notes, cur = rec.notes && typeof rec.notes === "object" ? rec.notes : null;
+    const curRev = cur && FW_PDB_REV_RE.test(String(cur.rev || "")) ? cur.rev : FW_PDB_ZERO;
+    if (!d) { this._say(where, "Nothing to save: the notes are as shown.", ""); return; }
+    const max = this._pLim("field_max", FW_PDB_FIELD_MAX);
+    if (fwPdbLen(d.text) > max) { this._say(where, `The notes field is at most ${max} characters.`, "err"); return; }
+    const base = over || d.base || curRev, text = d.text;
+    d.base = base;
+    this._pSend(src, rec, "notes", "field", "Notes saved.", (rid) => this._pNote({ op: "field", pid: rec.pid, base, text, rid }), text);
+  }
+  _pLog(src, rec, msg) {
+    const pd = this._pDraft(rec.pid), d = pd.entry || (pd.entry = { text: "" });
+    const max = this._pLim("entry_max", FW_PDB_ENTRY_MAX), n = fwPdbLen(d.text), busy = !!pd.wait.log;
+    const cnt = h("span", { class: `cnt${n > max ? " over" : ""}` }, `${n} / ${max}`);
+    const ta = h("textarea", { rows: 3, "data-k": `${src}-entry`, value: d.text, dir: "auto", placeholder: "Add a dated note", "aria-label": "Add a dated note",
+      oninput: (ev) => { d.text = ev.target.value; const k = fwPdbLen(d.text); cnt.textContent = `${k} / ${max}`; cnt.className = `cnt${k > max ? " over" : ""}`; } });
+    const list = Array.isArray(rec.entries) ? rec.entries.filter((e) => e && typeof e === "object") : [];
+    const ents = list.map((e) => {
+      const eid = String(e.eid || ""), gone = !!e.gone;
+      const take = e.mine === true && !gone && FW_PDB_EID_RE.test(eid)
+        ? h("button", { class: "g s", type: "button", "data-k": `${src}-ent-${eid}-retract`, disabled: busy, onclick: () => { if (confirm("Take this entry back? Its text is removed; a line says it was taken back.")) this._pSend(src, rec, "log", "retract", "Taken back.", (rid) => this._pNote({ op: "retract", pid: rec.pid, entry: eid, rid })); } }, "Take back") : null;
+      return h("div", { class: `ent${gone ? " gone" : ""}`, "data-eid": eid, "data-k": `${src}-ent-${eid}`, tabindex: "-1" },
+        h("div", { class: "meta" }, h("span", { class: "who" }, String(e.by || "")), fwPdbHst(e.at), e.mine === true ? h("span", { class: "tag" }, "yours") : null),
+        gone ? h("div", { class: "tx" }, "taken back") : h("div", { class: "tx", dir: "auto" }, String(e.text || "")), take ? h("div", { class: "row" }, take) : null);
+    });
+    const total = +rec.entries_total || 0;
+    return h("div", { class: "sec" }, h("h3", {}, "Log"), ta,
+      h("div", { class: "row" }, h("button", { type: "button", "data-k": `${src}-entry-add`, disabled: busy, onclick: () => {
+        const text = d.text;
+        if (!text.trim()) { this._say(`${src}-log`, "Type the note first.", "err"); return; }
+        if (fwPdbLen(text) > max) { this._say(`${src}-log`, `A note is at most ${max} characters.`, "err"); return; }
+        this._pSend(src, rec, "log", "add", "Added.", (rid) => this._pNote({ op: "add", pid: rec.pid, text, rid }));
+      } }, "Add"), cnt), msg,
+      ents.length ? h("div", {}, ents) : h("div", { class: "u" }, "No entries yet."),
+      total > ents.length ? h("div", { class: "u" }, `The newest ${ents.length} of ${total} are shown.`) : null);
   }
 
   // ---- writes: one op, JSON, the card's header; the answer redraws the record
@@ -1016,4 +1416,4 @@ class FlightWatcherPilotdbCard extends HTMLElement {
 }
 customElements.define("flight-watcher-pilotdb-card", FlightWatcherPilotdbCard);
 window.customCards = window.customCards || [];
-window.customCards.push({ type: "flight-watcher-pilotdb-card", name: "Flight Watcher pilots", description: "The pilot database: search, records, notes and log, pickups (Ryan's dashboard, admin only)" });
+window.customCards.push({ type: "flight-watcher-pilotdb-card", name: "Flight Watcher pilots", description: "The pilot database: search, records, notes and log, pickups (Ryan's dashboard); on a pilot's portal the shared notes and the pilot looked up" });

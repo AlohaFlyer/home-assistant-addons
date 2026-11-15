@@ -244,7 +244,7 @@ def test_one_push_per_machine_state_and_per_event(portal_pilot):
     W.set_machine("stopped_unexpected", "c")
     W.set_machine("stopped_unexpected", "d")
     W.pub("event/new_pairing", {"pairing": "H9001", "fit": "Fits", "far": "OK"}, retain=False)
-    W.pub("event/swap", {"pairing": "H9001"}, retain=False)  # not a portal event
+    W.pub("event/swap_test", {"pairing": "H9001"}, retain=False)  # not a portal event
     W.pub("last_new", {"pairing": "H9001"})  # a state, not an event
     assert [r["kind"] for r in sent] == ["needs_settings", "stopped_*", "new_pairing"]
     assert sent[-1]["priority"] == 5 and sent[0]["view"] == "settings"

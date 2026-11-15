@@ -32,7 +32,7 @@ const TAX_HELPERS = ["input_number.flight_watcher_federal_tax_pct", "input_numbe
 const usd = (v) => "$" + Math.round(v).toLocaleString("en-US");
 // FW-0066: only these reach a link (a tel: number of digits, an address with no space, quote or angle bracket)
 const PILOT_TEL_RE = /^\+?\d{7,15}$/;
-const PILOT_MAIL_RE = /^[^\s@<>"'&]+@[^\s@<>"'&]+\.[A-Za-z]{2,}$/;
+const PILOT_MAIL_RE = /^[^\s@<>"'&?%#,;]+@[^\s@<>"'&?%#,;]+\.[A-Za-z]{2,}$/;  // 1.7.9 review: no mailto parameters
 const pilotNameKey = (n) => {  // 'Doe, Jane A' / 'DOE, JANE' -> 'doe,jane' (contacts._key)
   const s = String(n || "").toLowerCase().replace(/[^a-z, ]/g, "");
   if (!s.includes(",")) return "";

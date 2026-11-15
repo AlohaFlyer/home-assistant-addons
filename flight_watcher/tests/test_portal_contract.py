@@ -3,7 +3,9 @@ portal.contract_text() from roles.py and portal.py, byte for byte, and its sha25
 the same value for its copy, fwportal/contract/v1.json): changing the contract means regenerating the fixture,
 updating this constant, PORTAL_CONTRACT.md and HOM's copy together. 1.7.0 (Release C): contract 1 revision 2, tickets
 on the portal (the same file name: fwp and contract stay 1). 1.7.2: revision 3 (pilot alerts, the pilot/set shape,
-recall/set refused, a pilot's PDF uploads). Synthetic data only."""
+recall/set refused, a pilot's PDF uploads). 1.7.9: revision 4 (Ryan's pilot database shared with a pilot: the pilotdb
+file, pilotdb/note, pilotdb/edit, the synthesized pilotdb state with the looked-up pilot's contact; the swap alert; the
+AI note hand-off). Synthetic data only."""
 import hashlib
 import json
 import os
@@ -17,7 +19,7 @@ import roles
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE = os.path.join(HERE, "tests", "fixtures", "portal_contract_v1.json")
 DOC = os.path.join(HERE, "PORTAL_CONTRACT.md")
-CONTRACT_SHA256 = "e8e437fe9f9ccd7822158c080351d31d98a7825ff3669bf2ba4cb9cb2f8bb9fa"
+CONTRACT_SHA256 = "9b882fb6dd00a932e196359edc364ee8ecbe78da7077f5f29a7fdc06301a6176"
 
 
 def _fx():
@@ -34,7 +36,7 @@ def test_fixture_regenerates_byte_for_byte_and_is_pinned():
 def test_lists_are_the_roles_tables():
     fx = _fx()
     assert fx["contract"] == fx["fwp"] == roles.CONTRACT == PT.FWP == 1
-    assert fx["revision"] == roles.CONTRACT_REVISION == 3
+    assert fx["revision"] == roles.CONTRACT_REVISION == 4
     assert fx["commands"]["shapes"] == json.loads(json.dumps(roles.SHAPE_CMDS))
     assert fx["commands"]["pilot_upload_limits"] == roles.PILOT_UPLOAD_LIMITS
     assert fx["commands"]["since_revision"] == roles.COMMAND_SINCE and fx["commands"]["since_revision"]["upload/pdf"] == 3
@@ -42,7 +44,7 @@ def test_lists_are_the_roles_tables():
     assert fx["events"]["kind_fields"] == {k: list(v) for k, v in roles.EVENT_KIND_FIELDS.items()}
     assert {"bid_calendar", "schedule_unread"} <= set(fx["events"]["kinds"])
     man = json.loads(fx["samples"]["envelopes"][0]["envelope"]["payload"])
-    assert man["revision"] == 3 and "recall/set" not in man["mqtt_subs"] and "upload/pdf" in man["mqtt_subs"]
+    assert man["revision"] == 4 and "recall/set" not in man["mqtt_subs"] and "upload/pdf" in man["mqtt_subs"]
     assert fx["commands"]["allowed"] == list(roles.PORTAL_CMDS)
     assert fx["commands"]["refused"] == list(roles.PORTAL_REFUSED)
     assert fx["prefs"] == json.loads(json.dumps(roles.PREF_KEYS)) and fx["file_kinds"] == roles.FILE_KINDS
@@ -138,7 +140,7 @@ def test_ticket_samples_match_check_ticket():
     assert any('"images":2.0' in s["cmd"]["payload"] for s in acc)  # a whole float is a whole number (JS cannot tell)
 
 
-OWN_FOLDER = ("finds", "school", "versions", "pickers", "recall", "pilotver", "tickets")  # pairings is shared
+OWN_FOLDER = ("finds", "school", "versions", "pickers", "recall", "pilotver", "tickets", "pilotdb")  # pairings is shared
 
 
 def _remap(url, pilot="demo"):
@@ -175,6 +177,7 @@ def test_doc_names_everything_in_the_contract():
     assert "| contract 1 (`fwp` 1) | 1.6.0 | 1.6.0 |" in doc
     assert "| contract 1 rev 2 (`fwp` 1) | 1.7.0 | 1.8.0 | tickets on the portal |" in doc
     assert "| contract 1 rev 3 (`fwp` 1) | 1.7.2 | 1.8.2 |" in doc  # 1.7.2
+    assert "| contract 1 rev 4 (`fwp` 1) | 1.7.9 | 1.9.0 |" in doc  # 1.7.9
     for s in roles.PORTAL_CMDS:
         assert f"`{s if s != 'rule/+/live/set' else 'rule/<id>/live/set'}`" in doc, s
     for s in roles.PORTAL_REFUSED:
@@ -197,9 +200,124 @@ def test_doc_names_everything_in_the_contract():
                  "revision 3", "check_shape", "since_revision", "pilot_upload_limits", "pilot_upload_checks",
                  "kind_fields", "%%EOF", "setrlimit", "30 s", "512 MB", "at least 100 pairings", "quarantine",
                  "provenance.json", "upload/decide", "event/", "time-sensitive", "Approve", "Reject", "Remove",
-                 "sensor.<prefix>_pilot_uploads", "Fit\n  Fits", "SCHEDULE_UNREAD_H", "HOM 1.8.2"):
+                 "sensor.<prefix>_pilot_uploads", "Fit\n  Fits", "SCHEDULE_UNREAD_H", "HOM 1.8.2",
+                 # 1.7.9 (revision 4)
+                 "revision 4", "HOM 1.9.0", "sensor.<prefix>_pilotdb", "pilotdb_rules", "pilotdb_answers",
+                 "shown.contact", "B23", "roster.json", "inbox/<name>/", "compare-and-set", "look the pilot up first",
+                 "Busy: try again in a minute", "off by default", "never set by Claude", "stats.json", "ai_notes",
+                 "labeled AI", "min_pickups: 3", "note_max: 600", "32 KB", "F#107", "trade/set", "masks.contact_only_in",
+                 "portal.PILOTDB_FILE_KEYS", "union_id", "anti-walk"):
         assert word in doc, word
     for a in roles.PILOT_TICKET_ACTIONS:
         assert f"`{a}`" in doc, a
     # the two sentences 1.6.2 left behind (section 6 named only a token; 5.3 seeded prefs from the HA helpers)
     assert "topic only" in doc and "seeded once from the HA helpers" not in doc
+
+
+# ---------------------------------------------------------------- 1.7.9 (revision 4): the shared pilot database
+def test_revision_4_tables_are_in_the_fixture():
+    fx = _fx()
+    cm = fx["commands"]
+    assert {"pilotdb/note", "pilotdb/edit"} <= set(cm["allowed"])
+    assert cm["since_revision"]["pilotdb/note"] == cm["since_revision"]["pilotdb/edit"] == 4
+    assert cm["pilotdb_note_limits"] == roles.PILOTDB_NOTE_LIMITS
+    assert cm["pilotdb_answers"] == list(roles.PILOTDB_ANSWERS) and cm["pilotdb_rules"] == list(PT.PILOTDB_RULES)
+    assert set(cm["shapes"]) == {"pilot/set", "upload/pdf", "pilotdb/note", "pilotdb/edit"}
+    note, edit = cm["shapes"]["pilotdb/note"], cm["shapes"]["pilotdb/edit"]
+    assert note["keys"] == ["op", "pid", "entry", "base", "text", "rid"] and note["required"] == ["op", "pid", "rid"]
+    assert note["fields"]["op"]["values"] == ["add", "retract", "field"]
+    assert edit["fields"]["op"]["values"] == ["set", "unset"]
+    assert edit["fields"]["field"]["values"] == list(roles.PILOTDB_EDIT_FIELDS)
+    for shape in (note, edit):  # no author, no employee number and no name can be sent
+        assert not {"by", "author", "emp", "name"} & set(shape["keys"])
+        # only what the generic checkers on both sides already know
+        assert set(shape) <= {"keys", "required", "fields", "nonempty_when", "any_of", "le"}
+        assert {f["type"] for f in shape["fields"].values()} <= {"text", "int", "enum"}
+    assert fx["file_kinds"]["pilotdb"] == "" and fx["synthesized_states"]["pilotdb"] == "sensor.<prefix>_pilotdb"
+    assert fx["revisions"]["4"].startswith("Flight Watcher 1.7.9, HOM 1.9.0")
+    assert fx["tabs"] == ["watcher", "schedule", "pilot", "recall", "settings", "tickets"]  # unchanged
+    # B23: contact is still dropped from every state read from HA; the synthesized sensor is the one exception
+    assert fx["masks"]["drop"] == ["contact"] == list(PT.MASK_DROP) and "shown.contact" in fx["masks"]["contact_only_in"]
+    pd = fx["pilotdb"]
+    assert pd["file"]["keys"] == PT.PILOTDB_FILE_KEYS and pd["state"]["keys"] == PT.PILOTDB_STATE_KEYS
+    assert pd["edit_fields"] == list(roles.PILOTDB_EDIT_FIELDS) and set(pd["edit_values"]) == set(pd["edit_fields"])
+    assert pd["inbox"]["file_re"] == PT.INBOX_NAME_RE.pattern and pd["inbox"]["max_bytes"] == 32 * 1024
+    assert "by" in pd["inbox"]["body"] and "off by default" in pd["share"] and "Claude never" in pd["share"]
+    ai = pd["ai"]
+    assert ai["min_pickups"] == 3 and ai["note_max"] == 600 and "off by default" in ai["switch"]
+    assert ai["stats_path"] == "/share/flight_watcher/pilotdb/ai/stats.json"
+    assert ai["in_dir"] == "/share/flight_watcher/pilotdb/ai/in"
+    assert not {"name", "emp", "pid", "sen", "doh", "pairing", "at"} & set(ai["stats_keys"]["stats"])
+    assert ai["stats_keys"]["pilot"] == ["id", "stats"] and ai["notes_keys"]["note"] == ["id", "text"]
+    # every limit a card shows is in the limits
+    assert set(PT.pilotdb_limits()) <= set(roles.PILOTDB_NOTE_LIMITS)
+    # the manifest sample, the state sample and the file sample
+    man = json.loads(fx["samples"]["envelopes"][0]["envelope"]["payload"])
+    assert {"pilotdb/note", "pilotdb/edit"} <= set(man["mqtt_subs"]) and "pilotdb" in man["files"]
+    st = json.loads(fx["samples"]["envelopes"][1]["envelope"]["payload"])["states"]["sensor.flight_watcher_demo_pilotdb"]
+    assert st["state"] == "on" and set(st["attributes"]) == set(PT.PILOTDB_STATE_KEYS["attributes"])
+    assert set(st["attributes"]["shown"]) <= set(PT.PILOTDB_STATE_KEYS["shown"])
+    assert set(st["attributes"]["shown"]["contact"]) == {"phones", "emails"}
+    f = next(json.loads(e["envelope"]["payload"]) for e in fx["samples"]["envelopes"] if e["file"] == "files/pilotdb.json")
+    assert set(f) <= set(PT.PILOTDB_FILE_KEYS["top"]) and set(f["records"][0]) <= set(PT.PILOTDB_FILE_KEYS["record"])
+    text = json.dumps(f)
+    for bad in ('"emp"', '"phones"', '"emails"', "union_id", '"contact"', "10001", "555-01", "example.com"):
+        assert bad not in text, bad
+
+
+def test_pilotdb_samples_match_check_shape():
+    """Every pilotdb sample through check_shape alone: the refused ones for the shape (the sub is allowed), so HOM's
+    generic checker must refuse each for the same rules."""
+    fx = _fx()
+    subs = ("pilotdb/note", "pilotdb/edit")
+    acc = [s for s in fx["samples"]["commands"]["accepted"] if s["cmd"]["sub"] in subs]
+    ref = [s for s in fx["samples"]["commands"]["refused"] if s["cmd"]["sub"] in subs]
+    assert {s["cmd"]["sub"] for s in acc} == {s["cmd"]["sub"] for s in ref} == set(subs)
+    assert all(s["name"].startswith("17636000007") for s in acc) and all(s["name"].startswith("17636000008") for s in ref)
+    for s in acc:
+        assert isinstance(PT.check_shape(s["cmd"]["sub"], s["cmd"]["payload"]), dict), s
+    for s in ref:
+        with pytest.raises(PT.PortalError):
+            PT.check_shape(s["cmd"]["sub"], s["cmd"]["payload"])
+    whys = {s["why"] for s in ref}
+    for w in ("note op edit", "note without rid", "note without pid", "note names an author",
+              "note names an employee number", "note text over 4000 code points", "note text with a bidi override",
+              "note text with a NUL", "retract without entry", "field without base", "field base not hex",
+              "add with empty text", "note op a number", "edit an unknown field", "edit rev as text",
+              "edit set without a value", "edit value a list", "edit names an author"):
+        assert w in whys, w
+    ops = {(s["cmd"]["sub"], json.loads(s["cmd"]["payload"])["op"]) for s in acc}
+    assert ops == {("pilotdb/note", "add"), ("pilotdb/note", "retract"), ("pilotdb/note", "field"),
+                   ("pilotdb/edit", "set"), ("pilotdb/edit", "unset")}
+    cap = [json.loads(s["cmd"]["payload"]).get("text", "") for s in acc]
+    assert any(len(t) == 4000 and ord(t[0]) > 0xFFFF for t in cap)  # code points, not UTF-16 units
+    assert any(json.loads(s["cmd"]["payload"]).get("base") == "000000000000" and
+               json.loads(s["cmd"]["payload"]).get("text") == "" for s in acc)
+    assert any('"rev":7.0' in s["cmd"]["payload"] for s in acc)
+    # Ryan's own ops are no portal sub
+    other = [s["cmd"]["sub"] for s in fx["samples"]["commands"]["refused"] if s["cmd"]["sub"].startswith("pilotdb/")
+             and s["cmd"]["sub"] not in subs]
+    assert other == ["pilotdb/share", "pilotdb/forget", "pilotdb/hide", "pilotdb/ai"]
+    for sub in other:
+        assert roles.portal_sub(sub) is None
+
+
+def test_the_swap_alert_is_a_portal_event_built_from_whitelisted_fields():
+    """1.7.9 (revision 4, F#107): a new swap idea. The pilot opts in by marking a trip would trade (trade/set)."""
+    fx = _fx()
+    assert "swap" in roles.PORTAL_EVENTS and fx["events"]["views"]["swap"] == "watcher"
+    assert fx["events"]["kind_fields"]["swap"] == ["for_trip", "for_date", "soft_gain", "credit_gain", "src"]
+    ev = json.loads(fx["samples"]["envelopes"][2]["envelope"]["payload"])["events"][-1]
+    assert ev["kind"] == "swap" and ev["view"] == "watcher" and ev["priority"] == 3
+    assert ev["title"] == "Swap idea: H9002 20NOV-22NOV for your H9001"
+    assert ev["body"] == ("3 days, layover SYD. Credit 15:20 (+4:50). Soft time +0:40. In open time. See it on the "
+                          "Watcher tab. Nothing is ever submitted for you: FLICA stays read only.")
+    assert set(ev["data"]) <= set(roles.EVENT_FIELDS) | set(roles.EVENT_KIND_FIELDS["swap"])
+    text = json.dumps(ev)
+    for bad in ("why", "detail_url", "example.invalid", "would_submit", "DRAFT", "gain_h", "grid"):
+        assert bad not in text, bad
+    # another kind's payload never brings the swap fields along
+    d = PT.event_data("new_pairing", {"pairing": "H9001", "for_trip": "H9002", "soft_gain": "+1:00"})
+    assert d == {"pairing": "H9001"}
+    import ntfy
+    assert ntfy.plain_text(ev) == ("Swap idea H9002 20NOV-22NOV", "Open your Flight Watcher portal for the details.")

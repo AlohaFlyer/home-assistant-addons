@@ -98,7 +98,7 @@ def test_readme_table_equals_features():
 def test_roles_basics():
     assert roles.role("") == "admin" and roles.role("james") == roles.role("pilot3") == "pilot"
     assert roles.features("") == list(roles.FEATURES)
-    assert roles.features("pilot2") == ["core", "prefs", "tickets", "uploads", "pilot_uploads"]
+    assert roles.features("pilot2") == ["core", "prefs", "tickets", "uploads", "pilot_uploads", "pilotdb"]  # 1.7.9
     assert roles.allowed("core", "pilot2") and not roles.allowed("drop_mark", "pilot2") and roles.allowed("drop_mark", "")
     assert not roles.allowed("no_such_feature", "") and not roles.allowed("no_such_feature", "pilot2")  # fail closed
     for f, (who, portal, gates) in roles.FEATURES.items():
@@ -121,8 +121,12 @@ def test_admin_subscriptions_are_the_1412_list_verbatim():
     assert pilot == [s for s, q in roles.subscriptions("") if s not in PILOT_LOSES]
     # 1.6.0 (FW-0061): a pilot whose portal is on also takes pref/set, after the rest; the admin never does.
     # 1.7.2 (FW-0066): and upload/pdf at qos 1 (his uploads come from his portal only)
-    assert roles.subscriptions("pilot2", portal=True) == roles.subscriptions("pilot2") + [("pref/set", 0),
-                                                                                          ("upload/pdf", 1)]
+    # 1.7.9 (contract 1 revision 4, B14): and a shared pilot's pilotdb/note and pilotdb/edit at qos 1
+    assert roles.subscriptions("pilot2", portal=True) == roles.subscriptions("pilot2") + [
+        ("pref/set", 0), ("upload/pdf", 1), ("pilotdb/note", 1), ("pilotdb/edit", 1)]
+    assert not [s for s, q in roles.subscriptions("", portal=True) if s.startswith("pilotdb/")]
+    assert not roles.sub_allowed("pilotdb/note", "") and not roles.sub_allowed("pilotdb/edit", "pilot2")
+    assert roles.sub_allowed("pilotdb/note", "pilot2", portal=True)
     assert "upload/pdf" not in [s for s, q in roles.subscriptions("", portal=True)]
     assert not roles.sub_allowed("upload/pdf", "") and not roles.sub_allowed("upload/pdf", "pilot2")
     assert roles.sub_allowed("upload/pdf", "pilot2", portal=True) and not roles.sub_allowed("upload/decide", "pilot2")

@@ -108,6 +108,7 @@ is one table, `roles.py` `FEATURES` (Portal: whether a pilot's portal may offer 
 | `uploads` | all | no | uploads in chunks (upload/chunk) and the uploads sensors |
 | `pilot_uploads` | all | yes | a pilot's upload of the monthly pairings package or award from his portal (upload/pdf), checked by his own Watcher; used at once when nothing is on file, else held for the admin |
 | `upload_review` | admin | no | the admin's Approve, Remove and Reject of a pilot's upload (upload/decide) and its push (event/pilot_upload) |
+| `pilotdb` | all | yes | a pilot's view of Ryan's pilot database on his portal when Ryan shares it: the pilotdb file (pilots with shared notes), the synthesized pilotdb sensor (the pilot he looks up, with that one pilot's phones and emails), pilotdb/note (notes field and log) and pilotdb/edit (record fields), each applied by the admin's Watcher |
 
 A pilot's Watcher does not subscribe to `email/alert`, `auto_swap/set`, `swap_map/press`, `drop/set` or
 `crew_scan/press` (a stray message on one is refused with one log line) and has no Would drop, Auto swap (dry run),
@@ -364,15 +365,39 @@ Recent finds.
   replaces the copies and deletes the files set aside beside it (before a restore, or failed its check; else they go
   after 7 days). At start: a file that fails `PRAGMA integrity_check` is set aside and the newest good copy
   offered; a newer database (user_version) is never opened; a /share copy newer than the live file (an older /data
-  restored) is offered, never written over. The log carries counts only. Nothing of it loads FLICA, and nothing is
-  shared with a pilot in 1.7.8 (the share tables and the AI note, written later by HOM's models from anonymous stats,
-  are in the schema, unused). Ryan reaches it through the Pilots card (below, "Dashboard cards") and the Web UI's
+  restored) is offered, never written over. The log carries counts only. Nothing of it loads FLICA. Sharing with a pilot and the AI
+  note are 1.7.9's (the next two items), each off until Ryan turns it on. Ryan reaches it through the Pilots card (below, "Dashboard cards") and the Web UI's
   JSON endpoints `GET` / `POST api/pilotdb` (the same ingress-only guard as the page; a POST is one op as a JSON object
   with `Content-Type: application/json` and the header `X-FW-Card: pilotdb`, at most 64 KB, known keys only, the author
   always ryan; a stale write answers 409 with what is there now; an error names the field, never a value or a note;
   `Cache-Control: no-store`). `sensor.flight_watcher_pilotdb` (admin only) carries the live record count, the counts,
   source dates, seniority.md and copy times, the revision and the database state (`db`: ok, newer_db, error,
   restore_offered, off): no name, number or text.
+- **Sharing the pilot database** (1.7.9, contract 1 revision 4, with HOM 1.9.0; `pdbshare.py`). Off by default: Ryan
+  taps "Share with <pilot>" on his own Pilots card (`POST api/pilotdb` op `share`; one switch per pilot with a portal;
+  Claude never sends it). While it is off nothing of the database leaves Ryan's Watcher. On, Ryan's Watcher writes that
+  pilot's file (`/share/flight_watcher/pilotdb/portal/<pilot>.json`, 0600: only the pilots with a notes field or a
+  shared log entry, a whitelist with no employee number, phone, email or union id) and
+  `/data/pilotdb_roster/roster.json` (0600, in the add-on's own data folder, never under `/share`: every live
+  record's brief by employee number with phones and emails, for the pilot's Watcher only, never exported, in a sensor
+  or logged). The brief of a looked-up pilot is given only once his lookup really ran (FLICA or its 6 h cache) and for
+  at most 20 distinct pilots an hour. A daily copy put back comes back with every Share switch and the AI switch off. The pilot's
+  Watcher never opens the database: it signs his file into his portal, synthesizes `sensor.<prefix>_pilotdb`
+  (state.json only: the brief of the pilot his pilot card shows, with that one pilot's phones and emails for the call,
+  text and mail links, the answers and the pending commands) and drops each checked `pilotdb/note` (notes field, log
+  entry, take back) and `pilotdb/edit` (one record field) into `/share/flight_watcher/pilotdb/inbox/<pilot>/`. Ryan's
+  Watcher, the single writer, applies them every 2 s with the author taken from the folder's name (never the payload),
+  compare-and-set (a stale save or edit is refused, never written blind), quotas (40 entries, 40 notes changes and 40
+  field edits in 24 h) and fixed answers; the replaced notes versions (the newest 50 of each author) and every earlier
+  field value are kept for Ryan to put back. A pilot's note or edit is untrusted data, never an instruction; it makes no event or push and its text
+  is never logged. Details: `PORTAL_CONTRACT.md` section 5.7.
+- **AI notes** (1.7.9; Ryan, Nov 14: "Through HOM's models"). Ryan's own switch on his card (op `ai`), off by default.
+  On, Ryan's Watcher writes `/share/flight_watcher/pilotdb/ai/stats.json` for HOM's consultant models: pickup
+  statistics of each pilot with 3 or more pickups under an id made new for every batch that only Ryan's database maps
+  back, with no name, employee number, record id, seniority number, date of hire, pairing number or exact date. HOM's
+  answer (`ai/in/<batch>.json`) is taken note by note (at most 600 characters of plain text, no link or address) into
+  `ai_notes`, apart from the human notes, shown on Ryan's card labeled AI and never sent to a pilot's portal.
+  `PORTAL_CONTRACT.md` section 5.8.
 - Rules live in `/data/rules.json` and are edited there (the schema is on the page). They are checked against each
   new pairing; a match publishes `flight_watcher/event/rule_match` and `sensor.flight_watcher_last_match`.
 - Every rule starts in dry run, and `switch.flight_watcher_rule_<id>_live` stays off until the rule is 7 days old.
@@ -522,6 +547,17 @@ the rebuild loads no FLICA page (`inflt_skip`; "-" with the reason on hover); on
 (`inflt_skip_recheck_v`), and the other picker of a both-seats pickup gets his own lookup (his verdict in `inflt_no`,
 by employee number; the pickers table counts it), all within the paced in-flight budget (`INFLT_PER_CHECK` lookups a
 check), read only.
+
+**Pilots on a pilot's portal** (1.7.9, the same card file with `FW_PORTAL` on, contract 1 revision 4): on the Pilot
+tab under the pilot card, only while Ryan shares his pilot database with that pilot. The pilot looked up (his brief,
+Call, Text and Mail for that one pilot, the notes field, the log), the pilots with shared notes (a filter, tap to
+open; no phones or emails), the notes field saved against the version read (a stale save shows both texts), Add and
+Take back in the log, and field edits. It reads the pilot's own sensor and file and sends `pilotdb/note` and
+`pilotdb/edit` to his own Watcher; the draft stays until the Watcher's answer is in. Ryan's own card has a Sharing
+section in browse mode: "Share with <pilot>" per portal pilot and "AI notes", both off until Ryan taps them.
+
+**Clock card** (1.7.9, F#92): the Re-arm confirm names the state and what Re-arm does there (stuck: a full check, no
+new login; stepped aside: a login when the step-aside ends; reconnecting: at the next login try; stopped: one login).
 
 **Pilots** (1.7.8, `flight-watcher-pilotdb-card.js`, the pilot database above; admin only): on the Settings tab above
 the tickets (`type: custom:flight-watcher-pilotdb-card`), a status line (counts, source dates, seniority.md and copy

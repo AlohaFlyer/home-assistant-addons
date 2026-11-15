@@ -106,7 +106,7 @@ KIND_WORDS = {"new_pairing": "New pairing", "rule_match": "Rule match", "recall_
               "request_decided": "Request decided", "schedule_changed": "Schedule changed", "charter": "Charter",
               "hidden": "Hidden trip?", "needs_settings": "Flight Watcher needs your FLICA login",
               "stopped_*": "Flight Watcher stopped", "ticket_fixed": "Ticket fixed", "bid_calendar": "Bid calendar",
-              "schedule_unread": "Schedule not read"}
+              "schedule_unread": "Schedule not read", "swap": "Swap idea"}
 TICKET_RE = re.compile(r"^FW-\d{4,6}$")
 VERSION_RE = re.compile(r"^\d{1,3}(?:\.\d{1,4}){1,3}$")
 PAIRING_RE = re.compile(r"^[A-Z]\d{4}[A-Z]?$")

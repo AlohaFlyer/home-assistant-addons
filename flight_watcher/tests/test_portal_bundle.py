@@ -42,11 +42,13 @@ def test_manifest_verifies_and_names_the_pilot(pilot):
     assert {k: m[k] for k in ("contract", "app_version", "pilot", "prefix", "role", "ntfy")} == {
         "contract": 1, "app_version": W.VERSION, "pilot": "pilot2", "prefix": P, "role": "pilot", "ntfy": False}
     assert set(m) == {"contract", "revision", "app_version", "pilot", "prefix", "role", "cards", "layout", "services",
-                      "mqtt_subs", "files", "ntfy"} and m["revision"] == roles.CONTRACT_REVISION == 3  # 1.7.2
+                      "mqtt_subs", "files", "ntfy"} and m["revision"] == roles.CONTRACT_REVISION == 4  # 1.7.9
     assert [t["id"] for t in m["layout"]["tabs"]] == list(roles.PORTAL_TABS)
     # 1.7.0: the tickets card's five subs (its _pub calls); 1.7.2 (revision 3): no recall/set (the admin's paste is
     # behind its role check, and the portal refuses it), and the pilot uploads card's upload/pdf
-    assert m["mqtt_subs"] == ["blocked/set", "improved/set", "pilot/set", "recall/act", "settings/set",
+    # 1.7.9 (revision 4): the Pilots card's pilotdb/note and pilotdb/edit
+    assert m["mqtt_subs"] == ["blocked/set", "improved/set", "pilot/set", "pilotdb/edit", "pilotdb/note",
+                              "recall/act", "settings/set",
                               "ticket/act", "ticket/delete", "ticket/edit", "ticket/image", "ticket/new",
                               "trade/set", "upload/pdf"]
     assert set(m["mqtt_subs"]) <= set(roles.PORTAL_CMDS)
@@ -64,7 +66,7 @@ def test_blobs_are_the_pilot_card_copies_by_hash(pilot):
     built = cards.build(W.VERSION, ["pilot2"])
     assert sorted(m["cards"]) == sorted(f"flight-watcher-{b}-pilot2.js" for b in (
         "charters-card", "clock-card", "finds-card", "improved-card", "pickers-card", "pilot-card", "pilot-search-card",
-        "pilot-uploads-card", "pot-card", "recall-card", "requests-card", "schedule-card", "settings-card", "tickets-card",
+        "pilot-uploads-card", "pilotdb-card", "pot-card", "recall-card", "requests-card", "schedule-card", "settings-card", "tickets-card",
         "working-card"))
     # no uploads or row colors card; 1.6.2: the pot, working flight, charters and requests cards; 1.7.0: tickets;
     # 1.7.2 (FW-0066): the pilot's own uploads card
@@ -143,6 +145,10 @@ def test_every_call_service_maps_to_the_manifest(pilot):
                     pubs = set(re.findall(r'_pub\("([a-z_/]+)"', text))
                     assert "tickets-card" in fn and pubs == {"ticket/new", "ticket/image", "ticket/act", "ticket/edit",
                                                              "ticket/delete"} and pubs <= subs, pubs
+                elif "`${FW_PDB_PREFIX}" in data:  # 1.7.9 (revision 4): the Pilots card's _pub(sub, obj)
+                    pubs = set(re.findall(r'_pub\("([a-z_/]+)"', text))
+                    assert "pilotdb-card" in fn and pubs == {"pilotdb/note", "pilotdb/edit"} and pubs <= subs, pubs
+                    assert 'FW_PDB_PREFIX = "%s"' % P in text
                 else:
                     pytest.fail(f"unmapped mqtt publish in {fn}: {data}")
                 continue

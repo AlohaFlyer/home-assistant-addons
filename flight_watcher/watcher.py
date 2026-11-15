@@ -66,8 +66,9 @@ import bidcal as BC
 import layover as LO
 import pilotpdf as PP
 import pilotdb as PDBM
+import pdbshare as PS
 
-VERSION = "1.7.8"
+VERSION = "1.7.9"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -337,6 +338,9 @@ def on_message(c, u, msg):
         return
     if msg.topic == f"{T}/upload/pdf":  # 1.7.2 (FW-0066): a portal pilot only (roles.PORTAL_SUBS)
         pilot_upload_chunk(msg.payload)
+        return
+    if msg.topic in (f"{T}/pilotdb/note", f"{T}/pilotdb/edit"):  # 1.7.9 (revision 4): a portal pilot only
+        pilotdb_cmd(msg.topic.rsplit("/", 1)[1], msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/upload/decide":  # 1.7.2 (FW-0066): the admin only (roles: upload_review)
         upload_decide_cmd(msg.payload.decode(errors="replace"))
@@ -3624,6 +3628,17 @@ def seniority_refresh():
 PILOTDB_FILE = f"{DATA}/pilotdb.sqlite"
 PILOTDB_BACKUP = f"{DATA}/pilotdb_backup"
 PILOTDB_SHARE = "/share/flight_watcher/pilotdb"
+# 1.7.9 review: roster.json (every live pilot's brief with phones and emails, for the one pilot a shared pilot looks
+# up) is kept in the add-on's own /data, never under /share (mapped into other add-ons): Ryan's /data/pilotdb_roster,
+# which a pilot's Watcher (data folder /data/<name>, the same container) reads as its data folder's parent
+PILOTDB_ROSTER = None  # a test's own folder
+
+
+def pilotdb_roster_dir():
+    if PILOTDB_ROSTER:
+        return PILOTDB_ROSTER
+    base = DATA if ROLES.role(INSTANCE) == ROLES.ADMIN else os.path.dirname(DATA.rstrip("/"))
+    return os.path.join(base or "/data", "pilotdb_roster")
 PILOTDB_POLL_S = 60          # the source signature check
 PILOTDB_MD_DEBOUNCE_S = 30   # seniority.md 30 s after the last change (at once after a merge)
 PILOTDB_BACKUP_AT = (2, 47)  # HST: the nightly copies
@@ -3691,6 +3706,9 @@ def pilotdb_start():
     if db is None:
         with contextlib.suppress(Exception):  # the sensor says why (newer_db, error)
             publish_pilotdb(force=True)
+        # 1.7.9 review: no database, no share: a roster or a pilot's file an earlier run wrote does not stay readable
+        if PS.clear_files(PILOTDB_SHARE, pilotdb_roster_dir()):
+            log.info("pilot db: not open: the shared files were removed")
         return None
     web.SENIORITY_MD_HOOK = pilotdb_nudge  # seniority.md is the database's from now on
     first = db.meta("seeded_at") is None
@@ -3707,6 +3725,13 @@ def pilotdb_start():
     if PDB.get("thread") is None:
         PDB["thread"] = threading.Thread(target=pilotdb_thread, daemon=True, name="pilotdb")
         PDB["thread"].start()
+    try:  # 1.7.9: each shared pilot's file and the roster as the database has them now (none while no share is on)
+        pilotdb_share_pass(force=True)
+    except Exception as e:  # noqa: BLE001
+        log.info("pilot db: share files skipped: %s", type(e).__name__)
+    if PDB.get("share_thread") is None and isinstance(PDB.get("thread"), threading.Thread):
+        PDB["share_thread"] = threading.Thread(target=pilotdb_share_thread, daemon=True, name="pilotdb-inbox")
+        PDB["share_thread"].start()
     return db
 
 
@@ -3877,9 +3902,23 @@ def pilotdb_restore(file):
             PDBM.restore(PILOTDB_FILE, pilotdb_dirs(), file)
         finally:
             db, st = PDBM.open_checked(PILOTDB_FILE, pilotdb_dirs())
-            PDB.update(db=db, status=st, md_rev=None, md_at=0.0)
+            PDB.update(db=db, status=st, md_rev=None, md_at=0.0, share_rev=None, share_seen=None, ai_at=0.0,
+                       ai_check=0.0)
             web.SENIORITY_MD_HOOK = pilotdb_nudge if db is not None else None
-    log.info("pilot db: a copy was put back (the file before it is kept aside): %s", st["db"])
+        # 1.7.9 review: the copy came back with every Share switch and the AI switch off (pilotdb.restore), whatever
+        # it held: the files follow now (each pilot's file, the roster and the AI statistics go), never 2 s later
+        with contextlib.suppress(Exception):
+            PS.ai_off(PILOTDB_SHARE)
+        try:
+            if db is not None:
+                pilotdb_share_pass(force=True)
+            else:
+                PS.clear_files(PILOTDB_SHARE, pilotdb_roster_dir())
+        except Exception as e:  # noqa: BLE001
+            log.info("pilot db: share files skipped: %s", type(e).__name__)
+    reset = bool(db is not None and db.meta("share_reset"))
+    log.info("pilot db: a copy was put back (the file before it is kept aside): %s%s", st["db"],
+             "; sharing and AI notes are off until Ryan turns them on again" if reset else "")
     pilotdb_nudge()
     return st
 
@@ -3893,10 +3932,107 @@ def pilotdb_status():
     if db is not None:
         try:
             out.update(db.summary())
+            # 1.7.9: each portal pilot's Share switch and how many of his commands wait in the inbox (names and counts)
+            names = pilotdb_portal_pilots()
+            shared = set(out.get("shared_with") or [])
+            out["pending"] = {n: PS.pending(PS.inbox_dir(n, PILOTDB_SHARE)) for n in names if n in shared}
+            out["pilots"] = [{"name": n, "shared": n in shared, "pending": out["pending"].get(n, 0),
+                              "full": n in (PDB.get("full") or ())} for n in names]
         except Exception as e:  # noqa: BLE001
             out["db"] = "error"
             log.info("pilot db: summary not read: %s", type(e).__name__)
     return out
+
+
+# ---------------------------------------------------------------- 1.7.9: sharing the pilot database (contract rev 4)
+# Ryan's Share switch per portal pilot (api/pilotdb op share, his card only; off by default; Claude never calls it).
+# While a share is on the admin writes that pilot's file (pilotdb.export_for: the noted pilots, a whitelist) and the
+# roster (pdbshare.write_files) 2 s after the database last changed, and applies his notes and field edits from the
+# inbox folder every PILOTDB_SHARE_POLL_S (pdbshare.drain: the author is the folder's name, compare-and-set, quotas,
+# fixed answers). While it is off there is no file and every waiting command is answered "Ryan has not shared ...".
+# The AI note (Ryan's AI switch, op ai, off by default): anonymous pickup statistics out, HOM's notes in (pdbshare).
+# No line here names a pilot other than a portal pilot's instance name, and none carries a text or a number.
+PILOTDB_SHARE_POLL_S = 2.0
+PILOTDB_AI_EVERY_S = 86400   # a new statistics batch at most once a day (and at once when the switch turns on)
+PILOTDB_AI_CHECK_S = 600     # how often the statistics are compared with the last batch
+PDB.update(share_thread=None, share_rev=None, share_seen=None, full=(), ai_at=0.0, ai_check=0.0)
+
+
+def pilotdb_portal_pilots():
+    """The pilots Ryan may share with: those the add-on runs with a portal (option pilots[].portal), by run.py's own
+    rules. [] on a pilot instance."""
+    if not has("one_writer"):
+        return []
+    import io
+    import run as RUNNER
+    with contextlib.redirect_stdout(io.StringIO()):
+        return [n for n, portal in RUNNER.pilot_entries(OPTS) if portal]
+
+
+def pilotdb_share_pass(force=False, now=None):
+    """One pass of the admin's share thread: the inbox drain, then the files when the database changed (2 s after the
+    last change; at once after a drain that applied something, or force), then the AI hand-off. Returns the drain's
+    counts. Never loads FLICA; logs ops, instance names and counts only."""
+    db = PDB.get("db")
+    if db is None or not has("one_writer"):
+        return None
+    now = time.time() if now is None else now
+    names = pilotdb_portal_pilots()
+    with PDB_LOCK:
+        try:
+            r = PS.drain(db, names, PILOTDB_SHARE, full=PDB.get("full") or (), now=now, log=log.info)
+        except Exception as e:  # noqa: BLE001 (1.7.9 review: a drain fault never keeps the files from following)
+            r = {"applied": 0, "refused": 0, "scrub": False}
+            portal_once("pilotdb_drain:" + type(e).__name__, "pilot db: inbox drain skipped: %s", type(e).__name__)
+        if r["scrub"]:
+            pilotdb_scrub()
+        rev = db.rev
+        due = force or r["applied"] or r["refused"] or (rev != PDB.get("share_rev") and PDB.get("share_seen") == rev)
+        PDB["share_seen"] = rev
+        if due:
+            st = PS.write_files(db, names, PILOTDB_SHARE, roster_dir=pilotdb_roster_dir())
+            was = tuple(sorted(n for n, v in st.items() if v != "off"))
+            if was != PDB.get("share_on"):
+                log.info("pilot db: shared with %s", ", ".join(was) if was else "nobody")
+            PDB.update(share_rev=rev, full=tuple(n for n, v in st.items() if v == "full"), share_on=was)
+        ai = pilotdb_ai_pass(db, now)
+    if r["applied"] or (ai and ai.get("saved")):
+        pilotdb_nudge()  # seniority.md and the sensor follow
+    if r["applied"] or r["refused"]:
+        with contextlib.suppress(Exception):
+            publish_pilotdb()
+    return r
+
+
+def pilotdb_ai_pass(db, now):
+    """The AI note hand-off while Ryan's AI switch is on: HOM's answers taken in every pass; a new statistics batch
+    when the statistics moved, at most every PILOTDB_AI_EVERY_S. Off: nothing is written or read."""
+    if not db.ai_on():
+        return None
+    got = PS.ai_drain(db, PILOTDB_SHARE, now)
+    if got["files"]:
+        log.info("pilot db: AI notes in: %d saved, %d refused", got["saved"], got["refused"])
+    last = PDB.get("ai_at") or 0.0
+    if not last or now - (PDB.get("ai_check") or 0.0) >= PILOTDB_AI_CHECK_S:
+        PDB["ai_check"] = now
+        if not last or now - last >= PILOTDB_AI_EVERY_S:
+            n = PS.ai_write_stats(db, PILOTDB_SHARE)
+            if n is not None:
+                PDB["ai_at"] = now
+                log.info("pilot db: AI statistics written for %d pilots (no names, no numbers)", n)
+            elif not last:
+                PDB["ai_at"] = now - PILOTDB_AI_EVERY_S  # nothing new: compared again every PILOTDB_AI_CHECK_S
+    return got
+
+
+def pilotdb_share_thread():
+    """The admin's inbox drain and share files, every PILOTDB_SHARE_POLL_S. Never stops."""
+    while True:
+        time.sleep(PILOTDB_SHARE_POLL_S)
+        try:
+            pilotdb_share_pass()
+        except Exception as e:  # noqa: BLE001
+            portal_once("pilotdb_share:" + type(e).__name__, "pilot db: share pass skipped: %s", type(e).__name__)
 
 
 # ---------------------------------------------------------------- 1.7.8: Ryan's side of the pilot database (spec 10)
@@ -3927,10 +4063,14 @@ PILOTDB_OPS = {
     "merge": (("pid", "into"), ()),
     "new": (("emp", "name"), ("doh",)),
     "restore_db": (("file", "confirm"), ()),
+    # 1.7.9: Ryan's switches, tapped on his own card only (Claude never sends either): share with one portal pilot;
+    # the AI notes from HOM's consultant models (clear: true with on false also removes the notes already written)
+    "share": (("pilot", "on"), ()),
+    "ai": (("on",), ("clear",)),
 }
 PILOTDB_SENSOR_KEYS = ("records", "live", "gone", "noted", "entries", "entries_7d", "hand", "drift", "conflicts",
-                       "pickups", "pickers", "sources", "shared_with", "pending", "md_at", "backup_at", "rev", "db",
-                       "contacts")
+                       "pickups", "pickers", "sources", "shared_with", "pending", "ai", "md_at", "backup_at", "rev",
+                       "db", "contacts")
 _PDB_PUB = {"sig": None}
 _PDB_PUB_LOCK = threading.Lock()
 
@@ -4134,6 +4274,20 @@ def _pilotdb_apply(db, op, o):
             raise PDBM.Bad("doh", "must be a date")
         pid = db.new_record(_pdb_emp(o), _pdb_text(o, "name", "name"), doh or None)
         return {"pid": pid, "record": db.record(pid)}, None
+    if op == "share":  # 1.7.9: Ryan's Share switch (a configured portal pilot only)
+        pilot = _pdb_text(o, "pilot", "pilot")
+        if pilot not in pilotdb_portal_pilots():
+            raise PDBM.Bad("pilot", "is not a pilot with a portal")
+        return {"shared_with": db.set_share(pilot, o.get("on"))}, "share"
+    if op == "ai":  # 1.7.9: Ryan's AI notes switch
+        if "clear" in o and (o["clear"] is not True or o.get("on") is not False):
+            raise PDBM.Bad("clear", "must be true, with on false")
+        on = db.set_ai(o.get("on"))
+        if not on:
+            PS.ai_off(PILOTDB_SHARE)
+            PDB.update(ai_at=0.0, ai_check=0.0)
+        cleared = db.ai_clear() if o.get("clear") is True else 0
+        return {"ai": {"on": on, "cleared": cleared}}, "share"
     raise PDBM.Bad("op", "is not an operation of the pilot database")
 
 
@@ -4142,8 +4296,8 @@ def pilotdb_post(obj):
     (HTTP status, body): 200 {ok: true, rev, ...the op's answer: record, notes, eid, pid}; 400 {ok: false, field,
     why} (a key, a type or a value refused: never the value itself); 404 (no such record, entry, version or
     conflict); 409 a stale write, nothing written: {ok: false, why: changed, record} for a field edit,
-    {ok: false, conflict: {text, rev, by, at}} for the notes field; 503 the database is not open. The share op is
-    1.7.9's, so it is refused like any unknown op."""
+    {ok: false, conflict: {text, rev, by, at}} for the notes field; 503 the database is not open. 1.7.9: share
+    {pilot, on} and ai {on, clear?}, Ryan's two switches (a log line names the op and the pilot's instance name)."""
     if not isinstance(obj, dict):
         return 400, {"ok": False, "field": "body", "why": "must be a JSON object"}
     op = obj.get("op")
@@ -4178,8 +4332,15 @@ def pilotdb_post(obj):
     try:
         with PDB_LOCK:
             body, after = _pilotdb_apply(db, op, o)
-            if after:
+            if after == "share":  # 1.7.9: the files follow the switch at once (a share off deletes the pilot's file)
+                pilotdb_share_pass(force=True)
+            elif after:
                 pilotdb_scrub(purged=after == "purge")
+            if after in ("scrub", "purge") or op == "hide":
+                # 1.7.9 review: text Ryan hid, purged or forgot (or took back) leaves the shared files now, as a
+                # share off does, not one or two passes later
+                with contextlib.suppress(Exception):
+                    pilotdb_share_pass(force=True)
             rev = db.rev
     except PDBM.Stale as e:
         log.info("pilot db: %s from the card: stale, nothing written", op)
@@ -6040,10 +6201,12 @@ def cap_write(name, data, extra=()):
 
 def page_log(text):
     """1.6.2 review: FLICA page text for a log line. The admin's as before. A pilot's only while his captures are on
-    (and masked, as a capture); otherwise just its size. The pilot log filter (PilotLogMask) masks every line too."""
+    (and masked, as a capture); otherwise just its size. The pilot log filter (PilotLogMask) masks every line too.
+    1.7.9 (Ryan, Nov 15): no quoted page carries an employee number, the admin's included ("(emp# n) schedule last
+    updated", EmployeeID=n: captures.mask_emp), so every line that quotes a page through here is masked."""
     t = str(text or "")
     if CAP.admin:
-        return t
+        return CAPS.mask_emp(t)
     if not cap_on():
         return f"({len(t)} chars, not logged: page captures are off for this pilot)"
     return CAPS.mask(t, cap_secrets())
@@ -7446,6 +7609,8 @@ def pilot_check(fl):
             # lowercases the page and the name masks need a capital letter
             log.info("pilot %s: %s gave %s: %s", emp, url.split("?")[1], classify(html), page_log(visible_text(html)[:200]))
         if not sched:
+            if classify(html) == "ok":  # 1.7.9 review: FLICA answered for this pilot (no readable month): it ran
+                PILOT_RAN["emp"] = PDBM.emp_of(emp)
             pilotver_capture_rebuild(emp, req.get("name") or "")  # FW-0069: the crew index's view, when it has one
             pub_pilot({"emp": emp, "name": req.get("name") or "", "status": pilot_unreadable_status(html),
                                    "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": now_iso()})
@@ -10959,9 +11124,9 @@ EXPORT_RETRY_S = 15  # a state HA had no answer for is read again after this, do
 SPOOL_POLL_S = 1.0
 SPOOL_MAX_PER_POLL = 200
 PORTAL_LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portal_layout.json")
-PORTAL_CARDS_OUT = ("uploads-card", "row-colors", "layover-card", "pilotdb-card")  # not in a portal (1.7.0: the
-# tickets card is, revision 2; 1.7.1 FW-0072: the layover card is the admin's only in this release; 1.7.8 B3: the Pilots
-# card stays off every portal until sharing, 1.7.9 with contract revision 4)
+PORTAL_CARDS_OUT = ("uploads-card", "row-colors", "layover-card")  # not in a portal (1.7.0: the tickets card is,
+# revision 2; 1.7.1 FW-0072: the layover card is the admin's only in this release; 1.7.9 B16, contract revision 4: the
+# Pilots card joins the bundle, it stayed off every portal in 1.7.8)
 PAIRINGS_BACK_M = 2  # the shared pairings packages exported: from this many months back (HST), and every later one
 
 
@@ -10987,12 +11152,14 @@ def portal_ids():
     ids += [f"switch.{RULE_UID}_{r['id']}_live" for r in rules if ROLES.PORTAL_RULE_ID_RE.fullmatch(str(r.get("id")))]
     ids += [ROLES.pref_entity(k, T) for k in ROLES.PREF_KEYS]
     ids.append(pilot_uploads_eid())  # 1.7.2 (FW-0066): synthesized from his upload records, never read from HA
+    if has("pilotdb"):
+        ids.append(pilotdb_eid())  # 1.7.9 (revision 4): synthesized from his pilotdb file and the roster
     return list(dict.fromkeys(ids))
 
 
 def portal_pref_ids():
     """The ids state.json synthesizes (never read from HA): the pref helpers and (1.7.2) the pilot's uploads view."""
-    return {ROLES.pref_entity(k, T) for k in ROLES.PREF_KEYS} | {pilot_uploads_eid()}
+    return {ROLES.pref_entity(k, T) for k in ROLES.PREF_KEYS} | {pilot_uploads_eid(), pilotdb_eid()}
 
 
 def portal_topics():
@@ -11097,7 +11264,11 @@ def _portal_event(kind, payload):
             pass
     rec = PT.event_record(kind, p, EXPORT["seq"].next("event"), now_iso())
     with EXPORT["lock"]:
-        EXPORT["events_list"] = (EXPORT["events_list"] + [rec])[-PT.EVENTS_KEEP:]
+        # 1.7.9 review (F#107): the same swap idea published again (it keeps its id) takes the place of its earlier
+        # alert, so the Alerts list and the badge show it once
+        old = [e for e in EXPORT["events_list"]
+               if not (kind == "swap" and e.get("kind") == kind and e.get("id") == rec["id"])]
+        EXPORT["events_list"] = (old + [rec])[-PT.EVENTS_KEEP:]
         try:
             PT.write_private(f"{DATA}/portal_events.json", PT.dumps({"events": EXPORT["events_list"]}))
         except OSError as e:
@@ -11358,6 +11529,11 @@ def portal_write_state(ids, read, now=None, beat=False):
         states.update(pilot_uploads_state())  # 1.7.2 (FW-0066)
     except Exception as e:  # noqa: BLE001 (never stops the export)
         portal_once("pilot_uploads_state", "portal pilot uploads view skipped: %s", type(e).__name__)
+    try:
+        if has("pilotdb"):
+            states.update(pilotdb_state())  # 1.7.9 (revision 4)
+    except Exception as e:  # noqa: BLE001 (never stops the export)
+        portal_once("pilotdb_state", "portal pilot database view skipped: %s", type(e).__name__)
     text = PT.dumps({"states": states, "ha_ok": ok})
     if len(text.encode("utf-8")) > PT.CAPS["state"]:
         portal_once("state_cap", "portal state over %d KB: not written", PT.CAPS["state"] // 1024)
@@ -11418,6 +11594,15 @@ def portal_file_sources():
         m = re.fullmatch(r"pairings_(\d{4}-\d{2})\.json", n)
         if m and m.group(1) >= first:
             out.append((f"file:pairings:{m.group(1)}", os.path.join(CARD_PAIRINGS, n)))
+    # 1.7.9 (revision 4, B12): his pilotdb file, only while Ryan shares the database with him (the admin deletes it
+    # when the share goes off, and the copy in out/files goes with it)
+    if has("pilotdb"):
+        pp = PS.export_path(INSTANCE, PILOTDB_SHARE)
+        try:
+            if stat.S_ISREG(os.lstat(pp).st_mode) and PS._real_dir(os.path.dirname(pp)):
+                out.append(("file:pilotdb", pp))
+        except OSError:
+            pass
     return out
 
 
@@ -11526,8 +11711,13 @@ def portal_services():
 def portal_mqtt_subs(cards=None):
     """The allowed subs the bundled cards publish to directly (mqtt.publish), sorted; drop/set (admin only) is not."""
     subs = set()
-    for text in (cards if cards is not None else portal_cards()).values():
+    cards = cards if cards is not None else portal_cards()
+    for text in cards.values():
         subs |= PT.card_subs(text, T)
+    # 1.7.9 (revision 4): the Pilots card in the bundle sends the pilot's notes and field edits (named here whatever
+    # the card's publish call looks like, so HOM lets them through)
+    if any(fn.startswith("flight-watcher-pilotdb-card-") for fn in cards):
+        subs |= {"pilotdb/note", "pilotdb/edit"}
     return sorted(s for s in subs if ROLES.portal_sub(s))
 
 
@@ -11602,6 +11792,174 @@ def portal_thread():
         except Exception as e:  # noqa: BLE001 (the export must never stop the Watcher)
             log.info("portal export skipped: %s: %s", type(e).__name__, e)
             time.sleep(EXPORT_DEBOUNCE_S)
+
+
+# ---- 1.7.9 (contract 1 revision 4): a shared pilot's side of the pilot database (spec 11.3)
+# Only on a pilot whose portal is on, and only while Ryan shares the database with him (his file is there). His
+# Watcher never opens the database: it reads his own file and the roster (pdbshare.View), signs the file into his
+# portal's out/files/pilotdb.json unchanged, synthesizes sensor.<T>_pilotdb (state.json only, never an HA entity, so
+# nothing reaches HA's recorder or MQTT) and hands each checked pilotdb/note and pilotdb/edit to the admin's inbox.
+# The author is INSTANCE. Nothing here runs a pilot lookup or the gate, loads FLICA or wakes the loop; a log line names
+# the op only, never a text, a name or a number.
+PILOTDB_LOST_S = 120  # a command whose inbox file is gone this long with no answer is answered "send it again"
+PILOTDB_LOCAL = f"{DATA}/pilotdb_portal.json"  # his Watcher's own refusals and the rids waiting for the admin
+PDBV = {"view": None, "lock": threading.RLock(), "sig": None, "shown": None, "local": None}
+
+
+def pilotdb_eid():
+    return f"sensor.{T}_pilotdb"
+
+
+def pilotdb_view():
+    if PDBV["view"] is None:
+        PDBV["view"] = PS.View(INSTANCE, PILOTDB_SHARE, pilotdb_roster_dir())
+    return PDBV["view"]
+
+
+def _pdbv_local():
+    if PDBV["local"] is None:
+        try:
+            with open(PILOTDB_LOCAL, encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            d = {}
+        ans = [a for a in (d.get("answers") if isinstance(d, dict) else None) or []
+               if isinstance(a, dict) and isinstance(a.get("rid"), str)]
+        pend = (d.get("pending") if isinstance(d, dict) else None) or {}
+        PDBV["local"] = {"answers": ans, "pending": {k: v for k, v in pend.items() if isinstance(v, (int, float))}
+                         if isinstance(pend, dict) else {}}
+    return PDBV["local"]
+
+
+def _pdbv_save():
+    try:
+        PT.write_private(PILOTDB_LOCAL, json.dumps(PDBV["local"]))
+    except OSError as e:
+        portal_once("pilotdb_local", "pilot db: answers not saved: %s", type(e).__name__)
+
+
+def _pdbv_answer(rid, why):
+    """One of his Watcher's own refusals (a fixed phrase) for his card."""
+    loc = _pdbv_local()
+    keep = ROLES.PILOTDB_NOTE_LIMITS["answers"]
+    loc["answers"] = ([a for a in loc["answers"] if a.get("rid") != rid]
+                      + [{"rid": rid, "ok": False, "why": why, "at": now_iso()}])[-keep:]
+    loc["pending"].pop(rid, None)
+    _pdbv_save()
+
+
+PILOTDB_BRIEF_PER_H = 20  # 1.7.9 review: distinct pilots an hour whose brief (and contact) a shared pilot may be shown
+PILOT_RAN = {"emp": ""}  # the pilot whose Schedule Lookup FLICA answered without a readable month (pilot_check)
+
+
+def pilotdb_shown(v):
+    """The brief of the pilot his pilot card shows (pdbshare.View.shown), or None. 1.7.9 review (Ryan's Q1 and Q2:
+    never the roster, the anti-walk limits stay): only for a pilot whose lookup really ran, a FLICA Schedule Lookup
+    on one of his own paced checks or its 6 h cache (status ok or cached, or a page FLICA answered that had no
+    readable month), never while it is still 'loading' or 'waiting'; and for at most PILOTDB_BRIEF_PER_H distinct
+    employee numbers an hour (S pdb_briefs, kept across restarts). Past either limit there is no answer at all, not
+    even 'not in the database', so employee numbers typed one after the other learn nothing."""
+    p = PILOT_SHOWN["p"] or {}
+    emp = PDBM.emp_of(shown_emp())
+    if v.state != "on" or not emp:
+        return None
+    if str(p.get("status") or "") not in ("ok", "cached") and PILOT_RAN.get("emp") != emp:
+        return None
+    now = time.time()
+    seen = {e: t for e, t in (S.get("pdb_briefs") or {}).items() if isinstance(t, (int, float)) and 0 <= now - t < 3600}
+    if emp not in seen:
+        if len(seen) >= PILOTDB_BRIEF_PER_H:
+            return None
+        seen[emp] = now
+        S["pdb_briefs"] = seen
+        save_state(S)
+    return v.shown(emp, str(p.get("name") or ""))
+
+
+def pilotdb_state():
+    """{sensor.<T>_pilotdb: entry} for a portal pilot's state.json (synthesized, contract 1 revision 4): state on, off
+    (Ryan has not shared the database with him) or waiting (his file does not read yet); rev, file_key (32 zeros),
+    count and updated of his file; shown, the brief of the pilot his pilot card shows with that one pilot's phones
+    and emails (B23), {emp, none: true} or null; answers (the file's and his Watcher's own refusals, fixed phrases,
+    the last 20); pending rids; limits."""
+    with PDBV["lock"]:  # the export thread never reads a view the spool thread is halfway through reading again
+        v, loc = pilotdb_view(), _pdbv_local()
+        keep = ROLES.PILOTDB_NOTE_LIMITS["answers"]
+        answers = sorted(v.answers + [a for a in loc["answers"] if a["rid"] not in {x["rid"] for x in v.answers}],
+                         key=lambda a: str(a.get("at") or ""))[-keep:]
+        shown = pilotdb_shown(v)
+        attrs = {"friendly_name": "Pilot database", "rev": v.rev, "file_key": "0" * 32, "count": v.count,
+                 "updated": v.updated, "shown": shown,
+                 "answers": [{k: a.get(k) for k in ("rid", "ok", "why", "at")} for a in answers],
+                 "pending": sorted(loc["pending"]), "limits": v.limits or PT.pilotdb_limits()}
+        at = v.updated or None
+        return {pilotdb_eid(): {"state": v.state, "attributes": attrs, "last_changed": at, "last_updated": at}}
+
+
+def pilotdb_watch(now=None):
+    """Once a spool poll on a shared-capable pilot: his file, the roster or the shown pilot changed: his view is read
+    again, answered rids leave pending (all of them when the share went off, each with 'Ryan has not shared ...'), and
+    the file is exported before the state that names its rev. True when something changed."""
+    if not EXPORT["on"] or not has("pilotdb"):
+        return False
+    now = time.time() if now is None else now
+    with PDBV["lock"]:
+        v, loc = pilotdb_view(), _pdbv_local()
+        changed = v.refresh()
+        done = {a["rid"] for a in v.answers}
+        stale = ROLES.PILOTDB_NOTE_LIMITS["stale_h"] * 3600
+        for rid, at in list(loc["pending"].items()):
+            if rid in done or now - at > stale:
+                loc["pending"].pop(rid)
+                changed = True
+            elif v.state == "off":
+                _pdbv_answer(rid, PS.NOT_SHARED)
+                changed = True
+            elif now - at > PILOTDB_LOST_S and not PS.waiting(PS.inbox_dir(INSTANCE, PILOTDB_SHARE), rid):
+                _pdbv_answer(rid, PS.UNREADABLE)  # its file is gone and no answer came: never left pending for a day
+                changed = True
+        if changed:
+            _pdbv_save()
+        sig = json.dumps(pilotdb_state(), sort_keys=True)
+        if sig == PDBV["sig"] and not changed:
+            return False
+        PDBV["sig"] = sig
+    portal_files_dirty()
+    portal_dirty(pilotdb_eid())
+    return True
+
+
+def pilotdb_cmd(cmd, payload):
+    """{T}/pilotdb/note or {T}/pilotdb/edit on a portal pilot (the spool republished it after its shape check; any
+    MQTT client could publish here, so every check runs again): pdbshare.pilot_check (shape, shared, the pid is in his
+    file or is the shown pilot's, the op rules, the pending limit), then one file into the admin's inbox with the
+    author INSTANCE (never a payload key). A refusal is answered on his sensor with a fixed phrase. Returns
+    (queued, why). No lookup, no gate and no FLICA page is behind it."""
+    if not portal_on() or not has("pilotdb") or cmd not in ("note", "edit"):
+        return False, "off"
+    with PDBV["lock"]:
+        v, loc = pilotdb_view(), _pdbv_local()
+        v.refresh()
+        shown = pilotdb_shown(v) or {}
+        inner, why = PS.pilot_check(v, shown.get("pid"), cmd, payload, len(loc["pending"]))
+        rid = inner.get("rid") if isinstance(inner, dict) else None
+        op = inner.get("op") if isinstance(inner, dict) else None
+        op = op if op in ROLES.PILOTDB_NOTE_OPS + ROLES.PILOTDB_EDIT_OPS else "?"
+        if not why and rid in loc["pending"]:
+            return True, ""  # the same command again (a retry): one file is enough
+        if not why:
+            try:
+                PS.inbox_put(INSTANCE, cmd, inner, PILOTDB_SHARE)
+                loc["pending"][rid] = time.time()
+                _pdbv_save()
+            except OSError:
+                why = PS.NOT_SHARED
+        if why and isinstance(rid, str):
+            _pdbv_answer(rid, why)
+    log.info("pilotdb %s %s from portal: %s", cmd, op, "refused" if why else "queued")
+    PDBV["sig"] = None
+    portal_dirty(pilotdb_eid())
+    return not why, why
 
 
 # ---- the spool (contract 3.5)
@@ -11684,6 +12042,10 @@ def spool_thread():
             portal_spool_once()
         except Exception as e:  # noqa: BLE001
             portal_once("spool", "portal spool skipped: %s", type(e).__name__)
+        try:
+            pilotdb_watch()  # 1.7.9 (revision 4): his pilotdb file, the roster and the shown pilot
+        except Exception as e:  # noqa: BLE001
+            portal_once("pilotdb_watch", "pilot db: watch skipped: %s", type(e).__name__)
         time.sleep(SPOOL_POLL_S)
 
 
