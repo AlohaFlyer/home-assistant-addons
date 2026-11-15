@@ -103,7 +103,10 @@ PICKERS_V = 1  # 1.7.7: the pickers table and picker_log rebuilt once from the s
 # a pickup's in-flight fields; inflt_skip (1.7.7 review): a verdict from before 1.7.7 that was for another pilot, dropped
 # (1.7.8, Ryan Nov 15 "Re-check them": looked up again once for the picker, recheck_inflt_skip); inflt_no (1.7.8): the
 # verdicts of the other open-seat pickers of a both-seats pickup, by employee number ({emp: {inflt, trip, tries, leg}})
-INFLT_KEYS = ("inflt", "inflt_trip", "inflt_tries", "inflt_leg", "inflt_emp", "inflt_skip", "inflt_no")
+# inflt_named (1.7.9, Ryan Nov 15): when the open-seat picker is not known, the own verdict of each pilot the pickup
+# names, by employee number (the same shape as inflt_no); inflt_named_q marks the ones queue_inflt_named queued (listed
+# first until each is looked up) and is not a verdict, so a reset keeps it
+INFLT_KEYS = ("inflt", "inflt_trip", "inflt_tries", "inflt_leg", "inflt_emp", "inflt_skip", "inflt_no", "inflt_named")
 DOW = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 INFLT_MAX_TRIES = 3  # pickups_without_inflt's max_tries: a pickup with this many in-flight tries is never looked up again
 
@@ -128,6 +131,39 @@ def inflt_first(pk, row=None):
     if (pk or {}).get("inflt_emp"):
         return str(pk["inflt_emp"])
     return next((e for _p, _n, e in pickers_of(pk, row) if e), "")
+
+
+def named_of(pk, row=None):
+    """1.7.9 (Ryan, Nov 15): the pilots a pickup names when its open-seat picker is NOT known (pickers_of gives none
+    and no verdict was made for one): [(pos, name, emp)] of its 'by', each employee number once, in order; [] when a
+    picker is known. They are looked up in flight each for himself (inflt_named); none of them is made the picker."""
+    if (pk or {}).get("inflt_emp") or pickers_of(pk, row):
+        return []
+    out, seen = [], set()
+    for p in by_parts((pk or {}).get("by")):
+        if p[2] and p[2] not in seen:
+            seen.add(p[2])
+            out.append(p)
+    return out
+
+
+def _slot_set(slot, inflt, trip, tries, leg):
+    """One pilot's own verdict slot ({inflt, trip, tries, leg}: inflt_no, inflt_named) after a lookup: a failed try
+    under INFLT_MAX_TRIES only counts."""
+    if tries is not None:
+        slot["tries"] = tries
+    if not (inflt is None and tries is not None and tries < INFLT_MAX_TRIES):
+        slot.update(inflt=inflt, trip=trip)
+        if isinstance(leg, dict):
+            slot["leg"] = leg
+        else:
+            slot.pop("leg", None)
+
+
+def _slot_open(slot, max_tries=INFLT_MAX_TRIES):
+    """True while a verdict slot still wants a lookup (no verdict and tries left)."""
+    slot = slot if isinstance(slot, dict) else {}
+    return "inflt" not in slot and int(slot.get("tries") or 0) < max_tries
 
 
 def inflt_of(pk, row, emp):
@@ -305,6 +341,13 @@ class Store:
                         # 1.7.8: the other open-seat pickers' own verdicts ({emp: True | False | None})
                         "inflt_no": {str(e): (v or {}).get("inflt") for e, v in (pk.get("inflt_no") or {}).items()
                                      if isinstance(v, dict)},
+                        # 1.7.9 (Ryan, Nov 15): the picker is not known: the own verdict of each pilot the pickup
+                        # names ({emp: {inflt: True | False | None, trip, leg}}; None = not looked up yet or not
+                        # readable); {} when a picker is known. The card marks these "picker not known", no link
+                        "inflt_named": {e: {"inflt": sl.get("inflt"), "trip": sl.get("trip") or "",
+                                            "leg": sl.get("leg") if isinstance(sl.get("leg"), dict) else None}
+                                        for e, sl in ((e, (pk.get("inflt_named") or {}).get(e) or {})
+                                                      for _p, _n, e in (named_of(pk, r) if pk.get("status") == "filled" else []))},
                         "month": month, "seen": first, "gone": gone,
                         # FW-0042: the smart push fields as the row last had them in the pot ('' before 1.4.13 or
                         # without smart.json)
@@ -634,6 +677,9 @@ class Store:
                 pickup = dict(pickup, inflt_tries=old["inflt_tries"])
             if "inflt_no" in old and "inflt_no" not in pickup:  # 1.7.8: the other pickers' verdicts too
                 pickup = dict(pickup, inflt_no=old["inflt_no"])
+            for f in ("inflt_named", "inflt_named_q"):  # 1.7.9: the named pilots' verdicts (picker not known) too
+                if f in old and f not in pickup:
+                    pickup = dict(pickup, **{f: old[f]})
             self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pickup), key))
 
     def pickups_without_inflt(self, n=50, max_tries=INFLT_MAX_TRIES):
@@ -641,14 +687,17 @@ class Store:
         [(key, emp, gone_at, tries)], newest first. A pickup that failed max_tries lookups is skipped. 1.7.7: the
         first open-seat picker (pickers_of), never the last number of a 'by' that names two pilots. 1.7.8 (Ryan, Nov
         15: "Re-check them"): the second picker of a both-seats pickup is listed too, after the first, for his own
-        verdict (inflt_no); the check still makes at most its INFLT_PER_CHECK lookups."""
+        verdict (inflt_no); the check still makes at most its INFLT_PER_CHECK lookups. 1.7.9 (Ryan, Nov 15): a pickup
+        whose open-seat picker is not known (named_of) lists each pilot it names, for his own verdict (inflt_named);
+        the ones queue_inflt_named queued come first with the re-check's, whatever their age."""
         with self.lock:
             rows = self.db.execute("SELECT key,pickup,gone_at,row FROM finds WHERE pickup IS NOT NULL AND gone_at IS NOT NULL "
                                    "ORDER BY first_seen DESC LIMIT ?", (n,)).fetchall()
             # review: the pickups the once-only re-check reset (inflt_recheck) come first, whatever their age: most
             # verdicts 1.7.7 dropped are older than the newest n pickups, and were reset but never looked up
             again = self.db.execute("SELECT key,pickup,gone_at,row FROM finds WHERE pickup IS NOT NULL AND gone_at IS "
-                                    "NOT NULL AND json_extract(pickup,'$.inflt_recheck')=1 ORDER BY first_seen").fetchall()
+                                    "NOT NULL AND (json_extract(pickup,'$.inflt_recheck')=1 OR "
+                                    "json_extract(pickup,'$.inflt_named_q')=1) ORDER BY first_seen").fetchall()
         seen = {k for k, *_ in again}
         rows = again + [r for r in rows if r[0] not in seen]
         out = []
@@ -665,9 +714,44 @@ class Store:
                 if e == first:
                     continue
                 slot = (pk.get("inflt_no") or {}).get(e) or {}
-                if "inflt" not in slot and int(slot.get("tries") or 0) < max_tries:
+                if _slot_open(slot, max_tries):
+                    out.append((k, e, gone, int(slot.get("tries") or 0)))
+            for _p, _n, e in named_of(pk, r):  # 1.7.9: picker not known: each pilot named, in the 'by' order
+                slot = (pk.get("inflt_named") or {}).get(e) or {}
+                if _slot_open(slot, max_tries):
                     out.append((k, e, gone, int(slot.get("tries") or 0)))
         return out
+
+    def queue_inflt_named(self):
+        """1.7.9 (Ryan, Nov 15), once: every filled pickup whose open-seat picker is not known and that names a pilot
+        with an employee number still to look up is marked (inflt_named_q), so pickups_without_inflt lists it first
+        whatever its age (the ones 1.7.7 dropped the verdict of are older than the newest pickups). The pickup's own
+        verdict and its dropped state (inflt_skip) stay. No FLICA load here. Returns how many."""
+        n = 0
+        with self.lock:
+            for k, pk, row in self.db.execute("SELECT key,pickup,row FROM finds WHERE pickup IS NOT NULL AND gone_at IS "
+                                              "NOT NULL").fetchall():
+                pk = json.loads(pk) if pk else {}
+                if not isinstance(pk, dict) or pk.get("status") != "filled" or pk.get("inflt_named_q"):
+                    continue
+                named = named_of(pk, json.loads(row) if row else {})
+                if not any(_slot_open((pk.get("inflt_named") or {}).get(e)) for _p, _n, e in named):
+                    continue
+                pk["inflt_named_q"] = 1
+                self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), k))
+                n += 1
+        return n
+
+    def inflt_who(self, key, emp):
+        """1.7.9: who a lookup was for, for the in-flight log line, never his employee number: 'picker 2' (picker_no),
+        or 'named pilot 2 (picker not known)' by his place among the pilots the pickup names; 'pilot' when neither."""
+        n = self.picker_no(key, emp)
+        if n:
+            return f"picker {n}"
+        with self.lock:
+            r = self.db.execute("SELECT pickup,row FROM finds WHERE key=?", (key,)).fetchone()
+        emps = [e for _p, _n, e in named_of(json.loads(r[0]), json.loads(r[1]) if r[1] else {})] if r and r[0] else []
+        return f"named pilot {emps.index(str(emp)) + 1} (picker not known)" if str(emp) in emps else "pilot"
 
     def picker_no(self, key, emp):
         """Which open-seat picker of a pickup an employee number is (1, 2, ...; 0 when none): the in-flight log line
@@ -702,24 +786,25 @@ class Store:
     def set_inflt(self, key, inflt, trip="", tries=None, emp=None, leg=None):
         """Record the in-flight verdict (True / False / None = unknown after max tries) on the pickup. 1.7.7: emp the
         picker it was looked up for (inflt_emp) and leg the leg he was airborne on (inflt_leg, inflt.page_leg). The
-        verdict is the pickup's (one lookup a pickup, review R2)."""
+        verdict is the pickup's (one lookup a pickup, review R2). 1.7.9: a lookup for a pilot named on a pickup whose
+        picker is not known goes to his own slot (inflt_named); the pickup's own verdict and picker do not change."""
         with self.lock:
             r = self.db.execute("SELECT pickup,row FROM finds WHERE key=?", (key,)).fetchone()
             if not r or not r[0]:
                 return
             pk = json.loads(r[0])
-            first = inflt_first(pk, json.loads(r[1]) if r[1] else {})
+            row = json.loads(r[1]) if r[1] else {}
+            first = inflt_first(pk, row)
             if emp and first and str(emp) != first:  # 1.7.8: another open-seat picker's own verdict (inflt_no)
-                no = pk.setdefault("inflt_no", {})
-                slot = no.setdefault(str(emp), {})
-                if tries is not None:
-                    slot["tries"] = tries
-                if not (inflt is None and tries is not None and tries < INFLT_MAX_TRIES):
-                    slot.update(inflt=inflt, trip=trip)
-                    if isinstance(leg, dict):
-                        slot["leg"] = leg
-                    else:
-                        slot.pop("leg", None)
+                _slot_set(pk.setdefault("inflt_no", {}).setdefault(str(emp), {}), inflt, trip, tries, leg)
+                self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), key))
+                return
+            named = [e for _p, _n, e in named_of(pk, row)]
+            if emp and str(emp) in named:  # 1.7.9: picker not known: this named pilot's own verdict (inflt_named)
+                slots = pk.setdefault("inflt_named", {})
+                _slot_set(slots.setdefault(str(emp), {}), inflt, trip, tries, leg)
+                if not any(_slot_open(slots.get(e)) for e in named):
+                    pk.pop("inflt_named_q", None)  # each looked up: back in the normal order
                 self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), key))
                 return
             if tries is not None:

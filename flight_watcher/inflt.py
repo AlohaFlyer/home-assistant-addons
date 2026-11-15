@@ -11,6 +11,7 @@ import time
 from datetime import date, datetime
 from urllib.parse import unquote
 
+from captures import mask_emp
 from pot import (TZ, CM_PAIR_RE, classify, inflight_leg, leg_local_date, parse_legs, schedule_items, trip_minute,
                  visible_text)
 
@@ -130,6 +131,10 @@ RECHECK_NO_V = 1  # FW-0013: 'not in flight' verdicts (some were read off the er
 # 1.7.8 (Ryan, Nov 15: "Re-check them"): the verdicts 1.7.7 dropped as made for another pilot (inflt_skip) are looked up
 # again once for the picker (store.recheck_inflt_skip); the other picker of a both-seats pickup gets his own lookup
 RECHECK_SKIP_V = 1
+# 1.7.9 (Ryan, Nov 15): the pickups whose open-seat picker is not known (the pot showed no open seat and the pickup
+# names two pilots: the ones 1.7.7 dropped the verdict of) are queued once so EACH pilot named gets his own lookup
+# (store.queue_inflt_named, verdicts in inflt_named by employee number), the oldest too, within the paced budget
+NAMED_V = 1
 
 
 CAPTURE_DIR = "/share/flight_watcher/captures"
@@ -189,15 +194,16 @@ def fetch_schedule(fl, base, emp, bd, cur_bd, log, key):
         if PROBE["logged"] < 3:
             PROBE["logged"] += 1
             txt = visible_text(html)[:300]
-            # review: the month and the answer, never the query (it carries the employee number)
+            # review: the month and the answer, never the query (it carries the employee number); 1.7.9: nor the
+            # number the page itself prints ("(emp# n) schedule last updated"), masked here whoever quotes the page
             log.info("inflt %s: schedule lookup %s gave %s: %s", key, bd, classify(html),
-                     PAGE_LOG(txt) if PAGE_LOG else txt)
+                     mask_emp(PAGE_LOG(txt) if PAGE_LOG else txt))
     return None
 
 
 def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
-    """Three pickups per check: look the picker's month up, read the pairings around the pickup day,
-    decide. Returns True when any verdict was written. FW-0056: on_sched(items) gets each picker month read
+    """Three lookups per check: look the picker's month up, read the pairings around the pickup day,
+    decide. 1.7.9: a pickup whose picker is not known is looked up for each pilot it names (his own verdict). Returns True when any verdict was written. FW-0056: on_sched(items) gets each picker month read
     ([{trip, start}]), so the crew index reads those trips too."""
     changed_early = False
     if db.get("score_email_v") != 1:  # 0.5.6 one-shot: score the email-caught pickups recorded before 0.5.6
@@ -217,6 +223,12 @@ def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
         if n_skip:  # review: the number queued (each listed first until looked up), not the number flagged
             log.info("in-flight: %d pickups whose verdict 1.7.7 dropped (made for another pilot) are queued to be "
                      "looked up again once for the picker, first, within the paced in-flight budget", n_skip)
+    if db.get("inflt_named_v") != NAMED_V:
+        n_named = db.queue_inflt_named()
+        db.put("inflt_named_v", NAMED_V)
+        if n_named:
+            log.info("in-flight: %d pickups whose open-seat picker is not known are queued so each pilot named gets "
+                     "his own lookup once, first, within the paced in-flight budget", n_named)
     todo = db.pickups_without_inflt(50)
     if not todo:
         return changed_early
@@ -243,7 +255,7 @@ def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
                     try:
                         on_sched(sched)
                     except Exception as e:
-                        log.info("inflt %s: schedule trips not passed on: %s", key, e)
+                        log.info("inflt %s: schedule trips not passed on: %s", key, mask_emp(e))
             day = d.date()
             cands = [p for p in cache[ck] if 0 <= (day - date.fromisoformat(p["start"])).days <= 6]
             verdict, trip, leg = False, "", None
@@ -261,11 +273,12 @@ def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
             db.set_inflt(key, verdict, trip, tries=tries + 1, emp=emp, leg=leg)
             on = (f"IN FLIGHT on {trip} ({'DH ' if leg['dh'] else ''}{leg['flt']} {leg['frm']}-{leg['to']} "
                   f"{leg['date']})" if verdict else "not in flight")
-            # review: the picker by his seat order (picker 1, picker 2), never his employee number
-            log.info("inflt %s: picker %d %s at pickup (%s)", key, db.picker_no(key, emp), on,
+            # review: the picker by his seat order (picker 1, picker 2), never his employee number; 1.7.9: a pilot
+            # named on a pickup whose picker is not known by his place in its 'by' (named pilot 1, named pilot 2)
+            log.info("inflt %s: %s %s at pickup (%s)", key, db.inflt_who(key, emp), on,
                      ", ".join(p["trip"] + " " + p["start"] for p in cands) or "no trip that day")
             changed = True
         except Exception as e:
-            log.info("inflt %s skipped: %s", key, e)
+            log.info("inflt %s skipped: %s", key, mask_emp(e))  # 1.7.9: a load error can quote the query
             db.set_inflt(key, None, tries=tries + 1, emp=emp)
     return changed

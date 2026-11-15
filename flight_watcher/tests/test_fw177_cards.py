@@ -156,7 +156,8 @@ def _check(pg):
     assert rows["H9302"]["links"] == [PAT, MAX] and rows["H9302"]["plain"] == []  # both seats open: both
     assert rows["H9303"]["links"] == [LOU] and [p[0] for p in rows["H9303"]["plain"]] == [KIM]  # derived from open_seats
     assert rows["H9304"]["links"] == [] and [p[0] for p in rows["H9304"]["plain"]] == [KIM, LOU]  # ambiguous: none
-    assert rows["H9304"]["inflt"] == ""  # nobody to look up
+    # 1.7.9 (Ryan, Nov 15): picker not known: each pilot named is looked up for himself (none yet here), no link
+    assert rows["H9304"]["inflt"] == "FO -RO -picker not known"
     assert rows["H9302"]["inflt"] == "no" and rows["H9302"]["tip"] == "FO Poe, Pat on the ground at pickup; the other picker not checked"
     h = rows["H9308"]  # Lou the picker, Rick already on it; the old verdict was Rick's: dropped, not checked again
     assert h["links"] == [LOU] and h["inflt"] == "-" and not h["icon"]

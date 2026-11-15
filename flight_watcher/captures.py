@@ -212,6 +212,17 @@ def _mask_js(code):
     return "".join(out)
 
 
+# 1.7.9 (Ryan, Nov 15): a labeled employee number in FLICA page text quoted in a log line ("(emp# n) schedule last
+# updated", "Emp#n", "EmployeeID=n", "employee id: n"), whatever its length; the label stays, the digits become '#'
+EMP_QUOTE_RE = re.compile(r"(?i)\b(emp(?:loyee)?\s*(?:id|no\.?|num(?:ber)?)?\s*(?:[=:#]|%3D)+\s*)(\d+)")
+
+
+def mask_emp(text):
+    """Page text for a log line with no employee number (the admin's log too): every labeled number masked. Names,
+    times, pairings and flights stay (a pilot's line is masked in full by mask)."""
+    return EMP_QUOTE_RE.sub(lambda m: m.group(1) + "#" * len(m.group(2)), str(text or ""))
+
+
 def mask(text, extra=()):
     """A page as a pilot's capture may hold it: session tokens and hidden form values MASKED, employee numbers '#',
     crew names and every string in extra (the pilot's own logins, name and employee number) masked."""

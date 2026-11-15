@@ -6040,10 +6040,12 @@ def cap_write(name, data, extra=()):
 
 def page_log(text):
     """1.6.2 review: FLICA page text for a log line. The admin's as before. A pilot's only while his captures are on
-    (and masked, as a capture); otherwise just its size. The pilot log filter (PilotLogMask) masks every line too."""
+    (and masked, as a capture); otherwise just its size. The pilot log filter (PilotLogMask) masks every line too.
+    1.7.9 (Ryan, Nov 15): no quoted page carries an employee number, the admin's included ("(emp# n) schedule last
+    updated", EmployeeID=n: captures.mask_emp), so every line that quotes a page through here is masked."""
     t = str(text or "")
     if CAP.admin:
-        return t
+        return CAPS.mask_emp(t)
     if not cap_on():
         return f"({len(t)} chars, not logged: page captures are off for this pilot)"
     return CAPS.mask(t, cap_secrets())
