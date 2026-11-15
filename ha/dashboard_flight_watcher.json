@@ -202,6 +202,13 @@
                   "type": "custom:flight-watcher-pilot-card"
                 },
                 {
+                  "follow": true,
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "custom:flight-watcher-pilotdb-card"
+                },
+                {
                   "entity": "sensor.flight_watcher_pickers",
                   "grid_options": {
                     "columns": "full"
@@ -666,6 +673,12 @@
                       ]
                     }
                   ]
+                },
+                {
+                  "grid_options": {
+                    "columns": "full"
+                  },
+                  "type": "custom:flight-watcher-pilotdb-card"
                 },
                 {
                   "type": "heading",

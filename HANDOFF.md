@@ -1,22 +1,24 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-15, release 1.7.7 live, 1.7.8 built)
+# HANDOFF: Flight Watcher (refreshed 2026-11-15, release 1.7.8 live)
 
-State (Nov 15): app **1.7.7** live on Pako HI. **1.7.8** (branch `fw-1.7.8`, not pushed, no PR yet): Ryan's pilot
-database, the pilot database spec's step 1 (CHANGELOG 1.7.8): `pilotdb.py` on Ryan's instance only (`/data/pilotdb.sqlite`,
-0600), seeded on its first start from the kept contact CSV on the share and `seniority.json`, each picker's pickup
-history, `seniority.md` written from it, nightly copies, the ingress API `api/pilotdb`, `sensor.flight_watcher_pilotdb`
+State (Nov 15): app **1.7.8** live on Pako HI since 2026-11-15 03:07 UTC (PR #118, squash bbf269a; app backup
+`83daa6bb` "Flight Watcher 1.7.7 before 1.7.8"). Ryan's pilot database, the pilot database spec's step 1 (CHANGELOG
+1.7.8): `pilotdb.py` on Ryan's instance only (`/data/pilotdb.sqlite`, 0600), seeded on its first start from the kept
+contact CSV on the share (`seniority.json` is merged when Ryan uploads the union list), each picker's pickup history,
+`seniority.md` written from it, nightly copies, the ingress API `api/pilotdb`, `sensor.flight_watcher_pilotdb`
 (counts only) and the Pilots card (`flight-watcher-pilotdb-card.js`, admin only, kept off every portal); the pilot
-card's `_esc` escapes `'`; the in-flight re-check; the reviewers' fixes (CHANGELOG 1.7.8 "Review fixes": a pilot listed
-twice, the 90% guard's baseline, identity from the uploads, remembered Attach, purge of the set-aside files, a pilot's
-upload kept as his and making no record, the card on a phone, focus, live region, the late-read race). Contract
-unchanged at revision 3, HOM untouched, nothing shared with James (that is 1.7.9 with HOM 1.9.0, its own yes). Open for
-Ryan's yes, not built: refusing the contacts and seniority upload kinds on a pilot's instance (a boundary change). Its steps, each a [DESTRUCTIVE] yes from Ryan: merge the PR, store
-reload and update, then verify on Pako (`sensor.flight_watcher_state` version 1.7.8, `sensor.flight_watcher_pilotdb`
-`db: ok` with counts, the log's "pilot db: seeded" and merge lines (counts only), `/data/pilotdb.sqlite`, the first
-copies and `seniority.md` at 0600 and the folders at 0700, a Playwright render of the card through ingress reporting
-layout and counts only). Then, on his yes, the dashboard edits: the Settings view gets
-`{"type": "custom:flight-watcher-pilotdb-card"}` above the tickets card, the watcher view gets
-`{"type": "custom:flight-watcher-pilotdb-card", "follow": true}` right under the pilot card, and `ha/` takes the new
-snapshot (`ha/README.md`). Until then the card is deployed but on no view.
+card's `_esc` escapes `'`; the in-flight re-check; the reviewers' fixes (CHANGELOG 1.7.8 "Review fixes"); the pickers
+table fits Mac and iPad cards and the admin's lookup hint is short. Contract unchanged at revision 3, HOM untouched,
+nothing shared with James (that is 1.7.9 with HOM 1.9.0, its own yes). Open for Ryan's yes, not built: refusing the
+contacts and seniority upload kinds on a pilot's instance (a boundary change).
+
+Verified on Pako after the update: both instances report 1.7.8; the log has "pilot db: contacts 2026-11-14 merged:
+1228 added" and "pilot db: seeded: 1228 pilots (0 gone), 0 with hand edits, 0 conflicts, 112 pickups of 74 pickers"
+and no traceback; `sensor.flight_watcher_pilotdb` is 1228 with `db: ok`, `contacts: reparsed`; `seniority.md` and the
+first copy (`/share/flight_watcher/pilotdb/backup/pilotdb-2026-11-14.sqlite`) are 0600 and the folders 0700. The API
+answers only Home Assistant's ingress proxy (172.30.32.2): the HA connector's app proxy, which comes from its own
+container, gets 403 by design, so the live card's first API call is Ryan's own browser through ingress. The dashboard
+has the Pilots card (Settings above Tickets; follow mode under the pilot card on Watcher), applied through the HA
+connector on Ryan's yes; `ha/` matches Pako by sha256 (`ha/README.md`).
 
 **Pilot database, restore by hand** (spec 18): the card's "Daily copies" puts a copy back (typed RESTORE; the file in
 use is set aside as `pilotdb.sqlite.before-restore-<time>` first; it and a `pilotdb.sqlite.bad-<time>` from a failed
