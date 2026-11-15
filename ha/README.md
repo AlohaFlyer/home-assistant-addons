@@ -102,8 +102,18 @@ The 23 automations here match Pako's 23 Flight Watcher automations in file order
 23 items `0a7ff0d9f8aac055fef0b2a41350e9cb657896bbca1e04759bc48ce543dcc8c4` (read 2026-11-13 06:2x HST, after 1.7.2 went
 live, the pilot upload automation was added, the "Ready to update" push wording changed and the temporary van one was
 deleted). The dashboard snapshot matches Pako's `/config/.storage/lovelace.flight_watcher`, sha256
-`828ee141cb06d8d613d9ab8c9441a1d865202c7191433c4b045336cbb52117bf` (5 views: Watcher, Working Flight, Details,
-Recall/O75, Settings; read 2026-11-14 HST, with the van alert settings tiles and the Working Flight view below).
+`cd6e75d2d6687429e2962863c00ceb9ca8d6aee91d39f25f3a21160ec87e17b6` (5 views: Watcher, Working Flight, Details,
+Recall/O75, Settings; read 2026-11-15 HST, with the van alert settings tiles, the Working Flight view and the pilot lookup
+row below).
+
+**Changed on Pako 2026-11-14 about 15:39 HST (Ryan: "make the pilot name field much wider so I can see what I am
+typing ... make it work good on iphone ipad and mac"):** in the Watcher view's finds section the two buttons ("Scan
+FLICA now", "Update schedules") sit side by side, each `grid_options` columns 12, and the pilot lookup card has a row
+of its own under them (columns 24, which HA caps at the section's width). The box was 5 of 12 columns beside the
+buttons; now it is 269 px on an iPhone, 643 px on an iPad and about 570 px on a Mac. Claude made the edit through the
+HA connector; 1.7.8 shortens the box's placeholder for the admin to
+"Last name, first name or emp #" so the whole hint shows on an iPhone. Undo: the three cards' old order and columns
+(4, 5, 3) from git history.
 
 **Changed on Pako 2026-11-13 about 08:30 HST (Ryan: "Layover card only"):** once the 1.7.2 loader made the layover
 card show on his phone (FW-0072 closed), the Working Flight view showed the flight twice: the Nov 12 stand-in markdown

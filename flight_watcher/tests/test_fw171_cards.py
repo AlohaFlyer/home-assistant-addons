@@ -391,11 +391,11 @@ def test_pilot_search_card_asks_once_per_press_through_its_form():
         inp.fill("Roe")
         pg.evaluate("C.shadowRoot.querySelector('form').requestSubmit()")  # a phone keyboard's Search key
         assert pg.evaluate("window.asks") == [{"q": "Doe"}, {"q": "Doe"}, {"q": "Roe"}]
-        # the admin's card (Home Assistant): no label or hint lines, the long placeholder
+        # the admin's card (Home Assistant): no label or hint lines, the admin placeholder
         pg.evaluate("(st) => { C.hass = mkHass(st); }", _pilot({"sensor.flight_watcher_state": _s("idle", {"role": "admin"})}))
         assert pg.evaluate("[C.shadowRoot.querySelector('.lb').checkVisibility(), C.shadowRoot.querySelector('.hint')"
                            ".checkVisibility(), C.shadowRoot.querySelector('input').placeholder]") == [
-            False, False, "Anybody's schedule: last name, first name or employee #"]
+            False, False, "Last name, first name or emp #"]
 
 
 PICKERS = [{"name": "Doe, Jane", "emp": "10001", "pos": "FO", "n": 12, "month_n": 3, "year_n": 9, "inflt_n": 1,

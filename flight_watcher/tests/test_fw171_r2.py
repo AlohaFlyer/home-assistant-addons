@@ -647,7 +647,7 @@ def test_the_dashboard_snapshot_has_no_weather_view_and_matches_its_sha():
     # Working Flight view keeps the layover card only; the snapshot and Pako's dashboard have the same sha256 (read
     # 2026-11-14) and nothing is pending
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    assert sha == "828ee141cb06d8d613d9ab8c9441a1d865202c7191433c4b045336cbb52117bf" and sha in readme
+    assert sha == "cd6e75d2d6687429e2962863c00ceb9ca8d6aee91d39f25f3a21160ec87e17b6" and sha in readme
     assert "Applied on Pako 2026-11-13 about 05:47 HST (1.7.2): van alert settings" in readme
     assert "Pending on Pako" not in readme and "ahead of Pako" not in readme
     assert "lat=" not in text and "windy" not in text.lower()

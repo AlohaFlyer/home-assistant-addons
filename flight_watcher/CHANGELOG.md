@@ -135,6 +135,16 @@ test; FLICA is read only and nothing in the pilot database loads a FLICA page.
   - "Use upload value" shows only when an upload has a value; otherwise "Remove my edit" behind a confirm (never for
     the name).
 
+### Pickers table and the pilot lookup (tests: `tests/test_fw178_polish.py`)
+- Pickers card: Avg Pickup Speed was cut off behind a sideways scroll at Mac width (1280). The headers' words now wrap
+  (the cells do not), and on a card 900 px wide or less (an iPad) the name and layover cells wrap and the cells are
+  tighter, so all ten columns fit a Mac or iPad card. The phone layout (Pilot, Pos, Best, Avg) starts at a 700 px card
+  (was 500), so an iPad in split view or a phone on its side gets it. Checked on the live list (72 pickers) at card
+  widths 990, 900, 748, 560 and 358: no sideways scroll at any of them.
+- Pilot lookup card: the admin's placeholder is "Last name, first name or emp #" (was "Anybody's schedule: last name,
+  first name or employee #"), so the whole hint shows in the box on an iPhone. The box got its own full row on the
+  Watcher view on Nov 14 (`ha/README.md`).
+
 ## 1.7.7
 
 The pairing detail panel, one look for every month, other pilots' pay and seniority.md (Ryan, Nov 14), then Ryan's
