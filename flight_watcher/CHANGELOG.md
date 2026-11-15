@@ -22,7 +22,8 @@ test; FLICA is read only and nothing in the pilot database loads a FLICA page.
 - The notes field (one per record, at most 4000 characters): every save compare-and-set on the version it was read at,
   the newest 50 versions kept, Restore any. The dated log (at most 2000 characters an entry, 500 a record): add (a
   repeated request id adds nothing), Only me, take back your own, hide, restore, purge, delete the whole record (typed
-  DELETE). A take back, a purge or a delete scrubs the file; a purge or a delete also replaces the daily copies.
+  DELETE). A take back, a purge or a delete scrubs the file; a purge or a delete also replaces the daily copies and
+  deletes the files set aside beside it (before a restore, or failed its check).
 - Uploads merge on their own when a source file changes (checked at start and once a minute, at once after an upload):
   a pilot missing from a newer list is marked gone (his last values kept, marked stale) and back when he returns.
   Nothing is moved or merged automatically: a renumbered pilot, another pilot on a known number, an ambiguous row, an
@@ -30,7 +31,8 @@ test; FLICA is read only and nothing in the pilot database loads a FLICA page.
 - Seeded on the first start from the kept contact list on the share (`contacts_<date>.csv`, its Notes "HAL Emp# n |
   Sen# n (Mon YYYY) | DOH D-Mon-YY | Status X | Age 65 retirement Mon YYYY") and `seniority.json`. `contacts.hal_notes`
   reads the Notes ("Age-65" as Pako's file has it, and "Age 65"); the raw Notes are never kept; contacts parser 2 reads
-  the kept source again once. A contact row with a HAL Emp# makes a record (there is no `seniority.json` on Pako yet).
+  the kept source again once. A contact row with a HAL Emp# makes a record (there is no `seniority.json` on Pako yet);
+  one a pilot's instance uploaded is held for Ryan instead.
 - Each picker's record carries his full pickup history from the pickers data 1.7.7 rebuilt, linked by employee number:
   each pickup with its running count overall and at its layover station, trip length, turn or layover, credit, report
   time, weekday and pickup speed.
@@ -79,6 +81,59 @@ test; FLICA is read only and nothing in the pilot database loads a FLICA page.
 - Contact rows with a HAL Emp# create records (the seed would make none otherwise); seat also accepts RO (the relief
   officer); bookkeeping writes (signatures, md and copy times) do not move the revision the card follows.
 - `FLIGHT_WATCHER_PILOTDB=0` keeps the database closed (the test suite's default); run.py never sets it.
+
+### Review fixes (each with a test that failed first: `tests/test_fw178_review.py`, `tests/test_fw178_review_card.py`)
+- One pilot listed twice in one upload (a second phone card on the contact list, an `also` that repeats him) is one
+  row: the first row's values, each missing field filled from the others, phones and emails joined (counted `dup`). It
+  made a second record before, which broke the unique key and rolled back the whole merge, so a duplicated contact
+  stopped the seed, `seniority.md`, the copies, the pickups and the sensor every minute. The same number and last name
+  with another first initial is held for Ryan (`ambiguous`). Each row runs in its own SAVEPOINT (one refused row is
+  counted bad and rolls back alone), and each source merges in its own try in `pilotdb_tick`: a failed merge logs
+  "pilot db: <source> not merged: <error type>" once per file and is tried again next pass while the rest runs.
+- The 90% guard measures each list against the last whole list's count, which a partial list no longer moves: a second
+  partial list (the other half of the roster) no longer marks the first half gone. The same for the contact list.
+- A record's identity (last name, first initial) comes from the uploads' own name (list, award, contacts), a hand name
+  only when no upload has one, and a row matches on any DOH the record holds: a hand edit of the name or the DOH only
+  decides what is shown, and the pilot's later rows keep updating it (drift) instead of being held as `other_pilot`.
+  Unsetting a name no upload has is refused.
+- Ryan's answer to a held row is remembered with the record it put the row on: a contact row he attached goes to that
+  record again on every later list (it was skipped and the record lost its contacts values), an ignored one stays
+  ignored. A record that answer named is gone (deleted): the row is asked again.
+- A purge or a delete also deletes the files set aside beside the database (`pilotdb.sqlite.before-restore-<time>`
+  from a restore, `pilotdb.sqlite.bad-<time>` from a failed check); otherwise they roll off after 7 days with the
+  nightly copies. The card's Daily copies lists them (`view=status` `aside`).
+- An answered held row keeps only its employee number and the record it went to (`conflicts.pid`); a delete also
+  removes the open rows about that pilot, so no contact's phones, emails or name outlive the record in the file or the
+  fresh copies.
+- A contact or seniority list keeps its uploader (`uploaded_by`, save_upload's `who`; kept through a re-read) and is
+  merged as his (`vals.by`, `merges.by`, "uploaded by" in seniority.md). A contact list a pilot's instance saved makes
+  no record: such a row is held for Ryan (`contact_unmatched`, Attach or Ignore); rows that match a record update it.
+  Refusing the contacts and seniority kinds on a pilot's instance altogether is a boundary change left for Ryan's yes.
+- A record Ryan merged into another keeps its pickups through the next pass (`_link_pickups` follows `merged_into`).
+- A turn's station is no layover station: the pickup history keeps it as `station`, counts it apart (`turn_stations`)
+  and never in the stations or the running count per station; seniority.md says "Layover stations: LAX 2; turns: OGG 1".
+- The notes rev hashes the rev it replaces too (`sha256(pid|base|text|by|at)`), so a rev never comes back (X, Y, X in
+  one second gave the first save's rev).
+- Log entries made in one second stay newest first (`ORDER BY at DESC, rowid DESC`), in the card and seniority.md.
+- In-flight re-check: the pickups the once-only reset touched (`inflt_recheck`) are listed first whatever their age
+  (most were older than the newest 50 and were never looked up), only a pickup with a known picker is reset (any other
+  keeps its dropped state), and the log says how many are queued. The in-flight log names the picker by seat
+  ("picker 2 IN FLIGHT ..."), and the schedule lookup and capture lines no longer carry an employee number.
+- The Pilots card:
+  - a record read that answers after a newer read or a write is dropped (a sequence guard, as the search has): after
+    "Save mine over theirs" the card no longer goes back to the older notes;
+  - on a phone (700 px or less) every field is 16 px (no iOS zoom) and every button, chip, link and fold 44 px; a drift
+    line wraps; each pickup is one wrapped line (the table needed a hidden sideways swipe); the results' flags sit under
+    the name and the flags column is named "Flags" for a screen reader; the search placeholder is short enough to read;
+  - after Save, Cancel, Add, Hide, Restore, Take back, a held row's answer and Close the focus stays where Ryan acted
+    (the Edit button, the entry, the next held row, the pilot's row in the results), never the top of the page;
+  - every message also goes to one live region that is never redrawn (the sections' lines are plain text and stay
+    through a redraw);
+  - a record read that lands while Ryan types in it waits until the focus leaves the field (the box, its caret and its
+    height stay; an iPhone kept losing the keyboard); a notes box made taller stays that tall;
+  - Restore of a version with a draft in the box asks first, then shows the restored text;
+  - "Use upload value" shows only when an upload has a value; otherwise "Remove my edit" behind a confirm (never for
+    the name).
 
 ## 1.7.7
 

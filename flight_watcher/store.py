@@ -645,6 +645,12 @@ class Store:
         with self.lock:
             rows = self.db.execute("SELECT key,pickup,gone_at,row FROM finds WHERE pickup IS NOT NULL AND gone_at IS NOT NULL "
                                    "ORDER BY first_seen DESC LIMIT ?", (n,)).fetchall()
+            # review: the pickups the once-only re-check reset (inflt_recheck) come first, whatever their age: most
+            # verdicts 1.7.7 dropped are older than the newest n pickups, and were reset but never looked up
+            again = self.db.execute("SELECT key,pickup,gone_at,row FROM finds WHERE pickup IS NOT NULL AND gone_at IS "
+                                    "NOT NULL AND json_extract(pickup,'$.inflt_recheck')=1 ORDER BY first_seen").fetchall()
+        seen = {k for k, *_ in again}
+        rows = again + [r for r in rows if r[0] not in seen]
         out = []
         for k, pk, gone, row in rows:
             pk = json.loads(pk) if pk else {}
@@ -663,20 +669,33 @@ class Store:
                     out.append((k, e, gone, int(slot.get("tries") or 0)))
         return out
 
+    def picker_no(self, key, emp):
+        """Which open-seat picker of a pickup an employee number is (1, 2, ...; 0 when none): the in-flight log line
+        names the picker by it, never by his number (review)."""
+        with self.lock:
+            r = self.db.execute("SELECT pickup,row FROM finds WHERE key=?", (key,)).fetchone()
+        if not r or not r[0]:
+            return 0
+        emps = [e for _p, _n, e in pickers_of(json.loads(r[0]), json.loads(r[1]) if r[1] else {}) if e]
+        return emps.index(str(emp)) + 1 if str(emp) in emps else 0
+
     def recheck_inflt_skip(self):
         """1.7.8 (Ryan, Nov 15: "Re-check them"), once: the in-flight verdicts 1.7.7 dropped as made for another pilot
         (inflt_skip) lose their dropped state and tries, so the check looks each pickup up again for its first
         open-seat picker (no FLICA load here). Returns how many."""
         n = 0
         with self.lock:
-            for k, pk in self.db.execute("SELECT key,pickup FROM finds WHERE pickup IS NOT NULL").fetchall():
+            for k, pk, row, gone in self.db.execute("SELECT key,pickup,row,gone_at FROM finds WHERE pickup IS NOT NULL").fetchall():
                 pk = json.loads(pk) if pk else {}
                 if not isinstance(pk, dict) or not pk.get("inflt_skip"):
                     continue
-                for f in ("inflt", "inflt_trip", "inflt_leg", "inflt_emp", "inflt_skip"):
-                    pk.pop(f, None)
-                pk["inflt_tries"] = 0
-                self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), k))
+                fresh = {f: v for f, v in pk.items() if f not in ("inflt", "inflt_trip", "inflt_leg", "inflt_emp", "inflt_skip")}
+                # review: only a pickup the check can look up (a filled one with a known first picker) is reset; any
+                # other keeps its dropped state, so the card still says why it has no verdict
+                if not gone or fresh.get("status") != "filled" or not inflt_first(fresh, json.loads(row) if row else {}):
+                    continue
+                fresh.update(inflt_tries=0, inflt_recheck=1)  # listed first by pickups_without_inflt until looked up
+                self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(fresh), k))
                 n += 1
         return n
 
@@ -710,6 +729,7 @@ class Store:
                     return
             pk["inflt"], pk["inflt_trip"] = inflt, trip
             pk.pop("inflt_skip", None)
+            pk.pop("inflt_recheck", None)  # looked up again: back in the normal order
             if emp:
                 pk["inflt_emp"] = emp
             if isinstance(leg, dict):

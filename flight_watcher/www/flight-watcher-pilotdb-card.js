@@ -42,6 +42,7 @@ const FW_PDB_LABEL = Object.fromEntries(FW_PDB_FIELDS.concat([["text", "The text
 const FW_PDB_HINT = { name: "Last, First M", sen: "1 to 5 digits", doh: "YYYY-MM-DD", status: "A, ALPA, EXEC, FUR, LOA, MLOA, MRET, PESL, SLOA or blank",
   retire: "YYYY-MM", seat: "CA, FO, RO or blank", equip: "330, 321, 717 ...", union_id: "1 to 10 digits",
   phones: "one a line: mobile 808-555-0100 (mobile, home, work or other)", emails: "one a line" };
+const FW_PDB_Q_LONG = 'Name, employee #, s812 for a Sen #, "text" in notes', FW_PDB_Q_SHORT = 'Name, emp #, s812, "text"';
 const FW_PDB_FILTERS = [["all", "All"], ["notes", "Notes"], ["hand", "Edited"], ["drift", "Drift"], ["disagree", "Disagree"],
   ["conflict", "Held"], ["gone", "Gone"]];
 const FW_PDB_SRC = { list: "List", award: "Award", contacts: "Contacts", hand: "Edited" };
@@ -133,6 +134,12 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{
  color:var(--secondary-text-color);margin-left:4px;white-space:nowrap}
 .tag.w{border-color:var(--warning-color,#b26a00);color:var(--primary-text-color)}
 .tag.ai{border-color:var(--primary-color);color:var(--primary-color);font-weight:600}
+.tag.wr{white-space:normal;overflow-wrap:anywhere;min-width:0;max-width:100%;box-sizing:border-box}
+.vh{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.rfl{display:none;margin-top:2px}.rfl .tag{margin:2px 4px 0 0}
+.pkl{display:none;list-style:none;margin:6px 0;padding:0}
+.pkl li{padding:6px 0;border-bottom:1px solid var(--divider-color);font-size:13px;overflow-wrap:anywhere}.pkl li:last-child{border-bottom:0}
+[tabindex="-1"]:focus{outline:none}
 .wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:6px 0}
 table{border-collapse:collapse;width:100%}
 th,td{text-align:left;padding:6px 6px;border-bottom:1px solid var(--divider-color);vertical-align:top}
@@ -171,6 +178,14 @@ label.ck{display:inline-flex;gap:6px;align-items:center;min-height:30px}
  .fl{grid-template-columns:minmax(0,1fr)}
  .two{grid-template-columns:minmax(0,1fr)}
  .hn{display:none}
+ .fcol{display:none}.rfl{display:block}
+ .pkw{display:none}.pkl{display:block}
+}
+@media (max-width: 700px){
+ input,textarea,select{font-size:16px}
+ button,button.s,.chip,.nm,a.ct,label.ck{min-height:44px}
+ table.rt td{vertical-align:middle}
+ details>summary{min-height:44px;line-height:44px}
 }`;
 
 class FlightWatcherPilotdbCard extends HTMLElement {
@@ -224,13 +239,17 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     E.status = h("div", { class: "u", "data-status": "" });
     E.ban = h("div", {});
     E.msg = h("div", { class: "msg", role: "status", "aria-live": "polite" });
+    // review: one live region that is never redrawn, so every section's message is announced (a region made in the
+    // same task as its text may not be); the sections' own lines are visible text only
+    E.sr = h("div", { class: "vh", role: "status", "aria-live": "polite", "data-live": "" });
+    this._watchFocus(box);
     if (this._c.follow) {
       E.rec = h("div", {});
-      box.append(h("div", { class: "ttl" }, this._c.title || "Pilot database"), E.ban, E.msg, E.rec);
+      box.append(h("div", { class: "ttl" }, this._c.title || "Pilot database"), E.ban, E.msg, E.sr, E.rec);
       this._renderRecord();
       return;
     }
-    E.q = h("input", { type: "search", placeholder: 'Name, employee #, s812 for a Sen #, "text" in notes', autocomplete: "off",
+    E.q = h("input", { type: "search", placeholder: FW_PDB_Q_LONG, autocomplete: "off",
       spellcheck: false, "aria-label": "Search the pilot database", "data-k": "q", value: this._q,
       oninput: (ev) => { this._q = ev.target.value; this._page = 0; clearTimeout(this._qT); this._qT = setTimeout(() => this._search(true), 300); } });
     E.chips = h("div", { class: "chips", role: "group", "aria-label": "Filter" });
@@ -239,15 +258,43 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     E.rec = h("div", {});
     E.more = h("div", {});
     box.append(h("div", { class: "ttl" }, this._c.title || "Pilot database"), E.status, E.ban,
-      h("div", { class: "row" }, E.q), E.chips, E.msg, E.res, E.rec, E.conf, E.more);
+      h("div", { class: "row" }, E.q), E.chips, E.msg, E.sr, E.res, E.rec, E.conf, E.more);
+    if (typeof ResizeObserver === "function") {  // review: a placeholder that fits a phone's search box
+      this._ro = new ResizeObserver(() => { const w = box.clientWidth; E.q.placeholder = w && w < 520 ? FW_PDB_Q_SHORT : FW_PDB_Q_LONG; });
+      this._ro.observe(box);
+    }
     this._renderChips();
     this._renderMore();
   }
+  _watchFocus(box) {  // review: a record read while a field is being typed in waits until the focus leaves it
+    box.addEventListener("focusout", () => {
+      if (!this._pendingRec) return;
+      setTimeout(() => { if (this._pendingRec && !this._typing()) { const p = this._pendingRec; this._pendingRec = null; this._setRec(p.rec, p.rev); } }, 0);
+    });
+  }
+  _typing() {  // a text field in the record has the focus
+    const root = this.shadowRoot, a = root && root.activeElement, E = this._els;
+    return !!(a && E && E.rec && E.rec.contains(a) && (a.tagName === "TEXTAREA" || (a.tagName === "INPUT" && a.type !== "checkbox")));
+  }
   _say(where, text, cls) {
+    // review: a section's line is kept through the record's redraws (until its next message or another record)
+    // and every message also goes to the card's one live region, which is never redrawn
+    if (where !== "main") (this._msgs || (this._msgs = {}))[where] = { text: text || "", cls: cls || "" };
     const el = where === "main" ? this._els.msg : this._msgEl && this._msgEl[where];
-    if (!el) return;
-    el.className = `msg${cls ? " " + cls : ""}`;
-    el.textContent = text || "";
+    if (el) {
+      el.className = `msg${cls ? " " + cls : ""}`;
+      el.textContent = text || "";
+    }
+    const sr = this._els && this._els.sr;
+    if (sr && where !== "main" && text) {
+      sr.textContent = "";
+      const say = () => { sr.textContent = text; };
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(say); else say();
+    }
+  }
+  _msgNode(k) {  // a section's visible line (its text kept by _say), never a live region of its own
+    const st = (this._msgs || {})[k] || { text: "", cls: "" };
+    return (this._msgEl[k] = h("div", { class: `msg${st.cls ? " " + st.cls : ""}`, "data-msg": k }, st.text));
   }
   _why(r, what) {  // a refusal: the field and why, never a value (the Watcher's answers carry none)
     if (r && r.field) return `${what ? what + ": " : ""}${FW_PDB_LABEL[r.field] || r.field} ${r.why || "was refused"}.`;
@@ -350,20 +397,21 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     if (!r.rows.length) { E.res.replaceChildren(h("div", { class: "u" }, this._q || this._f !== "all" ? "No pilot matches." : "No pilot in the database yet: upload the seniority list or the contact list.")); return; }
     const open = this._rec && this._rec.pid;
     const rows = r.rows.map((x) => {
-      const flags = (x.flags || []).map((f) => h("span", { class: `tag${["drift", "disagree", "conflict"].includes(f) ? " w" : ""}` }, { hand: "edited", shared: "shared #", conflict: "held" }[f] || f));
+      const flags = () => (x.flags || []).map((f) => h("span", { class: `tag${["drift", "disagree", "conflict"].includes(f) ? " w" : ""}` }, { hand: "edited", shared: "shared #", conflict: "held" }[f] || f));
       const tr = h("tr", { class: `pick${x.pid === open ? " on" : ""}`, onclick: (ev) => { if (!ev.target.closest("button")) this._open(x.pid, true); } },
         h("td", { class: "n" }, x.sen || ""),
-        h("td", {}, h("button", { class: "nm", type: "button", onclick: () => this._open(x.pid, true), dir: "auto" }, x.name || "(no name)")),
+        h("td", {}, h("button", { class: "nm", type: "button", "data-k": `nm-${x.pid}`, onclick: () => this._open(x.pid, true), dir: "auto" }, x.name || "(no name)"),
+          (x.flags || []).length ? h("div", { class: "rfl" }, flags()) : null),  // review: on a phone the flags sit under the name
         h("td", { class: "n" }, x.emp),
         h("td", { class: "n" }, x.status || ""),
         h("td", { class: "n hn" }, x.doh || ""),
         h("td", { class: "n" }, x.notes_n ? String(x.notes_n) : ""),
-        h("td", {}, flags));
+        h("td", { class: "fcol" }, flags()));
       return tr;
     });
     const from = r.page * 50 + 1, to = r.page * 50 + r.rows.length;
     E.res.replaceChildren(
-      h("div", { class: "wrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Sen", "Name", "Emp", "Status", "DOH", "Notes", ""].map((c, i) => h("th", { scope: "col", class: i === 4 ? "hn" : null }, c)))),
+      h("div", { class: "wrap" }, h("table", { class: "rt" }, h("thead", {}, h("tr", {}, ["Sen", "Name", "Emp", "Status", "DOH", "Notes", "Flags"].map((c, i) => h("th", { scope: "col", class: i === 4 ? "hn" : i === 6 ? "fcol" : null }, i === 6 ? h("span", { class: "vh" }, c) : c)))),
         h("tbody", {}, rows))),
       h("div", { class: "row u" }, `${from} to ${to} of ${r.total}`,
         r.page > 0 ? h("button", { class: "g s", type: "button", onclick: () => { this._page -= 1; this._search(true); } }, "Previous") : null,
@@ -373,9 +421,13 @@ class FlightWatcherPilotdbCard extends HTMLElement {
   // ---- the record
   async _open(pid, scroll) {
     if (!/^p[0-9a-f]{10}$/.test(String(pid || ""))) return;
+    // review: a read answered after a newer read or a write (a slow phone) is dropped, as the search's is
+    const seq = (this._oseq = (this._oseq || 0) + 1);
     try {
       const r = await this._get(`pid=${pid}`);
+      if (seq !== this._oseq) return;
       if (!r.ok) { this._say("main", this._why(r, "The record"), "err"); return; }
+      if (!scroll && this._rec && this._rec.pid === pid && this._typing()) { this._pendingRec = { rec: r.record, rev: r.rev }; return; }
       this._setRec(r.record, r.rev);
       if (scroll && this._els.rec && this._els.rec.scrollIntoView) this._els.rec.scrollIntoView({ block: "start", behavior: "smooth" });
     } catch (e) {
@@ -385,22 +437,38 @@ class FlightWatcherPilotdbCard extends HTMLElement {
   _setRec(rec, rev) {
     const prev = this._rec && this._rec.pid;
     this._rec = rec;
+    this._pendingRec = null;
     if (rec) this._recWhy = "";
     if (rev != null) this._rev = rev;
-    if (!rec || rec.pid !== prev) { this._d = {}; this._noteConflict = null; }
+    if (!rec || rec.pid !== prev) {
+      this._d = {}; this._noteConflict = null;
+      for (const k of ["rec", "notes", "log", "danger"]) if (this._msgs) delete this._msgs[k];  // another record: its lines go
+    }
     this._renderRecord();
     if (!this._c.follow) this._renderResults();
   }
-  _keepFocus(box, paint) {  // a redraw keeps the field being typed in (drafts live in this._d)
+  _fallbacks(k) {  // review: where the focus goes when the control it was on is gone after a write
+    const out = [k], swap = { save: "edit", cancel: "edit", unset: "edit", remove: "edit", keep: "edit", hide: "restore", restore: "hide" };
+    const m = /^(.*)-([a-z]+)$/.exec(k);
+    if (m && swap[m[2]]) out.push(`${m[1]}-${swap[m[2]]}`);
+    for (let x = k; x.includes("-");) { x = x.slice(0, x.lastIndexOf("-")); out.push(x); }
+    return out;
+  }
+  _keepFocus(box, paint) {  // a redraw keeps the field being typed in (drafts live in this._d) and the control used
     const root = this.shadowRoot, a = root && root.activeElement;
     const k = a && box.contains(a) && a.dataset ? a.dataset.k : null;
     const sel = k && typeof a.selectionStart === "number" ? [a.selectionStart, a.selectionEnd] : null;
+    const heights = {};  // review: a notes box Ryan made taller stays that tall through a redraw
+    for (const t of box.querySelectorAll("textarea[data-k]")) if (t.style.height) heights[t.dataset.k] = t.style.height;
     paint();
+    for (const t of box.querySelectorAll("textarea[data-k]")) if (heights[t.dataset.k]) t.style.height = heights[t.dataset.k];
     if (!k) return;
-    const n = Array.from(box.querySelectorAll("[data-k]")).find((x) => x.dataset.k === k);
+    const all = Array.from(box.querySelectorAll("[data-k]"));
+    let n = null;
+    for (const c of this._fallbacks(k)) { n = all.find((x) => x.dataset.k === c && !x.disabled); if (n) break; }
     if (!n) return;
     n.focus();
-    if (sel && n.setSelectionRange) { try { n.setSelectionRange(sel[0], sel[1]); } catch (e) { /* a field that takes no selection */ } }
+    if (n.dataset.k === k && sel && n.setSelectionRange) { try { n.setSelectionRange(sel[0], sel[1]); } catch (e) { /* a field that takes no selection */ } }
   }
   _renderRecord() {
     const E = this._els;
@@ -420,7 +488,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
       if (!rec) return [h("div", { class: "u" }, "Reading the pilot database...")];
     }
     if (!rec) return [];
-    const m = (k) => (this._msgEl[k] = h("div", { class: "msg", role: "status", "aria-live": "polite" }));
+    const m = (k) => this._msgNode(k);
     const F = rec.fields || {}, val = (k) => (F[k] && F[k].value) || "";
     const flags = [];
     if (rec.gone) flags.push(h("span", { class: "tag w" }, `gone from the list of ${String(rec.gone_from || "").replace(/^list /, "")}`));
@@ -429,7 +497,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     const brief = [["Sen", val("sen")], ["Emp", rec.emp], ["DOH", val("doh")], ["Status", val("status")], ["Retires", val("retire")], ["Seat", val("seat")]]
       .filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(" · ");
     const head = h("div", { class: "rh" }, h("div", {}, h("div", { class: "rn", dir: "auto" }, val("name") || "(no name)", flags), h("div", { class: "u" }, brief)),
-      this._c.follow ? null : h("button", { class: "g s", type: "button", onclick: () => { this._rec = null; this._renderRecord(); this._renderResults(); } }, "Close"));
+      this._c.follow ? null : h("button", { class: "g s", type: "button", "data-k": "close", onclick: () => this._close() }, "Close"));
     const out = [head, m("rec"), this._contactNodes(F)];
     const fields = h("div", {}, FW_PDB_FIELDS.map(([k, label]) => this._fieldNode(k, label, F[k] || {})));
     if (this._c.follow) out.push(this._det("fields", "sec", "Every field and its source", fields));
@@ -439,6 +507,13 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     if (!this._c.follow) out.push(this._historyNode(rec), this._dangerNode(rec, m("danger")));
     if ((rec.conflicts || []).length) out.push(h("div", { class: "sec" }, h("h3", {}, "Held for you"), h("div", { class: "u" }, `${rec.conflicts.length} upload row${rec.conflicts.length === 1 ? "" : "s"} about this record wait for your answer in the list of held rows (the Held filter).`)));
     return [h("div", { class: "rec", "data-rec": rec.pid }, out)];
+  }
+  _close() {  // review: the focus goes back to the pilot's row in the results (else the search box)
+    const pid = this._rec && this._rec.pid;
+    this._rec = null; this._pendingRec = null;
+    this._renderRecord(); this._renderResults();
+    const E = this._els, b = E.res && Array.from(E.res.querySelectorAll("[data-k]")).find((x) => x.dataset.k === `nm-${pid}`);
+    (b || E.q || { focus() {} }).focus();
   }
   _contactNodes(F) {
     const links = [];
@@ -477,14 +552,19 @@ class FlightWatcherPilotdbCard extends HTMLElement {
       && !(fv.drift && up && c.source === up.source))
       .map((c) => `${c.ref || c.source}: ${this._show(k, c.value)}${c.stale ? " (no longer on it)" : ""}`);
     const lines = [h("div", { class: "row" }, h("span", { class: "v", dir: "auto" }, shown || "-"), tags,
-      ed ? null : h("button", { class: "g s", type: "button", "aria-label": `Edit ${label}`, title: `Edit ${label}`,
+      ed ? null : h("button", { class: "g s", type: "button", "data-k": `f-${k}-edit`, "aria-label": `Edit ${label}`, title: `Edit ${label}`,
         onclick: () => { this._d.edit = { field: k, value: k === "phones" ? (fv.value || []).map((p) => `${p.label} ${p.number}`).join("\n") : k === "emails" ? (fv.value || []).join("\n") : shown, why: "" }; this._renderRecord(); this._focus(`edit-${k}`); } }, "Edit"))];
     if (fv.hand && fv.why) lines.push(h("div", { class: "cands" }, "Why: ", h("span", { dir: "auto" }, fv.why)));
     if (others.length) lines.push(h("div", { class: "cands", dir: "auto" }, others.join(" · ")));
     if (fv.hand) {
-      const acts = [h("button", { class: "g s", type: "button", onclick: () => this._post({ op: "unset", pid: rec.pid, field: k, rev: rec.rev }, "rec", `${label}: back to the uploads.`) }, "Use upload value")];
-      if (fv.drift) acts.push(h("button", { class: "g s", type: "button", onclick: () => this._post({ op: "keep", pid: rec.pid, field: k }, "rec", `${label}: your edit is kept.`) }, "Keep my edit"));
-      lines.push(h("div", { class: "row cands" }, fv.drift && up ? h("span", { class: "tag w" }, `${up.ref || up.source} says ${this._show(k, up.value)}`) : null, acts));
+      const acts = [];
+      // review: "Use upload value" only when an upload has one; else "Remove my edit" behind a confirm (never for the
+      // name, which a record must keep)
+      if (up) acts.push(h("button", { class: "g s", type: "button", "data-k": `f-${k}-unset`, onclick: () => this._post({ op: "unset", pid: rec.pid, field: k, rev: rec.rev }, "rec", `${label}: back to the uploads.`) }, "Use upload value"));
+      else if (k !== "name") acts.push(h("button", { class: "g s", type: "button", "data-k": `f-${k}-remove`, onclick: () => { if (confirm(`Remove your edit of ${label}? No upload has a value for it, so it is left empty.`)) this._post({ op: "unset", pid: rec.pid, field: k, rev: rec.rev }, "rec", `${label}: your edit is removed.`); } }, "Remove my edit"));
+      if (fv.drift) acts.push(h("button", { class: "g s", type: "button", "data-k": `f-${k}-keep`, onclick: () => this._post({ op: "keep", pid: rec.pid, field: k }, "rec", `${label}: your edit is kept.`) }, "Keep my edit"));
+      const drift = fv.drift && up ? h("span", { class: "tag w wr", dir: "auto" }, `${up.ref || up.source} says ${this._show(k, up.value)}`) : null;  // review: wraps on a phone
+      if (drift || acts.length) lines.push(h("div", { class: "row cands" }, drift, acts));
     }
     if (ed) {
       const multi = k === "phones" || k === "emails";
@@ -493,10 +573,10 @@ class FlightWatcherPilotdbCard extends HTMLElement {
         : h("input", { type: "text", "data-k": `edit-${k}`, value: ed.value, "aria-label": label, autocomplete: "off", spellcheck: false, oninput: (ev) => { ed.value = ev.target.value; } });
       lines.push(h("div", { class: "ed" }, input, h("div", { class: "u" }, FW_PDB_HINT[k] || ""),
         h("input", { type: "text", "data-k": `why-${k}`, value: ed.why, placeholder: "Reason (optional, one line)", "aria-label": "Reason", maxLength: FW_PDB_WHY_MAX, oninput: (ev) => { ed.why = ev.target.value; } }),
-        h("div", { class: "row" }, h("button", { type: "button", onclick: () => this._saveField(k, label) }, "Save"),
-          h("button", { class: "g", type: "button", onclick: () => { this._d.edit = null; this._renderRecord(); } }, "Cancel"))));
+        h("div", { class: "row" }, h("button", { type: "button", "data-k": `f-${k}-save`, onclick: () => this._saveField(k, label) }, "Save"),
+          h("button", { class: "g", type: "button", "data-k": `f-${k}-cancel`, onclick: () => { this._d.edit = null; this._renderRecord(); } }, "Cancel"))));
     }
-    return h("div", { class: "fl" }, h("div", { class: "fk" }, label), h("div", { class: "fv" }, lines));
+    return h("div", { class: "fl", "data-k": `f-${k}`, tabindex: "-1" }, h("div", { class: "fk" }, label), h("div", { class: "fv" }, lines));
   }
   _det(key, cls, summary, ...kids) {  // a fold that stays open (or shut) through a redraw
     const o = this._folds || (this._folds = {});
@@ -534,8 +614,8 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     const cnt = h("span", { class: `cnt${n > FW_PDB_FIELD_MAX ? " over" : ""}` }, `${n} / ${FW_PDB_FIELD_MAX}`);
     const ta = h("textarea", { rows: 4, "data-k": "notes", value: text, dir: "auto", "aria-label": "Notes",
       oninput: (ev) => { this._d.notes = { text: ev.target.value, base }; const k = fwPdbLen(ev.target.value); cnt.textContent = `${k} / ${FW_PDB_FIELD_MAX}`; cnt.className = `cnt${k > FW_PDB_FIELD_MAX ? " over" : ""}`; } });
-    const kids = [h("h3", {}, "Notes"), ta, h("div", { class: "row" },
-      h("button", { type: "button", onclick: () => this._saveNotes(base) }, "Save notes"), cnt,
+    const kids = [h("h3", { "data-k": "notes-h", tabindex: "-1" }, "Notes"), ta, h("div", { class: "row" },
+      h("button", { type: "button", "data-k": "notes-save", onclick: () => this._saveNotes(base) }, "Save notes"), cnt,
       cur ? h("span", { class: "u" }, `Saved by ${cur.by} ${fwPdbHst(cur.at)}`) : h("span", { class: "u" }, "No notes yet")), msg];
     if (d && cur && cur.rev !== d.base && !this._noteConflict) kids.push(h("div", { class: "u" }, "The notes changed since you started typing: Save shows both."));
     const c = this._noteConflict;
@@ -544,19 +624,28 @@ class FlightWatcherPilotdbCard extends HTMLElement {
         h("div", {}, `Not saved: changed by ${c.by || "someone"}${c.at ? ` at ${fwPdbHst(c.at)}` : ""}. Your text is still in the box.`),
         h("div", { class: "two" }, h("div", { class: "box" }, h("div", { class: "u" }, "Theirs (saved)"), h("div", { class: "tx", dir: "auto" }, c.text || "(empty)")),
           h("div", { class: "box" }, h("div", { class: "u" }, "Yours (not saved)"), h("div", { class: "tx", dir: "auto" }, text || "(empty)"))),
-        h("div", { class: "row" }, h("button", { class: "g", type: "button", onclick: () => { this._d.notes = null; this._noteConflict = null; this._renderRecord(); } }, "Take theirs"),
-          h("button", { type: "button", onclick: () => { const t = this._d.notes ? this._d.notes.text : text; this._d.notes = { text: t, base: c.rev }; this._noteConflict = null; this._saveNotes(c.rev); } }, "Save mine over theirs"))));
+        h("div", { class: "row" }, h("button", { class: "g", type: "button", "data-k": "notes-theirs", onclick: () => { this._d.notes = null; this._noteConflict = null; this._renderRecord(); this._focus("notes-save"); } }, "Take theirs"),
+          h("button", { type: "button", "data-k": "notes-mine", onclick: () => { const t = this._d.notes ? this._d.notes.text : text; this._d.notes = { text: t, base: c.rev }; this._noteConflict = null; this._saveNotes(c.rev); } }, "Save mine over theirs"))));
     }
     const hist = rec.notes_hist || [];
     if (hist.length) {
-      kids.push(this._det("hist", null, `Earlier versions (${hist.length})`, hist.map((v) => h("div", { class: "ent" },
+      kids.push(this._det("hist", null, `Earlier versions (${hist.length})`, hist.map((v) => h("div", { class: "ent", "data-k": `hist-${v.id}`, tabindex: "-1" },
         h("div", { class: "meta" }, h("span", { class: "who" }, v.by), `saved ${fwPdbHst(v.at)}, replaced ${fwPdbHst(v.replaced_at)} by ${v.replaced_by}`),
         v.purged ? h("div", { class: "u" }, "purged") : h("div", { class: "tx", dir: "auto" }, v.text || "(empty)"),
         v.purged ? null : h("div", { class: "row" },
-          h("button", { class: "g s", type: "button", onclick: () => this._post({ op: "restore_field", pid: rec.pid, hist_id: v.id, base: cur ? cur.rev : FW_PDB_ZERO }, "notes", "That version is the notes again (a new save; the one it replaced is kept).") }, "Restore"),
-          h("button", { class: "g s", type: "button", onclick: () => { if (confirm("Purge this version's text for good? It also leaves the daily copies.")) this._post({ op: "purge", hist_id: v.id }, "notes", "Purged."); } }, "Purge"))))));
+          h("button", { class: "g s", type: "button", "data-k": `hist-${v.id}-restore`, onclick: () => this._restoreVersion(rec, v, cur) }, "Restore"),
+          h("button", { class: "g s", type: "button", "data-k": `hist-${v.id}-purge`, onclick: () => { if (confirm("Purge this version's text for good? It also leaves the daily copies.")) this._post({ op: "purge", hist_id: v.id }, "notes", "Purged."); } }, "Purge"))))));
     }
     return h("div", { class: "sec" }, kids);
+  }
+  async _restoreVersion(rec, v, cur) {
+    // review: a draft in the box is replaced by the restored text, so ask first; on success the box shows it
+    const d = this._d.notes;
+    if (d && d.text !== (cur ? cur.text : "") && !confirm("Restore this version? Your unsaved text in the Notes box is replaced by it.")) return;
+    const ok = "That version is the notes again (a new save; the one it replaced is kept).";
+    const r = await this._post({ op: "restore_field", pid: rec.pid, hist_id: v.id, base: cur ? cur.rev : FW_PDB_ZERO }, "notes", ok, true);
+    if (r && r.ok) { this._d.notes = null; this._noteConflict = null; this._renderRecord(); this._say("notes", ok, "ok"); }
+    else if (r && r._status === 409) { this._say("notes", "Not restored: the notes changed meanwhile. They are shown as they are now; restore again.", "err"); this._open(rec.pid, false); }
   }
   async _saveNotes(base) {
     const rec = this._rec;
@@ -587,7 +676,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     const ents = (rec.entries || []).map((e) => this._entryNode(e));
     const more = rec.entries_total > (rec.entries || []).length ? h("div", { class: "u" }, `The newest ${(rec.entries || []).length} of ${rec.entries_total} are shown.`) : null;
     return h("div", { class: "sec" }, h("h3", {}, "Log"), ta,
-      h("div", { class: "row" }, h("button", { type: "button", onclick: () => this._addEntry() }, "Add"), cnt,
+      h("div", { class: "row" }, h("button", { type: "button", "data-k": "entry-add", onclick: () => this._addEntry() }, "Add"), cnt,
         h("label", { class: "ck" }, only, "Only me"), h("span", { class: "u" }, "Nothing is shared with a pilot in 1.7.8; Only me stays yours when sharing comes.")),
       msg, ents.length ? h("div", {}, ents) : h("div", { class: "u" }, "No entries yet."), more);
   }
@@ -596,15 +685,16 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     const meta = [h("span", { class: "who" }, e.by), fwPdbHst(e.at), e.shared === false ? h("span", { class: "tag" }, "only me") : null,
       gone === "hidden" ? h("span", { class: "tag w" }, `hidden by ${e.gone_by || "ryan"}`) : null];
     const acts = [];
-    if (!gone && e.by === "ryan") acts.push(h("button", { class: "g s", type: "button", onclick: () => { if (confirm("Take this entry back? Its text is removed now; a line says it was taken back.")) this._post({ op: "retract", eid: e.eid }, "log", "Taken back."); } }, "Take back"));
-    if (!gone) acts.push(h("button", { class: "g s", type: "button", onclick: () => this._post({ op: "hide", eid: e.eid }, "log", "Hidden. Restore brings it back.") }, "Hide"));
+    const k = (a) => `ent-${e.eid}-${a}`;
+    if (!gone && e.by === "ryan") acts.push(h("button", { class: "g s", type: "button", "data-k": k("retract"), onclick: () => { if (confirm("Take this entry back? Its text is removed now; a line says it was taken back.")) this._post({ op: "retract", eid: e.eid }, "log", "Taken back."); } }, "Take back"));
+    if (!gone) acts.push(h("button", { class: "g s", type: "button", "data-k": k("hide"), onclick: () => this._post({ op: "hide", eid: e.eid }, "log", "Hidden. Restore brings it back.") }, "Hide"));
     if (gone === "hidden") {
-      acts.push(h("button", { class: "g s", type: "button", onclick: () => this._post({ op: "restore", eid: e.eid }, "log", "Restored.") }, "Restore"));
-      acts.push(h("button", { class: "g s", type: "button", onclick: () => { if (confirm("Purge this entry's text for good? It also leaves the daily copies.")) this._post({ op: "purge", eid: e.eid }, "log", "Purged."); } }, "Purge"));
+      acts.push(h("button", { class: "g s", type: "button", "data-k": k("restore"), onclick: () => this._post({ op: "restore", eid: e.eid }, "log", "Restored.") }, "Restore"));
+      acts.push(h("button", { class: "g s", type: "button", "data-k": k("purge"), onclick: () => { if (confirm("Purge this entry's text for good? It also leaves the daily copies.")) this._post({ op: "purge", eid: e.eid }, "log", "Purged."); } }, "Purge"));
     }
     const body = gone === "retracted" ? h("div", { class: "tx" }, `taken back by ${e.gone_by || e.by}`)
       : gone === "purged" ? h("div", { class: "tx" }, "purged") : h("div", { class: "tx", dir: "auto" }, e.text);
-    return h("div", { class: `ent${gone ? " gone" : ""}`, "data-eid": e.eid }, h("div", { class: "meta" }, meta), body, acts.length && rec ? h("div", { class: "row" }, acts) : null);
+    return h("div", { class: `ent${gone ? " gone" : ""}`, "data-eid": e.eid, "data-k": `ent-${e.eid}`, tabindex: "-1" }, h("div", { class: "meta" }, meta), body, acts.length && rec ? h("div", { class: "row" }, acts) : null);
   }
   async _addEntry() {
     const rec = this._rec, d = this._d.entry;
@@ -626,16 +716,26 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     if (s.inflt) line.push(`${s.inflt} while in flight`);
     const days = Object.entries(s.days || {}).map(([k, v]) => `${k}-day ${v}`).join(" · ");
     const pdow = FW_PDB_DOW.filter((d) => (s.pick_dow || {})[d]).map((d) => `${d} ${s.pick_dow[d]}`).join(" · ");
-    const table = h("div", { class: "wrap" }, h("table", { class: "pk" },
+    const stay = (r) => (r.turn ? (r.station ? `turn ${r.station}` : "turn") : r.lay ? `${r.lay} (${r.n_lay})` : "");
+    const table = h("div", { class: "wrap pkw" }, h("table", { class: "pk" },
       h("thead", {}, h("tr", {}, ["#", "Picked up (HST)", "Pairing", "Start", "Days", "Layover", "Credit", "Report", "Speed", "In flight"].map((c) => h("th", { scope: "col" }, c)))),
       h("tbody", {}, rows.map((r) => h("tr", {}, h("td", {}, String(r.n)), h("td", {}, `${fwPdbHst(r.at).replace(" HST", "")}${r.pick_dow ? ` ${r.pick_dow}` : ""}`), h("td", {}, r.pairing || ""),
         h("td", {}, `${r.start || ""}${r.dow ? ` ${r.dow}` : ""}`), h("td", {}, r.days != null ? String(r.days) : ""),
-        h("td", {}, r.turn ? "turn" : r.lay ? `${r.lay} (${r.n_lay})` : ""), h("td", {}, r.credit || ""), h("td", {}, r.report || ""),
+        h("td", {}, stay(r)), h("td", {}, r.credit || ""), h("td", {}, r.report || ""),
         h("td", {}, `${r.approx ? "~" : ""}${fwPdbSecs(r.secs)}`), h("td", {}, r.inflt === true ? "yes" : r.inflt === false ? "no" : ""))))));
+    // review: on a phone each pickup is one wrapped line (the table needed a hidden sideways swipe for 7 of its 10 columns)
+    const list = h("ol", { class: "pkl", "aria-label": "Every pickup, newest first" }, rows.map((r) => h("li", {},
+      [`#${r.n}`, `${fwPdbHst(r.at)}${r.pick_dow ? ` ${r.pick_dow}` : ""}`, r.pairing || "",
+        r.start ? `starts ${r.start}${r.dow ? ` ${r.dow}` : ""}` : "", r.days != null ? `${r.days}-day` : "", stay(r),
+        r.credit ? `credit ${r.credit}` : "", r.report ? `report ${r.report}` : "",
+        r.secs != null ? `picked up in ${r.approx ? "about " : ""}${fwPdbSecs(r.secs)}` : "",
+        r.inflt === true ? "in flight" : r.inflt === false ? "not in flight" : ""].filter(Boolean).join(" · "))));
+    const both = [table, list];
     return h("div", { class: "sec" }, h("h3", {}, "Pickups"), h("div", { class: "u" }, line.join(" · ")),
       (s.lays || []).length ? h("div", { class: "stn", "aria-label": "Pickups per layover station" }, s.lays.map(([st, c]) => h("span", {}, `${st} ${c}`))) : null,
+      (s.turn_stations || []).length ? h("div", { class: "stn", "aria-label": "Turns per station" }, s.turn_stations.map(([st, c]) => h("span", {}, `${st} turn ${c}`))) : null,
       days ? h("div", { class: "u" }, `Trip length: ${days}`) : null, pdow ? h("div", { class: "u" }, `Picked up on: ${pdow} (HST)`) : null,
-      this._c.follow ? this._det("picks", null, "Every pickup", table) : table);
+      this._c.follow ? this._det("picks", null, "Every pickup", both) : both);
   }
   _aiNode(ai) {
     return h("div", { class: "sec" }, h("h3", {}, "AI note ", h("span", { class: "tag ai" }, "AI")),
@@ -671,16 +771,16 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     const d = this._d;
     const typed = h("input", { type: "text", "data-k": "del", value: d.del || "", placeholder: "Type DELETE", "aria-label": "Type DELETE to delete the record", autocomplete: "off",
       oninput: (ev) => { d.del = ev.target.value; del.disabled = d.del !== "DELETE"; } });
-    const del = h("button", { type: "button", disabled: d.del !== "DELETE", onclick: async () => {
+    const del = h("button", { type: "button", "data-k": "del-go", disabled: d.del !== "DELETE", onclick: async () => {
       const r = await this._post({ op: "forget", pid: rec.pid, confirm: "DELETE" }, "danger", "Record deleted.", true);
-      if (r && r.ok) { this._rec = null; this._d = {}; this._renderRecord(); this._search(false); this._say("main", "Record deleted, and its text scrubbed from the file and the copies.", "ok"); }
+      if (r && r.ok) { this._rec = null; this._d = {}; this._renderRecord(); this._search(false); this._say("main", "Record deleted, and its text scrubbed from the file and the copies.", "ok"); if (this._els.q) this._els.q.focus(); }
     } }, "Delete record");
     const emp = h("input", { type: "text", "data-k": "move", inputMode: "numeric", value: d.move || "", placeholder: "New employee #", "aria-label": "New employee number", autocomplete: "off", oninput: (ev) => { d.move = ev.target.value; } });
     return this._det("danger", "sec", "Merge, renumber or delete", msg,
       h("div", { class: "u" }, "Merge this record into another (a duplicate): its log, notes, versions, values and pickups move there and this one is hidden."),
       this._picker((x) => { if (confirm(`Merge this record into ${x.name} (Emp ${x.emp})?`)) this._post({ op: "merge", pid: rec.pid, into: x.pid }, "danger", "Merged.").then((r) => { if (r && r.ok) this._search(false); }); }, rec.pid),
       h("div", { class: "u" }, "A new employee number for the same pilot (renumbered): his notes stay on this record."),
-      h("div", { class: "row" }, emp, h("button", { class: "g", type: "button", onclick: () => { if (/^\d{1,7}$/.test(String(d.move || "").trim()) && confirm("Give this record the new employee number?")) this._post({ op: "move", pid: rec.pid, emp: String(d.move).trim() }, "danger", "Employee number changed."); else if (!/^\d{1,7}$/.test(String(d.move || "").trim())) this._say("danger", "The employee # is 1 to 7 digits.", "err"); } }, "Change")),
+      h("div", { class: "row" }, emp, h("button", { class: "g", type: "button", "data-k": "move-go", onclick: () => { if (/^\d{1,7}$/.test(String(d.move || "").trim()) && confirm("Give this record the new employee number?")) this._post({ op: "move", pid: rec.pid, emp: String(d.move).trim() }, "danger", "Employee number changed."); else if (!/^\d{1,7}$/.test(String(d.move || "").trim())) this._say("danger", "The employee # is 1 to 7 digits.", "err"); } }, "Change")),
       h("div", { class: "u" }, "Delete the whole record: its values, log, notes, versions and entries. Its text is scrubbed from the file and the daily copies."),
       h("div", { class: "row" }, typed, del));
   }
@@ -693,11 +793,14 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     } catch (e) { /* the status line says the rest */ }
   }
   _renderConflicts() {
+    const E = this._els;
+    if (E && E.conf) this._keepFocus(E.conf, () => this._paintConflicts());
+  }
+  _paintConflicts() {
     const E = this._els, list = this._conf || [];
-    if (!E.conf) return;
     if (!list.length) { E.conf.replaceChildren(); return; }
-    const msg = (this._msgEl.conf = h("div", { class: "msg", role: "status", "aria-live": "polite" }));
-    E.conf.replaceChildren(h("div", { class: "sec" }, h("h3", {}, `Held for you (${list.length})`),
+    const msg = this._msgNode("conf");
+    E.conf.replaceChildren(h("div", { class: "sec" }, h("h3", { "data-k": "conf", tabindex: "-1" }, `Held for you (${list.length})`),
       h("div", { class: "u" }, "Upload rows the database would not apply on its own: nothing is ever moved or merged without you."), msg,
       list.map((c) => {
         const v = c.values || {};
@@ -706,11 +809,11 @@ class FlightWatcherPilotdbCard extends HTMLElement {
           : `${c.ref}: ${[v.name, c.emp ? `Emp ${c.emp}` : "", v.sen ? `Sen ${v.sen}` : "", v.doh ? `DOH ${v.doh}` : ""].filter(Boolean).join(" · ")}`;
         const cand = c.cand ? h("div", { class: "u" }, "The record it names: ", h("span", { dir: "auto" }, `${c.cand.name} (Emp ${c.cand.emp}${c.cand.sen ? `, Sen ${c.cand.sen}` : ""}${c.cand.doh ? `, DOH ${c.cand.doh}` : ""})`)) : null;
         const slot = h("div", {});
-        const acts = (c.answers || []).map((a) => h("button", { class: a === "ignore" ? "g s" : "s", type: "button", onclick: () => {
+        const acts = (c.answers || []).map((a) => h("button", { class: a === "ignore" ? "g s" : "s", type: "button", "data-k": `conf-${c.id}-${a}`, onclick: () => {
           if (a === "attach") { slot.replaceChildren(this._picker((x) => this._resolve(c, a, x.pid))); return; }
           this._resolve(c, a);
         } }, FW_PDB_ANSWER[a] || a));
-        return h("div", { class: "ent" }, h("div", { class: "meta" }, h("span", { class: "who" }, FW_PDB_KIND[c.kind] || c.kind), fwPdbHst(c.at)),
+        return h("div", { class: "ent", "data-k": `conf-${c.id}`, tabindex: "-1" }, h("div", { class: "meta" }, h("span", { class: "who" }, FW_PDB_KIND[c.kind] || c.kind), fwPdbHst(c.at)),
           h("div", { dir: "auto" }, what), cand, h("div", { class: "row" }, acts), slot);
       })));
   }
@@ -718,19 +821,26 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     const body = { op: "resolve", conflict_id: c.id, how };
     if (pid) body.pid = pid;
     const r = await this._post(body, "conf", "Done.", true);
-    if (r && r.ok) { await this._loadConflicts(); this._search(false); if (r.record) this._setRec(r.record, r.rev); }
+    if (r && r.ok) {
+      await this._loadConflicts(); this._search(false); if (r.record) this._setRec(r.record, r.rev);
+      const E = this._els, next = E.conf && E.conf.querySelector("[data-k^='conf-']");  // review: the next held row, else the heading
+      if (next) next.focus(); else if (E.q) E.q.focus();
+    }
   }
   _renderMore() {
     const E = this._els;
-    if (!E.more) return;
-    const msgN = (this._msgEl.new = h("div", { class: "msg", role: "status", "aria-live": "polite" }));
+    if (E && E.more) this._keepFocus(E.more, () => this._paintMore());
+  }
+  _paintMore() {
+    const E = this._els;
+    const msgN = this._msgNode("new");
     const n = this._newRec || (this._newRec = { emp: "", name: "", doh: "" });
-    const inp = (k, ph, mode) => h("input", { type: "text", value: n[k], placeholder: ph, "aria-label": ph, inputMode: mode || null, autocomplete: "off", spellcheck: false, oninput: (ev) => { n[k] = ev.target.value; } });
+    const inp = (k, ph, mode) => h("input", { type: "text", "data-k": `new-${k}`, value: n[k], placeholder: ph, "aria-label": ph, inputMode: mode || null, autocomplete: "off", spellcheck: false, oninput: (ev) => { n[k] = ev.target.value; } });
     const copies = this._view ? this._copiesNodes() : [h("button", { class: "g s", type: "button", onclick: () => this._loadStatus() }, "Show the copies")];
     E.more.replaceChildren(
-      h("details", { class: "sec" }, h("summary", {}, "Add a record"), h("div", { class: "u" }, "A pilot the uploads do not have yet. Its values are your edits."),
+      this._det("new", "sec", "Add a record", h("div", { class: "u" }, "A pilot the uploads do not have yet. Its values are your edits."),
         h("div", { class: "row" }, inp("emp", "Employee #", "numeric"), inp("name", "Last, First"), inp("doh", "DOH YYYY-MM-DD (optional)")),
-        h("div", { class: "row" }, h("button", { type: "button", onclick: async () => {
+        h("div", { class: "row" }, h("button", { type: "button", "data-k": "new-add", onclick: async () => {
           const body = { op: "new", emp: n.emp.trim(), name: n.name.trim() };
           if (n.doh.trim()) body.doh = n.doh.trim();
           const r = await this._post(body, "new", "Record added.", true);
@@ -747,7 +857,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
   _restoreBox(b, label) {
     const st = { typed: "" };
     const go = h("button", { type: "button", disabled: true, onclick: async () => {
-      const r = await this._post({ op: "restore_db", file: b.file, confirm: "RESTORE" }, "main", "The copy is back. The file before it is kept aside.", true);
+      const r = await this._post({ op: "restore_db", file: b.file, confirm: "RESTORE" }, "main", "The copy is back. The file before it is kept aside until a purge, a delete or 7 days.", true);
       if (r && r.ok) { this._view = null; this._rec = null; this._renderRecord(); this._loadStatus(); this._search(false); }
     } }, label);
     const typed = h("input", { type: "text", placeholder: "Type RESTORE", "aria-label": "Type RESTORE to put the copy back", autocomplete: "off", oninput: (ev) => { st.typed = ev.target.value; go.disabled = st.typed !== "RESTORE"; } });
@@ -755,9 +865,12 @@ class FlightWatcherPilotdbCard extends HTMLElement {
   }
   _copiesNodes() {
     const v = this._view, bk = (v && v.backups) || [];
-    const msg = (this._msgEl.copies = h("div", { class: "msg", role: "status", "aria-live": "polite" }));
+    const msg = this._msgNode("copies");
     const where = (f) => (String(f).startsWith("1/") ? "share" : "/data");
+    const aside = (v && v.aside) || [];
     return [h("div", { class: "u" }, "Nightly at 02:47 HST, 7 kept in /data and on the share (it survives a /data restore). Taken-back text stays up to 7 days in them and in Home Assistant's backups; a purge replaces them."),
+      // review: the files set aside beside the file in use hold its text too: a purge or a delete removes them
+      aside.length ? h("div", { class: "u", "data-aside": "" }, `Set aside beside the file in use: ${aside.length} file${aside.length === 1 ? "" : "s"} (${aside.map((a) => `${a.kind === "bad" ? "failed its check" : "before a restore"} ${fwPdbHst(a.at)}`).join("; ")}), kept until a purge, a delete or 7 days.`) : null,
       bk.length ? h("div", { class: "wrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["Day", "Where", "Revision", "Size", ""].map((c) => h("th", { scope: "col" }, c)))),
         h("tbody", {}, bk.map((b) => { const slot = h("td", {}); slot.append(h("button", { class: "g s", type: "button", onclick: () => slot.replaceChildren(this._restoreBox(b, "Put it back")) }, "Put back..."));
           return h("tr", {}, h("td", {}, b.day), h("td", {}, where(b.file)), h("td", {}, b.rev == null ? "?" : String(b.rev)), h("td", {}, `${Math.round((+b.size || 0) / 1024)} KB`), slot); })))) : h("div", { class: "u" }, "No copy yet."),
@@ -782,11 +895,11 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     const p = new URLSearchParams();
     if (emp) p.set("emp", emp);
     if (name) p.set("name", name.replace(/[\r\n\t]+/g, " "));
-    const seq = (this._fseq = (this._fseq || 0) + 1);
+    const seq = (this._fseq = (this._fseq || 0) + 1), oseq = this._oseq || 0;
     try {
       let r = await this._get(p.toString());
       if (!r.ok && r.field === "name" && emp) r = await this._get(new URLSearchParams({ emp }).toString());  // a name it refuses: by number only
-      if (seq !== this._fseq) return;
+      if (seq !== this._fseq || (this._oseq || 0) !== oseq) return;  // review: a newer read or a write answered first
       if (!r.ok) { this._say("main", this._why(r, "The pilot database"), "err"); return; }
       if (!r.record) { this._recWhy = r.why || "Not in the pilot database"; this._rec = null; this._rev = r.rev; this._renderRecord(); return; }
       this._say("main", "");
@@ -805,6 +918,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     let r = null;
     try {
       r = await this._send(body);
+      if (r.record) this._oseq = (this._oseq || 0) + 1;  // review: a read sent before this write never overwrites its answer
       if (r.ok) {
         if (r.rev != null) this._rev = r.rev;
         if (r.record) this._setRec(r.record, r.rev);

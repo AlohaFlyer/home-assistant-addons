@@ -304,22 +304,25 @@ def seniority_md_backfill(out=None):
     return seniority_md_write(view, out) if view else ""
 
 
-def seniority_store(parsed, pdf_name, uploaded_at, list_date="", out=None):
+def seniority_store(parsed, pdf_name, uploaded_at, list_date="", out=None, who=None):
     """Store a dedicated seniority list parse with pilot rows (SEN.to_json, source 'list') and rebuild seniority.json
     (`out`, seniority_file() unless given) with the award on file: the list is on top unless that award is later
-    (seniority.combine). Returns the list's dict."""
+    (seniority.combine). Returns the list's dict. who (1.7.8 review): the uploader (save_upload's who), kept as
+    uploaded_by for the pilot database's provenance."""
     d = SEN.to_json(parsed, pdf_name, uploaded_at, list_date)
     d["source"] = "list"
+    if who:
+        d["uploaded_by"] = str(who)
     _lst, aw = seniority_sources(out)
     seniority_rebuild(d, aw, out)
     return d
 
 
-def seniority_write(txt_path, pdf_name, uploaded_at, list_date="", out=None):
+def seniority_write(txt_path, pdf_name, uploaded_at, list_date="", out=None, who=None):
     """Parse a seniority list text copy and write seniority.json (seniority_read + seniority_store). Returns the
     written dict, or None when no pilot row was read (the file on hand is kept). Nothing personal is logged."""
     parsed = seniority_read(txt_path, uploaded_at, list_date)
-    return seniority_store(parsed, pdf_name, uploaded_at, list_date, out) if parsed["rows"] else None
+    return seniority_store(parsed, pdf_name, uploaded_at, list_date, out, who) if parsed["rows"] else None
 
 
 def award_seniority(txt_path, month, pdf_name, uploaded_at, out=None):
@@ -494,9 +497,9 @@ def save_upload(fields, data, log, who=PP.ADMIN):
     with save_lock():
         os.makedirs(UPLOAD_DIR, exist_ok=True)
         if kind == "contacts":
-            return _save_contacts(data, log)
+            return _save_contacts(data, log, who)
         if kind == "seniority":
-            return _save_seniority(data, fields, log)
+            return _save_seniority(data, fields, log, who)
         return _save_monthly(data, month, kind, log, who)
 
 
@@ -562,7 +565,7 @@ def _save_upload(ctype, body, log, after=None):
     return f"<p class='{'ok' if r['ok'] else 'err'}'>{html.escape(r['message'])}</p>"
 
 
-def _save_seniority(data, fields, log):
+def _save_seniority(data, fields, log, who=PP.ADMIN):
     """FW-0062: a seniority list upload. It goes to a temporary name (seniority_<day>.new.pdf / .txt) and is read
     there; only a file that gives pilot rows is renamed to seniority_<YYYY-MM-DD, HST upload day>.pdf / .txt and
     written to seniority.json. A refused file (no text copy, no pilot rows) is deleted, so the list on file keeps its
@@ -602,7 +605,7 @@ def _save_seniority(data, fields, log):
                                             f"the pilot seniority list? {SEN_FORMATS}); {kept}"}
         os.replace(tmp, final)
         os.replace(tmp[:-4] + ".txt", final[:-4] + ".txt")
-        d = seniority_store(parsed, name + ".pdf", at, given)
+        d = seniority_store(parsed, name + ".pdf", at, given, who=who)
     finally:
         for f in (tmp, tmp[:-4] + ".txt"):
             try:
@@ -665,13 +668,15 @@ def contacts_reparse(log, today=None):
             return "no-source"
         up = str(old.get("uploaded_at") or "") if pick == old.get("file") else hst_iso(st.st_mtime)
         d = CT.build(parsed, pick, up)
+        if old.get("uploaded_by"):  # the uploader stays the one who sent the file
+            d["uploaded_by"] = old["uploaded_by"]
         CT.store(CONTACTS_FILE, d)
     log.info("contact list read again (parser %d): %d pilots, %d with HAL Notes, %d Notes segments not read", CT.PARSER,
              d["count"], d["with_hal"], sum(d["hal_rejects"].values()))
     return "reparsed"
 
 
-def _save_contacts(data, log):
+def _save_contacts(data, log, who=PP.ADMIN):
     """FW-0066: a pilot contact list (PDF, CSV or XLSX; the type is read from the bytes). It is written mode 600
     under contacts_<HST day>.new.<ext> and read there (a PDF from its pdftotext copy); only a list that gives pilot
     contacts (a phone or an email with a name or employee number) replaces the one on file: it becomes
@@ -721,6 +726,7 @@ def _save_contacts(data, log):
         if text is not None:
             os.replace(ttxt, final.rsplit(".", 1)[0] + ".txt")
         d = CT.build(parsed, os.path.basename(final), now.isoformat(timespec="seconds"))
+        d["uploaded_by"] = str(who or PP.ADMIN)  # 1.7.8 review: the pilot database merges it as its uploader's
         CT.store(CONTACTS_FILE, d)
     finally:
         for f in (tmp, ttxt):

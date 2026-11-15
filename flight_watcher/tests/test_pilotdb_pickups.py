@@ -70,11 +70,12 @@ def test_sync_links_by_employee_number_with_running_counts(tmp_path):
     assert r == {"rows": 5, "linked": 5, "added": 5, "removed": 0}
     jane = db.find("10001")
     h = db.pickups(jane)
-    assert [(x["pairing"], x["n"], x["n_lay"]) for x in h["rows"]] == [
-        ("H3603", 3, 2), ("H3602", 2, 1), ("H3601", 1, 1)]  # newest first; LAX twice, OGG once
+    # newest first; LAX twice; the OGG turn is no layover station (review: it was counted as one)
+    assert [(x["pairing"], x["n"], x["lay"], x["n_lay"], x["station"]) for x in h["rows"]] == [
+        ("H3603", 3, "LAX", 2, "LAX"), ("H3602", 2, "", 0, "OGG"), ("H3601", 1, "LAX", 1, "LAX")]
     sm = h["summary"]
-    assert (sm["n"], sm["lays"], sm["turns"], sm["layovers"], sm["days"]) == (
-        3, [["LAX", 2], ["OGG", 1]], 1, 2, {"1": 1, "3": 2})
+    assert (sm["n"], sm["lays"], sm["turn_stations"], sm["turns"], sm["layovers"], sm["days"]) == (
+        3, [["LAX", 2]], [["OGG", 1]], 1, 2, {"1": 1, "3": 2})
     assert sm["dow"] == {"Tue": 2, "Sat": 1}  # the trips start Tue Nov 3, Sat Nov 7 and Tue Nov 10
     assert sm["report"] == {"first": "08:00", "last": "08:00"} and sm["credit_avg"] == "15:30"
     assert sm["speed"]["avg_s"] is not None and sm["speed"]["min_s"] <= sm["speed"]["max_s"]
@@ -115,5 +116,5 @@ def test_the_md_carries_the_pickup_history(tmp_path):
     db.sync_pickups(s.pickup_history())
     md = db.render_md("1.7.8", "2026-11-15 10:00 HST")
     assert "## Pickup history" in md
-    assert "### Doe, Jane (Emp 10001, 3 pickups)" in md and "- Stations: LAX 2, OGG 1" in md
+    assert "### Doe, Jane (Emp 10001, 3 pickups)" in md and "- Layover stations: LAX 2; turns: OGG 1" in md
     assert "Layovers 2, turns 1" in md

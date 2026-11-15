@@ -5,8 +5,11 @@ database, the pilot database spec's step 1 (CHANGELOG 1.7.8): `pilotdb.py` on Ry
 0600), seeded on its first start from the kept contact CSV on the share and `seniority.json`, each picker's pickup
 history, `seniority.md` written from it, nightly copies, the ingress API `api/pilotdb`, `sensor.flight_watcher_pilotdb`
 (counts only) and the Pilots card (`flight-watcher-pilotdb-card.js`, admin only, kept off every portal); the pilot
-card's `_esc` escapes `'`; the in-flight re-check. Contract unchanged at revision 3, HOM untouched, nothing shared with
-James (that is 1.7.9 with HOM 1.9.0, its own yes). Its steps, each a [DESTRUCTIVE] yes from Ryan: merge the PR, store
+card's `_esc` escapes `'`; the in-flight re-check; the reviewers' fixes (CHANGELOG 1.7.8 "Review fixes": a pilot listed
+twice, the 90% guard's baseline, identity from the uploads, remembered Attach, purge of the set-aside files, a pilot's
+upload kept as his and making no record, the card on a phone, focus, live region, the late-read race). Contract
+unchanged at revision 3, HOM untouched, nothing shared with James (that is 1.7.9 with HOM 1.9.0, its own yes). Open for
+Ryan's yes, not built: refusing the contacts and seniority upload kinds on a pilot's instance (a boundary change). Its steps, each a [DESTRUCTIVE] yes from Ryan: merge the PR, store
 reload and update, then verify on Pako (`sensor.flight_watcher_state` version 1.7.8, `sensor.flight_watcher_pilotdb`
 `db: ok` with counts, the log's "pilot db: seeded" and merge lines (counts only), `/data/pilotdb.sqlite`, the first
 copies and `seniority.md` at 0600 and the folders at 0700, a Playwright render of the card through ingress reporting
@@ -16,7 +19,9 @@ layout and counts only). Then, on his yes, the dashboard edits: the Settings vie
 snapshot (`ha/README.md`). Until then the card is deployed but on no view.
 
 **Pilot database, restore by hand** (spec 18): the card's "Daily copies" puts a copy back (typed RESTORE; the file in
-use is set aside as `pilotdb.sqlite.before-restore-<time>` first). By hand, only with the app stopped and Ryan's yes
+use is set aside as `pilotdb.sqlite.before-restore-<time>` first; it and a `pilotdb.sqlite.bad-<time>` from a failed
+start check stay beside the file until a purge or a delete removes them, else 7 days; the card's Daily copies lists
+them). By hand, only with the app stopped and Ryan's yes
 ([DESTRUCTIVE]): with the Pako HI Shell copy one of `/data/pilotdb_backup/pilotdb-<YYYY-MM-DD>.sqlite` or
 `/share/flight_watcher/pilotdb/backup/pilotdb-<YYYY-MM-DD>.sqlite` over `/data/pilotdb.sqlite` (remove a
 `pilotdb.sqlite-wal` and `-shm` left beside it; keep mode 600), then start the app. A /data rollback (an HA app backup

@@ -3593,7 +3593,8 @@ def seniority_refresh():
             same = (lst or {}).get("file") == f[:-4] + ".pdf"
             try:
                 d = web.seniority_write(path, f[:-4] + ".pdf", lst.get("uploaded_at") if same else f"{f[10:20]}T00:00:00",
-                                        (lst.get("list_date") or "") if same else "", out)
+                                        (lst.get("list_date") or "") if same else "", out,
+                                        (lst.get("uploaded_by") or None) if same else None)  # 1.7.8 review: its uploader
                 log.info("seniority list %s: %s", f, f"{d['count']} pilots read again" if d else "no pilot rows")
             except Exception as e:
                 log.info("seniority list %s not read: %s", f, e)
@@ -3745,30 +3746,40 @@ def pilotdb_tick(force=False):
         lst_sig = _pilotdb_sig([out, os.path.join(d, web.SEN_LIST)])
         aw_sig = _pilotdb_sig([os.path.join(d, web.SEN_AWARD)])
         lst, aw = web.seniority_sources(out) if (lst_sig or aw_sig) else (None, None)
+        # review: each source merges on its own, so one that fails (counts-only reason in the log, once per file)
+        # still lets the others, the pickups, seniority.md, the copies and the sensor run; it is tried again on the
+        # next pass (its signature is set only once it merged)
         if lst_sig and (force or db.meta("sig:list") != lst_sig):
-            if lst:
-                r = db.merge_list(lst, "ryan", hashlib.sha256(lst_sig.encode()).hexdigest(), lst.get("parser"))
-                log.info(_pilotdb_merge_line("list", SEN.as_of(lst) or "?", r))
-                merged = True
-            db.set_meta("sig:list", lst_sig)
+            def _list():
+                if lst:
+                    r = db.merge_list(lst, _pilotdb_by(lst.get("uploaded_by")),
+                                      hashlib.sha256(lst_sig.encode()).hexdigest(), lst.get("parser"))
+                    log.info(_pilotdb_merge_line("list", SEN.as_of(lst) or "?", r))
+                    return True
+                return False
+            merged = _pilotdb_merge("list", lst_sig, _list) or merged
         if aw_sig and (force or db.meta("sig:award") != aw_sig):
-            if aw:
-                month = str(aw.get("award_month") or "")
-                who = "ryan"
-                with contextlib.suppress(Exception):
-                    who = str((review().on_file(month, "award")[1] or {}).get("who") or "ryan")
-                r = db.merge_award(aw, who if ROLES.NAME_RE.match(who) else "ryan",
-                                   hashlib.sha256(aw_sig.encode()).hexdigest(), aw.get("parser"))
-                log.info(_pilotdb_merge_line("award", month or "?", r))
-                merged = True
-            db.set_meta("sig:award", aw_sig)
+            def _award():
+                if aw:
+                    month = str(aw.get("award_month") or "")
+                    who = "ryan"
+                    with contextlib.suppress(Exception):
+                        who = str((review().on_file(month, "award")[1] or {}).get("who") or "ryan")
+                    r = db.merge_award(aw, _pilotdb_by(who), hashlib.sha256(aw_sig.encode()).hexdigest(), aw.get("parser"))
+                    log.info(_pilotdb_merge_line("award", month or "?", r))
+                    return True
+                return False
+            merged = _pilotdb_merge("award", aw_sig, _award) or merged
         if ct_sig and (force or db.meta("sig:contacts") != ct_sig):
-            cj = CT.load(web.CONTACTS_FILE)
-            if cj:
-                r = db.merge_contacts(cj, "ryan", hashlib.sha256(ct_sig.encode()).hexdigest(), cj.get("parser"))
-                log.info(_pilotdb_merge_line("contacts", str(cj.get("uploaded_at") or "")[:10] or "?", r))
-                merged = True
-            db.set_meta("sig:contacts", ct_sig)
+            def _contacts():
+                cj = CT.load(web.CONTACTS_FILE)
+                if cj:
+                    r = db.merge_contacts(cj, _pilotdb_by(cj.get("uploaded_by")),
+                                          hashlib.sha256(ct_sig.encode()).hexdigest(), cj.get("parser"))
+                    log.info(_pilotdb_merge_line("contacts", str(cj.get("uploaded_at") or "")[:10] or "?", r))
+                    return True
+                return False
+            merged = _pilotdb_merge("contacts", ct_sig, _contacts) or merged
         try:
             db.sync_pickups(DB.pickup_history())
         except Exception as e:  # noqa: BLE001
@@ -3794,6 +3805,31 @@ def pilotdb_tick(force=False):
         except Exception as e:  # noqa: BLE001
             log.info("pilot db: sensor not published: %s", type(e).__name__)
         return merged
+
+
+def _pilotdb_by(who):
+    """The uploader a merge records (vals.by, merges.by, seniority.md's 'uploaded by'): the file's own uploaded_by
+    (web.save_upload's who: ryan, or the pilot whose instance saved it), ryan for a file from before 1.7.8."""
+    who = str(who or "").strip()
+    return who if who and ROLES.NAME_RE.match(who) else "ryan"
+
+
+def _pilotdb_merge(src, sig, fn):
+    """One source's merge (pilotdb_tick): fn() inside its own try. Its signature is set when it ran; a failure logs
+    its counts-only reason once per file and leaves the signature, so the next pass tries it again. True when it
+    merged."""
+    db = PDB.get("db")
+    try:
+        done = fn()
+        db.set_meta(f"sig:{src}", sig)
+        PDB.setdefault("failed", {}).pop(src, None)
+        return done
+    except Exception as e:  # noqa: BLE001
+        failed = PDB.setdefault("failed", {})
+        if failed.get(src) != sig:
+            failed[src] = sig
+            log.warning("pilot db: %s not merged: %s (tried again on the next pass)", src, type(e).__name__)
+        return False
 
 
 def pilotdb_thread():
@@ -3988,7 +4024,10 @@ def pilotdb_get(query):
     view = q.get("view", "")
     if view == "status":
         bk = [{k: b[k] for k in ("file", "day", "rev", "size")} for b in PDBM.backups(pilotdb_dirs())]
-        return 200, {"ok": True, "status": pilotdb_status(), "backups": bk, "version": VERSION}
+        # review: the files set aside beside the file in use (before a restore, or failed its check), until a purge
+        # or 7 days
+        aside = [{k: a[k] for k in ("name", "kind", "at", "size")} for a in PDBM.aside_files(PILOTDB_FILE)]
+        return 200, {"ok": True, "status": pilotdb_status(), "backups": bk, "aside": aside, "version": VERSION}
     db = PDB.get("db")
     if db is None:
         return 503, {"ok": False, "db": (PDB.get("status") or {}).get("db", "off"),

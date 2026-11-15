@@ -169,7 +169,7 @@ def capture(html, emp, log):
             os.makedirs(CAPTURE_DIR, exist_ok=True)
             open(f"{CAPTURE_DIR}/cmschedule_{emp}.html", "w").write(html)
         PROBE["saved"] = PROBE.get("saved", 0) + 1
-        log.info("inflt: schedule page for %s saved (%d chars, %d pair links)", emp, len(html),
+        log.info("inflt: a picker's schedule page saved (%d chars, %d pair links)", len(html),  # review: no number
                  len(parse_cm_schedule(html)))
     except Exception as e:
         log.info("inflt: capture skipped: %s", e)
@@ -189,7 +189,8 @@ def fetch_schedule(fl, base, emp, bd, cur_bd, log, key):
         if PROBE["logged"] < 3:
             PROBE["logged"] += 1
             txt = visible_text(html)[:300]
-            log.info("inflt %s: schedule lookup %s gave %s: %s", key, url.split("?")[1], classify(html),
+            # review: the month and the answer, never the query (it carries the employee number)
+            log.info("inflt %s: schedule lookup %s gave %s: %s", key, bd, classify(html),
                      PAGE_LOG(txt) if PAGE_LOG else txt)
     return None
 
@@ -213,9 +214,9 @@ def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
     if db.get("inflt_skip_recheck_v") != RECHECK_SKIP_V:
         n_skip = db.recheck_inflt_skip()
         db.put("inflt_skip_recheck_v", RECHECK_SKIP_V)
-        if n_skip:
-            log.info("in-flight: %d pickups whose verdict 1.7.7 dropped (made for another pilot) are looked up again "
-                     "once for the picker, within the paced in-flight budget", n_skip)
+        if n_skip:  # review: the number queued (each listed first until looked up), not the number flagged
+            log.info("in-flight: %d pickups whose verdict 1.7.7 dropped (made for another pilot) are queued to be "
+                     "looked up again once for the picker, first, within the paced in-flight budget", n_skip)
     todo = db.pickups_without_inflt(50)
     if not todo:
         return changed_early
@@ -260,7 +261,8 @@ def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
             db.set_inflt(key, verdict, trip, tries=tries + 1, emp=emp, leg=leg)
             on = (f"IN FLIGHT on {trip} ({'DH ' if leg['dh'] else ''}{leg['flt']} {leg['frm']}-{leg['to']} "
                   f"{leg['date']})" if verdict else "not in flight")
-            log.info("inflt %s: picker %s %s at pickup (%s)", key, emp, on,
+            # review: the picker by his seat order (picker 1, picker 2), never his employee number
+            log.info("inflt %s: picker %d %s at pickup (%s)", key, db.picker_no(key, emp), on,
                      ", ".join(p["trip"] + " " + p["start"] for p in cands) or "no trip that day")
             changed = True
         except Exception as e:

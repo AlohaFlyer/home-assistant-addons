@@ -67,6 +67,10 @@ GONE_GUARD = 0.9  # a list with fewer than 90% of the last one's pilots marks no
 BACKUP_KEEP = 7
 BACKUP_RE = re.compile(r"^pilotdb-(\d{4}-\d{2}-\d{2})\.sqlite$")
 PRE_RE = re.compile(r"^pilotdb-pre-v\d+\.sqlite$")
+# review: the files set aside beside the live file, by restore() (the file in use before a restore) and by
+# open_checked() (a file that failed its integrity check): <file>.before-restore-<ts>[-wal|-shm] and
+# <file>[-wal|-shm].bad-<ts>. A purge or a forget deletes them (they hold the text it removes); else 7 days.
+ASIDE_RE = r"^{name}(?:\.before-restore-(\d{{8}}T\d{{6}}Z)(?:-wal|-shm)?|(?:-wal|-shm)?\.bad-(\d{{8}}T\d{{6}}Z))$"
 CONFLICT_KINDS = ("ambiguous", "renumbered", "other_pilot", "contact_unmatched", "list_partial")
 RESOLVE = {"renumbered": ("same", "different", "ignore"), "other_pilot": ("attach", "new", "ignore"),
            "ambiguous": ("attach", "new", "ignore"), "contact_unmatched": ("attach", "ignore"),
@@ -323,8 +327,11 @@ def emp_of(v):
     return re.sub(r"\D", "", str(v or "")).lstrip("0")
 
 
-def notes_rev(pid, text, by, at):
-    return hashlib.sha256(f"{pid}|{text}|{by}|{at}".encode()).hexdigest()[:12]
+def notes_rev(pid, base, text, by, at):
+    """A notes field's rev: the first 12 hex of sha256(pid|base|text|by|at). Review: the rev it replaces (base) is in
+    the hash, so a rev never comes back (saving X, Y, then X again in one second gave the first save's rev, and a tab
+    still holding it would have passed the compare-and-set)."""
+    return hashlib.sha256(f"{pid}|{base}|{text}|{by}|{at}".encode()).hexdigest()[:12]
 
 
 # ---------------------------------------------------------------- the value shown (spec 6)
@@ -583,16 +590,21 @@ class PilotDB:
         return p
 
     def _refresh(self, pid):
-        """A changed record: rev +1, its identity (last_key, first initial) from the name shown (kept when another
-        live record already has this employee number and last name), its search tokens from every name spelling."""
+        """A changed record: rev +1, its identity (last_key, first initial) from the uploads' own name (the ORDER rule:
+        list, award, contacts; a hand name only when no upload has one, as for a record Ryan added), kept when another
+        live record already has this employee number and last name; its search tokens from every name spelling.
+        Review: the identity followed the name shown, so a hand edit of the name cut the record off from the
+        pilot's own later rows."""
         p = self._pilot(pid)
         if not p:
             return
-        names = [r["value"] for r in self._vals(pid, "name")]
+        rows = self._vals(pid, "name")
+        names = [r["value"] for r in rows]
         names += [n for (n,) in self.db.execute("SELECT DISTINCT name FROM pickups WHERE pid=? AND name!=''", (pid,))]
         names += [n for o, w in self.db.execute("SELECT old,new FROM field_log WHERE pid=? AND field='name'", (pid,))
                   for n in (o, w) if n]  # an older spelling still finds him
-        name = self._eff(pid, "name")
+        ident = upload_pick("name", rows) or next((r for r in rows if r["source"] == "hand"), None)
+        name = ident["value"] if ident else ""
         lk, fi = name_key(name) if name else (p["last_key"], p["first_i"])
         if lk and (lk, fi) != (p["last_key"], p["first_i"]):
             clash = self.db.execute("SELECT 1 FROM pilots WHERE emp=? AND last_key=? AND pid!=? AND merged_into IS NULL",
@@ -683,15 +695,22 @@ class PilotDB:
         return changed
 
     # -------------------------------------------------- matching (spec 7)
+    def _dohs(self, pid):
+        """Every DOH value a record holds (each upload source's, stale ones too, and a hand edit): a row is the same
+        pilot when its DOH is any of them (review: matching follows the uploads' identity, not only the value shown)."""
+        return {v for (v,) in self.db.execute("SELECT value FROM vals WHERE pid=? AND field='doh'", (pid,))}
+
     def _live(self, emp):
         rows = self.db.execute("SELECT pid,last_key,first_i,emp FROM pilots WHERE emp=? AND merged_into IS NULL",
                                (emp,)).fetchall()
-        return [{"pid": p, "last_key": lk, "first_i": fi, "emp": e, "doh": self._eff(p, "doh")} for p, lk, fi, e in rows]
+        return [{"pid": p, "last_key": lk, "first_i": fi, "emp": e, "dohs": self._dohs(p)} for p, lk, fi, e in rows]
 
     def _match(self, emp, name, doh, counts, emps, taken):
         """('match', pid, note) | ('new', None, None) | ('new_shared', None, None) | ('conflict', pid|None, kind).
         Nothing is ever moved or merged here: a wrong merge mixes two pilots' notes. taken: the records this upload
-        already matched (two rows never land on one record)."""
+        already matched (two rows never land on one record). The record's identity (last_key) comes from the uploads'
+        own name, and its DOH is any of its DOH values, so a hand edit of the name or the DOH only decides what is
+        shown and never cuts the record off from the pilot's own later rows (review)."""
         lk, fi = name_key(name)
         live = [r for r in self._live(emp) if r["pid"] not in taken]
         held = [r for r in self._live(emp) if r["pid"] in taken]
@@ -699,7 +718,7 @@ class PilotDB:
             r = live[0]
             if r["last_key"] == lk:
                 return "match", r["pid"], None
-            if doh and r["doh"] and doh == r["doh"]:
+            if doh and doh in r["dohs"]:
                 return "match", r["pid"], "name"
             if counts.get(emp, 0) > 1:
                 return "new_shared", None, None
@@ -708,30 +727,61 @@ class PilotDB:
             hits = [r for r in live if r["last_key"] == lk]
             if len(hits) == 1:
                 return "match", hits[0]["pid"], None
-            dh = [r for r in live if doh and r["doh"] == doh and not hits]
+            dh = [r for r in live if doh and doh in r["dohs"] and not hits]
             if len(dh) == 1:
                 return "match", dh[0]["pid"], "name"
-            if not live and counts.get(emp, 0) > len(held):
+            if not live and counts.get(emp, 0) > len(held) and not any(r["last_key"] == lk for r in held):
                 return "new_shared", None, None
             return "conflict", None, "ambiguous"
         if doh and lk:
             rows = self.db.execute("SELECT pid,emp FROM pilots WHERE last_key=? AND first_i=? AND merged_into IS NULL",
                                    (lk, fi)).fetchall()
-            cands = [p for p, e in rows if e not in emps and self._eff(p, "doh") == doh]
+            cands = [p for p, e in rows if e not in emps and doh in self._dohs(p)]
             if len(cands) == 1:
                 return "conflict", cands[0], "renumbered"
         return "new", None, None
 
+    @staticmethod
+    def _sig(kind, source, emp, pid, what):
+        return hashlib.sha256(json.dumps([kind, source, emp, pid, what], sort_keys=True, default=str).encode()).hexdigest()[:24]
+
     def _conflict(self, kind, source, ref, emp, row, pid=None, sig_of=None):
         """Hold a row for Ryan (row: what resolving applies). sig_of (else the row's values) is what makes it the same
-        conflict: one held already, or resolved (Ignore too), is never asked again. True when it is new."""
+        conflict: one held already, or resolved (Ignore too), is never asked again. Returns None when it is new or
+        still open, else Ryan's answer to it: (how, pid), pid the record an Attach (or a New, a Same pilot) put it on
+        (review: the next upload applies an attached row to that record again)."""
         what = sig_of if sig_of is not None else (row.get("values") if isinstance(row, dict) else row)
-        sig = hashlib.sha256(json.dumps([kind, source, emp, pid, what], sort_keys=True, default=str).encode()).hexdigest()[:24]
-        if self.db.execute("SELECT 1 FROM conflicts WHERE sig=?", (sig,)).fetchone():
-            return False
+        sig = self._sig(kind, source, emp, pid, what)
+        old = self.db.execute("SELECT id,resolved_at,resolved_how,pid FROM conflicts WHERE sig=?", (sig,)).fetchone()
+        if old:
+            cid, done, how, put = old
+            if not done:
+                return None  # still waiting for Ryan
+            if how in ("attach", "same", "new", "different"):
+                live = self._target(put) if put else None
+                if live is None:  # the record it was put on is gone (deleted): asked again
+                    self.db.execute("UPDATE conflicts SET resolved_at=NULL, resolved_how=NULL, pid=?, row_json=?, at=? "
+                                    "WHERE id=?", (pid, json.dumps(row, separators=(",", ":"), sort_keys=True),
+                                                   self.now(), cid))
+                    return None
+                return how, live
+            return how, None  # ignore (or a partial list's answer)
         self.db.execute("INSERT INTO conflicts(kind,source,ref,emp,row_json,pid,at,sig) VALUES(?,?,?,?,?,?,?,?)",
                         (kind, source, ref, emp, json.dumps(row, separators=(",", ":"), sort_keys=True), pid, self.now(), sig))
-        return True
+        return None
+
+    def _target(self, pid):
+        """The live record a pid is now: itself, or (merged) the record it was merged into, followed; None when none."""
+        seen = set()
+        while isinstance(pid, str) and pid not in seen:
+            seen.add(pid)
+            r = self.db.execute("SELECT merged_into FROM pilots WHERE pid=?", (pid,)).fetchone()
+            if not r:
+                return None
+            if not r[0]:
+                return pid
+            pid = r[0]
+        return None
 
     # -------------------------------------------------- the merges (spec 8)
     @staticmethod
@@ -744,50 +794,135 @@ class PilotDB:
                     out.append((emp_of(emp), r))
         return out
 
+    def _dedupe(self, rows, stats):
+        """One row per pilot: rows of one upload with the same employee number and the same last name (the same
+        pilot listed twice: a second phone card on the contact list, an 'also' that repeats him) become one row, the
+        first one's values kept and each missing field filled from the others (phones and emails joined, at most 4
+        and 3); counted 'dup'. Two rows with the same number and last name but another first initial stay apart (the
+        match then holds the second for Ryan: the key cannot tell them apart). Review: a repeated pilot made a second
+        record, which broke the unique key and rolled the whole merge back."""
+        out, seen = [], {}
+        for emp, values, fa in rows:
+            try:
+                lk, fi = name_key(check("name", str(values.get("name") or ""), self.today()))
+            except Bad:
+                out.append((emp, values, fa))
+                continue
+            # a row with no employee number (a contact card) is the same pilot only under the very same name
+            k = (emp, lk) if emp else ("", re.sub(r"[^A-Z,]", "", _fold(values.get("name"))))
+            if k not in seen:
+                seen[k] = (len(out), fi)
+                out.append((emp, dict(values), dict(fa or {})))
+                continue
+            i, fi0 = seen[k]
+            if fi and fi0 and fi != fi0:
+                out.append((emp, values, fa))
+                continue
+            stats["dup"] = stats.get("dup", 0) + 1
+            e0, v0, fa0 = out[i]
+            for f, x in values.items():
+                if x in (None, "", []):
+                    continue
+                if f in ("phones", "emails") and isinstance(x, list):
+                    have = list(v0.get(f) or [])
+                    keys = {self._list_key(f, y) for y in have}
+                    for y in x:
+                        if self._list_key(f, y) not in keys and len(have) < (4 if f == "phones" else 3):
+                            have.append(y)
+                            keys.add(self._list_key(f, y))
+                    v0[f] = have
+                elif v0.get(f) in (None, "", []):
+                    v0[f] = x
+                    if (fa or {}).get(f):
+                        fa0[f] = fa[f]
+            out[i] = (e0, v0, fa0)
+        return out
+
+    @staticmethod
+    def _list_key(f, y):
+        if f == "phones":
+            d = re.sub(r"\D", "", str((y or {}).get("number") or (y or {}).get("tel") or "") if isinstance(y, dict) else str(y))
+            return d[1:] if len(d) == 11 and d.startswith("1") else d
+        return str(y or "").strip().lower()
+
     def _merge_rows(self, source, rows, as_of, ref, by, stats, field_as_of=None, create=True):
-        """Match and apply upload rows [(emp, values, field_as_of)]; returns the matched pids."""
+        """Match and apply upload rows [(emp, values, field_as_of)]; returns (taken, held): the records matched and
+        the records of numbers held for Ryan. create=False (a contact list a pilot's instance saved): a row that would
+        make a record is held for Ryan instead (contact_unmatched). Each row runs in its own SAVEPOINT, so one row
+        the database refuses rolls back alone (counted bad, its number's records kept) and never the whole merge."""
+        rows = self._dedupe(rows, stats)
         counts = {}
         for emp, _v, _fa in rows:
             counts[emp] = counts.get(emp, 0) + 1
         emps, taken, held = set(counts), set(), set()
         for emp, values, fa in rows:
-            name = str(values.get("name") or "")
+            self.db.execute("SAVEPOINT pdb_row")
             try:
-                name = check("name", name, self.today())
-            except Bad:  # a row whose name cannot be read: nothing written, and its number's records are not gone
+                got, hold = self._merge_one(source, emp, values, fa, as_of, ref, by, stats, counts, emps, taken, create)
+            except sqlite3.Error:
+                self.db.execute("ROLLBACK TO pdb_row")
+                self.db.execute("RELEASE pdb_row")
                 stats["bad"] = stats.get("bad", 0) + 1
                 held.update(r["pid"] for r in self._live(emp))
                 continue
-            doh = ""
-            with contextlib.suppress(Bad):
-                doh = check("doh", values.get("doh") or "", self.today()) if values.get("doh") else ""
-            how, pid, note = self._match(emp, name, doh, counts, emps, taken)
-            if how == "conflict":
-                row = {"emp": emp, "values": {k: values.get(k) for k in SOURCE_FIELDS[source]
-                                              if values.get(k) not in (None, "", [])},
-                       "as_of": as_of, "ref": ref, "by": by, "field_as_of": fa or {}}
-                self._conflict(note, source, ref, emp, row, pid)
-                stats["conflicts"] = stats.get("conflicts", 0) + 1  # rows held in this merge (new or still open)
-                held.update(r["pid"] for r in self._live(emp))
-                if pid:
-                    held.add(pid)
-                continue
-            if how in ("new", "new_shared"):
-                if not create:
-                    continue
-                pid = self._create(emp, name, ref, source, by)
-                stats["added"] = stats.get("added", 0) + 1
-            elif note == "name":
-                stats["renamed"] = stats.get("renamed", 0) + 1
-            taken.add(pid)
-            p = self._pilot(pid)
-            if p["gone_at"] and source == "list":
-                self.db.execute("UPDATE pilots SET gone_at=NULL, gone_from=NULL WHERE pid=?", (pid,))
-                self._log(pid, "_gone", source, p["gone_from"], None, ref, by, "back")
-                stats["back"] = stats.get("back", 0) + 1
-                self._touch(pid)
-            self._apply(pid, source, values, as_of, ref, by, stats, fa)
+            self.db.execute("RELEASE pdb_row")
+            if got:
+                taken.add(got)
+            held.update(hold)
         return taken, held
+
+    def _merge_one(self, source, emp, values, fa, as_of, ref, by, stats, counts, emps, taken, create):
+        """One upload row: (the pid it was applied to or None, the pids to keep as held)."""
+        name = str(values.get("name") or "")
+        try:
+            name = check("name", name, self.today())
+        except Bad:  # a row whose name cannot be read: nothing written, and its number's records are not gone
+            stats["bad"] = stats.get("bad", 0) + 1
+            return None, {r["pid"] for r in self._live(emp)}
+        doh = ""
+        with contextlib.suppress(Bad):
+            doh = check("doh", values.get("doh") or "", self.today()) if values.get("doh") else ""
+        how, pid, note = self._match(emp, name, doh, counts, emps, taken)
+        if how in ("new", "new_shared"):
+            lk = name_key(name)[0]
+            clash = self.db.execute("SELECT pid FROM pilots WHERE emp=? AND last_key=? AND merged_into IS NULL",
+                                    (emp, lk)).fetchone()
+            if clash:  # the key already has a record (a second pilot of that name on that number): Ryan decides
+                how, pid, note = "conflict", clash[0], "ambiguous"
+            elif not create:
+                how, pid, note = "conflict", None, "contact_unmatched"
+        if how == "conflict":
+            row = {"emp": emp, "values": {k: values.get(k) for k in SOURCE_FIELDS[source]
+                                          if values.get(k) not in (None, "", [])},
+                   "as_of": as_of, "ref": ref, "by": by, "field_as_of": fa or {}}
+            sig_of = {"name": name, "emp": emp} if note == "contact_unmatched" else None
+            done = self._conflict(note, source, ref, emp, row, pid, sig_of)
+            put = done[1] if done and done[0] in ("attach", "same", "new", "different") else None
+            if put and put not in taken:  # Ryan answered this row before: it goes where he put it (review)
+                self._apply(put, source, values, as_of, ref, by, stats, fa)
+                stats["remembered"] = stats.get("remembered", 0) + 1
+                return put, set()
+            hold = {r["pid"] for r in self._live(emp)}
+            if pid:
+                hold.add(pid)
+            if put:
+                hold.add(put)
+            if not done:
+                stats["conflicts"] = stats.get("conflicts", 0) + 1  # rows held in this merge (new or still open)
+            return None, hold
+        if how in ("new", "new_shared"):
+            pid = self._create(emp, name, ref, source, by)
+            stats["added"] = stats.get("added", 0) + 1
+        elif note == "name":
+            stats["renamed"] = stats.get("renamed", 0) + 1
+        p = self._pilot(pid)
+        if p["gone_at"] and source == "list":
+            self.db.execute("UPDATE pilots SET gone_at=NULL, gone_from=NULL WHERE pid=?", (pid,))
+            self._log(pid, "_gone", source, p["gone_from"], None, ref, by, "back")
+            stats["back"] = stats.get("back", 0) + 1
+            self._touch(pid)
+        self._apply(pid, source, values, as_of, ref, by, stats, fa)
+        return pid, set()
 
     def _record_merge(self, source, ref, sha, parser, by, stats, rows):
         self.db.execute("INSERT INTO merges(source,ref,sha256,parser,at,by,rows,added,changed,kept_hand,gone,back,conflicts) "
@@ -810,22 +945,24 @@ class PilotDB:
             if prev and as_of < prev:
                 self._record_merge("list", ref, sha, parser, by, stats, len(rows))
                 return dict(stats, applied=False, why="older")
+            # the guard's baseline (review): the row count of the last whole list, which a partial list never moves,
+            # so a second partial list (the other half) is measured against the roster, not against the first half
+            base_n = int(self._meta("list_count", "0") or 0)
             taken, held = self._merge_rows("list", rows, as_of, ref, by, stats)
-            prev_n = int(self._meta("list_count", "0") or 0)
-            had = [p for (p,) in self.db.execute(
-                "SELECT DISTINCT v.pid FROM vals v JOIN pilots p ON p.pid=v.pid WHERE v.source='list' AND v.stale=0 "
-                "AND p.merged_into IS NULL")]
+            had = self._fresh("list")
             missing = [p for p in had if p not in taken and p not in held]
-            if missing and prev_n and len(rows) < GONE_GUARD * prev_n:
+            partial = bool(missing and base_n and len(rows) < GONE_GUARD * base_n)
+            if partial:
                 self._conflict("list_partial", "list", ref, "", {"missing": sorted(missing), "rows": len(rows),
-                                                                 "prev": prev_n, "ref": ref, "by": by}, None, ref)
+                                                                 "prev": base_n, "ref": ref, "by": by}, None, ref)
                 stats["conflicts"] = stats.get("conflicts", 0) + 1
             else:
                 for pid in missing:
                     self._gone(pid, ref, by)
                     stats["gone"] = stats.get("gone", 0) + 1
             self._set_meta("list_as_of", as_of)
-            self._set_meta("list_count", len(rows))
+            if not partial:  # the count of the last whole list (the sensor's); a partial list leaves it
+                self._set_meta("list_count", len(rows))
             self._link_pickups()
             self._record_merge("list", ref, sha, parser, by, stats, len(rows))
         return dict(stats, applied=True)
@@ -880,9 +1017,12 @@ class PilotDB:
         """The contact list (contacts.json, parser 2: each entry's hal object from its Notes). A row with a HAL Emp#
         is matched like a list row and (Ryan, Nov 14: seed from the contact list) makes a record when none fits; a
         row without one matches by its Employee ID only when a live record with that number has its last name, else
-        by last name and first name when exactly one live record fits, else it is held (contact_unmatched). A row
-        that disappears from a newer list removes only its contacts values (logged); a list with fewer than 90% of
-        the last one's rows removes none (list_partial)."""
+        by last name and first name when exactly one live record fits, else it is held (contact_unmatched). A held row
+        Ryan attached goes to that record again on every later list (review). A row that disappears from a newer list
+        removes only its contacts values (logged); a list with fewer than 90% of the last whole list's rows removes
+        none (list_partial; the count it is measured against stays the whole list's). by: the uploader (contacts.json's uploaded_by); a list a pilot's instance
+        saved (by not ryan) makes no record: such a row is held for Ryan (review, spec 7: a contacts row never makes
+        one on its own)."""
         day = str((cj or {}).get("uploaded_at") or "")[:10] or self.today().isoformat()
         ref = f"contacts {day}"
         entries = [e for e in list((cj or {}).get("pilots") or []) + list((cj or {}).get("hal_only") or [])
@@ -893,6 +1033,7 @@ class PilotDB:
             if prev and day < prev:
                 self._record_merge("contacts", ref, sha, parser, by, stats, len(entries))
                 return dict(stats, applied=False, why="older")
+            base_n = int(self._meta("contacts_count", "0") or 0)  # the last whole contact list's (review)
             hal_rows, plain = [], []
             for e in entries:
                 vals, fa = self.contact_values(e)
@@ -901,40 +1042,26 @@ class PilotDB:
                     hal_rows.append((emp_of(hal["emp"]), vals, fa))
                 else:
                     plain.append((emp_of(e.get("emp")), vals, fa))
-            taken, held = self._merge_rows("contacts", hal_rows, day, ref, by, stats)
-            for emp, vals, fa in plain:
+            taken, held = self._merge_rows("contacts", hal_rows, day, ref, by, stats, create=by == "ryan")
+            for emp, vals, fa in self._dedupe(plain, stats):
+                self.db.execute("SAVEPOINT pdb_row")
                 try:
-                    name = check("name", vals.get("name") or "", self.today())
-                except Bad:  # unreadable: its number's records keep their contacts values
+                    got, hold = self._contact_plain(emp, vals, fa, day, ref, by, stats, taken)
+                except sqlite3.Error:
+                    self.db.execute("ROLLBACK TO pdb_row")
+                    self.db.execute("RELEASE pdb_row")
                     stats["bad"] = stats.get("bad", 0) + 1
-                    held.update(r["pid"] for r in (self._live(emp) if emp else []))
                     continue
-                lk, fi = name_key(name)
-                pid = None
-                if emp:
-                    hit = self.db.execute("SELECT pid FROM pilots WHERE emp=? AND last_key=? AND merged_into IS NULL",
-                                          (emp, lk)).fetchone()
-                    pid = hit[0] if hit else None
-                if not pid:
-                    hits = self.db.execute("SELECT pid FROM pilots WHERE last_key=? AND first_i=? AND merged_into IS NULL",
-                                           (lk, fi)).fetchall()
-                    first = (re.sub(r"[^A-Z ]", " ", _fold(name).partition(",")[2]).split() or [""])[0]
-                    hits = [p for (p,) in hits if (re.sub(r"[^A-Z ]", " ", _fold(self._eff(p, "name")).partition(",")[2])
-                                                   .split() or [""])[0] == first]
-                    pid = hits[0] if len(hits) == 1 else None
-                if not pid or pid in taken:
-                    row = {"emp": emp, "values": vals, "as_of": day, "ref": ref, "by": by, "field_as_of": fa}
-                    self._conflict("contact_unmatched", "contacts", ref, emp, row, None, {"name": name, "emp": emp})
-                    stats["conflicts"] = stats.get("conflicts", 0) + 1
-                    continue
-                taken.add(pid)
-                self._apply(pid, "contacts", vals, day, ref, by, stats, fa)
-            had = [p for (p,) in self.db.execute("SELECT DISTINCT pid FROM vals WHERE source='contacts'")]
+                self.db.execute("RELEASE pdb_row")
+                if got:
+                    taken.add(got)
+                held.update(hold)
+            had = self._fresh("contacts")
             missing = [p for p in had if p not in taken and p not in held]
-            prev_n = int(self._meta("contacts_count", "0") or 0)
-            if missing and prev_n and len(entries) < GONE_GUARD * prev_n:
+            partial = bool(missing and base_n and len(entries) < GONE_GUARD * base_n)
+            if partial:
                 self._conflict("list_partial", "contacts", ref, "", {"missing": sorted(missing), "rows": len(entries),
-                                                                     "prev": prev_n, "ref": ref, "by": by}, None, ref)
+                                                                     "prev": base_n, "ref": ref, "by": by}, None, ref)
                 stats["conflicts"] = stats.get("conflicts", 0) + 1
             else:
                 for pid in missing:
@@ -942,10 +1069,59 @@ class PilotDB:
                         self._drop_val(pid, f, "contacts", ref, by)
                     stats["removed"] = stats.get("removed", 0) + 1
             self._set_meta("contacts_as_of", day)
-            self._set_meta("contacts_count", len(entries))
+            if not partial:
+                self._set_meta("contacts_count", len(entries))
             self._link_pickups()
             self._record_merge("contacts", ref, sha, parser, by, stats, len(entries))
         return dict(stats, applied=True)
+
+    def _fresh(self, source):
+        """The live records holding a fresh value of a source (a partial list guard's baseline)."""
+        return [p for (p,) in self.db.execute(
+            "SELECT DISTINCT v.pid FROM vals v JOIN pilots p ON p.pid=v.pid WHERE v.source=? AND v.stale=0 "
+            "AND p.merged_into IS NULL", (source,))]
+
+    def _first_words(self, pid):
+        """The first names a record goes by (every source's name, the hand one too), upper case."""
+        out = set()
+        for r in self._vals(pid, "name"):
+            w = re.sub(r"[^A-Z ]", " ", _fold(r["value"]).partition(",")[2]).split()
+            if w:
+                out.add(w[0])
+        return out
+
+    def _contact_plain(self, emp, vals, fa, day, ref, by, stats, taken):
+        """A contact row with no HAL Emp#: (the pid it was applied to or None, the pids to keep as held)."""
+        try:
+            name = check("name", vals.get("name") or "", self.today())
+        except Bad:  # unreadable: its number's records keep their contacts values
+            stats["bad"] = stats.get("bad", 0) + 1
+            return None, {r["pid"] for r in (self._live(emp) if emp else [])}
+        lk, fi = name_key(name)
+        pid = None
+        if emp:
+            hit = self.db.execute("SELECT pid FROM pilots WHERE emp=? AND last_key=? AND merged_into IS NULL",
+                                  (emp, lk)).fetchone()
+            pid = hit[0] if hit else None
+        if not pid:
+            first = (re.sub(r"[^A-Z ]", " ", _fold(name).partition(",")[2]).split() or [""])[0]
+            hits = [p for (p,) in self.db.execute("SELECT pid FROM pilots WHERE last_key=? AND first_i=? AND "
+                                                  "merged_into IS NULL", (lk, fi)).fetchall()
+                    if first in self._first_words(p)]
+            pid = hits[0] if len(hits) == 1 else None
+        if pid and pid not in taken:
+            self._apply(pid, "contacts", vals, day, ref, by, stats, fa)
+            return pid, set()
+        row = {"emp": emp, "values": vals, "as_of": day, "ref": ref, "by": by, "field_as_of": fa}
+        done = self._conflict("contact_unmatched", "contacts", ref, emp, row, None, {"name": name, "emp": emp})
+        put = done[1] if done and done[0] == "attach" else None
+        if put and put not in taken:  # Ryan attached this row before: it goes to that record again (review)
+            self._apply(put, "contacts", vals, day, ref, by, stats, fa)
+            stats["remembered"] = stats.get("remembered", 0) + 1
+            return put, set()
+        if not done:
+            stats["conflicts"] = stats.get("conflicts", 0) + 1
+        return None, ({put} if put else set())
 
     # -------------------------------------------------- Ryan's hand edits (spec 8.3)
     def set_field(self, pid, field, value, rev, why="", by="ryan"):
@@ -957,7 +1133,7 @@ class PilotDB:
                 raise Stale(self._record(pid))
             v = check(field, value, self.today())
             why = clean_line(why or "", WHY_MAX, "why", empty_ok=True) or None
-            if field == "name":
+            if field == "name" and not upload_pick("name", self._vals(pid, "name")):  # the hand name is his identity
                 lk, _fi = name_key(v)
                 if lk != p["last_key"] and self.db.execute(
                         "SELECT 1 FROM pilots WHERE emp=? AND last_key=? AND pid!=? AND merged_into IS NULL",
@@ -974,6 +1150,8 @@ class PilotDB:
                 raise Stale(self._record(pid))
             if field not in FIELDS:
                 raise Bad("field", "is not a field of the pilot database")
+            if field == "name" and not upload_pick("name", self._vals(pid, "name")):
+                raise Bad("name", "has no upload value: edit it instead")  # review: never a record with no name
             self._drop_val(pid, field, "hand", by, by, how="unset")
         return self.record(pid)
 
@@ -1111,7 +1289,13 @@ class PilotDB:
                 self._apply(target, source, vals, row.get("as_of") or ref.split(" ")[-1], ref, row.get("by") or by,
                             stats, row.get("field_as_of"))
                 self._touch(target)
-            self.db.execute("UPDATE conflicts SET resolved_at=?, resolved_how=? WHERE id=?", (self.now(), how, cid))
+            # review: the answer keeps the record it put the row on (the next upload applies the same row there again,
+            # and a forget of that record deletes this row); the row's values now live in vals, so only its number is
+            # kept here (a contact's phones and emails never outlive its record in this table)
+            keep = {"emp": emp or ""} if kind != "list_partial" else {"rows": row.get("rows"), "prev": row.get("prev")}
+            self.db.execute("UPDATE conflicts SET resolved_at=?, resolved_how=?, pid=?, row_json=? WHERE id=?",
+                            (self.now(), how, target if target else (cpid if how == "ignore" else None),
+                             json.dumps(keep, separators=(",", ":"), sort_keys=True), cid))
             self._log(target or cpid or "", "_conflict", source or "", kind, how, ref, by, "resolve")
             self._link_pickups()
         return target
@@ -1140,7 +1324,7 @@ class PilotDB:
             if base != (cur["rev"] if cur else ZERO_REV):
                 raise Stale(cur or {"text": "", "rev": ZERO_REV, "by": "", "at": ""})
             at = self.now()
-            rev = notes_rev(pid, text, by, at)
+            rev = notes_rev(pid, base, text, by, at)
             if cur:
                 self.db.execute("INSERT INTO notes_hist(pid,text,rev,by,at,replaced_at,replaced_by) VALUES(?,?,?,?,?,?,?)",
                                 (pid, cur["text"], cur["rev"], cur["by"], cur["at"], at, by))
@@ -1253,6 +1437,14 @@ class PilotDB:
             for t in ("vals", "field_log", "notes", "notes_hist", "entries", "ai_notes", "act_log"):
                 self.db.execute(f"DELETE FROM {t} WHERE pid=?", (pid,))
             self.db.execute("DELETE FROM conflicts WHERE pid=?", (pid,))
+            # review: an open row about him that names no record yet (a contact held unmatched: his phones, emails and
+            # name) goes too, matched by his number and last name
+            for cid, rj in self.db.execute("SELECT id,row_json FROM conflicts WHERE emp=? AND resolved_at IS NULL",
+                                           (p["emp"],)).fetchall():
+                with contextlib.suppress(ValueError, TypeError, AttributeError):
+                    nm = str(((json.loads(rj or "{}") or {}).get("values") or {}).get("name") or "")
+                    if nm and name_key(nm)[0] == p["last_key"]:
+                        self.db.execute("DELETE FROM conflicts WHERE id=?", (cid,))
             self.db.execute("UPDATE pickups SET pid=NULL WHERE pid=?", (pid,))
             for (m,) in self.db.execute("SELECT pid FROM pilots WHERE merged_into=?", (pid,)).fetchall():
                 self.db.execute("DELETE FROM pilots WHERE pid=?", (m,))
@@ -1313,6 +1505,11 @@ class PilotDB:
         for key, emp, lk, pid in self.db.execute("SELECT key,emp,last_key,pid FROM pickups").fetchall():
             live = self.db.execute("SELECT pid,last_key FROM pilots WHERE emp=? AND merged_into IS NULL", (emp,)).fetchall()
             got = live[0][0] if len(live) == 1 else next((p for p, k in live if k == lk), None)
+            if got is None:  # review: a record Ryan merged into another (on another number): the pickup follows it
+                dead = self.db.execute("SELECT pid,last_key FROM pilots WHERE emp=? AND merged_into IS NOT NULL",
+                                       (emp,)).fetchall()
+                to = {self._target(p) for p, k in dead if len(dead) == 1 or k == lk} - {None}
+                got = to.pop() if len(to) == 1 else None
             if got != pid:
                 self.db.execute("UPDATE pickups SET pid=? WHERE key=? AND emp=?", (got, key, emp))
                 for x in (got, pid):
@@ -1322,7 +1519,8 @@ class PilotDB:
 
     def pickups(self, pid):
         """A record's pickup history: {rows (newest first, each with n, its running count, and n_lay, the running
-        count at its layover station), summary {n, lays [[station, n]], turns, layovers, days {n_days: n}, dow
+        count at its layover station; a turn has lay '' and its station in `station`), summary {n, lays [[station,
+        n]] (layovers only), turn_stations [[station, n]], turns, layovers, days {n_days: n}, dow
         {Mon: n}, pick_dow {Mon: n}, report {first, last}, credit_avg, speed {avg_s, min_s, max_s}, inflt, first_at,
         last_at}}."""
         with self.lock:
@@ -1458,7 +1656,7 @@ class PilotDB:
                     (pid,)).fetchall()]
         ents = []
         for eid, by, at, text, shared, gone_at, gone_by, gone_how in self.db.execute(
-                "SELECT eid,by,at,text,shared,gone_at,gone_by,gone_how FROM entries WHERE pid=? ORDER BY at DESC, eid "
+                "SELECT eid,by,at,text,shared,gone_at,gone_by,gone_how FROM entries WHERE pid=? ORDER BY at DESC, rowid DESC "
                 "LIMIT ?", (pid, ENTRY_ROWS)).fetchall():
             e = {"eid": eid, "by": by, "at": at, "text": text, "shared": bool(shared)}
             if gone_how:
@@ -1570,7 +1768,7 @@ class PilotDB:
             notes = {p: (t, rv, b, a) for p, t, rv, b, a in self.db.execute("SELECT pid,text,rev,by,at FROM notes")}
             ents = {}
             for pid, by, at, text, shared in self.db.execute(
-                    "SELECT pid,by,at,text,shared FROM entries WHERE gone_how IS NULL ORDER BY at DESC"):
+                    "SELECT pid,by,at,text,shared FROM entries WHERE gone_how IS NULL ORDER BY at DESC, rowid DESC"):
                 ents.setdefault(pid, []).append((by, at, text, shared))
         out = ["# Pilot database", "",
                f"Generator: Flight Watcher {_md_cell(version)} pilot database · Written {_md_cell(written or _hst(self.now()))}"
@@ -1608,7 +1806,9 @@ class PilotDB:
                 sp = h["speed"]
                 out += ["", f"### {_md_cell(v['fields']['name']['value']) or '?'} (Emp {_md_cell(v['emp'])}, "
                             f"{h['n']} pickups)", "",
-                        "- Stations: " + (", ".join(f"{_md_cell(s)} {n}" for s, n in h["lays"]) or "none"),
+                        "- Layover stations: " + (", ".join(f"{_md_cell(s)} {n}" for s, n in h["lays"]) or "none")
+                        + ("; turns: " + ", ".join(f"{_md_cell(s)} {n}" for s, n in h["turn_stations"])
+                           if h["turn_stations"] else ""),
                         f"- Layovers {h['layovers']}, turns {h['turns']}; trip days: "
                         + (", ".join(f"{d}-day {n}" for d, n in h["days"].items()) or "unknown"),
                         "- Trip start weekdays: " + (", ".join(f"{d} {n}" for d, n in h["dow"].items()) or "unknown"),
@@ -1689,12 +1889,14 @@ class PilotDB:
             for n in drop:
                 with contextlib.suppress(OSError):
                     os.remove(os.path.join(d, n))
+        drop_aside(self.path, None if replace else self.clock() - timedelta(days=BACKUP_KEEP))
         if done:
             self.set_meta("backup_at", self.now())
         return done
 
     def replace_backups(self):
-        """After a purge or a forget: scrub, then a fresh copy in place of every older one."""
+        """After a purge or a forget: scrub, then a fresh copy in place of every older one, and every file set aside
+        beside the live file (before a restore, or failed its check) deleted: they hold the text too (review)."""
         self.scrub()
         return self.backup(replace=True)
 
@@ -1709,19 +1911,24 @@ def pickup_history(rows):
     """rows oldest first -> {rows newest first with n and n_lay, summary}; see PilotDB.pickups."""
     n_lay, out = {}, []
     for i, r in enumerate(rows, 1):
-        lay = r.get("lay") or ""
-        n_lay[lay] = n_lay.get(lay, 0) + 1
-        out.append(dict(r, n=i, n_lay=n_lay[lay], turn=bool(r.get("turn")), approx=bool(r.get("approx")),
+        turn = bool(r.get("turn"))
+        # review: a turn's station (store.lay_of falls back to it) is no layover station: kept as `station`, never
+        # counted in the stations or the running count per station
+        lay = "" if turn else str(r.get("lay") or "")
+        if lay:
+            n_lay[lay] = n_lay.get(lay, 0) + 1
+        out.append(dict(r, n=i, lay=lay, station=str(r.get("lay") or ""), n_lay=n_lay.get(lay, 0) if lay else 0,
+                        turn=turn, approx=bool(r.get("approx")),
                         inflt=None if r.get("inflt") is None else bool(r.get("inflt")),
                         pick_dow=_hst(r.get("at"), "%a")))
-    lays = {}
+    lays, last_at, tst, tst_at = {}, {}, {}, {}
     for r in out:
         if r.get("lay"):
             lays[r["lay"]] = lays.get(r["lay"], 0) + 1
-    last_at = {}
-    for r in out:
-        if r.get("lay"):
             last_at[r["lay"]] = r["at"]
+        elif r["turn"] and r.get("station"):
+            tst[r["station"]] = tst.get(r["station"], 0) + 1
+            tst_at[r["station"]] = r["at"]
     days, dow, pdow = {}, {}, {}
     for r in out:
         if r.get("days"):
@@ -1736,6 +1943,8 @@ def pickup_history(rows):
     secs = [r["secs"] for r in out if isinstance(r.get("secs"), int)]
     summary = {"n": len(out),
                "lays": [[s, c] for s, c in sorted(lays.items(), key=lambda kv: (kv[1], last_at[kv[0]]), reverse=True)],
+               "turn_stations": [[s, c] for s, c in sorted(tst.items(), key=lambda kv: (kv[1], tst_at[kv[0]]),
+                                                            reverse=True)],
                "turns": sum(1 for r in out if r["turn"]), "layovers": sum(1 for r in out if not r["turn"]),
                "days": dict(sorted(days.items(), key=lambda kv: int(kv[0]))),
                "dow": {d: dow[d] for d in DOW if d in dow}, "pick_dow": {d: pdow[d] for d in DOW if d in pdow},
@@ -1774,6 +1983,42 @@ def _file_ok(path, live=False):
             db.close()
     except sqlite3.Error:
         return False
+
+
+def aside_files(path):
+    """[{name, kind (before-restore | bad), at (UTC ISO), size, path}] of the files set aside beside the live file,
+    newest first (review: listed on the card, deleted by a purge or a forget, else rolled off after 7 days)."""
+    d, base = os.path.dirname(path) or ".", os.path.basename(path)
+    rx = re.compile(ASIDE_RE.format(name=re.escape(base)))
+    out = []
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return out
+    for n in names:
+        m = rx.match(n)
+        p = os.path.join(d, n)
+        if not m or os.path.islink(p) or not os.path.isfile(p):
+            continue
+        ts = m.group(1) or m.group(2)
+        at = datetime.strptime(ts, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        out.append({"name": n, "kind": "before-restore" if m.group(1) else "bad", "at": at.isoformat(),
+                    "size": os.path.getsize(p), "path": p})
+    out.sort(key=lambda a: (a["at"], a["name"]), reverse=True)
+    return out
+
+
+def drop_aside(path, before=None):
+    """Delete the files set aside beside the live file: all of them (a purge or a forget), or those set aside before
+    `before` (a datetime: the nightly copy's 7 days). Returns how many went."""
+    n = 0
+    for a in aside_files(path):
+        if before is not None and datetime.fromisoformat(a["at"]) >= before:
+            continue
+        with contextlib.suppress(OSError):
+            os.remove(a["path"])
+            n += 1
+    return n
 
 
 def backups(backup_dirs):

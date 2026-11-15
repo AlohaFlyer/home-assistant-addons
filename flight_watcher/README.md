@@ -360,8 +360,9 @@ Recent finds.
   own; Ryan hides, restores, purges). Each picker's record carries his pickup history from the scored pickups (each
   pickup with its running count overall and at its layover station, trip length, turn or layover, credit, report time,
   weekday and pickup speed), kept up to date as pickups are scored. Daily copies at 02:47 HST in `/data/pilotdb_backup`
-  and `/share/flight_watcher/pilotdb/backup` (folders 0700, files 0600, 7 kept); a purge or a forget scrubs the file
-  and replaces the copies. At start: a file that fails `PRAGMA integrity_check` is set aside and the newest good copy
+  and `/share/flight_watcher/pilotdb/backup` (folders 0700, files 0600, 7 kept); a purge or a forget scrubs the file,
+  replaces the copies and deletes the files set aside beside it (before a restore, or failed its check; else they go
+  after 7 days). At start: a file that fails `PRAGMA integrity_check` is set aside and the newest good copy
   offered; a newer database (user_version) is never opened; a /share copy newer than the live file (an older /data
   restored) is offered, never written over. The log carries counts only. Nothing of it loads FLICA, and nothing is
   shared with a pilot in 1.7.8 (the share tables and the AI note, written later by HOM's models from anonymous stats,

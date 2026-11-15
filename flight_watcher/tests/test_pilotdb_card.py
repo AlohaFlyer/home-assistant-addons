@@ -112,7 +112,8 @@ def _shot(pg, name, sel="flight-watcher-pilotdb-card"):
     if not SHOTS:
         return
     os.makedirs(SHOTS, exist_ok=True)
-    pg.locator(sel).first.screenshot(path=os.path.join(SHOTS, f"{name}.png"))
+    pre = os.environ.get("FW_178_SHOT_PREFIX", "")  # e.g. final_ for the release's screenshots
+    pg.locator(sel).first.screenshot(path=os.path.join(SHOTS, f"{pre}{name}.png"))
 
 
 def _click(pg, text, scope="[data-rec]"):
@@ -283,12 +284,13 @@ def test_edit_notes_log_and_the_conflict_view(seeded):
           const c = C.shadowRoot.querySelector('input[data-k=only]'); c.checked = true; c.dispatchEvent(new Event('change')); }""")
         _click(pg, "Add")
         pg.wait_for_function("C.shadowRoot.textContent.includes('Only for me: ask about the 777.')")
-        e = db.record(jane)["entries"][0]
+        e = next(x for x in db.record(jane)["entries"] if x["text"] == "Only for me: ask about the 777.")  # review: by text
         assert (e["text"], e["shared"], e["by"]) == ("Only for me: ask about the 777.", False, "ryan")
+        assert db.record(jane)["entries"][0]["eid"] == e["eid"]  # and newest first (entries in one second keep their order)
         assert "only me" in pg.evaluate("(eid) => C.shadowRoot.querySelector(`[data-eid=${eid}]`).textContent", e["eid"])
         pg.evaluate("(eid) => [...C.shadowRoot.querySelector(`[data-eid=${eid}]`).querySelectorAll('button')].find((b) => b.textContent === 'Take back').click()", e["eid"])
         pg.wait_for_function("(eid) => C.shadowRoot.querySelector(`[data-eid=${eid}]`).textContent.includes('taken back by ryan')", arg=e["eid"])
-        assert db.record(jane)["entries"][0]["gone"] == "retracted"
+        assert next(x for x in db.record(jane)["entries"] if x["eid"] == e["eid"])["gone"] == "retracted"
         hostile = next(x for x in db.record(jane)["entries"] if x["text"] == HOSTILE)
         pg.evaluate("(eid) => [...C.shadowRoot.querySelector(`[data-eid=${eid}]`).querySelectorAll('button')].find((b) => b.textContent === 'Hide').click()", hostile["eid"])
         pg.wait_for_function("(eid) => C.shadowRoot.querySelector(`[data-eid=${eid}]`).textContent.includes('hidden by ryan')", arg=hostile["eid"])
