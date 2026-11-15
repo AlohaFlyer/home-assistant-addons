@@ -1,5 +1,150 @@
 # Changelog
 
+## 1.7.8
+
+Ryan's pilot database (Ryan, Nov 14: "should we have an editable pilot database that has these data points. and even a
+notes field we can edit and append to"), the pilot database spec's step 1: on Ryan's own instance only, the portal
+contract unchanged at revision 3, HOM untouched, nothing shared with a pilot (sharing with James is 1.7.9 with HOM
+1.9.0); the schema is ready for it. Plus the in-flight re-check (Ryan, Nov 15: "Re-check them"). Synthetic data in every
+test; FLICA is read only and nothing in the pilot database loads a FLICA page.
+
+### The database (`pilotdb.py`, the admin's Watcher only: `one_writer`)
+- `/data/pilotdb.sqlite`, mode 600, in HA's pre-update app backup; schema `user_version` 1 (a file from a newer
+  Flight Watcher is never opened). One record per pilot, keyed by employee number plus last name (two pilots on one
+  number are two records) with an opaque `pid`.
+- Each field (name, Sen #, DOH, status, retirement month, seat, equipment, phones, emails, union id) keeps every source's
+  value with its date and reference: the seniority list, the award's dates of hire, the contact list and Ryan's hand
+  edits. The seniority PDF wins on Sen #, DOH and status (Ryan, Nov 14); the contact list's age 65 month comes first
+  for retirement (14 CFR 121.383(d)). Sources that differ are flagged (`disagree`).
+- A hand edit stays shown through every later upload; an upload that brings another value flags `drift` ("Use upload
+  value" or "Keep my edit"). Every change is in the field log (old, new, who, when, why). Edits are compare-and-set on
+  the record's revision: a stale one is refused with the fresh record, never written blind.
+- The notes field (one per record, at most 4000 characters): every save compare-and-set on the version it was read at,
+  the newest 50 versions kept, Restore any. The dated log (at most 2000 characters an entry, 500 a record): add (a
+  repeated request id adds nothing), Only me, take back your own, hide, restore, purge, delete the whole record (typed
+  DELETE). A take back, a purge or a delete scrubs the file; a purge or a delete also replaces the daily copies and
+  deletes the files set aside beside it (before a restore, or failed its check).
+- Uploads merge on their own when a source file changes (checked at start and once a minute, at once after an upload):
+  a pilot missing from a newer list is marked gone (his last values kept, marked stale) and back when he returns.
+  Nothing is moved or merged automatically: a renumbered pilot, another pilot on a known number, an ambiguous row, an
+  unmatched contact and a list with fewer than 90% of the last one's pilots are held for Ryan, each with its answers.
+- Seeded on the first start from the kept contact list on the share (`contacts_<date>.csv`, its Notes "HAL Emp# n |
+  Sen# n (Mon YYYY) | DOH D-Mon-YY | Status X | Age 65 retirement Mon YYYY") and `seniority.json`. `contacts.hal_notes`
+  reads the Notes ("Age-65" as Pako's file has it, and "Age 65"); the raw Notes are never kept; contacts parser 2 reads
+  the kept source again once. A contact row with a HAL Emp# makes a record (there is no `seniority.json` on Pako yet);
+  one a pilot's instance uploaded is held for Ryan instead.
+- Each picker's record carries his full pickup history from the pickers data 1.7.7 rebuilt, linked by employee number:
+  each pickup with its running count overall and at its layover station, trip length, turn or layover, credit, report
+  time, weekday and pickup speed.
+- `seniority.md` (same path, mode 600) is written from the database, 30 s after the last change, at once after a merge
+  and each HST day. Daily copies at 02:47 HST in `/data/pilotdb_backup` and `/share/flight_watcher/pilotdb/backup`
+  (folders 0700, files 0600, 7 kept). At start: a file that fails its integrity check is set aside and the newest good
+  copy offered; a share copy newer than the live file (an older /data restored) is offered, never written over.
+- The AI note has its table (`ai_notes`: written later by HOM's consultant models from anonymous stats, labeled AI,
+  kept apart from the human notes); nothing writes it in 1.7.8. The share, answers and act_log tables wait for 1.7.9.
+- `seniority.to_json` keeps each pilot's status code and the DOR as `retire` (parser 4: the list on file is read again).
+- Every log line carries counts and op names only, never a name, a number or a note.
+
+### Ryan's side: the ingress API, the sensor and the Pilots card
+- `GET` and `POST api/pilotdb` on the app's Web UI (B4; admin only, the ingress IP guard): search (name words, an
+  employee number, `s` and a Sen #, "quoted" text in the notes; filters; 50 rows a page, no phones or emails in a row),
+  the whole record, the pilot the pilot card shows, the held rows, the status and copies. A POST is one op as a JSON
+  object: it needs `Content-Type: application/json` and the header `X-FW-Card: pilotdb` (a plain cross-site form can
+  send neither), at most 64 KB, known keys only; the author is always `ryan`. Ops: set, unset, keep, field,
+  restore_field, add, retract, hide, restore, purge, forget, resolve, move, merge, new, restore_db (typed RESTORE). A
+  stale write answers 409 (the fresh record, or the notes text there now); an error names the field and never echoes a
+  value or a note; every answer is `Cache-Control: no-store`. There is no share op (B6: 1.7.9).
+- `sensor.flight_watcher_pilotdb` (B5, admin only): the live record count, with counts, source dates, the seniority.md
+  and copy times, the revision and the database state (ok, newer_db, error, restore_offered, off). No name, number or
+  text, under 2 KB; the card reads it again when its revision moves.
+- The Pilots card (`flight-watcher-pilotdb-card.js`): browse on the Settings tab (search, filter chips, the record with
+  every field's source and date, edit, the notes with the conflict view and versions, the log, the pickups with the
+  count per layover station, the AI note read only when there is one, the history, merge, renumber, delete; the held
+  rows; a new record; the daily copies and Restore), and follow mode under the pilot lookup card (the looked-up
+  pilot's record and notes; it never publishes `pilot/set`). Admin mode only; anyone else sees one read-only line.
+  Every value goes in as text (no markup is ever parsed); the only links are tel:, sms: and mailto: after the pilot
+  card's checks. The card is kept off every portal (B3, `PORTAL_CARDS_OUT`).
+- The pilot card's `_esc` also escapes the single quote.
+- roles (B1, B2): `one_writer` names the pilot database; RESERVED gains `pilotdb`; `ENTITY_FEATURE` maps the new sensor
+  to `one_writer`. No portal list, contract fixture, FLICA budget or push changes.
+- On Pako, after the update and with Ryan's yes: the Settings view gets the card above the tickets
+  (`type: custom:flight-watcher-pilotdb-card`) and the watcher view gets it in follow mode right under the pilot card
+  (`follow: true`), then the `ha/` snapshot in git (HANDOFF.md).
+
+### In-flight re-check (Ryan, Nov 15: "Re-check them")
+- The verdicts 1.7.7 dropped as made for another pilot (`inflt_skip`) are looked up once more, for the picker; the
+  second picker of a both-seats pickup gets his own lookup (`inflt_no`, by employee number). All within the paced
+  in-flight budget (`INFLT_PER_CHECK`), read only.
+
+### Choices that differ from the spec text
+- Sen # and status take the list first rather than the newest source (Ryan: "the seniority PDF wins").
+- Contact rows with a HAL Emp# create records (the seed would make none otherwise); seat also accepts RO (the relief
+  officer); bookkeeping writes (signatures, md and copy times) do not move the revision the card follows.
+- `FLIGHT_WATCHER_PILOTDB=0` keeps the database closed (the test suite's default); run.py never sets it.
+
+### Review fixes (each with a test that failed first: `tests/test_fw178_review.py`, `tests/test_fw178_review_card.py`)
+- One pilot listed twice in one upload (a second phone card on the contact list, an `also` that repeats him) is one
+  row: the first row's values, each missing field filled from the others, phones and emails joined (counted `dup`). It
+  made a second record before, which broke the unique key and rolled back the whole merge, so a duplicated contact
+  stopped the seed, `seniority.md`, the copies, the pickups and the sensor every minute. The same number and last name
+  with another first initial is held for Ryan (`ambiguous`). Each row runs in its own SAVEPOINT (one refused row is
+  counted bad and rolls back alone), and each source merges in its own try in `pilotdb_tick`: a failed merge logs
+  "pilot db: <source> not merged: <error type>" once per file and is tried again next pass while the rest runs.
+- The 90% guard measures each list against the last whole list's count, which a partial list no longer moves: a second
+  partial list (the other half of the roster) no longer marks the first half gone. The same for the contact list.
+- A record's identity (last name, first initial) comes from the uploads' own name (list, award, contacts), a hand name
+  only when no upload has one, and a row matches on any DOH the record holds: a hand edit of the name or the DOH only
+  decides what is shown, and the pilot's later rows keep updating it (drift) instead of being held as `other_pilot`.
+  Unsetting a name no upload has is refused.
+- Ryan's answer to a held row is remembered with the record it put the row on: a contact row he attached goes to that
+  record again on every later list (it was skipped and the record lost its contacts values), an ignored one stays
+  ignored. A record that answer named is gone (deleted): the row is asked again.
+- A purge or a delete also deletes the files set aside beside the database (`pilotdb.sqlite.before-restore-<time>`
+  from a restore, `pilotdb.sqlite.bad-<time>` from a failed check); otherwise they roll off after 7 days with the
+  nightly copies. The card's Daily copies lists them (`view=status` `aside`).
+- An answered held row keeps only its employee number and the record it went to (`conflicts.pid`); a delete also
+  removes the open rows about that pilot, so no contact's phones, emails or name outlive the record in the file or the
+  fresh copies.
+- A contact or seniority list keeps its uploader (`uploaded_by`, save_upload's `who`; kept through a re-read) and is
+  merged as his (`vals.by`, `merges.by`, "uploaded by" in seniority.md). A contact list a pilot's instance saved makes
+  no record: such a row is held for Ryan (`contact_unmatched`, Attach or Ignore); rows that match a record update it.
+  Refusing the contacts and seniority kinds on a pilot's instance altogether is a boundary change left for Ryan's yes.
+- A record Ryan merged into another keeps its pickups through the next pass (`_link_pickups` follows `merged_into`).
+- A turn's station is no layover station: the pickup history keeps it as `station`, counts it apart (`turn_stations`)
+  and never in the stations or the running count per station; seniority.md says "Layover stations: LAX 2; turns: OGG 1".
+- The notes rev hashes the rev it replaces too (`sha256(pid|base|text|by|at)`), so a rev never comes back (X, Y, X in
+  one second gave the first save's rev).
+- Log entries made in one second stay newest first (`ORDER BY at DESC, rowid DESC`), in the card and seniority.md.
+- In-flight re-check: the pickups the once-only reset touched (`inflt_recheck`) are listed first whatever their age
+  (most were older than the newest 50 and were never looked up), only a pickup with a known picker is reset (any other
+  keeps its dropped state), and the log says how many are queued. The in-flight log names the picker by seat
+  ("picker 2 IN FLIGHT ..."), and the schedule lookup and capture lines no longer carry an employee number.
+- The Pilots card:
+  - a record read that answers after a newer read or a write is dropped (a sequence guard, as the search has): after
+    "Save mine over theirs" the card no longer goes back to the older notes;
+  - on a phone (700 px or less) every field is 16 px (no iOS zoom) and every button, chip, link and fold 44 px; a drift
+    line wraps; each pickup is one wrapped line (the table needed a hidden sideways swipe); the results' flags sit under
+    the name and the flags column is named "Flags" for a screen reader; the search placeholder is short enough to read;
+  - after Save, Cancel, Add, Hide, Restore, Take back, a held row's answer and Close the focus stays where Ryan acted
+    (the Edit button, the entry, the next held row, the pilot's row in the results), never the top of the page;
+  - every message also goes to one live region that is never redrawn (the sections' lines are plain text and stay
+    through a redraw);
+  - a record read that lands while Ryan types in it waits until the focus leaves the field (the box, its caret and its
+    height stay; an iPhone kept losing the keyboard); a notes box made taller stays that tall;
+  - Restore of a version with a draft in the box asks first, then shows the restored text;
+  - "Use upload value" shows only when an upload has a value; otherwise "Remove my edit" behind a confirm (never for
+    the name).
+
+### Pickers table and the pilot lookup (tests: `tests/test_fw178_polish.py`)
+- Pickers card: Avg Pickup Speed was cut off behind a sideways scroll at Mac width (1280). The headers' words now wrap
+  (the cells do not), and on a card 900 px wide or less (an iPad) the name and layover cells wrap and the cells are
+  tighter, so all ten columns fit a Mac or iPad card. The phone layout (Pilot, Pos, Best, Avg) starts at a 700 px card
+  (was 500), so an iPad in split view or a phone on its side gets it. Checked on the live list (72 pickers) at card
+  widths 990, 900, 748, 560 and 358: no sideways scroll at any of them.
+- Pilot lookup card: the admin's placeholder is "Last name, first name or emp #" (was "Anybody's schedule: last name,
+  first name or employee #"), so the whole hint shows in the box on an iPhone. The box got its own full row on the
+  Watcher view on Nov 14 (`ha/README.md`).
+
 ## 1.7.7
 
 The pairing detail panel, one look for every month, other pilots' pay and seniority.md (Ryan, Nov 14), then Ryan's

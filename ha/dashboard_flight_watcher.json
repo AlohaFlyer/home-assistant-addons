@@ -159,7 +159,7 @@
                 {
                   "entity": "button.flight_watcher_check_now",
                   "grid_options": {
-                    "columns": 4
+                    "columns": 12
                   },
                   "icon": "mdi:refresh",
                   "name": "Scan FLICA now",
@@ -173,15 +173,9 @@
                   "type": "tile"
                 },
                 {
-                  "grid_options": {
-                    "columns": 5
-                  },
-                  "type": "custom:flight-watcher-pilot-search-card"
-                },
-                {
                   "entity": "button.flight_watcher_update_schedules",
                   "grid_options": {
-                    "columns": 3
+                    "columns": 12
                   },
                   "icon": "mdi:account-search",
                   "name": "Update schedules",
@@ -193,6 +187,12 @@
                     }
                   },
                   "type": "tile"
+                },
+                {
+                  "grid_options": {
+                    "columns": 24
+                  },
+                  "type": "custom:flight-watcher-pilot-search-card"
                 },
                 {
                   "entity": "sensor.flight_watcher_pilot_schedule",

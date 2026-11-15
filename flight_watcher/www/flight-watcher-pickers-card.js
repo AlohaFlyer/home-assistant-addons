@@ -5,13 +5,16 @@
    Search box filters by last name, first name or employee number. Read only.
    FW-0060 (1.4.7): every picker comes from pickers_<key>.json under /local/; the sensor keeps the count and the
    fastest few (the list passed HA's 16 KB recorder limit as it grew). The key is only in the sensor's attributes.
-   1.7.1 (F#52): the box is labeled as this list's filter (the pilot lookup card above it asks FLICA). On a card 500 px
-   wide or less (a phone; a container query, so the desktop table is unchanged) the table keeps Pilot, Pos, Best
+   1.7.1 (F#52): the box is labeled as this list's filter (the pilot lookup card above it asks FLICA). On a card 500 px (700 px since
+   1.7.8) wide or less (a phone; a container query, so the desktop table is unchanged) the table keeps Pilot, Pos, Best
    (Fastest Pickup Speed) and Avg (Avg Pickup Speed), so the speeds show without a sideways scroll; the employee number,
    the pickup counts and the common layovers go on a small line under the name. The sorted column's header is bold in
    the text color (the theme's blue on the header's gray was under WCAG AA's 4.5:1, F#119). 1.7.1 review: on a phone
    (700 px or less) the filter box is 16 px: iOS Safari zooms into a smaller one when it is tapped and leaves the page
-   wider than the screen (as F#43 found for the pilot lookup). */
+   wider than the screen (as F#43 found for the pilot lookup). 1.7.8: a header's words wrap, and on a card 900 px wide or
+   less (an iPad) the name and layover cells wrap too and the cells are tighter, so the whole table, Avg Pickup Speed included, fits a Mac or
+   iPad card without a sideways scroll. The phone layout (Pilot, Pos, Best, Avg) now starts at a 700 px card, not
+   500, so an iPad in split view or a phone on its side gets it too. */
 const FMT = (a) => a == null ? "-" : a >= 3600 ? `${Math.floor(a / 3600)}h ${String(Math.floor((a % 3600) / 60)).padStart(2, "0")}m`
   : a >= 60 ? `${Math.floor(a / 60)}m ${String(a % 60).padStart(2, "0")}s` : `${a}s`;
 // [key, header, sort kind, header on a narrow card ("" = folded under the name there)]
@@ -99,7 +102,7 @@ class FlightWatcherPickersCard extends HTMLElement {
         @media (max-width:700px){input{font-size:16px}}
         .wrap{overflow-x:auto}
         table{border-collapse:collapse;font-size:13px;width:100%}
-        th,td{border:1px solid var(--divider-color,#ddd);padding:3px 6px;white-space:nowrap}
+        th,td{border:1px solid var(--divider-color,#ddd);padding:3px 6px;white-space:nowrap}th{white-space:normal;vertical-align:bottom}
         th{text-align:left;cursor:pointer;user-select:none;background:var(--secondary-background-color,#f4f4f4);position:sticky;top:0}
         th.on{color:var(--primary-text-color);font-weight:700}
         th.on:after{content:" \\25B2";font-size:9px}
@@ -110,7 +113,8 @@ class FlightWatcherPickersCard extends HTMLElement {
         .lay b{font-weight:700}
         td.pn{cursor:pointer}td.pn .nm{color:var(--primary-color);text-decoration:underline dotted}
         .sm{display:none;font-size:11px;font-weight:400;color:var(--secondary-text-color)}th .sh{display:none}
-        @container (max-width:500px){.wide{display:none}th .lg{display:none}th .sh{display:inline}.sm{display:block}
+        @container (max-width:900px){td.pn,td.lay{white-space:normal}th,td{padding:3px 4px}}
+        @container (max-width:700px){.wide{display:none}th .lg{display:none}th .sh{display:inline}.sm{display:block}
           td.pn{white-space:normal}table{font-size:12px}th,td{padding:3px 4px}}
         .key{font-size:11px;opacity:.8;margin:6px 0 0}
         details summary{cursor:pointer;font-size:12px}

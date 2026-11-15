@@ -43,7 +43,8 @@ FEATURES = {
     "hark_ccr": (ADMIN, False, "CCR requests to Hark (/share/flight_watcher/ccr_requests) and the poll of its "
                                "replies"),
     "one_writer": (ADMIN, False, "files with one writer: the seniority list re-read, the versions seed, the finds "
-                                 "file sweep of other folders"),
+                                 "file sweep of other folders, and the pilot database (pilotdb: imports, hand edits, "
+                                 "notes, the ingress API, seniority.md, backups)"),
     "web_ui": (ADMIN, False, "the ingress Web UI (run.py starts it for the default instance only)"),
     "addon_config": (ADMIN, False, "the FLICA and CrewTrac logins from the add-on Configuration tab"),
     "drop_mark": (ADMIN, False, "would drop marks (drop/set), the drop scan, event/drop_ready, sensor would_drop"),
@@ -102,7 +103,8 @@ ENTITY_FEATURE = {"auto_swap": "auto_swap", "swap_map": "auto_swap", "drop_away"
                   "crew_index": "crew_index", "crew_scan": "crew_index",
                   "layover_van": "admin_pushes", "layover_notes": "one_writer",  # 1.7.1 (FW-0072)
                   # 1.7.2 (Ryan, Nov 12): the van alerts' switch and sliders
-                  "van_alerts": "admin_pushes", "van_alert_first": "admin_pushes", "van_alert_second": "admin_pushes"}
+                  "van_alerts": "admin_pushes", "van_alert_first": "admin_pushes", "van_alert_second": "admin_pushes",
+                  "pilotdb": "one_writer"}  # 1.7.8 (B5): sensor.flight_watcher_pilotdb, the pilot database's counts
 
 # Words of lowercase letters and digits joined by single underscores, 1 to 32 characters: HA keeps no entity id with
 # "__" or a trailing "_" (sensor.flight_watcher_jane__state), so "jane_", "a__b" and "_x" are refused. config.yaml
@@ -114,12 +116,13 @@ MAX_PILOTS = 3  # pilots besides the admin: each runs its own Chromium and its o
 # share folders or /data files would collide with them, so it is refused (run.py). ha/check_push_isolation.py reads
 # an id whose first word is here as the admin's. 1.7.2: "ready" (automation.flight_watcher_ready_to_update_ask_hark,
 # the Working Flight button that asks Hark, Ryan Nov 12) and "van" (switch.flight_watcher_van_alerts and
-# number.flight_watcher_van_alert_first and _second, the van alert settings, Ryan Nov 12).
+# number.flight_watcher_van_alert_first and _second, the van alert settings, Ryan Nov 12). 1.7.8: "pilotdb" (the pilot
+# database: /data/pilotdb_backup, /share/flight_watcher/pilotdb, sensor.flight_watcher_pilotdb and its topic).
 RESERVED = frozenset({
     "admin", "auto", "bid", "blocked", "captures", "ccr", "charter", "charters", "check", "crew", "default", "drop",
     "email", "er", "event", "federal", "fetches", "finds", "flica", "freq", "grid", "hunt", "improved", "last",
     "layover", "layovers", "longevity", "map", "month", "new", "next", "normal", "ot", "own", "pause", "pickers",
-    "pilot", "pot", "pref", "re", "rearm", "ready", "recall", "reserve", "rule", "rules", "ryan", "scan", "schedule", "session",
+    "pilot", "pilotdb", "pot", "pref", "re", "rearm", "ready", "recall", "reserve", "rule", "rules", "ryan", "scan", "schedule", "session",
     "settings", "show",
     "state", "status", "swap", "ticket", "tickets", "trade", "tradeboard", "update", "upload", "uploads", "van",
     "versions", "working", "would", "www",

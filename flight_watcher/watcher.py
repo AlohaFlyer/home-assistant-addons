@@ -65,8 +65,9 @@ import photos as PH
 import bidcal as BC
 import layover as LO
 import pilotpdf as PP
+import pilotdb as PDBM
 
-VERSION = "1.7.7"
+VERSION = "1.7.8"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -1537,6 +1538,11 @@ def entity_defs():
         ("sensor", "uploads", {"name": "Uploads on file", "state_topic": f"{T}/uploads",
                                "value_template": "{{ value_json.count }}",
                                "json_attributes_topic": f"{T}/uploads", "icon": "mdi:file-upload-outline"}),
+        # 1.7.8 (B5, admin only: roles.ENTITY_FEATURE one_writer): the pilot database's counts, source dates, md and
+        # copy times, rev and db state (pilotdb_sensor: no name, number or text, so no recorder exclude)
+        ("sensor", "pilotdb", {"name": "Pilot database", "state_topic": f"{T}/pilotdb",
+                               "value_template": "{{ value_json.live }}",
+                               "json_attributes_topic": f"{T}/pilotdb", "icon": "mdi:card-account-details-outline"}),
         ("sensor", "upload_status", {"name": "Upload status", "state_topic": f"{T}/upload/status",
                                      "value_template": "{{ value_json.state }}",
                                      "json_attributes_topic": f"{T}/upload/status", "icon": "mdi:progress-upload"}),
@@ -1612,6 +1618,7 @@ def mqtt_start():
         publish_swap_mode(cl)
         publish_swap_tests()
         publish_uploads(cl, force=True)  # FW-0066
+        publish_pilotdb(cl, force=True)  # 1.7.8: the pilot database's counts (the admin only)
         _BIDCAL["sig"] = None  # 1.7.1 review: the bid calendar sensor goes again at the next minute's bidcal_tick
         forget_layover_sigs()  # 1.7.1 review: and the van and notes sensors at the next sweep's van_tick
         tm = threading.Timer(CONNECT_STATES_DELAY_S, connect_states, args=(cl,))  # FW-0024
@@ -3534,8 +3541,10 @@ def seniority_refresh():
     only, so the files have one writer; counts only in the log."""
     if not has("one_writer"):
         return
-    # 1.7.7: seniority.md (the markdown reference, web.seniority_md_write) for a seniority.json written before it came
-    web.seniority_md_backfill(os.path.join(UPLOADS_SHARED, "seniority.json"))
+    # 1.7.7: seniority.md (the markdown reference, web.seniority_md_write) for a seniority.json written before it came.
+    # 1.7.8: while the pilot database is open it writes seniority.md (pilotdb_tick), so this fallback stands aside
+    if PDB.get("db") is None:
+        web.seniority_md_backfill(os.path.join(UPLOADS_SHARED, "seniority.json"))
     try:
         names = os.listdir(UPLOADS_SHARED)
     except OSError:
@@ -3584,7 +3593,8 @@ def seniority_refresh():
             same = (lst or {}).get("file") == f[:-4] + ".pdf"
             try:
                 d = web.seniority_write(path, f[:-4] + ".pdf", lst.get("uploaded_at") if same else f"{f[10:20]}T00:00:00",
-                                        (lst.get("list_date") or "") if same else "", out)
+                                        (lst.get("list_date") or "") if same else "", out,
+                                        (lst.get("uploaded_by") or None) if same else None)  # 1.7.8 review: its uploader
                 log.info("seniority list %s: %s", f, f"{d['count']} pilots read again" if d else "no pilot rows")
             except Exception as e:
                 log.info("seniority list %s not read: %s", f, e)
@@ -3599,6 +3609,600 @@ def seniority_refresh():
                 log.info("award %s dates of hire: %d pilot rows (%s), %s", f, info["rows"], info["reader"], info["decision"])
             except Exception as e:
                 log.info("award %s dates of hire not read: %s", f, e)
+
+
+# ---------------------------------------------------------------- 1.7.8: the pilot database (pilotdb.py)
+# Ryan, Nov 14: "should we have an editable pilot database that has these data points. and even a notes field we can
+# edit and append to". The admin's Watcher only (one_writer: one writer of the file): /data/pilotdb.sqlite (mode 600,
+# in HA's pre-update app backup), its daily copies in /data/pilotdb_backup and /share/flight_watcher/pilotdb/backup
+# (folders 0700, files 0600, 7 kept), and seniority.md written from it. Seeded on the first start from the kept contact
+# list (its Notes: HAL Emp#, Sen#, DOH, Status, retirement; contacts.PARSER 2 reads the kept source again once) and
+# seniority.json (the seniority PDF wins on Sen#, DOH and status). A source file whose signature (mtime, size, sha256)
+# moved is merged again (checked at start and once a minute, and at once after an upload: web on_saved); each picker's
+# record carries his pickup history (store.pickup_history), synced as pickups are scored. The log carries counts only,
+# never a name, a number or a note; nothing here loads FLICA. Nothing is shared with a pilot in 1.7.8.
+PILOTDB_FILE = f"{DATA}/pilotdb.sqlite"
+PILOTDB_BACKUP = f"{DATA}/pilotdb_backup"
+PILOTDB_SHARE = "/share/flight_watcher/pilotdb"
+PILOTDB_POLL_S = 60          # the source signature check
+PILOTDB_MD_DEBOUNCE_S = 30   # seniority.md 30 s after the last change (at once after a merge)
+PILOTDB_BACKUP_AT = (2, 47)  # HST: the nightly copies
+PDB = {"db": None, "status": {"db": "off", "offer": None}, "wake": threading.Event(), "md_rev": None, "md_at": 0.0,
+       "md_day": "", "merged": False, "contacts": "", "thread": None}
+PDB_LOCK = threading.RLock()
+
+
+def pilotdb_dirs():
+    return (PILOTDB_BACKUP, os.path.join(PILOTDB_SHARE, "backup"))
+
+
+def pilotdb_md_path():
+    """seniority.md (1.7.7's path): /share/flight_watcher/seniority.md, beside the uploads folder."""
+    return web.seniority_md_path(os.path.join(UPLOADS_SHARED, "seniority.json"))
+
+
+def pilotdb_nudge():
+    """Wake the pilot database thread now (an upload saved, a pickup scored, an in-flight verdict written)."""
+    PDB["wake"].set()
+
+
+def _pilotdb_sig(paths):
+    """'mtime|size|sha256' of each source file that exists (plain files only), joined; '' when none exists."""
+    out = []
+    for p in paths:
+        try:
+            st = os.lstat(p)
+            if not stat.S_ISREG(st.st_mode):
+                continue
+            h = hashlib.sha256()
+            with open(p, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            out.append(f"{os.path.basename(p)}:{st.st_mtime:.0f}|{st.st_size}|{h.hexdigest()}")
+        except OSError:
+            continue
+    return ";".join(out)
+
+
+def pilotdb_start():
+    """1.7.8: the start checks (spec 18: PRAGMA integrity_check, a newer database, a newer /share copy), then the first
+    sync (the seed on the very first start), seniority.md and today's copies when there are none, and the thread.
+    Admin only; never stops the start. FLIGHT_WATCHER_PILOTDB=0 keeps it closed (the test suite's default, so a test
+    that runs main() never opens one on the host's /share; run.py never sets it)."""
+    if not has("one_writer") or os.environ.get("FLIGHT_WATCHER_PILOTDB", "1") != "1":
+        return None
+    try:
+        for d in (PILOTDB_BACKUP, PILOTDB_SHARE, os.path.join(PILOTDB_SHARE, "backup")):
+            PDBM._dir_0700(d)
+        db, st = PDBM.open_checked(PILOTDB_FILE, pilotdb_dirs())
+    except Exception as e:  # noqa: BLE001
+        db, st = None, {"db": "error", "offer": None}
+        log.warning("pilot db: not opened: %s", type(e).__name__)
+    with PDB_LOCK:
+        PDB.update(db=db, status=st)
+    if st["db"] == "newer_db":
+        log.warning("pilot db: the file is from a newer Flight Watcher; it is left as it is (roll forward to use it)")
+    elif st["db"] == "error":
+        log.warning("pilot db: the file failed its integrity check and was set aside; a copy is offered on the card"
+                    if st.get("offer") else "pilot db: the file failed its integrity check and was set aside")
+    elif st["db"] == "restore_offered":
+        log.warning("pilot db: a newer copy is on the share (an older /data was restored?); nothing overwritten, the "
+                    "card offers it")
+    if db is None:
+        with contextlib.suppress(Exception):  # the sensor says why (newer_db, error)
+            publish_pilotdb(force=True)
+        return None
+    web.SENIORITY_MD_HOOK = pilotdb_nudge  # seniority.md is the database's from now on
+    first = db.meta("seeded_at") is None
+    try:
+        pilotdb_tick(force=first)
+        if first:
+            db.set_meta("seeded_at", db.now())
+            log.info("pilot db: seeded: %s", _pilotdb_counts(db))
+        if not any(os.path.exists(os.path.join(d, f"pilotdb-{local_now().date().isoformat()}.sqlite"))
+                   for d in pilotdb_dirs()):
+            db.backup(local_now().date().isoformat())
+    except Exception as e:  # noqa: BLE001
+        log.warning("pilot db: first sync skipped: %s", type(e).__name__)
+    if PDB.get("thread") is None:
+        PDB["thread"] = threading.Thread(target=pilotdb_thread, daemon=True, name="pilotdb")
+        PDB["thread"].start()
+    return db
+
+
+def _pilotdb_counts(db):
+    s = db.summary()
+    return (f"{s['live']} pilots ({s['gone']} gone), {s['hand']} with hand edits, {s['conflicts']} conflicts, "
+            f"{s['pickups']} pickups of {s['pickers']} pickers")
+
+
+def _pilotdb_merge_line(src, ref, r):
+    if not r.get("applied"):
+        return f"pilot db: {src} {ref} not applied ({r.get('why', 'older')})"
+    n = r.get("conflicts", 0)
+    return (f"pilot db: {src} {ref} merged: {r.get('added', 0)} added, {r.get('changed', 0)} changed, "
+            f"{r.get('kept_hand', 0)} kept hand edits, {r.get('gone', 0)} gone, {n} conflict{'' if n == 1 else 's'}")
+
+
+def pilotdb_tick(force=False):
+    """One pass: the contact list read again by parser 2 when needed, each source whose signature moved merged (the
+    list, then the award, then the contact list), the pickup history synced, seniority.md when the database changed
+    (at once after a merge, else 30 s after the last change) or the HST day turned (its pay year column), and the
+    nightly copies at 02:47 HST. Counts only in the log. True when a source was merged."""
+    db = PDB.get("db")
+    if db is None:
+        return False
+    with PDB_LOCK:
+        merged = False
+        out = os.path.join(UPLOADS_SHARED, "seniority.json")
+        d = os.path.dirname(out)
+        ct_sig = _pilotdb_sig([web.CONTACTS_FILE])
+        if ct_sig and (force or db.meta("sig:contacts") != ct_sig):
+            try:  # spec 8.4.4: a contacts.json from parser 1 is read again from the kept source first, once
+                PDB["contacts"] = web.contacts_reparse(log, local_now().date())
+            except Exception as e:  # noqa: BLE001
+                log.info("pilot db: contact list not read again: %s", type(e).__name__)
+            ct_sig = _pilotdb_sig([web.CONTACTS_FILE])
+        lst_sig = _pilotdb_sig([out, os.path.join(d, web.SEN_LIST)])
+        aw_sig = _pilotdb_sig([os.path.join(d, web.SEN_AWARD)])
+        lst, aw = web.seniority_sources(out) if (lst_sig or aw_sig) else (None, None)
+        # review: each source merges on its own, so one that fails (counts-only reason in the log, once per file)
+        # still lets the others, the pickups, seniority.md, the copies and the sensor run; it is tried again on the
+        # next pass (its signature is set only once it merged)
+        if lst_sig and (force or db.meta("sig:list") != lst_sig):
+            def _list():
+                if lst:
+                    r = db.merge_list(lst, _pilotdb_by(lst.get("uploaded_by")),
+                                      hashlib.sha256(lst_sig.encode()).hexdigest(), lst.get("parser"))
+                    log.info(_pilotdb_merge_line("list", SEN.as_of(lst) or "?", r))
+                    return True
+                return False
+            merged = _pilotdb_merge("list", lst_sig, _list) or merged
+        if aw_sig and (force or db.meta("sig:award") != aw_sig):
+            def _award():
+                if aw:
+                    month = str(aw.get("award_month") or "")
+                    who = "ryan"
+                    with contextlib.suppress(Exception):
+                        who = str((review().on_file(month, "award")[1] or {}).get("who") or "ryan")
+                    r = db.merge_award(aw, _pilotdb_by(who), hashlib.sha256(aw_sig.encode()).hexdigest(), aw.get("parser"))
+                    log.info(_pilotdb_merge_line("award", month or "?", r))
+                    return True
+                return False
+            merged = _pilotdb_merge("award", aw_sig, _award) or merged
+        if ct_sig and (force or db.meta("sig:contacts") != ct_sig):
+            def _contacts():
+                cj = CT.load(web.CONTACTS_FILE)
+                if cj:
+                    r = db.merge_contacts(cj, _pilotdb_by(cj.get("uploaded_by")),
+                                          hashlib.sha256(ct_sig.encode()).hexdigest(), cj.get("parser"))
+                    log.info(_pilotdb_merge_line("contacts", str(cj.get("uploaded_at") or "")[:10] or "?", r))
+                    return True
+                return False
+            merged = _pilotdb_merge("contacts", ct_sig, _contacts) or merged
+        try:
+            db.sync_pickups(DB.pickup_history())
+        except Exception as e:  # noqa: BLE001
+            log.info("pilot db: pickups not synced: %s", type(e).__name__)
+        now, day, rev = time.time(), local_now().date().isoformat(), db.rev
+        if rev != PDB["md_rev"] and not PDB["md_at"]:
+            PDB["md_at"] = now + PILOTDB_MD_DEBOUNCE_S  # a change: written 30 s after it, unless more come
+        if merged or force or day != PDB["md_day"] or (PDB["md_at"] and now >= PDB["md_at"]):
+            try:
+                db.write_md(pilotdb_md_path(), VERSION, local_now().strftime("%Y-%m-%d %H:%M HST"))
+                PDB.update(md_rev=rev, md_day=day)
+            except Exception as e:  # noqa: BLE001
+                log.info("pilot db: seniority.md not written: %s", type(e).__name__)
+            PDB["md_at"] = 0.0
+        if (local_now().hour, local_now().minute) >= PILOTDB_BACKUP_AT and db.meta("backup_day") != day:
+            try:
+                db.backup(day)
+                db.set_meta("backup_day", day)
+            except Exception as e:  # noqa: BLE001
+                log.info("pilot db: nightly copy not taken: %s", type(e).__name__)
+        try:  # sensor.flight_watcher_pilotdb when its counts moved (the card refetches when its rev does)
+            publish_pilotdb()
+        except Exception as e:  # noqa: BLE001
+            log.info("pilot db: sensor not published: %s", type(e).__name__)
+        return merged
+
+
+def _pilotdb_by(who):
+    """The uploader a merge records (vals.by, merges.by, seniority.md's 'uploaded by'): the file's own uploaded_by
+    (web.save_upload's who: ryan, or the pilot whose instance saved it), ryan for a file from before 1.7.8."""
+    who = str(who or "").strip()
+    return who if who and ROLES.NAME_RE.match(who) else "ryan"
+
+
+def _pilotdb_merge(src, sig, fn):
+    """One source's merge (pilotdb_tick): fn() inside its own try. Its signature is set when it ran; a failure logs
+    its counts-only reason once per file and leaves the signature, so the next pass tries it again. True when it
+    merged."""
+    db = PDB.get("db")
+    try:
+        done = fn()
+        db.set_meta(f"sig:{src}", sig)
+        PDB.setdefault("failed", {}).pop(src, None)
+        return done
+    except Exception as e:  # noqa: BLE001
+        failed = PDB.setdefault("failed", {})
+        if failed.get(src) != sig:
+            failed[src] = sig
+            log.warning("pilot db: %s not merged: %s (tried again on the next pass)", src, type(e).__name__)
+        return False
+
+
+def pilotdb_thread():
+    """The pilot database's own thread: a pass every PILOTDB_POLL_S, or at once when nudged (pilotdb_nudge), and the
+    30 s seniority.md debounce in between. Never stops."""
+    while True:
+        woke = PDB["wake"].wait(min(PILOTDB_POLL_S, PILOTDB_MD_DEBOUNCE_S) if PDB.get("md_at") else PILOTDB_POLL_S)
+        PDB["wake"].clear()
+        try:
+            pilotdb_tick()
+        except Exception as e:  # noqa: BLE001
+            log.info("pilot db: pass skipped: %s", type(e).__name__)
+        if woke:
+            time.sleep(1)  # a burst of nudges (an upload's several files) is one pass
+
+
+def pilotdb_scrub(purged=False):
+    """After a retract: scrub() (the text leaves the file and its WAL; the daily copies roll off in 7 days). After a
+    purge or a forget (purged): scrub and a fresh copy in place of every older one, so the text leaves the copies too
+    (spec 9.4 and 18). For the ingress API's ops; never raises."""
+    db = PDB.get("db")
+    if db is None:
+        return False
+    try:
+        with PDB_LOCK:
+            if purged:
+                db.replace_backups()
+            else:
+                db.scrub()
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.info("pilot db: scrub skipped: %s", type(e).__name__)
+        return False
+
+
+def pilotdb_restore(file):
+    """Ryan's restore_db (typed RESTORE on his card): put a daily copy back (pilotdb.restore: the current file set
+    aside first), then open it with the start checks. Returns the new status. pilotdb.Bad for a file not on the list."""
+    with PDB_LOCK:
+        db = PDB.get("db")
+        if db is not None:
+            db.close()
+        PDB["db"] = None
+        try:
+            PDBM.restore(PILOTDB_FILE, pilotdb_dirs(), file)
+        finally:
+            db, st = PDBM.open_checked(PILOTDB_FILE, pilotdb_dirs())
+            PDB.update(db=db, status=st, md_rev=None, md_at=0.0)
+            web.SENIORITY_MD_HOOK = pilotdb_nudge if db is not None else None
+    log.info("pilot db: a copy was put back (the file before it is kept aside): %s", st["db"])
+    pilotdb_nudge()
+    return st
+
+
+def pilotdb_status():
+    """For the pilot database's sensor and card (1.7.8, counts only): db (ok, newer_db, error, restore_offered, off),
+    the copy offered, the counts (pilotdb.summary) and the contact list's re-read state ('no-source': upload the
+    contact list again)."""
+    db, st = PDB.get("db"), PDB.get("status") or {}
+    out = {"db": st.get("db", "off"), "offer": st.get("offer"), "contacts": PDB.get("contacts") or ""}
+    if db is not None:
+        try:
+            out.update(db.summary())
+        except Exception as e:  # noqa: BLE001
+            out["db"] = "error"
+            log.info("pilot db: summary not read: %s", type(e).__name__)
+    return out
+
+
+# ---------------------------------------------------------------- 1.7.8: Ryan's side of the pilot database (spec 10)
+# The admin-only ingress API (web.serve's api/pilotdb: GET reads, POST one op as JSON) and the counts-only sensor
+# sensor.flight_watcher_pilotdb, for the Pilots card (www/flight-watcher-pilotdb-card.js) on Ryan's dashboard. The
+# author of every write is ryan (never a payload key). An error names the field, never a value or a note; a log line
+# names the op and its outcome only. Nothing here loads FLICA, publishes pilot/set or shares a record with a pilot (the
+# share op, roster.json, the exports and the inbox drain are 1.7.9).
+PILOTDB_BODY_MAX = 64 * 1024  # a POST body
+PILOTDB_PID_RE = re.compile(r"^p[0-9a-f]{10}$")
+PILOTDB_EID_RE = re.compile(r"^n[0-9a-f]{10}$")
+PILOTDB_GET_KEYS = frozenset({"q", "f", "page", "pid", "emp", "name", "view"})
+# op -> (keys it needs, keys it may carry), "op" itself aside; any other key is refused
+PILOTDB_OPS = {
+    "set": (("pid", "field", "value", "rev"), ("why",)),
+    "unset": (("pid", "field", "rev"), ()),
+    "keep": (("pid", "field"), ()),
+    "field": (("pid", "text", "base"), ()),
+    "restore_field": (("pid", "hist_id", "base"), ()),
+    "add": (("pid", "text", "rid"), ("shared",)),
+    "retract": (("eid",), ()),
+    "hide": (("eid",), ()),
+    "restore": (("eid",), ()),
+    "purge": ((), ("eid", "hist_id", "backups")),
+    "forget": (("pid", "confirm"), ()),
+    "resolve": (("conflict_id", "how"), ("pid",)),
+    "move": (("pid", "emp"), ()),
+    "merge": (("pid", "into"), ()),
+    "new": (("emp", "name"), ("doh",)),
+    "restore_db": (("file", "confirm"), ()),
+}
+PILOTDB_SENSOR_KEYS = ("records", "live", "gone", "noted", "entries", "entries_7d", "hand", "drift", "conflicts",
+                       "pickups", "pickers", "sources", "shared_with", "pending", "md_at", "backup_at", "rev", "db",
+                       "contacts")
+_PDB_PUB = {"sig": None}
+_PDB_PUB_LOCK = threading.Lock()
+
+
+def pilotdb_sensor():
+    """sensor.flight_watcher_pilotdb's payload (spec 10.2): counts, source dates, md and copy times, rev and db (ok,
+    newer_db, error, restore_offered, off); the copy offered by its day and rev only. No name, number or text."""
+    s = pilotdb_status()
+    d = {k: s[k] for k in PILOTDB_SENSOR_KEYS if k in s}
+    d["live"] = int(d.get("live") or 0)
+    off = s.get("offer")
+    d["offer"] = {"day": off.get("day"), "rev": off.get("rev")} if isinstance(off, dict) else None
+    return d
+
+
+def publish_pilotdb(c=None, force=False):
+    """{T}/pilotdb (retained): the admin's only (one_writer), when it changed (or force). The card refetches when its
+    rev moves."""
+    if not has("one_writer"):
+        return False
+    with _PDB_PUB_LOCK:
+        d = pilotdb_sensor()
+        sig = json.dumps(d, sort_keys=True)
+        if not force and sig == _PDB_PUB["sig"]:
+            return False
+        _PDB_PUB["sig"] = sig
+    if c is not None:
+        c.publish(f"{T}/pilotdb", json.dumps(d), retain=True)
+    else:
+        pub("pilotdb", d)
+    return True
+
+
+def _pdb_text(o, k, field=None, rx=None):
+    v = o.get(k)
+    if not isinstance(v, str) or (rx is not None and not rx.match(v)):
+        raise PDBM.Bad(field or k, "is not valid")
+    return v
+
+
+def _pdb_int(o, k):
+    v = o.get(k)
+    if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+        raise PDBM.Bad(k, "must be a whole number")
+    return v
+
+
+def _pdb_field(o):
+    f = o.get("field")
+    if f not in PDBM.FIELDS:
+        raise PDBM.Bad("field", "is not a field of the pilot database")
+    return f
+
+
+def _pdb_emp(o):
+    v = o.get("emp")
+    if isinstance(v, bool) or not isinstance(v, (str, int)) or not re.fullmatch(r"[0-9]{1,7}", str(v).strip()):
+        raise PDBM.Bad("emp", "must be 1 to 7 digits")
+    return str(v).strip()
+
+
+def _pilotdb_conflicts(db):
+    """The conflicts queue for the card: each held row with the record it names (brief) and, for a partial list, how
+    many records it would mark gone and the first 20 of them."""
+    out = []
+    for c in db.conflicts():
+        row = c.get("row") or {}
+        item = {k: c.get(k) for k in ("id", "kind", "source", "ref", "emp", "pid", "at")}
+        item["answers"] = list(PDBM.RESOLVE.get(c.get("kind"), ()))
+        if c.get("kind") == "list_partial":
+            miss = [p for p in row.get("missing") or [] if isinstance(p, str)]
+            item.update(missing_n=len(miss), rows=row.get("rows"), prev=row.get("prev"),
+                        missing=[b for b in (db.brief(p) for p in miss[:20]) if b])
+        else:
+            item["values"] = row.get("values") or {}
+            item["as_of"] = row.get("as_of") or ""
+        item["cand"] = db.brief(c.get("pid")) if c.get("pid") else None
+        out.append(item)
+    return out
+
+
+def pilotdb_get(query):
+    """GET api/pilotdb (spec 10.1), the card's reads: (HTTP status, body). query {key: value}: q (1 to 60 code points),
+    f (a filter), page (50 rows a page): the search; pid: the whole record (every field with its sources, phones and
+    emails, the notes field and its versions, the entries, the log, the conflicts, the pickups, the AI note); emp and
+    name (the pilot card's pilot, follow mode): the same record, or record null; view=conflicts: the queue;
+    view=status: the counts, sources, copies and the copy offered. An unknown key is refused."""
+    q = dict(query or {})
+    if set(q) - PILOTDB_GET_KEYS:
+        return 400, {"ok": False, "field": "query", "why": "holds a key the pilot database does not take"}
+    view = q.get("view", "")
+    if view == "status":
+        bk = [{k: b[k] for k in ("file", "day", "rev", "size")} for b in PDBM.backups(pilotdb_dirs())]
+        # review: the files set aside beside the file in use (before a restore, or failed its check), until a purge
+        # or 7 days
+        aside = [{k: a[k] for k in ("name", "kind", "at", "size")} for a in PDBM.aside_files(PILOTDB_FILE)]
+        return 200, {"ok": True, "status": pilotdb_status(), "backups": bk, "aside": aside, "version": VERSION}
+    db = PDB.get("db")
+    if db is None:
+        return 503, {"ok": False, "db": (PDB.get("status") or {}).get("db", "off"),
+                     "why": "The pilot database is not open"}
+    try:
+        if view == "conflicts":
+            return 200, {"ok": True, "rev": db.rev, "conflicts": _pilotdb_conflicts(db)}
+        if view:
+            raise PDBM.Bad("view", "is not a view")
+        if "pid" in q:
+            pid = _pdb_text(q, "pid", "pid", PILOTDB_PID_RE)
+            return 200, {"ok": True, "rev": db.rev, "record": db.record(pid)}
+        if "emp" in q or "name" in q:
+            emp = str(q.get("emp") or "")
+            if emp and not re.fullmatch(r"[0-9]{1,7}", emp):
+                raise PDBM.Bad("emp", "must be 1 to 7 digits")
+            name = PDBM.clean_line(str(q.get("name") or ""), PDBM.NAME_MAX, "name", empty_ok=True)
+            pid = db.find(emp, name)
+            if not pid:
+                return 200, {"ok": True, "rev": db.rev, "record": None, "why": "Not in the pilot database"}
+            return 200, {"ok": True, "rev": db.rev, "record": db.record(pid)}
+        page = str(q.get("page") or "0")
+        if not re.fullmatch(r"[0-9]{1,5}", page):
+            raise PDBM.Bad("page", "must be a whole number")
+        return 200, db.search(str(q.get("q") or ""), str(q.get("f") or "all"), int(page))
+    except PDBM.Bad as e:
+        return 400, {"ok": False, "field": e.field, "why": e.why}
+    except PDBM.Missing as e:
+        return 404, {"ok": False, "why": f"{e} not found"}
+    except Exception as e:  # noqa: BLE001
+        log.info("pilot db: read refused: %s", type(e).__name__)
+        return 500, {"ok": False, "why": "The pilot database could not read that"}
+
+
+def _pilotdb_apply(db, op, o):
+    """One op on the database: (body, after) with after None, 'scrub' (a retract) or 'purge' (a purge or a forget:
+    scrub and fresh copies). Raises pilotdb.Bad, Missing or Stale."""
+    if op in ("set", "unset", "keep"):
+        pid, f = _pdb_text(o, "pid", "pid", PILOTDB_PID_RE), _pdb_field(o)
+        if op == "set":
+            v = o.get("value")
+            if not isinstance(v, str) and not (f in ("phones", "emails") and isinstance(v, list)):
+                raise PDBM.Bad(f, "must be text")
+            why = o.get("why", "")
+            if not isinstance(why, str):
+                raise PDBM.Bad("why", "must be text")
+            return {"record": db.set_field(pid, f, v, _pdb_int(o, "rev"), why)}, None
+        if op == "unset":
+            return {"record": db.unset_field(pid, f, _pdb_int(o, "rev"))}, None
+        return {"record": db.keep(pid, f)}, None
+    if op in ("field", "restore_field"):
+        pid = _pdb_text(o, "pid", "pid", PILOTDB_PID_RE)
+        base = _pdb_text(o, "base", "base")
+        if op == "field":
+            n = db.save_notes(pid, _pdb_text(o, "text", "text"), base)
+        else:
+            n = db.restore_notes(pid, _pdb_int(o, "hist_id"), base)
+        return {"notes": n, "record": db.record(pid)}, None
+    if op == "add":
+        pid = _pdb_text(o, "pid", "pid", PILOTDB_PID_RE)
+        shared = o.get("shared", True)
+        if not isinstance(shared, bool):
+            raise PDBM.Bad("shared", "must be true or false")
+        eid = db.add_entry(pid, _pdb_text(o, "text", "text"), shared, _pdb_text(o, "rid", "rid"))
+        return {"eid": eid, "record": db.record(pid)}, None
+    if op in ("retract", "hide", "restore"):
+        eid = _pdb_text(o, "eid", "entry", PILOTDB_EID_RE)
+        pid = db.entry_pid(eid)
+        {"retract": db.retract, "hide": db.hide, "restore": db.unhide}[op](eid)
+        return {"record": db.record(pid)}, "scrub" if op == "retract" else None
+    if op == "purge":
+        named = [k for k in ("eid", "hist_id", "backups") if k in o]
+        if len(named) != 1:
+            raise PDBM.Bad("purge", "names one entry, one version or the copies")
+        if named[0] == "backups":
+            if o["backups"] is not True:
+                raise PDBM.Bad("backups", "must be true")
+            return {}, "purge"
+        if named[0] == "eid":
+            eid = _pdb_text(o, "eid", "entry", PILOTDB_EID_RE)
+            pid = db.entry_pid(eid)
+            db.purge(eid=eid)
+        else:
+            hid = _pdb_int(o, "hist_id")
+            pid = db.hist_pid(hid)
+            db.purge(hist_id=hid)
+        return {"record": db.record(pid)}, "purge"
+    if op == "forget":
+        db.forget(_pdb_text(o, "pid", "pid", PILOTDB_PID_RE), o.get("confirm"))
+        return {}, "purge"
+    if op == "resolve":
+        pid = _pdb_text(o, "pid", "pid", PILOTDB_PID_RE) if "pid" in o else None
+        target = db.resolve(_pdb_int(o, "conflict_id"), _pdb_text(o, "how", "how"), pid)
+        return {"pid": target, "record": db.record(target) if target else None}, None
+    if op == "move":
+        pid = db.move(_pdb_text(o, "pid", "pid", PILOTDB_PID_RE), _pdb_emp(o))
+        return {"record": db.record(pid)}, None
+    if op == "merge":
+        into = db.merge_records(_pdb_text(o, "pid", "pid", PILOTDB_PID_RE), _pdb_text(o, "into", "into", PILOTDB_PID_RE))
+        return {"pid": into, "record": db.record(into)}, None
+    if op == "new":
+        doh = o.get("doh")
+        if doh is not None and not isinstance(doh, str):
+            raise PDBM.Bad("doh", "must be a date")
+        pid = db.new_record(_pdb_emp(o), _pdb_text(o, "name", "name"), doh or None)
+        return {"pid": pid, "record": db.record(pid)}, None
+    raise PDBM.Bad("op", "is not an operation of the pilot database")
+
+
+def pilotdb_post(obj):
+    """POST api/pilotdb (spec 10.1): one op as a JSON object, for Ryan's card on his dashboard. The author is ryan.
+    (HTTP status, body): 200 {ok: true, rev, ...the op's answer: record, notes, eid, pid}; 400 {ok: false, field,
+    why} (a key, a type or a value refused: never the value itself); 404 (no such record, entry, version or
+    conflict); 409 a stale write, nothing written: {ok: false, why: changed, record} for a field edit,
+    {ok: false, conflict: {text, rev, by, at}} for the notes field; 503 the database is not open. The share op is
+    1.7.9's, so it is refused like any unknown op."""
+    if not isinstance(obj, dict):
+        return 400, {"ok": False, "field": "body", "why": "must be a JSON object"}
+    op = obj.get("op")
+    if not isinstance(op, str) or op not in PILOTDB_OPS:
+        return 400, {"ok": False, "field": "op", "why": "is not an operation of the pilot database"}
+    need, may = PILOTDB_OPS[op]
+    o = {k: v for k, v in obj.items() if k != "op"}
+    if set(o) - set(need) - set(may):
+        return 400, {"ok": False, "field": "keys", "why": "holds a key this op does not take"}
+    miss = [k for k in need if k not in o]
+    if miss:
+        return 400, {"ok": False, "field": miss[0], "why": "is missing"}
+    if op == "restore_db":
+        if o.get("confirm") != "RESTORE":
+            return 400, {"ok": False, "field": "confirm", "why": "type RESTORE"}
+        try:
+            st = pilotdb_restore(_pdb_text(o, "file", "file"))
+        except PDBM.Bad as e:
+            log.info("pilot db: restore_db from the card: refused")
+            return 400, {"ok": False, "field": e.field, "why": e.why}
+        except Exception as e:  # noqa: BLE001
+            log.info("pilot db: restore_db from the card failed: %s", type(e).__name__)
+            return 500, {"ok": False, "why": "The copy could not be put back"}
+        with contextlib.suppress(Exception):
+            publish_pilotdb()
+        return 200, {"ok": True, "status": st}
+    db = PDB.get("db")
+    if db is None:
+        return 503, {"ok": False, "db": (PDB.get("status") or {}).get("db", "off"),
+                     "why": "The pilot database is not open"}
+    pid = obj.get("pid") if isinstance(obj.get("pid"), str) else None
+    try:
+        with PDB_LOCK:
+            body, after = _pilotdb_apply(db, op, o)
+            if after:
+                pilotdb_scrub(purged=after == "purge")
+            rev = db.rev
+    except PDBM.Stale as e:
+        log.info("pilot db: %s from the card: stale, nothing written", op)
+        if op in ("field", "restore_field"):
+            return 409, {"ok": False, "why": "changed", "conflict": e.current}
+        rec = None
+        with contextlib.suppress(Exception):
+            rec = db.record(pid) if pid else None
+        return 409, {"ok": False, "why": "changed", "record": rec or e.current}
+    except PDBM.Bad as e:
+        log.info("pilot db: %s from the card: refused", op)
+        return 400, {"ok": False, "field": e.field, "why": e.why}
+    except PDBM.Missing as e:
+        log.info("pilot db: %s from the card: not found", op)
+        return 404, {"ok": False, "why": f"{e} not found"}
+    except Exception as e:  # noqa: BLE001
+        log.info("pilot db: %s from the card failed: %s", op, type(e).__name__)
+        return 500, {"ok": False, "why": "The pilot database could not do that"}
+    log.info("pilot db: %s from the card: saved", op)
+    pilotdb_nudge()  # seniority.md 30 s after the last change
+    with contextlib.suppress(Exception):
+        publish_pilotdb()
+    return 200, dict(body, ok=True, rev=rev)
 
 
 TAX = {"at": 0.0, "pct": None}
@@ -9974,6 +10578,7 @@ def pickup_check(fl, full=False):
             secs = DB.score_pickup(k)  # 0.4.18: picker speed stats
             if secs is not None:
                 log.info("picker %s: %s in open time", who, secs)
+                pilotdb_nudge()  # 1.7.8: the picker's pickup history in the pilot database
             pend.pop(k, None)
             done = True
         elif status == "open":
@@ -10093,6 +10698,7 @@ def inflt_check(fl, limit=INFLT_PER_CHECK):
                      on_sched=lambda items: note_sched_trips(items, "picker"))  # FW-0056: the crew index reads them too
     if changed:
         publish_finds()
+        pilotdb_nudge()  # 1.7.8: each picker's in-flight verdict in his pickup history
     return changed
 
 
@@ -10353,8 +10959,9 @@ EXPORT_RETRY_S = 15  # a state HA had no answer for is read again after this, do
 SPOOL_POLL_S = 1.0
 SPOOL_MAX_PER_POLL = 200
 PORTAL_LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portal_layout.json")
-PORTAL_CARDS_OUT = ("uploads-card", "row-colors", "layover-card")  # not in a portal (1.7.0: the tickets card is,
-# revision 2; 1.7.1 FW-0072: the layover card is the admin's only in this release)
+PORTAL_CARDS_OUT = ("uploads-card", "row-colors", "layover-card", "pilotdb-card")  # not in a portal (1.7.0: the
+# tickets card is, revision 2; 1.7.1 FW-0072: the layover card is the admin's only in this release; 1.7.8 B3: the Pilots
+# card stays off every portal until sharing, 1.7.9 with contract revision 4)
 PAIRINGS_BACK_M = 2  # the shared pairings packages exported: from this many months back (HST), and every later one
 
 
@@ -11287,6 +11894,7 @@ def main():
     publish_crew_index()
     versions_check(force_pub=True)
     uploads_check()
+    pilotdb_start()  # 1.7.8: after uploads_check (the seniority list re-read by a newer parser comes first)
     recall_eval()
     start_charter_watch()
     threading.Thread(target=ccr_thread, daemon=True, name="ccr").start()  # 1.4.6: Hark's answers to CCR requests
@@ -11294,7 +11902,8 @@ def main():
         web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
                   save_rules_from_page, DB, log, get_settings=lambda: settings_state(load_creds()),
                   save_settings=lambda d: settings_cmd(json.dumps(d)), clear_settings=settings_clear,
-                  on_saved=lambda: publish_uploads(force=True), portal_key=PORTAL_PUB)
+                  on_saved=lambda: (publish_uploads(force=True), pilotdb_nudge()), portal_key=PORTAL_PUB,
+                  pilotdb_get=pilotdb_get, pilotdb_post=pilotdb_post)  # 1.7.8: the Pilots card's api/pilotdb
     last_month_check = None
     with sync_playwright() as pw:
         fl = Flica(pw)

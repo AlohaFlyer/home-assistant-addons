@@ -97,7 +97,7 @@ is one table, `roles.py` `FEATURES` (Portal: whether a pilot's portal may offer 
 | `prefs` | all | yes | the pay and tax helpers the schedule card and the Watcher read (federal and state tax %, longevity year, ER trips) |
 | `crew_index` | admin | no | the crew index runs (crew_scan/press, sensor crew_index, button update_schedules), previous-month lookups and pilot schedule versions from the index |
 | `hark_ccr` | admin | no | CCR requests to Hark (/share/flight_watcher/ccr_requests) and the poll of its replies |
-| `one_writer` | admin | no | files with one writer: the seniority list re-read, the versions seed, the finds file sweep of other folders |
+| `one_writer` | admin | no | files with one writer: the seniority list re-read, the versions seed, the finds file sweep of other folders, and the pilot database (pilotdb: imports, hand edits, notes, the ingress API, seniority.md, backups) |
 | `web_ui` | admin | no | the ingress Web UI (run.py starts it for the default instance only) |
 | `addon_config` | admin | no | the FLICA and CrewTrac logins from the add-on Configuration tab |
 | `drop_mark` | admin | no | would drop marks (drop/set), the drop scan, event/drop_ready, sensor would_drop |
@@ -339,6 +339,40 @@ Recent finds.
   longevity year from the DOH, PWA 3.B.1, capped at 12) sorted by seniority. Personal data: mode 600, outside the
   uploads list and `www`, never exported to a pilot's portal; at start a `seniority.json` with no (or an older) md
   gets one, and (review) the uploads check rewrites it once a day (HST), so the pay year follows each anniversary.
+  1.7.8: while the pilot database is open (below) it writes `seniority.md` from the database instead, at the same path
+  and mode, rewritten each HST day.
+- **Pilot database** (1.7.8, `pilotdb.py`; Ryan, Nov 14: "should we have an editable pilot database that has these data
+  points. and even a notes field we can edit and append to"). The admin's Watcher only (`one_writer`, its one writer):
+  `/data/pilotdb.sqlite` (mode 600, in HA's pre-update app backup), one record per pilot keyed by employee number
+  (a number two pilots share holds two records, told apart by last name; the record's id is an opaque `pid`). Each
+  field (name, Sen #, DOH, status, retirement month, seat, equipment, phones, emails, union id) keeps every source's
+  value with its date and reference: the seniority list, the award's dates of hire, the contact list (its Notes: "HAL
+  Emp# n | Sen# n (Mon YYYY) | DOH D-Mon-YY | Status X | Age-65 retirement Mon YYYY", read by `contacts.hal_notes`,
+  contacts parser 2; the raw Notes are never kept) and Ryan's hand edits, which stay shown through later uploads
+  (logged: old, new, who, when, why). The seniority PDF wins on Sen #, DOH and status (Ryan, Nov 14); the contact list's
+  age 65 month comes first for retirement (14 CFR 121.383(d)). Seeded on the first start from the kept contact list
+  (`contacts_<date>.csv`; a contacts.json from parser 1 is read again from it once) and `seniority.json`; a source file
+  whose signature moves is merged again (once a minute, and at once after an upload). Nothing is moved or merged
+  automatically: a renumbered pilot, another pilot on a known number, an ambiguous row, an unmatched contact and a list
+  with fewer than 90% of the last one's pilots are held for Ryan. A pilot missing from a newer list is marked gone (his
+  last list values kept, marked stale) and back when he returns. Each record has a notes field (compare-and-set on the
+  revision it was read at, the newest 50 versions kept) and a dated notes log (append only; the author takes back his
+  own; Ryan hides, restores, purges). Each picker's record carries his pickup history from the scored pickups (each
+  pickup with its running count overall and at its layover station, trip length, turn or layover, credit, report time,
+  weekday and pickup speed), kept up to date as pickups are scored. Daily copies at 02:47 HST in `/data/pilotdb_backup`
+  and `/share/flight_watcher/pilotdb/backup` (folders 0700, files 0600, 7 kept); a purge or a forget scrubs the file,
+  replaces the copies and deletes the files set aside beside it (before a restore, or failed its check; else they go
+  after 7 days). At start: a file that fails `PRAGMA integrity_check` is set aside and the newest good copy
+  offered; a newer database (user_version) is never opened; a /share copy newer than the live file (an older /data
+  restored) is offered, never written over. The log carries counts only. Nothing of it loads FLICA, and nothing is
+  shared with a pilot in 1.7.8 (the share tables and the AI note, written later by HOM's models from anonymous stats,
+  are in the schema, unused). Ryan reaches it through the Pilots card (below, "Dashboard cards") and the Web UI's
+  JSON endpoints `GET` / `POST api/pilotdb` (the same ingress-only guard as the page; a POST is one op as a JSON object
+  with `Content-Type: application/json` and the header `X-FW-Card: pilotdb`, at most 64 KB, known keys only, the author
+  always ryan; a stale write answers 409 with what is there now; an error names the field, never a value or a note;
+  `Cache-Control: no-store`). `sensor.flight_watcher_pilotdb` (admin only) carries the live record count, the counts,
+  source dates, seniority.md and copy times, the revision and the database state (`db`: ok, newer_db, error,
+  restore_offered, off): no name, number or text.
 - Rules live in `/data/rules.json` and are edited there (the schema is on the page). They are checked against each
   new pairing; a match publishes `flight_watcher/event/rule_match` and `sensor.flight_watcher_last_match`.
 - Every rule starts in dry run, and `switch.flight_watcher_rule_<id>_live` stays off until the rule is 7 days old.
@@ -483,7 +517,28 @@ pickers of a pickup with both seats open); the in-flight check looks up the firs
 merged name ("Doe, Jane (10001); RO Roe, Rick" with Rick's number); the first start of 1.7.7 rebuilds the pickers table
 and its log from the stored pickups once (`pickers_rebuild_v`; a pickup whose trip came back into the pot keeps its
 count). An in-flight verdict made before 1.7.7 for a pilot who was not the picker is dropped and not checked again, so
-the rebuild loads no FLICA page (`inflt_skip`; "-" with the reason on hover); one made for a picker stays his.
+the rebuild loads no FLICA page (`inflt_skip`; "-" with the reason on hover); one made for a picker stays his. 1.7.8
+(Ryan, Nov 15: "Re-check them"): those dropped verdicts are looked up again once, for the picker
+(`inflt_skip_recheck_v`), and the other picker of a both-seats pickup gets his own lookup (his verdict in `inflt_no`,
+by employee number; the pickers table counts it), all within the paced in-flight budget (`INFLT_PER_CHECK` lookups a
+check), read only.
+
+**Pilots** (1.7.8, `flight-watcher-pilotdb-card.js`, the pilot database above; admin only): on the Settings tab above
+the tickets (`type: custom:flight-watcher-pilotdb-card`), a status line (counts, source dates, seniority.md and copy
+times), a search (name words, an employee number, `s812` for a Sen #, "quoted" text in the notes) with filter chips
+(Notes, Edited, Drift, Disagree, Held, Gone) and the results by Sen #. A tap opens the record: each field with its
+source and date and the other sources' values; Edit (a value and a reason: it stays shown through later uploads and is
+logged), and on drift "Use upload value" or "Keep my edit"; call, text and mail links; the notes field (saved
+compare-and-set: when someone saved first, both texts show, with Take theirs and Save mine over theirs; earlier
+versions with Restore and Purge); the dated log (Add, Only me, Take back your own, Hide, Restore, Purge); the picker's
+pickups (count per layover station, trip length, report times, average credit and speed, in flight, every pickup);
+the AI note, read only, when HOM has written one; the history; Merge, a new employee number and Delete (typed
+DELETE). Below: the rows the uploads held for you (Same pilot, Attach, New record, Ignore, Mark them gone anyway),
+Add a record, and the daily copies with Put back (typed RESTORE). With `follow: true`, on the watcher tab right under
+the pilot lookup card, it shows the looked-up pilot's record and notes (or "Not in the pilot database" with Add a
+record); it never asks FLICA for anything. It talks to the app's ingress API like the uploads card; every value is
+drawn as text, never as markup. Anyone who is not a Home Assistant admin sees one line; the card is on no portal in
+1.7.8.
 
 **InFlt** (1.7.7, Ryan, Nov 14: "I want to know what flight he was flying to be certain. Add the flight number... i.e
 AS808/06NOV and date"): an in-flight pickup shows the airplane and the flight, `AS808/06NOV`: the flight number of the

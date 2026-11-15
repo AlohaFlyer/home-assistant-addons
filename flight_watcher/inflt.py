@@ -127,6 +127,9 @@ CM_SCHED_MONTH = "{base}/full/cmschedules.cgi?Prompt=1&EmployeeID={emp}&bd={bd}&
 PROBE = {"logged": 0}
 RESET_V = 5  # bump when the parser changes so stored verdicts are re-checked once
 RECHECK_NO_V = 1  # FW-0013: 'not in flight' verdicts (some were read off the error page below) are looked up again, once
+# 1.7.8 (Ryan, Nov 15: "Re-check them"): the verdicts 1.7.7 dropped as made for another pilot (inflt_skip) are looked up
+# again once for the picker (store.recheck_inflt_skip); the other picker of a both-seats pickup gets his own lookup
+RECHECK_SKIP_V = 1
 
 
 CAPTURE_DIR = "/share/flight_watcher/captures"
@@ -166,7 +169,7 @@ def capture(html, emp, log):
             os.makedirs(CAPTURE_DIR, exist_ok=True)
             open(f"{CAPTURE_DIR}/cmschedule_{emp}.html", "w").write(html)
         PROBE["saved"] = PROBE.get("saved", 0) + 1
-        log.info("inflt: schedule page for %s saved (%d chars, %d pair links)", emp, len(html),
+        log.info("inflt: a picker's schedule page saved (%d chars, %d pair links)", len(html),  # review: no number
                  len(parse_cm_schedule(html)))
     except Exception as e:
         log.info("inflt: capture skipped: %s", e)
@@ -186,7 +189,8 @@ def fetch_schedule(fl, base, emp, bd, cur_bd, log, key):
         if PROBE["logged"] < 3:
             PROBE["logged"] += 1
             txt = visible_text(html)[:300]
-            log.info("inflt %s: schedule lookup %s gave %s: %s", key, url.split("?")[1], classify(html),
+            # review: the month and the answer, never the query (it carries the employee number)
+            log.info("inflt %s: schedule lookup %s gave %s: %s", key, bd, classify(html),
                      PAGE_LOG(txt) if PAGE_LOG else txt)
     return None
 
@@ -207,6 +211,12 @@ def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
     if db.get("inflt_recheck_no_v") != RECHECK_NO_V:
         db.reset_inflt(only=False)
         db.put("inflt_recheck_no_v", RECHECK_NO_V)
+    if db.get("inflt_skip_recheck_v") != RECHECK_SKIP_V:
+        n_skip = db.recheck_inflt_skip()
+        db.put("inflt_skip_recheck_v", RECHECK_SKIP_V)
+        if n_skip:  # review: the number queued (each listed first until looked up), not the number flagged
+            log.info("in-flight: %d pickups whose verdict 1.7.7 dropped (made for another pilot) are queued to be "
+                     "looked up again once for the picker, first, within the paced in-flight budget", n_skip)
     todo = db.pickups_without_inflt(50)
     if not todo:
         return changed_early
@@ -226,7 +236,7 @@ def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
                     time.sleep(random.uniform(1.5, 3.5))
                 sched = fetch_schedule(fl, base, emp, bd, cur_bd, log, key)
                 if sched is None:
-                    db.set_inflt(key, None, tries=tries + 1)
+                    db.set_inflt(key, None, tries=tries + 1, emp=emp)  # 1.7.8: this picker's try
                     continue
                 cache[ck] = sched
                 if on_sched:
@@ -251,10 +261,11 @@ def run(fl, db, limit, log, local_now, base, hst, on_sched=None):
             db.set_inflt(key, verdict, trip, tries=tries + 1, emp=emp, leg=leg)
             on = (f"IN FLIGHT on {trip} ({'DH ' if leg['dh'] else ''}{leg['flt']} {leg['frm']}-{leg['to']} "
                   f"{leg['date']})" if verdict else "not in flight")
-            log.info("inflt %s: picker %s %s at pickup (%s)", key, emp, on,
+            # review: the picker by his seat order (picker 1, picker 2), never his employee number
+            log.info("inflt %s: picker %d %s at pickup (%s)", key, db.picker_no(key, emp), on,
                      ", ".join(p["trip"] + " " + p["start"] for p in cands) or "no trip that day")
             changed = True
         except Exception as e:
             log.info("inflt %s skipped: %s", key, e)
-            db.set_inflt(key, None, tries=tries + 1)
+            db.set_inflt(key, None, tries=tries + 1, emp=emp)
     return changed

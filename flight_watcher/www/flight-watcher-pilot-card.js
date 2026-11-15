@@ -777,7 +777,8 @@ class FlightWatcherPilotCard extends HTMLElement {
       && x.start < d0 && ISO_RE.test(x.end || "") && x.end >= d0 && !have.has(`${x.pairing}|${x.start}`)).slice(0, 2)
       .map((x) => ({ trip: x.pairing, start: x.start, end: x.end, route: x.route || "", crew: x.crew || [], legs: [], carry: true }));
   }
-  _esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+  // 1.7.8 (pilot database spec 12): the single quote too, so no text can close a single-quoted attribute
+  _esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
   // FW-0069: the versions file, like the schedule card's fwListFile: <PILOTVER_URL><key>.json fetched once per key|rev
   // (no-store); null until it is in, or when the sensor has no key. A failed fetch is not retried until rev changes.
   _vfile(a) {

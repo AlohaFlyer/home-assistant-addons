@@ -229,11 +229,17 @@ def seniority_rebuild(lst, aw, out=None):
     if view:
         view["parser"] = SEN.PARSER
         _dump(out, view)
-        seniority_md_write(view, out)
+        if SENIORITY_MD_HOOK is not None:
+            SENIORITY_MD_HOOK()  # 1.7.8: the pilot database writes seniority.md (it merges this list first)
+        else:
+            seniority_md_write(view, out)
     return view
 
 
 SEN_MD = "seniority.md"  # 1.7.7: the markdown reference of seniority.json (seniority.render_md)
+# 1.7.8: set by the admin's Watcher while its pilot database is open (watcher.pilotdb_nudge): seniority.md is then written
+# from the database (pilotdb.render_md), so a seniority.json write only nudges it; None: written from seniority.json
+SENIORITY_MD_HOOK = None
 
 
 def seniority_md_path(out=None):
@@ -298,22 +304,25 @@ def seniority_md_backfill(out=None):
     return seniority_md_write(view, out) if view else ""
 
 
-def seniority_store(parsed, pdf_name, uploaded_at, list_date="", out=None):
+def seniority_store(parsed, pdf_name, uploaded_at, list_date="", out=None, who=None):
     """Store a dedicated seniority list parse with pilot rows (SEN.to_json, source 'list') and rebuild seniority.json
     (`out`, seniority_file() unless given) with the award on file: the list is on top unless that award is later
-    (seniority.combine). Returns the list's dict."""
+    (seniority.combine). Returns the list's dict. who (1.7.8 review): the uploader (save_upload's who), kept as
+    uploaded_by for the pilot database's provenance."""
     d = SEN.to_json(parsed, pdf_name, uploaded_at, list_date)
     d["source"] = "list"
+    if who:
+        d["uploaded_by"] = str(who)
     _lst, aw = seniority_sources(out)
     seniority_rebuild(d, aw, out)
     return d
 
 
-def seniority_write(txt_path, pdf_name, uploaded_at, list_date="", out=None):
+def seniority_write(txt_path, pdf_name, uploaded_at, list_date="", out=None, who=None):
     """Parse a seniority list text copy and write seniority.json (seniority_read + seniority_store). Returns the
     written dict, or None when no pilot row was read (the file on hand is kept). Nothing personal is logged."""
     parsed = seniority_read(txt_path, uploaded_at, list_date)
-    return seniority_store(parsed, pdf_name, uploaded_at, list_date, out) if parsed["rows"] else None
+    return seniority_store(parsed, pdf_name, uploaded_at, list_date, out, who) if parsed["rows"] else None
 
 
 def award_seniority(txt_path, month, pdf_name, uploaded_at, out=None):
@@ -488,9 +497,9 @@ def save_upload(fields, data, log, who=PP.ADMIN):
     with save_lock():
         os.makedirs(UPLOAD_DIR, exist_ok=True)
         if kind == "contacts":
-            return _save_contacts(data, log)
+            return _save_contacts(data, log, who)
         if kind == "seniority":
-            return _save_seniority(data, fields, log)
+            return _save_seniority(data, fields, log, who)
         return _save_monthly(data, month, kind, log, who)
 
 
@@ -556,7 +565,7 @@ def _save_upload(ctype, body, log, after=None):
     return f"<p class='{'ok' if r['ok'] else 'err'}'>{html.escape(r['message'])}</p>"
 
 
-def _save_seniority(data, fields, log):
+def _save_seniority(data, fields, log, who=PP.ADMIN):
     """FW-0062: a seniority list upload. It goes to a temporary name (seniority_<day>.new.pdf / .txt) and is read
     there; only a file that gives pilot rows is renamed to seniority_<YYYY-MM-DD, HST upload day>.pdf / .txt and
     written to seniority.json. A refused file (no text copy, no pilot rows) is deleted, so the list on file keeps its
@@ -596,7 +605,7 @@ def _save_seniority(data, fields, log):
                                             f"the pilot seniority list? {SEN_FORMATS}); {kept}"}
         os.replace(tmp, final)
         os.replace(tmp[:-4] + ".txt", final[:-4] + ".txt")
-        d = seniority_store(parsed, name + ".pdf", at, given)
+        d = seniority_store(parsed, name + ".pdf", at, given, who=who)
     finally:
         for f in (tmp, tmp[:-4] + ".txt"):
             try:
@@ -621,7 +630,53 @@ def _private(path):
         pass
 
 
-def _save_contacts(data, log):
+def contacts_reparse(log, today=None):
+    """1.7.8 (pilot database, spec 8.4.4): contacts.json written by an older parser (contacts.PARSER; 2 reads the
+    Notes column's HAL data) is read again once from the kept source upload (contacts_<YYYY-MM-DD>.<csv|xlsx|pdf>,
+    mode 600; a PDF from its text copy), under the save lock, keeping its file name and upload time. Returns
+    'reparsed', 'current' (already this parser), 'no-list' (no contacts.json) or 'no-source' (no kept file: upload
+    the contact list again). The admin's Watcher only (one_writer); counts only in the log."""
+    with save_lock():
+        old = CT.load(CONTACTS_FILE)
+        if old is None:
+            return "no-list"
+        if int(old.get("parser") or 0) >= CT.PARSER:
+            return "current"
+        try:
+            names = sorted(os.listdir(UPLOAD_DIR))
+        except OSError:
+            names = []
+        src = [f for f in names if CONTACTS_RE.fullmatch(f)]
+        pick = str(old.get("file") or "") if str(old.get("file") or "") in src else (src[-1] if src else "")
+        if not pick:
+            return "no-source"
+        path = os.path.join(UPLOAD_DIR, pick)
+        ext = pick.rsplit(".", 1)[1]
+        try:
+            st = os.lstat(path)
+            if not os.path.isfile(path) or os.path.islink(path) or st.st_size > UPLOAD_MAX:
+                return "no-source"
+            data = open(path, "rb").read()
+            text = None
+            if ext == "pdf":
+                text = open(path[:-4] + ".txt", encoding="utf-8", errors="replace").read()
+            parsed = CT.parse(data, CT.sniff(data) or ext, text, today=today)
+        except (OSError, ValueError) as e:
+            log.info("contact list not read again: %s", type(e).__name__)
+            return "no-source"
+        if not parsed["entries"] and not parsed.get("hal_only"):
+            return "no-source"
+        up = str(old.get("uploaded_at") or "") if pick == old.get("file") else hst_iso(st.st_mtime)
+        d = CT.build(parsed, pick, up)
+        if old.get("uploaded_by"):  # the uploader stays the one who sent the file
+            d["uploaded_by"] = old["uploaded_by"]
+        CT.store(CONTACTS_FILE, d)
+    log.info("contact list read again (parser %d): %d pilots, %d with HAL Notes, %d Notes segments not read", CT.PARSER,
+             d["count"], d["with_hal"], sum(d["hal_rejects"].values()))
+    return "reparsed"
+
+
+def _save_contacts(data, log, who=PP.ADMIN):
     """FW-0066: a pilot contact list (PDF, CSV or XLSX; the type is read from the bytes). It is written mode 600
     under contacts_<HST day>.new.<ext> and read there (a PDF from its pdftotext copy); only a list that gives pilot
     contacts (a phone or an email with a name or employee number) replaces the one on file: it becomes
@@ -671,6 +726,7 @@ def _save_contacts(data, log):
         if text is not None:
             os.replace(ttxt, final.rsplit(".", 1)[0] + ".txt")
         d = CT.build(parsed, os.path.basename(final), now.isoformat(timespec="seconds"))
+        d["uploaded_by"] = str(who or PP.ADMIN)  # 1.7.8 review: the pilot database merges it as its uploader's
         CT.store(CONTACTS_FILE, d)
     finally:
         for f in (tmp, ttxt):
@@ -828,11 +884,38 @@ def portal_section(key):
             "matches.</p><p><code>" + html.escape(key) + "</code></p>")
 
 
+PILOTDB_BODY_MAX = 64 * 1024  # 1.7.8: a POST api/pilotdb body (spec 10.1)
+PILOTDB_CARD = "pilotdb"  # the X-FW-Card header the Pilots card sends: a plain cross-site form can send neither it nor JSON
+
+
+def _pilotdb_query(path):
+    """{key: value} of a GET api/pilotdb query string (the last value of a repeated key); None when it is not one."""
+    try:
+        q = parse_qs(urlsplit(path).query, keep_blank_values=True, strict_parsing=False, max_num_fields=16)
+    except ValueError:
+        return None
+    return {k: v[-1] for k, v in q.items()}
+
+
+def _json_object(raw):
+    """A JSON object from a request body (UTF-8, no NaN or Infinity), else None."""
+    def no_const(c):
+        raise ValueError(c)
+    try:
+        obj = json.loads(raw.decode("utf-8"), parse_constant=no_const)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
 def serve(port, version, get_rules, save_rules, store, log, get_settings=None, save_settings=None,
-          clear_settings=None, on_saved=None, portal_key=""):
+          clear_settings=None, on_saved=None, portal_key="", pilotdb_get=None, pilotdb_post=None):
     """The ingress page and its JSON endpoints. on_saved (1.4.8) runs after an upload is saved (the Watcher then
     publishes sensor.<prefix>_uploads); its failure never fails the upload. portal_key (1.6.0): the portal signing
-    key's public half, shown when a pilot has a portal."""
+    key's public half, shown when a pilot has a portal. pilotdb_get and pilotdb_post (1.7.8, the admin's Watcher
+    only): api/pilotdb for the Pilots card, each (query or object) -> (HTTP status, body); a POST needs
+    Content-Type application/json and the header X-FW-Card: pilotdb, and a body of at most PILOTDB_BODY_MAX bytes.
+    Every answer is Cache-Control: no-store; the same ingress-only guard as the page."""
     def saved(r):
         if r.get("ok") and on_saved:
             try:
@@ -881,6 +964,15 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
             self.end_headers()
             self.wfile.write(b)
 
+        def _pdb(self, fn, arg):
+            """A pilot database callback's (status, body); its failure is a 500 that names nothing."""
+            try:
+                code, body = fn(arg)
+                return int(code), body
+            except Exception as e:  # noqa: BLE001
+                log.info("pilot db: api failed: %s", type(e).__name__)
+                return 500, {"ok": False, "why": "The pilot database could not answer"}
+
         def _api(self):
             """1.4.5: 'uploads' / 'upload' for a path under api/ (as the ingress proxy passes it on), '' for an
             unknown one under api/, None for the page's own paths."""
@@ -894,6 +986,11 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
             api = self._api()
             if api == "uploads":
                 return self._json(200, uploads_json(version, review=True))
+            if api == "pilotdb" and pilotdb_get is not None:  # 1.7.8: the Pilots card's reads
+                q = _pilotdb_query(self.path)
+                if q is None:
+                    return self._json(400, {"ok": False, "field": "query", "why": "could not be read"})
+                return self._json(*self._pdb(pilotdb_get, q))
             if api is not None:
                 return self._json(404, {"ok": False, "message": "Not found."})
             self._page()
@@ -901,8 +998,28 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
         def do_POST(self):
             if not self._guard():
                 return
-            n = int(self.headers.get("Content-Length", 0) or 0)
+            try:
+                n = int(self.headers.get("Content-Length", 0) or 0)
+            except ValueError:
+                n = -1
             api = self._api()
+            if api == "pilotdb" and pilotdb_post is not None:  # 1.7.8: one op of the Pilots card
+                ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+                if ctype != "application/json":
+                    return self._json(415, {"ok": False, "field": "Content-Type", "why": "must be application/json"})
+                if self.headers.get("X-FW-Card", "") != PILOTDB_CARD:
+                    return self._json(403, {"ok": False, "field": "X-FW-Card", "why": "is missing"})
+                if n > PILOTDB_BODY_MAX:
+                    return self._json(413, {"ok": False, "field": "body", "why": f"is over {PILOTDB_BODY_MAX} bytes"})
+                if n <= 0:
+                    return self._json(400, {"ok": False, "field": "body", "why": "is empty"})
+                obj = _json_object(self.rfile.read(n))
+                if obj is None:
+                    return self._json(400, {"ok": False, "field": "body", "why": "must be a JSON object"})
+                return self._json(*self._pdb(pilotdb_post, obj))
+            if n < 0:  # a Content-Length that is not a number
+                self.send_error(400)
+                return
             if api is not None:  # 1.4.5: the dashboard uploads card
                 if api != "upload":
                     return self._json(404, {"ok": False, "message": "Not found."})

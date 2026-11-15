@@ -7,6 +7,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
 
+@pytest.fixture(autouse=True)
+def _pilotdb_closed(monkeypatch):
+    """1.7.8: no test opens the pilot database or lets its seniority.md hook outlive it unless it asks
+    (tests/test_pilotdb_watcher.py sets FLIGHT_WATCHER_PILOTDB=1 and its own folders): a test that runs the Watcher's
+    main() would otherwise open one on the host's /share."""
+    monkeypatch.setenv("FLIGHT_WATCHER_PILOTDB", "0")
+    import web
+    monkeypatch.setattr(web, "SENIORITY_MD_HOOK", None)
+
+
 @pytest.fixture
 def fx():
     def load(name):

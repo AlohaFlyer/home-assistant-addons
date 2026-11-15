@@ -7,7 +7,8 @@
    (keydown only stops HA's shortcuts). enterkeyhint="search" puts a Search key on the phone keyboard, autocomplete is
    off, and the text is 16 px so iOS does not zoom in on a tap. The 2 s same-query guard (FW-0025) still stops a double
    tap or a held Enter from asking twice. (F#52) On a pilot's card a line above the box says it asks FLICA, and a line
-   under it what a name finds, so it is not taken for the pickers list's filter below it; the placeholder is short. */
+   under it what a name finds, so it is not taken for the pickers list's filter below it; the placeholder is short.
+   1.7.8: the admin's placeholder is short too ("Last name, first name or emp #"), so it fits the box on an iPhone. */
 class FlightWatcherPilotSearchCard extends HTMLElement {
   setConfig(config) { this._config = { ...config }; }
   set hass(h) {
@@ -16,7 +17,7 @@ class FlightWatcherPilotSearchCard extends HTMLElement {
     // 1.6.2 review: a pilot's lookup takes a last name (3+ letters), Last, First, or an employee number: no first name
     const st = h && h.states && h.states["sensor.flight_watcher_state"];
     const pilot = ((st && st.attributes) || {}).role === "pilot";
-    const ph = pilot ? "Last name or employee #" : "Anybody's schedule: last name, first name or employee #";
+    const ph = pilot ? "Last name or employee #" : "Last name, first name or emp #";
     const inp = this._root.querySelector("input");
     if (inp.placeholder !== ph) inp.placeholder = ph;
     this._root.querySelector(".lb").hidden = !pilot;
@@ -43,7 +44,7 @@ class FlightWatcherPilotSearchCard extends HTMLElement {
       input{flex:1;min-width:0;padding:8px 10px;border:1px solid var(--divider-color,#ccc);border-radius:6px;background:var(--card-background-color,#fff);color:var(--primary-text-color);font-size:16px}
       button{padding:8px 12px;border:none;border-radius:6px;background:var(--primary-color);color:#fff;font-size:13px;cursor:pointer;min-height:40px}
     </style><ha-card><form autocomplete="off"><label class="lb" for="q" hidden>Look up a pilot's month (asks FLICA)</label>
-      <div class="row"><ha-icon icon="mdi:account-search"></ha-icon><input id="q" type="search" enterkeyhint="search" autocomplete="off" autocapitalize="words" spellcheck="false" aria-label="Look up a pilot's month" placeholder="Anybody's schedule: last name, first name or employee #"><button type="submit">Go</button></div>
+      <div class="row"><ha-icon icon="mdi:account-search"></ha-icon><input id="q" type="search" enterkeyhint="search" autocomplete="off" autocapitalize="words" spellcheck="false" aria-label="Look up a pilot's month" placeholder="Last name, first name or emp #"><button type="submit">Go</button></div>
       <div class="hint" hidden>An employee number finds any pilot; a whole last name (or Last, First) finds pilots on the award or seniority list on file.</div></form></ha-card>`;
     this._root.querySelector("form").addEventListener("submit", (e) => { e.preventDefault(); this._go(); });
     // keep HA's e/a/c shortcuts out of the field; Enter submits the form (implicit submission), never a keydown here

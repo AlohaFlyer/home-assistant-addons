@@ -266,6 +266,7 @@ def _fill(W, fake, tmp_path, monkeypatch):
                              "reconstructed_coverage_pct": 88.5, "reconstructed_month": months[1], "pay_line": {"gross": 41234.5}})
     W.pub("last_new", _pot_row(1))
     W.pub("last_match", {"rule_id": "r1", "row": _pot_row(2), "at": W.now_iso()})
+    W.publish_pilotdb(force=True)  # 1.7.8: the admin's pilot database counts (test_pilotdb_sensor_stays_under_2_kb)
     out = {}
     for t, p, _ in fake.msgs:
         if t.startswith(f"{W.T}/") and p and p[:1] == "{":
@@ -496,3 +497,31 @@ def test_recall_card_adds_the_older_days_from_the_file(tmp_path):
             "console.log(JSON.stringify([d.map((x) => x.date), d[0].verdicts[0].act.status]));")
     dates, status = _node(tmp_path, "flight-watcher-recall-card.js", body)
     assert dates == ["2026-11-06", "2026-11-05", "2026-10-01"] and status == "approved"  # the sensor's day wins
+
+
+def test_pilotdb_sensor_stays_under_2_kb(tmp_path, monkeypatch):
+    """1.7.8 (spec 10.2): sensor.flight_watcher_pilotdb carries counts, source dates, times, rev and the db state only,
+    under 2 KB with a full list (1300 pilots, gone ones, hand edits, notes and entries, held rows and a copy offered)."""
+    import pilotdb as PDBM
+    W, fake = _load(tmp_path, monkeypatch)
+    db = PDBM.PilotDB(str(tmp_path / "pilotdb.sqlite"))
+    pilots = {str(10001 + i): {"name": f"{PAD}{i}, Jane", "doh": "2001-05-01", "sen": str(i + 1), "status": "A",
+                               "retire": "2041-03", "seat": "FO"} for i in range(1300)}
+    db.merge_list({"list_date": "2026-11-01", "pilots": pilots})
+    db.merge_list({"list_date": "2026-12-01", "pilots": dict(list(pilots.items())[:1250])})
+    for i, pid in enumerate(r["pid"] for r in db.search(f="all")["rows"][:40]):
+        db.save_notes(pid, f"note {i} " * 100, PDBM.ZERO_REV)
+        db.add_entry(pid, "an entry " * 50)
+        db.set_field(pid, "seat", "CA", db.record(pid)["rev"], why="upgraded")
+    monkeypatch.setitem(W.PDB, "db", db)
+    monkeypatch.setitem(W.PDB, "status", {"db": "restore_offered",
+                                          "offer": {"file": "1/pilotdb-2026-11-14.sqlite", "day": "2026-11-14", "rev": 99999}})
+    monkeypatch.setitem(W.PDB, "contacts", "no-source")
+    d = W.pilotdb_sensor()
+    size = len(json.dumps(d, separators=(",", ":")))
+    assert d["live"] == 1300 and d["gone"] == 50 and d["noted"] == 40 and d["offer"] == {"day": "2026-11-14", "rev": 99999}
+    assert size + HA_OWN < 2048, size
+    text = json.dumps(d)
+    assert PAD not in text and "Jane" not in text and "note 1 " not in text and "an entry" not in text and "10001" not in text
+    assert W.publish_pilotdb(force=True) and [t for t, _p, _r in fake.msgs] == ["flight_watcher/pilotdb"]
+    db.close()

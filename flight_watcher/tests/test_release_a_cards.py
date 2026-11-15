@@ -577,4 +577,4 @@ def test_pilot_search_placeholder_says_what_a_pilots_lookup_takes():
     # 1.7.1 (F#43): a short placeholder on a phone; the line under the box says what a name finds
     assert got["pilot"] == ("Last name or employee # | An employee number finds any pilot; a whole last name (or Last, "
                             "First) finds pilots on the award or seniority list on file.") and "first name" not in got["pilot"]
-    assert got["admin"] == "Anybody's schedule: last name, first name or employee #"  # the admin's crew directory
+    assert got["admin"] == "Last name, first name or emp #"  # the admin's crew directory
