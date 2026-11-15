@@ -214,8 +214,14 @@ class FlightWatcherClockCard extends HTMLElement {
     this._rearmSays = ["idle", "hunting"].includes(st) && blind ? `The Watcher is stuck: no check for ${mins >= 60 ? `${Math.floor(mins / 60)} h ${mins % 60} min` : `${mins} min`}. Re-arm starts a full check now, with no new FLICA login.`
       : st === "yielded" ? "The Watcher stepped aside for your own FLICA login. Re-arm logs into FLICA once when the step-aside ends, not before."
       : st === "backoff" ? "The Watcher is reconnecting to FLICA. Re-arm logs in at its next login try."
+      // 1.7.9 review: the same cases as the Watcher's rearm_answer. FLICA refused the saved details (the stop's note
+      // says so): no login is made; no login saved yet; the app not answering; any other state that is not stopped
+      : st.startsWith("stopped") && /\brefused\b/i.test(stopNote) ? `The Watcher is stopped: ${stopNote}. Re-arm makes no login with details FLICA refused: save new FLICA details on the Settings tab first.`
       : st === "stopped_login_failed" ? `The Watcher is stopped: the FLICA login failed (${stopNote}). Re-arm logs into FLICA once with the saved login.`
-      : `The Watcher is stopped (${stopNote}). Re-arm logs into FLICA once and resumes.`;
+      : st.startsWith("stopped") ? `The Watcher is stopped (${stopNote}). Re-arm logs into FLICA once and resumes.`
+      : st === "needs_settings" ? "The Watcher has no FLICA login yet. Re-arm does nothing: enter your FLICA login on the Settings tab."
+      : ["unavailable", "unknown", ""].includes(st) ? "The Watcher app is not answering (its state is unavailable). Re-arm cannot reach it: check that the app is running."
+      : `The Watcher is ${st.replace(/_/g, " ")}, not stopped${age != null ? `, with no check for ${mins >= 60 ? `${Math.floor(mins / 60)} h ${mins % 60} min` : `${mins} min`}` : ""}. Re-arm does nothing in this state: it acts when the Watcher is stopped or stuck.`;
     if ($("rearm").title !== this._rearmSays) $("rearm").title = this._rearmSays;
     $("chk").style.display = ["idle", "hunting"].includes(st) && !paused ? "" : "none";
     // 1.7.1 (F#4): a command in flight (the portal's hass.fwPending) reads "Sending..." and takes no second tap

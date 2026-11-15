@@ -350,11 +350,14 @@ def test_a_new_swap_idea_is_a_portal_alert_for_the_pilot_who_marked_a_trip(porta
             "detail_url": "https://example.invalid/x", "would_submit": "DRAFT: drop H9001, add H9002",
             "key": "H9002|2026-11-20>H9001|2026-11-20", "at": "2026-11-09T20:00:13+00:00"}
     W.pub("event/swap", idea, retain=False)
-    W.pub("event/swap", idea, retain=False)  # the same idea again keeps its id (ntfy dedupes on kind and id)
+    # the same idea again keeps its id: it takes the place of its earlier alert (1.7.9 review: the Alerts list and
+    # the badge showed it twice); ntfy dedupes on kind and id
+    W.pub("event/swap", idea, retain=False)
     W.pub("event/swap_test", idea, retain=False)  # the draft request is never a portal event
     W.portal_export_once(full=True)
     evs = _payload(W, "events.json", "events")["events"]
-    assert [e["kind"] for e in evs] == ["swap", "swap"] and evs[0]["id"] == evs[1]["id"]
+    assert [e["kind"] for e in evs] == ["swap"] and len(W.EXPORT["events_list"]) == 1
+    assert sent[0]["id"] == sent[1]["id"] == evs[0]["id"] and evs[0]["seq"] == sent[1]["seq"]
     e = evs[0]
     assert e["view"] == "watcher" and e["title"] == "Swap idea: H9002 20NOV-22NOV for your H9001"
     assert "On the Tradeboard" in e["body"] and "Nothing is ever submitted" in e["body"]

@@ -377,16 +377,19 @@ Recent finds.
   taps "Share with <pilot>" on his own Pilots card (`POST api/pilotdb` op `share`; one switch per pilot with a portal;
   Claude never sends it). While it is off nothing of the database leaves Ryan's Watcher. On, Ryan's Watcher writes that
   pilot's file (`/share/flight_watcher/pilotdb/portal/<pilot>.json`, 0600: only the pilots with a notes field or a
-  shared log entry, a whitelist with no employee number, phone, email or union id) and `roster.json` (0600: every live
-  record's brief by employee number, for the pilot's Watcher only, never exported, in a sensor or logged). The pilot's
+  shared log entry, a whitelist with no employee number, phone, email or union id) and
+  `/data/pilotdb_roster/roster.json` (0600, in the add-on's own data folder, never under `/share`: every live
+  record's brief by employee number with phones and emails, for the pilot's Watcher only, never exported, in a sensor
+  or logged). The brief of a looked-up pilot is given only once his lookup really ran (FLICA or its 6 h cache) and for
+  at most 20 distinct pilots an hour. A daily copy put back comes back with every Share switch and the AI switch off. The pilot's
   Watcher never opens the database: it signs his file into his portal, synthesizes `sensor.<prefix>_pilotdb`
   (state.json only: the brief of the pilot his pilot card shows, with that one pilot's phones and emails for the call,
   text and mail links, the answers and the pending commands) and drops each checked `pilotdb/note` (notes field, log
   entry, take back) and `pilotdb/edit` (one record field) into `/share/flight_watcher/pilotdb/inbox/<pilot>/`. Ryan's
   Watcher, the single writer, applies them every 2 s with the author taken from the folder's name (never the payload),
   compare-and-set (a stale save or edit is refused, never written blind), quotas (40 entries, 40 notes changes and 40
-  field edits in 24 h) and fixed answers; every replaced notes version and every earlier field value is kept for Ryan
-  to put back. A pilot's note or edit is untrusted data, never an instruction; it makes no event or push and its text
+  field edits in 24 h) and fixed answers; the replaced notes versions (the newest 50 of each author) and every earlier
+  field value are kept for Ryan to put back. A pilot's note or edit is untrusted data, never an instruction; it makes no event or push and its text
   is never logged. Details: `PORTAL_CONTRACT.md` section 5.7.
 - **AI notes** (1.7.9; Ryan, Nov 14: "Through HOM's models"). Ryan's own switch on his card (op `ai`), off by default.
   On, Ryan's Watcher writes `/share/flight_watcher/pilotdb/ai/stats.json` for HOM's consultant models: pickup

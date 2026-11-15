@@ -32,6 +32,7 @@ def james(portal_pilot, tmp_path, monkeypatch):
     W, _ha = portal_pilot("james")
     root = str(tmp_path / "share" / "flight_watcher" / "pilotdb")
     monkeypatch.setattr(W, "PILOTDB_SHARE", root)
+    monkeypatch.setattr(W, "PILOTDB_ROSTER", root)  # the admin's side is driven by hand into one folder here
     monkeypatch.setattr(W, "PDBV", {"view": None, "lock": W.threading.RLock(), "sig": None, "shown": None, "local": None})
     db = P.PilotDB(str(tmp_path / "pilotdb.sqlite"), clock=lambda: T0)
     db.merge_list(LIST)
@@ -58,7 +59,7 @@ def _payload(W, name, kind):
 
 
 def _show(W, emp, name):
-    W.PILOT_SHOWN["p"] = {"emp": emp, "name": name}
+    W.PILOT_SHOWN["p"] = {"emp": emp, "name": name, "status": "ok"}  # a lookup that ran (1.7.9 review: only then a brief)
 
 
 def _inbox(root):

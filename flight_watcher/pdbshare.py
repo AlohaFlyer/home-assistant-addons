@@ -1,11 +1,14 @@
 """Sharing the pilot database with a portal pilot (1.7.9, contract 1 revision 4): the files between the two Watchers.
 
 Ryan's Watcher (the admin, the one writer of /data/pilotdb.sqlite) and a shared pilot's Watcher never talk over MQTT
-about the database. They pass plain files under /share/flight_watcher/pilotdb (folder 0700, files 0600, root):
+about the database. They pass plain files under /share/flight_watcher/pilotdb (folder 0700, files 0600, root), and
+one under the add-on's own /data:
 
   roster.json            the admin writes it while any share is on: every live record's brief by employee number, with
                          its phones and emails (B23). A pilot's Watcher reads it for the one pilot his pilot card shows
-                         and for nothing else. Never exported, never in a sensor, never logged.
+                         and for nothing else. Never exported, never in a sensor, never logged. 1.7.9 review: it lives
+                         in the add-on's own /data/pilotdb_roster (roster_dir; both Watchers run in the one container),
+                         never under /share, where other add-ons and their backups could read every phone and email.
   portal/<pilot>.json    the admin writes it while that pilot's share is on (pilotdb.export_for: a whitelist), and
                          deletes it when the share goes off. The pilot's Watcher signs it into his portal's
                          out/files/pilotdb.json unchanged.
@@ -23,6 +26,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import stat
 import time
 from datetime import datetime, timezone
@@ -84,10 +88,27 @@ def _unlink(path):
 
 
 # ---------------------------------------------------------------- the admin's side: the files it writes
-def write_files(db, pilots, root=ROOT, limits=None):
+def clear_files(root=ROOT, roster_dir=None):
+    """No share can be on (the database did not open at start, 1.7.9 review): the roster and every pilot's file go, so
+    nothing a share once wrote stays readable. Returns how many files were removed. Never raises."""
+    paths = [roster_path(root)] + ([roster_path(roster_dir)] if roster_dir else [])
+    with contextlib.suppress(OSError):
+        paths += [os.path.join(root, "portal", n) for n in os.listdir(os.path.join(root, "portal")) if n.endswith(".json")]
+    n = 0
+    for path in paths:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+            n += 1
+    return n
+
+
+def write_files(db, pilots, root=ROOT, limits=None, roster_dir=None):
     """The roster and each shared pilot's file from the database, and none for a pilot whose share is off (his file
     and his waiting commands stay out of reach: the file is deleted). pilots: the configured pilots. Returns
-    {pilot: 'on' | 'off'} and sets nothing else. A pilot's file that is full (over export_bytes) says so (full)."""
+    {pilot: 'on' | 'off'} and sets nothing else. A pilot's file that is full (over export_bytes) says so (full).
+    roster_dir (1.7.9 review): the folder of roster.json when it is not root (the Watcher's /data/pilotdb_roster); a
+    roster left under root is then removed."""
+    rdir = roster_dir or root
     shared = [p for p in db.shared_with() if p in pilots]
     out = {}
     ensure_dirs(root, shared)
@@ -106,10 +127,12 @@ def write_files(db, pilots, root=ROOT, limits=None):
         stray = []
     for n in stray:  # a pilot no longer configured: his file goes
         _unlink(os.path.join(root, "portal", n))
-    if shared:
-        PT.write_private(roster_path(root), json.dumps(db.roster(), ensure_ascii=False, separators=(",", ":")))
-    else:
+    if rdir != root:
         _unlink(roster_path(root))
+    if shared and PDBM._dir_0700(rdir):
+        PT.write_private(roster_path(rdir), json.dumps(db.roster(), ensure_ascii=False, separators=(",", ":")))
+    else:
+        _unlink(roster_path(rdir))
     return out
 
 
@@ -160,7 +183,7 @@ def _read_cmd(folder, name):
 def check_cmd(cmd, d):
     """The inner fields of a note or an edit, checked by the contract's shape again (portal.check_shape) and by the
     op rules the generic checker cannot say. Returns the fields; PortalError when refused."""
-    sub = {"note": "pilotdb/note", "edit": "pilotdb/edit"}.get(cmd)
+    sub = {"note": "pilotdb/note", "edit": "pilotdb/edit"}.get(cmd) if isinstance(cmd, str) else None
     if sub is None:
         raise PT.PortalError("not a pilotdb command")
     keys = NOTE_KEYS if cmd == "note" else EDIT_KEYS
@@ -206,13 +229,20 @@ def drain(db, pilots, root=ROOT, limits=None, full=(), now=None, log=None, per_p
             elif now - ms / 1000.0 > lim["stale_h"] * 3600:
                 why = TOO_OLD
             else:
+                # 1.7.9 review: whatever a planted file holds (a cmd that is a list, a value no check foresaw), it is
+                # refused as unreadable and removed; it never raises out of the drain and so never blocks the pass
                 try:
                     inner = check_cmd(cmd, d)
-                except PT.PortalError:
+                except Exception:  # noqa: BLE001
                     inner = None
                 if inner is not None:
-                    ok, why, after = db.pilot_op(pilot, cmd, inner, lim, full=pilot in full)
-                    by_db = True
+                    try:
+                        ok, why, after = db.pilot_op(pilot, cmd, inner, lim, full=pilot in full)
+                        by_db = True
+                    except sqlite3.Error:
+                        raise  # the database itself (locked, full disk): nothing was saved, the file waits for the next pass
+                    except Exception:  # noqa: BLE001
+                        ok, why, after = False, UNREADABLE, None
             if not by_db and db.answer_of(pilot, rid) is None:
                 # a refusal made here (not by the database): answered once; the same rid again keeps the first answer
                 db.put_answer(pilot, rid, False, why, lim["answers"])
@@ -220,8 +250,9 @@ def drain(db, pilots, root=ROOT, limits=None, full=(), now=None, log=None, per_p
             out["applied" if ok else "refused"] += 1
             out["scrub"] = out["scrub"] or after == "scrub"
             if d is not None and d.get("by") == pilot:
-                say(f"pilot db: {cmd if cmd in ('note', 'edit') else 'command'} "
-                    f"{d.get('op') if d.get('op') in ROLES.PILOTDB_NOTE_OPS + ROLES.PILOTDB_EDIT_OPS else '?'} "
+                op = d.get("op")
+                say(f"pilot db: {cmd if isinstance(cmd, str) and cmd in ('note', 'edit') else 'command'} "
+                    f"{op if isinstance(op, str) and op in ROLES.PILOTDB_NOTE_OPS + ROLES.PILOTDB_EDIT_OPS else '?'} "
                     f"from {pilot}: {'saved' if ok else 'refused'}")
     return out
 
@@ -260,8 +291,8 @@ class View:
     ones whose time, size or inode moved (lstat; read without following a symlink, capped) and says whether anything
     changed."""
 
-    def __init__(self, pilot, root=ROOT):
-        self.pilot, self.root = pilot, root
+    def __init__(self, pilot, root=ROOT, roster_dir=None):
+        self.pilot, self.root, self.roster_dir = pilot, root, roster_dir or root
         self.sig = {"export": None, "roster": None}
         self.state = "off"       # on: his file is there and reads; off: no file; waiting: a file that does not read yet
         self.text = ""           # his file's text exactly (what the portal serves)
@@ -284,7 +315,7 @@ class View:
 
     def refresh(self):
         changed = False
-        ep, rp = export_path(self.pilot, self.root), roster_path(self.root)
+        ep, rp = export_path(self.pilot, self.root), roster_path(self.roster_dir)
         s = self._sig(ep)
         if s != self.sig["export"]:
             self.sig["export"], changed = s, True

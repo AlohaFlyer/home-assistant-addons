@@ -26,7 +26,11 @@ picker is not known gets his own in-flight lookup, once; no in-flight log line c
 idea alert (F#107) and the clock card's state-worded Re-arm confirm (F#92). The Pilots card has its portal mode
 (`FW_PORTAL`, James's Pilot tab under the pilot card: the pilot looked up with call, text and mail links, the pilots
 with shared notes, notes with compare-and-set, the log, field edits) and Ryan's card has the Sharing section (the
-"Share with james" and "AI notes" switches). Sharing the pilot database with
+"Share with james" and "AI notes" switches). Review fixes are in (CHANGELOG 1.7.9 "Review fixes": no brief or
+contact before a lookup ran and at most 20 pilots an hour, a restore turns both switches off, the roster under
+`/data/pilotdb_roster`, the drain in one transaction). Open for Ryan (one question): the standing rule looks up every
+numbered name of a pickup with no known picker, also a lone name that is no candidate for the open seat; say if it
+should be only FO and RO names of a pickup with no open seat on file. Sharing the pilot database with
 James, contract 1 revision 4 (`flight_watcher/PORTAL_CONTRACT.md` sections 4.3, 5.7 and 5.8; the fixture
 `flight_watcher/tests/fixtures/portal_contract_v1.json` is frozen once committed and HOM 1.9.0 pins the same bytes).
 Order (each step Ryan's own yes, [DESTRUCTIVE]): HOM 1.9.0 first (merge, then Hark's deploy), then Flight Watcher 1.7.9
@@ -195,7 +199,8 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
 - **1.7.9 to 1.7.8** (Flight Watcher first, then HOM 1.9.0 to 1.8.3 only if needed): safe. 1.7.8 has no pilotdb file,
   command or synthesized sensor and keeps the Pilots card off every portal; the database is untouched (schema 1 in
   both; the share switch and the AI notes stay stored, unused). Files left in
-  `/share/flight_watcher/pilotdb/portal/`, `roster.json`, `inbox/` and `ai/` are read by nothing in 1.7.8: delete them
+  `/share/flight_watcher/pilotdb/portal/`, `inbox/` and `ai/` and `/data/pilotdb_roster/roster.json` (the add-on's own
+  data folder; turn every Share switch off before the downgrade and it is gone) are read by nothing in 1.7.8: delete them
   with the Pako HI Shell on Ryan's yes ([DESTRUCTIVE]) so no shared copy stays behind. Inbox files wait; 1.7.9 refuses
   any older than 24 h on its return. HOM 1.9.0 refuses `pilotdb/note` and `pilotdb/edit` to a revision 3 manifest.
 - **1.7.8 to 1.7.7:** safe. 1.7.7 never opens `/data/pilotdb.sqlite` (it waits for the next upgrade), and

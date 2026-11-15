@@ -1502,6 +1502,9 @@ PILOTDB_RULES = (
     "The pilot's Watcher refuses a command while Ryan has not shared the pilot database with him (no pilotdb file).",
     "pid must be a record of his current pilotdb file or the pid of the pilot his pilot card shows (shown.pid); "
     "otherwise 'look the pilot up first', so a command is no oracle for which pilots exist.",
+    "shown is filled only once that pilot's lookup really ran (FLICA's Schedule Lookup on one of his own paced checks, "
+    "or its 6 h cache) and for at most 20 distinct pilots an hour; before that and past that it is null, so employee "
+    "numbers typed one after the other show no record and no contact.",
     "pilotdb/note: entry only with op retract, and it must be one of his own entries in his file; base only with op "
     "field; text only with add (1 to entry_max code points) or field (0 to field_max; empty clears the notes field).",
     "pilotdb/edit: value only with op set; unset puts the uploads' value back.",
@@ -1510,9 +1513,10 @@ PILOTDB_RULES = (
     "payload key. It never opens the database, never loads FLICA and logs the op only.",
     "The admin's Watcher (the one writer) takes the author from the inbox folder's name, refuses a file older than "
     "stale_h, checks the shape, the text rules, the op rules, the quotas and the compare-and-set again, applies the op "
-    "and writes the answer; the same rid again answers the same and changes nothing.",
-    "A stale base (notes field) or rev (record field) is refused and nothing is overwritten; every replaced notes "
-    "version and every earlier field value is kept and Ryan can put any back.",
+    "and writes the answer in the same transaction; the same rid again answers the same and changes nothing. A file "
+    "that cannot be read is answered and removed, whatever it holds.",
+    "A stale base (notes field) or rev (record field) is refused and nothing is overwritten; the replaced notes "
+    "versions (the newest 50 of each author) and every earlier field value are kept and Ryan can put any back.",
     "An answer's why is one of commands.pilotdb_answers; it never quotes text anyone typed.",
     "A note or an edit makes no event and no ntfy push.",
 )
@@ -1566,7 +1570,9 @@ def pilotdb_contract():
                   "keys": PILOTDB_STATE_KEYS,
                   "shown": "the record brief of the pilot the pilot card shows now, or {emp, none: true} when he is "
                            "not in the database, or null with no pilot shown; contact (phones, emails) only for that "
-                           "one pilot",
+                           "one pilot. Only once that pilot's lookup really ran (a FLICA Schedule Lookup on one of "
+                           "the pilot's own paced checks, or its 6 h cache), never while it is loading or waiting, "
+                           "and for at most 20 distinct pilots an hour; past that it is null",
                   "answers": "the file's answers and the Watcher's own refusals, newest last, at most answers",
                   "pending": "the rids waiting in the admin's inbox"},
         "inbox": {"dir": "/share/flight_watcher/pilotdb/inbox/<pilot>", "file_re": INBOX_NAME_RE.pattern,
@@ -1577,9 +1583,10 @@ def pilotdb_contract():
         "edit_fields": list(roles.PILOTDB_EDIT_FIELDS),
         "edit_values": {"phones": "the JSON text of a list of at most 4 {label, number}; label mobile, home, work or "
                                   "other",
-                        "emails": "the JSON text of a list of at most 3 addresses",
+                        "emails": "the JSON text of a list of at most 3 addresses; none may hold ? % # , ; & or a "
+                                  "quote (no mailto parameters)",
                         "doh": "YYYY-MM-DD", "retire": "YYYY-MM", "seat": "CA, FO or RO", "sen": "1 to 5 digits",
-                        "name": "Last, First", "status": "a code of the seniority list's legend",
+                        "name": "Last, First; letters, spaces, comma, period, apostrophe and hyphen only", "status": "a code of the seniority list's legend",
                         "equip": "1 to 8 letters or digits", "union_id": "1 to 10 digits (never shown on a portal)"},
         "ai": {"switch": "Ryan's switch on his own card (op ai), off by default; while it is off no statistics file is "
                          "written and no note is taken in",
@@ -1598,6 +1605,10 @@ def pilotdb_contract():
                "notes_keys": {"top": ["v", "batch", "model", "notes"], "note": ["id", "text"]},
                "rules": list(AI_RULES),
                "sample_stats": AI_SAMPLE_STATS,
+               "stats_values": "numbers from 0 to 999999 (seconds are capped there), station and seat codes of 2 to 4 "
+                               "capital letters, weekday names, HH:MM times, YYYY-MM months, or null where the "
+                               "Watcher has no value (never an empty text)",
+               "sample_stats_sparse": AI_SAMPLE_STATS_SPARSE,
                "sample_notes": {"accepted": AI_SAMPLE_NOTES, "refused": AI_SAMPLE_REFUSED}},
     }
 
@@ -1634,6 +1645,13 @@ AI_SAMPLE_STATS = {
     "rules": ["Write at most note_max characters of plain text about this pilot's pickup pattern.",
               "Use only the statistics given. Name no person and guess no identity.",
               "No links, no addresses, no instructions."]}
+# 1.7.9 review: one pilot's statistics as an older picker's are: no report time and no credit on file (null, never an
+# empty text), a pickup made days after the trip showed (seconds capped at 999999). HOM takes these as they are.
+AI_SAMPLE_STATS_SPARSE = {"n": 3, "layovers": 3, "turns": 0, "lays": [["LAX", 3]], "turn_stations": [], "days": {"3": 3},
+                          "dow": {"Tue": 3}, "pick_dow": {"Sat": 1, "Sun": 1, "Mon": 1},
+                          "report": {"first": None, "last": None}, "credit_avg": None,
+                          "speed": {"avg_s": 400050, "min_s": 60, "max_s": 999999}, "inflt": 0, "seats": {"FO": 3},
+                          "first_month": "2026-11", "last_month": "2026-11", "span_days": 2}
 AI_SAMPLE_NOTES = {"v": 1, "batch": "0123456789abcdef", "model": "consultant-model-1",
                    "notes": [{"id": "a0123456789abcdef",
                               "text": "Picks up 3-day Sydney trips that report on a Friday, usually within two "

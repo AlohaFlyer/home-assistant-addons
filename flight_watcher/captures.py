@@ -214,13 +214,25 @@ def _mask_js(code):
 
 # 1.7.9 (Ryan, Nov 15): a labeled employee number in FLICA page text quoted in a log line ("(emp# n) schedule last
 # updated", "Emp#n", "EmployeeID=n", "employee id: n"), whatever its length; the label stays, the digits become '#'
-EMP_QUOTE_RE = re.compile(r"(?i)\b(emp(?:loyee)?\s*(?:id|no\.?|num(?:ber)?)?\s*(?:[=:#]|%3D)+\s*)(\d+)")
+# 1.7.9 review: close variants too. The label is 'emp' or 'employee' at a word start, or 'EmployeeID' anywhere
+# ('strEmployeeID=', 'CrewEmployeeID='), with or without id / no / num / number; between it and the digits any run of
+# spaces, dots, '_', '#', ':', '=', '-', a no-break space, '&nbsp;' or '%3D', or nothing ('Employee Number 10001',
+# 'EmpNo 10001', 'empid 10001', 'Emp. # 10001', 'employee_id=10001'); the number may hold hyphens ('0-10001'). Also
+# the capture file's own name (cmschedule_<n>.html, in an error text) and a number in brackets beside a 'Last, First'
+# name ('(10001) Doe, Jane', 'Doe, Jane (10001)').
+_EMP_SEP = r"(?:[\s._#:=\-\xa0]|&nbsp;|%3D)*"
+EMP_QUOTE_RE = re.compile(r"(?i)((?:\bemp(?:loyee)?|employee[\s._-]*id)[\s._-]*(?:id|no|num(?:ber)?)?" + _EMP_SEP
+                          + r"|cmschedule_)(\d(?:[\d-]*\d)?)")
+_NAME = r"[a-z][a-z'.\-]+,\s*[a-z][a-z'.\-]*"  # any case: visible_text lowercases a page
+EMP_NAME_RE = re.compile(r"(?i)(\(\s*)(\d{4,7})(\s*\)\s*" + _NAME + r")|(" + _NAME + r"\s*\(\s*)(\d{4,7})(\s*\))")
 
 
 def mask_emp(text):
     """Page text for a log line with no employee number (the admin's log too): every labeled number masked. Names,
     times, pairings and flights stay (a pilot's line is masked in full by mask)."""
-    return EMP_QUOTE_RE.sub(lambda m: m.group(1) + "#" * len(m.group(2)), str(text or ""))
+    s = EMP_QUOTE_RE.sub(lambda m: m.group(1) + re.sub(r"\d", "#", m.group(2)), str(text or ""))
+    return EMP_NAME_RE.sub(lambda m: (m.group(1) + "#" * len(m.group(2)) + m.group(3)) if m.group(2) else
+                           (m.group(4) + "#" * len(m.group(5)) + m.group(6)), s)
 
 
 def mask(text, extra=()):

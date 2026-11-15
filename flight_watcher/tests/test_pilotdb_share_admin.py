@@ -35,6 +35,10 @@ def _root(P):  # noqa: N803
     return P.PILOTDB_SHARE
 
 
+def _rdir(P):  # noqa: N803
+    return P.pilotdb_roster_dir()
+
+
 def _post(P, **obj):  # noqa: N803
     return P.pilotdb_post(obj)
 
@@ -44,9 +48,9 @@ def test_nothing_is_shared_until_ryan_taps_the_switch(A):
     assert P.pilotdb_portal_pilots() == ["james"]  # pilot3 has no portal
     st = P.pilotdb_status()
     assert st["shared_with"] == [] and st["pilots"] == [{"name": "james", "shared": False, "pending": 0, "full": False}]
-    assert not os.path.exists(PS.export_path("james", _root(P))) and not os.path.exists(PS.roster_path(_root(P)))
+    assert not os.path.exists(PS.export_path("james", _root(P))) and not os.path.exists(PS.roster_path(_rdir(P)))
     assert P.pilotdb_share_pass(force=True) == {"applied": 0, "refused": 0, "scrub": False}
-    assert not os.path.exists(PS.export_path("james", _root(P))) and not os.path.exists(PS.roster_path(_root(P)))
+    assert not os.path.exists(PS.export_path("james", _root(P))) and not os.path.exists(PS.roster_path(_rdir(P)))
     assert P.pilotdb_sensor()["shared_with"] == []
 
 
@@ -57,7 +61,7 @@ def test_the_share_switch_writes_the_files_at_once_and_off_deletes_them(A, caplo
         code, r = _post(P, op="share", pilot="james", on=True)
     assert code == 200 and r["shared_with"] == ["james"]
     ep = PS.export_path("james", _root(P))
-    assert stat.S_IMODE(os.stat(ep).st_mode) == 0o600 and os.path.exists(PS.roster_path(_root(P)))
+    assert stat.S_IMODE(os.stat(ep).st_mode) == 0o600 and os.path.exists(PS.roster_path(_rdir(P)))
     assert json.load(open(ep))["count"] == 0  # no shared note yet: an empty file, never the roster
     assert "pilot db: shared with james" in caplog.text
     # a change of Ryan's reaches the file after the 2 s debounce (two passes), not on the first pass
@@ -74,7 +78,7 @@ def test_the_share_switch_writes_the_files_at_once_and_off_deletes_them(A, caplo
     assert _post(P, op="share", pilot="james")[0] == 400
     code, r = _post(P, op="share", pilot="james", on=False)
     assert code == 200 and r["shared_with"] == []
-    assert not os.path.exists(ep) and not os.path.exists(PS.roster_path(_root(P)))
+    assert not os.path.exists(ep) and not os.path.exists(PS.roster_path(_rdir(P)))
     for s in SECRETS:
         assert s not in caplog.text, s
 
@@ -120,7 +124,7 @@ def test_no_statistics_leave_while_the_ai_switch_is_off(A, tmp_path):
     _pickups(db, tmp_path)
     P.pilotdb_share_pass(force=True)
     assert not os.path.exists(os.path.join(_root(P), "ai"))
-    assert P.pilotdb_status()["ai"] == {"on": False, "notes": 0}
+    assert P.pilotdb_status()["ai"] == {"on": False, "notes": 0, "left_out": 0}
 
 
 def test_the_statistics_are_anonymous_and_only_for_three_or_more_pickups(A, tmp_path, caplog):
@@ -181,11 +185,11 @@ def test_homs_note_is_stored_apart_labeled_ai_and_never_goes_to_a_pilot(A, tmp_p
     rec = db.record(jane)
     assert rec["notes"] is None and rec["entries"] == []  # apart from the human notes
     assert "pilot db: AI notes in: 1 saved, 1 refused" in caplog.text and "AI-SENTINEL" not in caplog.text
-    assert P.pilotdb_status()["ai"] == {"on": True, "notes": 1}
+    assert P.pilotdb_status()["ai"] == {"on": True, "notes": 1, "left_out": 0}
     # never in a pilot's file or the roster
     P.pilotdb_share_pass(force=True)
     assert "AI-SENTINEL" not in open(PS.export_path("james", _root(P))).read()
-    assert "AI-SENTINEL" not in open(PS.roster_path(_root(P))).read()
+    assert "AI-SENTINEL" not in open(PS.roster_path(_rdir(P))).read()
     # off with clear: the statistics file and the notes go
     code, r = _post(P, op="ai", on=False, clear=True)
     assert code == 200 and r["ai"] == {"on": False, "cleared": 1}

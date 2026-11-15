@@ -56,7 +56,8 @@ const FW_PDB_ENTRY_MAX = 2000, FW_PDB_FIELD_MAX = 4000, FW_PDB_WHY_MAX = 200, FW
 const FW_PDB_REFRESH_MS = 5 * 60 * 1000;  // the Supervisor keeps an ingress session 15 min from its last validation
 const FW_PDB_URL_RE = /^\/api\/hassio_ingress\/[A-Za-z0-9_-]+\/?$/;
 const FW_PDB_TEL_RE = /^\+?\d{7,15}$/;  // the pilot card's PILOT_TEL_RE
-const FW_PDB_MAIL_RE = /^[^\s@<>"'&]+@[^\s@<>"'&]+\.[A-Za-z]{2,}$/;  // the pilot card's PILOT_MAIL_RE
+// the pilot card's PILOT_MAIL_RE; 1.7.9 review: no ? % # , ; (an address never carries mailto parameters into the link)
+const FW_PDB_MAIL_RE = /^[^\s@<>"'&?%#,;]+@[^\s@<>"'&?%#,;]+\.[A-Za-z]{2,}$/;
 const FW_PDB_FIELDS = [["name", "Name"], ["sen", "Sen #"], ["doh", "DOH"], ["status", "Status"], ["retire", "Retires"],
   ["seat", "Seat"], ["equip", "Equipment"], ["phones", "Phones"], ["emails", "Emails"], ["union_id", "Union ID"]];
 const FW_PDB_LABEL = Object.fromEntries(FW_PDB_FIELDS.concat([["text", "The text"], ["why", "The reason"], ["emp", "The employee #"],
@@ -897,11 +898,13 @@ class FlightWatcherPilotdbCard extends HTMLElement {
       return h("div", { class: "row", "data-share-pilot": name }, h("label", { class: "ck" }, box, `Share with ${name}`), h("span", { class: "u" }, say));
     });
     const aiBox = h("input", { type: "checkbox", role: "switch", checked: !!ai.on, "data-k": "ai-on", onchange: (ev) => this._setAi(ev.target) });
-    const n = +ai.notes || 0;
-    return [h("div", { class: "u" }, "Off until you turn it on. A shared pilot sees the pilots with shared notes and the pilot he looks up (with that one pilot's phones and emails), and can edit the notes field, add to the log and edit every field. Each change is checked against the version he read, every earlier version is kept and you can put any back. Only me entries, hidden entries, the history, pickups and the AI note never leave this card."),
+    const n = +ai.notes || 0, left = +ai.left_out || 0;
+    // 1.7.9 review: a copy put back never turns a switch on again; say so until Ryan uses a switch
+    const reset = st.share_reset ? h("div", { class: "ban", role: "status", "data-share-reset": "" }, "A copy of the database was put back: sharing and the AI notes were turned off. They stay off until you turn them on again here.") : null;
+    return [reset, h("div", { class: "u" }, "Off until you turn it on. A shared pilot sees the pilots with shared notes and the pilot he looks up (with that one pilot's phones and emails), and can edit the notes field, add to the log and edit every field. Each change is checked against the version he read, the earlier versions are kept (the newest 50 of the notes field per author, every field edit in the history) and you can put any back. Only me entries, hidden entries, the history, pickups and the AI note never leave this card."),
       rows.length ? rows : h("div", { class: "u" }, "No pilot with a portal is set up."),
       h("div", { class: "row", "data-ai": "" }, h("label", { class: "ck" }, aiBox, "AI notes ", h("span", { class: "tag ai" }, "AI")),
-        h("span", { class: "u" }, `${ai.on ? "On" : "Off"}: HOM's consultant models write a short note per pilot with 3 or more pickups, from anonymous statistics only (no name, no employee number). ${n} written.`),
+        h("span", { class: "u" }, `${ai.on ? "On" : "Off"}: HOM's consultant models write a short note per pilot with 3 or more pickups, from anonymous statistics only (no name, no employee number). ${n} written.${left ? ` ${left} pilot${left === 1 ? " was" : "s were"} left out of the last batch (no note came back).` : ""}`),
         n && !ai.on ? h("button", { class: "g s", type: "button", "data-k": "ai-clear", onclick: () => { if (confirm(`Remove the ${n} AI note${n === 1 ? "" : "s"}?`)) this._post({ op: "ai", on: false, clear: true }, "share", "The AI notes are removed.").then(() => this._loadStatus()); } }, "Remove the AI notes") : null),
       this._msgNode("share")];
   }
@@ -1115,7 +1118,13 @@ class FlightWatcherPilotdbCard extends HTMLElement {
       if (this._pFile && this._pFile.full === true) top.push(h("div", { class: "ban", role: "alert" }, "The shared notes file is full: new notes are refused until it is trimmed."));
     }
     E.pTop.replaceChildren(...top);
-    if (!s || s.state !== "on") { for (const b of [E.pShown, E.pList, E.pSel]) b.replaceChildren(); return; }
+    if (!s || s.state !== "on") {
+      // 1.7.9 review: not shared (or not read yet): a line a save left behind ("Seat saved.") goes with the records
+      for (const b of [E.pShown, E.pList, E.pSel]) b.replaceChildren();
+      this._msgs = {}; this._msgEl = {};
+      if (E.msg) { E.msg.className = "msg"; E.msg.textContent = ""; }
+      return;
+    }
     if (this._pSelPid && (!this._pRecs().some((r) => r.pid === this._pSelPid) || (this._pShown() || {}).pid === this._pSelPid)) this._pSelPid = "";
     this._pPaint("shown"); this._pPaintList(); this._pPaint("sel");
   }
@@ -1204,7 +1213,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
       const input = multi
         ? h("textarea", { rows: 3, "data-k": `${src}-edit-${k}`, value: ed.value, "aria-label": label, oninput: (ev) => { ed.value = ev.target.value; } })
         : h("input", { type: "text", "data-k": `${src}-edit-${k}`, value: ed.value, "aria-label": label, autocomplete: "off", spellcheck: false, oninput: (ev) => { ed.value = ev.target.value; } });
-      lines.push(h("div", { class: "ed" }, input, h("div", { class: "u" }, `${FW_PDB_HINT[k] || ""}${k === "phones" ? " (at most 4)" : k === "emails" ? " (at most 3)" : ""}`),
+      lines.push(h("div", { class: "ed" }, input, h("div", { class: "u" }, `${(FW_PDB_HINT[k] || "").replace(/ or blank$/, "")}${k === "status" || k === "seat" ? " (to undo an edit, Use upload value)" : ""}${k === "phones" ? " (at most 4)" : k === "emails" ? " (at most 3)" : ""}`),
         h("input", { type: "text", "data-k": `${src}-why-${k}`, value: ed.why, placeholder: "Reason (optional, one line)", "aria-label": "Reason", maxLength: FW_PDB_WHY_MAX, oninput: (ev) => { ed.why = ev.target.value; } }),
         h("div", { class: "row" }, h("button", { type: "button", "data-k": `${src}-f-${k}-save`, disabled: busy, onclick: () => this._pSaveField(src, rec, k, label) }, "Save"),
           h("button", { class: "g", type: "button", "data-k": `${src}-f-${k}-cancel`, onclick: () => { pd.edit = null; this._pPaint(src); } }, "Cancel"))));

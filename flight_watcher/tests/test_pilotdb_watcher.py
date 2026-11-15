@@ -39,6 +39,7 @@ def P(W, tmp_path, monkeypatch):  # noqa: F811
     monkeypatch.setattr(W, "PILOTDB_FILE", str(data / "pilotdb.sqlite"))
     monkeypatch.setattr(W, "PILOTDB_BACKUP", str(data / "pilotdb_backup"))
     monkeypatch.setattr(W, "PILOTDB_SHARE", str(share / "pilotdb"))
+    monkeypatch.setattr(W, "PILOTDB_ROSTER", str(data / "pilotdb_roster"))  # 1.7.9 review: under /data, never /share
     monkeypatch.setattr(W, "PDB", {"db": None, "status": {"db": "off", "offer": None}, "wake": W.threading.Event(),
                                    "md_rev": None, "md_at": 0.0, "md_day": "", "merged": False, "contacts": "",
                                    "thread": "test: no thread"})

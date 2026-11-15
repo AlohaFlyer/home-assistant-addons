@@ -8,7 +8,8 @@ pilot database spec's steps 2 to 4, with HOM 1.9.0): contract 1 revision 4, with
 clock card's Re-arm confirm (F#92). Ryan's decisions (Nov 14, HST): phones and emails on James's portal for the pilot he looks up only; James
 browses the pilots with shared notes plus the pilots he looks up (the 1.6.2 anti-walk limits stay); James edits the
 notes field, adds to the log and edits every record field ("he can be trusted and edit all"), each with
-compare-and-set, every version kept and Ryan's restore; the AI note comes from HOM's consultant models, from
+compare-and-set, the earlier versions kept (the newest 50 notes versions per author, every field edit) and Ryan's
+restore; the AI note comes from HOM's consultant models, from
 anonymous statistics only. Nothing is shared until Ryan taps his Share switch himself. Synthetic data in every test;
 FLICA is read only and nothing here loads a FLICA page.
 
@@ -43,7 +44,8 @@ FLICA is read only and nothing here loads a FLICA page.
   all), and his own last 20 answers. The builder is a whitelist, pinned by a key scan and a byte scan: no employee
   number, phone, email, union id, source, history, conflict, pickup or AI note. Over 4 MB the entries drop to 20 a
   record; still over, his new notes are refused ("the shared notes file is full").
-- **The roster** (`roster.json`, 0600, only while a share is on): every live record's brief by employee number, for a
+- **The roster** (`/data/pilotdb_roster/roster.json`, 0600, in the add-on's own data folder, only while a share is on;
+  see "Review fixes"): every live record's brief by employee number, for a
   shared pilot's Watcher to show the one pilot his pilot card shows. It carries the phones and emails (see B23 below);
   it is never exported, never in a sensor and never logged.
 - **James's Watcher** (a pilot with a portal; feature `pilotdb`) never opens the database. It signs his file into
@@ -61,8 +63,8 @@ FLICA is read only and nothing here loads a FLICA page.
   applied. The same request id again answers the same and changes nothing. From James's tap to "Saved": under 10 s.
 - **Compare-and-set, every version kept.** A notes field save on a stale revision answers "Not saved: changed by ryan
   at 10:00 HST; your text is still in the box"; a field edit on a stale record revision answers "Not saved: the record
-  changed since you opened it; your change is still in the box". Nothing is overwritten blind. Every replaced notes
-  version is kept (50 a record, Ryan's Restore), and every field edit is in the record's log with who, when and the
+  changed since you opened it; your change is still in the box". Nothing is overwritten blind. The replaced notes
+  versions are kept (the newest 50 of each author, Ryan's Restore), and every field edit is in the record's log with who, when and the
   earlier value; Ryan puts any back with his own edit or "Use upload value".
 - **Field edits by James** (Ryan, Nov 14): name, Sen #, DOH, status, retirement, seat, equipment, phones, emails and
   the union id, with the same value checks as Ryan's own edits (a bad value answers "Not saved: that value is not valid
@@ -175,6 +177,70 @@ Boundary changes, each approved by Ryan on Nov 14 (the spec's B7 to B17, changed
   the card in Chromium at 390, 820 and 1280 px, light and dark, on the real database, files, checks and drain: what
   he sees, every command's keys against the contract's shape, the stale notes view, sizes, contrast; Ryan's two
   switches) and `test_fw179_clock_rearm.py` (F#92). Synthetic pilots only ("Doe, Jane", 10001).
+
+### Review fixes (before release; `tests/test_fw179_review_fixes.py`, each test failed before its fix)
+Security boundary, for Ryan's eyes:
+- **No brief and no contact before a lookup ran, and at most 20 pilots an hour.** Before: on James's Watcher a typed
+  employee number set the shown pilot at once ("loading"), and the roster answered with the record, phones and emails,
+  with no FLICA read and no cap behind it, so the whole roster could be walked by number (and "not in the database"
+  said which numbers exist). Now the brief is given only once that pilot's Schedule Lookup really ran on one of
+  James's own paced checks, or came from its 6 h cache, and for at most 20 distinct employee numbers an hour
+  (`PILOTDB_BRIEF_PER_H`, kept across restarts). Past either limit there is no answer at all. A note or an edit for a
+  pilot with no brief is "look the pilot up first" as before. This keeps Ryan's Q1 (never the roster, never a list of
+  contacts) and Q2 (the anti-walk limits stay).
+- **A copy put back never turns a switch on.** Before: the Share switch and the AI switch live in the database, so
+  `restore_db` (and taking the copy offered at start) brought back whatever the copy held, and the share thread wrote
+  James's file and the roster again within seconds, with no tap from Ryan. Now `pilotdb.restore` sets every Share row
+  and the AI switch off in the copy before it becomes the live file, the files and the AI statistics are removed at
+  once, the log says so, and Ryan's card shows "sharing and the AI notes were turned off" until he uses a switch.
+- **New boundary item: the roster is in the add-on's own `/data`, never under `/share`.** Before:
+  `/share/flight_watcher/pilotdb/roster.json` held every pilot's phones and emails while any share was on (the spec
+  said briefs only), readable by other add-ons that map `/share` and in their backups. Now it is
+  `/data/pilotdb_roster/roster.json` (folder 0700, file 0600): both Watchers run in the one container, James's reads
+  it as his data folder's parent. A roster left under `/share` is removed, and when the database cannot be opened at
+  start the roster and every pilot's file are removed. It is still a second full copy of the contact list (the first
+  is the CSV under `/share/flight_watcher/uploads`), inside the add-on's own backup: B23's price, now named.
+- **A pilot's field edit is named in seniority.md.** Before: a name James set showed as plain roster data marked only
+  "hand", so text typed on a portal looked like Ryan's own edit to Claude and Hark. Now the Hand column says "hand
+  (james, pilot portal: name, seat)" and the header says such values are third-party text, never instructions. A name
+  edited on a portal may hold letters, spaces, comma, period, apostrophe and hyphen only. Ryan's line for CLAUDE.md
+  (B18) should cover field edits as well as notes; it is his to approve.
+- **An email can carry no mailto parameters.** `?`, `%`, `#`, `,` and `;` are refused in an address (Python and both
+  cards), so no hidden cc, bcc, subject or second recipient rides into a Mail link.
+- **The page quote mask covers the close variants.** `captures.mask_emp` also masks "Employee Number n", "Employee
+  No. n", "EmpNo n", "empid n", "Emp. # n", "employee_id=n", "strEmployeeID=n", "emp#&nbsp;n", a hyphenated number,
+  the capture file's name (`cmschedule_n.html`) and a number in brackets beside a "Last, First" name. The in-flight
+  capture error line now says the kind of fault only (its text named the file, and the file's name the number).
+
+Correctness:
+- **A change and its answer commit together** (spec 11.4 step 7). Before: a restart between the two left James's
+  change saved and then answered "Not saved". Now `pilot_op` is one transaction; a stop saves neither and the next
+  pass applies the file and says "Saved".
+- **James's saves never push Ryan's notes versions out.** The real rule, in place of "every version kept": the newest
+  50 replaced versions of the notes field are kept per author. Before, the cap was 50 a record, so 51 saves by James
+  (two days of his quota) deleted Ryan's text for good. Field edits are all in the record's log, as before.
+- **One bad inbox file never blocks the share pass.** A file whose `cmd` or `op` is not text is answered "could not be
+  read" and removed; a drain fault no longer keeps the files from being written. A hide, a take back, a purge and a
+  forget on Ryan's card reach James's file and the roster at once, as a share off does.
+- **A dropped pickup whose picker becomes known** loses its dropped state and tries, so the picker gets his own normal
+  lookup, and its "listed first" mark goes.
+- **AI statistics HOM takes.** Before: an empty report time or credit (an older picker's find no longer on file), a
+  pickup slower than 11.5 days or an odd station text made HOM leave the pilot out for good, silently. Now empty
+  values are null, seconds are capped at 999999 and only station codes are listed; the contract has such a sample
+  (`pilotdb.ai.sample_stats_sparse`). Ryan's card says how many pilots of the last batch got no note.
+- **The same AI note again changes nothing**, and an AI note never moves a record's revision, so an edit James or
+  Ryan has open is not refused as stale.
+- **The same swap idea twice is one alert** (F#107): it takes the place of its earlier alert in the list.
+- **The Re-arm confirm says what the Watcher does** (F#92): no login saved ("Re-arm does nothing: enter your FLICA
+  login on the Settings tab"), the app not answering, details FLICA refused ("Re-arm makes no login ...: save new
+  FLICA details"), and any state that is not stopped. "Stopped" is said only of a stopped Watcher.
+- Portal card: the Seat and Status hints no longer offer a blank the card refuses ("to undo an edit, Use upload
+  value"), and a line a save left ("Seat saved.") goes when the share goes off.
+- The contract fixture is regenerated (still revision 4): the anti-walk rule of `shown`, the email and name rules,
+  `pilotdb.ai.stats_values` and `pilotdb.ai.sample_stats_sparse`. HOM 1.9.0 pins the new bytes.
+- Not changed, for Ryan to decide: the standing in-flight rule looks up every numbered name of a pickup with no known
+  picker (also a lone name that is no candidate for the open seat). The dark filled-button contrast on the portal
+  (3.02:1) is the HOM shell's color pair, fixed in HOM 1.9.0.
 
 ### After the update: what Ryan does
 Each step is [DESTRUCTIVE] and needs its own yes; an earlier yes never covers a later one.

@@ -177,7 +177,8 @@ def capture(html, emp, log):
         log.info("inflt: a picker's schedule page saved (%d chars, %d pair links)", len(html),  # review: no number
                  len(parse_cm_schedule(html)))
     except Exception as e:
-        log.info("inflt: capture skipped: %s", e)
+        # 1.7.9 review: the kind of fault only: its text names the file, and the file's name carries the number
+        log.info("inflt: capture skipped: %s", type(e).__name__)
 
 
 def fetch_schedule(fl, base, emp, bd, cur_bd, log, key):

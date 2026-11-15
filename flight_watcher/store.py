@@ -680,6 +680,21 @@ class Store:
             for f in ("inflt_named", "inflt_named_q"):  # 1.7.9: the named pilots' verdicts (picker not known) too
                 if f in old and f not in pickup:
                     pickup = dict(pickup, **{f: old[f]})
+            if pickup.get("inflt_skip") or pickup.get("inflt_named_q"):
+                # 1.7.9 review: a pickup whose picker was not known and now is (a later check names him): its dropped
+                # verdict and its tries go, as recheck_inflt_skip does, so the picker gets his own normal lookup; and
+                # the "listed first" mark goes once the pickup names nobody to look up as a named pilot. A dropped
+                # verdict whose picker was known all along stays final (1.7.7 review R2; the 1.7.8 re-check was its
+                # one second look)
+                r = self.db.execute("SELECT row FROM finds WHERE key=?", (key,)).fetchone()
+                row = json.loads(r[0]) if r and r[0] else {}
+                fresh = {f: v for f, v in pickup.items()
+                         if f not in ("inflt", "inflt_trip", "inflt_leg", "inflt_emp", "inflt_skip")}
+                if pickup.get("inflt_skip") and fresh.get("status") == "filled" and pickers_of(fresh, row) and \
+                        not pickers_of({f: v for f, v in old.items() if f != "inflt_emp"}, row):
+                    pickup = dict(fresh, inflt_tries=0)
+                if pickup.get("inflt_named_q") and not named_of(pickup, row):
+                    pickup = {f: v for f, v in pickup.items() if f != "inflt_named_q"}
             self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pickup), key))
 
     def pickups_without_inflt(self, n=50, max_tries=INFLT_MAX_TRIES):

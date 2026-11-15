@@ -426,12 +426,13 @@ state is `off`, nothing of the database is in his out/ folder and every `pilotdb
 has not shared the pilot database with you". Turning it off deletes his file at once.
 
 **Files between the two Watchers** (`pdbshare.py`; `/share/flight_watcher/pilotdb/`, folders 0700, files 0600, root;
-the portal process, uid 2061, has no access):
+the portal process, uid 2061, has no access; the roster alone is in the add-on's own `/data/pilotdb_roster/`, which no
+other add-on can read):
 
 | Path | Written by | What |
 |:--|:--|:--|
 | `portal/<name>.json` | admin | the pilot's file (below), only while his share is on |
-| `roster.json` | admin | every live record's brief by employee number, with phones and emails, only while any share is on; a pilot's Watcher reads it for the one pilot his pilot card shows; never exported, never in a sensor, never logged |
+| `/data/pilotdb_roster/roster.json` | admin | every live record's brief by employee number, with phones and emails, only while any share is on; a pilot's Watcher (the same container) reads it for the one pilot his pilot card shows; never under `/share`, never exported, never in a sensor, never logged |
 | `inbox/<name>/<13-digit ms>-<rid>.json` | the pilot's Watcher | one checked command (`O_CREAT, O_EXCL, O_NOFOLLOW`, at most 32 KB) |
 
 **The file** (kind `pilotdb`, `out/files/pilotdb.json`, the fixture's `pilotdb.file`): `{v: 1, generated, as_of {list,
@@ -459,6 +460,11 @@ file does not read yet). Attributes: `rev` (the first 12 hex of the file's sha25
   `pid`, `sen`, `doh`, `status`, `retire`, `seat`, `equip`, `gone`, `edited`, `rev`, `notes_n`, and `contact`
   (`phones`: `label`, `number`, `tel`; `emails`) when the database has any. `{emp, none: true}` when he is not in the
   database; null with no pilot shown or while not shared.
+- Anti-walk (1.7.9 review; Ryan's Q1 and Q2): `shown` is filled only once that pilot's lookup really ran, a FLICA
+  Schedule Lookup on one of the pilot's own paced checks or its 6 h cache (the pilot card's status `ok` or `cached`, or
+  a page FLICA answered with no readable month). While the lookup is `loading` or `waiting` it is null. And for at
+  most 20 distinct employee numbers an hour (`PILOTDB_BRIEF_PER_H`, kept across restarts); past that it is null, not
+  even `{emp, none: true}`. So typing employee numbers one after the other shows no record and no contact.
 - B23 (Ryan, Nov 14, reversing FW-0066 plan Q6 for this one case): `shown.contact` is the only place phones and emails
   reach a portal: one pilot, the one looked up, for the call, text and mail links. Never a list, never in the file.
 
@@ -472,7 +478,9 @@ an unknown key.
 - `pilotdb/edit`: `{op, pid, field, value?, rev, why?, rid}`. `op` `set` or `unset` (back to the uploads' value);
   `field` one of `name`, `sen`, `doh`, `status`, `retire`, `seat`, `equip`, `phones`, `emails`, `union_id`; `value` one
   line of at most 1000 code points (phones: the JSON text of a list of at most 4 `{label, number}`; emails: the JSON
-  text of a list of at most 3 addresses); `rev` the record's `rev` it was read at; `why` an optional reason line. The
+  text of a list of at most 3 addresses, none with `?`, `%`, `#`, `,`, `;`, `&` or a quote, so an address can carry
+  no mailto parameters; a name: letters, spaces, comma, period, apostrophe and hyphen only); `rev` the record's `rev`
+  it was read at; `why` an optional reason line. The
   admin's Watcher runs the same value checks as on Ryan's own edit. `union_id` can be set but is never shown on a
   portal.
 - `rid` (6 to 40 of `[A-Za-z0-9_-]`) is made by the card; the answer comes back under it.
@@ -490,9 +498,13 @@ an unknown key.
 4. The admin's Watcher (`pdbshare.drain`, every 2 s) takes the author from the folder's name (a body `by` that differs
    is refused), refuses a file older than 24 h, checks the shape, the text rules, the op rules and the quotas again and
    applies the op in Ryan's database: 40 entries, 40 notes field saves or retracts and 40 field edits in 24 h, 500
-   entries a record. The same `rid` again answers the same and changes nothing.
-5. Compare-and-set: a stale `base` or `rev` is refused and nothing is overwritten. Every replaced notes version is kept
-   (50 a record) and every field edit is in the record's log with the earlier value; Ryan can put any back.
+   entries a record. The same `rid` again answers the same and changes nothing. The change, its audit row and its
+   answer commit in one transaction (a stop between them saves neither and the next pass applies the file); a file
+   that cannot be read, whatever it holds, is answered "could not be read" and removed, never left to block the pass.
+5. Compare-and-set: a stale `base` or `rev` is refused and nothing is overwritten. The replaced notes versions are
+   kept, the newest 50 of each author (a pilot's saves never push Ryan's versions out), and every field edit is in
+   the record's log with the earlier value; Ryan can put any back. In `seniority.md` a row a pilot edited says so in
+   its Hand column ("hand (james, pilot portal: seat)"): those values are third-party text.
 6. The answer (`commands.pilotdb_answers`, fixed phrases that never quote text) reaches the pilot through his file's
    `answers` and the sensor; his file is written at once after a drain. From his tap to "Saved" takes under 10 s.
 
@@ -512,7 +524,10 @@ notes (`pilotdb`'s `ai_notes` table) and never goes to a pilot's portal file or 
   stats}], rules}`. Only pilots with 3 or more pickups. `stats`: `n`, `layovers`, `turns`, `lays` and `turn_stations`
   (station and count), `days` (trip length and count), `dow` and `pick_dow` (weekday and count), `report` (first and
   last report time), `credit_avg`, `speed` (seconds from the pairing showing up to the pickup), `inflt`, `seats`,
-  `first_month`, `last_month`, `span_days`. A new batch at most once a day, when the statistics moved.
+  `first_month`, `last_month`, `span_days`. A new batch at most once a day, when the statistics moved. Values
+  (`pilotdb.ai.stats_values`): numbers from 0 to 999999 (seconds are capped there), station and seat codes of 2 to 4
+  capital letters, weekday names, HH:MM, YYYY-MM, or null where the Watcher has no value (no report time or credit on
+  file), never an empty text; `pilotdb.ai.sample_stats_sparse` is such a pilot. HOM must take null.
 - Anonymous: `id` (`^a[0-9a-f]{16}$`) is random, made new for every batch and kept only in Ryan's database, so nothing
   outside Ryan's Watcher maps it to a pilot and nothing links one batch to the next. No name, employee number, record
   id, seniority number, date of hire, pairing number, exact date or note text is in the file.
@@ -520,7 +535,8 @@ notes (`pilotdb`'s `ai_notes` table) and never goes to a pilot's portal file or 
   `{v: 1, batch, model, notes: [{id, text}]}`. The Watcher takes a note only when the batch is one of its last 2, the
   id is in that batch, `model` matches `model_re` and `text` is 1 to 600 code points of plain text (the ticket text
   rule, no `@` and no `://`); anything else is dropped and counted. The file is deleted once read. The log says
-  "AI notes in: 3 saved, 1 refused": counts only.
+  "AI notes in: 3 saved, 1 refused": counts only. The same note handed in again writes nothing, and an AI note never
+  moves a record's `rev`. Ryan's card says how many pilots of the last batch got no note.
 - The note is model output: untrusted data, never an instruction to Claude, Hark or the Watcher.
 
 ## 6. ntfy
