@@ -102,9 +102,17 @@ The 23 automations here match Pako's 23 Flight Watcher automations in file order
 23 items `0a7ff0d9f8aac055fef0b2a41350e9cb657896bbca1e04759bc48ce543dcc8c4` (read 2026-11-13 06:2x HST, after 1.7.2 went
 live, the pilot upload automation was added, the "Ready to update" push wording changed and the temporary van one was
 deleted). The dashboard snapshot matches Pako's `/config/.storage/lovelace.flight_watcher`, sha256
-`cd6e75d2d6687429e2962863c00ceb9ca8d6aee91d39f25f3a21160ec87e17b6` (5 views: Watcher, Working Flight, Details,
-Recall/O75, Settings; read 2026-11-15 HST, with the van alert settings tiles, the Working Flight view and the pilot lookup
-row below).
+`be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435` (5 views: Watcher, Working Flight, Details,
+Recall/O75, Settings; read 2026-11-14 about 17:20 HST, with the van alert settings tiles, the Working Flight view, the
+pilot lookup row and the Pilots cards below).
+
+**Changed on Pako 2026-11-14 about 17:15 HST (1.7.8, Ryan's yes "all of it"):** once 1.7.8 was live, Claude put the
+Pilots card on the dashboard through the HA connector (a JSON patch guarded by tests of the neighbouring cards): the
+Settings view gets `{"type": "custom:flight-watcher-pilotdb-card"}` right above the Tickets heading (browse mode: search,
+records, notes, held rows, daily copies), and the Watcher view gets `{"follow": true, "type":
+"custom:flight-watcher-pilotdb-card"}` right under the pilot card (the record and notes of the pilot it shows), each
+`grid_options` columns full. The card draws itself only for a Home Assistant admin on Ryan's copy. Undo: remove the
+two cards.
 
 **Changed on Pako 2026-11-14 about 15:39 HST (Ryan: "make the pilot name field much wider so I can see what I am
 typing ... make it work good on iphone ipad and mac"):** in the Watcher view's finds section the two buttons ("Scan
