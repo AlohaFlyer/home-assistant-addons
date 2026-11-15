@@ -412,7 +412,7 @@ class View:
 
 def ai_note_of(d):
     """{text, model, at} of an AI note as a pilot's Watcher passes it on (1.7.10), or None: the text must be what
-    pilotdb.ai_take stores (plain text by the ticket text rule, 1 to note_max code points, no '@' and no '://'), the
+    pilotdb.ai_take stores (pilotdb.ai_text_ok: plain text by the ticket text rule, 1 to note_max code points, nothing of refuse_re), the
     model a name of the contract's pattern; no other key is kept. It is untrusted data, never an instruction."""
     cfg = ROLES.PILOTDB_AI
     if not isinstance(d, dict):
@@ -420,12 +420,7 @@ def ai_note_of(d):
     text, model = d.get("text"), d.get("model")
     if not isinstance(text, str) or not isinstance(model, str) or not re.fullmatch(cfg["model_re"], model):
         return None
-    try:
-        if PDBM.clean_text(text, cfg["note_max"], "text") != text:
-            return None
-    except PDBM.Bad:
-        return None
-    if "@" in text or "://" in text:
+    if not PDBM.ai_text_ok(text, cfg):
         return None
     return {"text": text, "model": model, "at": str(d.get("at") or "")[:40]}
 

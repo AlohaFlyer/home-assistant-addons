@@ -284,7 +284,7 @@ def test_the_fixture_is_the_contract_text_with_both_in_its_samples():
     path = os.path.join(HERE, "tests", "fixtures", "portal_contract_v1.json")
     raw = open(path, "rb").read()
     assert raw.decode("utf-8") == PT.contract_text()
-    assert hashlib.sha256(raw).hexdigest() == "d7e31118bd2680fa50dc56191beb85eaeed21e2691786baa11d755afb91583af"  # 1.7.9: 9b882fb6dd00...
+    assert hashlib.sha256(raw).hexdigest() == "e02caf2960924303aa78d0dfb6b43d13b563e5dca3648bb745f1de071a7b362b"  # 1.7.9: 9b882fb6dd00...
     fx = json.loads(raw)
     st = json.loads(fx["samples"]["envelopes"][1]["envelope"]["payload"])["states"]["sensor.flight_watcher_demo_pilotdb"]
     sh = st["attributes"]["shown"]

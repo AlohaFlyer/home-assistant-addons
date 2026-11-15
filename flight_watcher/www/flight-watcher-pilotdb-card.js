@@ -921,7 +921,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
   }
   async _setShare(name, box) {
     const on = !!box.checked;
-    const ask = on ? `Share the pilot database with ${name}? He sees the pilots with shared notes and the pilot he looks up, with that pilot's phones and emails, and can edit notes, the log and every field.`
+    const ask = on ? `Share the pilot database with ${name}? He sees the pilots with shared notes and the pilot he looks up, with that pilot's phones and emails, each with the union ID and, while AI notes are on, the AI note read only, and can edit notes, the log and every field.`
       : `Stop sharing with ${name}? His file is deleted at once and his waiting changes are refused.`;
     if (!confirm(ask)) { box.checked = !on; return; }
     const r = await this._post({ op: "share", pilot: name, on }, "share", on ? `Shared with ${name}.` : `No longer shared with ${name}.`);
@@ -1214,7 +1214,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
   }
   _pAiNode(ai) {  // 1.7.10: read only, apart from the human notes, every value a text node; nothing here can be typed in or sent
     return h("div", { class: "aib", role: "group", "aria-label": "AI note", "data-ai-note": "" },
-      h("h3", {}, "AI note ", h("span", { class: "tag ai" }, "AI")),
+      h("h3", {}, "AI note ", h("span", { class: "tag ai", "aria-hidden": "true" }, "AI")),
       h("div", { class: "u" }, `AI note, from anonymous pickup statistics. Written by ${ai.model || "a model"}${ai.at ? ` ${fwPdbHst(ai.at)}` : ""}. Read only: not a human note, and it cannot be changed here.`),
       h("div", { class: "tx", dir: "auto", "data-ai-text": "" }, ai.text));
   }

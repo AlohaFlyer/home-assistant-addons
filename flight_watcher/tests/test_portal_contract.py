@@ -21,7 +21,7 @@ FIXTURE = os.path.join(HERE, "tests", "fixtures", "portal_contract_v1.json")
 DOC = os.path.join(HERE, "PORTAL_CONTRACT.md")
 # 1.7.10 (Ryan, Nov 15): still revision 4, two additive keys a shared pilot reads (union_id, ai_note); 1.7.9's bytes
 # were 9b882fb6dd00a932e196359edc364ee8ecbe78da7077f5f29a7fdc06301a6176
-CONTRACT_SHA256 = "d7e31118bd2680fa50dc56191beb85eaeed21e2691786baa11d755afb91583af"
+CONTRACT_SHA256 = "e02caf2960924303aa78d0dfb6b43d13b563e5dca3648bb745f1de071a7b362b"
 
 
 def _fx():

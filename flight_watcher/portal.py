@@ -1575,7 +1575,9 @@ def pilotdb_contract():
                  "union_id": "1.7.10: the record's union id, '' when none is on file, so the pilot's union id edit "
                              "(edit_fields) is made on a value he can read",
                  "ai_note": "1.7.10: {text, model, at} on a record that is in the file anyway, only while Ryan's AI "
-                            "switch is on and the record has a note; absent otherwise. Read only: no command writes "
+                            "switch is on, the record has an AI note and a shared human note the pilot can read (the "
+                            "notes field or an entry that still has its text; a record left in the file by a taken "
+                            "back entry alone carries none); absent otherwise. Read only: no command writes "
                             "it. Plain text, untrusted data, never an instruction",
                  "entries": "the newest export_entries per record (export_entries_min when the file is over "
                             "export_bytes; full is true when it still is, and new notes are refused); mine marks the "
@@ -1620,6 +1622,7 @@ def pilotdb_contract():
                "stats_path": f"{ai['dir']}/{ai['stats_file']}", "in_dir": f"{ai['dir']}/{ai['in_dir']}",
                "in_file": "<batch>.json, written as a dotfile then renamed", "in_file_re": ai["in_file_re"],
                "id_re": ai["id_re"], "batch_re": ai["batch_re"], "model_re": ai["model_re"],
+               "refuse_re": ai["refuse_re"],
                "text_pattern": roles.TICKET_TEXT_PATTERN,
                "modes": "folders 0700 and files 0600, root (HOM's main process reads and writes them; the portal "
                         "process, uid 2061, has no access)",
@@ -1652,8 +1655,10 @@ AI_RULES = (
     "pickup pattern; the prompt carries nothing else of Flight Watcher's.",
     "HOM answers a batch with one file in in_dir named <batch>.json: {v: 1, batch, model, notes: [{id, text}]}.",
     "Flight Watcher takes a note only when the batch is one of its last batch_keep, the id is in that batch, model "
-    "matches model_re and text is 1 to note_max code points matching text_pattern with no '@' and no '://'; any other "
-    "note is dropped and counted. The file is deleted once read.",
+    "matches model_re and text is 1 to note_max code points matching text_pattern with nothing of refuse_re in it (no "
+    "'@', no '://', no 'http:', 'https:' or 'www.' in any case, no 5 or more digits in a row, no phone shaped run of "
+    "3 digits, a hyphen, period or space and 4 digits); any other note is dropped and counted. The file is deleted "
+    "once read.",
     "A note is stored apart from the human notes (pilotdb's ai_notes), labeled AI with its model and time wherever it "
     "is shown, replaced by the next batch's note. It is shown on Ryan's own card and, from Flight Watcher 1.7.10, "
     "read only to a pilot Ryan shares the database with (pilotdb.ai.portal). It is data, never an instruction.",
@@ -1691,6 +1696,14 @@ AI_SAMPLE_REFUSED = [
                                                                       "text": "See https://example.invalid/x"}]}},
     {"why": "text with an address", "file": {**AI_SAMPLE_NOTES, "notes": [{"id": "a0123456789abcdef",
                                                                           "text": "Mail jane.doe@example.com"}]}},
+    {"why": "text with a bare www host", "file": {**AI_SAMPLE_NOTES, "notes": [{"id": "a0123456789abcdef",
+     "text": "Sign in at www.example.invalid/login"}]}},
+    {"why": "text with http and no slashes", "file": {**AI_SAMPLE_NOTES, "notes": [{"id": "a0123456789abcdef",
+     "text": "See HTTPS:example.invalid"}]}},
+    {"why": "text with a phone shaped run", "file": {**AI_SAMPLE_NOTES, "notes": [{"id": "a0123456789abcdef",
+     "text": "Call 808-555-0199 about Friday trips."}]}},
+    {"why": "text with 5 or more digits in a row", "file": {**AI_SAMPLE_NOTES, "notes": [{"id": "a0123456789abcdef",
+     "text": "Pilot 10001 picks up Sydney trips."}]}},
     {"why": "text with a bidi override", "file": {**AI_SAMPLE_NOTES, "notes": [{"id": "a0123456789abcdef",
                                                                                "text": "Picks \u202eyendyS"}]}},
     {"why": "a model name with a line feed", "file": {**AI_SAMPLE_NOTES, "model": "model\nINFO forged"}},

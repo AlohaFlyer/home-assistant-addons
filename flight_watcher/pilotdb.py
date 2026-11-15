@@ -206,6 +206,19 @@ def clean_text(text, maxlen, field="text", empty_ok=False):
     return s
 
 
+def ai_text_ok(text, cfg=None):
+    """True when text is an AI note as it may be stored and shown (1.7.10 review: one rule for pilotdb.ai_take and
+    pdbshare.ai_note_of): already clean plain text of 1 to note_max code points (clean_text leaves it as it is) with
+    nothing of roles.PILOTDB_AI refuse_re in it (an address, a link, 5 or more digits in a row, a phone shaped run)."""
+    cfg = cfg or ROLES.PILOTDB_AI
+    try:
+        if not isinstance(text, str) or clean_text(text, cfg["note_max"], "text") != text:
+            return False
+    except Bad:
+        return False
+    return not re.search(cfg["refuse_re"], text)
+
+
 def clean_line(text, maxlen, field, empty_ok=False):
     """One line (a name, Ryan's reason): spaces closed up, the ticket line rule (TICKET_LINE_PATTERN)."""
     if not isinstance(text, str):
@@ -1636,7 +1649,9 @@ class PilotDB:
         fields (no employee number, phones, emails, sources or history; 1.7.10: with the union id), the notes field,
         the newest entries (his own marked mine; a taken back one without its text; hidden, purged and only-me ones
         not at all) and this pilot's own answers. 1.7.10: a record that is in the file anyway carries its AI note
-        (ai_note: text, model, at) while Ryan's AI switch is on; an AI note alone never puts a pilot in the file. Over export_bytes the entries drop to export_entries_min a record; still over,
+        (ai_note: text, model, at) while Ryan's AI switch is on and the record has a shared human note he can read
+        (the notes field or an entry that still has its text; a record left in the file by a taken back entry alone
+        has none); an AI note alone never puts a pilot in the file. Over export_bytes the entries drop to export_entries_min a record; still over,
         full is true (the admin then refuses his new notes)."""
         lim = limits or ROLES.PILOTDB_NOTE_LIMITS
         with self.lock:
@@ -1668,7 +1683,9 @@ class PilotDB:
                 r = self._shared_brief(views[p])
                 if p in notes:
                     r["notes"] = notes[p]
-                if p in ai:
+                # 1.7.10 review: the AI note goes with a shared human note he can read (the notes field or an
+                # entry that still has its text); a record that is in the file only for a taken back entry has none
+                if p in ai and (p in notes or any("text" in e for e in ents.get(p, []))):
                     r["ai_note"] = ai[p]
                 r["entries"] = ents.get(p, [])[:n]
                 r["entries_total"] = len(ents.get(p, []))
@@ -1818,7 +1835,7 @@ class PilotDB:
                     text = clean_text(n.get("text"), cfg["note_max"], "text") if p and not p["merged_into"] else None
                 except Bad:
                     text = None
-                if not text or "@" in text or "://" in text:
+                if not text or not ai_text_ok(text, cfg):
                     refused += 1
                     continue
                 saved += 1

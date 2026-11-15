@@ -454,15 +454,18 @@ contacts, award}, count, records, answers, limits, full?}`.
   Each: `pid` (an opaque id, `^p[0-9a-f]{10}$`), `name`, `sen`, `doh`, `status`, `retire`, `seat`, `equip`, `union_id`
   (1.7.10: the union id, `""` when none is on file, so his union id edit is made on a value he can read), `gone`,
   `edited` (the fields a person edited), `rev` (the record's revision, for an edit's compare-and-set), `notes` (`text`,
-  `rev`, `by`, `at`), `ai_note` (1.7.10: `text`, `model`, `at`; only while Ryan's AI switch is on and the record has
-  one, see 5.8; read only), `entries` (the newest 50: `eid`, `by`, `at`, `text`, `mine` true on his own; a taken back entry
+  `rev`, `by`, `at`), `ai_note` (1.7.10: `text`, `model`, `at`; only while Ryan's AI switch is on, the record has
+  one and it has a shared human note he can read, the notes field or an entry that still has its text: a record left
+  in the file by a taken back entry alone carries none; see 5.8; read only), `entries` (the newest 50: `eid`, `by`, `at`, `text`, `mine` true on his own; a taken back entry
   keeps `eid`, `by`, `at` and `gone: "taken back"`, never its text; a hidden one leaves no trace) and `entries_total`.
 - `answers`: this pilot's last 20 (`rid`, `ok`, `why`, `at`). `limits`: `entry_max`, `field_max`, `adds_per_day`,
   `changes_per_day`, `edits_per_day`, `value_max`, `why_max`.
 - The builder is a whitelist (`portal.PILOTDB_FILE_KEYS`; a test scans every key), so the file never holds an employee
   number, phones, emails, a source or history, a conflict, pickups, an only-me entry or another pilot's answers.
 - An AI note alone never adds a pilot to the file: a pilot with an AI note and no shared human note is not in it (the
-  file stays the noted pilots only). He is read only through a lookup (the brief below).
+  file stays the noted pilots only). He is read only through a lookup (the brief below). One shared entry of the
+  pilot's own on a pilot he looked up makes that pilot a noted one: the record, its union id and its AI note then stay
+  in his file while that entry has its text (as decided; bounded by `adds_per_day`, and by a real lookup first).
 - Over 4 MB (`export_bytes`) the entries drop to 20 a record; still over, `full` is true and his new notes are refused.
 
 **The synthesized state** `sensor.<prefix>_pilotdb` (state.json only): state `on`, `off` (not shared) or `waiting` (his
@@ -552,7 +555,9 @@ it went to no portal. Ryan's own switch on his card
 - In: HOM answers with `/share/flight_watcher/pilotdb/ai/in/<batch>.json` (a dotfile, then renamed; at most 2 MB):
   `{v: 1, batch, model, notes: [{id, text}]}`. The Watcher takes a note only when the batch is one of its last 2, the
   id is in that batch, `model` matches `model_re` and `text` is 1 to 600 code points of plain text (the ticket text
-  rule, no `@` and no `://`); anything else is dropped and counted. The file is deleted once read. The log says
+  rule) with nothing of `pilotdb.ai.refuse_re` in it (1.7.10: no `@`, no `://`, no `http:`, `https:` or `www.` in any
+  case, no 5 or more digits in a row, no phone shaped run of 3 digits, a hyphen, period or space and 4 digits; Flight
+  Watcher checks this itself, whatever HOM checked); anything else is dropped and counted. The file is deleted once read. The log says
   "AI notes in: 3 saved, 1 refused": counts only. The same note handed in again writes nothing, and an AI note never
   moves a record's `rev`. Ryan's card says how many pilots of the last batch got no note.
 - On a portal (1.7.10, Ryan's Nov 15 decision; the fixture's `pilotdb.ai.portal`): a shared pilot reads a note, read

@@ -6,8 +6,19 @@ blind), and James SEES the AI note, read only, labeled "AI note, from anonymous 
 human notes, only while Ryan's AI switch is on. His file stays the noted pilots only (an AI note alone adds nobody)
 and the brief keeps the anti-walk rule. CHANGELOG 1.7.10 names both as boundary changes. Contract 1 stays revision 4
 with two additive keys (`union_id`, `ai_note`); the fixture is regenerated, sha256
-`d7e31118bd2680fa50dc56191beb85eaeed21e2691786baa11d755afb91583af` (1.7.9's was `9b882fb6dd00...`). HOM 1.9.0 relays
+`e02caf2960924303aa78d0dfb6b43d13b563e5dca3648bb745f1de071a7b362b` (1.7.9's was `9b882fb6dd00...`). HOM 1.9.0 relays
 the file and the state as signed and reads no key of either, so either order is safe.
+
+Review fixes (same branch, commit "Flight Watcher 1.7.10 review fixes"): a record left in James's file by a taken back
+entry alone carries no AI note; Flight Watcher refuses by itself an AI note with a web or mail address, a link, a phone
+shaped run or 5 or more digits in a row (`roles.PILOTDB_AI` `refuse_re`, in the contract with four more refused
+samples, which is why the fixture's sha256 moved again); Ryan's share confirm names the union ID and the AI note; the
+AI box's heading reads once. HOM must re-pin these exact bytes. Open for Ryan (one question): one shared entry of
+James's own on a pilot he looked up keeps that pilot, his union id and each later AI note in James's file while the
+entry has its text (at most 40 entries in 24 h, never without a real lookup). Built as decided (B: a record already in
+his file); if Ryan wants the AI note only on records Ryan himself noted, that is a small change in
+`pilotdb.export_for`. Optional for HOM: `cleanNote` (lib/bus/fwAiNotes.ts) could refuse the phone and digit runs too,
+so it does not write a note Flight Watcher then drops; not needed for either release order.
 
 Release order for 1.7.10, each step [DESTRUCTIVE] with Ryan's own yes (an earlier yes never covers a later one):
 1. Push `fw-1.7.10` and open the Flight Watcher PR (a push, so Ryan's yes).

@@ -396,10 +396,12 @@ Recent finds.
   On, Ryan's Watcher writes `/share/flight_watcher/pilotdb/ai/stats.json` for HOM's consultant models: pickup
   statistics of each pilot with 3 or more pickups under an id made new for every batch that only Ryan's database maps
   back, with no name, employee number, record id, seniority number, date of hire, pairing number or exact date. HOM's
-  answer (`ai/in/<batch>.json`) is taken note by note (at most 600 characters of plain text, no link or address) into
+  answer (`ai/in/<batch>.json`) is taken note by note (at most 600 characters of plain text; no link, web or mail address, phone shaped number or run of 5 or more
+  digits: `roles.PILOTDB_AI` `refuse_re`, checked by Flight Watcher itself) into
   `ai_notes`, apart from the human notes, shown on Ryan's card labeled AI. 1.7.10 (Ryan, Nov 15): a pilot Ryan shares
   the database with reads it too, read only, on the records of his file and on the pilot he looked up, only while this
-  switch is on; a pilot with an AI note and no shared human note is not added to his file.
+  switch is on; a pilot with an AI note and no shared human note is not added to his file, and a record left in it by a
+  taken back entry alone carries no AI note.
   `PORTAL_CONTRACT.md` section 5.8.
 - Rules live in `/data/rules.json` and are edited there (the schema is on the page). They are checked against each
   new pairing; a match publishes `flight_watcher/event/rule_match` and `sensor.flight_watcher_last_match`.

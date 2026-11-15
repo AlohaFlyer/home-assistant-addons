@@ -567,11 +567,16 @@ PILOTDB_ANSWERS = (
 # no name, employee number, record id, seniority number, date of hire, pairing number or exact date. HOM answers with
 # one file per batch; a note is note_max code points of plain text at most (the ticket text rule, no "@" and no
 # "://"), stored apart from the human notes (pilotdb's ai_notes), labeled AI with its model, never an instruction.
+# 1.7.10 review: refuse_re (a search, no flags) is everything a note may not hold now that a shared pilot reads it: an
+# address ("@"), a link ("://", "http:", "https:", "www." in any case), 5 or more digits in a row (an employee number)
+# and a phone shaped run (3 digits, a hyphen, period or space, 4 digits). A pickup pattern needs none of them. A name
+# or an order in words cannot be told by a pattern: the note stays untrusted plain text wherever it is read.
 PILOTDB_AI = {"min_pickups": 3, "note_max": 600, "model_max": 80, "batch_keep": 2, "max_pilots": 2000,
               "in_bytes": 2 * 1024 * 1024, "stale_h": 72,
               "dir": "/share/flight_watcher/pilotdb/ai", "stats_file": "stats.json", "in_dir": "in",
               "in_file_re": r"^[0-9a-f]{16}\.json$", "id_re": r"^a[0-9a-f]{16}$", "batch_re": r"^[0-9a-f]{16}$",
-              "model_re": r"^[A-Za-z0-9][A-Za-z0-9 ._:/()+-]{0,79}$"}
+              "model_re": r"^[A-Za-z0-9][A-Za-z0-9 ._:/()+-]{0,79}$",
+              "refuse_re": r"@|://|\b[Hh][Tt][Tt][Pp][Ss]?:|\b[Ww][Ww][Ww]\.|[0-9]{5,}|[0-9]{3}[-. ][0-9]{4}"}
 
 
 def portal_sub(sub):

@@ -21,15 +21,32 @@ load, nothing shared that Ryan's own switches do not already gate. Synthetic dat
   file. He is read only through a lookup, and the brief keeps the anti-walk rule: only once that lookup really ran,
   for at most 20 distinct pilots an hour.
 - The pilot's Watcher trusts no file: it passes on a union id only when it is 1 to 10 digits and an AI note only when
-  it still passes the hand-off's own rules (plain text of 1 to 600 characters, no "@", no "://", a model name of the
-  contract's pattern), with the three keys text, model and time and nothing else (`pdbshare.ai_note_of`).
+  it still passes the hand-off's own rules (plain text of 1 to 600 characters with nothing of `refuse_re` in it, a
+  model name of the contract's pattern), with the three keys text, model and time and nothing else
+  (`pdbshare.ai_note_of`).
+- **The AI note goes with a shared human note James can read** (review). A record stays in his file after its only
+  shared entry was taken back (the "taken back" line, as in 1.7.9, now with its union id), but it carries no AI note:
+  `ai_note` is on a record only while it has a notes field or an entry that still has its text. Known and as
+  decided: one shared entry of James's own on a pilot he looked up makes that pilot a noted one, so the record, its
+  union id and its AI note (each later batch's too) stay in his file while that entry has its text. He reaches no
+  pilot without a real lookup, and his entries are capped at 40 in 24 h.
+- **Flight Watcher checks an AI note's text itself** (review; before, it refused only "@" and "://" and left the rest
+  to HOM). `roles.PILOTDB_AI` `refuse_re`, one rule for `pilotdb.ai_take` and `pdbshare.ai_note_of`
+  (`pilotdb.ai_text_ok`): no "@", no "://", no "http:", "https:" or "www." in any case, no 5 or more digits in a row
+  (an employee number), no phone shaped run (3 digits, a hyphen, period or space, 4 digits). Such a note is dropped
+  and counted ("left out" on Ryan's card); times (07:10), months (2026-09) and counts pass. A name or an order written
+  in words cannot be told by a pattern: the note is untrusted plain text, drawn as a text node, never an instruction.
+- Ryan's "Share the pilot database with ...?" confirm now names the union ID and the AI note (review), and the AI
+  note box's heading reads "AI note" once to a screen reader (the visible AI tag is `aria-hidden`).
 - Ryan's card: the Sharing text says what a shared pilot now sees, and the "Turn the AI notes on?" confirm says that
   a pilot he shares the database with sees each note read only.
 
 ### The contract: still contract 1 revision 4, two additive keys
 - `portal.PILOTDB_FILE_KEYS` (record: `union_id`, `ai_note`) and `PILOTDB_STATE_KEYS` (shown: `union_id`, `ai_note`);
-  the fixture is regenerated (sha256 `d7e31118bd2680fa50dc56191beb85eaeed21e2691786baa11d755afb91583af`) and
-  `PORTAL_CONTRACT.md` (5.7, 5.8, "Revision 4 as of 1.7.10") says the same.
+  the fixture is regenerated (sha256 `e02caf2960924303aa78d0dfb6b43d13b563e5dca3648bb745f1de071a7b362b`) and
+  `PORTAL_CONTRACT.md` (5.7, 5.8, "Revision 4 as of 1.7.10") says the same. The review added `pilotdb.ai.refuse_re`
+  and four refused AI note samples (a bare www host, http with no slashes, a phone shaped run, 5 or more digits in a
+  row): data and samples only, no key HOM's run-time code reads.
 - Why not revision 5: HOM 1.9.0 relays the pilotdb file and the state export as signed and reads no key of either
   (its `fwportal/server.mjs` state and file routes pass the verified payload through; its copy of the contract's
   `pilotdb` section is read by no run-time code). No command, shape, limit, file kind or event kind changed. So 1.7.10
