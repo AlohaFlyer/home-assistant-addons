@@ -1,36 +1,50 @@
 # HANDOFF: Flight Watcher (refreshed 2026-11-15, release 1.7.9 live with HOM 1.9.0; 1.7.10 built, not released)
 
-**1.7.10 built on branch `fw-1.7.10` (not pushed, not merged, not live).** Ryan's two decisions of Nov 15: James SEES
-the union ID on his portal (each record of his file and the looked-up pilot's brief; his edit of it is no longer
-blind), and James SEES the AI note, read only, labeled "AI note, from anonymous pickup statistics", apart from the
-human notes, only while Ryan's AI switch is on. His file stays the noted pilots only (an AI note alone adds nobody)
-and the brief keeps the anti-walk rule. CHANGELOG 1.7.10 names both as boundary changes. Contract 1 stays revision 4
-with two additive keys (`union_id`, `ai_note`); the fixture is regenerated, sha256
-`e02caf2960924303aa78d0dfb6b43d13b563e5dca3648bb745f1de071a7b362b` (1.7.9's was `9b882fb6dd00...`). HOM 1.9.0 relays
-the file and the state as signed and reads no key of either, so either order is safe.
+**1.7.10 built on branch `fw-1.7.10` (not pushed, not merged, not live).** Ryan's decisions of Nov 15: "The pilot
+database should be shared with James 100%; we work on a shared system; we do have our own schedules and pay rates
+though." Built in three commits on top of the part one commits (James sees the union ID and the AI note):
 
-Review fixes (same branch, commit "Flight Watcher 1.7.10 review fixes"): a record left in James's file by a taken back
-entry alone carries no AI note; Flight Watcher refuses by itself an AI note with a web or mail address, a link, a phone
-shaped run or 5 or more digits in a row (`roles.PILOTDB_AI` `refuse_re`, in the contract with four more refused
-samples, which is why the fixture's sha256 moved again); Ryan's share confirm names the union ID and the AI note; the
-AI box's heading reads once. HOM must re-pin these exact bytes. Open for Ryan (one question): one shared entry of
-James's own on a pilot he looked up keeps that pilot, his union id and each later AI note in James's file while the
-entry has its text (at most 40 entries in 24 h, never without a real lookup). Built as decided (B: a record already in
-his file); if Ryan wants the AI note only on records Ryan himself noted, that is a small change in
-`pilotdb.export_for`. Optional for HOM: `cleanNote` (lib/bus/fwAiNotes.ts) could refuse the phone and digit runs too,
-so it does not write a note Flight Watcher then drops; not needed for either release order.
+- Part one, final (commit "Flight Watcher 1.7.10: the pilot database shared 100% with every portal pilot, on by
+  default; AI notes on; a pilot's uploads merge into it"): a shared pilot's file holds every live record with every
+  field (employee number, phones and emails too), the notes, the whole log (no "Only me" any more; old only-me
+  entries are shared), each picker's pickups and the AI note. Sharing is on by default for every portal pilot and AI
+  notes are on by default; Ryan's card keeps an OFF switch for each, kept in `/data/pilotdb_switches.json`, outside
+  the database, so a daily copy put back changes neither (the 1.7.9 "restore turns both off" fix is removed with the
+  switches' move). A contact list or an award a pilot's instance saves merges like Ryan's, with that pilot as the
+  author. James's portal card is a full browse and search of every pilot. `roster.json`, the looked-up brief and its
+  anti-walk limits are gone; every FLICA limit is untouched.
+- Part two (commit "... award seniority, name lookups through the pilot database, pickup speed capped at Ryan's
+  request time, no crew names or numbers in Ryan's log"): CHANGELOG 1.7.10 "Part two".
+
+CHANGELOG 1.7.10 names every boundary change (15 of them). Contract 1 stays revision 4: HOM 1.9.0 relays the file and
+the state as signed, reads no key of either and caps a file at 8 MiB (Flight Watcher keeps it under 7 MiB; a
+synthetic 1300 pilot file is 0.64 to 3.2 MiB). The fixture is regenerated, sha256
+`86c2d8f905eff7509cb8ef85cf3f8a7adf7e611556ab395a017e6fd460311fbf` (part one's first build: `e02caf296092...`;
+1.7.9's: `9b882fb6dd00...`). HOM must re-pin these exact bytes (tests and docs, no deploy); either order is safe.
+
+Open for Ryan:
+1. **The CLAUDE.md line was NOT changed.** The 1.7.9 hard rule still reads "Claude never turns a pilot database share
+   or the AI notes switch on or off: those are Ryan's taps only." It needs Ryan's own edit or his yes (an agent's
+   brief cannot change CLAUDE.md). Proposed wording: "Sharing and AI notes are on by default by Ryan's decision of
+   Nov 15, 2026; Claude never turns either on or off by hand, and turning one off is Ryan's tap." The untrusted-data
+   rule stays as it is. `tests/test_fw179_pilotdb_rule.py` still tests the current line and changes with it.
+2. A contact list has no upload kind on James's portal (`upload/pdf` takes pairings and award). Adding it changes a
+   command shape, so it is contract revision 5 with HOM 1.9.1 first. Today his contact list merges only when his
+   instance saves one (the 1.4.8 uploads path, which the retired HA dashboard used). Say if he should get it.
+3. The base is read only on James's portal for the same reason (`pilotdb/edit`'s field list is a shape).
+4. The update itself turns sharing with James on and the AI notes on (no tap). If Ryan wants either off from the
+   first minute, say so before the update: the switch is on his Pilots card (Settings, Sharing).
 
 Release order for 1.7.10, each step [DESTRUCTIVE] with Ryan's own yes (an earlier yes never covers a later one):
-1. Push `fw-1.7.10` and open the Flight Watcher PR (a push, so Ryan's yes).
-2. Merge the Flight Watcher PR (yes), then store reload and update the app on Pako (yes). It works with the live
-   HOM 1.9.0. Verify: `sensor.flight_watcher_state` version 1.7.10 on both instances, the app log, James's manifest
-   still revision 4.
+1. Push `fw-1.7.10` and update the Flight Watcher PR (a push, so Ryan's yes).
+2. Merge the Flight Watcher PR (yes), then store reload and update the app on Pako (yes; this yes turns sharing and
+   AI notes on). It works with the live HOM 1.9.0. Verify: `sensor.flight_watcher_state` version 1.7.10 on both
+   instances, the app log ("pilot db: shared with james", no name or number in Ryan's log), James's manifest still
+   revision 4, his signed `pilotdb` file (every live record, whitelisted keys only, under 7 MiB), his sensor `on`,
+   no `roster.json` under `/data/pilotdb_roster`.
 3. HOM: the re-pin PR on branch `claude/hom-1.9.1-pilotdb` (fixture copy, its sha256, its test, docs; tests and docs
-   only if no run-time code changed there): push (yes), merge (yes). No deploy. Before or after step 2.
-4. Ryan's own taps, as before: "Share with james", and "AI notes" if he wants James to see AI notes. Claude never
-   taps either and never contacts James.
-5. After a share is on: Claude checks James's signed file (whitelisted keys only; `union_id` on each record; `ai_note`
-   only with the AI switch on) and his sensor's `shown` after a lookup.
+   only): push (yes), merge (yes). No deploy. Before or after step 2.
+4. No tap is needed. Claude never taps either switch and never contacts James.
 
 State (Nov 15, later): app **1.7.9** live on Pako HI since 2026-11-15 18:56 UTC (08:56 HST), both instances (PR #120,
 squash 855cd29), on **HOM 1.9.0** (AlohaFlyer/home-office-manager PR #60, squash 7bf6d25, deployed by Hark about
@@ -54,10 +68,10 @@ state without a session 401, bus health 200, MCP without a token 401, no errors 
 1.7.9: Ryan's own log still quotes crew names and numbers in the pairing detail lines and in his own Schedule Lookup
 lines (they are not in-flight lines).
 
-Next for Ryan: the "Share with james" tap on his Pilots card (Settings view); then Claude checks James's file (signed,
-whitelisted keys only, his sensor `on`). Open for Ryan (one question each): the standing rule also looks up a lone
-name that is no candidate for the open seat (say if it should be only FO and RO names of a pickup with no open seat
-on file); refusing the contacts and seniority upload kinds on a pilot's instance (a boundary change, not built).
+Next for Ryan (as of 1.7.9; 1.7.10 makes sharing automatic, see the top): Open for Ryan (one question): the standing
+rule also looks up a lone name that is no candidate for the open seat (say if it should be only FO and RO names of a
+pickup with no open seat on file). Settled by Ryan's decision 4 of Nov 15: the contacts and seniority upload kinds on
+a pilot's instance are accepted and merged (1.7.10).
 Contract 1 revision 4: `flight_watcher/PORTAL_CONTRACT.md` sections 4.3, 5.7 and 5.8; the fixture
 `flight_watcher/tests/fixtures/portal_contract_v1.json` (live 1.7.9: sha256
 `9b882fb6dd00a932e196359edc364ee8ecbe78da7077f5f29a7fdc06301a6176`, the bytes HOM 1.9.0 pins; 1.7.10 regenerates it, see
@@ -97,8 +111,8 @@ contact CSV on the share (`seniority.json` is merged when Ryan uploads the union
 (counts only) and the Pilots card (`flight-watcher-pilotdb-card.js`, admin only, kept off every portal); the pilot
 card's `_esc` escapes `'`; the in-flight re-check; the reviewers' fixes (CHANGELOG 1.7.8 "Review fixes"); the pickers
 table fits Mac and iPad cards and the admin's lookup hint is short. Contract unchanged at revision 3, HOM untouched,
-nothing shared with James (that is 1.7.9 with HOM 1.9.0, its own yes). Open for Ryan's yes, not built: refusing the
-contacts and seniority upload kinds on a pilot's instance (a boundary change).
+nothing shared with James (that is 1.7.9 with HOM 1.9.0, its own yes). (The contacts and seniority upload kinds on a
+pilot's instance: settled Nov 15, accepted and merged, 1.7.10.)
 
 Verified on Pako after the update: both instances report 1.7.8; the log has "pilot db: contacts 2026-11-14 merged:
 1228 added" and "pilot db: seeded: 1228 pilots (0 gone), 0 with hand edits, 0 conflicts, 112 pickups of 74 pickers"

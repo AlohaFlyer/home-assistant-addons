@@ -2,8 +2,8 @@
 the award seniority), so a whole last name or 'Last, First' finds any pilot, not only those on an award's pilot lines
 or a seniority list. Before, a portal pilot's lookup of a surname that is in the database answered "No pilot named
 ... on the award or seniority list on file". Ryan's lookup searches his database; a portal pilot's searches the
-award's seniority lines (the award text every instance has) and, while Ryan shares the database with him, the roster
-his Watcher already holds. The FLICA lookup then runs exactly as before: the pick list still shows a name and a seat,
+award's seniority lines (the award text every instance has) and, unless Ryan turned his share off, the records of
+his own pilotdb file (every live record since Ryan's decision 1 of Nov 15). The FLICA lookup then runs exactly as before: the pick list still shows a name and a seat,
 never a number, and no budget or limit changed. Synthetic pilots only ("Doe, Jane" 10001)."""
 import json
 

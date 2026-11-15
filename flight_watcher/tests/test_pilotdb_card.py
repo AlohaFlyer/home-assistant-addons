@@ -287,15 +287,15 @@ def test_edit_notes_log_and_the_conflict_view(seeded):
           [...e.querySelectorAll('button')].find((b) => b.textContent === 'Restore').click(); }""")
         pg.wait_for_function("C.shadowRoot.querySelector('textarea[data-k=notes]').value === 'Saved elsewhere first.'")
         assert db.record(jane)["notes"]["text"] == "Saved elsewhere first."
-        # the log: add with Only me, take back, hide and restore
-        pg.evaluate("""() => { const t = C.shadowRoot.querySelector('textarea[data-k=entry]'); t.value = 'Only for me: ask about the 777.'; t.dispatchEvent(new Event('input'));
-          const c = C.shadowRoot.querySelector('input[data-k=only]'); c.checked = true; c.dispatchEvent(new Event('change')); }""")
+        # the log: add (1.7.10, Ryan Nov 15: no "Only me" box any more, every entry is shared), take back, hide and restore
+        assert pg.evaluate("() => C.shadowRoot.querySelector('input[data-k=only]') === null && !C.shadowRoot.textContent.includes('Only me')")
+        pg.evaluate("""() => { const t = C.shadowRoot.querySelector('textarea[data-k=entry]'); t.value = 'Only for me: ask about the 777.'; t.dispatchEvent(new Event('input')); }""")
         _click(pg, "Add")
         pg.wait_for_function("C.shadowRoot.textContent.includes('Only for me: ask about the 777.')")
         e = next(x for x in db.record(jane)["entries"] if x["text"] == "Only for me: ask about the 777.")  # review: by text
-        assert (e["text"], e["shared"], e["by"]) == ("Only for me: ask about the 777.", False, "ryan")
+        assert (e["text"], e["shared"], e["by"]) == ("Only for me: ask about the 777.", True, "ryan")
         assert db.record(jane)["entries"][0]["eid"] == e["eid"]  # and newest first (entries in one second keep their order)
-        assert "only me" in pg.evaluate("(eid) => C.shadowRoot.querySelector(`[data-eid=${eid}]`).textContent", e["eid"])
+        assert "only me" not in pg.evaluate("(eid) => C.shadowRoot.querySelector(`[data-eid=${eid}]`).textContent", e["eid"])
         pg.evaluate("(eid) => [...C.shadowRoot.querySelector(`[data-eid=${eid}]`).querySelectorAll('button')].find((b) => b.textContent === 'Take back').click()", e["eid"])
         pg.wait_for_function("(eid) => C.shadowRoot.querySelector(`[data-eid=${eid}]`).textContent.includes('taken back by ryan')", arg=e["eid"])
         assert next(x for x in db.record(jane)["entries"] if x["eid"] == e["eid"])["gone"] == "retracted"

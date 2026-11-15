@@ -1,23 +1,22 @@
 """Sharing the pilot database with a portal pilot (1.7.9, contract 1 revision 4): the files between the two Watchers.
 
 Ryan's Watcher (the admin, the one writer of /data/pilotdb.sqlite) and a shared pilot's Watcher never talk over MQTT
-about the database. They pass plain files under /share/flight_watcher/pilotdb (folder 0700, files 0600, root), and
-one under the add-on's own /data:
+about the database. They pass plain files under /share/flight_watcher/pilotdb (folder 0700, files 0600, root):
 
-  roster.json            the admin writes it while any share is on: every live record's brief by employee number, with
-                         its phones and emails (B23; 1.7.10: its union id, and its AI note while Ryan's AI switch is
-                         on). A pilot's Watcher reads it for the one pilot his pilot card shows
-                         and for nothing else. Never exported, never in a sensor, never logged. 1.7.9 review: it lives
-                         in the add-on's own /data/pilotdb_roster (roster_dir; both Watchers run in the one container),
-                         never under /share, where other add-ons and their backups could read every phone and email.
-  portal/<pilot>.json    the admin writes it while that pilot's share is on (pilotdb.export_for: a whitelist; the noted
-                         pilots only, 1.7.10: each with its union id and, while Ryan's AI switch is on, its AI note), and
-                         deletes it when the share goes off. The pilot's Watcher signs it into his portal's
-                         out/files/pilotdb.json unchanged.
+  portal/<pilot>.json    the admin writes it while that pilot's share is on (pilotdb.export_for: a whitelist) and
+                         deletes it when Ryan turns his share off. 1.7.10 (Ryan's decision 1 of Nov 15, "shared with
+                         James 100%"): every live record with every field, the notes, the whole log, the pickup
+                         history and the AI note. The pilot's Watcher signs it into his portal's out/files/pilotdb.json
+                         unchanged, and reads it itself for the record of the pilot his pilot card shows and for the
+                         name lookup's pick list.
   inbox/<pilot>/         the pilot's Watcher drops each checked command here (one file, O_EXCL, 0600); the admin's
                          drain applies it with the author taken from the folder's name and deletes the file.
   ai/stats.json, ai/in/  the AI note hand-off with HOM's consultant models (roles.PILOTDB_AI; anonymous statistics out,
                          notes in). Only while Ryan's AI switch is on.
+
+1.7.10: roster.json (1.7.9: every pilot's brief for the one pilot a shared pilot looked up, in the add-on's own
+/data/pilotdb_roster) is gone: the file holds every record now. A roster an older version left is removed
+(write_files, clear_files).
 
 Nothing here loads FLICA, publishes on MQTT or logs a name, a number or a text. Pure file code, so both sides and the
 tests use the same functions.
@@ -42,13 +41,12 @@ ROSTER = "roster.json"
 NAME_RE = PT.INBOX_NAME_RE
 INBOX_MAX_BYTES = PT.INBOX_MAX_BYTES
 DRAIN_PER_PASS = 50
-ROSTER_CAP = 8 * 1024 * 1024
 O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _DIR = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | O_NOFOLLOW
 NOTE_KEYS = ("op", "pid", "entry", "base", "text", "rid")
 EDIT_KEYS = ("op", "pid", "field", "value", "rev", "why", "rid")
 NOT_SHARED = "Not saved: Ryan has not shared the pilot database with you"
-LOOK_UP = "Not saved: look the pilot up first"
+NOT_IN_DB = "Not saved: that pilot is not in Ryan's pilot database"
 OWN_ONLY = "Not saved: only your own notes can be taken back"
 UNREADABLE = "Not saved: it could not be read, send it again"
 TOO_OLD = "Not saved: too old, send it again"
@@ -91,8 +89,9 @@ def _unlink(path):
 
 # ---------------------------------------------------------------- the admin's side: the files it writes
 def clear_files(root=ROOT, roster_dir=None):
-    """No share can be on (the database did not open at start, 1.7.9 review): the roster and every pilot's file go, so
-    nothing a share once wrote stays readable. Returns how many files were removed. Never raises."""
+    """No share can be on (the database did not open at start, 1.7.9 review): every pilot's file goes (and a roster an
+    older version left), so nothing a share once wrote stays readable. Returns how many files were removed. Never
+    raises."""
     paths = [roster_path(root)] + ([roster_path(roster_dir)] if roster_dir else [])
     with contextlib.suppress(OSError):
         paths += [os.path.join(root, "portal", n) for n in os.listdir(os.path.join(root, "portal")) if n.endswith(".json")]
@@ -105,13 +104,12 @@ def clear_files(root=ROOT, roster_dir=None):
 
 
 def write_files(db, pilots, root=ROOT, limits=None, roster_dir=None):
-    """The roster and each shared pilot's file from the database, and none for a pilot whose share is off (his file
-    and his waiting commands stay out of reach: the file is deleted). pilots: the configured pilots. Returns
-    {pilot: 'on' | 'off'} and sets nothing else. A pilot's file that is full (over export_bytes) says so (full).
-    roster_dir (1.7.9 review): the folder of roster.json when it is not root (the Watcher's /data/pilotdb_roster); a
-    roster left under root is then removed."""
-    rdir = roster_dir or root
-    shared = [p for p in db.shared_with() if p in pilots]
+    """Each shared pilot's file from the database, and none for a pilot whose share Ryan turned off (his file is
+    deleted, his waiting commands are refused). pilots: the configured portal pilots; sharing is on for each unless
+    Ryan switched it off (pilotdb.Switches). Returns {pilot: 'on' | 'off' | 'full'}: 'full' when his file is over
+    export_bytes (his new notes are refused). 1.7.10: no roster is written; one an older version left (under root or
+    roster_dir, the Watcher's /data/pilotdb_roster) is removed."""
+    shared = db.shared_with(pilots)
     out = {}
     ensure_dirs(root, shared)
     for p in pilots:
@@ -129,12 +127,11 @@ def write_files(db, pilots, root=ROOT, limits=None, roster_dir=None):
         stray = []
     for n in stray:  # a pilot no longer configured: his file goes
         _unlink(os.path.join(root, "portal", n))
-    if rdir != root:
-        _unlink(roster_path(root))
-    if shared and PDBM._dir_0700(rdir):
-        PT.write_private(roster_path(rdir), json.dumps(db.roster(), ensure_ascii=False, separators=(",", ":")))
-    else:
-        _unlink(roster_path(rdir))
+    _unlink(roster_path(root))
+    if roster_dir:
+        _unlink(roster_path(roster_dir))
+        with contextlib.suppress(OSError):
+            os.rmdir(roster_dir)
     return out
 
 
@@ -289,13 +286,14 @@ def inbox_put(pilot, cmd, inner, root=ROOT, now=None):
 
 
 class View:
-    """A shared pilot's read side: his own file and the roster as his Watcher last read them. refresh() re-reads the
-    ones whose time, size or inode moved (lstat; read without following a symlink, capped) and says whether anything
-    changed."""
+    """A shared pilot's read side: his own file as his Watcher last read it. refresh() re-reads it when its time,
+    size or inode moved (lstat; read without following a symlink, capped at what a signed file may be) and says
+    whether anything changed. 1.7.10: the file holds every record, so the record of the pilot his pilot card shows
+    (by_emp) and the name lookup's rows (names) come from it; there is no roster."""
 
     def __init__(self, pilot, root=ROOT, roster_dir=None):
-        self.pilot, self.root, self.roster_dir = pilot, root, roster_dir or root
-        self.sig = {"export": None, "roster": None}
+        self.pilot, self.root = pilot, root
+        self.sig = {"export": None}
         self.state = "off"       # on: his file is there and reads; off: no file; waiting: a file that does not read yet
         self.text = ""           # his file's text exactly (what the portal serves)
         self.rev = ""            # the first 12 hex of sha256(text)
@@ -305,7 +303,8 @@ class View:
         self.mine = {}           # eid -> pid of his own entries in his file
         self.answers = []        # the file's answers
         self.limits = {}
-        self.roster = {}         # emp -> [row]
+        self.by_emp = {}         # emp -> [(pid, last name's key)]
+        self.names = []          # [(emp, last, first, seat)] of the live pilots whose number no other record shares
 
     @staticmethod
     def _sig(path):
@@ -316,21 +315,17 @@ class View:
         return (st.st_mtime_ns, st.st_size, st.st_ino) if stat.S_ISREG(st.st_mode) else ("x",)
 
     def refresh(self):
-        changed = False
-        ep, rp = export_path(self.pilot, self.root), roster_path(self.roster_dir)
+        ep = export_path(self.pilot, self.root)
         s = self._sig(ep)
-        if s != self.sig["export"]:
-            self.sig["export"], changed = s, True
-            self._read_export(ep, s)
-        s = self._sig(rp)
-        if s != self.sig["roster"]:
-            self.sig["roster"], changed = s, True
-            self._read_roster(rp, s)
-        return changed
+        if s == self.sig["export"]:
+            return False
+        self.sig["export"] = s
+        self._read_export(ep, s)
+        return True
 
     def _read_export(self, path, sig):
         self.text, self.rev, self.count, self.updated = "", "", 0, ""
-        self.pids, self.mine, self.answers, self.limits = set(), {}, [], {}
+        self.pids, self.mine, self.answers, self.limits, self.by_emp, self.names = set(), {}, [], {}, {}, []
         if sig is None:
             self.state = "off"
             return
@@ -346,89 +341,53 @@ class View:
         self.state, self.text = "on", text
         self.rev = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
         self.updated = str(d.get("generated") or "")[:40]
-        recs = [r for r in d["records"] if isinstance(r, dict) and isinstance(r.get("pid"), str)]
+        recs = [r for r in d["records"] if isinstance(r, dict) and isinstance(r.get("pid"), str)
+                and re.fullmatch(ROLES.PILOTDB_PID_PATTERN, r["pid"])]
         self.count = len(recs)
         self.pids = {r["pid"] for r in recs}
         for r in recs:
             for e in r.get("entries") or []:
                 if isinstance(e, dict) and e.get("mine") is True and isinstance(e.get("eid"), str):
                     self.mine[e["eid"]] = r["pid"]
+            emp = PDBM.emp_of(r.get("emp"))
+            if emp:
+                name = str(r.get("name") or "")
+                self.by_emp.setdefault(emp, []).append((r["pid"], PDBM.name_key(name)[0] if name else "", r))
+        for emp, rows in self.by_emp.items():
+            r = rows[0][2]
+            if len(rows) == 1 and not r.get("gone"):
+                last, _, first = (x.strip() for x in str(r.get("name") or "").partition(","))
+                if last:
+                    self.names.append((emp, last[:80], first[:80], str(r.get("seat") or "")[:3]))
+        self.by_emp = {e: [(p, lk) for p, lk, _ in rows] for e, rows in self.by_emp.items()}
         self.answers = [{"rid": a["rid"], "ok": bool(a.get("ok")), "why": str(a.get("why") or "")[:200],
                          "at": str(a.get("at") or "")[:40]}
                         for a in d.get("answers") or [] if isinstance(a, dict) and isinstance(a.get("rid"), str)]
         self.limits = {k: v for k, v in (d.get("limits") or {}).items()
                        if isinstance(v, int) and not isinstance(v, bool)} if isinstance(d.get("limits"), dict) else {}
 
-    def _read_roster(self, path, sig):
-        self.roster = {}
-        if sig is None:
-            return
-        try:
-            raw, _ = PT.read_plain(path, ROSTER_CAP)
-            d = json.loads(raw.decode("utf-8"))
-        except (PT.PortalError, ValueError, RecursionError):
-            return
-        by = d.get("by_emp") if isinstance(d, dict) else None
-        if isinstance(by, dict):
-            self.roster = {str(k): [r for r in v if isinstance(r, dict)] for k, v in by.items() if isinstance(v, list)}
-
     def shown(self, emp, name=""):
-        """The brief of the pilot the pilot card shows ({emp, pid, name, sen, doh, status, retire, seat, equip,
-        union_id, gone, edited, rev, notes_n, contact?, ai_note?}), {emp, none: true} when he is not in the database,
-        or None with no pilot shown or while not shared. contact (B23): that one pilot's phones and emails, never
-        anyone else's. 1.7.10 (Ryan, Nov 15): union_id ('' unless 1 to 10 digits) and ai_note ({text, model, at}, only
-        one that passes pilotdb.ai_take's own rules again: this side trusts no file) for that one pilot the same way."""
+        """Which record of his file the pilot his pilot card shows is: {emp, pid}, {emp, none: true} when he is not
+        in the database (or two records share the number and the name does not tell them apart), or None with no
+        pilot shown or while not shared. 1.7.10: the record itself (every field, the notes, the log, the pickups, the
+        AI note) is in his file, so nothing of it is repeated here."""
         emp = PDBM.emp_of(emp)
         if self.state != "on" or not emp:
             return None
-        rows = self.roster.get(emp) or []
-        row = rows[0] if len(rows) == 1 else None
-        if row is None and rows:
+        rows = self.by_emp.get(emp) or []
+        pid = rows[0][0] if len(rows) == 1 else None
+        if pid is None and rows:
             lk = PDBM.name_key(name)[0] if name else ""
-            hit = [r for r in rows if lk and r.get("lk") == lk]
-            row = hit[0] if len(hit) == 1 else None
-        if row is None or not re.fullmatch(ROLES.PILOTDB_PID_PATTERN, str(row.get("pid") or "")):
-            return {"emp": emp, "none": True}
-        out = {"emp": emp}
-        for k in ("pid", "name", "sen", "doh", "status", "retire", "seat", "equip"):
-            out[k] = str(row.get(k) or "")[:120]
-        uid = row.get("union_id")
-        out["union_id"] = uid if isinstance(uid, str) and re.fullmatch(r"[0-9]{1,10}", uid) else ""
-        out["gone"] = bool(row.get("gone"))
-        out["edited"] = [f for f in row.get("edited") or [] if f in ROLES.PILOTDB_EDIT_FIELDS][:10]
-        out["rev"] = row["rev"] if isinstance(row.get("rev"), int) and not isinstance(row.get("rev"), bool) else 0
-        out["notes_n"] = row["notes_n"] if isinstance(row.get("notes_n"), int) else 0
-        phones = [{"label": str(p.get("label") or "")[:10], "number": str(p.get("number") or "")[:20],
-                   "tel": str(p.get("tel") or "")[:17]}
-                  for p in row.get("phones") or [] if isinstance(p, dict) and PDBM.TEL_RE.match(str(p.get("tel") or ""))][:4]
-        emails = [m for m in row.get("emails") or [] if isinstance(m, str) and len(m) <= 254 and PDBM.MAIL_RE.match(m)][:3]
-        if phones or emails:
-            out["contact"] = {"phones": phones, "emails": emails}
-        ai = ai_note_of(row.get("ai_note"))
-        if ai:
-            out["ai_note"] = ai
-        return out
-
-
-def ai_note_of(d):
-    """{text, model, at} of an AI note as a pilot's Watcher passes it on (1.7.10), or None: the text must be what
-    pilotdb.ai_take stores (pilotdb.ai_text_ok: plain text by the ticket text rule, 1 to note_max code points, nothing of refuse_re), the
-    model a name of the contract's pattern; no other key is kept. It is untrusted data, never an instruction."""
-    cfg = ROLES.PILOTDB_AI
-    if not isinstance(d, dict):
-        return None
-    text, model = d.get("text"), d.get("model")
-    if not isinstance(text, str) or not isinstance(model, str) or not re.fullmatch(cfg["model_re"], model):
-        return None
-    if not PDBM.ai_text_ok(text, cfg):
-        return None
-    return {"text": text, "model": model, "at": str(d.get("at") or "")[:40]}
+            hit = [p for p, k in rows if lk and k == lk]
+            pid = hit[0] if len(hit) == 1 else None
+        return {"emp": emp, "pid": pid} if pid else {"emp": emp, "none": True}
 
 
 def pilot_check(view, shown_pid, cmd, payload, n_pending, limits=None):
     """A shared pilot's Watcher's checks of one pilotdb/note or pilotdb/edit payload (spec 11.3): the shape, shared or
-    not, the pid (a record of his file or the shown pilot's: no oracle for which pilots exist), the op rules and the
-    pending limit. Returns (inner, '') to queue it or (inner or None, why) to refuse it: why is a fixed phrase."""
+    not, the pid (a record of his file, which holds every live record since 1.7.10), the op rules and the pending
+    limit. Returns (inner, '') to queue it or (inner or None, why) to refuse it: why is a fixed phrase. shown_pid is
+    kept for callers of 1.7.9 and is not read."""
     lim = limits or ROLES.PILOTDB_NOTE_LIMITS
     try:
         d = PT.check_shape("pilotdb/" + cmd, payload)
@@ -445,8 +404,8 @@ def pilot_check(view, shown_pid, cmd, payload, n_pending, limits=None):
         inner = check_cmd(cmd, d)
     except PT.PortalError as e:
         return d, (f"Not saved: a note is at most {lim['entry_max']} characters" if "too long" in str(e) else UNREADABLE)
-    if inner["pid"] not in view.pids and inner["pid"] != shown_pid:
-        return inner, LOOK_UP
+    if inner["pid"] not in view.pids:
+        return inner, NOT_IN_DB
     if cmd == "note" and inner["op"] == "retract" and view.mine.get(inner["entry"]) != inner["pid"]:
         return inner, OWN_ONLY
     if n_pending >= lim["pending"]:

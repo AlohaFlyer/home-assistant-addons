@@ -764,7 +764,6 @@
    "Not saved: a note is at most <n> characters",
    "Not saved: the notes field is at most <n> characters",
    "Not saved: that value is not valid for <field>",
-   "Not saved: look the pilot up first",
    "Not saved: that pilot is not in Ryan's pilot database",
    "Not saved: the log for that pilot is full",
    "Not saved: the shared notes file is full",
@@ -775,9 +774,8 @@
   ],
   "pilotdb_rules": [
    "The portal and the spool check the shape (commands.shapes) and nothing else.",
-   "The pilot's Watcher refuses a command while Ryan has not shared the pilot database with him (no pilotdb file).",
-   "pid must be a record of his current pilotdb file or the pid of the pilot his pilot card shows (shown.pid); otherwise 'look the pilot up first', so a command is no oracle for which pilots exist.",
-   "shown is filled only once that pilot's lookup really ran (FLICA's Schedule Lookup on one of his own paced checks, or its 6 h cache) and for at most 20 distinct pilots an hour; before that and past that it is null, so employee numbers typed one after the other show no record and no contact.",
+   "The pilot's Watcher refuses a command while the pilot database is not shared with him (Ryan turned his share off: no pilotdb file).",
+   "pid must be a record of his current pilotdb file (1.7.10: the file holds every live record); otherwise 'that pilot is not in Ryan's pilot database'.",
    "pilotdb/note: entry only with op retract, and it must be one of his own entries in his file; base only with op field; text only with add (1 to entry_max code points) or field (0 to field_max; empty clears the notes field).",
    "pilotdb/edit: value only with op set; unset puts the uploads' value back.",
    "At most pending commands wait in the admin's inbox per pilot; over it: 'Busy: try again in a minute'.",
@@ -984,7 +982,7 @@
   "pilotdb": "sensor.<prefix>_pilotdb"
  },
  "pilotdb": {
-  "share": "Ryan's switch per portal pilot on his own card (the admin's ingress API, op share), off by default. While it is off the pilot has no pilotdb file, the sensor's state is off and every pilotdb command is refused. Claude never turns it on or off.",
+  "share": "1.7.10 (Ryan's decisions 1 and 2 of Nov 15): the pilot database is shared 100% with every portal pilot, on by default. Ryan's card keeps one switch per portal pilot (the admin's ingress API, op share) as an OFF switch; his choice is kept in the admin's Watcher's own switches file, never in the database, so a database copy put back changes it neither way. While a pilot's share is off he has no pilotdb file, the sensor's state is off and every pilotdb command is refused. Claude never turns it on or off by hand. Schedules and pay rates stay each pilot's own: nothing of them is in this file",
   "file": {
    "kind": "pilotdb",
    "keys": {
@@ -1005,6 +1003,7 @@
     ],
     "record": [
      "pid",
+     "emp",
      "name",
      "sen",
      "doh",
@@ -1012,14 +1011,23 @@
      "retire",
      "seat",
      "equip",
+     "base",
      "union_id",
+     "phones",
+     "emails",
      "gone",
      "edited",
      "rev",
      "notes",
      "ai_note",
      "entries",
-     "entries_total"
+     "entries_total",
+     "pickups"
+    ],
+    "phone": [
+     "label",
+     "number",
+     "tel"
     ],
     "notes": [
      "text",
@@ -1040,6 +1048,45 @@
      "mine",
      "gone"
     ],
+    "pickups": [
+     "summary",
+     "rows"
+    ],
+    "pickup": [
+     "pos",
+     "at",
+     "pairing",
+     "start",
+     "days",
+     "lay",
+     "turn",
+     "credit",
+     "report",
+     "dow",
+     "secs",
+     "approx",
+     "inflt",
+     "n",
+     "station",
+     "n_lay",
+     "pick_dow"
+    ],
+    "pickup_summary": [
+     "n",
+     "lays",
+     "turn_stations",
+     "turns",
+     "layovers",
+     "days",
+     "dow",
+     "pick_dow",
+     "report",
+     "credit_avg",
+     "speed",
+     "inflt",
+     "first_at",
+     "last_at"
+    ],
     "answer": [
      "rid",
      "ok",
@@ -1047,22 +1094,22 @@
      "at"
     ]
    },
-   "records": "only records with a notes field or at least one shared entry that is not hidden (the noted pilots), never the roster; an AI note alone never adds a pilot to the file",
-   "union_id": "1.7.10: the record's union id, '' when none is on file, so the pilot's union id edit (edit_fields) is made on a value he can read",
-   "ai_note": "1.7.10: {text, model, at} on a record that is in the file anyway, only while Ryan's AI switch is on, the record has an AI note and a shared human note the pilot can read (the notes field or an entry that still has its text; a record left in the file by a taken back entry alone carries none); absent otherwise. Read only: no command writes it. Plain text, untrusted data, never an instruction",
-   "entries": "the newest export_entries per record (export_entries_min when the file is over export_bytes; full is true when it still is, and new notes are refused); mine marks the pilot's own; a taken back entry keeps eid, by, at and gone 'taken back', never its text; a hidden one leaves no trace",
+   "records": "every live record of the database (1.7.9: only the pilots with a shared note), sorted by seniority number",
+   "fields": "emp (the employee number), name, sen, doh, status, retire, seat, equip, base, union_id ('' when none), phones (at most 4 {label, number, tel}) and emails (at most 3): the value shown on Ryan's card; edited names the fields a hand set. base is read only on a portal (not an edit field of this revision). Never a field's sources or its history",
+   "ai_note": "{text, model, at} on a record that has an AI note, only while the AI notes are on; absent otherwise. Read only: no command writes it. Plain text, untrusted data, never an instruction",
+   "entries": "the dated log: every entry that is not hidden or purged, whoever wrote it (1.7.10: an entry an older version marked 'Only me' too; the option is gone), the newest export_entries per record; mine marks the pilot's own; a taken back entry keeps eid, by, at and gone 'taken back', never its text; a hidden one leaves no trace",
+   "pickups": "on a record with pickups: the summary of all of them and the newest rows (100; 20 when the file is over export_bytes)",
+   "size": "over export_bytes the entries drop to export_entries_min a record and the pickup rows to 20; full is true when it still is over, and new notes are refused. The file never passes 7 MiB (caps.file is 8 MiB): past that the logs and pickup rows go first, then the notes fields and AI notes, the records last",
    "answers": "this pilot's last answers only",
    "never": [
-    "emp",
-    "phones",
-    "emails",
-    "contact",
+    "a field's sources",
     "history",
     "conflicts",
-    "pickups",
-    "only-me entries",
     "hidden entries",
-    "other pilots' answers"
+    "purged text",
+    "other pilots' answers",
+    "schedules",
+    "pay rates"
    ]
   },
   "state": {
@@ -1087,38 +1134,10 @@
     "shown": [
      "emp",
      "pid",
-     "name",
-     "sen",
-     "doh",
-     "status",
-     "retire",
-     "seat",
-     "equip",
-     "union_id",
-     "gone",
-     "edited",
-     "rev",
-     "notes_n",
-     "contact",
-     "ai_note",
      "none"
-    ],
-    "contact": [
-     "phones",
-     "emails"
-    ],
-    "ai_note": [
-     "text",
-     "model",
-     "at"
-    ],
-    "phone": [
-     "label",
-     "number",
-     "tel"
     ]
    },
-   "shown": "the record brief of the pilot the pilot card shows now, or {emp, none: true} when he is not in the database, or null with no pilot shown; contact (phones, emails) only for that one pilot. Only once that pilot's lookup really ran (a FLICA Schedule Lookup on one of the pilot's own paced checks, or its 6 h cache), never while it is loading or waiting, and for at most 20 distinct pilots an hour; past that it is null. 1.7.10: union_id ('' when none) and, while Ryan's AI switch is on and that pilot has one, ai_note {text, model, at}, under the same rule and for that one pilot only",
+   "shown": "which record of the file the pilot the pilot card shows is: {emp, pid}, {emp, none: true} when he is not in the database, or null with no pilot shown. 1.7.10: the record itself is in the file, so the 1.7.9 brief, its contact and its limits (only after a FLICA lookup ran, 20 distinct pilots an hour) are gone",
    "answers": "the file's answers and the Watcher's own refusals, newest last, at most answers",
    "pending": "the rids waiting in the admin's inbox"
   },
@@ -1144,6 +1163,7 @@
    ],
    "author": "the folder's name; a body by that differs is refused"
   },
+  "uploads": "1.7.10 (Ryan's decision 4 of Nov 15): a contact list or an award a pilot's instance saves (the award through upload/pdf and its checks and quarantine; a contact or seniority list through his instance's uploads path) merges into the one database like Ryan's, with that pilot recorded as the author. Ryan's hand edits stay on top and he can put any earlier value back. upload/pdf's kinds are unchanged (pairings, award)",
   "edit_fields": [
    "name",
    "sen",
@@ -1169,8 +1189,8 @@
    "union_id": "1 to 10 digits"
   },
   "ai": {
-   "switch": "Ryan's switch on his own card (op ai), off by default; while it is off no statistics file is written and no note is taken in",
-   "portal": "1.7.10 (Ryan, Nov 15): a pilot Ryan shares the database with reads a note, read only, on the records of his pilotdb file (the noted pilots only: a note alone adds nobody) and on the looked-up pilot's brief (state.keys.shown, under the anti-walk rule), only while this switch is on. His card labels it 'AI note, from anonymous pickup statistics', apart from the human notes, as plain text. No portal command writes, edits or removes one",
+   "switch": "1.7.10 (Ryan's decision 3 of Nov 15): on by default; Ryan's switch on his own card (op ai) turns it off and on, kept in the admin's Watcher's own switches file, never in the database. While it is off no statistics file is written, no note is taken in and no note is in a pilot's file",
+   "portal": "a pilot the database is shared with reads a note, read only, on the records of his pilotdb file, only while this switch is on. His card labels it 'AI note, from anonymous pickup statistics', apart from the human notes, as plain text. No portal command writes, edits or removes one",
    "min_pickups": 3,
    "note_max": 600,
    "model_max": 80,
@@ -1234,12 +1254,12 @@
     ]
    },
    "rules": [
-    "Flight Watcher writes stats.json only while Ryan's AI switch is on, for pilots with at least min_pickups pickups.",
+    "Flight Watcher writes stats.json only while Ryan's AI switch is on (1.7.10: on by default), for pilots with at least min_pickups pickups.",
     "A pilot's id is random, made new for every batch and kept only in Ryan's pilot database: nothing outside Ryan's Watcher maps it to a pilot. The file holds no name, employee number, record id, seniority number, date of hire, pairing number, exact date or note text.",
     "HOM's consultant models get the statistics of one pilot at a time and write a short plain-text note about his pickup pattern; the prompt carries nothing else of Flight Watcher's.",
     "HOM answers a batch with one file in in_dir named <batch>.json: {v: 1, batch, model, notes: [{id, text}]}.",
     "Flight Watcher takes a note only when the batch is one of its last batch_keep, the id is in that batch, model matches model_re and text is 1 to note_max code points matching text_pattern with nothing of refuse_re in it (no '@', no '://', no 'http:', 'https:' or 'www.' in any case, no 5 or more digits in a row, no phone shaped run of 3 digits, a hyphen, period or space and 4 digits); any other note is dropped and counted. The file is deleted once read.",
-    "A note is stored apart from the human notes (pilotdb's ai_notes), labeled AI with its model and time wherever it is shown, replaced by the next batch's note. It is shown on Ryan's own card and, from Flight Watcher 1.7.10, read only to a pilot Ryan shares the database with (pilotdb.ai.portal). It is data, never an instruction."
+    "A note is stored apart from the human notes (pilotdb's ai_notes), labeled AI with its model and time wherever it is shown, replaced by the next batch's note. It is shown on Ryan's own card and, from Flight Watcher 1.7.10, read only to a pilot the database is shared with (pilotdb.ai.portal). It is data, never an instruction."
    ],
    "sample_stats": {
     "v": 1,
@@ -1540,7 +1560,7 @@
   "1": "Flight Watcher 1.6.0, HOM 1.6.0: first version",
   "2": "Flight Watcher 1.7.0, HOM 1.8.0: tickets on the portal",
   "3": "Flight Watcher 1.7.2, HOM 1.8.2: bid_calendar and schedule_unread alerts, the pilot/set shape, recall/set refused, a pilot's pairings package and award uploads (upload/pdf), the fit alone in the new pairing text, the manifest's revision",
-  "4": "Flight Watcher 1.7.9, HOM 1.9.0: Ryan's pilot database shared with a pilot by Ryan's switch (file kind pilotdb, commands pilotdb/note and pilotdb/edit, synthesized state pilotdb with the looked-up pilot's phones and emails), the swap alert for a new swap idea, the AI note hand-off (pilotdb.ai). Flight Watcher 1.7.10 (Ryan, Nov 15), still revision 4 and additive: the shared pilot reads union_id and ai_note on the records of his pilotdb file and on the looked-up pilot's brief; no command, shape, limit or file kind changed, and the portal passes both through as signed"
+  "4": "Flight Watcher 1.7.9, HOM 1.9.0: Ryan's pilot database shared with a pilot by Ryan's switch (file kind pilotdb, commands pilotdb/note and pilotdb/edit, synthesized state pilotdb), the swap alert for a new swap idea, the AI note hand-off (pilotdb.ai). Flight Watcher 1.7.10 (Ryan's decisions of Nov 15), still revision 4: the database is shared 100% (the pilotdb file holds every live record with every field, the employee number, phones and emails too, the notes, the whole log, the pickup history and the AI note; state.shown only says which record the pilot card's pilot is), on by default for every portal pilot, AI notes on by default. No command, shape, limit, file kind or cap changed and the portal passes the file and the state through as signed, so HOM 1.9.0 serves it as it is"
  },
  "masks": {
   "zero": [
@@ -1553,7 +1573,7 @@
   "never_copied": [
    "context"
   ],
-  "contact_only_in": "sensor.<prefix>_pilotdb attributes.shown.contact: the phones and emails of the one pilot the pilot card shows, from Ryan's pilot database, only while Ryan shares it; never a list, never in a file"
+  "contact_only_in": "the pilotdb file's records (phones, emails), from Ryan's pilot database, only while it is shared with that pilot; never in a state, an event or a push"
  },
  "blob_keep_s": 3600,
  "test_key": {
@@ -1581,8 +1601,8 @@
      "kind": "state",
      "pilot": "demo",
      "seq": 1763600000001,
-     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"idle\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null},\"sensor.flight_watcher_demo_pilotdb\":{\"state\":\"on\",\"attributes\":{\"friendly_name\":\"Pilot database\",\"rev\":\"abc123abc123\",\"file_key\":\"00000000000000000000000000000000\",\"count\":1,\"updated\":\"2026-11-14T20:05:00+00:00\",\"shown\":{\"emp\":\"10001\",\"pid\":\"p0123456789\",\"name\":\"Doe, Jane\",\"sen\":\"812\",\"doh\":\"2001-05-01\",\"status\":\"A\",\"retire\":\"2041-03\",\"seat\":\"FO\",\"equip\":\"A330\",\"union_id\":\"424242\",\"gone\":false,\"edited\":[\"doh\"],\"rev\":7,\"notes_n\":2,\"contact\":{\"phones\":[{\"label\":\"mobile\",\"number\":\"808-555-0100\",\"tel\":\"+18085550100\"}],\"emails\":[\"jane.doe@example.com\"]},\"ai_note\":{\"text\":\"Picks up 3-day Sydney trips that report on a Friday, usually within two minutes of the pairing showing up, midweek.\",\"model\":\"consultant-model-1\",\"at\":\"2026-11-14T20:06:00+00:00\"}},\"answers\":[{\"rid\":\"rdemo0500\",\"ok\":true,\"why\":\"Saved\",\"at\":\"2026-11-14T20:04:58+00:00\"}],\"pending\":[],\"limits\":{\"entry_max\":2000,\"field_max\":4000,\"adds_per_day\":40,\"changes_per_day\":40,\"edits_per_day\":40,\"value_max\":1000,\"why_max\":200}},\"last_changed\":\"2026-11-14T20:05:00+00:00\",\"last_updated\":\"2026-11-14T20:05:00+00:00\"}},\"ha_ok\":true}",
-     "sig": "LG7Hl8rUJclZJ92LYM3kLmVNrhQj1LqlifShtAAHv-lKxYMibSaPL3dFg8SYXvVJAr4deWRsuPnAGlP5J3aIAw"
+     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"idle\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null},\"sensor.flight_watcher_demo_pilotdb\":{\"state\":\"on\",\"attributes\":{\"friendly_name\":\"Pilot database\",\"rev\":\"abc123abc123\",\"file_key\":\"00000000000000000000000000000000\",\"count\":2,\"updated\":\"2026-11-14T20:05:00+00:00\",\"shown\":{\"emp\":\"10001\",\"pid\":\"p0123456789\"},\"answers\":[{\"rid\":\"rdemo0500\",\"ok\":true,\"why\":\"Saved\",\"at\":\"2026-11-14T20:04:58+00:00\"}],\"pending\":[],\"limits\":{\"entry_max\":2000,\"field_max\":4000,\"adds_per_day\":40,\"changes_per_day\":40,\"edits_per_day\":40,\"value_max\":1000,\"why_max\":200}},\"last_changed\":\"2026-11-14T20:05:00+00:00\",\"last_updated\":\"2026-11-14T20:05:00+00:00\"}},\"ha_ok\":true}",
+     "sig": "COZ9AFLIGrTAXOv0frjT3k5Bj9vkjVU-SCK2m_POnggc3aSY_evCDV4F9EEr0Ft2mv5VcNC3RSi9XahUjODiDw"
     }
    },
    {
@@ -1636,8 +1656,8 @@
      "kind": "file:pilotdb",
      "pilot": "demo",
      "seq": 1763600000006,
-     "payload": "{\"v\":1,\"generated\":\"2026-11-14T20:05:00+00:00\",\"as_of\":{\"list\":\"2026-11-01\",\"contacts\":\"2026-11-12\",\"award\":\"2026-12\"},\"count\":1,\"records\":[{\"pid\":\"p0123456789\",\"name\":\"Doe, Jane\",\"sen\":\"812\",\"doh\":\"2001-05-01\",\"status\":\"A\",\"retire\":\"2041-03\",\"seat\":\"FO\",\"equip\":\"A330\",\"union_id\":\"424242\",\"gone\":false,\"edited\":[\"doh\"],\"rev\":7,\"notes\":{\"text\":\"Commutes from the mainland.\",\"rev\":\"a1b2c3d4e5f6\",\"by\":\"ryan\",\"at\":\"2026-11-14T19:00:00+00:00\"},\"ai_note\":{\"text\":\"Picks up 3-day Sydney trips that report on a Friday, usually within two minutes of the pairing showing up, midweek.\",\"model\":\"consultant-model-1\",\"at\":\"2026-11-14T20:06:00+00:00\"},\"entries\":[{\"eid\":\"n0123456789\",\"by\":\"demo\",\"at\":\"2026-11-14T20:04:58+00:00\",\"text\":\"Flew with her in October.\",\"mine\":true},{\"eid\":\"n9876543210\",\"by\":\"ryan\",\"at\":\"2026-11-13T20:00:00+00:00\",\"gone\":\"taken back\"}],\"entries_total\":2}],\"answers\":[{\"rid\":\"rdemo0500\",\"ok\":true,\"why\":\"Saved\",\"at\":\"2026-11-14T20:04:58+00:00\"}],\"limits\":{\"entry_max\":2000,\"field_max\":4000,\"adds_per_day\":40,\"changes_per_day\":40,\"edits_per_day\":40,\"value_max\":1000,\"why_max\":200}}",
-     "sig": "atBSgTUOn_6nQruSzWdDJafqJYA57eea9xvlZlfpzsVennIYVQxIKp1uHn-jncAfI-tiwVgEt1-fF9nyEX_VAw"
+     "payload": "{\"v\":1,\"generated\":\"2026-11-14T20:05:00+00:00\",\"as_of\":{\"list\":\"2026-11-01\",\"contacts\":\"2026-11-12\",\"award\":\"2026-12\"},\"count\":2,\"records\":[{\"pid\":\"p0123456789\",\"emp\":\"10001\",\"name\":\"Doe, Jane\",\"sen\":\"812\",\"doh\":\"2001-05-01\",\"status\":\"A\",\"retire\":\"2041-03\",\"seat\":\"FO\",\"equip\":\"A330\",\"base\":\"HNL\",\"union_id\":\"424242\",\"phones\":[{\"label\":\"mobile\",\"number\":\"808-555-0100\",\"tel\":\"+18085550100\"}],\"emails\":[\"jane.doe@example.com\"],\"gone\":false,\"edited\":[\"doh\"],\"rev\":7,\"notes\":{\"text\":\"Commutes from the mainland.\",\"rev\":\"a1b2c3d4e5f6\",\"by\":\"ryan\",\"at\":\"2026-11-14T19:00:00+00:00\"},\"ai_note\":{\"text\":\"Picks up 3-day Sydney trips that report on a Friday, usually within two minutes of the pairing showing up, midweek.\",\"model\":\"consultant-model-1\",\"at\":\"2026-11-14T20:06:00+00:00\"},\"entries\":[{\"eid\":\"n0123456789\",\"by\":\"demo\",\"at\":\"2026-11-14T20:04:58+00:00\",\"text\":\"Flew with her in October.\",\"mine\":true},{\"eid\":\"n9876543210\",\"by\":\"ryan\",\"at\":\"2026-11-13T20:00:00+00:00\",\"gone\":\"taken back\"}],\"entries_total\":2,\"pickups\":{\"summary\":{\"n\":1,\"lays\":[[\"SYD\",1]],\"turn_stations\":[],\"turns\":0,\"layovers\":1,\"days\":{\"3\":1},\"dow\":{\"Fri\":1},\"pick_dow\":{\"Wed\":1},\"report\":{\"first\":\"07:10\",\"last\":\"07:10\"},\"credit_avg\":\"14:05\",\"speed\":{\"avg_s\":95,\"min_s\":95,\"max_s\":95},\"inflt\":0,\"first_at\":\"2026-11-12T03:10:00+00:00\",\"last_at\":\"2026-11-12T03:10:00+00:00\"},\"rows\":[{\"pos\":\"FO\",\"at\":\"2026-11-12T03:10:00+00:00\",\"pairing\":\"H3601\",\"start\":\"2026-11-20\",\"days\":3,\"lay\":\"SYD\",\"turn\":false,\"credit\":\"14:05\",\"report\":\"07:10\",\"dow\":\"Fri\",\"secs\":95,\"approx\":false,\"inflt\":false,\"n\":1,\"station\":\"SYD\",\"n_lay\":1,\"pick_dow\":\"Wed\"}]}},{\"pid\":\"p1111111111\",\"emp\":\"10002\",\"name\":\"Roe, Richard\",\"sen\":\"\",\"doh\":\"\",\"status\":\"\",\"retire\":\"\",\"seat\":\"CA\",\"equip\":\"A330\",\"base\":\"HNL\",\"union_id\":\"\",\"phones\":[],\"emails\":[],\"gone\":false,\"edited\":[],\"rev\":1,\"entries\":[],\"entries_total\":0}],\"answers\":[{\"rid\":\"rdemo0500\",\"ok\":true,\"why\":\"Saved\",\"at\":\"2026-11-14T20:04:58+00:00\"}],\"limits\":{\"entry_max\":2000,\"field_max\":4000,\"adds_per_day\":40,\"changes_per_day\":40,\"edits_per_day\":40,\"value_max\":1000,\"why_max\":200}}",
+     "sig": "g72JihPH5FHgO-9lVt59A2ph1XlFL9zKszhWaQKxujMFBce4ajIYoOvxxd6RSIlgR1lh-Wy7g3388K-uthu3Cw"
     }
    }
   ],
@@ -1649,8 +1669,8 @@
      "kind": "state",
      "pilot": "demo",
      "seq": 1763600000001,
-     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"hunting\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null},\"sensor.flight_watcher_demo_pilotdb\":{\"state\":\"on\",\"attributes\":{\"friendly_name\":\"Pilot database\",\"rev\":\"abc123abc123\",\"file_key\":\"00000000000000000000000000000000\",\"count\":1,\"updated\":\"2026-11-14T20:05:00+00:00\",\"shown\":{\"emp\":\"10001\",\"pid\":\"p0123456789\",\"name\":\"Doe, Jane\",\"sen\":\"812\",\"doh\":\"2001-05-01\",\"status\":\"A\",\"retire\":\"2041-03\",\"seat\":\"FO\",\"equip\":\"A330\",\"union_id\":\"424242\",\"gone\":false,\"edited\":[\"doh\"],\"rev\":7,\"notes_n\":2,\"contact\":{\"phones\":[{\"label\":\"mobile\",\"number\":\"808-555-0100\",\"tel\":\"+18085550100\"}],\"emails\":[\"jane.doe@example.com\"]},\"ai_note\":{\"text\":\"Picks up 3-day Sydney trips that report on a Friday, usually within two minutes of the pairing showing up, midweek.\",\"model\":\"consultant-model-1\",\"at\":\"2026-11-14T20:06:00+00:00\"}},\"answers\":[{\"rid\":\"rdemo0500\",\"ok\":true,\"why\":\"Saved\",\"at\":\"2026-11-14T20:04:58+00:00\"}],\"pending\":[],\"limits\":{\"entry_max\":2000,\"field_max\":4000,\"adds_per_day\":40,\"changes_per_day\":40,\"edits_per_day\":40,\"value_max\":1000,\"why_max\":200}},\"last_changed\":\"2026-11-14T20:05:00+00:00\",\"last_updated\":\"2026-11-14T20:05:00+00:00\"}},\"ha_ok\":true}",
-     "sig": "LG7Hl8rUJclZJ92LYM3kLmVNrhQj1LqlifShtAAHv-lKxYMibSaPL3dFg8SYXvVJAr4deWRsuPnAGlP5J3aIAw"
+     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"hunting\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null},\"sensor.flight_watcher_demo_pilotdb\":{\"state\":\"on\",\"attributes\":{\"friendly_name\":\"Pilot database\",\"rev\":\"abc123abc123\",\"file_key\":\"00000000000000000000000000000000\",\"count\":2,\"updated\":\"2026-11-14T20:05:00+00:00\",\"shown\":{\"emp\":\"10001\",\"pid\":\"p0123456789\"},\"answers\":[{\"rid\":\"rdemo0500\",\"ok\":true,\"why\":\"Saved\",\"at\":\"2026-11-14T20:04:58+00:00\"}],\"pending\":[],\"limits\":{\"entry_max\":2000,\"field_max\":4000,\"adds_per_day\":40,\"changes_per_day\":40,\"edits_per_day\":40,\"value_max\":1000,\"why_max\":200}},\"last_changed\":\"2026-11-14T20:05:00+00:00\",\"last_updated\":\"2026-11-14T20:05:00+00:00\"}},\"ha_ok\":true}",
+     "sig": "COZ9AFLIGrTAXOv0frjT3k5Bj9vkjVU-SCK2m_POnggc3aSY_evCDV4F9EEr0Ft2mv5VcNC3RSi9XahUjODiDw"
     }
    },
    {
@@ -1660,8 +1680,8 @@
      "kind": "state",
      "pilot": "james",
      "seq": 1763600000001,
-     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"idle\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null},\"sensor.flight_watcher_demo_pilotdb\":{\"state\":\"on\",\"attributes\":{\"friendly_name\":\"Pilot database\",\"rev\":\"abc123abc123\",\"file_key\":\"00000000000000000000000000000000\",\"count\":1,\"updated\":\"2026-11-14T20:05:00+00:00\",\"shown\":{\"emp\":\"10001\",\"pid\":\"p0123456789\",\"name\":\"Doe, Jane\",\"sen\":\"812\",\"doh\":\"2001-05-01\",\"status\":\"A\",\"retire\":\"2041-03\",\"seat\":\"FO\",\"equip\":\"A330\",\"union_id\":\"424242\",\"gone\":false,\"edited\":[\"doh\"],\"rev\":7,\"notes_n\":2,\"contact\":{\"phones\":[{\"label\":\"mobile\",\"number\":\"808-555-0100\",\"tel\":\"+18085550100\"}],\"emails\":[\"jane.doe@example.com\"]},\"ai_note\":{\"text\":\"Picks up 3-day Sydney trips that report on a Friday, usually within two minutes of the pairing showing up, midweek.\",\"model\":\"consultant-model-1\",\"at\":\"2026-11-14T20:06:00+00:00\"}},\"answers\":[{\"rid\":\"rdemo0500\",\"ok\":true,\"why\":\"Saved\",\"at\":\"2026-11-14T20:04:58+00:00\"}],\"pending\":[],\"limits\":{\"entry_max\":2000,\"field_max\":4000,\"adds_per_day\":40,\"changes_per_day\":40,\"edits_per_day\":40,\"value_max\":1000,\"why_max\":200}},\"last_changed\":\"2026-11-14T20:05:00+00:00\",\"last_updated\":\"2026-11-14T20:05:00+00:00\"}},\"ha_ok\":true}",
-     "sig": "LG7Hl8rUJclZJ92LYM3kLmVNrhQj1LqlifShtAAHv-lKxYMibSaPL3dFg8SYXvVJAr4deWRsuPnAGlP5J3aIAw"
+     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"idle\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null},\"sensor.flight_watcher_demo_pilotdb\":{\"state\":\"on\",\"attributes\":{\"friendly_name\":\"Pilot database\",\"rev\":\"abc123abc123\",\"file_key\":\"00000000000000000000000000000000\",\"count\":2,\"updated\":\"2026-11-14T20:05:00+00:00\",\"shown\":{\"emp\":\"10001\",\"pid\":\"p0123456789\"},\"answers\":[{\"rid\":\"rdemo0500\",\"ok\":true,\"why\":\"Saved\",\"at\":\"2026-11-14T20:04:58+00:00\"}],\"pending\":[],\"limits\":{\"entry_max\":2000,\"field_max\":4000,\"adds_per_day\":40,\"changes_per_day\":40,\"edits_per_day\":40,\"value_max\":1000,\"why_max\":200}},\"last_changed\":\"2026-11-14T20:05:00+00:00\",\"last_updated\":\"2026-11-14T20:05:00+00:00\"}},\"ha_ok\":true}",
+     "sig": "COZ9AFLIGrTAXOv0frjT3k5Bj9vkjVU-SCK2m_POnggc3aSY_evCDV4F9EEr0Ft2mv5VcNC3RSi9XahUjODiDw"
     }
    },
    {
@@ -1684,8 +1704,8 @@
      "kind": "state",
      "pilot": "demo",
      "seq": 1763600000001,
-     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"idle\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null},\"sensor.flight_watcher_demo_pilotdb\":{\"state\":\"on\",\"attributes\":{\"friendly_name\":\"Pilot database\",\"rev\":\"abc123abc123\",\"file_key\":\"00000000000000000000000000000000\",\"count\":1,\"updated\":\"2026-11-14T20:05:00+00:00\",\"shown\":{\"emp\":\"10001\",\"pid\":\"p0123456789\",\"name\":\"Doe, Jane\",\"sen\":\"812\",\"doh\":\"2001-05-01\",\"status\":\"A\",\"retire\":\"2041-03\",\"seat\":\"FO\",\"equip\":\"A330\",\"union_id\":\"424242\",\"gone\":false,\"edited\":[\"doh\"],\"rev\":7,\"notes_n\":2,\"contact\":{\"phones\":[{\"label\":\"mobile\",\"number\":\"808-555-0100\",\"tel\":\"+18085550100\"}],\"emails\":[\"jane.doe@example.com\"]},\"ai_note\":{\"text\":\"Picks up 3-day Sydney trips that report on a Friday, usually within two minutes of the pairing showing up, midweek.\",\"model\":\"consultant-model-1\",\"at\":\"2026-11-14T20:06:00+00:00\"}},\"answers\":[{\"rid\":\"rdemo0500\",\"ok\":true,\"why\":\"Saved\",\"at\":\"2026-11-14T20:04:58+00:00\"}],\"pending\":[],\"limits\":{\"entry_max\":2000,\"field_max\":4000,\"adds_per_day\":40,\"changes_per_day\":40,\"edits_per_day\":40,\"value_max\":1000,\"why_max\":200}},\"last_changed\":\"2026-11-14T20:05:00+00:00\",\"last_updated\":\"2026-11-14T20:05:00+00:00\"}},\"ha_ok\":true}",
-     "sig": "LG7Hl8rUJclZJ92LYM3kLmVNrhQj1LqlifShtAAHv-lKxYMibSaPL3dFg8SYXvVJAr4deWRsuPnAGlP5J3aIAw"
+     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"idle\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null},\"sensor.flight_watcher_demo_pilotdb\":{\"state\":\"on\",\"attributes\":{\"friendly_name\":\"Pilot database\",\"rev\":\"abc123abc123\",\"file_key\":\"00000000000000000000000000000000\",\"count\":2,\"updated\":\"2026-11-14T20:05:00+00:00\",\"shown\":{\"emp\":\"10001\",\"pid\":\"p0123456789\"},\"answers\":[{\"rid\":\"rdemo0500\",\"ok\":true,\"why\":\"Saved\",\"at\":\"2026-11-14T20:04:58+00:00\"}],\"pending\":[],\"limits\":{\"entry_max\":2000,\"field_max\":4000,\"adds_per_day\":40,\"changes_per_day\":40,\"edits_per_day\":40,\"value_max\":1000,\"why_max\":200}},\"last_changed\":\"2026-11-14T20:05:00+00:00\",\"last_updated\":\"2026-11-14T20:05:00+00:00\"}},\"ha_ok\":true}",
+     "sig": "COZ9AFLIGrTAXOv0frjT3k5Bj9vkjVU-SCK2m_POnggc3aSY_evCDV4F9EEr0Ft2mv5VcNC3RSi9XahUjODiDw"
     }
    },
    {
@@ -1695,8 +1715,8 @@
      "kind": "state",
      "pilot": "demo",
      "seq": 1763600000001,
-     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"idle\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null},\"sensor.flight_watcher_demo_pilotdb\":{\"state\":\"on\",\"attributes\":{\"friendly_name\":\"Pilot database\",\"rev\":\"abc123abc123\",\"file_key\":\"00000000000000000000000000000000\",\"count\":1,\"updated\":\"2026-11-14T20:05:00+00:00\",\"shown\":{\"emp\":\"10001\",\"pid\":\"p0123456789\",\"name\":\"Doe, Jane\",\"sen\":\"812\",\"doh\":\"2001-05-01\",\"status\":\"A\",\"retire\":\"2041-03\",\"seat\":\"FO\",\"equip\":\"A330\",\"union_id\":\"424242\",\"gone\":false,\"edited\":[\"doh\"],\"rev\":7,\"notes_n\":2,\"contact\":{\"phones\":[{\"label\":\"mobile\",\"number\":\"808-555-0100\",\"tel\":\"+18085550100\"}],\"emails\":[\"jane.doe@example.com\"]},\"ai_note\":{\"text\":\"Picks up 3-day Sydney trips that report on a Friday, usually within two minutes of the pairing showing up, midweek.\",\"model\":\"consultant-model-1\",\"at\":\"2026-11-14T20:06:00+00:00\"}},\"answers\":[{\"rid\":\"rdemo0500\",\"ok\":true,\"why\":\"Saved\",\"at\":\"2026-11-14T20:04:58+00:00\"}],\"pending\":[],\"limits\":{\"entry_max\":2000,\"field_max\":4000,\"adds_per_day\":40,\"changes_per_day\":40,\"edits_per_day\":40,\"value_max\":1000,\"why_max\":200}},\"last_changed\":\"2026-11-14T20:05:00+00:00\",\"last_updated\":\"2026-11-14T20:05:00+00:00\"}},\"ha_ok\":true}",
-     "sig": "LG7Hl8rUJclZJ92LYM3kLmVNrhQj1LqlifShtAAHv-lKxYMibSaPL3dFg8SYXvVJAr4deWRsuPnAGlP5J3aIAw"
+     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"idle\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null},\"sensor.flight_watcher_demo_pilotdb\":{\"state\":\"on\",\"attributes\":{\"friendly_name\":\"Pilot database\",\"rev\":\"abc123abc123\",\"file_key\":\"00000000000000000000000000000000\",\"count\":2,\"updated\":\"2026-11-14T20:05:00+00:00\",\"shown\":{\"emp\":\"10001\",\"pid\":\"p0123456789\"},\"answers\":[{\"rid\":\"rdemo0500\",\"ok\":true,\"why\":\"Saved\",\"at\":\"2026-11-14T20:04:58+00:00\"}],\"pending\":[],\"limits\":{\"entry_max\":2000,\"field_max\":4000,\"adds_per_day\":40,\"changes_per_day\":40,\"edits_per_day\":40,\"value_max\":1000,\"why_max\":200}},\"last_changed\":\"2026-11-14T20:05:00+00:00\",\"last_updated\":\"2026-11-14T20:05:00+00:00\"}},\"ha_ok\":true}",
+     "sig": "COZ9AFLIGrTAXOv0frjT3k5Bj9vkjVU-SCK2m_POnggc3aSY_evCDV4F9EEr0Ft2mv5VcNC3RSi9XahUjODiDw"
     }
    },
    {
@@ -1706,8 +1726,8 @@
      "kind": "state",
      "pilot": "demo",
      "seq": 1763600000001,
-     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"idle\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null},\"sensor.flight_watcher_demo_pilotdb\":{\"state\":\"on\",\"attributes\":{\"friendly_name\":\"Pilot database\",\"rev\":\"abc123abc123\",\"file_key\":\"00000000000000000000000000000000\",\"count\":1,\"updated\":\"2026-11-14T20:05:00+00:00\",\"shown\":{\"emp\":\"10001\",\"pid\":\"p0123456789\",\"name\":\"Doe, Jane\",\"sen\":\"812\",\"doh\":\"2001-05-01\",\"status\":\"A\",\"retire\":\"2041-03\",\"seat\":\"FO\",\"equip\":\"A330\",\"union_id\":\"424242\",\"gone\":false,\"edited\":[\"doh\"],\"rev\":7,\"notes_n\":2,\"contact\":{\"phones\":[{\"label\":\"mobile\",\"number\":\"808-555-0100\",\"tel\":\"+18085550100\"}],\"emails\":[\"jane.doe@example.com\"]},\"ai_note\":{\"text\":\"Picks up 3-day Sydney trips that report on a Friday, usually within two minutes of the pairing showing up, midweek.\",\"model\":\"consultant-model-1\",\"at\":\"2026-11-14T20:06:00+00:00\"}},\"answers\":[{\"rid\":\"rdemo0500\",\"ok\":true,\"why\":\"Saved\",\"at\":\"2026-11-14T20:04:58+00:00\"}],\"pending\":[],\"limits\":{\"entry_max\":2000,\"field_max\":4000,\"adds_per_day\":40,\"changes_per_day\":40,\"edits_per_day\":40,\"value_max\":1000,\"why_max\":200}},\"last_changed\":\"2026-11-14T20:05:00+00:00\",\"last_updated\":\"2026-11-14T20:05:00+00:00\"}},\"ha_ok\":true}",
-     "sig": "yBuTmtpJQq60oT4ezpRsxLfBG-JRhzwX32kyeTHFSVmuGWilYTT17LCkAO-6I__m9lcKNmsMON9vDgd3nU_lDw"
+     "payload": "{\"states\":{\"sensor.flight_watcher_demo_state\":{\"state\":\"idle\",\"attributes\":{\"role\":\"pilot\",\"version\":\"1.6.0\"},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"sensor.flight_watcher_demo_finds\":{\"state\":\"1\",\"attributes\":{\"count\":1,\"file_key\":\"00000000000000000000000000000000\",\"rev\":\"abc123abc123\",\"finds\":[{\"pairing\":\"H9001\"}]},\"last_changed\":\"2026-11-09T20:00:00+00:00\",\"last_updated\":\"2026-11-09T20:00:00+00:00\"},\"input_number.flight_watcher_demo_federal_tax_pct\":{\"state\":\"22.0\",\"attributes\":{\"min\":0,\"max\":45,\"step\":0.5},\"last_changed\":null,\"last_updated\":null},\"sensor.flight_watcher_demo_pilotdb\":{\"state\":\"on\",\"attributes\":{\"friendly_name\":\"Pilot database\",\"rev\":\"abc123abc123\",\"file_key\":\"00000000000000000000000000000000\",\"count\":2,\"updated\":\"2026-11-14T20:05:00+00:00\",\"shown\":{\"emp\":\"10001\",\"pid\":\"p0123456789\"},\"answers\":[{\"rid\":\"rdemo0500\",\"ok\":true,\"why\":\"Saved\",\"at\":\"2026-11-14T20:04:58+00:00\"}],\"pending\":[],\"limits\":{\"entry_max\":2000,\"field_max\":4000,\"adds_per_day\":40,\"changes_per_day\":40,\"edits_per_day\":40,\"value_max\":1000,\"why_max\":200}},\"last_changed\":\"2026-11-14T20:05:00+00:00\",\"last_updated\":\"2026-11-14T20:05:00+00:00\"}},\"ha_ok\":true}",
+     "sig": "jzqzy7uVsUNhABHq0zqbo5Z8Fju1kDH955AirLQjTx2hBmyTU3ix0dLk6DtDUXWdX9tht1gVmqFGFQCvEodtDQ"
     }
    }
   ],

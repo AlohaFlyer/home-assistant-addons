@@ -1095,28 +1095,27 @@ def contract():
     # 1.7.10: the AI note a shared pilot reads (the hand-off's accepted sample, made-up values)
     pdb_ai = {"text": AI_SAMPLE_NOTES["notes"][0]["text"], "model": AI_SAMPLE_NOTES["model"],
               "at": "2026-11-14T20:06:00+00:00"}
-    # 1.7.9 (revision 4): the synthesized pilotdb sensor (made-up values) and the pilotdb file
+    # 1.7.9 (revision 4): the synthesized pilotdb sensor (made-up values) and the pilotdb file. 1.7.10 (Ryan's
+    # decision 1 of Nov 15): the file holds every record with every field; shown only says which record it is
     state["states"][f"sensor.{prefix}_pilotdb"] = {
         "state": "on",
-        "attributes": {"friendly_name": "Pilot database", "rev": "abc123abc123", "file_key": zeros, "count": 1,
+        "attributes": {"friendly_name": "Pilot database", "rev": "abc123abc123", "file_key": zeros, "count": 2,
                        "updated": "2026-11-14T20:05:00+00:00",
-                       "shown": {"emp": "10001", "pid": pdb_pid, "name": "Doe, Jane", "sen": "812",
-                                 "doh": "2001-05-01", "status": "A", "retire": "2041-03", "seat": "FO",
-                                 "equip": "A330", "union_id": "424242", "gone": False, "edited": ["doh"], "rev": 7,
-                                 "notes_n": 2,
-                                 "contact": {"phones": [{"label": "mobile", "number": "808-555-0100",
-                                                         "tel": "+18085550100"}],
-                                             "emails": ["jane.doe@example.com"]},
-                                 "ai_note": pdb_ai},
+                       "shown": {"emp": "10001", "pid": pdb_pid},
                        "answers": [{"rid": "rdemo0500", "ok": True, "why": "Saved",
                                     "at": "2026-11-14T20:04:58+00:00"}],
                        "pending": [], "limits": pilotdb_limits()},
         "last_changed": "2026-11-14T20:05:00+00:00", "last_updated": "2026-11-14T20:05:00+00:00"}
+    pdb_pick = {"pos": "FO", "at": "2026-11-12T03:10:00+00:00", "pairing": "H3601", "start": "2026-11-20", "days": 3,
+                "lay": "SYD", "turn": False, "credit": "14:05", "report": "07:10", "dow": "Fri", "secs": 95,
+                "approx": False, "inflt": False, "n": 1, "station": "SYD", "n_lay": 1, "pick_dow": "Wed"}
     pdb_file = {"v": 1, "generated": "2026-11-14T20:05:00+00:00",
-                "as_of": {"list": "2026-11-01", "contacts": "2026-11-12", "award": "2026-12"}, "count": 1,
-                "records": [{"pid": pdb_pid, "name": "Doe, Jane", "sen": "812", "doh": "2001-05-01", "status": "A",
-                             "retire": "2041-03", "seat": "FO", "equip": "A330", "union_id": "424242", "gone": False,
-                             "edited": ["doh"], "rev": 7,
+                "as_of": {"list": "2026-11-01", "contacts": "2026-11-12", "award": "2026-12"}, "count": 2,
+                "records": [{"pid": pdb_pid, "emp": "10001", "name": "Doe, Jane", "sen": "812", "doh": "2001-05-01",
+                             "status": "A", "retire": "2041-03", "seat": "FO", "equip": "A330", "base": "HNL",
+                             "union_id": "424242",
+                             "phones": [{"label": "mobile", "number": "808-555-0100", "tel": "+18085550100"}],
+                             "emails": ["jane.doe@example.com"], "gone": False, "edited": ["doh"], "rev": 7,
                              "notes": {"text": "Commutes from the mainland.", "rev": "a1b2c3d4e5f6", "by": "ryan",
                                        "at": "2026-11-14T19:00:00+00:00"},
                              "ai_note": pdb_ai,
@@ -1124,7 +1123,21 @@ def contract():
                                           "text": "Flew with her in October.", "mine": True},
                                          {"eid": "n9876543210", "by": "ryan", "at": "2026-11-13T20:00:00+00:00",
                                           "gone": "taken back"}],
-                             "entries_total": 2}],
+                             "entries_total": 2,
+                             "pickups": {"summary": {"n": 1, "lays": [["SYD", 1]], "turn_stations": [], "turns": 0,
+                                                     "layovers": 1, "days": {"3": 1}, "dow": {"Fri": 1},
+                                                     "pick_dow": {"Wed": 1},
+                                                     "report": {"first": "07:10", "last": "07:10"},
+                                                     "credit_avg": "14:05",
+                                                     "speed": {"avg_s": 95, "min_s": 95, "max_s": 95}, "inflt": 0,
+                                                     "first_at": "2026-11-12T03:10:00+00:00",
+                                                     "last_at": "2026-11-12T03:10:00+00:00"},
+                                         "rows": [pdb_pick]}},
+                            # a pilot with no note, no log and no pickup is in the file too (every live record)
+                            {"pid": "p1111111111", "emp": "10002", "name": "Roe, Richard", "sen": "",
+                             "doh": "", "status": "", "retire": "", "seat": "CA", "equip": "A330", "base": "HNL",
+                             "union_id": "", "phones": [], "emails": [], "gone": False, "edited": [], "rev": 1,
+                             "entries": [], "entries_total": 0}],
                 "answers": [{"rid": "rdemo0500", "ok": True, "why": "Saved", "at": "2026-11-14T20:04:58+00:00"}],
                 "limits": pilotdb_limits()}
     manifest = {"contract": 1, "revision": roles.CONTRACT_REVISION, "app_version": "1.7.2", "pilot": pilot,
@@ -1291,17 +1304,20 @@ def contract():
                            "fit alone in the new pairing text, the manifest's revision",
                       "4": "Flight Watcher 1.7.9, HOM 1.9.0: Ryan's pilot database shared with a pilot by Ryan's "
                            "switch (file kind pilotdb, commands pilotdb/note and pilotdb/edit, synthesized state "
-                           "pilotdb with the looked-up pilot's phones and emails), the swap alert for a new swap "
-                           "idea, the AI note hand-off (pilotdb.ai). Flight Watcher 1.7.10 (Ryan, Nov 15), still "
-                           "revision 4 and additive: the shared pilot reads union_id and ai_note on the records of "
-                           "his pilotdb file and on the looked-up pilot's brief; no command, shape, limit or file "
-                           "kind changed, and the portal passes both through as signed"},
+                           "pilotdb), the swap alert for a new swap idea, the AI note hand-off (pilotdb.ai). Flight "
+                           "Watcher 1.7.10 (Ryan's decisions of Nov 15), still revision 4: the database is shared "
+                           "100% (the pilotdb file holds every live record with every field, the employee number, "
+                           "phones and emails too, the notes, the whole log, the pickup history and the AI note; "
+                           "state.shown only says which record the pilot card's pilot is), on by default for every "
+                           "portal pilot, AI notes on by default. No command, shape, limit, file kind or cap changed "
+                           "and the portal passes the file and the state through as signed, so HOM 1.9.0 serves "
+                           "it as it is"},
         "masks": {"zero": list(MASK_ZERO), "drop": list(MASK_DROP), "never_copied": ["context"],
-                  # 1.7.9 (revision 4, B23): contact is still dropped from every state read from Home Assistant; the
-                  # one place a portal gets phones and emails is the synthesized pilotdb sensor
-                  "contact_only_in": "sensor.<prefix>_pilotdb attributes.shown.contact: the phones and emails of the "
-                                     "one pilot the pilot card shows, from Ryan's pilot database, only while Ryan "
-                                     "shares it; never a list, never in a file"},
+                  # contact is still dropped from every state read from Home Assistant. 1.7.9 put the looked-up
+                  # pilot's phones and emails in the synthesized pilotdb sensor; 1.7.10 (Ryan, Nov 15: shared 100%)
+                  # puts every record's in the pilotdb file instead and none in a state
+                  "contact_only_in": "the pilotdb file's records (phones, emails), from Ryan's pilot database, only "
+                                     "while it is shared with that pilot; never in a state, an event or a push"},
         "blob_keep_s": BLOB_KEEP_S,
         "test_key": {"label": TEST_SEED_LABEL, "seed": "sha256(label)", "public_key": public_id(key)},
         "samples": {"envelopes": envs, "bad_envelopes": bad,
@@ -1508,12 +1524,10 @@ def shape_samples(cmd):
 # 1.7.9 (revision 4): how a shared pilot's note or edit travels and what each side checks, in order
 PILOTDB_RULES = (
     "The portal and the spool check the shape (commands.shapes) and nothing else.",
-    "The pilot's Watcher refuses a command while Ryan has not shared the pilot database with him (no pilotdb file).",
-    "pid must be a record of his current pilotdb file or the pid of the pilot his pilot card shows (shown.pid); "
-    "otherwise 'look the pilot up first', so a command is no oracle for which pilots exist.",
-    "shown is filled only once that pilot's lookup really ran (FLICA's Schedule Lookup on one of his own paced checks, "
-    "or its 6 h cache) and for at most 20 distinct pilots an hour; before that and past that it is null, so employee "
-    "numbers typed one after the other show no record and no contact.",
+    "The pilot's Watcher refuses a command while the pilot database is not shared with him (Ryan turned his share "
+    "off: no pilotdb file).",
+    "pid must be a record of his current pilotdb file (1.7.10: the file holds every live record); otherwise 'that "
+    "pilot is not in Ryan's pilot database'.",
     "pilotdb/note: entry only with op retract, and it must be one of his own entries in his file; base only with op "
     "field; text only with add (1 to entry_max code points) or field (0 to field_max; empty clears the notes field).",
     "pilotdb/edit: value only with op set; unset puts the uploads' value back.",
@@ -1542,59 +1556,69 @@ def pilotdb_limits():
 PILOTDB_FILE_KEYS = {
     "top": ["v", "generated", "as_of", "count", "records", "answers", "limits", "full"],
     "as_of": ["list", "contacts", "award"],
-    # 1.7.10 (Ryan, Nov 15; revision 4, additive): union_id, and ai_note on a record that is in the file anyway
-    "record": ["pid", "name", "sen", "doh", "status", "retire", "seat", "equip", "union_id", "gone", "edited", "rev",
-               "notes", "ai_note", "entries", "entries_total"],
+    # 1.7.10 (Ryan's decision 1 of Nov 15, revision 4): every field of the record (emp, base, phones, emails) and the
+    # picker's pickup history
+    "record": ["pid", "emp", "name", "sen", "doh", "status", "retire", "seat", "equip", "base", "union_id", "phones",
+               "emails", "gone", "edited", "rev", "notes", "ai_note", "entries", "entries_total", "pickups"],
+    "phone": ["label", "number", "tel"],
     "notes": ["text", "rev", "by", "at"],
     "ai_note": ["text", "model", "at"],
     "entry": ["eid", "by", "at", "text", "mine", "gone"],
+    "pickups": ["summary", "rows"],
+    "pickup": ["pos", "at", "pairing", "start", "days", "lay", "turn", "credit", "report", "dow", "secs", "approx",
+               "inflt", "n", "station", "n_lay", "pick_dow"],
+    "pickup_summary": ["n", "lays", "turn_stations", "turns", "layovers", "days", "dow", "pick_dow", "report",
+                       "credit_avg", "speed", "inflt", "first_at", "last_at"],
     "answer": ["rid", "ok", "why", "at"],
 }
 PILOTDB_STATE_KEYS = {
     "attributes": ["friendly_name", "rev", "file_key", "count", "updated", "shown", "answers", "pending", "limits"],
-    "shown": ["emp", "pid", "name", "sen", "doh", "status", "retire", "seat", "equip", "union_id", "gone", "edited",
-              "rev", "notes_n", "contact", "ai_note", "none"],
-    "contact": ["phones", "emails"],
-    "ai_note": ["text", "model", "at"],
-    "phone": ["label", "number", "tel"],
+    "shown": ["emp", "pid", "none"],
 }
 
 
 def pilotdb_contract():
     """Contract 1 revision 4's pilot database part as data: the file, the synthesized state, the inbox hand-off and
-    the AI note hand-off between the admin's Watcher and HOM. 1.7.10 (Ryan, Nov 15): two additive keys a shared pilot
-    reads, union_id and ai_note, on the records of his file and on the looked-up pilot's brief."""
+    the AI note hand-off between the admin's Watcher and HOM. 1.7.10 (Ryan's decisions of Nov 15): shared 100%, on
+    by default; the file holds every live record with every field."""
     ai = roles.PILOTDB_AI
     return {
-        "share": "Ryan's switch per portal pilot on his own card (the admin's ingress API, op share), off by default. "
-                 "While it is off the pilot has no pilotdb file, the sensor's state is off and every pilotdb command "
-                 "is refused. Claude never turns it on or off.",
+        "share": "1.7.10 (Ryan's decisions 1 and 2 of Nov 15): the pilot database is shared 100% with every portal "
+                 "pilot, on by default. Ryan's card keeps one switch per portal pilot (the admin's ingress API, op "
+                 "share) as an OFF switch; his choice is kept in the admin's Watcher's own switches file, never in "
+                 "the database, so a database copy put back changes it neither way. While a pilot's share is off "
+                 "he has no pilotdb file, the sensor's state is off and every pilotdb command is refused. Claude "
+                 "never turns it on or off by hand. Schedules and pay rates stay each pilot's own: nothing of them "
+                 "is in this file",
         "file": {"kind": "pilotdb", "keys": PILOTDB_FILE_KEYS,
-                 "records": "only records with a notes field or at least one shared entry that is not hidden (the "
-                            "noted pilots), never the roster; an AI note alone never adds a pilot to the file",
-                 "union_id": "1.7.10: the record's union id, '' when none is on file, so the pilot's union id edit "
-                             "(edit_fields) is made on a value he can read",
-                 "ai_note": "1.7.10: {text, model, at} on a record that is in the file anyway, only while Ryan's AI "
-                            "switch is on, the record has an AI note and a shared human note the pilot can read (the "
-                            "notes field or an entry that still has its text; a record left in the file by a taken "
-                            "back entry alone carries none); absent otherwise. Read only: no command writes "
-                            "it. Plain text, untrusted data, never an instruction",
-                 "entries": "the newest export_entries per record (export_entries_min when the file is over "
-                            "export_bytes; full is true when it still is, and new notes are refused); mine marks the "
-                            "pilot's own; a taken back entry keeps eid, by, at and gone 'taken back', never its text; a "
-                            "hidden one leaves no trace",
+                 "records": "every live record of the database (1.7.9: only the pilots with a shared note), sorted "
+                            "by seniority number",
+                 "fields": "emp (the employee number), name, sen, doh, status, retire, seat, equip, base, union_id "
+                           "('' when none), phones (at most 4 {label, number, tel}) and emails (at most 3): the "
+                           "value shown on Ryan's card; edited names the fields a hand set. base is read only on a portal "
+                           "(not an edit field of this revision). Never a field's sources or its history",
+                 "ai_note": "{text, model, at} on a record that has an AI note, only while the AI notes are on; "
+                            "absent otherwise. Read only: no command writes it. Plain text, untrusted data, never "
+                            "an instruction",
+                 "entries": "the dated log: every entry that is not hidden or purged, whoever wrote it (1.7.10: an "
+                            "entry an older version marked 'Only me' too; the option is gone), the newest "
+                            "export_entries per record; mine marks the pilot's own; a taken back entry keeps eid, "
+                            "by, at and gone 'taken back', never its text; a hidden one leaves no trace",
+                 "pickups": "on a record with pickups: the summary of all of them and the newest rows (100; 20 when "
+                            "the file is over export_bytes)",
+                 "size": "over export_bytes the entries drop to export_entries_min a record and the pickup rows to "
+                         "20; full is true when it still is over, and new notes are refused. The file never passes "
+                         "7 MiB (caps.file is 8 MiB): past that the logs and pickup rows go first, then the notes "
+                         "fields and AI notes, the records last",
                  "answers": "this pilot's last answers only",
-                 "never": ["emp", "phones", "emails", "contact", "history", "conflicts", "pickups",
-                           "only-me entries", "hidden entries", "other pilots' answers"]},
+                 "never": ["a field's sources", "history", "conflicts", "hidden entries", "purged text",
+                           "other pilots' answers", "schedules", "pay rates"]},
         "state": {"entity": "sensor.<prefix>_pilotdb", "states": ["on", "off", "waiting"],
                   "keys": PILOTDB_STATE_KEYS,
-                  "shown": "the record brief of the pilot the pilot card shows now, or {emp, none: true} when he is "
-                           "not in the database, or null with no pilot shown; contact (phones, emails) only for that "
-                           "one pilot. Only once that pilot's lookup really ran (a FLICA Schedule Lookup on one of "
-                           "the pilot's own paced checks, or its 6 h cache), never while it is loading or waiting, "
-                           "and for at most 20 distinct pilots an hour; past that it is null. 1.7.10: union_id ('' "
-                           "when none) and, while Ryan's AI switch is on and that pilot has one, ai_note {text, "
-                           "model, at}, under the same rule and for that one pilot only",
+                  "shown": "which record of the file the pilot the pilot card shows is: {emp, pid}, {emp, none: "
+                           "true} when he is not in the database, or null with no pilot shown. 1.7.10: the record "
+                           "itself is in the file, so the 1.7.9 brief, its contact and its limits (only after a "
+                           "FLICA lookup ran, 20 distinct pilots an hour) are gone",
                   "answers": "the file's answers and the Watcher's own refusals, newest last, at most answers",
                   "pending": "the rids waiting in the admin's inbox"},
         "inbox": {"dir": "/share/flight_watcher/pilotdb/inbox/<pilot>", "file_re": INBOX_NAME_RE.pattern,
@@ -1602,6 +1626,11 @@ def pilotdb_contract():
                   "body": ["v", "by", "at", "cmd", "op", "pid", "entry", "base", "text", "field", "value", "rev", "why",
                            "rid"],
                   "author": "the folder's name; a body by that differs is refused"},
+        "uploads": "1.7.10 (Ryan's decision 4 of Nov 15): a contact list or an award a pilot's instance saves (the "
+                   "award through upload/pdf and its checks and quarantine; a contact or seniority list through his "
+                   "instance's uploads path) merges into the one database like Ryan's, with that pilot recorded as "
+                   "the author. Ryan's hand edits stay on top and he can put any earlier value back. upload/pdf's "
+                   "kinds are unchanged (pairings, award)",
         "edit_fields": list(roles.PILOTDB_EDIT_FIELDS),
         "edit_values": {"phones": "the JSON text of a list of at most 4 {label, number}; label mobile, home, work or "
                                   "other",
@@ -1610,13 +1639,14 @@ def pilotdb_contract():
                         "doh": "YYYY-MM-DD", "retire": "YYYY-MM", "seat": "CA, FO or RO", "sen": "1 to 5 digits",
                         "name": "Last, First; letters, spaces, comma, period, apostrophe and hyphen only", "status": "a code of the seniority list's legend",
                         "equip": "1 to 8 letters or digits", "union_id": "1 to 10 digits"},
-        "ai": {"switch": "Ryan's switch on his own card (op ai), off by default; while it is off no statistics file is "
-                         "written and no note is taken in",
-               "portal": "1.7.10 (Ryan, Nov 15): a pilot Ryan shares the database with reads a note, read only, on "
-                         "the records of his pilotdb file (the noted pilots only: a note alone adds nobody) and on "
-                         "the looked-up pilot's brief (state.keys.shown, under the anti-walk rule), only while this "
-                         "switch is on. His card labels it 'AI note, from anonymous pickup statistics', apart from "
-                         "the human notes, as plain text. No portal command writes, edits or removes one",
+        "ai": {"switch": "1.7.10 (Ryan's decision 3 of Nov 15): on by default; Ryan's switch on his own card (op ai) "
+                         "turns it off and on, kept in the admin's Watcher's own switches file, never in the "
+                         "database. While it is off no statistics file is written, no note is taken in and no "
+                         "note is in a pilot's file",
+               "portal": "a pilot the database is shared with reads a note, read only, on the records of his "
+                         "pilotdb file, only while this switch is on. His card labels it 'AI note, from anonymous "
+                         "pickup statistics', apart from the human notes, as plain text. No portal command writes, "
+                         "edits or removes one",
                "min_pickups": ai["min_pickups"], "note_max": ai["note_max"], "model_max": ai["model_max"],
                "max_pilots": ai["max_pilots"], "in_max_bytes": ai["in_bytes"], "stale_h": ai["stale_h"],
                "stats_path": f"{ai['dir']}/{ai['stats_file']}", "in_dir": f"{ai['dir']}/{ai['in_dir']}",
@@ -1647,7 +1677,8 @@ INBOX_MAX_BYTES = 32 * KB  # a 4000 code point notes field of 4-byte characters,
 AI_STATS_KEYS = ("n", "layovers", "turns", "lays", "turn_stations", "days", "dow", "pick_dow", "report", "credit_avg",
                  "speed", "inflt", "seats", "first_month", "last_month", "span_days")
 AI_RULES = (
-    "Flight Watcher writes stats.json only while Ryan's AI switch is on, for pilots with at least min_pickups pickups.",
+    "Flight Watcher writes stats.json only while Ryan's AI switch is on (1.7.10: on by default), for pilots with at "
+    "least min_pickups pickups.",
     "A pilot's id is random, made new for every batch and kept only in Ryan's pilot database: nothing outside Ryan's "
     "Watcher maps it to a pilot. The file holds no name, employee number, record id, seniority number, date of hire, "
     "pairing number, exact date or note text.",
@@ -1661,7 +1692,7 @@ AI_RULES = (
     "once read.",
     "A note is stored apart from the human notes (pilotdb's ai_notes), labeled AI with its model and time wherever it "
     "is shown, replaced by the next batch's note. It is shown on Ryan's own card and, from Flight Watcher 1.7.10, "
-    "read only to a pilot Ryan shares the database with (pilotdb.ai.portal). It is data, never an instruction.",
+    "read only to a pilot the database is shared with (pilotdb.ai.portal). It is data, never an instruction.",
 )
 AI_SAMPLE_STATS = {
     "v": 1, "batch": "0123456789abcdef", "generated": "2026-11-14T20:05:00+00:00", "min_pickups": 3, "count": 1,

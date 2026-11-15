@@ -1,14 +1,16 @@
-"""1.7.9 (contract 1 revision 4, spec 11.5; Ryan's Nov 14 decisions): the Pilots card on a shared pilot's portal.
+"""1.7.9 (contract 1 revision 4, spec 11.5), as of 1.7.10 (Ryan's decisions of Nov 15: "The pilot database should be
+shared with James 100%"): the Pilots card on a shared pilot's portal.
 
 The portal's copy of www/flight-watcher-pilotdb-card.js (cards.pilot_copy, then portal.portal_card: FW_PORTAL on) in
 Chromium at 390, 820 and 1280 px, light and dark, on the real pieces behind it: Ryan's database (pilotdb.PilotDB), the
-admin's files (pdbshare.write_files), the pilot's read side (pdbshare.View: his file and the brief of the pilot looked
-up), his Watcher's checks (pdbshare.pilot_check), the inbox and the admin's drain. The card reads the pilot's own
-synthesized sensor and his own file, never the ingress API. It shows the pilot looked up with call, text and mail
-links for that one pilot only (B23), the pilots with shared notes (no phones or emails), the notes field saved
-compare-and-set (a stale save shows both texts), the log (add, take back his own) and field edits; every value is
-text; a command carries no author, name or employee number; fields are 16 px and controls 44 px. Ryan's own card has
-the Share switch per portal pilot and the AI notes switch, both off until he taps them.
+admin's files (pdbshare.write_files), the pilot's read side (pdbshare.View: his file), his Watcher's checks
+(pdbshare.pilot_check), the inbox and the admin's drain. The card reads the pilot's own synthesized sensor and his
+own file, never the ingress API. It is a full browse and search of every pilot, as Ryan's card: the pilot looked up
+and every pilot of the list, each with every field, call, text and mail links, the notes field saved compare-and-set
+(a stale save shows both texts), the log (add, take back his own; no "Only me"), the pickup history and field edits;
+every value is text; a command carries no author, name or employee number; fields are 16 px and controls 44 px, with
+no sideways scroll. Ryan's own card has the Share switch per portal pilot and the AI notes switch, both on by
+default and his to turn off.
 FW_179_SHOTS=<dir> keeps the screenshots. Synthetic pilots only ("Doe, Jane", 10001, 808-555-01xx, example.com)."""
 import json
 import os
@@ -78,7 +80,7 @@ class Side:
         """What the pilot's Watcher and then the admin's drain do with one published command."""
         m = re.fullmatch(r"flight_watcher_james/pilotdb/(note|edit)", topic)
         assert m, topic
-        inner, why = PS.pilot_check(self.view, (self.shown() or {}).get("pid"), m.group(1), payload, len(self.pending))
+        inner, why = PS.pilot_check(self.view, None, m.group(1), payload, len(self.pending))
         if why:
             self.local.append({"rid": inner["rid"], "ok": False, "why": why, "at": "2026-11-15T20:00:00+00:00"})
             return
@@ -180,7 +182,7 @@ def _seed(side):
     db.save_notes(side.jane, "Commutes from Maui.\nGood on reserve.", PDBM.ZERO_REV)
     db.add_entry(side.jane, "Flew with her in Oct: great CRM.", rid="seed-0001")
     db.add_entry(side.jane, HOSTILE, rid="seed-0002")
-    db.add_entry(side.jane, "ONLY-ME-SENTINEL", shared=False, rid="seed-0003")
+    db.add_entry(side.jane, "ONCE-ONLY-ME", shared=False, rid="seed-0003")  # 1.7.9's "Only me": shared since 1.7.10
     db.add_entry(side.roe, "Good with the new hires.", rid="seed-0004")
 
 
@@ -211,19 +213,35 @@ def test_the_portal_copy_publishes_only_the_two_commands_and_parses_no_markup(W)
 
 # ---------------------------------------------------------------- what he sees
 def test_not_shared_shows_one_line_and_asks_for_nothing(side):
+    side.share(on=False)  # Ryan turned this pilot's share off
     with _browser() as b:
         fetched = []
         pg = _page(b, side, 390, 844, "light", fetched)
         _mount(pg, side)
         pg.wait_for_function("C.shadowRoot.textContent.includes('Not shared')")
-        assert _txt(pg) == "Pilot databaseNot shared: the admin has not turned on his pilot database for you."
+        assert _txt(pg) == "Pilot databaseNot shared: the admin has turned his pilot database off for you."
         assert fetched == [] and pg.evaluate("() => window.calls.length") == 0 and pg.errors == []
         _shot(pg, "portal_off_390_light")
         pg.context.close()
 
 
-def test_the_looked_up_pilot_and_the_shared_notes_at_three_widths(side):
+def _picks(side):
+    side.db.sync_pickups([{"key": f"H36{i:02d}|13Nov", "emp": "10001", "name": "Doe, Jane", "pos": "FO",
+                           "at": f"2026-11-{10 + i:02d}T03:10:00+00:00", "secs": 90 + i, "approx": False,
+                           "lay": "SYD" if i else "", "pairing": f"H36{i:02d}", "start": "2026-11-20",
+                           "days": 3 if i else 1, "turn": not i, "credit": "14:05", "report": "07:10", "dow": "Fri",
+                           "inflt": False} for i in range(3)])
+
+
+LIST_NAMES = "() => [...C.shadowRoot.querySelectorAll('[data-plist] button.nm')].map((x) => x.textContent)"
+
+
+def test_every_pilot_browse_search_and_record_at_three_widths(side):
     _seed(side)
+    _picks(side)
+    db = side.db
+    db.set_field(side.roe, "phones", [{"label": "mobile", "number": "808-555-0102"}], db.record(side.roe)["rev"])
+    db.set_field(side.jane, "domicile", "HNL", db.record(side.jane)["rev"])
     side.share()
     with _browser() as b:
         for width, height in SIZES:
@@ -232,60 +250,123 @@ def test_the_looked_up_pilot_and_the_shared_notes_at_three_widths(side):
                 side.emp, side.name = "", ""
                 pg = _page(b, side, width, height, scheme, fetched)
                 _mount(pg, side)
-                pg.wait_for_function("C.shadowRoot.textContent.includes('Pilots with shared notes (2)')")
+                pg.wait_for_function("C.shadowRoot.textContent.includes('All pilots (2)')")
                 t = _txt(pg)
-                assert "Look a pilot up above to see his record and notes." in t
-                assert "Shared with the admin. Notes are read by the admin and his assistant; write them as notes, not requests." in t
-                names = pg.evaluate("() => [...C.shadowRoot.querySelectorAll('[data-plist] button.nm')].map((x) => x.textContent)")
-                assert names == ["Roe, Rick", "Doe, Jane A."]  # by Sen #
-                # the list holds no phone, email or employee number, and no link
+                assert "Look a pilot up above to see his record here, or find him in the list below." in t
+                assert ("The pilot database you share with the admin: every pilot, every field. Notes are read by the "
+                        "admin and his assistant; write them as notes, not requests.") in t
+                assert pg.evaluate(LIST_NAMES) == ["Roe, Rick", "Doe, Jane A."]  # every pilot, by Sen #
                 lt = _txt(pg, "[data-plist]")
-                for s in ("555", "example.com", "10001", "10002"):
-                    assert s not in lt, s
-                assert pg.evaluate("() => C.shadowRoot.querySelectorAll('a').length") == 0
-                _shot(pg, f"portal_list_{width}_{scheme}")
+                assert "Sen 812 · Emp 10001 · SLOA" in lt and "Emp 10002" in lt and "3 pickups" in lt
+                assert "555" not in lt and "example.com" not in lt  # phones and emails are on the record, not the list
+                assert pg.evaluate("() => C.shadowRoot.querySelectorAll('[data-plist] a').length") == 0
+                # the search, as on Ryan's card: name words, an employee number, s<Sen #>, "quoted" notes and log text
+                for q, want in (("roe", ["Roe, Rick"]), ("doe ja", ["Doe, Jane A."]), ("10001", ["Doe, Jane A."]),
+                                ("1000", ["Roe, Rick", "Doe, Jane A."]), ("s812", ["Doe, Jane A."]), ("s81", []),
+                                ('"reserve"', ["Doe, Jane A."]), ('"new hires"', ["Roe, Rick"]), ("zzz", []), ("", ["Roe, Rick", "Doe, Jane A."])):
+                    _type(pg, "pq", q)
+                    assert pg.evaluate(LIST_NAMES) == want, q
+                assert pg.evaluate("() => C.shadowRoot.querySelector('[data-pcount]').textContent") == "2 pilots, by Sen #."
+                # the filter chips
+                chips = pg.evaluate("() => [...C.shadowRoot.querySelectorAll('[data-plist] .chip')].map((x) => [x.textContent, x.getAttribute('aria-pressed')])")
+                assert chips == [["All", "true"], ["Notes", "false"], ["Edited", "false"], ["Pickups", "false"], ["Gone", "false"]]
+                for chip, want in (("Pickups", ["Doe, Jane A."]), ("Edited", ["Roe, Rick", "Doe, Jane A."]), ("Gone", []),
+                                   ("Notes", ["Roe, Rick", "Doe, Jane A."]), ("All", ["Roe, Rick", "Doe, Jane A."])):
+                    _click(pg, chip, "[data-plist]")
+                    assert pg.evaluate(LIST_NAMES) == want, chip
+                font, height_min = _sizes(pg)
+                assert font >= 16 and height_min >= 44, (width, font, height_min)
+                _shot(pg, f"portal_browse_{width}_{scheme}")
                 # a pilot who is not in the database
                 side.emp, side.name = "10099", "Doe, Nobody"
                 _push(pg, side)
                 pg.wait_for_function("C.shadowRoot.textContent.includes(\"Not in the admin's pilot database.\")")
-                # the pilot looked up: his brief, the links for him only, notes and log
+                # the pilot looked up: every field, the links, notes, the log and the pickups
                 side.emp, side.name = "10001", "Doe, Jane"
                 _push(pg, side)
                 pg.wait_for_function("!!C.shadowRoot.querySelector('[data-pshown] [data-rec]')")
                 t = _txt(pg, "[data-pshown]")
-                assert "Doe, Jane A." in t and "Sen 812 · Emp 10001 · DOH 2001-05-01 · Status SLOA · Retires 2041-03" in t
-                hrefs = pg.evaluate("() => [...C.shadowRoot.querySelectorAll('a')].map((a) => a.getAttribute('href'))")
+                assert "Doe, Jane A." in t
+                assert "Sen 812 · Emp 10001 · DOH 2001-05-01 · Status SLOA · Retires 2041-03 · Base HNL" in t
+                hrefs = pg.evaluate("() => [...C.shadowRoot.querySelectorAll('[data-pshown] a')].map((a) => a.getAttribute('href'))")
                 assert "tel:+18085550101" in hrefs and "mailto:jane.doe@example.com" in hrefs
-                assert all(re.match(r"^(tel|sms|mailto):", h) for h in hrefs)
-                assert pg.evaluate("() => [...C.shadowRoot.querySelectorAll('a')].every((a) => !!a.closest('[data-pshown]'))")
                 assert pg.evaluate("() => C.shadowRoot.querySelector('textarea[data-k=shown-notes]').value") == "Commutes from Maui.\nGood on reserve."
-                assert "Flew with her in Oct: great CRM." in t and HOSTILE in t and "ONLY-ME-SENTINEL" not in _txt(pg)
-                assert pg.evaluate("() => C.shadowRoot.querySelectorAll('img, b, script').length") == 0  # every value is text
+                # the whole log, the entry 1.7.9 kept as "Only me" too; every value is text
+                assert "Flew with her in Oct: great CRM." in t and HOSTILE in t and "ONCE-ONLY-ME" in t
+                assert pg.evaluate("() => C.shadowRoot.querySelectorAll('img, b, script').length") == 0
                 assert "Saved by ryan 2026-11-15 10:00 HST" in t  # HST whatever zone the phone is in
-                # Ryan's side only: no history, pickups, AI note, hide, purge, merge or delete
-                for s in ("History", "Pickups", "AI note", "Hide", "Purge", "Merge", "Delete", "Only me", "Earlier versions"):
+                assert "Pickups" in t and "3 pickups · 2 with a layover, 1 turn" in t and "SYD 2" in t
+                # Ryan's side only: no history, hide, purge, merge or delete; and no "Only me" anywhere
+                for s in ("History", "Hide", "Purge", "Merge", "Delete", "Only me", "Earlier versions", "sources disagree"):
                     assert s not in _txt(pg), s
-                # the other pilot from the list: opened without a lookup, so no phones, emails or employee number
+                # any other pilot from the list, with no lookup: the same record, his links too
                 pg.evaluate("() => [...C.shadowRoot.querySelectorAll('[data-plist] button.nm')].find((x) => x.textContent === 'Roe, Rick').click()")
                 pg.wait_for_function("!!C.shadowRoot.querySelector('[data-psel] [data-rec]')")
                 st = _txt(pg, "[data-psel]")
-                assert "Roe, Rick" in st and "Good with the new hires." in st and "Emp" not in st.replace("Equipment", "")
-                assert pg.evaluate("() => C.shadowRoot.querySelectorAll('[data-psel] a').length") == 0
+                assert "Roe, Rick" in st and "Good with the new hires." in st and "Sen 13 · Emp 10002" in st
+                sel = pg.evaluate("() => [...C.shadowRoot.querySelectorAll('[data-psel] a')].map((a) => a.getAttribute('href'))")
+                assert sel == ["tel:+18085550102", "sms:+18085550102"]
+                allh = pg.evaluate("() => [...C.shadowRoot.querySelectorAll('a')].map((a) => a.getAttribute('href'))")
+                assert all(re.match(r"^(tel|sms|mailto):", h) for h in allh)
                 pg.evaluate("() => { for (const d of C.shadowRoot.querySelectorAll('details')) d.open = true; }")
                 labels = "(box) => [...C.shadowRoot.querySelectorAll(box + ' .fk')].map((x) => x.textContent)"
-                assert pg.evaluate(labels, "[data-pshown]") == ["Name", "Sen #", "DOH", "Status", "Retires", "Seat", "Equipment", "Phones", "Emails", "Union ID"]
-                assert pg.evaluate(labels, "[data-psel]") == ["Name", "Sen #", "DOH", "Status", "Retires", "Seat", "Equipment", "Union ID"]
-                assert "Phones and emails show only for the pilot you looked up." in _txt(pg, "[data-psel]")
+                want = ["Name", "Sen #", "DOH", "Status", "Retires", "Seat", "Equipment", "Phones", "Emails", "Union ID", "Base"]
+                assert pg.evaluate(labels, "[data-pshown]") == want and pg.evaluate(labels, "[data-psel]") == want
                 font, height_min = _sizes(pg)
                 assert font >= 16 and height_min >= 44, (width, font, height_min)
                 _shot(pg, f"portal_record_{width}_{scheme}")
                 assert pg.evaluate("() => document.documentElement.scrollWidth <= innerWidth"), "no page scroll sideways"
+                inner = pg.evaluate("""() => [...C.shadowRoot.querySelectorAll('*')].filter((e) => e.getClientRects().length
+                  && e.scrollWidth > e.clientWidth + 1 && getComputedStyle(e).overflowX !== 'visible').map((e) => e.className)""")
+                assert inner == [], inner  # and nothing inside the card scrolls sideways either
                 con = pg.evaluate("() => fwContrast(C)")
                 assert con["fails"] == [], con["fails"][:5]
                 # only his own file was fetched, by its rev; nothing was published; never the ingress API
                 assert fetched and all(urlsplit(u).path == FILE_PATH and urlsplit(u).query == f"r={side.view.rev}" for u in fetched)
                 assert pg.evaluate("() => window.calls.length") == 0 and pg.errors == []
                 pg.context.close()
+
+
+def test_a_file_of_1300_pilots_draws_fifty_at_a_time_and_searches_at_once(side):
+    """The size Ryan's database has (about 1228 live records): the list draws 50 rows and "Show 50 more", a search
+    narrows it, and nothing scrolls sideways at any width."""
+    def last(i):  # letters only, as names are: Doeaaa, Doeaab, ...
+        return "Doe" + "".join(chr(97 + (i // 26 ** k) % 26) for k in (2, 1, 0))
+    recs = [{"pid": "p%010x" % i, "emp": str(20000 + i), "name": f"{last(i)}, Jane", "sen": str(i + 1), "doh": "2001-05-01",
+             "status": "A", "retire": "2041-03", "seat": "FO", "equip": "A330", "base": "HNL", "union_id": "",
+             "phones": [{"label": "mobile", "number": "808-555-0101", "tel": "+18085550101"}],
+             "emails": ["jane.doe@example.com"], "gone": False, "edited": [], "rev": 1, "entries": [], "entries_total": 0}
+            for i in range(1300)]
+    doc = {"v": 1, "generated": "2026-11-15T20:00:00+00:00", "as_of": {"list": "2026-11-01", "contacts": "", "award": ""},
+           "count": len(recs), "records": recs, "answers": [], "limits": PT.pilotdb_limits()}
+    os.makedirs(os.path.join(side.root, "portal"), exist_ok=True)
+    open(PS.export_path("james", side.root), "w", encoding="utf-8").write(json.dumps(doc, separators=(",", ":")))
+    side.view.refresh()
+    assert side.view.state == "on" and side.view.count == 1300 and len(side.view.names) == 1300
+    with _browser() as b:
+        for width, height in SIZES:
+            pg = _page(b, side, width, height, "light", [])
+            _mount(pg, side)
+            pg.wait_for_function("C.shadowRoot.textContent.includes('All pilots (1300)')")
+            assert len(pg.evaluate(LIST_NAMES)) == 50
+            assert "The first 50 of 1300 are shown." in _txt(pg, "[data-plist]")
+            _click(pg, "Show 50 more", "[data-plist]")
+            assert len(pg.evaluate(LIST_NAMES)) == 100
+            _type(pg, "pq", last(777).lower())
+            assert pg.evaluate(LIST_NAMES) == [f"{last(777)}, Jane"]
+            _type(pg, "pq", "21299")
+            assert pg.evaluate(LIST_NAMES) == [f"{last(1299)}, Jane"]
+            _type(pg, "pq", "s1300")
+            assert pg.evaluate(LIST_NAMES) == [f"{last(1299)}, Jane"]
+            _click(pg, f"{last(1299)}, Jane", "[data-plist]")
+            pg.wait_for_function("!!C.shadowRoot.querySelector('[data-psel] [data-rec]')")
+            assert "Sen 1300 · Emp 21299" in _txt(pg, "[data-psel]")
+            assert pg.evaluate("() => document.documentElement.scrollWidth <= innerWidth")
+            font, height_min = _sizes(pg)
+            assert font >= 16 and height_min >= 44, (width, font, height_min)
+            _shot(pg, f"portal_1300_{width}_light")
+            assert pg.errors == []
+            pg.context.close()
 
 
 # ---------------------------------------------------------------- what he writes
@@ -419,7 +500,7 @@ def test_a_command_the_portal_does_not_send_keeps_the_draft_and_says_so(side):
 
 
 # ---------------------------------------------------------------- Ryan's own card: the two switches
-def test_ryans_card_has_the_share_switch_and_the_ai_switch_both_off_until_he_taps(P):  # noqa: F811
+def test_ryans_card_has_both_switches_on_by_default_and_his_to_turn_off(P):  # noqa: F811
     P.OPTS["pilots"] = [{"name": "james", "portal": True}, {"name": "pilot3"}]
     db = P.pilotdb_start()
     jane = db.find("10001")
@@ -430,11 +511,11 @@ def test_ryans_card_has_the_share_switch_and_the_ai_switch_both_off_until_he_tap
     states = {"sensor.flight_watcher_pilotdb": {"state": "5", "last_updated": lu, "last_changed": lu, "attributes": P.pilotdb_sensor()}}
     built = cards.build("9.9.9", [])
     posts = []
+    ep = PS.export_path("james", P.PILOTDB_SHARE)
     with _browser() as b:
         for width, height, scheme in ((390, 844, "light"), (1280, 800, "dark")):
-            for name in ("james",):  # each run starts with the switch off
-                P.pilotdb_post({"op": "share", "pilot": name, "on": False})
-            P.pilotdb_post({"op": "ai", "on": False})
+            P.pilotdb_post({"op": "share", "pilot": "james", "on": True})  # each run starts as a fresh install is: on
+            P.pilotdb_post({"op": "ai", "on": True})
             ctx = b.new_context(viewport={"width": width, "height": height}, device_scale_factor=2, color_scheme=scheme)
             html = ("<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
                     "<style>" + PORTAL_CSS + "</style></head><body><main><section class='view'></section></main><script>" + HARNESS_JS
@@ -463,21 +544,23 @@ def test_ryans_card_has_the_share_switch_and_the_ai_switch_both_off_until_he_tap
             pg.evaluate("(st) => { window.C = mount('flight-watcher-pilotdb-card', {title: 'Pilots'}, st, window.admin); }", states)
             pg.wait_for_function("!!C.shadowRoot.querySelector('[data-share-pilot=james]')")
             t = _txt(pg, "[data-share]")
-            assert "Share with james" in t and "Off: nothing of the pilot database is on his portal." in t
-            assert "pilot3" not in t  # no portal, no switch
-            assert pg.evaluate("() => [C.shadowRoot.querySelector('[data-k=share-james]').checked, C.shadowRoot.querySelector('[data-k=ai-on]').checked]") == [False, False]
-            assert P.pilotdb_status()["shared_with"] == [] and not os.path.exists(PS.export_path("james", P.PILOTDB_SHARE))
-            n0 = len(posts)
-            pg.evaluate("() => C.shadowRoot.querySelector('[data-k=share-james]').click()")
-            pg.wait_for_function("C.shadowRoot.querySelector('[data-share]').textContent.includes('On: he sees the pilots with shared notes')")
-            assert posts[n0:] == [{"op": "share", "pilot": "james", "on": True}]
-            assert P.pilotdb_status()["shared_with"] == ["james"] and os.path.exists(PS.export_path("james", P.PILOTDB_SHARE))
-            pg.evaluate("() => C.shadowRoot.querySelector('[data-k=ai-on]').click()")
-            pg.wait_for_function("C.shadowRoot.querySelector('[data-ai]').textContent.includes('On: HOM')")
-            assert posts[-1] == {"op": "ai", "on": True} and P.pilotdb_status()["ai"]["on"] is True
+            assert "Share with james" in t and "On: he sees and searches every pilot, as you do." in t
+            assert "On for every pilot with a portal unless you turn it off here." in t and "shared 100%" in t
+            assert "pilot3" not in t and "Only me" not in _txt(pg)  # no portal, no switch; the option is gone
+            assert pg.evaluate("() => [C.shadowRoot.querySelector('[data-k=share-james]').checked, C.shadowRoot.querySelector('[data-k=ai-on]').checked]") == [True, True]
+            assert P.pilotdb_status()["shared_with"] == ["james"] and os.path.exists(ep)
             if SHOTS:
                 os.makedirs(SHOTS, exist_ok=True)
                 pg.locator("flight-watcher-pilotdb-card").first.screenshot(path=os.path.join(SHOTS, f"admin_sharing_{width}_{scheme}.png"))
+            # his OFF switch: the file is deleted at once, and it stays off
+            n0 = len(posts)
+            pg.evaluate("() => C.shadowRoot.querySelector('[data-k=share-james]').click()")
+            pg.wait_for_function("C.shadowRoot.querySelector('[data-share]').textContent.includes('Off: you turned it off.')")
+            assert posts[n0:] == [{"op": "share", "pilot": "james", "on": False}]
+            assert P.pilotdb_status()["shared_with"] == [] and not os.path.exists(ep)
+            pg.evaluate("() => C.shadowRoot.querySelector('[data-k=ai-on]').click()")
+            pg.wait_for_function("C.shadowRoot.querySelector('[data-ai]').textContent.includes('Off: HOM')")
+            assert posts[-1] == {"op": "ai", "on": False} and P.pilotdb_status()["ai"]["on"] is False
             # the AI note on the record: read only, labeled AI, with its model
             pg.evaluate("() => [...C.shadowRoot.querySelectorAll('button.nm')].find((x) => x.textContent === 'Doe, Jane A').click()")
             pg.wait_for_function("!!C.shadowRoot.querySelector('[data-rec]') && C.shadowRoot.querySelector('[data-rec]').textContent.includes('AI note')")
@@ -486,8 +569,10 @@ def test_ryans_card_has_the_share_switch_and_the_ai_switch_both_off_until_he_tap
             assert pg.evaluate("() => !!C.shadowRoot.querySelector('[data-rec] .tag.ai')")
             assert pg.evaluate("() => fwContrast(C)")["fails"] == []
             assert pg.evaluate("() => window.calls.length") == 0 and errors == []
-            # off again: his file is deleted at once
+            # and on again
             pg.evaluate("() => C.shadowRoot.querySelector('[data-k=share-james]').click()")
-            pg.wait_for_function("C.shadowRoot.querySelector('[data-share]').textContent.includes('Off: nothing of the pilot database')")
-            assert not os.path.exists(PS.export_path("james", P.PILOTDB_SHARE))
+            pg.wait_for_function("C.shadowRoot.querySelector('[data-share]').textContent.includes('On: he sees and searches every pilot')")
+            assert posts[-1] == {"op": "share", "pilot": "james", "on": True} and os.path.exists(ep)
             ctx.close()
+
+

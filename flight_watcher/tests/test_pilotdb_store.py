@@ -234,7 +234,7 @@ def test_entries_add_retract_hide_restore_purge_and_idempotency(mk):
     db.purge(eid=e1)
     got = {e["eid"]: e for e in db.record(pid)["entries"]}
     assert got[e1]["text"] == "" and got[e1]["gone"] == "purged"
-    assert got[e2]["shared"] is False
+    assert got[e2]["shared"] is True  # 1.7.10 (Ryan, Nov 15): no "Only me" entry any more; every entry is shared
     # a pilot's write is counted (1.7.9 quotas), Ryan's are not; no text in act_log
     acts = db.db.execute("SELECT by,kind FROM act_log ORDER BY id").fetchall()
     assert acts == [("james", "add"), ("james", "retract")]

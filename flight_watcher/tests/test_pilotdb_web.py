@@ -242,7 +242,8 @@ def test_the_notes_field_and_the_log(api, caplog):
         assert st == 200 and r["eid"] == eid and len(r["record"]["entries"]) == 1
         st, r = _op(port, op="add", pid=jane, text="Only for me", rid="rid-0002", shared=False)
         mine = r["eid"]
-        assert [e["shared"] for e in r["record"]["entries"] if e["eid"] == mine] == [False]
+        # 1.7.10 (Ryan, Nov 15): "Only me" is gone; a card of 1.7.9 that still sends shared: false saves a shared entry
+        assert [e["shared"] for e in r["record"]["entries"] if e["eid"] == mine] == [True]
         st, r = _op(port, op="add", pid=jane, text="x", rid="rid-0003", shared="yes")
         assert (st, r["field"]) == (400, "shared")
         st, r = _op(port, op="retract", eid=mine)

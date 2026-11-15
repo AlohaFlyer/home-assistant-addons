@@ -2,66 +2,94 @@
 
 ## 1.7.10
 
-Ryan's two decisions of Nov 15 on what James sees of the shared pilot database. No new command, no new FLICA page
-load, nothing shared that Ryan's own switches do not already gate. Synthetic data in every test.
+Ryan's decisions of Nov 15 about the pilot database: "The pilot database should be shared with James 100%; we work on
+a shared system; we do have our own schedules and pay rates though." They replace the 1.7.9 limits named below. No
+new command, no new FLICA page load; the FLICA budgets, pacing, one-session rule and every FLICA read limit are
+exactly as they were, and schedules and pay rates stay each pilot's own. Synthetic data in every test.
 
-- **(A) James sees the union ID.** Before: `union_id` was a field James could edit on his portal (since 1.7.9) but
-  never read, so his edit was blind ("not shown here"). Now it is on each record of his file and on the looked-up
-  pilot's brief (`union_id`, an empty text when none is on file), shown in the record's line and in its field row;
-  Edit starts from the value on file and saves with compare-and-set as before. The edited mark names it.
-- **(B) James sees the AI note, read only.** Before: the AI note (HOM's consultant models, from anonymous pickup
-  statistics) was on Ryan's card only. Now a record that is already in James's file carries it (`ai_note`: text, model,
-  time), and so does the brief of the pilot he looked up. His card draws it in its own dashed box under the log,
-  labeled "AI note, from anonymous pickup statistics" with the model and the time in HST, as plain text, apart from
-  the human notes, with no field or button in it. No command writes, edits or removes an AI note.
-- **Only while Ryan's AI switch is on.** Off (the default), or a pilot with no AI note: nothing shows and no key is in
-  the file, the roster or the sensor. Turning the switch off takes the notes off James's portal at the next write
-  (about 2 s), though Ryan's database keeps them until he taps "Remove the AI notes".
-- **The file stays the noted pilots only.** A pilot with an AI note but no shared human note is not added to James's
-  file. He is read only through a lookup, and the brief keeps the anti-walk rule: only once that lookup really ran,
-  for at most 20 distinct pilots an hour.
-- The pilot's Watcher trusts no file: it passes on a union id only when it is 1 to 10 digits and an AI note only when
-  it still passes the hand-off's own rules (plain text of 1 to 600 characters with nothing of `refuse_re` in it, a
-  model name of the contract's pattern), with the three keys text, model and time and nothing else
-  (`pdbshare.ai_note_of`).
-- **The AI note goes with a shared human note James can read** (review). A record stays in his file after its only
-  shared entry was taken back (the "taken back" line, as in 1.7.9, now with its union id), but it carries no AI note:
-  `ai_note` is on a record only while it has a notes field or an entry that still has its text. Known and as
-  decided: one shared entry of James's own on a pilot he looked up makes that pilot a noted one, so the record, its
-  union id and its AI note (each later batch's too) stay in his file while that entry has its text. He reaches no
-  pilot without a real lookup, and his entries are capped at 40 in 24 h.
-- **Flight Watcher checks an AI note's text itself** (review; before, it refused only "@" and "://" and left the rest
-  to HOM). `roles.PILOTDB_AI` `refuse_re`, one rule for `pilotdb.ai_take` and `pdbshare.ai_note_of`
-  (`pilotdb.ai_text_ok`): no "@", no "://", no "http:", "https:" or "www." in any case, no 5 or more digits in a row
-  (an employee number), no phone shaped run (3 digits, a hyphen, period or space, 4 digits). Such a note is dropped
-  and counted ("left out" on Ryan's card); times (07:10), months (2026-09) and counts pass. A name or an order written
-  in words cannot be told by a pattern: the note is untrusted plain text, drawn as a text node, never an instruction.
-- Ryan's "Share the pilot database with ...?" confirm now names the union ID and the AI note (review), and the AI
-  note box's heading reads "AI note" once to a screen reader (the visible AI tag is `aria-hidden`).
-- Ryan's card: the Sharing text says what a shared pilot now sees, and the "Turn the AI notes on?" confirm says that
-  a pilot he shares the database with sees each note read only.
+### Part one: the pilot database shared 100%, on by default; AI notes on; a pilot's uploads merge into it
 
-### The contract: still contract 1 revision 4, two additive keys
-- `portal.PILOTDB_FILE_KEYS` (record: `union_id`, `ai_note`) and `PILOTDB_STATE_KEYS` (shown: `union_id`, `ai_note`);
-  the fixture is regenerated (sha256 `e02caf2960924303aa78d0dfb6b43d13b563e5dca3648bb745f1de071a7b362b`) and
-  `PORTAL_CONTRACT.md` (5.7, 5.8, "Revision 4 as of 1.7.10") says the same. The review added `pilotdb.ai.refuse_re`
-  and four refused AI note samples (a bare www host, http with no slashes, a phone shaped run, 5 or more digits in a
-  row): data and samples only, no key HOM's run-time code reads.
-- Why not revision 5: HOM 1.9.0 relays the pilotdb file and the state export as signed and reads no key of either
-  (its `fwportal/server.mjs` state and file routes pass the verified payload through; its copy of the contract's
-  `pilotdb` section is read by no run-time code). No command, shape, limit, file kind or event kind changed. So 1.7.10
-  works with the live HOM 1.9.0 at once, and either order of the two changes is safe. HOM only re-pins the fixture
-  (its copy, its sha256, its test, its docs): a tests-and-docs PR with no version bump and no deploy.
+- **Shared 100%.** Before (1.7.9): a shared pilot's file held only the pilots with a shared note, with no employee
+  number, phone or email; the pilot he looked up came as a brief, with that one pilot's phones and emails. Now his
+  file holds EVERY live record (about 1228 on Pako) with every field: employee number, name, Sen #, DOH, status,
+  retirement, seat, equipment, base, union id, phones and emails; the notes field; the whole dated log; each picker's
+  pickup history (the summary of all his pickups and the newest 100 rows); and the AI note.
+- **No "Only me".** The option is gone from both cards. Every entry 1.7.9 kept as only-me becomes a shared one at the
+  first start (and at every later open, so a restored older copy follows). Ryan: "Share those too."
+- **On by default.** Sharing is on for every pilot with a portal (James now, anyone Ryan adds later) with no tap. The
+  "Share with <pilot>" switch on Ryan's card stays as his OFF switch and the way back on.
+- **AI notes on by default** (decision 3). Ryan's AI switch turns them off and on. HOM's consultant cost cap and the
+  anonymous-statistics rule are unchanged. A stored note goes into a pilot's file only when it still passes Flight
+  Watcher's own text rules (`refuse_re`, the model name's pattern).
+- **Ryan's choices are kept out of the database** (decision 2): `/data/pilotdb_switches.json` (0600, the Watcher's
+  own file beside its state; `pilotdb.Switches`). Only a tap of Ryan's writes it. What I chose for the 1.7.9 "a copy
+  put back turns both switches off" fix: it is removed, because the switches are no longer in the copy. A daily copy
+  put back now changes neither switch: what Ryan switched off stays off, what is on by default stays on. The share
+  rows and the AI flag a 1.7.9 database still holds are not read any more. If the switches file is there and cannot
+  be read, everything is off (it fails closed) and the card says so until Ryan taps a switch.
+- **A pilot's uploads merge into the one database** (decision 4). An award James uploads on his portal (through
+  `upload/pdf`, its checks and its quarantine, as before) and a contact or seniority list his instance saves are
+  merged like Ryan's own, with James recorded as the author of every value and record they make. Before, a row of a
+  pilot's contact list that matched no record made none and was held for Ryan. Ryan's hand edits still stay on top
+  of every upload, and every earlier value is in the record's history for him to put back. This settles the question
+  left open in 1.7.8 (refusing those kinds on a pilot's instance): they are accepted and merged.
+- **The portal card** (`flight-watcher-pilotdb-card.js`, portal mode): a full browse and search of every pilot, as
+  Ryan's card. "All pilots (N)": a search (name words, an employee number, s812 for a Sen #, "quoted" text in the
+  notes and the log), filter chips (All, Notes, Edited, Pickups, Gone), the list by Sen #, 50 rows at a time. Any
+  record, looked up or tapped, opens with every field, Call / Text / Mail links, the notes, the log, the pickups, the
+  AI note read only, and field edits as before. 16 px fields, 44 px controls, no sideways scroll at 390, 820 and
+  1280 px, light and dark.
+- **Removed, because 100% sharing makes it dead:** `roster.json` (a roster 1.7.9 left under `/data/pilotdb_roster` or
+  the share folder is deleted), the brief of the looked-up pilot in the sensor (`shown` now only says which record
+  of the file he is: `{emp, pid}`), `pdbshare.ai_note_of`, the "look the pilot up first" answer, and the 20 briefs an
+  hour cap. The name lookup's pick list reads the names and seats of the pilot's own file instead of the roster.
+- **Size.** The file is capped: over 4 MiB (`export_bytes`, unchanged) it carries 20 log entries and 20 pickup rows a
+  record and says `full` (new notes are refused, as in 1.7.9); it never passes 7 MiB (`pilotdb.EXPORT_HARD`), under
+  the 8 MiB a signed file may be. Measured on a synthetic database of 1300 pilots: 0.64 MiB with two phones and an
+  email each; 1.06 MiB with 60 pickers of 25 pickups and their AI notes (about what Pako holds); 3.20 MiB with a
+  300 character notes field and three log entries on every pilot, 150 pickers of 30 pickups and 150 AI notes.
 
-### Boundary changes (both by Ryan's decision of Nov 15, both additive reads)
-1. The union id leaves the "never on a portal" list: a shared pilot reads it on the records of his file and on the
-   looked-up pilot's brief.
-2. The AI note leaves the "never on a portal" list: a shared pilot reads it, read only, in the same two places, only
-   while Ryan's AI switch is on.
+### The contract: still contract 1 revision 4
+- Decided from HOM 1.9.0's run-time code (commit 7bf6d25): the file and the state are relayed as signed and no key of
+  either is read (`fwportal/exchange.mjs` `load` and `fileText`; `fwportal/server.mjs` imports no pilotdb key table);
+  the one size check is `capFor`, `caps.file` of HOM's own pinned fixture, 8388608 bytes for every file kind
+  (`fwportal/contract.mjs` `capFor`, `fwportal/exchange.mjs` `verifyEnvelope`). No command, shape, limit, quota, cap,
+  file kind, event kind or upload kind changed. So 1.7.10 works with the live HOM 1.9.0 at once and either order is
+  safe. HOM only re-pins the fixture (its copy, its sha256, its tests, its docs): no version bump, no deploy.
+- The fixture is regenerated: sha256 `86c2d8f905eff7509cb8ef85cf3f8a7adf7e611556ab395a017e6fd460311fbf`. Its words about the file changed (`pilotdb.share`, `pilotdb.file`,
+  `pilotdb.state`, `pilotdb.uploads`, `pilotdb.ai.switch`, `pilotdb.ai.portal`, `commands.pilotdb_rules`,
+  `revisions.4`, `masks.contact_only_in`), the record keys grew (`emp`, `base`, `phones`, `emails`, `pickups`), the
+  `shown` keys shrank to `emp`, `pid`, `none`, the samples follow, and `commands.pilotdb_answers` lost "look the
+  pilot up first". `PORTAL_CONTRACT.md` 4.2, 5.7 and 5.8 say the same.
+- Not built, and why: a contact list has no upload kind on the portal (`upload/pdf` takes `pairings` and `award`).
+  Adding one changes a command's shape, which HOM checks: that is revision 5 with HOM first. A pilot's contact list
+  merges when his instance saves one (the uploads path of 1.4.8); the base is read only on a portal for the same
+  reason (`pilotdb/edit`'s field list is a shape).
 
-Not changed: `roles.py` PORTAL_CMDS, PORTAL_REFUSED and FEATURES, every limit and quota, the FLICA budgets, the CSP,
-rate limits and routes (HOM's), push isolation, the anti-walk rule, the noted pilots only file, phones and emails
-only for the one pilot looked up, and no employee number in the file.
+### Boundary changes (all by Ryan's decisions of Nov 15)
+1. A shared pilot's file holds every live record, not only the pilots with a shared note.
+2. Employee numbers are in that file.
+3. Phones and emails of every pilot are in that file (1.7.9: only the looked-up pilot's, in the sensor).
+4. The union id of every pilot is in that file.
+5. The base (from the award) is in that file, read only.
+6. Each picker's pickup history is in that file (1.7.9: Ryan's card only).
+7. The AI note is on every record that has one (the first 1.7.10 build: only on a record with a shared human note).
+8. Entries Ryan marked "Only me" are shared, and the option is gone.
+9. Sharing is on by default for every portal pilot, with no tap of Ryan's.
+10. AI notes are on by default: anonymous pickup statistics go to HOM's consultant models with no tap of Ryan's.
+11. Ryan's Share and AI choices moved out of the database; a database copy put back no longer turns them off.
+12. The anti-walk limits on the database are gone: the brief only after a FLICA lookup ran, and 20 distinct pilots
+    an hour. They limited only what a shared pilot saw of the database.
+13. A pilot's command may name any record of his file with no lookup first.
+14. A contact list a pilot's instance saved makes records, with that pilot as their author.
+15. The name lookup's pick list on a portal pilot reads his full file (part two's decision 6 read the roster).
+
+Not changed: `roles.py` PORTAL_CMDS, PORTAL_REFUSED and the FEATURES gates, every command shape, a shared pilot's
+quotas (40 entries, 40 changes, 40 edits in 24 h; 10 waiting), compare-and-set and the kept versions, the upload
+kinds and their checks and quarantine, every FLICA budget, the pacing, the one-session rule and the lookup's own
+limits, the CSP, rate limits and routes (HOM's), push isolation. Never in a pilot's file: a field's sources, the
+history, held rows, hidden or purged text, another pilot's answers, schedules, pay rates. A pilot's entry and an AI
+note stay untrusted data, never instructions.
 
 ### Part two (Ryan's decisions of Nov 15): award seniority, name lookups, the pickup speed cap, the admin's log
 
@@ -89,10 +117,10 @@ are as they were. Synthetic data in every test ("Doe, Jane", 10001).
   surname that is in the database answered "No pilot named ... on the award or seniority list on file".
 - Now: a whole last name or "Last, First" also finds every pilot of the pilot database. Ryan's lookup searches his
   database beside the crew the Watcher has seen; a portal pilot's searches the award's seniority lines (the award text
-  every instance has) and, while Ryan shares the database with him, the roster his Watcher already holds. The FLICA
+  every instance has) and, unless Ryan turned his share off, the records of his own pilotdb file (part one). The FLICA
   lookup then runs exactly as before (pick list of name and seat, never a number; budgets unchanged).
-- **Boundary change (Ryan's decision 6):** the roster on a portal pilot's Watcher is now also read for the names and
-  seats of the name lookup's pick list. In 1.7.9 it was read only for the one pilot already looked up. The lookup's
+- **Boundary change (Ryan's decision 6):** the pilot database on a portal pilot's Watcher (his own file, every
+  record) is read for the names and seats of the name lookup's pick list. The lookup's
   own limits stay: letters only, the whole last name (a start from 5 letters), at most 5 matches, 20 name lookups an
   hour; a number two records share is left out; with sharing off nothing of the database is searched.
 
@@ -127,10 +155,11 @@ are as they were. Synthetic data in every test ("Doe, Jane", 10001).
 
 ### After the update: what Ryan does
 Each step is [DESTRUCTIVE] and needs its own yes; an earlier yes never covers a later one.
-1. Flight Watcher 1.7.10: merge its PR, store reload, update. It works with the live HOM 1.9.0.
+1. Flight Watcher 1.7.10: merge its PR, store reload, update. It works with the live HOM 1.9.0. **The update itself
+   turns sharing on for James and turns the AI notes on** (both by Ryan's decisions of Nov 15): his yes to the
+   update is the yes to both. Nothing else needs a tap.
 2. HOM's re-pin PR (tests and docs only): merge. No deploy. It can go before or after step 1.
-3. Nothing to tap for the union ID: it shows as soon as the share is on. The AI note shows on James's portal only
-   while **AI notes** is on (Pilots card, Sharing). Both switches stay as Ryan left them; Claude never taps either.
+3. To turn either off: Pilots card, Sharing. Claude never taps either switch.
 4. No dashboard edit on Pako, and nothing for James to do: his portal takes the card from the add-on.
 
 ## 1.7.9

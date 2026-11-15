@@ -34,6 +34,17 @@ answers, the synthesized pilotdb state with the looked-up pilot's phones and ema
 union id edit was blind) and ai_note (read only, labeled as an AI note, only while Ryan's AI switch is on), on the
 records of his pilotdb file and on the looked-up pilot's brief. Two boundary changes, both additive reads: PORTAL_CMDS,
 PORTAL_REFUSED, FEATURES, every limit, the noted-pilots-only file and the anti-walk rule are as in 1.7.9.
+
+1.7.10, Ryan's decisions 1 to 4 of Nov 15 ("The pilot database should be shared with James 100%; we work on a shared
+system; we do have our own schedules and pay rates though"), still contract 1 revision 4: the pilotdb file holds
+EVERY live record with every field (the employee number, phones and emails too), the notes, the whole log (there is
+no "Only me" entry any more), each picker's pickup history and the AI note; sharing is on by default for every portal
+pilot and the AI notes are on by default (Ryan's card keeps an OFF switch for each, stored in the Watcher's own
+switches file, never in the database); a contact list or an award a pilot's instance saves merges into the one
+database like Ryan's, with that pilot as its author. The noted-pilots-only file, phones and emails only for the
+looked-up pilot, the roster and its anti-walk rule and the 20-an-hour brief cap are gone (they only limited what a
+shared pilot saw of the database). PORTAL_CMDS, PORTAL_REFUSED, every command shape, every limit and quota of a
+shared pilot's writes, the upload kinds, and every FLICA budget, pacing and read limit are as in 1.7.9.
 """
 import math
 import re
@@ -70,12 +81,14 @@ FEATURES = {
                                  "held for the admin"),
     "upload_review": (ADMIN, False, "the admin's Approve, Remove and Reject of a pilot's upload (upload/decide) and its "
                                     "push (event/pilot_upload)"),
-    # 1.7.9 (contract 1 revision 4, B14): only for a pilot Ryan shares the pilot database with (the Share switch on
-    # Ryan's own card, off by default; while it is off there is no file, the sensor says off and every command is refused)
-    "pilotdb": (ALL, True, "a pilot's view of Ryan's pilot database on his portal when Ryan shares it: the pilotdb file "
-                           "(pilots with shared notes), the synthesized pilotdb sensor (the pilot he looks up, with "
-                           "that one pilot's phones and emails), pilotdb/note (notes field and log) and pilotdb/edit "
-                           "(record fields), each applied by the admin's Watcher"),
+    # 1.7.9 (contract 1 revision 4, B14). 1.7.10 (Ryan, Nov 15): shared 100% with every portal pilot, on by default;
+    # Ryan's card keeps an OFF switch per pilot (while it is off there is no file, the sensor says off and every
+    # command is refused)
+    "pilotdb": (ALL, True, "the pilot database shared with a portal pilot (on by default; Ryan can turn it off): the "
+                           "pilotdb file (every live record with every field, the notes, the log, the pickup history "
+                           "and the AI note), the synthesized pilotdb sensor (which record the pilot card's pilot "
+                           "is), pilotdb/note (notes field and log) and pilotdb/edit (record fields), each applied by "
+                           "the admin's Watcher"),
 }
 
 # every MQTT command topic (after <prefix>/) an instance subscribes to, in the 1.4.12 order, and its feature
@@ -485,7 +498,8 @@ SHAPE_CMDS = {
 
 
 # ---------------------------------------------------------------- 1.7.9 (revision 4): the shared pilot database
-# Ryan's pilot database (pilotdb.py, the admin's Watcher, one writer) shared with a portal pilot by Ryan's own switch.
+# Ryan's pilot database (pilotdb.py, the admin's Watcher, one writer) shared with a portal pilot (1.7.9: by Ryan's own
+# switch, off by default; 1.7.10, Ryan's decisions of Nov 15: 100% of it, on by default, with an OFF switch on his card).
 # The pilot's Watcher never opens the database: it checks a command and drops it into the admin's inbox folder; the
 # admin applies it, with the author taken from the instance (the inbox folder's name), never from the payload.
 # pilotdb/note: the notes field (op field: compare-and-set on base, the rev it was read at) and the notes log (add,
@@ -504,7 +518,8 @@ PILOTDB_EDIT_FIELDS = ("name", "sen", "doh", "status", "retire", "seat", "equip"
 # code points; adds_per_day entries, changes_per_day notes field saves plus retracts and edits_per_day field edits in
 # 24 h; entries_per_record on one record, all authors; pending inbox files waiting per pilot; stale_h: an older inbox
 # file is refused; answers kept per pilot; export_entries newest entries per record in his file (export_entries_min
-# when the file is over export_bytes); value_max: a field edit's value; why_max: its reason line.
+# when the file is over export_bytes; 1.7.10: his file holds every record and never passes pilotdb.EXPORT_HARD, 7 MiB,
+# under the 8 MiB a signed file may be); value_max: a field edit's value; why_max: its reason line.
 PILOTDB_NOTE_LIMITS = {"entry_max": 2000, "field_max": 4000, "adds_per_day": 40, "changes_per_day": 40,
                        "edits_per_day": 40, "entries_per_record": 500, "pending": 10, "stale_h": 24, "answers": 20,
                        "export_entries": 50, "export_entries_min": 20, "export_bytes": 4 * 1024 * 1024,
@@ -549,7 +564,6 @@ PILOTDB_ANSWERS = (
     "Not saved: a note is at most <n> characters",
     "Not saved: the notes field is at most <n> characters",
     "Not saved: that value is not valid for <field>",
-    "Not saved: look the pilot up first",
     "Not saved: that pilot is not in Ryan's pilot database",
     "Not saved: the log for that pilot is full",
     "Not saved: the shared notes file is full",
@@ -559,9 +573,9 @@ PILOTDB_ANSWERS = (
     "Busy: try again in a minute",
 )
 # The AI note (Ryan, Nov 14: "Through HOM's models"): HOM's consultant models write one short note per pilot with at
-# least min_pickups pickups, from anonymous pickup statistics only. Ryan's own switch on his card (off by default)
-# turns it on; it is his data (1.7.10, Ryan Nov 15: a pilot he shares the database with reads a note, read only, on
-# the records of his file and on the looked-up pilot's brief; nobody but HOM's hand-off writes one). Flight Watcher
+# least min_pickups pickups, from anonymous pickup statistics only. 1.7.10 (Ryan's decision 3 of Nov 15): on by
+# default; Ryan's own switch on his card turns it off (and on again). A shared pilot reads a note, read only, on the
+# records of his file; nobody but HOM's hand-off writes one. Flight Watcher
 # writes the statistics file; each pilot
 # in it has an id made new for every batch (random, kept only in Ryan's database, so nobody else can map it back), and
 # no name, employee number, record id, seniority number, date of hire, pairing number or exact date. HOM answers with

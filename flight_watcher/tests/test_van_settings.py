@@ -609,12 +609,12 @@ def test_roles_classify_the_new_subs_and_the_contract_is_unchanged(tmp_path):
         (in_dir / name).write_text(json.dumps(cmd))
         with pytest.raises(PT.PortalError):
             sp.take(str(in_dir / name))
-    # contract 1 byte for byte (revision 4 since 1.7.9; 1.7.10 adds union_id and ai_note, HOM re-pins), and its doc
+    # contract 1 byte for byte (revision 4 since 1.7.9; 1.7.10: shared 100%, HOM re-pins), and its doc
     raw = open(os.path.join(HERE, "tests", "fixtures", "portal_contract_v1.json"), "rb").read()
-    assert hashlib.sha256(raw).hexdigest() == "e02caf2960924303aa78d0dfb6b43d13b563e5dca3648bb745f1de071a7b362b"
+    assert hashlib.sha256(raw).hexdigest() == "86c2d8f905eff7509cb8ef85cf3f8a7adf7e611556ab395a017e6fd460311fbf"
     assert PT.contract_text().encode("utf-8") == raw and b"van/alerts" not in raw
     doc = open(os.path.join(HERE, "PORTAL_CONTRACT.md"), "rb").read()
-    assert hashlib.sha256(doc).hexdigest() == "facae5437d27cbd8f5185a3327d398f08c33dbab511b7d5845d7dde14c21ded8"
+    assert hashlib.sha256(doc).hexdigest() == "a4f5dcccafa79074fa6ea4647316b57dc1569cf61cb04f947b445225ea7c9161"
 
 
 def test_van_is_reserved_and_the_guard_reads_the_ids_as_ryans():

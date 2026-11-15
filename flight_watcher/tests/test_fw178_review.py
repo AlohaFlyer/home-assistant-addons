@@ -351,7 +351,9 @@ def test_unset_of_a_name_no_upload_has_is_refused(db):
 
 
 # ---------------------------------------------------------------- the uploader
-def test_a_pilots_uploaded_contact_list_is_his_and_makes_no_record(PW):  # noqa: F811
+def test_a_pilots_uploaded_contact_list_is_his_and_merges_like_ryans(PW):  # noqa: F811
+    """1.7.10 (Ryan's decision 4 of Nov 15): a contact list a pilot's instance saved merges into the one database like
+    Ryan's own, with that pilot as the author (1.7.8 held a row that matched no record for Ryan)."""
     db = PW.pilotdb_start()
     row = ["Zoe", "", "Zed", "", "Example Air", "First Officer", "808-555-0109", "zoe.zed@example.com", "10099",
            "HAL Emp# 10099 | Sen# 990 (Jul 2026) | DOH 2-Feb-22 | Status A"]
@@ -359,9 +361,16 @@ def test_a_pilots_uploaded_contact_list_is_his_and_makes_no_record(PW):  # noqa:
     r = web.save_upload({"kind": "contacts", "month": ""}, _csv([row, jane]), logging.getLogger("t"), who="james")
     assert r["ok"] and json.load(open(web.CONTACTS_FILE))["uploaded_by"] == "james"
     PW.pilotdb_tick()
-    assert db.find("10099") is None  # a pilot's list makes no record: held for Ryan
-    held = [c for c in db.conflicts() if c["kind"] == "contact_unmatched" and c["emp"] == "10099"]
-    assert len(held) == 1
+    zoe = db.find("10099")  # a row with a HAL Emp# makes a record, as on Ryan's own list, and it is the pilot's
+    assert zoe and [x["by"] for x in db.record(zoe)["field_log"] if x["how"] == "created"] == ["james"]
+    assert {v["by"] for v in db._vals(zoe, "name")} == {"james"}
+    assert not [c for c in db.conflicts() if c["kind"] == "contact_unmatched" and c["emp"] == "10099"]
+    # Ryan's hand edit stays on top of a pilot's upload, and the upload's value is kept beside it
+    db.set_field(zoe, "status", "LOA", db.record(zoe)["rev"], "He told me")
+    web.save_upload({"kind": "contacts", "month": ""}, _csv([row, jane]), logging.getLogger("t"), who="james")
+    PW.pilotdb_tick(force=True)
+    f = db.record(zoe)["fields"]["status"]
+    assert (f["value"], f["hand"], f["by"]) == ("LOA", True, "ryan")
     rec = db.record(db.find("10001"))  # a row that matches a record updates it, as the pilot's
     assert {v["by"] for v in db._vals(rec["pid"], "phones") if v["source"] == "contacts"} == {"james"}
     with db.lock:

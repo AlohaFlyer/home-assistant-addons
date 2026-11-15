@@ -1,12 +1,14 @@
-"""1.7.9 (contract 1 revision 4; spec 11.1, 11.2, 11.4; Ryan's Nov 14 decisions): what leaves Ryan's pilot database
-for a pilot he shares it with, and how that pilot's notes and field edits come back.
+"""1.7.9 (contract 1 revision 4; spec 11.1, 11.2, 11.4), as of 1.7.10 (Ryan's decisions of Nov 15: "The pilot database
+should be shared with James 100%"): what leaves Ryan's pilot database for a portal pilot, and how that pilot's notes
+and field edits come back.
 
-The Share switch is off by default and nothing is written while it is off. A shared pilot's file is a whitelist: the
-noted pilots only, no employee number, phone, email, source or history, no only-me or hidden entry, only his own
-answers; 0600 (1.7.10: the union id is on each record, and the AI note while Ryan's AI switch is on:
-tests/test_fw1710_union_ai.py). The roster is for a pilot's Watcher only (B23: it carries the phones and emails so the Watcher can
-show them for the one pilot looked up). The admin's inbox drain applies notes, log entries and field edits with the
-author taken from the folder's name, compare-and-set, quotas and fixed answers, and keeps every earlier version.
+Sharing is on by default for every portal pilot; Ryan's switch turns one off (his file is deleted) and on again, and
+the choice is kept outside the database (pilotdb.Switches). A shared pilot's file is a whitelist of keys that holds
+every live record with every field (the employee number, phones and emails too), the notes, the whole log (an entry
+an older version marked "Only me" too), the pickup history and, while the AI notes are on, the AI note; never a
+hidden or purged text, a field's sources, the history or another pilot's answers; 0600. No roster is written. The
+admin's inbox drain applies notes, log entries and field edits with the author taken from the folder's name,
+compare-and-set, quotas and fixed answers, and keeps every earlier version.
 Synthetic pilots only ("Doe, Jane", 10001, 555-01xx, example.com)."""
 import json
 import os
@@ -67,17 +69,28 @@ def _put(root, pilot, cmd, now=T0S, by=None, **inner):
 
 
 def _share(db, root, pilot="james"):
-    db.set_share(pilot, True)
+    """Sharing is on by default (1.7.10); the tests of one pilot's file turn the other pilot's off."""
+    for p in PILOTS:
+        db.set_share(p, p == pilot)
     return PS.write_files(db, PILOTS, root)
 
 
 # ---------------------------------------------------------------- the switch
-def test_nothing_is_written_while_no_share_is_on(db, root):
+def test_every_portal_pilot_is_shared_with_by_default_and_no_roster_is_written(db, root):
     jane = _jane(db)
     db.save_notes(jane, "Commutes from the mainland.", P.ZERO_REV)
-    assert db.shared_with() == [] and not db.is_shared("james")
+    assert db.shared_with(PILOTS) == PILOTS and db.is_shared("james") and db.is_shared("pilot3")
+    assert not db.is_shared("../etc") and not db.is_shared(None)
+    assert PS.write_files(db, PILOTS, root) == {"james": "on", "pilot3": "on"}
+    assert sorted(os.listdir(os.path.join(root, "portal"))) == ["james.json", "pilot3.json"]
+    assert not os.path.exists(PS.roster_path(root))
+
+
+def test_ryans_off_switch_writes_nothing_for_that_pilot(db, root):
+    for p in PILOTS:
+        db.set_share(p, False)
+    assert db.shared_with(PILOTS) == [] and not db.is_shared("james")
     assert PS.write_files(db, PILOTS, root) == {"james": "off", "pilot3": "off"}
-    assert not os.path.exists(PS.export_path("james", root)) and not os.path.exists(PS.roster_path(root))
     assert os.listdir(os.path.join(root, "portal")) == []
 
 
@@ -85,39 +98,49 @@ def test_share_on_writes_private_files_and_off_deletes_them(db, root):
     jane = _jane(db)
     db.save_notes(jane, "Commutes from the mainland.", P.ZERO_REV)
     assert _share(db, root) == {"james": "on", "pilot3": "off"}
-    for p in (PS.export_path("james", root), PS.roster_path(root)):
-        assert _mode(p) == 0o600
+    assert _mode(PS.export_path("james", root)) == 0o600
     for d in (root, os.path.join(root, "portal"), os.path.join(root, "inbox"), PS.inbox_dir("james", root)):
         assert _mode(d) == 0o700
-    assert not os.path.exists(PS.export_path("pilot3", root))  # the other pilot gets nothing
+    assert not os.path.exists(PS.export_path("pilot3", root))  # Ryan turned that pilot's share off
     db.set_share("james", False)
     assert PS.write_files(db, PILOTS, root) == {"james": "off", "pilot3": "off"}
-    assert not os.path.exists(PS.export_path("james", root)) and not os.path.exists(PS.roster_path(root))
+    assert not os.path.exists(PS.export_path("james", root))
     with pytest.raises(P.Bad):
         db.set_share("james", "yes")
     with pytest.raises(P.Bad):
         db.set_share("../etc", True)
 
 
+def test_a_roster_an_older_version_left_is_removed(db, root, tmp_path):
+    rdir = str(tmp_path / "data" / "pilotdb_roster")
+    os.makedirs(rdir)
+    os.makedirs(root)
+    for d in (root, rdir):
+        open(PS.roster_path(d), "w").write("{}")
+    PS.write_files(db, PILOTS, root, roster_dir=rdir)
+    assert not os.path.exists(PS.roster_path(root)) and not os.path.exists(rdir)
+
+
 def test_a_pilot_no_longer_configured_loses_his_file(db, root):
     _share(db, root)
     assert os.path.exists(PS.export_path("james", root))
     PS.write_files(db, ["pilot3"], root)
-    assert not os.path.exists(PS.export_path("james", root)) and not os.path.exists(PS.roster_path(root))
+    assert not os.path.exists(PS.export_path("james", root))
 
 
 # ---------------------------------------------------------------- the file: a whitelist
-def test_the_file_holds_the_noted_pilots_only_and_whitelisted_keys(db, root):
+def test_the_file_holds_every_pilot_with_every_field_and_whitelisted_keys(db, root):
     jane, rick = _jane(db), db.find("10002")
     db.save_notes(jane, "Commutes from the mainland.", P.ZERO_REV)
     shared = db.add_entry(jane, "Flew with her in October.", True, "rid-000001")
-    db.add_entry(jane, "ONLY-ME-SENTINEL", False, "rid-000002")
+    only = db.add_entry(jane, "ONCE-ONLY-ME", False, "rid-000002")  # 1.7.10: there is no only-me entry any more
     hidden = db.add_entry(jane, "HIDDEN-SENTINEL", True, "rid-000003")
     db.hide(hidden)
     gone = db.add_entry(jane, "RETRACTED-SENTINEL", True, "rid-000004")
     db.retract(gone)
     db.set_field(jane, "doh", "2001-05-02", db.record(jane)["rev"], "From her award line")
     db.set_field(jane, "union_id", "424242", db.record(jane)["rev"])
+    db.set_field(jane, "domicile", "HNL", db.record(jane)["rev"])
     db.put_answer("james", "rid-james1", True, "Saved")
     db.put_answer("pilot3", "rid-other1", False, "Busy: try again in a minute")
     _share(db, root)
@@ -128,38 +151,71 @@ def test_the_file_holds_the_noted_pilots_only_and_whitelisted_keys(db, root):
         allowed |= set(ks)
     allowed |= set(PT.pilotdb_limits())
     assert _keys(d) <= allowed, _keys(d) - allowed
-    assert d["v"] == 1 and d["count"] == 1 and [r["pid"] for r in d["records"]] == [jane]  # Rick has no note
-    assert rick not in text
-    r = d["records"][0]
+    # every live record, by Sen #: Rick (13) has no note, no log and no pickup and is in the file all the same
+    assert d["v"] == 1 and d["count"] == 2 and [r["pid"] for r in d["records"]] == [rick, jane]
+    r = d["records"][1]
     assert set(r) <= set(PT.PILOTDB_FILE_KEYS["record"])
-    assert (r["name"], r["sen"], r["doh"], r["status"], r["seat"], r["gone"]) == (
-        "Doe, Jane A.", "812", "2001-05-02", "SLOA", "", False)
-    assert r["edited"] == ["doh", "union_id"]  # the hand marker only; never phones or emails
-    assert r["union_id"] == "424242"  # 1.7.10 (Ryan, Nov 15): shown, so his union id edit is not blind
+    assert (r["emp"], r["name"], r["sen"], r["doh"], r["status"], r["seat"], r["base"], r["gone"]) == (
+        "10001", "Doe, Jane A.", "812", "2001-05-02", "SLOA", "", "HNL", False)
+    assert r["edited"] == ["doh", "domicile", "union_id"] and r["union_id"] == "424242"
+    assert r["phones"][0] == {"label": "mobile", "number": "808-555-0101", "tel": "+18085550101"}
+    assert r["emails"] == ["jane.doe@example.com"]
     assert r["notes"]["text"] == "Commutes from the mainland." and r["notes"]["by"] == "ryan"
-    assert [e["eid"] for e in r["entries"]] == [gone, shared] and r["entries_total"] == 2
+    assert [e["eid"] for e in r["entries"]] == [gone, only, shared] and r["entries_total"] == 3
     assert r["entries"][0] == {"eid": gone, "by": "ryan", "at": r["entries"][0]["at"], "gone": "taken back"}
-    assert "mine" not in r["entries"][1]  # ryan's entry is not james's
+    assert r["entries"][1]["text"] == "ONCE-ONLY-ME"  # Ryan: "Share those too"
+    assert "mine" not in r["entries"][2]  # ryan's entry is not james's
+    assert "pickups" not in r and "ai_note" not in r  # nobody picked anything up; no AI note on file
+    k = d["records"][0]
+    assert (k["emp"], k["name"], k["entries"], k["entries_total"]) == ("10002", "Roe, Rick", [], 0) and "notes" not in k
     assert [a["rid"] for a in d["answers"]] == ["rid-james1"]
     assert d["limits"] == PT.pilotdb_limits()
-    # a byte scan: no employee number, phone, email, only-me, hidden or taken back text, other's answer
-    for s in ("10001", "10002", "555-01", "example.com", "ONLY-ME-SENTINEL", "HIDDEN-SENTINEL",
-              "RETRACTED-SENTINEL", "rid-other1", "From her award line", "emp", "phones", "emails", "ai_note"):
+    # a byte scan: no hidden or taken back text, no other pilot's answer, no reason line, no source or history
+    for s in ("HIDDEN-SENTINEL", "RETRACTED-SENTINEL", "rid-other1", "From her award line", "source", "cands",
+              "field_log", "conflict"):
         assert s not in text, s
+
+
+def test_an_only_me_entry_of_an_older_version_becomes_a_shared_one_at_open(db):
+    jane = _jane(db)
+    eid = db.add_entry(jane, "Kept to myself in 1.7.9.", True, "rid-000009")
+    with db._tx():
+        db.db.execute("UPDATE entries SET shared=0 WHERE eid=?", (eid,))
+    again = P.PilotDB(db.path, clock=db.clock)  # every open (a restored older copy too)
+    try:
+        assert again.db.execute("SELECT shared FROM entries WHERE eid=?", (eid,)).fetchone()[0] == 1
+        assert [e["text"] for e in again.export_for("james")["records"][-1]["entries"]] == ["Kept to myself in 1.7.9."]
+        assert "(only me)" not in again.render_md()
+    finally:
+        again.close()
+
+
+def test_the_pickup_history_is_on_the_pickers_record(db):
+    jane = _jane(db)
+    db.sync_pickups([{"key": f"H36{i:02d}|13Nov", "emp": "10001", "name": "Doe, Jane", "pos": "FO",
+                      "at": f"2026-11-{10 + i:02d}T03:10:00+00:00", "secs": 90 + i, "approx": False, "lay": "SYD",
+                      "pairing": f"H36{i:02d}", "start": "2026-11-20", "days": 3, "turn": False, "credit": "14:05",
+                      "report": "07:10", "dow": "Fri", "inflt": False} for i in range(3)])
+    d = db.export_for("james")
+    r = next(x for x in d["records"] if x["pid"] == jane)
+    assert set(r["pickups"]) == {"summary", "rows"} and r["pickups"]["summary"]["n"] == 3
+    assert [x["pairing"] for x in r["pickups"]["rows"]] == ["H3602", "H3601", "H3600"]  # newest first
+    assert set(r["pickups"]["rows"][0]) <= set(PT.PILOTDB_FILE_KEYS["pickup"])
+    assert set(r["pickups"]["summary"]) <= set(PT.PILOTDB_FILE_KEYS["pickup_summary"])
+    assert "name" not in r["pickups"]["rows"][0] and "key" not in r["pickups"]["rows"][0]
+    assert all("pickups" not in x for x in d["records"] if x["pid"] != jane)
 
 
 def test_mine_marks_only_the_pilots_own_entries(db, root):
     jane = _jane(db)
     e1 = db.add_entry(jane, "James's note.", True, "rid-000001", by="james")
     db.add_entry(jane, "Another pilot's note.", True, "rid-000002", by="pilot3")
-    db.set_share("james", True)
-    db.set_share("pilot3", True)
-    PS.write_files(db, PILOTS, root)
-    dj = json.load(open(PS.export_path("james", root)))
-    d3 = json.load(open(PS.export_path("pilot3", root)))
-    assert [e.get("mine") for e in dj["records"][0]["entries"]] == [None, True]
-    assert [e.get("mine") for e in d3["records"][0]["entries"]] == [True, None]
-    assert dj["records"][0]["entries"][1]["eid"] == e1
+    PS.write_files(db, PILOTS, root)  # both are shared by default
+    dj = next(r for r in json.load(open(PS.export_path("james", root)))["records"] if r["pid"] == jane)
+    d3 = next(r for r in json.load(open(PS.export_path("pilot3", root)))["records"] if r["pid"] == jane)
+    assert [e.get("mine") for e in dj["entries"]] == [None, True]
+    assert [e.get("mine") for e in d3["entries"]] == [True, None]
+    assert dj["entries"][1]["eid"] == e1
 
 
 def test_entries_are_cut_to_the_newest_and_a_full_file_says_so(db, root):
@@ -168,36 +224,47 @@ def test_entries_are_cut_to_the_newest_and_a_full_file_says_so(db, root):
         db.clock_box["t"] = T0 + timedelta(seconds=i)
         db.add_entry(jane, f"note {i:02d} " + "x" * 300, True, f"rid-{i:06d}")
     lim = dict(roles.PILOTDB_NOTE_LIMITS)
+
+    def rec(d):
+        return next(r for r in d["records"] if r["pid"] == jane)
     d = db.export_for("james", lim)
-    assert len(d["records"][0]["entries"]) == 50 and d["records"][0]["entries_total"] == 60
-    assert d["records"][0]["entries"][0]["text"].startswith("note 59") and "full" not in d
+    assert len(rec(d)["entries"]) == 50 and rec(d)["entries_total"] == 60
+    assert rec(d)["entries"][0]["text"].startswith("note 59") and "full" not in d
     small = dict(lim, export_bytes=12000)
     d = db.export_for("james", small)
-    assert len(d["records"][0]["entries"]) == 20 and "full" not in d
+    assert len(rec(d)["entries"]) == 20 and "full" not in d
     tiny = dict(lim, export_bytes=2000)
     d = db.export_for("james", tiny)
-    assert d["full"] is True and len(d["records"][0]["entries"]) == 20
+    assert d["full"] is True and len(rec(d)["entries"]) == 20
     # the admin then refuses his new notes
-    db.set_share("james", True)
     ok, why, _ = db.pilot_op("james", "note", {"op": "add", "pid": jane, "text": "one more", "rid": "rid-full01"},
                              full=True)
     assert (ok, why) == (False, "Not saved: the shared notes file is full")
 
 
-def test_the_roster_is_by_employee_number_with_phones_and_emails_and_no_text(db, root):
+def test_the_file_never_passes_the_hard_size(db):
+    """Under portal.CAPS['file'] whatever the database holds: the logs and pickup rows go first, then the notes
+    fields and AI notes, the records last; full says so."""
     jane = _jane(db)
-    db.save_notes(jane, "NOTE-SENTINEL", P.ZERO_REV)
-    db.add_entry(jane, "ENTRY-SENTINEL", True, "rid-000001")
-    _share(db, root)
-    text = open(PS.roster_path(root), encoding="utf-8").read()
-    d = json.loads(text)
-    assert set(d) == {"v", "generated", "rev", "by_emp"} and set(d["by_emp"]) == {"10001", "10002"}
-    row = d["by_emp"]["10001"][0]
-    assert set(row) == {"pid", "name", "sen", "doh", "status", "retire", "seat", "equip", "union_id", "gone", "edited",
-                        "rev", "lk", "notes_n", "phones", "emails"}  # 1.7.10: union_id; no ai_note (the switch is off)
-    assert row["pid"] == jane and row["lk"] == "DOE" and row["notes_n"] == 2
-    assert row["phones"][0]["tel"] == "+18085550101" and row["emails"] == ["jane.doe@example.com"]  # B23
-    assert "SENTINEL" not in text and "ai_note" not in text
+    db.save_notes(jane, "N" * 3000, P.ZERO_REV)
+    for i in range(30):
+        db.clock_box["t"] = T0 + timedelta(seconds=i)
+        db.add_entry(jane, f"note {i:02d} " + "x" * 500, True, f"rid-{i:06d}")
+    assert P.EXPORT_HARD < PT.CAPS["file"] and roles.PILOTDB_NOTE_LIMITS["export_bytes"] <= P.EXPORT_HARD
+
+    def size(d):
+        return len(json.dumps(d, ensure_ascii=False, separators=(",", ":")).encode())
+
+    def rec(d):
+        return next(r for r in d["records"] if r["pid"] == jane)
+    d = db.export_for("james", hard=9000)  # room for the fields, the notes field and a few entries
+    assert size(d) <= 9000 and d["full"] is True and d["count"] == 2 and len(rec(d)["entries"]) == 5
+    d = db.export_for("james", hard=5000)  # no room for any entry: the notes field stays
+    assert size(d) <= 5000 and rec(d)["entries"] == [] and rec(d)["entries_total"] == 30 and "notes" in rec(d)
+    d = db.export_for("james", hard=1500)  # nor for the notes field: every record's fields stay
+    assert size(d) <= 1500 and d["count"] == 2 and "notes" not in rec(d) and rec(d)["emp"] == "10001"
+    d = db.export_for("james", hard=700)  # absurd: the records themselves are cut, the file still reads
+    assert size(d) <= 700 and d["full"] is True and d["count"] < 2
 
 
 # ---------------------------------------------------------------- the drain: notes, log entries, field edits
@@ -300,7 +367,7 @@ def test_retract_is_for_his_own_entries_only_and_asks_for_a_scrub(db, root):
 
 def test_an_unshared_pilot_a_stale_file_and_an_unknown_record_are_refused(db, root):
     jane = _jane(db)
-    _share(db, root)
+    _share(db, root)  # Ryan turned pilot3's share off
     PS.ensure_dirs(root, ["pilot3"])
     _put(root, "pilot3", "note", op="add", pid=jane, text="Not shared with me.", rid="rid-p30001")
     _put(root, "james", "note", now=T0S - 25 * 3600, op="add", pid=jane, text="A day old.", rid="rid-old001")
@@ -382,7 +449,7 @@ def test_the_inbox_file_is_private_and_made_exclusively(db, root):
     body = json.load(open(path))
     assert body["by"] == "james" and body["cmd"] == "note" and set(body) == {"v", "by", "at", "cmd", "op", "pid", "text",
                                                                            "rid"}
-    with pytest.raises(OSError):  # no inbox folder: not shared
+    with pytest.raises(OSError):  # no inbox folder: Ryan turned his share off
         PS.inbox_put("pilot3", "note", {"op": "add", "pid": jane, "text": "x", "rid": "rid-mode02"}, root)
     os.rmdir(PS.inbox_dir("pilot3", root)) if os.path.isdir(PS.inbox_dir("pilot3", root)) else None
     os.symlink(PS.inbox_dir("james", root), PS.inbox_dir("pilot3", root))

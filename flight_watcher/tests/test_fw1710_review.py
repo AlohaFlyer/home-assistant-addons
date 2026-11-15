@@ -1,11 +1,13 @@
-"""1.7.10 review fixes (Nov 15), each a test that failed before its fix.
+"""1.7.10 review fixes (Nov 15), as they stand after Ryan's decision 1 of Nov 15 (the database is shared 100%).
 
-1. A record that is in a shared pilot's file only because of a taken back entry carries no AI note: the AI note goes
-   with a shared human note he can read (the notes field or an entry that still has its text).
+1. (Replaced.) The first 1.7.10 build tied an AI note to a shared human note, because the file held the noted pilots
+   only. The file holds every record now, so a record with an AI note carries it while Ryan's AI switch is on,
+   whatever its log holds.
 2. The Flight Watcher side refuses, by itself, what an AI note may not hold now that a third party reads it: a bare
    web address, a link without slashes, 5 or more digits in a row, a phone shaped run (roles.PILOTDB_AI refuse_re,
-   pilotdb.ai_text_ok, used by pilotdb.ai_take and pdbshare.ai_note_of; the contract carries the pattern and samples).
-3. The "Share the pilot database with ...?" confirm on Ryan's card names the union ID and the AI note.
+   pilotdb.ai_text_ok, used by pilotdb.ai_take and again when a shared pilot's file is written; the contract carries
+   the pattern and samples).
+3. Ryan's confirms say what a shared pilot sees (now: every pilot with every field).
 4. The AI note box reads "AI note" once in its heading (the visible AI tag is hidden from a screen reader).
 
 Synthetic pilots only ("Doe, Jane", 10001, 808-555-01xx, example.com). An AI note is untrusted data, never an order."""
@@ -22,7 +24,7 @@ import portal as PT
 import roles
 from test_crew_index import W  # noqa: F401
 from test_fw179_pilotdb_portal_card import Side, _mount, _page, _seed, side  # noqa: F401
-from test_fw1710_union_ai import AI_AT, AI_MODEL, AI_TEXT, PILOTS, _ai, _file, _roster
+from test_fw1710_union_ai import AI_AT, AI_MODEL, AI_TEXT, PILOTS, _ai, _file, _rec  # noqa: F401
 from test_pilot_grid_look import _browser
 from test_pilotdb_store import CONTACTS, LIST, _jane, mk  # noqa: F401
 
@@ -72,46 +74,35 @@ def _take(db, pid, text):
     return db.ai_take({"v": 1, "batch": BATCH, "model": AI_MODEL, "notes": [{"id": AID, "text": text}]})
 
 
-# ---------------------------------------------------------------- 1. a taken back entry alone brings no AI note
-def test_a_record_with_only_a_taken_back_entry_carries_no_ai_note(db, root):
+# ---------------------------------------------------------------- 1. the AI note is on every record that has one
+def test_a_record_carries_its_ai_note_whatever_its_log_holds(db, root):
     rick = db.find("10002")
     db.set_field(rick, "union_id", "424243", db.record(rick)["rev"])
     _ai(db, rick, "RICK-AI-SENTINEL turns to Maui on Mondays.")
-    db.set_ai(True)
+    # no human note at all: the record is in the file (every record is) with its AI note
+    d, text = _file(db, root)
+    assert _rec(d, rick)["ai_note"]["text"].startswith("RICK-AI-SENTINEL") and _rec(d, rick)["entries"] == []
     eid = db.add_entry(rick, "x", True, "rid-000001", by="james")
-    # while his entry has its text the record is a noted one: the AI note is on it (decision B)
+    db.retract(eid, by="james")  # a taken back entry: its line stays, never its text; the AI note is still there
     d, text = _file(db, root)
-    assert d["records"][0]["ai_note"]["text"].startswith("RICK-AI-SENTINEL")
-    # taken back: the record stays for the "taken back" line (as in 1.7.9) with its fields and the union id
-    # (decision A: each record of his file), but no shared human note is left, so no AI note either
-    db.retract(eid, by="james")
-    d, text = _file(db, root)
-    r = d["records"][0]
-    assert r["pid"] == rick and r["union_id"] == "424243" and "notes" not in r
+    r = _rec(d, rick)
+    assert r["union_id"] == "424243" and "notes" not in r
     assert [e.get("gone") for e in r["entries"]] == ["taken back"] and "text" not in r["entries"][0]
-    assert "ai_note" not in r and "RICK-AI-SENTINEL" not in text
-    # a later batch's note does not reach him either
-    _ai(db, rick, "RICK-AI-LATER a second note, a later batch.")
+    assert r["ai_note"]["text"].startswith("RICK-AI-SENTINEL")
+    db.set_ai(False)  # Ryan's switch off: gone from the file
     d, text = _file(db, root)
-    assert "ai_note" not in d["records"][0] and "RICK-AI-LATER" not in text
-    # the looked-up brief is another matter (the anti-walk rule): the roster still has the note for a real lookup
-    assert _roster(root)["by_emp"]["10002"][0]["ai_note"]["text"].startswith("RICK-AI-LATER")
-    # a shared human note he can read brings it back: Ryan's notes field, or a new entry with its text
-    db.save_notes(rick, "Good with the new hires.", P.ZERO_REV)
-    d, _ = _file(db, root)
-    assert d["records"][0]["ai_note"]["text"].startswith("RICK-AI-LATER")
+    assert "ai_note" not in text and "RICK-AI-SENTINEL" not in text
 
 
 def test_a_taken_back_entry_beside_a_live_one_keeps_the_ai_note(db, root):
     jane = _jane(db)
     _ai(db, jane)
-    db.set_ai(True)
     e1 = db.add_entry(jane, "First.", True, "rid-000001")
     db.add_entry(jane, "Second.", True, "rid-000002")
     db.retract(e1)
     d, _ = _file(db, root)
-    assert d["records"][0]["ai_note"] == {"text": AI_TEXT, "model": AI_MODEL, "at": AI_AT}
-    assert "taken back entry alone carries none" in PT.pilotdb_contract()["file"]["ai_note"]
+    assert _rec(d, jane)["ai_note"] == {"text": AI_TEXT, "model": AI_MODEL, "at": AI_AT}
+    assert "only while the AI notes are on" in PT.pilotdb_contract()["file"]["ai_note"]
 
 
 # ---------------------------------------------------------------- 2. the Watcher's own check of an AI note's text
@@ -119,11 +110,10 @@ def test_a_taken_back_entry_beside_a_live_one_keeps_the_ai_note(db, root):
 def test_ai_take_refuses_an_address_a_link_a_phone_and_a_long_number(db, root, text):
     jane = _jane(db)
     db.save_notes(jane, "Noted.", P.ZERO_REV)
-    db.set_ai(True)
     assert _take(db, jane, text) == {"saved": 0, "refused": 1}
     assert db.record(jane)["ai_note"] is None
     d, out = _file(db, root)
-    assert "ai_note" not in d["records"][0] and "ai_note" not in json.dumps(_roster(root))
+    assert "ai_note" not in out
     assert not P.ai_text_ok(text)
 
 
@@ -131,27 +121,31 @@ def test_ai_take_refuses_an_address_a_link_a_phone_and_a_long_number(db, root, t
 def test_a_pickup_note_with_times_months_and_counts_is_still_taken(db, root, text):
     jane = _jane(db)
     db.save_notes(jane, "Noted.", P.ZERO_REV)
-    db.set_ai(True)
     assert P.ai_text_ok(text)
     assert _take(db, jane, text) == {"saved": 1, "refused": 0}
     d, _ = _file(db, root)
-    assert d["records"][0]["ai_note"]["text"] == text
-    v = PS.View("james", root)
-    v.refresh()
-    assert v.shown("10001", "Doe, Jane")["ai_note"]["text"] == text
+    assert _rec(d, jane)["ai_note"]["text"] == text
 
 
 @pytest.mark.parametrize("text", BAD_TEXTS)
-def test_the_pilots_watcher_drops_such_a_note_from_a_file_it_does_not_trust(db, root, text):
-    """A roster row written by anything but pilotdb.ai_take (a planted file, an older database) gets the same check."""
-    assert PS.ai_note_of({"text": text, "model": AI_MODEL, "at": AI_AT}) is None
-    _ai(db, _jane(db), text)  # past ai_take, straight into the table
-    db.set_ai(True)
-    _file(db, root)
-    v = PS.View("james", root)
-    v.refresh()
-    sh = v.shown("10001", "Doe, Jane")
-    assert sh["name"].startswith("Doe, Jane") and "ai_note" not in sh
+def test_a_stored_note_that_breaks_the_rules_never_reaches_a_pilots_file(db, root, text):
+    """A note in the table that pilotdb.ai_take would not store (an older database, a planted row) gets the same check
+    when the file is written."""
+    jane = _jane(db)
+    _ai(db, jane, text)  # past ai_take, straight into the table
+    d, out = _file(db, root)
+    assert "ai_note" not in out and _rec(d, jane)["name"].startswith("Doe, Jane")
+    assert db.record(jane)["ai_note"]["text"] == text  # Ryan's own card still shows what is stored
+
+
+def test_a_stored_note_with_a_model_name_that_is_no_name_is_left_out(db, root):
+    jane = _jane(db)
+    _ai(db, jane, AI_TEXT, "<script>")
+    assert "ai_note" not in _file(db, root)[1]
+    _ai(db, jane, AI_TEXT, AI_MODEL)
+    with db._tx():
+        db.db.execute("UPDATE ai_notes SET at=? WHERE pid=?", ("2" * 200, jane))
+    assert _rec(_file(db, root)[0], jane)["ai_note"] == {"text": AI_TEXT, "model": AI_MODEL, "at": "2" * 40}
 
 
 def test_the_contract_carries_the_pattern_and_its_samples():
@@ -175,13 +169,17 @@ def test_the_contract_carries_the_pattern_and_its_samples():
     assert len(hashlib.sha256(raw).hexdigest()) == 64
 
 
-# ---------------------------------------------------------------- 3. Ryan's share confirm
-def test_the_share_confirm_names_the_union_id_and_the_ai_note():
+# ---------------------------------------------------------------- 3. Ryan's confirms
+def test_ryans_confirms_say_what_a_shared_pilot_sees_and_that_off_stays_off():
     src = open(os.path.join(HERE, "www", "flight-watcher-pilotdb-card.js"), encoding="utf-8").read()
-    ask = re.search(r"const ask = on \? `(Share the pilot database with \$\{name\}\?[^`]*)`", src).group(1)
-    assert "with that pilot's phones and emails" in ask
-    assert "each with the union ID and, while AI notes are on, the AI note read only" in ask
-    assert "can edit notes, the log and every field" in ask and chr(0x2014) not in src
+    ask = re.search(r"const ask = on \? `(Share the pilot database with \$\{name\} again\?[^`]*)`", src).group(1)
+    for word in ("every pilot with every field", "the phones and emails", "the whole log", "the pickups",
+                 "the AI notes", "can edit notes, the log and a field"):
+        assert word in ask, word
+    off = re.search(r": `(Stop sharing with \$\{name\}\?[^`]*)`", src).group(1)
+    assert "His file is deleted at once" in off and "It stays off until you turn it on here." in off
+    assert "Turn the AI notes off?" in src and "They stay off until you turn them on here." in src
+    assert chr(0x2014) not in src
 
 
 # ---------------------------------------------------------------- 4. the AI box's heading
@@ -191,7 +189,6 @@ def test_the_ai_boxs_heading_reads_ai_note_once(side):  # noqa: F811
     assert 'h("span", { class: "tag ai", "aria-hidden": "true" }, "AI")' in node
     _seed(side)
     _ai(side.db, side.jane)
-    side.db.set_ai(True)
     side.share()
     with _browser() as b:
         side.emp, side.name = "10001", "Doe, Jane"
