@@ -103,7 +103,9 @@ def test_the_guards(api):
     # unknown keys and ops are refused, never echoed
     st, r = _op(port, op="add", pid=jane, text="x", rid="rid-guard-2", by="james")
     assert (st, r) == (400, {"ok": False, "field": "keys", "why": "holds a key this op does not take"})
-    st, r = _op(port, op="share", pilot="james", on=True)  # B6: sharing is 1.7.9's
+    st, r = _op(port, op="share", pilot="james", on=True)  # 1.7.9: only a pilot the add-on runs with a portal
+    assert (st, r) == (400, {"ok": False, "field": "pilot", "why": "is not a pilot with a portal"})
+    st, r = _op(port, op="publish", pilot="james")
     assert (st, r) == (400, {"ok": False, "field": "op", "why": "is not an operation of the pilot database"})
     st, r = _op(port, op="set", pid=jane, field="sen")
     assert (st, r["field"], r["why"]) == (400, "value", "is missing")

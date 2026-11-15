@@ -832,7 +832,7 @@ def _check_spec(spec, sub, payload, cid):
 _TAGS = {"new_pairing": "airplane", "rule_match": "dart", "recall_miss": "warning", "request_decided": "envelope",
          "schedule_changed": "calendar", "charter": "airplane", "hidden": "eyes", "needs_settings": "key",
          "stopped_*": "rotating_light", "ticket_fixed": "white_check_mark", "bid_calendar": "spiral_calendar",
-         "schedule_unread": "hourglass"}
+         "schedule_unread": "hourglass", "swap": "arrows_counterclockwise"}
 
 
 def _clean(v, n=120):
@@ -857,6 +857,8 @@ def event_data(kind, payload):
         p["block"] = p.get("blk")
     if isinstance(p.get("row"), dict):  # rule_match: the matched row
         p = {**{k: v for k, v in p["row"].items() if k not in p}, **p}
+    if kind == "swap" and "for_date" not in p and isinstance(p.get("for"), str):  # 1.7.9: "TRIP|YYYY-MM-DD"
+        p["for_date"] = p["for"].partition("|")[2]
     out = {}
     for k in tuple(roles.EVENT_FIELDS) + tuple(roles.EVENT_KIND_FIELDS.get(kind, ())):
         if k in p:
@@ -914,6 +916,21 @@ def event_text(kind, d):
                 ". ".join(["Seat still open on the pairing page, gone from the pot"] + facts))
     if kind == "needs_settings":
         return "Flight Watcher needs your FLICA login", "Enter your FLICA username and password on the Settings tab."
+    if kind == "swap":  # 1.7.9 (revision 4, F#107): the pickup, the trip he marked, the gains; never the reason text
+        f2 = []
+        if d.get("days"):
+            f2.append(f"{d['days']} days" + (f", layover {d['layover']}" if d.get("layover") else ""))
+        elif d.get("layover"):
+            f2.append(f"Layover {d['layover']}")
+        if d.get("credit"):
+            f2.append(_j("Credit", d["credit"], f"({d['credit_gain']})" if d.get("credit_gain") else ""))
+        if d.get("soft_gain"):
+            f2.append(f"Soft time {d['soft_gain']}")
+        if d.get("src") in ("O", "T"):
+            f2.append("In open time" if d["src"] == "O" else "On the Tradeboard")
+        f2.append("See it on the Watcher tab. Nothing is ever submitted for you: FLICA stays read only")
+        return (_j("Swap idea:", d.get("pairing"), when, _j("for your", d["for_trip"]) if d.get("for_trip") else ""),
+                ". ".join(f2) + ".")
     if kind == "bid_calendar":  # 1.7.2 (revision 3): the admin's push words, from the alert's own fields
         return bidcal.alert_text(d) or ("Bid calendar", "See the bid calendar dates in your pairing package.")
     if kind == "schedule_unread":  # 1.7.2 (revision 3): how long, and whether reads fail or wait; nothing else
@@ -1063,6 +1080,47 @@ def contract():
                           seq0 + 11, "2026-11-03T18:00:00+00:00")
     ev_unread = event_record("schedule_unread", {"state": "failing", "hours": 7, "key": "2026-11-09"}, seq0 + 12,
                              "2026-11-09T20:00:12+00:00")
+    # 1.7.9 (revision 4, F#107): a new swap idea (the Watcher's event/swap payload; its reason, URL and draft never
+    # reach the record)
+    ev_swap = event_record("swap", {"for": "H9001|2026-11-20", "for_trip": "H9001", "for_credit": "10:30",
+                                    "pairing": "H9002", "start": "2026-11-20", "end": "2026-11-22",
+                                    "dates": "20NOV-22NOV", "days": 3, "layover": "SYD", "credit": "15:20",
+                                    "soft": "2:10", "src": "O", "soft_gain": "+0:40", "credit_gain": "+4:50",
+                                    "why": "soft +0:40, credit +4:50", "detail_url": "https://example.invalid/x",
+                                    "grid_ok": True, "grid": "grid OK", "gain_h": 1.15,
+                                    "would_submit": "DRAFT: drop H9001, add H9002",
+                                    "key": "H9002|2026-11-20>H9001|2026-11-20", "at": "2026-11-09T20:00:13+00:00"},
+                          seq0 + 13, "2026-11-09T20:00:13+00:00")
+    pdb_pid, pdb_eid = "p0123456789", "n0123456789"
+    # 1.7.9 (revision 4): the synthesized pilotdb sensor (made-up values) and the pilotdb file
+    state["states"][f"sensor.{prefix}_pilotdb"] = {
+        "state": "on",
+        "attributes": {"friendly_name": "Pilot database", "rev": "abc123abc123", "file_key": zeros, "count": 1,
+                       "updated": "2026-11-14T20:05:00+00:00",
+                       "shown": {"emp": "10001", "pid": pdb_pid, "name": "Doe, Jane", "sen": "812",
+                                 "doh": "2001-05-01", "status": "A", "retire": "2041-03", "seat": "FO",
+                                 "equip": "A330", "gone": False, "edited": ["doh"], "rev": 7, "notes_n": 2,
+                                 "contact": {"phones": [{"label": "mobile", "number": "808-555-0100",
+                                                         "tel": "+18085550100"}],
+                                             "emails": ["jane.doe@example.com"]}},
+                       "answers": [{"rid": "rdemo0500", "ok": True, "why": "Saved",
+                                    "at": "2026-11-14T20:04:58+00:00"}],
+                       "pending": [], "limits": pilotdb_limits()},
+        "last_changed": "2026-11-14T20:05:00+00:00", "last_updated": "2026-11-14T20:05:00+00:00"}
+    pdb_file = {"v": 1, "generated": "2026-11-14T20:05:00+00:00",
+                "as_of": {"list": "2026-11-01", "contacts": "2026-11-12", "award": "2026-12"}, "count": 1,
+                "records": [{"pid": pdb_pid, "name": "Doe, Jane", "sen": "812", "doh": "2001-05-01", "status": "A",
+                             "retire": "2041-03", "seat": "FO", "equip": "A330", "gone": False, "edited": ["doh"],
+                             "rev": 7,
+                             "notes": {"text": "Commutes from the mainland.", "rev": "a1b2c3d4e5f6", "by": "ryan",
+                                       "at": "2026-11-14T19:00:00+00:00"},
+                             "entries": [{"eid": pdb_eid, "by": pilot, "at": "2026-11-14T20:04:58+00:00",
+                                          "text": "Flew with her in October.", "mine": True},
+                                         {"eid": "n9876543210", "by": "ryan", "at": "2026-11-13T20:00:00+00:00",
+                                          "gone": "taken back"}],
+                             "entries_total": 2}],
+                "answers": [{"rid": "rdemo0500", "ok": True, "why": "Saved", "at": "2026-11-14T20:04:58+00:00"}],
+                "limits": pilotdb_limits()}
     manifest = {"contract": 1, "revision": roles.CONTRACT_REVISION, "app_version": "1.7.2", "pilot": pilot,
                 "prefix": prefix, "role": "pilot",
                 "cards": {f"flight-watcher-clock-card-{pilot}.js": hashlib.sha256(b"// sample card\n").hexdigest()},
@@ -1078,15 +1136,16 @@ def contract():
                              f"input_number.{prefix}_month_offset": {"set_value": {"local": True},
                                                                       "increment": {"local": True},
                                                                       "decrement": {"local": True}}},
-                "mqtt_subs": ["blocked/set", "improved/set", "pilot/set", "recall/act", "settings/set", "trade/set",
-                              "upload/pdf"],
-                "files": ["finds:2026-11", "pairings:2026-11", "pickers", "pilotver", "recall", "school:2026-27",
-                          "versions"], "ntfy": False}
-    bodies = [("manifest", manifest), ("state", state), ("events", {"events": [ev, ev_bid, ev_unread]}),
+                "mqtt_subs": ["blocked/set", "improved/set", "pilot/set", "pilotdb/edit", "pilotdb/note",
+                              "recall/act", "settings/set", "trade/set", "upload/pdf"],
+                "files": ["finds:2026-11", "pairings:2026-11", "pickers", "pilotdb", "pilotver", "recall",
+                          "school:2026-27", "versions"], "ntfy": False}
+    bodies = [("manifest", manifest), ("state", state), ("events", {"events": [ev, ev_bid, ev_unread, ev_swap]}),
               ("results", {"results": [{"id": "0123456789abcdef", "ok": True, "why": ""},
                                        {"id": "fedcba9876543210", "ok": False, "why": "sub not allowed: drop/set"}]}),
               ("file:finds:2026-11", {"month": "2026-11", "count": 0, "finds": []}),
-              ("file:pickers", {"count": 0, "pickers": []})]
+              ("file:pickers", {"count": 0, "pickers": []}),
+              ("file:pilotdb", pdb_file)]
     envs = []
     for i, (kind, body) in enumerate(bodies):
         envs.append({"file": out_name(kind), "envelope": envelope(key, kind, pilot, seq0 + i, dumps(body))})
@@ -1142,6 +1201,9 @@ def contract():
     s_acc, s_ref = shape_samples(cmd)  # 1.7.2 (revision 3): pilot/set and upload/pdf
     accepted += s_acc
     refused += s_ref
+    p_acc, p_ref = pilotdb_samples(cmd)  # 1.7.9 (revision 4): pilotdb/note and pilotdb/edit
+    accepted += p_acc
+    refused += p_ref
     file_urls = [
         {"url": f"/local/flight-watcher/{pilot}/finds_2026-11_{'ab' * 16}.json?t=1", "kind": "finds", "arg": "2026-11",
          "api": "/fw/api/file/finds/2026-11"},
@@ -1150,13 +1212,16 @@ def contract():
         {"url": f"/local/flight-watcher/{pilot}/school_2026-27.json?v=1", "kind": "school", "arg": "2026-27",
          "api": "/fw/api/file/school/2026-27"},
     ] + [{"url": f"/local/flight-watcher/{pilot}/{k}_{zeros}.json?r=abc", "kind": k, "arg": "",
-          "api": f"/fw/api/file/{k}"} for k in ("versions", "pickers", "recall", "pilotver", "tickets")]
+          "api": f"/fw/api/file/{k}"} for k in ("versions", "pickers", "recall", "pilotver", "tickets", "pilotdb")]
     # 1.7.0: URLs a pilot's portal never maps (the shim answers null): the admin's tickets list (no pilot folder, his
     # key) and another pilot's folder
     file_urls_refused = [
         {"url": f"/local/flight-watcher/tickets_{zeros}.json?r=abc", "why": "the admin's tickets list (no pilot folder)"},
         {"url": f"/local/flight-watcher/pilot3/tickets_{zeros}.json?r=abc", "why": "another pilot's folder"},
         {"url": f"/local/flight-watcher/pilot3/versions_{zeros}.json?r=abc", "why": "another pilot's folder"},
+        # 1.7.9 (revision 4): the pilotdb file only from the pilot's own folder
+        {"url": f"/local/flight-watcher/pilotdb_{zeros}.json?r=abc", "why": "no pilot folder"},
+        {"url": f"/local/flight-watcher/pilot3/pilotdb_{zeros}.json?r=abc", "why": "another pilot's folder"},
     ]
     return {
         "contract": roles.CONTRACT, "revision": roles.CONTRACT_REVISION, "fwp": FWP,
@@ -1193,6 +1258,9 @@ def contract():
                      "shape_rules": "commands.shapes are read with commands.ticket_rules, as commands.tickets are",
                      "pilot_upload_limits": roles.PILOT_UPLOAD_LIMITS,
                      "pilot_upload_checks": list(UPLOAD_CHECKS),
+                     "pilotdb_note_limits": roles.PILOTDB_NOTE_LIMITS,
+                     "pilotdb_answers": list(roles.PILOTDB_ANSWERS),
+                     "pilotdb_rules": list(PILOTDB_RULES),
                      "since_revision": roles.COMMAND_SINCE, "removed_in_revision": roles.COMMAND_REMOVED},
         "prefs": roles.PREF_KEYS, "local_helpers": roles.LOCAL_HELPERS,
         "events": {"kinds": list(roles.PORTAL_EVENTS) + list(roles.MACHINE_EVENTS) + list(roles.OWN_EVENTS),
@@ -1207,13 +1275,24 @@ def contract():
         "file_kinds": roles.FILE_KINDS,
         "synthesized_states": {"prefs": [roles.PREF_KEYS[k]["entity"].replace("{prefix}", "<prefix>")
                                           for k in roles.PREF_KEYS],
-                               "pilot_uploads": "sensor.<prefix>_pilot_uploads"},
+                               "pilot_uploads": "sensor.<prefix>_pilot_uploads",
+                               "pilotdb": "sensor.<prefix>_pilotdb"},
+        "pilotdb": pilotdb_contract(),
         "revisions": {"1": "Flight Watcher 1.6.0, HOM 1.6.0: first version",
                       "2": "Flight Watcher 1.7.0, HOM 1.8.0: tickets on the portal",
                       "3": "Flight Watcher 1.7.2, HOM 1.8.2: bid_calendar and schedule_unread alerts, the pilot/set "
                            "shape, recall/set refused, a pilot's pairings package and award uploads (upload/pdf), the "
-                           "fit alone in the new pairing text, the manifest's revision"},
-        "masks": {"zero": list(MASK_ZERO), "drop": list(MASK_DROP), "never_copied": ["context"]},
+                           "fit alone in the new pairing text, the manifest's revision",
+                      "4": "Flight Watcher 1.7.9, HOM 1.9.0: Ryan's pilot database shared with a pilot by Ryan's "
+                           "switch (file kind pilotdb, commands pilotdb/note and pilotdb/edit, synthesized state "
+                           "pilotdb with the looked-up pilot's phones and emails), the swap alert for a new swap "
+                           "idea, the AI note hand-off (pilotdb.ai)"},
+        "masks": {"zero": list(MASK_ZERO), "drop": list(MASK_DROP), "never_copied": ["context"],
+                  # 1.7.9 (revision 4, B23): contact is still dropped from every state read from Home Assistant; the
+                  # one place a portal gets phones and emails is the synthesized pilotdb sensor
+                  "contact_only_in": "sensor.<prefix>_pilotdb attributes.shown.contact: the phones and emails of the "
+                                     "one pilot the pilot card shows, from Ryan's pilot database, only while Ryan "
+                                     "shares it; never a list, never in a file"},
         "blob_keep_s": BLOB_KEEP_S,
         "test_key": {"label": TEST_SEED_LABEL, "seed": "sha256(label)", "public_key": public_id(key)},
         "samples": {"envelopes": envs, "bad_envelopes": bad,
@@ -1414,6 +1493,241 @@ def shape_samples(cmd):
     accepted = [cmd(sub, p if isinstance(p, str) else dumps(p), 500 + i) for i, (sub, p) in enumerate(acc)]
     refused = [{"why": why, **cmd(sub, p if isinstance(p, str) else dumps(p), 600 + i)}
                for i, (why, sub, p) in enumerate(ref)]
+    return accepted, refused
+
+
+# 1.7.9 (revision 4): how a shared pilot's note or edit travels and what each side checks, in order
+PILOTDB_RULES = (
+    "The portal and the spool check the shape (commands.shapes) and nothing else.",
+    "The pilot's Watcher refuses a command while Ryan has not shared the pilot database with him (no pilotdb file).",
+    "pid must be a record of his current pilotdb file or the pid of the pilot his pilot card shows (shown.pid); "
+    "otherwise 'look the pilot up first', so a command is no oracle for which pilots exist.",
+    "pilotdb/note: entry only with op retract, and it must be one of his own entries in his file; base only with op "
+    "field; text only with add (1 to entry_max code points) or field (0 to field_max; empty clears the notes field).",
+    "pilotdb/edit: value only with op set; unset puts the uploads' value back.",
+    "At most pending commands wait in the admin's inbox per pilot; over it: 'Busy: try again in a minute'.",
+    "The pilot's Watcher writes the command into the admin's inbox folder; the author is his instance name, never a "
+    "payload key. It never opens the database, never loads FLICA and logs the op only.",
+    "The admin's Watcher (the one writer) takes the author from the inbox folder's name, refuses a file older than "
+    "stale_h, checks the shape, the text rules, the op rules, the quotas and the compare-and-set again, applies the op "
+    "and writes the answer; the same rid again answers the same and changes nothing.",
+    "A stale base (notes field) or rev (record field) is refused and nothing is overwritten; every replaced notes "
+    "version and every earlier field value is kept and Ryan can put any back.",
+    "An answer's why is one of commands.pilotdb_answers; it never quotes text anyone typed.",
+    "A note or an edit makes no event and no ntfy push.",
+)
+
+
+def pilotdb_limits():
+    """The limits a shared pilot's file and sensor show (the sizes and his daily quotas)."""
+    lim = roles.PILOTDB_NOTE_LIMITS
+    return {k: lim[k] for k in ("entry_max", "field_max", "adds_per_day", "changes_per_day", "edits_per_day",
+                                "value_max", "why_max")}
+
+
+# every key the pilotdb file and the synthesized sensor may hold (the builders are whitelists; tests scan them)
+PILOTDB_FILE_KEYS = {
+    "top": ["v", "generated", "as_of", "count", "records", "answers", "limits", "full"],
+    "as_of": ["list", "contacts", "award"],
+    "record": ["pid", "name", "sen", "doh", "status", "retire", "seat", "equip", "gone", "edited", "rev", "notes",
+               "entries", "entries_total"],
+    "notes": ["text", "rev", "by", "at"],
+    "entry": ["eid", "by", "at", "text", "mine", "gone"],
+    "answer": ["rid", "ok", "why", "at"],
+}
+PILOTDB_STATE_KEYS = {
+    "attributes": ["friendly_name", "rev", "file_key", "count", "updated", "shown", "answers", "pending", "limits"],
+    "shown": ["emp", "pid", "name", "sen", "doh", "status", "retire", "seat", "equip", "gone", "edited", "rev",
+              "notes_n", "contact", "none"],
+    "contact": ["phones", "emails"],
+    "phone": ["label", "number", "tel"],
+}
+
+
+def pilotdb_contract():
+    """Contract 1 revision 4's pilot database part as data: the file, the synthesized state, the inbox hand-off and
+    the AI note hand-off between the admin's Watcher and HOM."""
+    ai = roles.PILOTDB_AI
+    return {
+        "share": "Ryan's switch per portal pilot on his own card (the admin's ingress API, op share), off by default. "
+                 "While it is off the pilot has no pilotdb file, the sensor's state is off and every pilotdb command "
+                 "is refused. Claude never turns it on or off.",
+        "file": {"kind": "pilotdb", "keys": PILOTDB_FILE_KEYS,
+                 "records": "only records with a notes field or at least one shared entry that is not hidden (the "
+                            "noted pilots), never the roster",
+                 "entries": "the newest export_entries per record (export_entries_min when the file is over "
+                            "export_bytes; full is true when it still is, and new notes are refused); mine marks the "
+                            "pilot's own; a taken back entry keeps eid, by, at and gone 'taken back', never its text; a "
+                            "hidden one leaves no trace",
+                 "answers": "this pilot's last answers only",
+                 "never": ["emp", "phones", "emails", "union_id", "contact", "history", "conflicts", "pickups", "ai_note",
+                           "only-me entries", "hidden entries", "other pilots' answers"]},
+        "state": {"entity": "sensor.<prefix>_pilotdb", "states": ["on", "off", "waiting"],
+                  "keys": PILOTDB_STATE_KEYS,
+                  "shown": "the record brief of the pilot the pilot card shows now, or {emp, none: true} when he is "
+                           "not in the database, or null with no pilot shown; contact (phones, emails) only for that "
+                           "one pilot",
+                  "answers": "the file's answers and the Watcher's own refusals, newest last, at most answers",
+                  "pending": "the rids waiting in the admin's inbox"},
+        "inbox": {"dir": "/share/flight_watcher/pilotdb/inbox/<pilot>", "file_re": INBOX_NAME_RE.pattern,
+                  "max_bytes": INBOX_MAX_BYTES,
+                  "body": ["v", "by", "at", "cmd", "op", "pid", "entry", "base", "text", "field", "value", "rev", "why",
+                           "rid"],
+                  "author": "the folder's name; a body by that differs is refused"},
+        "edit_fields": list(roles.PILOTDB_EDIT_FIELDS),
+        "edit_values": {"phones": "the JSON text of a list of at most 4 {label, number}; label mobile, home, work or "
+                                  "other",
+                        "emails": "the JSON text of a list of at most 3 addresses",
+                        "doh": "YYYY-MM-DD", "retire": "YYYY-MM", "seat": "CA, FO or RO", "sen": "1 to 5 digits",
+                        "name": "Last, First", "status": "a code of the seniority list's legend",
+                        "equip": "1 to 8 letters or digits", "union_id": "1 to 10 digits (never shown on a portal)"},
+        "ai": {"switch": "Ryan's switch on his own card (op ai), off by default; while it is off no statistics file is "
+                         "written and no note is taken in",
+               "min_pickups": ai["min_pickups"], "note_max": ai["note_max"], "model_max": ai["model_max"],
+               "max_pilots": ai["max_pilots"], "in_max_bytes": ai["in_bytes"], "stale_h": ai["stale_h"],
+               "stats_path": f"{ai['dir']}/{ai['stats_file']}", "in_dir": f"{ai['dir']}/{ai['in_dir']}",
+               "in_file": "<batch>.json, written as a dotfile then renamed", "in_file_re": ai["in_file_re"],
+               "id_re": ai["id_re"], "batch_re": ai["batch_re"], "model_re": ai["model_re"],
+               "text_pattern": roles.TICKET_TEXT_PATTERN,
+               "modes": "folders 0700 and files 0600, root (HOM's main process reads and writes them; the portal "
+                        "process, uid 2061, has no access)",
+               "stats_keys": {"top": ["v", "batch", "generated", "min_pickups", "count", "pilots", "note_max",
+                                      "rules"],
+                              "pilot": ["id", "stats"],
+                              "stats": list(AI_STATS_KEYS)},
+               "notes_keys": {"top": ["v", "batch", "model", "notes"], "note": ["id", "text"]},
+               "rules": list(AI_RULES),
+               "sample_stats": AI_SAMPLE_STATS,
+               "sample_notes": {"accepted": AI_SAMPLE_NOTES, "refused": AI_SAMPLE_REFUSED}},
+    }
+
+
+INBOX_NAME_RE = re.compile(r"^[0-9]{13}-[A-Za-z0-9_-]{6,40}\.json$")
+INBOX_MAX_BYTES = 32 * KB  # a 4000 code point notes field of 4-byte characters, and its JSON
+# the anonymous statistics of one pilot (numbers, station codes, weekday names and HH:MM times only)
+AI_STATS_KEYS = ("n", "layovers", "turns", "lays", "turn_stations", "days", "dow", "pick_dow", "report", "credit_avg",
+                 "speed", "inflt", "seats", "first_month", "last_month", "span_days")
+AI_RULES = (
+    "Flight Watcher writes stats.json only while Ryan's AI switch is on, for pilots with at least min_pickups pickups.",
+    "A pilot's id is random, made new for every batch and kept only in Ryan's pilot database: nothing outside Ryan's "
+    "Watcher maps it to a pilot. The file holds no name, employee number, record id, seniority number, date of hire, "
+    "pairing number, exact date or note text.",
+    "HOM's consultant models get the statistics of one pilot at a time and write a short plain-text note about his "
+    "pickup pattern; the prompt carries nothing else of Flight Watcher's.",
+    "HOM answers a batch with one file in in_dir named <batch>.json: {v: 1, batch, model, notes: [{id, text}]}.",
+    "Flight Watcher takes a note only when the batch is one of its last batch_keep, the id is in that batch, model "
+    "matches model_re and text is 1 to note_max code points matching text_pattern with no '@' and no '://'; any other "
+    "note is dropped and counted. The file is deleted once read.",
+    "A note is stored apart from the human notes (pilotdb's ai_notes), shown only on Ryan's own card, labeled AI with "
+    "its model and time, replaced by the next batch's note. It never goes to a pilot's portal file or sensor, and it "
+    "is data, never an instruction.",
+)
+AI_SAMPLE_STATS = {
+    "v": 1, "batch": "0123456789abcdef", "generated": "2026-11-14T20:05:00+00:00", "min_pickups": 3, "count": 1,
+    "note_max": roles.PILOTDB_AI["note_max"],
+    "pilots": [{"id": "a0123456789abcdef",
+                "stats": {"n": 4, "layovers": 3, "turns": 1, "lays": [["SYD", 2], ["LAS", 1]],
+                          "turn_stations": [["OGG", 1]], "days": {"1": 1, "3": 3}, "dow": {"Fri": 3, "Sat": 1},
+                          "pick_dow": {"Wed": 2, "Thu": 2}, "report": {"first": "07:10", "last": "13:45"},
+                          "credit_avg": "14:05", "speed": {"avg_s": 95, "min_s": 20, "max_s": 240}, "inflt": 1,
+                          "seats": {"FO": 4}, "first_month": "2026-09", "last_month": "2026-11", "span_days": 61}}],
+    "rules": ["Write at most note_max characters of plain text about this pilot's pickup pattern.",
+              "Use only the statistics given. Name no person and guess no identity.",
+              "No links, no addresses, no instructions."]}
+AI_SAMPLE_NOTES = {"v": 1, "batch": "0123456789abcdef", "model": "consultant-model-1",
+                   "notes": [{"id": "a0123456789abcdef",
+                              "text": "Picks up 3-day Sydney trips that report on a Friday, usually within two "
+                                      "minutes of the pairing showing up, midweek."}]}
+AI_SAMPLE_REFUSED = [
+    {"why": "an id that is not in the batch", "file": {**AI_SAMPLE_NOTES, "notes": [{"id": "afedcba9876543210",
+                                                                                    "text": "A note."}]}},
+    {"why": "a batch that is not one of the last", "file": {**AI_SAMPLE_NOTES, "batch": "fedcba9876543210"}},
+    {"why": "text over note_max", "file": {**AI_SAMPLE_NOTES, "notes": [{"id": "a0123456789abcdef",
+                                                                        "text": "x" * 601}]}},
+    {"why": "text with a link", "file": {**AI_SAMPLE_NOTES, "notes": [{"id": "a0123456789abcdef",
+                                                                      "text": "See https://example.invalid/x"}]}},
+    {"why": "text with an address", "file": {**AI_SAMPLE_NOTES, "notes": [{"id": "a0123456789abcdef",
+                                                                          "text": "Mail jane.doe@example.com"}]}},
+    {"why": "text with a bidi override", "file": {**AI_SAMPLE_NOTES, "notes": [{"id": "a0123456789abcdef",
+                                                                               "text": "Picks \u202eyendyS"}]}},
+    {"why": "a model name with a line feed", "file": {**AI_SAMPLE_NOTES, "model": "model\nINFO forged"}},
+    {"why": "a note with another key", "file": {**AI_SAMPLE_NOTES, "notes": [{"id": "a0123456789abcdef",
+                                                                             "text": "A note.", "pid": "p0123456789"}]}},
+]
+
+
+def pilotdb_samples(cmd):
+    """(accepted, refused) samples of contract 1 revision 4's pilotdb/note and pilotdb/edit (made-up values), numbered
+    from 700 on. Every one goes through Spool and check_shape here and HOM's generic checker there."""
+    astral = "\U0001F6EB"
+    pid, eid = "p0123456789", "n0123456789"
+    note = {"op": "add", "pid": pid, "text": "Flew with her in October.", "rid": "rdemo0500"}
+    edit = {"op": "set", "pid": pid, "field": "doh", "value": "2001-05-01", "rev": 7, "rid": "rdemo0600"}
+    lim = roles.PILOTDB_NOTE_LIMITS
+    acc = [
+        ("pilotdb/note", note),
+        ("pilotdb/note", {"op": "retract", "pid": pid, "entry": eid, "rid": "rdemo0501"}),
+        ("pilotdb/note", {"op": "field", "pid": pid, "base": "000000000000", "text": "", "rid": "rdemo0502"}),
+        ("pilotdb/note", {"op": "field", "pid": pid, "base": "a1b2c3d4e5f6", "text": "Line one\n\tLine two",
+                          "rid": "rdemo0503"}),
+        ("pilotdb/note", {"op": "field", "pid": pid, "base": "a1b2c3d4e5f6",
+                          "text": astral + "x" * (lim["field_max"] - 1), "rid": "rdemo0504"}),
+        ("pilotdb/edit", edit),
+        ("pilotdb/edit", {**edit, "why": "From his award line", "rid": "rdemo0601"}),
+        ("pilotdb/edit", {"op": "unset", "pid": pid, "field": "seat", "rev": 8, "rid": "rdemo0602"}),
+        ("pilotdb/edit", {**edit, "field": "phones", "rid": "rdemo0603",
+                          "value": dumps([{"label": "mobile", "number": "808-555-0100"}])}),
+        ("pilotdb/edit", {**edit, "field": "emails", "value": dumps(["jane.doe@example.com"]), "rid": "rdemo0604"}),
+        ("pilotdb/edit", dumps({**edit, "rid": "rdemo0605"}).replace('"rev":7', '"rev":7.0')),
+    ]
+    ref = [
+        ("note op edit", "pilotdb/note", {**note, "op": "edit"}),
+        ("note op hide", "pilotdb/note", {**note, "op": "hide"}),
+        ("note without rid", "pilotdb/note", {k: v for k, v in note.items() if k != "rid"}),
+        ("note without pid", "pilotdb/note", {k: v for k, v in note.items() if k != "pid"}),
+        ("note names an author", "pilotdb/note", {**note, "by": "ryan"}),
+        ("note names an employee number", "pilotdb/note", {**note, "emp": "10001"}),
+        ("note text over 4000 code points", "pilotdb/note", {**note, "text": astral + "x" * lim["field_max"]}),
+        ("note text with a bidi override", "pilotdb/note", {**note, "text": "Flew \u202ereh htiw"}),
+        ("note text with a NUL", "pilotdb/note", {**note, "text": "Flew\x00 with her"}),
+        ("note pid in capitals", "pilotdb/note", {**note, "pid": "P0123456789"}),
+        ("note pid too short", "pilotdb/note", {**note, "pid": "p01234"}),
+        ("note pid an employee number", "pilotdb/note", {**note, "pid": "10001"}),
+        ("retract without entry", "pilotdb/note", {"op": "retract", "pid": pid, "rid": "rdemo0501"}),
+        ("retract with a bad entry", "pilotdb/note", {"op": "retract", "pid": pid, "entry": "FW-0001",
+                                                      "rid": "rdemo0501"}),
+        ("field without base", "pilotdb/note", {"op": "field", "pid": pid, "text": "x", "rid": "rdemo0502"}),
+        ("field base not hex", "pilotdb/note", {"op": "field", "pid": pid, "base": "zzzzzzzzzzzz", "text": "x",
+                                                "rid": "rdemo0502"}),
+        ("add with empty text", "pilotdb/note", {**note, "text": ""}),
+        ("add without text", "pilotdb/note", {k: v for k, v in note.items() if k != "text"}),
+        ("note op a number", "pilotdb/note", {**note, "op": 1}),
+        ("note payload an array", "pilotdb/note", "[\"add\"]"),
+        ("note text with a lone surrogate", "pilotdb/note", dumps({**note, "text": "@"}).replace("@", "\\ud800", 1)),
+        ("edit op restore", "pilotdb/edit", {**edit, "op": "restore"}),
+        ("edit an unknown field", "pilotdb/edit", {**edit, "field": "emp"}),
+        ("edit the notes field", "pilotdb/edit", {**edit, "field": "notes"}),
+        ("edit without rev", "pilotdb/edit", {k: v for k, v in edit.items() if k != "rev"}),
+        ("edit rev 0", "pilotdb/edit", {**edit, "rev": 0}),
+        ("edit rev as text", "pilotdb/edit", {**edit, "rev": "7"}),
+        ("edit rev true", "pilotdb/edit", {**edit, "rev": True}),
+        ("edit set without a value", "pilotdb/edit", {k: v for k, v in edit.items() if k != "value"}),
+        ("edit set with an empty value", "pilotdb/edit", {**edit, "value": ""}),
+        ("edit value a list", "pilotdb/edit", {**edit, "field": "emails", "value": ["jane.doe@example.com"]}),
+        ("edit value with a line feed", "pilotdb/edit", {**edit, "value": "2001-05-01\n"}),
+        ("edit value over 1000 code points", "pilotdb/edit", {**edit, "value": "x" * (lim["value_max"] + 1)}),
+        ("edit why with a line feed", "pilotdb/edit", {**edit, "why": "one\ntwo"}),
+        ("edit names an author", "pilotdb/edit", {**edit, "by": "ryan"}),
+        ("edit names an employee number", "pilotdb/edit", {**edit, "emp": "10001"}),
+        ("edit without rid", "pilotdb/edit", {k: v for k, v in edit.items() if k != "rid"}),
+        ("edit payload not JSON", "pilotdb/edit", "{op: set"),
+    ]
+    accepted = [cmd(sub, p if isinstance(p, str) else dumps(p), 700 + i) for i, (sub, p) in enumerate(acc)]
+    refused = [{"why": why, **cmd(sub, p if isinstance(p, str) else dumps(p), 800 + i)}
+               for i, (why, sub, p) in enumerate(ref)]
+    # no other pilotdb sub exists: Ryan's own ops never come from a portal
+    refused += [{"why": "sub not allowed", **cmd(s, "x", 900 + i)}
+                for i, s in enumerate(("pilotdb/share", "pilotdb/forget", "pilotdb/hide", "pilotdb/ai"))]
     return accepted, refused
 
 

@@ -24,6 +24,11 @@ publish, schedule_unread after 6 h without a good schedule read), the pilot/set 
 portal (a pilot's recall lists come only from the admin's forward), and a pilot's upload of the monthly pairings package
 or award (upload/pdf, PILOT_UPLOAD_LIMITS; FW-0066) with the admin's Approve, Remove and Reject (upload/decide, never on
 a portal). Additive again: fwp and contract stay 1.
+
+1.7.9: contract 1 revision 4 (Ryan's Nov 14 decisions): his pilot database shared with a pilot by his own switch (the
+feature pilotdb, the file kind pilotdb, the commands pilotdb/note and pilotdb/edit with their shapes, limits and fixed
+answers, the synthesized pilotdb state with the looked-up pilot's phones and emails), the swap alert for a new swap idea
+(F#107) and the AI note hand-off with HOM's consultant models (PILOTDB_AI). Additive: fwp and contract stay 1.
 """
 import math
 import re
@@ -60,6 +65,12 @@ FEATURES = {
                                  "held for the admin"),
     "upload_review": (ADMIN, False, "the admin's Approve, Remove and Reject of a pilot's upload (upload/decide) and its "
                                     "push (event/pilot_upload)"),
+    # 1.7.9 (contract 1 revision 4, B14): only for a pilot Ryan shares the pilot database with (the Share switch on
+    # Ryan's own card, off by default; while it is off there is no file, the sensor says off and every command is refused)
+    "pilotdb": (ALL, True, "a pilot's view of Ryan's pilot database on his portal when Ryan shares it: the pilotdb file "
+                           "(pilots with shared notes), the synthesized pilotdb sensor (the pilot he looks up, with "
+                           "that one pilot's phones and emails), pilotdb/note (notes field and log) and pilotdb/edit "
+                           "(record fields), each applied by the admin's Watcher"),
 }
 
 # every MQTT command topic (after <prefix>/) an instance subscribes to, in the 1.4.12 order, and its feature
@@ -79,11 +90,15 @@ SUBS = {
     "upload/pdf": "pilot_uploads",  # 1.7.2 (FW-0066): portal only (PORTAL_SUBS), a pilot's upload in chunks
     # 1.7.2 (Ryan, Nov 12): the van alerts' switch and lead times, the admin's (a pilot has no van alerts)
     "van/alerts/set": "admin_pushes", "van/first_min/set": "admin_pushes", "van/second_min/set": "admin_pushes",
+    # 1.7.9 (revision 4): portal only (PORTAL_SUBS), a shared pilot's note and field edit; his Watcher only checks them
+    # and hands them to the admin's inbox (the admin never subscribes: it reads the inbox folder)
+    "pilotdb/note": "pilotdb", "pilotdb/edit": "pilotdb",
 }
-QOS = {"upload/chunk": 1, "upload/pdf": 1}  # FW-0066: chunks at qos 1; every other subscription at qos 0
+# FW-0066: chunks at qos 1; 1.7.9: a note or an edit too (its text is typed once); every other subscription at qos 0
+QOS = {"upload/chunk": 1, "upload/pdf": 1, "pilotdb/note": 1, "pilotdb/edit": 1}
 # 1.6.0 (FW-0061): subscriptions taken only on a pilot instance whose portal is on (option pilots[].portal); the
 # admin never takes them, so its list stays the 1.4.12 one. 1.7.2: upload/pdf too (a pilot uploads from his portal only)
-PORTAL_SUBS = ("pref/set", "upload/pdf")
+PORTAL_SUBS = ("pref/set", "upload/pdf", "pilotdb/note", "pilotdb/edit")
 
 # every event topic (after <prefix>/event/) and its feature
 EVENTS = {
@@ -210,17 +225,19 @@ def name_refusal(name, taken=()):
 # list files it serves (FILE_KINDS). portal.py builds the contract fixture (tests/fixtures/portal_contract_v1.json)
 # from these; PORTAL_CONTRACT.md documents it. The admin has no portal: none of this runs on the default instance.
 CONTRACT = 1
-CONTRACT_REVISION = 3  # 1.7.0 (Release C): tickets (2); 1.7.2: pilot alerts, shapes, uploads (3); additive within 1
+# 1.7.0 (Release C): tickets (2); 1.7.2: pilot alerts, shapes, uploads (3); 1.7.9: the shared pilot database, the swap
+# idea alert (4); additive within 1
+CONTRACT_REVISION = 4
 # 1.7.2 (revision 3): recall/set leaves the list (F#78: a crafted paste from the portal could replace or blank a day on
 # the pilot's own instance; his lists come only from the admin's forward, 1.7.1) and upload/pdf joins it (FW-0066)
 PORTAL_CMDS = ("hunt/set", "pause/set", "rearm/press", "check_now/press", "charter_scan/press", "freq/normal_min/set",
                "freq/hunt_s/set", "rule/+/live/set", "blocked/set", "trade/set", "pilot/set", "improved/set",
                "recall/act", "settings/set", "pref/set", "ticket/new", "ticket/image", "ticket/act",
-               "ticket/edit", "ticket/delete", "upload/pdf")
+               "ticket/edit", "ticket/delete", "upload/pdf", "pilotdb/note", "pilotdb/edit")
 # the revision each portal command came in (HOM refuses a newer command to a Watcher that names an older revision in its
 # manifest, with a plain message; a manifest with no revision is revision 2 or older) and the one it left in
 COMMAND_SINCE = {"ticket/new": 2, "ticket/image": 2, "ticket/act": 2, "ticket/edit": 2, "ticket/delete": 2,
-                 "upload/pdf": 3}
+                 "upload/pdf": 3, "pilotdb/note": 4, "pilotdb/edit": 4}
 COMMAND_REMOVED = {"recall/set": 3}
 PORTAL_RULE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 # contract 1's check frequency ranges (freq/normal_min/set in minutes, freq/hunt_s/set in seconds): a portal's
@@ -262,7 +279,10 @@ NOT_ON_PORTAL = ("van/alerts/set", "van/first_min/set", "van/second_min/set")
 # Tickets tab last, so the five tabs before it keep their places in the tab bar
 PORTAL_TABS = ("watcher", "schedule", "pilot", "recall", "settings", "tickets")
 PORTAL_EVENTS = ("new_pairing", "rule_match", "recall_miss", "request_decided", "schedule_changed", "charter",
-                 "hidden", "bid_calendar")  # 1.7.2 (revision 3): bid_calendar, the pilot's own (FW-0070)
+                 "hidden", "bid_calendar",  # 1.7.2 (revision 3): bid_calendar, the pilot's own (FW-0070)
+                 # 1.7.9 (revision 4, F#107): a new swap idea for a trip the pilot marked "would trade" (trade/set, his
+                 # opt-in: no mark, no idea, no alert); the pot card on the Watcher tab lists the ideas
+                 "swap")
 MACHINE_EVENTS = ("needs_settings", "stopped_*")  # sensor.<prefix>_state turning to one of these (stopped_ any)
 # 1.7.0 (Release C): events the Watcher makes from its own files, never from an MQTT event topic (so a publish can never
 # become one): ticket_fixed, from a move into fixed in the pilot's own tickets (tickets.fixed_moves)
@@ -272,7 +292,7 @@ OWN_EVENTS = ("ticket_fixed", "schedule_unread")
 EVENT_VIEWS = {"new_pairing": "watcher", "rule_match": "watcher", "recall_miss": "recall",
                "request_decided": "schedule", "schedule_changed": "schedule", "charter": "watcher",
                "hidden": "watcher", "needs_settings": "settings", "stopped_*": "watcher", "ticket_fixed": "tickets",
-               "bid_calendar": "watcher", "schedule_unread": "schedule"}
+               "bid_calendar": "watcher", "schedule_unread": "schedule", "swap": "watcher"}
 SCHEDULE_UNREAD_H = 6
 # the only fields an event's data (events.json) carries; the title and body are built from these alone, so no name,
 # employee number, captain, contact, URL, commute reason or pay amount (value, pay) ever leaves the Watcher in one.
@@ -286,7 +306,10 @@ EVENT_FIELDS = ("pairing", "dates", "start", "end", "days", "month", "date", "la
 # unread. Never a title or a message: the text is built from these (portal.event_text renders the bid calendar's words
 # with bidcal.render, as the admin's push has them).
 EVENT_KIND_FIELDS = {"bid_calendar": ("bid_month", "alert", "event_hst", "at_hst", "source", "cycle_source"),
-                     "schedule_unread": ("hours",)}
+                     "schedule_unread": ("hours",),
+                     # 1.7.9 (revision 4, F#107): the trip he would give up, the gains as the pot card words them and
+                     # where the pickup is (O open time, T Tradeboard); never the idea's reason text, a URL or a draft
+                     "swap": ("for_trip", "for_date", "soft_gain", "credit_gain", "src")}
 # the pay and tax helpers the portal sets with pref/set (feature prefs); the Watcher keeps them in <data>/prefs.json
 # and shows them as these entities. Bounds: the schedule card's own pickers (federal 0 to 45 % by 0.5, state 0 to
 # 15 % by 0.25), the longevity year 1 to 12 (PWA 3.B.1, 3.D.6 table caps at 12), the Extended Range list the schedule
@@ -308,7 +331,8 @@ LOCAL_HELPERS = {"month_offset": {"entity": "input_number.{prefix}_month_offset"
 # pairings_<YYYY-MM> package, school_<YYYY-YY> and FW-0060 / FW-0069's list files; 1.7.0 (contract 1 revision 2): the
 # pilot's own tickets list (tickets.listing for his name only)
 FILE_KINDS = {"finds": r"\d{4}-\d{2}", "pairings": r"\d{4}-\d{2}", "school": r"\d{4}-\d{2}", "versions": "",
-              "pickers": "", "recall": "", "pilotver": "", "tickets": ""}
+              "pickers": "", "recall": "", "pilotver": "", "tickets": "",
+              "pilotdb": ""}  # 1.7.9 (revision 4, B12): the pilots with shared notes, only while Ryan shares
 
 
 # ---------------------------------------------------------------- 1.7.0 (Release C): tickets on the portal
@@ -453,6 +477,94 @@ SHAPE_CMDS = {
                    "data": _text(1, _UL["chunk_chars"], TICKET_DATA_PATTERN)},
         "le": [["part", "parts"]]},
 }
+
+
+# ---------------------------------------------------------------- 1.7.9 (revision 4): the shared pilot database
+# Ryan's pilot database (pilotdb.py, the admin's Watcher, one writer) shared with a portal pilot by Ryan's own switch.
+# The pilot's Watcher never opens the database: it checks a command and drops it into the admin's inbox folder; the
+# admin applies it, with the author taken from the instance (the inbox folder's name), never from the payload.
+# pilotdb/note: the notes field (op field: compare-and-set on base, the rev it was read at) and the notes log (add,
+# retract of his own entry). pilotdb/edit (Ryan, Nov 14: "he can be trusted and edit all"): one record field, set or
+# unset (back to the uploads' value), compare-and-set on rev (the record's rev it was read at); every earlier value
+# stays in the record's log and Ryan can put any back. value is text: phones a JSON list of {label, number} (at most
+# 4), emails a JSON list of addresses (at most 3), every other field as Ryan's card types it; the admin's Watcher runs
+# the same checks as on Ryan's own edit (pilotdb.check). No author key, no employee number and no name in either.
+PILOTDB_PID_PATTERN = r"^p[0-9a-f]{10}$"
+PILOTDB_ENTRY_PATTERN = r"^n[0-9a-f]{10}$"
+PILOTDB_REV_PATTERN = r"^[0-9a-f]{12}$"
+PILOTDB_NOTE_OPS = ("add", "retract", "field")
+PILOTDB_EDIT_OPS = ("set", "unset")
+PILOTDB_EDIT_FIELDS = ("name", "sen", "doh", "status", "retire", "seat", "equip", "phones", "emails", "union_id")
+# A shared pilot's limits, kept by the admin's Watcher (Ryan has the size limits only): entry_max and field_max in
+# code points; adds_per_day entries, changes_per_day notes field saves plus retracts and edits_per_day field edits in
+# 24 h; entries_per_record on one record, all authors; pending inbox files waiting per pilot; stale_h: an older inbox
+# file is refused; answers kept per pilot; export_entries newest entries per record in his file (export_entries_min
+# when the file is over export_bytes); value_max: a field edit's value; why_max: its reason line.
+PILOTDB_NOTE_LIMITS = {"entry_max": 2000, "field_max": 4000, "adds_per_day": 40, "changes_per_day": 40,
+                       "edits_per_day": 40, "entries_per_record": 500, "pending": 10, "stale_h": 24, "answers": 20,
+                       "export_entries": 50, "export_entries_min": 20, "export_bytes": 4 * 1024 * 1024,
+                       "value_max": 1000, "why_max": 200}
+_PL = PILOTDB_NOTE_LIMITS
+SHAPE_CMDS.update({
+    "pilotdb/note": {
+        "keys": ["op", "pid", "entry", "base", "text", "rid"],
+        "required": ["op", "pid", "rid"],
+        "fields": {"op": {"type": "enum", "values": list(PILOTDB_NOTE_OPS)},
+                   "pid": _text(11, 11, PILOTDB_PID_PATTERN),
+                   "entry": _text(11, 11, PILOTDB_ENTRY_PATTERN),
+                   "base": _text(12, 12, PILOTDB_REV_PATTERN),
+                   "text": _text(0, _PL["field_max"], _TEXT),
+                   "rid": _text(6, 40, TICKET_CID_PATTERN)},
+        "nonempty_when": [{"field": "op", "is": "add", "then": "text"},
+                          {"field": "op", "is": "retract", "then": "entry"},
+                          {"field": "op", "is": "field", "then": "base"}]},
+    "pilotdb/edit": {
+        "keys": ["op", "pid", "field", "value", "rev", "why", "rid"],
+        "required": ["op", "pid", "field", "rev", "rid"],
+        "fields": {"op": {"type": "enum", "values": list(PILOTDB_EDIT_OPS)},
+                   "pid": _text(11, 11, PILOTDB_PID_PATTERN),
+                   "field": {"type": "enum", "values": list(PILOTDB_EDIT_FIELDS)},
+                   "value": _text(0, _PL["value_max"], _LINE),
+                   "rev": _int(1, 2147483647),
+                   "why": _text(0, _PL["why_max"], _LINE),
+                   "rid": _text(6, 40, TICKET_CID_PATTERN)},
+        "nonempty_when": [{"field": "op", "is": "set", "then": "value"}]},
+})
+# The only answers a note or an edit gets (the synthesized sensor's answers[].why, the file's answers[].why). <author>
+# is ryan or a pilot's instance name, <n> a limit, <field> one of PILOTDB_EDIT_FIELDS, HH:MM an HST time; never text
+# anyone typed.
+PILOTDB_ANSWERS = (
+    "Saved",
+    "Not saved: changed by <author> at HH:MM HST; your text is still in the box",
+    "Not saved: the record changed since you opened it; your change is still in the box",
+    "Not saved: only your own notes can be taken back",
+    "Not saved: over <n> notes in 24 h",
+    "Not saved: over <n> changes in 24 h",
+    "Not saved: over <n> edits in 24 h",
+    "Not saved: a note is at most <n> characters",
+    "Not saved: the notes field is at most <n> characters",
+    "Not saved: that value is not valid for <field>",
+    "Not saved: look the pilot up first",
+    "Not saved: that pilot is not in Ryan's pilot database",
+    "Not saved: the log for that pilot is full",
+    "Not saved: the shared notes file is full",
+    "Not saved: Ryan has not shared the pilot database with you",
+    "Not saved: too old, send it again",
+    "Not saved: it could not be read, send it again",
+    "Busy: try again in a minute",
+)
+# The AI note (Ryan, Nov 14: "Through HOM's models"): HOM's consultant models write one short note per pilot with at
+# least min_pickups pickups, from anonymous pickup statistics only. Ryan's own switch on his card (off by default)
+# turns it on; it is his data and never goes to a pilot's portal. Flight Watcher writes the statistics file; each pilot
+# in it has an id made new for every batch (random, kept only in Ryan's database, so nobody else can map it back), and
+# no name, employee number, record id, seniority number, date of hire, pairing number or exact date. HOM answers with
+# one file per batch; a note is note_max code points of plain text at most (the ticket text rule, no "@" and no
+# "://"), stored apart from the human notes (pilotdb's ai_notes), labeled AI with its model, never an instruction.
+PILOTDB_AI = {"min_pickups": 3, "note_max": 600, "model_max": 80, "batch_keep": 2, "max_pilots": 2000,
+              "in_bytes": 2 * 1024 * 1024, "stale_h": 72,
+              "dir": "/share/flight_watcher/pilotdb/ai", "stats_file": "stats.json", "in_dir": "in",
+              "in_file_re": r"^[0-9a-f]{16}\.json$", "id_re": r"^a[0-9a-f]{16}$", "batch_re": r"^[0-9a-f]{16}$",
+              "model_re": r"^[A-Za-z0-9][A-Za-z0-9 ._:/()+-]{0,79}$"}
 
 
 def portal_sub(sub):

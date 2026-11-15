@@ -94,7 +94,7 @@ def pilot_copy(s, name):
     # the pilot's own files under www/flight-watcher/<name>/: finds months, the school calendar and (FW-0060) the
     # tickets, versions, pickers and recall list files, and (FW-0069) the pilot card's pilotver list file; the
     # pairings package stays shared
-    s = re.sub(r"/local/flight-watcher/(finds|school|tickets|versions|pickers|recall|pilotver)_",
+    s = re.sub(r"/local/flight-watcher/(finds|school|tickets|versions|pickers|recall|pilotver|pilotdb)_",
                rf"/local/flight-watcher/{name}/\1_", s)
     s = s.replace('"/flight-watcher/recall"', f'"/flight-watcher-{name}/recall"')
     s = s.replace('"flight-watcher-pilot"', f'"flight-watcher-pilot-{name}"')

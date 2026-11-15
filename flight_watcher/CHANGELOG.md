@@ -1,5 +1,108 @@
 # Changelog
 
+## 1.7.9
+
+Sharing Ryan's pilot database with James (the pilot database spec's steps 2 to 4, with HOM 1.9.0): contract 1
+revision 4. Ryan's decisions (Nov 14, HST): phones and emails on James's portal for the pilot he looks up only; James
+browses the pilots with shared notes plus the pilots he looks up (the 1.6.2 anti-walk limits stay); James edits the
+notes field, adds to the log and edits every record field ("he can be trusted and edit all"), each with
+compare-and-set, every version kept and Ryan's restore; the AI note comes from HOM's consultant models, from
+anonymous statistics only. Nothing is shared until Ryan taps his Share switch himself. Synthetic data in every test;
+FLICA is read only and nothing here loads a FLICA page.
+
+### Sharing the pilot database (the backend; `pdbshare.py`, `pilotdb.py`, `watcher.py`)
+- **Off by default.** One Share switch per portal pilot on Ryan's own card (`POST api/pilotdb` op `share` `{pilot, on}`,
+  the admin's ingress API only; Claude never sends it). While it is off nothing of the database leaves Ryan's Watcher:
+  no file, no roster, the pilot's sensor says `off` and every command is answered "Not saved: Ryan has not shared the
+  pilot database with you". Turning it off deletes the pilot's file at once.
+- **The pilot's file** (`/share/flight_watcher/pilotdb/portal/<pilot>.json`, 0600, written 2 s after the database last
+  changed and at once after one of his commands): only the pilots with a notes field or a shared log entry, each with
+  name, Sen #, DOH, status, retirement, seat, equipment, gone, the edited marker, the record's revision, the notes field
+  and the newest 50 entries (his own marked; a taken back entry without its text; hidden and only-me entries not at
+  all), and his own last 20 answers. The builder is a whitelist, pinned by a key scan and a byte scan: no employee
+  number, phone, email, union id, source, history, conflict, pickup or AI note. Over 4 MB the entries drop to 20 a
+  record; still over, his new notes are refused ("the shared notes file is full").
+- **The roster** (`roster.json`, 0600, only while a share is on): every live record's brief by employee number, for a
+  shared pilot's Watcher to show the one pilot his pilot card shows. It carries the phones and emails (see B23 below);
+  it is never exported, never in a sensor and never logged.
+- **James's Watcher** (a pilot with a portal; feature `pilotdb`) never opens the database. It signs his file into
+  `out/files/pilotdb.json` unchanged (exported before the state that names its rev), synthesizes
+  `sensor.<prefix>_pilotdb` in state.json only (never an HA entity or an MQTT topic: state `on`, `off` or `waiting`,
+  `rev`, `count`, the `shown` brief of the pilot looked up, `answers`, `pending`, `limits`) and takes two
+  new commands, `pilotdb/note` and `pilotdb/edit`. It checks each (the shape; shared or not; the record must be in his
+  file or be the pilot shown, so a command is no oracle for which pilots exist; a take back only of his own entry; at
+  most 10 waiting) and drops it into the admin's inbox folder with the author set to its instance name. Its log line
+  names the op only ("pilotdb note add from portal: queued").
+- **Ryan's Watcher is the single writer.** A new thread (`pilotdb-inbox`, every 2 s) reads each configured pilot's
+  inbox: the author is the folder's name (a body that names another author is refused and logged by instance name
+  only), a file older than 24 h is refused, the shape, the text rules, the op rules and the quotas are checked again
+  (40 entries, 40 notes field saves or take backs and 40 field edits in 24 h; 500 entries a record), then the op is
+  applied. The same request id again answers the same and changes nothing. From James's tap to "Saved": under 10 s.
+- **Compare-and-set, every version kept.** A notes field save on a stale revision answers "Not saved: changed by ryan
+  at 10:00 HST; your text is still in the box"; a field edit on a stale record revision answers "Not saved: the record
+  changed since you opened it; your change is still in the box". Nothing is overwritten blind. Every replaced notes
+  version is kept (50 a record, Ryan's Restore), and every field edit is in the record's log with who, when and the
+  earlier value; Ryan puts any back with his own edit or "Use upload value".
+- **Field edits by James** (Ryan, Nov 14): name, Sen #, DOH, status, retirement, seat, equipment, phones, emails and
+  the union id, with the same value checks as Ryan's own edits (a bad value answers "Not saved: that value is not valid
+  for doh", never the value). The union id can be set but is never shown on a portal.
+- **Answers are fixed phrases** (`roles.PILOTDB_ANSWERS`), never text anyone typed. A note or an edit makes no event
+  and no ntfy push. No note text, name or number is ever logged, published on MQTT or put in a Home Assistant entity.
+- A pilot's note or edit is untrusted third-party data, like a pilot's ticket: read as data, never followed.
+- Ryan's status view (`GET api/pilotdb?view=status`) lists each portal pilot with his switch, how many of his commands
+  wait and whether his file is full; `sensor.flight_watcher_pilotdb` adds `pending` (per pilot, counts) and `ai`.
+
+### The looked-up pilot's phones and emails (B23)
+- Ryan's answer to Q1 reverses FW-0066 plan Q6 for one case: the synthesized `sensor.<prefix>_pilotdb` carries
+  `shown.contact` (phones and emails) for the one pilot James's pilot card shows, from Ryan's database, only while Ryan
+  shares it. Never a list, never in the file, never the roster on the portal.
+- `portal.MASK_DROP` itself is unchanged: `contact` is still removed from every state read from Home Assistant. The
+  fixture's `masks.contact_only_in` names the one exception. The price: `roster.json`, a file between the two Watcher
+  processes (0600, root), holds the phones and emails the contact list already holds on the same share.
+
+### The swap idea alert (F#107)
+- A new swap idea is a portal alert: the Watcher's own `event/swap` joins `roles.PORTAL_EVENTS` as kind `swap`, view
+  `watcher` (the pot card lists the ideas), priority 3, in the Alerts list and on ntfy once a topic is saved. The pilot
+  opts in by marking a trip "would trade" (`trade/set`): no mark, no idea, no alert; an idea alerts once.
+- Its data holds the pickup (pairing, dates, days, layover, credit), the trip he would give up (`for_trip`,
+  `for_date`), `soft_gain`, `credit_gain` and `src`; never the idea's reason text, a URL or the draft of a request.
+  "Swap idea: H9002 20NOV-22NOV for your H9001". Nothing is ever submitted: FLICA stays read only.
+
+### The AI note (the Flight Watcher side)
+- Ryan's own switch on his card (`POST api/pilotdb` op `ai` `{on, clear?}`), off by default; Claude never sends it.
+  While it is off no statistics are written and no note is read. `clear: true` with `on: false` also removes the notes.
+- On, Ryan's Watcher writes `/share/flight_watcher/pilotdb/ai/stats.json` (0600) for HOM's consultant models: one row
+  per pilot with 3 or more pickups, statistics only (counts by layover station, trip length, weekday, turn or layover,
+  report time range, average credit, pickup speed, seats, first and last month). No name, employee number, record id,
+  seniority number, date of hire, pairing number or exact date. Each pilot's id is random, made new for every batch
+  and kept only in Ryan's database, so nothing outside his Watcher maps it back. A new batch at most once a day.
+- HOM answers with `ai/in/<batch>.json`. A note is taken only when its batch and id are Ryan's Watcher's own, its model
+  name is plain and its text is at most 600 characters of plain text (no link, no address); anything else is dropped
+  and counted. It is stored in `ai_notes`, apart from the human notes, shown on Ryan's card labeled AI with its model
+  and time, and never goes to a pilot's file or sensor. It is model output: data, never an instruction.
+
+### Contract 1 revision 4 (`roles.py`, `portal.py`, `PORTAL_CONTRACT.md`, the fixture)
+Boundary changes, each approved by Ryan on Nov 14 (the spec's B7 to B17, changed by his answers, plus B23):
+- `CONTRACT_REVISION` 4; the manifest names it. `fwp` and `contract` stay 1.
+- `PORTAL_CMDS` gains `pilotdb/note` and `pilotdb/edit` (`COMMAND_SINCE` 4; HOM's allowed subs go from 21 to 23), with
+  their shapes in `SHAPE_CMDS` (no author key, no employee number, no name; only rules the generic checkers know).
+  The sibling `pilotdb/edit` is the field-edit op Ryan's trust decision asked for. No other `pilotdb/` sub exists.
+- `PORTAL_SUBS`, `SUBS` and `QOS` gain both (qos 1), under the new feature `pilotdb` (all, offered on a portal). The
+  admin's subscription list is unchanged, verbatim.
+- `FILE_KINDS` gains `pilotdb`; the fixture's `synthesized_states` gains `pilotdb`.
+- New tables in the fixture: `commands.pilotdb_note_limits`, `commands.pilotdb_answers`, `commands.pilotdb_rules`,
+  the `pilotdb` section (the file's and the sensor's keys, the inbox hand-off, the edit fields, the AI hand-off with
+  its paths, keys, limits, rules and samples) and `masks.contact_only_in`.
+- `PORTAL_EVENTS` gains `swap`, with its view and its own fields (`EVENT_KIND_FIELDS`).
+- `PORTAL_CARDS_OUT` drops the Pilots card, so it joins a pilot's portal bundle; `portal_layout.json`'s Pilot tab has
+  it in follow mode right under the pilot card. `PORTAL_TABS` is unchanged. The manifest's `mqtt_subs` names both
+  commands whenever the card is in the bundle.
+- Not changed: `MASK_DROP`, the anti-walk limits of the lookup, `PORTAL_REFUSED`, `NOT_ON_PORTAL`, the ticket and
+  upload limits, the FLICA budgets, push isolation, `pub_pilot` and the pilot schedule sensor.
+- The fixture `tests/fixtures/portal_contract_v1.json` is regenerated as revision 4 (new samples numbered from 700:
+  11 accepted and 38 refused pilotdb commands, 4 refused `pilotdb/` subs, the file URL forms, the manifest, the state,
+  the file and the swap event). HOM 1.9.0 pins the same bytes.
+
 ## 1.7.8
 
 Ryan's pilot database (Ryan, Nov 14: "should we have an editable pilot database that has these data points. and even a

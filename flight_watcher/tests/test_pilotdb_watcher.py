@@ -187,8 +187,10 @@ def test_a_pilot_instance_never_opens_it(P, monkeypatch):
 def test_no_flica_path_in_the_pilot_database():
     """D8: no pilotdb code calls the FLICA fetch, the gate or pilot_cmd, or sets pilot_req or WAKE."""
     import watcher as Wm
-    srcs = [inspect.getsource(PDBM)] + [inspect.getsource(getattr(Wm, n)) for n in dir(Wm) if n.startswith("pilotdb_")
-                                         and callable(getattr(Wm, n))]
+    import pdbshare
+    srcs = [inspect.getsource(PDBM), inspect.getsource(pdbshare)] + [  # 1.7.9: the share files and both sides' glue
+        inspect.getsource(getattr(Wm, n)) for n in dir(Wm) if n.startswith(("pilotdb_", "_pdbv_"))
+        and callable(getattr(Wm, n))]
     for src in srcs:
         for bad in ("fl.fetch", ".fetch(", "pilot_cmd", "pilot_req", "WAKE", "GT.", "BRK.", "sync_playwright"):
             assert bad not in src, bad

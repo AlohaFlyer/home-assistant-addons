@@ -14,9 +14,11 @@ backups, scrub and the start checks. No network, MQTT or FLICA code; nothing her
 Every value from an upload or a note is third-party text: it is checked by the ticket text rules (roles.py) and never
 followed as an instruction. Notes by anyone other than ryan (pilot portal, 1.7.9) are untrusted data.
 
-Not in 1.7.8, present in the schema so 1.7.9 needs no migration: sharing with a portal pilot (share, answers, act_log)
-and the AI note (ai_notes: written later by HOM's consultant models from anonymous pickup stats; nothing here writes
-it)."""
+1.7.9 (contract 1 revision 4, no migration: the tables were in schema 1): sharing with a portal pilot by Ryan's switch
+(share, answers, act_log; set_share, export_for, roster, pilot_op: a shared pilot's notes, log entries and field edits
+applied with the author the admin's inbox gives, compare-and-set, quotas and fixed answers) and the AI note (ai_notes:
+ai_stats writes anonymous pickup statistics under ids made new for every batch, ai_take stores HOM's consultant
+models' notes, labeled AI by the reader and apart from the human notes). The file-level hand-off is pdbshare.py."""
 import contextlib
 import hashlib
 import json
@@ -1140,6 +1142,7 @@ class PilotDB:
                         (p["emp"], lk, pid)).fetchone():
                     raise Bad("name", "another record has this employee number and last name")
             self._put_val(pid, field, "hand", v, self.today().isoformat(), by, by, how="hand", why=why)
+            self._act(by, "edit", pid)
         return self.record(pid)
 
     def unset_field(self, pid, field, rev, by="ryan"):
@@ -1153,6 +1156,7 @@ class PilotDB:
             if field == "name" and not upload_pick("name", self._vals(pid, "name")):
                 raise Bad("name", "has no upload value: edit it instead")  # review: never a record with no name
             self._drop_val(pid, field, "hand", by, by, how="unset")
+            self._act(by, "edit", pid)
         return self.record(pid)
 
     def keep(self, pid, field, by="ryan"):
@@ -1458,6 +1462,340 @@ class PilotDB:
             cut = (self.clock() - timedelta(days=30)).astimezone(timezone.utc).isoformat()
             self.db.execute("DELETE FROM act_log WHERE at<?", (cut,))
 
+    # -------------------------------------------------- 1.7.9: sharing with a portal pilot (spec 11, contract rev 4)
+    def set_share(self, pilot, on, by="ryan"):
+        """Ryan's Share switch for one portal pilot (only Ryan's card calls it; Claude never does). Returns the pilots
+        shared with now."""
+        if not isinstance(pilot, str) or not ROLES.NAME_RE.fullmatch(pilot):
+            raise Bad("pilot", "is not a pilot")
+        if not isinstance(on, bool):
+            raise Bad("on", "must be true or false")
+        with self._tx():
+            self.db.execute("INSERT INTO share(pilot,enabled,at,by) VALUES(?,?,?,?) ON CONFLICT(pilot) DO UPDATE SET "
+                            "enabled=excluded.enabled, at=excluded.at, by=excluded.by", (pilot, int(on), self.now(), by))
+        return self.shared_with()
+
+    def shared_with(self):
+        with self.lock:
+            return [p for (p,) in self.db.execute("SELECT pilot FROM share WHERE enabled=1 ORDER BY pilot")]
+
+    def is_shared(self, pilot):
+        with self.lock:
+            return bool(self.db.execute("SELECT 1 FROM share WHERE pilot=? AND enabled=1", (pilot,)).fetchone())
+
+    def answer_of(self, pilot, rid):
+        """The answer already given to (pilot, rid), {ok, why, at}, or None."""
+        with self.lock:
+            r = self.db.execute("SELECT ok,why,at FROM answers WHERE pilot=? AND rid=?", (pilot, rid)).fetchone()
+        return {"ok": bool(r[0]), "why": r[1], "at": r[2]} if r else None
+
+    def put_answer(self, pilot, rid, ok, why, keep=20):
+        """One answer for a pilot's command (a fixed phrase, never text); his newest `keep` stay."""
+        with self._tx():
+            self.db.execute("INSERT INTO answers(pilot,rid,ok,why,at) VALUES(?,?,?,?,?) ON CONFLICT(pilot,rid) DO NOTHING",
+                            (pilot, rid, int(bool(ok)), str(why)[:200], self.now()))
+            old = [r for (r,) in self.db.execute("SELECT rid FROM answers WHERE pilot=? ORDER BY at DESC, rowid DESC",
+                                                 (pilot,))][keep:]
+            for r in old:
+                self.db.execute("DELETE FROM answers WHERE pilot=? AND rid=?", (pilot, r))
+
+    def answers(self, pilot, keep=20):
+        with self.lock:
+            rows = self.db.execute("SELECT rid,ok,why,at FROM answers WHERE pilot=? ORDER BY at DESC, rowid DESC LIMIT ?",
+                                   (pilot, keep)).fetchall()
+        return [{"rid": r, "ok": bool(o), "why": w, "at": a} for r, o, w, a in rows][::-1]
+
+    def acts(self, by, kinds, hours=24):
+        """How many of a pilot's writes of these kinds (add, field, retract, edit) the last `hours` hold (act_log)."""
+        cut = (self.clock() - timedelta(hours=hours)).astimezone(timezone.utc).replace(microsecond=0).isoformat()
+        with self.lock:
+            q = "SELECT COUNT(*) FROM act_log WHERE by=? AND at>=? AND kind IN (%s)" % ",".join("?" * len(kinds))
+            return self.db.execute(q, (by, cut, *kinds)).fetchone()[0]
+
+    def pilot_op(self, pilot, cmd, d, limits=None, full=False):
+        """One command of a shared pilot from the admin's inbox (spec 11.4; Ryan, Nov 14: record fields too), applied
+        with the author `pilot` (the inbox folder's name, never a payload key). cmd 'note': d {op add | retract | field,
+        pid, entry?, base?, text?, rid}; cmd 'edit': d {op set | unset, pid, field, value?, rev, why?, rid}. Returns
+        (ok, why, after): why one of roles.PILOTDB_ANSWERS filled in, after 'scrub' for a retract. The answer is
+        stored with it; the same rid again returns the first answer and changes nothing. Never raises for a refusal."""
+        lim = limits or ROLES.PILOTDB_NOTE_LIMITS
+        rid = d.get("rid")
+        with self.lock:
+            had = self.answer_of(pilot, rid)
+            if had:
+                return had["ok"], had["why"], None
+            ok, why, after = self._pilot_op(pilot, cmd, d, lim, full)
+            self.put_answer(pilot, rid, ok, why, lim["answers"])
+            return ok, why, after
+
+    def _pilot_op(self, pilot, cmd, d, lim, full):
+        op, pid = d.get("op"), d.get("pid")
+        try:
+            with self.lock:
+                p = self._pilot(pid) if isinstance(pid, str) else None
+                if not p or p["merged_into"]:
+                    return False, "Not saved: that pilot is not in Ryan's pilot database", None
+            if cmd == "note" and op == "add":
+                text = d.get("text")
+                if not isinstance(text, str) or len(text) > lim["entry_max"]:
+                    return False, f"Not saved: a note is at most {lim['entry_max']} characters", None
+                if self.acts(pilot, ("add",)) >= lim["adds_per_day"]:
+                    return False, f"Not saved: over {lim['adds_per_day']} notes in 24 h", None
+                if full:
+                    return False, "Not saved: the shared notes file is full", None
+                with self.lock:
+                    if self.db.execute("SELECT COUNT(*) FROM entries WHERE pid=?", (pid,)).fetchone()[0] >= \
+                            lim["entries_per_record"]:
+                        return False, "Not saved: the log for that pilot is full", None
+                self.add_entry(pid, text, True, d.get("rid"), by=pilot)
+                return True, "Saved", None
+            if cmd == "note" and op == "retract":
+                with self.lock:
+                    r = self.db.execute("SELECT by,pid FROM entries WHERE eid=?", (d.get("entry"),)).fetchone()
+                if not r or r[0] != pilot or r[1] != pid:
+                    return False, "Not saved: only your own notes can be taken back", None
+                if self.acts(pilot, ("field", "retract")) >= lim["changes_per_day"]:
+                    return False, f"Not saved: over {lim['changes_per_day']} changes in 24 h", None
+                self.retract(d["entry"], by=pilot)
+                return True, "Saved", "scrub"
+            if cmd == "note" and op == "field":
+                text = d.get("text", "")
+                if not isinstance(text, str) or len(text) > lim["field_max"]:
+                    return False, f"Not saved: the notes field is at most {lim['field_max']} characters", None
+                if self.acts(pilot, ("field", "retract")) >= lim["changes_per_day"]:
+                    return False, f"Not saved: over {lim['changes_per_day']} changes in 24 h", None
+                try:
+                    self.save_notes(pid, text, d.get("base"), by=pilot)
+                except Stale as e:
+                    cur = e.current or {}
+                    who = cur.get("by") if ROLES.NAME_RE.fullmatch(str(cur.get("by") or "")) else "someone"
+                    return False, (f"Not saved: changed by {who} at {_hst(cur.get('at'), '%H:%M HST') or 'an earlier time'}"
+                                   "; your text is still in the box"), None
+                return True, "Saved", None
+            if cmd == "edit" and op in ("set", "unset"):
+                f = d.get("field")
+                if f not in FIELDS:
+                    return False, "Not saved: it could not be read, send it again", None
+                if self.acts(pilot, ("edit",)) >= lim["edits_per_day"]:
+                    return False, f"Not saved: over {lim['edits_per_day']} edits in 24 h", None
+                try:
+                    if op == "set":
+                        self.set_field(pid, f, d.get("value"), d.get("rev"), d.get("why") or "", by=pilot)
+                    else:
+                        self.unset_field(pid, f, d.get("rev"), by=pilot)
+                except Stale:
+                    return False, "Not saved: the record changed since you opened it; your change is still in the box", None
+                except Bad:
+                    return False, f"Not saved: that value is not valid for {f}", None
+                return True, "Saved", None
+        except Bad as e:
+            if e.why == "the log for that pilot is full":
+                return False, "Not saved: the log for that pilot is full", None
+            return False, "Not saved: it could not be read, send it again", None
+        except Missing:
+            return False, "Not saved: that pilot is not in Ryan's pilot database", None
+        return False, "Not saved: it could not be read, send it again", None
+
+    def _shared_brief(self, v):
+        """A record's fields as a shared pilot may see them (no employee number, phones, emails or union id)."""
+        f = v["fields"]
+        return {"pid": v["pid"], "name": f["name"]["value"], "sen": f["sen"]["value"], "doh": f["doh"]["value"],
+                "status": f["status"]["value"], "retire": f["retire"]["value"], "seat": f["seat"]["value"],
+                "equip": f["equip"]["value"], "gone": v["gone"],
+                "edited": [k for k in FIELDS if f[k]["hand"] and k not in ("phones", "emails", "union_id")],
+                "rev": v["rev"]}
+
+    def export_for(self, pilot, limits=None):
+        """The pilotdb file of one shared pilot (spec 11.2; a whitelist: portal.PILOTDB_FILE_KEYS): every live record
+        with a notes field or a shared entry that is not hidden (the noted pilots, never the roster), each with its
+        fields (no employee number, phones, emails, union id, sources or history), the notes field, the newest
+        entries (his own marked mine; a taken back one without its text; hidden, purged and only-me ones not at all)
+        and this pilot's own answers. Over export_bytes the entries drop to export_entries_min a record; still over,
+        full is true (the admin then refuses his new notes)."""
+        lim = limits or ROLES.PILOTDB_NOTE_LIMITS
+        with self.lock:
+            views = self._all_views()
+            notes = {p: {"text": t, "rev": r, "by": b, "at": a}
+                     for p, t, r, b, a in self.db.execute("SELECT pid,text,rev,by,at FROM notes WHERE text!=''")}
+            ents = {}
+            for eid, pid, by, at, text, how in self.db.execute(
+                    "SELECT eid,pid,by,at,text,gone_how FROM entries WHERE shared=1 AND "
+                    "(gone_how IS NULL OR gone_how='retracted') ORDER BY at DESC, rowid DESC"):
+                e = {"eid": eid, "by": by, "at": at}
+                if how:
+                    e["gone"] = "taken back"
+                else:
+                    e["text"] = text
+                    if by == pilot:
+                        e["mine"] = True
+                ents.setdefault(pid, []).append(e)
+            as_of = {"list": self._meta("list_as_of", ""), "contacts": self._meta("contacts_as_of", ""),
+                     "award": self._meta("award_month", "")}
+            answers = self.answers(pilot, lim["answers"])
+            now = self.now()
+        pids = sorted((p for p in set(notes) | set(ents) if p in views), key=lambda p: self._sen_key(views[p]))
+        out = {}
+        for n, full in ((lim["export_entries"], False), (lim["export_entries_min"], True)):
+            recs = []
+            for p in pids:
+                r = self._shared_brief(views[p])
+                if p in notes:
+                    r["notes"] = notes[p]
+                r["entries"] = ents.get(p, [])[:n]
+                r["entries_total"] = len(ents.get(p, []))
+                recs.append(r)
+            out = {"v": 1, "generated": now, "as_of": as_of, "count": len(recs), "records": recs, "answers": answers,
+                   "limits": {k: lim[k] for k in ("entry_max", "field_max", "adds_per_day", "changes_per_day",
+                                                  "edits_per_day", "value_max", "why_max")}}
+            if len(json.dumps(out, ensure_ascii=False).encode("utf-8")) <= lim["export_bytes"]:
+                return out
+            if full:
+                out["full"] = True
+        return out
+
+    def roster(self):
+        """roster.json for the shared pilots' Watchers (spec 11.1; never exported, logged or in a sensor): every live
+        record by employee number, each {the shared brief, lk (the last name's key, for a number two records share),
+        notes_n, phones, emails}. 1.7.9 (Ryan, Nov 14, B23): the phones and emails are here so a pilot's Watcher can
+        show them for the one pilot he looks up; it never passes on more than that one pilot's."""
+        with self.lock:
+            views = self._all_views()
+            shared_n = dict(self.db.execute("SELECT pid,COUNT(*) FROM entries WHERE shared=1 AND gone_how IS NULL "
+                                            "GROUP BY pid").fetchall())
+            noted = {p for (p,) in self.db.execute("SELECT pid FROM notes WHERE text!=''")}
+            by_emp = {}
+            for pid, v in views.items():
+                r = self._shared_brief(v)
+                r.update(lk=v["last_key"], notes_n=shared_n.get(pid, 0) + (1 if pid in noted else 0),
+                         phones=v["fields"]["phones"]["value"] or [], emails=v["fields"]["emails"]["value"] or [])
+                by_emp.setdefault(v["emp"], []).append(r)
+            return {"v": 1, "generated": self.now(), "rev": int(self._meta("rev", "0")), "by_emp": by_emp}
+
+    # -------------------------------------------------- 1.7.9: the AI note (HOM's consultant models)
+    def ai_on(self):
+        return self.meta("ai_on", "0") == "1"
+
+    def set_ai(self, on):
+        """Ryan's AI notes switch (only his card calls it)."""
+        if not isinstance(on, bool):
+            raise Bad("on", "must be true or false")
+        self.set_meta("ai_on", "1" if on else "0", bump=True)
+        return on
+
+    def _ai_rows(self, cfg):
+        """([(pid, stats)], signature) of every live record with at least min_pickups pickups."""
+        with self.lock:
+            pids = [p for p, n in self.db.execute("SELECT pid,COUNT(*) FROM pickups WHERE pid IS NOT NULL GROUP BY pid "
+                                                  "HAVING COUNT(*)>=? ORDER BY pid", (cfg["min_pickups"],)).fetchall()
+                    if (self._pilot(p) or {}).get("merged_into") is None][:cfg["max_pilots"]]
+            seats = {}
+            for p, pos, n in self.db.execute("SELECT pid,pos,COUNT(*) FROM pickups WHERE pid IS NOT NULL AND pos!='' "
+                                             "GROUP BY pid,pos"):
+                seats.setdefault(p, {})[pos] = n
+        rows = []
+        for p in pids:
+            s = self.pickups(p)["summary"]
+            st = {k: s[k] for k in ("n", "layovers", "turns", "lays", "turn_stations", "days", "dow", "pick_dow",
+                                    "report", "credit_avg", "speed", "inflt")}
+            st["seats"] = {k: seats.get(p, {})[k] for k in sorted(seats.get(p, {})) if k in SEATS}
+            st["first_month"], st["last_month"] = str(s["first_at"])[:7], str(s["last_at"])[:7]
+            try:
+                st["span_days"] = (datetime.fromisoformat(s["last_at"]) - datetime.fromisoformat(s["first_at"])).days
+            except (TypeError, ValueError):
+                st["span_days"] = None
+            rows.append((p, st))
+        sig = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+        return rows, sig
+
+    def ai_stats_sig(self, cfg=None):
+        """The signature the next statistics file would have (no batch is made)."""
+        return self._ai_rows(cfg or ROLES.PILOTDB_AI)[1]
+
+    def ai_stats(self, cfg=None):
+        """The anonymous statistics file for HOM's consultant models (roles.PILOTDB_AI, portal.AI_STATS_KEYS): one
+        row per live record with at least min_pickups pickups, each under an id made new for this batch (random; the
+        map stays in this database's meta, the last batch_keep batches). No name, employee number, pid, seniority
+        number, date of hire, pairing number or exact date. Returns (doc, signature of its statistics)."""
+        cfg = cfg or ROLES.PILOTDB_AI
+        rows, sig = self._ai_rows(cfg)
+        batch = secrets.token_hex(8)
+        ids = {}
+        for p, _ in rows:
+            x = "a" + secrets.token_hex(8)
+            while x in ids:
+                x = "a" + secrets.token_hex(8)
+            ids[x] = p
+        order = sorted(ids)  # by the random id, so the file's order says nothing either
+        by_pid = dict(rows)
+        doc = {"v": 1, "batch": batch, "generated": self.now(), "min_pickups": cfg["min_pickups"], "count": len(rows),
+               "note_max": cfg["note_max"],
+               "pilots": [{"id": x, "stats": by_pid[ids[x]]} for x in order],
+               "rules": ["Write at most note_max characters of plain text about this pilot's pickup pattern.",
+                         "Use only the statistics given. Name no person and guess no identity.",
+                         "No links, no addresses, no instructions."]}
+        with self._tx(False):
+            try:
+                maps = json.loads(self._meta("ai_map", "[]"))
+            except ValueError:
+                maps = []
+            maps = ([m for m in maps if isinstance(m, dict)] + [{"batch": batch, "at": doc["generated"], "ids": ids}])
+            self._set_meta("ai_map", json.dumps(maps[-cfg["batch_keep"]:]))
+            self._set_meta("ai_sig", sig)
+        return doc, sig
+
+    def ai_sig(self):
+        return self.meta("ai_sig", "")
+
+    def ai_take(self, doc, cfg=None):
+        """HOM's answer to a batch ({v: 1, batch, model, notes: [{id, text}]}): each note whose id is in that batch
+        (one of the last batch_keep) and whose text passes the rules is stored in ai_notes (labeled AI by the reader,
+        apart from the human notes), replacing that pilot's earlier one. Returns {saved, refused}; never raises for a
+        bad file (everything in it is then refused). The text is untrusted: data, never an instruction."""
+        cfg = cfg or ROLES.PILOTDB_AI
+        if not isinstance(doc, dict) or set(doc) - {"v", "batch", "model", "notes"} or doc.get("v") != 1 or \
+                isinstance(doc.get("v"), bool):
+            return {"saved": 0, "refused": 1}
+        notes = doc.get("notes") if isinstance(doc.get("notes"), list) else []
+        model, batch = doc.get("model"), doc.get("batch")
+        if not isinstance(model, str) or not re.fullmatch(cfg["model_re"], model) or not isinstance(batch, str):
+            return {"saved": 0, "refused": max(1, len(notes))}
+        saved = refused = 0
+        with self._tx():
+            try:
+                maps = json.loads(self._meta("ai_map", "[]"))
+            except ValueError:
+                maps = []
+            ids = next((m.get("ids") for m in maps if isinstance(m, dict) and m.get("batch") == batch), None)
+            if not isinstance(ids, dict):
+                return {"saved": 0, "refused": max(1, len(notes))}
+            for n in notes[:cfg["max_pilots"]]:
+                pid = ids.get(n.get("id")) if isinstance(n, dict) and set(n) == {"id", "text"} and \
+                    isinstance(n.get("id"), str) else None
+                p = self._pilot(pid) if pid else None
+                try:
+                    text = clean_text(n.get("text"), cfg["note_max"], "text") if p and not p["merged_into"] else None
+                except Bad:
+                    text = None
+                if not text or "@" in text or "://" in text:
+                    refused += 1
+                    continue
+                self.db.execute("INSERT INTO ai_notes(pid,text,model,basis,at) VALUES(?,?,?,?,?) ON CONFLICT(pid) DO "
+                                "UPDATE SET text=excluded.text, model=excluded.model, basis=excluded.basis, "
+                                "at=excluded.at", (pid, text, model, f"pickup statistics, batch {batch}", self.now()))
+                self._touch(pid)
+                saved += 1
+            refused += max(0, len(notes) - cfg["max_pilots"])
+        return {"saved": saved, "refused": refused}
+
+    def ai_clear(self):
+        """Every AI note removed (Ryan turned the switch off and asked for them gone). Returns how many."""
+        with self._tx():
+            n = self.db.execute("SELECT COUNT(*) FROM ai_notes").fetchone()[0]
+            self.db.execute("DELETE FROM ai_notes")
+            self._set_meta("ai_map", "[]")
+            self._set_meta("ai_sig", "")
+        return n
+
     # -------------------------------------------------- pickups (Ryan, Nov 14: each picker's full pickup history)
     def sync_pickups(self, rows):
         """Mirror the Watcher's scored pickups ({key, emp, name, pos, at, secs, approx, lay, pairing, start, days,
@@ -1746,7 +2084,9 @@ class PilotDB:
                                          "count": int(self._meta("contacts_count", "0")), "merged_at": merged["contacts"]},
                             "award": {"month": self._meta("award_month", ""), "count": int(self._meta("award_count", "0"))}},
                 "shared_with": [p for (p,) in self.db.execute("SELECT pilot FROM share WHERE enabled=1 ORDER BY pilot")],
-                "pending": {}, "md_at": self._meta("md_at", ""), "backup_at": self._meta("backup_at", ""),
+                "pending": {}, "ai": {"on": self._meta("ai_on", "0") == "1",
+                                      "notes": one("SELECT COUNT(*) FROM ai_notes")},
+                "md_at": self._meta("md_at", ""), "backup_at": self._meta("backup_at", ""),
                 "rev": int(self._meta("rev", "0"))}
 
     # -------------------------------------------------- seniority.md (spec 13)

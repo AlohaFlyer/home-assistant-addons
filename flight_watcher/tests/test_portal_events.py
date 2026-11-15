@@ -335,3 +335,38 @@ def test_state_and_files_are_the_pilots_own_dashboard_data(portal_pilot):
     assert st["finds"][0]["captain"] == f"{NAME} ({EMP})" and st["finds"][0]["value"] == 4321.5
     assert "contact" not in st["finds"][0] and st["file_key"] == "0" * 32 and "808-555" not in json.dumps(st)
     assert NAME in _payload(W, "files/pickers.json", "file:pickers")["pickers"][0]["name"]
+
+
+def test_a_new_swap_idea_is_a_portal_alert_for_the_pilot_who_marked_a_trip(portal_pilot):
+    """1.7.9 (contract 1 revision 4, F#107): the Watcher's own event/swap publish (swap_scan: only for a trip the pilot
+    marked would trade, his opt-in) joins his Alerts list and ntfy, with the idea's reason, URL and draft left out."""
+    W, _ = portal_pilot("pilot2")
+    W.portal_start(threads=False)
+    sent = []
+    W.EXPORT["ntfy"] = type("N", (), {"enqueue": lambda self, rec: sent.append(rec)})()
+    idea = {"for": "H9001|2026-11-20", "for_trip": "H9001", "pairing": "H9002", "start": "2026-11-20",
+            "end": "2026-11-22", "dates": "20NOV-22NOV", "days": 3, "layover": "SYD", "credit": "15:20", "src": "T",
+            "soft_gain": "+0:40", "credit_gain": "+4:50", "why": "soft +0:40, credit +4:50",
+            "detail_url": "https://example.invalid/x", "would_submit": "DRAFT: drop H9001, add H9002",
+            "key": "H9002|2026-11-20>H9001|2026-11-20", "at": "2026-11-09T20:00:13+00:00"}
+    W.pub("event/swap", idea, retain=False)
+    W.pub("event/swap", idea, retain=False)  # the same idea again keeps its id (ntfy dedupes on kind and id)
+    W.pub("event/swap_test", idea, retain=False)  # the draft request is never a portal event
+    W.portal_export_once(full=True)
+    evs = _payload(W, "events.json", "events")["events"]
+    assert [e["kind"] for e in evs] == ["swap", "swap"] and evs[0]["id"] == evs[1]["id"]
+    e = evs[0]
+    assert e["view"] == "watcher" and e["title"] == "Swap idea: H9002 20NOV-22NOV for your H9001"
+    assert "On the Tradeboard" in e["body"] and "Nothing is ever submitted" in e["body"]
+    assert e["data"]["for_date"] == "2026-11-20" and e["data"]["src"] == "T"
+    text = json.dumps(evs)
+    for bad in ("example.invalid", "DRAFT", "why", "would_submit"):
+        assert bad not in text, bad
+    assert [r["kind"] for r in sent] == ["swap", "swap"]
+
+
+def test_the_admins_swap_idea_is_never_a_portal_event(portal_pilot):
+    A, _ = portal_pilot("", portal=True)
+    assert A.portal_start(threads=False) is False
+    A.pub("event/swap", {"pairing": "H9002", "for_trip": "H9001"}, retain=False)
+    assert A.EXPORT["events_list"] == []
