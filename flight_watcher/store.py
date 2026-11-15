@@ -62,6 +62,37 @@ def dwell(first, last, gone, alert=None):
     return max(0, int((mid - entry).total_seconds())), int((hi - lo).total_seconds() / 2)
 
 
+REQ_CAP_SLACK_S = 600  # a request this long before the trip entered the pot was for an earlier time in the pot
+
+
+def req_cap_secs(first, alert, cap_at):
+    """1.7.10 (Ryan, Nov 15): the most seconds a trip can have been in open time when the pilot whose Watcher this
+    is asked for it at cap_at (his request's minute, ISO) and FLICA denied him because the picker had it: the picker
+    asked before him, so from the entry (dwell()'s: the first sighting or FLICA's alert, the earlier) to the end of
+    that minute (+59 s: the list prints minutes). None when there is no cap, a time does not read, or the request was
+    filed more than REQ_CAP_SLACK_S before the entry (another time in the pot)."""
+    if not cap_at:
+        return None
+    try:
+        f = datetime.fromisoformat(first)
+        entry = min(f, datetime.fromisoformat(alert)) if alert else f
+        end = datetime.fromisoformat(cap_at) + timedelta(seconds=59)
+        left = (end - entry).total_seconds()
+    except (TypeError, ValueError):
+        return None
+    return None if left < -REQ_CAP_SLACK_S else max(0, int(left))
+
+
+def speed(first, last, gone, alert=None, cap_at=None):
+    """(seconds, plus_minus, capped): dwell()'s estimate, or the request cap when it is lower (req_cap_secs: an upper
+    bound, 'at most', so plus_minus 0 and capped True)."""
+    secs, pm = dwell(first, last, gone, alert)
+    cap = req_cap_secs(first, alert, cap_at) if secs is not None else None
+    if cap is not None and cap < secs:
+        return cap, 0, True
+    return secs, pm, False
+
+
 def lay_of(row):
     """'LAX' from a find row: its layover, else its turn station (PPG), else ''."""
     lay = (row or {}).get("layover") or ""
@@ -226,6 +257,10 @@ class Store:
             self.db.execute("ALTER TABLE picker_log ADD COLUMN lay TEXT")
         except sqlite3.OperationalError:
             pass
+        try:  # 1.7.10 (Ryan, Nov 15): 1 when this picker's seconds are the request cap (an upper bound, "at most")
+            self.db.execute("ALTER TABLE picker_log ADD COLUMN cap INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         try:  # 0.7.6 (Ryan): when FLICA's alert email for the find was sent (the true pot-entry time)
             self.db.execute("ALTER TABLE finds ADD COLUMN alert_at TEXT")
         except sqlite3.OperationalError:
@@ -322,9 +357,11 @@ class Store:
             pks = pickers_of(pk, r)  # 1.7.7: only the open-seat picker(s) link on the card
             who = pks[0] if pks else None
             st = stats.get(who[2]) if who else None
-            secs, pm = dwell(first, last, gone, alert)
+            secs, pm, capped = speed(first, last, gone, alert, pk.get("req_cap_at"))
             out.append({"pairing": r.get("pairing"), "dates": r.get("dates"), "days": r.get("days"),
                         "dwell_s": secs, "dwell_pm_s": pm, "alert_at": alert or "",
+                        # 1.7.10: the speed is an upper bound ("at most"): capped at the own request's time
+                        "dwell_cap": capped,
                         "picker_emp": who[2] if who else "", "picker_n": st["n"] if st else 0,
                         "picker_avg_s": int(st["total_s"] / st["n"]) if st and st["n"] else None,
                         "layover": r.get("layover"), "report": r.get("report"), "credit": r.get("credit"),
@@ -457,8 +494,14 @@ class Store:
             pks = self.db.execute("SELECT pickup, row FROM finds WHERE pickup IS NOT NULL").fetchall()
             logs = self.db.execute("SELECT emp,at,lay FROM picker_log ORDER BY at").fetchall()
             mins = dict(self.db.execute("SELECT emp,MIN(secs) FROM picker_log WHERE secs IS NOT NULL GROUP BY emp").fetchall())
+            # 1.7.10: capped pickups per picker, and whether his fastest one is a capped one ("at most")
+            caps = dict(self.db.execute("SELECT emp,COUNT(*) FROM picker_log WHERE cap=1 GROUP BY emp").fetchall())
+            min_cap = {e for (e,) in self.db.execute(
+                "SELECT l.emp FROM picker_log l WHERE l.cap=1 AND l.secs=(SELECT MIN(secs) FROM picker_log m "
+                "WHERE m.emp=l.emp AND m.secs IS NOT NULL)")}
         out = {e: {"name": nm, "pos": ps, "n": n, "total_s": t, "last_at": la, "inflt_n": 0, "month_n": 0, "year_n": 0,
-                   "lays": [], "last_lay": "", "min_s": mins.get(e)}  # 0.8.2 (Ryan): fastest pickup
+                   "lays": [], "last_lay": "", "min_s": mins.get(e),  # 0.8.2 (Ryan): fastest pickup
+                   "cap_n": caps.get(e, 0), "min_cap": e in min_cap}
                for e, nm, ps, n, t, la in rows}
         counts, latest = {}, {}
         for emp, at, lay in logs:
@@ -515,16 +558,24 @@ class Store:
             pks = pickers_of(pickup, row)
             if not pks or (approx and len(pks) != 1):
                 return None
-            secs, _ = dwell(first, last, gone, alert)  # 0.7.6: alert time in, middle of the gone window out
+            plain, _ = dwell(first, last, gone, alert)  # 0.7.6: alert time in, middle of the gone window out
+            # 1.7.10: capped at the own request's time for the picker FLICA named in the denial (req_cap_emp)
+            secs, _pm, capped = speed(first, last, gone, alert, pickup.get("req_cap_at"))
             self.db.execute("BEGIN")
             for pos, name, emp in pks:
+                mine = capped and str(pickup.get("req_cap_emp") or "") == emp
+                s1 = secs if mine else plain
                 self.db.execute("INSERT INTO pickers(emp,name,pos,n,total_s,last_at) VALUES(?,?,?,1,?,?) "
                                 "ON CONFLICT(emp) DO UPDATE SET name=excluded.name, pos=excluded.pos, "
                                 "n=n+1, total_s=total_s+excluded.total_s, last_at=excluded.last_at",
-                                (emp, name, pos, secs, gone))
-                self.db.execute("INSERT OR IGNORE INTO picker_log(key,emp,at,secs,approx,lay) VALUES(?,?,?,?,?,?)",
-                                (log_key(key, emp), emp, gone, secs, int(approx), lay_of(row)))
+                                (emp, name, pos, s1, gone))
+                self.db.execute("INSERT OR IGNORE INTO picker_log(key,emp,at,secs,approx,lay,cap) VALUES(?,?,?,?,?,?,?)",
+                                (log_key(key, emp), emp, gone, s1, int(approx), lay_of(row), int(mine)))
             pickup["scored"] = secs
+            if capped:
+                pickup["capped"] = True
+            else:
+                pickup.pop("capped", None)
             pickup["pickers"] = [e for _p, _n, e in pks]
             if approx:
                 pickup["approx"] = True
@@ -606,17 +657,66 @@ class Store:
                 pk = json.loads(pk)
                 if pk.get("scored") is None or (keys and k not in keys):
                     continue
-                secs, _ = dwell(first, last, gone, alert)
-                if secs is None or secs == pk["scored"]:
+                plain, _ = dwell(first, last, gone, alert)
+                secs, _pm, capped = speed(first, last, gone, alert, pk.get("req_cap_at"))  # 1.7.10: the request cap
+                if secs is None:
                     continue
-                pk["scored"] = secs
-                self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), k))
-                self.db.execute("UPDATE picker_log SET secs=? WHERE key=?", (secs, k))  # a row keyed before 1.7.7
+                if secs != pk["scored"] or capped != bool(pk.get("capped")):
+                    pk["scored"] = secs
+                    if capped:
+                        pk["capped"] = True
+                    else:
+                        pk.pop("capped", None)
+                    self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), k))
+                # the capped picker's row holds the cap, every other picker's the plain estimate
+                self.db.execute("UPDATE picker_log SET secs=?, cap=? WHERE key=?", (secs, int(capped), k))  # keyed before 1.7.7
                 for _p, _n, emp in pickers_of(pk, json.loads(row) if row else {}):
-                    self.db.execute("UPDATE picker_log SET secs=? WHERE key=?", (secs, log_key(k, emp)))
+                    mine = capped and str(pk.get("req_cap_emp") or "") == emp
+                    self.db.execute("UPDATE picker_log SET secs=?, cap=? WHERE key=?",
+                                    (secs if mine else plain, int(mine), log_key(k, emp)))
             self.db.execute("UPDATE pickers SET total_s=(SELECT COALESCE(SUM(secs),0) FROM picker_log WHERE picker_log.emp=pickers.emp), "
                             "n=(SELECT COUNT(*) FROM picker_log WHERE picker_log.emp=pickers.emp)")
             self.db.execute("COMMIT")
+
+    def set_req_cap(self, key, at, emp):
+        """1.7.10 (Ryan, Nov 15): keep on a find's pickup the time of the own request FLICA denied because this picker
+        (emp, one of its open-seat pickers) had picked the trip up: req_cap_at (the request's minute, ISO) and
+        req_cap_emp. The earlier of two requests stays. The pickup is rescored (the cap is kept through every later
+        rescore and re-check). Returns 'capped' (its speed is the cap now), 'kept' (stored; the estimate is already
+        lower, or the pickup is not scored yet), 'same' (already stored) or None (no such pickup, or not this
+        picker)."""
+        with self.lock:
+            r = self.db.execute("SELECT row,pickup,first_seen,last_seen,gone_at,alert_at FROM finds WHERE key=?",
+                                (key,)).fetchone()
+            if not r or not r[1]:
+                return None
+            row, pk = json.loads(r[0]) if r[0] else {}, json.loads(r[1])
+            if pk.get("status") != "filled" or str(emp) not in {e for _p, _n, e in pickers_of(pk, row)}:
+                return None
+            if req_cap_secs(r[2], r[5], at) is None:
+                return None
+            old = pk.get("req_cap_at")
+            if old and old <= at and str(pk.get("req_cap_emp") or "") == str(emp):
+                same = True
+            else:
+                same = False
+                pk["req_cap_at"], pk["req_cap_emp"] = at, str(emp)
+                self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), key))
+            was = bool(pk.get("capped"))
+        if pk.get("scored") is not None:
+            self.rescore_all([key])
+        with self.lock:
+            now = json.loads(self.db.execute("SELECT pickup FROM finds WHERE key=?", (key,)).fetchone()[0])
+        if same and bool(now.get("capped")) == was:
+            return "same"
+        return "capped" if now.get("capped") else "kept"
+
+    def pickups_of(self, pairing):
+        """[(key, row, pickup)] of the finds of one pairing that have a pickup (1.7.10: the request cap's match)."""
+        with self.lock:
+            rows = self.db.execute("SELECT key,row,pickup FROM finds WHERE pairing=? AND pickup IS NOT NULL",
+                                   (pairing,)).fetchall()
+        return [(k, json.loads(r) if r else {}, json.loads(p)) for k, r, p in rows]
 
     def unscored_pickups(self):
         with self.lock:
@@ -675,6 +775,9 @@ class Store:
                 pickup.update({f: old[f] for f in ("inflt_leg", "inflt_emp", "inflt_skip") if f in old})
             elif "inflt_tries" in old and "inflt_tries" not in pickup:  # 1.7.8: the tries so far of a verdict to come
                 pickup = dict(pickup, inflt_tries=old["inflt_tries"])
+            for f in ("req_cap_at", "req_cap_emp", "capped"):  # 1.7.10: a re-check keeps the request cap
+                if f in old and f not in pickup:
+                    pickup = dict(pickup, **{f: old[f]})
             if "inflt_no" in old and "inflt_no" not in pickup:  # 1.7.8: the other pickers' verdicts too
                 pickup = dict(pickup, inflt_no=old["inflt_no"])
             for f in ("inflt_named", "inflt_named_q"):  # 1.7.9: the named pilots' verdicts (picker not known) too

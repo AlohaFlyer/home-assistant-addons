@@ -32,7 +32,7 @@ import rules as R
 import web
 import far as FAR
 from pot import PAIRING_RE, LEG_FULL_RE, LEG_FLT_RE, crew_seat, schedule_items, parse_schedule_desktop, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_pickers, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, CLOSE_IN_RE, close_in_folders, pick_close_in, trade_pages, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
-from store import PICKERS_V, Store
+from store import PICKERS_V, Store, by_parts
 import tradeboard as TB
 import swap as SW
 import swapmap as SM
@@ -1374,6 +1374,8 @@ def publish_pickers():
              "inflt_n": v.get("inflt_n", 0), "month_n": v.get("month_n", 0), "year_n": v.get("year_n", 0),
              "lays": v.get("lays", []), "last_lay": v.get("last_lay", ""),  # 0.7.6: Common Layover
              "min_s": v.get("min_s"),  # 0.8.2: Fastest Pickup Speed
+             # 1.7.10: pickups whose speed is capped at the own request's time ("at most"), and whether the fastest is
+             "cap_n": v.get("cap_n", 0), "min_cap": bool(v.get("min_cap")),
              "last_at": v["last_at"]} for e, v in DB.picker_stats().items()]
     rows.sort(key=lambda r: (r["avg_s"] is None, r["avg_s"] or 0, r["name"]))
     key, rev = write_list_file("pickers", {"count": len(rows), "pickers": rows})
@@ -3610,7 +3612,9 @@ def seniority_refresh():
             try:
                 info = web.award_seniority(path, f[:7], f[:-4] + ".pdf",
                                            aw.get("uploaded_at") if same else web.hst_iso(os.path.getmtime(path)), out)
-                log.info("award %s dates of hire: %d pilot rows (%s), %s", f, info["rows"], info["reader"], info["decision"])
+                if info["decision"] != "no-doh":  # 1.7.10: a packet with no dates of hire section is not a line
+                    log.info("award %s dates of hire: %d pilot rows (%s), %s", f, info["rows"], info["reader"],
+                             info["decision"])
             except Exception as e:
                 log.info("award %s dates of hire not read: %s", f, e)
 
@@ -3795,6 +3799,29 @@ def pilotdb_tick(force=False):
                     return True
                 return False
             merged = _pilotdb_merge("award", aw_sig, _award) or merged
+        # 1.7.10 (Ryan, Nov 15): each month's award text on file gives Sen #, base, equipment and seat per awarded
+        # pilot (seniority.award_sen_parse), merged oldest month first so the newest month's values stand; a month is
+        # merged again only when its file moved. Counts only in the log; the uploader is the file's (review store)
+        for f in pilotdb_award_texts():
+            month, path = f[:7], os.path.join(UPLOADS_SHARED, f)
+            sen_sig = _pilotdb_sig([path])
+            if sen_sig and (force or db.meta(f"sig:awardsen:{month}") != sen_sig):
+                def _award_sen(month=month, path=path, sen_sig=sen_sig):
+                    with open(path, encoding="utf-8", errors="replace") as fh:
+                        got = SEN.award_sen_parse(fh.read())
+                    if not got["rows"]:
+                        return False
+                    who = "ryan"
+                    with contextlib.suppress(Exception):
+                        who = str((review().on_file(month, "award")[1] or {}).get("who") or "ryan")
+                    r = db.merge_award_sen(month, got["rows"], _pilotdb_by(who),
+                                           hashlib.sha256(sen_sig.encode()).hexdigest(), SEN.PARSER)
+                    log.info("pilot db: award %s seniority merged: %d lines (%d not read), %d added, %d changed, %d kept "
+                             "hand edits, %d another last name on the number (not touched)", month, r.get("rows", 0),
+                             got["rejects"] + r.get("bad", 0), r.get("added", 0), r.get("changed", 0),
+                             r.get("kept_hand", 0), r.get("unmatched", 0))
+                    return True
+                merged = _pilotdb_merge(f"awardsen:{month}", sen_sig, _award_sen) or merged
         if ct_sig and (force or db.meta("sig:contacts") != ct_sig):
             def _contacts():
                 cj = CT.load(web.CONTACTS_FILE)
@@ -3830,6 +3857,14 @@ def pilotdb_tick(force=False):
         except Exception as e:  # noqa: BLE001
             log.info("pilot db: sensor not published: %s", type(e).__name__)
         return merged
+
+
+def pilotdb_award_texts():
+    """The award texts on file (<YYYY-MM>_award.txt in the shared uploads folder), oldest month first."""
+    try:
+        return sorted(f for f in os.listdir(UPLOADS_SHARED) if re.fullmatch(r"\d{4}-\d{2}_award\.txt", f))
+    except OSError:
+        return []
 
 
 def _pilotdb_by(who):
@@ -6164,8 +6199,9 @@ def detail_probe(fl, pot):
         return
     row = dict(next(iter(pot.values())))
     enrich(fl, row)
-    # 1.7.3: a pilot's log never names the captain (another pilot), only whether one was parsed; PilotLogMask too
-    who = repr(row.get("captain")) if CAP.admin else ("parsed" if row.get("captain") else "none")
+    # 1.7.3: a pilot's log never names the captain (another pilot), only whether one was parsed; PilotLogMask too.
+    # 1.7.10 (Ryan, Nov 15): the admin's neither
+    who = "parsed" if row.get("captain") else "none"
     log.info("detail probe %s: captain=%s blk=%s credit=%s soft=%s", row.get("pairing"),
              who, row.get("blk"), row.get("credit"), row.get("soft"))
 
@@ -6205,8 +6241,8 @@ def page_log(text):
     1.7.9 (Ryan, Nov 15): no quoted page carries an employee number, the admin's included ("(emp# n) schedule last
     updated", EmployeeID=n: captures.mask_emp), so every line that quotes a page through here is masked."""
     t = str(text or "")
-    if CAP.admin:
-        return CAPS.mask_emp(t)
+    if CAP.admin:  # 1.7.10 (Ryan, Nov 15): no crew name either (a crew list, 'picked up by ...', a captain)
+        return CAPS.mask_crew(t, page=True)
     if not cap_on():
         return f"({len(t)} chars, not logged: page captures are off for this pilot)"
     return CAPS.mask(t, cap_secrets())
@@ -6242,11 +6278,28 @@ class PilotLogMask(logging.Filter):
         return True
 
 
+class AdminLogMask(logging.Filter):
+    """1.7.10 (Ryan, Nov 15): the admin's own Watcher log carries no crew name and no employee number: every line
+    goes through captures.mask_crew (a labeled number, 'pilot <n>:', a seat and its number, a crew line's names, a
+    name with its number, 'picked up by ...', a 'Last, First'). Each line that named a pilot names the seat or the
+    pairing instead (the call sites); this filter is the net under them. Cards, the database and exports are not
+    touched: only log lines."""
+
+    def filter(self, record):
+        try:
+            msg = record.getMessage()
+            out = CAPS.mask_crew(msg)
+            if out != msg:
+                record.msg, record.args = out, ()
+        except Exception:  # noqa: BLE001 (a log line is never lost to the mask)
+            pass
+        return True
+
+
 for _f in list(log.filters):  # one per process (a re-import, as the tests do, replaces it)
-    if type(_f).__name__ == "PilotLogMask":
+    if type(_f).__name__ in ("PilotLogMask", "AdminLogMask"):
         log.removeFilter(_f)
-if ROLES.role(INSTANCE) == ROLES.PILOT:
-    log.addFilter(PilotLogMask())
+log.addFilter(PilotLogMask() if ROLES.role(INSTANCE) == ROLES.PILOT else AdminLogMask())
 
 
 IF.WRITE = cap_write
@@ -6676,7 +6729,7 @@ def _request_view(fl, b, ts):
             S.setdefault("req_view_captured", {})[n] = True
             try:
                 cap_write(f"otrequest_view_{n}.html", html)
-                log.info("request view %s captured; text: %s", ts, text[:600])
+                log.info("request view %s captured; text: %s", ts, page_log(text[:600]))
             except Exception:
                 pass
         return SUB.parse_request_view(text)
@@ -6767,7 +6820,7 @@ def requests_check(fl):
                 try:
                     cap_write(f"otrequests_{n}.html", html)
                     S.setdefault("req_captured", {})[n] = True
-                    log.info("requests %s: %d rows, page captured; text: %s", b, len(rows), text[:600])
+                    log.info("requests %s: %d rows, page captured; text: %s", b, len(rows), page_log(text[:600]))
                 except Exception:
                     pass
             ids = SUB.request_ids(html)
@@ -6782,7 +6835,7 @@ def requests_check(fl):
                     S.setdefault("req_mismatch_logged", {})[n] = len(ids)
                     log.info("requests %s: %d requests on the page, %d rows read; latest page captured", b, len(ids), len(rows))
             if not SUB.is_request_page(text, rows):
-                log.info("requests %s: not the request list, skipped: %s", b, text[:120])
+                log.info("requests %s: not the request list, skipped: %s", b, page_log(text[:120]))
                 BRK.fail("requests", "not the request list (a page the parser does not know)", "unknown")  # 1.6.2
                 continue
             if not rows and rows_of.get(b) and empty.get(b, 0) < 1:  # a list gone empty must read so twice
@@ -6801,7 +6854,7 @@ def requests_check(fl):
                     continue  # the feature's (or the close-in folder's) first read: older decisions are history
                 if r.get("ts") and not r.get("legs"):
                     r.update(_request_view(fl, b, r["ts"]))  # the list names no trips; its view page does
-                ev = {**r, "bcid": b, "at": now_iso(), "url": url}
+                ev = {**_req_shown(r), "bcid": b, "at": now_iso(), "url": url}
                 if b == ci:
                     ev["folder"] = "close-in"
                 try:
@@ -6809,7 +6862,7 @@ def requests_check(fl):
                 except Exception as e:
                     log.info("request pay not priced: %s", e)
                     ev["pay"] = None
-                log.info("request %s %s %s", r["type"], r["status"], r["detail"][:80])
+                log.info("request %s %s %s", r["type"], r["status"], page_log(r["detail"][:80]))
                 pub("event/request_decided", ev, retain=False)
                 note_decided(r, now)  # FW-0064: its schedule changes are this request's, not a trade's
             if rows and rows[-1].get("ts") and not S.get("req_view_captured", {}).get(n) and cap_on():
@@ -6819,6 +6872,7 @@ def requests_check(fl):
                     pushed[SUB.push_key(r)] = now_iso()  # last seen; pruned once gone 60 days
                     if r.get("alt"):  # the content key too: a read that falls back to it never re-pushes
                         pushed[f"{r['alt']}|{r['status']}"] = now_iso()
+            req_cap_keep(rows, rows_of.get(b))  # 1.7.10: each denial's 'picked up by' stays on its row
             rows_of[b] = rows
             if b == ci:
                 done_first[b] = now_iso()
@@ -6852,15 +6906,154 @@ def requests_check(fl):
         pushed.pop(k, None)
     if read_ok:
         S["ot_req_init"] = True
+        try:  # 1.7.10 (Ryan, Nov 15): pickup speeds capped at the own request's time; no FLICA load
+            req_cap_pass()
+        except Exception as e:  # noqa: BLE001 (type only: a message could carry a name)
+            log.info("speed: request cap skipped: %s", type(e).__name__)
     save_state(S)
     tsig = json.dumps(trows_of, sort_keys=True)
     tb_new = tb_ok and tsig != S.get("tb_req_sig")  # 1.4.3: trades alone republish only when they changed
     if read_ok or tb_new:  # a failed pass keeps the last good sensor instead of showing 0 pending
         S["tb_req_sig"] = tsig
-        shown = [{**r, "bcid": b, **({"folder": "close-in"} if b == ci else {})} for b in folders for r in rows_of.get(b) or []]
+        shown = [{**_req_shown(r), "bcid": b, **({"folder": "close-in"} if b == ci else {})} for b in folders for r in rows_of.get(b) or []]
         shown += [{**r, "bcid": f"001.{n}"} for n in sorted(trows_of) for r in trows_of[n] or []]
         pub("ot_requests", {"pending": sum(1 for r in shown if r["status"] in SUB.OPEN), "count": len(shown),
                             "requests": shown[-20:], "checked_at": now_iso()})
+
+
+# ---------------------------------------------------------------- 1.7.10: the pickup speed cap (Ryan, Nov 15)
+# When this pilot himself asked for a trip and FLICA denied him because another pilot picked it up ('CS:
+# H3607:17NOV picked up by DOE, JANE (10001)' on his Open Time Requests list), that picker asked before he did: the
+# picker's speed ends no later than this request's Requested time (store.req_cap_secs: its minute + 59 s), not at
+# FLICA's decision time and not at the Watcher's later pot read. Every other pickup keeps store.dwell's estimate.
+# Read from the request lists requests_check already loads (and, once, from the lists on file: S['ot_req_rows'] and
+# the admin's own captured request pages): no FLICA page beyond those, no link followed. Each instance caps the
+# pickups in its own database from its own list; nothing crosses instances. The log carries counts only.
+REQ_CAP_V = 1
+REQ_CAP_FILE_MAX = 5 * 1024 * 1024
+
+
+def _req_shown(r):
+    """A request row as it is published (the sensor, the decided event): without the cap's own fields."""
+    return {k: v for k, v in r.items() if k not in ("pu", "st_at")}
+
+
+def req_cap_keep(rows, old):
+    """The 'picked up by' of each Denied row stays on the row as pu {trip, day, emp} (no name): from the list's own
+    text (submit.parse_request_rows), else its view page's reason (read once, when it was pushed), else what the
+    last read of this folder kept for the same request."""
+    before = {r.get("key"): SUB.row_cap(r) for r in old or [] if isinstance(r, dict)}
+    for r in rows:
+        if r.get("status") != "Denied":
+            continue
+        c = SUB.row_cap(r) or before.get(r.get("key"))
+        if c:
+            r["pu"] = {k: c[k] for k in ("trip", "day", "emp")}
+
+
+def _folder_month(num):
+    """The bid month ('YYYY-MM') of the watched folder whose BCID ends in num ('152' of '003.152'), '' when none."""
+    return next((m for m, u in (S.get("pot_urls") or {}).items()
+                 if re.fullmatch(r"\d{4}-\d{2}", str(m)) and str(bcid(u) or "").split(".")[-1] == num), "")
+
+
+def req_cap_rows():
+    """[(trip, day, emp, at)] of the denied 'picked up by' rows of the request lists on file (S['ot_req_rows']); at:
+    the request's Requested time (HST ISO, the year from the bid folder's month, else the year nearest now)."""
+    out = []
+    ci = S.get("close_in_bcid")
+    for b, rows in (S.get("ot_req_rows") or {}).items():
+        fm = "" if b == ci else _folder_month(str(b).split(".")[-1])
+        for r in rows or []:
+            c = SUB.row_cap(r)
+            at = SUB.req_time(r.get("date"), r.get("time"), fm or None, datetime.now(HST)) if c else None
+            if at:
+                out.append((c["trip"], c["day"], c["emp"], at))
+    return out
+
+
+def req_cap_captures():
+    """The same from the admin's own captured request pages (the first read of each list, the latest odd page and a
+    view page, under his captures folder; never a pilot's, whose captures are off or masked), when they parse."""
+    out = []
+    if not CAP.admin:
+        return out
+    try:
+        names = sorted(os.listdir(CAPTURE_DIR))
+    except OSError:
+        return out
+    for f in names:
+        m = re.fullmatch(r"otrequests?_(view_)?(closein_)?(\d+)(?:_latest)?\.html", f)
+        path = os.path.join(CAPTURE_DIR, f)
+        try:
+            if not m or os.path.islink(path) or os.path.getsize(path) > REQ_CAP_FILE_MAX:
+                continue
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                html = fh.read()
+            ref = datetime.fromtimestamp(os.path.getmtime(path), HST)
+        except OSError:
+            continue
+        text = visible_text(html)
+        fm = "" if m.group(2) else _folder_month(m.group(3))
+        if m.group(1):  # a view page: one request
+            c, ra = SUB.picked_up(text), SUB.requested_at(text)
+            at = SUB.req_time(ra[0], ra[1], fm or None, ref) if c and ra and re.search(r"\bdenied\b", text, re.I) else None
+            if at:
+                out.append((c["trip"], c["day"], c["emp"], at))
+            continue
+        for r in SUB.parse_request_rows(text, html):
+            c = SUB.row_cap(r)
+            at = SUB.req_time(r.get("date"), r.get("time"), fm or None, ref) if c else None
+            if at:
+                out.append((c["trip"], c["day"], c["emp"], at))
+    return out
+
+
+def _day_key(s):
+    m = re.match(r"\s*(\d{1,2})\s?([A-Za-z]{3})", str(s or ""))
+    return f"{int(m.group(1)):02d}{m.group(2).upper()}" if m else ""
+
+
+def req_cap_apply(caps):
+    """Put each (trip, day, emp, at) on its pickup: the find of that pairing whose first day is that day and whose
+    open-seat pickers (store.pickers_of) include that employee number (store.set_req_cap; else it is unmatched and
+    nothing changes). Returns (the pickups whose speed is the cap now, the caps that matched no pickup)."""
+    capped, unmatched = set(), 0
+    for trip, day, emp, at in sorted(set(caps)):
+        got = None
+        for k, row, _pk in DB.pickups_of(trip):
+            if day not in (_day_key(row.get("start") or (row.get("dates") or "").split("-")[0]), _day_key(k.split("|")[-1])):
+                continue
+            got = DB.set_req_cap(k, at, emp)
+            if got:
+                if got == "capped":
+                    capped.add(k)
+                break
+        if not got:
+            unmatched += 1
+    return capped, unmatched
+
+
+def req_cap_pass():
+    """After a good read of the request lists: the cap for every denied 'picked up by' row on file. The first pass
+    of 1.7.10 (DB 'req_cap_v') also reads the admin's captured request pages and says the counts; a later pass says
+    a count only when a pickup's speed changed. Idempotent (a cap already on a pickup changes nothing)."""
+    first = DB.get("req_cap_v") != REQ_CAP_V
+    caps = req_cap_rows() + (req_cap_captures() if first else [])
+    before = {k for k, _r, pk in (x for t in {c[0] for c in caps} for x in DB.pickups_of(t)) if pk.get("capped")}
+    capped, unmatched = req_cap_apply(caps)
+    whose = "Ryan's" if CAP.admin else "this pilot's own"
+    new = capped - before
+    if first:
+        DB.put("req_cap_v", REQ_CAP_V)
+        log.info("speed: %d pickup%s capped at %s request time, %d unmatched", len(capped), "" if len(capped) == 1 else "s",
+                 whose, unmatched)
+    elif new:
+        log.info("speed: %d pickup%s capped at %s request time", len(new), "" if len(new) == 1 else "s", whose)
+    if new:
+        publish_pickers()
+        publish_finds()
+        pilotdb_nudge()  # the picker's pickup history in the pilot database
 
 
 def _trade_requests_check(fl, folders, trows_of, pushed, now):
@@ -6890,7 +7083,7 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
                     cap_write(f"tb_myrequests_{n}{'_latest' if odd else ''}.html", html,
                               extra=[str(r.get("emp") or "") for r in rows])
                     S.setdefault("tbreq_captured", {})[n] = True
-                    log.info("trade requests %s: %d rows, page captured; text: %s", n, len(rows), text[:600])
+                    log.info("trade requests %s: %d rows, page captured; text: %s", n, len(rows), page_log(text[:600]))
                 except Exception:
                     pass
             for r in SUB.request_news(pushed, rows):
@@ -7377,7 +7570,8 @@ def name_directory():
     except OSError:
         awards = []
     paths = [os.path.join(UPLOADS_SHARED, "seniority.json")] + [os.path.join(UPLOADS, f) for f in awards]
-    sig = tuple((p, os.path.getmtime(p)) for p in paths if os.path.exists(p))
+    db_rows, db_sig = pilotdb_name_rows()
+    sig = tuple((p, os.path.getmtime(p)) for p in paths if os.path.exists(p)) + (db_sig,)
     if _NAME_DIR["sig"] == sig:
         return _NAME_DIR["rows"]
     rows = {}
@@ -7388,15 +7582,21 @@ def name_directory():
             continue
         m = AWARD_SEAT_RE.search("\n".join(lines[:40]))
         seat = m.group(1).upper() if m else ""
+        # 1.7.10 (Ryan, Nov 15): the award's seniority lines ('Seniority 00072 Category HNL-332-FO DOE 10001'): the
+        # last name and the seat of every awarded pilot (no first name on them)
+        for r in SEN.award_sen_parse("\n".join(lines))["rows"]:
+            if r["emp"] not in rows:
+                rows[r["emp"]] = {"emp": r["emp"], "last": r["last"], "first": "", "seat": r["seat"][:2]}
         for i, ln in enumerate(lines):
             g = SEN.AWARD_PILOT_RE.match(ln)
             if not g:
                 continue
             emp = g["emp"].lstrip("0")
             name = SEN._award_name(g["rest"]) or (SEN._award_name(lines[i + 1]) if i + 1 < len(lines) else "")
-            if emp and name and emp not in rows:
+            if emp and name and (emp not in rows or not rows[emp]["first"]):
                 last, _, first = (x.strip() for x in name.partition(","))
-                rows[emp] = {"emp": emp, "last": last.title(), "first": first.title(), "seat": seat}
+                rows[emp] = {"emp": emp, "last": last.title(), "first": first.title(),
+                             "seat": seat or (rows.get(emp) or {}).get("seat", "")}
     for k, rec in ((seniority_data() or {}).get("pilots") or {}).items():
         for r in [rec] + list(rec.get("also") or []):
             name = str(r.get("name") or "")
@@ -7406,9 +7606,54 @@ def name_directory():
             if k and last:  # the union's list has no seat: the award's, when it names the pilot
                 rows[k] = {"emp": k, "last": last, "first": first,
                            "seat": str(r.get("seat") or (rows.get(k) or {}).get("seat") or "").upper()[:2]}
+    # 1.7.10 (Ryan, Nov 15: the lookup searches the pilot database, all pilots): every live record's name and seat
+    # (the admin's own database; a portal pilot's roster, while Ryan shares the database with him). A record's
+    # 'Last, First' wins over a file's; a record with a last name only fills in a number no file names
+    for k, last, first, seat in db_rows:
+        old = rows.get(k)
+        if old and old["first"] and not first:
+            continue
+        rows[k] = {"emp": k, "last": last, "first": first, "seat": (seat or (old or {}).get("seat") or "").upper()[:2]}
     out = [dict(r, name=f"{r['last']}, {r['first']}".strip(" ,")) for r in rows.values()]
     _NAME_DIR.update(sig=sig, rows=out)
     return out
+
+
+def pilotdb_name_rows():
+    """1.7.10: ([(emp, last, first, seat)], signature) of the pilot database for the name lookup. The admin reads his
+    database; a portal pilot the roster his Watcher already holds (pdbshare.View, only while the database is shared
+    with him: no file, no rows). A number two records share is left out (the lookup runs by number and could not
+    tell them apart). Never phones, emails or notes; ([], '') when there is nothing to read."""
+    out = []
+    try:
+        if ROLES.role(INSTANCE) == ROLES.ADMIN:
+            db = PDB.get("db")
+            if db is None:
+                return [], ""
+            sig = f"db:{db.rev}"
+            if _NAME_DIR.get("db_sig") == sig:
+                return _NAME_DIR["db_rows"], sig
+            for r in db.name_rows():
+                out.append(r)
+        else:
+            with PDBV["lock"]:
+                v = pilotdb_view()
+                if v.state != "on":
+                    return [], ""
+                sig = f"roster:{v.sig.get('roster')}"
+                if _NAME_DIR.get("db_sig") == sig:
+                    return _NAME_DIR["db_rows"], sig
+                for emp, recs in (v.roster or {}).items():
+                    if len(recs) != 1 or not isinstance(recs[0], dict) or recs[0].get("gone"):
+                        continue
+                    last, _, first = (x.strip() for x in str(recs[0].get("name") or "").partition(","))
+                    if emp and last:
+                        out.append((str(emp), last, first, str(recs[0].get("seat") or "")))
+    except Exception as e:  # noqa: BLE001 (type only: a message could carry a name)
+        log.info("pilot lookup: pilot database not searched: %s", type(e).__name__)
+        return [], ""
+    _NAME_DIR.update(db_sig=sig, db_rows=out)
+    return out, sig
 
 
 def name_lookup(q):
@@ -7432,8 +7677,8 @@ def name_lookup(q):
         hits = [r for r in hits if not r["first"] or _nkey(r["first"]).startswith(fk)]
     hits.sort(key=lambda r: (r["name"], r["emp"]))
     if not hits:
-        return [], (f"No pilot named '{q}' on the award or seniority list on file. Type the whole last name (or "
-                    f"{LOOKUP_PREFIX_MIN} letters of it), or the employee number."
+        return [], (f"No pilot named '{q}' in the pilot database or on the award or seniority list on file. Type the "
+                    f"whole last name (or {LOOKUP_PREFIX_MIN} letters of it), or the employee number."
                     if rows else "No award or seniority list is on file to look names up in. Type the employee number.")
     if len(hits) > LOOKUP_MAX:
         return [], (f"More than {LOOKUP_MAX} pilots match '{q}'. Type more of the last name, or Last, First, or the "
@@ -7526,6 +7771,10 @@ def pilot_cmd(payload):
             emp = q
         else:
             hits = DB.find_crew(q)
+            # 1.7.10 (Ryan, Nov 15): the pilot database too (every pilot: the contact list and the award seniority),
+            # by the whole last name or 'Last, First'; the FLICA lookup then runs as before
+            have = {h["emp"] for h in hits}
+            hits = hits + [h for h in pilotdb_name_hits(q) if h["emp"] not in have]
             ct = None if hits else contact_emp(q)  # FW-0066: a name only the contact list has
             if ct:
                 emp, d["name"] = ct
@@ -7536,7 +7785,7 @@ def pilot_cmd(payload):
                                        "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
                 return
             else:
-                pub_pilot({"emp": "", "name": q, "status": f"no pilot named '{q}' in the {DB.crew_count()} crew the Watcher has seen; enter the employee number",
+                pub_pilot({"emp": "", "name": q, "status": f"no pilot named '{q}' in the pilot database or the {DB.crew_count()} crew the Watcher has seen; enter the employee number",
                                        "matches": [], "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
                 return
     if not emp:
@@ -7549,7 +7798,7 @@ def pilot_cmd(payload):
         pub_pilot({**cached, "status": "cached"})
         S.pop("pilot_req", None)
         save_state(S)
-        log.info("pilot %s: schedule served from cache", emp)
+        log.info("pilot lookup: schedule served from cache")
         return
     m = S.get("machine") or ""
     if ROLES.role(INSTANCE) == ROLES.PILOT and (m in LOOKUP_WAIT_STATES or m.startswith("stopped")):
@@ -7557,11 +7806,11 @@ def pilot_cmd(payload):
         pub_pilot({"emp": emp, "name": d.get("name") or "", "month": "", "days": [], "items": [], "totals": {},
                    "updated": "", "fetched": "", "at": now_iso(),
                    "status": f"waiting: your Watcher is {m.replace('_', ' ')}; this lookup runs on its next FLICA check"})
-        log.info("pilot %s: schedule requested (waits: %s)", emp, m)
+        log.info("pilot lookup: schedule requested (waits: %s)", m)
         return
     pub_pilot({"emp": emp, "name": d.get("name") or "", "status": "loading", "month": "", "days": [], "items": [],
                            "totals": {}, "updated": "", "fetched": "", "at": now_iso()})
-    log.info("pilot %s: schedule requested", emp)
+    log.info("pilot lookup: schedule requested")
     if ROLES.role(INSTANCE) == ROLES.ADMIN:  # 1.6.2: a pilot's lookup waits for his next check (no extra FLICA check)
         WAKE.set()
 
@@ -7607,14 +7856,15 @@ def pilot_check(fl):
                 break
             # 1.7.3 review: page text through page_log (a pilot's only while his captures are on, masked): visible_text
             # lowercases the page and the name masks need a capital letter
-            log.info("pilot %s: %s gave %s: %s", emp, url.split("?")[1], classify(html), page_log(visible_text(html)[:200]))
+            log.info("pilot lookup: %s gave %s: %s", CAPS.mask_emp(url.split("?")[1]), classify(html),
+                     page_log(visible_text(html)[:200]))
         if not sched:
             if classify(html) == "ok":  # 1.7.9 review: FLICA answered for this pilot (no readable month): it ran
                 PILOT_RAN["emp"] = PDBM.emp_of(emp)
             pilotver_capture_rebuild(emp, req.get("name") or "")  # FW-0069: the crew index's view, when it has one
             pub_pilot({"emp": emp, "name": req.get("name") or "", "status": pilot_unreadable_status(html),
                                    "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": now_iso()})
-            log.info("pilot %s: schedule page not readable (%s)", emp, classify(html))
+            log.info("pilot lookup: schedule page not readable (%s)", classify(html))
             S.pop("pilot_req", None)
             save_state(S)
             return True
@@ -7651,10 +7901,10 @@ def pilot_check(fl):
         captured = True  # FW-0069: a readable month is the version source (no rebuild below if a later step fails)
         pilotver_capture_lookup(emp, rec)  # a new version when the pairings changed
         pub_pilot({**rec, "status": "ok"})
-        log.info("pilot %s (%s): %s read, %d items, %d pairing pages", emp, rec["name"], sched["month"], len(sched["items"]), n)
+        log.info("pilot lookup: %s read, %d items, %d pairing pages", sched["month"], len(sched["items"]), n)
         lookup_prev_month(fl, emp, cur)  # FW-0057: trips run into this month from the previous one (the next run reads them)
     except Exception as e:
-        log.info("pilot %s: schedule read failed: %s", emp, e)
+        log.info("pilot lookup: schedule read failed: %s", e)
         if not captured:
             pilotver_capture_rebuild(emp, req.get("name") or "")  # FW-0069
         pub_pilot({"emp": emp, "name": req.get("name") or "", "status": f"error: {e}", "month": "", "days": [],
@@ -7688,7 +7938,7 @@ def lookup_prev_month(fl, emp, cur):
         return 0
     url = IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=f"{prev.month:02d}{prev.year % 100:02d}")
     if not (SUB.safe_get(url) and SM.safe_get(url)):
-        log.info("pilot %s: previous month url refused by safe_get", emp)
+        log.info("pilot lookup: previous month url refused by safe_get")
         return 0
     time.sleep(random.uniform(1.5, 3.5))
     try:
@@ -7696,16 +7946,16 @@ def lookup_prev_month(fl, emp, cur):
         sched = IF.parse_cm_month(html) if classify(html) == "ok" and IF.schedule_ok(html) else None
     except Exception as e:
         html, sched = "", None
-        log.info("pilot %s: previous month read failed: %s", emp, e)
+        log.info("pilot lookup: previous month read failed: %s", e)
     if not sched:
         DB.put(key, {"tries": st.get("tries", 0) + 1, "at": now_iso()})
-        log.info("pilot %s: previous month %s not readable (%s)", emp, pm, classify(html or "") if html else "no page")
+        log.info("pilot lookup: previous month %s not readable (%s)", pm, classify(html or "") if html else "no page")
         return 0
     floor = prev.isoformat()
     into = [it for it in sched["items"] if (it.get("end") or it.get("start") or "") >= floor]
     n = note_sched_trips(into, "lookup")
     DB.put(key, {"done": True, "at": now_iso(), "trips": len(into)})
-    log.info("pilot %s: previous month %s read, %d trips run into this month (%d new for the crew index)", emp, pm,
+    log.info("pilot lookup: previous month %s read, %d trips run into this month (%d new for the crew index)", pm,
              len(into), n)
     return n
 
@@ -7748,7 +7998,7 @@ def pilotver_register(emp, name=""):
     try:
         PV.register(DB, emp, name, now_iso())
     except Exception as e:
-        log.info("pilot %s: versions registry skipped: %s", emp, e)
+        log.info("pilot lookup: versions registry skipped: %s", e)
 
 
 def pilotver_capture_lookup(emp, rec):
@@ -7759,10 +8009,10 @@ def pilotver_capture_lookup(emp, rec):
         first, _, end = CI.grid_range(CARD_PAIRINGS, rec["month"])
         made = PV.capture_lookup(DB, emp, rec.get("name") or "", rec, now_iso(), (first, end), pilot_award)
         if made:
-            log.info("pilot %s: schedule version %s (%s, FLICA schedule)", emp, ", ".join(made), rec["month"])
+            log.info("pilot lookup: schedule version %s (%s, FLICA schedule)", ", ".join(made), rec["month"])
         return made
     except Exception as e:
-        log.info("pilot %s: schedule version skipped: %s", emp, e)
+        log.info("pilot lookup: schedule version skipped: %s", e)
         return []
 
 
@@ -7778,10 +8028,10 @@ def pilotver_capture_rebuild(emp, name="", month=None, insts=None, rows=None):
         trips = CI.pilot_trips(insts, DB.crew_by_emp(emp), month, first, rows, pkg_details_for, end)
         made = PV.capture_rebuild(DB, emp, name, month, trips, rows, now_iso(), (first, end), start, end, pilot_award)
         if made:
-            log.info("pilot %s: schedule version %s (%s, rebuilt from crew lists)", emp, ", ".join(made), month)
+            log.info("pilot lookup: schedule version %s (%s, rebuilt from crew lists)", ", ".join(made), month)
         return made
     except Exception as e:
-        log.info("pilot %s: rebuilt schedule version skipped: %s", emp, e)
+        log.info("pilot lookup: rebuilt schedule version skipped: %s", e)
         return []
 
 
@@ -7830,7 +8080,7 @@ def pilotver_awards(month, text, det):
                 continue  # no date header above his line, or (1.7.2) his line cut off: the next pilot's may read
             if aw and PV.set_award(DB, emp, month, aw, now_iso(), (first, end), first):
                 n += 1
-                log.info("pilot %s: awarded line is schedule version %s.001", emp, int(month[5:7]))
+                log.info("pilot lookup: awarded line is schedule version %s.001", int(month[5:7]))
                 if emp == shown_emp():
                     pub_pilot(dict(PILOT_SHOWN["p"]))
         return n
@@ -7882,7 +8132,7 @@ def pilotver_price(emp, ent, recon=None):
                         it["split"] = got["split"]
                 rec["pay"] = {k: line.get(k) for k in PILOTVER_PAY if line.get(k) is not None}
             except Exception as e:  # noqa: BLE001
-                log.info("pilot %s: version pay skipped: %s", emp, e)
+                log.info("pilot lookup: version pay skipped: %s", e)
 
 
 # the pay summary a version record carries (the totals line's groups, pilot card _vold)
@@ -8083,10 +8333,10 @@ def crew_overlaps(insts, rows):
         flags, rr, new, kept, cleared = CI.overlap_update(CI.overlaps(insts, live), f0, r0,
                                                           local_now().isoformat(timespec="seconds"))
         for i in new:
-            log.info("crew index: pilot %s on two overlapping trips (%s), both queued for a re-read", flags[i]["emp"],
+            log.info("crew index: a pilot on two overlapping trips (%s), both queued for a re-read",
                      " and ".join(flags[i]["keys"]))
         for i in kept:
-            log.info("crew index: pilot %s still on %s after the re-read, newer read kept (flagged)", flags[i]["emp"],
+            log.info("crew index: a pilot still on %s after the re-read, newer read kept (flagged)",
                      " and ".join(flags[i]["keys"]))
         for i in cleared:
             log.info("crew index: overlap %s cleared", i)
@@ -9079,7 +9329,7 @@ def upload_gens_check():
                 versions_check(force_pub=True)
                 for emp in PV.registered(DB, month):  # 1.7.2 (review): a looked-up pilot's .001 came from it too
                     if PV.clear_award(DB, emp, month):
-                        log.info("pilot %s: the removed award is no longer schedule version %s.001", emp,
+                        log.info("pilot lookup: the removed award is no longer schedule version %s.001",
                                  int(month[5:7]))
                         if emp == shown_emp():
                             pub_pilot(dict(PILOT_SHOWN["p"]))
@@ -9697,6 +9947,20 @@ def contacts_data():
     if _CT_CACHE.get("path") != path or _CT_CACHE.get("mt") != mt:
         _CT_CACHE.update(path=path, mt=mt, data=CT.load(path))
     return _CT_CACHE.get("data")
+
+
+def pilotdb_name_hits(q):
+    """1.7.10: [{emp, name, pos}] of the admin's pilot database for a typed 'Last' or 'Last, First' (the whole last
+    name), [] when the database is not open or the text is not a name. Counts and names never reach the log."""
+    db = PDB.get("db")
+    q = str(q or "").replace("\u2019", "'").replace("\u2018", "'")
+    if db is None or not LOOKUP_NAME_RE.fullmatch(q):
+        return []
+    try:
+        return db.name_hits(q)
+    except Exception as e:  # noqa: BLE001
+        log.info("pilot lookup: pilot database not searched: %s", type(e).__name__)
+        return []
 
 
 def contact_emp(q):
@@ -10739,10 +11003,12 @@ def pickup_check(fl, full=False):
         if status == "filled":
             DB.set_pickup(k, {"status": "filled", "by": who, "ca": ca, "known": known, "pickers": pickers,
                               "at": now_iso()})
-            log.info("pickup %s: %s (CA %s)", k, who, ca or "?")
+            # 1.7.10 (Ryan, Nov 15): by seat, never a name or an employee number (the card shows who)
+            seats = ", ".join(pos for pos, _nm, _e in by_parts(who)) or "nobody named"
+            log.info("pickup %s: filled (%s; CA %s)", k, seats, "named" if ca else "?")
             secs = DB.score_pickup(k)  # 0.4.18: picker speed stats
             if secs is not None:
-                log.info("picker %s: %s in open time", who, secs)
+                log.info("picker of %s (%s): %s in open time", k, seats, secs)
                 pilotdb_nudge()  # 1.7.8: the picker's pickup history in the pilot database
             pend.pop(k, None)
             done = True

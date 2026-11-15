@@ -376,7 +376,7 @@ def test_crew_split_over_two_copies_reads_on(W, tmp_path, monkeypatch, caplog):
                                                                  "v": 2}
     for emp, pid in (("10001", "H3999B"), ("10003", "H3999C"), ("10004", "H3999C")):
         assert [r["pairing"] for r in W.DB.crew_by_emp(emp)] == [pid]
-    assert "crew index: H3999B 2026-11-06 names 1 of 3 pilots, the next letters are read too (crew line: ca 10001 x, x)" \
+    assert "crew index: H3999B 2026-11-06 names 1 of 3 pilots, the next letters are read too (crew line: ca ##### x, x)" \
         in caplog.text
     assert "Doe" not in caplog.text and "doe" not in caplog.text and "Roe" not in caplog.text
 

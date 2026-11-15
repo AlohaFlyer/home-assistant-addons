@@ -128,11 +128,14 @@ def test_a_pilots_detail_probe_names_no_captain(load, caplog):
     assert "detail probe H3607: captain=parsed blk=17:35 credit=17:35 soft=0:00" in text
 
 
-def test_the_admins_detail_probe_is_as_before(load, caplog):
+def test_the_admins_detail_probe_names_no_captain_either(load, caplog):
+    """1.7.10 (Ryan, Nov 15): the admin's own log carries no crew name and no employee number (it named the captain
+    until 1.7.9)."""
     W = load("")
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
         W.detail_probe(None, POT)
-    assert "detail probe H3607: captain='Doe, Jane (6598)' blk=17:35 credit=17:35 soft=0:00" in caplog.text
+    assert "detail probe H3607: captain=parsed blk=17:35 credit=17:35 soft=0:00" in caplog.text
+    assert "Doe" not in caplog.text and "6598" not in caplog.text
 
 
 def test_a_pilots_pickup_lines_name_no_crew(load, caplog):

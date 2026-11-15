@@ -18,7 +18,7 @@ series) or FLICA denies it. FW-0034: the Watcher finds that BCID on the menu (a 
 folder, never a guess) and trusts it once the folder's open time page reads (S['close_in_bcid']); until
 then such a draft has folder 'close-in' and no BCID. Drafts are never sendable either way."""
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 MODES = ("Test",)  # FW-0028: Confirm and Live removed for good
 DEFAULT_MODE = "Test"
@@ -213,18 +213,117 @@ def parse_request_rows(text, html=None):
     for i, m in enumerate(ms):
         d, t, k, st = m.group(1), m.group(2), m.group(3).title(), m.group(4).title()
         end = ms[i + 1].start() if i + 1 < len(ms) else min(len(text), m.end() + 300)
-        detail = re.sub(r"\s+", " ", text[m.end():end]).strip()[:200]
+        whole = re.sub(r"\s+", " ", text[m.end():end]).strip()
+        detail = whole[:200]
         legs = _legs(detail)
         trips = [x["trip"] for x in legs]
         base = f"{d}|{t}|{k}|{'+'.join(sorted(trips))}"
         seen[base] = seen.get(base, 0) + 1
         rows.append({"key": f"{base}|{seen[base]}", "date": d, "time": t, "type": k, "status": st,
                      "trips": trips, "legs": legs, "detail": detail})
+        # 1.7.10: the row's own columns after the status: the decision time ('Denied 30 OCT 15:10') and, on a
+        # denial for a pickup, the pairing and the picker's employee number (kept when the detail is dropped below)
+        sa = status_at(f"{st} {whole[:40]}")
+        if sa:
+            rows[-1]["st_at"] = " ".join(sa)
+        pu = picked_up(whole) if st == "Denied" else None
+        if pu:
+            rows[-1]["pu"] = {x: pu[x] for x in ("trip", "day", "emp")}
     ids = request_ids(html)
     if ids and len(ids) == len(rows):
         for r, ts in zip(rows, ids):
             r.update({"alt": r["key"], "key": f"ts:{ts}", "ts": ts, "detail": "", "legs": [], "trips": []})
     return rows
+
+
+# ---------------------------------------------------------------- 1.7.10: the pickup speed cap (Ryan, Nov 15)
+# A request FLICA denied because another pilot picked the trip up carries crew scheduling's comment
+# 'CS: H3607:17NOV picked up by DOE, JANE (10001)' (made-up values). That picker asked before the pilot whose list
+# this is, so his pickup speed ends no later than this request's Requested time (minute precision: its minute + 59 s).
+PICKED_RE = re.compile(r"\b([A-Za-z]\d{4}[A-Za-z]?)\s*:\s*(\d{1,2})\s?([A-Za-z]{3})\s+picked\s+up\s+by\s+"
+                       r"([A-Za-z\u00c0-\u024f][A-Za-z\u00c0-\u024f'.\- ]{0,40}?,\s*[A-Za-z\u00c0-\u024f'.\- ]{0,40}?)\s*"
+                       r"\(\s*(\d{3,7})\s*\)", re.I)
+MON3 = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+STAMP_RE = re.compile(r"\b(\d{1,2})\s?(" + "|".join(MON3) + r")\s+(\d{1,2}):(\d{2})\b", re.I)
+STATUS_AT_RE = re.compile(r"\b(?:approved|denied)\s+(?:(\d{1,2})\s?(" + "|".join(MON3) + r")|(\d{2})/(\d{2}))\s+"
+                          r"(\d{1,2}):(\d{2})\b", re.I)
+REQUESTED_RE = re.compile(r"\b(?:requested|time)\b[^0-9]{0,24}(?:(\d{1,2})\s?(" + "|".join(MON3) + r")|(\d{2})/(\d{2}))\s+"
+                          r"(\d{1,2}):(\d{2})\b", re.I)
+HST_TZ = timezone(timedelta(hours=-10))
+
+
+def picked_up(text):
+    """{trip, day, name, emp} of a 'H3607:17NOV picked up by DOE, JANE (10001)' comment (any letter case), or None."""
+    m = PICKED_RE.search(text or "")
+    if not m:
+        return None
+    return {"trip": m.group(1).upper(), "day": f"{int(m.group(2)):02d}{m.group(3).upper()}",
+            "name": re.sub(r"\s+", " ", m.group(4)).strip().title(), "emp": m.group(5).lstrip("0")}
+
+
+def _md_hm(m):
+    """('MM/DD', 'HH:MM') of a match whose groups are (day, MON, MM, DD, hour, minute), or None for a bad date."""
+    d, mon, mm, dd, hh, mi = m.groups()[-6:]
+    try:
+        mo, day = (MON3.index(mon.upper()) + 1, int(d)) if mon else (int(mm), int(dd))
+        if not (1 <= mo <= 12 and 1 <= day <= 31 and int(hh) < 24 and int(mi) < 60):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return f"{mo:02d}/{day:02d}", f"{int(hh):02d}:{mi}"
+
+
+def status_at(text):
+    """('MM/DD', 'HH:MM') of the decision time in 'Denied 30 OCT 15:10' (or 'Denied 10/30 15:10'), or None."""
+    m = STATUS_AT_RE.search(text or "")
+    return _md_hm(m) if m else None
+
+
+def requested_at(text):
+    """('MM/DD', 'HH:MM') of a request's own time on its view page ('Requested (HA) 30 OCT 15:08', 'Time: 10/30
+    15:08'), or None."""
+    m = REQUESTED_RE.search(text or "")
+    return _md_hm(m) if m else None
+
+
+def req_time(md, hm, folder_month=None, ref=None):
+    """The HST time (ISO, minute precision) of a request filed 'MM/DD' 'HH:MM'. The page prints no year: with the bid
+    folder's month ('YYYY-MM') it is the year that puts the request nearest that month (a request of late December
+    in January's folder is last year's; one of early January in December's folder is next year's); else the year
+    nearest ref (an aware datetime). None when it cannot be read."""
+    try:
+        mo, dd = (int(x) for x in str(md).split("/"))
+        hh, mi = (int(x) for x in str(hm).split(":"))
+        if folder_month:
+            anchor = datetime(int(folder_month[:4]), int(folder_month[5:7]), 15, tzinfo=HST_TZ)
+        else:
+            anchor = ref.astimezone(HST_TZ)
+        best = None
+        for y in (anchor.year - 1, anchor.year, anchor.year + 1):
+            try:
+                t = datetime(y, mo, dd, hh, mi, tzinfo=HST_TZ)
+            except ValueError:
+                continue
+            if best is None or abs(t - anchor) < abs(best - anchor):
+                best = t
+        return best.isoformat(timespec="minutes") if best else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def row_cap(r):
+    """1.7.10: what a Denied request row says for the pickup speed cap: {trip, day, emp} from its 'picked up by'
+    comment (the list's own text, kept on the row as 'pu', else its view page's reason or detail), or None. The
+    picker's name is not kept."""
+    if not isinstance(r, dict) or str(r.get("status") or "").title() != "Denied":
+        return None
+    pu = r.get("pu") if isinstance(r.get("pu"), dict) else None
+    if not pu:
+        got = picked_up(str(r.get("reason") or "")) or picked_up(str(r.get("detail") or ""))
+        pu = {k: got[k] for k in ("trip", "day", "emp")} if got else None
+    if not pu or not all(isinstance(pu.get(k), str) and pu.get(k) for k in ("trip", "day", "emp")):
+        return None
+    return {k: pu[k] for k in ("trip", "day", "emp")}
 
 
 REQ_PAGE_RE = re.compile(r"\brequests?\b", re.I)

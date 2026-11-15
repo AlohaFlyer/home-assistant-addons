@@ -40,18 +40,21 @@ HST = timezone(timedelta(hours=-10))
 ZERO_REV = "000000000000"
 UPLOAD_SOURCES = ("list", "award", "contacts")
 SOURCES = UPLOAD_SOURCES + ("hand",)
-FIELDS = ("name", "sen", "doh", "status", "retire", "seat", "equip", "phones", "emails", "union_id")
+# 1.7.10 (Ryan, Nov 15): domicile, the base of the award packet's category (HNL-332-FO: base, equipment, seat). Its
+# key is not 'base': that is the notes field's version in a save (Bad('base'), the card's label)
+FIELDS = ("name", "sen", "doh", "status", "retire", "seat", "equip", "domicile", "phones", "emails", "union_id")
 # the rule picking the value shown when there is no hand edit (spec 6, with Ryan's Nov 14 answer: "the seniority PDF
 # wins on Sen#, DOH, status", so sen and status take the list first, ORDER, not the newest)
-PICK = {"name": ("order", ("list", "award", "contacts")), "sen": ("order", ("list", "contacts")),
+PICK = {"name": ("order", ("list", "award", "contacts")), "sen": ("order", ("list", "contacts", "award")),
         "doh": ("order", ("list", "award", "contacts")), "status": ("order", ("list", "contacts")),
         "retire": ("order", ("contacts", "list")), "seat": ("recency", ("list", "award")),
-        "equip": ("recency", ("list", "award")), "phones": ("order", ("contacts",)),
+        "equip": ("recency", ("list", "award")), "domicile": ("order", ("award",)), "phones": ("order", ("contacts",)),
         "emails": ("order", ("contacts",)), "union_id": ("order", ("contacts",))}
 TIE = ("list", "contacts", "award")  # a RECENCY tie
 SOURCE_FIELDS = {"list": ("name", "sen", "doh", "status", "retire", "seat", "equip"),
-                 "award": ("name", "doh", "seat"),
+                 "award": ("name", "doh", "seat"),  # the award's dates of hire (merge_award)
                  "contacts": ("name", "sen", "doh", "status", "retire", "phones", "emails", "union_id")}
+AWARD_SEN_FIELDS = ("sen", "domicile", "equip", "seat")  # 1.7.10: the award's seniority lines (merge_award_sen)
 HAL_STATUS = frozenset(SEN.HAL_STATUS)
 SEATS = ("CA", "FO", "RO")  # the list's seat column (spec: CA or FO); RO, the A330 relief officer, read too
 PHONE_LABELS = {"mobile": "mobile", "cell": "mobile", "home": "home", "work": "work", "other": "other",
@@ -130,7 +133,7 @@ CREATE INDEX pickups_emp ON pickups(emp, at);
 CREATE TABLE ai_notes (pid TEXT PRIMARY KEY REFERENCES pilots(pid), text TEXT NOT NULL, model TEXT NOT NULL,
   basis TEXT NOT NULL, at TEXT NOT NULL);
 """
-# meta keys: rev (+1 on every commit), created_at, seeded_at, list_as_of / list_count, award_month,
+# meta keys: rev (+1 on every commit), created_at, seeded_at, list_as_of / list_count, award_month, award_sen_month,
 # contacts_as_of / contacts_count, sig:<source>, md_at, backup_at
 # share, answers and act_log: 1.7.9 (sharing with a portal pilot). ai_notes: 1.7.9 (HOM's consultant models, from
 # anonymous stats only, for pilots with 3 or more pickups, labeled AI and kept apart from the human notes).
@@ -332,6 +335,11 @@ def check(field, value, today):
         if v and v not in SEATS:
             raise Bad("seat", "must be CA, FO, RO or blank")
         return v
+    if field == "domicile":
+        v = v.upper()
+        if not re.fullmatch(r"[A-Z]{3}", v):
+            raise Bad("domicile", "must be 3 letters")
+        return v
     if field == "equip":
         v = v.upper()
         if not re.fullmatch(r"[A-Z0-9]{1,8}", v):
@@ -369,6 +377,9 @@ def upload_pick(field, rows):
         rs = [r for r in ups if bool(r["stale"]) == bool(stale)]
         if not rs:
             continue
+        if field == "name" and any("," in r["value"] for r in rs):
+            # 1.7.10: an award seniority line gives a last name only; a 'Last, First' of any source is shown first
+            rs = [r for r in rs if "," in r["value"]]
         if how == "order":
             return sorted(rs, key=lambda r: order.index(r["source"]))[0]
         return _sort_recency(rs)[0]
@@ -383,8 +394,9 @@ def disagrees(field, rows):
         return False
     if field == "doh":
         return len({r["value"] for r in fresh}) > 1
-    if field == "name":
-        return len({name_key(r["value"]) for r in fresh}) > 1
+    if field == "name":  # 1.7.10: an award seniority line's last name alone ('Doe') disagrees with no 'Last, First'
+        full = {name_key(r["value"]) for r in fresh if "," in r["value"]}
+        return len(full) > 1 or len({k[0] for k in full} | {name_key(r["value"])[0] for r in fresh}) > 1
     if field in ("sen", "status"):
         for i, a in enumerate(fresh):
             for b in fresh[i + 1:]:
@@ -1014,6 +1026,116 @@ class PilotDB:
             self._record_merge("award", ref, sha, parser, by, stats, len(rows))
         return dict(stats, applied=True)
 
+    def merge_award_sen(self, month, rows, by="ryan", sha="", parser=None):
+        """1.7.10 (Ryan, Nov 15): a month's award seniority lines (seniority.award_sen_parse rows: sen, emp, last,
+        base, equip, seat) as source award, dated by the bid month (its first day; ref 'award YYYY-MM'). Per row: the
+        one live record of that employee number with that last name gets Sen #, base, equipment and seat (a value of
+        a newer month stays; a hand edit stays on top, counted kept_hand); an employee number not in the database
+        makes a record under the last name alone (a 'Last, First' from any later upload is shown instead); a number
+        whose records carry another last name is not touched (counted unmatched: a wrong merge mixes two pilots).
+        Nothing is dropped (the award's dates of hire, merge_award, keep their own values), nobody is marked gone or
+        back. Returns the counts {applied, rows, added, changed, kept_hand, unmatched, bad}."""
+        month = str(month or "")
+        if not re.fullmatch(r"\d{4}-\d{2}", month):
+            return {"applied": False, "why": "no-month"}
+        as_of, ref = f"{month}-01", f"award {month}"
+        stats = {"rows": len(rows or [])}
+        with self._tx():
+            seen = set()
+            for r in rows or []:
+                emp = emp_of((r or {}).get("emp"))
+                last = clean_line(str((r or {}).get("last") or ""), NAME_MAX, "name", empty_ok=True) if r else ""
+                lk = name_key(last)[0]
+                if not emp or not lk or "," in last or emp in seen:
+                    stats["bad"] = stats.get("bad", 0) + 1
+                    continue
+                seen.add(emp)
+                self.db.execute("SAVEPOINT pdb_row")
+                try:
+                    self._award_sen_one(emp, last, lk, r, as_of, ref, by, stats)
+                except (sqlite3.Error, Bad):
+                    self.db.execute("ROLLBACK TO pdb_row")
+                    stats["bad"] = stats.get("bad", 0) + 1
+                self.db.execute("RELEASE pdb_row")
+            self._link_pickups()
+            if month >= (self._meta("award_sen_month") or ""):
+                self._set_meta("award_sen_month", month)
+                self._set_meta("award_sen_count", len(seen))
+            self._record_merge("award", ref, sha, parser, by, stats, stats["rows"])
+        return dict(stats, applied=True)
+
+    def _award_sen_one(self, emp, last, lk, r, as_of, ref, by, stats):
+        live = self._live(emp)
+        hit = [x for x in live if x["last_key"] == lk]
+        if not hit:  # a last name the award cut short, or printed with a second word the record does not have
+            hit = [x for x in live if len(lk) >= 4 and len(x["last_key"]) >= 4
+                   and (x["last_key"].startswith(lk) or lk.startswith(x["last_key"]))]
+        if len(hit) == 1:
+            pid = hit[0]["pid"]
+        elif live:
+            stats["unmatched"] = stats.get("unmatched", 0) + 1
+            return
+        else:
+            pid = self._create(emp, last, ref, "award", by)
+            stats["added"] = stats.get("added", 0) + 1
+            self._put_val(pid, "name", "award", last, as_of, ref, by)
+        hands = {f for (f,) in self.db.execute("SELECT field FROM vals WHERE pid=? AND source='hand'", (pid,))}
+        changed = False
+        for f in AWARD_SEN_FIELDS:
+            try:
+                v = check(f, r.get("base" if f == "domicile" else f), self.today())
+            except Bad:
+                continue
+            if v and self._put_val(pid, f, "award", v, as_of, ref, by) == "changed":
+                changed = True
+                if f in hands:
+                    stats["kept_hand"] = stats.get("kept_hand", 0) + 1
+        if changed:
+            stats["changed"] = stats.get("changed", 0) + 1
+
+    def name_rows(self):
+        """[(emp, last, first, seat)] of every live record whose employee number no other live record shares, for the
+        name lookup's directory (watcher.name_directory)."""
+        out = []
+        with self.lock:
+            for v in self._all_views().values():
+                if v["gone"] or v["emp_shared"]:
+                    continue
+                last, _, first = (x.strip() for x in v["fields"]["name"]["value"].partition(","))
+                if last:
+                    out.append((v["emp"], last, first, v["fields"]["seat"]["value"]))
+        return out
+
+    def _award_meta(self):
+        """{month, count} of the newest award merged: its dates of hire (merge_award) or, 1.7.10, its seniority
+        lines (merge_award_sen), whichever month is later."""
+        a = (self._meta("award_month", ""), int(self._meta("award_count", "0") or 0))
+        b = (self._meta("award_sen_month", ""), int(self._meta("award_sen_count", "0") or 0))
+        m, n = max(a, b)
+        return {"month": m, "count": n}
+
+    def name_hits(self, q, limit=20):
+        """1.7.10 (Ryan, Nov 15): the live records a typed name finds, for the pilot lookup: 'Last' or 'Last, First'
+        (letters; the whole last name, without Jr / Sr / II; the first name by its start). [{emp, name, pos}] by
+        name, at most limit; never phones, emails or notes."""
+        last, _, first = (x.strip() for x in str(q or "").partition(","))
+        lk = name_key(last + ",")[0]
+        fk = re.sub(r"[^A-Z]", "", _fold(first))
+        if not lk:
+            return []
+        out = []
+        with self.lock:
+            for v in self._all_views().values():
+                if v["last_key"] != lk:
+                    continue
+                name = v["fields"]["name"]["value"]
+                nf = re.sub(r"[^A-Z]", "", _fold(name.partition(",")[2]))
+                if fk and nf and not nf.startswith(fk):
+                    continue
+                out.append({"emp": v["emp"], "name": name, "pos": v["fields"]["seat"]["value"]})
+        out.sort(key=lambda r: (r["name"].upper(), r["emp"]))
+        return out[:limit]
+
     @staticmethod
     def contact_values(e):
         """The contacts source's values of one contacts.json entry (its hal object from the Notes, phones, emails;
@@ -1601,7 +1723,9 @@ class PilotDB:
                 return True, "Saved", None
             if cmd == "edit" and op in ("set", "unset"):
                 f = d.get("field")
-                if f not in FIELDS:
+                # 1.7.10: only the contract's edit fields (roles.PILOTDB_EDIT_FIELDS); 'domicile', new in the
+                # database, is not one of them until the contract says so
+                if f not in FIELDS or f not in ROLES.PILOTDB_EDIT_FIELDS:
                     return False, "Not saved: it could not be read, send it again", None
                 if self.acts(pilot, ("edit",)) >= lim["edits_per_day"]:
                     return False, f"Not saved: over {lim['edits_per_day']} edits in 24 h", None
@@ -1671,7 +1795,7 @@ class PilotDB:
                         e["mine"] = True
                 ents.setdefault(pid, []).append(e)
             as_of = {"list": self._meta("list_as_of", ""), "contacts": self._meta("contacts_as_of", ""),
-                     "award": self._meta("award_month", "")}
+                     "award": self._award_meta()["month"]}
             ai = self._shared_ai()
             answers = self.answers(pilot, lim["answers"])
             now = self.now()
@@ -2153,7 +2277,7 @@ class PilotDB:
                                      "merged_at": merged["list"]},
                             "contacts": {"date": self._meta("contacts_as_of", ""),
                                          "count": int(self._meta("contacts_count", "0")), "merged_at": merged["contacts"]},
-                            "award": {"month": self._meta("award_month", ""), "count": int(self._meta("award_count", "0"))}},
+                            "award": self._award_meta()},
                 "shared_with": [p for (p,) in self.db.execute("SELECT pilot FROM share WHERE enabled=1 ORDER BY pilot")],
                 "pending": {}, "ai": {"on": self._meta("ai_on", "0") == "1",
                                       "notes": one("SELECT COUNT(*) FROM ai_notes"),

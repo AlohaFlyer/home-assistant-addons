@@ -235,6 +235,81 @@ def mask_emp(text):
                            (m.group(4) + "#" * len(m.group(5)) + m.group(6)), s)
 
 
+# 1.7.10 (Ryan, Nov 15): the admin's own log carries no crew name and no employee number either. mask_crew is the
+# admin's line mask (watcher.AdminLogMask, and page text quoted through watcher.page_log): narrower than mask() (a
+# pilot's), which would also blank ordinary words; it takes what a crew list, a pickup line or a lookup line holds.
+_LW = (r"(?!(?:ca|fo|ro|fa|so|by|up|ckp|open|picked|pilot|picker|capt|captain)\b)[a-z\u00c0-\u024f\u02bb]"
+       r"[a-z\u00c0-\u024f\u02bb'.\-]*")
+_LOW_NAME = r"(?<![\w'])" + _LW + r"(?:\s+" + _LW + r")?\s*,\s*" + _LW + r"(?:\s+[a-z]\b\.?)?"
+NAME_HASH_RE = re.compile(r"(?i)(" + _LOW_NAME + r")(\s*\(\s*#{3,7}\s*\))")
+HASH_NAME_RE = re.compile(r"(?i)(\(\s*#{3,7}\s*\)\s*)(" + _LOW_NAME + r")")
+PICKED_BY_RE = re.compile(r"(?i)(picked\s+up\s+by\s+)(" + _LOW_NAME + r")")
+SEAT_NAME_RE = re.compile(r"(?i)(?<![\w'.,-])((?:CA|FO|RO|F/O|capt(?:ain)?)\s*[:=]?\s+)(" + _LOW_NAME + r")")
+CREW_LINE_RE = re.compile(r"(?is)(\bcrew\s*:\s*)(.{0,400})")
+LOOKUP_EMP_RE = re.compile(r"(?i)\b(pilot\s+|picker\s+)(\d{3,7})\b(?=\s*[:(]|\s+(?:on|still|is|was)\b)")
+X_NAME_NUM_RE = re.compile(r"((?<![\w'])x+(?:[ '.\-]x+)*,\s*x+(?:[ '.\-]x+)*[\s,:;(]+)(\d{4,7})(?![\d:./-])")
+NUM_X_NAME_RE = re.compile(r"(?<![\d:./-])(\d{4,7})([\s,:;)]+x+(?:[ '.\-]x+)*,\s*x+)(?![\w])")
+MONTH_WORDS = {"january", "february", "march", "april", "june", "july", "august", "september", "october", "november",
+               "december"}
+
+
+def _crew_line(m):
+    """A crew line's words (crewidx.crew_mask's rule): seat codes, 'open' and 'ckp' stay; a number becomes '#', any
+    other word 'x' (commas and brackets stay)."""
+    toks = m.group(2).split(" ")
+    out = []
+    for i, t in enumerate(toks):
+        low = t.lower()
+        nxt = toks[i + 1].lower() if i + 1 < len(toks) else ""
+        if low in ("open", "ckp", ""):
+            out.append(t)
+        elif re.fullmatch(r"[a-z]{2}|[a-z]/[a-z]", low) and (nxt[:1].isdigit() or nxt[:1] == "#" or nxt == "open"):
+            out.append(t)
+        elif re.fullmatch(r"\(?[\d#]{3,7}\)?[,;]?", t):
+            out.append(re.sub(r"\d", "#", t))
+        elif re.search(r"\d", t):
+            out.append(t)  # a time, a date, a pairing: not a name
+        else:
+            out.append(_x(t))
+    return m.group(1) + " ".join(out)
+
+
+def _comma_name(m):
+    words = [w.lower() for w in re.split(r"[\s,]+", m.group(0)) if w]
+    if all(w in UI_WORDS or w in MONTH_WORDS for w in words):
+        return m.group(0)  # 'Friday, November', 'Open, Pending': page words, no name
+    return _x(m.group(0))
+
+
+LOW_NAME_RE = re.compile(r"(?i)" + _LOW_NAME)
+
+
+def mask_crew(text, page=False):
+    """A log line (or page text for one) with no crew name and no employee number, for the admin's log: a labeled
+    number (mask_emp), the number of a 'pilot <n>:' / 'picker <n>' line, a name with its number in brackets, a seat
+    and its number, the names of a crew line ('crew: ca 99999 doe, john fo 10001 doe, jane' -> 'crew: ca ##### xxx,
+    xxxx fo ##### xxx, xxxx'), a 'picked up by' or seat-labeled name, and a capitalized 'Last, First'. Seats,
+    pairings, dates, times, flights and counts stay, so a line still says which seat or pairing it is about.
+    page=True (text quoted from a FLICA page, which visible_text lowercases): a 'last, first' in any letter case
+    too, page words apart ('monday, november')."""
+    s = _name_emps(str(text or ""))
+    s = mask_emp(s)
+    s = LOOKUP_EMP_RE.sub(lambda m: m.group(1) + "#" * len(m.group(2)), s)
+    s = SEAT_EMP_RE.sub(lambda m: m.group(1) + m.group(2) + "#" * len(m.group(3)), s)
+    s = CREW_LINE_RE.sub(_crew_line, s)
+    s = CREW_NAME_RE.sub(lambda m: m.group(1) + (m.group(2) if m.group(2).lower() == "open" else _x(m.group(2))), s)
+    s = NAME_HASH_RE.sub(lambda m: _x(m.group(1)) + m.group(2), s)
+    s = HASH_NAME_RE.sub(lambda m: m.group(1) + _x(m.group(2)), s)
+    s = PICKED_BY_RE.sub(lambda m: m.group(1) + _x(m.group(2)), s)
+    s = SEAT_NAME_RE.sub(lambda m: m.group(1) + _x(m.group(2)), s)
+    s = COMMA_NAME_RE.sub(_comma_name, s)
+    if page:  # quoted page text (visible_text lowercases it): any 'last, first' there, whatever its case
+        s = LOW_NAME_RE.sub(_comma_name, s)
+    # a bare number right beside a masked name ('xxx, xxxx 10001', '10001 xxx, xxxx') is that pilot's
+    s = X_NAME_NUM_RE.sub(lambda m: m.group(1) + "#" * len(m.group(2)), s)
+    return NUM_X_NAME_RE.sub(lambda m: "#" * len(m.group(1)) + m.group(2), s)
+
+
 def mask(text, extra=()):
     """A page as a pilot's capture may hold it: session tokens and hidden form values MASKED, employee numbers '#',
     crew names and every string in extra (the pilot's own logins, name and employee number) masked."""

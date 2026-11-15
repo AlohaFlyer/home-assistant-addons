@@ -45,7 +45,7 @@ class FlightWatcherPilotSearchCard extends HTMLElement {
       button{padding:8px 12px;border:none;border-radius:6px;background:var(--primary-color);color:#fff;font-size:13px;cursor:pointer;min-height:40px}
     </style><ha-card><form autocomplete="off"><label class="lb" for="q" hidden>Look up a pilot's month (asks FLICA)</label>
       <div class="row"><ha-icon icon="mdi:account-search"></ha-icon><input id="q" type="search" enterkeyhint="search" autocomplete="off" autocapitalize="words" spellcheck="false" aria-label="Look up a pilot's month" placeholder="Last name, first name or emp #"><button type="submit">Go</button></div>
-      <div class="hint" hidden>An employee number finds any pilot; a whole last name (or Last, First) finds pilots on the award or seniority list on file.</div></form></ha-card>`;
+      <div class="hint" hidden>An employee number finds any pilot; a whole last name (or Last, First) finds pilots in the pilot database or on the award or seniority list on file.</div></form></ha-card>`;
     this._root.querySelector("form").addEventListener("submit", (e) => { e.preventDefault(); this._go(); });
     // keep HA's e/a/c shortcuts out of the field; Enter submits the form (implicit submission), never a keydown here
     this._root.querySelector("input").addEventListener("keydown", (e) => e.stopPropagation());

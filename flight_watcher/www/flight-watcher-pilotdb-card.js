@@ -63,11 +63,11 @@ const FW_PDB_TEL_RE = /^\+?\d{7,15}$/;  // the pilot card's PILOT_TEL_RE
 // the pilot card's PILOT_MAIL_RE; 1.7.9 review: no ? % # , ; (an address never carries mailto parameters into the link)
 const FW_PDB_MAIL_RE = /^[^\s@<>"'&?%#,;]+@[^\s@<>"'&?%#,;]+\.[A-Za-z]{2,}$/;
 const FW_PDB_FIELDS = [["name", "Name"], ["sen", "Sen #"], ["doh", "DOH"], ["status", "Status"], ["retire", "Retires"],
-  ["seat", "Seat"], ["equip", "Equipment"], ["phones", "Phones"], ["emails", "Emails"], ["union_id", "Union ID"]];
+  ["seat", "Seat"], ["equip", "Equipment"], ["domicile", "Base"], ["phones", "Phones"], ["emails", "Emails"], ["union_id", "Union ID"]];
 const FW_PDB_LABEL = Object.fromEntries(FW_PDB_FIELDS.concat([["text", "The text"], ["why", "The reason"], ["emp", "The employee #"],
   ["q", "The search"], ["entry", "That entry"], ["confirm", "The word typed"], ["base", "The version"], ["file", "That copy"]]));
 const FW_PDB_HINT = { name: "Last, First M", sen: "1 to 5 digits", doh: "YYYY-MM-DD", status: "A, ALPA, EXEC, FUR, LOA, MLOA, MRET, PESL, SLOA or blank",
-  retire: "YYYY-MM", seat: "CA, FO, RO or blank", equip: "330, 321, 717 ...", union_id: "1 to 10 digits",
+  retire: "YYYY-MM", seat: "CA, FO, RO or blank", equip: "330, 332, 321, 717 ...", domicile: "3 letters: HNL", union_id: "1 to 10 digits",
   phones: "one a line: mobile 808-555-0100 (mobile, home, work or other)", emails: "one a line" };
 const FW_PDB_Q_LONG = 'Name, employee #, s812 for a Sen #, "text" in notes', FW_PDB_Q_SHORT = 'Name, emp #, s812, "text"';
 const FW_PDB_FILTERS = [["all", "All"], ["notes", "Notes"], ["hand", "Edited"], ["drift", "Drift"], ["disagree", "Disagree"],

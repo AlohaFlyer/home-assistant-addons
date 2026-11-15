@@ -336,8 +336,14 @@ def award_seniority(txt_path, month, pdf_name, uploaded_at, out=None):
         ('on-top', the list's other pilots carried under it), else the list stays in use ('list-newer').
     Returns {rows, reader, rejects, month, decision, on_file?, view?} (counts only; nothing personal)."""
     out = out or seniority_file()
-    parsed = SEN.award_parse(open(txt_path, encoding="utf-8", errors="replace").read(), int(month[:4]))
+    text = open(txt_path, encoding="utf-8", errors="replace").read()
+    parsed = SEN.award_parse(text, int(month[:4]))
     info = {"rows": len(parsed["rows"]), "reader": parsed["reader"], "rejects": len(parsed["rejects"]), "month": month}
+    # 1.7.10 (Ryan, Nov 15): the packet's seniority lines (Sen #, base, equipment, seat, last name, employee number),
+    # which the pilot database merges (pilotdb.merge_award_sen): counted here for the upload's answer
+    info["sen_lines"] = len(SEN.award_sen_parse(text)["rows"])
+    if not info["rows"]:
+        return dict(info, decision="no-doh")  # no dates of hire section at all: said once, quietly, not as 'too-few'
     if info["rows"] < SEN.AWARD_MIN:
         return dict(info, decision="too-few")
     lst, aw_on = seniority_sources(out)
@@ -353,6 +359,15 @@ def award_seniority(txt_path, month, pdf_name, uploaded_at, out=None):
 def award_note(info):
     """The upload result's sentence about an award's dates of hire (plain text, counts only)."""
     n, d = info.get("rows", 0), info.get("decision")
+    sen = info.get("sen_lines", 0)
+    said = (f" Seniority: {sen} pilots read from it (Sen #, base, equipment and seat) for the pilot database."
+            if sen else "")
+    if d == "no-doh":  # 1.7.10: a packet with no dates of hire section (the usual one) is no problem to report
+        return said.strip() or "No seniority lines and no dates of hire read from it; the seniority data on file is unchanged."
+    return _award_note(info, n, d) + said
+
+
+def _award_note(info, n, d):
     if d == "too-few":
         return (f"No dates of hire read from it ({n} pilot rows; {SEN.AWARD_MIN} needed), so the seniority data on "
                 "file is unchanged.")
@@ -539,9 +554,12 @@ def _save_monthly(data, month, kind, log, who=PP.ADMIN):
     if kind == "award":
         try:
             info = award_seniority(txt, month, os.path.basename(path), _hst_now().isoformat(timespec="seconds"))
-            log.info("upload: %s award dates of hire: %d pilot rows (%s, %d lines not read), %s", month, info["rows"],
-                     info["reader"], info["rejects"], info["decision"])
-            out["seniority"] = {k: info[k] for k in ("rows", "reader", "decision", "view") if k in info}
+            if info["decision"] != "no-doh":  # 1.7.10: a packet with no dates of hire section says nothing here
+                log.info("upload: %s award dates of hire: %d pilot rows (%s, %d lines not read), %s", month,
+                         info["rows"], info["reader"], info["rejects"], info["decision"])
+            if info.get("sen_lines"):
+                log.info("upload: %s award seniority: %d pilot lines", month, info["sen_lines"])
+            out["seniority"] = {k: info[k] for k in ("rows", "reader", "decision", "view", "sen_lines") if k in info}
             out["message"] += " " + award_note(info)
         except Exception as e:
             log.info("upload: %s award dates of hire not read: %s", month, e)

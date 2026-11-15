@@ -63,6 +63,68 @@ Not changed: `roles.py` PORTAL_CMDS, PORTAL_REFUSED and FEATURES, every limit an
 rate limits and routes (HOM's), push isolation, the anti-walk rule, the noted pilots only file, phones and emails
 only for the one pilot looked up, and no employee number in the file.
 
+### Part two (Ryan's decisions of Nov 15): award seniority, name lookups, the pickup speed cap, the admin's log
+
+No new FLICA page load, no new link followed, no command added; the FLICA budgets, pacing and the one-session rule
+are as they were. Synthetic data in every test ("Doe, Jane", 10001).
+
+#### Award seniority in the pilot database
+- Ryan: "look at the records... it has the seniority and also our pairings award packet had it monthly". Before: the
+  award text was read only for dates of hire, found none (the packet has no such section) and said "dates of hire: 0
+  pilot rows (seniority section), too-few" at every upload. Each awarded pilot's block opens with one line, the
+  seniority number, the category (BASE-EQUIPMENT-SEAT), the last name and the employee number.
+- Now: `seniority.award_sen_parse` reads those lines and `pilotdb.merge_award_sen` merges each month's award text on
+  file (`/share/flight_watcher/uploads/<YYYY-MM>_award.txt`, oldest month first, again only when a file changed):
+  Sen #, base, equipment and seat, source "award", dated by the bid month. The seniority list still wins on Sen # (the
+  award's number is kept beside it); a hand edit stays on top; a pilot the database did not have gets a record under
+  his last name (a "Last, First" from any later upload is shown instead); a number whose record carries another last
+  name is not touched and is counted. Nobody is marked gone or back by an award.
+- New field: **Base** (`domicile` in the database, 3 letters), shown and editable on Ryan's Pilots card.
+- A packet with no dates of hire section is quiet: no "dates of hire" log line, and the upload answers "Seniority: N
+  pilots read from it (Sen #, base, equipment and seat) for the pilot database."
+- The log says counts only ("pilot db: award 2026-12 seniority merged: 243 lines ...").
+
+#### Name lookups search the pilot database
+- Before: a portal pilot's "Look up a pilot's month" searched only the award's pilot lines and the seniority list, so a
+  surname that is in the database answered "No pilot named ... on the award or seniority list on file".
+- Now: a whole last name or "Last, First" also finds every pilot of the pilot database. Ryan's lookup searches his
+  database beside the crew the Watcher has seen; a portal pilot's searches the award's seniority lines (the award text
+  every instance has) and, while Ryan shares the database with him, the roster his Watcher already holds. The FLICA
+  lookup then runs exactly as before (pick list of name and seat, never a number; budgets unchanged).
+- **Boundary change (Ryan's decision 6):** the roster on a portal pilot's Watcher is now also read for the names and
+  seats of the name lookup's pick list. In 1.7.9 it was read only for the one pilot already looked up. The lookup's
+  own limits stay: letters only, the whole last name (a start from 5 letters), at most 5 matches, 20 name lookups an
+  hour; a number two records share is left out; with sharing off nothing of the database is searched.
+
+#### Pickup speed: capped at Ryan's request time
+- Ryan's rule: when he himself asked for a trip and FLICA denied him "picked up by" another pilot, that pilot asked
+  before he did. Before: the picker's speed ran to the middle of the window between the Watcher's last pot read that
+  listed the trip and the read that found it gone, which can be minutes after Ryan's own request.
+- Now: that picker's speed is at most Ryan's Requested time minus the trip's entry (the request's minute plus 59 s,
+  since the list prints minutes), when that is lower than the estimate. Every other pickup keeps the estimate. The cap
+  is kept on the find (`req_cap_at`, `req_cap_emp`), so every rescore and re-check keeps it; only the picker FLICA
+  named is capped (it must be one of the pickup's open-seat pickers, else nothing changes and it is counted
+  unmatched); a request filed more than 10 minutes before the trip entered the pot is not used.
+- History: once, after the first good read of the request lists, every pickup with a matching denied row on file is
+  recalculated (the request lists in the Watcher's state and Ryan's own captured request pages); the log says counts
+  only ("speed: N pickups capped at Ryan's request time, M unmatched"). Going forward each read of the list applies it.
+- The finds card and the FO / RO pickers card show the sign for "at most" before a capped speed, with "capped at your
+  request time" on hover and for a screen reader; each card's Key says so. The picker's history in the pilot database
+  takes the capped seconds.
+- A portal pilot's Watcher does the same from his own request list for the pickups in his own database (his own
+  request time); it reads no captured page, and nothing crosses instances.
+- The year of a request comes from its bid folder's month (a late December request in January's folder is last year's).
+
+#### No crew names or employee numbers in Ryan's log
+- Before: the admin's log named the captain ("detail probe H3601: captain='...(...)'"), quoted a pairing page's crew
+  list ("detail text H3601: ... crew: ca ..."), started each Schedule Lookup line with the employee number ("pilot
+  <emp>: ...EmployeeID=<emp>..."), named a pickup's pickers and quoted the request list's "picked up by".
+- Now: those lines name the seat or the pairing ("detail probe H3601: captain=parsed", "pilot lookup: schedule
+  requested", "pickup H3607|13Nov: filled (FO; CA named)", "picker of H3607|13Nov (FO): 120 in open time", "crew
+  index: a pilot on two overlapping trips (...)"), page text is quoted through `page_log` (names and numbers masked),
+  and a filter on the admin's logger (`captures.mask_crew`) is the net under every other line. A pilot's log keeps its
+  stricter mask. Cards, the database and the exports are unchanged.
+
 ### After the update: what Ryan does
 Each step is [DESTRUCTIVE] and needs its own yes; an earlier yes never covers a later one.
 1. Flight Watcher 1.7.10: merge its PR, store reload, update. It works with the live HOM 1.9.0.

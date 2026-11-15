@@ -391,7 +391,9 @@ def test_the_inbox_file_is_private_and_made_exclusively(db, root):
 
 
 def test_the_edit_fields_are_the_databases_fields():
-    assert roles.PILOTDB_EDIT_FIELDS == P.FIELDS
+    # 1.7.10: domicile (the base of the award's category) is new in the database; a portal pilot's edit fields are
+    # the contract's and do not hold it yet (the contract is unchanged by it), so his edit of it is refused
+    assert roles.PILOTDB_EDIT_FIELDS == tuple(f for f in P.FIELDS if f != "domicile")
     assert roles.PILOTDB_NOTE_LIMITS["entry_max"] == P.ENTRY_MAX and roles.PILOTDB_NOTE_LIMITS["field_max"] == P.FIELD_MAX
     assert roles.PILOTDB_NOTE_LIMITS["entries_per_record"] == P.ENTRIES_PER_RECORD
     assert roles.PILOTDB_NOTE_LIMITS["why_max"] == P.WHY_MAX

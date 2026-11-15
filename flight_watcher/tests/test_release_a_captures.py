@@ -295,9 +295,13 @@ def test_a_pilots_log_holds_no_page_names_mails_or_phones(load, tmp_path, caplog
     assert "not logged: page captures are off" in text
 
 
-def test_the_admins_log_is_as_before(load, caplog):
+def test_the_admins_log_names_no_crew_either(load, caplog):
+    """1.7.10 (Ryan, Nov 15): the admin's log carries no crew name and no employee number (as before 1.7.10 it
+    carried both); an ordinary line is unchanged."""
     import logging
     W = load("")
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
         W.log.info("a page line: %s", "Doe, Jane 10001")
-    assert "Doe, Jane 10001" in caplog.text and W.page_log("Doe, Jane") == "Doe, Jane"
+        W.log.info("pot %s: %d pairings, %d new", "2026-11", 14, 2)
+    assert "a page line: xxx, xxxx #####" in caplog.text and "Doe" not in caplog.text and "10001" not in caplog.text
+    assert "pot 2026-11: 14 pairings, 2 new" in caplog.text and W.page_log("Doe, Jane") == "xxx, xxxx"
