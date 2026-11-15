@@ -16,7 +16,13 @@
 // 1.6.2 (Release A item 14): in the pilot portal (FW_PORTAL, turned on only in the portal's copy: portal.portal_card)
 // the Key leaves out what a portal pilot does not have: the FLICA alert email and, until a row carries Comm or Value,
 // the smart.json line.
+// 1.7.7 (Ryan, Nov 14): in "Picked up by" only the picker (the newcomer in the find's open seat: the row's pickers, the
+// employee numbers the Watcher stored; an older row without them: its open_seats and the seat before each name, none
+// when that leaves it ambiguous) is the blue link to his month; a pilot already on the pairing is plain text. InFlt
+// names the flight the picker was airborne on, "AS808/06NOV" (the leg's local departure date at its origin), with the
+// leg and the pairing on hover; the airplane alone when the flight is not on file.
 const FW_PORTAL = false;
+const FW_MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 class FlightWatcherFindsCard extends HTMLElement {
   setConfig(c) { this._c = { entity: "sensor.flight_watcher_finds", ...c }; this._files = {}; this._m = this._hstMonth(Date.now()); }
   getCardSize() { return 8; }
@@ -122,14 +128,66 @@ class FlightWatcherFindsCard extends HTMLElement {
     if (!m[3]) return a;
     return m[4].toLowerCase() === m[2].toLowerCase() ? `${a}-${+m[3]}` : `${a}-${m[4]} ${+m[3]}`;
   }
+  // 1.7.7: the employee numbers of the open-seat picker(s): the row's pickers (the Watcher's), else from its open seats
+  // and the seat before each name (store.pickers_of's rule): a seat's names are its pickers when they are no more than
+  // its open seats; no open seat on file: a lone FO / RO name. Anything else links nobody rather than the wrong pilot.
+  _pickers(f) {
+    if (Array.isArray(f.pickers)) return new Set(f.pickers.map(String));
+    const parts = String(f.picked_by || "").split("; ").map((p) => ({ seat: p.split(" ")[0].toUpperCase(), emp: (p.match(/\((\d{3,7})\)\s*$/) || [])[1] }))
+      .filter((p) => p.seat === "FO" || p.seat === "RO");
+    const seats = String(f.open_seats || "").split(",").map((x) => x.trim().toUpperCase()).filter(Boolean);
+    const out = new Set();
+    if (!seats.length) { if (parts.length === 1 && parts[0].emp) out.add(parts[0].emp); return out; }
+    for (const pos of ["FO", "RO"]) {
+      const n = seats.filter((x) => x === pos).length, c = parts.filter((p) => p.seat === pos);
+      if (n && c.length && c.length <= n) c.forEach((p) => { if (p.emp) out.add(p.emp); });
+    }
+    return out;
+  }
   _who(f) {
+    const pk = this._pickers(f);
     return String(f.picked_by || "").split("; ").map((part) => {
       const sp = part.indexOf(" ");
       const seat = sp > 0 ? part.slice(0, sp) : "", nm = sp > 0 ? part.slice(sp + 1) : part;
       const em = nm.match(/\((\d{3,7})\)\s*$/);
-      const lnk = em ? `<a href="#pilot=${em[1]},${encodeURIComponent(nm.replace(/\s*\(\d+\)\s*$/, ""))}">${this._e(nm)}</a>` : this._e(nm);
+      // only the picker links (blue); a pilot who was already on the pairing is plain text
+      if (!em || !pk.has(em[1])) return `${this._e(seat)} <span class="np">${this._e(nm)}</span>`;
+      const lnk = `<a href="#pilot=${em[1]},${encodeURIComponent(nm.replace(/\s*\(\d+\)\s*$/, ""))}">${this._e(nm)}</a>`;
       return `${this._e(seat)} ${f.pickup_known ? `<b>${lnk}</b>` : lnk}`;
     }).join("; ");
+  }
+  // 1.7.7: "06NOV" from "2030-11-06"; "Nov 3" from "2030-11-03"
+  _ddmon(iso) { const m = String(iso || "").match(/^\d{4}-(\d{2})-(\d{2})$/); return m && +m[1] >= 1 && +m[1] <= 12 ? `${m[2]}${FW_MON[+m[1] - 1].toUpperCase()}` : ""; }
+  _mdy(iso) { const m = String(iso || "").match(/^\d{4}-(\d{2})-(\d{2})$/); return m && +m[1] >= 1 && +m[1] <= 12 ? `${FW_MON[+m[1] - 1]} ${+m[2]}` : ""; }
+  // 1.7.7 (Ryan, Nov 14: "I want to know what flight he was flying to be certain. Add the flight number... i.e
+  // AS808/06NOV and date"): the airplane, then AS<flight>/<DDMON> (the leg's local departure date at its origin); the
+  // leg, its local departure and the pairing on hover; DH for a deadhead (airborne all the same). No leg on file: the
+  // airplane alone, "flight not on file".
+  // 1.7.7 review: a pickup gets one in-flight lookup (no new FLICA load): with two pickers the verdict is the first
+  // one's, and the hover names him; a verdict from before 1.7.7 that was for the other pilot on the pairing is dropped
+  // and not checked again ("-", the hover says why).
+  _inflt(f) {
+    const st = f.pickup_status || "";
+    const nm = (() => {  // two pickers: name the one the verdict is for
+      if (this._pickers(f).size < 2 || !f.inflt_emp) return "";
+      const p = String(f.picked_by || "").split("; ").find((x) => x.endsWith(`(${f.inflt_emp})`));
+      return p ? `${p.replace(/\s*\(\d+\)\s*$/, "")} ` : "";
+    })();
+    if (f.inflt === false) return nm ? `<span class="if" title="${this._e(`${nm}on the ground at pickup; the other picker not checked`)}">no</span>` : "no";
+    if (f.inflt !== true && f.inflt_skip && st === "filled") return `<span class="if" title="not checked for the picker: the check before 1.7.7 looked up the other pilot on the pairing">-</span>`;
+    // not looked up yet; never, when no open-seat picker with an employee number is known (blank)
+    if (f.inflt !== true) return st === "filled" && f.picked_by && this._pickers(f).size ? "-" : "";
+    const tr = String(f.inflt_trip || "").match(/^([A-Z]\d{4}[A-Z]?)\s+(\d{4}-\d{2}-\d{2})$/);
+    const pr = tr ? ` (pairing ${tr[1]} ${this._mdy(tr[2])})` : "";
+    const lg = f.inflt_leg && typeof f.inflt_leg === "object" ? f.inflt_leg : null;
+    const flt = lg && /^\d{1,4}[A-Z]?$/.test(String(lg.flt || "")) ? `AS${lg.flt}` : "";
+    const dd = lg ? this._ddmon(lg.date) : "";
+    if (!flt || !dd) return `<span class="if" title="${this._e(`${nm}picked up while airborne${pr}; flight not on file`)}"><ha-icon icon="mdi:airplane"></ha-icon></span>`;
+    const rt = /^[A-Z]{3}$/.test(lg.frm || "") && /^[A-Z]{3}$/.test(lg.to || "") ? ` ${lg.frm}-${lg.to}` : "";
+    const dep = /^\d{2}:\d{2}$/.test(lg.dep_l || "") ? ` ${lg.dep_l}` : "";
+    const tip = `${nm}picked up while airborne on ${flt}${rt}${lg.dh ? " (DH, deadhead)" : ""}, departed ${dd}${dep} local${pr}` +
+      (lg.src === "package" ? "; flight from the pairings package" : "");
+    return `<span class="if" title="${this._e(tip)}"><ha-icon icon="mdi:airplane"></ha-icon> ${this._e(flt)}/${this._e(dd)}</span>`;
   }
   _speed(f) {
     if (f.dwell_s == null || !f.gone) return "";
@@ -161,7 +219,7 @@ class FlightWatcherFindsCard extends HTMLElement {
     else if (st === "unchanged") by = "left pot, same crew";
     else if (f.picked_by) by = this._who(f);
     else by = "checking";
-    const inflt = f.inflt === true ? `<ha-icon icon="mdi:airplane"></ha-icon>` : f.inflt === false ? "no" : (st === "filled" && f.picked_by ? "-" : "");
+    const inflt = this._inflt(f);
     const prem = f.prem && f.gone && st === "filled" ? `<ha-icon icon="mdi:alpha-x"></ha-icon>` : f.prem ? "X" : "";
     const lay = f.layover && !["-none-", "none"].includes(f.layover) ? this._e(f.layover) : (f.turn ? `<b>${this._e(f.turn)}</b>` : "none");
     const cls = st === "open" && f.gone ? "hid" : (f.prem && f.gone && st === "filled" ? "prem" : "");
@@ -226,7 +284,8 @@ class FlightWatcherFindsCard extends HTMLElement {
       td.n{text-align:right}td.c{text-align:center}
       tr.hid td{background:rgba(244,67,54,.14)}tr.prem td{background:rgba(76,175,80,.16)}
       .cm{font-weight:600}.cm.ok{color:var(--success-color,#2e7d32)}.cm.no{color:var(--error-color,#c62828)}
-      a{color:var(--primary-color);text-decoration:underline}
+      a{color:var(--primary-color);text-decoration:underline}.np{color:var(--primary-text-color)}
+      .if{white-space:nowrap}
       tbody.fold td{border:0;padding:0}
       .fb{position:sticky;left:0;appearance:none;-webkit-appearance:none;background:none;border:0;margin:0;padding:8px 6px 6px 0;font:inherit;font-size:13px;font-weight:600;color:var(--secondary-text-color);cursor:pointer;-webkit-tap-highlight-color:transparent}
       .fb::before{content:"\\25B6";display:inline-block;width:1.5em;font-size:.72em}.fb[aria-expanded="true"]::before{content:"\\25BC"}
@@ -241,7 +300,8 @@ class FlightWatcherFindsCard extends HTMLElement {
         ${this._list(all, Date.now(), loading || nokey)}
         <details class="key"><summary>Key</summary><div class="k">
           ${FW_PORTAL ? "" : `<div><ha-icon icon="mdi:email-outline"></ha-icon> caught from your FLICA alert email (gone before a pot check)</div>`}
-          <div>InFlt <ha-icon icon="mdi:airplane"></ha-icon> = picked up while airborne (from the picker's own trip); no = on the ground; - = not checked yet</div>
+          <div>Picked up by: the picker (blue) opens his month; a pilot who was already on the pairing is plain text.</div>
+          <div>InFlt <ha-icon icon="mdi:airplane"></ha-icon> AS808/06NOV = picked up while airborne on flight AS808, which departed on 06NOV (the local date at its origin), from the picker's own trip; hover for the leg and the pairing (DH = a deadhead, airborne all the same). <ha-icon icon="mdi:airplane"></ha-icon> alone = airborne, flight not on file; no = on the ground (two pickers: the first one, hover); - = not checked (yet; hover says why when it will not be); blank = no picker known to check</div>
           <div>Pickup Speed = how long the trip sat in open time, ± half the check window;${FW_PORTAL ? "" : " ~ = timed from your alert email;"} bold under 1 min. Hover for the picker's average.</div>
           <div>Red row: seat still open but not in the pot (hidden?). Green row: Premium trip picked up.</div>
           ${FW_PORTAL && !all.some((f) => f.comm || f.value) ? "" : `<div>Comm = airports you can commute from: 2 scheduled nonstops arriving HNL before report (PWA 26.QQ.2) and 1 home 60+ min after release, same day; No = neither works; ? = not known yet (only a customs release, origin not on file, decides it). Hover for the times and the month rule. Value = credit x your hourly rate. Both blank until your smart.json is on file.</div>`}

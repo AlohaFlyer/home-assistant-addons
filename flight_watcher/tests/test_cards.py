@@ -313,18 +313,25 @@ def test_pilot_card_draws_rebuilt_month_in_the_schedule_grid(tmp_path):
     h = r["open"]
     assert h.count("<tr") == 33 and h.count(" bxs") == 5 and h.count(" bxe") == 4
     assert h.count(' bx"') + h.count(" bx ") == 11  # Oct 31-Nov 2, Nov 5-6, Nov 20, Nov 27-30, Dec 1
-    assert "CA Doe, Jane · FO Roe, Rick" in h and "2 legs" in h and 'title="crew read 11-05 13:56 HST"' in h
+    # 1.7.7: the schedule card's look: the bold blue pairing opens its detail; seat, legs and the crew read time are its
+    # hint; a day trip shows its turn station in bold (HNL-OGG-HNL: OGG), a layover station plain in the trip's box
+    assert "CA Doe, Jane · FO Roe, Rick" in h
+    assert ('<span class="trip" data-k="H9001|2026-10-31" data-g="rb" role="button" tabindex="0" aria-expanded="false" '
+            'title="Seat FO (the crew index)\n2 legs:\nHNL-LAX\nLAX-HNL\ncrew read 11-05 13:56 HST\nTap for the pairing detail">H9001</span>') in h
+    assert '<td><span class="tag lay" title="H9002 2026-11-20 crew:\ncrew not read yet"><b>OGG</b></span></td>' in h
+    assert '<span class="tag lay" title="H9001 2026-10-31 crew:\nCA Doe, Jane\nFO Roe, Rick">LAX</span>' in h
     assert "November 2026 · 87.5% of trips read · updated 00/06/12/18 HST" in h
     assert "Also on crew lists" in h and "<b>H9005</b> Nov 5-7 FO, read 11-01 13:10" in h
     # totals: the 4 trips in the bid period as drawn; the overlap and the Oct 31 row are named, not added
-    assert 'Trips<b>4</b> <small class="u">(+1 overlapping, +1 before Nov 1: not totaled)</small>' in h
-    assert "Block<b>43:30</b>" in h and "Credit<b>48:30</b>" in h
-    assert "Block<b>?</b>" in r["nob"] and "Credit<b>48:30</b>" in r["nob"]  # a trip without block: no block total
+    k = lambda lab, v: f'<span class="ti"><span class="k">{lab}</span> {v}</span>'  # noqa: E731  (the totals groups)
+    assert k("Trips", '4 <span class="k">(+1 overlapping, +1 before Nov 1: not totaled)</span>') in h
+    assert k("Block", "43:30") in h and k("Credit", "48:30") in h and '<div class="tot"><span class="tgrp thrs">' in h
+    assert k("Block", "?") in r["nob"] and k("Credit", "48:30") in r["nob"]  # a trip without block: no block total
     # a readable month: the rebuilt grid takes FLICA's first and last day; an old publish: month end or the last trip
     assert (r["lined"][0], r["lined"][-1], len(r["lined"])) == ("2026-10-31", "2026-12-01", 32)
     assert (r["bare"][0], r["bare"][-1]) == ("2026-10-31", "2026-12-03")
     assert r["fold"].startswith('<details class="rb"><summary>') and not h.startswith("<details")
-    assert 'title="WE HNL-OGG 0800-0840 0:40">1 legs</span>' in r["rd"] and "CA Doe, Jane" in r["rd"]
+    assert 'title="1 leg:\nWE HNL-OGG 08:00-08:40 0:40\nTap for the pairing detail">H3826</span>' in r["rd"] and "CA Doe, Jane" in r["rd"]
 
 
 def _chromium(p):

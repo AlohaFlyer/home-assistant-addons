@@ -1,11 +1,13 @@
 """Bid calendar alerts (1.7.1, FW-0070, Ryan): the PBS bid cycle's dates and the pushes around them.
 
 Ryan's ticket: a critical alert the day before the pairing package publishes, at 08:00 HST ("adjust your vacation if
-needed"; Ryan, Nov 11: the morning of the 3rd, not 20:00), one at 20:00 HST the night before each practice run, one 24 h before bids close and one at 20:00 HST the night before
+needed"; Ryan, Nov 11: the morning before the publish day, not 20:00; Nov 14: the 4th, the package posting on the 5th),
+one at 20:00 HST the night before each practice run, one 24 h before bids close and one at 20:00 HST the night before
 they close. The package for bid month M+1 (uploads/<M+1>_pairings.txt, the text copy the uploads make) prints its Bid
-Calendar on page 1, with dates in month M: "Pairing Package Published" (the 4th), "Practice Run #1" and "#2", "CA & FO
-Bids Close" (the 11th, 0800HST on a following line), "All Monthly Awards Posted ... no later than 1700HST on <date>"
-and "Flica Open Time Window Opens ... 1200HST on <date>". Everything is HST (Pacific/Honolulu, no DST). The page is
+Calendar on page 1, with dates in month M: "Pairing Package Published" (the 5th by default from 1.7.7; the Sep, Oct
+and Nov 2026 packages printed the 4th), "Practice Run #1" and "#2", "CA & FO Bids Close" (the 11th, 0800HST on a
+following line), "All Monthly Awards Posted ... no later than 1700HST on <date>" and "Flica Open Time Window Opens
+... 1200HST on <date>". Everything is HST (Pacific/Honolulu, no DST). The page is
 two columns (pdftotext -layout): the calendar is the left one, the reserve and credit tables the right one, so a date
 line can carry table text after it.
 
@@ -19,15 +21,17 @@ MONTHS = ("January", "February", "March", "April", "May", "June", "July", "Augus
           "November", "December")
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
-# Ryan asked for the alert on the 4th for a package he expected on the 5th. The packages publish on the 4th (Sep 4,
-# Oct 4, Nov 4 on their own Bid Calendars), so the same lead time is the day before. Ryan's answer (Nov 11): 08:00 HST
-# the day before the publish date, the 3rd by default (20:00 before). One constant, (days before the publish date,
-# HH:MM HST). Its kind keeps the name publish_eve (the keys in the DB and the payloads), though it is a morning alert.
+# Ryan asked for the alert on the 4th for a package he expected on the 5th. Ryan's answer (Nov 11): 08:00 HST the day
+# before the publish date (20:00 before). One constant, (days before the publish date, HH:MM HST). Its kind keeps the
+# name publish_eve (the keys in the DB and the payloads), though it is a morning alert.
 PUBLISH_ALERT = (1, "08:00")
 EVE_AT = "20:00"  # the night before a practice run and before the close (FW-0070)
 CLOSE_LEAD_H = 24  # and this many hours before the close
-# A cycle whose package is not on file (it cannot be before it publishes) uses the usual days of month M.
-DEFAULT_PUBLISHED = 4
+# A cycle whose package is not on file (it cannot be before it publishes) uses the usual days of month M. 1.7.7 (Ryan,
+# Nov 14: "pairings post on the 5th of the month and close on the 11th monthly"): published the 5th (it was the 4th),
+# so the publish alert is 08:00 HST on the 4th; the close stays the 11th 08:00. A package's printed Bid Calendar wins
+# (the Sep, Oct and Nov 2026 packages printed the 4th on theirs).
+DEFAULT_PUBLISHED = 5
 DEFAULT_PRACTICE = (7, 10)
 DEFAULT_CLOSE = (11, "08:00")
 KINDS = ("publish_eve", "practice_eve_1", "practice_eve_2", "close_24h", "close_eve")

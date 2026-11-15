@@ -31,8 +31,8 @@ from playwright.sync_api import sync_playwright
 import rules as R
 import web
 import far as FAR
-from pot import PAIRING_RE, LEG_FULL_RE, schedule_items, parse_schedule_desktop, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, CLOSE_IN_RE, close_in_folders, pick_close_in, trade_pages, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
-from store import Store
+from pot import PAIRING_RE, LEG_FULL_RE, LEG_FLT_RE, crew_seat, schedule_items, parse_schedule_desktop, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_pickers, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, CLOSE_IN_RE, close_in_folders, pick_close_in, trade_pages, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
+from store import PICKERS_V, Store
 import tradeboard as TB
 import swap as SW
 import swapmap as SM
@@ -66,7 +66,7 @@ import bidcal as BC
 import layover as LO
 import pilotpdf as PP
 
-VERSION = "1.7.6.1"
+VERSION = "1.7.7"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -1268,7 +1268,8 @@ def publish_trade():
 FINDS_ATTR_ROWS = 30
 FINDS_ATTR_MAX = 12000  # bytes of the whole payload (ASCII-escaped, so HA's UTF-8 copy is no larger); recorder limit 16384
 FINDS_ATTR_KEYS = ("pairing", "dates", "days", "layover", "turn", "report", "credit", "captain", "seen", "gone",
-                   "alert_at", "pickup_status", "picked_by", "source")
+                   "alert_at", "pickup_status", "picked_by", "source",
+                   "pickers")  # 1.7.7: a fresher pickup's open-seat picker(s), so the card links the right name
 
 
 def finds_payload(rows, key, rev=None):
@@ -3481,6 +3482,33 @@ def pkg_details_for(period):
     return det
 
 
+_HOTEL_CACHE = {}  # 1.7.7 review: period -> (file time, hotels) parsed from the shared package text
+
+
+def pkg_hotels_for(period):
+    """1.7.7 review: the layover hotels and van times of one bid period's pairings ({pid: [[stn, hotel, van], ...]},
+    pdfs.package_hotels): this instance's DB copy (uploads_check), else parsed from the shared upload's text copy
+    (cached by file time). Kept out of the public pairing file; publish_own_trips gives the pilot's own trips theirs."""
+    got = DB.get(f"pkg_hotels:{period}")
+    if got:
+        return got
+    path = os.path.join(UPLOADS_SHARED, f"{period}_pairings.txt")
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return {}
+    c = _HOTEL_CACHE.get(period)
+    if c and c[0] == mt:
+        return c[1]
+    try:
+        got = PDF.package_hotels(open(path, errors="replace").read())
+    except Exception as e:  # noqa: BLE001
+        log.info("pairing package %s hotels not read: %s", period, e)
+        got = {}
+    _HOTEL_CACHE[period] = (mt, got)
+    return got
+
+
 def seniority_data():
     """FW-0062: the parsed pilot seniority list (web.seniority_write), shared by every instance; {} when none."""
     path = os.path.join(UPLOADS_SHARED, "seniority.json")
@@ -3506,6 +3534,8 @@ def seniority_refresh():
     only, so the files have one writer; counts only in the log."""
     if not has("one_writer"):
         return
+    # 1.7.7: seniority.md (the markdown reference, web.seniority_md_write) for a seniority.json written before it came
+    web.seniority_md_backfill(os.path.join(UPLOADS_SHARED, "seniority.json"))
     try:
         names = os.listdir(UPLOADS_SHARED)
     except OSError:
@@ -3605,10 +3635,173 @@ def pilot_pay_line(trips, emp, name, start, end):
         g = per.get(f"{t.get('pairing')}|{t.get('start')}")
         if g is not None:
             t["gross"] = g
-    line.update(list_status="ok" if rec else ("not_on_list" if data else "none"), list_date=data.get("list_date") or "",
+    line.update(_sen_fields(data, rec))
+    return line  # 1.7.7: on a pilot instance too (DOH, list dates, year_to as 1.7.5 sent them; the new rate_steps too)
+
+
+def _sen_fields(data, rec):
+    """What a pay line says about the seniority data it was priced from (pilot_pay_line, pilot_price)."""
+    return dict(list_status="ok" if rec else ("not_on_list" if data else "none"), list_date=data.get("list_date") or "",
                 list_newest_doh=data.get("newest_doh") or "", seat_list=(rec or {}).get("seat") or "",
                 list_source=(data.get("source") or "list") if data else "")
-    return line
+
+
+# 1.7.7 (Ryan, Nov 14: "james and I are on a high level of trust. he can be trusted"; James may see a looked-up
+# pilot's Sen, DOH, status, retirement and seat): a pilot instance's pay lines (pilot_price, pilot_pay_line) carry
+# the date of hire, the list's dates and year_to, as 1.7.5's rebuilt-month line sent them, plus the new rate_steps
+# (this release's first build left them out).
+
+
+def _equip_ok(rec):
+    """1.7.7 review: (equip, rate_ok) for the list's equipment of a pilot. The Watcher holds the A330 PAX tables only
+    (PWA 3.D.6 First Officer; PWA 3.C.4 A330 PAX and B787 Captain): an A330 pilot (or none on the list) is priced in any
+    seat, a 787 pilot in the Captain seat only, any other fleet in none (its rates are not on file)."""
+    eq = re.sub(r"[A-Z]$", "", re.sub(r"^[AB]", "", str((rec or {}).get("equip") or "").strip().upper()))
+    if not eq or eq.startswith("33"):
+        return "", None
+    return eq, ((lambda seat: str(seat).upper() == "CA") if eq == "787" else (lambda seat: False))
+
+
+PC_DOW = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"]
+
+
+def _month_share(st, end, det, legs, month):
+    """PWA 4.A (the schedule card's figs()): a segment pays on the date it originates, so a trip that starts in month
+    and flies on into the next one counts here only the block share of its duties departing in month. From the
+    package's duties (dep: HST minutes from the trip's first day, blk), else from the pairing page's legs (each on the
+    first day from the one before whose weekday it names). (share, block minutes flown outside month, that month);
+    (1.0, 0, '') when it all departs in month or nothing says when."""
+    if (end or st)[:7] == st[:7] == month:
+        return 1.0, 0, ""
+    try:
+        t0 = date.fromisoformat(st)
+    except ValueError:
+        return 1.0, 0, ""
+    parts = []  # (month it departs in, block minutes)
+    du = [d for d in (det or {}).get("duties") or [] if isinstance(d, dict) and isinstance(d.get("dep"), (int, float))
+          and isinstance(d.get("blk"), (int, float))]
+    if du:
+        parts = [((datetime.combine(t0, datetime.min.time()) + timedelta(minutes=d["dep"])).strftime("%Y-%m"), d["blk"]) for d in du]
+    else:
+        at = t0
+        for lg in legs or []:
+            w = PC_DOW.index(str(lg.get("dow") or "").upper()[:2]) if str(lg.get("dow") or "").upper()[:2] in PC_DOW else -1
+            b = re.fullmatch(r"(\d{1,2}):?(\d{2})", str(lg.get("blk") or "").strip())
+            if w < 0 or not b:
+                return 1.0, 0, ""
+            k = next((k for k in range(7) if ((at + timedelta(days=k)).weekday() + 1) % 7 == w), None)
+            if k is None:
+                return 1.0, 0, ""
+            at += timedelta(days=k)
+            parts.append((at.strftime("%Y-%m"), int(b.group(1)) * 60 + int(b.group(2))))
+    tot = sum(b for _m, b in parts)
+    if not parts or tot <= 0:
+        return 1.0, 0, ""
+    inm = sum(b for m, b in parts if m == month)
+    out = [(m, b) for m, b in parts if m != month]
+    return inm / tot, sum(b for _m, b in out), (out[-1][0] if out else "")
+
+
+def _period_of(st, month, start, end, cache):
+    """1.7.7 review: the bid period a trip starting on st belongs to, on a grid of month's bid period (start..end):
+    month inside it, the month before for a day before it (FLICA's first row: Dec 1 on December's grid is November's),
+    the month after past it; without the bounds, the pairing files' (crewidx.period_for)."""
+    if not (start and end):
+        return CI.period_for(CARD_PAIRINGS, st, cache)
+    if start <= st <= end:
+        return month
+    d = date.fromisoformat(f"{month}-01")
+    return (d - timedelta(days=1)).strftime("%Y-%m") if st < start else (d + timedelta(days=32)).strftime("%Y-%m")
+
+
+def pilot_price(items, emp, name, month, start, end, recon=None, days_off=None, flica=None):
+    """1.7.7 (Ryan, Nov 14: "you should be able to calculate their pay by looking at their date of hire and
+    seniority"): the pay of a month FLICA's Schedule Lookup showed for another pilot (or an older version of it),
+    priced as the rebuilt month is (pay.pay_line, ca_rules): each pairing for the seat that pilot flies on it at his
+    longevity year from the date of hire on the shared seniority list (PWA 3.B.1; CA PWA 3.C.4, FO and RO PWA
+    3.D.6) with the PWA 4.O.1 overrides. Per pairing: credit and block from the pairing page read (items), else the
+    pairing package of the trip's bid period (the id, else the id without its trailing letter), else the crew index's
+    trip on the same day (recon); the seat from the pairing page's crew line, else the crew index's, else the list's
+    seat, else FO (seat_src says which); the pilots on the crew line from the page, else the crew index. days_off:
+    FLICA's own count for the month (Schedule Lookup's totals; None when it gave none), never one from the trips,
+    which would count reserve, training and vacation days as days off. No FLICA
+    load. Returns (line, {'PID|start': {seat, seat_src, gross?, credit?, blk?, soft?, figs?, split?}}): figs names where
+    a credit or block the page did not give came from. 1.7.7: a pilot instance's line is the same (the DOH, the
+    list's dates, year_to and rate_steps included: Ryan, Nov 14, James can be trusted with them).
+    1.7.7 review, the schedule card's month (Ryan: the month's Pay-Gross "as Ryan's does"): the totals cover the trips
+    that start in the calendar month, each its PWA 4.A share (_month_share: split says so), the vacation days in the
+    month at VAC_H (PWA 6.J.1.c) and the PAYP days (PWA Definitions 57) at FLICA's month credit (flica: Schedule
+    Lookup's totals) less the rest, an estimate. Each trip's package is its own bid period's (_period_of). The
+    list's equipment says which rates apply (_equip_ok): another fleet's trips are not priced."""
+    data = seniority_data()
+    rec = SEN.find(data, emp, name) if data else None
+    rk = {f"{t.get('pairing')}|{t.get('start')}": t for t in (recon or []) if isinstance(t, dict)}
+    m_from = f"{month}-01"
+    m_to = (date.fromisoformat(m_from).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    pcache, trips, info, srcs, vac, payp = {}, [], {}, {}, set(), []
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        pid, st = str(it.get("trip") or ""), str(it.get("start") or "")
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", st):
+            continue
+        if pid in ("VAC", VER.PAYP):
+            ds = PAY._days(st, str(it.get("end") or st), cap=40)
+            if pid == "VAC":
+                vac.update(d for d in ds if d[:7] == month)
+            elif any(d[:7] == month for d in ds):
+                payp.append({"start": st, "end": str(it.get("end") or st)})
+            continue
+        if not PAIRING_RE.match(pid):
+            continue
+        r = rk.get(f"{pid}|{st}") or {}
+        dets = pkg_details_for(_period_of(st, month, start, end, pcache)) or {}
+        det = dets.get(pid) or dets.get(re.sub(r"(?<=\d)[A-Z]$", "", pid)) or {}
+        got = {"credit": CI._hm(it.get("credit")), "blk": CI._hm(it.get("blk"))}
+        fill = {"credit": CI._hm(det.get("credit")) or CI._hm(r.get("credit")), "blk": CI._hm(det.get("block")) or CI._hm(r.get("blk"))}
+        figs = ("package" if det else "crew index") if any(not got[k] and fill[k] for k in got) else ""
+        credit, blk = got["credit"] or fill["credit"], got["blk"] or fill["blk"]
+        seat, src = str(it.get("seat") or "").upper(), "pairing page"
+        if not seat and r.get("seat"):
+            seat, src = str(r["seat"]).upper(), "crew index"
+        if not seat and (rec or {}).get("seat"):
+            seat, src = str(rec["seat"]).upper(), "seniority list"
+        if not seat:
+            seat, src = "FO", "assumed"
+        try:
+            n = int(it.get("n") or 0) or int(r.get("n") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        end_ = str(it.get("end") or st)
+        # PWA 4.A: this calendar month's share of a trip that flies on into the next one (the schedule card's rule)
+        share, out_b, nxt = _month_share(st, end_, dets.get(pid) or {}, it.get("legs"), month) if st[:7] == month else (1.0, 0, "")
+        c_h, b_h = PAY.hrs(credit), PAY.hrs(blk)
+        c_m, b_m = (PAY.hm(c_h * share) if c_h is not None else ""), (PAY.hm(b_h * share) if b_h is not None else "")
+        trips.append({"pairing": pid, "start": st, "end": end_, "seat": seat, "credit": c_m if share < 1 else credit,
+                      "blk": b_m if share < 1 else blk, "soft": soft_time(credit, blk) or "", "n": n,
+                      "lay": str(it.get("lay") or det.get("lay") or r.get("lay") or ""),
+                      "route": str(det.get("route") or r.get("route") or "")})
+        k = f"{pid}|{st}"
+        info[k] = {"seat": seat, "seat_src": src}
+        if figs:
+            info[k].update(credit=credit, blk=blk, soft=soft_time(credit, blk) or "", figs=figs)
+        if share < 1:
+            soft_s = PAY.hm(max(0.0, PAY.hrs(c_m) - PAY.hrs(b_m))) if c_m and b_m else ""
+            info[k]["split"] = {"credit": c_m, "blk": b_m, "soft": soft_s, "all_credit": credit, "all_blk": blk,
+                                "out_blk": PAY.hm(out_b / 60), "next": nxt}
+        if st[:7] == month:
+            srcs[src] = srcs.get(src, 0) + 1
+    eq, ok = _equip_ok(rec)
+    fc = PAY.hrs(re.sub(r"^(\d+)\.(\d{2})$", r"\1:\2", str((flica or {}).get("credit") or "")))
+    line, per = PAY.pay_line(trips, (rec or {}).get("doh") or "", m_from, m_to.isoformat(), tax_pct(), month=month,
+                             vac=sorted(vac), payp=payp, flica_credit=fc, rate_ok=ok,
+                             vac_seat=str((rec or {}).get("seat") or "FO").upper())
+    for k, g in per.items():
+        info[k]["gross"] = g
+    line.update(_sen_fields(data, rec), seat_src=srcs, days_off=days_off)
+    if eq:
+        line["equip"] = eq
+    return line, info
 
 
 def finds_dir():
@@ -3632,6 +3825,22 @@ def uploads_check():
         _uploads_check()
 
 
+def _write_pairings(path, pj):
+    """1.7.7: the card's pairing file written whole: a temporary file beside it (mkstemp: a new name, never through a
+    link), then moved into place, so the schedule card or the portal sweep never reads half a file (the detail made it
+    several times larger). Readable by Home Assistant as before (0644); nothing left behind on failure."""
+    fd, tmp = tempfile.mkstemp(prefix=".pairings_", suffix=".tmp", dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(pj, fh, separators=(",", ":"))
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
 def _uploads_check():
     try:
         upload_gens_check()
@@ -3648,6 +3857,8 @@ def _uploads_check():
             for f in [x for x in files if x.endswith(f"_{kind}.txt")]:
                 path = os.path.join(UPLOADS, f)
                 sig = f"{os.path.getmtime(path):.0f}"
+                if kind == "pairings":  # 1.7.7: a newer parser (the pairing detail) reads the text copies on file again
+                    sig += f"|p{PDF.PKG_PARSER}"
                 if done.get(f) == sig:
                     continue
                 month = f[:7]
@@ -3658,9 +3869,15 @@ def _uploads_check():
                         log.info("upload %s: not a %s A332 pairing package (%s, %d rows)", f, month, pj["month"], len(pj["rows"]))
                     else:
                         os.makedirs(CARD_PAIRINGS, exist_ok=True)
-                        json.dump(pj, open(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json"), "w"), separators=(",", ":"))
+                        _write_pairings(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json"), pj)
                         DB.put(f"pkg_details:{month}", PDF.package_details(text))
+                        DB.put(f"pkg_hotels:{month}", PDF.package_hotels(text))  # 1.7.7 review: never in the public file
                         log.info("upload %s: %d A332 pairings -> www/flight-watcher/pairings_%s.json", f, len(pj["rows"]), month)
+                        try:  # 1.7.7: an in-flight pickup's leg this package now gives (no FLICA load)
+                            if inflt_leg_backfill():
+                                publish_finds()
+                        except Exception as e:  # noqa: BLE001
+                            log.info("in-flight legs not backfilled: %s", type(e).__name__)
                 else:
                     det = DB.get(f"pkg_details:{month}")
                     emp = S.get("own_emp") or ""
@@ -4531,9 +4748,24 @@ def publish_own_trips():
     shows them and suggests tag-on pairings after each trip. Keys 'TRIP|YYYY-MM-DD' (start). FW-0067: without
     the legs (about 100 bytes a leg; with them a busy line passes ATTR_MAX and loses trips the card shows);
     the working flight sensor carries the one leg that matters."""
-    own = S.get("own_trips", {})
-    pub("own_trips", {"count": len(own), "trips": {k: ({f: v for f, v in t.items() if f != "legs"} if isinstance(t, dict) else t)
-                                                   for k, t in own.items()}})
+    own, cache = S.get("own_trips", {}), {"_lo": (local_now().date() - timedelta(days=45)).isoformat()}
+    pub("own_trips", {"count": len(own), "trips": {k: (_own_hotels(k, {f: v for f, v in t.items() if f != "legs"}, cache)
+                                                       if isinstance(t, dict) else t) for k, t in own.items()}})
+
+
+def _own_hotels(k, t, cache):
+    """1.7.7 review: the pilot's own trip (key TRIP|start) with its layover hotels from the pairings package of its bid
+    period ('hotels': [[stn, hotel, van], ...] a duty, pkg_hotels_for), for the pairing detail's hotel line: they are
+    kept out of the public pairing file, and this sensor is the pilot's own (behind his login). Trips from 45 days ago on
+    (cache['_lo']). t as it was on any miss."""
+    try:
+        pid, st = k.split("|", 1)
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", st) or st < cache.get("_lo", ""):
+            return t  # an old trip keeps the sensor's room (ATTR_MAX) for the months the card shows
+        hs = pkg_hotels_for(CI.period_for(CARD_PAIRINGS, st, cache)).get(pid)
+        return {**t, "hotels": hs} if hs else t
+    except Exception:  # noqa: BLE001
+        return t
 
 
 # FW-0067: the working flight sensor is published when it changes (state, leg, status, next...), and at least every
@@ -6633,9 +6865,17 @@ def pilot_check(fl):
             it["soft"] = soft_time(it.get("credit"), it.get("blk")) or ""
             txt = visible_text(page)
             DB.remember_crew(txt)
-            it["legs"] = [{"dow": dw, "route": f"{a}-{b}".upper(), "dep": dep, "arr": arr, "blk": blk}
-                          for dw, a, b, dep, arr, blk in LEG_FULL_RE.findall(txt)][:12]
+            # 1.7.7: with the flight number (LEG_FLT_RE, the same legs), for the card's pairing detail
+            it["legs"] = [{"dow": dw, "flt": flt, "route": f"{a}-{b}".upper(), "dep": dep, "arr": arr, "blk": blk}
+                          for dw, flt, a, b, dep, arr, blk in LEG_FLT_RE.findall(txt)][:12]
             it["crew"] = parse_crew(txt)[:6]
+            # 1.7.7: the seat this pilot flies and the pilots on the crew line, from the page just read (no other
+            # load), so his Pay-Gross is priced for that seat (PWA 3.C.4 / 3.D.6) with the PWA 4.O.1 overrides
+            seat, crew_n = crew_seat(txt, emp)
+            if seat:
+                it["seat"] = seat
+            if crew_n:
+                it["n"] = crew_n
         rec = {**sched, "emp": emp, "name": sched.get("name") or req.get("name") or "", "bd": bd,
                "fetched": now_iso(), "fetched_ts": time.time()}
         DB.put(f"pilot_sched:{emp}", rec)
@@ -6830,12 +7070,67 @@ def pilotver_awards(month, text, det):
         return 0
 
 
-def pilotver_attrs(emp):
+PILOTVER_FILL = ("credit", "blk", "seat", "n", "legs")  # 1.7.7 review: what a version item takes from the live read
+
+
+def pilotver_price(emp, ent, recon=None):
+    """1.7.7: each version of another pilot's month priced as the live month is (pilot_price): each item gets its
+    gross (and its seat when the record had none, and its PWA 4.A split), each record a pay summary (the totals line's
+    groups). Amounts and hours only: never a date of hire (the list file is served under /local/). In place, on the list
+    file's copy (PV.history), never the stored records. Never raises. 1.7.7 review: a version keeps only trip, start,
+    end, lay and seat (pilotver.clean_items), so each item of a version is priced from the best data on file for that
+    pairing and day: the live read's (DB pilot_sched:<emp>: the pairing page's credit, block, seat, crew count and
+    legs, PILOTVER_FILL) for a trip the live month still holds, the crew index's trips (recon {YYYY-MM: trips}, which
+    carry the crew count), then the package; an unchanged trip is priced the same in the live month and its versions."""
+    live = DB.get(f"pilot_sched:{emp}") or {}
+    lk = {f"{it.get('trip')}|{it.get('start')}": it for it in live.get("items") or [] if isinstance(it, dict)}
+    for month, recs in ((ent or {}).get("months") or {}).items():
+        try:
+            _first, start, end = CI.grid_range(CARD_PAIRINGS, month)
+        except Exception:  # noqa: BLE001
+            continue
+        for rec in recs or []:
+            try:
+                items = [it for it in (rec.get("items") or []) if isinstance(it, dict)]
+                priced = []
+                for it in items:
+                    lv = lk.get(f"{it.get('trip')}|{it.get('start')}") if live.get("month") == month else None
+                    priced.append({**{k: lv[k] for k in PILOTVER_FILL if lv and lv.get(k) not in (None, "", [])}, **it}
+                                  if lv else it)
+                line, info = pilot_price(priced, emp, (ent or {}).get("name") or "", month, start, end,
+                                         (recon or {}).get(month), (rec.get("totals") or {}).get("days_off"),
+                                         rec.get("totals") if rec.get("source") == "lookup" else None)
+                for it in items:
+                    got = info.get(f"{it.get('trip')}|{it.get('start')}")
+                    if not got:
+                        continue
+                    if got.get("gross") is not None:
+                        it["gross"] = got["gross"]
+                    if not it.get("seat"):
+                        it["seat"] = got["seat"]
+                    it["seat_src"] = got["seat_src"]
+                    if got.get("split"):
+                        it["split"] = got["split"]
+                rec["pay"] = {k: line.get(k) for k in PILOTVER_PAY if line.get(k) is not None}
+            except Exception as e:  # noqa: BLE001
+                log.info("pilot %s: version pay skipped: %s", emp, e)
+
+
+# the pay summary a version record carries (the totals line's groups, pilot card _vold)
+PILOTVER_PAY = ("gross", "trips", "trips_priced", "credit", "credit_n", "block", "block_n", "soft", "soft_n",
+                "vac", "vac_days", "payp", "payp_est", "payp_unk", "missing", "no_block", "no_rate", "equip")
+
+
+def pilotver_attrs(emp, recon=None):
     """FW-0069: the pilot card's versions: the list file pilotver_<key>.json (this pilot's versions, written only when
-    it changed) and the sensor's short form. {} when it fails (the card then shows no versions bar)."""
+    it changed) and the sensor's short form. {} when it fails (the card then shows no versions bar). 1.7.7: each
+    version is priced in the file (pilotver_price)."""
     try:
         emp = re.sub(r"\D", "", str(emp or ""))
-        key, rev = write_list_file("pilotver", PV.history(DB, emp) if emp else {})
+        hist = PV.history(DB, emp) if emp else {}
+        if emp and hist.get(emp):
+            pilotver_price(emp, hist[emp], recon)
+        key, rev = write_list_file("pilotver", hist)
         return {"versions_file_key": key or "", "versions_rev": int(rev, 16) if rev else 0,
                 "versions": PV.summary(DB, emp) if emp else {}}
     except Exception as e:
@@ -6853,14 +7148,15 @@ def pub_pilot(payload):
     FW-0059: a trip that overlaps another of the pilot's carries overlap / overlap_with (crewidx.pilot_trips).
     FW-0062: each trip's package details come from its own bid period (pkg_details_for), and pay_line (pilot_pay_line)
     totals the rebuilt month with Pay-Gross for the seat flown on each trip, from the pilot's date of hire on the
-    shared seniority list. A readable month (status ok) gets no pay line of its own: Schedule Lookup shows no seat,
-    only PILOT_PAIRINGS_MAX of its pairing pages are read, and FLICA's credit total holds reserve and training days
-    that cannot be priced trip by trip.
+    shared seniority list. 1.7.7: a readable month (status ok or cached) is priced too (pilot_price): each item
+    carries its seat (seat_src: the pairing page's crew line, the crew index, the seniority list or assumed FO) and
+    gross, items_pay the month's totals (Days Off FLICA's). Schedule Lookup shows no seat and only
+    PILOT_PAIRINGS_MAX of its pairing pages are read, so the card says how many trips were priced and from what.
     FW-0069: it also writes that pilot's schedule versions to pilotver_<key>.json and adds versions_file_key,
     versions_rev (a number) and versions {YYYY-MM: {count, current, awarded}} (pilotver_attrs)."""
     PILOT_SHOWN["p"] = {k: v for k, v in (payload or {}).items() if k not in (
         "reconstructed", "reconstructed_coverage_pct", "reconstructed_month", "reconstructed_from", "reconstructed_to",
-        "pay_line", "contact", "versions_file_key", "versions_rev", "versions")}
+        "pay_line", "items_pay", "contact", "versions_file_key", "versions_rev", "versions")}
     try:
         emp = re.sub(r"\D", "", str(payload.get("emp") or ""))
         month = str(payload.get("month") or "")
@@ -6880,12 +7176,23 @@ def pub_pilot(payload):
         ct = contact_for(emp, payload.get("name") or "") if emp else None
         if ct:  # FW-0066: the one looked-up pilot's phone and email, for the card's call / text / mail links
             payload["contact"] = ct
+        name = payload.get("name") or next((r.get("name") for r in mine if r.get("name")), "")
         if trips:
             try:
-                name = payload.get("name") or next((r.get("name") for r in mine if r.get("name")), "")
                 payload["pay_line"] = pilot_pay_line(trips, emp, name, start, end)
             except Exception as e:
                 log.info("pilot lookup: pay line skipped: %s", e)
+        # 1.7.7: a month FLICA showed gets its pay too (pilot_price): each pairing's seat and gross on a copy of its
+        # item (the record pilot_check stored stays as read), the month's totals in items_pay
+        if emp and payload.get("month") and str(payload.get("status") or "") in ("ok", "cached") and payload.get("items"):
+            try:
+                tot = payload.get("totals") if isinstance(payload.get("totals"), dict) else {}
+                line, info = pilot_price(payload["items"], emp, name, month, start, end, trips, tot.get("days_off"), tot)
+                payload["items"] = [dict(it, **info.get(f"{it.get('trip')}|{it.get('start')}", {})) if isinstance(it, dict)
+                                    else it for it in payload["items"]]
+                payload["items_pay"] = line
+            except Exception as e:
+                log.info("pilot lookup: pay of the month skipped: %s", e)
     except Exception as e:
         log.info("pilot lookup: crew index skipped: %s", e)
         payload = {**payload, "reconstructed": [], "reconstructed_coverage_pct": 0.0 if has("crew_index") else None}
@@ -6894,7 +7201,8 @@ def pub_pilot(payload):
         if ct:
             payload["contact"] = ct
     with PILOT_PUB_LOCK:  # FW-0069: the list file and the sensor that names its rev go out together (two threads publish)
-        payload.update(pilotver_attrs(payload.get("emp")))
+        rm = payload.get("reconstructed_month")
+        payload.update(pilotver_attrs(payload.get("emp"), {rm: payload.get("reconstructed") or []} if rm else None))
         # FW-0066 review: a contact never stays in the broker. The retained copy (what HA reads after a restart) has
         # none; the same payload with it follows, not retained, and that is the one the sensor and the card end on.
         pub("pilot_schedule", {k: v for k, v in payload.items() if k != "contact"})
@@ -9622,7 +9930,7 @@ def pickup_check(fl, full=False):
             time.sleep(random.uniform(1.5, 3.5))
         n += 1
         p["tries"] = p.get("tries", 0) + 1
-        status, who, ca, seats, known = "unknown", "", "", [], False
+        status, who, ca, seats, known, pickers = "unknown", "", "", [], False, []
         try:
             page = fl.fetch(url)
             if classify(page) == "ok":
@@ -9633,12 +9941,20 @@ def pickup_check(fl, full=False):
                     d = parse_detail(page)
                     DB.patch_row(k, {f: d[f] for f in ("credit", "days", "blk", "tafb") if d.get(f)})
                 seats = [x for x in (row.get("open_seats") or "").split(",") if x]
-                before = row.get("crew")
+                # 1.7.7 review: an empty roster ('' when the pot detail read had no crew line) is no roster: nothing says
+                # who was on the pairing before, so every FO / RO is not 'new' (known False, the open-seat rule decides)
+                before = row.get("crew") or None
                 if before is not None:
                     status, who, known = pickup_diff([tuple(x) for x in before], crew)
-                else:  # found before 0.4.0: no roster to compare, fall back to open_seats
+                else:  # found before 0.4.0 (or no crew line read in the pot): no roster to compare, fall back to open_seats
                     status, who = pickup_result(crew, seats)
                     known = bool(seats)
+                # 1.7.7 (Ryan, Nov 14): the open-seat picker(s) among the names, by employee number: the card links only
+                # them, and only they are scored and looked up for the in-flight check (pot.pickup_pickers)
+                parts = [(ps.upper(), nm) for ps, _, nm in (x.partition(" ") for x in (who or "").split("; ") if x)]
+                pidx = (pickup_pickers(parts, seats, [tuple(x) for x in before], crew) if before is not None
+                        else pickup_pickers(parts, seats))
+                pickers = [ids[parts[i][1]] for i in pidx if ids.get(parts[i][1])]
                 ca = next((nm for pos, nm in crew if pos == "CA" and nm != "OPEN"), "")
                 who, ca = with_ids(who, ids), with_ids(f"CA {ca}", ids)[3:] if ca else ""
         except GT.GateSkip:  # 1.6.2 review: left out for a pilot's budget: no try used, the rest wait for a later check
@@ -9652,7 +9968,7 @@ def pickup_check(fl, full=False):
         start = row_date(row.get("start") or (row.get("dates") or "").split("-")[0])
         started = bool(start and start < local_now().date())
         if status == "filled":
-            DB.set_pickup(k, {"status": "filled", "by": who, "ca": ca, "known": known,
+            DB.set_pickup(k, {"status": "filled", "by": who, "ca": ca, "known": known, "pickers": pickers,
                               "at": now_iso()})
             log.info("pickup %s: %s (CA %s)", k, who, ca or "?")
             secs = DB.score_pickup(k)  # 0.4.18: picker speed stats
@@ -9705,6 +10021,64 @@ def pickup_check(fl, full=False):
 
 
 INFLT_PER_CHECK = 3
+_DETAIL_CACHE = {}  # 1.7.7: pairing file path -> (file time, its 'detail'); period -> (text time, package_legs of the text)
+
+
+def pkg_detail_for(period, pid):
+    """1.7.7: one pairing's pairings package detail of one bid period (pdfs.package_legs: its duties' legs, DAY and the
+    local times as printed): from the pairing file (pairings_<period>.json 'detail', cached by file time), else from the
+    shared upload's text copy (a pairing the file's detail budget left out, or a file from before the detail). None
+    when neither has it. No FLICA load."""
+    path = os.path.join(CARD_PAIRINGS, f"pairings_{period}.json")
+    try:
+        mt = os.path.getmtime(path)
+        c = _DETAIL_CACHE.get(path)
+        if not c or c[0] != mt:
+            d = json.load(open(path))
+            c = _DETAIL_CACHE[path] = (mt, d.get("detail") if isinstance(d, dict) and isinstance(d.get("detail"), dict) else {})
+        if isinstance(c[1].get(pid), dict):
+            return c[1][pid]
+    except (OSError, ValueError):
+        pass
+    txt = os.path.join(UPLOADS_SHARED, f"{period}_pairings.txt")
+    try:
+        mt = os.path.getmtime(txt)
+        c = _DETAIL_CACHE.get(period)
+        if not c or c[0] != mt:
+            c = _DETAIL_CACHE[period] = (mt, PDF.package_legs(open(txt, errors="replace").read()))
+        return c[1].get(pid)
+    except Exception as e:  # noqa: BLE001
+        if not isinstance(e, OSError):
+            log.info("pairing package %s legs not read: %s", period, type(e).__name__)
+        return None
+
+
+def inflt_leg_backfill():
+    """1.7.7 (Ryan, Nov 14: "I want to know what flight he was flying to be certain"): an in-flight pickup whose
+    verdict came before 1.7.7 has its pairing (inflt_trip, 'H3648 2026-11-03') but not the leg. With no FLICA load, the
+    leg comes from the pairings package of that trip's bid period, only when the package lists that pairing id on that
+    start date (crewidx.instances, src package) and one of its legs holds the pickup time (inflt.package_leg); else the
+    card keeps the airplane alone and says the flight is not on file. Returns the number found."""
+    todo = DB.inflt_without_leg()
+    if not todo:
+        return 0
+    try:
+        insts = CI.instances(CARD_PAIRINGS, date(2000, 1, 1))
+    except Exception as e:  # noqa: BLE001
+        log.info("in-flight legs not backfilled: %s", type(e).__name__)
+        return 0
+    got = 0
+    for key, trip, gone in todo:
+        pid, _, start = str(trip or "").partition(" ")
+        it = insts.get(f"{pid}|{start}")
+        if not it or it.get("src") != "package":
+            continue
+        leg = IF.package_leg(pkg_detail_for(it.get("period") or start[:7], pid), start, gone)
+        if leg and DB.set_inflt_leg(key, leg):
+            got += 1
+    log.info("in-flight pickups from before 1.7.7: %d flights found in the pairings package (no FLICA load), %d not "
+             "on file", got, len(todo) - got)
+    return got
 
 
 def inflt_check(fl, limit=INFLT_PER_CHECK):
@@ -10886,6 +11260,18 @@ def main():
         DB.rescore_all()
         DB.put("score_v", 2)
         log.info("pickup speeds rescored (0.7.6 dwell: alert time in, middle of the gone window out)")
+    if DB.get("pickers_rebuild_v") != PICKERS_V:  # 1.7.7 one-shot: each open-seat picker once, no merged two-name rows
+        try:
+            r = DB.rebuild_pickers()
+            log.info("FO / RO pickers rebuilt from %d scored pickups (each open-seat picker once): %d pilots; %d in-flight "
+                     "verdicts made for another pilot dropped (not looked up again: no FLICA load)", r["pickups"],
+                     r["pickers"], r["inflt_dropped"])
+        except Exception as e:  # never stops the start; tried again on the next one
+            log.warning("pickers rebuild skipped: %s: %s", type(e).__name__, e)
+    try:
+        inflt_leg_backfill()  # 1.7.7: the legs of in-flight pickups from before 1.7.7, from the pairings package
+    except Exception as e:  # noqa: BLE001
+        log.info("in-flight legs not backfilled: %s", type(e).__name__)
     RULES["list"] = load_rules()
     publish_rules(MQ)
     finds_files_cleanup()  # FW-0010: before publish_finds() rebuilds the month files under the key

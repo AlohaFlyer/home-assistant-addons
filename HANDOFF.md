@@ -177,7 +177,8 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
 
 - Ryan, Nov 11, 2026:
   - FW-0070: the "pairing package publishes tomorrow, adjust your vacation" alert goes at 08:00 HST the day before the
-    publish date (the 3rd by default), not 20:00 (built in 1.7.1, `fw171-r2`).
+    publish date (the 4th by default: Ryan, Nov 14, the package posts on the 5th, `bidcal.DEFAULT_PUBLISHED`, 1.7.7),
+    not 20:00 (built in 1.7.1, `fw171-r2`).
   - FW-0066: either pilot may upload the pairings package and the award; an upload is used at once when nothing is on
     file for that month, else it is quarantined until Ryan approves it. Comes in portal contract revision 3 (built in
     1.7.2, open item 12; a contract change, HOM first).
