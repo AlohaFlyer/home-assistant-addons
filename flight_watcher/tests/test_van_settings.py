@@ -611,10 +611,10 @@ def test_roles_classify_the_new_subs_and_the_contract_is_unchanged(tmp_path):
             sp.take(str(in_dir / name))
     # contract 1 byte for byte (revision 4 since 1.7.9; 1.7.10: shared 100%, HOM re-pins), and its doc
     raw = open(os.path.join(HERE, "tests", "fixtures", "portal_contract_v1.json"), "rb").read()
-    assert hashlib.sha256(raw).hexdigest() == "86c2d8f905eff7509cb8ef85cf3f8a7adf7e611556ab395a017e6fd460311fbf"
+    assert hashlib.sha256(raw).hexdigest() == "051676bbdf48456cb0f49828f6cb6eb5c154a1c33a650b969c834513df9f1dc1"
     assert PT.contract_text().encode("utf-8") == raw and b"van/alerts" not in raw
     doc = open(os.path.join(HERE, "PORTAL_CONTRACT.md"), "rb").read()
-    assert hashlib.sha256(doc).hexdigest() == "a4f5dcccafa79074fa6ea4647316b57dc1569cf61cb04f947b445225ea7c9161"
+    assert hashlib.sha256(doc).hexdigest() == "cd4e8ed29036139199b6f1bae07c4ad0a670383481a469b75ac84d528eb6d7be"
 
 
 def test_van_is_reserved_and_the_guard_reads_the_ids_as_ryans():

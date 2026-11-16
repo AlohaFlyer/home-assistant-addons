@@ -42,7 +42,7 @@ def test_manifest_verifies_and_names_the_pilot(pilot):
     assert {k: m[k] for k in ("contract", "app_version", "pilot", "prefix", "role", "ntfy")} == {
         "contract": 1, "app_version": W.VERSION, "pilot": "pilot2", "prefix": P, "role": "pilot", "ntfy": False}
     assert set(m) == {"contract", "revision", "app_version", "pilot", "prefix", "role", "cards", "layout", "services",
-                      "mqtt_subs", "files", "ntfy"} and m["revision"] == roles.CONTRACT_REVISION == 4  # 1.7.9
+                      "mqtt_subs", "files", "ntfy"} and m["revision"] == roles.CONTRACT_REVISION == 5  # 1.7.9: 4; 1.7.10: 5
     assert [t["id"] for t in m["layout"]["tabs"]] == list(roles.PORTAL_TABS)
     # 1.7.0: the tickets card's five subs (its _pub calls); 1.7.2 (revision 3): no recall/set (the admin's paste is
     # behind its role check, and the portal refuses it), and the pilot uploads card's upload/pdf

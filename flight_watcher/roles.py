@@ -45,6 +45,15 @@ database like Ryan's, with that pilot as its author. The noted-pilots-only file,
 looked-up pilot, the roster and its anti-walk rule and the 20-an-hour brief cap are gone (they only limited what a
 shared pilot saw of the database). PORTAL_CMDS, PORTAL_REFUSED, every command shape, every limit and quota of a
 shared pilot's writes, the upload kinds, and every FLICA budget, pacing and read limit are as in 1.7.9.
+
+1.7.10, contract 1 REVISION 5 (Ryan, Nov 16: "His uploads should update the shared database too", and the contacts
+list upload on a pilot's portal "Now, in 1.7.10"): upload/pdf takes a third kind, contacts: the airline contacts list
+as its CSV export (PILOT_CONTACTS_LIMITS: 1 MiB, the header row). The pilot's Watcher checks the whole file and hands
+it to the admin's Watcher through his pilotdb inbox folder (the author is the folder's name, never a payload key); the
+admin's Watcher checks it again and merges it into the one database with that pilot as the author. A pilot's list
+only adds and updates (pilotdb.merge_contacts, additive). The command's shape changed (one more value of kind), so
+HOM 1.9.1 goes live first; HOM 1.9.0 refuses kind contacts with its own shape check and serves everything else as it
+did. PORTAL_CMDS, PORTAL_REFUSED, FEATURES and every other shape, limit and quota are as in revision 4.
 """
 import math
 import re
@@ -78,7 +87,8 @@ FEATURES = {
     "uploads": (ALL, False, "uploads in chunks (upload/chunk) and the uploads sensors"),
     "pilot_uploads": (ALL, True, "a pilot's upload of the monthly pairings package or award from his portal "
                                  "(upload/pdf), checked by his own Watcher; used at once when nothing is on file, else "
-                                 "held for the admin"),
+                                 "held for the admin; and of the contacts list (CSV) into the shared pilot database, "
+                                 "while it is shared with him"),
     "upload_review": (ADMIN, False, "the admin's Approve, Remove and Reject of a pilot's upload (upload/decide) and its "
                                     "push (event/pilot_upload)"),
     # 1.7.9 (contract 1 revision 4, B14). 1.7.10 (Ryan, Nov 15): shared 100% with every portal pilot, on by default;
@@ -244,8 +254,8 @@ def name_refusal(name, taken=()):
 # from these; PORTAL_CONTRACT.md documents it. The admin has no portal: none of this runs on the default instance.
 CONTRACT = 1
 # 1.7.0 (Release C): tickets (2); 1.7.2: pilot alerts, shapes, uploads (3); 1.7.9: the shared pilot database, the swap
-# idea alert (4); additive within 1
-CONTRACT_REVISION = 4
+# idea alert (4); 1.7.10: a pilot's contacts list upload, kind contacts on upload/pdf (5); additive within 1
+CONTRACT_REVISION = 5
 # 1.7.2 (revision 3): recall/set leaves the list (F#78: a crafted paste from the portal could replace or blank a day on
 # the pilot's own instance; his lists come only from the admin's forward, 1.7.1) and upload/pdf joins it (FW-0066)
 PORTAL_CMDS = ("hunt/set", "pause/set", "rearm/press", "check_now/press", "charter_scan/press", "freq/normal_min/set",
@@ -257,6 +267,10 @@ PORTAL_CMDS = ("hunt/set", "pause/set", "rearm/press", "check_now/press", "chart
 COMMAND_SINCE = {"ticket/new": 2, "ticket/image": 2, "ticket/act": 2, "ticket/edit": 2, "ticket/delete": 2,
                  "upload/pdf": 3, "pilotdb/note": 4, "pilotdb/edit": 4}
 COMMAND_REMOVED = {"recall/set": 3}
+# 1.7.10 (revision 5): the revision one VALUE of a command's field came in, when the command itself is older:
+# {sub: {field: {value: revision}}}. HOM refuses such a value to a Watcher whose manifest names an older revision
+# (it would refuse the chunk itself), as it does a whole command by COMMAND_SINCE.
+VALUE_SINCE = {"upload/pdf": {"kind": {"contacts": 5}}}
 PORTAL_RULE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 # contract 1's check frequency ranges (freq/normal_min/set in minutes, freq/hunt_s/set in seconds): a portal's
 # freq/*/set must be a finite number within them (portal.check_freq). Contract 1 is pinned (its fixture and sha256).
@@ -459,7 +473,7 @@ TICKET_CMDS = {
 # query or a name (at most 60 code points, one line), or a pick id (pilot.pick_id: 12 lowercase hex). The Watcher
 # refuses the same (watcher.pilot_cmd, every instance), and its log line never carries the text.
 # upload/pdf (FW-0066, Ryan Nov 11): one chunk of a pilot's upload of the monthly pairings package or the award (never
-# the seniority list or the contact list: they hold other pilots' phone numbers), cut like ticket photos so each
+# the seniority list; 1.7.10, revision 5: the contacts list as its CSV export too, PILOT_CONTACTS_LIMITS below), cut like ticket photos so each
 # command stays under the 64 KB cap. Every chunk carries the upload's fields; the pilot's Watcher (pilotpdf.py) puts
 # one upload together at a time and checks it whole before anything is stored.
 PRINTABLE_PATTERN = TICKET_LINE_PATTERN  # one line: no control character, line or paragraph separator, bidi control
@@ -478,6 +492,19 @@ PILOT_UPLOAD_LIMITS = {"kinds": ["pairings", "award"], "file_bytes": 4 * 1024 * 
                        "chunk_chars": 60000, "chunk_parts": 94, "stale_s": 120, "months_ahead": 2,
                        "extract_timeout_s": 30, "extract_mem_mb": 512, "extract_cpu_s": 30, "min_pairings": 100}
 _UL = PILOT_UPLOAD_LIMITS
+# 1.7.10 (revision 5; Ryan, Nov 16): a third kind on upload/pdf, the airline contacts list as its CSV export. kinds
+# above stays the two PDF kinds (their checks, their quarantine and the months on file are theirs alone). A contacts
+# list: file_bytes (1 MiB; the export is about 200 KB) in at most chunk_parts chunks; text only (UTF-8, no control
+# character but tab, CR and LF) whose first row is header, cell for cell (case and outer spaces aside); rows_min
+# pilots read by the 1.4.8 parser (contacts.parse); pending: one list of a pilot waits for the admin's Watcher at a
+# time; per_day: lists the admin's Watcher merges for one pilot in 24 h (his own Watcher counts every upload toward
+# PILOT_UPLOAD_LIMITS per_day as well); inbox_bytes: the inbox file that carries it (its base64 and its envelope).
+# It carries a month like every upload/pdf chunk (this HST month); the month is checked and not used.
+PILOT_UPLOAD_KINDS = tuple(_UL["kinds"]) + ("contacts",)
+PILOT_CONTACTS_LIMITS = {"kind": "contacts", "file_bytes": 1024 * 1024, "chunk_parts": 24, "rows_min": 1,
+                         "pending": 1, "per_day": 4, "inbox_bytes": 1536 * 1024,
+                         "header": ["First Name", "Middle Name", "Last Name", "Suffix", "Company", "Job Title",
+                                    "Mobile Phone", "Email", "Employee ID", "Notes"]}
 SHAPE_CMDS = {
     "pilot/set": {
         "keys": ["emp", "q", "name", "pick"],
@@ -488,7 +515,7 @@ SHAPE_CMDS = {
     "upload/pdf": {
         "keys": ["uid", "kind", "month", "size", "sha", "part", "parts", "data"],
         "required": ["uid", "kind", "month", "size", "sha", "part", "parts", "data"],
-        "fields": {"uid": _text(16, 40, UPLOAD_ID_PATTERN), "kind": {"type": "enum", "values": list(_UL["kinds"])},
+        "fields": {"uid": _text(16, 40, UPLOAD_ID_PATTERN), "kind": {"type": "enum", "values": list(PILOT_UPLOAD_KINDS)},
                    "month": _text(7, 7, MONTH_PATTERN), "size": _int(1, _UL["file_bytes"]),
                    "sha": _text(64, 64, SHA256_PATTERN), "part": _int(1, _UL["chunk_parts"]),
                    "parts": _int(1, _UL["chunk_parts"]),
@@ -571,6 +598,13 @@ PILOTDB_ANSWERS = (
     "Not saved: too old, send it again",
     "Not saved: it could not be read, send it again",
     "Busy: try again in a minute",
+    # 1.7.10 (revision 5): a pilot's contacts list (upload/pdf kind contacts), answered under the upload's uid. <n>
+    # are counts; never a name, a number or a cell of the file
+    "Contacts merged: <n> rows read, <n> pilots added, <n> updated, <n> held for Ryan",
+    "Not merged: that file is not the contacts list (CSV) export",
+    "Not merged: no pilot was read from that contacts list",
+    "Not merged: a contacts list is at most <n> KB",
+    "Not merged: over <n> contacts lists in 24 h",
 )
 # The AI note (Ryan, Nov 14: "Through HOM's models"): HOM's consultant models write one short note per pilot with at
 # least min_pickups pickups, from anonymous pickup statistics only. 1.7.10 (Ryan's decision 3 of Nov 15): on by

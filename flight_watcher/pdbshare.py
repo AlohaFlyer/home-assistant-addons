@@ -14,6 +14,12 @@ about the database. They pass plain files under /share/flight_watcher/pilotdb (f
   ai/stats.json, ai/in/  the AI note hand-off with HOM's consultant models (roles.PILOTDB_AI; anonymous statistics out,
                          notes in). Only while Ryan's AI switch is on.
 
+1.7.10 (contract 1 revision 5; Ryan, Nov 16): a portal pilot's contacts list (the CSV export, upload/pdf kind
+contacts) travels through the same inbox folder: his Watcher checks the whole file (contacts_check) and drops it as one
+inbox file (contacts_put: cmd contacts, its size, sha256 and base64, 0600); the admin's drain checks it again with the
+same function and merges it with the author taken from the folder's name (pilotdb.pilot_contacts: adds and updates
+only). Nothing of the file is kept after the merge, and no line logged holds a cell of it.
+
 1.7.10: roster.json (1.7.9: every pilot's brief for the one pilot a shared pilot looked up, in the add-on's own
 /data/pilotdb_roster) is gone: the file holds every record now. A roster an older version left is removed
 (write_files, clear_files).
@@ -21,8 +27,12 @@ about the database. They pass plain files under /share/flight_watcher/pilotdb (f
 Nothing here loads FLICA, publishes on MQTT or logs a name, a number or a text. Pure file code, so both sides and the
 tests use the same functions.
 """
+import base64
+import binascii
 import contextlib
+import csv
 import hashlib
+import io
 import json
 import os
 import re
@@ -32,6 +42,7 @@ import stat
 import time
 from datetime import datetime, timezone
 
+import contacts as CT
 import pilotdb as PDBM
 import portal as PT
 import roles as ROLES
@@ -51,6 +62,52 @@ OWN_ONLY = "Not saved: only your own notes can be taken back"
 UNREADABLE = "Not saved: it could not be read, send it again"
 TOO_OLD = "Not saved: too old, send it again"
 BUSY = "Busy: try again in a minute"
+# 1.7.10 (revision 5): a pilot's contacts list. Fixed phrases (roles.PILOTDB_ANSWERS), never a cell of the file
+CONTACTS_KEYS = ("rid", "size", "sha", "data")
+CONTACTS_BAD = "Not merged: that file is not the contacts list (CSV) export"
+CONTACTS_EMPTY = "Not merged: no pilot was read from that contacts list"
+CONTACTS_BIG = "Not merged: a contacts list is at most {n} KB"
+CONTACTS_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # no control character but tab, LF and CR
+
+
+class ContactsRefused(ValueError):
+    """A contacts list refused; str() is one of the fixed phrases above."""
+
+
+def contacts_check(raw, limits=None, today=None):
+    """The checks both Watchers run on a pilot's whole contacts list, in order (portal.CONTACTS_CHECKS): at most
+    file_bytes; text only (strict UTF-8, a BOM allowed, no control character but tab, CR and LF: so no PDF, no XLSX,
+    no binary); its first row is the export's header, cell for cell (case and outer spaces aside); read by the 1.4.8
+    parser (contacts.parse, the one Ryan's own upload goes through) it gives at least rows_min pilots. Returns the
+    parsed list (contacts.parse's answer); ContactsRefused with a fixed phrase otherwise. Never logs."""
+    lim = limits or ROLES.PILOT_CONTACTS_LIMITS
+    if not isinstance(raw, (bytes, bytearray)) or not raw:
+        raise ContactsRefused(CONTACTS_BAD)
+    if len(raw) > lim["file_bytes"]:
+        raise ContactsRefused(CONTACTS_BIG.format(n=lim["file_bytes"] // 1024))
+    try:
+        text = bytes(raw).decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise ContactsRefused(CONTACTS_BAD) from None
+    kind = CT.sniff(bytes(raw))  # read from the bytes, as Ryan's own upload is: 'csv', or None for a lone header row
+    if CONTACTS_CTRL.search(text) or kind not in ("csv", None):
+        raise ContactsRefused(CONTACTS_BAD)
+    first = next((ln for ln in text.splitlines() if ln.strip()), "")
+    try:
+        head = next(csv.reader(io.StringIO(first)), [])
+    except csv.Error:
+        head = []
+    if [c.strip().lower() for c in head] != [h.lower() for h in lim["header"]]:
+        raise ContactsRefused(CONTACTS_BAD)
+    if kind is None:
+        raise ContactsRefused(CONTACTS_EMPTY)
+    try:
+        parsed = CT.parse(bytes(raw), "csv", today=today)
+    except Exception:  # noqa: BLE001 (whatever a crafted sheet does to the parser: refused, never raised on)
+        raise ContactsRefused(CONTACTS_BAD) from None
+    if len(parsed["entries"]) + len(parsed.get("hal_only") or []) < lim["rows_min"]:
+        raise ContactsRefused(CONTACTS_EMPTY)
+    return parsed
 
 
 def export_path(pilot, root=ROOT):
@@ -170,13 +227,52 @@ def pending(folder):
 
 
 def _read_cmd(folder, name):
-    """The parsed body of one inbox file, or None: read without following a symlink, at most INBOX_MAX_BYTES."""
+    """The parsed body of one inbox file, or None: read without following a symlink, at most INBOX_MAX_BYTES (1.7.10:
+    a contacts list's file at most roles.PILOT_CONTACTS_LIMITS inbox_bytes; a note or an edit never gets that room)."""
     try:
-        raw, _ = PT.read_plain(os.path.join(folder, name), INBOX_MAX_BYTES)
+        raw, _ = PT.read_plain(os.path.join(folder, name), ROLES.PILOT_CONTACTS_LIMITS["inbox_bytes"])
         d = json.loads(raw.decode("utf-8"))
     except (PT.PortalError, ValueError, RecursionError):
         return None
-    return d if isinstance(d, dict) else None
+    if not isinstance(d, dict) or (len(raw) > INBOX_MAX_BYTES and d.get("cmd") != "contacts"):
+        return None
+    return d
+
+
+def contacts_of(d, limits=None):
+    """The bytes of the contacts list one inbox body carries: exactly the keys of a contacts body, a strict base64 of
+    size bytes whose sha256 is sha. PortalError when anything is off (answered 'it could not be read')."""
+    lim = limits or ROLES.PILOT_CONTACTS_LIMITS
+    if set(d) != {"v", "by", "at", "cmd"} | set(CONTACTS_KEYS):
+        raise PT.PortalError("contacts: keys")
+    size, sha, data = d.get("size"), d.get("sha"), d.get("data")
+    if (not isinstance(size, int) or isinstance(size, bool) or not 0 < size <= lim["file_bytes"]
+            or not isinstance(sha, str) or not re.fullmatch(ROLES.SHA256_PATTERN, sha) or not isinstance(data, str)):
+        raise PT.PortalError("contacts: fields")
+    try:
+        raw = base64.b64decode(data.encode("ascii"), validate=True)
+    except (binascii.Error, ValueError):
+        raise PT.PortalError("contacts: not base64") from None
+    if len(raw) != size or hashlib.sha256(raw).hexdigest() != sha:
+        raise PT.PortalError("contacts: not the file it names")
+    return raw
+
+
+def _contacts_apply(db, pilot, rid, d, now):
+    """One contacts list from a pilot's inbox, checked again and merged with the author `pilot` (the folder). Returns
+    (ok, why, stats or None, by_db): by_db False when the refusal was made here and still needs its answer."""
+    try:
+        raw = contacts_of(d)
+    except Exception:  # noqa: BLE001
+        return False, UNREADABLE, None, False
+    try:
+        parsed = contacts_check(raw, today=db.today())
+    except ContactsRefused as e:
+        return False, str(e), None, False
+    at = datetime.fromtimestamp(now, PDBM.HST).replace(microsecond=0).isoformat()
+    cj = CT.build(parsed, "", at)
+    ok, why, stats = db.pilot_contacts(pilot, rid, cj, d["sha"], CT.PARSER)
+    return ok, why, stats, True
 
 
 def check_cmd(cmd, d):
@@ -230,6 +326,24 @@ def drain(db, pilots, root=ROOT, limits=None, full=(), now=None, log=None, per_p
             else:
                 # 1.7.9 review: whatever a planted file holds (a cmd that is a list, a value no check foresaw), it is
                 # refused as unreadable and removed; it never raises out of the drain and so never blocks the pass
+                if cmd == "contacts":  # 1.7.10 (revision 5): a pilot's contacts list, adds and updates only
+                    try:
+                        ok, why, st, by_db = _contacts_apply(db, pilot, rid, d, now)
+                    except sqlite3.Error:
+                        raise  # nothing was merged: the file waits for the next pass
+                    except Exception:  # noqa: BLE001
+                        ok, why, st, by_db = False, UNREADABLE, None, False
+                    if not by_db and db.answer_of(pilot, rid) is None:
+                        db.put_answer(pilot, rid, False, why, lim["answers"])
+                    _unlink(os.path.join(folder, name))
+                    out["applied" if ok else "refused"] += 1
+                    if st is not None:
+                        say(f"pilot db: contacts list from {pilot}: merged ({st.get('rows', 0)} rows, "
+                            f"{st.get('added', 0)} added, {st.get('changed', 0) - st.get('added', 0)} changed, "
+                            f"{st.get('kept_hand', 0)} kept hand edits, {st.get('conflicts', 0)} held for Ryan)")
+                    else:
+                        say(f"pilot db: contacts list from {pilot}: {'merged before' if ok else 'refused'}")
+                    continue
                 try:
                     inner = check_cmd(cmd, d)
                 except Exception:  # noqa: BLE001
@@ -265,7 +379,30 @@ def inbox_put(pilot, cmd, inner, root=ROOT, now=None):
     body = {"v": 1, "by": pilot, "at": datetime.fromtimestamp(now, timezone.utc).replace(microsecond=0).isoformat(),
             "cmd": cmd}
     body.update({k: inner[k] for k in (NOTE_KEYS if cmd == "note" else EDIT_KEYS) if k in inner})
-    name = f"{int(now * 1000):013d}-{inner['rid']}.json"
+    return _inbox_write(pilot, body, inner["rid"], root, now)
+
+
+def contacts_put(pilot, rid, raw, root=ROOT, now=None):
+    """1.7.10 (revision 5): a pilot's checked contacts list into the admin's inbox, as inbox_put writes a command
+    (O_EXCL, O_NOFOLLOW, 0600, in the folder's own fd): {v, by, at, cmd: contacts, rid, size, sha, data (base64)}.
+    The author is the instance, never anything of the file. Returns the file name; OSError when the folder is not
+    there (not shared)."""
+    now = time.time() if now is None else now
+    if not isinstance(rid, str) or not re.fullmatch(ROLES.UPLOAD_ID_PATTERN, rid):
+        raise OSError("contacts: rid")
+    body = {"v": 1, "by": pilot, "at": datetime.fromtimestamp(now, timezone.utc).replace(microsecond=0).isoformat(),
+            "cmd": "contacts", "rid": rid, "size": len(raw), "sha": hashlib.sha256(raw).hexdigest(),
+            "data": base64.b64encode(raw).decode("ascii")}
+    return _inbox_write(pilot, body, rid, root, now)
+
+
+def contacts_waiting(folder):
+    """How many contacts lists wait in one pilot's inbox (their bodies are read: the name does not say the cmd)."""
+    return sum(1 for n in inbox_names(folder) if ((_read_cmd(folder, n) or {}).get("cmd") == "contacts"))
+
+
+def _inbox_write(pilot, body, rid, root, now):
+    name = f"{int(now * 1000):013d}-{rid}.json"
     dfd = os.open(inbox_dir(pilot, root), _DIR)
     try:
         tmp = f".{name}.{secrets.token_hex(4)}.tmp"

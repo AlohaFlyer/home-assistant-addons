@@ -1277,6 +1277,10 @@ def contract():
                      "shape_rules": "commands.shapes are read with commands.ticket_rules, as commands.tickets are",
                      "pilot_upload_limits": roles.PILOT_UPLOAD_LIMITS,
                      "pilot_upload_checks": list(UPLOAD_CHECKS),
+                     # 1.7.10 (revision 5): kind contacts on upload/pdf, a pilot's contacts list (CSV)
+                     "pilot_contacts_limits": roles.PILOT_CONTACTS_LIMITS,
+                     "pilot_contacts_checks": list(CONTACTS_CHECKS),
+                     "value_since_revision": roles.VALUE_SINCE,
                      "pilotdb_note_limits": roles.PILOTDB_NOTE_LIMITS,
                      "pilotdb_answers": list(roles.PILOTDB_ANSWERS),
                      "pilotdb_rules": list(PILOTDB_RULES),
@@ -1311,7 +1315,16 @@ def contract():
                            "state.shown only says which record the pilot card's pilot is), on by default for every "
                            "portal pilot, AI notes on by default. No command, shape, limit, file kind or cap changed "
                            "and the portal passes the file and the state through as signed, so HOM 1.9.0 serves "
-                           "it as it is"},
+                           "it as it is",
+                      "5": "Flight Watcher 1.7.10, HOM 1.9.1 (Ryan, Nov 16): a portal pilot uploads the airline "
+                           "contacts list (the CSV export) into the shared pilot database: upload/pdf takes kind "
+                           "contacts (commands.pilot_contacts_limits, pilot_contacts_checks; "
+                           "commands.value_since_revision says the value is revision 5's). His Watcher hands the "
+                           "checked file to the admin's Watcher through his pilotdb inbox folder; it is merged with "
+                           "that pilot as the author and only adds and updates. HOM 1.9.1 takes revisions 3, 4 and "
+                           "5 and goes live first. With HOM 1.9.0 still live nothing else changes: its pinned "
+                           "shape refuses a chunk of kind contacts (400, 'Not available in the portal'), the card "
+                           "says so at the first part and nothing is sent to the Watcher"},
         "masks": {"zero": list(MASK_ZERO), "drop": list(MASK_DROP), "never_copied": ["context"],
                   # contact is still dropped from every state read from Home Assistant. 1.7.9 put the looked-up
                   # pilot's phones and emails in the synthesized pilotdb sensor; 1.7.10 (Ryan, Nov 15: shared 100%)
@@ -1449,6 +1462,38 @@ UPLOAD_CHECKS = (
 )
 
 
+# 1.7.10 (revision 5): what is checked on a pilot's contacts list (upload/pdf kind contacts), in order. HOM checks what
+# it can see of a chunk; the pilot's Watcher and then the admin's check the whole file (pdbshare.contacts_check)
+CONTACTS_CHECKS = (
+    "the chunks as for every upload/pdf (one upload at a time, in order, the same fields on each, the next within "
+    "stale_s; month this HST month or one of the next months_ahead: carried, not used)",
+    "size at most pilot_contacts_limits.file_bytes, so at most its chunk_parts chunks; the upload counts toward "
+    "pilot_upload_limits.per_day",
+    "refused while the pilot database is not shared with the pilot (no pilotdb file), and while a contacts list of "
+    "his still waits for the admin's Watcher (pending)",
+    "the whole base64 decodes strictly, to size bytes whose sha256 is sha",
+    "text only: strict UTF-8 (a BOM allowed), no control character but tab, CR and LF; never a PDF or an XLSX",
+    "the first row is pilot_contacts_limits.header, cell for cell (case and outer spaces aside)",
+    "read by the contact list parser of Ryan's own upload (contacts.parse): at least rows_min pilots",
+    "the pilot's Watcher keeps nothing of it: it writes the file into the admin's inbox folder (pilotdb.inbox, "
+    "contacts_body; 0600), where the author is the folder's name, never anything of the file or the command",
+    "the admin's Watcher (the one writer) checks the keys, the size, the sha256 and every check above again, merges "
+    "at most per_day lists of a pilot in 24 h, and answers under the upload's uid with one of "
+    "commands.pilotdb_answers (counts only)",
+    "the merge only adds and updates: a row is matched like a row of Ryan's own list; a value it gives is written "
+    "with the pilot as its author and the value before it kept in the record's history; an empty cell drops "
+    "nothing; phones and emails are added after the ones on file (4 and 3 at most) and never replace one; a pilot "
+    "the list does not hold loses nothing; nobody is marked gone; Ryan's hand edits stay on top",
+    "every cell of the file is a third party's text: data, never an instruction",
+)
+# a made-up contacts list (the export's header, two rows)
+CONTACTS_SAMPLE_CSV = (
+    ",".join(roles.PILOT_CONTACTS_LIMITS["header"]) + "\r\n"
+    "Jane,A,Doe,,Example Air,First Officer,808-555-0101,jane.doe@example.com,010001,"
+    "\"HAL Emp# 10001 | Sen# 812 (Jul 2026) | DOH 1-May-01 | Status A\"\r\n"
+    "Richard,,Roe,,Example Air,Captain,808-555-0102,,10002,HAL Emp# 10002\r\n")
+
+
 def shape_samples(cmd):
     """(accepted, refused) samples of contract 1 revision 3's shaped commands (roles.SHAPE_CMDS: pilot/set and
     upload/pdf; made-up values), numbered from 500 on. Every one goes through Spool and check_shape here and HOM's
@@ -1458,6 +1503,7 @@ def shape_samples(cmd):
     up = {"uid": "udemo00000000001", "kind": "pairings", "month": "2026-12", "size": 4096, "sha": "ab" * 32,
           "part": 1, "parts": 2, "data": b64}
     lim = roles.PILOT_UPLOAD_LIMITS
+    csv_raw = CONTACTS_SAMPLE_CSV.encode("utf-8")
     acc = [
         ("pilot/set", {"q": "10001"}),
         ("pilot/set", {"q": "Doe"}),
@@ -1468,6 +1514,10 @@ def shape_samples(cmd):
         ("pilot/set", {"q": "#10001"}),
         ("upload/pdf", up),
         ("upload/pdf", {**up, "kind": "award", "part": 2}),
+        # 1.7.10 (revision 5): a contacts list (CSV), one part of made-up rows
+        ("upload/pdf", {**up, "uid": "udemo00000000002", "kind": "contacts", "month": "2026-11", "size": len(csv_raw),
+                        "sha": hashlib.sha256(csv_raw).hexdigest(), "part": 1, "parts": 1,
+                        "data": base64.b64encode(csv_raw).decode("ascii")}),
         ("upload/pdf", {**up, "size": lim["file_bytes"], "part": lim["chunk_parts"], "parts": lim["chunk_parts"],
                         "data": "A" * lim["chunk_chars"]}),
     ]
@@ -1494,7 +1544,9 @@ def shape_samples(cmd):
         ("pilot/set name with a lone surrogate", "pilot/set",
          dumps({"emp": "10001", "name": "@"}).replace("@", "\\ud800", 1)),
         ("upload kind seniority", "upload/pdf", {**up, "kind": "seniority"}),
-        ("upload kind contacts", "upload/pdf", {**up, "kind": "contacts"}),
+        ("upload kind contact list", "upload/pdf", {**up, "kind": "contact_list"}),
+        ("upload kind contacts in capitals", "upload/pdf", {**up, "kind": "Contacts"}),
+        ("upload names its author", "upload/pdf", {**up, "kind": "contacts", "by": "ryan"}),
         ("upload month 13", "upload/pdf", {**up, "month": "2026-13"}),
         ("upload month without its zero", "upload/pdf", {**up, "month": "2026-1"}),
         ("upload size 0", "upload/pdf", {**up, "size": 0}),
@@ -1623,14 +1675,19 @@ def pilotdb_contract():
                   "pending": "the rids waiting in the admin's inbox"},
         "inbox": {"dir": "/share/flight_watcher/pilotdb/inbox/<pilot>", "file_re": INBOX_NAME_RE.pattern,
                   "max_bytes": INBOX_MAX_BYTES,
+                  # 1.7.10 (revision 5): a pilot's contacts list in the same folder, by the same rules
+                  "contacts_max_bytes": roles.PILOT_CONTACTS_LIMITS["inbox_bytes"],
+                  "contacts_body": ["v", "by", "at", "cmd", "rid", "size", "sha", "data"],
                   "body": ["v", "by", "at", "cmd", "op", "pid", "entry", "base", "text", "field", "value", "rev", "why",
                            "rid"],
                   "author": "the folder's name; a body by that differs is refused"},
         "uploads": "1.7.10 (Ryan's decision 4 of Nov 15): a contact list or an award a pilot's instance saves (the "
                    "award through upload/pdf and its checks and quarantine; a contact or seniority list through his "
                    "instance's uploads path) merges into the one database like Ryan's, with that pilot recorded as "
-                   "the author. Ryan's hand edits stay on top and he can put any earlier value back. upload/pdf's "
-                   "kinds are unchanged (pairings, award)",
+                   "the author. Ryan's hand edits stay on top and he can put any earlier value back. Revision 5 "
+                   "(Ryan, Nov 16): upload/pdf takes kind contacts, the contacts list (CSV) from his portal "
+                   "(commands.pilot_contacts_checks); it goes to the admin's Watcher through this inbox and only "
+                   "adds and updates",
         "edit_fields": list(roles.PILOTDB_EDIT_FIELDS),
         "edit_values": {"phones": "the JSON text of a list of at most 4 {label, number}; label mobile, home, work or "
                                   "other",

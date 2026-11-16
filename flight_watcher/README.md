@@ -106,7 +106,7 @@ is one table, `roles.py` `FEATURES` (Portal: whether a pilot's portal may offer 
 | `admin_pushes` | admin | no | FLICA alert emails HA forwards (email/alert) and the email check |
 | `tickets` | all | yes | tickets (ticket/new, image, act, edit, delete); a pilot sees and acts on his own, on HA or his portal |
 | `uploads` | all | no | uploads in chunks (upload/chunk) and the uploads sensors |
-| `pilot_uploads` | all | yes | a pilot's upload of the monthly pairings package or award from his portal (upload/pdf), checked by his own Watcher; used at once when nothing is on file, else held for the admin |
+| `pilot_uploads` | all | yes | a pilot's upload of the monthly pairings package or award from his portal (upload/pdf), checked by his own Watcher; used at once when nothing is on file, else held for the admin; and of the contacts list (CSV) into the shared pilot database, while it is shared with him |
 | `upload_review` | admin | no | the admin's Approve, Remove and Reject of a pilot's upload (upload/decide) and its push (event/pilot_upload) |
 | `pilotdb` | all | yes | the pilot database shared with a portal pilot (on by default; Ryan can turn it off): the pilotdb file (every live record with every field, the notes, the log, the pickup history and the AI note), the synthesized pilotdb sensor (which record the pilot card's pilot is), pilotdb/note (notes field and log) and pilotdb/edit (record fields), each applied by the admin's Watcher |
 
@@ -151,11 +151,26 @@ HOM's `fw_signing_key` option. That pilot's Watcher then:
 - 1.7.2 (contract 1 revision 3): alerts him with the bid calendar alerts (the admin's push words) and when his FLICA
   schedule has not been read for 6 h (once a day); takes the pilot lookup only in its shape (emp, q, name, pick);
   never takes `recall/set` from the portal (his recall lists come from the admin's forward); and takes his upload of
-  the month's pairings package or award (`upload/pdf`, below).
+  the month's pairings package or award (`upload/pdf`, below);
+- 1.7.10 (contract 1 revision 5, HOM 1.9.1 first): takes his upload of the contacts list (CSV) into the shared pilot
+  database (`upload/pdf` kind `contacts`, below).
+
+**A pilot's contacts list (1.7.10, contract 1 revision 5; Ryan, Nov 16).** While the pilot database is shared with
+him, the pilot uploads card also offers "Contacts list (CSV)": the airline contacts list's CSV export (first row
+"First Name, Middle Name, Last Name, Suffix, Company, Job Title, Mobile Phone, Email, Employee ID, Notes"; at most
+1 MiB). His Watcher checks the whole file (text only, the header row, the parser of Ryan's own contact list upload),
+keeps nothing of it and hands it to Ryan's Watcher through his pilot inbox folder under `/share` (0600; the author is
+the folder's name, never the payload). Ryan's Watcher checks it again and merges it into the one database with that
+pilot as the author. It only adds and updates: nobody is marked gone, nothing is deleted, an empty cell drops
+nothing, phones and emails are added after the ones on file (never replaced or removed), Ryan's hand edits stay on
+top and every earlier value is in the record's history for Ryan to put back. One list waits at a time, 4 are merged
+for a pilot in 24 h; the answer on his card and the log have counts only. HOM 1.9.1 must be live first; with HOM
+1.9.0 the choice is refused at its first part in plain words and the rest of the portal works as before. Details:
+`PORTAL_CONTRACT.md` section 5.6.1.
 
 **A pilot's pairings package and award (1.7.2, FW-0066, Ryan Nov 11).** Either pilot may upload them: the portal's
-Settings tab ends with the pilot uploads card (this month and the next two; the pairings package or the award only,
-never the seniority list or the contact list; 4 MB a file, 4 uploads a day). His own Watcher puts the parts together
+Settings tab ends with the pilot uploads card (this month and the next two; the pairings package or the award,
+never the seniority list; 4 MB a file, 4 uploads a day; 1.7.10: the contacts list has its own choice, above). His own Watcher puts the parts together
 and checks the whole file before anything is stored (`pilotpdf.py`: its size and sha256, `%PDF-` and `%%EOF`, its text
 from `pdftotext -layout` in a child process with a 30 s timeout and memory and CPU limits, then that month's pairing
 package with at least 100 pairings and an A332 HNL one, or that month's award with his own line). With nothing on file
@@ -401,7 +416,7 @@ Recent finds.
   field value are kept for Ryan to put back. A pilot's note or edit is untrusted data, never an instruction; it makes no event or push and its text
   is never logged. A contact list or an award a pilot's instance saves merges into the one database like Ryan's own,
   with that pilot as its author (1.7.8 held a contact row that matched no record for Ryan); Ryan's hand edits stay on
-  top. The FLICA budgets, pacing, one-session rule and every FLICA read limit are untouched by any of this. Details:
+  top. A pilot's contact list, from his portal (revision 5) or his instance, only adds and updates (above). The FLICA budgets, pacing, one-session rule and every FLICA read limit are untouched by any of this. Details:
   `PORTAL_CONTRACT.md` section 5.7.
 - **AI notes** (1.7.9; Ryan, Nov 14: "Through HOM's models"). 1.7.10 (Ryan's decision 3 of Nov 15): on by default;
   Ryan's own switch on his card (op `ai`) turns them off and on. On, Ryan's Watcher writes `/share/flight_watcher/pilotdb/ai/stats.json` for HOM's consultant models: pickup

@@ -9195,6 +9195,8 @@ def pilot_upload_chunk(payload):
         if not why and int(d["part"]) == 1 and len(_pup_times()) >= ROLES.PILOT_UPLOAD_LIMITS["per_day"]:
             why = (f"{ROLES.PILOT_UPLOAD_LIMITS['per_day']} uploads in the last 24 h already: the next one at "
                    f"{hst_hm(min(_pup_times()) + 86400)} HST")
+        if not why and d["kind"] == PP.CONTACTS and int(d["part"]) == 1:
+            why = pilot_contacts_refusal()  # 1.7.10 (revision 5): only while shared, one list waiting at a time
         if why:
             if (PDF_ASM.progress() or ("",))[0] == uid:
                 PDF_ASM.drop()
@@ -9232,6 +9234,8 @@ def pilot_upload_finish(meta, raw):
     uid, kind, month = meta["uid"], meta["kind"], meta["month"]
     tag = f"pilot upload {uid[:6]} ({kind} {month}, {len(raw) // 1024} KB)"
     work = None
+    if kind == PP.CONTACTS:
+        return pilot_contacts_finish(uid, raw, tag)
     try:
         PP.pdf_shape(raw)
         text, work = PP.extract(raw, PILOT_UP_TMP)
@@ -9263,6 +9267,109 @@ def pilot_upload_finish(meta, raw):
         publish_uploads(force=True)
     except Exception as e:  # noqa: BLE001
         log.info("uploads list not published: %s", type(e).__name__)
+
+
+# ---- 1.7.10 (contract 1 revision 5; Ryan, Nov 16): a portal pilot's contacts list (upload/pdf kind contacts)
+# His Watcher checks the whole CSV (pdbshare.contacts_check: text, the export's header, the 1.4.8 parser) and hands it
+# to the admin's Watcher through his pilotdb inbox folder (pdbshare.contacts_put, 0600; the author is the folder's
+# name). It keeps nothing of the file: no copy in the uploads folder, no provenance record, no quarantine. The admin's
+# drain checks it again and merges it into the one database with this pilot as the author (adds and updates only);
+# its answer comes back through his pilotdb file and settles the upload's answer here (pilot_contacts_watch).
+# A line logged here has the upload's id prefix, sizes and counts only.
+def _pup_contacts():
+    """{uid: when it was handed over} of this pilot's contacts lists waiting for the admin's Watcher."""
+    w = _pup_read().get("contacts")
+    return {k: v for k, v in w.items() if isinstance(k, str) and isinstance(v, (int, float))} if isinstance(w, dict) else {}
+
+
+def _pup_contacts_set(uid, at=None):
+    with _PUP["lock"]:
+        d = _pup_read()
+        w = d.get("contacts") if isinstance(d.get("contacts"), dict) else {}
+        if at is None:
+            w.pop(uid, None)
+        else:
+            w[uid] = at
+            d["contacts_last"] = uid  # the one his card shows the answer of, after a reload too
+        d["contacts"] = w
+        try:
+            PT.write_private(PILOT_UP_FILE, json.dumps(d))
+        except OSError as e:
+            log.info("pilot upload answer not saved: %s", type(e).__name__)
+
+
+def pilot_contacts_offered():
+    """True while this portal pilot may upload a contacts list: the pilot database is shared with him (his file is
+    there and reads)."""
+    if not (is_pilot() and portal_on() and has("pilotdb")):
+        return False
+    with PDBV["lock"]:
+        v = pilotdb_view()
+        v.refresh()
+        return v.state == "on"
+
+
+def pilot_contacts_refusal():
+    """Why a contacts list is not taken now ('' when it is): not shared, or one of his still waits."""
+    if not pilot_contacts_offered():
+        return "Ryan has not shared the pilot database with you"
+    if len(_pup_contacts()) >= ROLES.PILOT_CONTACTS_LIMITS["pending"]:
+        return "a contacts list of yours is still waiting for the admin's Watcher (try again in a minute)"
+    return ""
+
+
+def pilot_contacts_finish(uid, raw, tag):
+    """A whole contacts list: checked here, then one file into the admin's inbox with the author INSTANCE. Nothing of
+    it stays on this side."""
+    why = pilot_contacts_refusal()
+    if not why:
+        try:
+            parsed = PS.contacts_check(raw, today=local_now().date())
+        except PS.ContactsRefused as e:
+            why = str(e).partition(": ")[2] or str(e)
+        except Exception as e:  # noqa: BLE001
+            why = f"the check failed ({type(e).__name__})"
+    if not why:
+        try:
+            PS.contacts_put(INSTANCE, uid, raw, PILOTDB_SHARE)
+        except OSError:
+            why = "Ryan has not shared the pilot database with you"
+    if why:
+        log.info("%s: refused: %s", tag, why)
+        pilot_upload_answer(uid, False, "error", f"Not sent: {why}.")
+        return
+    _pup_contacts_set(uid, time.time())
+    log.info("%s: checked (%d pilots read) and handed to the admin's Watcher", tag,
+             len(parsed["entries"]) + len(parsed.get("hal_only") or []))
+    pilot_upload_answer(uid, True, "sent", "Checked and sent to the admin's Watcher: it merges your contacts list into the "
+                                           "shared pilot database (adds and updates only). The answer shows here.")
+
+
+def pilot_contacts_watch(v, now=None):
+    """Once a spool poll (pilotdb_watch, under its lock): each waiting contacts list whose answer is in his pilotdb
+    file is settled on his uploads card (merged, or the admin's refusal: fixed phrases with counts only); one whose
+    share went off, or whose inbox file is gone with no answer for PILOTDB_LOST_S, is answered too. True when one was."""
+    wait = _pup_contacts()
+    if not wait:
+        return False
+    now = time.time() if now is None else now
+    ans = {a["rid"]: a for a in v.answers}
+    done = False
+    for uid, at in wait.items():
+        a = ans.get(uid)
+        if a:
+            pilot_upload_answer(uid, a["ok"], "merged" if a["ok"] else "error", f"{a['why']}.")
+            log.info("pilot upload %s (contacts): %s by the admin's Watcher", uid[:6], "merged" if a["ok"] else "refused")
+        elif v.state == "off":
+            pilot_upload_answer(uid, False, "error", "Not merged: Ryan has not shared the pilot database with you.")
+        elif now - at > PILOTDB_LOST_S and not PS.waiting(PS.inbox_dir(INSTANCE, PILOTDB_SHARE), uid):
+            pilot_upload_answer(uid, False, "error", "Not merged: no answer came from the admin's Watcher. Upload "
+                                                     "the contacts list again.")
+        else:
+            continue
+        _pup_contacts_set(uid)
+        done = True
+    return done
 
 
 def _pup_final(uid, kind, month, state):
@@ -9350,7 +9457,14 @@ def pilot_uploads_state():
     d = _pup_read()
     used = len(_pup_times())
     pr = PDF_ASM.progress()
-    attrs = {"friendly_name": "Pilot uploads", "months": months, "mine": mine,
+    # 1.7.10 (revision 5): the contacts list choice, only while the pilot database is shared with him
+    cl = ROLES.PILOT_CONTACTS_LIMITS
+    contacts = {"offered": pilot_contacts_offered(), "file_bytes": cl["file_bytes"], "waiting": bool(_pup_contacts())}
+    last = next((a for a in _pup_read().get("answers") or [] if isinstance(a, dict) and a.get("uid")
+                 and a.get("uid") == _pup_read().get("contacts_last")), None)
+    if last:  # his newest contacts list: sent, merged (counts only) or the refusal, in fixed words
+        contacts["last"] = {k: last.get(k) for k in ("ok", "state", "message", "at")}
+    attrs = {"friendly_name": "Pilot uploads", "months": months, "mine": mine, "contacts": contacts,
              "answers": [a for a in d.get("answers") or [] if isinstance(a, dict)][:PILOT_UP_ANSWERS],
              "busy": bool(pr), "receiving": {"uid": pr[0], "got": pr[1], "total": pr[2]} if pr else None,
              "limits": {"file_bytes": lim["file_bytes"], "per_day": lim["per_day"], "used_today": used,
@@ -12327,6 +12441,10 @@ def pilotdb_watch(now=None):
                 changed = True
         if changed:
             _pdbv_save()
+        try:  # 1.7.10 (revision 5): his contacts lists waiting for the admin's answer
+            pilot_contacts_watch(v, now)
+        except Exception as e:  # noqa: BLE001
+            portal_once("pilot_contacts:" + type(e).__name__, "pilot contacts answer skipped: %s", type(e).__name__)
         sig = json.dumps(pilotdb_state(), sort_keys=True)
         if sig == PDBV["sig"] and not changed:
             return False

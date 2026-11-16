@@ -1,4 +1,17 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-15, release 1.7.9 live with HOM 1.9.0; 1.7.10 built, not released)
+# HANDOFF: Flight Watcher (refreshed 2026-11-16, release 1.7.9 live with HOM 1.9.0; 1.7.10 built, not released)
+
+**Nov 16, on top of everything below: 1.7.10 is now contract 1 REVISION 5 and needs HOM 1.9.1 live FIRST.** Ryan:
+"His uploads should update the shared database too", and the contacts list upload on James's portal "Now, in
+1.7.10". Built (commit "Flight Watcher 1.7.10: a portal pilot uploads a contacts list into the shared pilot database
+(contract 1 revision 5)"; CHANGELOG 1.7.10, its own section; `PORTAL_CONTRACT.md` 5.6.1): the pilot uploads card
+offers "Contacts list (CSV)"; `upload/pdf` takes kind `contacts`; his Watcher checks the file and hands it to Ryan's
+Watcher through his pilot inbox under `/share` (0600, the author from the folder); it merges into the one database
+with James as the author and ONLY ADDS AND UPDATES (nobody gone, nothing deleted, no phone or email removed or
+replaced, Ryan's hand edits on top, every earlier value in the history). Boundary changes 16 to 20 in the CHANGELOG.
+The fixture is regenerated for revision 5, sha256 `051676bbdf48456cb0f49828f6cb6eb5c154a1c33a650b969c834513df9f1dc1`
+(revision 4's, which HOM 1.9.0's re-pin branch held: `86c2d8f905ef...`). HOM 1.9.1 pins these bytes.
+Where the notes below say "revision 4", "either order is safe" or "works with the live HOM 1.9.0", read this
+paragraph and the release order instead: they describe 1.7.10 before Nov 16.
 
 **1.7.10 built on branch `fw-1.7.10` (not pushed, not merged, not live).** Ryan's decisions of Nov 15: "The pilot
 database should be shared with James 100%; we work on a shared system; we do have our own schedules and pay rates
@@ -27,9 +40,8 @@ Open for Ryan:
    "Sharing the pilot database with every portal pilot and AI notes are on by default ...; Claude never turns either
    on or off by hand, and turning one off is Ryan's tap." The untrusted-data rule stays; `tests/test_fw179_pilotdb_rule.py`
    tests the new line. It lands with Ryan's yes to merge 1.7.10.
-2. A contact list has no upload kind on James's portal (`upload/pdf` takes pairings and award). Adding it changes a
-   command shape, so it is contract revision 5 with HOM 1.9.1 first. Today his contact list merges only when his
-   instance saves one (the 1.4.8 uploads path, which the retired HA dashboard used). Say if he should get it.
+2. Settled Nov 16 ("Now, in 1.7.10"): James's portal has the contacts list upload (contract revision 5, HOM 1.9.1
+   first; the top of this file).
 3. The base is read only on James's portal for the same reason (`pilotdb/edit`'s field list is a shape).
 4. The update itself turns sharing with James on and the AI notes on (no tap). If Ryan wants either off from the
    first minute, say so before the update: the switch is on his Pilots card (Settings, Sharing).
@@ -53,16 +65,32 @@ Open for Ryan:
    up cap anything (today it caps nothing, on every path)? The tests are synthetic: (a) to (e) are the real proof.
    Every OFF switch now also lives in `/share/flight_watcher/pilotdb/switches_off.json` (off in either file is off).
 
-Release order for 1.7.10, each step [DESTRUCTIVE] with Ryan's own yes (an earlier yes never covers a later one):
-1. Push `fw-1.7.10` and update the Flight Watcher PR (a push, so Ryan's yes).
-2. Merge the Flight Watcher PR (yes), then store reload and update the app on Pako (yes; this yes turns sharing and
-   AI notes on). It works with the live HOM 1.9.0. Verify: `sensor.flight_watcher_state` version 1.7.10 on both
-   instances, the app log ("pilot db: shared with james", no name or number in Ryan's log), James's manifest still
-   revision 4, his signed `pilotdb` file (every live record, whitelisted keys only, under 7 MiB), his sensor `on`,
-   no `roster.json` under `/data/pilotdb_roster`.
-3. HOM: the re-pin PR on branch `claude/hom-1.9.1-pilotdb` (fixture copy, its sha256, its test, docs; tests and docs
-   only): push (yes), merge (yes). No deploy. Before or after step 2.
-4. No tap is needed. Claude never taps either switch and never contacts James.
+Release order for 1.7.10 (revision 5 since Nov 16: HOM FIRST), each step [DESTRUCTIVE] with Ryan's own yes (an
+earlier yes never covers a later one):
+1. HOM 1.9.1 (branch `claude/hom-1.9.1-pilotdb`: the revision 5 fixture pinned, revisions 3, 4 and 5 accepted, the
+   contacts upload kind for a pilot's own session, gzip and ETag on the file route): push (yes), merge (yes), deploy
+   by Hark (yes). Check after it: `[fwportal] 1.9.1 listening ... self-check passed`, /fw/ 200 with its CSP
+   unchanged, James's portal draws as before on the live Flight Watcher 1.7.9 (revision 4 manifest), a file route
+   answer is gzipped with an ETag, and a chunk of kind `contacts` is refused for his revision 4 Watcher ("your Flight
+   Watcher is too old for this"), with an audit row.
+2. Push `fw-1.7.10` and update the Flight Watcher PR (a push, so Ryan's yes).
+3. Merge the Flight Watcher PR (yes), then store reload and update the app on Pako (yes; this yes turns sharing and
+   AI notes on). Checks after the update: `sensor.flight_watcher_state` version 1.7.10 on both instances; the app
+   log ("pilot db: shared with james", no name or number in Ryan's log); James's `out/manifest.json` names
+   **revision 5**; his signed `pilotdb` file (every live record, whitelisted keys only, under 7 MiB); his sensor
+   `on`; no `roster.json` under `/data/pilotdb_roster`; `sensor.flight_watcher_james_pilot_uploads` (his state.json)
+   has `contacts: {offered: true, file_bytes: 1048576, waiting: false}`; his uploads card lists "Contacts list (CSV)".
+4. The contacts upload itself is proven only when James (or Ryan signed in as him, his call) uploads a real list:
+   then James's log says "pilot upload ... (contacts ..., N KB): checked (N pilots read) and handed to the admin's
+   Watcher", Ryan's log says "pilot db: contacts list from james: merged (N rows, A added, C changed, K kept hand
+   edits, H held for Ryan)" with no name or number, the card answers "Contacts merged: ...", the Pilots card shows the
+   new values with "james" as their author in the record's history, `gone` did not move in
+   `sensor.flight_watcher_pilotdb`, and nothing is left in `/share/flight_watcher/pilotdb/inbox/james/`. Claude does
+   not upload one for him and never contacts James.
+5. If step 3 ever runs before step 1 (HOM 1.9.0 still live): the portal works as before; only "Contacts list (CSV)"
+   answers "the portal does not take a contacts list yet (it needs its next update). Nothing was sent." Nothing to
+   roll back; do step 1.
+6. No tap is needed. Claude never taps either switch.
 
 State (Nov 15, later): app **1.7.9** live on Pako HI since 2026-11-15 18:56 UTC (08:56 HST), both instances (PR #120,
 squash 855cd29), on **HOM 1.9.0** (AlohaFlyer/home-office-manager PR #60, squash 7bf6d25, deployed by Hark about
@@ -273,6 +301,12 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
    (harmless: the Watcher forwards recall lists itself, F#75).
 
 ## Rollback notes
+
+- **1.7.10 to 1.7.9** (Flight Watcher first; HOM 1.9.1 can stay, it takes revision 4): safe. 1.7.9 refuses a chunk
+  of kind `contacts` by its own shape check and answers an inbox file of cmd `contacts` "it could not be read"; the
+  values and records a pilot's contacts list gave stay in the database (each with its author and its history;
+  Ryan's card can put any earlier value back). The switches file and the 100% sharing notes of part one apply as
+  written below.
 
 - **1.7.9 to 1.7.8** (Flight Watcher first, then HOM 1.9.0 to 1.8.3 only if needed): safe. 1.7.8 has no pilotdb file,
   command or synthesized sensor and keeps the Pilots card off every portal; the database is untouched (schema 1 in

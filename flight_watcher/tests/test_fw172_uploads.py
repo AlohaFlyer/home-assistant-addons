@@ -422,10 +422,14 @@ def test_the_pilots_limits_month_kind_and_a_day(inst, monkeypatch):
     W = inst("pilot2")
     _send(W, _chunks(PKG, "pairings", "2027-02"))
     assert _answer(W)["state"] == "error" and "pick November 2026, December 2026 or January 2027" in _answer(W)["message"]
-    for kind in ("seniority", "contacts"):  # never the seniority list or the contact list (other pilots' phones)
+    for kind in ("seniority", "contacts"):  # never the seniority list
         _send(W, [p.replace('"kind": "pairings"', f'"kind": "{kind}"') for p in _chunks(PKG, "pairings", "2026-12",
                                                                                       uid=f"u{kind}000000000000")])
-        assert _answer(W, f"u{kind}000000000000") is None
+    assert _answer(W, "useniority000000000000") is None
+    # 1.7.10 (revision 5): contacts is a kind of its own (tests/test_fw1710_portal_contacts.py). Here the pilot
+    # database is not shared with this pilot, so it is refused at its first part and nothing is stored or sent
+    a = _answer(W, "ucontacts000000000000")
+    assert a["state"] == "error" and "Ryan has not shared the pilot database with you" in a["message"]
     assert not os.listdir(inst.up)
     big = b"%PDF-1.4\n" + b"0" * (LIM["file_bytes"] + 1)
     W.on_message(None, None, Msg(f"{W.T}/upload/pdf", _chunks(big, "pairings", "2026-12", uid="uBig0000000000001")[0]))

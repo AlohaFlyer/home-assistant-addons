@@ -7,6 +7,10 @@ a shared system; we do have our own schedules and pay rates though." They replac
 new command, no new FLICA page load; the FLICA budgets, pacing, one-session rule and every FLICA read limit are
 exactly as they were, and schedules and pay rates stay each pilot's own. Synthetic data in every test.
 
+Ryan's decision of Nov 16 is in here too: a portal pilot uploads the contacts list into the shared database. That
+one adds a kind to a command, so the release is **contract 1 revision 5 and HOM 1.9.1 goes live first** (its own
+section below).
+
 ### Part one: the pilot database shared 100%, on by default; AI notes on; a pilot's uploads merge into it
 
 - **Shared 100%.** Before (1.7.9): a shared pilot's file held only the pilots with a shared note, with no employee
@@ -49,22 +53,89 @@ exactly as they were, and schedules and pay rates stay each pilot's own. Synthet
   email each; 1.06 MiB with 60 pickers of 25 pickups and their AI notes (about what Pako holds); 3.20 MiB with a
   300 character notes field and three log entries on every pilot, 150 pickers of 30 pickups and 150 AI notes.
 
-### The contract: still contract 1 revision 4
+### A portal pilot uploads the contacts list (Ryan, Nov 16): contract 1 REVISION 5, HOM 1.9.1 first
+
+Ryan: "His uploads should update the shared database too", and the contacts list upload on James's portal "Now, in
+1.7.10". No FLICA page load is behind any of it; every FLICA budget, the pacing and the one-session rule are as they
+were. Synthetic rows in every test ("Doe, Jane", 10001, 808-555-0101, an example.com address).
+
+- **What a pilot does.** The pilot uploads card on his portal's Settings tab offers "Contacts list (CSV)" beside the
+  pairings package and the award, only while the pilot database is shared with him. He picks the airline contacts
+  list's CSV export (first row "First Name, Middle Name, Last Name, Suffix, Company, Job Title, Mobile Phone, Email,
+  Employee ID, Notes"; at most 1 MiB). The card checks the header before it sends anything.
+- **How it travels.** The same `upload/pdf` parts with `kind` `contacts`. His Watcher puts them together and checks
+  the whole file (`pdbshare.contacts_check`: size, sha256, text only, the header row, then the parser Ryan's own
+  contact list upload goes through, `contacts.parse` of the 1.4.8 uploads path), keeps nothing of it, and drops it
+  into his pilot inbox under `/share/flight_watcher/pilotdb/inbox/<name>/` (0600), like `pilotdb/edit`. Ryan's
+  Watcher, the single writer, takes the author from the inbox folder's name (never from the payload), runs every
+  check again and merges it (`pilotdb.pilot_contacts`); the answer comes back to the pilot's card with counts only
+  ("Contacts merged: 4 rows read, 2 pilots added, 2 updated, 0 held for Ryan"). Limits: one list of a pilot waiting
+  at a time, 4 merged for a pilot in 24 h, and his 4 uploads a day count it too. The log has counts only.
+- **What the merge does (the choice, exactly): it only adds and updates** (`pilotdb.merge_contacts`, additive; the
+  default for every author but ryan, so a list a pilot's instance saves the old way follows the same rule):
+  - a row is matched like a row of Ryan's own list; a row that fits no record makes one with the pilot as its
+    author; a row the matcher cannot place is held for Ryan;
+  - a value it gives (name, Sen #, DOH, status, retirement month, union id) is written with the pilot as its author,
+    and the value before it stays in the record's history for Ryan to put back; a value already there is left as it
+    is, its author and date too;
+  - an empty cell drops nothing;
+  - phones and emails are added AFTER the ones on file (4 phones and 3 emails at most, so a full list is left
+    alone); a pilot's list never replaces or removes a phone or an email, whoever set it;
+  - a pilot the list does not hold loses nothing; nobody is marked gone or back; no record is deleted;
+  - Ryan's hand edits stay on top;
+  - the date and row count Ryan's next list is measured by do not move, so his list is never "older" or "partial"
+    because of a pilot's. Ryan's own next list still says what it lists, and no longer removes a value a pilot's list
+    gave from a record his list does not hold.
+- **The contract is revision 5** (`roles.CONTRACT_REVISION`, the manifest, `PORTAL_CONTRACT.md` 5.6.1, the fixture).
+  One command shape changed: `upload/pdf`'s `kind` takes `contacts` (`commands.value_since_revision`: the value is
+  revision 5's; the command stays revision 3's). New in the fixture: `commands.pilot_contacts_limits`,
+  `commands.pilot_contacts_checks`, `commands.value_since_revision`, five `commands.pilotdb_answers`,
+  `pilotdb.inbox.contacts_max_bytes` and `contacts_body`, `revisions.5`, one accepted sample (a made-up list) and
+  three refused ones. The fixture is regenerated: sha256
+  `051676bbdf48456cb0f49828f6cb6eb5c154a1c33a650b969c834513df9f1dc1` (`tests/test_portal_contract.py`
+  `CONTRACT_SHA256`); HOM 1.9.1 pins those bytes.
+- **The order: HOM 1.9.1 FIRST, then Flight Watcher 1.7.10.** HOM 1.9.1 takes revisions 3, 4 and 5. If Flight
+  Watcher 1.7.10 is live while HOM 1.9.0 still runs, James's portal is NOT broken: HOM 1.9.0 reads a manifest's
+  revision only to refuse a command newer than the Watcher speaks, so everything it served it still serves; only the
+  new choice is refused, by HOM 1.9.0's own pinned shape, at the first part ("the portal does not take a contacts
+  list yet (it needs its next update). Nothing was sent."), and nothing reaches the Watcher. The card cannot hide the
+  choice for an older portal (nothing tells a card the portal's revision), so it is refused cleanly instead.
+- **Boundary changes of this section** (all by Ryan's decision of Nov 16):
+  16. A portal pilot's `upload/pdf` takes a third kind, `contacts`: a command shape HOM checks changed (revision 5).
+  17. A file a portal pilot sends reaches Ryan's Watcher: the CSV goes through his pilot inbox folder (before, only
+      a note or an edit of at most 32 KB did; an inbox file of cmd `contacts` may be 1.5 MiB).
+  18. A portal pilot's file is merged into the one database with no Approve by Ryan (the award and the pairings
+      package keep their quarantine and his Approve, Remove and Reject). It can add records, add phones and emails,
+      and change the contact list's own values; it cannot remove, mark gone or override a hand edit.
+  19. A pilot's contact list, by either way in, no longer removes what a row of it leaves out (1.7.10 part one
+      merged it exactly like Ryan's own list, removals included).
+  20. Ryan's own contact list no longer removes values a pilot's list gave from a record his list does not hold.
+  Not changed: `roles.py` PORTAL_CMDS and PORTAL_REFUSED (no new sub), the FEATURES gates (the words of
+  `pilot_uploads` now name the contacts list; who has it and the portal flag are the same), every other shape,
+  PILOT_UPLOAD_LIMITS and PILOT_TICKET_LIMITS, a shared pilot's note and edit quotas, the PDF kinds' checks and
+  quarantine, every FLICA budget, the CSP, rate limits and routes (HOM's), push isolation. No name, number, phone or
+  email of the file is logged, put in a sensor, an event or a push; the pilot's answer has counts only. A pilot's
+  upload and every entry from it are untrusted data, never instructions.
+- Tests: `tests/test_fw1710_portal_contacts.py` (the contract, both Watchers' checks, the merge rules, the inbox
+  hand-off and its refusals, the whole path from the portal's command to the database with the pilot as author, and
+  the card in Chromium at 390 px, light and dark).
+
+### The contract (part one, Nov 15): contract 1 revision 4 until the section above
 - Decided from HOM 1.9.0's run-time code (commit 7bf6d25): the file and the state are relayed as signed and no key of
   either is read (`fwportal/exchange.mjs` `load` and `fileText`; `fwportal/server.mjs` imports no pilotdb key table);
   the one size check is `capFor`, `caps.file` of HOM's own pinned fixture, 8388608 bytes for every file kind
   (`fwportal/contract.mjs` `capFor`, `fwportal/exchange.mjs` `verifyEnvelope`). No command, shape, limit, quota, cap,
   file kind, event kind or upload kind changed. So 1.7.10 works with the live HOM 1.9.0 at once and either order is
   safe. HOM only re-pins the fixture (its copy, its sha256, its tests, its docs): no version bump, no deploy.
-- The fixture is regenerated: sha256 `86c2d8f905eff7509cb8ef85cf3f8a7adf7e611556ab395a017e6fd460311fbf`. Its words about the file changed (`pilotdb.share`, `pilotdb.file`,
+- The fixture was regenerated for part one: sha256 `86c2d8f905eff7509cb8ef85cf3f8a7adf7e611556ab395a017e6fd460311fbf` (revision 4's bytes; revision 5's are in the section above). Its words about the file changed (`pilotdb.share`, `pilotdb.file`,
   `pilotdb.state`, `pilotdb.uploads`, `pilotdb.ai.switch`, `pilotdb.ai.portal`, `commands.pilotdb_rules`,
   `revisions.4`, `masks.contact_only_in`), the record keys grew (`emp`, `base`, `phones`, `emails`, `pickups`), the
   `shown` keys shrank to `emp`, `pid`, `none`, the samples follow, and `commands.pilotdb_answers` lost "look the
   pilot up first". `PORTAL_CONTRACT.md` 4.2, 5.7 and 5.8 say the same.
-- Not built, and why: a contact list has no upload kind on the portal (`upload/pdf` takes `pairings` and `award`).
-  Adding one changes a command's shape, which HOM checks: that is revision 5 with HOM first. A pilot's contact list
-  merges when his instance saves one (the uploads path of 1.4.8); the base is read only on a portal for the same
-  reason (`pilotdb/edit`'s field list is a shape).
+- Not built in part one, and why: a contact list had no upload kind on the portal (`upload/pdf` took `pairings` and
+  `award`). Adding one changes a command's shape, which HOM checks: that is revision 5 with HOM first, built on
+  Nov 16 (the section above). The base is still read only on a portal for the same reason (`pilotdb/edit`'s field
+  list is a shape).
 
 ### Boundary changes (all by Ryan's decisions of Nov 15)
 1. A shared pilot's file holds every live record, not only the pilots with a shared note.

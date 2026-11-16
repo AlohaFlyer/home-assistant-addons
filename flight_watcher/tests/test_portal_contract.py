@@ -19,9 +19,10 @@ import roles
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE = os.path.join(HERE, "tests", "fixtures", "portal_contract_v1.json")
 DOC = os.path.join(HERE, "PORTAL_CONTRACT.md")
-# 1.7.10 (Ryan, Nov 15): still revision 4, two additive keys a shared pilot reads (union_id, ai_note); 1.7.9's bytes
-# were 9b882fb6dd00a932e196359edc364ee8ecbe78da7077f5f29a7fdc06301a6176
-CONTRACT_SHA256 = "86c2d8f905eff7509cb8ef85cf3f8a7adf7e611556ab395a017e6fd460311fbf"
+# 1.7.10 (Ryan, Nov 16): revision 5, a pilot's contacts list (upload/pdf kind contacts). Revision 4's bytes as of
+# Nov 15 were 86c2d8f905eff7509cb8ef85cf3f8a7adf7e611556ab395a017e6fd460311fbf; 1.7.9's were
+# 9b882fb6dd00a932e196359edc364ee8ecbe78da7077f5f29a7fdc06301a6176
+CONTRACT_SHA256 = "051676bbdf48456cb0f49828f6cb6eb5c154a1c33a650b969c834513df9f1dc1"
 
 
 def _fx():
@@ -38,7 +39,7 @@ def test_fixture_regenerates_byte_for_byte_and_is_pinned():
 def test_lists_are_the_roles_tables():
     fx = _fx()
     assert fx["contract"] == fx["fwp"] == roles.CONTRACT == PT.FWP == 1
-    assert fx["revision"] == roles.CONTRACT_REVISION == 4
+    assert fx["revision"] == roles.CONTRACT_REVISION == 5  # 1.7.10: a pilot's contacts list (kind contacts)
     assert fx["commands"]["shapes"] == json.loads(json.dumps(roles.SHAPE_CMDS))
     assert fx["commands"]["pilot_upload_limits"] == roles.PILOT_UPLOAD_LIMITS
     assert fx["commands"]["since_revision"] == roles.COMMAND_SINCE and fx["commands"]["since_revision"]["upload/pdf"] == 3
@@ -46,7 +47,7 @@ def test_lists_are_the_roles_tables():
     assert fx["events"]["kind_fields"] == {k: list(v) for k, v in roles.EVENT_KIND_FIELDS.items()}
     assert {"bid_calendar", "schedule_unread"} <= set(fx["events"]["kinds"])
     man = json.loads(fx["samples"]["envelopes"][0]["envelope"]["payload"])
-    assert man["revision"] == 4 and "recall/set" not in man["mqtt_subs"] and "upload/pdf" in man["mqtt_subs"]
+    assert man["revision"] == 5 and "recall/set" not in man["mqtt_subs"] and "upload/pdf" in man["mqtt_subs"]
     assert fx["commands"]["allowed"] == list(roles.PORTAL_CMDS)
     assert fx["commands"]["refused"] == list(roles.PORTAL_REFUSED)
     assert fx["prefs"] == json.loads(json.dumps(roles.PREF_KEYS)) and fx["file_kinds"] == roles.FILE_KINDS
@@ -211,7 +212,11 @@ def test_doc_names_everything_in_the_contract():
                  "portal.PILOTDB_FILE_KEYS", "union_id",
                  # 1.7.10 (Ryan's decisions of Nov 15): shared 100%, on by default, the choices outside the database
                  "shared with James 100%", "every live record", "on by default", "pilotdb_switches.json",
-                 "EXPORT_HARD", "7 MiB", "either order", "A pilot's uploads", "that pilot is not in Ryan's pilot database"):
+                 "EXPORT_HARD", "7 MiB", "either order", "A pilot's uploads", "that pilot is not in Ryan's pilot database",
+                 # 1.7.10 (revision 5; Ryan, Nov 16): a portal pilot's contacts list
+                 "revision 5", "HOM 1.9.1", "pilot_contacts_limits", "pilot_contacts_checks", "value_since_revision",
+                 "it only adds and updates", "contacts_body", "With HOM 1.9.0 still live", "1 MiB",
+                 "Nobody is marked gone"):
         assert word in doc, word
     for a in roles.PILOT_TICKET_ACTIONS:
         assert f"`{a}`" in doc, a

@@ -367,7 +367,7 @@ def test_the_manifest_names_revision_4_and_the_pilotdb_subs(james):
     W, _db, _root = james
     W.portal_export_once(full=True)
     m = _payload(W, "manifest.json", "manifest")
-    assert m["revision"] == 4 and {"pilotdb/note", "pilotdb/edit"} <= set(m["mqtt_subs"])
+    assert m["revision"] == 5 and {"pilotdb/note", "pilotdb/edit"} <= set(m["mqtt_subs"])
     assert "flight-watcher-pilotdb-card-james.js" in m["cards"]
     pilot_tab = next(t for t in m["layout"]["tabs"] if t["id"] == "pilot")
     types = [c["type"] for c in pilot_tab["cards"]]
