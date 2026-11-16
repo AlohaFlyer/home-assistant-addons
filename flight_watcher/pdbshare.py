@@ -67,6 +67,7 @@ CONTACTS_KEYS = ("rid", "size", "sha", "data")
 CONTACTS_BAD = "Not merged: that file is not the contacts list (CSV) export"
 CONTACTS_EMPTY = "Not merged: no pilot was read from that contacts list"
 CONTACTS_BIG = "Not merged: a contacts list is at most {n} KB"
+CONTACTS_ROWS = "Not merged: a contacts list is at most {n} rows"
 CONTACTS_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # no control character but tab, LF and CR
 
 
@@ -74,21 +75,52 @@ class ContactsRefused(ValueError):
     """A contacts list refused; str() is one of the fixed phrases above."""
 
 
+def contacts_text(raw):
+    """The text of a contacts list, decoded as the 1.4.8 parser decodes Ryan's own (contacts.csv_rows): UTF-8 (a BOM
+    allowed), else Windows-1252 (strict: its five undefined bytes are refused). ContactsRefused otherwise."""
+    for enc in ("utf-8-sig", "cp1252"):
+        try:
+            return bytes(raw).decode(enc)
+        except UnicodeDecodeError:
+            continue
+    raise ContactsRefused(CONTACTS_BAD)
+
+
+def _contacts_cells(text, lim):
+    """The bounds on a list's rows and cells (review, Nov 16), read with the csv module before the parser sees a
+    byte: at most rows_max rows under the header; a cell at most cell_chars characters (the Notes cell, the last of
+    the header, notes_chars); no text in a cell beyond the header's columns. ContactsRefused with a fixed phrase."""
+    width, rows = len(lim["header"]), -1
+    try:
+        for row in csv.reader(io.StringIO(text, newline="")):
+            if not any(c.strip() for c in row):
+                continue
+            rows += 1
+            if rows == 0:
+                continue  # the header row (checked cell for cell by the caller)
+            if rows > lim["rows_max"]:
+                raise ContactsRefused(CONTACTS_ROWS.format(n=lim["rows_max"]))
+            for i, c in enumerate(row):
+                if (c.strip() if i >= width else len(c) > (lim["notes_chars"] if i == width - 1 else lim["cell_chars"])):
+                    raise ContactsRefused(CONTACTS_BAD)
+    except csv.Error:  # a cell over the csv module's own limit, a NUL
+        raise ContactsRefused(CONTACTS_BAD) from None
+
+
 def contacts_check(raw, limits=None, today=None):
     """The checks both Watchers run on a pilot's whole contacts list, in order (portal.CONTACTS_CHECKS): at most
-    file_bytes; text only (strict UTF-8, a BOM allowed, no control character but tab, CR and LF: so no PDF, no XLSX,
-    no binary); its first row is the export's header, cell for cell (case and outer spaces aside); read by the 1.4.8
-    parser (contacts.parse, the one Ryan's own upload goes through) it gives at least rows_min pilots. Returns the
-    parsed list (contacts.parse's answer); ContactsRefused with a fixed phrase otherwise. Never logs."""
+    file_bytes; text only (UTF-8, a BOM allowed, else Windows-1252, as the 1.4.8 parser reads Ryan's own; no control
+    character but tab, CR and LF: so no PDF, no XLSX, no binary); its first row is the export's header, cell for cell
+    (case and outer spaces aside); at most rows_max rows and no cell over cell_chars (Notes: notes_chars), nothing
+    beyond the header's columns (_contacts_cells); read by the 1.4.8 parser (contacts.parse, the one Ryan's own upload
+    goes through) it gives at least rows_min pilots. Returns the parsed list (contacts.parse's answer);
+    ContactsRefused with a fixed phrase otherwise. Never logs."""
     lim = limits or ROLES.PILOT_CONTACTS_LIMITS
     if not isinstance(raw, (bytes, bytearray)) or not raw:
         raise ContactsRefused(CONTACTS_BAD)
     if len(raw) > lim["file_bytes"]:
         raise ContactsRefused(CONTACTS_BIG.format(n=lim["file_bytes"] // 1024))
-    try:
-        text = bytes(raw).decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raise ContactsRefused(CONTACTS_BAD) from None
+    text = contacts_text(raw)
     kind = CT.sniff(bytes(raw))  # read from the bytes, as Ryan's own upload is: 'csv', or None for a lone header row
     if CONTACTS_CTRL.search(text) or kind not in ("csv", None):
         raise ContactsRefused(CONTACTS_BAD)
@@ -99,6 +131,7 @@ def contacts_check(raw, limits=None, today=None):
         head = []
     if [c.strip().lower() for c in head] != [h.lower() for h in lim["header"]]:
         raise ContactsRefused(CONTACTS_BAD)
+    _contacts_cells(text, lim)
     if kind is None:
         raise ContactsRefused(CONTACTS_EMPTY)
     try:
@@ -258,15 +291,46 @@ def contacts_of(d, limits=None):
     return raw
 
 
-def _contacts_apply(db, pilot, rid, d, now):
+def contacts_precheck(pilots, root=ROOT, today=None):
+    """Review (Nov 16): the whole-file check of each pilot's oldest waiting contacts list, done BEFORE the admin's
+    Watcher takes the pilot database's lock (watcher.pilotdb_share_pass), so reading a list never holds the database.
+    Returns {(pilot, file name): (sha256 of the bytes checked, the parsed list or the ContactsRefused)}; the drain
+    uses an entry only for a file with those same bytes, and checks any other list itself. Never raises."""
+    out = {}
+    for pilot in pilots:
+        folder = inbox_dir(pilot, root)
+        for name in inbox_names(folder)[:DRAIN_PER_PASS]:
+            d = _read_cmd(folder, name)
+            if not d or d.get("cmd") != "contacts":
+                continue
+            try:
+                raw = contacts_of(d)
+                try:
+                    got = contacts_check(raw, today=today)
+                except ContactsRefused as e:
+                    got = e
+                out[(pilot, name)] = (hashlib.sha256(raw).hexdigest(), got)
+            except Exception:  # noqa: BLE001 (unreadable: the drain answers it)
+                pass
+            break  # one list a pilot a pass (his Watcher lets one wait at a time)
+    return out
+
+
+def _contacts_apply(db, pilot, rid, d, now, pre=None):
     """One contacts list from a pilot's inbox, checked again and merged with the author `pilot` (the folder). Returns
-    (ok, why, stats or None, by_db): by_db False when the refusal was made here and still needs its answer."""
+    (ok, why, stats or None, by_db): by_db False when the refusal was made here and still needs its answer. pre: this
+    file's contacts_precheck entry (used when it is of the same bytes)."""
     try:
         raw = contacts_of(d)
     except Exception:  # noqa: BLE001
         return False, UNREADABLE, None, False
     try:
-        parsed = contacts_check(raw, today=db.today())
+        if pre and pre[0] == hashlib.sha256(raw).hexdigest():
+            if isinstance(pre[1], ContactsRefused):
+                raise pre[1]
+            parsed = pre[1]
+        else:
+            parsed = contacts_check(raw, today=db.today())
     except ContactsRefused as e:
         return False, str(e), None, False
     at = datetime.fromtimestamp(now, PDBM.HST).replace(microsecond=0).isoformat()
@@ -297,12 +361,13 @@ def check_cmd(cmd, d):
     return inner
 
 
-def drain(db, pilots, root=ROOT, limits=None, full=(), now=None, log=None, per_pass=DRAIN_PER_PASS):
+def drain(db, pilots, root=ROOT, limits=None, full=(), now=None, log=None, per_pass=DRAIN_PER_PASS, checked=None):
     """One pass over every configured pilot's inbox (oldest name first, at most per_pass files a pilot): each command is
     applied by the database with the author taken from the folder's name (pilotdb.pilot_op), answered and its file
     deleted. A body whose `by` differs from the folder, a file that cannot be read or an old one is refused (answered
     when its name carries a rid); a pilot whose share is off gets 'Ryan has not shared ...'. full: the pilots whose
-    file is full. Returns {applied, refused, scrub}. log(msg): op and author names only, never a text or a number."""
+    file is full. Returns {applied, refused, scrub}. log(msg): op and author names only, never a text or a number.
+    checked: contacts_precheck's answer (the lists already read outside the database's lock)."""
     lim = limits or ROLES.PILOTDB_NOTE_LIMITS
     now = time.time() if now is None else now
     say = log or (lambda m: None)
@@ -328,7 +393,7 @@ def drain(db, pilots, root=ROOT, limits=None, full=(), now=None, log=None, per_p
                 # refused as unreadable and removed; it never raises out of the drain and so never blocks the pass
                 if cmd == "contacts":  # 1.7.10 (revision 5): a pilot's contacts list, adds and updates only
                     try:
-                        ok, why, st, by_db = _contacts_apply(db, pilot, rid, d, now)
+                        ok, why, st, by_db = _contacts_apply(db, pilot, rid, d, now, (checked or {}).get((pilot, name)))
                     except sqlite3.Error:
                         raise  # nothing was merged: the file waits for the next pass
                     except Exception:  # noqa: BLE001

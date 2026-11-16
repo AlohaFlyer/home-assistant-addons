@@ -4053,9 +4053,11 @@ def pilotdb_share_pass(force=False, now=None):
         return None
     now = time.time() if now is None else now
     names = pilotdb_portal_pilots()
+    # 1.7.10 review: a pilot's waiting contacts list is read and checked here, before the database's lock is taken
+    checked = PS.contacts_precheck(names, PILOTDB_SHARE, today=db.today())
     with PDB_LOCK:
         try:
-            r = PS.drain(db, names, PILOTDB_SHARE, full=PDB.get("full") or (), now=now, log=log.info)
+            r = PS.drain(db, names, PILOTDB_SHARE, full=PDB.get("full") or (), now=now, log=log.info, checked=checked)
         except Exception as e:  # noqa: BLE001 (1.7.9 review: a drain fault never keeps the files from following)
             r = {"applied": 0, "refused": 0, "scrub": False}
             portal_once("pilotdb_drain:" + type(e).__name__, "pilot db: inbox drain skipped: %s", type(e).__name__)

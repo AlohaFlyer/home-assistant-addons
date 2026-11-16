@@ -857,6 +857,20 @@ class PilotDB:
                 out.append(y)
         return json.dumps(out, separators=(",", ":")) if len(out) > len(have) else None
 
+    def _add_val(self, pid, field, source, value, ref, by):
+        """1.7.10 review: phones or emails a pilot's list added to the ones on file. The value on file keeps its own
+        author, ref and date (Ryan's numbers stay Ryan's list's, and his next list rewrites or removes the value as
+        it would have); the log names the pilot as the author of the change, with the value before and after. False
+        when the source has no value yet (the caller writes it, the pilot's own)."""
+        old = self.db.execute("SELECT value FROM vals WHERE pid=? AND field=? AND source=?", (pid, field, source)).fetchone()
+        if not old:
+            return False
+        self.db.execute("UPDATE vals SET value=?, at=?, stale=0 WHERE pid=? AND field=? AND source=?",
+                        (value, self.now(), pid, field, source))
+        self._log(pid, field, source, old[0], value, ref, by, "upload")
+        self._touch(pid)
+        return True
+
     def _apply(self, pid, source, values, as_of, ref, by, stats, field_as_of=None, additive=False):
         """One upload row on a record: each of the source's fields set from values (a value missing or refused drops
         that source's value of it). stats counts changed and kept_hand. additive (1.7.10, a pilot's contacts list):
@@ -879,6 +893,11 @@ class PilotDB:
                 if f in ("phones", "emails"):
                     v = self._union(pid, f, source, v)
                     if v is None:
+                        continue
+                    if self._add_val(pid, f, source, v, ref, by):  # added to a value on file: that value's author stays
+                        changed = True
+                        if f in hands:
+                            stats["kept_hand"] = stats.get("kept_hand", 0) + 1
                         continue
                 elif self.db.execute("SELECT 1 FROM vals WHERE pid=? AND field=? AND source=? AND value=? AND stale=0",
                                      (pid, f, source, v)).fetchone():
@@ -1613,7 +1632,10 @@ class PilotDB:
                     if source == "list":
                         self._gone(p, ref, by)
                     else:
-                        for (f,) in self.db.execute("SELECT field FROM vals WHERE pid=? AND source='contacts'", (p,)).fetchall():
+                        # 1.7.10 review: the same rule as a whole list (merge_contacts): only what a list of
+                        # Ryan's gave goes; a value only a pilot's list gave stays
+                        for (f,) in self.db.execute("SELECT field FROM vals WHERE pid=? AND source='contacts' AND "
+                                                    "ref NOT LIKE ?", (p, PILOT_REF + "%")).fetchall():
                             self._drop_val(p, f, "contacts", ref, by)
             elif how in ("same", "attach", "different", "new"):
                 vals = row.get("values") or {}
@@ -1639,8 +1661,10 @@ class PilotDB:
                 if tp["gone_at"] and source == "list":
                     self.db.execute("UPDATE pilots SET gone_at=NULL, gone_from=NULL WHERE pid=?", (target,))
                     self._log(target, "_gone", source, tp["gone_from"], None, ref, by, "back")
+                # 1.7.10 review: a held row of a pilot's contacts list is applied the way his list is, whoever
+                # answers it: it adds and updates, and never drops or replaces a phone, an email or any other value
                 self._apply(target, source, vals, row.get("as_of") or ref.split(" ")[-1], ref, row.get("by") or by,
-                            stats, row.get("field_as_of"))
+                            stats, row.get("field_as_of"), additive=str(ref or "").startswith(PILOT_REF))
                 self._touch(target)
             # review: the answer keeps the record it put the row on (the next upload applies the same row there again,
             # and a forget of that record deletes this row); the row's values now live in vals, so only its number is
@@ -1882,6 +1906,16 @@ class PilotDB:
             self.put_answer(pilot, rid, ok, why, lim["answers"])
             return ok, why, after
 
+    def pilot_made(self):
+        """How many live records only pilots' contacts lists made: created by one ('pilot contacts <day>') and holding
+        no value from the seniority list, an award or a contacts list of Ryan's. A hand edit does not count as
+        Ryan's list (a pilot can send one)."""
+        with self.lock:
+            return self.db.execute(
+                "SELECT COUNT(*) FROM pilots p WHERE p.merged_into IS NULL AND p.created_by LIKE ? AND NOT EXISTS ("
+                "SELECT 1 FROM vals v WHERE v.pid=p.pid AND (v.source IN ('list','award') OR "
+                "(v.source='contacts' AND v.ref NOT LIKE ?)))", (PILOT_REF + "%", PILOT_REF + "%")).fetchone()[0]
+
     def pilot_contacts(self, pilot, rid, cj, sha="", parser=None, limits=None):
         """1.7.10 (contract 1 revision 5): a portal pilot's contacts list from the admin's inbox, merged with the
         author `pilot` (the inbox folder's name), adding and updating only (merge_contacts, additive). At most
@@ -1898,11 +1932,30 @@ class PilotDB:
             if self.acts(pilot, ("contacts",)) >= lim["per_day"]:
                 ok, why = False, f"Not merged: over {lim['per_day']} contacts lists in 24 h"
             else:
-                r = self.merge_contacts(cj, pilot, sha, parser, additive=True)
-                self._act(pilot, "contacts", None)
-                ok, why = True, (f"Contacts merged: {r.get('rows', 0)} rows read, {r.get('added', 0)} pilots added, "
-                                 f"{max(0, r.get('changed', 0) - r.get('added', 0))} updated, "
-                                 f"{r.get('conflicts', 0)} held for Ryan")
+                # review (Nov 16): the merge runs in a savepoint; when it leaves more than new_max live records that
+                # only pilots' lists made (no list of Ryan's holds them), the whole list is rolled back and refused
+                touched = set(self._touched)
+                self.db.execute("SAVEPOINT pdb_pilot_list")
+                try:
+                    r = self.merge_contacts(cj, pilot, sha, parser, additive=True)
+                    over = bool(r.get("added")) and self.pilot_made() > lim["new_max"]
+                    if over:
+                        self.db.execute("ROLLBACK TO pdb_pilot_list")
+                        self._touched, r = touched, None
+                except BaseException:
+                    self.db.execute("ROLLBACK TO pdb_pilot_list")
+                    self.db.execute("RELEASE pdb_pilot_list")
+                    self._touched = touched
+                    raise
+                self.db.execute("RELEASE pdb_pilot_list")
+                self._act(pilot, "contacts", None)  # a refused list counts toward per_day too
+                if r is None:
+                    ok, why = False, (f"Not merged: over {lim['new_max']} pilots that no list of Ryan's holds; ask Ryan "
+                                      "to upload his own list first")
+                else:
+                    ok, why = True, (f"Contacts merged: {r.get('rows', 0)} rows read, {r.get('added', 0)} pilots added, "
+                                     f"{max(0, r.get('changed', 0) - r.get('added', 0))} updated, "
+                                     f"{r.get('conflicts', 0)} held for Ryan")
             self.put_answer(pilot, rid, ok, why, ROLES.PILOTDB_NOTE_LIMITS["answers"])
             return ok, why, r
 

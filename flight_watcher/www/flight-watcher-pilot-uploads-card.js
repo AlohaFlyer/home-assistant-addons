@@ -1,6 +1,8 @@
 // Flight Watcher pilot uploads card (1.7.2, FW-0066, Ryan Nov 11: "either I or James can upload them; the pairings and
 // awards are the same doc for each of us"). The pilot portal's Settings tab: a pilot uploads the month's pairings
 // package or award PDF (never the seniority list or the contact list), for this month or one of the next two (HST).
+// Review (Nov 16): the card is the portal's alone, so its fields and its button are 16 px text and 44 px high at every
+// width (they were so only under 700 px).
 // The file is read in the browser (FileReader, no blob: URL: the portal's CSP stays as it is), its sha256 taken with
 // WebCrypto, and its base64 sent in parts of FW_PUP_CHUNK characters, one upload/pdf command each
 // ({uid, kind, month, size, sha, part, parts, data}: contract 1 revision 3, roles.SHAPE_CMDS), one part every
@@ -12,7 +14,9 @@
 // (its header row is checked here before anything is sent; at most contacts.file_bytes, 1 MiB) goes through the same
 // upload/pdf parts with kind contacts and this HST month. His Watcher checks the whole file and hands it to the
 // admin's Watcher, which merges it into the shared pilot database with him as the author: it only adds and updates.
-// A portal that does not take the kind yet (HOM before 1.9.1) refuses the first part: the card says so and stops.
+// A portal that does not take the kind yet (HOM before 1.9.1) refuses the first part in its own words ("kind is not
+// one of ..."): the card says so and stops. Any other refusal of the portal (review, Nov 16) is shown in the portal's
+// own fixed words, cut to one plain line: never as "needs its next update".
 // Data: sensor.flight_watcher_pilot_uploads (synthesized by the Watcher for the portal): what is on file for each month
 // and from whom (you, the admin or another pilot; never a name), his uploads, the answers and his limits.
 // FW_PORTAL: on in the portal's copy (portal.portal_card); the card is the portal's (no Home Assistant dashboard has it).
@@ -34,6 +38,11 @@ const FW_PUP_CSV_MAX = 1024 * 1024;  // roles.PILOT_CONTACTS_LIMITS file_bytes (
 // roles.PILOT_CONTACTS_LIMITS header: the first row of the export, cell for cell (case and outer spaces aside)
 const FW_PUP_CSV_HEAD = ["first name", "middle name", "last name", "suffix", "company", "job title", "mobile phone",
   "email", "employee id", "notes"];
+// "1 MB" for a whole number of MiB, else KB (the contacts list cap)
+const fwPupCap = (n) => (n >= 1048576 && n % 1048576 === 0 ? `${n / 1048576} MB` : `${Math.round(n / 1024)} KB`);
+// a portal refusal as one plain line: its prefix and the command's name off, letters, digits and plain punctuation only
+const fwPupPortalWhy = (msg) => String(msg || "").replace(/^.*?not available in the (?:pilot )?portal:\s*/i, "")
+  .replace(/^upload\/pdf:\s*/i, "").replace(/[^A-Za-z0-9 .,:;()'\/#-]/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
 const fwPupCsvHead = (bytes) => {
   let text = "";
   try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, 4096)); }
@@ -88,7 +97,7 @@ class FlightWatcherPilotUploadsCard extends HTMLElement {
   _lim() { const a = this._a(); return (a && a.limits) || {}; }
   _build() {
     this._root = this.shadowRoot || this.attachShadow({ mode: "open" });
-    this._root.innerHTML = `<style>${this._css()}</style><ha-card><div class="ttl">Pairings package and award</div>
+    this._root.innerHTML = `<style>${this._css()}</style><ha-card><div class="ttl" data-ttl>Pairings package and award</div>
       <div class="u" data-intro>${FW_PUP_INTRO}</div>
       <div data-files></div>
       <div class="form"><div class="grid">
@@ -125,7 +134,7 @@ class FlightWatcherPilotUploadsCard extends HTMLElement {
       .ok{color:var(--ok)}.err{color:var(--err)}
       .m{border-top:1px solid var(--divider-color,#ccc);padding:6px 0}.m b{display:block}
       .lbl{font-weight:600;margin:8px 0 2px}
-      @media (max-width:700px){select,input{font-size:16px}button{min-height:44px}}`;
+      select,input,button{font-size:16px;min-height:44px}`;
   }
   _paint() {
     const a = this._a(), r = this._root, e = (s) => this._e(s);
@@ -141,6 +150,7 @@ class FlightWatcherPilotUploadsCard extends HTMLElement {
       if (kinds.some((q) => q[0] === had)) ks.value = had;
     }
     r.querySelector("[data-intro]").textContent = this._csv() ? FW_PUP_INTRO_CSV : FW_PUP_INTRO;
+    r.querySelector("[data-ttl]").textContent = this._csv() ? "Uploads" : "Pairings package and award";
     this._kind();
     const keep = sel.value;
     sel.innerHTML = months.map((m) => `<option value="${e(m)}">${e(fwPupName(m))}</option>`).join("");
@@ -165,7 +175,7 @@ class FlightWatcherPilotUploadsCard extends HTMLElement {
     lim.textContent = `Up to ${Math.round(max / 1048576)} MB a file and ${l.per_day || 4} uploads a day` +
       (Number.isFinite(l.left_today) ? ` (${l.left_today} left today)` : "") +
       ". One upload at a time: keep this page open while it sends, about 1 min for each MB." +
-      (this._csv() ? ` A contacts list: up to ${Math.round(((a.contacts.file_bytes || FW_PUP_CSV_MAX)) / 1024)} KB.` : "");
+      (this._csv() ? ` A contacts list: up to ${fwPupCap(a.contacts.file_bytes || FW_PUP_CSV_MAX)}.` : "");
     const rows = (a.mine || []).filter((x) => x && fwPupName(x.month)).slice(0, 5);
     mine.innerHTML = rows.length ? `<div class="lbl">Your uploads</div>` + rows.map((x) =>
       `<div class="m">${e(fwPupName(x.month))} ${e(FW_PUP_WHAT[x.kind] || x.kind)}: ${e(FW_PUP_STATE[x.state] || x.state)}<div class="u">${e(fwPupSize(+x.size || 0))}, uploaded ${e(fwPupHst(x.at))} HST</div></div>`).join("") : "";
@@ -202,7 +212,10 @@ class FlightWatcherPilotUploadsCard extends HTMLElement {
       if (s.timer) { clearTimeout(s.timer); s.timer = null; }
       if (btn) btn.disabled = false;
       if (prog) prog.textContent = "";
-      if (fin) this._say(ans.message, !!ans.ok);  // a final answer wins, even one that came after the card stopped waiting
+      // a final answer wins, even one that came after the card stopped waiting. A contacts list's answer is shown once:
+      // under "Your contacts list" below when it is the newest one there, else here
+      const cl = (this._a() || {}).contacts, below = !!(fin && s.kind === "contacts" && cl && cl.last && cl.last.message === ans.message);
+      if (fin) this._say(below ? "" : ans.message, !!ans.ok);
       else if (s.error) this._say(s.error, false);
       else this._say("All parts sent: your Watcher is checking the file (up to a minute).", true);
       return;
@@ -243,7 +256,7 @@ class FlightWatcherPilotUploadsCard extends HTMLElement {
     if (csv && !this._csv()) return this._say("A contacts list is not taken now: the pilot database is not shared with you.", false);
     if (!file) return this._say(csv ? "Pick the CSV first." : "Pick the PDF first.", false);
     if (!FW_PUP_WHAT[kind] || !fwPupName(month)) return this._say("Pick what it is and its month.", false);
-    if (file.size > max) return this._say(csv ? `That file is ${fwPupSize(file.size)}: a contacts list is up to ${Math.round(max / 1024)} KB.` : `That file is ${fwPupSize(file.size)}: up to ${Math.round(max / 1048576)} MB.`, false);
+    if (file.size > max) return this._say(csv ? `That file is ${fwPupSize(file.size)}: a contacts list is up to ${fwPupCap(max)}.` : `That file is ${fwPupSize(file.size)}: up to ${Math.round(max / 1048576)} MB.`, false);
     if (Number.isFinite(l.left_today) && l.left_today <= 0) return this._say("No uploads left today: try again tomorrow.", false);
     if (!(window.crypto && crypto.subtle && crypto.getRandomValues)) return this._say("This browser cannot check the file before it sends it: open the portal at its https address.", false);
     let bytes;
@@ -265,8 +278,17 @@ class FlightWatcherPilotUploadsCard extends HTMLElement {
         catch (err) {
           // 1.7.10: a portal that does not take a contacts list yet (HOM before 1.9.1 refuses the kind by its pinned
           // shape, in its own words) will not take it on a retry either: say so at once, nothing was sent
-          if (csv && /not available in the (pilot )?portal|not[_ ]allowed/i.test(String((err && err.message) || err))) {
+          // Review (Nov 16): only that refusal ("kind is not one of") means an older portal. Any other answer the
+          // portal gives in its own words (HOM 1.9.1: not the export, your Flight Watcher is too old, reload the
+          // page) is final too and is shown as it is; a rate limit or a network fault is tried again as before
+          const why = String((err && err.message) || err);
+          if (csv && /kind is not one of/i.test(why)) {
             s.error = "Not sent: the portal does not take a contacts list yet (it needs its next update). Nothing was sent.";
+            s.done = true;
+            break;
+          }
+          if (csv && /not available in the (pilot )?portal:/i.test(why)) {
+            s.error = `Not sent: ${fwPupPortalWhy(why) || "the portal refused it"}${/[.!?]$/.test(fwPupPortalWhy(why)) ? "" : "."} Nothing was merged.`;
             s.done = true;
             break;
           }

@@ -22,7 +22,7 @@ DOC = os.path.join(HERE, "PORTAL_CONTRACT.md")
 # 1.7.10 (Ryan, Nov 16): revision 5, a pilot's contacts list (upload/pdf kind contacts). Revision 4's bytes as of
 # Nov 15 were 86c2d8f905eff7509cb8ef85cf3f8a7adf7e611556ab395a017e6fd460311fbf; 1.7.9's were
 # 9b882fb6dd00a932e196359edc364ee8ecbe78da7077f5f29a7fdc06301a6176
-CONTRACT_SHA256 = "051676bbdf48456cb0f49828f6cb6eb5c154a1c33a650b969c834513df9f1dc1"
+CONTRACT_SHA256 = "4e7812d603f97a6e46ff00fc8b6cf6f3dc32708db1539f15010566e6095a192b"
 
 
 def _fx():

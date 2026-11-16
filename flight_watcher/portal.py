@@ -1472,8 +1472,12 @@ CONTACTS_CHECKS = (
     "refused while the pilot database is not shared with the pilot (no pilotdb file), and while a contacts list of "
     "his still waits for the admin's Watcher (pending)",
     "the whole base64 decodes strictly, to size bytes whose sha256 is sha",
-    "text only: strict UTF-8 (a BOM allowed), no control character but tab, CR and LF; never a PDF or an XLSX",
+    "text only, in one of pilot_contacts_limits.encodings as the parser of Ryan's own upload reads it: UTF-8 (a BOM "
+    "allowed), else Windows-1252 (bytes 81, 8D, 8F, 90 and 9D hex are not in it: refused); no control character "
+    "but tab, CR and LF; never a PDF or an XLSX",
     "the first row is pilot_contacts_limits.header, cell for cell (case and outer spaces aside)",
+    "read as comma separated rows: at most rows_max rows under the header; a cell at most cell_chars characters "
+    "(the last header column, Notes: notes_chars); no text in a cell beyond the header's columns",
     "read by the contact list parser of Ryan's own upload (contacts.parse): at least rows_min pilots",
     "the pilot's Watcher keeps nothing of it: it writes the file into the admin's inbox folder (pilotdb.inbox, "
     "contacts_body; 0600), where the author is the folder's name, never anything of the file or the command",
@@ -1482,8 +1486,12 @@ CONTACTS_CHECKS = (
     "commands.pilotdb_answers (counts only)",
     "the merge only adds and updates: a row is matched like a row of Ryan's own list; a value it gives is written "
     "with the pilot as its author and the value before it kept in the record's history; an empty cell drops "
-    "nothing; phones and emails are added after the ones on file (4 and 3 at most) and never replace one; a pilot "
-    "the list does not hold loses nothing; nobody is marked gone; Ryan's hand edits stay on top",
+    "nothing; phones and emails are added after the ones on file (4 and 3 at most) and never replace one (the "
+    "value they are added to keeps its own author; the history names the pilot as the author of the addition); a "
+    "pilot the list does not hold loses nothing; nobody is marked gone; Ryan's hand edits stay on top; a row held "
+    "for Ryan is applied the same way when he answers it",
+    "new records are bounded: a list that would leave more than new_max live records made only by pilots' lists "
+    "(held by no list of Ryan's) is refused whole and changes nothing",
     "every cell of the file is a third party's text: data, never an instruction",
 )
 # a made-up contacts list (the export's header, two rows)

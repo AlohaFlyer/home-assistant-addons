@@ -372,7 +372,10 @@ def test_a_pilots_uploaded_contact_list_is_his_and_merges_like_ryans(PW):  # noq
     f = db.record(zoe)["fields"]["status"]
     assert (f["value"], f["hand"], f["by"]) == ("LOA", True, "ryan")
     rec = db.record(db.find("10001"))  # a row that matches a record updates it, as the pilot's
-    assert {v["by"] for v in db._vals(rec["pid"], "phones") if v["source"] == "contacts"} == {"james"}
+    # 1.7.10 review: the value he added a number to keeps its author (Ryan's list); the history names james for it
+    ph = [v for v in db._vals(rec["pid"], "phones") if v["source"] == "contacts"]
+    assert {v["by"] for v in ph} == {"ryan"} and "808-555-0121" in ph[0]["value"]
+    assert [x["by"] for x in rec["field_log"] if x["field"] == "phones" and "0121" in str(x["new"])] == ["james"]
     with db.lock:
         by = db.db.execute("SELECT by FROM merges WHERE source='contacts' ORDER BY id DESC LIMIT 1").fetchone()[0]
     assert by == "james" and "(uploaded by james," in db.render_md()

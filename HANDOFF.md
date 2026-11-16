@@ -1,17 +1,19 @@
 # HANDOFF: Flight Watcher (refreshed 2026-11-16, release 1.7.9 live with HOM 1.9.0; 1.7.10 built, not released)
 
-**Nov 16, on top of everything below: 1.7.10 is now contract 1 REVISION 5 and needs HOM 1.9.1 live FIRST.** Ryan:
-"His uploads should update the shared database too", and the contacts list upload on James's portal "Now, in
-1.7.10". Built (commit "Flight Watcher 1.7.10: a portal pilot uploads a contacts list into the shared pilot database
-(contract 1 revision 5)"; CHANGELOG 1.7.10, its own section; `PORTAL_CONTRACT.md` 5.6.1): the pilot uploads card
-offers "Contacts list (CSV)"; `upload/pdf` takes kind `contacts`; his Watcher checks the file and hands it to Ryan's
-Watcher through his pilot inbox under `/share` (0600, the author from the folder); it merges into the one database
-with James as the author and ONLY ADDS AND UPDATES (nobody gone, nothing deleted, no phone or email removed or
-replaced, Ryan's hand edits on top, every earlier value in the history). Boundary changes 16 to 20 in the CHANGELOG.
-The fixture is regenerated for revision 5, sha256 `051676bbdf48456cb0f49828f6cb6eb5c154a1c33a650b969c834513df9f1dc1`
-(revision 4's, which HOM 1.9.0's re-pin branch held: `86c2d8f905ef...`). HOM 1.9.1 pins these bytes.
-Where the notes below say "revision 4", "either order is safe" or "works with the live HOM 1.9.0", read this
-paragraph and the release order instead: they describe 1.7.10 before Nov 16.
+**Nov 16: 1.7.10 is contract 1 REVISION 5 and HOM 1.9.1 goes live FIRST.** Ryan: "His uploads should update the
+shared database too", and the contacts list upload on James's portal "Now, in 1.7.10". Built (commits "... a portal
+pilot uploads a contacts list into the shared pilot database (contract 1 revision 5)" and "... pilot contacts upload
+review fixes"; CHANGELOG 1.7.10, its own two sections; `PORTAL_CONTRACT.md` 5.6.1): the pilot uploads card offers
+"Contacts list (CSV)"; `upload/pdf` takes kind `contacts`; his Watcher checks the file and hands it to Ryan's Watcher
+through his pilot inbox under `/share` (0600, the author from the folder); it merges into the one database with
+James as the author and ONLY ADDS AND UPDATES (nobody gone, nothing deleted, no phone or email removed or replaced,
+Ryan's hand edits on top, every earlier value in the history). Review fixes (Nov 16): a list is at most 2500 rows
+with bounded cells, UTF-8 or Windows-1252; pilots' lists together make at most 250 records no list of Ryan's holds
+(over that a list is refused whole); a held row Ryan answers is applied additively; a number a pilot adds leaves
+Ryan's value Ryan's. Boundary changes 16 to 25 in the CHANGELOG. The fixture is regenerated for revision 5, sha256
+`4e7812d603f97a6e46ff00fc8b6cf6f3dc32708db1539f15010566e6095a192b` (the first revision 5 build: `051676bbdf48...`;
+revision 4's: `86c2d8f905ef...`). HOM 1.9.1 pins these bytes and its chunk check takes the same two encodings.
+Open for Ryan: there is no one-step undo of a merged pilot's list (he restores values from a record's history).
 
 **1.7.10 built on branch `fw-1.7.10` (not pushed, not merged, not live).** Ryan's decisions of Nov 15: "The pilot
 database should be shared with James 100%; we work on a shared system; we do have our own schedules and pay rates
@@ -29,11 +31,11 @@ though." Built in three commits on top of the part one commits (James sees the u
 - Part two (commit "... award seniority, name lookups through the pilot database, pickup speed capped at Ryan's
   request time, no crew names or numbers in Ryan's log"): CHANGELOG 1.7.10 "Part two".
 
-CHANGELOG 1.7.10 names every boundary change (15 of them). Contract 1 stays revision 4: HOM 1.9.0 relays the file and
-the state as signed, reads no key of either and caps a file at 8 MiB (Flight Watcher keeps it under 7 MiB; a
-synthetic 1300 pilot file is 0.64 to 3.2 MiB). The fixture is regenerated, sha256
-`86c2d8f905eff7509cb8ef85cf3f8a7adf7e611556ab395a017e6fd460311fbf` (part one's first build: `e02caf296092...`;
-1.7.9's: `9b882fb6dd00...`). HOM must re-pin these exact bytes (tests and docs, no deploy); either order is safe.
+CHANGELOG 1.7.10 names every boundary change (25 of them). The contract is revision 5 (the paragraph above): HOM
+1.9.1 is deployed FIRST, then Flight Watcher 1.7.10 (the release order below). HOM relays the pilotdb file and the
+state as signed, reads no key of either and caps a file at 8 MiB (Flight Watcher keeps it under 7 MiB; a synthetic
+1300 pilot file is 0.64 to 3.2 MiB). The fixture HOM 1.9.1 pins is the revision 5 one above (parts one and two alone
+were revision 4, sha256 `86c2d8f905ef...`; 1.7.9's: `9b882fb6dd00...`).
 
 Open for Ryan:
 1. **The CLAUDE.md line is updated on this branch** (Ryan chose automatic sharing and AI notes on in session, Nov 15):

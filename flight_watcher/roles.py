@@ -494,15 +494,24 @@ PILOT_UPLOAD_LIMITS = {"kinds": ["pairings", "award"], "file_bytes": 4 * 1024 * 
 _UL = PILOT_UPLOAD_LIMITS
 # 1.7.10 (revision 5; Ryan, Nov 16): a third kind on upload/pdf, the airline contacts list as its CSV export. kinds
 # above stays the two PDF kinds (their checks, their quarantine and the months on file are theirs alone). A contacts
-# list: file_bytes (1 MiB; the export is about 200 KB) in at most chunk_parts chunks; text only (UTF-8, no control
+# list: file_bytes (1 MiB; the export is about 200 KB) in at most chunk_parts chunks; text only (encodings, no control
 # character but tab, CR and LF) whose first row is header, cell for cell (case and outer spaces aside); rows_min
 # pilots read by the 1.4.8 parser (contacts.parse); pending: one list of a pilot waits for the admin's Watcher at a
 # time; per_day: lists the admin's Watcher merges for one pilot in 24 h (his own Watcher counts every upload toward
 # PILOT_UPLOAD_LIMITS per_day as well); inbox_bytes: the inbox file that carries it (its base64 and its envelope).
 # It carries a month like every upload/pdf chunk (this HST month); the month is checked and not used.
+# Review fixes (Nov 16), each a bound on what one pilot's list can do to the one shared database: encodings (the 1.4.8
+# parser's own: UTF-8, a BOM allowed, else Windows-1252, so a pilot's export is read exactly as Ryan's is); rows_max
+# rows under the header (the export has about 1230); cell_chars characters a cell and notes_chars for the Notes cell
+# (the last of header), and no text in a cell beyond the header's columns: so no cell can hold the parser for
+# seconds; new_max: the live records a pilot's lists made that no list of Ryan's (seniority list, award, his own
+# contacts list) holds, all pilots' lists together: a list that would take the database over it is refused whole and
+# changes nothing.
 PILOT_UPLOAD_KINDS = tuple(_UL["kinds"]) + ("contacts",)
 PILOT_CONTACTS_LIMITS = {"kind": "contacts", "file_bytes": 1024 * 1024, "chunk_parts": 24, "rows_min": 1,
                          "pending": 1, "per_day": 4, "inbox_bytes": 1536 * 1024,
+                         "encodings": ["utf-8", "cp1252"], "rows_max": 2500, "cell_chars": 200, "notes_chars": 2000,
+                         "new_max": 250,
                          "header": ["First Name", "Middle Name", "Last Name", "Suffix", "Company", "Job Title",
                                     "Mobile Phone", "Email", "Employee ID", "Notes"]}
 SHAPE_CMDS = {
@@ -605,6 +614,8 @@ PILOTDB_ANSWERS = (
     "Not merged: no pilot was read from that contacts list",
     "Not merged: a contacts list is at most <n> KB",
     "Not merged: over <n> contacts lists in 24 h",
+    "Not merged: a contacts list is at most <n> rows",
+    "Not merged: over <n> pilots that no list of Ryan's holds; ask Ryan to upload his own list first",
 )
 # The AI note (Ryan, Nov 14: "Through HOM's models"): HOM's consultant models write one short note per pilot with at
 # least min_pickups pickups, from anonymous pickup statistics only. 1.7.10 (Ryan's decision 3 of Nov 15): on by

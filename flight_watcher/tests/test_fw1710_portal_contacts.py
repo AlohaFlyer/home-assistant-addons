@@ -135,7 +135,7 @@ def test_contacts_check_takes_the_export_and_nothing_else():
         "a zip": b"PK\x03\x04" + _csv(),
         "a NUL": _csv() + b"\x00",
         "an escape": _csv().replace(b"Example Air", b"Example\x1bAir", 1),
-        "not utf-8": _csv().replace(b"Jane", b"J\xe4ne", 1),
+        "not utf-8 and not Windows-1252": _csv().replace(b"Jane", b"J\x81ne", 1),
         "another header": _csv(head="Name,Phone,Email\r\n"),
         "one column short": _csv(head=HEAD.replace(",Notes", "")),
         "a column more": _csv(head=HEAD.replace("\r\n", ",Home Phone\r\n")),
@@ -192,7 +192,8 @@ def test_a_pilots_list_adds_and_updates_with_him_as_the_author(tmp_path):
     assert [p["number"] for p in _f(db, "10004", "phones")["value"]] == ["808-555-0104"]
     # Jane: her phone from Ryan's list stays FIRST and the pilot's is added; her email stays though his row has none
     ph = _f(db, "10001", "phones")
-    assert [p["number"] for p in ph["value"]] == ["808-555-0101", "808-555-0111"] and ph["by"] == "james"
+    # (review: the value he added to keeps its author, Ryan; the history below names james for the addition)
+    assert [p["number"] for p in ph["value"]] == ["808-555-0101", "808-555-0111"] and ph["by"] == "ryan"
     em = _f(db, "10001", "emails")
     assert em["value"] == ["jane.doe@example.com"] and em["by"] == "ryan"
     # Rick had no contact values: his email is added, by james; his list values are untouched
@@ -573,7 +574,7 @@ def test_the_card_offers_contacts_list_csv_beside_the_pdfs(scheme):
         _shot(pg, f"portal_contacts_choice_390_{scheme}")
     assert got["kinds"] == [["pairings", "Pairings package"], ["award", "Award"], ["contacts", "Contacts list (CSV)"]]
     assert got["month"] is True and got["lbl"] == "CSV" and got["accept"] == "text/csv,.csv"
-    assert "only adds and updates" in got["text"] and "A contacts list: up to 1024 KB" in got["text"]
+    assert "only adds and updates" in got["text"] and "A contacts list: up to 1 MB." in got["text"]
     assert "Your contacts list" in got["text"] and "Contacts merged: 4 rows read, 2 pilots added" in got["text"]
     assert got["fit"]["right"] <= 390 and got["fit"]["page"] <= 390 and got["fit"]["inner"] <= 0
     assert got["con"]["fails"] == [], got["con"]["fails"]
@@ -633,7 +634,7 @@ def test_the_card_refuses_what_is_not_the_export_before_sending():
             out[name] = pg.evaluate("() => [c.shadowRoot.querySelector('[data-msg]').textContent, window.calls.length]")
     for name in ("pdf", "other"):
         assert out[name][0].startswith("That file is not the contacts list (CSV) export") and out[name][1] == 0
-    assert "a contacts list is up to 1024 KB" in out["big"][0] and out["big"][1] == 0
+    assert "a contacts list is up to 1 MB." in out["big"][0] and out["big"][1] == 0
 
 
 def test_a_portal_that_does_not_take_the_kind_yet_is_said_plainly_at_the_first_part():

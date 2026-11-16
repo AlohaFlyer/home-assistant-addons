@@ -455,18 +455,24 @@ Email, Employee ID, Notes` (the Notes carry HAL Emp#, Sen#, DOH and status; abou
 limits are `commands.pilot_contacts_limits` (`roles.PILOT_CONTACTS_LIMITS`): 1 MiB a file (24 chunks at most; the
 shape's own `size` and `part` bounds stay the PDF's, so the 1 MiB cap is HOM's content check and both Watchers'), the
 header, at least one pilot read, one list of a pilot waiting at a time, 4 lists merged for a pilot in 24 h, and the
-size of the inbox file that carries it (1.5 MiB). It carries a `month` like every chunk (this HST month); the month is
+size of the inbox file that carries it (1.5 MiB); and (review, Nov 16) `encodings` (UTF-8, else Windows-1252),
+`rows_max` 2500 rows under the header, `cell_chars` 200 and `notes_chars` 2000 characters a cell, and `new_max` 250
+standing records made only by pilots' lists. It carries a `month` like every chunk (this HST month); the month is
 checked and not used. `commands.pilot_upload_limits.kinds` stays `pairings`, `award`: the PDF kinds, their checks,
 their quarantine and the admin's Approve, Remove and Reject are theirs alone.
 
 The checks, in the fixture's order (`commands.pilot_contacts_checks`):
 
 1. HOM (1.9.1): the shape, the pilot's own session only, its upload rate limit and an audit row, and what it can see
-   of the content: a file of at most 1 MiB, text with the header row, no binary. CSP unchanged.
+   of the content: a file of at most 1 MiB, text with the header row, no binary (UTF-8 or Windows-1252 text: no NUL
+   and no control byte but tab, CR and LF in any part). CSP unchanged.
 2. The pilot's Watcher (`watcher.pilot_contacts_finish`, `pdbshare.contacts_check`): refused while the pilot database
    is not shared with him or while a list of his still waits; the whole base64 to `size` bytes with sha256 `sha`;
-   text only (strict UTF-8, a BOM allowed, no control character but tab, CR and LF: never a PDF or an XLSX); the first
-   row is the header, cell for cell (case and outer spaces aside); read by the parser of Ryan's own contact list
+   text only (UTF-8, a BOM allowed, else Windows-1252, exactly as the parser of Ryan's own upload decodes it; the
+   five bytes Windows-1252 does not have are refused; no control character but tab, CR and LF: never a PDF or an
+   XLSX); the first row is the header, cell for cell (case and outer spaces aside); read as comma separated rows it
+   has at most `rows_max` rows, no cell over `cell_chars` characters (Notes: `notes_chars`) and no text beyond the
+   header's columns; read by the parser of Ryan's own contact list
    upload (`contacts.parse`, the 1.4.8 uploads path) it gives at least one pilot. The upload counts toward the
    pilot's 4 uploads a day. It keeps NOTHING of the file: no copy in the uploads folder, no provenance record, no
    quarantine.
@@ -475,8 +481,10 @@ The checks, in the fixture's order (`commands.pilot_contacts_checks`):
    `cmd` `contacts`, `rid` (the upload's `uid`), `size`, `sha`, `data`, the file's base64). The author is the folder's
    name: a body whose `by` differs is refused, and nothing of the file or the command ever names an author.
 4. The admin's Watcher (the one writer; `pdbshare.drain`, `pilotdb.pilot_contacts`): the keys, the size, the sha256
-   and every check of step 2 again; refused while Ryan has that pilot's share off or when the file is older than
-   24 h; at most 4 lists of a pilot merged in 24 h. Then the merge, its count row and its answer in one transaction;
+   and every check of step 2 again (before it takes the database's lock: `pdbshare.contacts_precheck`); refused
+   while Ryan has that pilot's share off or when the file is older than 24 h; at most 4 lists of a pilot merged in
+   24 h; a list that would leave more than `new_max` live records made only by pilots' lists (held by no list of
+   Ryan's) is rolled back whole and refused. Then the merge, its count row and its answer in one transaction;
    the same `rid` again answers the same and changes nothing. The file is deleted; nothing of it is kept.
 5. The answer comes back through the pilot's `pilotdb` file (`answers`, under the upload's `uid`) and his Watcher
    settles the upload's answer in `sensor.<prefix>_pilot_uploads` (`answers`, state `sent` then `merged` or `error`;
@@ -495,7 +503,10 @@ said exactly):
   A value the database already has from a contact list is left exactly as it is (its author and date too).
 - An empty cell drops nothing.
 - Phones and emails are ADDED after the ones on file (4 phones and 3 emails at most, so a full list is left alone);
-  none is ever replaced or removed by a pilot's list.
+  none is ever replaced or removed by a pilot's list. The value they are added to keeps its own author and ref (the
+  history names the pilot for the addition), so Ryan's next list rewrites or removes that value as it would have; a
+  value only a pilot's list gave stays when Ryan's list does not hold that pilot.
+- A row held for Ryan is applied by these same rules when he answers it (Attach, Same pilot, New, Different).
 - A pilot the list does not hold loses nothing. Nobody is marked gone, nobody is marked back, no record is deleted.
 - Ryan's hand edits stay on top of every value, as over his own uploads.
 - The date and the row count Ryan's next list is measured by (`contacts_as_of`, `contacts_count`) do not move, so his

@@ -64,7 +64,7 @@ were. Synthetic rows in every test ("Doe, Jane", 10001, 808-555-0101, an example
   list's CSV export (first row "First Name, Middle Name, Last Name, Suffix, Company, Job Title, Mobile Phone, Email,
   Employee ID, Notes"; at most 1 MiB). The card checks the header before it sends anything.
 - **How it travels.** The same `upload/pdf` parts with `kind` `contacts`. His Watcher puts them together and checks
-  the whole file (`pdbshare.contacts_check`: size, sha256, text only, the header row, then the parser Ryan's own
+  the whole file (`pdbshare.contacts_check`: size, sha256, text only, the header row, the row and cell bounds, then the parser Ryan's own
   contact list upload goes through, `contacts.parse` of the 1.4.8 uploads path), keeps nothing of it, and drops it
   into his pilot inbox under `/share/flight_watcher/pilotdb/inbox/<name>/` (0600), like `pilotdb/edit`. Ryan's
   Watcher, the single writer, takes the author from the inbox folder's name (never from the payload), runs every
@@ -80,20 +80,21 @@ were. Synthetic rows in every test ("Doe, Jane", 10001, 808-555-0101, an example
     is, its author and date too;
   - an empty cell drops nothing;
   - phones and emails are added AFTER the ones on file (4 phones and 3 emails at most, so a full list is left
-    alone); a pilot's list never replaces or removes a phone or an email, whoever set it;
+    alone); a pilot's list never replaces or removes a phone or an email, whoever set it (the value they are added
+    to keeps its own author; the history names the pilot for the addition: review fixes below);
   - a pilot the list does not hold loses nothing; nobody is marked gone or back; no record is deleted;
   - Ryan's hand edits stay on top;
   - the date and row count Ryan's next list is measured by do not move, so his list is never "older" or "partial"
-    because of a pilot's. Ryan's own next list still says what it lists, and no longer removes a value a pilot's list
-    gave from a record his list does not hold.
+    because of a pilot's. Ryan's own next list still says what it lists, and no longer removes a value only a
+    pilot's list gave from a record his list does not hold.
 - **The contract is revision 5** (`roles.CONTRACT_REVISION`, the manifest, `PORTAL_CONTRACT.md` 5.6.1, the fixture).
   One command shape changed: `upload/pdf`'s `kind` takes `contacts` (`commands.value_since_revision`: the value is
   revision 5's; the command stays revision 3's). New in the fixture: `commands.pilot_contacts_limits`,
   `commands.pilot_contacts_checks`, `commands.value_since_revision`, five `commands.pilotdb_answers`,
   `pilotdb.inbox.contacts_max_bytes` and `contacts_body`, `revisions.5`, one accepted sample (a made-up list) and
-  three refused ones. The fixture is regenerated: sha256
-  `051676bbdf48456cb0f49828f6cb6eb5c154a1c33a650b969c834513df9f1dc1` (`tests/test_portal_contract.py`
-  `CONTRACT_SHA256`); HOM 1.9.1 pins those bytes.
+  three refused ones. The fixture is regenerated (again by the review fixes below): sha256
+  `4e7812d603f97a6e46ff00fc8b6cf6f3dc32708db1539f15010566e6095a192b` (`tests/test_portal_contract.py`
+  `CONTRACT_SHA256`); HOM 1.9.1 pins those bytes (the first build of this section was `051676bbdf48...`).
 - **The order: HOM 1.9.1 FIRST, then Flight Watcher 1.7.10.** HOM 1.9.1 takes revisions 3, 4 and 5. If Flight
   Watcher 1.7.10 is live while HOM 1.9.0 still runs, James's portal is NOT broken: HOM 1.9.0 reads a manifest's
   revision only to refuse a command newer than the Watcher speaks, so everything it served it still serves; only the
@@ -119,6 +120,75 @@ were. Synthetic rows in every test ("Doe, Jane", 10001, 808-555-0101, an example
 - Tests: `tests/test_fw1710_portal_contacts.py` (the contract, both Watchers' checks, the merge rules, the inbox
   hand-off and its refusals, the whole path from the portal's command to the database with the pilot as author, and
   the card in Chromium at 390 px, light and dark).
+
+### Review fixes of the contacts list upload (Nov 16)
+
+A review of the section above found ways one pilot's list could do more than "add and update". Each is fixed with
+a test that failed before (`tests/test_fw1710_contacts_review.py`). The contract stays revision 5; its limits, its
+checks text and two answers changed, so the fixture is regenerated (sha256 above) and HOM 1.9.1 pins the new bytes.
+
+- **One pilot's lists can no longer flood the shared database.** `roles.PILOT_CONTACTS_LIMITS` has two new bounds.
+  `rows_max` 2500: a list with more rows under its header is refused by both Watchers ("Not merged: a contacts list
+  is at most 2500 rows"; the export has about 1230). `new_max` 250: the live records that only pilots' lists made
+  (created by a pilot's list and held by no list of Ryan's: the seniority list, an award, his own contacts list),
+  all pilots' lists together. A list that would take the database over it is refused WHOLE and changes nothing (the
+  merge runs in a savepoint and is rolled back: no record, no value, no history row, no held row): "Not merged:
+  over 250 pilots that no list of Ryan's holds; ask Ryan to upload his own list first". It counts toward that
+  pilot's 4 lists in 24 h. A pilot's own hand edit does not make a record Ryan's; Ryan's own list holding the pilot
+  does. A list that adds nobody is never refused for this. Before: one 1 MiB list added 9500 made-up records, four
+  a day, filled every shared pilot's file and pushed real records out of it.
+- **No cell can hold the parser or the database.** `cell_chars` 200 and `notes_chars` 2000 (the Notes cell), and no
+  text in a cell beyond the header's ten columns (empty cells after them, a trailing comma, are fine): checked with
+  the csv module before the parser reads a byte (`pdbshare._contacts_cells`). `contacts.EMAIL_RE` reads a long run of
+  letters once (a local part starts where its run starts and is at most 64 characters, RFC 5321; every address of 64
+  or fewer local characters is found exactly as before, in Ryan's own uploads too). Ryan's Watcher now checks a
+  waiting list BEFORE it takes the pilot database's lock (`pdbshare.contacts_precheck`, `watcher.pilotdb_share_pass`);
+  only the merge runs inside it. Before: a well-formed list with seven 130000 letter email cells held the lock about
+  100 s; now the largest crafted list is checked in well under a second.
+- **A held row of a pilot's list that Ryan answers is applied the way the list is** (`pilotdb.resolve`: additive when
+  the row's ref is a pilot's list). Attach, Same pilot, New and Different add its phones and emails after the ones on
+  file and drop nothing. Before, Attach replaced Ryan's list's phone and dropped the email and the retirement month.
+- **Whose value it is (the rule, exactly).** When a pilot's list adds a phone or an email to ones on file, the value
+  on file keeps its own author, ref and date (Ryan's numbers stay Ryan's list's) and the record's history names the
+  pilot as the author of the addition, with the value before and after. A phones or emails value the database did
+  not have is the pilot's own (his name, ref `pilot contacts <day>`). So Ryan's next list treats the phones exactly
+  as it treats the email: for a pilot it lists it writes what it lists (a pilot's added number goes; as before), and
+  for a pilot it no longer holds it removes the values his lists gave, the added number with them (logged, so Ryan
+  can put it back); a value only a pilot's list gave stays. The partial list answer "gone" now follows the same rule
+  (it removed pilot-given values too). Before: the whole phones value turned into the pilot's (Ryan's number read as
+  his) and then outlived Ryan's next list while the email on the same record did not.
+- **Still the chosen rule, now said plainly:** a row's HAL values (name, Sen #, DOH, status, retirement month, union
+  id) are WRITTEN over the contact list's value with the pilot as the author, also over a value Ryan's own contact
+  list gave; the value before is in the history. So one pilot's list can change the shown retirement month and union
+  id of any pilot with no hand edit (Sen #, DOH, status and the name are shown from the seniority list where it has
+  them). A value a pilot's list wrote carries his ref, so Ryan's next list that no longer holds that pilot leaves
+  it. There is no one-step undo of a merged list: Ryan restores a value from the record's history, field by field.
+- **The same file Ryan's own upload reads.** A pilot's list is decoded as the 1.4.8 parser decodes Ryan's: UTF-8 (a
+  BOM allowed), else Windows-1252 (`limits.encodings`). Bytes Windows-1252 does not have (81, 8D, 8F, 90, 9D hex) and
+  control characters are refused as before. Before, one accented name in a Windows-1252 export refused the whole
+  list for a pilot while Ryan's upload of the same file was read. HOM 1.9.1's chunk check must take the same two
+  encodings (it sees parts, so: no NUL or other control byte but tab, CR and LF; the header row in the first part).
+- **The card.** A refusal the portal gives in its own words is shown in those words ("Not sent: that file is not the
+  contacts list (CSV) export. Nothing was merged."), cut to one plain line; "the portal does not take a contacts list
+  yet (it needs its next update)" is said only for an older portal's own refusal ("kind is not one of ..."). Before,
+  every refusal of the live HOM 1.9.1 read as a missing update. The fields and the button are 16 px text and 44 px
+  high at every width (they were 14 px and 32 px from 700 px up). The title is "Uploads" while the contacts list is
+  offered, the cap reads "1 MB", and a merged answer is shown once, under "Your contacts list".
+- **Boundary changes of these fixes** (they narrow what a pilot's list can do, and none widens it):
+  21. `roles.PILOT_CONTACTS_LIMITS` gains `encodings`, `rows_max`, `cell_chars`, `notes_chars` and `new_max`, and
+      `PILOTDB_ANSWERS` two refusals (rows, new pilots). The fixture's `commands.pilot_contacts_limits`,
+      `pilot_contacts_checks` and `pilotdb_answers` follow; HOM re-pins the fixture.
+  22. A pilot's contacts list may be Windows-1252 text as well as UTF-8 (the one widening: the encodings of Ryan's
+      own upload path).
+  23. A pilot's list can make at most 250 standing records of its own, all pilots together; over that it is refused
+      whole.
+  24. Ryan's next contact list removes a number a pilot's list added to his value when his list no longer holds that
+      pilot (boundary change 20 now covers only a value a pilot's list alone gave).
+  25. The answer to a held row of a pilot's list never removes or replaces a value.
+  Not changed: PORTAL_CMDS, PORTAL_REFUSED, FEATURES, every shape, PILOT_UPLOAD_LIMITS, PILOT_TICKET_LIMITS, the note
+  and edit quotas, the FLICA budgets, the inbox folder and its modes, the author from the folder's name, the log
+  (counts only), push isolation.
+- Left open for Ryan: a one-step "undo this pilot's list" (by its merge row) is not built.
 
 ### The contract (part one, Nov 15): contract 1 revision 4 until the section above
 - Decided from HOM 1.9.0's run-time code (commit 7bf6d25): the file and the state are relayed as signed and no key of

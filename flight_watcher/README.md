@@ -163,8 +163,10 @@ keeps nothing of it and hands it to Ryan's Watcher through his pilot inbox folde
 the folder's name, never the payload). Ryan's Watcher checks it again and merges it into the one database with that
 pilot as the author. It only adds and updates: nobody is marked gone, nothing is deleted, an empty cell drops
 nothing, phones and emails are added after the ones on file (never replaced or removed), Ryan's hand edits stay on
-top and every earlier value is in the record's history for Ryan to put back. One list waits at a time, 4 are merged
-for a pilot in 24 h; the answer on his card and the log have counts only. HOM 1.9.1 must be live first; with HOM
+top and every earlier value is in the record's history for Ryan to put back. A list is at most 2500 rows with cells
+of at most 200 characters (Notes 2000), UTF-8 or Windows-1252 as Ryan's own upload; pilots' lists together can make
+at most 250 records that no list of Ryan's holds (a list over that is refused whole). One list waits at a time, 4
+are merged for a pilot in 24 h; the answer on his card and the log have counts only. HOM 1.9.1 must be live first; with HOM
 1.9.0 the choice is refused at its first part in plain words and the rest of the portal works as before. Details:
 `PORTAL_CONTRACT.md` section 5.6.1.
 
