@@ -15,9 +15,9 @@ import inflt as IF
 
 @pytest.mark.parametrize("text,leaks", [
     ("Doe, Jane (1234)", ("Doe", "Jane", "1234")),
-    ("Doe Jr, Jane (14157)", ("Doe", "Jr", "Jane", "14157")),
+    ("Doe Jr, Jane (10034)", ("Doe", "Jr", "Jane", "10034")),
     ("captain='Doe, Jane (6593)'", ("Doe", "Jane", "6593")),
-    ("captain='Doe Jr, Jane (14157)'", ("Doe", "Jr", "Jane", "14157")),
+    ("captain='Doe Jr, Jane (10034)'", ("Doe", "Jr", "Jane", "10034")),
     ('captain="Doe, Jane (6593)"', ("Doe", "Jane", "6593")),
     ("captain='Jane Doe (6593)'", ("Doe", "Jane", "6593")),
     ("captain='DOE, JANE (123)'", ("DOE", "JANE", "123")),
@@ -33,7 +33,7 @@ def test_a_crew_name_and_its_number_are_masked(text, leaks):
 def test_the_live_detail_probe_line_is_masked():
     line = "detail probe H3607: captain='Doe, Jane (6593)' blk=17:35 credit=17:35 soft=0:00"
     assert CAPS.mask(line, []) == "detail probe H3607: captain='xxx, xxxx (####)' blk=17:35 credit=17:35 soft=0:00"
-    line2 = "detail probe H3631B: captain='Doe Jr, Jane (14157)' blk=17:35 credit=17:35 soft=0:00"
+    line2 = "detail probe H3631B: captain='Doe Jr, Jane (10034)' blk=17:35 credit=17:35 soft=0:00"
     assert CAPS.mask(line2, []) == ("detail probe H3631B: captain='xxx xx, xxxx (#####)' blk=17:35 credit=17:35 "
                                     "soft=0:00")
 
@@ -121,9 +121,9 @@ def test_a_pilots_detail_probe_names_no_captain(load, caplog):
     W = load("pilot2")
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
         W.detail_probe(None, POT)
-        W.log.info("detail probe %s: captain=%r blk=%s", "H3607", "Doe Jr, Jane (14157)", "17:35")  # the mask too
+        W.log.info("detail probe %s: captain=%r blk=%s", "H3607", "Doe Jr, Jane (10034)", "17:35")  # the mask too
     text = "\n".join(r.getMessage() for r in caplog.records)
-    for leak in ("Doe", "Jane", "Jr", "6593", "14157"):
+    for leak in ("Doe", "Jane", "Jr", "6593", "10034"):
         assert leak not in text, (leak, text)
     assert "detail probe H3607: captain=parsed blk=17:35 credit=17:35 soft=0:00" in text
 
