@@ -142,6 +142,32 @@ are as they were. Synthetic data in every test ("Doe, Jane", 10001).
 - A portal pilot's Watcher does the same from his own request list for the pickups in his own database (his own
   request time); it reads no captured page, and nothing crosses instances.
 - The year of a request comes from its bid folder's month (a late December request in January's folder is last year's).
+- **Where the comment really is (Nov 16, checked against the real pages):** the Open Time Requests list has only
+  "10/29 19:22 Add Denied" on a row (that time is the Requested time), no comment and no decision time, so as first
+  built the cap never fired. Crew scheduling's comment is on each request's read-only view page. Now each Denied add
+  or swap on the list with no reason on file is read there once (`watcher.req_cap_views`, the same read-only view
+  page a pending request already used; both `safe_get` guards, 1.5 to 3.5 s apart, never the QuickDelete link beside
+  it, nothing submitted). At most 2 new view pages for each bid folder on each read of the list (every 15 minutes;
+  every 2 while a request is pending), so a history of 15 denials is read over about 8 list reads with no burst; a
+  page that cannot be read is tried 3 times in all. A new denial is read within the next reads (one that is pushed
+  is read once for its push and not again). A drop, a trade or an approved request is never read for this.
+- **FLICA budget:** each view page is one FLICA load, counted by the gate like the list's own (pace, host cap, a
+  pilot's hourly budget). On a pilot's Watcher a view page is loaded only when one more load fits his budget and the
+  request reads' share (`opt_fits`); otherwise it waits for a later read and no try is used. None is loaded while the
+  request reads are stopped (their breaker) or the Watcher is paused.
+- **Both name orders:** the real comment is first name first with no comma ("CS: H3677:13NOV picked up by JOHN DOE
+  (10001)", made-up values; the first build read only "DOE, JANE"). Both read now: one or more given names, a middle
+  initial, a suffix (JR, III), hyphens, apostrophes, any letter case. "CS: Added pairing (H3630:14NOV) not in
+  opentime pot" and every other comment is no pickup and caps nothing; a comment about the trip a swap gives up caps
+  nothing either.
+- What is kept for each denial: the pairing, its day and the picker's employee number, by folder and FLICA request id
+  (`req_cap_views` in the Watcher's state, forgotten when the request leaves the list). The picker's name is never
+  kept. The cap uses the row's own Requested time from the list (year from the bid folder's month).
+- Log, counts only: "speed: 2 denied request view pages read, 3 left to read" and "speed: N pickups capped at Ryan's
+  request time, M unmatched" (the second whenever a speed or the unmatched count changed). No name, no employee number.
+- A portal pilot's Watcher reads his own denials' view pages the same way, inside his budget, with his captures off.
+- Tests: `test_fw1710_speed_cap.py` (the real list and view page layouts with made-up values; each new test failed
+  before the change).
 
 #### No crew names or employee numbers in Ryan's log
 - Before: the admin's log named the captain ("detail probe H3601: captain='...(...)'"), quoted a pairing page's crew
@@ -200,7 +226,7 @@ are as they were. Synthetic data in every test ("Doe, Jane", 10001).
   and `test_pilotdb_share_admin.py` updated to the per-picker cap, the gradual ladder and the repaired switches file.
 - Left open for Ryan (see HANDOFF.md): the CLAUDE.md hard-rule line for decision 9, the contact list upload on a
   pilot's portal page (contract revision 5, HOM first), gzip and ETag for the file route (a later HOM release), and
-  checking the real request list page against the speed cap's parser after the update.
+  checking the speed cap on the real pages after the update (the denials' view pages; see the speed cap section).
 
 ### After the update: what Ryan does
 Each step is [DESTRUCTIVE] and needs its own yes; an earlier yes never covers a later one.

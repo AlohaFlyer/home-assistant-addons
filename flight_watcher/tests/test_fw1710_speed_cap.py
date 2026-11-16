@@ -3,7 +3,9 @@ another pilot picked it up ('CS: H3607:17NOV picked up by DOE, JANE (10001)' on 
 picker asked before Ryan did, so his pickup speed ends no later than Ryan's Requested time (its minute + 59 s), not
 at FLICA's decision time and not at the Watcher's later pot read. Every other pickup keeps store.dwell's estimate.
 History is recalculated once from the request lists on file; each later read of the list applies it; the cards say
-"at most". No FLICA page beyond the lists requests_check already reads. Synthetic pilots only ("Doe, Jane" 10001)."""
+"at most". The real list page carries no comment: it is on each request's read-only view page ('CS: H3677:13NOV
+picked up by JOHN DOE (10001)', first name first), so each denied add or swap is read there once, two new ones a
+folder a read, inside the FLICA budget. Synthetic pilots only ("Doe, Jane", "JOHN DOE" 10001)."""
 import json
 import logging
 
@@ -140,7 +142,11 @@ def test_a_cap_that_does_not_win_leaves_the_estimate(tmp_path):
 URL = "https://ha2.flica.net/full/mobileopentimepot.cgi?BCID=003.152&From=MainMenu"
 
 
-def _watch(W, monkeypatch, tmp_path, body=LIST, ids=IDS):  # noqa: N803
+NO_CS = ("<html><body>Add/Swap/Drop requests Add H3999:20NOV (F) Time: 10/30 14:00 Status: Denied 10/30 14:02 "
+         "CM: [no comments] CS: Rest short on 20NOV Note: denied requests stay listed</body></html>")
+
+
+def _watch(W, monkeypatch, tmp_path, body=LIST, ids=IDS, views=None):  # noqa: N803
     monkeypatch.setattr(W, "CAPTURE_DIR", str(tmp_path / "cap"))
     monkeypatch.setattr(W, "trade_check", lambda: None)
     W.S["pot_urls"] = {"2026-11": URL}
@@ -154,6 +160,11 @@ def _watch(W, monkeypatch, tmp_path, body=LIST, ids=IDS):  # noqa: N803
             fetched.append(url)
             if "TB_MyRequests" in url:
                 return "<html><body>my requests</body></html>"
+            if "ShowRequest" in url:  # a request's read-only view page, by its FLICA id
+                page = (views or {}).get(url.split("TimeStamp=")[1].split("&")[0], NO_CS)
+                if isinstance(page, Exception):
+                    raise page
+                return page
             return f"<html><body>{body}{ids}</body></html>"
 
     def read():
@@ -179,11 +190,14 @@ def test_a_read_of_the_request_list_caps_the_pickup(W, tmp_path, monkeypatch, ca
     assert _pk(W.DB)["scored"] == 239 and _pk(W.DB)["req_caps"] == {"10001": REQ} and _pk(W.DB)["capped"] is True
     assert _pk(W.DB, "H3608|18Nov")["scored"] == 600 and "req_caps" not in _pk(W.DB, "H3608|18Nov")
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("speed:")]
-    assert lines == ["speed: 1 pickup capped at Ryan's request time, 0 unmatched"]
+    assert lines == ["speed: 1 denied request view page read, 0 left to read",
+                     "speed: 1 pickup capped at Ryan's request time, 0 unmatched"]
     for leak in ("10001", "Doe", "doe", "Jane", "jane"):  # counts only: no name, no employee number in the log
         assert leak not in caplog.text, leak
-    # no FLICA page beyond the request list and the Tradeboard page it already read; no link followed
-    assert len(fetched) == 2 and all("QuickDelete" not in u and "ShowRequest" not in u for u in fetched)
+    # the request list, the Tradeboard page, and the read-only view page of the one denial with no reason on file
+    # (the row whose 'picked up by' the list text gave is not read again); never a QuickDelete link
+    assert len(fetched) == 3 and all("QuickDelete" not in u for u in fetched)
+    assert [u.split("TimeStamp=")[1].split("&")[0] for u in fetched if "ShowRequest" in u] == ["AAAA1:BBBB1"]
     # the finds export and the pickers publish carry it
     finds = [p for t, p in W.SENT if t == "finds"]
     pickers = [p for t, p in W.SENT if t == "pickers"][-1]["pickers"]
@@ -193,12 +207,12 @@ def test_a_read_of_the_request_list_caps_the_pickup(W, tmp_path, monkeypatch, ca
     sensor = [p for t, p in W.SENT if t == "ot_requests"][-1]
     assert sensor["count"] == 3 and all("pu" not in r and "st_at" not in r for r in sensor["requests"])
     assert W.S["ot_req_rows"]["003.152"][0]["pu"] == {"trip": "H3607", "day": "17NOV", "emp": "10001"}
-    # the next read: idempotent, nothing said, nothing more loaded than the same two pages
+    # the next read: idempotent, nothing said, nothing more loaded than the list and the Tradeboard page
     n = len(caplog.records)
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
         read()
     assert not [r for r in caplog.records[n:] if r.getMessage().startswith("speed:")]
-    assert len(fetched) == 4 and _pk(W.DB)["scored"] == 239
+    assert len(fetched) == 5 and _pk(W.DB)["scored"] == 239
 
 
 def test_a_picker_flica_did_not_name_is_not_capped(W, tmp_path, monkeypatch, caplog):  # noqa: F811
@@ -257,6 +271,215 @@ def test_a_pilots_instance_caps_from_its_own_list_only(tmp_path, monkeypatch, ca
     assert _pk(W.DB)["scored"] == 239
     assert "speed: 1 pickup capped at this pilot's own request time, 0 unmatched" in caplog.text
     assert "10001" not in caplog.text and "doe" not in caplog.text.lower()
+
+
+# ---------------------------------------------------------------- the real pages: the comment is on the view page
+@pytest.mark.parametrize("text,name,emp", [
+    ("CS: H3677:13NOV picked up by JOHN DOE (10001)", "John Doe", "10001"),  # the real page: first name first
+    ("cs: h3677:13nov picked up by john doe (10001) note: x", "John Doe", "10001"),  # as visible_text gives it
+    ("CS: H3677:13NOV picked up by MARY ANN DOE (10001)", "Mary Ann Doe", "10001"),
+    ("CS: H3677:13NOV picked up by JOHN Q DOE (010001)", "John Q Doe", "10001"),
+    ("CS: H3677:13NOV picked up by JOHN Q. DOE JR (10001)", "John Q. Doe Jr", "10001"),
+    ("CS: H3677:13NOV picked up by JOHN DOE III (10001)", "John Doe Iii", "10001"),
+    ("CS: H3677:13NOV picked up by MARY-ANN DOE-ROE (10001)", "Mary-Ann Doe-Roe", "10001"),
+    ("CS: H3677:13NOV picked up by SEAN O'DOE (10001)", "Sean O'Doe", "10001"),
+    ("CS: H3677:13NOV picked up by Sean O’Doe (10001)", "Sean O’Doe", "10001"),
+    ("CS: H3677 : 13 NOV  picked  up  by  John   Doe  ( 10001 )", "John Doe", "10001"),
+    ("CS: H3677:13NOV picked up by DOE, JANE (10001)", "Doe, Jane", "10001"),  # last name first still reads
+    ("CS: H3677:13NOV picked up by DOE JR, JANE Q (10001)", "Doe Jr, Jane Q", "10001"),
+])
+def test_both_name_orders_of_the_picked_up_by_comment(text, name, emp):
+    got = SUB.picked_up(text)
+    assert got == {"trip": "H3677", "day": "13NOV", "name": name, "emp": emp}
+    row = {"status": "Denied", "reason": SUB.parse_request_view(f"add h3677:13nov (f) time: 11/10 09:00 {text}")["reason"]}
+    assert SUB.row_cap(row) == {"trip": "H3677", "day": "13NOV", "emp": emp}  # the name is never kept
+
+
+@pytest.mark.parametrize("text", [
+    "CS: Added pairing (H3630:14NOV) not in opentime pot",  # a real comment that is no pickup
+    "cs: added pairing (h3630:14nov) not in opentime pot note: x",
+    "CS: Rest short on 20NOV", "CS: [no comments]", "CS: H3677:13NOV picked up by (10001)",
+    "CS: H3677:13NOV picked up by JOHN DOE", "CS: H3677:13NOV not picked up; JOHN DOE (10001) holds it",
+])
+def test_a_comment_that_is_no_pickup_gives_no_cap(text):
+    assert SUB.picked_up(text) is None
+    assert SUB.row_cap({"status": "Denied", "reason": text}) is None
+
+
+def _view(trip_day, cs, kind="Add", at="10/30 12:03"):
+    """A request's read-only view page as FLICA writes it (layout of parse_request_view; made-up values)."""
+    return (f"<html><body>Add/Swap/Drop requests {kind} {trip_day} (F) Time: {at} Status: Denied {at[:9]}59 "
+            f"CM: [no comments] CS: {cs} Note: denied requests stay listed "
+            '<a href="x?QuickDelete=1&amp;TimeStamp=DEAD:BEEF">Denied</a></body></html>')
+
+
+# the real list page: 'MM/DD HH:MM type status' and nothing else on a row (no comment, no decision time)
+REAL = ("open time requests 10/29 19:22 add denied 10/30 12:03 add denied 10/30 12:04 swap denied "
+        "10/30 13:00 drop denied 10/30 14:00 add denied 10/31 09:00 add approved 10/31 10:00 add denied")
+REAL_IDS = "".join(f'<a href="x?ShowRequest=1&amp;TimeStamp=AAAA{i}:BBBB{i}">v</a>'
+                   f'<a href="x?QuickDelete=1&amp;TimeStamp=AAAA{i}:BBBB{i}">d</a>' for i in range(7))
+REAL_VIEWS = {
+    "AAAA0:BBBB0": _view("H3630:14NOV", "Added pairing (H3630:14NOV) not in opentime pot", at="10/29 19:22"),
+    "AAAA1:BBBB1": _view("H3607:17NOV", "H3607:17NOV picked up by JOHN DOE (10001)"),
+    "AAAA2:BBBB2": _view("H3911:21NOV (F) For H3609:19NOV", "H3609:19NOV picked up by RICK Q ROE JR (10002)",
+                         kind="Swap", at="10/30 12:04"),
+    "AAAA4:BBBB4": _view("H3610:20NOV", "H3610:20NOV picked up by MARY-ANN O'POE (10003)", at="10/30 14:00"),
+    "AAAA6:BBBB6": _view("H3611:21NOV", "Rest short on 21NOV", at="10/31 10:00"),
+}
+
+
+def _ids(fetched):
+    return [u.split("TimeStamp=")[1].split("&")[0] for u in fetched if "ShowRequest" in u]
+
+
+def test_denied_requests_view_pages_are_read_for_the_cap(W, tmp_path, monkeypatch, caplog):  # noqa: F811
+    """The real pages: the list names no picker, so each denied add or swap is read on its view page, two new ones a
+    read; a drop and an approved request never; history catches up over a few reads with no burst."""
+    _seed(W)
+    _seed(W, "H3609|19Nov", f"FO {RICK}", ("10002",))
+    _seed(W, "H3610|20Nov", f"FO {RICK}", ("10002",))  # FLICA names another picker (10003): unmatched, not capped
+    fits = []
+    monkeypatch.setattr(W, "opt_fits", lambda n: fits.append(n) or True)
+    guards = []
+    for mod in (W.SUB, W.SM):
+        real = mod.safe_get
+        monkeypatch.setattr(mod, "safe_get", lambda u, real=real, mod=mod: guards.append((mod.__name__, u)) or real(u))
+    fetched, read = _watch(W, monkeypatch, tmp_path, body=REAL, ids=REAL_IDS, views=REAL_VIEWS)
+    assert W.REQ_CAP_VIEWS_PER_READ == 2
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        read()
+    assert _ids(fetched) == ["AAAA0:BBBB0", "AAAA1:BBBB1"]  # two new view pages, in list order
+    assert _pk(W.DB)["scored"] == 239 and _pk(W.DB)["req_caps"] == {"10001": REQ}  # the row's own Requested time
+    assert _pk(W.DB, "H3609|19Nov")["scored"] == 600
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        read()
+    assert _ids(fetched)[2:] == ["AAAA2:BBBB2", "AAAA4:BBBB4"]  # the swap's add side; the drop (AAAA3) is never read
+    assert _pk(W.DB, "H3609|19Nov")["scored"] == 299 and "req_caps" not in _pk(W.DB, "H3610|20Nov")
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        read()
+        read()
+    assert _ids(fetched)[4:] == ["AAAA6:BBBB6"]  # each request's page once; the approved one (AAAA5) never
+    # every view page load passed both guards, was asked of the budget one at a time, and no link was followed
+    for u in (x for x in fetched if "ShowRequest" in x):
+        assert ("submit", u) in guards and ("swapmap", u) in guards and "QuickDelete" not in u
+    assert all("QuickDelete" not in u for u in fetched)
+    assert fits.count(1) == 5
+    # what is kept: the picked-up parts by folder and FLICA id, never the name
+    kept = W.S["req_cap_views"]
+    assert kept["003.152|AAAA1:BBBB1"] == {"reason": {"trip": "H3607", "day": "17NOV", "emp": "10001"}, "ok": True,
+                                           "tries": 1}
+    assert kept["003.152|AAAA0:BBBB0"] == {"reason": None, "ok": True, "tries": 1}
+    assert sorted(kept) == [f"003.152|AAAA{i}:BBBB{i}" for i in (0, 1, 2, 4, 6)]
+    state = json.dumps({"v": kept, "r": W.S["ot_req_rows"]}).lower()
+    for leak in ("doe", "john", "roe", "rick", "poe", "mary"):
+        assert leak not in state, leak
+    assert W.S["ot_req_rows"]["003.152"][1]["pu"] == {"trip": "H3607", "day": "17NOV", "emp": "10001"}
+    sensor = [p for t, p in W.SENT if t == "ot_requests"][-1]
+    assert all("pu" not in r for r in sensor["requests"])
+    # the log: counts only
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("speed:")]
+    assert lines == ["speed: 2 denied request view pages read, 3 left to read",
+                     "speed: 1 pickup capped at Ryan's request time, 0 unmatched",
+                     "speed: 2 denied request view pages read, 1 left to read",
+                     "speed: 1 pickup capped at Ryan's request time, 1 unmatched",
+                     "speed: 1 denied request view page read, 0 left to read"]
+    for leak in ("10001", "10002", "10003", "doe", "john", "roe", "rick", "poe", "mary"):
+        assert leak not in caplog.text.lower(), leak
+
+
+def test_a_view_page_that_fails_is_tried_three_times_and_no_more(W, tmp_path, monkeypatch):  # noqa: F811
+    _seed(W)
+    views = {"AAAA0:BBBB0": RuntimeError("timeout"), "AAAA1:BBBB1": "<html><body>please log in</body></html>"}
+    monkeypatch.setattr(W, "classify", lambda html: "login" if "please log in" in html else "ok")
+    fetched, read = _watch(W, monkeypatch, tmp_path, body="open time requests 10/30 12:03 add denied 10/30 12:04 add denied",
+                           ids=REAL_IDS[:len(REAL_IDS) * 2 // 7], views=views)
+    for _ in range(5):
+        read()
+    assert sorted(_ids(fetched)) == ["AAAA0:BBBB0"] * 3 + ["AAAA1:BBBB1"] * 3 == [
+        "AAAA0:BBBB0"] * W.REQ_CAP_VIEW_TRIES + ["AAAA1:BBBB1"] * W.REQ_CAP_VIEW_TRIES
+    assert W.S["req_cap_views"] == {f"003.152|AAAA{i}:BBBB{i}": {"reason": None, "ok": False, "tries": 3} for i in (0, 1)}
+    assert _pk(W.DB)["scored"] == 600
+
+
+def test_a_view_page_read_waits_for_room_in_the_flica_budget(W, tmp_path, monkeypatch):  # noqa: F811
+    """A pilot's budget: the list read fits, a view page does not; nothing is loaded and no try is used up. Then a
+    stopped request path (its breaker) reads none either."""
+    _seed(W)
+    room = {"n": 0}
+    monkeypatch.setattr(W, "opt_fits", lambda n: n != 1 or room["n"] > 0)
+    fetched, read = _watch(W, monkeypatch, tmp_path, body=REAL, ids=REAL_IDS, views=REAL_VIEWS)
+    read()
+    assert _ids(fetched) == [] and W.S.get("req_cap_views", {}) == {} and _pk(W.DB)["scored"] == 600
+    room["n"] = 1
+    read()
+    assert _ids(fetched) == ["AAAA0:BBBB0", "AAAA1:BBBB1"] and _pk(W.DB)["scored"] == 239
+
+
+def test_a_request_that_leaves_the_list_is_forgotten_and_a_listed_one_is_kept(W, tmp_path, monkeypatch):  # noqa: F811
+    _seed(W)
+    fetched, read = _watch(W, monkeypatch, tmp_path, body=REAL, ids=REAL_IDS, views=REAL_VIEWS)
+    for _ in range(3):
+        read()
+    assert len(W.S["req_cap_views"]) == 5
+    W.S["req_cap_views"]["009.999|AAAA9:BBBB9"] = {"reason": None, "ok": True, "tries": 1}  # a folder not watched now
+    # Ryan cleared all but the second request; the page names fewer requests than it has rows once (no ids): kept
+    _f2, read2 = _watch(W, monkeypatch, tmp_path, body="open time requests 10/30 12:03 add denied 10/30 12:04 add denied",
+                        ids=REAL_IDS[len(REAL_IDS) // 7:len(REAL_IDS) * 2 // 7], views=REAL_VIEWS)
+    read2()
+    assert len(W.S["req_cap_views"]) == 5 and _ids(_f2) == []
+    _f3, read3 = _watch(W, monkeypatch, tmp_path, body="open time requests 10/30 12:03 add denied",
+                        ids=REAL_IDS[len(REAL_IDS) // 7:len(REAL_IDS) * 2 // 7], views=REAL_VIEWS)
+    read3()
+    assert sorted(W.S["req_cap_views"]) == ["003.152|AAAA1:BBBB1"] and _ids(_f3) == []  # never read twice
+    assert _pk(W.DB)["scored"] == 239  # the cap stays on the find
+
+
+def test_a_new_denial_pushed_with_its_view_page_is_not_read_twice(W, tmp_path, monkeypatch):  # noqa: F811
+    """Going forward: a denial that is news is read on its view page for the push (1.3.0); the cap takes it from
+    there, with the first-name-first comment, and its page is not loaded again."""
+    from datetime import datetime, timedelta
+    _seed(W)
+    now = datetime.now(W.HST)
+    W.DB.db.execute("UPDATE finds SET first_seen=?, last_seen=?, gone_at=? WHERE key=?", (
+        (now - timedelta(minutes=30)).astimezone(W.timezone.utc).isoformat(),
+        (now - timedelta(minutes=2)).astimezone(W.timezone.utc).isoformat(), now.astimezone(W.timezone.utc).isoformat(), KEY))
+    W.DB.rescore_all()
+    was = _pk(W.DB)["scored"]
+    assert was > 1500  # the estimate: the middle of the last two minutes, 29 minutes after the trip came in
+    filed = now - timedelta(minutes=20)
+    W.S["ot_req_init"] = True
+    fetched, read = _watch(W, monkeypatch, tmp_path, body=f"open time requests {filed:%m/%d %H:%M} add denied",
+                           ids=REAL_IDS[:len(REAL_IDS) // 7],
+                           views={"AAAA0:BBBB0": _view("H3607:17NOV", "H3607:17NOV picked up by JOHN DOE (10001)")})
+    read()
+    read()
+    assert _ids(fetched) == ["AAAA0:BBBB0"]
+    assert [p["status"] for t, p in W.SENT if t == "event/request_decided"] == ["Denied"]
+    assert _pk(W.DB)["capped"] is True and 600 <= _pk(W.DB)["scored"] <= 720 < was  # his request, 10 minutes in
+    assert W.S["req_cap_views"]["003.152|AAAA0:BBBB0"]["reason"] == {"trip": "H3607", "day": "17NOV", "emp": "10001"}
+
+
+def test_a_pilots_instance_reads_its_own_view_pages_with_captures_off(tmp_path, monkeypatch, caplog):
+    from test_instance import _load
+    W = _load(tmp_path, monkeypatch, "james", {"username": "u", "password": "p", "log_level": "info",  # noqa: N806
+                                               "category_check": "HNL 332 FO"})
+    W.SENT = []
+    monkeypatch.setattr(W, "pub", lambda t, p, retain=True: W.SENT.append((t, p)))
+    monkeypatch.setattr(W, "DB", Store(str(tmp_path / "james.db")))
+    monkeypatch.setattr(W, "opt_fits", lambda n: True)
+    _seed(W)
+    wrote = []
+    monkeypatch.setattr(W, "cap_write", lambda *a, **k: wrote.append(a))
+    fetched, read = _watch(W, monkeypatch, tmp_path, body=REAL, ids=REAL_IDS, views=REAL_VIEWS)
+    W.S["req_view_captured"] = {}
+    assert not W.CAP.admin and not W.cap_on()
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        read()
+    assert _ids(fetched) == ["AAAA0:BBBB0", "AAAA1:BBBB1"] and wrote == []
+    assert _pk(W.DB)["scored"] == 239
+    assert "speed: 1 pickup capped at this pilot's own request time, 0 unmatched" in caplog.text
+    for leak in ("10001", "doe", "john"):
+        assert leak not in caplog.text.lower(), leak
 
 
 # ---------------------------------------------------------------- the cards say "at most"

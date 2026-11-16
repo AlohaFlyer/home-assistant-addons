@@ -35,9 +35,19 @@ Open for Ryan:
    first minute, say so before the update: the switch is on his Pilots card (Settings, Sharing).
 5. Round 2 review fixes are in (CHANGELOG 1.7.10 "Review fixes, round 2"). Two things they leave for later: the full
    roster file is sent uncompressed and uncached on every portal open (gzip and an ETag on HOM's file route, a later
-   HOM release, no contract change), and after the update the one-time log line "speed: N pickups capped at Ryan's
-   request time, M unmatched" should be read and the captured request list page (on Pako, never git) checked
-   against `submit.parse_request_rows` before history is called recalculated: the test page is synthetic.
+   HOM release, no contract change), and the speed cap must be checked on Pako after the update. The real pages
+   (Nov 16): the request list has no "picked up by" comment, it is on each denied request's read-only view page, first
+   name first. 1.7.10 now reads those view pages, 2 new ones a folder a list read, inside the FLICA budget (CHANGELOG
+   1.7.10, speed cap section). To check, in Ryan's app log and state only (no extra FLICA load, never a QuickDelete
+   link): (a) "speed: N denied request view pages read, M left to read" on each list read until M is 0 (15 denials
+   take about 8 reads, about 2 hours at the 15 minute pace); (b) "speed: N pickups capped at Ryan's request time, M
+   unmatched" as they arrive; unmatched means FLICA named a pilot who is not one of that pickup's open-seat pickers,
+   or the find is not on file; (c) no name and no employee number in any of those lines; (d) `req_cap_views` in
+   `/data/state.json` has one entry for each denied add or swap, `ok` true, `tries` 1, reason trip, day and number
+   only; an entry with `ok` false and `tries` 3 is a view page the parser could not read (check the captured
+   `otrequest_view_<n>.html` on Pako against `submit.parse_request_view`, never in git); (e) a capped find shows the
+   sign for "at most" on the finds card and the pickers card; (f) James's log shows the same two lines with "this
+   pilot's own" and his FLICA loads stay inside his budget. The tests are synthetic: (a) to (e) are the real proof.
    Every OFF switch now also lives in `/share/flight_watcher/pilotdb/switches_off.json` (off in either file is off).
 
 Release order for 1.7.10, each step [DESTRUCTIVE] with Ryan's own yes (an earlier yes never covers a later one):

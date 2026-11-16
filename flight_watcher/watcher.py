@@ -6916,6 +6916,7 @@ def requests_check(fl):
                     if r.get("alt"):  # the content key too: a read that falls back to it never re-pushes
                         pushed[f"{r['alt']}|{r['status']}"] = now_iso()
             req_cap_keep(rows, rows_of.get(b))  # 1.7.10: each denial's 'picked up by' stays on its row
+            req_cap_views(fl, b, rows)  # the real comment is on the denial's read-only view page: read once
             rows_of[b] = rows
             if b == ci:
                 done_first[b] = now_iso()
@@ -6941,6 +6942,8 @@ def requests_check(fl):
     if folders:
         for b in [x for x in rows_of if x not in folders]:
             rows_of.pop(b, None)  # a folder no longer watched: its Pending rows no longer hold the 2-min poll
+        for k in [k for k in S.get("req_cap_views") or {} if k.split("|")[0] not in folders]:
+            S["req_cap_views"].pop(k, None)
         nums = {b.split(".")[-1] for b in regular}
         for n in [x for x in trows_of if x not in nums]:
             trows_of.pop(n, None)
@@ -6949,7 +6952,7 @@ def requests_check(fl):
         pushed.pop(k, None)
     if read_ok:
         S["ot_req_init"] = True
-        try:  # 1.7.10 (Ryan, Nov 15): pickup speeds capped at the own request's time; no FLICA load
+        try:  # 1.7.10 (Ryan, Nov 15): pickup speeds capped at the own request's time; no FLICA load of its own
             req_cap_pass()
         except Exception as e:  # noqa: BLE001 (type only: a message could carry a name)
             log.info("speed: request cap skipped: %s", type(e).__name__)
@@ -6969,11 +6972,17 @@ def requests_check(fl):
 # H3607:17NOV picked up by DOE, JANE (10001)' on his Open Time Requests list), that picker asked before he did: the
 # picker's speed ends no later than this request's Requested time (store.req_cap_secs: its minute + 59 s), not at
 # FLICA's decision time and not at the Watcher's later pot read. Every other pickup keeps store.dwell's estimate.
-# Read from the request lists requests_check already loads (and, once, from the lists on file: S['ot_req_rows'] and
-# the admin's own captured request pages): no FLICA page beyond those, no link followed. Each instance caps the
-# pickups in its own database from its own list; nothing crosses instances. The log carries counts only.
+# Real pages (Nov 16): the list requests_check loads has only 'MM/DD HH:MM Add Denied' on a row (that time is the
+# Requested time); the comment ('CS: H3677:13NOV picked up by JOHN DOE (10001)', first name first) is on the
+# request's read-only view page. So each Denied add or swap with no reason on file is read there once
+# (req_cap_views: _request_view, never the QuickDelete link beside it), a few a read, inside the FLICA budget; the
+# lists on file (S['ot_req_rows']) and, once, the admin's own captured request pages are used too. Each instance caps
+# the pickups in its own database from its own list; nothing crosses instances. The log carries counts only.
 REQ_CAP_V = 1
 REQ_CAP_FILE_MAX = 5 * 1024 * 1024
+REQ_CAP_VIEWS_PER_READ = 2  # new denied view pages per folder per list read: history catches up with no burst
+REQ_CAP_VIEW_TRIES = 3  # view page reads of one denied request whose page could not be read
+REQ_CAP_TYPES = ("Add", "Swap")  # a request that asks for a trip; a drop or a trade is denied for other reasons
 
 
 def _req_shown(r):
@@ -6992,6 +7001,66 @@ def req_cap_keep(rows, old):
         c = SUB.row_cap(r) or before.get(r.get("key"))
         if c:
             r["pu"] = {k: c[k] for k in ("trip", "day", "emp")}
+
+
+def _cap_parts(c):
+    """{trip, day, emp} (strings, nothing else: never a name) of a kept cap reason, or None."""
+    if not isinstance(c, dict) or not all(isinstance(c.get(k), str) and c.get(k) for k in ("trip", "day", "emp")):
+        return None
+    return {k: c[k] for k in ("trip", "day", "emp")}
+
+
+def req_cap_views(fl, b, rows):
+    """The real list names no picker: crew scheduling's 'picked up by' comment is on each request's read-only view
+    page. For each Denied add or swap row with a FLICA id (ts) and no cap reason on file, that page is read once
+    (_request_view: both safe_get guards, paced, captured only where captures are on; never the QuickDelete link),
+    at most REQ_CAP_VIEWS_PER_READ new ones per folder per list read and REQ_CAP_VIEW_TRIES tries per request. Each
+    load is a FLICA load like the list's own (the gate counts it; on a pilot it must fit his budget first: opt_fits),
+    and none is made while the request reads are stopped. S['req_cap_views'][folder|ts] = {reason, ok, tries}:
+    reason is the picked-up parts only ({trip, day, emp}; the name is never kept), None when the comment is not a
+    pickup or the trip is the one this request gives up. Kept until the row leaves the list. The reason goes on the
+    row as 'pu', so row_cap / req_cap_pass apply the cap with the row's own Requested time. Counts only in the log."""
+    views = S.setdefault("req_cap_views", {})
+    listed, n, left = set(), 0, 0
+    for r in rows:
+        if not r.get("ts"):
+            continue
+        k = f"{b}|{r['ts']}"
+        listed.add(k)
+        if r.get("status") != "Denied" or r.get("type") not in REQ_CAP_TYPES:
+            continue
+        v = views.get(k) if isinstance(views.get(k), dict) else None
+        have = SUB.row_cap(r) or _cap_parts((v or {}).get("reason"))
+        if have:  # on file: the list's own text, the view page read for its push, an earlier read
+            r["pu"] = dict(have)
+            views[k] = {"reason": dict(have), "ok": True, "tries": (v or {}).get("tries", 0)}
+            continue
+        if v is None and "reason" in r:  # its view page was read in this pass (the push): no pickup comment there
+            v = views[k] = {"reason": None, "ok": True, "tries": 1}
+        if v is not None and (v.get("ok") or v.get("tries", 0) >= REQ_CAP_VIEW_TRIES):
+            continue
+        if n >= REQ_CAP_VIEWS_PER_READ or RUN["aborted"] or not BRK.allow("requests") or not opt_fits(1):
+            left += 1
+            continue
+        n += 1
+        got = _request_view(fl, b, r["ts"])
+        if RUN["aborted"]:  # given up for a pause or a stop: not a try
+            left += 1
+            continue
+        pu = SUB.picked_up(str(got.get("reason") or "")) if got else None
+        if pu and any(x.get("trip") == pu["trip"] and x.get("side") == "drop" and x.get("day") in ("", pu["day"])
+                      for x in got.get("legs") or []):
+            pu = None  # the trip this request gives up, not the one it asked for
+        v = views[k] = {"reason": _cap_parts(pu), "ok": bool(got), "tries": (v or {}).get("tries", 0) + 1}
+        if v["reason"]:
+            r["pu"] = dict(v["reason"])
+        elif not v["ok"] and v["tries"] < REQ_CAP_VIEW_TRIES:
+            left += 1
+    if listed or not rows:  # a page read without its ids forgets nothing
+        for k in [k for k in views if k.startswith(f"{b}|") and k not in listed]:
+            views.pop(k, None)
+    if n:
+        log.info("speed: %d denied request view page%s read, %d left to read", n, "" if n == 1 else "s", left)
 
 
 def _folder_month(num):
@@ -7080,7 +7149,8 @@ def req_cap_apply(caps):
 def req_cap_pass():
     """After a good read of the request lists: the cap for every denied 'picked up by' row on file. The first pass
     of 1.7.10 (DB 'req_cap_v') also reads the admin's captured request pages and says the counts; a later pass says
-    a count only when a pickup's speed changed. Idempotent (a cap already on a pickup changes nothing)."""
+    them only when a pickup's speed changed or the unmatched count did (the denials' view pages are read a few a
+    read, so history arrives over several passes). Idempotent (a cap already on a pickup changes nothing)."""
     first = DB.get("req_cap_v") != REQ_CAP_V
     caps = req_cap_rows() + (req_cap_captures() if first else [])
     capped, unmatched = req_cap_apply(caps)
@@ -7088,10 +7158,10 @@ def req_cap_pass():
     new = capped  # review: set_req_cap says 'capped' only when it changed a speed ('same' writes and rescores nothing)
     if first:
         DB.put("req_cap_v", REQ_CAP_V)
+    if first or new or unmatched != S.get("req_cap_unmatched", 0):  # later: as the view pages are read (history)
         log.info("speed: %d pickup%s capped at %s request time, %d unmatched", len(capped), "" if len(capped) == 1 else "s",
                  whose, unmatched)
-    elif new:
-        log.info("speed: %d pickup%s capped at %s request time", len(new), "" if len(new) == 1 else "s", whose)
+    S["req_cap_unmatched"] = unmatched
     if new:
         publish_pickers()
         publish_finds()

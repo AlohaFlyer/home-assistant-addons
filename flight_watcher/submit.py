@@ -238,10 +238,16 @@ def parse_request_rows(text, html=None):
 
 # ---------------------------------------------------------------- 1.7.10: the pickup speed cap (Ryan, Nov 15)
 # A request FLICA denied because another pilot picked the trip up carries crew scheduling's comment
-# 'CS: H3607:17NOV picked up by DOE, JANE (10001)' (made-up values). That picker asked before the pilot whose list
+# 'CS: H3677:13NOV picked up by JOHN DOE (10001)' (made-up values). That picker asked before the pilot whose list
 # this is, so his pickup speed ends no later than this request's Requested time (minute precision: its minute + 59 s).
+# Real pages (Nov 16): the comment is on the request's read-only view page only (the list has none), the name is
+# first name first with no comma, and pot.visible_text gives it in lower case. Both name orders read: 'JOHN DOE',
+# 'MARY ANN DOE', 'JOHN Q. DOE JR', 'MARY-ANN DOE-ROE', "SEAN O'DOE", and 'DOE, JANE' / 'DOE JR, JANE Q'. The name
+# is one or more words of letters, hyphens, apostrophes and dots (a comma between them at most), then the employee
+# number in brackets; 'Added pairing (H3630:14NOV) not in opentime pot' and any other comment is no pickup.
+_NAME_W = r"[A-Za-z\u00c0-\u024f][A-Za-z\u00c0-\u024f'\u2019.\-]*"
 PICKED_RE = re.compile(r"\b([A-Za-z]\d{4}[A-Za-z]?)\s*:\s*(\d{1,2})\s?([A-Za-z]{3})\s+picked\s+up\s+by\s+"
-                       r"([A-Za-z\u00c0-\u024f][A-Za-z\u00c0-\u024f'.\- ]{0,40}?,\s*[A-Za-z\u00c0-\u024f'.\- ]{0,40}?)\s*"
+                       r"(" + _NAME_W + r"(?:\s*,\s*|\s+)(?:" + _NAME_W + r"\s*,?\s*){0,7}?|" + _NAME_W + r")\s*"
                        r"\(\s*(\d{3,7})\s*\)", re.I)
 MON3 = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
 STAMP_RE = re.compile(r"\b(\d{1,2})\s?(" + "|".join(MON3) + r")\s+(\d{1,2}):(\d{2})\b", re.I)
@@ -253,7 +259,8 @@ HST_TZ = timezone(timedelta(hours=-10))
 
 
 def picked_up(text):
-    """{trip, day, name, emp} of a 'H3607:17NOV picked up by DOE, JANE (10001)' comment (any letter case), or None."""
+    """{trip, day, name, emp} of a 'H3677:13NOV picked up by JOHN DOE (10001)' comment (first name first as FLICA
+    writes it, or 'DOE, JANE'; any letter case), or None. The name is for a test or a caller's eyes: never stored."""
     m = PICKED_RE.search(text or "")
     if not m:
         return None
@@ -313,8 +320,8 @@ def req_time(md, hm, folder_month=None, ref=None):
 
 def row_cap(r):
     """1.7.10: what a Denied request row says for the pickup speed cap: {trip, day, emp} from its 'picked up by'
-    comment (the list's own text, kept on the row as 'pu', else its view page's reason or detail), or None. The
-    picker's name is not kept."""
+    comment (kept on the row as 'pu': from its read-only view page, where the real comment is, or a list's own text;
+    else its view page's reason or detail), or None. The picker's name is not kept."""
     if not isinstance(r, dict) or str(r.get("status") or "").title() != "Denied":
         return None
     pu = r.get("pu") if isinstance(r.get("pu"), dict) else None
