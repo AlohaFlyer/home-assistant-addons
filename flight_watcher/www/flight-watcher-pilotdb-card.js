@@ -223,6 +223,7 @@ label.ck{display:inline-flex;gap:6px;align-items:center;min-height:30px}
 .prow:last-child{border-bottom:0}.prow.on .nm{text-decoration:underline}
 :host([portal]) input,:host([portal]) textarea,:host([portal]) select{font-size:16px}
 :host([portal]) button,:host([portal]) button.s,:host([portal]) .nm,:host([portal]) a.ct,:host([portal]) label.ck{min-height:44px}
+:host([portal]) a.ct{min-width:44px;justify-content:center}
 :host([portal]) details>summary{min-height:44px;line-height:44px}
 :host([portal]) input[type=search],:host([portal]) input[type=text]{min-height:44px}
 :host([portal]) .chip{min-height:44px;padding:2px 14px}
@@ -1062,7 +1063,7 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     if (!f) return [];
     if (!this._pIdx) {
       const recs = f.records.filter((r) => r && typeof r === "object" && FW_PDB_PID_RE.test(String(r.pid || "")));
-      this._pIdx = { recs, by: new Map(recs.map((r) => [r.pid, r])), hay: new Map(), txt: new Map() };
+      this._pIdx = { recs, by: new Map(recs.map((r) => [r.pid, r])), hay: new Map(), flat: new Map(), txt: new Map() };
     }
     return this._pIdx.recs;
   }
@@ -1141,7 +1142,14 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     else if (s.state !== "on") top.push(h("div", { class: "u" }, "The shared pilot database is being read. One moment."));
     else {
       top.push(h("div", { class: "u" }, "The pilot database you share with Ryan: every pilot, every field. Notes are read by Ryan and his assistant; write them as notes, not requests."));
-      if (this._pFile && this._pFile.full === true) top.push(h("div", { class: "ban", role: "alert" }, "The shared file is full: new notes are refused until it is trimmed, and only the newest log entries and pickups are shown."));
+      if (this._pFile && this._pFile.full === true) {
+        // 1.7.10 review: say what the file left out to fit (it keeps the newest notes and entries of all pilots)
+        let cut = 0;
+        for (const r of this._pRecs()) cut += Math.max(0, (+r.entries_total || 0) - (Array.isArray(r.entries) ? r.entries.length : 0));
+        top.push(h("div", { class: "ban", role: "alert", "data-full": String(cut) }, cut
+          ? `The shared file is full: new notes are refused until it is trimmed. Only the newest notes and log entries fit: ${cut} older log entr${cut === 1 ? "y is" : "ies are"} not shown here, and a pilot's notes field may be missing. Nothing is lost: Ryan's card has all of them.`
+          : "The shared file is full: new notes are refused until it is trimmed, and only the newest pickups are shown."));
+      }
     }
     E.pTop.replaceChildren(...top);
     if (!s || s.state !== "on") {
@@ -1173,9 +1181,56 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     this._keepFocus(box, () => box.replaceChildren(...(nodes.length ? [h("div", { class: "sec" }, nodes)] : [])));
   }
   _pPaintList() {
+    // 1.7.10 review: the search field, its hint, the filter chips and the count line are built ONCE and kept; a
+    // keystroke redraws only the count's text and the rows. (Replacing the field on every input event cut a
+    // composition short, so a composing keyboard, Android's Gboard or any IME, typed "zzezedzedb" for "zedb"; and a
+    // count line made anew with its text in it is not announced.)
     const E = this._els;
     if (!E.pList) return;
-    this._keepFocus(E.pList, () => E.pList.replaceChildren(h("div", { class: "sec" }, this._pListNodes())));
+    const recs = this._pFile ? this._pRecs() : [];
+    if (!this._pFile || !recs.length) {
+      this._pL = null;
+      E.pList.replaceChildren(h("div", { class: "sec" }, h("h3", {}, this._pFile ? "All pilots (0)" : "All pilots"),
+        h("div", { class: "u" }, this._pFile ? "No pilot in the database yet." : "Reading the pilot database...")));
+      return;
+    }
+    let L = this._pL;
+    if (!L || L.sec.parentNode !== E.pList) {
+      L = this._pL = { h3: h("h3", {}, ""), count: h("div", { class: "u", role: "status", "aria-live": "polite", "data-pcount": "" }, ""),
+        rows: h("div", { role: "list" }), more: h("div", { "data-pmore": "" }) };
+      L.inp = h("input", { type: "search", "data-k": "pq", value: this._pq, placeholder: FW_PDB_Q_SHORT, autocomplete: "off", spellcheck: false, maxLength: FW_PDB_Q_MAX,
+        "aria-label": `Search the pilots: ${FW_PDB_Q_LONG}`, oninput: (ev) => { this._pq = ev.target.value; this._pMax = FW_PDB_LIST_MAX; this._pPaintList(); } });
+      L.chips = h("div", { class: "chips", role: "group", "aria-label": "Filter the pilots" }, FW_PDB_PFILTERS.map(([k, label]) => h("button", { class: "chip", type: "button", "data-k": `pf-${k}`, "aria-pressed": "false",
+        onclick: () => { this._pf = k; this._pMax = FW_PDB_LIST_MAX; this._pPaintList(); } }, label)));
+      L.sec = h("div", { class: "sec" }, L.h3, h("div", { class: "row" }, L.inp), h("div", { class: "u" }, FW_PDB_Q_LONG), L.chips, L.count, L.rows, L.more);
+      E.pList.replaceChildren(L.sec);
+    }
+    const shown = (this._pShown() || {}).pid || "";
+    const q = this._pQuery();
+    const rows = recs.filter((r) => this._pFilter(r) && (!q || this._pHit(r, q)));  // the file is sorted by Sen #
+    L.h3.textContent = `All pilots (${recs.length})`;
+    if (L.inp.value !== this._pq && this.shadowRoot.activeElement !== L.inp) L.inp.value = this._pq;
+    for (const c of L.chips.children) c.setAttribute("aria-pressed", String(c.dataset.k === `pf-${this._pf}`));
+    const line = rows.length ? `${rows.length} pilot${rows.length === 1 ? "" : "s"}${q || this._pf !== "all" ? " match" + (rows.length === 1 ? "es" : "") : ""}, by Sen #.` : "No pilot matches.";
+    if (L.count.textContent !== line) L.count.textContent = line;
+    this._keepFocus(L.sec, () => {
+      L.rows.replaceChildren(...rows.slice(0, this._pMax).map((r) => {
+        const n = +r.entries_total || 0, on = r.pid === this._pSelPid || r.pid === shown, pk = r.pickups && r.pickups.summary ? +r.pickups.summary.n || 0 : 0;
+        const brief = [r.sen ? `Sen ${r.sen}` : "", r.emp ? `Emp ${r.emp}` : "", r.status || "", r.seat || "", r.base || ""].filter(Boolean).join(" · ");
+        return h("div", { class: `prow${on ? " on" : ""}`, role: "listitem" },
+          h("button", { class: "nm", type: "button", "data-k": `pl-${r.pid}`, dir: "auto", onclick: () => this._pOpen(r.pid) }, String(r.name || "(no name)")),
+          brief ? h("span", { class: "u" }, brief) : null,
+          r.notes && r.notes.text ? h("span", { class: "tag" }, "notes") : null, n ? h("span", { class: "tag" }, `${n} in the log`) : null,
+          pk ? h("span", { class: "tag" }, `${pk} pickup${pk === 1 ? "" : "s"}`) : null,
+          r.gone ? h("span", { class: "tag w" }, "gone") : null, r.pid === shown ? h("span", { class: "tag" }, "looked up") : null);
+      }));
+      L.more.replaceChildren(...(rows.length > this._pMax ? [h("div", { class: "row" }, h("span", { class: "u" }, `The first ${this._pMax} of ${rows.length} are shown.`),
+        h("button", { class: "g", type: "button", "data-k": "pmore", onclick: () => { this._pMax += FW_PDB_LIST_MAX; this._pPaintList(); } }, `Show ${Math.min(FW_PDB_LIST_MAX, rows.length - this._pMax)} more`))] : []));
+    });
+  }
+  _pQuery() {  // the typed search; text with no letter, digit or quoted text in it (",", '""', a lone '"') is no query
+    const q = this._pq.trim().slice(0, FW_PDB_Q_MAX);
+    return /[\p{L}\p{N}]/u.test(q) ? q : "";
   }
   _pHit(r, q) {  // Ryan's search rules, on the file: digits an employee # prefix, s<digits> a Sen #, "quoted" the notes and log, else name words
     const I = this._pIdx, low = (v) => String(v == null ? "" : v).toLowerCase();
@@ -1192,8 +1247,16 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     if (/^s[0-9]+$/i.test(q)) return String(r.sen || "") === String(+q.slice(1));
     let hay = I.hay.get(r.pid);
     if (hay === undefined) { hay = low(r.name).normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^a-z]+/).filter(Boolean); I.hay.set(r.pid, hay); }
-    const words = q.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^a-z]+/).filter(Boolean);
-    return words.every((w) => hay.some((t) => t.startsWith(w)));
+    const fold = (v) => v.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const words = fold(q).split(/[^a-z]+/).filter(Boolean);
+    if (words.every((w) => hay.some((t) => t.startsWith(w)))) return true;
+    // 1.7.10 review: a last name typed without its apostrophe, hyphen, space or okina ("obrien", "delacruz",
+    // "mcdonaldsmith", "stjohn"), as the name lookup takes it: the letters of what is typed before a comma against
+    // the letters of the last name, by its start; a first name after the comma by its start
+    let flat = I.flat.get(r.pid);
+    if (flat === undefined) { const nm = fold(String(r.name == null ? "" : r.name)), c = nm.indexOf(","); flat = [(c < 0 ? nm : nm.slice(0, c)).replace(/[^a-z]/g, ""), c < 0 ? "" : nm.slice(c + 1).replace(/[^a-z]/g, "")]; I.flat.set(r.pid, flat); }
+    const fq = fold(q), ci = fq.indexOf(","), ql = (ci < 0 ? fq : fq.slice(0, ci)).replace(/[^a-z]/g, ""), qf = ci < 0 ? "" : fq.slice(ci + 1).replace(/[^a-z]/g, "");
+    return ql.length >= 2 && flat[0].startsWith(ql) && (!qf || flat[1].startsWith(qf));
   }
   _pFilter(r) {
     const f = this._pf;
@@ -1202,33 +1265,6 @@ class FlightWatcherPilotdbCard extends HTMLElement {
     if (f === "picks") return !!(r.pickups && r.pickups.summary && +r.pickups.summary.n > 0);
     if (f === "gone") return r.gone === true;
     return true;
-  }
-  _pListNodes() {
-    if (!this._pFile) return [h("h3", {}, "All pilots"), h("div", { class: "u" }, "Reading the pilot database...")];
-    const recs = this._pRecs(), shown = (this._pShown() || {}).pid || "";
-    const q = this._pq.trim().slice(0, FW_PDB_Q_MAX);
-    const rows = recs.filter((r) => this._pFilter(r) && (!q || this._pHit(r, q)));  // the file is sorted by Sen #
-    const inp = h("input", { type: "search", "data-k": "pq", value: this._pq, placeholder: FW_PDB_Q_SHORT, autocomplete: "off", spellcheck: false, maxLength: FW_PDB_Q_MAX,
-      "aria-label": `Search the pilots: ${FW_PDB_Q_LONG}`, oninput: (ev) => { this._pq = ev.target.value; this._pMax = FW_PDB_LIST_MAX; this._pPaintList(); } });
-    const chips = h("div", { class: "chips", role: "group", "aria-label": "Filter the pilots" }, FW_PDB_PFILTERS.map(([k, label]) => h("button", { class: "chip", type: "button", "data-k": `pf-${k}`, "aria-pressed": String(this._pf === k),
-      onclick: () => { this._pf = k; this._pMax = FW_PDB_LIST_MAX; this._pPaintList(); this._focus2("list", `pf-${k}`); } }, label)));
-    const out = [h("h3", {}, `All pilots (${recs.length})`)];
-    if (!recs.length) { out.push(h("div", { class: "u" }, "No pilot in the database yet.")); return out; }
-    out.push(h("div", { class: "row" }, inp), h("div", { class: "u" }, FW_PDB_Q_LONG), chips);
-    out.push(h("div", { class: "u", role: "status", "aria-live": "polite", "data-pcount": "" }, rows.length ? `${rows.length} pilot${rows.length === 1 ? "" : "s"}${q || this._pf !== "all" ? " match" + (rows.length === 1 ? "es" : "") : ""}, by Sen #.` : "No pilot matches."));
-    out.push(h("div", { role: "list" }, rows.slice(0, this._pMax).map((r) => {
-      const n = +r.entries_total || 0, on = r.pid === this._pSelPid || r.pid === shown, pk = r.pickups && r.pickups.summary ? +r.pickups.summary.n || 0 : 0;
-      const brief = [r.sen ? `Sen ${r.sen}` : "", r.emp ? `Emp ${r.emp}` : "", r.status || "", r.seat || "", r.base || ""].filter(Boolean).join(" · ");
-      return h("div", { class: `prow${on ? " on" : ""}`, role: "listitem" },
-        h("button", { class: "nm", type: "button", "data-k": `pl-${r.pid}`, dir: "auto", onclick: () => this._pOpen(r.pid) }, String(r.name || "(no name)")),
-        brief ? h("span", { class: "u" }, brief) : null,
-        r.notes && r.notes.text ? h("span", { class: "tag" }, "notes") : null, n ? h("span", { class: "tag" }, `${n} in the log`) : null,
-        pk ? h("span", { class: "tag" }, `${pk} pickup${pk === 1 ? "" : "s"}`) : null,
-        r.gone ? h("span", { class: "tag w" }, "gone") : null, r.pid === shown ? h("span", { class: "tag" }, "looked up") : null);
-    })));
-    if (rows.length > this._pMax) out.push(h("div", { class: "row" }, h("span", { class: "u" }, `The first ${this._pMax} of ${rows.length} are shown.`),
-      h("button", { class: "g", type: "button", "data-k": "pmore", onclick: () => { this._pMax += FW_PDB_LIST_MAX; this._pPaintList(); } }, `Show ${Math.min(FW_PDB_LIST_MAX, rows.length - this._pMax)} more`)));
-    return out;
   }
   _pOpen(pid) {
     const E = this._els, shown = (this._pShown() || {}).pid === pid;

@@ -2279,7 +2279,8 @@ class Flica:
             hits = [h for h in BLOCK_HINTS if h in text]
             if hits:
                 i = text.find(hits[0])
-                log.warning("block hints matched (visible text): %s near: %s", hits, text[max(0, i - 120):i + 120])
+                log.warning("block hints matched (visible text): %s near: %s", hits,
+                            page_log(text[max(0, i - 120):i + 120]))
                 return "blocked"
             if "sign out" in low and no_pw:
                 self.save()
@@ -3655,12 +3656,21 @@ def pilotdb_roster_dir():
     return os.path.join(base or "/data", "pilotdb_roster")
 
 
+def pilotdb_switches_mirror():
+    """1.7.10 review: the second copy of every OFF Ryan tapped, outside /data (the Watcher's own /share folder,
+    beside the database's daily copies), so an older /data put back by a restore never turns a share or the AI notes
+    back on. A test with its own switches file keeps its mirror beside it."""
+    if PILOTDB_SWITCHES:
+        return PILOTDB_SWITCHES + ".off"
+    return os.path.join(PILOTDB_SHARE, "switches_off.json")
+
+
 def _pilotdb_switches(db):
     """Ryan's Share and AI choices, read from the Watcher's own file and attached to the database just opened. A
     file that cannot be read turns everything off (pilotdb.Switches) and says so once."""
     if db is None:
         return None
-    db.switches = PDBM.Switches(pilotdb_switches_path())
+    db.switches = PDBM.Switches(pilotdb_switches_path(), pilotdb_switches_mirror(), pilotdb_portal_pilots)
     if db.switches.broken:
         log.warning("pilot db: the switches file could not be read: sharing and AI notes are off until Ryan taps a "
                     "switch on his card")
@@ -5807,7 +5817,7 @@ def lookup_totals(fl, month):
     sp = IF.parse_cm_month(html) if classify(html) == "ok" else None
     if not sp or sp["month"] != month:
         log.info("schedule %s totals via Schedule Lookup (bd=%s): %s %s", month, bd, classify(html),
-                 (sp and sp["month"]) or visible_text(html)[:120])
+                 (sp and sp["month"]) or page_log(visible_text(html)[:120]))
         return {}
     LOOKUP_PAGE.update(bd=bd, html=html, at=time.time())
     note_lookup_months(html)
@@ -5870,7 +5880,7 @@ def other_months_check(fl, cur_month):
             return False
         bds = re.findall(r'<option value="(\d{4})"', html)
     if not bds:
-        log.info("own schedule lookup: no month list: %s", visible_text(html)[:160])
+        log.info("own schedule lookup: no month list: %s", page_log(visible_text(html)[:160]))
         return False
     got, waiting = [], False
     fails = S.setdefault("sched_other_fail", {})
@@ -5893,7 +5903,8 @@ def other_months_check(fl, cur_month):
         if sp and sp["month"] == mon:
             SCHED_READ["lookup_ok"] = True
         if not sp or sp["month"] != mon:
-            log.info("own schedule %s (bd=%s): %s %s", mon, bd, classify(page), (sp and sp["month"]) or visible_text(page)[:160])
+            log.info("own schedule %s (bd=%s): %s %s", mon, bd, classify(page),
+                     (sp and sp["month"]) or page_log(visible_text(page)[:160]))
             other_failed(mon, classify(page) if classify(page) != "ok" else "not that month's schedule")
             continue
         fails.pop(mon, None)
@@ -6688,7 +6699,7 @@ def close_in_check(fl, pot_all, full=False, moved_from=()):
     if not (is_pot_page(html) and all(c in text for c in cat)):
         ci["bad"] = ci.get("bad", 0) + 1
         log.info("close-in %s: not an open time page of %s (%d of %d): %s", b, OPTS.get("category_check"), ci["bad"],
-                 CLOSE_IN_BAD_MAX, text[:160])
+                 CLOSE_IN_BAD_MAX, page_log(text[:160]))
         if ci["bad"] >= CLOSE_IN_BAD_MAX:
             log.info("close-in BCID %s dropped; the menu is read again", b)
             ci["rejected"] = (ci.get("rejected") or [])[-4:] + [b]
@@ -6702,7 +6713,7 @@ def close_in_check(fl, pot_all, full=False, moved_from=()):
     if not ci.get("verified"):
         ci.update(verified=True, verified_at=now_iso())
         log.info("close-in folder %s verified (found on the %s): its open time page reads; text: %s", b, ci.get("via"),
-                 text[:300])
+                 page_log(text[:300]))
         try:  # a private copy for parser checks (/share, never git)
             cap_write(f"pot_closein_{b.split('.')[-1]}.html", html)
         except Exception:
@@ -7072,10 +7083,9 @@ def req_cap_pass():
     a count only when a pickup's speed changed. Idempotent (a cap already on a pickup changes nothing)."""
     first = DB.get("req_cap_v") != REQ_CAP_V
     caps = req_cap_rows() + (req_cap_captures() if first else [])
-    before = {k for k, _r, pk in (x for t in {c[0] for c in caps} for x in DB.pickups_of(t)) if pk.get("capped")}
     capped, unmatched = req_cap_apply(caps)
     whose = "Ryan's" if CAP.admin else "this pilot's own"
-    new = capped - before
+    new = capped  # review: set_req_cap says 'capped' only when it changed a speed ('same' writes and rescores nothing)
     if first:
         DB.put("req_cap_v", REQ_CAP_V)
         log.info("speed: %d pickup%s capped at %s request time, %d unmatched", len(capped), "" if len(capped) == 1 else "s",
@@ -7131,7 +7141,7 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
                 except Exception as e:
                     log.info("trade pay not priced: %s", e)
                     ev["pay"] = None
-                log.info("trade %s %s", r["status"], r["detail"][:120])
+                log.info("trade %s %s", r["status"], page_log(r["detail"][:120]))
                 pub("event/request_decided", ev, retain=False)
                 note_decided(r, now)  # FW-0064
             for r in rows:
@@ -7360,11 +7370,11 @@ def tradeboard_check(fl, full=False):
             if not TB.has_rows(html):
                 if not S.get("tb_raw_logged2"):
                     S["tb_raw_logged2"] = True
-                    flat = re.sub(r"\s+", " ", html)
-                    calls = [m.start() for m in re.finditer(r"\bA\s*\(", flat)]
-                    i = calls[1] if len(calls) > 1 else (calls[0] if calls else 0)
-                    log.info("tradeboard %s: no trip rows; %d A( calls; data: %s", n, len(calls),
-                             page_log(flat[max(0, i - 300):i + 5000]))
+                    # 1.7.10 review: counts only. The rows' data names every poster ('FIRST','LAST', e-mail, phone,
+                    # employee number): it is in the capture below (never the log)
+                    calls = len(re.findall(r"\bA\s*\(", html))
+                    log.info("tradeboard %s: no trip rows; %d A( calls; %d chars (the page is in the capture)", n,
+                             calls, len(html))
                     try:
                         cap_write(f"tradeboard_{n}.html", fh + "\n<!--OTHER-->\n" + html,
                                   extra=[str(r.get("poster") or "") for r in picks.values()])
@@ -7373,8 +7383,9 @@ def tradeboard_check(fl, full=False):
                 continue
             if not TB_PROBE["done"]:
                 TB_PROBE["done"] = True
-                log.info("tradeboard probe %s url=%s pickups=%s text=%s", n, url.split("?")[0],
-                         page_log(str(list(picks))), page_log(visible_text(html)[:1500]))
+                # 1.7.10 review: counts only (the page text names the posters, with e-mail addresses and phones)
+                log.info("tradeboard probe %s url=%s pickups=%d text=%d chars", n, url.split("?")[0], len(picks),
+                         len(visible_text(html)))
             old = base.get(key)
             if old is None:
                 log.info("tradeboard baseline %s: %d pickup posts (no alert)", key, len(picks))
@@ -7384,7 +7395,8 @@ def tradeboard_check(fl, full=False):
                     if detail(ev):  # 1.7.1 review: its details kept, so the post costs one detail GET, not two
                         tb_cache[k] = {f: v for f, v in ev.items() if f not in ("month", "seen")}
                         fresh.add(k)
-                    log.info("NEW tradeboard pickup %s", ev)
+                    # 1.7.10 review: the pairing and its dates; never the poster or his comments
+                    log.info("NEW tradeboard pickup %s %s", ev.get("pairing") or "?", ev.get("dates") or "")
                     pub("event/new_pairing", ev, retain=False)
                     pub("last_tradeboard", ev)
                     # 1.7.1 review: in the baseline at once, so a read that ends later (Pause) never pushes it again
@@ -7713,6 +7725,22 @@ def name_lookup(q):
     return hits, ""
 
 
+def pick_seats(hits):
+    """1.7.10 review: what a pick-list row shows after the name: the seat, and for rows that would read the same
+    (one name and one seat: two award-only namesakes) the Sen # from the pilot's own pilotdb file ('FO Sen 72'), so
+    he can tell them apart. Never an employee number."""
+    same = {}
+    for h in hits:
+        same[(h["name"], h["seat"])] = same.get((h["name"], h["seat"]), 0) + 1
+    sens = {}
+    if any(n > 1 for n in same.values()):
+        with contextlib.suppress(Exception):
+            with PDBV["lock"]:
+                sens = dict(pilotdb_view().sens)
+    return [f"{h['seat']} Sen {sens[h['emp']]}".strip() if same[(h["name"], h["seat"])] > 1 and h["emp"] in sens
+            else h["seat"] for h in hits]
+
+
 def pick_id(emp):
     """1.6.2: the opaque id a pick-list entry carries instead of the employee number (this process only)."""
     return hashlib.sha256(f"{PICK_SALT}|{emp}".encode()).hexdigest()[:12]
@@ -7788,8 +7816,8 @@ def pilot_cmd(payload):
                 pub_pilot({"emp": "", "name": q, "at": now_iso(),
                            "status": why or (f"1 pilot matches '{q}': tap the name to read the month" if len(hits) == 1
                                              else f"{len(hits)} pilots match '{q}', pick one"),
-                           "matches": [{"pick": k, "name": v["name"], "pos": h["seat"]}
-                                       for (k, v), h in zip(picks.items(), hits)],
+                           "matches": [{"pick": k, "name": v["name"], "pos": pos}
+                                       for (k, v), pos in zip(picks.items(), pick_seats(hits))],
                            "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
                 return
         q = ""
@@ -7862,7 +7890,8 @@ def pilot_check(fl):
         try:
             html = fl.fetch(f"{BASE}/full/cmschedules.cgi?Prompt=1&SchBrowser=1")
             cap_write("cmschedules_prompt.html", html or "")
-            log.info("schedule lookup prompt page saved (%d chars): %s", len(html or ""), visible_text(html)[:200])
+            log.info("schedule lookup prompt page saved (%d chars): %s", len(html or ""),
+                     page_log(visible_text(html)[:200]))
             S["cm_prompt_captured"] = True
             save_state(S)
             time.sleep(random.uniform(1.5, 3.5))  # 1.6.2: the FLICA pacing rule (was 1.0 to 2.0 s)

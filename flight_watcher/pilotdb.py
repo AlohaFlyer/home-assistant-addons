@@ -501,32 +501,59 @@ class Switches:
     turns a share back on after Ryan switched it off nor turns one off that is on by default.
 
     {v: 1, default: true, share: {pilot: bool}, ai: bool or null}. No file: everything is on (the default). A file
-    that is there and cannot be read fails closed: everything is off (default false, `broken`), until Ryan taps a
-    switch, which writes a good file again. path None: memory only (tests, a database opened without a Watcher)."""
+    that is there and cannot be read fails closed: everything is off (`broken`), until Ryan taps a switch. path None:
+    memory only (tests, a database opened without a Watcher).
 
-    def __init__(self, path=None):
-        self.path, self.default, self.share, self.ai, self.broken = path, True, {}, None, False
+    Review (round 2): every OFF is also kept in a second small file outside /data (mirror: switches_off.json in the
+    Watcher's own /share/flight_watcher/pilotdb folder, 0600, {v: 1, share_off: [pilot], ai_off: bool}). A pilot (or
+    the AI notes) is off when EITHER file says off, so an older /data put back by a Home Assistant restore, or a
+    lost switches file, never turns back on what Ryan switched off. A mirror that is there and cannot be read fails
+    closed too. A tap on a broken file writes a good one: the defaults are on again (a pilot added later is shared),
+    and every pilot configured now and the AI notes are written as off, except the one tapped. Memory changes only
+    after both files were written, so a failed write leaves the running Watcher as it was."""
+
+    def __init__(self, path=None, mirror=None, pilots=None):
+        self.path, self.mirror, self.pilots = path, mirror, pilots or (lambda: ())
+        self.default, self.share, self.ai, self.broken = True, {}, None, False
         self.lock = threading.RLock()
+        try:
+            d = self._read(path)
+            if d is not None:
+                if d.get("v") != 1 or not isinstance(d.get("default"), bool) or not isinstance(d.get("share"), dict) \
+                        or not (d.get("ai") is None or isinstance(d.get("ai"), bool)):
+                    raise ValueError("not a switches file")
+                self.default = d["default"]
+                self.share = {k: v for k, v in d["share"].items()
+                              if isinstance(k, str) and ROLES.NAME_RE.fullmatch(k) and isinstance(v, bool)}
+                self.ai = d["ai"]
+            m = self._read(mirror)
+            if m is not None:
+                if m.get("v") != 1 or not isinstance(m.get("share_off"), list) or not isinstance(m.get("ai_off"), bool):
+                    raise ValueError("not a switches mirror")
+                for k in m["share_off"]:
+                    if isinstance(k, str) and ROLES.NAME_RE.fullmatch(k):
+                        self.share[k] = False  # off in either file is off
+                if m["ai_off"]:
+                    self.ai = False
+        except (OSError, ValueError, RecursionError):
+            self.default, self.share, self.ai, self.broken = False, {}, None, True
+
+    @staticmethod
+    def _read(path):
+        """The JSON object of one small plain file (never a link); None when there is no file (or no path)."""
         if not path:
-            return
+            return None
         try:
             st = os.lstat(path)
         except OSError:
-            return  # no file: the defaults
-        try:
-            if not stat.S_ISREG(st.st_mode) or st.st_size > 65536:
-                raise ValueError("not a plain small file")
-            with open(os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)), encoding="utf-8") as f:
-                d = json.load(f)
-            if not isinstance(d, dict) or d.get("v") != 1 or not isinstance(d.get("default"), bool) \
-                    or not isinstance(d.get("share"), dict) or not (d.get("ai") is None or isinstance(d.get("ai"), bool)):
-                raise ValueError("not a switches file")
-            self.default = d["default"]
-            self.share = {k: v for k, v in d["share"].items()
-                          if isinstance(k, str) and ROLES.NAME_RE.fullmatch(k) and isinstance(v, bool)}
-            self.ai = d["ai"]
-        except (OSError, ValueError, RecursionError):
-            self.default, self.share, self.ai, self.broken = False, {}, None, True
+            return None
+        if not stat.S_ISREG(st.st_mode) or st.st_size > 65536:
+            raise ValueError("not a plain small file")
+        with open(os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)), encoding="utf-8") as f:
+            d = json.load(f)
+        if not isinstance(d, dict):
+            raise ValueError("not an object")
+        return d
 
     def shared(self, pilot):
         with self.lock:
@@ -536,29 +563,47 @@ class Switches:
         with self.lock:
             return bool(self.default if self.ai is None else self.ai)
 
+    def _state(self):
+        """(default, share, ai) a tap starts from: as held, or, on a broken file, the defaults on again with every
+        pilot configured now and the AI notes written as off (nothing comes on that Ryan did not tap)."""
+        if not self.broken:
+            return self.default, dict(self.share), self.ai
+        names = [p for p in (self.pilots() or ()) if isinstance(p, str) and ROLES.NAME_RE.fullmatch(p)]
+        return True, {p: False for p in names}, False
+
     def set_share(self, pilot, on):
         with self.lock:
-            self.share[pilot] = bool(on)
-            self._save()
+            default, share, ai = self._state()
+            share[pilot] = bool(on)
+            self._save(default, share, ai)
 
     def set_ai(self, on):
         with self.lock:
-            self.ai = bool(on)
-            self._save()
+            default, share, _ai = self._state()
+            self._save(default, share, bool(on))
 
-    def _save(self):
-        """Written whole (a temporary file beside it, 0600, then moved into place). A write that fails raises: the
-        caller's op then fails and the card says so, so a tap is never shown as saved when it was not."""
-        self.broken = False
-        if not self.path:
-            return
-        tmp = f"{self.path}.tmp"
+    @staticmethod
+    def _write(path, obj):
+        tmp = f"{path}.tmp"
         with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600), "w",
                   encoding="utf-8") as f:
-            json.dump({"v": 1, "default": self.default, "share": dict(sorted(self.share.items())), "ai": self.ai}, f)
+            json.dump(obj, f)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, self.path)
+        os.replace(tmp, path)
+
+    def _save(self, default, share, ai):
+        """Both files written whole (a temporary file beside each, 0600, then moved into place): the mirror of the
+        OFFs first, then the switches file. A write that fails raises before memory changes: the caller's op then
+        fails and the card says so, so a tap is never shown as saved when it was not, and the running Watcher keeps
+        the value it had."""
+        if self.mirror:
+            _dir_0700(os.path.dirname(self.mirror))
+            self._write(self.mirror, {"v": 1, "share_off": sorted(p for p, v in share.items() if not v),
+                                      "ai_off": ai is False})
+        if self.path:
+            self._write(self.path, {"v": 1, "default": default, "share": dict(sorted(share.items())), "ai": ai})
+        self.default, self.share, self.ai, self.broken = default, share, ai, False
 
 
 class PilotDB:
@@ -805,6 +850,8 @@ class PilotDB:
                     stats["bad"] = stats.get("bad", 0) + 1
                     v = None
             if v in (None, "", "[]"):
+                if source == "award" and f == "seat":
+                    continue  # 1.7.10 review: the award's seat is its seniority lines' (merge_award_sen), never dropped here
                 if self._drop_val(pid, f, source, ref, by):
                     changed = True
                 continue
@@ -1124,8 +1171,9 @@ class PilotDB:
         a newer month stays; a hand edit stays on top, counted kept_hand); an employee number not in the database
         makes a record under the last name alone (a 'Last, First' from any later upload is shown instead); a number
         whose records carry another last name is not touched (counted unmatched: a wrong merge mixes two pilots).
-        Nothing is dropped (the award's dates of hire, merge_award, keep their own values), nobody is marked gone or
-        back. Returns the counts {applied, rows, added, changed, kept_hand, unmatched, bad}."""
+        Nothing is dropped (the award's dates of hire, merge_award, keep their own values) and nobody is marked gone;
+        review: a pilot a seniority list marked gone who is on the award of that list's month or a later one is back.
+        Returns the counts {applied, rows, added, changed, kept_hand, unmatched, back, bad}."""
         month = str(month or "")
         if not re.fullmatch(r"\d{4}-\d{2}", month):
             return {"applied": False, "why": "no-month"}
@@ -1170,6 +1218,15 @@ class PilotDB:
             pid = self._create(emp, last, ref, "award", by)
             stats["added"] = stats.get("added", 0) + 1
             self._put_val(pid, "name", "award", last, as_of, ref, by)
+        p = self._pilot(pid)
+        gm = re.fullmatch(r"list (\d{4}-\d{2})-\d{2}", p["gone_from"] or "")
+        if p["gone_at"] and gm and as_of[:7] >= gm.group(1):
+            # 1.7.10 review: a pilot a seniority list dropped who is on the award of that list's month or a later
+            # one is flying: back (logged, as a list's own 'back' is)
+            self.db.execute("UPDATE pilots SET gone_at=NULL, gone_from=NULL WHERE pid=?", (pid,))
+            self._log(pid, "_gone", "award", p["gone_from"], None, ref, by, "back")
+            stats["back"] = stats.get("back", 0) + 1
+            self._touch(pid)
         hands = {f for (f,) in self.db.execute("SELECT field FROM vals WHERE pid=? AND source='hand'", (pid,))}
         changed = False
         for f in AWARD_SEN_FIELDS:
@@ -1208,7 +1265,9 @@ class PilotDB:
     def name_hits(self, q, limit=20):
         """1.7.10 (Ryan, Nov 15): the live records a typed name finds, for the pilot lookup: 'Last' or 'Last, First'
         (letters; the whole last name, without Jr / Sr / II; the first name by its start). [{emp, name, pos}] by
-        name, at most limit; never phones, emails or notes."""
+        name, at most limit; never phones, emails or notes. Review: live means not gone, as in name_rows (a portal
+        pilot's directory), so both lookups find the same pilots; a pilot on a current award is never gone
+        (merge_award_sen)."""
         last, _, first = (x.strip() for x in str(q or "").partition(","))
         lk = name_key(last + ",")[0]
         fk = re.sub(r"[^A-Z]", "", _fold(first))
@@ -1217,7 +1276,7 @@ class PilotDB:
         out = []
         with self.lock:
             for v in self._all_views().values():
-                if v["last_key"] != lk:
+                if v["last_key"] != lk or v["gone"]:
                     continue
                 name = v["fields"]["name"]["value"]
                 nf = re.sub(r"[^A-Z]", "", _fold(name.partition(",")[2]))
@@ -1885,8 +1944,10 @@ class PilotDB:
 
         The size ladder: the newest export_entries entries and EXPORT_PICKUPS pickup rows a record; over export_bytes
         export_entries_min and EXPORT_PICKUPS_MIN; still over, full is true (the admin then refuses his new notes).
-        The file never goes over `hard` (EXPORT_HARD, under the 8 MiB a signed file may be): past it the logs and
-        pickup rows go, then the notes fields and AI notes, and at the very last the records."""
+        The file never goes over `hard` (EXPORT_HARD, under the 8 MiB a signed file may be): past it 5 entries and 5
+        pickup rows a record; still over (review, round 2: gradually, no cliff) the pickup rows go and the notes
+        fields, AI notes and log entries are kept newest first, across all pilots, for as long as they fit, so the
+        newest are always there; at the very last (a database whose fields alone are over) the records."""
         lim = limits or ROLES.PILOTDB_NOTE_LIMITS
         hard = EXPORT_HARD if hard is None else hard
         with self.lock:
@@ -1914,15 +1975,15 @@ class PilotDB:
         pids = sorted(views, key=lambda p: self._sen_key(views[p]))
         briefs = {p: self._shared_rec(views[p]) for p in pids}
 
-        def build(n_ent, n_pick, texts=True, n_rec=None):
+        def build(n_ent, n_pick, texts=True, n_rec=None, keep=None):
             recs = []
             for p in (pids if n_rec is None else pids[:n_rec]):
                 r = dict(briefs[p])
-                if texts and p in notes:
+                if p in notes and (texts if keep is None else ("n", p) in keep):
                     r["notes"] = notes[p]
-                if texts and p in ai:
+                if p in ai and (texts if keep is None else ("a", p) in keep):
                     r["ai_note"] = ai[p]
-                r["entries"] = ents.get(p, [])[:n_ent]
+                r["entries"] = ents.get(p, [])[:n_ent if keep is None else keep.get(("e", p), 0)]
                 r["entries_total"] = len(ents.get(p, []))
                 if p in picks:
                     r["pickups"] = {"summary": picks[p]["summary"], "rows": picks[p]["rows"][:n_pick]}
@@ -1942,11 +2003,34 @@ class PilotDB:
         if size(out) <= soft:
             return out
         out["full"] = True
-        steps = ((5, 5, True, None), (0, 0, True, None), (0, 0, False, None))
-        for step in steps:
+        if size(out) <= hard:
+            return out
+        out = dict(build(5, 5), full=True)
+        if size(out) <= hard:
+            return out
+        # review (round 2): no cliff. The texts newest first, across all pilots, while they fit over the bare records
+        bare = size(build(0, 0, False))
+        items = [(v["at"] or "", ("n", p), size(v) + 12) for p, v in notes.items() if p in briefs]
+        items += [(v.get("at") or "", ("a", p), size(v) + 14) for p, v in ai.items() if p in briefs]
+        items += [(e["at"] or "", ("e", p), size(e) + 1) for p, es in ents.items() if p in briefs for e in es]
+        items.sort(key=lambda x: x[0], reverse=True)
+        room = hard - bare
+        while bare <= hard and room > 0:
+            keep, left, closed = {}, room, set()
+            for _at, k, n_bytes in items:
+                if k in closed:
+                    continue  # an older entry of a pilot whose newer one did not fit: a record's entries stay a run
+                if n_bytes > left:
+                    if k[0] == "e":
+                        closed.add(k)
+                    continue
+                left -= n_bytes
+                keep[k] = keep.get(k, 0) + 1
+            out = dict(build(0, 0, keep=keep), full=True)
             if size(out) <= hard:
                 return out
-            out = dict(build(*step), full=True)
+            room = int(room * 0.9) - 64
+        out = dict(build(0, 0, False), full=True)
         n = len(pids)
         while size(out) > hard and n:  # never reached with real data: a record's fields are a few hundred bytes
             n //= 2

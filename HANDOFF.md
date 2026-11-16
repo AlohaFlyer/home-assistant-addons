@@ -34,6 +34,12 @@ Open for Ryan:
 3. The base is read only on James's portal for the same reason (`pilotdb/edit`'s field list is a shape).
 4. The update itself turns sharing with James on and the AI notes on (no tap). If Ryan wants either off from the
    first minute, say so before the update: the switch is on his Pilots card (Settings, Sharing).
+5. Round 2 review fixes are in (CHANGELOG 1.7.10 "Review fixes, round 2"). Two things they leave for later: the full
+   roster file is sent uncompressed and uncached on every portal open (gzip and an ETag on HOM's file route, a later
+   HOM release, no contract change), and after the update the one-time log line "speed: N pickups capped at Ryan's
+   request time, M unmatched" should be read and the captured request list page (on Pako, never git) checked
+   against `submit.parse_request_rows` before history is called recalculated: the test page is synthetic.
+   Every OFF switch now also lives in `/share/flight_watcher/pilotdb/switches_off.json` (off in either file is off).
 
 Release order for 1.7.10, each step [DESTRUCTIVE] with Ryan's own yes (an earlier yes never covers a later one):
 1. Push `fw-1.7.10` and update the Flight Watcher PR (a push, so Ryan's yes).

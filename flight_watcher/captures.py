@@ -238,11 +238,29 @@ def mask_emp(text):
 # 1.7.10 (Ryan, Nov 15): the admin's own log carries no crew name and no employee number either. mask_crew is the
 # admin's line mask (watcher.AdminLogMask, and page text quoted through watcher.page_log): narrower than mask() (a
 # pilot's), which would also blank ordinary words; it takes what a crew list, a pickup line or a lookup line holds.
-_LW = (r"(?!(?:ca|fo|ro|fa|so|by|up|ckp|open|picked|pilot|picker|capt|captain)\b)[a-z\u00c0-\u024f\u02bb]"
-       r"[a-z\u00c0-\u024f\u02bb'.\-]*")
-_LOW_NAME = r"(?<![\w'])" + _LW + r"(?:\s+" + _LW + r")?\s*,\s*" + _LW + r"(?:\s+[a-z]\b\.?)?"
-NAME_HASH_RE = re.compile(r"(?i)(" + _LOW_NAME + r")(\s*\(\s*#{3,7}\s*\))")
-HASH_NAME_RE = re.compile(r"(?i)(\(\s*#{3,7}\s*\)\s*)(" + _LOW_NAME + r")")
+# review (round 2): a last name of up to four words ('de la cruz', 'van der doe jr'), a second given name where a
+# number in brackets ends the name ('doe-smith, mary ann (10001)'), a 3-digit number in brackets (submit.PICKED_RE
+# takes 3 to 7), and the small words a page puts before a name ('with doe, jane') are no part of it
+_LW = (r"(?!(?:ca|fo|ro|fa|so|by|up|ckp|open|picked|pilot|picker|capt|captain|with|for|and|the|from)\b)"
+       r"[a-z\u00c0-\u024f\u02bb][a-z\u00c0-\u024f\u02bb'.\-]*")
+_LOW_LAST = r"(?<![\w'])" + _LW + r"(?:\s+" + _LW + r"){0,3}\s*,\s*"
+_LOW_NAME = _LOW_LAST + _LW + r"(?:\s+[a-z]\b\.?)?"
+_LOW_NAME2 = _LOW_LAST + _LW + r"(?:\s+" + _LW + r"){0,2}"
+NAME_HASH_RE = re.compile(r"(?i)(" + _LOW_NAME2 + r")(\s*\(\s*)([#\d]{3,7})(\s*\))")
+HASH_NAME_RE = re.compile(r"(?i)(\(\s*)([#\d]{3,7})(\s*\)\s*)(" + _LOW_NAME + r")")
+# a capitalized 'Last, First' with up to four last-name words and a second given name ('De La Cruz, John', 'Doe-Smith,
+# Mary Ann'): the admin's line mask only (COMMA_NAME_RE stays the pilot mask's)
+_CAPW = rf"\u02bb?[{NAME_UP}][{NAME_LOW}]+"
+COMMA_NAME_WIDE_RE = re.compile(rf"(?<!\w)((?:{_CAPW}\s+){{0,3}}{_CAPW}\s*,\s*(?:CKP\s+)?{_CAPW}"
+                                rf"(?:\s+[{NAME_UP}]\.?(?![\w]))?)(\s+{_CAPW})?")
+# names with no comma: a seat label, one to four words and the number ('Captain: DOE JOHN 99999', 'f/o: doe jane
+# 10001'), and capital words right before a number ('trade: DOE JANE 10001')
+SEAT_WORDS_NUM_RE = re.compile(r"(?i)(?<![\w'.,-])((?:CA|FO|RO|F/O|capt(?:ain)?)\s*[:=]\s*)((?:[a-z\u00c0-\u024f\u02bb]"
+                               r"[a-z\u00c0-\u024f\u02bb'.\-]*\s+){1,4})(\d{3,7})(?![\d:./-])")
+CAPS_NUM_RE = re.compile(rf"(?<![\w'])((?:[{NAME_UP}][{NAME_UP}'\-]+\s+){{2,4}})(\d{{4,7}})(?![\d:./-])")
+QUOTED_NUM_RE = re.compile(r"(\b\w*(?:Error|Exception)\(\s*['\"])(\d{3,7})(['\"]\s*\))")  # KeyError('10001')
+ADMIN_EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})+")  # bounded: linear on a long token
+ADMIN_PHONE_RE = re.compile(r"(?<![\w.:/-])(?:\+?1[\s.-]?)?(?:\(\d{3}\)\s?|\d{3}[\s.-])\d{3}[\s.-]\d{4}(?![\w:/-])")
 PICKED_BY_RE = re.compile(r"(?i)(picked\s+up\s+by\s+)(" + _LOW_NAME + r")")
 SEAT_NAME_RE = re.compile(r"(?i)(?<![\w'.,-])((?:CA|FO|RO|F/O|capt(?:ain)?)\s*[:=]?\s+)(" + _LOW_NAME + r")")
 CREW_LINE_RE = re.compile(r"(?is)(\bcrew\s*:\s*)(.{0,400})")
@@ -281,7 +299,33 @@ def _comma_name(m):
     return _x(m.group(0))
 
 
+def _comma_wide(m):
+    """A capitalized 'Last, First' (COMMA_NAME_WIDE_RE): masked unless every word is a page word; the word after it
+    is a second given name ('Mary Ann') unless it is a page word ('Doe, Jane Schedule')."""
+    words = [w.lower() for w in re.split(r"[\s,]+", m.group(1)) if w]
+    if all(w in UI_WORDS or w in MONTH_WORDS for w in words):
+        return m.group(0)
+    tail = m.group(2) or ""
+    return _x(m.group(1)) + (tail if tail.strip().lower() in UI_WORDS | MONTH_WORDS else _x(tail))
+
+
+def _name_num(name, pre, num, post, m):
+    words = [w.lower() for w in re.split(r"[\s,]+", name) if w]
+    if all(w in UI_WORDS or w in MONTH_WORDS for w in words):
+        return m.group(0)
+    return None
+
+
+def _caps_num(m):
+    words = m.group(1).split()
+    if all(w.lower() in UI_WORDS or w.lower() in MONTH_WORDS for w in words):
+        return m.group(0)
+    return "".join(w if not w.strip() or w.lower() in UI_WORDS else _x(w)
+                   for w in re.split(r"(\s+)", m.group(1))) + "#" * len(m.group(2))
+
+
 LOW_NAME_RE = re.compile(r"(?i)" + _LOW_NAME)
+LONG_RUN_RE = re.compile(r"(?:[^\W\d_]|['.\-]){80,}")
 
 
 def mask_crew(text, page=False):
@@ -291,18 +335,31 @@ def mask_crew(text, page=False):
     xxxx fo ##### xxx, xxxx'), a 'picked up by' or seat-labeled name, and a capitalized 'Last, First'. Seats,
     pairings, dates, times, flights and counts stay, so a line still says which seat or pairing it is about.
     page=True (text quoted from a FLICA page, which visible_text lowercases): a 'last, first' in any letter case
-    too, page words apart ('monday, november')."""
-    s = _name_emps(str(text or ""))
+    too, page words apart ('monday, november'). Review (round 2): also an e-mail address, a phone-shaped number
+    (any 7 to 15 digit phone in page text), a seat-labeled or all-capitals name with no comma before its number
+    ('Captain: DOE JOHN 99999'), and the number an error text quotes (KeyError('10001'))."""
+    # review (round 2): a run of 80 or more letters (hyphens, dots and apostrophes too) is no word (and no name): said by its length, so one very long
+    # token never costs the name patterns seconds
+    s = LONG_RUN_RE.sub(lambda m: f"({len(m.group(0))} letters)", str(text or ""))
+    s = _name_emps(s)
     s = mask_emp(s)
     s = LOOKUP_EMP_RE.sub(lambda m: m.group(1) + "#" * len(m.group(2)), s)
     s = SEAT_EMP_RE.sub(lambda m: m.group(1) + m.group(2) + "#" * len(m.group(3)), s)
     s = CREW_LINE_RE.sub(_crew_line, s)
     s = CREW_NAME_RE.sub(lambda m: m.group(1) + (m.group(2) if m.group(2).lower() == "open" else _x(m.group(2))), s)
-    s = NAME_HASH_RE.sub(lambda m: _x(m.group(1)) + m.group(2), s)
-    s = HASH_NAME_RE.sub(lambda m: m.group(1) + _x(m.group(2)), s)
+    if "@" in s:  # review (round 2): an e-mail address, a phone-shaped number
+        s = ADMIN_EMAIL_RE.sub(lambda m: _x(m.group(0)), s)
+    s = _phones(s) if page else ADMIN_PHONE_RE.sub(lambda m: re.sub(r"\d", "#", m.group(0)), s)
+    s = QUOTED_NUM_RE.sub(lambda m: m.group(1) + "#" * len(m.group(2)) + m.group(3), s)
+    s = NAME_HASH_RE.sub(lambda m: _name_num(m.group(1), 0, 0, 0, m) or (
+        _x(m.group(1)) + m.group(2) + "#" * len(m.group(3)) + m.group(4)), s)
+    s = HASH_NAME_RE.sub(lambda m: _name_num(m.group(4), 0, 0, 0, m) or (
+        m.group(1) + "#" * len(m.group(2)) + m.group(3) + _x(m.group(4))), s)
+    s = SEAT_WORDS_NUM_RE.sub(lambda m: m.group(1) + _x(m.group(2)) + "#" * len(m.group(3)), s)
+    s = CAPS_NUM_RE.sub(_caps_num, s)
     s = PICKED_BY_RE.sub(lambda m: m.group(1) + _x(m.group(2)), s)
     s = SEAT_NAME_RE.sub(lambda m: m.group(1) + _x(m.group(2)), s)
-    s = COMMA_NAME_RE.sub(_comma_name, s)
+    s = COMMA_NAME_WIDE_RE.sub(_comma_wide, s)
     if page:  # quoted page text (visible_text lowercases it): any 'last, first' there, whatever its case
         s = LOW_NAME_RE.sub(_comma_name, s)
     # a bare number right beside a masked name ('xxx, xxxx 10001', '10001 xxx, xxxx') is that pilot's

@@ -93,6 +93,22 @@ def speed(first, last, gone, alert=None, cap_at=None):
     return secs, pm, False
 
 
+def caps_of(pk, pks=None):
+    """1.7.10 review: the request caps of a pickup, {employee number: the request's minute (ISO)}: one for each
+    picker FLICA named in a denial of the own request (pk['req_caps']; the first build's single req_cap_at /
+    req_cap_emp is read too). With pks (pickers_of) only the caps of those pickers: a cap is its own picker's, never
+    the pickup's."""
+    out = {}
+    if (pk or {}).get("req_cap_at") and pk.get("req_cap_emp"):
+        out[str(pk["req_cap_emp"])] = pk["req_cap_at"]
+    if isinstance((pk or {}).get("req_caps"), dict):
+        out.update({str(e): a for e, a in pk["req_caps"].items() if isinstance(a, str) and a})
+    if pks is not None:
+        want = {e for _p, _n, e in pks}
+        out = {e: a for e, a in out.items() if e in want}
+    return out
+
+
 def lay_of(row):
     """'LAX' from a find row: its layover, else its turn station (PPG), else ''."""
     lay = (row or {}).get("layover") or ""
@@ -357,7 +373,8 @@ class Store:
             pks = pickers_of(pk, r)  # 1.7.7: only the open-seat picker(s) link on the card
             who = pks[0] if pks else None
             st = stats.get(who[2]) if who else None
-            secs, pm, capped = speed(first, last, gone, alert, pk.get("req_cap_at"))
+            # 1.7.10 review: the cap is the shown picker's own (a two-seat pickup's other picker keeps the estimate)
+            secs, pm, capped = speed(first, last, gone, alert, caps_of(pk, pks).get(who[2]) if who else None)
             out.append({"pairing": r.get("pairing"), "dates": r.get("dates"), "days": r.get("days"),
                         "dwell_s": secs, "dwell_pm_s": pm, "alert_at": alert or "",
                         # 1.7.10: the speed is an upper bound ("at most"): capped at the own request's time
@@ -559,12 +576,16 @@ class Store:
             if not pks or (approx and len(pks) != 1):
                 return None
             plain, _ = dwell(first, last, gone, alert)  # 0.7.6: alert time in, middle of the gone window out
-            # 1.7.10: capped at the own request's time for the picker FLICA named in the denial (req_cap_emp)
-            secs, _pm, capped = speed(first, last, gone, alert, pickup.get("req_cap_at"))
+            # 1.7.10: capped at the own request's time for each picker FLICA named in a denial (caps_of); the
+            # pickup's own speed (scored) is its first picker's, the one the finds card shows
+            caps = caps_of(pickup, pks)
+            secs, capped = plain, False
             self.db.execute("BEGIN")
-            for pos, name, emp in pks:
-                mine = capped and str(pickup.get("req_cap_emp") or "") == emp
-                s1 = secs if mine else plain
+            for i, (pos, name, emp) in enumerate(pks):
+                s1, _pm, mine = speed(first, last, gone, alert, caps.get(emp))
+                capped = capped or mine
+                if i == 0:
+                    secs = s1
                 self.db.execute("INSERT INTO pickers(emp,name,pos,n,total_s,last_at) VALUES(?,?,?,1,?,?) "
                                 "ON CONFLICT(emp) DO UPDATE SET name=excluded.name, pos=excluded.pos, "
                                 "n=n+1, total_s=total_s+excluded.total_s, last_at=excluded.last_at",
@@ -658,9 +679,14 @@ class Store:
                 if pk.get("scored") is None or (keys and k not in keys):
                     continue
                 plain, _ = dwell(first, last, gone, alert)
-                secs, _pm, capped = speed(first, last, gone, alert, pk.get("req_cap_at"))  # 1.7.10: the request cap
-                if secs is None:
+                if plain is None:
                     continue
+                # 1.7.10: the request cap, each picker's own (caps_of); scored is the first picker's speed
+                pks = pickers_of(pk, json.loads(row) if row else {})
+                caps = caps_of(pk, pks)
+                each = [(emp,) + speed(first, last, gone, alert, caps.get(emp))[::2] for _p, _n, emp in pks]
+                secs, cap0 = (each[0][1], each[0][2]) if each else (plain, False)
+                capped = any(c for _e, _s, c in each)
                 if secs != pk["scored"] or capped != bool(pk.get("capped")):
                     pk["scored"] = secs
                     if capped:
@@ -668,48 +694,48 @@ class Store:
                     else:
                         pk.pop("capped", None)
                     self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), k))
-                # the capped picker's row holds the cap, every other picker's the plain estimate
-                self.db.execute("UPDATE picker_log SET secs=?, cap=? WHERE key=?", (secs, int(capped), k))  # keyed before 1.7.7
-                for _p, _n, emp in pickers_of(pk, json.loads(row) if row else {}):
-                    mine = capped and str(pk.get("req_cap_emp") or "") == emp
-                    self.db.execute("UPDATE picker_log SET secs=?, cap=? WHERE key=?",
-                                    (secs if mine else plain, int(mine), log_key(k, emp)))
+                # a capped picker's row holds his cap, every other picker's the plain estimate
+                self.db.execute("UPDATE picker_log SET secs=?, cap=? WHERE key=?", (secs, int(cap0), k))  # keyed before 1.7.7
+                for emp, s1, mine in each:
+                    self.db.execute("UPDATE picker_log SET secs=?, cap=? WHERE key=?", (s1, int(mine), log_key(k, emp)))
             self.db.execute("UPDATE pickers SET total_s=(SELECT COALESCE(SUM(secs),0) FROM picker_log WHERE picker_log.emp=pickers.emp), "
                             "n=(SELECT COUNT(*) FROM picker_log WHERE picker_log.emp=pickers.emp)")
             self.db.execute("COMMIT")
 
     def set_req_cap(self, key, at, emp):
         """1.7.10 (Ryan, Nov 15): keep on a find's pickup the time of the own request FLICA denied because this picker
-        (emp, one of its open-seat pickers) had picked the trip up: req_cap_at (the request's minute, ISO) and
-        req_cap_emp. The earlier of two requests stays. The pickup is rescored (the cap is kept through every later
-        rescore and re-check). Returns 'capped' (its speed is the cap now), 'kept' (stored; the estimate is already
-        lower, or the pickup is not scored yet), 'same' (already stored) or None (no such pickup, or not this
-        picker)."""
+        (emp, one of its open-seat pickers) had picked the trip up: pickup['req_caps'][emp] = the request's minute
+        (ISO). Review: one cap for each picker (two denials naming the two pickers of a both-seats pickup do not
+        overwrite each other); the earlier of two requests naming one picker stays. The pickup is rescored (the caps
+        are kept through every later rescore and re-check). Returns 'capped' (this picker's speed is his cap now),
+        'kept' (stored; his estimate is already lower, or the pickup is not scored yet), 'same' (already stored:
+        nothing written, nothing rescored) or None (no such pickup, or not this picker)."""
+        emp = str(emp)
         with self.lock:
             r = self.db.execute("SELECT row,pickup,first_seen,last_seen,gone_at,alert_at FROM finds WHERE key=?",
                                 (key,)).fetchone()
             if not r or not r[1]:
                 return None
             row, pk = json.loads(r[0]) if r[0] else {}, json.loads(r[1])
-            if pk.get("status") != "filled" or str(emp) not in {e for _p, _n, e in pickers_of(pk, row)}:
+            pks = pickers_of(pk, row)
+            if pk.get("status") != "filled" or emp not in {e for _p, _n, e in pks}:
                 return None
             if req_cap_secs(r[2], r[5], at) is None:
                 return None
-            old = pk.get("req_cap_at")
-            if old and old <= at and str(pk.get("req_cap_emp") or "") == str(emp):
-                same = True
-            else:
-                same = False
-                pk["req_cap_at"], pk["req_cap_emp"] = at, str(emp)
-                self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), key))
-            was = bool(pk.get("capped"))
-        if pk.get("scored") is not None:
+            caps = caps_of(pk, pks)
+            old = caps.get(emp)
+            if old and old <= at:
+                return "same"
+            caps[emp] = at
+            pk["req_caps"] = dict(sorted(caps.items()))
+            pk.pop("req_cap_at", None)
+            pk.pop("req_cap_emp", None)
+            self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pk), key))
+            scored = pk.get("scored") is not None
+            mine = speed(r[2], r[3], r[4], r[5], at)[2] if r[4] else False
+        if scored:
             self.rescore_all([key])
-        with self.lock:
-            now = json.loads(self.db.execute("SELECT pickup FROM finds WHERE key=?", (key,)).fetchone()[0])
-        if same and bool(now.get("capped")) == was:
-            return "same"
-        return "capped" if now.get("capped") else "kept"
+        return "capped" if scored and mine else "kept"
 
     def pickups_of(self, pairing):
         """[(key, row, pickup)] of the finds of one pairing that have a pickup (1.7.10: the request cap's match)."""
@@ -775,9 +801,19 @@ class Store:
                 pickup.update({f: old[f] for f in ("inflt_leg", "inflt_emp", "inflt_skip") if f in old})
             elif "inflt_tries" in old and "inflt_tries" not in pickup:  # 1.7.8: the tries so far of a verdict to come
                 pickup = dict(pickup, inflt_tries=old["inflt_tries"])
-            for f in ("req_cap_at", "req_cap_emp", "capped"):  # 1.7.10: a re-check keeps the request cap
+            for f in ("req_caps", "req_cap_at", "req_cap_emp", "capped"):  # 1.7.10: a re-check keeps the request caps
                 if f in old and f not in pickup:
                     pickup = dict(pickup, **{f: old[f]})
+            recap = False
+            if caps_of(pickup):
+                # 1.7.10 review: a cap is its picker's. When a re-check names another picker, the cap of the one
+                # who is no longer an open-seat picker goes, and the pickup is rescored without it
+                r = self.db.execute("SELECT row FROM finds WHERE key=?", (key,)).fetchone()
+                keep = caps_of(pickup, pickers_of(pickup, json.loads(r[0]) if r and r[0] else {}))
+                recap = keep != caps_of(pickup)
+                pickup = {f: v for f, v in pickup.items() if f not in ("req_caps", "req_cap_at", "req_cap_emp")}
+                if keep:
+                    pickup["req_caps"] = dict(sorted(keep.items()))
             if "inflt_no" in old and "inflt_no" not in pickup:  # 1.7.8: the other pickers' verdicts too
                 pickup = dict(pickup, inflt_no=old["inflt_no"])
             for f in ("inflt_named", "inflt_named_q"):  # 1.7.9: the named pilots' verdicts (picker not known) too
@@ -799,6 +835,8 @@ class Store:
                 if pickup.get("inflt_named_q") and not named_of(pickup, row):
                     pickup = {f: v for f, v in pickup.items() if f != "inflt_named_q"}
             self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pickup), key))
+        if recap and pickup.get("scored") is not None:
+            self.rescore_all([key])
 
     def pickups_without_inflt(self, n=50, max_tries=INFLT_MAX_TRIES):
         """0.5.2 (Ryan): filled pickups with a known picker (employee number) and no in-flight verdict yet:

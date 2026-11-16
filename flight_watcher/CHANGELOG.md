@@ -130,7 +130,7 @@ are as they were. Synthetic data in every test ("Doe, Jane", 10001).
   listed the trip and the read that found it gone, which can be minutes after Ryan's own request.
 - Now: that picker's speed is at most Ryan's Requested time minus the trip's entry (the request's minute plus 59 s,
   since the list prints minutes), when that is lower than the estimate. Every other pickup keeps the estimate. The cap
-  is kept on the find (`req_cap_at`, `req_cap_emp`), so every rescore and re-check keeps it; only the picker FLICA
+  is kept on the find (`req_caps`, one for each picker; see the round 2 fixes), so every rescore and re-check keeps it; only the picker FLICA
   named is capped (it must be one of the pickup's open-seat pickers, else nothing changes and it is counted
   unmatched); a request filed more than 10 minutes before the trip entered the pot is not used.
 - History: once, after the first good read of the request lists, every pickup with a matching denied row on file is
@@ -152,6 +152,55 @@ are as they were. Synthetic data in every test ("Doe, Jane", 10001).
   index: a pilot on two overlapping trips (...)"), page text is quoted through `page_log` (names and numbers masked),
   and a filter on the admin's logger (`captures.mask_crew`) is the net under every other line. A pilot's log keeps its
   stricter mask. Cards, the database and the exports are unchanged.
+
+### Review fixes, round 2 (Nov 15)
+
+- **Ryan's log, the Tradeboard lines** (decision 8): "NEW tradeboard pickup" names the pairing and its dates, never the
+  poster or his comments; the Tradeboard probe and the "no trip rows" line say counts only (the page stays in the
+  capture on /share, never the log). The admin's line mask (`captures.mask_crew`) also takes an e-mail address, a
+  phone-shaped number (any 7 to 15 digit phone in quoted page text), a last name of up to four words ("De La Cruz,
+  John"), a second given name ("Doe-Smith, Mary Ann"), a 3-digit number in brackets after a name, a seat-labeled or
+  all-capitals name with no comma before its number ("Captain: DOE JOHN 99999") and the number an error text quotes
+  (`KeyError('10001')`). A run of 80 or more letters is said by its length, so one very long token never costs the
+  mask seconds.
+- **Every log line that quotes FLICA page text goes through `page_log`**: the block hints line, the two own
+  schedule lines, the schedule totals line, the close-in folder's two lines, the trade decision line and the Schedule
+  Lookup prompt page line (a lowercased "last, first" there was not masked). A test reads `watcher.py` and fails on
+  any log call that quotes page text without it.
+- **A share Ryan switched off stays off when /data loses its switches file** (decision 2). Every OFF is also kept in
+  `/share/flight_watcher/pilotdb/switches_off.json` (0600, the Watcher's own folder, outside /data and outside the
+  database). A pilot, or the AI notes, is off when either file says off, so an older /data put back by a Home
+  Assistant restore never shares again by itself. A mirror that cannot be read fails closed.
+  **Boundary change:** one new private file on /share that holds pilot instance names and two true / false values,
+  nothing else.
+- **A tap on an unreadable switches file writes a good one**: the defaults are on again (a pilot Ryan adds later is
+  shared, decision 2), every pilot configured now and the AI notes are written as off except the one tapped, and the
+  running Watcher changes only after both files were written (a failed write leaves it as it was).
+- **Pickup speed cap, each picker's own**: the cap is kept per picker (`pickup.req_caps`, employee number to request
+  time; the first build's `req_cap_at` / `req_cap_emp` is still read). On a both-seats pickup the finds card shows
+  the cap only when the picker it shows is the capped one; two denials naming the two pickers both stay, and a second
+  pass writes and rescores nothing ("same"); when a re-check names another picker the old picker's cap goes and the
+  pickup is rescored.
+- **The award's dates of hire no longer erase the seat its seniority lines wrote** (`merge_award` leaves the award's
+  seat when it has none of its own).
+- **Name lookups agree on who is gone**: `name_hits` (Ryan's lookup) and `name_rows` (a portal pilot's directory) both
+  leave out a pilot marked gone, and a pilot a seniority list dropped who is on the award of that list's month or a
+  later one is back (logged "back", as a list's own). Two pick-list rows with one name and one seat (award-only
+  namesakes) show their Sen # ("FO Sen 72"), from the pilot's own pilotdb file; never an employee number.
+- **Portal Pilots card**: the search field, its hint, the chips and the count line are built once and only the count's
+  text and the rows are redrawn, so a composing keyboard (Android Gboard, any IME) types "zedb" and not
+  "zzezedzedbzedb", and the count is one lasting live region a screen reader announces. A last name typed without its
+  apostrophe, hyphen, space or okina is found ("obrien", "delacruz", "mcdonaldsmith", "stjohn"), as the name lookup
+  does; text with no letter or digit is no query. The Mail link is 44 px wide.
+- **The file's size ladder has no cliff**: past the hard size the pickup rows go and the notes fields, AI notes and
+  log entries are kept newest first, across all pilots, for as long as they fit (before: every text left the file at
+  once). The card's banner counts the older log entries the file left out. No new key: the contract and its fixture
+  are unchanged.
+- Tests: `test_fw1710_review2.py` (each failed before its fix); `test_fw1710_speed_cap.py`, `test_pilotdb_export.py`
+  and `test_pilotdb_share_admin.py` updated to the per-picker cap, the gradual ladder and the repaired switches file.
+- Left open for Ryan (see HANDOFF.md): the CLAUDE.md hard-rule line for decision 9, the contact list upload on a
+  pilot's portal page (contract revision 5, HOM first), gzip and ETag for the file route (a later HOM release), and
+  checking the real request list page against the speed cap's parser after the update.
 
 ### After the update: what Ryan does
 Each step is [DESTRUCTIVE] and needs its own yes; an earlier yes never covers a later one.

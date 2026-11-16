@@ -93,7 +93,7 @@ def test_a_scored_pickup_is_capped_and_stays_capped(tmp_path):
     assert db.score_pickup(KEY) == 600 and _log(db) == {f"{KEY}|10001": (600, 0)}
     assert db.set_req_cap(KEY, REQ, "10001") == "capped"
     pk = _pk(db)
-    assert (pk["scored"], pk["capped"], pk["req_cap_at"], pk["req_cap_emp"]) == (239, True, REQ, "10001")
+    assert (pk["scored"], pk["capped"], pk["req_caps"]) == (239, True, {"10001": REQ})
     assert _log(db) == {f"{KEY}|10001": (239, 1)}
     st = db.picker_stats()["10001"]
     assert (st["total_s"], st["n"], st["min_s"], st["cap_n"], st["min_cap"]) == (239, 1, 239, 1, True)
@@ -105,7 +105,7 @@ def test_a_scored_pickup_is_capped_and_stays_capped(tmp_path):
     db.rescore_all()
     db.set_pickup(KEY, {"status": "filled", "by": f"FO {JANE}", "ca": "", "known": True, "pickers": ["10001"]})
     db.rescore_all()
-    assert _pk(db)["scored"] == 239 and _pk(db)["req_cap_at"] == REQ and _log(db) == {f"{KEY}|10001": (239, 1)}
+    assert _pk(db)["scored"] == 239 and _pk(db)["req_caps"] == {"10001": REQ} and _log(db) == {f"{KEY}|10001": (239, 1)}
     # an earlier request of the same pilot lowers it; a later one never raises it
     assert db.set_req_cap(KEY, "2026-10-30T12:01-10:00", "10001") == "capped" and _pk(db)["scored"] == 119
     assert db.set_req_cap(KEY, REQ, "10001") == "same" and _pk(db)["scored"] == 119
@@ -176,8 +176,8 @@ def test_a_read_of_the_request_list_caps_the_pickup(W, tmp_path, monkeypatch, ca
     fetched, read = _watch(W, monkeypatch, tmp_path)
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
         read()
-    assert _pk(W.DB)["scored"] == 239 and _pk(W.DB)["req_cap_at"] == REQ and _pk(W.DB)["capped"] is True
-    assert _pk(W.DB, "H3608|18Nov")["scored"] == 600 and "req_cap_at" not in _pk(W.DB, "H3608|18Nov")
+    assert _pk(W.DB)["scored"] == 239 and _pk(W.DB)["req_caps"] == {"10001": REQ} and _pk(W.DB)["capped"] is True
+    assert _pk(W.DB, "H3608|18Nov")["scored"] == 600 and "req_caps" not in _pk(W.DB, "H3608|18Nov")
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("speed:")]
     assert lines == ["speed: 1 pickup capped at Ryan's request time, 0 unmatched"]
     for leak in ("10001", "Doe", "doe", "Jane", "jane"):  # counts only: no name, no employee number in the log
@@ -206,7 +206,7 @@ def test_a_picker_flica_did_not_name_is_not_capped(W, tmp_path, monkeypatch, cap
     _fetched, read = _watch(W, monkeypatch, tmp_path)
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
         read()
-    assert _pk(W.DB)["scored"] == 600 and "req_cap_at" not in _pk(W.DB)
+    assert _pk(W.DB)["scored"] == 600 and "req_caps" not in _pk(W.DB)
     assert "speed: 0 pickups capped at Ryan's request time, 1 unmatched" in caplog.text
     assert "10001" not in caplog.text and "10002" not in caplog.text
 

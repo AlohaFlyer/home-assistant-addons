@@ -243,8 +243,8 @@ def test_entries_are_cut_to_the_newest_and_a_full_file_says_so(db, root):
 
 
 def test_the_file_never_passes_the_hard_size(db):
-    """Under portal.CAPS['file'] whatever the database holds: the logs and pickup rows go first, then the notes
-    fields and AI notes, the records last; full says so."""
+    """Under portal.CAPS['file'] whatever the database holds: the older logs and the pickup rows go first, then the
+    older texts (the newest notes fields, AI notes and entries stay while they fit), the records last; full says so."""
     jane = _jane(db)
     db.save_notes(jane, "N" * 3000, P.ZERO_REV)
     for i in range(30):
@@ -259,8 +259,16 @@ def test_the_file_never_passes_the_hard_size(db):
         return next(r for r in d["records"] if r["pid"] == jane)
     d = db.export_for("james", hard=9000)  # room for the fields, the notes field and a few entries
     assert size(d) <= 9000 and d["full"] is True and d["count"] == 2 and len(rec(d)["entries"]) == 5
-    d = db.export_for("james", hard=5000)  # no room for any entry: the notes field stays
-    assert size(d) <= 5000 and rec(d)["entries"] == [] and rec(d)["entries_total"] == 30 and "notes" in rec(d)
+    # 1.7.10 review (round 2): no cliff. The newest texts stay while they fit, newest first: here the newest
+    # entries (a run from the newest on), not the older 3000 character notes field
+    d = db.export_for("james", hard=5000)
+    got = [e["text"][:7] for e in rec(d)["entries"]]
+    assert size(d) <= 5000 and d["full"] is True and rec(d)["entries_total"] == 30 and "notes" not in rec(d)
+    assert len(got) >= 5 and got == [f"note {i:02d}" for i in range(29, 29 - len(got), -1)]
+    db.clock_box["t"] = T0 + timedelta(seconds=60)
+    db.save_notes(jane, "M" * 3000, db.record(jane)["notes"]["rev"])  # the notes field is the newest text now
+    d = db.export_for("james", hard=5000)
+    assert size(d) <= 5000 and rec(d)["notes"]["text"] == "M" * 3000 and len(rec(d)["entries"]) >= 1
     d = db.export_for("james", hard=1500)  # nor for the notes field: every record's fields stay
     assert size(d) <= 1500 and d["count"] == 2 and "notes" not in rec(d) and rec(d)["emp"] == "10001"
     d = db.export_for("james", hard=700)  # absurd: the records themselves are cut, the file still reads

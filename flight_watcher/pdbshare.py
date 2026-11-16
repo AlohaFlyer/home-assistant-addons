@@ -305,6 +305,7 @@ class View:
         self.limits = {}
         self.by_emp = {}         # emp -> [(pid, last name's key)]
         self.names = []          # [(emp, last, first, seat)] of the live pilots whose number no other record shares
+        self.sens = {}           # 1.7.10 review: {emp: Sen #} of those pilots (the pick list tells namesakes apart)
 
     @staticmethod
     def _sig(path):
@@ -326,6 +327,7 @@ class View:
     def _read_export(self, path, sig):
         self.text, self.rev, self.count, self.updated = "", "", 0, ""
         self.pids, self.mine, self.answers, self.limits, self.by_emp, self.names = set(), {}, [], {}, {}, []
+        self.sens = {}
         if sig is None:
             self.state = "off"
             return
@@ -359,6 +361,8 @@ class View:
                 last, _, first = (x.strip() for x in str(r.get("name") or "").partition(","))
                 if last:
                     self.names.append((emp, last[:80], first[:80], str(r.get("seat") or "")[:3]))
+                    if re.fullmatch(r"\d{1,5}", str(r.get("sen") or "")):
+                        self.sens[emp] = str(r["sen"])
         self.by_emp = {e: [(p, lk) for p, lk, _ in rows] for e, rows in self.by_emp.items()}
         self.answers = [{"rid": a["rid"], "ok": bool(a.get("ok")), "why": str(a.get("why") or "")[:200],
                          "at": str(a.get("at") or "")[:40]}

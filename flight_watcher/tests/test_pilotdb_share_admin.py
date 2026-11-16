@@ -124,7 +124,8 @@ def test_a_switches_file_that_cannot_be_read_turns_everything_off(A, caplog):
     code, r = _post(P, op="share", pilot="james", on=True)  # Ryan's tap puts it right
     assert code == 200 and r["shared_with"] == ["james"] and os.path.exists(ep)
     assert P.pilotdb_status()["switches"] == "ok" and P.pilotdb_status()["ai"]["on"] is False  # the AI switch is his too
-    assert json.load(open(P.pilotdb_switches_path())) == {"v": 1, "default": False, "share": {"james": True}, "ai": None}
+    # 1.7.10 review: the defaults are on again (a pilot added later is shared); what was not tapped is written off
+    assert json.load(open(P.pilotdb_switches_path())) == {"v": 1, "default": True, "share": {"james": True}, "ai": False}
 
 
 def test_the_drain_applies_a_shared_pilots_note_and_edit_and_the_card_sees_the_count(A, caplog):

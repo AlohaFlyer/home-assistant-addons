@@ -378,7 +378,9 @@ Recent finds.
   our own schedules and pay rates though"): shared 100% and on by default for every pilot with a portal, the ones
   Ryan adds later too. "Share with <pilot>" on Ryan's own Pilots card (`POST api/pilotdb` op `share`; Claude never
   sends it) is his OFF switch and the way back on. His choice, and the AI switch's, live in
-  `/data/pilotdb_switches.json` (0600), never in the database, so a daily copy put back changes neither; a switches
+  `/data/pilotdb_switches.json` (0600), never in the database, so a daily copy put back changes neither (every OFF is
+  also kept in `/share/flight_watcher/pilotdb/switches_off.json`, and off in either file is off, so an older /data
+  put back never shares again by itself); a switches
   file that cannot be read turns everything off until he taps a switch. While a pilot's share is on, Ryan's Watcher
   writes his file (`/share/flight_watcher/pilotdb/portal/<pilot>.json`, 0600, a whitelist of keys): every live record
   with its employee number and every field (name, Sen #, DOH, status, retirement, seat, equipment, base, union id,
