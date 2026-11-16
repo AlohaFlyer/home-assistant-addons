@@ -2493,7 +2493,7 @@ read. Built, not deployed.
 ## 1.4.12
 
 - FW-0068 follow-up (Nov 9, live check of 1.4.10): the probe found H3631 Nov 6 flown as H3631B, but that copy's crew
-  line names the captain only, so pilot 19852 (an FO on the trip, per CrewTrac) still had nothing on Nov 6-8. FLICA
+  line names the captain only, so pilot 10031 (an FO on the trip, per CrewTrac) still had nothing on Nov 6-8. FLICA
   can split a rebuilt trip's crew over two lettered copies, and the probe stopped at the first copy with crew. Now
   the letters are read on until the copies found name as many pilots as the package trip has pilot seats (its crew
   line after departure, OPEN seats counted); every copy that names a pilot is indexed. A copy that leaves seats

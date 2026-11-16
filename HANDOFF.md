@@ -23,11 +23,10 @@ synthetic 1300 pilot file is 0.64 to 3.2 MiB). The fixture is regenerated, sha25
 1.7.9's: `9b882fb6dd00...`). HOM must re-pin these exact bytes (tests and docs, no deploy); either order is safe.
 
 Open for Ryan:
-1. **The CLAUDE.md line was NOT changed.** The 1.7.9 hard rule still reads "Claude never turns a pilot database share
-   or the AI notes switch on or off: those are Ryan's taps only." It needs Ryan's own edit or his yes (an agent's
-   brief cannot change CLAUDE.md). Proposed wording: "Sharing and AI notes are on by default by Ryan's decision of
-   Nov 15, 2026; Claude never turns either on or off by hand, and turning one off is Ryan's tap." The untrusted-data
-   rule stays as it is. `tests/test_fw179_pilotdb_rule.py` still tests the current line and changes with it.
+1. **The CLAUDE.md line is updated on this branch** (Ryan chose automatic sharing and AI notes on in session, Nov 15):
+   "Sharing the pilot database with every portal pilot and AI notes are on by default ...; Claude never turns either
+   on or off by hand, and turning one off is Ryan's tap." The untrusted-data rule stays; `tests/test_fw179_pilotdb_rule.py`
+   tests the new line. It lands with Ryan's yes to merge 1.7.10.
 2. A contact list has no upload kind on James's portal (`upload/pdf` takes pairings and award). Adding it changes a
    command shape, so it is contract revision 5 with HOM 1.9.1 first. Today his contact list merges only when his
    instance saves one (the 1.4.8 uploads path, which the retired HA dashboard used). Say if he should get it.

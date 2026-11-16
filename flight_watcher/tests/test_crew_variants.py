@@ -410,8 +410,8 @@ def test_an_old_record_whose_copy_names_every_seat_stays(W, tmp_path, monkeypatc
 
 
 def test_crew_mask_keeps_seats_and_numbers_only():
-    assert CI.crew_mask("pairing details h3631b:06nov crew: ca 9606 doe, jane fb 19852 roe jr, rick ro open") == \
-        "ca 9606 x, x fb 19852 x x, x ro open"
+    assert CI.crew_mask("pairing details h3631b:06nov crew: ca 9603 doe, jane fb 10031 roe jr, rick ro open") == \
+        "ca 9603 x, x fb 10031 x x, x ro open"
     assert CI.crew_mask("crew: ca 10001 ng, jo ckp f/o 10002 li, al") == "ca 10001 x, x ckp f/o 10002 x, x"
     assert CI.crew_mask("no crew line here") == "" and CI.crew_mask(None) == ""
     assert CI.pilot_seats(OPEN3) == 3 and CI.pilot_seats(OPEN3 + [{"pos": "FA", "name": "x", "emp": "1"}]) == 3

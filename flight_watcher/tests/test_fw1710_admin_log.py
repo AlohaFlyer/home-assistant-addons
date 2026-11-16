@@ -16,7 +16,7 @@ import captures as CAPS
 from test_crew_index import W  # noqa: F401  (the Watcher fixture: the admin's)
 from test_fw173_log_mask import POT, load  # noqa: F401
 
-LEAKS = ("Doe", "doe", "Jane", "jane", "John", "john", "Roe", "roe", "Rick", "10001", "10002", "99999", "6598")
+LEAKS = ("Doe", "doe", "Jane", "jane", "John", "john", "Roe", "roe", "Rick", "10001", "10002", "99999", "6593")
 SRC = open(os.path.join(os.path.dirname(__file__), "..", "watcher.py"), encoding="utf-8").read()
 
 
@@ -40,7 +40,7 @@ def _clean(text):
      "pilot ##### (xxx, xxxx): 2026-11 read, 12 items, 3 pairing pages"),
     ("pickup H3607|13Nov: FO Doe, Jane (10001); RO Roe, Rick (10002) (CA Doe Jr, John (99999))",
      "pickup H3607|13Nov: FO xxx, xxxx (#####); RO xxx, xxxx (#####) (CA xxx xx, xxxx (#####))"),
-    ("picker FO Doe, Jane (6598): 120 in open time", "picker FO xxx, xxxx (####): 120 in open time"),
+    ("picker FO Doe, Jane (6593): 120 in open time", "picker FO xxx, xxxx (####): 120 in open time"),
     ("requests 003.152: text: 10/30 15:08 add denied 30 oct 15:10 cs: h3607:17nov picked up by doe, jane (10001)",
      "requests 003.152: text: 10/30 15:08 add denied 30 oct 15:10 cs: h3607:17nov picked up by xxx, xxxx (#####)"),
     ("crew index: H3601 17Nov names 1 of 2 pilots (crew line: ca 99999 x, x fo open)",

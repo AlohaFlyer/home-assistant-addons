@@ -82,7 +82,7 @@ UI_WORDS = {w.lower() for w in (
     "ID") + MONTHS}
 NAME_WORD = rf"(?:\u02bb?[{NAME_UP}][{NAME_LOW}]+|[{NAME_UP}]\.?)"  # 1.7.3 review: outside ASCII too
 NAME_RUN_RE = re.compile(rf"(?<!\w)({NAME_WORD}(?:(?:\s*,\s*|\s+){NAME_WORD})+)(?![\w'])")  # 1.7.3: after a quote too
-# 1.7.3: a name with its employee number in parentheses ('Doe, Jane (6598)'; 3 to 7 digits, EMP_RE takes only 5 to 7).
+# 1.7.3: a name with its employee number in parentheses ('Doe, Jane (6593)'; 3 to 7 digits, EMP_RE takes only 5 to 7).
 # 1.7.3 review: up to 8 words, so a long run of capitalized words with no number after it costs linear time
 NAME_EMP_RE = re.compile(rf"(?<!\w)({NAME_WORD}(?:(?:\s*,\s*|\s+){NAME_WORD}){{0,7}})(\s*\(\s*)(\d{{3,7}})(\s*\))")
 SEAT_CODES = {"CA", "FO", "RO", "FA", "SO"}
@@ -131,7 +131,7 @@ def _name_runs(t):
 
 
 def _name_emps(t):
-    """1.7.3: a name followed by its employee number in parentheses ('Doe, Jane (6598)', 'DOE J (10001)') is a crew
+    """1.7.3: a name followed by its employee number in parentheses ('Doe, Jane (6593)', 'DOE J (10001)') is a crew
     name: the number becomes '#', every word that is no page word is masked and so are the page words of a 'Last,
     First' name (_comma_words: 'Day Jr, Pat'); page words before it (a seat code) stay, and words that are all page
     words with no comma ('Version (1720)') are no name."""
