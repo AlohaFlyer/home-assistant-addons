@@ -91,7 +91,7 @@ def test_the_admins_quoted_page_text_names_no_crew(W, caplog):  # noqa: F811
     # the lines that quote a page go through it
     for call in ('log.info("detail text %s: %s", ev.get("pairing"), page_log(',
                  'page captured; text: %s", b, len(rows), page_log(text[:600]))',
-                 'log.info("request view %s captured; text: %s", ts, page_log(text[:600]))',
+                 'log.info("request view %s captured; text: %s", ts, page_log(_no_cs(text[:600])))',
                  'log.info("request %s %s %s", r["type"], r["status"], page_log('):
         assert call in SRC, call
 

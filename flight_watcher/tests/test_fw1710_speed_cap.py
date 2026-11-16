@@ -367,8 +367,8 @@ def test_denied_requests_view_pages_are_read_for_the_cap(W, tmp_path, monkeypatc
     # what is kept: the picked-up parts by folder and FLICA id, never the name
     kept = W.S["req_cap_views"]
     assert kept["003.152|AAAA1:BBBB1"] == {"reason": {"trip": "H3607", "day": "17NOV", "emp": "10001"}, "ok": True,
-                                           "tries": 1}
-    assert kept["003.152|AAAA0:BBBB0"] == {"reason": None, "ok": True, "tries": 1}
+                                           "tries": 1, "v": 1}
+    assert kept["003.152|AAAA0:BBBB0"] == {"reason": None, "ok": True, "tries": 1, "v": 1}
     assert sorted(kept) == [f"003.152|AAAA{i}:BBBB{i}" for i in (0, 1, 2, 4, 6)]
     state = json.dumps({"v": kept, "r": W.S["ot_req_rows"]}).lower()
     for leak in ("doe", "john", "roe", "rick", "poe", "mary"):
@@ -397,7 +397,7 @@ def test_a_view_page_that_fails_is_tried_three_times_and_no_more(W, tmp_path, mo
         read()
     assert sorted(_ids(fetched)) == ["AAAA0:BBBB0"] * 3 + ["AAAA1:BBBB1"] * 3 == [
         "AAAA0:BBBB0"] * W.REQ_CAP_VIEW_TRIES + ["AAAA1:BBBB1"] * W.REQ_CAP_VIEW_TRIES
-    assert W.S["req_cap_views"] == {f"003.152|AAAA{i}:BBBB{i}": {"reason": None, "ok": False, "tries": 3} for i in (0, 1)}
+    assert W.S["req_cap_views"] == {f"003.152|AAAA{i}:BBBB{i}": {"reason": None, "ok": False, "tries": 3, "v": 1} for i in (0, 1)}
     assert _pk(W.DB)["scored"] == 600
 
 
@@ -421,7 +421,7 @@ def test_a_request_that_leaves_the_list_is_forgotten_and_a_listed_one_is_kept(W,
     for _ in range(3):
         read()
     assert len(W.S["req_cap_views"]) == 5
-    W.S["req_cap_views"]["009.999|AAAA9:BBBB9"] = {"reason": None, "ok": True, "tries": 1}  # a folder not watched now
+    W.S["req_cap_views"]["009.999|AAAA9:BBBB9"] = {"reason": None, "ok": True, "tries": 1, "v": 1}  # a folder not watched now
     # Ryan cleared all but the second request; the page names fewer requests than it has rows once (no ids): kept
     _f2, read2 = _watch(W, monkeypatch, tmp_path, body="open time requests 10/30 12:03 add denied 10/30 12:04 add denied",
                         ids=REAL_IDS[len(REAL_IDS) // 7:len(REAL_IDS) * 2 // 7], views=REAL_VIEWS)

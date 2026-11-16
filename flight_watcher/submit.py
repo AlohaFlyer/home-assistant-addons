@@ -245,10 +245,18 @@ def parse_request_rows(text, html=None):
 # 'MARY ANN DOE', 'JOHN Q. DOE JR', 'MARY-ANN DOE-ROE', "SEAN O'DOE", and 'DOE, JANE' / 'DOE JR, JANE Q'. The name
 # is one or more words of letters, hyphens, apostrophes and dots (a comma between them at most), then the employee
 # number in brackets; 'Added pairing (H3630:14NOV) not in opentime pot' and any other comment is no pickup.
-_NAME_W = r"[A-Za-z\u00c0-\u024f][A-Za-z\u00c0-\u024f'\u2019.\-]*"
-PICKED_RE = re.compile(r"\b([A-Za-z]\d{4}[A-Za-z]?)\s*:\s*(\d{1,2})\s?([A-Za-z]{3})\s+picked\s+up\s+by\s+"
-                       r"(" + _NAME_W + r"(?:\s*,\s*|\s+)(?:" + _NAME_W + r"\s*,?\s*){0,7}?|" + _NAME_W + r")\s*"
-                       r"\(\s*(\d{3,7})\s*\)", re.I)
+# review: the words of a name are split by a real separator (spaces, or a comma) and each is 31 characters at most,
+# and the name is looked for only in the 200 characters after 'picked up by', so a long run of letters with no
+# number after it ('picked up by another-crewmember-before-your-request...') costs no time (it took seconds to hours
+# while a word could also be split with nothing between its parts).
+_NAME_W = r"[A-Za-zÀ-ɏ][A-Za-zÀ-ɏ'’.\-]{0,30}"
+_PICKED_HEAD = r"\b([A-Za-z]\d{4}[A-Za-z]?)\s{0,8}:\s{0,8}(\d{1,2})\s?([A-Za-z]{3})\s{1,8}picked\s{1,8}up\s{1,8}by\s{1,8}"
+_PICKED_TAIL = (r"(" + _NAME_W + r"(?:(?:\s{0,8},\s{0,8}|\s{1,8})" + _NAME_W + r"){0,7})\s{0,8},?\s{0,8}"
+                r"\(\s{0,8}(\d{3,7})\s{0,8}\)")
+PICKED_HEAD_RE = re.compile(_PICKED_HEAD, re.I)
+PICKED_TAIL_RE = re.compile(_PICKED_TAIL, re.I)
+PICKED_RE = re.compile(_PICKED_HEAD + _PICKED_TAIL, re.I)  # the whole comment (picked_up reads it in two steps)
+PICKED_TAIL_MAX = 200
 MON3 = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
 STAMP_RE = re.compile(r"\b(\d{1,2})\s?(" + "|".join(MON3) + r")\s+(\d{1,2}):(\d{2})\b", re.I)
 STATUS_AT_RE = re.compile(r"\b(?:approved|denied)\s+(?:(\d{1,2})\s?(" + "|".join(MON3) + r")|(\d{2})/(\d{2}))\s+"
@@ -261,11 +269,37 @@ HST_TZ = timezone(timedelta(hours=-10))
 def picked_up(text):
     """{trip, day, name, emp} of a 'H3677:13NOV picked up by JOHN DOE (10001)' comment (first name first as FLICA
     writes it, or 'DOE, JANE'; any letter case), or None. The name is for a test or a caller's eyes: never stored."""
-    m = PICKED_RE.search(text or "")
-    if not m:
+    text = text or ""
+    for h in PICKED_HEAD_RE.finditer(text):
+        m = PICKED_TAIL_RE.match(text[h.end():h.end() + PICKED_TAIL_MAX])
+        if m:
+            return {"trip": h.group(1).upper(), "day": f"{int(h.group(2)):02d}{h.group(3).upper()}",
+                    "name": re.sub(r"\s+", " ", m.group(1)).strip().title(), "emp": m.group(2).lstrip("0")}
+    return None
+
+
+def gives_up(pu, legs):
+    """True when the trip a 'picked up by' comment names is one this request gives up (a swap's drop leg), not the
+    one it asked for: no cap from it. The one place this is decided (the denial's push, the history read of its view
+    page and a captured view page all go through it)."""
+    return bool(pu) and any(isinstance(x, dict) and x.get("trip") == pu.get("trip") and x.get("side") == "drop"
+                            and x.get("day") in ("", pu.get("day")) for x in legs or [])
+
+
+def view_cap(got):
+    """{trip, day, emp} (never the name) of the 'picked up by' comment of a parsed view page (parse_request_view's
+    dict), or None: no such comment, or the trip is the one the request gives up."""
+    pu = picked_up(str((got or {}).get("reason") or ""))
+    if not pu or gives_up(pu, (got or {}).get("legs")):
         return None
-    return {"trip": m.group(1).upper(), "day": f"{int(m.group(2)):02d}{m.group(3).upper()}",
-            "name": re.sub(r"\s+", " ", m.group(4)).strip().title(), "emp": m.group(5).lstrip("0")}
+    return {k: pu[k] for k in ("trip", "day", "emp")}
+
+
+def is_view_page(got):
+    """A parsed view page counts as this request's own page only when a trip was read on it (the request line 'Add
+    H3607:17NOV (F) ...'): an interstitial or any other page classify() lets through is a failed read, not a 'no
+    pickup' verdict."""
+    return bool((got or {}).get("legs"))
 
 
 def _md_hm(m):
@@ -329,6 +363,8 @@ def row_cap(r):
         got = picked_up(str(r.get("reason") or "")) or picked_up(str(r.get("detail") or ""))
         pu = {k: got[k] for k in ("trip", "day", "emp")} if got else None
     if not pu or not all(isinstance(pu.get(k), str) and pu.get(k) for k in ("trip", "day", "emp")):
+        return None
+    if gives_up(pu, r.get("legs")):  # review: the same answer whichever path read the page
         return None
     return {k: pu[k] for k in ("trip", "day", "emp")}
 

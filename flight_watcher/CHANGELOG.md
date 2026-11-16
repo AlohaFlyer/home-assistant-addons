@@ -168,6 +168,28 @@ are as they were. Synthetic data in every test ("Doe, Jane", 10001).
 - A portal pilot's Watcher reads his own denials' view pages the same way, inside his budget, with his captures off.
 - Tests: `test_fw1710_speed_cap.py` (the real list and view page layouts with made-up values; each new test failed
   before the change).
+- **Review fixes (view page reads):**
+  - Log: the line of a view page's first capture and the line of a pushed decision no longer quote crew scheduling's
+    comment (it reads "cs: (41 chars)"; the private capture holds the page), and the log mask (`captures.mask_crew`)
+    now knows the real comment: every word after "picked up by" and the number after them are masked, first name
+    first, lower case, whole or cut short by the line's length. Before, a new bid month's first view page capture
+    printed the picker's name and employee number in Ryan's log.
+  - Budget order: a pass reads the denials' view pages last, after the request lists and the Tradeboard's My Requests
+    pages. Read inside the folder loop they took the load kept for My Requests, so a pilot at his budget's pace with
+    15 denials had no trade decision read for hours. On such a pilot the history now uses only what is left (about
+    one view page in four hours in the simulation), so his history takes days; Ryan's own Watcher has no hourly
+    budget and reads 2 a folder a read as before.
+  - What counts as read: a view page is final only when it is the request's own page (a trip read on it,
+    `submit.is_view_page`); a "please wait" page or any other page is a failed try (3 in all). Each kept record
+    carries the parser's version (`REQ_CAP_VIEW_V`): after a parser fix that raises it, every "no pickup" verdict and
+    every given-up page is read once more, and a reason on file is kept.
+  - The "picked up by" pattern: name words are split by a real separator, 31 characters a word at most, and read only
+    in the 200 characters after "picked up by". A long run of letters with no number after it took 43 s at 60
+    letters (hours beyond) inside the check thread; it now takes no time.
+  - The trip a swap gives up: one rule (`submit.gives_up`, used by `row_cap` and `view_cap`) for the denial's push,
+    the history read and a captured view page. Before, only the history read left it uncapped. Whether such a
+    comment should cap is still Ryan's to confirm; until then it caps nothing on any path.
+  - Tests: `test_fw1710_speed_cap_review.py`.
 
 #### No crew names or employee numbers in Ryan's log
 - Before: the admin's log named the captain ("detail probe H3601: captain='...(...)'"), quoted a pairing page's crew

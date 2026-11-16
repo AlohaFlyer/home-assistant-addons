@@ -6754,6 +6754,13 @@ def close_in_check(fl, pot_all, full=False, moved_from=()):
     return rows, "ok"
 
 
+def _no_cs(text):
+    """Review (speed cap): view page text for a log line without crew scheduling's comment, which is where a picker
+    is named ('cs: h3677:13nov picked up by <name> (<number>)'): 'cs: (N chars)'. The capture file holds the page."""
+    return re.sub(r"(?is)(\bcs\s*:)(.*?)(?=\s*\bnote\s*:|$)", lambda m: f"{m.group(1)} ({len(m.group(2).strip())} chars)",
+                  str(text or ""))
+
+
 def _request_view(fl, b, ts):
     """1.2.2: {legs, trips, detail} of one request from its read-only view page ({} when it cannot be read).
     The first view page of each folder is saved privately to CAPTURE_DIR for parser checks."""
@@ -6772,7 +6779,7 @@ def _request_view(fl, b, ts):
             S.setdefault("req_view_captured", {})[n] = True
             try:
                 cap_write(f"otrequest_view_{n}.html", html)
-                log.info("request view %s captured; text: %s", ts, page_log(text[:600]))
+                log.info("request view %s captured; text: %s", ts, page_log(_no_cs(text[:600])))
             except Exception:
                 pass
         return SUB.parse_request_view(text)
@@ -6843,6 +6850,7 @@ def requests_check(fl):
     first = not S.get("ot_req_init")
     now = datetime.now(HST)
     read_ok = False
+    read_now = []  # the folders whose list was read in this pass
     for b in folders:
         url = SUB.requests_url(BASE, b)
         if not BRK.allow("requests"):  # 1.6.2: the request list reads are stopped (the breaker's note says why)
@@ -6905,7 +6913,7 @@ def requests_check(fl):
                 except Exception as e:
                     log.info("request pay not priced: %s", e)
                     ev["pay"] = None
-                log.info("request %s %s %s", r["type"], r["status"], page_log(r["detail"][:80]))
+                log.info("request %s %s %s", r["type"], r["status"], page_log(_no_cs(r["detail"])[:80]))
                 pub("event/request_decided", ev, retain=False)
                 note_decided(r, now)  # FW-0064: its schedule changes are this request's, not a trade's
             if rows and rows[-1].get("ts") and not S.get("req_view_captured", {}).get(n) and cap_on():
@@ -6916,8 +6924,8 @@ def requests_check(fl):
                     if r.get("alt"):  # the content key too: a read that falls back to it never re-pushes
                         pushed[f"{r['alt']}|{r['status']}"] = now_iso()
             req_cap_keep(rows, rows_of.get(b))  # 1.7.10: each denial's 'picked up by' stays on its row
-            req_cap_views(fl, b, rows)  # the real comment is on the denial's read-only view page: read once
             rows_of[b] = rows
+            read_now.append(b)
             if b == ci:
                 done_first[b] = now_iso()
             read_ok = True
@@ -6935,6 +6943,19 @@ def requests_check(fl):
     except GT.BreakerOpen as e:  # 1.6.2 review: the Tradeboard path stopped or left out: the request list still publishes
         log.info("trade requests skipped: %s", e)
         tb_ok = False
+    # 1.7.10: the real 'picked up by' comment is on each denial's read-only view page. Review: read last, once the
+    # lists and the Tradeboard's My Requests pages of this pass are done, so on a pilot the history reads only use
+    # what his FLICA budget has left (read inside the folder loop they took the load kept for My Requests every hour)
+    for b in read_now:
+        try:
+            req_cap_views(fl, b, rows_of.get(b) or [])
+        except GT.GateAbort:
+            raise
+        except GT.BreakerOpen as e:
+            log.info("request view pages %s skipped: %s", b, e)
+            break
+        except Exception as e:  # noqa: BLE001 (type only: a message could carry a name)
+            log.info("request view pages %s error: %s", b, type(e).__name__)
     try:
         trade_check()  # FW-0064: a decision just read explains schedule changes; a pending one may match them
     except Exception as e:
@@ -6982,6 +7003,8 @@ REQ_CAP_V = 1
 REQ_CAP_FILE_MAX = 5 * 1024 * 1024
 REQ_CAP_VIEWS_PER_READ = 2  # new denied view pages per folder per list read: history catches up with no burst
 REQ_CAP_VIEW_TRIES = 3  # view page reads of one denied request whose page could not be read
+REQ_CAP_VIEW_V = 1  # the view page parser's version, kept on each record: raise it when submit.parse_request_view,
+# submit.picked_up or the swap rule changes, and every 'no pickup' verdict (and every given-up page) is read once more
 REQ_CAP_TYPES = ("Add", "Swap")  # a request that asks for a trip; a drop or a trade is denied for other reasons
 
 
@@ -7016,9 +7039,13 @@ def req_cap_views(fl, b, rows):
     (_request_view: both safe_get guards, paced, captured only where captures are on; never the QuickDelete link),
     at most REQ_CAP_VIEWS_PER_READ new ones per folder per list read and REQ_CAP_VIEW_TRIES tries per request. Each
     load is a FLICA load like the list's own (the gate counts it; on a pilot it must fit his budget first: opt_fits),
-    and none is made while the request reads are stopped. S['req_cap_views'][folder|ts] = {reason, ok, tries}:
-    reason is the picked-up parts only ({trip, day, emp}; the name is never kept), None when the comment is not a
-    pickup or the trip is the one this request gives up. Kept until the row leaves the list. The reason goes on the
+    and none is made while the request reads are stopped; requests_check calls this last in a pass, after the lists
+    and the Tradeboard's My Requests pages. S['req_cap_views'][folder|ts] = {reason, ok, tries, v}: reason is the
+    picked-up parts only ({trip, day, emp}; the name is never kept), None when the comment is not a pickup or the
+    trip is the one this request gives up (submit.view_cap / row_cap, the one rule for every path); ok only when
+    the page read was this request's own view (submit.is_view_page; any other page is a failed try); v the parser
+    version (REQ_CAP_VIEW_V: a record of another version with no reason is read again). Kept until the row leaves
+    the list. The reason goes on the
     row as 'pu', so row_cap / req_cap_pass apply the cap with the row's own Requested time. Counts only in the log."""
     views = S.setdefault("req_cap_views", {})
     listed, n, left = set(), 0, 0
@@ -7033,10 +7060,16 @@ def req_cap_views(fl, b, rows):
         have = SUB.row_cap(r) or _cap_parts((v or {}).get("reason"))
         if have:  # on file: the list's own text, the view page read for its push, an earlier read
             r["pu"] = dict(have)
-            views[k] = {"reason": dict(have), "ok": True, "tries": (v or {}).get("tries", 0)}
+            views[k] = {"reason": dict(have), "ok": True, "tries": (v or {}).get("tries", 0), "v": REQ_CAP_VIEW_V}
             continue
-        if v is None and "reason" in r:  # its view page was read in this pass (the push): no pickup comment there
-            v = views[k] = {"reason": None, "ok": True, "tries": 1}
+        if v is not None and v.get("v") != REQ_CAP_VIEW_V:
+            v = None  # read by another parser version: its 'no pickup' (or its failed tries) is read again, once
+        if "reason" in r:  # its view page was read in this pass (the push): not loaded again now
+            ok = SUB.is_view_page(r)  # the request's own page with no pickup comment; any other page is a failed try
+            v = views[k] = {"reason": None, "ok": ok, "tries": (v or {}).get("tries", 0) + 1, "v": REQ_CAP_VIEW_V}
+            if not ok and v["tries"] < REQ_CAP_VIEW_TRIES:
+                left += 1
+            continue
         if v is not None and (v.get("ok") or v.get("tries", 0) >= REQ_CAP_VIEW_TRIES):
             continue
         if n >= REQ_CAP_VIEWS_PER_READ or RUN["aborted"] or not BRK.allow("requests") or not opt_fits(1):
@@ -7047,11 +7080,11 @@ def req_cap_views(fl, b, rows):
         if RUN["aborted"]:  # given up for a pause or a stop: not a try
             left += 1
             continue
-        pu = SUB.picked_up(str(got.get("reason") or "")) if got else None
-        if pu and any(x.get("trip") == pu["trip"] and x.get("side") == "drop" and x.get("day") in ("", pu["day"])
-                      for x in got.get("legs") or []):
-            pu = None  # the trip this request gives up, not the one it asked for
-        v = views[k] = {"reason": _cap_parts(pu), "ok": bool(got), "tries": (v or {}).get("tries", 0) + 1}
+        # review: final only when the page is this request's own view (a trip read on it); an interstitial or any
+        # other page classify() lets through is a failed try, read again (REQ_CAP_VIEW_TRIES in all)
+        ok = SUB.is_view_page(got)
+        v = views[k] = {"reason": SUB.view_cap(got) if ok else None, "ok": ok, "tries": (v or {}).get("tries", 0) + 1,
+                        "v": REQ_CAP_VIEW_V}
         if v["reason"]:
             r["pu"] = dict(v["reason"])
         elif not v["ok"] and v["tries"] < REQ_CAP_VIEW_TRIES:
@@ -7108,7 +7141,7 @@ def req_cap_captures():
         text = visible_text(html)
         fm = "" if m.group(2) else _folder_month(m.group(3))
         if m.group(1):  # a view page: one request
-            c, ra = SUB.picked_up(text), SUB.requested_at(text)
+            c, ra = SUB.view_cap(SUB.parse_request_view(text)), SUB.requested_at(text)
             at = SUB.req_time(ra[0], ra[1], fm or None, ref) if c and ra and re.search(r"\bdenied\b", text, re.I) else None
             if at:
                 out.append((c["trip"], c["day"], c["emp"], at))

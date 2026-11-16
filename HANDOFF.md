@@ -43,11 +43,14 @@ Open for Ryan:
    take about 8 reads, about 2 hours at the 15 minute pace); (b) "speed: N pickups capped at Ryan's request time, M
    unmatched" as they arrive; unmatched means FLICA named a pilot who is not one of that pickup's open-seat pickers,
    or the find is not on file; (c) no name and no employee number in any of those lines; (d) `req_cap_views` in
-   `/data/state.json` has one entry for each denied add or swap, `ok` true, `tries` 1, reason trip, day and number
-   only; an entry with `ok` false and `tries` 3 is a view page the parser could not read (check the captured
-   `otrequest_view_<n>.html` on Pako against `submit.parse_request_view`, never in git); (e) a capped find shows the
+   `/data/state.json` has one entry for each denied add or swap, `ok` true, `tries` 1, `v` 1, reason trip, day and
+   number only; an entry with `ok` false and `tries` 3 is a view page on which no trip could be read (check the
+   captured `otrequest_view_<n>.html` on Pako against `submit.parse_request_view`, never in git; a parser fix raises
+   `watcher.REQ_CAP_VIEW_V`, which reads every entry with no reason once more); (e) a capped find shows the
    sign for "at most" on the finds card and the pickers card; (f) James's log shows the same two lines with "this
-   pilot's own" and his FLICA loads stay inside his budget. The tests are synthetic: (a) to (e) are the real proof.
+   pilot's own" and his FLICA loads stay inside his budget (his view pages are read last in a pass, with what his
+   budget has left, so his history can take days). Open for Ryan: should a comment that names the trip a swap gives
+   up cap anything (today it caps nothing, on every path)? The tests are synthetic: (a) to (e) are the real proof.
    Every OFF switch now also lives in `/share/flight_watcher/pilotdb/switches_off.json` (off in either file is off).
 
 Release order for 1.7.10, each step [DESTRUCTIVE] with Ryan's own yes (an earlier yes never covers a later one):

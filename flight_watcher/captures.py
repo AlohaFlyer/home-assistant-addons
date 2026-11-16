@@ -261,7 +261,13 @@ CAPS_NUM_RE = re.compile(rf"(?<![\w'])((?:[{NAME_UP}][{NAME_UP}'\-]+\s+){{2,4}})
 QUOTED_NUM_RE = re.compile(r"(\b\w*(?:Error|Exception)\(\s*['\"])(\d{3,7})(['\"]\s*\))")  # KeyError('10001')
 ADMIN_EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})+")  # bounded: linear on a long token
 ADMIN_PHONE_RE = re.compile(r"(?<![\w.:/-])(?:\+?1[\s.-]?)?(?:\(\d{3}\)\s?|\d{3}[\s.-])\d{3}[\s.-]\d{4}(?![\w:/-])")
-PICKED_BY_RE = re.compile(r"(?i)(picked\s+up\s+by\s+)(" + _LOW_NAME + r")")
+# review (speed cap view pages): crew scheduling's real comment is first name first with no comma, and visible_text
+# lowercases it ('picked up by john q. doe jr (10001)'): every word after 'picked up by' (eight at most, each split
+# from the next by spaces or a comma; a label such as 'note:' ends them) is masked whatever its case, and so is the
+# number after them, in brackets or not, whole or cut short by the line's length ('(100')
+_PW = r"(?![^\W\d_]{1,30}:)[^\W\d_](?:[^\W\d_]|['\u2019.\-]){0,30}"
+PICKED_BY_RE = re.compile(r"(?i)(picked\s{1,8}up\s{1,8}by\s{1,8})(" + _PW + r"(?:(?:\s{0,8},\s{0,8}|\s{1,8})" + _PW
+                          + r"){0,7})?(\s{0,8},?\s{0,8}\(?\s{0,8})([\d#]{1,7})?")
 SEAT_NAME_RE = re.compile(r"(?i)(?<![\w'.,-])((?:CA|FO|RO|F/O|capt(?:ain)?)\s*[:=]?\s+)(" + _LOW_NAME + r")")
 CREW_LINE_RE = re.compile(r"(?is)(\bcrew\s*:\s*)(.{0,400})")
 LOOKUP_EMP_RE = re.compile(r"(?i)\b(pilot\s+|picker\s+)(\d{3,7})\b(?=\s*[:(]|\s+(?:on|still|is|was)\b)")
@@ -357,7 +363,7 @@ def mask_crew(text, page=False):
         m.group(1) + "#" * len(m.group(2)) + m.group(3) + _x(m.group(4))), s)
     s = SEAT_WORDS_NUM_RE.sub(lambda m: m.group(1) + _x(m.group(2)) + "#" * len(m.group(3)), s)
     s = CAPS_NUM_RE.sub(_caps_num, s)
-    s = PICKED_BY_RE.sub(lambda m: m.group(1) + _x(m.group(2)), s)
+    s = PICKED_BY_RE.sub(lambda m: m.group(1) + _x(m.group(2) or "") + m.group(3) + "#" * len(m.group(4) or ""), s)
     s = SEAT_NAME_RE.sub(lambda m: m.group(1) + _x(m.group(2)), s)
     s = COMMA_NAME_WIDE_RE.sub(_comma_wide, s)
     if page:  # quoted page text (visible_text lowercases it): any 'last, first' there, whatever its case
