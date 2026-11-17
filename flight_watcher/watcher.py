@@ -1251,7 +1251,7 @@ def drop_scan():
         tests = S.setdefault("drop_tests", [])
         tests.append(rec)
         del tests[:-20]
-        log.info("DROP READY (%s): %s, grid green on %s; form %s", SUB.DRAFT, k, ", ".join(days), rec["form"])
+        log.info("Drop ready (%s): %s, grid green on %s; form %s", SUB.DRAFT, k, ", ".join(days), rec["form"])
         pub("event/drop_ready", rec, retain=False)
     save_state(S)
     publish_drop()
@@ -3738,7 +3738,8 @@ def pilotdb_start():
     with PDB_LOCK:
         PDB.update(db=db, status=st)
     if st["db"] == "newer_db":
-        log.warning("pilot db: the file is from a newer Flight Watcher; it is left as it is (roll forward to use it)")
+        log.warning("pilot db: the file is from a newer release of this app; it is left as it is (roll forward to use "
+                    "it)")
     elif st["db"] == "error":
         log.warning("pilot db: the file failed its integrity check and was set aside; a copy is offered on the card"
                     if st.get("offer") else "pilot db: the file failed its integrity check and was set aside")
@@ -7416,7 +7417,7 @@ def trade_check():
         for m in grp:
             m.update(state="pushed", by=ev["key"])
         done[ev["key"]] = now_iso()
-        log.info("trade seen on the schedule (%s): %s, Pay-Gross %s", day, ev["detail"],
+        log.info("trade seen on the schedule (%s): %s; Pay-Gross %s", day, ev["detail"],
                  (ev["pay"] or {}).get("delta_text", "not priced"))
         pub("event/request_decided", ev, retain=False)
     cut = (datetime.fromisoformat(now_iso()) - timedelta(days=30)).isoformat()
@@ -8323,7 +8324,7 @@ def pilotver_capture_lookup(emp, rec):
         first, _, end = CI.grid_range(CARD_PAIRINGS, rec["month"])
         made = PV.capture_lookup(DB, emp, rec.get("name") or "", rec, now_iso(), (first, end), pilot_award)
         if made:
-            log.info("pilot lookup: schedule version %s (%s, FLICA schedule)", ", ".join(made), rec["month"])
+            log.info("pilot lookup: schedule version %s (%s, from the FLICA schedule)", ", ".join(made), rec["month"])
         return made
     except Exception as e:
         log.info("pilot lookup: schedule version skipped: %s", e)
@@ -11456,7 +11457,7 @@ def swap_test(idea):
     tests = S.setdefault("swap_tests", [])
     tests.append(rec)
     del tests[:-20]
-    log.info("SWAP DRAFT (%s): give %s take %s folder %s bcid %s form %s", SUB.DRAFT, rec["give"], rec["take"],
+    log.info("Swap draft (%s): give %s take %s folder %s bcid %s form %s", SUB.DRAFT, rec["give"], rec["take"],
              rec["folder"], rec["bcid"], rec["form"])
     pub("event/swap_test", rec, retain=False)
     publish_swap_tests()
@@ -11795,7 +11796,7 @@ def email_check(fl, pot_all):
         k = it["key"]
         if DB.has_find(k):
             if it.get("at") and DB.set_alert_at(k, it["at"]):  # 0.7.6: FLICA's alert time is the true pot-entry time
-                log.info("alert email: %s entered the pot at %s (Pickup Speed rescored)", k, it["at"])
+                log.info("alert email: %s entered the pot at %s (pickup speed rescored)", k, it["at"])
             # 0.4.21 (Ryan): a known find named in a fresh alert went back to open time; re-read its page
             # so "who holds it now" is current, instead of trusting the old pickup record.
             row = DB.find_row(k) or {}
