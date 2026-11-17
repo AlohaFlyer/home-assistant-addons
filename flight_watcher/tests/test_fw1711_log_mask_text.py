@@ -32,9 +32,19 @@ from test_fw173_log_mask import load  # noqa: F401  (a Watcher as the admin or a
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LEVELS = {"info", "warning", "error", "debug", "exception", "critical"}
-# the modules whose own log callable is the Watcher's log.info (watcher.py: Captures(log=log.info), Ntfy(log=...),
-# PS.drain(log=log.info), SMART.load(warn=log.info)); run.py, cards.py, migrate.py and portal.py print their own lines
-INDIRECT = {"captures.py": {"self.log"}, "ntfy.py": {"self.log"}, "pdbshare.py": {"say"}, "smart.py": {"warn"}}
+# the callables that hand a text to the Watcher's log, as {file: {callable: (the text's argument, its format values
+# follow it)}}: the modules' own log callable, which takes a finished text (watcher.py: Captures(log=log.info),
+# Ntfy(log=...), PS.drain(log=log.info), SMART.load(warn=log.info)); 1.7.11 review: and the two wrappers that take a
+# format text and its values, watcher.portal_once(key, msg, *a) and gate.Gate._say(msg, *a). run.py, cards.py,
+# migrate.py and portal.py print their own lines
+INDIRECT = {"captures.py": {"self.log": (0, False)}, "ntfy.py": {"self.log": (0, False)},
+            "pdbshare.py": {"say": (0, False)}, "smart.py": {"warn": (0, False)},
+            "watcher.py": {"portal_once": (1, True)}, "gate.py": {"self._say": (0, True)}}
+# 1.7.11 review: (file, function) of the log calls whose text the sweep cannot read (one hole, no fixed text), each
+# with its reason; any other such call fails test_fw1711_log_mask_review (a module helper that returns the text is
+# read through its return values, Module.template)
+OPAQUE = {("gate.py", "_say"): "the gate's log wrapper: its callers' texts are swept (INDIRECT)",
+          ("watcher.py", "portal_once"): "the portal's log-once wrapper: its callers' texts are swept (INDIRECT)"}
 FMT_RE = re.compile(r"%(\([^)]*\))?[-#0 +]*(\d+|\*)?(\.\d+)?([sdirfgxXeEc%])")
 # a pairing, a schedule version, a month, a count, a station; in this order the rotation puts a version before a month
 # ('schedule version 12.002 (2026-11)', as live)
@@ -61,6 +71,13 @@ class Module:
     def __init__(self, name, src=None):
         self.name = name
         self.tree = ast.parse(src if src is not None else open(os.path.join(HERE, name), encoding="utf-8").read())
+        # 1.7.11 review: the module's own functions (a helper that returns a log text: _pilotdb_merge_line), the
+        # function each call is in, and a helper's parameters bound to a call's arguments while it is read
+        self.funcs = {n.name: n for n in self.tree.body if isinstance(n, ast.FunctionDef)}
+        self.where, self.bind, self.reading = {}, {}, set()
+        for fn in [n for n in ast.walk(self.tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            for n in ast.walk(fn):
+                self.where[id(n)] = fn.name  # inner functions come later in the walk: the innermost wins
         self.consts = {}
         for n in self.tree.body:
             if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name):
@@ -82,11 +99,32 @@ class Module:
                                                                                                           "self.log"):
                 yield n.lineno, n.args[0], n.args[1:]
             elif f in INDIRECT.get(self.name, ()):
-                yield n.lineno, n.args[0], None
+                at, fmt = INDIRECT[self.name][f]
+                if len(n.args) > at:
+                    yield n.lineno, n.args[at], (n.args[at + 1:] if fmt else None)
+
+    def function(self, node):
+        """The name of the function a call's text is in ('' at module level)."""
+        return self.where.get(id(node), "")
+
+    def _as_passed(self, node, fn):
+        """A helper's parameter read as the argument its call passed, in the caller's terms (fn: values or sample);
+        None when node is no bound parameter."""
+        if not (isinstance(node, ast.Name) and node.id in self.bind):
+            return None
+        arg, outer = self.bind[node.id]
+        saved, self.bind = self.bind, outer
+        try:
+            return (fn(arg),)
+        finally:
+            self.bind = saved
 
     def values(self, node):
         """A hole's fixed texts when the code names them (a string, either string of an 'a if c else b', a module
         text constant or one of a module dict's texts), else None (a sample fills it)."""
+        passed = self._as_passed(node, self.values)
+        if passed is not None:
+            return passed[0]
         if isinstance(node, ast.Constant) and isinstance(node.value, (str, int, float)):
             return [str(node.value)]
         if isinstance(node, ast.IfExp):
@@ -103,6 +141,9 @@ class Module:
 
     def sample(self, node):
         """The sample kind a hole takes: 'num' (a count), 'exc' (an exception's name) or None (the rotation)."""
+        passed = self._as_passed(node, self.sample)
+        if passed is not None:
+            return passed[0]
         if isinstance(node, ast.Call) and _dotted(node.func) in NUMERIC_CALLS:
             return "num"
         if isinstance(node, ast.BinOp) and not isinstance(node.op, (ast.Add, ast.Mod)):
@@ -153,6 +194,23 @@ class Module:
             return self.template(node.body, args) + self.template(node.orelse, args)
         if isinstance(node, ast.Call) and _dotted(node.func).endswith("scrub") and node.args:
             return self.template(node.args[0], args)
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in self.funcs
+                and node.func.id not in self.reading):
+            # 1.7.11 review: a module helper that returns the text (_pilotdb_merge_line): each text it returns, its
+            # parameters bound to this call's arguments
+            fn = self.funcs[node.func.id]
+            bind = {a.arg: (v, self.bind) for a, v in zip(fn.args.args, node.args)}
+            bind.update({k.arg: (k.value, self.bind) for k in node.keywords if k.arg})
+            rets = [r.value for r in ast.walk(fn) if isinstance(r, ast.Return) and r.value is not None]
+            saved, self.bind = self.bind, bind
+            self.reading.add(fn.name)
+            try:
+                out = [t for r in rets for t in self.template(r, None)]
+            finally:
+                self.reading.discard(fn.name)
+                self.bind = saved
+            if out:
+                return out
         return [[("h", "s", "", None, None)]]
 
 
@@ -204,6 +262,18 @@ def _pilot(t):
 
 def modules():
     return [Module(n) for n in sorted(os.listdir(HERE)) if n.endswith(".py")]
+
+
+def opaque_calls(mods):
+    """1.7.11 review: (file, line, function) of each log call whose text is one hole with no fixed text, so the sweep
+    reads nothing of it."""
+    out = []
+    for mod in mods:
+        for line, node, args in mod.calls():
+            tpls = mod.template(node, args)
+            if all(len(t) == 1 and t[0][0] == "h" and t[0][3] is None for t in tpls):
+                out.append((mod.name, line, mod.function(node)))
+    return out
 
 
 def sweep(mods):
