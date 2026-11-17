@@ -13,10 +13,14 @@ so I could set it for 510 for example". The admin's instance only; no FLICA page
   and "Van 5 minutes later"). They show only when `sensor.flight_watcher_layover_van` says `adjustable` (the Watcher
   placed the van the card shows): never for Hark's van the Watcher did not place, never in a portal's copy of the card
   (it now has the `FW_PORTAL` flag; it is on no portal). A press publishes `flight_watcher/van/adjust/set`
-  `{"van": <van_id>, "minutes": <the move>}`: the absolute move from the van as read (the current move, or the one
-  still saving, plus or minus 5), so a repeated press or a retry never moves it twice. A button at an end of the
-  range (-120 and +120 min) is disabled. "Saving..." until the sensor says the new move; "Not saved, try again" after
-  10 s without it, after a publish error, or when the van itself changed meanwhile. Moved, the big time, its HST, the
+  `{"van": <van_id>, "minutes": <the move>}`: the absolute move from the van as read (the Watcher's current move plus
+  or minus 5), so a repeated press or a retry never moves it twice. One move at a time: while one is saving, the
+  buttons are `aria-disabled` and a tap on them does nothing, so only the answer to that command ends the wait. A
+  button at an end of the range (-120 and +120 min) is `aria-disabled` the same way (never `disabled`, so the
+  keyboard focus stays on it); when "Back to" goes with its answer, the focus moves to "-5 min". "Saving..." until the
+  sensor says the new move; "Not saved, try again" after 10 s without it, after a publish error, or when the van
+  itself changed meanwhile. A screen reader hears "Saving", "Van moved to 05:10", "Van back to 05:25" or "Not saved,
+  try again" from one visually hidden `role="status"` element that every render keeps. Moved, the big time, its HST, the
   countdown and the alert times are the moved van's; under the buttons "You moved it -15 min (the package says
   05:25)" ("Hark says" for Hark's van; its weekday when the move crossed midnight) and "Back to 05:25" (minutes 0).
   When the package's van wins, "Hark says ..." still shows only when Hark says another time than the package did.
@@ -38,10 +42,14 @@ so I could set it for 510 for example". The admin's instance only; no FLICA page
   sensor says the moved van at once. `van_tick` applies the move right after `van_source`, under the van lock, so the
   keys, the alerts, the sensor and the van a setting applies to are the moved van's: a moved van is a new van time
   (a new key) and follows the 1.7.1 and 1.7.2 rules (a late start sends the latest alert still due, worded with the
-  minutes left; nothing after the van). Moving it back to the van as read never sends one of that van's alerts again
+  minutes left; nothing after the van). A moved van's alerts wait 30 s (`VAN_ADJUST_SETTLE_S`) from the first sweep
+  that saw the last move, so the 5 minute steps passed through on the way to the time Ryan wants (05:25 to 05:10 in
+  three taps, a 10 s sweep between them) send no push and leave no key; only the time he chose gets its alert. Moving it back to the van as read never sends one of that van's alerts again
   (`van_keep` keeps its keys while it is moved). When the van itself changes (a new package, Hark's text, another
   pairing) the move no longer applies: one log line ("van: the -15 min move no longer applies: the van time
-  changed"), and it stays in the state only within the 8. A sweep that cannot read Hark's sensor drops nothing.
+  changed"), and it stays in the state only within the 8. The move applied is kept in the state too
+  (`S["van_moved"]`), so a van that changed while the app was down (an update, a restart) still gets that one line.
+  A sweep that cannot read Hark's sensor drops nothing, and a move taken then does not log that sweep's reason again.
 
 ## 1.7.10
 

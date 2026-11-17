@@ -512,8 +512,10 @@ Recent finds.
   `{"van": <van_id>, "minutes": <the move>}`, the absolute move from the van as read (a whole multiple of 5 from -120
   to +120; 0 puts it back), kept in the Watcher's state across restarts (at most 8 moves). The moved van is a new van
   time: its alerts, the push and the sensor use it (`adjust_min`, and `orig_local` and `orig_date`, the van as read);
-  the card says "You moved it -15 min (the package says 05:25)" with "Back to 05:25". A van that changes (a new
-  package, Hark's text, another pairing) drops the move, with one log line. Layover notes:
+  its alerts wait 30 s after the sweep that saw the last tap, so the steps passed through on the way send no push.
+  One move at a time: the card ignores a tap while one is saving. The card says "You moved it -15 min (the package
+  says 05:25)" with "Back to 05:25". A van that changes (a new package, Hark's text, another pairing, also while the
+  app was down) drops the move, with one log line. Layover notes:
   `flight_watcher/layover/note` {city, text, rid} adds a note (plain text, at most 1000 characters, the city a
   3-letter station code; {city, delete: <id>, rid} removes one), stored in
   `/share/flight_watcher/layovers/<CITY>.json` (folder 0700, files 0600; never in git or a portal export);

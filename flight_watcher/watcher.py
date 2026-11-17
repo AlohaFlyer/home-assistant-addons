@@ -9803,8 +9803,10 @@ LAYOVERS_DIR = "/share/flight_watcher/layovers"  # <CITY>.json notes and <CITY>.
 LAYOVER_NOTE_BYTES = 8192  # a layover/note command's payload, at most
 LAYOVER_SCAN_S = 30  # the notes folder is looked at this often (a guide Claude wrote shows within it)
 _VAN = {"read": None, "status": None, "attrs": None, "state": "", "why": None, "sig": None, "city": "", "last": None,
-        "seen": None, "moved": None}  # seen: the last van van_tick placed (1.7.2: the van a setting applies to);
-# moved (1.7.11): (van_id, minutes) of Ryan's move applied to the van in hand, None when it is not moved
+        "seen": None, "adjusted": None, "hold": None}  # seen: the last van van_tick placed (1.7.2: the van a setting
+# applies to). 1.7.11 review: adjusted, the van_id Ryan moved since the last sweep; hold, (van_id, until): that van's
+# alerts wait until then (VAN_ADJUST_SETTLE_S), so the times passed through on the way to the one he wants send nothing.
+# The move applied to the van in hand is S["van_moved"] (van_moved), kept across a restart.
 _LN = {"sig": None, "files": None, "checked": None, "last": {}, "city": None}
 # the uploads janitor (layover_notes_tick) and the MQTT thread (layover_note_cmd) both publish the notes sensor: one at
 # a time, each building its payload under the lock, so a payload built before a note was written is never the last one
@@ -9957,6 +9959,10 @@ def van_keep(done, info):
 VAN_ADJUST_KEEP = 8  # moves kept, the newest, and always the van in hand's
 VAN_ADJUST_BYTES = 512  # a van/adjust/set payload, at most
 VAN_ADJUST_ID_MAX = 64  # characters of a van_id kept ('H3681|2026-11-18T13:25Z' is 23)
+# 1.7.11 review (F1): every 5 min step is a new van time, so a sweep (10 s) between two of Ryan's taps would send a
+# critical push for a time he only passed through. A moved van's alerts wait this long from the first sweep that saw
+# his last move (30 to 40 s after his last tap); each further move starts the wait again.
+VAN_ADJUST_SETTLE_S = 30
 
 
 def van_adjusts():
@@ -9967,6 +9973,29 @@ def van_adjusts():
         return {}
     return {k: m for k, m in v.items()
             if isinstance(k, str) and 0 < len(k) <= VAN_ADJUST_ID_MAX and LO.adjust_ok(m) and m != 0}
+
+
+def van_moved():
+    """1.7.11 review (F5, F3): S["van_moved"] as kept, (van_id, minutes) of the move applied to the van in hand at the
+    last sweep that had a van, else None (a hand-edited state cannot put in one the card could not make). In the state,
+    so a van that changed while the app was down still logs that the move no longer applies (only the applied one:
+    S["van_adjust"] keeps the moves of vans no longer in hand too)."""
+    v = S.get("van_moved")
+    if isinstance(v, (list, tuple)) and len(v) == 2 and isinstance(v[0], str) and 0 < len(v[0]) <= VAN_ADJUST_ID_MAX \
+            and LO.adjust_ok(v[1]) and v[1] != 0:
+        return v[0], v[1]
+    return None
+
+
+def van_moved_put(mv):
+    """S["van_moved"] = mv ((van_id, minutes) or None); save_state only when it changed."""
+    if van_moved() == mv and (mv or "van_moved" not in S):
+        return
+    if mv:
+        S["van_moved"] = [mv[0], mv[1]]
+    else:
+        S.pop("van_moved", None)
+    save_state(S)
 
 
 def van_adjust_keep(adj, keep_id):
@@ -9990,16 +10019,17 @@ def van_orig_words(info):
 def van_apply_move(info):
     """1.7.11: the van as read moved by Ryan's move for it (S["van_adjust"], layover.adjusted), else as read. When the
     van itself changed since a move applied (another van_id: a new package, Hark's text, another pairing), the move no
-    longer applies: one log line, and it stays in S within its bound. A sweep with no van (Hark not answering) changes
+    longer applies: one log line, and it stays in S within its bound. The move applied is S["van_moved"] (van_moved),
+    so a van that changed while the app was down logs that line too. A sweep with no van (Hark not answering) changes
     nothing. Under _VAN_LOCK."""
     if not info:
         return info
     vid = LO.van_id(info)
-    prev = _VAN.get("moved")
+    prev = van_moved()
     if prev and prev[0] != vid:
         log.info("van: the %+d min move no longer applies: the van time changed", prev[1])
     m = van_adjusts().get(vid, 0)
-    _VAN["moved"] = (vid, m) if m else None
+    van_moved_put((vid, m) if m else None)
     return LO.adjusted(info, m) if m else info
 
 
@@ -10020,8 +10050,8 @@ def van_adjust_cmd(c, payload, now=None):
     multiple of 5 from -120 to 120 (a bool, a float, NaN or text are not; nothing here can end paho's thread), there is
     no van in hand, or the van is not the van in hand's (it changed since the card drew it). Either way the van sensor
     goes again, so the card stops waiting. One log line a change, no crew names. The sensor says the moved van at once;
-    its alerts follow at the next sweep (van_tick: a moved van is a new van time). Returns True when the move changed.
-    Nothing on a pilot's instance."""
+    its alerts follow once Ryan's taps settle (van_tick, VAN_ADJUST_SETTLE_S: a moved van is a new van time). Returns
+    True when the move changed. Nothing on a pilot's instance."""
     if not has("admin_pushes"):
         log.info("van move refused: not for a pilot instance")
         return False
@@ -10053,6 +10083,10 @@ def van_adjust_cmd(c, payload, now=None):
         if m:
             adj[vid] = m
         S["van_adjust"] = van_adjust_keep(adj, vid)
+        if m:
+            S["van_moved"] = [vid, m]
+        else:
+            S.pop("van_moved", None)
         save_state(S)
         moved = LO.adjusted(seen, m)
         where = f"{moved['pairing']} {moved['city']} {moved['date']} {moved['local']} {moved['abbr']}"
@@ -10061,11 +10095,13 @@ def van_adjust_cmd(c, payload, now=None):
         else:
             log.info("van: moved back by Ryan: %s (%s)", where,
                      "the package's time" if moved.get("source") == "package" else "Hark's time")
-        _VAN["seen"], _VAN["moved"] = moved, ((vid, m) if m else None)
-        _VAN["why"] = (LO.key(moved, 0), moved["source"])  # the next sweep does not log the same van again
+        _VAN["seen"], _VAN["adjusted"] = moved, vid  # adjusted: its alerts wait for the taps to settle (van_tick)
         last = _VAN.get("last")
         if last is not None and last[0] is not None and LO.van_id(last[0]) == vid:
             _VAN["last"] = (moved, last[1])
+            # the next sweep does not log the same van again; only for the van the last sweep had (a move taken while
+            # a sweep had no van leaves its reason, so that sweep's line is not logged twice)
+            _VAN["why"] = (LO.key(moved, 0), moved["source"])
         van_republish(t)
     return True
 
@@ -10174,7 +10210,9 @@ def van_tick(now=None, mono=None):
     offsets sent. Nothing on a pilot's instance. The van comes from van_source: the pairings package's VAN, else
     Hark's. 1.7.2: the lead times and the switch are Ryan's settings (van_settings): off sends nothing; what a setting
     skips for the van in hand is in the DB already (van_setting_cmd, layover.settle). A sent key names its slider
-    (slot), so a slider moved after its alert went sends no other for that van."""
+    (slot), so a slider moved after its alert went sends no other for that van. 1.7.11 review (F1): a van Ryan moved
+    sends nothing and skips nothing until VAN_ADJUST_SETTLE_S after the first sweep that saw his last move, so the
+    5 min steps he passes through on the way to the time he wants are no pushes and no keys."""
     if not has("admin_pushes"):
         return []
     now = now or datetime.now(HST)
@@ -10188,6 +10226,12 @@ def van_tick(now=None, mono=None):
     info, why = van_source(own, a, _VAN["state"])
     with _VAN_LOCK:
         info = van_apply_move(info)  # 1.7.11 (FW-0075): Ryan's move, before the keys, due, the sensor and seen
+        if _VAN.get("adjusted"):  # 1.7.11 review (F1): a move since the last sweep: that van's alerts wait
+            _VAN["hold"], _VAN["adjusted"] = (_VAN["adjusted"], now + timedelta(seconds=VAN_ADJUST_SETTLE_S)), None
+        hold = _VAN.get("hold")
+        # never longer than VAN_ADJUST_SETTLE_S from now, so a clock set back cannot stretch the wait
+        held = bool(info and hold and hold[0] == LO.van_id(info)
+                    and 0 < (hold[1] - now).total_seconds() <= VAN_ADJUST_SETTLE_S)
         vs = van_settings()
         offs = van_offsets(vs)
         active = offs if vs["on"] else ()
@@ -10209,7 +10253,7 @@ def van_tick(now=None, mono=None):
         _VAN["last"] = (info, why)
         _VAN["seen"] = info or _VAN["seen"]
         done = DB.get(VAN_DONE) or {}
-        send, skip = LO.due(info, done, now, active) if info else ([], [])
+        send, skip = LO.due(info, done, now, active) if info and not held else ([], [])
         if send and not mqtt_up():
             send = []  # tried again at the next sweep, until the van time
         for m in skip:

@@ -341,7 +341,8 @@ def test_a_move_after_an_alert_is_a_new_van_time(tmp_path, monkeypatch):
     assert W.van_tick(_at(30), mono=0) == [30]  # 04:55 PST for 05:25
     assert W.van_tick(_at(27), mono=10) == []
     _move(W, fake, -15)  # 05:10 at 04:58: its 30 min mark has passed, its 10 min mark is ahead
-    assert W.van_tick(_at(27) + timedelta(seconds=30), mono=20) == [30]
+    assert W.van_tick(_at(27) + timedelta(seconds=10), mono=20) == []  # the taps settle first (VAN_ADJUST_SETTLE_S)
+    assert W.van_tick(_at(27) + timedelta(seconds=40), mono=25) == [30]
     ev = _vans(fake)[-1][0]
     assert (ev["minutes"], ev["minutes_left"], ev["van_local"]) == (30, 12, "05:10")
     assert ev["message"].startswith("Van in 12 min: 05:10 PST")
@@ -433,6 +434,7 @@ def test_a_van_setting_works_on_the_moved_van(tmp_path, monkeypatch):
     W.van_tick(_at(180), mono=0)
     _move(W, fake, -15)
     moved = LAS_VAN - timedelta(minutes=15)
+    W.van_tick(_at(60, moved), mono=5)  # the sweep that sees the move (its alerts wait VAN_ADJUST_SETTLE_S from it)
     assert W.van_setting_cmd(fake, "van/first_min/set", "45", now=_at(50, moved))
     assert W.van_tick(_at(45, moved), mono=10) == [45]
     assert _vans(fake)[-1][0]["van_local"] == "05:10"
@@ -533,16 +535,19 @@ def test_a_press_publishes_the_absolute_move_and_waits_for_the_watcher(browser, 
     assert _calls(pg) == [(TOPIC, {"van": "H3681|2026-11-12T08:40Z", "minutes": -5})]
     got = _adj(pg)
     assert got["pend"] == "Saving..." and got["time"] == "19:40"  # the Watcher's time until it says the new one
-    # a second press while saving goes on from the one asked (absolute: -10), never from the old one twice
+    # one move at a time (review F1): a second press while saving does nothing; an unrelated update keeps it waiting
+    card.locator('[data-vadj="-5"]').click(force=True)
+    pg.wait_for_timeout(100)
+    assert len(_calls(pg)) == 1
+    pg.evaluate("window.setStates({'sensor.flight_watcher_layover_notes': {...window.H.states['sensor.flight_watcher_layover_notes'], last_updated: 'n9'}})")
+    assert _adj(pg)["pend"] == "Saving..."
+    # the Watcher's answer (-5) ends the wait; the next press goes on from it (absolute: -10), never from 0 twice
+    _set_sensor(pg, _moved_sensor(st, -5), "v2")
+    got = _adj(pg)
+    assert got["pend"] == "" and got["time"] == "19:35"
     card.locator('[data-vadj="-5"]').click()
     pg.wait_for_function("window.calls.length === 2")
     assert _calls(pg)[1] == (TOPIC, {"van": "H3681|2026-11-12T08:40Z", "minutes": -10})
-    # the Watcher's first answer (-5) keeps it waiting for -10; an unrelated update too
-    _set_sensor(pg, _moved_sensor(st, -5), "v2")
-    got = _adj(pg)
-    assert got["pend"] == "Saving..." and got["time"] == "19:35"
-    pg.evaluate("window.setStates({'sensor.flight_watcher_layover_notes': {...window.H.states['sensor.flight_watcher_layover_notes'], last_updated: 'n9'}})")
-    assert _adj(pg)["pend"] == "Saving..."
     _set_sensor(pg, _moved_sensor(st, -10), "v3")
     got = _adj(pg)
     assert (got["pend"], got["msg"], got["time"]) == ("", "", "19:30")
@@ -604,9 +609,9 @@ def test_the_ends_of_the_range_disable_their_button(browser, tmp_path):  # noqa:
         pg = browser.new_page(viewport={"width": 390, "height": 844})
         pg.set_content(_page(st, theme=HA_LIGHT))
         got = _adj(pg)
-        for k in ("minus", "plus"):
+        for k in ("minus", "plus"):  # aria-disabled, never disabled: it keeps the focus (review F2)
             want = k == off
-            assert (got[k]["disabled"], got[k]["ariaDisabled"] == "true") == (want, want), (minutes, k)
+            assert (got[k]["disabled"], got[k]["ariaDisabled"] == "true") == (False, want), (minutes, k)
         if off:
             pg.locator(f'flight-watcher-layover-card [data-vadj="{"5" if off == "plus" else "-5"}"]').click(force=True)
             pg.wait_for_timeout(100)
@@ -614,13 +619,17 @@ def test_the_ends_of_the_range_disable_their_button(browser, tmp_path):  # noqa:
         con = pg.evaluate("window.fwContrast(window.root().host)")
         assert not con["fails"], json.dumps(con["fails"], indent=1)
         pg.close()
-    # 115 + 5 = 120 is sent; the plus then disables while saving goes on from 120
+    # 115 + 5 = 120 is sent; both wait while saving, then the plus stays off at 120
     st = _adj_states(tmp_path / "x", minutes=115)
     pg = browser.new_page(viewport={"width": 390, "height": 844})
     pg.set_content(_page(st))
     pg.locator('flight-watcher-layover-card [data-vadj="5"]').click()
     pg.wait_for_function("window.calls.length === 1")
-    assert _calls(pg)[0][1]["minutes"] == 120 and _adj(pg)["plus"]["disabled"] is True
+    got = _adj(pg)
+    assert _calls(pg)[0][1]["minutes"] == 120 and got["plus"]["ariaDisabled"] == got["minus"]["ariaDisabled"] == "true"
+    _set_sensor(pg, _moved_sensor(st, 120), "v2")
+    got = _adj(pg)
+    assert (got["plus"]["ariaDisabled"], got["minus"]["ariaDisabled"], got["plus"]["disabled"]) == ("true", None, False)
     pg.close()
 
 
@@ -731,3 +740,220 @@ def test_the_cards_range_is_the_watchers():
     assert m and (int(m.group(1)), int(m.group(2))) == LO.ADJUST_RANGE and int(m.group(3)) == LO.ADJUST_STEP
     assert "const FW_PORTAL = false;" in SRC and chr(0x2014) not in SRC
     assert PT.card_subs(SRC, "flight_watcher") >= {"van/adjust/set", "layover/note"}
+
+
+# ---------------------------------------------------------------- review fixes (the Watcher)
+def test_taps_between_sweeps_send_one_alert_for_the_van_chosen(tmp_path, monkeypatch):
+    """Review F1 (alerts): Ryan's own case inside the alert window. The 05:25 van's 30 min alert went at 04:55; at 04:56
+    he taps -5 three times to reach 05:10 with a sweep (10 s) between taps. The times passed through on the way
+    (05:20, 05:15) send nothing and leave no key; the van he chose gets its one late alert once his taps settle
+    (VAN_ADJUST_SETTLE_S from the first sweep that saw his last move)."""
+    W, fake, st, _ = _w(tmp_path, monkeypatch)
+    assert W.VAN_ADJUST_SETTLE_S == 30
+    assert W.van_tick(_at(30), mono=0) == [30]  # 04:55 for 05:25
+    t = _at(29)  # 04:56
+    for i, m in enumerate((-5, -10, -15)):
+        _move(W, fake, m)
+        assert W.van_tick(t + timedelta(seconds=10 * i + 10), mono=10 + 10 * i) == [], m
+    assert W.van_tick(t + timedelta(seconds=40), mono=40) == []
+    assert W.van_tick(t + timedelta(seconds=50), mono=50) == []
+    assert W.van_tick(t + timedelta(seconds=60), mono=60) == [30]  # 30 s after the sweep that saw the last tap
+    for k in range(1, 6):
+        assert W.van_tick(t + timedelta(seconds=60 + 10 * k), mono=60 + 10 * k) == []
+    evs = [e for e, _ in _vans(fake)]
+    assert [e["message"].split(",")[0] for e in evs] == ["Van in 30 min: 05:25 PST (03:25 HST)",
+                                                         "Van in 13 min: 05:10 PST (03:10 HST)"]
+    done = W.DB.get(W.VAN_DONE)
+    assert not [k for k in done if "13:20Z" in k or "13:15Z" in k], done
+    # its 10 min alert goes at its mark, no settle on it (no move since)
+    moved = LAS_VAN - timedelta(minutes=15)
+    assert W.van_tick(_at(10, moved), mono=200) == [10]
+    # an unmoved van is never held
+    W2, fake2, _, _ = _w(tmp_path / "b", monkeypatch)
+    assert W2.van_tick(_at(30), mono=0) == [30]
+
+
+def test_a_settle_never_outlasts_its_length_when_the_clock_goes_back(tmp_path, monkeypatch):
+    W, fake, st, _ = _w(tmp_path, monkeypatch)
+    W.van_tick(_at(180), mono=0)
+    _move(W, fake, -15)
+    t = _at(29, LAS_VAN - timedelta(minutes=15))  # past the moved van's 30 min mark
+    assert W.van_tick(t + timedelta(hours=1), mono=10) == []  # the sweep that sees the move, its clock an hour fast
+    assert W.van_tick(t, mono=20) == [30]  # the clock set right: the wait is over, never an hour and 30 s
+
+
+def test_a_move_while_hark_is_gone_logs_the_reason_once(tmp_path, monkeypatch, caplog):
+    """Review F2 (security lens): a move taken for the van in hand while a sweep has no van (a card drawn before Hark's
+    sensor went, a retry) does not make the next sweep log the same reason again."""
+    W, fake, st, _ = _w(tmp_path, monkeypatch)
+    W.van_tick(_at(180), mono=0)
+    with caplog.at_level(logging.INFO, logger=W.log.name):
+        caplog.clear()
+        st.clear()
+        W.van_tick(_at(170), mono=100)
+        assert _last(fake, "layover_van")["at"] is None
+        assert W.van_adjust_cmd(fake, json.dumps({"van": VID, "minutes": -15})) is True  # the van as a setting takes it
+        assert W.S["van_adjust"] == {VID: -15}
+        W.van_tick(_at(169), mono=200)
+        W.van_tick(_at(168), mono=300)
+        st["sensor.hark_working_flight"] = (LAS_STATE, las())  # Hark is back with the same van
+        W.van_tick(_at(160), mono=400)
+        W.van_tick(_at(159), mono=500)
+    assert _lines(caplog) == [
+        "van alerts: none (Hark's working flight is not in Home Assistant)",
+        "van: moved -15 min by Ryan: H3681 LAS 2026-11-18 05:10 PST (Hark says 05:25)",
+        "van: H3681 LAS 2026-11-18 at 05:10 PST (03:10 HST 2026-11-18), alerts 30 and 10 min before (from Hark; "
+        "moved -15 min by Ryan; Hark says 05:25)"]
+    assert _last(fake, "layover_van")["local"] == "05:10"
+
+
+def test_a_van_changed_while_the_app_was_down_drops_the_move_with_one_line(tmp_path, monkeypatch, caplog):
+    """Review F5 and F3: the move applied is kept with the state (S["van_moved"]), so a van that changed while the app
+    was down (an update, a restart) still says once that the move no longer applies; a later restart says nothing
+    (the move in S["van_adjust"] of a van no longer in hand is never taken for the applied one)."""
+    W, fake, st, _ = _w(tmp_path, monkeypatch)
+    W.van_tick(_at(180), mono=0)
+    _move(W, fake, -15)
+    W.van_tick(_at(179), mono=10)
+    assert W.S["van_moved"] == [VID, -15]
+    later = "5:40 AM (05:40) Wed 2026-11-18, Example lobby"
+    for n in range(2):  # the restart, then another one
+        W, fake, st, _ = _w(tmp_path, monkeypatch, text=later, state="x")
+        with caplog.at_level(logging.INFO, logger=W.log.name):
+            caplog.clear()
+            W.van_tick(_at(170), mono=0)
+            W.van_tick(_at(169), mono=100)
+        s = _last(fake, "layover_van")
+        assert (s["local"], s["adjust_min"], s["van_id"]) == ("05:40", 0, "H3681|2026-11-18T13:40Z")
+        assert _lines(caplog, "van: the") == (["van: the -15 min move no longer applies: the van time changed"]
+                                              if n == 0 else []), n
+        assert W.S["van_adjust"] == {VID: -15} and "van_moved" not in W.S
+    # a restart with the same van moved says nothing about it either
+    W, fake, st, _ = _w(tmp_path / "same", monkeypatch)
+    W.van_tick(_at(180), mono=0)
+    _move(W, fake, -15)
+    W, fake, st, _ = _w(tmp_path / "same", monkeypatch)
+    with caplog.at_level(logging.INFO, logger=W.log.name):
+        caplog.clear()
+        W.van_tick(_at(170), mono=0)
+    assert _lines(caplog, "van: the") == [] and _last(fake, "layover_van")["local"] == "05:10"
+    # a hand-edited applied move cannot be a bad one
+    for bad in ("x", [VID], [VID, 7], [VID, True], [VID, 0], [5, -15], ["g" * 200, -15], {"v": VID}):
+        W.S["van_moved"] = bad
+        assert W.van_moved() is None, bad
+
+
+# ---------------------------------------------------------------- review fixes (the layover card)
+_FOCUSED = "() => { const a = window.root().activeElement; return a ? a.getAttribute('data-vadj') : 'none'; }"
+_FAKE_TIMERS = ("() => { window.tmo = []; window.setTimeout = (f, ms) => { window.tmo.push([f, ms]); return window.tmo.length; };"
+                "window.clearTimeout = () => {}; }")
+VAN_ID = "H3681|2026-11-12T08:40Z"
+
+
+def _tap(pg, d):
+    """A tap that does not wait for the button to look enabled (a quick second tap while saving)."""
+    pg.locator(f'flight-watcher-layover-card [data-vadj="{d}"]').click(force=True)
+
+
+def test_one_move_at_a_time_so_an_older_answer_never_settles_a_newer_tap(browser, tmp_path):  # noqa: F811
+    """Review F1 (card): taps while a move is saving are ignored (the buttons aria-disabled, never disabled, like the
+    1.7.2 tick box), each move is from the Watcher's adjust_min, and only the answer to the one command in flight ends
+    "Saving...": so a lost last command still says "Not saved, try again" after 10 s."""
+    st = _adj_states(tmp_path)
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(st))
+    pg.evaluate(_FAKE_TIMERS)
+    for d in ("-5", "-5", "5"):  # -5, -5, +5 quickly
+        _tap(pg, d)
+    pg.wait_for_timeout(100)
+    assert _calls(pg) == [(TOPIC, {"van": VAN_ID, "minutes": -5})]
+    got = _adj(pg)
+    assert got["pend"] == "Saving..." and got["time"] == "19:40"
+    for k in ("minus", "plus"):
+        assert (got[k]["disabled"], got[k]["ariaDisabled"]) == (False, "true"), k
+    # that one command is lost: "Not saved, try again" after 10 s, the taps while waiting never sent
+    pg.evaluate("window.tmo[window.tmo.length - 1][0]()")
+    got = _adj(pg)
+    assert (got["pend"], got["msg"], got["time"]) == ("", "Not saved, try again", "19:40")
+    assert got["minus"]["ariaDisabled"] is None and len(_calls(pg)) == 1
+    # +5 then -5: only the +5 goes, still saving (never a 0 that looks settled at once)
+    _tap(pg, "5")
+    _tap(pg, "-5")
+    pg.wait_for_timeout(100)
+    assert _calls(pg)[1:] == [(TOPIC, {"van": VAN_ID, "minutes": 5})] and _adj(pg)["pend"] == "Saving..."
+    _set_sensor(pg, _moved_sensor(st, 5), "v2")  # its answer ends the wait
+    got = _adj(pg)
+    assert (got["pend"], got["time"], got["moved"]) == ("", "19:45", "You moved it +5 min (Hark says 19:40)")
+    _tap(pg, "-5")  # from the Watcher's +5
+    pg.wait_for_timeout(100)
+    assert _calls(pg)[-1] == (TOPIC, {"van": VAN_ID, "minutes": 0}) and _adj(pg)["pend"] == "Saving..."
+    pg.close()
+
+
+def test_the_focus_stays_at_the_ends_of_the_range_and_when_back_goes(browser, tmp_path):  # noqa: F811
+    """Review F2 (card): a button at an end of the range is aria-disabled and keeps its focus (a tap on it does
+    nothing); when Back goes after its answer, the focus moves to -5 instead of falling to the page."""
+    st = _adj_states(tmp_path / "end", minutes=115)
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(st))
+    pg.evaluate("window.root().querySelector('[data-vadj=\"5\"]').focus()")
+    pg.keyboard.press("Enter")
+    pg.wait_for_function("window.calls.length === 1")
+    assert _calls(pg)[0][1]["minutes"] == 120 and pg.evaluate(_FOCUSED) == "5"
+    _set_sensor(pg, _moved_sensor(st, 120), "v2")
+    got = _adj(pg)
+    assert (got["plus"]["disabled"], got["plus"]["ariaDisabled"], got["minus"]["ariaDisabled"]) == (False, "true", None)
+    assert pg.evaluate(_FOCUSED) == "5" and pg.evaluate("document.activeElement.tagName") != "BODY"
+    pg.keyboard.press("Enter")  # at the end: nothing sent
+    pg.wait_for_timeout(100)
+    assert len(_calls(pg)) == 1 and pg.evaluate(_FOCUSED) == "5"
+    pg.close()
+    st = _adj_states(tmp_path / "back", minutes=-15)
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(st))
+    pg.evaluate("window.root().querySelector('[data-vadj=\"0\"]').focus()")
+    pg.keyboard.press("Enter")
+    pg.wait_for_function("window.calls.length === 1")
+    assert _calls(pg)[0][1]["minutes"] == 0 and pg.evaluate(_FOCUSED) == "0"
+    _set_sensor(pg, _moved_sensor(st, 0), "v2")
+    assert _adj(pg)["back"] is None and pg.evaluate(_FOCUSED) == "-5"
+    pg.keyboard.press("Enter")  # and it works from there
+    pg.wait_for_function("window.calls.length === 2")
+    assert _calls(pg)[1][1]["minutes"] == -5
+    pg.close()
+
+
+def test_a_screen_reader_hears_saving_moved_and_not_saved(browser, tmp_path):  # noqa: F811
+    """Review F4 (card): one visually hidden role=status (aria-live polite) element that every render keeps (outside
+    the part drawn again), its text set when the move's state changes."""
+    st = _adj_states(tmp_path)
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(st))
+    pg.evaluate(_FAKE_TIMERS)
+    lives = pg.evaluate("""() => [...window.root().querySelectorAll('[role="status"]')].map((e) =>
+        [e.getAttribute('aria-live'), e.getAttribute('aria-atomic'), e.hasAttribute('data-vadjlive'), !!e.closest('ha-card'),
+         Math.round(e.getBoundingClientRect().width), getComputedStyle(e).display])""")
+    assert lives == [["polite", "true", True, False, 1, "block"]]
+    pg.evaluate("window.live0 = window.root().querySelector('[data-vadjlive]')")
+    said = "() => { const l = window.root().querySelector('[data-vadjlive]'); return [l === window.live0, l.textContent]; }"
+    assert pg.evaluate(said) == [True, ""]
+    _tap(pg, "-5")
+    pg.wait_for_timeout(50)
+    assert pg.evaluate(said) == [True, "Saving"]
+    _set_sensor(pg, _moved_sensor(st, -5), "v2")
+    assert pg.evaluate(said) == [True, "Van moved to 19:35"]
+    _set_sensor(pg, dict(_moved_sensor(st, -5), local="19:35"), "v3")  # an update with nothing new: said once
+    assert pg.evaluate(said) == [True, "Van moved to 19:35"]
+    _tap(pg, "0")
+    pg.wait_for_timeout(50)
+    assert pg.evaluate(said) == [True, "Saving"]
+    _set_sensor(pg, _moved_sensor(st, 0), "v4")
+    assert pg.evaluate(said) == [True, "Van back to 19:40"]
+    _tap(pg, "5")
+    pg.evaluate("window.tmo[window.tmo.length - 1][0]()")  # no answer in 10 s
+    assert pg.evaluate(said) == [True, "Not saved, try again"]
+    pg.evaluate("() => { window.H.callService = async () => { throw new Error('offline'); }; }")
+    _tap(pg, "5")
+    pg.wait_for_function("!!window.root().querySelector('[data-vadjmsg]')")
+    assert pg.evaluate(said) == [True, "Not saved, try again (offline)"]
+    pg.close()
