@@ -22,7 +22,20 @@
    pairings package, row heights, the totals line, light and dark) and the same pairing detail (a tap on a pairing: a
    panel below the grid on a wide card, a bottom sheet on a phone). Columns: Trip, Layover, Block, Credit, Soft,
    Pay-Gross (that pilot's, priced by the Watcher from his date of hire and the seat flown, when known) and Crew. The
-   seat and legs move into the pairing's hint and its detail; the source and pay notes sit under the grid. */
+   seat and legs move into the pairing's hint and its detail; the source and pay notes sit under the grid.
+   1.7.11 (FW-0078, Ryan: "show up to 12 matches as Last, First, seat, base and employee #"): each pick-list entry reads
+   "Doe, Jane · FO · HNL · #10001" (a base no source has is left out), escaped, wrapping on a phone, 44 px tall; a
+   pilot's entry still sends its opaque pick id, never the number it shows. 1.7.11 (FW-0076, contract 1 revision 6):
+   on a pilot's month two buttons under the heading, this HST month and the next ("Nov 2026", "Dec 2026"); the month
+   shown is pressed and not tappable, the other sends pilot/set with the same pilot (the admin's card: emp; a pilot's:
+   the field that found him, the sensor's ask) and the month, then "Loading Nov 2026..." until the Watcher answers.
+   A portal that does not take the month yet (HOM 1.9.1 refuses the key) says the month choice needs a portal update.
+   1.7.11 review: that note is kept on the class (the portal's shell swaps in a fresh pilot card before the refusal
+   reaches the card that sent it) and drawn by every pilot card that shows the same pilot; a refused tap can be sent
+   again at once (the 2 s guard forgets it); the buttons show only when the pilot shown can be named in a pilot/set
+   the shape takes; a month tap the Watcher queues ("waiting: ...") reads "Loading Nov 2026..." with that month pressed,
+   and a month that did not read is named on its status line; a lookup still unanswered after its wait frees the
+   buttons; the pressed month is white on #01579b (7.6:1, the layover pill's), not the theme's primary pair. */
 const DOW = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const PILOT_EV = "flight-watcher-pilot";  // the lookup event (pickers, pilot lookup, the pick list, #pilot= links)
@@ -44,6 +57,15 @@ const PILOTVER_URL = "/local/flight-watcher/pilotver_";
 const VER_SRC = { lookup: "FLICA schedule", rebuild: "rebuilt", award: "awarded line" };
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 const PILOT_WAIT_MS = 120000;  // 1.6.2: the loading line gives up this long after the Watcher's next check
+const MONTH_RE = /^[0-9]{4}-(0[1-9]|1[0-2])$/;  // 1.7.11 (revision 6): pilot/set's month, roles.MONTH_PATTERN
+const PILOT_NOTE_MS = 600000;  // 1.7.11 review: a refused month tap's note stays this long (or until the next lookup)
+const PILOT_QUEUED_RE = /^(waiting:|Schedule Lookup reads are paused)/;  // 1.7.11 review: the Watcher's replies for a lookup it keeps for later
+// 1.7.11 (FW-0076): this HST month and the next as YYYY-MM (the Watcher takes only these two)
+const pcMonths = () => {
+  const t = new Date(Date.now() - 10 * 3600e3), y = t.getUTCFullYear(), m = t.getUTCMonth() + 1;
+  return [`${y}-${String(m).padStart(2, "0")}`, m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`];
+};
+const pcMonthLabel = (ym) => { const m = MONTH_RE.exec(String(ym || "")) ? Number(ym.slice(5, 7)) : 0; return m ? `${MONTHS[m - 1].slice(0, 3)} ${ym.slice(0, 4)}` : String(ym || ""); };
 const hstHM = (iso) => { const t = Date.parse(iso || ""); return isNaN(t) ? "" : new Date(t - 10 * 3600e3).toISOString().slice(11, 16); };
 // 1.7.7: the shared pairings package files (pairings_YYYY-MM.json; cards.pilot_copy keeps them shared), the schedule card's
 const PAIRINGS_URL = "/local/flight-watcher/pairings_";
@@ -452,6 +474,16 @@ const PILOT_CSS = `
       .cts{display:inline-flex;flex-wrap:wrap;gap:6px}.ct{padding:4px 10px;border-radius:14px;background:var(--primary-color);color:var(--text-primary-color,#fff);text-decoration:none;font-size:12px;font-weight:600;line-height:1.3}
       .cts.mini{gap:6px;margin-left:4px}.cts.mini .ct{padding:4px 8px;font-size:11px;font-weight:400;line-height:16px}
       .pk{padding:6px 10px;border:1px solid var(--divider-color,#ccc);border-radius:6px;background:var(--card-background-color,#fff);color:var(--primary-text-color);cursor:pointer;font-size:13px}
+      /* 1.7.11 (FW-0078): "Last, First · seat · base · #number", wrapping inside a 390 px phone; 44 px targets */
+      .pk{min-height:44px;min-width:44px;max-width:100%;box-sizing:border-box;text-align:left;white-space:normal;overflow-wrap:anywhere;line-height:1.3}
+      /* 1.7.11 (FW-0076): this HST month and the next under a pilot's heading; the shown one pressed */
+      .mos{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 6px}
+      .mo{min-height:44px;min-width:44px;padding:6px 14px;border:1px solid var(--divider-color,#ccc);border-radius:6px;background:var(--card-background-color,#fff);color:var(--primary-text-color);cursor:pointer;font-size:13px;font-weight:600}
+      /* review: white on #01579b (7.6:1, the layover pill's), never the theme's primary pair (2.6:1 to 3.3:1 on Home Assistant's blues) */
+      .mo[aria-pressed="true"]{background:#01579b;border-color:#01579b;color:#fff;cursor:default;opacity:1}
+      .mo:disabled:not([aria-pressed="true"]){opacity:.55;cursor:default}
+      .mo:focus-visible,.pk:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:2px}
+      .mnote{margin:0 0 6px;font-size:12px;color:var(--fw-err,#c62828)}
       .vbar{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 14px;font-size:12px;margin:0 0 4px}.vbar .nw{white-space:nowrap}.vbar .k{color:var(--secondary-text-color);font-size:11.5px}
       .vbar .vb{cursor:pointer;padding:0 6px;color:var(--primary-color);user-select:none}.vbar .vb.here{opacity:.5}.vbar .vb.off{opacity:.3;cursor:default}
       .chg{margin:0 0 6px;font-size:11px;color:var(--secondary-text-color)}.chg summary{cursor:pointer;font-weight:600;list-style:none}.chg summary::-webkit-details-marker{display:none}
@@ -483,6 +515,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     }
     if (typeof document !== "undefined" && document.addEventListener) document.addEventListener("keydown", this._kd);
     if (typeof window !== "undefined" && window.addEventListener) window.addEventListener("resize", this._rz);
+    (FlightWatcherPilotCard._cards = FlightWatcherPilotCard._cards || new Set()).add(this);  // 1.7.11 review: _monthRefused
     if (this._on) return;
     this._on = true;
     FlightWatcherPilotCard._live = (FlightWatcherPilotCard._live || 0) + 1;
@@ -493,6 +526,7 @@ class FlightWatcherPilotCard extends HTMLElement {
   disconnectedCallback() {
     if (this._kd && typeof document !== "undefined" && document.removeEventListener) document.removeEventListener("keydown", this._kd);
     if (this._rz && typeof window !== "undefined" && window.removeEventListener) window.removeEventListener("resize", this._rz);
+    if (FlightWatcherPilotCard._cards) FlightWatcherPilotCard._cards.delete(this);
     if (!this._on) return;
     this._on = false;
     FlightWatcherPilotCard._live = Math.max(0, (FlightWatcherPilotCard._live || 0) - 1);
@@ -524,6 +558,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     if (q) out.q = q;
     if (/^[0-9a-f]{12}$/.test(String(src.pick || ""))) out.pick = String(src.pick);
     if (src.name != null && (out.emp || out.pick)) out.name = one(src.name);
+    if (MONTH_RE.test(String(src.month || "")) && (out.emp || out.q || out.pick)) out.month = String(src.month);  // 1.7.11 (revision 6)
     return out;
   }
   static _first(detail) {  // true for the first card to hear a lookup; false for the same lookup again inside PILOT_SAME_MS
@@ -535,15 +570,38 @@ class FlightWatcherPilotCard extends HTMLElement {
   _lookup(e) {
     const d = (e && e.detail) || {};
     this._hidden = false;
-    this._want = d.emp || d.q;
-    // 1.6.2: what was asked for draws the loading header (the sensor still holds the previous answer)
+    this._want = d.emp || d.q || d.shown_emp;
+    FlightWatcherPilotCard._mnote = null;  // 1.7.11 review: a new lookup, a new answer (the refused month's note goes)
+    // 1.6.2: what was asked for draws the loading header (the sensor still holds the previous answer). 1.7.11: a
+    // month tap names the pilot shown (shown_emp: the header only, never sent) and the month
     const q0 = String(d.q || "").trim();
-    this._ask = { emp: String(d.emp || "") || (/^\d+$/.test(q0) ? q0 : ""), name: String(d.name || ""), q: /^\d+$/.test(q0) ? "" : q0, at: Date.now() };
+    const mon = MONTH_RE.test(String(d.month || "")) ? String(d.month) : "";
+    this._ask = { emp: String(d.emp || d.shown_emp || "") || (/^\d+$/.test(q0) ? q0 : ""), name: String(d.name || d.shown_name || ""), q: /^\d+$/.test(q0) ? "" : q0, at: Date.now(), month: mon };
     if (!this._h) return;
     const q = String(d.q || "").trim();
     this._askQ = !d.emp && q && !/^\d+$/.test(q) ? q.toLowerCase() : "";  // a name: learn which pilot it found (_shows)
     const c = FlightWatcherPilotCard._clean(d);  // 1.7.2: the pilot/set shape only (contract 1 revision 3)
-    if ((c.emp || c.q || c.pick) && FlightWatcherPilotCard._first(c)) this._h.callService("mqtt", "publish", { topic: "flight_watcher/pilot/set", payload: JSON.stringify(c) });
+    const named = !!(c.emp || c.q || c.pick);
+    if (named && FlightWatcherPilotCard._first(c)) {
+      const r = this._h.callService("mqtt", "publish", { topic: "flight_watcher/pilot/set", payload: JSON.stringify(c) });
+      const p = JSON.stringify(c), who = String(d.shown_emp || c.emp || ""), ent = this._config.entity;
+      if (r && typeof r.then === "function") {
+        r.then(null, (err) => {
+          // 1.7.11 review (P3): a refused publish is not in flight: the same tap may go again at once
+          const last = FlightWatcherPilotCard._sent;
+          if (last && last.p === p) FlightWatcherPilotCard._sent = null;
+          // 1.7.11 (revision 6): a portal that does not take the month yet (HOM 1.9.1's pinned shape refuses the key;
+          // HOM 1.9.2 with an older Watcher says it is too old) answers at once: the card says so and keeps the month
+          // it shows (review P1: on every pilot card for this sensor, as the portal's shell swaps in a fresh one)
+          if (c.month) FlightWatcherPilotCard._monthRefused(err, c.month, ent, who);
+        });
+      }
+    } else if (d.month && !named) {
+      // 1.7.11 review (P4): a month tap that names no pilot the shape takes sends nothing, so it waits for nothing
+      this._ask = null;
+      this._paint();
+      return;
+    }
     // FW-0025: the loading line only while the reply is still to come. When the sensor already holds the answer (a
     // double tap after a quick cached reply, the same pilot asked again), draw it: HA fires no state change for an
     // identical reply, so the loading line would never clear. A stale cache still answers "loading" (a change).
@@ -555,6 +613,7 @@ class FlightWatcherPilotCard extends HTMLElement {
   _shows(d) {  // FW-0025: does the sensor already hold the Watcher's answer to this lookup?
     const st = this._h && this._h.states && this._h.states[this._config.entity];
     const a = (st && st.attributes) || {};
+    if (d.month && String(a.month || "") !== String(d.month)) return false;  // 1.7.11: another month of the pilot shown
     const q = String(d.q || "").trim();
     const emp = String(d.emp || "").replace(/\D/g, "") || (/^\d+$/.test(q) ? q : "");  // the Watcher reads an all-digit q as an emp
     if (emp) return String(a.emp || "") === emp;
@@ -583,6 +642,64 @@ class FlightWatcherPilotCard extends HTMLElement {
     this._paint();
   }
   getCardSize() { return 8; }
+  // 1.7.11 (FW-0076): the month buttons. The admin's card names the pilot by emp; a pilot's card by the field that
+  // found him (the sensor's ask: his pick, the number of a #pilot= link or the number he typed), else emp
+  _month(month) {
+    const st = this._h && this._h.states[this._config.entity];
+    const a = (st && st.attributes) || {};
+    const via = MONTH_RE.test(String(month || "")) ? FlightWatcherPilotCard._monthVia(a) : null;
+    if (!via) return;  // 1.7.11 review (P4): nothing the shape takes names this pilot: no tap
+    window.dispatchEvent(new CustomEvent(PILOT_EV, { detail: { ...via, month, shown_emp: String(a.emp), shown_name: String(a.name || "") } }));
+  }
+  // what a month tap sends for the pilot the sensor shows (without the month), or null when the pilot/set shape would
+  // take none of it (an emp of 8 digits or more): the admin's card names him by emp; a pilot's card by the field that
+  // found him (the sensor's ask: his pick, the number of a #pilot= link or the number he typed), else emp
+  static _monthVia(a) {
+    if (!a || !a.emp) return null;
+    const ask = a.ask && typeof a.ask === "object" ? a.ask : null;
+    const via = ask && /^[0-9a-f]{12}$/.test(String(ask.pick || "")) ? { pick: String(ask.pick) }
+      : ask && /^[0-9]{1,7}$/.test(String(ask.emp || "")) ? { emp: String(ask.emp) }
+      : ask && /^[0-9]{1,7}$/.test(String(ask.q || "")) ? { q: String(ask.q) } : { emp: String(a.emp) };
+    const d = { ...via, ...(via.q ? {} : { name: String(a.name || "") }) };
+    const c = FlightWatcherPilotCard._clean(d);
+    return c.emp || c.q || c.pick ? d : null;
+  }
+  // 1.7.11 review (P1): the note is the class's, for the sensor and the pilot it names, so the card on the page draws
+  // it even when it is not the one that sent the tap (the portal's shell swaps a fresh card in, then rejects)
+  static _monthRefused(err, month, ent, emp) {
+    const why = String((err && err.message) || err || "");
+    const what = /month is not allowed/i.test(why) ? "The month choice needs a portal update" : /too old/i.test(why) ? "The month choice needs a Flight Watcher update" : `Not sent: ${why.replace(/^not available in the (pilot )?portal:\s*/i, "").replace(/\.$/, "") || "the portal refused it"}`;
+    FlightWatcherPilotCard._mnote = { ent, emp: String(emp || ""), text: `${what} (${pcMonthLabel(month)} was not read).`, at: Date.now() };
+    for (const c of FlightWatcherPilotCard._cards || []) {
+      if (!c._config || c._config.entity !== ent) continue;
+      c._ask = null;
+      if (c._root && c._h) { try { c._paint(); } catch (e) { /* the next update draws it */ } }
+    }
+  }
+  _mnoteText() {  // the refused month's note when it is for this sensor and the pilot it shows
+    const n = FlightWatcherPilotCard._mnote;
+    if (!n || n.ent !== this._config.entity || !(Date.now() - n.at < PILOT_NOTE_MS)) return "";
+    const st = this._h && this._h.states && this._h.states[this._config.entity];
+    return String(((st && st.attributes) || {}).emp || "") === n.emp ? n.text : "";
+  }
+  // the two buttons for the pilot the sensor shows: the month shown (FLICA's, or while loading the one asked for)
+  // pressed and not tappable; while a month loads both wait
+  _monthsHtml(shown, waiting) {
+    const btn = (m) => { const on = m === shown; return `<button type="button" class="mo" data-month="${m}" aria-pressed="${on}"${on || waiting ? " disabled" : ""}>${this._esc(pcMonthLabel(m))}</button>`; };
+    const note = this._mnoteText();
+    return `<div class="mos" role="group" aria-label="Month">${pcMonths().map(btn).join("")}</div>${note ? `<div class="mnote" role="status">${this._esc(note)}</div>` : ""}`;
+  }
+  // 1.6.2: when a lookup asked at t is overdue: 2 minutes past the Watcher's next check (or past t)
+  _dueAt(t) {
+    const S = (this._h && this._h.states) || {};
+    const nx = Date.parse((S["sensor.flight_watcher_next_check"] || {}).state || "");
+    return Math.max(t, isNaN(nx) ? t : nx) + PILOT_WAIT_MS;
+  }
+  _repaintAt(due) {  // one repaint when a wait turns overdue
+    clearTimeout(this._waitT);
+    this._waitT = setTimeout(() => { if (this._root) this._paint(this._busy); }, Math.min(due - Date.now() + 500, 2147483000));
+    if (this._waitT && this._waitT.unref) this._waitT.unref();  // a test's node process need not wait for it
+  }
   _recon(a, readable) {  // FW-0002: the crew index's rebuilt month, drawn in the same grid as a readable schedule
     const r = a.reconstructed || [];
     const cov = a.reconstructed_coverage_pct;
@@ -914,6 +1031,8 @@ class FlightWatcherPilotCard extends HTMLElement {
         if (e.target.closest(".x")) { this._hidden = true; this._paint(); return; }
         const vb = e.target.closest(".vb");  // FW-0069: schedule versions
         if (vb) { this._vstep(vb.dataset.v); return; }
+        const mo = e.target.closest(".mo");  // 1.7.11 (FW-0076): this month or the next
+        if (mo) { if (!mo.disabled) this._month(mo.dataset.month); return; }
         const pk = e.target.closest(".pk");  // 1.6.2: a pilot instance's pick list carries an opaque pick id, not the number
         if (pk) window.dispatchEvent(new CustomEvent(PILOT_EV, { detail: pk.dataset.pick ? { pick: pk.dataset.pick, name: pk.dataset.name } : { emp: pk.dataset.emp, name: pk.dataset.name } }));
       });
@@ -964,19 +1083,31 @@ class FlightWatcherPilotCard extends HTMLElement {
     let old = "";  // an older version picked: its own grid (a record the card cannot draw says so, never throws)
     if (vs && vs.rec) try { old = this._vold(a, vs.rec, a.month || a.reconstructed_month); } catch (err) { old = `<div class="none">This version could not be drawn.</div>`; }
     if (!a.month) {
-      const picks = (a.matches || []).map((m) => `<button class="pk" data-emp="${this._esc(m.emp || "")}" data-pick="${this._esc(m.pick || "")}" data-name="${this._esc(m.name)}">${this._esc(m.name)} <span class="u">${this._esc(m.pos)}${m.emp ? " " + this._esc(m.emp) : ""}</span></button>`).join("");
+      // 1.7.11 (FW-0078): "Last, First · seat · base · #number"; data-emp only where there is no pick (a pilot's entry
+      // sends its pick id, never the number it shows)
+      const picks = (a.matches || []).map((m) => `<button type="button" class="pk" data-emp="${this._esc(m.pick ? "" : m.emp || "")}" data-pick="${this._esc(m.pick || "")}" data-name="${this._esc(m.name)}">${this._esc(m.name)}${[m.pos, m.base, m.emp ? "#" + m.emp : ""].filter((x) => x).map((x) => ` <span class="u">· ${this._esc(x)}</span>`).join("")}</button>`).join("");
       // 1.6.2: the header names a pilot only from the reply itself (its emp), never from an earlier lookup; a reply
       // with no pilot (no match, a pick list) names the query; the status line always shows, with its time (HST)
       const h3 = a.emp ? `${this._esc(name || "Pilot")} (${this._esc(a.emp)})` : (a.matches || []).length ? `Pick the pilot for '${this._esc(name)}'` : name ? `No pilot found for '${this._esc(name)}'` : "Pilot lookup";
       const when = hstHM(a.at || (st && st.last_updated));
       const said = /application error|customer care/i.test(a.status || "") ? "FLICA showed its error page for this schedule (often a pilot who has hidden it, or a FLICA hiccup). Nothing to read; try again later." : (a.status || "no data");
-      body.innerHTML = `<div class="hd"><h3>${h3}</h3>${ct}<span class="u pst">${this._esc(said)}${when ? ` (${when} HST)` : ""}</span><span class="x" title="close">&times;</span></div>${vb}${picks ? `<div class="picks">${picks}</div>` : ""}`;
+      // 1.7.11 review: a reply to a month tap names the month asked (asked_month). The Watcher queued it (P5:
+      // "waiting: ...", reads paused): "Loading Nov 2026..." with that month pressed and both buttons waiting, until
+      // the wait is overdue; it did not read (F5): the month on the status line, either month again
+      const am = MONTH_RE.test(String(a.asked_month || "")) ? String(a.asked_month) : "";
+      const at = Date.parse(a.at || (st && st.last_updated) || "");
+      const due = am && PILOT_QUEUED_RE.test(String(a.status || "")) ? this._dueAt(isNaN(at) ? Date.now() : Math.min(at, Date.now())) : 0;
+      const queued = !!due && Date.now() <= due;
+      if (queued) this._repaintAt(due);
+      const line = am ? `${queued ? `Loading ${pcMonthLabel(am)}...` : `${pcMonthLabel(am)}:`} ${said}` : said;
+      const mos = a.emp && FlightWatcherPilotCard._monthVia(a) ? this._monthsHtml(queued ? am : "", queued) : "";  // 1.7.11: a pilot whose month did not read: either month again
+      body.innerHTML = `<div class="hd"><h3>${h3}</h3>${ct}<span class="u pst">${this._esc(line)}${when ? ` (${when} HST)` : ""}</span><span class="x" title="close">&times;</span></div>${mos}${vb}${picks ? `<div class="picks">${picks}</div>` : ""}`;
       if (old) { body.insertAdjacentHTML("beforeend", old + this._recon(a, true)); return; }  // the live rebuild, folded under it
       body.insertAdjacentHTML("beforeend", this._recon(a, false));  // 0.10.1 crew index; FW-0002: in the schedule grid
       return;
     }
     const [y, m] = a.month.split("-").map(Number);
-    const hd = `<div class="hd"><h3>${this._esc(name)} (${this._esc(emp)})</h3>${ct}<span class="u">${MONTHS[m - 1]} ${y} · FLICA updated ${this._esc(a.updated || "?")} · read ${a.fetched ? this._hst(a.fetched) : ""}${a.status === "cached" ? " (cached)" : ""}</span><span class="x" title="close">&times;</span></div>`;
+    const hd = `<div class="hd"><h3>${this._esc(name)} (${this._esc(emp)})</h3>${ct}<span class="u">${MONTHS[m - 1]} ${y} · FLICA updated ${this._esc(a.updated || "?")} · read ${a.fetched ? this._hst(a.fetched) : ""}${a.status === "cached" ? " (cached)" : ""}</span><span class="x" title="close">&times;</span></div>${FlightWatcherPilotCard._monthVia(a) ? this._monthsHtml(a.month, false) : ""}`;
     if (old) {  // FW-0069: an older version of a readable month
       body.innerHTML = hd + vb + old;
       body.insertAdjacentHTML("beforeend", this._recon(a, true));
@@ -1041,18 +1172,17 @@ class FlightWatcherPilotCard extends HTMLElement {
     const S = (this._h && this._h.states) || {};
     const nx = Date.parse((S["sensor.flight_watcher_next_check"] || {}).state || "");
     const state = String((S["sensor.flight_watcher_state"] || {}).state || "");
-    const due = Math.max(ask.at, isNaN(nx) ? ask.at : nx) + PILOT_WAIT_MS;
+    const due = this._dueAt(ask.at);
     // a next check already past is no time to promise
-    let line = `reading this pilot's month from FLICA (Schedule Lookup, read only) on the Watcher's next check${isNaN(nx) ? ", usually under 2 minutes" : nx > Date.now() ? `, about ${hstHM(new Date(nx).toISOString())} HST` : ""}`;
-    if (Date.now() > due) {
+    const mon = (ask.month && MONTH_RE.test(ask.month) ? ask.month : "") || (MONTH_RE.test(String(a.asked_month || "")) ? String(a.asked_month) : "");  // 1.7.11
+    let line = `${mon ? `Loading ${pcMonthLabel(mon)}... ` : ""}reading this pilot's month from FLICA (Schedule Lookup, read only) on the Watcher's next check${isNaN(nx) ? ", usually under 2 minutes" : nx > Date.now() ? `, about ${hstHM(new Date(nx).toISOString())} HST` : ""}`;
+    const late = Date.now() > due;
+    if (late) {
       const why = /^(paused|yielded|backoff|needs_settings|stopped)/.test(state) ? `the Watcher is ${state.replace(/_/g, " ")}; the lookup runs once it checks FLICA again` : state ? `no answer from the Watcher (it is ${state.replace(/_/g, " ")}); try again in a few minutes` : "no answer from the Watcher: it may not be running";
-      line = `Still waiting after ${Math.round((Date.now() - ask.at) / 60000)} min: ${why}.`;
-    } else {
-      clearTimeout(this._waitT);
-      this._waitT = setTimeout(() => { if (this._ask && this._root) this._paint(this._busy); }, Math.min(due - Date.now() + 500, 2147483000));
-      if (this._waitT && this._waitT.unref) this._waitT.unref();  // a test's node process need not wait for it
-    }
-    return `<div class="hd"><h3>${h3}</h3>${ct}<span class="u pst">${this._esc(line)}</span><span class="x" title="close">&times;</span></div>`;
+      line = `Still waiting after ${Math.round((Date.now() - ask.at) / 60000)} min${mon ? ` for ${pcMonthLabel(mon)}` : ""}: ${why}.`;
+    } else this._repaintAt(due);
+    // 1.7.11 review (P3): once the wait is overdue the month buttons are free again (either month, to try again)
+    return `<div class="hd"><h3>${h3}</h3>${ct}<span class="u pst">${this._esc(line)}</span><span class="x" title="close">&times;</span></div>${mon && ask.emp ? this._monthsHtml(late ? "" : mon, !late) : ""}`;
   }
   // 1.7.7: a trip's report and release (HST) and the day it is released: from the pairings package when it lists the
   // pairing (the id without a trailing letter, as the schedule card times a trip) on that day, else from the legs the

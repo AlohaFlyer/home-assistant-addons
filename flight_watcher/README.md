@@ -149,11 +149,31 @@ HOM's `fw_signing_key` option. That pilot's Watcher then:
   tickets sensor, the tickets card with FW_PORTAL on), takes his ticket commands with his quotas and his photos in
   chunks (checked and re-encoded), and alerts him when one of his tickets is fixed (the ticket id and version only);
 - 1.7.2 (contract 1 revision 3): alerts him with the bid calendar alerts (the admin's push words) and when his FLICA
-  schedule has not been read for 6 h (once a day); takes the pilot lookup only in its shape (emp, q, name, pick);
+  schedule has not been read for 6 h (once a day); takes the pilot lookup only in its shape (emp, q, name, pick; 1.7.11:
+  month);
   never takes `recall/set` from the portal (his recall lists come from the admin's forward); and takes his upload of
   the month's pairings package or award (`upload/pdf`, below);
 - 1.7.10 (contract 1 revision 5, HOM 1.9.1 first): takes his upload of the contacts list (CSV) into the shared pilot
-  database (`upload/pdf` kind `contacts`, below).
+  database (`upload/pdf` kind `contacts`, below);
+- 1.7.11 (contract 1 revision 6, HOM 1.9.2 first): takes the pilot lookup's month (`pilot/set` key `month`, below).
+
+**The pilot lookup's pick list and month (1.7.11; Ryan's yes of Nov 17, FW-0078 and FW-0076), on both instances.**
+A typed name lists up to 12 pilots (more is no list: "More than 12 pilots match ..."); each entry reads "Doe, Jane ·
+FO · HNL · #10001": the name, the seat (with the Sen # for two entries that would read the same, as before), the base
+(the pilot database record's, else the award's or the seniority list's, else left out) and the employee number. A
+pilot's entry is still picked by its opaque pick id, never by the number it shows; Ryan's card picks by the number as
+before. On a pilot's month the card shows two buttons under the heading, this HST month and the next ("Nov 2026",
+"Dec 2026"); the month shown is pressed and not tappable, the other reads that month: `pilot/set` with the same pilot
+(Ryan's card: the employee number; a pilot's card: the field that found him, published as the pilot sensor's `ask`)
+and `month`. The Watcher takes this HST month or the next only (any other: one log line and a status line), reads that
+month's Schedule Lookup page alone (one page load, then the pairing pages as before, paced 1.5 to 3.5 s, inside the
+FLICA budget and the host gate), keeps a 6 h cache per month and answers "Loading Nov 2026..." while it waits. A
+lookup with no month (a name, a pick, a #pilot= link) reads FLICA's default month exactly as before. With HOM 1.9.1
+still live, a month tap on the portal is refused by HOM's pinned shape and the card says the month choice needs a
+portal update (on the card the portal's shell draws again, too); nothing else changes. A month tap the Watcher keeps
+for later (yielded, paused) reads "Loading Nov 2026..." with that month pressed; a month that did not read is named on
+its status line, with that month's rebuild from the crew lists; a tap answers from the newer read of its month on hand
+(the month's own or the one with no month); the pick list's base is never another record's on a shared number.
 
 **A pilot's contacts list (1.7.10, contract 1 revision 5; Ryan, Nov 16).** While the pilot database is shared with
 him, the pilot uploads card also offers "Contacts list (CSV)": the airline contacts list's CSV export (first row

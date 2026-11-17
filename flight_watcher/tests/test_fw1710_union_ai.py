@@ -152,7 +152,7 @@ def test_the_signed_file_carries_both_and_the_state_neither(james):  # noqa: F81
 # ---------------------------------------------------------------- the contract: still revision 4
 def test_the_contract_names_both_keys_and_stays_revision_4():
     c = PT.contract()
-    assert c["contract"] == 1 and c["revision"] == roles.CONTRACT_REVISION == 5  # revision 5 since Nov 16 (the contacts list upload); these keys are revision 4's
+    assert c["contract"] == 1 and c["revision"] == roles.CONTRACT_REVISION == 6  # 5 since Nov 16 (contacts list), 6 in 1.7.11; these keys are revision 4's
     pdb = c["pilotdb"]
     assert {"union_id", "ai_note"} <= set(pdb["file"]["keys"]["record"])
     assert pdb["file"]["keys"]["ai_note"] == ["text", "model", "at"]
