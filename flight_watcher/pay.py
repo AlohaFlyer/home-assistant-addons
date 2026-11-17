@@ -256,8 +256,9 @@ def rate_steps(doh, period_from, period_to):
 def pay_line(trips, doh, period_from, period_to, tax_pct, ca_rules=True, vac=(), payp=(), flica_credit=None,
              rate_ok=None, vac_seat="FO"):
     """FW-0062: the pay line under another pilot's rebuilt month. trips: the trips the pilot card draws in its grid
-    (crewidx.grid_pick), each {pairing, start, end, seat, credit, blk, soft, lay, route, n}. The totals cover the
-    trips that start in the bid period (period_from..period_to, ISO), as the card's own totals do; Days Off are the
+    (crewidx.grid_pick), each {pairing, start, end, seat, credit, blk, soft, lay, route, n}. The totals cover the bid
+    period (period_from..period_to, ISO), as FLICA's and the card's own totals do: each trip's part flown in it (1.7.11,
+    in_period below); Days Off are the
     bid period's days no drawn trip covers (reserve, training and days off look alike on crew lists). Each trip is
     priced for its own seat (rate_for: CA PWA 3.C.4, FO and RO PWA 3.D.6) on its own start date, for the longevity
     year from doh (doh_year, capped at 12, PWA 3.B.1), with the PWA 4.O.1 overrides and the Extended Range +15% per

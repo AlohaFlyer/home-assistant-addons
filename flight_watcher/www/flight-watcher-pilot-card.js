@@ -439,12 +439,14 @@ const PC_SEAT_SRC = { "pairing page": "the pairing page's crew line", "crew inde
 // 1.7.11 (FW-0080, PWA 4.A: a segment pays on the date it originates): the Watcher totals another pilot's month by bid
 // period, as FLICA does (December 2026 runs Dec 2 to Dec 31). A split trip's title: its part in this bid period and
 // what part pays in the other one (the Watcher's split: side, edge, other, out_blk, out_credit, est, none, placed)
-const pcSplitWhy = (trip, sp) => {
+const pcSplitWhy = (trip, sp, start) => {
   const all = `${sp.all_blk || "?"} block / ${sp.all_credit || "?"} credit in all`;
   if (!sp.side) return `${trip}: ${all}; ${sp.out_blk || "?"} block flown from ${sp.next || "next month"} pays next month (PWA 4.A). Credit split by block share.`;  // an older Watcher's
   const where = `${sp.side === "after" ? "after" : "before"}${ISO_RE.test(sp.edge || "") ? ` ${fwgMd(sp.edge)}` : ""}`;
   const other = /^\d{4}-\d{2}$/.test(sp.other || "") ? `the ${MONTHS[Number(sp.other.slice(5, 7)) - 1]} bid period` : "the other bid period";
-  if (sp.none) return `${trip}: ${all}, flown ${where}: it pays in ${other} (PWA 4.A), not in these totals.${sp.placed === false ? " No duty times on file: the whole trip pays in the bid period of its first day." : ""}`;
+  // 1.7.11 review: with no duty times on file nothing says when any of it flew: it pays where its first day is
+  if (sp.none && sp.placed === false) return `${trip}: ${all}${ISO_RE.test(start || "") ? `, starts ${fwgMd(start)}` : ""}; no duty times on file, so the whole trip pays in ${other}, the bid period of its first day (PWA 4.A), not in these totals.`;
+  if (sp.none) return `${trip}: ${all}, all flown ${where}: it pays in ${other} (PWA 4.A), not in these totals.`;
   return `${trip}: ${all}; ${sp.out_blk || "?"} block, ${sp.out_credit || "?"} credit flown ${where} pay in ${other} (PWA 4.A).` +
     (sp.est ? " Credit split by block share (no duty credit on file): an estimate." : " Credit of each duty from the pairings package (TCRD); the rest of the trip credit (rig, minimums) stays with the bid period of its first day.");
 };
@@ -468,10 +470,19 @@ const PILOT_CSS = `
       .tot .tpay{flex-wrap:wrap}  /* another pilot's Pay-Gross carries "(n of m trips)" and Pay-Net its tax note: they wrap on a phone */
       .crew{font-size:11px;color:var(--secondary-text-color)}
       .cal td.t.split{color:var(--fw-split,#7b1fa2);cursor:help}:host([dark]){--fw-split:#ce93d8}
-      .crl{display:none}  /* FW-0079: the crew list under the grid, a phone's Crew column */
+      .crl{display:none;margin:6px 2px 0;font-size:11px;line-height:1.35;color:var(--secondary-text-color);text-align:left}  /* FW-0079: the crew list under the grid, a phone's Crew column */
+      .crl div{margin:2px 0;overflow-wrap:anywhere}.crl b{color:var(--primary-color);font-weight:600}.crl .cp{white-space:nowrap;color:var(--primary-text-color)}
+      .pgx{display:inline}
+      /* a grid wider than its box on a wider card (_fitCrl): the crew list as on a phone */
+      .wrap.crlon .crl{display:block}.wrap.crlon th.crw,.wrap.crlon td.crew{display:none}.wrap.crlon tr[data-d] td:nth-child(5)::after{content:"\\200b"}
       @media (max-width:700px){.cal th{padding:2px 3px}.cal th.crw,.cal td.crew{display:none}.cal tr[data-d] td:nth-child(5)::after{content:"\\200b"}
-        .crl{display:block;margin:6px 2px 0;font-size:11px;line-height:1.35;color:var(--secondary-text-color);text-align:left}
-        .crl div{margin:2px 0;overflow-wrap:anywhere}.crl b{color:var(--primary-color);font-weight:600}.crl .cp{white-space:nowrap;color:var(--primary-text-color)}}
+        .crl{display:block}
+        /* 1.7.11 review: so the grid fits a 360 px phone, the columns Ryan's card has no twin of in the shared look (Credit,
+           Soft, Pay-Gross: the day, date, trip, layover and block cells stay the schedule card's) are 1 to 2 px padded
+           and Pay-Gross heads two lines; a day with both the report and the release (a one-day turn) may wrap in its
+           Layover cell when the grid needs it, its station, R and Rel each kept whole; every other row stays one line */
+        .cal th:nth-child(n+6){padding-left:1px;padding-right:1px}.cal td:nth-child(n+6){padding-left:2px;padding-right:2px}.pgx{display:block}
+        .cal td.lr2{white-space:normal}.cal td.lr2 .tm,.cal td.lr2 .lay{white-space:nowrap}}
       .cal td.crew::after{content:"\\200b"}  /* every row one 11 px line, as the schedule card's FAR columns give each of its rows */
       .prate{text-align:center;margin:2px 0;overflow-wrap:anywhere}.psrc{margin-top:4px;text-align:center}
       .none{padding:8px;color:var(--secondary-text-color)}
@@ -507,7 +518,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     // 1.7.7: Esc closes the pairing detail, Tab stays inside its sheet; a rotation or resize past the phone width redraws it
     if (!this._kd) {
       this._kd = (e) => { if (!this._pd) return; if (e.key === "Escape") { this._pdClose(true); return; } if (this._sheet) this._sheet.trap(e); };
-      this._rz = () => { if (this._pd && this._h && this._root && fwgNarrow(this._hc()) !== this._pdNarrow) this._paint(); };
+      this._rz = () => { if (this._pd && this._h && this._root && fwgNarrow(this._hc()) !== this._pdNarrow) this._paint(); else this._fitCrl(); };
     }
     if (typeof document !== "undefined" && document.addEventListener) document.addEventListener("keydown", this._kd);
     if (typeof window !== "undefined" && window.addEventListener) window.addEventListener("resize", this._rz);
@@ -978,6 +989,21 @@ class FlightWatcherPilotCard extends HTMLElement {
     this._narrow = !!this._pd && fwgNarrow(this._hc());
     this._draw(body, a, st, loading);
     this._pdAfter(body, fk);
+    this._fitCrl(body);
+  }
+  // 1.7.11 review (FW-0079): a grid wider than its box on a card wider than a phone (a tablet in portrait, a narrow
+  // column) gets the phone's crew list too (.wrap.crlon: the Crew column hidden, .crl shown), measured on the card's
+  // own width after each draw and resize; a grid that fits keeps its Crew column
+  _fitCrl(body) {
+    try {
+      const root = body || this._root;
+      if (!root || typeof root.querySelectorAll !== "function") return;
+      for (const w of root.querySelectorAll(".wrap")) {
+        if (!w.querySelector(".crl")) continue;
+        w.classList.remove("crlon");
+        if (w.scrollWidth > w.clientWidth + 1) w.classList.add("crlon");
+      }
+    } catch (err) { /* a layout read that fails leaves the grid as drawn */ }
   }
   _draw(body, a, st, loading) {
     if (this._hidden || (!a.emp && !a.status && !loading)) { body.innerHTML = ""; this.style.display = "none"; return; }  // v4: a "no match" or pick-list reply shows too
@@ -1218,16 +1244,16 @@ class FlightWatcherPilotCard extends HTMLElement {
         const sp = it.split && typeof it.split === "object" ? it.split : null;
         if (sp && (sp.credit || sp.blk || sp.side)) {
           blk = e(sp.blk || ""); cr = e(sp.credit || ""); soft = e(sp.soft || "");
-          split = pcSplitWhy(it.trip, sp);
+          split = pcSplitWhy(it.trip, sp, it.start);
         }
         if (it.gross != null) pay = `<span class="pay" title="${e(`Pay-Gross for the ${String(it.seat || "FO").toUpperCase()} seat${it.seat_src ? ` (${PC_SEAT_SRC[it.seat_src] || it.seat_src})` : ""}: credit x the seat's hourly rate for this pilot's longevity year, plus the PWA 4.O.1 overrides`)}">${e(usd(it.gross))}</span>`;
         crew = (it.crew || []).map(([p, n]) => `${e(p)} ${e(n)}${(this._ctKeys || []).includes(pilotNameKey(n)) ? this._ctMini : ""}`).join(" · ");
       }
       const sc = split ? ` split" title="${e(split)}` : "";
       rows += `<tr data-d="${d}" class="${wk ? "wk" : ""}${fwgHol(d) ? " hol2" : ""}${oth ? " oth" : ""}${code === "VAC" ? " vac" : ""}${bx}${pdDays.has(d) ? " pdh" : ""}"><td>${DOW[w]}</td><td class="n">${d.slice(8)}</td>` +
-        `<td>${tc}</td><td>${l}${rp}${rl}</td><td class="t${sc}">${blk}</td><td class="t${sc}">${cr}</td><td class="t">${soft}</td>${o.pay ? `<td class="t tot1">${pay}</td>` : ""}<td class="crew">${crew}</td></tr>`;
+        `<td>${tc}</td><td${rp && rl ? ` class="lr2"` : ""}>${l}${rp}${rl}</td><td class="t${sc}">${blk}</td><td class="t${sc}">${cr}</td><td class="t">${soft}</td>${o.pay ? `<td class="t tot1">${pay}</td>` : ""}<td class="crew">${crew}</td></tr>`;
     }
-    const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th class="r">Block</th><th class="r">Credit</th><th class="r">Soft</th>${o.pay ? `<th class="r" title="This pilot's Pay-Gross for the seat flown on each pairing, from his date of hire on file; hover a figure for its seat">Pay-Gross</th>` : ""}<th class="crw">Crew</th></tr>`;
+    const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th class="r">Block</th><th class="r">Credit</th><th class="r">Soft</th>${o.pay ? `<th class="r" title="This pilot's Pay-Gross for the seat flown on each pairing, from his date of hire on file; hover a figure for its seat">Pay-<span class="pgx">Gross</span></th>` : ""}<th class="crw">Crew</th></tr>`;
     // FW-0079: on a phone the Crew column is hidden and this list under the grid holds it, a line a pairing, each pilot
     // a no-wrap span (the contact links beside the looked-up pilot kept); hidden on a wider card. Inside .wrap, so the
     // pairing detail panel still follows the grid's box. The Block cell keeps each row one 11 px line (the Crew cell's

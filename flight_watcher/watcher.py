@@ -41,7 +41,7 @@ import submit as SUB
 import inflt as IF
 import charter as CH
 import versions as VER
-from pot import leg_shift as pot_leg_shift
+from pot import LAYOVER_MIN_H, leg_shift as pot_leg_shift
 import pdfs as PDF
 import recall as RC
 import ccr as CCR
@@ -3462,6 +3462,37 @@ def repair_trip_ends():
     return n
 
 
+PAYP_FIX_V = 1  # 1.7.11 review (FW-0080): bump to split the PAYP records in the stored versions again
+
+
+def repair_payp_splits():
+    """1.7.11 review (FW-0080, PWA 4.A), once: the PAYP records in the stored versions (months 24 back to 3 ahead), written
+    while a PAYP's kept credit split by the calendar month (1.7.10), split again by bid period (versions.resplit_versions:
+    each removed trip's duties from own trips or the versions, its TCRD from its pairings package), so a viewed version
+    prices each bid period's part as FLICA does; the records on file are split again by payp_refresh on every run.
+    Returns the number of months changed."""
+    if S.get("payp_fix_v") == PAYP_FIX_V:
+        return 0
+    today = local_now().date()
+    vers = {}
+    for i in range(-24, 4):
+        y, m = divmod(today.year * 12 + today.month - 1 + i, 12)
+        mk = f"{y:04d}-{m + 1:02d}"
+        v = DB.get(f"sched_versions:{mk}")
+        if v:
+            vers[mk] = v
+    bpk = bid_period_fn()
+    changed = VER.resplit_versions(vers, S.get("own_trips") or {}, bpk, lambda k, r: payp_tcrd(k, r, bpk))
+    for mk in changed:
+        DB.put(f"sched_versions:{mk}", vers[mk])
+    S["payp_fix_v"] = PAYP_FIX_V
+    save_state(S)
+    if changed:
+        log.info("pay protection split: the PAYP records of %d month(s) of stored versions split again by bid period (%s)",
+                 len(changed), ", ".join(changed))
+    return len(changed)
+
+
 def versions_months(months):
     """1.6.2: the months whose versions are published: every month FLICA's schedule was read for, plus any month from
     last month to two ahead whose first version is the PBS award (an award upload before any FLICA read of it: a pilot's
@@ -3483,6 +3514,10 @@ def versions_check(force_pub=False):
         repair_trip_ends()
     except Exception as e:  # never stops the versions; tried again next time
         log.info("trip end repair skipped: %s", e)
+    try:
+        repair_payp_splits()
+    except Exception as e:  # never stops the versions; tried again next time
+        log.info("pay protection split repair skipped: %s", e)
     try:
         months, own = S.get("schedule") or {}, S.get("own_trips") or {}
         wait = S.setdefault("ver_wait", {})
@@ -4590,11 +4625,27 @@ def _legs_duties(st, legs):
     """1.7.11 (FW-0080): the legs of another pilot's pairing page ([{dow, route, dep (local HHMM), blk (HHMM)}]) as
     duties for pay.period_share: each leg on the first day from the one before whose weekday it names (its local date),
     then its departure in HST minutes from 00:00 HST of the trip's first day st, by its time (pot.leg_shift: a leg out
-    of LAX at 00:30 local departs 22:30 HST the day before). [] when a leg's weekday or block is unreadable."""
+    of LAX at 00:30 local departs 22:30 HST the day before). [] when a leg's weekday or block is unreadable.
+    1.7.11 review: the legs make duty periods as pot.parse_duties makes Ryan's (a gap of LAYOVER_MIN_H or more from a
+    leg's block-in, dep + blk, to the next departure starts a new one), each {dep: its first leg's, blk: their sum}, so
+    a duty whose legs cross HST midnight counts on its first leg's date, as the package's duties do."""
     try:
         t0 = date.fromisoformat(st)
     except ValueError:
         return []
+    legs_out = _legs_hst(t0, legs)
+    out = []
+    for lg in legs_out:
+        if out and lg["dep"] - out[-1]["_in"] < LAYOVER_MIN_H * 60:
+            out[-1]["blk"] += lg["blk"]
+            out[-1]["_in"] = max(out[-1]["_in"], lg["dep"] + lg["blk"])
+        else:
+            out.append({"dep": lg["dep"], "blk": lg["blk"], "_in": lg["dep"] + lg["blk"]})
+    return [{"dep": d["dep"], "blk": d["blk"]} for d in out] if len(legs_out) == len(legs or []) else []
+
+
+def _legs_hst(t0, legs):
+    """_legs_duties' legs, each {dep: HST minutes from 00:00 HST of t0, blk}; stops at the first unreadable leg."""
     at, out = t0, []
     for lg in legs or []:
         dw = str((lg or {}).get("dow") or "").upper()[:2] if isinstance(lg, dict) else ""

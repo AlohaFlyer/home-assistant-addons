@@ -2,8 +2,10 @@
 // December (tests/test_fw1711_totals.py builds it with pilot_price: synthetic pilots and pairings only). At 390 px and
 // 1024 px, light and dark: the grid fits its box, the Crew column gives way to the crew list on a phone (and is back on
 // a wide card), names stay text, the trip across the bid period's edge shows its December part, purple, with its title,
-// and the totals match FLICA's (no red). Usage: node <this> <pilot card.js> <attributes.json> [screenshot dir].
-const [, , cardPath, attrsPath, shotDir] = process.argv;
+// and the totals match FLICA's (no red). Usage: node <this> <pilot card.js> <attributes.json> [screenshot dir or ""]
+// [widths, default "390,1024"] [shot name tag]. 1.7.11 review: also 360, 375 and 820 px (a tablet in portrait), and each
+// row's height by day (rowHd) for a one-day turn's row.
+const [, , cardPath, attrsPath, shotDir, widthsArg, tag] = process.argv;
 const fs = require("fs");
 
 (async () => {
@@ -13,7 +15,8 @@ const fs = require("fs");
   const ENT = "sensor.flight_watcher_pilot_schedule";
   const b = await chromium.launch();
   const out = {};
-  for (const [w, h] of [[390, 844], [1024, 900]]) {
+  const widths = String(widthsArg || "390,1024").split(",").map(Number).filter((x) => x > 0);
+  for (const [w, h] of widths.map((x) => [x, x >= 700 ? 900 : 844])) {
     for (const dark of [false, true]) {
       const p = await b.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 2 });
       await p.route("**/*", (r) => r.fulfill({ status: 404, body: "" }));
@@ -50,9 +53,12 @@ customElements.define("ha-card", class extends HTMLElement { constructor() { sup
           splitColor: (() => { const td = R.querySelector(".body tr[data-d='2026-12-01'] td.t.split"); return td ? getComputedStyle(td).color : ""; })(),
           tot: tot ? tot.textContent.replace(/\s+/g, " ").trim() : "", totTitle: tot ? tot.title : "", totBad: tot ? tot.querySelectorAll(".bad").length : -1,
           rowH: [...R.querySelectorAll(".body tr[data-d]")].map((x) => Math.round(x.getBoundingClientRect().height * 100) / 100),
+          rowHd: Object.fromEntries([...R.querySelectorAll(".body tr[data-d]")].map((x) => [x.dataset.d, Math.round(x.getBoundingClientRect().height * 100) / 100])),
+          payR: Math.max(0, ...[...R.querySelectorAll(".body tr[data-d] td.tot1 .pay")].map((x) => x.getBoundingClientRect().right)),
+          crlon: !!R.querySelector(".body .wrap.crlon"),
         };
       }, { ENT, attrs, dark });
-      if (shotDir) await p.screenshot({ path: `${shotDir}/totals_pilot_${w}_${dark ? "dark" : "light"}.png`, fullPage: true });
+      if (shotDir) await p.screenshot({ path: `${shotDir}/totals_pilot_${tag ? `${tag}_` : ""}${w}_${dark ? "dark" : "light"}.png`, fullPage: true });
       out[`${w}_${dark ? "dark" : "light"}`] = r;
       await p.close();
     }

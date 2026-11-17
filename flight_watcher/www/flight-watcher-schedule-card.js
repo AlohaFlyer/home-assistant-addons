@@ -111,6 +111,30 @@ function fwSplit(st, duties, from, to, cr, bl) {
     outBl: side && bM != null ? bM - (mine.b || 0) : null, side, est: est && !!side };
 }
 
+// 1.7.11 review (FW-0080): a trip whose own times are not read yet places its duties from the pairings package's detail
+// (fwPkgDuties: each duty's first leg, its day number and local departure, made HST with FW_TZ, the Watcher's pot.TZ;
+// tests/test_fw1711_review.py keeps them equal), so it splits as the Watcher splits it from the package
+const FW_TZ = { HNL: -10, OGG: -10, KOA: -10, ITO: -10, LIH: -10, PPT: -10, RAR: -10, PPG: -11, ANC: -9,
+  LAX: -8, SFO: -8, SEA: -8, SAN: -8, OAK: -8, SMF: -8, LAS: -8, PDX: -8, SJC: -8, ONT: -8, LGB: -8,
+  PHX: -7, SLC: -7, DEN: -7, ORD: -6, DFW: -6, AUS: -6, MSP: -6, IAH: -6,
+  JFK: -5, BOS: -5, MCO: -5, IAD: -5, ATL: -5, MIA: -5, EWR: -5,
+  NRT: 9, HND: 9, KIX: 9, CTS: 9, FUK: 9, NGO: 9, ICN: 9, SYD: 10, BNE: 10, MEL: 10,
+  AKL: 12, SIN: 8, MNL: 8, CRK: 8, TPE: 8, PEK: 8, PVG: 8, HKG: 8 };
+// [{dep (HST minutes from 00:00 HST of the trip's first day), blk, tcrd}] of a package entry's duties (det.duties: legs
+// [day, dh, flt, from, to, dep local, ...], tblk, tcrd), [] when any duty's first leg, departure or block is unreadable
+function fwPkgDuties(pr) {
+  const dd = pr && pr.det && Array.isArray(pr.det.duties) ? pr.det.duties : [];
+  const out = [];
+  for (const x of dd) {
+    const l = x && Array.isArray(x.legs) && Array.isArray(x.legs[0]) ? x.legs[0] : null;
+    const n = l ? Number(l[0]) : NaN, t = l ? /^(\d{1,2}):?(\d{2})$/.exec(String(l[5] == null ? "" : l[5]).trim()) : null, b = x ? fwgMins(x.tblk) : null;
+    if (!Number.isInteger(n) || n < 1 || n > 40 || !t || Number(t[1]) > 23 || b == null) return [];
+    const shift = l[3] in FW_TZ && l[4] in FW_TZ ? (FW_TZ[l[3]] + 10) * 60 : 0;  // pot.leg_shift
+    out.push({ dep: (n - 1) * 1440 + Number(t[1]) * 60 + Number(t[2]) - shift, blk: b, tcrd: x.tcrd });
+  }
+  return out;
+}
+
 // ---- shared schedule grid: keep identical in every card that holds it (tests/test_sched_grid_shared.py) ----
 // 1.7.7 (Nov 14: "my schedule and other pilots schedule and reconstructed schedules should be exactly the same style
 // including this latest detail panel"): one look for every month grid and one pairing detail panel, in each card that
@@ -935,9 +959,17 @@ class FlightWatcherScheduleCard extends HTMLElement {
           const all = dys.filter(([d, t]) => t === PAYP && it.start <= d && d <= (it.end || it.start)).map(([d]) => d);
           const ds = all.filter((d) => inBp(d));  // FW-0080: the PAYP days in this bid period
           if (!ds.length) continue;
-          const rec = tr[`${PAYP}|${it.start}`] || null, c = rec ? hrs(rec.credit) : null;
+          let rec = tr[`${PAYP}|${it.start}`] || null, c = rec ? hrs(rec.credit) : null;
+          // 1.7.11 review (FW-0080): no record of its own (a PAYP listed again on this page, from Dec 1, the bid period
+          // before's last day): the record of the PAYP it continues gives its share when its split names this bid period
+          if (c == null) {
+            const prev = Object.entries(tr || {}).find(([k, r]) => k.startsWith(PAYP + "|") && r && r.payp && !r.of && r.split && typeof r.split === "object"
+              && hrs(r.split[key]) != null && k.slice(PAYP.length + 1) < it.start && it.start <= fwgDay(r.end || k.slice(PAYP.length + 1), 1));
+            if (prev) { rec = { ...prev[1], credit: prev[1].split[key], split: null, of: prev[0] }; c = hrs(rec.credit); }
+          }
           const sp = c != null && rec.split && typeof rec.split === "object" ? rec.split : null;
-          out.push({ it, ds, all, row: ds[0], rec: c != null ? rec : null, h: c == null ? null : sp ? hrs(sp[key]) : (ds.includes(it.start) ? c : null), est: false });
+          // a continuation record (of) holds this bid period's share already (versions.payp_entries)
+          out.push({ it, ds, all, row: ds[0], rec: c != null ? rec : null, h: c == null ? null : sp ? hrs(sp[key]) : (rec.of || ds.includes(it.start) ? c : null), est: false });
         }
         for (const [k, r] of Object.entries(tr || {})) {
           if (!r || !r.payp || !k.startsWith(PAYP + "|") || hrs(r.credit) == null) continue;
@@ -977,26 +1009,39 @@ class FlightWatcherScheduleCard extends HTMLElement {
       };
       // FW-0080: the package of the bid period a trip's first day is in (this month's, the one before or after), for its
       // duties' TCRD: fetched only for a trip that starts outside this bid period
-      const packAt = (d) => (inBp(d) ? pkE : this._packE(bpNext(d < bp.from ? "before" : "after")));
+      // 1.7.11 review (F#32): packWait = a package a price or a split asked for is still loading, so the month's
+      // Improved-Pay-Gross waits for it too (priced before it, a trip across the edge counts its block share)
+      let packWait = false;
+      const packAt = (d) => { if (inBp(d)) return pkE; const e = this._packE(bpNext(d < bp.from ? "before" : "after")); if (e === null) packWait = true; return e; };
+      // the package map that lists a trip starting on d: this month's in the bid period, else the bid period's of d
+      const pkOf = (d) => { if (inBp(d)) return pk; const e = packAt(d); return e ? e.map : null; };
       // a row's Block / Credit / Soft as this bid period counts them (PWA 4.A, fwSplit), for the rows, the carried trips
       // and the PAYP estimate. FW-0080: the trip's own duties (FLICA's pairing page), each one's TCRD from its pairings
       // package's detail (the exact pairing, listed on that day, as many duties), else the block share (an estimate);
       // a trip with no duty on file pays in the bid period of its first day (inP: any part of it counts here)
+      // 1.7.11 review (FW-0080): a trip whose own times are not read yet places the package detail's duties
+      // (fwPkgDuties, their TCRD with them), so it splits as the Watcher splits it (pilot_price, package_details)
       const splitOf = (d, trip, ot, cH, bH) => {
-        const du = trip && trip !== "VAC" && trip !== PAYP && Array.isArray(ot.duties) ? ot.duties : [];
-        if (!du.length || !du.every((x) => x && typeof x.dep === "number" && typeof x.blk === "number")) return null;
+        if (!trip || trip === "VAC" || trip === PAYP || !isP(trip)) return null;
+        const own = Array.isArray(ot.duties) && ot.duties.length && ot.duties.every((x) => x && typeof x.dep === "number" && typeof x.blk === "number") ? ot.duties : null;
+        if (!own && Array.isArray(ot.duties) && ot.duties.length) return null;
         const pe = packAt(d), pr = pe && Object.prototype.hasOwnProperty.call(pe.map, trip) && pe.map[trip].days.has(d) ? pe.map[trip] : null;
-        const pd = pr && pr.det && Array.isArray(pr.det.duties) && pr.det.duties.length === du.length ? pr.det.duties : null;
-        return fwSplit(d, du.map((x, i) => ({ dep: x.dep, blk: x.blk, tcrd: pd && pd[i] && typeof pd[i] === "object" ? pd[i].tcrd : null })), bp.from, bp.to, cH, bH);
+        if (!own) { const pdu = fwPkgDuties(pr); return pdu.length ? fwSplit(d, pdu, bp.from, bp.to, cH, bH) : null; }
+        const pd = pr && pr.det && Array.isArray(pr.det.duties) && pr.det.duties.length === own.length ? pr.det.duties : null;
+        return fwSplit(d, own.map((x, i) => ({ dep: x.dep, blk: x.blk, tcrd: pd && pd[i] && typeof pd[i] === "object" ? pd[i].tcrd : null })), bp.from, bp.to, cH, bH);
       };
       const figs = (d, trip, tr) => {
         const ot = trip && trip !== "VAC" ? ((tr || ownT)[`${trip}|${d}`] || {}) : {};
-        const pkr = trip && trip !== "VAC" && trip !== PAYP && pk ? (pk[trip.slice(0, 5)] || {}) : {};
+        // 1.7.11 review: the package of the bid period the trip starts in (a trip from the bid period before is in
+        // that one's package, not this month's)
+        const pkm = isP(trip) ? pkOf(d) : null;  // a pairing only (a code never asks for another package)
+        const pkr = pkm ? (pkm[trip.slice(0, 5)] || {}) : {};
         // 1.6.3: the pairings package writes credit as "15h00"; hrs() reads "15:00", so a trip whose own times are not
         // read yet (a pilot's first days, or any new trip) counted 0:00 and $0 in the row and the month totals
         const pkC = pkr.credit ? String(pkr.credit).trim().replace(/^(\d+)h(\d{2})$/, "$1:$2") : "";
         const bcsAll = trip && trip !== "VAC" ? [ot.blk || "", ot.credit || pkC || "", ot.soft || ""] : ["", "", ""];
-        const sp = splitOf(d, trip, ot, hrs(bcsAll[1]), hrs(bcsAll[0]));
+        const bAll = hrs(bcsAll[0]) != null ? hrs(bcsAll[0]) : ot.blk ? null : hx(pkr.block);  // the package's block for a split
+        const sp = splitOf(d, trip, ot, hrs(bcsAll[1]), bAll);
         const inP = sp ? sp.in : inBp(d), whole = sp ? sp.whole : inP;
         const z = (v) => (v ? "0:00" : "");
         const bcs = whole ? bcsAll : sp ? [sp.bl != null ? hm(sp.bl / 60) : "", sp.cr != null ? hm(sp.cr / 60) : "", sp.cr != null && sp.bl != null ? hm(Math.max(0, sp.cr - sp.bl) / 60) : ""]
@@ -1005,12 +1050,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
       };
       // FW-0080: what a row's split mark says (its part here, and what part pays in the other bid period, PWA 4.A)
       const splitWhy = (d, trip, F) => {
-        if (F.whole || !trip || trip === "VAC" || trip === PAYP) return "";
+        // 1.7.11 review: only a pairing splits (a reserve or other code on a grid day outside the bid period is plain)
+        if (F.whole || !trip || trip === "VAC" || trip === PAYP || !isP(trip)) return "";
         const sd = F.sp && F.sp.side ? F.sp.side : d < bp.from ? "before" : "after";
         const edge = sd === "before" ? `before ${mdy(bp.from)}` : `after ${mdy(bp.to)}`;
         const other = `the ${MONTHS[parseInt(bpNext(sd).slice(5, 7), 10) - 1]} bid period`;
         const all = `${F.bcsAll[0] || "?"} block / ${F.bcsAll[1] || "?"} credit in all`;
-        if (!F.sp) return `${trip}: ${all}, flown ${edge}: it pays in ${other}, the bid period of its first day (PWA 4.A), not in these totals.`;
+        // 1.7.11 review: no duty times on file, so nothing says when any of it flew: it pays where its first day is
+        if (!F.sp) return `${trip}: ${all}, starts ${mdy(d)}; no duty times on file, so the whole trip pays in ${other}, the bid period of its first day (PWA 4.A), not in these totals.`;
         const sp = F.sp, oc = sp.outCr != null ? hm(sp.outCr / 60) : "?", ob = sp.outBl != null ? hm(sp.outBl / 60) : "?";
         if (!sp.in) return `${trip}: ${all}, all flown ${edge}: it pays in ${other} (PWA 4.A), not in these totals.`;
         return `${trip}: ${all}; ${ob} block, ${oc} credit flown ${edge} pay in ${other} (PWA 4.A).` +
@@ -1047,7 +1094,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       const price = (mm, tr) => { let g = 0, other = 0;
         // FW-0080: the rows' rule (figs): each trip its part in this bid period, the trips carried in from no row too
         const one = (d, trip, lay) => {
-          const ot = tr[`${trip}|${d}`] || {}; const pr = pk ? (pk[trip.slice(0, 5)] || {}) : {};
+          const ot = tr[`${trip}|${d}`] || {}; const pm = pkOf(d), pr = pm ? (pm[trip.slice(0, 5)] || {}) : {};
           let cH = hrs(ot.credit); if (cH == null) cH = hx(pr.credit); let bH = hrs(ot.blk); if (bH == null) bH = hx(pr.block);
           const sp = splitOf(d, trip, ot, cH, bH);
           if (!(sp ? sp.in : inBp(d))) return;
@@ -1267,7 +1314,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
         // 1.7.1 (F#32): only once the pairings package is in or known to be missing (pk null = still loading). Priced
         // before that, a trip without its own times pays 0 and no crew override, and the Watcher would store that low
         // figure until the redraw sent the right one (two reports a load, one of them wrong)
-        if (this._impSig[key] !== sig && this._h && !noYear && pk !== null) {
+        // 1.7.11 review: and every other bid period's package a price or split asked for (packWait), so a trip across
+        // the bid period's edge is priced with its duties' TCRD, not its block share first
+        if (this._impSig[key] !== sig && this._h && !noYear && pk !== null && !packWait) {
           this._impSig[key] = sig;
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/improved/set", payload: JSON.stringify({ month: key, awarded: Math.round(awd * 100) / 100, current: Math.round(curG * 100) / 100, ver: vl[vl.length - 1].ver, awarded_ver: vl[0].ver }) });
         }
