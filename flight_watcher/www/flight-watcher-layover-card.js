@@ -38,8 +38,20 @@
 // ("30 and 10 min before", "Off") and "Change in Settings" (the sliders, /flight-watcher/settings). The box, its label
 // and the link are 44 px taps; the box keeps the keyboard focus through a tap and its answer (aria-disabled while
 // waiting, never disabled, which would drop the focus).
+// 1.7.11 (FW-0075, Ryan, Nov 17: "I need to have a plus and a - kind of below the numbers for the van time because in
+// some cases the company adjust the van time a little tiny bit ... so I could set it for 510 for example"): under the
+// van time, "-5 min" and "+5 min" (44 px taps, aria-labels "Van 5 minutes earlier" and "Van 5 minutes later"), only when
+// sensor.<prefix>_layover_van says adjustable (the admin's Watcher placed this van; never Hark's van the Watcher did not
+// place, never in a portal's copy). A press publishes <prefix>/van/adjust/set {van: its van_id, minutes}: the absolute
+// move (the current one, or the one still saving, plus or minus 5, within FW_VAN_ADJUST; a button at an end of the range
+// is disabled), so a repeat or a retry never moves it twice. "Saving..." until the sensor says that adjust_min, "Not
+// saved, try again" after 10 s without it (or a publish error, or the van itself changed). Moved: the big time is the
+// moved van (HST, countdown and alert times too), a line "You moved it -15 min (the package says 05:25)" ("Hark says"
+// for Hark's van) and "Back to 05:25" (minutes 0).
 // Usage: type: custom:flight-watcher-layover-card, update_url: https://... (optional)
 const FW_LAYOVER_NOTE_MAX = 1000;  // layover.NOTE_MAX
+const FW_VAN_ADJUST = { lo: -120, hi: 120, step: 5 };  // layover.ADJUST_RANGE and ADJUST_STEP
+const FW_PORTAL = false;  // portal.portal_card turns it on in a portal's copy (this card is on no portal): no van move there
 class FlightWatcherLayoverCard extends HTMLElement {
   setConfig(c) {
     this._c = { prefix: "flight_watcher", ...(c || {}) };
@@ -47,15 +59,18 @@ class FlightWatcherLayoverCard extends HTMLElement {
     this._tidied = this._tidied || {};
     this._vaWant = this._vaWant === undefined ? null : this._vaWant; this._vaMsg = this._vaMsg || "";
     this._vaMsgOn = this._vaMsgOn === undefined ? null : this._vaMsgOn;
+    this._adj = this._adj || null; this._adjMsg = this._adjMsg || ""; this._adjMsgKey = this._adjMsgKey || "";
   }
   getCardSize() { return 8; }
   connectedCallback() {
     if (!this._tick) this._tick = setInterval(() => this._countdown(), 30000);
     if (this._vaWant !== null && this._vaWant !== undefined && !this._vaT) this._vaWait();  // back while still waiting
+    if (this._adj && !this._adjT) this._adjWait();  // 1.7.11: a van move still saving
   }
   disconnectedCallback() {
     if (this._tick) { clearInterval(this._tick); this._tick = null; }
     if (this._vaT) { clearTimeout(this._vaT); this._vaT = null; }
+    if (this._adjT) { clearTimeout(this._adjT); this._adjT = null; }
   }
   _e(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
   _https(u) { return /^https:\/\/[A-Za-z0-9.-]+(?::\d+)?(\/[^\s"<>]*)?$/.test(String(u || "")) ? String(u) : ""; }
@@ -298,6 +313,56 @@ class FlightWatcherLayoverCard extends HTMLElement {
       <div class="u vas" id="vasub"><span data-vawords>${this._e(words)}</span> &middot; <a href="/flight-watcher/settings" data-vaset>Change in Settings</a></div>
       ${this._vaMsg ? `<div class="warn" data-vamsg>${this._e(this._vaMsg)}</div>` : ""}</div>`;
   }
+  // 1.7.11 (FW-0075): Ryan's move of the Watcher's van for this pairing ({m, local, date}: the minutes and the van as
+  // read), from the van sensor's adjust_min, orig_local and orig_date; null when it is not moved
+  _moved(va, a) {
+    const m = va.adjust_min;
+    return va.at && this._same(va.pairing, a.pairing) && Number.isInteger(m) && m !== 0 && va.orig_local && va.orig_date
+      ? { m, local: String(va.orig_local), date: String(va.orig_date) } : null;
+  }
+  _wdOf(d) {
+    const s = String(d || ""), t = new Date(`${s}T00:00:00Z`);
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) && isFinite(t) ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][t.getUTCDay()] : "";
+  }
+  _adjKey() {
+    const va = (this._st(`sensor.${this._c.prefix}_layover_van`) || {}).attributes || {};
+    return `${va.van_id}|${va.adjust_min}`;
+  }
+  _adjSay(m) { this._adjMsg = m; this._adjMsgKey = this._adjKey(); }
+  // no answer in 10 s (a publish that never returns too): not saved
+  _adjWait() {
+    if (this._adjT) clearTimeout(this._adjT);
+    this._adjT = setTimeout(() => {
+      this._adjT = null;
+      if (!this._adj) return;
+      this._adj = null; this._adjSay("Not saved, try again");
+      this._render();
+    }, 10000);
+  }
+  // the -5 and +5 buttons, the move and Back, under the van time; "" unless the Watcher's sensor says adjustable for
+  // the van shown (vs: the Watcher's reading of it)
+  _adjHtml(va, vs, mv) {
+    this._adjVan = "";
+    if (FW_PORTAL || !vs || va.adjustable !== true || typeof va.van_id !== "string" || !va.van_id) return "";
+    const cur = Number.isInteger(va.adjust_min) ? va.adjust_min : 0, w = this._adj;
+    if (w && (w.van !== va.van_id || w.minutes === cur)) {  // the Watcher says the move asked, or the van changed
+      this._adj = null;
+      if (this._adjT) { clearTimeout(this._adjT); this._adjT = null; }
+      if (w.van !== va.van_id) this._adjSay("Not saved, try again");
+    }
+    if (this._adjMsg && this._adjKey() !== this._adjMsgKey) this._adjMsg = "";  // the Watcher's van changed since
+    this._adjVan = va.van_id; this._adjCur = cur;
+    const { lo, hi, step } = FW_VAN_ADJUST, base = this._adj ? this._adj.minutes : cur;
+    const btn = (d, text, label, off) => `<button class="vbt" data-vadj="${d}"${label ? ` aria-label="${label}"` : ""}${off ? ' disabled aria-disabled="true"' : ""}>${text}</button>`;
+    const orig = mv ? `${mv.local}${mv.date !== String(va.date || "") ? ` ${this._wdOf(mv.date)}` : ""}`.trim() : "";
+    const said = `${va.source === "package" ? "the package" : "Hark"} says ${orig}`;
+    const moved = `You moved it ${cur > 0 ? "+" : "-"}${Math.abs(cur)} min${mv ? ` (${said})` : ""}`;
+    return `<div class="vadj" data-vadjrow>
+      <div class="vab">${btn(-step, "&minus;5 min", "Van 5 minutes earlier", base - step < lo)}${btn(step, "+5 min", "Van 5 minutes later", base + step > hi)}</div>
+      ${this._adj ? `<div class="u" data-vadjpend>Saving...</div>` : ""}
+      ${cur ? `<div class="vmv"><span data-vmoved>${this._e(moved)}</span>${btn(0, this._e(mv ? `Back to ${orig}` : "Undo the move"), "", false)}</div>` : ""}
+      ${this._adjMsg ? `<div class="warn" data-vadjmsg>${this._e(this._adjMsg)}</div>` : ""}</div>`;
+  }
   _go(e, href) {
     if (e.button || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;  // a new tab keeps the link's own way
     e.preventDefault();
@@ -307,6 +372,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     const r0 = this.shadowRoot, focus = r0.activeElement && r0.activeElement.matches && r0.activeElement.matches("[data-draft]");
     const vaFocus = !!(r0.activeElement && r0.activeElement.matches && r0.activeElement.matches("[data-vaon]"));
+    const adjFocus = r0.activeElement && r0.activeElement.getAttribute ? r0.activeElement.getAttribute("data-vadj") : null;
     const prevCity = r0.querySelector("[data-city]");
     const { s, a, hark, w } = this._pick();
     const p = this._c.prefix, n = this._st(`sensor.${p}_layover_notes`);
@@ -319,7 +385,13 @@ class FlightWatcherLayoverCard extends HTMLElement {
       const va = (this._st(`sensor.${p}_layover_van`) || {}).attributes || {};
       const pk = va.at && va.source === "package" && this._same(va.pairing, a.pairing) && va.local && va.date
         ? { local: String(va.local), date: String(va.date), wd: String(va.weekday || ""), place: String(va.place || "") } : null;
-      const vt = pk || (hark ? this._vanText(a, s.state) : null), vs = this._vanSensor(a, vt);
+      // 1.7.11 (FW-0075): Ryan moved the Watcher's van: Hark's text still says its own time, the moved van shows
+      const mv = this._moved(va, a);
+      let vt = pk || (hark ? this._vanText(a, s.state) : null);
+      if (vt && !pk && mv && vt.local === mv.local && vt.date === mv.date) {
+        vt = { local: String(va.local || ""), date: String(va.date || ""), wd: String(va.weekday || ""), place: vt.place };
+      }
+      const vs = this._vanSensor(a, vt);
       // Hark gave a van the Watcher could not place: its text shows, and that no alert comes for it
       const unread = hark && !vt && String(a.van || "").trim() ? String(a.van).trim() : "";
       // on a layover (Hark's layover mode, or the Watcher's next leg out of a station that is not home) with no van:
@@ -327,9 +399,9 @@ class FlightWatcherLayoverCard extends HTMLElement {
       const o = String(a.origin || "").toUpperCase();
       const onLay = /^[A-Z]{3}$/.test(o) && o !== "HNL" && (hark ? a.mode === "layover" : !a.status || a.status === "Scheduled");
       const unknown = !vt && !unread && onLay && !va.at;  // never while the Watcher has a van (and its alerts)
-      // the package's van wins; Hark's own van text, when it says another time, shows under it
-      const hv = pk && hark ? this._harkVan(a, s.state) : null;
-      const hsays = hv && (hv.local !== pk.local || hv.date !== pk.date) ? `Hark says ${hv.local}${hv.date !== pk.date ? ` ${hv.wd}` : ""}` : "";
+      // the package's van wins; Hark's own van text, when it says another time than the package, shows under it
+      const hv = pk && hark ? this._harkVan(a, s.state) : null, pko = pk && mv ? mv : pk;
+      const hsays = hv && (hv.local !== pko.local || hv.date !== pko.date) ? `Hark says ${hv.local}${hv.date !== pko.date ? ` ${hv.wd}` : ""}` : "";
       const rep = this._when("report", a, hark, w, va), dsc = this._when("dep_sched", a, hark, w, va);
       let big;
       if (vt) {
@@ -379,6 +451,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
       main = `<div class="hd"><div class="lt"><div class="fl">&#9992;&#65039; ${this._e(a.flight || a.pairing)} ${this._e(a.origin || "")} &rarr; ${this._e(a.dest || "")}</div>
           <div class="u">${this._e(a.pairing)}${a.leg ? ` &middot; leg ${this._e(a.leg)}` : ""}${a.date ? ` &middot; ${this._e(a.date)}` : ""}${a.tail ? ` &middot; ${this._e(a.tail)}` : ""}</div>
           ${a.mode ? `<span class="mode">${this._e(a.mode === "layover" ? `Layover ${a.origin || ""}` : a.mode)}</span>` : ""}</div>${big}</div>
+        ${vt ? this._adjHtml(va, vs, mv) : ""}
         ${vt ? this._vaHtml() : ""}
         ${vt && vt.place ? `<div class="vp">&#128656; Van at ${this._e(vt.place)}${alerts.length && this._vaShown() ? ` <span class="u">&middot; alerts ${alerts.map((x) => `${x.minutes} min ${x.status === "sent" ? "&#10003;" : x.status === "pending" ? `at ${this._e(x.at_hst)} HST` : this._e(x.status)}`).join(", ")}</span>` : ""}</div>` : ""}
         ${unread ? `<div class="vp" data-vanunread>&#128656; Van: ${this._e(unread)} <span class="u">&middot; no van alert: its time could not be read for sure</span></div>` : ""}
@@ -415,6 +488,11 @@ class FlightWatcherLayoverCard extends HTMLElement {
       .vck input:focus-visible+.bx{outline:2px solid var(--primary-color);outline-offset:2px}
       .vck.pend,.vck.pend input{cursor:default}.vck.pend .bx{opacity:.6}
       .vas a{display:inline-flex;align-items:center;min-height:44px}
+      .vadj{display:flex;flex-direction:column;align-items:flex-end;text-align:right;gap:4px;margin:6px 0 0}
+      .vab{display:flex;gap:8px;justify-content:flex-end}
+      button.vbt{min-width:64px;min-height:44px;padding:0 12px;font-size:15px;font-variant-numeric:tabular-nums;background:none;color:var(--primary-text-color);border:1px solid var(--secondary-text-color)}
+      button.vbt:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px}
+      .vmv{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:4px 8px;font-size:13px;font-weight:600}
       .tm{margin:8px 0;display:grid;gap:2px}.k{display:inline-block;min-width:62px;color:var(--secondary-text-color);font-size:12px;font-weight:600}
       .stt{font-size:13px;margin:4px 0}
       .chips{display:flex;flex-wrap:wrap;gap:10px 6px;margin:12px 0}
@@ -474,6 +552,26 @@ class FlightWatcherLayoverCard extends HTMLElement {
         this._vaWant = null; this._vaSay(`Didn't send: ${(e && e.message) || "no connection"}. Try again.`); this._render();
       }
     };
+    r.querySelectorAll("[data-vadj]").forEach((b) => {
+      if (adjFocus !== null && b.getAttribute("data-vadj") === adjFocus && !b.disabled) b.focus({ preventScroll: true });
+      b.onclick = async () => {  // 1.7.11 (FW-0075): the absolute move, from the one still saving if any
+        if (b.disabled || !this._adjVan) return;
+        const d = Number(b.dataset.vadj), { lo, hi } = FW_VAN_ADJUST, van = this._adjVan;
+        const want = d === 0 ? 0 : (this._adj ? this._adj.minutes : this._adjCur) + d;
+        if (!Number.isInteger(want) || want < lo || want > hi) return;
+        this._adj = { van, minutes: want }; this._adjMsg = "";
+        this._adjWait();
+        this._render();
+        try { await this._pub("van/adjust/set", { van, minutes: want }); }
+        catch (e) {
+          if (this._adj && this._adj.van === van && this._adj.minutes === want) {
+            if (this._adjT) { clearTimeout(this._adjT); this._adjT = null; }
+            this._adj = null;
+          }
+          this._adjSay(`Not saved, try again (${(e && e.message) || "no connection"})`); this._render();
+        }
+      };
+    });
     const vl = r.querySelector("[data-vaset]");
     if (vl) vl.onclick = (e) => this._go(e, vl.getAttribute("href"));
     const msg = (t, bad) => { const m = r.querySelector("[data-nmsg]"); if (m) { m.textContent = t; m.className = bad ? "warn" : "u"; } };

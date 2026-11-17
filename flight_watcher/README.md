@@ -506,7 +506,14 @@ Recent finds.
   latest one goes at once (a setting never leaves the van with no alert); one whose mark is ahead goes at it; a slider
   moved after its own alert went sends no other for that van; an alert already sent is never sent again; a van moved
   or learned later, and the late start after a restart, are as above. The van sensor carries `alerts_on` and `offsets` (the lead times, largest first)
-  and an alert per lead time. Layover notes:
+  and an alert per lead time. Moving the van (1.7.11, FW-0075, Ryan Nov 17: the company moves a van a few minutes, "so
+  I could set it for 510"): the layover card's "-5 min" and "+5 min" under the van time (only when the sensor says
+  `adjustable`: a van the Watcher placed, on the admin's instance) publish `flight_watcher/van/adjust/set`
+  `{"van": <van_id>, "minutes": <the move>}`, the absolute move from the van as read (a whole multiple of 5 from -120
+  to +120; 0 puts it back), kept in the Watcher's state across restarts (at most 8 moves). The moved van is a new van
+  time: its alerts, the push and the sensor use it (`adjust_min`, and `orig_local` and `orig_date`, the van as read);
+  the card says "You moved it -15 min (the package says 05:25)" with "Back to 05:25". A van that changes (a new
+  package, Hark's text, another pairing) drops the move, with one log line. Layover notes:
   `flight_watcher/layover/note` {city, text, rid} adds a note (plain text, at most 1000 characters, the city a
   3-letter station code; {city, delete: <id>, rid} removes one), stored in
   `/share/flight_watcher/layovers/<CITY>.json` (folder 0700, files 0600; never in git or a portal export);
@@ -516,8 +523,8 @@ Recent finds.
   changed and is left off the sensor (`unreadable`). `sensor.flight_watcher_layover_notes` (retained on
   `flight_watcher/layover_notes`): count, and by city the guide and the newest notes, the current layover station
   first, within 12000 bytes, plus the answer to the last note command. A pilot's instance has none of this (roles:
-  `admin_pushes`, `one_writer`), a portal refuses `layover/note`, and the van setting commands are never a portal's
-  (`roles.NOT_ON_PORTAL`).
+  `admin_pushes`, `one_writer`), a portal refuses `layover/note`, and the van setting and van move commands are never
+  a portal's (`roles.NOT_ON_PORTAL`).
 
 ## Dashboard cards and pushes
 

@@ -68,7 +68,7 @@ import pilotpdf as PP
 import pilotdb as PDBM
 import pdbshare as PS
 
-VERSION = "1.7.10"
+VERSION = "1.7.11"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -350,6 +350,9 @@ def on_message(c, u, msg):
         return
     if msg.topic in (f"{T}/van/alerts/set", f"{T}/van/first_min/set", f"{T}/van/second_min/set"):  # 1.7.2: admin
         van_setting_cmd(c, msg.topic[len(T) + 1:], msg.payload.decode(errors="replace"))
+        return
+    if msg.topic == f"{T}/van/adjust/set":  # 1.7.11 (FW-0075): the admin moves the van in 5 minute steps
+        van_adjust_cmd(c, msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/ticket/new":
         ticket_safe(ticket_new, msg.payload.decode(errors="replace"))
@@ -9800,7 +9803,8 @@ LAYOVERS_DIR = "/share/flight_watcher/layovers"  # <CITY>.json notes and <CITY>.
 LAYOVER_NOTE_BYTES = 8192  # a layover/note command's payload, at most
 LAYOVER_SCAN_S = 30  # the notes folder is looked at this often (a guide Claude wrote shows within it)
 _VAN = {"read": None, "status": None, "attrs": None, "state": "", "why": None, "sig": None, "city": "", "last": None,
-        "seen": None}  # seen: the last van van_tick placed (1.7.2: the van a setting applies to)
+        "seen": None, "moved": None}  # seen: the last van van_tick placed (1.7.2: the van a setting applies to);
+# moved (1.7.11): (van_id, minutes) of Ryan's move applied to the van in hand, None when it is not moved
 _LN = {"sig": None, "files": None, "checked": None, "last": {}, "city": None}
 # the uploads janitor (layover_notes_tick) and the MQTT thread (layover_note_cmd) both publish the notes sensor: one at
 # a time, each building its payload under the lock, so a payload built before a note was written is never the last one
@@ -9931,15 +9935,139 @@ def van_setting_cmd(c, sub, payload, now=None):
 def van_keep(done, info):
     """VAN_DONE bounded: the newest VAN_KEEP keys by when each was written, and always every key of the van in hand, so
     a run of lead time changes (each a skipped key) can never push out an alert already sent for it and send it
-    again. The van in hand has at most one key a lead time (1 to 120 min)."""
-    pre = LO.key(info, 0).rsplit("|", 1)[0] + "|" if info else None
+    again. The van in hand has at most one key a lead time (1 to 120 min). 1.7.11 (FW-0075): a moved van keeps the keys
+    of the van as read too, so moving it back never sends one of its alerts again (two keys a lead time at most)."""
+    pres = (LO.key(info, 0).rsplit("|", 1)[0] + "|", LO.van_id(info) + "|") if info else ()
     when = lambda kv: str((kv[1] or {}).get("at") or "")  # noqa: E731
-    mine = {k: v for k, v in done.items() if pre and k.startswith(pre)}
+    mine = {k: v for k, v in done.items() if any(k.startswith(p) for p in pres)}
     rest = sorted(((k, v) for k, v in done.items() if k not in mine), key=when)
     n = max(0, VAN_KEEP - len(mine))
     keep = dict(rest[-n:]) if n else {}
     keep.update(mine)
     return dict(sorted(keep.items(), key=when))
+
+
+# 1.7.11 (FW-0075, Ryan, Nov 17: "I need to have a plus and a - kind of below the numbers for the van time because in
+# some cases the company adjust the van time a little tiny bit ... so I could set it for 510 for example").
+# S["van_adjust"] {van_id: minutes}: Ryan's move of a van (layover.van_id, the van as read; layover.adjusted), a whole
+# multiple of 5 from -120 to 120, set from the layover card's -5 and +5 min ({T}/van/adjust/set). van_tick applies it
+# right after van_source, so the keys, the alerts, the sensor and the van a setting applies to are the moved van's (a
+# new van time: the 1.7.1 and 1.7.2 rules). A van that changed (a new package, Hark's text, another pairing) is another
+# van_id: the move no longer applies. The admin only (roles: admin_pushes), like the alerts.
+VAN_ADJUST_KEEP = 8  # moves kept, the newest, and always the van in hand's
+VAN_ADJUST_BYTES = 512  # a van/adjust/set payload, at most
+VAN_ADJUST_ID_MAX = 64  # characters of a van_id kept ('H3681|2026-11-18T13:25Z' is 23)
+
+
+def van_adjusts():
+    """S["van_adjust"] as kept: {van_id: minutes} of the valid moves only, in the order they were made (a hand-edited
+    state cannot put in one the card could not make: 0, out of range, not a multiple of 5, a bool, a float, text)."""
+    v = S.get("van_adjust")
+    if not isinstance(v, dict):
+        return {}
+    return {k: m for k, m in v.items()
+            if isinstance(k, str) and 0 < len(k) <= VAN_ADJUST_ID_MAX and LO.adjust_ok(m) and m != 0}
+
+
+def van_adjust_keep(adj, keep_id):
+    """adj bounded: at most VAN_ADJUST_KEEP moves, the newest (the last made goes last), and always keep_id's (the van
+    in hand)."""
+    if len(adj) <= VAN_ADJUST_KEEP:
+        return dict(adj)
+    rest = [k for k in adj if k != keep_id]
+    keep = set(rest[len(rest) - (VAN_ADJUST_KEEP - (1 if keep_id in adj else 0)):]) | {keep_id}
+    return {k: m for k, m in adj.items() if k in keep}
+
+
+def van_orig_words(info):
+    """'Hark says 05:25' or 'the package says 05:25': the van as read, of a moved van (with its date when the move
+    crossed midnight)."""
+    who = "the package says" if info.get("source") == "package" else "Hark says"
+    od = info.get("orig_date") or info["date"]
+    return f"{who} {info.get('orig_local') or info['local']}" + (f" on {od}" if od != info["date"] else "")
+
+
+def van_apply_move(info):
+    """1.7.11: the van as read moved by Ryan's move for it (S["van_adjust"], layover.adjusted), else as read. When the
+    van itself changed since a move applied (another van_id: a new package, Hark's text, another pairing), the move no
+    longer applies: one log line, and it stays in S within its bound. A sweep with no van (Hark not answering) changes
+    nothing. Under _VAN_LOCK."""
+    if not info:
+        return info
+    vid = LO.van_id(info)
+    prev = _VAN.get("moved")
+    if prev and prev[0] != vid:
+        log.info("van: the %+d min move no longer applies: the van time changed", prev[1])
+    m = van_adjusts().get(vid, 0)
+    _VAN["moved"] = (vid, m) if m else None
+    return LO.adjusted(info, m) if m else info
+
+
+def van_republish(t):
+    """The van sensor again, even unchanged (after a van move command, refused or not), for the van van_tick has in
+    hand."""
+    last = _VAN.get("last")
+    if last is not None:
+        publish_layover_van(last[0], last[1], DB.get(VAN_DONE) or {}, t, force=True)
+
+
+def van_adjust_cmd(c, payload, now=None):
+    """1.7.11 (FW-0075, Ryan, Nov 17): {T}/van/adjust/set {"van": <van_id>, "minutes": <int>} moves the van in hand (the
+    last van van_tick placed, as for a van setting) to minutes from the van as read: absolute, never a step, so a
+    repeated press or a retry never moves it twice; 0 puts it back (the entry goes). Kept in S["van_adjust"]
+    (save_state, so a restart keeps it; at most VAN_ADJUST_KEEP, the van in hand's always). Refused with one log line
+    and nothing changed when the payload is not a JSON object of at most VAN_ADJUST_BYTES, the minutes are not a whole
+    multiple of 5 from -120 to 120 (a bool, a float, NaN or text are not; nothing here can end paho's thread), there is
+    no van in hand, or the van is not the van in hand's (it changed since the card drew it). Either way the van sensor
+    goes again, so the card stops waiting. One log line a change, no crew names. The sensor says the moved van at once;
+    its alerts follow at the next sweep (van_tick: a moved van is a new van time). Returns True when the move changed.
+    Nothing on a pilot's instance."""
+    if not has("admin_pushes"):
+        log.info("van move refused: not for a pilot instance")
+        return False
+    p = payload if isinstance(payload, str) else str(payload or "")
+    d = None
+    if len(p.encode("utf-8", errors="replace")) <= VAN_ADJUST_BYTES:
+        try:
+            d = json.loads(p)
+        except (ValueError, RecursionError):  # JSONDecodeError is a ValueError; a deep nest is a RecursionError
+            d = None
+    t = (now or datetime.now(HST)).astimezone(HST)
+    with _VAN_LOCK:
+        seen = _VAN.get("seen")
+        m = d.get("minutes") if isinstance(d, dict) else None
+        why = (f"not a JSON object of at most {VAN_ADJUST_BYTES} bytes" if not isinstance(d, dict)
+               else "the minutes must be a whole multiple of 5 from -120 to 120" if not LO.adjust_ok(m)
+               else "no van in hand" if not seen
+               else "not the van in hand (the van time changed)" if d.get("van") != LO.van_id(seen) else "")
+        if why:
+            log.info("van move refused: %s; nothing changed", why)
+            van_republish(t)
+            return False
+        vid = LO.van_id(seen)
+        adj = van_adjusts()
+        if adj.get(vid, 0) == m:  # the same move again (a retry, a double tap): nothing to change
+            van_republish(t)
+            return False
+        adj.pop(vid, None)
+        if m:
+            adj[vid] = m
+        S["van_adjust"] = van_adjust_keep(adj, vid)
+        save_state(S)
+        moved = LO.adjusted(seen, m)
+        where = f"{moved['pairing']} {moved['city']} {moved['date']} {moved['local']} {moved['abbr']}"
+        if m:
+            log.info("van: moved %+d min by Ryan: %s (%s)", m, where, van_orig_words(moved))
+        else:
+            log.info("van: moved back by Ryan: %s (%s)", where,
+                     "the package's time" if moved.get("source") == "package" else "Hark's time")
+        _VAN["seen"], _VAN["moved"] = moved, ((vid, m) if m else None)
+        _VAN["why"] = (LO.key(moved, 0), moved["source"])  # the next sweep does not log the same van again
+        last = _VAN.get("last")
+        if last is not None and last[0] is not None and LO.van_id(last[0]) == vid:
+            _VAN["last"] = (moved, last[1])
+        van_republish(t)
+    return True
 
 
 def van_read(mono):
@@ -10059,6 +10187,7 @@ def van_tick(now=None, mono=None):
         own = None
     info, why = van_source(own, a, _VAN["state"])
     with _VAN_LOCK:
+        info = van_apply_move(info)  # 1.7.11 (FW-0075): Ryan's move, before the keys, due, the sensor and seen
         vs = van_settings()
         offs = van_offsets(vs)
         active = offs if vs["on"] else ()
@@ -10067,9 +10196,11 @@ def van_tick(now=None, mono=None):
         if seen != _VAN["why"]:
             _VAN["why"] = seen
             if info:
-                log.info("van: %s %s %s at %s %s (%s HST %s), %s (from %s)", info["pairing"],
+                log.info("van: %s %s %s at %s %s (%s HST %s), %s (from %s%s)", info["pairing"],
                          info["city"], info["date"], info["local"], info["abbr"], info["hst"], info["hst_date"],
-                         van_words(vs), "the pairings package" if info["source"] == "package" else "Hark")
+                         van_words(vs), "the pairings package" if info["source"] == "package" else "Hark",
+                         f"; moved {info['adjust_min']:+d} min by Ryan; {van_orig_words(info)}"
+                         if info.get("adjust_min") else "")
             else:
                 log.info("van alerts: none (%s)", why)
         city = info["city"] if info else own["city"] if own else (
@@ -10108,9 +10239,10 @@ def forget_layover_sigs():
 
 def publish_layover_van(info, why, done, now, force=False, vs=None):
     """{T}/layover_van (retained), sensor.{T}_layover_van: layover.sensor; published when it changes. 1.7.2: with the
-    van settings (vs, van_settings): alerts_on, offsets and the alerts of the lead times set."""
+    van settings (vs, van_settings): alerts_on, offsets and the alerts of the lead times set. 1.7.11 (FW-0075): with a
+    van, adjustable, van_id, adjust_min and the van as read when moved (the layover card's -5 and +5 min)."""
     vs = vs or van_settings()
-    d = LO.sensor(info, why, done, now, van_offsets(vs), vs["on"])
+    d = LO.sensor(info, why, done, now, van_offsets(vs), vs["on"], adjustable=has("admin_pushes"))
     sig = json.dumps(d, sort_keys=True)
     if not force and sig == _VAN["sig"]:
         return False

@@ -118,6 +118,7 @@ SUBS = {
     "upload/pdf": "pilot_uploads",  # 1.7.2 (FW-0066): portal only (PORTAL_SUBS), a pilot's upload in chunks
     # 1.7.2 (Ryan, Nov 12): the van alerts' switch and lead times, the admin's (a pilot has no van alerts)
     "van/alerts/set": "admin_pushes", "van/first_min/set": "admin_pushes", "van/second_min/set": "admin_pushes",
+    "van/adjust/set": "admin_pushes",  # 1.7.11 (FW-0075): Ryan moves the van in hand in 5 minute steps (layover card)
     # 1.7.9 (revision 4): portal only (PORTAL_SUBS), a shared pilot's note and field edit; his Watcher only checks them
     # and hands them to the admin's inbox (the admin never subscribes: it reads the inbox folder)
     "pilotdb/note": "pilotdb", "pilotdb/edit": "pilotdb",
@@ -305,8 +306,9 @@ PORTAL_REFUSED = ("email/alert", "crew_scan/press", "upload/chunk", "drop/set", 
                   "hunt/state", "pause/state", "recall/set", "layover/note", "upload/decide")
 # 1.7.1 (FW-0072): subs added after a contract revision that a portal never offers, refused as "anything else" until a
 # later revision names them in PORTAL_REFUSED (1.7.2, revision 3: layover/note is named there now). 1.7.2 (after
-# revision 3, Ryan Nov 12): the admin's van alert settings (the spool refuses anything not in PORTAL_CMDS)
-NOT_ON_PORTAL = ("van/alerts/set", "van/first_min/set", "van/second_min/set")
+# revision 3, Ryan Nov 12): the admin's van alert settings (the spool refuses anything not in PORTAL_CMDS). 1.7.11
+# (FW-0075): the admin's van move, never a portal's (no contract change)
+NOT_ON_PORTAL = ("van/alerts/set", "van/first_min/set", "van/second_min/set", "van/adjust/set")
 # the tabs of the portal (portal_layout.json), and the one each event opens (ntfy Click, the events list); 1.7.0: the
 # Tickets tab last, so the five tabs before it keep their places in the tab bar
 PORTAL_TABS = ("watcher", "schedule", "pilot", "recall", "settings", "tickets")

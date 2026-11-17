@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.7.11
+
+### FW-0075: move the van time in 5 minute steps
+
+Ryan's ticket (Nov 17, page Watcher): "I need to have a plus and a - kind of below the numbers for the van time because
+in some cases the company adjust the van time a little tiny bit to accommodate local things that are happening and so
+in this case my [van time] says 5:25 am and I would want to be able to switch the van time in five minute increments
+so I could set it for 510 for example". The admin's instance only; no FLICA page load, no contract change.
+
+- **The layover card**: under the big van time, "-5 min" and "+5 min" (44 px taps; aria-labels "Van 5 minutes earlier"
+  and "Van 5 minutes later"). They show only when `sensor.flight_watcher_layover_van` says `adjustable` (the Watcher
+  placed the van the card shows): never for Hark's van the Watcher did not place, never in a portal's copy of the card
+  (it now has the `FW_PORTAL` flag; it is on no portal). A press publishes `flight_watcher/van/adjust/set`
+  `{"van": <van_id>, "minutes": <the move>}`: the absolute move from the van as read (the current move, or the one
+  still saving, plus or minus 5), so a repeated press or a retry never moves it twice. A button at an end of the
+  range (-120 and +120 min) is disabled. "Saving..." until the sensor says the new move; "Not saved, try again" after
+  10 s without it, after a publish error, or when the van itself changed meanwhile. Moved, the big time, its HST, the
+  countdown and the alert times are the moved van's; under the buttons "You moved it -15 min (the package says
+  05:25)" ("Hark says" for Hark's van; its weekday when the move crossed midnight) and "Back to 05:25" (minutes 0).
+  When the package's van wins, "Hark says ..." still shows only when Hark says another time than the package did.
+  Every value is escaped; light and dark; 390 px with no sideways scroll.
+- **`layover.py`**: `adjusted(info, minutes)` moves the van's instant by a whole multiple of 5 in `ADJUST_RANGE`
+  (-120 to +120), then reads its local time, date, weekday and zone letters again on the station's zone (daylight
+  time right: 03:10 AEDT less 15 min is 01:55 AEST; midnight right: 00:05 less 10 is 23:55 the day before) and its
+  HST time and date; a moved van has `adjust_min`, `orig_local` and `orig_date`. `van_id(info)` is the van before any
+  move (the pairing's base id and the van instant as read, UTC). `adjust_ok` is the check: an int (never a bool, a
+  float or text), a multiple of 5, in the range. The sensor gets `adjustable`, `van_id`, `adjust_min` (0 when not
+  moved) and, moved, `orig_local` and `orig_date`, with a van on the admin's instance; nothing new without one.
+- **The Watcher**: `S["van_adjust"]` `{van_id: minutes}` (kept across a restart; at most 8, the newest, the van in
+  hand's always). The command is refused with one log line and nothing changed (the van sensor still goes again, so
+  the card stops waiting) when the payload is not a JSON object of at most 512 bytes, the minutes are not a whole
+  multiple of 5 from -120 to 120 (NaN, 1e999, "5", 5.0 and true are not; nothing in it can end paho's thread), there
+  is no van in hand, or the van is not the van in hand's; a pilot's instance refuses it (roles: `admin_pushes`; it is
+  in `roles.NOT_ON_PORTAL`, so a portal's spool refuses it like the van settings). 0 removes the move. One log line a
+  change, no crew names: "van: moved -15 min by Ryan: H3681 LAS 2026-11-18 05:10 PST (the package says 05:25)". The
+  sensor says the moved van at once. `van_tick` applies the move right after `van_source`, under the van lock, so the
+  keys, the alerts, the sensor and the van a setting applies to are the moved van's: a moved van is a new van time
+  (a new key) and follows the 1.7.1 and 1.7.2 rules (a late start sends the latest alert still due, worded with the
+  minutes left; nothing after the van). Moving it back to the van as read never sends one of that van's alerts again
+  (`van_keep` keeps its keys while it is moved). When the van itself changes (a new package, Hark's text, another
+  pairing) the move no longer applies: one log line ("van: the -15 min move no longer applies: the van time
+  changed"), and it stays in the state only within the 8. A sweep that cannot read Hark's sensor drops nothing.
+
 ## 1.7.10
 
 Ryan's decisions of Nov 15 about the pilot database: "The pilot database should be shared with James 100%; we work on
