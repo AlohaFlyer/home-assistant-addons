@@ -7749,8 +7749,8 @@ def name_directory():
             if emp and name and (emp not in rows or not rows[emp]["first"]):
                 last, _, first = (x.strip() for x in name.partition(","))
                 rows[emp] = {"emp": emp, "last": last.title(), "first": first.title(),
-                             "seat": seat or (rows.get(emp) or {}).get("seat", ""),
-                             "base": (rows.get(emp) or {}).get("base", "")}
+                             "seat": seat or _same_pilot(rows.get(emp), last, "seat"),
+                             "base": _same_pilot(rows.get(emp), last, "base")}
     for k, rec in ((seniority_data() or {}).get("pilots") or {}).items():
         for r in [rec] + list(rec.get("also") or []):
             name = str(r.get("name") or "")
@@ -7758,20 +7758,22 @@ def name_directory():
             name = name.title() if name in (name.upper(), name.lower()) else name
             last, _, first = (x.strip() for x in name.partition(","))
             if k and last:  # the union's list has no seat: the award's, when it names the pilot
+                # 1.7.11 review (F4): an earlier row's seat and base only when it names this last name (a number
+                # whose record has 'also' records: another pilot on that number never gets the first one's)
                 rows[k] = {"emp": k, "last": last, "first": first,
-                           "seat": str(r.get("seat") or (rows.get(k) or {}).get("seat") or "").upper()[:2],
-                           "base": _base(r.get("base")) or (rows.get(k) or {}).get("base", "")}
+                           "seat": str(r.get("seat") or _same_pilot(rows.get(k), last, "seat")).upper()[:2],
+                           "base": _base(r.get("base")) or _same_pilot(rows.get(k), last, "base")}
     # 1.7.10 (Ryan, Nov 15: the lookup searches the pilot database, all pilots): every live record's name and seat
     # (the admin's own database; a portal pilot's own pilotdb file, unless Ryan turned his share off). A record's
     # 'Last, First' wins over a file's; a record with a last name only fills in a number no file names
     for k, last, first, seat, base in db_rows:
         old = rows.get(k)
         if old and old["first"] and not first:
-            if _base(base):  # 1.7.11: the record's base still wins over a file's
+            if _base(base) and _same_pilot(old, last, "last"):  # 1.7.11: the record's base still wins over a file's
                 old["base"] = _base(base)
             continue
-        rows[k] = {"emp": k, "last": last, "first": first, "seat": (seat or (old or {}).get("seat") or "").upper()[:2],
-                   "base": _base(base) or (old or {}).get("base", "")}
+        rows[k] = {"emp": k, "last": last, "first": first, "seat": (seat or _same_pilot(old, last, "seat")).upper()[:2],
+                   "base": _base(base) or _same_pilot(old, last, "base")}
     out = [dict(r, name=f"{r['last']}, {r['first']}".strip(" ,")) for r in rows.values()]
     _NAME_DIR.update(sig=sig, rows=out)
     return out
@@ -7781,6 +7783,12 @@ def _base(v):
     """1.7.11 (FW-0078): a base as the pick list shows it (3 capital letters, 'HNL'), else ''."""
     v = str(v or "").strip().upper()
     return v if re.fullmatch(r"[A-Z]{3}", v) else ""
+
+
+def _same_pilot(old, last, field):
+    """1.7.11 review (F4): name_directory's earlier row's field (its seat or base) for a row of the same employee
+    number, only when that row names the same last name (_lkey); '' for another pilot on the number."""
+    return str((old or {}).get(field) or "") if old and _lkey(old.get("last")) == _lkey(last) else ""
 
 
 def pilotdb_name_rows():
@@ -7869,12 +7877,22 @@ def pick_id(emp):
     return hashlib.sha256(f"{PICK_SALT}|{emp}".encode()).hexdigest()[:12]
 
 
-def pick_bases(emps):
-    """1.7.11 (FW-0078): {emp: base} for a pick list (name_directory's base: the pilot database record's, else the
-    award's or the seniority list's); a pilot with none is left out. Never raises."""
+def pick_bases(hits):
+    """1.7.11 (FW-0078): {emp: base} for the admin's pick list ([{emp, name}] hits): a hit's own base when it has one
+    (a pilot database hit: its record's domicile, pilotdb.name_hits), else name_directory's (the pilot database
+    record's, else the award's or the seniority list's) only when that row names the same last name as the hit
+    (review F3: a number two records share has one directory row, maybe another pilot's). A pilot with none is left
+    out. Never raises."""
     try:
-        want = set(emps)
-        return {r["emp"]: r["base"] for r in name_directory() if r["emp"] in want and r.get("base")}
+        hits = list(hits)
+        out = {h["emp"]: _base(h.get("base")) for h in hits if _base(h.get("base"))}
+        want = {h["emp"]: _lkey(str(h.get("name") or "").partition(",")[0]) for h in hits if h["emp"] not in out}
+        if want:
+            for r in name_directory():
+                k = r["emp"]
+                if k in want and k not in out and r.get("base") and want[k] and _lkey(r["last"]) == want[k]:
+                    out[k] = r["base"]
+        return out
     except Exception as e:  # noqa: BLE001 (type only: a message could carry a name)
         log.info("pilot lookup: bases not read: %s", type(e).__name__)
         return {}
@@ -8034,7 +8052,7 @@ def pilot_cmd(payload):
             elif len(hits) == 1:
                 emp, d["name"] = hits[0]["emp"], hits[0]["name"]
             elif hits:
-                bases = pick_bases(h["emp"] for h in hits)  # 1.7.11 (FW-0078): the base beside the seat and number
+                bases = pick_bases(hits)  # 1.7.11 (FW-0078): the base beside the seat and number (review F3: the hit's own)
                 pub_pilot({"emp": "", "name": q, "status": f"{len(hits)} pilots match '{q}', pick one",
                            "matches": [pick_entry(h["emp"], h["name"], h.get("pos"), bases.get(h["emp"])) for h in hits],
                            "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
@@ -8075,15 +8093,16 @@ def pilot_cmd(payload):
 
 def pilot_cached(emp, month=""):
     """The stored read of a pilot's month (DB pilot_sched:<emp>, the lookup with no month: FLICA's default month), or
-    1.7.11 (FW-0076) for a month: its own read (pilot_sched:<emp>:<YYYY-MM>), else the default read when it holds that
-    month. None when there is none (the caller checks its age)."""
+    1.7.11 (FW-0076) for a month: its own read (pilot_sched:<emp>:<YYYY-MM>) or the default read when it holds that
+    month, whichever is newer (review F1: a month tap and a lookup with no month each write one key, so both can hold
+    the same month; the newer read by fetched_ts wins, so a tap never reads FLICA again, or shows an older read, while
+    a newer read of its month is on hand). None when there is none (the caller checks its age). With no month the
+    default read alone, as always (FLICA's default month may have moved on since a month tap)."""
+    base = DB.get(f"pilot_sched:{emp}")
     if not month:
-        return DB.get(f"pilot_sched:{emp}")
-    rec = DB.get(f"pilot_sched:{emp}:{month}")
-    if rec:
-        return rec
-    rec = DB.get(f"pilot_sched:{emp}")
-    return rec if rec and rec.get("month") == month else None
+        return base
+    recs = [r for r in (DB.get(f"pilot_sched:{emp}:{month}"), base) if r and r.get("month") == month]
+    return max(recs, key=lambda r: float(r.get("fetched_ts") or 0)) if recs else None
 
 
 def pilot_check(fl):
@@ -8096,6 +8115,7 @@ def pilot_check(fl):
             S["pilot_paused_said"] = req["emp"]
             pub_pilot({"emp": req["emp"], "name": req.get("name") or "", "month": "", "days": [], "items": [],
                        "totals": {}, "updated": "", "fetched": now_iso(),
+                       **({"asked_month": req["month"]} if req.get("month") else {}),  # 1.7.11 review (F5)
                        "status": f"Schedule Lookup reads are paused until {hst_hm(BRK.until('lookup'))} HST; "
                                  "this lookup runs then"})
         return False
@@ -8132,6 +8152,7 @@ def pilot_check(fl):
         cur = local_now()
         bd = f"{cur.month:02d}{cur.year % 100:02d}"
         urls = (IF.CM_SCHED.format(base=BASE, emp=emp), IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bd))
+    want = {"asked_month": month} if month else {}  # 1.7.11 review (F5): a reply with no month names the month asked
     captured = False
     try:
         sched, html = None, ""
@@ -8147,9 +8168,11 @@ def pilot_check(fl):
             log.info("pilot lookup: %s gave %s: %s", CAPS.mask_emp(url.split("?")[1]), classify(html),
                      page_log(visible_text(html)[:200]))
         if not sched:
-            pilotver_capture_rebuild(emp, req.get("name") or "")  # FW-0069: the crew index's view, when it has one
+            # FW-0069: the crew index's view, when it has one. 1.7.11 review (F5): of the month asked for (a month
+            # tap), named in the reply (asked_month), so the card shows that month's rebuild, never this month's
+            pilotver_capture_rebuild(emp, req.get("name") or "", month or None)
             pub_pilot({"emp": emp, "name": req.get("name") or "", "status": pilot_unreadable_status(html),
-                                   "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": now_iso()})
+                       "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": now_iso(), **want})
             log.info("pilot lookup: schedule page not readable (%s)", classify(html))
             S.pop("pilot_req", None)
             save_state(S)
@@ -8194,9 +8217,9 @@ def pilot_check(fl):
     except Exception as e:
         log.info("pilot lookup: schedule read failed: %s", e)
         if not captured:
-            pilotver_capture_rebuild(emp, req.get("name") or "")  # FW-0069
+            pilotver_capture_rebuild(emp, req.get("name") or "", month or None)  # FW-0069 (review F5: the month asked)
         pub_pilot({"emp": emp, "name": req.get("name") or "", "status": f"error: {e}", "month": "", "days": [],
-                               "items": [], "totals": {}, "updated": "", "fetched": now_iso()})
+                   "items": [], "totals": {}, "updated": "", "fetched": now_iso(), **want})
     S.pop("pilot_req", None)
     save_state(S)
     return True
@@ -8481,6 +8504,10 @@ def pub_pilot(payload):
     try:
         emp = re.sub(r"\D", "", str(payload.get("emp") or ""))
         month = str(payload.get("month") or "")
+        if not re.fullmatch(r"\d{4}-\d{2}", month):
+            # 1.7.11 review (F5): a reply with no month to a month tap (loading, waiting, not readable, an error)
+            # carries the month asked for: the crew index's view of that month, never this one
+            month = str(payload.get("asked_month") or "")
         if not re.fullmatch(r"\d{4}-\d{2}", month):
             month = local_now().strftime("%Y-%m")
         insts, rows = crew_instances(), DB.crew_rows()

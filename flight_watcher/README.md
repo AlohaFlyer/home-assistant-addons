@@ -170,7 +170,10 @@ month's Schedule Lookup page alone (one page load, then the pairing pages as bef
 FLICA budget and the host gate), keeps a 6 h cache per month and answers "Loading Nov 2026..." while it waits. A
 lookup with no month (a name, a pick, a #pilot= link) reads FLICA's default month exactly as before. With HOM 1.9.1
 still live, a month tap on the portal is refused by HOM's pinned shape and the card says the month choice needs a
-portal update; nothing else changes.
+portal update (on the card the portal's shell draws again, too); nothing else changes. A month tap the Watcher keeps
+for later (yielded, paused) reads "Loading Nov 2026..." with that month pressed; a month that did not read is named on
+its status line, with that month's rebuild from the crew lists; a tap answers from the newer read of its month on hand
+(the month's own or the one with no month); the pick list's base is never another record's on a shared number.
 
 **A pilot's contacts list (1.7.10, contract 1 revision 5; Ryan, Nov 16).** While the pilot database is shared with
 him, the pilot uploads card also offers "Contacts list (CSV)": the airline contacts list's CSV export (first row

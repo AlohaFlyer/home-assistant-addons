@@ -3,7 +3,13 @@ seat, base and employee number, escaped, wrapping at 390 px, 44 px targets; a pi
 id) and FW-0076 (the month buttons: this HST month and the next under the heading of a pilot's month, the shown one
 pressed and not tappable, the other sends pilot/set with the same pilot and the month; "Loading Nov 2026..." while it
 waits; the 2 s guard; light and dark; a portal that refuses the key says the month choice needs a portal update).
-Rendered in Chromium with node Playwright on made-up replies ("Doe, Jane", 10001)."""
+Rendered in Chromium with node Playwright on made-up replies ("Doe, Jane", 10001).
+
+1.7.11 review: the page's clock is pinned to Nov 17, 2026, 10:00 HST (P2: the labels hold on any day); the refusal is
+also run the way the portal's shell does it, a fresh card swapped in before the rejection, and the note is read on the
+card on the page (P1); a refused tap goes again at once (P3); an employee number the shape refuses draws no buttons
+(P4); a waiting reply to a month tap names and presses the month (P5); a month that did not read is named (F5); the
+pressed month reads at 4.5:1 or more on any theme (P6)."""
 import json
 import os
 import re
@@ -95,3 +101,76 @@ def test_a_portal_that_refuses_the_month_says_it_needs_an_update(rendered, who):
     assert ref["sent"] == 1
     assert "The month choice needs a portal update" in ref["text"] and "Loading" not in ref["text"]
     assert "Doe, Bea (10002)" in ref["text"]  # the month shown stays
+
+
+@pytest.mark.parametrize("who", ["admin", "pilot", "pilotDark"])
+def test_the_note_shows_on_the_card_the_portals_shell_swaps_in(rendered, who):
+    """P1 / R1: HOM's shell draws a fresh pilot card before the refusal reaches the one that sent the tap."""
+    ref = rendered[who]["refused"]
+    assert ref["swapped"] and ref["shellSent"] == 1
+    assert "The month choice needs a portal update (Nov 2026 was not read)." in ref["shellText"], ref["shellText"]
+    assert "December 2026" in ref["shellText"] and "Loading" not in ref["shellText"]
+    assert "needs a portal update" not in ref["otherText"]  # another pilot shown: not his note
+
+
+@pytest.mark.parametrize("who", ["admin", "pilot"])
+def test_a_refused_tap_can_be_sent_again_at_once(rendered, who):
+    """P3: the 2 s guard forgets a refused publish: the same tap again goes out, and the card never waits for nothing."""
+    ref = rendered[who]["refused"]
+    assert ref["retapSent"] == 2
+    assert "needs a portal update" in ref["retapText"] and "Loading" not in ref["retapText"]
+    assert ref["retapMos"] == [{"t": "Nov 2026", "disabled": False}, {"t": "Dec 2026", "disabled": True}]
+
+
+@pytest.mark.parametrize("who", ["admin", "pilot"])
+def test_the_clock_is_pinned_in_the_page(rendered, who):
+    assert rendered[who]["clock"] == "2026-11-17T20"  # P2: the card reads the pinned day, not the real one
+
+
+@pytest.mark.parametrize("who", ["admin", "pilot", "pilotDark"])
+def test_a_waiting_month_tap_says_loading_that_month(rendered, who):
+    r = rendered[who]
+    assert "Loading Nov 2026... waiting: your Watcher is yielded" in r["waiting"], r["waiting"]
+    assert r["waitMos"] == [{"t": "Nov 2026", "pressed": "true", "disabled": True},
+                            {"t": "Dec 2026", "pressed": "false", "disabled": True}]
+
+
+@pytest.mark.parametrize("who", ["admin", "pilot"])
+def test_an_overdue_month_lookup_frees_the_buttons(rendered, who):
+    """P3: once the wait is overdue the 'try again' it suggests can be done from the card."""
+    r = rendered[who]
+    assert "Still waiting after 60 min for Nov 2026:" in r["late"], r["late"]
+    assert r["lateMos"] == [{"t": "Nov 2026", "pressed": "false", "disabled": False},
+                            {"t": "Dec 2026", "pressed": "false", "disabled": False}]
+
+
+@pytest.mark.parametrize("who", ["admin", "pilot"])
+def test_a_month_that_did_not_read_is_named(rendered, who):
+    r = rendered[who]
+    assert "Dec 2026: not readable: ok no schedule" in r["unread"] and "Loading" not in r["unread"]
+    assert [m["disabled"] for m in r["unreadMos"]] == [False, False]  # either month again
+
+
+@pytest.mark.parametrize("who", ["admin", "pilot"])
+def test_an_employee_number_the_shape_refuses_draws_no_month_buttons(rendered, who):
+    r = rendered[who]
+    assert r["eightMos"] == 0 and r["eightMonthMos"] == 0
+    assert r["eightSent"] == 0 and "Loading" not in r["eightText"]
+
+
+def _lum(rgb):
+    def f(v):
+        v /= 255
+        return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+    r, g, b = (float(x) for x in re.findall(r"[\d.]+", rgb)[:3])
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+
+
+@pytest.mark.parametrize("who", ["admin", "pilot", "pilotDark"])
+def test_the_pressed_month_reads_at_aa(rendered, who):
+    """P6: white on #01579b, not the theme's primary pair (white on Home Assistant's #03a9f4 is 2.6:1, #009ac7 3.3:1)."""
+    fg, bg = rendered[who]["moColors"]["on"]
+    assert bg == "rgb(1, 87, 155)" and fg == "rgb(255, 255, 255)"
+    a, b = sorted((_lum(fg), _lum(bg)))
+    assert (b + 0.05) / (a + 0.05) >= 4.5
+    assert "--primary-color" not in SRC.split('.mo[aria-pressed="true"]{')[1].split("}")[0]
