@@ -13,6 +13,7 @@ FW-0062 (1.4.2, Ryan): another pilot's month rebuilt from crew lines gets a pay 
 pilot flew on each trip: a Captain at the PWA 3.C.4 A330 PAX / B787 Captain rate (same effective dates as the FO
 table), an FO or RO at the PWA 3.D.6 FO rate, the longevity year from the date of hire (PWA 3.B.1: from the date of
 employment as a pilot; both tables stop at year 12). pay_line() totals the trips the pilot card draws."""
+import math
 import re
 from datetime import date, timedelta
 
@@ -119,6 +120,120 @@ def _days(start, end, cap=15):
     return [(d + timedelta(days=k)).isoformat() for k in range(cap) if d + timedelta(days=k) <= e]
 
 
+# ---------------------------------------------------------------- 1.7.11 (FW-0080): totals by bid period
+# PWA 4.A: a segment pays on the date it originates, and FLICA totals a bid period, not a calendar month (December 2026
+# runs Dec 2 to Dec 31, November Nov 1 to Dec 1). Each duty counts in the bid period that holds its HST departure date;
+# its credit is its own TCRD (the pairings package's duty credit) when that is on file, else its block share (an
+# estimate). The bid period of the trip's first day keeps the rest of the trip credit (rig, minimums), so the parts of
+# one trip always add up to its credit. The schedule card's fwSplit() does the same (tests/test_fw1711_totals.py runs
+# both). Ryan, Nov 17, 2026: "Everywhere" (another pilot's month, Ryan's own month and the versions).
+def mins(v):
+    """'6h39', '6:39' or a whole number of minutes -> minutes; None when unreadable."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(round(v))
+    m = re.fullmatch(r"\s*(\d{1,3})[h:](\d{2})\s*", str(v or ""))
+    return int(m.group(1)) * 60 + int(m.group(2)) if m else None
+
+
+def _half_up(x):
+    """x rounded to a whole number, halves up (JavaScript's Math.round, so the card and the Watcher agree)."""
+    return int(math.floor(x + 0.5))
+
+
+def duty_dates(st, duties):
+    """[(HST departure date ISO, block minutes, TCRD minutes or None)] of the duties that have a numeric dep (HST
+    minutes from 00:00 HST of the trip's first day st) and blk, in order; [] when st is not a date."""
+    try:
+        t0 = date.fromisoformat(str(st))
+    except (TypeError, ValueError):
+        return []
+    out = []
+    for d in duties or []:
+        if not isinstance(d, dict):
+            continue
+        dep, blk = d.get("dep"), d.get("blk")
+        if isinstance(dep, bool) or isinstance(blk, bool) or not isinstance(dep, (int, float)) or not isinstance(blk, (int, float)):
+            continue
+        out.append(((t0 + timedelta(days=int(dep // 1440))).isoformat(), int(blk), mins(d.get("tcrd"))))
+    return out
+
+
+def split_by_period(st, duties, period_of, credit=None, blk=None):
+    """A trip's credit and block by bid period. period_of(iso) names the bid period of a day; the trip's first day st
+    names its home period. credit, blk: the whole trip's (H:MM, hours or None). Block: each period its duties' block
+    share of the trip's block, the home period the rest. Credit: each period other than the home one the TCRD of its
+    duties when every one of them has it (est False), else their block share (est True); the home period keeps the rest
+    (rig and minimums, PWA 4.C.3). None when no duty is placed (the whole trip then pays in its home period). Returns
+    {by: {period: {credit, blk}} (minutes, None when the trip's figure is unknown), home, est}."""
+    du = duty_dates(st, duties)
+    tot_b = sum(b for _d, b, _t in du)
+    if not du or tot_b <= 0:
+        return None
+    home = period_of(str(st))
+    keys = [period_of(d) for d, _b, _t in du]
+    parts = {}
+    for k, (_d, b, t) in zip(keys, du):
+        p = parts.setdefault(k, {"b": 0, "t": 0, "tok": True})
+        p["b"] += b
+        if t is None:
+            p["tok"] = False
+        else:
+            p["t"] += t
+    parts.setdefault(home, {"b": 0, "t": 0, "tok": True})
+    c_h, b_h = hrs(credit), hrs(blk)
+    c_m = int(round(c_h * 60)) if c_h is not None else None
+    b_m = int(round(b_h * 60)) if b_h is not None else None
+    others = [k for k in parts if k != home]
+    est = not all(parts[k]["tok"] for k in others)
+    by = {k: {"credit": None, "blk": None} for k in parts}
+    if b_m is not None:
+        for k in others:
+            by[k]["blk"] = _half_up(b_m * parts[k]["b"] / tot_b)
+        by[home]["blk"] = max(0, b_m - sum(by[k]["blk"] for k in others))
+    if c_m is not None:
+        for k in others:
+            by[k]["credit"] = min(c_m, _half_up(c_m * parts[k]["b"] / tot_b) if est else parts[k]["t"])
+        by[home]["credit"] = max(0, c_m - sum(by[k]["credit"] for k in others))
+    return {"by": by, "home": home, "est": est}
+
+
+def period_share(st, start, end, duties, credit=None, blk=None):
+    """FW-0080: a trip's part in the bid period start..end (ISO, both days in it), split_by_period's rule. Returns
+    {in: any part of it pays here, whole: all of it does, credit, blk, soft (H:MM, this period's part; '' when the trip's
+    figure is unknown), out_credit, out_blk (H:MM, the part paid in another bid period), side ('before' / 'after' / '':
+    where that other period lies), est (the credit split by block share: no TCRD on file), placed (False: no duty says
+    when, so the whole trip pays in the bid period of its first day)}."""
+    def where(iso):
+        return "in" if start <= iso <= end else ("before" if iso < start else "after")
+    sp = split_by_period(st, duties, where, credit, blk)
+    cr_h, bl_h = hrs(credit), hrs(blk)
+    full = {"credit": hm(cr_h) if cr_h is not None else "", "blk": hm(bl_h) if bl_h is not None else ""}
+    if sp is None:
+        here = where(str(st)) == "in"
+        side = "" if here else where(str(st))
+        return {"in": here, "whole": here, "credit": full["credit"] if here else ("0:00" if cr_h is not None else ""),
+                "blk": full["blk"] if here else ("0:00" if bl_h is not None else ""),
+                "soft": (hm(max(0.0, cr_h - bl_h)) if here and cr_h is not None and bl_h is not None else ""),
+                "out_credit": "" if here else full["credit"], "out_blk": "" if here else full["blk"], "side": side,
+                "est": False, "placed": False}
+    mine = sp["by"].get("in") or {"credit": 0 if cr_h is not None else None, "blk": 0 if bl_h is not None else None}
+    side = next((k for k in sp["by"] if k != "in"), "")
+    whole = not side
+
+    def f(m):
+        return "" if m is None else hm(m / 60)
+    c_in, b_in = mine["credit"], mine["blk"]
+    return {"in": "in" in sp["by"], "whole": whole, "credit": f(c_in), "blk": f(b_in),
+            "soft": f(max(0, c_in - b_in)) if c_in is not None and b_in is not None else "",
+            "out_credit": "" if whole or cr_h is None else hm(cr_h - (c_in or 0) / 60),
+            "out_blk": "" if whole or bl_h is None else hm(bl_h - (b_in or 0) / 60),
+            "side": side, "est": bool(sp["est"]) and not whole, "placed": True}
+
+
 def rate_steps(doh, period_from, period_to):
     """1.7.7 review: the days after period_from on which this pilot's hourly rates change inside the period (a DOH
     anniversary: a new longevity year, PWA 3.B.1; or a PWA 3.C.4 / 3.D.6 rate date), each {from, year, CA, FO}; [] when
@@ -138,23 +253,27 @@ def rate_steps(doh, period_from, period_to):
     return out
 
 
-def pay_line(trips, doh, period_from, period_to, tax_pct, ca_rules=True, month=None, vac=(), payp=(), flica_credit=None,
+def pay_line(trips, doh, period_from, period_to, tax_pct, ca_rules=True, vac=(), payp=(), flica_credit=None,
              rate_ok=None, vac_seat="FO"):
     """FW-0062: the pay line under another pilot's rebuilt month. trips: the trips the pilot card draws in its grid
-    (crewidx.grid_pick), each {pairing, start, end, seat, credit, blk, soft, lay, route, n}. The totals cover the
-    trips that start in the bid period (period_from..period_to, ISO), as the card's own totals do; Days Off are the
+    (crewidx.grid_pick), each {pairing, start, end, seat, credit, blk, soft, lay, route, n}. The totals cover the bid
+    period (period_from..period_to, ISO), as FLICA's and the card's own totals do: each trip's part flown in it (1.7.11,
+    in_period below); Days Off are the
     bid period's days no drawn trip covers (reserve, training and days off look alike on crew lists). Each trip is
     priced for its own seat (rate_for: CA PWA 3.C.4, FO and RO PWA 3.D.6) on its own start date, for the longevity
     year from doh (doh_year, capped at 12, PWA 3.B.1), with the PWA 4.O.1 overrides and the Extended Range +15% per
     er_on (no per-trip list: that list is Ryan's own). No doh: no amounts. Returns (pay_line, {'PID|start': gross}).
-    1.7.7 review (a month FLICA showed, or a version of it; the schedule card's rules): month 'YYYY-MM' totals the trips
-    that start in that calendar month (each trip's credit and block already its PWA 4.A share), plus vac (ISO days of
-    vacation in the month, PWA 6.J.1.c: VAC_H credit a day at the vac_seat rate) and payp (the PAYP days, PWA
-    Definitions 57): their credit is FLICA's month credit (flica_credit, hours) less everything else counted, an
-    estimate, when that leaves some and every trip has its credit; else unknown, not counted. rate_ok(seat): False for
-    a seat whose rates are not on file (another fleet): its trips are not priced (no_rate). rate_steps: the days the
-    rates change inside the period (rate_steps())."""
-    tot = [t for t in trips if ((t.get("start") or "")[:7] == month if month else (t.get("start") or "") >= period_from)]
+    1.7.7 review (a month FLICA showed, or a version of it; the schedule card's rules): plus vac (ISO days of vacation
+    in the bid period, PWA 6.J.1.c: VAC_H credit a day at the vac_seat rate) and payp (the PAYP days, PWA Definitions
+    57): their credit is FLICA's month credit (flica_credit, hours) less everything else counted, an estimate, when that
+    leaves some and every trip has its credit; else unknown, not counted. rate_ok(seat): False for a seat whose rates
+    are not on file (another fleet): its trips are not priced (no_rate). rate_steps: the days the rates change inside
+    the period (rate_steps()). 1.7.11 (FW-0080, PWA 4.A): the bid period, never the calendar month: a trip with
+    in_period (period_share: its credit and block already its part in the bid period) counts when that is True, so a
+    trip from the bid period before counts the duties it flies in this one; any other trip counts when it starts in the
+    bid period."""
+    tot = [t for t in trips if (bool(t["in_period"]) if "in_period" in t
+                                else period_from <= (t.get("start") or "") <= period_to)]
     covered = {d for t in trips for d in _days(t.get("start"), t.get("end"))}
     period = _days(period_from, period_to, cap=62)
     sums = {"credit": [0.0, 0], "blk": [0.0, 0], "soft": [0.0, 0]}

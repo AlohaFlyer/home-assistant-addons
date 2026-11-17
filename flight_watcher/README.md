@@ -34,8 +34,16 @@ publishes what it finds to Home Assistant over MQTT.
   details, and the monthly award and pairings PDFs uploaded on the dashboard (or the Web UI). A trip that comes home
   the day the next one starts keeps its real end (1.4.7). A trip the company removed and FLICA shows as PAYP keeps
   its credit in Credit, Pay-Gross and Pay-Net (1.7.2, PWA Definitions 57), never in Block or the FAR 117 checks;
-  a trip over the month boundary counts each month's share (PWA 4.A), and a trip added on PAYP days pays on top (PWA
-  4.R.1). With the removed trip not on file the card estimates it from FLICA's month credit and says "estimate", when
+  a trip over the bid period's edge counts each bid period's part (PWA 4.A), and a trip added on PAYP days pays on top
+  (PWA 4.R.1). The month's totals are the bid period's, as FLICA's are (1.7.11, FW-0080: December 2026 runs Dec 2 to
+  Dec 31, so a trip Dec 1 to 3 pays its Dec 1 duty in November and its Dec 3 duty in December): each duty counts in
+  the bid period of its HST departure date, its credit its TCRD from the pairings package (else its block share, an
+  estimate), the bid period of the trip's first day keeping the rest of the trip credit (rig, minimums); VAC and PAYP
+  days count in the bid period they fall in. The bid period comes from the pairings package, else the schedule pages
+  (`periods` on the schedule sensor), else the calendar month, and the totals' title says which. A trip whose own
+  times are not read yet places the package detail's duties the same way. A PAYP's kept credit splits by bid period
+  too: listed again on the next page (December's page starts on Dec 1, November's), its record carries the next bid
+  period's share, and a record kept from 1.7.10 (the calendar month's split) is split again, the stored versions once. With the removed trip not on file the card estimates it from FLICA's month credit and says "estimate", when
   it counts everything else in the month; otherwise it says "PAYP credit unknown". Open time over PAYP days fits
   (1.7.2, PWA 4.R.1): no "Conflict PAYP", no FAR overlap with the removed trip, and the PAYP days count as days off
   as FLICA counts them.
@@ -356,10 +364,14 @@ Recent finds.
   `items_pay` holds the month's Credit, Block, Soft, Pay-Gross, Pay-Net and FLICA's own Days Off. Credit and block come
   from the pairing page read, else the pairings package, else the crew index. Each schedule version of that pilot is
   priced in `pilotver_<key>.json` (each item's `gross`, the record's `pay`: amounts and hours, never a date of hire). No
-  FLICA page is loaded for any of it. The month is the schedule card's (1.7.7 review): the pairings that start in the
-  calendar month, each its PWA 4.A share (a segment pays on the date it originates: a trip into the next month counts
-  the block share of its duties departing this month, from the package's duties or the legs of its pairing page;
-  `split` on the item), the vacation days at 4:00 credit a day (PWA 6.J.1.c, `vac`), and a PAYP (PWA Definitions 57)
+  FLICA page is loaded for any of it. The month is the bid period, as FLICA totals it (1.7.11, FW-0080, Ryan, Nov 17:
+  "Everywhere"; 1.7.7 had taken the calendar month): each pairing its PWA 4.A part (a segment pays on the date it
+  originates: each duty in the bid period of its HST departure date, from the package's duties or the legs of its
+  pairing page made into duty periods as the package's are; its credit the duty's TCRD from the pairings package, else the block share, an estimate; the bid
+  period of the trip's first day keeps the rest of the trip credit; `split` on the item names the part flown in the
+  other bid period), a trip of the crew index that starts before FLICA's grid and flies into the bid period its part
+  too (`carry`, only while FLICA's grid shows those days free with a layover cell), the bid period itself in `period`,
+  the vacation days in it at 4:00 credit a day (PWA 6.J.1.c, `vac`), and a PAYP (PWA Definitions 57)
   at FLICA's month credit less everything else counted (`payp`, an estimate), else `payp_unk` (not counted; the card
   shows FLICA's credit without the red mark). Each trip's package is that of its own bid period (Dec 1 on December's
   grid is November's). A version's trip is priced from the live read of the same trip (the pairing page's credit,
@@ -587,7 +599,12 @@ the rebuilt trip's nights from the package's duties, and an older version's tota
 columns are Trip, Layover, Block, Credit, Soft,
 Pay-Gross (that pilot's, when his date of hire is on file) and Crew; the seat and legs are in the pairing's hint and
 detail, and the rate, seat and source notes sit under the grid. Ryan's planning columns (Pay-Net, Res Grid, the FAR
-columns, Room, Legal next, Open, Ideas, the trade and drop marks) stay on his own schedule.
+columns, Room, Legal next, Open, Ideas, the trade and drop marks) stay on his own schedule. On a phone (700 px or less,
+1.7.11, FW-0079) the Crew column gives way to a crew list under the grid, one line a pairing ("H9601 Dec 1: CA Doe,
+Jane · FO Roe, Rick", each pilot on one line, the call and text links kept), so the grid fits the screen down to 360 px
+(Pay-Gross heads two lines there, and a one-day turn's report and release may share its Layover cell on two lines); a
+wider card keeps the Crew column while the grid fits it, else (a tablet in portrait, a long crew) it lists the crew too. A trip across the bid period's edge shows its part in this bid period in purple, its title
+naming the part flown in the other one (1.7.11, FW-0080, PWA 4.A).
 
 **Picked up by** (1.7.7, Ryan, Nov 14: "the person picking up should be blue and clickable... the other person who was
 already on the pairing should be black and not clickable"): on the finds card only the picker is the blue link to his

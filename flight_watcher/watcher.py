@@ -41,6 +41,7 @@ import submit as SUB
 import inflt as IF
 import charter as CH
 import versions as VER
+from pot import LAYOVER_MIN_H, leg_shift as pot_leg_shift
 import pdfs as PDF
 import recall as RC
 import ccr as CCR
@@ -3219,6 +3220,61 @@ def bid_period_of(d):
     return mon if mon != f"{d:%Y-%m}" or BID_PERIODS["files"][mon] else None
 
 
+def bid_period_fn():
+    """1.7.11 (FW-0080): iso -> the bid period ('YYYY-MM') that day (ISO) belongs to, for the totals and the PAYP split:
+    the pairing files' period bounds (bid_period_of), else the schedule pages on file (smart.bid_month), else the
+    calendar month. One function for a run of lookups (the pages are read once)."""
+    of = SMART.bid_month(S.get("schedule") or {}, bid_period_of)
+
+    def key(iso):
+        try:
+            return of(date.fromisoformat(str(iso)[:10]))
+        except ValueError:
+            return str(iso)[:7]
+    return key
+
+
+def bid_period_key(iso):
+    """1.7.11 (FW-0080): bid_period_fn() for one day."""
+    return bid_period_fn()(iso)
+
+
+_BID_BOUNDS = {"at": 0.0, "v": {}}  # bid_bounds' cache: the pairing files are read at most every BID_PERIODS_TTL_S
+
+
+def bid_bounds(month):
+    """1.7.11 (FW-0080): (first day, last day, src) of month's bid period for the schedule card: the pairing files'
+    bounds (crewidx.period_start / period_end) when they speak for it, src 'package'; else the days the schedule pages
+    on file give month (bid_period_key), src 'schedule'; else the calendar month, src 'calendar'."""
+    if time.time() - _BID_BOUNDS["at"] > BID_PERIODS_TTL_S:
+        _BID_BOUNDS.update(at=time.time(), v={})
+    if month not in _BID_BOUNDS["v"]:
+        _BID_BOUNDS["v"][month] = _bid_bounds(month)
+    return _BID_BOUNDS["v"][month]
+
+
+def _bid_bounds(month):
+    d = date.fromisoformat(f"{month}-01")
+    cal = (d.isoformat(), ((d + timedelta(days=32)).replace(day=1) - timedelta(days=1)).isoformat())
+    ps, pe = CI.period_start(CARD_PAIRINGS, month), CI.period_end(CARD_PAIRINGS, month)
+    if (ps, pe) != cal or os.path.exists(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json")):
+        return ps, pe, "package"
+    of = SMART.bid_month(S.get("schedule") or {})
+    own = [x for x in ((d + timedelta(days=k)) for k in range(-3, 35)) if of(x) == month]
+    if own and (own[0].isoformat(), own[-1].isoformat()) != cal:
+        return own[0].isoformat(), own[-1].isoformat(), "schedule"
+    return cal[0], cal[1], "calendar"
+
+
+def payp_tcrd(key, rec, period_of=None):
+    """1.7.11 (FW-0080): the TCRD of each duty of a removed trip (key 'TRIP|start'), from the pairings package detail of
+    its bid period (pkg_detail_for), for versions.payp_entries' split; None when the package does not have it."""
+    trip, _, st = str(key).partition("|")
+    pd = pkg_detail_for((period_of or bid_period_key)(st), trip) if trip and st else None
+    du = pd.get("duties") if isinstance(pd, dict) else None
+    return [x.get("tcrd") if isinstance(x, dict) else None for x in du] if isinstance(du, list) else None
+
+
 def block_672(ev):
     """1.7.1 (FW-0042, Ryan's rule of Nov 9): smart.block_672 of a row, on the FAR column's own trips (far_trips):
     {tag, b672, b672_ok}; '672 ? (times not read)' when the pickup's report or final arrival is not known."""
@@ -3351,7 +3407,9 @@ def payp_refresh(own=None):
     step fails)."""
     own = S.setdefault("own_trips", {}) if own is None else own
     try:
-        got = VER.payp_entries(_sched_items(), own, lambda mk: DB.get(f"sched_versions:{mk}") or [], PAIRING_RE.match)
+        bpk = bid_period_fn()  # 1.7.11 (FW-0080): split by bid period, TCRD per duty
+        got = VER.payp_entries(_sched_items(), own, lambda mk: DB.get(f"sched_versions:{mk}") or [], PAIRING_RE.match,
+                               bpk, lambda k, r: payp_tcrd(k, r, bpk))
     except Exception as e:  # never stops the trip reads; what is on file stays while its PAYP is on the schedule
         log.info("pay protection skipped: %s", e)
         return {k for k in own if k.startswith(f"{VER.PAYP}|")}
@@ -3407,6 +3465,37 @@ def repair_trip_ends():
     return n
 
 
+PAYP_FIX_V = 1  # 1.7.11 review (FW-0080): bump to split the PAYP records in the stored versions again
+
+
+def repair_payp_splits():
+    """1.7.11 review (FW-0080, PWA 4.A), once: the PAYP records in the stored versions (months 24 back to 3 ahead), written
+    while a PAYP's kept credit split by the calendar month (1.7.10), split again by bid period (versions.resplit_versions:
+    each removed trip's duties from own trips or the versions, its TCRD from its pairings package), so a viewed version
+    prices each bid period's part as FLICA does; the records on file are split again by payp_refresh on every run.
+    Returns the number of months changed."""
+    if S.get("payp_fix_v") == PAYP_FIX_V:
+        return 0
+    today = local_now().date()
+    vers = {}
+    for i in range(-24, 4):
+        y, m = divmod(today.year * 12 + today.month - 1 + i, 12)
+        mk = f"{y:04d}-{m + 1:02d}"
+        v = DB.get(f"sched_versions:{mk}")
+        if v:
+            vers[mk] = v
+    bpk = bid_period_fn()
+    changed = VER.resplit_versions(vers, S.get("own_trips") or {}, bpk, lambda k, r: payp_tcrd(k, r, bpk))
+    for mk in changed:
+        DB.put(f"sched_versions:{mk}", vers[mk])
+    S["payp_fix_v"] = PAYP_FIX_V
+    save_state(S)
+    if changed:
+        log.info("pay protection split: the PAYP records of %d month(s) of stored versions split again by bid period (%s)",
+                 len(changed), ", ".join(changed))
+    return len(changed)
+
+
 def versions_months(months):
     """1.6.2: the months whose versions are published: every month FLICA's schedule was read for, plus any month from
     last month to two ahead whose first version is the PBS award (an award upload before any FLICA read of it: a pilot's
@@ -3428,6 +3517,10 @@ def versions_check(force_pub=False):
         repair_trip_ends()
     except Exception as e:  # never stops the versions; tried again next time
         log.info("trip end repair skipped: %s", e)
+    try:
+        repair_payp_splits()
+    except Exception as e:  # never stops the versions; tried again next time
+        log.info("pay protection split repair skipped: %s", e)
     try:
         months, own = S.get("schedule") or {}, S.get("own_trips") or {}
         wait = S.setdefault("ver_wait", {})
@@ -4471,19 +4564,38 @@ def tax_pct():
     return TAX["pct"]
 
 
-def pilot_pay_line(trips, emp, name, start, end):
+def pilot_pay_line(trips, emp, name, start, end, month=None):
     """FW-0062: the pay line under a rebuilt month (pay.pay_line over the trips the card draws, crewidx.grid_pick),
     priced with the date of hire on the shared seniority list. Adds 'gross' to each priced trip. list_status: 'ok',
-    'none' (no list uploaded) or 'not_on_list' (a newer hire, or a name the list spells another way)."""
+    'none' (no list uploaded) or 'not_on_list' (a newer hire, or a name the list spells another way). 1.7.11
+    (FW-0080): each trip counts its part flown in the bid period start..end (PWA 4.A, _period_part: the pairings
+    package's duties and their TCRD), and a trip with a part in another bid period gets its 'split', as the month FLICA
+    showed does (pilot_price)."""
     data = seniority_data()
     rec = SEN.find(data, emp, name) if data else None
     grid, _also = CI.grid_pick(trips)
+    month = month if re.fullmatch(r"\d{4}-\d{2}", str(month or "")) else CI.period_for(CARD_PAIRINGS, start)
+    pcache, splits = {}, {}
+    for t in grid:
+        st = str(t.get("start") or "")
+        per = _period_of(st, month, start, end, pcache)
+        dets = pkg_details_for(per) or {}
+        part, sp = _period_part(t["pairing"], st, month, start, end, per, dets.get(t["pairing"]) or {}, None,
+                                CI._hm(t.get("credit")), CI._hm(t.get("blk")))
+        t.update(part)
+        if sp:
+            splits[f"{t['pairing']}|{st}"] = sp
     line, per = PAY.pay_line(grid, (rec or {}).get("doh") or "", start, end, tax_pct())
     for t in trips:
-        g = per.get(f"{t.get('pairing')}|{t.get('start')}")
+        k = f"{t.get('pairing')}|{t.get('start')}"
+        g = per.get(k)
         if g is not None:
             t["gross"] = g
-    line.update(_sen_fields(data, rec))
+        if splits.get(k):
+            t["split"] = splits[k]
+        else:
+            t.pop("split", None)
+    line.update(_sen_fields(data, rec), period=_bid_period_note(month, start, end))
     return line  # 1.7.7: on a pilot instance too (DOH, list dates, year_to as 1.7.5 sent them; the new rate_steps too)
 
 
@@ -4513,41 +4625,98 @@ def _equip_ok(rec):
 PC_DOW = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"]
 
 
-def _month_share(st, end, det, legs, month):
-    """PWA 4.A (the schedule card's figs()): a segment pays on the date it originates, so a trip that starts in month
-    and flies on into the next one counts here only the block share of its duties departing in month. From the
-    package's duties (dep: HST minutes from the trip's first day, blk), else from the pairing page's legs (each on the
-    first day from the one before whose weekday it names). (share, block minutes flown outside month, that month);
-    (1.0, 0, '') when it all departs in month or nothing says when."""
-    if (end or st)[:7] == st[:7] == month:
-        return 1.0, 0, ""
+def _legs_duties(st, legs):
+    """1.7.11 (FW-0080): the legs of another pilot's pairing page ([{dow, route, dep (local HHMM), blk (HHMM)}]) as
+    duties for pay.period_share: each leg on the first day from the one before whose weekday it names (its local date),
+    then its departure in HST minutes from 00:00 HST of the trip's first day st, by its time (pot.leg_shift: a leg out
+    of LAX at 00:30 local departs 22:30 HST the day before). [] when a leg's weekday or block is unreadable.
+    1.7.11 review: the legs make duty periods as pot.parse_duties makes Ryan's (a gap of LAYOVER_MIN_H or more from a
+    leg's block-in, dep + blk, to the next departure starts a new one), each {dep: its first leg's, blk: their sum}, so
+    a duty whose legs cross HST midnight counts on its first leg's date, as the package's duties do."""
     try:
         t0 = date.fromisoformat(st)
     except ValueError:
-        return 1.0, 0, ""
-    parts = []  # (month it departs in, block minutes)
-    du = [d for d in (det or {}).get("duties") or [] if isinstance(d, dict) and isinstance(d.get("dep"), (int, float))
+        return []
+    legs_out = _legs_hst(t0, legs)
+    out = []
+    for lg in legs_out:
+        if out and lg["dep"] - out[-1]["_in"] < LAYOVER_MIN_H * 60:
+            out[-1]["blk"] += lg["blk"]
+            out[-1]["_in"] = max(out[-1]["_in"], lg["dep"] + lg["blk"])
+        else:
+            out.append({"dep": lg["dep"], "blk": lg["blk"], "_in": lg["dep"] + lg["blk"]})
+    return [{"dep": d["dep"], "blk": d["blk"]} for d in out] if len(legs_out) == len(legs or []) else []
+
+
+def _legs_hst(t0, legs):
+    """_legs_duties' legs, each {dep: HST minutes from 00:00 HST of t0, blk}; stops at the first unreadable leg."""
+    at, out = t0, []
+    for lg in legs or []:
+        dw = str((lg or {}).get("dow") or "").upper()[:2] if isinstance(lg, dict) else ""
+        b = re.fullmatch(r"(\d{1,2}):?(\d{2})", str(lg.get("blk") or "").strip()) if dw in PC_DOW else None
+        if not b:
+            return []
+        w = PC_DOW.index(dw)
+        at += timedelta(days=next(k for k in range(7) if ((at + timedelta(days=k)).weekday() + 1) % 7 == w))
+        t = re.fullmatch(r"(\d{1,2}):?(\d{2})", str(lg.get("dep") or "").strip())
+        frm, _, to = str(lg.get("route") or "").upper().partition("-")
+        dep = int(t.group(1)) * 60 + int(t.group(2)) - pot_leg_shift(frm, to) if t and int(t.group(1)) < 24 else 720
+        out.append({"dep": (at - t0).days * 1440 + dep, "blk": int(b.group(1)) * 60 + int(b.group(2))})
+    return out
+
+
+def _trip_duties(period, pid, det, legs, st):
+    """1.7.11 (FW-0080): (duties, src) of a trip for pay.period_share: the pairings package's duties of its bid period
+    (package_details: dep in HST minutes, blk) with each one's TCRD from the package detail (pkg_detail_for: the same
+    duty periods in the same order, paired by index when both list as many), src 'package'; else the pairing page's
+    legs (_legs_duties, no TCRD), src 'legs'; else ([], '')."""
+    raw = (det or {}).get("duties") or []
+    ok = [d for d in raw if isinstance(d, dict) and isinstance(d.get("dep"), (int, float))
           and isinstance(d.get("blk"), (int, float))]
-    if du:
-        parts = [((datetime.combine(t0, datetime.min.time()) + timedelta(minutes=d["dep"])).strftime("%Y-%m"), d["blk"]) for d in du]
-    else:
-        at = t0
-        for lg in legs or []:
-            w = PC_DOW.index(str(lg.get("dow") or "").upper()[:2]) if str(lg.get("dow") or "").upper()[:2] in PC_DOW else -1
-            b = re.fullmatch(r"(\d{1,2}):?(\d{2})", str(lg.get("blk") or "").strip())
-            if w < 0 or not b:
-                return 1.0, 0, ""
-            k = next((k for k in range(7) if ((at + timedelta(days=k)).weekday() + 1) % 7 == w), None)
-            if k is None:
-                return 1.0, 0, ""
-            at += timedelta(days=k)
-            parts.append((at.strftime("%Y-%m"), int(b.group(1)) * 60 + int(b.group(2))))
-    tot = sum(b for _m, b in parts)
-    if not parts or tot <= 0:
-        return 1.0, 0, ""
-    inm = sum(b for m, b in parts if m == month)
-    out = [(m, b) for m, b in parts if m != month]
-    return inm / tot, sum(b for _m, b in out), (out[-1][0] if out else "")
+    if ok:
+        pd = pkg_detail_for(period, pid) if period else None
+        pdu = pd.get("duties") if isinstance(pd, dict) else None
+        same = isinstance(pdu, list) and len(pdu) == len(raw) == len(ok)
+        return [{"dep": d["dep"], "blk": d["blk"],
+                 "tcrd": (pdu[i].get("tcrd") if same and isinstance(pdu[i], dict) else None)} for i, d in enumerate(ok)], "package"
+    lg = _legs_duties(st, legs)
+    return (lg, "legs") if lg else ([], "")
+
+
+def _period_by(month, side):
+    """'YYYY-MM' of the bid period just before (side 'before') or just after ('after') month's."""
+    d = date.fromisoformat(f"{month}-01")
+    return (d - timedelta(days=1)).strftime("%Y-%m") if side == "before" else (d + timedelta(days=32)).strftime("%Y-%m")
+
+
+def _period_part(pid, st, month, start, end, per, det, legs, credit, blk):
+    """1.7.11 (FW-0080, PWA 4.A): a trip's part in month's bid period start..end (pay.period_share over _trip_duties):
+    ({credit, blk, soft, in_period}, split or None). split, for a trip with a part in another bid period: this period's
+    credit / blk / soft, the trip's all_credit / all_blk, out_credit / out_blk (the part paid in the other bid period),
+    side ('before' / 'after'), other (that bid period, 'YYYY-MM'), edge (this period's first day for 'before', its last
+    for 'after'), est (credit by block share, no TCRD), none (no part here), placed (False: no duty on file, so the whole
+    trip pays in the bid period of its first day)."""
+    duties, _src = _trip_duties(per, pid, det, legs, st)
+    sh = PAY.period_share(st, start, end, duties, credit, blk)
+    if sh["whole"]:
+        return {"credit": credit, "blk": blk, "soft": soft_time(credit, blk) or "", "in_period": True}, None
+    side = sh["side"] or ("before" if st < start else "after")
+    sp = {"credit": sh["credit"], "blk": sh["blk"], "soft": sh["soft"], "all_credit": credit, "all_blk": blk,
+          "out_credit": sh["out_credit"], "out_blk": sh["out_blk"], "side": side, "other": _period_by(month, side),
+          "edge": start if side == "before" else end, "est": sh["est"], "none": not sh["in"], "placed": sh["placed"]}
+    return {"credit": sh["credit"], "blk": sh["blk"], "soft": sh["soft"], "in_period": sh["in"]}, sp
+
+
+def _bid_period_note(month, start, end):
+    """1.7.11 (FW-0080): {from, to, src} of the bid period a pay line covers: src 'package' when the pairing files give
+    its bounds (crewidx.period_start / period_end), 'calendar' when none does and the calendar month stands in."""
+    try:
+        d = date.fromisoformat(f"{month}-01")
+        cal = (d.isoformat(), ((d + timedelta(days=32)).replace(day=1) - timedelta(days=1)).isoformat())
+    except ValueError:
+        cal = ("", "")
+    pkg = (start, end) != cal or os.path.exists(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json"))
+    return {"from": start, "to": end, "src": "package" if pkg else "calendar"}
 
 
 def _period_of(st, month, start, end, cache):
@@ -4558,11 +4727,10 @@ def _period_of(st, month, start, end, cache):
         return CI.period_for(CARD_PAIRINGS, st, cache)
     if start <= st <= end:
         return month
-    d = date.fromisoformat(f"{month}-01")
-    return (d - timedelta(days=1)).strftime("%Y-%m") if st < start else (d + timedelta(days=32)).strftime("%Y-%m")
+    return _period_by(month, "before" if st < start else "after")
 
 
-def pilot_price(items, emp, name, month, start, end, recon=None, days_off=None, flica=None):
+def pilot_price(items, emp, name, month, start, end, recon=None, days_off=None, flica=None, days=None):
     """1.7.7 (Ryan, Nov 14: "you should be able to calculate their pay by looking at their date of hire and
     seniority"): the pay of a month FLICA's Schedule Lookup showed for another pilot (or an older version of it),
     priced as the rebuilt month is (pay.pay_line, ca_rules): each pairing for the seat that pilot flies on it at his
@@ -4576,34 +4744,45 @@ def pilot_price(items, emp, name, month, start, end, recon=None, days_off=None, 
     load. Returns (line, {'PID|start': {seat, seat_src, gross?, credit?, blk?, soft?, figs?, split?}}): figs names where
     a credit or block the page did not give came from. 1.7.7: a pilot instance's line is the same (the DOH, the
     list's dates, year_to and rate_steps included: Ryan, Nov 14, James can be trusted with them).
-    1.7.7 review, the schedule card's month (Ryan: the month's Pay-Gross "as Ryan's does"): the totals cover the trips
-    that start in the calendar month, each its PWA 4.A share (_month_share: split says so), the vacation days in the
-    month at VAC_H (PWA 6.J.1.c) and the PAYP days (PWA Definitions 57) at FLICA's month credit (flica: Schedule
-    Lookup's totals) less the rest, an estimate. Each trip's package is its own bid period's (_period_of). The
-    list's equipment says which rates apply (_equip_ok): another fleet's trips are not priced."""
+    1.7.7 review, the schedule card's month (Ryan: the month's Pay-Gross "as Ryan's does"): the vacation days at VAC_H
+    (PWA 6.J.1.c) and the PAYP days (PWA Definitions 57) at FLICA's month credit (flica: Schedule Lookup's totals) less
+    the rest, an estimate. Each trip's package is its own bid period's (_period_of). The list's equipment says which
+    rates apply (_equip_ok): another fleet's trips are not priced.
+    1.7.11 (FW-0080, Ryan, Nov 17: "Everywhere"): the totals cover the bid period start..end as FLICA's do, never the
+    calendar month: each trip its part flown in it (PWA 4.A: a segment pays on the date it originates; _period_part,
+    the credit of a duty its TCRD; split says what part flew in the other bid period), so a trip from the bid period
+    before counts the duties it flies in this one; the VAC and PAYP days in the bid period. days (FLICA's grid, as
+    pub_pilot gives it): a trip of the crew index (recon) that starts before the grid and flies on into the bid period
+    counts its part too when every grid day it covers is free and shows a layover cell (line 'carry': it has no item).
+    line 'period': the bid period and where its bounds came from."""
     data = seniority_data()
     rec = SEN.find(data, emp, name) if data else None
     rk = {f"{t.get('pairing')}|{t.get('start')}": t for t in (recon or []) if isinstance(t, dict)}
-    m_from = f"{month}-01"
-    m_to = (date.fromisoformat(m_from).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
-    pcache, trips, info, srcs, vac, payp = {}, [], {}, {}, set(), []
+    try:
+        m0 = date.fromisoformat(f"{month}-01")
+    except ValueError:
+        m0 = local_now().date().replace(day=1)
+    if not (start and end):  # no bounds: the calendar month stands in (_bid_period_note says so)
+        start, end = m0.isoformat(), ((m0 + timedelta(days=32)).replace(day=1) - timedelta(days=1)).isoformat()
+    pcache, trips, info, srcs, vac, payp, carry = {}, [], {}, {}, set(), [], []
     for it in items or []:
         if not isinstance(it, dict):
             continue
         pid, st = str(it.get("trip") or ""), str(it.get("start") or "")
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", st):
             continue
-        if pid in ("VAC", VER.PAYP):
+        if pid in ("VAC", VER.PAYP):  # FW-0080: the days in the bid period (a VAC day on Dec 1 is November's)
             ds = PAY._days(st, str(it.get("end") or st), cap=40)
             if pid == "VAC":
-                vac.update(d for d in ds if d[:7] == month)
-            elif any(d[:7] == month for d in ds):
+                vac.update(d for d in ds if start <= d <= end)
+            elif any(start <= d <= end for d in ds):
                 payp.append({"start": st, "end": str(it.get("end") or st)})
             continue
         if not PAIRING_RE.match(pid):
             continue
         r = rk.get(f"{pid}|{st}") or {}
-        dets = pkg_details_for(_period_of(st, month, start, end, pcache)) or {}
+        per = _period_of(st, month, start, end, pcache)
+        dets = pkg_details_for(per) or {}
         det = dets.get(pid) or dets.get(re.sub(r"(?<=\d)[A-Z]$", "", pid)) or {}
         got = {"credit": CI._hm(it.get("credit")), "blk": CI._hm(it.get("blk"))}
         fill = {"credit": CI._hm(det.get("credit")) or CI._hm(r.get("credit")), "blk": CI._hm(det.get("block")) or CI._hm(r.get("blk"))}
@@ -4621,32 +4800,69 @@ def pilot_price(items, emp, name, month, start, end, recon=None, days_off=None, 
         except (TypeError, ValueError):
             n = 0
         end_ = str(it.get("end") or st)
-        # PWA 4.A: this calendar month's share of a trip that flies on into the next one (the schedule card's rule)
-        share, out_b, nxt = _month_share(st, end_, dets.get(pid) or {}, it.get("legs"), month) if st[:7] == month else (1.0, 0, "")
-        c_h, b_h = PAY.hrs(credit), PAY.hrs(blk)
-        c_m, b_m = (PAY.hm(c_h * share) if c_h is not None else ""), (PAY.hm(b_h * share) if b_h is not None else "")
-        trips.append({"pairing": pid, "start": st, "end": end_, "seat": seat, "credit": c_m if share < 1 else credit,
-                      "blk": b_m if share < 1 else blk, "soft": soft_time(credit, blk) or "", "n": n,
-                      "lay": str(it.get("lay") or det.get("lay") or r.get("lay") or ""),
-                      "route": str(det.get("route") or r.get("route") or "")})
+        # PWA 4.A (FW-0080): this bid period's part of the trip, never a calendar month's
+        part, sp = _period_part(pid, st, month, start, end, per, dets.get(pid) or {}, it.get("legs"), credit, blk)
+        trips.append(dict(part, pairing=pid, start=st, end=end_, seat=seat, n=n,
+                          lay=str(it.get("lay") or det.get("lay") or r.get("lay") or ""),
+                          route=str(det.get("route") or r.get("route") or "")))
         k = f"{pid}|{st}"
         info[k] = {"seat": seat, "seat_src": src}
         if figs:
             info[k].update(credit=credit, blk=blk, soft=soft_time(credit, blk) or "", figs=figs)
-        if share < 1:
-            soft_s = PAY.hm(max(0.0, PAY.hrs(c_m) - PAY.hrs(b_m))) if c_m and b_m else ""
-            info[k]["split"] = {"credit": c_m, "blk": b_m, "soft": soft_s, "all_credit": credit, "all_blk": blk,
-                                "out_blk": PAY.hm(out_b / 60), "next": nxt}
-        if st[:7] == month:
+        if sp:
+            info[k]["split"] = sp
+        if part["in_period"]:
             srcs[src] = srcs.get(src, 0) + 1
+    # FW-0080: a crew index trip from before FLICA's grid (the day before the bid period) that flies on into the bid
+    # period: its part counts, only when FLICA's grid shows each of its days free with a layover cell (a trip in
+    # progress, not one dropped since the crew list was read) and a duty on file places it
+    first = (date.fromisoformat(start) - timedelta(days=1)).isoformat()
+    grid = {str(d[0]): d for d in days or [] if isinstance(d, (list, tuple)) and len(d) >= 3}
+    taken = {d for t in trips for d in PAY._days(t["start"], t["end"], cap=40)}
+    for t in recon or []:
+        if not isinstance(t, dict):
+            continue
+        pid, st, en = str(t.get("pairing") or ""), str(t.get("start") or ""), str(t.get("end") or "")
+        k = f"{pid}|{st}"
+        if (not PAIRING_RE.match(pid) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", st) or not en or not st < first
+                or en < start or k in info or not grid):
+            continue
+        cov = [d for d in PAY._days(first, en, cap=40)]
+        if not cov or any(d in taken or d not in grid or str(grid[d][1] or "").strip() or not str(grid[d][2] or "").strip()
+                          for d in cov):
+            continue
+        per = _period_of(st, month, start, end, pcache)
+        dets = pkg_details_for(per) or {}
+        det = dets.get(pid) or {}
+        credit, blk = CI._hm(t.get("credit")) or CI._hm(det.get("credit")), CI._hm(t.get("blk")) or CI._hm(det.get("block"))
+        part, sp = _period_part(pid, st, month, start, end, per, det, None, credit, blk)
+        if not part["in_period"] or not sp or not sp["placed"]:
+            continue
+        seat = str(t.get("seat") or (rec or {}).get("seat") or "FO").upper()
+        try:
+            n = int(t.get("n") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        trips.append(dict(part, pairing=pid, start=st, end=en, seat=seat, n=n, lay=str(t.get("lay") or det.get("lay") or ""),
+                          route=str(det.get("route") or t.get("route") or "")))
+        info[k] = {"seat": seat, "seat_src": "crew index", "split": sp}
+        carry.append({"pairing": pid, "start": st, "credit": sp["credit"], "blk": sp["blk"], "all_credit": credit,
+                      "all_blk": blk, "est": sp["est"]})
+        srcs["crew index"] = srcs.get("crew index", 0) + 1
     eq, ok = _equip_ok(rec)
     fc = PAY.hrs(re.sub(r"^(\d+)\.(\d{2})$", r"\1:\2", str((flica or {}).get("credit") or "")))
-    line, per = PAY.pay_line(trips, (rec or {}).get("doh") or "", m_from, m_to.isoformat(), tax_pct(), month=month,
+    line, per = PAY.pay_line(trips, (rec or {}).get("doh") or "", start, end, tax_pct(),
                              vac=sorted(vac), payp=payp, flica_credit=fc, rate_ok=ok,
                              vac_seat=str((rec or {}).get("seat") or "FO").upper())
     for k, g in per.items():
         info[k]["gross"] = g
-    line.update(_sen_fields(data, rec), seat_src=srcs, days_off=days_off)
+    for c in carry:
+        g = per.get(f"{c['pairing']}|{c['start']}")
+        if g is not None:
+            c["gross"] = g
+    line.update(_sen_fields(data, rec), seat_src=srcs, days_off=days_off, period=_bid_period_note(month, start, end))
+    if carry:
+        line["carry"] = carry
     if eq:
         line["equip"] = eq
     return line, info
@@ -6065,14 +6281,23 @@ def sched_label(url):
 
 def publish_schedule(updated=None, source=None):
     """sensor.<prefix>_schedule: the months on file (as before) and, 1.6.2, read_status: {ok, why, at, at_hst,
-    next_try, next_hst, tries} of the last read, so the Schedule card can say why FLICA's schedule is not read."""
+    next_try, next_hst, tries} of the last read, so the Schedule card can say why FLICA's schedule is not read.
+    1.7.11 (FW-0080): periods {YYYY-MM: {start, end, src}}, each month's bid period (bid_bounds), which the card's
+    totals cover when the month's pairings package is not loaded."""
     sch = S.get("schedule") or {}
     cur = sch.get(local_now().strftime("%Y-%m")) or {}
+    periods = {}
+    for k in sch:  # 1.7.11 (FW-0080): each month's bid period, for the schedule card's totals
+        try:
+            a, b, src = bid_bounds(k)
+            periods[k] = {"start": a, "end": b, "src": src}
+        except Exception:  # noqa: BLE001: the card then uses the pairings package, else the calendar month
+            continue
     pub("schedule", {"updated": updated if updated is not None else (cur.get("updated") or ""),
                      "source": source if source is not None else (S.get("sched_source") or ""),
                      "checked": now_iso(), "read_status": S.get("sched_status") or {},
                      "months": {k: {kk: v[kk] for kk in ("items", "days", "totals", "updated") if kk in v}
-                                for k, v in sch.items()}})
+                                for k, v in sch.items()}, "periods": periods})
 
 
 def schedule_check(fl, force=False):
@@ -8433,7 +8658,7 @@ def pilotver_price(emp, ent, recon=None):
                                   if lv else it)
                 line, info = pilot_price(priced, emp, (ent or {}).get("name") or "", month, start, end,
                                          (recon or {}).get(month), (rec.get("totals") or {}).get("days_off"),
-                                         rec.get("totals") if rec.get("source") == "lookup" else None)
+                                         rec.get("totals") if rec.get("source") == "lookup" else None, rec.get("days"))
                 for it in items:
                     got = info.get(f"{it.get('trip')}|{it.get('start')}")
                     if not got:
@@ -8450,9 +8675,11 @@ def pilotver_price(emp, ent, recon=None):
                 log.info("pilot lookup: version pay skipped: %s", e)
 
 
-# the pay summary a version record carries (the totals line's groups, pilot card _vold)
+# the pay summary a version record carries (the totals line's groups, pilot card _vold; 1.7.11, FW-0080: the bid
+# period it covers and the trips from before the grid counted in it)
 PILOTVER_PAY = ("gross", "trips", "trips_priced", "credit", "credit_n", "block", "block_n", "soft", "soft_n",
-                "vac", "vac_days", "payp", "payp_est", "payp_unk", "missing", "no_block", "no_rate", "equip")
+                "vac", "vac_days", "payp", "payp_est", "payp_unk", "missing", "no_block", "no_rate", "equip", "period",
+                "carry")
 
 
 def pilotver_attrs(emp, recon=None):
@@ -8531,7 +8758,7 @@ def pub_pilot(payload):
         name = payload.get("name") or next((r.get("name") for r in mine if r.get("name")), "")
         if trips:
             try:
-                payload["pay_line"] = pilot_pay_line(trips, emp, name, start, end)
+                payload["pay_line"] = pilot_pay_line(trips, emp, name, start, end, month)
             except Exception as e:
                 log.info("pilot lookup: pay line skipped: %s", e)
         # 1.7.7: a month FLICA showed gets its pay too (pilot_price): each pairing's seat and gross on a copy of its
@@ -8539,7 +8766,8 @@ def pub_pilot(payload):
         if emp and payload.get("month") and str(payload.get("status") or "") in ("ok", "cached") and payload.get("items"):
             try:
                 tot = payload.get("totals") if isinstance(payload.get("totals"), dict) else {}
-                line, info = pilot_price(payload["items"], emp, name, month, start, end, trips, tot.get("days_off"), tot)
+                line, info = pilot_price(payload["items"], emp, name, month, start, end, trips, tot.get("days_off"), tot,
+                                         payload.get("days"))
                 payload["items"] = [dict(it, **info.get(f"{it.get('trip')}|{it.get('start')}", {})) if isinstance(it, dict)
                                     else it for it in payload["items"]]
                 payload["items_pay"] = line

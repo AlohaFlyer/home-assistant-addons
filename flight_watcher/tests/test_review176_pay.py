@@ -1,7 +1,9 @@
 """1.7.7 review fixes, another pilot's pay (Ryan, Nov 14: the totals line shows the month's Pay-Gross "as Ryan's
 does"). Synthetic pilots and pairings only (Roe, Rick 10999; Doe, Jane 10001; H9001...).
-- The month is the schedule card's: trips that start in the calendar month, each its PWA 4.A share (a segment pays on
-  the date it originates), vacation days at 4:00 (PWA 6.J.1.c), a PAYP at FLICA's credit less the rest (estimate).
+- The month is the bid period (1.7.11, FW-0080: FLICA totals the bid period, November 2026 runs Nov 1 to Dec 1), each
+  trip its PWA 4.A part (a segment pays on the date it originates), vacation days at 4:00 (PWA 6.J.1.c), a PAYP at
+  FLICA's credit less the rest (estimate). 1.7.7 chose the calendar month; the tests that pinned it now pin the bid
+  period, each saying why.
 - A version is priced from the live read of the same trip (crew count, page credit), as the live month is.
 - Each trip's package is its own bid period's; another fleet's pilot is not priced at the A330 rates; the rate note
   carries a mid-month step; a pilot instance publishes another pilot's DOH in both pay lines again (1.7.7)."""
@@ -67,46 +69,60 @@ def test_a_version_prices_the_pages_credit_the_card_shows(W, tmp_path, monkeypat
     assert ver["H9001"]["gross"] == pytest.approx(live["H9001"]["gross"])  # 13:30 (the page), not the package's 12:30
 
 
-# ---------------------------------------------------------------- PWA 4.A and the calendar month
+# ---------------------------------------------------------------- PWA 4.A and the bid period (FW-0080)
 DUTIES = [{"d": 0, "dep": 1380, "arr": 1722, "stn": "SEA", "blk": 342}, {"d": 1, "dep": 2415, "arr": 2720, "stn": "SFO", "blk": 305},
           {"d": 2, "dep": 3900, "arr": 4250, "stn": "HNL", "blk": 350}]
 
 
-def test_a_trip_into_next_month_counts_its_pwa_4a_share(W, tmp_path, monkeypatch):  # noqa: F811
-    """H9103 Nov 29 to Dec 1, duty 3 departs Dec 1: Ryan's card shows Credit 11:41 and $3,596 for it in November
-    (DOH 2014-11-15, FO, year 12): the pilot card now shows the same."""
+def test_a_trip_into_the_next_bid_period_counts_its_pwa_4a_part(W, tmp_path, monkeypatch):  # noqa: F811
+    """1.7.11 (FW-0080): this test held H9103 Nov 29 to Dec 1 and counted its Dec 1 duty in December (the calendar
+    month). November's bid period runs to Dec 1, so that trip is now all November's (asserted below), and the split
+    moves a day on: H9103 Nov 30 to Dec 2, duty 3 departing Dec 2, counts 11:41 and $3,596 in November (no TCRD on file:
+    the block share, an estimate; DOH 2014-11-15, FO, year 12)."""
     _setup(W, tmp_path, monkeypatch, {"10999": dict(ROE, doh="2014-11-15")})
     W.DB.put("pkg_details:2026-11", {"H9103": {"credit": "18:00", "block": "16:37", "lay": "SEA", "duties": DUTIES}})
-    items = [{"trip": "H9103", "start": "2026-11-29", "end": "2026-12-01", "lay": "SEA", "credit": "18:00", "blk": "16:37",
+    whole = [{"trip": "H9103", "start": "2026-11-29", "end": "2026-12-01", "lay": "SEA", "credit": "18:00", "blk": "16:37",
               "seat": "FO", "n": 2}]
+    line, info = W.pilot_price(whole, "10999", "Roe, Rick", "2026-11", "2026-11-01", "2026-12-01", None, 20)
+    assert "split" not in info["H9103|2026-11-29"] and line["credit"] == "18:00"  # Dec 1 is November's
+    items = [dict(whole[0], start="2026-11-30", end="2026-12-02")]
     line, info = W.pilot_price(items, "10999", "Roe, Rick", "2026-11", "2026-11-01", "2026-12-01", None, 20)
-    sp = info["H9103|2026-11-29"]["split"]
+    sp = info["H9103|2026-11-30"]["split"]
     share = (342 + 305) / (342 + 305 + 350)
-    assert (sp["credit"], sp["blk"], sp["all_credit"], sp["next"]) == (PAY.hm(18 * share), PAY.hm((16 + 37 / 60) * share),
-                                                                         "18:00", "2026-12")
-    assert sp["credit"] == "11:41" and sp["out_blk"] == "5:50"
+    assert (sp["credit"], sp["blk"], sp["all_credit"], sp["other"], sp["side"], sp["edge"], sp["est"]) == (
+        PAY.hm(18 * share), PAY.hm((16 + 37 / 60) * share), "18:00", "2026-12", "after", "2026-12-01", True)
+    assert sp["credit"] == "11:41" and sp["out_blk"] == "5:50" and sp["out_credit"] == "6:19"
     assert line["credit"] == "11:41"
-    assert round(info["H9103|2026-11-29"]["gross"]) == 3596 == round(PAY.hrs("11:41") * PAY.rate_for(12, "2026-11-29"))
+    assert round(info["H9103|2026-11-30"]["gross"]) == 3596 == round(PAY.hrs("11:41") * PAY.rate_for(12, "2026-11-30"))
 
 
-def test_a_trip_from_the_bid_periods_last_day_is_next_months(W, tmp_path, monkeypatch):  # noqa: F811
+def test_a_trip_from_the_bid_periods_last_day_is_this_bid_periods(W, tmp_path, monkeypatch):  # noqa: F811
+    """1.7.11 (FW-0080): this test said H9002 Dec 1 to 2 was December's (the calendar month of its first day). Dec 1 is
+    November's bid period's last day, and with no duty times on file the whole trip pays in the bid period of its first
+    day: November counts it now, December does not."""
     _setup(W, tmp_path, monkeypatch)
     items = [{"trip": "H9002", "start": "2026-12-01", "end": "2026-12-02", "lay": "SEA", "credit": "12:00", "blk": "9:30",
               "seat": "FO", "n": 2}]
     line, _ = W.pilot_price(items, "10999", "Roe, Rick", "2026-11", "2026-11-01", "2026-12-01", None, 20)
-    assert line["trips"] == 0 and line.get("gross") is None  # December's on Ryan's card, and here
+    assert line["trips"] == 1 and line["credit"] == "12:00" and line["gross"] == pytest.approx(12 * PAY.rate_for(9, "2026-12-01"))
+    dec, info = W.pilot_price(items, "10999", "Roe, Rick", "2026-12", "2026-12-02", "2026-12-31", None, 20)
+    assert dec["trips"] == 0 and dec.get("gross") is None
+    assert info["H9002|2026-12-01"]["split"]["none"] is True and info["H9002|2026-12-01"]["split"]["other"] == "2026-11"
 
 
 def test_the_split_also_comes_from_the_pairing_pages_legs(W, tmp_path, monkeypatch):  # noqa: F811
-    """No package duties for the trip: the legs the pairing page gave place each duty (weekday) in its month."""
+    """No package duties for the trip: the legs the pairing page gave place each duty in its bid period, on its HST
+    departure date (1.7.11: the leg's local time less its station's offset). The trip moved a day on from Nov 30 to
+    Dec 1 (FW-0080: Dec 1 is November's): TU HNL-SEA 23:00 Dec 1 is November's, WE SEA-HNL 18:30 local Dec 2 December's."""
     _setup(W, tmp_path, monkeypatch)
-    legs = [{"dow": "MO", "route": "HNL-SEA", "dep": "2300", "arr": "0642", "blk": "0542"},
-            {"dow": "TU", "route": "SEA-HNL", "dep": "1830", "arr": "2255", "blk": "0625"}]
-    items = [{"trip": "H9105", "start": "2026-11-30", "end": "2026-12-01", "credit": "15:00", "blk": "12:07", "seat": "FO",
+    legs = [{"dow": "TU", "route": "HNL-SEA", "dep": "2300", "arr": "0642", "blk": "0542"},
+            {"dow": "WE", "route": "SEA-HNL", "dep": "1830", "arr": "2255", "blk": "0625"}]
+    items = [{"trip": "H9105", "start": "2026-12-01", "end": "2026-12-02", "credit": "15:00", "blk": "12:07", "seat": "FO",
               "n": 2, "legs": legs}]
     _line, info = W.pilot_price(items, "10999", "Roe, Rick", "2026-11", "2026-11-01", "2026-12-01", None, 20)
-    sp = info["H9105|2026-11-30"]["split"]
-    assert sp["credit"] == PAY.hm(15 * 342 / (342 + 385)) and sp["next"] == "2026-12" and sp["out_blk"] == "6:25"
+    sp = info["H9105|2026-12-01"]["split"]
+    assert sp["credit"] == PAY.hm(15 * 342 / (342 + 385)) and sp["other"] == "2026-12" and sp["out_blk"] == "6:25"
+    assert sp["est"] is True  # the pairing page prints no duty credit
 
 
 # ---------------------------------------------------------------- vacation and PAYP
@@ -209,8 +225,12 @@ def test_a_pilot_instance_sends_another_pilots_doh_as_1_7_5_did(W, tmp_path, mon
 
 
 def test_split_rule_matches_versions_split():
-    """The pilot card's share is the schedule card's (versions._split, 'the schedule card's way')."""
-    import watcher as W0
-    share, out_b, nxt = W0._month_share("2026-11-29", "2026-12-01", {"duties": DUTIES}, None, "2026-11")
-    assert round(18 * 60 * share) == VER._split("2026-11-29", {"duties": DUTIES}, 18 * 60)["2026-11"]
-    assert (out_b, nxt) == (350, "2026-12")
+    """The pilot card's part is the schedule card's and the versions' (versions._split, pay.period_share). 1.7.11
+    (FW-0080): by bid period, so the trip that pinned this moved a day on (Nov 29 to Dec 1 is all November's now)."""
+    def nov(iso):
+        return "2026-11" if "2026-11-01" <= iso <= "2026-12-01" else iso[:7]
+    sh = PAY.period_share("2026-11-30", "2026-11-01", "2026-12-01", DUTIES, "18:00", "16:37")
+    sp = VER._split("2026-11-30", {"duties": DUTIES}, 18 * 60, nov)
+    assert PAY.mins(sh["credit"]) == sp["2026-11"] and PAY.mins(sh["out_credit"]) == sp["2026-12"]
+    assert (sh["out_blk"], sh["side"]) == ("5:50", "after")
+    assert VER._split("2026-11-29", {"duties": DUTIES}, 18 * 60, nov) == {"2026-11": 18 * 60}

@@ -235,14 +235,22 @@ def test_one_look_for_every_month_grid(width, height, scheme):
         for v in ("pilot", "recon"):
             _same(r["own"]["tot"], r[v]["tot"], (v, "totals"))
             _same(r["own"]["totK"], r[v]["totK"], (v, "totals label"))
-            _same(r["own"]["th"], r[v]["th"], (v, "header"))
+            # 1.7.11 (FW-0079): on a phone the other pilot's header cells are 3 px padded (6 px on Ryan's) and the Crew
+            # column moves into the crew list under the grid, so its 8 columns fit a 368 px frame
+            th = dict(r[v]["th"])
+            if width <= 700:
+                assert th.pop("paddingLeft") == "3px", r[v]["th"]
+            _same({k: x for k, x in r["own"]["th"].items() if width > 700 or k != "paddingLeft"}, th, (v, "header"))
             assert r[v]["heads"] == ["", "", "Trip", "Layover", "Block", "Credit", "Soft", "Pay-Gross", "Crew"], r[v]["heads"]
         assert r["own"]["heads"][:8] == ["", "", "Trip", "Layover", "Block", "Credit", "Soft", "Pay-Gross"]
         assert r["pilot"]["labels"] == ["Credit", "Block", "Soft", "Pay-Gross", "Pay-Net", "Days Off"]
         assert r["recon"]["labels"] == ["Trips", "Credit", "Block", "Soft", "Pay-Gross", "Pay-Net", "Days Off"]
         assert r["own"]["labels"][:2] == ["Credit", "Block"]
         rows = _texts(pg, "PIL", ".cal tr[data-d='2026-11-16']")
-        assert rows == [f"MO 16 H9102 LAX ✔ R 07:00 11:15 13:15 2:00 ${round(PER['H9102|2026-11-16']):,} CA Doe, John · FO Roe, Jane"], rows
+        crew = " CA Doe, John · FO Roe, Jane" if width > 700 else ""  # FW-0079: a phone's crew is in the list under the grid
+        assert rows == [f"MO 16 H9102 LAX ✔ R 07:00 11:15 13:15 2:00 ${round(PER['H9102|2026-11-16']):,}{crew}"], rows
+        if width <= 700:
+            assert "H9102 Nov 16: CA Doe, John · FO Roe, Jane" in _texts(pg, "PIL", ".crl")[0]
         tot = _texts(pg, "PIL", ".frame > .tot")[0]
         assert tot.startswith("Credit 41:15 ✓ Block 35:52 ✓ Soft 5:23 Pay-Gross") and "Days Off 22" in tot, tot
         assert "Year 9 (DOH 2018-10-03)" in _texts(pg, "PIL", ".prate")[0]
