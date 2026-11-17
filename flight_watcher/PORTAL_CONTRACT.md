@@ -619,7 +619,8 @@ file does not read yet). Attributes: `rev` (the first 12 hex of the file's sha25
   is not in the database; null with no pilot shown or while not shared. It follows the pilot card at once and loads no
   FLICA page. The record itself (every field, phones and emails) is in the file, never in the state.
 - The name lookup ("Look up a pilot's month") reads the names and seats of the file's records for its pick list
-  (section 5.3's limits are unchanged: letters only, the whole last name, at most 5 matches, 20 name lookups an hour);
+  (the lookup's limits: letters only, the whole last name, at most 12 matches (`watcher.LOOKUP_MAX`, 5 before 1.7.11),
+  20 name lookups an hour);
   the FLICA lookup then runs as before.
 
 **A pilot's uploads** (Ryan's decision 4 of Nov 15). An award a pilot uploads from his portal (`upload/pdf`, section

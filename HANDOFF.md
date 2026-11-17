@@ -410,8 +410,12 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
 
 ## Recent releases
 
-1.7.11 built Nov 17 on branch `fw-1.7.11` (not pushed, not live): FW-0075, the layover card's "-5 min" and "+5 min"
-move the van time in 5 minute steps (`flight_watcher/van/adjust/set`, admin only, no contract change; CHANGELOG 1.7.11).
+1.7.11 built Nov 17 on branch `fw-1.7.11` (not pushed, not live): contract 1 revision 6, so HOM 1.9.2 goes live
+first. FW-0075 (the layover card's "-5 min" / "+5 min" move the van time in 5 minute steps, admin only), FW-0076 (this
+month / next month buttons on the pilot card, `pilot/set` key `month`), FW-0078 (the pick list shows up to 12 pilots
+with seat, base and employee number), FW-0079 (the pilot card's crew list on a phone), FW-0080 (totals by bid period
+everywhere, PWA 4.A; stored PAYP records split again once), the log mask fixes, and the integration review fixes
+(CHANGELOG 1.7.11, its last list).
 1.7.5 Nov 14 (Pause wins over a waiting FLICA login, login floor from when FLICA is reached), 1.7.4 Nov 14 (FLICA
 refusal block HMAC),
 1.7.3 Nov 14 (crew index probes no longer stop pairing reads, pilot log mask, pause note, plain FLICA error line),

@@ -255,6 +255,50 @@ way of joining them with 1.7.10, and no form that 1.7.10 masked passes now. Synt
   instances, and the phone rule stays linear on long lines.
 - Not changed: cards, the database, exports, FLICA reads and budgets, the portal, pushes.
 
+### Integration review fixes
+
+What broke with the four branches together, or on the first start after the update from 1.7.10. Synthetic data in
+every test (`tests/test_fw1711_integration.py`); no contract change, the fixture is unchanged (sha256
+`a066d935367dfc736383bb4a6b1fa71d114fee26defcb2de8479695759ed2ec9`); no FLICA load.
+
+- **A rebuilt pairing splits by bid period** (FW-0068 with FW-0080). FLICA's rebuilt copy of a package pairing
+  (H9635B) found no duties, so another pilot's December gave it 0:00 and November the whole 15:00 / 11:15 under "no
+  duty times on file". Another pilot's month, its carried trips and the rebuilt month now use the base id's package
+  duties and TCRD (`pkg_det`, `pkg_detail_for` with the trip's first day, `payp_tcrd`), only when that bid period's
+  pairing file lists the base id on the trip's first day (`pkg_base`, the pilot card's rule): never for a trip on
+  another day, such as a part of it (H9640A).
+- **The first start after 1.7.10 makes no schedule version** (`repair_payp_splits`). A stored version's records have no
+  `end`, so the repair took a continuation PAYP (PAYP|12-01) for Dec 1 alone, November's day, and dropped it; its
+  span now comes from the version's own PAYP item, and a continuation whose span cannot be read is kept. The records
+  on file are priced first (`payp_refresh`; a record of a PAYP on the schedule that it no longer keeps leaves own
+  trips, as `own_trip_times` prunes it), and each repaired version's fingerprint is made again, so neither the start's
+  `versions_check` nor the first check's makes a version or sends `event/schedule_version` when FLICA changed nothing.
+- **The repaired versions' change lines** say what the records now hold, in the bid period's words (their PAYP lines
+  written again from `versions.diff`; "by month ... 7:04, 10:56" became "by bid period ... 9:30, 8:30").
+- **A PAYP whose trip still flies in part** (H9640A flies the Dec 2 and Dec 3 duties of H9640, the PAYP is Nov 30 to
+  Dec 1): its kept credit (18:00 less 8:30) splits only the duties departing on the PAYP's own days, so November gets
+  its 9:30 (PWA 4.A, PWA Definitions 57); before, November 1:00 and December 8:30, which H9640A already pays. The
+  one-time repair does the same, with the PAYP's days from the version's item.
+- **A month tap while Schedule Lookup reads are paused** says so with its month ("Loading Nov 2026... Schedule Lookup
+  reads are paused until ..."): the paused line was said once a pilot, so a tap for the pilot already shown stayed
+  "loading" for hours. It is said once a request now, for the pilot and the month.
+- **The pilot month an older release left in HA** (the retained `pilot_schedule`, which the portal exports as it is)
+  is priced again by bid period at the start, when its pay lines carry no `period` (`pilot_shown_reprice`: from its
+  stored read, served as cached, else from the sensor's own fields), so James never sees 1.7.10's calendar-month
+  totals in red under the bid period's title until his next lookup.
+- **On a phone the split explains itself**: a line under the totals ("Purple Block and Credit: only the part flown in
+  this bid period (PWA 4.A ...). H9635 Dec 1: 5:23 block, 8:21 credit pay in the November bid period.") and the split's
+  reason in the pairing sheet (and the wide card's panel) a tap opens. Touch never shows a title.
+- **Docs**: `PORTAL_CONTRACT.md` section 5.7 said the name lookup gives at most 5 matches (12 since FW-0078, and it
+  pointed at section 5.3, which is pref/set; the doc's own sha256 pin in `tests/test_doh_settings.py` and
+  `tests/test_van_settings.py` moves with it, the fixture's does not); HANDOFF's release list called 1.7.11 FW-0075
+  alone with no contract change (it is revision 6, HOM 1.9.2 first, with every item above).
+- **A test that read the wall clock** (`test_a_new_denial_pushed_with_its_view_page_is_not_read_twice`) failed about
+  once a run in 60 (at :59.x the request cap is 599 s, not 600); its clock is pinned to three seconds of a minute now.
+- **Not fixed here, needs a contract change:** the month buttons are this HST month and the next, as contract 1
+  revision 6 words them in the pinned fixture. On a bid period's day after its calendar month ends (Dec 1, 2026 is
+  November's) the bid period being flown cannot be picked; offering it changes the rule the fixture states.
+
 ## 1.7.10
 
 Ryan's decisions of Nov 15 about the pilot database: "The pilot database should be shared with James 100%; we work on

@@ -4,7 +4,8 @@
 // a wide card), names stay text, the trip across the bid period's edge shows its December part, purple, with its title,
 // and the totals match FLICA's (no red). Usage: node <this> <pilot card.js> <attributes.json> [screenshot dir or ""]
 // [widths, default "390,1024"] [shot name tag]. 1.7.11 review: also 360, 375 and 820 px (a tablet in portrait), and each
-// row's height by day (rowHd) for a one-day turn's row.
+// row's height by day (rowHd) for a one-day turn's row. 1.7.11 integration review: the card's visible text (bodyText,
+// innerText: what a phone shows, never a title) and, under 700 px, the pairing sheet's after a tap on H9635 (sheetText).
 const [, , cardPath, attrsPath, shotDir, widthsArg, tag] = process.argv;
 const fs = require("fs");
 
@@ -58,6 +59,13 @@ customElements.define("ha-card", class extends HTMLElement { constructor() { sup
           crlon: !!R.querySelector(".body .wrap.crlon"),
         };
       }, { ENT, attrs, dark });
+      r.bodyText = await p.evaluate(() => document.querySelector("flight-watcher-pilot-card").shadowRoot.querySelector(".body").innerText);
+      r.sheetText = "";
+      if (w < 700) {
+        await p.evaluate(() => { const t = document.querySelector("flight-watcher-pilot-card").shadowRoot.querySelector('.trip[data-k="H9635|2026-12-01"]'); if (t) t.click(); });
+        await p.waitForTimeout(400);
+        r.sheetText = await p.evaluate(() => { const h = document.querySelector("flight-watcher-pilot-card").shadowRoot.querySelector(".fwsh"); return h && !h.hidden ? h.innerText : ""; });
+      }
       if (shotDir) await p.screenshot({ path: `${shotDir}/totals_pilot_${tag ? `${tag}_` : ""}${w}_${dark ? "dark" : "light"}.png`, fullPage: true });
       out[`${w}_${dark ? "dark" : "light"}`] = r;
       await p.close();

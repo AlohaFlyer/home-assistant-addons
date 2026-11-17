@@ -3270,7 +3270,7 @@ def payp_tcrd(key, rec, period_of=None):
     """1.7.11 (FW-0080): the TCRD of each duty of a removed trip (key 'TRIP|start'), from the pairings package detail of
     its bid period (pkg_detail_for), for versions.payp_entries' split; None when the package does not have it."""
     trip, _, st = str(key).partition("|")
-    pd = pkg_detail_for((period_of or bid_period_key)(st), trip) if trip and st else None
+    pd = pkg_detail_for((period_of or bid_period_key)(st), trip, st) if trip and st else None
     du = pd.get("duties") if isinstance(pd, dict) else None
     return [x.get("tcrd") if isinstance(x, dict) else None for x in du] if isinstance(du, list) else None
 
@@ -3473,9 +3473,26 @@ def repair_payp_splits():
     while a PAYP's kept credit split by the calendar month (1.7.10), split again by bid period (versions.resplit_versions:
     each removed trip's duties from own trips or the versions, its TCRD from its pairings package), so a viewed version
     prices each bid period's part as FLICA does; the records on file are split again by payp_refresh on every run.
-    Returns the number of months changed."""
+    Returns the number of months changed.
+    1.7.11 integration review (the first start after 1.7.10): the records on file go first (payp_refresh; a record of a
+    PAYP on the schedule that it no longer keeps leaves own trips, as own_trip_times prunes it), so they match the
+    repaired versions;
+    resplit_versions makes each repaired version's fingerprint again and writes its PAYP change lines in the bid period's
+    words. The start's versions_check and the first check's then see the line as it is: no new version, no
+    event/schedule_version, with nothing changed on FLICA. No FLICA load."""
     if S.get("payp_fix_v") == PAYP_FIX_V:
         return 0
+    own = S.setdefault("own_trips", {})
+    was = json.dumps(own, sort_keys=True, default=str)
+    keep, on = payp_refresh(own), {f"{it.get('trip')}|{it.get('start')}" for it in _sched_items()}
+    for k in [k for k in own if k.startswith(f"{VER.PAYP}|") and k not in keep and k in on]:
+        own.pop(k)
+    if json.dumps(own, sort_keys=True, default=str) != was:
+        save_state(S)
+        try:
+            publish_own_trips()
+        except Exception as e:  # noqa: BLE001 (the next check publishes them)
+            log.info("own trips not published after the pay protection split: %s", type(e).__name__)
     today = local_now().date()
     vers = {}
     for i in range(-24, 4):
@@ -4580,7 +4597,8 @@ def pilot_pay_line(trips, emp, name, start, end, month=None):
         st = str(t.get("start") or "")
         per = _period_of(st, month, start, end, pcache)
         dets = pkg_details_for(per) or {}
-        part, sp = _period_part(t["pairing"], st, month, start, end, per, dets.get(t["pairing"]) or {}, None,
+        # 1.7.11 integration review: a rebuilt copy (FW-0068, H9635B) splits by its base id's duties (pkg_det)
+        part, sp = _period_part(t["pairing"], st, month, start, end, per, pkg_det(dets, per, t["pairing"], st), None,
                                 CI._hm(t.get("credit")), CI._hm(t.get("blk")))
         t.update(part)
         if sp:
@@ -4674,7 +4692,7 @@ def _trip_duties(period, pid, det, legs, st):
     ok = [d for d in raw if isinstance(d, dict) and isinstance(d.get("dep"), (int, float))
           and isinstance(d.get("blk"), (int, float))]
     if ok:
-        pd = pkg_detail_for(period, pid) if period else None
+        pd = pkg_detail_for(period, pid, st) if period else None  # 1.7.11 integration review: a rebuilt id's base too
         pdu = pd.get("duties") if isinstance(pd, dict) else None
         same = isinstance(pdu, list) and len(pdu) == len(raw) == len(ok)
         return [{"dep": d["dep"], "blk": d["blk"],
@@ -4801,7 +4819,8 @@ def pilot_price(items, emp, name, month, start, end, recon=None, days_off=None, 
             n = 0
         end_ = str(it.get("end") or st)
         # PWA 4.A (FW-0080): this bid period's part of the trip, never a calendar month's
-        part, sp = _period_part(pid, st, month, start, end, per, dets.get(pid) or {}, it.get("legs"), credit, blk)
+        # 1.7.11 integration review: a rebuilt copy (FW-0068, H9635B) splits by its base id's duties (pkg_det)
+        part, sp = _period_part(pid, st, month, start, end, per, pkg_det(dets, per, pid, st), it.get("legs"), credit, blk)
         trips.append(dict(part, pairing=pid, start=st, end=end_, seat=seat, n=n,
                           lay=str(it.get("lay") or det.get("lay") or r.get("lay") or ""),
                           route=str(det.get("route") or r.get("route") or "")))
@@ -4832,8 +4851,7 @@ def pilot_price(items, emp, name, month, start, end, recon=None, days_off=None, 
                           for d in cov):
             continue
         per = _period_of(st, month, start, end, pcache)
-        dets = pkg_details_for(per) or {}
-        det = dets.get(pid) or {}
+        det = pkg_det(pkg_details_for(per), per, pid, st)  # 1.7.11 integration review: a rebuilt id's base too
         credit, blk = CI._hm(t.get("credit")) or CI._hm(det.get("credit")), CI._hm(t.get("blk")) or CI._hm(det.get("block"))
         part, sp = _period_part(pid, st, month, start, end, per, det, None, credit, blk)
         if not part["in_period"] or not sp or not sp["placed"]:
@@ -8296,6 +8314,7 @@ def pilot_cmd(payload):
     if ask:
         S["pilot_ask"] = {"emp": emp, "name": d.get("name") or "", "ask": ask}
     S["pilot_req"] = {"emp": emp, "name": d.get("name") or "", "at": now_iso(), **({"month": month} if month else {})}
+    S.pop("pilot_paused_said", None)  # 1.7.11 integration review: a new request gets its own paused line (pilot_check)
     save_state(S)
     cached = pilot_cached(emp, month)
     if cached and time.time() - cached.get("fetched_ts", 0) < PILOT_CACHE_S:
@@ -8340,8 +8359,11 @@ def pilot_check(fl):
     if not req:
         return False
     if not BRK.allow("lookup"):  # 1.6.2: kept for when Schedule Lookup reads may run again; the card says so
-        if (S.get("pilot_paused_said") or "") != req["emp"]:
-            S["pilot_paused_said"] = req["emp"]
+        # 1.7.11 integration review: said once a request (pilot_cmd clears the mark), keyed by the pilot and the month,
+        # so a month tap for the pilot already shown gets its paused line with its month too (FW-0076)
+        said = f"{req['emp']}|{req.get('month') or ''}"
+        if (S.get("pilot_paused_said") or "") != said:
+            S["pilot_paused_said"] = said
             pub_pilot({"emp": req["emp"], "name": req.get("name") or "", "month": "", "days": [], "items": [],
                        "totals": {}, "updated": "", "fetched": now_iso(),
                        **({"asked_month": req["month"]} if req.get("month") else {}),  # 1.7.11 review (F5)
@@ -8788,6 +8810,44 @@ def pub_pilot(payload):
         pub("pilot_schedule", {k: v for k, v in payload.items() if k != "contact"})
         if payload.get("contact"):
             pub("pilot_schedule", payload, retain=False)
+
+
+PILOT_COMPUTED = ("reconstructed", "reconstructed_coverage_pct", "reconstructed_month", "reconstructed_from",
+                  "reconstructed_to", "pay_line", "items_pay", "contact", "versions_file_key", "versions_rev", "versions",
+                  "ask", "friendly_name", "icon")  # what pub_pilot (or HA) adds to a lookup's reply
+
+
+def pilot_shown_reprice():
+    """1.7.11 integration review (FW-0080): at the start, the pilot month HA still shows from an older release (the
+    retained pilot_schedule, which the portal exports to the card as it is) is priced again by bid period when its pay
+    lines carry no bid period ('period', new in 1.7.11): a readable month from its stored read (pilot_cached, the same
+    fetched time; served as 'cached'), else from what the sensor holds, without the fields pub_pilot adds. No FLICA
+    load; nothing when HA has no such pilot, or the month is already priced by bid period. True when published."""
+    code, st = ha_state_full(f"sensor.{T}_pilot_schedule")
+    a = (st or {}).get("attributes") if code == 200 and isinstance(st, dict) else None
+    if not isinstance(a, dict):
+        return False
+    emp = re.sub(r"\D", "", str(a.get("emp") or ""))
+    lines = [x for x in (a.get("items_pay"), a.get("pay_line")) if isinstance(x, dict)]
+    if not emp or not lines or any(isinstance(x.get("period"), dict) for x in lines):
+        return False
+    month = str(a.get("month") or "")
+    rec = pilot_cached(emp, month) if re.fullmatch(r"\d{4}-\d{2}", month) else None
+    if rec and str(a.get("status") or "") in ("ok", "cached") and rec.get("fetched") == a.get("fetched"):
+        payload = {**rec, "status": "cached"}
+    else:
+        items = []
+        for it in a.get("items") or []:
+            if not isinstance(it, dict):
+                continue
+            it = {k: v for k, v in it.items() if k not in ("gross", "split") + (("credit", "blk", "soft", "figs") if it.get("figs") else ())}
+            if it.pop("seat_src", "pairing page") != "pairing page":
+                it.pop("seat", None)
+            items.append(it)
+        payload = {**{k: v for k, v in a.items() if k not in PILOT_COMPUTED}, "items": items}
+    pub_pilot(payload)
+    log.info("pilot lookup: the month shown before this start priced again by bid period (no FLICA load)")
+    return True
 
 
 # ---------------------------------------------------------------- 0.10.1 crew index (Ryan)
@@ -11908,11 +11968,59 @@ INFLT_PER_CHECK = 3
 _DETAIL_CACHE = {}  # 1.7.7: pairing file path -> (file time, its 'detail'); period -> (text time, package_legs of the text)
 
 
-def pkg_detail_for(period, pid):
+_STARTS_CACHE = {}  # 1.7.11 integration review: pairing file path -> (file time, crewidx.file_starts of it)
+
+
+def pkg_starts(period):
+    """1.7.11 integration review: {pairing id: {ISO first days}} the pairing file of one bid period lists (crewidx's
+    rule), cached by file time; {} when there is no file."""
+    path = os.path.join(CARD_PAIRINGS, f"pairings_{period}.json")
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return {}
+    c = _STARTS_CACHE.get(path)
+    if not c or c[0] != mt:
+        c = _STARTS_CACHE[path] = (mt, CI.file_starts(CARD_PAIRINGS, period))
+    return c[1]
+
+
+def pkg_base(period, pid, st):
+    """1.7.11 integration review (FW-0068 with FW-0080): the id whose pairings package entry a trip pid that starts on st
+    uses: pid; for a pairing FLICA rebuilt (H9635B) whose own id the package lacks, its base id (H9635) when the bid
+    period's pairing file lists the base id on st (the pilot card's rule, _times), so a rebuilt copy's duties split by bid
+    period as the package's trip does; never the base's for a trip on another day (a part of it, H9640A)."""
+    pid = str(pid or "")
+    b = re.sub(r"(?<=\d)[A-Z]$", "", pid)
+    return b if b != pid and st and st in pkg_starts(period).get(b, ()) else pid
+
+
+def pkg_det(dets, period, pid, st):
+    """1.7.11 integration review: a trip's pairings package details (pkg_details_for of its bid period): its own id's,
+    else its base id's when pkg_base allows it; {} when neither."""
+    dets = dets or {}
+    if dets.get(pid):
+        return dets[pid]
+    b = pkg_base(period, pid, st)
+    return (dets.get(b) if b != pid else None) or {}
+
+
+def pkg_detail_for(period, pid, st=None):
     """1.7.7: one pairing's pairings package detail of one bid period (pdfs.package_legs: its duties' legs, DAY and the
     local times as printed): from the pairing file (pairings_<period>.json 'detail', cached by file time), else from the
     shared upload's text copy (a pairing the file's detail budget left out, or a file from before the detail). None
-    when neither has it. No FLICA load."""
+    when neither has it. No FLICA load. 1.7.11 integration review: with st (the trip's first day), a pairing FLICA
+    rebuilt (H9635B) that the package lacks takes its base id's detail when pkg_base allows it (its TCRD for the bid
+    period split)."""
+    got = _pkg_detail_for(period, pid)
+    if got is None and st:
+        b = pkg_base(period, pid, st)
+        if b != pid:
+            got = _pkg_detail_for(period, b)
+    return got
+
+
+def _pkg_detail_for(period, pid):
     path = os.path.join(CARD_PAIRINGS, f"pairings_{period}.json")
     try:
         mt = os.path.getmtime(path)
@@ -13358,6 +13466,10 @@ def main():
     versions_check(force_pub=True)
     uploads_check()
     pilotdb_start()  # 1.7.8: after uploads_check (the seniority list re-read by a newer parser comes first)
+    try:  # 1.7.11 integration review: the pilot month an older release left in HA, by bid period (no FLICA load)
+        pilot_shown_reprice()
+    except Exception as e:  # noqa: BLE001 (never stops the start; the next lookup prices it)
+        log.info("pilot lookup: the month shown before this start not priced again: %s", type(e).__name__)
     recall_eval()
     start_charter_watch()
     threading.Thread(target=ccr_thread, daemon=True, name="ccr").start()  # 1.4.6: Hark's answers to CCR requests

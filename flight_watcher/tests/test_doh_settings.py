@@ -32,7 +32,9 @@ TODAY = "2026-11-11"
 DOH = "2019-03-01"  # made up: year 8 on TODAY
 # PORTAL_CONTRACT.md as 1.6.3 shipped it: the portal only relays ciphertext, so a date of hire changes no contract
 # 1.7.10: revision 5 (the contacts list upload) was b14e730cd84f6b1eb997194c10ec53d787cbac7f1c90305595cc2d9388e44e38
-CONTRACT_DOC_SHA256 = "8fe0659c468e610e557aee5ffc7a67aabf8fe4f01869348d6768343ca9203817"  # 1.7.11: revision 6 (the lookup's month)
+# 1.7.11 revision 6 (the lookup's month) was 8fe0659c468e...; the integration review fixed section 5.7's stale "at most 5
+# matches" (12 since FW-0078), the doc only: the fixture is unchanged
+CONTRACT_DOC_SHA256 = "e4f559e075f579c76c3dc8abf206987459c1f9160d7a1b34e84e9ef8472f1b9c"
 
 
 def _src(name):

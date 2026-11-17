@@ -365,13 +365,35 @@ def duty_record(key, own, versions_of):
     return None
 
 
-def payp_resplit(k, rec, find, period_of=None, tcrd_of=None):
+def _split_payp_days(p, rec, n, period_of, tcrd, s, e):
+    """1.7.11 integration review (PWA 4.A, PWA Definitions 57): n credit minutes a PAYP over s..e keeps of removed trip p
+    ('TRIP|start') when a pairing with its base id still flies part of it (_net: H9640A flies its Dec 2 and Dec 3
+    duties): only the trip's duties that depart on the PAYP's own days split it (the flown ones are paid by that
+    pairing), each with its TCRD when tcrd lists one per duty; the bid period of the trip's first day (a PAYP day: the
+    removed trip starts on one) keeps the rest, as _split does. {period: minutes}."""
+    po, st = period_of or _cal, p.split("|", 1)[1]
+    days = set(_days(s, e or s))
+    du = [d for d in (rec or {}).get("duties") or [] if isinstance(d, dict)]
+    tc = list(tcrd) if isinstance(tcrd, (list, tuple)) and len(tcrd) == len(du) else None
+    try:
+        t0 = date.fromisoformat(st)
+    except ValueError:
+        return {po(s): n}
+    keep = [i for i, d in enumerate(du) if isinstance(d.get("dep"), (int, float)) and not isinstance(d.get("dep"), bool)
+            and (t0 + timedelta(days=int(d["dep"] // 1440))).isoformat() in days]
+    return _split(st, dict(rec or {}, duties=[du[i] for i in keep]), n, po, [tc[i] for i in keep] if tc else None)
+
+
+def payp_resplit(k, rec, find, period_of=None, tcrd_of=None, end=None):
     """1.7.11 review (FW-0080, PWA 4.A): a PAYP record (key PAYP|start) on file split again by the bid period rule, so a
     record written under the calendar month (1.7.10) counts each bid period's part as FLICA does: each protected trip's
     duties (find(trip key) -> its record with duties, duty_record) with their TCRD (tcrd_of), its credit the record's
     (one protected trip) or each trip's own (several, when they add up to the record's credit). The record as it is
     when a protected trip's duties are not on file or the credits do not add up, and for a continuation record ('of':
-    its share follows its original, payp_share). Only 'split' changes: never the credit, the trips or the days."""
+    its share follows its original, payp_share). Only 'split' changes: never the credit, the trips or the days.
+    1.7.11 integration review: one protected trip whose credit is above the record's (a pairing with its base id flies
+    part of it, _net) splits only its duties on the PAYP's days (_split_payp_days; end: the PAYP's last day, the
+    record's own when not given; the record as it is when neither says)."""
     if not _valid(rec) or rec.get("of"):
         return rec
     parts, n = _prot(rec), _mins(rec.get("credit"))
@@ -381,9 +403,17 @@ def payp_resplit(k, rec, find, period_of=None, tcrd_of=None):
     ns = [n] if len(parts) == 1 else [_mins(r.get("credit")) for r in recs]
     if None in ns or sum(ns) != n:
         return rec
-    po, msplit = period_of or _cal, {}
+    po, msplit, end = period_of or _cal, {}, end or rec.get("end") or ""
     for p, r, x in zip(parts, recs, ns):
-        for m, v in _split(p.split("|", 1)[1], r, x, po, tcrd_of(p, r) if tcrd_of else None).items():
+        tc = tcrd_of(p, r) if tcrd_of else None
+        full = _mins(r.get("credit"))
+        if len(parts) == 1 and full is not None and x < full:
+            if not end:
+                return rec
+            got = _split_payp_days(p, r, x, po, tc, k.split("|", 1)[1], end)
+        else:
+            got = _split(p.split("|", 1)[1], r, x, po, tc)
+        for m, v in got.items():
             msplit[m] = msplit.get(m, 0) + v
     sp = {m: _hm(v) for m, v in sorted(msplit.items()) if v > 0}
     out = {f: v for f, v in rec.items() if f != "split"}
@@ -410,27 +440,61 @@ def payp_share(k, rec, orig, period_of=None):
     return sp[key] if key else None
 
 
+def _payp_end(v, k):
+    """1.7.11 integration review: the last day of the PAYP item a stored version lists at record k's start (PAYP|start),
+    '' when it lists none there: a version's records never hold 'end' (trips_of keeps TRIP_FIELDS only)."""
+    st = k.split("|", 1)[1]
+    ends = [str(i.get("end") or i["start"]) for i in (v.get("items") or []) if isinstance(i, dict) and i.get("trip") == PAYP
+            and i.get("start") == st]
+    return max(ends) if ends else ""
+
+
+FILLER = "schedule re-read with small differences"
+
+
+def _payp_lines(old, new):
+    """1.7.11 integration review: a version's change lines with its PAYP lines (those that start "PAYP ") taken from new
+    (diff of the repaired versions, the bid period's wording), the others as they were and where they were."""
+    old = [c for c in old or [] if isinstance(c, str)]
+    mine = [c for c in new or [] if c.startswith(f"{PAYP} ")]
+    rest = [c for c in old if not c.startswith(f"{PAYP} ")]
+    if not mine and len(rest) == len(old):
+        return old  # no PAYP line before or after
+    if mine:
+        at = next((i for i, c in enumerate(old) if c.startswith(f"{PAYP} ")), len(old))
+        before = sum(1 for c in old[:at] if not c.startswith(f"{PAYP} ") and c != FILLER)
+        rest = [c for c in rest if c != FILLER]
+        rest = rest[:before] + mine + rest[before:]
+    return rest or [FILLER]
+
+
 def resplit_versions(month_versions, own, period_of=None, tcrd_of=None):
     """1.7.11 review (FW-0080): the PAYP records in stored versions ({month: [version, ...]}) split again by bid period,
     as payp_entries does with the ones on file: each record payp_resplit (its protected trips' duties from own trips or
     any of these versions), each continuation record ('of') its original's share there (payp_share; dropped when the
-    original gives it none). Changes the versions in place; returns the months changed."""
+    original gives it none). Changes the versions in place; returns the months changed.
+    1.7.11 integration review: a record's span is its version's PAYP item's (a stored record has no 'end'); a
+    continuation whose version lists no PAYP item at its start is kept as it is. Each version whose trips changed gets
+    its fingerprint made again from them (as repair_ends does), so the next read of the same line is no new version;
+    and each version's PAYP change lines are written again with the bid period's wording (diff of the repaired
+    versions), so they say what the records now hold."""
     def vo(mk):
         return month_versions.get(mk) or []
 
     def find(p):
         return duty_record(p, own, vo)
-    po, changed, orig = period_of or _cal, set(), {}
+    po, changed, orig, hit = period_of or _cal, set(), {}, set()
     for mk, vers in sorted(month_versions.items()):
         for v in vers:
             tr = v.get("trips") if isinstance(v, dict) and isinstance(v.get("trips"), dict) else {}
             for k, rec in list(tr.items()):
                 if not k.startswith(f"{PAYP}|") or not _valid(rec) or rec.get("of"):
                     continue
-                new = payp_resplit(k, rec, find, po, tcrd_of)
+                new = payp_resplit(k, rec, find, po, tcrd_of, rec.get("end") or _payp_end(v, k))
                 if new is not rec:
                     tr[k] = new
                     changed.add(mk)
+                    hit.add(id(v))
                 orig[k] = new  # the newest version's, the months and their versions in order
     for mk, vers in sorted(month_versions.items()):
         for v in vers:
@@ -439,15 +503,31 @@ def resplit_versions(month_versions, own, period_of=None, tcrd_of=None):
                 if not k.startswith(f"{PAYP}|") or not _valid(rec) or not rec.get("of"):
                     continue
                 o = orig.get(rec["of"]) or (own or {}).get(rec["of"])  # the original as stored, else on file
-                if not _valid(o):
-                    continue
-                share = payp_share(k, rec, o, po)
+                end = rec.get("end") or _payp_end(v, k)
+                if not _valid(o) or not end:
+                    continue  # its span cannot be read: never dropped on a guess
+                share = payp_share(k, dict(rec, end=end), o, po)
                 if share is None:
                     tr.pop(k)
-                    changed.add(mk)
                 elif share != rec.get("credit"):
                     tr[k] = dict(rec, credit=share)
+                else:
+                    continue
+                changed.add(mk)
+                hit.add(id(v))
+    for mk, vers in sorted(month_versions.items()):
+        prev = None
+        for v in vers:
+            if not isinstance(v, dict):
+                continue
+            if id(v) in hit and "fp" in v:
+                v["fp"] = fingerprint(v, v.get("trips") or {})
+            if prev is not None and not v.get("award") and isinstance(v.get("changes"), list):
+                lines = _payp_lines(v["changes"], diff(prev, v))
+                if lines != v["changes"]:
+                    v["changes"] = lines
                     changed.add(mk)
+            prev = v
     return sorted(changed)
 
 
@@ -644,12 +724,16 @@ def payp_entries(items, own, versions_of, is_pairing, period_of=None, tcrd_of=No
             moved.update(mv)
             continue
         moved.update(mv)
-        for (p, _, seat, rec, _), n in zip(new, nets):
+        for (p, full, seat, rec, _), n in zip(new, nets):
             if n > 0:
                 parts.append(p)
                 mins += n
                 seats.append(seat)
-                for m, x in _split(p.split("|", 1)[1], rec, n, po, tcrd_of(p, rec) if tcrd_of else None).items():
+                tc = tcrd_of(p, rec) if tcrd_of else None
+                # 1.7.11 integration review: a pairing with its base id still flies part of it (_net): only the duties
+                # on the PAYP's days split what the PAYP keeps
+                got = _split_payp_days(p, rec, n, po, tc, s, e) if n < full else _split(p.split("|", 1)[1], rec, n, po, tc)
+                for m, x in got.items():
                     msplit[m] = msplit.get(m, 0) + x
         if not parts:  # the next month's page lists the PAYP again: that bid period's share of the split
             for rk, r in list(out.items()):
