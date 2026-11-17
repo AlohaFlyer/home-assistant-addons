@@ -64,9 +64,10 @@ BUFFER_672_H = 98
 FITS_672 = "Fits 672"
 OVER_672 = f"Over {BUFFER_672_H}/672"
 UNK_672 = "672 ?"
-# smart.json keys that no longer mean anything: read and ignored, logged once per file change (load())
-IGNORED = {"cap_credit": "no monthly credit cap (Ryan, Nov 9: the PWA does not cap voluntary adds); the 672 h block "
-                         "check (Fits 672 / Over 98/672) replaces it"}
+# smart.json keys that no longer mean anything: read and ignored, logged once per file change (load()). 1.7.11: no
+# 'Name, Mon' in the text (the admin's log mask read 'Ryan, Nov' as a 'Last, First')
+IGNORED = {"cap_credit": "no monthly credit cap (Ryan's rule of Nov 9: the PWA does not cap voluntary adds); the 672 h "
+                         "block check (Fits 672 / Over 98/672) replaces it"}
 AP_RE = re.compile(r"^[A-Z]{3}$")
 # a pairing id (pot.PAIRING_RE): a schedule page lists a day outside its bid period only for a pairing carried across
 # the period's edge, so a day it lists with no pairing on it is a day of that page's own bid period

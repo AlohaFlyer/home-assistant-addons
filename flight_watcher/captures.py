@@ -57,7 +57,9 @@ TAG_RE = re.compile(r"(<[^>]*>)")
 # 1.6.2 review: by the page's structure, not only the 'Last, First' pattern (the Tradeboard writes 'FIRST LAST' and
 # JS string literals "JANE","DOE", with e-mail addresses and phone numbers)
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
-PHONE_RE = re.compile(r"(?<![\w.:/-])(?:\+?\d[\d\s().-]{5,18}\d)(?![\w.:/-])")
+# 1.7.11: a phone may end a sentence or a clause ('call 808-555-1234.', '808-555-1234- ...'): a dot or a hyphen right
+# after it ends it when no word, digit or dot follows
+PHONE_RE = re.compile(r"(?<![\w.:/-])(?:\+?\d[\d\s().-]{5,18}\d)(?![\w:/])(?![.\-][\w.:/\-])")
 DATE_DIGITS_RE = re.compile(r"^20\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(\d{6})?$")  # YYYYMMDD[HHMMSS]
 SCRIPT_OPEN_RE = re.compile(r"(?i)^<script\b")
 SCRIPT_CLOSE_RE = re.compile(r"(?i)^</script\b")
@@ -145,17 +147,66 @@ def _name_emps(t):
     return NAME_EMP_RE.sub(one, t)
 
 
+# 1.7.11 (Ryan, Nov 17: "Fix the masking text too"): an ISO month or date (2026-11, 2026-11-17) and a schedule version
+# (one or two digits, a dot, three digits: 12.002) are never a phone number or part of one. Before, PHONE_RE took
+# 'schedule version 12.002 (2026-11)' for one 11-digit number and the pilot's log said '##.### (####-##)'. Now a match
+# is masked only when its digits outside them still make a phone number by the rules below, and only those digits
+# are masked; and the text between them is read again on its own (a phone longer than what PHONE_RE could take after
+# a version: '12.002 (+1 808 555 1234)'). So a phone right after a date ('2026-11-17 808-555-1234') or in brackets
+# after a version is still masked
+NOT_PHONE_RE = re.compile(r"((?<![\d.])(?<!\d-)(?:20\d{2}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?"
+                          r"|\d{1,2}\.\d{3})(?!\d|[.\-]\d))")
+# a 5 to 7 digit number (an employee number's shape) right beside one of them, which the phone rule took with it
+# before: masked still ('2026-11-17 10001', '10001 (2026-11-17)')
+NUM_BEFORE_RE = re.compile(r"(?<![\w.:/-])(\d{5,7})([\s()]{1,4})$")
+NUM_AFTER_RE = re.compile(r"^([\s()]{1,4})(\d{5,7})(?![\w.:/-])")
+# a phone written with spaces only: an international one ('+1 808 555 1234', '+44 20 7946 0958') or the 3-3-4 shape
+# ('808 555 1234', '1 808 555 1234')
+SPACED_PHONE_RE = re.compile(r"\+\d[\d\s]*|(?:1\s+)?\d{3}\s+\d{3}\s+\d{4}")
+
+
+def _is_phone(s):
+    """One PHONE_RE match (its dates and versions taken out) is a phone number: 7 to 15 digits, no YYYYMMDD[HHMMSS],
+    no time, and not numbers in a row ('1 2 3 4 5 6 7') unless written as a phone."""
+    digits = re.sub(r"\D", "", s)
+    if len(digits) < 7 or len(digits) > 15 or DATE_DIGITS_RE.match(digits):
+        return False
+    s = s.strip()
+    if re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", s):
+        return False
+    return not (" " in s and not re.search(r"[()\-.]|\d{7}", s) and not SPACED_PHONE_RE.fullmatch(s))
+
+
+def _phone_sub(m):
+    s = m.group(0)
+    parts = NOT_PHONE_RE.split(s)
+    rest = "".join(parts[::2])
+    if _is_phone(rest):
+        return "".join(p if i % 2 else re.sub(r"\d", "#", p) for i, p in enumerate(parts))
+    cut = max((w.start() for w in re.finditer(r"\s", s)), default=-1)
+    if len(re.sub(r"\D", "", rest)) > 15 and cut > 0:
+        # more digits than one phone holds: a phone and the number after it ('1-808-555-1234 10001'), each read on
+        # its own (split at the last space)
+        return PHONE_RE.sub(_phone_sub, s[:cut]) + PHONE_RE.sub(_phone_sub, s[cut:])
+    return s
+
+
 def _phones(t):
-    def one(m):
-        digits = re.sub(r"\D", "", m.group(0))
-        if len(digits) < 7 or len(digits) > 15 or DATE_DIGITS_RE.match(digits):
-            return m.group(0)
-        if re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", m.group(0).strip()):
-            return m.group(0)
-        if " " in m.group(0).strip() and not re.search(r"[()\-.]|\d{7}", m.group(0)):
-            return m.group(0)  # numbers in a row ('1 2 3 4 5 6 7'), not one phone number
-        return re.sub(r"\d", "#", m.group(0))
-    return PHONE_RE.sub(one, t)
+    """Phone numbers in t, their digits as '#'. Dates and versions stay (NOT_PHONE_RE); the length never changes."""
+    t = str(t)
+    a = PHONE_RE.sub(_phone_sub, t)
+    parts = NOT_PHONE_RE.split(t)
+    if len(parts) == 1:
+        return a
+    for i in range(0, len(parts), 2):  # the text between them, each piece on its own
+        p = PHONE_RE.sub(_phone_sub, parts[i])
+        if i + 1 < len(parts):
+            p = NUM_BEFORE_RE.sub(lambda m: "#" * len(m.group(1)) + m.group(2), p)
+        if i:
+            p = NUM_AFTER_RE.sub(lambda m: m.group(1) + "#" * len(m.group(2)), p)
+        parts[i] = p
+    b = "".join(parts)  # both keep the length: a digit either one masked is masked
+    return "".join("#" if c.isdigit() and "#" in (x, y) else c for c, x, y in zip(t, a, b))
 
 
 def _mask_text(t):
@@ -255,9 +306,10 @@ COMMA_NAME_WIDE_RE = re.compile(rf"(?<!\w)((?:{_CAPW}\s+){{0,3}}{_CAPW}\s*,\s*(?
                                 rf"(?:\s+[{NAME_UP}]\.?(?![\w]))?)(\s+{_CAPW})?")
 # names with no comma: a seat label, one to four words and the number ('Captain: DOE JOHN 99999', 'f/o: doe jane
 # 10001'), and capital words right before a number ('trade: DOE JANE 10001')
+# 1.7.11: the number may be masked already ('#####': in page text, a number right beside a date is masked first)
 SEAT_WORDS_NUM_RE = re.compile(r"(?i)(?<![\w'.,-])((?:CA|FO|RO|F/O|capt(?:ain)?)\s*[:=]\s*)((?:[a-z\u00c0-\u024f\u02bb]"
-                               r"[a-z\u00c0-\u024f\u02bb'.\-]*\s+){1,4})(\d{3,7})(?![\d:./-])")
-CAPS_NUM_RE = re.compile(rf"(?<![\w'])((?:[{NAME_UP}][{NAME_UP}'\-]+\s+){{2,4}})(\d{{4,7}})(?![\d:./-])")
+                               r"[a-z\u00c0-\u024f\u02bb'.\-]*\s+){1,4})([\d#]{3,7})(?![\d#:./-])")
+CAPS_NUM_RE = re.compile(rf"(?<![\w'])((?:[{NAME_UP}][{NAME_UP}'\-]+\s+){{2,4}})([\d#]{{4,7}})(?![\d#:./-])")
 QUOTED_NUM_RE = re.compile(r"(\b\w*(?:Error|Exception)\(\s*['\"])(\d{3,7})(['\"]\s*\))")  # KeyError('10001')
 ADMIN_EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})+")  # bounded: linear on a long token
 ADMIN_PHONE_RE = re.compile(r"(?<![\w.:/-])(?:\+?1[\s.-]?)?(?:\(\d{3}\)\s?|\d{3}[\s.-])\d{3}[\s.-]\d{4}(?![\w:/-])")
