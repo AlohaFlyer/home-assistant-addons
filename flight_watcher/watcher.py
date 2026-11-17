@@ -7688,7 +7688,9 @@ PILOT_PAIRINGS_MAX = 8
 LOOKUP_MIN_LETTERS = 3  # of the last name
 LOOKUP_PREFIX_MIN = 5  # 1.6.2 review: a last name matches whole; only this many letters or more also match its start
 LOOKUP_PER_H = 20  # 1.6.2 review: name queries an hour (the roster cannot be walked letter by letter)
-LOOKUP_MAX = 5  # matches shown (name and seat); more is no list: type more of the name
+# matches shown; more is no list: type more of the name. 1.7.11 (FW-0078, Ryan: "show up to 12 matches as Last,
+# First, seat, base and employee #"): 12 (5 before; the most pilots sharing one last name in the shared pilot file is 10)
+LOOKUP_MAX = 12
 PICK_TTL_S = 1800  # a pick-list entry stays usable this long
 LOOKUP_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z '.-]*(?:,\s*[A-Za-z][A-Za-z '.-]*)?$")  # letters only: no wildcard
 AWARD_SEAT_RE = re.compile(r"\b[AB]\d{3}\s*(CA|FO)\b[^\n]{0,40}\bAWARD\b", re.I)
@@ -7709,11 +7711,12 @@ def _lkey(s):
 
 
 def name_directory():
-    """1.6.2 (item 11): [{emp, last, first, name, seat}] of every pilot on the files every instance already receives:
-    the shared seniority list (seniority.json: 'Last, First', seat) and the PBS award texts (<YYYY-MM>_award.txt: the
-    'SSSSS / EMP' line, the last name on it or on the next line, the seat from the award's title, e.g. 'A332FO ...
-    AWARD'). Never the admin's crew index or contact list. The list's record wins for an employee number on both.
-    Cached by the files' times."""
+    """1.6.2 (item 11): [{emp, last, first, name, seat, base}] of every pilot on the files every instance already
+    receives: the shared seniority list (seniority.json: 'Last, First', seat) and the PBS award texts
+    (<YYYY-MM>_award.txt: the 'SSSSS / EMP' line, the last name on it or on the next line, the seat from the award's
+    title, e.g. 'A332FO ... AWARD'). Never the admin's crew index or contact list. The list's record wins for an
+    employee number on both. Cached by the files' times. 1.7.11 (FW-0078): base, for the pick list: the pilot
+    database record's (domicile), else the award's seniority line's category or the seniority list's record, else ''."""
     try:
         awards = sorted(f for f in os.listdir(UPLOADS) if re.fullmatch(r"\d{4}-\d{2}_award\.txt", f))
     except OSError:
@@ -7735,7 +7738,8 @@ def name_directory():
         # last name and the seat of every awarded pilot (no first name on them)
         for r in SEN.award_sen_parse("\n".join(lines))["rows"]:
             if r["emp"] not in rows:
-                rows[r["emp"]] = {"emp": r["emp"], "last": r["last"], "first": "", "seat": r["seat"][:2]}
+                rows[r["emp"]] = {"emp": r["emp"], "last": r["last"], "first": "", "seat": r["seat"][:2],
+                                  "base": _base(r.get("base"))}
         for i, ln in enumerate(lines):
             g = SEN.AWARD_PILOT_RE.match(ln)
             if not g:
@@ -7745,7 +7749,8 @@ def name_directory():
             if emp and name and (emp not in rows or not rows[emp]["first"]):
                 last, _, first = (x.strip() for x in name.partition(","))
                 rows[emp] = {"emp": emp, "last": last.title(), "first": first.title(),
-                             "seat": seat or (rows.get(emp) or {}).get("seat", "")}
+                             "seat": seat or (rows.get(emp) or {}).get("seat", ""),
+                             "base": (rows.get(emp) or {}).get("base", "")}
     for k, rec in ((seniority_data() or {}).get("pilots") or {}).items():
         for r in [rec] + list(rec.get("also") or []):
             name = str(r.get("name") or "")
@@ -7754,22 +7759,33 @@ def name_directory():
             last, _, first = (x.strip() for x in name.partition(","))
             if k and last:  # the union's list has no seat: the award's, when it names the pilot
                 rows[k] = {"emp": k, "last": last, "first": first,
-                           "seat": str(r.get("seat") or (rows.get(k) or {}).get("seat") or "").upper()[:2]}
+                           "seat": str(r.get("seat") or (rows.get(k) or {}).get("seat") or "").upper()[:2],
+                           "base": _base(r.get("base")) or (rows.get(k) or {}).get("base", "")}
     # 1.7.10 (Ryan, Nov 15: the lookup searches the pilot database, all pilots): every live record's name and seat
     # (the admin's own database; a portal pilot's own pilotdb file, unless Ryan turned his share off). A record's
     # 'Last, First' wins over a file's; a record with a last name only fills in a number no file names
-    for k, last, first, seat in db_rows:
+    for k, last, first, seat, base in db_rows:
         old = rows.get(k)
         if old and old["first"] and not first:
+            if _base(base):  # 1.7.11: the record's base still wins over a file's
+                old["base"] = _base(base)
             continue
-        rows[k] = {"emp": k, "last": last, "first": first, "seat": (seat or (old or {}).get("seat") or "").upper()[:2]}
+        rows[k] = {"emp": k, "last": last, "first": first, "seat": (seat or (old or {}).get("seat") or "").upper()[:2],
+                   "base": _base(base) or (old or {}).get("base", "")}
     out = [dict(r, name=f"{r['last']}, {r['first']}".strip(" ,")) for r in rows.values()]
     _NAME_DIR.update(sig=sig, rows=out)
     return out
 
 
+def _base(v):
+    """1.7.11 (FW-0078): a base as the pick list shows it (3 capital letters, 'HNL'), else ''."""
+    v = str(v or "").strip().upper()
+    return v if re.fullmatch(r"[A-Z]{3}", v) else ""
+
+
 def pilotdb_name_rows():
-    """1.7.10: ([(emp, last, first, seat)], signature) of the pilot database for the name lookup. The admin reads his
+    """1.7.10: ([(emp, last, first, seat, base)], signature) of the pilot database for the name lookup (1.7.11: base,
+    the record's domicile, for the pick list). The admin reads his
     database; a portal pilot his own pilotdb file (pdbshare.View, every live record; none while Ryan has his share
     off: no file, no rows). A number two records share is left out (the lookup runs by number and could not
     tell them apart). Never phones, emails or notes; ([], '') when there is nothing to read."""
@@ -7833,7 +7849,8 @@ def name_lookup(q):
 def pick_seats(hits):
     """1.7.10 review: what a pick-list row shows after the name: the seat, and for rows that would read the same
     (one name and one seat: two award-only namesakes) the Sen # from the pilot's own pilotdb file ('FO Sen 72'), so
-    he can tell them apart. Never an employee number."""
+    he can tell them apart. 1.7.11 (FW-0078): the seat as before; the base and the employee number are fields of
+    their own on each entry (pick_entry), so the number is never part of the seat."""
     same = {}
     for h in hits:
         same[(h["name"], h["seat"])] = same.get((h["name"], h["seat"]), 0) + 1
@@ -7847,8 +7864,52 @@ def pick_seats(hits):
 
 
 def pick_id(emp):
-    """1.6.2: the opaque id a pick-list entry carries instead of the employee number (this process only)."""
+    """1.6.2: the opaque id a pick-list entry carries instead of the employee number (this process only). 1.7.11
+    (FW-0078): the entry shows the number too, but the pick is still this id, never the number."""
     return hashlib.sha256(f"{PICK_SALT}|{emp}".encode()).hexdigest()[:12]
+
+
+def pick_bases(emps):
+    """1.7.11 (FW-0078): {emp: base} for a pick list (name_directory's base: the pilot database record's, else the
+    award's or the seniority list's); a pilot with none is left out. Never raises."""
+    try:
+        want = set(emps)
+        return {r["emp"]: r["base"] for r in name_directory() if r["emp"] in want and r.get("base")}
+    except Exception as e:  # noqa: BLE001 (type only: a message could carry a name)
+        log.info("pilot lookup: bases not read: %s", type(e).__name__)
+        return {}
+
+
+def pick_entry(emp, name, pos, base, pick=""):
+    """1.7.11 (FW-0078): one pick-list entry: {pick (a pilot's instance), name, pos, base (when known), emp}. The card
+    shows "Last, First · seat · base · #emp"; a pilot's card sends the pick, the admin's the number."""
+    e = {"pick": pick} if pick else {}
+    e.update(name=name, pos=pos or "")
+    if _base(base):
+        e["base"] = _base(base)
+    e["emp"] = str(emp)
+    return e
+
+
+# ---------------------------------------------------------------- 1.7.11 (FW-0076): the lookup's month
+def lookup_months():
+    """(this HST month, the next) as YYYY-MM: the only months pilot/set's month may name (the pilot card's buttons)."""
+    t = local_now()
+    nxt = (t.year + 1, 1) if t.month == 12 else (t.year, t.month + 1)
+    return f"{t.year}-{t.month:02d}", f"{nxt[0]}-{nxt[1]:02d}"
+
+
+def month_label(m):
+    """'2026-11' -> 'Nov 2026' (the card's button words)."""
+    try:
+        return datetime(int(m[:4]), int(m[5:7]), 1).strftime("%b %Y")
+    except (TypeError, ValueError):
+        return str(m or "")
+
+
+def month_refused_status():
+    a, b = lookup_months()
+    return f"Only {month_label(a)} and {month_label(b)} can be looked up (this month and the next, HST)."
 
 
 LOOKUP_WAIT_STATES = ("paused", "yielded", "backoff", "needs_settings")
@@ -7869,12 +7930,18 @@ def pilot_cmd(payload):
     """MQTT flight_watcher/pilot/set {"emp": "10001", "name": "..."}: show that pilot's current month on the
     dashboard. Served from a 6 h cache when fresh, else read on the next check (Schedule Lookup + the
     pairing pages, GET only). 1.6.2 (item 11): on a pilot instance a name is looked up only on the award and
-    seniority list files (name_lookup: 3 letters at least, at most 5 matches, name and seat; each match carries an
-    opaque 'pick' id, never the employee number, and {"pick": id} runs it); '#10001' is an employee number.
+    seniority list files (name_lookup: 3 letters at least, at most LOOKUP_MAX matches; each match carries an opaque
+    'pick' id, and {"pick": id} runs it); '#10001' is an employee number.
     1.7.2 (contract 1 revision 3, F#49): on every instance the payload must have the pilot/set shape (roles.SHAPE_CMDS:
     keys emp, q, name and pick only; emp 1 to 7 digits; q and name at most 60 code points on one line; pick 12 hex),
     the same the portal's spool and HOM check; anything else is refused with one log line that never carries the
-    text."""
+    text. 1.7.11 (FW-0078): a pick-list entry shows the name, the seat, the base and the employee number (pick_entry);
+    a pilot's entry is still picked by its pick id. 1.7.11 (FW-0076, contract 1 revision 6): an optional month
+    (YYYY-MM), this HST month or the next only (lookup_months; any other is refused with one log line and a status
+    line): that month's Schedule Lookup page alone is read (pilot_check), its cache is its own (pilot_sched:<emp>:<month>);
+    no month is the lookup as it always was. On a pilot's instance the field that named the pilot shown (a pick, an
+    emp, a typed number) is kept (S pilot_ask) and published as ask, so his card's month buttons send the same field;
+    that pilot's pick stays usable for a month tap after the pick list's PICK_TTL_S."""
     try:
         PT.check_shape("pilot/set", payload)
     except PT.PortalError as e:
@@ -7888,19 +7955,44 @@ def pilot_cmd(payload):
     if not isinstance(d, dict):
         d = {}
     q = str(d.get("q") or "").strip()[:80]
-    if ROLES.role(INSTANCE) == ROLES.PILOT and not emp:
+    month = str(d.get("month") or "")
+    pilot = ROLES.role(INSTANCE) == ROLES.PILOT
+    if month and month not in lookup_months():
+        # 1.7.11 (FW-0076): one log line (never the month or a number), and the status on the card with the pilot it
+        # names when the payload names one outright (a stale card at the turn of a month)
+        log.info("pilot lookup refused: month not this HST month or the next")
+        who = emp or (re.sub(r"[#\s]", "", q) if re.fullmatch(r"#?\s*\d{1,7}", q) else "")
+        if not who and d.get("pick"):
+            hit = (S.get("pilot_picks") or {}).get(str(d["pick"])) or (
+                (S.get("pilot_ask") or {}) if ((S.get("pilot_ask") or {}).get("ask") or {}).get("pick") == d["pick"]
+                else {})
+            who = str(hit.get("emp") or "")
+        pub_pilot({"emp": who, "name": str(d.get("name") or "")[:60], "month": "", "days": [], "items": [],
+                   "totals": {}, "updated": "", "fetched": "", "at": now_iso(), "matches": [],
+                   "status": month_refused_status()})
+        return
+    ask = None  # 1.7.11: on a pilot's instance, the field that names the pilot (his card's month buttons send it back)
+    if pilot and emp:
+        ask = {"emp": emp}
+    if pilot and not emp:
         if d.get("pick"):
             p = (S.get("pilot_picks") or {}).get(str(d["pick"]))
             if not p or time.time() - float(p.get("at") or 0) > PICK_TTL_S:
-                pub_pilot({"emp": "", "name": str(d.get("name") or "")[:60], "matches": [], "month": "", "days": [],
-                           "items": [], "totals": {}, "updated": "", "fetched": "", "at": now_iso(),
-                           "status": "That pick list is old: type the name again."})
-                return
+                shown = S.get("pilot_ask") or {}
+                if month and (shown.get("ask") or {}).get("pick") == d["pick"] and shown.get("emp"):
+                    p = {"emp": shown["emp"], "name": shown.get("name") or ""}  # the pilot his card shows: a month tap
+                else:
+                    pub_pilot({"emp": "", "name": str(d.get("name") or "")[:60], "matches": [], "month": "",
+                               "days": [], "items": [], "totals": {}, "updated": "", "fetched": "", "at": now_iso(),
+                               "status": "That pick list is old: type the name again."})
+                    return
             emp, d["name"] = p["emp"], p["name"]
+            ask = {"pick": str(d["pick"])}
         elif q:
             digits = re.sub(r"[#\s]", "", q)
             if digits.isdigit():
                 emp = digits
+                ask = {"q": digits}
             else:
                 now = time.time()
                 asked = [t for t in S.get("name_queries") or [] if 0 <= now - t < 3600]
@@ -7913,16 +8005,17 @@ def pilot_cmd(payload):
                     return
                 S["name_queries"] = asked + [now]
                 hits, why = name_lookup(q)
-                # 1.6.2 review: even one match is a pick list (name and seat): its employee number is used, and shown,
-                # only once the pilot picks it
+                # 1.6.2 review: even one match is a pick list: its employee number is used only once the pilot picks
+                # it. 1.7.11 (FW-0078): each entry shows the name, the seat, the base and the employee number; the
+                # pick stays its opaque id
                 picks = {pick_id(h["emp"]): {"emp": h["emp"], "name": h["name"], "at": time.time()} for h in hits}
                 S["pilot_picks"] = picks
                 save_state(S)
                 pub_pilot({"emp": "", "name": q, "at": now_iso(),
                            "status": why or (f"1 pilot matches '{q}': tap the name to read the month" if len(hits) == 1
                                              else f"{len(hits)} pilots match '{q}', pick one"),
-                           "matches": [{"pick": k, "name": v["name"], "pos": pos}
-                                       for (k, v), pos in zip(picks.items(), pick_seats(hits))],
+                           "matches": [pick_entry(h["emp"], h["name"], pos, h.get("base"), pick=pick_id(h["emp"]))
+                                       for h, pos in zip(hits, pick_seats(hits))],
                            "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
                 return
         q = ""
@@ -7941,8 +8034,10 @@ def pilot_cmd(payload):
             elif len(hits) == 1:
                 emp, d["name"] = hits[0]["emp"], hits[0]["name"]
             elif hits:
-                pub_pilot({"emp": "", "name": q, "status": f"{len(hits)} pilots match '{q}', pick one", "matches": hits,
-                                       "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
+                bases = pick_bases(h["emp"] for h in hits)  # 1.7.11 (FW-0078): the base beside the seat and number
+                pub_pilot({"emp": "", "name": q, "status": f"{len(hits)} pilots match '{q}', pick one",
+                           "matches": [pick_entry(h["emp"], h["name"], h.get("pos"), bases.get(h["emp"])) for h in hits],
+                           "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
                 return
             else:
                 pub_pilot({"emp": "", "name": q, "status": f"no pilot named '{q}' in the pilot database or the {DB.crew_count()} crew the Watcher has seen; enter the employee number",
@@ -7951,28 +8046,44 @@ def pilot_cmd(payload):
     if not emp:
         return
     pilotver_register(emp, d.get("name") or "")  # FW-0069: Ryan looked this pilot up: his versions are kept
-    S["pilot_req"] = {"emp": emp, "name": d.get("name") or "", "at": now_iso()}
+    if ask:
+        S["pilot_ask"] = {"emp": emp, "name": d.get("name") or "", "ask": ask}
+    S["pilot_req"] = {"emp": emp, "name": d.get("name") or "", "at": now_iso(), **({"month": month} if month else {})}
     save_state(S)
-    cached = DB.get(f"pilot_sched:{emp}")
+    cached = pilot_cached(emp, month)
     if cached and time.time() - cached.get("fetched_ts", 0) < PILOT_CACHE_S:
         pub_pilot({**cached, "status": "cached"})
         S.pop("pilot_req", None)
         save_state(S)
         log.info("pilot lookup: schedule served from cache")
         return
+    want = {"asked_month": month} if month else {}  # 1.7.11: the loading line names the month asked for
     m = S.get("machine") or ""
-    if ROLES.role(INSTANCE) == ROLES.PILOT and (m in LOOKUP_WAIT_STATES or m.startswith("stopped")):
+    if pilot and (m in LOOKUP_WAIT_STATES or m.startswith("stopped")):
         # 1.6.2 (item 11): say why it waits, instead of a loading line that never ends (pilot_req is kept)
         pub_pilot({"emp": emp, "name": d.get("name") or "", "month": "", "days": [], "items": [], "totals": {},
-                   "updated": "", "fetched": "", "at": now_iso(),
+                   "updated": "", "fetched": "", "at": now_iso(), **want,
                    "status": f"waiting: your Watcher is {m.replace('_', ' ')}; this lookup runs on its next FLICA check"})
         log.info("pilot lookup: schedule requested (waits: %s)", m)
         return
     pub_pilot({"emp": emp, "name": d.get("name") or "", "status": "loading", "month": "", "days": [], "items": [],
-                           "totals": {}, "updated": "", "fetched": "", "at": now_iso()})
+                           "totals": {}, "updated": "", "fetched": "", "at": now_iso(), **want})
     log.info("pilot lookup: schedule requested")
     if ROLES.role(INSTANCE) == ROLES.ADMIN:  # 1.6.2: a pilot's lookup waits for his next check (no extra FLICA check)
         WAKE.set()
+
+
+def pilot_cached(emp, month=""):
+    """The stored read of a pilot's month (DB pilot_sched:<emp>, the lookup with no month: FLICA's default month), or
+    1.7.11 (FW-0076) for a month: its own read (pilot_sched:<emp>:<YYYY-MM>), else the default read when it holds that
+    month. None when there is none (the caller checks its age)."""
+    if not month:
+        return DB.get(f"pilot_sched:{emp}")
+    rec = DB.get(f"pilot_sched:{emp}:{month}")
+    if rec:
+        return rec
+    rec = DB.get(f"pilot_sched:{emp}")
+    return rec if rec and rec.get("month") == month else None
 
 
 def pilot_check(fl):
@@ -8003,12 +8114,28 @@ def pilot_check(fl):
         except Exception as e:
             log.info("schedule lookup prompt capture skipped: %s", e)
     emp = req["emp"]
-    cur = local_now()
-    bd = f"{cur.month:02d}{cur.year % 100:02d}"
+    month = str(req.get("month") or "")
+    if month and month not in lookup_months():  # 1.7.11: asked before a turn of the month, read after it
+        pub_pilot({"emp": emp, "name": req.get("name") or "", "month": "", "days": [], "items": [], "totals": {},
+                   "updated": "", "fetched": now_iso(), "status": month_refused_status()})
+        log.info("pilot lookup refused: month not this HST month or the next")
+        S.pop("pilot_req", None)
+        save_state(S)
+        return False
+    if month:
+        # 1.7.11 (FW-0076): the month asked for, alone: one Schedule Lookup page (its bd), then the pairing pages as
+        # always; FW-0057's previous month is the one before it
+        cur = datetime(int(month[:4]), int(month[5:7]), 1)
+        bd = f"{cur.month:02d}{cur.year % 100:02d}"
+        urls = (IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bd),)
+    else:
+        cur = local_now()
+        bd = f"{cur.month:02d}{cur.year % 100:02d}"
+        urls = (IF.CM_SCHED.format(base=BASE, emp=emp), IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bd))
     captured = False
     try:
         sched, html = None, ""
-        for i, url in enumerate((IF.CM_SCHED.format(base=BASE, emp=emp), IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bd))):
+        for i, url in enumerate(urls):
             if i:
                 time.sleep(random.uniform(1.5, 3.5))
             html = fl.fetch(url)
@@ -8056,7 +8183,9 @@ def pilot_check(fl):
                 it["n"] = crew_n
         rec = {**sched, "emp": emp, "name": sched.get("name") or req.get("name") or "", "bd": bd,
                "fetched": now_iso(), "fetched_ts": time.time()}
-        DB.put(f"pilot_sched:{emp}", rec)
+        if month and sched["month"] != month:  # the card's header says which month it is; the cache says the same
+            log.info("pilot lookup: FLICA showed another month than the one asked for")
+        DB.put(f"pilot_sched:{emp}:{sched['month']}" if month else f"pilot_sched:{emp}", rec)
         captured = True  # FW-0069: a readable month is the version source (no rebuild below if a later step fails)
         pilotver_capture_lookup(emp, rec)  # a new version when the pairings changed
         pub_pilot({**rec, "status": "ok"})
@@ -8260,9 +8389,9 @@ def pilotver_price(emp, ent, recon=None):
     pairing and day: the live read's (DB pilot_sched:<emp>: the pairing page's credit, block, seat, crew count and
     legs, PILOTVER_FILL) for a trip the live month still holds, the crew index's trips (recon {YYYY-MM: trips}, which
     carry the crew count), then the package; an unchanged trip is priced the same in the live month and its versions."""
-    live = DB.get(f"pilot_sched:{emp}") or {}
-    lk = {f"{it.get('trip')}|{it.get('start')}": it for it in live.get("items") or [] if isinstance(it, dict)}
     for month, recs in ((ent or {}).get("months") or {}).items():
+        live = pilot_cached(emp, month) or {}  # 1.7.11: that month's own read (a month tap), else the default read
+        lk = {f"{it.get('trip')}|{it.get('start')}": it for it in live.get("items") or [] if isinstance(it, dict)}
         try:
             _first, start, end = CI.grid_range(CARD_PAIRINGS, month)
         except Exception:  # noqa: BLE001
@@ -8316,6 +8445,19 @@ def pilotver_attrs(emp, recon=None):
         return {}
 
 
+def pilot_ask_attr(payload):
+    """1.7.11 (FW-0076): on a pilot's instance, the payload of the pilot his card shows carries ask, the field that
+    named that pilot in his lookup ({"pick": id}, {"emp": n} or {"q": n}; S pilot_ask), so the card's month buttons
+    send the same field. Nothing on the admin's instance (his card sends emp) or for another pilot."""
+    payload = dict(payload or {})
+    payload.pop("ask", None)
+    a = S.get("pilot_ask") or {}
+    emp = str(payload.get("emp") or "")
+    if ROLES.role(INSTANCE) == ROLES.PILOT and emp and str(a.get("emp") or "") == emp and isinstance(a.get("ask"), dict):
+        payload["ask"] = dict(a["ask"])
+    return payload
+
+
 def pub_pilot(payload):
     """0.10.1: every pilot_schedule publish carries the crew index's view of that pilot's month too:
     reconstructed [{pairing, start, end, seat, route, checked_at, lay, blk, credit, soft, crew}],
@@ -8332,6 +8474,7 @@ def pub_pilot(payload):
     PILOT_PAIRINGS_MAX of its pairing pages are read, so the card says how many trips were priced and from what.
     FW-0069: it also writes that pilot's schedule versions to pilotver_<key>.json and adds versions_file_key,
     versions_rev (a number) and versions {YYYY-MM: {count, current, awarded}} (pilotver_attrs)."""
+    payload = pilot_ask_attr(payload)
     PILOT_SHOWN["p"] = {k: v for k, v in (payload or {}).items() if k not in (
         "reconstructed", "reconstructed_coverage_pct", "reconstructed_month", "reconstructed_from", "reconstructed_to",
         "pay_line", "items_pay", "contact", "versions_file_key", "versions_rev", "versions")}

@@ -1296,8 +1296,9 @@ class PilotDB:
             stats["changed"] = stats.get("changed", 0) + 1
 
     def name_rows(self):
-        """[(emp, last, first, seat)] of every live record whose employee number no other live record shares, for the
-        name lookup's directory (watcher.name_directory)."""
+        """[(emp, last, first, seat, base)] of every live record whose employee number no other live record shares,
+        for the name lookup's directory (watcher.name_directory). 1.7.11 (FW-0078): base is the record's domicile
+        (the award's category, '' when none), shown on the pick list."""
         out = []
         with self.lock:
             for v in self._all_views().values():
@@ -1305,7 +1306,8 @@ class PilotDB:
                     continue
                 last, _, first = (x.strip() for x in v["fields"]["name"]["value"].partition(","))
                 if last:
-                    out.append((v["emp"], last, first, v["fields"]["seat"]["value"]))
+                    out.append((v["emp"], last, first, v["fields"]["seat"]["value"],
+                                v["fields"]["domicile"]["value"] or ""))
         return out
 
     def _award_meta(self):

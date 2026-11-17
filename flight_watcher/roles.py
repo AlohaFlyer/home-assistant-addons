@@ -54,6 +54,14 @@ admin's Watcher checks it again and merges it into the one database with that pi
 only adds and updates (pilotdb.merge_contacts, additive). The command's shape changed (one more value of kind), so
 HOM 1.9.1 goes live first; HOM 1.9.0 refuses kind contacts with its own shape check and serves everything else as it
 did. PORTAL_CMDS, PORTAL_REFUSED, FEATURES and every other shape, limit and quota are as in revision 4.
+
+1.7.11, contract 1 REVISION 6 (Ryan's yes of Nov 17, FW-0076: "This month and next month buttons on the pilot lookup,
+on both instances. One FLICA load per tap, inside the budget."): pilot/set takes one more key, month (YYYY-MM,
+MONTH_PATTERN). The command is revision 1's; the key is revision 6's (KEY_SINCE, the way revision 5 marked a value in
+VALUE_SINCE), so HOM 1.9.2 takes a pilot/set with month only for a Watcher whose manifest names revision 6, and HOM
+1.9.1's pinned shape refuses the key. The Watcher takes only this HST month or the next (watcher.lookup_months). FW-0078
+(the same release): the pick list shows each pilot's base and employee number; no shape or mask changed for it.
+PORTAL_CMDS, PORTAL_REFUSED, FEATURES and every other shape, limit and quota are as in revision 5.
 """
 import math
 import re
@@ -254,8 +262,9 @@ def name_refusal(name, taken=()):
 # from these; PORTAL_CONTRACT.md documents it. The admin has no portal: none of this runs on the default instance.
 CONTRACT = 1
 # 1.7.0 (Release C): tickets (2); 1.7.2: pilot alerts, shapes, uploads (3); 1.7.9: the shared pilot database, the swap
-# idea alert (4); 1.7.10: a pilot's contacts list upload, kind contacts on upload/pdf (5); additive within 1
-CONTRACT_REVISION = 5
+# idea alert (4); 1.7.10: a pilot's contacts list upload, kind contacts on upload/pdf (5); 1.7.11: the pilot lookup's
+# month, the key month on pilot/set (6); additive within 1
+CONTRACT_REVISION = 6
 # 1.7.2 (revision 3): recall/set leaves the list (F#78: a crafted paste from the portal could replace or blank a day on
 # the pilot's own instance; his lists come only from the admin's forward, 1.7.1) and upload/pdf joins it (FW-0066)
 PORTAL_CMDS = ("hunt/set", "pause/set", "rearm/press", "check_now/press", "charter_scan/press", "freq/normal_min/set",
@@ -271,6 +280,10 @@ COMMAND_REMOVED = {"recall/set": 3}
 # {sub: {field: {value: revision}}}. HOM refuses such a value to a Watcher whose manifest names an older revision
 # (it would refuse the chunk itself), as it does a whole command by COMMAND_SINCE.
 VALUE_SINCE = {"upload/pdf": {"kind": {"contacts": 5}}}
+# 1.7.11 (revision 6, FW-0076): the revision one KEY of a command came in, when the command itself is older:
+# {sub: {key: revision}}. HOM refuses a payload with such a key to a Watcher whose manifest names an older revision (an
+# older Watcher's own shape check would refuse it), as it does a value by VALUE_SINCE and a command by COMMAND_SINCE.
+KEY_SINCE = {"pilot/set": {"month": 6}}
 PORTAL_RULE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 # contract 1's check frequency ranges (freq/normal_min/set in minutes, freq/hunt_s/set in seconds): a portal's
 # freq/*/set must be a finite number within them (portal.check_freq). Contract 1 is pinned (its fixture and sha256).
@@ -471,7 +484,8 @@ TICKET_CMDS = {
 # The same rules as TICKET_CMDS (TICKET_RULES, one generic checker on each side) for two more portal commands.
 # pilot/set (F#49): what the pilot lookup cards send, nothing else: an employee number (1 to 7 ASCII digits), a typed
 # query or a name (at most 60 code points, one line), or a pick id (pilot.pick_id: 12 lowercase hex). The Watcher
-# refuses the same (watcher.pilot_cmd, every instance), and its log line never carries the text.
+# refuses the same (watcher.pilot_cmd, every instance), and its log line never carries the text. 1.7.11 (revision 6,
+# FW-0076): and a month (YYYY-MM): the pilot card's month buttons; the Watcher takes this HST month or the next only.
 # upload/pdf (FW-0066, Ryan Nov 11): one chunk of a pilot's upload of the monthly pairings package or the award (never
 # the seniority list; 1.7.10, revision 5: the contacts list as its CSV export too, PILOT_CONTACTS_LIMITS below), cut like ticket photos so each
 # command stays under the 64 KB cap. Every chunk carries the upload's fields; the pilot's Watcher (pilotpdf.py) puts
@@ -516,11 +530,12 @@ PILOT_CONTACTS_LIMITS = {"kind": "contacts", "file_bytes": 1024 * 1024, "chunk_p
                                     "Mobile Phone", "Email", "Employee ID", "Notes"]}
 SHAPE_CMDS = {
     "pilot/set": {
-        "keys": ["emp", "q", "name", "pick"],
+        "keys": ["emp", "q", "name", "pick", "month"],
         "required": [],
         "any_of": ["emp", "q", "pick"],
         "fields": {"emp": _text(1, 7, r"^[0-9]{1,7}$"), "q": _text(1, 60, PRINTABLE_PATTERN),
-                   "name": _text(0, 60, PRINTABLE_PATTERN), "pick": _text(12, 12, PICK_PATTERN)}},
+                   "name": _text(0, 60, PRINTABLE_PATTERN), "pick": _text(12, 12, PICK_PATTERN),
+                   "month": _text(7, 7, MONTH_PATTERN)}},  # 1.7.11 (revision 6): KEY_SINCE
     "upload/pdf": {
         "keys": ["uid", "kind", "month", "size", "sha", "part", "parts", "data"],
         "required": ["uid", "kind", "month", "size", "sha", "part", "parts", "data"],

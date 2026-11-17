@@ -4,7 +4,8 @@ or a seniority list. Before, a portal pilot's lookup of a surname that is in the
 ... on the award or seniority list on file". Ryan's lookup searches his database; a portal pilot's searches the
 award's seniority lines (the award text every instance has) and, unless Ryan turned his share off, the records of
 his own pilotdb file (every live record since Ryan's decision 1 of Nov 15). The FLICA lookup then runs exactly as before: the pick list still shows a name and a seat,
-never a number, and no budget or limit changed. Synthetic pilots only ("Doe, Jane" 10001)."""
+never a number, and no budget or limit changed. 1.7.11 (FW-0078, Ryan, Nov 17): the pick list shows the base and the
+employee number too, up to 12 entries; the pick is still the opaque pick id. Synthetic pilots only ("Doe, Jane" 10001)."""
 import json
 
 import pdbshare as PS
@@ -54,7 +55,9 @@ def test_a_portal_pilot_finds_a_pilot_only_the_database_has(james, tmp_path, mon
     W.pilotdb_watch()
     W.pilot_cmd(json.dumps({"q": "Zoe"}))
     p = sent[-1]
-    assert [m["name"] for m in p["matches"]] == ["Zoe, Zed"] and p["emp"] == "" and "10777" not in json.dumps(p)
+    assert [m["name"] for m in p["matches"]] == ["Zoe, Zed"] and p["emp"] == ""
+    # 1.7.11 (FW-0078): the number is shown on the entry; the pick is still its opaque id
+    assert [m["emp"] for m in p["matches"]] == ["10777"] and p["matches"][0]["pick"] != "10777"
     assert "tap the name" in p["status"] and not W.S.get("pilot_req")  # a pick list of one, as before
     W.pilot_cmd(json.dumps({"pick": p["matches"][0]["pick"], "name": "Zoe, Zed"}))
     assert W.S["pilot_req"]["emp"] == "10777"  # the FLICA lookup is queued the way it always was
@@ -63,7 +66,8 @@ def test_a_portal_pilot_finds_a_pilot_only_the_database_has(james, tmp_path, mon
     W.pilot_cmd(json.dumps({"q": "Zoe, Amy"}))
     assert sent[-1]["matches"] == []
     # the lookup's own limits are as they were
-    assert (W.LOOKUP_PER_H, W.LOOKUP_MAX, W.LOOKUP_MIN_LETTERS, W.LOOKUP_PREFIX_MIN) == (20, 5, 3, 5)
+    # 1.7.11 (FW-0078, Ryan, Nov 17): up to 12 matches (5 before)
+    assert (W.LOOKUP_PER_H, W.LOOKUP_MAX, W.LOOKUP_MIN_LETTERS, W.LOOKUP_PREFIX_MIN) == (20, 12, 3, 5)
     # sharing switched off again: the database is not searched any more
     db.set_share("james", False)
     PS.write_files(db, [], root)
