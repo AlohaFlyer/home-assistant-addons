@@ -2,6 +2,11 @@
 
 ## 1.7.11
 
+Ryan's ticket run of Nov 17, 2026. FW-0075 is Ryan's; FW-0076 and FW-0078 are James's, built on Ryan's yes naming
+both; FW-0079 and FW-0080 are follow-ups filed under Ryan from FW-0076 by james (its screenshot) ("Fix the crew column and totals too",
+scope "Everywhere"); the log masks on Ryan's "Fix the masking text too". **Contract 1 revision 6: HOM 1.9.2 goes
+live first.**
+
 ### FW-0075: move the van time in 5 minute steps
 
 Ryan's ticket (Nov 17, page Watcher): "I need to have a plus and a - kind of below the numbers for the van time because
@@ -50,6 +55,205 @@ so I could set it for 510 for example". The admin's instance only; no FLICA page
   changed"), and it stays in the state only within the 8. The move applied is kept in the state too
   (`S["van_moved"]`), so a van that changed while the app was down (an update, a restart) still gets that one line.
   A sweep that cannot read Hark's sensor drops nothing, and a move taken then does not log that sweep's reason again.
+
+### The pilot lookup: up to 12 matches with seat, base and employee number (FW-0078); this month or next (FW-0076)
+
+Both tickets are James's (reporter james); Ryan said yes on Nov 17 naming both, and only what he approved was built.
+**Contract 1 revision 6: HOM 1.9.2 goes live first.** Synthetic data in every test.
+
+- **Up to 12 matches** (FW-0078, Ryan: "show up to 12 matches as Last, First, seat, base and employee #"). A name
+  lookup lists up to 12 pilots (5 before; the most pilots sharing one last name in the shared pilot file is 10). More
+  than 12 is still no list ("More than 12 pilots match ... Type more of the last name, or Last, First, or the employee
+  number."). Both instances.
+- **Each entry reads "Doe, Jane · FO · HNL · #10001"**: the name, the seat as before (with the Sen # for two entries
+  that would read the same), the base and the employee number. The base is the pilot database record's (its domicile,
+  from the award's category), else the award's seniority line's or the seniority list's, else it is left out. The
+  entries wrap on a 390 px phone and are 44 px tall; names are escaped.
+- **The pick is still the opaque pick id.** On a pilot's instance an entry is picked by its pick id, never by the
+  number it shows (the card sends no number for it). Ryan's card picks by the number, as before.
+- **This month and next** (FW-0076, Ryan: "This month and next month buttons on the pilot lookup, on both instances.
+  One FLICA load per tap, inside the budget."). On a pilot's month the pilot card shows two buttons under the heading,
+  this HST month and the next ("Nov 2026", "Dec 2026"). The month shown is pressed and not tappable; the other reads
+  that month for the same pilot, "Loading Nov 2026..." while it waits. Before, a lookup always showed FLICA's default
+  month, which after the award is the next bid month (December on Nov 17).
+- **One page per tap.** With a month the Watcher reads only that month's Schedule Lookup page (`bd=MMYY`), then the
+  pairing pages as before, paced 1.5 to 3.5 s, inside the pilot's FLICA budget and the host gate like every lookup.
+  The 6 h cache is per month (a month the default lookup already read is served from it); FW-0057's previous month
+  follows the month read. Only this HST month or the next is taken; any other is refused with one log line and a
+  status line on the card. A lookup with no month (a name, a pick, a #pilot= link) is exactly as before.
+- **The same pilot.** Ryan's card sends the employee number; a pilot's card sends the field that found the pilot it
+  shows (his pick, the number of a #pilot= link, or the number he typed), which his Watcher publishes as the pilot
+  sensor's `ask`; the pick of the pilot shown stays usable for his month buttons after the pick list's 30 min. The
+  card's 2 s guard covers a month tap.
+- **Contract 1 revision 6.** `pilot/set` takes one more key, `month` (YYYY-MM); `commands.key_since_revision`
+  (`{"pilot/set": {"month": 6}}`) marks the key the way revision 5 marked a value. HOM 1.9.2 takes a `pilot/set` with
+  `month` only from a revision 6 export and goes live first. With HOM 1.9.1 still live a month tap is refused by its
+  pinned shape ("pilot/set: month is not allowed") and the card says "The month choice needs a portal update (Nov 2026
+  was not read)."; nothing else changes for James. No mask changed: the pick list's `emp` and `base` pass the portal's
+  masks (only `contact` is dropped and the file keys zeroed). The fixture is regenerated: sha256
+  `a066d935367dfc736383bb4a6b1fa71d114fee26defcb2de8479695759ed2ec9`.
+- **Rollback to 1.7.10** (Flight Watcher first; HOM 1.9.2 can stay, it takes revision 5): safe. 1.7.10 refuses a
+  `pilot/set` with `month` by its own shape check (one log line, nothing read), its card has no month buttons and its
+  pick list is back to 5 entries of name and seat. The per-month cache rows (`pilot_sched:<emp>:<YYYY-MM>`) are ignored.
+- **Review fixes** (synthetic data in every test; no contract change, the fixture is unchanged):
+  - A month tap answers from the newer read of its month on hand, the month's own or the lookup's with no month
+    (fetched_ts), so it never reads FLICA again, or shows an older read, while a newer one of its month is cached;
+    a month's versions are priced from that same read. A lookup with no month uses its own read, as before.
+  - The pick list's base is never another pilot's: on Ryan's instance a pilot database hit shows its own record's
+    domicile, a crew directory hit the directory's only when that row names the same last name; a seniority list
+    record on a shared number ('also') never takes the first record's seat or base.
+  - A month tap whose page cannot be read (or whose read fails) rebuilds the month asked for from the crew lists and
+    names it ("Dec 2026: not readable ..."), never this month's rebuild.
+  - On the portal the note "The month choice needs a portal update (Nov 2026 was not read)." now shows: HOM's shell
+    swaps in a fresh pilot card before the refusal arrives, so the card keeps the note on its class (for the sensor
+    and the pilot it names) and every pilot card on the page draws it. A refused tap can be sent again at once.
+  - A month tap the Watcher keeps for later (yielded, paused) reads "Loading Nov 2026..." with that month pressed and
+    both buttons waiting; a lookup still unanswered after its wait frees the buttons again ("Still waiting after N
+    min for Nov 2026: ..."); a pilot shown under a number the shape refuses (8 digits or more) gets no buttons.
+  - The pressed month is white on #01579b (7.6:1, the layover pill's), not the theme's primary pair (white on Home
+    Assistant's #03a9f4 is 2.63:1, on #009ac7 3.26:1).
+  - The card test pins its clock inside the page (it read the real clock and would have failed from Dec 1 HST).
+
+### FW-0080: totals by bid period, everywhere (PWA 4.A)
+
+Ryan, Nov 17: "Fix the crew column and totals too", scope "Everywhere". Seen in a pilot's screenshot (FW-0076, a
+report only): another pilot's December showed Credit 15:00 and Block 11:15 in red beside FLICA's 6:39 and 5:52.
+
+- **Why.** The Watcher and the cards totalled a month by the calendar month; FLICA totals the bid period (December
+  2026 runs Dec 2 to Dec 31, November Nov 1 to Dec 1, its package days read "D1"). A trip Dec 1 to 3 (duty 1 Dec 1,
+  duty 2 Dec 3) counted whole in December; FLICA's December holds only duty 2. 1.7.7 had chosen the calendar month on
+  purpose; the bid period replaces it everywhere.
+- **The rule** (`pay.split_by_period` / `pay.period_share`; the schedule card's `fwSplit`, the same rule, tested side
+  by side): each duty counts in the bid period that holds its HST departure date (its `dep` minutes, never a weekday
+  field). Its credit is its TCRD from the pairings package detail (paired by index with the package's duties, only
+  when both list as many); the bid period of the trip's first day keeps the rest of the trip credit (rig, minimums), so
+  the parts add up to the trip: November 8:21 / 5:23 and December 6:39 / 5:52 for the 15:00 / 11:15 trip. With no
+  TCRD on file: the block share, marked an estimate. With no duty times: the whole trip pays in the bid period of its
+  first day.
+- **The bid period** comes from the pairings package (`start` / `end`), else the calendar month as before, and the totals'
+  title says which. Ryan's schedule card and the PAYP split also take the schedule pages on file before the calendar
+  month (the schedule sensor's new `periods`, `bid_bounds`, `bid_period_fn`); another pilot's month and the rebuilt
+  month have no schedule-page fallback (their `period.src` is `package` or `calendar`).
+- **Another pilot's month** (`pilot_price`): no `start[:7] == month` guard; a trip counts in a bid period when its part
+  there is not zero, so a trip from the bid period before counts its own part. A crew index trip that starts before
+  FLICA's grid and flies on into the bid period counts its part too (`carry`, only while FLICA's grid shows its days
+  free with a layover cell). VAC and PAYP days and the pay line's dates are the bid period's. The line carries
+  `period` ({from, to, src}); each split trip's `split` names its part here, the part in the other bid period
+  (`out_credit`, `out_blk`), `side`, `other`, `edge`, `est`, `none`.
+- **The rebuilt month** (`pilot_pay_line`) and **the versions** (`pilotver_<key>.json`, its `pay` with `period` and
+  `carry`) count the same way.
+- **Ryan's own month** (the schedule card): rows, totals, the carried-in trips (named under the totals), the PAYP
+  estimate's checks and the versions' Awarded / Improved-Pay-Gross (`price`) all by bid period. A trip whose own times
+  are not read yet places the package detail's duties (each duty's first leg, made HST with the Watcher's time zones)
+  and takes its credit from its own bid period's package. The month's Improved-Pay-Gross goes to the Watcher once every
+  package a price asked for is in (one report a load, priced with the TCRD, never the block share first; F#32).
+- **A PAYP's kept credit** splits by bid period with the removed trip's TCRD (`versions.payp_entries` with
+  `bid_period_fn`, `payp_tcrd`). Listed again on the next page (December's page starts on Dec 1, November's bid
+  period's last day), its continuation record carries the share of the bid period of its days, Dec 2 on (the card
+  also reads that share off the November record when December's page has none yet). A record kept from 1.7.10 (the
+  calendar month's split, or none) is split again from the removed trip's duties in own trips or the versions (only
+  its split changes), and the PAYP records in the stored versions once (`repair_payp_splits`, `payp_fix_v`). The
+  versions' change line says "by bid period".
+- **Another pilot's pairing page legs** make duty periods as Ryan's own trips and the package's do (a gap of 8 h or
+  more starts a new one), so a duty whose legs cross HST midnight counts on its first leg's date whichever source
+  prices the trip.
+- **Cards.** A split trip's Block and Credit show its part in this bid period, purple (`--fw-split`, WCAG AA light and
+  dark), titled for example "5:23 block, 8:21 credit flown before Dec 2 pay in the November bid period (PWA 4.A)". With
+  no duty times on file the title says where the trip starts and that the whole trip pays in that bid period. Only a
+  pairing is marked split (a reserve or other code on a grid day outside the bid period stays plain). The totals' title
+  says "flown in the bid period". A totals line that matches FLICA shows its check mark, no red.
+- Tests: `tests/test_fw1711_totals.py` (the Dec 1 to 3 shape both ways, the block share fallback, a VAC day on Dec 1 in
+  November, a carried trip, the versions file, the rebuilt month, the PAYP split, the card's split against the
+  Watcher's, Ryan's schedule card in Chromium) and `tests/test_fw1711_review.py` (the PAYP listed again on December's
+  page, 1.7.10 records and versions split again, the legs' duty periods, the card's package duties, plain codes, the
+  no-times title, one Improved-Pay-Gross report). The tests that pinned the calendar month (`tests/test_review176_pay.py`
+  and the two month-boundary PAYP tests in `tests/test_payp.py`) now pin the bid period, each saying why.
+
+### FW-0079: the pilot card's crew on a phone
+
+Seen in the same screenshot (FW-0076, a report only): at 390 px with crews about 41 characters long the grid was about
+606 px wide in a 368 px frame, clipped with no scrollbar a phone shows.
+
+- On a phone (700 px or less) the pilot card hides the Crew column and lists the crew under the grid, one line a
+  pairing ("H9601 Dec 1: CA Doe, Jane · FO Roe, Rick"), each pilot a no-wrap span, the looked-up pilot's call, text
+  and mail links kept; the header cells are 3 px padded there. Down to 360 px the grid fits: the Credit, Soft and
+  Pay-Gross cells (the columns with no twin in the shared look) are 1 to 2 px padded, Pay-Gross heads two lines, and a
+  one-day turn's report and release may share its Layover cell on two lines when the grid needs it. A wider card keeps
+  the Crew column while the grid fits it; one whose grid does not (a tablet in portrait, a long crew) lists the crew
+  too, measured on the card's own width after each draw and resize. Everything is escaped as before. The shared grid
+  block is untouched; the day, date, trip, layover and block cells keep the schedule card's look and every other row
+  its height.
+- Tests: Chromium (node Playwright, `tests/fw1711_pilot_render.js`) at 390 px light and dark (the grid fits its box,
+  the list names every crew, a name with markup stays text) and 1024 px (the Crew column shows, the list is hidden);
+  `tests/test_fw1711_review.py` at 360, 375 and 390 px with and without one-day turns, and at 820 px (the list).
+  `test_pilot_grid_look` and `test_pilot_contact_card` now measure the phone's crew list instead of the hidden column.
+
+### Log masks: fixed text is no longer blanked
+
+Ryan, Nov 17: "Fix the masking text too." Two lines seen live on 1.7.10, and every other fixed log text checked the
+same way. The name, employee number, e-mail and phone masks are as strong as before or stronger: a review compared
+each phone form beside each kind of neighbour (a date, a version, an employee number, a pairing, a name) and each
+way of joining them with 1.7.10, and no form that 1.7.10 masked passes now. Synthetic data in every test.
+
+- **Ryan's log, the cap_credit line.** smart.json's ignored `cap_credit` text said "(Ryan, Nov 9: the PWA does not
+  cap voluntary adds)", and the admin's log mask (`captures.mask_crew`, the 'Last, First' rule) read "Ryan, Nov" as
+  a crew name: the log said "(xxxx, xxx 9: ...". The text now says "(Ryan's rule of Nov 9: the PWA does not cap
+  voluntary adds)", which neither mask touches. The name rule is unchanged.
+- **James's log, schedule versions and months.** The phone rule (`captures._phones`, used by a pilot's log mask and
+  for FLICA page text in Ryan's log) took "12.002 (2026-11" for one 11-digit phone number, so a pilot's log said
+  "schedule version ##.### (####-##)". Now an ISO month or date (2026-11, 2026-11-17) and a schedule version (one or
+  two digits, a dot, three digits: 12.002) are never a phone number or part of one, with three exceptions where the
+  dotted group is the phone's own: a number that starts with "+" ("+44.207 946 0958", "+49 30.123 4567"), a group
+  with 7 or more digits around it on both sides ("808 12.345 0101"), and an area code before a 3-3-4 number ("Nov
+  17.808 555 0101"). The text between dates and versions is read by the phone rules on its own (a dot or a dash
+  right after a date reads as a space there: "2026-11 -808 555 0101"), so a phone right after a date or in brackets
+  after a version is still masked.
+- **A number beside a date or a version** that the phone rule used to take with it is masked still: a 5 to 7 digit
+  number joined by spaces, brackets, a dot or a dash ("2026-11-17 10001", "10001. 2026-11-17", "2026-11-17 -10001");
+  a 3 or 4 digit employee number after "pilot" ("pilot 6593 2026-11-17"), after a quoted "emp" key ("'emp': 6593")
+  or beside a masked name (a pilot's mask: "Doe, Jane 6593 2026-11-17", "DOE JANE 6593 (2026-11)", "6593 Doe,
+  Jane"; the admin's: "DOE, JANE 999 (12.002)"). Counts beside a date stay ("pilot 3 2026-11", "12 pilots read
+  2026-11-17").
+- **Phones the phone rule let through before** are masked now in a pilot's log and in quoted page text:
+  - written with spaces only: an international number ("+1 808 555 0101", "+44 20 7946 0958") and the 3-3-4 shape
+    ("808 555 0101"). Before, those passed as "numbers in a row". Numbers in a row ("1 2 3 4 5 6 7") still pass;
+  - at the end of a sentence or a clause ("call 808-555-0101.", "808-555-0101- ...", "808-555-0101: crew desk"),
+    read by a rule of its own that takes only a phone's shape (a "+" number, three groups or more, nnn-nnnn, or a
+    North American number), so a count, an epoch or a decimal before a full stop stays ("size 10485760.", "ts
+    1763400000.", "lon 157.92245.") and a time before a colon stays ("12:30: ok");
+  - beside another number ("1-808-555-0101 10001", "10001 808 555 0101", "808-555-0101(1234567)"), and a phone's
+    group that the rule's 20-character window left out ("123456 (808) 555 0101 2026-11-17" left "0101"), read
+    again from the next number or grown by the group beside it;
+  - a phone another rule took a part of ("LAS (808) 555 0101": the name rule took "LAS (808)").
+- **A name beside a masked number.** In quoted page text a number right beside a date is masked first, so the two
+  name rules that wait for its digits ("trade: DOE JANE 10001", "Captain: DOE JOHN 10001") missed the name when a
+  date followed it (this was so before too, through the phone rule). They read the digits the phone rule masked now,
+  and only those: an employee number's label stays readable ("employee number #####", "FO: EMP NO #####"), and a
+  number followed by "#" is read as before ("trade: DOE JANE 10001#12").
+- **A line masked twice** (page_log, then the log filter) keeps the date after a labeled number ("emp# #####
+  2026-11-17", before "emp# ##### ####-##-##"): the label rules take one or two "#" but not a masked number.
+- **Fixed texts reworded** so neither mask blanks them (the sweep below found each one; no mask was made weaker):
+  - `Swap draft (...)` (was `SWAP DRAFT`) and `Drop ready (...)` (was `DROP READY`): a pilot's mask took the two
+    capital words for a name.
+  - `pilot db: the file is from a newer release of this app` (was `... a newer Flight Watcher`): "Watcher" is no page
+    word.
+  - `alert email: ... (pickup speed rescored)` (was `Pickup Speed`).
+  - `contact list read again (parser n): ... with HAL notes, n notes segments not read` (was `HAL Notes`).
+  - `upload: contact list (<ext>, n KB) ...` (was `(n KB, <ext>)`: "KB, CSV" read as 'Last, First').
+  - `trade seen on the schedule (...): <detail>; Pay-Gross ...` (was `<detail>, Pay-Gross`: a detail ending in a
+    capitalized word read as 'Last, First').
+  - `pilot lookup: schedule version ... (<month>, from the FLICA schedule)` (was `(<month>, FLICA schedule)`).
+- **Guard tests** (`tests/test_fw1711_log_mask_text.py`, `tests/test_fw1711_log_mask_review.py`): the sweep reads
+  every log text in flight_watcher/*.py (log.info, warning, error, debug, exception, critical; the texts captures,
+  ntfy, pdbshare and smart hand to the Watcher's log; the texts sent through `portal_once` and the gate's `_say`; and
+  the texts a module helper returns, such as the pilot database's merge line), fills its holes with neutral samples
+  (a pairing, a schedule version, a month, a count, an exception's name, and on the admin's mask a station; the
+  strings the code names, such as smart's ignored texts, as they are) and fails when either mask changes a fixed
+  character, a hole that holds no capitalized word, or finds a phone number in the line. A log call whose text the
+  sweep cannot read fails unless it is listed with its reason (today only the two wrappers' own bodies). Its allow
+  list (texts meant to carry a masked value) is empty. Each phone form beside each neighbour is checked on both
+  instances, and the phone rule stays linear on long lines.
+- Not changed: cards, the database, exports, FLICA reads and budgets, the portal, pushes.
 
 ## 1.7.10
 

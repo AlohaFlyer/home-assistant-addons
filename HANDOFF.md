@@ -1,4 +1,21 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-16, release 1.7.9 live with HOM 1.9.0; 1.7.10 built, not released)
+# HANDOFF: Flight Watcher (refreshed 2026-11-17: 1.7.10 live with HOM 1.9.1; 1.7.11 with HOM 1.9.2 releasing)
+
+**Nov 17: 1.7.11 is contract 1 REVISION 6 and HOM 1.9.2 goes live FIRST** (Ryan: "Ship it all when ready"). The
+ticket run of Nov 17 (CHANGELOG 1.7.11 has every section):
+- FW-0075 (Ryan): the layover card's "-5 min" / "+5 min" move the van time in 5 minute steps
+  (`flight_watcher/van/adjust/set`, admin only, absolute move, alerts settle 30 s, kept across a restart).
+- FW-0078 (James, Ryan's yes naming it): the pilot lookup lists up to 12 matches as "Doe, Jane · FO · HNL · #10001";
+  the pick stays the opaque id.
+- FW-0076 (James, Ryan's yes naming it): this-month / next-month buttons on the pilot card (`pilot/set` key `month`,
+  `commands.key_since_revision`), one Schedule Lookup page a tap, a 6 h cache per month.
+- FW-0080 (filed under Ryan from FW-0076 by james; scope "Everywhere"): totals by BID PERIOD, not calendar month
+  (PWA 4.A, each duty in the bid period it departs in, TCRD per duty, the home period keeps the rest) on the pilot
+  card, Ryan's schedule card, the versions and the PAYP split; stored versions re-split once (`PAYP_FIX_V`).
+- FW-0079 (same source): on a phone the pilot card's Crew column gives way to a crew list under the grid.
+- Log masks: fixed log texts are no longer blanked (a sweep test walks every log call), dates and schedule versions
+  are no phone numbers; the leak review found and closed 12 ways a phone or number got through.
+- FW-0073 / FW-0074 (Ryan): the LAS layover guide is on Pako and both are closed. FW-0077 (James): fixed in 1.7.10,
+  left `fixed` for him to verify. James's FW-0076 and FW-0078 stay `fixed` for him to verify after 1.7.11.
 
 **Nov 16: 1.7.10 is contract 1 REVISION 5 and HOM 1.9.1 goes live FIRST.** Ryan: "His uploads should update the
 shared database too", and the contacts list upload on James's portal "Now, in 1.7.10". Built (commits "... a portal
