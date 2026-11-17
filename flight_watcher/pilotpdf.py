@@ -71,6 +71,22 @@ ADMIN = "ryan"  # the admin's name in provenance (tickets' reporter): a pilot's 
 STATES = ("live", "pending", "approved", "rejected", "removed", "replaced", "superseded")
 
 
+# 1.7.10 (contract 1 revision 5): the contacts list (CSV) comes through the same chunks. KINDS stays the two PDF
+# kinds (the review store, the months on file); the Assembler takes CHUNK_KINDS, each with its own size cap
+CONTACTS = roles.PILOT_CONTACTS_LIMITS["kind"]
+CHUNK_KINDS = roles.PILOT_UPLOAD_KINDS
+
+
+def file_cap(kind):
+    """The most bytes a file of this kind may be: 4 MB for a PDF, 1 MiB for a contacts list."""
+    return roles.PILOT_CONTACTS_LIMITS["file_bytes"] if kind == CONTACTS else LIM["file_bytes"]
+
+
+def cap_words(kind):
+    cap = file_cap(kind)
+    return f"the file is over {cap // 1024} KB" if kind == CONTACTS else f"the file is over {cap // (1024 * 1024)} MB"
+
+
 class Refused(ValueError):
     """An upload or a chunk refused; str() is plain text for the pilot's card (never any file content)."""
 
@@ -161,10 +177,10 @@ class Assembler:
             if part == 1:
                 if c and c["meta"]["uid"] != meta["uid"]:
                     raise Refused("another upload is still coming: one at a time (try again in 2 minutes)")
-                if meta["kind"] not in KINDS:
-                    raise Refused("only the pairings package or the award may be uploaded here")
-                if meta["size"] > LIM["file_bytes"]:
-                    raise Refused(f"the file is over {LIM['file_bytes'] // (1024 * 1024)} MB")
+                if meta["kind"] not in CHUNK_KINDS:
+                    raise Refused("only the pairings package, the award or the contacts list may be uploaded here")
+                if meta["size"] > file_cap(meta["kind"]):
+                    raise Refused(cap_words(meta["kind"]))
                 if meta["parts"] != parts_for(meta["size"]):
                     raise Refused("the parts do not fit the file's size; nothing was stored")
                 c = self.cur = {"meta": meta, "got": 0, "data": [], "last": "", "at": self.now()}
@@ -193,8 +209,8 @@ def decode(b64, meta):
         raise Refused("the file did not come through whole (not valid base64); nothing was stored") from None
     if len(raw) != meta["size"]:
         raise Refused("the file's size does not match; nothing was stored")
-    if len(raw) > LIM["file_bytes"]:
-        raise Refused(f"the file is over {LIM['file_bytes'] // (1024 * 1024)} MB")
+    if len(raw) > file_cap(meta.get("kind")):
+        raise Refused(cap_words(meta.get("kind")))
     if hashlib.sha256(raw).hexdigest() != meta["sha"]:
         raise Refused("the file changed on the way (its checksum does not match); nothing was stored")
     return raw

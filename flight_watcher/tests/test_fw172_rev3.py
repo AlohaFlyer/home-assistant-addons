@@ -186,7 +186,7 @@ def test_the_manifest_names_its_revision(portal_pilot):
     key = PT.load_key(W.PORTAL_KEY_FILE, create=False)
     env = json.load(open(os.path.join(W.PORTAL_DIR, "out", "manifest.json"), encoding="utf-8"))
     m = json.loads(PT.verify(PT.public_id(key), env, "manifest", "pilot2"))
-    assert m["contract"] == 1 and m["revision"] == 4 and "upload/pdf" in m["mqtt_subs"]  # 1.7.9: revision 4
+    assert m["contract"] == 1 and m["revision"] == 5 and "upload/pdf" in m["mqtt_subs"]  # 1.7.9: revision 4; 1.7.10: 5
 
 
 def test_the_new_pairing_sample_says_the_fit_alone():

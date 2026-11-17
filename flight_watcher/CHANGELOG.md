@@ -1,5 +1,405 @@
 # Changelog
 
+## 1.7.10
+
+Ryan's decisions of Nov 15 about the pilot database: "The pilot database should be shared with James 100%; we work on
+a shared system; we do have our own schedules and pay rates though." They replace the 1.7.9 limits named below. No
+new command, no new FLICA page load; the FLICA budgets, pacing, one-session rule and every FLICA read limit are
+exactly as they were, and schedules and pay rates stay each pilot's own. Synthetic data in every test.
+
+Ryan's decision of Nov 16 is in here too: a portal pilot uploads the contacts list into the shared database. That
+one adds a kind to a command, so the release is **contract 1 revision 5 and HOM 1.9.1 goes live first** (its own
+section below).
+
+### Part one: the pilot database shared 100%, on by default; AI notes on; a pilot's uploads merge into it
+
+- **Shared 100%.** Before (1.7.9): a shared pilot's file held only the pilots with a shared note, with no employee
+  number, phone or email; the pilot he looked up came as a brief, with that one pilot's phones and emails. Now his
+  file holds EVERY live record (about 1228 on Pako) with every field: employee number, name, Sen #, DOH, status,
+  retirement, seat, equipment, base, union id, phones and emails; the notes field; the whole dated log; each picker's
+  pickup history (the summary of all his pickups and the newest 100 rows); and the AI note.
+- **No "Only me".** The option is gone from both cards. Every entry 1.7.9 kept as only-me becomes a shared one at the
+  first start (and at every later open, so a restored older copy follows). Ryan: "Share those too."
+- **On by default.** Sharing is on for every pilot with a portal (James now, anyone Ryan adds later) with no tap. The
+  "Share with <pilot>" switch on Ryan's card stays as his OFF switch and the way back on.
+- **AI notes on by default** (decision 3). Ryan's AI switch turns them off and on. HOM's consultant cost cap and the
+  anonymous-statistics rule are unchanged. A stored note goes into a pilot's file only when it still passes Flight
+  Watcher's own text rules (`refuse_re`, the model name's pattern).
+- **Ryan's choices are kept out of the database** (decision 2): `/data/pilotdb_switches.json` (0600, the Watcher's
+  own file beside its state; `pilotdb.Switches`). Only a tap of Ryan's writes it. What I chose for the 1.7.9 "a copy
+  put back turns both switches off" fix: it is removed, because the switches are no longer in the copy. A daily copy
+  put back now changes neither switch: what Ryan switched off stays off, what is on by default stays on. The share
+  rows and the AI flag a 1.7.9 database still holds are not read any more. If the switches file is there and cannot
+  be read, everything is off (it fails closed) and the card says so until Ryan taps a switch.
+- **A pilot's uploads merge into the one database** (decision 4). An award James uploads on his portal (through
+  `upload/pdf`, its checks and its quarantine, as before) and a contact or seniority list his instance saves are
+  merged like Ryan's own, with James recorded as the author of every value and record they make. Before, a row of a
+  pilot's contact list that matched no record made none and was held for Ryan. Ryan's hand edits still stay on top
+  of every upload, and every earlier value is in the record's history for him to put back. This settles the question
+  left open in 1.7.8 (refusing those kinds on a pilot's instance): they are accepted and merged.
+- **The portal card** (`flight-watcher-pilotdb-card.js`, portal mode): a full browse and search of every pilot, as
+  Ryan's card. "All pilots (N)": a search (name words, an employee number, s812 for a Sen #, "quoted" text in the
+  notes and the log), filter chips (All, Notes, Edited, Pickups, Gone), the list by Sen #, 50 rows at a time. Any
+  record, looked up or tapped, opens with every field, Call / Text / Mail links, the notes, the log, the pickups, the
+  AI note read only, and field edits as before. 16 px fields, 44 px controls, no sideways scroll at 390, 820 and
+  1280 px, light and dark.
+- **Removed, because 100% sharing makes it dead:** `roster.json` (a roster 1.7.9 left under `/data/pilotdb_roster` or
+  the share folder is deleted), the brief of the looked-up pilot in the sensor (`shown` now only says which record
+  of the file he is: `{emp, pid}`), `pdbshare.ai_note_of`, the "look the pilot up first" answer, and the 20 briefs an
+  hour cap. The name lookup's pick list reads the names and seats of the pilot's own file instead of the roster.
+- **Size.** The file is capped: over 4 MiB (`export_bytes`, unchanged) it carries 20 log entries and 20 pickup rows a
+  record and says `full` (new notes are refused, as in 1.7.9); it never passes 7 MiB (`pilotdb.EXPORT_HARD`), under
+  the 8 MiB a signed file may be. Measured on a synthetic database of 1300 pilots: 0.64 MiB with two phones and an
+  email each; 1.06 MiB with 60 pickers of 25 pickups and their AI notes (about what Pako holds); 3.20 MiB with a
+  300 character notes field and three log entries on every pilot, 150 pickers of 30 pickups and 150 AI notes.
+
+### A portal pilot uploads the contacts list (Ryan, Nov 16): contract 1 REVISION 5, HOM 1.9.1 first
+
+Ryan: "His uploads should update the shared database too", and the contacts list upload on James's portal "Now, in
+1.7.10". No FLICA page load is behind any of it; every FLICA budget, the pacing and the one-session rule are as they
+were. Synthetic rows in every test ("Doe, Jane", 10001, 808-555-0101, an example.com address).
+
+- **What a pilot does.** The pilot uploads card on his portal's Settings tab offers "Contacts list (CSV)" beside the
+  pairings package and the award, only while the pilot database is shared with him. He picks the airline contacts
+  list's CSV export (first row "First Name, Middle Name, Last Name, Suffix, Company, Job Title, Mobile Phone, Email,
+  Employee ID, Notes"; at most 1 MiB). The card checks the header before it sends anything.
+- **How it travels.** The same `upload/pdf` parts with `kind` `contacts`. His Watcher puts them together and checks
+  the whole file (`pdbshare.contacts_check`: size, sha256, text only, the header row, the row and cell bounds, then the parser Ryan's own
+  contact list upload goes through, `contacts.parse` of the 1.4.8 uploads path), keeps nothing of it, and drops it
+  into his pilot inbox under `/share/flight_watcher/pilotdb/inbox/<name>/` (0600), like `pilotdb/edit`. Ryan's
+  Watcher, the single writer, takes the author from the inbox folder's name (never from the payload), runs every
+  check again and merges it (`pilotdb.pilot_contacts`); the answer comes back to the pilot's card with counts only
+  ("Contacts merged: 4 rows read, 2 pilots added, 2 updated, 0 held for Ryan"). Limits: one list of a pilot waiting
+  at a time, 4 merged for a pilot in 24 h, and his 4 uploads a day count it too. The log has counts only.
+- **What the merge does (the choice, exactly): it only adds and updates** (`pilotdb.merge_contacts`, additive; the
+  default for every author but ryan, so a list a pilot's instance saves the old way follows the same rule):
+  - a row is matched like a row of Ryan's own list; a row that fits no record makes one with the pilot as its
+    author; a row the matcher cannot place is held for Ryan;
+  - a value it gives (name, Sen #, DOH, status, retirement month, union id) is written with the pilot as its author,
+    and the value before it stays in the record's history for Ryan to put back; a value already there is left as it
+    is, its author and date too;
+  - an empty cell drops nothing;
+  - phones and emails are added AFTER the ones on file (4 phones and 3 emails at most, so a full list is left
+    alone); a pilot's list never replaces or removes a phone or an email, whoever set it (the value they are added
+    to keeps its own author; the history names the pilot for the addition: review fixes below);
+  - a pilot the list does not hold loses nothing; nobody is marked gone or back; no record is deleted;
+  - Ryan's hand edits stay on top;
+  - the date and row count Ryan's next list is measured by do not move, so his list is never "older" or "partial"
+    because of a pilot's. Ryan's own next list still says what it lists, and no longer removes a value only a
+    pilot's list gave from a record his list does not hold.
+- **The contract is revision 5** (`roles.CONTRACT_REVISION`, the manifest, `PORTAL_CONTRACT.md` 5.6.1, the fixture).
+  One command shape changed: `upload/pdf`'s `kind` takes `contacts` (`commands.value_since_revision`: the value is
+  revision 5's; the command stays revision 3's). New in the fixture: `commands.pilot_contacts_limits`,
+  `commands.pilot_contacts_checks`, `commands.value_since_revision`, five `commands.pilotdb_answers`,
+  `pilotdb.inbox.contacts_max_bytes` and `contacts_body`, `revisions.5`, one accepted sample (a made-up list) and
+  three refused ones. The fixture is regenerated (again by the review fixes below): sha256
+  `4e7812d603f97a6e46ff00fc8b6cf6f3dc32708db1539f15010566e6095a192b` (`tests/test_portal_contract.py`
+  `CONTRACT_SHA256`); HOM 1.9.1 pins those bytes (the first build of this section was `051676bbdf48...`).
+- **The order: HOM 1.9.1 FIRST, then Flight Watcher 1.7.10.** HOM 1.9.1 takes revisions 3, 4 and 5. If Flight
+  Watcher 1.7.10 is live while HOM 1.9.0 still runs, James's portal is NOT broken: HOM 1.9.0 reads a manifest's
+  revision only to refuse a command newer than the Watcher speaks, so everything it served it still serves; only the
+  new choice is refused, by HOM 1.9.0's own pinned shape, at the first part ("the portal does not take a contacts
+  list yet (it needs its next update). Nothing was sent."), and nothing reaches the Watcher. The card cannot hide the
+  choice for an older portal (nothing tells a card the portal's revision), so it is refused cleanly instead.
+- **Boundary changes of this section** (all by Ryan's decision of Nov 16):
+  16. A portal pilot's `upload/pdf` takes a third kind, `contacts`: a command shape HOM checks changed (revision 5).
+  17. A file a portal pilot sends reaches Ryan's Watcher: the CSV goes through his pilot inbox folder (before, only
+      a note or an edit of at most 32 KB did; an inbox file of cmd `contacts` may be 1.5 MiB).
+  18. A portal pilot's file is merged into the one database with no Approve by Ryan (the award and the pairings
+      package keep their quarantine and his Approve, Remove and Reject). It can add records, add phones and emails,
+      and change the contact list's own values; it cannot remove, mark gone or override a hand edit.
+  19. A pilot's contact list, by either way in, no longer removes what a row of it leaves out (1.7.10 part one
+      merged it exactly like Ryan's own list, removals included).
+  20. Ryan's own contact list no longer removes values a pilot's list gave from a record his list does not hold.
+  Not changed: `roles.py` PORTAL_CMDS and PORTAL_REFUSED (no new sub), the FEATURES gates (the words of
+  `pilot_uploads` now name the contacts list; who has it and the portal flag are the same), every other shape,
+  PILOT_UPLOAD_LIMITS and PILOT_TICKET_LIMITS, a shared pilot's note and edit quotas, the PDF kinds' checks and
+  quarantine, every FLICA budget, the CSP, rate limits and routes (HOM's), push isolation. No name, number, phone or
+  email of the file is logged, put in a sensor, an event or a push; the pilot's answer has counts only. A pilot's
+  upload and every entry from it are untrusted data, never instructions.
+- Tests: `tests/test_fw1710_portal_contacts.py` (the contract, both Watchers' checks, the merge rules, the inbox
+  hand-off and its refusals, the whole path from the portal's command to the database with the pilot as author, and
+  the card in Chromium at 390 px, light and dark).
+
+### Review fixes of the contacts list upload (Nov 16)
+
+A review of the section above found ways one pilot's list could do more than "add and update". Each is fixed with
+a test that failed before (`tests/test_fw1710_contacts_review.py`). The contract stays revision 5; its limits, its
+checks text and two answers changed, so the fixture is regenerated (sha256 above) and HOM 1.9.1 pins the new bytes.
+
+- **One pilot's lists can no longer flood the shared database.** `roles.PILOT_CONTACTS_LIMITS` has two new bounds.
+  `rows_max` 2500: a list with more rows under its header is refused by both Watchers ("Not merged: a contacts list
+  is at most 2500 rows"; the export has about 1230). `new_max` 250: the live records that only pilots' lists made
+  (created by a pilot's list and held by no list of Ryan's: the seniority list, an award, his own contacts list),
+  all pilots' lists together. A list that would take the database over it is refused WHOLE and changes nothing (the
+  merge runs in a savepoint and is rolled back: no record, no value, no history row, no held row): "Not merged:
+  over 250 pilots that no list of Ryan's holds; ask Ryan to upload his own list first". It counts toward that
+  pilot's 4 lists in 24 h. A pilot's own hand edit does not make a record Ryan's; Ryan's own list holding the pilot
+  does. A list that adds nobody is never refused for this. Before: one 1 MiB list added 9500 made-up records, four
+  a day, filled every shared pilot's file and pushed real records out of it.
+- **No cell can hold the parser or the database.** `cell_chars` 200 and `notes_chars` 2000 (the Notes cell), and no
+  text in a cell beyond the header's ten columns (empty cells after them, a trailing comma, are fine): checked with
+  the csv module before the parser reads a byte (`pdbshare._contacts_cells`). `contacts.EMAIL_RE` reads a long run of
+  letters once (a local part starts where its run starts and is at most 64 characters, RFC 5321; every address of 64
+  or fewer local characters is found exactly as before, in Ryan's own uploads too). Ryan's Watcher now checks a
+  waiting list BEFORE it takes the pilot database's lock (`pdbshare.contacts_precheck`, `watcher.pilotdb_share_pass`);
+  only the merge runs inside it. Before: a well-formed list with seven 130000 letter email cells held the lock about
+  100 s; now the largest crafted list is checked in well under a second.
+- **A held row of a pilot's list that Ryan answers is applied the way the list is** (`pilotdb.resolve`: additive when
+  the row's ref is a pilot's list). Attach, Same pilot, New and Different add its phones and emails after the ones on
+  file and drop nothing. Before, Attach replaced Ryan's list's phone and dropped the email and the retirement month.
+- **Whose value it is (the rule, exactly).** When a pilot's list adds a phone or an email to ones on file, the value
+  on file keeps its own author, ref and date (Ryan's numbers stay Ryan's list's) and the record's history names the
+  pilot as the author of the addition, with the value before and after. A phones or emails value the database did
+  not have is the pilot's own (his name, ref `pilot contacts <day>`). So Ryan's next list treats the phones exactly
+  as it treats the email: for a pilot it lists it writes what it lists (a pilot's added number goes; as before), and
+  for a pilot it no longer holds it removes the values his lists gave, the added number with them (logged, so Ryan
+  can put it back); a value only a pilot's list gave stays. The partial list answer "gone" now follows the same rule
+  (it removed pilot-given values too). Before: the whole phones value turned into the pilot's (Ryan's number read as
+  his) and then outlived Ryan's next list while the email on the same record did not.
+- **Still the chosen rule, now said plainly:** a row's HAL values (name, Sen #, DOH, status, retirement month, union
+  id) are WRITTEN over the contact list's value with the pilot as the author, also over a value Ryan's own contact
+  list gave; the value before is in the history. So one pilot's list can change the shown retirement month and union
+  id of any pilot with no hand edit (Sen #, DOH, status and the name are shown from the seniority list where it has
+  them). A value a pilot's list wrote carries his ref, so Ryan's next list that no longer holds that pilot leaves
+  it. There is no one-step undo of a merged list: Ryan restores a value from the record's history, field by field.
+- **The same file Ryan's own upload reads.** A pilot's list is decoded as the 1.4.8 parser decodes Ryan's: UTF-8 (a
+  BOM allowed), else Windows-1252 (`limits.encodings`). Bytes Windows-1252 does not have (81, 8D, 8F, 90, 9D hex) and
+  control characters are refused as before. Before, one accented name in a Windows-1252 export refused the whole
+  list for a pilot while Ryan's upload of the same file was read. HOM 1.9.1's chunk check must take the same two
+  encodings (it sees parts, so: no NUL or other control byte but tab, CR and LF; the header row in the first part).
+- **The card.** A refusal the portal gives in its own words is shown in those words ("Not sent: that file is not the
+  contacts list (CSV) export. Nothing was merged."), cut to one plain line; "the portal does not take a contacts list
+  yet (it needs its next update)" is said only for an older portal's own refusal ("kind is not one of ..."). Before,
+  every refusal of the live HOM 1.9.1 read as a missing update. The fields and the button are 16 px text and 44 px
+  high at every width (they were 14 px and 32 px from 700 px up). The title is "Uploads" while the contacts list is
+  offered, the cap reads "1 MB", and a merged answer is shown once, under "Your contacts list".
+- **Boundary changes of these fixes** (they narrow what a pilot's list can do, and none widens it):
+  21. `roles.PILOT_CONTACTS_LIMITS` gains `encodings`, `rows_max`, `cell_chars`, `notes_chars` and `new_max`, and
+      `PILOTDB_ANSWERS` two refusals (rows, new pilots). The fixture's `commands.pilot_contacts_limits`,
+      `pilot_contacts_checks` and `pilotdb_answers` follow; HOM re-pins the fixture.
+  22. A pilot's contacts list may be Windows-1252 text as well as UTF-8 (the one widening: the encodings of Ryan's
+      own upload path).
+  23. A pilot's list can make at most 250 standing records of its own, all pilots together; over that it is refused
+      whole.
+  24. Ryan's next contact list removes a number a pilot's list added to his value when his list no longer holds that
+      pilot (boundary change 20 now covers only a value a pilot's list alone gave).
+  25. The answer to a held row of a pilot's list never removes or replaces a value.
+  Not changed: PORTAL_CMDS, PORTAL_REFUSED, FEATURES, every shape, PILOT_UPLOAD_LIMITS, PILOT_TICKET_LIMITS, the note
+  and edit quotas, the FLICA budgets, the inbox folder and its modes, the author from the folder's name, the log
+  (counts only), push isolation.
+- Left open for Ryan: a one-step "undo this pilot's list" (by its merge row) is not built.
+
+### The contract (part one, Nov 15): contract 1 revision 4 until the section above
+- Decided from HOM 1.9.0's run-time code (commit 7bf6d25): the file and the state are relayed as signed and no key of
+  either is read (`fwportal/exchange.mjs` `load` and `fileText`; `fwportal/server.mjs` imports no pilotdb key table);
+  the one size check is `capFor`, `caps.file` of HOM's own pinned fixture, 8388608 bytes for every file kind
+  (`fwportal/contract.mjs` `capFor`, `fwportal/exchange.mjs` `verifyEnvelope`). No command, shape, limit, quota, cap,
+  file kind, event kind or upload kind changed. So 1.7.10 works with the live HOM 1.9.0 at once and either order is
+  safe. HOM only re-pins the fixture (its copy, its sha256, its tests, its docs): no version bump, no deploy.
+- The fixture was regenerated for part one: sha256 `86c2d8f905eff7509cb8ef85cf3f8a7adf7e611556ab395a017e6fd460311fbf` (revision 4's bytes; revision 5's are in the section above). Its words about the file changed (`pilotdb.share`, `pilotdb.file`,
+  `pilotdb.state`, `pilotdb.uploads`, `pilotdb.ai.switch`, `pilotdb.ai.portal`, `commands.pilotdb_rules`,
+  `revisions.4`, `masks.contact_only_in`), the record keys grew (`emp`, `base`, `phones`, `emails`, `pickups`), the
+  `shown` keys shrank to `emp`, `pid`, `none`, the samples follow, and `commands.pilotdb_answers` lost "look the
+  pilot up first". `PORTAL_CONTRACT.md` 4.2, 5.7 and 5.8 say the same.
+- Not built in part one, and why: a contact list had no upload kind on the portal (`upload/pdf` took `pairings` and
+  `award`). Adding one changes a command's shape, which HOM checks: that is revision 5 with HOM first, built on
+  Nov 16 (the section above). The base is still read only on a portal for the same reason (`pilotdb/edit`'s field
+  list is a shape).
+
+### Boundary changes (all by Ryan's decisions of Nov 15)
+1. A shared pilot's file holds every live record, not only the pilots with a shared note.
+2. Employee numbers are in that file.
+3. Phones and emails of every pilot are in that file (1.7.9: only the looked-up pilot's, in the sensor).
+4. The union id of every pilot is in that file.
+5. The base (from the award) is in that file, read only.
+6. Each picker's pickup history is in that file (1.7.9: Ryan's card only).
+7. The AI note is on every record that has one (the first 1.7.10 build: only on a record with a shared human note).
+8. Entries Ryan marked "Only me" are shared, and the option is gone.
+9. Sharing is on by default for every portal pilot, with no tap of Ryan's.
+10. AI notes are on by default: anonymous pickup statistics go to HOM's consultant models with no tap of Ryan's.
+11. Ryan's Share and AI choices moved out of the database; a database copy put back no longer turns them off.
+12. The anti-walk limits on the database are gone: the brief only after a FLICA lookup ran, and 20 distinct pilots
+    an hour. They limited only what a shared pilot saw of the database.
+13. A pilot's command may name any record of his file with no lookup first.
+14. A contact list a pilot's instance saved makes records, with that pilot as their author.
+15. The name lookup's pick list on a portal pilot reads his full file (part two's decision 6 read the roster).
+
+Not changed: `roles.py` PORTAL_CMDS, PORTAL_REFUSED and the FEATURES gates, every command shape, a shared pilot's
+quotas (40 entries, 40 changes, 40 edits in 24 h; 10 waiting), compare-and-set and the kept versions, the upload
+kinds and their checks and quarantine, every FLICA budget, the pacing, the one-session rule and the lookup's own
+limits, the CSP, rate limits and routes (HOM's), push isolation. Never in a pilot's file: a field's sources, the
+history, held rows, hidden or purged text, another pilot's answers, schedules, pay rates. A pilot's entry and an AI
+note stay untrusted data, never instructions.
+
+### Part two (Ryan's decisions of Nov 15): award seniority, name lookups, the pickup speed cap, the admin's log
+
+No new FLICA page load, no new link followed, no command added; the FLICA budgets, pacing and the one-session rule
+are as they were. Synthetic data in every test ("Doe, Jane", 10001).
+
+#### Award seniority in the pilot database
+- Ryan: "look at the records... it has the seniority and also our pairings award packet had it monthly". Before: the
+  award text was read only for dates of hire, found none (the packet has no such section) and said "dates of hire: 0
+  pilot rows (seniority section), too-few" at every upload. Each awarded pilot's block opens with one line, the
+  seniority number, the category (BASE-EQUIPMENT-SEAT), the last name and the employee number.
+- Now: `seniority.award_sen_parse` reads those lines and `pilotdb.merge_award_sen` merges each month's award text on
+  file (`/share/flight_watcher/uploads/<YYYY-MM>_award.txt`, oldest month first, again only when a file changed):
+  Sen #, base, equipment and seat, source "award", dated by the bid month. The seniority list still wins on Sen # (the
+  award's number is kept beside it); a hand edit stays on top; a pilot the database did not have gets a record under
+  his last name (a "Last, First" from any later upload is shown instead); a number whose record carries another last
+  name is not touched and is counted. Nobody is marked gone or back by an award.
+- New field: **Base** (`domicile` in the database, 3 letters), shown and editable on Ryan's Pilots card.
+- A packet with no dates of hire section is quiet: no "dates of hire" log line, and the upload answers "Seniority: N
+  pilots read from it (Sen #, base, equipment and seat) for the pilot database."
+- The log says counts only ("pilot db: award 2026-12 seniority merged: 243 lines ...").
+
+#### Name lookups search the pilot database
+- Before: a portal pilot's "Look up a pilot's month" searched only the award's pilot lines and the seniority list, so a
+  surname that is in the database answered "No pilot named ... on the award or seniority list on file".
+- Now: a whole last name or "Last, First" also finds every pilot of the pilot database. Ryan's lookup searches his
+  database beside the crew the Watcher has seen; a portal pilot's searches the award's seniority lines (the award text
+  every instance has) and, unless Ryan turned his share off, the records of his own pilotdb file (part one). The FLICA
+  lookup then runs exactly as before (pick list of name and seat, never a number; budgets unchanged).
+- **Boundary change (Ryan's decision 6):** the pilot database on a portal pilot's Watcher (his own file, every
+  record) is read for the names and seats of the name lookup's pick list. The lookup's
+  own limits stay: letters only, the whole last name (a start from 5 letters), at most 5 matches, 20 name lookups an
+  hour; a number two records share is left out; with sharing off nothing of the database is searched.
+
+#### Pickup speed: capped at Ryan's request time
+- Ryan's rule: when he himself asked for a trip and FLICA denied him "picked up by" another pilot, that pilot asked
+  before he did. Before: the picker's speed ran to the middle of the window between the Watcher's last pot read that
+  listed the trip and the read that found it gone, which can be minutes after Ryan's own request.
+- Now: that picker's speed is at most Ryan's Requested time minus the trip's entry (the request's minute plus 59 s,
+  since the list prints minutes), when that is lower than the estimate. Every other pickup keeps the estimate. The cap
+  is kept on the find (`req_caps`, one for each picker; see the round 2 fixes), so every rescore and re-check keeps it; only the picker FLICA
+  named is capped (it must be one of the pickup's open-seat pickers, else nothing changes and it is counted
+  unmatched); a request filed more than 10 minutes before the trip entered the pot is not used.
+- History: once, after the first good read of the request lists, every pickup with a matching denied row on file is
+  recalculated (the request lists in the Watcher's state and Ryan's own captured request pages); the log says counts
+  only ("speed: N pickups capped at Ryan's request time, M unmatched"). Going forward each read of the list applies it.
+- The finds card and the FO / RO pickers card show the sign for "at most" before a capped speed, with "capped at your
+  request time" on hover and for a screen reader; each card's Key says so. The picker's history in the pilot database
+  takes the capped seconds.
+- A portal pilot's Watcher does the same from his own request list for the pickups in his own database (his own
+  request time); it reads no captured page, and nothing crosses instances.
+- The year of a request comes from its bid folder's month (a late December request in January's folder is last year's).
+- **Where the comment really is (Nov 16, checked against the real pages):** the Open Time Requests list has only
+  "10/29 19:22 Add Denied" on a row (that time is the Requested time), no comment and no decision time, so as first
+  built the cap never fired. Crew scheduling's comment is on each request's read-only view page. Now each Denied add
+  or swap on the list with no reason on file is read there once (`watcher.req_cap_views`, the same read-only view
+  page a pending request already used; both `safe_get` guards, 1.5 to 3.5 s apart, never the QuickDelete link beside
+  it, nothing submitted). At most 2 new view pages for each bid folder on each read of the list (every 15 minutes;
+  every 2 while a request is pending), so a history of 15 denials is read over about 8 list reads with no burst; a
+  page that cannot be read is tried 3 times in all. A new denial is read within the next reads (one that is pushed
+  is read once for its push and not again). A drop, a trade or an approved request is never read for this.
+- **FLICA budget:** each view page is one FLICA load, counted by the gate like the list's own (pace, host cap, a
+  pilot's hourly budget). On a pilot's Watcher a view page is loaded only when one more load fits his budget and the
+  request reads' share (`opt_fits`); otherwise it waits for a later read and no try is used. None is loaded while the
+  request reads are stopped (their breaker) or the Watcher is paused.
+- **Both name orders:** the real comment is first name first with no comma ("CS: H3677:13NOV picked up by JOHN DOE
+  (10001)", made-up values; the first build read only "DOE, JANE"). Both read now: one or more given names, a middle
+  initial, a suffix (JR, III), hyphens, apostrophes, any letter case. "CS: Added pairing (H3630:14NOV) not in
+  opentime pot" and every other comment is no pickup and caps nothing; a comment about the trip a swap gives up caps
+  nothing either.
+- What is kept for each denial: the pairing, its day and the picker's employee number, by folder and FLICA request id
+  (`req_cap_views` in the Watcher's state, forgotten when the request leaves the list). The picker's name is never
+  kept. The cap uses the row's own Requested time from the list (year from the bid folder's month).
+- Log, counts only: "speed: 2 denied request view pages read, 3 left to read" and "speed: N pickups capped at Ryan's
+  request time, M unmatched" (the second whenever a speed or the unmatched count changed). No name, no employee number.
+- A portal pilot's Watcher reads his own denials' view pages the same way, inside his budget, with his captures off.
+- Tests: `test_fw1710_speed_cap.py` (the real list and view page layouts with made-up values; each new test failed
+  before the change).
+- **Review fixes (view page reads):**
+  - Log: the line of a view page's first capture and the line of a pushed decision no longer quote crew scheduling's
+    comment (it reads "cs: (41 chars)"; the private capture holds the page), and the log mask (`captures.mask_crew`)
+    now knows the real comment: every word after "picked up by" and the number after them are masked, first name
+    first, lower case, whole or cut short by the line's length. Before, a new bid month's first view page capture
+    printed the picker's name and employee number in Ryan's log.
+  - Budget order: a pass reads the denials' view pages last, after the request lists and the Tradeboard's My Requests
+    pages. Read inside the folder loop they took the load kept for My Requests, so a pilot at his budget's pace with
+    15 denials had no trade decision read for hours. On such a pilot the history now uses only what is left (about
+    one view page in four hours in the simulation), so his history takes days; Ryan's own Watcher has no hourly
+    budget and reads 2 a folder a read as before.
+  - What counts as read: a view page is final only when it is the request's own page (a trip read on it,
+    `submit.is_view_page`); a "please wait" page or any other page is a failed try (3 in all). Each kept record
+    carries the parser's version (`REQ_CAP_VIEW_V`): after a parser fix that raises it, every "no pickup" verdict and
+    every given-up page is read once more, and a reason on file is kept.
+  - The "picked up by" pattern: name words are split by a real separator, 31 characters a word at most, and read only
+    in the 200 characters after "picked up by". A long run of letters with no number after it took 43 s at 60
+    letters (hours beyond) inside the check thread; it now takes no time.
+  - The trip a swap gives up: one rule (`submit.gives_up`, used by `row_cap` and `view_cap`) for the denial's push,
+    the history read and a captured view page. Before, only the history read left it uncapped. Whether such a
+    comment should cap is still Ryan's to confirm; until then it caps nothing on any path.
+  - Tests: `test_fw1710_speed_cap_review.py`.
+
+#### No crew names or employee numbers in Ryan's log
+- Before: the admin's log named the captain ("detail probe H3601: captain='...(...)'"), quoted a pairing page's crew
+  list ("detail text H3601: ... crew: ca ..."), started each Schedule Lookup line with the employee number ("pilot
+  <emp>: ...EmployeeID=<emp>..."), named a pickup's pickers and quoted the request list's "picked up by".
+- Now: those lines name the seat or the pairing ("detail probe H3601: captain=parsed", "pilot lookup: schedule
+  requested", "pickup H3607|13Nov: filled (FO; CA named)", "picker of H3607|13Nov (FO): 120 in open time", "crew
+  index: a pilot on two overlapping trips (...)"), page text is quoted through `page_log` (names and numbers masked),
+  and a filter on the admin's logger (`captures.mask_crew`) is the net under every other line. A pilot's log keeps its
+  stricter mask. Cards, the database and the exports are unchanged.
+
+### Review fixes, round 2 (Nov 15)
+
+- **Ryan's log, the Tradeboard lines** (decision 8): "NEW tradeboard pickup" names the pairing and its dates, never the
+  poster or his comments; the Tradeboard probe and the "no trip rows" line say counts only (the page stays in the
+  capture on /share, never the log). The admin's line mask (`captures.mask_crew`) also takes an e-mail address, a
+  phone-shaped number (any 7 to 15 digit phone in quoted page text), a last name of up to four words ("De La Cruz,
+  John"), a second given name ("Doe-Smith, Mary Ann"), a 3-digit number in brackets after a name, a seat-labeled or
+  all-capitals name with no comma before its number ("Captain: DOE JOHN 99999") and the number an error text quotes
+  (`KeyError('10001')`). A run of 80 or more letters is said by its length, so one very long token never costs the
+  mask seconds.
+- **Every log line that quotes FLICA page text goes through `page_log`**: the block hints line, the two own
+  schedule lines, the schedule totals line, the close-in folder's two lines, the trade decision line and the Schedule
+  Lookup prompt page line (a lowercased "last, first" there was not masked). A test reads `watcher.py` and fails on
+  any log call that quotes page text without it.
+- **A share Ryan switched off stays off when /data loses its switches file** (decision 2). Every OFF is also kept in
+  `/share/flight_watcher/pilotdb/switches_off.json` (0600, the Watcher's own folder, outside /data and outside the
+  database). A pilot, or the AI notes, is off when either file says off, so an older /data put back by a Home
+  Assistant restore never shares again by itself. A mirror that cannot be read fails closed.
+  **Boundary change:** one new private file on /share that holds pilot instance names and two true / false values,
+  nothing else.
+- **A tap on an unreadable switches file writes a good one**: the defaults are on again (a pilot Ryan adds later is
+  shared, decision 2), every pilot configured now and the AI notes are written as off except the one tapped, and the
+  running Watcher changes only after both files were written (a failed write leaves it as it was).
+- **Pickup speed cap, each picker's own**: the cap is kept per picker (`pickup.req_caps`, employee number to request
+  time; the first build's `req_cap_at` / `req_cap_emp` is still read). On a both-seats pickup the finds card shows
+  the cap only when the picker it shows is the capped one; two denials naming the two pickers both stay, and a second
+  pass writes and rescores nothing ("same"); when a re-check names another picker the old picker's cap goes and the
+  pickup is rescored.
+- **The award's dates of hire no longer erase the seat its seniority lines wrote** (`merge_award` leaves the award's
+  seat when it has none of its own).
+- **Name lookups agree on who is gone**: `name_hits` (Ryan's lookup) and `name_rows` (a portal pilot's directory) both
+  leave out a pilot marked gone, and a pilot a seniority list dropped who is on the award of that list's month or a
+  later one is back (logged "back", as a list's own). Two pick-list rows with one name and one seat (award-only
+  namesakes) show their Sen # ("FO Sen 72"), from the pilot's own pilotdb file; never an employee number.
+- **Portal Pilots card**: the search field, its hint, the chips and the count line are built once and only the count's
+  text and the rows are redrawn, so a composing keyboard (Android Gboard, any IME) types "zedb" and not
+  "zzezedzedbzedb", and the count is one lasting live region a screen reader announces. A last name typed without its
+  apostrophe, hyphen, space or okina is found ("obrien", "delacruz", "mcdonaldsmith", "stjohn"), as the name lookup
+  does; text with no letter or digit is no query. The Mail link is 44 px wide.
+- **The file's size ladder has no cliff**: past the hard size the pickup rows go and the notes fields, AI notes and
+  log entries are kept newest first, across all pilots, for as long as they fit (before: every text left the file at
+  once). The card's banner counts the older log entries the file left out. No new key: the contract and its fixture
+  are unchanged.
+- Tests: `test_fw1710_review2.py` (each failed before its fix); `test_fw1710_speed_cap.py`, `test_pilotdb_export.py`
+  and `test_pilotdb_share_admin.py` updated to the per-picker cap, the gradual ladder and the repaired switches file.
+- Left open for Ryan (see HANDOFF.md): the CLAUDE.md hard-rule line for decision 9, the contact list upload on a
+  pilot's portal page (contract revision 5, HOM first), gzip and ETag for the file route (a later HOM release), and
+  checking the speed cap on the real pages after the update (the denials' view pages; see the speed cap section).
+
+### After the update: what Ryan does
+Each step is [DESTRUCTIVE] and needs its own yes; an earlier yes never covers a later one.
+1. Flight Watcher 1.7.10: merge its PR, store reload, update. It works with the live HOM 1.9.0. **The update itself
+   turns sharing on for James and turns the AI notes on** (both by Ryan's decisions of Nov 15): his yes to the
+   update is the yes to both. Nothing else needs a tap.
+2. HOM's re-pin PR (tests and docs only): merge. No deploy. It can go before or after step 1.
+3. To turn either off: Pilots card, Sharing. Claude never taps either switch.
+4. No dashboard edit on Pako, and nothing for James to do: his portal takes the card from the add-on.
+
 ## 1.7.9
 
 Release order: HOM 1.9.0 first, then this add-on, each step with Ryan's own yes (see "After the update" at the end of
@@ -2282,7 +2682,7 @@ read. Built, not deployed.
 ## 1.4.12
 
 - FW-0068 follow-up (Nov 9, live check of 1.4.10): the probe found H3631 Nov 6 flown as H3631B, but that copy's crew
-  line names the captain only, so pilot 19852 (an FO on the trip, per CrewTrac) still had nothing on Nov 6-8. FLICA
+  line names the captain only, so pilot 10031 (an FO on the trip, per CrewTrac) still had nothing on Nov 6-8. FLICA
   can split a rebuilt trip's crew over two lettered copies, and the probe stopped at the first copy with crew. Now
   the letters are read on until the copies found name as many pilots as the package trip has pilot seats (its crew
   line after departure, OPEN seats counted); every copy that names a pilot is indexed. A copy that leaves seats

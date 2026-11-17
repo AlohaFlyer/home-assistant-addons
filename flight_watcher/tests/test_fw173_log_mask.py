@@ -15,14 +15,14 @@ import inflt as IF
 
 @pytest.mark.parametrize("text,leaks", [
     ("Doe, Jane (1234)", ("Doe", "Jane", "1234")),
-    ("Doe Jr, Jane (14157)", ("Doe", "Jr", "Jane", "14157")),
-    ("captain='Doe, Jane (6598)'", ("Doe", "Jane", "6598")),
-    ("captain='Doe Jr, Jane (14157)'", ("Doe", "Jr", "Jane", "14157")),
-    ('captain="Doe, Jane (6598)"', ("Doe", "Jane", "6598")),
-    ("captain='Jane Doe (6598)'", ("Doe", "Jane", "6598")),
+    ("Doe Jr, Jane (10034)", ("Doe", "Jr", "Jane", "10034")),
+    ("captain='Doe, Jane (6593)'", ("Doe", "Jane", "6593")),
+    ("captain='Doe Jr, Jane (10034)'", ("Doe", "Jr", "Jane", "10034")),
+    ('captain="Doe, Jane (6593)"', ("Doe", "Jane", "6593")),
+    ("captain='Jane Doe (6593)'", ("Doe", "Jane", "6593")),
     ("captain='DOE, JANE (123)'", ("DOE", "JANE", "123")),
-    ("Jane Doe (6598)", ("Doe", "Jane", "6598")),
-    ("captain='Day, Pat (6598)'", ("Day", "Pat", "6598")),  # a surname that is also a page word
+    ("Jane Doe (6593)", ("Doe", "Jane", "6593")),
+    ("captain='Day, Pat (6593)'", ("Day", "Pat", "6593")),  # a surname that is also a page word
 ])
 def test_a_crew_name_and_its_number_are_masked(text, leaks):
     out = CAPS.mask(text, [])
@@ -31,9 +31,9 @@ def test_a_crew_name_and_its_number_are_masked(text, leaks):
 
 
 def test_the_live_detail_probe_line_is_masked():
-    line = "detail probe H3607: captain='Doe, Jane (6598)' blk=17:35 credit=17:35 soft=0:00"
+    line = "detail probe H3607: captain='Doe, Jane (6593)' blk=17:35 credit=17:35 soft=0:00"
     assert CAPS.mask(line, []) == "detail probe H3607: captain='xxx, xxxx (####)' blk=17:35 credit=17:35 soft=0:00"
-    line2 = "detail probe H3631B: captain='Doe Jr, Jane (14157)' blk=17:35 credit=17:35 soft=0:00"
+    line2 = "detail probe H3631B: captain='Doe Jr, Jane (10034)' blk=17:35 credit=17:35 soft=0:00"
     assert CAPS.mask(line2, []) == ("detail probe H3631B: captain='xxx xx, xxxx (#####)' blk=17:35 credit=17:35 "
                                     "soft=0:00")
 
@@ -60,22 +60,22 @@ def test_mask_takes_linear_time_on_a_long_run_of_capitalized_words():
 @pytest.mark.parametrize("text,want", [
     # 1.7.3 review: a surname (or first or middle name) that is also a page word is masked in a 'Last, First' name;
     # a seat code first stays
-    ("captain='Day Jr, Pat (6598)'", "captain='xxx xx, xxx (####)'"),
-    ("pickup H3607:13NOV: FO Doe, Jane (6598) (CA Block Jr, Pat (10007))",
+    ("captain='Day Jr, Pat (6593)'", "captain='xxx xx, xxx (####)'"),
+    ("pickup H3607:13NOV: FO Doe, Jane (6593) (CA Block Jr, Pat (10007))",
      "pickup H3607:13NOV: FO xxx, xxxx (####) (CA xxxxx xx, xxx (#####))"),
     ("captain='Day, Pat'", "captain='xxx, xxx'"),
     ("pickup H3607:13NOV: FO Day, Pat (CA ?)", "pickup H3607:13NOV: FO xxx, xxx (CA ?)"),
-    ("captain='Doe, Jane May (6598)'", "captain='xxx, xxxx xxx (####)'"),
+    ("captain='Doe, Jane May (6593)'", "captain='xxx, xxxx xxx (####)'"),
     ("picker FO Day, Pat (10003); RO Block, Jan: 12 in open time",
      "picker FO xxx, xxx (#####); RO xxxxx, xxx: 12 in open time"),
-    ("captain='Day, May (6598)'", "captain='xxx, xxx (####)'"),  # page words only, but a comma and a number
-    ("CA De La Cruz Jr, Maria Ann (6598)", "CA xx xx xxxx xx, xxxxx xxx (####)"),
+    ("captain='Day, May (6593)'", "captain='xxx, xxx (####)'"),  # page words only, but a comma and a number
+    ("CA De La Cruz Jr, Maria Ann (6593)", "CA xx xx xxxx xx, xxxxx xxx (####)"),
     ("CA DOE, JANE FO OPEN", "CA xxx, xxxx FO OPEN"),
     # 1.7.3 review: letters outside ASCII (Latin-1, Latin Extended, the okina) are name letters too
-    ("captain='Pe\u00f1a, Jos\u00e9 (6598)'", "captain='xxxx, xxxx (####)'"),
-    ("captain='Ka\u02bbaihue, Keoni (6598)'", "captain='xxxxxxxx, xxxxx (####)'"),
+    ("captain='Pe\u00f1a, Jos\u00e9 (6593)'", "captain='xxxx, xxxx (####)'"),
+    ("captain='Ka\u02bbaihue, Keoni (6593)'", "captain='xxxxxxxx, xxxxx (####)'"),
     ("pickup H3607:13NOV: FO \u014cta, K\u0113hau (CA ?)", "pickup H3607:13NOV: FO xxx, xxxxx (CA ?)"),
-    ("Jos\u00e9 Pe\u00f1a (6598)", "xxxx xxxx (####)"),
+    ("Jos\u00e9 Pe\u00f1a (6593)", "xxxx xxxx (####)"),
 ])
 def test_page_word_and_non_ascii_names_are_masked(text, want):
     assert CAPS.mask(text, []) == want
@@ -105,7 +105,7 @@ def load(tmp_path, monkeypatch):
         monkeypatch.setattr(W, "DETAIL_PROBE", {"done": False})
 
         def enrich(fl, row):
-            row.update(captain="Doe, Jane (6598)", blk="17:35", credit="17:35", soft="0:00")
+            row.update(captain="Doe, Jane (6593)", blk="17:35", credit="17:35", soft="0:00")
         monkeypatch.setattr(W, "enrich", enrich)
         W.S.clear()
         return W
@@ -121,18 +121,21 @@ def test_a_pilots_detail_probe_names_no_captain(load, caplog):
     W = load("pilot2")
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
         W.detail_probe(None, POT)
-        W.log.info("detail probe %s: captain=%r blk=%s", "H3607", "Doe Jr, Jane (14157)", "17:35")  # the mask too
+        W.log.info("detail probe %s: captain=%r blk=%s", "H3607", "Doe Jr, Jane (10034)", "17:35")  # the mask too
     text = "\n".join(r.getMessage() for r in caplog.records)
-    for leak in ("Doe", "Jane", "Jr", "6598", "14157"):
+    for leak in ("Doe", "Jane", "Jr", "6593", "10034"):
         assert leak not in text, (leak, text)
     assert "detail probe H3607: captain=parsed blk=17:35 credit=17:35 soft=0:00" in text
 
 
-def test_the_admins_detail_probe_is_as_before(load, caplog):
+def test_the_admins_detail_probe_names_no_captain_either(load, caplog):
+    """1.7.10 (Ryan, Nov 15): the admin's own log carries no crew name and no employee number (it named the captain
+    until 1.7.9)."""
     W = load("")
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
         W.detail_probe(None, POT)
-    assert "detail probe H3607: captain='Doe, Jane (6598)' blk=17:35 credit=17:35 soft=0:00" in caplog.text
+    assert "detail probe H3607: captain=parsed blk=17:35 credit=17:35 soft=0:00" in caplog.text
+    assert "Doe" not in caplog.text and "6593" not in caplog.text
 
 
 def test_a_pilots_pickup_lines_name_no_crew(load, caplog):
@@ -140,10 +143,10 @@ def test_a_pilots_pickup_lines_name_no_crew(load, caplog):
     ASCII) are masked by PilotLogMask."""
     W = load("pilot2")
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
-        W.log.info("pickup %s: %s (CA %s)", "H3607:13NOV", "FO Day, Pat (6598)", "Block Jr, Pat (10007)")
-        W.log.info("picker %s: %s in open time", "FO Pe\u00f1a, Jos\u00e9 (6598)", 12)
+        W.log.info("pickup %s: %s (CA %s)", "H3607:13NOV", "FO Day, Pat (6593)", "Block Jr, Pat (10007)")
+        W.log.info("picker %s: %s in open time", "FO Pe\u00f1a, Jos\u00e9 (6593)", 12)
     text = "\n".join(r.getMessage() for r in caplog.records)
-    for leak in ("Day", "Pat", "Block", "Jr", "6598", "10007", "Pe\u00f1a", "Jos\u00e9", "\u00f1", "\u00e9"):
+    for leak in ("Day", "Pat", "Block", "Jr", "6593", "10007", "Pe\u00f1a", "Jos\u00e9", "\u00f1", "\u00e9"):
         assert leak not in text, (leak, text)
     assert "pickup H3607:13NOV: FO xxx, xxx (####) (CA xxxxx xx, xxx (#####))" in text
     assert "picker FO xxxx, xxxx (####): 12 in open time" in text

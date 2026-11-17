@@ -1,10 +1,12 @@
 """1.7.9 review fixes. Each test failed on the three builder commits (a46f0fb) and passes with the fix beside it.
 
-Security: a shared pilot gets a brief (and a contact) only for a pilot whose lookup really ran, for at most
-PILOTDB_BRIEF_PER_H distinct numbers an hour; a copy put back never turns the Share or the AI switch on again; a
-pilot's field edit is named as third-party text in seniority.md; an email can carry no mailto parameters; the roster
-(phones and emails) lives in the add-on's own /data, never under /share; no labeled employee number survives the page
-quote mask in any close variant.
+Security: a pilot's field edit is named as third-party text in seniority.md; an email can carry no mailto parameters;
+no labeled employee number survives the page quote mask in any close variant; no shared file stays readable when the
+database does not open.
+1.7.10 (Ryan's decisions 1 and 2 of Nov 15) replaced three of the 1.7.9 fixes, and their tests here say what holds
+now: the brief's anti-walk limits (only after a lookup ran, 20 pilots an hour) are gone, because a shared pilot's
+file holds every record (the FLICA lookup's own limits are untouched); Ryan's Share and AI choices are kept outside
+the database, so a copy put back changes neither (1.7.9 turned both off in the copy); and no roster is written.
 Correctness: a pilot's change and its answer commit together; a pilot's saves never push Ryan's notes versions out;
 the capture error line carries no number; a planted inbox file never blocks the share pass; a hide, a purge and a
 forget reach the shared files at once; a pickup whose picker becomes known is looked up for him; the AI statistics
@@ -39,67 +41,33 @@ from test_pilotdb_watcher import P  # noqa: F401  (the seeded pilot database fix
 from test_release_a_cards import _run as _js_run, _src
 
 
-# ---------------------------------------------------------------- the roster cannot be walked by employee number
-def test_numbers_typed_one_after_the_other_get_no_brief_and_no_contact(james, monkeypatch):  # noqa: F811
+# ---------------------------------------------------------------- numbers typed one after the other load no FLICA page
+def test_numbers_typed_one_after_the_other_load_no_flica_page_for_the_database(james, monkeypatch):  # noqa: F811
+    """1.7.10: which record a number is comes from his own file (he has every record), with no FLICA page behind it;
+    the lookup itself stays on his paced checks and budgets."""
     W, pdb, sroot = james  # noqa: N806, F811
-    pdb.set_share("james", True)
     PS.write_files(pdb, ["james"], sroot)
     W.pilotdb_watch()
-    # no FLICA page is loaded in this test
     monkeypatch.setattr(W, "pilot_check", lambda *a, **k: (_ for _ in ()).throw(AssertionError("pilot_check")))
     got = []
-    for emp in range(9990, 10110):  # 120 numbers back to back: every lookup is still 'loading' or 'waiting'
+    for emp in range(9990, 10010):  # back to back: every lookup is still 'loading' or 'waiting'
         W.pilot_cmd(json.dumps({"q": str(emp)}))
         got.append(_attrs(W)["attributes"]["shown"])
-    assert got == [None] * 120  # no brief, no contact, and not even "not in the database"
-    assert not W.S.get("pdb_briefs")
+    assert [g for g in got if g and "pid" in g] == [{"emp": "10001", "pid": pdb.find("10001")},
+                                                    {"emp": "10002", "pid": pdb.find("10002")}]
+    assert all(g is None or set(g) <= {"emp", "pid", "none"} for g in got)  # never a field, a phone or an email
+    assert "pdb_briefs" not in W.S
 
 
-def test_a_brief_only_after_the_lookup_ran_and_for_a_capped_number_of_pilots_an_hour(james):  # noqa: F811
-    W, pdb, sroot = james  # noqa: N806, F811
-    pdb.set_share("james", True)
-    PS.write_files(pdb, ["james"], sroot)
-    W.pilotdb_watch()
-    W.PILOT_SHOWN["p"] = {"emp": "10001", "name": "Doe, Jane", "status": "loading"}
-    assert _attrs(W)["attributes"]["shown"] is None
-    W.PILOT_SHOWN["p"] = {"emp": "10001", "name": "Doe, Jane", "status": "waiting: your Watcher is paused"}
-    assert _attrs(W)["attributes"]["shown"] is None
-    ok, why = W.pilotdb_cmd("note", json.dumps({"op": "add", "pid": pdb.find("10001"), "text": "x", "rid": "rid-w00001"}))
-    assert (ok, why) == (False, PS.LOOK_UP)  # no brief, so his pid is not "the shown pilot's" either
-    W.PILOT_SHOWN["p"] = {"emp": "10001", "name": "Doe, Jane", "status": "ok"}  # the Schedule Lookup ran
-    sh = _attrs(W)["attributes"]["shown"]
-    assert sh["name"].startswith("Doe, Jane") and sh["contact"]["emails"] == ["jane.doe@example.com"]
-    W.PILOT_SHOWN["p"] = {"emp": "10002", "name": "Roe, Rick", "status": "cached"}  # served from the 6 h cache
-    assert _attrs(W)["attributes"]["shown"]["name"] == "Roe, Rick"
-    # FLICA answered with no readable month (a hidden schedule): the lookup ran all the same
-    W.PILOT_SHOWN["p"] = {"emp": "99999", "name": "", "status": "this pilot's schedule is not readable"}
-    assert _attrs(W)["attributes"]["shown"] is None
-    W.PILOT_RAN["emp"] = "99999"
-    assert _attrs(W)["attributes"]["shown"] == {"emp": "99999", "none": True}
-    # the cap: PILOTDB_BRIEF_PER_H distinct numbers an hour, kept in the state file; past it no answer at all
-    cap = W.PILOTDB_BRIEF_PER_H
-    assert cap == 20 and set(W.S["pdb_briefs"]) == {"10001", "10002", "99999"}
-    answers = []
-    for emp in range(20001, 20001 + cap + 5):
-        W.PILOT_SHOWN["p"] = {"emp": str(emp), "name": "", "status": "ok"}
-        answers.append(_attrs(W)["attributes"]["shown"])
-    assert answers[:cap - 3] == [{"emp": str(e), "none": True} for e in range(20001, 20001 + cap - 3)]
-    assert answers[cap - 3:] == [None] * 8 and len(W.S["pdb_briefs"]) == cap
-    W.PILOT_SHOWN["p"] = {"emp": "10001", "name": "Doe, Jane", "status": "ok"}  # one of this hour's: still shown
-    assert _attrs(W)["attributes"]["shown"]["pid"] == pdb.find("10001")
-    assert len(W.load_state()["pdb_briefs"]) == cap  # kept across a restart
-    W.S["pdb_briefs"] = {e: t - 3601 for e, t in W.S["pdb_briefs"].items()}  # an hour later
-    W.PILOT_SHOWN["p"] = {"emp": "20030", "name": "", "status": "ok"}
-    assert _attrs(W)["attributes"]["shown"] == {"emp": "20030", "none": True}
-
-
-# ---------------------------------------------------------------- a copy put back never turns a switch on
-def test_a_restored_copy_comes_back_with_the_share_and_ai_switches_off(db, root):  # noqa: F811
+# ---------------------------------------------------------------- a copy put back changes neither switch
+def test_a_copy_put_back_never_turns_on_what_ryan_switched_off(db, root, tmp_path):  # noqa: F811
+    """1.7.10 (Ryan's decision 2 of Nov 15): his choices are in the Watcher's own switches file, not in the database."""
+    sw = str(tmp_path / "pilotdb_switches.json")
+    db.switches = PM.Switches(sw)
     jane = _jane(db)
-    db.save_notes(jane, "private until shared", PM.ZERO_REV)
-    db.set_share("james", True)
-    db.set_ai(True)
-    db.backup()  # the daily copy, taken while both switches were on
+    db.save_notes(jane, "from the copy", PM.ZERO_REV)
+    assert db.is_shared("james") and db.ai_on() is True  # the defaults
+    db.backup()  # the daily copy, taken while both were on
     db.clock_box["t"] = T0 + timedelta(days=1)
     db.set_share("james", False)
     db.set_ai(False)
@@ -110,39 +78,91 @@ def test_a_restored_copy_comes_back_with_the_share_and_ai_switches_off(db, root)
     PM.restore(path, dirs, key)
     db2, st = PM.open_checked(path, dirs)
     try:
+        db2.switches = PM.Switches(sw)  # as the Watcher attaches it after every open
         assert st["db"] in ("ok", "restore_offered")
-        assert db2.shared_with() == [] and db2.ai_on() is False and not db2.is_shared("james")
-        assert db2.summary()["share_reset"]  # the card says so
-        assert PS.write_files(db2, PILOTS, root)["james"] == "off"
-        assert not os.path.exists(PS.export_path("james", root)) and not os.path.exists(PS.roster_path(root))
-        assert db2.record(jane)["notes"]["text"] == "private until shared"  # the copy's data is all there
-        db2.set_share("james", True)  # Ryan's own tap: shared again, the line goes
-        assert db2.shared_with() == ["james"] and db2.summary()["share_reset"] == ""
+        assert not db2.is_shared("james") and db2.ai_on() is False and db2.is_shared("pilot3")
+        assert "share_reset" not in db2.summary()
+        assert PS.write_files(db2, PILOTS, root) == {"james": "off", "pilot3": "on"}
+        assert not os.path.exists(PS.export_path("james", root))
+        assert db2.record(jane)["notes"]["text"] == "from the copy"  # the copy's data is all there
+        db2.set_share("james", True)  # Ryan's own tap: shared again
+        assert db2.shared_with(PILOTS) == PILOTS
     finally:
         db2.close()
 
 
-def test_restore_db_on_the_card_leaves_nothing_shared(A, caplog):  # noqa: F811
+def test_a_copy_put_back_never_turns_off_what_is_on_by_default(db, root, tmp_path):  # noqa: F811
+    """A copy from 1.7.9 holds its own share rows and AI switch (off there): 1.7.10 does not read them."""
+    sw = str(tmp_path / "pilotdb_switches.json")
+    db.switches = PM.Switches(sw)
+    with db._tx():
+        db.db.execute("INSERT INTO share(pilot,enabled,at,by) VALUES('james',0,'x','ryan')")
+        db._set_meta("ai_on", "0")
+        db._set_meta("share_reset", "20261115T000000Z")
+    db.backup()
+    key = PM.backups(db.backup_dirs)[0]["file"]
+    path, dirs = db.path, db.backup_dirs
+    db.close()
+    PM.restore(path, dirs, key)
+    assert not os.path.exists(sw)  # a restore writes no switch
+    db2, _st = PM.open_checked(path, dirs)
+    try:
+        db2.switches = PM.Switches(sw)
+        assert db2.is_shared("james") and db2.ai_on() is True
+        assert PS.write_files(db2, PILOTS, root)["james"] == "on"
+    finally:
+        db2.close()
+
+
+def test_the_switches_file_fails_closed_and_is_private(tmp_path):
+    sw = str(tmp_path / "pilotdb_switches.json")
+    s = PM.Switches(sw)
+    assert (s.shared("james"), s.ai_on(), s.broken) == (True, True, False) and not os.path.exists(sw)
+    s.set_ai(False)
+    assert os.stat(sw).st_mode & 0o777 == 0o600
+    assert json.load(open(sw)) == {"v": 1, "default": True, "share": {}, "ai": False}
+    assert (PM.Switches(sw).ai_on(), PM.Switches(sw).shared("anyone")) == (False, True)
+    for bad in ("", "{", "[]", json.dumps({"v": 2, "default": True, "share": {}, "ai": None}),
+                json.dumps({"v": 1, "default": "yes", "share": {}, "ai": None}),
+                json.dumps({"v": 1, "default": True, "share": [], "ai": None}),
+                json.dumps({"v": 1, "default": True, "share": {}, "ai": "on"})):
+        open(sw, "w").write(bad)
+        b = PM.Switches(sw)
+        assert (b.broken, b.shared("james"), b.ai_on()) == (True, False, False), bad
+    os.unlink(sw)
+    os.symlink(str(tmp_path / "elsewhere.json"), sw)  # a symlink is never followed
+    open(str(tmp_path / "elsewhere.json"), "w").write(json.dumps({"v": 1, "default": True, "share": {}, "ai": True}))
+    assert PM.Switches(sw).broken is True
+
+
+def test_restore_db_on_the_card_leaves_the_switches_as_ryan_left_them(A, caplog):  # noqa: F811
     P_, pdb = A  # noqa: N806
-    _post(P_, op="share", pilot="james", on=True)
-    _post(P_, op="ai", on=True)
-    ep, rp = PS.export_path("james", _root(P_)), PS.roster_path(_rdir(P_))
-    assert os.path.exists(ep) and os.path.exists(rp)
-    pdb.backup(replace=True)
+    ep = PS.export_path("james", _root(P_))
+    assert os.path.exists(ep) and P_.pilotdb_status()["ai"]["on"] is True  # the defaults
+    pdb.backup(replace=True)  # a copy taken while both were on
     copy = PM.backups(pdb.backup_dirs)[0]["file"]
+    _post(P_, op="share", pilot="james", on=False)
+    _post(P_, op="ai", on=False)
+    assert not os.path.exists(ep)
     with caplog.at_level(logging.INFO):
         code, r = _post(P_, op="restore_db", file=copy, confirm="RESTORE")
     assert code == 200
     st = P_.pilotdb_status()
-    assert st["shared_with"] == [] and st["ai"]["on"] is False and st["share_reset"]
-    assert not os.path.exists(ep) and not os.path.exists(rp)
-    assert not os.path.exists(PS.ai_paths(_root(P_))[1])
+    assert st["shared_with"] == [] and st["ai"]["on"] is False and "share_reset" not in st  # what he switched off stays off
+    assert not os.path.exists(ep) and not os.path.exists(PS.ai_paths(_root(P_))[1])
     for _ in range(3):  # and the share thread's passes keep it so
         P_.pilotdb_share_pass()
-    assert not os.path.exists(ep) and not os.path.exists(rp)
-    assert "sharing and AI notes are off until Ryan turns them on again" in caplog.text
+    assert not os.path.exists(ep)
+    assert "sharing and AI notes are as Ryan left them" in caplog.text
+    # and the other way: both on again, a copy put back turns neither off
+    _post(P_, op="share", pilot="james", on=True)
+    _post(P_, op="ai", on=True)
+    code, r = _post(P_, op="restore_db", file=copy, confirm="RESTORE")
+    assert code == 200 and os.path.exists(ep)
+    st = P_.pilotdb_status()
+    assert st["shared_with"] == ["james"] and st["ai"]["on"] is True
     card = _src("pilotdb-card")
-    assert "data-share-reset" in card and "They stay off until you turn them on again here." in card
+    assert "data-share-reset" not in card and "putting a daily copy back changes neither" in card
 
 
 # ---------------------------------------------------------------- a pilot's field edit in seniority.md
@@ -191,38 +211,28 @@ def test_an_email_can_carry_no_mailto_parameters(db):  # noqa: F811
     assert got["t"] == [False] * len(bad) + [True]
 
 
-# ---------------------------------------------------------------- the roster lives under /data, never /share
-def test_the_roster_is_kept_in_the_add_ons_own_data_folder(A, monkeypatch):  # noqa: F811
+# ---------------------------------------------------------------- no roster; nothing stays when the database is shut
+def test_no_roster_is_written_and_one_an_older_version_left_is_removed(A, monkeypatch):  # noqa: F811
     P_, pdb = A  # noqa: N806
-    _post(P_, op="share", pilot="james", on=True)
     rdir = _rdir(P_)
-    assert os.path.exists(PS.roster_path(rdir)) and not os.path.exists(PS.roster_path(_root(P_)))
-    assert not os.path.commonpath([rdir, _root(P_)]) == _root(P_)  # not inside the share folder
-    assert json.load(open(PS.roster_path(rdir)))["by_emp"]["10001"][0]["phones"]  # B23: the contact is in it
-    for dirpath, _dirs, files in os.walk(os.path.dirname(_root(P_))):  # nothing under the share holds a phone
-        for n in files:
-            if n.endswith((".json", ".md")):
-                assert "555-01" not in open(os.path.join(dirpath, n), encoding="utf-8", errors="replace").read() or \
-                    "uploads" in dirpath or n in ("contacts.json", "seniority.md"), (dirpath, n)
-    # the real paths: Ryan's /data/pilotdb_roster, read by a pilot's Watcher (data folder /data/<name>) as its parent's
+    os.makedirs(rdir, exist_ok=True)
+    for d in (rdir, _root(P_)):
+        open(PS.roster_path(d), "w").write('{"by_emp": {}}')  # as 1.7.9 left it
+    P_.pilotdb_share_pass(force=True)
+    assert not os.path.exists(PS.roster_path(rdir)) and not os.path.exists(PS.roster_path(_root(P_)))
+    assert not os.path.exists(rdir)
+    # the folder 1.7.9 used, so its roster is found: Ryan's /data/pilotdb_roster
     monkeypatch.setattr(P_, "PILOTDB_ROSTER", None)
     monkeypatch.setattr(P_, "DATA", "/data")
     assert P_.pilotdb_roster_dir() == "/data/pilotdb_roster"
-    monkeypatch.setattr(P_, "INSTANCE", "james")
-    monkeypatch.setattr(P_, "DATA", "/data/james")
-    assert P_.pilotdb_roster_dir() == "/data/pilotdb_roster"
 
 
-def test_a_roster_left_under_the_share_and_the_files_of_a_database_that_does_not_open_are_removed(db, root, tmp_path):  # noqa: F811
-    _share(db, root)  # the builders' layout: the roster under the share folder
-    assert os.path.exists(PS.roster_path(root))
+def test_the_files_of_a_database_that_does_not_open_are_removed(db, root, tmp_path):  # noqa: F811
+    _share(db, root)
     rdir = str(tmp_path / "data" / "pilotdb_roster")
-    assert PS.write_files(db, PILOTS, root, roster_dir=rdir)["james"] == "on"
-    assert not os.path.exists(PS.roster_path(root)) and os.path.exists(PS.roster_path(rdir))
-    assert os.stat(PS.roster_path(rdir)).st_mode & 0o777 == 0o600 and os.stat(rdir).st_mode & 0o777 == 0o700
-    v = PS.View("james", root, rdir)
-    v.refresh()
-    assert v.shown("10001")["contact"]["phones"][0]["tel"] == "+18085550101"
+    os.makedirs(rdir)
+    open(PS.roster_path(rdir), "w").write("{}")  # as 1.7.9 left it
+    assert os.path.exists(PS.export_path("james", root))
     assert PS.clear_files(root, rdir) == 2  # the database did not open at start: both go
     assert not os.path.exists(PS.roster_path(rdir)) and not os.path.exists(PS.export_path("james", root))
 
@@ -231,9 +241,8 @@ def test_no_database_at_start_removes_the_shared_files(P, caplog):  # noqa: F811
     PW = P  # noqa: N806
     PW.OPTS["pilots"] = [{"name": "james", "portal": True}]
     pdb = PW.pilotdb_start()
-    _post(PW, op="share", pilot="james", on=True)
-    ep, rp = PS.export_path("james", _root(PW)), PS.roster_path(_rdir(PW))
-    assert os.path.exists(ep) and os.path.exists(rp)
+    ep = PS.export_path("james", _root(PW))
+    assert os.path.exists(ep)  # shared by default
     pdb.close()
     PW.PDB["db"] = None
     with open(PW.PILOTDB_FILE, "wb") as fh:  # a damaged file
@@ -243,7 +252,7 @@ def test_no_database_at_start_removes_the_shared_files(P, caplog):  # noqa: F811
             os.remove(PW.PILOTDB_FILE + sfx)
     with caplog.at_level(logging.INFO):
         assert PW.pilotdb_start() is None
-    assert not os.path.exists(ep) and not os.path.exists(rp)
+    assert not os.path.exists(ep)
     assert "pilot db: not open: the shared files were removed" in caplog.text
 
 
@@ -354,13 +363,12 @@ def test_a_drain_fault_never_keeps_the_files_from_following(A, monkeypatch, capl
 def test_a_hide_a_purge_and_a_forget_reach_the_shared_files_at_once(A):  # noqa: F811
     P_, pdb = A  # noqa: N806
     jane = pdb.find("10001")
-    _post(P_, op="share", pilot="james", on=True)
     _post(P_, op="field", pid=jane, text="NOTE-A", base=PM.ZERO_REV)
     _post(P_, op="add", pid=jane, text="ENTRY-B", rid="rid-000001")
     _post(P_, op="add", pid=jane, text="ENTRY-C", rid="rid-000002")
     ents = {e["text"]: e["eid"] for e in pdb.record(jane)["entries"]}
     P_.pilotdb_share_pass(force=True)
-    ep, rp = PS.export_path("james", _root(P_)), PS.roster_path(_rdir(P_))
+    ep = PS.export_path("james", _root(P_))
     text = open(ep).read()
     assert "ENTRY-B" in text and "ENTRY-C" in text and "NOTE-A" in text
     assert _post(P_, op="hide", eid=ents["ENTRY-B"])[0] == 200
@@ -369,7 +377,7 @@ def test_a_hide_a_purge_and_a_forget_reach_the_shared_files_at_once(A):  # noqa:
     assert "ENTRY-C" not in open(ep).read()
     assert _post(P_, op="purge", eid=ents["ENTRY-B"])[0] == 200
     assert _post(P_, op="forget", pid=jane, confirm="DELETE")[0] == 200
-    assert "NOTE-A" not in open(ep).read() and "10001" not in json.load(open(rp))["by_emp"]
+    assert "NOTE-A" not in open(ep).read() and "10001" not in [r["emp"] for r in json.load(open(ep))["records"]]
 
 
 # ---------------------------------------------------------------- the notes versions

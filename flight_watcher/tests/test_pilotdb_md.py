@@ -65,7 +65,8 @@ def test_notes_authors_fences_and_hidden_entries(tmp_path):
     block = sec.split(f"rev {n['rev']}, 2026-11-15 10:00 HST:\n", 1)[1]
     fence = block.splitlines()[0]
     assert fence == "~" * 5 and block.split("\n" + fence + "\n", 1)[0] == fence + "\n" + tricky
-    assert "- 2026-11-15 10:00 HST, ryan:" in sec and "- 2026-11-15 10:00 HST, ryan (only me):" in sec
+    assert "- 2026-11-15 10:00 HST, ryan:" in sec and "(only me)" not in md  # 1.7.10: every entry is shared
+    assert "private one" in sec
     assert "- 2026-11-15 10:00 HST, james (pilot portal: third-party text):\n~~~~~~~\nfrom the portal" in sec
     assert "TAKEN-BACK-QXZ" not in md and "HIDDEN-QXZ" not in md
     # every block closes: after an opening fence of n '~', the next line of exactly n '~' closes it, and no heading

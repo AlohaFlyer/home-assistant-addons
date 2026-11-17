@@ -32,7 +32,7 @@ import rules as R
 import web
 import far as FAR
 from pot import PAIRING_RE, LEG_FULL_RE, LEG_FLT_RE, crew_seat, schedule_items, parse_schedule_desktop, parse_legs, parse_cm_schedule, inflight_at, crew_ids, with_ids, parse_alert_email, fit_tag, hours, parse_crew, pickup_diff, pickup_pickers, pickup_result, layout_still_parses, parse_schedule, row_date, BLOCK_HINTS, detail_url, parse_detail, soft_time, bcid, bcid_after, bcid_key, classify, CLOSE_IN_RE, close_in_folders, pick_close_in, trade_pages, header_fingerprint, is_pot_page, parse_pot, pot_links, visible_text
-from store import PICKERS_V, Store
+from store import PICKERS_V, Store, by_parts
 import tradeboard as TB
 import swap as SW
 import swapmap as SM
@@ -68,7 +68,7 @@ import pilotpdf as PP
 import pilotdb as PDBM
 import pdbshare as PS
 
-VERSION = "1.7.9"
+VERSION = "1.7.10"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -1374,6 +1374,8 @@ def publish_pickers():
              "inflt_n": v.get("inflt_n", 0), "month_n": v.get("month_n", 0), "year_n": v.get("year_n", 0),
              "lays": v.get("lays", []), "last_lay": v.get("last_lay", ""),  # 0.7.6: Common Layover
              "min_s": v.get("min_s"),  # 0.8.2: Fastest Pickup Speed
+             # 1.7.10: pickups whose speed is capped at the own request's time ("at most"), and whether the fastest is
+             "cap_n": v.get("cap_n", 0), "min_cap": bool(v.get("min_cap")),
              "last_at": v["last_at"]} for e, v in DB.picker_stats().items()]
     rows.sort(key=lambda r: (r["avg_s"] is None, r["avg_s"] or 0, r["name"]))
     key, rev = write_list_file("pickers", {"count": len(rows), "pickers": rows})
@@ -2277,7 +2279,8 @@ class Flica:
             hits = [h for h in BLOCK_HINTS if h in text]
             if hits:
                 i = text.find(hits[0])
-                log.warning("block hints matched (visible text): %s near: %s", hits, text[max(0, i - 120):i + 120])
+                log.warning("block hints matched (visible text): %s near: %s", hits,
+                            page_log(text[max(0, i - 120):i + 120]))
                 return "blocked"
             if "sign out" in low and no_pw:
                 self.save()
@@ -3610,7 +3613,9 @@ def seniority_refresh():
             try:
                 info = web.award_seniority(path, f[:7], f[:-4] + ".pdf",
                                            aw.get("uploaded_at") if same else web.hst_iso(os.path.getmtime(path)), out)
-                log.info("award %s dates of hire: %d pilot rows (%s), %s", f, info["rows"], info["reader"], info["decision"])
+                if info["decision"] != "no-doh":  # 1.7.10: a packet with no dates of hire section is not a line
+                    log.info("award %s dates of hire: %d pilot rows (%s), %s", f, info["rows"], info["reader"],
+                             info["decision"])
             except Exception as e:
                 log.info("award %s dates of hire not read: %s", f, e)
 
@@ -3625,12 +3630,22 @@ def seniority_refresh():
 # moved is merged again (checked at start and once a minute, and at once after an upload: web on_saved); each picker's
 # record carries his pickup history (store.pickup_history), synced as pickups are scored. The log carries counts only,
 # never a name, a number or a note; nothing here loads FLICA. Nothing is shared with a pilot in 1.7.8.
+# 1.7.10 (Ryan's decisions 2 and 3 of Nov 15): /data/pilotdb_switches.json holds Ryan's Share and AI choices
+# (pilotdb.Switches), in the Watcher's own /data beside its state and OUT of the database, so a database copy put
+# back changes neither.
 PILOTDB_FILE = f"{DATA}/pilotdb.sqlite"
 PILOTDB_BACKUP = f"{DATA}/pilotdb_backup"
 PILOTDB_SHARE = "/share/flight_watcher/pilotdb"
-# 1.7.9 review: roster.json (every live pilot's brief with phones and emails, for the one pilot a shared pilot looks
-# up) is kept in the add-on's own /data, never under /share (mapped into other add-ons): Ryan's /data/pilotdb_roster,
-# which a pilot's Watcher (data folder /data/<name>, the same container) reads as its data folder's parent
+PILOTDB_SWITCHES = None  # a test's own file; else pilotdb_switches.json beside the database (/data)
+
+
+def pilotdb_switches_path():
+    return PILOTDB_SWITCHES or os.path.join(os.path.dirname(PILOTDB_FILE), "pilotdb_switches.json")
+
+
+# 1.7.9 kept roster.json (every live pilot's brief with phones and emails) in the add-on's own /data/pilotdb_roster.
+# 1.7.10 writes none (a shared pilot's file holds every record); the folder is named only so a roster an older
+# version left is removed (pdbshare.write_files, clear_files).
 PILOTDB_ROSTER = None  # a test's own folder
 
 
@@ -3639,6 +3654,29 @@ def pilotdb_roster_dir():
         return PILOTDB_ROSTER
     base = DATA if ROLES.role(INSTANCE) == ROLES.ADMIN else os.path.dirname(DATA.rstrip("/"))
     return os.path.join(base or "/data", "pilotdb_roster")
+
+
+def pilotdb_switches_mirror():
+    """1.7.10 review: the second copy of every OFF Ryan tapped, outside /data (the Watcher's own /share folder,
+    beside the database's daily copies), so an older /data put back by a restore never turns a share or the AI notes
+    back on. A test with its own switches file keeps its mirror beside it."""
+    if PILOTDB_SWITCHES:
+        return PILOTDB_SWITCHES + ".off"
+    return os.path.join(PILOTDB_SHARE, "switches_off.json")
+
+
+def _pilotdb_switches(db):
+    """Ryan's Share and AI choices, read from the Watcher's own file and attached to the database just opened. A
+    file that cannot be read turns everything off (pilotdb.Switches) and says so once."""
+    if db is None:
+        return None
+    db.switches = PDBM.Switches(pilotdb_switches_path(), pilotdb_switches_mirror(), pilotdb_portal_pilots)
+    if db.switches.broken:
+        log.warning("pilot db: the switches file could not be read: sharing and AI notes are off until Ryan taps a "
+                    "switch on his card")
+    return db.switches
+
+
 PILOTDB_POLL_S = 60          # the source signature check
 PILOTDB_MD_DEBOUNCE_S = 30   # seniority.md 30 s after the last change (at once after a merge)
 PILOTDB_BACKUP_AT = (2, 47)  # HST: the nightly copies
@@ -3693,6 +3731,7 @@ def pilotdb_start():
     except Exception as e:  # noqa: BLE001
         db, st = None, {"db": "error", "offer": None}
         log.warning("pilot db: not opened: %s", type(e).__name__)
+    _pilotdb_switches(db)
     with PDB_LOCK:
         PDB.update(db=db, status=st)
     if st["db"] == "newer_db":
@@ -3706,7 +3745,7 @@ def pilotdb_start():
     if db is None:
         with contextlib.suppress(Exception):  # the sensor says why (newer_db, error)
             publish_pilotdb(force=True)
-        # 1.7.9 review: no database, no share: a roster or a pilot's file an earlier run wrote does not stay readable
+        # 1.7.9 review: no database, no share: a pilot's file an earlier run wrote does not stay readable
         if PS.clear_files(PILOTDB_SHARE, pilotdb_roster_dir()):
             log.info("pilot db: not open: the shared files were removed")
         return None
@@ -3725,7 +3764,7 @@ def pilotdb_start():
     if PDB.get("thread") is None:
         PDB["thread"] = threading.Thread(target=pilotdb_thread, daemon=True, name="pilotdb")
         PDB["thread"].start()
-    try:  # 1.7.9: each shared pilot's file and the roster as the database has them now (none while no share is on)
+    try:  # each shared pilot's file as the database has it now (1.7.10: on for every portal pilot Ryan did not turn off)
         pilotdb_share_pass(force=True)
     except Exception as e:  # noqa: BLE001
         log.info("pilot db: share files skipped: %s", type(e).__name__)
@@ -3795,6 +3834,29 @@ def pilotdb_tick(force=False):
                     return True
                 return False
             merged = _pilotdb_merge("award", aw_sig, _award) or merged
+        # 1.7.10 (Ryan, Nov 15): each month's award text on file gives Sen #, base, equipment and seat per awarded
+        # pilot (seniority.award_sen_parse), merged oldest month first so the newest month's values stand; a month is
+        # merged again only when its file moved. Counts only in the log; the uploader is the file's (review store)
+        for f in pilotdb_award_texts():
+            month, path = f[:7], os.path.join(UPLOADS_SHARED, f)
+            sen_sig = _pilotdb_sig([path])
+            if sen_sig and (force or db.meta(f"sig:awardsen:{month}") != sen_sig):
+                def _award_sen(month=month, path=path, sen_sig=sen_sig):
+                    with open(path, encoding="utf-8", errors="replace") as fh:
+                        got = SEN.award_sen_parse(fh.read())
+                    if not got["rows"]:
+                        return False
+                    who = "ryan"
+                    with contextlib.suppress(Exception):
+                        who = str((review().on_file(month, "award")[1] or {}).get("who") or "ryan")
+                    r = db.merge_award_sen(month, got["rows"], _pilotdb_by(who),
+                                           hashlib.sha256(sen_sig.encode()).hexdigest(), SEN.PARSER)
+                    log.info("pilot db: award %s seniority merged: %d lines (%d not read), %d added, %d changed, %d kept "
+                             "hand edits, %d another last name on the number (not touched)", month, r.get("rows", 0),
+                             got["rejects"] + r.get("bad", 0), r.get("added", 0), r.get("changed", 0),
+                             r.get("kept_hand", 0), r.get("unmatched", 0))
+                    return True
+                merged = _pilotdb_merge(f"awardsen:{month}", sen_sig, _award_sen) or merged
         if ct_sig and (force or db.meta("sig:contacts") != ct_sig):
             def _contacts():
                 cj = CT.load(web.CONTACTS_FILE)
@@ -3830,6 +3892,14 @@ def pilotdb_tick(force=False):
         except Exception as e:  # noqa: BLE001
             log.info("pilot db: sensor not published: %s", type(e).__name__)
         return merged
+
+
+def pilotdb_award_texts():
+    """The award texts on file (<YYYY-MM>_award.txt in the shared uploads folder), oldest month first."""
+    try:
+        return sorted(f for f in os.listdir(UPLOADS_SHARED) if re.fullmatch(r"\d{4}-\d{2}_award\.txt", f))
+    except OSError:
+        return []
 
 
 def _pilotdb_by(who):
@@ -3902,23 +3972,23 @@ def pilotdb_restore(file):
             PDBM.restore(PILOTDB_FILE, pilotdb_dirs(), file)
         finally:
             db, st = PDBM.open_checked(PILOTDB_FILE, pilotdb_dirs())
+            _pilotdb_switches(db)
             PDB.update(db=db, status=st, md_rev=None, md_at=0.0, share_rev=None, share_seen=None, ai_at=0.0,
                        ai_check=0.0)
             web.SENIORITY_MD_HOOK = pilotdb_nudge if db is not None else None
-        # 1.7.9 review: the copy came back with every Share switch and the AI switch off (pilotdb.restore), whatever
-        # it held: the files follow now (each pilot's file, the roster and the AI statistics go), never 2 s later
-        with contextlib.suppress(Exception):
-            PS.ai_off(PILOTDB_SHARE)
+        # 1.7.10 (Ryan's decision 2 of Nov 15): Ryan's Share and AI choices are not in the database, so the copy put
+        # back changes neither (1.7.9 turned both off in the copy, when they were stored in it): what he switched
+        # off stays off, what is on by default stays on. The files follow the copy now, never 2 s later.
         try:
             if db is not None:
                 pilotdb_share_pass(force=True)
             else:
+                PS.ai_off(PILOTDB_SHARE)
                 PS.clear_files(PILOTDB_SHARE, pilotdb_roster_dir())
         except Exception as e:  # noqa: BLE001
             log.info("pilot db: share files skipped: %s", type(e).__name__)
-    reset = bool(db is not None and db.meta("share_reset"))
-    log.info("pilot db: a copy was put back (the file before it is kept aside): %s%s", st["db"],
-             "; sharing and AI notes are off until Ryan turns them on again" if reset else "")
+    log.info("pilot db: a copy was put back (the file before it is kept aside): %s; sharing and AI notes are as Ryan "
+             "left them", st["db"])
     pilotdb_nudge()
     return st
 
@@ -3932,9 +4002,11 @@ def pilotdb_status():
     if db is not None:
         try:
             out.update(db.summary())
-            # 1.7.9: each portal pilot's Share switch and how many of his commands wait in the inbox (names and counts)
+            # each portal pilot's Share switch (1.7.10: on unless Ryan turned it off) and how many of his commands
+            # wait in the inbox (names and counts)
             names = pilotdb_portal_pilots()
-            shared = set(out.get("shared_with") or [])
+            out["shared_with"] = db.shared_with(names)
+            shared = set(out["shared_with"])
             out["pending"] = {n: PS.pending(PS.inbox_dir(n, PILOTDB_SHARE)) for n in names if n in shared}
             out["pilots"] = [{"name": n, "shared": n in shared, "pending": out["pending"].get(n, 0),
                               "full": n in (PDB.get("full") or ())} for n in names]
@@ -3945,12 +4017,15 @@ def pilotdb_status():
 
 
 # ---------------------------------------------------------------- 1.7.9: sharing the pilot database (contract rev 4)
-# Ryan's Share switch per portal pilot (api/pilotdb op share, his card only; off by default; Claude never calls it).
-# While a share is on the admin writes that pilot's file (pilotdb.export_for: the noted pilots, a whitelist) and the
-# roster (pdbshare.write_files) 2 s after the database last changed, and applies his notes and field edits from the
-# inbox folder every PILOTDB_SHARE_POLL_S (pdbshare.drain: the author is the folder's name, compare-and-set, quotas,
-# fixed answers). While it is off there is no file and every waiting command is answered "Ryan has not shared ...".
-# The AI note (Ryan's AI switch, op ai, off by default): anonymous pickup statistics out, HOM's notes in (pdbshare).
+# 1.7.10 (Ryan's decisions 1 to 3 of Nov 15): the database is shared 100% with every portal pilot, on by default
+# (James now, anyone Ryan adds later), and the AI notes are on by default. Ryan's card keeps one switch per pilot and
+# the AI switch as OFF switches (api/pilotdb ops share and ai, his card only; Claude never calls either); his choices
+# live in /data/pilotdb_switches.json, never in the database. While a pilot's share is on the admin writes his file
+# (pilotdb.export_for: every live record, a whitelist of keys; pdbshare.write_files) 2 s after the database last
+# changed, and applies his notes and field edits from the inbox folder every PILOTDB_SHARE_POLL_S (pdbshare.drain: the
+# author is the folder's name, compare-and-set, quotas, fixed answers). While it is off there is no file and every
+# waiting command is answered "Ryan has not shared ...". The AI note: anonymous pickup statistics out, HOM's notes in
+# (pdbshare), only while the AI switch is on.
 # No line here names a pilot other than a portal pilot's instance name, and none carries a text or a number.
 PILOTDB_SHARE_POLL_S = 2.0
 PILOTDB_AI_EVERY_S = 86400   # a new statistics batch at most once a day (and at once when the switch turns on)
@@ -3959,7 +4034,7 @@ PDB.update(share_thread=None, share_rev=None, share_seen=None, full=(), ai_at=0.
 
 
 def pilotdb_portal_pilots():
-    """The pilots Ryan may share with: those the add-on runs with a portal (option pilots[].portal), by run.py's own
+    """The pilots the database is shared with unless Ryan turned one off: those the add-on runs with a portal (option pilots[].portal), by run.py's own
     rules. [] on a pilot instance."""
     if not has("one_writer"):
         return []
@@ -3978,9 +4053,11 @@ def pilotdb_share_pass(force=False, now=None):
         return None
     now = time.time() if now is None else now
     names = pilotdb_portal_pilots()
+    # 1.7.10 review: a pilot's waiting contacts list is read and checked here, before the database's lock is taken
+    checked = PS.contacts_precheck(names, PILOTDB_SHARE, today=db.today())
     with PDB_LOCK:
         try:
-            r = PS.drain(db, names, PILOTDB_SHARE, full=PDB.get("full") or (), now=now, log=log.info)
+            r = PS.drain(db, names, PILOTDB_SHARE, full=PDB.get("full") or (), now=now, log=log.info, checked=checked)
         except Exception as e:  # noqa: BLE001 (1.7.9 review: a drain fault never keeps the files from following)
             r = {"applied": 0, "refused": 0, "scrub": False}
             portal_once("pilotdb_drain:" + type(e).__name__, "pilot db: inbox drain skipped: %s", type(e).__name__)
@@ -3990,7 +4067,7 @@ def pilotdb_share_pass(force=False, now=None):
         due = force or r["applied"] or r["refused"] or (rev != PDB.get("share_rev") and PDB.get("share_seen") == rev)
         PDB["share_seen"] = rev
         if due:
-            st = PS.write_files(db, names, PILOTDB_SHARE, roster_dir=pilotdb_roster_dir())
+            st = PS.write_files(db, names, PILOTDB_SHARE, roster_dir=pilotdb_roster_dir())  # roster_dir: cleanup only
             was = tuple(sorted(n for n, v in st.items() if v != "off"))
             if was != PDB.get("share_on"):
                 log.info("pilot db: shared with %s", ", ".join(was) if was else "nobody")
@@ -4040,7 +4117,7 @@ def pilotdb_share_thread():
 # sensor.flight_watcher_pilotdb, for the Pilots card (www/flight-watcher-pilotdb-card.js) on Ryan's dashboard. The
 # author of every write is ryan (never a payload key). An error names the field, never a value or a note; a log line
 # names the op and its outcome only. Nothing here loads FLICA, publishes pilot/set or shares a record with a pilot (the
-# share op, roster.json, the exports and the inbox drain are 1.7.9).
+# share op, the exports and the inbox drain are 1.7.9; 1.7.10: shared 100%, on by default).
 PILOTDB_BODY_MAX = 64 * 1024  # a POST body
 PILOTDB_PID_RE = re.compile(r"^p[0-9a-f]{10}$")
 PILOTDB_EID_RE = re.compile(r"^n[0-9a-f]{10}$")
@@ -4069,8 +4146,8 @@ PILOTDB_OPS = {
     "ai": (("on",), ("clear",)),
 }
 PILOTDB_SENSOR_KEYS = ("records", "live", "gone", "noted", "entries", "entries_7d", "hand", "drift", "conflicts",
-                       "pickups", "pickers", "sources", "shared_with", "pending", "ai", "md_at", "backup_at", "rev",
-                       "db", "contacts")
+                       "pickups", "pickers", "sources", "shared_with", "switches", "pending", "ai", "md_at",
+                       "backup_at", "rev", "db", "contacts")
 _PDB_PUB = {"sig": None}
 _PDB_PUB_LOCK = threading.Lock()
 
@@ -4274,11 +4351,13 @@ def _pilotdb_apply(db, op, o):
             raise PDBM.Bad("doh", "must be a date")
         pid = db.new_record(_pdb_emp(o), _pdb_text(o, "name", "name"), doh or None)
         return {"pid": pid, "record": db.record(pid)}, None
-    if op == "share":  # 1.7.9: Ryan's Share switch (a configured portal pilot only)
+    if op == "share":  # Ryan's Share switch (a configured portal pilot only; 1.7.10: on by default, this turns it off)
         pilot = _pdb_text(o, "pilot", "pilot")
-        if pilot not in pilotdb_portal_pilots():
+        names = pilotdb_portal_pilots()
+        if pilot not in names:
             raise PDBM.Bad("pilot", "is not a pilot with a portal")
-        return {"shared_with": db.set_share(pilot, o.get("on"))}, "share"
+        db.set_share(pilot, o.get("on"))
+        return {"shared_with": db.shared_with(names)}, "share"
     if op == "ai":  # 1.7.9: Ryan's AI notes switch
         if "clear" in o and (o["clear"] is not True or o.get("on") is not False):
             raise PDBM.Bad("clear", "must be true, with on false")
@@ -5740,7 +5819,7 @@ def lookup_totals(fl, month):
     sp = IF.parse_cm_month(html) if classify(html) == "ok" else None
     if not sp or sp["month"] != month:
         log.info("schedule %s totals via Schedule Lookup (bd=%s): %s %s", month, bd, classify(html),
-                 (sp and sp["month"]) or visible_text(html)[:120])
+                 (sp and sp["month"]) or page_log(visible_text(html)[:120]))
         return {}
     LOOKUP_PAGE.update(bd=bd, html=html, at=time.time())
     note_lookup_months(html)
@@ -5803,7 +5882,7 @@ def other_months_check(fl, cur_month):
             return False
         bds = re.findall(r'<option value="(\d{4})"', html)
     if not bds:
-        log.info("own schedule lookup: no month list: %s", visible_text(html)[:160])
+        log.info("own schedule lookup: no month list: %s", page_log(visible_text(html)[:160]))
         return False
     got, waiting = [], False
     fails = S.setdefault("sched_other_fail", {})
@@ -5826,7 +5905,8 @@ def other_months_check(fl, cur_month):
         if sp and sp["month"] == mon:
             SCHED_READ["lookup_ok"] = True
         if not sp or sp["month"] != mon:
-            log.info("own schedule %s (bd=%s): %s %s", mon, bd, classify(page), (sp and sp["month"]) or visible_text(page)[:160])
+            log.info("own schedule %s (bd=%s): %s %s", mon, bd, classify(page),
+                     (sp and sp["month"]) or page_log(visible_text(page)[:160]))
             other_failed(mon, classify(page) if classify(page) != "ok" else "not that month's schedule")
             continue
         fails.pop(mon, None)
@@ -6164,8 +6244,9 @@ def detail_probe(fl, pot):
         return
     row = dict(next(iter(pot.values())))
     enrich(fl, row)
-    # 1.7.3: a pilot's log never names the captain (another pilot), only whether one was parsed; PilotLogMask too
-    who = repr(row.get("captain")) if CAP.admin else ("parsed" if row.get("captain") else "none")
+    # 1.7.3: a pilot's log never names the captain (another pilot), only whether one was parsed; PilotLogMask too.
+    # 1.7.10 (Ryan, Nov 15): the admin's neither
+    who = "parsed" if row.get("captain") else "none"
     log.info("detail probe %s: captain=%s blk=%s credit=%s soft=%s", row.get("pairing"),
              who, row.get("blk"), row.get("credit"), row.get("soft"))
 
@@ -6205,8 +6286,8 @@ def page_log(text):
     1.7.9 (Ryan, Nov 15): no quoted page carries an employee number, the admin's included ("(emp# n) schedule last
     updated", EmployeeID=n: captures.mask_emp), so every line that quotes a page through here is masked."""
     t = str(text or "")
-    if CAP.admin:
-        return CAPS.mask_emp(t)
+    if CAP.admin:  # 1.7.10 (Ryan, Nov 15): no crew name either (a crew list, 'picked up by ...', a captain)
+        return CAPS.mask_crew(t, page=True)
     if not cap_on():
         return f"({len(t)} chars, not logged: page captures are off for this pilot)"
     return CAPS.mask(t, cap_secrets())
@@ -6242,11 +6323,28 @@ class PilotLogMask(logging.Filter):
         return True
 
 
+class AdminLogMask(logging.Filter):
+    """1.7.10 (Ryan, Nov 15): the admin's own Watcher log carries no crew name and no employee number: every line
+    goes through captures.mask_crew (a labeled number, 'pilot <n>:', a seat and its number, a crew line's names, a
+    name with its number, 'picked up by ...', a 'Last, First'). Each line that named a pilot names the seat or the
+    pairing instead (the call sites); this filter is the net under them. Cards, the database and exports are not
+    touched: only log lines."""
+
+    def filter(self, record):
+        try:
+            msg = record.getMessage()
+            out = CAPS.mask_crew(msg)
+            if out != msg:
+                record.msg, record.args = out, ()
+        except Exception:  # noqa: BLE001 (a log line is never lost to the mask)
+            pass
+        return True
+
+
 for _f in list(log.filters):  # one per process (a re-import, as the tests do, replaces it)
-    if type(_f).__name__ == "PilotLogMask":
+    if type(_f).__name__ in ("PilotLogMask", "AdminLogMask"):
         log.removeFilter(_f)
-if ROLES.role(INSTANCE) == ROLES.PILOT:
-    log.addFilter(PilotLogMask())
+log.addFilter(PilotLogMask() if ROLES.role(INSTANCE) == ROLES.PILOT else AdminLogMask())
 
 
 IF.WRITE = cap_write
@@ -6603,7 +6701,7 @@ def close_in_check(fl, pot_all, full=False, moved_from=()):
     if not (is_pot_page(html) and all(c in text for c in cat)):
         ci["bad"] = ci.get("bad", 0) + 1
         log.info("close-in %s: not an open time page of %s (%d of %d): %s", b, OPTS.get("category_check"), ci["bad"],
-                 CLOSE_IN_BAD_MAX, text[:160])
+                 CLOSE_IN_BAD_MAX, page_log(text[:160]))
         if ci["bad"] >= CLOSE_IN_BAD_MAX:
             log.info("close-in BCID %s dropped; the menu is read again", b)
             ci["rejected"] = (ci.get("rejected") or [])[-4:] + [b]
@@ -6617,7 +6715,7 @@ def close_in_check(fl, pot_all, full=False, moved_from=()):
     if not ci.get("verified"):
         ci.update(verified=True, verified_at=now_iso())
         log.info("close-in folder %s verified (found on the %s): its open time page reads; text: %s", b, ci.get("via"),
-                 text[:300])
+                 page_log(text[:300]))
         try:  # a private copy for parser checks (/share, never git)
             cap_write(f"pot_closein_{b.split('.')[-1]}.html", html)
         except Exception:
@@ -6658,6 +6756,13 @@ def close_in_check(fl, pot_all, full=False, moved_from=()):
     return rows, "ok"
 
 
+def _no_cs(text):
+    """Review (speed cap): view page text for a log line without crew scheduling's comment, which is where a picker
+    is named ('cs: h3677:13nov picked up by <name> (<number>)'): 'cs: (N chars)'. The capture file holds the page."""
+    return re.sub(r"(?is)(\bcs\s*:)(.*?)(?=\s*\bnote\s*:|$)", lambda m: f"{m.group(1)} ({len(m.group(2).strip())} chars)",
+                  str(text or ""))
+
+
 def _request_view(fl, b, ts):
     """1.2.2: {legs, trips, detail} of one request from its read-only view page ({} when it cannot be read).
     The first view page of each folder is saved privately to CAPTURE_DIR for parser checks."""
@@ -6676,7 +6781,7 @@ def _request_view(fl, b, ts):
             S.setdefault("req_view_captured", {})[n] = True
             try:
                 cap_write(f"otrequest_view_{n}.html", html)
-                log.info("request view %s captured; text: %s", ts, text[:600])
+                log.info("request view %s captured; text: %s", ts, page_log(_no_cs(text[:600])))
             except Exception:
                 pass
         return SUB.parse_request_view(text)
@@ -6747,6 +6852,7 @@ def requests_check(fl):
     first = not S.get("ot_req_init")
     now = datetime.now(HST)
     read_ok = False
+    read_now = []  # the folders whose list was read in this pass
     for b in folders:
         url = SUB.requests_url(BASE, b)
         if not BRK.allow("requests"):  # 1.6.2: the request list reads are stopped (the breaker's note says why)
@@ -6767,7 +6873,7 @@ def requests_check(fl):
                 try:
                     cap_write(f"otrequests_{n}.html", html)
                     S.setdefault("req_captured", {})[n] = True
-                    log.info("requests %s: %d rows, page captured; text: %s", b, len(rows), text[:600])
+                    log.info("requests %s: %d rows, page captured; text: %s", b, len(rows), page_log(text[:600]))
                 except Exception:
                     pass
             ids = SUB.request_ids(html)
@@ -6782,7 +6888,7 @@ def requests_check(fl):
                     S.setdefault("req_mismatch_logged", {})[n] = len(ids)
                     log.info("requests %s: %d requests on the page, %d rows read; latest page captured", b, len(ids), len(rows))
             if not SUB.is_request_page(text, rows):
-                log.info("requests %s: not the request list, skipped: %s", b, text[:120])
+                log.info("requests %s: not the request list, skipped: %s", b, page_log(text[:120]))
                 BRK.fail("requests", "not the request list (a page the parser does not know)", "unknown")  # 1.6.2
                 continue
             if not rows and rows_of.get(b) and empty.get(b, 0) < 1:  # a list gone empty must read so twice
@@ -6801,7 +6907,7 @@ def requests_check(fl):
                     continue  # the feature's (or the close-in folder's) first read: older decisions are history
                 if r.get("ts") and not r.get("legs"):
                     r.update(_request_view(fl, b, r["ts"]))  # the list names no trips; its view page does
-                ev = {**r, "bcid": b, "at": now_iso(), "url": url}
+                ev = {**_req_shown(r), "bcid": b, "at": now_iso(), "url": url}
                 if b == ci:
                     ev["folder"] = "close-in"
                 try:
@@ -6809,7 +6915,7 @@ def requests_check(fl):
                 except Exception as e:
                     log.info("request pay not priced: %s", e)
                     ev["pay"] = None
-                log.info("request %s %s %s", r["type"], r["status"], r["detail"][:80])
+                log.info("request %s %s %s", r["type"], r["status"], page_log(_no_cs(r["detail"])[:80]))
                 pub("event/request_decided", ev, retain=False)
                 note_decided(r, now)  # FW-0064: its schedule changes are this request's, not a trade's
             if rows and rows[-1].get("ts") and not S.get("req_view_captured", {}).get(n) and cap_on():
@@ -6819,7 +6925,9 @@ def requests_check(fl):
                     pushed[SUB.push_key(r)] = now_iso()  # last seen; pruned once gone 60 days
                     if r.get("alt"):  # the content key too: a read that falls back to it never re-pushes
                         pushed[f"{r['alt']}|{r['status']}"] = now_iso()
+            req_cap_keep(rows, rows_of.get(b))  # 1.7.10: each denial's 'picked up by' stays on its row
             rows_of[b] = rows
+            read_now.append(b)
             if b == ci:
                 done_first[b] = now_iso()
             read_ok = True
@@ -6837,6 +6945,19 @@ def requests_check(fl):
     except GT.BreakerOpen as e:  # 1.6.2 review: the Tradeboard path stopped or left out: the request list still publishes
         log.info("trade requests skipped: %s", e)
         tb_ok = False
+    # 1.7.10: the real 'picked up by' comment is on each denial's read-only view page. Review: read last, once the
+    # lists and the Tradeboard's My Requests pages of this pass are done, so on a pilot the history reads only use
+    # what his FLICA budget has left (read inside the folder loop they took the load kept for My Requests every hour)
+    for b in read_now:
+        try:
+            req_cap_views(fl, b, rows_of.get(b) or [])
+        except GT.GateAbort:
+            raise
+        except GT.BreakerOpen as e:
+            log.info("request view pages %s skipped: %s", b, e)
+            break
+        except Exception as e:  # noqa: BLE001 (type only: a message could carry a name)
+            log.info("request view pages %s error: %s", b, type(e).__name__)
     try:
         trade_check()  # FW-0064: a decision just read explains schedule changes; a pending one may match them
     except Exception as e:
@@ -6844,6 +6965,8 @@ def requests_check(fl):
     if folders:
         for b in [x for x in rows_of if x not in folders]:
             rows_of.pop(b, None)  # a folder no longer watched: its Pending rows no longer hold the 2-min poll
+        for k in [k for k in S.get("req_cap_views") or {} if k.split("|")[0] not in folders]:
+            S["req_cap_views"].pop(k, None)
         nums = {b.split(".")[-1] for b in regular}
         for n in [x for x in trows_of if x not in nums]:
             trows_of.pop(n, None)
@@ -6852,15 +6975,232 @@ def requests_check(fl):
         pushed.pop(k, None)
     if read_ok:
         S["ot_req_init"] = True
+        try:  # 1.7.10 (Ryan, Nov 15): pickup speeds capped at the own request's time; no FLICA load of its own
+            req_cap_pass()
+        except Exception as e:  # noqa: BLE001 (type only: a message could carry a name)
+            log.info("speed: request cap skipped: %s", type(e).__name__)
     save_state(S)
     tsig = json.dumps(trows_of, sort_keys=True)
     tb_new = tb_ok and tsig != S.get("tb_req_sig")  # 1.4.3: trades alone republish only when they changed
     if read_ok or tb_new:  # a failed pass keeps the last good sensor instead of showing 0 pending
         S["tb_req_sig"] = tsig
-        shown = [{**r, "bcid": b, **({"folder": "close-in"} if b == ci else {})} for b in folders for r in rows_of.get(b) or []]
+        shown = [{**_req_shown(r), "bcid": b, **({"folder": "close-in"} if b == ci else {})} for b in folders for r in rows_of.get(b) or []]
         shown += [{**r, "bcid": f"001.{n}"} for n in sorted(trows_of) for r in trows_of[n] or []]
         pub("ot_requests", {"pending": sum(1 for r in shown if r["status"] in SUB.OPEN), "count": len(shown),
                             "requests": shown[-20:], "checked_at": now_iso()})
+
+
+# ---------------------------------------------------------------- 1.7.10: the pickup speed cap (Ryan, Nov 15)
+# When this pilot himself asked for a trip and FLICA denied him because another pilot picked it up ('CS:
+# H3607:17NOV picked up by DOE, JANE (10001)' on his Open Time Requests list), that picker asked before he did: the
+# picker's speed ends no later than this request's Requested time (store.req_cap_secs: its minute + 59 s), not at
+# FLICA's decision time and not at the Watcher's later pot read. Every other pickup keeps store.dwell's estimate.
+# Real pages (Nov 16): the list requests_check loads has only 'MM/DD HH:MM Add Denied' on a row (that time is the
+# Requested time); the comment ('CS: H3677:13NOV picked up by JOHN DOE (10001)', first name first) is on the
+# request's read-only view page. So each Denied add or swap with no reason on file is read there once
+# (req_cap_views: _request_view, never the QuickDelete link beside it), a few a read, inside the FLICA budget; the
+# lists on file (S['ot_req_rows']) and, once, the admin's own captured request pages are used too. Each instance caps
+# the pickups in its own database from its own list; nothing crosses instances. The log carries counts only.
+REQ_CAP_V = 1
+REQ_CAP_FILE_MAX = 5 * 1024 * 1024
+REQ_CAP_VIEWS_PER_READ = 2  # new denied view pages per folder per list read: history catches up with no burst
+REQ_CAP_VIEW_TRIES = 3  # view page reads of one denied request whose page could not be read
+REQ_CAP_VIEW_V = 1  # the view page parser's version, kept on each record: raise it when submit.parse_request_view,
+# submit.picked_up or the swap rule changes, and every 'no pickup' verdict (and every given-up page) is read once more
+REQ_CAP_TYPES = ("Add", "Swap")  # a request that asks for a trip; a drop or a trade is denied for other reasons
+
+
+def _req_shown(r):
+    """A request row as it is published (the sensor, the decided event): without the cap's own fields."""
+    return {k: v for k, v in r.items() if k not in ("pu", "st_at")}
+
+
+def req_cap_keep(rows, old):
+    """The 'picked up by' of each Denied row stays on the row as pu {trip, day, emp} (no name): from the list's own
+    text (submit.parse_request_rows), else its view page's reason (read once, when it was pushed), else what the
+    last read of this folder kept for the same request."""
+    before = {r.get("key"): SUB.row_cap(r) for r in old or [] if isinstance(r, dict)}
+    for r in rows:
+        if r.get("status") != "Denied":
+            continue
+        c = SUB.row_cap(r) or before.get(r.get("key"))
+        if c:
+            r["pu"] = {k: c[k] for k in ("trip", "day", "emp")}
+
+
+def _cap_parts(c):
+    """{trip, day, emp} (strings, nothing else: never a name) of a kept cap reason, or None."""
+    if not isinstance(c, dict) or not all(isinstance(c.get(k), str) and c.get(k) for k in ("trip", "day", "emp")):
+        return None
+    return {k: c[k] for k in ("trip", "day", "emp")}
+
+
+def req_cap_views(fl, b, rows):
+    """The real list names no picker: crew scheduling's 'picked up by' comment is on each request's read-only view
+    page. For each Denied add or swap row with a FLICA id (ts) and no cap reason on file, that page is read once
+    (_request_view: both safe_get guards, paced, captured only where captures are on; never the QuickDelete link),
+    at most REQ_CAP_VIEWS_PER_READ new ones per folder per list read and REQ_CAP_VIEW_TRIES tries per request. Each
+    load is a FLICA load like the list's own (the gate counts it; on a pilot it must fit his budget first: opt_fits),
+    and none is made while the request reads are stopped; requests_check calls this last in a pass, after the lists
+    and the Tradeboard's My Requests pages. S['req_cap_views'][folder|ts] = {reason, ok, tries, v}: reason is the
+    picked-up parts only ({trip, day, emp}; the name is never kept), None when the comment is not a pickup or the
+    trip is the one this request gives up (submit.view_cap / row_cap, the one rule for every path); ok only when
+    the page read was this request's own view (submit.is_view_page; any other page is a failed try); v the parser
+    version (REQ_CAP_VIEW_V: a record of another version with no reason is read again). Kept until the row leaves
+    the list. The reason goes on the
+    row as 'pu', so row_cap / req_cap_pass apply the cap with the row's own Requested time. Counts only in the log."""
+    views = S.setdefault("req_cap_views", {})
+    listed, n, left = set(), 0, 0
+    for r in rows:
+        if not r.get("ts"):
+            continue
+        k = f"{b}|{r['ts']}"
+        listed.add(k)
+        if r.get("status") != "Denied" or r.get("type") not in REQ_CAP_TYPES:
+            continue
+        v = views.get(k) if isinstance(views.get(k), dict) else None
+        have = SUB.row_cap(r) or _cap_parts((v or {}).get("reason"))
+        if have:  # on file: the list's own text, the view page read for its push, an earlier read
+            r["pu"] = dict(have)
+            views[k] = {"reason": dict(have), "ok": True, "tries": (v or {}).get("tries", 0), "v": REQ_CAP_VIEW_V}
+            continue
+        if v is not None and v.get("v") != REQ_CAP_VIEW_V:
+            v = None  # read by another parser version: its 'no pickup' (or its failed tries) is read again, once
+        if "reason" in r:  # its view page was read in this pass (the push): not loaded again now
+            ok = SUB.is_view_page(r)  # the request's own page with no pickup comment; any other page is a failed try
+            v = views[k] = {"reason": None, "ok": ok, "tries": (v or {}).get("tries", 0) + 1, "v": REQ_CAP_VIEW_V}
+            if not ok and v["tries"] < REQ_CAP_VIEW_TRIES:
+                left += 1
+            continue
+        if v is not None and (v.get("ok") or v.get("tries", 0) >= REQ_CAP_VIEW_TRIES):
+            continue
+        if n >= REQ_CAP_VIEWS_PER_READ or RUN["aborted"] or not BRK.allow("requests") or not opt_fits(1):
+            left += 1
+            continue
+        n += 1
+        got = _request_view(fl, b, r["ts"])
+        if RUN["aborted"]:  # given up for a pause or a stop: not a try
+            left += 1
+            continue
+        # review: final only when the page is this request's own view (a trip read on it); an interstitial or any
+        # other page classify() lets through is a failed try, read again (REQ_CAP_VIEW_TRIES in all)
+        ok = SUB.is_view_page(got)
+        v = views[k] = {"reason": SUB.view_cap(got) if ok else None, "ok": ok, "tries": (v or {}).get("tries", 0) + 1,
+                        "v": REQ_CAP_VIEW_V}
+        if v["reason"]:
+            r["pu"] = dict(v["reason"])
+        elif not v["ok"] and v["tries"] < REQ_CAP_VIEW_TRIES:
+            left += 1
+    if listed or not rows:  # a page read without its ids forgets nothing
+        for k in [k for k in views if k.startswith(f"{b}|") and k not in listed]:
+            views.pop(k, None)
+    if n:
+        log.info("speed: %d denied request view page%s read, %d left to read", n, "" if n == 1 else "s", left)
+
+
+def _folder_month(num):
+    """The bid month ('YYYY-MM') of the watched folder whose BCID ends in num ('152' of '003.152'), '' when none."""
+    return next((m for m, u in (S.get("pot_urls") or {}).items()
+                 if re.fullmatch(r"\d{4}-\d{2}", str(m)) and str(bcid(u) or "").split(".")[-1] == num), "")
+
+
+def req_cap_rows():
+    """[(trip, day, emp, at)] of the denied 'picked up by' rows of the request lists on file (S['ot_req_rows']); at:
+    the request's Requested time (HST ISO, the year from the bid folder's month, else the year nearest now)."""
+    out = []
+    ci = S.get("close_in_bcid")
+    for b, rows in (S.get("ot_req_rows") or {}).items():
+        fm = "" if b == ci else _folder_month(str(b).split(".")[-1])
+        for r in rows or []:
+            c = SUB.row_cap(r)
+            at = SUB.req_time(r.get("date"), r.get("time"), fm or None, datetime.now(HST)) if c else None
+            if at:
+                out.append((c["trip"], c["day"], c["emp"], at))
+    return out
+
+
+def req_cap_captures():
+    """The same from the admin's own captured request pages (the first read of each list, the latest odd page and a
+    view page, under his captures folder; never a pilot's, whose captures are off or masked), when they parse."""
+    out = []
+    if not CAP.admin:
+        return out
+    try:
+        names = sorted(os.listdir(CAPTURE_DIR))
+    except OSError:
+        return out
+    for f in names:
+        m = re.fullmatch(r"otrequests?_(view_)?(closein_)?(\d+)(?:_latest)?\.html", f)
+        path = os.path.join(CAPTURE_DIR, f)
+        try:
+            if not m or os.path.islink(path) or os.path.getsize(path) > REQ_CAP_FILE_MAX:
+                continue
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                html = fh.read()
+            ref = datetime.fromtimestamp(os.path.getmtime(path), HST)
+        except OSError:
+            continue
+        text = visible_text(html)
+        fm = "" if m.group(2) else _folder_month(m.group(3))
+        if m.group(1):  # a view page: one request
+            c, ra = SUB.view_cap(SUB.parse_request_view(text)), SUB.requested_at(text)
+            at = SUB.req_time(ra[0], ra[1], fm or None, ref) if c and ra and re.search(r"\bdenied\b", text, re.I) else None
+            if at:
+                out.append((c["trip"], c["day"], c["emp"], at))
+            continue
+        for r in SUB.parse_request_rows(text, html):
+            c = SUB.row_cap(r)
+            at = SUB.req_time(r.get("date"), r.get("time"), fm or None, ref) if c else None
+            if at:
+                out.append((c["trip"], c["day"], c["emp"], at))
+    return out
+
+
+def _day_key(s):
+    m = re.match(r"\s*(\d{1,2})\s?([A-Za-z]{3})", str(s or ""))
+    return f"{int(m.group(1)):02d}{m.group(2).upper()}" if m else ""
+
+
+def req_cap_apply(caps):
+    """Put each (trip, day, emp, at) on its pickup: the find of that pairing whose first day is that day and whose
+    open-seat pickers (store.pickers_of) include that employee number (store.set_req_cap; else it is unmatched and
+    nothing changes). Returns (the pickups whose speed is the cap now, the caps that matched no pickup)."""
+    capped, unmatched = set(), 0
+    for trip, day, emp, at in sorted(set(caps)):
+        got = None
+        for k, row, _pk in DB.pickups_of(trip):
+            if day not in (_day_key(row.get("start") or (row.get("dates") or "").split("-")[0]), _day_key(k.split("|")[-1])):
+                continue
+            got = DB.set_req_cap(k, at, emp)
+            if got:
+                if got == "capped":
+                    capped.add(k)
+                break
+        if not got:
+            unmatched += 1
+    return capped, unmatched
+
+
+def req_cap_pass():
+    """After a good read of the request lists: the cap for every denied 'picked up by' row on file. The first pass
+    of 1.7.10 (DB 'req_cap_v') also reads the admin's captured request pages and says the counts; a later pass says
+    them only when a pickup's speed changed or the unmatched count did (the denials' view pages are read a few a
+    read, so history arrives over several passes). Idempotent (a cap already on a pickup changes nothing)."""
+    first = DB.get("req_cap_v") != REQ_CAP_V
+    caps = req_cap_rows() + (req_cap_captures() if first else [])
+    capped, unmatched = req_cap_apply(caps)
+    whose = "Ryan's" if CAP.admin else "this pilot's own"
+    new = capped  # review: set_req_cap says 'capped' only when it changed a speed ('same' writes and rescores nothing)
+    if first:
+        DB.put("req_cap_v", REQ_CAP_V)
+    if first or new or unmatched != S.get("req_cap_unmatched", 0):  # later: as the view pages are read (history)
+        log.info("speed: %d pickup%s capped at %s request time, %d unmatched", len(capped), "" if len(capped) == 1 else "s",
+                 whose, unmatched)
+    S["req_cap_unmatched"] = unmatched
+    if new:
+        publish_pickers()
+        publish_finds()
+        pilotdb_nudge()  # the picker's pickup history in the pilot database
 
 
 def _trade_requests_check(fl, folders, trows_of, pushed, now):
@@ -6890,7 +7230,7 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
                     cap_write(f"tb_myrequests_{n}{'_latest' if odd else ''}.html", html,
                               extra=[str(r.get("emp") or "") for r in rows])
                     S.setdefault("tbreq_captured", {})[n] = True
-                    log.info("trade requests %s: %d rows, page captured; text: %s", n, len(rows), text[:600])
+                    log.info("trade requests %s: %d rows, page captured; text: %s", n, len(rows), page_log(text[:600]))
                 except Exception:
                     pass
             for r in SUB.request_news(pushed, rows):
@@ -6906,7 +7246,7 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
                 except Exception as e:
                     log.info("trade pay not priced: %s", e)
                     ev["pay"] = None
-                log.info("trade %s %s", r["status"], r["detail"][:120])
+                log.info("trade %s %s", r["status"], page_log(r["detail"][:120]))
                 pub("event/request_decided", ev, retain=False)
                 note_decided(r, now)  # FW-0064
             for r in rows:
@@ -7135,11 +7475,11 @@ def tradeboard_check(fl, full=False):
             if not TB.has_rows(html):
                 if not S.get("tb_raw_logged2"):
                     S["tb_raw_logged2"] = True
-                    flat = re.sub(r"\s+", " ", html)
-                    calls = [m.start() for m in re.finditer(r"\bA\s*\(", flat)]
-                    i = calls[1] if len(calls) > 1 else (calls[0] if calls else 0)
-                    log.info("tradeboard %s: no trip rows; %d A( calls; data: %s", n, len(calls),
-                             page_log(flat[max(0, i - 300):i + 5000]))
+                    # 1.7.10 review: counts only. The rows' data names every poster ('FIRST','LAST', e-mail, phone,
+                    # employee number): it is in the capture below (never the log)
+                    calls = len(re.findall(r"\bA\s*\(", html))
+                    log.info("tradeboard %s: no trip rows; %d A( calls; %d chars (the page is in the capture)", n,
+                             calls, len(html))
                     try:
                         cap_write(f"tradeboard_{n}.html", fh + "\n<!--OTHER-->\n" + html,
                                   extra=[str(r.get("poster") or "") for r in picks.values()])
@@ -7148,8 +7488,9 @@ def tradeboard_check(fl, full=False):
                 continue
             if not TB_PROBE["done"]:
                 TB_PROBE["done"] = True
-                log.info("tradeboard probe %s url=%s pickups=%s text=%s", n, url.split("?")[0],
-                         page_log(str(list(picks))), page_log(visible_text(html)[:1500]))
+                # 1.7.10 review: counts only (the page text names the posters, with e-mail addresses and phones)
+                log.info("tradeboard probe %s url=%s pickups=%d text=%d chars", n, url.split("?")[0], len(picks),
+                         len(visible_text(html)))
             old = base.get(key)
             if old is None:
                 log.info("tradeboard baseline %s: %d pickup posts (no alert)", key, len(picks))
@@ -7159,7 +7500,8 @@ def tradeboard_check(fl, full=False):
                     if detail(ev):  # 1.7.1 review: its details kept, so the post costs one detail GET, not two
                         tb_cache[k] = {f: v for f, v in ev.items() if f not in ("month", "seen")}
                         fresh.add(k)
-                    log.info("NEW tradeboard pickup %s", ev)
+                    # 1.7.10 review: the pairing and its dates; never the poster or his comments
+                    log.info("NEW tradeboard pickup %s %s", ev.get("pairing") or "?", ev.get("dates") or "")
                     pub("event/new_pairing", ev, retain=False)
                     pub("last_tradeboard", ev)
                     # 1.7.1 review: in the baseline at once, so a read that ends later (Pause) never pushes it again
@@ -7377,7 +7719,8 @@ def name_directory():
     except OSError:
         awards = []
     paths = [os.path.join(UPLOADS_SHARED, "seniority.json")] + [os.path.join(UPLOADS, f) for f in awards]
-    sig = tuple((p, os.path.getmtime(p)) for p in paths if os.path.exists(p))
+    db_rows, db_sig = pilotdb_name_rows()
+    sig = tuple((p, os.path.getmtime(p)) for p in paths if os.path.exists(p)) + (db_sig,)
     if _NAME_DIR["sig"] == sig:
         return _NAME_DIR["rows"]
     rows = {}
@@ -7388,15 +7731,21 @@ def name_directory():
             continue
         m = AWARD_SEAT_RE.search("\n".join(lines[:40]))
         seat = m.group(1).upper() if m else ""
+        # 1.7.10 (Ryan, Nov 15): the award's seniority lines ('Seniority 00072 Category HNL-332-FO DOE 10001'): the
+        # last name and the seat of every awarded pilot (no first name on them)
+        for r in SEN.award_sen_parse("\n".join(lines))["rows"]:
+            if r["emp"] not in rows:
+                rows[r["emp"]] = {"emp": r["emp"], "last": r["last"], "first": "", "seat": r["seat"][:2]}
         for i, ln in enumerate(lines):
             g = SEN.AWARD_PILOT_RE.match(ln)
             if not g:
                 continue
             emp = g["emp"].lstrip("0")
             name = SEN._award_name(g["rest"]) or (SEN._award_name(lines[i + 1]) if i + 1 < len(lines) else "")
-            if emp and name and emp not in rows:
+            if emp and name and (emp not in rows or not rows[emp]["first"]):
                 last, _, first = (x.strip() for x in name.partition(","))
-                rows[emp] = {"emp": emp, "last": last.title(), "first": first.title(), "seat": seat}
+                rows[emp] = {"emp": emp, "last": last.title(), "first": first.title(),
+                             "seat": seat or (rows.get(emp) or {}).get("seat", "")}
     for k, rec in ((seniority_data() or {}).get("pilots") or {}).items():
         for r in [rec] + list(rec.get("also") or []):
             name = str(r.get("name") or "")
@@ -7406,9 +7755,49 @@ def name_directory():
             if k and last:  # the union's list has no seat: the award's, when it names the pilot
                 rows[k] = {"emp": k, "last": last, "first": first,
                            "seat": str(r.get("seat") or (rows.get(k) or {}).get("seat") or "").upper()[:2]}
+    # 1.7.10 (Ryan, Nov 15: the lookup searches the pilot database, all pilots): every live record's name and seat
+    # (the admin's own database; a portal pilot's own pilotdb file, unless Ryan turned his share off). A record's
+    # 'Last, First' wins over a file's; a record with a last name only fills in a number no file names
+    for k, last, first, seat in db_rows:
+        old = rows.get(k)
+        if old and old["first"] and not first:
+            continue
+        rows[k] = {"emp": k, "last": last, "first": first, "seat": (seat or (old or {}).get("seat") or "").upper()[:2]}
     out = [dict(r, name=f"{r['last']}, {r['first']}".strip(" ,")) for r in rows.values()]
     _NAME_DIR.update(sig=sig, rows=out)
     return out
+
+
+def pilotdb_name_rows():
+    """1.7.10: ([(emp, last, first, seat)], signature) of the pilot database for the name lookup. The admin reads his
+    database; a portal pilot his own pilotdb file (pdbshare.View, every live record; none while Ryan has his share
+    off: no file, no rows). A number two records share is left out (the lookup runs by number and could not
+    tell them apart). Never phones, emails or notes; ([], '') when there is nothing to read."""
+    out = []
+    try:
+        if ROLES.role(INSTANCE) == ROLES.ADMIN:
+            db = PDB.get("db")
+            if db is None:
+                return [], ""
+            sig = f"db:{db.rev}"
+            if _NAME_DIR.get("db_sig") == sig:
+                return _NAME_DIR["db_rows"], sig
+            for r in db.name_rows():
+                out.append(r)
+        else:
+            with PDBV["lock"]:
+                v = pilotdb_view()
+                if v.state != "on":
+                    return [], ""
+                sig = f"file:{v.rev}"
+                if _NAME_DIR.get("db_sig") == sig:
+                    return _NAME_DIR["db_rows"], sig
+                out = list(v.names)
+    except Exception as e:  # noqa: BLE001 (type only: a message could carry a name)
+        log.info("pilot lookup: pilot database not searched: %s", type(e).__name__)
+        return [], ""
+    _NAME_DIR.update(db_sig=sig, db_rows=out)
+    return out, sig
 
 
 def name_lookup(q):
@@ -7432,13 +7821,29 @@ def name_lookup(q):
         hits = [r for r in hits if not r["first"] or _nkey(r["first"]).startswith(fk)]
     hits.sort(key=lambda r: (r["name"], r["emp"]))
     if not hits:
-        return [], (f"No pilot named '{q}' on the award or seniority list on file. Type the whole last name (or "
-                    f"{LOOKUP_PREFIX_MIN} letters of it), or the employee number."
+        return [], (f"No pilot named '{q}' in the pilot database or on the award or seniority list on file. Type the "
+                    f"whole last name (or {LOOKUP_PREFIX_MIN} letters of it), or the employee number."
                     if rows else "No award or seniority list is on file to look names up in. Type the employee number.")
     if len(hits) > LOOKUP_MAX:
         return [], (f"More than {LOOKUP_MAX} pilots match '{q}'. Type more of the last name, or Last, First, or the "
                     "employee number.")
     return hits, ""
+
+
+def pick_seats(hits):
+    """1.7.10 review: what a pick-list row shows after the name: the seat, and for rows that would read the same
+    (one name and one seat: two award-only namesakes) the Sen # from the pilot's own pilotdb file ('FO Sen 72'), so
+    he can tell them apart. Never an employee number."""
+    same = {}
+    for h in hits:
+        same[(h["name"], h["seat"])] = same.get((h["name"], h["seat"]), 0) + 1
+    sens = {}
+    if any(n > 1 for n in same.values()):
+        with contextlib.suppress(Exception):
+            with PDBV["lock"]:
+                sens = dict(pilotdb_view().sens)
+    return [f"{h['seat']} Sen {sens[h['emp']]}".strip() if same[(h["name"], h["seat"])] > 1 and h["emp"] in sens
+            else h["seat"] for h in hits]
 
 
 def pick_id(emp):
@@ -7516,8 +7921,8 @@ def pilot_cmd(payload):
                 pub_pilot({"emp": "", "name": q, "at": now_iso(),
                            "status": why or (f"1 pilot matches '{q}': tap the name to read the month" if len(hits) == 1
                                              else f"{len(hits)} pilots match '{q}', pick one"),
-                           "matches": [{"pick": k, "name": v["name"], "pos": h["seat"]}
-                                       for (k, v), h in zip(picks.items(), hits)],
+                           "matches": [{"pick": k, "name": v["name"], "pos": pos}
+                                       for (k, v), pos in zip(picks.items(), pick_seats(hits))],
                            "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
                 return
         q = ""
@@ -7526,6 +7931,10 @@ def pilot_cmd(payload):
             emp = q
         else:
             hits = DB.find_crew(q)
+            # 1.7.10 (Ryan, Nov 15): the pilot database too (every pilot: the contact list and the award seniority),
+            # by the whole last name or 'Last, First'; the FLICA lookup then runs as before
+            have = {h["emp"] for h in hits}
+            hits = hits + [h for h in pilotdb_name_hits(q) if h["emp"] not in have]
             ct = None if hits else contact_emp(q)  # FW-0066: a name only the contact list has
             if ct:
                 emp, d["name"] = ct
@@ -7536,7 +7945,7 @@ def pilot_cmd(payload):
                                        "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
                 return
             else:
-                pub_pilot({"emp": "", "name": q, "status": f"no pilot named '{q}' in the {DB.crew_count()} crew the Watcher has seen; enter the employee number",
+                pub_pilot({"emp": "", "name": q, "status": f"no pilot named '{q}' in the pilot database or the {DB.crew_count()} crew the Watcher has seen; enter the employee number",
                                        "matches": [], "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
                 return
     if not emp:
@@ -7549,7 +7958,7 @@ def pilot_cmd(payload):
         pub_pilot({**cached, "status": "cached"})
         S.pop("pilot_req", None)
         save_state(S)
-        log.info("pilot %s: schedule served from cache", emp)
+        log.info("pilot lookup: schedule served from cache")
         return
     m = S.get("machine") or ""
     if ROLES.role(INSTANCE) == ROLES.PILOT and (m in LOOKUP_WAIT_STATES or m.startswith("stopped")):
@@ -7557,11 +7966,11 @@ def pilot_cmd(payload):
         pub_pilot({"emp": emp, "name": d.get("name") or "", "month": "", "days": [], "items": [], "totals": {},
                    "updated": "", "fetched": "", "at": now_iso(),
                    "status": f"waiting: your Watcher is {m.replace('_', ' ')}; this lookup runs on its next FLICA check"})
-        log.info("pilot %s: schedule requested (waits: %s)", emp, m)
+        log.info("pilot lookup: schedule requested (waits: %s)", m)
         return
     pub_pilot({"emp": emp, "name": d.get("name") or "", "status": "loading", "month": "", "days": [], "items": [],
                            "totals": {}, "updated": "", "fetched": "", "at": now_iso()})
-    log.info("pilot %s: schedule requested", emp)
+    log.info("pilot lookup: schedule requested")
     if ROLES.role(INSTANCE) == ROLES.ADMIN:  # 1.6.2: a pilot's lookup waits for his next check (no extra FLICA check)
         WAKE.set()
 
@@ -7586,7 +7995,8 @@ def pilot_check(fl):
         try:
             html = fl.fetch(f"{BASE}/full/cmschedules.cgi?Prompt=1&SchBrowser=1")
             cap_write("cmschedules_prompt.html", html or "")
-            log.info("schedule lookup prompt page saved (%d chars): %s", len(html or ""), visible_text(html)[:200])
+            log.info("schedule lookup prompt page saved (%d chars): %s", len(html or ""),
+                     page_log(visible_text(html)[:200]))
             S["cm_prompt_captured"] = True
             save_state(S)
             time.sleep(random.uniform(1.5, 3.5))  # 1.6.2: the FLICA pacing rule (was 1.0 to 2.0 s)
@@ -7607,14 +8017,13 @@ def pilot_check(fl):
                 break
             # 1.7.3 review: page text through page_log (a pilot's only while his captures are on, masked): visible_text
             # lowercases the page and the name masks need a capital letter
-            log.info("pilot %s: %s gave %s: %s", emp, url.split("?")[1], classify(html), page_log(visible_text(html)[:200]))
+            log.info("pilot lookup: %s gave %s: %s", CAPS.mask_emp(url.split("?")[1]), classify(html),
+                     page_log(visible_text(html)[:200]))
         if not sched:
-            if classify(html) == "ok":  # 1.7.9 review: FLICA answered for this pilot (no readable month): it ran
-                PILOT_RAN["emp"] = PDBM.emp_of(emp)
             pilotver_capture_rebuild(emp, req.get("name") or "")  # FW-0069: the crew index's view, when it has one
             pub_pilot({"emp": emp, "name": req.get("name") or "", "status": pilot_unreadable_status(html),
                                    "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": now_iso()})
-            log.info("pilot %s: schedule page not readable (%s)", emp, classify(html))
+            log.info("pilot lookup: schedule page not readable (%s)", classify(html))
             S.pop("pilot_req", None)
             save_state(S)
             return True
@@ -7651,10 +8060,10 @@ def pilot_check(fl):
         captured = True  # FW-0069: a readable month is the version source (no rebuild below if a later step fails)
         pilotver_capture_lookup(emp, rec)  # a new version when the pairings changed
         pub_pilot({**rec, "status": "ok"})
-        log.info("pilot %s (%s): %s read, %d items, %d pairing pages", emp, rec["name"], sched["month"], len(sched["items"]), n)
+        log.info("pilot lookup: %s read, %d items, %d pairing pages", sched["month"], len(sched["items"]), n)
         lookup_prev_month(fl, emp, cur)  # FW-0057: trips run into this month from the previous one (the next run reads them)
     except Exception as e:
-        log.info("pilot %s: schedule read failed: %s", emp, e)
+        log.info("pilot lookup: schedule read failed: %s", e)
         if not captured:
             pilotver_capture_rebuild(emp, req.get("name") or "")  # FW-0069
         pub_pilot({"emp": emp, "name": req.get("name") or "", "status": f"error: {e}", "month": "", "days": [],
@@ -7688,7 +8097,7 @@ def lookup_prev_month(fl, emp, cur):
         return 0
     url = IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=f"{prev.month:02d}{prev.year % 100:02d}")
     if not (SUB.safe_get(url) and SM.safe_get(url)):
-        log.info("pilot %s: previous month url refused by safe_get", emp)
+        log.info("pilot lookup: previous month url refused by safe_get")
         return 0
     time.sleep(random.uniform(1.5, 3.5))
     try:
@@ -7696,16 +8105,16 @@ def lookup_prev_month(fl, emp, cur):
         sched = IF.parse_cm_month(html) if classify(html) == "ok" and IF.schedule_ok(html) else None
     except Exception as e:
         html, sched = "", None
-        log.info("pilot %s: previous month read failed: %s", emp, e)
+        log.info("pilot lookup: previous month read failed: %s", e)
     if not sched:
         DB.put(key, {"tries": st.get("tries", 0) + 1, "at": now_iso()})
-        log.info("pilot %s: previous month %s not readable (%s)", emp, pm, classify(html or "") if html else "no page")
+        log.info("pilot lookup: previous month %s not readable (%s)", pm, classify(html or "") if html else "no page")
         return 0
     floor = prev.isoformat()
     into = [it for it in sched["items"] if (it.get("end") or it.get("start") or "") >= floor]
     n = note_sched_trips(into, "lookup")
     DB.put(key, {"done": True, "at": now_iso(), "trips": len(into)})
-    log.info("pilot %s: previous month %s read, %d trips run into this month (%d new for the crew index)", emp, pm,
+    log.info("pilot lookup: previous month %s read, %d trips run into this month (%d new for the crew index)", pm,
              len(into), n)
     return n
 
@@ -7748,7 +8157,7 @@ def pilotver_register(emp, name=""):
     try:
         PV.register(DB, emp, name, now_iso())
     except Exception as e:
-        log.info("pilot %s: versions registry skipped: %s", emp, e)
+        log.info("pilot lookup: versions registry skipped: %s", e)
 
 
 def pilotver_capture_lookup(emp, rec):
@@ -7759,10 +8168,10 @@ def pilotver_capture_lookup(emp, rec):
         first, _, end = CI.grid_range(CARD_PAIRINGS, rec["month"])
         made = PV.capture_lookup(DB, emp, rec.get("name") or "", rec, now_iso(), (first, end), pilot_award)
         if made:
-            log.info("pilot %s: schedule version %s (%s, FLICA schedule)", emp, ", ".join(made), rec["month"])
+            log.info("pilot lookup: schedule version %s (%s, FLICA schedule)", ", ".join(made), rec["month"])
         return made
     except Exception as e:
-        log.info("pilot %s: schedule version skipped: %s", emp, e)
+        log.info("pilot lookup: schedule version skipped: %s", e)
         return []
 
 
@@ -7778,10 +8187,10 @@ def pilotver_capture_rebuild(emp, name="", month=None, insts=None, rows=None):
         trips = CI.pilot_trips(insts, DB.crew_by_emp(emp), month, first, rows, pkg_details_for, end)
         made = PV.capture_rebuild(DB, emp, name, month, trips, rows, now_iso(), (first, end), start, end, pilot_award)
         if made:
-            log.info("pilot %s: schedule version %s (%s, rebuilt from crew lists)", emp, ", ".join(made), month)
+            log.info("pilot lookup: schedule version %s (%s, rebuilt from crew lists)", ", ".join(made), month)
         return made
     except Exception as e:
-        log.info("pilot %s: rebuilt schedule version skipped: %s", emp, e)
+        log.info("pilot lookup: rebuilt schedule version skipped: %s", e)
         return []
 
 
@@ -7830,7 +8239,7 @@ def pilotver_awards(month, text, det):
                 continue  # no date header above his line, or (1.7.2) his line cut off: the next pilot's may read
             if aw and PV.set_award(DB, emp, month, aw, now_iso(), (first, end), first):
                 n += 1
-                log.info("pilot %s: awarded line is schedule version %s.001", emp, int(month[5:7]))
+                log.info("pilot lookup: awarded line is schedule version %s.001", int(month[5:7]))
                 if emp == shown_emp():
                     pub_pilot(dict(PILOT_SHOWN["p"]))
         return n
@@ -7882,7 +8291,7 @@ def pilotver_price(emp, ent, recon=None):
                         it["split"] = got["split"]
                 rec["pay"] = {k: line.get(k) for k in PILOTVER_PAY if line.get(k) is not None}
             except Exception as e:  # noqa: BLE001
-                log.info("pilot %s: version pay skipped: %s", emp, e)
+                log.info("pilot lookup: version pay skipped: %s", e)
 
 
 # the pay summary a version record carries (the totals line's groups, pilot card _vold)
@@ -8083,10 +8492,10 @@ def crew_overlaps(insts, rows):
         flags, rr, new, kept, cleared = CI.overlap_update(CI.overlaps(insts, live), f0, r0,
                                                           local_now().isoformat(timespec="seconds"))
         for i in new:
-            log.info("crew index: pilot %s on two overlapping trips (%s), both queued for a re-read", flags[i]["emp"],
+            log.info("crew index: a pilot on two overlapping trips (%s), both queued for a re-read",
                      " and ".join(flags[i]["keys"]))
         for i in kept:
-            log.info("crew index: pilot %s still on %s after the re-read, newer read kept (flagged)", flags[i]["emp"],
+            log.info("crew index: a pilot still on %s after the re-read, newer read kept (flagged)",
                      " and ".join(flags[i]["keys"]))
         for i in cleared:
             log.info("crew index: overlap %s cleared", i)
@@ -8788,6 +9197,8 @@ def pilot_upload_chunk(payload):
         if not why and int(d["part"]) == 1 and len(_pup_times()) >= ROLES.PILOT_UPLOAD_LIMITS["per_day"]:
             why = (f"{ROLES.PILOT_UPLOAD_LIMITS['per_day']} uploads in the last 24 h already: the next one at "
                    f"{hst_hm(min(_pup_times()) + 86400)} HST")
+        if not why and d["kind"] == PP.CONTACTS and int(d["part"]) == 1:
+            why = pilot_contacts_refusal()  # 1.7.10 (revision 5): only while shared, one list waiting at a time
         if why:
             if (PDF_ASM.progress() or ("",))[0] == uid:
                 PDF_ASM.drop()
@@ -8825,6 +9236,8 @@ def pilot_upload_finish(meta, raw):
     uid, kind, month = meta["uid"], meta["kind"], meta["month"]
     tag = f"pilot upload {uid[:6]} ({kind} {month}, {len(raw) // 1024} KB)"
     work = None
+    if kind == PP.CONTACTS:
+        return pilot_contacts_finish(uid, raw, tag)
     try:
         PP.pdf_shape(raw)
         text, work = PP.extract(raw, PILOT_UP_TMP)
@@ -8856,6 +9269,109 @@ def pilot_upload_finish(meta, raw):
         publish_uploads(force=True)
     except Exception as e:  # noqa: BLE001
         log.info("uploads list not published: %s", type(e).__name__)
+
+
+# ---- 1.7.10 (contract 1 revision 5; Ryan, Nov 16): a portal pilot's contacts list (upload/pdf kind contacts)
+# His Watcher checks the whole CSV (pdbshare.contacts_check: text, the export's header, the 1.4.8 parser) and hands it
+# to the admin's Watcher through his pilotdb inbox folder (pdbshare.contacts_put, 0600; the author is the folder's
+# name). It keeps nothing of the file: no copy in the uploads folder, no provenance record, no quarantine. The admin's
+# drain checks it again and merges it into the one database with this pilot as the author (adds and updates only);
+# its answer comes back through his pilotdb file and settles the upload's answer here (pilot_contacts_watch).
+# A line logged here has the upload's id prefix, sizes and counts only.
+def _pup_contacts():
+    """{uid: when it was handed over} of this pilot's contacts lists waiting for the admin's Watcher."""
+    w = _pup_read().get("contacts")
+    return {k: v for k, v in w.items() if isinstance(k, str) and isinstance(v, (int, float))} if isinstance(w, dict) else {}
+
+
+def _pup_contacts_set(uid, at=None):
+    with _PUP["lock"]:
+        d = _pup_read()
+        w = d.get("contacts") if isinstance(d.get("contacts"), dict) else {}
+        if at is None:
+            w.pop(uid, None)
+        else:
+            w[uid] = at
+            d["contacts_last"] = uid  # the one his card shows the answer of, after a reload too
+        d["contacts"] = w
+        try:
+            PT.write_private(PILOT_UP_FILE, json.dumps(d))
+        except OSError as e:
+            log.info("pilot upload answer not saved: %s", type(e).__name__)
+
+
+def pilot_contacts_offered():
+    """True while this portal pilot may upload a contacts list: the pilot database is shared with him (his file is
+    there and reads)."""
+    if not (is_pilot() and portal_on() and has("pilotdb")):
+        return False
+    with PDBV["lock"]:
+        v = pilotdb_view()
+        v.refresh()
+        return v.state == "on"
+
+
+def pilot_contacts_refusal():
+    """Why a contacts list is not taken now ('' when it is): not shared, or one of his still waits."""
+    if not pilot_contacts_offered():
+        return "Ryan has not shared the pilot database with you"
+    if len(_pup_contacts()) >= ROLES.PILOT_CONTACTS_LIMITS["pending"]:
+        return "a contacts list of yours is still waiting for the admin's Watcher (try again in a minute)"
+    return ""
+
+
+def pilot_contacts_finish(uid, raw, tag):
+    """A whole contacts list: checked here, then one file into the admin's inbox with the author INSTANCE. Nothing of
+    it stays on this side."""
+    why = pilot_contacts_refusal()
+    if not why:
+        try:
+            parsed = PS.contacts_check(raw, today=local_now().date())
+        except PS.ContactsRefused as e:
+            why = str(e).partition(": ")[2] or str(e)
+        except Exception as e:  # noqa: BLE001
+            why = f"the check failed ({type(e).__name__})"
+    if not why:
+        try:
+            PS.contacts_put(INSTANCE, uid, raw, PILOTDB_SHARE)
+        except OSError:
+            why = "Ryan has not shared the pilot database with you"
+    if why:
+        log.info("%s: refused: %s", tag, why)
+        pilot_upload_answer(uid, False, "error", f"Not sent: {why}.")
+        return
+    _pup_contacts_set(uid, time.time())
+    log.info("%s: checked (%d pilots read) and handed to the admin's Watcher", tag,
+             len(parsed["entries"]) + len(parsed.get("hal_only") or []))
+    pilot_upload_answer(uid, True, "sent", "Checked and sent to the admin's Watcher: it merges your contacts list into the "
+                                           "shared pilot database (adds and updates only). The answer shows here.")
+
+
+def pilot_contacts_watch(v, now=None):
+    """Once a spool poll (pilotdb_watch, under its lock): each waiting contacts list whose answer is in his pilotdb
+    file is settled on his uploads card (merged, or the admin's refusal: fixed phrases with counts only); one whose
+    share went off, or whose inbox file is gone with no answer for PILOTDB_LOST_S, is answered too. True when one was."""
+    wait = _pup_contacts()
+    if not wait:
+        return False
+    now = time.time() if now is None else now
+    ans = {a["rid"]: a for a in v.answers}
+    done = False
+    for uid, at in wait.items():
+        a = ans.get(uid)
+        if a:
+            pilot_upload_answer(uid, a["ok"], "merged" if a["ok"] else "error", f"{a['why']}.")
+            log.info("pilot upload %s (contacts): %s by the admin's Watcher", uid[:6], "merged" if a["ok"] else "refused")
+        elif v.state == "off":
+            pilot_upload_answer(uid, False, "error", "Not merged: Ryan has not shared the pilot database with you.")
+        elif now - at > PILOTDB_LOST_S and not PS.waiting(PS.inbox_dir(INSTANCE, PILOTDB_SHARE), uid):
+            pilot_upload_answer(uid, False, "error", "Not merged: no answer came from the admin's Watcher. Upload "
+                                                     "the contacts list again.")
+        else:
+            continue
+        _pup_contacts_set(uid)
+        done = True
+    return done
 
 
 def _pup_final(uid, kind, month, state):
@@ -8943,7 +9459,14 @@ def pilot_uploads_state():
     d = _pup_read()
     used = len(_pup_times())
     pr = PDF_ASM.progress()
-    attrs = {"friendly_name": "Pilot uploads", "months": months, "mine": mine,
+    # 1.7.10 (revision 5): the contacts list choice, only while the pilot database is shared with him
+    cl = ROLES.PILOT_CONTACTS_LIMITS
+    contacts = {"offered": pilot_contacts_offered(), "file_bytes": cl["file_bytes"], "waiting": bool(_pup_contacts())}
+    last = next((a for a in _pup_read().get("answers") or [] if isinstance(a, dict) and a.get("uid")
+                 and a.get("uid") == _pup_read().get("contacts_last")), None)
+    if last:  # his newest contacts list: sent, merged (counts only) or the refusal, in fixed words
+        contacts["last"] = {k: last.get(k) for k in ("ok", "state", "message", "at")}
+    attrs = {"friendly_name": "Pilot uploads", "months": months, "mine": mine, "contacts": contacts,
              "answers": [a for a in d.get("answers") or [] if isinstance(a, dict)][:PILOT_UP_ANSWERS],
              "busy": bool(pr), "receiving": {"uid": pr[0], "got": pr[1], "total": pr[2]} if pr else None,
              "limits": {"file_bytes": lim["file_bytes"], "per_day": lim["per_day"], "used_today": used,
@@ -9079,7 +9602,7 @@ def upload_gens_check():
                 versions_check(force_pub=True)
                 for emp in PV.registered(DB, month):  # 1.7.2 (review): a looked-up pilot's .001 came from it too
                     if PV.clear_award(DB, emp, month):
-                        log.info("pilot %s: the removed award is no longer schedule version %s.001", emp,
+                        log.info("pilot lookup: the removed award is no longer schedule version %s.001",
                                  int(month[5:7]))
                         if emp == shown_emp():
                             pub_pilot(dict(PILOT_SHOWN["p"]))
@@ -9697,6 +10220,20 @@ def contacts_data():
     if _CT_CACHE.get("path") != path or _CT_CACHE.get("mt") != mt:
         _CT_CACHE.update(path=path, mt=mt, data=CT.load(path))
     return _CT_CACHE.get("data")
+
+
+def pilotdb_name_hits(q):
+    """1.7.10: [{emp, name, pos}] of the admin's pilot database for a typed 'Last' or 'Last, First' (the whole last
+    name), [] when the database is not open or the text is not a name. Counts and names never reach the log."""
+    db = PDB.get("db")
+    q = str(q or "").replace("\u2019", "'").replace("\u2018", "'")
+    if db is None or not LOOKUP_NAME_RE.fullmatch(q):
+        return []
+    try:
+        return db.name_hits(q)
+    except Exception as e:  # noqa: BLE001
+        log.info("pilot lookup: pilot database not searched: %s", type(e).__name__)
+        return []
 
 
 def contact_emp(q):
@@ -10739,10 +11276,12 @@ def pickup_check(fl, full=False):
         if status == "filled":
             DB.set_pickup(k, {"status": "filled", "by": who, "ca": ca, "known": known, "pickers": pickers,
                               "at": now_iso()})
-            log.info("pickup %s: %s (CA %s)", k, who, ca or "?")
+            # 1.7.10 (Ryan, Nov 15): by seat, never a name or an employee number (the card shows who)
+            seats = ", ".join(pos for pos, _nm, _e in by_parts(who)) or "nobody named"
+            log.info("pickup %s: filled (%s; CA %s)", k, seats, "named" if ca else "?")
             secs = DB.score_pickup(k)  # 0.4.18: picker speed stats
             if secs is not None:
-                log.info("picker %s: %s in open time", who, secs)
+                log.info("picker of %s (%s): %s in open time", k, seats, secs)
                 pilotdb_nudge()  # 1.7.8: the picker's pickup history in the pilot database
             pend.pop(k, None)
             done = True
@@ -11153,7 +11692,7 @@ def portal_ids():
     ids += [ROLES.pref_entity(k, T) for k in ROLES.PREF_KEYS]
     ids.append(pilot_uploads_eid())  # 1.7.2 (FW-0066): synthesized from his upload records, never read from HA
     if has("pilotdb"):
-        ids.append(pilotdb_eid())  # 1.7.9 (revision 4): synthesized from his pilotdb file and the roster
+        ids.append(pilotdb_eid())  # 1.7.9 (revision 4): synthesized from his pilotdb file
     return list(dict.fromkeys(ids))
 
 
@@ -11796,7 +12335,7 @@ def portal_thread():
 
 # ---- 1.7.9 (contract 1 revision 4): a shared pilot's side of the pilot database (spec 11.3)
 # Only on a pilot whose portal is on, and only while Ryan shares the database with him (his file is there). His
-# Watcher never opens the database: it reads his own file and the roster (pdbshare.View), signs the file into his
+# Watcher never opens the database: it reads his own file (pdbshare.View; 1.7.10: every record), signs the file into his
 # portal's out/files/pilotdb.json unchanged, synthesizes sensor.<T>_pilotdb (state.json only, never an HA entity, so
 # nothing reaches HA's recorder or MQTT) and hands each checked pilotdb/note and pilotdb/edit to the admin's inbox.
 # The author is INSTANCE. Nothing here runs a pilot lookup or the gate, loads FLICA or wakes the loop; a log line names
@@ -11812,7 +12351,7 @@ def pilotdb_eid():
 
 def pilotdb_view():
     if PDBV["view"] is None:
-        PDBV["view"] = PS.View(INSTANCE, PILOTDB_SHARE, pilotdb_roster_dir())
+        PDBV["view"] = PS.View(INSTANCE, PILOTDB_SHARE)
     return PDBV["view"]
 
 
@@ -11848,39 +12387,23 @@ def _pdbv_answer(rid, why):
     _pdbv_save()
 
 
-PILOTDB_BRIEF_PER_H = 20  # 1.7.9 review: distinct pilots an hour whose brief (and contact) a shared pilot may be shown
-PILOT_RAN = {"emp": ""}  # the pilot whose Schedule Lookup FLICA answered without a readable month (pilot_check)
-
-
 def pilotdb_shown(v):
-    """The brief of the pilot his pilot card shows (pdbshare.View.shown), or None. 1.7.9 review (Ryan's Q1 and Q2:
-    never the roster, the anti-walk limits stay): only for a pilot whose lookup really ran, a FLICA Schedule Lookup
-    on one of his own paced checks or its 6 h cache (status ok or cached, or a page FLICA answered that had no
-    readable month), never while it is still 'loading' or 'waiting'; and for at most PILOTDB_BRIEF_PER_H distinct
-    employee numbers an hour (S pdb_briefs, kept across restarts). Past either limit there is no answer at all, not
-    even 'not in the database', so employee numbers typed one after the other learn nothing."""
-    p = PILOT_SHOWN["p"] or {}
+    """Which record of his file the pilot his pilot card shows is (pdbshare.View.shown): {emp, pid}, {emp, none: true}
+    or None. 1.7.10 (Ryan's decision 1 of Nov 15): his file holds every record, so the 1.7.9 limits on this answer
+    (only once that pilot's FLICA lookup really ran, at most 20 distinct pilots an hour) are gone: they existed only
+    to limit what a shared pilot saw of the database. Nothing here loads FLICA; the lookup's own budgets, pacing and
+    hourly cap are untouched (name_lookup, pilot_check)."""
     emp = PDBM.emp_of(shown_emp())
     if v.state != "on" or not emp:
         return None
-    if str(p.get("status") or "") not in ("ok", "cached") and PILOT_RAN.get("emp") != emp:
-        return None
-    now = time.time()
-    seen = {e: t for e, t in (S.get("pdb_briefs") or {}).items() if isinstance(t, (int, float)) and 0 <= now - t < 3600}
-    if emp not in seen:
-        if len(seen) >= PILOTDB_BRIEF_PER_H:
-            return None
-        seen[emp] = now
-        S["pdb_briefs"] = seen
-        save_state(S)
-    return v.shown(emp, str(p.get("name") or ""))
+    return v.shown(emp, str((PILOT_SHOWN["p"] or {}).get("name") or ""))
 
 
 def pilotdb_state():
     """{sensor.<T>_pilotdb: entry} for a portal pilot's state.json (synthesized, contract 1 revision 4): state on, off
     (Ryan has not shared the database with him) or waiting (his file does not read yet); rev, file_key (32 zeros),
-    count and updated of his file; shown, the brief of the pilot his pilot card shows with that one pilot's phones
-    and emails (B23), {emp, none: true} or null; answers (the file's and his Watcher's own refusals, fixed phrases,
+    count and updated of his file; shown, which record of his file the pilot his pilot card shows is ({emp, pid}),
+    {emp, none: true} or null; answers (the file's and his Watcher's own refusals, fixed phrases,
     the last 20); pending rids; limits."""
     with PDBV["lock"]:  # the export thread never reads a view the spool thread is halfway through reading again
         v, loc = pilotdb_view(), _pdbv_local()
@@ -11897,7 +12420,7 @@ def pilotdb_state():
 
 
 def pilotdb_watch(now=None):
-    """Once a spool poll on a shared-capable pilot: his file, the roster or the shown pilot changed: his view is read
+    """Once a spool poll on a shared-capable pilot: his file or the shown pilot changed: his view is read
     again, answered rids leave pending (all of them when the share went off, each with 'Ryan has not shared ...'), and
     the file is exported before the state that names its rev. True when something changed."""
     if not EXPORT["on"] or not has("pilotdb"):
@@ -11920,6 +12443,10 @@ def pilotdb_watch(now=None):
                 changed = True
         if changed:
             _pdbv_save()
+        try:  # 1.7.10 (revision 5): his contacts lists waiting for the admin's answer
+            pilot_contacts_watch(v, now)
+        except Exception as e:  # noqa: BLE001
+            portal_once("pilot_contacts:" + type(e).__name__, "pilot contacts answer skipped: %s", type(e).__name__)
         sig = json.dumps(pilotdb_state(), sort_keys=True)
         if sig == PDBV["sig"] and not changed:
             return False
@@ -11931,8 +12458,8 @@ def pilotdb_watch(now=None):
 
 def pilotdb_cmd(cmd, payload):
     """{T}/pilotdb/note or {T}/pilotdb/edit on a portal pilot (the spool republished it after its shape check; any
-    MQTT client could publish here, so every check runs again): pdbshare.pilot_check (shape, shared, the pid is in his
-    file or is the shown pilot's, the op rules, the pending limit), then one file into the admin's inbox with the
+    MQTT client could publish here, so every check runs again): pdbshare.pilot_check (shape, shared, the pid is a record
+    of his file, the op rules, the pending limit), then one file into the admin's inbox with the
     author INSTANCE (never a payload key). A refusal is answered on his sensor with a fixed phrase. Returns
     (queued, why). No lookup, no gate and no FLICA page is behind it."""
     if not portal_on() or not has("pilotdb") or cmd not in ("note", "edit"):
@@ -11940,8 +12467,7 @@ def pilotdb_cmd(cmd, payload):
     with PDBV["lock"]:
         v, loc = pilotdb_view(), _pdbv_local()
         v.refresh()
-        shown = pilotdb_shown(v) or {}
-        inner, why = PS.pilot_check(v, shown.get("pid"), cmd, payload, len(loc["pending"]))
+        inner, why = PS.pilot_check(v, None, cmd, payload, len(loc["pending"]))
         rid = inner.get("rid") if isinstance(inner, dict) else None
         op = inner.get("op") if isinstance(inner, dict) else None
         op = op if op in ROLES.PILOTDB_NOTE_OPS + ROLES.PILOTDB_EDIT_OPS else "?"
@@ -12043,7 +12569,7 @@ def spool_thread():
         except Exception as e:  # noqa: BLE001
             portal_once("spool", "portal spool skipped: %s", type(e).__name__)
         try:
-            pilotdb_watch()  # 1.7.9 (revision 4): his pilotdb file, the roster and the shown pilot
+            pilotdb_watch()  # 1.7.9 (revision 4): his pilotdb file and the shown pilot
         except Exception as e:  # noqa: BLE001
             portal_once("pilotdb_watch", "pilot db: watch skipped: %s", type(e).__name__)
         time.sleep(SPOOL_POLL_S)

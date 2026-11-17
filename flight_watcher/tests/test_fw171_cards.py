@@ -368,8 +368,8 @@ def test_pilot_search_card_asks_once_per_press_through_its_form():
                   help: r.querySelector('.hint').checkVisibility() ? r.querySelector('.hint').textContent : ''}; })()""")
         assert attrs == {"form": True, "hint": "search", "ac": "off", "font": "16px", "type": "submit",
                          "ph": "Last name or employee #", "label": "Look up a pilot's month (asks FLICA)",
-                         "help": "An employee number finds any pilot; a whole last name (or Last, First) finds pilots on the award or "
-                                 "seniority list on file."}
+                         "help": "An employee number finds any pilot; a whole last name (or Last, First) finds pilots in the pilot "
+                                 "database or on the award or seniority list on file."}
         asks = "window.asks.length"
         inp.fill("  ")
         go.click()

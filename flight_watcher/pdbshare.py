@@ -1,27 +1,38 @@
 """Sharing the pilot database with a portal pilot (1.7.9, contract 1 revision 4): the files between the two Watchers.
 
 Ryan's Watcher (the admin, the one writer of /data/pilotdb.sqlite) and a shared pilot's Watcher never talk over MQTT
-about the database. They pass plain files under /share/flight_watcher/pilotdb (folder 0700, files 0600, root), and
-one under the add-on's own /data:
+about the database. They pass plain files under /share/flight_watcher/pilotdb (folder 0700, files 0600, root):
 
-  roster.json            the admin writes it while any share is on: every live record's brief by employee number, with
-                         its phones and emails (B23). A pilot's Watcher reads it for the one pilot his pilot card shows
-                         and for nothing else. Never exported, never in a sensor, never logged. 1.7.9 review: it lives
-                         in the add-on's own /data/pilotdb_roster (roster_dir; both Watchers run in the one container),
-                         never under /share, where other add-ons and their backups could read every phone and email.
-  portal/<pilot>.json    the admin writes it while that pilot's share is on (pilotdb.export_for: a whitelist), and
-                         deletes it when the share goes off. The pilot's Watcher signs it into his portal's
-                         out/files/pilotdb.json unchanged.
+  portal/<pilot>.json    the admin writes it while that pilot's share is on (pilotdb.export_for: a whitelist) and
+                         deletes it when Ryan turns his share off. 1.7.10 (Ryan's decision 1 of Nov 15, "shared with
+                         James 100%"): every live record with every field, the notes, the whole log, the pickup
+                         history and the AI note. The pilot's Watcher signs it into his portal's out/files/pilotdb.json
+                         unchanged, and reads it itself for the record of the pilot his pilot card shows and for the
+                         name lookup's pick list.
   inbox/<pilot>/         the pilot's Watcher drops each checked command here (one file, O_EXCL, 0600); the admin's
                          drain applies it with the author taken from the folder's name and deletes the file.
   ai/stats.json, ai/in/  the AI note hand-off with HOM's consultant models (roles.PILOTDB_AI; anonymous statistics out,
                          notes in). Only while Ryan's AI switch is on.
 
+1.7.10 (contract 1 revision 5; Ryan, Nov 16): a portal pilot's contacts list (the CSV export, upload/pdf kind
+contacts) travels through the same inbox folder: his Watcher checks the whole file (contacts_check) and drops it as one
+inbox file (contacts_put: cmd contacts, its size, sha256 and base64, 0600); the admin's drain checks it again with the
+same function and merges it with the author taken from the folder's name (pilotdb.pilot_contacts: adds and updates
+only). Nothing of the file is kept after the merge, and no line logged holds a cell of it.
+
+1.7.10: roster.json (1.7.9: every pilot's brief for the one pilot a shared pilot looked up, in the add-on's own
+/data/pilotdb_roster) is gone: the file holds every record now. A roster an older version left is removed
+(write_files, clear_files).
+
 Nothing here loads FLICA, publishes on MQTT or logs a name, a number or a text. Pure file code, so both sides and the
 tests use the same functions.
 """
+import base64
+import binascii
 import contextlib
+import csv
 import hashlib
+import io
 import json
 import os
 import re
@@ -31,6 +42,7 @@ import stat
 import time
 from datetime import datetime, timezone
 
+import contacts as CT
 import pilotdb as PDBM
 import portal as PT
 import roles as ROLES
@@ -40,17 +52,95 @@ ROSTER = "roster.json"
 NAME_RE = PT.INBOX_NAME_RE
 INBOX_MAX_BYTES = PT.INBOX_MAX_BYTES
 DRAIN_PER_PASS = 50
-ROSTER_CAP = 8 * 1024 * 1024
 O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _DIR = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | O_NOFOLLOW
 NOTE_KEYS = ("op", "pid", "entry", "base", "text", "rid")
 EDIT_KEYS = ("op", "pid", "field", "value", "rev", "why", "rid")
 NOT_SHARED = "Not saved: Ryan has not shared the pilot database with you"
-LOOK_UP = "Not saved: look the pilot up first"
+NOT_IN_DB = "Not saved: that pilot is not in Ryan's pilot database"
 OWN_ONLY = "Not saved: only your own notes can be taken back"
 UNREADABLE = "Not saved: it could not be read, send it again"
 TOO_OLD = "Not saved: too old, send it again"
 BUSY = "Busy: try again in a minute"
+# 1.7.10 (revision 5): a pilot's contacts list. Fixed phrases (roles.PILOTDB_ANSWERS), never a cell of the file
+CONTACTS_KEYS = ("rid", "size", "sha", "data")
+CONTACTS_BAD = "Not merged: that file is not the contacts list (CSV) export"
+CONTACTS_EMPTY = "Not merged: no pilot was read from that contacts list"
+CONTACTS_BIG = "Not merged: a contacts list is at most {n} KB"
+CONTACTS_ROWS = "Not merged: a contacts list is at most {n} rows"
+CONTACTS_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # no control character but tab, LF and CR
+
+
+class ContactsRefused(ValueError):
+    """A contacts list refused; str() is one of the fixed phrases above."""
+
+
+def contacts_text(raw):
+    """The text of a contacts list, decoded as the 1.4.8 parser decodes Ryan's own (contacts.csv_rows): UTF-8 (a BOM
+    allowed), else Windows-1252 (strict: its five undefined bytes are refused). ContactsRefused otherwise."""
+    for enc in ("utf-8-sig", "cp1252"):
+        try:
+            return bytes(raw).decode(enc)
+        except UnicodeDecodeError:
+            continue
+    raise ContactsRefused(CONTACTS_BAD)
+
+
+def _contacts_cells(text, lim):
+    """The bounds on a list's rows and cells (review, Nov 16), read with the csv module before the parser sees a
+    byte: at most rows_max rows under the header; a cell at most cell_chars characters (the Notes cell, the last of
+    the header, notes_chars); no text in a cell beyond the header's columns. ContactsRefused with a fixed phrase."""
+    width, rows = len(lim["header"]), -1
+    try:
+        for row in csv.reader(io.StringIO(text, newline="")):
+            if not any(c.strip() for c in row):
+                continue
+            rows += 1
+            if rows == 0:
+                continue  # the header row (checked cell for cell by the caller)
+            if rows > lim["rows_max"]:
+                raise ContactsRefused(CONTACTS_ROWS.format(n=lim["rows_max"]))
+            for i, c in enumerate(row):
+                if (c.strip() if i >= width else len(c) > (lim["notes_chars"] if i == width - 1 else lim["cell_chars"])):
+                    raise ContactsRefused(CONTACTS_BAD)
+    except csv.Error:  # a cell over the csv module's own limit, a NUL
+        raise ContactsRefused(CONTACTS_BAD) from None
+
+
+def contacts_check(raw, limits=None, today=None):
+    """The checks both Watchers run on a pilot's whole contacts list, in order (portal.CONTACTS_CHECKS): at most
+    file_bytes; text only (UTF-8, a BOM allowed, else Windows-1252, as the 1.4.8 parser reads Ryan's own; no control
+    character but tab, CR and LF: so no PDF, no XLSX, no binary); its first row is the export's header, cell for cell
+    (case and outer spaces aside); at most rows_max rows and no cell over cell_chars (Notes: notes_chars), nothing
+    beyond the header's columns (_contacts_cells); read by the 1.4.8 parser (contacts.parse, the one Ryan's own upload
+    goes through) it gives at least rows_min pilots. Returns the parsed list (contacts.parse's answer);
+    ContactsRefused with a fixed phrase otherwise. Never logs."""
+    lim = limits or ROLES.PILOT_CONTACTS_LIMITS
+    if not isinstance(raw, (bytes, bytearray)) or not raw:
+        raise ContactsRefused(CONTACTS_BAD)
+    if len(raw) > lim["file_bytes"]:
+        raise ContactsRefused(CONTACTS_BIG.format(n=lim["file_bytes"] // 1024))
+    text = contacts_text(raw)
+    kind = CT.sniff(bytes(raw))  # read from the bytes, as Ryan's own upload is: 'csv', or None for a lone header row
+    if CONTACTS_CTRL.search(text) or kind not in ("csv", None):
+        raise ContactsRefused(CONTACTS_BAD)
+    first = next((ln for ln in text.splitlines() if ln.strip()), "")
+    try:
+        head = next(csv.reader(io.StringIO(first)), [])
+    except csv.Error:
+        head = []
+    if [c.strip().lower() for c in head] != [h.lower() for h in lim["header"]]:
+        raise ContactsRefused(CONTACTS_BAD)
+    _contacts_cells(text, lim)
+    if kind is None:
+        raise ContactsRefused(CONTACTS_EMPTY)
+    try:
+        parsed = CT.parse(bytes(raw), "csv", today=today)
+    except Exception:  # noqa: BLE001 (whatever a crafted sheet does to the parser: refused, never raised on)
+        raise ContactsRefused(CONTACTS_BAD) from None
+    if len(parsed["entries"]) + len(parsed.get("hal_only") or []) < lim["rows_min"]:
+        raise ContactsRefused(CONTACTS_EMPTY)
+    return parsed
 
 
 def export_path(pilot, root=ROOT):
@@ -89,8 +179,9 @@ def _unlink(path):
 
 # ---------------------------------------------------------------- the admin's side: the files it writes
 def clear_files(root=ROOT, roster_dir=None):
-    """No share can be on (the database did not open at start, 1.7.9 review): the roster and every pilot's file go, so
-    nothing a share once wrote stays readable. Returns how many files were removed. Never raises."""
+    """No share can be on (the database did not open at start, 1.7.9 review): every pilot's file goes (and a roster an
+    older version left), so nothing a share once wrote stays readable. Returns how many files were removed. Never
+    raises."""
     paths = [roster_path(root)] + ([roster_path(roster_dir)] if roster_dir else [])
     with contextlib.suppress(OSError):
         paths += [os.path.join(root, "portal", n) for n in os.listdir(os.path.join(root, "portal")) if n.endswith(".json")]
@@ -103,13 +194,12 @@ def clear_files(root=ROOT, roster_dir=None):
 
 
 def write_files(db, pilots, root=ROOT, limits=None, roster_dir=None):
-    """The roster and each shared pilot's file from the database, and none for a pilot whose share is off (his file
-    and his waiting commands stay out of reach: the file is deleted). pilots: the configured pilots. Returns
-    {pilot: 'on' | 'off'} and sets nothing else. A pilot's file that is full (over export_bytes) says so (full).
-    roster_dir (1.7.9 review): the folder of roster.json when it is not root (the Watcher's /data/pilotdb_roster); a
-    roster left under root is then removed."""
-    rdir = roster_dir or root
-    shared = [p for p in db.shared_with() if p in pilots]
+    """Each shared pilot's file from the database, and none for a pilot whose share Ryan turned off (his file is
+    deleted, his waiting commands are refused). pilots: the configured portal pilots; sharing is on for each unless
+    Ryan switched it off (pilotdb.Switches). Returns {pilot: 'on' | 'off' | 'full'}: 'full' when his file is over
+    export_bytes (his new notes are refused). 1.7.10: no roster is written; one an older version left (under root or
+    roster_dir, the Watcher's /data/pilotdb_roster) is removed."""
+    shared = db.shared_with(pilots)
     out = {}
     ensure_dirs(root, shared)
     for p in pilots:
@@ -127,12 +217,11 @@ def write_files(db, pilots, root=ROOT, limits=None, roster_dir=None):
         stray = []
     for n in stray:  # a pilot no longer configured: his file goes
         _unlink(os.path.join(root, "portal", n))
-    if rdir != root:
-        _unlink(roster_path(root))
-    if shared and PDBM._dir_0700(rdir):
-        PT.write_private(roster_path(rdir), json.dumps(db.roster(), ensure_ascii=False, separators=(",", ":")))
-    else:
-        _unlink(roster_path(rdir))
+    _unlink(roster_path(root))
+    if roster_dir:
+        _unlink(roster_path(roster_dir))
+        with contextlib.suppress(OSError):
+            os.rmdir(roster_dir)
     return out
 
 
@@ -171,13 +260,83 @@ def pending(folder):
 
 
 def _read_cmd(folder, name):
-    """The parsed body of one inbox file, or None: read without following a symlink, at most INBOX_MAX_BYTES."""
+    """The parsed body of one inbox file, or None: read without following a symlink, at most INBOX_MAX_BYTES (1.7.10:
+    a contacts list's file at most roles.PILOT_CONTACTS_LIMITS inbox_bytes; a note or an edit never gets that room)."""
     try:
-        raw, _ = PT.read_plain(os.path.join(folder, name), INBOX_MAX_BYTES)
+        raw, _ = PT.read_plain(os.path.join(folder, name), ROLES.PILOT_CONTACTS_LIMITS["inbox_bytes"])
         d = json.loads(raw.decode("utf-8"))
     except (PT.PortalError, ValueError, RecursionError):
         return None
-    return d if isinstance(d, dict) else None
+    if not isinstance(d, dict) or (len(raw) > INBOX_MAX_BYTES and d.get("cmd") != "contacts"):
+        return None
+    return d
+
+
+def contacts_of(d, limits=None):
+    """The bytes of the contacts list one inbox body carries: exactly the keys of a contacts body, a strict base64 of
+    size bytes whose sha256 is sha. PortalError when anything is off (answered 'it could not be read')."""
+    lim = limits or ROLES.PILOT_CONTACTS_LIMITS
+    if set(d) != {"v", "by", "at", "cmd"} | set(CONTACTS_KEYS):
+        raise PT.PortalError("contacts: keys")
+    size, sha, data = d.get("size"), d.get("sha"), d.get("data")
+    if (not isinstance(size, int) or isinstance(size, bool) or not 0 < size <= lim["file_bytes"]
+            or not isinstance(sha, str) or not re.fullmatch(ROLES.SHA256_PATTERN, sha) or not isinstance(data, str)):
+        raise PT.PortalError("contacts: fields")
+    try:
+        raw = base64.b64decode(data.encode("ascii"), validate=True)
+    except (binascii.Error, ValueError):
+        raise PT.PortalError("contacts: not base64") from None
+    if len(raw) != size or hashlib.sha256(raw).hexdigest() != sha:
+        raise PT.PortalError("contacts: not the file it names")
+    return raw
+
+
+def contacts_precheck(pilots, root=ROOT, today=None):
+    """Review (Nov 16): the whole-file check of each pilot's oldest waiting contacts list, done BEFORE the admin's
+    Watcher takes the pilot database's lock (watcher.pilotdb_share_pass), so reading a list never holds the database.
+    Returns {(pilot, file name): (sha256 of the bytes checked, the parsed list or the ContactsRefused)}; the drain
+    uses an entry only for a file with those same bytes, and checks any other list itself. Never raises."""
+    out = {}
+    for pilot in pilots:
+        folder = inbox_dir(pilot, root)
+        for name in inbox_names(folder)[:DRAIN_PER_PASS]:
+            d = _read_cmd(folder, name)
+            if not d or d.get("cmd") != "contacts":
+                continue
+            try:
+                raw = contacts_of(d)
+                try:
+                    got = contacts_check(raw, today=today)
+                except ContactsRefused as e:
+                    got = e
+                out[(pilot, name)] = (hashlib.sha256(raw).hexdigest(), got)
+            except Exception:  # noqa: BLE001 (unreadable: the drain answers it)
+                pass
+            break  # one list a pilot a pass (his Watcher lets one wait at a time)
+    return out
+
+
+def _contacts_apply(db, pilot, rid, d, now, pre=None):
+    """One contacts list from a pilot's inbox, checked again and merged with the author `pilot` (the folder). Returns
+    (ok, why, stats or None, by_db): by_db False when the refusal was made here and still needs its answer. pre: this
+    file's contacts_precheck entry (used when it is of the same bytes)."""
+    try:
+        raw = contacts_of(d)
+    except Exception:  # noqa: BLE001
+        return False, UNREADABLE, None, False
+    try:
+        if pre and pre[0] == hashlib.sha256(raw).hexdigest():
+            if isinstance(pre[1], ContactsRefused):
+                raise pre[1]
+            parsed = pre[1]
+        else:
+            parsed = contacts_check(raw, today=db.today())
+    except ContactsRefused as e:
+        return False, str(e), None, False
+    at = datetime.fromtimestamp(now, PDBM.HST).replace(microsecond=0).isoformat()
+    cj = CT.build(parsed, "", at)
+    ok, why, stats = db.pilot_contacts(pilot, rid, cj, d["sha"], CT.PARSER)
+    return ok, why, stats, True
 
 
 def check_cmd(cmd, d):
@@ -202,12 +361,13 @@ def check_cmd(cmd, d):
     return inner
 
 
-def drain(db, pilots, root=ROOT, limits=None, full=(), now=None, log=None, per_pass=DRAIN_PER_PASS):
+def drain(db, pilots, root=ROOT, limits=None, full=(), now=None, log=None, per_pass=DRAIN_PER_PASS, checked=None):
     """One pass over every configured pilot's inbox (oldest name first, at most per_pass files a pilot): each command is
     applied by the database with the author taken from the folder's name (pilotdb.pilot_op), answered and its file
     deleted. A body whose `by` differs from the folder, a file that cannot be read or an old one is refused (answered
     when its name carries a rid); a pilot whose share is off gets 'Ryan has not shared ...'. full: the pilots whose
-    file is full. Returns {applied, refused, scrub}. log(msg): op and author names only, never a text or a number."""
+    file is full. Returns {applied, refused, scrub}. log(msg): op and author names only, never a text or a number.
+    checked: contacts_precheck's answer (the lists already read outside the database's lock)."""
     lim = limits or ROLES.PILOTDB_NOTE_LIMITS
     now = time.time() if now is None else now
     say = log or (lambda m: None)
@@ -231,6 +391,24 @@ def drain(db, pilots, root=ROOT, limits=None, full=(), now=None, log=None, per_p
             else:
                 # 1.7.9 review: whatever a planted file holds (a cmd that is a list, a value no check foresaw), it is
                 # refused as unreadable and removed; it never raises out of the drain and so never blocks the pass
+                if cmd == "contacts":  # 1.7.10 (revision 5): a pilot's contacts list, adds and updates only
+                    try:
+                        ok, why, st, by_db = _contacts_apply(db, pilot, rid, d, now, (checked or {}).get((pilot, name)))
+                    except sqlite3.Error:
+                        raise  # nothing was merged: the file waits for the next pass
+                    except Exception:  # noqa: BLE001
+                        ok, why, st, by_db = False, UNREADABLE, None, False
+                    if not by_db and db.answer_of(pilot, rid) is None:
+                        db.put_answer(pilot, rid, False, why, lim["answers"])
+                    _unlink(os.path.join(folder, name))
+                    out["applied" if ok else "refused"] += 1
+                    if st is not None:
+                        say(f"pilot db: contacts list from {pilot}: merged ({st.get('rows', 0)} rows, "
+                            f"{st.get('added', 0)} added, {st.get('changed', 0) - st.get('added', 0)} changed, "
+                            f"{st.get('kept_hand', 0)} kept hand edits, {st.get('conflicts', 0)} held for Ryan)")
+                    else:
+                        say(f"pilot db: contacts list from {pilot}: {'merged before' if ok else 'refused'}")
+                    continue
                 try:
                     inner = check_cmd(cmd, d)
                 except Exception:  # noqa: BLE001
@@ -266,7 +444,30 @@ def inbox_put(pilot, cmd, inner, root=ROOT, now=None):
     body = {"v": 1, "by": pilot, "at": datetime.fromtimestamp(now, timezone.utc).replace(microsecond=0).isoformat(),
             "cmd": cmd}
     body.update({k: inner[k] for k in (NOTE_KEYS if cmd == "note" else EDIT_KEYS) if k in inner})
-    name = f"{int(now * 1000):013d}-{inner['rid']}.json"
+    return _inbox_write(pilot, body, inner["rid"], root, now)
+
+
+def contacts_put(pilot, rid, raw, root=ROOT, now=None):
+    """1.7.10 (revision 5): a pilot's checked contacts list into the admin's inbox, as inbox_put writes a command
+    (O_EXCL, O_NOFOLLOW, 0600, in the folder's own fd): {v, by, at, cmd: contacts, rid, size, sha, data (base64)}.
+    The author is the instance, never anything of the file. Returns the file name; OSError when the folder is not
+    there (not shared)."""
+    now = time.time() if now is None else now
+    if not isinstance(rid, str) or not re.fullmatch(ROLES.UPLOAD_ID_PATTERN, rid):
+        raise OSError("contacts: rid")
+    body = {"v": 1, "by": pilot, "at": datetime.fromtimestamp(now, timezone.utc).replace(microsecond=0).isoformat(),
+            "cmd": "contacts", "rid": rid, "size": len(raw), "sha": hashlib.sha256(raw).hexdigest(),
+            "data": base64.b64encode(raw).decode("ascii")}
+    return _inbox_write(pilot, body, rid, root, now)
+
+
+def contacts_waiting(folder):
+    """How many contacts lists wait in one pilot's inbox (their bodies are read: the name does not say the cmd)."""
+    return sum(1 for n in inbox_names(folder) if ((_read_cmd(folder, n) or {}).get("cmd") == "contacts"))
+
+
+def _inbox_write(pilot, body, rid, root, now):
+    name = f"{int(now * 1000):013d}-{rid}.json"
     dfd = os.open(inbox_dir(pilot, root), _DIR)
     try:
         tmp = f".{name}.{secrets.token_hex(4)}.tmp"
@@ -287,13 +488,14 @@ def inbox_put(pilot, cmd, inner, root=ROOT, now=None):
 
 
 class View:
-    """A shared pilot's read side: his own file and the roster as his Watcher last read them. refresh() re-reads the
-    ones whose time, size or inode moved (lstat; read without following a symlink, capped) and says whether anything
-    changed."""
+    """A shared pilot's read side: his own file as his Watcher last read it. refresh() re-reads it when its time,
+    size or inode moved (lstat; read without following a symlink, capped at what a signed file may be) and says
+    whether anything changed. 1.7.10: the file holds every record, so the record of the pilot his pilot card shows
+    (by_emp) and the name lookup's rows (names) come from it; there is no roster."""
 
     def __init__(self, pilot, root=ROOT, roster_dir=None):
-        self.pilot, self.root, self.roster_dir = pilot, root, roster_dir or root
-        self.sig = {"export": None, "roster": None}
+        self.pilot, self.root = pilot, root
+        self.sig = {"export": None}
         self.state = "off"       # on: his file is there and reads; off: no file; waiting: a file that does not read yet
         self.text = ""           # his file's text exactly (what the portal serves)
         self.rev = ""            # the first 12 hex of sha256(text)
@@ -303,7 +505,9 @@ class View:
         self.mine = {}           # eid -> pid of his own entries in his file
         self.answers = []        # the file's answers
         self.limits = {}
-        self.roster = {}         # emp -> [row]
+        self.by_emp = {}         # emp -> [(pid, last name's key)]
+        self.names = []          # [(emp, last, first, seat)] of the live pilots whose number no other record shares
+        self.sens = {}           # 1.7.10 review: {emp: Sen #} of those pilots (the pick list tells namesakes apart)
 
     @staticmethod
     def _sig(path):
@@ -314,21 +518,18 @@ class View:
         return (st.st_mtime_ns, st.st_size, st.st_ino) if stat.S_ISREG(st.st_mode) else ("x",)
 
     def refresh(self):
-        changed = False
-        ep, rp = export_path(self.pilot, self.root), roster_path(self.roster_dir)
+        ep = export_path(self.pilot, self.root)
         s = self._sig(ep)
-        if s != self.sig["export"]:
-            self.sig["export"], changed = s, True
-            self._read_export(ep, s)
-        s = self._sig(rp)
-        if s != self.sig["roster"]:
-            self.sig["roster"], changed = s, True
-            self._read_roster(rp, s)
-        return changed
+        if s == self.sig["export"]:
+            return False
+        self.sig["export"] = s
+        self._read_export(ep, s)
+        return True
 
     def _read_export(self, path, sig):
         self.text, self.rev, self.count, self.updated = "", "", 0, ""
-        self.pids, self.mine, self.answers, self.limits = set(), {}, [], {}
+        self.pids, self.mine, self.answers, self.limits, self.by_emp, self.names = set(), {}, [], {}, {}, []
+        self.sens = {}
         if sig is None:
             self.state = "off"
             return
@@ -344,67 +545,55 @@ class View:
         self.state, self.text = "on", text
         self.rev = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
         self.updated = str(d.get("generated") or "")[:40]
-        recs = [r for r in d["records"] if isinstance(r, dict) and isinstance(r.get("pid"), str)]
+        recs = [r for r in d["records"] if isinstance(r, dict) and isinstance(r.get("pid"), str)
+                and re.fullmatch(ROLES.PILOTDB_PID_PATTERN, r["pid"])]
         self.count = len(recs)
         self.pids = {r["pid"] for r in recs}
         for r in recs:
             for e in r.get("entries") or []:
                 if isinstance(e, dict) and e.get("mine") is True and isinstance(e.get("eid"), str):
                     self.mine[e["eid"]] = r["pid"]
+            emp = PDBM.emp_of(r.get("emp"))
+            if emp:
+                name = str(r.get("name") or "")
+                self.by_emp.setdefault(emp, []).append((r["pid"], PDBM.name_key(name)[0] if name else "", r))
+        for emp, rows in self.by_emp.items():
+            r = rows[0][2]
+            if len(rows) == 1 and not r.get("gone"):
+                last, _, first = (x.strip() for x in str(r.get("name") or "").partition(","))
+                if last:
+                    self.names.append((emp, last[:80], first[:80], str(r.get("seat") or "")[:3]))
+                    if re.fullmatch(r"\d{1,5}", str(r.get("sen") or "")):
+                        self.sens[emp] = str(r["sen"])
+        self.by_emp = {e: [(p, lk) for p, lk, _ in rows] for e, rows in self.by_emp.items()}
         self.answers = [{"rid": a["rid"], "ok": bool(a.get("ok")), "why": str(a.get("why") or "")[:200],
                          "at": str(a.get("at") or "")[:40]}
                         for a in d.get("answers") or [] if isinstance(a, dict) and isinstance(a.get("rid"), str)]
         self.limits = {k: v for k, v in (d.get("limits") or {}).items()
                        if isinstance(v, int) and not isinstance(v, bool)} if isinstance(d.get("limits"), dict) else {}
 
-    def _read_roster(self, path, sig):
-        self.roster = {}
-        if sig is None:
-            return
-        try:
-            raw, _ = PT.read_plain(path, ROSTER_CAP)
-            d = json.loads(raw.decode("utf-8"))
-        except (PT.PortalError, ValueError, RecursionError):
-            return
-        by = d.get("by_emp") if isinstance(d, dict) else None
-        if isinstance(by, dict):
-            self.roster = {str(k): [r for r in v if isinstance(r, dict)] for k, v in by.items() if isinstance(v, list)}
-
     def shown(self, emp, name=""):
-        """The brief of the pilot the pilot card shows ({emp, pid, name, sen, doh, status, retire, seat, equip, gone,
-        edited, rev, notes_n, contact?}), {emp, none: true} when he is not in the database, or None with no pilot
-        shown or while not shared. contact (B23): that one pilot's phones and emails, never anyone else's."""
+        """Which record of his file the pilot his pilot card shows is: {emp, pid}, {emp, none: true} when he is not
+        in the database (or two records share the number and the name does not tell them apart), or None with no
+        pilot shown or while not shared. 1.7.10: the record itself (every field, the notes, the log, the pickups, the
+        AI note) is in his file, so nothing of it is repeated here."""
         emp = PDBM.emp_of(emp)
         if self.state != "on" or not emp:
             return None
-        rows = self.roster.get(emp) or []
-        row = rows[0] if len(rows) == 1 else None
-        if row is None and rows:
+        rows = self.by_emp.get(emp) or []
+        pid = rows[0][0] if len(rows) == 1 else None
+        if pid is None and rows:
             lk = PDBM.name_key(name)[0] if name else ""
-            hit = [r for r in rows if lk and r.get("lk") == lk]
-            row = hit[0] if len(hit) == 1 else None
-        if row is None or not re.fullmatch(ROLES.PILOTDB_PID_PATTERN, str(row.get("pid") or "")):
-            return {"emp": emp, "none": True}
-        out = {"emp": emp}
-        for k in ("pid", "name", "sen", "doh", "status", "retire", "seat", "equip"):
-            out[k] = str(row.get(k) or "")[:120]
-        out["gone"] = bool(row.get("gone"))
-        out["edited"] = [f for f in row.get("edited") or [] if f in ROLES.PILOTDB_EDIT_FIELDS][:10]
-        out["rev"] = row["rev"] if isinstance(row.get("rev"), int) and not isinstance(row.get("rev"), bool) else 0
-        out["notes_n"] = row["notes_n"] if isinstance(row.get("notes_n"), int) else 0
-        phones = [{"label": str(p.get("label") or "")[:10], "number": str(p.get("number") or "")[:20],
-                   "tel": str(p.get("tel") or "")[:17]}
-                  for p in row.get("phones") or [] if isinstance(p, dict) and PDBM.TEL_RE.match(str(p.get("tel") or ""))][:4]
-        emails = [m for m in row.get("emails") or [] if isinstance(m, str) and len(m) <= 254 and PDBM.MAIL_RE.match(m)][:3]
-        if phones or emails:
-            out["contact"] = {"phones": phones, "emails": emails}
-        return out
+            hit = [p for p, k in rows if lk and k == lk]
+            pid = hit[0] if len(hit) == 1 else None
+        return {"emp": emp, "pid": pid} if pid else {"emp": emp, "none": True}
 
 
 def pilot_check(view, shown_pid, cmd, payload, n_pending, limits=None):
     """A shared pilot's Watcher's checks of one pilotdb/note or pilotdb/edit payload (spec 11.3): the shape, shared or
-    not, the pid (a record of his file or the shown pilot's: no oracle for which pilots exist), the op rules and the
-    pending limit. Returns (inner, '') to queue it or (inner or None, why) to refuse it: why is a fixed phrase."""
+    not, the pid (a record of his file, which holds every live record since 1.7.10), the op rules and the pending
+    limit. Returns (inner, '') to queue it or (inner or None, why) to refuse it: why is a fixed phrase. shown_pid is
+    kept for callers of 1.7.9 and is not read."""
     lim = limits or ROLES.PILOTDB_NOTE_LIMITS
     try:
         d = PT.check_shape("pilotdb/" + cmd, payload)
@@ -421,8 +610,8 @@ def pilot_check(view, shown_pid, cmd, payload, n_pending, limits=None):
         inner = check_cmd(cmd, d)
     except PT.PortalError as e:
         return d, (f"Not saved: a note is at most {lim['entry_max']} characters" if "too long" in str(e) else UNREADABLE)
-    if inner["pid"] not in view.pids and inner["pid"] != shown_pid:
-        return inner, LOOK_UP
+    if inner["pid"] not in view.pids:
+        return inner, NOT_IN_DB
     if cmd == "note" and inner["op"] == "retract" and view.mine.get(inner["entry"]) != inner["pid"]:
         return inner, OWN_ONLY
     if n_pending >= lim["pending"]:

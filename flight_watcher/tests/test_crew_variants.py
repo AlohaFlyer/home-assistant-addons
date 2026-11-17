@@ -376,7 +376,7 @@ def test_crew_split_over_two_copies_reads_on(W, tmp_path, monkeypatch, caplog):
                                                                  "v": 2}
     for emp, pid in (("10001", "H3999B"), ("10003", "H3999C"), ("10004", "H3999C")):
         assert [r["pairing"] for r in W.DB.crew_by_emp(emp)] == [pid]
-    assert "crew index: H3999B 2026-11-06 names 1 of 3 pilots, the next letters are read too (crew line: ca 10001 x, x)" \
+    assert "crew index: H3999B 2026-11-06 names 1 of 3 pilots, the next letters are read too (crew line: ca ##### x, x)" \
         in caplog.text
     assert "Doe" not in caplog.text and "doe" not in caplog.text and "Roe" not in caplog.text
 
@@ -410,8 +410,8 @@ def test_an_old_record_whose_copy_names_every_seat_stays(W, tmp_path, monkeypatc
 
 
 def test_crew_mask_keeps_seats_and_numbers_only():
-    assert CI.crew_mask("pairing details h3631b:06nov crew: ca 9606 doe, jane fb 19852 roe jr, rick ro open") == \
-        "ca 9606 x, x fb 19852 x x, x ro open"
+    assert CI.crew_mask("pairing details h3631b:06nov crew: ca 9603 doe, jane fb 10031 roe jr, rick ro open") == \
+        "ca 9603 x, x fb 10031 x x, x ro open"
     assert CI.crew_mask("crew: ca 10001 ng, jo ckp f/o 10002 li, al") == "ca 10001 x, x ckp f/o 10002 x, x"
     assert CI.crew_mask("no crew line here") == "" and CI.crew_mask(None) == ""
     assert CI.pilot_seats(OPEN3) == 3 and CI.pilot_seats(OPEN3 + [{"pos": "FA", "name": "x", "emp": "1"}]) == 3

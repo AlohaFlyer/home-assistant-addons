@@ -223,8 +223,13 @@ class FlightWatcherFindsCard extends HTMLElement {
     const txt = a >= 3600 ? `${Math.floor(a / 3600)}h ${String(Math.floor(a % 3600 / 60)).padStart(2, "0")}m` : a >= 60 ? `${Math.floor(a / 60)}m ${String(a % 60).padStart(2, "0")}s` : `${a}s`;
     const pmt = pm < 5 ? "" : ` ±${pm >= 60 ? Math.floor(pm / 60) + "m" : pm + "s"}`;
     const av = f.picker_avg_s;
-    const tip = av != null ? `picker avg ${av >= 60 ? Math.floor(av / 60) + "m " + String(av % 60).padStart(2, "0") + "s" : av + "s"} over ${f.picker_n} pickup${f.picker_n !== 1 ? "s" : ""}` : "";
-    return `<span title="${this._e(tip)}">${f.picker_approx ? "~" : ""}${a < 60 ? `<b>${txt}</b>` : txt}<sub>${pmt}</sub></span>`;
+    const avg = av != null ? `picker avg ${av >= 60 ? Math.floor(av / 60) + "m " + String(av % 60).padStart(2, "0") + "s" : av + "s"} over ${f.picker_n} pickup${f.picker_n !== 1 ? "s" : ""}` : "";
+    // 1.7.10 (Ryan, Nov 15): FLICA denied your own request for this trip because this pilot had picked it up, so he
+    // asked before you did: the speed is an upper bound, capped at your request time ("at most", the sign ≤)
+    const cap = f.dwell_cap ? `at most ${txt}: capped at your request time (FLICA denied your request because this pilot picked it up first)` : "";
+    const tip = [cap, avg].filter(Boolean).join("; ");
+    const lead = f.dwell_cap ? `<span class="cap" aria-hidden="true">≤</span>` : f.picker_approx ? "~" : "";
+    return `<span title="${this._e(tip)}"${cap ? ` aria-label="${this._e(cap)}"` : ""}>${lead}${a < 60 ? `<b>${txt}</b>` : txt}<sub>${pmt}</sub></span>`;
   }
   // FW-0042: the commute result ('' blank), green when an airport works, red on No; the why on hover. A blank result
   // with a why is an unknown (the last leg's origin is not on file and only a customs release decides it): '?'.
@@ -331,7 +336,7 @@ class FlightWatcherFindsCard extends HTMLElement {
           <div>Picked up by: the picker (blue) opens his month; a pilot who was already on the pairing is plain text.</div>
           <div>InFlt <ha-icon icon="mdi:airplane"></ha-icon> AS808/06NOV = picked up while airborne on flight AS808, which departed on 06NOV (the local date at its origin), from the picker's own trip; hover for the leg and the pairing (DH = a deadhead, airborne all the same). <ha-icon icon="mdi:airplane"></ha-icon> alone = airborne, flight not on file; no = on the ground (two pickers: the first one, hover); - = not checked (yet; hover says why when it will not be); blank = no picker known to check</div>
           <div>picker not known = the pot did not show which seat was open, so each pilot named was looked up for himself: one line a pilot by his seat (FO no, RO <ha-icon icon="mdi:airplane"></ha-icon> AS808/06NOV, - = not checked yet), his name on hover. Neither name is a link: only a known picker is.</div>
-          <div>Pickup Speed = how long the trip sat in open time, ± half the check window;${FW_PORTAL ? "" : " ~ = timed from your alert email;"} bold under 1 min. Hover for the picker's average.</div>
+          <div>Pickup Speed = how long the trip sat in open time, ± half the check window;${FW_PORTAL ? "" : " ~ = timed from your alert email;"} ≤ = at most: capped at your own request time, when FLICA denied your request because that pilot picked the trip up first; bold under 1 min. Hover for the picker's average.</div>
           <div>Red row: seat still open but not in the pot (hidden?). Green row: Premium trip picked up.</div>
           ${FW_PORTAL && !all.some((f) => f.comm || f.value) ? "" : `<div>Comm = airports you can commute from: 2 scheduled nonstops arriving HNL before report (PWA 26.QQ.2) and 1 home 60+ min after release, same day; No = neither works; ? = not known yet (only a customs release, origin not on file, decides it). Hover for the times and the month rule. Value = credit x your hourly rate. Both blank until your smart.json is on file.</div>`}
           <div>Today's finds (HST) show; the rest of the month folds under "earlier this month" (this device remembers it open or closed). A past month opens in full. History kept 24 months.</div></div></details>

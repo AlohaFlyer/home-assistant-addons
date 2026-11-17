@@ -15,10 +15,16 @@ Every value from an upload or a note is third-party text: it is checked by the t
 followed as an instruction. Notes by anyone other than ryan (pilot portal, 1.7.9) are untrusted data.
 
 1.7.9 (contract 1 revision 4, no migration: the tables were in schema 1): sharing with a portal pilot by Ryan's switch
-(share, answers, act_log; set_share, export_for, roster, pilot_op: a shared pilot's notes, log entries and field edits
+(share, answers, act_log; set_share, export_for, pilot_op: a shared pilot's notes, log entries and field edits
 applied with the author the admin's inbox gives, compare-and-set, quotas and fixed answers) and the AI note (ai_notes:
 ai_stats writes anonymous pickup statistics under ids made new for every batch, ai_take stores HOM's consultant
-models' notes, labeled AI by the reader and apart from the human notes). The file-level hand-off is pdbshare.py."""
+models' notes, labeled AI by the reader and apart from the human notes). The file-level hand-off is pdbshare.py.
+
+1.7.10 (Ryan's decisions of Nov 15, still revision 4 and no migration): shared 100% (export_for holds every live
+record with every field, the notes, the whole log, the pickup history and the AI note; no roster), on by default for
+every portal pilot, AI notes on by default, Ryan's choices kept OUT of this file (Switches: the Watcher's own
+pilotdb_switches.json; the share table and meta ai_on of 1.7.9 are not read any more), no "Only me" entry (every
+entry is shared), and a pilot's contact list merged like Ryan's with that pilot as its author."""
 import contextlib
 import hashlib
 import json
@@ -40,18 +46,21 @@ HST = timezone(timedelta(hours=-10))
 ZERO_REV = "000000000000"
 UPLOAD_SOURCES = ("list", "award", "contacts")
 SOURCES = UPLOAD_SOURCES + ("hand",)
-FIELDS = ("name", "sen", "doh", "status", "retire", "seat", "equip", "phones", "emails", "union_id")
+# 1.7.10 (Ryan, Nov 15): domicile, the base of the award packet's category (HNL-332-FO: base, equipment, seat). Its
+# key is not 'base': that is the notes field's version in a save (Bad('base'), the card's label)
+FIELDS = ("name", "sen", "doh", "status", "retire", "seat", "equip", "domicile", "phones", "emails", "union_id")
 # the rule picking the value shown when there is no hand edit (spec 6, with Ryan's Nov 14 answer: "the seniority PDF
 # wins on Sen#, DOH, status", so sen and status take the list first, ORDER, not the newest)
-PICK = {"name": ("order", ("list", "award", "contacts")), "sen": ("order", ("list", "contacts")),
+PICK = {"name": ("order", ("list", "award", "contacts")), "sen": ("order", ("list", "contacts", "award")),
         "doh": ("order", ("list", "award", "contacts")), "status": ("order", ("list", "contacts")),
         "retire": ("order", ("contacts", "list")), "seat": ("recency", ("list", "award")),
-        "equip": ("recency", ("list", "award")), "phones": ("order", ("contacts",)),
+        "equip": ("recency", ("list", "award")), "domicile": ("order", ("award",)), "phones": ("order", ("contacts",)),
         "emails": ("order", ("contacts",)), "union_id": ("order", ("contacts",))}
 TIE = ("list", "contacts", "award")  # a RECENCY tie
 SOURCE_FIELDS = {"list": ("name", "sen", "doh", "status", "retire", "seat", "equip"),
-                 "award": ("name", "doh", "seat"),
+                 "award": ("name", "doh", "seat"),  # the award's dates of hire (merge_award)
                  "contacts": ("name", "sen", "doh", "status", "retire", "phones", "emails", "union_id")}
+AWARD_SEN_FIELDS = ("sen", "domicile", "equip", "seat")  # 1.7.10: the award's seniority lines (merge_award_sen)
 HAL_STATUS = frozenset(SEN.HAL_STATUS)
 SEATS = ("CA", "FO", "RO")  # the list's seat column (spec: CA or FO); RO, the A330 relief officer, read too
 PHONE_LABELS = {"mobile": "mobile", "cell": "mobile", "home": "home", "work": "work", "other": "other",
@@ -65,11 +74,16 @@ TEXT_RE = re.compile(ROLES.TICKET_TEXT_PATTERN)
 NAME_MAX, WHY_MAX = 80, 200
 FIELD_MAX, ENTRY_MAX = 4000, 2000  # code points (roles.PILOTDB_NOTE_LIMITS in 1.7.9)
 ENTRIES_PER_RECORD = 500
+# 1.7.10: a shared pilot's file. The newest pickup rows a record carries (EXPORT_PICKUPS_MIN when the file is over
+# export_bytes) and the size the file never passes: under portal.CAPS["file"] (8 MiB, what a signed file may be)
+EXPORT_PICKUPS, EXPORT_PICKUPS_MIN = 100, 20
+EXPORT_HARD = 7 * 1024 * 1024
 HIST_KEEP = 50  # the newest versions of a record's notes field kept PER AUTHOR (1.7.9 review: see _trim_hist)
 PILOT_NAME_PUNCT = " ,.'-\u02bb\u2019"  # beside letters, what a name edited on a pilot portal may hold (1.7.9 review)
 LOG_ROWS, ENTRY_ROWS, PAGE_ROWS, QUERY_MAX = 100, 200, 50, 60
 AI_STATION_RE = re.compile(r"[A-Z]{2,4}")  # a station code in the AI statistics (HOM's value rule)
 AI_SECS_MAX = 999999  # the most seconds a statistic says (HOM takes no number over it): about 11.5 days
+PILOT_REF = "pilot contacts "  # 1.7.10: the ref of every value a pilot's contacts list gave (merge_contacts, additive)
 GONE_GUARD = 0.9  # a list with fewer than 90% of the last one's pilots marks nobody gone (list_partial)
 BACKUP_KEEP = 7
 BACKUP_RE = re.compile(r"^pilotdb-(\d{4}-\d{2}-\d{2})\.sqlite$")
@@ -130,7 +144,7 @@ CREATE INDEX pickups_emp ON pickups(emp, at);
 CREATE TABLE ai_notes (pid TEXT PRIMARY KEY REFERENCES pilots(pid), text TEXT NOT NULL, model TEXT NOT NULL,
   basis TEXT NOT NULL, at TEXT NOT NULL);
 """
-# meta keys: rev (+1 on every commit), created_at, seeded_at, list_as_of / list_count, award_month,
+# meta keys: rev (+1 on every commit), created_at, seeded_at, list_as_of / list_count, award_month, award_sen_month,
 # contacts_as_of / contacts_count, sig:<source>, md_at, backup_at
 # share, answers and act_log: 1.7.9 (sharing with a portal pilot). ai_notes: 1.7.9 (HOM's consultant models, from
 # anonymous stats only, for pilots with 3 or more pickups, labeled AI and kept apart from the human notes).
@@ -204,6 +218,19 @@ def clean_text(text, maxlen, field="text", empty_ok=False):
     if len(s) > maxlen:
         raise Bad(field, f"is over {maxlen} characters")
     return s
+
+
+def ai_text_ok(text, cfg=None):
+    """True when text is an AI note as it may be stored and shown (1.7.10 review: one rule for pilotdb.ai_take and
+    for a shared pilot's file, _shared_ai): already clean plain text of 1 to note_max code points (clean_text leaves it as it is) with
+    nothing of roles.PILOTDB_AI refuse_re in it (an address, a link, 5 or more digits in a row, a phone shaped run)."""
+    cfg = cfg or ROLES.PILOTDB_AI
+    try:
+        if not isinstance(text, str) or clean_text(text, cfg["note_max"], "text") != text:
+            return False
+    except Bad:
+        return False
+    return not re.search(cfg["refuse_re"], text)
 
 
 def clean_line(text, maxlen, field, empty_ok=False):
@@ -319,6 +346,11 @@ def check(field, value, today):
         if v and v not in SEATS:
             raise Bad("seat", "must be CA, FO, RO or blank")
         return v
+    if field == "domicile":
+        v = v.upper()
+        if not re.fullmatch(r"[A-Z]{3}", v):
+            raise Bad("domicile", "must be 3 letters")
+        return v
     if field == "equip":
         v = v.upper()
         if not re.fullmatch(r"[A-Z0-9]{1,8}", v):
@@ -356,6 +388,9 @@ def upload_pick(field, rows):
         rs = [r for r in ups if bool(r["stale"]) == bool(stale)]
         if not rs:
             continue
+        if field == "name" and any("," in r["value"] for r in rs):
+            # 1.7.10: an award seniority line gives a last name only; a 'Last, First' of any source is shown first
+            rs = [r for r in rs if "," in r["value"]]
         if how == "order":
             return sorted(rs, key=lambda r: order.index(r["source"]))[0]
         return _sort_recency(rs)[0]
@@ -370,8 +405,9 @@ def disagrees(field, rows):
         return False
     if field == "doh":
         return len({r["value"] for r in fresh}) > 1
-    if field == "name":
-        return len({name_key(r["value"]) for r in fresh}) > 1
+    if field == "name":  # 1.7.10: an award seniority line's last name alone ('Doe') disagrees with no 'Last, First'
+        full = {name_key(r["value"]) for r in fresh if "," in r["value"]}
+        return len(full) > 1 or len({k[0] for k in full} | {name_key(r["value"])[0] for r in fresh}) > 1
     if field in ("sen", "status"):
         for i, a in enumerate(fresh):
             for b in fresh[i + 1:]:
@@ -458,6 +494,119 @@ def _fmt_hm(mins):
 
 
 # ---------------------------------------------------------------- the database
+class Switches:
+    """Ryan's choices about the shared pilot database, kept OUT of the database file (1.7.10, Ryan's decisions of
+    Nov 15): one small file in the Watcher's own /data (pilotdb_switches.json, 0600) beside its state. Sharing is on
+    for every portal pilot and the AI notes are on unless Ryan turned one off on his card; only an off (or a later on)
+    he tapped is written here. Because the file is not part of the database, a restored copy of the database neither
+    turns a share back on after Ryan switched it off nor turns one off that is on by default.
+
+    {v: 1, default: true, share: {pilot: bool}, ai: bool or null}. No file: everything is on (the default). A file
+    that is there and cannot be read fails closed: everything is off (`broken`), until Ryan taps a switch. path None:
+    memory only (tests, a database opened without a Watcher).
+
+    Review (round 2): every OFF is also kept in a second small file outside /data (mirror: switches_off.json in the
+    Watcher's own /share/flight_watcher/pilotdb folder, 0600, {v: 1, share_off: [pilot], ai_off: bool}). A pilot (or
+    the AI notes) is off when EITHER file says off, so an older /data put back by a Home Assistant restore, or a
+    lost switches file, never turns back on what Ryan switched off. A mirror that is there and cannot be read fails
+    closed too. A tap on a broken file writes a good one: the defaults are on again (a pilot added later is shared),
+    and every pilot configured now and the AI notes are written as off, except the one tapped. Memory changes only
+    after both files were written, so a failed write leaves the running Watcher as it was."""
+
+    def __init__(self, path=None, mirror=None, pilots=None):
+        self.path, self.mirror, self.pilots = path, mirror, pilots or (lambda: ())
+        self.default, self.share, self.ai, self.broken = True, {}, None, False
+        self.lock = threading.RLock()
+        try:
+            d = self._read(path)
+            if d is not None:
+                if d.get("v") != 1 or not isinstance(d.get("default"), bool) or not isinstance(d.get("share"), dict) \
+                        or not (d.get("ai") is None or isinstance(d.get("ai"), bool)):
+                    raise ValueError("not a switches file")
+                self.default = d["default"]
+                self.share = {k: v for k, v in d["share"].items()
+                              if isinstance(k, str) and ROLES.NAME_RE.fullmatch(k) and isinstance(v, bool)}
+                self.ai = d["ai"]
+            m = self._read(mirror)
+            if m is not None:
+                if m.get("v") != 1 or not isinstance(m.get("share_off"), list) or not isinstance(m.get("ai_off"), bool):
+                    raise ValueError("not a switches mirror")
+                for k in m["share_off"]:
+                    if isinstance(k, str) and ROLES.NAME_RE.fullmatch(k):
+                        self.share[k] = False  # off in either file is off
+                if m["ai_off"]:
+                    self.ai = False
+        except (OSError, ValueError, RecursionError):
+            self.default, self.share, self.ai, self.broken = False, {}, None, True
+
+    @staticmethod
+    def _read(path):
+        """The JSON object of one small plain file (never a link); None when there is no file (or no path)."""
+        if not path:
+            return None
+        try:
+            st = os.lstat(path)
+        except OSError:
+            return None
+        if not stat.S_ISREG(st.st_mode) or st.st_size > 65536:
+            raise ValueError("not a plain small file")
+        with open(os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)), encoding="utf-8") as f:
+            d = json.load(f)
+        if not isinstance(d, dict):
+            raise ValueError("not an object")
+        return d
+
+    def shared(self, pilot):
+        with self.lock:
+            return bool(self.share.get(pilot, self.default))
+
+    def ai_on(self):
+        with self.lock:
+            return bool(self.default if self.ai is None else self.ai)
+
+    def _state(self):
+        """(default, share, ai) a tap starts from: as held, or, on a broken file, the defaults on again with every
+        pilot configured now and the AI notes written as off (nothing comes on that Ryan did not tap)."""
+        if not self.broken:
+            return self.default, dict(self.share), self.ai
+        names = [p for p in (self.pilots() or ()) if isinstance(p, str) and ROLES.NAME_RE.fullmatch(p)]
+        return True, {p: False for p in names}, False
+
+    def set_share(self, pilot, on):
+        with self.lock:
+            default, share, ai = self._state()
+            share[pilot] = bool(on)
+            self._save(default, share, ai)
+
+    def set_ai(self, on):
+        with self.lock:
+            default, share, _ai = self._state()
+            self._save(default, share, bool(on))
+
+    @staticmethod
+    def _write(path, obj):
+        tmp = f"{path}.tmp"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600), "w",
+                  encoding="utf-8") as f:
+            json.dump(obj, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+
+    def _save(self, default, share, ai):
+        """Both files written whole (a temporary file beside each, 0600, then moved into place): the mirror of the
+        OFFs first, then the switches file. A write that fails raises before memory changes: the caller's op then
+        fails and the card says so, so a tap is never shown as saved when it was not, and the running Watcher keeps
+        the value it had."""
+        if self.mirror:
+            _dir_0700(os.path.dirname(self.mirror))
+            self._write(self.mirror, {"v": 1, "share_off": sorted(p for p, v in share.items() if not v),
+                                      "ai_off": ai is False})
+        if self.path:
+            self._write(self.path, {"v": 1, "default": default, "share": dict(sorted(share.items())), "ai": ai})
+        self.default, self.share, self.ai, self.broken = default, share, ai, False
+
+
 class PilotDB:
     """The pilot database file. One instance per process, used by the admin's Watcher only. Every write runs in one
     BEGIN IMMEDIATE transaction under a lock and bumps meta.rev; every record it changes gets its rev bumped once."""
@@ -467,6 +616,7 @@ class PilotDB:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.lock = threading.RLock()
         self._depth, self._touched, self._views = 0, set(), None
+        self.switches = Switches()  # 1.7.10: Ryan's Share and AI choices, never in this file (the Watcher attaches its own)
         existed = os.path.exists(path) and os.path.getsize(path) > 0
         if not os.path.exists(path):  # made 0600 before SQLite writes a byte (its -wal and -shm take the same mode)
             os.close(os.open(path, os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600))
@@ -487,6 +637,18 @@ class PilotDB:
             raise
         for sfx in ("-wal", "-shm"):
             _private(path + sfx)
+        self._all_shared()
+
+    def _all_shared(self):
+        """1.7.10 (Ryan, Nov 15: "Share those too"): there is no "Only me" entry any more. Every entry an older
+        version stored as only-me becomes a shared one, at every open (so a restored older copy follows too)."""
+        with self.lock:
+            if self.db.execute("SELECT 1 FROM entries WHERE shared=0 LIMIT 1").fetchone():
+                with self._tx():
+                    for (pid,) in self.db.execute("SELECT DISTINCT pid FROM entries WHERE shared=0").fetchall():
+                        if self._pilot(pid):
+                            self._touch(pid)
+                    self.db.execute("UPDATE entries SET shared=1 WHERE shared=0")
 
     def close(self):
         with self.lock:
@@ -674,9 +836,46 @@ class PilotDB:
         self._touch(pid)
         return True
 
-    def _apply(self, pid, source, values, as_of, ref, by, stats, field_as_of=None):
+    def _union(self, pid, field, source, value):
+        """1.7.10 (a pilot's contacts list only adds): the source's phones or emails on file with the new ones of
+        value (checked JSON) after them, at most 4 phones and 3 emails; None when value adds nothing. What is on
+        file keeps its place, so a full list is left alone."""
+        old = self.db.execute("SELECT value FROM vals WHERE pid=? AND field=? AND source=?", (pid, field, source)).fetchone()
+        if not old:
+            return value
+        try:
+            have, new = json.loads(old[0]), json.loads(value)
+        except ValueError:
+            return None
+        seen = {self._list_key(field, y) for y in have}
+        cap = 4 if field == "phones" else 3
+        out = list(have)
+        for y in new:
+            k = self._list_key(field, y)
+            if k and k not in seen and len(out) < cap:
+                seen.add(k)
+                out.append(y)
+        return json.dumps(out, separators=(",", ":")) if len(out) > len(have) else None
+
+    def _add_val(self, pid, field, source, value, ref, by):
+        """1.7.10 review: phones or emails a pilot's list added to the ones on file. The value on file keeps its own
+        author, ref and date (Ryan's numbers stay Ryan's list's, and his next list rewrites or removes the value as
+        it would have); the log names the pilot as the author of the change, with the value before and after. False
+        when the source has no value yet (the caller writes it, the pilot's own)."""
+        old = self.db.execute("SELECT value FROM vals WHERE pid=? AND field=? AND source=?", (pid, field, source)).fetchone()
+        if not old:
+            return False
+        self.db.execute("UPDATE vals SET value=?, at=?, stale=0 WHERE pid=? AND field=? AND source=?",
+                        (value, self.now(), pid, field, source))
+        self._log(pid, field, source, old[0], value, ref, by, "upload")
+        self._touch(pid)
+        return True
+
+    def _apply(self, pid, source, values, as_of, ref, by, stats, field_as_of=None, additive=False):
         """One upload row on a record: each of the source's fields set from values (a value missing or refused drops
-        that source's value of it). stats counts changed and kept_hand."""
+        that source's value of it). stats counts changed and kept_hand. additive (1.7.10, a pilot's contacts list):
+        nothing is dropped, a value the source already has is left as it is (its author and date too), and phones and
+        emails are added after the ones on file (_union)."""
         today, changed = self.today(), False
         hands = {f for (f,) in self.db.execute("SELECT field FROM vals WHERE pid=? AND source='hand'", (pid,))}
         for f in SOURCE_FIELDS[source]:
@@ -688,7 +887,24 @@ class PilotDB:
                 except Bad:
                     stats["bad"] = stats.get("bad", 0) + 1
                     v = None
+            if additive:
+                if v in (None, "", "[]"):
+                    continue
+                if f in ("phones", "emails"):
+                    v = self._union(pid, f, source, v)
+                    if v is None:
+                        continue
+                    if self._add_val(pid, f, source, v, ref, by):  # added to a value on file: that value's author stays
+                        changed = True
+                        if f in hands:
+                            stats["kept_hand"] = stats.get("kept_hand", 0) + 1
+                        continue
+                elif self.db.execute("SELECT 1 FROM vals WHERE pid=? AND field=? AND source=? AND value=? AND stale=0",
+                                     (pid, f, source, v)).fetchone():
+                    continue
             if v in (None, "", "[]"):
+                if source == "award" and f == "seat":
+                    continue  # 1.7.10 review: the award's seat is its seniority lines' (merge_award_sen), never dropped here
                 if self._drop_val(pid, f, source, ref, by):
                     changed = True
                 continue
@@ -852,7 +1068,7 @@ class PilotDB:
             return d[1:] if len(d) == 11 and d.startswith("1") else d
         return str(y or "").strip().lower()
 
-    def _merge_rows(self, source, rows, as_of, ref, by, stats, field_as_of=None, create=True):
+    def _merge_rows(self, source, rows, as_of, ref, by, stats, field_as_of=None, create=True, additive=False):
         """Match and apply upload rows [(emp, values, field_as_of)]; returns (taken, held): the records matched and
         the records of numbers held for Ryan. create=False (a contact list a pilot's instance saved): a row that would
         make a record is held for Ryan instead (contact_unmatched). Each row runs in its own SAVEPOINT, so one row
@@ -865,7 +1081,8 @@ class PilotDB:
         for emp, values, fa in rows:
             self.db.execute("SAVEPOINT pdb_row")
             try:
-                got, hold = self._merge_one(source, emp, values, fa, as_of, ref, by, stats, counts, emps, taken, create)
+                got, hold = self._merge_one(source, emp, values, fa, as_of, ref, by, stats, counts, emps, taken, create,
+                                            additive)
             except sqlite3.Error:
                 self.db.execute("ROLLBACK TO pdb_row")
                 self.db.execute("RELEASE pdb_row")
@@ -878,7 +1095,7 @@ class PilotDB:
             held.update(hold)
         return taken, held
 
-    def _merge_one(self, source, emp, values, fa, as_of, ref, by, stats, counts, emps, taken, create):
+    def _merge_one(self, source, emp, values, fa, as_of, ref, by, stats, counts, emps, taken, create, additive=False):
         """One upload row: (the pid it was applied to or None, the pids to keep as held)."""
         name = str(values.get("name") or "")
         try:
@@ -906,7 +1123,7 @@ class PilotDB:
             done = self._conflict(note, source, ref, emp, row, pid, sig_of)
             put = done[1] if done and done[0] in ("attach", "same", "new", "different") else None
             if put and put not in taken:  # Ryan answered this row before: it goes where he put it (review)
-                self._apply(put, source, values, as_of, ref, by, stats, fa)
+                self._apply(put, source, values, as_of, ref, by, stats, fa, additive)
                 stats["remembered"] = stats.get("remembered", 0) + 1
                 return put, set()
             hold = {r["pid"] for r in self._live(emp)}
@@ -928,7 +1145,7 @@ class PilotDB:
             self._log(pid, "_gone", source, p["gone_from"], None, ref, by, "back")
             stats["back"] = stats.get("back", 0) + 1
             self._touch(pid)
-        self._apply(pid, source, values, as_of, ref, by, stats, fa)
+        self._apply(pid, source, values, as_of, ref, by, stats, fa, additive)
         return pid, set()
 
     def _record_merge(self, source, ref, sha, parser, by, stats, rows):
@@ -1001,6 +1218,128 @@ class PilotDB:
             self._record_merge("award", ref, sha, parser, by, stats, len(rows))
         return dict(stats, applied=True)
 
+    def merge_award_sen(self, month, rows, by="ryan", sha="", parser=None):
+        """1.7.10 (Ryan, Nov 15): a month's award seniority lines (seniority.award_sen_parse rows: sen, emp, last,
+        base, equip, seat) as source award, dated by the bid month (its first day; ref 'award YYYY-MM'). Per row: the
+        one live record of that employee number with that last name gets Sen #, base, equipment and seat (a value of
+        a newer month stays; a hand edit stays on top, counted kept_hand); an employee number not in the database
+        makes a record under the last name alone (a 'Last, First' from any later upload is shown instead); a number
+        whose records carry another last name is not touched (counted unmatched: a wrong merge mixes two pilots).
+        Nothing is dropped (the award's dates of hire, merge_award, keep their own values) and nobody is marked gone;
+        review: a pilot a seniority list marked gone who is on the award of that list's month or a later one is back.
+        Returns the counts {applied, rows, added, changed, kept_hand, unmatched, back, bad}."""
+        month = str(month or "")
+        if not re.fullmatch(r"\d{4}-\d{2}", month):
+            return {"applied": False, "why": "no-month"}
+        as_of, ref = f"{month}-01", f"award {month}"
+        stats = {"rows": len(rows or [])}
+        with self._tx():
+            seen = set()
+            for r in rows or []:
+                emp = emp_of((r or {}).get("emp"))
+                last = clean_line(str((r or {}).get("last") or ""), NAME_MAX, "name", empty_ok=True) if r else ""
+                lk = name_key(last)[0]
+                if not emp or not lk or "," in last or emp in seen:
+                    stats["bad"] = stats.get("bad", 0) + 1
+                    continue
+                seen.add(emp)
+                self.db.execute("SAVEPOINT pdb_row")
+                try:
+                    self._award_sen_one(emp, last, lk, r, as_of, ref, by, stats)
+                except (sqlite3.Error, Bad):
+                    self.db.execute("ROLLBACK TO pdb_row")
+                    stats["bad"] = stats.get("bad", 0) + 1
+                self.db.execute("RELEASE pdb_row")
+            self._link_pickups()
+            if month >= (self._meta("award_sen_month") or ""):
+                self._set_meta("award_sen_month", month)
+                self._set_meta("award_sen_count", len(seen))
+            self._record_merge("award", ref, sha, parser, by, stats, stats["rows"])
+        return dict(stats, applied=True)
+
+    def _award_sen_one(self, emp, last, lk, r, as_of, ref, by, stats):
+        live = self._live(emp)
+        hit = [x for x in live if x["last_key"] == lk]
+        if not hit:  # a last name the award cut short, or printed with a second word the record does not have
+            hit = [x for x in live if len(lk) >= 4 and len(x["last_key"]) >= 4
+                   and (x["last_key"].startswith(lk) or lk.startswith(x["last_key"]))]
+        if len(hit) == 1:
+            pid = hit[0]["pid"]
+        elif live:
+            stats["unmatched"] = stats.get("unmatched", 0) + 1
+            return
+        else:
+            pid = self._create(emp, last, ref, "award", by)
+            stats["added"] = stats.get("added", 0) + 1
+            self._put_val(pid, "name", "award", last, as_of, ref, by)
+        p = self._pilot(pid)
+        gm = re.fullmatch(r"list (\d{4}-\d{2})-\d{2}", p["gone_from"] or "")
+        if p["gone_at"] and gm and as_of[:7] >= gm.group(1):
+            # 1.7.10 review: a pilot a seniority list dropped who is on the award of that list's month or a later
+            # one is flying: back (logged, as a list's own 'back' is)
+            self.db.execute("UPDATE pilots SET gone_at=NULL, gone_from=NULL WHERE pid=?", (pid,))
+            self._log(pid, "_gone", "award", p["gone_from"], None, ref, by, "back")
+            stats["back"] = stats.get("back", 0) + 1
+            self._touch(pid)
+        hands = {f for (f,) in self.db.execute("SELECT field FROM vals WHERE pid=? AND source='hand'", (pid,))}
+        changed = False
+        for f in AWARD_SEN_FIELDS:
+            try:
+                v = check(f, r.get("base" if f == "domicile" else f), self.today())
+            except Bad:
+                continue
+            if v and self._put_val(pid, f, "award", v, as_of, ref, by) == "changed":
+                changed = True
+                if f in hands:
+                    stats["kept_hand"] = stats.get("kept_hand", 0) + 1
+        if changed:
+            stats["changed"] = stats.get("changed", 0) + 1
+
+    def name_rows(self):
+        """[(emp, last, first, seat)] of every live record whose employee number no other live record shares, for the
+        name lookup's directory (watcher.name_directory)."""
+        out = []
+        with self.lock:
+            for v in self._all_views().values():
+                if v["gone"] or v["emp_shared"]:
+                    continue
+                last, _, first = (x.strip() for x in v["fields"]["name"]["value"].partition(","))
+                if last:
+                    out.append((v["emp"], last, first, v["fields"]["seat"]["value"]))
+        return out
+
+    def _award_meta(self):
+        """{month, count} of the newest award merged: its dates of hire (merge_award) or, 1.7.10, its seniority
+        lines (merge_award_sen), whichever month is later."""
+        a = (self._meta("award_month", ""), int(self._meta("award_count", "0") or 0))
+        b = (self._meta("award_sen_month", ""), int(self._meta("award_sen_count", "0") or 0))
+        m, n = max(a, b)
+        return {"month": m, "count": n}
+
+    def name_hits(self, q, limit=20):
+        """1.7.10 (Ryan, Nov 15): the live records a typed name finds, for the pilot lookup: 'Last' or 'Last, First'
+        (letters; the whole last name, without Jr / Sr / II; the first name by its start). [{emp, name, pos}] by
+        name, at most limit; never phones, emails or notes. Review: live means not gone, as in name_rows (a portal
+        pilot's directory), so both lookups find the same pilots; a pilot on a current award is never gone
+        (merge_award_sen)."""
+        last, _, first = (x.strip() for x in str(q or "").partition(","))
+        lk = name_key(last + ",")[0]
+        fk = re.sub(r"[^A-Z]", "", _fold(first))
+        if not lk:
+            return []
+        out = []
+        with self.lock:
+            for v in self._all_views().values():
+                if v["last_key"] != lk or v["gone"]:
+                    continue
+                name = v["fields"]["name"]["value"]
+                nf = re.sub(r"[^A-Z]", "", _fold(name.partition(",")[2]))
+                if fk and nf and not nf.startswith(fk):
+                    continue
+                out.append({"emp": v["emp"], "name": name, "pos": v["fields"]["seat"]["value"]})
+        out.sort(key=lambda r: (r["name"].upper(), r["emp"]))
+        return out[:limit]
+
     @staticmethod
     def contact_values(e):
         """The contacts source's values of one contacts.json entry (its hal object from the Notes, phones, emails;
@@ -1020,24 +1359,36 @@ class PilotDB:
             fa = {"sen": f"{hal['sen_month']}-01", "status": f"{hal['sen_month']}-01"}
         return vals, fa
 
-    def merge_contacts(self, cj, by="ryan", sha="", parser=None):
+    def merge_contacts(self, cj, by="ryan", sha="", parser=None, additive=None):
         """The contact list (contacts.json, parser 2: each entry's hal object from its Notes). A row with a HAL Emp#
         is matched like a list row and (Ryan, Nov 14: seed from the contact list) makes a record when none fits; a
         row without one matches by its Employee ID only when a live record with that number has its last name, else
         by last name and first name when exactly one live record fits, else it is held (contact_unmatched). A held row
         Ryan attached goes to that record again on every later list (review). A row that disappears from a newer list
         removes only its contacts values (logged); a list with fewer than 90% of the last whole list's rows removes
-        none (list_partial; the count it is measured against stays the whole list's). by: the uploader (contacts.json's uploaded_by); a list a pilot's instance
-        saved (by not ryan) makes no record: such a row is held for Ryan (review, spec 7: a contacts row never makes
-        one on its own)."""
+        none (list_partial; the count it is measured against stays the whole list's). by: the uploader (contacts.json's
+        uploaded_by). 1.7.10 (Ryan's decision 4 of Nov 15): a list a portal pilot's instance saved merges like Ryan's
+        own, through the same checks, with that pilot recorded as the author of every value and record it makes
+        (1.7.8 held such a row for Ryan instead). Ryan's hand edits still stay on top and every earlier value is in
+        the field log. The values stay third-party text, never instructions.
+        additive (1.7.10, Ryan's decision of Nov 16; the default for every author but ryan): a pilot's list ONLY ADDS
+        AND UPDATES. A row is matched and checked exactly like a row of Ryan's list; a value it gives is written (the
+        value before it stays in the field log, with the pilot as the author of the new one); a cell it leaves empty
+        drops nothing; its phones and emails are added after the ones on file (4 phones and 3 emails at most, so a full
+        list is left alone) and never replace one; a pilot its list does not hold loses nothing; nobody is marked gone
+        or back; the dates and the row count the next list of Ryan's is measured by (contacts_as_of, contacts_count)
+        do not move, so his list is never 'older' or 'partial' because of a pilot's. Its values carry the ref
+        'pilot contacts <day>': a later list of Ryan's writes what it lists, and never removes such a value from a
+        record it does not list."""
+        additive = (by != "ryan") if additive is None else bool(additive)
         day = str((cj or {}).get("uploaded_at") or "")[:10] or self.today().isoformat()
-        ref = f"contacts {day}"
+        ref = f"{PILOT_REF}{day}" if additive else f"contacts {day}"
         entries = [e for e in list((cj or {}).get("pilots") or []) + list((cj or {}).get("hal_only") or [])
                    if isinstance(e, dict)]
         stats = {"rows": len(entries)}
         with self._tx():
             prev = self._meta("contacts_as_of")
-            if prev and day < prev:
+            if prev and day < prev and not additive:
                 self._record_merge("contacts", ref, sha, parser, by, stats, len(entries))
                 return dict(stats, applied=False, why="older")
             base_n = int(self._meta("contacts_count", "0") or 0)  # the last whole contact list's (review)
@@ -1049,11 +1400,11 @@ class PilotDB:
                     hal_rows.append((emp_of(hal["emp"]), vals, fa))
                 else:
                     plain.append((emp_of(e.get("emp")), vals, fa))
-            taken, held = self._merge_rows("contacts", hal_rows, day, ref, by, stats, create=by == "ryan")
+            taken, held = self._merge_rows("contacts", hal_rows, day, ref, by, stats, create=True, additive=additive)
             for emp, vals, fa in self._dedupe(plain, stats):
                 self.db.execute("SAVEPOINT pdb_row")
                 try:
-                    got, hold = self._contact_plain(emp, vals, fa, day, ref, by, stats, taken)
+                    got, hold = self._contact_plain(emp, vals, fa, day, ref, by, stats, taken, additive)
                 except sqlite3.Error:
                     self.db.execute("ROLLBACK TO pdb_row")
                     self.db.execute("RELEASE pdb_row")
@@ -1063,7 +1414,16 @@ class PilotDB:
                 if got:
                     taken.add(got)
                 held.update(hold)
-            had = self._fresh("contacts")
+            if additive:  # a pilot's list: no row is missed, nothing is removed, Ryan's dates and counts stay
+                self._link_pickups()
+                self._record_merge("contacts", ref, sha, parser, by, stats, len(entries))
+                return dict(stats, applied=True)
+            # 1.7.10: only values a whole list of Ryan's gave are removed when his next list does not hold the
+            # pilot; what a pilot's list gave (ref 'pilot contacts ...') stays
+            own = "source='contacts' AND ref NOT LIKE ?"
+            had = [p for (p,) in self.db.execute(
+                "SELECT DISTINCT v.pid FROM vals v JOIN pilots p ON p.pid=v.pid WHERE v.source='contacts' AND "
+                "v.stale=0 AND v.ref NOT LIKE ? AND p.merged_into IS NULL", (PILOT_REF + "%",))]
             missing = [p for p in had if p not in taken and p not in held]
             partial = bool(missing and base_n and len(entries) < GONE_GUARD * base_n)
             if partial:
@@ -1072,7 +1432,8 @@ class PilotDB:
                 stats["conflicts"] = stats.get("conflicts", 0) + 1
             else:
                 for pid in missing:
-                    for (f,) in self.db.execute("SELECT field FROM vals WHERE pid=? AND source='contacts'", (pid,)).fetchall():
+                    for (f,) in self.db.execute(f"SELECT field FROM vals WHERE pid=? AND {own}",
+                                                (pid, PILOT_REF + "%")).fetchall():
                         self._drop_val(pid, f, "contacts", ref, by)
                     stats["removed"] = stats.get("removed", 0) + 1
             self._set_meta("contacts_as_of", day)
@@ -1097,7 +1458,7 @@ class PilotDB:
                 out.add(w[0])
         return out
 
-    def _contact_plain(self, emp, vals, fa, day, ref, by, stats, taken):
+    def _contact_plain(self, emp, vals, fa, day, ref, by, stats, taken, additive=False):
         """A contact row with no HAL Emp#: (the pid it was applied to or None, the pids to keep as held)."""
         try:
             name = check("name", vals.get("name") or "", self.today())
@@ -1117,13 +1478,13 @@ class PilotDB:
                     if first in self._first_words(p)]
             pid = hits[0] if len(hits) == 1 else None
         if pid and pid not in taken:
-            self._apply(pid, "contacts", vals, day, ref, by, stats, fa)
+            self._apply(pid, "contacts", vals, day, ref, by, stats, fa, additive)
             return pid, set()
         row = {"emp": emp, "values": vals, "as_of": day, "ref": ref, "by": by, "field_as_of": fa}
         done = self._conflict("contact_unmatched", "contacts", ref, emp, row, None, {"name": name, "emp": emp})
         put = done[1] if done and done[0] == "attach" else None
         if put and put not in taken:  # Ryan attached this row before: it goes to that record again (review)
-            self._apply(put, "contacts", vals, day, ref, by, stats, fa)
+            self._apply(put, "contacts", vals, day, ref, by, stats, fa, additive)
             stats["remembered"] = stats.get("remembered", 0) + 1
             return put, set()
         if not done:
@@ -1271,7 +1632,10 @@ class PilotDB:
                     if source == "list":
                         self._gone(p, ref, by)
                     else:
-                        for (f,) in self.db.execute("SELECT field FROM vals WHERE pid=? AND source='contacts'", (p,)).fetchall():
+                        # 1.7.10 review: the same rule as a whole list (merge_contacts): only what a list of
+                        # Ryan's gave goes; a value only a pilot's list gave stays
+                        for (f,) in self.db.execute("SELECT field FROM vals WHERE pid=? AND source='contacts' AND "
+                                                    "ref NOT LIKE ?", (p, PILOT_REF + "%")).fetchall():
                             self._drop_val(p, f, "contacts", ref, by)
             elif how in ("same", "attach", "different", "new"):
                 vals = row.get("values") or {}
@@ -1297,8 +1661,10 @@ class PilotDB:
                 if tp["gone_at"] and source == "list":
                     self.db.execute("UPDATE pilots SET gone_at=NULL, gone_from=NULL WHERE pid=?", (target,))
                     self._log(target, "_gone", source, tp["gone_from"], None, ref, by, "back")
+                # 1.7.10 review: a held row of a pilot's contacts list is applied the way his list is, whoever
+                # answers it: it adds and updates, and never drops or replaces a phone, an email or any other value
                 self._apply(target, source, vals, row.get("as_of") or ref.split(" ")[-1], ref, row.get("by") or by,
-                            stats, row.get("field_as_of"))
+                            stats, row.get("field_as_of"), additive=str(ref or "").startswith(PILOT_REF))
                 self._touch(target)
             # review: the answer keeps the record it put the row on (the next upload applies the same row there again,
             # and a forget of that record deletes this row); the row's values now live in vals, so only its number is
@@ -1361,7 +1727,8 @@ class PilotDB:
 
     def add_entry(self, pid, text, shared=True, rid=None, by="ryan"):
         """A dated entry in the record's notes log. (by, rid) is unique: the same rid again answers the entry already
-        saved and adds nothing. At most ENTRIES_PER_RECORD entries a record, all authors together. Returns the eid."""
+        saved and adds nothing. At most ENTRIES_PER_RECORD entries a record, all authors together. Returns the eid.
+        1.7.10: every entry is shared (`shared` is kept for callers of 1.7.9 and is not read)."""
         text = clean_text(text, ENTRY_MAX, "text")
         if rid is not None and not re.fullmatch(ROLES.TICKET_CID_PATTERN, str(rid)):
             raise Bad("rid", "must be 6 to 40 letters, digits, _ or -")
@@ -1375,7 +1742,7 @@ class PilotDB:
                 raise Bad("text", "the log for that pilot is full")
             eid = self._new_id("n", "entries", "eid")
             self.db.execute("INSERT INTO entries(eid,pid,by,at,text,shared,rid) VALUES(?,?,?,?,?,?,?)",
-                            (eid, pid, by, self.now(), text, int(bool(shared)), rid))
+                            (eid, pid, by, self.now(), text, 1, rid))
             self._act(by, "add", pid)
             self._touch(pid)
             return eid
@@ -1476,25 +1843,22 @@ class PilotDB:
 
     # -------------------------------------------------- 1.7.9: sharing with a portal pilot (spec 11, contract rev 4)
     def set_share(self, pilot, on, by="ryan"):
-        """Ryan's Share switch for one portal pilot (only Ryan's card calls it; Claude never does). Returns the pilots
-        shared with now."""
+        """Ryan's Share switch for one portal pilot (only Ryan's card calls it; Claude never does). 1.7.10: sharing is
+        on by default for every portal pilot, so this is his OFF switch (and the way back on); the choice is kept in
+        the Watcher's own switches file (Switches), never in this database. Returns whether it is shared now."""
         if not isinstance(pilot, str) or not ROLES.NAME_RE.fullmatch(pilot):
             raise Bad("pilot", "is not a pilot")
         if not isinstance(on, bool):
             raise Bad("on", "must be true or false")
-        with self._tx():
-            self.db.execute("INSERT INTO share(pilot,enabled,at,by) VALUES(?,?,?,?) ON CONFLICT(pilot) DO UPDATE SET "
-                            "enabled=excluded.enabled, at=excluded.at, by=excluded.by", (pilot, int(on), self.now(), by))
-            self._set_meta("share_reset", "")  # Ryan used a switch: the "off after a restore" line goes
-        return self.shared_with()
+        self.switches.set_share(pilot, on)
+        return self.switches.shared(pilot)
 
-    def shared_with(self):
-        with self.lock:
-            return [p for (p,) in self.db.execute("SELECT pilot FROM share WHERE enabled=1 ORDER BY pilot")]
+    def shared_with(self, pilots=()):
+        """Those of `pilots` (the configured portal pilots) the database is shared with now."""
+        return [p for p in pilots if self.is_shared(p)]
 
     def is_shared(self, pilot):
-        with self.lock:
-            return bool(self.db.execute("SELECT 1 FROM share WHERE pilot=? AND enabled=1", (pilot,)).fetchone())
+        return isinstance(pilot, str) and bool(ROLES.NAME_RE.fullmatch(pilot)) and self.switches.shared(pilot)
 
     def answer_of(self, pilot, rid):
         """The answer already given to (pilot, rid), {ok, why, at}, or None."""
@@ -1542,6 +1906,59 @@ class PilotDB:
             self.put_answer(pilot, rid, ok, why, lim["answers"])
             return ok, why, after
 
+    def pilot_made(self):
+        """How many live records only pilots' contacts lists made: created by one ('pilot contacts <day>') and holding
+        no value from the seniority list, an award or a contacts list of Ryan's. A hand edit does not count as
+        Ryan's list (a pilot can send one)."""
+        with self.lock:
+            return self.db.execute(
+                "SELECT COUNT(*) FROM pilots p WHERE p.merged_into IS NULL AND p.created_by LIKE ? AND NOT EXISTS ("
+                "SELECT 1 FROM vals v WHERE v.pid=p.pid AND (v.source IN ('list','award') OR "
+                "(v.source='contacts' AND v.ref NOT LIKE ?)))", (PILOT_REF + "%", PILOT_REF + "%")).fetchone()[0]
+
+    def pilot_contacts(self, pilot, rid, cj, sha="", parser=None, limits=None):
+        """1.7.10 (contract 1 revision 5): a portal pilot's contacts list from the admin's inbox, merged with the
+        author `pilot` (the inbox folder's name), adding and updating only (merge_contacts, additive). At most
+        per_day lists of one pilot in 24 h. Returns (ok, why, counts or None): why one of roles.PILOTDB_ANSWERS with
+        counts only; counts (merge_contacts' answer) only for a list merged by this call.
+        The merge, its act_log row and its answer commit together; the same rid again returns the first answer and
+        changes nothing."""
+        lim = limits or ROLES.PILOT_CONTACTS_LIMITS
+        with self._tx():
+            had = self.answer_of(pilot, rid)
+            if had:
+                return had["ok"], had["why"], None
+            r = None
+            if self.acts(pilot, ("contacts",)) >= lim["per_day"]:
+                ok, why = False, f"Not merged: over {lim['per_day']} contacts lists in 24 h"
+            else:
+                # review (Nov 16): the merge runs in a savepoint; when it leaves more than new_max live records that
+                # only pilots' lists made (no list of Ryan's holds them), the whole list is rolled back and refused
+                touched = set(self._touched)
+                self.db.execute("SAVEPOINT pdb_pilot_list")
+                try:
+                    r = self.merge_contacts(cj, pilot, sha, parser, additive=True)
+                    over = bool(r.get("added")) and self.pilot_made() > lim["new_max"]
+                    if over:
+                        self.db.execute("ROLLBACK TO pdb_pilot_list")
+                        self._touched, r = touched, None
+                except BaseException:
+                    self.db.execute("ROLLBACK TO pdb_pilot_list")
+                    self.db.execute("RELEASE pdb_pilot_list")
+                    self._touched = touched
+                    raise
+                self.db.execute("RELEASE pdb_pilot_list")
+                self._act(pilot, "contacts", None)  # a refused list counts toward per_day too
+                if r is None:
+                    ok, why = False, (f"Not merged: over {lim['new_max']} pilots that no list of Ryan's holds; ask Ryan "
+                                      "to upload his own list first")
+                else:
+                    ok, why = True, (f"Contacts merged: {r.get('rows', 0)} rows read, {r.get('added', 0)} pilots added, "
+                                     f"{max(0, r.get('changed', 0) - r.get('added', 0))} updated, "
+                                     f"{r.get('conflicts', 0)} held for Ryan")
+            self.put_answer(pilot, rid, ok, why, ROLES.PILOTDB_NOTE_LIMITS["answers"])
+            return ok, why, r
+
     def _pilot_op(self, pilot, cmd, d, lim, full):
         op, pid = d.get("op"), d.get("pid")
         try:
@@ -1588,7 +2005,9 @@ class PilotDB:
                 return True, "Saved", None
             if cmd == "edit" and op in ("set", "unset"):
                 f = d.get("field")
-                if f not in FIELDS:
+                # 1.7.10: only the contract's edit fields (roles.PILOTDB_EDIT_FIELDS); 'domicile', new in the
+                # database, is not one of them until the contract says so
+                if f not in FIELDS or f not in ROLES.PILOTDB_EDIT_FIELDS:
                     return False, "Not saved: it could not be read, send it again", None
                 if self.acts(pilot, ("edit",)) >= lim["edits_per_day"]:
                     return False, f"Not saved: over {lim['edits_per_day']} edits in 24 h", None
@@ -1610,30 +2029,66 @@ class PilotDB:
             return False, "Not saved: that pilot is not in Ryan's pilot database", None
         return False, "Not saved: it could not be read, send it again", None
 
-    def _shared_brief(self, v):
-        """A record's fields as a shared pilot may see them (no employee number, phones, emails or union id)."""
+    def _shared_rec(self, v):
+        """One live record as a shared pilot reads it (1.7.10, Ryan's decision 1 of Nov 15: "shared with James
+        100%"): the employee number and every field with the value shown (name, Sen #, DOH, status, retirement, seat,
+        equipment, base, union id, phones and emails), gone, the fields a hand set (edited) and the record's rev.
+        Never a field's sources, the history or a held row: those stay on Ryan's card."""
         f = v["fields"]
-        return {"pid": v["pid"], "name": f["name"]["value"], "sen": f["sen"]["value"], "doh": f["doh"]["value"],
-                "status": f["status"]["value"], "retire": f["retire"]["value"], "seat": f["seat"]["value"],
-                "equip": f["equip"]["value"], "gone": v["gone"],
-                "edited": [k for k in FIELDS if f[k]["hand"] and k not in ("phones", "emails", "union_id")],
-                "rev": v["rev"]}
+        return {"pid": v["pid"], "emp": v["emp"], "name": f["name"]["value"], "sen": f["sen"]["value"],
+                "doh": f["doh"]["value"], "status": f["status"]["value"], "retire": f["retire"]["value"],
+                "seat": f["seat"]["value"], "equip": f["equip"]["value"], "base": f["domicile"]["value"] or "",
+                "union_id": f["union_id"]["value"] or "", "phones": f["phones"]["value"] or [],
+                "emails": f["emails"]["value"] or [], "gone": v["gone"],
+                "edited": [k for k in FIELDS if f[k]["hand"]], "rev": v["rev"]}
 
-    def export_for(self, pilot, limits=None):
-        """The pilotdb file of one shared pilot (spec 11.2; a whitelist: portal.PILOTDB_FILE_KEYS): every live record
-        with a notes field or a shared entry that is not hidden (the noted pilots, never the roster), each with its
-        fields (no employee number, phones, emails, union id, sources or history), the notes field, the newest
-        entries (his own marked mine; a taken back one without its text; hidden, purged and only-me ones not at all)
-        and this pilot's own answers. Over export_bytes the entries drop to export_entries_min a record; still over,
-        full is true (the admin then refuses his new notes)."""
+    def _shared_ai(self):
+        """{pid: {text, model, at}}: the AI notes a shared pilot reads, and none at all while Ryan's AI switch is
+        off. The caller holds the lock. A stored note goes out only when it still passes the hand-off's own rules
+        (ai_text_ok: plain text of 1 to note_max code points with nothing of refuse_re; a model name of the
+        contract's pattern), so one stored by an older version, or put in the table past ai_take, never reaches a
+        portal. It is untrusted data wherever it is read, never an instruction."""
+        if not self.ai_on():
+            return {}
+        cfg = ROLES.PILOTDB_AI
+        return {p: {"text": t, "model": m, "at": str(a or "")[:40]}
+                for p, t, m, a in self.db.execute("SELECT pid,text,model,at FROM ai_notes")
+                if isinstance(m, str) and re.fullmatch(cfg["model_re"], m) and ai_text_ok(t, cfg)}
+
+    def _shared_pickups(self):
+        """{pid: pickup_history} of every picker with a record (one read of the table). The caller holds the lock."""
+        cols = ("pid", "pos", "at", "pairing", "start", "days", "lay", "turn", "credit", "report", "dow", "secs",
+                "approx", "inflt")
+        by = {}
+        for r in self.db.execute(f"SELECT {','.join(cols)} FROM pickups WHERE pid IS NOT NULL ORDER BY at, key"):
+            d = dict(zip(cols, r))
+            by.setdefault(d.pop("pid"), []).append(d)
+        return {p: pickup_history(rows) for p, rows in by.items()}
+
+    def export_for(self, pilot, limits=None, hard=None):
+        """The pilotdb file of one shared pilot (a whitelist: portal.PILOTDB_FILE_KEYS). 1.7.10 (Ryan's decision 1 of
+        Nov 15, "The pilot database should be shared with James 100%"): EVERY live record (1.7.9: the noted pilots
+        only), each with every field (_shared_rec, the employee number, the phones and the emails too), the notes
+        field, the dated log (every entry that is not hidden or purged, the ones an older version marked "Only me"
+        too; his own marked mine; a taken back one without its text), the picker's pickup history (the summary and
+        the newest rows) and, while Ryan's AI switch is on, the AI note; and this pilot's own answers. Never: a
+        field's sources, the history, the held rows, hidden or purged text, another pilot's answers.
+
+        The size ladder: the newest export_entries entries and EXPORT_PICKUPS pickup rows a record; over export_bytes
+        export_entries_min and EXPORT_PICKUPS_MIN; still over, full is true (the admin then refuses his new notes).
+        The file never goes over `hard` (EXPORT_HARD, under the 8 MiB a signed file may be): past it 5 entries and 5
+        pickup rows a record; still over (review, round 2: gradually, no cliff) the pickup rows go and the notes
+        fields, AI notes and log entries are kept newest first, across all pilots, for as long as they fit, so the
+        newest are always there; at the very last (a database whose fields alone are over) the records."""
         lim = limits or ROLES.PILOTDB_NOTE_LIMITS
+        hard = EXPORT_HARD if hard is None else hard
         with self.lock:
             views = self._all_views()
             notes = {p: {"text": t, "rev": r, "by": b, "at": a}
                      for p, t, r, b, a in self.db.execute("SELECT pid,text,rev,by,at FROM notes WHERE text!=''")}
             ents = {}
             for eid, pid, by, at, text, how in self.db.execute(
-                    "SELECT eid,pid,by,at,text,gone_how FROM entries WHERE shared=1 AND "
+                    "SELECT eid,pid,by,at,text,gone_how FROM entries WHERE "
                     "(gone_how IS NULL OR gone_how='retracted') ORDER BY at DESC, rowid DESC"):
                 e = {"eid": eid, "by": by, "at": at}
                 if how:
@@ -1644,59 +2099,88 @@ class PilotDB:
                         e["mine"] = True
                 ents.setdefault(pid, []).append(e)
             as_of = {"list": self._meta("list_as_of", ""), "contacts": self._meta("contacts_as_of", ""),
-                     "award": self._meta("award_month", "")}
+                     "award": self._award_meta()["month"]}
+            ai = self._shared_ai()
+            picks = self._shared_pickups()
             answers = self.answers(pilot, lim["answers"])
             now = self.now()
-        pids = sorted((p for p in set(notes) | set(ents) if p in views), key=lambda p: self._sen_key(views[p]))
-        out = {}
-        for n, full in ((lim["export_entries"], False), (lim["export_entries_min"], True)):
-            recs = []
-            for p in pids:
-                r = self._shared_brief(views[p])
-                if p in notes:
-                    r["notes"] = notes[p]
-                r["entries"] = ents.get(p, [])[:n]
-                r["entries_total"] = len(ents.get(p, []))
-                recs.append(r)
-            out = {"v": 1, "generated": now, "as_of": as_of, "count": len(recs), "records": recs, "answers": answers,
-                   "limits": {k: lim[k] for k in ("entry_max", "field_max", "adds_per_day", "changes_per_day",
-                                                  "edits_per_day", "value_max", "why_max")}}
-            if len(json.dumps(out, ensure_ascii=False).encode("utf-8")) <= lim["export_bytes"]:
-                return out
-            if full:
-                out["full"] = True
-        return out
+        pids = sorted(views, key=lambda p: self._sen_key(views[p]))
+        briefs = {p: self._shared_rec(views[p]) for p in pids}
 
-    def roster(self):
-        """roster.json for the shared pilots' Watchers (spec 11.1; never exported, logged or in a sensor): every live
-        record by employee number, each {the shared brief, lk (the last name's key, for a number two records share),
-        notes_n, phones, emails}. 1.7.9 (Ryan, Nov 14, B23): the phones and emails are here so a pilot's Watcher can
-        show them for the one pilot he looks up; it never passes on more than that one pilot's."""
-        with self.lock:
-            views = self._all_views()
-            shared_n = dict(self.db.execute("SELECT pid,COUNT(*) FROM entries WHERE shared=1 AND gone_how IS NULL "
-                                            "GROUP BY pid").fetchall())
-            noted = {p for (p,) in self.db.execute("SELECT pid FROM notes WHERE text!=''")}
-            by_emp = {}
-            for pid, v in views.items():
-                r = self._shared_brief(v)
-                r.update(lk=v["last_key"], notes_n=shared_n.get(pid, 0) + (1 if pid in noted else 0),
-                         phones=v["fields"]["phones"]["value"] or [], emails=v["fields"]["emails"]["value"] or [])
-                by_emp.setdefault(v["emp"], []).append(r)
-            return {"v": 1, "generated": self.now(), "rev": int(self._meta("rev", "0")), "by_emp": by_emp}
+        def build(n_ent, n_pick, texts=True, n_rec=None, keep=None):
+            recs = []
+            for p in (pids if n_rec is None else pids[:n_rec]):
+                r = dict(briefs[p])
+                if p in notes and (texts if keep is None else ("n", p) in keep):
+                    r["notes"] = notes[p]
+                if p in ai and (texts if keep is None else ("a", p) in keep):
+                    r["ai_note"] = ai[p]
+                r["entries"] = ents.get(p, [])[:n_ent if keep is None else keep.get(("e", p), 0)]
+                r["entries_total"] = len(ents.get(p, []))
+                if p in picks:
+                    r["pickups"] = {"summary": picks[p]["summary"], "rows": picks[p]["rows"][:n_pick]}
+                recs.append(r)
+            return {"v": 1, "generated": now, "as_of": as_of, "count": len(recs), "records": recs, "answers": answers,
+                    "limits": {k: lim[k] for k in ("entry_max", "field_max", "adds_per_day", "changes_per_day",
+                                                   "edits_per_day", "value_max", "why_max")}}
+
+        def size(d):
+            return len(json.dumps(d, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+        soft = min(lim["export_bytes"], hard)
+        out = build(lim["export_entries"], EXPORT_PICKUPS)
+        if size(out) <= soft:
+            return out
+        out = build(lim["export_entries_min"], EXPORT_PICKUPS_MIN)
+        if size(out) <= soft:
+            return out
+        out["full"] = True
+        if size(out) <= hard:
+            return out
+        out = dict(build(5, 5), full=True)
+        if size(out) <= hard:
+            return out
+        # review (round 2): no cliff. The texts newest first, across all pilots, while they fit over the bare records
+        bare = size(build(0, 0, False))
+        items = [(v["at"] or "", ("n", p), size(v) + 12) for p, v in notes.items() if p in briefs]
+        items += [(v.get("at") or "", ("a", p), size(v) + 14) for p, v in ai.items() if p in briefs]
+        items += [(e["at"] or "", ("e", p), size(e) + 1) for p, es in ents.items() if p in briefs for e in es]
+        items.sort(key=lambda x: x[0], reverse=True)
+        room = hard - bare
+        while bare <= hard and room > 0:
+            keep, left, closed = {}, room, set()
+            for _at, k, n_bytes in items:
+                if k in closed:
+                    continue  # an older entry of a pilot whose newer one did not fit: a record's entries stay a run
+                if n_bytes > left:
+                    if k[0] == "e":
+                        closed.add(k)
+                    continue
+                left -= n_bytes
+                keep[k] = keep.get(k, 0) + 1
+            out = dict(build(0, 0, keep=keep), full=True)
+            if size(out) <= hard:
+                return out
+            room = int(room * 0.9) - 64
+        out = dict(build(0, 0, False), full=True)
+        n = len(pids)
+        while size(out) > hard and n:  # never reached with real data: a record's fields are a few hundred bytes
+            n //= 2
+            out = dict(build(0, 0, False, n), full=True)
+        return out
 
     # -------------------------------------------------- 1.7.9: the AI note (HOM's consultant models)
     def ai_on(self):
-        return self.meta("ai_on", "0") == "1"
+        """Ryan's AI notes switch: on by default (1.7.10, Ryan's decision 3 of Nov 15), off when he turned it off on
+        his card. Kept in the Watcher's switches file (Switches), never in this database."""
+        return self.switches.ai_on()
 
     def set_ai(self, on):
-        """Ryan's AI notes switch (only his card calls it)."""
+        """Ryan's AI notes switch (only his card calls it; Claude never does)."""
         if not isinstance(on, bool):
             raise Bad("on", "must be true or false")
-        with self._tx():
-            self._set_meta("ai_on", "1" if on else "0")
-            self._set_meta("share_reset", "")
-        return on
+        self.switches.set_ai(on)
+        return self.switches.ai_on()
 
     def _ai_rows(self, cfg):
         """([(pid, stats)], signature) of every live record with at least min_pickups pickups."""
@@ -1799,13 +2283,14 @@ class PilotDB:
                     text = clean_text(n.get("text"), cfg["note_max"], "text") if p and not p["merged_into"] else None
                 except Bad:
                     text = None
-                if not text or "@" in text or "://" in text:
+                if not text or not ai_text_ok(text, cfg):
                     refused += 1
                     continue
                 saved += 1
                 # 1.7.9 review: the same note handed in again (HOM sends its cached notes with every new batch) writes
-                # nothing, and an AI note never moves the record's rev (it is no record field and reaches no pilot), so
-                # a field edit somebody has open is not refused as stale and no shared file is rewritten for it
+                # nothing, and an AI note never moves the record's rev (it is no record field), so a field edit
+                # somebody has open is not refused as stale and no shared file is rewritten for the same note again
+                # (1.7.10: a new note moves the database's rev, so a shared pilot's file and the roster follow)
                 if self.db.execute("SELECT 1 FROM ai_notes WHERE pid=? AND text=? AND model=?",
                                    (pid, text, model)).fetchone():
                     continue
@@ -2116,13 +2601,14 @@ class PilotDB:
                                      "merged_at": merged["list"]},
                             "contacts": {"date": self._meta("contacts_as_of", ""),
                                          "count": int(self._meta("contacts_count", "0")), "merged_at": merged["contacts"]},
-                            "award": {"month": self._meta("award_month", ""), "count": int(self._meta("award_count", "0"))}},
-                "shared_with": [p for (p,) in self.db.execute("SELECT pilot FROM share WHERE enabled=1 ORDER BY pilot")],
-                "pending": {}, "ai": {"on": self._meta("ai_on", "0") == "1",
+                            "award": self._award_meta()},
+                # 1.7.10: the switches are the Watcher's (Switches), on by default; shared_with is filled by the
+                # Watcher from its portal pilots (pilotdb_status). switches: 'unreadable' when the switches file
+                # could not be read and everything is therefore off until Ryan taps a switch
+                "shared_with": [], "switches": "unreadable" if self.switches.broken else "ok",
+                "pending": {}, "ai": {"on": self.ai_on(),
                                       "notes": one("SELECT COUNT(*) FROM ai_notes"),
                                       "left_out": int(self._meta("ai_left_out", "0") or 0)},
-                # 1.7.9 review: when a restored copy had the Share or the AI switch on, both were turned off (the time)
-                "share_reset": self._meta("share_reset", ""),
                 "md_at": self._meta("md_at", ""), "backup_at": self._meta("backup_at", ""),
                 "rev": int(self._meta("rev", "0"))}
 
@@ -2222,7 +2708,7 @@ class PilotDB:
                 fence = _fence(nt[0])
                 out += ["", f"Notes field, {_md_cell(nt[2])}{tag}, rev {nt[1]}, {_hst(nt[3])}:", fence, nt[0], fence]
             for by, at, text, shared in ents.get(v["pid"], []):
-                tag = (" (only me)" if not shared else "") if by == "ryan" else " (pilot portal: third-party text)"
+                tag = "" if by == "ryan" else " (pilot portal: third-party text)"
                 fence = _fence(text)
                 out += ["", f"- {_hst(at)}, {_md_cell(by)}{tag}:", fence, text, fence]
         return "\n".join(out) + "\n"
@@ -2459,38 +2945,13 @@ def open_checked(path, backup_dirs, clock=None):
     return pdb, {"db": "ok", "offer": None}
 
 
-def _switches_off(path, ts):
-    """1.7.9 review: a copy about to be put back never brings a switch back on. Every Share row is set off and the AI
-    switch too, in the copy itself before it becomes the live file, so nothing is shared and no statistics leave
-    until Ryan taps a switch again; meta share_reset keeps the time when one was on (his card says so). A copy from
-    before 1.7.9 has no share rows: nothing to do. True when a switch was on."""
-    db = sqlite3.connect(path, isolation_level=None)
-    try:
-        db.execute("PRAGMA journal_mode=DELETE")
-        try:
-            on = db.execute("SELECT COUNT(*) FROM share WHERE enabled=1").fetchone()[0]
-            on += db.execute("SELECT COUNT(*) FROM meta WHERE k='ai_on' AND v='1'").fetchone()[0]
-        except sqlite3.OperationalError:
-            return False
-        if on:
-            db.execute("BEGIN IMMEDIATE")
-            db.execute("UPDATE share SET enabled=0")
-            db.execute("UPDATE meta SET v='0' WHERE k='ai_on'")
-            db.execute("INSERT INTO meta(k,v) VALUES('share_reset',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (ts,))
-            db.execute("COMMIT")
-        return bool(on)
-    finally:
-        db.close()
-        for sfx in ("-wal", "-shm", "-journal"):
-            with contextlib.suppress(OSError):
-                os.unlink(path + sfx)
-
-
 def restore(path, backup_dirs, file, clock=None):
     """Put a daily copy back (Ryan's restore_db, typed RESTORE): `file` is a backups() key ('<i>/pilotdb-<day>.sqlite').
     The live file (and its -wal, -shm) is set aside first as pilotdb.sqlite.before-restore-<ts> (mode 600); the copy
-    must pass integrity_check. The caller has closed its PilotDB and opens a new one after. 1.7.9 review: the copy
-    comes back with every Share switch and the AI switch OFF (_switches_off). Returns the path set aside."""
+    must pass integrity_check. The caller has closed its PilotDB and opens a new one after. 1.7.10: Ryan's Share and
+    AI choices are not in the database (Switches, the Watcher's own file), so a copy put back changes neither: what
+    he switched off stays off, what is on by default stays on (1.7.9 turned both off in the copy instead, when they
+    were stored in it). Returns the path set aside."""
     m = re.fullmatch(r"(\d)/(pilotdb-\d{4}-\d{2}-\d{2}\.sqlite)", str(file or ""))
     if not m or int(m.group(1)) >= len(backup_dirs):
         raise Bad("file", "is not a copy on file")
@@ -2511,6 +2972,5 @@ def restore(path, backup_dirs, file, clock=None):
                 break
             b.write(chunk)
     _private(tmp)
-    _switches_off(tmp, ts)
     os.replace(tmp, path)
     return aside

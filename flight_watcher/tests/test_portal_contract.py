@@ -19,7 +19,10 @@ import roles
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE = os.path.join(HERE, "tests", "fixtures", "portal_contract_v1.json")
 DOC = os.path.join(HERE, "PORTAL_CONTRACT.md")
-CONTRACT_SHA256 = "9b882fb6dd00a932e196359edc364ee8ecbe78da7077f5f29a7fdc06301a6176"
+# 1.7.10 (Ryan, Nov 16): revision 5, a pilot's contacts list (upload/pdf kind contacts). Revision 4's bytes as of
+# Nov 15 were 86c2d8f905eff7509cb8ef85cf3f8a7adf7e611556ab395a017e6fd460311fbf; 1.7.9's were
+# 9b882fb6dd00a932e196359edc364ee8ecbe78da7077f5f29a7fdc06301a6176
+CONTRACT_SHA256 = "4e7812d603f97a6e46ff00fc8b6cf6f3dc32708db1539f15010566e6095a192b"
 
 
 def _fx():
@@ -36,7 +39,7 @@ def test_fixture_regenerates_byte_for_byte_and_is_pinned():
 def test_lists_are_the_roles_tables():
     fx = _fx()
     assert fx["contract"] == fx["fwp"] == roles.CONTRACT == PT.FWP == 1
-    assert fx["revision"] == roles.CONTRACT_REVISION == 4
+    assert fx["revision"] == roles.CONTRACT_REVISION == 5  # 1.7.10: a pilot's contacts list (kind contacts)
     assert fx["commands"]["shapes"] == json.loads(json.dumps(roles.SHAPE_CMDS))
     assert fx["commands"]["pilot_upload_limits"] == roles.PILOT_UPLOAD_LIMITS
     assert fx["commands"]["since_revision"] == roles.COMMAND_SINCE and fx["commands"]["since_revision"]["upload/pdf"] == 3
@@ -44,7 +47,7 @@ def test_lists_are_the_roles_tables():
     assert fx["events"]["kind_fields"] == {k: list(v) for k, v in roles.EVENT_KIND_FIELDS.items()}
     assert {"bid_calendar", "schedule_unread"} <= set(fx["events"]["kinds"])
     man = json.loads(fx["samples"]["envelopes"][0]["envelope"]["payload"])
-    assert man["revision"] == 4 and "recall/set" not in man["mqtt_subs"] and "upload/pdf" in man["mqtt_subs"]
+    assert man["revision"] == 5 and "recall/set" not in man["mqtt_subs"] and "upload/pdf" in man["mqtt_subs"]
     assert fx["commands"]["allowed"] == list(roles.PORTAL_CMDS)
     assert fx["commands"]["refused"] == list(roles.PORTAL_REFUSED)
     assert fx["prefs"] == json.loads(json.dumps(roles.PREF_KEYS)) and fx["file_kinds"] == roles.FILE_KINDS
@@ -203,10 +206,17 @@ def test_doc_names_everything_in_the_contract():
                  "sensor.<prefix>_pilot_uploads", "Fit\n  Fits", "SCHEDULE_UNREAD_H", "HOM 1.8.2",
                  # 1.7.9 (revision 4)
                  "revision 4", "HOM 1.9.0", "sensor.<prefix>_pilotdb", "pilotdb_rules", "pilotdb_answers",
-                 "shown.contact", "B23", "roster.json", "inbox/<name>/", "compare-and-set", "look the pilot up first",
-                 "Busy: try again in a minute", "off by default", "never set by Claude", "stats.json", "ai_notes",
+                 "inbox/<name>/", "compare-and-set",
+                 "Busy: try again in a minute", "never set by Claude", "stats.json", "ai_notes",
                  "labeled AI", "min_pickups: 3", "note_max: 600", "32 KB", "F#107", "trade/set", "masks.contact_only_in",
-                 "portal.PILOTDB_FILE_KEYS", "union_id", "anti-walk"):
+                 "portal.PILOTDB_FILE_KEYS", "union_id",
+                 # 1.7.10 (Ryan's decisions of Nov 15): shared 100%, on by default, the choices outside the database
+                 "shared with James 100%", "every live record", "on by default", "pilotdb_switches.json",
+                 "EXPORT_HARD", "7 MiB", "either order", "A pilot's uploads", "that pilot is not in Ryan's pilot database",
+                 # 1.7.10 (revision 5; Ryan, Nov 16): a portal pilot's contacts list
+                 "revision 5", "HOM 1.9.1", "pilot_contacts_limits", "pilot_contacts_checks", "value_since_revision",
+                 "it only adds and updates", "contacts_body", "With HOM 1.9.0 still live", "1 MiB",
+                 "Nobody is marked gone"):
         assert word in doc, word
     for a in roles.PILOT_TICKET_ACTIONS:
         assert f"`{a}`" in doc, a
@@ -236,15 +246,16 @@ def test_revision_4_tables_are_in_the_fixture():
     assert fx["file_kinds"]["pilotdb"] == "" and fx["synthesized_states"]["pilotdb"] == "sensor.<prefix>_pilotdb"
     assert fx["revisions"]["4"].startswith("Flight Watcher 1.7.9, HOM 1.9.0")
     assert fx["tabs"] == ["watcher", "schedule", "pilot", "recall", "settings", "tickets"]  # unchanged
-    # B23: contact is still dropped from every state read from HA; the synthesized sensor is the one exception
-    assert fx["masks"]["drop"] == ["contact"] == list(PT.MASK_DROP) and "shown.contact" in fx["masks"]["contact_only_in"]
+    # contact is still dropped from every state read from HA; 1.7.10: phones and emails are in the pilotdb file's
+    # records (Ryan, Nov 15: shared 100%), never in a state
+    assert fx["masks"]["drop"] == ["contact"] == list(PT.MASK_DROP) and "pilotdb file" in fx["masks"]["contact_only_in"]
     pd = fx["pilotdb"]
     assert pd["file"]["keys"] == PT.PILOTDB_FILE_KEYS and pd["state"]["keys"] == PT.PILOTDB_STATE_KEYS
     assert pd["edit_fields"] == list(roles.PILOTDB_EDIT_FIELDS) and set(pd["edit_values"]) == set(pd["edit_fields"])
     assert pd["inbox"]["file_re"] == PT.INBOX_NAME_RE.pattern and pd["inbox"]["max_bytes"] == 32 * 1024
-    assert "by" in pd["inbox"]["body"] and "off by default" in pd["share"] and "Claude never" in pd["share"]
+    assert "by" in pd["inbox"]["body"] and "on by default" in pd["share"] and "Claude never" in pd["share"]
     ai = pd["ai"]
-    assert ai["min_pickups"] == 3 and ai["note_max"] == 600 and "off by default" in ai["switch"]
+    assert ai["min_pickups"] == 3 and ai["note_max"] == 600 and "on by default" in ai["switch"]
     assert ai["stats_path"] == "/share/flight_watcher/pilotdb/ai/stats.json"
     assert ai["in_dir"] == "/share/flight_watcher/pilotdb/ai/in"
     assert not {"name", "emp", "pid", "sen", "doh", "pairing", "at"} & set(ai["stats_keys"]["stats"])
@@ -256,13 +267,20 @@ def test_revision_4_tables_are_in_the_fixture():
     assert {"pilotdb/note", "pilotdb/edit"} <= set(man["mqtt_subs"]) and "pilotdb" in man["files"]
     st = json.loads(fx["samples"]["envelopes"][1]["envelope"]["payload"])["states"]["sensor.flight_watcher_demo_pilotdb"]
     assert st["state"] == "on" and set(st["attributes"]) == set(PT.PILOTDB_STATE_KEYS["attributes"])
-    assert set(st["attributes"]["shown"]) <= set(PT.PILOTDB_STATE_KEYS["shown"])
-    assert set(st["attributes"]["shown"]["contact"]) == {"phones", "emails"}
+    assert set(st["attributes"]["shown"]) == {"emp", "pid"} <= set(PT.PILOTDB_STATE_KEYS["shown"])
     f = next(json.loads(e["envelope"]["payload"]) for e in fx["samples"]["envelopes"] if e["file"] == "files/pilotdb.json")
     assert set(f) <= set(PT.PILOTDB_FILE_KEYS["top"]) and set(f["records"][0]) <= set(PT.PILOTDB_FILE_KEYS["record"])
     text = json.dumps(f)
-    for bad in ('"emp"', '"phones"', '"emails"', "union_id", '"contact"', "10001", "555-01", "example.com"):
-        assert bad not in text, bad
+    assert f["records"][0]["union_id"] == "424242" and set(f["records"][0]["ai_note"]) == {"text", "model", "at"}  # 1.7.10
+    # 1.7.10: every record with every field, and every key of the sample is a whitelisted one
+    r0 = f["records"][0]
+    assert (r0["emp"], r0["base"], r0["emails"]) == ("10001", "HNL", ["jane.doe@example.com"])
+    assert set(r0["phones"][0]) == set(PT.PILOTDB_FILE_KEYS["phone"])
+    assert set(r0["pickups"]) == set(PT.PILOTDB_FILE_KEYS["pickups"])
+    assert set(r0["pickups"]["rows"][0]) == set(PT.PILOTDB_FILE_KEYS["pickup"])
+    assert set(r0["pickups"]["summary"]) == set(PT.PILOTDB_FILE_KEYS["pickup_summary"])
+    assert len(f["records"]) == f["count"] == 2 and '"contact"' not in text
+    assert len(text.encode()) < PT.CAPS["file"]
 
 
 def test_pilotdb_samples_match_check_shape():

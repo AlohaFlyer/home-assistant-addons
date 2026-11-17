@@ -1,11 +1,13 @@
-"""1.7.9 (contract 1 revision 4): the admin's Watcher and its two switches on api/pilotdb.
+"""1.7.9 (contract 1 revision 4), as of 1.7.10 (Ryan's decisions 1 to 3 of Nov 15): the admin's Watcher and its two
+switches on api/pilotdb.
 
-Share with a portal pilot (op share, Ryan's card only, off by default): nothing leaves Ryan's Watcher while it is off;
-on, the pilot's file and the roster are written and his inbox is drained; off again, the file is deleted. The AI note
-(op ai, off by default): anonymous pickup statistics for HOM's consultant models (pilots with 3 or more pickups; no
-name, employee number, record id, seniority number, date of hire, pairing number or exact date; an id made new for
-every batch that only Ryan's database maps back) and HOM's notes taken into pilotdb's ai_notes, labeled AI, apart from
-the human notes and never in a pilot's file. Log lines carry ops, instance names and counts only.
+Sharing is on by default for every pilot with a portal: his file (every live record) is written at the start and his
+inbox is drained; Ryan's switch (op share, his card only) turns it off (the file is deleted) and on again. The AI
+notes are on by default too (op ai turns them off): anonymous pickup statistics for HOM's consultant models (pilots
+with 3 or more pickups; no name, employee number, record id, seniority number, date of hire, pairing number or exact
+date; an id made new for every batch that only Ryan's database maps back) and HOM's notes taken into pilotdb's
+ai_notes, labeled AI, apart from the human notes, read only in a shared pilot's file. Both choices are kept in the
+Watcher's own switches file, never in the database. Log lines carry ops, instance names and counts only.
 Synthetic pilots only ("Doe, Jane", 10001)."""
 import json
 import logging
@@ -43,50 +45,92 @@ def _post(P, **obj):  # noqa: N803
     return P.pilotdb_post(obj)
 
 
-def test_nothing_is_shared_until_ryan_taps_the_switch(A):
+def test_sharing_is_on_by_default_for_every_pilot_with_a_portal(A):
     P, db = A  # noqa: N806
     assert P.pilotdb_portal_pilots() == ["james"]  # pilot3 has no portal
     st = P.pilotdb_status()
-    assert st["shared_with"] == [] and st["pilots"] == [{"name": "james", "shared": False, "pending": 0, "full": False}]
-    assert not os.path.exists(PS.export_path("james", _root(P))) and not os.path.exists(PS.roster_path(_rdir(P)))
-    assert P.pilotdb_share_pass(force=True) == {"applied": 0, "refused": 0, "scrub": False}
-    assert not os.path.exists(PS.export_path("james", _root(P))) and not os.path.exists(PS.roster_path(_rdir(P)))
-    assert P.pilotdb_sensor()["shared_with"] == []
+    assert st["shared_with"] == ["james"] and st["switches"] == "ok"
+    assert st["pilots"] == [{"name": "james", "shared": True, "pending": 0, "full": False}]
+    ep = PS.export_path("james", _root(P))
+    assert stat.S_IMODE(os.stat(ep).st_mode) == 0o600  # written at the start, with no tap
+    assert json.load(open(ep))["count"] == db.summary()["live"] == 4  # every live record, not the noted ones
+    assert not os.path.exists(PS.export_path("pilot3", _root(P)))  # no portal, no file
+    assert not os.path.exists(PS.roster_path(_rdir(P))) and not os.path.exists(PS.roster_path(_root(P)))
+    assert P.pilotdb_sensor()["shared_with"] == ["james"]
+    assert not os.path.exists(P.pilotdb_switches_path())  # nothing is written until Ryan taps a switch
 
 
-def test_the_share_switch_writes_the_files_at_once_and_off_deletes_them(A, caplog):
+def test_a_pilot_ryan_adds_later_is_shared_with_at_once(A):
+    P, db = A  # noqa: N806
+    P.OPTS["pilots"] = [{"name": "james", "portal": True}, {"name": "pilot3", "portal": True}]
+    P.pilotdb_share_pass(force=True)
+    assert P.pilotdb_status()["shared_with"] == ["james", "pilot3"]
+    assert os.path.exists(PS.export_path("pilot3", _root(P)))
+
+
+def test_ryans_off_switch_deletes_the_file_at_once_and_on_writes_it_again(A, caplog):
     P, db = A  # noqa: N806
     jane = db.find("10001")
+    ep = PS.export_path("james", _root(P))
+    with caplog.at_level(logging.INFO):
+        code, r = _post(P, op="share", pilot="james", on=False)
+    assert code == 200 and r["shared_with"] == [] and not os.path.exists(ep)
+    assert "pilot db: shared with nobody" in caplog.text
+    sw = json.load(open(P.pilotdb_switches_path()))
+    assert sw == {"v": 1, "default": True, "share": {"james": False}, "ai": None}
+    assert stat.S_IMODE(os.stat(P.pilotdb_switches_path()).st_mode) == 0o600
+    assert P.pilotdb_status()["pilots"][0]["shared"] is False
+    # off stays off through a restart of the Watcher (the choice is in its own file, not in memory)
+    db.close()
+    P.PDB["db"] = None
+    db = P.pilotdb_start()
+    assert P.pilotdb_status()["shared_with"] == [] and not os.path.exists(ep)
     with caplog.at_level(logging.INFO):
         code, r = _post(P, op="share", pilot="james", on=True)
-    assert code == 200 and r["shared_with"] == ["james"]
-    ep = PS.export_path("james", _root(P))
-    assert stat.S_IMODE(os.stat(ep).st_mode) == 0o600 and os.path.exists(PS.roster_path(_rdir(P)))
-    assert json.load(open(ep))["count"] == 0  # no shared note yet: an empty file, never the roster
+    assert code == 200 and r["shared_with"] == ["james"] and json.load(open(ep))["count"] == 4
     assert "pilot db: shared with james" in caplog.text
     # a change of Ryan's reaches the file after the 2 s debounce (two passes), not on the first pass
     _post(P, op="field", pid=jane, text="Commutes from the mainland.", base=PDBM.ZERO_REV)
+
+    def notes():
+        return next(x for x in json.load(open(ep))["records"] if x["pid"] == jane).get("notes")
     P.pilotdb_share_pass()
-    assert json.load(open(ep))["count"] == 0
+    assert notes() is None
     P.pilotdb_share_pass()
-    assert json.load(open(ep))["count"] == 1
+    assert notes()["text"] == "Commutes from the mainland."
     st = P.pilotdb_status()
     assert st["pilots"][0]["shared"] is True and st["pending"] == {"james": 0}
     # only a pilot with a portal, only true or false, and never from a pilot's name in another shape
     assert _post(P, op="share", pilot="pilot3", on=True)[0] == 400
     assert _post(P, op="share", pilot="james", on="yes")[0] == 400
     assert _post(P, op="share", pilot="james")[0] == 400
-    code, r = _post(P, op="share", pilot="james", on=False)
-    assert code == 200 and r["shared_with"] == []
-    assert not os.path.exists(ep) and not os.path.exists(PS.roster_path(_rdir(P)))
     for s in SECRETS:
         assert s not in caplog.text, s
+
+
+def test_a_switches_file_that_cannot_be_read_turns_everything_off(A, caplog):
+    P, db = A  # noqa: N806
+    ep = PS.export_path("james", _root(P))
+    assert os.path.exists(ep)
+    open(P.pilotdb_switches_path(), "w").write("{not json")
+    db.close()
+    P.PDB["db"] = None
+    with caplog.at_level(logging.WARNING):
+        db = P.pilotdb_start()
+    assert "the switches file could not be read" in caplog.text
+    st = P.pilotdb_status()
+    assert st["switches"] == "unreadable" and st["shared_with"] == [] and st["ai"]["on"] is False
+    assert not os.path.exists(ep)  # fails closed: nothing is shared
+    code, r = _post(P, op="share", pilot="james", on=True)  # Ryan's tap puts it right
+    assert code == 200 and r["shared_with"] == ["james"] and os.path.exists(ep)
+    assert P.pilotdb_status()["switches"] == "ok" and P.pilotdb_status()["ai"]["on"] is False  # the AI switch is his too
+    # 1.7.10 review: the defaults are on again (a pilot added later is shared); what was not tapped is written off
+    assert json.load(open(P.pilotdb_switches_path())) == {"v": 1, "default": True, "share": {"james": True}, "ai": False}
 
 
 def test_the_drain_applies_a_shared_pilots_note_and_edit_and_the_card_sees_the_count(A, caplog):
     P, db = A  # noqa: N806
     jane = db.find("10001")
-    _post(P, op="share", pilot="james", on=True)
     rev = db.record(jane)["rev"]
     PS.inbox_put("james", "note", {"op": "add", "pid": jane, "text": "NOTE-SENTINEL", "rid": "rid-adm001"}, _root(P))
     assert P.pilotdb_status()["pending"] == {"james": 1} and P.pilotdb_sensor()["pending"] == {"james": 1}
@@ -96,8 +140,9 @@ def test_the_drain_applies_a_shared_pilots_note_and_edit_and_the_card_sees_the_c
         r = P.pilotdb_share_pass()
     assert r == {"applied": 2, "refused": 0, "scrub": False}
     d = json.load(open(PS.export_path("james", _root(P))))  # written at once after the drain
-    assert [a["rid"] for a in d["answers"]] == ["rid-adm001", "rid-adm002"] and d["count"] == 1
-    assert d["records"][0]["seat"] == "FO" and d["records"][0]["entries"][0]["mine"] is True
+    assert [a["rid"] for a in d["answers"]] == ["rid-adm001", "rid-adm002"] and d["count"] == 4
+    rj = next(x for x in d["records"] if x["pid"] == jane)
+    assert rj["seat"] == "FO" and rj["entries"][0]["mine"] is True
     rec = db.record(jane)
     assert rec["entries"][0]["by"] == "james" and rec["fields"]["seat"]["by"] == "james"
     assert "pilot db: note add from james: saved" in caplog.text and "NOTE-SENTINEL" not in caplog.text
@@ -119,12 +164,17 @@ def _pickups(db, tmp_path):
     return db.sync_pickups(s.pickup_history())
 
 
-def test_no_statistics_leave_while_the_ai_switch_is_off(A, tmp_path):
+def test_no_statistics_leave_while_ryan_has_the_ai_switch_off(A, tmp_path):
     P, db = A  # noqa: N806
+    code, r = _post(P, op="ai", on=False)
+    assert code == 200 and r["ai"] == {"on": False, "cleared": 0}
     _pickups(db, tmp_path)
+    P.PDB.update(ai_at=0.0, ai_check=0.0)
     P.pilotdb_share_pass(force=True)
-    assert not os.path.exists(os.path.join(_root(P), "ai"))
+    _d, path, in_dir = PS.ai_paths(_root(P))
+    assert not os.path.exists(path) and (not os.path.isdir(in_dir) or os.listdir(in_dir) == [])
     assert P.pilotdb_status()["ai"] == {"on": False, "notes": 0, "left_out": 0}
+    assert json.load(open(P.pilotdb_switches_path()))["ai"] is False
 
 
 def test_the_statistics_are_anonymous_and_only_for_three_or_more_pickups(A, tmp_path, caplog):
@@ -132,8 +182,11 @@ def test_the_statistics_are_anonymous_and_only_for_three_or_more_pickups(A, tmp_
     _pickups(db, tmp_path)
     jane = db.find("10001")
     assert len(db.pickups(jane)["rows"]) == 3
+    assert P.pilotdb_status()["ai"]["on"] is True  # 1.7.10 (Ryan's decision 3 of Nov 15): on by default
+    P.PDB.update(ai_at=0.0, ai_check=0.0)
     with caplog.at_level(logging.INFO):
-        code, r = _post(P, op="ai", on=True)  # the first batch is written with the switch
+        P.pilotdb_share_pass()  # the first batch, with no tap
+    code, r = _post(P, op="ai", on=True)  # turning it on again is allowed and changes nothing
     assert code == 200 and r["ai"] == {"on": True, "cleared": 0}
     _d, path, in_dir = PS.ai_paths(_root(P))
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600 and stat.S_IMODE(os.stat(in_dir).st_mode) == 0o700
@@ -162,12 +215,11 @@ def test_the_statistics_are_anonymous_and_only_for_three_or_more_pickups(A, tmp_
     assert doc2["pilots"][0]["id"] != row["id"] and doc2["batch"] != d["batch"]
 
 
-def test_homs_note_is_stored_apart_labeled_ai_and_never_goes_to_a_pilot(A, tmp_path, caplog):
+def test_homs_note_is_stored_apart_labeled_ai_and_is_read_only_in_a_shared_pilots_file(A, tmp_path, caplog):
     P, db = A  # noqa: N806
     _pickups(db, tmp_path)
     jane = db.find("10001")
-    _post(P, op="share", pilot="james", on=True)
-    _post(P, op="ai", on=True)
+    P.PDB.update(ai_at=0.0, ai_check=0.0)
     P.pilotdb_share_pass()
     _d, path, in_dir = PS.ai_paths(_root(P))
     d = json.load(open(path))
@@ -186,10 +238,16 @@ def test_homs_note_is_stored_apart_labeled_ai_and_never_goes_to_a_pilot(A, tmp_p
     assert rec["notes"] is None and rec["entries"] == []  # apart from the human notes
     assert "pilot db: AI notes in: 1 saved, 1 refused" in caplog.text and "AI-SENTINEL" not in caplog.text
     assert P.pilotdb_status()["ai"] == {"on": True, "notes": 1, "left_out": 0}
-    # never in a pilot's file or the roster
+    # 1.7.10 (Ryan's decision 1 of Nov 15): on her record in the pilot's file, whether or not she has a human note
     P.pilotdb_share_pass(force=True)
-    assert "AI-SENTINEL" not in open(PS.export_path("james", _root(P))).read()
-    assert "AI-SENTINEL" not in open(PS.roster_path(_rdir(P))).read()
+    ep = PS.export_path("james", _root(P))
+    rj = next(x for x in json.load(open(ep))["records"] if x["pid"] == jane)
+    assert rj["ai_note"] == {"text": note, "model": "consultant-model-1", "at": ai["at"]} and "notes" not in rj
+    assert rj["pickups"]["summary"]["n"] == 3  # and her pickup history
+    # the switch off: gone from the file at once, though the note stays in Ryan's database until he clears it
+    _post(P, op="ai", on=False)
+    assert "AI-SENTINEL" not in open(ep).read() and "ai_note" not in open(ep).read()
+    assert db.record(jane)["ai_note"]["text"] == note
     # off with clear: the statistics file and the notes go
     code, r = _post(P, op="ai", on=False, clear=True)
     assert code == 200 and r["ai"] == {"on": False, "cleared": 1}
@@ -221,7 +279,7 @@ def test_the_contracts_ai_samples_are_taken_and_refused_as_it_says(A, tmp_path):
 def test_an_answer_file_that_is_a_symlink_too_big_or_misnamed_is_dropped(A, tmp_path):
     P, db = A  # noqa: N806
     _pickups(db, tmp_path)
-    _post(P, op="ai", on=True)
+    P.PDB.update(ai_at=0.0, ai_check=0.0)
     P.pilotdb_share_pass()
     _d, path, in_dir = PS.ai_paths(_root(P))
     d = json.load(open(path))

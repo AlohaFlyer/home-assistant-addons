@@ -106,8 +106,9 @@ def test_an_award_with_no_dates_of_hire_never_replaces_a_good_list(tmp_path, mon
     before = (tmp_path / "seniority.json").read_bytes()
     from test_pdfs import AWARD
     r = _up(tmp_path, monkeypatch, AWARD, month="2027-01")
-    assert r["ok"] and r["seniority"]["decision"] == "too-few"
-    assert "No dates of hire read from it (0 pilot rows; 25 needed), so the seniority data on file is unchanged." in r["message"]
+    # 1.7.10: a packet with no dates of hire section at all is 'no-doh' (quiet), not 'too-few'
+    assert r["ok"] and r["seniority"]["decision"] == "no-doh" and "25 needed" not in r["message"]
+    assert "the seniority data on file is unchanged." in r["message"]
     assert (tmp_path / "seniority.json").read_bytes() == before and not (tmp_path / "seniority_award.json").exists()
     r = _up(tmp_path, monkeypatch, _blocks(SEN.AWARD_MIN - 1), month="2027-01")  # 24 rows: still not a section
     assert r["seniority"]["decision"] == "too-few" and (tmp_path / "seniority.json").read_bytes() == before

@@ -17,6 +17,10 @@
    500, so an iPad in split view or a phone on its side gets it too. */
 const FMT = (a) => a == null ? "-" : a >= 3600 ? `${Math.floor(a / 3600)}h ${String(Math.floor((a % 3600) / 60)).padStart(2, "0")}m`
   : a >= 60 ? `${Math.floor(a / 60)}m ${String(a % 60).padStart(2, "0")}s` : `${a}s`;
+// 1.7.10 (Ryan, Nov 15): a speed capped at your own request time (FLICA denied your request for the trip because
+// this pilot had picked it up, so he asked before you did) is an upper bound: "at most", shown with the sign ≤
+const CAPPED = (on, a, what) => (!on || a == null ? FMT(a)
+  : `<span title="${what} ${FMT(a)}, capped at your request time" aria-label="${what} ${FMT(a)}, capped at your request time"><span aria-hidden="true">≤</span>${FMT(a)}</span>`);
 // [key, header, sort kind, header on a narrow card ("" = folded under the name there)]
 const COLS = [
   ["name", "Pilot", "s", "Pilot"], ["emp", "Emp", "s", ""], ["pos", "Pos", "s", "Pos"], ["n", "Ttl Pickups", "n", ""],
@@ -122,7 +126,7 @@ class FlightWatcherPickersCard extends HTMLElement {
         <label class="fl" for="flt">Filter this list (it does not ask FLICA)</label>
         <input id="flt" type="search" enterkeyhint="search" autocomplete="off" spellcheck="false" placeholder="Filter this list (name, emp or layover)">
         <div class="wrap"><table><thead><tr></tr></thead><tbody></tbody></table></div>
-        <details><summary>&#9656; Key</summary><div class="key">Tap a column header to sort, tap again to flip. Bold row = 1 min or under. Ttl = all pickups seen; Month / Year = this HST month and year; InFlt = picked up while airborne; Common Layover = stations they pick up most, with how many (bold = their latest pickup); Fastest / Avg Pickup Speed = the pilot's quickest grab and their average time a trip sat in open time.</div></details>
+        <details><summary>&#9656; Key</summary><div class="key">Tap a column header to sort, tap again to flip. Bold row = 1 min or under. Ttl = all pickups seen; Month / Year = this HST month and year; InFlt = picked up while airborne; Common Layover = stations they pick up most, with how many (bold = their latest pickup); Fastest / Avg Pickup Speed = the pilot's quickest grab and their average time a trip sat in open time; ≤ = at most: a speed capped at your own request time, when FLICA denied your request because that pilot picked the trip up first.</div></details>
       </div></ha-card>`;
       this._root.querySelector(".hd").addEventListener("click", () => { this._open = !this._open; this._paint(); });
       this._root.querySelector("input").addEventListener("input", (e) => { this._q = e.target.value; this._paint(); });
@@ -160,7 +164,7 @@ class FlightWatcherPickersCard extends HTMLElement {
       const sm = `Emp ${this._esc(p.emp)} &middot; ${p.n} pickups: ${p.month_n || 0} this month, ${p.year_n || 0} this year, ${p.inflt_n || 0} in flight${lays ? ` &middot; <span class="lay">${lays}</span>` : ""}`;
       return `<tr class="${p.avg_s != null && p.avg_s <= 60 ? "fast" : ""}"><td class="pn" data-emp="${this._esc(p.emp)}" data-name="${this._esc(p.name)}" title="tap: this pilot's month"><span class="nm">${this._esc(p.name)}</span><div class="sm">${sm}</div></td><td class="wide">${this._esc(p.emp)}</td><td>${this._esc(p.pos)}</td>
         <td class="n wide">${p.n}</td><td class="n wide">${p.month_n || 0}</td><td class="n wide">${p.year_n || 0}</td><td class="n wide">${p.inflt_n || 0}</td>
-        <td class="lay wide">${lays || "-"}</td><td class="n">${FMT(p.min_s)}</td><td class="n">${FMT(p.avg_s)}</td></tr>`;
+        <td class="lay wide">${lays || "-"}</td><td class="n">${CAPPED(p.min_cap, p.min_s, "at most")}</td><td class="n">${CAPPED(p.cap_n > 0, p.avg_s, `at most: ${p.cap_n} of ${p.n} pickups`)}</td></tr>`;
     }).join("") : `<tr><td colspan="10">${this._q ? "No match." : "No pickups scored yet."}</td></tr>`;
   }
 }

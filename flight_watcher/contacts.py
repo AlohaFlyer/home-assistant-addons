@@ -38,7 +38,10 @@ NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 
 PHONE_RE = re.compile(r"(?<![\w+])(?:\+?1[\s.\-]?)?\(?([2-9]\d{2})\)?[\s.\-]?(\d{3})[\s.\-]?(\d{4})(?!\d)")
-EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}")
+# 1.7.10 review: the local part starts where its run of characters starts and is at most 64 long (RFC 5321), so a long
+# run of letters with no '@' is read once, not once from each of its characters (that was quadratic: a 130000 letter
+# cell took 14 s). Every address of 64 or fewer local characters is found exactly as before
+EMAIL_RE = re.compile(r"(?<![A-Za-z0-9._%+\-])[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}")
 DATE_RE = re.compile(r"(?<!\d)\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}(?!\d)")
 NUM_RE = re.compile(r"(?<![\d])\d{3,7}(?![\d])")
 LABELS = (("cell", "cell"), ("mobile", "cell"), ("mob", "cell"), ("home", "home"), ("work", "work"),

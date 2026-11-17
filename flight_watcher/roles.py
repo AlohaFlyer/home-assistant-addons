@@ -29,6 +29,31 @@ a portal). Additive again: fwp and contract stay 1.
 feature pilotdb, the file kind pilotdb, the commands pilotdb/note and pilotdb/edit with their shapes, limits and fixed
 answers, the synthesized pilotdb state with the looked-up pilot's phones and emails), the swap alert for a new swap idea
 (F#107) and the AI note hand-off with HOM's consultant models (PILOTDB_AI). Additive: fwp and contract stay 1.
+
+1.7.10 (Ryan's Nov 15 decisions), still contract 1 revision 4: the shared pilot reads two more keys, union_id (his
+union id edit was blind) and ai_note (read only, labeled as an AI note, only while Ryan's AI switch is on), on the
+records of his pilotdb file and on the looked-up pilot's brief. Two boundary changes, both additive reads: PORTAL_CMDS,
+PORTAL_REFUSED, FEATURES, every limit, the noted-pilots-only file and the anti-walk rule are as in 1.7.9.
+
+1.7.10, Ryan's decisions 1 to 4 of Nov 15 ("The pilot database should be shared with James 100%; we work on a shared
+system; we do have our own schedules and pay rates though"), still contract 1 revision 4: the pilotdb file holds
+EVERY live record with every field (the employee number, phones and emails too), the notes, the whole log (there is
+no "Only me" entry any more), each picker's pickup history and the AI note; sharing is on by default for every portal
+pilot and the AI notes are on by default (Ryan's card keeps an OFF switch for each, stored in the Watcher's own
+switches file, never in the database); a contact list or an award a pilot's instance saves merges into the one
+database like Ryan's, with that pilot as its author. The noted-pilots-only file, phones and emails only for the
+looked-up pilot, the roster and its anti-walk rule and the 20-an-hour brief cap are gone (they only limited what a
+shared pilot saw of the database). PORTAL_CMDS, PORTAL_REFUSED, every command shape, every limit and quota of a
+shared pilot's writes, the upload kinds, and every FLICA budget, pacing and read limit are as in 1.7.9.
+
+1.7.10, contract 1 REVISION 5 (Ryan, Nov 16: "His uploads should update the shared database too", and the contacts
+list upload on a pilot's portal "Now, in 1.7.10"): upload/pdf takes a third kind, contacts: the airline contacts list
+as its CSV export (PILOT_CONTACTS_LIMITS: 1 MiB, the header row). The pilot's Watcher checks the whole file and hands
+it to the admin's Watcher through his pilotdb inbox folder (the author is the folder's name, never a payload key); the
+admin's Watcher checks it again and merges it into the one database with that pilot as the author. A pilot's list
+only adds and updates (pilotdb.merge_contacts, additive). The command's shape changed (one more value of kind), so
+HOM 1.9.1 goes live first; HOM 1.9.0 refuses kind contacts with its own shape check and serves everything else as it
+did. PORTAL_CMDS, PORTAL_REFUSED, FEATURES and every other shape, limit and quota are as in revision 4.
 """
 import math
 import re
@@ -62,15 +87,18 @@ FEATURES = {
     "uploads": (ALL, False, "uploads in chunks (upload/chunk) and the uploads sensors"),
     "pilot_uploads": (ALL, True, "a pilot's upload of the monthly pairings package or award from his portal "
                                  "(upload/pdf), checked by his own Watcher; used at once when nothing is on file, else "
-                                 "held for the admin"),
+                                 "held for the admin; and of the contacts list (CSV) into the shared pilot database, "
+                                 "while it is shared with him"),
     "upload_review": (ADMIN, False, "the admin's Approve, Remove and Reject of a pilot's upload (upload/decide) and its "
                                     "push (event/pilot_upload)"),
-    # 1.7.9 (contract 1 revision 4, B14): only for a pilot Ryan shares the pilot database with (the Share switch on
-    # Ryan's own card, off by default; while it is off there is no file, the sensor says off and every command is refused)
-    "pilotdb": (ALL, True, "a pilot's view of Ryan's pilot database on his portal when Ryan shares it: the pilotdb file "
-                           "(pilots with shared notes), the synthesized pilotdb sensor (the pilot he looks up, with "
-                           "that one pilot's phones and emails), pilotdb/note (notes field and log) and pilotdb/edit "
-                           "(record fields), each applied by the admin's Watcher"),
+    # 1.7.9 (contract 1 revision 4, B14). 1.7.10 (Ryan, Nov 15): shared 100% with every portal pilot, on by default;
+    # Ryan's card keeps an OFF switch per pilot (while it is off there is no file, the sensor says off and every
+    # command is refused)
+    "pilotdb": (ALL, True, "the pilot database shared with a portal pilot (on by default; Ryan can turn it off): the "
+                           "pilotdb file (every live record with every field, the notes, the log, the pickup history "
+                           "and the AI note), the synthesized pilotdb sensor (which record the pilot card's pilot "
+                           "is), pilotdb/note (notes field and log) and pilotdb/edit (record fields), each applied by "
+                           "the admin's Watcher"),
 }
 
 # every MQTT command topic (after <prefix>/) an instance subscribes to, in the 1.4.12 order, and its feature
@@ -226,8 +254,8 @@ def name_refusal(name, taken=()):
 # from these; PORTAL_CONTRACT.md documents it. The admin has no portal: none of this runs on the default instance.
 CONTRACT = 1
 # 1.7.0 (Release C): tickets (2); 1.7.2: pilot alerts, shapes, uploads (3); 1.7.9: the shared pilot database, the swap
-# idea alert (4); additive within 1
-CONTRACT_REVISION = 4
+# idea alert (4); 1.7.10: a pilot's contacts list upload, kind contacts on upload/pdf (5); additive within 1
+CONTRACT_REVISION = 5
 # 1.7.2 (revision 3): recall/set leaves the list (F#78: a crafted paste from the portal could replace or blank a day on
 # the pilot's own instance; his lists come only from the admin's forward, 1.7.1) and upload/pdf joins it (FW-0066)
 PORTAL_CMDS = ("hunt/set", "pause/set", "rearm/press", "check_now/press", "charter_scan/press", "freq/normal_min/set",
@@ -239,6 +267,10 @@ PORTAL_CMDS = ("hunt/set", "pause/set", "rearm/press", "check_now/press", "chart
 COMMAND_SINCE = {"ticket/new": 2, "ticket/image": 2, "ticket/act": 2, "ticket/edit": 2, "ticket/delete": 2,
                  "upload/pdf": 3, "pilotdb/note": 4, "pilotdb/edit": 4}
 COMMAND_REMOVED = {"recall/set": 3}
+# 1.7.10 (revision 5): the revision one VALUE of a command's field came in, when the command itself is older:
+# {sub: {field: {value: revision}}}. HOM refuses such a value to a Watcher whose manifest names an older revision
+# (it would refuse the chunk itself), as it does a whole command by COMMAND_SINCE.
+VALUE_SINCE = {"upload/pdf": {"kind": {"contacts": 5}}}
 PORTAL_RULE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 # contract 1's check frequency ranges (freq/normal_min/set in minutes, freq/hunt_s/set in seconds): a portal's
 # freq/*/set must be a finite number within them (portal.check_freq). Contract 1 is pinned (its fixture and sha256).
@@ -441,7 +473,7 @@ TICKET_CMDS = {
 # query or a name (at most 60 code points, one line), or a pick id (pilot.pick_id: 12 lowercase hex). The Watcher
 # refuses the same (watcher.pilot_cmd, every instance), and its log line never carries the text.
 # upload/pdf (FW-0066, Ryan Nov 11): one chunk of a pilot's upload of the monthly pairings package or the award (never
-# the seniority list or the contact list: they hold other pilots' phone numbers), cut like ticket photos so each
+# the seniority list; 1.7.10, revision 5: the contacts list as its CSV export too, PILOT_CONTACTS_LIMITS below), cut like ticket photos so each
 # command stays under the 64 KB cap. Every chunk carries the upload's fields; the pilot's Watcher (pilotpdf.py) puts
 # one upload together at a time and checks it whole before anything is stored.
 PRINTABLE_PATTERN = TICKET_LINE_PATTERN  # one line: no control character, line or paragraph separator, bidi control
@@ -460,6 +492,28 @@ PILOT_UPLOAD_LIMITS = {"kinds": ["pairings", "award"], "file_bytes": 4 * 1024 * 
                        "chunk_chars": 60000, "chunk_parts": 94, "stale_s": 120, "months_ahead": 2,
                        "extract_timeout_s": 30, "extract_mem_mb": 512, "extract_cpu_s": 30, "min_pairings": 100}
 _UL = PILOT_UPLOAD_LIMITS
+# 1.7.10 (revision 5; Ryan, Nov 16): a third kind on upload/pdf, the airline contacts list as its CSV export. kinds
+# above stays the two PDF kinds (their checks, their quarantine and the months on file are theirs alone). A contacts
+# list: file_bytes (1 MiB; the export is about 200 KB) in at most chunk_parts chunks; text only (encodings, no control
+# character but tab, CR and LF) whose first row is header, cell for cell (case and outer spaces aside); rows_min
+# pilots read by the 1.4.8 parser (contacts.parse); pending: one list of a pilot waits for the admin's Watcher at a
+# time; per_day: lists the admin's Watcher merges for one pilot in 24 h (his own Watcher counts every upload toward
+# PILOT_UPLOAD_LIMITS per_day as well); inbox_bytes: the inbox file that carries it (its base64 and its envelope).
+# It carries a month like every upload/pdf chunk (this HST month); the month is checked and not used.
+# Review fixes (Nov 16), each a bound on what one pilot's list can do to the one shared database: encodings (the 1.4.8
+# parser's own: UTF-8, a BOM allowed, else Windows-1252, so a pilot's export is read exactly as Ryan's is); rows_max
+# rows under the header (the export has about 1230); cell_chars characters a cell and notes_chars for the Notes cell
+# (the last of header), and no text in a cell beyond the header's columns: so no cell can hold the parser for
+# seconds; new_max: the live records a pilot's lists made that no list of Ryan's (seniority list, award, his own
+# contacts list) holds, all pilots' lists together: a list that would take the database over it is refused whole and
+# changes nothing.
+PILOT_UPLOAD_KINDS = tuple(_UL["kinds"]) + ("contacts",)
+PILOT_CONTACTS_LIMITS = {"kind": "contacts", "file_bytes": 1024 * 1024, "chunk_parts": 24, "rows_min": 1,
+                         "pending": 1, "per_day": 4, "inbox_bytes": 1536 * 1024,
+                         "encodings": ["utf-8", "cp1252"], "rows_max": 2500, "cell_chars": 200, "notes_chars": 2000,
+                         "new_max": 250,
+                         "header": ["First Name", "Middle Name", "Last Name", "Suffix", "Company", "Job Title",
+                                    "Mobile Phone", "Email", "Employee ID", "Notes"]}
 SHAPE_CMDS = {
     "pilot/set": {
         "keys": ["emp", "q", "name", "pick"],
@@ -470,7 +524,7 @@ SHAPE_CMDS = {
     "upload/pdf": {
         "keys": ["uid", "kind", "month", "size", "sha", "part", "parts", "data"],
         "required": ["uid", "kind", "month", "size", "sha", "part", "parts", "data"],
-        "fields": {"uid": _text(16, 40, UPLOAD_ID_PATTERN), "kind": {"type": "enum", "values": list(_UL["kinds"])},
+        "fields": {"uid": _text(16, 40, UPLOAD_ID_PATTERN), "kind": {"type": "enum", "values": list(PILOT_UPLOAD_KINDS)},
                    "month": _text(7, 7, MONTH_PATTERN), "size": _int(1, _UL["file_bytes"]),
                    "sha": _text(64, 64, SHA256_PATTERN), "part": _int(1, _UL["chunk_parts"]),
                    "parts": _int(1, _UL["chunk_parts"]),
@@ -480,7 +534,8 @@ SHAPE_CMDS = {
 
 
 # ---------------------------------------------------------------- 1.7.9 (revision 4): the shared pilot database
-# Ryan's pilot database (pilotdb.py, the admin's Watcher, one writer) shared with a portal pilot by Ryan's own switch.
+# Ryan's pilot database (pilotdb.py, the admin's Watcher, one writer) shared with a portal pilot (1.7.9: by Ryan's own
+# switch, off by default; 1.7.10, Ryan's decisions of Nov 15: 100% of it, on by default, with an OFF switch on his card).
 # The pilot's Watcher never opens the database: it checks a command and drops it into the admin's inbox folder; the
 # admin applies it, with the author taken from the instance (the inbox folder's name), never from the payload.
 # pilotdb/note: the notes field (op field: compare-and-set on base, the rev it was read at) and the notes log (add,
@@ -499,7 +554,8 @@ PILOTDB_EDIT_FIELDS = ("name", "sen", "doh", "status", "retire", "seat", "equip"
 # code points; adds_per_day entries, changes_per_day notes field saves plus retracts and edits_per_day field edits in
 # 24 h; entries_per_record on one record, all authors; pending inbox files waiting per pilot; stale_h: an older inbox
 # file is refused; answers kept per pilot; export_entries newest entries per record in his file (export_entries_min
-# when the file is over export_bytes); value_max: a field edit's value; why_max: its reason line.
+# when the file is over export_bytes; 1.7.10: his file holds every record and never passes pilotdb.EXPORT_HARD, 7 MiB,
+# under the 8 MiB a signed file may be); value_max: a field edit's value; why_max: its reason line.
 PILOTDB_NOTE_LIMITS = {"entry_max": 2000, "field_max": 4000, "adds_per_day": 40, "changes_per_day": 40,
                        "edits_per_day": 40, "entries_per_record": 500, "pending": 10, "stale_h": 24, "answers": 20,
                        "export_entries": 50, "export_entries_min": 20, "export_bytes": 4 * 1024 * 1024,
@@ -544,7 +600,6 @@ PILOTDB_ANSWERS = (
     "Not saved: a note is at most <n> characters",
     "Not saved: the notes field is at most <n> characters",
     "Not saved: that value is not valid for <field>",
-    "Not saved: look the pilot up first",
     "Not saved: that pilot is not in Ryan's pilot database",
     "Not saved: the log for that pilot is full",
     "Not saved: the shared notes file is full",
@@ -552,19 +607,35 @@ PILOTDB_ANSWERS = (
     "Not saved: too old, send it again",
     "Not saved: it could not be read, send it again",
     "Busy: try again in a minute",
+    # 1.7.10 (revision 5): a pilot's contacts list (upload/pdf kind contacts), answered under the upload's uid. <n>
+    # are counts; never a name, a number or a cell of the file
+    "Contacts merged: <n> rows read, <n> pilots added, <n> updated, <n> held for Ryan",
+    "Not merged: that file is not the contacts list (CSV) export",
+    "Not merged: no pilot was read from that contacts list",
+    "Not merged: a contacts list is at most <n> KB",
+    "Not merged: over <n> contacts lists in 24 h",
+    "Not merged: a contacts list is at most <n> rows",
+    "Not merged: over <n> pilots that no list of Ryan's holds; ask Ryan to upload his own list first",
 )
 # The AI note (Ryan, Nov 14: "Through HOM's models"): HOM's consultant models write one short note per pilot with at
-# least min_pickups pickups, from anonymous pickup statistics only. Ryan's own switch on his card (off by default)
-# turns it on; it is his data and never goes to a pilot's portal. Flight Watcher writes the statistics file; each pilot
+# least min_pickups pickups, from anonymous pickup statistics only. 1.7.10 (Ryan's decision 3 of Nov 15): on by
+# default; Ryan's own switch on his card turns it off (and on again). A shared pilot reads a note, read only, on the
+# records of his file; nobody but HOM's hand-off writes one. Flight Watcher
+# writes the statistics file; each pilot
 # in it has an id made new for every batch (random, kept only in Ryan's database, so nobody else can map it back), and
 # no name, employee number, record id, seniority number, date of hire, pairing number or exact date. HOM answers with
 # one file per batch; a note is note_max code points of plain text at most (the ticket text rule, no "@" and no
 # "://"), stored apart from the human notes (pilotdb's ai_notes), labeled AI with its model, never an instruction.
+# 1.7.10 review: refuse_re (a search, no flags) is everything a note may not hold now that a shared pilot reads it: an
+# address ("@"), a link ("://", "http:", "https:", "www." in any case), 5 or more digits in a row (an employee number)
+# and a phone shaped run (3 digits, a hyphen, period or space, 4 digits). A pickup pattern needs none of them. A name
+# or an order in words cannot be told by a pattern: the note stays untrusted plain text wherever it is read.
 PILOTDB_AI = {"min_pickups": 3, "note_max": 600, "model_max": 80, "batch_keep": 2, "max_pilots": 2000,
               "in_bytes": 2 * 1024 * 1024, "stale_h": 72,
               "dir": "/share/flight_watcher/pilotdb/ai", "stats_file": "stats.json", "in_dir": "in",
               "in_file_re": r"^[0-9a-f]{16}\.json$", "id_re": r"^a[0-9a-f]{16}$", "batch_re": r"^[0-9a-f]{16}$",
-              "model_re": r"^[A-Za-z0-9][A-Za-z0-9 ._:/()+-]{0,79}$"}
+              "model_re": r"^[A-Za-z0-9][A-Za-z0-9 ._:/()+-]{0,79}$",
+              "refuse_re": r"@|://|\b[Hh][Tt][Tt][Pp][Ss]?:|\b[Ww][Ww][Ww]\.|[0-9]{5,}|[0-9]{3}[-. ][0-9]{4}"}
 
 
 def portal_sub(sub):

@@ -563,6 +563,40 @@ def award_parse(text, ref_year=None):
     return dict(best, reader=reader, sections=sections)
 
 
+# ---------------------------------------------------------------- 1.7.10: seniority from the monthly award packet
+# Ryan (Nov 15): "look at the records... it has the seniority and also our pairings award packet had it monthly".
+# Each awarded pilot's block in the award text opens with one line: the word Seniority, the seniority number, the
+# word Category, BASE-EQUIPMENT-SEAT, the last name and the employee number, e.g.
+#   Seniority            00072       Category HNL-332-FO          DOE       10001
+# (made-up values; no date of hire and no first name on it). award_sen_parse reads those lines; the pilot database
+# merges them (pilotdb.merge_award_sen: Sen #, base, equipment and seat, source award, dated by the bid month).
+AWARD_SEN_RE = re.compile(r"^\s*Seniority\s+(?P<sen>\d{1,5})\s+Category\s+(?P<base>[A-Z]{3})-(?P<equip>[A-Z0-9]{2,4})-"
+                          r"(?P<seat>[A-Z]{2})\s+(?P<last>[A-Za-z][A-Za-z'.\- ]{0,40}?)\s+(?P<emp>\d{3,7})\s*$")
+AWARD_SEN_HEAD_RE = re.compile(r"^\s*Seniority\s+\d")
+
+
+def award_sen_parse(text):
+    """{'rows': [{sen, emp, last, base, equip, seat}], 'rejects': n} from an award packet's text: one row per
+    'Seniority <n> Category <BASE-EQUIP-SEAT> <LAST NAME> <employee number>' line, the first one of an employee
+    number kept. A line that starts like one and does not read is counted in rejects; any other line is not looked
+    at. The last name is title-cased as the award's pilot lines are ('DOE' -> 'Doe')."""
+    rows, seen, rejects = [], set(), 0
+    for ln in (text or "").translate(DASHES).replace("\u00a0", " ").split("\n"):
+        if len(ln) > MAX_LINE or not AWARD_SEN_HEAD_RE.match(ln):
+            continue
+        m = AWARD_SEN_RE.match(ln)
+        emp = m["emp"].lstrip("0") if m else ""
+        if not m or not emp or int(m["sen"]) < 1:
+            rejects += 1
+            continue
+        if emp in seen:
+            continue
+        seen.add(emp)
+        rows.append({"sen": int(m["sen"]), "emp": emp, "last": re.sub(r"\s+", " ", m["last"]).strip().title(),
+                     "base": m["base"], "equip": m["equip"], "seat": m["seat"]})
+    return {"rows": rows, "rejects": rejects}
+
+
 def as_of(d):
     """The date a source's dates of hire stand at: its list date (typed or printed), else an award's bid period
     month (its first day), else the upload day. '' for nothing."""

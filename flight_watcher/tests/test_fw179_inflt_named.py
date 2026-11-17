@@ -218,7 +218,7 @@ def test_the_page_quote_helper_masks_the_number_for_the_admin_too(W):  # noqa: F
                    "Emp###### employee id: ##### credit 16:00 H3648 2026-11-03 flight 808")
     assert W.IF.PAGE_LOG is W.page_log
     assert CAPS.mask_emp("Doe, Jane 10001, 808 HNL-LAS") == "Doe, Jane 10001, 808 HNL-LAS"  # only a labeled number
-    assert W.page_log("Doe, Jane") == "Doe, Jane"
+    assert W.page_log("Doe, Jane") == "xxx, xxxx"  # 1.7.10 (Ryan, Nov 15): no crew name in the admin's log either
 
 
 # ---------------------------------------------------------------- the finds card
