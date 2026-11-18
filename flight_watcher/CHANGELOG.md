@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.7.14
+
+Schedule card fix: the release of an own trip that is not in the viewed month's pairings package. No FLICA page load,
+no new command or entity, `far.py` unchanged. Synthetic data in the test.
+
+- **Before.** Such a trip ended on the first day after its start that the VIEWED month's schedule showed back in HNL,
+  with no bound. A trip from the previous month (the package is only the viewed month's) was released on the viewed
+  month's first HNL day, and a one-day turn on the next trip's return day. Seen with made-up trips: an Oct 30 turn
+  (report 06:00, last arrival 18:00) in a November view made Nov 1 to 4 read mid-trip ("-") in the 30 h in 7 d column,
+  Nov 5 read "need 30" (false: Oct 30 18:15 to Nov 5 is far more than 30 h free, FAR 117.25(b)), spread the turn's
+  10:00 block from Oct 30 to Nov 7 in the 100 h in 672 h column (FAR 117.23(b)(1)), and put the turn's Legal next
+  (release + 11 h, PWA 10.E.1.a) on Nov 7. The trip box in the Layover column and the mid-trip test used the same
+  wrong release, even for a trip with duty periods.
+- **Now.** The search reads the days of the month the trip came from (the previous or next month's for their trips,
+  the viewed month's, or its version's, for its own) and stops at the trip's own end: release on its own return to
+  HNL, else on its own end (a turn: its own day; a trip running into the next month: the end its item carries).
+- Test: `tests/test_own_trip_release_bound.py` (Chromium at 390 px): the October turn, a November turn not in the
+  package, a 3-day trip and a trip running into December.
+
 ## 1.7.10
 
 Ryan's decisions of Nov 15 about the pilot database: "The pilot database should be shared with James 100%; we work on

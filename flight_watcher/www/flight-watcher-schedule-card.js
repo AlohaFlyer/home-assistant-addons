@@ -697,7 +697,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
       const prevItems = (SM[prevKey] || {}).items || [];
       const nextKey = new Date(Date.UTC(y, m + 1, 1)).toISOString().slice(0, 7);
       const nextItems = (SM[nextKey] || {}).items || [];
-      for (const it of [...prevItems, ...items, ...nextItems]) {
+      // each item with the days of the month it came from (the viewed month's may be a version's)
+      const prevDays = (SM[prevKey] || {}).days || [], nextDays = (SM[nextKey] || {}).days || [];
+      const ownSrc = [...prevItems.map((it) => [it, prevDays]), ...items.map((it) => [it, mon.days || []]), ...nextItems.map((it) => [it, nextDays])];
+      for (const [it, itDays] of ownSrc) {
         if (it.trip === "VAC" || !/^[A-Z]\d{4}/.test(it.trip || "")) continue;
         const t = ownT[`${it.trip}|${it.start}`] || {};
         const p = pk ? pk[it.trip.slice(0, 5)] : null;
@@ -706,9 +709,12 @@ class FlightWatcherScheduleCard extends HTMLElement {
         else if (p && p.days.has(it.start)) rep = this._t(it.start, p.report);
         if (p && p.days.has(it.start)) rel = this._t(it.start, p.release) + p.relDays * 24 * H;
         else if (t.last_arr) {
-          // trip not in the package: it ends on the first later day the schedule shows back in HNL
-          const back = (mon.days || []).find(([d, tr, ly]) => d > it.start && !tr && ly === "HNL");
-          const end = back ? back[0] : it.end;
+          // trip not in the package: it ends on the first later day its own month shows back in HNL, up to its own end
+          // (1.7.14: never a later trip's return day, never the viewed month's for a trip from another month), else
+          // on its own end (a turn: its own day; a trip running into the next month: the end its item carries)
+          const tEnd = it.end || it.start;
+          const back = itDays.find(([d, tr, ly]) => d > it.start && d <= tEnd && !tr && ly === "HNL");
+          const end = back ? back[0] : tEnd;
           rel = this._t(end, t.last_arr) + 15 * 60e3; if (rep && rel <= rep) rel += 24 * H;
         }
         own.push({ it, rep, rel });
