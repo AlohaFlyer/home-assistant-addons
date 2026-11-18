@@ -23,8 +23,9 @@ ticket run of Nov 17 (CHANGELOG 1.7.11 has every section):
   stale" past 2x); the review's "1x" (the Watcher's longest cycle, not the bare interval) waits for Ryan's yes, and the
   Details view's tile is pending on Pako (`ha/README.md`), applied with his yes once 1.7.12 is live. No contract change.
 - 1.7.13 (Ryan, Nov 17): the schedule card's FAR 117 columns read `30h in 7d`, `100h in 672h` and `Room to 100h`, with
-  headroom ("10:57 left", red "0:00 left" / "1:20 over") and a Key row each; wording only (far.py unchanged), nothing
-  pending on Pako, no contract change.
+  headroom ("10:57 left", red "0:00 left" / "1:20 over") and a Key row each; Room tries every 672 h window holding the
+  day as far.py does (mid-day ones too: over exactly where far.py finds one over 100:00) and `~` marks a window holding a
+  trip with no times (Nov 18, "fix all of these things"); far.py unchanged, nothing pending on Pako, no contract change.
 
 **Nov 16: 1.7.10 is contract 1 REVISION 5 and HOM 1.9.1 goes live FIRST.** Ryan: "His uploads should update the
 shared database too", and the contacts list upload on James's portal "Now, in 1.7.10". Built (commits "... a portal

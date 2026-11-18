@@ -8,11 +8,12 @@ report) words today's states with units ("✓ 36h 11/05", red "need 30h off", "?
 are unchanged. Synthetic months and made-up trips only (H91xx, H93xx, H95xx, H98xx), rendered in Chromium at 390 px,
 light and dark, and in a 936 px box. Set FW_1713_SHOTS to a folder to save the screenshots.
 
-Review fixes (wording and display only): Room to 100h says it tries the 672 h windows ending 24:00 HST (F1), the tick
-speaks for a report at the day's first duty start, 00:01 on a day off (F2), the Key says a trip with no times on file
-counts no block and as time off (F3, the marking itself is Ryan's call), each block is rounded to the minute once so a
-cell and its title add up to 100:00 (F4), the block is "flown or scheduled" (F6), and the grid is about as wide as in
-1.7.11 (r1: no "off" in the tick, two-line 100h and Room headers above 700 px, 4 px cell padding)."""
+Review fixes (wording and display only): the tick speaks for a report at the day's first duty start, 00:01 on a day
+off (F2), each block is rounded to the minute once so a cell and its title add up to 100:00 (F4), the block is "flown
+or scheduled" (F6), and the grid is about as wide as in 1.7.11 (r1: no "off" in the tick, two-line 100h and Room
+headers above 700 px, 4 px cell padding). Stage 2 (Ryan, Nov 18: "fix all of these things"): Room to 100h tries
+far._cum's windows too, those ending mid-day (F1), and a window holding a trip with no times on file reads '~' (F3);
+tests/test_fw1713_room_windows.py checks both against far.py, this file the cells that changed with them."""
 import copy
 import os
 import re
@@ -260,7 +261,7 @@ def test_headers_carry_units_and_cite_the_rule(got):
         assert far[1]["title"].startswith("FAR 117.23(b)(1): at most 100 flight hours in any 672 consecutive hours "
                                           "(28 days)")
         assert far[2]["title"].startswith("FAR 117.23(b)(1) (100 flight hours in any 672 consecutive hours): 100:00 "
-                                          "minus the busiest of the 672 h windows ending 24:00 HST that hold the day")
+                                          "minus the busiest 672 h window that holds any part of the day")
         # short enough for a 390 px phone: a dozen characters on one line, like the one-word Trip header, and the
         # three columns side by side within one screen when the grid is scrolled to them
         line = heads[2]["h"]
@@ -291,25 +292,26 @@ def test_100h_cell_is_what_is_left_positive_zero_and_over(got):
 
 def test_room_cell_positive_zero_over_and_approximate(got):
     for dark in (False, True):
-        # negative: every November day up to Nov 28 falls in the Nov 1 to 28 window (101:20)
-        assert {_txt(got, "over", d, dark)[2] for d in range(1, 29)} == {"1:20 over"}
-        assert _txt(got, "over", 29, dark)[2] == "11:40 left"  # positive
-        assert _txt(got, "over", 30, dark)[2] == "11:40 left"
+        # negative: every November day up to Nov 29 is held by a window with all nine turns (101:20): stage 2 (F1),
+        # the 672 h from Nov 1 06:00 (the first turn's report) to Nov 29 06:00 holds part of Nov 29 too
+        assert {_txt(got, "over", d, dark)[2] for d in range(1, 30)} == {"1:20 over"}
+        assert _txt(got, "over", 30, dark)[2] == "11:40 left"  # positive
         r = _far(got, "over", 19, dark)[2]
-        assert r["title"] == ("Room to 100h: 1:20 over. 100:00 minus the busiest of the 672 h windows ending 24:00 "
-                              "HST that hold this day (101:20 flown or scheduled in the 28 days ending 24:00 "
-                              "2026-11-25), looking back and forward (FAR 117.23(b)(1)). Only windows ending 24:00 are "
-                              "tried: one ending mid-day can hold more, so the room can be less."), r["title"]
+        assert r["title"] == ("Room to 100h: 1:20 over. 100:00 minus the busiest 672 h window that holds part of this "
+                              "day (101:20 flown or scheduled in the 672 h ending 24:00 2026-11-25), looking back and "
+                              "forward (FAR 117.23(b)(1))."), r["title"]
+        assert "(101:20 flown or scheduled in the 672 h ending 06:00 2026-11-29)" in _far(got, "over", 29, dark)[2]["title"]
         # zero: the busiest window holds exactly 100:00
-        assert {_txt(got, "zero", d, dark)[2] for d in range(1, 29)} == {"0:00 left"}
-        assert _txt(got, "zero", 22, dark)[1] == "0:00 left" and _txt(got, "zero", 29, dark)[2] == "13:00 left"
+        assert {_txt(got, "zero", d, dark)[2] for d in range(1, 30)} == {"0:00 left"}
+        assert _txt(got, "zero", 22, dark)[1] == "0:00 left" and _txt(got, "zero", 30, dark)[2] == "13:00 left"
         # approximate: '~' in front, the word kept
         assert _txt(got, "fwd", 19, dark)[1:] == ["10:57 left", "~1:20 over"]  # the 672 h back are on file
-        assert _txt(got, "fwd", 29, dark)[1:] == ["11:40 left", "~11:40 left"]
+        assert _txt(got, "fwd", 29, dark)[1:] == ["11:40 left", "~1:20 over"]
         assert _txt(got, "back", 19, dark)[1:] == ["~10:57 left", "~1:20 over"]
         assert _txt(got, "back", 22, dark)[1:] == ["~0:00 left", "~1:20 over"]
-        assert _txt(got, "back", 28, dark)[1:] == ["1:20 over", "1:20 over"]  # Nov 1 to 28: all on file
-        assert _txt(got, "back", 29, dark)[1:] == ["11:40 left", "11:40 left"]
+        # Nov 1 to 28 are on file for the 100h cell; a window holding part of Nov 28 can start on Oct 31 (stage 2)
+        assert _txt(got, "back", 28, dark)[1:] == ["1:20 over", "~1:20 over"]
+        assert _txt(got, "back", 29, dark)[1:] == ["11:40 left", "1:20 over"]
         assert "~ = a window reaches past the schedule on file" in _far(got, "fwd", 29, dark)[2]["title"]
         assert "~ = part of the window is before the schedule on file" in _far(got, "back", 19, dark)[1]["title"]
 
@@ -364,8 +366,7 @@ def test_key_explains_the_columns_with_units_and_the_rules(got):
     assert "hours and minutes" in t100 and "10:57 left = 89:03 flown or scheduled" in t100 and "1:20 over" in t100
     assert room.startswith("What is left, in hours and minutes (h:mm), under FAR 117.23(b)(1) (100 flight hours in any "
                            "672 consecutive hours):")
-    assert ("busiest of the 672 h (28-day) windows that end at 24:00 HST and hold that day, looking back and forward"
-            in room)
+    assert "busiest 672 h (28-day) window that holds any part of that day, looking back and forward" in room
     assert "red '0:00 left'" in room and "red '1:20 over'" in room and "~ = a window reaches past" in room
     assert "Block Avail (totals): 98:00 bid-month cap minus FLICA's bid-period Block" in room
     assert "The 30h in 7d column gives the date that counts" in key["Teal edge"]
@@ -397,33 +398,32 @@ def _key(got, name="over", dark=False):
 def _readme():
     with open(os.path.join(os.path.dirname(__file__), "..", "README.md"), encoding="utf-8") as f:
         text = " ".join(f.read().split())
-    return text[text.index("**FAR 117 columns** (1.7.13"):][:2600]
+    return text[text.index("**FAR 117 columns** (1.7.13"):][:3400]
 
 
-def test_room_says_it_tries_only_the_windows_ending_midnight(got):
-    """F1 (review): Room to 100h tries the 672 h windows ending 24:00 HST that hold the day (the math is unchanged;
-    trying the windows that end mid-day, as far._cum does, is Ryan's call). A window ending mid-day can hold more, so
-    the header, the cell's title, the Key and the README say what the cell tries and never call it the most block you
-    could add."""
+def test_room_tries_the_windows_ending_mid_day_too(got):
+    """F1 (review, fixed in stage 2, Ryan Nov 18: "fix all of these things"): a 672 h window ending mid-day can hold
+    more than any window ending 24:00, so Room to 100h tries far._cum's windows too (starting at a duty's start or
+    ending at its block-in). On the midday line the 672 h from Nov 1 10:45 to Nov 29 10:45 hold 101:00: Room reads
+    over on Nov 29, as far.py does for a pickup that day, while 100h in 672h stays the 672 h ending 24:00 (91:00). No
+    'windows ending 24:00 only' caveat is left in the header, the Key or the README."""
     import far
     from datetime import date, datetime
     for dark in (False, True):
         b, r = _far(got, "midday", 29, dark)[1:]
-        assert (b["t"], r["t"]) == ("9:00 left", "9:00 left") and "bad" not in r["cls"]  # the card's hours, as before
-        assert r["title"] == ("Room to 100h: 9:00 left. 100:00 minus the busiest of the 672 h windows ending 24:00 HST "
-                              "that hold this day (91:00 flown or scheduled in the 28 days ending 24:00 2026-11-29), "
-                              "looking back and forward (FAR 117.23(b)(1)). Only windows ending 24:00 are tried: one "
-                              "ending mid-day can hold more, so the room can be less."), r["title"]
+        assert (b["t"], r["t"]) == ("9:00 left", "1:00 over") and "bad" in r["cls"] and "bad" not in b["cls"]
+        assert r["title"] == ("Room to 100h: 1:00 over. 100:00 minus the busiest 672 h window that holds part of this "
+                              "day (101:00 flown or scheduled in the 672 h ending 10:45 2026-11-29), looking back and "
+                              "forward (FAR 117.23(b)(1))."), r["title"]
         head = got[("midday", dark)]["heads"][12]["title"]
-        assert "Only those windows are tried: one ending mid-day can hold more, so the room can be less." in head
+        assert "Only those windows are tried" not in head and "can be less" not in head
         assert "most block you could" not in head and "falls in" not in head
     room = _key(got, "midday")["Room to 100h"]
-    assert ("Only windows ending 24:00 are tried: a window ending mid-day can hold more, so the room can be less than "
-            "shown (a guide to the block you could add, not a legality check).") in room
+    assert "Only windows ending 24:00 are tried" not in room and "can be less than shown" not in room
     assert "The most block you could still add" not in room and "a window holding that day is over" not in room
     readme = _readme()
-    assert "busiest of the 672 h windows ending 24:00 HST that hold the day" in readme
-    assert "one ending mid-day can hold more, so the room can be less than shown" in readme
+    assert "busiest 672 h window that holds any part of the day, back and forward" in readme
+    assert "Only those windows are tried" not in readme and "the room can be less than shown" not in readme
     assert "the most block you could add that day" not in readme
 
     # far.py on the same line: the 672 h from Nov 1 12:00 to Nov 29 12:00 hold 101:00, over the limit
@@ -464,15 +464,18 @@ def test_30h_tick_speaks_for_the_first_duty_start_only(got):
 
 
 def test_key_says_a_trip_with_no_times_counts_nothing(got):
-    """F3 (review, wording only): a trip on the line whose times are not read yet adds no block, and with no report and
-    release on file counts as time off. Marking such a cell '~' or '?' changes what the column decides: Ryan's call.
-    Until then the Key and the README say it."""
+    """F3 (review; the marking itself in stage 2, Ryan Nov 18: "fix all of these things"): a trip on the line whose
+    times are not read yet adds no block, so a window holding it reads '~' (tests/test_fw1713_room_windows.py), and
+    with no report and release on file it counts as time off. The Key and the README say it."""
     key = _key(got)
     assert ("a trip whose report and release are not on file yet (its times not read) counts as time off"
             in key["30h in 7d"])
-    assert "A trip whose block times are not read yet adds 0:00 here and in Room to 100h." in key["100h in 672h"]
-    assert ("A trip whose times are not read yet adds no block, and with no report and release on file counts as time "
-            "off, so the cells can read better than the line is until its times are in.") in _readme()
+    assert ("~ = part of the window is before the schedule on file, or holds a trip whose times are not read yet (it "
+            "adds 0:00; hover for which).") in key["100h in 672h"]
+    assert "A trip whose block times are not read yet adds 0:00 here and in Room to 100h." not in key["100h in 672h"]
+    assert ("with `~` in front when a window reaches past the schedule on file or holds a trip whose times are not read "
+            "yet: that trip adds 0:00 block, and the cell's title names it. With no report and release on file such a "
+            "trip also counts as time off in `30h in 7d`.") in _readme()
 
 
 def _hmin(m):
@@ -481,20 +484,23 @@ def _hmin(m):
 
 def test_cell_and_title_add_up_to_100_hours(got):
     """F4 (review): the block is rounded to the minute once, so a cell (left or over) and its title (the block) always
-    add up to 100:00, also when a leg counts a half minute (FLICA Block 1:01 over duty block 61 + 61)."""
+    add up to 100:00, also when a leg counts a half minute (FLICA Block 1:01 over duty block 61 + 61: the 100h in 672h
+    cell scales each leg to the trip's Block, 30.5 min). Stage 2: Room to 100h counts H9801 as far.py counts it for a
+    pickup's FAR check, its two duty blocks in full (2:02), so Room and far.py read the line alike."""
     for dark in (False, True):
-        assert _txt(got, "half", 1, dark)[1:] == ["99:29 left", "98:59 left"]  # Room: both legs, 1:01
+        assert _txt(got, "half", 1, dark)[1:] == ["99:29 left", "97:58 left"]  # Room: both duty blocks, as far.py
         assert "0:31 block flown or scheduled" in _far(got, "half", 1, dark)[1]["title"]
+        assert "(2:02 flown or scheduled in the 672 h ending 11:01 2026-11-02)" in _far(got, "half", 1, dark)[2]["title"]
         c = _far(got, "half100", 29, dark)
-        assert [x["t"] for x in c[1:]] == ["0:01 over", "0:01 over"] and all("bad" in x["cls"] for x in c[1:])
-        assert "100:01 block flown or scheduled" in c[1]["title"] and "(100:01 flown or scheduled" in c[2]["title"]
+        assert [x["t"] for x in c[1:]] == ["0:01 over", "1:32 over"] and all("bad" in x["cls"] for x in c[1:])
+        assert "100:01 block flown or scheduled" in c[1]["title"] and "(101:32 flown or scheduled" in c[2]["title"]
         n = 0
         for name in CASES:
             for d, cells in got[(name, dark)]["rows"].items():
                 if len(cells) != 3:
                     continue
-                for cell, pat in ((cells[1], r"\. (\d+):(\d\d) block flown"), (cells[2], r"\((\d+):(\d\d) (?:flown or "
-                                                                                        r"scheduled )?in the 28 days")):
+                for cell, pat in ((cells[1], r"\. (\d+):(\d\d) block flown"), (cells[2], r"\((\d+):(\d\d) flown or "
+                                                                                        r"scheduled in the 672 h")):
                     m, t = re.search(pat, cell["title"]), re.fullmatch(r"~?(\d+):(\d\d) (left|over)", cell["t"])
                     assert m and t, (name, d, cell)
                     left = _hmin(t) * (-1 if t.group(3) == "over" else 1)
