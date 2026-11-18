@@ -23,6 +23,21 @@ still `be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435` (read 2
 back (`{"entity": "sensor.flight_watcher_last_check", "grid_options": {"columns": 6}, "name": "Last check", "type":
 "tile"}`, git history).
 
+## Pending on Pako (1.7.14): near misses card
+
+Ryan, Nov 17: "In the open time pot, for each trip hidden by a VAC or blocked day, show what I'd have to drop or swap to
+fly it, plus the pay difference." Flight Watcher 1.7.14 adds `sensor.flight_watcher_near_misses` (topic
+`flight_watcher/near/state`) and the card `custom:flight-watcher-near-card` (the app deploys it with the others).
+`dashboard_flight_watcher.json`, view `watcher`, section "Open time pot / Tradeboard Pickups": right after the pot table
+markdown card and before the "Swap ideas" heading, `{"grid_options": {"columns": "full"}, "type":
+"custom:flight-watcher-near-card"}` (keys sorted, as HA stores a card the connector writes). The list is folded by
+default with its count. The sensor and the card exist only once 1.7.14 is live, so Claude applies this dashboard edit
+through the HA connector after the release, with Ryan's yes for it (a [DESTRUCTIVE] dashboard change), then checks by
+sha256 of the redacted text as in Refresh below and turns this section into an "Applied" one. Until then the snapshot
+is this one card ahead of Pako: its sha256 is `ccadab7d0c05aaaa5d4deda7e339aaaea6037eca4e30761793ccc713d5d88e13`, while
+Pako's dashboard is still the `be03a0a4...` one below. Undo: remove that one card. No automation changes: the near
+misses never push (information only), so the guard's count is unchanged.
+
 ## Applied on Pako 2026-11-13 about 05:45 HST (1.7.2, FW-0066): "Flight Watcher pilot upload"
 
 `automations_flight_watcher.yaml` ends with **Flight Watcher pilot upload** (id `1794500000201`), after the van

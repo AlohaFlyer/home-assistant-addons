@@ -331,8 +331,9 @@ ADMIN_ONLY_172 = ("switch.flight_watcher_van_alerts", "number.flight_watcher_van
                   "number.flight_watcher_van_alert_second")
 # 1.7.8 (B5): the pilot database's counts, the admin's only (one_writer)
 ADMIN_ONLY_178 = ("sensor.flight_watcher_pilotdb",)
-ADMIN_IDS = sorted(ADMIN_IDS_1412 + ["sensor.flight_watcher_bid_calendar"] + list(ADMIN_ONLY_171)
-                   + list(ADMIN_ONLY_172) + list(ADMIN_ONLY_178))
+# 1.7.14: the near misses sensor, core (every instance its own)
+ADMIN_IDS = sorted(ADMIN_IDS_1412 + ["sensor.flight_watcher_bid_calendar", "sensor.flight_watcher_near_misses"]
+                   + list(ADMIN_ONLY_171) + list(ADMIN_ONLY_172) + list(ADMIN_ONLY_178))
 PILOT_RETIRED_1500 = ("switch.flight_watcher_auto_swap_dry_run", "button.flight_watcher_map_swap_pages_read_only",
                       "sensor.flight_watcher_would_drop")
 ADMIN_ONLY_1412 = ("sensor.flight_watcher_crew_index", "button.flight_watcher_update_schedules")  # never on a pilot

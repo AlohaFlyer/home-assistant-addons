@@ -204,7 +204,7 @@ subscriptions, entities and log lines as 1.5.0. FLICA stays read only: the porta
 `{"states": {"<entity_id>": {"state", "attributes", "last_changed", "last_updated"}}, "ha_ok": true}`
 
 - The ids are exactly `watcher.portal_ids()`: the pilot's discovery entities that a portal serves (no uploads
-  sensors; revision 2: `sensor.<prefix>_tickets`, his own tickets only, with `answers` and `limits` (section 5.4);
+  sensors; 1.7.14: not `sensor.<prefix>_near_misses` either, `roles.ENTITY_OFF_PORTAL`, held for a later revision; revision 2: `sensor.<prefix>_tickets`, his own tickets only, with `answers` and `limits` (section 5.4);
   `sensor.<prefix>_settings` among them), the rule live switches (`switch.<prefix>_rule_<id>_live`)
   and the pref helpers (section 5.3). Never another pilot's or the admin's id, never a house entity.
 - Read from Home Assistant one `GET /core/api/states/<id>` per id (a changed state 2 s after its publish, every id
