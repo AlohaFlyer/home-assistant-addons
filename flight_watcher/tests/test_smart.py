@@ -830,8 +830,9 @@ def test_check_with_a_malformed_smart_json_runs(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------- sensor sizes
 def test_the_pot_and_tradeboard_sensors_keep_their_rows(tmp_path, monkeypatch):
-    """With smart.json the pot and Tradeboard sensors publish exactly what they do without it: a busy month keeps
-    as many rows under cap_attrs' 12 KB (the fields are on the rows, the finds files and event/new_pairing)."""
+    """With smart.json the pot and Tradeboard sensors publish what they do without it (the fields are on the rows, the
+    finds files and event/new_pairing), 1.7.17 plus the commute tag cm on a row commutable both ways: a busy month
+    keeps its rows under cap_attrs' 12 KB, at most one fewer."""
     from test_sensor_size import HA_OWN, LIMIT, _attr_topics, _fill, _load, _pot_row
     W, fake = _load(tmp_path, monkeypatch)
     monkeypatch.setattr(W, "SMART_FILE", str(tmp_path / "smart.json"))
@@ -861,7 +862,13 @@ def test_the_pot_and_tradeboard_sensors_keep_their_rows(tmp_path, monkeypatch):
     assert rows[0]["comm"] == "AAA/BBB" and rows[0]["value"] == 1500
     assert rows[0]["month_rule"].startswith("Conflict H3681") and len(rows[0]["month_rule"]) <= SM.RULE_MAX
     assert len(rows[0]["comm_why"]) <= SM.WHY_MAX
-    assert smart == plain  # byte for byte
+    # 1.7.17: the one difference is cm, the commute tag (smart.comm_tag), on each row commutable both ways: the rows
+    # are the same rows, at most one fewer of a busy month (tests/test_fw1717_comm_tag.py has the worst case)
+    for t in ("pot/state", "tradeboard/state"):
+        s, p = json.loads(smart[t]), json.loads(plain[t])
+        assert all(r.pop("cm") == ["AAA", "BBB"] for r in s["pairings"]), t
+        assert s["pairings"] == p["pairings"][:len(s["pairings"])] and len(s["pairings"]) >= len(p["pairings"]) - 1, t
+        assert s["count"] == p["count"] and s["trimmed"] == p["trimmed"] + len(p["pairings"]) - len(s["pairings"]), t
     for t, p in smart.items():
         d = json.loads(p)
         assert d["trimmed"] > 0 and len(d["pairings"]) < d["count"], t  # busy: the cap is what decides the rows

@@ -11,7 +11,8 @@
   releases, and an airport that makes HOME only without customs is unknown (never a No). An airport counts only with
   both. The airports that count, in the config's order, joined with '/' ('AAA/BBB', 'AAA', 'BBB'), 'No' when every
   airport surely fails, '' when none counts but one is unknown (the why says so); ('', '') with no config, no airport
-  with both tables, or no report / release time.
+  with both tables, or no report / release time. comm_tag() (1.7.17): those airports as a list, the pot and
+  Tradeboard sensors' compact tag cm ([] for 'No' and '').
 - month_type() / month_rule(): the bid month's type from the config, 'line' or 'reserve', and the row against it,
   per bid month the trip touches (a trip across a bid period's end is judged in both, each by its own type). A bid
   month is the bid period, not the calendar month (November 2026 runs Nov 1 to Dec 1, December Dec 2 to 31): each
@@ -334,6 +335,17 @@ def comm(report, release, cfg, customs=False):
         return ("/".join(ok) if ok else "" if unk else "No"), why[:WHY_MAX]
     except Exception:  # noqa: BLE001: a field, never an error
         return "", ""
+
+
+def comm_tag(result):
+    """1.7.17 (Ryan, Nov 17: tag the pot trips whose report and release times line up with his commutes; the commute
+    check above and its timetables, no new windows): the airports comm() passed both ways, from its result
+    ('AAA/BBB' -> ['AAA', 'BBB']), in the config's order, for the pot and Tradeboard sensors' compact tag cm.
+    [] for 'No', for '' (no config or no timetables, or only an unknown airport: a customs release decides it, never a
+    guess) and for anything that is not three-letter codes."""
+    if not isinstance(result, str) or result in ("", "No"):
+        return []
+    return list(dict.fromkeys(a for a in result.split("/") if AP_RE.match(a)))
 
 
 # ---------------------------------------------------------------- month type and rules

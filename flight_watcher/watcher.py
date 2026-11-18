@@ -3148,6 +3148,11 @@ SMART_FIELDS = ("comm", "comm_why", "value", "month_rule", "b672", "b672_ok")
 # only, so none of them either. Showing Comm or Value in the pot_table macro needs a Watcher release that takes them
 # out of SENSOR_DROP for pot/state (minding the 12 KB cap) as well as the HA macro edit.
 SENSOR_DROP = ("far_why",) + SMART_FIELDS
+# 1.7.17 (Ryan, Nov 17): what the pot and Tradeboard sensor rows carry of the commute instead: cm, the airports comm
+# passed both ways (smart.comm_tag: ['AAA', 'BBB']), and no key at all when none did, one is only unknown or smart.json
+# has no timetables. About 19 bytes on a row commutable from two airports: a busy pot that cap_attrs already cuts to
+# 19 rows keeps 18 (tests/test_fw1717_comm_tag.py). The pot card's chip and the pot_table macro read it.
+CM_KEY = "cm"
 # FW-0042 review: stations a last leg into HNL comes from without clearing customs (the US stations of pot.TZ; a
 # pilot's smart.json "domestic" adds more). Any other origin means a release 30 min after block-in (PWA 2.19.b), the
 # one the commute HOME check uses; an origin not on file is judged both ways (smart.comm, far.py's sure / worst rule).
@@ -3303,6 +3308,14 @@ def block_672(ev):
     return SMART.block_672(*(trips or (None, None)))
 
 
+def commute(ev, cfg):
+    """(comm, comm_why) of a row from smart.json's config (smart.comm, PWA 26.QQ.2): its report and release
+    (report_release) and whether the release clears customs (release_customs, PWA 2.19.b). Files on hand only: no
+    FLICA page load."""
+    rep, rel = report_release(ev)
+    return SMART.comm(rep, rel, cfg, customs=release_customs(ev, cfg))
+
+
 def smart_fields(ev):
     """FW-0042: comm, comm_why (Hark's commute check, PWA 26.QQ.2), value (credit x rate, dollars), month_rule (the
     bid month's line / reserve rules, each day in its bid period: bid_period_of) and, 1.7.1, b672 / b672_ok (the block
@@ -3314,8 +3327,7 @@ def smart_fields(ev):
     try:
         cfg = SMART.load(SMART_FILE, warn=log.info)
         if cfg:
-            rep, rel = report_release(ev)
-            out["comm"], out["comm_why"] = SMART.comm(rep, rel, cfg, customs=release_customs(ev, cfg))
+            out["comm"], out["comm_why"] = commute(ev, cfg)
             out["value"] = SMART.value(ev.get("credit"), cfg)
             b = block_672(ev)
             out["b672"], out["b672_ok"] = b["b672"], b["b672_ok"]
@@ -3331,10 +3343,15 @@ def smart_fields(ev):
 
 def sensor_row(r):
     """FW-0042: a pot / Tradeboard row as its sensor carries it: no far_why and none of the smart fields (SENSOR_DROP),
-    so the sensor rows are byte for byte what they were in 1.4.12 and a busy month keeps as many rows under the 12 KB
-    cap. Showing them in the pot_table macro or the schedule card needs a Watcher release that puts them back on
-    these sensors (SENSOR_DROP), not only the HA edit."""
-    return {k: v for k, v in r.items() if k not in SENSOR_DROP}
+    so the sensor rows are what they were in 1.4.12 and a busy month keeps as many rows under the 12 KB cap. Showing
+    them in the pot_table macro or the schedule card needs a Watcher release that puts them back on these sensors
+    (SENSOR_DROP), not only the HA edit. 1.7.17: plus cm (CM_KEY), the airports the row's comm passed both ways, only
+    when there is one (smart.comm_tag): a row with none is byte for byte the 1.4.12 row."""
+    out = {k: v for k, v in r.items() if k not in SENSOR_DROP and k != CM_KEY}
+    tag = SMART.comm_tag(r.get("comm"))
+    if tag:
+        out[CM_KEY] = tag
+    return out
 
 
 OWN_PER_CHECK = 3
@@ -7855,8 +7872,14 @@ def tradeboard_check(fl, full=False):
 def publish_tradeboard(live=None):
     """0.4.6 (Ryan): Tradeboard 'Pickup Trip' posts are trips anyone can pick up, like open time.
     Published with the same fields as pot rows (fit, vac, blocked, far re-screened every time) plus
-    src 'T', so the dashboard lists them in the pot table."""
+    src 'T', so the dashboard lists them in the pot table. 1.7.17: and the pot rows' commute tag cm, its comm judged
+    again here from smart.json's timetables on hand (no FLICA page load), so an edit of the file reaches a post read
+    before it, as it reaches the pot's rows every check."""
     live = S.get("tb_details", {}) if live is None else live
+    try:
+        cfg = SMART.load(SMART_FILE, warn=log.info)
+    except Exception:  # noqa: BLE001 (load never raises; a field, never an error)
+        cfg = {}
     rows = []
     for k, row in sorted(live.items()):
         r = {f: v for f, v in row.items() if f not in ("row", "crew")}
@@ -7868,7 +7891,13 @@ def publish_tradeboard(live=None):
             r["far"] = far_for(r)
         except Exception as e:
             log.info("tradeboard screen %s skipped: %s", k, e)
-        # far_why and the smart fields off the sensor, as on pot/state (a new post's event/new_pairing carries them)
+        try:
+            r["comm"] = commute(r, cfg)[0] if cfg else ""
+        except Exception as e:
+            log.info("tradeboard commute %s skipped: %s", k, e)
+            r["comm"] = ""
+        # far_why and the smart fields off the sensor, as on pot/state (a new post's event/new_pairing carries them);
+        # cm, the commute tag, on it (sensor_row)
         rows.append(sensor_row(r))
     pub("tradeboard/state", {"count": len(rows), "pairings": rows})
 
@@ -12479,7 +12508,8 @@ def email_check(fl, pot_all):
 def publish_pot(flat):
     """sensor.<prefix>_pot_count: the first 60 pot rows (close-in first). far_why and the FW-0042 smart fields stay off
     the sensor (sensor_row: no card reads them there yet; they would cost rows under cap_attrs' 12 KB): the DB, the
-    finds month files, last_new and event/new_pairing keep them (the finds sensor carries FINDS_ATTR_KEYS only)."""
+    finds month files, last_new and event/new_pairing keep them (the finds sensor carries FINDS_ATTR_KEYS only).
+    1.7.17: a row commutable both ways carries cm, the airports (sensor_row), for the pot card's chip."""
     pub("pot/state", {"count": len(flat), "pairings": [sensor_row(r) for r in flat[:60]]})
 
 

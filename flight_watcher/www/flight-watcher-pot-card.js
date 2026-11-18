@@ -23,6 +23,10 @@
 // ideas listed (review R4: the size cap can list fewer than auto_max).
 // 1.7.1 (F#119): the chip colors are this card's own variables, lighter on dark cards (Home Assistant's dark mode, which the
 // portal sets from the device), so they keep WCAG AA contrast (4.5:1) on both (the portal's dark error red is 4.497:1).
+// 1.7.17 (Ryan, Nov 17: tag the pot trips whose report and release times line up with his commutes): a row's cm (the
+// airports the Watcher's commute check passed both ways from the pilot's own smart.json timetables: 2 scheduled
+// nonstops arriving HNL before report, PWA 26.QQ.2, and 1 home after release, same day) shows as a chip
+// "Commutable AAA BBB", in words, not color alone; only three-letter codes are drawn. No tag, no chip (and no key line).
 // Usage: type: custom:flight-watcher-pot-card
 // PWA 3.D.6 A330 PAX / B787 First Officer hourly rate by longevity year (1-12) and effective date (as the schedule card)
 const PC_RATE_DATES = ["2023-03-02", "2024-03-02", "2025-03-02", "2026-03-02", "2027-01-31"];
@@ -83,6 +87,18 @@ class FlightWatcherPotCard extends HTMLElement {
     if (s.startsWith("OK")) return ["warn", `FAR ${s}`];
     if (!s || s === "?") return ["mute", "FAR ?"];
     return ["bad", `FAR: ${s}`];
+  }
+  // 1.7.17: the airports of a row's commute tag (cm, a list from the Watcher; a text 'AAA/BBB' is read too), three-letter
+  // codes only, once each, in the Watcher's order (the pilot's smart.json)
+  _cmAps(p) {
+    const v = p.cm, raw = Array.isArray(v) ? v : typeof v === "string" ? v.split(/[\s\/,]+/) : [];
+    return [...new Set(raw.filter((a) => typeof a === "string" && /^[A-Z]{3}$/.test(a)))];
+  }
+  _cm(p) {
+    const aps = this._cmAps(p);
+    if (!aps.length) return "";
+    const t = `Commutable both ways from ${aps.join(" and ")}: 2 scheduled nonstops arriving HNL before report and 1 home after release, same day (PWA 26.QQ.2; your smart.json timetables)`;
+    return `<span class="c ok cm" title="${this._e(t)}">Commutable ${this._e(aps.join(" "))}</span>`;
   }
   // 1.7.1 (F#107): the swap ideas for the trips marked "would trade", the admin's Watcher view table in HTML.
   // 1.7.15: the automatic ones as well, with both trips' pay, days and pay per day
@@ -166,12 +182,13 @@ class FlightWatcherPotCard extends HTMLElement {
       return `<div class="r${p.vac || p.blocked ? " off" : ""}"><div class="l1"><b class="trip">${this._e(p.pairing)}</b>${p._t ? `<span class="t" title="Tradeboard pickup post">T</span>` : ""}`
         + `<span>${this._e(p.dates || p.start || "")}</span><span>${this._e(lay)}</span>${p.days ? `<span>${this._e(p.days)} d</span>` : ""}${val}</div>`
         + (facts ? `<div class="l2">${facts}</div>` : "")
-        + `<div class="l3"><span class="c ${fc}">${this._e(ft)}</span><span class="c ${ac}">${this._e(at)}</span>${p.vac ? `<span class="c mute">VAC</span>` : ""}${p.blocked ? `<span class="c mute">blocked day</span>` : ""}</div></div>`;
+        + `<div class="l3"><span class="c ${fc}">${this._e(ft)}</span><span class="c ${ac}">${this._e(at)}</span>${this._cm(p)}${p.vac ? `<span class="c mute">VAC</span>` : ""}${p.blocked ? `<span class="c mute">blocked day</span>` : ""}</div></div>`;
     };
     const nP = pot.length, nT = tb.length;
     const head = `${nP} in the pot &middot; ${nT} Tradeboard pickup${nT === 1 ? "" : "s"}`;
     const list = shown.length ? shown.map(row).join("") : `<div class="k">${rows.length ? "Every trip is on a VAC or blocked day." : "The open time pot is empty and there are no Tradeboard pickups."}</div>`;
     const vacBox = hidden.length || showVac ? `<label class="sv"><input type="checkbox" id="sv"${showVac ? " checked" : ""}> Show VAC/blocked${hidden.length && !showVac ? ` (${hidden.length} hidden)` : ""}</label>` : "";
+    const cmKey = rows.some((p) => this._cmAps(p).length) ? `<li><b>Commutable</b> and an airport = you can commute from that airport both ways: 2 scheduled nonstops arriving HNL before report (PWA 26.QQ.2) and 1 nonstop home 60+ min after release, same day (30 min after block-in when clearing customs, PWA 2.19.b), from your smart.json timetables. No chip = not commutable, or not known.</li>` : "";
     const valNote = rate == null ? "Value: set your longevity year in Pay settings (Schedule tab)."
       : `Value = credit x $${rate.toFixed(2)}/h (PWA 3.D.6, longevity year ${lyr}${unconf ? ", not confirmed yet: check it in Pay settings on the Schedule tab" : ""}).`;
     this.shadowRoot.innerHTML = `<style>
@@ -203,7 +220,7 @@ class FlightWatcherPotCard extends HTMLElement {
       <details><summary>Key</summary><ul class="k">
         <li><b>T</b> after a trip = Tradeboard pickup post; the rest are the open time pot.</li>
         <li><b>Fits</b> = no overlap with your trips, VAC or blocked days; <b>needs your schedule</b> = your FLICA schedule for those days is not read yet.</li>
-        <li><b>FAR</b> = 10 h rest before and after (117.25(e)), 30 h off in 168 h (117.25(b)), 100 h flying in 672 h (117.23(b)(1)), FDP limits (117.23(c)); <b>CBA rest</b> = legal, but under the 11 h company minimum (PWA 10.E.1.a); <b>?</b> = not checked yet.</li>
+        <li><b>FAR</b> = 10 h rest before and after (117.25(e)), 30 h off in 168 h (117.25(b)), 100 h flying in 672 h (117.23(b)(1)), FDP limits (117.23(c)); <b>CBA rest</b> = legal, but under the 11 h company minimum (PWA 10.E.1.a); <b>?</b> = not checked yet.</li>${cmKey}
         <li>${this._e(valNote)}</li>
         <li>Trips on VAC or blocked days are hidden: tick <b>Show VAC/blocked</b>. Block a day: tap it on the Schedule tab's calendar.</li>
         <li>Read only: pick a trip up in FLICA yourself. All times HST.</li></ul></details></ha-card>`;
