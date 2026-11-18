@@ -31,6 +31,11 @@
 // meaning of "1x"), "Watcher offline" in red when the app is down, and the hover text (a tap shows it, as every title
 // here) has the last good read in HST. The stamp keeps one width and weight at every level, at the header's right
 // (its own line on a phone), so the month arrows and Now never slide as the age ticks.
+// 1.7.18 (cross-item review): one box whatever the text says, so that holds for the long texts too ("2 h 10 min,
+// very stale", "over 1 h 5 min, Watcher offline" slid them up to 59 px): 21em at the right of a wide header (every
+// text on one line in the usual fonts; a wider font wraps inside it), and on a phone the rest of the Lock switch's
+// line, at its right (a long text wraps inside it, under the switch's 44 px), so the arrows, the month and Now keep
+// the second line to themselves and the header two lines.
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const DOW = ["SU","MO","TU","WE","TH","FR","SA"];
 const MON3 = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
@@ -1689,7 +1694,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .awl,.rsl{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.awl{font-weight:600}.rsl{color:var(--fw-warn,#8a5300)}
       .ag{font-size:11px;font-weight:600;color:var(--secondary-text-color);white-space:nowrap;font-variant-numeric:tabular-nums;cursor:pointer}
       .ag[data-age="amber"]{color:var(--fw-warn,#8a5300)}.ag[data-age="red"]{color:var(--fw-err,#c62828)}
-      .hd2 .ag{min-width:14em;margin-left:auto;text-align:right}
+      .hd2 .ag{margin-left:auto;text-align:right;white-space:normal;min-width:0;flex:0 0 21em}
+      @media (max-width:700px){.hd2 .ag{order:1;flex:1 1 0}.hd2 .sp{order:2}.hd2 .nav,.hd2 h3{order:3}}
       .unc{color:var(--fw-warn,#8a5300);font-weight:700}.ubn{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.set .keep{min-height:44px;padding:6px 12px;font:inherit;border-radius:6px;cursor:pointer}
     </style><ha-card><div class="frame"><div class="hd2">${this._lockHtml()}<span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${this._ageHtml(upd)}</div>${shead}${vhtml}${body}</div>${panel}
     <div class="info"></div>

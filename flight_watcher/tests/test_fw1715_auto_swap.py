@@ -568,8 +568,13 @@ def test_marked_ideas_keep_the_1711_order_and_the_cap_trims_the_least_soft_time_
     assert [i["gain_h"] for i in shown] == sorted((i["gain_h"] for i in shown), reverse=True)
     assert shown[0]["pairing"] == "H9300" == pushed[0]  # +2:30 soft: the best by swap.better, the first push
     assert [i["pairing"] for i in shown] == pushed[:len(shown)]  # what the cap leaves out is the tail of the pushes
-    assert shown[0]["ppd_gain"] < shown[-1]["ppd_gain"]  # not by pay per day: a marked trip keeps its own rule
-    assert all(not i["auto"] for i in shown) and W.attr_size(s) <= 9000
+    ev = _pubs(W, "event/swap")  # each push carries its pay figures
+    assert ev[0]["ppd_gain"] < ev[len(shown) - 1]["ppd_gain"]  # not by pay per day: a marked trip keeps its own rule
+    assert all(not i.get("auto") for i in shown) and W.attr_size(s) <= 9000
+    # 1.7.18 (cross-item review): over the cap the last marked ideas give up their pay figures before one is left out
+    # (tests/test_fw1718_xrev.py), so the figures are on the first ones only
+    n = sum(1 for i in shown if "ppd_gain" in i)
+    assert all("ppd_gain" in i for i in shown[:n]) and not any("ppd_gain" in i for i in shown[n:])
 
 
 def test_the_sensor_ideas_keep_their_1711_meaning_and_the_automatic_ones_have_their_own_list(W):

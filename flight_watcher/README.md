@@ -625,8 +625,9 @@ side, so the grid is about as wide as in 1.7.11.
 on every phone), the word Lock, a track and knob and On (locked, the default) or Off. While it is On a tap on a day,
 the trade mark or the drop mark is refused with a note; switch it Off to change them. One button (role switch,
 aria-checked, named "Lock schedule marks"); the state is kept for that browser as before (localStorage
-`flight_watcher_lock`, "0" = Off; a pilot's copy its own). On a phone (700 px or less) it has the header's first line to
-itself.
+`flight_watcher_lock`, "0" = Off; a pilot's copy its own). On a phone (700 px or less) it starts the header's first
+line with the Data age stamp at its right, and the month's arrows, title and Now have the second line (1.7.18
+cross-item review: two lines, not three).
 
 **Pairing detail** (1.7.7, Ryan, Nov 14): on the schedule card a tap on a pairing (or Enter on it) opens its detail
 like FLICA's pairing printout: the header (pairing, start date, the days it operates, base report, base and
@@ -738,7 +739,9 @@ interval, or while the FLICA budget or host limit holds the next check. "Data ag
 last check time is not known (an unknown interval shows the age with no colour); red "Data age over 12 min, Watcher
 offline" when the app is down. Its hover text has the last good read in HST (with its day when that is not today), the
 thresholds and, on the schedule card, FLICA's own schedule time, "FLICA updated Nov 9, 2026 09:54:34". A tap on the
-stamp shows that text on a phone. It ticks each second without a reload, at one width, so nothing beside it moves. On
+stamp shows that text on a phone. It ticks each second without a reload, in one box whatever it says (1.7.18: 21em at
+the right of a wide header, the rest of the lock switch's line on a phone, a long text wrapping inside it), so nothing
+beside it moves. On
 the Details view the clock card with `mode: age` is the stamp alone, a 56 px tile ("Data age" over its value), in
 place of the "Last check" tile. A pilot's portal shows it on his clock and schedule cards from the entities it already
 has. The pot card's "Pot last read ..." note is unchanged.

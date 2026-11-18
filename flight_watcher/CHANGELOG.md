@@ -3,7 +3,9 @@
 ## 1.7.18
 
 Two card changes Ryan asked for on Nov 17, 2026 (screenshots of Settings > Monthly files and of the schedule card on a
-Samsung phone). Cards only: no Watcher, sensor, contract or FLICA change.
+Samsung phone), cards only, and the cross-item review's fixes of Nov 18 (below: the schedule header's Data age stamp,
+1.7.17's Pako edits in ha/README.md, the swap ideas sensor's 12 KB cap and the swap draft's auto flag in the Watcher).
+No contract or FLICA change.
 
 ### The On file list folds
 
@@ -47,10 +49,59 @@ schedule card was an emoji (each phone draws its own) whose only change was the 
   (localStorage `flight_watcher_lock`, "0" = Off, anything else or nothing = On; a pilot's copy its own key).
 - A refused tap says "Settings are locked: turn the Lock switch at the top left Off to change availability, trade or
   drop marks." The Key's Day row says how the switch works.
-- On a phone (700 px or less) the switch has the header's first line to itself, so the month's arrows, title and Now
-  stay together on the next line (at 360 and 390 px the wider switch would otherwise split them); the Data age stamp
-  (1.7.12) follows Now, on a line of its own at 360 and 390 px. A wide card keeps one line, as before. Hover shading only with a mouse (no grey box left after a tap on a phone).
+- On a phone (700 px or less) the switch starts the header's first line, so the month's arrows, title and Now stay
+  together on the next line (at 360 and 390 px the wider switch would otherwise split them); the Data age stamp
+  (1.7.12) takes the rest of the switch's line, at its right (cross-item review, below). A wide card keeps one line,
+  as before. Hover shading only with a mouse (no grey box left after a tap on a phone).
 - The pilot card has no lock; every copy of the schedule card (a second pilot's, the portal's) gets the switch.
+
+### Cross-item review fixes (Nov 18)
+
+The review of items 3 to 8, A and B together (1.7.12 to 1.7.18 on one branch) found five things one item's own review
+could not see. Each fix names the item it corrects; each has a test that failed before it (`tests/test_fw1718_xrev.py`).
+- **The wide schedule header still slid** (corrects item 3, 1.7.12, the Data age stamp; item B's switch did not change
+  it). Above 700 px the stamp had a 14em minimum, so a longer text pushed the month's arrows, title and Now left: 4
+  px at "2 h 1 min, very stale", 11 px at "2 h 10 min", 59 px at "over 1 h 5 min, Watcher offline", and back on each
+  whole hour, against 1.7.12's own promise that they never slide. The stamp is now one box of 21em at the header's right
+  whatever it says (every text, up to "over 23 h 59 min, Watcher offline", on one line in the usual fonts; a wider font
+  wraps inside the box instead of moving anything). The arrows, the month and Now sit 77 px further left than beside
+  a short stamp before, and stay there.
+- **The phone header took three lines** (item B, 1.7.18, with item 3): the switch alone, then the month, then the stamp
+  alone under Now, 86 px. The stamp now takes the rest of the switch's line, at its right (a long text, "Watcher
+  offline", wraps inside that box, under the switch's 44 px), so the header is two lines, 70 px, and the month's line
+  never moves as the stamp changes, at 360, 390 and 430 px. CSS order only: the switch, the arrows, the month and Now
+  keep their order for a screen reader and the keyboard (the stamp is not focusable).
+- **1.7.17's Pako edits were not written down** (corrects item 8, 1.7.17): the `pot_table` macro's Commutable chip and
+  the pot table's Key line had no "Pending on Pako" section (the macro text was only in a scratch file), and the
+  snapshot had no Key line. `ha/README.md` now has "Pending on Pako (1.7.17): Commutable chip in the pot table", after
+  the 1.7.15 one: the `comm_chip` macro, its call inside `pot_table`, the Key line, the custom templates reload and the
+  check (its template and the output it must give), the undo, all a step of the 1.7.17 go-live with Ryan's yes. The
+  snapshot's pot markdown card has the Key line after "CBA rest" (the pot card's own Key text), so the one snapshot
+  carries every pending edit: sha256 `e322dc0e...` (`6678f813...` is what Pako reads once the 1.7.12, 1.7.14 and 1.7.15
+  edits are applied; Pako's own `be03a0a4...` until then); `tests/test_fw171_r2.py` pins it with four sections.
+- **The pay figures cut marked swap ideas** (corrects item 6, 1.7.15): every marked idea carries `pay`, `pay_days`,
+  `ppd`, `for_pay`, `for_days`, `for_ppd`, `ppd_gain` and `auto` (about 120 bytes), so in a busy month of marks the
+  12 KB cap kept 19 marked ideas where 1.7.11 kept 24, and a marked trip whose ideas were all in that tail lost its
+  swap tag on the schedule card. Now, still over the cap once no automatic idea is left on the sensor, the marked ideas
+  are first 1.7.11's (no pay figures), so the cap keeps as many as 1.7.11 did (the six automatic counts, under 100
+  bytes, can cost one at most), then the figures go back on the first ones, the most soft time first, while that many
+  still fit; the rest read "-" for Pay and Per day on the Swap ideas table and the pot card, as an idea with no rate
+  does. A month that fits is unchanged: every idea keeps its figures. Pushes are unchanged (each `event/swap` carries
+  its figures). `tests/test_sensor_size.py`'s busy month now publishes the swap ideas through `swap_scan` (marked and
+  automatic ideas, priced) instead of by hand in the 1.7.11 shape, and fills `picker_log` so the pickers sensor
+  carries a When to hunt attribute near its 2500-byte cap (1.7.16): 7496 bytes, under the 8000 bar.
+- **The backstop never saw a draft** (corrects item 6, 1.7.15): `pub()` refuses an idea with `auto` true on
+  `event/swap` and `event/swap_test`, but the draft `swap_test` publishes is a new record (`submit.compose`) that had no
+  `auto` key, so only `event/swap` was guarded. The draft now carries the idea's flag (`auto: false` on a marked trip's
+  draft, on `event/swap_test` and in `sensor.<prefix>_swap_test_requests`), so the backstop holds on both topics.
+  `swap_test`'s own return is still what keeps an automatic idea from making a draft at all.
+- Tests: `tests/test_fw1718_xrev.py` (Chromium and Jinja2, synthetic states and made-up pairings): the wide header at
+  701, 820, 1024 and 1280 px and the phone header at 360, 390 and 430 px, light and dark, the HA copy and the portal's
+  pilot2 copy, at ten stamp texts from "3 min" to "over 10 d 23 h, Watcher offline" (the same pixels, one box, nothing
+  cut); the CSS in every copy; the 1.7.17 section and Key line, the macro rendered from the README as it says; the
+  busy month against 1.7.11's count (24 of 24, 2307cce gives the same) and a sweep of idea sizes; a month that fits
+  keeps every figure; the draft's flag and the backstop with swap_test's own return bypassed.
+  `tests/test_fw1715_auto_swap.py`'s cap test reads the pay order from the pushes.
 
 ### Tests
 

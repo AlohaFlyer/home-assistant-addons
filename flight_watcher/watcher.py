@@ -11855,6 +11855,10 @@ def swap_test(idea):
     rec = SUB.compose(idea, b[0] if b else None, rep_h, seat=seat, close_in_bcid=S.get("close_in_bcid"))
     rec.update({"key": idea["key"], "at": now_iso(), "mode": SUB.DEFAULT_MODE,
                 "hours_to_report": round(rep_h, 1) if rep_h is not None else None, "sent": False})
+    # 1.7.18 (cross-item review of 1.7.15): the draft names the idea's auto flag, so pub()'s backstop sees it on
+    # event/swap_test as on event/swap (SUB.compose builds a new record, which had no auto key: only event/swap was
+    # guarded). The return above is still what keeps an automatic idea from ever making a draft.
+    rec["auto"] = bool(idea.get("auto"))
     tests = S.setdefault("swap_tests", [])
     tests.append(rec)
     del tests[:-20]
@@ -11866,6 +11870,8 @@ def swap_test(idea):
 
 SWAP_MARKED_MAX = 30  # ideas for the trips marked "would trade" the sensor lists (as before 1.7.15)
 SWAP_AUTO_MAX = 10  # 1.7.15: automatic ideas the sensor lists (auto_ideas), the best pay per day first; auto_more counts the rest
+# 1.7.18 (cross-item review of 1.7.15): the keys 1.7.15 put on a marked trip's idea; without them it is 1.7.11's idea
+SWAP_FIG_KEYS = ("pay", "pay_days", "ppd", "for_pay", "for_days", "for_ppd", "ppd_gain", "auto")
 SWAP_PAY_TTL_S = 300  # 1.7.15: pay_settings() (two HA helper reads) is read again at most every 5 min for the ideas
 _SWAP_PAY = {"at": 0.0, "v": None}
 
@@ -12072,7 +12078,8 @@ def swap_scan(pot_rows):
     "ideas" holds the marked trips' ideas only, as before (at most SWAP_MARKED_MAX, in the 1.7.11 order: gain_h, the
     soft time and credit gain), "auto_ideas" the best SWAP_AUTO_MAX automatic ones, the best pay per day first;
     auto_count is how many automatic ideas there are, auto_shown how many "auto_ideas" lists and auto_more how many
-    are not listed (the size cap, ATTR_MAX, drops automatic ideas from the end before any marked one, then cap_attrs
+    are not listed (the size cap, ATTR_MAX, drops automatic ideas from the end before any marked one, then, 1.7.18,
+    the marked ideas' pay figures from the end, so no more of them are trimmed than 1.7.11 trimmed; then cap_attrs
     trims "ideas" from the end, the least soft time first, as in 1.7.11). Reads the rows and the state on hand only:
     no FLICA load."""
     marks = S.get("trade_away") or []
@@ -12158,6 +12165,25 @@ def swap_scan(pot_rows):
     out = payload()
     while auto_shown and attr_size(out) > ATTR_MAX:  # the size cap: automatic ideas go first, from the end
         auto_shown.pop()
+        out = payload()
+    if shown and attr_size(out) > ATTR_MAX:
+        # 1.7.18 (cross-item review of 1.7.15): still over with no automatic idea listed (a busy month of marks). The
+        # pay figures (SWAP_FIG_KEYS) cost about 120 bytes an idea, which made cap_attrs keep 19 marked ideas where
+        # 1.7.11 kept 24. So first every idea is 1.7.11's (no pay figures): cap_attrs then keeps as many as
+        # 1.7.11 kept (the six auto_ counts aside, under 100 bytes). Then the figures go back on the first ones, the
+        # most soft time first, while that many still fit; the rest read "-" for Pay and Per day on both cards.
+        full = list(shown)
+        shown[:] = [{k: v for k, v in i.items() if k not in SWAP_FIG_KEYS} for i in full]
+        keep = len(cap_attrs("swap/state", payload()).get("ideas") or [])
+
+        def fits():  # the keep first ideas as cap_attrs will leave them (it counts "trimmed" while it cuts)
+            cut = len(shown) - keep
+            return attr_size({**payload(), "ideas": shown[:keep], "trimmed": cut} if cut else payload()) <= ATTR_MAX
+        for j in range(keep):
+            bare, shown[j] = shown[j], full[j]
+            if not fits():
+                shown[j] = bare
+                break
         out = payload()
     pub("swap/state", out)
 

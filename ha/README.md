@@ -21,7 +21,7 @@ sha256 of the redacted text as in Refresh below and drops this section. The pend
 one first: Pako's dashboard is still `be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435` (read
 2026-11-14, below), and with this edit alone it reads
 `7a3b3903c6d9bba5d59d0f059642772852df3ad1fd56a6cecc574c64173da530`. The snapshot is ahead of Pako by every pending
-edit (this one and the sections below), sha256 `6678f813ccdc4a6e2e1ab8837ccddffbd3de6f0c1de874a5cd8a1c48ea9a5cc5`.
+edit (this one and the sections below), sha256 `e322dc0eed2289d10236323e95afec78b4990867c7715eaa22ac936d9caac411`.
 Undo: put the tile back (`{"entity": "sensor.flight_watcher_last_check", "grid_options": {"columns": 6}, "name": "Last
 check", "type": "tile"}`, git history).
 
@@ -38,8 +38,8 @@ through the HA connector after the release, with Ryan's yes for it (a [DESTRUCTI
 sha256 of the redacted text as in Refresh below and turns this section into an "Applied" one. The pending edits go on
 in release order: once the 1.7.12 Details tile (above) and this card are applied, Pako reads
 `e95ce9d3b662aad0357c138f355d834928a9abad86a869bc6570283fe9fc19c2`; until then it is still the `be03a0a4...` one below.
-The snapshot carries every pending edit (the 1.7.15 one below too), sha256
-`6678f813ccdc4a6e2e1ab8837ccddffbd3de6f0c1de874a5cd8a1c48ea9a5cc5`. Undo: remove that one card. No automation changes:
+The snapshot carries every pending edit (the 1.7.15 and 1.7.17 ones below too), sha256
+`e322dc0eed2289d10236323e95afec78b4990867c7715eaa22ac936d9caac411`. Undo: remove that one card. No automation changes:
 the near misses never push (information only), so the guard's count is unchanged.
 
 ## Pending on Pako (1.7.15): automatic swap ideas on the Swap ideas table
@@ -49,8 +49,11 @@ legality and VAC/blocked rules." Flight Watcher 1.7.15 puts the automatic ideas 
 `auto_ideas`, on `sensor.flight_watcher_swap_ideas`, with each idea's pay, days and pay per day (`pay`, `pay_days`,
 `ppd`, `for_pay`, `for_days`, `for_ppd`, `ppd_gain`) and `auto_count`, `auto_shown`, `auto_more`, `auto_max`, `priced`
 on the sensor. `ideas` keeps the marked trips' ideas only, in their 1.7.11 order, so every reader of it (the old Swap
-ideas card, the schedule card's swap tags) shows exactly what 1.7.11 showed: until this edit is applied the dashboard
-lists no automatic idea at all, never one mixed in with the marked ones. `dashboard_flight_watcher.json`, view
+ideas card, the schedule card's swap tags) shows what 1.7.11 showed: until this edit is applied the dashboard
+lists no automatic idea at all, never one mixed in with the marked ones. In a month too busy for the sensor's 12 KB
+(from 1.7.18) the last marked ideas give up their pay figures before any is left out, so the list keeps the ideas
+1.7.11 kept (the six new counts, under 100 bytes, can cost one at most); the table shows "-" for their Pay and Per
+day. `dashboard_flight_watcher.json`, view
 `watcher`: the Swap ideas markdown card (under its heading) lists `ideas` then `auto_ideas` ("*auto*" beside the trip
 given up), adds the Pay and Per day columns and the "N more automatic ideas not shown (the best K by pay per day
 are)" line (K the number listed), says "No better-paying swap in the open pot right now" (or how to set a pay rate)
@@ -60,8 +63,74 @@ step of the 1.7.15 go-live, not a later one: right after the 1.7.15 update is ve
 applies it through the HA connector (a dashboard edit, the card's `content` only; undo: the old `content` from git
 history), checks it by sha256 of the redacted text as in Refresh below and drops this section. The pending edits go on
 in release order: once the 1.7.12 and 1.7.14 edits (above) and this one are applied, Pako reads
-`6678f813ccdc4a6e2e1ab8837ccddffbd3de6f0c1de874a5cd8a1c48ea9a5cc5`, the snapshot's sha256 (every pending edit); until
-then Pako's dashboard is still the `be03a0a4...` one below.
+`6678f813ccdc4a6e2e1ab8837ccddffbd3de6f0c1de874a5cd8a1c48ea9a5cc5`; until then Pako's dashboard is still the
+`be03a0a4...` one below. The snapshot carries every pending edit (the 1.7.17 Key line below too), sha256
+`e322dc0eed2289d10236323e95afec78b4990867c7715eaa22ac936d9caac411`.
+
+## Pending on Pako (1.7.17): Commutable chip in the pot table
+
+Ryan, Nov 17: "Tag pot trips whose report and release times line up with my commutes from KOA and LAS." Flight Watcher
+1.7.17 puts `cm` on each row (attribute `pairings`) of `sensor.flight_watcher_pot_count` and
+`sensor.flight_watcher_tradeboard_pickups`: the airports the commute check passed both ways from smart.json's
+timetables, in its order (`["KOA", "LAS"]`; PWA 26.QQ.2, the customs release PWA 2.19.b). A row with no commutable
+airport has no `cm` key. The pot card (the portal's, and the admin's copy) draws the chip itself. The HA Watcher view's
+pot table is the `pot_table` macro in `/config/custom_templates/flight_watcher.jinja` on Pako (not in git; the pot
+markdown card joins both sensors' `pairings` and calls it), so this takes two edits on Pako, both a step of the 1.7.17
+go-live with Ryan's yes for them (the macro file and a dashboard edit), after the 1.7.12, 1.7.14 and 1.7.15 edits
+above:
+
+1. **The macro** (`flight_watcher.jinja`). Add `comm_chip` at the top level of the file, just above
+   `{% macro pot_table(...) %}`. It prints a leading space and bold words ("**Commutable KOA LAS**", not colour
+   alone), or nothing; only codes of exactly three capital letters (Home Assistant's `match` test), so nothing in `cm`
+   can inject markup:
+
+```jinja
+{%- macro comm_chip(p) -%}
+{#- 1.7.17: the pot / Tradeboard row's commute tag cm (the airports the Watcher's commute check passed both ways from
+    smart.json's timetables, PWA 26.QQ.2), as words: 'Commutable KOA LAS'; nothing without one. Three-letter codes
+    only (a text 'KOA/LAS' is read too). -#}
+{%- set cm = p.get('cm') if p is mapping else none -%}
+{%- set raw = (cm.split('/') if cm is string else (cm if cm is iterable else [])) if cm else [] -%}
+{%- set aps = raw | select('string') | select('match', '^[A-Z]{3}$') | unique | list -%}
+{%- if aps %} **Commutable {{ aps | join(' ') }}**{% endif -%}
+{%- endmacro -%}
+```
+
+   Then call it in `pot_table`'s row loop (the `{% for ... in ps %}` over the rows; `p` here is that loop's row
+   variable, whatever `pot_table` calls it) as the last thing in the cell that prints the row's Fits / FAR text, before
+   that cell's closing `|` and on the same line as that text, so the markdown table row is not split. No import is
+   needed (the same file):
+
+```jinja
+{{ comm_chip(p) }}
+```
+
+2. **The Key** (`dashboard_flight_watcher.json`, view `watcher`, the pot markdown card's `<details>` Key, the snapshot
+   has it): after `- **CBA rest**: legal, but under the 11 h company minimum` add
+
+```markdown
+- **Commutable KOA**: you can commute from that airport both ways: 2 scheduled nonstops arriving HNL before report (PWA 26.QQ.2) and 1 nonstop home leaving at least your home gap after release (home_gap_min in your smart.json, 60 min unless set), same day (release 30 min after block-in when clearing customs, PWA 2.19.b), from your smart.json timetables. No chip = not commutable, or not known
+```
+
+3. **Reload and check.** Reload the templates (Developer Tools > YAML > "Custom Jinja2 templates", the action
+   `homeassistant.reload_custom_templates`), then render this in Developer Tools > Template:
+
+```jinja
+{%- from 'flight_watcher.jinja' import comm_chip -%}
+[{{ comm_chip({'cm': ['KOA', 'LAS']}) }}][{{ comm_chip({'cm': ['KOA']}) }}][{{ comm_chip({'cm': []}) }}][{{ comm_chip({}) }}][{{ comm_chip({'cm': ['<b>x</b>', 'LAS', 'las', 7, none, 'LAS']}) }}][{{ comm_chip({'cm': 'KOA/LAS'}) }}][{{ comm_chip(none) }}]
+```
+
+   It must give `[ **Commutable KOA LAS**][ **Commutable KOA**][][][ **Commutable LAS**][ **Commutable KOA LAS**][]`.
+   Then the Watcher view: a row whose sensor row has `cm` shows "**Commutable ...**" next to its Fits / FAR text, a row
+   without one nothing new. Claude checks the dashboard by sha256 of the redacted text as in Refresh below and drops
+   this section. The pending edits go on in release order: once the 1.7.12, 1.7.14 and 1.7.15 edits (above), this
+   macro and this Key line are applied, Pako reads
+   `e322dc0eed2289d10236323e95afec78b4990867c7715eaa22ac936d9caac411`, the snapshot's sha256 (every pending edit);
+   until then Pako's dashboard is still the `be03a0a4...` one below.
+
+Undo: remove the `{{ comm_chip(p) }}` call (the macro can stay: unused, it prints nothing) and reload the custom
+templates; take the Key line out of the card (git history). No automation changes: the new pairing push
+(`flight_watcher/event/new_pairing`) is unchanged, so the guard's count is unchanged.
 
 ## Applied on Pako 2026-11-13 about 05:45 HST (1.7.2, FW-0066): "Flight Watcher pilot upload"
 
@@ -164,8 +233,9 @@ deleted). The dashboard snapshot matched Pako's `/config/.storage/lovelace.fligh
 `be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435` (5 views: Watcher, Working Flight, Details,
 Recall/O75, Settings; read 2026-11-14 about 17:20 HST, with the van alert settings tiles, the Working Flight view, the
 pilot lookup row and the Pilots cards below), until the pending edits (above: the 1.7.12 Details tile, the 1.7.14 near
-misses card, the 1.7.15 Swap ideas table): the snapshot is now ahead of Pako by those edits alone, sha256
-`6678f813ccdc4a6e2e1ab8837ccddffbd3de6f0c1de874a5cd8a1c48ea9a5cc5`, and Pako matches it again once they are applied.
+misses card, the 1.7.15 Swap ideas table, the 1.7.17 pot table's Commutable Key line): the snapshot is now ahead of
+Pako by those edits alone, sha256 `e322dc0eed2289d10236323e95afec78b4990867c7715eaa22ac936d9caac411`, and Pako matches it again
+once they are applied.
 
 **Changed on Pako 2026-11-14 about 17:15 HST (1.7.8, Ryan's yes "all of it"):** once 1.7.8 was live, Claude put the
 Pilots card on the dashboard through the HA connector (a JSON patch guarded by tests of the neighbouring cards): the

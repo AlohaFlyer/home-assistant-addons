@@ -589,7 +589,8 @@ def test_lock_switch_renders_on_phones(scheme, width, height, dsf, name):
         for state in ("on", "off"):
             r = _q(pg, HEAD)
             assert r["inCard"] and r["hdOver"] <= 0 and r["h"] >= 44 and r["page"] <= width and r["dark"] == (scheme == "dark"), (state, r)
-            # a phone: the switch has the first line to itself, at the left; the arrows, the month and Now stay together
+            # a phone: the switch starts the first line, at the left (the Data age stamp at its right since the 1.7.18
+            # cross-item review, tests/test_fw1718_xrev.py); the arrows, the month and Now stay together
             assert r["navRow"] and r["above"] and not r["sameRow"] and r["left"] <= 4, (state, r)
             fails = [f for f in pg.evaluate("fwContrast(C).fails") if f["text"] in ("Lock", "On", "Off")]
             assert fails == [], (state, fails)

@@ -647,15 +647,17 @@ def test_the_dashboard_snapshot_has_no_weather_view_and_matches_its_sha():
     # Working Flight view keeps the layover card only; the snapshot and Pako's dashboard had the same sha256 (read
     # 2026-11-14, be03a0a4...). Pending, one section per release, each applied at release time with Ryan's yes, in
     # release order: 1.7.12 the Details view's data age stamp, 1.7.14 the near misses card, 1.7.15 the Swap ideas table
-    # with the automatic ideas and pay per day. The snapshot carries them all (one snapshot, ahead of Pako by those
-    # edits alone) and each section names its sha
+    # with the automatic ideas and pay per day, 1.7.17 the pot table's Commutable chip (the macro, not in git) and its
+    # Key line (1.7.18 cross-item review: it had no section, and the snapshot had no Key line). The snapshot carries
+    # them all (one snapshot, ahead of Pako by those edits alone) and each section names its sha
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    assert sha == "6678f813ccdc4a6e2e1ab8837ccddffbd3de6f0c1de874a5cd8a1c48ea9a5cc5" and sha in readme
+    assert sha == "e322dc0eed2289d10236323e95afec78b4990867c7715eaa22ac936d9caac411" and sha in readme
     assert "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" in readme
     assert "Applied on Pako 2026-11-13 about 05:47 HST (1.7.2): van alert settings" in readme
     heads = ["## Pending on Pako (1.7.12): the Details view's data age stamp\n",
              "## Pending on Pako (1.7.14): near misses card\n",
-             "## Pending on Pako (1.7.15): automatic swap ideas on the Swap ideas table\n"]
+             "## Pending on Pako (1.7.15): automatic swap ideas on the Swap ideas table\n",
+             "## Pending on Pako (1.7.17): Commutable chip in the pot table\n"]
     assert readme.count("## Pending on Pako") == len(heads)
     at = [readme.index(h) for h in heads]
     assert at == sorted(at)  # in release order

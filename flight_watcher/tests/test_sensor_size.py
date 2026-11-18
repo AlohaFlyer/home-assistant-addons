@@ -8,11 +8,13 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
 import cards
+import pay as PAY
+import store
 import tickets as TK
 import wwwfiles as WF
 from pot import parse_legs
@@ -132,6 +134,53 @@ def _verdict(d, i):
             "act": {"status": "new" if i % 3 != 2 else "dismissed", "at": "2026-11-06T10:00:00+00:00"}}
 
 
+def _swap_rows(today, sched):
+    """6 pot trips on the days of each own trip that has not started, each better (more soft time and more credit)
+    and paying more a day than it: marked ideas for the marks, automatic ones for the rest."""
+    rows = []
+    for mk, m in sched.items():
+        for it in m["items"]:
+            s0, e0 = date.fromisoformat(it["start"]), date.fromisoformat(it["end"])
+            if s0 <= today:
+                continue
+            for j in range(6):
+                n = len(rows)
+                rows.append(dict(_pot_row(n), pairing=f"H4{n:03d}", start=f"{s0:%d%b}", end=f"{e0:%d%b}",
+                                 dates=f"{s0:%d%b}-{e0:%d%b}", days=str((e0 - s0).days + 1), month=mk, layover="SYD",
+                                 credit=f"{23 + j}:00", blk=f"{20 + j}:19", soft="2:41", fit="", far="OK"))
+    return rows
+
+
+def _swap_busy(W, monkeypatch, today, sched):
+    """1.7.18 (cross-item review of 1.7.15): the swap ideas sensor as swap_scan builds it (it was published by hand in
+    the 1.7.11 shape here, so the 1.7.15 pay figures and auto_ideas were never measured): the busy month's marks (the
+    last 5 own trips) and its other trips against _swap_rows, priced at the year 9 rate, the FAR screen and a green grid
+    passing, nothing blocked for the scan. Returns the rows."""
+    monkeypatch.setattr(W, "pay_settings", lambda: (PAY.rate_for(9, today.isoformat()), 9, []))
+    monkeypatch.setattr(W, "far_for", lambda ev, exclude=None: "OK")
+    W.S["grid"] = {(today + timedelta(days=k)).isoformat(): {"color": "green", "net": 4, "res": 9, "need": 5}
+                   for k in range(-40, 75)}
+    rows, blocked = _swap_rows(today, sched), W.S["blocked_days"]
+    W.S["blocked_days"] = []
+    try:
+        W.swap_scan(rows)
+    finally:
+        W.S["blocked_days"] = blocked
+    W.T_SWAP_ROWS = rows
+    return rows
+
+
+SWAP_1715_KEYS = ("pay", "pay_days", "ppd", "for_pay", "for_days", "for_ppd", "ppd_gain", "auto")  # not in 1.7.11
+
+
+def _ideas_1711_kept(W, marked, marks):
+    """How many of these marked ideas 1.7.11 listed: its payload ({count, ideas[:30], marked}) with its idea (no
+    1.7.15 pay figures, no auto flag) through the same cap."""
+    old = {"count": len(marked), "marked": marks,
+           "ideas": [{k: v for k, v in i.items() if k not in SWAP_1715_KEYS} for i in marked[:30]]}
+    return len(W.cap_attrs("swap/state", old)["ideas"])
+
+
 def _fill(W, fake, tmp_path, monkeypatch):
     """Every publisher fed a busy month's worth of synthetic data; returns {topic: last payload dict}."""
     today = W.local_now().date()
@@ -215,6 +264,14 @@ def _fill(W, fake, tmp_path, monkeypatch):
     W.publish_crew_index()
     W.versions_check(force_pub=True)
     W.publish_recall()
+    # 1.7.18 (cross-item review of 1.7.16): When to hunt on the pickers sensor from a full picker_log, near its own cap
+    # (SPEED_ATTR_MAX): 420 pickups over 140 made-up layover stations, every HST weekday and time of day, some capped
+    for i in range(420):
+        at = (datetime(2026, 10, 1, tzinfo=timezone.utc) + timedelta(hours=5 * i + i % 4)).isoformat()
+        W.DB.db.execute("INSERT INTO picker_log(key,emp,at,secs,approx,lay,cap,entry) VALUES(?,?,?,?,?,?,?,?)",
+                        (f"s{i}|2{i % 150:04d}", f"2{i % 150:04d}", at, 90 + 61 * i % 7000, 0, f"Q{i % 140:02d}",
+                         int(i % 9 == 0), at))
+    W.DB._speed_dirty()
     W.publish_finds()  # and the pickers
     # FW-0066: the uploads list with 90 files on file, and an upload status carrying its recent results
     busy = tmp_path / "uploads_busy"
@@ -242,11 +299,7 @@ def _fill(W, fake, tmp_path, monkeypatch):
     W.pub("grid/state", {"green": 20, "count": 31, "read": W.now_iso(), "days": {
         (today + timedelta(days=k)).isoformat(): {"color": "green", "net": 4, "res": 9, "need": 5, "seen": W.now_iso()}
         for k in range(31)}})
-    W.pub("swap/state", {"count": 30, "marked": W.S["trade_away"], "ideas": [
-        {"for": "H9110|2026-11-12", "for_trip": "H9110", "for_credit": "21:06", "for_soft": "0:11", "pairing": f"H3{i:03d}",
-         "start": "12Nov", "end": "15Nov", "dates": "12Nov-15Nov", "days": "3", "layover": "LAS", "turn": "", "credit": "15:00",
-         "soft": "2:41", "src": "O", "soft_gain": "+2:30", "credit_gain": "-6:06", "why": "w" * 80,
-         "detail_url": _pot_row(i)["detail_url"], "gain_h": 1.9} for i in range(30)]})
+    _swap_busy(W, monkeypatch, today, sched)
     # 1.7.7: a readable month carries each pairing's seat and gross, and the month's pay (items_pay), a full one here
     pay_full = {"doh_known": True, "doh": "2018-10-03", "year": 9, "year_to": 10, "seat_rates": {"CA": 431.04, "FO": 295.26},
                 "seats": ["CA", "FO", "RO"], "trips": 12, "trips_priced": 11, "credit": "160:35", "credit_n": 11,
@@ -317,6 +370,27 @@ def test_every_sensor_under_12_kb_on_a_busy_month(tmp_path, monkeypatch, instanc
     own = got["own_trips"]
     assert "trimmed" not in own and len(own["trips"]) == own["count"] == len(W.S["own_trips"]) == 24
     assert all("legs" not in t for t in own["trips"].values()) and all("legs" in t for t in W.S["own_trips"].values())
+    # 1.7.18 (cross-item review of 1.7.16): the pickers sensor with a When to hunt attribute near its own cap
+    speed = len(json.dumps(got["pickers"]["speed"], separators=(",", ":")))
+    assert store.SPEED_ATTR_MAX - 400 < speed <= store.SPEED_ATTR_MAX and got["pickers"]["speed"]["more"] > 0, speed
+    # 1.7.18 (cross-item review of 1.7.15): the swap ideas sensor as swap_scan builds it, a busy month of marks with
+    # automatic ideas too: the automatic ones go first, then the marked ones' pay figures, so it lists the marked
+    # ideas 1.7.11 listed (the six new counts can cost one at most)
+    sw = got["swap/state"]
+    assert sw["auto_count"] > 0 and sw["auto_ideas"] == [] and sw["auto_more"] == sw["auto_count"] and sw["priced"]
+    assert sizes["swap/state"] <= W.ATTR_MAX and sw["trimmed"] > 0 and sw["marked"] == W.S["trade_away"]
+    monkeypatch.setattr(W, "ATTR_MAX", 10 ** 7)
+    fake.msgs.clear()
+    W.S["swap_seen"] = []
+    W.S["blocked_days"], blocked = [], W.S["blocked_days"]
+    W.swap_scan(W.T_SWAP_ROWS)  # the same scan, uncut
+    W.S["blocked_days"] = blocked
+    marked = [json.loads(p) for t, p, _ in fake.msgs if t == f"{W.T}/swap/state"][-1]["ideas"]
+    monkeypatch.setattr(W, "ATTR_MAX", 12000)
+    assert len(marked) == 30 and all("ppd_gain" in i for i in marked)
+    base = _ideas_1711_kept(W, marked, sw["marked"])
+    # 24 of 24 on Nov 18, 2026 (before this fix 19: the pay figures on every marked idea); the first keeps its figures
+    assert len(sw["ideas"]) >= base - 1 and sw["ideas"][0] == marked[0], (len(sw["ideas"]), base)
 
 
 def test_long_lists_live_in_keyed_files_the_cards_read(tmp_path, monkeypatch):
