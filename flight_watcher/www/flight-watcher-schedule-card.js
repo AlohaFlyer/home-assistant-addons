@@ -132,6 +132,12 @@ const far30Txt = (st, h, md) => st === "ok" ? `&#10003; ${Math.floor(h)}h <span 
   : st === "need" ? "need 30h off" : st === "unknown" ? "?" : "&#8211;";
 const usd = (v) => (v == null || Number.isNaN(v) ? "" : "$" + Math.round(v).toLocaleString("en-US"));  // 1.6.2 review: no rate, no figure
 const PAIRINGS_URL = "/local/flight-watcher/pairings_";  // the shared pairings package files (pairings_YYYY-MM.json)
+// 1.7.18: the lock switch's icon, an inline SVG (24 x 24): a shut shackle, or one lifted clear of the body, over a body
+// with a keyhole. Drawn the same on every phone (the emoji it replaces was each phone's own)
+const FWS_LOCK_BODY = "M6.5 10h11a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2V12a2 2 0 0 1 2-2zM12 13.4a1.8 1.8 0 0 0-.9 3.36V18.6h1.8v-1.84A1.8 1.8 0 0 0 12 13.4z";
+const fwsLockSvg = (shut) => `<svg class="lki" data-lock="${shut ? "shut" : "open"}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">` +
+  `<path d="${shut ? "M8 10.5V7.5a4 4 0 0 1 8 0v3" : "M8 10.5V5.5a4 4 0 0 1 8 0v1"}" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>` +
+  `<path d="${FWS_LOCK_BODY}" fill="currentColor" fill-rule="evenodd"/></svg>`;
 
 // FW-0060: a sensor's full list from its file under /local/ (<url><file_key>.json, the pilot's own www folder). Fetched
 // again whenever the sensor's rev changes; null until it is in (or when the sensor has no key), so the caller falls
@@ -779,6 +785,18 @@ class FlightWatcherScheduleCard extends HTMLElement {
   _role(h) { const s = ((h || this._h || {}).states || {})["sensor.flight_watcher_state"]; return (s && s.attributes && s.attributes.role) || ""; }
   _isAdmin(h) { const hh = h || this._h || {}; const s = (hh.states || {})["sensor.flight_watcher_state"]; return !!(s && s.attributes && s.attributes.role === "admin" && hh.user && hh.user.is_owner); }
   _marks() { return this._isAdmin() ? "availability, trade and drop marks" : "availability and trade marks"; }
+  // 1.7.18 (Nov 17: the lock did not show well on a Samsung phone, and it was not obvious when it was locked or
+  // unlocked): a switch, On = locked (the default). The lock icon (fwsLockSvg), the word Lock, a track with its knob
+  // (right = On) and the word On or Off, so the state never rests on colour alone. One button with role switch and
+  // the name "Lock schedule marks": a tap, Enter or Space flips it (the click handler's .lock), its title says what it
+  // freezes as before, and the stored value is the same (flight_watcher_lock, "0" = unlocked). On a phone (700 px or
+  // less) it has the header's first line to itself, so the month's arrows, title and Now stay together on the next
+  _lockHtml() {
+    const on = this._locked;
+    const t = on ? `Locked: ${this._marks()} cannot be changed by a tap. Tap to unlock.` : `Unlocked: taps change ${this._marks()}. Tap to lock.`;
+    return `<button type="button" class="lock ${on ? "shut" : "open"}" role="switch" aria-checked="${on ? "true" : "false"}" aria-label="Lock schedule marks" title="${t}">` +
+      `${fwsLockSvg(on)} <span class="lkl">Lock</span> <span class="lkt"><span class="lkk"></span></span> <span class="lks">${on ? "On" : "Off"}</span></button>`;
+  }
   _say(msg) { const box = this.shadowRoot.querySelector(".info"); if (box) { box.textContent = msg; box.style.whiteSpace = "pre-line"; box.style.display = "block"; } }
   _render() {
     if (this._locked === undefined) { let v = "1"; try { const g = localStorage.getItem("flight_watcher_lock"); v = g === null ? "1" : g; } catch (e) { v = "1"; } this._locked = v !== "0"; }  // v48: locked by default
@@ -812,7 +830,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const locked = this._locked;
         const db = e.target.closest(".drb");
         if (db && !this._isAdmin()) return;  // FW-0048, FW-0063: drawn for the owner on the admin's card only; ignore a stale one
-        if (db && locked) { this._say(`Settings are locked: tap the lock at the top left to change ${this._marks().replace(" and ", " or ")}.`); return; }
+        if (db && locked) { this._say(`Settings are locked: turn the Lock switch at the top left Off to change ${this._marks().replace(" and ", " or ")}.`); return; }
         if (db && db.dataset.k) {
           db.classList.toggle("on");
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/drop/set", payload: JSON.stringify({ key: db.dataset.k }) });
@@ -820,7 +838,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         }
         const tp = e.target.closest(".trb");  // 1.7.7: the pairing itself opens its detail
         if (tp && tp.dataset.k && tp.dataset.k.split("|")[1] <= new Date(Date.now() - 10 * H).toISOString().slice(0, 10)) return;  // v46: a started trip cannot be traded
-        if (tp && tp.dataset.k && locked) { this._say(`Settings are locked: tap the lock at the top left to change ${this._marks().replace(" and ", " or ")}.`); return; }
+        if (tp && tp.dataset.k && locked) { this._say(`Settings are locked: turn the Lock switch at the top left Off to change ${this._marks().replace(" and ", " or ")}.`); return; }
         if (tp && tp.dataset.k) {
           const row = tp.closest("td"); row.querySelector(".trip").classList.toggle("tr"); row.querySelector(".trb").classList.toggle("on");
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/trade/set", payload: JSON.stringify({ key: tp.dataset.k }) });
@@ -853,7 +871,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const dc = e.target.closest("td"); if (!dc || dc.cellIndex > 1) return;  // v43 (Ryan): only the day/date cells toggle a blocked day
         const tr = e.target.closest("tr[data-d]"); if (!tr || !this._h) return;
         if (tr.classList.contains("vac")) { this._say("Vacation day: always unavailable."); return; }  // v48 (Ryan): VAC days cannot be toggled
-        if (locked) { this._say(`Settings are locked: tap the lock at the top left to change ${this._marks().replace(" and ", " or ")}.`); return; }
+        if (locked) { this._say(`Settings are locked: turn the Lock switch at the top left Off to change ${this._marks().replace(" and ", " or ")}.`); return; }
         tr.classList.toggle("blk");
         this._h.callService("mqtt", "publish", { topic: "flight_watcher/blocked/set", payload: JSON.stringify({ date: tr.dataset.d }) });
       });
@@ -1604,6 +1622,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const main = this.shadowRoot.querySelector(".fwm");
     const ae = this.shadowRoot.activeElement;
     const fk = ae && ae.matches && ae.matches(".fwm .trip[data-k]") ? ae.dataset.k : "";  // the pairing that has the focus
+    const lf = !!(ae && ae.matches && ae.matches(".fwm .lock"));  // 1.7.18: the lock switch keeps the focus across a redraw
     main.innerHTML = `<style>${FWG_CSS}
       ha-card{padding:10px 8px 12px;font-size:12.5px;line-height:1.25;box-sizing:border-box}
       @media (max-width:700px){ha-card{font-size:10.5px;padding:6px 3px 8px}
@@ -1633,8 +1652,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
       :host([dark]) .nav:hover{background:rgba(255,255,255,.1)}
       .cal tr[data-d] td:nth-child(-n+2){cursor:pointer}
       .cal tr.blk td.n::after{content:" \\2298";color:#e53935;font-weight:700}
-      .lock{cursor:pointer;font-size:16px;line-height:1;padding:2px 6px;border-radius:6px;user-select:none;margin-right:auto}.lock:hover{background:rgba(0,0,0,.06)}
-      .lock.open{opacity:.9}.lock.shut{opacity:.6}
+      :host{--fws-on:#1565c0;--fws-off:#5f6368;--fws-knob:#fff;--fws-ring:#1565c0}:host([dark]){--fws-on:#90caf9;--fws-off:#a7b0b8;--fws-knob:#0d2235;--fws-ring:#90caf9}
+      .lock{display:inline-flex;align-items:center;gap:6px;box-sizing:border-box;min-height:44px;min-width:44px;margin:0 auto 0 0;padding:0 8px 0 4px;border:0;border-radius:8px;background:none;color:var(--primary-text-color);font:600 12px/1 sans-serif;cursor:pointer;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+      @media (hover:hover){.lock:hover{background:rgba(0,0,0,.06)}:host([dark]) .lock:hover{background:rgba(255,255,255,.1)}}.lock:focus-visible{outline:3px solid var(--fws-ring);outline-offset:1px}
+      @media (max-width:700px){.hd2{row-gap:2px}.hd2 .sp{flex:0 0 100%;height:0}}
+      .lock .lki{flex:none;width:20px;height:20px}.lock .lkt{position:relative;flex:none;box-sizing:border-box;width:40px;height:24px;border:2px solid var(--fws-off);border-radius:12px;background:transparent}
+      .lock .lkk{position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:var(--fws-off)}.lock .lks{min-width:22px;text-align:left}
+      .lock.shut .lkt{background:var(--fws-on);border-color:var(--fws-on)}.lock.shut .lkk{left:19px;background:var(--fws-knob)}.lock.shut .lks{font-weight:700}
+      @media (forced-colors:active){.lock .lkk{forced-color-adjust:none;background:CanvasText}.lock.shut .lkt{forced-color-adjust:none;background:Highlight;border-color:Highlight}.lock.shut .lkk{background:Canvas}}
       .ppt{cursor:help}.ppc .k{font-size:9.5px;color:var(--secondary-text-color)}
       .cal tr.gg td:nth-child(1),.cal tr.gg td:nth-child(2){font-weight:700}
       .gr{text-align:right;font-size:11px}.g.green{color:var(--fw-ok,#2e7d32);font-weight:700}.g.red{color:var(--fw-err,#c62828);font-weight:700}.g.black{color:var(--primary-text-color)}
@@ -1666,7 +1691,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .ag[data-age="amber"]{color:var(--fw-warn,#8a5300)}.ag[data-age="red"]{color:var(--fw-err,#c62828)}
       .hd2 .ag{min-width:14em;margin-left:auto;text-align:right}
       .unc{color:var(--fw-warn,#8a5300);font-weight:700}.ubn{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.set .keep{min-height:44px;padding:6px 12px;font:inherit;border-radius:6px;cursor:pointer}
-    </style><ha-card><div class="frame"><div class="hd2"><span class="lock ${this._locked ? "shut" : "open"}" title="${this._locked ? `Locked: ${this._marks()} cannot be changed by a tap. Tap to unlock.` : `Unlocked: taps change ${this._marks()}. Tap to lock.`}">${this._locked ? "&#128274;" : "&#128275;"}</span><span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${this._ageHtml(upd)}</div>${shead}${vhtml}${body}</div>${panel}
+    </style><ha-card><div class="frame"><div class="hd2">${this._lockHtml()}<span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${this._ageHtml(upd)}</div>${shead}${vhtml}${body}</div>${panel}
     <div class="info"></div>
     <details class="leg"><summary>Key</summary><table class="lt">
     <tr><td>Trip</td><td>Your pairing. Tap it for the pairing detail (legs, layovers, hotel, totals and crew, from the pairings package; below the schedule, or a sheet from the bottom on a phone); tap it again, the &#10005; or Esc to close. R = report time. Tap &#8644; to mark it "would trade" (orange).</td></tr>
@@ -1684,7 +1709,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     <tr><td>Legal next</td><td>Earliest report for another trip: release + 11 h (PWA 10.E.1.a). Tap for the 18 h case.</td></tr>
     <tr><td>Open</td><td>Open time trips starting that day: <span class="fit">fits</span>, <span class="clash">clashes or blocked</span>.</td></tr>
     <tr><td>Ideas</td><td>Tag-ons after your release with legal rest, <b>O</b> = in open time, <b>T</b> = on the Tradeboard. Orange = better trip for a marked one. Tap for details.</td></tr>
-    <tr><td>Day</td><td>Blue = weekend, ${this._role() === "admin" ? "yellow = no school at HPA (from the school year file), hatched yellow = US or Hawaii holiday with no school file loaded" : "hatched yellow = US or Hawaii holiday"}. Tap a day to block it (&#8856;), tap again to unblock; VAC days are always &#8856; and cannot be changed. The lock at the top left (&#128274;) freezes ${admin ? "availability, trade and drop" : "availability and trade"} taps. All times HNL.</td></tr>
+    <tr><td>Day</td><td>Blue = weekend, ${this._role() === "admin" ? "yellow = no school at HPA (from the school year file), hatched yellow = US or Hawaii holiday with no school file loaded" : "hatched yellow = US or Hawaii holiday"}. Tap a day to block it (&#8856;), tap again to unblock; VAC days are always &#8856; and cannot be changed. The lock switch at the top left (a lock, the word Lock, then On or Off) freezes ${admin ? "availability, trade and drop" : "availability and trade"} taps while it is On (the default); switch it Off to change them and On again to lock them. All times HNL.</td></tr>
     </table>${note ? `<div>${note}</div>` : ""}</details>
     <details class="set"${unconf.length ? " open" : ""}><summary>Pay settings${unconf.length ? " (not set yet)" : ""}</summary>
       <span>Federal tax <select data-e="input_number.flight_watcher_federal_tax_pct"${flagged.includes(PAY_PREFS[0]) ? ' data-f="1"' : ""}>${sel(0, 45, 0.5, fed, "%")}</select></span>
@@ -1705,6 +1730,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       if (pn && pn.scrollIntoView) pn.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "nearest" });
     }
     if (fk && !this._sheet.open) { const t = this._tripEl(fk); if (t) t.focus({ preventScroll: true }); }
+    if (lf) { const l = main.querySelector(".lock"); if (l) l.focus({ preventScroll: true }); }
   }
   // 1.7.7: the pairing detail: open, swap to another pairing, or close (the same one again)
   _pdToggle(k) {

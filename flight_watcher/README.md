@@ -285,7 +285,11 @@ is added to that Settings view's `visible` list. The files are base-wide: every 
   with a phone and with an email).
 - "On file" lists every file kept (what, bid period, size, upload time HST, and whether the Watcher can read it), then
   the dates of hire on file (how many pilots, from the seniority list or from which award, its date, and how many more
-  were kept from the list under a later award) and the contact list's counts.
+  were kept from the list under a later award) and the contact list's counts. 1.7.18: the file rows fold under the "On file (n)" heading,
+  folded by default; while folded the heading says how many, the newest upload and its HST day, and how many were not
+  read ("6 files, newest Award Dec 2026, uploaded Nov 14"). A tap (or Enter or Space) on the heading opens them; open or
+  folded is kept for that browser (localStorage `flight_watcher_onfile_open`, a pilot's copy its own) and Refresh
+  leaves it as it is. The Wanted line, Pilot uploads (Approve, Reject), Dates of hire and Pilot contacts stay in view.
 - How it reaches the app, picked from the signed-in user:
   - **An admin**: the app's Web UI, the way Home Assistant's own app panels do. The card asks the Supervisor (WebSocket
     `supervisor/api`) for the app's ingress address (`/addons/<slug>/info`, card option `slug`, default
@@ -613,6 +617,13 @@ a duty that has no block counts its whole Block in both cells (the rest of it on
 counts it; with no trip Block its duties with a block count and the cell reads `~`. A trip with no duties counts its
 block up to its last block-in, not its release (1.7.13 FAR review). The Key explains each. Above 700 px the `100h in 672h` and `Room to 100h` headers take two lines and the FAR cells pad 4 px a
 side, so the grid is about as wide as in 1.7.11.
+
+**Lock switch** (1.7.18): the schedule card's lock at the top left is a switch: a lock icon (an inline SVG, the same
+on every phone), the word Lock, a track and knob and On (locked, the default) or Off. While it is On a tap on a day,
+the trade mark or the drop mark is refused with a note; switch it Off to change them. One button (role switch,
+aria-checked, named "Lock schedule marks"); the state is kept for that browser as before (localStorage
+`flight_watcher_lock`, "0" = Off; a pilot's copy its own). On a phone (700 px or less) it has the header's first line to
+itself.
 
 **Pairing detail** (1.7.7, Ryan, Nov 14): on the schedule card a tap on a pairing (or Enter on it) opens its detail
 like FLICA's pairing printout: the header (pairing, start date, the days it operates, base report, base and
