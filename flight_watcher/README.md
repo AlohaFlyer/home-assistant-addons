@@ -567,6 +567,17 @@ through `/local/flight-watcher-loader.js`. Phone pushes are HA automations on Pa
 events (`<prefix>/event/...`: new_pairing, request_decided, recall_miss, recall_file_requested, recall_ccr_filed,
 ticket_fixed and others).
 
+**FAR 117 columns** (1.7.13, Ryan, Nov 17: "Give FAR-30/7, FAR-100/672 and Room real headers with units, and show
+headroom against each limit"): the schedule card's three FAR columns are headed `30h in 7d`, `100h in 672h` and
+`Room to 100h`, each header's title naming its rule. `30h in 7d` (FAR 117.25(b): 30 consecutive hours free from all
+duty in the 168 h before a report) reads `✓ 36h off 11/05` (the longest break in the 168 h before a report that day,
+in whole hours, and the day it ended), red `need 30h off`, `?` (the 168 h reach before the schedule on file) or `–`
+(mid-trip). `100h in 672h` is what is left of FAR 117.23(b)(1) (100 flight hours in any 672 consecutive hours) in the
+672 h ending that day (`10:57 left`, the block flown in its title); `Room to 100h` is what is left in the busiest 672 h
+window the day falls in, back and forward: the most block you could add that day. Both read red `0:00 left` at the
+limit and red `1:20 over` past it (the word says it too, never the colour alone), with `~` in front when a window
+reaches past the schedule on file. The Key explains each; the hours are figured as before (wording and display only).
+
 **Pairing detail** (1.7.7, Ryan, Nov 14): on the schedule card a tap on a pairing (or Enter on it) opens its detail
 like FLICA's pairing printout: the header (pairing, start date, the days it operates, base report, base and
 equipment), one line per leg (day, date, deadhead, flight, from and to, departure and arrival local as the package
@@ -598,8 +609,8 @@ detail (a panel below that grid, or a bottom sheet on a phone), with the VAC and
 the rebuilt trip's nights from the package's duties, and an older version's totals line in the live month's order. Its
 columns are Trip, Layover, Block, Credit, Soft,
 Pay-Gross (that pilot's, when his date of hire is on file) and Crew; the seat and legs are in the pairing's hint and
-detail, and the rate, seat and source notes sit under the grid. Ryan's planning columns (Pay-Net, Res Grid, the FAR
-columns, Room, Legal next, Open, Ideas, the trade and drop marks) stay on his own schedule. On a phone (700 px or less,
+detail, and the rate, seat and source notes sit under the grid. Ryan's planning columns (Pay-Net, Res Grid, the FAR 117
+columns (30h in 7d, 100h in 672h, Room to 100h), Legal next, Open, Ideas, the trade and drop marks) stay on his own schedule. On a phone (700 px or less,
 1.7.11, FW-0079) the Crew column gives way to a crew list under the grid, one line a pairing ("H9601 Dec 1: CA Doe,
 Jane · FO Roe, Rick", each pilot on one line, the call and text links kept), so the grid fits the screen down to 360 px
 (Pay-Gross heads two lines there, and a one-day turn's report and release may share its Layover cell on two lines); a
