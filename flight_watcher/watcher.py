@@ -3321,6 +3321,7 @@ def sensor_row(r):
 
 
 OWN_PER_CHECK = 3
+OWN_EMPTY_RETRY_S = 3600  # 1.7.11: a trip whose pairing page had no times is read again at most this often
 FULL_MAX = 12  # Check now: at most this many detail GETs per kind, still 1.5-3.5 s apart
 
 
@@ -3328,6 +3329,9 @@ def own_trip_times(fl, full=False):
     """Read only (0.3.8): check-in, final arrival and block of Ryan's own trips from their pairing
     pages, cached per trip and start date, so the FAR column can measure rest."""
     own = S.setdefault("own_trips", {})
+    # 1.7.11 (Ryan, Nov 17): when a trip's pairing page last came back with no times, its HST time; kept beside the
+    # records (an empty record stays {}), so a trip is read again at most once an hour (OWN_EMPTY_RETRY_S)
+    empty_at = S.setdefault("own_empty_at", {})
     # 1.7.2 (Ryan, Nov 13): first, with no FLICA load and before the trips gone from the schedule are pruned below, a
     # PAYP keeps the removed trip's credit (payp_refresh); a read stopped half way still leaves it on file
     keep, n = payp_refresh(own), 0
@@ -3353,6 +3357,14 @@ def own_trip_times(fl, full=False):
                 old = True
             elif it["end"] < today and not cur.get("final"):
                 old = True
+        # 1.7.11 (Ryan, Nov 17): a trip whose last page had no times is read again once an hour, no sooner, whether
+        # it has times from an earlier read or none (before 1.7.11 an empty record was never read again, save on a
+        # full check, and its times were blanked)
+        retry = (local_now() - timedelta(seconds=OWN_EMPTY_RETRY_S)).isoformat()
+        if k in own and not cur:
+            old = (empty_at.get(k) or "") < retry
+        elif empty_at.get(k, "") >= retry:
+            old = False
         if (k in own and not full and not old) or n >= (FULL_MAX if full else OWN_PER_CHECK) or not BRK.allow("pairing"):
             continue  # 1.6.2: nothing is read while pairing pages are stopped (the cached times stay)
         # FW-0067: paced before every read, the first too (the schedule check may have just loaded a page) ...
@@ -3365,6 +3377,7 @@ def own_trip_times(fl, full=False):
             if classify(page) == "ok":
                 d = parse_detail(page)
                 if d.get("report") and d.get("last_arr"):
+                    empty_at.pop(k, None)
                     own[k] = {f: d.get(f, "") for f in ("report", "last_arr", "blk", "credit")}
                     own[k]["soft"] = soft_time(d.get("credit"), d.get("blk")) or ""
                     own[k]["read_at"] = local_now().isoformat()
@@ -3380,14 +3393,23 @@ def own_trip_times(fl, full=False):
                     log.info("own trip %s: report %s, in %s, blk %s", k, d["report"], d["last_arr"],
                              d.get("blk"))
                 else:
-                    log.info("own trip %s: no times on the pairing page", k)
-                    own[k] = {}
+                    # 1.7.11 (Ryan, Nov 17): a page with no times never blanks the times already read; an empty record
+                    # stays {} and is read again in an hour
+                    empty_at[k] = local_now().isoformat()
+                    prev = own.get(k) or {}
+                    if prev.get("report") and prev.get("last_arr"):
+                        log.info("own trip %s: no times on the pairing page; the times read before are kept", k)
+                    else:
+                        own[k] = {}
+                        log.info("own trip %s: no times on the pairing page (read again in an hour)", k)
         except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
             raise
         except Exception as e:
             log.info("own trip %s skipped: %s", k, e)
     for k in [k for k in own if k not in keep]:
         own.pop(k)
+    for k in [k for k in empty_at if k not in keep]:
+        empty_at.pop(k)
     if n:
         save_state(S)
         time.sleep(random.uniform(1.5, 3.5))  # ... and after the last, before the check loads the pot

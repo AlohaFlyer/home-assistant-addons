@@ -7,6 +7,22 @@ both; FW-0079 and FW-0080 are follow-ups filed under Ryan from FW-0076 by james 
 scope "Everywhere"); the log masks on Ryan's "Fix the masking text too". **Contract 1 revision 6: HOM 1.9.2 goes
 live first.**
 
+### Own trip times are never blanked by a pairing page with no times
+
+Ryan, Nov 17: "an own trip's times must never be blanked by a pairing page with no times. Keep times already read when a
+page has none, and re-read an empty record hourly." Before, `own_trip_times` wrote an empty record over the times read
+before whenever FLICA's pairing page came back with no report or arrival time, and an empty record was never read
+again (save on a full Check now), so the FAR column, the pay line and the working flight lost that trip.
+- A page with no times keeps the times already read; one log line says so ("no times on the pairing page; the times
+  read before are kept"). A trip with no times read yet stays an empty record, as before.
+- `S["own_empty_at"]` holds, per trip, when its page last had no times. Such a trip is read again at most once an hour
+  (`OWN_EMPTY_RETRY_S`), whether it has times from before or none, inside the per-check limit (`OWN_PER_CHECK`, 3) and
+  the 1.5 to 3.5 s pacing. A read with times clears it; a trip leaving the schedule takes it along. The only new FLICA
+  load: one pairing page per empty trip per hour, as Ryan asked.
+- Tests: `tests/test_own_trip_blank.py` (synthetic pairings, both instances): times kept, hourly re-read, the
+  pre-1.7.11 empty record read once then hourly, an in-progress trip with kept times not re-read every check, the
+  per-check limit, pruning, and no load for a trip with times.
+
 ### FW-0075: move the van time in 5 minute steps
 
 Ryan's ticket (Nov 17, page Watcher): "I need to have a plus and a - kind of below the numbers for the van time because
