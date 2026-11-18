@@ -69,7 +69,7 @@ import pilotpdf as PP
 import pilotdb as PDBM
 import pdbshare as PS
 
-VERSION = "1.7.15"
+VERSION = "1.7.16"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -1383,7 +1383,12 @@ def publish_pickers():
              "last_at": v["last_at"]} for e, v in DB.picker_stats().items()]
     rows.sort(key=lambda r: (r["avg_s"] is None, r["avg_s"] or 0, r["name"]))
     key, rev = write_list_file("pickers", {"count": len(rows), "pickers": rows})
-    pub("pickers", {"count": len(rows), "pickers": rows[:PICKERS_ATTR_ROWS], "file_key": key, "rev": rev})
+    pay = {"count": len(rows), "pickers": rows[:PICKERS_ATTR_ROWS], "file_key": key, "rev": rev}
+    try:  # 1.7.16 (Ryan, Nov 17): When to hunt, this instance's own pickups only, recomputed when one changed
+        pay["speed"] = DB.speed_stats()
+    except Exception as e:  # noqa: BLE001  (never stops the pickers sensor)
+        log.info("pickup speed by layover, day and time skipped: %s", type(e).__name__)
+    pub("pickers", pay)
 
 
 # 1.0.0: entity id suffix per discovery oid where the two differ (the ids HA gave these entities from their names
