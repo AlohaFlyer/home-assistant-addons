@@ -24,7 +24,18 @@ FLICA page, no change to budgets, pacing or the one-session rule; read only as b
 - A page that stops pairing reads (the Flica client's breaker judged that very page: not a pairing page) is no read at
   all: the times on file and `own_empty_at` stay exactly as they were, a trip never read gets no empty record, and the
   trips after it in the same check are kept (never pruned) and load nothing ("the page stopped pairing reads; the
-  times on file are kept").
+  times on file are kept (read again in an hour)"). Review: that trip waits an hour (`S["own_stop_at"]`,
+  `OWN_EMPTY_RETRY_S`), a trip never read and a Check now too. Before, it was due again at every reopen, and as this
+  read runs first in a check its page was the first pairing load each time and stopped the path again (30 min
+  doubling to 6 h), so the pot details, pickups and crew index never got a pairing page to close the breaker with. Now
+  the first load at the reopen is another reader's (a good page closes the breaker), and the trip's own page is tried
+  again an hour after its last try. A read of the trip clears it; a trip leaving the schedule takes it along.
+- Review: when the page says FLICA's session is gone (another login took it, "new session under this account was
+  detected"; it expired; reads are blocked), no more own trip pages load on it in that check (before: up to 2 more, 11
+  on Check now); every trip stays on file and the sensor goes out, and the check meets the same page on the pot and
+  yields as before. A load a pilot's budget leaves out (the gate's skip) no longer drops the trips read before it in
+  the same check: they are saved, gone trips are pruned and the own trips sensor goes out, then the read is logged as
+  left out as before (both older than 1.7.11).
 - `S["own_empty_at"]` holds, per trip, when its page last had no times. Such a trip is read again at most once an hour
   (`OWN_EMPTY_RETRY_S`), whether it has times from before or none, inside the per-check limit (`OWN_PER_CHECK`, 3) and
   the 1.5 to 3.5 s pacing. A read with times clears it; a trip leaving the schedule takes it along. The only new FLICA
@@ -36,15 +47,31 @@ FLICA page, no change to budgets, pacing or the one-session rule; read only as b
   gives a trip in progress no code day on a later page, so both pages list it at its own start (or the later page
   not at all): one trip and start is one trip.
 - Checked for the same double count wherever two months' schedule items are joined (a synthetic trip across a month
-  end, old code and new): the card's own trip list was the only one. The card's Block, Credit and Pay totals, its
-  carried-in trips and prices (keyed by trip and start), FAR-30/7 and Legal next, the Watcher's FAR column and 98/672
-  tag (recall.line_records), the Recall/O75 lines (recall.held_at) and the working flight (working.py) count it once.
+  end, old code and new): the card's own trip list was the only one that counted it twice. The card's Block, Credit
+  and Pay totals, its carried-in trips and prices (keyed by trip and start), FAR-30/7 and Legal next, the Watcher's
+  FAR column and 98/672 tag (recall.line_records), the Recall/O75 lines (recall.held_at) and the working flight
+  (working.py) count it once. Review, three more joins fixed in the card (all older than 1.7.11):
+  - Swap ideas: the trip a swap replaces is skipped by its trip and start. Its copy on the other month's page
+    (December's Schedule Lookup rows start in late November) made every day of it busy, so a trip across a month end
+    never got a swap idea (no Ideas button).
+  - A trip not in the viewed month's package is released on a day of its own (after its start, up to its end). In the
+    December view every November trip took the first HNL day on December's page (Dec 2, H3607's return), which moved
+    its release, the FAR-30/7 mid-trip days, the trip box, Legal next and the rest a pick-up idea needs (PWA
+    10.E.1.a): a legal Dec 3 pick-up 22:25 after H3607 read 12:45 after a November trip, or was not offered.
+  - The Open column's clash test, the layover cell and the in-progress mark read every month's items (each trip and
+    start once). From Dec 1 December is read on the mobile page, which starts at Dec 1 and gives H3607 no code day, so
+    an open-time pairing on Dec 1 to 2 showed as fitting while the Watcher's schedule_fit says Conflict H3607.
 - Tests: `tests/test_own_trip_blank.py` (synthetic pairings, both instances): times kept, hourly re-read, the
   pre-1.7.11 empty record read once then hourly, an in-progress trip with kept times not re-read every check, the
   per-check limit, pruning, no load for a trip with times, and a page that stops pairing reads (times and
   `own_empty_at` unchanged, the later trip not pruned, no further load, no empty record for a trip never read);
+  review, on the real Flica.fetch path (a fake browser context): a trip whose page stopped pairing reads waits an
+  hour and a good pot detail at the reopen closes the breaker, a killed or expired page loads nothing more, and a
+  load the budget leaves out still publishes the trips read before it;
   `tests/test_card_cross_month_672.py` (Chromium, made-up pairing X9607: Nov 30, Dec 2 and Dec 5 in both months'
-  views).
+  views); `tests/test_card_cross_month_review.py` (Chromium, made-up pairings: swap ideas for X9607 with its copy on
+  December's page, a November trip's release, FAR-30/7, trip box, Legal next and pick-up rest in the December view,
+  and the Open clash and layover cell on December's mobile page).
 
 ### FW-0075: move the van time in 5 minute steps
 

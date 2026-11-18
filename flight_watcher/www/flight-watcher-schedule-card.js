@@ -750,8 +750,22 @@ class FlightWatcherScheduleCard extends HTMLElement {
       body = `<div class="none">No schedule for ${MONTHS[m]} yet.</div>`;
     } else {
       const items = mon.items || [];
-      const busy = (a, b) => items.find((it) => a <= it.end && b >= it.start);
-      const inTrip = (d) => items.some((it) => it.trip !== "VAC" && it.trip !== PAYP && it.start <= d && d <= it.end);
+      const prevKey = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0, 7);
+      const prevItems = (SM[prevKey] || {}).items || [];
+      const nextKey = new Date(Date.UTC(y, m + 1, 1)).toISOString().slice(0, 7);
+      const nextItems = (SM[nextKey] || {}).items || [];
+      // 1.7.11 review: the three months' items, each trip and start once (the own list's rule, this month's copy
+      // first). A trip in progress from the month before (H3607 Nov 30 to Dec 2) has no code day on a page that
+      // starts Dec 1, so this month's items alone miss it: the Open column's clash test, the layover cell and the
+      // in-progress mark read these, as the Watcher's schedule_fit reads every month
+      const near = [], nearSeen = new Set();
+      for (const it of [...items, ...prevItems, ...nextItems]) {
+        if (!it || !it.trip || nearSeen.has(`${it.trip}|${it.start}`)) continue;
+        nearSeen.add(`${it.trip}|${it.start}`);
+        near.push(it);
+      }
+      const busy = (a, b) => near.find((it) => a <= (it.end || it.start) && b >= it.start);
+      const inTrip = (d) => near.some((it) => it.trip !== "VAC" && it.trip !== PAYP && it.start <= d && d <= (it.end || it.start));
       const opens = {};
       for (const p of pot) {
         const a = this._iso(p.start || (p.dates || "").split("-")[0], y);
@@ -763,10 +777,6 @@ class FlightWatcherScheduleCard extends HTMLElement {
       }
       // own trips: report / release (app times first, then the pairing package)
       const own = [];
-      const prevKey = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0, 7);
-      const prevItems = (SM[prevKey] || {}).items || [];
-      const nextKey = new Date(Date.UTC(y, m + 1, 1)).toISOString().slice(0, 7);
-      const nextItems = (SM[nextKey] || {}).items || [];
       // 1.7.11 (Ryan, Nov 17: "over block on Dec 02?"): a trip across a month end (H3607 Nov 30 to Dec 2) is on both
       // months' schedules; it is ONE trip, so it enters own (and the FAR legs, duties, rest) once (recall.line_records'
       // rule). FLICA gives a trip in progress no code day on a later page: a page lists it at its start or not at all
@@ -782,9 +792,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
         else if (p && p.days.has(it.start)) rep = this._t(it.start, p.report);
         if (p && p.days.has(it.start)) rel = this._t(it.start, p.release) + p.relDays * 24 * H;
         else if (t.last_arr) {
-          // trip not in the package: it ends on the first later day the schedule shows back in HNL
-          const back = (mon.days || []).find(([d, tr, ly]) => d > it.start && !tr && ly === "HNL");
-          const end = back ? back[0] : it.end;
+          // trip not in the package: it ends on the first later day the schedule shows back in HNL. 1.7.11 review: a
+          // day of its own only (after its start, up to its end), on this page or its own month's: the first HNL day
+          // on this page after a trip from the month before is a later trip's (Dec 2 for every November trip in the
+          // December view), and an end with no HNL day (the next trip starts that day) is the item's end
+          const last = it.end || it.start;
+          const back = [...(mon.days || []), ...((SM[String(it.start).slice(0, 7)] || {}).days || [])]
+            .filter(([d, tr, ly]) => d > it.start && d <= last && !tr && ly === "HNL").map(([d]) => d).sort()[0];
+          const end = back || last;
           rel = this._t(end, t.last_arr) + 15 * 60e3; if (rep && rel <= rep) rel += 24 * H;
         }
         own.push({ it, rep, rel });
@@ -1127,8 +1142,11 @@ class FlightWatcherScheduleCard extends HTMLElement {
       // v51 (Ryan): swap / pick-up ideas. A swap may move off the trip's footprint onto any neighbouring day that is not
       // blocked and has no other assignment; legal rest before and after (11 h at domicile, PWA 10.E.1.a); pay from the
       // package credit (PWA 4.C.3 min 5:00 per calendar day already in it) with crew overrides (PWA 4.O.1).
-      const allItems = [...prevItems, ...items, ...nextItems];
-      const busyDay = (iso, excl) => blocked.has(iso) || allItems.some((it) => it !== excl && it.trip && it.start <= iso && iso <= it.end);
+      // 1.7.11 review: the trip a swap replaces is skipped by its trip and start, not by the copy own kept: a trip
+      // across a month end is on both months' pages (Schedule Lookup rows start in late November), and its other copy
+      // made every day of it busy, so no swap for it was ever offered
+      const busyDay = (iso, excl) => blocked.has(iso) || near.some((it) => it.trip && !(excl && it.trip === excl.trip && it.start === excl.start)
+        && it.start <= iso && iso <= (it.end || it.start));
       const addD = (iso, n) => this._d(Date.parse(iso + "T00:00:00Z") + n * 24 * H);
       const ideasFor = (d, trip) => {
         if (!pk) return null;
@@ -1216,7 +1234,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const turn = pkt && pkt.route ? [...new Set(pkt.route.split("-").slice(1, -1).filter((x) => x !== "HNL"))].join("/") : "";
         const l0 = lay === "-" && !inTrip(d) ? "" : (lay === "-" && turn ? `<b>${this._esc(turn)}</b>` : this._esc(lay));
         // v44 (Ryan): the layover cell carries the trip's crew (tap on a phone, hover on a Mac)
-        const cov = items.find((it) => it.trip !== "VAC" && it.trip !== PAYP && it.start <= d && d <= it.end);
+        const cov = near.find((it) => it.trip !== "VAC" && it.trip !== PAYP && it.start <= d && d <= (it.end || it.start));
         const covT = cov ? (ownT[`${cov.trip}|${cov.start}`] || {}) : null;
         const nowH = new Date(Date.now() - 10 * H); const nowHM = `${String(nowH.getUTCHours()).padStart(2, "0")}:${String(nowH.getUTCMinutes()).padStart(2, "0")}`;
         const tOwn = cov ? (ownT[`${cov.trip}|${cov.start}`] || {}) : {};

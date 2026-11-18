@@ -201,12 +201,152 @@ def test_a_page_that_stops_pairing_reads_is_no_read(W, caplog):
 
 
 def test_a_page_that_stops_pairing_reads_leaves_no_empty_record(W):
-    """A trip never read whose first page stopped pairing reads gets no empty record and no empty_at: it is read as
-    soon as pairing reads go again, not an hour later."""
+    """A trip never read whose first page stopped pairing reads gets no empty record and no empty_at. Review: it waits
+    an hour all the same (own_stop_at), so at the reopen another reader's page is the first pairing load."""
     fl = Stopping(W, H9001=["none"])
     W.own_trip_times(fl)
     assert fl.loads == ["H9001"]
     assert K1 not in W.S.get("own_trips", {}) and K1 not in W.S.get("own_empty_at", {})
+    assert W.S["own_stop_at"][K1] == W.CLOCK["now"].isoformat()
+
+
+# ---------------------------------------------------------------- 1.7.11 review: the real Flica.fetch path
+GOOD_PAGE = "times:{pid} Check In: 0800 Blk: 10:00 Pay: 12:00"  # parse_detail (the fixture's) reads its times
+UNKNOWN_PAGE = "<html><body>Service Temporarily Unavailable</body></html>"  # no PID: page_verdict 'unknown'
+KILLED_PAGE = "<html><body>A new session under this account was detected. You have been logged out.</body></html>"
+EXPIRED_PAGE = "<html><body>Your session has expired, please log in again.</body></html>"
+
+
+class Ctx:
+    """The browser context's request API: each GET of a pairing page answers the next page queued for its PID (a page
+    kind: times, unknown, killed, expired), and counts the loads."""
+
+    def __init__(self, **answers):
+        self.answers = {k: list(v) for k, v in answers.items()}
+        self.loads = []
+        self.request = self
+
+    def get(self, url, timeout=0):
+        pid = url.split("PID=")[1].split("&")[0]
+        self.loads.append(pid)
+        q = self.answers.get(pid) or ["times"]
+        kind = q.pop(0) if len(q) > 1 else q[0]
+        html = {"times": GOOD_PAGE.format(pid=pid), "unknown": UNKNOWN_PAGE, "killed": KILLED_PAGE,
+                "expired": EXPIRED_PAGE}[kind]
+        return type("R", (), {"text": lambda self_: html})()
+
+
+@pytest.fixture
+def real(W, monkeypatch):
+    """The real Flica.fetch, _load, _loaded, page_verdict and breakers (BRK) on a fake browser context and a gate that
+    lets every load through at once (no lock file); the breakers' clock follows the test's HST clock."""
+    import pot
+    t0 = W.CLOCK["now"]
+    monkeypatch.setattr(W.BRK, "clock", lambda: 1_800_000_000.0 + (W.CLOCK["now"] - t0).total_seconds())
+    monkeypatch.setattr(W.GATE, "acquire", lambda *a, **k: None)
+    monkeypatch.setattr(W, "count_fetch", lambda: None)
+    monkeypatch.setattr(W, "classify", pot.classify)  # the real page kinds: killed, expired, ok
+
+    def client(**answers):
+        fl = object.__new__(W.Flica)
+        fl.ctx = Ctx(**answers)
+        return fl
+    return client
+
+
+def _brk(W):
+    return dict((W.S.get("breakers") or {}).get("pairing") or {})
+
+
+def test_a_trip_whose_page_stopped_pairing_reads_never_keeps_the_breaker_stopped(W, real):
+    """1.7.11 review: H9001 (never read) gets a page nobody knows: the pairing breaker stops for 30 min. At the reopen
+    H9001 waits (own_stop_at, an hour), so the first pairing load is another reader's: a good pot detail closes the
+    breaker (trips back to 0). Before, H9001 was due again at every reopen, was the first load each time and stopped
+    the path again (30, 60, 120, 240, then 360 min), so no other reader ever got a pairing page."""
+    W.S["own_trips"] = {K2: dict(TIMES, read_at="2026-11-17T11:00:00", final=False, legs=[], soft="2:00")}
+    fl = real(H9001=["unknown", "times"])
+    W.own_trip_times(fl)
+    assert fl.ctx.loads == ["H9001"] and not W.BRK.allow("pairing") and _brk(W)["trips"] == 1
+    assert K1 not in W.S["own_trips"] and K1 not in W.S["own_empty_at"]  # no read: no empty record
+    _later(W, minutes=30, seconds=1)  # the breaker reopens
+    assert W.BRK.allow("pairing")
+    W.own_trip_times(fl)
+    assert fl.ctx.loads == ["H9001"], "H9001 loaded again at the reopen"
+    W.read_guard(W.pot_details, fl, {"X9650|2026-11-25": {"pairing": "X9650", "start": "25Nov", "end": "26Nov"}},
+                 optional=True)
+    assert fl.ctx.loads == ["H9001", "X9650"]  # the other reader's page is the first load at the reopen
+    assert W.BRK.allow("pairing") and _brk(W).get("trips", 0) == 0, "the good pot detail did not close the breaker"
+    W.own_trip_times(fl, full=True)  # a Check now reads every trip with times again, but H9001 still waits
+    assert fl.ctx.loads == ["H9001", "X9650", "H9002"]
+    _later(W, minutes=29)  # 59 min after its stop: H9001 still waits
+    W.own_trip_times(fl)
+    assert fl.ctx.loads == ["H9001", "X9650", "H9002"]
+    _later(W, minutes=2)  # an hour after: read again, its times this time; the hold goes
+    W.own_trip_times(fl)
+    assert fl.ctx.loads == ["H9001", "X9650", "H9002", "H9001"]
+    assert _have_times(W.S["own_trips"][K1]) and K1 not in W.S["own_stop_at"] and _brk(W).get("trips", 0) == 0
+
+
+def test_a_trip_in_progress_whose_page_stopped_pairing_reads_waits_an_hour(W, real):
+    """The same for a trip in progress with times on file (its 6 h re-read due): the times stay, and it is not loaded
+    again within the hour, so the reopen's first pairing load is not its page."""
+    W.CLOCK["now"] = datetime(2026, 11, 20, 23, 0)
+    W.S["own_trips"] = {K1: dict(TIMES, read_at="2026-11-20T10:00:00", final=False, legs=[], soft="2:00"),
+                        K2: dict(TIMES, read_at="2026-11-20T22:00:00", final=False, legs=[], soft="2:00")}
+    fl = real(H9001=["unknown"])
+    for _ in range(4):  # the stop, the reopen 30 min later, and two more checks inside the hour
+        W.own_trip_times(fl)
+        _later(W, minutes=15, seconds=1)
+    assert fl.ctx.loads == ["H9001"] and _have_times(W.S["own_trips"][K1])
+    assert _brk(W)["trips"] == 1  # stopped once, never again
+
+
+@pytest.mark.parametrize("page", ["killed", "expired"])
+@pytest.mark.parametrize("full", [False, True])
+def test_no_more_own_trip_pages_once_flica_says_the_session_is_gone(W, real, caplog, page, full):
+    """1.7.11 review: the first own trip page is FLICA's 'new session under this account was detected' page (Ryan
+    logged in elsewhere) or a 'session has expired' page. No more pairing pages load on that session (before: up to 3,
+    or 12 on Check now); every trip stays on file (none pruned) and the sensor still goes out, and check() meets the
+    same page on the pot and yields."""
+    marks = [(f"2026-11-{d:02d}", f"H90{d:02d}", "SFO") for d in range(2, 26, 2)]  # twelve one-day trips, none read
+    W.S["schedule"] = {"2026-11": _sched(marks)}
+    W.S["own_trips"] = {"H9024|2026-11-24": dict(TIMES, read_at="2026-11-17T11:00:00", final=False, legs=[], soft="2:00")}
+    fl = real(H9002=[page])
+    caplog.set_level("INFO")
+    W.own_trip_times(fl, full=full)
+    assert fl.ctx.loads == ["H9002"], "pairing pages loaded after FLICA said the session is gone"
+    assert set(W.S["own_trips"]) == {"H9024|2026-11-24"} and not W.S["own_empty_at"] and not W.S["own_stop_at"]
+    assert W.BRK.allow("pairing")  # not the pairing page's fault: no stop
+    assert f"FLICA's page says {page}; no more own trip pages this check" in caplog.text
+    assert [t for t, _, _ in W.FAKE.msgs].count(f"{W.T}/own_trips") == 1
+
+
+def test_a_load_left_out_for_the_budget_still_publishes_the_trips_read_before_it(W, real, monkeypatch, caplog):
+    """1.7.11 review (a pilot's budget: GateSkip): trip 1 reads, the gate leaves trip 2's load out. Trip 1's times are
+    saved and on the own trips sensor, a trip gone from the schedule is pruned, trip 2 stays as it was, and the read
+    is still logged as left out of this check (read_guard). Before, the GateSkip left at once: no prune, no save and
+    no sensor."""
+    import gate as GT
+    W.S["own_trips"] = {"X9607|2026-11-03": dict(TIMES, read_at="2026-11-01T11:00:00", final=True, legs=[], soft="2:00")}
+    calls = {"n": 0}
+
+    def acquire(*a, **k):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise GT.GateSkip("budget", 0)
+    monkeypatch.setattr(W.GATE, "acquire", acquire)
+    saves = []
+    monkeypatch.setattr(W, "save_state", lambda s: saves.append(1))
+    fl = real()
+    W.RUN["check"] = True
+    caplog.set_level("INFO")
+    W.read_guard(W.own_trip_times, fl, optional=True)
+    assert fl.ctx.loads == ["H9001"]  # trip 2's load was left out
+    assert set(W.S["own_trips"]) == {K1} and _have_times(W.S["own_trips"][K1])  # X9607 pruned; H9002 not read yet
+    assert saves, "the times read before the skip were not saved"
+    sensor = [json.loads(p) for t, p, _ in W.FAKE.msgs if t == f"{W.T}/own_trips"][-1]["trips"]
+    assert sensor[K1]["report"] == "08:00" and sensor[K1]["blk"] == "10:00" and "X9607|2026-11-03" not in sensor
+    assert "own_trip_times left out of this check" in caplog.text
 
 
 def test_the_per_check_limit_still_holds_and_empty_at_is_pruned_with_the_trip(W):

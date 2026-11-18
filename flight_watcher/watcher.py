@@ -3332,9 +3332,18 @@ def own_trip_times(fl, full=False):
     # 1.7.11 (Ryan, Nov 17): when a trip's pairing page last came back with no times, its HST time; kept beside the
     # records (an empty record stays {}), so a trip is read again at most once an hour (OWN_EMPTY_RETRY_S)
     empty_at = S.setdefault("own_empty_at", {})
+    # 1.7.11 review: when a trip's pairing page last stopped pairing reads (the Flica client's breaker judged that very
+    # page), its HST time. Such a trip waits an hour too (OWN_EMPTY_RETRY_S), a trip never read and a Check now as
+    # well: else it is the first pairing load at every reopen (this read runs before the pot details, the pickups and
+    # the crew index), stops the path again before any other reader gets a page, and the breaker never closes
+    stop_at = S.setdefault("own_stop_at", {})
     # 1.7.2 (Ryan, Nov 13): first, with no FLICA load and before the trips gone from the schedule are pruned below, a
     # PAYP keeps the removed trip's credit (payp_refresh); a read stopped half way still leaves it on file
     keep, n = payp_refresh(own), 0
+    # 1.7.11 review: why the rest of this check's own trip pages are not loaded ('' while they are): FLICA said the
+    # session is gone ('killed', 'expired', 'blocked'), or a pilot's budget left a load out (GateSkip, raised again
+    # once the trips read before it are saved and published). The trips after it still reach keep (never pruned)
+    stop, skipped = "", None
     for it in _sched_items():
         trip = it.get("trip") or ""
         if not PAIRING_RE.match(trip):
@@ -3365,7 +3374,9 @@ def own_trip_times(fl, full=False):
             old = (empty_at.get(k) or "") < retry
         elif empty_at.get(k, "") >= retry:
             old = False
-        if (k in own and not full and not old) or n >= (FULL_MAX if full else OWN_PER_CHECK) or not BRK.allow("pairing"):
+        held = stop_at.get(k, "") >= retry  # 1.7.11 review: its page stopped pairing reads within the hour
+        if (stop or held or (k in own and not full and not old) or n >= (FULL_MAX if full else OWN_PER_CHECK)
+                or not BRK.allow("pairing")):
             continue  # 1.6.2: nothing is read while pairing pages are stopped (the cached times stay)
         # FW-0067: paced before every read, the first too (the schedule check may have just loaded a page) ...
         time.sleep(random.uniform(1.5, 3.5))
@@ -3377,10 +3388,21 @@ def own_trip_times(fl, full=False):
             if not BRK.allow("pairing"):
                 # 1.7.11 (Ryan, Nov 17): this very page stopped pairing reads (the Flica client judged it: not a
                 # pairing page, as while the FLICA session is going): it is no read. The times on file and own_empty_at
-                # stay as they were; the trips after it still reach keep (never pruned) and load nothing
-                log.info("own trip %s: the page stopped pairing reads; the times on file are kept", k)
+                # stay as they were; the trips after it still reach keep (never pruned) and load nothing. Review: the
+                # trip waits an hour (own_stop_at), so the first load at the reopen is another reader's
+                stop_at[k] = local_now().isoformat()
+                log.info("own trip %s: the page stopped pairing reads; the times on file are kept (read again in an "
+                         "hour)", k)
                 continue
-            if classify(page) == "ok":
+            kind = classify(page)
+            if kind in STOP_KINDS:
+                # 1.7.11 review: FLICA says the session is gone (another login took it, it expired, or reads are
+                # blocked): no more pairing pages on it; check() meets the same page on the pot and yields
+                stop = kind
+                log.info("own trip %s: FLICA's page says %s; no more own trip pages this check", k, kind)
+                continue
+            if kind == "ok":
+                stop_at.pop(k, None)
                 d = parse_detail(page)
                 if d.get("report") and d.get("last_arr"):
                     empty_at.pop(k, None)
@@ -3408,6 +3430,10 @@ def own_trip_times(fl, full=False):
                     else:
                         own[k] = {}
                         log.info("own trip %s: no times on the pairing page (read again in an hour)", k)
+        except GT.GateSkip as e:
+            # 1.7.11 review: a pilot's budget left this load out (no load made): the trips read before it in this check
+            # are still pruned, saved and published below, then read_guard logs the skip; the rest wait
+            stop, skipped = "skip", e
         except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
             raise
         except Exception as e:
@@ -3416,10 +3442,14 @@ def own_trip_times(fl, full=False):
         own.pop(k)
     for k in [k for k in empty_at if k not in keep]:
         empty_at.pop(k)
+    for k in [k for k in stop_at if k not in keep]:
+        stop_at.pop(k)
     if n:
         save_state(S)
         time.sleep(random.uniform(1.5, 3.5))  # ... and after the last, before the check loads the pot
     publish_own_trips()
+    if skipped:
+        raise skipped
 
 
 def payp_refresh(own=None):
