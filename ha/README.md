@@ -17,11 +17,13 @@ unknown" with no colour when the last check time is not known, red "Watcher offl
 card's age mode exists only from Flight Watcher 1.7.12,
 so the live dashboard is changed only at release time, with Ryan's yes: Claude applies this one edit through the HA
 connector right after 1.7.12 is live (a JSON patch on that card, guarded by a test of its neighbours), then checks by
-sha256 of the redacted text as in Refresh below and drops this section. Until then the snapshot is one edit ahead of
-Pako: the snapshot's sha256 is `7a3b3903c6d9bba5d59d0f059642772852df3ad1fd56a6cecc574c64173da530`, Pako's dashboard is
-still `be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435` (read 2026-11-14, below). Undo: put the tile
-back (`{"entity": "sensor.flight_watcher_last_check", "grid_options": {"columns": 6}, "name": "Last check", "type":
-"tile"}`, git history).
+sha256 of the redacted text as in Refresh below and drops this section. The pending edits go on in release order, this
+one first: Pako's dashboard is still `be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435` (read
+2026-11-14, below), and with this edit alone it reads
+`7a3b3903c6d9bba5d59d0f059642772852df3ad1fd56a6cecc574c64173da530`. The snapshot is ahead of Pako by every pending
+edit (this one and the sections below), sha256 `e95ce9d3b662aad0357c138f355d834928a9abad86a869bc6570283fe9fc19c2`.
+Undo: put the tile back (`{"entity": "sensor.flight_watcher_last_check", "grid_options": {"columns": 6}, "name": "Last
+check", "type": "tile"}`, git history).
 
 ## Pending on Pako (1.7.14): near misses card
 
@@ -33,10 +35,11 @@ markdown card and before the "Swap ideas" heading, `{"grid_options": {"columns":
 "custom:flight-watcher-near-card"}` (keys sorted, as HA stores a card the connector writes). The list is folded by
 default with its count. The sensor and the card exist only once 1.7.14 is live, so Claude applies this dashboard edit
 through the HA connector after the release, with Ryan's yes for it (a [DESTRUCTIVE] dashboard change), then checks by
-sha256 of the redacted text as in Refresh below and turns this section into an "Applied" one. Until then the snapshot
-is this one card ahead of Pako: its sha256 is `ccadab7d0c05aaaa5d4deda7e339aaaea6037eca4e30761793ccc713d5d88e13`, while
-Pako's dashboard is still the `be03a0a4...` one below. Undo: remove that one card. No automation changes: the near
-misses never push (information only), so the guard's count is unchanged.
+sha256 of the redacted text as in Refresh below and turns this section into an "Applied" one. The pending edits go on
+in release order: once the 1.7.12 Details tile (above) and this card are applied, Pako reads
+`e95ce9d3b662aad0357c138f355d834928a9abad86a869bc6570283fe9fc19c2`, the snapshot's sha256 (every pending edit); until
+then Pako's dashboard is still the `be03a0a4...` one below. Undo: remove that one card. No automation changes: the
+near misses never push (information only), so the guard's count is unchanged.
 
 ## Applied on Pako 2026-11-13 about 05:45 HST (1.7.2, FW-0066): "Flight Watcher pilot upload"
 
@@ -138,8 +141,9 @@ live, the pilot upload automation was added, the "Ready to update" push wording 
 deleted). The dashboard snapshot matched Pako's `/config/.storage/lovelace.flight_watcher`, sha256
 `be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435` (5 views: Watcher, Working Flight, Details,
 Recall/O75, Settings; read 2026-11-14 about 17:20 HST, with the van alert settings tiles, the Working Flight view, the
-pilot lookup row and the Pilots cards below), until the pending edits above (the 1.7.12 Details tile, the 1.7.14 near
-misses card).
+pilot lookup row and the Pilots cards below), until the pending edits (above: the 1.7.12 Details tile, the 1.7.14 near
+misses card): the snapshot is now ahead of Pako by those edits alone, sha256
+`e95ce9d3b662aad0357c138f355d834928a9abad86a869bc6570283fe9fc19c2`, and Pako matches it again once they are applied.
 
 **Changed on Pako 2026-11-14 about 17:15 HST (1.7.8, Ryan's yes "all of it"):** once 1.7.8 was live, Claude put the
 Pilots card on the dashboard through the HA connector (a JSON patch guarded by tests of the neighbouring cards): the

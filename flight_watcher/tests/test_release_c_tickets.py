@@ -636,10 +636,11 @@ def test_version_is_one_seven_two():
     # 1.7.11 (Nov 17, FW-0075): the layover card moves the van time in 5 minute steps; no contract change
     # 1.7.12 (Nov 17): one data age stamp in place of the two clocks; no contract change
     # 1.7.13 (Nov 17): the schedule card's FAR 117 columns with units and headroom; no contract change
-    assert _re.search(r'^version: "1\.7\.13"$', cfg, _re.M)
-    assert _re.search(r'^VERSION = "1\.7\.13"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
+    # 1.7.14 (Nov 17): near misses in the open time pot (off the portal); no contract change
+    assert _re.search(r'^version: "1\.7\.14"$', cfg, _re.M)
+    assert _re.search(r'^VERSION = "1\.7\.14"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.7.13\n") and "\n## 1.7.12\n" in log and "\n## 1.7.11\n" in log and "\n## 1.7.10\n" in log and "\n## 1.7.9\n" in log and "\n## 1.7.8\n" in log and "\n## 1.7.7\n" in log and "\n## 1.7.6.1\n" in log and "\n## 1.7.6\n" in log and "\n## 1.7.5\n" in log and "\n## 1.7.4\n" in log and "\n## 1.7.3\n" in log and "\n## 1.7.2\n" in log and "\n## 1.7.1.1\n" in log and "\n## 1.7.1\n" in log and "\n## 1.7.0\n" in log
+    assert log.startswith("# Changelog\n\n## 1.7.14\n") and "\n## 1.7.13\n" in log and "\n## 1.7.12\n" in log and "\n## 1.7.11\n" in log and "\n## 1.7.10\n" in log and "\n## 1.7.9\n" in log and "\n## 1.7.8\n" in log and "\n## 1.7.7\n" in log and "\n## 1.7.6.1\n" in log and "\n## 1.7.6\n" in log and "\n## 1.7.5\n" in log and "\n## 1.7.4\n" in log and "\n## 1.7.3\n" in log and "\n## 1.7.2\n" in log and "\n## 1.7.1.1\n" in log and "\n## 1.7.1\n" in log and "\n## 1.7.0\n" in log
     assert chr(0x2014) not in log
     dock = open(os.path.join(HERE, "Dockerfile"), encoding="utf-8").read()
     assert "photos.py" in dock and "bidcal.py" in dock and "pilotpdf.py" in dock and "Pillow==11.0.0" in dock

@@ -1,5 +1,74 @@
 # Changelog
 
+## 1.7.14
+
+### Near misses in the open time pot
+
+Ryan, Nov 17: "In the open time pot, for each trip hidden by a VAC or blocked day, show what I'd have to drop or swap to
+fly it, plus the pay difference."
+- Each check, right after the pot sensor, the Watcher lists every pot trip (the open time pot and the close-in folder)
+  hidden today because it touches a VAC day, a blocked day or one of the pilot's own trips (`near_misses`,
+  `near_blockers`). A PAYP day is free for a pickup (PWA 4.R.1), never in the way; a pot row that is one of his own
+  trips (its open seat) is left out.
+- What stands in the way: "VAC Nov 21 to 22" (the VAC days the trip touches, a run of days each), "blocked Nov 14",
+  "overlaps your H3620 Nov 25 to 27". What to change to fly it: "give up VAC Nov 21 to 22", "unblock Nov 14", "drop or
+  swap H3620". A trip hidden for more than one reason lists each.
+- An own trip that only shares a day with the pickup is kept, nothing given up, when `far_screen` with it in the line
+  is a plain OK: "same day as your H2000 Nov 10 to 11, legal to fly both" (home in the morning, the pot turn that
+  evening; its duty does not overlap and every rest and limit holds), or when the pickup is known not legal for
+  another reason exactly as with it dropped ("no conflict with it"). A "?" keeps it in the way.
+- The pay difference: the trip's Pay-Gross less what is given up, and the credit hours ("+$518", "+2:00"). Every trip
+  is priced by `pay.trip_gross` (the schedule card's tripFull, as `price_moves` prices a trade): credit x the PWA 3.D.6
+  rate for the longevity year in Pay settings (`pay_settings`, PWA 3.B.1), the PWA 4.O.1 override (RO $4.00 per block
+  hour when only the RO seat is open, FO $3.00 on a 3-pilot crew) and the Extended Range +15% where on. Pilots are
+  counted the same way on the pickup and on a dropped trip: CA, FO, RO and SO, never a flight attendant (`_near_crew_n`,
+  as `crewidx.pilot_seats`). Credit, block and crew not on the row or record come from the pairings package of the
+  trip's own bid period (`bid_period_key`, 1.7.11: Dec 1 is November's). A VAC day given up is 4:00 of pay and credit
+  (PWA 6.J.1.c, `pay.VAC_H`, the schedule card's VAC_H x RATE); a dropped own trip its own Pay-Gross and credit (his own
+  trip record, else the newest version of the schedule month that holds it, else the pairings package: `_move_rec`); a
+  blocked day or a kept trip nothing. No longevity year or DOH: the hours only, and the sensor says why. Any credit not
+  on file: no amount (never a wrong one).
+- FAR 117 with the conflict removed: `far_screen` (the check `far_for` and the swap ideas use) with the overlapping own
+  trips given up left out (`recall.line_records` now takes several keys); VAC and blocked days are no duty. "legal"
+  only on a plain OK, as `swap_scan` (FAR 117.25(e), 117.25(b), 117.23(b)(1), 117.23(c) and the PWA 10.E.1.a 11 h home
+  rest); else the reason with its trip and rule in the text, not a tooltip ("not legal: rest 6:15 before (H1019 Nov
+  19), under 10 h (FAR 117.25(e))", "not legal: CBA rest 10:30, under the 11 h home rest (PWA 10.E.1.a)"). A time not
+  on file, or "OK (CBA rest 10:50?)" (the home rest short only if a release was 30 min after block-in for customs, PWA
+  2.19.b), reads "not known yet: ...", never legal and never not legal.
+- Information only: from the pot rows, schedule, own trip records, blocked days, pairings package file and Pay settings
+  already on hand. No FLICA page load, no event, nothing added, dropped, swapped or requested.
+- New sensor `sensor.<prefix>_near_misses` (MQTT discovery, core: the admin and every pilot instance each compute
+  their own; topic `<prefix>/near/state`): `count`, `misses` (legal first, then not known, then not legal; the best pay
+  difference first; the first 20, `NEAR_ROWS`), `kinds`, `rate`, `year`, `pay_note`; `cap_attrs` trims `misses` from
+  the end under the 12 KB `ATTR_MAX`. The pot sensor is unchanged.
+- Not on a pilot's portal yet: `roles.ENTITY_OFF_PORTAL` keeps the sensor out of his state.json (a new exported state
+  is a portal contract change, PORTAL_CONTRACT.md 4.2, left for a later revision), and the card is in
+  `PORTAL_CARDS_OUT`. Contract 1 revision 6, its fixture, PORTAL_CONTRACT.md (sha256 `e4f559e0...`, unchanged) and
+  James's portal are exactly as in 1.7.11; he sees near misses after a later contract revision. `near` joins
+  `roles.RESERVED` (no pilot may be named near or near_x).
+- New card `www/flight-watcher-near-card.js` (`custom:flight-watcher-near-card`), deployed with the others: the list
+  folded by default with its count, staying open across updates once opened; each miss with what is in the way, what
+  to change (with the credit and pay each change gives up, "nothing lost" for a blocked day or a kept trip), the pay
+  difference in green or red and the FAR 117 chip; a key with the PWA and FAR references. The card is built once: an
+  update changes only the count, the list and the rate, so "How this is figured" stays open and the keyboard focus
+  stays put. While the sensor is unavailable or unknown (the Watcher offline or restarting: HA drops its attributes)
+  or not published yet, the count reads "?", never 0, and the folded header says why. 390 px with no sideways scroll,
+  44 px targets, WCAG AA in light and dark.
+- Ryan's Watcher view: `ha/dashboard_flight_watcher.json` has the card under the pot table, before Swap ideas.
+  **Pending on Pako**: Claude applies that one card through the HA connector after the release, with Ryan's yes
+  (ha/README.md: the snapshot matched Pako's `be03a0a4...` until the pending edits, 1.7.12's Details tile and this
+  card, and is ahead of it by those two, `e95ce9d3...`; Pako reads that once both are applied).
+- Tests: `tests/test_fw1714_near.py` (synthetic pairings): each conflict type, the pay math with the PWA rules (VAC
+  4:00 a day, the RO override, a dropped trip's credit, a blocked day at nothing, no rate, an unknown credit), legal,
+  not legal (FAR rest with its trip and rule, the 11 h home rest) and not known (a time not on file, a customs-only
+  short rest), a trip hidden for two reasons, several excluded trips, a same-day trip kept (legal to fly both; not the
+  problem), two own trips with one kept, a Dec 1 trip priced from November's package and schedule versions, pilots
+  counted without flight attendants on both sides, the order, no FLICA load, the sensor's size bound, both instances
+  and the unchanged portal export, the dashboard snapshot and its README wording, and the card in Chromium at 390 px
+  light and dark (unavailable, unknown and no sensor; the key staying open with its focus across an update).
+  `tests/test_sensor_size.py`'s busy month publishes the near misses too (60 rows, each hidden by a week of VAC, the
+  blocked days and own trips), for the admin and a pilot, under the 12 KB bar.
+
 ## 1.7.13
 
 ### FAR 117 columns with units and headroom

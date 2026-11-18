@@ -619,10 +619,11 @@ def test_a_pilots_portal_shows_the_stamp_from_what_it_already_has():
     for oid in ("state", "last_check", "next_check", "normal_check_every", "hunt_check_every", "hunt_mode"):
         assert roles.entity_on_portal(oid, "james"), oid
     names = sorted(cards.sources())
+    # no new card for the stamp (1.7.14's near misses card, off the portal, came later)
     assert names == sorted(f"flight-watcher-{n}" for n in (
-        "charters-card", "clock-card", "finds-card", "improved-card", "layover-card", "pickers-card", "pilot-card",
-        "pilot-search-card", "pilot-uploads-card", "pilotdb-card", "pot-card", "recall-card", "requests-card",
-        "row-colors", "schedule-card", "settings-card", "tickets-card", "uploads-card", "working-card"))  # no new card
+        "charters-card", "clock-card", "finds-card", "improved-card", "layover-card", "near-card", "pickers-card",
+        "pilot-card", "pilot-search-card", "pilot-uploads-card", "pilotdb-card", "pot-card", "recall-card",
+        "requests-card", "row-colors", "schedule-card", "settings-card", "tickets-card", "uploads-card", "working-card"))
     layout = open(os.path.join(HERE, "portal_layout.json"), encoding="utf-8").read()
     assert '"mode": "age"' not in layout  # the portal's tabs are as they were: the clock card already carries the stamp
     for name in HOLDERS:  # the stamp publishes nothing: the cards' MQTT subs are what they were
@@ -655,9 +656,10 @@ def test_the_details_view_tile_is_the_stamp_in_the_snapshot():
 
 
 def test_version_changelog_and_readme_say_data_age():
-    # 1.7.13 went on top: the version itself is pinned in test_release_c_tickets; the 1.7.12 section stays below it
+    # 1.7.13, then 1.7.14, went on top: the version itself is pinned in test_release_c_tickets; the 1.7.12 section
+    # stays below them
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.7.13\n") and "\n## 1.7.12\n" in log and "\n## 1.7.11\n" in log
+    assert log.startswith("# Changelog\n\n## 1.7.14\n") and "\n## 1.7.13\n" in log and "\n## 1.7.12\n" in log and "\n## 1.7.11\n" in log
     top = log.split("\n## 1.7.12\n", 1)[1].split("\n## 1.7.11\n", 1)[0]
     for word in ("Data age", "stale", "very stale", "FLICA updated", "Details", "hunt", "portal"):
         assert word in top, word

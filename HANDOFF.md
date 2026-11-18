@@ -29,6 +29,11 @@ ticket run of Nov 17 (CHANGELOG 1.7.11 has every section):
   100:00 in 672 h, or 60:00 FDP in 168 h, is legal, was a false NO) and tries the windows at the open edges of a
   pairing; 100h in 672h counts a trip whose duty has no block and ends a no-duty trip at its block-in. Nothing pending
   on Pako, no contract change.
+- 1.7.14 (Ryan, Nov 17): near misses in the open time pot (`sensor.flight_watcher_near_misses`, the near card): each pot
+  trip hidden by a VAC day, a blocked day or an own trip, what to give up or drop to fly it, the pay difference (PWA
+  3.D.6, 4.O.1, VAC 4:00 a day PWA 6.J.1.c) and FAR 117 with the conflict removed; information only, no FLICA load,
+  off the portal (no contract change). The card under the pot table is pending on Pako (`ha/README.md`), applied with
+  Ryan's yes after the 1.7.12 Details tile, once 1.7.14 is live.
 
 **Nov 16: 1.7.10 is contract 1 REVISION 5 and HOM 1.9.1 goes live FIRST.** Ryan: "His uploads should update the
 shared database too", and the contacts list upload on James's portal "Now, in 1.7.10". Built (commits "... a portal

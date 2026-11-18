@@ -493,7 +493,10 @@ def test_the_watcher_view_shows_the_card_under_the_pot_table():
     cur = cur[:cur.index("\n\n")]
     assert "The dashboard snapshot matches Pako's" not in readme
     assert "The dashboard snapshot matched Pako's" in cur and "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" in cur
-    assert "until the pending near misses card edit (above)" in cur and "ahead of Pako by that edit alone" in cur
+    # 1.7.14 on 1.7.12 (one snapshot for both): the snapshot is ahead of Pako by the pending edits, this card one of them
+    flat = " ".join(cur.split())
+    assert "until the pending edits (above: " in flat and "the 1.7.14 near misses card" in flat
+    assert "ahead of Pako by those edits alone" in flat
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() in cur
     assert "Ryan" in sec and "yes" in sec and "Undo" in sec
     assert chr(0x2014) not in readme and chr(0x2014) not in text
