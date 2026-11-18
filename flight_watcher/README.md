@@ -50,7 +50,8 @@ publishes what it finds to Home Assistant over MQTT.
 - FAR column (1.4.7, FW-0039): pot, Tradeboard and finds rows run the Recall check's FAR 117 and PWA rules per duty
   period (117.25(e), 117.25(b), 117.23(b)(1), 117.23(c)(1) and (2): `FDP 65h/168h`, `FDP 191h/672h`; PWA 10.E.1.a
   as the `OK (CBA rest 10:30)` note). Anything not on file (a neighbour's times, training or reserve days, a customs
-  release) reads `?`, never OK; `far_why` on the row cites the rule.
+  release) reads `?`, never OK; `far_why` on the row cites the rule. A 672 h or 168 h window holding exactly a limit
+  (100:00 flight time, 60:00 or 190:00 FDP) passes: the hours are compared to the minute (1.7.13 FAR review).
 - Smart push fields (1.4.13, FW-0042): pot, Tradeboard and finds rows (in the finds DB and month files, not on the
   sensors), `last_new` and `event/new_pairing` carry `comm` (the home airports you can commute from: two scheduled
   nonstops arriving HNL before report, PWA 26.QQ.2, and one home 60+ min after release; or `No`), `value` (credit x
@@ -567,6 +568,29 @@ through `/local/flight-watcher-loader.js`. Phone pushes are HA automations on Pa
 events (`<prefix>/event/...`: new_pairing, request_decided, recall_miss, recall_file_requested, recall_ccr_filed,
 ticket_fixed and others).
 
+**FAR 117 columns** (1.7.13, Ryan, Nov 17: "Give FAR-30/7, FAR-100/672 and Room real headers with units, and show
+headroom against each limit"): the schedule card's three FAR columns are headed `30h in 7d`, `100h in 672h` and
+`Room to 100h`, each header's title naming its rule. `30h in 7d` (FAR 117.25(b): 30 consecutive hours free from all
+duty in the 168 h before a report) reads `✓ 36h 11/05` (a report at that day's first duty start, 00:01 on a day off,
+is covered: the longest break off duty in the 168 h before it, in whole hours, and the day it ended; a later report
+that day may not be, so its title gives 'covers reports until'), red `need 30h off`, `?` (the 168 h reach before the
+schedule on file) or `–` (mid-trip). `100h in 672h` is what is left of FAR 117.23(b)(1) (100 flight hours in any 672
+consecutive hours) in the 672 h ending 24:00 that day (`10:57 left`, the block flown or scheduled in its title, both
+rounded to the minute once so they add up to 100:00); `Room to 100h` is what is left in the busiest 672 h window
+that holds any part of the day, back and forward. It tries every window that starts at a duty's start or ends at its
+block-in, where the busiest one always is, counting a duty's block when the whole duty is in the window, as a
+pickup's FAR check (far.py) does, and the windows ending 24:00 HST counted leg by leg as in `100h in 672h`, so it
+never shows more room than that cell (1.7.13, Ryan, Nov 18: "fix all of these things"). On the same line Room reads
+over exactly where far.py finds a 672 h window over 100:00 that holds the day, or where a window ending 24:00 is over
+leg by leg (a leg across its edge counted in part), which far.py reads `?`. Both read red `0:00 left` at the limit
+and red `1:20 over` past it (the word says it too, never the colour alone), with `~` in front when a window reaches
+past the schedule on file or holds a trip whose times are not read yet: that trip adds 0:00 block, and the cell's
+title names it. With no report and release on file such a trip also counts as time off in `30h in 7d`. A trip with
+a duty that has no block counts its whole Block in both cells (the rest of it on the duties without one), as far.py
+counts it; with no trip Block its duties with a block count and the cell reads `~`. A trip with no duties counts its
+block up to its last block-in, not its release (1.7.13 FAR review). The Key explains each. Above 700 px the `100h in 672h` and `Room to 100h` headers take two lines and the FAR cells pad 4 px a
+side, so the grid is about as wide as in 1.7.11.
+
 **Pairing detail** (1.7.7, Ryan, Nov 14): on the schedule card a tap on a pairing (or Enter on it) opens its detail
 like FLICA's pairing printout: the header (pairing, start date, the days it operates, base report, base and
 equipment), one line per leg (day, date, deadhead, flight, from and to, departure and arrival local as the package
@@ -598,8 +622,8 @@ detail (a panel below that grid, or a bottom sheet on a phone), with the VAC and
 the rebuilt trip's nights from the package's duties, and an older version's totals line in the live month's order. Its
 columns are Trip, Layover, Block, Credit, Soft,
 Pay-Gross (that pilot's, when his date of hire is on file) and Crew; the seat and legs are in the pairing's hint and
-detail, and the rate, seat and source notes sit under the grid. Ryan's planning columns (Pay-Net, Res Grid, the FAR
-columns, Room, Legal next, Open, Ideas, the trade and drop marks) stay on his own schedule. On a phone (700 px or less,
+detail, and the rate, seat and source notes sit under the grid. Ryan's planning columns (Pay-Net, Res Grid, the FAR 117
+columns (30h in 7d, 100h in 672h, Room to 100h), Legal next, Open, Ideas, the trade and drop marks) stay on his own schedule. On a phone (700 px or less,
 1.7.11, FW-0079) the Crew column gives way to a crew list under the grid, one line a pairing ("H9601 Dec 1: CA Doe,
 Jane · FO Roe, Rick", each pilot on one line, the call and text links kept), so the grid fits the screen down to 360 px
 (Pay-Gross heads two lines there, and a one-day turn's report and release may share its Layover cell on two lines); a

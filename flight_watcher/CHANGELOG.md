@@ -1,5 +1,119 @@
 # Changelog
 
+## 1.7.13
+
+### FAR 117 columns with units and headroom
+
+Ryan, Nov 17: "Give FAR-30/7, FAR-100/672 and Room real headers with units, and show headroom against each limit (e.g.
+"100h/672h: 10:57 left"). Explain the Room column in the Key." The Schedule card only (far.py, the pot and finds cards
+unchanged); the windows Room to 100h tries are the next section's.
+- Headers `30h in 7d`, `100h in 672h` and `Room to 100h` (one line each at 390 px; above 700 px the last two take two
+  lines and the FAR cells pad 4 px a side, so the grid is within about 15 px of 1.7.11's width and a laptop-sized card
+  fits it again); each title names its rule: FAR 117.25(b) (30 consecutive hours free from all duty in the 168 h before
+  a report) and FAR 117.23(b)(1) (at most 100 flight hours in any 672 consecutive hours).
+- `100h in 672h` is what is left in the 672 h ending 24:00 that day (`10:57 left`; its title `100h/672h: 10:57 left.
+  89:03 block flown or scheduled in the 672 h (28 days) ending 24:00 ...`); the block is rounded to the minute once,
+  so a cell and its title always add up to 100:00. `Room to 100h` is what is left in the busiest 672 h window that
+  holds any part of the day, back and forward (the next section). Both read red `0:00 left` at the limit and red
+  `1:20 over` past it, so the word says it, never the colour alone; `~` in front when a window reaches past the
+  schedule on file (`~10:57 left`) or holds a trip with no times on file.
+- `30h in 7d` words today's states with units: `✓ 36h 11/05` (a report at that day's first duty start, 00:01 on a day
+  off, is covered: the longest break off duty in the 168 h before it, whole hours, and the day it ended; a later report
+  that day may not be, so its title gives 'covers reports until'), red `need 30h off`, `?` (the 168 h reach before the
+  schedule on file), `–` (mid-trip).
+- The Key has a row for each column: units, the rule (FAR 117.25(b); FAR 117.23(b)(1), 100 flight hours in any 672
+  consecutive hours), what Room to 100h counts that 100h in 672h does not (trips later on the line, the windows it
+  tries), and that a trip whose times are not read yet adds no block (`~`) and, with no report and release on file,
+  counts as time off in 30h in 7d. The cells stay on one line (no taller rows).
+- Tests: `tests/test_fw1713_far_columns.py` (synthetic months, made-up trips H91xx, H93xx, H95xx, H98xx; Chromium at
+  390 px, light and dark, and a 936 px box for the pilot's and Ryan's copies): headers and titles, the 100h in 672h and
+  Room to 100h cells positive, zero, over and approximate, a cell and its title adding up to 100:00 (half-minute legs),
+  Room over on a window ending mid-day where far.py says NO, the 30h in 7d states and which report the tick covers, red
+  only with its word, the Key text, the grid's width, far.py's limits unchanged.
+  `FW_1713_SHOTS=<folder>` saves the screenshots (390 px and 1024 px). 1.7.11's cross-month test
+  (`tests/test_card_cross_month_672.py`) reads the 100h in 672h cell as headroom (`82:25 left` on Dec 2) and the
+  trip's block, counted once (17:35), in its title.
+
+### Room to 100h tries every 672 h window, like far.py; unknown trip times marked
+
+Ryan, Nov 18: "fix all of these things" (the FAR 117 gaps item 4's review left open). The Schedule card only; far.py,
+recall.py and the pot and finds cards are unchanged here (far.py changes in the review fixes below).
+- **Room to 100h finds far.py's windows** (F1): it was 100:00 minus the busiest 672 h window ending 24:00 HST, and a
+  window ending mid-day can hold more (on a synthetic line Room read `9:00 left` where far.legality finds 101:00 in the
+  672 h from Nov 1 10:45 to Nov 29 10:45, over FAR 117.23(b)(1)). Room is now 100:00 minus the busiest 672 h window
+  that holds any part of the day, back and forward: the windows starting at a duty's start or ending at its block-in
+  (far._cum's, where the busiest one always is), a duty's block counting when the whole duty is in the window, on the
+  spans far.py reads (recall._trip: a duty from the trip's report, or 1:00 before departure from HNL and 1:15 elsewhere,
+  PWA 2.19.b, to its block-in), and the windows ending 24:00 HST counted leg by leg as before, so Room never shows more
+  room than 100h in 672h. On the same line Room reads over exactly where far.py finds a 672 h window over 100:00 that
+  holds the day, or where a window ending 24:00 is over leg by leg (a leg across its edge counted in part), which
+  far.py reads `?` (may pass), never OK. The 100h in 672h cell stays the 672 h ending 24:00 that day. Room's title
+  names the window's end (`101:00 flown or scheduled in the 672 h ending 10:45 2026-11-29`; a tie keeps the window
+  ending 24:00); the "windows ending 24:00 only" caveat is gone from the header, title, Key and README. A window holds
+  the day when it holds part of it (far._cum's rule for a pickup), so Room's `~` (a window past the schedule on file)
+  reaches a day further each way. Where a trip's duty blocks add up to more than FLICA's trip Block, Room counts the
+  duty blocks as far.py does; 100h in 672h still scales them to the trip Block.
+- **A trip with no times on file is marked** (F3): it adds 0:00 block, so a 100h in 672h or Room to 100h cell whose
+  window holds an own trip with no times (no Block and no duties, a `{}` record, or none) reads with `~` (not known in
+  full) and its title names the trip (`~ = not known in full: no block times on file yet for H9205 11/05 (counted
+  0:00)`). The Key says so for both cells; 30h in 7d still counts such a trip as time off without a report and release.
+- **Ryan's line** (live data, names stripped, not in git): Room on every day of November and December equals far.py's
+  busiest window holding that day. Nov 29 reads `6:42 left` (was `10:03 left`: the 672 h from 04:00 Nov 1 hold 93:18),
+  Dec 1 `10:03 left` (was `10:04`), Dec 6 `~10:04 left` (was `~16:35`), Dec 7 `~16:35 left` (was `~18:34`), Dec 4 gains
+  its `~`; Dec 2's 100h in 672h is unchanged (`16:18 left`, 83:42); every cell is positive.
+- **F4**: item 4's queued finding (a trip from the month before taking its release from a later HNL day of the viewed
+  month) was fixed in 1.7.11 (`tests/test_card_cross_month_review.py`); a render on this release confirms it (X9620 Nov
+  20 to 22 keeps its Nov 22 release in the December view, and Dec 10 shows only X9612's own release).
+- Tests: `tests/test_fw1713_room_windows.py` (Chromium, synthetic lines, made-up trips H91xx, H92xx, H96xx): Room over
+  on the mid-day window; day by day against far._cum on the same line (a widebody-shaped line with red-eyes, out-station
+  duty starts, a trip across Nov 30 and a duty with no block; the mid-day line; item 4's lines at 101:20, at exactly
+  100:00 (`0:00 left`, far.py OK) and with duty blocks over the trip Block): over exactly when far.py is, Room's block
+  the larger of far.py's busiest window and the windows ending 24:00; `~` and the trip's name for a `{}` record, no
+  record and no Block; the Key and header. Each fails on the code before. `tests/test_fw1713_far_columns.py` moves
+  to the new cells (Room over on Nov 29 of the 101:20 line, `~` a day further, Room counting duty blocks as far.py).
+
+### FAR review fixes
+
+Two adversarial checks of the FAR fixes above (460 random synthetic lines, 28,060 day comparisons with far.py) found
+four gaps. Each is fixed with a test that fails on the code before (`tests/test_fw1713_room_windows.py`).
+- **Exactly 100:00 is legal in far.py** (R1): far._cum added blocks as float hours, and about a quarter of block sets
+  that add up to exactly 6000 min float to 100.00000000000001 h, so a pickup that brings a 672 h window to exactly
+  100:00 read NO `flight time 100:00 h in 672 h, over 100 h` (`FT 100h/672h` in the pot, Tradeboard and finds FAR
+  column and the Recall/O75 miss check) while the card read `0:00 left`. FAR 117.23(b)(1) allows 100 h. _cum now
+  compares whole minutes (every time on file is one), for the FDP limits too (FAR 117.23(c)(1): five FDPs adding up to
+  exactly 60:00 in 168 h read over); one minute more is over. The 1.7.13 claim "at exactly 100:00 (`0:00 left`,
+  far.py OK)" now holds for any blocks, not only the `zero` line's.
+- **100h in 672h counts a trip with a duty block missing** (R2): its legs held only the duties with a block, so a
+  window holding H9201 (Block 20:00, its second duty with no block) counted 10:00 where far.py counts the trip's 20:00
+  (recall._trip puts the Block on one span from report to last block-in): `6:00 left` (94:00) against 104:00, no `~`,
+  while Room read `4:00 over`. The rest of the trip's Block now counts on the duties without a block (departure to
+  arrival, shared by their length; on far.py's span when their times do not read), so a window holding the whole trip
+  counts its Block as far.py does. With no trip Block the duties with a block count and the cell reads `~` (`no block
+  time on file yet for a duty of H9205 11/05 (counted the duties with a block)`). The Key says both.
+- **A no-duty trip's block ends at its last block-in** (R3): 100h in 672h spread it to the release (15 min later,
+  PWA 2.19.b), so the 672 h ending 24:00 after a 23:50 block-in held 99:59 of a 100:02 line (`0:01 left`, Room `0:02
+  over`). It now ends at the block-in, as far.py's span does.
+- **far._cum tries the open edges too** (R4): it tried only windows built on span edges, so for a pairing with no
+  flight time of its own (the tests' day probe) the busiest worst window, ending just after 00:00 that day as a span of
+  the line leaves it, was never tried: on a line where Room read `5:00 over` on Dec 25 (105:00 in the 672 h ending
+  24:00, a leg across its start) far.py read OK `at most 95:00`. _cum now also tries the window ending 1 s after the
+  start of the pairing's first span and the one starting 1 s before the end of its last (its report and release when
+  it has none): `?` (95:00 known, up to 129:00), as a real 1:00 pickup that day read. "Room over leg by leg, far.py `?`,
+  never OK" now holds for the probe, and the test checks it on every day. On 12,000 random synthetic pickups against
+  300 random lines only 15 of 21,789 FAR 117.23 checks changed: 2 NO at exactly 60:00 FDP now OK (R1), 13 NO now `?`
+  (`over ... even without the pairing: the line on file looks incomplete`), each on a synthetic line already over the
+  limit by itself next to the pickup, which a line on file cannot be.
+- A rerun of the checks on the fixed code (450 random lines, seeds 11, 22, 33, Nov and Dec, 27,450 days): Room never
+  reads left where far.py finds a window over 100:00, never over where far.py reads OK, and its block is never below
+  far.py's busiest sure window. The 100h in 672h cell lies between far.py's sure and worst count of the same 672 h
+  ending 24:00 on every day, except windows holding a trip whose duty blocks add up to more than its Block (the cell
+  scales them to the Block, 1.7.11, as before). 30h in 7d is identical to 1.7.11's on every day.
+- Tests: synthetic lines H91xx (exactly 100:00, a float sum over 100 h), H92xx (a duty with no block), H93xx (a 23:50
+  block-in), H94xx (Oct to Jan, the probe's edge window), two H9205 records whose second duty has no block (with and
+  without the trip Block) and five FDPs (H95xx) at exactly 60:00 in 168 h; on every test line the 100h in 672h cell
+  between far.py's sure and worst count of its window, day by day (half100 left out: it scales duty blocks by design),
+  and far.py `?` wherever Room is over and far.py's sure count is not.
+
 ## 1.7.12
 
 ### One data age stamp in place of the two clocks

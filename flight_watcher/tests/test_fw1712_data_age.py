@@ -655,12 +655,10 @@ def test_the_details_view_tile_is_the_stamp_in_the_snapshot():
 
 
 def test_version_changelog_and_readme_say_data_age():
-    cfg = open(os.path.join(HERE, "config.yaml"), encoding="utf-8").read()
-    assert re.search(r'^version: "1\.7\.12"$', cfg, re.M)
-    assert re.search(r'^VERSION = "1\.7\.12"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), re.M)
+    # 1.7.13 went on top: the version itself is pinned in test_release_c_tickets; the 1.7.12 section stays below it
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.7.12\n") and "\n## 1.7.11\n" in log
-    top = log.split("\n## 1.7.11\n", 1)[0]
+    assert log.startswith("# Changelog\n\n## 1.7.13\n") and "\n## 1.7.12\n" in log and "\n## 1.7.11\n" in log
+    top = log.split("\n## 1.7.12\n", 1)[1].split("\n## 1.7.11\n", 1)[0]
     for word in ("Data age", "stale", "very stale", "FLICA updated", "Details", "hunt", "portal"):
         assert word in top, word
     readme = open(os.path.join(HERE, "README.md"), encoding="utf-8").read()
