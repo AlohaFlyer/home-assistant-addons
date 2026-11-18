@@ -1,5 +1,89 @@
 # Changelog
 
+## 1.7.15
+
+### Automatic swap ideas ranked by pay per day
+
+Ryan, Nov 17 (item 6, his yes): "Fill Swap ideas without a manual tap: rank my trips against open pot trips by pay per
+day. Keep legality and VAC/blocked rules." Both instances; no FLICA page load, nothing sent to FLICA, no contract change
+(revision 6 and its fixture stay; section 4.3's wording follows, below).
+
+- **Every trip, no tap.** Each check, every own pairing that has not started yet (it starts after today, HST) and is not
+  marked "would trade" is compared with every open pot trip (open time and the close-in folder; a Tradeboard post is
+  not the pot) of the same bid period that it could swap for (a FLICA swap stays inside one BCID): the pot's own bid
+  month when its key names one (`2026-11`, or the desktop menu's `November`), else the bid period of its first day
+  (`bid_period_fn`, the 1.7.11 rule); his trip's is the pairing files' bounds, else the first schedule page on file
+  that lists it (a Dec 1 trip listed on November's and December's pages is November's: FLICA's next page starts on
+  the bid period before's last day), else `bid_period_fn`. Marked trips work as
+  before: the soft time or credit rule (`swap.better`), their pushes, their drafts and the auto swap dry run.
+- **Ranked by pay per day**: (pot trip Pay-Gross / its days) minus (own trip Pay-Gross / its days). Each trip is priced
+  the way the swap pushes price one (`price_moves`, `pay.trip_gross`): credit x the PWA 3.D.6 rate `pay_settings()`
+  gives for the longevity year, plus the PWA 4.O.1 override for the seat flown (RO $4.00 a block hour; FO $3.00 on a
+  3-pilot crew) and the Extended Range +15% where on (the per-trip ER list too). Credit and block come from his own trip
+  record (his seat and roster) and from the pot row, else from the pairings package of the bid period that holds the
+  trip's first day (1.7.11, PWA 4.A: a Dec 1 trip of November's period is in November's package), then the calendar
+  month's. A pot trip is priced in the RO seat when RO is its only open seat (the row's `open_seats`), else in the FO
+  seat, as `price_moves` falls back; its crew is its own roster (the row's `crew`, open seats included), else the
+  package's crew line, as his trip's is his roster. His trip's layover for the ER rule is the package's route, else
+  its schedule item's (a SIN trip no package or roster covers keeps its +15%). No rate is invented: with no rate on
+  file (no date of hire, no longevity year) there are no automatic ideas and the sensor says `priced: false`.
+  `pay_settings()` is read again at most every 5 min for this (`SWAP_PAY_TTL_S`).
+- **Each idea shows** both pay-per-day figures and both trips' totals: `pay`, `pay_days`, `ppd` (the pot trip),
+  `for_pay`, `for_days`, `for_ppd` (his trip) and `ppd_gain`; an idea for a marked trip carries them too (None when the
+  rate or the credit is not known). An automatic idea is listed only when it pays more a day.
+- **The same legality, nothing looser**: not his own pairing number; FAR 117 with his trip removed (`far_for` with
+  `exclude`) reading a plain OK, so the 11 h domicile rest (PWA 10.E.1.a) holds; no VAC or blocked day; the grid rule
+  (`grid.swap_allowed`: it shares a day with his trip and every day moved off is green). A marked trip's grid-red idea
+  is listed and waits, as before; an automatic idea is listed only when the grid is green now.
+- **Never a push**: each idea has `auto` (true for an automatic idea, false for a marked trip's). Automatic ideas are
+  never published on `event/swap` (the topic the "Flight Watcher swap idea" automation listens to; it reads no sensor,
+  so it needs no condition and is unchanged), never on `event/swap_test`, never a draft (`swap_test`), never the auto
+  swap dry run, never in `swap_seen`. `pub()` refuses an idea with `auto` true on either topic (a backstop, one log
+  line), so a pilot's portal alert and ntfy never get one either. `ha/check_push_isolation.py` passes unchanged.
+- **Bounded, and `ideas` keeps its meaning**: on `sensor.<prefix>_swap_ideas`, `ideas` lists the marked trips' ideas
+  only, exactly as 1.7.11 did (at most 30, in their soft time and credit order, `gain_h`, the order they push in); the
+  best 10 automatic ones (`SWAP_AUTO_MAX`) are in their own attribute, `auto_ideas`, the best pay per day first. So
+  every reader of `ideas` (the old Swap ideas card still on Pako until the dashboard edit, the schedule card's swap
+  tags) shows what 1.7.11 showed and never an automatic idea unlabeled. New attributes: `auto_ideas`, `auto_count`
+  (all automatic ideas), `auto_shown` (those listed), `auto_more` (those not listed), `auto_max` (10) and `priced`.
+  The 12 KB attribute cap drops automatic ideas from the end first, then trims `ideas` from the end, the least soft
+  time first, as in 1.7.11 (the best soft-time idea, the first push, stays listed). The state (`count`) is every idea
+  found, marked and automatic.
+- **Dashboard** (`ha/dashboard_flight_watcher.json`, Watcher view, Swap ideas): the table shows the automatic ideas
+  ("*auto*" beside the trip given up) and two new columns, Pay ("$2,029 (1 day) vs $3,886 (3 days)") and Per day
+  ("+$734 a day: $2,029 vs $1,295"); "N more automatic ideas not shown (the best K by pay per day are)" under it, K the
+  number listed (the size cap can list fewer than 10, or none: "no room left next to your marked trips' ideas"); with
+  no idea, "No better-paying swap
+  in the open pot right now" (or, with no rate, how to set one) and the mark hint. The key explains auto and pay per
+  day. **The snapshot is ahead of Pako by this edit and the earlier pending ones** (1.7.12's Details tile, 1.7.14's
+  near misses card; `ha/README.md`: "Pending on Pako (1.7.15): automatic swap ideas on the Swap ideas table", one
+  section a release in release order; the snapshot, every pending edit, sha256 `6678f813...`, which Pako reads once
+  all three are applied; Pako's `be03a0a4...` stays named; `tests/test_fw171_r2.py` pins both). Applying it is a step
+  of the 1.7.15 go-live: right after the update is verified, Claude applies the card's `content` through the HA
+  connector (after the 1.7.12 and 1.7.14 edits), checks the sha256 and drops that section. Until then the old card shows the marked trips'
+  ideas exactly as 1.7.11 did, and no automatic idea.
+- **Pot card** (the portal's Watcher tab): `ideas` then `auto_ideas`, the same columns and "auto" chip, the "N more"
+  line (the number listed), the new empty text;
+  "-" for an idea with no pay figure (an older Watcher). Folds into labeled lines at 390 px; WCAG AA light and dark.
+- The schedule card is unchanged: its Ideas column is a separate system, and its swap tags (up to 2 a trip) read
+  `ideas`, so they show the marked trips' ideas as in 1.7.11 and no automatic one.
+- **Portal contract** (`PORTAL_CONTRACT.md` 4.3 and the `roles.PORTAL_EVENTS` comment): the `swap` alert's opt-in now
+  reads "no mark, no alert", and 4.3 says 1.7.15 keeps revision 6 (the fixture is unchanged): the swap ideas sensor
+  also lists automatic ideas in `auto_ideas`, which never alert (never `event/swap`, so never a `swap` event or an
+  ntfy push). Wording only: no constant, fixture or HOM change.
+- Tests: `tests/test_fw1715_auto_swap.py` (synthetic pairings, both instances): the ranking and the figures, the
+  pricing (seat, crew, package, ER list, the bid period's package), marked vs automatic, each legality rule rejecting
+  (VAC, blocked, FAR conflict, rest, the CBA 11 h, FAR unknown, a red or missing grid day, another bid period, less pay
+  a day, no rate, his own pairing, a started trip, a Tradeboard post), the real FAR screen with the trip removed, no
+  push and no draft for automatic ideas (MQTT, the portal and ntfy), the push automation, the size bound and the cap,
+  no FLICA load, each instance on its own prefix, the dashboard table (Jinja) and the pot card (Chromium); from the
+  review: marked ideas in their 1.7.11 order with the cap trimming the least soft time first, `ideas` holding no
+  automatic idea, the RO seat, the pot row's roster, his trip's schedule layover (ER), the pot's and his page's bid
+  period with no pairing files, the "N more" wording on both cards, the contract wording.
+  `tests/test_fw171_cards.py`: the pot card's swap table test follows the new columns and empty text;
+  `tests/test_fw171_r2.py`: the dashboard snapshot sha and the pending note; `tests/test_doh_settings.py` and
+  `tests/test_van_settings.py`: the contract doc's sha256 pin follows the 4.3 wording (the fixture's is unchanged).
+
 ## 1.7.14
 
 ### Near misses in the open time pot

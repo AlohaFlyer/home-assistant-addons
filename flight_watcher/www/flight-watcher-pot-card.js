@@ -16,6 +16,11 @@
 // columns as that table (Give up, For, Dates, Layover, Days, Credit, Soft, Gain, Src, Grid); on a card 560 px wide or
 // less each idea folds into labeled lines, so nothing scrolls sideways at 390 px. Read only: a new idea makes no alert
 // here (a portal event would be a contract change).
+// 1.7.15 (Ryan, Nov 17): the automatic ideas too (attribute auto_ideas: a trip not marked against the open pot, ranked
+// by pay per day; "auto" beside the trip given up; never pushed), after the marked trips' ideas (attribute ideas, in
+// the Watcher's order), and, on every idea, Pay (both trips' Pay-Gross and days) and Per day (the difference a day,
+// then both pay-per-day figures). "-" where the Watcher sent no pay figure. The "N more" line counts the automatic
+// ideas listed (review R4: the size cap can list fewer than auto_max).
 // 1.7.1 (F#119): the chip colors are this card's own variables, lighter on dark cards (Home Assistant's dark mode, which the
 // portal sets from the device), so they keep WCAG AA contrast (4.5:1) on both (the portal's dark error red is 4.497:1).
 // Usage: type: custom:flight-watcher-pot-card
@@ -79,29 +84,47 @@ class FlightWatcherPotCard extends HTMLElement {
     if (!s || s === "?") return ["mute", "FAR ?"];
     return ["bad", `FAR: ${s}`];
   }
-  // 1.7.1 (F#107): the swap ideas for the trips marked "would trade", the admin's Watcher view table in HTML
+  // 1.7.1 (F#107): the swap ideas for the trips marked "would trade", the admin's Watcher view table in HTML.
+  // 1.7.15: the automatic ones as well, with both trips' pay, days and pay per day
   _swaps() {
-    const ideas = this._a("sensor.flight_watcher_swap_ideas").ideas, marks = this._a("sensor.flight_watcher_would_trade").keys;
-    const list = Array.isArray(ideas) ? ideas : [], marked = Array.isArray(marks) ? marks : [];
+    const sw = this._a("sensor.flight_watcher_swap_ideas"), marks = this._a("sensor.flight_watcher_would_trade").keys;
+    const arr = (v) => Array.isArray(v) ? v : [];
+    const autos = arr(sw.auto_ideas).map((i) => ({ ...i, auto: true })), list = [...arr(sw.ideas), ...autos], marked = arr(marks);
     const head = `<h4>Swap ideas${list.length ? ` <span class="k">${list.length}</span>` : ""}</h4>`;
-    if (!marked.length) return `${head}<div class="k">No trips marked. On the Schedule tab, tap &#8644; beside a trip you would trade for something better: better trips for it show up here.</div>`;
+    const left = Number(sw.auto_more) || 0;
+    const more = left > 0 ? `<div class="k">${this._e(left)} ${autos.length ? "more " : ""}automatic idea${left === 1 ? "" : "s"} not shown (${autos.length
+      ? `the best ${this._e(autos.length)} by pay per day ${autos.length === 1 ? "is" : "are"}` : "no room left next to your marked trips' ideas"}).</div>` : "";
+    if (!list.length && !marked.length) {
+      const why = left > 0 ? "" : sw.priced === false ? "No automatic ideas yet: they need your pay rate (your date of hire or longevity year in Pay settings). "
+        : "No better-paying swap in the open pot right now. ";
+      return `${head}${more}<div class="k">${why}On the Schedule tab, tap &#8644; beside a trip you would trade for more soft time or credit: better trips for it show up here too.</div>`;
+    }
     const mine = [...new Set(marked.map((k) => String(k).split("|")[0]))].join(", ");
-    if (!list.length) return `${head}<div class="k">Watching for better trips than <b>${this._e(mine)}</b>. Nothing better right now.</div>`;
-    const cols = ["Give up", "For", "Dates", "Layover", "Days", "Credit", "Soft", "Gain", "Src", "Grid"];
+    if (!list.length) return `${head}<div class="k">Watching for better trips than <b>${this._e(mine)}</b>. Nothing better right now.</div>${more}`;
+    const cols = ["Give up", "For", "Dates", "Layover", "Days", "Credit", "Soft", "Pay", "Per day", "Gain", "Src", "Grid"];
     const none = (v) => v == null || v === "" || /^-?none-?$/i.test(String(v));
+    const num = (v) => typeof v === "number" && isFinite(v);
+    const usd = (v) => "$" + Math.round(Math.abs(v)).toLocaleString("en-US");
+    const dn = (n) => `${this._e(n)} day${Number(n) === 1 ? "" : "s"}`;
     const rows = list.map((i) => {
       const lay = !none(i.layover) ? this._e(i.layover) : i.turn ? `<b>${this._e(i.turn)}</b> turn` : "turn";
       const src = i.src === "T" ? "Tradeboard" : "Open time";
       const grid = i.grid_ok ? `<b class="ok">OK</b>` : this._e(String(i.grid || "?").replace(/^grid\s+/i, "") || "?");  // review r4: the cell is labeled Grid already
-      const cells = [this._e(i.for_trip), `<b>${this._e(i.pairing)}</b>`, this._e(i.dates), lay, this._e(i.days), this._e(i.credit),
-        this._e(i.soft), `<b>${this._e(i.soft_gain)}</b> soft, ${this._e(i.credit_gain)} cr`, src, grid];
+      const pay = num(i.pay) && num(i.for_pay) ? `${usd(i.pay)} (${dn(i.pay_days)}) vs ${usd(i.for_pay)} (${dn(i.for_days)})` : "-";
+      const ppd = num(i.ppd_gain) && num(i.ppd) && num(i.for_ppd)
+        ? `<b>${i.ppd_gain < 0 ? "-" : "+"}${usd(i.ppd_gain)}</b> a day: ${usd(i.ppd)} vs ${usd(i.for_ppd)}` : "-";
+      const cells = [`${this._e(i.for_trip)}${i.auto ? ` <span class="k">auto</span>` : ""}`, `<b>${this._e(i.pairing)}</b>`,
+        this._e(i.dates), lay, this._e(i.days), this._e(i.credit), this._e(i.soft), pay, ppd,
+        `<b>${this._e(i.soft_gain)}</b> soft, ${this._e(i.credit_gain)} cr`, src, grid];
       return `<tr>${cells.map((c, n) => `<td data-l="${cols[n]}">${c}</td>`).join("")}</tr>`;
     }).join("");
-    return `${head}<div class="swb"><table class="swt"><thead><tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`
+    return `${head}<div class="swb"><table class="swt"><thead><tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>${more}`
       + `<details><summary>Swap ideas key</summary><ul class="k">
-        <li>Better = soft time up 0:30 or more, or credit up 1:00 or more without losing soft time.</li>
+        <li>A trip you marked: better = soft time up 0:30 or more, or credit up 1:00 or more without losing soft time.</li>
+        <li><b>auto</b>: a trip you did not mark, against the open pot of its bid period, ranked by pay per day (Pay-Gross / days at your pay settings' rate, PWA 3.D.6 and 4.O.1). Shown when it pays more a day; never pushed.</li>
+        <li><b>Pay</b>: the new trip's Pay-Gross and days vs yours. <b>Per day</b>: the difference a day, then both pay-per-day figures.</li>
         <li>Legal with your trip gone: FAR 117 OK, 11 h home rest (PWA 10.E.1.a), no VAC or blocked day.</li>
-        <li><b>Grid</b>: the new trip must share a day with yours, and every day you move off must be green on the reserve grid; a red idea waits until it turns green.</li>
+        <li><b>Grid</b>: the new trip must share a day with yours, and every day you move off must be green on the reserve grid; a red idea for a marked trip waits until it turns green, an automatic one is listed only when it is green.</li>
         <li><b>Src</b>: Open time = the open time pot, Tradeboard = a Tradeboard pickup post.</li>
         <li>Read only: a swap goes through FLICA, done by you; nothing is filed from here.</li></ul></details>`;
   }

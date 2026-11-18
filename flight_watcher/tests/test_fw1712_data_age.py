@@ -656,10 +656,10 @@ def test_the_details_view_tile_is_the_stamp_in_the_snapshot():
 
 
 def test_version_changelog_and_readme_say_data_age():
-    # 1.7.13, then 1.7.14, went on top: the version itself is pinned in test_release_c_tickets; the 1.7.12 section
-    # stays below them
+    # 1.7.13 to 1.7.15 went on top: the version itself is pinned in test_release_c_tickets; the 1.7.12 section stays
+    # below them
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.7.14\n") and "\n## 1.7.13\n" in log and "\n## 1.7.12\n" in log and "\n## 1.7.11\n" in log
+    assert log.startswith("# Changelog\n\n## 1.7.15\n") and "\n## 1.7.14\n" in log and "\n## 1.7.13\n" in log and "\n## 1.7.12\n" in log and "\n## 1.7.11\n" in log
     top = log.split("\n## 1.7.12\n", 1)[1].split("\n## 1.7.11\n", 1)[0]
     for word in ("Data age", "stale", "very stale", "FLICA updated", "Details", "hunt", "portal"):
         assert word in top, word

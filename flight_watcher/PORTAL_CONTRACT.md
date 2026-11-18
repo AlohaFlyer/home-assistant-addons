@@ -242,12 +242,16 @@ subscriptions, entities and log lines as 1.5.0. FLICA stays read only: the porta
   revision 3 `bid_calendar` and `schedule_unread`, and revision 4 `swap`.
 - `swap` (revision 4, F#107): a new swap idea, from the Watcher's own `event/swap` publish: an open time or Tradeboard
   pickup that is better than a trip the pilot marked "would trade" and still legal once that trip is gone. The pilot
-  opts in by marking a trip (`trade/set`, the schedule card): no mark, no idea, no alert; each idea alerts once, and
-  again only if it went away and came back. Like every portal event it goes to his Alerts list, and to ntfy once he
+  opts in to this alert by marking a trip (`trade/set`, the schedule card): no mark, no alert; each idea alerts once,
+  and again only if it went away and came back. Like every portal event it goes to his Alerts list, and to ntfy once he
   saved a topic. `data`: `pairing`, `dates`, `start`, `end`, `days`, `layover`, `credit` and its own fields `for_trip`,
   `for_date` (the trip he would give up), `soft_gain`, `credit_gain` and `src` (O open time, T Tradeboard); never the
   idea's reason text, a URL or the draft of a request. Title "Swap idea: H9002 20NOV-22NOV for your H9001", view
-  `watcher` (the pot card lists the ideas), priority 3. Nothing is ever submitted: FLICA stays read only.
+  `watcher` (the pot card lists the ideas), priority 3. Nothing is ever submitted: FLICA stays read only. Flight
+  Watcher 1.7.15 keeps revision 6 (the fixture is unchanged): `sensor.<prefix>_swap_ideas` also lists automatic ideas,
+  in their own attribute `auto_ideas` (`auto: true`: a trip he did not mark against the open pot of its bid period,
+  ranked by pay per day), and those never alert: they are never published on `event/swap`, so never a `swap` event
+  or an ntfy push. Its `ideas` keeps the marked trips' ideas only.
 - `bid_calendar` (revision 3, FW-0070): the pilot's own Watcher computes the PBS bid calendar alerts on every instance
   (1.7.1; 08:00 HST the day before the pairing package publishes, 20:00 HST the night before each practice run, 24 h
   before bids close and 20:00 HST the night before they close) and publishes them on its own prefix; from revision 3

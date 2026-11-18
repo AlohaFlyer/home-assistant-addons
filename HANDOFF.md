@@ -34,6 +34,11 @@ ticket run of Nov 17 (CHANGELOG 1.7.11 has every section):
   3.D.6, 4.O.1, VAC 4:00 a day PWA 6.J.1.c) and FAR 117 with the conflict removed; information only, no FLICA load,
   off the portal (no contract change). The card under the pot table is pending on Pako (`ha/README.md`), applied with
   Ryan's yes after the 1.7.12 Details tile, once 1.7.14 is live.
+- 1.7.15 (Ryan, Nov 17, item 6): automatic swap ideas: every unmarked own trip that has not started against the open pot
+  of its bid period, ranked by pay per day (PWA 3.D.6, 4.O.1), the same legality (FAR 117 with the trip removed, the
+  11 h home rest PWA 10.E.1.a, no VAC or blocked day, a green grid); in `auto_ideas`, never pushed, never a draft or
+  the dry run. Revision 6 kept (PORTAL_CONTRACT.md 4.3 wording only, doc sha `192e175c...`). The Swap ideas table edit
+  is pending on Pako (`ha/README.md`), a step of the 1.7.15 go-live after the 1.7.12 and 1.7.14 edits.
 
 **Nov 16: 1.7.10 is contract 1 REVISION 5 and HOM 1.9.1 goes live FIRST.** Ryan: "His uploads should update the
 shared database too", and the contacts list upload on James's portal "Now, in 1.7.10". Built (commits "... a portal

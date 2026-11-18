@@ -329,7 +329,8 @@ PORTAL_TABS = ("watcher", "schedule", "pilot", "recall", "settings", "tickets")
 PORTAL_EVENTS = ("new_pairing", "rule_match", "recall_miss", "request_decided", "schedule_changed", "charter",
                  "hidden", "bid_calendar",  # 1.7.2 (revision 3): bid_calendar, the pilot's own (FW-0070)
                  # 1.7.9 (revision 4, F#107): a new swap idea for a trip the pilot marked "would trade" (trade/set, his
-                 # opt-in: no mark, no idea, no alert); the pot card on the Watcher tab lists the ideas
+                 # opt-in: no mark, no alert); the pot card on the Watcher tab lists the ideas. 1.7.15: the sensor also
+                 # lists automatic ideas (auto_ideas, auto: true), which never alert (never event/swap)
                  "swap")
 MACHINE_EVENTS = ("needs_settings", "stopped_*")  # sensor.<prefix>_state turning to one of these (stopped_ any)
 # 1.7.0 (Release C): events the Watcher makes from its own files, never from an MQTT event topic (so a publish can never
