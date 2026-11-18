@@ -633,10 +633,11 @@ def test_version_is_one_seven_two():
     # 1.7.9 (Nov 15): the pilot database shared with a portal pilot (contract 1 revision 4, with HOM 1.9.0), Ryan's two
     # in-flight follow-ups, the swap idea alert (F#107) and the clock card's Re-arm confirm (F#92)
     # 1.7.10 (Nov 15): the shared pilot sees the union id and the AI note (read only); contract 1 still revision 4
-    assert _re.search(r'^version: "1\.7\.10"$', cfg, _re.M)
-    assert _re.search(r'^VERSION = "1\.7\.10"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
+    # 1.7.14 (Nov 18): an own trip not in the package is released on its own return (schedule card); no contract change
+    assert _re.search(r'^version: "1\.7\.14"$', cfg, _re.M)
+    assert _re.search(r'^VERSION = "1\.7\.14"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.7.10\n") and "\n## 1.7.9\n" in log and "\n## 1.7.8\n" in log and "\n## 1.7.7\n" in log and "\n## 1.7.6.1\n" in log and "\n## 1.7.6\n" in log and "\n## 1.7.5\n" in log and "\n## 1.7.4\n" in log and "\n## 1.7.3\n" in log and "\n## 1.7.2\n" in log and "\n## 1.7.1.1\n" in log and "\n## 1.7.1\n" in log and "\n## 1.7.0\n" in log
+    assert log.startswith("# Changelog\n\n## 1.7.14\n") and "\n## 1.7.10\n" in log and "\n## 1.7.9\n" in log and "\n## 1.7.8\n" in log and "\n## 1.7.7\n" in log and "\n## 1.7.6.1\n" in log and "\n## 1.7.6\n" in log and "\n## 1.7.5\n" in log and "\n## 1.7.4\n" in log and "\n## 1.7.3\n" in log and "\n## 1.7.2\n" in log and "\n## 1.7.1.1\n" in log and "\n## 1.7.1\n" in log and "\n## 1.7.0\n" in log
     assert chr(0x2014) not in log
     dock = open(os.path.join(HERE, "Dockerfile"), encoding="utf-8").read()
     assert "photos.py" in dock and "bidcal.py" in dock and "pilotpdf.py" in dock and "Pillow==11.0.0" in dock
