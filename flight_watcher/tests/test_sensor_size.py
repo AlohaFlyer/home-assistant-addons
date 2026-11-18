@@ -267,6 +267,16 @@ def _fill(W, fake, tmp_path, monkeypatch):
     W.pub("last_new", _pot_row(1))
     W.pub("last_match", {"rule_id": "r1", "row": _pot_row(2), "at": W.now_iso()})
     W.publish_pilotdb(force=True)  # 1.7.8: the admin's pilot database counts (test_pilotdb_sensor_stays_under_2_kb)
+    # 1.7.14: the near misses (every instance its own): 60 pot rows of 4 days, each hidden by a week of VAC, the blocked
+    # days and one or two of the busy month's own trips (a blocker of each kind on every row, the long texts)
+    vac = {"trip": "VAC", "start": (today + timedelta(days=2)).isoformat(), "end": (today + timedelta(days=8)).isoformat(),
+           "lay": ""}
+    keep = W.S["schedule"]
+    W.S["schedule"] = {mk: dict(v, items=v["items"] + [vac]) for mk, v in keep.items()}
+    W.publish_near_misses([dict(_pot_row(i), start=f"{today + timedelta(days=3 + i % 4):%d%b}",
+                                end=f"{today + timedelta(days=6 + i % 4):%d%b}", days="4", report="06:00", arrive="09:00",
+                                dates="", fit="") for i in range(60)])
+    W.S["schedule"] = keep
     out = {}
     for t, p, _ in fake.msgs:
         if t.startswith(f"{W.T}/") and p and p[:1] == "{":
@@ -294,6 +304,9 @@ def test_every_sensor_under_12_kb_on_a_busy_month(tmp_path, monkeypatch, instanc
     over = {t: n for t, n in sizes.items() if n + HA_OWN > LIMIT}
     assert over == {}, over
     assert got["state_attr"]["role"] == ("pilot" if instance else "admin") and got["state_attr"]["features"]  # FW-0063
+    near = got["near/state"]  # 1.7.14: every row a near miss, each with a VAC, a blocked and a trip blocker
+    assert near["count"] == 60 and near["kinds"] == {"vac": 60, "blocked": 60, "trip": 60} and near["misses"]
+    assert all({"vac", "blocked", "trip"} <= {b["kind"] for b in m["blockers"]} for m in near["misses"])
     for t in W.ATTR_TRIM:  # the backstop holds every capped sensor at ATTR_MAX
         if t in got:
             assert sizes.get(t, len(json.dumps(got[t], separators=(",", ":")))) <= W.ATTR_MAX, t

@@ -138,7 +138,8 @@ live, the pilot upload automation was added, the "Ready to update" push wording 
 deleted). The dashboard snapshot matched Pako's `/config/.storage/lovelace.flight_watcher`, sha256
 `be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435` (5 views: Watcher, Working Flight, Details,
 Recall/O75, Settings; read 2026-11-14 about 17:20 HST, with the van alert settings tiles, the Working Flight view, the
-pilot lookup row and the Pilots cards below), until the pending 1.7.12 Details edit above.
+pilot lookup row and the Pilots cards below), until the pending edits above (the 1.7.12 Details tile, the 1.7.14 near
+misses card).
 
 **Changed on Pako 2026-11-14 about 17:15 HST (1.7.8, Ryan's yes "all of it"):** once 1.7.8 was live, Claude put the
 Pilots card on the dashboard through the HA connector (a JSON patch guarded by tests of the neighbouring cards): the

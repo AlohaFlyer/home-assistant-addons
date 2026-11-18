@@ -26,12 +26,17 @@ publishes what it finds to Home Assistant over MQTT.
   6.J.1.c; a dropped trip its own Pay-Gross; a blocked day nothing; every trip priced by `pay.trip_gross`, the schedule
   card's rules: PWA 3.D.6 rate for the longevity year in Pay settings, PWA 4.O.1 overrides, Extended Range +15%) and
   FAR 117 with the conflict removed (`far_screen` leaving those trips out, as the swap ideas do: legal only on a plain
-  OK, so the PWA 10.E.1.a 11 h home rest counts; a time not on file is "not known yet", never legal). Legal ones and
-  the best pay difference first; the sensor carries the first 20 (`count` says how many). Information only: it uses
-  the rows, schedule, own trips and blocked days already on hand, with no FLICA page load, and nothing is added,
-  dropped, swapped or requested. Every instance computes its own; a pilot's sensor is in his Home Assistant only: his
-  portal does not export it yet (`roles.ENTITY_OFF_PORTAL`; a new exported state is a portal contract change, left for
-  a later revision), and the card is not in his portal bundle.
+  OK, so the PWA 10.E.1.a 11 h home rest counts, and "not legal" names the trip and the rule; a time not on file, or a
+  rest short only if a release was 30 min after block-in for customs, PWA 2.19.b, is "not known yet", never legal).
+  An own trip that only shares a day with the pickup and is legal to fly with it (home in the morning, the pot turn
+  that evening) is kept, nothing given up ("same day as your H2000 Nov 10 to 11, legal to fly both"). Each trip is
+  priced from its own bid period's pairings package (Dec 1 is November's) and pilots are counted the same way on both
+  sides (CA, FO, RO and SO, never a flight attendant). Legal ones and the best pay difference first; the sensor
+  carries the first 20 (`count` says how many). Information only: it uses the rows, schedule, own trips and blocked
+  days already on hand, with no FLICA page load, and nothing is added, dropped, swapped or requested. Every instance
+  computes its own; a pilot's sensor is in his Home Assistant only: his portal does not export it yet
+  (`roles.ENTITY_OFF_PORTAL`; a new exported state is a portal contract change, left for a later revision), and the
+  card is not in his portal bundle. The card shows "?" while the sensor is unavailable or unknown, never 0.
 - One session: FLICA allows one login. When you log in elsewhere the Watcher steps aside for 30 min (doubling on
   repeat). A failed login, a layout change or anything unexpected parks it until Re-arm. On a pilot, details FLICA
   refused get no more logins from Re-arm until details are saved again in Settings; they are kept only as an

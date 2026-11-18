@@ -209,7 +209,9 @@ def test_far_not_legal_and_unknown(tmp_path, monkeypatch):
     W = _w(tmp_path, monkeypatch)
     got = _by(W.near_misses(_rows()))
     e = got["H9005"]  # 6:15 after H1019's release (FAR 117.25(e) 10 h)
-    assert e["legal"] is False and e["legal_text"] == "not legal: Rest 6:15 before" and "117.25(e)" in e["far_why"]
+    assert e["legal"] is False and e["far"] == "Rest 6:15 before" and "117.25(e)" in e["far_why"]
+    # review: the visible text names the neighbouring trip and the rule (a title tooltip is out of reach on a phone)
+    assert e["legal_text"] == "not legal: rest 6:15 before (H1019 Nov 19), under 10 h (FAR 117.25(e))"
     i = got["H9007"]  # FAR met, 10:30 at home: under the PWA 10.E.1.a 11 h (swap_scan's rule: plain OK only)
     assert i["legal"] is False and i["far"] == "OK (CBA rest 10:30)"
     assert i["legal_text"] == "not legal: CBA rest 10:30, under the 11 h home rest (PWA 10.E.1.a)"
@@ -230,6 +232,141 @@ def test_line_records_leaves_out_every_trip_given_up():
     assert lab(RC.line_records(months, {}, d, d, date(2026, 11, 2), "H1002|2026-11-11")) == ["H1001 Nov 10", "H1003 Nov 12"]
     assert lab(RC.line_records(months, {}, d, d, date(2026, 11, 2), ("H1001|2026-11-10", "H1002|2026-11-11"))) == [
         "H1003 Nov 12"]
+
+
+def test_a_customs_maybe_short_home_rest_is_not_known_not_illegal(tmp_path, monkeypatch):
+    """Review F4: far.screen's 'OK (CBA rest 10:50?)' (FAR met; the 11 h home rest short only if H1019's release was
+    30 min after block-in for customs, PWA 2.19.b) is legality()'s '?': not known yet, never not legal."""
+    W = _w(tmp_path, monkeypatch)
+    row = _row("H9101", "20Nov", credit="6:00", blk="5:00", report="10:50", arrive="16:00")
+    assert W.far_screen(dict(row))["far"] == "OK (CBA rest 10:50?)"
+    m = _by(W.near_misses([row]))["H9101"]
+    assert m["far"] == "OK (CBA rest 10:50?)" and m["legal"] is None
+    assert m["legal_text"].startswith("not known yet: ") and "not legal" not in m["legal_text"]
+    assert "PWA 2.19.b" in m["legal_text"] and "H1019 Nov 19" in m["legal_text"]
+    # a definite shortfall (10:30 at home) stays not legal
+    i = _by(W.near_misses([_row("H9007", "20Nov", report="10:15", arrive="16:00")]))["H9007"]
+    assert i["legal"] is False and i["far"] == "OK (CBA rest 10:30)"
+    # sorted with the other not known ones, before the not legal ones
+    order = [m["pairing"] for m in W.near_misses([_row("H9007", "20Nov", report="10:15", arrive="16:00"), dict(row)])]
+    assert order == ["H9101", "H9007"]
+
+
+def _same_day(W, h2100=False):
+    """His own H2000 Nov 10 to 11, home 06:00 Nov 11; with h2100, H2100 Nov 12 reporting 10:00 too."""
+    W.S["schedule"]["2026-11"]["items"].append({"trip": "H2000", "start": "2026-11-10", "end": "2026-11-11", "lay": "LAX"})
+    W.S["own_trips"]["H2000|2026-11-10"] = {"report": "18:00", "last_arr": "06:00", "blk": "9:00", "credit": "12:00",
+                                            "seat": "FO"}
+    if h2100:
+        W.S["schedule"]["2026-11"]["items"].append({"trip": "H2100", "start": "2026-11-12", "end": "2026-11-12", "lay": ""})
+        W.S["own_trips"]["H2100|2026-11-12"] = {"report": "10:00", "last_arr": "16:00", "blk": "5:00", "credit": "6:30",
+                                                "seat": "FO"}
+
+
+def test_a_trip_on_the_same_day_but_legal_to_keep_gives_up_nothing(tmp_path, monkeypatch):
+    """Review F1: a pot turn the evening he lands home in the morning shares a calendar day with his trip (the pot's
+    fit tag hides it) but is legal with the trip kept (13:45 rest, FAR 117.25(e), PWA 10.E.1.a): he flies both, so
+    nothing is given up and the whole trip pay is the difference."""
+    W = _w(tmp_path, monkeypatch)
+    _same_day(W)
+    row = _row("H9100", "11Nov", credit="6:00", blk="5:00", report="20:00", arrive="23:30")
+    assert W.far_screen(dict(row))["far"] == "OK"  # legal with H2000 kept
+    m = _by(W.near_misses([row]))["H9100"]
+    assert [(b["kind"], b["what"], b["fix"], b["credit"], b["pay"], b["keep"]) for b in m["blockers"]] == [
+        ("trip", "same day as your H2000 Nov 10 to 11, legal to fly both", "keep H2000 and fly both", "0:00", 0.0, True)]
+    assert m["pay_trip"] == round(6 * RATE, 2) == 1554.24
+    assert m["diff"] == 1554.24 and m["diff_text"] == "+$1,554" and m["hours"] == "+6:00"
+    assert (m["far"], m["legal"], m["legal_text"]) == ("OK", True, "legal")
+    # one that really overlaps his trip's duty is still a drop (H9003 inside H3620)
+    c = _by(W.near_misses(_rows()))["H9003"]["blockers"][0]
+    assert c["fix"] == "drop or swap H3620" and not c.get("keep") and c["pay"] == round(15.5 * RATE, 2)
+
+
+def test_two_own_trips_keep_the_legal_one_and_drop_the_other(tmp_path, monkeypatch):
+    """Review F1: a red-eye the night he lands home (legal with H2000 kept) whose return overlaps H2100's duty: only
+    H2100 is given up, and FAR 117 is checked with H2000 in the line."""
+    W = _w(tmp_path, monkeypatch)
+    _same_day(W, h2100=True)
+    row = _row("H9200", "11Nov", "12Nov", credit="10:00", blk="9:00", report="21:30", arrive="14:00", lay="LAX")
+    assert W.far_screen(dict(row), exclude=("H2100|2026-11-12",))["far"] == "OK"
+    assert W.far_screen(dict(row), exclude=("H2000|2026-11-10",))["far"] == "Conflict"
+    m = _by(W.near_misses([row]))["H9200"]
+    got = [(b["key"], b["fix"], b.get("keep", False)) for b in m["blockers"]]
+    assert got == [("H2000|2026-11-10", "keep H2000 and fly both", True), ("H2100|2026-11-12", "drop or swap H2100", False)]
+    assert m["blockers"][1]["credit"] == "6:30" and m["blockers"][1]["pay"] == round(6.5 * RATE, 2)
+    assert m["diff"] == round(10 * RATE - 6.5 * RATE, 2) and m["hours"] == "+3:30" and m["legal"] is True
+
+
+def test_a_same_day_trip_that_is_not_the_problem_is_kept(tmp_path, monkeypatch):
+    """Review F1: the evening turn is not legal for another reason (10:15 at home before H2100's report the next
+    morning, PWA 10.E.1.a), exactly as not legal with H2000 dropped: H2000 is not what stands in the way, so it is kept
+    (nothing given up) and the reason names H2100. A '?' result never keeps a trip (a time not on file)."""
+    W = _w(tmp_path, monkeypatch)
+    _same_day(W, h2100=True)
+    row = _row("H9100", "11Nov", credit="6:00", blk="5:00", report="20:00", arrive="23:30")
+    assert W.far_screen(dict(row)) == W.far_screen(dict(row), exclude=("H2000|2026-11-10",))
+    m = _by(W.near_misses([row]))["H9100"]
+    assert [(b["what"], b["fix"], b["pay"], b.get("keep")) for b in m["blockers"]] == [
+        ("same day as your H2000 Nov 10 to 11, no conflict with it", "keep H2000", 0.0, True)]
+    assert m["legal"] is False and m["far"] == "OK (CBA rest 10:15)" and "H2100" in m["far_why"]
+    assert m["diff_text"] == "+$1,554"
+    # the pickup's report not read yet: '?' with and without H2000, and H2000 stays in the way
+    u = _by(W.near_misses([_row("H9102", "11Nov", report="")]))["H9102"]
+    assert u["legal"] is None and u["blockers"][0]["fix"] == "drop or swap H2000" and not u["blockers"][0].get("keep")
+
+
+def _pkg_row(pid, days, credit, block, route, crew):
+    return [pid, "08:00", "09:00", "15:00", 0, 300, route, credit, "10h00", days, block, crew]
+
+
+def _pkg(www, month, start, end, rows):
+    from test_crew_index import COLS
+    www.mkdir(exist_ok=True)
+    (www / f"pairings_{month}.json").write_text(json.dumps({"month": month, "source": "synthetic", "start": start,
+                                                             "end": end, "cols": COLS, "rows": rows}))
+
+
+def test_a_trip_on_dec_1_is_priced_from_its_bid_period(tmp_path, monkeypatch):
+    """Review F2: Dec 1 belongs to November's bid period (1.7.11, bid_period_key): the pickup and a dropped own trip on
+    Dec 1 are priced from November's package and November's schedule versions, never December's same-named pairings."""
+    W = _w(tmp_path, monkeypatch)
+    www = tmp_path / "www"
+    _pkg(www, "2026-11", "2026-11-01", "2026-12-01",
+         [_pkg_row("H9200", "D1", "10h00", "8h00", "HNL-LAX-HNL", "CA01FO01"),
+          _pkg_row("H9300", "D1", "12h00", "10h00", "HNL-LAX-HNL", "CA01FO01")])
+    _pkg(www, "2026-12", "2026-12-02", "2026-12-31",
+         [_pkg_row("H9200", "5", "14h00", "12h00", "HNL-SYD-HNL", "CA02FO02"),
+          _pkg_row("H9300", "5", "20h00", "18h00", "HNL-SYD-HNL", "CA02FO02")])
+    assert W.bid_period_key("2026-12-01") == "2026-11"
+    W.S["blocked_days"] = ["2026-12-01"]
+    row = _row("H9200", "01Dec", credit="10:00", blk="8:00", report="08:00", arrive="15:00", lay="LAX")
+    m = W.near_misses([row])[0]
+    assert m["pay_trip"] == round(PAY.trip_gross(10.0, 8.0, "CA01FO01", "LAX", "H9200|2026-12-01", "FO", RATE), 2) == 2590.40
+    # his own H9300 on Dec 1, on November's schedule; its record has no credit, November's schedule versions do
+    W.S["blocked_days"] = []
+    W.S["schedule"]["2026-11"]["items"].append({"trip": "H9300", "start": "2026-12-01", "end": "2026-12-01", "lay": "LAX"})
+    W.S["own_trips"]["H9300|2026-12-01"] = {"report": "08:00", "last_arr": "15:00", "seat": "FO"}
+    W.DB.put("sched_versions:2026-11", [{"ver": "11.001", "at": "2026-11-01T10:00:00+00:00",
+                                         "items": [{"trip": "H9300", "start": "2026-12-01"}],
+                                         "trips": {"H9300|2026-12-01": {"credit": "12:30", "blk": "10:00", "seat": "FO"}}}])
+    b = W.near_misses([dict(row)])[0]["blockers"]
+    assert [(x["key"], x["credit"], x["pay"]) for x in b] == [("H9300|2026-12-01", "12:30", round(12.5 * RATE, 2))]
+
+
+def test_pilots_are_counted_the_same_on_both_sides(tmp_path, monkeypatch):
+    """Review F3: the PWA 4.O.1 override and the Extended Range +15% count pilots only (CA, FO, RO, SO: pot.PILOT_SEATS,
+    crewidx.PILOT_POS), never flight attendants, on the pickup and on a dropped own trip alike."""
+    W = _w(tmp_path, monkeypatch)
+    W.S["own_trips"]["H3620|2026-11-25"]["crew"] = ["CA Doe, Jane (10001)", "FO Roe, Rick (10002)", "RO Poe, Pat (10003)",
+                                                    "FA Moe, May (20001)", "FA Low, Lee (20002)"]
+    row = _row("H9003", "26Nov", credit="7:00", blk="6:00", report="07:00", arrive="13:00")
+    row["crew"] = [("CA", "Doe, Jane"), ("FO", "OPEN"), ("SO", "Poe, Pat"), ("FA", "Moe, May"), ("FA", "Low, Lee")]
+    m = _by(W.near_misses([row]))["H9003"]
+    three = PAY.trip_gross(15.5, 12.0, 3, "", "H3620|2026-11-25", "FO", RATE)  # FO $3.00 on a 3-pilot crew, no ER
+    assert m["blockers"][0]["pay"] == round(three, 2) == 4051.12
+    assert m["pay_trip"] == round(PAY.trip_gross(7.0, 6.0, 3, "", "H9003|2026-11-26", "FO", RATE), 2) == 1831.28
+    assert W._near_pilots(row) == 3 and W._near_pilots({"crew": [["CA", "A"], ["FO", "B"], ["SO", "C"], ["FA", "D"]]}) == 3
+    assert m["diff"] == round(1831.28 - 4051.12, 2)
 
 
 # ---------------------------------------------------------------- order, information only, the sensor
@@ -350,6 +487,14 @@ def test_the_watcher_view_shows_the_card_under_the_pot_table():
     sec = sec[:sec.index("\n## ", 5)]
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() in sec
     assert "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" in readme  # Pako's, until the release
+    # review F4: the current-state paragraph says the snapshot matched Pako until this pending edit and is now one
+    # card ahead (the 1.7.2 wording), never that it still matches be03a0a4...
+    cur = readme[readme.index("The 23 automations here match Pako's"):]
+    cur = cur[:cur.index("\n\n")]
+    assert "The dashboard snapshot matches Pako's" not in readme
+    assert "The dashboard snapshot matched Pako's" in cur and "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" in cur
+    assert "until the pending near misses card edit (above)" in cur and "ahead of Pako by that edit alone" in cur
+    assert hashlib.sha256(text.encode("utf-8")).hexdigest() in cur
     assert "Ryan" in sec and "yes" in sec and "Undo" in sec
     assert chr(0x2014) not in readme and chr(0x2014) not in text
 
@@ -437,7 +582,7 @@ def test_render_the_card_at_390(near_payload, theme):
             assert "overlaps your H3620 Nov 25 to 27" in c and "drop or swap H3620" in c and "-$2,202" in c
             assert "-15:30" in c and "-$4,015" in c
             e = next(x for x in got["items"] if x.startswith("H9005"))
-            assert "not legal: Rest 6:15 before" in e
+            assert "not legal: rest 6:15 before (H1019 Nov 19), under 10 h (FAR 117.25(e))" in e
             h = next(x for x in got["items"] if x.startswith("H9006"))
             assert "not known yet" in h
             con = pg.evaluate("window.fwContrast(window.root().host)")
@@ -446,6 +591,78 @@ def test_render_the_card_at_390(near_payload, theme):
             assert pg.evaluate(READ_JS)["open"] is True
             if SHOTS:
                 pg.screenshot(path=os.path.join(SHOTS, f"item5_near_390_{theme}_open.png"), full_page=True)
+            pg.close()
+        finally:
+            b.close()
+
+
+UNKNOWN_JS = """() => { const r = window.root(), d = r.querySelector('details.nm');
+  return {open: d.open, badge: r.querySelector('.n').textContent.trim(),
+          summary: d.querySelector('summary').innerText.replace(/\\s+/g, ' ').trim(),
+          text: r.textContent.replace(/\\s+/g, ' ')}; }"""
+
+
+@pytest.mark.parametrize("state", ["unavailable", "unknown"])
+def test_render_an_unavailable_sensor_as_not_known_never_zero(near_payload, state):
+    """Review: HA drops the attributes of a sensor whose Watcher is offline (every update or restart): the badge reads
+    '?', never 0, and the folded summary says the Watcher is not answering; a live card that goes unavailable too."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    from test_cards import _chromium
+    down = {"state": state, "attributes": {"friendly_name": "Near misses", "icon": "mdi:calendar-remove"},
+            "last_updated": "2026-11-02T19:05:00+00:00"}
+    with sync_api.sync_playwright() as p:
+        b = _chromium(p)
+        if not b:
+            pytest.skip("no Chromium for Playwright")
+        try:
+            pg = b.new_page(viewport={"width": 390, "height": 844})
+            pg.set_content(_page(near_payload, LIGHT, False))
+            assert pg.evaluate(UNKNOWN_JS)["badge"] == "7"
+            pg.evaluate("(s) => { window.H = {...window.H, states: {...window.H.states, "
+                        "'sensor.flight_watcher_near_misses': s}}; "
+                        "document.querySelector('flight-watcher-near-card').hass = window.H; }", down)
+            got = pg.evaluate(UNKNOWN_JS)
+            assert got["badge"] == "?" and got["open"] is False
+            assert "not answering" in got["summary"] and "No pot trip is hidden" not in got["text"]
+            assert "near misses show again when it is back" in got["text"]
+            if SHOTS:
+                pg.locator("flight-watcher-near-card details.nm > summary").click()
+                pg.screenshot(path=os.path.join(SHOTS, f"item5_near_390_light_{state}.png"), full_page=True)
+            pg.close()
+            pg = b.new_page(viewport={"width": 390, "height": 844})  # no sensor at all: '?' and a note in the summary
+            pg.set_content(_page(near_payload, LIGHT, False, eid="sensor.other"))
+            got = pg.evaluate(UNKNOWN_JS)
+            assert got["badge"] == "?" and "not published yet" in got["summary"]
+            if SHOTS:
+                pg.screenshot(path=os.path.join(SHOTS, "item5_near_390_light_no_sensor.png"), full_page=True)
+            pg.close()
+        finally:
+            b.close()
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_the_key_stays_open_and_keeps_focus_across_an_update(near_payload, theme):
+    """Review: a new near/state payload while the pilot reads "How this is figured" leaves it open and keeps the
+    keyboard focus on its summary (the card updates its parts; it never rebuilds itself)."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    from test_cards import _chromium
+    js = """() => { const r = window.root(), k = r.querySelector('details.key');
+      return {nm: r.querySelector('details.nm').open, key: k.open, focus: r.activeElement === k.querySelector('summary'),
+              rows: r.querySelectorAll('.m').length}; }"""
+    with sync_api.sync_playwright() as p:
+        b = _chromium(p)
+        if not b:
+            pytest.skip("no Chromium for Playwright")
+        try:
+            pg = b.new_page(viewport={"width": 390, "height": 844})
+            pg.set_content(_page(near_payload, LIGHT if theme == "light" else DARK, theme == "dark"))
+            pg.locator("flight-watcher-near-card details.nm > summary").click()
+            pg.locator("flight-watcher-near-card details.key > summary").click()
+            assert pg.evaluate(js) == {"nm": True, "key": True, "focus": True, "rows": 7}
+            pg.evaluate("window.again()")
+            assert pg.evaluate(js) == {"nm": True, "key": True, "focus": True, "rows": 7}
+            pg.keyboard.press("Enter")  # the focused key summary still answers the keyboard: it folds
+            assert pg.evaluate(js)["key"] is False
             pg.close()
         finally:
             b.close()
