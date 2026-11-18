@@ -48,6 +48,10 @@ ticket run of Nov 17 (CHANGELOG 1.7.11 has every section):
   pot card shows a "Commutable KOA LAS" chip. No FLICA load, no contract change (James's portal gets it as signed).
   The HA Watcher view's `pot_table` macro (`flight_watcher.jinja`, not in git) and its Key line are a Pako edit at the
   1.7.17 go-live, with Ryan's yes (custom templates reload).
+- 1.7.18 (Ryan, Nov 17): cards only. The uploads card's On file list folds under its heading (folded by default, kept
+  per browser, the Watcher's own count when the sensor list is cut); the schedule card's version lock is a switch (an
+  SVG lock, the word Lock, a track and knob, On = locked, role switch, 44 px; its own first line on a phone, the Data
+  age stamp after Now). Same lock storage and taps. No Watcher, sensor or contract change, nothing pending on Pako.
 
 **Nov 16: 1.7.10 is contract 1 REVISION 5 and HOM 1.9.1 goes live FIRST.** Ryan: "His uploads should update the
 shared database too", and the contacts list upload on James's portal "Now, in 1.7.10". Built (commits "... a portal

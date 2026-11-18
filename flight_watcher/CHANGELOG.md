@@ -1,5 +1,72 @@
 # Changelog
 
+## 1.7.18
+
+Two card changes Ryan asked for on Nov 17, 2026 (screenshots of Settings > Monthly files and of the schedule card on a
+Samsung phone). Cards only: no Watcher, sensor, contract or FLICA change.
+
+### The On file list folds
+
+Ryan, Nov 17: "collapse the on file list". The uploads card (Settings, heading "Monthly files") listed every file kept,
+one row each, above Pilot uploads, Dates of hire and Pilot contacts.
+- The file rows fold under their heading, folded by default. The heading is a button (44 px high, aria-expanded,
+  aria-controls, a chevron that turns down when open) that says "On file (6)" and, while folded, one line on what is
+  there: "6 files, newest Award Dec 2026, uploaded Nov 14" (the newest upload, its HST day, and "1 not read" in red when
+  a file has no text copy). A tap, Enter or Space opens or folds it; the focus stays on the heading.
+- Open or folded is kept per browser (localStorage `flight_watcher_onfile_open`; a pilot's copy keeps its own,
+  `flight_watcher_<name>_onfile_open`). Blocked storage (a private window) folds it at first and still opens it.
+  Refresh, and every sensor update, leave it as it is; the count and the line follow the new list. More than 6 files
+  still fold the rest under "n older" inside.
+- The Wanted line (a pairings package the crew index needs), "Nothing uploaded yet", an error, and the sections after
+  the list stay in view: Pilot uploads (its Approve and Reject), Dates of hire and Pilot contacts are sections of their
+  own (their own headings), not rows of the list. The Refresh button is 44 px high too.
+- While there is nothing to fold (the list loading, an error, "Nothing uploaded yet.") the heading is plain text: no
+  button, no aria-expanded, no aria-controls pointing at a list that is not there, no arrow, and a tap does nothing.
+  The button comes back, open or folded as kept, once there is a list (review AB-1).
+- The count in the heading and in the folded line is the Watcher's (the sensor's `count`), not the rows the sensor
+  carries: the Watcher cuts the uploads sensor's list at its 12000 byte cap, the oldest files first, and kept the full
+  number beside it. A card that reads the sensor (a user who is not an admin, a pilot's copy) said "On file (83)" for
+  102 files; it now says "On file (102)" and the open list ends with "19 older files not listed here (more than the
+  sensor can carry)." A count that is not a whole number above the rows listed is not used (review AB-2).
+- The portal has no copy of this card (the admin's uploads card stays off the portal; a pilot uploads with the pilot
+  uploads card, unchanged). A second pilot's dashboard copy (`flight-watcher-uploads-card-<name>`) folds the same.
+
+### The version lock is a switch
+
+Ryan, Nov 17: "The lock does not display well on James' samsung... its not obvious when it is locked or unlocked...
+Can we try a toggle Show the lock icon, and then an on/off toggle where locked is on". The lock at the top left of the
+schedule card was an emoji (each phone draws its own) whose only change was the shackle.
+- Now: a lock icon drawn as an inline SVG (shut, or the shackle lifted when unlocked; the same on every phone), the
+  word Lock, a switch track with its knob, and the word On (locked) or Off. On = locked, the default. On: a filled blue
+  track with the knob at the right and On in bold; Off: an outlined grey track with the knob at the left and Off. The
+  state never rests on colour alone (the knob's side and the word), and the track, knob and edge keep 3:1 against the
+  card in light and dark (WCAG 1.4.11); the text keeps AA.
+- One button (role switch, aria-checked, named "Lock schedule marks", 44 px), with a 3 px focus ring; a tap, Enter or
+  Space flips it and the redraw keeps the focus on it. The title is the same ("Locked: ... cannot be changed by a tap.
+  Tap to unlock." / "Unlocked: taps change .... Tap to lock."), and so are the taps it freezes and the storage
+  (localStorage `flight_watcher_lock`, "0" = Off, anything else or nothing = On; a pilot's copy its own key).
+- A refused tap says "Settings are locked: turn the Lock switch at the top left Off to change availability, trade or
+  drop marks." The Key's Day row says how the switch works.
+- On a phone (700 px or less) the switch has the header's first line to itself, so the month's arrows, title and Now
+  stay together on the next line (at 360 and 390 px the wider switch would otherwise split them); the Data age stamp
+  (1.7.12) follows Now, on a line of its own at 360 and 390 px. A wide card keeps one line, as before. Hover shading only with a mouse (no grey box left after a tap on a phone).
+- The pilot card has no lock; every copy of the schedule card (a second pilot's, the portal's) gets the switch.
+
+### Tests
+
+`tests/test_fw1718_ui.py` (Chromium, synthetic files and pairings, "pilot2"): A folded by default with the count and the
+line, opens and is remembered (another copy, a reload), Enter and Space with the focus kept, Refresh on the admin's
+card (ingress) and a user's (sensor) keeps it, the empty and error states in view, a pilot's copy under its own key,
+blocked storage, 390 px light and dark (no sideways scroll, AA text), the heading plain text while loading, on an error
+and with nothing on file (no button, aria-expanded, dangling aria-controls or arrow, Chromium's accessibility tree
+included) and a button again once a list comes, and the Watcher's count over a cut sensor list (a synthetic sensor, and
+120 synthetic files through watcher.cap_attrs). B: the switch reflects and toggles the lock
+(aria-checked, the knob's side, On / Off, the SVG, no emoji in any card), the title, the refused tap and the trade tap,
+Space and Enter with the focus ring, the stored value as before (and blocked storage), the Key, the portal's pilot2
+copy, and renders at 390 px and on an Android-like phone (360 x 780 at 3x), light and dark: on its own first line, the
+arrows, month and Now together, 44 px, AA text, 3:1 for the track, knob and edge. README: the On file fold and the
+lock switch.
+
 ## 1.7.17
 
 ### Commutable flag on pot trips
