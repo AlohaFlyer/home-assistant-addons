@@ -290,6 +290,9 @@ is added to that Settings view's `visible` list. The files are base-wide: every 
   read ("6 files, newest Award Dec 2026, uploaded Nov 14"). A tap (or Enter or Space) on the heading opens them; open or
   folded is kept for that browser (localStorage `flight_watcher_onfile_open`, a pilot's copy its own) and Refresh
   leaves it as it is. The Wanted line, Pilot uploads (Approve, Reject), Dates of hire and Pilot contacts stay in view.
+  While there is nothing to fold (loading, an error, nothing on file) the heading is plain text, with no button or
+  arrow. The count is the Watcher's: when the uploads sensor's list is cut at its size cap (the oldest go first), a
+  card that reads the sensor still says "On file (8)" and the open list ends with "2 older files not listed here".
 - How it reaches the app, picked from the signed-in user:
   - **An admin**: the app's Web UI, the way Home Assistant's own app panels do. The card asks the Supervisor (WebSocket
     `supervisor/api`) for the app's ingress address (`/addons/<slug>/info`, card option `slug`, default

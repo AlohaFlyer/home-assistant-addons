@@ -29,7 +29,10 @@
    is there ("6 files, newest Award Dec 2026, uploaded Nov 14", and how many were not read). Open or folded is kept per
    browser (localStorage FW_UP_OPEN_KEY, a pilot's copy under its own key; nothing kept where storage is blocked) and
    Refresh leaves it as it is. The Wanted line, the error and "Nothing uploaded yet" stay in view, and so do Pilot
-   uploads (its Approve and Reject), Dates of hire and Pilot contacts: sections of their own, not rows of the list. */
+   uploads (its Approve and Reject), Dates of hire and Pilot contacts: sections of their own, not rows of the list.
+   While there are no rows to fold (loading, an error, nothing on file) the heading is plain text: no button, no
+   aria-expanded, no chevron. The count is the Watcher's (count: the sensor's list is cut at its byte cap, the oldest
+   first) and the open list says how many older ones it cannot show. */
 const FW_UP_SLUG = ["43b22650", "flight", "watcher"].join("_");  // in parts: a second pilot's copy keeps the one app's slug
 const FW_UP_KINDS = [["award", "Monthly award"], ["pairings", "Pairings package"], ["seniority", "Pilot seniority list"], ["contacts", "Pilot contact list"]];
 const FW_UP_LABEL = { award: "Award", pairings: "Pairings package", seniority: "Seniority list", contacts: "Contact list", other: "Other file" };
@@ -222,14 +225,17 @@ class FlightWatcherUploadsCard extends HTMLElement {
       pilot's Watcher reads them: your starting schedule, trip details, other pilots' dates of hire, and a call, text and
       mail link on a looked-up pilot. Nothing is sent to FLICA.</div>${how}
       ${this._formHtml()}
-      <div class="hd"><button type="button" class="oft" data-oft aria-expanded="${this._open ? "true" : "false"}" aria-controls="fwup-ofl">${FW_UP_CHEV}<span class="ofw"><b>On file<span data-ofn></span></b> <span class="u ofs" data-ofs hidden></span></span></button><button type="button" class="g" data-reload>Refresh</button></div>
+      <div class="hd" data-hd>${this._headHtml(false)}<button type="button" class="g" data-reload>Refresh</button></div>
       <div data-list>${this._listHtml(null)}</div><div data-pilot></div><div data-sen></div></ha-card>`;
     const kind = this._q("[data-kind]");
     if (kind) kind.addEventListener("change", () => this._kind());
     const up = this._q("[data-up]");
     if (up) up.addEventListener("click", () => this._upload());
-    const ot = this._q("[data-oft]");  // 1.7.18: open or fold the On file rows, kept for this browser
-    if (ot) ot.addEventListener("click", () => { this._open = !this._open; fwUpOpenSet(this._open); this._fold(); });
+    const hd = this._q("[data-hd]");  // 1.7.18: open or fold the On file rows (a button only while they exist), kept for this browser
+    if (hd) hd.addEventListener("click", (ev) => {
+      if (!ev.target || typeof ev.target.closest !== "function" || !ev.target.closest("[data-oft]")) return;
+      this._open = !this._open; fwUpOpenSet(this._open); this._fold();
+    });
     const rl = this._q("[data-reload]");
     if (rl) rl.addEventListener("click", () => (this._mode === "admin" ? this._load() : this._fromSensor(true)));
     const pl = this._q("[data-pilot]");
@@ -290,7 +296,8 @@ class FlightWatcherUploadsCard extends HTMLElement {
       .oft .chev{flex:none;width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}
       .oft[aria-expanded="true"] .chev{transform:rotate(90deg)}
       .oft .ofw{display:flex;flex-direction:column;min-width:0}.oft b{font-weight:600}.oft .ofs{margin-top:1px}
-      @media (hover:hover){.oft:hover{background:rgba(0,0,0,.05)}:host([dark]) .oft:hover{background:rgba(255,255,255,.08)}}
+      .hd div.oft{margin-left:0;padding-left:0}
+      @media (hover:hover){button.oft:hover{background:rgba(0,0,0,.05)}:host([dark]) button.oft:hover{background:rgba(255,255,255,.08)}}
       .hd button.g{min-height:44px;padding:4px 14px;flex:none}
       button:focus-visible{outline:3px solid var(--fwup-ring);outline-offset:2px}
       .f{border-top:1px solid var(--divider-color,#ccc);padding:5px 0}
@@ -325,8 +332,9 @@ class FlightWatcherUploadsCard extends HTMLElement {
     if (this._err) return `<div class="err">${e(this._err)}</div>`;
     if (!d) return `<div class="u">Loading...</div>`;
     const files = Array.isArray(d.files) ? d.files.slice() : [];
-    const want = this._wantHtml(d);
-    if (!files.length) return want + `<div class="u">Nothing uploaded yet.</div>`;
+    const want = this._wantHtml(d), cut = this._total(d) - files.length;  // review AB-2: rows the sensor could not carry
+    const more = (old) => `<div class="u" data-ofmore>${cut} ${old}file${cut === 1 ? "" : "s"} not listed here (more than the sensor can carry).</div>`;
+    if (!files.length) return want + (cut > 0 ? more("") : `<div class="u">Nothing uploaded yet.</div>`);
     const order = { award: 0, pairings: 1, seniority: 2, contacts: 3 };
     const key = (f) => (f.kind === "award" || f.kind === "pairings" ? `1${f.month}` : `0${f.day || ""}`);
     files.sort((a, b) => (key(a) < key(b) ? 1 : key(a) > key(b) ? -1 : (order[a.kind] ?? 3) - (order[b.kind] ?? 3)));
@@ -340,11 +348,29 @@ class FlightWatcherUploadsCard extends HTMLElement {
     const top = files.slice(0, FW_UP_SHOW).map(row).join(""), rest = files.slice(FW_UP_SHOW);
     // 1.7.18: the rows fold under the On file heading (its button opens them); the Wanted line stays above
     return want + `<div class="ofl" id="fwup-ofl" data-ofl${this._open ? "" : " hidden"}>` + top
-      + (rest.length ? `<details><summary>${rest.length} older</summary>${rest.map(row).join("")}</details>` : "") + `</div>`;
+      + (rest.length ? `<details><summary>${rest.length} older</summary>${rest.map(row).join("")}</details>` : "")
+      + (cut > 0 ? more("older ") : "") + `</div>`;
+  }
+  // review AB-2: the Watcher's count of files on file (count, from publish_uploads); the sensor's list may hold fewer, as
+  // cap_attrs cuts the oldest at its byte cap. A count that is not a whole number above the rows listed is not used.
+  _total(d) {
+    const n = Array.isArray(d && d.files) ? d.files.length : 0, c = Number(d && d.count);
+    return Number.isInteger(c) && c > n ? c : n;
+  }
+  // review AB-1: the heading is a disclosure button only while there are rows to fold; else plain text (no button, no
+  // aria-expanded or aria-controls, no chevron). The count and the one line sit in either.
+  _headHtml(fold) {
+    const inner = `<span class="ofw"><b>On file<span data-ofn></span></b> <span class="u ofs" data-ofs hidden></span></span>`;
+    return fold ? `<button type="button" class="oft" data-oft aria-expanded="${this._open ? "true" : "false"}" aria-controls="fwup-ofl">${FW_UP_CHEV}${inner}</button>`
+      : `<div class="oft" data-ofp>${inner}</div>`;
+  }
+  _head(fold) {  // swaps the heading only when it changes kind, so a focused button stays focused through a refresh
+    const h = this._q("[data-oft]") || this._q("[data-ofp]");
+    if (h && typeof h.hasAttribute === "function" && h.hasAttribute("data-oft") !== fold) h.outerHTML = this._headHtml(fold);
   }
   // 1.7.18: the folded list in one line: how many, the newest upload and its HST day, and how many were not read
-  _sumHtml(files) {
-    const e = (s) => this._e(s), n = files.length;
+  _sumHtml(files, total) {
+    const e = (s) => this._e(s), n = Math.max(files.length, +total || 0);
     let top = null, at = -Infinity;
     for (const f of files) { const t = Date.parse(String(f.uploaded_at || "")); if (!isNaN(t) && t > at) { at = t; top = f; } }
     const per = (f) => (f.kind === "award" || f.kind === "pairings" ? fwUpMonth(f.month) || f.month : f.kind === "other" ? f.name : "");
@@ -395,11 +421,14 @@ class FlightWatcherUploadsCard extends HTMLElement {
   _render() {
     const list = this._q("[data-list]"), sen = this._q("[data-sen]"), pl = this._q("[data-pilot]");
     if (list) list.innerHTML = this._listHtml(this._data);
-    // 1.7.18: the heading's count and its one line (folded) over what is on file; nothing while loading or on an error
-    const files = this._data && !this._err && Array.isArray(this._data.files) ? this._data.files : [];
+    // 1.7.18: the heading's count and its one line (folded) over what is on file; nothing while loading or on an error.
+    // A button over the rows when there are rows, else plain text (review AB-1); the count is the Watcher's (AB-2).
+    const d = this._data && !this._err ? this._data : null;
+    const files = d && Array.isArray(d.files) ? d.files : [], total = d ? this._total(d) : 0;
+    this._head(!!this._q("[data-ofl]"));
     const n = this._q("[data-ofn]"), sum = this._q("[data-ofs]");
-    if (n) n.textContent = files.length ? ` (${files.length})` : "";
-    if (sum) sum.innerHTML = files.length ? this._sumHtml(files) : "";
+    if (n) n.textContent = total ? ` (${total})` : "";
+    if (sum) sum.innerHTML = files.length ? this._sumHtml(files, total) : "";
     this._fold();
     if (pl) pl.innerHTML = this._data && !this._err ? this._pilotHtml(this._data) : "";
     if (sen) sen.innerHTML = this._data && !this._err ? this._senHtml(this._data.seniority) + ("contacts" in this._data ? this._ctHtml(this._data.contacts) : "") + (this._data.version ? `<div class="u">Flight Watcher ${this._e(this._data.version)}</div>` : "") : "";

@@ -235,7 +235,7 @@ def test_refresh_keeps_the_fold_admin_card():
 
 def test_user_card_refresh_and_empty_and_error_states():
     """A user who is not an admin (the sensor): Refresh reads it again with the fold kept. Nothing on file, or the
-    Watcher not running, says so in view whatever the fold (there is nothing to fold)."""
+    Watcher not running, says so in view under a plain heading (there is nothing to fold: review AB-1)."""
     with _browser() as b:
         pg = _page(b, cards.build("9.9.9", [])[f"{UP}.js"])
         _umount(pg, st=_ustates())
@@ -247,15 +247,156 @@ def test_user_card_refresh_and_empty_and_error_states():
         empty = _ustates(lu="t3")
         empty["sensor.flight_watcher_uploads"]["attributes"]["files"] = []
         pg.evaluate("(st) => { C.hass = mkHass(st); }", empty)
-        r = _q(pg, LOOK_A)
-        assert r["count"] == "" and not r["sumVis"]
+        r = _q(pg, LOOK_H)
+        assert r["count"] == "" and not r["sumVis"] and not r["btn"] and r["plain"]  # nothing to fold: plain text
         none = "return vis(q('[data-list] > .u')) && q('[data-list] > .u').textContent;"
         assert _q(pg, none) == "Nothing uploaded yet."
-        pg.locator(f"{UP} [data-oft]").click()  # folded: still in view
-        assert _q(pg, none) == "Nothing uploaded yet."
+        pg.locator(f"{UP} [data-ofp]").click()  # a tap on the heading changes nothing: still in view
+        assert _q(pg, none) == "Nothing uploaded yet." and _q(pg, LOOK_H)["exp"] == []
         pg.evaluate("() => { C.hass = mkHass({'sensor.flight_watcher_uploads': {state: 'unavailable', last_updated: 't4', attributes: {}}}); }")
         assert _q(pg, "return vis(q('[data-list] .err')) && q('[data-list] .err').textContent;") == \
             "The Flight Watcher app is not running (its sensors are unavailable)."
+        assert pg.errors == []
+
+
+# review AB-1: the heading as a disclosure button only while there are rows to fold, else plain text
+LOOK_H = """const b = q('[data-oft]'), p = q('[data-ofp]'), h = b || p, l = q('[data-ofl]'), s = q('[data-ofs]');
+  return {btn: !!b, plain: p ? p.tagName : null, exp: qa('.hd [aria-expanded]').map((x) => x.getAttribute('aria-expanded')),
+    ctl: qa('.hd [aria-controls]').length, ctlOk: !!b && !!l && b.getAttribute('aria-controls') === l.id,
+    dangling: qa('[aria-controls]').filter((x) => !r.getElementById(x.getAttribute('aria-controls'))).length,
+    chev: qa('.hd .chev').filter(vis).length, head: h.textContent.replace(/\\s+/g, ' ').trim(),
+    count: q('[data-ofn]').textContent, sumVis: vis(s), list: !!l, listVis: vis(l),
+    text: q('[data-list]').textContent.replace(/\\s+/g, ' ').trim(), rows: qa('[data-list] .f').filter(vis).length,
+    more: vis(q('[data-ofmore]')) && q('[data-ofmore]').textContent, open: C._open,
+    h: Math.round(h.getBoundingClientRect().height), focus: r.activeElement === b};"""
+HEAD_BTN = re.compile(r"^On file")
+
+
+def _ax(node):
+    """Every node of a Playwright accessibility snapshot."""
+    if not node:
+        return []
+    return [node] + [x for c in node.get("children", []) for x in _ax(c)]
+
+
+def _plain(r, text):
+    """Nothing to fold: no button, no aria-expanded, no aria-controls (none pointing at nothing), no chevron."""
+    assert not r["btn"] and r["plain"] == "DIV" and r["exp"] == [] and r["ctl"] == 0 and r["dangling"] == 0, r
+    assert r["chev"] == 0 and not r["list"] and text in r["text"] and r["head"].startswith("On file"), r
+
+
+def test_on_file_heading_is_plain_text_while_there_is_nothing_to_fold():
+    """Review AB-1: while api/uploads has not answered ("Loading..."), on an error, and with nothing on file there are
+    no rows to fold, so the heading is plain text: no disclosure button, no aria-expanded, no aria-controls pointing at
+    an element that is not there, no chevron, and a tap on it changes nothing. The button comes back once there is a
+    list, folded or open as this browser keeps it, and goes again when the list does."""
+    src = cards.build("9.9.9", [])[f"{UP}.js"]
+    with _browser() as b:
+        # the admin's card: api/uploads held, then answered
+        held = []
+        pg = _page(b, src)
+        pg.route("**/api/hassio_ingress/tok123/api/uploads", lambda route: held.append(route))
+        pg.evaluate("() => { window.C = mount('" + UP + "', {}, {}, " + ADMIN + "); }")
+        for _ in range(100):
+            if held:
+                break
+            pg.wait_for_timeout(50)
+        assert held, "the card never asked for api/uploads"
+        r = _q(pg, LOOK_H)
+        _plain(r, "Loading...")
+        assert r["count"] == "" and not r["sumVis"] and r["h"] >= 44  # the heading keeps its height (no jump)
+        assert pg.get_by_role("button", name=HEAD_BTN).count() == 0
+        pg.locator(f"{UP} [data-ofp]").click()
+        assert _q(pg, LOOK_H)["exp"] == [] and _store(pg, "flight_watcher_onfile_open") is None
+        held[0].fulfill(status=200, content_type="application/json", body=json.dumps(_udata()))
+        pg.wait_for_function("!!C.shadowRoot.querySelector('[data-oft]')")
+        r = _q(pg, LOOK_H)
+        assert r["btn"] and r["plain"] is None and r["exp"] == ["false"] and r["ctlOk"] and r["dangling"] == 0
+        assert r["chev"] == 1 and r["head"] == "On file (6) 6 files, newest Award Dec 2026, uploaded Nov 14"
+        assert pg.get_by_role("button", name=HEAD_BTN).count() == 1
+        assert pg.errors == []
+        # a user's card (the sensor): not listed yet, a list, nothing on file, not running, a list again
+        pg = _page(b, src)
+        _umount(pg, st={})
+        _plain(_q(pg, LOOK_H), "The Watcher has not listed its files yet")
+        pg.evaluate("(st) => { C.hass = mkHass(st); }", _ustates(lu="t2"))
+        r = _q(pg, LOOK_H)
+        assert r["btn"] and r["exp"] == ["false"] and r["ctlOk"] and r["chev"] == 1 and not r["listVis"]
+        pg.locator(f"{UP} [data-oft]").click()
+        r = _q(pg, LOOK_H)
+        assert r["exp"] == ["true"] and r["listVis"] and r["rows"] == 6 and r["focus"]
+        empty = _ustates(lu="t3")
+        empty["sensor.flight_watcher_uploads"]["attributes"]["files"] = []
+        pg.evaluate("(st) => { C.hass = mkHass(st); }", empty)
+        r = _q(pg, LOOK_H)
+        _plain(r, "Nothing uploaded yet.")
+        assert r["open"] is True and _store(pg, "flight_watcher_onfile_open") == "1"  # kept for when a list is back
+        assert pg.get_by_role("button", name=HEAD_BTN).count() == 0
+        ax = [n for n in _ax(pg.accessibility.snapshot()) if str(n.get("name", "")).startswith("On file")]
+        assert ax and all(n.get("role") != "button" and "expanded" not in n for n in ax), ax  # Chromium's tree
+        _shot(pg, "A_390_light_empty_fixed")
+        pg.evaluate("() => { C.hass = mkHass({'sensor.flight_watcher_uploads': {state: 'unavailable', last_updated: 't4', attributes: {}}}); }")
+        _plain(_q(pg, LOOK_H), "The Flight Watcher app is not running")
+        pg.evaluate("(st) => { C.hass = mkHass(st); }", _ustates(lu="t5"))
+        r = _q(pg, LOOK_H)
+        assert r["btn"] and r["exp"] == ["true"] and r["listVis"] and r["rows"] == 6 and r["ctlOk"] and not r["sumVis"]
+        assert pg.errors == []
+
+
+def _trimmed(count, trimmed=None):
+    st = _ustates()
+    a = st["sensor.flight_watcher_uploads"]["attributes"]
+    a["count"] = count
+    if trimmed is not None:
+        a["trimmed"] = trimmed
+    st["sensor.flight_watcher_uploads"]["state"] = str(count)
+    return st
+
+
+def test_on_file_counts_what_the_watcher_counts_when_the_sensor_list_is_cut(tmp_path, monkeypatch):
+    """Review AB-2: watcher.cap_attrs cuts sensor.<prefix>_uploads files from the end (the oldest) at its byte cap and
+    keeps the whole number in count (trimmed beside it). A card reading the sensor gives the Watcher's count in the
+    heading and the folded line, and the open list says how many older ones it cannot show. A count it cannot use (none,
+    not a whole number, fewer than listed) falls back to the rows listed; the admin's api/uploads is never cut."""
+    from test_sensor_size import _load as wload
+
+    src = cards.build("9.9.9", [])[f"{UP}.js"]
+    with _browser() as b:
+        pg = _page(b, src)
+        _umount(pg, st=_trimmed(8, 2))
+        r = _q(pg, LOOK_H)
+        assert r["count"] == " (8)" and r["head"] == "On file (8) 8 files, newest Award Dec 2026, uploaded Nov 14", r
+        assert r["more"] is False  # folded with the rows
+        pg.locator(f"{UP} [data-oft]").click()
+        r = _q(pg, LOOK_H)
+        assert r["rows"] == 6 and r["more"] == "2 older files not listed here (more than the sensor can carry).", r
+        _shot(pg, "A_390_light_trimmed_open")
+        for bad in (None, "x", 3, 6.5, -1, True):
+            pg.evaluate("(st) => { C.hass = mkHass(st); }", _trimmed(bad))
+            pg.locator(f"{UP} [data-reload]").click()
+            r = _q(pg, LOOK_H)
+            assert r["count"] == " (6)" and r["more"] is False and r["rows"] == 6, (bad, r)
+        assert pg.errors == []
+        # the real cut: 120 synthetic files (60 months of award and pairings, newest first) through cap_attrs
+        W = wload(tmp_path, monkeypatch)[0]
+        files = []
+        for k in range(60):
+            y, m = 2026 - k // 12, 12 - k % 12
+            for i, kind in enumerate(("award", "pairings")):
+                files.append({"name": f"{y}-{m:02d}_{kind}.pdf", "kind": kind, "month": f"{y}-{m:02d}", "day": "",
+                              "size": 800000 + k, "uploaded_at": f"{y - (m == 1)}-{(m - 2) % 12 + 1:02d}-14T08:{10 + i:02d}:00-10:00",
+                              "has_text": True})
+        d = {"version": "9.9.9", "max_bytes": 16711680, "mqtt_max_bytes": 25000000, "files": files, "wanted": [],
+             "seniority": None, "contacts": None, "count": len(files), "chunk_bytes": 65536}
+        p = W.cap_attrs("uploads", d)
+        assert p["count"] == 120 and 0 < len(p["files"]) < 120 and p["trimmed"] == 120 - len(p["files"])
+        st = {"sensor.flight_watcher_uploads": {"state": "120", "last_updated": "t9", "attributes": p}}
+        pg.evaluate("(st) => { C.hass = mkHass(st); }", st)
+        r = _q(pg, LOOK_H)
+        assert r["count"] == " (120)" and r["more"] == f"{p['trimmed']} older files not listed here (more than the sensor can carry).", r
+        pg.locator(f"{UP} [data-oft]").click()
+        r = _q(pg, LOOK_H)
+        assert r["head"] == "On file (120) 120 files, newest Pairings package Dec 2026, uploaded Nov 14", r
         assert pg.errors == []
 
 
