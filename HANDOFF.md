@@ -19,6 +19,9 @@ ticket run of Nov 17 (CHANGELOG 1.7.11 has every section):
   schedule card's FAR-100/672 and Room (H3607 Nov 30 to Dec 2: 101:17 on Dec 2, real 83:42).
 - FW-0073 / FW-0074 (Ryan): the LAS layover guide is on Pako and both are closed. FW-0077 (James): fixed in 1.7.10,
   left `fixed` for him to verify. James's FW-0076 and FW-0078 stay `fixed` for him to verify after 1.7.11.
+- 1.7.12 (Ryan, Nov 17): one "Data age" stamp replaces "updated" and "Last check" (amber "stale" past 1x, red "very
+  stale" past 2x); the review's "1x" (the Watcher's longest cycle, not the bare interval) waits for Ryan's yes, and the
+  Details view's tile is pending on Pako (`ha/README.md`), applied with his yes once 1.7.12 is live. No contract change.
 
 **Nov 16: 1.7.10 is contract 1 REVISION 5 and HOM 1.9.1 goes live FIRST.** Ryan: "His uploads should update the
 shared database too", and the contacts list upload on James's portal "Now, in 1.7.10". Built (commits "... a portal
