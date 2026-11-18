@@ -1,9 +1,9 @@
 """1.7.16 (Ryan, Nov 17): "Using the pot log ("Pickup Speed" exists, so build on it), show median time to pickup by
 layover city and by day of week/time of day, so I know when to run Hunt."
 
-From the pickups the FO / RO pickers card counts (picker_log: each open-seat picker once a pickup, at its own scored
+From the pickups the FO / RO pickers card counts (picker_log; each pickup once, a both-seats trip too, at its scored
 speed; a speed capped at Ryan's request time counts at its cap and is flagged), the median time to pickup, the count
-and the fastest, by layover (the trip's layover station, else its turn station, as Common Layover), by the HST
+and the fastest, by layover (the first station of the trip's layover, else of its turn, as Common Layover), by the HST
 weekday the trip entered the pot and by the HST time of day it entered it (00-06, 06-12, 12-18, 18-24). A group of
 fewer than 5 pickups is too few to trust: grey on the card, never the tip. The aggregates ride on
 sensor.<prefix>_pickers (speed, under its own size cap), each instance from its own store, recomputed only when a
@@ -135,7 +135,7 @@ def test_the_tip_names_the_fastest_day_and_band_with_5_or_more():
     assert got["tip"] == "Trips go fastest when they enter the pot Mon 06-12 HST: median 2 min (n 6)."
 
 
-def test_when_the_fastest_day_and_band_share_under_5_the_tip_gives_each():
+def test_when_the_fastest_day_and_band_share_under_5_the_tip_gives_each_apart():
     rows = _rows(*[(60, "LAX", 16, 19)] * 5,  # Mon 18-24
                  *[(30, "LAX", 17, 8)] * 5,  # Tue 06-12
                  *[(900, "LAX", 16, 8)] * 2)  # Mon 06-12: only 2
@@ -152,9 +152,10 @@ def test_when_the_fastest_day_and_band_share_under_5_the_tip_gives_each():
                  *[(30, "LAX", 18, 8)] * 2)  # Wed: 2 (too few)
     got = speed_summary(rows)
     assert got["dow"][0] == ["Mon", 5, 50, 50, 0, 0] and got["band"][0] == ["06-12", 7, 30, 30, 0, 0]
-    # Mon and 06-12 meet in 3 pickups only: each with its own numbers
-    assert got["tip"] == ("Trips go fastest when they enter the pot on Mon (median 50 s, n 5) and at 06-12 HST "
-                          "(median 30 s, n 7).")
+    # Mon and 06-12 meet in 3 pickups only, and no slot has 5: two separate facts, each with its own numbers
+    # (review F1: never "on Mon and at 06-12", which reads as a Mon 06-12 slot)
+    assert got["tip"] == ("Fastest day: Mon (median 50 s, n 5). Fastest time of day: 06-12 HST (median 30 s, n 7). "
+                          "No day and time pair has 5 pickups yet.")
 
 
 def test_a_tip_from_one_table_only_and_none_at_all():
@@ -202,15 +203,15 @@ def test_the_store_counts_the_same_pickups_as_the_pickers_card(tmp_path):
     db = Store(str(tmp_path / "s.db"))
     for i, s in enumerate((60, 120, 180, 240, 300)):  # Tue 19:00 to 19:40 HST
         _pick(db, f"H96{i:02d}|20Nov", _utc(17, 19, 10 * i), s)
-    # both seats open: each picker once, as the pickers card counts them
+    # both seats open: each picker once on the pickers card, but one trip (one pot entry, one dwell) here
     _pick(db, "H9610|21Nov", _utc(18, 7), 600, emps=("10001", "10002"), lay="SYD", by=f"FO {JANE}; RO {RICK}",
           seats="FO,RO")
     got = db.speed_stats()
     stats = db.picker_stats()
-    assert got["n"] == sum(v["n"] for v in stats.values()) == 7
-    assert got["city"] == [["LAX", 5, 180, 60, 0, 0], ["SYD", 2, 600, 600, 0, 0]]
-    assert got["dow"] == [["Tue", 5, 180, 60, 0, 0], ["Wed", 2, 600, 600, 0, 0]]
-    assert got["band"] == [["18-24", 5, 180, 60, 0, 0], ["06-12", 2, 600, 600, 0, 0]]
+    assert sum(v["n"] for v in stats.values()) == 7 and got["n"] == 6  # review F2: the pickups, not the pickers
+    assert got["city"] == [["LAX", 5, 180, 60, 0, 0], ["SYD", 1, 600, 600, 0, 0]]
+    assert got["dow"] == [["Tue", 5, 180, 60, 0, 0], ["Wed", 1, 600, 600, 0, 0]]
+    assert got["band"] == [["18-24", 5, 180, 60, 0, 0], ["06-12", 1, 600, 600, 0, 0]]
     assert got["tip"] == "Trips go fastest when they enter the pot Tue 18-24 HST: median 3 min (n 5)." and got["more"] == 0
 
 
@@ -228,7 +229,7 @@ def test_the_entry_is_the_alert_when_earlier_and_a_cap_counts_capped(tmp_path):
     assert db.speed_stats()["band"] == [["00-06", 1, 239, 239, 1, 1]]
 
 
-def test_a_pickup_whose_find_is_gone_or_back_in_the_pot_enters_at_its_pickup_less_its_speed(tmp_path):
+def test_a_pickup_whose_find_is_gone_or_back_in_the_pot_keeps_its_entry(tmp_path):
     db = Store(str(tmp_path / "s.db"))
     _pick(db, "H9630|20Nov", _utc(17, 23, 50), 1200)  # Tue 23:50 HST, picked up Wed 00:10
     db.db.execute("DELETE FROM finds WHERE key='H9630|20Nov'")
@@ -360,7 +361,7 @@ def _world(W, many=True):  # noqa: F811
     return [p for t, p in W.SENT if t == "pickers"][-1]
 
 
-def _card_page(b, width, height, scheme, pay):
+def _card_page(b, width, height, scheme, pay, cfg="{open: true}", ready="tbody tr"):
     import cards
     from test_fw171_cards import HARNESS_JS, PORTAL_CSS
     built = cards.build("9.9.9", [])
@@ -381,8 +382,8 @@ def _card_page(b, width, height, scheme, pay):
     st = {"sensor.flight_watcher_pickers": {"state": str(pay["count"]), "last_updated": lu, "last_changed": lu,
                                             "attributes": attrs}}
     pg.wait_for_function("!!customElements.get('flight-watcher-pickers-card')")
-    pg.evaluate("(st) => { window.PC = mount('flight-watcher-pickers-card', {open: true}, st); window.ST = st; }", st)
-    pg.wait_for_function("PC.shadowRoot && PC.shadowRoot.querySelector('tbody tr')")
+    pg.evaluate("(st) => { window.PC = mount('flight-watcher-pickers-card', " + cfg + ", st); window.ST = st; }", st)
+    pg.wait_for_function(f"PC.shadowRoot && PC.shadowRoot.querySelector('{ready}')")
     return pg
 
 
@@ -474,7 +475,7 @@ def test_a_trimmed_city_list_says_how_many_are_left_out(W, tmp_path):  # noqa: F
 
 
 @pytest.mark.parametrize("path", ["store.py", "watcher.py", "www/flight-watcher-pickers-card.js", "README.md",
-                                  "tests/test_fw1716_speed.py"])
+                                  "tests/test_fw1716_speed.py", "tests/test_fw1716_review.py"])
 def test_no_em_dash(path):
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     assert chr(0x2014) not in open(os.path.join(here, path), encoding="utf-8").read()

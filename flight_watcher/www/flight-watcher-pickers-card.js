@@ -20,7 +20,12 @@
    and three small tables, by layover, by the HST day and by the HST time of day the trip entered the pot, each by
    median (the groups of 5 or more first; fewer are grey, too few to trust). It reads the sensor's speed attribute
    (the Watcher's aggregates of the pickups this card counts), so it is the same on the pilot portal; collapsed when
-   its tables run long, and as the viewer left it after that. */
+   its tables run long, and as the viewer left it after that.
+   1.7.16 review: the section sits under the header, outside the pickers list, so the tip shows while the list is
+   collapsed (the dashboard and the portal mount the card collapsed, R1); an open or close the viewer made any way
+   (a tap, the keyboard, find in page: the details' toggle event) is kept, and an update changes the tip and tables
+   in place, so a focused summary keeps its focus (R3); an empty table says so (R4); the tip's day and time of day
+   never split across two lines (R5). */
 const FMT = (a) => a == null ? "-" : a >= 3600 ? `${Math.floor(a / 3600)}h ${String(Math.floor((a % 3600) / 60)).padStart(2, "0")}m`
   : a >= 60 ? `${Math.floor(a / 60)}m ${String(a % 60).padStart(2, "0")}s` : `${a}s`;
 // 1.7.10 (Ryan, Nov 15): a speed capped at your own request time (FLICA denied your request for the trip because
@@ -31,7 +36,9 @@ const CAPPED = (on, a, what) => (!on || a == null ? FMT(a)
 const HUNT_OPEN_ROWS = 12;  // the three tables open by default with this many rows or fewer, else collapsed
 const HCAP = (on, a, title) => (!on || a == null ? FMT(a)
   : `<span title="${title}" aria-label="${title}"><span aria-hidden="true">≤</span>${FMT(a)}</span>`);
-const HUNT_TABLES = [["city", "Layover", "Station"], ["dow", "Day (HST)", "Day"], ["band", "Time (HST)", "Entered"]];
+// [speed key, caption, first header, what an empty table says (review R4)]
+const HUNT_TABLES = [["city", "Layover", "Station", "No layover on file yet."],
+  ["dow", "Day (HST)", "Day", "No pot entry time on file yet."], ["band", "Time (HST)", "Entered", "No pot entry time on file yet."]];
 // [key, header, sort kind, header on a narrow card ("" = folded under the name there)]
 const COLS = [
   ["name", "Pilot", "s", "Pilot"], ["emp", "Emp", "s", ""], ["pos", "Pos", "s", "Pos"], ["n", "Ttl Pickups", "n", ""],
@@ -135,7 +142,7 @@ class FlightWatcherPickersCard extends HTMLElement {
           td.pn{white-space:normal}table{font-size:12px}th,td{padding:3px 4px}}
         .key{font-size:11px;opacity:.8;margin:6px 0 0}
         details summary{cursor:pointer;font-size:12px}
-        .hunt{margin:4px 0 10px;padding:8px 10px;border:1px solid var(--divider-color,#ddd);border-radius:8px}
+        .hunt{margin:4px 0 6px;padding:8px 10px;border:1px solid var(--divider-color,#ddd);border-radius:8px}
         .htl{font-weight:600;font-size:14px}.tip{margin:4px 0 6px;font-size:13px}
         .hunt summary{padding:4px 0}
         .tbls{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px 12px;margin-top:6px;align-items:start}
@@ -143,10 +150,10 @@ class FlightWatcherPickersCard extends HTMLElement {
         .tbls table{font-size:12px}.tbls caption{text-align:left;font-weight:600;padding:2px 0}
         .tbls th{cursor:default;position:static;white-space:nowrap}
         tr.few td{color:var(--secondary-text-color);font-style:italic}
+        .tbls td.none{white-space:normal;color:var(--secondary-text-color)}
         .note,.more{font-size:11px;color:var(--secondary-text-color);margin:6px 0 0}
         .vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-      </style><ha-card><div class="hd"><span class="tri"></span><span class="ttl"></span></div><div class="body">
-        <div class="hunt-box"></div>
+      </style><ha-card><div class="hd"><span class="tri"></span><span class="ttl"></span></div><div class="hunt-box"></div><div class="body">
         <label class="fl" for="flt">Filter this list (it does not ask FLICA)</label>
         <input id="flt" type="search" enterkeyhint="search" autocomplete="off" spellcheck="false" placeholder="Filter this list (name, emp or layover)">
         <div class="wrap"><table class="pk"><thead><tr></tr></thead><tbody></tbody></table></div>
@@ -155,12 +162,19 @@ class FlightWatcherPickersCard extends HTMLElement {
       this._root.querySelector(".hd").addEventListener("click", () => { this._open = !this._open; this._paint(); });
       this._root.querySelector("input").addEventListener("input", (e) => { this._q = e.target.value; this._paint(); });
       this._root.querySelector("input").addEventListener("keydown", (e) => e.stopPropagation());  // v4: keep HA's e/a/c shortcuts out of the field
-      this._root.querySelector(".hunt-box").addEventListener("click", (e) => {  // 1.7.16: the viewer's open / closed stays
+      const hb = this._root.querySelector(".hunt-box");
+      hb.addEventListener("click", (e) => {  // 1.7.16: the viewer's open / closed stays
         const s = e.target.closest("summary");
         if (!s) return;
-        this._huntOpen = !s.parentElement.open;
-        this._huntSig = JSON.stringify(this._speed) + this._huntOpen;
+        this._huntOpen = this._huntShown = !s.parentElement.open;
       });
+      // review R3: an open or close without a click (find in page opens a closed details) comes as a toggle event, which
+      // does not bubble: caught on the way down. One the card made itself (_huntShown) is not the viewer's
+      hb.addEventListener("toggle", (e) => {
+        const d = e.target;
+        if (!d || d.tagName !== "DETAILS" || !d.isConnected || d.open === this._huntShown) return;
+        this._huntOpen = this._huntShown = d.open;
+      }, true);
       this._root.querySelector(".pk tbody").addEventListener("click", (e) => {  // v2: tap a name -> pilot schedule card
         const td = e.target.closest("td.pn");
         if (td) window.dispatchEvent(new CustomEvent("flight-watcher-pilot", { detail: { emp: td.dataset.emp, name: td.dataset.name } }));
@@ -199,7 +213,8 @@ class FlightWatcherPickersCard extends HTMLElement {
     }).join("") : `<tr><td colspan="10">${this._q ? "No match." : "No pickups scored yet."}</td></tr>`;
   }
   // 1.7.16: When to hunt, from the sensor's speed attribute ({n, min_n, city, dow, band, tip, more}; each group
-  // [label, n, median_s, fastest_s, capped_n, fastest_capped]), drawn again only when it changes
+  // [label, n, median_s, fastest_s, capped_n, fastest_capped]). Review R3: the section is built once and its tip,
+  // summary and tables are changed in place when the speed changes (a focused summary keeps its focus)
   _paintHunt() {
     const box = this._root.querySelector(".hunt-box");
     const sp = this._speed;
@@ -211,12 +226,23 @@ class FlightWatcherPickersCard extends HTMLElement {
     }
     const total = lists.reduce((a, l) => a + l.length, 0);
     const open = this._huntOpen == null ? total <= HUNT_OPEN_ROWS : this._huntOpen;
-    const sig = JSON.stringify(sp) + open;
+    if (!box.firstElementChild) {
+      box.innerHTML = `<section class="hunt" aria-label="When to hunt"><div class="htl">When to hunt</div><p class="tip"></p>
+        <details><summary></summary><div class="tbls"></div><p class="more" hidden></p><p class="note"></p></details></section>`;
+      this._huntSig = "";
+      this._huntShown = false;
+    }
+    const det = box.querySelector("details");
+    if (det.open !== open) {
+      this._huntShown = open;  // the card's own change: its toggle event is not the viewer's
+      det.open = open;
+    }
+    const sig = JSON.stringify(sp);
     if (sig === this._huntSig) return;
     this._huntSig = sig;
     const min = sp.min_n || 5;
-    const table = ([, cap, head], list) => `<table><caption>${cap}</caption><thead><tr><th scope="col">${head}</th>
-      <th scope="col">Median</th><th scope="col">Fastest</th><th scope="col">n</th></tr></thead><tbody>${list.map((g) => {
+    const table = ([, cap, head, none], list) => `<table><caption>${cap}</caption><thead><tr><th scope="col">${head}</th>
+      <th scope="col">Median</th><th scope="col">Fastest</th><th scope="col">n</th></tr></thead><tbody>${list.length ? "" : `<tr><td colspan="4" class="none">${none}</td></tr>`}${list.map((g) => {
         const [k, n, med, fast, capN, fastCap] = g;
         const few = n < min;
         return `<tr${few ? ` class="few" title="${n} pickup${n === 1 ? "" : "s"}: too few to trust (under ${min})"` : ""}>`
@@ -225,14 +251,18 @@ class FlightWatcherPickersCard extends HTMLElement {
           + `<td class="n">${HCAP(!!fastCap, fast, `at most ${FMT(fast)}: capped at your request time`)}</td>`
           + `<td class="n">${n}</td></tr>`;
       }).join("")}</tbody></table>`;
-    box.innerHTML = `<section class="hunt" aria-label="When to hunt"><div class="htl">When to hunt</div>
-      <p class="tip">${this._esc(sp.tip || `No tip yet: no day or time of day has ${min} pickups.`).replace(/\b(\d\d-\d\d HST)\b/g, '<span class="nb">$1</span>')}</p>
-      <details${open ? " open" : ""}><summary>By layover, day and time (${sp.n} pickup${sp.n === 1 ? "" : "s"})</summary>
-      <div class="tbls">${HUNT_TABLES.map((t, i) => table(t, lists[i])).join("")}</div>
-      ${sp.more > 0 ? `<p class="more">${sp.more} more layover${sp.more === 1 ? "" : "s"} with fewer pickups not shown.</p>` : ""}
-      <p class="note">The median time a trip sat in open time before a pickup, by where it lays over and the HST day and
-      time it entered the pot; each pickup the list below counts. Grey = fewer than ${min} pickups, too few to trust (never
-      the tip). ≤ = at most: a speed capped at your own request time is among them.</p></details></section>`;
+    // review R5: the day and the time of day of a slot ("Tue 18-24 HST") stay on one line
+    box.querySelector(".tip").innerHTML = this._esc(sp.tip || `No tip yet: no day or time of day has ${min} pickups.`)
+      .replace(/\b((?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) )?\d\d-\d\d HST)\b/g, '<span class="nb">$1</span>');
+    box.querySelector("summary").textContent = `By layover, day and time (${sp.n} pickup${sp.n === 1 ? "" : "s"})`;
+    box.querySelector(".tbls").innerHTML = HUNT_TABLES.map((t, i) => table(t, lists[i])).join("");
+    const more = box.querySelector(".more");
+    more.hidden = !(sp.more > 0);
+    more.textContent = sp.more > 0 ? `${sp.more} more layover${sp.more === 1 ? "" : "s"} with fewer pickups not shown.` : "";
+    box.querySelector(".note").textContent = `The median time a trip sat in open time before it was picked up, by where
+      it lays over (the first station of its layover, else of its turn) and the HST day and time it entered the pot:
+      the pickups the pickers list counts, a trip with both seats open once. Grey = fewer than ${min} pickups, too few
+      to trust (never the tip). ≤ = at most: a speed capped at your own request time is among them.`.replace(/\s+/g, " ");
   }
 }
 customElements.define("flight-watcher-pickers-card", FlightWatcherPickersCard);
