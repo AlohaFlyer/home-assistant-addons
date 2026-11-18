@@ -6,7 +6,11 @@ the same bid period it could swap for, ranked by (pot trip Pay-Gross / its days)
 priced as the swap pushes price a trip (pay.trip_gross, pay_settings' rate). The same legality as a marked trip: FAR 117
 with the own trip removed (far_for exclude), the 11 h CBA rest (a plain OK only), no VAC or blocked day, the grid rule.
 An automatic idea carries auto: True and never pushes (event/swap, event/swap_test, the auto swap dry run). Marked trips
-work as before. Synthetic schedule and made-up pairings (H9xxx), no names, no FLICA (swap_scan reads rows on hand)."""
+work as before. Synthetic schedule and made-up pairings (H9xxx), no names, no FLICA (swap_scan reads rows on hand).
+1.7.15 review: the sensor's "ideas" keeps the marked trips' ideas only, in their 1.7.11 order (gain_h); the automatic
+ones are in "auto_ideas" (R1, F1, F3); a pot trip is priced in its open RO seat (R3) with its own roster (R5); his trip's
+layover is its schedule item's (R6); the bid period is the pot's and his trip's page's (R7); the "N more" line counts
+the automatic ideas listed (R4, F2)."""
 import inspect
 import json
 import os
@@ -132,6 +136,11 @@ def _sensor(W):
     return _pubs(W, "swap/state")[-1]
 
 
+def _auto(W):
+    """The automatic ideas on the sensor (1.7.15 review: their own attribute, auto_ideas)."""
+    return _sensor(W)["auto_ideas"]
+
+
 def _gross(credit, blk, crew=None, seat="FO", lay="", key="", er=()):
     return PAY.trip_gross(PAY.hrs(credit), PAY.hrs(blk), crew, lay, key, seat, RATE, er)
 
@@ -140,10 +149,10 @@ def _gross(credit, blk, crew=None, seat="FO", lay="", key="", er=()):
 def test_with_no_mark_every_own_trip_is_ranked_against_the_pot_by_pay_per_day(W):
     W.swap_scan([P1, P2, P3, P4])
     s = _sensor(W)
-    ideas = s["ideas"]
+    ideas = s["auto_ideas"]
     assert [(i["for"], i["pairing"]) for i in ideas] == [(K1, "H9102"), (K1, "H9101"), (K2, "H9104")]
-    assert all(i["auto"] is True for i in ideas) and s["marked"] == [] and s["count"] == 3
-    assert s["auto_count"] == 3 and s["auto_more"] == 0 and s["auto_max"] == W.SWAP_AUTO_MAX == 10
+    assert all(i["auto"] is True for i in ideas) and s["marked"] == [] and s["count"] == 3 and s["ideas"] == []
+    assert s["auto_count"] == s["auto_shown"] == 3 and s["auto_more"] == 0 and s["auto_max"] == W.SWAP_AUTO_MAX == 10
     # (pot trip pay / its days) minus (own trip pay / its days), the existing pricing (pay.trip_gross, the rate of
     # pay_settings); both pay-per-day figures and both trips' totals (pay and days) on each idea
     own1, own2 = _gross("10:00", "8:00", key=K1), _gross("15:00", "13:00", key=K2)
@@ -175,7 +184,7 @@ def test_the_pay_is_the_swap_pushes_pricing_with_the_package_seat_crew_and_er(W,
     monkeypatch.setattr(W, "pay_settings", lambda: (RATE, 5, er))
     # credit and block not read on the rows: the package's
     W.swap_scan([_row("H9105", "2026-11-24", "2026-11-26", "", ""), _row("H9108", "2026-11-24", "2026-11-26", "", "")])
-    got = {i["pairing"]: i for i in _sensor(W)["ideas"]}
+    got = {i["pairing"]: i for i in _auto(W)}
     assert set(got) == {"H9105", "H9108"}
     own_g = PAY.trip_gross(15.0, 13.0, 3, "LAX", K2, "RO", RATE, er)  # his RO seat on a crew of 3: $4.00 a block hour
     g5 = PAY.trip_gross(17.0, 13.0, "CA01FO01RO01", "LAX", "H9105|2026-11-24", "FO", RATE, er)  # FO on 3: $3.00
@@ -196,7 +205,7 @@ def test_a_trip_of_novembers_bid_period_is_priced_from_its_package(W, monkeypatc
     _setup(W, monkeypatch, tmp_path, own=own)
     monkeypatch.setattr(W, "bid_period_fn", lambda: (lambda iso: "2026-11" if str(iso) <= "2026-12-01" else "2026-12"))
     W.swap_scan([_row("H9106", "2026-12-01", "2026-12-01", "", "")])
-    (i,) = _sensor(W)["ideas"]
+    (i,) = _auto(W)
     assert i["pay"] == round(16.0 * RATE, 2) and i["pay_days"] == 1 and i["for_ppd"] == round(10.0 * RATE / 2, 2)
 
 
@@ -205,15 +214,15 @@ def test_marked_trips_keep_todays_rule_and_push_and_the_rest_are_automatic(W):
     W.S["trade_away"] = [K1]
     W.swap_scan([P1, P2, P3, P4])
     s = _sensor(W)
-    marked = [i for i in s["ideas"] if not i["auto"]]
-    auto = [i for i in s["ideas"] if i["auto"]]
+    marked, auto = s["ideas"], s["auto_ideas"]
     # H9001 (marked): swap.better as before (more soft time or credit): H9101 and H9103, never H9102 (more pay a day
     # but no soft time or credit gain); no automatic idea for a marked trip
     assert {i["pairing"] for i in marked} == {"H9101", "H9103"} and all(i["for"] == K1 for i in marked)
+    assert not any(i["auto"] for i in marked) and all(i["auto"] for i in auto)
     assert [(i["for"], i["pairing"]) for i in auto] == [(K2, "H9104")]
-    assert s["ideas"][:2] == marked  # the marked trips' ideas first, then the automatic ones
-    # marked ideas also show both pay-per-day figures, ranked by them (H9101 +1:00 a day, H9103 -0:30 a day)
-    assert [i["pairing"] for i in marked] == ["H9101", "H9103"] and marked[1]["ppd_gain"] < 0
+    # review R1: marked ideas keep the 1.7.11 order (gain_h: H9103 +1:30 soft, +3:30 cr before H9101 +1:00, +2:00),
+    # the order they push in, and also show both pay-per-day figures (H9101 +1:00 a day, H9103 -0:30 a day)
+    assert [i["pairing"] for i in marked] == ["H9103", "H9101"] and marked[0]["ppd_gain"] < 0 < marked[1]["ppd_gain"]
     # pushes: once per marked idea (event/swap and its draft), never for the automatic one
     pushed = _pubs(W, "event/swap")
     assert sorted(p["pairing"] for p in pushed) == ["H9101", "H9103"] and not any(p.get("auto") for p in pushed)
@@ -239,7 +248,14 @@ def _grid_red(W):
 
 
 def _bid_period(W):
+    """Listed in December's pot (review R7: the pot's own bid month)."""
+    W.ROW_KW = {"month": "2026-12"}
+
+
+def _bid_period_by_day(W):
+    """A pot whose key names no month (the mobile pages' keys): the bid period of its first day."""
     W.BID_FN = lambda iso: "2026-12" if str(iso) >= "2026-11-21" else "2026-11"
+    W.ROW_KW = {"month": "mobile_003.153"}
 
 
 RULES = {
@@ -252,6 +268,7 @@ RULES = {
     "a grid day moved off is red": _grid_red,
     "a grid day moved off has no entry": lambda W: W.S["grid"].pop("2026-11-20"),
     "another bid period": _bid_period,
+    "another bid period by its first day": _bid_period_by_day,
     "less pay a day": None,
     "no pay rate on file": None,
 }
@@ -262,10 +279,10 @@ def test_each_legality_rule_rejects_an_automatic_idea(W, monkeypatch, tmp_path, 
     own = {K1: OWN[K1]}
     _setup(W, monkeypatch, tmp_path, own=own)
     W.swap_scan([P2])  # the baseline: H9102 for H9001 is an automatic idea, FAR asked with H9001 left out
-    assert [(i["for"], i["pairing"], i["auto"]) for i in _sensor(W)["ideas"]] == [(K1, "H9102", True)]
+    assert [(i["for"], i["pairing"], i["auto"]) for i in _auto(W)] == [(K1, "H9102", True)]
     assert ("H9102", K1) in W.T_FAR_CALLS and ("H9102", None) not in W.T_FAR_CALLS
     W.FAKE.msgs.clear()
-    W.BID_FN = None
+    W.BID_FN, W.ROW_KW = None, {}
     row = dict(P2)
     if rule == "less pay a day":
         row.update(credit="5:00", blk="4:00", soft="1:00")
@@ -276,23 +293,24 @@ def test_each_legality_rule_rejects_an_automatic_idea(W, monkeypatch, tmp_path, 
         RULES[rule](W)
     if W.BID_FN:
         monkeypatch.setattr(W, "bid_period_fn", lambda: W.BID_FN)
+    row.update(W.ROW_KW)
     W.swap_scan([row])
     s = _sensor(W)
-    assert s["ideas"] == [] and s["count"] == 0 and s["auto_count"] == 0, rule
+    assert s["ideas"] == s["auto_ideas"] == [] and s["count"] == 0 and s["auto_count"] == 0, rule
     if rule == "no pay rate on file":
         assert s["priced"] is False
 
 
 def test_the_same_pairing_a_started_trip_and_a_tradeboard_post_make_no_automatic_idea(W):
     W.swap_scan([_row("H9001", "2026-11-21", "2026-11-21", "9:00", "5:00")])  # his own pairing number
-    assert _sensor(W)["ideas"] == []
+    assert _auto(W) == []
     W.S["tb_details"] = {"H9102|21Nov": dict(P2)}  # a Tradeboard post: not the open pot
     W.swap_scan([])
-    assert _sensor(W)["ideas"] == []
+    assert _auto(W) == []
     W.S.pop("tb_details")
     W.CLOCK["now"] = datetime(2026, 11, 20, 6, 0)  # H9001 starts today: not swapped from here
     W.swap_scan([P2])
-    assert [i["for"] for i in _sensor(W)["ideas"]] == []
+    assert [i["for"] for i in _auto(W)] == []
 
 
 def test_far_is_asked_with_each_own_trip_removed(W, monkeypatch):
@@ -340,7 +358,7 @@ def test_the_real_far_screen_runs_with_the_own_trip_removed(W, monkeypatch, tmp_
     assert W.far_for(dict(late), exclude=K1).startswith("Rest 8:15")
     assert W.far_for(dict(cba), exclude=K1).startswith("OK (CBA rest 10:30")
     W.swap_scan([P2, late, cba])
-    assert [(i["for"], i["pairing"], i["auto"]) for i in _sensor(W)["ideas"]] == [(K1, "H9102", True)]
+    assert [(i["for"], i["pairing"], i["auto"]) for i in _auto(W)] == [(K1, "H9102", True)]
 
 
 # ---------------------------------------------------------------- 4, 5: no push, no draft, no FLICA for auto ideas
@@ -348,11 +366,11 @@ def test_an_automatic_idea_never_pushes_never_drafts_and_never_feeds_auto_swap(W
     W.S["auto_swap"] = True  # the admin's dry run switch (a pilot has none)
     for _ in range(2):
         W.swap_scan([P1, P2, P4])
-    assert len(_sensor(W)["ideas"]) == 3
+    assert len(_auto(W)) == 3 and _sensor(W)["ideas"] == []
     assert _pubs(W, "event/swap") == [] and _pubs(W, "event/swap_test") == []
     assert W.S.get("swap_seen") == [] and W.S.get("swap_tests") in (None, []) and W.S.get("auto_swap_log") == {}
     # the backstops: an automatic idea handed to the push path still sends nothing
-    idea = dict(_sensor(W)["ideas"][0], key="x>y")
+    idea = dict(_auto(W)[0], key="x>y")
     W.pub("event/swap", idea, retain=False)
     W.swap_test(dict(idea, report=""))
     assert _pubs(W, "event/swap") == [] and _pubs(W, "event/swap_test") == []
@@ -406,10 +424,10 @@ def _many(n, start="2026-11-21"):
 def test_the_sensor_keeps_the_top_automatic_ideas_and_counts_the_rest(W):
     W.swap_scan(_many(15))
     s = _sensor(W)
-    assert s["auto_count"] == 15 and s["count"] == 15
-    assert len(s["ideas"]) == W.SWAP_AUTO_MAX == 10 and s["auto_more"] == 5
-    gains = [i["ppd_gain"] for i in s["ideas"]]
-    assert gains == sorted(gains, reverse=True) and s["ideas"][0]["pairing"] == "H9214"  # the best pay a day first
+    assert s["auto_count"] == 15 and s["count"] == 15 and s["ideas"] == []
+    assert len(s["auto_ideas"]) == s["auto_shown"] == W.SWAP_AUTO_MAX == 10 and s["auto_more"] == 5
+    gains = [i["ppd_gain"] for i in s["auto_ideas"]]
+    assert gains == sorted(gains, reverse=True) and s["auto_ideas"][0]["pairing"] == "H9214"  # the best pay a day first
     assert W.attr_size(s) <= W.ATTR_MAX and "trimmed" not in s
 
 
@@ -420,10 +438,10 @@ def test_the_size_cap_cuts_automatic_ideas_before_any_marked_one(W, monkeypatch)
     rows = [dict(r, layover="L" * 60) for r in _many(15)] + [pm]
     W.swap_scan(rows)
     s = _sensor(W)
-    marked = [i for i in s["ideas"] if not i["auto"]]
-    assert [i["pairing"] for i in marked] == ["H9107"]
-    shown = len(s["ideas"]) - 1
+    assert [i["pairing"] for i in s["ideas"]] == ["H9107"]
+    shown = len(s["auto_ideas"])
     assert 0 < shown < W.SWAP_AUTO_MAX and s["auto_more"] == 15 - shown and s["auto_count"] == 15
+    assert s["auto_shown"] == shown
     assert W.attr_size(s) <= 4500 and "trimmed" not in s
 
 
@@ -439,7 +457,7 @@ def test_each_instance_ranks_only_its_own_trips_on_its_own_prefix(tmp_path, monk
     p_topics = {t for t, _p, _r in P.FAKE.msgs}
     assert a_topics and all(t.startswith("flight_watcher/") for t in a_topics)
     assert p_topics and all(t.startswith("flight_watcher_pilot2/") for t in p_topics)
-    assert {i["for"] for i in _sensor(A)["ideas"]} == {K1} and {i["for"] for i in _sensor(P)["ideas"]} == {K2}
+    assert {i["for"] for i in _auto(A)} == {K1} and {i["for"] for i in _auto(P)} == {K2}
     assert A.S is not P.S and "H9002|2026-11-24" not in A.S["own_trips"] and K1 not in P.S["own_trips"]
     sys.modules.pop("watcher", None)
 
@@ -478,9 +496,9 @@ def test_the_dashboard_swap_table_shows_automatic_ideas_with_pay_per_day(W):
     s = _sensor(W)
     out = _render(md, {"sensor.flight_watcher_swap_ideas": s, "sensor.flight_watcher_would_trade": {"keys": []}})
     assert "No trips marked" not in out and "| Give up |" in out and "Per day" in out
-    top = s["ideas"][0]
+    top = s["auto_ideas"][0]
     assert f"${top['ppd']:,.0f}" in out and f"${top['for_ppd']:,.0f}" in out and f"${top['pay']:,.0f}" in out
-    assert "auto" in out and "2 more automatic ideas" in out
+    assert "auto" in out and "2 more automatic ideas not shown (the best 10 by pay per day are)" in out
     none = _render(md, {"sensor.flight_watcher_swap_ideas": {"ideas": [], "count": 0, "priced": True},
                         "sensor.flight_watcher_would_trade": {"keys": []}})
     assert "No better-paying swap" in none
@@ -489,20 +507,28 @@ def test_the_dashboard_swap_table_shows_automatic_ideas_with_pay_per_day(W):
     assert "date of hire" in unpriced
 
 
+def _pot_sw(sensor, marks=()):
+    """The pot card's states (test_fw171_cards._pot_states, pilot2's ids) with this swap ideas sensor as published."""
+    from test_fw171_cards import _pot_states, _s
+    st = _pot_states(marks=marks, ideas=())
+    st["sensor.flight_watcher_pilot2_swap_ideas"] = _s(str(sensor.get("count", 0)), dict(sensor))
+    return st
+
+
 def test_the_pot_card_lists_automatic_ideas_with_both_pay_per_day_figures(W):
-    from test_fw171_cards import SWAP_JS, _browser, _card, _page, _pot_states
+    from test_fw171_cards import SWAP_JS, _browser, _card, _page
     W.swap_scan([P1, P2, P4])
-    ideas = _sensor(W)["ideas"]
+    ideas = _auto(W)
+    st = _pot_sw(_sensor(W))
     con = {}
     with _browser() as b:
-        narrow = _page(b, [_card("pot-card")]).evaluate(SWAP_JS, _pot_states(marks=(), ideas=ideas))
-        wide = _page(b, [_card("pot-card")], width=1100).evaluate(SWAP_JS, _pot_states(marks=(), ideas=ideas))
+        narrow = _page(b, [_card("pot-card")]).evaluate(SWAP_JS, st)
+        wide = _page(b, [_card("pot-card")], width=1100).evaluate(SWAP_JS, st)
         for width in (390, 1100):  # WCAG AA on the portal's light and dark cards, as the 1.7.1 renders (F#119)
             for scheme in ("light", "dark"):
                 pg = _page(b, [_card("pot-card")], width=width, scheme=scheme)
                 con[(width, scheme)] = pg.evaluate("(st) => { const c = mount('flight-watcher-pot-card-pilot2', {}, st);"
-                                                   " return {con: fwContrast(c), fit: fwFits(c)}; }",
-                                                   _pot_states(marks=(), ideas=ideas))
+                                                   " return {con: fwContrast(c), fit: fwFits(c)}; }", st)
                 pg.context.close()
     for k, v in con.items():
         assert v["con"]["n"] > 0 and v["con"]["fails"] == [], (k, v["con"]["fails"])
@@ -516,3 +542,169 @@ def test_the_pot_card_lists_automatic_ideas_with_both_pay_per_day_figures(W):
     assert f"${top['pay']:,.0f} (1 day) vs ${top['for_pay']:,.0f} (2 days)" in first
     assert narrow["rows"] == wide["rows"] and narrow["fit"]["page"] <= 390 and narrow["fit"]["inner"] <= 0
     assert "pay per day" in wide["key"].lower() and "never pushed" in wide["key"]
+
+
+# ---------------------------------------------------------------- 1.7.15 review fixes
+def _better(n):
+    """n open trips on Nov 24-26 (H9002's days), each better than a marked H9002 by soft time; credit rising 0:10 a trip
+    from 16:00 while soft time falls 0:04 a trip from 4:30, so the most soft time pays the least a day."""
+    out = []
+    for k in range(n):
+        cr, soft = 16 + k / 6, 4.5 - k / 15
+        out.append(_row(f"H93{k:02d}", "2026-11-24", "2026-11-26", _hm(cr), _hm(cr - soft)))
+    return out
+
+
+def test_marked_ideas_keep_the_1711_order_and_the_cap_trims_the_least_soft_time_first(W, monkeypatch):
+    """R1, F1: the marked trips' ideas stay in gain_h order (soft time first, the order they push in), and the size cap
+    drops the least soft time from the end, as in 1.7.11: the best soft-time idea, the first push, stays listed."""
+    W.S["trade_away"] = [K2]
+    monkeypatch.setattr(W, "ATTR_MAX", 9000)
+    W.swap_scan(_better(30))
+    s = _sensor(W)
+    shown = s["ideas"]
+    pushed = [p["pairing"] for p in _pubs(W, "event/swap")]
+    assert len(pushed) == 30 and s.get("trimmed", 0) > 0 and len(shown) == 30 - s["trimmed"]
+    assert [i["gain_h"] for i in shown] == sorted((i["gain_h"] for i in shown), reverse=True)
+    assert shown[0]["pairing"] == "H9300" == pushed[0]  # +2:30 soft: the best by swap.better, the first push
+    assert [i["pairing"] for i in shown] == pushed[:len(shown)]  # what the cap leaves out is the tail of the pushes
+    assert shown[0]["ppd_gain"] < shown[-1]["ppd_gain"]  # not by pay per day: a marked trip keeps its own rule
+    assert all(not i["auto"] for i in shown) and W.attr_size(s) <= 9000
+
+
+def test_the_sensor_ideas_keep_their_1711_meaning_and_the_automatic_ones_have_their_own_list(W):
+    """F3: "ideas" (the old dashboard card, the schedule card's swap tags) holds only the marked trips' ideas, so the
+    dashboard still live on Pako shows no automatic idea, unlabeled, under its Key; the new card reads auto_ideas."""
+    W.S["trade_away"] = [K1]
+    W.swap_scan([P1, P2, P3, P4])
+    s = _sensor(W)
+    assert {(i["for"], i["pairing"]) for i in s["ideas"]} == {(K1, "H9101"), (K1, "H9103")}
+    assert not any(i.get("auto") for i in s["ideas"])
+    assert [(i["for"], i["pairing"], i["auto"]) for i in s["auto_ideas"]] == [(K2, "H9104", True)]
+    readme = open(os.path.join(REPO, "ha", "README.md"), encoding="utf-8").read()
+    assert "it shows the ideas only while a trip is marked" not in readme
+    assert "step of the 1.7.15 go-live" in readme and "`auto_ideas`" in readme
+
+
+def _crew3(W, key=K2):
+    W.S["own_trips"][key]["crew"] = ["CA X", "FO Y", "RO Z"]  # his roster: 3 pilots (positions only)
+
+
+def test_a_pot_trip_whose_only_open_seat_is_ro_is_priced_in_the_ro_seat(W, monkeypatch, tmp_path):
+    """R3 (PWA 4.O.1): RO $4.00 a block hour on any crew, FO $3.00 on a 3-pilot crew: the pot row's open_seats says
+    which seat he would fly. FO,RO open: priced FO, as price_moves falls back."""
+    pdir = tmp_path / "www" / "flight-watcher"
+    pdir.mkdir(parents=True)
+    rows = [["H9111", "15:00", "13:00", "CA01FO01RO01", "HNL-LAX-HNL"], ["H9112", "15:00", "13:00", "CA01FO01RO01", "HNL-LAX-HNL"]]
+    (pdir / "pairings_2026-11.json").write_text(json.dumps({"month": "2026-11", "cols": ["id", "credit", "block", "crew", "route"],
+                                                            "rows": rows}))
+    _crew3(W)
+    W.swap_scan([_row("H9111", "2026-11-24", "2026-11-26", "15:00", "13:00", open_seats="RO"),
+                 _row("H9112", "2026-11-24", "2026-11-26", "15:00", "13:00", open_seats="FO,RO")])
+    (i,) = _auto(W)
+    assert i["pairing"] == "H9111" and i["for"] == K2
+    assert i["for_pay"] == round(15 * RATE + 13 * 3.0, 2)  # his FO seat on 3
+    assert i["pay"] == round(PAY.trip_gross(15.0, 13.0, 3, "LAX", "H9111|2026-11-24", "RO", RATE), 2) == round(15 * RATE + 13 * 4.0, 2)
+    assert i["ppd_gain"] == round(13 * 1.0 / 3, 2)
+
+
+def test_a_pot_trip_no_package_lists_is_priced_with_its_own_roster(W):
+    """R5: the pot row's crew (its roster, open seats included) gives the FO 3-pilot override when no package lists
+    the trip, as his own trip's roster does for his."""
+    _crew3(W)
+    crew = [["CA", "Doe"], ["FO", "OPEN"], ["RO", "Roe"]]
+    W.swap_scan([_row("H9113", "2026-11-24", "2026-11-26", "15:05", "13:00", crew=crew, open_seats="FO")])
+    (i,) = _auto(W)
+    assert i["pairing"] == "H9113" and i["pay"] == round(PAY.hrs("15:05") * RATE + 13 * 3.0, 2)
+    assert i["ppd_gain"] == round((PAY.hrs("15:05") * RATE + 39.0) / 3 - (15 * RATE + 39.0) / 3, 2) == 7.2
+
+
+def test_his_trip_is_priced_with_its_schedule_layover_for_the_er_rule(W):
+    """R6: his trip's own record holds no layover; its schedule item's (SIN) turns the Extended Range +15% on when no
+    package or roster says otherwise, so a 10:30 LAX trip that pays less a day is no automatic idea, and a marked
+    trip's idea shows his ER pay."""
+    for it in W.S["schedule"]["2026-11"]["items"]:
+        if it["trip"] == "H9001":
+            it["lay"] = "SIN"
+    mine = round(10 * RATE * 1.15, 2)
+    W.swap_scan([_row("H9120", "2026-11-20", "2026-11-21", "10:30", "8:00")])
+    assert _auto(W) == []
+    W.S["trade_away"] = [K1]
+    W.swap_scan([_row("H9121", "2026-11-20", "2026-11-21", "12:00", "8:00")])  # +2:00 soft: better for a marked H9001
+    (i,) = _sensor(W)["ideas"]
+    assert i["for_pay"] == mine and i["for_ppd"] == round(mine / 2, 2)
+
+
+def test_the_same_bid_period_is_the_pots_and_his_trips_page_without_pairing_files(W, monkeypatch, tmp_path):
+    """R7: no pairing file gives the bounds. H9005 Dec 1-3 is listed on November's page (Nov 1 to Dec 3) and on
+    December's (Dec 1 on, FLICA's next page starts on the period before's last day): it is November's trip, so a trip
+    from November's pot (Nov 30-Dec 1) is a swap for it and one from December's pot (Dec 2-3) is not."""
+    own = {"H9005|2026-12-01": ("2026-12-03", {"credit": "15:00", "blk": "13:00", "soft": "2:00", "seat": "FO"})}
+    _setup(W, monkeypatch, tmp_path, own=own)
+    item = {"trip": "H9005", "start": "2026-12-01", "end": "2026-12-03", "lay": "LAX"}
+    nov = [[date(2026, 11, d).isoformat(), "", ""] for d in range(1, 31)] + [["2026-12-01", "H9005", "LAX"],
+                                                                            ["2026-12-02", "", "LAX"], ["2026-12-03", "", "HNL"]]
+    dec = [["2026-12-01", "H9005", "LAX"], ["2026-12-02", "", "LAX"], ["2026-12-03", "", "HNL"]] + \
+          [[date(2026, 12, d).isoformat(), "", ""] for d in range(4, 32)]
+    W.S["schedule"] = {"2026-11": {"items": [dict(item)], "days": nov}, "2026-12": {"items": [dict(item)], "days": dec}}
+    W.S["grid"] = _grid("2026-11-25", 15)
+    assert W.bid_period_of(date(2026, 12, 1)) is None and W.bid_period_fn()("2026-12-01") == "2026-12"
+    dec_pot = _row("H9130", "2026-12-02", "2026-12-03", "16:00", "13:00", month="2026-12")
+    nov_pot = _row("H9131", "2026-11-30", "2026-12-01", "16:00", "13:00", month="2026-11")
+    W.swap_scan([dec_pot, nov_pot])
+    assert [(i["for"], i["pairing"]) for i in _auto(W)] == [("H9005|2026-12-01", "H9131")]
+
+
+def test_a_pot_rows_bid_period_is_its_pots_month_when_the_key_names_one(W):
+    """R7: the pot's key: 'YYYY-MM', or the desktop menu's month name (the year nearest the trip); the mobile pages'
+    keys and the close-in folder name no month, so the trip's first day decides (period_of)."""
+    of = lambda iso: "day:" + iso  # noqa: E731
+    assert W._pot_period({"month": "2026-11"}, "2026-12-01", of) == "2026-11"
+    assert W._pot_period({"month": "November"}, "2026-12-01", of) == "2026-11"
+    assert W._pot_period({"month": "January"}, "2026-12-31", of) == "2027-01"
+    assert W._pot_period({"month": "December"}, "2027-01-01", of) == "2026-12"
+    for key in ("mobile", "mobile_003.153", W.CLOSE_IN_KEY, "", None):
+        assert W._pot_period({"month": key}, "2026-12-01", of) == "day:2026-12-01"
+
+
+def _cap_case(W, monkeypatch, attr_max):
+    W.S["trade_away"] = [K2]
+    monkeypatch.setattr(W, "ATTR_MAX", attr_max)
+    pm = _row("H9107", "2026-11-25", "2026-11-26", "11:00", "8:00")  # better than H9002 by soft time
+    W.swap_scan([dict(r, layover="L" * 60) for r in _many(15)] + [pm])
+    return _sensor(W)
+
+
+@pytest.mark.parametrize("room", ["some", "none"])
+def test_the_n_more_line_counts_the_automatic_ideas_listed(W, monkeypatch, room):
+    """R4, F2: the size cap can list fewer automatic ideas than auto_max (here some, then none): both the dashboard and
+    the pot card say how many are listed, never "the top 10"."""
+    from test_fw171_cards import SWAP_JS, _browser, _card, _page
+    attr_max = 4500
+    if room == "none":  # room for the marked idea and the counts only
+        full = _cap_case(W, monkeypatch, 10 ** 6)
+        attr_max = W.attr_size(dict(full, auto_ideas=[], auto_shown=0, auto_more=15)) + 50
+        W.FAKE.msgs.clear()
+    s = _cap_case(W, monkeypatch, attr_max)
+    k = len(s["auto_ideas"])
+    assert s["auto_shown"] == k < W.SWAP_AUTO_MAX and s["auto_more"] == 15 - k and s["auto_max"] == 10
+    assert (k > 0) == (room == "some") and [i["pairing"] for i in s["ideas"]] == ["H9107"] and "trimmed" not in s
+    want = (f"{15 - k} more automatic ideas not shown (the best {k} by pay per day are)." if k
+            else "15 automatic ideas not shown (no room left next to your marked trips' ideas).")
+    (md,) = _dash_md()
+    out = _render(md, {"sensor.flight_watcher_swap_ideas": s, "sensor.flight_watcher_would_trade": {"keys": [K2]}})
+    assert want in out and "the top 10" not in out
+    with _browser() as b:
+        card = _page(b, [_card("pot-card")], width=1100).evaluate(SWAP_JS, _pot_sw(s, marks=(K2,)))
+    assert want in card["text"] and "the top 10" not in card["text"]
+    assert len(card["rows"]) == 1 + k and card["rows"][0].startswith("H9002 H9107")
+
+
+def test_the_portal_contract_says_no_mark_no_alert_and_names_the_automatic_ideas():
+    """F5: a portal pilot with no mark now has automatic ideas on his swap ideas sensor (never an alert)."""
+    doc = open(os.path.join(HERE, "PORTAL_CONTRACT.md"), encoding="utf-8").read()
+    roles = open(os.path.join(HERE, "roles.py"), encoding="utf-8").read()
+    assert "no mark, no idea" not in doc and "no mark, no idea" not in roles
+    sec = doc[doc.index("- `swap` (revision 4, F#107)"):doc.index("- `bid_calendar` (revision 3, FW-0070)")]
+    assert "no mark, no alert" in sec and "`auto_ideas`" in sec and "never published on `event/swap`" in sec
+    assert "the fixture is unchanged" in sec

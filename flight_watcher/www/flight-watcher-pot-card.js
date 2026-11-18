@@ -16,9 +16,11 @@
 // columns as that table (Give up, For, Dates, Layover, Days, Credit, Soft, Gain, Src, Grid); on a card 560 px wide or
 // less each idea folds into labeled lines, so nothing scrolls sideways at 390 px. Read only: a new idea makes no alert
 // here (a portal event would be a contract change).
-// 1.7.15 (Ryan, Nov 17): the automatic ideas too (a trip not marked against the open pot, ranked by pay per day; "auto"
-// beside the trip given up; never pushed) and, on every idea, Pay (both trips' Pay-Gross and days) and Per day (the
-// difference a day, then both pay-per-day figures). "-" where the Watcher sent no pay figure.
+// 1.7.15 (Ryan, Nov 17): the automatic ideas too (attribute auto_ideas: a trip not marked against the open pot, ranked
+// by pay per day; "auto" beside the trip given up; never pushed), after the marked trips' ideas (attribute ideas, in
+// the Watcher's order), and, on every idea, Pay (both trips' Pay-Gross and days) and Per day (the difference a day,
+// then both pay-per-day figures). "-" where the Watcher sent no pay figure. The "N more" line counts the automatic
+// ideas listed (review R4: the size cap can list fewer than auto_max).
 // 1.7.1 (F#119): the chip colors are this card's own variables, lighter on dark cards (Home Assistant's dark mode, which the
 // portal sets from the device), so they keep WCAG AA contrast (4.5:1) on both (the portal's dark error red is 4.497:1).
 // Usage: type: custom:flight-watcher-pot-card
@@ -85,16 +87,20 @@ class FlightWatcherPotCard extends HTMLElement {
   // 1.7.1 (F#107): the swap ideas for the trips marked "would trade", the admin's Watcher view table in HTML.
   // 1.7.15: the automatic ones as well, with both trips' pay, days and pay per day
   _swaps() {
-    const sw = this._a("sensor.flight_watcher_swap_ideas"), ideas = sw.ideas, marks = this._a("sensor.flight_watcher_would_trade").keys;
-    const list = Array.isArray(ideas) ? ideas : [], marked = Array.isArray(marks) ? marks : [];
+    const sw = this._a("sensor.flight_watcher_swap_ideas"), marks = this._a("sensor.flight_watcher_would_trade").keys;
+    const arr = (v) => Array.isArray(v) ? v : [];
+    const autos = arr(sw.auto_ideas).map((i) => ({ ...i, auto: true })), list = [...arr(sw.ideas), ...autos], marked = arr(marks);
     const head = `<h4>Swap ideas${list.length ? ` <span class="k">${list.length}</span>` : ""}</h4>`;
+    const left = Number(sw.auto_more) || 0;
+    const more = left > 0 ? `<div class="k">${this._e(left)} ${autos.length ? "more " : ""}automatic idea${left === 1 ? "" : "s"} not shown (${autos.length
+      ? `the best ${this._e(autos.length)} by pay per day ${autos.length === 1 ? "is" : "are"}` : "no room left next to your marked trips' ideas"}).</div>` : "";
     if (!list.length && !marked.length) {
-      const why = sw.priced === false ? "No automatic ideas yet: they need your pay rate (your date of hire or longevity year in Pay settings)."
-        : "No better-paying swap in the open pot right now.";
-      return `${head}<div class="k">${why} On the Schedule tab, tap &#8644; beside a trip you would trade for more soft time or credit: better trips for it show up here too.</div>`;
+      const why = left > 0 ? "" : sw.priced === false ? "No automatic ideas yet: they need your pay rate (your date of hire or longevity year in Pay settings). "
+        : "No better-paying swap in the open pot right now. ";
+      return `${head}${more}<div class="k">${why}On the Schedule tab, tap &#8644; beside a trip you would trade for more soft time or credit: better trips for it show up here too.</div>`;
     }
     const mine = [...new Set(marked.map((k) => String(k).split("|")[0]))].join(", ");
-    if (!list.length) return `${head}<div class="k">Watching for better trips than <b>${this._e(mine)}</b>. Nothing better right now.</div>`;
+    if (!list.length) return `${head}<div class="k">Watching for better trips than <b>${this._e(mine)}</b>. Nothing better right now.</div>${more}`;
     const cols = ["Give up", "For", "Dates", "Layover", "Days", "Credit", "Soft", "Pay", "Per day", "Gain", "Src", "Grid"];
     const none = (v) => v == null || v === "" || /^-?none-?$/i.test(String(v));
     const num = (v) => typeof v === "number" && isFinite(v);
@@ -112,7 +118,6 @@ class FlightWatcherPotCard extends HTMLElement {
         `<b>${this._e(i.soft_gain)}</b> soft, ${this._e(i.credit_gain)} cr`, src, grid];
       return `<tr>${cells.map((c, n) => `<td data-l="${cols[n]}">${c}</td>`).join("")}</tr>`;
     }).join("");
-    const more = Number(sw.auto_more) > 0 ? `<div class="k">${this._e(sw.auto_more)} more automatic ideas not shown (the top ${this._e(sw.auto_max || 10)} by pay per day are).</div>` : "";
     return `${head}<div class="swb"><table class="swt"><thead><tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>${more}`
       + `<details><summary>Swap ideas key</summary><ul class="k">
         <li>A trip you marked: better = soft time up 0:30 or more, or credit up 1:00 or more without losing soft time.</li>

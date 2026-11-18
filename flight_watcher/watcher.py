@@ -11825,7 +11825,7 @@ def swap_test(idea):
 
 
 SWAP_MARKED_MAX = 30  # ideas for the trips marked "would trade" the sensor lists (as before 1.7.15)
-SWAP_AUTO_MAX = 10  # 1.7.15: automatic ideas the sensor lists, the best pay per day first; auto_more counts the rest
+SWAP_AUTO_MAX = 10  # 1.7.15: automatic ideas the sensor lists (auto_ideas), the best pay per day first; auto_more counts the rest
 SWAP_PAY_TTL_S = 300  # 1.7.15: pay_settings() (two HA helper reads) is read again at most every 5 min for the ideas
 _SWAP_PAY = {"at": 0.0, "v": None}
 
@@ -11848,26 +11848,46 @@ def _swap_package(trip, start, cache, period_of):
     return {}
 
 
-def swap_pay(trip, start, days, rec, own, pay, cache, period_of):
+def _pot_seat(row):
+    """1.7.15 review (R3): the seat a pot trip is flown in for its pay: RO when RO is its only open seat (the pot row's
+    open_seats, pot.parse_detail), else FO (price_moves' fallback, as the schedule card's Ideas price a package trip)."""
+    return "RO" if [x for x in str(row.get("open_seats") or "").split(",") if x] == ["RO"] else "FO"
+
+
+def _pot_crew(row):
+    """1.7.15 review (R5): the pilots on a pot trip from its own roster (the row's crew, [[seat, name]], open seats
+    included), None when the row has none (the package's crew line then)."""
+    crew = row.get("crew")
+    if not isinstance(crew, list):
+        return None
+    n = sum(1 for x in crew if isinstance(x, (list, tuple)) and x and str(x[0]).upper() in ("CA", "FO", "RO"))
+    return n or None
+
+
+def swap_pay(trip, start, days, rec, own, pay, cache, period_of, lay=""):
     """1.7.15: (Pay-Gross, pay per day) of one side of a swap idea, priced the way the swap pushes price a trip
     (price_moves, pay.trip_gross): credit x the PWA 3.D.6 rate pay_settings() gives for the longevity year, plus the
     PWA 4.O.1 override for the seat flown (RO $4.00 a block hour; FO $3.00 on a 3-pilot crew) and the Extended Range
     +15% where on (the per-trip ER list too). Credit and block: rec's (own: Ryan's own trip record; else the pot row),
-    else the trip's bid period package (_swap_package). Seat: his own record's on his trip, FO on a pot trip (as the
-    schedule card's Ideas price it). Crew: his own trip's roster, else the package's crew line. days: the trip's
-    calendar days. (None, None) when the rate, the credit or the days are not known."""
+    else the trip's bid period package (_swap_package). Seat: his own record's on his trip; on a pot trip RO when RO is
+    its only open seat, else FO (_pot_seat, 1.7.15 review R3). Crew: the trip's own roster (his record's, or the pot
+    row's, _pot_crew, review R5), else the package's crew line. Layover: the package's route, else rec's, else lay (his
+    trip's schedule item, review R6), for the ER rule. days: the trip's calendar days. (None, None) when the rate, the
+    credit or the days are not known."""
     rate, _yr, er = pay
     if not rate or not days:
         return None, None
     pk = _swap_package(trip, start, cache, period_of)
     credit = PAY.hrs(rec.get("credit")) if rec.get("credit") else PAY.hrs(pk.get("credit"))
     block = PAY.hrs(rec.get("blk")) if rec.get("blk") else PAY.hrs(pk.get("block"))
-    crew = len(rec["crew"]) if own and isinstance(rec.get("crew"), list) and rec["crew"] else pk.get("crew")
-    lay = "/".join(x for x in str(pk.get("route") or "").split("-") if x and x != "HNL")
-    if not lay:
-        lay = str(rec.get("lay") or rec.get("layover") or "")
-        lay = "" if lay.strip("-").lower() == "none" else lay
-    seat = (rec.get("seat") or "FO") if own else "FO"
+    if own:
+        crew = len(rec["crew"]) if isinstance(rec.get("crew"), list) and rec["crew"] else pk.get("crew")
+    else:
+        crew = _pot_crew(rec) or pk.get("crew")
+    route = "/".join(x for x in str(pk.get("route") or "").split("-") if x and x != "HNL")
+    lays = [str(x or "") for x in (rec.get("lay"), rec.get("layover"), lay)]
+    lay = route or next((x for x in lays if x.strip() and x.strip("-").lower() != "none"), "")
+    seat = (rec.get("seat") or "FO") if own else _pot_seat(rec)
     g = PAY.trip_gross(credit, block, crew, lay, f"{trip}|{start}", seat, rate, er or ())
     if g is None:
         return None, None
@@ -11895,8 +11915,43 @@ def _item_days(it):
     return [(s + timedelta(days=i)).isoformat() for i in range(min(40, (e - s).days + 1))]
 
 
+def _pot_period(row, first, period_of):
+    """1.7.15 review (R7): the bid period ('YYYY-MM') of a pot row: the pot it was listed in (a FLICA swap stays inside
+    one BCID), when its month key names one ('2026-11', or the desktop menu's 'November', the year nearest its first
+    day); else (the mobile pages' keys, the close-in folder) the bid period of its first day (period_of)."""
+    key = str(row.get("month") or "")
+    if re.fullmatch(r"\d{4}-\d{2}", key):
+        return key
+    if key in MONTHS:
+        try:
+            d = date.fromisoformat(first)
+        except ValueError:
+            return period_of(first)
+        m = MONTHS.index(key) + 1
+        y = min((d.year - 1, d.year, d.year + 1), key=lambda y: abs((y * 12 + m) - (d.year * 12 + d.month)))
+        return f"{y:04d}-{m:02d}"
+    return period_of(first)
+
+
+def _own_period(trip, start, period_of):
+    """1.7.15 review (R7): the bid period of his own trip starting on start: the pairing files' bounds when they speak
+    for that day (bid_period_of, through period_of); else the first schedule page on file that lists the trip (a page
+    lists another bid period's day only for a pairing carried across its edge, and FLICA's next page starts on the bid
+    period before's last day, so a Dec 1 trip listed on November's and December's pages is November's); else
+    period_of."""
+    try:
+        if bid_period_of(date.fromisoformat(start)):
+            return period_of(start)
+    except ValueError:
+        return period_of(start)
+    pages = sorted(mk for mk, m in (S.get("schedule") or {}).items() if re.fullmatch(r"\d{4}-\d{2}", str(mk))
+                   and any(it.get("trip") == trip and it.get("start") == start for it in (m or {}).get("items") or []))
+    return pages[0] if pages else period_of(start)
+
+
 def _swap_rank(i):
-    """Display order: the pay-per-day gain, best first; an idea with no pay figure after, by its soft time gain."""
+    """The automatic ideas' order: the pay-per-day gain, best first; an idea with no pay figure after, by its soft time
+    gain. (A marked trip's ideas keep their 1.7.11 order, gain_h: 1.7.15 review R1.)"""
     return (i.get("ppd_gain") is None, -(i.get("ppd_gain") or 0.0), -i.get("gain_h", 0.0), str(i.get("pairing")),
             str(i.get("start")), i.get("for", ""))
 
@@ -11907,7 +11962,8 @@ def swap_auto(rows, marks, items, today, pay, cache, period_of):
     not mark "would trade" against every open pot trip (open time and the close-in folder; a Tradeboard post is not
     the pot) it could swap for, ranked by pay per day: (pot trip Pay-Gross / its days) minus (own trip Pay-Gross / its
     days), swap_pay. Kept only when it pays more a day and is legal by the marked trips' rules: not his own pairing
-    number, the same bid period as his trip (bid_period_fn, 1.7.11), the grid rule (G.swap_allowed: it shares a day
+    number, the same bid period as his trip (1.7.11's bid_period_fn; review R7: the pot's own bid month, _pot_period,
+    against his trip's, _own_period), the grid rule (G.swap_allowed: it shares a day
     with his trip and every day moved off is green), no VAC or blocked day, and FAR 117 with his trip removed reading a
     plain 'OK' (far_for exclude: no CBA-rest note, PWA 10.E.1.a wants 11 h in domicile). Nothing looser: a grid-red
     automatic idea is not listed (a marked one is, and waits). Each carries auto: True and never pushes. Reads only
@@ -11920,7 +11976,7 @@ def swap_auto(rows, marks, items, today, pay, cache, period_of):
             continue
         days = _trip_days(row)
         if days:
-            pot_rows.append((row, days, period_of(days[0])))
+            pot_rows.append((row, days, _pot_period(row, days[0], period_of)))
     out = []
     for mk, it in items.items():
         trip, st = it.get("trip") or "", it.get("start") or ""
@@ -11930,7 +11986,7 @@ def swap_auto(rows, marks, items, today, pay, cache, period_of):
         if not mine_days:
             continue
         mine = own.get(mk) or {}
-        per = period_of(st)
+        per = _own_period(trip, st, period_of)
         mine_pay = None
         for row, days, row_per in pot_rows:
             if row.get("pairing") == trip or row_per != per:
@@ -11939,7 +11995,7 @@ def swap_auto(rows, marks, items, today, pay, cache, period_of):
             if not ok_grid or touches_vac(row) or touches_blocked(row):
                 continue
             if mine_pay is None:
-                mine_pay = swap_pay(trip, st, len(mine_days), mine, True, pay, cache, period_of)
+                mine_pay = swap_pay(trip, st, len(mine_days), mine, True, pay, cache, period_of, it.get("lay") or "")
             if mine_pay[1] is None:
                 break  # his trip cannot be priced: no pay per day to rank against
             row_pay = swap_pay(row.get("pairing"), days[0], len(days), row, False, pay, cache, period_of)
@@ -11973,10 +12029,12 @@ def swap_scan(pot_rows):
     period, ranked by pay per day, the same legality), auto: True, shown on the sensor only: never event/swap, never a
     draft (swap_test), never the auto swap dry run, never swap_seen. Every idea, marked or not, carries both trips'
     Pay-Gross and days and their pay per day (swap_pay; None when the pay rate or the credit is not known). The sensor:
-    the marked trips' ideas first (at most SWAP_MARKED_MAX, as before), then the best SWAP_AUTO_MAX automatic ones,
-    each group ranked by the pay-per-day gain; auto_count is how many automatic ideas there are, auto_more how many
-    of them are not listed (the size cap, ATTR_MAX, drops automatic ideas from the end before any marked one).
-    Reads the rows and the state on hand only: no FLICA load."""
+    "ideas" holds the marked trips' ideas only, as before (at most SWAP_MARKED_MAX, in the 1.7.11 order: gain_h, the
+    soft time and credit gain), "auto_ideas" the best SWAP_AUTO_MAX automatic ones, the best pay per day first;
+    auto_count is how many automatic ideas there are, auto_shown how many "auto_ideas" lists and auto_more how many
+    are not listed (the size cap, ATTR_MAX, drops automatic ideas from the end before any marked one, then cap_attrs
+    trims "ideas" from the end, the least soft time first, as in 1.7.11). Reads the rows and the state on hand only:
+    no FLICA load."""
     marks = S.get("trade_away") or []
     own = S.get("own_trips", {})
     rows = [dict(r, src=r.get("src") or "O") for r in pot_rows] + [dict(r, src="T") for r in S.get("tb_details", {}).values()]
@@ -12007,7 +12065,8 @@ def swap_scan(pot_rows):
             ok_grid, bad_days = G.swap_allowed(S.get("grid") or {}, mine_days, row_days)
             grid_note = "grid OK" if ok_grid else ("no shared day" if bad_days == ["no shared day"] else "grid red " + ", ".join(d[5:] for d in bad_days))
             if mine_pay is None:
-                mine_pay = swap_pay(trip, mk.split("|")[-1], len(mine_days), mine, True, pay, cache, period_of)
+                mine_pay = swap_pay(trip, mk.split("|")[-1], len(mine_days), mine, True, pay, cache, period_of,
+                                    (mine_it or {}).get("lay") or "")
             row_pay = swap_pay(row.get("pairing"), row_days[0] if row_days else "", len(row_days), row, False, pay,
                                cache, period_of)
             ideas.append(_swap_figs({"for": mk, "for_trip": trip, "for_credit": mine.get("credit", ""),
@@ -12046,12 +12105,16 @@ def swap_scan(pot_rows):
     S["auto_swap_log"] = {d: n for d, n in (S.get("auto_swap_log") or {}).items() if d >= today}
     save_state(S)
     auto = swap_auto(rows, marks, items, today, pay, cache, period_of)
-    shown, auto_shown = sorted(ideas[:SWAP_MARKED_MAX], key=_swap_rank), auto[:SWAP_AUTO_MAX]
+    # 1.7.15 review (R1, F3): the marked trips' ideas in "ideas", in their 1.7.11 order (gain_h, the push order), so
+    # the size cap (cap_attrs, ATTR_TRIM: "ideas" from the end) drops the least soft time first as before, and every
+    # reader of "ideas" (the old dashboard card, the schedule card's swap tags) sees what 1.7.11 gave it; the automatic
+    # ones in their own "auto_ideas", best pay per day first
+    shown, auto_shown = ideas[:SWAP_MARKED_MAX], auto[:SWAP_AUTO_MAX]
 
     def payload():
-        return {"count": len(ideas) + len(auto), "ideas": shown + auto_shown, "marked": marks,
-                "auto_count": len(auto), "auto_more": len(auto) - len(auto_shown), "auto_max": SWAP_AUTO_MAX,
-                "priced": bool(pay and pay[0])}
+        return {"count": len(ideas) + len(auto), "ideas": shown, "auto_ideas": auto_shown, "marked": marks,
+                "auto_count": len(auto), "auto_shown": len(auto_shown), "auto_more": len(auto) - len(auto_shown),
+                "auto_max": SWAP_AUTO_MAX, "priced": bool(pay and pay[0])}
     out = payload()
     while auto_shown and attr_size(out) > ATTR_MAX:  # the size cap: automatic ideas go first, from the end
         auto_shown.pop()

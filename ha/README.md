@@ -44,17 +44,21 @@ near misses never push (information only), so the guard's count is unchanged.
 ## Pending on Pako (1.7.15): automatic swap ideas on the Swap ideas table
 
 Ryan, Nov 17: "Fill Swap ideas without a manual tap: rank my trips against open pot trips by pay per day. Keep
-legality and VAC/blocked rules." Flight Watcher 1.7.15 adds automatic ideas (`auto: true`) to
-`sensor.flight_watcher_swap_ideas` with each idea's pay, days and pay per day (`pay`, `pay_days`, `ppd`, `for_pay`,
-`for_days`, `for_ppd`, `ppd_gain`) and `auto_more`, `auto_max`, `priced` on the sensor. `dashboard_flight_watcher.json`,
-view `watcher`: the Swap ideas markdown card (under its heading) lists them ("*auto*" beside the trip given up), adds
-the Pay and Per day columns and the "N more automatic ideas not shown" line, says "No better-paying swap in the open
-pot right now" (or how to set a pay rate) when there is no idea, and its Key explains auto and pay per day. No push
-changes: the "Flight Watcher swap idea" automation is triggered by `flight_watcher/event/swap` alone, which never
-carries an automatic idea. The old card still works with 1.7.15 (it shows the ideas only while a trip is marked), so
-Claude applies this dashboard edit through the HA connector after 1.7.15 is live (a dashboard edit: the card's
-`content` only; undo: the old `content` from git history), then checks by sha256 of the redacted text as in Refresh
-below and drops this section. Until then the snapshot is one edit ahead of Pako (below).
+legality and VAC/blocked rules." Flight Watcher 1.7.15 puts the automatic ideas (`auto: true`) in their own attribute,
+`auto_ideas`, on `sensor.flight_watcher_swap_ideas`, with each idea's pay, days and pay per day (`pay`, `pay_days`,
+`ppd`, `for_pay`, `for_days`, `for_ppd`, `ppd_gain`) and `auto_count`, `auto_shown`, `auto_more`, `auto_max`, `priced`
+on the sensor. `ideas` keeps the marked trips' ideas only, in their 1.7.11 order, so every reader of it (the old Swap
+ideas card, the schedule card's swap tags) shows exactly what 1.7.11 showed: until this edit is applied the dashboard
+lists no automatic idea at all, never one mixed in with the marked ones. `dashboard_flight_watcher.json`, view
+`watcher`: the Swap ideas markdown card (under its heading) lists `ideas` then `auto_ideas` ("*auto*" beside the trip
+given up), adds the Pay and Per day columns and the "N more automatic ideas not shown (the best K by pay per day
+are)" line (K the number listed), says "No better-paying swap in the open pot right now" (or how to set a pay rate)
+when there is no idea, and its Key explains auto and pay per day. No push changes: the "Flight Watcher swap idea"
+automation is triggered by `flight_watcher/event/swap` alone, which never carries an automatic idea. This edit is a
+step of the 1.7.15 go-live, not a later one: right after the 1.7.15 update is verified (release step 3), Claude
+applies it through the HA connector (a dashboard edit, the card's `content` only; undo: the old
+`content` from git history), checks it by sha256 of the redacted text as in Refresh below and drops this
+section. Until then the snapshot is one edit ahead of Pako (below).
 
 ## Applied on Pako 2026-11-13 about 05:45 HST (1.7.2, FW-0066): "Flight Watcher pilot upload"
 
@@ -161,7 +165,7 @@ misses card): the snapshot is now ahead of Pako by those edits alone, sha256
 `e95ce9d3b662aad0357c138f355d834928a9abad86a869bc6570283fe9fc19c2`, and Pako matches it again once they are applied.
 
 pilot lookup row and the Pilots cards below), until the pending Swap ideas edit (above): the snapshot is now ahead of
-Pako by that edit alone, sha256 `5b7fce3f5b9a1700df88531dff6990ea26c608c759e47f0934facd032096b1bf`, and Pako matches
+Pako by that edit alone, sha256 `eaefa85cdd9d6ff95893445682292b11896bc3468bf8583fb583a2d391f781fd`, and Pako matches
 it again once the edit is applied.
 
 **Changed on Pako 2026-11-14 about 17:15 HST (1.7.8, Ryan's yes "all of it"):** once 1.7.8 was live, Claude put the
