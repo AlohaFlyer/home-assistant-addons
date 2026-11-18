@@ -61,6 +61,10 @@ FLICA page, no change to budgets, pacing or the one-session rule; read only as b
   - The Open column's clash test, the layover cell and the in-progress mark read every month's items (each trip and
     start once). From Dec 1 December is read on the mobile page, which starts at Dec 1 and gives H3607 no code day, so
     an open-time pairing on Dec 1 to 2 showed as fitting while the Watcher's schedule_fit says Conflict H3607.
+- Month totals of a trip across a month end (Ryan, Nov 17: December Credit 73:00 / Block 36:21 against FLICA 80:35 /
+  43:56 on 1.7.10): FLICA's December page starts on Nov 30 when a trip runs in (H3607), and its Dec 2 leg (7:35) is
+  December's (PWA 4.A). FW-0080 above already counts each duty in the bid period it departs in, so December's Credit,
+  Block, Soft and Pay include it and November keeps its own part; a test keeps it so (Ryan's 1.7.12 patch, folded in).
 - Tests: `tests/test_own_trip_blank.py` (synthetic pairings, both instances): times kept, hourly re-read, the
   pre-1.7.11 empty record read once then hourly, an in-progress trip with kept times not re-read every check, the
   per-check limit, pruning, no load for a trip with times, and a page that stops pairing reads (times and
@@ -69,7 +73,7 @@ FLICA page, no change to budgets, pacing or the one-session rule; read only as b
   hour and a good pot detail at the reopen closes the breaker, a killed or expired page loads nothing more, and a
   load the budget leaves out still publishes the trips read before it;
   `tests/test_card_cross_month_672.py` (Chromium, made-up pairing X9607: Nov 30, Dec 2 and Dec 5 in both months'
-  views); `tests/test_card_cross_month_review.py` (Chromium, made-up pairings: swap ideas for X9607 with its copy on
+  views, December's page starting on Nov 30, and each month's Block and Credit matching its FLICA totals); `tests/test_card_cross_month_review.py` (Chromium, made-up pairings: swap ideas for X9607 with its copy on
   December's page, a November trip's release, FAR-30/7, trip box, Legal next and pick-up rest in the December view,
   and the Open clash and layover cell on December's mobile page).
 

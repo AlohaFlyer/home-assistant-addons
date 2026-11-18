@@ -21,9 +21,10 @@ def _days(mk, n):
 
 
 def _states(offset):
+    # FLICA's December page starts on Nov 30 when a trip runs into December (as H3607 did)
     s = lambda st, a=None: {"state": st, "attributes": a or {}, "last_updated": NOW, "last_changed": NOW}  # noqa: E731
     months = {"2026-11": {"items": [TRIP], "days": _days("2026-11", 30), "totals": {"block": "10:00", "credit": "10:00"}},
-              "2026-12": {"items": [dict(TRIP)], "days": _days("2026-12", 31), "totals": {"block": "7:35", "credit": "7:35"}}}
+              "2026-12": {"items": [dict(TRIP)], "days": [["2026-11-30", "X9607", "KIX"]] + _days("2026-12", 31), "totals": {"block": "7:35", "credit": "7:35"}}}
     return {"sensor.flight_watcher_schedule": s("ok", {"updated": "Nov 20, 2026", "months": months}),
             "sensor.flight_watcher_own_trip_times": s("1", {"count": 1, "trips": OWN}),
             "input_number.flight_watcher_month_offset": s(str(offset)),
@@ -41,3 +42,19 @@ def test_a_trip_across_a_month_end_counts_once_in_100_672(offset, day, want):
         pg.wait_for_function(f"C.shadowRoot && C.shadowRoot.querySelector('tr[data-d=\"{day}\"]')")
         cell = _q(pg, f"return q('tr[data-d=\"{day}\"]').cells[11].textContent.replace('~', '').trim();")
         assert cell == want  # each leg once (Nov 30: the first leg so far), never twice
+
+
+@pytest.mark.parametrize("offset,want", [(0, "10:00"), (1, "7:35")])
+def test_each_month_totals_count_its_own_share_of_a_cross_month_trip(offset, want):
+    """Ryan's 1.7.12 patch (Nov 17: December Credit 73:00 / Block 36:21 against FLICA 80:35 / 43:56), folded into
+    1.7.11: December's Block and Credit include the Dec 2 leg (7:35) shown on the Nov 30 row; November keeps its 10:00.
+    Both match the months' FLICA totals, so neither shows a FLICA mismatch. FW-0080 (each duty counts in the bid period
+    it departs in, PWA 4.A) already does this; the test keeps it so."""
+    with _browser() as b:
+        pg = _page(b, _card("schedule-card", pilot=False), 1280, 900, pkg=None)
+        pg.clock.set_fixed_time(NOW)
+        pg.evaluate("([tag, st]) => { window.C = mount(tag, {}, st, {user: {id: 'o', name: 'O', is_admin: true, "
+                    "is_owner: true}}); }", [TAG, _states(offset)])
+        pg.wait_for_function("C.shadowRoot && C.shadowRoot.querySelector('.tot')")
+        tot = " ".join(_q(pg, "return q('.tot').textContent;").split())
+        assert f"Block {want}" in tot and f"Credit {want}" in tot and "FLICA" not in tot, tot
