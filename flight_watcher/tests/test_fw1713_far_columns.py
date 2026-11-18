@@ -471,7 +471,7 @@ def test_key_says_a_trip_with_no_times_counts_nothing(got):
     assert ("a trip whose report and release are not on file yet (its times not read) counts as time off"
             in key["30h in 7d"])
     assert ("~ = part of the window is before the schedule on file, or holds a trip whose times are not read yet (it "
-            "adds 0:00; hover for which).") in key["100h in 672h"]
+            "adds 0:00, or only its duties with a block; hover for which).") in key["100h in 672h"]
     assert "A trip whose block times are not read yet adds 0:00 here and in Room to 100h." not in key["100h in 672h"]
     assert ("with `~` in front when a window reaches past the schedule on file or holds a trip whose times are not read "
             "yet: that trip adds 0:00 block, and the cell's title names it. With no report and release on file such a "

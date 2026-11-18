@@ -1060,24 +1060,43 @@ class FlightWatcherScheduleCard extends HTMLElement {
       // holding part of the pickup), so it ends after 00:00 that day and starts before 24:00.
       // 1.7.13: headed "30h in 7d", "100h in 672h" and "Room to 100h"; the two flight time cells show what is left of
       // the 100:00 (farLeft), the 30 h cell its states with units (far30Txt).
+      // 1.7.13 FAR review (R2, R3): a trip with a duty block missing counts its whole Block, as far.py does (recall._trip
+      // puts it on one span from report to last block-in): the duties with a block as before, the rest of the Block on
+      // the duties without one (departure to arrival, shared by their length), else on far.py's span (farSpans); with no
+      // trip Block its duties with a block count and it reads "~". A trip with no duties ends its leg at the last
+      // block-in (o.rel less the 15 min debrief, PWA 2.19.b), as far.py's span does
       const legs = [], unk = [];
+      const atMin = (iso, mn) => this._t(iso, "0:0") + mn * 60e3;
       for (const o of own) {
         const t = ownT[`${o.it.trip}|${o.it.start}`] || {}; const base = this._t(o.it.start, "0:0"), n0 = legs.length;
         // duty blk can carry credit on some trips, so each trip's legs are scaled to FLICA's trip Block
         const dsum = (t.duties || []).reduce((sm, du) => sm + (du.blk || 0), 0) / 60, tb = hrs(t.blk), sc = tb != null && dsum > 0 ? Math.min(1, tb / dsum) : 1;
-        if (t.duties && t.duties.length) t.duties.forEach((du) => { if (du.blk) legs.push({ a: base + (du.arr - du.blk) * 60e3, b: base + du.arr * 60e3, h: du.blk / 60 * sc }); });
-        else { const bh = hrs(t.blk); if (bh != null && o.rep && o.rel) legs.push({ a: o.rep, b: o.rel, h: bh }); }
+        const noBlk = (t.duties || []).filter((du) => du.blk == null || du.blk === ""), miss = noBlk.length > 0;
+        const span = (du) => { const d0 = farInt(du && du.dep), d1 = farInt(du && du.arr); return d0 != null && d1 != null && d1 > d0 ? d1 - d0 : 0; };
+        const nbLen = noBlk.reduce((sm, du) => sm + span(du), 0), rest = tb != null ? Math.max(0, tb - dsum * sc) : null;
+        const one = miss && tb != null && !noBlk.every((du) => span(du) > 0) ? farSpans(o.it, t, atMin).filter((sp) => sp.e > sp.s)[0] : null;
+        if (one) legs.push({ a: one.s, b: one.e, h: tb });
+        else if (t.duties && t.duties.length) {
+          t.duties.forEach((du) => { if (du.blk) legs.push({ a: base + (du.arr - du.blk) * 60e3, b: base + du.arr * 60e3, h: du.blk / 60 * sc }); });
+          if (miss && rest) noBlk.forEach((du) => legs.push({ a: base + farInt(du.dep) * 60e3, b: base + farInt(du.arr) * 60e3, h: rest * span(du) / nbLen }));
+        } else { const bh = hrs(t.blk); if (bh != null && o.rep && o.rel) legs.push({ a: o.rep, b: Math.max(o.rep, o.rel - 15 * 60e3), h: bh }); }
         // 1.7.13 (F3): a trip that adds no block (no times on file: no Block and no duties, a {} record, no record) is
-        // not known in full, so a window holding it (its report to release, else its whole days) reads with "~"
-        if (legs.length === n0 && tb !== 0) {
+        // not known in full, so a window holding it (its report to release, else its whole days) reads with "~"; so
+        // does one whose duties count without the trip's Block when a duty has none (R2: part)
+        const part = miss && tb == null && legs.length > n0;
+        if ((legs.length === n0 && tb !== 0) || part) {
           const known = o.rep && o.rel && o.rel > o.rep;
           unk.push({ a: known ? o.rep : base, b: known ? o.rel : this._t(o.it.end || o.it.start, "0:0") + 24 * H,
-            txt: `${o.it.trip} ${String(o.it.start).slice(5).replace("-", "/")}` });
+            txt: `${o.it.trip} ${String(o.it.start).slice(5).replace("-", "/")}`, part });
         }
       }
       const blkIn = (w0, w1) => legs.reduce((sm, l) => { const ov = Math.min(l.b, w1) - Math.max(l.a, w0); return ov > 0 ? sm + l.h * Math.min(1, ov / Math.max(1, l.b - l.a)) : sm; }, 0);
-      const unkIn = (w0, w1) => unk.filter((u) => u.a < w1 && w0 < u.b).map((u) => u.txt);
-      const unkTxt = (u) => `~ = not known in full: no block times on file yet for ${u.join(", ")} (counted 0:00)`;
+      const unkIn = (w0, w1) => unk.filter((u) => u.a < w1 && w0 < u.b);
+      const unkTxt = (u) => {
+        const none = u.filter((x) => !x.part).map((x) => x.txt), part = u.filter((x) => x.part).map((x) => x.txt);
+        return "~ = not known in full: " + [none.length ? `no block times on file yet for ${none.join(", ")} (counted 0:00)` : "",
+          part.length ? `no block time on file yet for a duty of ${part.join(", ")} (counted the duties with a block)` : ""].filter(Boolean).join("; ");
+      };
       // far._cum's windows (1.7.13 F1), each with its sure block in whole minutes, earliest end first
       const fsp = [];
       for (const o of own) for (const sp of farSpans(o.it, ownT[`${o.it.trip}|${o.it.start}`] || {}, (iso, mn) => this._t(iso, "0:0") + mn * 60e3)) if (sp.h != null) fsp.push(sp);
@@ -1660,8 +1679,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
     <tr><td>RO / RO+15%</td><td>Add-ons inside Pay-Gross. RO = only on trips where you are listed RO: block x $${IRO_OVERRIDE.toFixed(2)} (PWA 4.O.1.a). RO+15% = Extended Range crew, 4 pilots, type-rated FO: 15% of pay (PWA 4.O.1.b); on by itself for SIN, tap Pay-Gross to switch any trip on or off.</td></tr>
     <tr><td>Res Grid</td><td>FLICA net reserves. <span class="g green">Green</span> = drop or swap off this day OK. <span class="g red">Red</span> = add only.</td></tr>
     <tr><td>30h in 7d</td><td>FAR 117.25(b): 30 consecutive hours free from all duty within the past 168 consecutive hours (7 days) before a report. A break of 30 h+ off all duty (teal edge on its days, a long layover counts) covers any report up to 138 h after it ends. &#10003; 36h MM/DD = a report at that day's first duty start (00:01 on a day off) is covered: the longest break off duty in the 168 h before it, in whole hours, and the date that break ended; a later report that day may not be (hover for the hours and 'covered until'); red 'need 30h off' = that report is not covered; ? = the window reaches before the schedule on file; &#8211; = mid-trip, no report that day. Training (SIM, OEB, ground school) and reserve days count as duty; a trip whose report and release are not on file yet (its times not read) counts as time off. Need 30 h off by (totals): the first report time after which you need 30 h off first.</td></tr>
-    <tr><td>100h in 672h</td><td>FAR 117.23(b)(1): at most 100 flight hours in any 672 consecutive hours (28 days). This cell checks the 672 h ending 24:00 that day: what is left, in hours and minutes, of 100:00 less the block flown or scheduled in it, leg by leg (10:57 left = 89:03 flown or scheduled). Red '0:00 left' = at the limit; red '1:20 over' = past it by that much. ~ = part of the window is before the schedule on file, or holds a trip whose times are not read yet (it adds 0:00; hover for which). Hover for the block.</td></tr>
-    <tr><td>Room to 100h</td><td>What is left, in hours and minutes (h:mm), under FAR 117.23(b)(1) (100 flight hours in any 672 consecutive hours): 100:00 minus the block flown or scheduled in the busiest 672 h (28-day) window that holds any part of that day, looking back and forward, so trips already on your line after that day count too (100h in 672h looks back only). It tries every window that starts at a duty's start or ends at its block-in, where the busiest one always is, counting a duty's block when the whole duty is in the window, as a pickup's FAR check does, and the windows ending 24:00 HST counted leg by leg as in 100h in 672h, so it never shows more room than 100h in 672h. 'left' = room under the limit; red '0:00 left' = none; red '1:20 over' = such a window is over 100:00 by that much. ~ = a window reaches past the schedule on file, or holds a trip whose times are not read yet (it adds 0:00; hover for which). Block Avail (totals): 98:00 bid-month cap minus FLICA's bid-period Block.</td></tr>
+    <tr><td>100h in 672h</td><td>FAR 117.23(b)(1): at most 100 flight hours in any 672 consecutive hours (28 days). This cell checks the 672 h ending 24:00 that day: what is left, in hours and minutes, of 100:00 less the block flown or scheduled in it, leg by leg (10:57 left = 89:03 flown or scheduled). Red '0:00 left' = at the limit; red '1:20 over' = past it by that much. ~ = part of the window is before the schedule on file, or holds a trip whose times are not read yet (it adds 0:00, or only its duties with a block; hover for which). A trip with a duty's block missing counts its whole trip Block, as a pickup's FAR check does: the rest of it on the duties without one. Hover for the block.</td></tr>
+    <tr><td>Room to 100h</td><td>What is left, in hours and minutes (h:mm), under FAR 117.23(b)(1) (100 flight hours in any 672 consecutive hours): 100:00 minus the block flown or scheduled in the busiest 672 h (28-day) window that holds any part of that day, looking back and forward, so trips already on your line after that day count too (100h in 672h looks back only). It tries every window that starts at a duty's start or ends at its block-in, where the busiest one always is, counting a duty's block when the whole duty is in the window, as a pickup's FAR check does, and the windows ending 24:00 HST counted leg by leg as in 100h in 672h, so it never shows more room than 100h in 672h. 'left' = room under the limit; red '0:00 left' = none; red '1:20 over' = such a window is over 100:00 by that much. ~ = a window reaches past the schedule on file, or holds a trip whose times are not read yet (it adds 0:00, or only its duties with a block; hover for which). Block Avail (totals): 98:00 bid-month cap minus FLICA's bid-period Block.</td></tr>
     <tr><td>Legal next</td><td>Earliest report for another trip: release + 11 h (PWA 10.E.1.a). Tap for the 18 h case.</td></tr>
     <tr><td>Open</td><td>Open time trips starting that day: <span class="fit">fits</span>, <span class="clash">clashes or blocked</span>.</td></tr>
     <tr><td>Ideas</td><td>Tag-ons after your release with legal rest, <b>O</b> = in open time, <b>T</b> = on the Tradeboard. Orange = better trip for a marked one. Tap for details.</td></tr>

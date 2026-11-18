@@ -37,7 +37,7 @@ unchanged); the windows Room to 100h tries are the next section's.
 ### Room to 100h tries every 672 h window, like far.py; unknown trip times marked
 
 Ryan, Nov 18: "fix all of these things" (the FAR 117 gaps item 4's review left open). The Schedule card only; far.py,
-recall.py and the pot and finds cards are unchanged.
+recall.py and the pot and finds cards are unchanged here (far.py changes in the review fixes below).
 - **Room to 100h finds far.py's windows** (F1): it was 100:00 minus the busiest 672 h window ending 24:00 HST, and a
   window ending mid-day can hold more (on a synthetic line Room read `9:00 left` where far.legality finds 101:00 in the
   672 h from Nov 1 10:45 to Nov 29 10:45, over FAR 117.23(b)(1)). Room is now 100:00 minus the busiest 672 h window
@@ -71,6 +71,48 @@ recall.py and the pot and finds cards are unchanged.
   the larger of far.py's busiest window and the windows ending 24:00; `~` and the trip's name for a `{}` record, no
   record and no Block; the Key and header. Each fails on the code before. `tests/test_fw1713_far_columns.py` moves
   to the new cells (Room over on Nov 29 of the 101:20 line, `~` a day further, Room counting duty blocks as far.py).
+
+### FAR review fixes
+
+Two adversarial checks of the FAR fixes above (460 random synthetic lines, 28,060 day comparisons with far.py) found
+four gaps. Each is fixed with a test that fails on the code before (`tests/test_fw1713_room_windows.py`).
+- **Exactly 100:00 is legal in far.py** (R1): far._cum added blocks as float hours, and about a quarter of block sets
+  that add up to exactly 6000 min float to 100.00000000000001 h, so a pickup that brings a 672 h window to exactly
+  100:00 read NO `flight time 100:00 h in 672 h, over 100 h` (`FT 100h/672h` in the pot, Tradeboard and finds FAR
+  column and the Recall/O75 miss check) while the card read `0:00 left`. FAR 117.23(b)(1) allows 100 h. _cum now
+  compares whole minutes (every time on file is one), for the FDP limits too (FAR 117.23(c)(1): five FDPs adding up to
+  exactly 60:00 in 168 h read over); one minute more is over. The 1.7.13 claim "at exactly 100:00 (`0:00 left`,
+  far.py OK)" now holds for any blocks, not only the `zero` line's.
+- **100h in 672h counts a trip with a duty block missing** (R2): its legs held only the duties with a block, so a
+  window holding H9201 (Block 20:00, its second duty with no block) counted 10:00 where far.py counts the trip's 20:00
+  (recall._trip puts the Block on one span from report to last block-in): `6:00 left` (94:00) against 104:00, no `~`,
+  while Room read `4:00 over`. The rest of the trip's Block now counts on the duties without a block (departure to
+  arrival, shared by their length; on far.py's span when their times do not read), so a window holding the whole trip
+  counts its Block as far.py does. With no trip Block the duties with a block count and the cell reads `~` (`no block
+  time on file yet for a duty of H9205 11/05 (counted the duties with a block)`). The Key says both.
+- **A no-duty trip's block ends at its last block-in** (R3): 100h in 672h spread it to the release (15 min later,
+  PWA 2.19.b), so the 672 h ending 24:00 after a 23:50 block-in held 99:59 of a 100:02 line (`0:01 left`, Room `0:02
+  over`). It now ends at the block-in, as far.py's span does.
+- **far._cum tries the open edges too** (R4): it tried only windows built on span edges, so for a pairing with no
+  flight time of its own (the tests' day probe) the busiest worst window, ending just after 00:00 that day as a span of
+  the line leaves it, was never tried: on a line where Room read `5:00 over` on Dec 25 (105:00 in the 672 h ending
+  24:00, a leg across its start) far.py read OK `at most 95:00`. _cum now also tries the window ending 1 s after the
+  start of the pairing's first span and the one starting 1 s before the end of its last (its report and release when
+  it has none): `?` (95:00 known, up to 129:00), as a real 1:00 pickup that day read. "Room over leg by leg, far.py `?`,
+  never OK" now holds for the probe, and the test checks it on every day. On 12,000 random synthetic pickups against
+  300 random lines only 15 of 21,789 FAR 117.23 checks changed: 2 NO at exactly 60:00 FDP now OK (R1), 13 NO now `?`
+  (`over ... even without the pairing: the line on file looks incomplete`), each on a synthetic line already over the
+  limit by itself next to the pickup, which a line on file cannot be.
+- A rerun of the checks on the fixed code (450 random lines, seeds 11, 22, 33, Nov and Dec, 27,450 days): Room never
+  reads left where far.py finds a window over 100:00, never over where far.py reads OK, and its block is never below
+  far.py's busiest sure window. The 100h in 672h cell lies between far.py's sure and worst count of the same 672 h
+  ending 24:00 on every day, except windows holding a trip whose duty blocks add up to more than its Block (the cell
+  scales them to the Block, 1.7.11, as before). 30h in 7d is identical to 1.7.11's on every day.
+- Tests: synthetic lines H91xx (exactly 100:00, a float sum over 100 h), H92xx (a duty with no block), H93xx (a 23:50
+  block-in), H94xx (Oct to Jan, the probe's edge window), two H9205 records whose second duty has no block (with and
+  without the trip Block) and five FDPs (H95xx) at exactly 60:00 in 168 h; on every test line the 100h in 672h cell
+  between far.py's sure and worst count of its window, day by day (half100 left out: it scales duty blocks by design),
+  and far.py `?` wherever Room is over and far.py's sure count is not.
 
 ## 1.7.12
 

@@ -50,7 +50,8 @@ publishes what it finds to Home Assistant over MQTT.
 - FAR column (1.4.7, FW-0039): pot, Tradeboard and finds rows run the Recall check's FAR 117 and PWA rules per duty
   period (117.25(e), 117.25(b), 117.23(b)(1), 117.23(c)(1) and (2): `FDP 65h/168h`, `FDP 191h/672h`; PWA 10.E.1.a
   as the `OK (CBA rest 10:30)` note). Anything not on file (a neighbour's times, training or reserve days, a customs
-  release) reads `?`, never OK; `far_why` on the row cites the rule.
+  release) reads `?`, never OK; `far_why` on the row cites the rule. A 672 h or 168 h window holding exactly a limit
+  (100:00 flight time, 60:00 or 190:00 FDP) passes: the hours are compared to the minute (1.7.13 FAR review).
 - Smart push fields (1.4.13, FW-0042): pot, Tradeboard and finds rows (in the finds DB and month files, not on the
   sensors), `last_new` and `event/new_pairing` carry `comm` (the home airports you can commute from: two scheduled
   nonstops arriving HNL before report, PWA 26.QQ.2, and one home 60+ min after release; or `No`), `value` (credit x
@@ -584,8 +585,10 @@ over exactly where far.py finds a 672 h window over 100:00 that holds the day, o
 leg by leg (a leg across its edge counted in part), which far.py reads `?`. Both read red `0:00 left` at the limit
 and red `1:20 over` past it (the word says it too, never the colour alone), with `~` in front when a window reaches
 past the schedule on file or holds a trip whose times are not read yet: that trip adds 0:00 block, and the cell's
-title names it. With no report and release on file such a trip also counts as time off in `30h in 7d`. The Key
-explains each. Above 700 px the `100h in 672h` and `Room to 100h` headers take two lines and the FAR cells pad 4 px a
+title names it. With no report and release on file such a trip also counts as time off in `30h in 7d`. A trip with
+a duty that has no block counts its whole Block in both cells (the rest of it on the duties without one), as far.py
+counts it; with no trip Block its duties with a block count and the cell reads `~`. A trip with no duties counts its
+block up to its last block-in, not its release (1.7.13 FAR review). The Key explains each. Above 700 px the `100h in 672h` and `Room to 100h` headers take two lines and the FAR cells pad 4 px a
 side, so the grid is about as wide as in 1.7.11.
 
 **Pairing detail** (1.7.7, Ryan, Nov 14): on the schedule card a tap on a pairing (or Enter on it) opens its detail
