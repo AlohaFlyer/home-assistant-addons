@@ -27,6 +27,9 @@
 // airports the Watcher's commute check passed both ways from the pilot's own smart.json timetables: 2 scheduled
 // nonstops arriving HNL before report, PWA 26.QQ.2, and 1 home after release, same day) shows as a chip
 // "Commutable AAA BBB", in words, not color alone; only three-letter codes are drawn. No tag, no chip (and no key line).
+// 1.7.17 review: the Key gives the home gap as the pilot's smart.json home_gap_min (60 min unless set), never a fixed 60;
+// the stale-pot banner's rule is div.warn, so the "c warn" FAR chip (CBA rest) keeps the chip size and the line's
+// other chips are not stretched to its height.
 // Usage: type: custom:flight-watcher-pot-card
 // PWA 3.D.6 A330 PAX / B787 First Officer hourly rate by longevity year (1-12) and effective date (as the schedule card)
 const PC_RATE_DATES = ["2023-03-02", "2024-03-02", "2025-03-02", "2026-03-02", "2027-01-31"];
@@ -188,7 +191,7 @@ class FlightWatcherPotCard extends HTMLElement {
     const head = `${nP} in the pot &middot; ${nT} Tradeboard pickup${nT === 1 ? "" : "s"}`;
     const list = shown.length ? shown.map(row).join("") : `<div class="k">${rows.length ? "Every trip is on a VAC or blocked day." : "The open time pot is empty and there are no Tradeboard pickups."}</div>`;
     const vacBox = hidden.length || showVac ? `<label class="sv"><input type="checkbox" id="sv"${showVac ? " checked" : ""}> Show VAC/blocked${hidden.length && !showVac ? ` (${hidden.length} hidden)` : ""}</label>` : "";
-    const cmKey = rows.some((p) => this._cmAps(p).length) ? `<li><b>Commutable</b> and an airport = you can commute from that airport both ways: 2 scheduled nonstops arriving HNL before report (PWA 26.QQ.2) and 1 nonstop home 60+ min after release, same day (30 min after block-in when clearing customs, PWA 2.19.b), from your smart.json timetables. No chip = not commutable, or not known.</li>` : "";
+    const cmKey = rows.some((p) => this._cmAps(p).length) ? `<li><b>Commutable</b> and an airport = you can commute from that airport both ways: 2 scheduled nonstops arriving HNL before report (PWA 26.QQ.2) and 1 nonstop home leaving at least your home gap after release (home_gap_min in your smart.json, 60 min unless set), same day (release 30 min after block-in when clearing customs, PWA 2.19.b), from your smart.json timetables. No chip = not commutable, or not known.</li>` : "";
     const valNote = rate == null ? "Value: set your longevity year in Pay settings (Schedule tab)."
       : `Value = credit x $${rate.toFixed(2)}/h (PWA 3.D.6, longevity year ${lyr}${unconf ? ", not confirmed yet: check it in Pay settings on the Schedule tab" : ""}).`;
     this.shadowRoot.innerHTML = `<style>
@@ -196,7 +199,7 @@ class FlightWatcherPotCard extends HTMLElement {
       ha-card{padding:10px 12px;font-size:13px;line-height:1.35}
       h3{margin:0;font-size:15px}.hd{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:6px}
       .k{color:var(--secondary-text-color);font-size:12px}
-      .warn{margin:4px 0 6px;padding:6px 8px;border-radius:6px;border-left:4px solid var(--warning-color,#b26a00);background:rgba(178,106,0,.12)}
+      div.warn{margin:4px 0 6px;padding:6px 8px;border-radius:6px;border-left:4px solid var(--warning-color,#b26a00);background:rgba(178,106,0,.12)}
       .r{padding:6px 0;border-top:1px solid var(--divider-color)}.r.off{opacity:.6}
       .l1{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}.l2{color:var(--secondary-text-color);font-size:12px;margin-top:2px;overflow-wrap:anywhere}
       .l3{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}

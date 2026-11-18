@@ -6987,11 +6987,17 @@ def close_in_menu_read(fl):
 
 
 def _close_in_cached(regular):
-    """The close-in rows of the last good read of the folder now trusted, less any trip a regular pot has now."""
+    """The close-in rows of the last good read of the folder now trusted, less any trip a regular pot has now. 1.7.17
+    review: their smart fields (comm, so the sensors' cm tag) are judged again from smart.json on hand (smart_fields,
+    as pot_details does for the regular rows every check; no FLICA page load), so an edit or removal of the file
+    reaches them between reads and after a failed read, never a tag kept without timetables."""
     b = (S.get("close_in") or {}).get("bcid")
     if not b or CLOSE_IN_LAST["bcid"] != b:
         return {}
-    return {k: r for k, r in CLOSE_IN_LAST["rows"].items() if k not in regular}
+    rows = {k: r for k, r in CLOSE_IN_LAST["rows"].items() if k not in regular}
+    for r in rows.values():
+        smart_fields(r)  # never raises: '' fields without smart.json
+    return rows
 
 
 def close_in_check(fl, pot_all, full=False, moved_from=()):
@@ -7874,7 +7880,7 @@ def publish_tradeboard(live=None):
     Published with the same fields as pot rows (fit, vac, blocked, far re-screened every time) plus
     src 'T', so the dashboard lists them in the pot table. 1.7.17: and the pot rows' commute tag cm, its comm judged
     again here from smart.json's timetables on hand (no FLICA page load), so an edit of the file reaches a post read
-    before it, as it reaches the pot's rows every check."""
+    before it, as it reaches the pot's rows every check (the close-in rows between reads too: _close_in_cached)."""
     live = S.get("tb_details", {}) if live is None else live
     try:
         cfg = SMART.load(SMART_FILE, warn=log.info)

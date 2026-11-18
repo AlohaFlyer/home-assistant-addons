@@ -74,8 +74,9 @@ publishes what it finds to Home Assistant over MQTT.
   (100:00 flight time, 60:00 or 190:00 FDP) passes: the hours are compared to the minute (1.7.13 FAR review).
 - Smart push fields (1.4.13, FW-0042): pot, Tradeboard and finds rows (in the finds DB and month files, not on the
   sensors), `last_new` and `event/new_pairing` carry `comm` (the home airports you can commute from: two scheduled
-  nonstops arriving HNL before report, PWA 26.QQ.2, and one home 60+ min after release; or `No`), `value` (credit x
-  your rate) and `month_rule` (your bid line or reserve month's rules, per bid period: days off, VAC, rest, SCR days).
+  nonstops arriving HNL before report, PWA 26.QQ.2, and one home at least smart.json's `home_gap_min` after release,
+  60 min unless set; or `No`), `value` (credit x your rate) and `month_rule` (your bid line or reserve month's rules,
+  per bid period: days off, VAC, rest, SCR days).
   They read `/share/flight_watcher/smart.json` (a second pilot's `/share/flight_watcher/<name>/smart.json`), which is
   never in git; without it they are blank. The finds card shows Comm and Value. 1.7.17: the pot and Tradeboard
   sensor rows carry `cm`, the airports `comm` passed both ways (`["AAA", "BBB"]`), only on a trip commutable from

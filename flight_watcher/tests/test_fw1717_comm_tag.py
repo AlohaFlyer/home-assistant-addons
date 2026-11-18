@@ -213,6 +213,70 @@ def test_both_instances_read_their_own_smart_json(tmp_path, monkeypatch):
     assert "cm" not in _sensor(sent3)["H9301"]
 
 
+# ---------------------------------------------------------------- review F2: close-in rows between reads
+CI_REG = "https://ha2.flica.net/full/mobileopentimepot.cgi?BCID=003.152&From=MainMenu"
+CI_PAGE = ("<html><body>Mar 2030 Open Time as of: 03/02 09:00 HA [HNL 332 FO] <table><tr><td>H9331</td></tr></table>"
+           "[HNL 332 FO]</body></html>")
+
+
+def test_close_in_rows_between_reads_are_judged_again_from_smart_json(tmp_path, monkeypatch):
+    """1.7.17 review (F2): hunting, the close-in page is read at most every CLOSE_IN_READ_S, and between reads (or
+    after a failed read) the last good read's rows are used. Their commute is judged again from smart.json on hand
+    each time, as the regular pot's rows are: an edit or removal of the file reaches their cm with no page load, and a
+    tag is never kept without timetables."""
+    W, sent, _ = _w(tmp_path, monkeypatch)
+    now = [1_000_000.0]
+    monkeypatch.setattr(W.time, "time", lambda: now[0])
+    monkeypatch.setattr(W.time, "sleep", lambda s: None)
+    W.S["pot_urls"] = {"mobile": CI_REG}
+    W.S["close_in"] = {"bcid": "008.152", "verified": True, "menu_at": now[0], "via": "left menu"}
+    k = "H9331|24Mar"
+    W.S.setdefault("details", {})[k] = {"crew": [], "duties": [], "report": "11:30", "captain": "Doe, Jane (10001)",
+                                        "route": ""}
+    monkeypatch.setattr(W, "parse_pot", lambda html: {k: dict(ROW, pairing="H9331", arrive="13:00")})
+    fetched, fail = [], [False]
+
+    class FL:  # a synthetic folder page; never FLICA
+        def fetch(self, url, *a, **kw):
+            fetched.append(url)
+            if fail[0]:
+                raise RuntimeError("synthetic fetch failure")
+            return CI_PAGE
+
+    fl, smart = FL(), tmp_path / "share" / "smart.json"
+    W.FLAGS["hunt"] = True
+
+    def cm():
+        rows, kind = W.close_in_check(fl, {"mobile": {}})
+        assert kind == "ok" and list(rows) == [k]
+        W.publish_pot([dict(v, month=W.CLOSE_IN_KEY) for v in rows.values()])
+        return rows[k], _sensor(sent)["H9331"].get("cm")
+
+    row, tag = cm()  # the good read
+    assert len(fetched) == 1 and row["comm"] == "KOA/LAS" and tag == ["KOA", "LAS"]
+    smart.write_text(json.dumps(dict(RAW, airports=["LAS"])))  # an edit: LAS only
+    now[0] += 60
+    row, tag = cm()  # between reads (hunting): no page load, the edit reaches the tag
+    assert len(fetched) == 1 and row["comm"] == "LAS" and tag == ["LAS"]
+    smart.unlink()  # the file removed: no timetables, no tag
+    now[0] += 60
+    row, tag = cm()
+    assert len(fetched) == 1 and row["comm"] == "" and row["comm_why"] == "" and tag is None
+    fail[0] = True  # a failed read after CLOSE_IN_READ_S: the cached rows, judged again, still no tag
+    now[0] += W.CLOSE_IN_READ_S
+    row, tag = cm()
+    assert len(fetched) == 2 and row["comm"] == "" and tag is None
+    for _ in range(3):  # reads that keep failing: never the old tag back from the cache
+        now[0] += W.CLOSE_IN_READ_S
+        assert cm()[1] is None
+    smart.write_text(json.dumps(RAW))  # the file back: the cached row is tagged again from it, still no page load
+    n = len(fetched)
+    now[0] += W.CLOSE_IN_READ_S
+    row, tag = cm()
+    assert len(fetched) == n + 1 and row["comm"] == "KOA/LAS" and tag == ["KOA", "LAS"]
+    assert not any(set(W.SMART_FIELDS) & set(r) for r in [p for t, p in sent if t == "pot/state"][-1]["pairings"])
+
+
 class Rec:
     def __init__(self):
         self.msgs = []
@@ -374,6 +438,66 @@ def test_the_admins_pot_card_shows_the_chip_on_home_assistants_theme(theme, name
     assert got["dark"] == (name == "dark") and got["wide"] <= 390
     # the ok color of each theme (F#119: lighter on dark cards)
     assert {c[1] for c in got["chips"]} == {"rgb(129, 199, 132)" if name == "dark" else "rgb(46, 125, 50)"}
+
+
+KEY_JS = """(st) => { const c = mount('flight-watcher-pot-card-pilot2', {}, st); const r = c.shadowRoot;
+  for (const d of r.querySelectorAll('details')) d.open = true;
+  return [...r.querySelectorAll('details li')].map((li) => li.textContent.replace(/\\s+/g, ' ')).filter((t) =>
+    t.startsWith('Commutable')); }"""
+
+
+def test_the_key_gives_the_pilots_home_gap_not_a_fixed_60(tmp_path, monkeypatch):
+    """1.7.17 review (F1): the commute check's home flight is the pilot's smart.json home_gap_min (0 to 600; 60 unless
+    set) after release, so the chip's Key (and the README) never promise a fixed 60 min: with a 45 min gap a trip
+    whose home flight is 50 min after release is tagged, with 90 one 70 min after is not."""
+    gap45, gap90 = SM.normalize(dict(RAW, home_gap_min=45)), SM.normalize(dict(RAW, home_gap_min=90))
+    tag = lambda rel, cfg: SM.comm_tag(SM.comm(at(24, "11:30"), at(24, rel), cfg)[0])  # noqa: E731
+    assert tag("21:10", gap45) == ["LAS"] and tag("21:10", CFG) == []  # LAS home 22:00, 50 min after release
+    assert tag("20:50", gap90) == [] and tag("20:50", CFG) == ["LAS"]  # 70 min after: not with a 90 min gap
+    with _browser() as b:
+        key = _portal_page(b, [_card("pot-card")]).evaluate(KEY_JS, _states())
+    assert len(key) == 1, key
+    assert "home_gap_min" in key[0] and "60 min unless set" in key[0] and "60+" not in key[0], key[0]
+    assert "PWA 26.QQ.2" in key[0] and "PWA 2.19.b" in key[0]
+    readme = open(os.path.join(HERE, "README.md"), encoding="utf-8").read()
+    assert "home 60+ min after release" not in readme and "`home_gap_min` after release" in readme
+
+
+FAR_ROWS = [  # the FAR chip "c warn" (CBA rest) beside Fits and the commute chip
+    {"pairing": "H9401", "start": "24Nov", "dates": "24Nov", "days": "1", "layover": "-none-", "turn": "LIH",
+     "credit": "5:10", "report": "06:00", "fit": "Fits", "far": "OK (CBA rest 10:30)", "vac": False, "blocked": False,
+     "cm": ["KOA"]},
+    {"pairing": "H9402", "start": "25Nov", "dates": "25Nov", "days": "1", "layover": "-none-", "turn": "OGG",
+     "credit": "5:00", "fit": "Fits", "far": "OK", "vac": False, "blocked": False, "cm": ["KOA"]},
+    {"pairing": "H9403", "start": "26Nov", "dates": "26Nov", "days": "1", "layover": "-none-", "turn": "ITO",
+     "credit": "5:00", "fit": "Fits", "far": "OK (CBA rest 10:30)", "vac": False, "blocked": False}]
+CHIP_JS = """(st) => { const c = mount('flight-watcher-pot-card-pilot2', {}, st); const r = c.shadowRoot, out = {};
+  for (const x of r.querySelectorAll('.r')) out[x.querySelector('.trip').textContent] =
+    [...x.querySelectorAll('.l3 .c')].map((s) => { const b = s.getBoundingClientRect(), cs = getComputedStyle(s);
+      return {text: s.textContent, h: b.height, m: cs.marginTop + ' ' + cs.marginBottom, bg: cs.backgroundColor}; });
+  const w = r.querySelector('div.warn'), ws = w && getComputedStyle(w);
+  return {rows: out, banner: w ? {m: ws.marginTop + ' ' + ws.marginBottom, bg: ws.backgroundColor,
+    bl: ws.borderLeftWidth} : null}; }"""
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_the_far_chip_keeps_the_chip_size_beside_the_commute_chip(scheme):
+    """1.7.17 review: the stale-pot banner's rule (margin, tint) is the banner's only (div.warn), not the FAR chip's
+    ("c warn", CBA rest): every chip on a row's line is one chip high, so "Commutable KOA" beside a CBA rest chip is
+    not stretched with its text at the top. The banner keeps its look."""
+    st = _states(FAR_ROWS, [])
+    st[next(k for k in st if k.endswith("_last_check"))] = _s("2026-11-01T00:00:00+00:00")  # stale: the banner shows
+    with _browser() as b:
+        pg = _portal_page(b, [_card("pot-card")], width=390, scheme=scheme)
+        got = pg.evaluate(CHIP_JS, st)
+        _shot(pg, f"fix_far_chip_390_{scheme}")
+    rows = got["rows"]
+    assert [c["text"] for c in rows["H9401"]] == ["Fits", "FAR OK (CBA rest 10:30)", "Commutable KOA"]
+    hs = [c["h"] for r in rows.values() for c in r]
+    assert max(hs) - min(hs) < 0.5 and max(hs) < 24, rows
+    far = rows["H9401"][1]
+    assert far["m"] == "0px 0px" and far["bg"] == "rgba(0, 0, 0, 0)", far
+    assert got["banner"] == {"m": "4px 6px", "bg": "rgba(178, 106, 0, 0.12)", "bl": "4px"}, got["banner"]
 
 
 def test_no_em_dash_in_the_change():
