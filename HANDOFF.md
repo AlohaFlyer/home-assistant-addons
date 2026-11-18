@@ -232,7 +232,7 @@ the top of this file).
   change Ryan's setup. This is a CLAUDE.md hard rule since Nov 15 (Ryan's yes; the spec's B18 wording, extended to
   field edits and AI notes).
 - Decided by Ryan (Nov 15), built in 1.7.10: James sees the union id (so his edit of it is not blind) and sees the AI
-  note read only. Until 1.7.10 is live, 1.7.9 shows neither on his portal.
+  note read only. Live since 1.7.10 (Pako runs 1.7.18 since Nov 18).
 
 **Pilot database, restore by hand** (spec 18): the card's "Daily copies" puts a copy back (typed RESTORE; the file in
 use is set aside as `pilotdb.sqlite.before-restore-<time>` first; it and a `pilotdb.sqlite.bad-<time>` from a failed
@@ -407,14 +407,16 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
     Shell app has no Supervisor API permission (it cannot update apps): app updates go through the HA connector.
 11. **Hark's two notes for Ryan** (from its HOM bus answer of Nov 17, a report only): the Supervisor logged
     "backup_hint not in schema" warnings for the Home Assistant MCP Server app (`81f33d0f_ha_mcp`) at 21:10, 21:25 and
-    21:36 HST on Nov 17; Core logged one invalid-auth attempt at 21:27 HST on Nov 17 from a Hawaiian Tel address.
+    21:36 HST on Nov 17; Core logged one invalid-auth attempt at 21:27 HST on Nov 17 from an outside address (Hark has
+    the details).
 12. **Waiting on James:** FW-0076 and FW-0078 (fixed, 1.7.11, marked Nov 18 08:23 HST) and FW-0077 (fixed in 1.7.10)
-    stay `fixed` until he verifies or reopens them on his portal; Claude never closes a pilot's ticket and never
-    contacts James.
+    stay `fixed` until he verifies or reopens them on his portal; Claude never closes a pilot's ticket and contacts
+    James only with Ryan's yes (the Nov 18 ticket-fixed alert had it: "Hark + James alerts").
 
 ## Rollback notes
 
-- **1.7.18 to 1.7.11** (Flight Watcher only; HOM 1.9.2 stays: 1.7.12 to 1.7.18 change no contract, all revision 6).
+- **1.7.18 to 1.7.11** (Flight Watcher only; HOM 1.9.2 stays: 1.7.12 to 1.7.18 keep contract 1 revision 6 and its fixture; 1.7.15
+  changed the `PORTAL_CONTRACT.md` 4.3 wording only).
   Home Assistant's automatic full backup `a9310263` (Nov 18 04:59 HST) holds Flight Watcher 1.7.18 and the HA
   configuration from before the Pako edits: restoring it gives 1.7.18 (HA's update, 04:02 to 04:06 HST, came before
   it), not a 1.7.11 copy, with the dashboard and the Jinja file as they were before 08:04 HST (and anything else

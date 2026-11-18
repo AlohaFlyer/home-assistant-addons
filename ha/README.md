@@ -78,8 +78,8 @@ timetables, in its order (`["KOA", "LAS"]`; PWA 26.QQ.2, the customs release PWA
 airport has no `cm` key. The pot card (the portal's, and the admin's copy) draws the chip itself. The HA Watcher view's
 pot table is the `pot_table` macro in `/config/custom_templates/flight_watcher.jinja` on Pako (not in git; the pot
 markdown card joins both sensors' `pairings` and calls it), so this took two edits on Pako, both a step of the 1.7.17
-go-live with Ryan's yes for them (the macro file and a dashboard edit), after the 1.7.12, 1.7.14 and 1.7.15 edits
-above: the Key line went on in the one 08:04 HST dashboard patch, the macro about 08:18 HST, and the custom templates
+go-live with Ryan's yes for them (the macro file and a dashboard edit): the Key line went on with the 1.7.12, 1.7.14
+and 1.7.15 edits above in their one 08:04 HST dashboard patch, the macro about 08:18 HST, and the custom templates
 were reloaded at 08:19 HST.
 
 1. **The macro** (`flight_watcher.jinja`). Claude added `comm_chip`, exactly this text, at the top level of the file,
