@@ -1,5 +1,954 @@
 # Changelog
 
+## 1.7.18
+
+Two card changes Ryan asked for on Nov 17, 2026 (screenshots of Settings > Monthly files and of the schedule card on a
+Samsung phone), cards only, and the cross-item review's fixes of Nov 18 (below: the schedule header's Data age stamp,
+1.7.17's Pako edits in ha/README.md, the swap ideas sensor's 12 KB cap and the swap draft's auto flag in the Watcher).
+No contract or FLICA change.
+
+### The On file list folds
+
+Ryan, Nov 17: "collapse the on file list". The uploads card (Settings, heading "Monthly files") listed every file kept,
+one row each, above Pilot uploads, Dates of hire and Pilot contacts.
+- The file rows fold under their heading, folded by default. The heading is a button (44 px high, aria-expanded,
+  aria-controls, a chevron that turns down when open) that says "On file (6)" and, while folded, one line on what is
+  there: "6 files, newest Award Dec 2026, uploaded Nov 14" (the newest upload, its HST day, and "1 not read" in red when
+  a file has no text copy). A tap, Enter or Space opens or folds it; the focus stays on the heading.
+- Open or folded is kept per browser (localStorage `flight_watcher_onfile_open`; a pilot's copy keeps its own,
+  `flight_watcher_<name>_onfile_open`). Blocked storage (a private window) folds it at first and still opens it.
+  Refresh, and every sensor update, leave it as it is; the count and the line follow the new list. More than 6 files
+  still fold the rest under "n older" inside.
+- The Wanted line (a pairings package the crew index needs), "Nothing uploaded yet", an error, and the sections after
+  the list stay in view: Pilot uploads (its Approve and Reject), Dates of hire and Pilot contacts are sections of their
+  own (their own headings), not rows of the list. The Refresh button is 44 px high too.
+- While there is nothing to fold (the list loading, an error, "Nothing uploaded yet.") the heading is plain text: no
+  button, no aria-expanded, no aria-controls pointing at a list that is not there, no arrow, and a tap does nothing.
+  The button comes back, open or folded as kept, once there is a list (review AB-1).
+- The count in the heading and in the folded line is the Watcher's (the sensor's `count`), not the rows the sensor
+  carries: the Watcher cuts the uploads sensor's list at its 12000 byte cap, the oldest files first, and kept the full
+  number beside it. A card that reads the sensor (a user who is not an admin, a pilot's copy) said "On file (83)" for
+  102 files; it now says "On file (102)" and the open list ends with "19 older files not listed here (more than the
+  sensor can carry)." A count that is not a whole number above the rows listed is not used (review AB-2).
+- The portal has no copy of this card (the admin's uploads card stays off the portal; a pilot uploads with the pilot
+  uploads card, unchanged). A second pilot's dashboard copy (`flight-watcher-uploads-card-<name>`) folds the same.
+
+### The version lock is a switch
+
+Ryan, Nov 17: "The lock does not display well on James' samsung... its not obvious when it is locked or unlocked...
+Can we try a toggle Show the lock icon, and then an on/off toggle where locked is on". The lock at the top left of the
+schedule card was an emoji (each phone draws its own) whose only change was the shackle.
+- Now: a lock icon drawn as an inline SVG (shut, or the shackle lifted when unlocked; the same on every phone), the
+  word Lock, a switch track with its knob, and the word On (locked) or Off. On = locked, the default. On: a filled blue
+  track with the knob at the right and On in bold; Off: an outlined grey track with the knob at the left and Off. The
+  state never rests on colour alone (the knob's side and the word), and the track, knob and edge keep 3:1 against the
+  card in light and dark (WCAG 1.4.11); the text keeps AA.
+- One button (role switch, aria-checked, named "Lock schedule marks", 44 px), with a 3 px focus ring; a tap, Enter or
+  Space flips it and the redraw keeps the focus on it. The title is the same ("Locked: ... cannot be changed by a tap.
+  Tap to unlock." / "Unlocked: taps change .... Tap to lock."), and so are the taps it freezes and the storage
+  (localStorage `flight_watcher_lock`, "0" = Off, anything else or nothing = On; a pilot's copy its own key).
+- A refused tap says "Settings are locked: turn the Lock switch at the top left Off to change availability, trade or
+  drop marks." The Key's Day row says how the switch works.
+- On a phone (700 px or less) the switch starts the header's first line, so the month's arrows, title and Now stay
+  together on the next line (at 360 and 390 px the wider switch would otherwise split them); the Data age stamp
+  (1.7.12) takes the rest of the switch's line, at its right (cross-item review, below). A wide card keeps one line,
+  as before. Hover shading only with a mouse (no grey box left after a tap on a phone).
+- The pilot card has no lock; every copy of the schedule card (a second pilot's, the portal's) gets the switch.
+
+### Cross-item review fixes (Nov 18)
+
+The review of items 3 to 8, A and B together (1.7.12 to 1.7.18 on one branch) found five things one item's own review
+could not see. Each fix names the item it corrects; each has a test that failed before it (`tests/test_fw1718_xrev.py`).
+- **The wide schedule header still slid** (corrects item 3, 1.7.12, the Data age stamp; item B's switch did not change
+  it). Above 700 px the stamp had a 14em minimum, so a longer text pushed the month's arrows, title and Now left: 4
+  px at "2 h 1 min, very stale", 11 px at "2 h 10 min", 59 px at "over 1 h 5 min, Watcher offline", and back on each
+  whole hour, against 1.7.12's own promise that they never slide. The stamp is now one box of 21em at the header's right
+  whatever it says (every text, up to "over 23 h 59 min, Watcher offline", on one line in the usual fonts; a wider font
+  wraps inside the box instead of moving anything). The arrows, the month and Now sit 77 px further left than beside
+  a short stamp before, and stay there.
+- **The phone header took three lines** (item B, 1.7.18, with item 3): the switch alone, then the month, then the stamp
+  alone under Now, 86 px. The stamp now takes the rest of the switch's line, at its right (a long text, "Watcher
+  offline", wraps inside that box, under the switch's 44 px), so the header is two lines, 70 px, and the month's line
+  never moves as the stamp changes, at 360, 390 and 430 px. CSS order only: the switch, the arrows, the month and Now
+  keep their order for a screen reader and the keyboard (the stamp is not focusable).
+- **1.7.17's Pako edits were not written down** (corrects item 8, 1.7.17): the `pot_table` macro's Commutable chip and
+  the pot table's Key line had no "Pending on Pako" section (the macro text was only in a scratch file), and the
+  snapshot had no Key line. `ha/README.md` now has "Pending on Pako (1.7.17): Commutable chip in the pot table", after
+  the 1.7.15 one: the `comm_chip` macro, its call inside `pot_table`, the Key line, the custom templates reload and the
+  check (its template and the output it must give), the undo, all a step of the 1.7.17 go-live with Ryan's yes. The
+  snapshot's pot markdown card has the Key line after "CBA rest" (the pot card's own Key text), so the one snapshot
+  carries every pending edit: sha256 `e322dc0e...` (`6678f813...` is what Pako reads once the 1.7.12, 1.7.14 and 1.7.15
+  edits are applied; Pako's own `be03a0a4...` until then); `tests/test_fw171_r2.py` pins it with four sections.
+- **The pay figures cut marked swap ideas** (corrects item 6, 1.7.15): every marked idea carries `pay`, `pay_days`,
+  `ppd`, `for_pay`, `for_days`, `for_ppd`, `ppd_gain` and `auto` (about 120 bytes), so in a busy month of marks the
+  12 KB cap kept 19 marked ideas where 1.7.11 kept 24, and a marked trip whose ideas were all in that tail lost its
+  swap tag on the schedule card. Now, still over the cap once no automatic idea is left on the sensor, the marked ideas
+  are first 1.7.11's (no pay figures), so the cap keeps as many as 1.7.11 did (the six automatic counts, under 100
+  bytes, can cost one at most), then the figures go back on the first ones, the most soft time first, while that many
+  still fit; the rest read "-" for Pay and Per day on the Swap ideas table and the pot card, as an idea with no rate
+  does. A month that fits is unchanged: every idea keeps its figures. Pushes are unchanged (each `event/swap` carries
+  its figures). `tests/test_sensor_size.py`'s busy month now publishes the swap ideas through `swap_scan` (marked and
+  automatic ideas, priced) instead of by hand in the 1.7.11 shape, and fills `picker_log` so the pickers sensor
+  carries a When to hunt attribute near its 2500-byte cap (1.7.16): 7496 bytes, under the 8000 bar.
+- **The backstop never saw a draft** (corrects item 6, 1.7.15): `pub()` refuses an idea with `auto` true on
+  `event/swap` and `event/swap_test`, but the draft `swap_test` publishes is a new record (`submit.compose`) that had no
+  `auto` key, so only `event/swap` was guarded. The draft now carries the idea's flag (`auto: false` on a marked trip's
+  draft, on `event/swap_test` and in `sensor.<prefix>_swap_test_requests`), so the backstop holds on both topics.
+  `swap_test`'s own return is still what keeps an automatic idea from making a draft at all.
+- Tests: `tests/test_fw1718_xrev.py` (Chromium and Jinja2, synthetic states and made-up pairings): the wide header at
+  701, 820, 1024 and 1280 px and the phone header at 360, 390 and 430 px, light and dark, the HA copy and the portal's
+  pilot2 copy, at ten stamp texts from "3 min" to "over 10 d 23 h, Watcher offline" (the same pixels, one box, nothing
+  cut); the CSS in every copy; the 1.7.17 section and Key line, the macro rendered from the README as it says; the
+  busy month against 1.7.11's count (24 of 24, 2307cce gives the same) and a sweep of idea sizes; a month that fits
+  keeps every figure; the draft's flag and the backstop with swap_test's own return bypassed.
+  `tests/test_fw1715_auto_swap.py`'s cap test reads the pay order from the pushes.
+
+### For Ryan to confirm (shipped under "Ship it all", each his to undo)
+
+- **The Data age stamp's "1x"** (1.7.12): the Watcher's longest healthy cycle (the interval x 1.3 plus room for the
+  check), not the bare interval, which read amber on about half of a healthy Watcher's cycles. Say no and it goes back
+  to the bare interval (one constant in the shared block).
+- **Duty blocks over the trip Block** (1.7.13): when a trip's duty blocks add up to more than FLICA's trip Block (likely
+  deadhead legs, since `pot.parse_duties` sums every leg), Room counts the duty blocks as far.py does, so the card and
+  far.py agree exactly; the 100h cell still scales them down. Not seen on Ryan's live line. The other way is far.py and
+  recall.py using FLICA's Block.
+
+### Tests
+
+`tests/test_fw1718_ui.py` (Chromium, synthetic files and pairings, "pilot2"): A folded by default with the count and the
+line, opens and is remembered (another copy, a reload), Enter and Space with the focus kept, Refresh on the admin's
+card (ingress) and a user's (sensor) keeps it, the empty and error states in view, a pilot's copy under its own key,
+blocked storage, 390 px light and dark (no sideways scroll, AA text), the heading plain text while loading, on an error
+and with nothing on file (no button, aria-expanded, dangling aria-controls or arrow, Chromium's accessibility tree
+included) and a button again once a list comes, and the Watcher's count over a cut sensor list (a synthetic sensor, and
+120 synthetic files through watcher.cap_attrs). B: the switch reflects and toggles the lock
+(aria-checked, the knob's side, On / Off, the SVG, no emoji in any card), the title, the refused tap and the trade tap,
+Space and Enter with the focus ring, the stored value as before (and blocked storage), the Key, the portal's pilot2
+copy, and renders at 390 px and on an Android-like phone (360 x 780 at 3x), light and dark: on its own first line, the
+arrows, month and Now together, 44 px, AA text, 3:1 for the track, knob and edge. README: the On file fold and the
+lock switch.
+
+## 1.7.17
+
+### Commutable flag on pot trips
+
+Ryan, Nov 17: "Tag pot trips whose report and release times line up with my commutes from KOA and LAS." He chose the
+existing commute check and its smart.json timetables (no new windows). No FLICA page load, no contract change.
+
+- **The Watcher**: each row of `sensor.<prefix>_pot_count` and `sensor.<prefix>_tradeboard_pickups` carries `cm`, the
+  airports the commute check passed both ways, in smart.json's order (`["KOA", "LAS"]`; `smart.comm_tag`): two scheduled
+  nonstops arriving HNL before report (PWA 26.QQ.2) and one home at least smart.json's `home_gap_min` after release (60
+  min unless set), same day. A last leg from outside the US releases 30 min after block-in, not 15 (PWA 2.19.b); one
+  whose origin is not on file is judged both ways, so an airport that makes it only without customs is never tagged.
+  There is no `cm` key at all when no airport passes, when one is only unknown, or when smart.json is missing or has no
+  timetables: never a guess.
+- The full commute object (`comm`, `comm_why`) stays off both sensors as before (`SENSOR_DROP`); a row with no tag is
+  byte for byte the row it was. The DB, the finds month files, `last_new` and `event/new_pairing` are unchanged.
+- The Tradeboard's tag is judged again at each publish from the timetables on hand (a post's details are read once), so
+  a smart.json edit reaches it as it reaches the pot every check. So are the close-in folder's rows between its reads
+  (hunting, at most every 5 min) and after a failed read: an edit or removal of smart.json reaches their tag with no
+  page load, and a tag is never kept without timetables. Each instance reads its own smart.json
+  (`/share/flight_watcher/smart.json`; a second pilot's `/share/flight_watcher/<name>/smart.json`).
+- **Size**: about 19 bytes on a row commutable from two airports. The pot sensor stays at or under its 12 KB cap
+  (`cap_attrs` still cuts rows from the end). With every row tagged, the busiest synthetic pot keeps 18 rows where it
+  kept 19, and a lighter one keeps 34 where it kept 36.
+- **The pot card** (`flight-watcher-pot-card.js`: the portal's pot, and the admin's copy): a chip "Commutable KOA LAS"
+  beside Fits and FAR. It is in words, not color alone, and green like Fits (the F#119 colors, WCAG AA in light and
+  dark); hover shows the rule. Only three-letter codes are drawn. The Key gets a Commutable line when a row has the
+  chip; it gives the home flight as your smart.json home gap (`home_gap_min`, 60 min unless set), never a fixed 60. The
+  stale-pot banner's style no longer reaches the FAR chip "OK (CBA rest ...)": every chip on a row is one chip high
+  again (before, that chip's margin stretched Fits and the new chip beside it, text at the top).
+- **The HA Watcher view**: its pot table is the `pot_table` Jinja macro on Pako (not in git). The macro edit and the
+  dashboard Key line are in the release notes; they need Ryan's OK at the release step (custom templates reload).
+- **James's portal**: gets the tag with no contract change. state.json masks only `contact` and the www file keys, so
+  the new attribute passes through as signed. The contract fixture is unchanged (sha256 `a066d935...ed2ec9`), and his
+  copy of the pot card reads the same attribute. He sees chips only when his own smart.json has timetables; without one
+  his card is unchanged.
+- Tests: `tests/test_fw1717_comm_tag.py` (made-up KOA and LAS timetables, made-up pairings). It covers both ways, one
+  way only (not tagged), no timetables (no tag), and the customs release from a US station, from abroad and with the
+  origin not on file. It also covers smart.json's `domestic` list, the Tradeboard tag judged fresh, each instance's own
+  file, a worst-case pot under the cap, the portal pass-through and fixture hash, and the chip at 390 px on the portal
+  (light and dark, contrast checked) and on Home Assistant's themes. Review: the close-in rows judged again between
+  reads and after failed ones, the Key's home gap (45 and 90 min gaps), and the chip heights beside a CBA rest chip.
+  `tests/test_smart.py`'s sensor test now expects the tag as the one difference.
+
+## 1.7.16
+
+### When to hunt: pickup speed by layover, weekday and time of day
+
+Ryan, Nov 17: "Using the pot log ("Pickup Speed" exists, so build on it), show median time to pickup by layover city and
+by day of week/time of day, so I know when to run Hunt."
+- From the pickups the FO / RO pickers card already counts (`picker_log`; no new source), each pickup once (a trip
+  with both seats open is one pot entry and one dwell: once, at its faster picker's speed, which is the same for both
+  unless one has a request cap), the median time to pickup, the count and the fastest by layover (the first station
+  of the trip's layover, else of its turn, as Common Layover; split as rules.py splits a layover, so a pot-seen
+  multi-stop turn "PPG/PPT" and the "PPG" the Watcher files its email-caught copy under are one station, and
+  "SYD/MEL" is SYD), by the HST weekday and by the HST time of day (00-06, 06-12, 12-18, 18-24) the trip entered the
+  pot. The entry is `dwell()`'s, the earlier of the first sighting and FLICA's alert, kept on the pickup's
+  `picker_log` row (new column `entry`) when it is scored or rescored, so a trip back in the pot, or a find later
+  cleared or deleted, never moves it to another weekday or band. A row logged before 1.7.16 gets it once at start
+  from its find, else from its pickup time less its speed (late by half the gone window, more for a capped speed).
+  Stored times are UTC; the weekday and band are read in HST (-10 h all year), so 05:00 UTC Wednesday is Tuesday
+  19:00, 18-24.
+- A speed capped at Ryan's request time (1.7.10) counts at its cap; a group with one has its median read "at most"
+  (an upper bound), and its fastest too when the fastest is the capped one (≤, the reason on hover).
+- The median of an even count is the mean of the two middle speeds, to the nearest second. Each table runs by
+  median (a tie: more pickups first), the groups of 5 or more pickups first; a group of fewer is grey, "too few to
+  trust", and never the tip.
+- The tip names the fastest HST day and time of day together (a slot) of 5 or more pickups: "Trips go fastest when
+  they enter the pot Tue 18-24 HST: median 4 min (n 12).", when that slot is no slower than the fastest day and the
+  fastest time of day of 5 or more; never the slot where the fastest day and the fastest time of day cross, which can
+  be slow or nearly empty. Else it gives that day and that time of day as two separate facts ("Fastest day: Mon
+  (median 50 s, n 5). Fastest time of day: 06-12 HST (median 30 s, n 7). No day and time pair has 5 pickups yet.",
+  the last sentence only when no slot has 5); from one table when only it has a group of 5; none when neither has.
+- The FO / RO pickers card has a When to hunt section at its top, under the header and outside the pickers list, so
+  the tip shows while the list is collapsed (the dashboard and the pilot portal mount the card collapsed): the tip,
+  then the three small tables (Layover, Day (HST), Time (HST): Median, Fastest, n), collapsed by default when they run
+  past 12 rows and kept as the viewer left them across updates, however they were opened or closed (a tap, the
+  keyboard, find in page). An update changes the tip and tables in place, so a focused summary keeps its focus; an
+  empty table says so ("No layover on file yet."); a slot in the tip ("Tue 18-24 HST") never splits across two lines.
+  390 px with no sideways scroll, WCAG AA in light and dark; three side by side on a wide card.
+- Published as `speed` on `sensor.<prefix>_pickers` (`{n, min_n, city, dow, band, tip, more}`, each group `[label, n,
+  median_s, fastest_s, capped_n, fastest_capped]`): aggregates only, no name, employee number or pairing; at most
+  2500 bytes (`store.SPEED_ATTR_MAX`), the layovers with the fewest pickups left out first and counted in `more` ("12
+  more layovers with fewer pickups not shown."). The busiest case measured: 7.5 KB for the whole pickers sensor,
+  under its 8 KB bar and HA's 16 KB recorder limit. The pickers list file is unchanged.
+- Each instance computes its own from its own store (Ryan's and every pilot's); nothing crosses instances. A pilot's
+  portal shows the section from the pickers sensor it already gets in state.json: no new export, contract 1 revision
+  6 unchanged.
+- No FLICA load. `Store.speed_stats()` is recomputed only after picker_log changes (a pickup scored or rescored, the
+  log rebuilt, backfilled or trimmed), not on every check's publish.
+- Tests: `tests/test_fw1716_speed.py` (synthetic pairings H96xx, made-up stations, "Doe, Jane"): median with odd and
+  even counts, capped speeds, HST bands across midnight and the date line from UTC stored times, the HST weekday, the
+  under-5 rule, the tip in each form, the size bound, the store counting what the pickers card counts (both seats
+  open), the alert and request cap moving the entry and speed, a find gone or back in the pot, the recompute only on a
+  change, no FLICA load, a pilot's instance on its own, the contract unchanged, and the card in Chromium at 390 px
+  light and dark and 1280 px (screenshots `item7_390_light.png`, `item7_390_dark.png`, `item7_1280_light.png`,
+  `item7_390_short.png`). Review fixes, `tests/test_fw1716_review.py`: the tip's slot (the fastest of 5 or more, not
+  where the fastest day and band cross; two separate facts when none has 5 or it is slower), a both-seats trip once
+  (count, trust bar and median weight, and at the cap when one picker is capped), one station per layover across
+  sources, the entry kept through a trip back in the pot, a cleared pickup and a deleted find (a capped one too), a
+  row logged before 1.7.16 filled once at start, the section shown on a collapsed card (the dashboard's and portal's
+  config), an open without a click and the summary's focus kept through updates, an empty table, and the tip's slot
+  on one line at 360 to 414 px (screenshots `item7_review_collapsed_390_light.png`, `..._dark.png`,
+  `item7_review_nolay_390_light.png`, `..._dark.png`).
+
+## 1.7.15
+
+### Automatic swap ideas ranked by pay per day
+
+Ryan, Nov 17 (item 6, his yes): "Fill Swap ideas without a manual tap: rank my trips against open pot trips by pay per
+day. Keep legality and VAC/blocked rules." Both instances; no FLICA page load, nothing sent to FLICA, no contract change
+(revision 6 and its fixture stay; section 4.3's wording follows, below).
+
+- **Every trip, no tap.** Each check, every own pairing that has not started yet (it starts after today, HST) and is not
+  marked "would trade" is compared with every open pot trip (open time and the close-in folder; a Tradeboard post is
+  not the pot) of the same bid period that it could swap for (a FLICA swap stays inside one BCID): the pot's own bid
+  month when its key names one (`2026-11`, or the desktop menu's `November`), else the bid period of its first day
+  (`bid_period_fn`, the 1.7.11 rule); his trip's is the pairing files' bounds, else the first schedule page on file
+  that lists it (a Dec 1 trip listed on November's and December's pages is November's: FLICA's next page starts on
+  the bid period before's last day), else `bid_period_fn`. Marked trips work as
+  before: the soft time or credit rule (`swap.better`), their pushes, their drafts and the auto swap dry run.
+- **Ranked by pay per day**: (pot trip Pay-Gross / its days) minus (own trip Pay-Gross / its days). Each trip is priced
+  the way the swap pushes price one (`price_moves`, `pay.trip_gross`): credit x the PWA 3.D.6 rate `pay_settings()`
+  gives for the longevity year, plus the PWA 4.O.1 override for the seat flown (RO $4.00 a block hour; FO $3.00 on a
+  3-pilot crew) and the Extended Range +15% where on (the per-trip ER list too). Credit and block come from his own trip
+  record (his seat and roster) and from the pot row, else from the pairings package of the bid period that holds the
+  trip's first day (1.7.11, PWA 4.A: a Dec 1 trip of November's period is in November's package), then the calendar
+  month's. A pot trip is priced in the RO seat when RO is its only open seat (the row's `open_seats`), else in the FO
+  seat, as `price_moves` falls back; its crew is its own roster (the row's `crew`, open seats included), else the
+  package's crew line, as his trip's is his roster. His trip's layover for the ER rule is the package's route, else
+  its schedule item's (a SIN trip no package or roster covers keeps its +15%). No rate is invented: with no rate on
+  file (no date of hire, no longevity year) there are no automatic ideas and the sensor says `priced: false`.
+  `pay_settings()` is read again at most every 5 min for this (`SWAP_PAY_TTL_S`).
+- **Each idea shows** both pay-per-day figures and both trips' totals: `pay`, `pay_days`, `ppd` (the pot trip),
+  `for_pay`, `for_days`, `for_ppd` (his trip) and `ppd_gain`; an idea for a marked trip carries them too (None when the
+  rate or the credit is not known). An automatic idea is listed only when it pays more a day.
+- **The same legality, nothing looser**: not his own pairing number; FAR 117 with his trip removed (`far_for` with
+  `exclude`) reading a plain OK, so the 11 h domicile rest (PWA 10.E.1.a) holds; no VAC or blocked day; the grid rule
+  (`grid.swap_allowed`: it shares a day with his trip and every day moved off is green). A marked trip's grid-red idea
+  is listed and waits, as before; an automatic idea is listed only when the grid is green now.
+- **Never a push**: each idea has `auto` (true for an automatic idea, false for a marked trip's). Automatic ideas are
+  never published on `event/swap` (the topic the "Flight Watcher swap idea" automation listens to; it reads no sensor,
+  so it needs no condition and is unchanged), never on `event/swap_test`, never a draft (`swap_test`), never the auto
+  swap dry run, never in `swap_seen`. `pub()` refuses an idea with `auto` true on either topic (a backstop, one log
+  line), so a pilot's portal alert and ntfy never get one either. `ha/check_push_isolation.py` passes unchanged.
+- **Bounded, and `ideas` keeps its meaning**: on `sensor.<prefix>_swap_ideas`, `ideas` lists the marked trips' ideas
+  only, exactly as 1.7.11 did (at most 30, in their soft time and credit order, `gain_h`, the order they push in); the
+  best 10 automatic ones (`SWAP_AUTO_MAX`) are in their own attribute, `auto_ideas`, the best pay per day first. So
+  every reader of `ideas` (the old Swap ideas card still on Pako until the dashboard edit, the schedule card's swap
+  tags) shows what 1.7.11 showed and never an automatic idea unlabeled. New attributes: `auto_ideas`, `auto_count`
+  (all automatic ideas), `auto_shown` (those listed), `auto_more` (those not listed), `auto_max` (10) and `priced`.
+  The 12 KB attribute cap drops automatic ideas from the end first, then trims `ideas` from the end, the least soft
+  time first, as in 1.7.11 (the best soft-time idea, the first push, stays listed). The state (`count`) is every idea
+  found, marked and automatic.
+- **Dashboard** (`ha/dashboard_flight_watcher.json`, Watcher view, Swap ideas): the table shows the automatic ideas
+  ("*auto*" beside the trip given up) and two new columns, Pay ("$2,029 (1 day) vs $3,886 (3 days)") and Per day
+  ("+$734 a day: $2,029 vs $1,295"); "N more automatic ideas not shown (the best K by pay per day are)" under it, K the
+  number listed (the size cap can list fewer than 10, or none: "no room left next to your marked trips' ideas"); with
+  no idea, "No better-paying swap
+  in the open pot right now" (or, with no rate, how to set one) and the mark hint. The key explains auto and pay per
+  day. **The snapshot is ahead of Pako by this edit and the earlier pending ones** (1.7.12's Details tile, 1.7.14's
+  near misses card; `ha/README.md`: "Pending on Pako (1.7.15): automatic swap ideas on the Swap ideas table", one
+  section a release in release order; the snapshot, every pending edit, sha256 `6678f813...`, which Pako reads once
+  all three are applied; Pako's `be03a0a4...` stays named; `tests/test_fw171_r2.py` pins both). Applying it is a step
+  of the 1.7.15 go-live: right after the update is verified, Claude applies the card's `content` through the HA
+  connector (after the 1.7.12 and 1.7.14 edits), checks the sha256 and drops that section. Until then the old card shows the marked trips'
+  ideas exactly as 1.7.11 did, and no automatic idea.
+- **Pot card** (the portal's Watcher tab): `ideas` then `auto_ideas`, the same columns and "auto" chip, the "N more"
+  line (the number listed), the new empty text;
+  "-" for an idea with no pay figure (an older Watcher). Folds into labeled lines at 390 px; WCAG AA light and dark.
+- The schedule card is unchanged: its Ideas column is a separate system, and its swap tags (up to 2 a trip) read
+  `ideas`, so they show the marked trips' ideas as in 1.7.11 and no automatic one.
+- **Portal contract** (`PORTAL_CONTRACT.md` 4.3 and the `roles.PORTAL_EVENTS` comment): the `swap` alert's opt-in now
+  reads "no mark, no alert", and 4.3 says 1.7.15 keeps revision 6 (the fixture is unchanged): the swap ideas sensor
+  also lists automatic ideas in `auto_ideas`, which never alert (never `event/swap`, so never a `swap` event or an
+  ntfy push). Wording only: no constant, fixture or HOM change.
+- Tests: `tests/test_fw1715_auto_swap.py` (synthetic pairings, both instances): the ranking and the figures, the
+  pricing (seat, crew, package, ER list, the bid period's package), marked vs automatic, each legality rule rejecting
+  (VAC, blocked, FAR conflict, rest, the CBA 11 h, FAR unknown, a red or missing grid day, another bid period, less pay
+  a day, no rate, his own pairing, a started trip, a Tradeboard post), the real FAR screen with the trip removed, no
+  push and no draft for automatic ideas (MQTT, the portal and ntfy), the push automation, the size bound and the cap,
+  no FLICA load, each instance on its own prefix, the dashboard table (Jinja) and the pot card (Chromium); from the
+  review: marked ideas in their 1.7.11 order with the cap trimming the least soft time first, `ideas` holding no
+  automatic idea, the RO seat, the pot row's roster, his trip's schedule layover (ER), the pot's and his page's bid
+  period with no pairing files, the "N more" wording on both cards, the contract wording.
+  `tests/test_fw171_cards.py`: the pot card's swap table test follows the new columns and empty text;
+  `tests/test_fw171_r2.py`: the dashboard snapshot sha and the pending note; `tests/test_doh_settings.py` and
+  `tests/test_van_settings.py`: the contract doc's sha256 pin follows the 4.3 wording (the fixture's is unchanged).
+
+## 1.7.14
+
+### Near misses in the open time pot
+
+Ryan, Nov 17: "In the open time pot, for each trip hidden by a VAC or blocked day, show what I'd have to drop or swap to
+fly it, plus the pay difference."
+- Each check, right after the pot sensor, the Watcher lists every pot trip (the open time pot and the close-in folder)
+  hidden today because it touches a VAC day, a blocked day or one of the pilot's own trips (`near_misses`,
+  `near_blockers`). A PAYP day is free for a pickup (PWA 4.R.1), never in the way; a pot row that is one of his own
+  trips (its open seat) is left out.
+- What stands in the way: "VAC Nov 21 to 22" (the VAC days the trip touches, a run of days each), "blocked Nov 14",
+  "overlaps your H3620 Nov 25 to 27". What to change to fly it: "give up VAC Nov 21 to 22", "unblock Nov 14", "drop or
+  swap H3620". A trip hidden for more than one reason lists each.
+- An own trip that only shares a day with the pickup is kept, nothing given up, when `far_screen` with it in the line
+  is a plain OK: "same day as your H2000 Nov 10 to 11, legal to fly both" (home in the morning, the pot turn that
+  evening; its duty does not overlap and every rest and limit holds), or when the pickup is known not legal for
+  another reason exactly as with it dropped ("no conflict with it"). A "?" keeps it in the way.
+- The pay difference: the trip's Pay-Gross less what is given up, and the credit hours ("+$518", "+2:00"). Every trip
+  is priced by `pay.trip_gross` (the schedule card's tripFull, as `price_moves` prices a trade): credit x the PWA 3.D.6
+  rate for the longevity year in Pay settings (`pay_settings`, PWA 3.B.1), the PWA 4.O.1 override (RO $4.00 per block
+  hour when only the RO seat is open, FO $3.00 on a 3-pilot crew) and the Extended Range +15% where on. Pilots are
+  counted the same way on the pickup and on a dropped trip: CA, FO, RO and SO, never a flight attendant (`_near_crew_n`,
+  as `crewidx.pilot_seats`). Credit, block and crew not on the row or record come from the pairings package of the
+  trip's own bid period (`bid_period_key`, 1.7.11: Dec 1 is November's). A VAC day given up is 4:00 of pay and credit
+  (PWA 6.J.1.c, `pay.VAC_H`, the schedule card's VAC_H x RATE); a dropped own trip its own Pay-Gross and credit (his own
+  trip record, else the newest version of the schedule month that holds it, else the pairings package: `_move_rec`); a
+  blocked day or a kept trip nothing. No longevity year or DOH: the hours only, and the sensor says why. Any credit not
+  on file: no amount (never a wrong one).
+- FAR 117 with the conflict removed: `far_screen` (the check `far_for` and the swap ideas use) with the overlapping own
+  trips given up left out (`recall.line_records` now takes several keys); VAC and blocked days are no duty. "legal"
+  only on a plain OK, as `swap_scan` (FAR 117.25(e), 117.25(b), 117.23(b)(1), 117.23(c) and the PWA 10.E.1.a 11 h home
+  rest); else the reason with its trip and rule in the text, not a tooltip ("not legal: rest 6:15 before (H1019 Nov
+  19), under 10 h (FAR 117.25(e))", "not legal: CBA rest 10:30, under the 11 h home rest (PWA 10.E.1.a)"). A time not
+  on file, or "OK (CBA rest 10:50?)" (the home rest short only if a release was 30 min after block-in for customs, PWA
+  2.19.b), reads "not known yet: ...", never legal and never not legal.
+- Information only: from the pot rows, schedule, own trip records, blocked days, pairings package file and Pay settings
+  already on hand. No FLICA page load, no event, nothing added, dropped, swapped or requested.
+- New sensor `sensor.<prefix>_near_misses` (MQTT discovery, core: the admin and every pilot instance each compute
+  their own; topic `<prefix>/near/state`): `count`, `misses` (legal first, then not known, then not legal; the best pay
+  difference first; the first 20, `NEAR_ROWS`), `kinds`, `rate`, `year`, `pay_note`; `cap_attrs` trims `misses` from
+  the end under the 12 KB `ATTR_MAX`. The pot sensor is unchanged.
+- Not on a pilot's portal yet: `roles.ENTITY_OFF_PORTAL` keeps the sensor out of his state.json (a new exported state
+  is a portal contract change, PORTAL_CONTRACT.md 4.2, left for a later revision), and the card is in
+  `PORTAL_CARDS_OUT`. Contract 1 revision 6, its fixture, PORTAL_CONTRACT.md (sha256 `e4f559e0...`, unchanged) and
+  James's portal are exactly as in 1.7.11; he sees near misses after a later contract revision. `near` joins
+  `roles.RESERVED` (no pilot may be named near or near_x).
+- New card `www/flight-watcher-near-card.js` (`custom:flight-watcher-near-card`), deployed with the others: the list
+  folded by default with its count, staying open across updates once opened; each miss with what is in the way, what
+  to change (with the credit and pay each change gives up, "nothing lost" for a blocked day or a kept trip), the pay
+  difference in green or red and the FAR 117 chip; a key with the PWA and FAR references. The card is built once: an
+  update changes only the count, the list and the rate, so "How this is figured" stays open and the keyboard focus
+  stays put. While the sensor is unavailable or unknown (the Watcher offline or restarting: HA drops its attributes)
+  or not published yet, the count reads "?", never 0, and the folded header says why. 390 px with no sideways scroll,
+  44 px targets, WCAG AA in light and dark.
+- Ryan's Watcher view: `ha/dashboard_flight_watcher.json` has the card under the pot table, before Swap ideas.
+  **Pending on Pako**: Claude applies that one card through the HA connector after the release, with Ryan's yes
+  (ha/README.md: the snapshot matched Pako's `be03a0a4...` until the pending edits, 1.7.12's Details tile and this
+  card, and is ahead of it by those two, `e95ce9d3...`; Pako reads that once both are applied).
+- Tests: `tests/test_fw1714_near.py` (synthetic pairings): each conflict type, the pay math with the PWA rules (VAC
+  4:00 a day, the RO override, a dropped trip's credit, a blocked day at nothing, no rate, an unknown credit), legal,
+  not legal (FAR rest with its trip and rule, the 11 h home rest) and not known (a time not on file, a customs-only
+  short rest), a trip hidden for two reasons, several excluded trips, a same-day trip kept (legal to fly both; not the
+  problem), two own trips with one kept, a Dec 1 trip priced from November's package and schedule versions, pilots
+  counted without flight attendants on both sides, the order, no FLICA load, the sensor's size bound, both instances
+  and the unchanged portal export, the dashboard snapshot and its README wording, and the card in Chromium at 390 px
+  light and dark (unavailable, unknown and no sensor; the key staying open with its focus across an update).
+  `tests/test_sensor_size.py`'s busy month publishes the near misses too (60 rows, each hidden by a week of VAC, the
+  blocked days and own trips), for the admin and a pilot, under the 12 KB bar.
+
+## 1.7.13
+
+### FAR 117 columns with units and headroom
+
+Ryan, Nov 17: "Give FAR-30/7, FAR-100/672 and Room real headers with units, and show headroom against each limit (e.g.
+"100h/672h: 10:57 left"). Explain the Room column in the Key." The Schedule card only (far.py, the pot and finds cards
+unchanged); the windows Room to 100h tries are the next section's.
+- Headers `30h in 7d`, `100h in 672h` and `Room to 100h` (one line each at 390 px; above 700 px the last two take two
+  lines and the FAR cells pad 4 px a side, so the grid is within about 15 px of 1.7.11's width and a laptop-sized card
+  fits it again); each title names its rule: FAR 117.25(b) (30 consecutive hours free from all duty in the 168 h before
+  a report) and FAR 117.23(b)(1) (at most 100 flight hours in any 672 consecutive hours).
+- `100h in 672h` is what is left in the 672 h ending 24:00 that day (`10:57 left`; its title `100h/672h: 10:57 left.
+  89:03 block flown or scheduled in the 672 h (28 days) ending 24:00 ...`); the block is rounded to the minute once,
+  so a cell and its title always add up to 100:00. `Room to 100h` is what is left in the busiest 672 h window that
+  holds any part of the day, back and forward (the next section). Both read red `0:00 left` at the limit and red
+  `1:20 over` past it, so the word says it, never the colour alone; `~` in front when a window reaches past the
+  schedule on file (`~10:57 left`) or holds a trip with no times on file.
+- `30h in 7d` words today's states with units: `✓ 36h 11/05` (a report at that day's first duty start, 00:01 on a day
+  off, is covered: the longest break off duty in the 168 h before it, whole hours, and the day it ended; a later report
+  that day may not be, so its title gives 'covers reports until'), red `need 30h off`, `?` (the 168 h reach before the
+  schedule on file), `–` (mid-trip).
+- The Key has a row for each column: units, the rule (FAR 117.25(b); FAR 117.23(b)(1), 100 flight hours in any 672
+  consecutive hours), what Room to 100h counts that 100h in 672h does not (trips later on the line, the windows it
+  tries), and that a trip whose times are not read yet adds no block (`~`) and, with no report and release on file,
+  counts as time off in 30h in 7d. The cells stay on one line (no taller rows).
+- Tests: `tests/test_fw1713_far_columns.py` (synthetic months, made-up trips H91xx, H93xx, H95xx, H98xx; Chromium at
+  390 px, light and dark, and a 936 px box for the pilot's and Ryan's copies): headers and titles, the 100h in 672h and
+  Room to 100h cells positive, zero, over and approximate, a cell and its title adding up to 100:00 (half-minute legs),
+  Room over on a window ending mid-day where far.py says NO, the 30h in 7d states and which report the tick covers, red
+  only with its word, the Key text, the grid's width, far.py's limits unchanged.
+  `FW_1713_SHOTS=<folder>` saves the screenshots (390 px and 1024 px). 1.7.11's cross-month test
+  (`tests/test_card_cross_month_672.py`) reads the 100h in 672h cell as headroom (`82:25 left` on Dec 2) and the
+  trip's block, counted once (17:35), in its title.
+
+### Room to 100h tries every 672 h window, like far.py; unknown trip times marked
+
+Ryan, Nov 18: "fix all of these things" (the FAR 117 gaps item 4's review left open). The Schedule card only; far.py,
+recall.py and the pot and finds cards are unchanged here (far.py changes in the review fixes below).
+- **Room to 100h finds far.py's windows** (F1): it was 100:00 minus the busiest 672 h window ending 24:00 HST, and a
+  window ending mid-day can hold more (on a synthetic line Room read `9:00 left` where far.legality finds 101:00 in the
+  672 h from Nov 1 10:45 to Nov 29 10:45, over FAR 117.23(b)(1)). Room is now 100:00 minus the busiest 672 h window
+  that holds any part of the day, back and forward: the windows starting at a duty's start or ending at its block-in
+  (far._cum's, where the busiest one always is), a duty's block counting when the whole duty is in the window, on the
+  spans far.py reads (recall._trip: a duty from the trip's report, or 1:00 before departure from HNL and 1:15 elsewhere,
+  PWA 2.19.b, to its block-in), and the windows ending 24:00 HST counted leg by leg as before, so Room never shows more
+  room than 100h in 672h. On the same line Room reads over exactly where far.py finds a 672 h window over 100:00 that
+  holds the day, or where a window ending 24:00 is over leg by leg (a leg across its edge counted in part), which
+  far.py reads `?` (may pass), never OK. The 100h in 672h cell stays the 672 h ending 24:00 that day. Room's title
+  names the window's end (`101:00 flown or scheduled in the 672 h ending 10:45 2026-11-29`; a tie keeps the window
+  ending 24:00); the "windows ending 24:00 only" caveat is gone from the header, title, Key and README. A window holds
+  the day when it holds part of it (far._cum's rule for a pickup), so Room's `~` (a window past the schedule on file)
+  reaches a day further each way. Where a trip's duty blocks add up to more than FLICA's trip Block, Room counts the
+  duty blocks as far.py does; 100h in 672h still scales them to the trip Block.
+- **A trip with no times on file is marked** (F3): it adds 0:00 block, so a 100h in 672h or Room to 100h cell whose
+  window holds an own trip with no times (no Block and no duties, a `{}` record, or none) reads with `~` (not known in
+  full) and its title names the trip (`~ = not known in full: no block times on file yet for H9205 11/05 (counted
+  0:00)`). The Key says so for both cells; 30h in 7d still counts such a trip as time off without a report and release.
+- **Ryan's line** (live data, names stripped, not in git): Room on every day of November and December equals far.py's
+  busiest window holding that day. Nov 29 reads `6:42 left` (was `10:03 left`: the 672 h from 04:00 Nov 1 hold 93:18),
+  Dec 1 `10:03 left` (was `10:04`), Dec 6 `~10:04 left` (was `~16:35`), Dec 7 `~16:35 left` (was `~18:34`), Dec 4 gains
+  its `~`; Dec 2's 100h in 672h is unchanged (`16:18 left`, 83:42); every cell is positive.
+- **F4**: item 4's queued finding (a trip from the month before taking its release from a later HNL day of the viewed
+  month) was fixed in 1.7.11 (`tests/test_card_cross_month_review.py`); a render on this release confirms it (X9620 Nov
+  20 to 22 keeps its Nov 22 release in the December view, and Dec 10 shows only X9612's own release).
+- Tests: `tests/test_fw1713_room_windows.py` (Chromium, synthetic lines, made-up trips H91xx, H92xx, H96xx): Room over
+  on the mid-day window; day by day against far._cum on the same line (a widebody-shaped line with red-eyes, out-station
+  duty starts, a trip across Nov 30 and a duty with no block; the mid-day line; item 4's lines at 101:20, at exactly
+  100:00 (`0:00 left`, far.py OK) and with duty blocks over the trip Block): over exactly when far.py is, Room's block
+  the larger of far.py's busiest window and the windows ending 24:00; `~` and the trip's name for a `{}` record, no
+  record and no Block; the Key and header. Each fails on the code before. `tests/test_fw1713_far_columns.py` moves
+  to the new cells (Room over on Nov 29 of the 101:20 line, `~` a day further, Room counting duty blocks as far.py).
+
+### FAR review fixes
+
+Two adversarial checks of the FAR fixes above (460 random synthetic lines, 28,060 day comparisons with far.py) found
+four gaps. Each is fixed with a test that fails on the code before (`tests/test_fw1713_room_windows.py`).
+- **Exactly 100:00 is legal in far.py** (R1): far._cum added blocks as float hours, and about a quarter of block sets
+  that add up to exactly 6000 min float to 100.00000000000001 h, so a pickup that brings a 672 h window to exactly
+  100:00 read NO `flight time 100:00 h in 672 h, over 100 h` (`FT 100h/672h` in the pot, Tradeboard and finds FAR
+  column and the Recall/O75 miss check) while the card read `0:00 left`. FAR 117.23(b)(1) allows 100 h. _cum now
+  compares whole minutes (every time on file is one), for the FDP limits too (FAR 117.23(c)(1): five FDPs adding up to
+  exactly 60:00 in 168 h read over); one minute more is over. The 1.7.13 claim "at exactly 100:00 (`0:00 left`,
+  far.py OK)" now holds for any blocks, not only the `zero` line's.
+- **100h in 672h counts a trip with a duty block missing** (R2): its legs held only the duties with a block, so a
+  window holding H9201 (Block 20:00, its second duty with no block) counted 10:00 where far.py counts the trip's 20:00
+  (recall._trip puts the Block on one span from report to last block-in): `6:00 left` (94:00) against 104:00, no `~`,
+  while Room read `4:00 over`. The rest of the trip's Block now counts on the duties without a block (departure to
+  arrival, shared by their length; on far.py's span when their times do not read), so a window holding the whole trip
+  counts its Block as far.py does. With no trip Block the duties with a block count and the cell reads `~` (`no block
+  time on file yet for a duty of H9205 11/05 (counted the duties with a block)`). The Key says both.
+- **A no-duty trip's block ends at its last block-in** (R3): 100h in 672h spread it to the release (15 min later,
+  PWA 2.19.b), so the 672 h ending 24:00 after a 23:50 block-in held 99:59 of a 100:02 line (`0:01 left`, Room `0:02
+  over`). It now ends at the block-in, as far.py's span does.
+- **far._cum tries the open edges too** (R4): it tried only windows built on span edges, so for a pairing with no
+  flight time of its own (the tests' day probe) the busiest worst window, ending just after 00:00 that day as a span of
+  the line leaves it, was never tried: on a line where Room read `5:00 over` on Dec 25 (105:00 in the 672 h ending
+  24:00, a leg across its start) far.py read OK `at most 95:00`. _cum now also tries the window ending 1 s after the
+  start of the pairing's first span and the one starting 1 s before the end of its last (its report and release when
+  it has none): `?` (95:00 known, up to 129:00), as a real 1:00 pickup that day read. "Room over leg by leg, far.py `?`,
+  never OK" now holds for the probe, and the test checks it on every day. On 12,000 random synthetic pickups against
+  300 random lines only 15 of 21,789 FAR 117.23 checks changed: 2 NO at exactly 60:00 FDP now OK (R1), 13 NO now `?`
+  (`over ... even without the pairing: the line on file looks incomplete`), each on a synthetic line already over the
+  limit by itself next to the pickup, which a line on file cannot be.
+- A rerun of the checks on the fixed code (450 random lines, seeds 11, 22, 33, Nov and Dec, 27,450 days): Room never
+  reads left where far.py finds a window over 100:00, never over where far.py reads OK, and its block is never below
+  far.py's busiest sure window. The 100h in 672h cell lies between far.py's sure and worst count of the same 672 h
+  ending 24:00 on every day, except windows holding a trip whose duty blocks add up to more than its Block (the cell
+  scales them to the Block, 1.7.11, as before). 30h in 7d is identical to 1.7.11's on every day.
+- Tests: synthetic lines H91xx (exactly 100:00, a float sum over 100 h), H92xx (a duty with no block), H93xx (a 23:50
+  block-in), H94xx (Oct to Jan, the probe's edge window), two H9205 records whose second duty has no block (with and
+  without the trip Block) and five FDPs (H95xx) at exactly 60:00 in 168 h; on every test line the 100h in 672h cell
+  between far.py's sure and worst count of its window, day by day (half100 left out: it scales duty blocks by design),
+  and far.py `?` wherever Room is over and far.py's sure count is not.
+
+## 1.7.12
+
+### One data age stamp in place of the two clocks
+
+Ryan, Nov 17 (approved): "Replace the two clocks ("updated" and "Last check") with one "data age" stamp. Turn it amber
+past 1x the normal interval and red past 2x." No FLICA page load, no new entity, no contract change.
+
+- **The stamp**: "Data age 12 min", the time since the Watcher's last good read (`sensor.<prefix>_last_check`, which a
+  check sets only when it succeeds): seconds under a minute, then minutes, hours and minutes, days and hours. Amber
+  with the word "stale" past 1x the check interval (`number.<prefix>_normal_check_every`, minutes; while hunting, the
+  switch on or the state `hunting`, `number.<prefix>_hunt_check_every`, seconds), red with "very stale" past 2x, plain
+  otherwise. The word goes with the colour, so the colour is never the only cue (colour-blind users, screen readers).
+  A last check time that is unknown, missing or not a time reads "Data age unknown" with no colour (unavailable: see
+  the review below); an interval that is unknown or 0 leaves the age shown with no colour. Amber `#8a5300` and red `#c62828` on a light card,
+  `#ffb74d` and `#ef9a9a` on a dark one (Home Assistant's dark mode, the portal's from the device), WCAG AA on both.
+  The code is one block (`// ---- shared data age ...`) the clock and schedule cards carry byte for byte (the cards load
+  one file each, so a shared file would change the portal's card bundle); `tests/test_fw1712_data_age.py` keeps the
+  copies equal.
+- **Clock card**: "Last HH:MM:SS HST (N ago)" gives way to the stamp; "Next" stays. The last good read's HST time is
+  in its hover text with the thresholds ("Last good read 01:27:00 HST. Stale past 10 min 48 s, very stale past 21 min
+  36 s: ...", the review below). It ticks with the card's 1 s redraw. The Stuck state, its Re-arm and its card colour
+  are as before (with the interval known, Stuck reads red on the stamp too: very stale comes no later than its limit).
+- **Clock card, `mode: age`**: the stamp alone (no controls), for the Details view.
+- **Schedule card**: the header's "updated ..." gives way to the same stamp. FLICA's own schedule time (the schedule
+  sensor's `updated`) is only in the stamp's hover text, "FLICA updated Nov 9, 2026 09:54:34. Data age: ...". The
+  stamp ticks each second by itself (that one span; the card still redraws only when its entities change), and stops
+  off the page.
+- **Details view** (`ha/dashboard_flight_watcher.json`): the "Last check" tile becomes
+  `{"grid_options": {"columns": 6}, "mode": "age", "type": "custom:flight-watcher-clock-card"}` in its place. Pending
+  on Pako (`ha/README.md`): applied through the HA connector right after 1.7.12 is live, with Ryan's yes.
+- **A pilot's portal**: his clock and schedule cards (the same files, his entity ids) show the same stamp, from the
+  entities the portal already exports (state, last check, the two intervals, hunt mode). Nothing new is exported; the
+  portal's tabs and card bundle are as they were.
+- The pot card's "Pot last read ..." note (after 15 min) is unchanged.
+- Tests: `tests/test_fw1712_data_age.py` (synthetic states): the age text and both thresholds in normal and hunt mode
+  (1x and 2x exactly are not past them), unknown or missing values (no colour, "Data age unknown"), the clock card and
+  the schedule header in Chromium at 390 px light and dark (the portal's theme and Home Assistant's) with WCAG AA, the
+  ticks without a reload or a redraw, the Details view snapshot and its sha256. The clock card's HST check and the
+  award line's check read the stamp's hover text now.
+
+### Review fixes (the meaning of "1x": shipped under Ryan's "Ship it all", his to undo)
+
+The review ran the first build against the Watcher's real timing and found a healthy Watcher reading amber "stale" on
+about half of its normal cycles and nearly every hunt cycle, and a pilot held by his FLICA budget reading red "very
+stale" most of the time beside "Slowed.". `gap()` (watcher.py) waits the interval x 0.7 to 1.3 (`JITTER`), the wait
+starts when a check ends, and the next check takes time too (a crew index chunk: about 2 min in normal mode, 20 s
+hunting), so the bare interval is shorter than one healthy cycle. **This changes what "1x" means in Ryan's rule: it
+ships under his "Ship it all when ready fix all of these things" (Nov 17), flagged to him in 1.7.18; say no and the
+stamp goes back to the bare interval.**
+
+- **Thresholds** (the shared block): 1x and 2x of the Watcher's longest cycle between two good reads: the interval x
+  1.3 plus room for the check (`FW_AGE_ROOM_S`: 3 min normal, 45 s hunting, which also covers a few seconds of a phone
+  clock running fast). Normal 6 min: stale past 10 min 48 s, very stale past 21 min 36 s; hunt 40 s: 1 min 37 s and 3
+  min 14 s; hunt 5 s: 52 s and 1 min 44 s. On a pilot whose budget holds his checks apart (the state note's "at least
+  N s apart"), that pace is the interval. Very stale comes no later than the Watcher's own Stuck limit
+  (`stuck_after_s`), so "Stuck." always has a red stamp. The hover text says which cycle it used.
+- **Counted from later when the Watcher's wait started later**: after a change of hunt or of the interval in use (the
+  entity's `last_changed` after the read: the wait starts over, and a next check planned before the change still
+  counts, so Hunt pressed with a 3 min old read no longer turns red at once), and from the next check while the FLICA
+  budget or host limit holds it (the gate's note).
+- **Watcher offline**: a last check that is `unavailable` (the app is down; every entity has its availability topic)
+  reads red "Data age over 12 min, Watcher offline" (from the entity's `last_changed`, "unknown" under a minute), not
+  the grey "Data age unknown" of a Watcher that never read.
+- **Hover text**: the last good read in HST carries its day when it is not today's ("Last good read Nov 9 23:30:00
+  HST."), and the schedule card's has it too. A tap, Enter or Space on the clock card's stamp (both modes) opens it in
+  a box ("tap to close"), as the schedule card already did for its titles: phones have no hover.
+- **Layout**: the stamp keeps one weight (600) at every level and a 14em minimum width (the clock card's Next 17em).
+  On a phone the clock card's stamp starts its own line and Next the one after it, so the card's height and its
+  buttons no longer jump 22 px as the age ticks; the schedule header's stamp sits at its right (its own line on a
+  phone), so the month arrows and Now stay put at every width. Only a longer state text ("Watcher offline") may move
+  them, once.
+- **Details tile** (`mode: age`): a 56 px tile like the ones beside it (`getGridOptions`: 6 columns, 1 row), "Data age"
+  over its value, never wrapped (an ellipsis); a mode change on the same card element (HA's card editor) builds the
+  card again instead of throwing every second or freezing.
+- Tests (`tests/test_fw1712_data_age.py`): healthy cycles of jitter and check time (normal 1, 6 and 10 min, hunt 5 and
+  40 s, a held pilot) show no colour; the held pace, the gate, a mode change, a phone 8 s fast, the Stuck limit, the
+  offline Watcher, the day in the hover text, the tap box, the clock card's height from 360 to 1024 px, the header's
+  month controls from 390 to 1280 px, the 56 px tile at 166 and 183 px and the mode change, in Chromium light and
+  dark.
+
+## 1.7.11
+
+Ryan's ticket run of Nov 17, 2026. FW-0075 is Ryan's; FW-0076 and FW-0078 are James's, built on Ryan's yes naming
+both; FW-0079 and FW-0080 are follow-ups filed under Ryan from FW-0076 by james (its screenshot) ("Fix the crew column and totals too",
+scope "Everywhere"); the log masks on Ryan's "Fix the masking text too". **Contract 1 revision 6: HOM 1.9.2 goes
+live first.**
+
+### Own trip times are never blanked by a pairing page with no times; a trip across a month end counts once
+
+Ryan, Nov 17: "an own trip's times must never be blanked by a pairing page with no times. Keep times already read when a
+page has none, and re-read an empty record hourly." Before, `own_trip_times` wrote an empty record over the times read
+before whenever FLICA's pairing page came back with no report or arrival time, and an empty record was never read
+again (save on a full Check now), so the FAR column, the pay line and the working flight lost that trip.
+
+The cause (Ryan, Nov 17): the schedule card's Block read 91:04 against FLICA's 103:18. H3620 Nov 15 (block 12:21) had
+lost its times: at 16:48 HST, while the FLICA session was going, its in-progress re-read got a page with no times (the
+same page stopped pairing reads as "not a pairing page"), and the Watcher replaced the good record with an empty one.
+An empty record counted as cached, so it was never read again and the block stayed out of the month. No new kind of
+FLICA page, no change to budgets, pacing or the one-session rule; read only as before.
+- A page with no times keeps the times already read; one log line says so ("no times on the pairing page; the times
+  read before are kept"). A trip with no times read yet stays an empty record, as before.
+- A page that stops pairing reads (the Flica client's breaker judged that very page: not a pairing page) is no read at
+  all: the times on file and `own_empty_at` stay exactly as they were, a trip never read gets no empty record, and the
+  trips after it in the same check are kept (never pruned) and load nothing ("the page stopped pairing reads; the
+  times on file are kept (read again in an hour)"). Review: that trip waits an hour (`S["own_stop_at"]`,
+  `OWN_EMPTY_RETRY_S`), a trip never read and a Check now too. Before, it was due again at every reopen, and as this
+  read runs first in a check its page was the first pairing load each time and stopped the path again (30 min
+  doubling to 6 h), so the pot details, pickups and crew index never got a pairing page to close the breaker with. Now
+  the first load at the reopen is another reader's (a good page closes the breaker), and the trip's own page is tried
+  again an hour after its last try. A read of the trip clears it; a trip leaving the schedule takes it along.
+- Review: when the page says FLICA's session is gone (another login took it, "new session under this account was
+  detected"; it expired; reads are blocked), no more own trip pages load on it in that check (before: up to 2 more, 11
+  on Check now); every trip stays on file and the sensor goes out, and the check meets the same page on the pot and
+  yields as before. A load a pilot's budget leaves out (the gate's skip) no longer drops the trips read before it in
+  the same check: they are saved, gone trips are pruned and the own trips sensor goes out, then the read is logged as
+  left out as before (both older than 1.7.11).
+- `S["own_empty_at"]` holds, per trip, when its page last had no times. Such a trip is read again at most once an hour
+  (`OWN_EMPTY_RETRY_S`), whether it has times from before or none, inside the per-check limit (`OWN_PER_CHECK`, 3) and
+  the 1.5 to 3.5 s pacing. A read with times clears it; a trip leaving the schedule takes it along. The only new FLICA
+  load: one pairing page per empty trip per hour, as Ryan asked.
+- Schedule card, FAR-100/672 and Room (Ryan, Nov 17: "are they gonna say I am over block on Dec 02?"): a trip
+  across a month end (H3607 Nov 30 to Dec 2) is on both months' schedules, and the card counted it once per month, so
+  its block went in twice: 101:17 on Dec 2 and Room -7:31, against a real 83:42 (highest window Nov 30 to Dec 14:
+  89:56). It now enters the card's trip list once (same rule as recall.line_records), in both months' views. FLICA
+  gives a trip in progress no code day on a later page, so both pages list it at its own start (or the later page
+  not at all): one trip and start is one trip.
+- Checked for the same double count wherever two months' schedule items are joined (a synthetic trip across a month
+  end, old code and new): the card's own trip list was the only one that counted it twice. The card's Block, Credit
+  and Pay totals, its carried-in trips and prices (keyed by trip and start), FAR-30/7 and Legal next, the Watcher's
+  FAR column and 98/672 tag (recall.line_records), the Recall/O75 lines (recall.held_at) and the working flight
+  (working.py) count it once. Review, three more joins fixed in the card (all older than 1.7.11):
+  - Swap ideas: the trip a swap replaces is skipped by its trip and start. Its copy on the other month's page
+    (December's Schedule Lookup rows start in late November) made every day of it busy, so a trip across a month end
+    never got a swap idea (no Ideas button).
+  - A trip not in the viewed month's package is released on a day of its own (after its start, up to its end). In the
+    December view every November trip took the first HNL day on December's page (Dec 2, H3607's return), which moved
+    its release, the FAR-30/7 mid-trip days, the trip box, Legal next and the rest a pick-up idea needs (PWA
+    10.E.1.a): a legal Dec 3 pick-up 22:25 after H3607 read 12:45 after a November trip, or was not offered.
+  - The Open column's clash test, the layover cell and the in-progress mark read every month's items (each trip and
+    start once). From Dec 1 December is read on the mobile page, which starts at Dec 1 and gives H3607 no code day, so
+    an open-time pairing on Dec 1 to 2 showed as fitting while the Watcher's schedule_fit says Conflict H3607.
+- Month totals of a trip across a month end (Ryan, Nov 17: December Credit 73:00 / Block 36:21 against FLICA 80:35 /
+  43:56 on 1.7.10): FLICA's December page starts on Nov 30 when a trip runs in (H3607), and its Dec 2 leg (7:35) is
+  December's (PWA 4.A). FW-0080 above already counts each duty in the bid period it departs in, so December's Credit,
+  Block, Soft and Pay include it and November keeps its own part; a test keeps it so (Ryan's 1.7.12 patch, folded in).
+- Tests: `tests/test_own_trip_blank.py` (synthetic pairings, both instances): times kept, hourly re-read, the
+  pre-1.7.11 empty record read once then hourly, an in-progress trip with kept times not re-read every check, the
+  per-check limit, pruning, no load for a trip with times, and a page that stops pairing reads (times and
+  `own_empty_at` unchanged, the later trip not pruned, no further load, no empty record for a trip never read);
+  review, on the real Flica.fetch path (a fake browser context): a trip whose page stopped pairing reads waits an
+  hour and a good pot detail at the reopen closes the breaker, a killed or expired page loads nothing more, and a
+  load the budget leaves out still publishes the trips read before it;
+  `tests/test_card_cross_month_672.py` (Chromium, made-up pairing X9607: Nov 30, Dec 2 and Dec 5 in both months'
+  views, December's page starting on Nov 30, and each month's Block and Credit matching its FLICA totals); `tests/test_card_cross_month_review.py` (Chromium, made-up pairings: swap ideas for X9607 with its copy on
+  December's page, a November trip's release, FAR-30/7, trip box, Legal next and pick-up rest in the December view,
+  and the Open clash and layover cell on December's mobile page).
+
+### FW-0075: move the van time in 5 minute steps
+
+Ryan's ticket (Nov 17, page Watcher): "I need to have a plus and a - kind of below the numbers for the van time because
+in some cases the company adjust the van time a little tiny bit to accommodate local things that are happening and so
+in this case my [van time] says 5:25 am and I would want to be able to switch the van time in five minute increments
+so I could set it for 510 for example". The admin's instance only; no FLICA page load, no contract change.
+
+- **The layover card**: under the big van time, "-5 min" and "+5 min" (44 px taps; aria-labels "Van 5 minutes earlier"
+  and "Van 5 minutes later"). They show only when `sensor.flight_watcher_layover_van` says `adjustable` (the Watcher
+  placed the van the card shows): never for Hark's van the Watcher did not place, never in a portal's copy of the card
+  (it now has the `FW_PORTAL` flag; it is on no portal). A press publishes `flight_watcher/van/adjust/set`
+  `{"van": <van_id>, "minutes": <the move>}`: the absolute move from the van as read (the Watcher's current move plus
+  or minus 5), so a repeated press or a retry never moves it twice. One move at a time: while one is saving, the
+  buttons are `aria-disabled` and a tap on them does nothing, so only the answer to that command ends the wait. A
+  button at an end of the range (-120 and +120 min) is `aria-disabled` the same way (never `disabled`, so the
+  keyboard focus stays on it); when "Back to" goes with its answer, the focus moves to "-5 min". "Saving..." until the
+  sensor says the new move; "Not saved, try again" after 10 s without it, after a publish error, or when the van
+  itself changed meanwhile. A screen reader hears "Saving", "Van moved to 05:10", "Van back to 05:25" or "Not saved,
+  try again" from one visually hidden `role="status"` element that every render keeps. Moved, the big time, its HST, the
+  countdown and the alert times are the moved van's; under the buttons "You moved it -15 min (the package says
+  05:25)" ("Hark says" for Hark's van; its weekday when the move crossed midnight) and "Back to 05:25" (minutes 0).
+  When the package's van wins, "Hark says ..." still shows only when Hark says another time than the package did.
+  Every value is escaped; light and dark; 390 px with no sideways scroll.
+- **`layover.py`**: `adjusted(info, minutes)` moves the van's instant by a whole multiple of 5 in `ADJUST_RANGE`
+  (-120 to +120), then reads its local time, date, weekday and zone letters again on the station's zone (daylight
+  time right: 03:10 AEDT less 15 min is 01:55 AEST; midnight right: 00:05 less 10 is 23:55 the day before) and its
+  HST time and date; a moved van has `adjust_min`, `orig_local` and `orig_date`. `van_id(info)` is the van before any
+  move (the pairing's base id and the van instant as read, UTC). `adjust_ok` is the check: an int (never a bool, a
+  float or text), a multiple of 5, in the range. The sensor gets `adjustable`, `van_id`, `adjust_min` (0 when not
+  moved) and, moved, `orig_local` and `orig_date`, with a van on the admin's instance; nothing new without one.
+- **The Watcher**: `S["van_adjust"]` `{van_id: minutes}` (kept across a restart; at most 8, the newest, the van in
+  hand's always). The command is refused with one log line and nothing changed (the van sensor still goes again, so
+  the card stops waiting) when the payload is not a JSON object of at most 512 bytes, the minutes are not a whole
+  multiple of 5 from -120 to 120 (NaN, 1e999, "5", 5.0 and true are not; nothing in it can end paho's thread), there
+  is no van in hand, or the van is not the van in hand's; a pilot's instance refuses it (roles: `admin_pushes`; it is
+  in `roles.NOT_ON_PORTAL`, so a portal's spool refuses it like the van settings). 0 removes the move. One log line a
+  change, no crew names: "van: moved -15 min by Ryan: H3681 LAS 2026-11-18 05:10 PST (the package says 05:25)". The
+  sensor says the moved van at once. `van_tick` applies the move right after `van_source`, under the van lock, so the
+  keys, the alerts, the sensor and the van a setting applies to are the moved van's: a moved van is a new van time
+  (a new key) and follows the 1.7.1 and 1.7.2 rules (a late start sends the latest alert still due, worded with the
+  minutes left; nothing after the van). A moved van's alerts wait 30 s (`VAN_ADJUST_SETTLE_S`) from the first sweep
+  that saw the last move, so the 5 minute steps passed through on the way to the time Ryan wants (05:25 to 05:10 in
+  three taps, a 10 s sweep between them) send no push and leave no key; only the time he chose gets its alert. Moving it back to the van as read never sends one of that van's alerts again
+  (`van_keep` keeps its keys while it is moved). When the van itself changes (a new package, Hark's text, another
+  pairing) the move no longer applies: one log line ("van: the -15 min move no longer applies: the van time
+  changed"), and it stays in the state only within the 8. The move applied is kept in the state too
+  (`S["van_moved"]`), so a van that changed while the app was down (an update, a restart) still gets that one line.
+  A sweep that cannot read Hark's sensor drops nothing, and a move taken then does not log that sweep's reason again.
+
+### The pilot lookup: up to 12 matches with seat, base and employee number (FW-0078); this month or next (FW-0076)
+
+Both tickets are James's (reporter james); Ryan said yes on Nov 17 naming both, and only what he approved was built.
+**Contract 1 revision 6: HOM 1.9.2 goes live first.** Synthetic data in every test.
+
+- **Up to 12 matches** (FW-0078, Ryan: "show up to 12 matches as Last, First, seat, base and employee #"). A name
+  lookup lists up to 12 pilots (5 before; the most pilots sharing one last name in the shared pilot file is 10). More
+  than 12 is still no list ("More than 12 pilots match ... Type more of the last name, or Last, First, or the employee
+  number."). Both instances.
+- **Each entry reads "Doe, Jane · FO · HNL · #10001"**: the name, the seat as before (with the Sen # for two entries
+  that would read the same), the base and the employee number. The base is the pilot database record's (its domicile,
+  from the award's category), else the award's seniority line's or the seniority list's, else it is left out. The
+  entries wrap on a 390 px phone and are 44 px tall; names are escaped.
+- **The pick is still the opaque pick id.** On a pilot's instance an entry is picked by its pick id, never by the
+  number it shows (the card sends no number for it). Ryan's card picks by the number, as before.
+- **This month and next** (FW-0076, Ryan: "This month and next month buttons on the pilot lookup, on both instances.
+  One FLICA load per tap, inside the budget."). On a pilot's month the pilot card shows two buttons under the heading,
+  this HST month and the next ("Nov 2026", "Dec 2026"). The month shown is pressed and not tappable; the other reads
+  that month for the same pilot, "Loading Nov 2026..." while it waits. Before, a lookup always showed FLICA's default
+  month, which after the award is the next bid month (December on Nov 17).
+- **One page per tap.** With a month the Watcher reads only that month's Schedule Lookup page (`bd=MMYY`), then the
+  pairing pages as before, paced 1.5 to 3.5 s, inside the pilot's FLICA budget and the host gate like every lookup.
+  The 6 h cache is per month (a month the default lookup already read is served from it); FW-0057's previous month
+  follows the month read. Only this HST month or the next is taken; any other is refused with one log line and a
+  status line on the card. A lookup with no month (a name, a pick, a #pilot= link) is exactly as before.
+- **The same pilot.** Ryan's card sends the employee number; a pilot's card sends the field that found the pilot it
+  shows (his pick, the number of a #pilot= link, or the number he typed), which his Watcher publishes as the pilot
+  sensor's `ask`; the pick of the pilot shown stays usable for his month buttons after the pick list's 30 min. The
+  card's 2 s guard covers a month tap.
+- **Contract 1 revision 6.** `pilot/set` takes one more key, `month` (YYYY-MM); `commands.key_since_revision`
+  (`{"pilot/set": {"month": 6}}`) marks the key the way revision 5 marked a value. HOM 1.9.2 takes a `pilot/set` with
+  `month` only from a revision 6 export and goes live first. With HOM 1.9.1 still live a month tap is refused by its
+  pinned shape ("pilot/set: month is not allowed") and the card says "The month choice needs a portal update (Nov 2026
+  was not read)."; nothing else changes for James. No mask changed: the pick list's `emp` and `base` pass the portal's
+  masks (only `contact` is dropped and the file keys zeroed). The fixture is regenerated: sha256
+  `a066d935367dfc736383bb4a6b1fa71d114fee26defcb2de8479695759ed2ec9`.
+- **Rollback to 1.7.10** (Flight Watcher first; HOM 1.9.2 can stay, it takes revision 5): safe. 1.7.10 refuses a
+  `pilot/set` with `month` by its own shape check (one log line, nothing read), its card has no month buttons and its
+  pick list is back to 5 entries of name and seat. The per-month cache rows (`pilot_sched:<emp>:<YYYY-MM>`) are ignored.
+- **Review fixes** (synthetic data in every test; no contract change, the fixture is unchanged):
+  - A month tap answers from the newer read of its month on hand, the month's own or the lookup's with no month
+    (fetched_ts), so it never reads FLICA again, or shows an older read, while a newer one of its month is cached;
+    a month's versions are priced from that same read. A lookup with no month uses its own read, as before.
+  - The pick list's base is never another pilot's: on Ryan's instance a pilot database hit shows its own record's
+    domicile, a crew directory hit the directory's only when that row names the same last name; a seniority list
+    record on a shared number ('also') never takes the first record's seat or base.
+  - A month tap whose page cannot be read (or whose read fails) rebuilds the month asked for from the crew lists and
+    names it ("Dec 2026: not readable ..."), never this month's rebuild.
+  - On the portal the note "The month choice needs a portal update (Nov 2026 was not read)." now shows: HOM's shell
+    swaps in a fresh pilot card before the refusal arrives, so the card keeps the note on its class (for the sensor
+    and the pilot it names) and every pilot card on the page draws it. A refused tap can be sent again at once.
+  - A month tap the Watcher keeps for later (yielded, paused) reads "Loading Nov 2026..." with that month pressed and
+    both buttons waiting; a lookup still unanswered after its wait frees the buttons again ("Still waiting after N
+    min for Nov 2026: ..."); a pilot shown under a number the shape refuses (8 digits or more) gets no buttons.
+  - The pressed month is white on #01579b (7.6:1, the layover pill's), not the theme's primary pair (white on Home
+    Assistant's #03a9f4 is 2.63:1, on #009ac7 3.26:1).
+  - The card test pins its clock inside the page (it read the real clock and would have failed from Dec 1 HST).
+
+### FW-0080: totals by bid period, everywhere (PWA 4.A)
+
+Ryan, Nov 17: "Fix the crew column and totals too", scope "Everywhere". Seen in a pilot's screenshot (FW-0076, a
+report only): another pilot's December showed Credit 15:00 and Block 11:15 in red beside FLICA's 6:39 and 5:52.
+
+- **Why.** The Watcher and the cards totalled a month by the calendar month; FLICA totals the bid period (December
+  2026 runs Dec 2 to Dec 31, November Nov 1 to Dec 1, its package days read "D1"). A trip Dec 1 to 3 (duty 1 Dec 1,
+  duty 2 Dec 3) counted whole in December; FLICA's December holds only duty 2. 1.7.7 had chosen the calendar month on
+  purpose; the bid period replaces it everywhere.
+- **The rule** (`pay.split_by_period` / `pay.period_share`; the schedule card's `fwSplit`, the same rule, tested side
+  by side): each duty counts in the bid period that holds its HST departure date (its `dep` minutes, never a weekday
+  field). Its credit is its TCRD from the pairings package detail (paired by index with the package's duties, only
+  when both list as many); the bid period of the trip's first day keeps the rest of the trip credit (rig, minimums), so
+  the parts add up to the trip: November 8:21 / 5:23 and December 6:39 / 5:52 for the 15:00 / 11:15 trip. With no
+  TCRD on file: the block share, marked an estimate. With no duty times: the whole trip pays in the bid period of its
+  first day.
+- **The bid period** comes from the pairings package (`start` / `end`), else the calendar month as before, and the totals'
+  title says which. Ryan's schedule card and the PAYP split also take the schedule pages on file before the calendar
+  month (the schedule sensor's new `periods`, `bid_bounds`, `bid_period_fn`); another pilot's month and the rebuilt
+  month have no schedule-page fallback (their `period.src` is `package` or `calendar`).
+- **Another pilot's month** (`pilot_price`): no `start[:7] == month` guard; a trip counts in a bid period when its part
+  there is not zero, so a trip from the bid period before counts its own part. A crew index trip that starts before
+  FLICA's grid and flies on into the bid period counts its part too (`carry`, only while FLICA's grid shows its days
+  free with a layover cell). VAC and PAYP days and the pay line's dates are the bid period's. The line carries
+  `period` ({from, to, src}); each split trip's `split` names its part here, the part in the other bid period
+  (`out_credit`, `out_blk`), `side`, `other`, `edge`, `est`, `none`.
+- **The rebuilt month** (`pilot_pay_line`) and **the versions** (`pilotver_<key>.json`, its `pay` with `period` and
+  `carry`) count the same way.
+- **Ryan's own month** (the schedule card): rows, totals, the carried-in trips (named under the totals), the PAYP
+  estimate's checks and the versions' Awarded / Improved-Pay-Gross (`price`) all by bid period. A trip whose own times
+  are not read yet places the package detail's duties (each duty's first leg, made HST with the Watcher's time zones)
+  and takes its credit from its own bid period's package. The month's Improved-Pay-Gross goes to the Watcher once every
+  package a price asked for is in (one report a load, priced with the TCRD, never the block share first; F#32).
+- **A PAYP's kept credit** splits by bid period with the removed trip's TCRD (`versions.payp_entries` with
+  `bid_period_fn`, `payp_tcrd`). Listed again on the next page (December's page starts on Dec 1, November's bid
+  period's last day), its continuation record carries the share of the bid period of its days, Dec 2 on (the card
+  also reads that share off the November record when December's page has none yet). A record kept from 1.7.10 (the
+  calendar month's split, or none) is split again from the removed trip's duties in own trips or the versions (only
+  its split changes), and the PAYP records in the stored versions once (`repair_payp_splits`, `payp_fix_v`). The
+  versions' change line says "by bid period".
+- **Another pilot's pairing page legs** make duty periods as Ryan's own trips and the package's do (a gap of 8 h or
+  more starts a new one), so a duty whose legs cross HST midnight counts on its first leg's date whichever source
+  prices the trip.
+- **Cards.** A split trip's Block and Credit show its part in this bid period, purple (`--fw-split`, WCAG AA light and
+  dark), titled for example "5:23 block, 8:21 credit flown before Dec 2 pay in the November bid period (PWA 4.A)". With
+  no duty times on file the title says where the trip starts and that the whole trip pays in that bid period. Only a
+  pairing is marked split (a reserve or other code on a grid day outside the bid period stays plain). The totals' title
+  says "flown in the bid period". A totals line that matches FLICA shows its check mark, no red.
+- Tests: `tests/test_fw1711_totals.py` (the Dec 1 to 3 shape both ways, the block share fallback, a VAC day on Dec 1 in
+  November, a carried trip, the versions file, the rebuilt month, the PAYP split, the card's split against the
+  Watcher's, Ryan's schedule card in Chromium) and `tests/test_fw1711_review.py` (the PAYP listed again on December's
+  page, 1.7.10 records and versions split again, the legs' duty periods, the card's package duties, plain codes, the
+  no-times title, one Improved-Pay-Gross report). The tests that pinned the calendar month (`tests/test_review176_pay.py`
+  and the two month-boundary PAYP tests in `tests/test_payp.py`) now pin the bid period, each saying why.
+
+### FW-0079: the pilot card's crew on a phone
+
+Seen in the same screenshot (FW-0076, a report only): at 390 px with crews about 41 characters long the grid was about
+606 px wide in a 368 px frame, clipped with no scrollbar a phone shows.
+
+- On a phone (700 px or less) the pilot card hides the Crew column and lists the crew under the grid, one line a
+  pairing ("H9601 Dec 1: CA Doe, Jane · FO Roe, Rick"), each pilot a no-wrap span, the looked-up pilot's call, text
+  and mail links kept; the header cells are 3 px padded there. Down to 360 px the grid fits: the Credit, Soft and
+  Pay-Gross cells (the columns with no twin in the shared look) are 1 to 2 px padded, Pay-Gross heads two lines, and a
+  one-day turn's report and release may share its Layover cell on two lines when the grid needs it. A wider card keeps
+  the Crew column while the grid fits it; one whose grid does not (a tablet in portrait, a long crew) lists the crew
+  too, measured on the card's own width after each draw and resize. Everything is escaped as before. The shared grid
+  block is untouched; the day, date, trip, layover and block cells keep the schedule card's look and every other row
+  its height.
+- Tests: Chromium (node Playwright, `tests/fw1711_pilot_render.js`) at 390 px light and dark (the grid fits its box,
+  the list names every crew, a name with markup stays text) and 1024 px (the Crew column shows, the list is hidden);
+  `tests/test_fw1711_review.py` at 360, 375 and 390 px with and without one-day turns, and at 820 px (the list).
+  `test_pilot_grid_look` and `test_pilot_contact_card` now measure the phone's crew list instead of the hidden column.
+
+### Log masks: fixed text is no longer blanked
+
+Ryan, Nov 17: "Fix the masking text too." Two lines seen live on 1.7.10, and every other fixed log text checked the
+same way. The name, employee number, e-mail and phone masks are as strong as before or stronger: a review compared
+each phone form beside each kind of neighbour (a date, a version, an employee number, a pairing, a name) and each
+way of joining them with 1.7.10, and no form that 1.7.10 masked passes now. Synthetic data in every test.
+
+- **Ryan's log, the cap_credit line.** smart.json's ignored `cap_credit` text said "(Ryan, Nov 9: the PWA does not
+  cap voluntary adds)", and the admin's log mask (`captures.mask_crew`, the 'Last, First' rule) read "Ryan, Nov" as
+  a crew name: the log said "(xxxx, xxx 9: ...". The text now says "(Ryan's rule of Nov 9: the PWA does not cap
+  voluntary adds)", which neither mask touches. The name rule is unchanged.
+- **James's log, schedule versions and months.** The phone rule (`captures._phones`, used by a pilot's log mask and
+  for FLICA page text in Ryan's log) took "12.002 (2026-11" for one 11-digit phone number, so a pilot's log said
+  "schedule version ##.### (####-##)". Now an ISO month or date (2026-11, 2026-11-17) and a schedule version (one or
+  two digits, a dot, three digits: 12.002) are never a phone number or part of one, with three exceptions where the
+  dotted group is the phone's own: a number that starts with "+" ("+44.207 946 0958", "+49 30.123 4567"), a group
+  with 7 or more digits around it on both sides ("808 12.345 0101"), and an area code before a 3-3-4 number ("Nov
+  17.808 555 0101"). The text between dates and versions is read by the phone rules on its own (a dot or a dash
+  right after a date reads as a space there: "2026-11 -808 555 0101"), so a phone right after a date or in brackets
+  after a version is still masked.
+- **A number beside a date or a version** that the phone rule used to take with it is masked still: a 5 to 7 digit
+  number joined by spaces, brackets, a dot or a dash ("2026-11-17 10001", "10001. 2026-11-17", "2026-11-17 -10001");
+  a 3 or 4 digit employee number after "pilot" ("pilot 6593 2026-11-17"), after a quoted "emp" key ("'emp': 6593")
+  or beside a masked name (a pilot's mask: "Doe, Jane 6593 2026-11-17", "DOE JANE 6593 (2026-11)", "6593 Doe,
+  Jane"; the admin's: "DOE, JANE 999 (12.002)"). Counts beside a date stay ("pilot 3 2026-11", "12 pilots read
+  2026-11-17").
+- **Phones the phone rule let through before** are masked now in a pilot's log and in quoted page text:
+  - written with spaces only: an international number ("+1 808 555 0101", "+44 20 7946 0958") and the 3-3-4 shape
+    ("808 555 0101"). Before, those passed as "numbers in a row". Numbers in a row ("1 2 3 4 5 6 7") still pass;
+  - at the end of a sentence or a clause ("call 808-555-0101.", "808-555-0101- ...", "808-555-0101: crew desk"),
+    read by a rule of its own that takes only a phone's shape (a "+" number, three groups or more, nnn-nnnn, or a
+    North American number), so a count, an epoch or a decimal before a full stop stays ("size 10485760.", "ts
+    1763400000.", "lon 157.92245.") and a time before a colon stays ("12:30: ok");
+  - beside another number ("1-808-555-0101 10001", "10001 808 555 0101", "808-555-0101(1234567)"), and a phone's
+    group that the rule's 20-character window left out ("123456 (808) 555 0101 2026-11-17" left "0101"), read
+    again from the next number or grown by the group beside it;
+  - a phone another rule took a part of ("LAS (808) 555 0101": the name rule took "LAS (808)").
+- **A name beside a masked number.** In quoted page text a number right beside a date is masked first, so the two
+  name rules that wait for its digits ("trade: DOE JANE 10001", "Captain: DOE JOHN 10001") missed the name when a
+  date followed it (this was so before too, through the phone rule). They read the digits the phone rule masked now,
+  and only those: an employee number's label stays readable ("employee number #####", "FO: EMP NO #####"), and a
+  number followed by "#" is read as before ("trade: DOE JANE 10001#12").
+- **A line masked twice** (page_log, then the log filter) keeps the date after a labeled number ("emp# #####
+  2026-11-17", before "emp# ##### ####-##-##"): the label rules take one or two "#" but not a masked number.
+- **Fixed texts reworded** so neither mask blanks them (the sweep below found each one; no mask was made weaker):
+  - `Swap draft (...)` (was `SWAP DRAFT`) and `Drop ready (...)` (was `DROP READY`): a pilot's mask took the two
+    capital words for a name.
+  - `pilot db: the file is from a newer release of this app` (was `... a newer Flight Watcher`): "Watcher" is no page
+    word.
+  - `alert email: ... (pickup speed rescored)` (was `Pickup Speed`).
+  - `contact list read again (parser n): ... with HAL notes, n notes segments not read` (was `HAL Notes`).
+  - `upload: contact list (<ext>, n KB) ...` (was `(n KB, <ext>)`: "KB, CSV" read as 'Last, First').
+  - `trade seen on the schedule (...): <detail>; Pay-Gross ...` (was `<detail>, Pay-Gross`: a detail ending in a
+    capitalized word read as 'Last, First').
+  - `pilot lookup: schedule version ... (<month>, from the FLICA schedule)` (was `(<month>, FLICA schedule)`).
+- **Guard tests** (`tests/test_fw1711_log_mask_text.py`, `tests/test_fw1711_log_mask_review.py`): the sweep reads
+  every log text in flight_watcher/*.py (log.info, warning, error, debug, exception, critical; the texts captures,
+  ntfy, pdbshare and smart hand to the Watcher's log; the texts sent through `portal_once` and the gate's `_say`; and
+  the texts a module helper returns, such as the pilot database's merge line), fills its holes with neutral samples
+  (a pairing, a schedule version, a month, a count, an exception's name, and on the admin's mask a station; the
+  strings the code names, such as smart's ignored texts, as they are) and fails when either mask changes a fixed
+  character, a hole that holds no capitalized word, or finds a phone number in the line. A log call whose text the
+  sweep cannot read fails unless it is listed with its reason (today only the two wrappers' own bodies). Its allow
+  list (texts meant to carry a masked value) is empty. Each phone form beside each neighbour is checked on both
+  instances, and the phone rule stays linear on long lines.
+- Not changed: cards, the database, exports, FLICA reads and budgets, the portal, pushes.
+
+### Integration review fixes
+
+What broke with the four branches together, or on the first start after the update from 1.7.10. Synthetic data in
+every test (`tests/test_fw1711_integration.py`); no contract change, the fixture is unchanged (sha256
+`a066d935367dfc736383bb4a6b1fa71d114fee26defcb2de8479695759ed2ec9`); no FLICA load.
+
+- **A rebuilt pairing splits by bid period** (FW-0068 with FW-0080). FLICA's rebuilt copy of a package pairing
+  (H9635B) found no duties, so another pilot's December gave it 0:00 and November the whole 15:00 / 11:15 under "no
+  duty times on file". Another pilot's month, its carried trips and the rebuilt month now use the base id's package
+  duties and TCRD (`pkg_det`, `pkg_detail_for` with the trip's first day, `payp_tcrd`), only when that bid period's
+  pairing file lists the base id on the trip's first day (`pkg_base`, the pilot card's rule): never for a trip on
+  another day, such as a part of it (H9640A).
+- **The first start after 1.7.10 makes no schedule version** (`repair_payp_splits`). A stored version's records have no
+  `end`, so the repair took a continuation PAYP (PAYP|12-01) for Dec 1 alone, November's day, and dropped it; its
+  span now comes from the version's own PAYP item, and a continuation whose span cannot be read is kept. The records
+  on file are priced first (`payp_refresh`; a record of a PAYP on the schedule that it no longer keeps leaves own
+  trips, as `own_trip_times` prunes it), and each repaired version's fingerprint is made again, so neither the start's
+  `versions_check` nor the first check's makes a version or sends `event/schedule_version` when FLICA changed nothing.
+- **The repaired versions' change lines** say what the records now hold, in the bid period's words (their PAYP lines
+  written again from `versions.diff`; "by month ... 7:04, 10:56" became "by bid period ... 9:30, 8:30").
+- **A PAYP whose trip still flies in part** (H9640A flies the Dec 2 and Dec 3 duties of H9640, the PAYP is Nov 30 to
+  Dec 1): its kept credit (18:00 less 8:30) splits only the duties departing on the PAYP's own days, so November gets
+  its 9:30 (PWA 4.A, PWA Definitions 57); before, November 1:00 and December 8:30, which H9640A already pays. The
+  one-time repair does the same, with the PAYP's days from the version's item.
+- **A month tap while Schedule Lookup reads are paused** says so with its month ("Loading Nov 2026... Schedule Lookup
+  reads are paused until ..."): the paused line was said once a pilot, so a tap for the pilot already shown stayed
+  "loading" for hours. It is said once a request now, for the pilot and the month.
+- **The pilot month an older release left in HA** (the retained `pilot_schedule`, which the portal exports as it is)
+  is priced again by bid period at the start, when its pay lines carry no `period` (`pilot_shown_reprice`: from its
+  stored read, served as cached, else from the sensor's own fields), so James never sees 1.7.10's calendar-month
+  totals in red under the bid period's title until his next lookup.
+- **On a phone the split explains itself**: a line under the totals ("Purple Block and Credit: only the part flown in
+  this bid period (PWA 4.A ...). H9635 Dec 1: 5:23 block, 8:21 credit pay in the November bid period.") and the split's
+  reason in the pairing sheet (and the wide card's panel) a tap opens. Touch never shows a title.
+- **Docs**: `PORTAL_CONTRACT.md` section 5.7 said the name lookup gives at most 5 matches (12 since FW-0078, and it
+  pointed at section 5.3, which is pref/set; the doc's own sha256 pin in `tests/test_doh_settings.py` and
+  `tests/test_van_settings.py` moves with it, the fixture's does not); HANDOFF's release list called 1.7.11 FW-0075
+  alone with no contract change (it is revision 6, HOM 1.9.2 first, with every item above).
+- **A test that read the wall clock** (`test_a_new_denial_pushed_with_its_view_page_is_not_read_twice`) failed about
+  once a run in 60 (at :59.x the request cap is 599 s, not 600); its clock is pinned to three seconds of a minute now.
+- **Not fixed here, needs a contract change:** the month buttons are this HST month and the next, as contract 1
+  revision 6 words them in the pinned fixture. On a bid period's day after its calendar month ends (Dec 1, 2026 is
+  November's) the bid period being flown cannot be picked; offering it changes the rule the fixture states.
+
 ## 1.7.10
 
 Ryan's decisions of Nov 15 about the pilot database: "The pilot database should be shared with James 100%; we work on

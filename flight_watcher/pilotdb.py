@@ -1296,8 +1296,9 @@ class PilotDB:
             stats["changed"] = stats.get("changed", 0) + 1
 
     def name_rows(self):
-        """[(emp, last, first, seat)] of every live record whose employee number no other live record shares, for the
-        name lookup's directory (watcher.name_directory)."""
+        """[(emp, last, first, seat, base)] of every live record whose employee number no other live record shares,
+        for the name lookup's directory (watcher.name_directory). 1.7.11 (FW-0078): base is the record's domicile
+        (the award's category, '' when none), shown on the pick list."""
         out = []
         with self.lock:
             for v in self._all_views().values():
@@ -1305,7 +1306,8 @@ class PilotDB:
                     continue
                 last, _, first = (x.strip() for x in v["fields"]["name"]["value"].partition(","))
                 if last:
-                    out.append((v["emp"], last, first, v["fields"]["seat"]["value"]))
+                    out.append((v["emp"], last, first, v["fields"]["seat"]["value"],
+                                v["fields"]["domicile"]["value"] or ""))
         return out
 
     def _award_meta(self):
@@ -1321,7 +1323,8 @@ class PilotDB:
         (letters; the whole last name, without Jr / Sr / II; the first name by its start). [{emp, name, pos}] by
         name, at most limit; never phones, emails or notes. Review: live means not gone, as in name_rows (a portal
         pilot's directory), so both lookups find the same pilots; a pilot on a current award is never gone
-        (merge_award_sen)."""
+        (merge_award_sen). 1.7.11 review (F3): each hit also carries base, its own record's domicile ('' when none),
+        so a pick-list entry never shows the base of another record on the same employee number."""
         last, _, first = (x.strip() for x in str(q or "").partition(","))
         lk = name_key(last + ",")[0]
         fk = re.sub(r"[^A-Z]", "", _fold(first))
@@ -1336,7 +1339,8 @@ class PilotDB:
                 nf = re.sub(r"[^A-Z]", "", _fold(name.partition(",")[2]))
                 if fk and nf and not nf.startswith(fk):
                     continue
-                out.append({"emp": v["emp"], "name": name, "pos": v["fields"]["seat"]["value"]})
+                out.append({"emp": v["emp"], "name": name, "pos": v["fields"]["seat"]["value"],
+                            "base": v["fields"]["domicile"]["value"] or ""})
         out.sort(key=lambda r: (r["name"].upper(), r["emp"]))
         return out[:limit]
 

@@ -644,12 +644,33 @@ def test_the_dashboard_snapshot_has_no_weather_view_and_matches_its_sha():
     assert views == ["watcher", "flight", "details", "recall", "settings"]
     readme = open(os.path.join(ROOT, "ha", "README.md"), encoding="utf-8").read()
     # the snapshot's sha256 is in the README. 1.7.2 live (Nov 13): the van alert settings tiles are applied, then the
-    # Working Flight view keeps the layover card only; the snapshot and Pako's dashboard have the same sha256 (read
-    # 2026-11-14) and nothing is pending
+    # Working Flight view keeps the layover card only; the snapshot and Pako's dashboard had the same sha256 (read
+    # 2026-11-14, be03a0a4...). Pending, one section per release, each applied at release time with Ryan's yes, in
+    # release order: 1.7.12 the Details view's data age stamp, 1.7.14 the near misses card, 1.7.15 the Swap ideas table
+    # with the automatic ideas and pay per day, 1.7.17 the pot table's Commutable chip (the macro, not in git) and its
+    # Key line (1.7.18 cross-item review: it had no section, and the snapshot had no Key line). The snapshot carries
+    # them all (one snapshot, ahead of Pako by those edits alone) and each section names its sha
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    assert sha == "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" and sha in readme
+    assert sha == "e322dc0eed2289d10236323e95afec78b4990867c7715eaa22ac936d9caac411" and sha in readme
+    assert "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" in readme
     assert "Applied on Pako 2026-11-13 about 05:47 HST (1.7.2): van alert settings" in readme
-    assert "Pending on Pako" not in readme and "ahead of Pako" not in readme
+    heads = ["## Pending on Pako (1.7.12): the Details view's data age stamp\n",
+             "## Pending on Pako (1.7.14): near misses card\n",
+             "## Pending on Pako (1.7.15): automatic swap ideas on the Swap ideas table\n",
+             "## Pending on Pako (1.7.17): Commutable chip in the pot table\n"]
+    assert readme.count("## Pending on Pako") == len(heads)
+    at = [readme.index(h) for h in heads]
+    assert at == sorted(at)  # in release order
+    rest, j = "", 0
+    for i, h in zip(at, heads):
+        end = readme.index("\n## ", i + len(h))
+        assert sha in readme[i:end], h  # each pending section names the snapshot's sha
+        rest, j = rest + readme[j:i], end
+    rest += readme[j:]
+    cur = rest[rest.index("The 23 automations here match Pako's"):]
+    cur = cur[:cur.index("\n\n")]
+    assert sha in cur and "ahead of Pako by those edits alone" in " ".join(cur.split())
+    assert "Pending on Pako" not in rest and "ahead of Pako" not in rest.replace(cur, "")
     assert "lat=" not in text and "windy" not in text.lower()
     assert os.path.exists(os.path.join(ROOT, "ha", "packages", "flight_watcher_wx.yaml"))  # the wx package stays
     claude = open(os.path.join(ROOT, "CLAUDE.md"), encoding="utf-8").read()

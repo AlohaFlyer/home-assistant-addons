@@ -11,7 +11,8 @@
   releases, and an airport that makes HOME only without customs is unknown (never a No). An airport counts only with
   both. The airports that count, in the config's order, joined with '/' ('AAA/BBB', 'AAA', 'BBB'), 'No' when every
   airport surely fails, '' when none counts but one is unknown (the why says so); ('', '') with no config, no airport
-  with both tables, or no report / release time.
+  with both tables, or no report / release time. comm_tag() (1.7.17): those airports as a list, the pot and
+  Tradeboard sensors' compact tag cm ([] for 'No' and '').
 - month_type() / month_rule(): the bid month's type from the config, 'line' or 'reserve', and the row against it,
   per bid month the trip touches (a trip across a bid period's end is judged in both, each by its own type). A bid
   month is the bid period, not the calendar month (November 2026 runs Nov 1 to Dec 1, December Dec 2 to 31): each
@@ -64,9 +65,10 @@ BUFFER_672_H = 98
 FITS_672 = "Fits 672"
 OVER_672 = f"Over {BUFFER_672_H}/672"
 UNK_672 = "672 ?"
-# smart.json keys that no longer mean anything: read and ignored, logged once per file change (load())
-IGNORED = {"cap_credit": "no monthly credit cap (Ryan, Nov 9: the PWA does not cap voluntary adds); the 672 h block "
-                         "check (Fits 672 / Over 98/672) replaces it"}
+# smart.json keys that no longer mean anything: read and ignored, logged once per file change (load()). 1.7.11: no
+# 'Name, Mon' in the text (the admin's log mask read 'Ryan, Nov' as a 'Last, First')
+IGNORED = {"cap_credit": "no monthly credit cap (Ryan's rule of Nov 9: the PWA does not cap voluntary adds); the 672 h "
+                         "block check (Fits 672 / Over 98/672) replaces it"}
 AP_RE = re.compile(r"^[A-Z]{3}$")
 # a pairing id (pot.PAIRING_RE): a schedule page lists a day outside its bid period only for a pairing carried across
 # the period's edge, so a day it lists with no pairing on it is a day of that page's own bid period
@@ -333,6 +335,17 @@ def comm(report, release, cfg, customs=False):
         return ("/".join(ok) if ok else "" if unk else "No"), why[:WHY_MAX]
     except Exception:  # noqa: BLE001: a field, never an error
         return "", ""
+
+
+def comm_tag(result):
+    """1.7.17 (Ryan, Nov 17: tag the pot trips whose report and release times line up with his commutes; the commute
+    check above and its timetables, no new windows): the airports comm() passed both ways, from its result
+    ('AAA/BBB' -> ['AAA', 'BBB']), in the config's order, for the pot and Tradeboard sensors' compact tag cm.
+    [] for 'No', for '' (no config or no timetables, or only an unknown airport: a customs release decides it, never a
+    guess) and for anything that is not three-letter codes."""
+    if not isinstance(result, str) or result in ("", "No"):
+        return []
+    return list(dict.fromkeys(a for a in result.split("/") if AP_RE.match(a)))
 
 
 # ---------------------------------------------------------------- month type and rules

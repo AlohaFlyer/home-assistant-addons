@@ -318,7 +318,7 @@ CLOCK_JS = """(h) => { const c = document.createElement('flight-watcher-clock-ca
   document.body.appendChild(c); c.hass = {states: h, callService: (d, s, data) => window.calls.push([d, s, data])};
   const r = c.shadowRoot, q = (i) => r.getElementById(i);
   const hs = q('hs'), vis = (e) => e.style.display !== 'none';
-  return {lt: q('lt').textContent, nt: q('nt').textContent, st: q('st').textContent, msg: q('msg').textContent,
+  return {lt: q('age').title, nt: q('nt').textContent, st: q('st').textContent, msg: q('msg').textContent,
           opts: [...hs.options].map((o) => o.value), hsShown: vis(hs), hst: q('hst').textContent, val: hs.value,
           nopts: [...q('ns').options].map((o) => o.value), rearm: vis(q('rearm')),
           heights: [...r.querySelectorAll('button, select')].filter(vis).map((e) => Math.round(e.getBoundingClientRect().height)),
@@ -353,13 +353,15 @@ def test_clock_card_hst_touch_targets_and_the_intervals_a_pilot_has():
     ha = _run(admin + [("pilot", f"({CLOCK_JS})({json.dumps(_clock_states(hs='10'))})")], src, tz="Asia/Tokyo")
     po = _run(pilot, portal, tz="America/Los_Angeles")  # the phone on a Tokyo layover / in LA: still HST
     a = ha["admin"]
-    assert a["lt"] == "01:29:30 HST" and a["nt"] == "01:30:40 HST"
+    # 1.7.12: "Last" gave way to the data age stamp; the last good read's HST time is in its hover text
+    assert a["lt"].startswith("Last good read 01:29:30 HST.") and a["nt"] == "01:30:40 HST"
     assert a["opts"] == ["5", "10", "15", "20", "30", "40", "45", "60", "90"] and a["val"] == "40"  # 40 in its place
     assert a["nopts"] == NORM_OPTS  # 1 to 90 min on the admin's HA dashboard
     assert min(a["heights"]) >= 44 and a["wide"] <= 390
     assert ha["pilot"]["opts"] == HUNT_OPTS and ha["pilot"]["nopts"] == NORM_OPTS  # a pilot on HA: the same ranges
     p = po["pilot"]
-    assert p["lt"] == "01:29:30 HST" and p["hsShown"] and p["opts"] == HUNT_OPTS and p["val"] == "10"
+    assert p["lt"].startswith("Last good read 01:29:30 HST.")
+    assert p["hsShown"] and p["opts"] == HUNT_OPTS and p["val"] == "10"
     assert p["nopts"] == NORM_OPTS[:8] and p["nopts"][-1] == "20"  # an entity that says 20: the copy follows it
     assert po["wide"]["nopts"] == NORM_OPTS and po["wide"]["val"] == "5"  # revision 2: the portal sends up to 90 min
     assert min(p["heights"]) >= 44

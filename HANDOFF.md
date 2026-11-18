@@ -1,4 +1,62 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-16, release 1.7.9 live with HOM 1.9.0; 1.7.10 built, not released)
+# HANDOFF: Flight Watcher (refreshed 2026-11-17: 1.7.10 live with HOM 1.9.1; 1.7.11 with HOM 1.9.2 releasing)
+
+**Nov 17: 1.7.11 is contract 1 REVISION 6 and HOM 1.9.2 goes live FIRST** (Ryan: "Ship it all when ready"). The
+ticket run of Nov 17 (CHANGELOG 1.7.11 has every section):
+- FW-0075 (Ryan): the layover card's "-5 min" / "+5 min" move the van time in 5 minute steps
+  (`flight_watcher/van/adjust/set`, admin only, absolute move, alerts settle 30 s, kept across a restart).
+- FW-0078 (James, Ryan's yes naming it): the pilot lookup lists up to 12 matches as "Doe, Jane · FO · HNL · #10001";
+  the pick stays the opaque id.
+- FW-0076 (James, Ryan's yes naming it): this-month / next-month buttons on the pilot card (`pilot/set` key `month`,
+  `commands.key_since_revision`), one Schedule Lookup page a tap, a 6 h cache per month.
+- FW-0080 (filed under Ryan from FW-0076 by james; scope "Everywhere"): totals by BID PERIOD, not calendar month
+  (PWA 4.A, each duty in the bid period it departs in, TCRD per duty, the home period keeps the rest) on the pilot
+  card, Ryan's schedule card, the versions and the PAYP split; stored versions re-split once (`PAYP_FIX_V`).
+- FW-0079 (same source): on a phone the pilot card's Crew column gives way to a crew list under the grid.
+- Log masks: fixed log texts are no longer blanked (a sweep test walks every log call), dates and schedule versions
+  are no phone numbers; the leak review found and closed 12 ways a phone or number got through.
+- Own trips (Ryan's pasted patch, folded into PR 124): a page with no times, or one that stops pairing reads, never
+  blanks times read before (H3620 Nov 15: Block 91:04 vs FLICA's 103:18); a trip across a month end counts once in the
+  schedule card's FAR-100/672 and Room (H3607 Nov 30 to Dec 2: 101:17 on Dec 2, real 83:42).
+- FW-0073 / FW-0074 (Ryan): the LAS layover guide is on Pako and both are closed. FW-0077 (James): fixed in 1.7.10,
+  left `fixed` for him to verify. James's FW-0076 and FW-0078 stay `fixed` for him to verify after 1.7.11.
+- 1.7.12 (Ryan, Nov 17): one "Data age" stamp replaces "updated" and "Last check" (amber "stale" past 1x, red "very
+  stale" past 2x); the review's "1x" (the Watcher's longest cycle, not the bare interval) ships under Ryan's "Ship it all" (his to undo), and the
+  Details view's tile is pending on Pako (`ha/README.md`), applied with his yes once 1.7.12 is live. No contract change.
+- 1.7.13 (Ryan, Nov 17): the schedule card's FAR 117 columns read `30h in 7d`, `100h in 672h` and `Room to 100h`, with
+  headroom ("10:57 left", red "0:00 left" / "1:20 over") and a Key row each; Room tries every 672 h window holding the
+  day as far.py does (mid-day ones too: over exactly where far.py finds one over 100:00) and `~` marks a window holding a
+  trip with no times (Nov 18, "fix all of these things"). FAR review fixes: far.py compares whole minutes (exactly
+  100:00 in 672 h, or 60:00 FDP in 168 h, is legal, was a false NO) and tries the windows at the open edges of a
+  pairing; 100h in 672h counts a trip whose duty has no block and ends a no-duty trip at its block-in. Nothing pending
+  on Pako, no contract change.
+- 1.7.14 (Ryan, Nov 17): near misses in the open time pot (`sensor.flight_watcher_near_misses`, the near card): each pot
+  trip hidden by a VAC day, a blocked day or an own trip, what to give up or drop to fly it, the pay difference (PWA
+  3.D.6, 4.O.1, VAC 4:00 a day PWA 6.J.1.c) and FAR 117 with the conflict removed; information only, no FLICA load,
+  off the portal (no contract change). The card under the pot table is pending on Pako (`ha/README.md`), applied with
+  Ryan's yes after the 1.7.12 Details tile, once 1.7.14 is live.
+- 1.7.15 (Ryan, Nov 17, item 6): automatic swap ideas: every unmarked own trip that has not started against the open pot
+  of its bid period, ranked by pay per day (PWA 3.D.6, 4.O.1), the same legality (FAR 117 with the trip removed, the
+  11 h home rest PWA 10.E.1.a, no VAC or blocked day, a green grid); in `auto_ideas`, never pushed, never a draft or
+  the dry run. Revision 6 kept (PORTAL_CONTRACT.md 4.3 wording only, doc sha `192e175c...`). The Swap ideas table edit
+  is pending on Pako (`ha/README.md`), a step of the 1.7.15 go-live after the 1.7.12 and 1.7.14 edits.
+- 1.7.16 (Ryan, Nov 17): When to hunt on the FO / RO pickers card: the median time to pickup, count and fastest by
+  layover, HST weekday and HST time of day the trip entered the pot (from `picker_log`, each pickup once, a capped
+  speed "at most"), groups under 5 grey, a tip naming the fastest day and time slot of 5 or more; `speed` on the
+  pickers sensor (aggregates only, at most 2500 bytes). No FLICA load, no new export, nothing pending on Pako.
+- 1.7.17 (Ryan, Nov 17): the pot and Tradeboard sensor rows carry `cm`, the airports the commute check passed both ways
+  from smart.json's timetables (PWA 26.QQ.2, customs release PWA 2.19.b; none without timetables, never a guess); the
+  pot card shows a "Commutable KOA LAS" chip. No FLICA load, no contract change (James's portal gets it as signed).
+  The HA Watcher view's `pot_table` macro (`flight_watcher.jinja`, not in git) and its Key line are a Pako edit at the
+  1.7.17 go-live, with Ryan's yes (custom templates reload): `ha/README.md` "Pending on Pako (1.7.17)" has the macro,
+  the call, the Key line and the check (added by the 1.7.18 cross-item review; the snapshot has the Key line).
+- 1.7.18 (Ryan, Nov 17): two card changes. The uploads card's On file list folds under its heading (folded by default,
+  kept per browser, the Watcher's own count when the sensor list is cut); the schedule card's version lock is a switch
+  (an SVG lock, the word Lock, a track and knob, On = locked, role switch, 44 px; it starts the first line on a phone,
+  the Data age stamp at its right). Same lock storage and taps. No contract change, nothing pending on Pako of its own.
+  Cross-item review fixes (Nov 18, CHANGELOG 1.7.18): the schedule header's stamp is one fixed box (the month arrows
+  and Now no longer slide at long texts; on a phone it shares the switch's line, two lines in all); 1.7.17's Pako edits
+  are a pending section with the macro in git and the snapshot `e322dc0e...` carries every pending edit; a busy month
+  of marked swap ideas keeps 1.7.11's count (the last ones drop their pay figures first); a swap draft carries `auto`.
 
 **Nov 16: 1.7.10 is contract 1 REVISION 5 and HOM 1.9.1 goes live FIRST.** Ryan: "His uploads should update the
 shared database too", and the contacts list upload on James's portal "Now, in 1.7.10". Built (commits "... a portal
@@ -393,6 +451,12 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
 
 ## Recent releases
 
+1.7.11 built Nov 17 on branch `fw-1.7.11` (not pushed, not live): contract 1 revision 6, so HOM 1.9.2 goes live
+first. FW-0075 (the layover card's "-5 min" / "+5 min" move the van time in 5 minute steps, admin only), FW-0076 (this
+month / next month buttons on the pilot card, `pilot/set` key `month`), FW-0078 (the pick list shows up to 12 pilots
+with seat, base and employee number), FW-0079 (the pilot card's crew list on a phone), FW-0080 (totals by bid period
+everywhere, PWA 4.A; stored PAYP records split again once), the log mask fixes, and the integration review fixes
+(CHANGELOG 1.7.11, its last list).
 1.7.5 Nov 14 (Pause wins over a waiting FLICA login, login floor from when FLICA is reached), 1.7.4 Nov 14 (FLICA
 refusal block HMAC),
 1.7.3 Nov 14 (crew index probes no longer stop pairing reads, pilot log mask, pause note, plain FLICA error line),

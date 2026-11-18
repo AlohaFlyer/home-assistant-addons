@@ -152,7 +152,7 @@ def test_the_signed_file_carries_both_and_the_state_neither(james):  # noqa: F81
 # ---------------------------------------------------------------- the contract: still revision 4
 def test_the_contract_names_both_keys_and_stays_revision_4():
     c = PT.contract()
-    assert c["contract"] == 1 and c["revision"] == roles.CONTRACT_REVISION == 5  # revision 5 since Nov 16 (the contacts list upload); these keys are revision 4's
+    assert c["contract"] == 1 and c["revision"] == roles.CONTRACT_REVISION == 6  # 5 since Nov 16 (contacts list), 6 in 1.7.11; these keys are revision 4's
     pdb = c["pilotdb"]
     assert {"union_id", "ai_note"} <= set(pdb["file"]["keys"]["record"])
     assert pdb["file"]["keys"]["ai_note"] == ["text", "model", "at"]
@@ -358,12 +358,11 @@ def test_ryans_card_says_what_a_shared_pilot_now_sees():
 
 # ---------------------------------------------------------------- the release
 def test_version_is_one_seven_ten():
-    cfg = open(os.path.join(HERE, "config.yaml"), encoding="utf-8").read()
-    assert re.search(r'^version: "1\.7\.10"$', cfg, re.M)
-    assert re.search(r'^VERSION = "1\.7\.10"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), re.M)
+    # 1.7.11 (FW-0075), then 1.7.12 to 1.7.18, went on top: the version itself is pinned in test_release_c_tickets;
+    # the 1.7.10 section stays
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.7.10\n") and "\n## 1.7.9\n" in log
-    top = log.split("\n## 1.7.9\n")[0]
+    assert log.startswith("# Changelog\n\n## 1.7.18\n") and "\n## 1.7.10\n" in log and "\n## 1.7.9\n" in log
+    top = log.split("\n## 1.7.10\n", 1)[1].split("\n## 1.7.9\n")[0]
     for word in ("union", "AI note", "revision 4", "Boundary changes", "After the update", "100%", "on by default"):
         assert word in top, word
     assert chr(0x2014) not in log

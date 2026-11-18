@@ -165,7 +165,7 @@ def test_the_contract_carries_the_pattern_and_its_samples():
     raw = open(os.path.join(HERE, "tests", "fixtures", "portal_contract_v1.json"), "rb").read()
     assert raw.decode("utf-8") == PT.contract_text()
     doc = json.loads(raw)
-    assert doc["pilotdb"]["ai"]["refuse_re"] == ai["refuse_re"] and doc["revision"] == 5 and doc["contract"] == 1
+    assert doc["pilotdb"]["ai"]["refuse_re"] == ai["refuse_re"] and doc["revision"] == 6 and doc["contract"] == 1  # 1.7.11: 6
     assert len(hashlib.sha256(raw).hexdigest()) == 64
 
 

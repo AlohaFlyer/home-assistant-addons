@@ -70,7 +70,7 @@ def _f(db, emp, field):
 
 # ---------------------------------------------------------------- the contract: revision 5
 def test_revision_5_takes_kind_contacts_on_upload_pdf():
-    assert roles.CONTRACT_REVISION == 5
+    assert roles.CONTRACT_REVISION >= 5  # 1.7.11: 6 (the lookup's month); kind contacts is still revision 5's
     cl = roles.PILOT_CONTACTS_LIMITS
     assert cl["kind"] == "contacts" and cl["file_bytes"] == 1024 * 1024
     assert cl["header"] == ["First Name", "Middle Name", "Last Name", "Suffix", "Company", "Job Title",
@@ -95,7 +95,7 @@ def test_revision_5_takes_kind_contacts_on_upload_pdf():
 def test_the_fixture_says_revision_5_and_what_hom_checks():
     fx = PT.contract()
     cm = fx["commands"]
-    assert fx["revision"] == 5
+    assert fx["revision"] >= 5  # 1.7.11: 6
     assert cm["value_since_revision"] == {"upload/pdf": {"kind": {"contacts": 5}}}
     assert cm["pilot_contacts_limits"] == roles.PILOT_CONTACTS_LIMITS
     assert cm["pilot_contacts_checks"] == list(PT.CONTACTS_CHECKS) and len(cm["pilot_contacts_checks"]) >= 8
@@ -111,7 +111,7 @@ def test_the_fixture_says_revision_5_and_what_hom_checks():
     assert "upload kind contacts" not in ref and "upload kind seniority" in ref
     man = json.loads(next(e["envelope"] for e in fx["samples"]["envelopes"]
                           if e["file"] == "manifest.json")["payload"])
-    assert man["revision"] == 5
+    assert man["revision"] >= 5  # 1.7.11: 6
     # the inbox hand-off of the list is described, with its own size
     ib = fx["pilotdb"]["inbox"]
     assert ib["contacts_max_bytes"] == roles.PILOT_CONTACTS_LIMITS["inbox_bytes"] > ib["max_bytes"]

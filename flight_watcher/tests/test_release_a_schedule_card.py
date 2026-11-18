@@ -67,7 +67,8 @@ def test_schedule_card_draws_the_awarded_line_labeled_and_the_read_status():
                     return {awl: q('.awl') && q('.awl').textContent, rsl: q('.rsl') && q('.rsl').textContent,
                             none: q('.none') && q('.none').textContent, rows: r.querySelectorAll('.cal tr').length,
                             trip: (r.querySelector('.cal') || {textContent: ''}).textContent.includes('H9101'),
-                            upd: !!q('.u'), wide: document.documentElement.scrollWidth}; }""", st)
+                            upd: (q('.hd2 .ag[data-age]') || {title: ''}).title.startsWith('FLICA updated'),
+                            wide: document.documentElement.scrollWidth}; }""", st)
             calls = pg.evaluate("window.calls.map((c) => c[2].topic || '')")
         finally:
             b.close()
@@ -75,7 +76,7 @@ def test_schedule_card_draws_the_awarded_line_labeled_and_the_read_status():
     assert a["awl"] == LABEL and a["trip"] and a["rows"] >= 31 and a["none"] is None
     assert a["rsl"] == ("FLICA schedule not read: Schedule Lookup: not a schedule page; mobile schedule: FLICA answered"
                         " 'invalid or unspecified bid period' at 01:04 HST; next try 01:14 HST")
-    assert not a["upd"]  # no 'updated' with nothing after it
+    assert not a["upd"]  # no 'updated' with nothing after it (1.7.12: "FLICA updated ..." in the data age stamp's title)
     n = got["nothing"]
     assert n["awl"] is None and n["none"] == "No schedule for November yet." and n["rsl"].startswith("FLICA schedule not read")
     r = got["read"]

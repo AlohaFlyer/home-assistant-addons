@@ -214,9 +214,15 @@ def _cum(trips, new, span, lim, what, ref):
     (its length when the block is unknown) and its overlap. Both are piecewise linear in the window's position (a
     known block steps up where its span comes wholly inside, at a window starting at its start or ending at its end),
     so their maxima are at the windows that start at a span's start or at its end less its cap, or end at a span's
-    end or at its start plus its cap; only those windows are tried. Returns (result 'OK' | 'NO' | '?', line, hours: when NO or '?' over, the worst
-    failing window's of the kind the first one in time decided (the pairing's own excess, or the line's), else the most
-    it can be)."""
+    end or at its start plus its cap, or at the open edges of the windows that hold part of the pairing; only those
+    windows are tried. 1.7.13 FAR review (R4): the edges too, the window ending 1 s after the start of the pairing's
+    first span and the one starting 1 s before the end of its last (its report and release when it has no span: the
+    windows holding part of a day with no flight time of its own, the tests' day probe), where the worst can be
+    highest when a span of the line leaves the window there. 1.7.13 FAR review (R1): the hours are compared in whole
+    minutes (every time on file is one), so a window holding exactly the limit (blocks whose float sum is
+    100.00000000000001 h) is within it, as FAR 117.23 allows. Returns (result 'OK' | 'NO' | '?', line, hours: when NO
+    or '?' over, the worst failing window's of the kind the first one in time decided (the pairing's own excess, or the
+    line's), else the most it can be)."""
     segs = _segs(trips, new, what, new["report"] - span, new["release"] + span)
     cands = set()
     for s, e, cap, _, _, _, _ in segs:
@@ -225,31 +231,37 @@ def _cum(trips, new, span, lim, what, ref):
             cands.add((x, x + span))
         for y in (e, s + c):
             cands.add((y - span, y))
-    best_lo, best_hi, worst_w, fail = 0.0, 0.0, None, None
+    mine = [(s, e) for s, e, _, _, _, is_new, _ in segs if is_new]
+    first, last = (min(s for s, _ in mine), max(e for _, e in mine)) if mine else (new["report"], new["release"])
+    edge = timedelta(seconds=1)
+    cands.add((first + edge - span, first + edge))
+    cands.add((last - edge, last - edge + span))
+    lim_m = lim * 60
+    best_lo, best_hi, worst_w, fail = 0, 0, None, None  # whole minutes
     for a, b in sorted(cands):
         if not (a < new["release"] and new["report"] < b):
             continue
-        lo, hi, lo_mine = _in_window(segs, a, b, what)
+        lo, hi, lo_mine = (int(round(x * 60)) for x in _in_window(segs, a, b, what))
         if hi > best_hi:
             best_hi, worst_w = hi, (a, b)
         best_lo = max(best_lo, lo)
-        if lo > lim:
-            mine_over = lo_mine > lim
+        if lo > lim_m:
+            mine_over = lo_mine > lim_m
             if fail is None:
                 fail = (lo, mine_over)
             elif mine_over == fail[1]:
                 fail = (max(fail[0], lo), mine_over)  # the worst window of that kind, not the first in time
     n = int(span.total_seconds() // 3600)
     if fail and not fail[1]:
-        return "NO", f"{what} {_hh(fail[0])} h in {n} h, over {lim} h ({ref})", fail[0]
+        return "NO", f"{what} {_hh(fail[0] / 60)} h in {n} h, over {lim} h ({ref})", fail[0] / 60
     if fail:
         return "?", (f"{what} in {n} h is over {lim} h even without the pairing ({ref}): the line on file looks "
-                     f"incomplete"), fail[0]
-    if best_hi > lim:
+                     f"incomplete"), fail[0] / 60
+    if best_hi > lim_m:
         guess = sorted({_what(s[6]) for s in segs if not s[4] and worst_w and _ov(s[0], s[1], *worst_w) > 0})
-        return "?", (f"{what} in {n} h may pass {lim} h ({ref}): {_hh(best_lo)} h known, up to {_hh(best_hi)} h; "
-                     f"{', '.join(guess) or 'some times'} not on file"), best_hi
-    return "OK", f"{what} at most {_hh(best_hi)} of {lim} h in {n} h ({ref})", best_hi
+        return "?", (f"{what} in {n} h may pass {lim} h ({ref}): {_hh(best_lo / 60)} h known, up to "
+                     f"{_hh(best_hi / 60)} h; {', '.join(guess) or 'some times'} not on file"), best_hi / 60
+    return "OK", f"{what} at most {_hh(best_hi / 60)} of {lim} h in {n} h ({ref})", best_hi / 60
 
 
 CUM = ((H672, FT_672, "flight time", "FAR 117.23(b)(1)", "FT"),

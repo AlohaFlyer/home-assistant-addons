@@ -22,7 +22,25 @@
    pairings package, row heights, the totals line, light and dark) and the same pairing detail (a tap on a pairing: a
    panel below the grid on a wide card, a bottom sheet on a phone). Columns: Trip, Layover, Block, Credit, Soft,
    Pay-Gross (that pilot's, priced by the Watcher from his date of hire and the seat flown, when known) and Crew. The
-   seat and legs move into the pairing's hint and its detail; the source and pay notes sit under the grid. */
+   seat and legs move into the pairing's hint and its detail; the source and pay notes sit under the grid.
+   1.7.11 (FW-0078, Ryan: "show up to 12 matches as Last, First, seat, base and employee #"): each pick-list entry reads
+   "Doe, Jane · FO · HNL · #10001" (a base no source has is left out), escaped, wrapping on a phone, 44 px tall; a
+   pilot's entry still sends its opaque pick id, never the number it shows. 1.7.11 (FW-0076, contract 1 revision 6):
+   on a pilot's month two buttons under the heading, this HST month and the next ("Nov 2026", "Dec 2026"); the month
+   shown is pressed and not tappable, the other sends pilot/set with the same pilot (the admin's card: emp; a pilot's:
+   the field that found him, the sensor's ask) and the month, then "Loading Nov 2026..." until the Watcher answers.
+   A portal that does not take the month yet (HOM 1.9.1 refuses the key) says the month choice needs a portal update.
+   1.7.11 review: that note is kept on the class (the portal's shell swaps in a fresh pilot card before the refusal
+   reaches the card that sent it) and drawn by every pilot card that shows the same pilot; a refused tap can be sent
+   again at once (the 2 s guard forgets it); the buttons show only when the pilot shown can be named in a pilot/set
+   the shape takes; a month tap the Watcher queues ("waiting: ...") reads "Loading Nov 2026..." with that month pressed,
+   and a month that did not read is named on its status line; a lookup still unanswered after its wait frees the
+   buttons; the pressed month is white on #01579b (7.6:1, the layover pill's), not the theme's primary pair.
+   1.7.11 (FW-0080, Ryan, Nov 17: "Everywhere"): the totals are the bid period's, as FLICA's (PWA 4.A); a trip across the
+   bid period's edge shows its part here, purple, its title naming the part flown in the other bid period. (FW-0079) On a
+   phone (700 px or less) the Crew column gives way to a crew list under the grid, one line a pairing ("H9601 Dec 1:
+   CA Doe, Jane · FO Roe, Rick"): a 41-character crew in one cell made the grid about 600 px wide in a 368 px frame,
+   clipped with no scrollbar a phone shows. */
 const DOW = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const PILOT_EV = "flight-watcher-pilot";  // the lookup event (pickers, pilot lookup, the pick list, #pilot= links)
@@ -44,6 +62,15 @@ const PILOTVER_URL = "/local/flight-watcher/pilotver_";
 const VER_SRC = { lookup: "FLICA schedule", rebuild: "rebuilt", award: "awarded line" };
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 const PILOT_WAIT_MS = 120000;  // 1.6.2: the loading line gives up this long after the Watcher's next check
+const MONTH_RE = /^[0-9]{4}-(0[1-9]|1[0-2])$/;  // 1.7.11 (revision 6): pilot/set's month, roles.MONTH_PATTERN
+const PILOT_NOTE_MS = 600000;  // 1.7.11 review: a refused month tap's note stays this long (or until the next lookup)
+const PILOT_QUEUED_RE = /^(waiting:|Schedule Lookup reads are paused)/;  // 1.7.11 review: the Watcher's replies for a lookup it keeps for later
+// 1.7.11 (FW-0076): this HST month and the next as YYYY-MM (the Watcher takes only these two)
+const pcMonths = () => {
+  const t = new Date(Date.now() - 10 * 3600e3), y = t.getUTCFullYear(), m = t.getUTCMonth() + 1;
+  return [`${y}-${String(m).padStart(2, "0")}`, m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`];
+};
+const pcMonthLabel = (ym) => { const m = MONTH_RE.exec(String(ym || "")) ? Number(ym.slice(5, 7)) : 0; return m ? `${MONTHS[m - 1].slice(0, 3)} ${ym.slice(0, 4)}` : String(ym || ""); };
 const hstHM = (iso) => { const t = Date.parse(iso || ""); return isNaN(t) ? "" : new Date(t - 10 * 3600e3).toISOString().slice(11, 16); };
 // 1.7.7: the shared pairings package files (pairings_YYYY-MM.json; cards.pilot_copy keeps them shared), the schedule card's
 const PAIRINGS_URL = "/local/flight-watcher/pairings_";
@@ -431,6 +458,36 @@ const pcMin = (hm) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(hm || "")); 
 const pcClock = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 const PC_WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const PC_SEAT_SRC = { "pairing page": "the pairing page's crew line", "crew index": "the crew index", "seniority list": "the seniority list", assumed: "assumed FO" };
+// 1.7.11 (FW-0080, PWA 4.A: a segment pays on the date it originates): the Watcher totals another pilot's month by bid
+// period, as FLICA does (December 2026 runs Dec 2 to Dec 31). A split trip's title: its part in this bid period and
+// what part pays in the other one (the Watcher's split: side, edge, other, out_blk, out_credit, est, none, placed)
+const pcSplitWhy = (trip, sp, start) => {
+  const all = `${sp.all_blk || "?"} block / ${sp.all_credit || "?"} credit in all`;
+  if (!sp.side) return `${trip}: ${all}; ${sp.out_blk || "?"} block flown from ${sp.next || "next month"} pays next month (PWA 4.A). Credit split by block share.`;  // an older Watcher's
+  const where = `${sp.side === "after" ? "after" : "before"}${ISO_RE.test(sp.edge || "") ? ` ${fwgMd(sp.edge)}` : ""}`;
+  const other = /^\d{4}-\d{2}$/.test(sp.other || "") ? `the ${MONTHS[Number(sp.other.slice(5, 7)) - 1]} bid period` : "the other bid period";
+  // 1.7.11 review: with no duty times on file nothing says when any of it flew: it pays where its first day is
+  if (sp.none && sp.placed === false) return `${trip}: ${all}${ISO_RE.test(start || "") ? `, starts ${fwgMd(start)}` : ""}; no duty times on file, so the whole trip pays in ${other}, the bid period of its first day (PWA 4.A), not in these totals.`;
+  if (sp.none) return `${trip}: ${all}, all flown ${where}: it pays in ${other} (PWA 4.A), not in these totals.`;
+  return `${trip}: ${all}; ${sp.out_blk || "?"} block, ${sp.out_credit || "?"} credit flown ${where} pay in ${other} (PWA 4.A).` +
+    (sp.est ? " Credit split by block share (no duty credit on file): an estimate." : " Credit of each duty from the pairings package (TCRD); the rest of the trip credit (rig, minimums) stays with the bid period of its first day.");
+};
+// 1.7.11 integration review (FW-0080 with FW-0079): the split in words a phone shows (touch never shows a title): each
+// split trip's part paid in the other bid period, for the note under the totals; '' for a trip with no split
+const pcSplitShort = (it) => {
+  const sp = it && it.split && typeof it.split === "object" ? it.split : null;
+  if (!sp || !sp.side) return "";
+  const md = ISO_RE.test(it.start || "") ? ` ${fwgMd(it.start)}` : "";
+  const other = /^\d{4}-\d{2}$/.test(sp.other || "") ? `the ${MONTHS[Number(sp.other.slice(5, 7)) - 1]} bid period` : "the other bid period";
+  if (sp.none) return `${it.trip}${md}: all of it pays in ${other}${sp.placed === false ? " (no duty times on file: the bid period of its first day)" : ""}`;
+  return `${it.trip}${md}: ${sp.out_blk || "?"} block, ${sp.out_credit || "?"} credit pay in ${other}${sp.est ? " (credit by block share, an estimate)" : ""}`;
+};
+// the bid period a pay line covers (the Watcher's period: from, to, src), for the totals' title
+const pcPeriod = (pl) => {
+  const p = pl && pl.period && typeof pl.period === "object" ? pl.period : null;
+  if (!p || !ISO_RE.test(p.from || "") || !ISO_RE.test(p.to || "")) return "";
+  return ` (${fwgMd(p.from)} to ${fwgMd(p.to)}${p.src === "calendar" ? ", the calendar month: no pairings package gives this bid period" : ""})`;
+};
 // The card's own look around the shared grid (FWG_CSS): the header, the lookup, the versions bar and the notes; the
 // schedule card's ha-card, table and number column rules where the grid needs them
 const PILOT_CSS = `
@@ -444,6 +501,20 @@ const PILOT_CSS = `
       .tot1{font-weight:600}.pay{cursor:help}
       .tot .tpay{flex-wrap:wrap}  /* another pilot's Pay-Gross carries "(n of m trips)" and Pay-Net its tax note: they wrap on a phone */
       .crew{font-size:11px;color:var(--secondary-text-color)}
+      .cal td.t.split{color:var(--fw-split,#7b1fa2);cursor:help}:host([dark]){--fw-split:#ce93d8}
+      .crl{display:none;margin:6px 2px 0;font-size:11px;line-height:1.35;color:var(--secondary-text-color);text-align:left}  /* FW-0079: the crew list under the grid, a phone's Crew column */
+      .crl div{margin:2px 0;overflow-wrap:anywhere}.crl b{color:var(--primary-color);font-weight:600}.crl .cp{white-space:nowrap;color:var(--primary-text-color)}
+      .pgx{display:inline}
+      /* a grid wider than its box on a wider card (_fitCrl): the crew list as on a phone */
+      .wrap.crlon .crl{display:block}.wrap.crlon th.crw,.wrap.crlon td.crew{display:none}.wrap.crlon tr[data-d] td:nth-child(5)::after{content:"\\200b"}
+      @media (max-width:700px){.cal th{padding:2px 3px}.cal th.crw,.cal td.crew{display:none}.cal tr[data-d] td:nth-child(5)::after{content:"\\200b"}
+        .crl{display:block}
+        /* 1.7.11 review: so the grid fits a 360 px phone, the columns Ryan's card has no twin of in the shared look (Credit,
+           Soft, Pay-Gross: the day, date, trip, layover and block cells stay the schedule card's) are 1 to 2 px padded
+           and Pay-Gross heads two lines; a day with both the report and the release (a one-day turn) may wrap in its
+           Layover cell when the grid needs it, its station, R and Rel each kept whole; every other row stays one line */
+        .cal th:nth-child(n+6){padding-left:1px;padding-right:1px}.cal td:nth-child(n+6){padding-left:2px;padding-right:2px}.pgx{display:block}
+        .cal td.lr2{white-space:normal}.cal td.lr2 .tm,.cal td.lr2 .lay{white-space:nowrap}}
       .cal td.crew::after{content:"\\200b"}  /* every row one 11 px line, as the schedule card's FAR columns give each of its rows */
       .prate{text-align:center;margin:2px 0;overflow-wrap:anywhere}.psrc{margin-top:4px;text-align:center}
       .none{padding:8px;color:var(--secondary-text-color)}
@@ -452,6 +523,16 @@ const PILOT_CSS = `
       .cts{display:inline-flex;flex-wrap:wrap;gap:6px}.ct{padding:4px 10px;border-radius:14px;background:var(--primary-color);color:var(--text-primary-color,#fff);text-decoration:none;font-size:12px;font-weight:600;line-height:1.3}
       .cts.mini{gap:6px;margin-left:4px}.cts.mini .ct{padding:4px 8px;font-size:11px;font-weight:400;line-height:16px}
       .pk{padding:6px 10px;border:1px solid var(--divider-color,#ccc);border-radius:6px;background:var(--card-background-color,#fff);color:var(--primary-text-color);cursor:pointer;font-size:13px}
+      /* 1.7.11 (FW-0078): "Last, First · seat · base · #number", wrapping inside a 390 px phone; 44 px targets */
+      .pk{min-height:44px;min-width:44px;max-width:100%;box-sizing:border-box;text-align:left;white-space:normal;overflow-wrap:anywhere;line-height:1.3}
+      /* 1.7.11 (FW-0076): this HST month and the next under a pilot's heading; the shown one pressed */
+      .mos{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 6px}
+      .mo{min-height:44px;min-width:44px;padding:6px 14px;border:1px solid var(--divider-color,#ccc);border-radius:6px;background:var(--card-background-color,#fff);color:var(--primary-text-color);cursor:pointer;font-size:13px;font-weight:600}
+      /* review: white on #01579b (7.6:1, the layover pill's), never the theme's primary pair (2.6:1 to 3.3:1 on Home Assistant's blues) */
+      .mo[aria-pressed="true"]{background:#01579b;border-color:#01579b;color:#fff;cursor:default;opacity:1}
+      .mo:disabled:not([aria-pressed="true"]){opacity:.55;cursor:default}
+      .mo:focus-visible,.pk:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:2px}
+      .mnote{margin:0 0 6px;font-size:12px;color:var(--fw-err,#c62828)}
       .vbar{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 14px;font-size:12px;margin:0 0 4px}.vbar .nw{white-space:nowrap}.vbar .k{color:var(--secondary-text-color);font-size:11.5px}
       .vbar .vb{cursor:pointer;padding:0 6px;color:var(--primary-color);user-select:none}.vbar .vb.here{opacity:.5}.vbar .vb.off{opacity:.3;cursor:default}
       .chg{margin:0 0 6px;font-size:11px;color:var(--secondary-text-color)}.chg summary{cursor:pointer;font-weight:600;list-style:none}.chg summary::-webkit-details-marker{display:none}
@@ -479,10 +560,11 @@ class FlightWatcherPilotCard extends HTMLElement {
     // 1.7.7: Esc closes the pairing detail, Tab stays inside its sheet; a rotation or resize past the phone width redraws it
     if (!this._kd) {
       this._kd = (e) => { if (!this._pd) return; if (e.key === "Escape") { this._pdClose(true); return; } if (this._sheet) this._sheet.trap(e); };
-      this._rz = () => { if (this._pd && this._h && this._root && fwgNarrow(this._hc()) !== this._pdNarrow) this._paint(); };
+      this._rz = () => { if (this._pd && this._h && this._root && fwgNarrow(this._hc()) !== this._pdNarrow) this._paint(); else this._fitCrl(); };
     }
     if (typeof document !== "undefined" && document.addEventListener) document.addEventListener("keydown", this._kd);
     if (typeof window !== "undefined" && window.addEventListener) window.addEventListener("resize", this._rz);
+    (FlightWatcherPilotCard._cards = FlightWatcherPilotCard._cards || new Set()).add(this);  // 1.7.11 review: _monthRefused
     if (this._on) return;
     this._on = true;
     FlightWatcherPilotCard._live = (FlightWatcherPilotCard._live || 0) + 1;
@@ -493,6 +575,7 @@ class FlightWatcherPilotCard extends HTMLElement {
   disconnectedCallback() {
     if (this._kd && typeof document !== "undefined" && document.removeEventListener) document.removeEventListener("keydown", this._kd);
     if (this._rz && typeof window !== "undefined" && window.removeEventListener) window.removeEventListener("resize", this._rz);
+    if (FlightWatcherPilotCard._cards) FlightWatcherPilotCard._cards.delete(this);
     if (!this._on) return;
     this._on = false;
     FlightWatcherPilotCard._live = Math.max(0, (FlightWatcherPilotCard._live || 0) - 1);
@@ -524,6 +607,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     if (q) out.q = q;
     if (/^[0-9a-f]{12}$/.test(String(src.pick || ""))) out.pick = String(src.pick);
     if (src.name != null && (out.emp || out.pick)) out.name = one(src.name);
+    if (MONTH_RE.test(String(src.month || "")) && (out.emp || out.q || out.pick)) out.month = String(src.month);  // 1.7.11 (revision 6)
     return out;
   }
   static _first(detail) {  // true for the first card to hear a lookup; false for the same lookup again inside PILOT_SAME_MS
@@ -535,15 +619,38 @@ class FlightWatcherPilotCard extends HTMLElement {
   _lookup(e) {
     const d = (e && e.detail) || {};
     this._hidden = false;
-    this._want = d.emp || d.q;
-    // 1.6.2: what was asked for draws the loading header (the sensor still holds the previous answer)
+    this._want = d.emp || d.q || d.shown_emp;
+    FlightWatcherPilotCard._mnote = null;  // 1.7.11 review: a new lookup, a new answer (the refused month's note goes)
+    // 1.6.2: what was asked for draws the loading header (the sensor still holds the previous answer). 1.7.11: a
+    // month tap names the pilot shown (shown_emp: the header only, never sent) and the month
     const q0 = String(d.q || "").trim();
-    this._ask = { emp: String(d.emp || "") || (/^\d+$/.test(q0) ? q0 : ""), name: String(d.name || ""), q: /^\d+$/.test(q0) ? "" : q0, at: Date.now() };
+    const mon = MONTH_RE.test(String(d.month || "")) ? String(d.month) : "";
+    this._ask = { emp: String(d.emp || d.shown_emp || "") || (/^\d+$/.test(q0) ? q0 : ""), name: String(d.name || d.shown_name || ""), q: /^\d+$/.test(q0) ? "" : q0, at: Date.now(), month: mon };
     if (!this._h) return;
     const q = String(d.q || "").trim();
     this._askQ = !d.emp && q && !/^\d+$/.test(q) ? q.toLowerCase() : "";  // a name: learn which pilot it found (_shows)
     const c = FlightWatcherPilotCard._clean(d);  // 1.7.2: the pilot/set shape only (contract 1 revision 3)
-    if ((c.emp || c.q || c.pick) && FlightWatcherPilotCard._first(c)) this._h.callService("mqtt", "publish", { topic: "flight_watcher/pilot/set", payload: JSON.stringify(c) });
+    const named = !!(c.emp || c.q || c.pick);
+    if (named && FlightWatcherPilotCard._first(c)) {
+      const r = this._h.callService("mqtt", "publish", { topic: "flight_watcher/pilot/set", payload: JSON.stringify(c) });
+      const p = JSON.stringify(c), who = String(d.shown_emp || c.emp || ""), ent = this._config.entity;
+      if (r && typeof r.then === "function") {
+        r.then(null, (err) => {
+          // 1.7.11 review (P3): a refused publish is not in flight: the same tap may go again at once
+          const last = FlightWatcherPilotCard._sent;
+          if (last && last.p === p) FlightWatcherPilotCard._sent = null;
+          // 1.7.11 (revision 6): a portal that does not take the month yet (HOM 1.9.1's pinned shape refuses the key;
+          // HOM 1.9.2 with an older Watcher says it is too old) answers at once: the card says so and keeps the month
+          // it shows (review P1: on every pilot card for this sensor, as the portal's shell swaps in a fresh one)
+          if (c.month) FlightWatcherPilotCard._monthRefused(err, c.month, ent, who);
+        });
+      }
+    } else if (d.month && !named) {
+      // 1.7.11 review (P4): a month tap that names no pilot the shape takes sends nothing, so it waits for nothing
+      this._ask = null;
+      this._paint();
+      return;
+    }
     // FW-0025: the loading line only while the reply is still to come. When the sensor already holds the answer (a
     // double tap after a quick cached reply, the same pilot asked again), draw it: HA fires no state change for an
     // identical reply, so the loading line would never clear. A stale cache still answers "loading" (a change).
@@ -555,6 +662,7 @@ class FlightWatcherPilotCard extends HTMLElement {
   _shows(d) {  // FW-0025: does the sensor already hold the Watcher's answer to this lookup?
     const st = this._h && this._h.states && this._h.states[this._config.entity];
     const a = (st && st.attributes) || {};
+    if (d.month && String(a.month || "") !== String(d.month)) return false;  // 1.7.11: another month of the pilot shown
     const q = String(d.q || "").trim();
     const emp = String(d.emp || "").replace(/\D/g, "") || (/^\d+$/.test(q) ? q : "");  // the Watcher reads an all-digit q as an emp
     if (emp) return String(a.emp || "") === emp;
@@ -583,6 +691,64 @@ class FlightWatcherPilotCard extends HTMLElement {
     this._paint();
   }
   getCardSize() { return 8; }
+  // 1.7.11 (FW-0076): the month buttons. The admin's card names the pilot by emp; a pilot's card by the field that
+  // found him (the sensor's ask: his pick, the number of a #pilot= link or the number he typed), else emp
+  _month(month) {
+    const st = this._h && this._h.states[this._config.entity];
+    const a = (st && st.attributes) || {};
+    const via = MONTH_RE.test(String(month || "")) ? FlightWatcherPilotCard._monthVia(a) : null;
+    if (!via) return;  // 1.7.11 review (P4): nothing the shape takes names this pilot: no tap
+    window.dispatchEvent(new CustomEvent(PILOT_EV, { detail: { ...via, month, shown_emp: String(a.emp), shown_name: String(a.name || "") } }));
+  }
+  // what a month tap sends for the pilot the sensor shows (without the month), or null when the pilot/set shape would
+  // take none of it (an emp of 8 digits or more): the admin's card names him by emp; a pilot's card by the field that
+  // found him (the sensor's ask: his pick, the number of a #pilot= link or the number he typed), else emp
+  static _monthVia(a) {
+    if (!a || !a.emp) return null;
+    const ask = a.ask && typeof a.ask === "object" ? a.ask : null;
+    const via = ask && /^[0-9a-f]{12}$/.test(String(ask.pick || "")) ? { pick: String(ask.pick) }
+      : ask && /^[0-9]{1,7}$/.test(String(ask.emp || "")) ? { emp: String(ask.emp) }
+      : ask && /^[0-9]{1,7}$/.test(String(ask.q || "")) ? { q: String(ask.q) } : { emp: String(a.emp) };
+    const d = { ...via, ...(via.q ? {} : { name: String(a.name || "") }) };
+    const c = FlightWatcherPilotCard._clean(d);
+    return c.emp || c.q || c.pick ? d : null;
+  }
+  // 1.7.11 review (P1): the note is the class's, for the sensor and the pilot it names, so the card on the page draws
+  // it even when it is not the one that sent the tap (the portal's shell swaps a fresh card in, then rejects)
+  static _monthRefused(err, month, ent, emp) {
+    const why = String((err && err.message) || err || "");
+    const what = /month is not allowed/i.test(why) ? "The month choice needs a portal update" : /too old/i.test(why) ? "The month choice needs a Flight Watcher update" : `Not sent: ${why.replace(/^not available in the (pilot )?portal:\s*/i, "").replace(/\.$/, "") || "the portal refused it"}`;
+    FlightWatcherPilotCard._mnote = { ent, emp: String(emp || ""), text: `${what} (${pcMonthLabel(month)} was not read).`, at: Date.now() };
+    for (const c of FlightWatcherPilotCard._cards || []) {
+      if (!c._config || c._config.entity !== ent) continue;
+      c._ask = null;
+      if (c._root && c._h) { try { c._paint(); } catch (e) { /* the next update draws it */ } }
+    }
+  }
+  _mnoteText() {  // the refused month's note when it is for this sensor and the pilot it shows
+    const n = FlightWatcherPilotCard._mnote;
+    if (!n || n.ent !== this._config.entity || !(Date.now() - n.at < PILOT_NOTE_MS)) return "";
+    const st = this._h && this._h.states && this._h.states[this._config.entity];
+    return String(((st && st.attributes) || {}).emp || "") === n.emp ? n.text : "";
+  }
+  // the two buttons for the pilot the sensor shows: the month shown (FLICA's, or while loading the one asked for)
+  // pressed and not tappable; while a month loads both wait
+  _monthsHtml(shown, waiting) {
+    const btn = (m) => { const on = m === shown; return `<button type="button" class="mo" data-month="${m}" aria-pressed="${on}"${on || waiting ? " disabled" : ""}>${this._esc(pcMonthLabel(m))}</button>`; };
+    const note = this._mnoteText();
+    return `<div class="mos" role="group" aria-label="Month">${pcMonths().map(btn).join("")}</div>${note ? `<div class="mnote" role="status">${this._esc(note)}</div>` : ""}`;
+  }
+  // 1.6.2: when a lookup asked at t is overdue: 2 minutes past the Watcher's next check (or past t)
+  _dueAt(t) {
+    const S = (this._h && this._h.states) || {};
+    const nx = Date.parse((S["sensor.flight_watcher_next_check"] || {}).state || "");
+    return Math.max(t, isNaN(nx) ? t : nx) + PILOT_WAIT_MS;
+  }
+  _repaintAt(due) {  // one repaint when a wait turns overdue
+    clearTimeout(this._waitT);
+    this._waitT = setTimeout(() => { if (this._root) this._paint(this._busy); }, Math.min(due - Date.now() + 500, 2147483000));
+    if (this._waitT && this._waitT.unref) this._waitT.unref();  // a test's node process need not wait for it
+  }
   _recon(a, readable) {  // FW-0002: the crew index's rebuilt month, drawn in the same grid as a readable schedule
     const r = a.reconstructed || [];
     const cov = a.reconstructed_coverage_pct;
@@ -591,8 +757,9 @@ class FlightWatcherPilotCard extends HTMLElement {
     const [y, m] = String(a.reconstructed_month || "").split("-").map(Number);
     const mon = m >= 1 && m <= 12 ? `${MONTHS[m - 1]} ${y}` : (a.reconstructed_month || "");
     const head = `<b>Reconstructed from pairing crew lists</b> <span class="u">${this._esc(mon)}${cov != null ? ` · ${this._esc(cov)}% of trips read · updated 00/06/12/18 HST` : ""}</span>`;  // 1.6.2: no coverage on a pilot
-    const tot = g.items.filter((it) => it.start >= g.from);  // totals: trips in the bid period, as drawn (not the day-before row, not the overlaps below)
-    const sum = (k) => { let t = 0; for (const it of tot) { const x = /^(\d+):(\d{2})$/.exec(it[k] || ""); if (!x) return "?"; t += +x[1] * 60 + +x[2]; } return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
+    // totals: trips flown in the bid period (FW-0080: the Watcher's split says a trip's part; else it starts in it), not the overlaps below
+    const tot = g.items.filter((it) => (it.split && typeof it.split === "object" && it.split.side ? !it.split.none : it.start >= g.from));
+    const sum = (k) => { let t = 0; for (const it of tot) { const v = it.split && it.split.side ? it.split[k] : it[k]; const x = /^(\d+):(\d{2})$/.exec(v || ""); if (!x) return "?"; t += +x[1] * 60 + +x[2]; } return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
     const md = (d) => `${MONTHS[+d.slice(5, 7) - 1].slice(0, 3)} ${+d.slice(8)}`;
     const days = (x) => (x.start === x.end ? md(x.start) : x.start.slice(0, 7) === x.end.slice(0, 7) ? `${md(x.start)}-${+x.end.slice(8)}` : `${md(x.start)}-${md(x.end)}`);
     const also = g.also.length ? `<div class="u also">Also on crew lists, on days of a trip above (one of them was likely traded after it was read): ${g.also.map((x) => `<b>${this._esc(x.pairing)}</b> ${days(x)}${x.seat ? " " + this._esc(x.seat) : ""}${x.checked_at ? ", read " + this._esc(String(x.checked_at).slice(5, 16).replace("T", " ")) : ""}${x.overlap === "reread" ? ", re-read queued" : x.overlap === "older" ? ", older read" : ""}`).join(" · ")}</div>` : "";
@@ -602,7 +769,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     const tl = a.pay_line ? this._payLine(a.pay_line, left, md, src)  // the totals line under the grid, the notes under that
       : { tot: `<div class="tot">${this._tgrp("thrs", [["Trips", `${tot.length}${left.length ? ` <span class="k">(${this._esc(left.join(", "))}: not totaled)</span>` : ""}`], ["Block", sum("blk")], ["Credit", sum("credit")]])}</div>`,
         notes: `<div class="u psrc">${src}</div>` };
-    const body = !g.items.length ? "" : `<div class="frame">${this._grid(g.days, g.items, g.month, { g: "rb", pay })}${tl.tot}</div>${also}${tl.notes}`;
+    const body = !g.items.length ? "" : `<div class="frame">${this._grid(g.days, g.items, g.month, { g: "rb", pay })}${tl.tot}</div>${this._splitNote(g.items)}${also}${tl.notes}`;
     const open = readable && (this._rbOpen || (this._pd && this._pd.g === "rb"));
     return readable ? `<details class="rb"${open ? " open" : ""}><summary>${head}</summary>${body}</details>` : `<div class="rb"><div class="rbh">${head}</div>${body}</div>`;
   }
@@ -662,7 +829,7 @@ class FlightWatcherPilotCard extends HTMLElement {
     const of = (n) => (Number(n) < m ? ` <span class="k">(${e(n)} of ${e(m)})</span>` : "");
     const ds = (x) => `${e(x.pairing)} ${/^\d{4}-\d{2}-\d{2}$/.test(x.start || "") ? md(x.start) : e(x.start)}`;
     const priced = pl.doh_known && pl.gross != null;
-    const why = `Totals over the ${m} trips that start in the bid period, as drawn.` + (!priced ? "" : ` Pay-Gross = credit x the hourly rate of the seat flown on each trip, for the pilot's longevity year from the date of hire (PWA 3.B.1; Captain PWA 3.C.4, First Officer and RO PWA 3.D.6), plus PWA 4.O.1: Captain $5.00 per block hour on a crew of 3 or more, RO $4.00, First Officer $3.00 on a 3-pilot crew, and the Extended Range +15% for an FO or RO on a 4-pilot crew or a SIN layover. Credit from the pairing package (minimums per PWA 4.C.3).`);
+    const why = `Totals flown in the bid period${pcPeriod(pl)}: the ${m} trips with a part in it, each its part (PWA 4.A: a segment pays on the date it originates).` + (!priced ? "" : ` Pay-Gross = credit x the hourly rate of the seat flown on each trip, for the pilot's longevity year from the date of hire (PWA 3.B.1; Captain PWA 3.C.4, First Officer and RO PWA 3.D.6), plus PWA 4.O.1: Captain $5.00 per block hour on a crew of 3 or more, RO $4.00, First Officer $3.00 on a 3-pilot crew, and the Extended Range +15% for an FO or RO on a 4-pilot crew or a SIN layover. Credit from the pairing package (minimums per PWA 4.C.3).`);
     const hrsG = this._tgrp("thrs", [["Trips", e(m)], ["Credit", e(pl.credit) + of(pl.credit_n)], ["Block", e(pl.block) + of(pl.block_n)], ["Soft", e(pl.soft) + of(pl.soft_n)]]);
     const daysG = this._tgrp("tdays", [["Days Off", pl.days_off == null ? "?" : e(pl.days_off), "Bid period days with no trip on the crew lists. Reserve, training and other duty without a pairing are not on crew lists, so they count here as days off."]]);
     const notes = [left.length ? `${left.join(", ")}: not totaled` : "",
@@ -682,7 +849,8 @@ class FlightWatcherPilotCard extends HTMLElement {
         notes: `<div class="u psrc">Source: FLICA Tools > Schedule Lookup, read only. Block / Credit per trip from the pairing pages.</div>` };
     }
     const m = Number(ip.trips) || 0;
-    const why = `Credit, Block and Soft over the ${m} pairings that start in the month, each its share flown in the month (PWA 4.A: a segment pays on the date it originates), plus vacation days at 4:00 (PWA 6.J.1.c) and the PAYP's pay protected credit (PWA Definitions 57); FLICA's figures also hold reserve, training and other credited days.` +
+    const cin = this._carryNote(ip);
+    const why = `Credit, Block and Soft flown in the bid period${pcPeriod(ip)}, as FLICA totals it: the ${m} pairings with a part in it, each its part flown in the bid period (PWA 4.A: a segment pays on the date it originates, so a trip across the bid period's edge counts only the duties departing in it), plus vacation days at 4:00 (PWA 6.J.1.c) and the PAYP's pay protected credit (PWA Definitions 57); FLICA's figures also hold reserve, training and other credited days.${cin ? ` ${cin}` : ""}` +
       (ip.doh_known && ip.gross != null ? " Pay-Gross = credit x the hourly rate of the seat flown on each pairing, for the pilot's longevity year from the date of hire (PWA 3.B.1; Captain PWA 3.C.4, First Officer and RO PWA 3.D.6), plus the PWA 4.O.1 overrides." : "");
     const tot = `<div class="tot" title="${e(why)}">${this._hoursPay(ip, t, m, "FLICA's days off for the month")}</div>`;
     const ss = ip.seat_src && typeof ip.seat_src === "object" ? Object.entries(ip.seat_src).filter(([, n]) => Number(n) > 0) : [];
@@ -690,9 +858,19 @@ class FlightWatcherPilotCard extends HTMLElement {
     const ds = (x) => `${e(x.pairing)} ${ISO_RE.test(x.start || "") ? e(fwgMd(x.start)) : e(x.start)}`;
     const notes = [(ip.missing || []).length ? `No credit for ${(ip.missing || []).map(ds).join(", ")}: not priced` : "",
       (ip.no_block || []).length ? `No block for ${(ip.no_block || []).map(ds).join(", ")}: its PWA 4.O.1 override is not in Pay-Gross` : "",
-      ip.payp_unk ? "A PAYP's credit is not known (FLICA's month credit leaves none, or a trip's credit is missing): not counted" : ""].filter(Boolean);
-    return { tot, notes: `<div class="u prate">${[this._rate(ip), seatN].filter(Boolean).join(" · ")}</div>${notes.length ? `<div class="u prate">${notes.join(" · ")}</div>` : ""}` +
+      ip.payp_unk ? "A PAYP's credit is not known (FLICA's month credit leaves none, or a trip's credit is missing): not counted" : "", e(cin)].filter(Boolean);
+    return { tot, notes: `${this._splitNote(a.items)}<div class="u prate">${[this._rate(ip), seatN].filter(Boolean).join(" · ")}</div>${notes.length ? `<div class="u prate">${notes.join(" · ")}</div>` : ""}` +
       `<div class="u psrc">Source: FLICA Tools > Schedule Lookup, read only. Block / Credit per pairing from its pairing page (the first few), else the pairings package.</div>` };
+  }
+  // 1.7.11 integration review: the purple cells explained on screen (a phone has no hover): '' when no trip is split
+  _splitNote(items) {
+    const l = (items || []).filter((it) => it && !it.carry).map(pcSplitShort).filter(Boolean).slice(0, 4);
+    return l.length ? `<div class="u prate spn">Purple Block and Credit: only the part flown in this bid period (PWA 4.A: a segment pays on the date it originates). ${this._esc(l.join("; "))}.</div>` : "";
+  }
+  // 1.7.11 (FW-0080): the trips from before FLICA's grid counted in its bid period (the Watcher's carry), '' when none
+  _carryNote(ip) {
+    const c = ip && Array.isArray(ip.carry) ? ip.carry.filter((x) => x && x.pairing && ISO_RE.test(x.start || "")).slice(0, 3) : [];
+    return c.length ? `Also counted (PWA 4.A): ${c.map((x) => `${x.pairing} ${fwgMd(x.start)}, from before the grid: ${x.blk || "?"} block, ${x.credit || "?"} credit flown in the bid period${x.est ? " (credit by block share, an estimate)" : ""}`).join("; ")}.` : "";
   }
   // 1.7.7 review: a month's hours and pay groups, the schedule card's (its order, check marks, Vacation and PAYP):
   // Credit (with the vacation and PAYP credit), Block, Soft, Vacation, PAYP, Pay-Gross, Pay-Net, Days Off. ip: the
@@ -760,7 +938,7 @@ class FlightWatcherPilotCard extends HTMLElement {
       at[x.start] = [x.pairing, lay];
       items.push({ trip: x.pairing, start: x.start, end: x.end, blk: x.blk || "", credit: x.credit || "", soft: x.soft || "", crew: x.crew || [],
         legs: st.slice(1).map((s, i) => ({ route: `${st[i]}-${s}` })), seat: x.seat || "", read: x.checked_at || "", route: x.route || "",
-        gross: x.gross != null ? x.gross : null, seat_src: x.seat ? "crew index" : "" });
+        gross: x.gross != null ? x.gross : null, seat_src: x.seat ? "crew index" : "", split: x.split && typeof x.split === "object" ? x.split : null });
     }
     const days = [];
     for (let d = first, k = 0; d <= last && k < 45; d = add(d, 1), k++) days.push([d, ...(at[d] || ["", ""])]);
@@ -861,7 +1039,8 @@ class FlightWatcherPilotCard extends HTMLElement {
     if (!days.length) days = this._rebuild({ reconstructed_month: month, reconstructed: items.map((it) => ({ pairing: it.trip, start: it.start, end: it.end, lay: it.lay })) }).days;
     const t = rec.totals && typeof rec.totals === "object" ? rec.totals : {};
     const pv = rec.pay && typeof rec.pay === "object" ? rec.pay : {};
-    const from = `${month}-01`, to = days.length ? days[days.length - 1][0] : "";
+    const per = pv.period && typeof pv.period === "object" ? pv.period : {};  // FW-0080: the bid period it covers
+    const from = ISO_RE.test(per.from || "") ? per.from : `${month}-01`, to = ISO_RE.test(per.to || "") ? per.to : days.length ? days[days.length - 1][0] : "";
     const trips = items.filter((it) => /^[A-Z]\d{4}/.test(it.trip) && it.start >= from && (!to || it.start <= to)).length;
     const e = (x) => this._esc(x);
     const m = Number(pv.trips) || trips;
@@ -874,7 +1053,8 @@ class FlightWatcherPilotCard extends HTMLElement {
       const c0 = mm(t.credit), b0 = mm(t.block);
       ip.soft = c0 != null && b0 != null && c0 >= b0 ? `${Math.floor((c0 - b0) / 60)}:${String((c0 - b0) % 60).padStart(2, "0")}` : null;
     }
-    const tot = `<div class="tot" title="${e(`This version's pairings priced as the live month is (each trip from the best figures on file for it: the live read, the crew index, the pairings package); the totals line of the live month, in the same order.`)}">${this._hoursPay(ip, t, m, "")}</div>`;
+    const cin = this._carryNote(pv);
+    const tot = `<div class="tot" title="${e(`This version's pairings priced as the live month is (each trip from the best figures on file for it: the live read, the crew index, the pairings package), flown in the bid period${pcPeriod(pv)} (PWA 4.A); the totals line of the live month, in the same order.${cin ? ` ${cin}` : ""}`)}">${this._hoursPay(ip, t, m, "")}</div>${cin ? `<div class="u prate">${e(cin)}</div>` : ""}`;
     const src = rec.source === "lookup" ? `FLICA Tools > Schedule Lookup${rec.updated ? ` (FLICA updated ${e(rec.updated)})` : ""}`
       : rec.source === "rebuild" ? "rebuilt from pairing crew lists" : rec.source === "award" ? "the awarded line" : e(rec.source || "");
     return `<div class="frame">${this._grid(days, items, month, { g: "main", pay, carry: this._carry(a, days, items) })}${tot}</div><div class="u vnote">v${e(rec.ver)} as captured ${this._hst(rec.at)}${src ? `, ${src}` : ""}. Block / Credit per trip and crew shown are the live ones; Pay-Gross is this version's.</div>`;
@@ -914,6 +1094,8 @@ class FlightWatcherPilotCard extends HTMLElement {
         if (e.target.closest(".x")) { this._hidden = true; this._paint(); return; }
         const vb = e.target.closest(".vb");  // FW-0069: schedule versions
         if (vb) { this._vstep(vb.dataset.v); return; }
+        const mo = e.target.closest(".mo");  // 1.7.11 (FW-0076): this month or the next
+        if (mo) { if (!mo.disabled) this._month(mo.dataset.month); return; }
         const pk = e.target.closest(".pk");  // 1.6.2: a pilot instance's pick list carries an opaque pick id, not the number
         if (pk) window.dispatchEvent(new CustomEvent(PILOT_EV, { detail: pk.dataset.pick ? { pick: pk.dataset.pick, name: pk.dataset.name } : { emp: pk.dataset.emp, name: pk.dataset.name } }));
       });
@@ -941,6 +1123,21 @@ class FlightWatcherPilotCard extends HTMLElement {
     this._narrow = !!this._pd && fwgNarrow(this._hc());
     this._draw(body, a, st, loading);
     this._pdAfter(body, fk);
+    this._fitCrl(body);
+  }
+  // 1.7.11 review (FW-0079): a grid wider than its box on a card wider than a phone (a tablet in portrait, a narrow
+  // column) gets the phone's crew list too (.wrap.crlon: the Crew column hidden, .crl shown), measured on the card's
+  // own width after each draw and resize; a grid that fits keeps its Crew column
+  _fitCrl(body) {
+    try {
+      const root = body || this._root;
+      if (!root || typeof root.querySelectorAll !== "function") return;
+      for (const w of root.querySelectorAll(".wrap")) {
+        if (!w.querySelector(".crl")) continue;
+        w.classList.remove("crlon");
+        if (w.scrollWidth > w.clientWidth + 1) w.classList.add("crlon");
+      }
+    } catch (err) { /* a layout read that fails leaves the grid as drawn */ }
   }
   _draw(body, a, st, loading) {
     if (this._hidden || (!a.emp && !a.status && !loading)) { body.innerHTML = ""; this.style.display = "none"; return; }  // v4: a "no match" or pick-list reply shows too
@@ -964,19 +1161,31 @@ class FlightWatcherPilotCard extends HTMLElement {
     let old = "";  // an older version picked: its own grid (a record the card cannot draw says so, never throws)
     if (vs && vs.rec) try { old = this._vold(a, vs.rec, a.month || a.reconstructed_month); } catch (err) { old = `<div class="none">This version could not be drawn.</div>`; }
     if (!a.month) {
-      const picks = (a.matches || []).map((m) => `<button class="pk" data-emp="${this._esc(m.emp || "")}" data-pick="${this._esc(m.pick || "")}" data-name="${this._esc(m.name)}">${this._esc(m.name)} <span class="u">${this._esc(m.pos)}${m.emp ? " " + this._esc(m.emp) : ""}</span></button>`).join("");
+      // 1.7.11 (FW-0078): "Last, First · seat · base · #number"; data-emp only where there is no pick (a pilot's entry
+      // sends its pick id, never the number it shows)
+      const picks = (a.matches || []).map((m) => `<button type="button" class="pk" data-emp="${this._esc(m.pick ? "" : m.emp || "")}" data-pick="${this._esc(m.pick || "")}" data-name="${this._esc(m.name)}">${this._esc(m.name)}${[m.pos, m.base, m.emp ? "#" + m.emp : ""].filter((x) => x).map((x) => ` <span class="u">· ${this._esc(x)}</span>`).join("")}</button>`).join("");
       // 1.6.2: the header names a pilot only from the reply itself (its emp), never from an earlier lookup; a reply
       // with no pilot (no match, a pick list) names the query; the status line always shows, with its time (HST)
       const h3 = a.emp ? `${this._esc(name || "Pilot")} (${this._esc(a.emp)})` : (a.matches || []).length ? `Pick the pilot for '${this._esc(name)}'` : name ? `No pilot found for '${this._esc(name)}'` : "Pilot lookup";
       const when = hstHM(a.at || (st && st.last_updated));
       const said = /application error|customer care/i.test(a.status || "") ? "FLICA showed its error page for this schedule (often a pilot who has hidden it, or a FLICA hiccup). Nothing to read; try again later." : (a.status || "no data");
-      body.innerHTML = `<div class="hd"><h3>${h3}</h3>${ct}<span class="u pst">${this._esc(said)}${when ? ` (${when} HST)` : ""}</span><span class="x" title="close">&times;</span></div>${vb}${picks ? `<div class="picks">${picks}</div>` : ""}`;
+      // 1.7.11 review: a reply to a month tap names the month asked (asked_month). The Watcher queued it (P5:
+      // "waiting: ...", reads paused): "Loading Nov 2026..." with that month pressed and both buttons waiting, until
+      // the wait is overdue; it did not read (F5): the month on the status line, either month again
+      const am = MONTH_RE.test(String(a.asked_month || "")) ? String(a.asked_month) : "";
+      const at = Date.parse(a.at || (st && st.last_updated) || "");
+      const due = am && PILOT_QUEUED_RE.test(String(a.status || "")) ? this._dueAt(isNaN(at) ? Date.now() : Math.min(at, Date.now())) : 0;
+      const queued = !!due && Date.now() <= due;
+      if (queued) this._repaintAt(due);
+      const line = am ? `${queued ? `Loading ${pcMonthLabel(am)}...` : `${pcMonthLabel(am)}:`} ${said}` : said;
+      const mos = a.emp && FlightWatcherPilotCard._monthVia(a) ? this._monthsHtml(queued ? am : "", queued) : "";  // 1.7.11: a pilot whose month did not read: either month again
+      body.innerHTML = `<div class="hd"><h3>${h3}</h3>${ct}<span class="u pst">${this._esc(line)}${when ? ` (${when} HST)` : ""}</span><span class="x" title="close">&times;</span></div>${mos}${vb}${picks ? `<div class="picks">${picks}</div>` : ""}`;
       if (old) { body.insertAdjacentHTML("beforeend", old + this._recon(a, true)); return; }  // the live rebuild, folded under it
       body.insertAdjacentHTML("beforeend", this._recon(a, false));  // 0.10.1 crew index; FW-0002: in the schedule grid
       return;
     }
     const [y, m] = a.month.split("-").map(Number);
-    const hd = `<div class="hd"><h3>${this._esc(name)} (${this._esc(emp)})</h3>${ct}<span class="u">${MONTHS[m - 1]} ${y} · FLICA updated ${this._esc(a.updated || "?")} · read ${a.fetched ? this._hst(a.fetched) : ""}${a.status === "cached" ? " (cached)" : ""}</span><span class="x" title="close">&times;</span></div>`;
+    const hd = `<div class="hd"><h3>${this._esc(name)} (${this._esc(emp)})</h3>${ct}<span class="u">${MONTHS[m - 1]} ${y} · FLICA updated ${this._esc(a.updated || "?")} · read ${a.fetched ? this._hst(a.fetched) : ""}${a.status === "cached" ? " (cached)" : ""}</span><span class="x" title="close">&times;</span></div>${FlightWatcherPilotCard._monthVia(a) ? this._monthsHtml(a.month, false) : ""}`;
     if (old) {  // FW-0069: an older version of a readable month
       body.innerHTML = hd + vb + old;
       body.insertAdjacentHTML("beforeend", this._recon(a, true));
@@ -1041,18 +1250,17 @@ class FlightWatcherPilotCard extends HTMLElement {
     const S = (this._h && this._h.states) || {};
     const nx = Date.parse((S["sensor.flight_watcher_next_check"] || {}).state || "");
     const state = String((S["sensor.flight_watcher_state"] || {}).state || "");
-    const due = Math.max(ask.at, isNaN(nx) ? ask.at : nx) + PILOT_WAIT_MS;
+    const due = this._dueAt(ask.at);
     // a next check already past is no time to promise
-    let line = `reading this pilot's month from FLICA (Schedule Lookup, read only) on the Watcher's next check${isNaN(nx) ? ", usually under 2 minutes" : nx > Date.now() ? `, about ${hstHM(new Date(nx).toISOString())} HST` : ""}`;
-    if (Date.now() > due) {
+    const mon = (ask.month && MONTH_RE.test(ask.month) ? ask.month : "") || (MONTH_RE.test(String(a.asked_month || "")) ? String(a.asked_month) : "");  // 1.7.11
+    let line = `${mon ? `Loading ${pcMonthLabel(mon)}... ` : ""}reading this pilot's month from FLICA (Schedule Lookup, read only) on the Watcher's next check${isNaN(nx) ? ", usually under 2 minutes" : nx > Date.now() ? `, about ${hstHM(new Date(nx).toISOString())} HST` : ""}`;
+    const late = Date.now() > due;
+    if (late) {
       const why = /^(paused|yielded|backoff|needs_settings|stopped)/.test(state) ? `the Watcher is ${state.replace(/_/g, " ")}; the lookup runs once it checks FLICA again` : state ? `no answer from the Watcher (it is ${state.replace(/_/g, " ")}); try again in a few minutes` : "no answer from the Watcher: it may not be running";
-      line = `Still waiting after ${Math.round((Date.now() - ask.at) / 60000)} min: ${why}.`;
-    } else {
-      clearTimeout(this._waitT);
-      this._waitT = setTimeout(() => { if (this._ask && this._root) this._paint(this._busy); }, Math.min(due - Date.now() + 500, 2147483000));
-      if (this._waitT && this._waitT.unref) this._waitT.unref();  // a test's node process need not wait for it
-    }
-    return `<div class="hd"><h3>${h3}</h3>${ct}<span class="u pst">${this._esc(line)}</span><span class="x" title="close">&times;</span></div>`;
+      line = `Still waiting after ${Math.round((Date.now() - ask.at) / 60000)} min${mon ? ` for ${pcMonthLabel(mon)}` : ""}: ${why}.`;
+    } else this._repaintAt(due);
+    // 1.7.11 review (P3): once the wait is overdue the month buttons are free again (either month, to try again)
+    return `<div class="hd"><h3>${h3}</h3>${ct}<span class="u pst">${this._esc(line)}</span><span class="x" title="close">&times;</span></div>${mon && ask.emp ? this._monthsHtml(late ? "" : mon, !late) : ""}`;
   }
   // 1.7.7: a trip's report and release (HST) and the day it is released: from the pairings package when it lists the
   // pairing (the id without a trailing letter, as the schedule card times a trip) on that day, else from the legs the
@@ -1111,6 +1319,9 @@ class FlightWatcherPilotCard extends HTMLElement {
     if (why && !legs.length && !it.blk && !it.credit) why += " The Watcher read no pairing page for this trip either.";
     const wmd = (iso, hm) => (hm && ISO_RE.test(iso || "") ? `${hm} ${PC_WD[fwgWday(iso)]} ${fwgMd(iso)}` : "");
     const notes = [];
+    // 1.7.11 integration review: the split's reason in the sheet a tap opens (its Block / Credit are the whole trip's)
+    const sp = it.split && typeof it.split === "object" && (it.split.credit || it.split.blk || it.split.side) ? it.split : null;
+    if (sp) notes.push(pcSplitWhy(it.trip, sp, it.start));
     if (it.seat) notes.push(`Seat ${String(it.seat).toUpperCase()}${it.seat_src ? ` from ${PC_SEAT_SRC[it.seat_src] || it.seat_src}` : ""}.`);
     if (it.read) notes.push(`From the crew list read ${String(it.read).slice(5, 16).replace("T", " ")} HST (crew index)${it.route ? `, route ${it.route}` : ""}.`);
     if (it.gross != null) notes.push(`Pay-Gross ${usd(it.gross)} for this seat (the Watcher's price from the date of hire on file).`);
@@ -1177,21 +1388,26 @@ class FlightWatcherPilotCard extends HTMLElement {
       let blk = "", cr = "", soft = "", pay = "", crew = "", split = "";
       if (it) {
         blk = e(it.blk || ""); cr = e(it.credit || ""); soft = e(it.soft || "");
-        // PWA 4.A (the Watcher's split, the schedule card's rule): this month's share of a trip into the next month
+        // PWA 4.A (FW-0080, the Watcher's split, the schedule card's rule): this bid period's part of a trip across its edge
         const sp = it.split && typeof it.split === "object" ? it.split : null;
-        if (sp && sp.credit) {
-          blk = e(sp.blk || ""); cr = e(sp.credit); soft = e(sp.soft || "");
-          split = `${it.trip}: ${sp.all_blk || "?"} block / ${sp.all_credit || "?"} credit in all; ${sp.out_blk || "?"} block flown from ${sp.next || "next month"} pays next month (PWA 4.A). Credit split by block share.`;
+        if (sp && (sp.credit || sp.blk || sp.side)) {
+          blk = e(sp.blk || ""); cr = e(sp.credit || ""); soft = e(sp.soft || "");
+          split = pcSplitWhy(it.trip, sp, it.start);
         }
         if (it.gross != null) pay = `<span class="pay" title="${e(`Pay-Gross for the ${String(it.seat || "FO").toUpperCase()} seat${it.seat_src ? ` (${PC_SEAT_SRC[it.seat_src] || it.seat_src})` : ""}: credit x the seat's hourly rate for this pilot's longevity year, plus the PWA 4.O.1 overrides`)}">${e(usd(it.gross))}</span>`;
         crew = (it.crew || []).map(([p, n]) => `${e(p)} ${e(n)}${(this._ctKeys || []).includes(pilotNameKey(n)) ? this._ctMini : ""}`).join(" · ");
       }
       const sc = split ? ` split" title="${e(split)}` : "";
       rows += `<tr data-d="${d}" class="${wk ? "wk" : ""}${fwgHol(d) ? " hol2" : ""}${oth ? " oth" : ""}${code === "VAC" ? " vac" : ""}${bx}${pdDays.has(d) ? " pdh" : ""}"><td>${DOW[w]}</td><td class="n">${d.slice(8)}</td>` +
-        `<td>${tc}</td><td>${l}${rp}${rl}</td><td class="t${sc}">${blk}</td><td class="t${sc}">${cr}</td><td class="t">${soft}</td>${o.pay ? `<td class="t tot1">${pay}</td>` : ""}<td class="crew">${crew}</td></tr>`;
+        `<td>${tc}</td><td${rp && rl ? ` class="lr2"` : ""}>${l}${rp}${rl}</td><td class="t${sc}">${blk}</td><td class="t${sc}">${cr}</td><td class="t">${soft}</td>${o.pay ? `<td class="t tot1">${pay}</td>` : ""}<td class="crew">${crew}</td></tr>`;
     }
-    const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th class="r">Block</th><th class="r">Credit</th><th class="r">Soft</th>${o.pay ? `<th class="r" title="This pilot's Pay-Gross for the seat flown on each pairing, from his date of hire on file; hover a figure for its seat">Pay-Gross</th>` : ""}<th>Crew</th></tr>`;
-    let html = `<div class="wrap"><table class="cal">${head}${rows}</table></div>`;
+    const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th class="r">Block</th><th class="r">Credit</th><th class="r">Soft</th>${o.pay ? `<th class="r" title="This pilot's Pay-Gross for the seat flown on each pairing, from his date of hire on file; hover a figure for its seat">Pay-<span class="pgx">Gross</span></th>` : ""}<th class="crw">Crew</th></tr>`;
+    // FW-0079: on a phone the Crew column is hidden and this list under the grid holds it, a line a pairing, each pilot
+    // a no-wrap span (the contact links beside the looked-up pilot kept); hidden on a wider card. Inside .wrap, so the
+    // pairing detail panel still follows the grid's box. The Block cell keeps each row one 11 px line (the Crew cell's
+    // ::after did), so the rows stay the schedule card's height
+    const crl = trips.filter((it) => !it.carry && Array.isArray(it.crew) && it.crew.length).map((it) => `<div><b>${e(it.trip)}</b> ${e(fwgMd(it.start))}: ${it.crew.map((c) => (Array.isArray(c) ? c : ["", c])).map(([p, n]) => `<span class="cp">${e(p)} ${e(n)}</span>${(this._ctKeys || []).includes(pilotNameKey(n)) ? this._ctMini : ""}`).join(" · ")}</div>`).join("");
+    let html = `<div class="wrap"><table class="cal">${head}${rows}</table>${crl ? `<div class="crl">${crl}</div>` : ""}</div>`;
     if (pdIt) {
       const m = this._pdModel(pdIt, tm.get(pdIt));
       this._pdM = m;

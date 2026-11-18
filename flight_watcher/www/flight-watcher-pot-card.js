@@ -16,8 +16,20 @@
 // columns as that table (Give up, For, Dates, Layover, Days, Credit, Soft, Gain, Src, Grid); on a card 560 px wide or
 // less each idea folds into labeled lines, so nothing scrolls sideways at 390 px. Read only: a new idea makes no alert
 // here (a portal event would be a contract change).
+// 1.7.15 (Ryan, Nov 17): the automatic ideas too (attribute auto_ideas: a trip not marked against the open pot, ranked
+// by pay per day; "auto" beside the trip given up; never pushed), after the marked trips' ideas (attribute ideas, in
+// the Watcher's order), and, on every idea, Pay (both trips' Pay-Gross and days) and Per day (the difference a day,
+// then both pay-per-day figures). "-" where the Watcher sent no pay figure. The "N more" line counts the automatic
+// ideas listed (review R4: the size cap can list fewer than auto_max).
 // 1.7.1 (F#119): the chip colors are this card's own variables, lighter on dark cards (Home Assistant's dark mode, which the
 // portal sets from the device), so they keep WCAG AA contrast (4.5:1) on both (the portal's dark error red is 4.497:1).
+// 1.7.17 (Ryan, Nov 17: tag the pot trips whose report and release times line up with his commutes): a row's cm (the
+// airports the Watcher's commute check passed both ways from the pilot's own smart.json timetables: 2 scheduled
+// nonstops arriving HNL before report, PWA 26.QQ.2, and 1 home after release, same day) shows as a chip
+// "Commutable AAA BBB", in words, not color alone; only three-letter codes are drawn. No tag, no chip (and no key line).
+// 1.7.17 review: the Key gives the home gap as the pilot's smart.json home_gap_min (60 min unless set), never a fixed 60;
+// the stale-pot banner's rule is div.warn, so the "c warn" FAR chip (CBA rest) keeps the chip size and the line's
+// other chips are not stretched to its height.
 // Usage: type: custom:flight-watcher-pot-card
 // PWA 3.D.6 A330 PAX / B787 First Officer hourly rate by longevity year (1-12) and effective date (as the schedule card)
 const PC_RATE_DATES = ["2023-03-02", "2024-03-02", "2025-03-02", "2026-03-02", "2027-01-31"];
@@ -79,29 +91,59 @@ class FlightWatcherPotCard extends HTMLElement {
     if (!s || s === "?") return ["mute", "FAR ?"];
     return ["bad", `FAR: ${s}`];
   }
-  // 1.7.1 (F#107): the swap ideas for the trips marked "would trade", the admin's Watcher view table in HTML
+  // 1.7.17: the airports of a row's commute tag (cm, a list from the Watcher; a text 'AAA/BBB' is read too), three-letter
+  // codes only, once each, in the Watcher's order (the pilot's smart.json)
+  _cmAps(p) {
+    const v = p.cm, raw = Array.isArray(v) ? v : typeof v === "string" ? v.split(/[\s\/,]+/) : [];
+    return [...new Set(raw.filter((a) => typeof a === "string" && /^[A-Z]{3}$/.test(a)))];
+  }
+  _cm(p) {
+    const aps = this._cmAps(p);
+    if (!aps.length) return "";
+    const t = `Commutable both ways from ${aps.join(" and ")}: 2 scheduled nonstops arriving HNL before report and 1 home after release, same day (PWA 26.QQ.2; your smart.json timetables)`;
+    return `<span class="c ok cm" title="${this._e(t)}">Commutable ${this._e(aps.join(" "))}</span>`;
+  }
+  // 1.7.1 (F#107): the swap ideas for the trips marked "would trade", the admin's Watcher view table in HTML.
+  // 1.7.15: the automatic ones as well, with both trips' pay, days and pay per day
   _swaps() {
-    const ideas = this._a("sensor.flight_watcher_swap_ideas").ideas, marks = this._a("sensor.flight_watcher_would_trade").keys;
-    const list = Array.isArray(ideas) ? ideas : [], marked = Array.isArray(marks) ? marks : [];
+    const sw = this._a("sensor.flight_watcher_swap_ideas"), marks = this._a("sensor.flight_watcher_would_trade").keys;
+    const arr = (v) => Array.isArray(v) ? v : [];
+    const autos = arr(sw.auto_ideas).map((i) => ({ ...i, auto: true })), list = [...arr(sw.ideas), ...autos], marked = arr(marks);
     const head = `<h4>Swap ideas${list.length ? ` <span class="k">${list.length}</span>` : ""}</h4>`;
-    if (!marked.length) return `${head}<div class="k">No trips marked. On the Schedule tab, tap &#8644; beside a trip you would trade for something better: better trips for it show up here.</div>`;
+    const left = Number(sw.auto_more) || 0;
+    const more = left > 0 ? `<div class="k">${this._e(left)} ${autos.length ? "more " : ""}automatic idea${left === 1 ? "" : "s"} not shown (${autos.length
+      ? `the best ${this._e(autos.length)} by pay per day ${autos.length === 1 ? "is" : "are"}` : "no room left next to your marked trips' ideas"}).</div>` : "";
+    if (!list.length && !marked.length) {
+      const why = left > 0 ? "" : sw.priced === false ? "No automatic ideas yet: they need your pay rate (your date of hire or longevity year in Pay settings). "
+        : "No better-paying swap in the open pot right now. ";
+      return `${head}${more}<div class="k">${why}On the Schedule tab, tap &#8644; beside a trip you would trade for more soft time or credit: better trips for it show up here too.</div>`;
+    }
     const mine = [...new Set(marked.map((k) => String(k).split("|")[0]))].join(", ");
-    if (!list.length) return `${head}<div class="k">Watching for better trips than <b>${this._e(mine)}</b>. Nothing better right now.</div>`;
-    const cols = ["Give up", "For", "Dates", "Layover", "Days", "Credit", "Soft", "Gain", "Src", "Grid"];
+    if (!list.length) return `${head}<div class="k">Watching for better trips than <b>${this._e(mine)}</b>. Nothing better right now.</div>${more}`;
+    const cols = ["Give up", "For", "Dates", "Layover", "Days", "Credit", "Soft", "Pay", "Per day", "Gain", "Src", "Grid"];
     const none = (v) => v == null || v === "" || /^-?none-?$/i.test(String(v));
+    const num = (v) => typeof v === "number" && isFinite(v);
+    const usd = (v) => "$" + Math.round(Math.abs(v)).toLocaleString("en-US");
+    const dn = (n) => `${this._e(n)} day${Number(n) === 1 ? "" : "s"}`;
     const rows = list.map((i) => {
       const lay = !none(i.layover) ? this._e(i.layover) : i.turn ? `<b>${this._e(i.turn)}</b> turn` : "turn";
       const src = i.src === "T" ? "Tradeboard" : "Open time";
       const grid = i.grid_ok ? `<b class="ok">OK</b>` : this._e(String(i.grid || "?").replace(/^grid\s+/i, "") || "?");  // review r4: the cell is labeled Grid already
-      const cells = [this._e(i.for_trip), `<b>${this._e(i.pairing)}</b>`, this._e(i.dates), lay, this._e(i.days), this._e(i.credit),
-        this._e(i.soft), `<b>${this._e(i.soft_gain)}</b> soft, ${this._e(i.credit_gain)} cr`, src, grid];
+      const pay = num(i.pay) && num(i.for_pay) ? `${usd(i.pay)} (${dn(i.pay_days)}) vs ${usd(i.for_pay)} (${dn(i.for_days)})` : "-";
+      const ppd = num(i.ppd_gain) && num(i.ppd) && num(i.for_ppd)
+        ? `<b>${i.ppd_gain < 0 ? "-" : "+"}${usd(i.ppd_gain)}</b> a day: ${usd(i.ppd)} vs ${usd(i.for_ppd)}` : "-";
+      const cells = [`${this._e(i.for_trip)}${i.auto ? ` <span class="k">auto</span>` : ""}`, `<b>${this._e(i.pairing)}</b>`,
+        this._e(i.dates), lay, this._e(i.days), this._e(i.credit), this._e(i.soft), pay, ppd,
+        `<b>${this._e(i.soft_gain)}</b> soft, ${this._e(i.credit_gain)} cr`, src, grid];
       return `<tr>${cells.map((c, n) => `<td data-l="${cols[n]}">${c}</td>`).join("")}</tr>`;
     }).join("");
-    return `${head}<div class="swb"><table class="swt"><thead><tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`
+    return `${head}<div class="swb"><table class="swt"><thead><tr>${cols.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>${more}`
       + `<details><summary>Swap ideas key</summary><ul class="k">
-        <li>Better = soft time up 0:30 or more, or credit up 1:00 or more without losing soft time.</li>
+        <li>A trip you marked: better = soft time up 0:30 or more, or credit up 1:00 or more without losing soft time.</li>
+        <li><b>auto</b>: a trip you did not mark, against the open pot of its bid period, ranked by pay per day (Pay-Gross / days at your pay settings' rate, PWA 3.D.6 and 4.O.1). Shown when it pays more a day; never pushed.</li>
+        <li><b>Pay</b>: the new trip's Pay-Gross and days vs yours. <b>Per day</b>: the difference a day, then both pay-per-day figures.</li>
         <li>Legal with your trip gone: FAR 117 OK, 11 h home rest (PWA 10.E.1.a), no VAC or blocked day.</li>
-        <li><b>Grid</b>: the new trip must share a day with yours, and every day you move off must be green on the reserve grid; a red idea waits until it turns green.</li>
+        <li><b>Grid</b>: the new trip must share a day with yours, and every day you move off must be green on the reserve grid; a red idea for a marked trip waits until it turns green, an automatic one is listed only when it is green.</li>
         <li><b>Src</b>: Open time = the open time pot, Tradeboard = a Tradeboard pickup post.</li>
         <li>Read only: a swap goes through FLICA, done by you; nothing is filed from here.</li></ul></details>`;
   }
@@ -143,12 +185,13 @@ class FlightWatcherPotCard extends HTMLElement {
       return `<div class="r${p.vac || p.blocked ? " off" : ""}"><div class="l1"><b class="trip">${this._e(p.pairing)}</b>${p._t ? `<span class="t" title="Tradeboard pickup post">T</span>` : ""}`
         + `<span>${this._e(p.dates || p.start || "")}</span><span>${this._e(lay)}</span>${p.days ? `<span>${this._e(p.days)} d</span>` : ""}${val}</div>`
         + (facts ? `<div class="l2">${facts}</div>` : "")
-        + `<div class="l3"><span class="c ${fc}">${this._e(ft)}</span><span class="c ${ac}">${this._e(at)}</span>${p.vac ? `<span class="c mute">VAC</span>` : ""}${p.blocked ? `<span class="c mute">blocked day</span>` : ""}</div></div>`;
+        + `<div class="l3"><span class="c ${fc}">${this._e(ft)}</span><span class="c ${ac}">${this._e(at)}</span>${this._cm(p)}${p.vac ? `<span class="c mute">VAC</span>` : ""}${p.blocked ? `<span class="c mute">blocked day</span>` : ""}</div></div>`;
     };
     const nP = pot.length, nT = tb.length;
     const head = `${nP} in the pot &middot; ${nT} Tradeboard pickup${nT === 1 ? "" : "s"}`;
     const list = shown.length ? shown.map(row).join("") : `<div class="k">${rows.length ? "Every trip is on a VAC or blocked day." : "The open time pot is empty and there are no Tradeboard pickups."}</div>`;
     const vacBox = hidden.length || showVac ? `<label class="sv"><input type="checkbox" id="sv"${showVac ? " checked" : ""}> Show VAC/blocked${hidden.length && !showVac ? ` (${hidden.length} hidden)` : ""}</label>` : "";
+    const cmKey = rows.some((p) => this._cmAps(p).length) ? `<li><b>Commutable</b> and an airport = you can commute from that airport both ways: 2 scheduled nonstops arriving HNL before report (PWA 26.QQ.2) and 1 nonstop home leaving at least your home gap after release (home_gap_min in your smart.json, 60 min unless set), same day (release 30 min after block-in when clearing customs, PWA 2.19.b), from your smart.json timetables. No chip = not commutable, or not known.</li>` : "";
     const valNote = rate == null ? "Value: set your longevity year in Pay settings (Schedule tab)."
       : `Value = credit x $${rate.toFixed(2)}/h (PWA 3.D.6, longevity year ${lyr}${unconf ? ", not confirmed yet: check it in Pay settings on the Schedule tab" : ""}).`;
     this.shadowRoot.innerHTML = `<style>
@@ -156,7 +199,7 @@ class FlightWatcherPotCard extends HTMLElement {
       ha-card{padding:10px 12px;font-size:13px;line-height:1.35}
       h3{margin:0;font-size:15px}.hd{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:6px}
       .k{color:var(--secondary-text-color);font-size:12px}
-      .warn{margin:4px 0 6px;padding:6px 8px;border-radius:6px;border-left:4px solid var(--warning-color,#b26a00);background:rgba(178,106,0,.12)}
+      div.warn{margin:4px 0 6px;padding:6px 8px;border-radius:6px;border-left:4px solid var(--warning-color,#b26a00);background:rgba(178,106,0,.12)}
       .r{padding:6px 0;border-top:1px solid var(--divider-color)}.r.off{opacity:.6}
       .l1{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}.l2{color:var(--secondary-text-color);font-size:12px;margin-top:2px;overflow-wrap:anywhere}
       .l3{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
@@ -180,7 +223,7 @@ class FlightWatcherPotCard extends HTMLElement {
       <details><summary>Key</summary><ul class="k">
         <li><b>T</b> after a trip = Tradeboard pickup post; the rest are the open time pot.</li>
         <li><b>Fits</b> = no overlap with your trips, VAC or blocked days; <b>needs your schedule</b> = your FLICA schedule for those days is not read yet.</li>
-        <li><b>FAR</b> = 10 h rest before and after (117.25(e)), 30 h off in 168 h (117.25(b)), 100 h flying in 672 h (117.23(b)(1)), FDP limits (117.23(c)); <b>CBA rest</b> = legal, but under the 11 h company minimum (PWA 10.E.1.a); <b>?</b> = not checked yet.</li>
+        <li><b>FAR</b> = 10 h rest before and after (117.25(e)), 30 h off in 168 h (117.25(b)), 100 h flying in 672 h (117.23(b)(1)), FDP limits (117.23(c)); <b>CBA rest</b> = legal, but under the 11 h company minimum (PWA 10.E.1.a); <b>?</b> = not checked yet.</li>${cmKey}
         <li>${this._e(valNote)}</li>
         <li>Trips on VAC or blocked days are hidden: tick <b>Show VAC/blocked</b>. Block a day: tap it on the Schedule tab's calendar.</li>
         <li>Read only: pick a trip up in FLICA yourself. All times HST.</li></ul></details></ha-card>`;

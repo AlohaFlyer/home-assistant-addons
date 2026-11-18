@@ -29,9 +29,10 @@ ADMIN_SUBS_1412 = [
     "flight_watcher/upload/decide",  # 1.7.2 (FW-0066): the admin's Approve / Remove / Reject of a pilot's upload
     # 1.7.2 (Ryan, Nov 12): the van alerts' switch and sliders
     "flight_watcher/van/alerts/set", "flight_watcher/van/first_min/set", "flight_watcher/van/second_min/set",
+    "flight_watcher/van/adjust/set",  # 1.7.11 (FW-0075): Ryan moves the van in 5 minute steps (layover card)
 ]
 PILOT_LOSES = ("email/alert", "auto_swap/set", "swap_map/press", "drop/set", "crew_scan/press", "layover/note",
-               "upload/decide", "van/alerts/set", "van/first_min/set", "van/second_min/set")
+               "upload/decide", "van/alerts/set", "van/first_min/set", "van/second_min/set", "van/adjust/set")
 # 1.7.1 (F#22): a pilot also reads the admin's shared charter list (retained, under the admin's prefix, never a
 # command: his portal publishes only under his own prefix)
 PILOT_GAINS = [("flight_watcher/charters/shared", 1)]

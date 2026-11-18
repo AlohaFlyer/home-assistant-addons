@@ -388,8 +388,9 @@ def line_records(months, own_trips, start, end, today, exclude=None):
     items (own_records; `exclude` 'TRIP|YYYY-MM-DD' left out, for a swap) plus the days LOOK + TRIP_MARGIN around the
     pickup that no schedule month on file covers (line_gaps), which can only make a check unknown, never OK.
     1.7.2: a PAYP item is left out (its trip was removed and is not flown; PWA 4.R.1 lets a pickup cover its days).
-    The miss check (verdict) reads own_records directly and still counts it as possible duty."""
-    items, seen = [], {exclude}
+    The miss check (verdict) reads own_records directly and still counts it as possible duty. 1.7.14: exclude may
+    also be several keys (a list, tuple or set: a near miss that overlaps two of his trips gives up both)."""
+    items, seen = [], (set(exclude) if isinstance(exclude, (list, tuple, set, frozenset)) else {exclude})
     for m in (months or {}).values():
         for it in (m or {}).get("items") or []:
             k = f"{it.get('trip')}|{it.get('start')}"

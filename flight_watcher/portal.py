@@ -1281,6 +1281,8 @@ def contract():
                      "pilot_contacts_limits": roles.PILOT_CONTACTS_LIMITS,
                      "pilot_contacts_checks": list(CONTACTS_CHECKS),
                      "value_since_revision": roles.VALUE_SINCE,
+                     # 1.7.11 (revision 6): the key month on pilot/set (FW-0076, the pilot lookup's month)
+                     "key_since_revision": roles.KEY_SINCE,
                      "pilotdb_note_limits": roles.PILOTDB_NOTE_LIMITS,
                      "pilotdb_answers": list(roles.PILOTDB_ANSWERS),
                      "pilotdb_rules": list(PILOTDB_RULES),
@@ -1324,7 +1326,20 @@ def contract():
                            "that pilot as the author and only adds and updates. HOM 1.9.1 takes revisions 3, 4 and "
                            "5 and goes live first. With HOM 1.9.0 still live nothing else changes: its pinned "
                            "shape refuses a chunk of kind contacts (400, 'Not available in the portal'), the card "
-                           "says so at the first part and nothing is sent to the Watcher"},
+                           "says so at the first part and nothing is sent to the Watcher",
+                      "6": "Flight Watcher 1.7.11, HOM 1.9.2 (Ryan, Nov 17, FW-0076): the pilot lookup's month. "
+                           "pilot/set takes an optional key, month (YYYY-MM; commands.key_since_revision says the key "
+                           "is revision 6's, the command stays revision 1's). The pilot card shows two buttons on a "
+                           "pilot's month, this HST month and the next, and a tap sends pilot/set with the same pilot "
+                           "and the month; the Watcher takes this HST month or the next only (any other is refused "
+                           "with a status line) and reads that month's Schedule Lookup page alone. HOM 1.9.2 takes "
+                           "revisions 3 to 6, a pilot/set with month only from a revision 6 export, and goes live "
+                           "first. With HOM 1.9.1 still live nothing else changes: its pinned shape refuses the key "
+                           "(400, 'Not available in the portal: pilot/set: month is not allowed'), the card says the "
+                           "month choice needs a portal update and nothing is sent to the Watcher. FW-0078 (the same "
+                           "release, Ryan's yes): each entry of the pick list in the pilot sensor carries the pilot's "
+                           "base and employee number (emp), shown beside the name and seat; the masks are unchanged "
+                           "(they drop only contact and zero the file keys), so both reach the card as signed"},
         "masks": {"zero": list(MASK_ZERO), "drop": list(MASK_DROP), "never_copied": ["context"],
                   # contact is still dropped from every state read from Home Assistant. 1.7.9 put the looked-up
                   # pilot's phones and emails in the synthesized pilotdb sensor; 1.7.10 (Ryan, Nov 15: shared 100%)
@@ -1505,7 +1520,8 @@ CONTACTS_SAMPLE_CSV = (
 def shape_samples(cmd):
     """(accepted, refused) samples of contract 1 revision 3's shaped commands (roles.SHAPE_CMDS: pilot/set and
     upload/pdf; made-up values), numbered from 500 on. Every one goes through Spool and check_shape here and HOM's
-    generic checker there."""
+    generic checker there. 1.7.11 (revision 6): pilot/set's month, added at the end of each list so the samples
+    before it keep their numbers."""
     astral = "\U0001F6EB"
     b64 = base64.b64encode(b"%PDF-1.4 made-up test bytes, not a pairing package\n%%EOF\n").decode("ascii")
     up = {"uid": "udemo00000000001", "kind": "pairings", "month": "2026-12", "size": 4096, "sha": "ab" * 32,
@@ -1528,6 +1544,12 @@ def shape_samples(cmd):
                         "data": base64.b64encode(csv_raw).decode("ascii")}),
         ("upload/pdf", {**up, "size": lim["file_bytes"], "part": lim["chunk_parts"], "parts": lim["chunk_parts"],
                         "data": "A" * lim["chunk_chars"]}),
+        # 1.7.11 (revision 6, FW-0076): the month buttons. The shape takes any well formed month; the Watcher's own
+        # rule takes this HST month or the next only (2030-01 passes the shape and the Watcher refuses it)
+        ("pilot/set", {"emp": "10001", "name": "Doe, Jane", "month": "2026-11"}),
+        ("pilot/set", {"pick": "0123456789ab", "name": "Doe, Jane", "month": "2026-12"}),
+        ("pilot/set", {"q": "10001", "month": "2026-12"}),
+        ("pilot/set", {"emp": "10001", "month": "2030-01"}),
     ]
     ref = [
         ("pilot/set with no emp, q or pick", "pilot/set", {"name": "Doe, Jane"}),
@@ -1574,6 +1596,17 @@ def shape_samples(cmd):
         ("upload without data", "upload/pdf", {k: v for k, v in up.items() if k != "data"}),
         ("upload without sha", "upload/pdf", {k: v for k, v in up.items() if k != "sha"}),
         ("upload payload not an object", "upload/pdf", "\"%PDF\""),
+        # 1.7.11 (revision 6, FW-0076)
+        ("pilot/set month alone", "pilot/set", {"month": "2026-12"}),
+        ("pilot/set month 13", "pilot/set", {"emp": "10001", "month": "2026-13"}),
+        ("pilot/set month without its zero", "pilot/set", {"emp": "10001", "month": "2026-1"}),
+        ("pilot/set month in words", "pilot/set", {"emp": "10001", "month": "Dec 2026"}),
+        ("pilot/set month a number", "pilot/set", {"emp": "10001", "month": 202612}),
+        ("pilot/set month null", "pilot/set", {"emp": "10001", "month": None}),
+        ("pilot/set month with a trailing newline", "pilot/set", {"emp": "10001", "month": "2026-12\n"}),
+        ("pilot/set month with a day", "pilot/set", {"emp": "10001", "month": "2026-12-01"}),
+        # FW-0078: the employee number a pick list shows is never a pick
+        ("pilot/set pick an employee number", "pilot/set", {"pick": "10001", "name": "Doe, Jane"}),
     ]
     accepted = [cmd(sub, p if isinstance(p, str) else dumps(p), 500 + i) for i, (sub, p) in enumerate(acc)]
     refused = [{"why": why, **cmd(sub, p if isinstance(p, str) else dumps(p), 600 + i)}

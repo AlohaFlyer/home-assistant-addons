@@ -347,8 +347,9 @@ def test_the_van_sensor_keeps_only_what_the_card_reads(tmp_path, monkeypatch):
     s = _last(fake, "layover_van")
     assert set(s) == {"at", "why", "pairing", "city", "abbr", "date", "local", "weekday", "hst", "hst_weekday", "place",
                       "source", "alerts",  # 1.7.1: source, package or hark, for the card's "from ..." line
-                      "alerts_on", "offsets"}  # 1.7.2: the van alert settings (Ryan, Nov 12)
-    assert s["source"] == "hark"
+                      "alerts_on", "offsets",  # 1.7.2: the van alert settings (Ryan, Nov 12)
+                      "adjustable", "van_id", "adjust_min"}  # 1.7.11 (FW-0075): the card's -5 and +5 min
+    assert s["source"] == "hark" and (s["adjustable"], s["adjust_min"]) == (True, 0)
     assert "7:40 PM" not in json.dumps(s) and s["place"] == "Example Harbour Hotel lobby"
     (ev, _), = _vans(fake)
     assert ev["hotel"] == "Example Harbour Hotel" and ev["place"] == "Example Harbour Hotel lobby"

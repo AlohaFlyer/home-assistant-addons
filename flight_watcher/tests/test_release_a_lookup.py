@@ -2,7 +2,8 @@
 files every instance already receives (never the admin's crew index or contact list, nor the pilot's own crew
 directory); a query needs 3 letters of a last name, letters only (no wildcard, no listing); at most 5 matches, each
 with name and seat and an opaque pick id instead of the employee number; the number runs the lookup and is shown only
-for the chosen pilot. A lookup while the Watcher is paused says it waits; a pilot's reply has no crew index coverage.
+for the chosen pilot. 1.7.11 (FW-0078, Ryan, Nov 17): at most 12 matches, each showing the base and the employee
+number too; the pick is still the opaque pick id (tests/test_fw1711_pilot_lookup.py). A lookup while the Watcher is paused says it waits; a pilot's reply has no crew index coverage.
 The card: the status line with its time on no match, the header of the pilot asked for, the loading line's timeout.
 Synthetic names only ("Doe, Jane", 10001)."""
 import json
@@ -72,7 +73,7 @@ def test_name_directory_is_the_award_and_the_seniority_list(load):
     rows = {r["emp"]: r for r in W.name_directory()}
     assert rows["10001"]["name"] == "Doe, Jane" and rows["10001"]["seat"] == "FO"  # the list wins (a first name)
     assert rows["10002"]["seat"] == "CA" and rows["10004"] == {"emp": "10004", "last": "Roe", "first": "", "seat": "FO",
-                                                              "name": "Roe"}  # award only: seat from its title
+                                                              "base": "", "name": "Roe"}  # award only: seat from its title
     assert "10077" not in rows and "10078" not in rows
 
 
@@ -90,7 +91,8 @@ def test_one_match_is_a_pick_list_of_one(load):
     """1.6.2 review: one match is not run at once: its employee number is used (and shown) only after the pick."""
     W, sent = load()
     p = _ask(W, sent, q="roe")
-    assert p["emp"] == "" and [m["name"] for m in p["matches"]] == ["Roe"] and "10004" not in json.dumps(p)
+    assert p["emp"] == "" and [m["name"] for m in p["matches"]] == ["Roe"]
+    assert p["matches"][0]["emp"] == "10004" and p["matches"][0]["pick"] != "10004"  # 1.7.11: shown, never the pick
     assert "tap the name" in p["status"] and not W.S.get("pilot_req")
     q = _ask(W, sent, pick=p["matches"][0]["pick"], name="Roe")
     assert (q["emp"], q["name"], q["status"]) == ("10004", "Roe", "loading") and W.S["pilot_req"]["emp"] == "10004"
@@ -114,13 +116,14 @@ def test_a_prefix_needs_5_letters_so_the_roster_cannot_be_walked(load):
     assert found <= {"Doe, Jane", "Doe, John", "Roe"}
 
 
-def test_more_than_5_matches_is_no_list(load, monkeypatch):
+def test_more_than_12_matches_is_no_list(load, monkeypatch):
     W, sent = load()
+    # 1.7.11 (FW-0078): 12 (5 before)
     rows = [{"emp": str(20001 + i), "last": f"Hallo{c}", "first": "", "seat": "FO", "name": f"Hallo{c}"}
-            for i, c in enumerate("abcdef")]
+            for i, c in enumerate("abcdefghijklm")]
     monkeypatch.setattr(W, "name_directory", lambda: rows)
     p = _ask(W, sent, q="Hallo")
-    assert p["matches"] == [] and "More than 5 pilots match" in p["status"]
+    assert p["matches"] == [] and "More than 12 pilots match" in p["status"]
 
 
 def test_name_queries_are_capped_at_20_an_hour(load):
@@ -137,8 +140,9 @@ def test_several_matches_give_name_and_seat_and_a_pick_id(load):
     W, sent = load()
     p = _ask(W, sent, q="Doe")  # DOE exactly: DOERR is left out
     assert p["emp"] == "" and [(m["name"], m["pos"]) for m in p["matches"]] == [("Doe, Jane", "FO"), ("Doe, John", "CA")]
-    blob = json.dumps(p)
-    assert "10001" not in blob and "10002" not in blob  # no employee number in the list
+    # 1.7.11 (FW-0078, Ryan, Nov 17): each entry shows the employee number; the pick is still the opaque id
+    assert [m["emp"] for m in p["matches"]] == ["10001", "10002"]
+    assert all(m["pick"] not in ("10001", "10002") for m in p["matches"])
     pick = p["matches"][1]["pick"]
     q = _ask(W, sent, pick=pick, name="Doe, John")
     assert (q["emp"], q["status"]) == ("10002", "loading")
@@ -185,7 +189,7 @@ def test_pilot_card_states_at_390_px(tmp_path):
     assert r["loading"].startswith("Looking up 'Roe'") and "10001" not in r["loading"] and "Doe" not in r["loading"]
     assert r["nomatch"].startswith("No pilot found for 'Roe'") and "(10:00 HST)" in r["nomatch"]
     assert "No pilot named 'Roe'" in r["nomatch"] and "10001" not in r["nomatch"]
-    assert "Moe, Kai FO" in r["picks"] and not any(ch.isdigit() for ch in r["picks"].split("\n", 2)[2].split("HST")[-1])
+    assert "Moe, Kai · FO" in r["picks"] and not any(ch.isdigit() for ch in r["picks"].split("\n", 2)[2].split("HST")[-1])
     assert [json.loads(x) for x in r["pickSent"]] == [{"pick": "a1b2c3d4e5f6", "name": "Moe, Kai"}]
     assert r["pickLoading"].startswith("Moe, Kai\n")
     assert "Still waiting after 5 min: the Watcher is paused" in r["overdue"] and r["wide"] <= 390

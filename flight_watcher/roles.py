@@ -54,6 +54,14 @@ admin's Watcher checks it again and merges it into the one database with that pi
 only adds and updates (pilotdb.merge_contacts, additive). The command's shape changed (one more value of kind), so
 HOM 1.9.1 goes live first; HOM 1.9.0 refuses kind contacts with its own shape check and serves everything else as it
 did. PORTAL_CMDS, PORTAL_REFUSED, FEATURES and every other shape, limit and quota are as in revision 4.
+
+1.7.11, contract 1 REVISION 6 (Ryan's yes of Nov 17, FW-0076: "This month and next month buttons on the pilot lookup,
+on both instances. One FLICA load per tap, inside the budget."): pilot/set takes one more key, month (YYYY-MM,
+MONTH_PATTERN). The command is revision 1's; the key is revision 6's (KEY_SINCE, the way revision 5 marked a value in
+VALUE_SINCE), so HOM 1.9.2 takes a pilot/set with month only for a Watcher whose manifest names revision 6, and HOM
+1.9.1's pinned shape refuses the key. The Watcher takes only this HST month or the next (watcher.lookup_months). FW-0078
+(the same release): the pick list shows each pilot's base and employee number; no shape or mask changed for it.
+PORTAL_CMDS, PORTAL_REFUSED, FEATURES and every other shape, limit and quota are as in revision 5.
 """
 import math
 import re
@@ -118,6 +126,7 @@ SUBS = {
     "upload/pdf": "pilot_uploads",  # 1.7.2 (FW-0066): portal only (PORTAL_SUBS), a pilot's upload in chunks
     # 1.7.2 (Ryan, Nov 12): the van alerts' switch and lead times, the admin's (a pilot has no van alerts)
     "van/alerts/set": "admin_pushes", "van/first_min/set": "admin_pushes", "van/second_min/set": "admin_pushes",
+    "van/adjust/set": "admin_pushes",  # 1.7.11 (FW-0075): Ryan moves the van in hand in 5 minute steps (layover card)
     # 1.7.9 (revision 4): portal only (PORTAL_SUBS), a shared pilot's note and field edit; his Watcher only checks them
     # and hands them to the admin's inbox (the admin never subscribes: it reads the inbox folder)
     "pilotdb/note": "pilotdb", "pilotdb/edit": "pilotdb",
@@ -160,11 +169,12 @@ MAX_PILOTS = 3  # pilots besides the admin: each runs its own Chromium and its o
 # an id whose first word is here as the admin's. 1.7.2: "ready" (automation.flight_watcher_ready_to_update_ask_hark,
 # the Working Flight button that asks Hark, Ryan Nov 12) and "van" (switch.flight_watcher_van_alerts and
 # number.flight_watcher_van_alert_first and _second, the van alert settings, Ryan Nov 12). 1.7.8: "pilotdb" (the pilot
-# database: /data/pilotdb_backup, /share/flight_watcher/pilotdb, sensor.flight_watcher_pilotdb and its topic).
+# database: /data/pilotdb_backup, /share/flight_watcher/pilotdb, sensor.flight_watcher_pilotdb and its topic). 1.7.14:
+# "near" (sensor.flight_watcher_near_misses and its topic near/state, the near misses in the open time pot).
 RESERVED = frozenset({
     "admin", "auto", "bid", "blocked", "captures", "ccr", "charter", "charters", "check", "crew", "default", "drop",
     "email", "er", "event", "federal", "fetches", "finds", "flica", "freq", "grid", "hunt", "improved", "last",
-    "layover", "layovers", "longevity", "map", "month", "new", "next", "normal", "ot", "own", "pause", "pickers",
+    "layover", "layovers", "longevity", "map", "month", "near", "new", "next", "normal", "ot", "own", "pause", "pickers",
     "pilot", "pilotdb", "pot", "pref", "re", "rearm", "ready", "recall", "reserve", "rule", "rules", "ryan", "scan", "schedule", "session",
     "settings", "show",
     "state", "status", "swap", "ticket", "tickets", "trade", "tradeboard", "update", "upload", "uploads", "van",
@@ -254,8 +264,9 @@ def name_refusal(name, taken=()):
 # from these; PORTAL_CONTRACT.md documents it. The admin has no portal: none of this runs on the default instance.
 CONTRACT = 1
 # 1.7.0 (Release C): tickets (2); 1.7.2: pilot alerts, shapes, uploads (3); 1.7.9: the shared pilot database, the swap
-# idea alert (4); 1.7.10: a pilot's contacts list upload, kind contacts on upload/pdf (5); additive within 1
-CONTRACT_REVISION = 5
+# idea alert (4); 1.7.10: a pilot's contacts list upload, kind contacts on upload/pdf (5); 1.7.11: the pilot lookup's
+# month, the key month on pilot/set (6); additive within 1
+CONTRACT_REVISION = 6
 # 1.7.2 (revision 3): recall/set leaves the list (F#78: a crafted paste from the portal could replace or blank a day on
 # the pilot's own instance; his lists come only from the admin's forward, 1.7.1) and upload/pdf joins it (FW-0066)
 PORTAL_CMDS = ("hunt/set", "pause/set", "rearm/press", "check_now/press", "charter_scan/press", "freq/normal_min/set",
@@ -271,6 +282,10 @@ COMMAND_REMOVED = {"recall/set": 3}
 # {sub: {field: {value: revision}}}. HOM refuses such a value to a Watcher whose manifest names an older revision
 # (it would refuse the chunk itself), as it does a whole command by COMMAND_SINCE.
 VALUE_SINCE = {"upload/pdf": {"kind": {"contacts": 5}}}
+# 1.7.11 (revision 6, FW-0076): the revision one KEY of a command came in, when the command itself is older:
+# {sub: {key: revision}}. HOM refuses a payload with such a key to a Watcher whose manifest names an older revision (an
+# older Watcher's own shape check would refuse it), as it does a value by VALUE_SINCE and a command by COMMAND_SINCE.
+KEY_SINCE = {"pilot/set": {"month": 6}}
 PORTAL_RULE_ID_RE = re.compile(r"^[a-z0-9_]{1,40}$")
 # contract 1's check frequency ranges (freq/normal_min/set in minutes, freq/hunt_s/set in seconds): a portal's
 # freq/*/set must be a finite number within them (portal.check_freq). Contract 1 is pinned (its fixture and sha256).
@@ -305,15 +320,17 @@ PORTAL_REFUSED = ("email/alert", "crew_scan/press", "upload/chunk", "drop/set", 
                   "hunt/state", "pause/state", "recall/set", "layover/note", "upload/decide")
 # 1.7.1 (FW-0072): subs added after a contract revision that a portal never offers, refused as "anything else" until a
 # later revision names them in PORTAL_REFUSED (1.7.2, revision 3: layover/note is named there now). 1.7.2 (after
-# revision 3, Ryan Nov 12): the admin's van alert settings (the spool refuses anything not in PORTAL_CMDS)
-NOT_ON_PORTAL = ("van/alerts/set", "van/first_min/set", "van/second_min/set")
+# revision 3, Ryan Nov 12): the admin's van alert settings (the spool refuses anything not in PORTAL_CMDS). 1.7.11
+# (FW-0075): the admin's van move, never a portal's (no contract change)
+NOT_ON_PORTAL = ("van/alerts/set", "van/first_min/set", "van/second_min/set", "van/adjust/set")
 # the tabs of the portal (portal_layout.json), and the one each event opens (ntfy Click, the events list); 1.7.0: the
 # Tickets tab last, so the five tabs before it keep their places in the tab bar
 PORTAL_TABS = ("watcher", "schedule", "pilot", "recall", "settings", "tickets")
 PORTAL_EVENTS = ("new_pairing", "rule_match", "recall_miss", "request_decided", "schedule_changed", "charter",
                  "hidden", "bid_calendar",  # 1.7.2 (revision 3): bid_calendar, the pilot's own (FW-0070)
                  # 1.7.9 (revision 4, F#107): a new swap idea for a trip the pilot marked "would trade" (trade/set, his
-                 # opt-in: no mark, no idea, no alert); the pot card on the Watcher tab lists the ideas
+                 # opt-in: no mark, no alert); the pot card on the Watcher tab lists the ideas. 1.7.15: the sensor also
+                 # lists automatic ideas (auto_ideas, auto: true), which never alert (never event/swap)
                  "swap")
 MACHINE_EVENTS = ("needs_settings", "stopped_*")  # sensor.<prefix>_state turning to one of these (stopped_ any)
 # 1.7.0 (Release C): events the Watcher makes from its own files, never from an MQTT event topic (so a publish can never
@@ -471,7 +488,8 @@ TICKET_CMDS = {
 # The same rules as TICKET_CMDS (TICKET_RULES, one generic checker on each side) for two more portal commands.
 # pilot/set (F#49): what the pilot lookup cards send, nothing else: an employee number (1 to 7 ASCII digits), a typed
 # query or a name (at most 60 code points, one line), or a pick id (pilot.pick_id: 12 lowercase hex). The Watcher
-# refuses the same (watcher.pilot_cmd, every instance), and its log line never carries the text.
+# refuses the same (watcher.pilot_cmd, every instance), and its log line never carries the text. 1.7.11 (revision 6,
+# FW-0076): and a month (YYYY-MM): the pilot card's month buttons; the Watcher takes this HST month or the next only.
 # upload/pdf (FW-0066, Ryan Nov 11): one chunk of a pilot's upload of the monthly pairings package or the award (never
 # the seniority list; 1.7.10, revision 5: the contacts list as its CSV export too, PILOT_CONTACTS_LIMITS below), cut like ticket photos so each
 # command stays under the 64 KB cap. Every chunk carries the upload's fields; the pilot's Watcher (pilotpdf.py) puts
@@ -516,11 +534,12 @@ PILOT_CONTACTS_LIMITS = {"kind": "contacts", "file_bytes": 1024 * 1024, "chunk_p
                                     "Mobile Phone", "Email", "Employee ID", "Notes"]}
 SHAPE_CMDS = {
     "pilot/set": {
-        "keys": ["emp", "q", "name", "pick"],
+        "keys": ["emp", "q", "name", "pick", "month"],
         "required": [],
         "any_of": ["emp", "q", "pick"],
         "fields": {"emp": _text(1, 7, r"^[0-9]{1,7}$"), "q": _text(1, 60, PRINTABLE_PATTERN),
-                   "name": _text(0, 60, PRINTABLE_PATTERN), "pick": _text(12, 12, PICK_PATTERN)}},
+                   "name": _text(0, 60, PRINTABLE_PATTERN), "pick": _text(12, 12, PICK_PATTERN),
+                   "month": _text(7, 7, MONTH_PATTERN)}},  # 1.7.11 (revision 6): KEY_SINCE
     "upload/pdf": {
         "keys": ["uid", "kind", "month", "size", "sha", "part", "parts", "data"],
         "required": ["uid", "kind", "month", "size", "sha", "part", "parts", "data"],
@@ -693,10 +712,17 @@ def pref_value(key, value):
 # discovery oids a pilot has whose feature a portal may not offer: the uploads sensors (uploads stay off the portal).
 # 1.7.0: sensor.<prefix>_tickets passes now (the tickets feature is offered), with his own tickets only
 ENTITY_PORTAL_FEATURE = {"tickets": "tickets", "uploads": "uploads", "upload_status": "uploads"}
+# 1.7.14 (Ryan, Nov 17): discovery oids a pilot has in HA that his portal does not serve yet, whatever their feature. The
+# near misses sensor (sensor.<prefix>_near_misses) is core and every instance computes its own, but a new exported state
+# is a portal contract change (PORTAL_CONTRACT.md 4.2): it waits for a later contract revision, so contract 1 revision 6
+# and a pilot's state.json stay exactly as they are.
+ENTITY_OFF_PORTAL = frozenset({"near_misses"})
 
 
 def entity_on_portal(oid, instance):
-    """True when a portal serves this discovery entity of instance: the instance has its feature and FEATURES offers
-    that feature on a portal."""
+    """True when a portal serves this discovery entity of instance: the instance has its feature, FEATURES offers that
+    feature on a portal, and (1.7.14) the entity is not one held back for a later contract revision (ENTITY_OFF_PORTAL)."""
+    if oid in ENTITY_OFF_PORTAL:
+        return False
     f = ENTITY_FEATURE.get(oid) or ENTITY_PORTAL_FEATURE.get(oid, "core")
     return allowed(f, instance) and FEATURES[f][1]

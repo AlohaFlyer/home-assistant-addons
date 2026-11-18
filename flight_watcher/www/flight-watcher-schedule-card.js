@@ -18,6 +18,24 @@
 // extra fade.
 // 1.7.1 review: on a phone (700 px or less) the Pay settings selects are 16 px: iOS Safari zooms into a smaller one
 // when it is tapped and leaves the page wider than the screen (as F#43 found for the pilot lookup).
+// 1.7.11 (FW-0080, Ryan, Nov 17: "Everywhere"): the totals are the bid period's, as FLICA's are (PWA 4.A: a segment pays
+// on the date it originates; December 2026 runs Dec 2 to Dec 31, so a trip Dec 1 to 3 pays its Dec 1 duty in November
+// and its Dec 3 duty in December): each trip its part flown in the bid period (fwSplit, each duty's TCRD from the
+// pairings package, else its block share), the VAC and PAYP days in it, the versions' prices the same. The bid period
+// is the pairings package's, else the Watcher's (sensor periods), else the calendar month, which the totals then say.
+// 1.7.12 (Ryan, Nov 17): the header's "updated" gives way to the clock card's "Data age 12 min" stamp (the shared data
+// age block below: the time since the Watcher's last good read, amber "stale" past 1x the check interval, red "very
+// stale" past 2x). FLICA's own schedule time is only in its hover text, "FLICA updated ...". The stamp ticks each second
+// by itself (that span only; the card redraws only when its entities change, as before).
+// 1.7.12 review: the thresholds follow the Watcher's own longest cycle (the shared block; pending Ryan's yes on that
+// meaning of "1x"), "Watcher offline" in red when the app is down, and the hover text (a tap shows it, as every title
+// here) has the last good read in HST. The stamp keeps one width and weight at every level, at the header's right
+// (its own line on a phone), so the month arrows and Now never slide as the age ticks.
+// 1.7.18 (cross-item review): one box whatever the text says, so that holds for the long texts too ("2 h 10 min,
+// very stale", "over 1 h 5 min, Watcher offline" slid them up to 59 px): 21em at the right of a wide header (every
+// text on one line in the usual fonts; a wider font wraps inside it), and on a phone the rest of the Lock switch's
+// line, at its right (a long text wraps inside it, under the switch's 44 px), so the arrows, the month and Now keep
+// the second line to themselves and the header two lines.
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const DOW = ["SU","MO","TU","WE","TH","FR","SA"];
 const MON3 = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
@@ -53,8 +71,78 @@ const PAY_PREFS = ["input_number.flight_watcher_federal_tax_pct", "input_number.
 const PAY_PREF_LABEL = { [PAY_PREFS[0]]: "federal tax", [PAY_PREFS[1]]: "state tax", [PAY_PREFS[2]]: "longevity year" };
 const dohYear = (iso, doh) => { const [a, b] = [doh || DOH, iso].map((s) => String(s).slice(0, 10).split("-").map(Number)); return b[0] - a[0] - (b[1] < a[1] || (b[1] === a[1] && b[2] < a[2]) ? 1 : 0) + 1; };
 const hrs = (t) => { const mm = /^(\d+):(\d{2})$/.exec(String(t || "").trim()); return mm ? Number(mm[1]) + Number(mm[2]) / 60 : null; };
+// 1.7.13 (Ryan, Nov 17: "Give FAR-30/7, FAR-100/672 and Room real headers with units, and show headroom against each
+// limit (e.g. "100h/672h: 10:57 left")"): the 100h in 672h and Room to 100h cells say what is left of the FAR
+// 117.23(b)(1) limit (100 flight hours in any 672 consecutive hours), to the minute: "10:57 left", "0:00 left" at the
+// limit, "1:20 over" past it (both red: the words say it too, never the colour alone); "~" in front when a window
+// reaches past the schedule on file or holds a trip with no times on file (1.7.13 F3). 1.7.13 review: the caller
+// rounds the block to the minute once and passes 100:00 less that, so a cell and its title (the block) add up to 100:00.
+const farLeft = (left, approx) => {
+  const m = Math.round(left * 60), a = Math.abs(m);
+  return { txt: `${approx ? "~" : ""}${Math.floor(a / 60)}:${String(a % 60).padStart(2, "0")} ${m < 0 ? "over" : "left"}`, bad: m <= 0 };
+};
+// 1.7.13 (F1, Ryan Nov 18: "fix all of these things"): an own trip's flight time spans as far.py counts them for a
+// pickup's FAR check (recall._trip, read by far._cum): one per duty period, from its start (the trip's report; a later
+// one 1:00 before departure from HNL, 1:15 elsewhere, PWA 2.19.b) to its block-in, with that duty's block; with a duty
+// block missing, one span from report to last block-in with the trip's Block; with no duty times, that one span; none
+// with the dates only (far.py: whole days, block not known). [{s, e, h}]: ms (HST as UTC) and hours, h null = block not
+// known. at(iso, minutes) is the card's clock. The rules follow recall._trip step by step (its int() and time parsing
+// included), so Room to 100h and far.py count a line alike.
+const farInt = (x) => (typeof x === "number" ? (Number.isFinite(x) ? Math.trunc(x) : null)
+  : /^\s*[+-]?\d+\s*$/.test(String(x)) ? parseInt(x, 10) : null);
+const farHm = (x) => {  // far._t: "HH:MM" (or HH.MM) -> minutes, or null
+  const p = String(x == null ? "None" : x).replace(/\./g, ":").split(":");
+  const h = p.length > 1 ? farInt(p[0]) : null, m = p.length > 1 ? farInt(p[1]) : null;
+  return h != null && m != null && h >= 0 && h < 24 && m >= 0 && m < 60 ? h * 60 + m : null;
+};
+const farBlk = (x) => {  // recall._hrs: "H:MM" -> hours, or null
+  const p = String(x == null ? "None" : x).split(":");
+  const h = p.length > 1 ? farInt(p[0]) : null, m = p.length > 1 ? farInt(p[1]) : null;
+  return h != null && m != null ? h + m / 60 : null;
+};
+const farSpans = (it, t, at) => {
+  const a = it.start, b = it.end || it.start, base = at(a, 0), DEB = 15 * 60e3, DAY = 24 * 3600e3;
+  const dus = Array.isArray(t.duties) ? t.duties : [];
+  let rep = null, rel = null;
+  const r = farHm(t.report), la = farHm(t.last_arr);
+  if (a && r != null && la != null) { rep = at(a, r); rel = at(b, la) + DEB; if (rel <= rep) rel += DAY; }
+  if (rep == null && dus.length) {  // no report or last block-in: the first duty's departure - 1:00 to the last + 0:15
+    const d0 = farInt(dus[0] && dus[0].dep), arrs = dus.map((x) => farInt(x && x.arr));
+    if (d0 != null && arrs.every((v) => v != null)) { rep = base + (d0 - 60) * 60e3; rel = base + (Math.max(...arrs) + 15) * 60e3; }
+  }
+  if (rep == null) return [];
+  const bh = farBlk(t.blk), one = [{ s: rep, e: rel - DEB, h: bh }];
+  let du = [];
+  try {
+    if (dus.some((x) => farInt(x && x.dep) == null)) throw new Error("dep");
+    let prev = "HNL";
+    dus.slice().sort((x, y) => farInt(x.dep) - farInt(y.dep)).forEach((x, i) => {
+      const dep = base + farInt(x.dep) * 60e3, am = farInt(x.arr);
+      if (am == null || base + am * 60e3 <= dep) throw new Error("arr");
+      let h = null;
+      if (x.blk != null && x.blk !== "") { const v = farInt(x.blk); if (v == null) throw new Error("blk"); h = v / 60; }
+      du.push({ s: Math.min(i === 0 ? rep : dep - (prev === "HNL" ? 60 : 75) * 60e3, dep), e: base + am * 60e3, h });
+      prev = String(x.stn || x.to || "");
+    });
+  } catch (e) { du = []; }
+  if (du.length && Math.abs(du[du.length - 1].e + DEB - rel) <= 3600e3) return du.some((x) => x.h == null) ? one : du;
+  return one;
+};
+// The 30h in 7d cell (FAR 117.25(b): 30 consecutive hours free from all duty in the 168 h before a report): today's
+// states with units: "✓ 36h MM/DD" (the longest break off duty in the 168 h before a report at that day's first duty
+// start, 00:01 on a day off, in whole hours, and the day it ended), "need 30h off", "?" (the 168 h reach before the
+// schedule on file), "–" (mid-trip, no report). 1.7.13 review: no "off" in the tick, so the grid is about as wide as
+// in 1.7.11 (the header and the Key say the hours are off duty).
+const far30Txt = (st, h, md) => st === "ok" ? `&#10003; ${Math.floor(h)}h <span class="k">${md}</span>`
+  : st === "need" ? "need 30h off" : st === "unknown" ? "?" : "&#8211;";
 const usd = (v) => (v == null || Number.isNaN(v) ? "" : "$" + Math.round(v).toLocaleString("en-US"));  // 1.6.2 review: no rate, no figure
 const PAIRINGS_URL = "/local/flight-watcher/pairings_";  // the shared pairings package files (pairings_YYYY-MM.json)
+// 1.7.18: the lock switch's icon, an inline SVG (24 x 24): a shut shackle, or one lifted clear of the body, over a body
+// with a keyhole. Drawn the same on every phone (the emoji it replaces was each phone's own)
+const FWS_LOCK_BODY = "M6.5 10h11a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2V12a2 2 0 0 1 2-2zM12 13.4a1.8 1.8 0 0 0-.9 3.36V18.6h1.8v-1.84A1.8 1.8 0 0 0 12 13.4z";
+const fwsLockSvg = (shut) => `<svg class="lki" data-lock="${shut ? "shut" : "open"}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">` +
+  `<path d="${shut ? "M8 10.5V7.5a4 4 0 0 1 8 0v3" : "M8 10.5V5.5a4 4 0 0 1 8 0v1"}" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>` +
+  `<path d="${FWS_LOCK_BODY}" fill="currentColor" fill-rule="evenodd"/></svg>`;
 
 // FW-0060: a sensor's full list from its file under /local/ (<url><file_key>.json, the pilot's own www folder). Fetched
 // again whenever the sensor's rev changes; null until it is in (or when the sensor has no key), so the caller falls
@@ -72,6 +160,62 @@ function fwListFile(box, url, st, redraw) {
       .catch(() => { box.busy = false; box.want = want; });
   }
   return box.key === key ? box.data : null;
+}
+
+// 1.7.11 (FW-0080, Ryan, Nov 17: "Everywhere"; PWA 4.A: a segment pays on the date it originates): FLICA totals the bid
+// period, not the calendar month (December 2026 runs Dec 2 to Dec 31, November Nov 1 to Dec 1). fwSplit: a trip's part
+// in the bid period from..to (ISO). Each duty counts in the bid period that holds its HST departure date (dep: HST
+// minutes from 00:00 HST of the trip's first day st), its credit the duty's TCRD (the pairings package's) when every
+// duty outside the trip's home period (the one holding st) has one, else its block share (est); the home period keeps
+// the rest of the trip credit (rig, minimums), so the parts always add up to the trip. cr, bl: the trip's credit and
+// block in hours (null: unknown). null when no duty is placed (the whole trip pays in its home period), else {in, whole,
+// cr, bl (minutes here; null unknown), outCr, outBl (minutes paid in the other bid period), side ('before' / 'after' /
+// ''), est}. pay.split_by_period and period_share are the same rule (tests/test_fw1711_totals.py runs both).
+function fwSplit(st, duties, from, to, cr, bl) {
+  const where = (d) => (from <= d && d <= to ? "in" : d < from ? "before" : "after");
+  const t0 = Date.parse(String(st).slice(0, 10) + "T00:00:00Z");
+  if (Number.isNaN(t0)) return null;
+  const mins = (v) => (typeof v === "number" && Number.isFinite(v) ? Math.round(v) : fwgMins(v));
+  const du = (Array.isArray(duties) ? duties : []).filter((x) => x && typeof x.dep === "number" && typeof x.blk === "number" && Number.isFinite(x.dep) && Number.isFinite(x.blk))
+    .map((x) => ({ d: new Date(t0 + Math.floor(x.dep / 1440) * 864e5).toISOString().slice(0, 10), b: Math.trunc(x.blk), t: mins(x.tcrd) }));
+  const totB = du.reduce((a, x) => a + x.b, 0);
+  if (!du.length || totB <= 0) return null;
+  const home = where(String(st).slice(0, 10)), parts = {};
+  for (const x of du) { const k = where(x.d); const p = parts[k] || (parts[k] = { b: 0, t: 0, ok: true }); p.b += x.b; if (x.t == null) p.ok = false; else p.t += x.t; }
+  if (!parts[home]) parts[home] = { b: 0, t: 0, ok: true };
+  const others = Object.keys(parts).filter((k) => k !== home), est = !others.every((k) => parts[k].ok);
+  const cM = cr == null || Number.isNaN(cr) ? null : Math.round(cr * 60), bM = bl == null || Number.isNaN(bl) ? null : Math.round(bl * 60);
+  const by = {};
+  for (const k of Object.keys(parts)) by[k] = { c: null, b: null };
+  if (bM != null) { for (const k of others) by[k].b = Math.floor(bM * parts[k].b / totB + 0.5); by[home].b = Math.max(0, bM - others.reduce((a, k) => a + by[k].b, 0)); }
+  if (cM != null) { for (const k of others) by[k].c = Math.min(cM, est ? Math.floor(cM * parts[k].b / totB + 0.5) : parts[k].t); by[home].c = Math.max(0, cM - others.reduce((a, k) => a + by[k].c, 0)); }
+  const mine = by.in || { c: cM == null ? null : 0, b: bM == null ? null : 0 }, side = Object.keys(by).find((k) => k !== "in") || "";
+  return { in: !!by.in, whole: !side, cr: mine.c, bl: mine.b, outCr: side && cM != null ? cM - (mine.c || 0) : null,
+    outBl: side && bM != null ? bM - (mine.b || 0) : null, side, est: est && !!side };
+}
+
+// 1.7.11 review (FW-0080): a trip whose own times are not read yet places its duties from the pairings package's detail
+// (fwPkgDuties: each duty's first leg, its day number and local departure, made HST with FW_TZ, the Watcher's pot.TZ;
+// tests/test_fw1711_review.py keeps them equal), so it splits as the Watcher splits it from the package
+const FW_TZ = { HNL: -10, OGG: -10, KOA: -10, ITO: -10, LIH: -10, PPT: -10, RAR: -10, PPG: -11, ANC: -9,
+  LAX: -8, SFO: -8, SEA: -8, SAN: -8, OAK: -8, SMF: -8, LAS: -8, PDX: -8, SJC: -8, ONT: -8, LGB: -8,
+  PHX: -7, SLC: -7, DEN: -7, ORD: -6, DFW: -6, AUS: -6, MSP: -6, IAH: -6,
+  JFK: -5, BOS: -5, MCO: -5, IAD: -5, ATL: -5, MIA: -5, EWR: -5,
+  NRT: 9, HND: 9, KIX: 9, CTS: 9, FUK: 9, NGO: 9, ICN: 9, SYD: 10, BNE: 10, MEL: 10,
+  AKL: 12, SIN: 8, MNL: 8, CRK: 8, TPE: 8, PEK: 8, PVG: 8, HKG: 8 };
+// [{dep (HST minutes from 00:00 HST of the trip's first day), blk, tcrd}] of a package entry's duties (det.duties: legs
+// [day, dh, flt, from, to, dep local, ...], tblk, tcrd), [] when any duty's first leg, departure or block is unreadable
+function fwPkgDuties(pr) {
+  const dd = pr && pr.det && Array.isArray(pr.det.duties) ? pr.det.duties : [];
+  const out = [];
+  for (const x of dd) {
+    const l = x && Array.isArray(x.legs) && Array.isArray(x.legs[0]) ? x.legs[0] : null;
+    const n = l ? Number(l[0]) : NaN, t = l ? /^(\d{1,2}):?(\d{2})$/.exec(String(l[5] == null ? "" : l[5]).trim()) : null, b = x ? fwgMins(x.tblk) : null;
+    if (!Number.isInteger(n) || n < 1 || n > 40 || !t || Number(t[1]) > 23 || b == null) return [];
+    const shift = l[3] in FW_TZ && l[4] in FW_TZ ? (FW_TZ[l[3]] + 10) * 60 : 0;  // pot.leg_shift
+    out.push({ dep: (n - 1) * 1440 + Number(t[1]) * 60 + Number(t[2]) - shift, blk: b, tcrd: x.tcrd });
+  }
+  return out;
 }
 
 // ---- shared schedule grid: keep identical in every card that holds it (tests/test_sched_grid_shared.py) ----
@@ -451,6 +595,100 @@ const FWG_CSS = `
 `;
 // ---- end shared schedule grid ----
 
+// ---- shared data age: keep identical in every card that holds it (tests/test_fw1712_data_age.py) ----
+// 1.7.12 (Nov 17: "Replace the two clocks ("updated" and "Last check") with one "data age" stamp. Turn it amber
+// past 1x the normal interval and red past 2x."): the time since the Watcher's last good read (its last check time,
+// which a check sets only when it succeeds), with the word "stale" or "very stale" beside the colour, so the colour is
+// never the only cue (colour-blind users, screen readers).
+// 1.7.12 review (its meaning of "1x" is pending a yes): 1x and 2x of the Watcher's own longest cycle between two
+// good reads, not of the bare setting, so a healthy Watcher never reads stale. Each wait is the interval x 0.7 to 1.3
+// (watcher.py JITTER), starts when a check ends, and the next check takes time too (a crew index chunk: about 2 min in
+// normal mode, 20 s hunting). The cycle is the interval (on a pilot the pace his FLICA budget holds him to, when the
+// state note says "at least N s apart" and that is longer) x 1.3, plus FW_AGE_ROOM_S for the check, which also covers a
+// few seconds of a phone's clock running fast. It counts from the last good read, or later: from a change of hunt or
+// of the interval after that read (the Watcher's wait starts over then; a next check it planned before the change
+// counts too), and from the next check while the FLICA budget or host limit holds it (the gate's note). Very stale
+// no later than the Watcher's own Stuck limit (watcher.py stuck_after_s: 10 min hunting, else 2.5x the normal interval
+// and at least 30 min), so the clock card's "Stuck." always comes with a red stamp. "Data age
+// unknown" with no colour when the read time is unknown, missing or not a time; red "Watcher offline" when the entity
+// is unavailable (the app is down: "over N" from the moment it went), so the stamp warns when the data is stalest. An
+// interval that is unknown or 0 shows the age with no colour. Each card passes its own entity ids (fwAgeFrom): none
+// here, a pilot's copy rewrites them.
+const FW_AGE_JITTER = 0.3;
+const FW_AGE_ROOM_S = { hunt: 45, normal: 180 };
+const FW_AGE_PACE = / is held to \d+ FLICA loads an hour: checks wait for the budget, at least (\d+) s apart/;
+const FW_AGE_GATE = /^(?:(?:Hunting every \d+ s|Checking every \d+ min) is held to \d+ FLICA loads an hour: checks wait for the budget \(next at |FLICA (?:budget|host limit): )/;
+const FW_AGE_HST = new Intl.DateTimeFormat("en-US", { timeZone: "Pacific/Honolulu", year: "numeric", month: "short",
+  day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+function fwAgeDur(sec) {
+  const s = Math.max(0, Math.floor(sec)), m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (s < 60) return `${s} s`;
+  if (m < 60) return `${m} min`;
+  if (h < 24) return `${h} h` + (m % 60 ? ` ${m % 60} min` : "");
+  return `${d} d` + (h % 24 ? ` ${h % 24} h` : "");
+}
+function fwAgeSpan(sec) {  // a threshold in the hover text, to the second: "10 min 48 s"
+  const s = Math.max(0, Math.round(sec)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  return [h ? `${h} h` : "", m ? `${m} min` : "", r || !(h || m) ? `${r} s` : ""].filter(Boolean).join(" ");
+}
+function fwAgeWhen(t, now) {  // HST, with the day when it is not today's (HST): "01:27:00 HST", "Nov 9 23:30:00 HST"
+  const p = (d) => Object.fromEntries(FW_AGE_HST.formatToParts(new Date(d)).map((x) => [x.type, x.value]));
+  const a = p(t), b = p(now), day = a.year !== b.year ? `${a.month} ${a.day}, ${a.year} ` : a.month !== b.month || a.day !== b.day ? `${a.month} ${a.day} ` : "";
+  return `${day}${a.hour}:${a.minute}:${a.second} HST`;
+}
+function fwAgeMs(x) { const v = Date.parse(x == null ? "" : String(x)); return isNaN(v) ? NaN : v; }
+function fwDataAge(last, hunting, normalMin, huntSec, now, more) {
+  const o = more || {}, mode = hunting ? "hunt" : "normal", unit = hunting ? "s" : "min";
+  if (last === "unavailable") {  // the app is down (MQTT availability): no read comes until it is back
+    const went = fwAgeMs(o.lastChanged), gone = (now - went) / 1000;
+    return { sec: null, t: null, level: "red", word: "Watcher offline",
+      text: `Data age ${gone >= 60 ? `over ${fwAgeDur(gone)}` : "unknown"}, Watcher offline`,
+      read: isNaN(went) ? "The Watcher is offline." : `The Watcher is offline since ${fwAgeWhen(went, now)}.`,
+      rule: "No read comes until the Watcher app answers again." };
+  }
+  const per = parseFloat(hunting ? huntSec : normalMin), set = hunting ? per : per * 60;
+  const known = isFinite(set) && set > 0, note = String(o.note || ""), pm = FW_AGE_PACE.exec(note);
+  const pace = pm ? Number(pm[1]) : 0, room = FW_AGE_ROOM_S[mode];
+  const cyc = Math.ceil(+(Math.max(set, pace) * (1 + FW_AGE_JITTER)).toFixed(3)) + room;  // whole seconds
+  const why = (pace > set ? `the ${pace} s the FLICA budget holds the checks apart` : `the ${mode} check interval `
+    + `(${Math.round(per * 10) / 10} ${unit})`) + ` plus its 30 % jitter, and ${fwAgeSpan(room)} for the check`;
+  const stuck = hunting ? 600 : Math.max(1800, per * 150);  // watcher.py stuck_after_s
+  const rule = (a, b, x) => known ? `Stale past ${fwAgeSpan(a)}, very stale past ${fwAgeSpan(b)}: 1x and 2x the Watcher's `
+    + `longest ${mode} cycle, ${why}${b < a + cyc ? ", or its Stuck limit when that comes first" : ""}.${x || ""}`
+    : `No ${mode} check interval is known, so the age is not judged.`;
+  const t = fwAgeMs(last);
+  if (isNaN(t)) return { sec: null, t: null, level: "", word: "", text: "Data age unknown", read: "No good read on file.", rule: rule(cyc, Math.min(2 * cyc, stuck)) };
+  const sec = Math.max(0, (now - t) / 1000), nx = fwAgeMs(o.next);
+  const ch = Math.max(-Infinity, ...(o.changed || []).map(fwAgeMs).filter((v) => !isNaN(v)));
+  let due = t + cyc * 1000, from = "";
+  if (ch > t) {  // hunt or the interval changed after the read: the wait starts over, a next check planned before counts
+    const d = Math.max(ch + cyc * 1000, nx > t ? nx + room * 1000 : -Infinity);
+    if (d > due) { due = d; from = " Counted from the hunt or interval change after that read."; }
+  }
+  if (FW_AGE_GATE.test(note) && nx > t && nx + room * 1000 > due) {
+    due = nx + room * 1000; from = ` The FLICA budget or host limit holds the next check until ${fwAgeWhen(nx, now)}: counted from then.`;
+  }
+  const amber = (due - t) / 1000, red = from ? amber + cyc : Math.min(amber + cyc, stuck);
+  const level = !known ? "" : sec > red ? "red" : sec > amber ? "amber" : "";
+  const word = level === "red" ? "very stale" : level === "amber" ? "stale" : "";
+  return { sec, t, level, word, text: `Data age ${fwAgeDur(sec)}` + (word ? `, ${word}` : ""),
+    read: `Last good read ${fwAgeWhen(t, now)}.`, rule: rule(amber, red, from) };
+}
+// the stamp from a card's own entities (ids: last, state, next, hunt, normal, huntEvery); hunting by the switch or the
+// Watcher's state; the interval change that counts is the one in use (hunt's while hunting)
+function fwAgeFrom(states, ids, now) {
+  const e = (k) => (states && states[ids[k]]) || {};
+  const hunting = e("hunt").state === "on" || e("state").state === "hunting";
+  return fwDataAge(e("last").state, hunting, e("normal").state, e("huntEvery").state, now, {
+    note: (e("state").attributes || {}).note, next: e("next").state, lastChanged: e("last").last_changed,
+    changed: [e("hunt").last_changed, e(hunting ? "huntEvery" : "normal").last_changed] });
+}
+// ---- end shared data age ----
+
+const FW_AGE_IDS = { last: "sensor.flight_watcher_last_check", state: "sensor.flight_watcher_state",
+  next: "sensor.flight_watcher_next_check", hunt: "switch.flight_watcher_hunt_mode",
+  normal: "number.flight_watcher_normal_check_every", huntEvery: "number.flight_watcher_hunt_check_every" };
+
 class FlightWatcherScheduleCard extends HTMLElement {
   setConfig(c) { this.c = c || {}; this._pk = {}; }
   set hass(h) {
@@ -464,9 +702,28 @@ class FlightWatcherScheduleCard extends HTMLElement {
     // 1.6.2 (Release A item 15): each state too, not only last_updated: the pilot portal keeps the month helper
     // (input_number.flight_watcher_month_offset) in the page, and a step there need not move last_updated
     this._h = h;
-    if (sig === this._sig) return;
+    if (!this._ageT && this.isConnected) this._ageT = setInterval(() => this._ageTick(), 1000);  // 1.7.12: it ticks
+    if (sig === this._sig) { this._ageTick(); return; }
     this._sig = sig;
     this._render();
+  }
+  // 1.7.12: the data age stamp (the clock card's), from this card's own entities (the shared block's fwAgeFrom)
+  _age() { return fwAgeFrom(this._h && this._h.states, FW_AGE_IDS, Date.now()); }
+  // its hover text: FLICA's own schedule time ("FLICA updated ...", the header showed it as "updated" before 1.7.12)
+  _ageTitle(a) { return (this._updT ? `FLICA updated ${this._updT}. ` : "") + `Data age: the time since the Watcher's last good read. ${a.read} ${a.rule}`; }
+  _ageHtml(upd) {
+    this._updT = upd || "";
+    const a = this._age();
+    return `<span class="ag" data-age="${a.level}" title="${this._esc(this._ageTitle(a))}">${this._esc(a.text)}</span>`;
+  }
+  // each second: that span only, never a redraw
+  _ageTick() {
+    const el = this.shadowRoot && this.shadowRoot.querySelector(".fwm .hd2 .ag[data-age]");
+    if (!el || !this._h) return;
+    const a = this._age(), title = this._ageTitle(a);
+    if (el.textContent !== a.text) el.textContent = a.text;
+    if (el.dataset.age !== a.level) el.dataset.age = a.level;
+    if (el.title !== title) el.title = title;
   }
   // FW-0010: the pilot's DOH from the state sensor ("" when none is on file or the Watcher is offline); only this
   // value is in the redraw signature, not the sensor's last_updated (its note changes on every check)
@@ -533,6 +790,18 @@ class FlightWatcherScheduleCard extends HTMLElement {
   _role(h) { const s = ((h || this._h || {}).states || {})["sensor.flight_watcher_state"]; return (s && s.attributes && s.attributes.role) || ""; }
   _isAdmin(h) { const hh = h || this._h || {}; const s = (hh.states || {})["sensor.flight_watcher_state"]; return !!(s && s.attributes && s.attributes.role === "admin" && hh.user && hh.user.is_owner); }
   _marks() { return this._isAdmin() ? "availability, trade and drop marks" : "availability and trade marks"; }
+  // 1.7.18 (Nov 17: the lock did not show well on a Samsung phone, and it was not obvious when it was locked or
+  // unlocked): a switch, On = locked (the default). The lock icon (fwsLockSvg), the word Lock, a track with its knob
+  // (right = On) and the word On or Off, so the state never rests on colour alone. One button with role switch and
+  // the name "Lock schedule marks": a tap, Enter or Space flips it (the click handler's .lock), its title says what it
+  // freezes as before, and the stored value is the same (flight_watcher_lock, "0" = unlocked). On a phone (700 px or
+  // less) it has the header's first line to itself, so the month's arrows, title and Now stay together on the next
+  _lockHtml() {
+    const on = this._locked;
+    const t = on ? `Locked: ${this._marks()} cannot be changed by a tap. Tap to unlock.` : `Unlocked: taps change ${this._marks()}. Tap to lock.`;
+    return `<button type="button" class="lock ${on ? "shut" : "open"}" role="switch" aria-checked="${on ? "true" : "false"}" aria-label="Lock schedule marks" title="${t}">` +
+      `${fwsLockSvg(on)} <span class="lkl">Lock</span> <span class="lkt"><span class="lkk"></span></span> <span class="lks">${on ? "On" : "Off"}</span></button>`;
+  }
   _say(msg) { const box = this.shadowRoot.querySelector(".info"); if (box) { box.textContent = msg; box.style.whiteSpace = "pre-line"; box.style.display = "block"; } }
   _render() {
     if (this._locked === undefined) { let v = "1"; try { const g = localStorage.getItem("flight_watcher_lock"); v = g === null ? "1" : g; } catch (e) { v = "1"; } this._locked = v !== "0"; }  // v48: locked by default
@@ -566,7 +835,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const locked = this._locked;
         const db = e.target.closest(".drb");
         if (db && !this._isAdmin()) return;  // FW-0048, FW-0063: drawn for the owner on the admin's card only; ignore a stale one
-        if (db && locked) { this._say(`Settings are locked: tap the lock at the top left to change ${this._marks().replace(" and ", " or ")}.`); return; }
+        if (db && locked) { this._say(`Settings are locked: turn the Lock switch at the top left Off to change ${this._marks().replace(" and ", " or ")}.`); return; }
         if (db && db.dataset.k) {
           db.classList.toggle("on");
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/drop/set", payload: JSON.stringify({ key: db.dataset.k }) });
@@ -574,7 +843,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         }
         const tp = e.target.closest(".trb");  // 1.7.7: the pairing itself opens its detail
         if (tp && tp.dataset.k && tp.dataset.k.split("|")[1] <= new Date(Date.now() - 10 * H).toISOString().slice(0, 10)) return;  // v46: a started trip cannot be traded
-        if (tp && tp.dataset.k && locked) { this._say(`Settings are locked: tap the lock at the top left to change ${this._marks().replace(" and ", " or ")}.`); return; }
+        if (tp && tp.dataset.k && locked) { this._say(`Settings are locked: turn the Lock switch at the top left Off to change ${this._marks().replace(" and ", " or ")}.`); return; }
         if (tp && tp.dataset.k) {
           const row = tp.closest("td"); row.querySelector(".trip").classList.toggle("tr"); row.querySelector(".trb").classList.toggle("on");
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/trade/set", payload: JSON.stringify({ key: tp.dataset.k }) });
@@ -607,7 +876,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const dc = e.target.closest("td"); if (!dc || dc.cellIndex > 1) return;  // v43 (Ryan): only the day/date cells toggle a blocked day
         const tr = e.target.closest("tr[data-d]"); if (!tr || !this._h) return;
         if (tr.classList.contains("vac")) { this._say("Vacation day: always unavailable."); return; }  // v48 (Ryan): VAC days cannot be toggled
-        if (locked) { this._say(`Settings are locked: tap the lock at the top left to change ${this._marks().replace(" and ", " or ")}.`); return; }
+        if (locked) { this._say(`Settings are locked: turn the Lock switch at the top left Off to change ${this._marks().replace(" and ", " or ")}.`); return; }
         tr.classList.toggle("blk");
         this._h.callService("mqtt", "publish", { topic: "flight_watcher/blocked/set", payload: JSON.stringify({ date: tr.dataset.d }) });
       });
@@ -668,6 +937,15 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const mergeT = (live, ver) => { const o = { ...live }; for (const [k, v] of Object.entries(ver || {})) o[k] = { ...(live[k] || {}), ...v }; return o; };
     const ownT = vsel ? mergeT(liveOwnT, vsel.trips) : awd0 ? mergeT(liveOwnT, awd0.trips) : liveOwnT;
     const pk = this._pack(key);
+    // 1.7.11 (FW-0080): the bid period this month's totals cover, as FLICA's do (never the calendar month): the month's
+    // pairings package's start..end, else the Watcher's (sensor periods: the pairing files, else the schedule pages),
+    // else the calendar month; the totals line says which
+    const pkE = this._packE(key), perW = ((st && st.attributes && st.attributes.periods) || {})[key] || null;
+    const bp = pkE && FWG_ISO.test(pkE.start || "") && FWG_ISO.test(pkE.end || "") ? { from: pkE.start, to: pkE.end, src: "package" }
+      : perW && FWG_ISO.test(perW.start || "") && FWG_ISO.test(perW.end || "") ? { from: perW.start, to: perW.end, src: ["package", "schedule"].includes(perW.src) ? perW.src : "calendar" }
+        : { from: `${key}-01`, to: new Date(Date.UTC(y, m + 1, 0)).toISOString().slice(0, 10), src: "calendar" };
+    const inBp = (d) => bp.from <= d && d <= bp.to;
+    const bpNext = (side) => new Date(Date.UTC(y, m + (side === "before" ? -1 : 1), 1)).toISOString().slice(0, 7);
     const grid = ((S["sensor.flight_watcher_reserve_grid"] || {}).attributes || {}).days || {};
     const trade = new Set(((S["sensor.flight_watcher_would_trade"] || {}).attributes || {}).keys || []);
     const swaps = ((S["sensor.flight_watcher_swap_ideas"] || {}).attributes || {}).ideas || [];
@@ -680,8 +958,22 @@ class FlightWatcherScheduleCard extends HTMLElement {
       body = `<div class="none">No schedule for ${MONTHS[m]} yet.</div>`;
     } else {
       const items = mon.items || [];
-      const busy = (a, b) => items.find((it) => a <= it.end && b >= it.start);
-      const inTrip = (d) => items.some((it) => it.trip !== "VAC" && it.trip !== PAYP && it.start <= d && d <= it.end);
+      const prevKey = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0, 7);
+      const prevItems = (SM[prevKey] || {}).items || [];
+      const nextKey = new Date(Date.UTC(y, m + 1, 1)).toISOString().slice(0, 7);
+      const nextItems = (SM[nextKey] || {}).items || [];
+      // 1.7.11 review: the three months' items, each trip and start once (the own list's rule, this month's copy
+      // first). A trip in progress from the month before (H3607 Nov 30 to Dec 2) has no code day on a page that
+      // starts Dec 1, so this month's items alone miss it: the Open column's clash test, the layover cell and the
+      // in-progress mark read these, as the Watcher's schedule_fit reads every month
+      const near = [], nearSeen = new Set();
+      for (const it of [...items, ...prevItems, ...nextItems]) {
+        if (!it || !it.trip || nearSeen.has(`${it.trip}|${it.start}`)) continue;
+        nearSeen.add(`${it.trip}|${it.start}`);
+        near.push(it);
+      }
+      const busy = (a, b) => near.find((it) => a <= (it.end || it.start) && b >= it.start);
+      const inTrip = (d) => near.some((it) => it.trip !== "VAC" && it.trip !== PAYP && it.start <= d && d <= (it.end || it.start));
       const opens = {};
       for (const p of pot) {
         const a = this._iso(p.start || (p.dates || "").split("-")[0], y);
@@ -693,12 +985,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
       }
       // own trips: report / release (app times first, then the pairing package)
       const own = [];
-      const prevKey = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0, 7);
-      const prevItems = (SM[prevKey] || {}).items || [];
-      const nextKey = new Date(Date.UTC(y, m + 1, 1)).toISOString().slice(0, 7);
-      const nextItems = (SM[nextKey] || {}).items || [];
+      // 1.7.11 (Ryan, Nov 17: "over block on Dec 02?"): a trip across a month end (H3607 Nov 30 to Dec 2) is on both
+      // months' schedules; it is ONE trip, so it enters own (and the FAR legs, duties, rest) once (recall.line_records'
+      // rule). FLICA gives a trip in progress no code day on a later page: a page lists it at its start or not at all
+      const ownSeen = new Set();
       for (const it of [...prevItems, ...items, ...nextItems]) {
         if (it.trip === "VAC" || !/^[A-Z]\d{4}/.test(it.trip || "")) continue;
+        if (ownSeen.has(`${it.trip}|${it.start}`)) continue;
+        ownSeen.add(`${it.trip}|${it.start}`);
         const t = ownT[`${it.trip}|${it.start}`] || {};
         const p = pk ? pk[it.trip.slice(0, 5)] : null;
         let rep = null, rel = null;
@@ -706,9 +1000,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
         else if (p && p.days.has(it.start)) rep = this._t(it.start, p.report);
         if (p && p.days.has(it.start)) rel = this._t(it.start, p.release) + p.relDays * 24 * H;
         else if (t.last_arr) {
-          // trip not in the package: it ends on the first later day the schedule shows back in HNL
-          const back = (mon.days || []).find(([d, tr, ly]) => d > it.start && !tr && ly === "HNL");
-          const end = back ? back[0] : it.end;
+          // trip not in the package: it ends on the first later day the schedule shows back in HNL. 1.7.11 review: a
+          // day of its own only (after its start, up to its end), on this page or its own month's: the first HNL day
+          // on this page after a trip from the month before is a later trip's (Dec 2 for every November trip in the
+          // December view), and an end with no HNL day (the next trip starts that day) is the item's end
+          const last = it.end || it.start;
+          const back = [...(mon.days || []), ...((SM[String(it.start).slice(0, 7)] || {}).days || [])]
+            .filter(([d, tr, ly]) => d > it.start && d <= last && !tr && ly === "HNL").map(([d]) => d).sort()[0];
+          const end = back || last;
           rel = this._t(end, t.last_arr) + 15 * 60e3; if (rep && rel <= rep) rel += 24 * H;
         }
         own.push({ it, rep, rel });
@@ -771,48 +1070,103 @@ class FlightWatcherScheduleCard extends HTMLElement {
       }
       // v49 (Ryan, Nov 5): FAR columns on EVERY day, looking back and forward.
       // 30/7 (117.25(b)): longest free block in the 168 h before a report that day: the real duty start on a duty day,
-      // 00:01 on an open day (worst case); blank on a mid-trip day with no duty start.
-      // 100/672 (117.23(b)(1)): leg block in the 672 h ending 24:00 that day; Room = 100:00 minus the busiest 672 h window
-      // that contains the day, back and forward 28 days.
-      const legs = [];
+      // 00:01 on an open day; blank on a mid-trip day with no duty start. 1.7.13 review: 00:01 is not the worst case (a
+      // later report that day can lose the break off the back of its 168 h), so the tick speaks for that one report
+      // and its title gives 'covers reports until'.
+      // 100/672 (117.23(b)(1)): leg block in the 672 h ending 24:00 that day (the 100h in 672h cell). Room = 100:00 minus
+      // the busiest 672 h window that holds any part of the day, back and forward. 1.7.13 (F1, Ryan Nov 18: "fix all of
+      // these things"): it tries the windows ending 24:00 HST (k = 0 to 27 below, leg by leg as the 100h cell counts
+      // them, so Room never shows more room than that cell) and far._cum's: each 672 h starting at a duty's start or
+      // ending at its block-in, where the busiest one always is, a block counting when its whole span is in the window
+      // (far._cum's sure count on recall._trip's spans, farSpans), so Room reads over wherever a pickup's FAR check finds
+      // a window over 100:00 that holds the day. A window holds the day when it holds part of it (far._cum: a window
+      // holding part of the pickup), so it ends after 00:00 that day and starts before 24:00.
+      // 1.7.13: headed "30h in 7d", "100h in 672h" and "Room to 100h"; the two flight time cells show what is left of
+      // the 100:00 (farLeft), the 30 h cell its states with units (far30Txt).
+      // 1.7.13 FAR review (R2, R3): a trip with a duty block missing counts its whole Block, as far.py does (recall._trip
+      // puts it on one span from report to last block-in): the duties with a block as before, the rest of the Block on
+      // the duties without one (departure to arrival, shared by their length), else on far.py's span (farSpans); with no
+      // trip Block its duties with a block count and it reads "~". A trip with no duties ends its leg at the last
+      // block-in (o.rel less the 15 min debrief, PWA 2.19.b), as far.py's span does
+      const legs = [], unk = [];
+      const atMin = (iso, mn) => this._t(iso, "0:0") + mn * 60e3;
       for (const o of own) {
-        const t = ownT[`${o.it.trip}|${o.it.start}`] || {}; const base = this._t(o.it.start, "0:0");
+        const t = ownT[`${o.it.trip}|${o.it.start}`] || {}; const base = this._t(o.it.start, "0:0"), n0 = legs.length;
         // duty blk can carry credit on some trips, so each trip's legs are scaled to FLICA's trip Block
         const dsum = (t.duties || []).reduce((sm, du) => sm + (du.blk || 0), 0) / 60, tb = hrs(t.blk), sc = tb != null && dsum > 0 ? Math.min(1, tb / dsum) : 1;
-        if (t.duties && t.duties.length) t.duties.forEach((du) => { if (du.blk) legs.push({ a: base + (du.arr - du.blk) * 60e3, b: base + du.arr * 60e3, h: du.blk / 60 * sc }); });
-        else { const bh = hrs(t.blk); if (bh != null && o.rep && o.rel) legs.push({ a: o.rep, b: o.rel, h: bh }); }
+        const noBlk = (t.duties || []).filter((du) => du.blk == null || du.blk === ""), miss = noBlk.length > 0;
+        const span = (du) => { const d0 = farInt(du && du.dep), d1 = farInt(du && du.arr); return d0 != null && d1 != null && d1 > d0 ? d1 - d0 : 0; };
+        const nbLen = noBlk.reduce((sm, du) => sm + span(du), 0), rest = tb != null ? Math.max(0, tb - dsum * sc) : null;
+        const one = miss && tb != null && !noBlk.every((du) => span(du) > 0) ? farSpans(o.it, t, atMin).filter((sp) => sp.e > sp.s)[0] : null;
+        if (one) legs.push({ a: one.s, b: one.e, h: tb });
+        else if (t.duties && t.duties.length) {
+          t.duties.forEach((du) => { if (du.blk) legs.push({ a: base + (du.arr - du.blk) * 60e3, b: base + du.arr * 60e3, h: du.blk / 60 * sc }); });
+          if (miss && rest) noBlk.forEach((du) => legs.push({ a: base + farInt(du.dep) * 60e3, b: base + farInt(du.arr) * 60e3, h: rest * span(du) / nbLen }));
+        } else { const bh = hrs(t.blk); if (bh != null && o.rep && o.rel) legs.push({ a: o.rep, b: Math.max(o.rep, o.rel - 15 * 60e3), h: bh }); }
+        // 1.7.13 (F3): a trip that adds no block (no times on file: no Block and no duties, a {} record, no record) is
+        // not known in full, so a window holding it (its report to release, else its whole days) reads with "~"; so
+        // does one whose duties count without the trip's Block when a duty has none (R2: part)
+        const part = miss && tb == null && legs.length > n0;
+        if ((legs.length === n0 && tb !== 0) || part) {
+          const known = o.rep && o.rel && o.rel > o.rep;
+          unk.push({ a: known ? o.rep : base, b: known ? o.rel : this._t(o.it.end || o.it.start, "0:0") + 24 * H,
+            txt: `${o.it.trip} ${String(o.it.start).slice(5).replace("-", "/")}`, part });
+        }
       }
       const blkIn = (w0, w1) => legs.reduce((sm, l) => { const ov = Math.min(l.b, w1) - Math.max(l.a, w0); return ov > 0 ? sm + l.h * Math.min(1, ov / Math.max(1, l.b - l.a)) : sm; }, 0);
+      const unkIn = (w0, w1) => unk.filter((u) => u.a < w1 && w0 < u.b);
+      const unkTxt = (u) => {
+        const none = u.filter((x) => !x.part).map((x) => x.txt), part = u.filter((x) => x.part).map((x) => x.txt);
+        return "~ = not known in full: " + [none.length ? `no block times on file yet for ${none.join(", ")} (counted 0:00)` : "",
+          part.length ? `no block time on file yet for a duty of ${part.join(", ")} (counted the duties with a block)` : ""].filter(Boolean).join("; ");
+      };
+      // far._cum's windows (1.7.13 F1), each with its sure block in whole minutes, earliest end first
+      const fsp = [];
+      for (const o of own) for (const sp of farSpans(o.it, ownT[`${o.it.trip}|${o.it.start}`] || {}, (iso, mn) => this._t(iso, "0:0") + mn * 60e3)) if (sp.h != null) fsp.push(sp);
+      const sureIn = (w0, w1) => fsp.reduce((sm, sp) => (sp.s >= w0 && sp.e <= w1 ? sm + sp.h : sm), 0);
+      const farWin = fsp.flatMap((sp) => [[sp.s, sp.s + 672 * H], [sp.e - 672 * H, sp.e]])
+        .map(([w0, w1]) => ({ a: w0, b: w1, m: Math.round(sureIn(w0, w1) * 60) })).sort((x, y) => x.b - y.b);
+      const winEnd = (ms) => (ms % (24 * H) === 0 ? `24:00 ${this._d(ms - 1)}` : `${this._hm(ms)} ${this._d(ms)}`);
       const free30 = (R) => { const w0 = R - 168 * H; let big = null;
         for (const f of frees) { const a0 = Math.max(f.a, w0), a1 = Math.min(f.b, R); if (a1 > a0 && (!big || a1 - a0 > big.b - big.a)) big = { a: a0, b: a1, at: f.at }; }
         return big; };
       const inDuty = (ms) => duties.some((du) => du.start <= ms && ms < du.end);
-      const hmS = (h) => (h < 0 ? "-" + hm(-h) : hm(h));
       const dutyStartOn = {};
       for (const du of duties) { const k = this._d(du.start); if (dutyStartOn[k] == null || du.start < dutyStartOn[k]) dutyStartOn[k] = du.start; }
       const farOn = {};
       for (const [d] of (mon.days || [])) {
         const R = dutyStartOn[d] != null ? dutyStartOn[d] : this._t(d, "0:01");
         const mid = dutyStartOn[d] == null && (inDuty(R) || own.some((o) => o.rep && o.rel && o.rep < R && R < o.rel));  // layover day inside a trip
-        let t30 = "&#8211;", t30t = "Mid-trip (layover): no report this day. The layover itself gets the teal edge if it is 30 h or more.", bad30 = false;
+        let t30 = far30Txt("mid"), t30t = "Mid-trip (layover): no report this day. The layover itself gets the teal edge if it is 30 h or more.", bad30 = false;
         if (!mid) {
           const big = free30(R); const ok = !!big && big.b - big.a >= 30 * H; const unknown = !ok && R - 168 * H < dataStart;
           const gu = ok ? Math.min(big.b, R) + 138 * H : null;
           const endD = ok ? this._d(Math.min(big.b, R)) : "";
-          t30 = ok ? `&#10003; <span class="k">${endD.slice(5).replace("-", "/")}</span>` : (unknown ? "?" : "need 30");
+          // 1.7.13: worded with units (far30Txt); the check itself is today's
+          t30 = far30Txt(ok ? "ok" : unknown ? "unknown" : "need", ok ? (big.b - big.a) / H : 0, endD.slice(5).replace("-", "/"));
           bad30 = !ok && !unknown;
-          t30t = `${dutyStartOn[d] != null ? "Duty starts " + this._hm(R) : "If you reported at 00:01"}: longest free block in the 168 h before was ${big ? this._dur(big.b - big.a) + " from " + this._hm(big.a) + " " + this._d(big.a) + (big.at && big.at !== "HNL" ? " at " + big.at : "") : "none"}. ` + (ok ? `30 in 7 met (FAR 117.25(b)); this break covers reports until ${this._hm(gu)} ${this._d(gu)}.` : unknown ? "The window reaches before the schedule on file." : "Under 30:00: 30 in 7 NOT met (FAR 117.25(b)).");
+          t30t = `${dutyStartOn[d] != null ? "Duty starts " + this._hm(R) : "If you reported at 00:01"}: longest free block in the 168 h before was ${big ? this._dur(big.b - big.a) + " from " + this._hm(big.a) + " " + this._d(big.a) + (big.at && big.at !== "HNL" ? " at " + big.at : "") : "none"}. ` + (ok ? `30 h free in 7 days met (FAR 117.25(b)): this break covers reports until ${this._hm(gu)} ${this._d(gu)}.` : unknown ? "The window reaches before the schedule on file." : "Under 30:00: 30 h free in 7 days NOT met (FAR 117.25(b)).");
         }
-        const E = this._t(d, "0:0") + 24 * H;
+        const E = this._t(d, "0:0") + 24 * H, D0 = E - 24 * H;
         const back = blkIn(E - 672 * H, E);
         let worst = back, wE = E;
         for (let k = 1; k < 28; k++) { const e2 = E + k * 24 * H; const v = blkIn(e2 - 672 * H, e2); if (v > worst) { worst = v; wE = e2; } }
-        const approxB = E - 672 * H < dataStart, approxR = approxB || E + 27 * 24 * H > dataEnd;
-        const room = 100 - worst;
-        farOn[d] = { t30, t30t, bad30, ok30: t30.startsWith("&#10003;"), b: hm(back) + (approxB ? "~" : ""), over: back >= 100,
-          bt: `Block flown in the 672 h (28 days) ending 24:00 ${d}, leg by leg${approxB ? "; ~ = part of the window is before the schedule on file" : ""}. FAR 117.23(b)(1) limit 100:00.`,
-          room: hmS(room) + (approxR ? "~" : ""), rbad: room <= 0,
-          rt: `Room = 100:00 minus the busiest 672 h window this day falls in (${hm(worst)} in the 28 days ending 24:00 ${this._d(wE - 1)}), looking back and forward. The most block you could add on this day.${approxR ? " ~ = a window reaches past the schedule on file." : ""}` };
+        // 1.7.13: both cells are what is left of the 100:00 (farLeft): back = the 672 h ending that day, worst = the
+        // busiest window that holds the day, back and forward. 1.7.13 review: each block is rounded to the minute once
+        // (bm, wm) and the cell is 100:00 less that, so the cell and its title add up. 1.7.13 (F1): far._cum's windows
+        // holding part of the day; a tie keeps the window ending 24:00
+        const bm = Math.round(back * 60);
+        let wm = Math.round(worst * 60);
+        for (const w of farWin) if (w.a < E && D0 < w.b && w.m > wm) { wm = w.m; wE = w.b; }
+        // "~": a window before or after the schedule on file, or holding a trip with no times (1.7.13 F3); the windows
+        // that hold part of the day start after 00:00 28 days before and end before 24:00 28 days after
+        const outB = E - 672 * H < dataStart, outR = D0 - 672 * H < dataStart || E + 672 * H > dataEnd;
+        const uB = unkIn(E - 672 * H, E), uR = unkIn(D0 - 672 * H, E + 672 * H);
+        const bl = farLeft((6000 - bm) / 60, outB || uB.length > 0), rl = farLeft((6000 - wm) / 60, outR || uR.length > 0);
+        farOn[d] = { t30, t30t, bad30, ok30: t30.startsWith("&#10003;"), b: bl.txt, over: bl.bad,
+          bt: `100h/672h: ${bl.txt}. ${hm(bm / 60)} block flown or scheduled in the 672 h (28 days) ending 24:00 ${d}, leg by leg${outB ? "; ~ = part of the window is before the schedule on file" : ""}${uB.length ? "; " + unkTxt(uB) : ""}. FAR 117.23(b)(1): at most 100 flight hours in any 672 consecutive hours; this cell checks the 672 h ending 24:00 that day.`,
+          room: rl.txt, rbad: rl.bad,
+          rt: `Room to 100h: ${rl.txt}. 100:00 minus the busiest 672 h window that holds part of this day (${hm(wm / 60)} flown or scheduled in the 672 h ending ${winEnd(wE)}), looking back and forward (FAR 117.23(b)(1)).${outR ? " ~ = a window reaches past the schedule on file." : ""}${uR.length ? ` ${unkTxt(uR)}.` : ""}` };
       }
       // when the next 30 h off is needed: first report time after now with no 30 h free block in the 168 h before it
       let need30 = null;
@@ -887,26 +1241,34 @@ class FlightWatcherScheduleCard extends HTMLElement {
         for (const it of its) {
           if (it.trip !== PAYP || !it.start) continue;
           const all = dys.filter(([d, t]) => t === PAYP && it.start <= d && d <= (it.end || it.start)).map(([d]) => d);
-          const ds = all.filter((d) => d.slice(0, 7) === key);
+          const ds = all.filter((d) => inBp(d));  // FW-0080: the PAYP days in this bid period
           if (!ds.length) continue;
-          const rec = tr[`${PAYP}|${it.start}`] || null, c = rec ? hrs(rec.credit) : null;
+          let rec = tr[`${PAYP}|${it.start}`] || null, c = rec ? hrs(rec.credit) : null;
+          // 1.7.11 review (FW-0080): no record of its own (a PAYP listed again on this page, from Dec 1, the bid period
+          // before's last day): the record of the PAYP it continues gives its share when its split names this bid period
+          if (c == null) {
+            const prev = Object.entries(tr || {}).find(([k, r]) => k.startsWith(PAYP + "|") && r && r.payp && !r.of && r.split && typeof r.split === "object"
+              && hrs(r.split[key]) != null && k.slice(PAYP.length + 1) < it.start && it.start <= fwgDay(r.end || k.slice(PAYP.length + 1), 1));
+            if (prev) { rec = { ...prev[1], credit: prev[1].split[key], split: null, of: prev[0] }; c = hrs(rec.credit); }
+          }
           const sp = c != null && rec.split && typeof rec.split === "object" ? rec.split : null;
-          out.push({ it, ds, all, row: ds[0], rec: c != null ? rec : null, h: c == null ? null : sp ? hrs(sp[key]) : (ds.includes(it.start) ? c : null), est: false });
+          // a continuation record (of) holds this bid period's share already (versions.payp_entries)
+          out.push({ it, ds, all, row: ds[0], rec: c != null ? rec : null, h: c == null ? null : sp ? hrs(sp[key]) : (rec.of || ds.includes(it.start) ? c : null), est: false });
         }
         for (const [k, r] of Object.entries(tr || {})) {
           if (!r || !r.payp || !k.startsWith(PAYP + "|") || hrs(r.credit) == null) continue;
           const s0 = k.slice(PAYP.length + 1), e0 = r.end || s0, prot = String(r.protected || "").split(",").filter(Boolean);
           if (its.some((it) => it.trip === PAYP && it.start <= e0 && s0 <= (it.end || it.start))) continue;
           const cov = its.find((it) => isP(it.trip) && s0 <= it.start && it.start <= e0 && !prot.some((q) => q === `${it.trip}|${it.start}` || q.slice(0, 5) === it.trip.slice(0, 5)));
-          const w = !cov ? null : r.split && typeof r.split === "object" ? hrs(r.split[key]) : (s0.slice(0, 7) === key ? hrs(r.credit) : null);
+          const w = !cov ? null : r.split && typeof r.split === "object" ? hrs(r.split[key]) : (inBp(s0) ? hrs(r.credit) : null);
           if (w) out.push({ it: null, cov, k, ds: [], all: [], row: null, rec: r, h: null, want: w, est: false });
         }
-        const mds = dys.filter(([d]) => d.slice(0, 7) === key), one = `${key}-01`;
+        const mds = dys.filter(([d]) => inBp(d)), one = bp.from;
         const known = (d, t) => hrs((tr[`${t}|${d}`] || {}).credit) != null || !!(pk && pk[t.slice(0, 5)] && hx(pk[t.slice(0, 5)].credit) != null);
         const why = flica == null ? `no ${srcFl} month credit to check it against`
           : mds.some(([, t]) => t && t !== "VAC" && t !== PAYP && !isP(t)) ? `${srcFl}'s month credit holds codes the card does not count (${[...new Set(mds.map(([, t]) => t).filter((t) => t && t !== "VAC" && t !== PAYP && !isP(t)))].join(", ")})`
           : mds.some(([d, t]) => isP(t) && !known(d, t)) ? "a trip's credit is not read yet"
-          : [...prevItems, ...its].some((it) => isP(it.trip) && it.start < one && (it.end || it.start) >= one) ? "a trip from last month runs into this month" : "";
+          : [...prevItems, ...its].some((it) => isP(it.trip) && it.start < one && (it.end || it.start) >= one && !carried.has(`${it.trip}|${it.start}`) && !(figs(it.start, it.trip).sp)) ? "a trip from the bid period before runs into this one" : "";
         let left = why ? null : Math.round((flica - other - out.reduce((a, p) => a + (p.h || 0), 0)) * 60);
         for (const p of out.filter((x) => x.want)) if (left != null && left >= Math.round(p.want * 60) - 1) { p.h = p.want; left -= Math.round(p.want * 60); }
         const need = out.filter((p) => p.it && !p.rec);
@@ -922,36 +1284,88 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const head = `Pay protected: ${prot || "the removed trip is not on file"} (${PAYP_REF})`;
         if (!p) return head;
         const sp = p.rec && p.rec.split && typeof p.rec.split === "object" ? Object.entries(p.rec.split).sort().map(([m0, v]) => `${MONTHS[parseInt(m0.slice(5, 7), 10) - 1]} ${v}`).join(", ") : "";
-        const by = sp ? ` by month: ${sp} (PWA 4.A: each month counts the share of the duties departing in it)` : "";
-        if (p.rec && p.h == null) return `${head}\nIts credit ${p.rec.credit} counts ${sp ? by.trim() : `in ${MONTHS[parseInt(p.it.start.slice(5, 7), 10) - 1]}, the month the PAYP starts`}.`;
-        if (p.rec) return `${head}\nCredit ${p.rec.credit} kept${p.rec.src ? ` (from ${p.rec.src})` : ""}${p.rec.of ? `, this month's share of the PAYP from ${mdy(p.rec.of.split("|")[1] || "")} (PWA 4.A)` : ""}${by}; no block (not flown).`;
+        const by = sp ? ` by bid period: ${sp} (PWA 4.A: each bid period counts the duties departing in it)` : "";
+        if (p.rec && p.h == null) return `${head}\nIts credit ${p.rec.credit} counts ${sp ? by.trim() : "in the bid period the PAYP starts in"}.`;
+        if (p.rec) return `${head}\nCredit ${p.rec.credit} kept${p.rec.src ? ` (from ${p.rec.src})` : ""}${p.rec.of ? `, this bid period's share of the PAYP from ${mdy(p.rec.of.split("|")[1] || "")} (PWA 4.A)` : ""}${by}; no block (not flown).`;
         if (p.est) return `${head}\nCredit ${hm(p.h)} is an estimate: ${srcFl}'s month credit ${hm(fl(tt.credit))} less everything else counted${p.ds.length ? `, over ${p.ds.length} PAYP day${p.ds.length > 1 ? "s" : ""}` : ""}.`;
         if (p.unk) return `${head}\nCredit unknown, not counted: ${p.why}.`;
         return `${head}\nNo credit counted: ${srcFl}'s month credit leaves none for it.`;
       };
-      // a row's Block / Credit / Soft as the month counts them (PWA 4.A share), for the rows and the PAYP estimate
-      const figs = (d, trip) => {
-        const ot = trip && trip !== "VAC" ? (ownT[`${trip}|${d}`] || {}) : {};
-        const pkr = trip && trip !== "VAC" && trip !== PAYP && pk ? (pk[trip.slice(0, 5)] || {}) : {};
+      // FW-0080: the package of the bid period a trip's first day is in (this month's, the one before or after), for its
+      // duties' TCRD: fetched only for a trip that starts outside this bid period
+      // 1.7.11 review (F#32): packWait = a package a price or a split asked for is still loading, so the month's
+      // Improved-Pay-Gross waits for it too (priced before it, a trip across the edge counts its block share)
+      let packWait = false;
+      const packAt = (d) => { if (inBp(d)) return pkE; const e = this._packE(bpNext(d < bp.from ? "before" : "after")); if (e === null) packWait = true; return e; };
+      // the package map that lists a trip starting on d: this month's in the bid period, else the bid period's of d
+      const pkOf = (d) => { if (inBp(d)) return pk; const e = packAt(d); return e ? e.map : null; };
+      // a row's Block / Credit / Soft as this bid period counts them (PWA 4.A, fwSplit), for the rows, the carried trips
+      // and the PAYP estimate. FW-0080: the trip's own duties (FLICA's pairing page), each one's TCRD from its pairings
+      // package's detail (the exact pairing, listed on that day, as many duties), else the block share (an estimate);
+      // a trip with no duty on file pays in the bid period of its first day (inP: any part of it counts here)
+      // 1.7.11 review (FW-0080): a trip whose own times are not read yet places the package detail's duties
+      // (fwPkgDuties, their TCRD with them), so it splits as the Watcher splits it (pilot_price, package_details)
+      const splitOf = (d, trip, ot, cH, bH) => {
+        if (!trip || trip === "VAC" || trip === PAYP || !isP(trip)) return null;
+        const own = Array.isArray(ot.duties) && ot.duties.length && ot.duties.every((x) => x && typeof x.dep === "number" && typeof x.blk === "number") ? ot.duties : null;
+        if (!own && Array.isArray(ot.duties) && ot.duties.length) return null;
+        const pe = packAt(d), pr = pe && Object.prototype.hasOwnProperty.call(pe.map, trip) && pe.map[trip].days.has(d) ? pe.map[trip] : null;
+        if (!own) { const pdu = fwPkgDuties(pr); return pdu.length ? fwSplit(d, pdu, bp.from, bp.to, cH, bH) : null; }
+        const pd = pr && pr.det && Array.isArray(pr.det.duties) && pr.det.duties.length === own.length ? pr.det.duties : null;
+        return fwSplit(d, own.map((x, i) => ({ dep: x.dep, blk: x.blk, tcrd: pd && pd[i] && typeof pd[i] === "object" ? pd[i].tcrd : null })), bp.from, bp.to, cH, bH);
+      };
+      const figs = (d, trip, tr) => {
+        const ot = trip && trip !== "VAC" ? ((tr || ownT)[`${trip}|${d}`] || {}) : {};
+        // 1.7.11 review: the package of the bid period the trip starts in (a trip from the bid period before is in
+        // that one's package, not this month's)
+        const pkm = isP(trip) ? pkOf(d) : null;  // a pairing only (a code never asks for another package)
+        const pkr = pkm ? (pkm[trip.slice(0, 5)] || {}) : {};
         // 1.6.3: the pairings package writes credit as "15h00"; hrs() reads "15:00", so a trip whose own times are not
         // read yet (a pilot's first days, or any new trip) counted 0:00 and $0 in the row and the month totals
         const pkC = pkr.credit ? String(pkr.credit).trim().replace(/^(\d+)h(\d{2})$/, "$1:$2") : "";
         const bcsAll = trip && trip !== "VAC" ? [ot.blk || "", ot.credit || pkC || "", ot.soft || ""] : ["", "", ""];
-        // PWA 4.A: a segment pays on the date it originates, so duties that start next month are next month's pay
-        let share = 1, blkOut = 0, nextMon = "";
-        if (trip && trip !== "VAC" && ot.duties && ot.duties.length && ot.duties[0].blk != null) {
-          const base = this._t(d, "0:0"); let inM = 0, all = 0;
-          for (const du of ot.duties) { const dm = this._d(base + du.dep * 60e3).slice(0, 7); all += du.blk; if (dm === key) inM += du.blk; else { blkOut += du.blk; nextMon = dm; } }
-          share = all ? inM / all : 1;
-        }
-        const bcs = share < 1 ? [hm((hrs(bcsAll[0]) || 0) * share), hm((hrs(bcsAll[1]) || 0) * share), hm(Math.max(0, (hrs(bcsAll[1]) || 0) * share - (hrs(bcsAll[0]) || 0) * share))] : bcsAll;
-        return { ot, pkr, bcsAll, bcs, share, blkOut, nextMon };
+        const bAll = hrs(bcsAll[0]) != null ? hrs(bcsAll[0]) : ot.blk ? null : hx(pkr.block);  // the package's block for a split
+        const sp = splitOf(d, trip, ot, hrs(bcsAll[1]), bAll);
+        const inP = sp ? sp.in : inBp(d), whole = sp ? sp.whole : inP;
+        const z = (v) => (v ? "0:00" : "");
+        const bcs = whole ? bcsAll : sp ? [sp.bl != null ? hm(sp.bl / 60) : "", sp.cr != null ? hm(sp.cr / 60) : "", sp.cr != null && sp.bl != null ? hm(Math.max(0, sp.cr - sp.bl) / 60) : ""]
+          : [z(bcsAll[0]), z(bcsAll[1]), z(bcsAll[2])];
+        return { ot, pkr, bcsAll, bcs, inP, whole, sp };
       };
+      // FW-0080: what a row's split mark says (its part here, and what part pays in the other bid period, PWA 4.A)
+      const splitWhy = (d, trip, F) => {
+        // 1.7.11 review: only a pairing splits (a reserve or other code on a grid day outside the bid period is plain)
+        if (F.whole || !trip || trip === "VAC" || trip === PAYP || !isP(trip)) return "";
+        const sd = F.sp && F.sp.side ? F.sp.side : d < bp.from ? "before" : "after";
+        const edge = sd === "before" ? `before ${mdy(bp.from)}` : `after ${mdy(bp.to)}`;
+        const other = `the ${MONTHS[parseInt(bpNext(sd).slice(5, 7), 10) - 1]} bid period`;
+        const all = `${F.bcsAll[0] || "?"} block / ${F.bcsAll[1] || "?"} credit in all`;
+        // 1.7.11 review: no duty times on file, so nothing says when any of it flew: it pays where its first day is
+        if (!F.sp) return `${trip}: ${all}, starts ${mdy(d)}; no duty times on file, so the whole trip pays in ${other}, the bid period of its first day (PWA 4.A), not in these totals.`;
+        const sp = F.sp, oc = sp.outCr != null ? hm(sp.outCr / 60) : "?", ob = sp.outBl != null ? hm(sp.outBl / 60) : "?";
+        if (!sp.in) return `${trip}: ${all}, all flown ${edge}: it pays in ${other} (PWA 4.A), not in these totals.`;
+        return `${trip}: ${all}; ${ob} block, ${oc} credit flown ${edge} pay in ${other} (PWA 4.A).` +
+          (sp.est ? " Credit split by block share (no duty credit on file): an estimate." : " Credit of each duty from the pairings package (TCRD); the rest of the trip credit (rig, minimums) stays with the bid period of its first day.");
+      };
+      // FW-0080: a trip with no row on this page (it starts before the page's first day, or after its last) whose duties
+      // fly part of this bid period: that part counts in the totals, named under them (carried)
+      const rowK = new Set((mon.days || []).filter(([, t]) => t).map(([d, t]) => `${t}|${d}`));
+      const carried = new Map();
+      for (const it of [...prevItems, ...items, ...nextItems]) {
+        if (!it || !/^[A-Z]\d{4}/.test(it.trip || "") || !FWG_ISO.test(it.start || "")) continue;
+        const k = `${it.trip}|${it.start}`;
+        if (carried.has(k) || rowK.has(k) || (it.end || it.start) < bp.from || it.start > bp.to) continue;
+        const F = figs(it.start, it.trip);
+        if (F.inP && F.sp) carried.set(k, { it, F });
+      }
       let crOther = 0;
       for (const [d, trip] of (mon.days || [])) {
-        if (d.slice(0, 7) !== key || !trip || trip === PAYP) continue;
-        crOther += trip === "VAC" ? VAC_H : (hrs(figs(d, trip).bcs[1]) || 0);
+        if (!trip || trip === PAYP) continue;
+        if (trip === "VAC") { if (inBp(d)) crOther += VAC_H; continue; }
+        const F = figs(d, trip);
+        if (F.inP) crOther += hrs(F.bcs[1]) || 0;
       }
+      for (const c of carried.values()) crOther += hrs(c.F.bcs[1]) || 0;
       const ppl = paypPlan(mon, ownT, crOther, fl(tt.credit));
       const ppDay = {};  // fix pass: every day of the PAYP, the next month's too, names its record
       for (const p of ppl) for (const d of p.all) ppDay[d] = p;
@@ -961,22 +1375,41 @@ class FlightWatcherScheduleCard extends HTMLElement {
       // month price of a version (same rules as the rows): Awarded-Pay-Gross and Improved-Pay-Gross
       // 1.7.2: a PAYP is priced as on the rows (paypPlan: the record's credit, else the estimate from the version's own
       // FLICA credit), so Awarded-Pay-Gross, Improved-Pay-Gross and a version's Pay-Gross count it too
-      const price = (mm, tr) => { let g = 0, other = 0; for (const [d, trip, lay] of ((mm && mm.days) || [])) { if (d.slice(0, 7) !== key) continue;
-          if (trip === "VAC") { g += VAC_H * RATE; other += VAC_H; continue; } if (!trip || !/^[A-Z]\d{4}/.test(trip)) continue;
-          const ot = tr[`${trip}|${d}`] || {}; const pr = pk ? (pk[trip.slice(0, 5)] || {}) : {};
+      const price = (mm, tr) => { let g = 0, other = 0;
+        // FW-0080: the rows' rule (figs): each trip its part in this bid period, the trips carried in from no row too
+        const one = (d, trip, lay) => {
+          const ot = tr[`${trip}|${d}`] || {}; const pm = pkOf(d), pr = pm ? (pm[trip.slice(0, 5)] || {}) : {};
           let cH = hrs(ot.credit); if (cH == null) cH = hx(pr.credit); let bH = hrs(ot.blk); if (bH == null) bH = hx(pr.block);
-          let share = 1; if (ot.duties && ot.duties.length && ot.duties[0].blk != null) { const base = this._t(d, "0:0"); let inM = 0, all = 0;
-            for (const du of ot.duties) { all += du.blk; if (this._d(base + du.dep * 60e3).slice(0, 7) === key) inM += du.blk; } share = all ? inM / all : 1; }
-          other += cH == null ? 0 : cH * share;
-          const v = tripFull(cH == null ? null : cH * share, bH == null ? null : bH * share, pr.crew, lay, `${trip}|${d}`, ot.seat); g += v || 0; }
+          const sp = splitOf(d, trip, ot, cH, bH);
+          if (!(sp ? sp.in : inBp(d))) return;
+          const c = sp && !sp.whole ? (sp.cr == null ? null : sp.cr / 60) : cH, b = sp && !sp.whole ? (sp.bl == null ? null : sp.bl / 60) : bH;
+          other += c == null ? 0 : c;
+          g += tripFull(c, b, pr.crew, lay, `${trip}|${d}`, ot.seat) || 0;
+        };
+        const rows = new Set(((mm && mm.days) || []).filter(([, t]) => t).map(([d, t]) => `${t}|${d}`));
+        for (const [d, trip, lay] of ((mm && mm.days) || [])) {
+          if (trip === "VAC") { if (inBp(d)) { g += VAC_H * RATE; other += VAC_H; } continue; }
+          if (!trip || !/^[A-Z]\d{4}/.test(trip)) continue;
+          one(d, trip, lay);
+        }
+        const seen = new Set();
+        for (const it of [...prevItems, ...((mm && mm.items) || []), ...nextItems]) {
+          const k = it && it.trip ? `${it.trip}|${it.start}` : "";
+          if (!k || seen.has(k) || rows.has(k) || !/^[A-Z]\d{4}/.test(it.trip) || !FWG_ISO.test(it.start || "") || (it.end || it.start) < bp.from || it.start > bp.to) continue;
+          seen.add(k);
+          if (splitOf(it.start, it.trip, tr[k] || {}, 0, 0)) one(it.start, it.trip, it.lay || "");
+        }
         for (const p of paypPlan(mm, tr, other, fl(((mm && mm.totals) || {}).credit))) if (p.h != null) g += tripFull(p.h, 0, "", "", p.it ? `${PAYP}|${p.row}` : p.k, "") || 0;
         return g; };
       const tripPay = {};
       // v51 (Ryan): swap / pick-up ideas. A swap may move off the trip's footprint onto any neighbouring day that is not
       // blocked and has no other assignment; legal rest before and after (11 h at domicile, PWA 10.E.1.a); pay from the
       // package credit (PWA 4.C.3 min 5:00 per calendar day already in it) with crew overrides (PWA 4.O.1).
-      const allItems = [...prevItems, ...items, ...nextItems];
-      const busyDay = (iso, excl) => blocked.has(iso) || allItems.some((it) => it !== excl && it.trip && it.start <= iso && iso <= it.end);
+      // 1.7.11 review: the trip a swap replaces is skipped by its trip and start, not by the copy own kept: a trip
+      // across a month end is on both months' pages (Schedule Lookup rows start in late November), and its other copy
+      // made every day of it busy, so no swap for it was ever offered
+      const busyDay = (iso, excl) => blocked.has(iso) || near.some((it) => it.trip && !(excl && it.trip === excl.trip && it.start === excl.start)
+        && it.start <= iso && iso <= (it.end || it.start));
       const addD = (iso, n) => this._d(Date.parse(iso + "T00:00:00Z") + n * 24 * H);
       const ideasFor = (d, trip) => {
         if (!pk) return null;
@@ -1064,7 +1497,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const turn = pkt && pkt.route ? [...new Set(pkt.route.split("-").slice(1, -1).filter((x) => x !== "HNL"))].join("/") : "";
         const l0 = lay === "-" && !inTrip(d) ? "" : (lay === "-" && turn ? `<b>${this._esc(turn)}</b>` : this._esc(lay));
         // v44 (Ryan): the layover cell carries the trip's crew (tap on a phone, hover on a Mac)
-        const cov = items.find((it) => it.trip !== "VAC" && it.trip !== PAYP && it.start <= d && d <= it.end);
+        const cov = near.find((it) => it.trip !== "VAC" && it.trip !== PAYP && it.start <= d && d <= (it.end || it.start));
         const covT = cov ? (ownT[`${cov.trip}|${cov.start}`] || {}) : null;
         const nowH = new Date(Date.now() - 10 * H); const nowHM = `${String(nowH.getUTCHours()).padStart(2, "0")}:${String(nowH.getUTCMinutes()).padStart(2, "0")}`;
         const tOwn = cov ? (ownT[`${cov.trip}|${cov.start}`] || {}) : {};
@@ -1074,11 +1507,11 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const l = l0 && cov ? `<span class="tag lay" title="${this._esc(`${cov.trip} ${cov.start} crew:\n${(covT && covT.crew || []).join("\n") || "crew not read yet"}`)}">${l0}</span>${st}` : l0;
         const g = grid[d]; const gc = g ? g.color : ""; const gb = gc === "green";
         const gcell = g ? `<span class="g ${gc}" title="Net reserves ${g.net}: ${gb ? "drop or swap off this day OK" : "add only (no drop/swap off this day)"}">${g.net}</span>` : "";
-        const F = figs(d, trip), ot = F.ot, pkr = F.pkr, share = F.share;
+        const F = figs(d, trip), ot = F.ot, pkr = F.pkr;
         // 1.7.2: a PAYP's credit on its first day (the record's, or the estimate), no block and no soft (not flown)
         const ppH = pp && pp.row === d && pp.h != null ? pp.h : null;
         const bcsAll = trip === PAYP ? ["", ppH != null ? hm(ppH) : "", ""] : F.bcsAll, bcs = trip === PAYP ? bcsAll : F.bcs;
-        const splitNote = trip === PAYP ? ppTitle(pp) : share < 1 ? `${trip}: ${bcsAll[0]} block / ${bcsAll[1]} credit in all; ${hm(F.blkOut / 60)} block flown from ${F.nextMon} pays next month (PWA 4.A). Credit split by block share${hrs(bcsAll[2]) ? ", estimate" : ""}.` : "";
+        const splitNote = trip === PAYP ? ppTitle(pp) : splitWhy(d, trip, F);
         const cH = hrs(bcs[1]), bH = hrs(bcs[0]);
         const gross = cH != null ? cH * RATE : null;
         const seat = trip === PAYP ? "" : (ot.seat || "").toUpperCase();  // 1.7.2: a PAYP flies no seat (no override)
@@ -1090,9 +1523,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const total = gross != null ? gross + roV + erV : null;
         const net = total != null ? total * (1 - (fed + stt) / 100) : null;
         if (trip && trip !== "VAC" && trip !== PAYP) tripPay[trip + "|" + d] = tripFull(hrs(bcsAll[1]) != null ? hrs(bcsAll[1]) : hx(pkr.credit), hrs(bcsAll[0]) != null ? hrs(bcsAll[0]) : hx(pkr.block), pkr.crew, l, trip + "|" + d, seat);
-        if (trip && trip !== "VAC" && d.slice(0, 7) === key) { sum.blk += bH || 0; sum.cr += cH || 0; sum.soft += hrs(bcs[2]) || 0; sum.gross += total || 0; sum.net += net || 0; }
-        if (trip === PAYP && d.slice(0, 7) === key && cH != null) { sum.payp += cH; sum.ppEst = sum.ppEst || !!pp.est; }
-        if (trip === "VAC" && d.slice(0, 7) === key) { sum.vacDays += 1; sum.vac += VAC_H; sum.gross += VAC_H * RATE; sum.net += VAC_H * RATE * (1 - (fed + stt) / 100); }
+        // FW-0080: the bid period's (a trip its part flown in it; a PAYP or VAC day in it), never the calendar month's
+        if (trip && trip !== "VAC" && (trip === PAYP ? inBp(d) : F.inP)) { sum.blk += bH || 0; sum.cr += cH || 0; sum.soft += hrs(bcs[2]) || 0; sum.gross += total || 0; sum.net += net || 0; }
+        if (trip === PAYP && inBp(d) && cH != null) { sum.payp += cH; sum.ppEst = sum.ppEst || !!pp.est; }
+        if (trip === "VAC" && inBp(d)) { sum.vacDays += 1; sum.vac += VAC_H; sum.gross += VAC_H * RATE; sum.net += VAC_H * RATE * (1 - (fed + stt) / 100); }
         const lines = gross != null ? [`Pay-Credit ${usd(gross)} (${bcs[1]} x ${rateTxt})`]
           .concat(seat === "RO" ? [`IRO override ${usd(roV)} (${bcs[0]} block x $${IRO_OVERRIDE.toFixed(2)}, PWA 4.O.1.a)`] : (roV ? [`IRO crew FO override ${usd(roV)} (${bcs[0]} block x $3.00, PWA 4.O.1.a)`] : []))
           .concat(erIs ? [`Extended Range type-rated FO +15% ${usd(erV)} (PWA 4.O.1.b)`] : [])
@@ -1107,6 +1541,15 @@ class FlightWatcherScheduleCard extends HTMLElement {
         return `<tr data-d="${d}" class="${wk ? "wk" : ""}${noSchool ? " hol" : (this._hol(d) ? " hol2" : "")}${other ? " oth" : ""}${blocked.has(d) ? " blk" : ""}${trip === "VAC" ? " vac" : ""}${gb ? " gg" : (gc ? " gx" : "")}${r30.has(d) ? " r30" : ""}${bx}${pdDays.has(d) ? " pdh" : ""}"><td>${DOW[dt.getDay()]}</td><td class="n" title="${r30.has(d) ? this._esc(r30Notes[d]) : ""}">${d.slice(8)}</td>` +
           `<td>${t}</td><td>${l}${rp}${rl}</td><td class="t${splitNote && trip !== PAYP ? " split" : ""}" title="${this._esc(splitNote)}">${this._esc(bcs[0])}</td><td class="t${splitNote && trip !== PAYP ? " split" : ""}${trip === PAYP ? " ppc" : ""}" title="${this._esc(splitNote)}">${this._esc(bcs[1])}${ppH != null && pp.est ? ' <span class="k">est</span>' : ""}</td><td class="t">${this._esc(bcs[2])}</td><td class="t tot1"><span class="pay" data-info="${this._esc(payT)}" data-btn="${this._esc(erBtn)}" title="${this._esc(payT)}">${usd(total)}</span></td><td class="t" title="Pay-Gross less ${fed}% federal and ${stt}% state">${usd(net)}</td><td class="gr">${gcell}</td><td class="t far${fo && fo.bad30 ? " bad" : ""}${fo && fo.ok30 ? " ok30" : ""}${fo && fo.t30 === "&#8211;" ? " mid" : ""}" title="${fo ? this._esc(fo.t30t) : ""}">${fo ? fo.t30 : ""}</td><td class="t far${fo && fo.over ? " bad" : ""}" title="${fo ? this._esc(fo.bt) : ""}">${fo ? fo.b : ""}</td><td class="t far${fo && fo.rbad ? " bad" : ""}" title="${fo ? this._esc(fo.rt) : ""}">${fo ? fo.room : ""}</td><td class="lg">${lcell}</td><td class="o">${(opens[d] || []).join("<br>")}</td><td class="tg">${ideaBtn(d, trip)}</td></tr>`;
       }).join("");
+      // FW-0080: the trips carried in (no row on this page) count their part flown in this bid period, as FLICA does
+      const carryT = [];
+      for (const { it, F } of carried.values()) {
+        const cH = hrs(F.bcs[1]), bH = hrs(F.bcs[0]), seat = (F.ot.seat || "").toUpperCase(), nP = crewN(F.pkr.crew);
+        const roV = bH != null ? (seat === "RO" ? bH * IRO_OVERRIDE : (seat !== "CA" && nP === 3 ? bH * 3.00 : 0)) : 0;
+        const total = cH != null ? cH * RATE + roV + (erOn(`${it.trip}|${it.start}`, it.lay || "", nP) ? cH * RATE * ER_PCT : 0) : null;
+        sum.blk += bH || 0; sum.cr += cH || 0; sum.soft += hrs(F.bcs[2]) || 0; sum.gross += total || 0; sum.net += total != null ? total * (1 - (fed + stt) / 100) : 0;
+        carryT.push(`${it.trip} ${mdy(it.start)}: ${F.bcs[0] || "?"} block, ${F.bcs[1] || "?"} credit flown in this bid period${F.sp && F.sp.est ? " (credit by block share, an estimate)" : ""}`);
+      }
       // fix pass (PWA 4.R.1): a PAYP with a trip added over all its days has no row; FLICA's month credit holds it
       for (const p of ppl) if (!p.it && p.h != null) { const g0 = tripFull(p.h, 0, "", "", p.k, "") || 0; sum.cr += p.h; sum.payp += p.h; sum.gross += g0; sum.net += g0 * (1 - (fed + stt) / 100); sum.ppCov.push(p); }
       for (const p of ppl) if (p.unk) sum.ppUnk = p.why;
@@ -1158,13 +1601,17 @@ class FlightWatcherScheduleCard extends HTMLElement {
         // 1.7.1 (F#32): only once the pairings package is in or known to be missing (pk null = still loading). Priced
         // before that, a trip without its own times pays 0 and no crew override, and the Watcher would store that low
         // figure until the redraw sent the right one (two reports a load, one of them wrong)
-        if (this._impSig[key] !== sig && this._h && !noYear && pk !== null) {
+        // 1.7.11 review: and every other bid period's package a price or split asked for (packWait), so a trip across
+        // the bid period's edge is priced with its duties' TCRD, not its block share first
+        if (this._impSig[key] !== sig && this._h && !noYear && pk !== null && !packWait) {
           this._impSig[key] = sig;
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/improved/set", payload: JSON.stringify({ month: key, awarded: Math.round(awd * 100) / 100, current: Math.round(curG * 100) / 100, ver: vl[vl.length - 1].ver, awarded_ver: vl[0].ver }) });
         }
       }
-      const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th>Block</th><th>Credit</th><th>Soft</th><th title="Credit pay + RO + RO+15%; hover or tap for the breakdown">Pay-Gross</th><th>Pay-Net</th><th title="Reserve grid net reserves">Res Grid</th><th title="Check MM/DD = a 30 h break falls in the 168 h before a report that day and ended on MM/DD, FAR 117.25(b). The teal edge on a day marks the break itself. Hover for the hours and 'covered until'.">FAR-30/7</th><th title="Block flown in the 672 h ending that day, FAR 117.23(b)(1)">FAR-100/672</th><th title="100:00 minus the busiest 672 h window the day falls in, back and forward">Room</th><th title="Earliest report for another trip">Legal next</th><th>Open</th><th title="Tap the airplane: swap or pick-up ideas for that day, with the Pay-Gross difference">Ideas</th></tr>`;
-      body = `<div class="wrap"><table class="cal">${head}${rows}</table></div>${pdM && !narrow ? fwgPanelHtml(pdM) : ""}<div class="tot" title="${this._esc(`${MONTHS[m]} totals: flying credited to the month each segment originates (PWA 4.A) plus vacation days at ${hm(VAC_H)} (PWA 6.J) and pay protected (PAYP) credit (PWA Definitions 57). Pay at ${rateTxt}/credit h incl. RO and RO+15% where on; net after the tax settings. Checked against FLICA's Block and Credit.`)}">${tot}</div>`;
+      const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th>Block</th><th>Credit</th><th>Soft</th><th title="Credit pay + RO + RO+15%; hover or tap for the breakdown">Pay-Gross</th><th>Pay-Net</th><th title="Reserve grid net reserves">Res Grid</th><th class="fh" title="FAR 117.25(b): 30 consecutive hours free from all duty in the 168 h (7 days) before a report. &#10003; 36h MM/DD = a report at that day's first duty start (00:01 on a day off) is covered: the longest break off duty in the 168 h before it, in whole hours, and the day it ended. A later report that day may not be: hover a cell for the hours and 'covered until'. The teal edge on a day marks the break itself.">30h in 7d</th><th class="fh" title="FAR 117.23(b)(1): at most 100 flight hours in any 672 consecutive hours (28 days). Left = 100:00 minus the block flown or scheduled in the 672 h ending 24:00 that day; over = past the limit by that much.">100h in <br class="hb">672h</th><th class="fh" title="FAR 117.23(b)(1) (100 flight hours in any 672 consecutive hours): 100:00 minus the busiest 672 h window that holds any part of the day, back and forward: the windows starting at a duty's start or ending at its block-in, as a pickup's FAR check tries them, and those ending 24:00 HST.">Room to <br class="hb">100h</th><th title="Earliest report for another trip">Legal next</th><th>Open</th><th title="Tap the airplane: swap or pick-up ideas for that day, with the Pay-Gross difference">Ideas</th></tr>`;
+      const bpTxt = `${mdy(bp.from)} to ${mdy(bp.to)}${bp.src === "package" ? " (the pairings package)" : bp.src === "schedule" ? " (the schedule pages: no pairings package on file)" : " (the calendar month: no pairings package or schedule page gives the bid period)"}`;
+      const totT = `${MONTHS[m]} totals: flown in the bid period, ${bpTxt}: each segment credited to the bid period it originates in (PWA 4.A), a trip across the bid period's edge its part here, plus vacation days at ${hm(VAC_H)} (PWA 6.J) and pay protected (PAYP) credit (PWA Definitions 57). Pay at ${rateTxt}/credit h incl. RO and RO+15% where on; net after the tax settings. Checked against FLICA's Block and Credit.${carryT.length ? ` Also counted: ${carryT.join("; ")}.` : ""}`;
+      body = `<div class="wrap"><table class="cal">${head}${rows}</table></div>${pdM && !narrow ? fwgPanelHtml(pdM) : ""}<div class="tot" title="${this._esc(totT)}">${tot}</div>${carryT.length ? `<div class="cin">Also counted (PWA 4.A): ${this._esc(carryT.join("; "))}.</div>` : ""}${bp.src === "calendar" ? `<div class="cin">Totals over the calendar month: no pairings package or schedule page on file gives this bid period.</div>` : ""}`;
     }
     const upd = awd0 ? "" : st && st.attributes ? (st.attributes.updated || "") : "";
     // 1.6.2: the award label and the read status sit above the grid (or the 'No schedule' line)
@@ -1180,6 +1627,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const main = this.shadowRoot.querySelector(".fwm");
     const ae = this.shadowRoot.activeElement;
     const fk = ae && ae.matches && ae.matches(".fwm .trip[data-k]") ? ae.dataset.k : "";  // the pairing that has the focus
+    const lf = !!(ae && ae.matches && ae.matches(".fwm .lock"));  // 1.7.18: the lock switch keeps the focus across a redraw
     main.innerHTML = `<style>${FWG_CSS}
       ha-card{padding:10px 8px 12px;font-size:12.5px;line-height:1.25;box-sizing:border-box}
       @media (max-width:700px){ha-card{font-size:10.5px;padding:6px 3px 8px}
@@ -1195,8 +1643,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
       h3{margin:0;font-size:16px}
       table{border-collapse:collapse;margin:0 auto}
       .cal th:nth-child(n+5):nth-child(-n+12){text-align:right}
-      .far{font-size:11px}.far.bad{color:var(--fw-err,#c62828);font-weight:700}.far.ok30{color:var(--fw-ok,#2e7d32);font-weight:700;text-align:center;white-space:nowrap}.far.ok30 .k{font-weight:400;font-size:10px;color:var(--secondary-text-color,#555)}
+      .far{font-size:11px;white-space:nowrap}@media (min-width:701px){.cal td.far,.cal th.fh{padding-left:4px;padding-right:4px}}@media (max-width:700px){.cal th .hb{display:none}}.far.bad{color:var(--fw-err,#c62828);font-weight:700}.far.ok30{color:var(--fw-ok,#2e7d32);font-weight:700;text-align:center;white-space:nowrap}.far.ok30 .k{font-weight:400;font-size:10px;color:var(--secondary-text-color,#555)}
       .cal tr.r30 td:nth-child(1){box-shadow:inset 4px 0 0 #00897b}
+      .cal td.t.split{color:var(--fw-split,#7b1fa2);cursor:help}:host([dark]){--fw-split:#ce93d8}
+      .cin{margin:4px auto 0;max-width:620px;font-size:11px;text-align:center;color:var(--secondary-text-color)}
       .cal td.far.mid{color:var(--secondary-text-color,#727272);text-align:center}
       .tot1{font-weight:600}
       .cal tr.gg td:nth-child(4),.cal tr.gg td:nth-child(10){background:rgba(76,175,80,.12)}
@@ -1207,8 +1657,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
       :host([dark]) .nav:hover{background:rgba(255,255,255,.1)}
       .cal tr[data-d] td:nth-child(-n+2){cursor:pointer}
       .cal tr.blk td.n::after{content:" \\2298";color:#e53935;font-weight:700}
-      .lock{cursor:pointer;font-size:16px;line-height:1;padding:2px 6px;border-radius:6px;user-select:none;margin-right:auto}.lock:hover{background:rgba(0,0,0,.06)}
-      .lock.open{opacity:.9}.lock.shut{opacity:.6}
+      :host{--fws-on:#1565c0;--fws-off:#5f6368;--fws-knob:#fff;--fws-ring:#1565c0}:host([dark]){--fws-on:#90caf9;--fws-off:#a7b0b8;--fws-knob:#0d2235;--fws-ring:#90caf9}
+      .lock{display:inline-flex;align-items:center;gap:6px;box-sizing:border-box;min-height:44px;min-width:44px;margin:0 auto 0 0;padding:0 8px 0 4px;border:0;border-radius:8px;background:none;color:var(--primary-text-color);font:600 12px/1 sans-serif;cursor:pointer;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+      @media (hover:hover){.lock:hover{background:rgba(0,0,0,.06)}:host([dark]) .lock:hover{background:rgba(255,255,255,.1)}}.lock:focus-visible{outline:3px solid var(--fws-ring);outline-offset:1px}
+      @media (max-width:700px){.hd2{row-gap:2px}.hd2 .sp{flex:0 0 100%;height:0}}
+      .lock .lki{flex:none;width:20px;height:20px}.lock .lkt{position:relative;flex:none;box-sizing:border-box;width:40px;height:24px;border:2px solid var(--fws-off);border-radius:12px;background:transparent}
+      .lock .lkk{position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:var(--fws-off)}.lock .lks{min-width:22px;text-align:left}
+      .lock.shut .lkt{background:var(--fws-on);border-color:var(--fws-on)}.lock.shut .lkk{left:19px;background:var(--fws-knob)}.lock.shut .lks{font-weight:700}
+      @media (forced-colors:active){.lock .lkk{forced-color-adjust:none;background:CanvasText}.lock.shut .lkt{forced-color-adjust:none;background:Highlight;border-color:Highlight}.lock.shut .lkk{background:Canvas}}
       .ppt{cursor:help}.ppc .k{font-size:9.5px;color:var(--secondary-text-color)}
       .cal tr.gg td:nth-child(1),.cal tr.gg td:nth-child(2){font-weight:700}
       .gr{text-align:right;font-size:11px}.g.green{color:var(--fw-ok,#2e7d32);font-weight:700}.g.red{color:var(--fw-err,#c62828);font-weight:700}.g.black{color:var(--primary-text-color)}
@@ -1236,24 +1692,30 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .info::after{content:"tap to close";display:block;margin-top:6px;font-size:10px;color:var(--secondary-text-color);text-align:right}
       .none{text-align:center;color:var(--secondary-text-color);padding:12px}
       .awl,.rsl{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.awl{font-weight:600}.rsl{color:var(--fw-warn,#8a5300)}
+      .ag{font-size:11px;font-weight:600;color:var(--secondary-text-color);white-space:nowrap;font-variant-numeric:tabular-nums;cursor:pointer}
+      .ag[data-age="amber"]{color:var(--fw-warn,#8a5300)}.ag[data-age="red"]{color:var(--fw-err,#c62828)}
+      .hd2 .ag{margin-left:auto;text-align:right;white-space:normal;min-width:0;flex:0 0 21em}
+      @media (max-width:700px){.hd2 .ag{order:1;flex:1 1 0}.hd2 .sp{order:2}.hd2 .nav,.hd2 h3{order:3}}
       .unc{color:var(--fw-warn,#8a5300);font-weight:700}.ubn{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.set .keep{min-height:44px;padding:6px 12px;font:inherit;border-radius:6px;cursor:pointer}
-    </style><ha-card><div class="frame"><div class="hd2"><span class="lock ${this._locked ? "shut" : "open"}" title="${this._locked ? `Locked: ${this._marks()} cannot be changed by a tap. Tap to unlock.` : `Unlocked: taps change ${this._marks()}. Tap to lock.`}">${this._locked ? "&#128274;" : "&#128275;"}</span><span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${upd ? `<span class="u">updated ${this._esc(upd)}</span>` : ""}</div>${shead}${vhtml}${body}</div>${panel}
+    </style><ha-card><div class="frame"><div class="hd2">${this._lockHtml()}<span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${this._ageHtml(upd)}</div>${shead}${vhtml}${body}</div>${panel}
     <div class="info"></div>
     <details class="leg"><summary>Key</summary><table class="lt">
     <tr><td>Trip</td><td>Your pairing. Tap it for the pairing detail (legs, layovers, hotel, totals and crew, from the pairings package; below the schedule, or a sheet from the bottom on a phone); tap it again, the &#10005; or Esc to close. R = report time. Tap &#8644; to mark it "would trade" (orange).</td></tr>
     <tr><td>Layover</td><td>Layover city. <b>Bold</b> = turn, no layover. Rel = release time (block-in + 15 min).</td></tr>
-    <tr><td>Block / Credit / Soft</td><td>Your trip's block, credit and soft time (credit minus block), from FLICA's pairing page. Purple = this month's share only; the rest pays next month (PWA 4.A), hover for the split.</td></tr>
+    <tr><td>Block / Credit / Soft</td><td>Your trip's block, credit and soft time (credit minus block), from FLICA's pairing page. Purple = this bid period's part only (FLICA totals the bid period: December 2026 runs Dec 2 to Dec 31); the rest pays in the bid period its duties depart in (PWA 4.A), hover for the split. A trip from the bid period before that flies into this one counts its part here, named under the totals.</td></tr>
     <tr><td>Totals</td><td>Month totals incl. vacation at ${hm(VAC_H)} a day (PWA 6.J); &#10003; = matches FLICA's figure, red = FLICA differs.</td></tr>
-    <tr><td>PAYP</td><td>Pay protected: a trip removed from your schedule keeps its Pay and Credit (PWA Definitions 57). Its credit counts in Credit, Pay-Gross and Pay-Net on the PAYP's first day, at your rate; never in Block, Block Avail or the FAR columns (not flown). A trip whose duties depart in two months counts each month's share there (PWA 4.A). est = the removed trip is not on file, so the credit is FLICA's month credit less everything else (only when the card counts everything else in the month; Credit then shows est, not a check). Credit unknown = not counted (no FLICA total, other credited codes, a trip not read yet). A trip you add on PAYP days pays on top (PWA 4.R.1), also when it covers every PAYP day.</td></tr>
+    <tr><td>PAYP</td><td>Pay protected: a trip removed from your schedule keeps its Pay and Credit (PWA Definitions 57). Its credit counts in Credit, Pay-Gross and Pay-Net on the PAYP's first day, at your rate; never in Block, Block Avail or the FAR columns (not flown). A trip whose duties depart in two bid periods counts each bid period's part there (PWA 4.A). est = the removed trip is not on file, so the credit is FLICA's month credit less everything else (only when the card counts everything else in the month; Credit then shows est, not a check). Credit unknown = not counted (no FLICA total, other credited codes, a trip not read yet). A trip you add on PAYP days pays on top (PWA 4.R.1), also when it covers every PAYP day.</td></tr>
     <tr><td>Pay-Gross / Pay-Net</td><td>Gross = credit x ${rateTxt} + RO + RO+15%; hover or tap it for the breakdown. Net = gross after the tax settings below.</td></tr>
-    <tr><td>Teal edge</td><td>Thin teal mark left of the day = that day falls inside a break of 30+ consecutive hours free of all duty (FAR 117.25(b)), between duty periods, a long layover included. Hover the date for the break's start, end and 'covers reports until'. The FAR-30/7 column gives the date that counts: &#10003; MM/DD = the day the qualifying break ended (on a day still inside a break, usually that day's own date).</td></tr>
+    <tr><td>Teal edge</td><td>Thin teal mark left of the day = that day falls inside a break of 30+ consecutive hours free of all duty (FAR 117.25(b)), between duty periods, a long layover included. Hover the date for the break's start, end and 'covers reports until'. The 30h in 7d column gives the date that counts: &#10003; 36h MM/DD = the day the qualifying break ended (on a day still inside a break, usually that day's own date).</td></tr>
     <tr><td>RO / RO+15%</td><td>Add-ons inside Pay-Gross. RO = only on trips where you are listed RO: block x $${IRO_OVERRIDE.toFixed(2)} (PWA 4.O.1.a). RO+15% = Extended Range crew, 4 pilots, type-rated FO: 15% of pay (PWA 4.O.1.b); on by itself for SIN, tap Pay-Gross to switch any trip on or off.</td></tr>
     <tr><td>Res Grid</td><td>FLICA net reserves. <span class="g green">Green</span> = drop or swap off this day OK. <span class="g red">Red</span> = add only.</td></tr>
-    <tr><td>FAR-30/7, FAR-100/672, Room</td><td>A break of 30 h+ off all duty (teal edge on its days, a long layover counts) covers any report up to 138 h after it ends (FAR 117.25(b): 30 h free in the 168 h before report). FAR-30/7: &#10003; MM/DD = a report that day is covered, and the date the qualifying 30 h break ended; red 'need 30' = it is not; ? = the window reaches before the schedule on file; &#8211; = mid-trip, no report that day. Hover for the hours and 'covered until'. Training (SIM, OEB, ground school) and reserve days count as duty. Need 30 h off by (totals): the first report time after which you need 30 h off first. 100/672: block flown in the 28 days ending that day, leg by leg (117.23(b)(1)). Room: 100:00 minus the busiest 28-day window the day falls in, back and forward: the most block you could add that day. ~ = a window reaches past the schedule on file. Block Avail: 98:00 bid-month cap minus FLICA's bid-period Block.</td></tr>
+    <tr><td>30h in 7d</td><td>FAR 117.25(b): 30 consecutive hours free from all duty within the past 168 consecutive hours (7 days) before a report. A break of 30 h+ off all duty (teal edge on its days, a long layover counts) covers any report up to 138 h after it ends. &#10003; 36h MM/DD = a report at that day's first duty start (00:01 on a day off) is covered: the longest break off duty in the 168 h before it, in whole hours, and the date that break ended; a later report that day may not be (hover for the hours and 'covered until'); red 'need 30h off' = that report is not covered; ? = the window reaches before the schedule on file; &#8211; = mid-trip, no report that day. Training (SIM, OEB, ground school) and reserve days count as duty; a trip whose report and release are not on file yet (its times not read) counts as time off. Need 30 h off by (totals): the first report time after which you need 30 h off first.</td></tr>
+    <tr><td>100h in 672h</td><td>FAR 117.23(b)(1): at most 100 flight hours in any 672 consecutive hours (28 days). This cell checks the 672 h ending 24:00 that day: what is left, in hours and minutes, of 100:00 less the block flown or scheduled in it, leg by leg (10:57 left = 89:03 flown or scheduled). Red '0:00 left' = at the limit; red '1:20 over' = past it by that much. ~ = part of the window is before the schedule on file, or holds a trip whose times are not read yet (it adds 0:00, or only its duties with a block; hover for which). A trip with a duty's block missing counts its whole trip Block, as a pickup's FAR check does: the rest of it on the duties without one. Hover for the block.</td></tr>
+    <tr><td>Room to 100h</td><td>What is left, in hours and minutes (h:mm), under FAR 117.23(b)(1) (100 flight hours in any 672 consecutive hours): 100:00 minus the block flown or scheduled in the busiest 672 h (28-day) window that holds any part of that day, looking back and forward, so trips already on your line after that day count too (100h in 672h looks back only). It tries every window that starts at a duty's start or ends at its block-in, where the busiest one always is, counting a duty's block when the whole duty is in the window, as a pickup's FAR check does, and the windows ending 24:00 HST counted leg by leg as in 100h in 672h, so it never shows more room than 100h in 672h. 'left' = room under the limit; red '0:00 left' = none; red '1:20 over' = such a window is over 100:00 by that much. ~ = a window reaches past the schedule on file, or holds a trip whose times are not read yet (it adds 0:00, or only its duties with a block; hover for which). Block Avail (totals): 98:00 bid-month cap minus FLICA's bid-period Block.</td></tr>
     <tr><td>Legal next</td><td>Earliest report for another trip: release + 11 h (PWA 10.E.1.a). Tap for the 18 h case.</td></tr>
     <tr><td>Open</td><td>Open time trips starting that day: <span class="fit">fits</span>, <span class="clash">clashes or blocked</span>.</td></tr>
     <tr><td>Ideas</td><td>Tag-ons after your release with legal rest, <b>O</b> = in open time, <b>T</b> = on the Tradeboard. Orange = better trip for a marked one. Tap for details.</td></tr>
-    <tr><td>Day</td><td>Blue = weekend, ${this._role() === "admin" ? "yellow = no school at HPA (from the school year file), hatched yellow = US or Hawaii holiday with no school file loaded" : "hatched yellow = US or Hawaii holiday"}. Tap a day to block it (&#8856;), tap again to unblock; VAC days are always &#8856; and cannot be changed. The lock at the top left (&#128274;) freezes ${admin ? "availability, trade and drop" : "availability and trade"} taps. All times HNL.</td></tr>
+    <tr><td>Day</td><td>Blue = weekend, ${this._role() === "admin" ? "yellow = no school at HPA (from the school year file), hatched yellow = US or Hawaii holiday with no school file loaded" : "hatched yellow = US or Hawaii holiday"}. Tap a day to block it (&#8856;), tap again to unblock; VAC days are always &#8856; and cannot be changed. The lock switch at the top left (a lock, the word Lock, then On or Off) freezes ${admin ? "availability, trade and drop" : "availability and trade"} taps while it is On (the default); switch it Off to change them and On again to lock them. All times HNL.</td></tr>
     </table>${note ? `<div>${note}</div>` : ""}</details>
     <details class="set"${unconf.length ? " open" : ""}><summary>Pay settings${unconf.length ? " (not set yet)" : ""}</summary>
       <span>Federal tax <select data-e="input_number.flight_watcher_federal_tax_pct"${flagged.includes(PAY_PREFS[0]) ? ' data-f="1"' : ""}>${sel(0, 45, 0.5, fed, "%")}</select></span>
@@ -1274,6 +1736,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       if (pn && pn.scrollIntoView) pn.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "nearest" });
     }
     if (fk && !this._sheet.open) { const t = this._tripEl(fk); if (t) t.focus({ preventScroll: true }); }
+    if (lf) { const l = main.querySelector(".lock"); if (l) l.focus({ preventScroll: true }); }
   }
   // 1.7.7: the pairing detail: open, swap to another pairing, or close (the same one again)
   _pdToggle(k) {
@@ -1293,6 +1756,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
   _hc() { return this.shadowRoot ? this.shadowRoot.querySelector(".fwm ha-card") : null; }
   // Esc closes the pairing detail, Tab stays inside the sheet; a rotation or resize past the phone width redraws it
   connectedCallback() {
+    if (this._h && !this._ageT) this._ageT = setInterval(() => this._ageTick(), 1000);  // 1.7.12: back on the page
     if (!this._kd) {
       this._kd = (e) => { if (!this._pd) return; if (e.key === "Escape") { this._pdClose(true); return; } if (this._sheet) this._sheet.trap(e); };
       this._rz = () => { if (this._pd && this._h && fwgNarrow(this._hc()) !== this._pdNarrow) this._render(); };
@@ -1301,6 +1765,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     window.addEventListener("resize", this._rz);
   }
   disconnectedCallback() {
+    clearInterval(this._ageT); this._ageT = null;  // 1.7.12: no tick off the page
     if (!this._kd) return;
     document.removeEventListener("keydown", this._kd);
     window.removeEventListener("resize", this._rz);

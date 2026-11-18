@@ -114,7 +114,9 @@ def test_contact_links_fit_a_phone(tmp_path):
                 m = pg.evaluate("""() => {
                   const r = document.querySelector('flight-watcher-pilot-card').shadowRoot, card = r.querySelector('ha-card');
                   const hd = r.querySelector('.hd'), links = [...hd.querySelectorAll('a.ct')].map((a) => a.getBoundingClientRect());
-                  const mini = [...r.querySelectorAll('.cts.mini a.ct')].map((a) => a.getBoundingClientRect());
+                  // 1.7.11 (FW-0079): on a phone the crew sits in the list under the grid (.crl), the Crew column hidden:
+                  // the links a viewer can see and tap, wherever they are
+                  const mini = [...r.querySelectorAll('.cts.mini a.ct')].map((a) => a.getBoundingClientRect()).filter((x) => x.width > 0 && x.height > 0);
                   return {doc: document.documentElement.scrollWidth, win: window.innerWidth, card: card.getBoundingClientRect().right,
                           n: links.length, right: Math.max(...links.map((x) => x.right)), h: Math.min(...links.map((x) => x.height)),
                           mn: mini.length, mh: Math.min(...mini.map((x) => x.height)), mw: Math.min(...mini.map((x) => x.width))};

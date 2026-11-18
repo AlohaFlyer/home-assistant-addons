@@ -259,26 +259,37 @@ def test_a_payp_that_grows_adds_the_trip_removed_on_its_new_days_from_the_versio
     assert got["PAYP|2026-11-12"]["protected"] == "H3620|2026-11-12,H3621|2026-11-15"
 
 
+def _bid(iso):
+    """1.7.11 (FW-0080): the bid period of a day, as the Watcher's bid_period_key gives it from the pairing files:
+    November 2026 runs Nov 1 to Dec 1, December Dec 2 to Dec 31."""
+    return "2026-11" if str(iso)[:10] == "2026-12-01" else str(iso)[:7]
+
+
 def test_a_payp_over_the_month_boundary_counts_each_months_share():
-    """Review: Nov kept all 17:35 of H9007 (FLICA's Nov holds 10:00) and Dec estimated 7:35 on top: 25:10 in all."""
+    """Review: Nov kept all 17:35 of H9007 (FLICA's Nov holds 10:00) and Dec estimated 7:35 on top: 25:10 in all.
+    1.7.11 (FW-0080): by bid period, as the Watcher splits it (payp_refresh passes bid_period_fn()), not the calendar
+    month this test pinned before: December's page starts on Dec 1, November's bid period's last day, so its PAYP item
+    starts on a November day and its record still carries December's share (the bid period of its days, Dec 2)."""
     nov, dec, own = _cross()
     items = nov["items"] + dec["items"]
     assert [(i["start"], i["end"]) for i in items if i["trip"] == "PAYP"] == [("2026-11-30", "2026-12-02"),
                                                                               ("2026-12-01", "2026-12-02")]
-    got = VER.payp_entries(items, own, lambda mk: [], PAIRING_RE.match)
+    got = VER.payp_entries(items, own, lambda mk: [], PAIRING_RE.match, _bid)
     assert got["PAYP|2026-11-30"]["credit"] == "17:35" and got["PAYP|2026-11-30"]["protected"] == "H9007|2026-11-30"
     assert got["PAYP|2026-11-30"]["split"] == {"2026-11": "10:00", "2026-12": "7:35"}
     assert got["PAYP|2026-12-01"] == {"credit": "7:35", "blk": "0:00", "soft": "0:00", "payp": True, "seat": "FO",
                                       "protected": "H9007|2026-11-30", "end": "2026-12-02", "src": "own trips",
                                       "of": "PAYP|2026-11-30"}
     gone = {k: v for k, v in own.items() if k != "H9007|2026-11-30"}
-    assert VER.payp_entries(items, {**gone, **got}, lambda mk: [], PAIRING_RE.match) == got  # kept as it is
+    assert VER.payp_entries(items, {**gone, **got}, lambda mk: [], PAIRING_RE.match, _bid) == got  # kept as it is
     # December's page read later: its share comes from the November record on file
-    first = VER.payp_entries(nov["items"], own, lambda mk: [], PAIRING_RE.match)
+    first = VER.payp_entries(nov["items"], own, lambda mk: [], PAIRING_RE.match, _bid)
     assert list(first) == ["PAYP|2026-11-30"] and first["PAYP|2026-11-30"]["split"]["2026-12"] == "7:35"
-    assert VER.payp_entries(items, {**gone, **first}, lambda mk: [], PAIRING_RE.match) == got
+    assert VER.payp_entries(items, {**gone, **first}, lambda mk: [], PAIRING_RE.match, _bid) == got
+    # the calendar month (no bid period given: no pairing file and no schedule page) gives the same records here
+    assert VER.payp_entries(items, own, lambda mk: [], PAIRING_RE.match) == got
     # a trip all in one month has no split
-    assert "split" not in VER.payp_entries(V29["items"], dict(OWN), lambda mk: [], PAIRING_RE.match)["PAYP|2026-11-12"]
+    assert "split" not in VER.payp_entries(V29["items"], dict(OWN), lambda mk: [], PAIRING_RE.match, _bid)["PAYP|2026-11-12"]
 
 
 def test_a_payp_with_a_trip_added_over_all_its_days_keeps_its_record():
@@ -509,10 +520,16 @@ CASES = {
 
 
 def _cross_states(offset):
+    """1.7.11 (FW-0080): the records by bid period (_bid) and the bid periods on the schedule sensor (periods, as
+    publish_schedule sends them), so the card totals each bid period as FLICA does, not the calendar month."""
     nov, dec, own = _cross()
-    recs = VER.payp_entries(nov["items"] + dec["items"], own, lambda mk: [], PAIRING_RE.match)
+    recs = VER.payp_entries(nov["items"] + dec["items"], own, lambda mk: [], PAIRING_RE.match, _bid)
     gone = {k: v for k, v in own.items() if k != "H9007|2026-11-30"}
-    return _card_states(nov, {**gone, **recs}, months={"2026-11": nov, "2026-12": dec}, offset=offset)
+    st = _card_states(nov, {**gone, **recs}, months={"2026-11": nov, "2026-12": dec}, offset=offset)
+    st["sensor.flight_watcher_schedule"]["attributes"]["periods"] = {
+        "2026-11": {"start": "2026-11-01", "end": "2026-12-01", "src": "package"},
+        "2026-12": {"start": "2026-12-02", "end": "2026-12-31", "src": "package"}}
+    return st
 
 
 H9999 = {"blk": "14:00", "credit": "18:00", "soft": "4:00", "seat": "FO", "report": "08:00", "last_arr": "18:00"}
@@ -604,12 +621,14 @@ def test_card_renders_the_payp_credit_at_390_px(card):
 
 
 def test_card_a_payp_over_the_month_boundary_counts_each_months_share(card):
-    """Review: Nov counted all 17:35 (Credit 133:50, red FLICA 126:15) and Dec estimated 7:35 on top."""
+    """Review: Nov counted all 17:35 (Credit 133:50, red FLICA 126:15) and Dec estimated 7:35 on top.
+    1.7.11 (FW-0080): by bid period (_cross_states): December's share counts on its first PAYP day in December's bid
+    period (Dec 2; Dec 1 is November's), never as an estimate."""
     n, d = card["nov_x"], card["dec_x"]
     assert "Credit 126:15 ✓" in n["tot"] and "PAYP 10:00" in n["tot"] and "estimate" not in n["tot"], n["tot"]
     assert n["rows"]["2026-11-30"][5] == "10:00" and n["rows"]["2026-11-30"][7] == _usd(10 * RATE)
     assert "Credit 17:35 ✓" in d["tot"] and "PAYP 7:35" in d["tot"] and "estimate" not in d["tot"], d["tot"]
-    assert d["rows"]["2026-12-01"][5] == "7:35" and d["rows"]["2026-12-02"][5] == ""
+    assert d["rows"]["2026-12-02"][5] == "7:35" and d["rows"]["2026-12-01"][5] == ""
     # the Dec 1 and 2 rows in the November view name the removed trip too
     assert n["pps"]["2026-12-01"].startswith("Pay protected: H9007 Nov 30 (") and "November 10:00, December 7:35" in \
         n["pps"]["2026-12-01"]
