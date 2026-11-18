@@ -31,6 +31,11 @@
 // rearm_answer does: stuck (idle or hunting with no check): a full check now, no new FLICA login; stepped aside for
 // the pilot's own FLICA login: a login when the step-aside ends, not before; reconnecting: a login at the next login
 // try; stopped: one FLICA login, with the stop's note. The button's tooltip says the same.
+// 1.7.12 (Ryan, Nov 17): "Last" and its "(N ago)" give way to one "Data age 12 min" stamp (the shared data age block
+// below): amber with "stale" past 1x the check interval (normal, or hunt while hunting), red with "very stale" past 2x,
+// "Data age unknown" with no colour when the last check time is not known; its hover text has the last good read in
+// HST. It ticks with the card's 1 s redraw. With mode: age (the Details view, in place of the "Last check" tile) the
+// card is that stamp alone, no controls.
 const FW_PORTAL = false;
 const FC_HUNT = [5, 10, 15, 20, 30, 45, 60, 90];  // seconds (number.flight_watcher_hunt_check_every 5-90)
 const FC_NORM = [1, 2, 3, 5, 6, 10, 15, 20, 30, 45, 60, 90];  // minutes (number.flight_watcher_normal_check_every 1-90)
@@ -39,22 +44,63 @@ const FC_DEFAULT = { hunt: [5, 90], normal: [1, 90] };  // an entity with no min
 const FC_WANT_MS = 20000;  // 1.7.1 (F#4): how long a picked interval waits for the state to show it
 const FC_HELD = /^(Hunting every \d+ s|Checking every \d+ min) is held to \d+ FLICA loads an hour/;  // the Watcher's held_note
 const FC_TIME = new Intl.DateTimeFormat("en-US", { timeZone: "Pacific/Honolulu", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+// ---- shared data age: keep identical in every card that holds it (tests/test_fw1712_data_age.py) ----
+// 1.7.12 (Nov 17: "Replace the two clocks ("updated" and "Last check") with one "data age" stamp. Turn it amber
+// past 1x the normal interval and red past 2x."): the time since the Watcher's last good read (its last check time,
+// which a check sets only when it succeeds). Amber past 1x the check interval (the normal one in minutes, or the hunt
+// one in seconds while hunting), red past 2x, plain otherwise; the word "stale" or "very stale" goes with the colour,
+// so the colour is never the only cue (colour-blind users, screen readers). A read time that is unknown, missing or not
+// a time is "Data age unknown" with no colour; an interval that is unknown or 0 leaves the age shown with no colour.
+// Each card passes its own entities' states (no entity ids here: a pilot's copy rewrites them).
+function fwAgeDur(sec) {
+  const s = Math.max(0, Math.floor(sec)), m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (s < 60) return `${s} s`;
+  if (m < 60) return `${m} min`;
+  if (h < 24) return `${h} h` + (m % 60 ? ` ${m % 60} min` : "");
+  return `${d} d` + (h % 24 ? ` ${h % 24} h` : "");
+}
+function fwDataAge(last, hunting, normalMin, huntSec, now) {
+  const mode = hunting ? "hunt" : "normal", unit = hunting ? "s" : "min";
+  const per = parseFloat(hunting ? huntSec : normalMin), iv = hunting ? per : per * 60;
+  const known = isFinite(iv) && iv > 0, one = Math.round(per * 10) / 10, two = Math.round(per * 20) / 10;
+  const rule = known
+    ? `Stale past ${one} ${unit}, very stale past ${two} ${unit}: 1x and 2x the ${mode} check interval.`
+    : `No ${mode} check interval is known, so the age is not judged.`;
+  const t = Date.parse(last == null ? "" : String(last));
+  if (isNaN(t)) return { sec: null, t: null, level: "", word: "", text: "Data age unknown", rule };
+  const sec = Math.max(0, (now - t) / 1000);
+  const level = !known ? "" : sec > 2 * iv ? "red" : sec > iv ? "amber" : "";
+  const word = level === "red" ? "very stale" : level === "amber" ? "stale" : "";
+  return { sec, t, level, word, text: `Data age ${fwAgeDur(sec)}` + (word ? `, ${word}` : ""), rule };
+}
+// ---- end shared data age ----
 class FlightWatcherClockCard extends HTMLElement {
   setConfig(c) { this.c = c || {}; }
   set hass(h) {
     // review r4: the dark colors follow Home Assistant's own dark mode (hass.themes.darkMode, which the portal sets from the device), not the phone's: a profile forced to Light on a phone in dark mode kept the light-on-dark reds
     if (typeof this.toggleAttribute === "function") this.toggleAttribute("dark", !!(h && h.themes && typeof h.themes.darkMode === "boolean" ? h.themes.darkMode : typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches));
     this._h = h;
+    if (!this._root && this._ageOnly()) {  // 1.7.12: the stamp alone (mode: age), ticking each second
+      this._root = this.shadowRoot || this.attachShadow({ mode: "open" });
+      this._root.innerHTML = `<style>
+        :host([dark]){--fw-err:#ef9a9a;--fw-warn:#ffb74d}
+        ha-card{padding:12px 16px;display:flex;align-items:center;min-height:24px;font-size:14px;line-height:1.4}
+        .ag{font-weight:600;font-variant-numeric:tabular-nums}
+        .ag[data-age="amber"]{color:var(--fw-warn,#8a5300);font-weight:700}.ag[data-age="red"]{color:var(--fw-err,#c62828);font-weight:700}
+      </style><ha-card><span class="ag" id="age" data-age="">Data age unknown</span></ha-card>`;
+      this._tick = setInterval(() => this._render(), 1000);
+    }
     if (!this._root) {
       this._root = this.shadowRoot || this.attachShadow({ mode: "open" });
       this._root.innerHTML = `<style>
-        :host([dark]){--fw-err:#ef9a9a}
+        :host([dark]){--fw-err:#ef9a9a;--fw-warn:#ffb74d}
         ha-card{padding:5px 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;line-height:1.3;border-left:5px solid var(--divider-color)}
         ha-card.ok{border-left-color:#2e7d32}ha-card.warn{border-left-color:#f9a825}ha-card.err{border-left-color:#c62828;background:rgba(198,40,40,.08)}ha-card.info{border-left-color:#1565c0}ha-card.err .k,ha-card.err .iv{color:var(--primary-text-color)}
         .st{font-weight:700}.m{color:var(--primary-text-color)}
         .k{color:var(--secondary-text-color)}.t{font-weight:600;font-variant-numeric:tabular-nums}
         .sep{color:var(--divider-color)}
-        .blind{color:var(--fw-err,#c62828);font-weight:700}
+        .ag{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+        .ag[data-age="amber"]{color:var(--fw-warn,#8a5300);font-weight:700}.ag[data-age="red"]{color:var(--fw-err,#c62828);font-weight:700}
         .ctl{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
         button{font:inherit;font-size:12px;padding:3px 9px;border-radius:14px;border:1px solid var(--divider-color);background:var(--card-background-color);color:var(--primary-text-color);cursor:pointer;white-space:nowrap}
         button:hover{background:rgba(0,0,0,.05)}
@@ -69,7 +115,7 @@ class FlightWatcherClockCard extends HTMLElement {
         @media (max-width:700px){ha-card{font-size:12px;gap:6px}.ctl{margin-left:0;width:100%}
           button{min-height:44px;min-width:44px;padding:6px 12px;font-size:13px}select{min-height:44px;min-width:56px;font-size:16px}}
       </style><ha-card><span class="st" id="st"></span><span class="m" id="msg"></span>
-      <span class="sep" aria-hidden="true">|</span><span class="k">Last</span> <span class="t" id="lt">-</span> <span class="k" id="la"></span>
+      <span class="sep" aria-hidden="true">|</span><span class="ag" id="age" data-age="">Data age unknown</span>
       <span class="sep" aria-hidden="true">|</span><span class="k">Next</span> <span class="t" id="nt">-</span> <span class="k" id="na"></span>
       <span class="ctl">
         <button class="chk" id="chk" title="Read the pot right away">&#8635; Check now</button>
@@ -91,6 +137,19 @@ class FlightWatcherClockCard extends HTMLElement {
     this._render();
   }
   disconnectedCallback() { clearInterval(this._tick); this._root = null; }
+  _ageOnly() { return !!(this.c && this.c.mode === "age"); }
+  // 1.7.12: the data age stamp, from this card's own entities; hunting by the switch or the Watcher's state
+  _stamp() {
+    const el = this._root.getElementById("age");
+    const st = this._st("sensor.flight_watcher_state"), last = this._st("sensor.flight_watcher_last_check");
+    const hunting = this._st("switch.flight_watcher_hunt_mode") === "on" || st === "hunting";
+    const a = fwDataAge(last, hunting, this._st("number.flight_watcher_normal_check_every"),
+      this._st("number.flight_watcher_hunt_check_every"), Date.now());
+    const title = (a.t == null ? "No good read on file." : `Last good read ${this._time(new Date(a.t))} HST.`) + " " + a.rule;
+    if (el.textContent !== a.text) el.textContent = a.text;
+    if (el.dataset.age !== a.level) el.dataset.age = a.level;
+    if (el.title !== title) el.title = title;
+  }
   _st(id) { const s = this._h && this._h.states[id]; return s ? s.state : "unavailable"; }
   _attr(id, a) { const s = this._h && this._h.states[id]; return s && s.attributes ? s.attributes[a] : undefined; }
   _time(d) { return FC_TIME.format(d); }  // 1.6.2: HST on any phone (the rows below and FLICA are HST)
@@ -146,6 +205,8 @@ class FlightWatcherClockCard extends HTMLElement {
   }
   _render() {
     if (!this._root || !this._h) return;
+    this._stamp();
+    if (this._ageOnly()) return;
     const $ = (i) => this._root.getElementById(i), now = Date.now();
     const card = this._root.querySelector("ha-card");
     const lc = Date.parse(this._st("sensor.flight_watcher_last_check"));
@@ -189,8 +250,6 @@ class FlightWatcherClockCard extends HTMLElement {
     else if (st === "backoff") { cls = "info"; label = "Reconnecting."; msg = cap(note); }
     else { cls = "err"; label = "Stopped, needs you."; msg = cap(note || st.replace(/_/g, " ")) + ". Fix that, then press Re-arm."; }
     card.className = cls; $("st").textContent = label; $("msg").textContent = msg;
-    if (isNaN(lc)) { $("lt").textContent = "never"; $("la").textContent = ""; }
-    else { $("lt").textContent = this._time(new Date(lc)) + " HST"; $("la").textContent = "(" + this._dur(age) + " ago)"; $("la").className = blind ? "blind" : "k"; }
     if (!["idle", "hunting"].includes(st)) { $("nt").textContent = "none"; $("na").textContent = ""; }
     else if (!isNaN(nc) && nc > now - 30000) { $("nt").textContent = this._time(new Date(nc)) + " HST"; $("na").textContent = nc > now ? "(in " + this._dur((nc - now) / 1000) + ")" : "(due now)"; }
     else if (!isNaN(lc)) {
@@ -236,4 +295,4 @@ class FlightWatcherClockCard extends HTMLElement {
 }
 customElements.define("flight-watcher-clock-card", FlightWatcherClockCard);
 window.customCards = window.customCards || [];
-window.customCards.push({ type: "flight-watcher-clock-card", name: "Flight Watcher clock", description: "Flight Watcher status, last and next check, and controls in one line" });
+window.customCards.push({ type: "flight-watcher-clock-card", name: "Flight Watcher clock", description: "Flight Watcher status, data age, next check and controls in one line (mode: age, the data age alone)" });

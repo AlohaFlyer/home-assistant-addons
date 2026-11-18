@@ -644,12 +644,18 @@ def test_the_dashboard_snapshot_has_no_weather_view_and_matches_its_sha():
     assert views == ["watcher", "flight", "details", "recall", "settings"]
     readme = open(os.path.join(ROOT, "ha", "README.md"), encoding="utf-8").read()
     # the snapshot's sha256 is in the README. 1.7.2 live (Nov 13): the van alert settings tiles are applied, then the
-    # Working Flight view keeps the layover card only; the snapshot and Pako's dashboard have the same sha256 (read
-    # 2026-11-14) and nothing is pending
+    # Working Flight view keeps the layover card only; the snapshot and Pako's dashboard had the same sha256 (read
+    # 2026-11-14, be03a0a4...). 1.7.12: the Details view's data age stamp is the one edit pending (applied at release
+    # time with Ryan's yes), so the snapshot is one edit ahead of Pako and nothing else is pending
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    assert sha == "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" and sha in readme
+    assert sha == "7a3b3903c6d9bba5d59d0f059642772852df3ad1fd56a6cecc574c64173da530" and sha in readme
+    assert "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" in readme
     assert "Applied on Pako 2026-11-13 about 05:47 HST (1.7.2): van alert settings" in readme
-    assert "Pending on Pako" not in readme and "ahead of Pako" not in readme
+    head = "## Pending on Pako (1.7.12): the Details view's data age stamp\n"
+    assert readme.count("## Pending on Pako") == 1 and head in readme
+    i = readme.index(head)
+    rest = readme[:i] + readme[readme.index("\n## ", i + len(head)):]
+    assert "Pending on Pako" not in rest and "ahead of Pako" not in rest
     assert "lat=" not in text and "windy" not in text.lower()
     assert os.path.exists(os.path.join(ROOT, "ha", "packages", "flight_watcher_wx.yaml"))  # the wx package stays
     claude = open(os.path.join(ROOT, "CLAUDE.md"), encoding="utf-8").read()

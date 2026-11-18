@@ -642,6 +642,18 @@ section in browse mode: "Share with <pilot>" per portal pilot and "AI notes", bo
 **Clock card** (1.7.9, F#92): the Re-arm confirm names the state and what Re-arm does there (stuck: a full check, no
 new login; stepped aside: a login when the step-aside ends; reconnecting: at the next login try; stopped: one login).
 
+**Data age** (1.7.12, Ryan, Nov 17: "Replace the two clocks ("updated" and "Last check") with one "data age" stamp.
+Turn it amber past 1x the normal interval and red past 2x."): the clock card's status line reads "Data age 12 min"
+where it read "Last HH:MM:SS HST (N ago)", then Next as before; the schedule card's header reads the same stamp where
+it read "updated ...". It is the time since the Watcher's last good read (`sensor.<prefix>_last_check`, set only when a
+check succeeds), amber with "stale" past 1x the check interval (the normal one in minutes, the hunt one in seconds
+while hunting), red with "very stale" past 2x, plain otherwise; "Data age unknown" with no colour when the last check
+time is not known (an unknown interval shows the age with no colour). Its hover text has the last good read in HST
+(clock card) or FLICA's own schedule time, "FLICA updated Nov 9, 2026 09:54:34" (schedule card), and the thresholds.
+It ticks each second without a reload. On the Details view the clock card with `mode: age` is the stamp alone, in
+place of the "Last check" tile. A pilot's portal shows it on his clock and schedule cards from the entities it already
+has. The pot card's "Pot last read ..." note is unchanged.
+
 **Pilots** (1.7.8, `flight-watcher-pilotdb-card.js`, the pilot database above; admin only): on the Settings tab above
 the tickets (`type: custom:flight-watcher-pilotdb-card`), a status line (counts, source dates, seniority.md and copy
 times), a search (name words, an employee number, `s812` for a Sen #, "quoted" text in the notes) with filter chips

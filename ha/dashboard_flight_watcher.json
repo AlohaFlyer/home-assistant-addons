@@ -304,12 +304,11 @@
                   "type": "tile"
                 },
                 {
-                  "entity": "sensor.flight_watcher_last_check",
                   "grid_options": {
                     "columns": 6
                   },
-                  "name": "Last check",
-                  "type": "tile"
+                  "mode": "age",
+                  "type": "custom:flight-watcher-clock-card"
                 },
                 {
                   "entity": "update.flight_watcher_update",

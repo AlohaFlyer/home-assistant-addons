@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.7.12
+
+### One data age stamp in place of the two clocks
+
+Ryan, Nov 17 (approved): "Replace the two clocks ("updated" and "Last check") with one "data age" stamp. Turn it amber
+past 1x the normal interval and red past 2x." No FLICA page load, no new entity, no contract change.
+
+- **The stamp**: "Data age 12 min", the time since the Watcher's last good read (`sensor.<prefix>_last_check`, which a
+  check sets only when it succeeds): seconds under a minute, then minutes, hours and minutes, days and hours. Amber
+  with the word "stale" past 1x the check interval (`number.<prefix>_normal_check_every`, minutes; while hunting, the
+  switch on or the state `hunting`, `number.<prefix>_hunt_check_every`, seconds), red with "very stale" past 2x, plain
+  otherwise. The word goes with the colour, so the colour is never the only cue (colour-blind users, screen readers).
+  A last check time that is unknown, unavailable, missing or not a time reads "Data age unknown" with no colour; an
+  interval that is unknown or 0 leaves the age shown with no colour. Amber `#8a5300` and red `#c62828` on a light card,
+  `#ffb74d` and `#ef9a9a` on a dark one (Home Assistant's dark mode, the portal's from the device), WCAG AA on both.
+  The code is one block (`// ---- shared data age ...`) the clock and schedule cards carry byte for byte (the cards load
+  one file each, so a shared file would change the portal's card bundle); `tests/test_fw1712_data_age.py` keeps the
+  copies equal.
+- **Clock card**: "Last HH:MM:SS HST (N ago)" gives way to the stamp; "Next" stays. The last good read's HST time is
+  in its hover text with the thresholds ("Last good read 01:27:00 HST. Stale past 6 min, very stale past 12 min: 1x
+  and 2x the normal check interval."). It ticks with the card's 1 s redraw. The Stuck state, its Re-arm and its card
+  colour are as before (with the interval known, Stuck reads red on the stamp too: its limit is past 2x).
+- **Clock card, `mode: age`**: the stamp alone (no controls), for the Details view.
+- **Schedule card**: the header's "updated ..." gives way to the same stamp. FLICA's own schedule time (the schedule
+  sensor's `updated`) is only in the stamp's hover text, "FLICA updated Nov 9, 2026 09:54:34. Data age: ...". The
+  stamp ticks each second by itself (that one span; the card still redraws only when its entities change), and stops
+  off the page.
+- **Details view** (`ha/dashboard_flight_watcher.json`): the "Last check" tile becomes
+  `{"grid_options": {"columns": 6}, "mode": "age", "type": "custom:flight-watcher-clock-card"}` in its place. Pending
+  on Pako (`ha/README.md`): applied through the HA connector right after 1.7.12 is live, with Ryan's yes.
+- **A pilot's portal**: his clock and schedule cards (the same files, his entity ids) show the same stamp, from the
+  entities the portal already exports (state, last check, the two intervals, hunt mode). Nothing new is exported; the
+  portal's tabs and card bundle are as they were.
+- The pot card's "Pot last read ..." note (after 15 min) is unchanged.
+- Tests: `tests/test_fw1712_data_age.py` (synthetic states): the age text and both thresholds in normal and hunt mode
+  (1x and 2x exactly are not past them), unknown or missing values (no colour, "Data age unknown"), the clock card and
+  the schedule header in Chromium at 390 px light and dark (the portal's theme and Home Assistant's) with WCAG AA, the
+  ticks without a reload or a redraw, the Details view snapshot and its sha256. The clock card's HST check and the
+  award line's check read the stamp's hover text now.
+
 ## 1.7.11
 
 Ryan's ticket run of Nov 17, 2026. FW-0075 is Ryan's; FW-0076 and FW-0078 are James's, built on Ryan's yes naming
