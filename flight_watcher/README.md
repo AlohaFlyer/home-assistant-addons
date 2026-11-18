@@ -671,6 +671,23 @@ the rebuild loads no FLICA page (`inflt_skip`; "-" with the reason on hover); on
 by employee number; the pickers table counts it), all within the paced in-flight budget (`INFLT_PER_CHECK` lookups a
 check), read only.
 
+**When to hunt** (1.7.16, Ryan, Nov 17: "show median time to pickup by layover city and by day of week/time of day, so
+I know when to run Hunt"): a section at the top of the FO / RO pickers card. From the pickups that card counts
+(`picker_log`: each open-seat picker once a pickup, at his own scored speed; one capped at Ryan's request time counts
+at its cap and its group's median and fastest read "at most", the sign ≤), the median time to pickup, the count and
+the fastest by layover (the trip's layover station, else its turn station, as Common Layover), by the HST weekday and
+by the HST time of day (00-06, 06-12, 12-18, 18-24) the trip entered the pot (the earlier of its first sighting and
+FLICA's alert; a pickup whose find is no longer on file, or whose trip came back into the pot since, counts from its
+pickup time less its speed). Each table runs by median, the groups of 5 or more pickups first; a group of fewer is
+grey, too few to trust, and never the tip. The tip names the fastest day and the fastest time of day of 5 or more
+("Trips go fastest when they enter the pot Tue 18-24 HST: median 4 min (n 12).", the pickups that share both when they
+are 5 or more, else each one's own figures). The tables are collapsed when they run past 12 rows. The aggregates ride
+on `sensor.<prefix>_pickers` as `speed` (`{n, min_n, city, dow, band, tip, more}`, each group `[label, n, median_s,
+fastest_s, capped_n, fastest_capped]`; at most 2500 bytes, the layovers with the fewest pickups left out first and
+counted in `more`), so the pilot portal shows the same from the sensor it already gets (no contract change). Each
+instance counts its own pickups; they are recomputed only when a pickup is scored or rescored (or the log trimmed),
+never per check, and load no FLICA page. No name, employee number or pairing is in them.
+
 **Pilots on a pilot's portal** (1.7.9, the same card file with `FW_PORTAL` on, contract 1 revision 4): on the Pilot
 tab under the pilot card. 1.7.10 (Ryan's decisions of Nov 15): a full browse and search of every pilot, as Ryan's
 card, on by default. The pilot looked up, and "All pilots": a search (name words, an employee number, s812 for a

@@ -235,6 +235,125 @@ def fmt_dur(sec):
     if sec >= 60:
         return f"{sec // 60}m {sec % 60:02d}s"
     return f"{sec}s"
+
+
+# ---- 1.7.16 (Ryan, Nov 17): "show median time to pickup by layover city and by day of week/time of day, so I know
+# when to run Hunt". From the pickups the FO / RO pickers card counts (picker_log: each open-seat picker once a
+# pickup, at his own scored speed; one capped at Ryan's request time counts at its cap and is flagged), grouped by
+# layover (lay_of: the layover station, else the turn station), by the HST weekday and by the HST time of day the
+# trip entered the pot. Aggregates only: no name, no employee number, no pairing.
+SPEED_MIN_N = 5  # a group of fewer pickups is too few to trust: grey on the card, never the tip
+SPEED_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+SPEED_BANDS = ("00-06", "06-12", "12-18", "18-24")  # HST, by the hour the trip entered the pot
+SPEED_ATTR_MAX = 2500  # bytes of sensor.<prefix>_pickers' speed attribute (compact JSON); the cities give way first
+
+
+def median_s(xs):
+    """The median of whole seconds: the middle one, or with an even count the mean of the two middle ones rounded to
+    the nearest second (a half up); None for none."""
+    s = sorted(xs)
+    n = len(s)
+    if not n:
+        return None
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2] + 1) // 2
+
+
+def hst_slot(iso):
+    """(weekday, band) in HST of a stored time ('Tue', '18-24'): the store keeps UTC ISO (any offset reads; none is
+    UTC). Hawaii keeps no daylight time, so a fixed -10 h is right all year. None when the time does not read."""
+    try:
+        t = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return None
+    loc = (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).astimezone(HST)
+    return SPEED_DAYS[loc.weekday()], SPEED_BANDS[loc.hour // 6]
+
+
+def speed_entry(first, alert, at, secs):
+    """When a logged pickup's trip entered the pot (UTC ISO): dwell()'s entry (the first sighting or FLICA's alert, the
+    earlier) while its find is on file and that is not after the pickup was logged; else (the find gone, or the trip
+    back in the pot since, with a new first sighting) the pickup's time less its speed, which is late by at most half
+    the check window (the speed is the middle of it). '' when nothing reads."""
+    try:
+        if first:
+            f = datetime.fromisoformat(first)
+            entry = min(f, datetime.fromisoformat(alert)) if alert else f
+            if not at or entry <= datetime.fromisoformat(at):
+                return entry.astimezone(timezone.utc).isoformat()
+        if at and secs is not None:
+            return (datetime.fromisoformat(at) - timedelta(seconds=int(secs))).astimezone(timezone.utc).isoformat()
+    except (TypeError, ValueError):
+        pass
+    return ""
+
+
+def tip_dur(sec):
+    """'45 s', '4 min', '1 h 05 min' for the When to hunt tip (to the nearest minute from 1 min up)."""
+    sec = int(sec)
+    if sec < 60:
+        return f"{sec} s"
+    m = (sec + 30) // 60
+    return f"{m} min" if m < 60 else f"{m // 60} h {m % 60:02d} min"
+
+
+def _speed_groups(rows, label, order, min_n):
+    """[[label, n, median_s, fastest_s, capped_n, fastest_capped (0/1)]]: the groups with 5 or more pickups by median
+    (a tie: more pickups first, then order), then the too few the same way."""
+    groups = {}
+    for r in rows:
+        k = label(r)
+        if k:
+            groups.setdefault(k, []).append(r)
+    out = []
+    for k, rs in groups.items():
+        secs = [s for s, _c, *_ in rs]
+        fast = min(secs)
+        out.append([k, len(rs), median_s(secs), fast, sum(1 for _s, c, *_ in rs if c),
+                    int(any(c for s, c, *_ in rs if s == fast))])
+    return sorted(out, key=lambda g: (g[1] < min_n, g[2], -g[1], order(g[0])))
+
+
+def speed_summary(rows, min_n=SPEED_MIN_N):
+    """rows [(secs, capped, lay, entry ISO)] -> {n, min_n, city, dow, band, tip}: the median time to pickup, the count
+    and the fastest by layover, by HST weekday and by HST band the trip entered the pot (_speed_groups). The tip names
+    the fastest day and the fastest band of 5 or more pickups: with the median and count of the pickups they share
+    when those are 5 or more, else each one's own; from one table when only it has one; '' when neither has."""
+    rows = [(int(s), bool(c), (lay or "").strip().upper(), hst_slot(e) if e else None)
+            for s, c, lay, e in rows if s is not None]
+    city = _speed_groups(rows, lambda r: r[2], lambda k: k, min_n)
+    dow = _speed_groups(rows, lambda r: r[3] and r[3][0], SPEED_DAYS.index, min_n)
+    band = _speed_groups(rows, lambda r: r[3] and r[3][1], SPEED_BANDS.index, min_n)
+    day = dow[0] if dow and dow[0][1] >= min_n else None
+    bnd = band[0] if band and band[0][1] >= min_n else None
+
+    def med(g):
+        return f"median {'at most ' if g[4] else ''}{tip_dur(g[2])}"
+    tip = ""
+    if day and bnd:
+        both = _speed_groups([r for r in rows if r[3] == (day[0], bnd[0])], lambda r: "x", lambda k: 0, min_n)
+        if both and both[0][1] >= min_n:
+            tip = f"Trips go fastest when they enter the pot {day[0]} {bnd[0]} HST: {med(both[0])} (n {both[0][1]})."
+        else:
+            tip = (f"Trips go fastest when they enter the pot on {day[0]} ({med(day)}, n {day[1]}) and at {bnd[0]} HST "
+                   f"({med(bnd)}, n {bnd[1]}).")
+    elif day:
+        tip = f"Trips go fastest when they enter the pot on {day[0]}: {med(day)} (n {day[1]})."
+    elif bnd:
+        tip = f"Trips go fastest when they enter the pot at {bnd[0]} HST: {med(bnd)} (n {bnd[1]})."
+    return {"n": len(rows), "min_n": min_n, "city": city, "dow": dow, "band": band, "tip": tip}
+
+
+def speed_payload(summary, max_bytes=SPEED_ATTR_MAX):
+    """summary (speed_summary) with 'more': at or under max_bytes of compact JSON, the cities with the fewest pickups
+    left out first (more = how many); the weekdays (7), the bands (4) and the tip are never cut."""
+    out = dict(summary, city=list(summary.get("city") or []), more=0)
+    while out["city"] and len(json.dumps(out, separators=(",", ":"))) > max_bytes:
+        i = min(range(len(out["city"])), key=lambda j: (out["city"][j][1], -j))  # the fewest, the slowest of those
+        out["city"].pop(i)
+        out["more"] += 1
+    return out
+
+
 KEEP_DAYS = 731  # 0.9.4 (Ryan): finds, matches and submissions kept 24 months
 
 
@@ -282,6 +401,8 @@ class Store:
         except sqlite3.OperationalError:
             pass
         self.default_state = default_state or {}
+        # 1.7.16: the When to hunt aggregates (speed_stats), kept until picker_log changes (_speed_dirty)
+        self._speed, self._speed_gen = None, 0
         self._backfill_picker_log()
         if legacy_json and os.path.exists(legacy_json) and self.get("state") is None:
             try:
@@ -428,6 +549,7 @@ class Store:
                     self.db.execute("INSERT OR IGNORE INTO picker_log(key,emp,at,secs,approx,lay) VALUES(?,?,?,?,?,?)",
                                     (lk, emp, gone, pk.get("scored"), int(bool(pk.get("approx"))), lay))
                     self.db.execute("UPDATE picker_log SET lay=? WHERE key=? AND (lay IS NULL OR lay='')", (lay, lk))
+        self._speed_dirty()
 
     def rebuild_pickers(self):
         """1.7.7, once (pickers_rebuild_v): the pickers table and picker_log from the stored pickups, each open-seat
@@ -498,7 +620,37 @@ class Store:
                 raise
             self.db.execute("COMMIT")
         self.put("pickers_rebuild_v", PICKERS_V)
+        self._speed_dirty()
         return {"pickups": scored, "pickers": count, "inflt_dropped": reset}
+
+    # ---- 1.7.16 (Ryan, Nov 17): When to hunt, the median time to pickup by layover, HST weekday and HST band
+    def _speed_dirty(self):
+        """picker_log changed (a pickup scored or rescored, the log rebuilt or trimmed): speed_stats recomputes once."""
+        self._speed_gen += 1
+
+    def _speed_rows(self):
+        """[(secs, capped, lay, entry ISO)]: every scored row of picker_log (the pickups the pickers card counts), the
+        entry from its find (speed_entry)."""
+        with self.lock:
+            logs = self.db.execute("SELECT key,emp,at,secs,cap,lay FROM picker_log WHERE secs IS NOT NULL").fetchall()
+            finds = {k: (f, a) for k, f, a in self.db.execute("SELECT key,first_seen,alert_at FROM finds "
+                                                              "WHERE pickup IS NOT NULL").fetchall()}
+        out = []
+        for lk, emp, at, secs, cap, lay in logs:
+            fk = lk[:-len(emp) - 1] if emp and lk.endswith(f"|{emp}") else lk  # log_key(find key, emp)
+            first, alert = finds.get(fk, (None, None))
+            out.append((secs, bool(cap), lay or "", speed_entry(first, alert, at, secs)))
+        return out
+
+    def speed_stats(self):
+        """sensor.<prefix>_pickers' speed attribute (speed_payload of speed_summary): computed from picker_log when a
+        pickup changed since the last call, else the same object again (the sensor is published every check)."""
+        gen = self._speed_gen
+        if self._speed is not None and self._speed[0] == gen:
+            return self._speed[1]
+        out = speed_payload(speed_summary(self._speed_rows()))
+        self._speed = (gen, out)
+        return out
 
     def picker_stats(self, now=None):
         """{emp: {name, pos, n, total_s, last_at, inflt_n, month_n, year_n, lays, last_lay}}; month and
@@ -602,6 +754,7 @@ class Store:
                 pickup["approx"] = True
             self.db.execute("UPDATE finds SET pickup=? WHERE key=?", (json.dumps(pickup), key))
             self.db.execute("COMMIT")
+            self._speed_dirty()
             return secs
 
     # ---- crew directory (0.8.2, Ryan: look anybody up by name)
@@ -701,6 +854,7 @@ class Store:
             self.db.execute("UPDATE pickers SET total_s=(SELECT COALESCE(SUM(secs),0) FROM picker_log WHERE picker_log.emp=pickers.emp), "
                             "n=(SELECT COUNT(*) FROM picker_log WHERE picker_log.emp=pickers.emp)")
             self.db.execute("COMMIT")
+            self._speed_dirty()  # 1.7.16: the When to hunt aggregates are recomputed on the next publish
 
     def set_req_cap(self, key, at, emp):
         """1.7.10 (Ryan, Nov 15): keep on a find's pickup the time of the own request FLICA denied because this picker
@@ -1231,3 +1385,4 @@ class Store:
             self.db.execute("DELETE FROM finds WHERE gone_at IS NOT NULL AND gone_at<?", (cut,))
             self.db.execute("DELETE FROM submissions WHERE at<?", (cut,))
             self.db.execute("DELETE FROM picker_log WHERE at<?", ((datetime.now(timezone.utc) - timedelta(days=LOG_KEEP_DAYS)).isoformat(),))
+        self._speed_dirty()
