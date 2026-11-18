@@ -358,10 +358,10 @@ def test_ryans_card_says_what_a_shared_pilot_now_sees():
 
 # ---------------------------------------------------------------- the release
 def test_version_is_one_seven_ten():
-    # 1.7.11 (FW-0075), then 1.7.12 to 1.7.16, went on top: the version itself is pinned in test_release_c_tickets;
+    # 1.7.11 (FW-0075), then 1.7.12 to 1.7.17, went on top: the version itself is pinned in test_release_c_tickets;
     # the 1.7.10 section stays
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.7.16\n") and "\n## 1.7.10\n" in log and "\n## 1.7.9\n" in log
+    assert log.startswith("# Changelog\n\n## 1.7.17\n") and "\n## 1.7.10\n" in log and "\n## 1.7.9\n" in log
     top = log.split("\n## 1.7.10\n", 1)[1].split("\n## 1.7.9\n")[0]
     for word in ("union", "AI note", "revision 4", "Boundary changes", "After the update", "100%", "on by default"):
         assert word in top, word

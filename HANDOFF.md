@@ -43,6 +43,11 @@ ticket run of Nov 17 (CHANGELOG 1.7.11 has every section):
   layover, HST weekday and HST time of day the trip entered the pot (from `picker_log`, each pickup once, a capped
   speed "at most"), groups under 5 grey, a tip naming the fastest day and time slot of 5 or more; `speed` on the
   pickers sensor (aggregates only, at most 2500 bytes). No FLICA load, no new export, nothing pending on Pako.
+- 1.7.17 (Ryan, Nov 17): the pot and Tradeboard sensor rows carry `cm`, the airports the commute check passed both ways
+  from smart.json's timetables (PWA 26.QQ.2, customs release PWA 2.19.b; none without timetables, never a guess); the
+  pot card shows a "Commutable KOA LAS" chip. No FLICA load, no contract change (James's portal gets it as signed).
+  The HA Watcher view's `pot_table` macro (`flight_watcher.jinja`, not in git) and its Key line are a Pako edit at the
+  1.7.17 go-live, with Ryan's yes (custom templates reload).
 
 **Nov 16: 1.7.10 is contract 1 REVISION 5 and HOM 1.9.1 goes live FIRST.** Ryan: "His uploads should update the
 shared database too", and the contacts list upload on James's portal "Now, in 1.7.10". Built (commits "... a portal

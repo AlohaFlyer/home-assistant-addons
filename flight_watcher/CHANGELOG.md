@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.7.17
+
+### Commutable flag on pot trips
+
+Ryan, Nov 17: "Tag pot trips whose report and release times line up with my commutes from KOA and LAS." He chose the
+existing commute check and its smart.json timetables (no new windows). No FLICA page load, no contract change.
+
+- **The Watcher**: each row of `sensor.<prefix>_pot_count` and `sensor.<prefix>_tradeboard_pickups` carries `cm`, the
+  airports the commute check passed both ways, in smart.json's order (`["KOA", "LAS"]`; `smart.comm_tag`): two scheduled
+  nonstops arriving HNL before report (PWA 26.QQ.2) and one home at least smart.json's `home_gap_min` after release (60
+  min unless set), same day. A last leg from outside the US releases 30 min after block-in, not 15 (PWA 2.19.b); one
+  whose origin is not on file is judged both ways, so an airport that makes it only without customs is never tagged.
+  There is no `cm` key at all when no airport passes, when one is only unknown, or when smart.json is missing or has no
+  timetables: never a guess.
+- The full commute object (`comm`, `comm_why`) stays off both sensors as before (`SENSOR_DROP`); a row with no tag is
+  byte for byte the row it was. The DB, the finds month files, `last_new` and `event/new_pairing` are unchanged.
+- The Tradeboard's tag is judged again at each publish from the timetables on hand (a post's details are read once), so
+  a smart.json edit reaches it as it reaches the pot every check. So are the close-in folder's rows between its reads
+  (hunting, at most every 5 min) and after a failed read: an edit or removal of smart.json reaches their tag with no
+  page load, and a tag is never kept without timetables. Each instance reads its own smart.json
+  (`/share/flight_watcher/smart.json`; a second pilot's `/share/flight_watcher/<name>/smart.json`).
+- **Size**: about 19 bytes on a row commutable from two airports. The pot sensor stays at or under its 12 KB cap
+  (`cap_attrs` still cuts rows from the end). With every row tagged, the busiest synthetic pot keeps 18 rows where it
+  kept 19, and a lighter one keeps 34 where it kept 36.
+- **The pot card** (`flight-watcher-pot-card.js`: the portal's pot, and the admin's copy): a chip "Commutable KOA LAS"
+  beside Fits and FAR. It is in words, not color alone, and green like Fits (the F#119 colors, WCAG AA in light and
+  dark); hover shows the rule. Only three-letter codes are drawn. The Key gets a Commutable line when a row has the
+  chip; it gives the home flight as your smart.json home gap (`home_gap_min`, 60 min unless set), never a fixed 60. The
+  stale-pot banner's style no longer reaches the FAR chip "OK (CBA rest ...)": every chip on a row is one chip high
+  again (before, that chip's margin stretched Fits and the new chip beside it, text at the top).
+- **The HA Watcher view**: its pot table is the `pot_table` Jinja macro on Pako (not in git). The macro edit and the
+  dashboard Key line are in the release notes; they need Ryan's OK at the release step (custom templates reload).
+- **James's portal**: gets the tag with no contract change. state.json masks only `contact` and the www file keys, so
+  the new attribute passes through as signed. The contract fixture is unchanged (sha256 `a066d935...ed2ec9`), and his
+  copy of the pot card reads the same attribute. He sees chips only when his own smart.json has timetables; without one
+  his card is unchanged.
+- Tests: `tests/test_fw1717_comm_tag.py` (made-up KOA and LAS timetables, made-up pairings). It covers both ways, one
+  way only (not tagged), no timetables (no tag), and the customs release from a US station, from abroad and with the
+  origin not on file. It also covers smart.json's `domestic` list, the Tradeboard tag judged fresh, each instance's own
+  file, a worst-case pot under the cap, the portal pass-through and fixture hash, and the chip at 390 px on the portal
+  (light and dark, contrast checked) and on Home Assistant's themes. Review: the close-in rows judged again between
+  reads and after failed ones, the Key's home gap (45 and 90 min gaps), and the chip heights beside a CBA rest chip.
+  `tests/test_smart.py`'s sensor test now expects the tag as the one difference.
+
 ## 1.7.16
 
 ### When to hunt: pickup speed by layover, weekday and time of day
