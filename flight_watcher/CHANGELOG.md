@@ -7,21 +7,44 @@ both; FW-0079 and FW-0080 are follow-ups filed under Ryan from FW-0076 by james 
 scope "Everywhere"); the log masks on Ryan's "Fix the masking text too". **Contract 1 revision 6: HOM 1.9.2 goes
 live first.**
 
-### Own trip times are never blanked by a pairing page with no times
+### Own trip times are never blanked by a pairing page with no times; a trip across a month end counts once
 
 Ryan, Nov 17: "an own trip's times must never be blanked by a pairing page with no times. Keep times already read when a
 page has none, and re-read an empty record hourly." Before, `own_trip_times` wrote an empty record over the times read
 before whenever FLICA's pairing page came back with no report or arrival time, and an empty record was never read
 again (save on a full Check now), so the FAR column, the pay line and the working flight lost that trip.
+
+The cause (Ryan, Nov 17): the schedule card's Block read 91:04 against FLICA's 103:18. H3620 Nov 15 (block 12:21) had
+lost its times: at 16:48 HST, while the FLICA session was going, its in-progress re-read got a page with no times (the
+same page stopped pairing reads as "not a pairing page"), and the Watcher replaced the good record with an empty one.
+An empty record counted as cached, so it was never read again and the block stayed out of the month. No new kind of
+FLICA page, no change to budgets, pacing or the one-session rule; read only as before.
 - A page with no times keeps the times already read; one log line says so ("no times on the pairing page; the times
   read before are kept"). A trip with no times read yet stays an empty record, as before.
+- A page that stops pairing reads (the Flica client's breaker judged that very page: not a pairing page) is no read at
+  all: the times on file and `own_empty_at` stay exactly as they were, a trip never read gets no empty record, and the
+  trips after it in the same check are kept (never pruned) and load nothing ("the page stopped pairing reads; the
+  times on file are kept").
 - `S["own_empty_at"]` holds, per trip, when its page last had no times. Such a trip is read again at most once an hour
   (`OWN_EMPTY_RETRY_S`), whether it has times from before or none, inside the per-check limit (`OWN_PER_CHECK`, 3) and
   the 1.5 to 3.5 s pacing. A read with times clears it; a trip leaving the schedule takes it along. The only new FLICA
   load: one pairing page per empty trip per hour, as Ryan asked.
+- Schedule card, FAR-100/672 and Room (Ryan, Nov 17: "are they gonna say I am over block on Dec 02?"): a trip
+  across a month end (H3607 Nov 30 to Dec 2) is on both months' schedules, and the card counted it once per month, so
+  its block went in twice: 101:17 on Dec 2 and Room -7:31, against a real 83:42 (highest window Nov 30 to Dec 14:
+  89:56). It now enters the card's trip list once (same rule as recall.line_records), in both months' views. FLICA
+  gives a trip in progress no code day on a later page, so both pages list it at its own start (or the later page
+  not at all): one trip and start is one trip.
+- Checked for the same double count wherever two months' schedule items are joined (a synthetic trip across a month
+  end, old code and new): the card's own trip list was the only one. The card's Block, Credit and Pay totals, its
+  carried-in trips and prices (keyed by trip and start), FAR-30/7 and Legal next, the Watcher's FAR column and 98/672
+  tag (recall.line_records), the Recall/O75 lines (recall.held_at) and the working flight (working.py) count it once.
 - Tests: `tests/test_own_trip_blank.py` (synthetic pairings, both instances): times kept, hourly re-read, the
   pre-1.7.11 empty record read once then hourly, an in-progress trip with kept times not re-read every check, the
-  per-check limit, pruning, and no load for a trip with times.
+  per-check limit, pruning, no load for a trip with times, and a page that stops pairing reads (times and
+  `own_empty_at` unchanged, the later trip not pruned, no further load, no empty record for a trip never read);
+  `tests/test_card_cross_month_672.py` (Chromium, made-up pairing X9607: Nov 30, Dec 2 and Dec 5 in both months'
+  views).
 
 ### FW-0075: move the van time in 5 minute steps
 

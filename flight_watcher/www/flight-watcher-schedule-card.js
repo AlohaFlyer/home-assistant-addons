@@ -767,8 +767,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
       const prevItems = (SM[prevKey] || {}).items || [];
       const nextKey = new Date(Date.UTC(y, m + 1, 1)).toISOString().slice(0, 7);
       const nextItems = (SM[nextKey] || {}).items || [];
+      // 1.7.11 (Ryan, Nov 17: "over block on Dec 02?"): a trip across a month end (H3607 Nov 30 to Dec 2) is on both
+      // months' schedules; it is ONE trip, so it enters own (and the FAR legs, duties, rest) once (recall.line_records'
+      // rule). FLICA gives a trip in progress no code day on a later page: a page lists it at its start or not at all
+      const ownSeen = new Set();
       for (const it of [...prevItems, ...items, ...nextItems]) {
         if (it.trip === "VAC" || !/^[A-Z]\d{4}/.test(it.trip || "")) continue;
+        if (ownSeen.has(`${it.trip}|${it.start}`)) continue;
+        ownSeen.add(`${it.trip}|${it.start}`);
         const t = ownT[`${it.trip}|${it.start}`] || {};
         const p = pk ? pk[it.trip.slice(0, 5)] : null;
         let rep = null, rel = null;

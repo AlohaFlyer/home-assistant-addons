@@ -164,6 +164,51 @@ def test_a_trip_in_progress_with_kept_times_is_read_at_most_hourly(W):
     assert fl.loads == ["H9001", "H9001"] and _have_times(W.S["own_trips"][K1])
 
 
+class Stopping(Pages):
+    """1.7.11: FLICA hands out a page with no times, and the Flica client's own check of that very page (page_verdict:
+    not a pairing page, as while the FLICA session is going) stops every pairing read before own_trip_times sees it."""
+
+    def __init__(self, W, **answers):
+        super().__init__(**answers)
+        self.W = W
+
+    def fetch(self, url):
+        page = super().fetch(url)
+        self.W.BRK.fail("pairing", "not a pairing page (a page the parser does not know)", "unknown")
+        return page
+
+
+def test_a_page_that_stops_pairing_reads_is_no_read(W, caplog):
+    """Ryan, Nov 17 (H3620 Nov 15 lost its times at 16:48 HST while the FLICA session was going): a page the breaker
+    stopped pairing reads on is no read at all. The times on file and own_empty_at stay exactly as they were, a later
+    trip in the same check is not pruned, and nothing more loads from FLICA in that check."""
+    W.CLOCK["now"] = datetime(2026, 11, 20, 23, 0)  # on H9001: its 6 h in-progress re-read is due
+    W.S["own_trips"] = {K1: dict(TIMES, read_at="2026-11-20T10:00:00", final=False, legs=[], soft="2:00"),
+                        K2: dict(TIMES, read_at="2026-11-17T11:00:00", final=False, soft="2:00")}  # no legs: due too
+    W.S["own_empty_at"] = {K1: "2026-11-20T19:00:00"}  # an earlier page had no times, over an hour ago
+    before = json.loads(json.dumps({"own": W.S["own_trips"], "empty_at": W.S["own_empty_at"]}))
+    fl = Stopping(W, H9001=["none"], H9002=["times"])
+    caplog.set_level("INFO")
+    W.own_trip_times(fl)
+    assert not W.BRK.allow("pairing")  # the page stopped pairing reads
+    assert fl.loads == ["H9001"], "a FLICA load after the page that stopped pairing reads"
+    assert W.S["own_trips"] == before["own"], "a page that stopped pairing reads changed the times on file"
+    assert W.S["own_empty_at"] == before["empty_at"], "a page that stopped pairing reads counted as a page with no times"
+    assert _have_times(W.S["own_trips"][K1]) and K2 in W.S["own_trips"]  # the later trip is kept, not pruned
+    assert "page stopped pairing reads" in caplog.text
+    sensor = [json.loads(p) for t, p, _ in W.FAKE.msgs if t == f"{W.T}/own_trips"][-1]["trips"]
+    assert sensor[K1]["blk"] == "10:00" and sensor[K2]["blk"] == "10:00"
+
+
+def test_a_page_that_stops_pairing_reads_leaves_no_empty_record(W):
+    """A trip never read whose first page stopped pairing reads gets no empty record and no empty_at: it is read as
+    soon as pairing reads go again, not an hour later."""
+    fl = Stopping(W, H9001=["none"])
+    W.own_trip_times(fl)
+    assert fl.loads == ["H9001"]
+    assert K1 not in W.S.get("own_trips", {}) and K1 not in W.S.get("own_empty_at", {})
+
+
 def test_the_per_check_limit_still_holds_and_empty_at_is_pruned_with_the_trip(W):
     marks = [(f"2026-11-{d:02d}", f"H90{d:02d}", "SFO") for d in range(2, 12, 2)]  # five one-day trips
     W.S["schedule"] = {"2026-11": _sched(marks)}

@@ -14,6 +14,9 @@ ticket run of Nov 17 (CHANGELOG 1.7.11 has every section):
 - FW-0079 (same source): on a phone the pilot card's Crew column gives way to a crew list under the grid.
 - Log masks: fixed log texts are no longer blanked (a sweep test walks every log call), dates and schedule versions
   are no phone numbers; the leak review found and closed 12 ways a phone or number got through.
+- Own trips (Ryan's pasted patch, folded into PR 124): a page with no times, or one that stops pairing reads, never
+  blanks times read before (H3620 Nov 15: Block 91:04 vs FLICA's 103:18); a trip across a month end counts once in the
+  schedule card's FAR-100/672 and Room (H3607 Nov 30 to Dec 2: 101:17 on Dec 2, real 83:42).
 - FW-0073 / FW-0074 (Ryan): the LAS layover guide is on Pako and both are closed. FW-0077 (James): fixed in 1.7.10,
   left `fixed` for him to verify. James's FW-0076 and FW-0078 stay `fixed` for him to verify after 1.7.11.
 

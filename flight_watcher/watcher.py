@@ -3374,6 +3374,12 @@ def own_trip_times(fl, full=False):
                "&FROM=MobileOpentimePot&CurrentPage=1")
         try:
             page = fl.fetch(url)
+            if not BRK.allow("pairing"):
+                # 1.7.11 (Ryan, Nov 17): this very page stopped pairing reads (the Flica client judged it: not a
+                # pairing page, as while the FLICA session is going): it is no read. The times on file and own_empty_at
+                # stay as they were; the trips after it still reach keep (never pruned) and load nothing
+                log.info("own trip %s: the page stopped pairing reads; the times on file are kept", k)
+                continue
             if classify(page) == "ok":
                 d = parse_detail(page)
                 if d.get("report") and d.get("last_arr"):
