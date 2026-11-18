@@ -69,7 +69,7 @@ import pilotpdf as PP
 import pilotdb as PDBM
 import pdbshare as PS
 
-VERSION = "1.7.13"
+VERSION = "1.7.14"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -1437,6 +1437,12 @@ def entity_defs():
         ("sensor", "swap_ideas", {"name": "Swap ideas", "state_topic": f"{T}/swap/state",
                                   "value_template": "{{ value_json.count }}",
                                   "json_attributes_topic": f"{T}/swap/state", "icon": "mdi:swap-horizontal-circle"}),
+        # 1.7.14 (Ryan, Nov 17): the pot trips hidden by a VAC day, a blocked day or one of his own trips, with what to
+        # change to fly each, the pay difference and FAR 117 (near_misses). Every instance its own; off a portal
+        # (roles.ENTITY_OFF_PORTAL) until a contract revision exports it
+        ("sensor", "near_misses", {"name": "Near misses", "state_topic": f"{T}/near/state",
+                                   "value_template": "{{ value_json.count }}",
+                                   "json_attributes_topic": f"{T}/near/state", "icon": "mdi:calendar-remove"}),
         ("switch", "auto_swap", {"name": "Auto swap (dry run)", "command_topic": f"{T}/auto_swap/set",
                                  "state_topic": f"{T}/auto_swap/state", "icon": "mdi:robot"}),
         ("sensor", "swap_mode", {"name": "Swap mode", "state_topic": f"{T}/swap_mode/state",  # FW-0028: read only
@@ -1661,6 +1667,7 @@ ATTR_TRIM = {
     "drop/state": ("keys", "front"), "trade/state": ("keys", "front"), "last_tradeboard": (None, None),
     "last_new": (None, None), "last_match": (None, None), "crew_index": ("waiting_for_award", "front"),
     "uploads": ("files", "end"),  # FW-0066: newest first, so the oldest files go
+    "near/state": ("misses", "end"),  # 1.7.14: legal and the best pay difference first, so the least useful go
 }
 ATTR_LOGGED = set()
 
@@ -3083,7 +3090,8 @@ def far_trips(ev, exclude=None):
     pickup's block and duty periods; recall.line_records: his schedule items flown and to fly, their times and blocks
     from own_trips, and the days around the pickup no schedule month on file covers), or (None, why) when the pickup's
     dates, report or final arrival are not known. The FAR column (far_screen) and the 672 h block check (1.7.1,
-    smart.block_672) read the same trips. exclude: 'TRIP|YYYY-MM-DD' of his own trip to leave out (a swap)."""
+    smart.block_672) read the same trips. exclude: 'TRIP|YYYY-MM-DD' of his own trip to leave out (a swap), or (1.7.14)
+    a tuple of such keys (a near miss that overlaps more than one of his trips)."""
     s, e = _span(ev)
     if not s:
         return None, "pickup dates unknown"
@@ -12230,6 +12238,244 @@ def publish_pot(flat):
     pub("pot/state", {"count": len(flat), "pairings": [sensor_row(r) for r in flat[:60]]})
 
 
+# ---------------------------------------------------------------- 1.7.14 (Ryan, Nov 17): near misses in the open time pot
+# "In the open time pot, for each trip hidden by a VAC or blocked day, show what I'd have to drop or swap to fly it, plus
+# the pay difference." Each pot row (the open time pot and the close-in folder, as publish_pot has them) that touches a
+# VAC day, a blocked day or one of the pilot's own trips: what stands in the way, what to change to fly it, the pay
+# difference and FAR 117 legality with the conflict removed. Information only, from what is on hand (the pot rows, his
+# schedule, own trip records, blocked days, the pairings package file and Pay settings): no FLICA page load, nothing
+# sent, nothing added, dropped, swapped or requested. Its own sensor (near/state, sensor.<prefix>_near_misses), never on
+# the pot sensor (its 12 KB cap); each instance computes its own from its own state (nothing crosses instances).
+NEAR_ROWS = 20  # misses on the sensor (count says how many there are); cap_attrs' ATTR_MAX is the byte backstop
+NEAR_WHY_MAX = 160  # far_why on a miss, short (the FAR column's reason with its rule)
+NEAR_LEGAL_ORDER = {True: 0, None: 1, False: 2}
+
+
+def _near_when(a, b):
+    """ISO days a..b as 'Nov 26', 'Nov 25 to 27' or 'Nov 30 to Dec 1'."""
+    x, y = date.fromisoformat(a), date.fromisoformat(b)
+    if x == y:
+        return f"{x:%b} {x.day}"
+    return f"{x:%b} {x.day} to {y.day}" if (x.year, x.month) == (y.year, y.month) else f"{x:%b} {x.day} to {y:%b} {y.day}"
+
+
+def _near_runs(days):
+    """Sorted ISO days as runs of consecutive days [(first, last)]."""
+    out = []
+    for d in sorted(set(days)):
+        if out and (date.fromisoformat(d) - date.fromisoformat(out[-1][1])).days == 1:
+            out[-1] = (out[-1][0], d)
+        else:
+            out.append((d, d))
+    return out
+
+
+def near_blockers(ev):
+    """What hides a pot row today, in this order: each run of VAC days it touches (kind vac, n days: given up, PWA 6.J),
+    each run of blocked days (kind blocked: unblocked on the schedule card) and each of the pilot's own trips it
+    overlaps (kind trip, key 'TRIP|YYYY-MM-DD': dropped or swapped; when, its days; month, the schedule month on file
+    that holds it, whose schedule versions keep its credit: near_misses reads both and takes them off). A PAYP day is
+    free for a pickup (PWA 4.R.1, pot.fit_tag), never in the way. [] when nothing hides it or its dates are not
+    known."""
+    s, e = _span(ev)
+    if not s:
+        return []
+    days, lo, hi = set(_trip_days(ev)), s.isoformat(), e.isoformat()
+    out, items = [], _sched_items()
+    vac = {d for it in items if it.get("trip") == "VAC" for d in PAY._days(it.get("start"), it.get("end"), cap=62)}
+    for a, b in _near_runs(days & vac):
+        w = _near_when(a, b)
+        out.append({"kind": "vac", "what": f"VAC {w}", "fix": f"give up VAC {w}", "n": len(PAY._days(a, b))})
+    for a, b in _near_runs(days & set(S.get("blocked_days") or [])):
+        w = _near_when(a, b)
+        out.append({"kind": "blocked", "what": f"blocked {w}", "fix": f"unblock {w}"})
+    seen = set()
+    held = [(mk, it) for mk, m in sorted((S.get("schedule") or {}).items()) for it in (m or {}).get("items") or []]
+    for mk, it in sorted(held, key=lambda x: (x[1].get("start") or "", x[1].get("trip") or "", x[0])):
+        trip, st, en = it.get("trip") or "", it.get("start") or "", it.get("end") or it.get("start") or ""
+        k = f"{trip}|{st}"
+        if PAIRING_RE.match(trip) and st and st <= hi and en >= lo and k not in seen:  # a trip two months list: once,
+            seen.add(k)  # the earlier month's (the bid period it starts in)
+            w = _near_when(st, en)
+            out.append({"kind": "trip", "what": f"overlaps your {trip} {w}", "fix": f"drop or swap {trip}", "key": k,
+                        "when": w, "month": mk})
+    return out
+
+
+def near_price(trip, start, rec, seat, cache, rate, er, lay="", period=None):
+    """(Pay-Gross or None, credit hours or None) of one trip, price_moves' way (pay.trip_gross, the schedule card's
+    tripFull): credit x the PWA 3.D.6 rate, the PWA 4.O.1 override for the seat flown (RO $4.00 per block hour, FO $3.00
+    on a 3-pilot crew) and the Extended Range +15% where on. Credit, block and pilots from rec (the pot row, or his own
+    trip record) else the pairing package of the trip's bid period (period: 'YYYY-MM', else bid_period_key(start);
+    review: Dec 1 is November's, 1.7.11, as pilot_price and payp_tcrd read it, never the calendar month's package).
+    No rate: no amount, the credit still."""
+    pk = _package(period or bid_period_key(start), cache).get(trip[:5]) or {}
+    credit = PAY.hrs(rec.get("credit")) if rec.get("credit") else PAY.hrs(pk.get("credit"))
+    block = PAY.hrs(rec.get("blk")) if rec.get("blk") else PAY.hrs(pk.get("block"))
+    lay = "/".join(x for x in str(pk.get("route") or "").split("-") if x and x != "HNL") or lay
+    g = PAY.trip_gross(credit, block, rec.get("n") or pk.get("crew"), lay, f"{trip}|{start}", seat, rate, er) if rate else None
+    return g, credit
+
+
+def _near_cap(t):
+    """far_why on a miss: at most NEAR_WHY_MAX characters, cut at a word with '...' when longer."""
+    t = str(t or "")
+    return t if len(t) <= NEAR_WHY_MAX else t[:NEAR_WHY_MAX - 3].rsplit(" ", 1)[0].rstrip(" ,;(") + "..."
+
+
+def near_legal(ev, keys):
+    """FAR 117 legality of a pot row with what is in the way removed: far_screen (far_for's check, as swap_scan uses it)
+    with his own trips in keys left out; VAC and blocked days are no duty, so never in the line. Legal only on a plain
+    'OK' (swap_scan's rule: FAR 117.25(e), 117.25(b), 117.23(b)(1), 117.23(c) and the PWA 10.E.1.a 11 h home rest); '?'
+    (a time not on file) is never legal, and nor is 'OK (CBA rest 10:50?)' (review: FAR met, the 11 h home rest short
+    only if a release was 30 min after block-in for customs, PWA 2.19.b, or a neighbour's times are not known:
+    legality()'s '?', so not known yet, never not legal). The text gives the reason with its rule ("not legal: rest
+    6:15 before (H1019 Nov 19), under 10 h (FAR 117.25(e))"; review: the column's label alone named neither the trip
+    nor the rule, and a title tooltip is out of reach on a phone). Returns (far, legal True | False | None, text, why)."""
+    r = far_screen(ev, tuple(keys) or None)
+    far, why = r["far"], _near_cap(r["why"])
+    if far == "OK":
+        return far, True, "legal", why
+    if far == "?":
+        return far, None, f"not known yet: {why or 'not checked'}", why
+    if far.startswith("OK (") and far.endswith("?)"):
+        return far, None, f"not known yet: {why or far[4:-1]}", why
+    if far.startswith("OK ("):  # FAR met, the PWA 10.E.1.a 11 h home rest short
+        return far, False, f"not legal: {far[4:].rstrip(')')}, under the 11 h home rest (PWA 10.E.1.a)", why
+    return far, False, f"not legal: {why or far}", why
+
+
+def _near_seat(row):
+    """The seat a pickup of this pot row flies: FO when its FO seat is open (or none is named), else RO."""
+    open_ = [x.strip().upper() for x in str(row.get("open_seats") or "").split(",") if x.strip()]
+    return "RO" if open_ and "FO" not in open_ and "RO" in open_ else "FO"
+
+
+def _near_crew_n(crew):
+    """The pilots on a crew list, for the PWA 4.O.1 overrides and the Extended Range +15%: the CA, FO, RO and SO seats
+    (crewidx.PILOT_POS, pot.PILOT_SEATS: an OPEN one too), never flight attendants, as crewidx.pilot_seats and
+    pot.crew_seat count n. A pot row's [(pos, name)], his own trip record's 'POS Name (emp)' strings or the crew index's
+    {pos}. Review: the pickup and a dropped own trip are counted the same way (len(crew) counted the FA too)."""
+    n = 0
+    for c in crew if isinstance(crew, (list, tuple)) else []:
+        pos = (c.get("pos") if isinstance(c, dict) else c[0] if isinstance(c, (list, tuple)) and c
+               else str(c).split(" ", 1)[0] if isinstance(c, str) else "")
+        n += str(pos or "").upper() in CI.PILOT_POS
+    return n
+
+
+def _near_pilots(row):
+    return _near_crew_n(row.get("crew"))
+
+
+def _near_own_rec(key, month):
+    """His own trip's credit, block and seat as price_moves keeps a dropped trip (_move_rec: his own trip record, else
+    the newest version of the schedule month that holds it), with the pilots on its crew roster (_near_crew_n)."""
+    trip, st = key.split("|", 1)
+    rec = _move_rec(trip, st, month or bid_period_key(st))
+    rec.pop("n", None)
+    n = _near_crew_n(((S.get("own_trips") or {}).get(key) or {}).get("crew"))
+    if n:
+        rec["n"] = n
+    return rec
+
+
+def _signed_hm(h):
+    return ("+" if h >= -1 / 120 else "-") + PAY.hm(abs(h))
+
+
+def near_misses(pot_rows, pay=None):
+    """1.7.14: the near misses of these pot rows, legal first (then not known, then not legal), the best pay difference
+    first, then by date. Each {key, pairing, start, end (ISO), dates, days, lay, credit, src, seat, kinds, blockers:
+    [{kind, what, fix, credit (H:MM given up), pay (dollars given up, None unknown), key (an own trip), keep (True: an
+    own trip kept, nothing given up, below)}], pay_trip (the trip's Pay-Gross), diff (pay_trip less what is given up; None when any figure is unknown), diff_text ('+$1,234'),
+    hours ('+2:00': credit less what is given up), far, legal, legal_text, far_why}. What is given up: a VAC day 4:00
+    of pay and credit (PWA 6.J.1.c, the schedule card's VAC_H x rate); a dropped own trip its own Pay-Gross and credit;
+    a blocked day nothing (a personal block, no pay). A row that is one of his own trips (its open seat) is left out.
+    Review: an own trip that only shares a calendar day with the pickup (home in the morning, the pot turn that
+    evening) is kept when far_screen with it in the line (and the other trips in the way left out) is a plain OK: its
+    duty does not overlap and every rest and limit holds, so he flies both ({keep: True}, "same day as your H2000 Nov
+    10 to 11, legal to fly both", nothing given up); and kept too when the pickup is known not legal for another
+    reason and exactly as not legal with that trip dropped ("same day as your H2000 Nov 10 to 11, no conflict with
+    it": dropping it would change nothing). A '?' result keeps the trip in the way (a time not on file is never taken
+    as no conflict). Each trip is priced from its own bid period's package.
+    pay: pay_settings()'s (rate, year, ER list), read when not given."""
+    rate, _yr, er = pay or pay_settings()
+    cache, out, period = {}, [], bid_period_fn()
+    for row in pot_rows or []:
+        s, e = _span(row)
+        if not s:
+            continue
+        bl = near_blockers(row)
+        if not bl or any(b.get("key") == f"{row.get('pairing')}|{s.isoformat()}" for b in bl):
+            continue
+        pid, seat = str(row.get("pairing") or ""), _near_seat(row)
+        lay = "" if re.search(r"none", str(row.get("layover") or ""), re.I) else str(row.get("layover") or "")
+        gain, cr = near_price(pid, s.isoformat(), {"credit": row.get("credit"), "blk": row.get("blk"),
+                                                   "n": _near_pilots(row)}, seat, cache, rate, er, lay,
+                              period(s.isoformat()))
+        drop = [b["key"] for b in bl if b["kind"] == "trip"]
+        for b in [b for b in bl if b["kind"] == "trip"]:  # in date order: keep each one legal to fly with
+            rest, trip = [k for k in drop if k != b["key"]], b["key"].split("|", 1)[0]
+            kept = far_screen(row, tuple(rest) or None)
+            if kept["far"] == "OK":
+                drop = rest
+                b.update(keep=True, what=f"same day as your {trip} {b['when']}, legal to fly both",
+                         fix=f"keep {trip} and fly both")
+            elif "?" not in kept["far"] and kept == far_screen(row, tuple(drop)):
+                # known and not legal, but exactly as not legal with it dropped: it is not what stands in the way
+                drop = rest
+                b.update(keep=True, what=f"same day as your {trip} {b['when']}, no conflict with it",
+                         fix=f"keep {trip}")
+        lose, lose_h = 0.0, 0.0
+        for b in bl:
+            if b["kind"] == "vac":
+                h = b.pop("n") * PAY.VAC_H
+                p = h * rate if rate else None
+            elif b["kind"] == "blocked" or b.get("keep"):
+                h, p = 0.0, 0.0
+            else:
+                trip, st = b["key"].split("|", 1)
+                rec = _near_own_rec(b["key"], b.get("month"))
+                p, h = near_price(trip, st, rec, str(rec.get("seat") or "FO").upper(), cache, rate, er,
+                                  period=period(st))
+            b.pop("when", None)
+            b.pop("month", None)
+            b["credit"] = PAY.hm(h) if h is not None else ""
+            b["pay"] = round(p, 2) if p is not None else None
+            lose = None if lose is None or p is None else lose + p
+            lose_h = None if lose_h is None or h is None else lose_h + h
+        far, legal, text, why = near_legal(row, drop)
+        diff = round(gain - lose, 2) if gain is not None and lose is not None else None
+        out.append({"key": f"{pid}|{row.get('start')}", "pairing": pid, "start": s.isoformat(), "end": e.isoformat(),
+                    "dates": row.get("dates") or row.get("start") or "", "days": row.get("days") or "",
+                    "lay": lay or (f"{row['turn']} turn" if row.get("turn") else ""), "credit": row.get("credit") or "",
+                    "src": row.get("src") or "O", "seat": seat, "kinds": list(dict.fromkeys(b["kind"] for b in bl)),
+                    "blockers": bl, "pay_trip": round(gain, 2) if gain is not None else None, "diff": diff,
+                    "diff_text": PAY.usd(diff) if diff is not None else "",
+                    "hours": _signed_hm(cr - lose_h) if cr is not None and lose_h is not None else "",
+                    "far": far, "legal": legal, "legal_text": text, "far_why": why})
+    out.sort(key=lambda m: (NEAR_LEGAL_ORDER[m["legal"]], m["diff"] is None, -(m["diff"] or 0), m["start"], m["pairing"]))
+    return out
+
+
+def publish_near_misses(flat):
+    """sensor.<prefix>_near_misses: {count, misses (the first NEAR_ROWS, near_misses' order), kinds (how many rows
+    each kind hides), rate, year (Pay settings), pay_note (no rate: why there are no amounts)}. Never raises: a failure
+    is logged and the pot check goes on."""
+    try:
+        rate, yr, er = pay_settings()
+        misses = near_misses(flat, (rate, yr, er))
+        p = {"count": len(misses), "misses": misses[:NEAR_ROWS],
+             "kinds": {k: sum(1 for m in misses if k in m["kinds"]) for k in ("vac", "blocked", "trip")},
+             "rate": rate, "year": yr}
+        if not rate:
+            p["pay_note"] = "No pay amounts: set your longevity year in Pay settings (or your date of hire in Settings)."
+        pub("near/state", p)
+    except Exception as e:  # noqa: BLE001
+        log.info("near misses not published: %s: %s", type(e).__name__, e)
+
+
 CAPTCHA_STOP_NOTE = ("FLICA showed a CAPTCHA page on {where} (never answered); press Re-arm after you have opened "
                      "FLICA yourself")
 
@@ -12366,6 +12612,7 @@ def check(fl):
     flat = [dict(v, month=m) for m, p in pot_all.items() for v in p.values()]
     flat.sort(key=lambda r: r.get("src") != "C")  # FW-0034: close-in trips (under 16 h to report) first
     publish_pot(flat)
+    publish_near_misses(flat)  # 1.7.14: from the rows, schedule and own trips on hand (no FLICA load)
     read_guard(email_check, fl, pot_all)
     read_guard(pickup_check, fl, full, optional=True)
     publish_finds()  # rows carry live CA / details now, so publish every check
@@ -12404,9 +12651,10 @@ EXPORT_RETRY_S = 15  # a state HA had no answer for is read again after this, do
 SPOOL_POLL_S = 1.0
 SPOOL_MAX_PER_POLL = 200
 PORTAL_LAYOUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portal_layout.json")
-PORTAL_CARDS_OUT = ("uploads-card", "row-colors", "layover-card")  # not in a portal (1.7.0: the tickets card is,
-# revision 2; 1.7.1 FW-0072: the layover card is the admin's only in this release; 1.7.9 B16, contract revision 4: the
-# Pilots card joins the bundle, it stayed off every portal in 1.7.8)
+PORTAL_CARDS_OUT = ("uploads-card", "row-colors", "layover-card", "near-card")  # not in a portal (1.7.0: the tickets
+# card is, revision 2; 1.7.1 FW-0072: the layover card is the admin's only in this release; 1.7.9 B16, contract revision
+# 4: the Pilots card joins the bundle, it stayed off every portal in 1.7.8; 1.7.14: the near misses card, whose sensor a
+# portal does not export yet, roles.ENTITY_OFF_PORTAL)
 PAIRINGS_BACK_M = 2  # the shared pairings packages exported: from this many months back (HST), and every later one
 
 

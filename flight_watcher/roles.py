@@ -169,11 +169,12 @@ MAX_PILOTS = 3  # pilots besides the admin: each runs its own Chromium and its o
 # an id whose first word is here as the admin's. 1.7.2: "ready" (automation.flight_watcher_ready_to_update_ask_hark,
 # the Working Flight button that asks Hark, Ryan Nov 12) and "van" (switch.flight_watcher_van_alerts and
 # number.flight_watcher_van_alert_first and _second, the van alert settings, Ryan Nov 12). 1.7.8: "pilotdb" (the pilot
-# database: /data/pilotdb_backup, /share/flight_watcher/pilotdb, sensor.flight_watcher_pilotdb and its topic).
+# database: /data/pilotdb_backup, /share/flight_watcher/pilotdb, sensor.flight_watcher_pilotdb and its topic). 1.7.14:
+# "near" (sensor.flight_watcher_near_misses and its topic near/state, the near misses in the open time pot).
 RESERVED = frozenset({
     "admin", "auto", "bid", "blocked", "captures", "ccr", "charter", "charters", "check", "crew", "default", "drop",
     "email", "er", "event", "federal", "fetches", "finds", "flica", "freq", "grid", "hunt", "improved", "last",
-    "layover", "layovers", "longevity", "map", "month", "new", "next", "normal", "ot", "own", "pause", "pickers",
+    "layover", "layovers", "longevity", "map", "month", "near", "new", "next", "normal", "ot", "own", "pause", "pickers",
     "pilot", "pilotdb", "pot", "pref", "re", "rearm", "ready", "recall", "reserve", "rule", "rules", "ryan", "scan", "schedule", "session",
     "settings", "show",
     "state", "status", "swap", "ticket", "tickets", "trade", "tradeboard", "update", "upload", "uploads", "van",
@@ -710,10 +711,17 @@ def pref_value(key, value):
 # discovery oids a pilot has whose feature a portal may not offer: the uploads sensors (uploads stay off the portal).
 # 1.7.0: sensor.<prefix>_tickets passes now (the tickets feature is offered), with his own tickets only
 ENTITY_PORTAL_FEATURE = {"tickets": "tickets", "uploads": "uploads", "upload_status": "uploads"}
+# 1.7.14 (Ryan, Nov 17): discovery oids a pilot has in HA that his portal does not serve yet, whatever their feature. The
+# near misses sensor (sensor.<prefix>_near_misses) is core and every instance computes its own, but a new exported state
+# is a portal contract change (PORTAL_CONTRACT.md 4.2): it waits for a later contract revision, so contract 1 revision 6
+# and a pilot's state.json stay exactly as they are.
+ENTITY_OFF_PORTAL = frozenset({"near_misses"})
 
 
 def entity_on_portal(oid, instance):
-    """True when a portal serves this discovery entity of instance: the instance has its feature and FEATURES offers
-    that feature on a portal."""
+    """True when a portal serves this discovery entity of instance: the instance has its feature, FEATURES offers that
+    feature on a portal, and (1.7.14) the entity is not one held back for a later contract revision (ENTITY_OFF_PORTAL)."""
+    if oid in ENTITY_OFF_PORTAL:
+        return False
     f = ENTITY_FEATURE.get(oid) or ENTITY_PORTAL_FEATURE.get(oid, "core")
     return allowed(f, instance) and FEATURES[f][1]

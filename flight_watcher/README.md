@@ -17,6 +17,26 @@ publishes what it finds to Home Assistant over MQTT.
   first on the pot (src `C`, folder `close-in`) and push like any new pairing (a trip moved there from the regular
   pot is the same find, not a new one); its request list joins the request-decided push. Hunting, its page is read
   at most every 5 min (about 12 FLICA loads an hour, keeping FW-0035's ~376); every check otherwise.
+- Near misses (1.7.14, Ryan, Nov 17): each pot trip (the pot and the close-in folder) hidden today because it touches
+  a VAC day, a blocked day or one of your own trips, on `sensor.<prefix>_near_misses` (topic `<prefix>/near/state`,
+  never on the pot sensor and its 12 KB cap) and the near misses card (`custom:flight-watcher-near-card`, folded by
+  default with its count): what stands in the way ("VAC Nov 25 to 26", "blocked Nov 26", "overlaps your H3620 Nov 25
+  to 27"), what to change to fly it (give up those VAC days, unblock the day, drop or swap that trip), the pay
+  difference (the trip's Pay-Gross less what is given up, with the credit hours: a VAC day 4:00 of pay and credit, PWA
+  6.J.1.c; a dropped trip its own Pay-Gross; a blocked day nothing; every trip priced by `pay.trip_gross`, the schedule
+  card's rules: PWA 3.D.6 rate for the longevity year in Pay settings, PWA 4.O.1 overrides, Extended Range +15%) and
+  FAR 117 with the conflict removed (`far_screen` leaving those trips out, as the swap ideas do: legal only on a plain
+  OK, so the PWA 10.E.1.a 11 h home rest counts, and "not legal" names the trip and the rule; a time not on file, or a
+  rest short only if a release was 30 min after block-in for customs, PWA 2.19.b, is "not known yet", never legal).
+  An own trip that only shares a day with the pickup and is legal to fly with it (home in the morning, the pot turn
+  that evening) is kept, nothing given up ("same day as your H2000 Nov 10 to 11, legal to fly both"). Each trip is
+  priced from its own bid period's pairings package (Dec 1 is November's) and pilots are counted the same way on both
+  sides (CA, FO, RO and SO, never a flight attendant). Legal ones and the best pay difference first; the sensor
+  carries the first 20 (`count` says how many). Information only: it uses the rows, schedule, own trips and blocked
+  days already on hand, with no FLICA page load, and nothing is added, dropped, swapped or requested. Every instance
+  computes its own; a pilot's sensor is in his Home Assistant only: his portal does not export it yet
+  (`roles.ENTITY_OFF_PORTAL`; a new exported state is a portal contract change, left for a later revision), and the
+  card is not in his portal bundle. The card shows "?" while the sensor is unavailable or unknown, never 0.
 - One session: FLICA allows one login. When you log in elsewhere the Watcher steps aside for 30 min (doubling on
   repeat). A failed login, a layout change or anything unexpected parks it until Re-arm. On a pilot, details FLICA
   refused get no more logins from Re-arm until details are saved again in Settings; they are kept only as an
