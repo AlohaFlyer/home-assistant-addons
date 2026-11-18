@@ -39,6 +39,10 @@ ticket run of Nov 17 (CHANGELOG 1.7.11 has every section):
   11 h home rest PWA 10.E.1.a, no VAC or blocked day, a green grid); in `auto_ideas`, never pushed, never a draft or
   the dry run. Revision 6 kept (PORTAL_CONTRACT.md 4.3 wording only, doc sha `192e175c...`). The Swap ideas table edit
   is pending on Pako (`ha/README.md`), a step of the 1.7.15 go-live after the 1.7.12 and 1.7.14 edits.
+- 1.7.16 (Ryan, Nov 17): When to hunt on the FO / RO pickers card: the median time to pickup, count and fastest by
+  layover, HST weekday and HST time of day the trip entered the pot (from `picker_log`, each pickup once, a capped
+  speed "at most"), groups under 5 grey, a tip naming the fastest day and time slot of 5 or more; `speed` on the
+  pickers sensor (aggregates only, at most 2500 bytes). No FLICA load, no new export, nothing pending on Pako.
 
 **Nov 16: 1.7.10 is contract 1 REVISION 5 and HOM 1.9.1 goes live FIRST.** Ryan: "His uploads should update the
 shared database too", and the contacts list upload on James's portal "Now, in 1.7.10". Built (commits "... a portal

@@ -1,5 +1,66 @@
 # Changelog
 
+## 1.7.16
+
+### When to hunt: pickup speed by layover, weekday and time of day
+
+Ryan, Nov 17: "Using the pot log ("Pickup Speed" exists, so build on it), show median time to pickup by layover city and
+by day of week/time of day, so I know when to run Hunt."
+- From the pickups the FO / RO pickers card already counts (`picker_log`; no new source), each pickup once (a trip
+  with both seats open is one pot entry and one dwell: once, at its faster picker's speed, which is the same for both
+  unless one has a request cap), the median time to pickup, the count and the fastest by layover (the first station
+  of the trip's layover, else of its turn, as Common Layover; split as rules.py splits a layover, so a pot-seen
+  multi-stop turn "PPG/PPT" and the "PPG" the Watcher files its email-caught copy under are one station, and
+  "SYD/MEL" is SYD), by the HST weekday and by the HST time of day (00-06, 06-12, 12-18, 18-24) the trip entered the
+  pot. The entry is `dwell()`'s, the earlier of the first sighting and FLICA's alert, kept on the pickup's
+  `picker_log` row (new column `entry`) when it is scored or rescored, so a trip back in the pot, or a find later
+  cleared or deleted, never moves it to another weekday or band. A row logged before 1.7.16 gets it once at start
+  from its find, else from its pickup time less its speed (late by half the gone window, more for a capped speed).
+  Stored times are UTC; the weekday and band are read in HST (-10 h all year), so 05:00 UTC Wednesday is Tuesday
+  19:00, 18-24.
+- A speed capped at Ryan's request time (1.7.10) counts at its cap; a group with one has its median read "at most"
+  (an upper bound), and its fastest too when the fastest is the capped one (≤, the reason on hover).
+- The median of an even count is the mean of the two middle speeds, to the nearest second. Each table runs by
+  median (a tie: more pickups first), the groups of 5 or more pickups first; a group of fewer is grey, "too few to
+  trust", and never the tip.
+- The tip names the fastest HST day and time of day together (a slot) of 5 or more pickups: "Trips go fastest when
+  they enter the pot Tue 18-24 HST: median 4 min (n 12).", when that slot is no slower than the fastest day and the
+  fastest time of day of 5 or more; never the slot where the fastest day and the fastest time of day cross, which can
+  be slow or nearly empty. Else it gives that day and that time of day as two separate facts ("Fastest day: Mon
+  (median 50 s, n 5). Fastest time of day: 06-12 HST (median 30 s, n 7). No day and time pair has 5 pickups yet.",
+  the last sentence only when no slot has 5); from one table when only it has a group of 5; none when neither has.
+- The FO / RO pickers card has a When to hunt section at its top, under the header and outside the pickers list, so
+  the tip shows while the list is collapsed (the dashboard and the pilot portal mount the card collapsed): the tip,
+  then the three small tables (Layover, Day (HST), Time (HST): Median, Fastest, n), collapsed by default when they run
+  past 12 rows and kept as the viewer left them across updates, however they were opened or closed (a tap, the
+  keyboard, find in page). An update changes the tip and tables in place, so a focused summary keeps its focus; an
+  empty table says so ("No layover on file yet."); a slot in the tip ("Tue 18-24 HST") never splits across two lines.
+  390 px with no sideways scroll, WCAG AA in light and dark; three side by side on a wide card.
+- Published as `speed` on `sensor.<prefix>_pickers` (`{n, min_n, city, dow, band, tip, more}`, each group `[label, n,
+  median_s, fastest_s, capped_n, fastest_capped]`): aggregates only, no name, employee number or pairing; at most
+  2500 bytes (`store.SPEED_ATTR_MAX`), the layovers with the fewest pickups left out first and counted in `more` ("12
+  more layovers with fewer pickups not shown."). The busiest case measured: 7.5 KB for the whole pickers sensor,
+  under its 8 KB bar and HA's 16 KB recorder limit. The pickers list file is unchanged.
+- Each instance computes its own from its own store (Ryan's and every pilot's); nothing crosses instances. A pilot's
+  portal shows the section from the pickers sensor it already gets in state.json: no new export, contract 1 revision
+  6 unchanged.
+- No FLICA load. `Store.speed_stats()` is recomputed only after picker_log changes (a pickup scored or rescored, the
+  log rebuilt, backfilled or trimmed), not on every check's publish.
+- Tests: `tests/test_fw1716_speed.py` (synthetic pairings H96xx, made-up stations, "Doe, Jane"): median with odd and
+  even counts, capped speeds, HST bands across midnight and the date line from UTC stored times, the HST weekday, the
+  under-5 rule, the tip in each form, the size bound, the store counting what the pickers card counts (both seats
+  open), the alert and request cap moving the entry and speed, a find gone or back in the pot, the recompute only on a
+  change, no FLICA load, a pilot's instance on its own, the contract unchanged, and the card in Chromium at 390 px
+  light and dark and 1280 px (screenshots `item7_390_light.png`, `item7_390_dark.png`, `item7_1280_light.png`,
+  `item7_390_short.png`). Review fixes, `tests/test_fw1716_review.py`: the tip's slot (the fastest of 5 or more, not
+  where the fastest day and band cross; two separate facts when none has 5 or it is slower), a both-seats trip once
+  (count, trust bar and median weight, and at the cap when one picker is capped), one station per layover across
+  sources, the entry kept through a trip back in the pot, a cleared pickup and a deleted find (a capped one too), a
+  row logged before 1.7.16 filled once at start, the section shown on a collapsed card (the dashboard's and portal's
+  config), an open without a click and the summary's focus kept through updates, an empty table, and the tip's slot
+  on one line at 360 to 414 px (screenshots `item7_review_collapsed_390_light.png`, `..._dark.png`,
+  `item7_review_nolay_390_light.png`, `..._dark.png`).
+
 ## 1.7.15
 
 ### Automatic swap ideas ranked by pay per day
