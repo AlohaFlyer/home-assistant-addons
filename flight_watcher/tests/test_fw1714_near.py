@@ -483,22 +483,27 @@ def test_the_watcher_view_shows_the_card_under_the_pot_table():
     assert cs[i + 1] == {"heading": "Swap ideas", "type": "heading"} or cs[i + 1].get("heading") == "Swap ideas"
     assert text == json.dumps(json.loads(text), indent=2, ensure_ascii=False) + "\n"  # the Refresh format
     readme = open(os.path.join(ROOT, "ha", "README.md"), encoding="utf-8").read()
-    sec = readme[readme.index("## Pending on Pako (1.7.14): near misses card"):]
+    sec = readme[readme.index("## Applied on Pako 2026-11-18 about 08:04 HST (1.7.14): near misses card"):]
     sec = sec[:sec.index("\n## ", 5)]
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() in sec
-    assert "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" in readme  # Pako's, until the release
-    # review F4: the current-state paragraph says the snapshot matched Pako until this pending edit and is now one
-    # card ahead (the 1.7.2 wording), never that it still matches be03a0a4...
+    assert "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" in readme  # Pako's, before the patch
+    # review F4: the current-state paragraph never says the snapshot matches a sha Pako does not read. Applied on
+    # Pako 2026-11-18 (one patch with the 1.7.12 tile, the 1.7.15 table and the 1.7.17 Key line): it matches Pako's
+    # sha again (the snapshot's), names this card among the edits, and keeps be03a0a4... only as what Pako read before
     cur = readme[readme.index("The 23 automations here match Pako's"):]
     cur = cur[:cur.index("\n\n")]
-    assert "The dashboard snapshot matches Pako's" not in readme
-    assert "The dashboard snapshot matched Pako's" in cur and "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" in cur
-    # 1.7.14 on 1.7.12 (one snapshot for both): the snapshot is ahead of Pako by the pending edits, this card one of them
+    assert "The dashboard snapshot matched Pako's" not in readme and "Pending on Pako" not in readme
     flat = " ".join(cur.split())
-    assert "until the pending edits (above: " in flat and "the 1.7.14 near misses card" in flat
-    assert "ahead of Pako by those edits alone" in flat
+    now = flat[flat.index("The dashboard snapshot matches Pako's"):flat.index("Before that patch Pako read")]
+    assert hashlib.sha256(text.encode("utf-8")).hexdigest() in now
+    assert "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" not in now
+    assert "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" in flat.replace(now, "")
+    # 1.7.14 on 1.7.12 (one snapshot for both): this card one of the edits the patch applied
+    assert "right after the one patch of the edits above: " in flat and "the 1.7.14 near misses card" in flat
+    assert "ahead of Pako" not in readme and "pending edit" not in readme
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() in cur
     assert "Ryan" in sec and "yes" in sec and "Undo" in sec
+    assert "sensor.flight_watcher_near_misses` is 3" in " ".join(sec.split())  # the live check is recorded
     assert chr(0x2014) not in readme and chr(0x2014) not in text
 
 

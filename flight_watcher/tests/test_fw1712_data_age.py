@@ -647,11 +647,12 @@ def test_the_details_view_tile_is_the_stamp_in_the_snapshot():
     readme = open(os.path.join(ROOT, "ha", "README.md"), encoding="utf-8").read()
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert sha in readme
-    sec = readme[readme.index("## Pending on Pako (1.7.12): the Details view's data age stamp"):]
+    sec = readme[readme.index("## Applied on Pako 2026-11-18 about 08:04 HST (1.7.12): the Details view's data age stamp"):]
     sec = sec[:sec.index("\n## ", 5)]
-    pako = "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435"  # Pako's dashboard, until then
-    assert sha in sec and pako in sec
+    pako = "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435"  # Pako's dashboard before the patch
+    assert sha in sec and pako in sec  # applied 2026-11-18: Pako read be03a0a4... before, the snapshot's sha after
     assert "Undo" in sec and "yes" in sec and '"mode": "age"' in sec
+    assert "Pending on Pako" not in readme
     assert chr(0x2014) not in readme and chr(0x2014) not in text
 
 
