@@ -570,13 +570,19 @@ ticket_fixed and others).
 **FAR 117 columns** (1.7.13, Ryan, Nov 17: "Give FAR-30/7, FAR-100/672 and Room real headers with units, and show
 headroom against each limit"): the schedule card's three FAR columns are headed `30h in 7d`, `100h in 672h` and
 `Room to 100h`, each header's title naming its rule. `30h in 7d` (FAR 117.25(b): 30 consecutive hours free from all
-duty in the 168 h before a report) reads `✓ 36h off 11/05` (the longest break in the 168 h before a report that day,
-in whole hours, and the day it ended), red `need 30h off`, `?` (the 168 h reach before the schedule on file) or `–`
-(mid-trip). `100h in 672h` is what is left of FAR 117.23(b)(1) (100 flight hours in any 672 consecutive hours) in the
-672 h ending that day (`10:57 left`, the block flown in its title); `Room to 100h` is what is left in the busiest 672 h
-window the day falls in, back and forward: the most block you could add that day. Both read red `0:00 left` at the
-limit and red `1:20 over` past it (the word says it too, never the colour alone), with `~` in front when a window
-reaches past the schedule on file. The Key explains each; the hours are figured as before (wording and display only).
+duty in the 168 h before a report) reads `✓ 36h 11/05` (a report at that day's first duty start, 00:01 on a day off,
+is covered: the longest break off duty in the 168 h before it, in whole hours, and the day it ended; a later report
+that day may not be, so its title gives 'covers reports until'), red `need 30h off`, `?` (the 168 h reach before the
+schedule on file) or `–` (mid-trip). `100h in 672h` is what is left of FAR 117.23(b)(1) (100 flight hours in any 672
+consecutive hours) in the 672 h ending 24:00 that day (`10:57 left`, the block flown or scheduled in its title, both
+rounded to the minute once so they add up to 100:00); `Room to 100h` is what is left in the busiest of the 672 h
+windows ending 24:00 HST that hold the day, back and forward. Only those windows are tried: one ending mid-day can
+hold more, so the room can be less than shown (a guide, not a legality check). Both read red `0:00 left` at the limit
+and red `1:20 over` past it (the word says it too, never the colour alone), with `~` in front when a window reaches
+past the schedule on file. A trip whose times are not read yet adds no block, and with no report and release on file
+counts as time off, so the cells can read better than the line is until its times are in. The Key explains each; the
+hours are figured as before (wording and display only). Above 700 px the `100h in 672h` and `Room to 100h` headers
+take two lines and the FAR cells pad 4 px a side, so the grid is about as wide as in 1.7.11.
 
 **Pairing detail** (1.7.7, Ryan, Nov 14): on the schedule card a tap on a pairing (or Enter on it) opens its detail
 like FLICA's pairing printout: the header (pairing, start date, the days it operates, base report, base and
