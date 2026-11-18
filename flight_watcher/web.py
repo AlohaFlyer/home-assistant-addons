@@ -689,7 +689,7 @@ def contacts_reparse(log, today=None):
         if old.get("uploaded_by"):  # the uploader stays the one who sent the file
             d["uploaded_by"] = old["uploaded_by"]
         CT.store(CONTACTS_FILE, d)
-    log.info("contact list read again (parser %d): %d pilots, %d with HAL Notes, %d Notes segments not read", CT.PARSER,
+    log.info("contact list read again (parser %d): %d pilots, %d with HAL notes, %d notes segments not read", CT.PARSER,
              d["count"], d["with_hal"], sum(d["hal_rejects"].values()))
     return "reparsed"
 
@@ -725,11 +725,11 @@ def _save_contacts(data, log, who=PP.ADMIN):
         try:
             parsed = CT.parse(data, ext, text)
         except Exception as e:
-            log.info("upload: contact list (%d KB, %s) not read: %s", kb, ext, type(e).__name__)
+            log.info("upload: contact list (%s, %d KB) not read: %s", ext, kb, type(e).__name__)
             return {"ok": False, "message": f"Not kept: {name}.{ext} ({kb} KB) could not be read ({type(e).__name__}); "
                                             f"{kept}"}
         if not parsed["entries"]:
-            log.info("upload: contact list (%d KB, %s) gave no pilot contacts (%d lines); not kept", kb, ext,
+            log.info("upload: contact list (%s, %d KB) gave no pilot contacts (%d lines); not kept", ext, kb,
                      parsed["lines"])
             return {"ok": False, "message": f"Not kept: {name}.{ext} ({kb} KB). No pilot contacts were found in it "
                                             "(each pilot needs a name or employee number with a phone or an email); "

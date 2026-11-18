@@ -34,11 +34,19 @@ NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")  # one capture file n
 TOKEN_RE = re.compile(r"(?i)\b(token|sid|session(?:id)?|jsessionid|csrf[a-z_]*|auth[a-z_]*|key|ticket)=([^&\"'\s<>;]+)")
 HIDDEN_RE = re.compile(r"(?i)(<input\b[^>]*\btype\s*=\s*[\"']?hidden[\"']?[^>]*\bvalue\s*=\s*[\"']?)([^\"'>\s]*)")
 HIDDEN_RE2 = re.compile(r"(?i)(<input\b[^>]*\bvalue\s*=\s*[\"']?)([^\"'>\s]*)([\"']?[^>]*\btype\s*=\s*[\"']?hidden)")
-EMP_KEY_RE = re.compile(r"(?i)\b(emp(?:loyee)?\s*(?:id|no\.?|num(?:ber)?|#)?\s*[=:#]+\s*)(\d{3,7})")
+# 1.7.11 review: a quoted key too ('emp': 6593, "emp": "6593": a JSON-like sample); one or two '#' but not a run of
+# three or more (a number masked already), so a line masked twice (page_log, then the pilot's log filter) keeps the
+# date after it ('emp# ##### 2026-11-17')
+EMP_KEY_RE = re.compile(r"(?i)\b(emp(?:loyee)?\s*(?:id|no\.?|num(?:ber)?|#(?!#))?['\"]?\s*(?:[=:]|#{1,2}(?!#))+"
+                        r"\s*['\"]?)(\d{3,7})")
 # 1.7.3 (F#55's live run, Nov 14): the pilot lookup's lines start 'pilot <employee number>:' or 'pilot <number> (<name>)',
 # and EMP_RE takes only 5 to 7 digits: the number there is masked whatever its length (3 to 7), a count is not; review:
 # the pickup check's 'picker <employee number> ...' too
-PILOT_EMP_RE = re.compile(r"(?i)\b(pilot\s+(?=\d{3,7}\s*[:(])|picker\s+)(\d{3,7})\b")
+# 1.7.11 review: and 'pilot <n>' right before a date or a schedule version ('pilot 6593 2026-11-17'), which the phone
+# rule took with the number before 1.7.11
+_DATE_OR_VERSION = r"(?:20\d{2}-(?:0[1-9]|1[0-2])|\d{1,2}\.\d{3}(?!\d))"
+_BESIDE = r"\d{3,7}(?![.\-]\d)[\s().-]{1,4}" + _DATE_OR_VERSION
+PILOT_EMP_RE = re.compile(r"(?i)\b(pilot\s+(?=\d{3,7}\s*[:(]|" + _BESIDE + r")|picker\s+)(\d{3,7})\b")
 SEAT_EMP_RE = re.compile(r"(?i)(?<![\w'.,-])(CA|FO|RO|FA|SO|F/O)(\s+)(\d{3,7})\b")
 EMP_RE = re.compile(r"(?<![\d.:/\-])\d{5,7}(?![\d.:/\-])")
 # 1.7.3 review: a name's letters outside ASCII too ('Pe\u00f1a, Jos\u00e9', 'Ka\u02bbaihue', '\u014cta'): Latin-1 and
@@ -58,6 +66,16 @@ TAG_RE = re.compile(r"(<[^>]*>)")
 # JS string literals "JANE","DOE", with e-mail addresses and phone numbers)
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 PHONE_RE = re.compile(r"(?<![\w.:/-])(?:\+?\d[\d\s().-]{5,18}\d)(?![\w.:/-])")
+# 1.7.11: a phone may end a sentence or a clause ('call 808-555-1234.', '808-555-1234- ...'; review: '808-555-1234:
+# crew desk'): a dot, a colon or a hyphen right after it ends it when no word, digit or dot follows ('13:05' stays).
+# Review: read by a rule of its own that takes only a phone's shape (END_SHAPE_RE: a '+' number, three groups or more,
+# nnn-nnnn, or a North American number: '8085551234.', '808-5551234.'), so a count, an epoch or a decimal before a
+# full stop stays ('size 10485760.', 'ts 1763400000.', 'lon 157.92245.'); and PHONE_RE keeps its 1.7.10 end, so a
+# match never runs past a phone into digits glued on through a bracket ('8085551234)(20261117.')
+PHONE_END_RE = re.compile(r"(?<![\w.:/-])(?:\+?\d[\d\s().-]{5,18}\d)(?=[.:\-](?![\w.:/\-]))")
+END_SHAPE_RE = re.compile(r"\+\d[\d\s().-]*|\d+(?:[\s().-]+\d+){2,}|\d{3}[.-]\d{4}"
+                          r"|(?:1[\s.-]?)?\(?[2-9]\d{2}\)?[\s.-]?[2-9]\d{2}[\s.-]?\d{4}")
+END_NEXT_RE = re.compile(r"[\w.:/\-]")  # what may not follow the dot, colon or hyphen after a phone (PHONE_END_RE)
 DATE_DIGITS_RE = re.compile(r"^20\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(\d{6})?$")  # YYYYMMDD[HHMMSS]
 SCRIPT_OPEN_RE = re.compile(r"(?i)^<script\b")
 SCRIPT_CLOSE_RE = re.compile(r"(?i)^</script\b")
@@ -145,17 +163,186 @@ def _name_emps(t):
     return NAME_EMP_RE.sub(one, t)
 
 
+# 1.7.11 (Ryan, Nov 17: "Fix the masking text too"): an ISO month or date (2026-11, 2026-11-17) and a schedule version
+# (one or two digits, a dot, three digits: 12.002) are never a phone number or part of one. Before, PHONE_RE took
+# 'schedule version 12.002 (2026-11)' for one 11-digit number and the pilot's log said '##.### (####-##)'. Now a match
+# is masked only when its digits outside them still make a phone number by the rules below, and only those digits
+# are masked; and the text between them is read again on its own (a phone longer than what PHONE_RE could take after
+# a version: '12.002 (+1 808 555 1234)'). So a phone right after a date ('2026-11-17 808-555-1234') or in brackets
+# after a version is still masked. Review: a '+' right before one makes it a country code ('+44.207 946 0958')
+NOT_PHONE_RE = re.compile(r"((?<![\d.+])(?<!\d-)(?:20\d{2}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?"
+                          r"|\d{1,2}\.\d{3})(?!\d|[.\-]\d))")
+VERSION_RE = re.compile(r"\d{1,2}\.\d{3}")
+# review: a version-shaped group that is a phone's own digits, masked with it as before 1.7.11: in a number that starts
+# with '+', with digits after it or right after the country code ('+49 30.123 4567'; not '+18085551234 12.002'), with
+# digits on both sides of it and 7 or more around it ('808 12.345 0101'), or as the area code of a 3-3-4 number ('Nov
+# 17.808 555 1234', 'call 1.808 555 1234')
+V_AREA_RE = re.compile(r"\d{1,2}\.\d{3}[\s().-]+\d{3}[\s.-]?\d{4}")
+# a 5 to 7 digit number (an employee number's shape) right beside one of them, which the phone rule took with it
+# before: masked still ('2026-11-17 10001', '10001 (2026-11-17)'); review: joined by a dot or a dash too, as PHONE_RE
+# took it ('10001. 2026-11-17', '2026-11-17 - 10001', '2026-11-17 -10001', '2026-11-17 10001.')
+NUM_BEFORE_RE = re.compile(r"(?<![\w.:/])(?<![\w.:/\-]-)(\d{5,7})([\s().-]{1,4})$")
+NUM_AFTER_RE = re.compile(r"^([\s().-]{1,4})(\d{5,7})(?![\w:/])(?![.\-][\w.:/\-])")
+# review: a phone's group that a rule's 20-character window left out ('123456 (808) 555 1234 2026-11-17' gave
+# '123456 (808) 555' and '1234 2026-11-17'): 3 or 4 digits right after or right before a phone's digits, only a
+# phone's separators between them (two groups at most after it, three before it: a phone has no more)
+TAIL_RE = re.compile(r"(?<=\d)[\s().-]{1,3}(\d{3,4})(?![\w/])(?![.:]\d)")
+# review: a phone of the usual shapes inside a longer match that is no phone as a whole ('10001 808 555 1234',
+# '10001 1 808 555 1234 10001'): ADMIN_PHONE_RE's shapes, read with the match's dates and versions blanked
+INNER_PHONE_RE = re.compile(r"(?<![\d.])(?:\+?1[\s.-]?)?(?:\(\d{3}\)\s?|\d{3}[\s.-])\d{3}[\s.-]\d{4}(?![\d])")
+HEAD_RE = re.compile(r"(?<![\w.:/])(?<![\w.:/\-]-)(\d{3,4}|1)[\s().-]{1,3}(?=\d)")  # '1': a country code
+# a phone written with spaces only: an international one ('+1 808 555 1234', '+44 20 7946 0958') or the 3-3-4 shape
+# ('808 555 1234', '1 808 555 1234')
+SPACED_PHONE_RE = re.compile(r"\+\d[\d\s]*|(?:1\s+)?\d{3}\s+\d{3}\s+\d{4}")
+
+
+def _is_phone(s):
+    """One PHONE_RE match (its dates and versions taken out) is a phone number: 7 to 15 digits, no YYYYMMDD[HHMMSS],
+    no time, and not numbers in a row ('1 2 3 4 5 6 7') unless written as a phone."""
+    digits = re.sub(r"\D", "", s)
+    if len(digits) < 7 or len(digits) > 15 or DATE_DIGITS_RE.match(digits):
+        return False
+    s = s.strip()
+    if re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", s):
+        return False
+    return not (" " in s and not re.search(r"[()\-.]|\d{7}", s) and not SPACED_PHONE_RE.fullmatch(s))
+
+
+def _is_phone_end(s):
+    """Review: a match before a trailing dot, colon or hyphen (PHONE_END_RE) is a phone only in a phone's shape."""
+    return _is_phone(s) and bool(END_SHAPE_RE.fullmatch(s.strip()))
+
+
+def _own_versions(s, parts, plus=False):
+    """Review: the indexes (in parts, NOT_PHONE_RE.split(s)) of the version-shaped groups that are the phone's own
+    digits (V_AREA_RE's comment; plus: a '+' right before s, which PHONE_RE leaves out after a '-'). A date never
+    is."""
+    digits = [len(re.sub(r"\D", "", p)) if i % 2 == 0 else 0 for i, p in enumerate(parts)]
+    own = set()
+    for i in range(1, len(parts), 2):
+        if not VERSION_RE.fullmatch(parts[i]):
+            continue
+        before, after = sum(digits[:i]), sum(digits[i + 1:])
+        intl = (plus or s.startswith("+")) and (after or before <= 3)  # in it, or right after its country code
+        if intl or (before and after and before + after >= 7) or V_AREA_RE.fullmatch("".join(parts[i:]).rstrip()):
+            own.add(i)
+    return own
+
+
+def _mask_phone(s, ok, plus=False):
+    """s (one match) with a phone's digits as '#', or None when ok finds no phone in it. Its dates and versions stay,
+    unless a version is the phone's own (_own_versions)."""
+    parts = NOT_PHONE_RE.split(s)
+    own = _own_versions(s, parts, plus)
+    with_own = "".join(p for i, p in enumerate(parts) if i % 2 == 0 or i in own)
+    # a phone with its own versions, or one without them ('+49 30.123 4567 10001': 16 digits with the number after it)
+    if ok(with_own) or (own and ok("".join(parts[::2]))):
+        return "".join(re.sub(r"\d", "#", p) if i % 2 == 0 or i in own else p for i, p in enumerate(parts))
+    return None
+
+
+def _plus(m):
+    """A '+' right before the match (PHONE_RE takes none after a '-': '10001-+44.207 946 0958')."""
+    return m.start() > 0 and m.string[m.start() - 1] == "+"
+
+
+def _phone_sub(m):
+    """One PHONE_RE match, its phone's digits as '#' (unchanged when it holds none)."""
+    s = m.group(0)
+    out = _mask_phone(s, _is_phone, _plus(m))
+    if out is not None:
+        return out
+    parts = NOT_PHONE_RE.split(s)
+    blank = "".join(" " * len(p) if i % 2 else p for i, p in enumerate(parts))
+    inner = [x.span() for x in INNER_PHONE_RE.finditer(blank)]
+    if inner:  # review: a phone of the usual shape inside it
+        return "".join("#" if c.isdigit() and any(a <= k < b for a, b in inner) else c for k, c in enumerate(s))
+    rest = "".join(parts[::2])
+    cut = max((w.start() for w in re.finditer(r"[\s()]", s)), default=-1)
+    if len(re.sub(r"\D", "", rest)) > 15 and cut > 0:
+        # more digits than one phone holds: a phone and the number after it ('1-808-555-1234 10001'), each read on
+        # its own (split at the last space; review: or bracket, '808-555-1234(1234567)')
+        return PHONE_RE.sub(_phone_sub, s[:cut]) + PHONE_RE.sub(_phone_sub, s[cut:])
+    return s
+
+
+def _scan(t, rx, one):
+    """rx over t, each match given to one(m) -> (masked text, its end) or None. Review: where a match holds no phone,
+    the next one may start inside it ('10001  1 808 555 1234', '123456. 808-555-1234.': the run from the first number
+    is too long for one phone or no phone's shape, the one from the next number is a phone)."""
+    out, pos, i = [], 0, 0
+    while True:
+        m = rx.search(t, i)
+        if not m:
+            break
+        r = one(m)
+        if r is None or r[0] == t[m.start():r[1]]:
+            i = m.start() + 1
+            continue
+        out += [t[pos:m.start()], r[0]]
+        pos = i = r[1]
+    return "".join(out) + t[pos:]
+
+
+def _one_end(m):
+    """One PHONE_END_RE match; where it holds no phone, a shorter one from the same start that also ends before a dot,
+    a colon or a hyphen may ('808.555.1234. 123456.')."""
+    t = m.string
+    for e in range(m.end(), m.start() + 6, -1):
+        if e == m.end() or (t[e] in ".:-" and t[e - 1].isdigit() and not END_NEXT_RE.match(t, e + 1)):
+            r = _mask_phone(t[m.start():e], _is_phone_end, _plus(m))
+            if r is not None:
+                return r, e
+    return None
+
+
+def _phone_pass(t):
+    """t read once by both phone rules: PHONE_RE, then PHONE_END_RE on what is left (a phone before a trailing dot,
+    colon or hyphen). PHONE_RE first, so a phone that ends with a space is read from its first digit ('(808) 555-1234
+    - 123456.'); a phone's group a window leaves out ('+1 808 555 1234- ...') is masked by _phones (TAIL_RE,
+    HEAD_RE)."""
+    return _scan(_scan(t, PHONE_RE, lambda m: (_phone_sub(m), m.end())), PHONE_END_RE, _one_end)
+
+
 def _phones(t):
-    def one(m):
-        digits = re.sub(r"\D", "", m.group(0))
-        if len(digits) < 7 or len(digits) > 15 or DATE_DIGITS_RE.match(digits):
-            return m.group(0)
-        if re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", m.group(0).strip()):
-            return m.group(0)
-        if " " in m.group(0).strip() and not re.search(r"[()\-.]|\d{7}", m.group(0)):
-            return m.group(0)  # numbers in a row ('1 2 3 4 5 6 7'), not one phone number
-        return re.sub(r"\d", "#", m.group(0))
-    return PHONE_RE.sub(one, t)
+    """Phone numbers in t, their digits as '#'. Dates and versions stay (NOT_PHONE_RE); the length never changes.
+    Review: a digit another rule masked already ('#') is read as a digit, so a phone that rule took a part of is still
+    a phone ('LAS (###) 555 1234': _name_emps took 'LAS (808)' for a name and its number); only digits are masked."""
+    orig, t = str(t), str(t).replace("#", "0")
+    hit = [a != b for a, b in zip(t, _phone_pass(t))]  # a phone's digits
+    near = [False] * len(t)  # a 5 to 7 digit number beside a date or a version
+    parts = NOT_PHONE_RE.split(t)
+    pos = 0
+    for i, p in enumerate(parts if len(parts) > 1 else ()):
+        if i % 2 == 0:  # the text between them, each piece on its own
+            # review: a dot or a dash right after a date or a version is no part of the phone after it ('2026-11
+            # -808 555 1234'): read as a space, so PHONE_RE's lookbehind takes the phone's first digit
+            lead = len(re.match(r"[\s().-]*", p).group(0)) if i else 0
+            q = _phone_pass(re.sub(r"[.-]", " ", p[:lead]) + p[lead:])
+            for k, (x, y) in enumerate(zip(p, q)):
+                hit[pos + k] = hit[pos + k] or (x.isdigit() and y == "#")
+            m = NUM_BEFORE_RE.search(p) if i + 1 < len(parts) else None
+            n = NUM_AFTER_RE.match(p) if i else None
+            for k in [k for x in (m and m.span(1), n and n.span(2)) if x for k in range(*x)]:
+                near[pos + k] = True
+        pos += len(p)
+    tokens = [m.span() for m in NOT_PHONE_RE.finditer(t)]  # a date's or a version's digits are never a phone's group
+    for n in range(3):  # review: a phone's group a window left out, after it (two) or before it (three: '1 808 555')
+        grow = [m.span(1) for m in TAIL_RE.finditer(t) if hit[m.start() - 1]] if n < 2 else []
+        grow += [m.span(1) for m in HEAD_RE.finditer(t) if hit[m.end()]]
+        for a, b in [g for g in grow if not any(x < g[1] and g[0] < y for x, y in tokens)]:
+            for k in range(a, b):
+                hit[k] = True
+    return "".join("#" if c.isdigit() and (hit[i] or near[i]) else c for i, c in enumerate(orig))
+
+
+# 1.7.11 review: a bare number right beside a masked name ('xxx, xxxx 6593', 'xxx xxxx 999 (12.002)', '6593 xxx,
+# xxxx') is that pilot's employee number (3 to 7 digits, as NAME_EMP_RE takes): a pilot's mask, after the names (the
+# phone rule took it before 1.7.11 when a date or a version was beside it). Two to eight masked words, so a long run
+# of them with no number costs linear time
+_X_RUN = r"x+(?:(?:[ '.\-]{1,3}|\s*,\s*)x+){1,7}"
+X_RUN_NUM_RE = re.compile(r"((?<![\w'])" + _X_RUN + r"[\s,:;(]{1,4})(\d{3,7})(?![\w:/])(?![.\-][\w.:/\-])")
+NUM_X_RUN_RE = re.compile(r"(?<![\w.:/])(?<![\w.:/\-]-)(\d{3,7})([\s,:;)]{1,4}" + _X_RUN + r")(?![\w])")
 
 
 def _mask_text(t):
@@ -164,7 +351,9 @@ def _mask_text(t):
     t = EMP_RE.sub(lambda m: "#" * len(m.group(0)), t)
     t = CREW_NAME_RE.sub(lambda m: m.group(1) + (m.group(2) if m.group(2).lower() == "open" else _x(m.group(2))), t)
     t = _name_runs(t)  # before the comma pattern, so a run like 'DE LA CRUZ, MARIA' is masked whole
-    return COMMA_NAME_RE.sub(lambda m: _x(m.group(0)), t)
+    t = COMMA_NAME_RE.sub(lambda m: _x(m.group(0)), t)
+    t = X_RUN_NUM_RE.sub(lambda m: m.group(1) + "#" * len(m.group(2)), t)
+    return NUM_X_RUN_RE.sub(lambda m: "#" * len(m.group(1)) + m.group(2), t)
 
 
 def _lit(tok, force=False):
@@ -220,7 +409,10 @@ def _mask_js(code):
 # 'EmpNo 10001', 'empid 10001', 'Emp. # 10001', 'employee_id=10001'); the number may hold hyphens ('0-10001'). Also
 # the capture file's own name (cmschedule_<n>.html, in an error text) and a number in brackets beside a 'Last, First'
 # name ('(10001) Doe, Jane', 'Doe, Jane (10001)').
-_EMP_SEP = r"(?:[\s._#:=\-\xa0]|&nbsp;|%3D)*"
+# 1.7.11 review: a quote too ('emp': 6593, "emp": "6593"); one or two '#' but not a run of three or more (a number
+# masked already), so a line masked twice (page_log, then the admin's log filter) keeps the date after it ('emp: ####
+# 2026-11-17')
+_EMP_SEP = r"(?:[\s._:=\-\xa0'\"]|#{1,2}(?!#)|&nbsp;|%3D)*"
 EMP_QUOTE_RE = re.compile(r"(?i)((?:\bemp(?:loyee)?|employee[\s._-]*id)[\s._-]*(?:id|no|num(?:ber)?)?" + _EMP_SEP
                           + r"|cmschedule_)(\d(?:[\d-]*\d)?)")
 _NAME = r"[a-z][a-z'.\-]+,\s*[a-z][a-z'.\-]*"  # any case: visible_text lowercases a page
@@ -254,7 +446,9 @@ _CAPW = rf"\u02bb?[{NAME_UP}][{NAME_LOW}]+"
 COMMA_NAME_WIDE_RE = re.compile(rf"(?<!\w)((?:{_CAPW}\s+){{0,3}}{_CAPW}\s*,\s*(?:CKP\s+)?{_CAPW}"
                                 rf"(?:\s+[{NAME_UP}]\.?(?![\w]))?)(\s+{_CAPW})?")
 # names with no comma: a seat label, one to four words and the number ('Captain: DOE JOHN 99999', 'f/o: doe jane
-# 10001'), and capital words right before a number ('trade: DOE JANE 10001')
+# 10001'), and capital words right before a number ('trade: DOE JANE 10001'). 1.7.11: mask_crew lets them read the
+# digits the phone rule masked (in page text, a number right beside a date is masked first), and only those: a number
+# another rule masked ('employee number #####') has no name before it
 SEAT_WORDS_NUM_RE = re.compile(r"(?i)(?<![\w'.,-])((?:CA|FO|RO|F/O|capt(?:ain)?)\s*[:=]\s*)((?:[a-z\u00c0-\u024f\u02bb]"
                                r"[a-z\u00c0-\u024f\u02bb'.\-]*\s+){1,4})(\d{3,7})(?![\d:./-])")
 CAPS_NUM_RE = re.compile(rf"(?<![\w'])((?:[{NAME_UP}][{NAME_UP}'\-]+\s+){{2,4}})(\d{{4,7}})(?![\d:./-])")
@@ -270,9 +464,12 @@ PICKED_BY_RE = re.compile(r"(?i)(picked\s{1,8}up\s{1,8}by\s{1,8})(" + _PW + r"(?
                           + r"){0,7})?(\s{0,8},?\s{0,8}\(?\s{0,8})([\d#]{1,7})?")
 SEAT_NAME_RE = re.compile(r"(?i)(?<![\w'.,-])((?:CA|FO|RO|F/O|capt(?:ain)?)\s*[:=]?\s+)(" + _LOW_NAME + r")")
 CREW_LINE_RE = re.compile(r"(?is)(\bcrew\s*:\s*)(.{0,400})")
-LOOKUP_EMP_RE = re.compile(r"(?i)\b(pilot\s+|picker\s+)(\d{3,7})\b(?=\s*[:(]|\s+(?:on|still|is|was)\b)")
-X_NAME_NUM_RE = re.compile(r"((?<![\w'])x+(?:[ '.\-]x+)*,\s*x+(?:[ '.\-]x+)*[\s,:;(]+)(\d{4,7})(?![\d:./-])")
-NUM_X_NAME_RE = re.compile(r"(?<![\d:./-])(\d{4,7})([\s,:;)]+x+(?:[ '.\-]x+)*,\s*x+)(?![\w])")
+LOOKUP_EMP_RE = re.compile(r"(?i)\b(pilot\s+|picker\s+)(\d{3,7})\b(?=\s*[:(]|\s+(?:on|still|is|was)\b|(?![.\-]\d)"
+                           r"[\s().-]{1,4}" + _DATE_OR_VERSION + r")")  # 1.7.11 review: 'pilot 6593 2026-11-17'
+# 1.7.11 review: 3 to 7 digits (NAME_EMP_RE's; 'xxx, xxxx 999 (12.002)'), and before a full stop ('xxx, xxxx 10001.')
+X_NAME_NUM_RE = re.compile(r"((?<![\w'])x+(?:[ '.\-]x+)*,\s*x+(?:[ '.\-]x+)*[\s,:;(]+)(\d{3,7})(?![\d:/])"
+                           r"(?![.\-][\w.:/\-])")
+NUM_X_NAME_RE = re.compile(r"(?<![\d:./-])(\d{3,7})([\s,:;)]+x+(?:[ '.\-]x+)*,\s*x+)(?![\w])")
 MONTH_WORDS = {"january", "february", "march", "april", "june", "july", "august", "september", "october", "november",
                "december"}
 
@@ -355,14 +552,20 @@ def mask_crew(text, page=False):
     s = CREW_NAME_RE.sub(lambda m: m.group(1) + (m.group(2) if m.group(2).lower() == "open" else _x(m.group(2))), s)
     if "@" in s:  # review (round 2): an e-mail address, a phone-shaped number
         s = ADMIN_EMAIL_RE.sub(lambda m: _x(m.group(0)), s)
+    before = s
     s = _phones(s) if page else ADMIN_PHONE_RE.sub(lambda m: re.sub(r"\d", "#", m.group(0)), s)
+    phone = [a != b for a, b in zip(before, s)]  # the digits the phone rule masked (the length never changes)
     s = QUOTED_NUM_RE.sub(lambda m: m.group(1) + "#" * len(m.group(2)) + m.group(3), s)
     s = NAME_HASH_RE.sub(lambda m: _name_num(m.group(1), 0, 0, 0, m) or (
         _x(m.group(1)) + m.group(2) + "#" * len(m.group(3)) + m.group(4)), s)
     s = HASH_NAME_RE.sub(lambda m: _name_num(m.group(4), 0, 0, 0, m) or (
         m.group(1) + "#" * len(m.group(2)) + m.group(3) + _x(m.group(4))), s)
+    # 1.7.11 review: the two name rules before a number read the digits the phone rule masked as digits ('trade: DOE
+    # JANE 10001 2026-11-17' in page text), and a number another rule masked as no number ('employee number #####')
+    s = "".join(b if p else c for b, c, p in zip(before, s, phone))
     s = SEAT_WORDS_NUM_RE.sub(lambda m: m.group(1) + _x(m.group(2)) + "#" * len(m.group(3)), s)
     s = CAPS_NUM_RE.sub(_caps_num, s)
+    s = "".join("#" if p else c for c, p in zip(s, phone))
     s = PICKED_BY_RE.sub(lambda m: m.group(1) + _x(m.group(2) or "") + m.group(3) + "#" * len(m.group(4) or ""), s)
     s = SEAT_NAME_RE.sub(lambda m: m.group(1) + _x(m.group(2)), s)
     s = COMMA_NAME_WIDE_RE.sub(_comma_wide, s)

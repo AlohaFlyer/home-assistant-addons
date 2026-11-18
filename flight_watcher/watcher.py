@@ -41,6 +41,7 @@ import submit as SUB
 import inflt as IF
 import charter as CH
 import versions as VER
+from pot import LAYOVER_MIN_H, leg_shift as pot_leg_shift
 import pdfs as PDF
 import recall as RC
 import ccr as CCR
@@ -68,7 +69,7 @@ import pilotpdf as PP
 import pilotdb as PDBM
 import pdbshare as PS
 
-VERSION = "1.7.10"
+VERSION = "1.7.11"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -350,6 +351,9 @@ def on_message(c, u, msg):
         return
     if msg.topic in (f"{T}/van/alerts/set", f"{T}/van/first_min/set", f"{T}/van/second_min/set"):  # 1.7.2: admin
         van_setting_cmd(c, msg.topic[len(T) + 1:], msg.payload.decode(errors="replace"))
+        return
+    if msg.topic == f"{T}/van/adjust/set":  # 1.7.11 (FW-0075): the admin moves the van in 5 minute steps
+        van_adjust_cmd(c, msg.payload.decode(errors="replace"))
         return
     if msg.topic == f"{T}/ticket/new":
         ticket_safe(ticket_new, msg.payload.decode(errors="replace"))
@@ -1248,7 +1252,7 @@ def drop_scan():
         tests = S.setdefault("drop_tests", [])
         tests.append(rec)
         del tests[:-20]
-        log.info("DROP READY (%s): %s, grid green on %s; form %s", SUB.DRAFT, k, ", ".join(days), rec["form"])
+        log.info("Drop ready (%s): %s, grid green on %s; form %s", SUB.DRAFT, k, ", ".join(days), rec["form"])
         pub("event/drop_ready", rec, retain=False)
     save_state(S)
     publish_drop()
@@ -3216,6 +3220,61 @@ def bid_period_of(d):
     return mon if mon != f"{d:%Y-%m}" or BID_PERIODS["files"][mon] else None
 
 
+def bid_period_fn():
+    """1.7.11 (FW-0080): iso -> the bid period ('YYYY-MM') that day (ISO) belongs to, for the totals and the PAYP split:
+    the pairing files' period bounds (bid_period_of), else the schedule pages on file (smart.bid_month), else the
+    calendar month. One function for a run of lookups (the pages are read once)."""
+    of = SMART.bid_month(S.get("schedule") or {}, bid_period_of)
+
+    def key(iso):
+        try:
+            return of(date.fromisoformat(str(iso)[:10]))
+        except ValueError:
+            return str(iso)[:7]
+    return key
+
+
+def bid_period_key(iso):
+    """1.7.11 (FW-0080): bid_period_fn() for one day."""
+    return bid_period_fn()(iso)
+
+
+_BID_BOUNDS = {"at": 0.0, "v": {}}  # bid_bounds' cache: the pairing files are read at most every BID_PERIODS_TTL_S
+
+
+def bid_bounds(month):
+    """1.7.11 (FW-0080): (first day, last day, src) of month's bid period for the schedule card: the pairing files'
+    bounds (crewidx.period_start / period_end) when they speak for it, src 'package'; else the days the schedule pages
+    on file give month (bid_period_key), src 'schedule'; else the calendar month, src 'calendar'."""
+    if time.time() - _BID_BOUNDS["at"] > BID_PERIODS_TTL_S:
+        _BID_BOUNDS.update(at=time.time(), v={})
+    if month not in _BID_BOUNDS["v"]:
+        _BID_BOUNDS["v"][month] = _bid_bounds(month)
+    return _BID_BOUNDS["v"][month]
+
+
+def _bid_bounds(month):
+    d = date.fromisoformat(f"{month}-01")
+    cal = (d.isoformat(), ((d + timedelta(days=32)).replace(day=1) - timedelta(days=1)).isoformat())
+    ps, pe = CI.period_start(CARD_PAIRINGS, month), CI.period_end(CARD_PAIRINGS, month)
+    if (ps, pe) != cal or os.path.exists(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json")):
+        return ps, pe, "package"
+    of = SMART.bid_month(S.get("schedule") or {})
+    own = [x for x in ((d + timedelta(days=k)) for k in range(-3, 35)) if of(x) == month]
+    if own and (own[0].isoformat(), own[-1].isoformat()) != cal:
+        return own[0].isoformat(), own[-1].isoformat(), "schedule"
+    return cal[0], cal[1], "calendar"
+
+
+def payp_tcrd(key, rec, period_of=None):
+    """1.7.11 (FW-0080): the TCRD of each duty of a removed trip (key 'TRIP|start'), from the pairings package detail of
+    its bid period (pkg_detail_for), for versions.payp_entries' split; None when the package does not have it."""
+    trip, _, st = str(key).partition("|")
+    pd = pkg_detail_for((period_of or bid_period_key)(st), trip, st) if trip and st else None
+    du = pd.get("duties") if isinstance(pd, dict) else None
+    return [x.get("tcrd") if isinstance(x, dict) else None for x in du] if isinstance(du, list) else None
+
+
 def block_672(ev):
     """1.7.1 (FW-0042, Ryan's rule of Nov 9): smart.block_672 of a row, on the FAR column's own trips (far_trips):
     {tag, b672, b672_ok}; '672 ? (times not read)' when the pickup's report or final arrival is not known."""
@@ -3262,6 +3321,7 @@ def sensor_row(r):
 
 
 OWN_PER_CHECK = 3
+OWN_EMPTY_RETRY_S = 3600  # 1.7.11: a trip whose pairing page had no times is read again at most this often
 FULL_MAX = 12  # Check now: at most this many detail GETs per kind, still 1.5-3.5 s apart
 
 
@@ -3269,9 +3329,21 @@ def own_trip_times(fl, full=False):
     """Read only (0.3.8): check-in, final arrival and block of Ryan's own trips from their pairing
     pages, cached per trip and start date, so the FAR column can measure rest."""
     own = S.setdefault("own_trips", {})
+    # 1.7.11 (Ryan, Nov 17): when a trip's pairing page last came back with no times, its HST time; kept beside the
+    # records (an empty record stays {}), so a trip is read again at most once an hour (OWN_EMPTY_RETRY_S)
+    empty_at = S.setdefault("own_empty_at", {})
+    # 1.7.11 review: when a trip's pairing page last stopped pairing reads (the Flica client's breaker judged that very
+    # page), its HST time. Such a trip waits an hour too (OWN_EMPTY_RETRY_S), a trip never read and a Check now as
+    # well: else it is the first pairing load at every reopen (this read runs before the pot details, the pickups and
+    # the crew index), stops the path again before any other reader gets a page, and the breaker never closes
+    stop_at = S.setdefault("own_stop_at", {})
     # 1.7.2 (Ryan, Nov 13): first, with no FLICA load and before the trips gone from the schedule are pruned below, a
     # PAYP keeps the removed trip's credit (payp_refresh); a read stopped half way still leaves it on file
     keep, n = payp_refresh(own), 0
+    # 1.7.11 review: why the rest of this check's own trip pages are not loaded ('' while they are): FLICA said the
+    # session is gone ('killed', 'expired', 'blocked'), or a pilot's budget left a load out (GateSkip, raised again
+    # once the trips read before it are saved and published). The trips after it still reach keep (never pruned)
+    stop, skipped = "", None
     for it in _sched_items():
         trip = it.get("trip") or ""
         if not PAIRING_RE.match(trip):
@@ -3294,7 +3366,17 @@ def own_trip_times(fl, full=False):
                 old = True
             elif it["end"] < today and not cur.get("final"):
                 old = True
-        if (k in own and not full and not old) or n >= (FULL_MAX if full else OWN_PER_CHECK) or not BRK.allow("pairing"):
+        # 1.7.11 (Ryan, Nov 17): a trip whose last page had no times is read again once an hour, no sooner, whether
+        # it has times from an earlier read or none (before 1.7.11 an empty record was never read again, save on a
+        # full check, and its times were blanked)
+        retry = (local_now() - timedelta(seconds=OWN_EMPTY_RETRY_S)).isoformat()
+        if k in own and not cur:
+            old = (empty_at.get(k) or "") < retry
+        elif empty_at.get(k, "") >= retry:
+            old = False
+        held = stop_at.get(k, "") >= retry  # 1.7.11 review: its page stopped pairing reads within the hour
+        if (stop or held or (k in own and not full and not old) or n >= (FULL_MAX if full else OWN_PER_CHECK)
+                or not BRK.allow("pairing")):
             continue  # 1.6.2: nothing is read while pairing pages are stopped (the cached times stay)
         # FW-0067: paced before every read, the first too (the schedule check may have just loaded a page) ...
         time.sleep(random.uniform(1.5, 3.5))
@@ -3303,9 +3385,27 @@ def own_trip_times(fl, full=False):
                "&FROM=MobileOpentimePot&CurrentPage=1")
         try:
             page = fl.fetch(url)
-            if classify(page) == "ok":
+            if not BRK.allow("pairing"):
+                # 1.7.11 (Ryan, Nov 17): this very page stopped pairing reads (the Flica client judged it: not a
+                # pairing page, as while the FLICA session is going): it is no read. The times on file and own_empty_at
+                # stay as they were; the trips after it still reach keep (never pruned) and load nothing. Review: the
+                # trip waits an hour (own_stop_at), so the first load at the reopen is another reader's
+                stop_at[k] = local_now().isoformat()
+                log.info("own trip %s: the page stopped pairing reads; the times on file are kept (read again in an "
+                         "hour)", k)
+                continue
+            kind = classify(page)
+            if kind in STOP_KINDS:
+                # 1.7.11 review: FLICA says the session is gone (another login took it, it expired, or reads are
+                # blocked): no more pairing pages on it; check() meets the same page on the pot and yields
+                stop = kind
+                log.info("own trip %s: FLICA's page says %s; no more own trip pages this check", k, kind)
+                continue
+            if kind == "ok":
+                stop_at.pop(k, None)
                 d = parse_detail(page)
                 if d.get("report") and d.get("last_arr"):
+                    empty_at.pop(k, None)
                     own[k] = {f: d.get(f, "") for f in ("report", "last_arr", "blk", "credit")}
                     own[k]["soft"] = soft_time(d.get("credit"), d.get("blk")) or ""
                     own[k]["read_at"] = local_now().isoformat()
@@ -3321,18 +3421,35 @@ def own_trip_times(fl, full=False):
                     log.info("own trip %s: report %s, in %s, blk %s", k, d["report"], d["last_arr"],
                              d.get("blk"))
                 else:
-                    log.info("own trip %s: no times on the pairing page", k)
-                    own[k] = {}
+                    # 1.7.11 (Ryan, Nov 17): a page with no times never blanks the times already read; an empty record
+                    # stays {} and is read again in an hour
+                    empty_at[k] = local_now().isoformat()
+                    prev = own.get(k) or {}
+                    if prev.get("report") and prev.get("last_arr"):
+                        log.info("own trip %s: no times on the pairing page; the times read before are kept", k)
+                    else:
+                        own[k] = {}
+                        log.info("own trip %s: no times on the pairing page (read again in an hour)", k)
+        except GT.GateSkip as e:
+            # 1.7.11 review: a pilot's budget left this load out (no load made): the trips read before it in this check
+            # are still pruned, saved and published below, then read_guard logs the skip; the rest wait
+            stop, skipped = "skip", e
         except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
             raise
         except Exception as e:
             log.info("own trip %s skipped: %s", k, e)
     for k in [k for k in own if k not in keep]:
         own.pop(k)
+    for k in [k for k in empty_at if k not in keep]:
+        empty_at.pop(k)
+    for k in [k for k in stop_at if k not in keep]:
+        stop_at.pop(k)
     if n:
         save_state(S)
         time.sleep(random.uniform(1.5, 3.5))  # ... and after the last, before the check loads the pot
     publish_own_trips()
+    if skipped:
+        raise skipped
 
 
 def payp_refresh(own=None):
@@ -3348,7 +3465,9 @@ def payp_refresh(own=None):
     step fails)."""
     own = S.setdefault("own_trips", {}) if own is None else own
     try:
-        got = VER.payp_entries(_sched_items(), own, lambda mk: DB.get(f"sched_versions:{mk}") or [], PAIRING_RE.match)
+        bpk = bid_period_fn()  # 1.7.11 (FW-0080): split by bid period, TCRD per duty
+        got = VER.payp_entries(_sched_items(), own, lambda mk: DB.get(f"sched_versions:{mk}") or [], PAIRING_RE.match,
+                               bpk, lambda k, r: payp_tcrd(k, r, bpk))
     except Exception as e:  # never stops the trip reads; what is on file stays while its PAYP is on the schedule
         log.info("pay protection skipped: %s", e)
         return {k for k in own if k.startswith(f"{VER.PAYP}|")}
@@ -3404,6 +3523,54 @@ def repair_trip_ends():
     return n
 
 
+PAYP_FIX_V = 1  # 1.7.11 review (FW-0080): bump to split the PAYP records in the stored versions again
+
+
+def repair_payp_splits():
+    """1.7.11 review (FW-0080, PWA 4.A), once: the PAYP records in the stored versions (months 24 back to 3 ahead), written
+    while a PAYP's kept credit split by the calendar month (1.7.10), split again by bid period (versions.resplit_versions:
+    each removed trip's duties from own trips or the versions, its TCRD from its pairings package), so a viewed version
+    prices each bid period's part as FLICA does; the records on file are split again by payp_refresh on every run.
+    Returns the number of months changed.
+    1.7.11 integration review (the first start after 1.7.10): the records on file go first (payp_refresh; a record of a
+    PAYP on the schedule that it no longer keeps leaves own trips, as own_trip_times prunes it), so they match the
+    repaired versions;
+    resplit_versions makes each repaired version's fingerprint again and writes its PAYP change lines in the bid period's
+    words. The start's versions_check and the first check's then see the line as it is: no new version, no
+    event/schedule_version, with nothing changed on FLICA. No FLICA load."""
+    if S.get("payp_fix_v") == PAYP_FIX_V:
+        return 0
+    own = S.setdefault("own_trips", {})
+    was = json.dumps(own, sort_keys=True, default=str)
+    keep, on = payp_refresh(own), {f"{it.get('trip')}|{it.get('start')}" for it in _sched_items()}
+    for k in [k for k in own if k.startswith(f"{VER.PAYP}|") and k not in keep and k in on]:
+        own.pop(k)
+    if json.dumps(own, sort_keys=True, default=str) != was:
+        save_state(S)
+        try:
+            publish_own_trips()
+        except Exception as e:  # noqa: BLE001 (the next check publishes them)
+            log.info("own trips not published after the pay protection split: %s", type(e).__name__)
+    today = local_now().date()
+    vers = {}
+    for i in range(-24, 4):
+        y, m = divmod(today.year * 12 + today.month - 1 + i, 12)
+        mk = f"{y:04d}-{m + 1:02d}"
+        v = DB.get(f"sched_versions:{mk}")
+        if v:
+            vers[mk] = v
+    bpk = bid_period_fn()
+    changed = VER.resplit_versions(vers, S.get("own_trips") or {}, bpk, lambda k, r: payp_tcrd(k, r, bpk))
+    for mk in changed:
+        DB.put(f"sched_versions:{mk}", vers[mk])
+    S["payp_fix_v"] = PAYP_FIX_V
+    save_state(S)
+    if changed:
+        log.info("pay protection split: the PAYP records of %d month(s) of stored versions split again by bid period (%s)",
+                 len(changed), ", ".join(changed))
+    return len(changed)
+
+
 def versions_months(months):
     """1.6.2: the months whose versions are published: every month FLICA's schedule was read for, plus any month from
     last month to two ahead whose first version is the PBS award (an award upload before any FLICA read of it: a pilot's
@@ -3425,6 +3592,10 @@ def versions_check(force_pub=False):
         repair_trip_ends()
     except Exception as e:  # never stops the versions; tried again next time
         log.info("trip end repair skipped: %s", e)
+    try:
+        repair_payp_splits()
+    except Exception as e:  # never stops the versions; tried again next time
+        log.info("pay protection split repair skipped: %s", e)
     try:
         months, own = S.get("schedule") or {}, S.get("own_trips") or {}
         wait = S.setdefault("ver_wait", {})
@@ -3735,7 +3906,8 @@ def pilotdb_start():
     with PDB_LOCK:
         PDB.update(db=db, status=st)
     if st["db"] == "newer_db":
-        log.warning("pilot db: the file is from a newer Flight Watcher; it is left as it is (roll forward to use it)")
+        log.warning("pilot db: the file is from a newer release of this app; it is left as it is (roll forward to use "
+                    "it)")
     elif st["db"] == "error":
         log.warning("pilot db: the file failed its integrity check and was set aside; a copy is offered on the card"
                     if st.get("offer") else "pilot db: the file failed its integrity check and was set aside")
@@ -4467,19 +4639,39 @@ def tax_pct():
     return TAX["pct"]
 
 
-def pilot_pay_line(trips, emp, name, start, end):
+def pilot_pay_line(trips, emp, name, start, end, month=None):
     """FW-0062: the pay line under a rebuilt month (pay.pay_line over the trips the card draws, crewidx.grid_pick),
     priced with the date of hire on the shared seniority list. Adds 'gross' to each priced trip. list_status: 'ok',
-    'none' (no list uploaded) or 'not_on_list' (a newer hire, or a name the list spells another way)."""
+    'none' (no list uploaded) or 'not_on_list' (a newer hire, or a name the list spells another way). 1.7.11
+    (FW-0080): each trip counts its part flown in the bid period start..end (PWA 4.A, _period_part: the pairings
+    package's duties and their TCRD), and a trip with a part in another bid period gets its 'split', as the month FLICA
+    showed does (pilot_price)."""
     data = seniority_data()
     rec = SEN.find(data, emp, name) if data else None
     grid, _also = CI.grid_pick(trips)
+    month = month if re.fullmatch(r"\d{4}-\d{2}", str(month or "")) else CI.period_for(CARD_PAIRINGS, start)
+    pcache, splits = {}, {}
+    for t in grid:
+        st = str(t.get("start") or "")
+        per = _period_of(st, month, start, end, pcache)
+        dets = pkg_details_for(per) or {}
+        # 1.7.11 integration review: a rebuilt copy (FW-0068, H9635B) splits by its base id's duties (pkg_det)
+        part, sp = _period_part(t["pairing"], st, month, start, end, per, pkg_det(dets, per, t["pairing"], st), None,
+                                CI._hm(t.get("credit")), CI._hm(t.get("blk")))
+        t.update(part)
+        if sp:
+            splits[f"{t['pairing']}|{st}"] = sp
     line, per = PAY.pay_line(grid, (rec or {}).get("doh") or "", start, end, tax_pct())
     for t in trips:
-        g = per.get(f"{t.get('pairing')}|{t.get('start')}")
+        k = f"{t.get('pairing')}|{t.get('start')}"
+        g = per.get(k)
         if g is not None:
             t["gross"] = g
-    line.update(_sen_fields(data, rec))
+        if splits.get(k):
+            t["split"] = splits[k]
+        else:
+            t.pop("split", None)
+    line.update(_sen_fields(data, rec), period=_bid_period_note(month, start, end))
     return line  # 1.7.7: on a pilot instance too (DOH, list dates, year_to as 1.7.5 sent them; the new rate_steps too)
 
 
@@ -4509,41 +4701,98 @@ def _equip_ok(rec):
 PC_DOW = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"]
 
 
-def _month_share(st, end, det, legs, month):
-    """PWA 4.A (the schedule card's figs()): a segment pays on the date it originates, so a trip that starts in month
-    and flies on into the next one counts here only the block share of its duties departing in month. From the
-    package's duties (dep: HST minutes from the trip's first day, blk), else from the pairing page's legs (each on the
-    first day from the one before whose weekday it names). (share, block minutes flown outside month, that month);
-    (1.0, 0, '') when it all departs in month or nothing says when."""
-    if (end or st)[:7] == st[:7] == month:
-        return 1.0, 0, ""
+def _legs_duties(st, legs):
+    """1.7.11 (FW-0080): the legs of another pilot's pairing page ([{dow, route, dep (local HHMM), blk (HHMM)}]) as
+    duties for pay.period_share: each leg on the first day from the one before whose weekday it names (its local date),
+    then its departure in HST minutes from 00:00 HST of the trip's first day st, by its time (pot.leg_shift: a leg out
+    of LAX at 00:30 local departs 22:30 HST the day before). [] when a leg's weekday or block is unreadable.
+    1.7.11 review: the legs make duty periods as pot.parse_duties makes Ryan's (a gap of LAYOVER_MIN_H or more from a
+    leg's block-in, dep + blk, to the next departure starts a new one), each {dep: its first leg's, blk: their sum}, so
+    a duty whose legs cross HST midnight counts on its first leg's date, as the package's duties do."""
     try:
         t0 = date.fromisoformat(st)
     except ValueError:
-        return 1.0, 0, ""
-    parts = []  # (month it departs in, block minutes)
-    du = [d for d in (det or {}).get("duties") or [] if isinstance(d, dict) and isinstance(d.get("dep"), (int, float))
+        return []
+    legs_out = _legs_hst(t0, legs)
+    out = []
+    for lg in legs_out:
+        if out and lg["dep"] - out[-1]["_in"] < LAYOVER_MIN_H * 60:
+            out[-1]["blk"] += lg["blk"]
+            out[-1]["_in"] = max(out[-1]["_in"], lg["dep"] + lg["blk"])
+        else:
+            out.append({"dep": lg["dep"], "blk": lg["blk"], "_in": lg["dep"] + lg["blk"]})
+    return [{"dep": d["dep"], "blk": d["blk"]} for d in out] if len(legs_out) == len(legs or []) else []
+
+
+def _legs_hst(t0, legs):
+    """_legs_duties' legs, each {dep: HST minutes from 00:00 HST of t0, blk}; stops at the first unreadable leg."""
+    at, out = t0, []
+    for lg in legs or []:
+        dw = str((lg or {}).get("dow") or "").upper()[:2] if isinstance(lg, dict) else ""
+        b = re.fullmatch(r"(\d{1,2}):?(\d{2})", str(lg.get("blk") or "").strip()) if dw in PC_DOW else None
+        if not b:
+            return []
+        w = PC_DOW.index(dw)
+        at += timedelta(days=next(k for k in range(7) if ((at + timedelta(days=k)).weekday() + 1) % 7 == w))
+        t = re.fullmatch(r"(\d{1,2}):?(\d{2})", str(lg.get("dep") or "").strip())
+        frm, _, to = str(lg.get("route") or "").upper().partition("-")
+        dep = int(t.group(1)) * 60 + int(t.group(2)) - pot_leg_shift(frm, to) if t and int(t.group(1)) < 24 else 720
+        out.append({"dep": (at - t0).days * 1440 + dep, "blk": int(b.group(1)) * 60 + int(b.group(2))})
+    return out
+
+
+def _trip_duties(period, pid, det, legs, st):
+    """1.7.11 (FW-0080): (duties, src) of a trip for pay.period_share: the pairings package's duties of its bid period
+    (package_details: dep in HST minutes, blk) with each one's TCRD from the package detail (pkg_detail_for: the same
+    duty periods in the same order, paired by index when both list as many), src 'package'; else the pairing page's
+    legs (_legs_duties, no TCRD), src 'legs'; else ([], '')."""
+    raw = (det or {}).get("duties") or []
+    ok = [d for d in raw if isinstance(d, dict) and isinstance(d.get("dep"), (int, float))
           and isinstance(d.get("blk"), (int, float))]
-    if du:
-        parts = [((datetime.combine(t0, datetime.min.time()) + timedelta(minutes=d["dep"])).strftime("%Y-%m"), d["blk"]) for d in du]
-    else:
-        at = t0
-        for lg in legs or []:
-            w = PC_DOW.index(str(lg.get("dow") or "").upper()[:2]) if str(lg.get("dow") or "").upper()[:2] in PC_DOW else -1
-            b = re.fullmatch(r"(\d{1,2}):?(\d{2})", str(lg.get("blk") or "").strip())
-            if w < 0 or not b:
-                return 1.0, 0, ""
-            k = next((k for k in range(7) if ((at + timedelta(days=k)).weekday() + 1) % 7 == w), None)
-            if k is None:
-                return 1.0, 0, ""
-            at += timedelta(days=k)
-            parts.append((at.strftime("%Y-%m"), int(b.group(1)) * 60 + int(b.group(2))))
-    tot = sum(b for _m, b in parts)
-    if not parts or tot <= 0:
-        return 1.0, 0, ""
-    inm = sum(b for m, b in parts if m == month)
-    out = [(m, b) for m, b in parts if m != month]
-    return inm / tot, sum(b for _m, b in out), (out[-1][0] if out else "")
+    if ok:
+        pd = pkg_detail_for(period, pid, st) if period else None  # 1.7.11 integration review: a rebuilt id's base too
+        pdu = pd.get("duties") if isinstance(pd, dict) else None
+        same = isinstance(pdu, list) and len(pdu) == len(raw) == len(ok)
+        return [{"dep": d["dep"], "blk": d["blk"],
+                 "tcrd": (pdu[i].get("tcrd") if same and isinstance(pdu[i], dict) else None)} for i, d in enumerate(ok)], "package"
+    lg = _legs_duties(st, legs)
+    return (lg, "legs") if lg else ([], "")
+
+
+def _period_by(month, side):
+    """'YYYY-MM' of the bid period just before (side 'before') or just after ('after') month's."""
+    d = date.fromisoformat(f"{month}-01")
+    return (d - timedelta(days=1)).strftime("%Y-%m") if side == "before" else (d + timedelta(days=32)).strftime("%Y-%m")
+
+
+def _period_part(pid, st, month, start, end, per, det, legs, credit, blk):
+    """1.7.11 (FW-0080, PWA 4.A): a trip's part in month's bid period start..end (pay.period_share over _trip_duties):
+    ({credit, blk, soft, in_period}, split or None). split, for a trip with a part in another bid period: this period's
+    credit / blk / soft, the trip's all_credit / all_blk, out_credit / out_blk (the part paid in the other bid period),
+    side ('before' / 'after'), other (that bid period, 'YYYY-MM'), edge (this period's first day for 'before', its last
+    for 'after'), est (credit by block share, no TCRD), none (no part here), placed (False: no duty on file, so the whole
+    trip pays in the bid period of its first day)."""
+    duties, _src = _trip_duties(per, pid, det, legs, st)
+    sh = PAY.period_share(st, start, end, duties, credit, blk)
+    if sh["whole"]:
+        return {"credit": credit, "blk": blk, "soft": soft_time(credit, blk) or "", "in_period": True}, None
+    side = sh["side"] or ("before" if st < start else "after")
+    sp = {"credit": sh["credit"], "blk": sh["blk"], "soft": sh["soft"], "all_credit": credit, "all_blk": blk,
+          "out_credit": sh["out_credit"], "out_blk": sh["out_blk"], "side": side, "other": _period_by(month, side),
+          "edge": start if side == "before" else end, "est": sh["est"], "none": not sh["in"], "placed": sh["placed"]}
+    return {"credit": sh["credit"], "blk": sh["blk"], "soft": sh["soft"], "in_period": sh["in"]}, sp
+
+
+def _bid_period_note(month, start, end):
+    """1.7.11 (FW-0080): {from, to, src} of the bid period a pay line covers: src 'package' when the pairing files give
+    its bounds (crewidx.period_start / period_end), 'calendar' when none does and the calendar month stands in."""
+    try:
+        d = date.fromisoformat(f"{month}-01")
+        cal = (d.isoformat(), ((d + timedelta(days=32)).replace(day=1) - timedelta(days=1)).isoformat())
+    except ValueError:
+        cal = ("", "")
+    pkg = (start, end) != cal or os.path.exists(os.path.join(CARD_PAIRINGS, f"pairings_{month}.json"))
+    return {"from": start, "to": end, "src": "package" if pkg else "calendar"}
 
 
 def _period_of(st, month, start, end, cache):
@@ -4554,11 +4803,10 @@ def _period_of(st, month, start, end, cache):
         return CI.period_for(CARD_PAIRINGS, st, cache)
     if start <= st <= end:
         return month
-    d = date.fromisoformat(f"{month}-01")
-    return (d - timedelta(days=1)).strftime("%Y-%m") if st < start else (d + timedelta(days=32)).strftime("%Y-%m")
+    return _period_by(month, "before" if st < start else "after")
 
 
-def pilot_price(items, emp, name, month, start, end, recon=None, days_off=None, flica=None):
+def pilot_price(items, emp, name, month, start, end, recon=None, days_off=None, flica=None, days=None):
     """1.7.7 (Ryan, Nov 14: "you should be able to calculate their pay by looking at their date of hire and
     seniority"): the pay of a month FLICA's Schedule Lookup showed for another pilot (or an older version of it),
     priced as the rebuilt month is (pay.pay_line, ca_rules): each pairing for the seat that pilot flies on it at his
@@ -4572,34 +4820,45 @@ def pilot_price(items, emp, name, month, start, end, recon=None, days_off=None, 
     load. Returns (line, {'PID|start': {seat, seat_src, gross?, credit?, blk?, soft?, figs?, split?}}): figs names where
     a credit or block the page did not give came from. 1.7.7: a pilot instance's line is the same (the DOH, the
     list's dates, year_to and rate_steps included: Ryan, Nov 14, James can be trusted with them).
-    1.7.7 review, the schedule card's month (Ryan: the month's Pay-Gross "as Ryan's does"): the totals cover the trips
-    that start in the calendar month, each its PWA 4.A share (_month_share: split says so), the vacation days in the
-    month at VAC_H (PWA 6.J.1.c) and the PAYP days (PWA Definitions 57) at FLICA's month credit (flica: Schedule
-    Lookup's totals) less the rest, an estimate. Each trip's package is its own bid period's (_period_of). The
-    list's equipment says which rates apply (_equip_ok): another fleet's trips are not priced."""
+    1.7.7 review, the schedule card's month (Ryan: the month's Pay-Gross "as Ryan's does"): the vacation days at VAC_H
+    (PWA 6.J.1.c) and the PAYP days (PWA Definitions 57) at FLICA's month credit (flica: Schedule Lookup's totals) less
+    the rest, an estimate. Each trip's package is its own bid period's (_period_of). The list's equipment says which
+    rates apply (_equip_ok): another fleet's trips are not priced.
+    1.7.11 (FW-0080, Ryan, Nov 17: "Everywhere"): the totals cover the bid period start..end as FLICA's do, never the
+    calendar month: each trip its part flown in it (PWA 4.A: a segment pays on the date it originates; _period_part,
+    the credit of a duty its TCRD; split says what part flew in the other bid period), so a trip from the bid period
+    before counts the duties it flies in this one; the VAC and PAYP days in the bid period. days (FLICA's grid, as
+    pub_pilot gives it): a trip of the crew index (recon) that starts before the grid and flies on into the bid period
+    counts its part too when every grid day it covers is free and shows a layover cell (line 'carry': it has no item).
+    line 'period': the bid period and where its bounds came from."""
     data = seniority_data()
     rec = SEN.find(data, emp, name) if data else None
     rk = {f"{t.get('pairing')}|{t.get('start')}": t for t in (recon or []) if isinstance(t, dict)}
-    m_from = f"{month}-01"
-    m_to = (date.fromisoformat(m_from).replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
-    pcache, trips, info, srcs, vac, payp = {}, [], {}, {}, set(), []
+    try:
+        m0 = date.fromisoformat(f"{month}-01")
+    except ValueError:
+        m0 = local_now().date().replace(day=1)
+    if not (start and end):  # no bounds: the calendar month stands in (_bid_period_note says so)
+        start, end = m0.isoformat(), ((m0 + timedelta(days=32)).replace(day=1) - timedelta(days=1)).isoformat()
+    pcache, trips, info, srcs, vac, payp, carry = {}, [], {}, {}, set(), [], []
     for it in items or []:
         if not isinstance(it, dict):
             continue
         pid, st = str(it.get("trip") or ""), str(it.get("start") or "")
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", st):
             continue
-        if pid in ("VAC", VER.PAYP):
+        if pid in ("VAC", VER.PAYP):  # FW-0080: the days in the bid period (a VAC day on Dec 1 is November's)
             ds = PAY._days(st, str(it.get("end") or st), cap=40)
             if pid == "VAC":
-                vac.update(d for d in ds if d[:7] == month)
-            elif any(d[:7] == month for d in ds):
+                vac.update(d for d in ds if start <= d <= end)
+            elif any(start <= d <= end for d in ds):
                 payp.append({"start": st, "end": str(it.get("end") or st)})
             continue
         if not PAIRING_RE.match(pid):
             continue
         r = rk.get(f"{pid}|{st}") or {}
-        dets = pkg_details_for(_period_of(st, month, start, end, pcache)) or {}
+        per = _period_of(st, month, start, end, pcache)
+        dets = pkg_details_for(per) or {}
         det = dets.get(pid) or dets.get(re.sub(r"(?<=\d)[A-Z]$", "", pid)) or {}
         got = {"credit": CI._hm(it.get("credit")), "blk": CI._hm(it.get("blk"))}
         fill = {"credit": CI._hm(det.get("credit")) or CI._hm(r.get("credit")), "blk": CI._hm(det.get("block")) or CI._hm(r.get("blk"))}
@@ -4617,32 +4876,69 @@ def pilot_price(items, emp, name, month, start, end, recon=None, days_off=None, 
         except (TypeError, ValueError):
             n = 0
         end_ = str(it.get("end") or st)
-        # PWA 4.A: this calendar month's share of a trip that flies on into the next one (the schedule card's rule)
-        share, out_b, nxt = _month_share(st, end_, dets.get(pid) or {}, it.get("legs"), month) if st[:7] == month else (1.0, 0, "")
-        c_h, b_h = PAY.hrs(credit), PAY.hrs(blk)
-        c_m, b_m = (PAY.hm(c_h * share) if c_h is not None else ""), (PAY.hm(b_h * share) if b_h is not None else "")
-        trips.append({"pairing": pid, "start": st, "end": end_, "seat": seat, "credit": c_m if share < 1 else credit,
-                      "blk": b_m if share < 1 else blk, "soft": soft_time(credit, blk) or "", "n": n,
-                      "lay": str(it.get("lay") or det.get("lay") or r.get("lay") or ""),
-                      "route": str(det.get("route") or r.get("route") or "")})
+        # PWA 4.A (FW-0080): this bid period's part of the trip, never a calendar month's
+        # 1.7.11 integration review: a rebuilt copy (FW-0068, H9635B) splits by its base id's duties (pkg_det)
+        part, sp = _period_part(pid, st, month, start, end, per, pkg_det(dets, per, pid, st), it.get("legs"), credit, blk)
+        trips.append(dict(part, pairing=pid, start=st, end=end_, seat=seat, n=n,
+                          lay=str(it.get("lay") or det.get("lay") or r.get("lay") or ""),
+                          route=str(det.get("route") or r.get("route") or "")))
         k = f"{pid}|{st}"
         info[k] = {"seat": seat, "seat_src": src}
         if figs:
             info[k].update(credit=credit, blk=blk, soft=soft_time(credit, blk) or "", figs=figs)
-        if share < 1:
-            soft_s = PAY.hm(max(0.0, PAY.hrs(c_m) - PAY.hrs(b_m))) if c_m and b_m else ""
-            info[k]["split"] = {"credit": c_m, "blk": b_m, "soft": soft_s, "all_credit": credit, "all_blk": blk,
-                                "out_blk": PAY.hm(out_b / 60), "next": nxt}
-        if st[:7] == month:
+        if sp:
+            info[k]["split"] = sp
+        if part["in_period"]:
             srcs[src] = srcs.get(src, 0) + 1
+    # FW-0080: a crew index trip from before FLICA's grid (the day before the bid period) that flies on into the bid
+    # period: its part counts, only when FLICA's grid shows each of its days free with a layover cell (a trip in
+    # progress, not one dropped since the crew list was read) and a duty on file places it
+    first = (date.fromisoformat(start) - timedelta(days=1)).isoformat()
+    grid = {str(d[0]): d for d in days or [] if isinstance(d, (list, tuple)) and len(d) >= 3}
+    taken = {d for t in trips for d in PAY._days(t["start"], t["end"], cap=40)}
+    for t in recon or []:
+        if not isinstance(t, dict):
+            continue
+        pid, st, en = str(t.get("pairing") or ""), str(t.get("start") or ""), str(t.get("end") or "")
+        k = f"{pid}|{st}"
+        if (not PAIRING_RE.match(pid) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", st) or not en or not st < first
+                or en < start or k in info or not grid):
+            continue
+        cov = [d for d in PAY._days(first, en, cap=40)]
+        if not cov or any(d in taken or d not in grid or str(grid[d][1] or "").strip() or not str(grid[d][2] or "").strip()
+                          for d in cov):
+            continue
+        per = _period_of(st, month, start, end, pcache)
+        det = pkg_det(pkg_details_for(per), per, pid, st)  # 1.7.11 integration review: a rebuilt id's base too
+        credit, blk = CI._hm(t.get("credit")) or CI._hm(det.get("credit")), CI._hm(t.get("blk")) or CI._hm(det.get("block"))
+        part, sp = _period_part(pid, st, month, start, end, per, det, None, credit, blk)
+        if not part["in_period"] or not sp or not sp["placed"]:
+            continue
+        seat = str(t.get("seat") or (rec or {}).get("seat") or "FO").upper()
+        try:
+            n = int(t.get("n") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        trips.append(dict(part, pairing=pid, start=st, end=en, seat=seat, n=n, lay=str(t.get("lay") or det.get("lay") or ""),
+                          route=str(det.get("route") or t.get("route") or "")))
+        info[k] = {"seat": seat, "seat_src": "crew index", "split": sp}
+        carry.append({"pairing": pid, "start": st, "credit": sp["credit"], "blk": sp["blk"], "all_credit": credit,
+                      "all_blk": blk, "est": sp["est"]})
+        srcs["crew index"] = srcs.get("crew index", 0) + 1
     eq, ok = _equip_ok(rec)
     fc = PAY.hrs(re.sub(r"^(\d+)\.(\d{2})$", r"\1:\2", str((flica or {}).get("credit") or "")))
-    line, per = PAY.pay_line(trips, (rec or {}).get("doh") or "", m_from, m_to.isoformat(), tax_pct(), month=month,
+    line, per = PAY.pay_line(trips, (rec or {}).get("doh") or "", start, end, tax_pct(),
                              vac=sorted(vac), payp=payp, flica_credit=fc, rate_ok=ok,
                              vac_seat=str((rec or {}).get("seat") or "FO").upper())
     for k, g in per.items():
         info[k]["gross"] = g
-    line.update(_sen_fields(data, rec), seat_src=srcs, days_off=days_off)
+    for c in carry:
+        g = per.get(f"{c['pairing']}|{c['start']}")
+        if g is not None:
+            c["gross"] = g
+    line.update(_sen_fields(data, rec), seat_src=srcs, days_off=days_off, period=_bid_period_note(month, start, end))
+    if carry:
+        line["carry"] = carry
     if eq:
         line["equip"] = eq
     return line, info
@@ -6061,14 +6357,23 @@ def sched_label(url):
 
 def publish_schedule(updated=None, source=None):
     """sensor.<prefix>_schedule: the months on file (as before) and, 1.6.2, read_status: {ok, why, at, at_hst,
-    next_try, next_hst, tries} of the last read, so the Schedule card can say why FLICA's schedule is not read."""
+    next_try, next_hst, tries} of the last read, so the Schedule card can say why FLICA's schedule is not read.
+    1.7.11 (FW-0080): periods {YYYY-MM: {start, end, src}}, each month's bid period (bid_bounds), which the card's
+    totals cover when the month's pairings package is not loaded."""
     sch = S.get("schedule") or {}
     cur = sch.get(local_now().strftime("%Y-%m")) or {}
+    periods = {}
+    for k in sch:  # 1.7.11 (FW-0080): each month's bid period, for the schedule card's totals
+        try:
+            a, b, src = bid_bounds(k)
+            periods[k] = {"start": a, "end": b, "src": src}
+        except Exception:  # noqa: BLE001: the card then uses the pairings package, else the calendar month
+            continue
     pub("schedule", {"updated": updated if updated is not None else (cur.get("updated") or ""),
                      "source": source if source is not None else (S.get("sched_source") or ""),
                      "checked": now_iso(), "read_status": S.get("sched_status") or {},
                      "months": {k: {kk: v[kk] for kk in ("items", "days", "totals", "updated") if kk in v}
-                                for k, v in sch.items()}})
+                                for k, v in sch.items()}, "periods": periods})
 
 
 def schedule_check(fl, force=False):
@@ -7413,7 +7718,7 @@ def trade_check():
         for m in grp:
             m.update(state="pushed", by=ev["key"])
         done[ev["key"]] = now_iso()
-        log.info("trade seen on the schedule (%s): %s, Pay-Gross %s", day, ev["detail"],
+        log.info("trade seen on the schedule (%s): %s; Pay-Gross %s", day, ev["detail"],
                  (ev["pay"] or {}).get("delta_text", "not priced"))
         pub("event/request_decided", ev, retain=False)
     cut = (datetime.fromisoformat(now_iso()) - timedelta(days=30)).isoformat()
@@ -7688,7 +7993,9 @@ PILOT_PAIRINGS_MAX = 8
 LOOKUP_MIN_LETTERS = 3  # of the last name
 LOOKUP_PREFIX_MIN = 5  # 1.6.2 review: a last name matches whole; only this many letters or more also match its start
 LOOKUP_PER_H = 20  # 1.6.2 review: name queries an hour (the roster cannot be walked letter by letter)
-LOOKUP_MAX = 5  # matches shown (name and seat); more is no list: type more of the name
+# matches shown; more is no list: type more of the name. 1.7.11 (FW-0078, Ryan: "show up to 12 matches as Last,
+# First, seat, base and employee #"): 12 (5 before; the most pilots sharing one last name in the shared pilot file is 10)
+LOOKUP_MAX = 12
 PICK_TTL_S = 1800  # a pick-list entry stays usable this long
 LOOKUP_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z '.-]*(?:,\s*[A-Za-z][A-Za-z '.-]*)?$")  # letters only: no wildcard
 AWARD_SEAT_RE = re.compile(r"\b[AB]\d{3}\s*(CA|FO)\b[^\n]{0,40}\bAWARD\b", re.I)
@@ -7709,11 +8016,12 @@ def _lkey(s):
 
 
 def name_directory():
-    """1.6.2 (item 11): [{emp, last, first, name, seat}] of every pilot on the files every instance already receives:
-    the shared seniority list (seniority.json: 'Last, First', seat) and the PBS award texts (<YYYY-MM>_award.txt: the
-    'SSSSS / EMP' line, the last name on it or on the next line, the seat from the award's title, e.g. 'A332FO ...
-    AWARD'). Never the admin's crew index or contact list. The list's record wins for an employee number on both.
-    Cached by the files' times."""
+    """1.6.2 (item 11): [{emp, last, first, name, seat, base}] of every pilot on the files every instance already
+    receives: the shared seniority list (seniority.json: 'Last, First', seat) and the PBS award texts
+    (<YYYY-MM>_award.txt: the 'SSSSS / EMP' line, the last name on it or on the next line, the seat from the award's
+    title, e.g. 'A332FO ... AWARD'). Never the admin's crew index or contact list. The list's record wins for an
+    employee number on both. Cached by the files' times. 1.7.11 (FW-0078): base, for the pick list: the pilot
+    database record's (domicile), else the award's seniority line's category or the seniority list's record, else ''."""
     try:
         awards = sorted(f for f in os.listdir(UPLOADS) if re.fullmatch(r"\d{4}-\d{2}_award\.txt", f))
     except OSError:
@@ -7735,7 +8043,8 @@ def name_directory():
         # last name and the seat of every awarded pilot (no first name on them)
         for r in SEN.award_sen_parse("\n".join(lines))["rows"]:
             if r["emp"] not in rows:
-                rows[r["emp"]] = {"emp": r["emp"], "last": r["last"], "first": "", "seat": r["seat"][:2]}
+                rows[r["emp"]] = {"emp": r["emp"], "last": r["last"], "first": "", "seat": r["seat"][:2],
+                                  "base": _base(r.get("base"))}
         for i, ln in enumerate(lines):
             g = SEN.AWARD_PILOT_RE.match(ln)
             if not g:
@@ -7745,7 +8054,8 @@ def name_directory():
             if emp and name and (emp not in rows or not rows[emp]["first"]):
                 last, _, first = (x.strip() for x in name.partition(","))
                 rows[emp] = {"emp": emp, "last": last.title(), "first": first.title(),
-                             "seat": seat or (rows.get(emp) or {}).get("seat", "")}
+                             "seat": seat or _same_pilot(rows.get(emp), last, "seat"),
+                             "base": _same_pilot(rows.get(emp), last, "base")}
     for k, rec in ((seniority_data() or {}).get("pilots") or {}).items():
         for r in [rec] + list(rec.get("also") or []):
             name = str(r.get("name") or "")
@@ -7753,23 +8063,42 @@ def name_directory():
             name = name.title() if name in (name.upper(), name.lower()) else name
             last, _, first = (x.strip() for x in name.partition(","))
             if k and last:  # the union's list has no seat: the award's, when it names the pilot
+                # 1.7.11 review (F4): an earlier row's seat and base only when it names this last name (a number
+                # whose record has 'also' records: another pilot on that number never gets the first one's)
                 rows[k] = {"emp": k, "last": last, "first": first,
-                           "seat": str(r.get("seat") or (rows.get(k) or {}).get("seat") or "").upper()[:2]}
+                           "seat": str(r.get("seat") or _same_pilot(rows.get(k), last, "seat")).upper()[:2],
+                           "base": _base(r.get("base")) or _same_pilot(rows.get(k), last, "base")}
     # 1.7.10 (Ryan, Nov 15: the lookup searches the pilot database, all pilots): every live record's name and seat
     # (the admin's own database; a portal pilot's own pilotdb file, unless Ryan turned his share off). A record's
     # 'Last, First' wins over a file's; a record with a last name only fills in a number no file names
-    for k, last, first, seat in db_rows:
+    for k, last, first, seat, base in db_rows:
         old = rows.get(k)
         if old and old["first"] and not first:
+            if _base(base) and _same_pilot(old, last, "last"):  # 1.7.11: the record's base still wins over a file's
+                old["base"] = _base(base)
             continue
-        rows[k] = {"emp": k, "last": last, "first": first, "seat": (seat or (old or {}).get("seat") or "").upper()[:2]}
+        rows[k] = {"emp": k, "last": last, "first": first, "seat": (seat or _same_pilot(old, last, "seat")).upper()[:2],
+                   "base": _base(base) or _same_pilot(old, last, "base")}
     out = [dict(r, name=f"{r['last']}, {r['first']}".strip(" ,")) for r in rows.values()]
     _NAME_DIR.update(sig=sig, rows=out)
     return out
 
 
+def _base(v):
+    """1.7.11 (FW-0078): a base as the pick list shows it (3 capital letters, 'HNL'), else ''."""
+    v = str(v or "").strip().upper()
+    return v if re.fullmatch(r"[A-Z]{3}", v) else ""
+
+
+def _same_pilot(old, last, field):
+    """1.7.11 review (F4): name_directory's earlier row's field (its seat or base) for a row of the same employee
+    number, only when that row names the same last name (_lkey); '' for another pilot on the number."""
+    return str((old or {}).get(field) or "") if old and _lkey(old.get("last")) == _lkey(last) else ""
+
+
 def pilotdb_name_rows():
-    """1.7.10: ([(emp, last, first, seat)], signature) of the pilot database for the name lookup. The admin reads his
+    """1.7.10: ([(emp, last, first, seat, base)], signature) of the pilot database for the name lookup (1.7.11: base,
+    the record's domicile, for the pick list). The admin reads his
     database; a portal pilot his own pilotdb file (pdbshare.View, every live record; none while Ryan has his share
     off: no file, no rows). A number two records share is left out (the lookup runs by number and could not
     tell them apart). Never phones, emails or notes; ([], '') when there is nothing to read."""
@@ -7833,7 +8162,8 @@ def name_lookup(q):
 def pick_seats(hits):
     """1.7.10 review: what a pick-list row shows after the name: the seat, and for rows that would read the same
     (one name and one seat: two award-only namesakes) the Sen # from the pilot's own pilotdb file ('FO Sen 72'), so
-    he can tell them apart. Never an employee number."""
+    he can tell them apart. 1.7.11 (FW-0078): the seat as before; the base and the employee number are fields of
+    their own on each entry (pick_entry), so the number is never part of the seat."""
     same = {}
     for h in hits:
         same[(h["name"], h["seat"])] = same.get((h["name"], h["seat"]), 0) + 1
@@ -7847,8 +8177,62 @@ def pick_seats(hits):
 
 
 def pick_id(emp):
-    """1.6.2: the opaque id a pick-list entry carries instead of the employee number (this process only)."""
+    """1.6.2: the opaque id a pick-list entry carries instead of the employee number (this process only). 1.7.11
+    (FW-0078): the entry shows the number too, but the pick is still this id, never the number."""
     return hashlib.sha256(f"{PICK_SALT}|{emp}".encode()).hexdigest()[:12]
+
+
+def pick_bases(hits):
+    """1.7.11 (FW-0078): {emp: base} for the admin's pick list ([{emp, name}] hits): a hit's own base when it has one
+    (a pilot database hit: its record's domicile, pilotdb.name_hits), else name_directory's (the pilot database
+    record's, else the award's or the seniority list's) only when that row names the same last name as the hit
+    (review F3: a number two records share has one directory row, maybe another pilot's). A pilot with none is left
+    out. Never raises."""
+    try:
+        hits = list(hits)
+        out = {h["emp"]: _base(h.get("base")) for h in hits if _base(h.get("base"))}
+        want = {h["emp"]: _lkey(str(h.get("name") or "").partition(",")[0]) for h in hits if h["emp"] not in out}
+        if want:
+            for r in name_directory():
+                k = r["emp"]
+                if k in want and k not in out and r.get("base") and want[k] and _lkey(r["last"]) == want[k]:
+                    out[k] = r["base"]
+        return out
+    except Exception as e:  # noqa: BLE001 (type only: a message could carry a name)
+        log.info("pilot lookup: bases not read: %s", type(e).__name__)
+        return {}
+
+
+def pick_entry(emp, name, pos, base, pick=""):
+    """1.7.11 (FW-0078): one pick-list entry: {pick (a pilot's instance), name, pos, base (when known), emp}. The card
+    shows "Last, First · seat · base · #emp"; a pilot's card sends the pick, the admin's the number."""
+    e = {"pick": pick} if pick else {}
+    e.update(name=name, pos=pos or "")
+    if _base(base):
+        e["base"] = _base(base)
+    e["emp"] = str(emp)
+    return e
+
+
+# ---------------------------------------------------------------- 1.7.11 (FW-0076): the lookup's month
+def lookup_months():
+    """(this HST month, the next) as YYYY-MM: the only months pilot/set's month may name (the pilot card's buttons)."""
+    t = local_now()
+    nxt = (t.year + 1, 1) if t.month == 12 else (t.year, t.month + 1)
+    return f"{t.year}-{t.month:02d}", f"{nxt[0]}-{nxt[1]:02d}"
+
+
+def month_label(m):
+    """'2026-11' -> 'Nov 2026' (the card's button words)."""
+    try:
+        return datetime(int(m[:4]), int(m[5:7]), 1).strftime("%b %Y")
+    except (TypeError, ValueError):
+        return str(m or "")
+
+
+def month_refused_status():
+    a, b = lookup_months()
+    return f"Only {month_label(a)} and {month_label(b)} can be looked up (this month and the next, HST)."
 
 
 LOOKUP_WAIT_STATES = ("paused", "yielded", "backoff", "needs_settings")
@@ -7869,12 +8253,18 @@ def pilot_cmd(payload):
     """MQTT flight_watcher/pilot/set {"emp": "10001", "name": "..."}: show that pilot's current month on the
     dashboard. Served from a 6 h cache when fresh, else read on the next check (Schedule Lookup + the
     pairing pages, GET only). 1.6.2 (item 11): on a pilot instance a name is looked up only on the award and
-    seniority list files (name_lookup: 3 letters at least, at most 5 matches, name and seat; each match carries an
-    opaque 'pick' id, never the employee number, and {"pick": id} runs it); '#10001' is an employee number.
+    seniority list files (name_lookup: 3 letters at least, at most LOOKUP_MAX matches; each match carries an opaque
+    'pick' id, and {"pick": id} runs it); '#10001' is an employee number.
     1.7.2 (contract 1 revision 3, F#49): on every instance the payload must have the pilot/set shape (roles.SHAPE_CMDS:
     keys emp, q, name and pick only; emp 1 to 7 digits; q and name at most 60 code points on one line; pick 12 hex),
     the same the portal's spool and HOM check; anything else is refused with one log line that never carries the
-    text."""
+    text. 1.7.11 (FW-0078): a pick-list entry shows the name, the seat, the base and the employee number (pick_entry);
+    a pilot's entry is still picked by its pick id. 1.7.11 (FW-0076, contract 1 revision 6): an optional month
+    (YYYY-MM), this HST month or the next only (lookup_months; any other is refused with one log line and a status
+    line): that month's Schedule Lookup page alone is read (pilot_check), its cache is its own (pilot_sched:<emp>:<month>);
+    no month is the lookup as it always was. On a pilot's instance the field that named the pilot shown (a pick, an
+    emp, a typed number) is kept (S pilot_ask) and published as ask, so his card's month buttons send the same field;
+    that pilot's pick stays usable for a month tap after the pick list's PICK_TTL_S."""
     try:
         PT.check_shape("pilot/set", payload)
     except PT.PortalError as e:
@@ -7888,19 +8278,44 @@ def pilot_cmd(payload):
     if not isinstance(d, dict):
         d = {}
     q = str(d.get("q") or "").strip()[:80]
-    if ROLES.role(INSTANCE) == ROLES.PILOT and not emp:
+    month = str(d.get("month") or "")
+    pilot = ROLES.role(INSTANCE) == ROLES.PILOT
+    if month and month not in lookup_months():
+        # 1.7.11 (FW-0076): one log line (never the month or a number), and the status on the card with the pilot it
+        # names when the payload names one outright (a stale card at the turn of a month)
+        log.info("pilot lookup refused: month not this HST month or the next")
+        who = emp or (re.sub(r"[#\s]", "", q) if re.fullmatch(r"#?\s*\d{1,7}", q) else "")
+        if not who and d.get("pick"):
+            hit = (S.get("pilot_picks") or {}).get(str(d["pick"])) or (
+                (S.get("pilot_ask") or {}) if ((S.get("pilot_ask") or {}).get("ask") or {}).get("pick") == d["pick"]
+                else {})
+            who = str(hit.get("emp") or "")
+        pub_pilot({"emp": who, "name": str(d.get("name") or "")[:60], "month": "", "days": [], "items": [],
+                   "totals": {}, "updated": "", "fetched": "", "at": now_iso(), "matches": [],
+                   "status": month_refused_status()})
+        return
+    ask = None  # 1.7.11: on a pilot's instance, the field that names the pilot (his card's month buttons send it back)
+    if pilot and emp:
+        ask = {"emp": emp}
+    if pilot and not emp:
         if d.get("pick"):
             p = (S.get("pilot_picks") or {}).get(str(d["pick"]))
             if not p or time.time() - float(p.get("at") or 0) > PICK_TTL_S:
-                pub_pilot({"emp": "", "name": str(d.get("name") or "")[:60], "matches": [], "month": "", "days": [],
-                           "items": [], "totals": {}, "updated": "", "fetched": "", "at": now_iso(),
-                           "status": "That pick list is old: type the name again."})
-                return
+                shown = S.get("pilot_ask") or {}
+                if month and (shown.get("ask") or {}).get("pick") == d["pick"] and shown.get("emp"):
+                    p = {"emp": shown["emp"], "name": shown.get("name") or ""}  # the pilot his card shows: a month tap
+                else:
+                    pub_pilot({"emp": "", "name": str(d.get("name") or "")[:60], "matches": [], "month": "",
+                               "days": [], "items": [], "totals": {}, "updated": "", "fetched": "", "at": now_iso(),
+                               "status": "That pick list is old: type the name again."})
+                    return
             emp, d["name"] = p["emp"], p["name"]
+            ask = {"pick": str(d["pick"])}
         elif q:
             digits = re.sub(r"[#\s]", "", q)
             if digits.isdigit():
                 emp = digits
+                ask = {"q": digits}
             else:
                 now = time.time()
                 asked = [t for t in S.get("name_queries") or [] if 0 <= now - t < 3600]
@@ -7913,16 +8328,17 @@ def pilot_cmd(payload):
                     return
                 S["name_queries"] = asked + [now]
                 hits, why = name_lookup(q)
-                # 1.6.2 review: even one match is a pick list (name and seat): its employee number is used, and shown,
-                # only once the pilot picks it
+                # 1.6.2 review: even one match is a pick list: its employee number is used only once the pilot picks
+                # it. 1.7.11 (FW-0078): each entry shows the name, the seat, the base and the employee number; the
+                # pick stays its opaque id
                 picks = {pick_id(h["emp"]): {"emp": h["emp"], "name": h["name"], "at": time.time()} for h in hits}
                 S["pilot_picks"] = picks
                 save_state(S)
                 pub_pilot({"emp": "", "name": q, "at": now_iso(),
                            "status": why or (f"1 pilot matches '{q}': tap the name to read the month" if len(hits) == 1
                                              else f"{len(hits)} pilots match '{q}', pick one"),
-                           "matches": [{"pick": k, "name": v["name"], "pos": pos}
-                                       for (k, v), pos in zip(picks.items(), pick_seats(hits))],
+                           "matches": [pick_entry(h["emp"], h["name"], pos, h.get("base"), pick=pick_id(h["emp"]))
+                                       for h, pos in zip(hits, pick_seats(hits))],
                            "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
                 return
         q = ""
@@ -7941,8 +8357,10 @@ def pilot_cmd(payload):
             elif len(hits) == 1:
                 emp, d["name"] = hits[0]["emp"], hits[0]["name"]
             elif hits:
-                pub_pilot({"emp": "", "name": q, "status": f"{len(hits)} pilots match '{q}', pick one", "matches": hits,
-                                       "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
+                bases = pick_bases(hits)  # 1.7.11 (FW-0078): the base beside the seat and number (review F3: the hit's own)
+                pub_pilot({"emp": "", "name": q, "status": f"{len(hits)} pilots match '{q}', pick one",
+                           "matches": [pick_entry(h["emp"], h["name"], h.get("pos"), bases.get(h["emp"])) for h in hits],
+                           "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": ""})
                 return
             else:
                 pub_pilot({"emp": "", "name": q, "status": f"no pilot named '{q}' in the pilot database or the {DB.crew_count()} crew the Watcher has seen; enter the employee number",
@@ -7951,28 +8369,46 @@ def pilot_cmd(payload):
     if not emp:
         return
     pilotver_register(emp, d.get("name") or "")  # FW-0069: Ryan looked this pilot up: his versions are kept
-    S["pilot_req"] = {"emp": emp, "name": d.get("name") or "", "at": now_iso()}
+    if ask:
+        S["pilot_ask"] = {"emp": emp, "name": d.get("name") or "", "ask": ask}
+    S["pilot_req"] = {"emp": emp, "name": d.get("name") or "", "at": now_iso(), **({"month": month} if month else {})}
+    S.pop("pilot_paused_said", None)  # 1.7.11 integration review: a new request gets its own paused line (pilot_check)
     save_state(S)
-    cached = DB.get(f"pilot_sched:{emp}")
+    cached = pilot_cached(emp, month)
     if cached and time.time() - cached.get("fetched_ts", 0) < PILOT_CACHE_S:
         pub_pilot({**cached, "status": "cached"})
         S.pop("pilot_req", None)
         save_state(S)
         log.info("pilot lookup: schedule served from cache")
         return
+    want = {"asked_month": month} if month else {}  # 1.7.11: the loading line names the month asked for
     m = S.get("machine") or ""
-    if ROLES.role(INSTANCE) == ROLES.PILOT and (m in LOOKUP_WAIT_STATES or m.startswith("stopped")):
+    if pilot and (m in LOOKUP_WAIT_STATES or m.startswith("stopped")):
         # 1.6.2 (item 11): say why it waits, instead of a loading line that never ends (pilot_req is kept)
         pub_pilot({"emp": emp, "name": d.get("name") or "", "month": "", "days": [], "items": [], "totals": {},
-                   "updated": "", "fetched": "", "at": now_iso(),
+                   "updated": "", "fetched": "", "at": now_iso(), **want,
                    "status": f"waiting: your Watcher is {m.replace('_', ' ')}; this lookup runs on its next FLICA check"})
         log.info("pilot lookup: schedule requested (waits: %s)", m)
         return
     pub_pilot({"emp": emp, "name": d.get("name") or "", "status": "loading", "month": "", "days": [], "items": [],
-                           "totals": {}, "updated": "", "fetched": "", "at": now_iso()})
+                           "totals": {}, "updated": "", "fetched": "", "at": now_iso(), **want})
     log.info("pilot lookup: schedule requested")
     if ROLES.role(INSTANCE) == ROLES.ADMIN:  # 1.6.2: a pilot's lookup waits for his next check (no extra FLICA check)
         WAKE.set()
+
+
+def pilot_cached(emp, month=""):
+    """The stored read of a pilot's month (DB pilot_sched:<emp>, the lookup with no month: FLICA's default month), or
+    1.7.11 (FW-0076) for a month: its own read (pilot_sched:<emp>:<YYYY-MM>) or the default read when it holds that
+    month, whichever is newer (review F1: a month tap and a lookup with no month each write one key, so both can hold
+    the same month; the newer read by fetched_ts wins, so a tap never reads FLICA again, or shows an older read, while
+    a newer read of its month is on hand). None when there is none (the caller checks its age). With no month the
+    default read alone, as always (FLICA's default month may have moved on since a month tap)."""
+    base = DB.get(f"pilot_sched:{emp}")
+    if not month:
+        return base
+    recs = [r for r in (DB.get(f"pilot_sched:{emp}:{month}"), base) if r and r.get("month") == month]
+    return max(recs, key=lambda r: float(r.get("fetched_ts") or 0)) if recs else None
 
 
 def pilot_check(fl):
@@ -7981,10 +8417,14 @@ def pilot_check(fl):
     if not req:
         return False
     if not BRK.allow("lookup"):  # 1.6.2: kept for when Schedule Lookup reads may run again; the card says so
-        if (S.get("pilot_paused_said") or "") != req["emp"]:
-            S["pilot_paused_said"] = req["emp"]
+        # 1.7.11 integration review: said once a request (pilot_cmd clears the mark), keyed by the pilot and the month,
+        # so a month tap for the pilot already shown gets its paused line with its month too (FW-0076)
+        said = f"{req['emp']}|{req.get('month') or ''}"
+        if (S.get("pilot_paused_said") or "") != said:
+            S["pilot_paused_said"] = said
             pub_pilot({"emp": req["emp"], "name": req.get("name") or "", "month": "", "days": [], "items": [],
                        "totals": {}, "updated": "", "fetched": now_iso(),
+                       **({"asked_month": req["month"]} if req.get("month") else {}),  # 1.7.11 review (F5)
                        "status": f"Schedule Lookup reads are paused until {hst_hm(BRK.until('lookup'))} HST; "
                                  "this lookup runs then"})
         return False
@@ -8003,12 +8443,29 @@ def pilot_check(fl):
         except Exception as e:
             log.info("schedule lookup prompt capture skipped: %s", e)
     emp = req["emp"]
-    cur = local_now()
-    bd = f"{cur.month:02d}{cur.year % 100:02d}"
+    month = str(req.get("month") or "")
+    if month and month not in lookup_months():  # 1.7.11: asked before a turn of the month, read after it
+        pub_pilot({"emp": emp, "name": req.get("name") or "", "month": "", "days": [], "items": [], "totals": {},
+                   "updated": "", "fetched": now_iso(), "status": month_refused_status()})
+        log.info("pilot lookup refused: month not this HST month or the next")
+        S.pop("pilot_req", None)
+        save_state(S)
+        return False
+    if month:
+        # 1.7.11 (FW-0076): the month asked for, alone: one Schedule Lookup page (its bd), then the pairing pages as
+        # always; FW-0057's previous month is the one before it
+        cur = datetime(int(month[:4]), int(month[5:7]), 1)
+        bd = f"{cur.month:02d}{cur.year % 100:02d}"
+        urls = (IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bd),)
+    else:
+        cur = local_now()
+        bd = f"{cur.month:02d}{cur.year % 100:02d}"
+        urls = (IF.CM_SCHED.format(base=BASE, emp=emp), IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bd))
+    want = {"asked_month": month} if month else {}  # 1.7.11 review (F5): a reply with no month names the month asked
     captured = False
     try:
         sched, html = None, ""
-        for i, url in enumerate((IF.CM_SCHED.format(base=BASE, emp=emp), IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bd))):
+        for i, url in enumerate(urls):
             if i:
                 time.sleep(random.uniform(1.5, 3.5))
             html = fl.fetch(url)
@@ -8020,9 +8477,11 @@ def pilot_check(fl):
             log.info("pilot lookup: %s gave %s: %s", CAPS.mask_emp(url.split("?")[1]), classify(html),
                      page_log(visible_text(html)[:200]))
         if not sched:
-            pilotver_capture_rebuild(emp, req.get("name") or "")  # FW-0069: the crew index's view, when it has one
+            # FW-0069: the crew index's view, when it has one. 1.7.11 review (F5): of the month asked for (a month
+            # tap), named in the reply (asked_month), so the card shows that month's rebuild, never this month's
+            pilotver_capture_rebuild(emp, req.get("name") or "", month or None)
             pub_pilot({"emp": emp, "name": req.get("name") or "", "status": pilot_unreadable_status(html),
-                                   "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": now_iso()})
+                       "month": "", "days": [], "items": [], "totals": {}, "updated": "", "fetched": now_iso(), **want})
             log.info("pilot lookup: schedule page not readable (%s)", classify(html))
             S.pop("pilot_req", None)
             save_state(S)
@@ -8056,7 +8515,9 @@ def pilot_check(fl):
                 it["n"] = crew_n
         rec = {**sched, "emp": emp, "name": sched.get("name") or req.get("name") or "", "bd": bd,
                "fetched": now_iso(), "fetched_ts": time.time()}
-        DB.put(f"pilot_sched:{emp}", rec)
+        if month and sched["month"] != month:  # the card's header says which month it is; the cache says the same
+            log.info("pilot lookup: FLICA showed another month than the one asked for")
+        DB.put(f"pilot_sched:{emp}:{sched['month']}" if month else f"pilot_sched:{emp}", rec)
         captured = True  # FW-0069: a readable month is the version source (no rebuild below if a later step fails)
         pilotver_capture_lookup(emp, rec)  # a new version when the pairings changed
         pub_pilot({**rec, "status": "ok"})
@@ -8065,9 +8526,9 @@ def pilot_check(fl):
     except Exception as e:
         log.info("pilot lookup: schedule read failed: %s", e)
         if not captured:
-            pilotver_capture_rebuild(emp, req.get("name") or "")  # FW-0069
+            pilotver_capture_rebuild(emp, req.get("name") or "", month or None)  # FW-0069 (review F5: the month asked)
         pub_pilot({"emp": emp, "name": req.get("name") or "", "status": f"error: {e}", "month": "", "days": [],
-                               "items": [], "totals": {}, "updated": "", "fetched": now_iso()})
+                   "items": [], "totals": {}, "updated": "", "fetched": now_iso(), **want})
     S.pop("pilot_req", None)
     save_state(S)
     return True
@@ -8168,7 +8629,7 @@ def pilotver_capture_lookup(emp, rec):
         first, _, end = CI.grid_range(CARD_PAIRINGS, rec["month"])
         made = PV.capture_lookup(DB, emp, rec.get("name") or "", rec, now_iso(), (first, end), pilot_award)
         if made:
-            log.info("pilot lookup: schedule version %s (%s, FLICA schedule)", ", ".join(made), rec["month"])
+            log.info("pilot lookup: schedule version %s (%s, from the FLICA schedule)", ", ".join(made), rec["month"])
         return made
     except Exception as e:
         log.info("pilot lookup: schedule version skipped: %s", e)
@@ -8260,9 +8721,9 @@ def pilotver_price(emp, ent, recon=None):
     pairing and day: the live read's (DB pilot_sched:<emp>: the pairing page's credit, block, seat, crew count and
     legs, PILOTVER_FILL) for a trip the live month still holds, the crew index's trips (recon {YYYY-MM: trips}, which
     carry the crew count), then the package; an unchanged trip is priced the same in the live month and its versions."""
-    live = DB.get(f"pilot_sched:{emp}") or {}
-    lk = {f"{it.get('trip')}|{it.get('start')}": it for it in live.get("items") or [] if isinstance(it, dict)}
     for month, recs in ((ent or {}).get("months") or {}).items():
+        live = pilot_cached(emp, month) or {}  # 1.7.11: that month's own read (a month tap), else the default read
+        lk = {f"{it.get('trip')}|{it.get('start')}": it for it in live.get("items") or [] if isinstance(it, dict)}
         try:
             _first, start, end = CI.grid_range(CARD_PAIRINGS, month)
         except Exception:  # noqa: BLE001
@@ -8277,7 +8738,7 @@ def pilotver_price(emp, ent, recon=None):
                                   if lv else it)
                 line, info = pilot_price(priced, emp, (ent or {}).get("name") or "", month, start, end,
                                          (recon or {}).get(month), (rec.get("totals") or {}).get("days_off"),
-                                         rec.get("totals") if rec.get("source") == "lookup" else None)
+                                         rec.get("totals") if rec.get("source") == "lookup" else None, rec.get("days"))
                 for it in items:
                     got = info.get(f"{it.get('trip')}|{it.get('start')}")
                     if not got:
@@ -8294,9 +8755,11 @@ def pilotver_price(emp, ent, recon=None):
                 log.info("pilot lookup: version pay skipped: %s", e)
 
 
-# the pay summary a version record carries (the totals line's groups, pilot card _vold)
+# the pay summary a version record carries (the totals line's groups, pilot card _vold; 1.7.11, FW-0080: the bid
+# period it covers and the trips from before the grid counted in it)
 PILOTVER_PAY = ("gross", "trips", "trips_priced", "credit", "credit_n", "block", "block_n", "soft", "soft_n",
-                "vac", "vac_days", "payp", "payp_est", "payp_unk", "missing", "no_block", "no_rate", "equip")
+                "vac", "vac_days", "payp", "payp_est", "payp_unk", "missing", "no_block", "no_rate", "equip", "period",
+                "carry")
 
 
 def pilotver_attrs(emp, recon=None):
@@ -8316,6 +8779,19 @@ def pilotver_attrs(emp, recon=None):
         return {}
 
 
+def pilot_ask_attr(payload):
+    """1.7.11 (FW-0076): on a pilot's instance, the payload of the pilot his card shows carries ask, the field that
+    named that pilot in his lookup ({"pick": id}, {"emp": n} or {"q": n}; S pilot_ask), so the card's month buttons
+    send the same field. Nothing on the admin's instance (his card sends emp) or for another pilot."""
+    payload = dict(payload or {})
+    payload.pop("ask", None)
+    a = S.get("pilot_ask") or {}
+    emp = str(payload.get("emp") or "")
+    if ROLES.role(INSTANCE) == ROLES.PILOT and emp and str(a.get("emp") or "") == emp and isinstance(a.get("ask"), dict):
+        payload["ask"] = dict(a["ask"])
+    return payload
+
+
 def pub_pilot(payload):
     """0.10.1: every pilot_schedule publish carries the crew index's view of that pilot's month too:
     reconstructed [{pairing, start, end, seat, route, checked_at, lay, blk, credit, soft, crew}],
@@ -8332,12 +8808,17 @@ def pub_pilot(payload):
     PILOT_PAIRINGS_MAX of its pairing pages are read, so the card says how many trips were priced and from what.
     FW-0069: it also writes that pilot's schedule versions to pilotver_<key>.json and adds versions_file_key,
     versions_rev (a number) and versions {YYYY-MM: {count, current, awarded}} (pilotver_attrs)."""
+    payload = pilot_ask_attr(payload)
     PILOT_SHOWN["p"] = {k: v for k, v in (payload or {}).items() if k not in (
         "reconstructed", "reconstructed_coverage_pct", "reconstructed_month", "reconstructed_from", "reconstructed_to",
         "pay_line", "items_pay", "contact", "versions_file_key", "versions_rev", "versions")}
     try:
         emp = re.sub(r"\D", "", str(payload.get("emp") or ""))
         month = str(payload.get("month") or "")
+        if not re.fullmatch(r"\d{4}-\d{2}", month):
+            # 1.7.11 review (F5): a reply with no month to a month tap (loading, waiting, not readable, an error)
+            # carries the month asked for: the crew index's view of that month, never this one
+            month = str(payload.get("asked_month") or "")
         if not re.fullmatch(r"\d{4}-\d{2}", month):
             month = local_now().strftime("%Y-%m")
         insts, rows = crew_instances(), DB.crew_rows()
@@ -8357,7 +8838,7 @@ def pub_pilot(payload):
         name = payload.get("name") or next((r.get("name") for r in mine if r.get("name")), "")
         if trips:
             try:
-                payload["pay_line"] = pilot_pay_line(trips, emp, name, start, end)
+                payload["pay_line"] = pilot_pay_line(trips, emp, name, start, end, month)
             except Exception as e:
                 log.info("pilot lookup: pay line skipped: %s", e)
         # 1.7.7: a month FLICA showed gets its pay too (pilot_price): each pairing's seat and gross on a copy of its
@@ -8365,7 +8846,8 @@ def pub_pilot(payload):
         if emp and payload.get("month") and str(payload.get("status") or "") in ("ok", "cached") and payload.get("items"):
             try:
                 tot = payload.get("totals") if isinstance(payload.get("totals"), dict) else {}
-                line, info = pilot_price(payload["items"], emp, name, month, start, end, trips, tot.get("days_off"), tot)
+                line, info = pilot_price(payload["items"], emp, name, month, start, end, trips, tot.get("days_off"), tot,
+                                         payload.get("days"))
                 payload["items"] = [dict(it, **info.get(f"{it.get('trip')}|{it.get('start')}", {})) if isinstance(it, dict)
                                     else it for it in payload["items"]]
                 payload["items_pay"] = line
@@ -8386,6 +8868,44 @@ def pub_pilot(payload):
         pub("pilot_schedule", {k: v for k, v in payload.items() if k != "contact"})
         if payload.get("contact"):
             pub("pilot_schedule", payload, retain=False)
+
+
+PILOT_COMPUTED = ("reconstructed", "reconstructed_coverage_pct", "reconstructed_month", "reconstructed_from",
+                  "reconstructed_to", "pay_line", "items_pay", "contact", "versions_file_key", "versions_rev", "versions",
+                  "ask", "friendly_name", "icon")  # what pub_pilot (or HA) adds to a lookup's reply
+
+
+def pilot_shown_reprice():
+    """1.7.11 integration review (FW-0080): at the start, the pilot month HA still shows from an older release (the
+    retained pilot_schedule, which the portal exports to the card as it is) is priced again by bid period when its pay
+    lines carry no bid period ('period', new in 1.7.11): a readable month from its stored read (pilot_cached, the same
+    fetched time; served as 'cached'), else from what the sensor holds, without the fields pub_pilot adds. No FLICA
+    load; nothing when HA has no such pilot, or the month is already priced by bid period. True when published."""
+    code, st = ha_state_full(f"sensor.{T}_pilot_schedule")
+    a = (st or {}).get("attributes") if code == 200 and isinstance(st, dict) else None
+    if not isinstance(a, dict):
+        return False
+    emp = re.sub(r"\D", "", str(a.get("emp") or ""))
+    lines = [x for x in (a.get("items_pay"), a.get("pay_line")) if isinstance(x, dict)]
+    if not emp or not lines or any(isinstance(x.get("period"), dict) for x in lines):
+        return False
+    month = str(a.get("month") or "")
+    rec = pilot_cached(emp, month) if re.fullmatch(r"\d{4}-\d{2}", month) else None
+    if rec and str(a.get("status") or "") in ("ok", "cached") and rec.get("fetched") == a.get("fetched"):
+        payload = {**rec, "status": "cached"}
+    else:
+        items = []
+        for it in a.get("items") or []:
+            if not isinstance(it, dict):
+                continue
+            it = {k: v for k, v in it.items() if k not in ("gross", "split") + (("credit", "blk", "soft", "figs") if it.get("figs") else ())}
+            if it.pop("seat_src", "pairing page") != "pairing page":
+                it.pop("seat", None)
+            items.append(it)
+        payload = {**{k: v for k, v in a.items() if k not in PILOT_COMPUTED}, "items": items}
+    pub_pilot(payload)
+    log.info("pilot lookup: the month shown before this start priced again by bid period (no FLICA load)")
+    return True
 
 
 # ---------------------------------------------------------------- 0.10.1 crew index (Ryan)
@@ -9800,7 +10320,10 @@ LAYOVERS_DIR = "/share/flight_watcher/layovers"  # <CITY>.json notes and <CITY>.
 LAYOVER_NOTE_BYTES = 8192  # a layover/note command's payload, at most
 LAYOVER_SCAN_S = 30  # the notes folder is looked at this often (a guide Claude wrote shows within it)
 _VAN = {"read": None, "status": None, "attrs": None, "state": "", "why": None, "sig": None, "city": "", "last": None,
-        "seen": None}  # seen: the last van van_tick placed (1.7.2: the van a setting applies to)
+        "seen": None, "adjusted": None, "hold": None}  # seen: the last van van_tick placed (1.7.2: the van a setting
+# applies to). 1.7.11 review: adjusted, the van_id Ryan moved since the last sweep; hold, (van_id, until): that van's
+# alerts wait until then (VAN_ADJUST_SETTLE_S), so the times passed through on the way to the one he wants send nothing.
+# The move applied to the van in hand is S["van_moved"] (van_moved), kept across a restart.
 _LN = {"sig": None, "files": None, "checked": None, "last": {}, "city": None}
 # the uploads janitor (layover_notes_tick) and the MQTT thread (layover_note_cmd) both publish the notes sensor: one at
 # a time, each building its payload under the lock, so a payload built before a note was written is never the last one
@@ -9931,15 +10454,173 @@ def van_setting_cmd(c, sub, payload, now=None):
 def van_keep(done, info):
     """VAN_DONE bounded: the newest VAN_KEEP keys by when each was written, and always every key of the van in hand, so
     a run of lead time changes (each a skipped key) can never push out an alert already sent for it and send it
-    again. The van in hand has at most one key a lead time (1 to 120 min)."""
-    pre = LO.key(info, 0).rsplit("|", 1)[0] + "|" if info else None
+    again. The van in hand has at most one key a lead time (1 to 120 min). 1.7.11 (FW-0075): a moved van keeps the keys
+    of the van as read too, so moving it back never sends one of its alerts again (two keys a lead time at most)."""
+    pres = (LO.key(info, 0).rsplit("|", 1)[0] + "|", LO.van_id(info) + "|") if info else ()
     when = lambda kv: str((kv[1] or {}).get("at") or "")  # noqa: E731
-    mine = {k: v for k, v in done.items() if pre and k.startswith(pre)}
+    mine = {k: v for k, v in done.items() if any(k.startswith(p) for p in pres)}
     rest = sorted(((k, v) for k, v in done.items() if k not in mine), key=when)
     n = max(0, VAN_KEEP - len(mine))
     keep = dict(rest[-n:]) if n else {}
     keep.update(mine)
     return dict(sorted(keep.items(), key=when))
+
+
+# 1.7.11 (FW-0075, Ryan, Nov 17: "I need to have a plus and a - kind of below the numbers for the van time because in
+# some cases the company adjust the van time a little tiny bit ... so I could set it for 510 for example").
+# S["van_adjust"] {van_id: minutes}: Ryan's move of a van (layover.van_id, the van as read; layover.adjusted), a whole
+# multiple of 5 from -120 to 120, set from the layover card's -5 and +5 min ({T}/van/adjust/set). van_tick applies it
+# right after van_source, so the keys, the alerts, the sensor and the van a setting applies to are the moved van's (a
+# new van time: the 1.7.1 and 1.7.2 rules). A van that changed (a new package, Hark's text, another pairing) is another
+# van_id: the move no longer applies. The admin only (roles: admin_pushes), like the alerts.
+VAN_ADJUST_KEEP = 8  # moves kept, the newest, and always the van in hand's
+VAN_ADJUST_BYTES = 512  # a van/adjust/set payload, at most
+VAN_ADJUST_ID_MAX = 64  # characters of a van_id kept ('H3681|2026-11-18T13:25Z' is 23)
+# 1.7.11 review (F1): every 5 min step is a new van time, so a sweep (10 s) between two of Ryan's taps would send a
+# critical push for a time he only passed through. A moved van's alerts wait this long from the first sweep that saw
+# his last move (30 to 40 s after his last tap); each further move starts the wait again.
+VAN_ADJUST_SETTLE_S = 30
+
+
+def van_adjusts():
+    """S["van_adjust"] as kept: {van_id: minutes} of the valid moves only, in the order they were made (a hand-edited
+    state cannot put in one the card could not make: 0, out of range, not a multiple of 5, a bool, a float, text)."""
+    v = S.get("van_adjust")
+    if not isinstance(v, dict):
+        return {}
+    return {k: m for k, m in v.items()
+            if isinstance(k, str) and 0 < len(k) <= VAN_ADJUST_ID_MAX and LO.adjust_ok(m) and m != 0}
+
+
+def van_moved():
+    """1.7.11 review (F5, F3): S["van_moved"] as kept, (van_id, minutes) of the move applied to the van in hand at the
+    last sweep that had a van, else None (a hand-edited state cannot put in one the card could not make). In the state,
+    so a van that changed while the app was down still logs that the move no longer applies (only the applied one:
+    S["van_adjust"] keeps the moves of vans no longer in hand too)."""
+    v = S.get("van_moved")
+    if isinstance(v, (list, tuple)) and len(v) == 2 and isinstance(v[0], str) and 0 < len(v[0]) <= VAN_ADJUST_ID_MAX \
+            and LO.adjust_ok(v[1]) and v[1] != 0:
+        return v[0], v[1]
+    return None
+
+
+def van_moved_put(mv):
+    """S["van_moved"] = mv ((van_id, minutes) or None); save_state only when it changed."""
+    if van_moved() == mv and (mv or "van_moved" not in S):
+        return
+    if mv:
+        S["van_moved"] = [mv[0], mv[1]]
+    else:
+        S.pop("van_moved", None)
+    save_state(S)
+
+
+def van_adjust_keep(adj, keep_id):
+    """adj bounded: at most VAN_ADJUST_KEEP moves, the newest (the last made goes last), and always keep_id's (the van
+    in hand)."""
+    if len(adj) <= VAN_ADJUST_KEEP:
+        return dict(adj)
+    rest = [k for k in adj if k != keep_id]
+    keep = set(rest[len(rest) - (VAN_ADJUST_KEEP - (1 if keep_id in adj else 0)):]) | {keep_id}
+    return {k: m for k, m in adj.items() if k in keep}
+
+
+def van_orig_words(info):
+    """'Hark says 05:25' or 'the package says 05:25': the van as read, of a moved van (with its date when the move
+    crossed midnight)."""
+    who = "the package says" if info.get("source") == "package" else "Hark says"
+    od = info.get("orig_date") or info["date"]
+    return f"{who} {info.get('orig_local') or info['local']}" + (f" on {od}" if od != info["date"] else "")
+
+
+def van_apply_move(info):
+    """1.7.11: the van as read moved by Ryan's move for it (S["van_adjust"], layover.adjusted), else as read. When the
+    van itself changed since a move applied (another van_id: a new package, Hark's text, another pairing), the move no
+    longer applies: one log line, and it stays in S within its bound. The move applied is S["van_moved"] (van_moved),
+    so a van that changed while the app was down logs that line too. A sweep with no van (Hark not answering) changes
+    nothing. Under _VAN_LOCK."""
+    if not info:
+        return info
+    vid = LO.van_id(info)
+    prev = van_moved()
+    if prev and prev[0] != vid:
+        log.info("van: the %+d min move no longer applies: the van time changed", prev[1])
+    m = van_adjusts().get(vid, 0)
+    van_moved_put((vid, m) if m else None)
+    return LO.adjusted(info, m) if m else info
+
+
+def van_republish(t):
+    """The van sensor again, even unchanged (after a van move command, refused or not), for the van van_tick has in
+    hand."""
+    last = _VAN.get("last")
+    if last is not None:
+        publish_layover_van(last[0], last[1], DB.get(VAN_DONE) or {}, t, force=True)
+
+
+def van_adjust_cmd(c, payload, now=None):
+    """1.7.11 (FW-0075, Ryan, Nov 17): {T}/van/adjust/set {"van": <van_id>, "minutes": <int>} moves the van in hand (the
+    last van van_tick placed, as for a van setting) to minutes from the van as read: absolute, never a step, so a
+    repeated press or a retry never moves it twice; 0 puts it back (the entry goes). Kept in S["van_adjust"]
+    (save_state, so a restart keeps it; at most VAN_ADJUST_KEEP, the van in hand's always). Refused with one log line
+    and nothing changed when the payload is not a JSON object of at most VAN_ADJUST_BYTES, the minutes are not a whole
+    multiple of 5 from -120 to 120 (a bool, a float, NaN or text are not; nothing here can end paho's thread), there is
+    no van in hand, or the van is not the van in hand's (it changed since the card drew it). Either way the van sensor
+    goes again, so the card stops waiting. One log line a change, no crew names. The sensor says the moved van at once;
+    its alerts follow once Ryan's taps settle (van_tick, VAN_ADJUST_SETTLE_S: a moved van is a new van time). Returns
+    True when the move changed. Nothing on a pilot's instance."""
+    if not has("admin_pushes"):
+        log.info("van move refused: not for a pilot instance")
+        return False
+    p = payload if isinstance(payload, str) else str(payload or "")
+    d = None
+    if len(p.encode("utf-8", errors="replace")) <= VAN_ADJUST_BYTES:
+        try:
+            d = json.loads(p)
+        except (ValueError, RecursionError):  # JSONDecodeError is a ValueError; a deep nest is a RecursionError
+            d = None
+    t = (now or datetime.now(HST)).astimezone(HST)
+    with _VAN_LOCK:
+        seen = _VAN.get("seen")
+        m = d.get("minutes") if isinstance(d, dict) else None
+        why = (f"not a JSON object of at most {VAN_ADJUST_BYTES} bytes" if not isinstance(d, dict)
+               else "the minutes must be a whole multiple of 5 from -120 to 120" if not LO.adjust_ok(m)
+               else "no van in hand" if not seen
+               else "not the van in hand (the van time changed)" if d.get("van") != LO.van_id(seen) else "")
+        if why:
+            log.info("van move refused: %s; nothing changed", why)
+            van_republish(t)
+            return False
+        vid = LO.van_id(seen)
+        adj = van_adjusts()
+        if adj.get(vid, 0) == m:  # the same move again (a retry, a double tap): nothing to change
+            van_republish(t)
+            return False
+        adj.pop(vid, None)
+        if m:
+            adj[vid] = m
+        S["van_adjust"] = van_adjust_keep(adj, vid)
+        if m:
+            S["van_moved"] = [vid, m]
+        else:
+            S.pop("van_moved", None)
+        save_state(S)
+        moved = LO.adjusted(seen, m)
+        where = f"{moved['pairing']} {moved['city']} {moved['date']} {moved['local']} {moved['abbr']}"
+        if m:
+            log.info("van: moved %+d min by Ryan: %s (%s)", m, where, van_orig_words(moved))
+        else:
+            log.info("van: moved back by Ryan: %s (%s)", where,
+                     "the package's time" if moved.get("source") == "package" else "Hark's time")
+        _VAN["seen"], _VAN["adjusted"] = moved, vid  # adjusted: its alerts wait for the taps to settle (van_tick)
+        last = _VAN.get("last")
+        if last is not None and last[0] is not None and LO.van_id(last[0]) == vid:
+            _VAN["last"] = (moved, last[1])
+            # the next sweep does not log the same van again; only for the van the last sweep had (a move taken while
+            # a sweep had no van leaves its reason, so that sweep's line is not logged twice)
+            _VAN["why"] = (LO.key(moved, 0), moved["source"])
+        van_republish(t)
+    return True
 
 
 def van_read(mono):
@@ -10046,7 +10727,9 @@ def van_tick(now=None, mono=None):
     offsets sent. Nothing on a pilot's instance. The van comes from van_source: the pairings package's VAN, else
     Hark's. 1.7.2: the lead times and the switch are Ryan's settings (van_settings): off sends nothing; what a setting
     skips for the van in hand is in the DB already (van_setting_cmd, layover.settle). A sent key names its slider
-    (slot), so a slider moved after its alert went sends no other for that van."""
+    (slot), so a slider moved after its alert went sends no other for that van. 1.7.11 review (F1): a van Ryan moved
+    sends nothing and skips nothing until VAN_ADJUST_SETTLE_S after the first sweep that saw his last move, so the
+    5 min steps he passes through on the way to the time he wants are no pushes and no keys."""
     if not has("admin_pushes"):
         return []
     now = now or datetime.now(HST)
@@ -10059,6 +10742,13 @@ def van_tick(now=None, mono=None):
         own = None
     info, why = van_source(own, a, _VAN["state"])
     with _VAN_LOCK:
+        info = van_apply_move(info)  # 1.7.11 (FW-0075): Ryan's move, before the keys, due, the sensor and seen
+        if _VAN.get("adjusted"):  # 1.7.11 review (F1): a move since the last sweep: that van's alerts wait
+            _VAN["hold"], _VAN["adjusted"] = (_VAN["adjusted"], now + timedelta(seconds=VAN_ADJUST_SETTLE_S)), None
+        hold = _VAN.get("hold")
+        # never longer than VAN_ADJUST_SETTLE_S from now, so a clock set back cannot stretch the wait
+        held = bool(info and hold and hold[0] == LO.van_id(info)
+                    and 0 < (hold[1] - now).total_seconds() <= VAN_ADJUST_SETTLE_S)
         vs = van_settings()
         offs = van_offsets(vs)
         active = offs if vs["on"] else ()
@@ -10067,9 +10757,11 @@ def van_tick(now=None, mono=None):
         if seen != _VAN["why"]:
             _VAN["why"] = seen
             if info:
-                log.info("van: %s %s %s at %s %s (%s HST %s), %s (from %s)", info["pairing"],
+                log.info("van: %s %s %s at %s %s (%s HST %s), %s (from %s%s)", info["pairing"],
                          info["city"], info["date"], info["local"], info["abbr"], info["hst"], info["hst_date"],
-                         van_words(vs), "the pairings package" if info["source"] == "package" else "Hark")
+                         van_words(vs), "the pairings package" if info["source"] == "package" else "Hark",
+                         f"; moved {info['adjust_min']:+d} min by Ryan; {van_orig_words(info)}"
+                         if info.get("adjust_min") else "")
             else:
                 log.info("van alerts: none (%s)", why)
         city = info["city"] if info else own["city"] if own else (
@@ -10078,7 +10770,7 @@ def van_tick(now=None, mono=None):
         _VAN["last"] = (info, why)
         _VAN["seen"] = info or _VAN["seen"]
         done = DB.get(VAN_DONE) or {}
-        send, skip = LO.due(info, done, now, active) if info else ([], [])
+        send, skip = LO.due(info, done, now, active) if info and not held else ([], [])
         if send and not mqtt_up():
             send = []  # tried again at the next sweep, until the van time
         for m in skip:
@@ -10108,9 +10800,10 @@ def forget_layover_sigs():
 
 def publish_layover_van(info, why, done, now, force=False, vs=None):
     """{T}/layover_van (retained), sensor.{T}_layover_van: layover.sensor; published when it changes. 1.7.2: with the
-    van settings (vs, van_settings): alerts_on, offsets and the alerts of the lead times set."""
+    van settings (vs, van_settings): alerts_on, offsets and the alerts of the lead times set. 1.7.11 (FW-0075): with a
+    van, adjustable, van_id, adjust_min and the van as read when moved (the layover card's -5 and +5 min)."""
     vs = vs or van_settings()
-    d = LO.sensor(info, why, done, now, van_offsets(vs), vs["on"])
+    d = LO.sensor(info, why, done, now, van_offsets(vs), vs["on"], adjustable=has("admin_pushes"))
     sig = json.dumps(d, sort_keys=True)
     if not force and sig == _VAN["sig"]:
         return False
@@ -11110,7 +11803,7 @@ def swap_test(idea):
     tests = S.setdefault("swap_tests", [])
     tests.append(rec)
     del tests[:-20]
-    log.info("SWAP DRAFT (%s): give %s take %s folder %s bcid %s form %s", SUB.DRAFT, rec["give"], rec["take"],
+    log.info("Swap draft (%s): give %s take %s folder %s bcid %s form %s", SUB.DRAFT, rec["give"], rec["take"],
              rec["folder"], rec["bcid"], rec["form"])
     pub("event/swap_test", rec, retain=False)
     publish_swap_tests()
@@ -11333,11 +12026,59 @@ INFLT_PER_CHECK = 3
 _DETAIL_CACHE = {}  # 1.7.7: pairing file path -> (file time, its 'detail'); period -> (text time, package_legs of the text)
 
 
-def pkg_detail_for(period, pid):
+_STARTS_CACHE = {}  # 1.7.11 integration review: pairing file path -> (file time, crewidx.file_starts of it)
+
+
+def pkg_starts(period):
+    """1.7.11 integration review: {pairing id: {ISO first days}} the pairing file of one bid period lists (crewidx's
+    rule), cached by file time; {} when there is no file."""
+    path = os.path.join(CARD_PAIRINGS, f"pairings_{period}.json")
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return {}
+    c = _STARTS_CACHE.get(path)
+    if not c or c[0] != mt:
+        c = _STARTS_CACHE[path] = (mt, CI.file_starts(CARD_PAIRINGS, period))
+    return c[1]
+
+
+def pkg_base(period, pid, st):
+    """1.7.11 integration review (FW-0068 with FW-0080): the id whose pairings package entry a trip pid that starts on st
+    uses: pid; for a pairing FLICA rebuilt (H9635B) whose own id the package lacks, its base id (H9635) when the bid
+    period's pairing file lists the base id on st (the pilot card's rule, _times), so a rebuilt copy's duties split by bid
+    period as the package's trip does; never the base's for a trip on another day (a part of it, H9640A)."""
+    pid = str(pid or "")
+    b = re.sub(r"(?<=\d)[A-Z]$", "", pid)
+    return b if b != pid and st and st in pkg_starts(period).get(b, ()) else pid
+
+
+def pkg_det(dets, period, pid, st):
+    """1.7.11 integration review: a trip's pairings package details (pkg_details_for of its bid period): its own id's,
+    else its base id's when pkg_base allows it; {} when neither."""
+    dets = dets or {}
+    if dets.get(pid):
+        return dets[pid]
+    b = pkg_base(period, pid, st)
+    return (dets.get(b) if b != pid else None) or {}
+
+
+def pkg_detail_for(period, pid, st=None):
     """1.7.7: one pairing's pairings package detail of one bid period (pdfs.package_legs: its duties' legs, DAY and the
     local times as printed): from the pairing file (pairings_<period>.json 'detail', cached by file time), else from the
     shared upload's text copy (a pairing the file's detail budget left out, or a file from before the detail). None
-    when neither has it. No FLICA load."""
+    when neither has it. No FLICA load. 1.7.11 integration review: with st (the trip's first day), a pairing FLICA
+    rebuilt (H9635B) that the package lacks takes its base id's detail when pkg_base allows it (its TCRD for the bid
+    period split)."""
+    got = _pkg_detail_for(period, pid)
+    if got is None and st:
+        b = pkg_base(period, pid, st)
+        if b != pid:
+            got = _pkg_detail_for(period, b)
+    return got
+
+
+def _pkg_detail_for(period, pid):
     path = os.path.join(CARD_PAIRINGS, f"pairings_{period}.json")
     try:
         mt = os.path.getmtime(path)
@@ -11449,7 +12190,7 @@ def email_check(fl, pot_all):
         k = it["key"]
         if DB.has_find(k):
             if it.get("at") and DB.set_alert_at(k, it["at"]):  # 0.7.6: FLICA's alert time is the true pot-entry time
-                log.info("alert email: %s entered the pot at %s (Pickup Speed rescored)", k, it["at"])
+                log.info("alert email: %s entered the pot at %s (pickup speed rescored)", k, it["at"])
             # 0.4.21 (Ryan): a known find named in a fresh alert went back to open time; re-read its page
             # so "who holds it now" is current, instead of trusting the old pickup record.
             row = DB.find_row(k) or {}
@@ -12783,6 +13524,10 @@ def main():
     versions_check(force_pub=True)
     uploads_check()
     pilotdb_start()  # 1.7.8: after uploads_check (the seniority list re-read by a newer parser comes first)
+    try:  # 1.7.11 integration review: the pilot month an older release left in HA, by bid period (no FLICA load)
+        pilot_shown_reprice()
+    except Exception as e:  # noqa: BLE001 (never stops the start; the next lookup prices it)
+        log.info("pilot lookup: the month shown before this start not priced again: %s", type(e).__name__)
     recall_eval()
     start_charter_watch()
     threading.Thread(target=ccr_thread, daemon=True, name="ccr").start()  # 1.4.6: Hark's answers to CCR requests

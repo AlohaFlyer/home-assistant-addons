@@ -609,12 +609,14 @@ def test_roles_classify_the_new_subs_and_the_contract_is_unchanged(tmp_path):
         (in_dir / name).write_text(json.dumps(cmd))
         with pytest.raises(PT.PortalError):
             sp.take(str(in_dir / name))
-    # contract 1 byte for byte (revision 4 since 1.7.9; 1.7.10: shared 100%, HOM re-pins), and its doc
+    # contract 1 byte for byte (revision 4 since 1.7.9; 1.7.10: shared 100%, HOM re-pins; revision 5 was 4e7812d603f9...;
+    # 1.7.11: revision 6, the lookup's month), and its doc (1.7.11 integration review: section 5.7's pick list limit
+    # corrected, the doc only; revision 6's doc was 8fe0659c468e...)
     raw = open(os.path.join(HERE, "tests", "fixtures", "portal_contract_v1.json"), "rb").read()
-    assert hashlib.sha256(raw).hexdigest() == "4e7812d603f97a6e46ff00fc8b6cf6f3dc32708db1539f15010566e6095a192b"
+    assert hashlib.sha256(raw).hexdigest() == "a066d935367dfc736383bb4a6b1fa71d114fee26defcb2de8479695759ed2ec9"
     assert PT.contract_text().encode("utf-8") == raw and b"van/alerts" not in raw
     doc = open(os.path.join(HERE, "PORTAL_CONTRACT.md"), "rb").read()
-    assert hashlib.sha256(doc).hexdigest() == "b14e730cd84f6b1eb997194c10ec53d787cbac7f1c90305595cc2d9388e44e38"
+    assert hashlib.sha256(doc).hexdigest() == "e4f559e075f579c76c3dc8abf206987459c1f9160d7a1b34e84e9ef8472f1b9c"
 
 
 def test_van_is_reserved_and_the_guard_reads_the_ids_as_ryans():

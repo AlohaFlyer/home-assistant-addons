@@ -15,6 +15,8 @@ import json
 import re
 from datetime import date, datetime, timedelta, timezone
 
+import pay as PAY
+
 # 1.7.2: payp / protected / split / of mark a PAYP record (payp_entries); they ride along with the version, not in the
 # fingerprint
 TRIP_FIELDS = ("blk", "credit", "soft", "seat", "report", "last_arr", "duties", "payp", "protected", "split", "of")
@@ -71,8 +73,9 @@ def diff(old, new):
         if isinstance(nt[k], dict) and nt[k].get("payp") and nt[k].get("credit"):
             prot = ", ".join(p.replace("|", " ") for p in str(nt[k].get("protected") or "").split(",") if p)
             sp = nt[k].get("split") if isinstance(nt[k].get("split"), dict) else {}
-            by = f"; by month (PWA 4.A) {', '.join(f'{m} {v}' for m, v in sorted(sp.items()))}" if sp else \
-                "; this month's share (PWA 4.A)" if nt[k].get("of") else ""
+            # 1.7.11 review (FW-0080): the split's keys are bid periods
+            by = f"; by bid period (PWA 4.A) {', '.join(f'{m} {v}' for m, v in sorted(sp.items()))}" if sp else \
+                "; this bid period's share (PWA 4.A)" if nt[k].get("of") else ""
             out.append(f"PAYP {k.split('|')[1]} keeps {prot or 'the removed trip'}'s credit {nt[k]['credit']} "
                        f"(pay protected{by})")
     for k in sorted(set(ot) & set(nt)):
@@ -309,35 +312,223 @@ def _at(v):
     return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 
-def _split(st, rec, n):
-    """PWA 4.A (fix pass): n credit minutes of a trip that starts on st, by month, the schedule card's way: shared by the
-    block of its duty periods departing in each month (dep: HST minutes from the trip's first day). {st[:7]: n} when no
-    duty block is on file."""
-    du = [d for d in (rec or {}).get("duties") or [] if isinstance(d, dict) and isinstance(d.get("dep"), (int, float))
-          and isinstance(d.get("blk"), (int, float))]
-    tot = sum(d["blk"] for d in du)
-    try:
-        t0 = datetime.fromisoformat(st)
-    except ValueError:
-        t0 = None
-    if not du or tot <= 0 or t0 is None:
-        return {st[:7]: n}
-    by = {}
-    for d in du:
-        mk = (t0 + timedelta(minutes=d["dep"])).isoformat()[:7]
-        by[mk] = by.get(mk, 0) + d["blk"]
-    out, left = {}, n
-    for i, mk in enumerate(sorted(by)):
-        out[mk] = left if i == len(by) - 1 else round(n * by[mk] / tot)
-        left -= out[mk]
-    return out
+def _cal(iso):
+    """The calendar month of a day: the bid period's stand-in when no bounds are on file."""
+    return str(iso)[:7]
 
 
-def _split_of(k, rec):
-    """A record's credit by month in minutes: its split, else all of it in the month its PAYP starts."""
+def _split(st, rec, n, period_of=None, tcrd=None):
+    """PWA 4.A: n credit minutes of a trip that starts on st, by bid period (1.7.11, FW-0080: period_of(iso) names the
+    bid period of a day, the Watcher's pairing files' bounds; the calendar month when none is given), the schedule
+    card's way (pay.split_by_period): each duty period in the bid period that holds its HST departure date (dep: HST
+    minutes from the trip's first day), with its TCRD when tcrd lists one per duty (the pairings package's), else its
+    block share; the bid period of st keeps the rest. {period_of(st): n} when no duty block is on file."""
+    po = period_of or _cal
+    du = [d for d in (rec or {}).get("duties") or [] if isinstance(d, dict)]
+    if isinstance(tcrd, (list, tuple)) and len(tcrd) == len(du):
+        du = [dict(d, tcrd=t) for d, t in zip(du, tcrd)]
+    sp = PAY.split_by_period(st, du, po, n / 60)
+    if sp is None:
+        return {po(st): n}
+    return {k: v["credit"] for k, v in sp["by"].items() if v["credit"] is not None}
+
+
+def _split_of(k, rec, period_of=None):
+    """A record's credit by bid period in minutes: its split, else all of it in the bid period its PAYP starts."""
     sp = rec.get("split") if isinstance(rec.get("split"), dict) else {}
     out = {m: _mins(v) for m, v in sp.items() if _mins(v) is not None}
-    return out or {k.split("|", 1)[1][:7]: _mins(rec.get("credit")) or 0}
+    return out or {(period_of or _cal)(k.split("|", 1)[1]): _mins(rec.get("credit")) or 0}
+
+
+def _has_duties(rec):
+    return isinstance(rec, dict) and any(isinstance(d, dict) and isinstance(d.get("dep"), (int, float))
+                                         and isinstance(d.get("blk"), (int, float)) for d in rec.get("duties") or [])
+
+
+def duty_record(key, own, versions_of):
+    """1.7.11 review (FW-0080): the record of trip key ('TRIP|start') that holds its duty periods: the own trips record,
+    else the newest stored version that lists it (versions_of(month) -> that month's versions, oldest first; the month
+    of its first day, the one before and the one after); None when neither has its duties."""
+    rec = (own or {}).get(key)
+    if _has_duties(rec):
+        return rec
+    st = str(key).partition("|")[2]
+    try:
+        d = date.fromisoformat(st)
+    except ValueError:
+        return None
+    for mk in ((d.replace(day=1) - timedelta(days=1)).strftime("%Y-%m"), st[:7], (d.replace(day=28) + timedelta(days=4)).strftime("%Y-%m")):
+        for v in reversed([v for v in (versions_of(mk) or []) if isinstance(v, dict)]):
+            rec = (v.get("trips") or {}).get(key)
+            if _has_duties(rec):
+                return rec
+    return None
+
+
+def _split_payp_days(p, rec, n, period_of, tcrd, s, e):
+    """1.7.11 integration review (PWA 4.A, PWA Definitions 57): n credit minutes a PAYP over s..e keeps of removed trip p
+    ('TRIP|start') when a pairing with its base id still flies part of it (_net: H9640A flies its Dec 2 and Dec 3
+    duties): only the trip's duties that depart on the PAYP's own days split it (the flown ones are paid by that
+    pairing), each with its TCRD when tcrd lists one per duty; the bid period of the trip's first day (a PAYP day: the
+    removed trip starts on one) keeps the rest, as _split does. {period: minutes}."""
+    po, st = period_of or _cal, p.split("|", 1)[1]
+    days = set(_days(s, e or s))
+    du = [d for d in (rec or {}).get("duties") or [] if isinstance(d, dict)]
+    tc = list(tcrd) if isinstance(tcrd, (list, tuple)) and len(tcrd) == len(du) else None
+    try:
+        t0 = date.fromisoformat(st)
+    except ValueError:
+        return {po(s): n}
+    keep = [i for i, d in enumerate(du) if isinstance(d.get("dep"), (int, float)) and not isinstance(d.get("dep"), bool)
+            and (t0 + timedelta(days=int(d["dep"] // 1440))).isoformat() in days]
+    return _split(st, dict(rec or {}, duties=[du[i] for i in keep]), n, po, [tc[i] for i in keep] if tc else None)
+
+
+def payp_resplit(k, rec, find, period_of=None, tcrd_of=None, end=None):
+    """1.7.11 review (FW-0080, PWA 4.A): a PAYP record (key PAYP|start) on file split again by the bid period rule, so a
+    record written under the calendar month (1.7.10) counts each bid period's part as FLICA does: each protected trip's
+    duties (find(trip key) -> its record with duties, duty_record) with their TCRD (tcrd_of), its credit the record's
+    (one protected trip) or each trip's own (several, when they add up to the record's credit). The record as it is
+    when a protected trip's duties are not on file or the credits do not add up, and for a continuation record ('of':
+    its share follows its original, payp_share). Only 'split' changes: never the credit, the trips or the days.
+    1.7.11 integration review: one protected trip whose credit is above the record's (a pairing with its base id flies
+    part of it, _net) splits only its duties on the PAYP's days (_split_payp_days; end: the PAYP's last day, the
+    record's own when not given; the record as it is when neither says)."""
+    if not _valid(rec) or rec.get("of"):
+        return rec
+    parts, n = _prot(rec), _mins(rec.get("credit"))
+    recs = [find(p) for p in parts]
+    if not parts or any(r is None for r in recs):
+        return rec
+    ns = [n] if len(parts) == 1 else [_mins(r.get("credit")) for r in recs]
+    if None in ns or sum(ns) != n:
+        return rec
+    po, msplit, end = period_of or _cal, {}, end or rec.get("end") or ""
+    for p, r, x in zip(parts, recs, ns):
+        tc = tcrd_of(p, r) if tcrd_of else None
+        full = _mins(r.get("credit"))
+        if len(parts) == 1 and full is not None and x < full:
+            if not end:
+                return rec
+            got = _split_payp_days(p, r, x, po, tc, k.split("|", 1)[1], end)
+        else:
+            got = _split(p.split("|", 1)[1], r, x, po, tc)
+        for m, v in got.items():
+            msplit[m] = msplit.get(m, 0) + v
+    sp = {m: _hm(v) for m, v in sorted(msplit.items()) if v > 0}
+    out = {f: v for f, v in rec.items() if f != "split"}
+    if set(sp) - {po(k.split("|", 1)[1])}:
+        out["split"] = sp
+    return rec if out == rec else out
+
+
+def _share_key(rs, sp, s, e, po):
+    """The bid period whose share of a PAYP record (its PAYP from rs, split sp) a PAYP listed again on the next page
+    (s..e) carries: the first of its days in a bid period other than rs's that the split names. FLICA's next page
+    starts on the bid period before's last day (December's grid on Dec 1, November's), so its first day alone never
+    tells (1.7.11 review: PAYP|12-01 is November's day, its share December's)."""
+    return next((po(d) for d in _days(s, e) if po(d) != po(rs) and _mins(sp.get(po(d)))), None)
+
+
+def payp_share(k, rec, orig, period_of=None):
+    """1.7.11 review (FW-0080): the credit of continuation record k (a PAYP listed again on the next page, 'of' its
+    original orig) under the bid period rule: orig's split share of the bid period of k's days (_share_key), or None
+    when orig gives this PAYP no share (all its credit pays in orig's own bid period)."""
+    po = period_of or _cal
+    sp = orig.get("split") if isinstance(orig, dict) and isinstance(orig.get("split"), dict) else {}
+    key = _share_key(str(rec.get("of") or "").split("|", 1)[-1], sp, k.split("|", 1)[1], rec.get("end") or k.split("|", 1)[1], po)
+    return sp[key] if key else None
+
+
+def _payp_end(v, k):
+    """1.7.11 integration review: the last day of the PAYP item a stored version lists at record k's start (PAYP|start),
+    '' when it lists none there: a version's records never hold 'end' (trips_of keeps TRIP_FIELDS only)."""
+    st = k.split("|", 1)[1]
+    ends = [str(i.get("end") or i["start"]) for i in (v.get("items") or []) if isinstance(i, dict) and i.get("trip") == PAYP
+            and i.get("start") == st]
+    return max(ends) if ends else ""
+
+
+FILLER = "schedule re-read with small differences"
+
+
+def _payp_lines(old, new):
+    """1.7.11 integration review: a version's change lines with its PAYP lines (those that start "PAYP ") taken from new
+    (diff of the repaired versions, the bid period's wording), the others as they were and where they were."""
+    old = [c for c in old or [] if isinstance(c, str)]
+    mine = [c for c in new or [] if c.startswith(f"{PAYP} ")]
+    rest = [c for c in old if not c.startswith(f"{PAYP} ")]
+    if not mine and len(rest) == len(old):
+        return old  # no PAYP line before or after
+    if mine:
+        at = next((i for i, c in enumerate(old) if c.startswith(f"{PAYP} ")), len(old))
+        before = sum(1 for c in old[:at] if not c.startswith(f"{PAYP} ") and c != FILLER)
+        rest = [c for c in rest if c != FILLER]
+        rest = rest[:before] + mine + rest[before:]
+    return rest or [FILLER]
+
+
+def resplit_versions(month_versions, own, period_of=None, tcrd_of=None):
+    """1.7.11 review (FW-0080): the PAYP records in stored versions ({month: [version, ...]}) split again by bid period,
+    as payp_entries does with the ones on file: each record payp_resplit (its protected trips' duties from own trips or
+    any of these versions), each continuation record ('of') its original's share there (payp_share; dropped when the
+    original gives it none). Changes the versions in place; returns the months changed.
+    1.7.11 integration review: a record's span is its version's PAYP item's (a stored record has no 'end'); a
+    continuation whose version lists no PAYP item at its start is kept as it is. Each version whose trips changed gets
+    its fingerprint made again from them (as repair_ends does), so the next read of the same line is no new version;
+    and each version's PAYP change lines are written again with the bid period's wording (diff of the repaired
+    versions), so they say what the records now hold."""
+    def vo(mk):
+        return month_versions.get(mk) or []
+
+    def find(p):
+        return duty_record(p, own, vo)
+    po, changed, orig, hit = period_of or _cal, set(), {}, set()
+    for mk, vers in sorted(month_versions.items()):
+        for v in vers:
+            tr = v.get("trips") if isinstance(v, dict) and isinstance(v.get("trips"), dict) else {}
+            for k, rec in list(tr.items()):
+                if not k.startswith(f"{PAYP}|") or not _valid(rec) or rec.get("of"):
+                    continue
+                new = payp_resplit(k, rec, find, po, tcrd_of, rec.get("end") or _payp_end(v, k))
+                if new is not rec:
+                    tr[k] = new
+                    changed.add(mk)
+                    hit.add(id(v))
+                orig[k] = new  # the newest version's, the months and their versions in order
+    for mk, vers in sorted(month_versions.items()):
+        for v in vers:
+            tr = v.get("trips") if isinstance(v, dict) and isinstance(v.get("trips"), dict) else {}
+            for k, rec in list(tr.items()):
+                if not k.startswith(f"{PAYP}|") or not _valid(rec) or not rec.get("of"):
+                    continue
+                o = orig.get(rec["of"]) or (own or {}).get(rec["of"])  # the original as stored, else on file
+                end = rec.get("end") or _payp_end(v, k)
+                if not _valid(o) or not end:
+                    continue  # its span cannot be read: never dropped on a guess
+                share = payp_share(k, dict(rec, end=end), o, po)
+                if share is None:
+                    tr.pop(k)
+                elif share != rec.get("credit"):
+                    tr[k] = dict(rec, credit=share)
+                else:
+                    continue
+                changed.add(mk)
+                hit.add(id(v))
+    for mk, vers in sorted(month_versions.items()):
+        prev = None
+        for v in vers:
+            if not isinstance(v, dict):
+                continue
+            if id(v) in hit and "fp" in v:
+                v["fp"] = fingerprint(v, v.get("trips") or {})
+            if prev is not None and not v.get("award") and isinstance(v.get("changes"), list):
+                lines = _payp_lines(v["changes"], diff(prev, v))
+                if lines != v["changes"]:
+                    v["changes"] = lines
+                    changed.add(mk)
+            prev = v
+    return sorted(changed)
 
 
 def _added_on_payp(month_versions):
@@ -423,7 +614,7 @@ def _from_versions(want, vo, is_pairing, on, held, own, skip):
     return list(got.values()), ver
 
 
-def payp_entries(items, own, versions_of, is_pairing):
+def payp_entries(items, own, versions_of, is_pairing, period_of=None, tcrd_of=None):
     """{PAYP|<start>: record} for the PAYP items on the schedule whose removed trip's credit is known. own: the own
     trips records keyed TRIP|start, taken before the ones no longer on the schedule are pruned; versions_of(month) ->
     that month's stored versions (oldest first); is_pairing(trip) -> truthy for a pairing id. Pure, never reads FLICA.
@@ -449,8 +640,15 @@ def payp_entries(items, own, versions_of, is_pairing):
     next month (PAYP|12-01 after PAYP|11-30) gets that month's share of the split. A record whose PAYP left the schedule
     because a trip was added over all its days (PWA 4.R.1: Pay and Credit of the PAYP day plus the added trip's) stays
     while a pairing other than the removed one starts on its days; the card counts it only when FLICA's month credit
-    holds it. Never invents a credit: no removed trip with a credit on file gives no record."""
+    holds it. Never invents a credit: no removed trip with a credit on file gives no record.
+    1.7.11 (FW-0080): the split is by bid period (period_of(iso) -> 'YYYY-MM', the Watcher's bid_period_key; the calendar
+    month when none is given), each duty's credit its TCRD when tcrd_of(trip key, record) lists one per duty. 1.7.11
+    review: a record on file whose PAYP kept its days is split again by that rule (payp_resplit: a 1.7.10 record holds
+    the calendar month's split, or none; only its split changes), and a continuation record ('of') always follows its
+    original: its share is the bid period of its days (_share_key; the next page's PAYP starts on the bid period
+    before's last day, Dec 1), kept as it is only while its original's PAYP is off the pages read."""
     own = own if isinstance(own, dict) else {}
+    po = period_of or _cal
     cache = {}
 
     def vo(mk):
@@ -466,8 +664,9 @@ def payp_entries(items, own, versions_of, is_pairing):
     out, taken, moved, cont = {}, set(), set(), set()
     for s, e in spans:  # first: the records on file whose PAYP kept its days, as they are
         rec = own.get(f"{PAYP}|{s}")
-        if _valid(rec) and rec.get("end") == e:
-            out[f"{PAYP}|{s}"] = rec
+        if _valid(rec) and rec.get("end") == e and not rec.get("of"):
+            # 1.7.11 review (FW-0080): split again by bid period (a 1.7.10 record has the calendar month's split, or none)
+            out[f"{PAYP}|{s}"] = payp_resplit(f"{PAYP}|{s}", rec, lambda p: duty_record(p, own, vo), po, tcrd_of)
             taken.update(_prot(rec))
     months = sorted({mk for s, e in spans for mk in _months(s, e)} | {mk for s, _ in spans for mk in _months(
         (date.fromisoformat(s) - timedelta(days=20)).isoformat(), s)})
@@ -482,11 +681,12 @@ def payp_entries(items, own, versions_of, is_pairing):
         k = f"{PAYP}|{s}"
         if k in out:
             continue
-        old = own.get(k) if _valid(own.get(k)) else None
+        # a continuation record (of) is never this PAYP's own: its share follows its original (below)
+        old = own.get(k) if _valid(own.get(k)) and not own[k].get("of") else None
         parts = list(_prot(old)) if old else []
         mins, seats, src = (_mins(old["credit"]) if old else 0), ([old.get("seat") or ""] if old else []), \
             ((old or {}).get("src") or "")
-        msplit = dict(_split_of(k, old)) if old else {}
+        msplit = dict(_split_of(k, old, po)) if old else {}
         had = set(_days(s, old.get("end"))) if old else set()  # the days its credit already covers
         mv = []
         for ok, orec in sorted(own.items()):  # a PAYP whose start moved: its trips and credit move with it
@@ -499,7 +699,7 @@ def payp_entries(items, own, versions_of, is_pairing):
                 seats.append(orec.get("seat") or "")
                 src = src or orec.get("src") or ""
                 had |= set(_days(ok.split("|", 1)[1], orec.get("end")))
-                for m, n in _split_of(ok, orec).items():
+                for m, n in _split_of(ok, orec, po).items():
                     msplit[m] = msplit.get(m, 0) + n
         held = taken | set(parts)
         want = [d for d in _days(s, e) if d not in had]
@@ -524,31 +724,41 @@ def payp_entries(items, own, versions_of, is_pairing):
             moved.update(mv)
             continue
         moved.update(mv)
-        for (p, _, seat, rec, _), n in zip(new, nets):
+        for (p, full, seat, rec, _), n in zip(new, nets):
             if n > 0:
                 parts.append(p)
                 mins += n
                 seats.append(seat)
-                for m, x in _split(p.split("|", 1)[1], rec, n).items():
+                tc = tcrd_of(p, rec) if tcrd_of else None
+                # 1.7.11 integration review: a pairing with its base id still flies part of it (_net): only the duties
+                # on the PAYP's days split what the PAYP keeps
+                got = _split_payp_days(p, rec, n, po, tc, s, e) if n < full else _split(p.split("|", 1)[1], rec, n, po, tc)
+                for m, x in got.items():
                     msplit[m] = msplit.get(m, 0) + x
-        if not parts:  # the next month's page lists the PAYP again: that month's share of the split
+        if not parts:  # the next month's page lists the PAYP again: that bid period's share of the split
             for rk, r in list(out.items()):
                 rs, sp = rk.split("|", 1)[1], r.get("split") if isinstance(r.get("split"), dict) else {}
-                if ((rk, s[:7]) not in cont and rs[:7] != s[:7] and _mins(sp.get(s[:7]))
+                # 1.7.11 review (FW-0080): the bid period of its days, not of its first day (Dec 1 is November's)
+                bk = _share_key(rs, sp, s, e, po)
+                if (bk and (rk, bk) not in cont
                         and rs < s <= (date.fromisoformat(r.get("end") or rs) + timedelta(days=1)).isoformat()):
-                    cont.add((rk, s[:7]))
-                    out[k] = {"credit": sp[s[:7]], "blk": "0:00", "soft": "0:00", "payp": True,
+                    cont.add((rk, bk))
+                    out[k] = {"credit": sp[bk], "blk": "0:00", "soft": "0:00", "payp": True,
                               "protected": r.get("protected") or "", "end": e, "src": r.get("src") or "", "of": rk}
                     if r.get("seat"):
                         out[k]["seat"] = r["seat"]
                     break
+            rec = own.get(k)
+            if k not in out and _valid(rec) and rec.get("of") and rec.get("end") == e and rec["of"] not in cur:
+                out[k] = rec  # its original's PAYP no longer on the pages read: kept as it is, while its days are
+                taken.update(_prot(rec))
             continue
         taken.update(parts)
         seat = seats[0] if seats and all(x == seats[0] for x in seats) else ""
         rec = {"credit": _hm(mins), "blk": "0:00", "soft": "0:00", "payp": True, "protected": ",".join(parts), "end": e,
                "src": src}
         sp = {m: _hm(n) for m, n in sorted(msplit.items()) if n > 0}
-        if set(sp) - {s[:7]}:
+        if set(sp) - {po(s)}:
             rec["split"] = sp
         if seat:
             rec["seat"] = seat

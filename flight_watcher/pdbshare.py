@@ -506,7 +506,8 @@ class View:
         self.answers = []        # the file's answers
         self.limits = {}
         self.by_emp = {}         # emp -> [(pid, last name's key)]
-        self.names = []          # [(emp, last, first, seat)] of the live pilots whose number no other record shares
+        self.names = []          # [(emp, last, first, seat, base)] of the live pilots whose number no other record
+        #                          shares (1.7.11, FW-0078: base, the record's, for the pick list)
         self.sens = {}           # 1.7.10 review: {emp: Sen #} of those pilots (the pick list tells namesakes apart)
 
     @staticmethod
@@ -562,7 +563,9 @@ class View:
             if len(rows) == 1 and not r.get("gone"):
                 last, _, first = (x.strip() for x in str(r.get("name") or "").partition(","))
                 if last:
-                    self.names.append((emp, last[:80], first[:80], str(r.get("seat") or "")[:3]))
+                    base = str(r.get("base") or "")
+                    self.names.append((emp, last[:80], first[:80], str(r.get("seat") or "")[:3],
+                                       base if re.fullmatch(r"[A-Z]{3}", base) else ""))
                     if re.fullmatch(r"\d{1,5}", str(r.get("sen") or "")):
                         self.sens[emp] = str(r["sen"])
         self.by_emp = {e: [(p, lk) for p, lk, _ in rows] for e, rows in self.by_emp.items()}

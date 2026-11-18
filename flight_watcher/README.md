@@ -34,8 +34,16 @@ publishes what it finds to Home Assistant over MQTT.
   details, and the monthly award and pairings PDFs uploaded on the dashboard (or the Web UI). A trip that comes home
   the day the next one starts keeps its real end (1.4.7). A trip the company removed and FLICA shows as PAYP keeps
   its credit in Credit, Pay-Gross and Pay-Net (1.7.2, PWA Definitions 57), never in Block or the FAR 117 checks;
-  a trip over the month boundary counts each month's share (PWA 4.A), and a trip added on PAYP days pays on top (PWA
-  4.R.1). With the removed trip not on file the card estimates it from FLICA's month credit and says "estimate", when
+  a trip over the bid period's edge counts each bid period's part (PWA 4.A), and a trip added on PAYP days pays on top
+  (PWA 4.R.1). The month's totals are the bid period's, as FLICA's are (1.7.11, FW-0080: December 2026 runs Dec 2 to
+  Dec 31, so a trip Dec 1 to 3 pays its Dec 1 duty in November and its Dec 3 duty in December): each duty counts in
+  the bid period of its HST departure date, its credit its TCRD from the pairings package (else its block share, an
+  estimate), the bid period of the trip's first day keeping the rest of the trip credit (rig, minimums); VAC and PAYP
+  days count in the bid period they fall in. The bid period comes from the pairings package, else the schedule pages
+  (`periods` on the schedule sensor), else the calendar month, and the totals' title says which. A trip whose own
+  times are not read yet places the package detail's duties the same way. A PAYP's kept credit splits by bid period
+  too: listed again on the next page (December's page starts on Dec 1, November's), its record carries the next bid
+  period's share, and a record kept from 1.7.10 (the calendar month's split) is split again, the stored versions once. With the removed trip not on file the card estimates it from FLICA's month credit and says "estimate", when
   it counts everything else in the month; otherwise it says "PAYP credit unknown". Open time over PAYP days fits
   (1.7.2, PWA 4.R.1): no "Conflict PAYP", no FAR overlap with the removed trip, and the PAYP days count as days off
   as FLICA counts them.
@@ -149,11 +157,31 @@ HOM's `fw_signing_key` option. That pilot's Watcher then:
   tickets sensor, the tickets card with FW_PORTAL on), takes his ticket commands with his quotas and his photos in
   chunks (checked and re-encoded), and alerts him when one of his tickets is fixed (the ticket id and version only);
 - 1.7.2 (contract 1 revision 3): alerts him with the bid calendar alerts (the admin's push words) and when his FLICA
-  schedule has not been read for 6 h (once a day); takes the pilot lookup only in its shape (emp, q, name, pick);
+  schedule has not been read for 6 h (once a day); takes the pilot lookup only in its shape (emp, q, name, pick; 1.7.11:
+  month);
   never takes `recall/set` from the portal (his recall lists come from the admin's forward); and takes his upload of
   the month's pairings package or award (`upload/pdf`, below);
 - 1.7.10 (contract 1 revision 5, HOM 1.9.1 first): takes his upload of the contacts list (CSV) into the shared pilot
-  database (`upload/pdf` kind `contacts`, below).
+  database (`upload/pdf` kind `contacts`, below);
+- 1.7.11 (contract 1 revision 6, HOM 1.9.2 first): takes the pilot lookup's month (`pilot/set` key `month`, below).
+
+**The pilot lookup's pick list and month (1.7.11; Ryan's yes of Nov 17, FW-0078 and FW-0076), on both instances.**
+A typed name lists up to 12 pilots (more is no list: "More than 12 pilots match ..."); each entry reads "Doe, Jane ·
+FO · HNL · #10001": the name, the seat (with the Sen # for two entries that would read the same, as before), the base
+(the pilot database record's, else the award's or the seniority list's, else left out) and the employee number. A
+pilot's entry is still picked by its opaque pick id, never by the number it shows; Ryan's card picks by the number as
+before. On a pilot's month the card shows two buttons under the heading, this HST month and the next ("Nov 2026",
+"Dec 2026"); the month shown is pressed and not tappable, the other reads that month: `pilot/set` with the same pilot
+(Ryan's card: the employee number; a pilot's card: the field that found him, published as the pilot sensor's `ask`)
+and `month`. The Watcher takes this HST month or the next only (any other: one log line and a status line), reads that
+month's Schedule Lookup page alone (one page load, then the pairing pages as before, paced 1.5 to 3.5 s, inside the
+FLICA budget and the host gate), keeps a 6 h cache per month and answers "Loading Nov 2026..." while it waits. A
+lookup with no month (a name, a pick, a #pilot= link) reads FLICA's default month exactly as before. With HOM 1.9.1
+still live, a month tap on the portal is refused by HOM's pinned shape and the card says the month choice needs a
+portal update (on the card the portal's shell draws again, too); nothing else changes. A month tap the Watcher keeps
+for later (yielded, paused) reads "Loading Nov 2026..." with that month pressed; a month that did not read is named on
+its status line, with that month's rebuild from the crew lists; a tap answers from the newer read of its month on hand
+(the month's own or the one with no month); the pick list's base is never another record's on a shared number.
 
 **A pilot's contacts list (1.7.10, contract 1 revision 5; Ryan, Nov 16).** While the pilot database is shared with
 him, the pilot uploads card also offers "Contacts list (CSV)": the airline contacts list's CSV export (first row
@@ -336,10 +364,14 @@ Recent finds.
   `items_pay` holds the month's Credit, Block, Soft, Pay-Gross, Pay-Net and FLICA's own Days Off. Credit and block come
   from the pairing page read, else the pairings package, else the crew index. Each schedule version of that pilot is
   priced in `pilotver_<key>.json` (each item's `gross`, the record's `pay`: amounts and hours, never a date of hire). No
-  FLICA page is loaded for any of it. The month is the schedule card's (1.7.7 review): the pairings that start in the
-  calendar month, each its PWA 4.A share (a segment pays on the date it originates: a trip into the next month counts
-  the block share of its duties departing this month, from the package's duties or the legs of its pairing page;
-  `split` on the item), the vacation days at 4:00 credit a day (PWA 6.J.1.c, `vac`), and a PAYP (PWA Definitions 57)
+  FLICA page is loaded for any of it. The month is the bid period, as FLICA totals it (1.7.11, FW-0080, Ryan, Nov 17:
+  "Everywhere"; 1.7.7 had taken the calendar month): each pairing its PWA 4.A part (a segment pays on the date it
+  originates: each duty in the bid period of its HST departure date, from the package's duties or the legs of its
+  pairing page made into duty periods as the package's are; its credit the duty's TCRD from the pairings package, else the block share, an estimate; the bid
+  period of the trip's first day keeps the rest of the trip credit; `split` on the item names the part flown in the
+  other bid period), a trip of the crew index that starts before FLICA's grid and flies into the bid period its part
+  too (`carry`, only while FLICA's grid shows those days free with a layover cell), the bid period itself in `period`,
+  the vacation days in it at 4:00 credit a day (PWA 6.J.1.c, `vac`), and a PAYP (PWA Definitions 57)
   at FLICA's month credit less everything else counted (`payp`, an estimate), else `payp_unk` (not counted; the card
   shows FLICA's credit without the red mark). Each trip's package is that of its own bid period (Dec 1 on December's
   grid is November's). A version's trip is priced from the live read of the same trip (the pairing page's credit,
@@ -506,7 +538,16 @@ Recent finds.
   latest one goes at once (a setting never leaves the van with no alert); one whose mark is ahead goes at it; a slider
   moved after its own alert went sends no other for that van; an alert already sent is never sent again; a van moved
   or learned later, and the late start after a restart, are as above. The van sensor carries `alerts_on` and `offsets` (the lead times, largest first)
-  and an alert per lead time. Layover notes:
+  and an alert per lead time. Moving the van (1.7.11, FW-0075, Ryan Nov 17: the company moves a van a few minutes, "so
+  I could set it for 510"): the layover card's "-5 min" and "+5 min" under the van time (only when the sensor says
+  `adjustable`: a van the Watcher placed, on the admin's instance) publish `flight_watcher/van/adjust/set`
+  `{"van": <van_id>, "minutes": <the move>}`, the absolute move from the van as read (a whole multiple of 5 from -120
+  to +120; 0 puts it back), kept in the Watcher's state across restarts (at most 8 moves). The moved van is a new van
+  time: its alerts, the push and the sensor use it (`adjust_min`, and `orig_local` and `orig_date`, the van as read);
+  its alerts wait 30 s after the sweep that saw the last tap, so the steps passed through on the way send no push.
+  One move at a time: the card ignores a tap while one is saving. The card says "You moved it -15 min (the package
+  says 05:25)" with "Back to 05:25". A van that changes (a new package, Hark's text, another pairing, also while the
+  app was down) drops the move, with one log line. Layover notes:
   `flight_watcher/layover/note` {city, text, rid} adds a note (plain text, at most 1000 characters, the city a
   3-letter station code; {city, delete: <id>, rid} removes one), stored in
   `/share/flight_watcher/layovers/<CITY>.json` (folder 0700, files 0600; never in git or a portal export);
@@ -516,8 +557,8 @@ Recent finds.
   changed and is left off the sensor (`unreadable`). `sensor.flight_watcher_layover_notes` (retained on
   `flight_watcher/layover_notes`): count, and by city the guide and the newest notes, the current layover station
   first, within 12000 bytes, plus the answer to the last note command. A pilot's instance has none of this (roles:
-  `admin_pushes`, `one_writer`), a portal refuses `layover/note`, and the van setting commands are never a portal's
-  (`roles.NOT_ON_PORTAL`).
+  `admin_pushes`, `one_writer`), a portal refuses `layover/note`, and the van setting and van move commands are never
+  a portal's (`roles.NOT_ON_PORTAL`).
 
 ## Dashboard cards and pushes
 
@@ -558,7 +599,12 @@ the rebuilt trip's nights from the package's duties, and an older version's tota
 columns are Trip, Layover, Block, Credit, Soft,
 Pay-Gross (that pilot's, when his date of hire is on file) and Crew; the seat and legs are in the pairing's hint and
 detail, and the rate, seat and source notes sit under the grid. Ryan's planning columns (Pay-Net, Res Grid, the FAR
-columns, Room, Legal next, Open, Ideas, the trade and drop marks) stay on his own schedule.
+columns, Room, Legal next, Open, Ideas, the trade and drop marks) stay on his own schedule. On a phone (700 px or less,
+1.7.11, FW-0079) the Crew column gives way to a crew list under the grid, one line a pairing ("H9601 Dec 1: CA Doe,
+Jane · FO Roe, Rick", each pilot on one line, the call and text links kept), so the grid fits the screen down to 360 px
+(Pay-Gross heads two lines there, and a one-day turn's report and release may share its Layover cell on two lines); a
+wider card keeps the Crew column while the grid fits it, else (a tablet in portrait, a long crew) it lists the crew too. A trip across the bid period's edge shows its part in this bid period in purple, its title
+naming the part flown in the other one (1.7.11, FW-0080, PWA 4.A).
 
 **Picked up by** (1.7.7, Ryan, Nov 14: "the person picking up should be blue and clickable... the other person who was
 already on the pairing should be black and not clickable"): on the finds card only the picker is the blue link to his
