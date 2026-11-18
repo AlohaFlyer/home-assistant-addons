@@ -21,7 +21,7 @@ sha256 of the redacted text as in Refresh below and drops this section. The pend
 one first: Pako's dashboard is still `be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435` (read
 2026-11-14, below), and with this edit alone it reads
 `7a3b3903c6d9bba5d59d0f059642772852df3ad1fd56a6cecc574c64173da530`. The snapshot is ahead of Pako by every pending
-edit (this one and the sections below), sha256 `e95ce9d3b662aad0357c138f355d834928a9abad86a869bc6570283fe9fc19c2`.
+edit (this one and the sections below), sha256 `6678f813ccdc4a6e2e1ab8837ccddffbd3de6f0c1de874a5cd8a1c48ea9a5cc5`.
 Undo: put the tile back (`{"entity": "sensor.flight_watcher_last_check", "grid_options": {"columns": 6}, "name": "Last
 check", "type": "tile"}`, git history).
 
@@ -37,9 +37,10 @@ default with its count. The sensor and the card exist only once 1.7.14 is live, 
 through the HA connector after the release, with Ryan's yes for it (a [DESTRUCTIVE] dashboard change), then checks by
 sha256 of the redacted text as in Refresh below and turns this section into an "Applied" one. The pending edits go on
 in release order: once the 1.7.12 Details tile (above) and this card are applied, Pako reads
-`e95ce9d3b662aad0357c138f355d834928a9abad86a869bc6570283fe9fc19c2`, the snapshot's sha256 (every pending edit); until
-then Pako's dashboard is still the `be03a0a4...` one below. Undo: remove that one card. No automation changes: the
-near misses never push (information only), so the guard's count is unchanged.
+`e95ce9d3b662aad0357c138f355d834928a9abad86a869bc6570283fe9fc19c2`; until then it is still the `be03a0a4...` one below.
+The snapshot carries every pending edit (the 1.7.15 one below too), sha256
+`6678f813ccdc4a6e2e1ab8837ccddffbd3de6f0c1de874a5cd8a1c48ea9a5cc5`. Undo: remove that one card. No automation changes:
+the near misses never push (information only), so the guard's count is unchanged.
 
 ## Pending on Pako (1.7.15): automatic swap ideas on the Swap ideas table
 
@@ -56,9 +57,11 @@ are)" line (K the number listed), says "No better-paying swap in the open pot ri
 when there is no idea, and its Key explains auto and pay per day. No push changes: the "Flight Watcher swap idea"
 automation is triggered by `flight_watcher/event/swap` alone, which never carries an automatic idea. This edit is a
 step of the 1.7.15 go-live, not a later one: right after the 1.7.15 update is verified (release step 3), Claude
-applies it through the HA connector (a dashboard edit, the card's `content` only; undo: the old
-`content` from git history), checks it by sha256 of the redacted text as in Refresh below and drops this
-section. Until then the snapshot is one edit ahead of Pako (below).
+applies it through the HA connector (a dashboard edit, the card's `content` only; undo: the old `content` from git
+history), checks it by sha256 of the redacted text as in Refresh below and drops this section. The pending edits go on
+in release order: once the 1.7.12 and 1.7.14 edits (above) and this one are applied, Pako reads
+`6678f813ccdc4a6e2e1ab8837ccddffbd3de6f0c1de874a5cd8a1c48ea9a5cc5`, the snapshot's sha256 (every pending edit); until
+then Pako's dashboard is still the `be03a0a4...` one below.
 
 ## Applied on Pako 2026-11-13 about 05:45 HST (1.7.2, FW-0066): "Flight Watcher pilot upload"
 
@@ -161,12 +164,8 @@ deleted). The dashboard snapshot matched Pako's `/config/.storage/lovelace.fligh
 `be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435` (5 views: Watcher, Working Flight, Details,
 Recall/O75, Settings; read 2026-11-14 about 17:20 HST, with the van alert settings tiles, the Working Flight view, the
 pilot lookup row and the Pilots cards below), until the pending edits (above: the 1.7.12 Details tile, the 1.7.14 near
-misses card): the snapshot is now ahead of Pako by those edits alone, sha256
-`e95ce9d3b662aad0357c138f355d834928a9abad86a869bc6570283fe9fc19c2`, and Pako matches it again once they are applied.
-
-pilot lookup row and the Pilots cards below), until the pending Swap ideas edit (above): the snapshot is now ahead of
-Pako by that edit alone, sha256 `eaefa85cdd9d6ff95893445682292b11896bc3468bf8583fb583a2d391f781fd`, and Pako matches
-it again once the edit is applied.
+misses card, the 1.7.15 Swap ideas table): the snapshot is now ahead of Pako by those edits alone, sha256
+`6678f813ccdc4a6e2e1ab8837ccddffbd3de6f0c1de874a5cd8a1c48ea9a5cc5`, and Pako matches it again once they are applied.
 
 **Changed on Pako 2026-11-14 about 17:15 HST (1.7.8, Ryan's yes "all of it"):** once 1.7.8 was live, Claude put the
 Pilots card on the dashboard through the HA connector (a JSON patch guarded by tests of the neighbouring cards): the

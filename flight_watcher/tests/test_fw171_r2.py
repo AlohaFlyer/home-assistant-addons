@@ -646,14 +646,16 @@ def test_the_dashboard_snapshot_has_no_weather_view_and_matches_its_sha():
     # the snapshot's sha256 is in the README. 1.7.2 live (Nov 13): the van alert settings tiles are applied, then the
     # Working Flight view keeps the layover card only; the snapshot and Pako's dashboard had the same sha256 (read
     # 2026-11-14, be03a0a4...). Pending, one section per release, each applied at release time with Ryan's yes, in
-    # release order: 1.7.12 the Details view's data age stamp, 1.7.14 the near misses card. The snapshot carries them
-    # all (one snapshot, ahead of Pako by those edits alone) and each section names its sha
+    # release order: 1.7.12 the Details view's data age stamp, 1.7.14 the near misses card, 1.7.15 the Swap ideas table
+    # with the automatic ideas and pay per day. The snapshot carries them all (one snapshot, ahead of Pako by those
+    # edits alone) and each section names its sha
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    assert sha == "e95ce9d3b662aad0357c138f355d834928a9abad86a869bc6570283fe9fc19c2" and sha in readme
+    assert sha == "6678f813ccdc4a6e2e1ab8837ccddffbd3de6f0c1de874a5cd8a1c48ea9a5cc5" and sha in readme
     assert "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" in readme
     assert "Applied on Pako 2026-11-13 about 05:47 HST (1.7.2): van alert settings" in readme
     heads = ["## Pending on Pako (1.7.12): the Details view's data age stamp\n",
-             "## Pending on Pako (1.7.14): near misses card\n"]
+             "## Pending on Pako (1.7.14): near misses card\n",
+             "## Pending on Pako (1.7.15): automatic swap ideas on the Swap ideas table\n"]
     assert readme.count("## Pending on Pako") == len(heads)
     at = [readme.index(h) for h in heads]
     assert at == sorted(at)  # in release order
