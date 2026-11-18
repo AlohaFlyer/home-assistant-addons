@@ -285,7 +285,14 @@ is added to that Settings view's `visible` list. The files are base-wide: every 
   with a phone and with an email).
 - "On file" lists every file kept (what, bid period, size, upload time HST, and whether the Watcher can read it), then
   the dates of hire on file (how many pilots, from the seniority list or from which award, its date, and how many more
-  were kept from the list under a later award) and the contact list's counts.
+  were kept from the list under a later award) and the contact list's counts. 1.7.18: the file rows fold under the "On file (n)" heading,
+  folded by default; while folded the heading says how many, the newest upload and its HST day, and how many were not
+  read ("6 files, newest Award Dec 2026, uploaded Nov 14"). A tap (or Enter or Space) on the heading opens them; open or
+  folded is kept for that browser (localStorage `flight_watcher_onfile_open`, a pilot's copy its own) and Refresh
+  leaves it as it is. The Wanted line, Pilot uploads (Approve, Reject), Dates of hire and Pilot contacts stay in view.
+  While there is nothing to fold (loading, an error, nothing on file) the heading is plain text, with no button or
+  arrow. The count is the Watcher's: when the uploads sensor's list is cut at its size cap (the oldest go first), a
+  card that reads the sensor still says "On file (8)" and the open list ends with "2 older files not listed here".
 - How it reaches the app, picked from the signed-in user:
   - **An admin**: the app's Web UI, the way Home Assistant's own app panels do. The card asks the Supervisor (WebSocket
     `supervisor/api`) for the app's ingress address (`/addons/<slug>/info`, card option `slug`, default
@@ -614,6 +621,14 @@ counts it; with no trip Block its duties with a block count and the cell reads `
 block up to its last block-in, not its release (1.7.13 FAR review). The Key explains each. Above 700 px the `100h in 672h` and `Room to 100h` headers take two lines and the FAR cells pad 4 px a
 side, so the grid is about as wide as in 1.7.11.
 
+**Lock switch** (1.7.18): the schedule card's lock at the top left is a switch: a lock icon (an inline SVG, the same
+on every phone), the word Lock, a track and knob and On (locked, the default) or Off. While it is On a tap on a day,
+the trade mark or the drop mark is refused with a note; switch it Off to change them. One button (role switch,
+aria-checked, named "Lock schedule marks"); the state is kept for that browser as before (localStorage
+`flight_watcher_lock`, "0" = Off; a pilot's copy its own). On a phone (700 px or less) it starts the header's first
+line with the Data age stamp at its right, and the month's arrows, title and Now have the second line (1.7.18
+cross-item review: two lines, not three).
+
 **Pairing detail** (1.7.7, Ryan, Nov 14): on the schedule card a tap on a pairing (or Enter on it) opens its detail
 like FLICA's pairing printout: the header (pairing, start date, the days it operates, base report, base and
 equipment), one line per leg (day, date, deadhead, flight, from and to, departure and arrival local as the package
@@ -716,7 +731,7 @@ Turn it amber past 1x the normal interval and red past 2x."): the clock card's s
 where it read "Last HH:MM:SS HST (N ago)", then Next as before; the schedule card's header reads the same stamp where
 it read "updated ...". It is the time since the Watcher's last good read (`sensor.<prefix>_last_check`, set only when a
 check succeeds), amber with "stale" past 1x and red with "very stale" past 2x the Watcher's longest cycle between two
-good reads, plain otherwise (review fix, its meaning of "1x" pending Ryan's yes): the check interval in use (the
+good reads, plain otherwise (review fix, its meaning of "1x" shipped under Ryan's "Ship it all", his to undo): the check interval in use (the
 normal one, the hunt one while hunting, or the pace a pilot's FLICA budget holds him to) x 1.3 for the Watcher's
 jitter, plus room for the check (3 min normal, 45 s hunting). Normal 6 min: stale past 10 min 48 s, very stale past 21
 min 36 s, and never later than the Watcher's own Stuck limit. It counts from later after a change of hunt or the
@@ -724,7 +739,9 @@ interval, or while the FLICA budget or host limit holds the next check. "Data ag
 last check time is not known (an unknown interval shows the age with no colour); red "Data age over 12 min, Watcher
 offline" when the app is down. Its hover text has the last good read in HST (with its day when that is not today), the
 thresholds and, on the schedule card, FLICA's own schedule time, "FLICA updated Nov 9, 2026 09:54:34". A tap on the
-stamp shows that text on a phone. It ticks each second without a reload, at one width, so nothing beside it moves. On
+stamp shows that text on a phone. It ticks each second without a reload, in one box whatever it says (1.7.18: 21em at
+the right of a wide header, the rest of the lock switch's line on a phone, a long text wrapping inside it), so nothing
+beside it moves. On
 the Details view the clock card with `mode: age` is the stamp alone, a 56 px tile ("Data age" over its value), in
 place of the "Last check" tile. A pilot's portal shows it on his clock and schedule cards from the entities it already
 has. The pot card's "Pot last read ..." note is unchanged.

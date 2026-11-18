@@ -8,7 +8,7 @@ An unknown or missing read time is "Data age unknown", no colour. The Details vi
 the stamp ticks by itself, and a pilot's portal copies show it from entities the portal already has. Synthetic states
 only, rendered in Chromium at 390 px, light and dark.
 
-1.7.12 review (the meaning of "1x" waits for Ryan's yes): 1x and 2x of the Watcher's own longest cycle between two good
+1.7.12 review (the meaning of "1x" shipped under Ryan's "Ship it all", his to undo): 1x and 2x of the Watcher's own longest cycle between two good
 reads (the interval, or a pilot's held budget pace, x 1.3 for the jitter, plus room for the check), counted from a mode
 change or a gate wait when those come later; red "Watcher offline" when the app is down; the day in the hover text for
 a read before today; a tap on the clock card's stamp shows its hover text; the clock card's height and the schedule
@@ -656,10 +656,10 @@ def test_the_details_view_tile_is_the_stamp_in_the_snapshot():
 
 
 def test_version_changelog_and_readme_say_data_age():
-    # 1.7.13 to 1.7.17 went on top: the version itself is pinned in test_release_c_tickets; the 1.7.12 section stays
+    # 1.7.13 to 1.7.18 went on top: the version itself is pinned in test_release_c_tickets; the 1.7.12 section stays
     # below them
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.7.17\n") and "\n## 1.7.16\n" in log and "\n## 1.7.15\n" in log and "\n## 1.7.14\n" in log and "\n## 1.7.13\n" in log and "\n## 1.7.12\n" in log and "\n## 1.7.11\n" in log
+    assert log.startswith("# Changelog\n\n## 1.7.18\n") and "\n## 1.7.17\n" in log and "\n## 1.7.16\n" in log and "\n## 1.7.15\n" in log and "\n## 1.7.14\n" in log and "\n## 1.7.13\n" in log and "\n## 1.7.12\n" in log and "\n## 1.7.11\n" in log
     top = log.split("\n## 1.7.12\n", 1)[1].split("\n## 1.7.11\n", 1)[0]
     for word in ("Data age", "stale", "very stale", "FLICA updated", "Details", "hunt", "portal"):
         assert word in top, word

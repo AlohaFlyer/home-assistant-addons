@@ -20,7 +20,7 @@ ticket run of Nov 17 (CHANGELOG 1.7.11 has every section):
 - FW-0073 / FW-0074 (Ryan): the LAS layover guide is on Pako and both are closed. FW-0077 (James): fixed in 1.7.10,
   left `fixed` for him to verify. James's FW-0076 and FW-0078 stay `fixed` for him to verify after 1.7.11.
 - 1.7.12 (Ryan, Nov 17): one "Data age" stamp replaces "updated" and "Last check" (amber "stale" past 1x, red "very
-  stale" past 2x); the review's "1x" (the Watcher's longest cycle, not the bare interval) waits for Ryan's yes, and the
+  stale" past 2x); the review's "1x" (the Watcher's longest cycle, not the bare interval) ships under Ryan's "Ship it all" (his to undo), and the
   Details view's tile is pending on Pako (`ha/README.md`), applied with his yes once 1.7.12 is live. No contract change.
 - 1.7.13 (Ryan, Nov 17): the schedule card's FAR 117 columns read `30h in 7d`, `100h in 672h` and `Room to 100h`, with
   headroom ("10:57 left", red "0:00 left" / "1:20 over") and a Key row each; Room tries every 672 h window holding the
@@ -47,7 +47,16 @@ ticket run of Nov 17 (CHANGELOG 1.7.11 has every section):
   from smart.json's timetables (PWA 26.QQ.2, customs release PWA 2.19.b; none without timetables, never a guess); the
   pot card shows a "Commutable KOA LAS" chip. No FLICA load, no contract change (James's portal gets it as signed).
   The HA Watcher view's `pot_table` macro (`flight_watcher.jinja`, not in git) and its Key line are a Pako edit at the
-  1.7.17 go-live, with Ryan's yes (custom templates reload).
+  1.7.17 go-live, with Ryan's yes (custom templates reload): `ha/README.md` "Pending on Pako (1.7.17)" has the macro,
+  the call, the Key line and the check (added by the 1.7.18 cross-item review; the snapshot has the Key line).
+- 1.7.18 (Ryan, Nov 17): two card changes. The uploads card's On file list folds under its heading (folded by default,
+  kept per browser, the Watcher's own count when the sensor list is cut); the schedule card's version lock is a switch
+  (an SVG lock, the word Lock, a track and knob, On = locked, role switch, 44 px; it starts the first line on a phone,
+  the Data age stamp at its right). Same lock storage and taps. No contract change, nothing pending on Pako of its own.
+  Cross-item review fixes (Nov 18, CHANGELOG 1.7.18): the schedule header's stamp is one fixed box (the month arrows
+  and Now no longer slide at long texts; on a phone it shares the switch's line, two lines in all); 1.7.17's Pako edits
+  are a pending section with the macro in git and the snapshot `e322dc0e...` carries every pending edit; a busy month
+  of marked swap ideas keeps 1.7.11's count (the last ones drop their pay figures first); a swap draft carries `auto`.
 
 **Nov 16: 1.7.10 is contract 1 REVISION 5 and HOM 1.9.1 goes live FIRST.** Ryan: "His uploads should update the
 shared database too", and the contacts list upload on James's portal "Now, in 1.7.10". Built (commits "... a portal

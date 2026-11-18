@@ -1,5 +1,133 @@
 # Changelog
 
+## 1.7.18
+
+Two card changes Ryan asked for on Nov 17, 2026 (screenshots of Settings > Monthly files and of the schedule card on a
+Samsung phone), cards only, and the cross-item review's fixes of Nov 18 (below: the schedule header's Data age stamp,
+1.7.17's Pako edits in ha/README.md, the swap ideas sensor's 12 KB cap and the swap draft's auto flag in the Watcher).
+No contract or FLICA change.
+
+### The On file list folds
+
+Ryan, Nov 17: "collapse the on file list". The uploads card (Settings, heading "Monthly files") listed every file kept,
+one row each, above Pilot uploads, Dates of hire and Pilot contacts.
+- The file rows fold under their heading, folded by default. The heading is a button (44 px high, aria-expanded,
+  aria-controls, a chevron that turns down when open) that says "On file (6)" and, while folded, one line on what is
+  there: "6 files, newest Award Dec 2026, uploaded Nov 14" (the newest upload, its HST day, and "1 not read" in red when
+  a file has no text copy). A tap, Enter or Space opens or folds it; the focus stays on the heading.
+- Open or folded is kept per browser (localStorage `flight_watcher_onfile_open`; a pilot's copy keeps its own,
+  `flight_watcher_<name>_onfile_open`). Blocked storage (a private window) folds it at first and still opens it.
+  Refresh, and every sensor update, leave it as it is; the count and the line follow the new list. More than 6 files
+  still fold the rest under "n older" inside.
+- The Wanted line (a pairings package the crew index needs), "Nothing uploaded yet", an error, and the sections after
+  the list stay in view: Pilot uploads (its Approve and Reject), Dates of hire and Pilot contacts are sections of their
+  own (their own headings), not rows of the list. The Refresh button is 44 px high too.
+- While there is nothing to fold (the list loading, an error, "Nothing uploaded yet.") the heading is plain text: no
+  button, no aria-expanded, no aria-controls pointing at a list that is not there, no arrow, and a tap does nothing.
+  The button comes back, open or folded as kept, once there is a list (review AB-1).
+- The count in the heading and in the folded line is the Watcher's (the sensor's `count`), not the rows the sensor
+  carries: the Watcher cuts the uploads sensor's list at its 12000 byte cap, the oldest files first, and kept the full
+  number beside it. A card that reads the sensor (a user who is not an admin, a pilot's copy) said "On file (83)" for
+  102 files; it now says "On file (102)" and the open list ends with "19 older files not listed here (more than the
+  sensor can carry)." A count that is not a whole number above the rows listed is not used (review AB-2).
+- The portal has no copy of this card (the admin's uploads card stays off the portal; a pilot uploads with the pilot
+  uploads card, unchanged). A second pilot's dashboard copy (`flight-watcher-uploads-card-<name>`) folds the same.
+
+### The version lock is a switch
+
+Ryan, Nov 17: "The lock does not display well on James' samsung... its not obvious when it is locked or unlocked...
+Can we try a toggle Show the lock icon, and then an on/off toggle where locked is on". The lock at the top left of the
+schedule card was an emoji (each phone draws its own) whose only change was the shackle.
+- Now: a lock icon drawn as an inline SVG (shut, or the shackle lifted when unlocked; the same on every phone), the
+  word Lock, a switch track with its knob, and the word On (locked) or Off. On = locked, the default. On: a filled blue
+  track with the knob at the right and On in bold; Off: an outlined grey track with the knob at the left and Off. The
+  state never rests on colour alone (the knob's side and the word), and the track, knob and edge keep 3:1 against the
+  card in light and dark (WCAG 1.4.11); the text keeps AA.
+- One button (role switch, aria-checked, named "Lock schedule marks", 44 px), with a 3 px focus ring; a tap, Enter or
+  Space flips it and the redraw keeps the focus on it. The title is the same ("Locked: ... cannot be changed by a tap.
+  Tap to unlock." / "Unlocked: taps change .... Tap to lock."), and so are the taps it freezes and the storage
+  (localStorage `flight_watcher_lock`, "0" = Off, anything else or nothing = On; a pilot's copy its own key).
+- A refused tap says "Settings are locked: turn the Lock switch at the top left Off to change availability, trade or
+  drop marks." The Key's Day row says how the switch works.
+- On a phone (700 px or less) the switch starts the header's first line, so the month's arrows, title and Now stay
+  together on the next line (at 360 and 390 px the wider switch would otherwise split them); the Data age stamp
+  (1.7.12) takes the rest of the switch's line, at its right (cross-item review, below). A wide card keeps one line,
+  as before. Hover shading only with a mouse (no grey box left after a tap on a phone).
+- The pilot card has no lock; every copy of the schedule card (a second pilot's, the portal's) gets the switch.
+
+### Cross-item review fixes (Nov 18)
+
+The review of items 3 to 8, A and B together (1.7.12 to 1.7.18 on one branch) found five things one item's own review
+could not see. Each fix names the item it corrects; each has a test that failed before it (`tests/test_fw1718_xrev.py`).
+- **The wide schedule header still slid** (corrects item 3, 1.7.12, the Data age stamp; item B's switch did not change
+  it). Above 700 px the stamp had a 14em minimum, so a longer text pushed the month's arrows, title and Now left: 4
+  px at "2 h 1 min, very stale", 11 px at "2 h 10 min", 59 px at "over 1 h 5 min, Watcher offline", and back on each
+  whole hour, against 1.7.12's own promise that they never slide. The stamp is now one box of 21em at the header's right
+  whatever it says (every text, up to "over 23 h 59 min, Watcher offline", on one line in the usual fonts; a wider font
+  wraps inside the box instead of moving anything). The arrows, the month and Now sit 77 px further left than beside
+  a short stamp before, and stay there.
+- **The phone header took three lines** (item B, 1.7.18, with item 3): the switch alone, then the month, then the stamp
+  alone under Now, 86 px. The stamp now takes the rest of the switch's line, at its right (a long text, "Watcher
+  offline", wraps inside that box, under the switch's 44 px), so the header is two lines, 70 px, and the month's line
+  never moves as the stamp changes, at 360, 390 and 430 px. CSS order only: the switch, the arrows, the month and Now
+  keep their order for a screen reader and the keyboard (the stamp is not focusable).
+- **1.7.17's Pako edits were not written down** (corrects item 8, 1.7.17): the `pot_table` macro's Commutable chip and
+  the pot table's Key line had no "Pending on Pako" section (the macro text was only in a scratch file), and the
+  snapshot had no Key line. `ha/README.md` now has "Pending on Pako (1.7.17): Commutable chip in the pot table", after
+  the 1.7.15 one: the `comm_chip` macro, its call inside `pot_table`, the Key line, the custom templates reload and the
+  check (its template and the output it must give), the undo, all a step of the 1.7.17 go-live with Ryan's yes. The
+  snapshot's pot markdown card has the Key line after "CBA rest" (the pot card's own Key text), so the one snapshot
+  carries every pending edit: sha256 `e322dc0e...` (`6678f813...` is what Pako reads once the 1.7.12, 1.7.14 and 1.7.15
+  edits are applied; Pako's own `be03a0a4...` until then); `tests/test_fw171_r2.py` pins it with four sections.
+- **The pay figures cut marked swap ideas** (corrects item 6, 1.7.15): every marked idea carries `pay`, `pay_days`,
+  `ppd`, `for_pay`, `for_days`, `for_ppd`, `ppd_gain` and `auto` (about 120 bytes), so in a busy month of marks the
+  12 KB cap kept 19 marked ideas where 1.7.11 kept 24, and a marked trip whose ideas were all in that tail lost its
+  swap tag on the schedule card. Now, still over the cap once no automatic idea is left on the sensor, the marked ideas
+  are first 1.7.11's (no pay figures), so the cap keeps as many as 1.7.11 did (the six automatic counts, under 100
+  bytes, can cost one at most), then the figures go back on the first ones, the most soft time first, while that many
+  still fit; the rest read "-" for Pay and Per day on the Swap ideas table and the pot card, as an idea with no rate
+  does. A month that fits is unchanged: every idea keeps its figures. Pushes are unchanged (each `event/swap` carries
+  its figures). `tests/test_sensor_size.py`'s busy month now publishes the swap ideas through `swap_scan` (marked and
+  automatic ideas, priced) instead of by hand in the 1.7.11 shape, and fills `picker_log` so the pickers sensor
+  carries a When to hunt attribute near its 2500-byte cap (1.7.16): 7496 bytes, under the 8000 bar.
+- **The backstop never saw a draft** (corrects item 6, 1.7.15): `pub()` refuses an idea with `auto` true on
+  `event/swap` and `event/swap_test`, but the draft `swap_test` publishes is a new record (`submit.compose`) that had no
+  `auto` key, so only `event/swap` was guarded. The draft now carries the idea's flag (`auto: false` on a marked trip's
+  draft, on `event/swap_test` and in `sensor.<prefix>_swap_test_requests`), so the backstop holds on both topics.
+  `swap_test`'s own return is still what keeps an automatic idea from making a draft at all.
+- Tests: `tests/test_fw1718_xrev.py` (Chromium and Jinja2, synthetic states and made-up pairings): the wide header at
+  701, 820, 1024 and 1280 px and the phone header at 360, 390 and 430 px, light and dark, the HA copy and the portal's
+  pilot2 copy, at ten stamp texts from "3 min" to "over 10 d 23 h, Watcher offline" (the same pixels, one box, nothing
+  cut); the CSS in every copy; the 1.7.17 section and Key line, the macro rendered from the README as it says; the
+  busy month against 1.7.11's count (24 of 24, 2307cce gives the same) and a sweep of idea sizes; a month that fits
+  keeps every figure; the draft's flag and the backstop with swap_test's own return bypassed.
+  `tests/test_fw1715_auto_swap.py`'s cap test reads the pay order from the pushes.
+
+### For Ryan to confirm (shipped under "Ship it all", each his to undo)
+
+- **The Data age stamp's "1x"** (1.7.12): the Watcher's longest healthy cycle (the interval x 1.3 plus room for the
+  check), not the bare interval, which read amber on about half of a healthy Watcher's cycles. Say no and it goes back
+  to the bare interval (one constant in the shared block).
+- **Duty blocks over the trip Block** (1.7.13): when a trip's duty blocks add up to more than FLICA's trip Block (likely
+  deadhead legs, since `pot.parse_duties` sums every leg), Room counts the duty blocks as far.py does, so the card and
+  far.py agree exactly; the 100h cell still scales them down. Not seen on Ryan's live line. The other way is far.py and
+  recall.py using FLICA's Block.
+
+### Tests
+
+`tests/test_fw1718_ui.py` (Chromium, synthetic files and pairings, "pilot2"): A folded by default with the count and the
+line, opens and is remembered (another copy, a reload), Enter and Space with the focus kept, Refresh on the admin's
+card (ingress) and a user's (sensor) keeps it, the empty and error states in view, a pilot's copy under its own key,
+blocked storage, 390 px light and dark (no sideways scroll, AA text), the heading plain text while loading, on an error
+and with nothing on file (no button, aria-expanded, dangling aria-controls or arrow, Chromium's accessibility tree
+included) and a button again once a list comes, and the Watcher's count over a cut sensor list (a synthetic sensor, and
+120 synthetic files through watcher.cap_attrs). B: the switch reflects and toggles the lock
+(aria-checked, the knob's side, On / Off, the SVG, no emoji in any card), the title, the refused tap and the trade tap,
+Space and Enter with the focus ring, the stored value as before (and blocked storage), the Key, the portal's pilot2
+copy, and renders at 390 px and on an Android-like phone (360 x 780 at 3x), light and dark: on its own first line, the
+arrows, month and Now together, 44 px, AA text, 3:1 for the track, knob and edge. README: the On file fold and the
+lock switch.
+
 ## 1.7.17
 
 ### Commutable flag on pot trips
@@ -412,14 +540,15 @@ past 1x the normal interval and red past 2x." No FLICA page load, no new entity,
   ticks without a reload or a redraw, the Details view snapshot and its sha256. The clock card's HST check and the
   award line's check read the stamp's hover text now.
 
-### Review fixes (the meaning of "1x" waits for Ryan's yes)
+### Review fixes (the meaning of "1x": shipped under Ryan's "Ship it all", his to undo)
 
 The review ran the first build against the Watcher's real timing and found a healthy Watcher reading amber "stale" on
 about half of its normal cycles and nearly every hunt cycle, and a pilot held by his FLICA budget reading red "very
 stale" most of the time beside "Slowed.". `gap()` (watcher.py) waits the interval x 0.7 to 1.3 (`JITTER`), the wait
 starts when a check ends, and the next check takes time too (a crew index chunk: about 2 min in normal mode, 20 s
-hunting), so the bare interval is shorter than one healthy cycle. **This changes what "1x" means in Ryan's rule: it is
-built and tested, and needs his yes before it ships** (say no and the stamp goes back to the bare interval).
+hunting), so the bare interval is shorter than one healthy cycle. **This changes what "1x" means in Ryan's rule: it
+ships under his "Ship it all when ready fix all of these things" (Nov 17), flagged to him in 1.7.18; say no and the
+stamp goes back to the bare interval.**
 
 - **Thresholds** (the shared block): 1x and 2x of the Watcher's longest cycle between two good reads: the interval x
   1.3 plus room for the check (`FW_AGE_ROOM_S`: 3 min normal, 45 s hunting, which also covers a few seconds of a phone
