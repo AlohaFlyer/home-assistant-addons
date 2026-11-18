@@ -1,5 +1,84 @@
 # Changelog
 
+## 1.7.12
+
+### One data age stamp in place of the two clocks
+
+Ryan, Nov 17 (approved): "Replace the two clocks ("updated" and "Last check") with one "data age" stamp. Turn it amber
+past 1x the normal interval and red past 2x." No FLICA page load, no new entity, no contract change.
+
+- **The stamp**: "Data age 12 min", the time since the Watcher's last good read (`sensor.<prefix>_last_check`, which a
+  check sets only when it succeeds): seconds under a minute, then minutes, hours and minutes, days and hours. Amber
+  with the word "stale" past 1x the check interval (`number.<prefix>_normal_check_every`, minutes; while hunting, the
+  switch on or the state `hunting`, `number.<prefix>_hunt_check_every`, seconds), red with "very stale" past 2x, plain
+  otherwise. The word goes with the colour, so the colour is never the only cue (colour-blind users, screen readers).
+  A last check time that is unknown, missing or not a time reads "Data age unknown" with no colour (unavailable: see
+  the review below); an interval that is unknown or 0 leaves the age shown with no colour. Amber `#8a5300` and red `#c62828` on a light card,
+  `#ffb74d` and `#ef9a9a` on a dark one (Home Assistant's dark mode, the portal's from the device), WCAG AA on both.
+  The code is one block (`// ---- shared data age ...`) the clock and schedule cards carry byte for byte (the cards load
+  one file each, so a shared file would change the portal's card bundle); `tests/test_fw1712_data_age.py` keeps the
+  copies equal.
+- **Clock card**: "Last HH:MM:SS HST (N ago)" gives way to the stamp; "Next" stays. The last good read's HST time is
+  in its hover text with the thresholds ("Last good read 01:27:00 HST. Stale past 10 min 48 s, very stale past 21 min
+  36 s: ...", the review below). It ticks with the card's 1 s redraw. The Stuck state, its Re-arm and its card colour
+  are as before (with the interval known, Stuck reads red on the stamp too: very stale comes no later than its limit).
+- **Clock card, `mode: age`**: the stamp alone (no controls), for the Details view.
+- **Schedule card**: the header's "updated ..." gives way to the same stamp. FLICA's own schedule time (the schedule
+  sensor's `updated`) is only in the stamp's hover text, "FLICA updated Nov 9, 2026 09:54:34. Data age: ...". The
+  stamp ticks each second by itself (that one span; the card still redraws only when its entities change), and stops
+  off the page.
+- **Details view** (`ha/dashboard_flight_watcher.json`): the "Last check" tile becomes
+  `{"grid_options": {"columns": 6}, "mode": "age", "type": "custom:flight-watcher-clock-card"}` in its place. Pending
+  on Pako (`ha/README.md`): applied through the HA connector right after 1.7.12 is live, with Ryan's yes.
+- **A pilot's portal**: his clock and schedule cards (the same files, his entity ids) show the same stamp, from the
+  entities the portal already exports (state, last check, the two intervals, hunt mode). Nothing new is exported; the
+  portal's tabs and card bundle are as they were.
+- The pot card's "Pot last read ..." note (after 15 min) is unchanged.
+- Tests: `tests/test_fw1712_data_age.py` (synthetic states): the age text and both thresholds in normal and hunt mode
+  (1x and 2x exactly are not past them), unknown or missing values (no colour, "Data age unknown"), the clock card and
+  the schedule header in Chromium at 390 px light and dark (the portal's theme and Home Assistant's) with WCAG AA, the
+  ticks without a reload or a redraw, the Details view snapshot and its sha256. The clock card's HST check and the
+  award line's check read the stamp's hover text now.
+
+### Review fixes (the meaning of "1x" waits for Ryan's yes)
+
+The review ran the first build against the Watcher's real timing and found a healthy Watcher reading amber "stale" on
+about half of its normal cycles and nearly every hunt cycle, and a pilot held by his FLICA budget reading red "very
+stale" most of the time beside "Slowed.". `gap()` (watcher.py) waits the interval x 0.7 to 1.3 (`JITTER`), the wait
+starts when a check ends, and the next check takes time too (a crew index chunk: about 2 min in normal mode, 20 s
+hunting), so the bare interval is shorter than one healthy cycle. **This changes what "1x" means in Ryan's rule: it is
+built and tested, and needs his yes before it ships** (say no and the stamp goes back to the bare interval).
+
+- **Thresholds** (the shared block): 1x and 2x of the Watcher's longest cycle between two good reads: the interval x
+  1.3 plus room for the check (`FW_AGE_ROOM_S`: 3 min normal, 45 s hunting, which also covers a few seconds of a phone
+  clock running fast). Normal 6 min: stale past 10 min 48 s, very stale past 21 min 36 s; hunt 40 s: 1 min 37 s and 3
+  min 14 s; hunt 5 s: 52 s and 1 min 44 s. On a pilot whose budget holds his checks apart (the state note's "at least
+  N s apart"), that pace is the interval. Very stale comes no later than the Watcher's own Stuck limit
+  (`stuck_after_s`), so "Stuck." always has a red stamp. The hover text says which cycle it used.
+- **Counted from later when the Watcher's wait started later**: after a change of hunt or of the interval in use (the
+  entity's `last_changed` after the read: the wait starts over, and a next check planned before the change still
+  counts, so Hunt pressed with a 3 min old read no longer turns red at once), and from the next check while the FLICA
+  budget or host limit holds it (the gate's note).
+- **Watcher offline**: a last check that is `unavailable` (the app is down; every entity has its availability topic)
+  reads red "Data age over 12 min, Watcher offline" (from the entity's `last_changed`, "unknown" under a minute), not
+  the grey "Data age unknown" of a Watcher that never read.
+- **Hover text**: the last good read in HST carries its day when it is not today's ("Last good read Nov 9 23:30:00
+  HST."), and the schedule card's has it too. A tap, Enter or Space on the clock card's stamp (both modes) opens it in
+  a box ("tap to close"), as the schedule card already did for its titles: phones have no hover.
+- **Layout**: the stamp keeps one weight (600) at every level and a 14em minimum width (the clock card's Next 17em).
+  On a phone the clock card's stamp starts its own line and Next the one after it, so the card's height and its
+  buttons no longer jump 22 px as the age ticks; the schedule header's stamp sits at its right (its own line on a
+  phone), so the month arrows and Now stay put at every width. Only a longer state text ("Watcher offline") may move
+  them, once.
+- **Details tile** (`mode: age`): a 56 px tile like the ones beside it (`getGridOptions`: 6 columns, 1 row), "Data age"
+  over its value, never wrapped (an ellipsis); a mode change on the same card element (HA's card editor) builds the
+  card again instead of throwing every second or freezing.
+- Tests (`tests/test_fw1712_data_age.py`): healthy cycles of jitter and check time (normal 1, 6 and 10 min, hunt 5 and
+  40 s, a held pilot) show no colour; the held pace, the gate, a mode change, a phone 8 s fast, the Stuck limit, the
+  offline Watcher, the day in the hover text, the tap box, the clock card's height from 360 to 1024 px, the header's
+  month controls from 390 to 1280 px, the 56 px tile at 166 and 183 px and the mode change, in Chromium light and
+  dark.
+
 ## 1.7.11
 
 Ryan's ticket run of Nov 17, 2026. FW-0075 is Ryan's; FW-0076 and FW-0078 are James's, built on Ryan's yes naming

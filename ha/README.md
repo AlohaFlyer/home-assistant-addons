@@ -4,6 +4,25 @@ Copies of the Flight Watcher pieces that live in Home Assistant on Pako HI rathe
 review and history (FW-0036). Nothing in this folder is loaded by Home Assistant or by the app, and the app store
 ignores it (no `config.yaml`).
 
+## Pending on Pako (1.7.12): the Details view's data age stamp
+
+Ryan, Nov 17 (approved for 1.7.12): "Replace the two clocks ("updated" and "Last check") with one "data age" stamp. Turn
+it amber past 1x the normal interval and red past 2x." `dashboard_flight_watcher.json`, view `details`, Health section:
+the tile named "Last check" (`sensor.flight_watcher_last_check`, half width) becomes `{"grid_options": {"columns": 6},
+"mode": "age", "type": "custom:flight-watcher-clock-card"}` in its place (after "FLICA session", before "App version";
+keys sorted, as HA stores a card the connector writes): the clock card's "Data age 12 min" stamp alone (a 56 px tile,
+one grid row), amber with "stale" past 1x the Watcher's longest check cycle (normal, or hunt while hunting), red with
+"very stale" past 2x (the review's meaning of "1x", pending Ryan's yes: `flight_watcher/CHANGELOG.md` 1.7.12), "Data age
+unknown" with no colour when the last check time is not known, red "Watcher offline" when the app is down. The clock
+card's age mode exists only from Flight Watcher 1.7.12,
+so the live dashboard is changed only at release time, with Ryan's yes: Claude applies this one edit through the HA
+connector right after 1.7.12 is live (a JSON patch on that card, guarded by a test of its neighbours), then checks by
+sha256 of the redacted text as in Refresh below and drops this section. Until then the snapshot is one edit ahead of
+Pako: the snapshot's sha256 is `7a3b3903c6d9bba5d59d0f059642772852df3ad1fd56a6cecc574c64173da530`, Pako's dashboard is
+still `be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435` (read 2026-11-14, below). Undo: put the tile
+back (`{"entity": "sensor.flight_watcher_last_check", "grid_options": {"columns": 6}, "name": "Last check", "type":
+"tile"}`, git history).
+
 ## Applied on Pako 2026-11-13 about 05:45 HST (1.7.2, FW-0066): "Flight Watcher pilot upload"
 
 `automations_flight_watcher.yaml` ends with **Flight Watcher pilot upload** (id `1794500000201`), after the van
@@ -101,10 +120,10 @@ only) by sha256 of the redacted text as in Refresh below:
 The 23 automations here match Pako's 23 Flight Watcher automations in file order, sha256 of the redacted text of the
 23 items `0a7ff0d9f8aac055fef0b2a41350e9cb657896bbca1e04759bc48ce543dcc8c4` (read 2026-11-13 06:2x HST, after 1.7.2 went
 live, the pilot upload automation was added, the "Ready to update" push wording changed and the temporary van one was
-deleted). The dashboard snapshot matches Pako's `/config/.storage/lovelace.flight_watcher`, sha256
+deleted). The dashboard snapshot matched Pako's `/config/.storage/lovelace.flight_watcher`, sha256
 `be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435` (5 views: Watcher, Working Flight, Details,
 Recall/O75, Settings; read 2026-11-14 about 17:20 HST, with the van alert settings tiles, the Working Flight view, the
-pilot lookup row and the Pilots cards below).
+pilot lookup row and the Pilots cards below), until the pending 1.7.12 Details edit above.
 
 **Changed on Pako 2026-11-14 about 17:15 HST (1.7.8, Ryan's yes "all of it"):** once 1.7.8 was live, Claude put the
 Pilots card on the dashboard through the HA connector (a JSON patch guarded by tests of the neighbouring cards): the
