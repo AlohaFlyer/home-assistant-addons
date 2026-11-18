@@ -10,9 +10,11 @@ Ryan, Nov 17 (approved for 1.7.12): "Replace the two clocks ("updated" and "Last
 it amber past 1x the normal interval and red past 2x." `dashboard_flight_watcher.json`, view `details`, Health section:
 the tile named "Last check" (`sensor.flight_watcher_last_check`, half width) becomes `{"grid_options": {"columns": 6},
 "mode": "age", "type": "custom:flight-watcher-clock-card"}` in its place (after "FLICA session", before "App version";
-keys sorted, as HA stores a card the connector writes): the clock card's "Data age 12 min" stamp alone, amber with
-"stale" past 1x the check interval (normal, or hunt while hunting), red with "very stale" past 2x, "Data age unknown"
-with no colour when the last check time is not known. The clock card's age mode exists only from Flight Watcher 1.7.12,
+keys sorted, as HA stores a card the connector writes): the clock card's "Data age 12 min" stamp alone (a 56 px tile,
+one grid row), amber with "stale" past 1x the Watcher's longest check cycle (normal, or hunt while hunting), red with
+"very stale" past 2x (the review's meaning of "1x", pending Ryan's yes: `flight_watcher/CHANGELOG.md` 1.7.12), "Data age
+unknown" with no colour when the last check time is not known, red "Watcher offline" when the app is down. The clock
+card's age mode exists only from Flight Watcher 1.7.12,
 so the live dashboard is changed only at release time, with Ryan's yes: Claude applies this one edit through the HA
 connector right after 1.7.12 is live (a JSON patch on that card, guarded by a test of its neighbours), then checks by
 sha256 of the redacted text as in Refresh below and drops this section. Until then the snapshot is one edit ahead of

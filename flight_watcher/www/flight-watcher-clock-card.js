@@ -36,7 +36,16 @@
 // "Data age unknown" with no colour when the last check time is not known; its hover text has the last good read in
 // HST. It ticks with the card's 1 s redraw. With mode: age (the Details view, in place of the "Last check" tile) the
 // card is that stamp alone, no controls.
+// 1.7.12 review: the thresholds are 1x and 2x of the Watcher's own longest cycle (the shared block says how; pending
+// Ryan's yes on that meaning of "1x"), and "Watcher offline" in red when the app is down. A tap (or Enter) on the stamp
+// shows its hover text in a box (phones have no hover): the last good read in HST, with its day when that is not
+// today, and the thresholds. On a phone the stamp starts its own line and Next the one after it, and the stamp (and
+// Next) keep one width and the stamp one weight at every level, so the card and its buttons never move as time ticks. mode: age is a tile
+// (56 px, one grid row, "Data age" over its value, never wrapped), and a mode change on the same card builds it again.
 const FW_PORTAL = false;
+const FW_AGE_IDS = { last: "sensor.flight_watcher_last_check", state: "sensor.flight_watcher_state",
+  next: "sensor.flight_watcher_next_check", hunt: "switch.flight_watcher_hunt_mode",
+  normal: "number.flight_watcher_normal_check_every", huntEvery: "number.flight_watcher_hunt_check_every" };
 const FC_HUNT = [5, 10, 15, 20, 30, 45, 60, 90];  // seconds (number.flight_watcher_hunt_check_every 5-90)
 const FC_NORM = [1, 2, 3, 5, 6, 10, 15, 20, 30, 45, 60, 90];  // minutes (number.flight_watcher_normal_check_every 1-90)
 const FC_PORTAL_MAX = { hunt: 90, normal: 90 };  // portal contract 1 revision 2 freq_limits (hunt_s 5-90, normal_min 1-90)
@@ -44,14 +53,35 @@ const FC_DEFAULT = { hunt: [5, 90], normal: [1, 90] };  // an entity with no min
 const FC_WANT_MS = 20000;  // 1.7.1 (F#4): how long a picked interval waits for the state to show it
 const FC_HELD = /^(Hunting every \d+ s|Checking every \d+ min) is held to \d+ FLICA loads an hour/;  // the Watcher's held_note
 const FC_TIME = new Intl.DateTimeFormat("en-US", { timeZone: "Pacific/Honolulu", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+// 1.7.12 review: the box a tap on the data age stamp opens (its hover text), as the schedule card's for its titles
+const FC_INFO_CSS = `.info{display:none;position:fixed;left:8px;right:8px;bottom:14px;z-index:9;margin:0 auto;max-width:460px;font-size:12px;line-height:1.4;font-weight:400;padding:8px 10px;border-radius:8px;background:var(--secondary-background-color,#e5e5e5);color:var(--primary-text-color);box-shadow:0 4px 18px rgba(0,0,0,.35);cursor:pointer;white-space:normal;text-align:left}
+        .info::after{content:"tap to close";display:block;margin-top:6px;font-size:10px;color:var(--secondary-text-color);text-align:right}
+        .ag{cursor:pointer;border-radius:4px}.ag:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:2px}`;
 // ---- shared data age: keep identical in every card that holds it (tests/test_fw1712_data_age.py) ----
 // 1.7.12 (Nov 17: "Replace the two clocks ("updated" and "Last check") with one "data age" stamp. Turn it amber
 // past 1x the normal interval and red past 2x."): the time since the Watcher's last good read (its last check time,
-// which a check sets only when it succeeds). Amber past 1x the check interval (the normal one in minutes, or the hunt
-// one in seconds while hunting), red past 2x, plain otherwise; the word "stale" or "very stale" goes with the colour,
-// so the colour is never the only cue (colour-blind users, screen readers). A read time that is unknown, missing or not
-// a time is "Data age unknown" with no colour; an interval that is unknown or 0 leaves the age shown with no colour.
-// Each card passes its own entities' states (no entity ids here: a pilot's copy rewrites them).
+// which a check sets only when it succeeds), with the word "stale" or "very stale" beside the colour, so the colour is
+// never the only cue (colour-blind users, screen readers).
+// 1.7.12 review (its meaning of "1x" is pending a yes): 1x and 2x of the Watcher's own longest cycle between two
+// good reads, not of the bare setting, so a healthy Watcher never reads stale. Each wait is the interval x 0.7 to 1.3
+// (watcher.py JITTER), starts when a check ends, and the next check takes time too (a crew index chunk: about 2 min in
+// normal mode, 20 s hunting). The cycle is the interval (on a pilot the pace his FLICA budget holds him to, when the
+// state note says "at least N s apart" and that is longer) x 1.3, plus FW_AGE_ROOM_S for the check, which also covers a
+// few seconds of a phone's clock running fast. It counts from the last good read, or later: from a change of hunt or
+// of the interval after that read (the Watcher's wait starts over then; a next check it planned before the change
+// counts too), and from the next check while the FLICA budget or host limit holds it (the gate's note). Very stale
+// no later than the Watcher's own Stuck limit (watcher.py stuck_after_s: 10 min hunting, else 2.5x the normal interval
+// and at least 30 min), so the clock card's "Stuck." always comes with a red stamp. "Data age
+// unknown" with no colour when the read time is unknown, missing or not a time; red "Watcher offline" when the entity
+// is unavailable (the app is down: "over N" from the moment it went), so the stamp warns when the data is stalest. An
+// interval that is unknown or 0 shows the age with no colour. Each card passes its own entity ids (fwAgeFrom): none
+// here, a pilot's copy rewrites them.
+const FW_AGE_JITTER = 0.3;
+const FW_AGE_ROOM_S = { hunt: 45, normal: 180 };
+const FW_AGE_PACE = / is held to \d+ FLICA loads an hour: checks wait for the budget, at least (\d+) s apart/;
+const FW_AGE_GATE = /^(?:(?:Hunting every \d+ s|Checking every \d+ min) is held to \d+ FLICA loads an hour: checks wait for the budget \(next at |FLICA (?:budget|host limit): )/;
+const FW_AGE_HST = new Intl.DateTimeFormat("en-US", { timeZone: "Pacific/Honolulu", year: "numeric", month: "short",
+  day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
 function fwAgeDur(sec) {
   const s = Math.max(0, Math.floor(sec)), m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
   if (s < 60) return `${s} s`;
@@ -59,35 +89,92 @@ function fwAgeDur(sec) {
   if (h < 24) return `${h} h` + (m % 60 ? ` ${m % 60} min` : "");
   return `${d} d` + (h % 24 ? ` ${h % 24} h` : "");
 }
-function fwDataAge(last, hunting, normalMin, huntSec, now) {
-  const mode = hunting ? "hunt" : "normal", unit = hunting ? "s" : "min";
-  const per = parseFloat(hunting ? huntSec : normalMin), iv = hunting ? per : per * 60;
-  const known = isFinite(iv) && iv > 0, one = Math.round(per * 10) / 10, two = Math.round(per * 20) / 10;
-  const rule = known
-    ? `Stale past ${one} ${unit}, very stale past ${two} ${unit}: 1x and 2x the ${mode} check interval.`
+function fwAgeSpan(sec) {  // a threshold in the hover text, to the second: "10 min 48 s"
+  const s = Math.max(0, Math.round(sec)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  return [h ? `${h} h` : "", m ? `${m} min` : "", r || !(h || m) ? `${r} s` : ""].filter(Boolean).join(" ");
+}
+function fwAgeWhen(t, now) {  // HST, with the day when it is not today's (HST): "01:27:00 HST", "Nov 9 23:30:00 HST"
+  const p = (d) => Object.fromEntries(FW_AGE_HST.formatToParts(new Date(d)).map((x) => [x.type, x.value]));
+  const a = p(t), b = p(now), day = a.year !== b.year ? `${a.month} ${a.day}, ${a.year} ` : a.month !== b.month || a.day !== b.day ? `${a.month} ${a.day} ` : "";
+  return `${day}${a.hour}:${a.minute}:${a.second} HST`;
+}
+function fwAgeMs(x) { const v = Date.parse(x == null ? "" : String(x)); return isNaN(v) ? NaN : v; }
+function fwDataAge(last, hunting, normalMin, huntSec, now, more) {
+  const o = more || {}, mode = hunting ? "hunt" : "normal", unit = hunting ? "s" : "min";
+  if (last === "unavailable") {  // the app is down (MQTT availability): no read comes until it is back
+    const went = fwAgeMs(o.lastChanged), gone = (now - went) / 1000;
+    return { sec: null, t: null, level: "red", word: "Watcher offline",
+      text: `Data age ${gone >= 60 ? `over ${fwAgeDur(gone)}` : "unknown"}, Watcher offline`,
+      read: isNaN(went) ? "The Watcher is offline." : `The Watcher is offline since ${fwAgeWhen(went, now)}.`,
+      rule: "No read comes until the Watcher app answers again." };
+  }
+  const per = parseFloat(hunting ? huntSec : normalMin), set = hunting ? per : per * 60;
+  const known = isFinite(set) && set > 0, note = String(o.note || ""), pm = FW_AGE_PACE.exec(note);
+  const pace = pm ? Number(pm[1]) : 0, room = FW_AGE_ROOM_S[mode];
+  const cyc = Math.ceil(+(Math.max(set, pace) * (1 + FW_AGE_JITTER)).toFixed(3)) + room;  // whole seconds
+  const why = (pace > set ? `the ${pace} s the FLICA budget holds the checks apart` : `the ${mode} check interval `
+    + `(${Math.round(per * 10) / 10} ${unit})`) + ` plus its 30 % jitter, and ${fwAgeSpan(room)} for the check`;
+  const stuck = hunting ? 600 : Math.max(1800, per * 150);  // watcher.py stuck_after_s
+  const rule = (a, b, x) => known ? `Stale past ${fwAgeSpan(a)}, very stale past ${fwAgeSpan(b)}: 1x and 2x the Watcher's `
+    + `longest ${mode} cycle, ${why}${b < a + cyc ? ", or its Stuck limit when that comes first" : ""}.${x || ""}`
     : `No ${mode} check interval is known, so the age is not judged.`;
-  const t = Date.parse(last == null ? "" : String(last));
-  if (isNaN(t)) return { sec: null, t: null, level: "", word: "", text: "Data age unknown", rule };
-  const sec = Math.max(0, (now - t) / 1000);
-  const level = !known ? "" : sec > 2 * iv ? "red" : sec > iv ? "amber" : "";
+  const t = fwAgeMs(last);
+  if (isNaN(t)) return { sec: null, t: null, level: "", word: "", text: "Data age unknown", read: "No good read on file.", rule: rule(cyc, Math.min(2 * cyc, stuck)) };
+  const sec = Math.max(0, (now - t) / 1000), nx = fwAgeMs(o.next);
+  const ch = Math.max(-Infinity, ...(o.changed || []).map(fwAgeMs).filter((v) => !isNaN(v)));
+  let due = t + cyc * 1000, from = "";
+  if (ch > t) {  // hunt or the interval changed after the read: the wait starts over, a next check planned before counts
+    const d = Math.max(ch + cyc * 1000, nx > t ? nx + room * 1000 : -Infinity);
+    if (d > due) { due = d; from = " Counted from the hunt or interval change after that read."; }
+  }
+  if (FW_AGE_GATE.test(note) && nx > t && nx + room * 1000 > due) {
+    due = nx + room * 1000; from = ` The FLICA budget or host limit holds the next check until ${fwAgeWhen(nx, now)}: counted from then.`;
+  }
+  const amber = (due - t) / 1000, red = from ? amber + cyc : Math.min(amber + cyc, stuck);
+  const level = !known ? "" : sec > red ? "red" : sec > amber ? "amber" : "";
   const word = level === "red" ? "very stale" : level === "amber" ? "stale" : "";
-  return { sec, t, level, word, text: `Data age ${fwAgeDur(sec)}` + (word ? `, ${word}` : ""), rule };
+  return { sec, t, level, word, text: `Data age ${fwAgeDur(sec)}` + (word ? `, ${word}` : ""),
+    read: `Last good read ${fwAgeWhen(t, now)}.`, rule: rule(amber, red, from) };
+}
+// the stamp from a card's own entities (ids: last, state, next, hunt, normal, huntEvery); hunting by the switch or the
+// Watcher's state; the interval change that counts is the one in use (hunt's while hunting)
+function fwAgeFrom(states, ids, now) {
+  const e = (k) => (states && states[ids[k]]) || {};
+  const hunting = e("hunt").state === "on" || e("state").state === "hunting";
+  return fwDataAge(e("last").state, hunting, e("normal").state, e("huntEvery").state, now, {
+    note: (e("state").attributes || {}).note, next: e("next").state, lastChanged: e("last").last_changed,
+    changed: [e("hunt").last_changed, e(hunting ? "huntEvery" : "normal").last_changed] });
 }
 // ---- end shared data age ----
 class FlightWatcherClockCard extends HTMLElement {
-  setConfig(c) { this.c = c || {}; }
+  setConfig(c) {
+    this.c = c || {};
+    // 1.7.12 review: a mode change on the same element (Home Assistant's card editor) builds the card again
+    if (this._root && this._built !== (this._ageOnly() ? "age" : "full")) {
+      clearInterval(this._tick); this._tick = null;
+      this._root.innerHTML = ""; this._root = null;
+      if (this._h) this.hass = this._h;
+    }
+  }
   set hass(h) {
     // review r4: the dark colors follow Home Assistant's own dark mode (hass.themes.darkMode, which the portal sets from the device), not the phone's: a profile forced to Light on a phone in dark mode kept the light-on-dark reds
     if (typeof this.toggleAttribute === "function") this.toggleAttribute("dark", !!(h && h.themes && typeof h.themes.darkMode === "boolean" ? h.themes.darkMode : typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches));
     this._h = h;
     if (!this._root && this._ageOnly()) {  // 1.7.12: the stamp alone (mode: age), ticking each second
+      // review: a tile, 56 px like the tiles beside it, "Data age" over its value, never wrapped (an ellipsis)
       this._root = this.shadowRoot || this.attachShadow({ mode: "open" });
       this._root.innerHTML = `<style>
         :host([dark]){--fw-err:#ef9a9a;--fw-warn:#ffb74d}
-        ha-card{padding:12px 16px;display:flex;align-items:center;min-height:24px;font-size:14px;line-height:1.4}
-        .ag{font-weight:600;font-variant-numeric:tabular-nums}
-        .ag[data-age="amber"]{color:var(--fw-warn,#8a5300);font-weight:700}.ag[data-age="red"]{color:var(--fw-err,#c62828);font-weight:700}
-      </style><ha-card><span class="ag" id="age" data-age="">Data age unknown</span></ha-card>`;
+        ha-card{box-sizing:border-box;height:56px;padding:0 12px;display:flex;flex-direction:column;justify-content:center;overflow:hidden}
+        .ag{display:block;min-width:0}
+        .lb,.v{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .lb{font-size:14px;line-height:20px;font-weight:500;color:var(--primary-text-color)}
+        .v{font-size:12px;line-height:16px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--secondary-text-color)}
+        .ag[data-age="amber"] .v{color:var(--fw-warn,#8a5300)}.ag[data-age="red"] .v{color:var(--fw-err,#c62828)}
+        ${FC_INFO_CSS}
+      </style><ha-card><span class="ag" id="age" data-age="" role="button" tabindex="0" aria-expanded="false"><span class="lb">Data age </span><span class="v" id="agv">unknown</span></span></ha-card><div class="info" id="agi"></div>`;
+      this._built = "age"; this._ageOpen = false;
+      this._ageWire();
       this._tick = setInterval(() => this._render(), 1000);
     }
     if (!this._root) {
@@ -99,8 +186,9 @@ class FlightWatcherClockCard extends HTMLElement {
         .st{font-weight:700}.m{color:var(--primary-text-color)}
         .k{color:var(--secondary-text-color)}.t{font-weight:600;font-variant-numeric:tabular-nums}
         .sep{color:var(--divider-color)}
-        .ag{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
-        .ag[data-age="amber"]{color:var(--fw-warn,#8a5300);font-weight:700}.ag[data-age="red"]{color:var(--fw-err,#c62828);font-weight:700}
+        .ag{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;min-width:14em}.nx{min-width:17em}
+        .ag[data-age="amber"]{color:var(--fw-warn,#8a5300)}.ag[data-age="red"]{color:var(--fw-err,#c62828)}
+        ${FC_INFO_CSS}
         .ctl{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
         button{font:inherit;font-size:12px;padding:3px 9px;border-radius:14px;border:1px solid var(--divider-color);background:var(--card-background-color);color:var(--primary-text-color);cursor:pointer;white-space:nowrap}
         button:hover{background:rgba(0,0,0,.05)}
@@ -112,11 +200,11 @@ class FlightWatcherClockCard extends HTMLElement {
         select{font:inherit;font-size:12px;padding:2px 2px;border-radius:6px;border:1px solid var(--divider-color);background:var(--card-background-color);color:var(--primary-text-color)}
         .iv{display:inline-flex;align-items:center;gap:3px;font-size:12px;color:var(--secondary-text-color)}
         .ivt{font-weight:600;color:var(--primary-text-color)}
-        @media (max-width:700px){ha-card{font-size:12px;gap:6px}.ctl{margin-left:0;width:100%}
+        @media (max-width:700px){ha-card{font-size:12px;gap:6px}.ctl{margin-left:0;width:100%}.ag{flex-basis:100%}.s1,.s2{display:none}
           button{min-height:44px;min-width:44px;padding:6px 12px;font-size:13px}select{min-height:44px;min-width:56px;font-size:16px}}
       </style><ha-card><span class="st" id="st"></span><span class="m" id="msg"></span>
-      <span class="sep" aria-hidden="true">|</span><span class="ag" id="age" data-age="">Data age unknown</span>
-      <span class="sep" aria-hidden="true">|</span><span class="k">Next</span> <span class="t" id="nt">-</span> <span class="k" id="na"></span>
+      <span class="sep s1" aria-hidden="true">|</span><span class="ag" id="age" data-age="" role="button" tabindex="0" aria-expanded="false">Data age unknown</span>
+      <span class="sep s2" aria-hidden="true">|</span><span class="nx"><span class="k">Next</span> <span class="t" id="nt">-</span> <span class="k" id="na"></span></span>
       <span class="ctl">
         <button class="chk" id="chk" title="Read the pot right away">&#8635; Check now</button>
         <button id="hunt" title="Hunt: check at hunt speed; off = normal speed">&#127939; Hunt</button>
@@ -124,7 +212,9 @@ class FlightWatcherClockCard extends HTMLElement {
         <span class="iv" title="Normal interval when Hunt is off (each wait varies by 30 %)">normal <select id="ns"></select><b class="ivt" id="nst"></b> min</span>
         <button class="pz" id="pz" title="Pause only if you will be in FLICA 30+ min; for a quick look just log in, the Watcher steps aside for 30 min">&#10074;&#10074; Pause</button>
         <button class="rearm" id="rearm" title="Logs into FLICA once and resumes" style="display:none">&#8634; Re-arm</button>
-      </span></ha-card>`;
+      </span></ha-card><div class="info" id="agi"></div>`;
+      this._built = "full"; this._ageOpen = false;
+      this._ageWire();
       const $ = (i) => this._root.getElementById(i);
       $("chk").addEventListener("click", () => this._h.callService("button", "press", { entity_id: "button.flight_watcher_check_now" }));
       $("hunt").addEventListener("click", () => this._h.callService("switch", "toggle", { entity_id: "switch.flight_watcher_hunt_mode" }));
@@ -138,17 +228,34 @@ class FlightWatcherClockCard extends HTMLElement {
   }
   disconnectedCallback() { clearInterval(this._tick); this._root = null; }
   _ageOnly() { return !!(this.c && this.c.mode === "age"); }
-  // 1.7.12: the data age stamp, from this card's own entities; hunting by the switch or the Watcher's state
+  // 1.7.12 review: mode: age is one row of a sections view (56 px, as the tiles beside it), half width unless set
+  getGridOptions() { return this._ageOnly() ? { columns: 6, rows: 1, min_rows: 1 } : {}; }
+  // 1.7.12: the data age stamp, from this card's own entities (the shared block's fwAgeFrom)
   _stamp() {
-    const el = this._root.getElementById("age");
-    const st = this._st("sensor.flight_watcher_state"), last = this._st("sensor.flight_watcher_last_check");
-    const hunting = this._st("switch.flight_watcher_hunt_mode") === "on" || st === "hunting";
-    const a = fwDataAge(last, hunting, this._st("number.flight_watcher_normal_check_every"),
-      this._st("number.flight_watcher_hunt_check_every"), Date.now());
-    const title = (a.t == null ? "No good read on file." : `Last good read ${this._time(new Date(a.t))} HST.`) + " " + a.rule;
-    if (el.textContent !== a.text) el.textContent = a.text;
+    const el = this._root.getElementById("age"), v = this._root.getElementById("agv");
+    const a = fwAgeFrom(this._h && this._h.states, FW_AGE_IDS, Date.now()), title = `${a.read} ${a.rule}`;
+    if (v) { const val = a.text.replace(/^Data age /, ""); if (v.textContent !== val) v.textContent = val; }  // mode: age
+    else if (el.textContent !== a.text) el.textContent = a.text;
     if (el.dataset.age !== a.level) el.dataset.age = a.level;
     if (el.title !== title) el.title = title;
+    if (this._ageOpen) this._ageBox();
+  }
+  // 1.7.12 review: a tap, Enter or Space on the stamp opens its hover text in a box (no hover on a phone): the last
+  // good read in HST and the thresholds; a tap on the box, another on the stamp or Esc closes it
+  _ageWire() {
+    const el = this._root.getElementById("age"), box = this._root.getElementById("agi");
+    const flip = (on) => { this._ageOpen = on; this._ageBox(); };
+    el.addEventListener("click", () => flip(!this._ageOpen));
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); flip(!this._ageOpen); } else if (e.key === "Escape") flip(false);
+    });
+    box.addEventListener("click", () => flip(false));
+  }
+  _ageBox() {
+    const el = this._root.getElementById("age"), box = this._root.getElementById("agi"), on = !!this._ageOpen;
+    if (on && box.textContent !== el.title) box.textContent = el.title;
+    if (box.style.display !== (on ? "block" : "")) box.style.display = on ? "block" : "";
+    if (el.getAttribute("aria-expanded") !== String(on)) el.setAttribute("aria-expanded", String(on));
   }
   _st(id) { const s = this._h && this._h.states[id]; return s ? s.state : "unavailable"; }
   _attr(id, a) { const s = this._h && this._h.states[id]; return s && s.attributes ? s.attributes[a] : undefined; }
@@ -206,7 +313,7 @@ class FlightWatcherClockCard extends HTMLElement {
   _render() {
     if (!this._root || !this._h) return;
     this._stamp();
-    if (this._ageOnly()) return;
+    if (this._built === "age") return;
     const $ = (i) => this._root.getElementById(i), now = Date.now();
     const card = this._root.querySelector("ha-card");
     const lc = Date.parse(this._st("sensor.flight_watcher_last_check"));
