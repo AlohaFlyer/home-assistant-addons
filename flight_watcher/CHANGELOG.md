@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.7.13
+
+### FAR 117 columns with units and headroom
+
+Ryan, Nov 17: "Give FAR-30/7, FAR-100/672 and Room real headers with units, and show headroom against each limit (e.g.
+"100h/672h: 10:57 left"). Explain the Room column in the Key." The Schedule card only: wording and display, the hours
+are figured as before (far.py, the pot and finds cards unchanged).
+- Headers `30h in 7d`, `100h in 672h` and `Room to 100h` (one line each at 390 px; above 700 px the last two take two
+  lines and the FAR cells pad 4 px a side, so the grid is within about 15 px of 1.7.11's width and a laptop-sized card
+  fits it again); each title names its rule: FAR 117.25(b) (30 consecutive hours free from all duty in the 168 h before
+  a report) and FAR 117.23(b)(1) (at most 100 flight hours in any 672 consecutive hours).
+- `100h in 672h` is what is left in the 672 h ending 24:00 that day (`10:57 left`; its title `100h/672h: 10:57 left.
+  89:03 block flown or scheduled in the 672 h (28 days) ending 24:00 ...`); the block is rounded to the minute once,
+  so a cell and its title always add up to 100:00. `Room to 100h` is what is left in the busiest of the 672 h windows
+  ending 24:00 HST that hold the day, back and forward; the header, title and Key say only those windows are tried (one
+  ending mid-day can hold more, so the room can be less: a guide, not a legality check). Both read red `0:00 left` at
+  the limit and red `1:20 over` past it, so the word says it, never the colour alone; `~` in front when a window reaches
+  past the schedule on file (`~10:57 left`).
+- `30h in 7d` words today's states with units: `✓ 36h 11/05` (a report at that day's first duty start, 00:01 on a day
+  off, is covered: the longest break off duty in the 168 h before it, whole hours, and the day it ended; a later report
+  that day may not be, so its title gives 'covers reports until'), red `need 30h off`, `?` (the 168 h reach before the
+  schedule on file), `–` (mid-trip).
+- The Key has a row for each column: units, the rule (FAR 117.25(b); FAR 117.23(b)(1), 100 flight hours in any 672
+  consecutive hours), what Room to 100h counts that 100h in 672h does not (trips later on the line), and that a trip
+  whose times are not read yet adds no block and, with no report and release on file, counts as time off. The cells
+  stay on one line (no taller rows).
+- Tests: `tests/test_fw1713_far_columns.py` (synthetic months, made-up trips H91xx, H93xx, H95xx, H98xx; Chromium at
+  390 px, light and dark, and a 936 px box for the pilot's and Ryan's copies): headers and titles, the 100h in 672h and
+  Room to 100h cells positive, zero, over and approximate, a cell and its title adding up to 100:00 (half-minute legs),
+  the windows-ending-24:00 wording against far.py's NO on a window ending mid-day, the 30h in 7d states and which report
+  the tick covers, red only with its word, the Key text, the grid's width, far.py's limits unchanged.
+  `FW_1713_SHOTS=<folder>` saves the screenshots (390 px and 1024 px). 1.7.11's cross-month test
+  (`tests/test_card_cross_month_672.py`) reads the 100h in 672h cell as headroom (`82:25 left` on Dec 2) and the
+  trip's block, counted once (17:35), in its title.
+
 ## 1.7.12
 
 ### One data age stamp in place of the two clocks

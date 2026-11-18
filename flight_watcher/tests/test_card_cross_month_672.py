@@ -31,17 +31,20 @@ def _states(offset):
             "sensor.flight_watcher_state": s("watching", {"role": "admin", "doh": "2012-03-04"})}
 
 
-@pytest.mark.parametrize("offset,day,want", [(0, "2026-11-30", "10:00"), (1, "2026-12-02", "17:35"),
-                                             (1, "2026-12-05", "17:35")])
-def test_a_trip_across_a_month_end_counts_once_in_100_672(offset, day, want):
+@pytest.mark.parametrize("offset,day,want,left", [(0, "2026-11-30", "10:00", "90:00"), (1, "2026-12-02", "17:35", "82:25"),
+                                                  (1, "2026-12-05", "17:35", "82:25")])
+def test_a_trip_across_a_month_end_counts_once_in_100_672(offset, day, want, left):
     with _browser() as b:
         pg = _page(b, _card("schedule-card", pilot=False), 1280, 900, pkg=None)
         pg.clock.set_fixed_time(NOW)
         pg.evaluate("([tag, st]) => { window.C = mount(tag, {}, st, {user: {id: 'o', name: 'O', is_admin: true, "
                     "is_owner: true}}); }", [TAG, _states(offset)])
         pg.wait_for_function(f"C.shadowRoot && C.shadowRoot.querySelector('tr[data-d=\"{day}\"]')")
-        cell = _q(pg, f"return q('tr[data-d=\"{day}\"]').cells[11].textContent.replace('~', '').trim();")
-        assert cell == want  # each leg once (Nov 30: the first leg so far), never twice
+        cell, title = _q(pg, f"const c = q('tr[data-d=\"{day}\"]').cells[11]; "
+                             "return [c.textContent.replace('~', '').trim(), c.title];")
+        # each leg once (Nov 30: the first leg so far), never twice. 1.7.13 (the FAR 117 columns with units and
+        # headroom): the 100h in 672h cell says what is left of the 100:00 and its title gives the block
+        assert cell == f"{left} left" and f" {want} block flown or scheduled in the 672 h " in title, (cell, title)
 
 
 @pytest.mark.parametrize("offset,want", [(0, "10:00"), (1, "7:35")])
