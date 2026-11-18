@@ -731,7 +731,7 @@ Turn it amber past 1x the normal interval and red past 2x."): the clock card's s
 where it read "Last HH:MM:SS HST (N ago)", then Next as before; the schedule card's header reads the same stamp where
 it read "updated ...". It is the time since the Watcher's last good read (`sensor.<prefix>_last_check`, set only when a
 check succeeds), amber with "stale" past 1x and red with "very stale" past 2x the Watcher's longest cycle between two
-good reads, plain otherwise (review fix, its meaning of "1x" pending Ryan's yes): the check interval in use (the
+good reads, plain otherwise (review fix, its meaning of "1x" shipped under Ryan's "Ship it all", his to undo): the check interval in use (the
 normal one, the hunt one while hunting, or the pace a pilot's FLICA budget holds him to) x 1.3 for the Watcher's
 jitter, plus room for the check (3 min normal, 45 s hunting). Normal 6 min: stale past 10 min 48 s, very stale past 21
 min 36 s, and never later than the Watcher's own Stuck limit. It counts from later after a change of hunt or the

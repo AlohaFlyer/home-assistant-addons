@@ -12,7 +12,7 @@ the tile named "Last check" (`sensor.flight_watcher_last_check`, half width) bec
 "mode": "age", "type": "custom:flight-watcher-clock-card"}` in its place (after "FLICA session", before "App version";
 keys sorted, as HA stores a card the connector writes): the clock card's "Data age 12 min" stamp alone (a 56 px tile,
 one grid row), amber with "stale" past 1x the Watcher's longest check cycle (normal, or hunt while hunting), red with
-"very stale" past 2x (the review's meaning of "1x", pending Ryan's yes: `flight_watcher/CHANGELOG.md` 1.7.12), "Data age
+"very stale" past 2x (the review's meaning of "1x", shipped under Ryan's "Ship it all", his to undo: `flight_watcher/CHANGELOG.md` 1.7.12), "Data age
 unknown" with no colour when the last check time is not known, red "Watcher offline" when the app is down. The clock
 card's age mode exists only from Flight Watcher 1.7.12,
 so the live dashboard is changed only at release time, with Ryan's yes: Claude applies this one edit through the HA

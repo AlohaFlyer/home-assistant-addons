@@ -103,6 +103,16 @@ could not see. Each fix names the item it corrects; each has a test that failed 
   keeps every figure; the draft's flag and the backstop with swap_test's own return bypassed.
   `tests/test_fw1715_auto_swap.py`'s cap test reads the pay order from the pushes.
 
+### For Ryan to confirm (shipped under "Ship it all", each his to undo)
+
+- **The Data age stamp's "1x"** (1.7.12): the Watcher's longest healthy cycle (the interval x 1.3 plus room for the
+  check), not the bare interval, which read amber on about half of a healthy Watcher's cycles. Say no and it goes back
+  to the bare interval (one constant in the shared block).
+- **Duty blocks over the trip Block** (1.7.13): when a trip's duty blocks add up to more than FLICA's trip Block (likely
+  deadhead legs, since `pot.parse_duties` sums every leg), Room counts the duty blocks as far.py does, so the card and
+  far.py agree exactly; the 100h cell still scales them down. Not seen on Ryan's live line. The other way is far.py and
+  recall.py using FLICA's Block.
+
 ### Tests
 
 `tests/test_fw1718_ui.py` (Chromium, synthetic files and pairings, "pilot2"): A folded by default with the count and the
@@ -530,14 +540,15 @@ past 1x the normal interval and red past 2x." No FLICA page load, no new entity,
   ticks without a reload or a redraw, the Details view snapshot and its sha256. The clock card's HST check and the
   award line's check read the stamp's hover text now.
 
-### Review fixes (the meaning of "1x" waits for Ryan's yes)
+### Review fixes (the meaning of "1x": shipped under Ryan's "Ship it all", his to undo)
 
 The review ran the first build against the Watcher's real timing and found a healthy Watcher reading amber "stale" on
 about half of its normal cycles and nearly every hunt cycle, and a pilot held by his FLICA budget reading red "very
 stale" most of the time beside "Slowed.". `gap()` (watcher.py) waits the interval x 0.7 to 1.3 (`JITTER`), the wait
 starts when a check ends, and the next check takes time too (a crew index chunk: about 2 min in normal mode, 20 s
-hunting), so the bare interval is shorter than one healthy cycle. **This changes what "1x" means in Ryan's rule: it is
-built and tested, and needs his yes before it ships** (say no and the stamp goes back to the bare interval).
+hunting), so the bare interval is shorter than one healthy cycle. **This changes what "1x" means in Ryan's rule: it
+ships under his "Ship it all when ready fix all of these things" (Nov 17), flagged to him in 1.7.18; say no and the
+stamp goes back to the bare interval.**
 
 - **Thresholds** (the shared block): 1x and 2x of the Watcher's longest cycle between two good reads: the interval x
   1.3 plus room for the check (`FW_AGE_ROOM_S`: 3 min normal, 45 s hunting, which also covers a few seconds of a phone

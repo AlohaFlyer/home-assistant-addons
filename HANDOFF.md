@@ -20,7 +20,7 @@ ticket run of Nov 17 (CHANGELOG 1.7.11 has every section):
 - FW-0073 / FW-0074 (Ryan): the LAS layover guide is on Pako and both are closed. FW-0077 (James): fixed in 1.7.10,
   left `fixed` for him to verify. James's FW-0076 and FW-0078 stay `fixed` for him to verify after 1.7.11.
 - 1.7.12 (Ryan, Nov 17): one "Data age" stamp replaces "updated" and "Last check" (amber "stale" past 1x, red "very
-  stale" past 2x); the review's "1x" (the Watcher's longest cycle, not the bare interval) waits for Ryan's yes, and the
+  stale" past 2x); the review's "1x" (the Watcher's longest cycle, not the bare interval) ships under Ryan's "Ship it all" (his to undo), and the
   Details view's tile is pending on Pako (`ha/README.md`), applied with his yes once 1.7.12 is live. No contract change.
 - 1.7.13 (Ryan, Nov 17): the schedule card's FAR 117 columns read `30h in 7d`, `100h in 672h` and `Room to 100h`, with
   headroom ("10:57 left", red "0:00 left" / "1:20 over") and a Key row each; Room tries every 672 h window holding the
