@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.7.19
+
+Paychecks on the schedule card and a pilot's tax settings (Ryan, Nov 19, 2026). Cards plus one admin-only sensor. No contract or FLICA change.
+
+### The next month's two paychecks
+- The totals line shows the next month's 7th and 22nd checks and their total (PWA 2.A.56: the 7th pays that month's
+  advance, 37:30 x the month's rate; the 22nd pays the month just flown less the advance paid on its 7th). A payday on
+  a weekend moves to the Friday before (2.A.56.b; holidays not checked).
+- On the admin's card, with `sensor.flight_watcher_pay_model` on file, each check is worked out from the flying of the
+  month it pays: Pay-Gross plus the FLICA credit the card does not price (SIM, sick, training) at the month's rate,
+  never below the 75:00 MMG. Then IRS Pub 15-T 2026 withholding (percentage method, semimonthly, by W-4),
+  supplemental pay at 22%, Social Security to the wage base, Medicare and Additional Medicare, 401(k) to the 402(g)
+  and 415(c) limits, and the employer's 415(c) excess paid as cash on the 22nd once 415(c) is full. Checks between the
+  last stub and these are worked through in order so the year-to-date limits carry into January. A tooltip on each
+  check lists gross, federal, Social Security, Medicare, 401(k), benefits, after-tax deductions, net and the amount
+  left for main checking after allotments.
+- Backtest on the 2026 stubs: within $1 of net on every regular check from Mar 6, except Sep 22 (415(c) filled part
+  way through that check). Jan and Feb differ because of the payroll changeover.
+- Anywhere else (a pilot's copy, the portal, no model on file) the checks use the flat federal and state settings, as
+  Pay-Net does. A pilot's copy never reads the admin's model: the line is behind the admin check, the copy names the
+  pilot's own sensor (which no instance creates), and the sensor is never exported to a portal.
+
+### A pilot's tax settings: state picker and pay stub (FW-0072)
+- Pay settings on a pilot's card (never the admin's) gain a State picker (every state and DC) and Filing (single or
+  married). Picking a state sets State tax from that state's 2026 wage income tax: Tax Foundation, "State Individual
+  Income Tax Rates and Brackets, 2026" (as of January 1, 2026). A bracketed state's rate is figured on a year's pay
+  (this month's Pay-Gross x 12, or 75:00 a month at his rate when the month has none) less the state's standard
+  deduction and exemption, credits not counted, and set to the nearest 0.25% the helper takes. The card shows the
+  state's bracket range, the figured rate and the source.
+- "Or set them from your pay stub": the pilot picks his pay advice PDF and the card reads it in his browser. Federal
+  tax becomes his year-to-date federal withholding, Social Security and Medicare as a percent of total gross (to the
+  0.5% step), State tax the rest of his taxes (to 0.25%), and his deductions percent comes out of the paycheck
+  estimates. The file is read in memory and dropped: nothing of it is sent, logged or stored. Saved: the two rate
+  helpers (as any pick in Pay settings) and, on that device only, the deductions percent, the state and filing picked
+  and where the rates came from. The card says so: "Your pay stub is read once on this device to set your tax rates,
+  then discarded. Only the resulting rates are saved to your settings: federal, state and deductions, as percentages."
+  "Clear stub rates" drops the device's deductions percent and puts the state table's rate back.
+- Reads the PeopleSoft pay advice (Flate streams, Type1 and Type0 fonts, the Standard security handler with RC4 or
+  AES-128 and an empty open password); refuses a stub that needs a password, one whose YTD totals do not add up as
+  read (gross = taxes + deductions + net, to $1) and any other PDF, saving nothing. A protected stub needs the page
+  open over https (WebCrypto). No change to the portal contract: the rates go through pref/set as before.
+- Tests: tests/test_pay_stub_reader.py builds synthetic PDFs (plain, RC4, AES-128, password-protected) in the test.
+
+### Pay model sensor
+- `sensor.flight_watcher_pay_model` (feature `one_writer`, the admin only): the Watcher declares it; a routine
+  publishes it retained from the pay stubs to `flight_watcher/pay_model/state` (the last stub's date) and
+  `flight_watcher/pay_model/attr` (tables, W-4, deductions, limits, year to date, recent paid nets; no account numbers).
+  "pay" joins the reserved pilot name words.
+
 ## 1.7.18
 
 Two card changes Ryan asked for on Nov 17, 2026 (screenshots of Settings > Monthly files and of the schedule card on a
