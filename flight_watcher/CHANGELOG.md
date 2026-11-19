@@ -2,7 +2,7 @@
 
 ## 1.7.19
 
-Paychecks on the schedule card (Ryan, Nov 19, 2026). Cards plus one admin-only sensor. No contract or FLICA change.
+Paychecks on the schedule card and a pilot's tax settings (Ryan, Nov 19, 2026). Cards plus one admin-only sensor. No contract or FLICA change.
 
 ### The next month's two paychecks
 - The totals line shows the next month's 7th and 22nd checks and their total (PWA 2.A.56: the 7th pays that month's
@@ -21,6 +21,27 @@ Paychecks on the schedule card (Ryan, Nov 19, 2026). Cards plus one admin-only s
 - Anywhere else (a pilot's copy, the portal, no model on file) the checks use the flat federal and state settings, as
   Pay-Net does. A pilot's copy never reads the admin's model: the line is behind the admin check, the copy names the
   pilot's own sensor (which no instance creates), and the sensor is never exported to a portal.
+
+### A pilot's tax settings: state picker and pay stub (FW-0072)
+- Pay settings on a pilot's card (never the admin's) gain a State picker (every state and DC) and Filing (single or
+  married). Picking a state sets State tax from that state's 2026 wage income tax: Tax Foundation, "State Individual
+  Income Tax Rates and Brackets, 2026" (as of January 1, 2026). A bracketed state's rate is figured on a year's pay
+  (this month's Pay-Gross x 12, or 75:00 a month at his rate when the month has none) less the state's standard
+  deduction and exemption, credits not counted, and set to the nearest 0.25% the helper takes. The card shows the
+  state's bracket range, the figured rate and the source.
+- "Or set them from your pay stub": the pilot picks his pay advice PDF and the card reads it in his browser. Federal
+  tax becomes his year-to-date federal withholding, Social Security and Medicare as a percent of total gross (to the
+  0.5% step), State tax the rest of his taxes (to 0.25%), and his deductions percent comes out of the paycheck
+  estimates. The file is read in memory and dropped: nothing of it is sent, logged or stored. Saved: the two rate
+  helpers (as any pick in Pay settings) and, on that device only, the deductions percent, the state and filing picked
+  and where the rates came from. The card says so: "Your pay stub is read once on this device to set your tax rates,
+  then discarded. Only the resulting rates are saved to your settings: federal, state and deductions, as percentages."
+  "Clear stub rates" drops the device's deductions percent and puts the state table's rate back.
+- Reads the PeopleSoft pay advice (Flate streams, Type1 and Type0 fonts, the Standard security handler with RC4 or
+  AES-128 and an empty open password); refuses a stub that needs a password, one whose YTD totals do not add up as
+  read (gross = taxes + deductions + net, to $1) and any other PDF, saving nothing. A protected stub needs the page
+  open over https (WebCrypto). No change to the portal contract: the rates go through pref/set as before.
+- Tests: tests/test_pay_stub_reader.py builds synthetic PDFs (plain, RC4, AES-128, password-protected) in the test.
 
 ### Pay model sensor
 - `sensor.flight_watcher_pay_model` (feature `one_writer`, the admin only): the Watcher declares it; a routine

@@ -172,6 +172,355 @@ const fwgCheck = (g, ytd, P) => {
   const net = fwgR2(gross - fed - ss - med - addl - def - pre - aft);
   return { date: g.date, gross, erCash, T, fed, ss, med, addl, def, pre, aft, net, toChk: fwgR2(net - (P.allot || 0)) };
 };
+// FW-0072 (Ryan, Nov 19): a pilot's pay stub (PDF) read in his browser to set his tax rates. Nothing leaves the device
+// and nothing of the stub is kept: the file's bytes and text live in this function's locals only, and the caller keeps
+// just the three percentages it returns. Reads the PeopleSoft pay advice Hawaiian Airlines issues (text in Type1 or
+// Type0 fonts, Flate streams, the Standard security handler RC4 or AES-128 with an empty open password).
+const fwpMd5 = (msg) => {
+  const K = new Uint32Array(64), S = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
+  for (let i = 0; i < 64; i++) K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296) >>> 0;
+  const n = msg.length, L = ((n + 8) >> 6) + 1, w = new Uint32Array(L * 16);
+  for (let i = 0; i < n; i++) w[i >> 2] |= msg[i] << ((i % 4) * 8);
+  w[n >> 2] |= 0x80 << ((n % 4) * 8); w[L * 16 - 2] = (n * 8) >>> 0; w[L * 16 - 1] = Math.floor(n / 536870912) >>> 0;
+  let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+  for (let o = 0; o < w.length; o += 16) {
+    let a = a0, b = b0, c = c0, d = d0;
+    for (let i = 0; i < 64; i++) {
+      let f, g;
+      if (i < 16) { f = (b & c) | (~b & d); g = i; } else if (i < 32) { f = (d & b) | (~d & c); g = (5 * i + 1) % 16; }
+      else if (i < 48) { f = b ^ c ^ d; g = (3 * i + 5) % 16; } else { f = c ^ (b | ~d); g = (7 * i) % 16; }
+      const t = d; d = c; c = b;
+      const x = (a + f + K[i] + w[o + g]) >>> 0, s = S[(i >> 4) * 4 + (i % 4)];
+      b = (b + ((x << s) | (x >>> (32 - s)))) >>> 0; a = t;
+    }
+    a0 = (a0 + a) >>> 0; b0 = (b0 + b) >>> 0; c0 = (c0 + c) >>> 0; d0 = (d0 + d) >>> 0;
+  }
+  const out = new Uint8Array(16);
+  [a0, b0, c0, d0].forEach((v, j) => { for (let k = 0; k < 4; k++) out[j * 4 + k] = (v >>> (8 * k)) & 255; });
+  return out;
+};
+const fwpRc4 = (key, data) => {
+  const s = new Uint8Array(256); for (let i = 0; i < 256; i++) s[i] = i;
+  for (let i = 0, j = 0; i < 256; i++) { j = (j + s[i] + key[i % key.length]) & 255; [s[i], s[j]] = [s[j], s[i]]; }
+  const out = new Uint8Array(data.length);
+  for (let k = 0, i = 0, j = 0; k < data.length; k++) {
+    i = (i + 1) & 255; j = (j + s[i]) & 255; [s[i], s[j]] = [s[j], s[i]]; out[k] = data[k] ^ s[(s[i] + s[j]) & 255];
+  }
+  return out;
+};
+const fwpCat = (...a) => { const o = new Uint8Array(a.reduce((n, x) => n + x.length, 0)); let p = 0; for (const x of a) { o.set(x, p); p += x.length; } return o; };
+const fwpLatin = (u8) => { let s = ""; for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192)); return s; };
+const fwpBytes = (s) => { const o = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) o[i] = s.charCodeAt(i) & 255; return o; };
+// a PDF string token's bytes: (literal, with its escapes) or <hex>
+const fwpStr = (t) => {
+  if (t[0] === "<") { const h = t.slice(1, -1).replace(/[^0-9a-fA-F]/g, ""); const o = []; for (let i = 0; i < h.length; i += 2) o.push(parseInt((h[i] + (h[i + 1] || "0")), 16)); return Uint8Array.from(o); }
+  const o = [], s = t.slice(1, -1), E = { n: 10, r: 13, t: 9, b: 8, f: 12 };
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c !== "\\") { o.push(c.charCodeAt(0) & 255); continue; }
+    const d = s[++i];
+    if (d === undefined) break;
+    if (E[d] !== undefined) o.push(E[d]);
+    else if (d >= "0" && d <= "7") { let v = d; while (v.length < 3 && s[i + 1] >= "0" && s[i + 1] <= "7") v += s[++i]; o.push(parseInt(v, 8) & 255); }
+    else if (d === "\r") { if (s[i + 1] === "\n") i++; } else if (d !== "\n") o.push(d.charCodeAt(0) & 255);
+  }
+  return Uint8Array.from(o);
+};
+// the string token that starts at s[i] ("(" or "<"), as text
+const fwpStrTok = (s, i) => {
+  if (s[i] === "<") { const j = s.indexOf(">", i); return s.slice(i, j + 1); }
+  let depth = 0, j = i;
+  for (; j < s.length; j++) { const c = s[j]; if (c === "\\") { j++; continue; } if (c === "(") depth++; else if (c === ")" && --depth === 0) break; }
+  return s.slice(i, j + 1);
+};
+const fwpInflate = async (u8) => new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream("deflate"))).arrayBuffer());
+const FWP_PAD = Uint8Array.from([0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41, 0x64, 0x00, 0x4E, 0x56, 0xFF, 0xFA, 0x01, 0x08,
+  0x2E, 0x2E, 0x00, 0xB6, 0xD0, 0x68, 0x3E, 0x80, 0x2F, 0x0C, 0xA9, 0xFE, 0x64, 0x53, 0x69, 0x7A]);
+class FwpError extends Error {}
+
+// PDF bytes -> its text, one string a line (top to bottom, left to right)
+const fwpPdfLines = async (buf) => {
+  const raw = new Uint8Array(buf), s = fwpLatin(raw);
+  if (!s.startsWith("%PDF")) throw new FwpError("not a PDF");
+  const objs = {};  // num -> {gen, dict, data (raw stream bytes) | null}
+  const re = /(\d+)\s+(\d+)\s+obj\b/g;
+  let m;
+  while ((m = re.exec(s))) {
+    const st = re.lastIndex, end = s.indexOf("endobj", st);
+    if (end < 0) break;
+    const body = s.slice(st, end), k = body.search(/\bstream(\r\n|\n|\r)/);
+    let dict = body, data = null;
+    if (k >= 0) {
+      dict = body.slice(0, k);
+      const d0 = st + k + body.slice(k).match(/^stream(\r\n|\n|\r)/)[0].length;
+      const lm = dict.match(/\/Length\s+(\d+)(?!\s+\d+\s+R)/);
+      let d1 = lm ? d0 + +lm[1] : s.lastIndexOf("endstream", end);
+      if (!lm) { while (d1 > d0 && (s[d1 - 1] === "\n" || s[d1 - 1] === "\r")) d1--; }
+      data = raw.subarray(d0, Math.min(d1, raw.length));
+    }
+    objs[+m[1]] = { num: +m[1], gen: +m[2], dict, data };
+    re.lastIndex = end;
+  }
+  // the Standard security handler (an empty open password)
+  let crypt = null;
+  const em = s.match(/\/Encrypt\s+(\d+)\s+\d+\s+R/g);
+  if (em) {
+    const en = objs[+em[em.length - 1].match(/(\d+)/)[1]];
+    if (!en || !/\/Filter\s*\/Standard/.test(en.dict)) throw new FwpError("protected in a way this can't open");
+    const g = (k) => { const x = en.dict.match(new RegExp("\\/" + k + "\\s+(-?\\d+)")); return x ? +x[1] : null; };
+    const V = g("V") || 0, R = g("R") || 2;
+    if (V > 4 || R > 4) throw new FwpError("protected in a way this can't open");
+    const tok = (k) => { const i = en.dict.search(new RegExp("\\/" + k + "\\s*[(<]")); if (i < 0) return null; const j = en.dict.indexOf(k, i) + k.length; const p = en.dict.slice(j).search(/[(<]/); return fwpStr(fwpStrTok(en.dict, j + p)); };
+    const O = tok("O"), U = tok("U"), P = g("P"), ids = [...s.matchAll(/\/ID\s*\[\s*[(<]/g)];
+    if (!O || !U || P === null || !ids.length) throw new FwpError("protected in a way this can't open");
+    const lastId = ids[ids.length - 1], id0 = fwpStr(fwpStrTok(s, lastId.index + lastId[0].length - 1));
+    const n = R === 2 ? 5 : (g("Length") || 40) / 8;
+    const cfm = (en.dict.match(/\/CFM\s*\/(\w+)/) || [])[1];
+    const aes = V === 4 && cfm === "AESV2";
+    if (V === 4 && cfm && cfm !== "AESV2" && cfm !== "V2") throw new FwpError("protected in a way this can't open");
+    const p4 = Uint8Array.from([P & 255, (P >> 8) & 255, (P >> 16) & 255, (P >>> 24) & 255]);
+    const noMeta = R >= 4 && /\/EncryptMetadata\s+false/.test(en.dict) ? Uint8Array.from([255, 255, 255, 255]) : new Uint8Array(0);
+    let h = fwpMd5(fwpCat(FWP_PAD, O.subarray(0, 32), p4, id0, noMeta));
+    if (R >= 3) for (let i = 0; i < 50; i++) h = fwpMd5(h.subarray(0, n));
+    const key = h.slice(0, n);
+    // the empty open password check (Algorithm 4 / 5)
+    let u;
+    if (R === 2) u = fwpRc4(key, FWP_PAD);
+    else { u = fwpRc4(key, fwpMd5(fwpCat(FWP_PAD, id0))); for (let i = 1; i < 20; i++) u = fwpRc4(key.map((b) => b ^ i), u); }
+    const cmpN = R === 2 ? 32 : 16;
+    for (let i = 0; i < cmpN; i++) if (u[i] !== U[i]) throw new FwpError("needs a password to open");
+    crypt = { key, n, aes };
+  }
+  const objKey = (o) => {
+    const k = fwpCat(crypt.key, Uint8Array.from([o.num & 255, (o.num >> 8) & 255, (o.num >> 16) & 255, o.gen & 255, (o.gen >> 8) & 255]),
+      crypt.aes ? Uint8Array.from([0x73, 0x41, 0x6C, 0x54]) : new Uint8Array(0));
+    return fwpMd5(k).slice(0, Math.min(crypt.n + 5, 16));
+  };
+  const streamOf = async (o) => {
+    if (!o || !o.data) return null;
+    let d = o.data;
+    if (crypt && !/\/Type\s*\/XRef/.test(o.dict)) {
+      if (crypt.aes) {
+        if (d.length < 32) return new Uint8Array(0);
+        if (!(globalThis.crypto && crypto.subtle)) throw new FwpError("needs Flight Watcher open over https to read it");
+        const ck = await crypto.subtle.importKey("raw", objKey(o), "AES-CBC", false, ["decrypt"]);
+        d = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-CBC", iv: d.slice(0, 16) }, ck, d.slice(16, 16 + ((d.length - 16) & ~15))));
+      } else d = fwpRc4(objKey(o), d);
+    }
+    if (/\/FlateDecode|\/Fl\b/.test(o.dict)) d = await fwpInflate(d);
+    else if (/\/Filter/.test(o.dict)) return null;  // a filter this reader has no use for (images)
+    return d;
+  };
+  // objects packed in object streams (their dicts only; a stream is never in one)
+  for (const o of Object.values(objs)) {
+    if (!/\/Type\s*\/ObjStm/.test(o.dict)) continue;
+    const d = fwpLatin(await streamOf(o)), first = +(o.dict.match(/\/First\s+(\d+)/) || [0, 0])[1];
+    const nums = d.slice(0, first).trim().split(/\s+/).map(Number);
+    for (let i = 0; i + 1 < nums.length; i += 2) {
+      const a = first + nums[i + 1], b = i + 3 < nums.length ? first + nums[i + 3] : d.length;
+      if (!objs[nums[i]]) objs[nums[i]] = { num: nums[i], gen: 0, dict: d.slice(a, b), data: null };
+    }
+  }
+  const ref = (txt, k) => { const x = txt.match(new RegExp("\\/" + k + "\\s+(\\d+)\\s+\\d+\\s+R")); return x ? objs[+x[1]] : null; };
+  // fonts by resource name: Type0 ones with a ToUnicode map read 2-byte codes through it
+  const fonts = {};
+  for (const o of Object.values(objs)) {
+    const fd = o.dict.match(/\/Font\s*<<([^>]*)>>/);
+    if (!fd) continue;
+    for (const f of fd[1].matchAll(/\/([^\s/<>[\]()]+)\s+(\d+)\s+\d+\s+R/g)) {
+      if (fonts[f[1]]) continue;
+      const fo = objs[+f[2]];
+      if (!fo) continue;
+      const map = {}, type0 = /\/Subtype\s*\/Type0/.test(fo.dict);
+      const tu = ref(fo.dict, "ToUnicode");
+      if (tu) {
+        const cm = fwpLatin((await streamOf(tu)) || new Uint8Array(0));
+        const hx = (x) => parseInt(x, 16);
+        const u16 = (x) => { let o = ""; for (let i = 0; i + 3 < x.length; i += 4) o += String.fromCharCode(hx(x.slice(i, i + 4))); return o; };
+        for (const b of cm.matchAll(/beginbfchar([\s\S]*?)endbfchar/g)) for (const p of b[1].matchAll(/<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>/g)) map[hx(p[1])] = u16(p[2]);
+        for (const b of cm.matchAll(/beginbfrange([\s\S]*?)endbfrange/g)) {
+          for (const p of b[1].matchAll(/<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*(<[0-9a-fA-F]+>|\[[^\]]*\])/g)) {
+            const lo = hx(p[1]), hi = hx(p[2]);
+            if (p[3][0] === "<") { const base = p[3].slice(1, -1); for (let c = lo; c <= hi && c - lo < 65536; c++) map[c] = u16(base.slice(0, -4) + (hx(base.slice(-4)) + c - lo).toString(16).padStart(4, "0")); }
+            else [...p[3].matchAll(/<([0-9a-fA-F]+)>/g)].forEach((q, i) => { map[lo + i] = u16(q[1]); });
+          }
+        }
+      }
+      fonts[f[1]] = { type0, map, uni: !!tu };
+    }
+  }
+  const dec = (font, b) => {
+    let o = "";
+    if (font && font.type0) { for (let i = 0; i + 1 < b.length; i += 2) { const c = (b[i] << 8) | b[i + 1]; o += font.map[c] !== undefined ? font.map[c] : ""; } return o; }
+    for (const c of b) o += font && font.uni && font.map[c] !== undefined ? font.map[c] : String.fromCharCode(c);
+    return o;
+  };
+  // the pages in order, their content streams
+  const pages = [], walk = (o, depth) => {
+    if (!o || depth > 32) return;
+    if (/\/Type\s*\/Pages\b/.test(o.dict)) { const k = o.dict.match(/\/Kids\s*\[([^\]]*)\]/); if (k) for (const r of k[1].matchAll(/(\d+)\s+\d+\s+R/g)) walk(objs[+r[1]], depth + 1); }
+    else if (/\/Type\s*\/Page\b/.test(o.dict)) pages.push(o);
+  };
+  const cat = Object.values(objs).find((o) => /\/Type\s*\/Catalog/.test(o.dict));
+  walk(cat && ref(cat.dict, "Pages"), 0);
+  const items = [];
+  for (const [pi, pg] of pages.entries()) {
+    const cs = [], c1 = pg.dict.match(/\/Contents\s*\[([^\]]*)\]/);
+    if (c1) for (const r of c1[1].matchAll(/(\d+)\s+\d+\s+R/g)) cs.push(objs[+r[1]]); else cs.push(ref(pg.dict, "Contents"));
+    let txt = "";
+    for (const c of cs) { const d = await streamOf(c); if (d) txt += fwpLatin(d) + "\n"; }
+    // a small content-stream interpreter: text position (Tm and the CTM) and the strings shown
+    const mul = (a, b) => [a[0] * b[0] + a[1] * b[2], a[0] * b[1] + a[1] * b[3], a[2] * b[0] + a[3] * b[2], a[2] * b[1] + a[3] * b[3],
+      a[4] * b[0] + a[5] * b[2] + b[4], a[4] * b[1] + a[5] * b[3] + b[5]];
+    let ctm = [1, 0, 0, 1, 0, 0], tm = ctm.slice(), tlm = ctm.slice(), lead = 0, font = null, size = 10;
+    const qs = [], ops = [];
+    const show = (str) => {
+      const p = mul(tm, ctm);
+      items.push({ pg: pi, x: p[4], y: p[5], s: str });
+      tm = mul([1, 0, 0, 1, str.length * size * 0.5, 0], tm);
+    };
+    const td = (x, y) => { tlm = mul([1, 0, 0, 1, x, y], tlm); tm = tlm.slice(); };
+    for (let i = 0; i < txt.length;) {
+      const c = txt[i];
+      if (/\s/.test(c)) { i++; continue; }
+      if (c === "%") { const j = txt.indexOf("\n", i); i = j < 0 ? txt.length : j; continue; }
+      if (c === "(" || (c === "<" && txt[i + 1] !== "<")) { const t = fwpStrTok(txt, i); ops.push({ str: fwpStr(t) }); i += t.length; continue; }
+      if (c === "[") { ops.push("["); i++; continue; }
+      if (c === "]") { const a = []; while (ops.length && ops[ops.length - 1] !== "[") a.unshift(ops.pop()); ops.pop(); ops.push({ arr: a }); i++; continue; }
+      if (c === "<" || c === ">") { i += 2; continue; }  // a dict (inline image parameters): not text
+      if (c === "/") { const m2 = txt.slice(i).match(/^\/[^\s/<>[\]()%]*/); ops.push({ name: m2[0].slice(1) }); i += m2[0].length; continue; }
+      const m3 = txt.slice(i, i + 64).match(/^[+-]?(\d+\.?\d*|\.\d+)/);
+      if (m3) { ops.push(+m3[0]); i += m3[0].length; continue; }
+      const m4 = txt.slice(i, i + 16).match(/^[A-Za-z'"*]+/);
+      if (!m4) { i++; continue; }
+      const op = m4[0], A = ops.splice(0);
+      i += op.length;
+      if (op === "BI") { const j = txt.indexOf("EI", i); i = j < 0 ? txt.length : j + 2; continue; }
+      const nums = A.filter((x) => typeof x === "number");
+      if (op === "q") qs.push(ctm.slice()); else if (op === "Q") ctm = qs.pop() || [1, 0, 0, 1, 0, 0];
+      else if (op === "cm" && nums.length === 6) ctm = mul(nums, ctm);
+      else if (op === "BT") { tm = [1, 0, 0, 1, 0, 0]; tlm = tm.slice(); }
+      else if (op === "Tf") { const nm = A.find((x) => x && x.name); font = nm ? fonts[nm.name] : null; size = nums[0] || size; }
+      else if (op === "TL") lead = nums[0] || 0;
+      else if (op === "Td" && nums.length === 2) td(nums[0], nums[1]);
+      else if (op === "TD" && nums.length === 2) { lead = -nums[1]; td(nums[0], nums[1]); }
+      else if (op === "Tm" && nums.length === 6) { tm = nums.slice(); tlm = nums.slice(); }
+      else if (op === "T*") td(0, -lead);
+      else if (op === "Tj" || op === "'" || op === "\"") { if (op !== "Tj") td(0, -lead); const st = A.find((x) => x && x.str); if (st) show(dec(font, st.str)); }
+      else if (op === "TJ") { const ar = A.find((x) => x && x.arr); if (ar) show(ar.arr.map((x) => (x && x.str ? dec(font, x.str) : typeof x === "number" && x < -200 ? " " : "")).join("")); }
+    }
+  }
+  // lines: items within 2.5 pt of height together, left to right
+  items.sort((a, b) => a.pg - b.pg || b.y - a.y);
+  const lines = [];
+  let cur = null;
+  for (const it of items) {
+    if (!it.s.trim()) continue;
+    if (!cur || cur.pg !== it.pg || Math.abs(cur.y - it.y) > 2.5) { cur = { pg: it.pg, y: it.y, its: [] }; lines.push(cur); }
+    cur.its.push(it);
+  }
+  return lines.map((l) => l.its.sort((a, b) => a.x - b.x).map((x) => x.s.trim()).join(" ").replace(/\s+/g, " "));
+};
+
+// the pay advice's text -> the year-to-date rates (percent of total gross). Hawaiian Airlines' PeopleSoft pay advice:
+// TOTAL GROSS / FED TAXABLE GROSS / TOTAL TAXES / TOTAL DEDUCTIONS / NET PAY, Current and YTD rows; the federal tax
+// lines Fed Withholding, Fed MED/EE, Fed OASDI/EE, Fed Addl Med. State and local = total taxes less the federal lines.
+const FWP_M = "(-?[\\d,]+\\.\\d\\d)";
+const fwpAmt = (x) => +String(x).replace(/,/g, "");
+const fwpRates = (lines) => {
+  const hi = lines.findIndex((l) => /TOTAL GROSS/i.test(l) && /NET PAY/i.test(l));
+  if (hi < 0) throw new FwpError("not a pay advice this can read");
+  const row = (w) => { for (let i = hi + 1; i < Math.min(lines.length, hi + 4); i++) { const m = lines[i].match(new RegExp("^" + w + "\\b(.*)", "i")); if (m) { const v = m[1].match(new RegExp(FWP_M, "g")); if (v && v.length >= 5) return v.slice(0, 5).map(fwpAmt); } } return null; };
+  const ytd = row("YTD");
+  if (!ytd) throw new FwpError("not a pay advice this can read");
+  const [gross, , taxes, deds, net] = ytd;
+  if (!(gross > 0)) throw new FwpError("shows no pay this year yet");
+  if (Math.abs(gross - taxes - deds - net) > 1.005) throw new FwpError("its totals don't add up as read");
+  const fedLine = (rx) => { for (const l of lines) { const m = l.match(new RegExp(rx + "\\s+" + FWP_M + "\\s+" + FWP_M, "i")); if (m) return fwpAmt(m[2]); } return 0; };
+  const fwh = fedLine("Fed Withholding"), fmed = fedLine("Fed MED\\/EE"), fss = fedLine("Fed OASDI\\/EE"), fadd = fedLine("Fed Addl Med");
+  if (!lines.some((l) => /Fed Withholding/i.test(l))) throw new FwpError("not a pay advice this can read");
+  const fed = fwh + fmed + fss + fadd, state = Math.max(0, taxes - fed);
+  if (fed > taxes + 0.005) throw new FwpError("its totals don't add up as read");
+  const pct = (v) => Math.round((v / gross) * 10000) / 100;
+  return { federal: pct(fed), state: pct(state), deductions: pct(deds) };
+};
+const fwpStep = (v, step, lo, hi) => Math.min(hi, Math.max(lo, Math.round(v / step) * step));
+// a File (or ArrayBuffer) -> {federal, state, deductions} percents; throws FwpError with a short reason
+const fwpReadStub = async (file) => fwpRates(await fwpPdfLines(file.arrayBuffer ? await file.arrayBuffer() : file));
+// FW-0072: each state's 2026 wage income tax, Tax Foundation, "State Individual Income Tax Rates and Brackets, 2026"
+// (as of January 1, 2026; taxfoundation.org): [name, n(one) | f(lat) | g(raduated), single brackets, married brackets
+// ([from $, rate %]), standard deduction single, married, personal exemption single, married (null: none on the page,
+// or a credit, which is not counted)]. A rate listed from a threshold above $0 leaves the income below it untaxed.
+const FWP_SRC = "Tax Foundation, State Individual Income Tax Rates and Brackets, 2026 (as of January 1, 2026)";
+const FWP_STATES = {
+  AL: ["Alabama","g",[[0,2.0],[500,4.0],[3000,5.0]],[[0,2.0],[1000,4.0],[6000,5.0]],3000,8500,1500,3000],
+  AK: ["Alaska","n",[],[],null,null,null,null],
+  AZ: ["Arizona","f",[[0,2.5]],[[0,2.5]],8350,16700,null,null],
+  AR: ["Arkansas","g",[[0,2.0],[4600,3.9]],[[0,2.0],[4600,3.9]],2470,4940,null,null],
+  CA: ["California","g",[[0,1.0],[11079,2.0],[26264,4.0],[41452,6.0],[57542,8.0],[72724,9.3],[371479,10.3],[445771,11.3],[742953,12.3],[1000000,13.3]],[[0,1.0],[22158,2.0],[52528,4.0],[82904,6.0],[115084,8.0],[145448,9.3],[742958,10.3],[891542,11.3],[1000000,12.3],[1485906,13.3]],5540,11080,null,null],
+  CO: ["Colorado","f",[[0,4.4]],[[0,4.4]],16100,32200,null,null],
+  CT: ["Connecticut","g",[[0,2.0],[10000,4.5],[50000,5.5],[100000,6.0],[200000,6.5],[250000,6.9],[500000,6.99]],[[0,2.0],[20000,4.5],[100000,5.5],[200000,6.0],[400000,6.5],[500000,6.9],[1000000,6.99]],null,null,15000,24000],
+  DE: ["Delaware","g",[[2000,2.2],[5000,3.9],[10000,4.8],[20000,5.2],[25000,5.55],[60000,6.6]],[[2000,2.2],[5000,3.9],[10000,4.8],[20000,5.2],[25000,5.55],[60000,6.6]],3250,6500,null,null],
+  DC: ["District of Columbia","g",[[0,4.0],[10000,6.0],[40000,6.5],[60000,8.5],[250000,9.25],[500000,9.75],[1000000,10.75]],[[0,4.0],[10000,6.0],[40000,6.5],[60000,8.5],[250000,9.25],[500000,9.75],[1000000,10.75]],16100,32200,null,null],
+  FL: ["Florida","n",[],[],null,null,null,null],
+  GA: ["Georgia","f",[[0,5.19]],[[0,5.19]],12000,24000,null,null],
+  HI: ["Hawaii","g",[[0,1.4],[9600,3.2],[14400,5.5],[19200,6.4],[24000,6.8],[36000,7.2],[48000,7.6],[125000,7.9],[175000,8.25],[225000,9.0],[275000,10.0],[325000,11.0]],[[0,1.4],[19200,3.2],[28800,5.5],[38400,6.4],[48000,6.8],[72000,7.2],[96000,7.6],[250000,7.9],[350000,8.25],[450000,9.0],[550000,10.0],[650000,11.0]],4400,8800,1144,2288],
+  ID: ["Idaho","f",[[4811,5.3]],[[9622,5.3]],16100,32200,null,null],
+  IL: ["Illinois","f",[[0,4.95]],[[0,4.95]],null,null,2925,5850],
+  IN: ["Indiana","f",[[0,2.95]],[[0,2.95]],null,null,1000,2000],
+  IA: ["Iowa","f",[[0,3.8]],[[0,3.8]],16100,32200,null,null],
+  KS: ["Kansas","g",[[0,5.2],[23000,5.58]],[[0,5.2],[46000,5.58]],3605,8240,9160,18320],
+  KY: ["Kentucky","f",[[0,3.5]],[[0,3.5]],3360,3360,null,null],
+  LA: ["Louisiana","f",[[0,3.0]],[[0,3.0]],12875,25750,null,null],
+  ME: ["Maine","g",[[0,5.8],[27399,6.75],[64849,7.15]],[[0,5.8],[54849,6.75],[129749,7.15]],8350,16700,5300,10600],
+  MD: ["Maryland","g",[[0,2.0],[1000,3.0],[2000,4.0],[3000,4.75],[100000,5.0],[125000,5.25],[150000,5.5],[250000,5.75],[500000,6.25],[1000000,6.5]],[[0,2.0],[1000,3.0],[2000,4.0],[3000,4.75],[150000,5.0],[175000,5.25],[225000,5.5],[300000,5.75],[600000,6.25],[1200000,6.5]],3350,6700,3200,6400],
+  MA: ["Massachusetts","g",[[0,5.0],[1083150,9.0]],[[0,5.0],[1083150,9.0]],null,null,4400,8800],
+  MI: ["Michigan","f",[[0,4.25]],[[0,4.25]],null,null,5900,11800],
+  MN: ["Minnesota","g",[[0,5.35],[33310,6.8],[109430,7.85],[203150,9.85]],[[0,5.35],[48700,6.8],[193480,7.85],[337930,9.85]],15300,30600,null,null],
+  MS: ["Mississippi","f",[[10000,4.0]],[[10000,4.0]],2300,4600,6000,12000],
+  MO: ["Missouri","g",[[1348,2.0],[2696,2.5],[4044,3.0],[5392,3.5],[6740,4.0],[8088,4.5],[9436,4.7]],[[1348,2.0],[2696,2.5],[4044,3.0],[5392,3.5],[6740,4.0],[8088,4.5],[9436,4.7]],16100,32200,null,null],
+  MT: ["Montana","g",[[0,4.7],[47500,5.65]],[[0,4.7],[95000,5.65]],16100,32200,null,null],
+  NE: ["Nebraska","g",[[0,2.46],[4130,3.51],[24760,4.55]],[[0,2.46],[8250,3.51],[49530,4.55]],8850,17700,null,null],
+  NV: ["Nevada","n",[],[],null,null,null,null],
+  NH: ["New Hampshire","n",[],[],null,null,null,null],
+  NJ: ["New Jersey","g",[[0,1.4],[20000,1.75],[35000,3.5],[40000,5.53],[75000,6.37],[500000,8.97],[1000000,10.75]],[[0,1.4],[20000,1.75],[50000,2.45],[70000,3.5],[80000,5.53],[150000,6.37],[500000,8.97],[1000000,10.75]],null,null,1000,2000],
+  NM: ["New Mexico","g",[[0,1.5],[5500,3.2],[16500,4.3],[33500,4.7],[66500,4.9],[210000,5.9]],[[0,1.5],[8000,3.2],[25000,4.3],[50000,4.7],[100000,4.9],[315000,5.9]],16100,32200,null,null],
+  NY: ["New York","g",[[0,3.9],[8500,4.4],[11700,5.15],[13900,5.4],[80650,5.9],[215400,6.85],[1077550,9.65],[5000000,10.3],[25000000,10.9]],[[0,3.9],[17150,4.4],[23600,5.15],[27900,5.4],[161550,5.9],[323200,6.85],[2155350,9.65],[5000000,10.3],[25000000,10.9]],8000,16050,null,null],
+  NC: ["North Carolina","f",[[0,3.99]],[[0,3.99]],12750,25500,null,null],
+  ND: ["North Dakota","g",[[48475,1.95],[244825,2.5]],[[80975,1.95],[298075,2.5]],16100,32200,null,null],
+  OH: ["Ohio","f",[[26050,2.75]],[[26050,2.75]],null,null,2400,4800],
+  OK: ["Oklahoma","g",[[3750,2.5],[4900,3.5],[7200,4.5]],[[7500,2.5],[9800,3.5],[14400,4.5]],6350,12700,1000,2000],
+  OR: ["Oregon","g",[[0,4.75],[4550,6.75],[11400,8.75],[125000,9.9]],[[0,4.75],[9100,6.75],[22800,8.75],[250000,9.9]],2910,5820,null,null],
+  PA: ["Pennsylvania","f",[[0,3.07]],[[0,3.07]],null,null,null,null],
+  RI: ["Rhode Island","g",[[0,3.75],[82050,4.75],[186450,5.99]],[[0,3.75],[82050,4.75],[186450,5.99]],11200,22400,5250,10500],
+  SC: ["South Carolina","g",[[0,0.0],[3640,3.0],[18230,6.0]],[[0,0.0],[3640,3.0],[18230,6.0]],8350,16700,null,null],
+  SD: ["South Dakota","n",[],[],null,null,null,null],
+  TN: ["Tennessee","n",[],[],null,null,null,null],
+  TX: ["Texas","n",[],[],null,null,null,null],
+  UT: ["Utah","f",[[0,4.5]],[[0,4.5]],null,null,null,null],
+  VT: ["Vermont","g",[[0,3.35],[49400,6.6],[119700,7.6],[249700,8.75]],[[0,3.35],[82500,6.6],[199450,7.6],[304000,8.75]],7650,15300,5300,10600],
+  VA: ["Virginia","g",[[0,2.0],[3000,3.0],[5000,5.0],[17000,5.75]],[[0,2.0],[3000,3.0],[5000,5.0],[17000,5.75]],8750,17500,930,1860],
+  WA: ["Washington","n",[],[],null,null,null,null],
+  WV: ["West Virginia","g",[[0,2.22],[10000,2.96],[25000,3.33],[40000,4.44],[60000,4.82]],[[0,2.22],[10000,2.96],[25000,3.33],[40000,4.44],[60000,4.82]],null,null,2000,4000],
+  WI: ["Wisconsin","g",[[0,3.5],[15110,4.4],[51950,5.3],[332720,7.65]],[[0,3.5],[20150,4.4],[69260,5.3],[443630,7.65]],13960,25840,700,1400],
+  WY: ["Wyoming","n",[],[],null,null,null,null]
+};
+// a state's tax as a percent of a year's gross: {name, type, pct (null with no gross), low, top}
+const fwpStateTax = (st, filing, annual) => {
+  const r = FWP_STATES[st];
+  if (!r) return null;
+  const [name, type, bs, bm, ss, sm, es, em] = r, mar = filing === "married", br = mar ? bm : bs;
+  if (type === "n") return { name, type, pct: 0, low: 0, top: 0 };
+  const top = br[br.length - 1][1], low = (br.find((b) => b[1] > 0) || br[0])[1];
+  if (!(annual > 0)) return { name, type, pct: null, low, top };
+  const taxable = Math.max(0, annual - ((mar ? sm : ss) || 0) - ((mar ? em : es) || 0));
+  let tax = 0;
+  for (let i = 0; i < br.length; i++) {
+    const lo = br[i][0], hi = i + 1 < br.length ? br[i + 1][0] : Infinity;
+    if (taxable > lo) tax += (Math.min(taxable, hi) - lo) * br[i][1] / 100;
+  }
+  return { name, type, pct: Math.round((tax / annual) * 10000) / 100, low, top };
+};
 const PAIRINGS_URL = "/local/flight-watcher/pairings_";  // the shared pairings package files (pairings_YYYY-MM.json)
 // 1.7.18: the lock switch's icon, an inline SVG (24 x 24): a shut shackle, or one lifted clear of the body, over a body
 // with a keyhole. Drawn the same on every phone (the emoji it replaces was each phone's own)
@@ -1610,6 +1959,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
       // of the month it pays: Pay-Gross plus FLICA credit the card does not price (SIM, sick, training) at the month's
       // rate, never below the 75:00 MMG. Checks between the last stub and these are worked through in order so the
       // year-to-date limits carry. Otherwise (a pilot's card, no model): the flat tax settings, as Pay-Net does.
+      // FW-0072: the state picker's month of pay (x 12 for a year): this month's Pay-Gross, or 75:00 (the MMG) at his rate
+      this._payGrossMo = noYear ? 0 : sum.gross > 0 ? sum.gross : RATE * 75; this._payGrossWhy = sum.gross > 0 ? "this month's Pay-Gross x 12" : "75:00 a month at your rate x 12";
       const chkGrp = (() => {
         if (noYear || !(sum.gross > 0)) return "";
         const ny = m === 11 ? y + 1 : y, nm = (m + 1) % 12;  // the month the checks land in (m is 0-based)
@@ -1666,8 +2017,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
           return tgrp("tchk", [[lbl(d7), cell(iso(d7))], [lbl(d22), cell(iso(d22))],
             [`${MONTHS[nm].slice(0, 3)} total`, both == null ? "" : `<span title="${this._esc(`${MONTHS[nm]} paychecks together: net ${c2(fwgR2(both))}${chk2}.`)}">${usd(both)}</span>`]]);
         }
-        const g7 = adv(ny, nm), g22 = sum.gross - adv(y, m), k = 1 - (fed + stt) / 100;
-        const tip = (g, what) => this._esc(`${what}. Gross ${usd(g)}, net after ${fed}% federal and ${stt}% state ${usd(g * k)}. Benefit, 401(k) loan and dues deductions not taken out. Estimate (PWA 2.A.56).`);
+        // FW-0072: a pilot's deductions percent from his pay stub (this device only) comes out of the checks too
+        const ded = admin ? 0 : this._payDed(), g7 = adv(ny, nm), g22 = sum.gross - adv(y, m), k = 1 - (fed + stt + ded) / 100;
+        const tip = (g, what) => this._esc(`${what}. Gross ${usd(g)}, net after ${fed}% federal and ${stt}% state${ded ? ` and ${ded}% deductions (benefits, 401(k), dues: from your pay stub)` : ""} ${usd(g * k)}.${ded ? "" : " Benefit, 401(k) loan and dues deductions not taken out."} Estimate (PWA 2.A.56).`);
         const cell = (g, what) => `<span title="${tip(g, what)}">${usd(g * k)}</span>`;
         return tgrp("tchk", [[lbl(d7), cell(g7, `${lbl(d7)} (${iso(d7)}): ${MONTHS[nm]} advance, 37:30 x ${"$" + (g7 / 37.5).toFixed(2)}`)],
           [lbl(d22), cell(g22, `${lbl(d22)} (${iso(d22)}): ${MONTHS[m]} true-up, Pay-Gross ${usd(sum.gross)} less the ${usd(adv(y, m))} advance paid on the 7th`)],
@@ -1825,12 +2177,13 @@ class FlightWatcherScheduleCard extends HTMLElement {
     <tr><td>Ideas</td><td>Tag-ons after your release with legal rest, <b>O</b> = in open time, <b>T</b> = on the Tradeboard. Orange = better trip for a marked one. Tap for details.</td></tr>
     <tr><td>Day</td><td>Blue = weekend, ${this._role() === "admin" ? "yellow = no school at HPA (from the school year file), hatched yellow = US or Hawaii holiday with no school file loaded" : "hatched yellow = US or Hawaii holiday"}. Tap a day to block it (&#8856;), tap again to unblock; VAC days are always &#8856; and cannot be changed. The lock switch at the top left (a lock, the word Lock, then On or Off) freezes ${admin ? "availability, trade and drop" : "availability and trade"} taps while it is On (the default); switch it Off to change them and On again to lock them. All times HNL.</td></tr>
     </table>${note ? `<div>${note}</div>` : ""}</details>
-    <details class="set"${unconf.length ? " open" : ""}><summary>Pay settings${unconf.length ? " (not set yet)" : ""}</summary>
+    <details class="set"${unconf.length || this._paySetOpen ? " open" : ""}><summary>Pay settings${unconf.length ? " (not set yet)" : ""}</summary>
       <span>Federal tax <select data-e="input_number.flight_watcher_federal_tax_pct"${flagged.includes(PAY_PREFS[0]) ? ' data-f="1"' : ""}>${sel(0, 45, 0.5, fed, "%")}</select></span>
       <span>State tax <select data-e="input_number.flight_watcher_state_tax_pct"${flagged.includes(PAY_PREFS[1]) ? ' data-f="1"' : ""}>${sel(0, 15, 0.25, stt, "%")}</select></span>
       <span>Longevity year <select data-e="input_number.flight_watcher_longevity_year"${flagged.includes(PAY_PREFS[2]) ? ' data-f="1"' : ""}>${noYear ? `<option value="" selected disabled>set</option>` : ""}${sel(1, 12, 1, lyr, "")}</select></span>
+      ${admin ? "" : this._payPickHtml()}
       ${flagged.length ? `<div class="r unc">These came from settings that were never set. Pick your own, or <button type="button" class="keep">Keep these</button></div>` : ""}
-      <div class="r">${noYear ? "Rate: set your longevity year here (A330 PAX FO, PWA 3.D.6; the table caps at 12). No pay is figured until it is set." : `Rate $${RATE.toFixed(2)}/credit h: A330 PAX FO, PWA 3.D.6, year ${lyr} ${doh ? `(DOH ${doh} = year ${dohYear(today, doh)}, table caps at 12)` : "(set your longevity year here; table caps at 12)"}, effective ${RATE_DATES.filter((x) => x <= today).pop()}. Net = gross less federal and state only; estimate.`}</div>
+      <div class="r">${noYear ? "Rate: set your longevity year here (A330 PAX FO, PWA 3.D.6; the table caps at 12). No pay is figured until it is set." : `Rate $${RATE.toFixed(2)}/credit h: A330 PAX FO, PWA 3.D.6, year ${lyr} ${doh ? `(DOH ${doh} = year ${dohYear(today, doh)}, table caps at 12)` : "(set your longevity year here; table caps at 12)"}, effective ${RATE_DATES.filter((x) => x <= today).pop()}. Net = gross less federal and state only${!admin && this._payDed() ? "; the paycheck estimates also take out your deductions" : ""}; estimate.`}</div>
     </details>${chtml}</ha-card>`;
     this._wire();
     // 1.7.7: the pairing detail after the redraw: the sheet (narrow) shown, updated or hidden; the wide panel scrolled into
@@ -1886,7 +2239,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     return `${items[0]} <span class="tag more" title="${this._esc(`${items.length - 1} more ${what}${items.length > 2 ? "s" : ""}:\n${rest}`)}">+${items.length - 1}</span>`;
   }
   _wire() {
-    this.shadowRoot.querySelectorAll(".set select").forEach((inp) => {
+    this.shadowRoot.querySelectorAll(".set select[data-e]").forEach((inp) => {
       inp.addEventListener("change", () => { this._h.callService("input_number", "set_value", { entity_id: inp.dataset.e, value: parseFloat(inp.value) }); });
     });
     const keep = this.shadowRoot.querySelector(".set .keep");  // 1.6.2: confirm the flagged values as they are
@@ -1898,6 +2251,71 @@ class FlightWatcherScheduleCard extends HTMLElement {
       });
       keep.disabled = true;
       keep.textContent = "Kept";
+    });    this._payWire();
+  }
+  // FW-0072 (Ryan, Nov 19): a pilot's state picker (2026 rates) and his pay stub, read once on this device. What this
+  // device keeps (localStorage, per pilot): the state and filing picked, the deductions percent and where the rates
+  // came from; the federal and state rates go to his own Pay settings helpers. Never the stub or anything read off it.
+  _ls(k) { try { return localStorage.getItem("flight_watcher_" + k); } catch (e) { return null; } }
+  _lsSet(k, v) { try { if (v === null) localStorage.removeItem("flight_watcher_" + k); else localStorage.setItem("flight_watcher_" + k, v); } catch (e) { /* ignore */ } }
+  _payDed() { const v = parseFloat(this._ls("pay_ded")); return v > 0 && v < 60 ? v : 0; }
+  _payPickHtml() {
+    const st = this._ls("pay_state") || "", fs = this._ls("pay_filing") === "married" ? "married" : "single", src = this._ls("pay_src");
+    const opts = Object.keys(FWP_STATES).sort((a, b) => FWP_STATES[a][0].localeCompare(FWP_STATES[b][0]))
+      .map((c) => `<option value="${c}"${c === st ? " selected" : ""}>${FWP_STATES[c][0]}</option>`).join("");
+    const pct = (v) => `${+v.toFixed(2)}%`;
+    let line = "";
+    const r = st ? fwpStateTax(st, fs, (this._payGrossMo || 0) * 12) : null;
+    if (r) {
+      line = r.type === "n" ? `${r.name}: no state income tax on wages.` : r.type === "f" && r.low === r.top
+        ? `${r.name}: flat ${pct(r.top)}${r.pct != null ? `, about ${pct(r.pct)} of your pay after its deduction and exemption` : ""}.`
+        : `${r.name}: ${pct(r.low)} to ${pct(r.top)} in brackets${r.pct != null ? `; about ${pct(r.pct)} of your pay (${this._payGrossWhy || "a year's pay"}, ${fs}, the state's standard deduction and exemption; credits not counted)` : "; the top rate is used until your longevity year is set"}.`;
+      line += src === "stub" ? " State tax is set from your pay stub for now (Clear stub rates to use this rate)." : ` State tax is set to the nearest 0.25%.`;
+    }
+    const ded = this._payDed();
+    const stubNote = src === "stub" ? `<div class="r">Federal and state tax set from your pay stub (federal includes Social Security and Medicare)${ded ? `; ${pct(ded)} deductions come out of the paycheck estimates` : ""}. <button type="button" class="fwpclr">Clear stub rates</button></div>` : "";
+    return `<span>State <select class="fwst" aria-label="State you pay income tax in"><option value=""${st ? "" : " selected"}>pick</option>${opts}</select></span>
+      <span>Filing <select class="fwfs" aria-label="Filing status"><option value="single"${fs === "single" ? " selected" : ""}>single</option><option value="married"${fs === "married" ? " selected" : ""}>married</option></select></span>
+      ${line ? `<div class="r">${this._esc(line)}</div>` : ""}<div class="r">State rates: ${this._esc(FWP_SRC)}.</div>
+      <div class="r">Or set them from your pay stub: <input type="file" class="fwstub" accept="application/pdf,.pdf" aria-label="Pay stub PDF"></div>
+      <div class="r">Your pay stub is read once on this device to set your tax rates, then discarded. Only the resulting rates are saved to your settings: federal, state and deductions, as percentages.</div>
+      ${this._stubMsg ? `<div class="r">${this._esc(this._stubMsg)}</div>` : ""}${stubNote}`;
+  }
+  _payWire() {
+    const sr = this.shadowRoot, fst = sr.querySelector(".set .fwst"), ffs = sr.querySelector(".set .fwfs"), stub = sr.querySelector(".set .fwstub");
+    const det = sr.querySelector("details.set");
+    if (det) det.addEventListener("toggle", () => { this._paySetOpen = det.open; });
+    // the two rate helpers only (named here so the portal's manifest check sees them): pref/set on the portal
+    const setFed = (v) => this._h.callService("input_number", "set_value", { entity_id: "input_number.flight_watcher_federal_tax_pct", value: v });
+    const setStt = (v) => this._h.callService("input_number", "set_value", { entity_id: "input_number.flight_watcher_state_tax_pct", value: v });
+    const applyState = (msg) => {
+      this._paySetOpen = true; this._stubMsg = typeof msg === "string" ? msg : "";
+      this._lsSet("pay_state", fst.value || null); this._lsSet("pay_filing", ffs.value);
+      const r = fst.value ? fwpStateTax(fst.value, ffs.value, (this._payGrossMo || 0) * 12) : null;
+      if (r) { setStt(fwpStep(r.pct != null ? r.pct : r.top, 0.25, 0, 15)); this._lsSet("pay_src", "table"); }
+      this._render();
+    };
+    if (fst) fst.addEventListener("change", () => applyState());
+    if (ffs) ffs.addEventListener("change", () => { if (fst && fst.value && this._ls("pay_src") !== "stub") applyState(); else { this._lsSet("pay_filing", ffs.value); this._paySetOpen = true; this._render(); } });
+    if (stub) stub.addEventListener("change", async () => {
+      const f = stub.files && stub.files[0];
+      if (!f) return;
+      stub.disabled = true; this._paySetOpen = true;
+      let r = null, why = "";
+      try { r = await fwpReadStub(f); } catch (e) { why = e instanceof FwpError ? e.message : "it could not be read"; }
+      stub.value = "";
+      if (!r) { this._stubMsg = `That file was not used (${why}). Nothing was saved.`; this._render(); return; }
+      const fv = fwpStep(r.federal, 0.5, 0, 45), sv = fwpStep(r.state, 0.25, 0, 15);
+      setFed(fv); setStt(sv);
+      this._lsSet("pay_ded", String(r.deductions)); this._lsSet("pay_src", "stub");
+      this._stubMsg = `Read and discarded. This year so far: federal ${r.federal}% (income tax, Social Security and Medicare), set as ${fv}%; state ${r.state}%, set as ${sv}%; deductions ${r.deductions}%.`;
+      this._render();
+    });
+    const clr = sr.querySelector(".set .fwpclr");
+    if (clr) clr.addEventListener("click", () => {
+      this._lsSet("pay_ded", null); this._lsSet("pay_src", null); this._paySetOpen = true;
+      this._stubMsg = fst && fst.value ? "Stub rates cleared; state tax is from the state table again. Set federal above." : "Stub rates cleared; pick your rates above.";
+      if (fst && fst.value) applyState(this._stubMsg); else this._render();
     });
   }
   getCardSize() { return 12; }
