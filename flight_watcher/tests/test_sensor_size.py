@@ -320,6 +320,18 @@ def _fill(W, fake, tmp_path, monkeypatch):
     W.pub("last_new", _pot_row(1))
     W.pub("last_match", {"rule_id": "r1", "row": _pot_row(2), "at": W.now_iso()})
     W.publish_pilotdb(force=True)  # 1.7.8: the admin's pilot database counts (test_pilotdb_sensor_stays_under_2_kb)
+    # 1.7.19: the admin's paycheck model, which a routine publishes from the pay stubs (the Watcher only declares the
+    # sensor): two Pub 15-T tables of 7 rows, deductions, year to date and the last 6 paid nets (made-up figures)
+    tbl = [[i * 25000.0, i * 3000.5, 0.1 + i * 0.04] for i in range(7)]
+    W.pub("pay_model/attr", {"last_stub": "2026-11-06", "tax_year": 2026, "w4": "married_checkbox", "supp_rate": 0.22,
+                             "tables": {"married_checkbox": tbl, "single": tbl}, "medical": 100.0, "dental": 5.0,
+                             "imputed": 5.0, "aftertax": 300.0, "allot": 1000.0, "meal_nt": 0, "ss_base": 184500,
+                             "addl_med_at": 200000, "cap_415c": 72000, "cap_402g": 24500, "k401_pct": 0.08,
+                             "er_pct": 0.15, "c415_start": 0,
+                             "ytd": {"year": 2026, "ss_wages": 100000.0, "med_wages": 150000.0, "c415": 30000.0,
+                                     "ee401": 10000.0},
+                             "paid": {f"2026-{m:02d}-{d:02d}": 5000.25 for m in (9, 10, 11) for d in (7, 22)},
+                             "source": "pay stubs in Drive (made up here)", "notes": "x" * 300, "updated": "2026-11-19"})
     # 1.7.14: the near misses (every instance its own): 60 pot rows of 4 days, each hidden by a week of VAC, the blocked
     # days and one or two of the busy month's own trips (a blocker of each kind on every row, the long texts)
     vac = {"trip": "VAC", "start": (today + timedelta(days=2)).isoformat(), "end": (today + timedelta(days=8)).isoformat(),

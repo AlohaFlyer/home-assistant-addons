@@ -136,6 +136,42 @@ const farSpans = (it, t, at) => {
 const far30Txt = (st, h, md) => st === "ok" ? `&#10003; ${Math.floor(h)}h <span class="k">${md}</span>`
   : st === "need" ? "need 30h off" : st === "unknown" ? "?" : "&#8211;";
 const usd = (v) => (v == null || Number.isNaN(v) ? "" : "$" + Math.round(v).toLocaleString("en-US"));  // 1.6.2 review: no rate, no figure
+// Paychecks (Ryan, Nov 19, 2026): per-check paycheck engine. Inputs from the admin's Pay model sensor (attributes), which a
+// routine keeps current from the pay stubs in Drive. Federal: IRS Pub 15-T 2026 percentage method, semimonthly (24
+// periods), table by W-4 (rows [annual wage from, tax at that point, rate]); supplemental pay at the flat rate.
+// Social Security 6.2% to the wage base, Medicare 1.45%, Additional Medicare 0.9% over the threshold, 401(k) deferral
+// to the 402(g) and 415(c) limits; once 415(c) is full the employer's contribution is paid as taxable cash on the
+// true-up (stub line "ER 415(c) Excess"). Backtest: within $1 of net on every regular 2026 stub from Mar 6 given its
+// earnings lines, except Sep 22 (the month 415(c) filled part way).
+const fwgR2 = (v) => Math.round(v * 100) / 100;
+const fwgWh = (T, w4, P) => {
+  const tb = (P.tables || {})[w4] || (P.tables || {}).single || [];
+  const A = T * 24;
+  let tax = 0;
+  for (let i = tb.length - 1; i >= 0; i--) { const [lo, base, r] = tb[i]; if (A > lo) { tax = base + (A - lo) * r; break; } }
+  return Math.max(0, fwgR2(tax / 24));
+};
+// g: {date, gross, eligible (401(k) base), erBase (employer base), meal (non-taxable meal pay), supp}; ytd is updated
+const fwgCheck = (g, ytd, P) => {
+  const yr = +g.date.slice(0, 4);
+  if (ytd.year !== yr) Object.assign(ytd, { year: yr, ss_wages: 0, med_wages: 0, c415: P.c415_start || 0, ee401: 0 });
+  const pre = (P.medical || 0) + (P.dental || 0);
+  const room = Math.max(0, (P.cap_415c || 0) - ytd.c415);
+  const def = fwgR2(Math.min((P.k401_pct || 0) * (g.eligible || 0), Math.max(0, (P.cap_402g || 0) - ytd.ee401), room));
+  const er = (P.er_pct || 0) * (g.erBase || 0), erPlan = Math.min(er, Math.max(0, room - def)), erCash = fwgR2(er - erPlan);
+  const gross = fwgR2(g.gross + erCash);
+  const T = fwgR2(gross - (g.meal || 0) - pre - def + (pre ? P.imputed || 0 : 0));
+  const supp = g.supp || 0;
+  const fed = fwgR2(fwgWh(T - supp, P.w4, P) + supp * (P.supp_rate || 0.22));
+  const mw = fwgR2(T + def), ssRoom = Math.max(0, (P.ss_base || 0) - ytd.ss_wages);
+  const ss = fwgR2(Math.min(mw, ssRoom) * 0.062), med = fwgR2(mw * 0.0145);
+  const at = P.addl_med_at || 200000;
+  const addl = fwgR2((Math.max(0, ytd.med_wages + mw - at) - Math.max(0, ytd.med_wages - at)) * 0.009);
+  ytd.ss_wages += Math.min(mw, ssRoom); ytd.med_wages += mw; ytd.c415 += def + erPlan; ytd.ee401 += def;
+  const aft = P.aftertax || 0;
+  const net = fwgR2(gross - fed - ss - med - addl - def - pre - aft);
+  return { date: g.date, gross, erCash, T, fed, ss, med, addl, def, pre, aft, net, toChk: fwgR2(net - (P.allot || 0)) };
+};
 const PAIRINGS_URL = "/local/flight-watcher/pairings_";  // the shared pairings package files (pairings_YYYY-MM.json)
 // 1.7.18: the lock switch's icon, an inline SVG (24 x 24): a shut shackle, or one lifted clear of the body, over a body
 // with a keyhole. Drawn the same on every phone (the emoji it replaces was each phone's own)
@@ -560,7 +596,7 @@ const FWG_CSS = `
       .tm{font-size:10.5px;color:var(--secondary-text-color)}
       .tag{cursor:help}.lay{display:inline-block;min-width:28px}
       .st{color:var(--fw-ok,#2e7d32);font-weight:700;cursor:help}.st.fly{color:var(--fw-info,#1565c0)}
-      .tot{margin-top:8px;font-size:14px;font-weight:700;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tgrp{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tpay{flex-wrap:nowrap}.tot .ti{white-space:nowrap}.tot .k{font-weight:600;color:var(--secondary-text-color);font-size:12px;margin-right:4px}.tot .bad{color:var(--fw-err,#c62828)}
+      .tot{margin-top:8px;font-size:14px;font-weight:700;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tgrp{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tpay{flex-wrap:nowrap}.tot .ti{white-space:nowrap}.tot .k{font-weight:600;color:var(--secondary-text-color);font-size:12px;margin-right:4px}.tot .bad{color:var(--fw-err,#c62828)}.tot .tchk{flex-wrap:nowrap;font-weight:600}
       .trip[data-k]{cursor:pointer}.trip[aria-expanded="true"]{text-decoration:underline;text-underline-offset:2px}
       .trip:focus-visible,.pdx:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px;border-radius:3px}.fwss .pdx:focus-visible{outline-offset:-3px}
       .cal tr.pdh[data-d] td:nth-child(n){background-image:linear-gradient(var(--fwg-hl),var(--fwg-hl))}
@@ -1565,11 +1601,83 @@ class FlightWatcherScheduleCard extends HTMLElement {
         .map(([k, v]) => `<span class="ti"><span class="k">${k}</span> ${v}</span>`).join(""); return s ? `<span class="tgrp ${cls}">${s}</span>` : ""; };
       // fix pass: the PAYP estimate is FLICA's credit less the rest, so Credit matches FLICA by construction: no check mark
       const ppCovT = sum.ppCov.map((p) => `${String(p.rec.protected || "").split(",").filter(Boolean).map((q) => `${q.split("|")[0]} ${mdy(q.split("|")[1] || "")}`).join(" and ") || "The removed trip"}: ${hm(p.h)} kept with ${p.cov.trip} ${mdy(p.cov.start)} added on its days (PWA 4.R.1: Pay and Credit of the PAYP day and of the added trip).`).join(" ");
+      // Paychecks (Ryan, Nov 19, 2026): this month's pay as the next month's two paychecks. PWA 2.A.56: the 7th pays the
+      // next month's advance (half the 75:00 MMG, 37:30 x rate) and the 22nd pays this month's actuals less the advance
+      // already paid on this month's 7th; a payday on a weekend moves to the Friday before (2.A.56.b; holidays not
+      // checked). Per-check model (Ryan, Nov 19): on the admin's card, with the Pay model sensor on file (kept
+      // current from the pay stubs), each check is worked out per check (fwgCheck: Pub 15-T withholding, Social
+      // Security, Medicare, 401(k), benefits, after-tax deductions, the ER 415(c) excess on the 22nd) from the flying
+      // of the month it pays: Pay-Gross plus FLICA credit the card does not price (SIM, sick, training) at the month's
+      // rate, never below the 75:00 MMG. Checks between the last stub and these are worked through in order so the
+      // year-to-date limits carry. Otherwise (a pilot's card, no model): the flat tax settings, as Pay-Net does.
+      const chkGrp = (() => {
+        if (noYear || !(sum.gross > 0)) return "";
+        const ny = m === 11 ? y + 1 : y, nm = (m + 1) % 12;  // the month the checks land in (m is 0-based)
+        const pd = (yy, mm0, dd) => { const t = new Date(Date.UTC(yy, mm0, dd)); const w = t.getUTCDay(); if (w === 6) t.setUTCDate(dd - 1); if (w === 0) t.setUTCDate(dd - 2); return t; };
+        const lbl = (t) => `${MONTHS[t.getUTCMonth()].slice(0, 3)} ${t.getUTCDate()}`;
+        const iso = (t) => t.toISOString().slice(0, 10);
+        const mk = (yy, mm0) => new Date(Date.UTC(yy, mm0, 1)).toISOString().slice(0, 7);
+        const d7 = pd(ny, nm, 7), d22 = pd(ny, nm, 22);
+        const adv = (yy, mm0) => 37.5 * rateFor(lyr, `${mk(yy, mm0)}-01`);
+        const PM = admin ? (S["sensor.flight_watcher_pay_model"] || {}).attributes || null : null;
+        if (PM && Array.isArray((PM.tables || {}).single) && PM.ytd && FWG_ISO.test(PM.last_stub || "")) {
+          const imp = ((S["sensor.flight_watcher_improved_pay_gross"] || {}).attributes || {}).months || [];
+          const mPay = (yy, mm0) => {  // the bid period's pay that the 22nd check settles
+            const k = mk(yy, mm0), R = rateFor(lyr, `${k}-15`), mmg = 75 * R;
+            if (k === key) {
+              const xh = Math.max(0, (fCr || 0) - crAll), p = sum.gross + xh * R;
+              return { pay: Math.max(p, mmg), why: p < mmg ? `${MONTHS[mm0]} flying ${usd(p)} is under the 75:00 MMG, so ${usd(mmg)}` : `${MONTHS[mm0]} Pay-Gross ${usd(sum.gross)}${xh > 0.01 ? ` plus ${hm(xh)} FLICA credit the card does not price (SIM, sick, training) at $${R.toFixed(2)}` : ""}` };
+            }
+            const row = imp.find((r) => r && r.month === k), cr = fl(((SM[k] || {}).totals || {}).credit);
+            const p = Math.max((row && +row.current) || 0, (cr || 0) * R);
+            return { pay: Math.max(p, mmg), why: p > 0 ? `${MONTHS[mm0]} pay ${usd(Math.max(p, mmg))} from FW (that month's view prices it more closely)` : `no ${MONTHS[mm0]} schedule in FW, so the 75:00 MMG` };
+          };
+          const ytd = { year: +(PM.ytd.year || PM.last_stub.slice(0, 4)), ss_wages: +PM.ytd.ss_wages || 0, med_wages: +PM.ytd.med_wages || 0, c415: +PM.ytd.c415 || 0, ee401: +PM.ytd.ee401 || 0 };
+          const paid = PM.paid || {}, out = {};
+          let cy = +PM.last_stub.slice(0, 4), cm = +PM.last_stub.slice(5, 7) - 1;
+          for (let guard = 0; guard < 36 && (cy < ny || (cy === ny && cm <= nm)); guard++) {
+            const a = pd(cy, cm, 7), t = pd(cy, cm, 22), pm0 = cm === 0 ? 11 : cm - 1, py0 = cm === 0 ? cy - 1 : cy;
+            const ga = adv(cy, cm), mp = mPay(py0, pm0), gt = mp.pay - adv(py0, pm0);
+            const evs = [[a, { gross: ga, eligible: ga, erBase: 0 }, `${MONTHS[cm]} advance, 37:30 x $${(ga / 37.5).toFixed(2)}`],
+              [t, { gross: gt, eligible: gt, erBase: mp.pay, meal: +PM.meal_nt || 0 }, `${MONTHS[pm0]} true-up: ${mp.why}, less the ${usd(adv(py0, pm0))} advance`]];
+            for (const [dt, g, what] of evs) {
+              const di = iso(dt);
+              if (di <= PM.last_stub) { if (paid[di] != null) out[di] = { paid: +paid[di], what }; continue; }
+              out[di] = { ...fwgCheck({ ...g, date: di }, ytd, PM), what };
+            }
+            cm += 1; if (cm > 11) { cm = 0; cy += 1; }
+          }
+          for (const dt of [d7, d22]) if (!out[iso(dt)] && paid[iso(dt)] != null) out[iso(dt)] = { paid: +paid[iso(dt)] };  // an earlier month's checks, already paid
+          const yr = (+PM.tax_year) || 2026;
+          const c2 = (v) => "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          const tipOf = (di, r) => {
+            if (r.paid != null) return this._esc(`${di}: paid. Net ${c2(r.paid)} (pay stub).`);
+            return this._esc([`${di}: ${r.what}.`, `Gross ${c2(r.gross)}${r.erCash ? ` (with ${c2(r.erCash)} ER 415(c) excess)` : ""}`,
+              `Federal ${c2(r.fed)}, Social Security ${c2(r.ss)}, Medicare ${c2(fwgR2(r.med + r.addl))}`,
+              `401(k) ${c2(r.def)}, benefits ${c2(r.pre)}, after-tax deductions ${c2(r.aft)}`,
+              `Net ${c2(r.net)}; to main checking after ${c2(+PM.allot || 0)} allotments ${c2(r.toChk)}`,
+              `Estimate from pay stubs through ${PM.last_stub}${+di.slice(0, 4) > yr ? `; ${yr} tax tables until ${di.slice(0, 4)}'s are loaded` : ""}.`].join("\n"));
+          };
+          const val = (r) => r ? (r.paid != null ? r.paid : r.net) : null;
+          const cell = (di) => { const r = out[di]; return r && val(r) != null ? `<span title="${tipOf(di, r)}">${usd(val(r))}</span>` : ""; };
+          const a7 = out[iso(d7)], a22 = out[iso(d22)];
+          const both = val(a7) != null && val(a22) != null ? val(a7) + val(a22) : null;
+          const chk2 = a7 && a22 && a7.toChk != null && a22.toChk != null ? `; to main checking ${c2(fwgR2(a7.toChk + a22.toChk))}` : "";
+          return tgrp("tchk", [[lbl(d7), cell(iso(d7))], [lbl(d22), cell(iso(d22))],
+            [`${MONTHS[nm].slice(0, 3)} total`, both == null ? "" : `<span title="${this._esc(`${MONTHS[nm]} paychecks together: net ${c2(fwgR2(both))}${chk2}.`)}">${usd(both)}</span>`]]);
+        }
+        const g7 = adv(ny, nm), g22 = sum.gross - adv(y, m), k = 1 - (fed + stt) / 100;
+        const tip = (g, what) => this._esc(`${what}. Gross ${usd(g)}, net after ${fed}% federal and ${stt}% state ${usd(g * k)}. Benefit, 401(k) loan and dues deductions not taken out. Estimate (PWA 2.A.56).`);
+        const cell = (g, what) => `<span title="${tip(g, what)}">${usd(g * k)}</span>`;
+        return tgrp("tchk", [[lbl(d7), cell(g7, `${lbl(d7)} (${iso(d7)}): ${MONTHS[nm]} advance, 37:30 x ${"$" + (g7 / 37.5).toFixed(2)}`)],
+          [lbl(d22), cell(g22, `${lbl(d22)} (${iso(d22)}): ${MONTHS[m]} true-up, Pay-Gross ${usd(sum.gross)} less the ${usd(adv(y, m))} advance paid on the 7th`)],
+          [`${MONTHS[nm].slice(0, 3)} total`, cell(g7 + g22, `${MONTHS[nm]} paychecks together`)]]);
+      })();
       const tot = tgrp("thrs", [["Credit", hm(crAll) + (sum.ppEst ? ` <span class="k" title="${this._esc(`Not checked: the PAYP estimate is ${srcFl}'s month credit less everything else counted, so Credit matches it by construction.`)}">est</span>` : chk(crAll, fCr))], ["Block", hm(sum.blk) + chk(sum.blk, fBlk)], ["Block Avail", `<span class="${bAv <= 0 ? "bad" : ""}" title="98:00 bid-month block cap (crew scheduling) minus FLICA's bid-period Block">${bAv < 0 ? "-" + hm(-bAv) : hm(bAv)}</span>`], ["Soft", hm(sum.soft)],
         ["Vacation", sum.vacDays ? `${hm(sum.vac)} <span class="k">(${sum.vacDays} d x ${hm(VAC_H)})</span>` : ""],
         // 1.7.2: the pay protected credit inside Credit (never in Block or Block Avail: not flown)
         ["PAYP", sum.payp || sum.ppUnk ? `<span class="ppt" title="${this._esc(`Pay protected credit inside Credit, Pay-Gross and Pay-Net (${PAYP_REF}). Not in Block or Block Avail: not flown.${sum.ppEst ? ` Estimate: ${srcFl}'s month credit less everything else counted.` : ""}${ppCovT ? " " + ppCovT : ""}${sum.ppUnk ? ` A PAYP's credit is unknown and not counted: ${sum.ppUnk}.` : ""}`)}">${sum.payp ? hm(sum.payp) : ""}${sum.ppEst ? ' <span class="k">estimate</span>' : ""}${sum.ppUnk ? `${sum.payp ? " +" : ""} <span class="bad">credit unknown</span>` : ""}</span>` : ""]]) +
-        tgrp("tpay", noYear ? [["Pay", "set your longevity year in Pay settings"]] : [["Pay-Gross", usd(sum.gross)], ["Pay-Net", usd(sum.net)]]) +
+        tgrp("tpay", noYear ? [["Pay", "set your longevity year in Pay settings"]] : [["Pay-Gross", usd(sum.gross)], ["Pay-Net", usd(sum.net)]]) + chkGrp +
         tgrp("tdays", [["Days Off", tt.days_off == null ? "" : this._esc(tt.days_off)], ["Need 30 h off by", n30]]);
       if (this._idea && this._idea.key === key) {
         const r = ideasFor(this._idea.d, this._idea.trip);

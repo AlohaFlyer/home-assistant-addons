@@ -69,7 +69,7 @@ import pilotpdf as PP
 import pilotdb as PDBM
 import pdbshare as PS
 
-VERSION = "1.7.18"
+VERSION = "1.7.19"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -1445,6 +1445,11 @@ def entity_defs():
         # 1.7.14 (Ryan, Nov 17): the pot trips hidden by a VAC day, a blocked day or one of his own trips, with what to
         # change to fly each, the pay difference and FAR 117 (near_misses). Every instance its own; off a portal
         # (roles.ENTITY_OFF_PORTAL) until a contract revision exports it
+        # 1.7.19 (Ryan, Nov 19): the admin's paycheck model (Pub 15-T tables, W-4, deductions, year to date) that the
+        # schedule card's per-check paychecks read. A routine keeps it current from the pay stubs, publishing retained
+        # to pay_model/state (the last stub's date) and pay_model/attr; the Watcher only declares it. Admin only.
+        ("sensor", "pay_model", {"name": "Pay model", "state_topic": f"{T}/pay_model/state",
+                                 "json_attributes_topic": f"{T}/pay_model/attr", "icon": "mdi:cash-check"}),
         ("sensor", "near_misses", {"name": "Near misses", "state_topic": f"{T}/near/state",
                                    "value_template": "{{ value_json.count }}",
                                    "json_attributes_topic": f"{T}/near/state", "icon": "mdi:calendar-remove"}),
