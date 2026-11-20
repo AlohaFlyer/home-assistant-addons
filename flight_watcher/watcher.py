@@ -55,6 +55,7 @@ import trades as TR
 import chunks as UP
 import contacts as CT
 import working as WK
+import timeout as TO
 import pilotver as PV
 import smart as SMART
 import roles as ROLES
@@ -69,7 +70,7 @@ import pilotpdf as PP
 import pilotdb as PDBM
 import pdbshare as PS
 
-VERSION = "1.7.19"
+VERSION = "1.7.20"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -3161,9 +3162,7 @@ CM_KEY = "cm"
 # FW-0042 review: stations a last leg into HNL comes from without clearing customs (the US stations of pot.TZ; a
 # pilot's smart.json "domestic" adds more). Any other origin means a release 30 min after block-in (PWA 2.19.b), the
 # one the commute HOME check uses; an origin not on file is judged both ways (smart.comm, far.py's sure / worst rule).
-US_STATIONS = frozenset(("HNL", "OGG", "KOA", "ITO", "LIH", "ANC", "LAX", "SFO", "SEA", "SAN", "OAK", "SMF", "LAS",
-                         "PDX", "SJC", "ONT", "LGB", "PHX", "SLC", "DEN", "ORD", "DFW", "AUS", "MSP", "IAH", "JFK",
-                         "BOS", "MCO", "IAD", "ATL", "MIA", "EWR"))
+US_STATIONS = TO.US_STATIONS  # 1.7.20: the one list, in timeout.py (the duty timeout's customs release uses it too)
 
 
 def report_release(ev):
@@ -5956,13 +5955,48 @@ WORKING_ROLL_H = 2
 WORKING_LAST = {"news": None, "at": None}
 
 
+def _working_pkg():
+    """1.7.20: (trip, start) -> the pairings package detail of a pairing ({eq, crew, duties, ...}: pkg_detail_for of its
+    bid period, a rebuilt id's base too; None when not on file) for the duty timeout's equipment, crew line and
+    deadheads. The bid period function is built once per publish. No FLICA load, no new file."""
+    try:
+        of = bid_period_fn()
+    except Exception:  # noqa: BLE001
+        def of(iso):
+            return str(iso)[:7]
+
+    def get(trip, start):
+        try:
+            return pkg_detail_for(of(start), trip, start)
+        except Exception:  # noqa: BLE001
+            return None
+    return get
+
+
+def _domestic():
+    """1.7.20 review: the pilot's smart.json "domestic" stations (counted as the US for customs, the rule
+    release_customs uses), for the duty timeout's release (PWA 2.19.b.2). Never raises."""
+    try:
+        return set((SMART.load(SMART_FILE) or {}).get("domestic") or ())
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 def publish_working_flight(now=None, force=False):
     """FW-0067: sensor.<prefix>_working_flight from this instance's own schedule and own trip legs (working.py), any
     pilot. Retained. Skipped when nothing but its time stamps changed, unless WORKING_REPUB_S passed. Never raises
-    (logs and goes on). Returns True when it published."""
+    (logs and goes on). Returns True when it published. 1.7.20: with the duty timeout (`timeout`, working.py and
+    timeout.py), from the pairings package detail of each pairing (_working_pkg), the schedule months and the
+    pilot's domestic stations; why a timeout could not be worked out after an error is logged once a change."""
     try:
         now = now or datetime.now(HST)
-        wf = WK.working_flight(_sched_items(), S.get("own_trips") or {}, now, WORKING_ROLL_H)
+        wf = WK.working_flight(_sched_items(), S.get("own_trips") or {}, now, WORKING_ROLL_H, pkg=_working_pkg(),
+                               months=S.get("schedule") or {}, domestic=_domestic())
+        err = WK.TIMEOUT_ERR.get("msg") or ""
+        if err != WORKING_LAST.get("err", ""):
+            WORKING_LAST["err"] = err
+            if err:
+                log.info("working flight: duty timeout not worked out (%s)", err)
         news = WK.news(wf)
         last = WORKING_LAST.get("at")
         if (not force and news == WORKING_LAST.get("news") and last is not None

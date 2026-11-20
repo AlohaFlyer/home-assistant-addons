@@ -521,6 +521,18 @@ Recent finds.
   read yet shows as `No trip` with that trip next while it comes first. The legs live in the state, not on
   `sensor.<prefix>_own_trip_times` (size). Hark's `sensor.hark_working_flight` (Ryan only: release, MEL, NOTAMs, live
   status) is separate.
+- Duty limits (1.7.20, `timeout.py`): the working flight sensor's `timeout` attribute. `last_out` / `last_out_ext`:
+  the working leg's last legal block-out without and with the 2:00 extension (the FDP end, no later than the 117.23(c)
+  cumulative FDP caps, less the scheduled time to the duty's last block-in), on the departure station's clock and HST.
+  `ft`: the duty's planned flight time against its limit (a duration; over it `legal` is false, with `not_legal`).
+  `no_ext` / `ext`: the block-in limits with the leg out on time; `fdp`: the FDP's own (Table B or C row, acclimation,
+  pilots, rest class and the other classes, the other clock's reading). From FAR 117 Tables A, B and C as FOM 125.4
+  4.3.2 gives them: acclimation (60 degrees, 36 h free or 72 h in the theater, else the last acclimated clock less
+  0:30), the crew list's pilots (else the package crew line), the pairings package's equipment and deadheads, the
+  117.23 limits when the line on file covers their window, and 117.25 rest. `sure` is false (a "?" on the card) when
+  acclimation, the clock, the rest class or the pilots are not certain: the earlier reading is used. `lines` (one per
+  rule, cited) and `not_checked` (PWA Section 10 is not on file) carry the basis. The layover card shows LAST OUT in a
+  dark orange box right of the report time; a tap opens the details. Absent when the pilots are not known.
 - Bid calendar (1.7.1, FW-0070, `bidcal.py`): alerts for each PBS bid cycle, all HST. The cycle for bid month M+1
   runs in month M: the pairing package publishes on the 5th (1.7.7, Ryan, Nov 14: "pairings post on the 5th of the
   month and close on the 11th monthly"; the 4th before), practice runs on the 7th and the 10th, bids close on
