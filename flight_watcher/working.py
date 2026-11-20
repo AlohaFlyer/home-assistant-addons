@@ -10,7 +10,13 @@ printed: the departure day and time at the origin's own zone (ZONES, daylight ti
 printed time at the destination nearest departure + block. Hawaii keeps no DST, so HST is a fixed UTC-10. A station
 in neither ZONES nor pot.TZ: the leg hangs on its known end (known origin: arrival = departure + block; known
 destination: departure = arrival - block); with neither end known only the printed local times show. The date is
-the departure day FLICA printed, the date at the origin."""
+the departure day FLICA printed, the date at the origin.
+
+1.7.20 (Ryan, Nov 20: "calculate per FAR 117 and PWA when I timeout, both for if I extend or if I do not"): the
+`timeout` attribute, the latest block-in of the working leg's duty period without and with an extension
+(timeout.duty_timeout), from every duty on file (a trip's read legs, else its duty periods), the roster's pilots or the
+pairings package's crew line, the package's equipment and the schedule months on file (whether the cumulative limits'
+windows are all on file). Absent when it cannot be worked out."""
 import re
 from datetime import datetime, time as dtime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -184,7 +190,7 @@ def _legs(p, rec):
             x = {"trip": p["trip"], "key": p["key"], "i": i, "flt": str(lg.get("flt") or ""), "frm": frm, "to": to,
                  "dep": dep, "arr": arr, "dep_l": str(lg.get("dep_l") or ""), "arr_l": str(lg.get("arr_l") or ""),
                  "blk": int(blk) if blk not in (None, "") else int((arr - dep).total_seconds() // 60),
-                 "date": day.isoformat(), "hst": hst, "report": rep, "duty_start": new_duty}
+                 "date": day.isoformat(), "hst": hst, "report": rep, "duty_start": new_duty, "dh": bool(lg.get("dh"))}
             if prev is not None:
                 prev["duty_end"] = new_duty
             out.append(x)
@@ -230,12 +236,146 @@ def _next_pairing(pairs, today, after=None, unread_only=False):
     return ""
 
 
-def working_flight(items, own, now, roll_h=2):
+# ---------------------------------------------------------------- 1.7.20: the duty timeout's inputs
+LOOK_D = 30  # days before the working duty the line on file is checked for the cumulative limits (672 h is 28)
+NOT_DUTY = ("VAC", "PAYP")  # schedule codes that are never duty (every other code may be: training, reserve...)
+
+
+def _report_at(first, rec, p, dep, frm):
+    """(report, how) of a duty that starts with a leg leaving `frm` at `dep`: the trip's first duty, FLICA's check in
+    (HNL time, so HST) on the trip's first day, the day before when it reads later than the departure; a later duty
+    1:00 before departure in domicile, 1:15 out of it (PWA 2.19.b.1; 1:00 when separate pilot transport is planned, so
+    1:15 is the earlier)."""
+    m = _mins(rec.get("report")) if first else None
+    if m is not None:
+        r = p["day0"] + timedelta(minutes=m)
+        if r > dep:
+            r -= timedelta(days=1)
+        while dep - r >= timedelta(days=1):
+            r += timedelta(days=1)
+        return r, f"FLICA check-in {_hhmm(m)} HST"
+    before = REPORT_DOMICILE_MIN if frm == DOMICILE else REPORT_AWAY_MIN
+    where = "in domicile" if frm == DOMICILE else "out of domicile"
+    return dep - timedelta(minutes=before), f"{before // 60}:{before % 60:02d} before scheduled departure {where} (PWA 2.19.b.1)"
+
+
+def _spans(p, rec):
+    """A trip's duty periods as legs when its legs are not read (a record cached before 1.4.9): one span a duty from
+    the record's duties [{dep, arr, stn, blk, dep_l, arr_l}] (first departure to last block-in, blk the flown block),
+    rebuilt on the station clocks as _legs does. [] when there are none."""
+    raw = rec.get("duties") if isinstance(rec, dict) else None
+    if not isinstance(raw, list) or not raw:
+        return []
+    out, frm = [], DOMICILE
+    try:
+        for du in sorted(raw, key=lambda y: int(y["dep"])):
+            to = str(du.get("stn") or "").upper()
+            lg = {"dep": du["dep"], "arr": du["arr"], "blk": int(du["arr"]) - int(du["dep"]),
+                  "dep_l": du.get("dep_l"), "arr_l": du.get("arr_l")}
+            dep, arr, _day, _hst = _times(p, lg, frm, to)
+            out.append({"key": p["key"], "frm": frm, "to": to, "dep": dep, "arr": arr, "flt": "", "dh": False,
+                        "blk": int(du["blk"]) if du.get("blk") not in (None, "") else int((arr - dep).total_seconds() // 60),
+                        "duty_start": True, "span": True})
+            frm = to
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return []
+    return out
+
+
+def _duties(pairs):
+    """Every duty on file in time order: {key, report, report_txt, legs}; a trip whose legs are not read gives its duty
+    periods (_spans); one with neither gives nothing."""
+    out = []
+    for p in pairs:
+        legs = p["legs"] or _spans(p, p["rec"])
+        cur = None
+        for j, x in enumerate(legs):
+            if x["duty_start"] or cur is None:
+                rep, how = _report_at(j == 0, p["rec"], p, x["dep"], x["frm"])
+                cur = {"key": p["key"], "report": rep, "report_txt": how, "legs": []}
+                out.append(cur)
+            cur["legs"].append({k: x[k] for k in ("dep", "arr", "blk", "frm", "to", "flt", "dh", "key")}
+                               | {"i": x.get("i")})
+    out.sort(key=lambda d: d["report"])
+    return out
+
+
+def _known_from(months, pairs, upto, today):
+    """The earliest time (00:00 HST of a day) from which the pilot's line is all on file up to `upto` (a date): the
+    days the schedule months on file cover (recall.line_gaps) with every pairing on them read (legs or duty periods),
+    looking back LOOK_D days. None without months."""
+    if not months:
+        return None
+    import recall as RC
+    lo = upto - timedelta(days=LOOK_D)
+    start = lo
+    for _a, b in RC.line_gaps(months, lo, upto, today):
+        start = max(start, datetime.strptime(b, "%Y-%m-%d").date() + timedelta(days=1))
+    for p in pairs:
+        if p["legs"] or _spans(p, p["rec"]):
+            continue
+        a, b = p["start"], p["end"]
+        if a <= upto.isoformat() and b >= start.isoformat():
+            start = max(start, datetime.strptime(b, "%Y-%m-%d").date() + timedelta(days=1))
+    return datetime.combine(start, dtime(0), tzinfo=HST)
+
+
+def _busy(items):
+    """[(start, end)] HST whole days of the schedule items that may be duty (not a pairing, VAC or PAYP)."""
+    out = []
+    for it in items or []:
+        t = str((it or {}).get("trip") or "") if isinstance(it, dict) else ""
+        if not t or PAIRING_RE.match(t) or t in NOT_DUTY:
+            continue
+        try:
+            a = datetime.strptime(str(it.get("start")), "%Y-%m-%d").replace(tzinfo=HST)
+            b = datetime.strptime(str(it.get("end") or it.get("start")), "%Y-%m-%d").replace(tzinfo=HST)
+        except ValueError:
+            continue
+        out.append((a, b + timedelta(days=1)))
+    return out
+
+
+def _pkg_of(pkg, p):
+    """The pairings package detail ({eq, crew, ...}) of a pairing: pkg is a dict keyed TRIP|start or a callable
+    (trip, start); None when neither gives one."""
+    try:
+        got = pkg.get(p["key"]) if isinstance(pkg, dict) else pkg(p["trip"], p["start"]) if callable(pkg) else None
+    except Exception:  # noqa: BLE001 (a package that cannot be read is no timeout input, never a failed publish)
+        got = None
+    return got if isinstance(got, dict) else None
+
+
+def _timeout(items, pairs, cur, p, now, pkg, months):
+    """The `timeout` attribute of the working leg's duty (timeout.duty_timeout), or None."""
+    import timeout as TO
+    if not all(x.get("hst", True) for x in p["legs"]):
+        return None
+    ds = _duties(pairs)
+    idx = next((j for j, d in enumerate(ds) if d["key"] == cur["key"]
+                and any(x.get("i") == cur["i"] for x in d["legs"])), None)
+    if idx is None:
+        return None
+    pk = _pkg_of(pkg, p) or {}
+    n_r, src_r = TO.pilots_of(p["rec"].get("crew"), "")
+    n_p, src_p = TO.pilots_of(None, pk.get("crew"))
+    pilots, src = (n_r, "the trip's crew list") if n_r else (n_p, f"package crew line {pk.get('crew')}") if n_p else (None, "")
+    notes = []
+    if n_r and n_p and n_r != n_p:
+        notes.append(f"The crew list shows {n_r} pilot seats, the package crew line {pk.get('crew')} {n_p}: the crew "
+                     f"list is used.")
+    known = _known_from(months, pairs, ds[idx]["legs"][-1]["arr"].astimezone(HST).date(), now.date())
+    return TO.duty_timeout(ds, idx, pilots, src, str(pk.get("eq") or ""), known, _busy(items), notes)
+
+
+def working_flight(items, own, now, roll_h=2, pkg=None, months=None):
     """{"state", "attributes"} for the working leg: of every read leg of every own trip, in departure order, the first
     whose block-in + roll_h hours is after now (it stays on a leg until 2 h after block-in, then rolls to the next;
     sooner only when the next leg blocks out within those 2 h).
     items: the schedule items (trip, start, end, lay); own: own_trips keyed TRIP|YYYY-MM-DD (start, HST) with legs and
-    report; now: an aware datetime (a naive one is taken as HST). A trip whose legs are not read yet is skipped for the
+    report; now: an aware datetime (a naive one is taken as HST). 1.7.20: pkg, the pairings package detail ({eq, crew})
+    by TRIP|start (a dict, or a callable (trip, start)), and months, the schedule months on file (the Watcher's
+    S['schedule']), for the duty timeout. A trip whose legs are not read yet is skipped for the
     working leg but can be the next pairing; one that has not ended and comes before the working leg's pairing (the
     pilot is on it, or going to it first) shows as "No trip" with that pairing next, rather than a later trip's leg.
     No leg left: state "No trip"."""
@@ -298,6 +438,9 @@ def working_flight(items, own, now, roll_h=2):
         "updated": at,
         "updated_by": UPDATED_BY,
     }
+    to = _timeout(items, pairs, cur, p, now, pkg, months)
+    if to:
+        attrs["timeout"] = to
     state = " ".join(s for s in (flight, f"{cur['frm']}-{cur['to']}") if s)
     return {"state": state[:STATE_MAX], "attributes": attrs}
 
