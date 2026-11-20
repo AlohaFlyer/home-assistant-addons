@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.21
+
+Review of 1.7.20 on live data (Hark, Nov 20, 2026). Pay only, cards and pay.py.
+
+- A trip whose duty times come from a pairing page that does not name the pilot (no seat: crew OPEN or not read, as
+  H3036A Oct 2026, whose own record is an open-time copy a day off the real trip) keeps FLICA's credit and gets no
+  LODO: the PWA tests are shown with a line saying why they are not applied. Recall marks still count. Without this,
+  October showed a false LODO 4:00 (Oct 20) that the Oct 2026 true-up advice does not pay.
+
 ## 1.7.20
 
 The PWA pay engine on the schedule card (Hark, Ryan's override of Nov 20, 2026: "Update my pay in FW ... so that our

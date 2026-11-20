@@ -68,6 +68,13 @@ def test_on_time_trip_matches_and_mdg_wins():
     assert pa["mdg"] == 15 * 60 and pa["won"] == "mdg" and pa["use"] == 15 * 60 and not pa["fix"] and pa["lodo"] == 0
 
 
+def test_duty_times_not_his_change_nothing():
+    """Review: a record read from a pairing page that does not list him (crew OPEN) is shown, never acted on."""
+    pa = PAY.pwa_trip("2026-11-18", OT, DET, 2, lambda iso: True, mine=False)
+    assert not pa["fix"] and pa["use"] == 32 * 60 + 19 and pa["lodo"] == 0
+    assert PAY.pwa_trip("2026-11-18", OT, DET, 2, rcl=[0], mine=False)["rcl"] == 9 * 60 + 45
+
+
 def test_recall_pay_only():
     assert PAY.pwa_trip("2026-11-18", OT, DET, 2, rcl=[0])["rcl"] == 9 * 60 + 45
     assert PAY.pwa_trip("2026-11-18", OT, DET, 2, rcl=True)["rcl"] == PAY.pwa_trip("2026-11-18", OT, DET, 2)["use"]
@@ -95,12 +102,12 @@ def test_card_and_pay_py_agree(tmp_path):
     late["duties"][1]["arr"] += 1440
     cases = [("2026-11-18", OT, DET, 2, "all", None), ("2026-11-18", OT, DET, 2, "none", None),
              ("2026-11-18", late, DET, 2, "all", None), ("2026-11-18", OT, None, None, "all", None),
-             ("2026-11-18", OT, DET, 2, "all", [1]), ("2026-11-18", OT, DET, 2, "all", True)]
+             ("2026-11-18", OT, DET, 2, "all", [1]), ("2026-11-18", OT, DET, 2, "all", True), ("2026-11-18", OT, DET, 2, "all", False)]
     js = "const out = [];\n"
     for st, ot, det, rd, off, rcl in cases:
         pr = "null" if det is None else json.dumps({"det": det, "relDays": rd})
         js += (f"{{ const p = fwPwaTrip({{start: {json.dumps(st)}, ot: {json.dumps(ot)}, pr: {pr}, "
-               f"isOff: () => {'true' if off == 'all' else 'false'}, rcl: {json.dumps(rcl)}}}); "
+               f"isOff: () => {'true' if off == 'all' else 'false'}, rcl: {json.dumps(rcl if rcl is not False else None)}, mine: {'false' if rcl is False else 'true'}}}); "
                "out.push([p.gop, p.rig, p.mdg, p.pwa, p.won, p.use, p.fix, p.cut, p.lodoDays, p.rcl, p.delayed, p.passed]); }\n")
     ov = [("RO", 4, 26.6, 27.0, False), ("FO", 3, 10.0, 11.0, False), ("RO", 3, 10.0, 11.0, False), ("CA", 3, 10.0, 11.0, False),
           ("FO", 4, 26.6, 27.0, True), ("RO", 2, 10.0, 11.0, False), ("", 0, 0.0, 15.0, False), ("FO", 3, None, 11.0, False)]
@@ -112,7 +119,8 @@ def test_card_and_pay_py_agree(tmp_path):
            "fwRclOf(['R+H9606A|2026-11-18'], 'H9606A|2026-11-18'), fwRclOf(['+H9606A|2026-11-18'], 'H9606A|2026-11-18')]}));")
     got = _node(js, tmp_path)
     for (st, ot, det, rd, off, rcl), j in zip(cases, got["out"]):
-        p = PAY.pwa_trip(st, ot, det, rd, (lambda iso: True) if off == "all" else (lambda iso: False), rcl)
+        p = PAY.pwa_trip(st, ot, det, rd, (lambda iso: True) if off == "all" else (lambda iso: False),
+                         None if rcl is False else rcl, mine=rcl is not False)
         assert j == [p["gop"], p["rig"], p["mdg"], p["pwa"], p["won"], p["use"], p["fix"], p["cut"], p["lodo_days"],
                      p["rcl"], p["delayed"], p["passed"]]
     for (s, n, b, c, e), (v, k) in zip(ov, got["ovs"]):
