@@ -632,6 +632,9 @@ function fwOverride(seat, n, blk, cr, rate, erPlus) {
 // - Credit = the greater of (PWA 4.C.3.a): GOP (4.B.1: each segment the greater of actual or scheduled block; a duty of
 //   one leg is one segment), Trip Rig 1:3.5 of TAFB (report to release, release = last block-in + 0:15), MDG 5:00 x the
 //   calendar days the trip touches (from Mar 2, 2025).
+// - mine === false (1.7.20 review: the duty times came from a pairing page whose crew list does not name the pilot, as
+//   H3036A Oct 2026 with its crew OPEN): the tests are shown but nothing is changed: no fix, no LODO (recall marks
+//   still count).
 // - Delay vs reassignment (2.A.15.a.1): a leg whose only change is its time, left less than 24 h after its scheduled
 //   departure (before the next day's operation of the same flight), is a delay: ONE segment. FLICA has counted a delayed
 //   leg twice (the original and the delayed one, H3606A Nov 2026): when every duty matches the package one leg each, a leg
@@ -660,14 +663,15 @@ function fwPwaTrip(o) {
   const flica = fwgMins(ot.credit);
   const delayed = segs.filter((s) => s.delay != null && s.delay >= 60 && s.delay < 1440).length;
   const passed = segs.filter((s) => s.delay != null && s.delay >= 1440).length;
-  const fix = single && delayed > 0 && !passed && flica != null && flica - pwa >= 30;
+  const mine = o.mine !== false;
+  const fix = mine && single && delayed > 0 && !passed && flica != null && flica - pwa >= 30;
   const use = fix ? pwa : flica != null ? flica : pwa;
   const sRel = pr && pr.relDays !== "" && pr.relDays != null && Number.isFinite(Number(pr.relDays)) ? Number(pr.relDays) : null;
   const aRel = Math.floor(rel / 1440), lodoDays = [];
-  if (sRel != null && aRel > sRel) for (let k = sRel + 1; k <= aRel; k++) { const iso = fwgDay(st, k); if (!o.isOff || o.isOff(iso)) lodoDays.push(iso); }
+  if (mine && sRel != null && aRel > sRel) for (let k = sRel + 1; k <= aRel; k++) { const iso = fwgDay(st, k); if (!o.isOff || o.isOff(iso)) lodoDays.push(iso); }
   const r = o.rcl, rcl = r === true ? use : Array.isArray(r) ? segs.reduce((a, s, i) => a + (r.includes(i) ? s.cr : 0), 0) : 0;
   return { segs, gop, rig, tafb, days, mdg, pwa, won, flica, use, fix, cut: fix ? flica - use : 0, match, single, delayed, passed,
-    sRel, aRel, rel, lodoDays, lodo: 240 * lodoDays.length, rcl, rclAll: r === true };
+    sRel, aRel, rel, lodoDays, lodo: 240 * lodoDays.length, rcl, rclAll: r === true, mine };
 }
 // Recall marks in the per-trip list (input_text.flight_watcher_er_trips, beside the '+KEY' / '-KEY' type-rated FO
 // marks): 'R+KEY' the whole trip, 'R+KEY@0.2' its duties 0 and 2 (from the first). Returns true, [i, ...] or null.
@@ -1257,6 +1261,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const seg = pa.segs.map((s) => `${s.stn ? `to ${s.stn} ` : ""}${mdy(s.day)} ${t(s.act)} actual${s.sch != null ? ` / ${t(s.sch)} sched = ${t(s.cr)}` : ""}${s.delay != null && s.delay >= 60 ? ` (left ${t(s.delay)} late)` : ""}`).join("; ");
     const won = { gop: "GOP", rig: "Trip Rig", mdg: "MDG" }[pa.won];
     out.push(`PWA credit ${t(pa.pwa)} = the greater of (PWA 4.C.3.a): GOP ${t(pa.gop)} (4.B.1, each segment the greater of actual or scheduled block: ${seg}); Trip Rig ${t(pa.rig)} (1:3.5 of TAFB ${t(pa.tafb)}, 4.C.3.a.4); MDG ${t(pa.mdg)} (5:00 x ${pa.days} calendar day${pa.days > 1 ? "s" : ""}, 4.C.3.a.5). ${won} wins.`);
+    if (!pa.mine) { out.push("These duty times come from a pairing page whose crew list does not name you (crew OPEN or not read): the PWA tests above are not applied; FLICA's credit kept, no LODO."); return out; }
     if (!pa.match) out.push(pa.sRel == null ? "Scheduled block not on file (no pairings package for this trip on this day): GOP uses actual block only." : "The legs differ from the pairings package (a reassignment or a rebuilt trip): FLICA's credit kept (pay protection, PWA 4.D.2.b).");
     if (pa.fix) out.push(`FLICA shows ${t(pa.flica)}: the delayed leg counted twice (the original and the delayed one). A delay, not a reassignment (PWA 2.A.15.a.1: only the time changed, before the next day's operation of that flight): one segment (4.B.1). FW counts ${t(pa.use)}, ${t(pa.cut)} less.`);
     else if (pa.passed) out.push("A leg left 24 h or more late (it may pass the next operation of that flight: a reassignment, PWA 2.A.15): FLICA's credit kept (pay protection, 4.D.2.b).");
@@ -1809,7 +1814,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       // delayed leg twice (fix), so Credit, Soft, Pay-Gross, the totals and the paychecks all use the PWA credit
       const isOffFor = (iso, self) => !near.some((it) => it && it.trip && `${it.trip}|${it.start}` !== self && it.start <= iso && iso <= (it.end || it.start));
       const pwaOf = (d, trip, ot, pr) => (isP(trip) && trip !== PAYP ? fwPwaTrip({ start: d, ot, pr: pr && pr.days && pr.days.has(d) ? pr : null,
-        isOff: (iso) => isOffFor(iso, `${trip}|${d}`), rcl: fwRclOf(erOv, `${trip}|${d}`) }) : null);
+        isOff: (iso) => isOffFor(iso, `${trip}|${d}`), rcl: fwRclOf(erOv, `${trip}|${d}`), mine: !!String((ot && ot.seat) || "").trim() }) : null);
       const pwaAdj = (ot, pa) => {
         if (!pa || !pa.fix) return ot;
         const b = fwgMins(ot.blk);
