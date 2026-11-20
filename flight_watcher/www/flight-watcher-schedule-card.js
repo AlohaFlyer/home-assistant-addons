@@ -603,6 +603,82 @@ function fwPkgDuties(pr) {
   return out;
 }
 
+// 1.7.20 (Hark, pay engine; Ryan, Nov 20, 2026: "Update my pay in FW ... so that our numbers are always 100% perfect").
+// Pilots on a crew: the package crew line (CA01FO01RO01 = 3), a number, or FLICA's own crew list (["CA Doe, Jane (1)",
+// "FO ..."]: one per seat listed, plus the Captain when the list names none; a 4-pilot charter lists only its FOs and RO)
+function fwCrewOwn(list) {
+  const seats = (Array.isArray(list) ? list : []).map((s) => (/^\s*(CA|FO|RO|SO)\b/.exec(String(s || "")) || [])[1]).filter(Boolean);
+  return seats.length + (seats.length && !seats.includes("CA") ? 1 : 0);
+}
+// PWA 4.O.1 override of one trip: {v ($), kind}. IRO crew (3 pilots, 4.O.1.a): Captain $5.00, IRO $4.00, First Officer
+// $3.00 per block hour. Extended Range crew (4 pilots, Definitions 25, 4.O.1.b): Captain $5.00, the type-rated FO a 15%
+// hourly pay premium, every other First Officer (an RO seat too) $3.00. The 15% only when the trip is marked as flown in
+// the type-rated FO seat (erPlus, the Pay-Gross tap): never by itself (a SIN trip or 4 pilots alone is $3.00).
+// A Captain is paid the Captain override "under all circumstances" (4.O.1), never the 15%.
+function fwOverride(seat, n, blk, cr, rate, erPlus) {
+  const s = String(seat || "FO").toUpperCase();
+  if (erPlus && s !== "CA") return { v: cr == null ? 0 : cr * rate * ER_PCT, kind: "er" };
+  if (blk == null) return { v: 0, kind: "" };
+  if (s === "CA") return n >= 3 ? { v: blk * 5.00, kind: "ca" } : { v: 0, kind: "" };
+  if (n >= 4) return { v: blk * 3.00, kind: "erfo" };
+  if (s === "RO") return { v: blk * IRO_OVERRIDE, kind: "iro" };
+  if (n === 3) return { v: blk * 3.00, kind: "fo3" };
+  return { v: 0, kind: "" };
+}
+// PWA pay of an own trip (minutes): o = {start (ISO, the trip's first day HST), ot (the Watcher's own trip times: report,
+// duties [{dep, arr, blk, stn}] in HST minutes from the first day, credit), pr (the pairings package entry that lists the
+// pairing on that day, or null), isOff(iso) (a day off on the schedule: no other assignment), rcl (true: the whole trip
+// was a recall; [i, ...]: those duties were)}. null without duty times.
+// - Credit = the greater of (PWA 4.C.3.a): GOP (4.B.1: each segment the greater of actual or scheduled block; a duty of
+//   one leg is one segment), Trip Rig 1:3.5 of TAFB (report to release, release = last block-in + 0:15), MDG 5:00 x the
+//   calendar days the trip touches (from Mar 2, 2025).
+// - Delay vs reassignment (2.A.15.a.1): a leg whose only change is its time, left less than 24 h after its scheduled
+//   departure (before the next day's operation of the same flight), is a delay: ONE segment. FLICA has counted a delayed
+//   leg twice (the original and the delayed one, H3606A Nov 2026): when every duty matches the package one leg each, a leg
+//   is delayed and FLICA's credit is 0:30 or more over every PWA test, the PWA credit is used (fix) and the cut kept.
+//   A leg 24 h or more late, or legs unlike the package, keep FLICA's credit (pay protection, 4.D.2.b).
+// - LODO (4.D.2.e): released in domicile after the scheduled footprint on a scheduled day off: 4:00 PAY, no credit, for
+//   each lost day off.
+// - Recall (4.M.1.a): 200% pay, 100% credit: the extra 100% of the recall duties' credit (pay only).
+function fwPwaTrip(o) {
+  const ot = (o && o.ot) || {}, st = String((o && o.start) || "");
+  const du = Array.isArray(ot.duties) && ot.duties.length && ot.duties.every((x) => x && typeof x.dep === "number" && typeof x.arr === "number" && typeof x.blk === "number") ? ot.duties : null;
+  if (!du || !FWG_ISO.test(st)) return null;
+  const pr = (o && o.pr) || null, pd = fwPkgDuties(pr), pdet = pr && pr.det && Array.isArray(pr.det.duties) ? pr.det.duties : [];
+  const match = pd.length > 0 && pd.length === du.length && du.every((x, i) => !x.stn || !pdet[i] || !pdet[i].stn || x.stn === pdet[i].stn);
+  const single = match && pdet.every((x) => x && Array.isArray(x.legs) && x.legs.length === 1);
+  const segs = du.map((x, i) => {
+    const act = Math.round(x.blk), sch = match ? pd[i].blk : null;
+    return { stn: String(x.stn || ""), act, sch, cr: Math.max(act, sch == null ? 0 : sch), delay: match ? Math.round(x.dep - pd[i].dep) : null, day: fwgDay(st, Math.floor(x.dep / 1440)) };
+  });
+  const gop = segs.reduce((a, s) => a + s.cr, 0);
+  const rep = fwgMins(ot.report), rel = Math.max(...du.map((x) => x.arr)) + 15;
+  const tafb = rep != null && rel > rep ? rel - rep : null;
+  const rig = tafb != null ? Math.round(tafb / 3.5) : 0;
+  const days = Math.floor(rel / 1440) + 1, mdg = st >= "2025-03-02" ? 300 * days : 0;
+  const pwa = Math.max(gop, rig, mdg), won = pwa === gop ? "gop" : pwa === rig ? "rig" : "mdg";
+  const flica = fwgMins(ot.credit);
+  const delayed = segs.filter((s) => s.delay != null && s.delay >= 60 && s.delay < 1440).length;
+  const passed = segs.filter((s) => s.delay != null && s.delay >= 1440).length;
+  const fix = single && delayed > 0 && !passed && flica != null && flica - pwa >= 30;
+  const use = fix ? pwa : flica != null ? flica : pwa;
+  const sRel = pr && pr.relDays !== "" && pr.relDays != null && Number.isFinite(Number(pr.relDays)) ? Number(pr.relDays) : null;
+  const aRel = Math.floor(rel / 1440), lodoDays = [];
+  if (sRel != null && aRel > sRel) for (let k = sRel + 1; k <= aRel; k++) { const iso = fwgDay(st, k); if (!o.isOff || o.isOff(iso)) lodoDays.push(iso); }
+  const r = o.rcl, rcl = r === true ? use : Array.isArray(r) ? segs.reduce((a, s, i) => a + (r.includes(i) ? s.cr : 0), 0) : 0;
+  return { segs, gop, rig, tafb, days, mdg, pwa, won, flica, use, fix, cut: fix ? flica - use : 0, match, single, delayed, passed,
+    sRel, aRel, rel, lodoDays, lodo: 240 * lodoDays.length, rcl, rclAll: r === true };
+}
+// Recall marks in the per-trip list (input_text.flight_watcher_er_trips, beside the '+KEY' / '-KEY' type-rated FO
+// marks): 'R+KEY' the whole trip, 'R+KEY@0.2' its duties 0 and 2 (from the first). Returns true, [i, ...] or null.
+function fwRclOf(list, k) {
+  for (const x of list || []) {
+    const m = /^R\+(.+?)(?:@([\d.]+))?$/.exec(String(x || ""));
+    if (m && m[1] === k) return m[2] ? m[2].split(".").filter(Boolean).map(Number) : true;
+  }
+  return null;
+}
+
 // ---- shared schedule grid: keep identical in every card that holds it (tests/test_sched_grid_shared.py) ----
 // 1.7.7 (Nov 14: "my schedule and other pilots schedule and reconstructed schedules should be exactly the same style
 // including this latest detail panel"): one look for every month grid and one pairing detail panel, in each card that
@@ -1174,6 +1250,21 @@ class FlightWatcherScheduleCard extends HTMLElement {
   // admin's household) is read and named on the admin's card only, never on a pilot's
   _role(h) { const s = ((h || this._h || {}).states || {})["sensor.flight_watcher_state"]; return (s && s.attributes && s.attributes.role) || ""; }
   _isAdmin(h) { const hh = h || this._h || {}; const s = (hh.states || {})["sensor.flight_watcher_state"]; return !!(s && s.attributes && s.attributes.role === "admin" && hh.user && hh.user.is_owner); }
+  // 1.7.20 (Hark, Ryan Nov 20, 2026): the PWA credit lines of a trip's Pay-Gross breakdown (fwPwaTrip): which test won,
+  // each segment, the rig, the minimum, delay vs reassignment, and the check against FLICA's credit
+  _pwaLines(pa, F, hm, mdy) {
+    const t = (m) => (m == null ? "?" : hm(m / 60)), out = [];
+    const seg = pa.segs.map((s) => `${s.stn ? `to ${s.stn} ` : ""}${mdy(s.day)} ${t(s.act)} actual${s.sch != null ? ` / ${t(s.sch)} sched = ${t(s.cr)}` : ""}${s.delay != null && s.delay >= 60 ? ` (left ${t(s.delay)} late)` : ""}`).join("; ");
+    const won = { gop: "GOP", rig: "Trip Rig", mdg: "MDG" }[pa.won];
+    out.push(`PWA credit ${t(pa.pwa)} = the greater of (PWA 4.C.3.a): GOP ${t(pa.gop)} (4.B.1, each segment the greater of actual or scheduled block: ${seg}); Trip Rig ${t(pa.rig)} (1:3.5 of TAFB ${t(pa.tafb)}, 4.C.3.a.4); MDG ${t(pa.mdg)} (5:00 x ${pa.days} calendar day${pa.days > 1 ? "s" : ""}, 4.C.3.a.5). ${won} wins.`);
+    if (!pa.match) out.push(pa.sRel == null ? "Scheduled block not on file (no pairings package for this trip on this day): GOP uses actual block only." : "The legs differ from the pairings package (a reassignment or a rebuilt trip): FLICA's credit kept (pay protection, PWA 4.D.2.b).");
+    if (pa.fix) out.push(`FLICA shows ${t(pa.flica)}: the delayed leg counted twice (the original and the delayed one). A delay, not a reassignment (PWA 2.A.15.a.1: only the time changed, before the next day's operation of that flight): one segment (4.B.1). FW counts ${t(pa.use)}, ${t(pa.cut)} less.`);
+    else if (pa.passed) out.push("A leg left 24 h or more late (it may pass the next operation of that flight: a reassignment, PWA 2.A.15): FLICA's credit kept (pay protection, 4.D.2.b).");
+    else if (pa.flica != null) out.push(Math.abs(pa.flica - pa.pwa) <= 1 ? `PWA check: matches FLICA's ${t(pa.flica)}.` : `PWA check: FLICA ${t(pa.flica)}, PWA tests ${t(pa.pwa)}${pa.flica > pa.pwa ? " (FLICA higher: segment credits or legs the duty times do not show; FLICA kept)" : " (FLICA lower: check it; FLICA kept)"}.`);
+    if (pa.sRel != null && pa.aRel > pa.sRel && !pa.lodoDays.length) out.push(`Released after the scheduled footprint, but not on a day off: no LODO (PWA 4.D.2.e).`);
+    if (pa.delayed && !pa.fix && !pa.passed) out.push("Delayed leg counted once (PWA 2.A.15.a.1, 4.B.1).");
+    return out;
+  }
   _marks() { return this._isAdmin() ? "availability, trade and drop marks" : "availability and trade marks"; }
   // 1.7.18 (Nov 17: the lock did not show well on a Samsung phone, and it was not obvious when it was locked or
   // unlocked): a switch, On = locked (the default). The lock icon (fwsLockSvg), the word Lock, a track with its knob
@@ -1235,11 +1326,20 @@ class FlightWatcherScheduleCard extends HTMLElement {
           return;
         }
         // 1.6.2 review: the RO+15% toggle sits inside the Pay-Gross info box, so it is read before a tap there closes it
+        // 1.7.20: the recall mark ('R+KEY' in the same list) sits in the Pay-Gross info box too
+        const rc = e.target.closest(".rcl");
+        if (rc && rc.dataset.k) {
+          const cur = String((this._h.states["input_text.flight_watcher_er_trips"] || {}).state || "").split(",").filter(Boolean);
+          const k = rc.dataset.k, on = rc.classList.contains("on");
+          const next = cur.filter((x) => !(x === "R+" + k || x.startsWith("R+" + k + "@"))).concat(on ? [] : ["R+" + k]);
+          this._h.callService("input_text", "set_value", { entity_id: "input_text.flight_watcher_er_trips", value: next.join(",") });
+          return;
+        }
         const er = e.target.closest(".er");
         if (er && er.dataset.k) {
           const cur = String((this._h.states["input_text.flight_watcher_er_trips"] || {}).state || "").split(",").filter(Boolean);
           const k = er.dataset.k, on = er.classList.contains("on");
-          const next = cur.filter((x) => x.slice(1) !== k).concat(on ? ["-" + k] : ["+" + k]);
+          const next = cur.filter((x) => x.slice(1) !== k || x.startsWith("R+")).concat(on ? ["-" + k] : ["+" + k]);
           this._h.callService("input_text", "set_value", { entity_id: "input_text.flight_watcher_er_trips", value: next.join(",") });
           return;
         }
@@ -1286,9 +1386,13 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const RATE = noYear ? NaN : rateFor(lyr, today);
     const rateTxt = noYear ? "your rate (set your longevity year)" : `$${RATE.toFixed(2)}`;
     const erOv = String((S["input_text.flight_watcher_er_trips"] || {}).state || "").split(",").filter(Boolean);
-    const erOn = (k, lay, n) => erOv.includes("-" + k) ? false : erOv.includes("+" + k) ? true : (n ? n >= 4 : /\bSIN\b/.test(lay || ""));
-    // v51: pilots on the pairing from the package crew line (CA01FO01RO01 = 3 = IRO crew; CA02FO02 = 4 = Extended Range crew, PWA 2.A.25)
-    const crewN = (c) => (String(c || "").match(/\d{2}/g) || []).reduce((a, x) => a + parseInt(x, 10), 0);
+    // 1.7.20 (Hark, Ryan Nov 20, 2026): the type-rated FO's 15% (PWA 4.O.1.b) only on a trip marked '+KEY' (the Pay-Gross
+    // tap): never by itself for SIN or a 4-pilot crew, where an FO or RO is paid $3.00 per block hour
+    const erOn = (k) => !erOv.includes("-" + k) && erOv.includes("+" + k);
+    // v51: pilots on the pairing from the package crew line (CA01FO01RO01 = 3 = IRO crew; CA02FO02 = 4 = Extended Range crew, PWA 2.A.25); 1.7.20: a number, or FLICA's crew list (fwCrewOwn)
+    const crewN = (c) => typeof c === "number" ? c : Array.isArray(c) ? fwCrewOwn(c) : (String(c || "").match(/\d{2}/g) || []).reduce((a, x) => a + parseInt(x, 10), 0);
+    // 1.7.20: a trip's pilots: the most of the package crew line (the row, else its detail) and FLICA's own crew list
+    const nOf = (pr, ot) => Math.max(crewN((pr && (pr.crew || (pr.det && pr.det.crew))) || ""), crewN(Array.isArray(ot && ot.crew) ? ot.crew : []));
     const hx = (v) => hrs(String(v || "").replace("h", ":"));
     const blocked = new Set(((S["sensor.flight_watcher_blocked_days"] || {}).attributes || {}).days || []);
     const dropA = admin ? (S["sensor.flight_watcher_would_drop"] || {}).attributes || {} : {};  // FW-0063: no Would drop on a pilot
@@ -1605,7 +1709,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         }
       } else if (pk === false) note = `No ${MONTHS[m]} pairing package on file, so no tag-on ideas.`;
       { const sc0 = this._school(key + "-15"); if (sc0 === false && this._role() === "admin") note += (note ? " " : "") + `No HPA school calendar file for this school year (school_YYYY-YY.json); holidays shown instead.`; }
-      const sum = { blk: 0, cr: 0, soft: 0, gross: 0, net: 0, vac: 0, vacDays: 0, payp: 0, ppEst: false, ppCov: [], ppUnk: "" };
+      const sum = { blk: 0, cr: 0, soft: 0, gross: 0, net: 0, vac: 0, vacDays: 0, payp: 0, ppEst: false, ppCov: [], ppUnk: "", lodo: 0, rcl: 0, cut: 0, cutT: [] };
       const tt = mon.totals || {};
       const fl = (v) => { const m = /^(\d+)[.:](\d{2})$/.exec(String(v || "")); return m ? parseInt(m[1], 10) + parseInt(m[2], 10) / 60 : null; };
       const mdy = (iso) => { const mo = MON3[parseInt(String(iso).slice(5, 7), 10) - 1] || ""; return `${mo.slice(0, 1)}${mo.slice(1).toLowerCase()} ${parseInt(String(iso).slice(8, 10), 10) || ""}`.trim(); };
@@ -1699,12 +1803,25 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const pd = pr && pr.det && Array.isArray(pr.det.duties) && pr.det.duties.length === own.length ? pr.det.duties : null;
         return fwSplit(d, own.map((x, i) => ({ dep: x.dep, blk: x.blk, tcrd: pd && pd[i] && typeof pd[i] === "object" ? pd[i].tcrd : null })), bp.from, bp.to, cH, bH);
       };
+      // 1.7.20 (Hark, Ryan Nov 20, 2026): the PWA pay engine on an own trip (fwPwaTrip: greater of GOP / Trip Rig / MDG,
+      // delay vs reassignment, LODO, recall). A day off = no other assignment on the schedule that day (a VAC, PAYP or
+      // reserve code is not off). pwaAdj: the trip's own times with FLICA's credit replaced only where FLICA counted a
+      // delayed leg twice (fix), so Credit, Soft, Pay-Gross, the totals and the paychecks all use the PWA credit
+      const isOffFor = (iso, self) => !near.some((it) => it && it.trip && `${it.trip}|${it.start}` !== self && it.start <= iso && iso <= (it.end || it.start));
+      const pwaOf = (d, trip, ot, pr) => (isP(trip) && trip !== PAYP ? fwPwaTrip({ start: d, ot, pr: pr && pr.days && pr.days.has(d) ? pr : null,
+        isOff: (iso) => isOffFor(iso, `${trip}|${d}`), rcl: fwRclOf(erOv, `${trip}|${d}`) }) : null);
+      const pwaAdj = (ot, pa) => {
+        if (!pa || !pa.fix) return ot;
+        const b = fwgMins(ot.blk);
+        return { ...ot, credit: hm(pa.use / 60), soft: b == null ? ot.soft : hm(Math.max(0, pa.use - b) / 60), flica_credit: ot.credit };
+      };
       const figs = (d, trip, tr) => {
-        const ot = trip && trip !== "VAC" ? ((tr || ownT)[`${trip}|${d}`] || {}) : {};
+        const ot0 = trip && trip !== "VAC" ? ((tr || ownT)[`${trip}|${d}`] || {}) : {};
         // 1.7.11 review: the package of the bid period the trip starts in (a trip from the bid period before is in
         // that one's package, not this month's)
         const pkm = isP(trip) ? pkOf(d) : null;  // a pairing only (a code never asks for another package)
         const pkr = pkm ? (pkm[trip.slice(0, 5)] || {}) : {};
+        const pa = pwaOf(d, trip, ot0, pkm ? pkm[trip.slice(0, 5)] : null), ot = pwaAdj(ot0, pa);
         // 1.6.3: the pairings package writes credit as "15h00"; hrs() reads "15:00", so a trip whose own times are not
         // read yet (a pilot's first days, or any new trip) counted 0:00 and $0 in the row and the month totals
         const pkC = pkr.credit ? String(pkr.credit).trim().replace(/^(\d+)h(\d{2})$/, "$1:$2") : "";
@@ -1715,7 +1832,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const z = (v) => (v ? "0:00" : "");
         const bcs = whole ? bcsAll : sp ? [sp.bl != null ? hm(sp.bl / 60) : "", sp.cr != null ? hm(sp.cr / 60) : "", sp.cr != null && sp.bl != null ? hm(Math.max(0, sp.cr - sp.bl) / 60) : ""]
           : [z(bcsAll[0]), z(bcsAll[1]), z(bcsAll[2])];
-        return { ot, pkr, bcsAll, bcs, inP, whole, sp };
+        return { ot, pkr, bcsAll, bcs, inP, whole, sp, pa };
       };
       // FW-0080: what a row's split mark says (its part here, and what part pays in the other bid period, PWA 4.A)
       const splitWhy = (d, trip, F) => {
@@ -1754,22 +1871,23 @@ class FlightWatcherScheduleCard extends HTMLElement {
       const ppl = paypPlan(mon, ownT, crOther, fl(tt.credit));
       const ppDay = {};  // fix pass: every day of the PAYP, the next month's too, names its record
       for (const p of ppl) for (const d of p.all) ppDay[d] = p;
-      const tripFull = (cr, blk, crew, lay, k, seat) => { const n = crewN(crew); seat = (seat || "FO").toUpperCase();
-        const ov = blk != null ? (seat === "RO" ? blk * IRO_OVERRIDE : (seat !== "CA" && n === 3 ? blk * 3.00 : 0)) : 0;
-        return cr == null ? null : cr * RATE + ov + (erOn(k, lay, n) ? cr * RATE * ER_PCT : 0); };
+      const tripFull = (cr, blk, crew, lay, k, seat) => { const n = crewN(crew);
+        return cr == null ? null : cr * RATE + fwOverride(seat, n, blk, cr, RATE, erOn(k, lay, n)).v; };
       // month price of a version (same rules as the rows): Awarded-Pay-Gross and Improved-Pay-Gross
       // 1.7.2: a PAYP is priced as on the rows (paypPlan: the record's credit, else the estimate from the version's own
       // FLICA credit), so Awarded-Pay-Gross, Improved-Pay-Gross and a version's Pay-Gross count it too
       const price = (mm, tr) => { let g = 0, other = 0;
         // FW-0080: the rows' rule (figs): each trip its part in this bid period, the trips carried in from no row too
         const one = (d, trip, lay) => {
-          const ot = tr[`${trip}|${d}`] || {}; const pm = pkOf(d), pr = pm ? (pm[trip.slice(0, 5)] || {}) : {};
+          const ot0 = tr[`${trip}|${d}`] || {}; const pm = pkOf(d), pr = pm ? (pm[trip.slice(0, 5)] || {}) : {};
+          const pa = pwaOf(d, trip, ot0, pm ? pm[trip.slice(0, 5)] : null), ot = pwaAdj(ot0, pa);  // 1.7.20
           let cH = hrs(ot.credit); if (cH == null) cH = hx(pr.credit); let bH = hrs(ot.blk); if (bH == null) bH = hx(pr.block);
           const sp = splitOf(d, trip, ot, cH, bH);
           if (!(sp ? sp.in : inBp(d))) return;
           const c = sp && !sp.whole ? (sp.cr == null ? null : sp.cr / 60) : cH, b = sp && !sp.whole ? (sp.bl == null ? null : sp.bl / 60) : bH;
           other += c == null ? 0 : c;
-          g += tripFull(c, b, pr.crew, lay, `${trip}|${d}`, ot.seat) || 0;
+          g += tripFull(c, b, nOf(pr, ot), lay, `${trip}|${d}`, ot.seat) || 0;
+          if (pa) g += ((pa.lodoDays.filter(inBp).length * 4) + (pa.rclAll ? (c || 0) : pa.rcl / 60)) * RATE;  // 1.7.20: LODO, recall (pay only)
         };
         const rows = new Set(((mm && mm.days) || []).filter(([, t]) => t).map(([d, t]) => `${t}|${d}`));
         for (const [d, trip, lay] of ((mm && mm.days) || [])) {
@@ -1900,24 +2018,38 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const cH = hrs(bcs[1]), bH = hrs(bcs[0]);
         const gross = cH != null ? cH * RATE : null;
         const seat = trip === PAYP ? "" : (ot.seat || "").toUpperCase();  // 1.7.2: a PAYP flies no seat (no override)
-        const nP = crewN(pkr.crew);
-        const roV = bH != null ? (seat === "RO" ? bH * IRO_OVERRIDE : (seat !== "CA" && nP === 3 ? bH * 3.00 : 0)) : 0;
-        const ro = bH != null && roV ? usd(roV) : "";
-        const erK = trip + "|" + d, erIs = cH != null && erOn(erK, l, nP);
-        const erV = erIs ? cH * RATE * ER_PCT : 0;
-        const total = gross != null ? gross + roV + erV : null;
+        // 1.7.20 (Hark, Ryan Nov 20, 2026): PWA 4.O.1 by crew size (fwOverride), LODO and recall pay (fwPwaTrip), pay only
+        const nP = trip === PAYP ? 0 : nOf(pkr, ot);
+        const erK = trip + "|" + d;
+        const ovO = gross != null ? fwOverride(seat, nP, bH, cH, RATE, erOn(erK, l, nP)) : { v: 0, kind: "" };
+        const erIs = ovO.kind === "er", roV = erIs ? 0 : ovO.v, erV = erIs ? ovO.v : 0;
+        const pa = F.pa, lodoD = pa && gross != null ? pa.lodoDays.filter(inBp) : [];
+        const rclH = pa && gross != null && F.inP ? (pa.rclAll ? cH : pa.rcl / 60) : 0;
+        const lodoV = lodoD.length * 4 * RATE, rclV = rclH * RATE;
+        const total = gross != null ? gross + roV + erV + lodoV + rclV : null;
         const net = total != null ? total * (1 - (fed + stt) / 100) : null;
-        if (trip && trip !== "VAC" && trip !== PAYP) tripPay[trip + "|" + d] = tripFull(hrs(bcsAll[1]) != null ? hrs(bcsAll[1]) : hx(pkr.credit), hrs(bcsAll[0]) != null ? hrs(bcsAll[0]) : hx(pkr.block), pkr.crew, l, trip + "|" + d, seat);
+        if (trip && trip !== "VAC" && trip !== PAYP) tripPay[trip + "|" + d] = tripFull(hrs(bcsAll[1]) != null ? hrs(bcsAll[1]) : hx(pkr.credit), hrs(bcsAll[0]) != null ? hrs(bcsAll[0]) : hx(pkr.block), nP, l, trip + "|" + d, seat);
         // FW-0080: the bid period's (a trip its part flown in it; a PAYP or VAC day in it), never the calendar month's
         if (trip && trip !== "VAC" && (trip === PAYP ? inBp(d) : F.inP)) { sum.blk += bH || 0; sum.cr += cH || 0; sum.soft += hrs(bcs[2]) || 0; sum.gross += total || 0; sum.net += net || 0; }
+        if (pa && F.inP && gross != null) { sum.lodo += lodoD.length * 4; sum.rcl += rclH; sum.cut += pa.cut / 60; if (pa.fix) sum.cutT.push(`${trip} ${mdy(d)}: FLICA ${pa.flica != null ? hm(pa.flica / 60) : "?"}, PWA ${hm(pa.use / 60)}`); }
         if (trip === PAYP && inBp(d) && cH != null) { sum.payp += cH; sum.ppEst = sum.ppEst || !!pp.est; }
         if (trip === "VAC" && inBp(d)) { sum.vacDays += 1; sum.vac += VAC_H; sum.gross += VAC_H * RATE; sum.net += VAC_H * RATE * (1 - (fed + stt) / 100); }
+        const ovLine = { iro: `IRO override ${usd(roV)} (${bcs[0]} block x $${IRO_OVERRIDE.toFixed(2)}, IRO seat on a ${nP || 3}-pilot crew, PWA 4.O.1.a)`,
+          fo3: `IRO crew FO override ${usd(roV)} (${bcs[0]} block x $3.00, 3-pilot crew, PWA 4.O.1.a)`,
+          erfo: `Extended Range crew FO override ${usd(roV)} (${bcs[0]} block x $3.00, ${nP}-pilot crew, ${seat || "FO"} seat; the 15% is only for the type-rated FO, PWA Definitions 25, 4.O.1.b)`,
+          ca: `Captain override ${usd(roV)} (${bcs[0]} block x $5.00, PWA 4.O.1)`,
+          er: `Extended Range type-rated FO +15% ${usd(erV)} (${bcs[1]} x ${rateTxt} x 15%, marked as the type-rated FO seat, PWA 4.O.1.b)` }[ovO.kind];
         const lines = gross != null ? [`Pay-Credit ${usd(gross)} (${bcs[1]} x ${rateTxt})`]
-          .concat(seat === "RO" ? [`IRO override ${usd(roV)} (${bcs[0]} block x $${IRO_OVERRIDE.toFixed(2)}, PWA 4.O.1.a)`] : (roV ? [`IRO crew FO override ${usd(roV)} (${bcs[0]} block x $3.00, PWA 4.O.1.a)`] : []))
-          .concat(erIs ? [`Extended Range type-rated FO +15% ${usd(erV)} (PWA 4.O.1.b)`] : [])
-          .concat(trip === PAYP ? [ppTitle(pp)] : []) : [];
+          .concat(ovLine ? [ovLine] : [])
+          .concat(lodoD.length ? [`LODO ${usd(lodoV)} (4:00 x ${lodoD.length} lost day${lodoD.length > 1 ? "s" : ""} off: ${lodoD.map(mdy).join(", ")}; released in domicile after the scheduled footprint, PAY only, no credit, PWA 4.D.2.e)`] : [])
+          .concat(rclV ? [`Recall +100% ${usd(rclV)} (${hm(rclH)} x ${rateTxt}: 200% pay, 100% credit on the recall ${pa.rclAll ? "trip" : "duties"}, PWA 4.M.1.a)`] : [])
+          .concat(trip === PAYP ? [ppTitle(pp)] : [])
+          .concat(pa ? this._pwaLines(pa, F, hm, mdy) : [])
+          .concat(gross != null && trip !== PAYP && isP(trip) ? [`Pay-Gross ${usd(total)}: credit pay ${usd(gross)}${roV || erV ? ` + override ${usd(roV + erV)}` : ""}${lodoV ? ` + LODO ${usd(lodoV)}` : ""}${rclV ? ` + recall ${usd(rclV)}` : ""}. Credit ${bcs[1]}${lodoD.length || rclV ? `; pay hours ${hm(cH + lodoD.length * 4 + rclH)} (LODO and recall are pay, not credit)` : ""}.`,
+            "CrewTrac check: not compared by FW yet (CrewTrac controls: check this trip's TCRD and BLKT in Schedule Detail)."] : []) : [];
         const payT = lines.join("\n");
-        const erBtn = cH != null ? `<span class="er tag${erIs ? " on" : ""}" data-k="${this._esc(erK)}">RO+15% ${erIs ? "ON, tap to turn off" : "off, tap to turn on (4-pilot Extended Range trip, not IOE)"}</span>` : "";
+        const erBtn = cH != null ? `<span class="er tag${erIs ? " on" : ""}" data-k="${this._esc(erK)}">Type-rated FO +15% ${erIs ? "ON, tap to turn off" : "off, tap to turn on (only if you flew the Extended Range type-rated FO seat, PWA 4.O.1.b; else FO/RO $3.00)"}</span>` +
+          (pa ? ` <span class="rcl tag${fwRclOf(erOv, erK) ? " on" : ""}" data-k="${this._esc(erK)}">Recall ${fwRclOf(erOv, erK) ? "ON, tap to turn off" : "off, tap if this trip was a recall (200% pay, PWA 4.M.1.a)"}</span>` : "") : "";
         const fo = farOn[d] || null;
         // trip box in the Layover column: top edge on the report day, bottom edge on the release day
         const tripSpan = own.find((o) => o.it.start <= d && d <= (o.rel ? this._d(o.rel) : o.it.end));
@@ -1929,9 +2061,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
       // FW-0080: the trips carried in (no row on this page) count their part flown in this bid period, as FLICA does
       const carryT = [];
       for (const { it, F } of carried.values()) {
-        const cH = hrs(F.bcs[1]), bH = hrs(F.bcs[0]), seat = (F.ot.seat || "").toUpperCase(), nP = crewN(F.pkr.crew);
-        const roV = bH != null ? (seat === "RO" ? bH * IRO_OVERRIDE : (seat !== "CA" && nP === 3 ? bH * 3.00 : 0)) : 0;
-        const total = cH != null ? cH * RATE + roV + (erOn(`${it.trip}|${it.start}`, it.lay || "", nP) ? cH * RATE * ER_PCT : 0) : null;
+        const cH = hrs(F.bcs[1]), bH = hrs(F.bcs[0]), seat = (F.ot.seat || "").toUpperCase(), nP = nOf(F.pkr, F.ot);
+        const lodoC = F.pa ? F.pa.lodoDays.filter(inBp).length * 4 : 0;  // 1.7.20: a LODO day in this bid period (pay only)
+        const total = cH != null ? cH * RATE + fwOverride(seat, nP, bH, cH, RATE, erOn(`${it.trip}|${it.start}`, it.lay || "", nP)).v + lodoC * RATE : null;
+        sum.lodo += cH != null ? lodoC : 0;
         sum.blk += bH || 0; sum.cr += cH || 0; sum.soft += hrs(F.bcs[2]) || 0; sum.gross += total || 0; sum.net += total != null ? total * (1 - (fed + stt) / 100) : 0;
         carryT.push(`${it.trip} ${mdy(it.start)}: ${F.bcs[0] || "?"} block, ${F.bcs[1] || "?"} credit flown in this bid period${F.sp && F.sp.est ? " (credit by block share, an estimate)" : ""}`);
       }
@@ -1976,7 +2109,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
           const mPay = (yy, mm0) => {  // the bid period's pay that the 22nd check settles
             const k = mk(yy, mm0), R = rateFor(lyr, `${k}-15`), mmg = 75 * R;
             if (k === key) {
-              const xh = Math.max(0, (fCr || 0) - crAll), p = sum.gross + xh * R;
+              const xh = Math.max(0, (fCr || 0) - crAll - sum.cut), p = sum.gross + xh * R;  // 1.7.20: never FLICA's double-counted delayed leg
               return { pay: Math.max(p, mmg), why: p < mmg ? `${MONTHS[mm0]} flying ${usd(p)} is under the 75:00 MMG, so ${usd(mmg)}` : `${MONTHS[mm0]} Pay-Gross ${usd(sum.gross)}${xh > 0.01 ? ` plus ${hm(xh)} FLICA credit the card does not price (SIM, sick, training) at $${R.toFixed(2)}` : ""}` };
             }
             const row = imp.find((r) => r && r.month === k), cr = fl(((SM[k] || {}).totals || {}).credit);
@@ -2025,8 +2158,12 @@ class FlightWatcherScheduleCard extends HTMLElement {
           [lbl(d22), cell(g22, `${lbl(d22)} (${iso(d22)}): ${MONTHS[m]} true-up, Pay-Gross ${usd(sum.gross)} less the ${usd(adv(y, m))} advance paid on the 7th`)],
           [`${MONTHS[nm].slice(0, 3)} total`, cell(g7 + g22, `${MONTHS[nm]} paychecks together`)]]);
       })();
-      const tot = tgrp("thrs", [["Credit", hm(crAll) + (sum.ppEst ? ` <span class="k" title="${this._esc(`Not checked: the PAYP estimate is ${srcFl}'s month credit less everything else counted, so Credit matches it by construction.`)}">est</span>` : chk(crAll, fCr))], ["Block", hm(sum.blk) + chk(sum.blk, fBlk)], ["Block Avail", `<span class="${bAv <= 0 ? "bad" : ""}" title="98:00 bid-month block cap (crew scheduling) minus FLICA's bid-period Block">${bAv < 0 ? "-" + hm(-bAv) : hm(bAv)}</span>`], ["Soft", hm(sum.soft)],
+      const cutT = sum.cut > 0.01 ? ` <span class="k" title="${this._esc(`FW counts ${hm(sum.cut)} less than FLICA: a delayed leg FLICA counted twice (PWA 2.A.15.a.1, 4.B.1). ${sum.cutT.join("; ")}. Tap the trip's Pay-Gross for the breakdown.`)}">PWA -${hm(sum.cut)}</span>` : "";
+      const tot = tgrp("thrs", [["Credit", hm(crAll) + cutT + (sum.ppEst ? ` <span class="k" title="${this._esc(`Not checked: the PAYP estimate is ${srcFl}'s month credit less everything else counted, so Credit matches it by construction.`)}">est</span>` : chk(crAll, fCr))], ["Block", hm(sum.blk) + chk(sum.blk, fBlk)], ["Block Avail", `<span class="${bAv <= 0 ? "bad" : ""}" title="98:00 bid-month block cap (crew scheduling) minus FLICA's bid-period Block">${bAv < 0 ? "-" + hm(-bAv) : hm(bAv)}</span>`], ["Soft", hm(sum.soft)],
         ["Vacation", sum.vacDays ? `${hm(sum.vac)} <span class="k">(${sum.vacDays} d x ${hm(VAC_H)})</span>` : ""],
+        // 1.7.20: pay with no credit (PWA 4.D.2.e LODO, the recall's extra 100%, 4.M.1.a): inside Pay-Gross, never in Credit
+        ["LODO", sum.lodo ? `<span class="ppt" title="${this._esc(`Loss of Day Off: 4:00 pay, no credit, per day off lost (PWA 4.D.2.e). Inside Pay-Gross and the paychecks, not in Credit.`)}">${hm(sum.lodo)} <span class="k">pay only</span></span>` : ""],
+        ["Recall", sum.rcl ? `<span class="ppt" title="${this._esc(`Recall: 200% pay, 100% credit (PWA 4.M.1.a). The extra 100% is inside Pay-Gross, not in Credit.`)}">+${hm(sum.rcl)} <span class="k">pay only</span></span>` : ""],
         // 1.7.2: the pay protected credit inside Credit (never in Block or Block Avail: not flown)
         ["PAYP", sum.payp || sum.ppUnk ? `<span class="ppt" title="${this._esc(`Pay protected credit inside Credit, Pay-Gross and Pay-Net (${PAYP_REF}). Not in Block or Block Avail: not flown.${sum.ppEst ? ` Estimate: ${srcFl}'s month credit less everything else counted.` : ""}${ppCovT ? " " + ppCovT : ""}${sum.ppUnk ? ` A PAYP's credit is unknown and not counted: ${sum.ppUnk}.` : ""}`)}">${sum.payp ? hm(sum.payp) : ""}${sum.ppEst ? ' <span class="k">estimate</span>' : ""}${sum.ppUnk ? `${sum.payp ? " +" : ""} <span class="bad">credit unknown</span>` : ""}</span>` : ""]]) +
         tgrp("tpay", noYear ? [["Pay", "set your longevity year in Pay settings"]] : [["Pay-Gross", usd(sum.gross)], ["Pay-Net", usd(sum.net)]]) + chkGrp +
@@ -2068,9 +2205,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/improved/set", payload: JSON.stringify({ month: key, awarded: Math.round(awd * 100) / 100, current: Math.round(curG * 100) / 100, ver: vl[vl.length - 1].ver, awarded_ver: vl[0].ver }) });
         }
       }
-      const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th>Block</th><th>Credit</th><th>Soft</th><th title="Credit pay + RO + RO+15%; hover or tap for the breakdown">Pay-Gross</th><th>Pay-Net</th><th title="Reserve grid net reserves">Res Grid</th><th class="fh" title="FAR 117.25(b): 30 consecutive hours free from all duty in the 168 h (7 days) before a report. &#10003; 36h MM/DD = a report at that day's first duty start (00:01 on a day off) is covered: the longest break off duty in the 168 h before it, in whole hours, and the day it ended. A later report that day may not be: hover a cell for the hours and 'covered until'. The teal edge on a day marks the break itself.">30h in 7d</th><th class="fh" title="FAR 117.23(b)(1): at most 100 flight hours in any 672 consecutive hours (28 days). Left = 100:00 minus the block flown or scheduled in the 672 h ending 24:00 that day; over = past the limit by that much.">100h in <br class="hb">672h</th><th class="fh" title="FAR 117.23(b)(1) (100 flight hours in any 672 consecutive hours): 100:00 minus the busiest 672 h window that holds any part of the day, back and forward: the windows starting at a duty's start or ending at its block-in, as a pickup's FAR check tries them, and those ending 24:00 HST.">Room to <br class="hb">100h</th><th title="Earliest report for another trip">Legal next</th><th>Open</th><th title="Tap the airplane: swap or pick-up ideas for that day, with the Pay-Gross difference">Ideas</th></tr>`;
+      const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th>Block</th><th>Credit</th><th>Soft</th><th title="Credit pay + crew override (PWA 4.O.1) + LODO and recall pay; hover or tap for the breakdown with PWA cites">Pay-Gross</th><th>Pay-Net</th><th title="Reserve grid net reserves">Res Grid</th><th class="fh" title="FAR 117.25(b): 30 consecutive hours free from all duty in the 168 h (7 days) before a report. &#10003; 36h MM/DD = a report at that day's first duty start (00:01 on a day off) is covered: the longest break off duty in the 168 h before it, in whole hours, and the day it ended. A later report that day may not be: hover a cell for the hours and 'covered until'. The teal edge on a day marks the break itself.">30h in 7d</th><th class="fh" title="FAR 117.23(b)(1): at most 100 flight hours in any 672 consecutive hours (28 days). Left = 100:00 minus the block flown or scheduled in the 672 h ending 24:00 that day; over = past the limit by that much.">100h in <br class="hb">672h</th><th class="fh" title="FAR 117.23(b)(1) (100 flight hours in any 672 consecutive hours): 100:00 minus the busiest 672 h window that holds any part of the day, back and forward: the windows starting at a duty's start or ending at its block-in, as a pickup's FAR check tries them, and those ending 24:00 HST.">Room to <br class="hb">100h</th><th title="Earliest report for another trip">Legal next</th><th>Open</th><th title="Tap the airplane: swap or pick-up ideas for that day, with the Pay-Gross difference">Ideas</th></tr>`;
       const bpTxt = `${mdy(bp.from)} to ${mdy(bp.to)}${bp.src === "package" ? " (the pairings package)" : bp.src === "schedule" ? " (the schedule pages: no pairings package on file)" : " (the calendar month: no pairings package or schedule page gives the bid period)"}`;
-      const totT = `${MONTHS[m]} totals: flown in the bid period, ${bpTxt}: each segment credited to the bid period it originates in (PWA 4.A), a trip across the bid period's edge its part here, plus vacation days at ${hm(VAC_H)} (PWA 6.J) and pay protected (PAYP) credit (PWA Definitions 57). Pay at ${rateTxt}/credit h incl. RO and RO+15% where on; net after the tax settings. Checked against FLICA's Block and Credit.${carryT.length ? ` Also counted: ${carryT.join("; ")}.` : ""}`;
+      const totT = `${MONTHS[m]} totals: flown in the bid period, ${bpTxt}: each segment credited to the bid period it originates in (PWA 4.A), a trip across the bid period's edge its part here, plus vacation days at ${hm(VAC_H)} (PWA 6.J) and pay protected (PAYP) credit (PWA Definitions 57). Pay at ${rateTxt}/credit h incl. the PWA 4.O.1 crew override, LODO (4.D.2.e) and recall (4.M.1.a) pay where due; net after the tax settings. Checked against FLICA's Block and Credit.${carryT.length ? ` Also counted: ${carryT.join("; ")}.` : ""}`;
       body = `<div class="wrap"><table class="cal">${head}${rows}</table></div>${pdM && !narrow ? fwgPanelHtml(pdM) : ""}<div class="tot" title="${this._esc(totT)}">${tot}</div>${carryT.length ? `<div class="cin">Also counted (PWA 4.A): ${this._esc(carryT.join("; "))}.</div>` : ""}${bp.src === "calendar" ? `<div class="cin">Totals over the calendar month: no pairings package or schedule page on file gives this bid period.</div>` : ""}`;
     }
     const upd = awd0 ? "" : st && st.attributes ? (st.attributes.updated || "") : "";
@@ -2165,9 +2302,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
     <tr><td>Block / Credit / Soft</td><td>Your trip's block, credit and soft time (credit minus block), from FLICA's pairing page. Purple = this bid period's part only (FLICA totals the bid period: December 2026 runs Dec 2 to Dec 31); the rest pays in the bid period its duties depart in (PWA 4.A), hover for the split. A trip from the bid period before that flies into this one counts its part here, named under the totals.</td></tr>
     <tr><td>Totals</td><td>Month totals incl. vacation at ${hm(VAC_H)} a day (PWA 6.J); &#10003; = matches FLICA's figure, red = FLICA differs.</td></tr>
     <tr><td>PAYP</td><td>Pay protected: a trip removed from your schedule keeps its Pay and Credit (PWA Definitions 57). Its credit counts in Credit, Pay-Gross and Pay-Net on the PAYP's first day, at your rate; never in Block, Block Avail or the FAR columns (not flown). A trip whose duties depart in two bid periods counts each bid period's part there (PWA 4.A). est = the removed trip is not on file, so the credit is FLICA's month credit less everything else (only when the card counts everything else in the month; Credit then shows est, not a check). Credit unknown = not counted (no FLICA total, other credited codes, a trip not read yet). A trip you add on PAYP days pays on top (PWA 4.R.1), also when it covers every PAYP day.</td></tr>
-    <tr><td>Pay-Gross / Pay-Net</td><td>Gross = credit x ${rateTxt} + RO + RO+15%; hover or tap it for the breakdown. Net = gross after the tax settings below.</td></tr>
+    <tr><td>Pay-Gross / Pay-Net</td><td>Gross = credit x ${rateTxt} + crew override + LODO and recall pay; hover or tap it for the breakdown (which credit test won, segments, rig, LODO, override, recall, with PWA cites). Net = gross after the tax settings below.</td></tr>
     <tr><td>Teal edge</td><td>Thin teal mark left of the day = that day falls inside a break of 30+ consecutive hours free of all duty (FAR 117.25(b)), between duty periods, a long layover included. Hover the date for the break's start, end and 'covers reports until'. The 30h in 7d column gives the date that counts: &#10003; 36h MM/DD = the day the qualifying break ended (on a day still inside a break, usually that day's own date).</td></tr>
-    <tr><td>RO / RO+15%</td><td>Add-ons inside Pay-Gross. RO = only on trips where you are listed RO: block x $${IRO_OVERRIDE.toFixed(2)} (PWA 4.O.1.a). RO+15% = Extended Range crew, 4 pilots, type-rated FO: 15% of pay (PWA 4.O.1.b); on by itself for SIN, tap Pay-Gross to switch any trip on or off.</td></tr>
+    <tr><td>Override / +15%</td><td>Add-ons inside Pay-Gross by crew size (PWA 4.O.1). IRO crew (3 pilots, 4.O.1.a): RO $${IRO_OVERRIDE.toFixed(2)}, FO $3.00, CA $5.00 per block hour. Extended Range crew (4 pilots, Definitions 25, 4.O.1.b): FO or RO $3.00 per block hour, CA $5.00; the 15% premium is only for the type-rated FO: tap Pay-Gross to mark a trip you flew in that seat. Recall (200% pay, 100% credit, 4.M.1.a): tap Pay-Gross to mark a recall trip. LODO (4.D.2.e): 4:00 pay, no credit, per day off lost to a late release.</td></tr>
     <tr><td>Res Grid</td><td>FLICA net reserves. <span class="g green">Green</span> = drop or swap off this day OK. <span class="g red">Red</span> = add only.</td></tr>
     <tr><td>30h in 7d</td><td>FAR 117.25(b): 30 consecutive hours free from all duty within the past 168 consecutive hours (7 days) before a report. A break of 30 h+ off all duty (teal edge on its days, a long layover counts) covers any report up to 138 h after it ends. &#10003; 36h MM/DD = a report at that day's first duty start (00:01 on a day off) is covered: the longest break off duty in the 168 h before it, in whole hours, and the date that break ended; a later report that day may not be (hover for the hours and 'covered until'); red 'need 30h off' = that report is not covered; ? = the window reaches before the schedule on file; &#8211; = mid-trip, no report that day. Training (SIM, OEB, ground school) and reserve days count as duty; a trip whose report and release are not on file yet (its times not read) counts as time off. Need 30 h off by (totals): the first report time after which you need 30 h off first.</td></tr>
     <tr><td>100h in 672h</td><td>FAR 117.23(b)(1): at most 100 flight hours in any 672 consecutive hours (28 days). This cell checks the 672 h ending 24:00 that day: what is left, in hours and minutes, of 100:00 less the block flown or scheduled in it, leg by leg (10:57 left = 89:03 flown or scheduled). Red '0:00 left' = at the limit; red '1:20 over' = past it by that much. ~ = part of the window is before the schedule on file, or holds a trip whose times are not read yet (it adds 0:00, or only its duties with a block; hover for which). A trip with a duty's block missing counts its whole trip Block, as a pickup's FAR check does: the rest of it on the duties without one. Hover for the block.</td></tr>

@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.7.20
+
+The PWA pay engine on the schedule card (Hark, Ryan's override of Nov 20, 2026: "Update my pay in FW ... so that our
+numbers are always 100% perfect"). Pay only: cards and pay.py. No contract, FLICA, push or Tradeboard change.
+
+### Credit of an own trip (PWA 4.C.3.a, 4.B.1, 2.A.15.a.1)
+- Each own trip with duty times is checked against the PWA: credit = the greater of GOP (each segment the greater of
+  actual or scheduled block, 4.B.1; scheduled block from the pairings package), Trip Rig 1:3.5 of TAFB (report to
+  release, release = last block-in + 0:15) and MDG 5:00 x the calendar days the trip touches (from Mar 2, 2025).
+- Delay vs reassignment (2.A.15.a.1): a leg whose only change is its time, leaving less than 24 h after its scheduled
+  departure, is a delay and ONE segment. FLICA counted the delayed leg twice on H3606A (Nov 18 to 21, 2026: Credit
+  32:19, Soft 11:11): when every duty matches the package one leg each, a leg left an hour or more late and FLICA's
+  credit is 0:30 or more over every PWA test, the PWA credit is used. A leg 24 h or more late, legs unlike the package
+  or no package keep FLICA's credit (pay protection, 4.D.2.b). The month's Credit says how much FW took off FLICA's
+  ("PWA -11:10"), and the paycheck estimate no longer adds that difference back as unpriced FLICA credit.
+- LODO (4.D.2.e): released in domicile after the scheduled footprint on a day off (no other assignment that day):
+  4:00 PAY, no credit, per lost day off; in Pay-Gross, Pay-Net, the paychecks and a "LODO ... pay only" total.
+- Recall (4.M.1.a): 200% pay, 100% credit. A "Recall" tap in the Pay-Gross box marks a trip ('R+KEY' in
+  input_text.flight_watcher_er_trips; 'R+KEY@0.2' marks duties 0 and 2 only); the extra 100% is pay only.
+
+### Overrides by crew size (PWA 4.O.1)
+- IRO crew (3 pilots): CA $5.00, IRO $4.00, FO $3.00 per block hour. Extended Range crew (4 pilots, Definitions 25):
+  CA $5.00, FO or RO $3.00, the 15% premium only for the type-rated FO. The 15% is no longer on by itself for SIN or
+  4 pilots: the Pay-Gross tap ("Type-rated FO +15%") marks a trip flown in that seat ('+KEY', as before).
+- Pilots on a trip: the most of the package crew line (the row, else its detail) and FLICA's crew list (a list with no
+  Captain counts one more). The package rows carry no crew column, so the FO $3.00 on 3-pilot trips was missing.
+- pay.py (pushes, another pilot's pay line) follows the same rules: override(), crew_own(), pwa_trip().
+
+### Per-trip breakdown
+- The Pay-Gross hover / tap lists credit pay, the override, LODO, recall, which credit test won with each segment, the
+  rig and the minimum, delay vs reassignment, the check against FLICA's credit, pay hours vs credit, each with its PWA
+  cite. All columns, buttons and marks stay. CrewTrac is not compared yet (a line says so).
+
+### Tests
+- tests/test_fw1720_pay_engine.py: pay.py and the card agree (fwPwaTrip, fwOverride, fwCrewOwn, fwRclOf), a delayed
+  leg counts once with LODO, a reassignment keeps FLICA's credit, overrides by crew size, the card draws it in Chromium.
+
 ## 1.7.19
 
 Paychecks on the schedule card and a pilot's tax settings (Ryan, Nov 19, 2026). Cards plus one admin-only sensor. No contract or FLICA change.

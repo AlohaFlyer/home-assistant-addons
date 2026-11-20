@@ -625,19 +625,16 @@ def test_a_pot_trip_no_package_lists_is_priced_with_its_own_roster(W):
 
 
 def test_his_trip_is_priced_with_its_schedule_layover_for_the_er_rule(W):
-    """R6: his trip's own record holds no layover; its schedule item's (SIN) turns the Extended Range +15% on when no
-    package or roster says otherwise, so a 10:30 LAX trip that pays less a day is no automatic idea, and a marked
-    trip's idea shows his ER pay."""
+    """R6, changed in 1.7.20 (Hark, Ryan Nov 20, 2026, PWA 4.O.1.b): a SIN layover alone no longer turns the Extended
+    Range +15% on (it is only for the type-rated FO, marked '+KEY'), so his SIN trip is priced at credit x rate, and a
+    trade-away idea prices his trip without it."""
     for it in W.S["schedule"]["2026-11"]["items"]:
         if it["trip"] == "H9001":
             it["lay"] = "SIN"
-    mine = round(10 * RATE * 1.15, 2)
-    W.swap_scan([_row("H9120", "2026-11-20", "2026-11-21", "10:30", "8:00")])
-    assert _auto(W) == []
     W.S["trade_away"] = [K1]
     W.swap_scan([_row("H9121", "2026-11-20", "2026-11-21", "12:00", "8:00")])  # +2:00 soft: better for a marked H9001
     (i,) = _sensor(W)["ideas"]
-    assert i["for_pay"] == mine and i["for_ppd"] == round(mine / 2, 2)
+    assert i["for_pay"] == round(10 * RATE, 2) and i["for_ppd"] == round(10 * RATE / 2, 2)
 
 
 def test_the_same_bid_period_is_the_pots_and_his_trips_page_without_pairing_files(W, monkeypatch, tmp_path):
