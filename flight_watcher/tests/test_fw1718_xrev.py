@@ -9,7 +9,8 @@ pairings (H9xxx), made-up airports' timetables, no names; no FLICA, nothing on P
    box), so the header is two lines (70 px) and the month's line never moves.
 3. Item 8 (1.7.17): the pot_table macro's Commutable chip and the pot table's Key line had no "Pending on Pako" section
    and the snapshot had no Key line. Both are in ha/README.md now (the macro text in git, rendered here with Jinja2),
-   and the one snapshot carries the Key line with its sha pinned.
+   and the one snapshot carries the Key line with its sha pinned. Applied on Pako 2026-11-18 (the section is an
+   "Applied on Pako" one now, with how the call was placed and the check's result).
 4. Item 6 (1.7.15): the pay figures on every marked idea (about 120 bytes each) made the 12 KB cap keep 19 marked ideas
    where 1.7.11 kept 24. Over the cap, the marked ideas now give up their pay figures from the end before any is
    left out, so "ideas" keeps what 1.7.11 kept (the head ones keep their figures while they fit).
@@ -128,13 +129,14 @@ def test_the_stamp_box_and_the_phone_order_are_in_every_copy():
         assert "min-width:14em" not in src
 
 
-# ---------------------------------------------------------------- 3: 1.7.17's Pako edits pending, in git
+# ---------------------------------------------------------------- 3: 1.7.17's Pako edits in git (applied 2026-11-18)
 SNAP = os.path.join(ROOT, "ha", "dashboard_flight_watcher.json")
 KEY_LINE = ("- **Commutable KOA**: you can commute from that airport both ways: 2 scheduled nonstops arriving HNL before "
             "report (PWA 26.QQ.2) and 1 nonstop home leaving at least your home gap after release (home_gap_min in your "
             "smart.json, 60 min unless set), same day (release 30 min after block-in when clearing customs, PWA 2.19.b), "
             "from your smart.json timetables. No chip = not commutable, or not known")
-HEAD_1717 = "## Pending on Pako (1.7.17): Commutable chip in the pot table\n"
+HEAD_1717 = "## Applied on Pako 2026-11-18 about 08:18 HST (1.7.17): Commutable chip in the pot table\n"
+HEAD_1715 = "## Applied on Pako 2026-11-18 about 08:04 HST (1.7.15)"
 
 
 def _pot_md(text):
@@ -158,7 +160,7 @@ def _section(readme, head):
     return readme[i:readme.index("\n## ", i + len(head))]
 
 
-def test_the_1717_pot_table_edits_are_pending_on_pako_with_the_key_line_in_the_snapshot():
+def test_the_1717_pot_table_edits_are_applied_on_pako_with_the_key_line_in_the_snapshot():
     text = open(SNAP, encoding="utf-8").read()
     assert text == json.dumps(json.loads(text), indent=2, ensure_ascii=False) + "\n"  # the Refresh format
     (md,) = _pot_md(text)
@@ -169,16 +171,24 @@ def test_the_1717_pot_table_edits_are_pending_on_pako_with_the_key_line_in_the_s
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
     readme = open(os.path.join(ROOT, "ha", "README.md"), encoding="utf-8").read()
     sec = _section(readme, HEAD_1717)
-    at = [readme.index(h) for h in ("## Pending on Pako (1.7.15)", HEAD_1717, "## Applied on Pako")]
-    assert at == sorted(at)  # after the 1.7.15 section, before every applied one (release order)
-    assert sha in sec and "be03a0a4" in sec  # the snapshot's sha (every pending edit); Pako's until then
+    at = [readme.index(h) for h in (HEAD_1715, HEAD_1717, "## Applied on Pako 2026-11-13")]
+    assert at == sorted(at)  # after the 1.7.15 section, before the older applied ones (release order)
+    assert "Pending on Pako" not in readme  # applied on Pako 2026-11-18: no pending section is left
+    # Pako reads the snapshot's sha (every edit applied); the 1.7.15 one (6678f813...) is the snapshot without the Key
+    # line
+    assert sha in sec and "6678f813" in sec and "be03a0a4" not in sec
     flat = " ".join(sec.split())
     for part in ("`pot_table`", "flight_watcher.jinja", "{{ comm_chip(p) }}", "homeassistant.reload_custom_templates",
                  "Ryan's yes", "Undo", "1.7.17 go-live", "PWA 26.QQ.2", "PWA 2.19.b"):
         assert part in flat, part
-    assert KEY_LINE in sec.split("\n")  # the line to add, as the snapshot has it
-    # the 1.7.15 section names what Pako reads once the first three are applied, and the snapshot's sha
-    s15 = _section(readme, "## Pending on Pako (1.7.15)")
+    # how the call was placed on Pako (pot_table prints Fits and FAR in one loop over extra.cols): gated to the FAR
+    # column, so it prints once per row; the reload at 08:19 HST and the check's output are recorded
+    for part in ("extra.cols", "{% if k == 'far' %}{{ comm_chip(p) }}{% endif %}", "08:19 HST",
+                 "it rendered exactly that", "2 of the 3 pot rows", "remove the whole"):
+        assert part in flat, part
+    assert KEY_LINE in sec.split("\n")  # the line added, as the snapshot has it
+    # the 1.7.15 section names the snapshot with the first three edits alone, and the snapshot's sha (Pako's now)
+    s15 = _section(readme, HEAD_1715)
     assert "6678f813ccdc4a6e2e1ab8837ccddffbd3de6f0c1de874a5cd8a1c48ea9a5cc5" in s15 and sha in s15
     assert chr(0x2014) not in readme and chr(0x2014) not in text
 
@@ -204,6 +214,15 @@ def test_the_comm_chip_macro_in_the_readme_renders_as_it_says():
     row = env.from_string("{%- from 'flight_watcher.jinja' import comm_chip -%}| {{ p.fit }} {{ p.far }}{{ comm_chip(p) }} |")
     assert row.render(p={"fit": "Fits", "far": "OK", "cm": ["KOA", "LAS"]}) == "| Fits OK **Commutable KOA LAS** |"
     assert row.render(p={"fit": "Fits", "far": "OK"}) == "| Fits OK |"
+    # as placed on Pako (2026-11-18): Fits and FAR are printed by one loop over the columns, the call gated to the FAR
+    # column at the end of the cell, so it prints once per row, in the FAR cell, and a row without cm is unchanged
+    gated = re.search(r"`(\{% if k == 'far' %\}\{\{ comm_chip\(p\) \}\}\{% endif %\})`", sec).group(1)
+    assert call in gated
+    cells = env.from_string("{%- from 'flight_watcher.jinja' import comm_chip -%}|{% for k in cols %} {{ p[k] }}"
+                            + gated + " |{% endfor %}")
+    assert cells.render(p={"fit": "Fits", "far": "OK", "cm": ["KOA", "LAS"]}, cols=["fit", "far"]) == \
+        "| Fits | OK **Commutable KOA LAS** |"
+    assert cells.render(p={"fit": "Fits", "far": "OK"}, cols=["fit", "far"]) == "| Fits | OK |"
 
 
 def test_the_dashboard_pot_key_matches_the_pot_cards_key():
@@ -352,6 +371,7 @@ def test_docs_say_what_each_fix_corrects():
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
     top = log.split("\n## 1.7.17\n", 1)[0]
     sec = top[top.index("### Cross-item review fixes"):]
+    # the CHANGELOG names the README section as 1.7.18 wrote it (it became an "Applied on Pako" one on 2026-11-18)
     for part in ("1.7.12", "item 3", "item B", "1.7.17", "item 8", "1.7.15", "item 6", "event/swap_test", "21em",
                  "Pending on Pako (1.7.17)", "e322dc0e", "tests/test_fw1718_xrev.py"):
         assert part in sec, part

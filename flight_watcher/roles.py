@@ -156,7 +156,8 @@ ENTITY_FEATURE = {"auto_swap": "auto_swap", "swap_map": "auto_swap", "drop_away"
                   "layover_van": "admin_pushes", "layover_notes": "one_writer",  # 1.7.1 (FW-0072)
                   # 1.7.2 (Ryan, Nov 12): the van alerts' switch and sliders
                   "van_alerts": "admin_pushes", "van_alert_first": "admin_pushes", "van_alert_second": "admin_pushes",
-                  "pilotdb": "one_writer"}  # 1.7.8 (B5): sensor.flight_watcher_pilotdb, the pilot database's counts
+                  "pilotdb": "one_writer",  # 1.7.8 (B5): sensor.flight_watcher_pilotdb, the pilot database's counts
+                  "pay_model": "one_writer"}  # 1.7.19: sensor.flight_watcher_pay_model, the admin's paycheck model
 
 # Words of lowercase letters and digits joined by single underscores, 1 to 32 characters: HA keeps no entity id with
 # "__" or a trailing "_" (sensor.flight_watcher_jane__state), so "jane_", "a__b" and "_x" are refused. config.yaml
@@ -171,10 +172,11 @@ MAX_PILOTS = 3  # pilots besides the admin: each runs its own Chromium and its o
 # number.flight_watcher_van_alert_first and _second, the van alert settings, Ryan Nov 12). 1.7.8: "pilotdb" (the pilot
 # database: /data/pilotdb_backup, /share/flight_watcher/pilotdb, sensor.flight_watcher_pilotdb and its topic). 1.7.14:
 # "near" (sensor.flight_watcher_near_misses and its topic near/state, the near misses in the open time pot).
+# 1.7.19: "pay" (sensor.flight_watcher_pay_model and its topics pay_model/state and pay_model/attr).
 RESERVED = frozenset({
     "admin", "auto", "bid", "blocked", "captures", "ccr", "charter", "charters", "check", "crew", "default", "drop",
     "email", "er", "event", "federal", "fetches", "finds", "flica", "freq", "grid", "hunt", "improved", "last",
-    "layover", "layovers", "longevity", "map", "month", "near", "new", "next", "normal", "ot", "own", "pause", "pickers",
+    "layover", "layovers", "longevity", "map", "month", "near", "new", "next", "normal", "ot", "own", "pause", "pay", "pickers",
     "pilot", "pilotdb", "pot", "pref", "re", "rearm", "ready", "recall", "reserve", "rule", "rules", "ryan", "scan", "schedule", "session",
     "settings", "show",
     "state", "status", "swap", "ticket", "tickets", "trade", "tradeboard", "update", "upload", "uploads", "van",
