@@ -169,14 +169,17 @@ def test_trip_gross_captain_rules():
     assert PAY.trip_gross(20.0, 17.5, "CA02FO02", "SIN", "k", "CA", r, ca_rules=True) == pytest.approx(20 * r + 17.5 * 5.00)
     assert PAY.trip_gross(10.0, 9.0, 2, "LAX", "k", "CA", r, ["+k"], ca_rules=True) == pytest.approx(10 * r)
     assert PAY.trip_gross(20.0, None, 3, "NRT", "k", "CA", r, ca_rules=True) == pytest.approx(20 * r)
-    assert PAY.trip_gross(20.0, 17.5, "CA02FO02", "SIN", "k", "CA", r) == pytest.approx(20 * r * 1.15)  # default: as before
+    # 1.7.20 (Hark, Ryan Nov 20, 2026): the Captain's $5.00 on every card now, never the 15%
+    assert PAY.trip_gross(20.0, 17.5, "CA02FO02", "SIN", "k", "CA", r) == pytest.approx(20 * r + 17.5 * 5.00)
     fo = PAY.rate_for(9, "2026-11-06")
     for seat, n, want in (("FO", 3, 16.5 * fo + 14 * 3.00), ("RO", 3, 16.5 * fo + 14 * 4.00), ("FO", 2, 16.5 * fo),
-                          ("FO", 4, 16.5 * fo * 1.15), ("RO", 4, 16.5 * fo + 14 * 4.00 + 16.5 * fo * 0.15)):
+                          ("FO", 4, 16.5 * fo + 14 * 3.00), ("RO", 4, 16.5 * fo + 14 * 3.00)):  # 1.7.20: 4 pilots $3.00
         assert PAY.trip_gross(16.5, 14.0, n, "NRT", "k", seat, fo, ca_rules=True) == pytest.approx(want)  # FO / RO unchanged
         assert PAY.trip_gross(16.5, 14.0, n, "NRT", "k", seat, fo) == pytest.approx(want)
+    # the type-rated FO's 15% only when the trip is marked '+KEY' (PWA 4.O.1.b), instead of the $3.00
+    assert PAY.trip_gross(16.5, 14.0, 4, "SIN", "k", "FO", fo, ["+k"]) == pytest.approx(16.5 * fo * 1.15)
     assert PAY.crew_n(3) == 3 and PAY.crew_n("CA01FO01RO01") == 3 and PAY.crew_n(None) == 0
-    assert [PAY.overrides_due(s, n) for s, n in (("RO", 2), ("CA", 3), ("CA", 2), ("FO", 3), ("FO", 4))] == [True, True, False, True, False]
+    assert [PAY.overrides_due(s, n) for s, n in (("RO", 2), ("CA", 3), ("CA", 2), ("FO", 3), ("FO", 4))] == [True, True, False, True, True]
 
 
 def _t(pid, s, e, seat, cr, blk, n, soft="", lay="", route="HNL-NRT-HNL"):
@@ -198,7 +201,7 @@ def test_pay_line_prices_each_seat():
     ca, fo = PAY.rate_for(9, "2026-11-01", "CA"), PAY.rate_for(9, "2026-11-01")
     want = {"H9002|2026-11-05": 20 * ca + 17.5 * 5.00,             # CA on a 3-pilot crew: $5.00 / block h, no 15%
             "H9003|2026-11-12": 16.5 * fo + 14 * 4.00,             # RO: FO rate + $4.00 / block h
-            "H9004|2026-11-20": 20 * fo * 1.15,                    # FO on a 4-pilot crew: Extended Range +15%
+            "H9004|2026-11-20": 20 * fo + 17.5 * 3.00,             # 1.7.20: FO on a 4-pilot crew $3.00 (15% only if marked)
             "H9006|2026-11-28": 12 * fo,                           # no block: the $3.00 override cannot be added
             "H9007|2026-12-01": (16 + 35 / 60) * fo}
     assert per == pytest.approx({k: round(v, 2) for k, v in want.items()})
@@ -218,7 +221,7 @@ def test_pay_line_longevity_and_no_doh():
     line, per = PAY.pay_line(TRIPS, "2018-11-15", "2026-11-01", "2026-12-01", 0)
     assert (line["year"], line["year_to"]) == (8, 9)
     assert per["H9002|2026-11-05"] == pytest.approx(round(20 * PAY.rate_for(8, "2026-11-05", "CA") + 17.5 * 5, 2))
-    assert per["H9004|2026-11-20"] == pytest.approx(round(20 * PAY.rate_for(9, "2026-11-20") * 1.15, 2))
+    assert per["H9004|2026-11-20"] == pytest.approx(round(20 * PAY.rate_for(9, "2026-11-20") + 17.5 * 3.00, 2))
     assert line["net"] == line["gross"]
     for doh in ("", None, "not a date"):  # no date of hire: hours and days, no amounts
         line, per = PAY.pay_line(TRIPS, doh, "2026-11-01", "2026-12-01", 22.0)
