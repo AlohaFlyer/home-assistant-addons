@@ -65,6 +65,10 @@ TAG_RE = re.compile(r"(<[^>]*>)")
 # 1.6.2 review: by the page's structure, not only the 'Last, First' pattern (the Tradeboard writes 'FIRST LAST' and
 # JS string literals "JANE","DOE", with e-mail addresses and phone numbers)
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+# an address starts only where a run of address characters starts (the lookbehind), so a long run with no '@'
+# ('x' * 200000) is tried once, not from each of its characters (quadratic: minutes); EMAIL_RE itself is tried only
+# right where the last masked address ended, which is where its next match could start mid-run ('a@b.c+d@e.f')
+EMAIL_START_RE = re.compile(r"(?<![\w.+-])" + EMAIL_RE.pattern)
 PHONE_RE = re.compile(r"(?<![\w.:/-])(?:\+?\d[\d\s().-]{5,18}\d)(?![\w.:/-])")
 # 1.7.11: a phone may end a sentence or a clause ('call 808-555-1234.', '808-555-1234- ...'; review: '808-555-1234:
 # crew desk'): a dot, a colon or a hyphen right after it ends it when no word, digit or dot follows ('13:05' stays).
@@ -161,6 +165,20 @@ def _name_emps(t):
         out = [w if i % 2 or (w.lower() in UI_WORDS and i not in name) else _x(w) for i, w in enumerate(words)]
         return "".join(out) + m.group(2) + "#" * len(m.group(3)) + m.group(4)
     return NAME_EMP_RE.sub(one, t)
+
+
+def _emails(t):
+    """Every e-mail address masked (_x), the very spans EMAIL_RE.sub masks, in linear time; only when there is an '@'."""
+    if "@" not in t:
+        return t
+    out, pos = [], 0
+    while True:
+        m = (pos and EMAIL_RE.match(t, pos)) or EMAIL_START_RE.search(t, pos)
+        if not m:
+            out.append(t[pos:])
+            return "".join(out)
+        out += [t[pos:m.start()], _x(m.group(0))]
+        pos = m.end()
 
 
 # 1.7.11 (Ryan, Nov 17: "Fix the masking text too"): an ISO month or date (2026-11, 2026-11-17) and a schedule version
@@ -587,7 +605,7 @@ def mask(text, extra=()):
     s = HIDDEN_RE2.sub(lambda m: m.group(1) + "MASKED" + m.group(3), s)
     s = EMP_KEY_RE.sub(lambda m: m.group(1) + "#" * len(m.group(2)), s)
     s = PILOT_EMP_RE.sub(lambda m: m.group(1) + "#" * len(m.group(2)), s)
-    s = EMAIL_RE.sub(lambda m: _x(m.group(0)), s)  # 1.6.2 review: e-mail addresses and phone numbers
+    s = _emails(s)  # 1.6.2 review: e-mail addresses and phone numbers
     s = _phones(s)
     parts = TAG_RE.split(s)
     script = False
