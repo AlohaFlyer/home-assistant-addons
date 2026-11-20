@@ -2132,7 +2132,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .set{margin:8px auto 0;max-width:620px;font-size:11px;color:var(--secondary-text-color);text-align:center}
       .set summary{cursor:pointer;font-weight:600;font-size:11px;list-style:none;margin-bottom:3px}.set summary::before{content:"\\25B8 "}.set[open] summary::before{content:"\\25BE "}
       .set span{margin:0 8px;white-space:nowrap}.set select{font-size:11px;margin-left:3px}.set .r{margin-top:3px}
-      @media (max-width:700px){.set select{font-size:16px}}
+      @media (max-width:700px){.set select,.set input[type=file]{font-size:16px}}
       .lg{font-size:11px}.lgl{color:var(--fw-info,#1565c0);font-weight:600;cursor:help}
       .trip.tr{background:rgba(255,160,0,.28);border-radius:4px;padding:0 3px;color:var(--primary-text-color)}
       .trb{display:inline-block;font-size:19px;line-height:1;padding:0 6px;margin:-4px 0 -4px 2px;color:var(--secondary-text-color,#727272);cursor:pointer;vertical-align:middle;border-radius:5px}
