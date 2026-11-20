@@ -1,8 +1,9 @@
 """1.7.20 (Ryan, Nov 20, 2026: "I need this page to calculate per FAR 117 and PWA when I timeout, both for if I extend or
 if I do not. Add that number in bold with a dark orange square around it right of the report time", and "the number I
 need to know is when is the last moment I can block out and be legal"): the last legal block-out and the duty limits
-(timeout.py, FOM 125.4 4.3.2 = 14 CFR 117 Tables A, B and C; FOM 5.1.23.7 and 5.1.23.8 crew rest; PWA 2.19.b), as
-working.py puts them on sensor.<prefix>_working_flight, and the layover card's box in a real Chromium.
+(timeout.py, FOM 125.4 4.3.2 = 14 CFR 117 Tables A, B and C; FOM 5.1.23.7 and 5.1.23.8 crew rest; PWA 2.A.19.b and the
+PWA 2023 Section 10 duty, rest and landing limits), as working.py puts them on sensor.<prefix>_working_flight, and the
+layover card's box in a real Chromium.
 
 Synthetic data only: made-up pairings (H39xx), flight numbers (9xxx), dates (2027), stations and times, and crew ("Doe,
 Jane"). The first case has the shape the rules were checked on by hand: an unacclimated 3-pilot return after a 24 h
@@ -106,7 +107,7 @@ def acceptance(pkg=None, months="default", hist=True, now=None, legs_read=False)
 
 
 def test_acceptance_bos_hnl_unacclimated_three_pilots_last_out_and_flight_time():
-    """By hand: report 1:15 before 09:15 EST = 08:00 EST, 03:00 HST (PWA 2.19.b.1). Free since the BOS release (02:10 +
+    """By hand: report 1:15 before 09:15 EST = 08:00 EST, 03:00 HST (PWA 2.A.19.b.1). Free since the BOS release (02:10 +
     0:15 HST Feb 18) 24:35 < 36 h, in the BOS theater 24:50 < 72 h, BOS 87 deg from HNL: not acclimated, HNL time 03:00.
     Table C 0000-0559, Class 1 (A330 LDMCR), 3 pilots: 15:00 less 0:30 = 14:30, FDP end 17:30 HST, 19:30 with the
     extension. Last out = 17:30 less 11:30 = 06:00 HST = 11:00 EST; with the extension 08:00 HST = 13:00 EST. Flight
@@ -118,7 +119,8 @@ def test_acceptance_bos_hnl_unacclimated_three_pilots_last_out_and_flight_time()
     a = r["attributes"]
     assert r["state"] == "HA9062 BOS-HNL" and a["leg"] == "2 of 2" and a["report"] == "08:00 local, 03:00 HST"
     t = a["timeout"]
-    assert t["legal"] is True and t["sure"] is True and t["unsure"] == [] and t["flags"] == []
+    # the BOS rest (PWA, below) is met by 2:25 from release to report, under VAN_RIDES 2:30: '?', its chip only
+    assert t["legal"] is True and t["sure"] is True and t["unsure"] == [] and t["flags"] == ["rest_q"]
     lo, lx = t["last_out"], t["last_out_ext"]
     assert (lo["txt"], lo["hst"], lo["day"], lo["wd"], lo["z"]) == ("11:00 EST", "06:00 HST", "Fri Feb 19", "", "16:00Z")
     assert lo["short"] == "FDP 14:30" and lo["by"] == "FDP 14:30 (FAR 117.17, Table C)" and lo["early"] is False
@@ -143,7 +145,7 @@ def test_acceptance_bos_hnl_unacclimated_three_pilots_last_out_and_flight_time()
     assert (c["fdp_168"]["used"], c["fdp_168"]["room"]) == ("36:45", "23:15")
     assert t["rest"] == {"free": "24:35", "ok": True, "week": "75:00", "week_ok": True}
     lines = "\n".join(t["lines"])
-    for w in ("Report 08:00 EST (03:00 HST Fri Feb 19): 1:15 before scheduled departure out of domicile (PWA 2.19.b.1)",
+    for w in ("Report 08:00 EST (03:00 HST Fri Feb 19): 1:15 before scheduled departure out of domicile (PWA 2.A.19.b.1)",
               "not acclimated: BOS is 87 deg from HNL, 24:35 free from duty (36 h needed), 24:50 in that theater (72 h "
               "needed)", "FAR 117.13(b), 117.17(b), FOM 4.3.2.4", "3 pilots (the trip's crew list): augmented, Table C",
               "A330 LDMCR bunks 1 and 4 (FOM 5.1.23.8), all LDMCR available", "Class 1 ends 17:30 HST; Class 2 16:30 HST "
@@ -155,16 +157,48 @@ def test_acceptance_bos_hnl_unacclimated_three_pilots_last_out_and_flight_time()
               "Out on time (09:15 EST, 04:15 HST) the block-in is due by 17:15 HST; it moves with the actual out",
               "FAR 117.19(a), FOM 4.3.2.5", "FAR 117.19(b)", "86:00 at the scheduled block-in 15:45 HST, 14:00 spare",
               "FAR 117.23(c)(1)", "24:35 free from duty since the last release, 10 h needed: met",
-              "longest free period 75:00: met", "Duty ends 15 min after block-in (PWA 2.19.b.2): release 17:45 HST at the "
+              "longest free period 75:00: met", "Duty ends 15 min after block-in (PWA 2.A.19.b): release 17:45 HST at the "
               "FDP end without an extension, 19:45 HST with one"):
         assert w in lines, w
-    assert TO.PWA10 in t["not_checked"]
+    # PWA Section 10 (ADDENDUM 2), by hand: an IRO Crew (3 pilots, 2.A.40), Maximum 18:00 (10.D.1.b.1): from 03:00 HST
+    # the duty ends by 21:00 HST; BOS-HNL is domestic, debrief 0:15, so the last block-in is 20:45 HST, less the 11:30
+    # block: 09:15 HST = 14:15 EST, later than both FAR last outs: not binding. Scheduled 03:00 to 16:00 HST = 13:00 of
+    # 16:00. The duty before it (HNL-BOS, report 15:20 HST Feb 17, in 02:10 HST Feb 18, release 02:25) is 11:05, so the
+    # BOS rest is 2 x 11:05 = 22:10 (10.E.1.a.1); release to report 24:35, 2:25 spare, under the 2:30 the two van rides
+    # may take (hotel time door to door, 10.E.1.a.3): '?'. BOS-HNL departs 09:15 EST: no 10.E.1.b. 1 landing of 10.
+    p = t["pwa"]
+    assert (p["cite"], p["scheduled"], p["maximum"], p["duty"], p["debrief"], p["binds"]) == (
+        "10.D.1.b.1", "16:00", "18:00", "13:00", "0:15", [])
+    assert (p["end_txt"], p["in_txt"], p["last_out_txt"], p["last_out_hst"]) == ("21:00 HST", "20:45 HST", "14:15 EST",
+                                                                                 "09:15 HST")
+    assert p["rest"] == {"need": "22:10", "have": "24:35", "ok": None, "cite": "10.E.1.a.1", "late": False}
+    assert p["landings"] == {"n": 1, "max": 10, "ok": True}
+    assert p["txt"] == ("scheduled duty 13:00 (Scheduled limit 16:00), Maximum 18:00 (10.D.1.b.1): last out 14:15 EST (not "
+                        "binding: FAR 117 is earlier) \u00b7 rest 24:35, 22:10 needed (10.E.1.a.1): ? \u00b7 landings 1 "
+                        "(10 may be scheduled, 11 if required)")
+    for w in ("PWA duty limit (10.D.1.b.1): IRO Crew (2.A.40): Scheduled 16:00, Maximum 18:00 of Duty Period (Local "
+              "Times, 2.A.43; from the later of the scheduled and actual report, 10.D.5, to 15 min after the last "
+              "block-in, 2.A.19.b)", "From the report 08:00 EST it ends by 21:00 HST Fri Feb 19, the last "
+              "block-in by 20:45 HST, so the last out is 14:15 EST (09:15 HST Fri Feb 19): not binding (FAR 117 is earlier).",
+              "PWA duty scheduled 13:00 of 16:00 (10.D.1.b.1).", "No 5.A.6 transfer time is added (none serves HNL; "
+              "10.D.1.b.2 bars them for an IRO Crew)", "10.D.4 is Interisland", "the PWA Maximum caps both last outs",
+              "PWA rest before this duty (10.E.1.a.1): out of domicile, 2 x the preceding Duty Period 11:05 (15:20 HST "
+              "Wed Feb 17 to release 02:25 HST Thu Feb 18) = 22:10 needed; release to report 24:35: ? met by 2:25 from "
+              "release to report, but the hotel time (door to door, 2.A.68.b, 10.E.1.a.3) is shorter by the two van "
+              "rides, which are not on the schedule (under 2:30 spare is not sure).",
+              "PWA 10.E.1.b (18:00 rest when a segment departs 1400-0359 local and the scheduled Duty Period is "
+              "12:00+): not "
+              "triggered (BOS-HNL departs 09:15 EST).",
+              "Landings (PWA 10.H.1): 1 flown segment; no more than 10 may be scheduled (11 if required to perform)."):
+        assert w in lines, w
+    assert "the PWA duty limit" not in lines  # it binds neither: the last out line is the FAR one
     for w in ("FAR 117.19(a)(2)", "In-flight rest of an augmented FDP (FOM 4.3.2.4.2)", "8 h sleep opportunity",
-              "1000 h flight time in 365 days"):
+              "1000 h flight time in 365 days", TO.PWA_NC_IRO, TO.PWA_NC):
         assert any(w in s for s in t["not_checked"]), w
+    assert not any("Section 10" in s for s in t["not_checked"])
     blob = json.dumps(t)
     assert chr(0x2014) not in blob and not any(w in blob for w in ("Doe", "Roe", "Poe", "10001", "10002", "10003"))
-    assert len(json.dumps(r)) < 9000  # the sensor stays far under HA's 16 KB attribute limit
+    assert len(json.dumps(r)) < 10000  # review TEST-1: a heavier case is guarded below (HA keeps 16 KB at most)
 
 
 def test_acceptance_with_every_trip_read_gives_the_same_times():
@@ -279,18 +313,26 @@ def test_sin_layover_of_46_h_free_acclimates_there():
     trips, pkg = _sin_line()
     t = run(trips, at(2027, 3, 4, "17:00"), pkg)["attributes"]["timeout"]
     f = t["fdp"]
-    # SIN arrival 19:15 HST Mar 2, release 19:45 (clearing customs at SIN, PWA 2.19.b.2); report 1:15 before 13:30 SGT
+    # SIN arrival 19:15 HST Mar 2, release 19:45 (clearing customs at SIN, PWA 2.A.19.b); report 1:15 before 13:30 SGT
     # = 12:15 SGT Mar 5 (18:15 HST Mar 4): 46:30 free: acclimated to SIN
     assert f["acclimated"] is True and f["row"] == "0700-1259 (SIN time 12:15)"
     assert f["pilots"] == 4 and f["rest_class"] == 2 and f["limit"] == "18:00"  # 4 pilots on the A330: Class 2, '?'
     assert f["rest_class_sure"] is False and t["unsure"] == ["rest class"] and f["alt"] == {"1": "13:15 HST", "3": "09:45 HST"}
     assert any("acclimated to the SIN theater (46:30 free from duty" in s for s in t["lines"])
     assert any("requires pilot crew rest seat 3C or 3G" in s for s in t["lines"])
-    # last out: FDP end 12:15 HST Mar 5 less 13:40 = 22:35 HST Mar 4 = 16:35 SGT Mar 5 (SGT prints as UTC+08)
-    assert (t["last_out"]["txt"], t["last_out"]["hst"]) == ("16:35 UTC+08", "22:35 HST")
+    # FAR alone: FDP end 12:15 HST Mar 5 less 13:40 = 22:35 HST Mar 4 = 16:35 SGT Mar 5 (SGT has no letters on file, so
+    # the box names the station: "SIN", review I7, never "UTC+08"). The PWA
+    # binds: an Extended Range Crew of 1 Captain (CA01FO02RO01, 2.A.25) may not be required past 18:00 of Duty Period
+    # (10.D.1.c), which ends 30 min after block-in clearing customs at HNL (2.A.19.b): 18:15 HST + 18:00 = 12:15 HST,
+    # last block-in 11:45, less 13:40 = 22:05 HST = 16:05 SGT, with and without an extension
+    assert (t["last_out"]["txt"], t["last_out"]["hst"]) == ("16:05 SIN", "22:05 HST")
+    assert t["last_out"]["short"] == t["last_out_ext"]["short"] == "PWA max duty 18 h" and t["last_out"]["pwa"] is True
+    assert t["last_out"]["by"] == "PWA 10.D.1.c max duty 18 h" and t["pwa"]["binds"] == ["no_ext", "ext"]
+    assert "UTC+" not in json.dumps(t)
+    assert t["no_ext"]["txt"] == "11:45 HST" and t["fdp"]["in_txt"] == "11:45 HST" and t["fdp"]["end_txt"] == "12:15 HST"
     rel = datetime.fromisoformat(t["no_ext"]["at"]) + timedelta(minutes=30)  # into HNL from SIN: customs
     assert t["no_ext"]["release_txt"] == f"{rel.astimezone(HST):%H:%M} HST"
-    assert any("Duty ends 30 min after block-in, clearing customs (PWA 2.19.b.2)" in s for s in t["lines"])
+    assert any("Duty ends 30 min after block-in, clearing customs (PWA 2.A.19.b)" in s for s in t["lines"])
 
 
 def test_home_report_within_36_h_after_sin_is_unacclimated_on_the_sin_clock():
@@ -352,8 +394,13 @@ def test_two_pilots_three_segments_table_b_and_table_a():
     f = t["fdp"]
     assert f["table"] == "B" and f["segments"] == 3 and f["row"] == "0500-0559 (HNL time 05:20)"
     assert f["limit"] == "12:00" and f["end_txt"] == "17:20 HST" and f["rest_class"] is None and f["alt"] == {}
-    # the last out of the working leg (leg 1): 17:20 less 9:15 scheduled to the last block-in (15:35) = 08:05 HST
-    assert (t["last_out"]["txt"], t["last_out_ext"]["txt"], t["last_out"]["leg"]) == ("08:05 HST", "10:05 HST", "HNL-OGG")
+    # the last out of the working leg (leg 1): 17:20 less 9:15 scheduled to the last block-in (15:35) = 08:05 HST; with
+    # the extension FAR alone gives 10:05, but HNL-OGG-HNL-LAX is Mixed Flying (2.A.45: HNL-LAX is 3:00 or more, the
+    # OGG turn is interisland and no Repositioning Flight, 2.A.62), so 14:00 for a standard crew (10.D.3): 05:20 +
+    # 14:00 = 19:20, less the 0:15 debrief = 19:05 last block-in, less 9:15 = 09:50 HST
+    assert (t["last_out"]["txt"], t["last_out_ext"]["txt"], t["last_out"]["leg"]) == ("08:05 HST", "09:50 HST", "HNL-OGG")
+    assert t["last_out_ext"]["by"] == "PWA 10.D.3 max duty 14 h" and t["pwa"]["mixed"] is True
+    assert t["pwa"]["landings"] == {"n": 3, "max": 4, "ok": True}  # Mixed Flying: 4 landings (10.H.3)
     # Table A 0500-1959: 9:00; 7:00 planned; out on time 1:30 flown before the last leg's 10:05 out: block-in by 17:35
     assert t["ft"]["txt"] == "7:00 of 9:00 (2:00 spare)" and t["ft"]["end_txt"] == "17:35 HST"
     assert t["no_ext"]["txt"] == "17:20 HST" and t["no_ext"]["by"] == "FDP 12:00 (FAR 117.13, Table B)"
@@ -539,12 +586,14 @@ def test_lax_in_july_reads_pdt_and_takes_the_lower_clock_marked_unsure():
     assert t["report_txt"] == "04:55 HST" and t["fdp"]["acclimated"] is True
     assert t["fdp"]["row"] == "0400-0459 (HNL time 04:55)" and t["fdp"]["limit"] == "10:00"
     assert t["sure"] is False and t["unsure"] == ["clock"] and t["last_out"]["sure"] is False
-    # last out 14:55 HST less 5:30 = 09:25 HST = 12:25 PDT; on the LAX clock 18:55 less 5:30 = 13:25 HST = 16:25 PDT
+    # last out 14:55 HST less 5:30 = 09:25 HST = 12:25 PDT; on the LAX clock 18:55 less 5:30 = 13:25 HST = 16:25 PDT;
+    # with the extension that reading's 20:55 is past the PWA 16:00 duty Maximum (10.D.1.a): 04:55 + 16:00 = 20:55 less
+    # the 0:15 debrief = 20:40, less 5:30 = 15:10 HST = 18:10 PDT
     assert t["last_out"]["txt"] == "12:25 PDT"
     assert t["fdp"]["other"] == {"clock": "LAX time 07:55", "row": "0700-1159", "limit": "14:00",
-                                 "last_out_txt": "16:25 PDT", "last_out_ext_txt": "18:25 PDT"}
+                                 "last_out_txt": "16:25 PDT", "last_out_ext_txt": "18:10 PDT"}
     assert any(s.startswith("Other reading: LAX time 07:55 gives row 0700-1159, FDP 14:00 and 9:00 flight time, last out "
-                            "16:25 PDT (18:25 PDT with the extension). FOM 4.3.2.4") for s in t["lines"])
+                            "16:25 PDT (18:10 PDT with the extension). FOM 4.3.2.4") for s in t["lines"])
     assert t["lines"][0].startswith("Report 07:55 PDT (04:55 HST")
     assert t["ft"]["limit"] == "8:00" and t["ft"]["from"] == "scheduled out 09:10 PDT"  # Table A on HNL time 04:55
 
@@ -574,10 +623,14 @@ def test_the_domestic_list_reaches_the_release():
     key = "H3985|2027-03-10"
     legs = [(0, "9085", "HNL", "LNK", "08:00", "18:00", "6:00")]
     t = run([(key, trip(key, "07:00", legs, CREW2))], at(2027, 3, 10, "06:00"), {key: {"eq": "332"}})["attributes"]["timeout"]
-    assert "clearing customs" in t["lines"][-1]  # LNK is not on the Watcher's US list: not known, conservative
+    ends = lambda t: next(s for s in t["lines"] if s.startswith("Duty ends"))  # noqa: E731
+    assert "clearing customs" in ends(t)  # LNK is not on the Watcher's US list: not known, conservative
+    # review PWA-5: watcher.release_customs (a last leg from outside the US) gives 15 min here: the basis says so
+    assert any(s.startswith("Customs (2.A.19.b): HNL-LNK crosses a border (or a country not on file), so the debrief is "
+                            "30 min here") for s in t["lines"])
     t = run([(key, trip(key, "07:00", legs, CREW2))], at(2027, 3, 10, "06:00"), {key: {"eq": "332"}},
             domestic={"LNK"})["attributes"]["timeout"]
-    assert "clearing customs" not in t["lines"][-1]
+    assert "clearing customs" not in ends(t) and not any(s.startswith("Customs") for s in t["lines"])
 
 
 def test_a_station_with_no_clock_is_never_read_as_its_own_time():
@@ -672,6 +725,855 @@ def test_publish_working_flight_passes_the_package_detail_and_logs_an_error_once
     assert [s for s in said if "duty timeout" in s] == ["working flight: duty timeout not worked out (ZeroDivisionError)"]
 
 
+# ---------------------------------------------------------------- PWA Section 10 (ADDENDUM 2): duty, rest, landings
+# Every case below is worked by hand from PWA 10.D, 10.E.1, 10.H.1 and 2.A.19.b / 2.A.25 / 2.A.40 / 2.A.45 / 2.A.62
+# (Local Times, 2.A.43) and FOM 125.4 4.3.2 (FAR 117 Tables A, B and C), before the code.
+def _leg(frm, to, dep, arr, flt="9", dh=False):
+    return {"dep": dep, "arr": arr, "blk": int((arr - dep).total_seconds() // 60), "frm": frm, "to": to, "flt": flt,
+            "dh": dh}
+
+
+def _duty(report, *legs):
+    return {"report": report, "legs": list(legs)}
+
+
+PWA_D = ("H3901|2027-02-10", "08:00", [(0, "9101", "HNL", "LAX", "09:00", "16:15", "5:15")])  # 09:00 + 5:15 = 14:15 HST
+
+
+def _pwa_d():
+    key, rep, legs = PWA_D
+    return run([(key, trip(key, rep, legs, CREW2))], at(2027, 2, 10, "07:00"), {key: {"eq": "332", "crew": "CA01FO01"}})
+
+
+def test_pwa_two_pilot_maximum_caps_the_extension():
+    """(d) 2 pilots HNL-LAX, report 08:00 HST, block 5:15, domestic. FAR: Table B 0700-1159, 1 segment, 14:00: FDP end
+    22:00, last out 22:00 - 5:15 = 16:45 HST; with the 2:00 extension 18:45. PWA 10.D.1.a (the LOA's table): Maximum
+    16:00, so the duty ends by 00:00 HST, the last block-in by 23:45 (0:15 debrief, 2.A.19.b), the last out 23:45 - 5:15 =
+    18:30 HST: it caps the extension (18:45 -> 18:30), not the 16:45. Scheduled 08:00 to 14:30 = 6:30 of 14:00."""
+    t = _pwa_d()["attributes"]["timeout"]
+    lo, lx, p, f = t["last_out"], t["last_out_ext"], t["pwa"], t["fdp"]
+    assert (lo["txt"], lo["by"], lo["pwa"]) == ("16:45 HST", "FDP 14:00 (FAR 117.13, Table B)", False)
+    assert (lx["txt"], lx["by"], lx["short"], lx["pwa"]) == ("18:30 HST", "PWA 10.D.1.a max duty 16 h", "PWA max duty 16 h",
+                                                             True)
+    assert t["legal"] is True and t["sure"] is True and t["flags"] == []
+    assert (p["cite"], p["crew"], p["scheduled"], p["maximum"], p["duty"], p["binds"]) == (
+        "10.D.1.a", "2 pilots", "14:00", "16:00", "6:30", ["ext"])
+    assert (p["end_txt"], p["in_txt"], p["last_out_txt"]) == ("00:00 HST", "23:45 HST", "18:30 HST")
+    # the block-in limits: the FDP's own ends stay FAR's; the block-in with the extension is the PWA's, its release 00:00
+    assert (f["end_txt"], f["ext_end_txt"], f["in_txt"], f["ext_in_txt"]) == ("22:00 HST", "00:00 HST", "22:00 HST",
+                                                                             "23:45 HST")
+    assert (f["release_txt"], f["ext_release_txt"]) == ("22:15 HST", "00:00 HST")
+    # out on time the block-in is due by 09:00 + Table A 9:00 = 18:00 either way (flight time binds before the PWA)
+    assert t["no_ext"]["txt"] == t["ext"]["txt"] == "18:00 HST" and t["ft"]["txt"] == "5:15 of 9:00 (3:45 spare)"
+    lines = "\n".join(t["lines"])
+    for w in ("Last out (block-out): the FDP end, or the PWA duty limit's last block-in when earlier, less the scheduled "
+              "5:15", "16:45 HST (16:45 HST Wed Feb 10) without an extension, 18:30 HST (18:30 HST Wed Feb 10) with it "
+              "(FDP 14:00; PWA max duty 16 h)", "PWA duty limit (10.D.1.a): 2 pilots: Scheduled 14:00, Maximum 16:00",
+              "it ends by 00:00 HST Thu Feb 11, the last block-in by 23:45 HST, so the last out is 18:30 HST (18:30 HST "
+              "Wed Feb 10): binding with the extension (FAR 117 alone: 16:45 HST, 18:45 HST with the extension).",
+              "PWA duty scheduled 6:30 of 14:00 (10.D.1.a).", "No 5.A.6 transfer time is added (none serves HNL), ",
+              "Landings (PWA 10.H.1): 1 flown segment; no more than 10 may be scheduled (11 if required to perform).",
+              "PWA 10.E.1.b (18:00 rest when a segment departs 1400-0359 local and the scheduled Duty Period is "
+              "12:00+): not "
+              "triggered (HNL-LAX departs 09:00 HST)."):
+        assert w in lines, w
+    assert "PWA rest before this duty (10.E.1.a): the duty before it is not on file" in t["not_checked"]
+    assert TO.PWA_NC in t["not_checked"] and TO.PWA_NC_IRO not in t["not_checked"]  # 10.D.1.b.4 is an IRO Crew's
+    assert p["txt"] == ("scheduled duty 6:30 (Scheduled limit 14:00), Maximum 16:00 (10.D.1.a): last out 18:30 HST (binds "
+                        "with the extension) · rest not on file · landings 1 (10 may be scheduled, 11 if required)")
+
+
+def test_pwa_maximum_less_the_customs_debrief_binds_the_extension():
+    """2 pilots HNL-PPT (Tahiti), report 08:00, out 09:00, block 5:45: FAR FDP 14:00 ends 22:00, last outs 16:15 and
+    18:15 HST. Clearing customs at PPT the Duty Period ends 30 min after block-in (2.A.19.b): 08:00 + 16:00 = 00:00,
+    last block-in 23:30, less 5:45 = 17:45 HST, which caps the extension; 15 min later than without customs."""
+    key = "H3904|2027-02-10"
+    t = run([(key, trip(key, "08:00", [(0, "9106", "HNL", "PPT", "09:00", "14:45", "5:45")], CREW2))],
+            at(2027, 2, 10, "07:00"), {key: {"eq": "332"}})["attributes"]["timeout"]
+    assert (t["last_out"]["txt"], t["last_out_ext"]["txt"]) == ("16:15 HST", "17:45 HST")
+    assert t["last_out_ext"]["short"] == "PWA max duty 16 h" and t["pwa"]["debrief"] == "0:30"
+    assert t["pwa"]["in_txt"] == "23:30 HST" and t["pwa"]["duty"] == "7:15"  # 08:00 to 14:45 + 0:30
+    assert any("to 30 min after the last block-in, clearing customs, 2.A.19.b)" in s for s in t["lines"])
+
+
+SIN4 = ("H3902|2027-03-02", "10:00", [(0, "9103", "HNL", "SIN", "11:00", "18:05", "13:05")])  # in 00:05 HST Mar 3
+
+
+def _sin4(crew, code=None):
+    key, rep, legs = SIN4
+    pk = {"eq": "332"} | ({"crew": code} if code else {})
+    return run([(key, trip(key, rep, legs, crew))], at(2027, 3, 2, "09:00"), {key: pk})["attributes"]["timeout"]
+
+
+def test_pwa_four_pilots_two_captains_have_no_pwa_hours_table_c_only():
+    """(e) CA02FO02: an Extended Range Crew of 2 Captains and 2 First Officers is limited by Part 117 Table C only
+    (10.D.1.d). Table C 0700-1259 (HNL time 10:00), Class 2 (A330, 4 pilots), 4 pilots: 18:00: FDP end 04:00 HST, last
+    out 04:00 - 13:05 = 14:55 HST, 16:55 with the extension; the PWA adds nothing."""
+    t = _sin4(["CA Doe, Jane (10001)", "CA Roe, Rick (10002)", "FO Poe, Pat (10003)", "FO Moe, Max (10004)"], "CA02FO02")
+    assert t["fdp"]["pilots"] == 4 and t["fdp"]["limit"] == "18:00" and t["fdp"]["rest_class"] == 2
+    assert (t["last_out"]["txt"], t["last_out_ext"]["txt"]) == ("14:55 HST", "16:55 HST")
+    assert t["last_out"]["short"] == "FDP 18:00" and t["last_out_ext"]["short"] == "FDP + 2:00 ext"
+    p = t["pwa"]
+    assert (p["cite"], p["maximum"], p["scheduled"], p["binds"], p["last_out_txt"]) == ("10.D.1.d", "", "", [], "")
+    assert p["duty"] == "14:35"  # 10:00 to 00:05 + 0:30 customs at SIN
+    assert any(s.startswith("PWA duty limit (10.D.1.d): an Extended Range Crew of 2 Captains and 2 First Officers has no "
+                            "PWA duty hours of its own: Part 117 Table C governs") for s in t["lines"])
+    assert "PWA crew" not in t["unsure"]
+
+
+def test_pwa_four_pilots_one_captain_extended_range_crew_18_hours():
+    """(f) CA01FO01RO02: an Extended Range Crew of 1 Captain (2.A.25), Scheduled 16:00, Maximum 18:00 (10.D.1.c). The
+    same duty: 10:00 + 18:00 = 04:00 HST, customs at SIN (0:30): last block-in 03:30, less 13:05 = 14:25 HST, earlier
+    than FAR's 14:55 and 16:55: it binds both. Scheduled 14:35 of 16:00."""
+    t = _sin4(["CA Doe, Jane (10001)", "FO Roe, Rick (10002)", "RO Poe, Pat (10003)", "RO Moe, Max (10004)"],
+              "CA01FO01RO02")
+    lo, lx, p = t["last_out"], t["last_out_ext"], t["pwa"]
+    assert (lo["txt"], lx["txt"], lo["by"], lx["by"]) == ("14:25 HST", "14:25 HST", "PWA 10.D.1.c max duty 18 h",
+                                                          "PWA 10.D.1.c max duty 18 h")
+    assert (p["cite"], p["scheduled"], p["maximum"], p["duty"], p["binds"], p["sure"]) == (
+        "10.D.1.c", "16:00", "18:00", "14:35", ["no_ext", "ext"], True)
+    assert any("Extended Range Crew of 1 Captain and 3 First Officers (2.A.25)" in s for s in t["lines"])
+    assert any("binding with and without an extension (FAR 117 alone: 14:55 HST, 16:55 HST with the extension)" in s
+               for s in t["lines"])
+    assert t["no_ext"]["txt"] == "03:30 HST" and t["no_ext"]["by"] == "PWA 10.D.1.c max duty 18 h"
+    assert "PWA crew" not in t["unsure"]
+    # the Captains not known (a crew list with no CA and no package line): the 1-Captain values, marked '?'
+    t = _sin4(["FO Doe, Jane (10001)", "FO Roe, Rick (10002)", "RO Poe, Pat (10003)"])
+    assert t["fdp"]["pilots"] == 4 and t["last_out"]["txt"] == "14:25 HST" and t["pwa"]["sure"] is False
+    assert "PWA crew" in t["unsure"] and t["sure"] is False and "(10.D.1.c?)" in t["pwa"]["txt"]
+
+
+def test_pwa_duty_values_by_crew():
+    h = lambda x: timedelta(hours=x)  # noqa: E731
+    assert TO.pwa_duty(2)[:3] == (h(14), h(16), "10.D.1.a")
+    assert TO.pwa_duty(3, 2)[:3] == (h(16), h(18), "10.D.1.b.1")  # an IRO Crew whatever its Captains (2.A.40)
+    assert TO.pwa_duty(4, 1)[:3] == (h(16), h(18), "10.D.1.c")
+    assert TO.pwa_duty(4, 2)[:3] == (None, None, "10.D.1.d")
+    assert TO.pwa_duty(4, None)[2:] == ("10.D.1.c", TO.pwa_duty(4, None)[3], False)
+    assert TO.pwa_duty(None)[:3] == (h(14), h(16), "10.D.1.a") and TO.pwa_duty(None)[4] is False
+    assert TO.pwa_duty(2, 1, True)[:3] == (h(12), h(14), "10.D.3") and TO.pwa_duty(3, 1, True)[:3] == (h(14), h(16), "10.D.3")
+    assert TO.pwa_duty(4, 2, True)[:3] == (h(14), h(16), "10.D.3")
+    assert (TO.package_captains("CA02FO02"), TO.package_captains("CA01FO01RO01"), TO.package_captains("FO02")) == (2, 1, None)
+    assert TO.roster_captains(["CA Doe, Jane (1)", "CA OPEN", "FO Roe, Rick (2)"]) == 2
+
+
+def test_mixed_flying_and_the_repositioning_flight():
+    """2.A.45: a segment of 3:00 or more and an interisland one, besides a single Repositioning Flight (2.A.62: to a
+    neighbor island station to leave the islands from there, or to Honolulu from one after arriving from outside)."""
+    t0 = at(2027, 2, 12, "08:00")
+    L = lambda a, b, h, m: _leg(a, b, t0, t0 + timedelta(hours=h, minutes=m))  # noqa: E731
+    assert TO.mixed_flying([L("KOA", "HNL", 0, 45), L("HNL", "LAX", 5, 15)])
+    assert TO.mixed_flying([L("HNL", "OGG", 0, 40), L("OGG", "HNL", 0, 40), L("HNL", "LAX", 5, 30)])
+    assert not TO.mixed_flying([L("HNL", "OGG", 0, 40), L("OGG", "LAX", 5, 0)])  # HNL-OGG repositions (2.A.62.a)
+    assert not TO.mixed_flying([L("LAX", "OGG", 5, 0), L("OGG", "HNL", 0, 40)])  # OGG-HNL repositions (2.A.62.b)
+    assert TO.mixed_flying([L("HNL", "LIH", 0, 35), L("LIH", "HNL", 0, 35), L("HNL", "OGG", 0, 40), L("OGG", "LAX", 5, 0)])
+    assert not TO.mixed_flying([L("HNL", "LAX", 5, 15)]) and not TO.mixed_flying([L("HNL", "OGG", 0, 40)])
+    assert not TO.mixed_flying([_leg("HNL", "KOA", t0, t0 + timedelta(minutes=45), dh=True), L("KOA", "LAX", 5, 0)])
+    # a duty that repositions: International limits, and the basis says why
+    d = _duty(at(2027, 2, 12, "07:00"), L("HNL", "OGG", 0, 40),
+              _leg("OGG", "LAX", at(2027, 2, 12, "09:40"), at(2027, 2, 12, "14:40")))
+    t = TO.duty_timeout([d], 0, 2, "roster", "332")
+    assert t["pwa"]["cite"] == "10.D.1.a" and t["pwa"]["mixed"] is False
+    assert ("Not Mixed Flying (2.A.45): HNL-OGG is a Repositioning Flight (2.A.62; a sit of 2:00 or less at the neighbor "
+            "island is read as its minimal delay).") in t["lines"]
+
+
+def test_pwa_mixed_flying_14_hours_binds_a_two_pilot_crew():
+    """(g) KOA-HNL (0:45) then HNL-LAX (5:15), 2 pilots, report 07:00 HST: Mixed Flying (2.A.45; KOA-HNL goes to
+    Honolulu before the international segment, so it is no Repositioning Flight). FAR: Table B 0700-1159, 2 segments,
+    14:00: FDP end 21:00; from KOA-HNL's 08:00 out to the last block-in 15:15 is 7:15: last outs 13:45 and 15:45 HST.
+    PWA 10.D.3 standard crew: Maximum 14:00: 07:00 + 14:00 = 21:00, last block-in 20:45, less 7:15 = 13:30 HST: it
+    binds both. Scheduled 8:30 of 12:00. Mixed Flying landings: 2 of 4 (10.H.3)."""
+    key = "H3903|2027-02-12"
+    legs = [(0, "9104", "KOA", "HNL", "08:00", "08:45", "0:45"), (0, "9105", "HNL", "LAX", "10:00", "17:15", "5:15")]
+    t = run([(key, trip(key, "07:00", legs, CREW2))], at(2027, 2, 12, "06:00"), {key: {"eq": "332"}})["attributes"]["timeout"]
+    lo, lx, p = t["last_out"], t["last_out_ext"], t["pwa"]
+    assert t["fdp"]["limit"] == "14:00" and t["fdp"]["segments"] == 2 and lo["leg"] == "KOA-HNL"
+    assert (lo["txt"], lx["txt"], lo["short"], lx["short"]) == ("13:30 HST", "13:30 HST", "PWA max duty 14 h",
+                                                                "PWA max duty 14 h")
+    assert lo["by"] == "PWA 10.D.3 max duty 14 h" and p["binds"] == ["no_ext", "ext"]
+    assert (p["mixed"], p["cite"], p["crew"], p["scheduled"], p["maximum"], p["duty"]) == (
+        True, "10.D.3", "Mixed Flying duty (2.A.45), standard crew", "12:00", "14:00", "8:30")
+    assert p["landings"] == {"n": 2, "max": 4, "ok": True}
+    assert "Landings (PWA 10.H.3, Mixed Flying): 2 flown segments; no more than 4 in a Mixed Flying Duty Period." in t["lines"]
+    assert any("binding with and without an extension (FAR 117 alone: 13:45 HST, 15:45 HST with the extension)" in s
+               for s in t["lines"])
+    # augmented, the same duty: 14:00 Scheduled, 16:00 Maximum (10.D.3)
+    t3 = run([(key, trip(key, "07:00", legs, CREW3))], at(2027, 2, 12, "06:00"), {key: {"eq": "332"}})["attributes"]["timeout"]
+    assert (t3["pwa"]["scheduled"], t3["pwa"]["maximum"], t3["pwa"]["crew"]) == (
+        "14:00", "16:00", "Mixed Flying duty (2.A.45), augmented crew")
+    assert t3["pwa"]["last_out_txt"] == "15:30 HST"  # 07:00 + 16:00 - 0:15 - 7:15
+
+
+def _rest_line():
+    """HNL-SFO (report 06:00 HST, out 07:00, in 12:30, release 12:45: a 6:45 Duty Period), SFO-HNL reporting 12:00 later
+    (00:45 HST, out 02:00, in 07:30, release 07:45), then HNL-LAX reporting 10:30 after that (18:15 HST, out 19:15)."""
+    return [_duty(at(2027, 3, 10, "06:00"), _leg("HNL", "SFO", at(2027, 3, 10, "07:00"), at(2027, 3, 10, "12:30"), "1")),
+            _duty(at(2027, 3, 11, "00:45"), _leg("SFO", "HNL", at(2027, 3, 11, "02:00"), at(2027, 3, 11, "07:30"), "2")),
+            _duty(at(2027, 3, 11, "18:15"), _leg("HNL", "LAX", at(2027, 3, 11, "19:15"), at(2027, 3, 12, "00:30"), "3"))]
+
+
+def test_pwa_rest_short_out_of_domicile_and_in_domicile():
+    """(h) Out of domicile (SFO) the rest is 2 x the preceding Duty Period (10.E.1.a.1): 2 x 6:45 = 13:30; release to
+    report 12:00: short (FAR's 10 h is met). With 2 pilots the Company may limit a regular crew's hotel rest to 9:00
+    (10.E.1.a.2), so 12:00 may meet the contract: a '?', not a red flag (review PWA-7; a regular crew is read as 2
+    pilots). At home (10.E.1.a) 11:00: release 07:45 to report 18:15 = 10:30: short. Flags only: the last outs do not
+    move."""
+    ds = _rest_line()
+    t = TO.duty_timeout(ds, 1, 3, "roster", "332")
+    r = t["pwa"]["rest"]
+    assert (r["need"], r["have"], r["ok"], r["cite"]) == ("13:30", "12:00", False, "10.E.1.a.1")
+    assert "pwa_rest" in t["flags"] and t["rest"]["ok"] is True and t["legal"] is True
+    assert "Flag: short of PWA rest (10.E.1.a.1): 12:00 of 13:30." in t["lines"]
+    assert any(s.startswith("PWA rest before this duty (10.E.1.a.1): out of domicile, 2 x the preceding Duty Period 6:45 "
+                            "(06:00 HST Wed Mar 10 to release 12:45 HST Wed Mar 10) = 13:30 needed; release to report "
+                            "12:00: SHORT; hotel time") for s in t["lines"])
+    assert "rest 12:00, 13:30 needed (10.E.1.a.1): SHORT" in t["pwa"]["txt"]
+    t2 = TO.duty_timeout(ds, 1, 2, "roster", "332")
+    r2 = t2["pwa"]["rest"]
+    assert (r2["need"], r2["have"], r2["ok"], r2["cite"]) == ("13:30", "12:00", None, "10.E.1.a.1")
+    assert "pwa_rest" not in t2["flags"] and not any(s.startswith("Flag: short of PWA rest") for s in t2["lines"])
+    assert any(s.startswith("PWA rest before this duty (10.E.1.a.1): out of domicile, 2 x the preceding Duty Period 6:45")
+               and s.endswith("release to report 12:00: ? short of it, but 9:00 or more: met if the Company limits a "
+                              "regular crew's hotel rest to 9:00 (10.E.1.a.2; a regular crew is read as 2 pilots); hotel "
+                              "time (door to door, 10.E.1.a.3) is shorter by the van rides.") for s in t2["lines"])
+    assert "rest 12:00, 13:30 needed (10.E.1.a.1): ?" in t2["pwa"]["txt"]
+    # under 9:00 it is short for any crew: report 8:30 after the SFO release
+    ds2 = copy.deepcopy(ds)
+    for x in [ds2[1]] + ds2[1]["legs"]:
+        for k in ("report", "dep", "arr"):
+            if k in x:
+                x[k] -= timedelta(hours=3, minutes=30)
+    t5 = TO.duty_timeout(ds2, 1, 2, "roster", "332")
+    assert t5["pwa"]["rest"]["ok"] is False and "pwa_rest" in t5["flags"]
+    assert "Flag: short of PWA rest (10.E.1.a.1): 8:30 of 13:30." in t5["lines"]
+    # the duty starts 02:45 PST: no more than 7 landings (10.H.1)
+    assert ("Landings (PWA 10.H.1): 1 flown segment; no more than 7 when the duty starts 2200-0459 local (it starts "
+            "02:45).") in t["lines"]
+    t3 = TO.duty_timeout(ds, 2, 2, "roster", "332")
+    r = t3["pwa"]["rest"]
+    assert (r["need"], r["have"], r["ok"], r["cite"]) == ("11:00", "10:30", False, "10.E.1.a")
+    assert "Flag: short of PWA rest (10.E.1.a): 10:30 of 11:00." in t3["lines"] and t3["rest"]["ok"] is True
+    assert any(s.startswith("PWA rest before this duty (10.E.1.a): in domicile, 11:00 needed; release to report 10:30: "
+                            "SHORT.") for s in t3["lines"])
+    # out at 19:15 HST but a 6:30 Duty Period: no 10.E.1.b
+    assert any(s.endswith("not triggered (scheduled Duty Period 6:30, under 12:00).") for s in t3["lines"])
+    # a longer rest meets it, and the box keeps its last out either way
+    ds[2] = _duty(at(2027, 3, 11, "19:00"), _leg("HNL", "LAX", at(2027, 3, 11, "20:00"), at(2027, 3, 12, "01:15"), "3"))
+    t4 = TO.duty_timeout(ds, 2, 2, "roster", "332")
+    assert t4["pwa"]["rest"]["ok"] is True and "pwa_rest" not in t4["flags"]
+    assert "rest 11:15, 11:00 needed (10.E.1.a): met" in t4["pwa"]["txt"]
+
+
+def _late_line(arr="01:45"):
+    """LAX-HNL in 20:45 HST, release 21:00; then HNL-JFK reporting 17:00 later (14:00 HST), out 15:00 HST, 3 pilots."""
+    h, m = map(int, arr.split(":"))
+    return [_duty(at(2027, 3, 9, "14:00"), _leg("LAX", "HNL", at(2027, 3, 9, "15:15"), at(2027, 3, 9, "20:45"), "1")),
+            _duty(at(2027, 3, 10, "14:00"), _leg("HNL", "JFK", at(2027, 3, 10, "15:00"),
+                                                 datetime(2027, 3, 11, h, m, tzinfo=HST), "2"))]
+
+
+def test_pwa_late_departure_with_a_12_hour_duty_needs_18_hours_rest():
+    """(i) 10.E.1.b: HNL-JFK departs 15:00 local (1400-0359) and the scheduled Duty Period, 14:00 to 01:45 + 0:15, is
+    12:00: 18:00 rest before it. Release to report 17:00: 11:00 at home (10.E.1.a) is met, 18:00 is not: flagged."""
+    t = TO.duty_timeout(_late_line(), 1, 3, "roster", "332")
+    r = t["pwa"]["rest"]
+    assert (r["need"], r["have"], r["ok"], r["cite"], r["late"]) == ("18:00", "17:00", False, "10.E.1.b", True)
+    assert "pwa_rest" in t["flags"] and "Flag: short of PWA rest (10.E.1.b): 17:00 of 18:00." in t["lines"]
+    assert any(s.startswith("PWA rest before this duty (10.E.1.a): in domicile, 11:00 needed; release to report 17:00: "
+                            "met, 6:00 spare") for s in t["lines"])
+    assert ("PWA 10.E.1.b (18:00 rest when a segment departs 1400-0359 local and the scheduled Duty Period is 12:00+): "
+            "applies "
+            "(HNL-JFK departs 15:00 HST, scheduled Duty Period 12:00); release to report 17:00: SHORT.") in t["lines"]
+    assert t["pwa"]["duty"] == "12:00" and "rest 17:00, 18:00 needed (10.E.1.b): SHORT" in t["pwa"]["txt"]
+    # one minute under 12:00 of Duty Period: not triggered
+    t = TO.duty_timeout(_late_line("01:44"), 1, 3, "roster", "332")
+    assert t["pwa"]["rest"]["late"] is False and "pwa_rest" not in t["flags"]
+    assert any(s.endswith("not triggered (scheduled Duty Period 11:59, under 12:00).") for s in t["lines"])
+    # the window is 1400-0359 at the station's Local Time
+    late = lambda hm: TO._late(_leg("HNL", "LAX", at(2027, 3, 10, hm), at(2027, 3, 10, hm) + timedelta(hours=5)))  # noqa: E731
+    assert late("14:00") and late("03:59") and late("23:30") and not late("04:00") and not late("13:59")
+    assert TO._late(_leg("LAX", "HNL", at(2027, 3, 10, "12:00"), at(2027, 3, 10, "17:00")))  # 14:00 PST
+
+
+def _hops(report, first_out, n, blk=40, every=60, dh_last=False):
+    """n LAX-SFO / SFO-LAX hops of `blk` minutes leaving every `every` minutes from first_out (HST)."""
+    legs = []
+    for k in range(n):
+        dep = first_out + timedelta(minutes=every * k)
+        a, b = ("LAX", "SFO") if k % 2 == 0 else ("SFO", "LAX")
+        legs.append(_leg(a, b, dep, dep + timedelta(minutes=blk), str(9200 + k), dh=dh_last and k == n - 1))
+    return _duty(report, *legs)
+
+
+def test_pwa_landings_seven_for_a_night_start_and_ten_scheduled():
+    """(j) 10.H.1: 8 flown legs in a duty reporting 23:00 PST (21:00 HST) at LAX: more than 7 for a duty starting
+    2200-0459 local: flagged. 11 scheduled legs (07:00 PST report): more than 10: flagged. 10, or 10 flown and a
+    deadhead, are not."""
+    t = TO.duty_timeout([_hops(at(2027, 3, 3, "21:00"), at(2027, 3, 3, "22:00"), 8)], 0, 2, "roster", "332")
+    assert t["pwa"]["landings"] == {"n": 8, "max": 7, "ok": False} and "landings" in t["flags"]
+    assert "Flag: landings (PWA 10.H.1): 8 flown segments, over 7 (the duty starts 23:00 local, 2200-0459)." in t["lines"]
+    t = TO.duty_timeout([_hops(at(2027, 3, 3, "21:00"), at(2027, 3, 3, "22:00"), 7)], 0, 2, "roster", "332")
+    assert t["pwa"]["landings"]["ok"] is True and "landings" not in t["flags"]
+    day = (at(2027, 3, 3, "05:00"), at(2027, 3, 3, "06:00"))
+    t = TO.duty_timeout([_hops(*day, 11, 30, 45)], 0, 2, "roster", "332")
+    assert t["pwa"]["landings"] == {"n": 11, "max": 10, "ok": False} and "landings" in t["flags"]
+    assert ("Flag: landings (PWA 10.H.1): 11 flown segments, over the 10 that may be scheduled (11 if required to "
+            "perform).") in t["lines"]
+    assert "landings 11 (10 may be scheduled, 11 if required): OVER" in t["pwa"]["txt"]
+    t = TO.duty_timeout([_hops(*day, 11, 30, 45, dh_last=True)], 0, 2, "roster", "332")
+    assert t["pwa"]["landings"] == {"n": 10, "max": 10, "ok": True}
+    assert ("Landings (PWA 10.H.1): 10 flown segments; no more than 10 may be scheduled (11 if required to perform)."
+            in t["lines"])
+
+
+def _long_day(in2):
+    """2 pilots: report 06:00 HST, HNL-SFO 07:00-12:15 (5:15), SFO-LAX out 1:30 before in2 (HST)."""
+    h, m = map(int, in2.split(":"))
+    arr = at(2027, 3, 10, "00:00") + timedelta(hours=h, minutes=m)
+    return [_duty(at(2027, 3, 10, "06:00"), _leg("HNL", "SFO", at(2027, 3, 10, "07:00"), at(2027, 3, 10, "12:15"), "1"),
+                  _leg("SFO", "LAX", arr - timedelta(minutes=90), arr, "2"))]
+
+
+def test_pwa_maximum_over_at_the_scheduled_times_is_not_legal_and_over_the_scheduled_limit_is_flagged():
+    """(k) 2 pilots, last block-in 22:15 HST: Duty Period 06:00 to 22:30 = 16:30, over the 16:00 Maximum (10.D.1.a):
+    not legal, no last out. Block-in 20:15: 14:30, within the Maximum but past the 14:00 Scheduled limit: flagged (the
+    company may not schedule it), the last outs stand: the PWA's 06:00 + 16:00 - 0:15 - (20:15 - 07:00) = 08:30 HST is
+    later than FAR's (Table B 0600-0659, 2 segments, 13:00: 19:00 - 13:15 = 05:45, over as scheduled; 07:45 with the
+    extension), so it binds neither."""
+    t = TO.duty_timeout(_long_day("22:15"), 0, 2, "roster", "332")
+    assert t["legal"] is False and t["last_out"] is None and t["last_out_ext"] is None
+    assert t["not_legal_short"] == "PWA duty 16:30 of 16:00" and "not legal as scheduled" in t["not_legal"]
+    assert t["not_legal"].startswith("the scheduled Duty Period 16:30 (the report to 15 min after the last block-in, PWA "
+                                     "2.A.19.b) is over the PWA 10.D.1.a Maximum 16:00 (2 pilots)")
+    assert any(s.startswith("Not legal: the scheduled Duty Period 16:30") for s in t["lines"])
+    assert any(s.endswith("the scheduled Duty Period is over it: not legal.") for s in t["lines"])
+    assert t["no_ext"]["legal"] is False and t["pwa"]["txt"].startswith(
+        "scheduled duty 16:30, over the 14:00 Scheduled limit (PAST), Maximum 16:00 (10.D.1.a): over the Maximum: not "
+        "legal")
+    assert t["pwa"]["binds"] == []  # no last out: the PWA sets no time (review)
+    # FAR 117 is over as scheduled too (Table B 0600-0659, 2 segments, 13:00; 06:00 to 22:15 is 16:15): said (review I9)
+    assert ("Flag: FAR 117 is over as scheduled too: the FDP from the report to the last flown block-in (22:15 HST) is "
+            "16:15, over the 13:00 limit (15:00 with the 2:00 extension, FAR 117.19(a); FAR 117.13).") in t["lines"]
+    assert t["ft"]["txt"] == "6:45 of 9:00 (2:15 spare)"  # flight time is not what makes it illegal
+    # SFO-LAX leaves 22:45 PST on a 16:30 duty: 10.E.1.b applies; no duty before it on file: not known
+    assert t["pwa"]["rest"] == {"need": "18:00", "have": "", "ok": None, "cite": "10.E.1.b", "late": True}
+    assert "rest not on file (10.E.1.b)" in t["pwa"]["txt"] and "pwa_rest" not in t["flags"]
+    t = TO.duty_timeout(_long_day("20:15"), 0, 2, "roster", "332")
+    assert t["legal"] is True and "pwa_sched" in t["flags"]
+    assert t["pwa"]["txt"].startswith("scheduled duty 14:30, over the 14:00 Scheduled limit (PAST), Maximum 16:00 "
+                                      "(10.D.1.a): last out 08:30 HST (not binding: FAR 117 is earlier)")
+    assert not any(s.startswith("Flag: FAR 117 is over as scheduled too") for s in t["lines"])  # the early flag says it
+    assert ("Flag: PWA duty scheduled 14:30 of 14:00 (10.D.1.a): scheduled past the PWA limit (the company may not "
+            "schedule it; not a timeout).") in t["lines"]
+    assert t["pwa"]["last_out_txt"] == "08:30 HST" and t["pwa"]["binds"] == []
+    assert (t["last_out"]["txt"], t["last_out_ext"]["txt"], t["last_out"]["early"]) == ("05:45 HST", "07:45 HST", True)
+    # 3 pilots: an IRO Crew's 18:00 (10.D.1.b.1): 18:30 is over it too
+    t = TO.duty_timeout([_duty(at(2027, 3, 10, "06:00"), _leg("HNL", "SFO", at(2027, 3, 10, "07:00"),
+                                                              at(2027, 3, 10, "12:15"), "1"),
+                               _leg("SFO", "LAX", at(2027, 3, 11, "00:45") - timedelta(minutes=90),
+                                    at(2027, 3, 11, "00:15"), "2"))], 0, 3, "roster", "332")
+    assert t["legal"] is False and t["not_legal_short"] == "PWA duty 18:30 of 18:00" and t["pwa"]["binds"] == []
+
+
+# ---------------------------------------------------------------- review round 1 (PWA text over the spec where they differ)
+def _kd(key, report, *legs):
+    return {"key": key, "report": report, "legs": [dict(x, key=key) for x in legs]}
+
+
+def test_pwa_mixed_flying_limits_and_rest_cover_the_whole_grouping():
+    """PWA 10.D.3.a ("A pilot assigned to a grouping containing a Mixed Flying Duty Period shall be subject to the
+    following limitations") and 10.E.3.a ("For pilots assigned to a grouping containing at least one Mixed Flying Duty
+    Period, out of Domicile rest ... shall be determined by the following table"). By hand: day 1 KOA-HNL (0:45) and
+    HNL-LAX (5:15), report 07:00 HST, in 15:15, release 15:30 (Duty Period 8:30); day 2 LAX-HNL out 07:45 HST (09:45
+    PST), block 5:45, report 1:15 before = 06:30 HST (08:30 PST), 15:00 after the release. 2 pilots, acclimated to HNL:
+    HNL time 06:30 is Table B 0600-0659, 13:00 (LAX time 08:30 would give 14:00: the lower is used, '?'): FDP end 19:30,
+    last out 19:30 - 5:45 = 13:45 HST (15:45 PST), 15:45 HST (17:45 PST) with the extension. Day 2 is no Mixed Flying
+    duty itself, but its grouping holds one: Maximum 14:00 (10.D.3, standard crew), so the duty ends by 20:30, the last
+    block-in by 20:15 (0:15 debrief), the last out 20:15 - 5:45 = 14:30 HST (16:30 PST): it caps the extension (10.D.1.a
+    alone gave 16:30 HST). Rest at LAX: 2 landings performed in the grouping before it (3 in all): 9:00 (10.E.3.a), which
+    15:00 meets; but until Ryan confirms that the table replaces 2 x the Duty Period (review PWA-R2-2), 2 x 8:30 = 17:00
+    (10.E.1.a.1) is judged too: short of it, so the rest is a '?' (and no flag). Landings of day 2: 1 of 10 (10.H.3 is
+    per Mixed Flying duty)."""
+    key = "H3998|2027-02-10"
+    legs = [(0, "9201", "KOA", "HNL", "08:00", "08:45", "0:45"), (0, "9202", "HNL", "LAX", "10:00", "17:15", "5:15"),
+            (1, "9203", "LAX", "HNL", "09:45", "13:30", "5:45")]
+    t = run([(key, trip(key, "07:00", legs, CREW2))], at(2027, 2, 11, "05:00"), {key: {"eq": "332"}})["attributes"]["timeout"]
+    lo, lx, p = t["last_out"], t["last_out_ext"], t["pwa"]
+    assert t["report_txt"] == "06:30 HST" and lo["leg"] == "LAX-HNL"
+    assert (lo["txt"], lo["hst"], lo["pwa"]) == ("15:45 PST", "13:45 HST", False)
+    assert (lx["txt"], lx["hst"], lx["by"], lx["short"]) == ("16:30 PST", "14:30 HST", "PWA 10.D.3 max duty 14 h",
+                                                             "PWA max duty 14 h")
+    assert (p["cite"], p["mixed"], p["mixed_grouping"], p["scheduled"], p["maximum"], p["binds"]) == (
+        "10.D.3", False, True, "12:00", "14:00", ["ext"])
+    assert p["crew"].startswith("a duty of a grouping that holds a Mixed Flying Duty Period (2.A.45; 10.D.3.a covers")
+    assert any(s.startswith("PWA 10.D.3.a: this grouping holds a Mixed Flying Duty Period (2.A.45)") for s in t["lines"])
+    assert p["rest"] == {"need": "9:00", "have": "15:00", "ok": None, "cite": "10.E.3.a", "late": False,
+                         "other": "17:00 (10.E.1.a.1)"}
+    assert "rest 15:00, 9:00 (10.E.3.a) or 17:00 (10.E.1.a.1) needed: ?" in p["txt"]
+    assert any(s.startswith("? PWA rest, the other reading (10.E.1.a.1): if 10.E.3.a's table adds to 10.E.1.a.1 rather "
+                            "than replacing it (to confirm): 2 x the preceding Duty Period 8:30") for s in t["lines"])
+    assert "pwa_rest" not in t["flags"] and p["landings"] == {"n": 1, "max": 10, "ok": True}
+    assert any(s.startswith("PWA rest before this duty (10.E.3.a): out of domicile in a grouping that holds a Mixed "
+                            "Flying Duty Period, 2 landings performed in it before this rest: 9:00") for s in t["lines"])
+    # the other clock (LAX 08:30, Table B 14:00) is capped by the PWA too: 20:15 - 5:45 = 14:30 HST
+    assert t["fdp"]["other"]["last_out_txt"] == "16:30 PST" and "clock" in t["unsure"]
+
+
+def test_pwa_mixed_flying_rest_counts_the_grouping_landings():
+    """10.E.3.a's table by the landings performed in the grouping: day 1 KOA-HNL-LAX (Mixed, 2), day 2 four LAX-SFO
+    hops (6 by then), day 3 LAX-HNL. Before day 3: 6 landings, 10:00 needed; 9:30 from release to report: short. Before
+    day 2: 2 landings performed (9:00, met by 9:30), but the whole grouping on file has 7 (10:00): a '?'."""
+    k = "H3999|2027-03-10"
+    d1 = _kd(k, at(2027, 3, 10, "07:00"), _leg("KOA", "HNL", at(2027, 3, 10, "08:00"), at(2027, 3, 10, "08:45"), "1"),
+             _leg("HNL", "LAX", at(2027, 3, 10, "10:00"), at(2027, 3, 10, "15:15"), "2"))
+    # release 15:30; day 2 reports 9:30 later (01:00 HST Mar 11), four 1:00 hops from 02:15
+    hops = [_leg(*(("LAX", "SFO") if j % 2 == 0 else ("SFO", "LAX")), at(2027, 3, 11, "02:15") + timedelta(hours=2 * j),
+                 at(2027, 3, 11, "03:15") + timedelta(hours=2 * j), str(3 + j)) for j in range(4)]
+    d2 = _kd(k, at(2027, 3, 11, "01:00"), *hops)  # last in 09:15, release 09:30
+    d3 = _kd(k, at(2027, 3, 11, "19:00"), _leg("LAX", "HNL", at(2027, 3, 11, "20:15"), at(2027, 3, 12, "01:45"), "7"))
+    t3 = TO.duty_timeout([d1, d2, d3], 2, 2, "roster", "332")
+    r = t3["pwa"]["rest"]
+    assert (r["need"], r["have"], r["ok"], r["cite"]) == ("10:00", "9:30", False, "10.E.3.a") and "pwa_rest" in t3["flags"]
+    assert "Flag: short of PWA rest (10.E.3.a): 9:30 of 10:00." in t3["lines"]
+    assert t3["pwa"]["cite"] == "10.D.3" and t3["pwa"]["mixed"] is False and t3["pwa"]["mixed_grouping"] is True
+    t2 = TO.duty_timeout([d1, d2, d3], 1, 2, "roster", "332")
+    r = t2["pwa"]["rest"]
+    assert (r["need"], r["have"], r["ok"], r["cite"]) == ("9:00", "9:30", None, "10.E.3.a") and "pwa_rest" not in t2["flags"]
+    assert any("? met for those landings; the 7 landings of the whole grouping on file would need 10:00" in s
+               for s in t2["lines"])
+    assert (TO.mixed_rest(5), TO.mixed_rest(6), TO.mixed_rest(7), TO.mixed_rest(8)) == (
+        timedelta(hours=9), timedelta(hours=10), timedelta(hours=10), timedelta(hours=11))
+    # another grouping (another key) is not covered: day 3 alone is 10.D.1.a and 2 x its preceding Duty Period
+    d3b = dict(d3, key="H3997|2027-03-11", legs=[dict(x, key="H3997|2027-03-11") for x in d3["legs"]])
+    t = TO.duty_timeout([d1, d2, d3b], 2, 2, "roster", "332")
+    assert t["pwa"]["cite"] == "10.D.1.a" and t["pwa"]["rest"]["cite"] == "10.E.1.a.1"
+
+
+def test_an_all_interisland_duty_takes_the_interisland_duty_limits():
+    """2.A.36.b: a pilot performing Interisland flying (other than a Repositioning Flight) is an Interisland Pilot, so
+    10.D.2 applies. By hand, 2 pilots: report 14:00 HST, four 1:00 legs HNL-OGG-HNL-LIH-HNL from 15:00 to 20:45 in.
+    FAR: Table B 1300-1659, 4 segments, 12:00: FDP end 02:00, 04:00 with the extension; the last out of the first leg
+    02:00 - 5:45 = 20:15 HST, 22:15 with the extension. 10.D.2.b (starting before 2200 and continuing after 0300: 12 h),
+    so the Maximum runs to the later of 0300 and 14:00 + 12:00 = 02:00: 03:00 (13 h), the last block-in 02:45, last out
+    02:45 - 5:45 = 21:00 HST: it caps the extension (10.D.1.a's 16:00 gave 00:00). Scheduled 14:00 to 21:00: 7:00 of
+    12:00. The pilot may exceed the Maximum at his option (10.D.4) only departing a station other than his domicile."""
+    rep = at(2027, 3, 10, "14:00")
+    legs = []
+    for j, (a, b) in enumerate((("HNL", "OGG"), ("OGG", "HNL"), ("HNL", "LIH"), ("LIH", "HNL"))):
+        dep = at(2027, 3, 10, "15:00") + timedelta(minutes=95 * j)
+        legs.append(_leg(a, b, dep, dep + timedelta(minutes=60), str(j + 1)))
+    t = TO.duty_timeout([_duty(rep, *legs)], 0, 2, "roster", "332")
+    lo, lx, p = t["last_out"], t["last_out_ext"], t["pwa"]
+    assert t["sched_in_txt"] == "20:45 HST" and lo["by"] == "FDP 12:00 (FAR 117.13, Table B)"
+    assert (lo["txt"], lx["txt"], lx["by"], lx["short"]) == ("20:15 HST", "21:00 HST", "PWA 10.D.2.b max duty 13 h",
+                                                             "PWA max duty 13 h")
+    assert p["duty"] == "7:00" and p["binds"] == ["ext"]
+    assert (p["cite"], p["scheduled"], p["maximum"], p["end_txt"], p["in_txt"]) == ("10.D.2.b", "12:00", "13:00",
+                                                                                  "03:00 HST", "02:45 HST")
+    assert p["crew"].startswith("Interisland duty (all its flown segments interisland: an Interisland Pilot, 2.A.36.b)")
+    assert "Pilot option (10.D.4): none for a departure from HNL, your domicile." in t["lines"]
+    assert any(s.startswith("This duty is all interisland flying (an Interisland Pilot's, PWA 2.A.36.b): one who "
+                            "completes a Duty Period after 0200 may not start another that calendar day (10.D.2.c)")
+               for s in t["not_checked"])
+    assert not any("are not checked" in s for s in t["not_checked"])  # 10.E.2 and 10.H.2 are checked (round 2)
+    # from OGG (the second leg working): the option is said with its time, the box keeps the limit without it
+    t = TO.duty_timeout([_duty(rep, *legs)], 0, 2, "roster", "332", work=1)
+    assert any(s.startswith("Pilot option (10.D.4): departing OGG, not your domicile, you may at your option stay past "
+                            "the Interisland Maximum if it has not passed at block-out, so block out before 03:00 HST")
+               for s in t["lines"])
+    h = lambda x: timedelta(hours=x)  # noqa: E731
+    D = lambda hm, end: TO.interisland_duty(at(2027, 3, 10, hm), at(2027, 3, 10, end))  # noqa: E731
+    assert D("06:00", "16:00")[:3] == (h(12), h(14), "10.D.2.a")  # 0500-2159
+    assert D("23:00", "23:59")[:3] == (h(10), h(12), "10.D.2.a") and D("04:30", "10:00")[:3] == (h(10), h(12), "10.D.2.a")
+    assert D("13:00", "20:00")[:3] == (h(12), h(14), "10.D.2.a")  # 14 h ends exactly 0300: not after it
+    assert D("16:00", "22:00")[:3] == (h(12), h(12), "10.D.2.b")  # past 0300 the next morning: 12 h
+    assert TO.interisland_duty(at(2027, 3, 10, "17:00"), at(2027, 3, 11, "03:30"))[0] == h(10)  # scheduled past 0300
+
+
+def test_a_long_sit_at_the_neighbor_island_is_no_repositioning_flight():
+    """2.A.62 needs "minimal delay at the neighbor island station"; the PWA gives no figure, the Watcher reads 2:00. By
+    hand, 2 pilots, report 07:00 HST: HNL-OGG 08:00-08:40, then OGG-LAX 3:00 later (11:40-16:40, 5:00 block). With the
+    3:00 sit HNL-OGG is no Repositioning Flight: Mixed Flying (2.A.45), 14:00 (10.D.3): the last block-in 20:45, last
+    out 20:45 - 8:40 = 12:05 HST, under FAR's 12:20 (Table B 0700-1159, 2 segments, 14:00: 21:00 - 8:40): it binds both,
+    marked '?'. With a 1:40 sit (OGG-LAX 10:20-15:20) it repositions: 10.D.1.a."""
+    t0 = at(2027, 3, 10, "08:00")
+    d = _duty(at(2027, 3, 10, "07:00"), _leg("HNL", "OGG", t0, t0 + timedelta(minutes=40)),
+              _leg("OGG", "LAX", at(2027, 3, 10, "11:40"), at(2027, 3, 10, "16:40")))
+    t = TO.duty_timeout([d], 0, 2, "roster", "332")
+    assert t["pwa"]["mixed"] is True and t["pwa"]["cite"] == "10.D.3" and t["last_out"]["txt"] == "12:05 HST"
+    assert "Mixed Flying" in t["unsure"] and t["sure"] is False
+    assert any(s.startswith("? Mixed Flying (2.A.45): HNL-OGG (sit 3:00) would be a Repositioning Flight (2.A.62)")
+               for s in t["lines"])
+    d = _duty(at(2027, 3, 10, "07:00"), _leg("HNL", "OGG", t0, t0 + timedelta(minutes=40)),
+              _leg("OGG", "LAX", at(2027, 3, 10, "10:20"), at(2027, 3, 10, "15:20")))
+    t = TO.duty_timeout([d], 0, 2, "roster", "332")
+    assert t["pwa"]["mixed"] is False and t["pwa"]["cite"] == "10.D.1.a" and "Mixed Flying" not in t["unsure"]
+    assert not TO.mixed_flying(d["legs"]) and not TO.mixed_flying(d["legs"], True)
+
+
+def test_a_trailing_deadhead_moves_every_release_to_its_block_in():
+    """By hand, 2 pilots: report 07:00 HST, HNL-LAX 08:00-13:00 HST (5:00), then a deadhead LAX-SFO 14:00-15:30 HST
+    (2:30 after the flown block-in). The duty ends 15 min after the deadhead's block-in. FAR: Table B 0700-1159,
+    1 segment, 14:00: FDP end 21:00. PWA 10.D.1.a: 07:00 + 16:00 = 23:00, less 0:15 and the 2:30 tail = 20:15 for the
+    flown block-in: it binds both (last out 20:15 - 5:00 = 15:15 HST). Every release is that block-in + 2:30 + 0:15:
+    23:00 with and without the extension; out on time the flight time (Table A 9:00) gives a block-in by 17:00, release
+    19:45."""
+    d = _duty(at(2027, 3, 10, "07:00"), _leg("HNL", "LAX", at(2027, 3, 10, "08:00"), at(2027, 3, 10, "13:00"), "1"),
+              _leg("LAX", "SFO", at(2027, 3, 10, "14:00"), at(2027, 3, 10, "15:30"), "2", dh=True))
+    t = TO.duty_timeout([d], 0, 2, "roster", "332")
+    f = t["fdp"]
+    assert t["last_out"]["txt"] == t["last_out_ext"]["txt"] == "15:15 HST" and t["pwa"]["binds"] == ["no_ext", "ext"]
+    assert (f["in_txt"], f["ext_in_txt"], f["release_txt"], f["ext_release_txt"]) == ("20:15 HST", "20:15 HST",
+                                                                                      "23:00 HST", "23:00 HST")
+    assert (t["no_ext"]["txt"], t["no_ext"]["release_txt"]) == ("17:00 HST", "19:45 HST")
+    assert t["pwa"]["end_txt"] == "23:00 HST"  # the same end as the releases
+    assert ("Duty ends 15 min after the trailing deadhead's block-in (LAX-SFO, due 2:30 after the last flown one) (PWA "
+            "2.A.19.b): release 23:00 HST at the FDP end without an extension, 23:00 HST with one.") in t["lines"]
+
+
+def test_a_station_whose_local_time_is_not_on_file_is_a_question_for_the_pwa():
+    """PWA Local Times (2.A.43): a station with no clock on file is never read as HST. 10.E.1.b: XYZ-HNL (11:00 block,
+    3 pilots) departs 05:00 HST, 12:45 of Duty Period (report 1:15 before, 0:30 customs: XYZ's country is not known),
+    17:00 after the last release: 18:00 may apply, so a '?' and no flag. 10.H.1: 8 hops from XYZ: 7 may apply: '?'."""
+    ds = [_duty(at(2027, 3, 9, "06:00"), _leg("HNL", "XYZ", at(2027, 3, 9, "07:00"), at(2027, 3, 9, "11:00"), "1")),
+          _duty(at(2027, 3, 10, "03:45"), _leg("XYZ", "HNL", at(2027, 3, 10, "05:00"), at(2027, 3, 10, "16:00"), "2"))]
+    assert TO._late(ds[1]["legs"][0]) is None and TO._late(_leg("MKK", "HNL", at(2027, 3, 10, "15:00"),
+                                                                at(2027, 3, 10, "15:30"))) is True
+    t = TO.duty_timeout(ds, 1, 3, "roster", "332")
+    r = t["pwa"]["rest"]
+    assert (r["need"], r["ok"], r["late"]) == ("18:00", None, True) and "pwa_rest" not in t["flags"]
+    assert any(s.startswith("PWA 10.E.1.b (18:00 rest") and "applies (?) (XYZ-HNL departs 05:00 HST; XYZ local time is "
+               "not on file, so it may depart 1400-0359 there" in s for s in t["lines"])
+    hops = [_leg(*(("XYZ", "QQQ") if j % 2 == 0 else ("QQQ", "XYZ")), at(2027, 3, 10, "08:00") + timedelta(hours=j),
+                 at(2027, 3, 10, "08:30") + timedelta(hours=j), str(j)) for j in range(8)]
+    t = TO.duty_timeout([_duty(at(2027, 3, 10, "07:00"), *hops)], 0, 2, "roster", "332")
+    assert t["pwa"]["landings"] == {"n": 8, "max": 10, "ok": None} and "landings" not in t["flags"]
+    assert "landings 8 (10 may be scheduled, 11 if required)?" in t["pwa"]["txt"]
+    assert any(s.startswith("Landings (PWA 10.H.1): 8 flown segments;") and "XYZ's local time is not on file: ?" in s
+               for s in t["lines"])
+
+
+def test_pwa_local_time_windows_follow_daylight_time():
+    """10.E.1.b and 10.H.1 read the station's Local Time with daylight time: 11:30 HST is 14:30 PDT in July (1400-0359:
+    late) and 13:30 PST in January (not late); a 19:30 HST report at LAX is 22:30 PDT in July (a night start: 7
+    landings) and 21:30 PST in January (10)."""
+    late = lambda m: TO._late(_leg("LAX", "HNL", at(2027, m, 10, "11:30"), at(2027, m, 10, "16:30")))  # noqa: E731
+    assert late(7) is True and late(1) is False
+    jul = TO.duty_timeout([_hops(at(2027, 7, 3, "19:30"), at(2027, 7, 3, "20:30"), 8)], 0, 2, "roster", "332")
+    jan = TO.duty_timeout([_hops(at(2027, 1, 3, "19:30"), at(2027, 1, 3, "20:30"), 8)], 0, 2, "roster", "332")
+    assert jul["pwa"]["landings"] == {"n": 8, "max": 7, "ok": False} and "landings" in jul["flags"]
+    assert "(the duty starts 22:30 local, 2200-0459)" in "\n".join(jul["lines"])
+    assert jan["pwa"]["landings"] == {"n": 8, "max": 10, "ok": True} and "landings" not in jan["flags"]
+
+
+def test_a_return_before_duty_timeout_never_logs_the_last_error(monkeypatch):
+    """Review ERR-1: TO.ERR keeps the last duty_timeout error; a working flight whose timeout returns before
+    duty_timeout runs (the working leg not found, legs not on HST) must not log it again."""
+    TO.ERR["last"] = "ZeroDivisionError"
+    monkeypatch.setattr(WK, "_timeout_of", lambda *a, **k: None)
+    assert WK._timeout([], [], {}, {}, at(2027, 2, 19, "01:00"), None, None) is None
+    assert WK.TIMEOUT_ERR["msg"] == "" and TO.ERR["last"] == ""
+
+
+def test_the_payload_of_a_heavy_case_stays_far_under_the_ha_limit():
+    """Review TEST-1: 4 pilots whose Captains are not known (crew list FO FO RO), the other clock (LAX in July), a
+    trailing deadhead from the package, the cumulative limits on, the PWA rest lines: under 12000 bytes (HA's recorder
+    keeps attributes up to 16384)."""
+    key = "H3986|2027-07-10"
+    legs = [(0, "9086", "HNL", "LAX", "08:10", "16:10", "5:00"), (2, "9087", "LAX", "HNL", "09:10", "11:40", "5:30")]
+    pk = {"eq": "332", "duties": [
+        {"legs": [["1", "", "9086", "HNL", "LAX", "08:10", "16:10", "5h00", "5:00", "", "332"]], "rept": "07:10"},
+        {"legs": [["3", "", "9087", "LAX", "HNL", "09:10", "11:40", "5h30", "5:30", "", "332"],
+                  ["3", "DH", "1200", "HNL", "OGG", "13:00", "13:40", "0h40", "0:20", "", "717"]], "rept": "08:00"}]}
+    crew = ["FO Doe, Jane (10001)", "FO Roe, Rick (10002)", "RO Poe, Pat (10003)"]
+    r = run([(key, trip(key, "07:10", legs, crew))], at(2027, 7, 12, "05:00"), {key: pk}, months_for("2027-06", "2027-07"))
+    t = r["attributes"]["timeout"]
+    # review PWA-deadhead: the trailing HNL-OGG deadhead may be the interisland Segment of a Mixed Flying duty (10.D.3)
+    assert {"pilots", "rest class", "clock", "Mixed Flying"} <= set(t["unsure"]) and t["fdp"]["other"]
+    assert set(t["cum"]) == {"ft_672", "fdp_168", "fdp_672"} and t["pwa"]["rest"]["cite"] == "10.E.3.a"
+    assert any(s.startswith("Duty ends 15 min after the trailing deadhead's block-in (HNL-OGG") for s in t["lines"])
+    assert len(json.dumps(r)) < 12000
+
+
+def test_no_text_says_pwa_section_10_is_not_on_file():
+    src = open(os.path.join(HERE, "timeout.py"), encoding="utf-8").read()
+    card = open(os.path.join(HERE, "www", "flight-watcher-layover-card.js"), encoding="utf-8").read()
+    docs = [open(os.path.join(HERE, n), encoding="utf-8").read() for n in ("CHANGELOG.md", "README.md")]
+    for blob in [src, card] + docs:
+        lines = blob.splitlines()
+        assert not [ln for ln in lines if "Section 10" in ln and ("not on file" in ln or "not checked" in ln)]
+        assert not [ln for ln in lines if "PWA10" in ln] and chr(0x2014) not in blob
+    t = acceptance()["attributes"]["timeout"]
+    assert not any("Section 10" in s for s in t["not_checked"] + t["lines"])
+
+
+# ---------------------------------------------------------------- review round 2: PWA rest and landings readings
+def _shift(d, td):
+    """A copy of duty d moved by td (its report and legs)."""
+    d = copy.deepcopy(d)
+    d["report"] += td
+    for x in d["legs"]:
+        x["dep"] += td
+        x["arr"] += td
+    return d
+
+
+def _sit_pair(sit):
+    """One grouping: HNL-LAX (report 06:00 HST Feb 10, in 12:15, release 12:30: a 6:30 Duty Period), then LAX-KOA-HNL
+    reporting 10:30 after that release (23:00 HST, 01:00 PST), LAX-KOA 00:15-05:45 HST, KOA-HNL `sit` minutes later."""
+    k = "H3991|2027-02-10"
+    o = at(2027, 2, 11, "05:45") + timedelta(minutes=sit)
+    return [_kd(k, at(2027, 2, 10, "06:00"), _leg("HNL", "LAX", at(2027, 2, 10, "07:00"), at(2027, 2, 10, "12:15"), "1")),
+            _kd(k, at(2027, 2, 10, "23:00"), _leg("LAX", "KOA", at(2027, 2, 11, "00:15"), at(2027, 2, 11, "05:45"), "2"),
+                _leg("KOA", "HNL", o, o + timedelta(minutes=40), "3"))]
+
+
+def test_a_long_sit_judges_the_rest_both_ways_and_the_box_says_not_sure():
+    """Review PWA-R2-1 / PWA-mixed-long-sit-rest: the long sit's Mixed Flying reading is the lower duty limit, but out of
+    domicile it needs less rest (10.E.3.a's table in place of 10.E.1.a.1). By hand, 3 pilots, equipment not on file
+    (Class 3, so FAR 117 sets both last outs): a 1:00 sit at KOA makes KOA-HNL a Repositioning Flight (2.A.62), no
+    Mixed Flying: 2 x 6:30 = 13:00 needed, 10:30 from release to report: SHORT, flagged. A 2:30 sit: Mixed Flying
+    (counted, conservative for the duty limit), 1 landing performed in the grouping before the rest: 9:00 (10.E.3.a),
+    met by 1:30 (a '?' anyway: under the 2:30 of van rides); the other reading needs 13:00: SHORT. The readings disagree:
+    a '?', no flag, the "Rest ?" chip; the box's last outs stay sure, as the PWA limit binds neither (review
+    PWA-rest-unsure-box-inconsistent; FAR: Table C Class 3, 13:00 from 23:00 HST = 12:00 HST, less the 8:40 from the
+    LAX out to the last block-in: 03:20 HST; 10.D.3's 16:00 gives 06:05 HST)."""
+    t = TO.duty_timeout(_sit_pair(60), 1, 3, "roster", "")
+    r = t["pwa"]["rest"]
+    assert (t["pwa"]["cite"], r["need"], r["have"], r["ok"], r["cite"]) == ("10.D.1.b.1", "13:00", "10:30", False,
+                                                                            "10.E.1.a.1")
+    assert "pwa_rest" in t["flags"] and "Mixed Flying" not in t["unsure"]
+    t = TO.duty_timeout(_sit_pair(150), 1, 3, "roster", "")
+    p, r = t["pwa"], t["pwa"]["rest"]
+    assert (p["cite"], p["mixed"], p["binds"], t["last_out"]["hst"], t["last_out"]["pwa"]) == (
+        "10.D.3", True, [], "03:20 HST", False)
+    assert r == {"need": "9:00", "have": "10:30", "ok": None, "cite": "10.E.3.a", "late": False,
+                 "other": "13:00 (10.E.1.a.1)"}
+    assert t["flags"] == ["rest_q"] and "Mixed Flying" not in t["unsure"] and t["unsure"] == ["rest class"]
+    assert "rest 10:30, 9:00 (10.E.3.a) or 13:00 (10.E.1.a.1) needed: ?" in p["txt"]
+    assert any(s.startswith("PWA rest before this duty (10.E.3.a): out of domicile in a grouping that holds a Mixed "
+                            "Flying Duty Period, 1 landing performed in it before this rest: 9:00") and
+               "release to report 10:30: ? met by 1:30 from release to report" in s for s in t["lines"])
+    assert any(s.startswith("? PWA rest, the other reading (10.E.1.a.1): if KOA-HNL is a Repositioning Flight (2.A.62), so "
+                            "no Mixed Flying, or if 10.E.3.a's table adds to 10.E.1.a.1 rather than replacing it (to "
+                            "confirm): out of domicile, 2 x the preceding Duty Period 6:30") and
+               s.endswith("= 13:00 needed: SHORT. The readings disagree, so the rest is not sure.") for s in t["lines"])
+    # the long sit line says the Mixed Flying reading is conservative only for the duty limit and the landings
+    assert any(s.startswith("? Mixed Flying (2.A.45): KOA-HNL (sit 2:30)") and "counted as Mixed Flying for the duty "
+               "limit and the landings (the lower limits, conservative); the rest before this duty is judged both ways"
+               in s for s in t["lines"])
+    # the two readings agree with a longer rest: met, no '?' (13:00 + the 2:30 of van rides = 15:30 from release to report)
+    ds = _sit_pair(150)
+    t = TO.duty_timeout([ds[0], _shift(ds[1], timedelta(hours=5))], 1, 3, "roster", "")
+    assert t["pwa"]["rest"]["ok"] is True and "Mixed Flying" not in t["unsure"] and t["flags"] == []
+
+
+def test_the_mixed_flying_rest_table_is_not_sure_where_2_x_the_duty_period_needs_more():
+    """Review PWA-R2-2: until Ryan confirms that 10.E.3.a's table replaces 10.E.1.a.1, a rest the table meets but 2 x the
+    preceding Duty Period does not is a '?'. By hand, 3 pilots: HNL-LAX report 08:00 HST, in 14:20, release 14:35 (6:35,
+    2 x = 13:10), then LAX-HNL-KOA (Mixed Flying: LAX-HNL 5:40 and HNL-KOA). 10:00 from release to report: 9:00 met (1:00
+    spare), 13:10 short: '?'. 15:40 (13:10 and the 2:30 of van rides): both met. 8:30: both short, flagged."""
+    k = "H3992|2027-06-10"
+
+    def pair(rest_m):
+        rep = at(2027, 6, 10, "14:35") + timedelta(minutes=rest_m)
+        o = rep + timedelta(minutes=75)
+        return [_kd(k, at(2027, 6, 10, "08:00"), _leg("HNL", "LAX", at(2027, 6, 10, "09:00"), at(2027, 6, 10, "14:20"), "1")),
+                _kd(k, rep, _leg("LAX", "HNL", o, o + timedelta(minutes=340), "2"),
+                    _leg("HNL", "KOA", o + timedelta(minutes=400), o + timedelta(minutes=440), "3"))]
+    t = TO.duty_timeout(pair(600), 1, 3, "roster", "332")
+    r = t["pwa"]["rest"]
+    assert t["pwa"]["mixed"] is True and (r["need"], r["ok"], r["cite"], r["other"]) == ("9:00", None, "10.E.3.a",
+                                                                                        "13:10 (10.E.1.a.1)")
+    assert "pwa_rest" not in t["flags"] and "Mixed Flying" not in t["unsure"]  # no long sit: only the rest is a '?'
+    assert any(s.startswith("? PWA rest, the other reading (10.E.1.a.1): if 10.E.3.a's table adds to 10.E.1.a.1 rather "
+                            "than replacing it (to confirm): 2 x the preceding Duty Period 6:35") for s in t["lines"])
+    t = TO.duty_timeout(pair(940), 1, 3, "roster", "332")
+    assert t["pwa"]["rest"]["ok"] is True and "other" not in t["pwa"]["rest"]
+    assert not any(s.startswith("? PWA rest") for s in t["lines"])
+    t = TO.duty_timeout(pair(510), 1, 3, "roster", "332")
+    assert t["pwa"]["rest"]["ok"] is False and "Flag: short of PWA rest (10.E.3.a): 8:30 of 9:00." in t["lines"]
+
+
+def test_an_interisland_duty_takes_the_interisland_rest_landings_and_10e1b():
+    """Review PWA-R2-3 / PWA-10E2-interisland-rest: a duty that is all interisland flying is an Interisland Pilot's
+    (2.A.36.b), so its rest is 10.E.2 and its landings 10.H.2. By hand, 2 pilots:
+    - in domicile 11:30 from release to report before HNL-OGG-HNL, after LAX-HNL: 12:00 needed (10.E.2.a): SHORT, but as
+      an International Pilot (the duty before it International flying) 10.E.1.a's 11:00 is met: the readings disagree,
+      '?' (review PWA-interisland-second-reading-asymmetric); after an interisland duty: SHORT, flagged;
+    - at OGG 11:30 after a 6:15 interisland duty: 9:00 (10.E.2.b): met by 2:30, the van rides (2 x 6:15 = 12:30 would be
+      short);
+    - at OGG 10:30 after LAX-OGG (International flying, 7:00, 3 pilots): 9:00 met, but as an International Pilot 2 x 7:00
+      = 14:00: the readings disagree, '?';
+    - nine HNL-OGG shuttles reporting 18:00 HST, the last in 02:50, the duty to 03:05: more than 8 (10.H.2): OVER; the
+      same reporting 17:30 and ending 02:35 (before 0300): 10 (10.H.1);
+    - a 12:00 interisland duty out 14:00 HST: 10.E.1.b would need 18:00 (12:30 from release to report): '?', no flag, as
+      it names an International Pilot's Segment."""
+    d0 = _duty(at(2027, 3, 1, "14:00"), _leg("LAX", "HNL", at(2027, 3, 1, "15:00"), at(2027, 3, 1, "20:30"), "1"))
+    d1 = _duty(at(2027, 3, 2, "08:15"), _leg("HNL", "OGG", at(2027, 3, 2, "09:15"), at(2027, 3, 2, "09:55"), "2"),
+               _leg("OGG", "HNL", at(2027, 3, 2, "10:30"), at(2027, 3, 2, "11:10"), "3"))
+    t = TO.duty_timeout([d0, d1], 1, 2, "roster", "332")
+    r = t["pwa"]["rest"]
+    assert (r["need"], r["have"], r["ok"], r["cite"], r["other"]) == ("12:00", "11:30", None, "10.E.2.a",
+                                                                      "11:00 (10.E.1.a)")
+    assert "pwa_rest" not in t["flags"] and "rest_q" in t["flags"]
+    assert any(s.startswith("? PWA rest, the other reading (10.E.1.a): as an International Pilot, the duty before it "
+                            "being International flying: in domicile, 11:00 needed: met") for s in t["lines"])
+    d0 = _duty(at(2027, 3, 1, "17:00"), _leg("HNL", "OGG", at(2027, 3, 1, "18:00"), at(2027, 3, 1, "18:40"), "1"),
+               _leg("OGG", "HNL", at(2027, 3, 1, "19:30"), at(2027, 3, 1, "20:30"), "0"))
+    t = TO.duty_timeout([d0, d1], 1, 2, "roster", "332")
+    r = t["pwa"]["rest"]
+    assert (r["need"], r["have"], r["ok"], r["cite"]) == ("12:00", "11:30", False, "10.E.2.a") and "pwa_rest" in t["flags"]
+    assert "Flag: short of PWA rest (10.E.2.a): 11:30 of 12:00." in t["lines"] and "other" not in r
+    a = _duty(at(2027, 3, 1, "06:00"), _leg("HNL", "OGG", at(2027, 3, 1, "07:00"), at(2027, 3, 1, "07:40"), "1"),
+              _leg("OGG", "HNL", at(2027, 3, 1, "08:30"), at(2027, 3, 1, "09:10"), "2"),
+              _leg("HNL", "OGG", at(2027, 3, 1, "11:20"), at(2027, 3, 1, "12:00"), "3"))
+    b = _duty(at(2027, 3, 1, "23:45"), _leg("OGG", "HNL", at(2027, 3, 2, "01:00"), at(2027, 3, 2, "01:40"), "4"))
+    t = TO.duty_timeout([a, b], 1, 2, "roster", "332")
+    r = t["pwa"]["rest"]
+    assert (r["need"], r["have"], r["ok"], r["cite"]) == ("9:00", "11:30", True, "10.E.2.b") and t["flags"] == []
+    assert "rest 11:30, 9:00 needed (10.E.2.b): met" in t["pwa"]["txt"]
+    a = _duty(at(2027, 3, 1, "06:00"), _leg("LAX", "OGG", at(2027, 3, 1, "07:15"), at(2027, 3, 1, "12:45"), "1"))
+    b = _duty(at(2027, 3, 1, "23:30"), _leg("OGG", "HNL", at(2027, 3, 2, "00:45"), at(2027, 3, 2, "01:25"), "2"))
+    t = TO.duty_timeout([a, b], 1, 3, "roster", "332")
+    r = t["pwa"]["rest"]
+    assert (r["need"], r["ok"], r["cite"], r["other"]) == ("9:00", None, "10.E.2.b", "14:00 (10.E.1.a.1)")
+    assert any(s.startswith("? PWA rest, the other reading (10.E.1.a.1): as an International Pilot, the duty before it "
+                            "being International flying: 2 x the preceding Duty Period 7:00") for s in t["lines"])
+
+    def shuttles(rep, out0):
+        legs = []
+        for j in range(9):
+            o = out0 + timedelta(minutes=55 * j)
+            legs.append(_leg(*(("HNL", "OGG") if j % 2 == 0 else ("OGG", "HNL")), o, o + timedelta(minutes=30), str(j)))
+        return _duty(rep, *legs)
+    t = TO.duty_timeout([shuttles(at(2027, 3, 10, "18:00"), at(2027, 3, 10, "19:00"))], 0, 2, "roster", "332")
+    assert t["sched_in_txt"] == "02:50 HST" and t["pwa"]["duty"] == "9:05" and t["legal"] is True
+    assert t["pwa"]["landings"] == {"n": 9, "max": 8, "ok": False} and "landings" in t["flags"]
+    assert ("Flag: landings (PWA 10.H.2): 9 flown segments, over 8 (an Interisland Pilot's duty starting before 2200 HST "
+            "and continuing after 0300 HST).") in t["lines"]
+    assert "landings 9 (8 at most, past 0300): OVER" in t["pwa"]["txt"]
+    t = TO.duty_timeout([shuttles(at(2027, 3, 10, "17:30"), at(2027, 3, 10, "18:30"))], 0, 2, "roster", "332")
+    assert t["pwa"]["landings"] == {"n": 9, "max": 10, "ok": True} and "landings" not in t["flags"]
+    d0 = _duty(at(2027, 3, 9, "18:00"), _leg("HNL", "OGG", at(2027, 3, 9, "19:00"), at(2027, 3, 9, "19:40"), "1"),
+               _leg("OGG", "HNL", at(2027, 3, 9, "23:35"), at(2027, 3, 10, "00:15"), "2"))
+    legs = [_leg(x, y, at(2027, 3, 10, hm), at(2027, 3, 10, hm) + timedelta(hours=1), str(j)) for j, (x, y, hm) in
+            enumerate((("HNL", "OGG", "14:00"), ("OGG", "HNL", "17:00"), ("HNL", "LIH", "20:00"), ("LIH", "HNL", "23:45")))]
+    t = TO.duty_timeout([d0, _duty(at(2027, 3, 10, "13:00"), *legs)], 1, 2, "roster", "332")
+    r = t["pwa"]["rest"]
+    assert t["pwa"]["duty"] == "12:00" and (r["need"], r["ok"], r["cite"], r["late"]) == ("18:00", None, "10.E.1.b", True)
+    assert "pwa_rest" not in t["flags"]
+    assert any(s.startswith("PWA 10.E.1.b (18:00 rest") and "applies (?) (HNL-OGG departs 14:00 HST; this duty is all "
+               "interisland flying, an Interisland Pilot's (2.A.36.b), and 10.E.1.b names an International Pilot's "
+               "Segment" in s and s.endswith("? SHORT if it applies to an Interisland Pilot's duty.") for s in t["lines"])
+    assert any("(10.D.2.c)" in s for s in t["not_checked"])
+
+
+def test_a_rest_met_by_less_than_the_van_rides_out_of_domicile_is_not_sure():
+    """Review PWA-R2-4: out of domicile the Rest Period is hotel time door to door (2.A.68.b, 10.E.1.a.3), shorter than
+    release to report by the two van rides, which the schedule does not give: a rest met by under 2:30 (review
+    PWA-VAN_RIDES: two rides at a far-out hotel take 1:30 to 2:30) is a '?'. By hand (_rest_line, 3 pilots, at SFO): 13:30
+    needed; 14:00 from release to report (0:30 spare): '?'; 15:59 (2:29): '?'; 16:00 (2:30): met. In domicile no van:
+    11:10 against 11:00 is met."""
+    ds = _rest_line()
+    t = TO.duty_timeout([ds[0], _shift(ds[1], timedelta(hours=2))], 1, 3, "roster", "332")
+    r = t["pwa"]["rest"]
+    assert (r["need"], r["have"], r["ok"]) == ("13:30", "14:00", None) and "pwa_rest" not in t["flags"]
+    assert any(s.endswith("release to report 14:00: ? met by 0:30 from release to report, but the hotel time (door to "
+                          "door, 2.A.68.b, 10.E.1.a.3) is shorter by the two van rides, which are not on the schedule "
+                          "(under 2:30 spare is not sure).") for s in t["lines"])
+    assert t["flags"] == ["rest_q"]
+    t = TO.duty_timeout([ds[0], _shift(ds[1], timedelta(hours=3, minutes=59))], 1, 3, "roster", "332")
+    assert (t["pwa"]["rest"]["have"], t["pwa"]["rest"]["ok"]) == ("15:59", None)
+    t = TO.duty_timeout([ds[0], _shift(ds[1], timedelta(hours=4))], 1, 3, "roster", "332")
+    assert t["pwa"]["rest"]["ok"] is True and "rest 16:00, 13:30 needed (10.E.1.a.1): met" in t["pwa"]["txt"]
+    t = TO.duty_timeout([ds[0], ds[1], _shift(ds[2], timedelta(minutes=40))], 2, 3, "roster", "332")
+    assert (t["pwa"]["rest"]["have"], t["pwa"]["rest"]["ok"]) == ("11:10", True)
+    assert TO.VAN_RIDES == timedelta(hours=2, minutes=30)
+
+
+def test_a_far_not_legal_duty_says_the_pwa_maximum_is_over_too():
+    """Review PWA-over-hidden-by-FAR-not-legal: 2 pilots (firm), HNL-JFK 9:30 and JFK-BOS 1:15: 10:45 of flight time over
+    Table A's 9:00 (not legal to dispatch), and the Duty Period 06:00 to 22:15 + 0:15 = 16:30 over the 16:00 Maximum
+    (10.D.1.a): said too, and the PWA row says over the Maximum, not only "no last out"."""
+    d = _duty(at(2027, 3, 2, "06:00"), _leg("HNL", "JFK", at(2027, 3, 2, "07:00"), at(2027, 3, 2, "16:30"), "1"),
+              _leg("JFK", "BOS", at(2027, 3, 2, "21:00"), at(2027, 3, 2, "22:15"), "2"))
+    t = TO.duty_timeout([d], 0, 2, "roster", "332", pilots_firm=True)
+    assert t["legal"] is False and t["not_legal_short"] == "FT 10:45 of 9:00" and t["pwa"]["binds"] == []
+    assert ("Flag: the PWA 10.D.1.a Maximum is over as scheduled too: the scheduled Duty Period 16:30 of 16:00 (2 pilots; "
+            "to 15 min after the last block-in, 2.A.19.b): Crew Scheduling must change it.") in t["lines"]
+    assert any(s.startswith("PWA duty limit (10.D.1.a)") and s.endswith(
+        ": the scheduled Duty Period is over it too: not legal (above).") for s in t["lines"])
+    assert t["pwa"]["txt"].startswith("scheduled duty 16:30, over the 14:00 Scheduled limit (PAST), Maximum 16:00 "
+                                      "(10.D.1.a): over the Maximum too (not legal)")
+    # within the Maximum: still "no last out (not legal)"
+    t = TO.duty_timeout([dict(d, legs=d["legs"][:1])], 0, 2, "roster", "332", pilots_firm=True)
+    assert t["legal"] is False and ": no last out (not legal)" in t["pwa"]["txt"]
+    assert not any(s.startswith("Flag: the PWA") for s in t["lines"])
+
+
+def test_the_other_rest_classes_last_outs_take_the_cumulative_caps():
+    """Review FAR-class-alternatives: with 60 h FDP in 168 h binding at 16:00 HST (the 60 h test, 3 pilots on the A330),
+    the Class 2 and Class 3 last outs are no later than it: 16:00 - 5:00 = 11:00 HST, as the main one (they read 18:30
+    and 17:00 before). The FDP ends by class stay the table's (Class 2 23:30, Class 3 22:00)."""
+    trips = _turns((2, 3, 4, 5))
+    key = "H3960|2027-03-06"
+    trips.append((key, trip(key, "07:00", [(0, "9070", "HNL", "LAX", "08:00", "15:00", "5:00")], CREW3)))
+    t = run(trips, at(2027, 3, 6, "06:30"), {key: {"eq": "332"}}, months_for("2027-02", "2027-03"))["attributes"]["timeout"]
+    assert t["last_out"]["txt"] == "11:00 HST" and t["last_out"]["short"] == "60 h FDP in 168 h"
+    assert t["fdp"]["alt"] == {"2": "23:30 HST", "3": "22:00 HST"}
+    assert any("Class 2 23:30 HST (last out 11:00 HST), Class 3 22:00 HST (last out 11:00 HST)" in s for s in t["lines"])
+
+
+def test_the_basis_names_a_rule_that_binds_both_once_and_the_block_in_has_its_day():
+    """Review UI-R1-4 and UI-R1-3: the PWA Maximum binding both last outs is named once ("for both"); the block-in
+    limits carry their day (HNL-SIN in after midnight HST)."""
+    t = _sin4(["CA Doe, Jane (10001)", "FO Roe, Rick (10002)", "RO Poe, Pat (10003)", "RO Moe, Max (10004)"],
+              "CA01FO01RO02")
+    assert any(s.startswith("Last out (block-out):") and s.endswith("with it (PWA max duty 18 h for both).")
+               for s in t["lines"])
+    t = _sin4(["CA Doe, Jane (10001)", "CA Roe, Rick (10002)", "FO Poe, Pat (10003)", "FO Moe, Max (10004)"], "CA02FO02")
+    f = t["fdp"]
+    assert (f["in_txt"], f["in_day"], f["ext_in_txt"], f["ext_in_day"]) == ("04:00 HST", "Wed Mar 3", "06:00 HST",
+                                                                          "Wed Mar 3")
+    assert t["last_out"]["day"] == "Tue Mar 2"
+    assert any(s.endswith("with it (FDP 18:00; FDP + 2:00 ext).") for s in t["lines"])
+
+
+def test_a_package_lookup_error_is_logged_once_and_a_missing_file_never(W, monkeypatch):
+    """Review ERR-pkg-lookup-silent: an error other than OSError in the package lookup still falls back (no equipment:
+    Class 3) and its type is logged once a change; a file that cannot be read stays silent."""
+    key, rep, legs = BOS_TRIP
+    it, rec = trip(key, rep, legs, CREW3)
+    W.S["schedule"] = {"2027-02": {"items": [it], "days": months_for("2027-02")["2027-02"]["days"]}}
+    W.S["own_trips"] = {key: rec}
+    said = []
+    monkeypatch.setattr(W, "bid_period_fn", lambda: (lambda iso: "2027-02"))
+    monkeypatch.setattr(W.SMART, "load", lambda *a, **k: {})
+    monkeypatch.setattr(W.log, "info", lambda msg, *a: said.append(msg % a))
+    monkeypatch.setattr(W, "pkg_detail_for", lambda *a, **k: (_ for _ in ()).throw(OSError("gone")))
+    assert W.publish_working_flight(now=at(2027, 2, 19, "01:00"), force=True)
+    assert not [s for s in said if "package" in s]
+    monkeypatch.setattr(W, "pkg_detail_for", lambda *a, **k: {}["eq"])
+    for m in ("01:01", "01:02"):
+        assert W.publish_working_flight(now=at(2027, 2, 19, m), force=True)
+    sent = [json.loads(p) for t, p, r in W.FAKE.msgs if t == f"{W.T}/working_flight" and r][-1]
+    assert sent["attributes"]["timeout"]["fdp"]["rest_class"] == 3
+    assert [s for s in said if "package" in s] == [
+        "working flight: pairings package not read (package detail KeyError); the duty timeout goes on without it"]
+    monkeypatch.setattr(W, "pkg_detail_for", lambda period, pid, st=None: BOS_PKG)
+    monkeypatch.setattr(W, "bid_period_fn", lambda: 1 / 0)
+    assert W.publish_working_flight(now=at(2027, 2, 19, "01:03"), force=True)
+    assert said[-1] == ("working flight: pairings package not read (bid period ZeroDivisionError); the duty timeout goes "
+                        "on without it")
+    # working.py alone, with a lookup that fails: kept the same way, and cleared by the next working flight
+    WK.working_flight([it], {key: rec}, at(2027, 2, 19, "01:00"), 2, pkg=lambda trip_, start: [][0])
+    assert WK.PKG_ERR["msg"] == "package detail IndexError"
+    WK.working_flight([it], {key: rec}, at(2027, 2, 19, "01:00"), 2, pkg={key: BOS_PKG})
+    assert WK.PKG_ERR["msg"] == ""
+
+
 # ---------------------------------------------------------------- the card, in a real Chromium
 from test_layover_card import DARK, HA_DARK, HA_LIGHT, LIGHT, _page, _states, browser  # noqa: E402,F401
 
@@ -705,10 +1607,11 @@ def test_card_box_shows_the_last_out_bold_right_of_the_report_and_opens_its_basi
     assert box.locator("[data-toext]").inner_text() == "Ext 13:00 EST"
     assert box.locator("[data-tohst]").inner_text() == "(06:00 / 08:00 HST)"
     assert box.locator("[data-toby]").inner_text() == "FT 11:30 of 13:00"
-    assert box.locator(".toq").count() == 0 and box.locator("[data-towarn]").count() == 0
+    # the BOS rest is met by less than the van rides (2:25): its chip, the last outs sure (no '?')
+    assert box.locator(".toq").count() == 0 and box.locator("[data-towarn]").all_inner_texts() == ["Rest ?"]
     say = box.get_attribute("aria-label")
-    assert say == ("Last out 11:00 EST, 06:00 HST without an extension, 13:00 EST, 08:00 HST with one; flight time 11:30 of "
-                   "13:00 (1:30 spare). Details")
+    assert say == ("Last out 11:00 EST, 06:00 HST without an extension (FDP 14:30), 13:00 EST, 08:00 HST with one; flight "
+                   "time 11:30 of 13:00 (1:30 spare); Rest ?. Details")
     style = pg.evaluate("""() => { const b = window.root().querySelector('[data-to]'), s = getComputedStyle(b);
         return {c: s.borderTopColor, w: s.borderTopWidth, st: s.borderTopStyle, tag: b.tagName,
                 no: parseInt(getComputedStyle(b.querySelector('[data-tono]')).fontWeight, 10),
@@ -734,7 +1637,7 @@ def test_card_box_shows_the_last_out_bold_right_of_the_report_and_opens_its_basi
               "With extension: block out by 13:00 EST (08:00 HST Fri Feb 19), block in by 19:30 HST, release 19:45 HST",
               "with the 2:00 extension (FAR 117.19(a)); before takeoff only", "13:00 flight time: an extension adds no flight time.",
               "Flight time: 11:30 of 13:00 (1:30 spare) · 100 h in 672 h: 14:00 spare", "How it is worked out",
-              "Not checked (6)"):
+              "Not checked (7)"):
         assert w in txt, w
     # how it is worked out and what is not checked fold under the summary (a phone sees the answer first)
     assert not card.locator("[data-tolines]").is_visible() and not card.locator("[data-tonc]").is_visible()
@@ -743,7 +1646,7 @@ def test_card_box_shows_the_last_out_bold_right_of_the_report_and_opens_its_basi
     card.locator("[data-k=tobasis] summary").click()
     assert "Table C row 0000-0559 (HNL time 03:00)" in card.locator("[data-tolines]").inner_text()
     card.locator("[data-k=tonc] summary").click()
-    assert "PWA Section 10 (Hours of Service)" in card.locator("[data-tonc]").inner_text()
+    assert "IRO at the controls 8 h in 24 h (PWA 10.D.1.b.4)" in card.locator("[data-tonc]").inner_text()
     assert det.bounding_box()["y"] >= card.locator(".hd").bounding_box()["y"] + card.locator(".hd").bounding_box()["height"] - 1
     card.locator("[data-to]").focus()
     pg.keyboard.press("Enter")
@@ -780,10 +1683,10 @@ def _old(t):
 
 
 @pytest.mark.parametrize("tweak,tono,rest,say", [
-    (_unsure, "11:00 EST?", "Ext 13:00 EST", "; not sure, the earlier reading is shown. Details"),
+    (_unsure, "11:00? EST", "Ext 13:00 EST", "; not sure, the earlier reading is shown. Details"),
     (_same, "11:00 EST", "Ext same (60 h FDP in 168 h)", "the same with one (60 h FDP in 168 h)"),
     (_not_legal, "NOT LEGAL", "FT 13:05 of 13:00", "Not legal to dispatch: FT 13:05 of 13:00. Details"),
-    (_early, "11:00 EST", "Over as scheduled", "; Over as scheduled. Details"),
+    (_early, "11:00 EST", "Over as scheduled", "; Over as scheduled, Rest ?. Details"),
     (_old, "17:15 HST", "Ext 17:15 HST", "Timeout 17:15 HST without an extension, 17:15 HST with one, 13:00 flight time"),
 ])
 def test_card_box_says_not_sure_not_legal_the_same_or_over(browser, tmp_path, tweak, tono, rest, say):
@@ -811,6 +1714,79 @@ def test_card_without_the_attribute_shows_no_box_and_nothing_else_changes(browse
     assert card.locator("[data-to]").count() == 0 and card.locator("[data-todet]").count() == 0
     assert card.locator(".rt").count() == 0 and card.locator(".hd.wt").count() == 0 and card.locator(".tmw").count() == 0
     assert card.locator("[data-van] .vt").inner_text() == "08:00"
+    pg.close()
+
+
+def _watcher_pwa(tmp_path, r):
+    """The admin's states with no Hark sensor and the working flight r (its timeout and leg)."""
+    st = _states(tmp_path, hark_attrs={}, notes=False)
+    a = st["sensor.flight_watcher_working_flight"]["attributes"]
+    keep = ("pairing", "flight", "origin", "dest", "leg", "date", "dep_sched", "arr_sched", "report", "status", "timeout")
+    a.update({k: copy.deepcopy(r["attributes"][k]) for k in keep})
+    return st
+
+
+def test_card_box_names_the_pwa_limit_when_it_binds_at_390(browser, tmp_path):
+    """(d) 2 pilots HNL-LAX: the PWA 16:00 Maximum caps the extension (18:30 HST, FAR alone 18:45): the box keeps the
+    FAR last out in bold, "Ext 18:30 HST", and a binding-rule line that says PWA; the details carry the PWA row and the
+    binding rule of the extension. (g) Mixed Flying binds both: "Ext same" and "PWA 14:00 duty". No sideways scroll."""
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(_watcher_pwa(tmp_path, _pwa_d())))
+    card = pg.locator("flight-watcher-layover-card")
+    box = card.locator("[data-to]")
+    assert box.is_visible() and box.locator("[data-tono]").inner_text() == "16:45 HST"
+    assert box.locator("[data-toext]").inner_text() == "Ext 18:30 HST"
+    bind = box.locator("[data-tobind]")
+    assert bind.is_visible() and bind.inner_text() == "Ext: PWA max duty 16 h" and "PWA" in bind.inner_text()
+    assert box.locator("[data-toby]").inner_text() == "FT 5:15 of 9:00"
+    assert "; Ext: PWA max duty 16 h;" in box.get_attribute("aria-label")
+    bb, rb = box.bounding_box(), card.locator("[data-van]").bounding_box()
+    assert bb["x"] >= rb["x"] + rb["width"] - 1 and bb["y"] < rb["y"] + rb["height"]  # right of the report, side by side
+    cb = card.bounding_box()
+    assert bb["x"] + bb["width"] <= cb["x"] + cb["width"] + 0.5
+    assert pg.evaluate("document.documentElement.scrollWidth") <= 390
+    box.click()
+    det = card.locator("[data-todet]").inner_text()
+    for w in ("With extension: block out by 18:30 HST Wed Feb 10, block in by 23:45 HST, release 00:00 HST",
+              "PWA 10.D.1.a max duty 16 h; before takeoff only",
+              "PWA: scheduled duty 6:30 (Scheduled limit 14:00), Maximum 16:00 (10.D.1.a): last out 18:30 HST (binds with "
+              "the extension) · rest not on file · landings 1 (10 may be scheduled, 11 if required)"):
+        assert w in det, w
+    assert card.locator("[data-topwa]").is_visible()
+    assert pg.evaluate("document.documentElement.scrollWidth") <= 390
+    pg.close()
+    key = "H3903|2027-02-12"
+    legs = [(0, "9104", "KOA", "HNL", "08:00", "08:45", "0:45"), (0, "9105", "HNL", "LAX", "10:00", "17:15", "5:15")]
+    r = run([(key, trip(key, "07:00", legs, CREW2))], at(2027, 2, 12, "06:00"), {key: {"eq": "332"}})
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(_watcher_pwa(tmp_path, r)))
+    box = pg.locator("flight-watcher-layover-card [data-to]")
+    assert box.locator("[data-tono]").inner_text() == "13:30 HST" and box.locator("[data-toext]").inner_text() == "Ext same"
+    assert box.locator("[data-tobind]").inner_text() == "PWA max duty 14 h"
+    assert "Landings" not in box.inner_text() and box.locator("[data-towarn]").count() == 0
+    assert pg.evaluate("document.documentElement.scrollWidth") <= 390
+    pg.close()
+
+
+def test_card_box_says_not_legal_over_the_pwa_maximum_and_flags_a_short_pwa_rest(browser, tmp_path):
+    def over(t):
+        t.update(legal=False, last_out=None, last_out_ext=None, not_legal_short="PWA duty 16:30 of 16:00",
+                 not_legal="the scheduled Duty Period 16:30 is over the PWA 10.D.1.a Maximum 16:00 (2 pilots): not legal "
+                           "as scheduled")
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(_watcher_only(tmp_path, tweak=over)))
+    box = pg.locator("flight-watcher-layover-card [data-to]")
+    assert box.locator("[data-tono]").inner_text() == "NOT LEGAL" and "PWA duty 16:30 of 16:00" in box.inner_text()
+    pg.close()
+
+    def short(t):
+        t["flags"] = ["pwa_rest"]
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(_watcher_only(tmp_path, tweak=short)))
+    box = pg.locator("flight-watcher-layover-card [data-to]")
+    assert box.locator("[data-towarn]").inner_text() == "PWA rest short"
+    assert box.locator("[data-tobind]").count() == 0  # the PWA binds neither result here
+    assert pg.evaluate("document.documentElement.scrollWidth") <= 390
     pg.close()
 
 
@@ -869,6 +1845,114 @@ def test_card_box_stays_inside_the_card_at_320_with_a_long_next_day_time(browser
     pg.close()
 
 
+# ---------------------------------------------------------------- review round 1: the card
+def _graft(t):
+    """The (d) working flight with another timeout t (a case worked out by duty_timeout)."""
+    r = copy.deepcopy(_pwa_d())
+    r["attributes"]["timeout"] = copy.deepcopy(t)
+    return r
+
+
+@pytest.mark.parametrize("theme", ["ha-light", "ha-dark"])
+def test_card_not_legal_is_white_on_red_says_why_and_keeps_its_question_mark(browser, tmp_path, theme):
+    """Review CARD-1, I2, I4, I10: NOT LEGAL is the most serious state: white on red (#b71c1c, AA on both themes), its
+    '?' kept when not sure (the Captains of a 4-pilot crew decide it), "Not legal as scheduled (PWA)" for a PWA Maximum
+    (a contract limit) and "Not legal to dispatch" for FAR 117; the button's class is its own (to-nl)."""
+    t = TO.duty_timeout(_long_day("22:15"), 0, 2, "roster", "332")
+    t.update(sure=False, unsure=["PWA crew"])
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(_watcher_pwa(tmp_path, _graft(t)), theme={"ha-light": HA_LIGHT, "ha-dark": HA_DARK}[theme]))
+    card = pg.locator("flight-watcher-layover-card")
+    box = card.locator("[data-to]")
+    assert box.locator("[data-tono]").inner_text() == "NOT LEGAL?" and box.locator(".toq").count() == 1
+    assert box.get_attribute("aria-label") == ("Not legal as scheduled (PWA): PWA duty 16:30 of 16:00; not sure, see the "
+                                               "details. Details")
+    cls = box.get_attribute("class").split()
+    assert "to-nl" in cls and "nl" not in cls
+    st = pg.evaluate("""() => { const c = getComputedStyle(window.root().querySelector('[data-to] .tonl'));
+        return [c.color, c.backgroundColor]; }""")
+    assert st == ["rgb(255, 255, 255)", "rgb(183, 28, 28)"]
+    box.click()
+    det = card.locator("[data-todet]")
+    assert det.locator(".tnlb").inner_text() == "Not legal as scheduled (PWA):"
+    assert pg.evaluate("getComputedStyle(window.root().querySelector('.tnlb')).backgroundColor") == "rgb(183, 28, 28)"
+    assert "? Not sure: the Captains of the crew (PWA 10.D.1.c or 10.D.1.d)" in det.inner_text()
+    card.locator("[data-k=tobasis] summary").click()
+    assert "Flag: FAR 117 is over as scheduled too" in card.locator("[data-tolines]").inner_text()
+    con = pg.evaluate("window.fwContrast(window.root().host)")
+    assert not con["fails"], json.dumps(con["fails"], indent=1)
+    pg.close()
+    # FAR 117 (flight time over): not legal to dispatch
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(_watcher_only(tmp_path, tweak=_not_legal)))
+    box = pg.locator("flight-watcher-layover-card [data-to]")
+    assert box.get_attribute("aria-label").startswith("Not legal to dispatch: FT 13:05 of 13:00")
+    box.click()
+    assert pg.locator("flight-watcher-layover-card .tnlb").inner_text() == "Not legal to dispatch:"
+    pg.close()
+
+
+def _sin_r():
+    trips, pkg = _sin_line()
+    return run(trips, at(2027, 3, 4, "17:00"), pkg)
+
+
+@pytest.mark.parametrize("case", ["sin", "not_legal", "four_pilots"])
+def test_card_box_stays_beside_the_report_block_at_320(browser, tmp_path, case):
+    """Review I1, I7: at 320 px the box sits right of the Report block, not under it: the time keeps 24 px with its '?'
+    right after it and its clock smaller after it (a zone with no letters named by its station: "16:05? SIN"), the
+    binding rule wraps, the Report block is a little smaller under 360 px. The SIN case (4 pilots, not sure), a NOT
+    LEGAL one and a 4-pilot FAR one (CA02FO02 HNL-SIN)."""
+    r = {"sin": _sin_r, "not_legal": lambda: _graft(TO.duty_timeout(_long_day("22:15"), 0, 2, "roster", "332")),
+         "four_pilots": lambda: _graft(_sin4(["CA Doe, Jane (10001)", "CA Roe, Rick (10002)", "FO Poe, Pat (10003)",
+                                              "FO Moe, Max (10004)"], "CA02FO02"))}[case]()
+    pg = browser.new_page(viewport={"width": 320, "height": 700})
+    pg.set_content(_page(_watcher_pwa(tmp_path, r)))
+    card = pg.locator("flight-watcher-layover-card")
+    box, rep = card.locator("[data-to]"), card.locator("[data-van]")
+    if case == "sin":
+        assert box.locator("[data-tono]").inner_text() == "16:05? SIN" and "UTC" not in box.inner_text()
+    bb, rb, cb = box.bounding_box(), rep.bounding_box(), card.bounding_box()
+    assert bb["x"] >= rb["x"] + rb["width"] - 1, (case, bb, rb)  # right of the Report block
+    assert bb["y"] < rb["y"] + rb["height"] and rb["y"] < bb["y"] + bb["height"], (case, bb, rb)  # side by side
+    assert bb["x"] + bb["width"] <= cb["x"] + cb["width"] + 0.5
+    size = pg.evaluate("parseFloat(getComputedStyle(window.root().querySelector('[data-tono]')).fontSize)")
+    assert size >= 20 and pg.evaluate("document.documentElement.scrollWidth") <= 320
+    pg.close()
+
+
+def test_card_box_shows_two_flag_chips_and_names_every_flag(browser, tmp_path):
+    """Review I5: more than one flag: the box shows two chips (a third and more as "+N more flags") and the label names
+    every one; the PWA row marks a duty past the Scheduled limit (PAST)."""
+    def three(t):
+        t["last_out"]["early"] = True
+        t["flags"] = ["early", "pwa_rest", "landings"]
+
+    def two(t):
+        t["flags"] = ["pwa_rest", "pwa_sched"]
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(_watcher_only(tmp_path, tweak=three)))
+    box = pg.locator("flight-watcher-layover-card [data-to]")
+    assert box.locator("[data-towarn]").all_inner_texts() == ["Over as scheduled", "+2 more flags"]
+    assert "; Over as scheduled, PWA rest short, Landings over. Details" in box.get_attribute("aria-label")
+    pg.close()
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(_watcher_only(tmp_path, tweak=two)))
+    box = pg.locator("flight-watcher-layover-card [data-to]")
+    assert box.locator("[data-towarn]").all_inner_texts() == ["PWA rest short", "Past PWA schedule"]
+    assert pg.evaluate("document.documentElement.scrollWidth") <= 390
+    pg.close()
+    r = _graft(TO.duty_timeout(_long_day("20:15"), 0, 2, "roster", "332"))
+    pg = browser.new_page(viewport={"width": 390, "height": 844})
+    pg.set_content(_page(_watcher_pwa(tmp_path, r)))
+    box = pg.locator("flight-watcher-layover-card [data-to]")
+    assert box.locator("[data-towarn]").all_inner_texts() == ["Over as scheduled", "Past PWA schedule"]
+    box.click()
+    assert ("scheduled duty 14:30, over the 14:00 Scheduled limit (PAST)"
+            in pg.locator("flight-watcher-layover-card [data-topwa]").inner_text())
+    pg.close()
+
+
 SHOTS = os.environ.get("FW_171_SHOTS", "")
 
 
@@ -900,3 +1984,281 @@ def test_card_timeout_box_reads_on_every_theme(browser, tmp_path, width, theme):
         if d:
             pg.screenshot(path=os.path.join(str(d), f"fw1720_timeout_{width}_{theme}.png"), full_page=True)
     pg.close()
+
+
+# ---------------------------------------------------------------- review round 2: the card
+def test_card_without_the_attribute_keeps_the_report_size_at_320(browser, tmp_path):
+    """Review CARD-360-media-unscoped: the phone rule that makes room for the box applies only to a header that holds
+    it: with no timeout attribute the Report time keeps 36 px at 320."""
+    pg = browser.new_page(viewport={"width": 320, "height": 700})
+    pg.set_content(_page(_watcher_only(tmp_path, timeout=False)))
+    assert pg.evaluate("parseFloat(getComputedStyle(window.root().querySelector('[data-van] .vt')).fontSize)") == 36
+    assert pg.evaluate("document.documentElement.scrollWidth") <= 320
+    pg.close()
+    pg = browser.new_page(viewport={"width": 320, "height": 700})
+    pg.set_content(_page(_watcher_only(tmp_path)))
+    assert pg.evaluate("parseFloat(getComputedStyle(window.root().querySelector('[data-van] .vt')).fontSize)") == 30
+    pg.close()
+
+
+def _one_line(pg, sel):
+    """True when the element's text sits on one line (its height under 1.5 of its line height)."""
+    return pg.evaluate("""(sel) => { const el = window.root().querySelector(sel), s = getComputedStyle(el);
+        const lh = parseFloat(s.lineHeight) || parseFloat(s.fontSize) * 1.15;
+        return el.getBoundingClientRect().height < lh * 1.5; }""", sel)
+
+
+@pytest.mark.parametrize("width", [320, 390])
+def test_card_box_keeps_a_number_with_its_unit_and_names_the_rule_of_each_last_out(browser, tmp_path, width):
+    """Review UI-R1-1 and UI-R1-2: the binding-rule lines keep "16 h" and "16:30 of 16:00" whole and fit on one line
+    (no "h" alone under it), and when the PWA binds only the extension the no-extension rule ("FDP 14:00", FAR 117) is
+    named above it, so neither reads as the reason for both; the label names it too. The box stays beside the Report
+    block at 320."""
+    pg = browser.new_page(viewport={"width": width, "height": 844})
+    pg.set_content(_page(_watcher_pwa(tmp_path, _pwa_d())))
+    card = pg.locator("flight-watcher-layover-card")
+    box = card.locator("[data-to]")
+    assert box.locator("[data-torule]").inner_text() == "FDP 14:00"
+    assert box.locator("[data-tobind]").inner_text() == "Ext: PWA max duty 16 h"
+    assert box.locator("[data-tobind] .nw").inner_text() == "16 h"
+    assert _one_line(pg, "[data-tobind]") and _one_line(pg, "[data-torule]") and _one_line(pg, "[data-toby]")
+    assert "without an extension (FDP 14:00), 18:30 HST with one; Ext: PWA max duty 16 h;" in box.get_attribute("aria-label")
+    bb, rb = box.bounding_box(), card.locator("[data-van]").bounding_box()
+    assert bb["x"] >= rb["x"] + rb["width"] - 1 and bb["y"] < rb["y"] + rb["height"]
+    assert pg.evaluate("document.documentElement.scrollWidth") <= width
+    pg.close()
+    pg = browser.new_page(viewport={"width": width, "height": 844})
+    pg.set_content(_page(_watcher_pwa(tmp_path, _graft(TO.duty_timeout(_long_day("22:15"), 0, 2, "roster", "332")))))
+    box = pg.locator("flight-watcher-layover-card [data-to]")
+    assert box.locator("[data-toby]").inner_text() == "PWA duty 16:30 of 16:00" and _one_line(pg, "[data-toby]")
+    assert box.locator("[data-torule]").count() == 0
+    assert pg.evaluate("document.documentElement.scrollWidth") <= width
+    pg.close()
+    pg = browser.new_page(viewport={"width": width, "height": 844})
+    pg.set_content(_page(_watcher_only(tmp_path)))  # FAR 117 sets both: no rule line, the label names it
+    box = pg.locator("flight-watcher-layover-card [data-to]")
+    assert box.locator("[data-torule]").count() == 0 and box.locator("[data-tobind]").count() == 0
+    assert "without an extension (FDP 14:30)," in box.get_attribute("aria-label")
+    pg.close()
+
+
+def test_card_details_give_the_block_in_day_and_why_the_on_time_block_ins_are_one(browser, tmp_path):
+    """Review UI-R1-3, UI-R1-4, CARD-ontime-flight-time-wording: a block-in after midnight carries its day; the two
+    on-time block-ins being one is said by the rule that makes them one: flight time ("an extension adds no flight
+    time"), the PWA Maximum ("the PWA Maximum caps it"), or another limit ("the same limit binds both"). A long sit's
+    Mixed Flying doubt is named with what it decides."""
+    def det(r, tweak=None):
+        r = copy.deepcopy(r)
+        if tweak:
+            tweak(r["attributes"]["timeout"])
+        pg = browser.new_page(viewport={"width": 390, "height": 844})
+        pg.set_content(_page(_watcher_pwa(tmp_path, r)))
+        pg.locator("flight-watcher-layover-card [data-to]").click()
+        txt = pg.locator("flight-watcher-layover-card [data-todet]").inner_text()
+        pg.close()
+        return txt
+    two_ca = _graft(_sin4(["CA Doe, Jane (10001)", "CA Roe, Rick (10002)", "FO Poe, Pat (10003)", "FO Moe, Max (10004)"],
+                          "CA02FO02"))
+    txt = det(two_ca)
+    assert "No extension: block out by 14:55 HST Tue Mar 2, block in by 04:00 HST Wed Mar 3, release 04:30 HST" in txt
+    assert "With extension: block out by 16:55 HST Tue Mar 2, block in by 06:00 HST Wed Mar 3, release 06:30 HST" in txt
+    assert "17:00 flight time: an extension adds no flight time." in txt
+    one_ca = _graft(_sin4(["CA Doe, Jane (10001)", "FO Roe, Rick (10002)", "RO Poe, Pat (10003)", "RO Moe, Max (10004)"],
+                          "CA01FO01RO02"))
+    txt = det(one_ca)
+    assert "PWA max duty 18 h: the PWA Maximum caps it, an extension adds nothing." in txt
+    assert "an extension adds no flight time" not in txt
+
+    def cap(t):
+        t["no_ext"].update(short="60 h FDP in 168 h")
+        t["ext"].update(at=t["no_ext"]["at"], short="60 h FDP in 168 h")
+    txt = det(_graft(acceptance()["attributes"]["timeout"]), cap)
+    assert "60 h FDP in 168 h: the same limit binds both, an extension adds nothing." in txt
+    txt = det(_graft(TO.duty_timeout(_sit_pair(150), 1, 3, "roster", "")))
+    assert "? Not sure: the rest facility class: the earlier reading is shown" in txt and "Repositioning" not in txt.split(
+        "How it is worked out")[0]
+    assert "rest 10:30, 9:00 (10.E.3.a) or 13:00 (10.E.1.a.1) needed: ?" in txt
+
+
+# ---------------------------------------------------------------- review round 3 (the open items after round 2)
+def _sin_trip(back="04-08"):
+    """HNL-SIN (report 08:00 HST Apr 1, out 09:00, in 19:30, customs: release 20:00), SIN-HNL (report 06:00 HST on
+    `back`, out 07:00, in 16:30, release 17:00)."""
+    m, d = map(int, back.split("-"))
+    return [_duty(at(2027, 4, 1, "08:00"), _leg("HNL", "SIN", at(2027, 4, 1, "09:00"), at(2027, 4, 1, "19:30"), "1")),
+            _duty(at(2027, m, d, "06:00"), _leg("SIN", "HNL", at(2027, m, d, "07:00"), at(2027, m, d, "16:30"), "2"))]
+
+
+def _lax(rep):
+    o = rep + timedelta(hours=1)
+    return _duty(rep, _leg("HNL", "LAX", o, o + timedelta(minutes=315), "3"))
+
+
+def test_far_117_25d_56_hours_on_return_home_after_a_long_trip_past_60_degrees():
+    """Review FAR-117.25d-theater-change-rest (FOM 4.3.2.11): away from HNL more than 168 h and more than 60 deg of
+    longitude (SIN: |104.0 - (-157.9)| = 261.9, 98.1 deg the short way), then 56 consecutive hours of rest at home. By
+    hand: away from the HNL report 08:00 HST Thu Apr 1 to the release 17:00 HST Thu Apr 8 = 177:00. The next report
+    08:00 HST Sat Apr 10: 39:00 free, SHORT of 56:00 (the 10 h of 117.25(e) and the PWA 11:00 are met); 01:00 HST Sun
+    Apr 11: 56:00, met. Back Apr 7 (153:00 away): not triggered, no line. A line that starts with the SIN-HNL duty (the
+    trip's start not on file, 11:00 away at least): '?' when short."""
+    ds = _sin_trip() + [_lax(at(2027, 4, 10, "08:00"))]
+    t = TO.duty_timeout(ds, 2, 2, "roster", "332")
+    assert t["rest"]["ok"] is False and t["rest"]["need"] == "56:00" and "rest" in t["flags"]
+    assert ("Rest on return to home base (FAR 117.25(d), FOM 4.3.2.11): 177:00 away from HNL (08:00 HST Thu Apr 1 to "
+            "release 17:00 HST Thu Apr 8, more than 168 h) and SIN is 98 deg from HNL (more than 60): 56 consecutive "
+            "hours, holding three physiological nights; 39:00 free: SHORT, check with Crew Scheduling.") in t["lines"]
+    assert "Flag: short of FAR rest (FAR 117.25(d)): 39:00 of 56:00." in t["lines"]
+    assert any(s.startswith("The three physiological nights of the 56 h rest") for s in t["not_checked"])
+    assert any(s.startswith("Rest before this FDP (FAR 117.25(e), FOM 4.3.2.7): 39:00") and s.endswith("met.")
+               for s in t["lines"])
+    t = TO.duty_timeout(_sin_trip() + [_lax(at(2027, 4, 11, "01:00"))], 2, 2, "roster", "332")
+    assert t["rest"]["ok"] is True and t["rest"]["need"] == "56:00" and "rest" not in t["flags"]
+    assert any(s.endswith("; 56:00 free: met.") and "FAR 117.25(d)" in s for s in t["lines"])
+    t = TO.duty_timeout(_sin_trip("04-07") + [_lax(at(2027, 4, 9, "08:00"))], 2, 2, "roster", "332")
+    assert t["rest"] == {"free": "39:00", "ok": True} and not any("117.25(d)" in s for s in t["lines"])
+    t = TO.duty_timeout(_sin_trip()[1:] + [_lax(at(2027, 4, 10, "08:00"))], 1, 2, "roster", "332")
+    assert t["rest"]["ok"] is None and "need" not in t["rest"] and "rest" not in t["flags"] and "rest_q" in t["flags"]
+    assert any(s.startswith("Rest on return to home base (FAR 117.25(d), FOM 4.3.2.11): 11:00 away from HNL") and
+               "at least: it may be more than 168 h" in s and "(? the trip's start is not on file (away at least 11:00))"
+               in s and s.endswith("39:00 free: ? SHORT of 56:00 if it applies.") for s in t["lines"])
+
+
+def test_far_117_25g_rest_after_deadhead_transportation_past_table_b():
+    """Review FAR-117.25d / FOM 4.3.2.10 (14 CFR 117.25(g)): deadhead transportation that runs past the Table B FDP
+    needs a rest as long as the deadhead, no less than 10 h. By hand: a SIN-HNL deadhead only, report 06:00 HST Apr 8, out
+    07:00, in 21:00 (14:00), release 21:30 (customs). Table B, 1 segment: 13:00 on HNL time (06:00, row 0600-0659), 9:00
+    on SIN time (00:00 Apr 9, row 0000-0359); report to block-in 15:00 is over both: 15:00 needed. HNL-LAX reporting
+    10:30 HST Apr 9 (13:00 free): SHORT; 12:30 (15:00): met. Flown SFO-HNL then a HNL-SIN deadhead (out 14:00, in 01:00,
+    11:00): over Table B (19:00 from the report 06:00 to 01:00 HST; 13:00 for 2 segments on HNL time, 14:00 on SFO's
+    09:00 PDT), but whether deadheads after the FDP count is not sure: 10:30 free of 11:00 is a '?'."""
+    out = _duty(at(2027, 4, 6, "08:00"), _leg("HNL", "SIN", at(2027, 4, 6, "09:00"), at(2027, 4, 6, "19:30"), "0"))
+    dh = _duty(at(2027, 4, 8, "06:00"), _leg("SIN", "HNL", at(2027, 4, 8, "07:00"), at(2027, 4, 8, "21:00"), "1", dh=True))
+    t = TO.duty_timeout([out, dh, _lax(at(2027, 4, 9, "10:30"))], 2, 2, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"]) == (False, "15:00", "13:00") and "rest" in t["flags"]
+    assert ("Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10): the duty before it was deadhead "
+            "transportation only, 15:00 from its report to its last block-in, over its Table B FDP 9:00: a rest as long "
+            "as the deadhead transportation (15:00, from the report), no less than 10 h; 13:00 free: SHORT, check with "
+            "Crew Scheduling.") in t["lines"]
+    assert "Flag: short of FAR rest (FAR 117.25(g)): 13:00 of 15:00." in t["lines"]
+    t = TO.duty_timeout([out, dh, _lax(at(2027, 4, 9, "12:30"))], 2, 2, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["need"]) == (True, "15:00") and "rest" not in t["flags"]
+    assert not any("117.25(d)" in s for s in t["lines"])  # 61:30 away: no 56 h rest
+    tr = _duty(at(2027, 4, 8, "06:00"), _leg("SFO", "HNL", at(2027, 4, 8, "07:00"), at(2027, 4, 8, "12:30"), "1"),
+               _leg("HNL", "SIN", at(2027, 4, 8, "14:00"), at(2027, 4, 9, "01:00"), "2", dh=True))
+    o = at(2027, 4, 9, "13:00")
+    nxt = _duty(at(2027, 4, 9, "12:00"), _leg("SIN", "NRT", o, o + timedelta(hours=7), "3"))
+    t = TO.duty_timeout([tr, nxt], 1, 3, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "10:30") and "need" not in t["rest"]  # may apply: its line
+    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10): the duty before it ended "
+                            "with deadhead transportation after its last flown leg, 19:00 from its report") and
+               s.endswith("10:30 free: ? SHORT of 11:00 if it applies.") for s in t["lines"])
+
+
+def test_molokai_and_lanai_are_hawaii_stations():
+    """Review PWA-MKK-LNY-customs-longitude: MKK and LNY are interisland (HAWAII), so no customs, a longitude and HST."""
+    for s in ("MKK", "LNY"):
+        assert s in TO.US_STATIONS and s in TO.LON and WK.ZONES[s] == "Pacific/Honolulu"
+        assert TO.customs({"frm": "HNL", "to": s}) is False and TO.same_theater(s, "HNL") is True
+
+
+def test_an_interisland_deadhead_is_judged_as_a_mixed_flying_segment_too():
+    """Review PWA-deadhead-not-counted-for-mixed-flying: 2.A.62 positions "such aircraft, or operating crew" and 2.A.45
+    counts Segments, so a deadhead may be the interisland Segment. By hand, 2 pilots: DH LIH-HNL 07:00-07:35, HNL-LAX
+    09:00-14:15 (5:15), report 06:00 HST. Table B, 2 segments, row 0600-0659: 13:00, FDP end 19:00, 21:00 with the
+    extension; the out to the last block-in 5:15: FAR last outs 13:45 and 15:45 HST. Mixed Flying (the deadhead read as
+    its interisland Segment, conservative): 10.D.3 standard crew 14:00, duty end 20:00, last block-in 19:45, last out
+    14:30 HST: it caps the extension (10.D.1.a's 16:00 would give 16:30). Not sure: Mixed Flying. A DH HNL-KOA before
+    KOA-LAX is the single Repositioning Flight either way (2.A.62)."""
+    dh = [_leg("LIH", "HNL", at(2027, 4, 5, "07:00"), at(2027, 4, 5, "07:35"), "1", dh=True),
+          _leg("HNL", "LAX", at(2027, 4, 5, "09:00"), at(2027, 4, 5, "14:15"), "2")]
+    assert not TO.mixed_flying(dh) and TO.mixed_flying(dh, dh=True)
+    rp = [_leg("HNL", "KOA", at(2027, 4, 5, "07:00"), at(2027, 4, 5, "07:45"), "1", dh=True),
+          _leg("KOA", "LAX", at(2027, 4, 5, "09:00"), at(2027, 4, 5, "14:00"), "2")]
+    assert not TO.mixed_flying(rp) and not TO.mixed_flying(rp, dh=True)
+    t = TO.duty_timeout([_duty(at(2027, 4, 5, "06:00"), *dh)], 0, 2, "roster", "332")
+    p = t["pwa"]
+    assert (p["cite"], p["maximum"], p["mixed"], p["binds"]) == ("10.D.3", "14:00", True, ["ext"])
+    assert (t["last_out"]["hst"], t["last_out_ext"]["hst"], t["last_out_ext"]["pwa"]) == ("13:45 HST", "14:30 HST", True)
+    assert "Mixed Flying" in t["unsure"] and t["sure"] is False
+    assert any(s.startswith("? Mixed Flying (2.A.45): the interisland deadhead LIH-HNL may be its interisland Segment")
+               for s in t["lines"])
+    # BASIS-flight-time-duplicate-clock: an HNL departure's clock once
+    assert any("Out on time (09:00 HST) the block-in is due by" in s for s in t["lines"])
+
+
+def test_a_mixed_flying_rest_is_not_sure_when_2_x_the_duty_period_is_not_known():
+    """Review PWA-mixed-rest-table-sure-when-2xDP-unknown: a span of the line not on file between the two duties of a
+    Mixed Flying grouping: 10.E.1.a.1 cannot be judged, so 10.E.3.a's 9:00 met alone is a '?'. By hand: HNL-LAX release
+    14:35 HST Jun 10, a span not on file to 17:35, LAX-HNL-KOA reporting 05:35 HST Jun 11: at least 12:00 free, 9:00 met
+    by 3:00."""
+    k = "H3993|2027-06-10"
+    rep = at(2027, 6, 11, "05:35")
+    o = rep + timedelta(minutes=75)
+    ds = [_kd(k, at(2027, 6, 10, "08:00"), _leg("HNL", "LAX", at(2027, 6, 10, "09:00"), at(2027, 6, 10, "14:20"), "1")),
+          _kd(k, rep, _leg("LAX", "HNL", o, o + timedelta(minutes=340), "2"),
+              _leg("HNL", "KOA", o + timedelta(minutes=400), o + timedelta(minutes=440), "3"))]
+    t = TO.duty_timeout(ds, 1, 3, "roster", "332", unknown=[(at(2027, 6, 10, "15:00"), at(2027, 6, 10, "17:35"))])
+    r = t["pwa"]["rest"]
+    assert (r["need"], r["have"], r["ok"], r["cite"]) == ("9:00", "12:00", None, "10.E.3.a") and "rest_q" in t["flags"]
+    assert any(s.startswith("? PWA rest: 2 x the preceding Duty Period (10.E.1.a.1) is not known") for s in t["lines"])
+
+
+def test_in_domicile_after_an_interisland_duty_the_interisland_rest_is_judged_too():
+    """Review PWA-interisland-second-reading-asymmetric (a): at home before an International duty that follows an all
+    interisland duty (an Interisland Pilot's, 2.A.36.b), 10.E.2.a's 12:00 is judged beside 10.E.1.a's 11:00. By hand:
+    HNL-OGG-HNL release 20:45 HST, HNL-LAX reporting 08:15 (11:30): 11:00 met, 12:00 short: '?'; 08:45 (12:00): met."""
+    d0 = _duty(at(2027, 3, 1, "17:00"), _leg("HNL", "OGG", at(2027, 3, 1, "18:00"), at(2027, 3, 1, "18:40"), "1"),
+               _leg("OGG", "HNL", at(2027, 3, 1, "19:30"), at(2027, 3, 1, "20:30"), "2"))
+    t = TO.duty_timeout([d0, _lax(at(2027, 3, 2, "08:15"))], 1, 2, "roster", "332")
+    r = t["pwa"]["rest"]
+    assert (r["need"], r["have"], r["ok"], r["cite"], r["other"]) == ("11:00", "11:30", None, "10.E.1.a",
+                                                                      "12:00 (10.E.2.a)")
+    assert ("? PWA rest, the other reading (10.E.2.a): as an Interisland Pilot, the duty before it being all interisland "
+            "flying (2.A.36.b): in domicile after a duty that was all interisland flying, 12:00 needed: SHORT. The "
+            "readings disagree, so the rest is not sure.") in t["lines"]
+    t = TO.duty_timeout([d0, _lax(at(2027, 3, 2, "08:45"))], 1, 2, "roster", "332")
+    assert t["pwa"]["rest"]["ok"] is True and "other" not in t["pwa"]["rest"] and t["flags"] == []
+
+
+@pytest.mark.parametrize("rep_l,lim,ok", [("04:30", 7, False), ("05:00", 10, True)])
+def test_pwa_landings_night_start_boundary_at_0459_local(rep_l, lim, ok):
+    """Review TEST-boundary-gaps: 10.H.1's 7 landings for a duty starting 2200-0459 local; LAX in April is PDT (HST + 3):
+    a report 04:30 PDT (01:30 HST) is a night start, 8 legs are over 7; 05:00 PDT (02:00 HST) is not, 8 of 10."""
+    h, m = map(int, rep_l.split(":"))
+    rep = at(2027, 4, 20, "00:00") + timedelta(hours=h - 3, minutes=m)
+    t = TO.duty_timeout([_hops(rep, rep + timedelta(hours=1), 8, blk=30, every=50)], 0, 2, "roster", "332")
+    assert (t["pwa"]["landings"]["n"], t["pwa"]["landings"]["max"], t["pwa"]["landings"]["ok"]) == (8, lim, ok)
+    assert ("landings" in t["flags"]) is (not ok)
+
+
+def test_a_sit_of_exactly_two_hours_is_a_repositioning_flight():
+    """Review TEST-boundary-gaps: 2.A.62's minimal delay is read as a sit of 2:00 or less: 2:00 at KOA is a Repositioning
+    Flight (no Mixed Flying), 2:01 is not."""
+    assert not TO.mixed_flying(_sit_pair(120)[1]["legs"]) and TO.mixed_flying(_sit_pair(121)[1]["legs"])
+    assert TO._repo([x for x in _sit_pair(120)[1]["legs"]], 1) == (True, timedelta(hours=2))
+
+
+def test_card_box_has_a_chip_for_every_flag_timeout_sets(browser, tmp_path):
+    """Review CARD-flags-segments-pilots-hidden: every key timeout.py appends to the flags maps to a chip and the label."""
+    import re
+    src = open(os.path.join(HERE, "timeout.py")).read()
+    js = open(os.path.join(HERE, "www", "flight-watcher-layover-card.js")).read()
+    keys = set(re.findall(r'\b(?:flags|r_flags|l_flags)\.append\("(\w+)"\)', src))
+    assert {"rest", "week", "pilots", "segments", "early", "pwa_rest", "pwa_sched", "landings", "rest_q",
+            "landings_q"} <= keys
+    for k in keys - {"rest", "week", "early"}:  # rest and week share "Rest short"; early is last_out.early
+        assert f'fl.includes("{k}")' in js, k
+
+    def seg(t):
+        t["flags"] = ["segments"]
+
+    def crew(t):
+        t["flags"] = ["pilots", "landings_q"]
+    for tweak, chips, said in ((seg, ["Over 3 segments (FOM)"], "; Over 3 segments (FOM). Details"),
+                               (crew, ["Check crew", "Landings ?"], "; Check crew, Landings ?. Details")):
+        pg = browser.new_page(viewport={"width": 390, "height": 844})
+        pg.set_content(_page(_watcher_only(tmp_path, tweak=tweak)))
+        box = pg.locator("flight-watcher-layover-card [data-to]")
+        assert box.locator("[data-towarn]").all_inner_texts() == chips
+        assert said in box.get_attribute("aria-label")
+        pg.close()

@@ -4,16 +4,48 @@
 
 Duty limits on the Working Flight card (Ryan, Nov 20, 2026: "calculate per FAR 117 and PWA when I timeout, both for if
 I extend or if I do not ... Keep in mind the flight time, and number of crew and rest", and that morning: "The number I
-need to know is when is the last moment I can block out and be legal"). A new attribute on the working flight sensor
-and a box on the layover card. No FLICA load, no new file, no contract change.
+need to know is when is the last moment I can block out and be legal"; then the PWA, so Section 10 is on file). A new
+attribute on the working flight sensor and a box on the layover card. No FLICA load, no new file, no contract change.
 
 ### What the Watcher works out (`timeout.py`, `sensor.<prefix>_working_flight` attribute `timeout`, both instances)
 - The headline: the last legal block-out of the working leg (`last_out`), without and with the 2:00 extension
   (`last_out_ext`): the FDP end (report + the Table B or C limit, with the extension 2:00 more, FAR 117.19(a), FOM
-  4.3.2.5), no later than the 117.23(c) cumulative FDP caps, less the scheduled time from this leg's block-out to the
-  duty's last flown block-in (its block, the later legs and the ground times). On the departure station's clock and
-  HST. Once a leg is in, the duty's next leg is the one. Rules from FOM 125.4 4.3.2, which reproduces 14 CFR 117 Tables
-  A, B and C.
+  4.3.2.5), no later than the 117.23(c) cumulative FDP caps and the PWA duty Maximum (below), less the scheduled time
+  from this leg's block-out to the duty's last flown block-in (its block, the later legs and the ground times). On the
+  departure station's clock and HST. Once a leg is in, the duty's next leg is the one. Rules from FOM 125.4 4.3.2, which
+  reproduces 14 CFR 117 Tables A, B and C, and the 2023 PWA.
+- PWA Section 10 duty limit (10.D; Local Times, 2.A.43): an International Pilot may not be required to remain in a Duty
+  Period past its Maximum: 2 pilots 16:00 (Scheduled 14:00, 10.D.1.a as the LOA amends it), an IRO Crew (3 pilots,
+  2.A.40) 18:00 (16:00, 10.D.1.b.1), an Extended Range Crew of 1 Captain (2.A.25) 18:00 (16:00, 10.D.1.c); one of 2
+  Captains has no PWA hours of its own, Part 117 Table C governs (10.D.1.d); 4 pilots whose Captains are not known use
+  18:00, "?" (a relief seat may hold a Captain, 2.A.40, so the crew list cannot say). Mixed Flying (2.A.45: a flown
+  segment of 3:00 or more and an interisland one, besides a single Repositioning Flight, 2.A.62) is 12:00 / 14:00,
+  augmented 14:00 / 16:00 (10.D.3), for every duty of a grouping (pairing) that holds one: 10.D.3.a covers "a pilot
+  assigned to a grouping containing a Mixed Flying Duty Period". A Repositioning Flight needs "minimal delay at the
+  neighbor island station": the PWA gives no figure, so a sit there of 2:00 or less is read as one, and a longer one
+  counts as Mixed Flying (the lower limits), "?". A duty that is all interisland flying is an Interisland Pilot's
+  (2.A.36.b): 10.D.2, 12:00 / 14:00 starting 0500-2159, 10:00 / 12:00 starting 2200-0459, and a duty starting before
+  2200 may not be required past 12 h once it runs after 0300 the next morning (10.D.2.b); the 10.D.4 option (stay past
+  it departing a station other than HNL, if the Maximum has not passed at block-out) is said, never used. The lowest
+  Maximum that applies is used. The Duty Period runs from the report (the later of the scheduled and actual one,
+  10.D.5) to 15 min after the duty's last block-in, 30 when clearing customs (2.A.19.b). No 5.A.6 transfer time serves
+  HNL (10.D.1.b.2 bars them for an IRO Crew), there is no pilot option past an International Maximum (10.D.4 is
+  Interisland) and a FAR 117.19 extension stays within the CBA (FOM 4.3.2.5), so the PWA last out (report + Maximum -
+  debrief - the scheduled time from this leg's out to the last block-in) caps both last outs and the block-in limits;
+  the binding rule is named as a duration ("PWA 10.D.1.b.1 max duty 18 h"). Over the Maximum at the scheduled times:
+  not legal, no last out (and the basis says when FAR 117 is over as scheduled too); over the Scheduled limit: flagged
+  ("scheduled past the PWA limit", not a timeout). The details give "PWA duty scheduled 13:00 of 16:00 (10.D.1.b.1)".
+- PWA rest before the duty (flags only, the last out does not move): 11:00 in domicile (10.E.1.a); out of it 2 x the
+  preceding Duty Period (10.E.1.a.1), or, in a grouping that holds a Mixed Flying Duty Period, 9:00, 10:00 or 11:00 by
+  the landings performed in the grouping before the rest (up to 5, 6 or 7, 8 or more: 10.E.3.a "shall be determined
+  by" that table; "?" when the whole grouping's landings on file would need more); and 18:00 when a segment departs
+  1400-0359 local and the scheduled Duty Period is 12:00 or more (10.E.1.b). For a 2-pilot crew a rest of 9:00 or more
+  but under 2 x the Duty Period is a "?", not short: the Company may limit a regular crew's hotel rest to 9:00
+  (10.E.1.a.2; a regular crew is read as 2 pilots). Measured release to report; the PWA Rest Period is hotel time door
+  to door (10.E.1.a.3), shorter by the van rides. Short: "short of PWA rest (10.E.1.a.1): 12:00 of 13:30".
+- Landings (10.H.1): the duty's flown segments against 10 that may be scheduled (11 if required to perform), 7 for a
+  duty starting 2200-0459 local, 4 for a Mixed Flying Duty Period (10.H.3). Over: flagged. A station whose Local Time
+  (2.A.43) is not on file is never read as HST: 10.E.1.b and the 7 landings may apply there, "?".
 - Flight time is a duration check (FAR 117.11, FOM 4.3.2.2: no takeoff without a reasonable expectation to land within
   it): the duty's planned flight time against Table A, 13:00 or 17:00 ("11:30 of 13:00, 1:30 spare"). Over it: "not
   legal to dispatch at any time" and no last out. An FDP extension does not extend it. With the leg out on time, the
@@ -36,8 +68,9 @@ and a box on the layover card. No FLICA load, no new file, no contract change.
   Table A flight time. 3 or 4: Table C and 13 or 17 h; more than 3 segments is flagged (FOM 4.3.2.4.2).
 - Deadheads: FLICA's pairing page legs on file carry none, so each duty takes its deadheads from the pairings package
   (matched by its flown flights): a duty that starts with one reports before it (the earlier of the package's REPT and
-  PWA 2.19.b.1), each counts as a segment (conservative), a trailing one sets the release. The basis says when the
-  package has no detail for the pairing.
+  PWA 2.A.19.b.1), each counts as a segment (conservative), a trailing one sets the release: every release shown is 15
+  or 30 min after the deadhead's block-in, never after the last flown one. The basis says when the package has no
+  detail for the pairing.
 - Rest facility (FOM 5.1.23.7, 5.1.23.8, Table 5.1.23.8.1(1)): the A330 LDMCR with 3 pilots, all LDMCR available: Class
   1. Where the FOM also requires a pilot crew rest seat in the cabin (A330 4 pilots, 787 3 or 4), a rest may be taken in
   it: Class 2, "?". Other or unknown equipment: Class 3, "?". The other classes' ends and last outs are given.
@@ -47,31 +80,105 @@ and a box on the layover card. No FLICA load, no new file, no contract change.
   larger of its block and its printed out to in (they can disagree).
 - Rest (FAR 117.25(e), FOM 4.3.2.7): the time free from duty before the report against 10 h; 117.25(b), FOM 4.3.2.9: the
   longest free period in the 168 h before it against 30 h. Short: flagged.
-- PWA 2.19.b: a later duty reports 1:15 before departure out of domicile (1:00 in it); the duty ends 15 min after
-  block-in, 30 min when clearing customs ("When required to clear Customs": a leg between two countries, or to or from
-  a station whose country is not on file; the Watcher's US list, now in `timeout.py`, and the pilot's smart.json
-  "domestic" stations are the US).
-- Not checked, and said so: PWA Section 10 (Hours of Service) duty limits (not on file: no PWA duty limit is used), an
-  extension of more than 30 min since the last 30 h free (117.19(a)(2)), the in-flight rest of an augmented FDP (FOM
-  4.3.2.4.2), the 8 h sleep opportunity (117.25(e)), flying outside the FLICA line (FOM 2.7.4) and 1000 h in 365 days
-  (117.23(b)(2)). Why a timeout could not be worked out after an error is logged once a change.
+- PWA 2.A.19.b: a later duty reports 1:15 before departure out of domicile (1:00 in it, 2.A.19.b.1); the duty ends
+  15 min after block-in, 30 min when clearing customs ("When required to clear Customs": a leg between two countries,
+  or to or from a station whose country is not on file; the Watcher's US list, now in `timeout.py`, and the pilot's
+  smart.json "domestic" stations are the US). The Watcher's other checks (FAR 117 rows, Recall, smart push) use
+  `release_customs`, 30 min only for a leg from outside the US; where the two give another release (a foreign arrival
+  such as HNL-SIN, a leg inside one foreign country), the basis says so.
+- Not checked, and said so: an extension of more than 30 min since the last 30 h free (117.19(a)(2)), the in-flight
+  rest of an augmented FDP (FOM 4.3.2.4.2), the 8 h sleep opportunity (117.25(e)), flying outside the FLICA line (FOM
+  2.7.4), 1000 h in 365 days (117.23(b)(2)), an IRO at the controls 8 h in 24 h (PWA 10.D.1.b.4: the in-flight rest
+  plan), the PWA hotel door-to-door rest (van and hotel times are not on the schedule) and, for a duty that is all
+  interisland flying, 10.D.2.c (no other Duty Period that calendar day after one completed past 0200). Why a timeout
+  could not be worked out after an error is logged once a change (and never the error of an earlier call), as is a
+  pairings package lookup that fails for another reason than a file not read.
 - Example (synthetic, tests): BOS-HNL out 09:15 EST after a 24 h layover, 3 pilots, A330, not acclimated (BOS is 87
   degrees from HNL), report 08:00 EST: Table C 0000-0559 on HNL time, 15:00 less 0:30 = 14:30, FDP end 17:30 HST (19:30
   with the extension); block 11:30, so last out 11:00 EST (06:00 HST), 13:00 EST (08:00 HST) with the extension; flight
-  time 11:30 of 13:00; out on time the block-in is due by 17:15 HST either way; Class 2 16:30, Class 3 15:30.
+  time 11:30 of 13:00; out on time the block-in is due by 17:15 HST either way; Class 2 16:30, Class 3 15:30. PWA: an
+  IRO Crew's 18:00 Maximum ends the duty by 21:00 HST, last block-in 20:45, last out 14:15 EST: not binding; scheduled
+  13:00 of 16:00; rest 2 x the 11:05 duty before it = 22:10, release to report 24:35; 1 landing of 10.
+- Example (synthetic, tests): 2 pilots HNL-LAX, report 08:00 HST, block 5:15: FAR last out 16:45 HST, 18:45 with the
+  extension; the PWA 16:00 Maximum (duty end 00:00, last block-in 23:45) caps the extension at 18:30 HST.
 
 ### The card (`flight-watcher-layover-card.js`)
 - Right of the report time, a box with a 2 px dark orange border (#c2410c, 3:1 or more on light and dark cards; its
   text is the theme's own colors, WCAG AA): LAST OUT, the last out in bold on the departure station's clock (as the
-  big Report time), "Ext" and the one with the extension in bold ("Ext same" with the rule when a cap binds both), the
-  two in HST small, and "FT 11:30 of 13:00". NOT LEGAL with the reason instead of a time; a "?" after the time when it
-  is not sure; "Over as scheduled" or "Rest short" when flagged. A tap (Enter and Space too) opens the details: the
-  block-out and block-in limits of both cases with their releases, the on-time block-in, the flight time and
-  cumulative spares, what is not sure; how it is worked out (each rule with its cite) and what is not checked fold under
+  big Report time; its clock smaller after it, a zone with no letters named by its station: "14:43 SIN"), "Ext" and
+  the one with the extension in bold ("Ext same" with the rule when a cap binds both), the two in HST small, the PWA
+  duty limit when it binds ("Ext: PWA max duty 18 h"), and "FT 11:30 of 13:00". NOT LEGAL in white on red with the
+  reason instead of a time ("Not legal as scheduled (PWA)" for a PWA Maximum over as scheduled, "Not legal to
+  dispatch" for FAR 117), its "?" kept; a "?" right after the time when it is not sure; "Over as scheduled", "Check
+  crew", "Rest short", "PWA rest short", "Landings over", "Over 3 segments (FOM)", "Past PWA schedule", "Rest ?" or
+  "Landings ?" when flagged (two chips, "+N more flags" past that, every one in the label). A tap (Enter and
+  Space too) opens the details: the block-out and block-in limits of both cases with their releases, the on-time
+  block-in, the flight time and cumulative spares, a PWA row in plain words ("scheduled duty 13:00 (Scheduled limit
+  16:00), Maximum 18:00 (10.D.1.b.1): last out 14:15 EST (not binding: FAR 117 is earlier) · rest 24:35, 22:10 needed
+  (10.E.1.a.1): ? · landings 1 (10 may be scheduled, 11 if required)"; PAST, SHORT or OVER when broken), what is not
+  sure; how it is worked out (each rule with its cite) and what is not checked fold under
   it. No `timeout` attribute: no box, nothing else changes. Under Hark's data the Watcher's timeout shows only for the
-  same pairing and origin, right of the Report line, with Departs and Arrives keeping the full width; on the narrowest
-  phones the box wraps under the Report block instead of leaving the card. The portal does not carry this card (as
-  before).
+  same pairing and origin, right of the Report line, with Departs and Arrives keeping the full width. At 320 px the box
+  stays beside the Report block (its binding rule wraps, the Report time is a little smaller under 360 px). The portal
+  does not carry this card (as before).
+
+### Review fixes (round 1) and what Ryan should confirm
+- From the PWA text over the first spec: 10.D.3.a and 10.E.3.a cover the whole grouping that holds a Mixed Flying
+  Duty Period; 10.D.2 for an all-interisland duty; 2.A.62's minimal delay; 10.E.1.a.2 a "?" for 2 pilots; a station's
+  Local Time never read as HST; every release after a trailing deadhead; `pwa.binds` empty when not legal.
+- To confirm: whether Crew Scheduling applies 10.D.3 to every duty of a Mixed Flying grouping (the PWA's words, used
+  here); whether 10.E.3.a's table replaces 2 x the Duty Period (as it reads) and counts the landings performed before
+  the rest; the 2:00 sit read as "minimal delay" (2.A.62); "regular crew" read as 2 pilots (10.E.1.a.2).
+- Tests: synthetic cases for each, daylight-time windows (LAX in July and January), a heavy payload under 12000 bytes
+  (HA keeps attributes up to 16384), the card at 320 px with a station-named clock and NOT LEGAL.
+
+### Review fixes (round 2)
+- Rest readings: where a long sit at the neighbor island decides Mixed Flying, the rest is judged both ways (out of
+  domicile Mixed Flying needs less, 10.E.3.a, so the long sit is conservative only for the duty limit and the
+  landings); a rest the readings disagree on is a "?" with both needs ("rest 10:30, 9:00 (10.E.3.a) or 13:00
+  (10.E.1.a.1) needed: ?"), no red flag (round 3: a "Rest ?" chip, the last outs stay sure). Until Ryan confirms that 10.E.3.a's
+  table replaces 2 x the Duty Period, a rest the table meets but 2 x the Duty Period does not is a "?" too.
+- An all-interisland duty (an Interisland Pilot's, 2.A.36.b) takes the Interisland rest, 12:00 at home (10.E.2.a) and
+  9:00 away (10.E.2.b; 2 x the Duty Period too, a "?", when the duty before it was International flying), and 10.H.2's
+  8 landings for a duty starting before 2200 HST and continuing after 0300 HST; 10.E.1.b names an International
+  Pilot's Segment, so short of it before an interisland duty is a "?". 10.D.2.c is listed as not checked.
+- Out of domicile the Rest Period is hotel time door to door (2.A.68.b, 10.E.1.a.3): a rest met from release to report
+  by under `timeout.VAN_RIDES` (the two van rides; 2:30 since round 3) is a "?", not "met".
+- A duty that FAR 117 makes not legal says when the PWA Maximum is over as scheduled too ("over the Maximum too").
+- The other rest classes' last outs take the 117.23(c) cumulative FDP caps as the main one does.
+- Card: a number keeps its unit and "of" its limit ("18 h", "16:30 of 16:00"), the small lines up to 136 px so they
+  fit on one line; when the PWA binds only the extension the FAR 117 rule of the last out is named above it ("FDP
+  17:00", and in the label); the block-in carries its day after midnight; why the two on-time block-ins are one is
+  said by the rule that makes them one (flight time, the PWA Maximum, or another limit); the basis names a rule
+  binding both once; the phone rule for the Report time applies only beside the box.
+- To confirm (more): the time allowed for the two van rides (round 3: 2:30); the Interisland rest for an A330 pilot's
+  all-interisland duty (2.A.36.b), with 2 x the Duty Period a "?" after International flying; 10.E.1.b read as not sure
+  before an interisland duty.
+
+### Review fixes (round 3)
+- FAR 117.25(d) (FOM 4.3.2.11): before the first FDP at home after a trip more than 168 h away from HNL that went more
+  than 60 degrees of longitude, 56 consecutive hours of rest ("177:00 away from HNL ... SIN is 98 deg from HNL ...: 56
+  consecutive hours ...; 39:00 free: SHORT"); a "?" when the trip's start or a span inside it is not on file; its three
+  physiological nights are listed as not checked.
+- FAR 117.25(g) (FOM 4.3.2.10): after deadhead transportation that ran past its Table B FDP, a rest as long as the
+  deadhead (no less than 10 h); a deadhead after the last flown leg of a duty is a "?".
+- Out of domicile a rest met from release to report by under 2:30 is a "?" (was 1:00): two van rides at a far-out
+  hotel take 1:30 to 2:30. Ryan's live trips: KIX-HNL (met by 1:15) is now a "?"; every last out is unchanged.
+- The box: a chip for every flag (new: "Check crew" when the pilots were raised, "Over 3 segments (FOM)", "Rest ?" and
+  "Landings ?"); the "?" after the time is only for what moves a last out, so a rest or landings count that is not
+  sure (a long sit's two readings, the van rides, 10.E.3.a or 10.E.2 against 2 x the Duty Period) is its own chip.
+- Mixed Flying (2.A.45): an interisland deadhead is judged as its interisland Segment too (2.A.62 positions "such
+  aircraft, or operating crew"): the lower 10.D.3 limits and 10.H.3 landings, "Mixed Flying" not sure when it binds.
+- PWA rest at home is judged by the other category too: 10.E.2.a's 12:00 after an all-interisland duty, 10.E.1.a's
+  11:00 before one after International flying; a disagreement is a "?". A Mixed Flying grouping's rest whose 2 x the
+  Duty Period is not known is a "?", not met on 10.E.3.a's table alone.
+- MKK and LNY are Hawaii stations (no customs, HST, a longitude). The flight time line names an HNL departure's clock
+  once.
+- To confirm (round 3): the 2:30 for the van rides (or a figure per hotel); whether a deadhead counts as a Segment for
+  Mixed Flying (2.A.45); which Interisland or International rest applies at home between the two kinds of duty.
+- Tests: 10 new (the 56 h and deadhead rests, MKK/LNY, the deadhead Mixed Flying reading, the unknown 2 x the Duty
+  Period, the rest at home after an interisland duty, landings at 04:30 and 05:00 local, a 2:00 sit, a chip for every
+  flag key).
 
 ## 1.7.19
 

@@ -5958,24 +5958,36 @@ WORKING_LAST = {"news": None, "at": None}
 def _working_pkg():
     """1.7.20: (trip, start) -> the pairings package detail of a pairing ({eq, crew, duties, ...}: pkg_detail_for of its
     bid period, a rebuilt id's base too; None when not on file) for the duty timeout's equipment, crew line and
-    deadheads. The bid period function is built once per publish. No FLICA load, no new file."""
+    deadheads. The bid period function is built once per publish. No FLICA load, no new file. Review: a file that
+    cannot be read (OSError) is silent; any other error falls back the same way and its type goes to WK.PKG_ERR,
+    which publish_working_flight logs once a change."""
+    perr = ""
     try:
         of = bid_period_fn()
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        perr = "" if isinstance(e, OSError) else f"bid period {type(e).__name__}"
+
         def of(iso):
             return str(iso)[:7]
 
     def get(trip, start):
+        if perr:
+            WK.PKG_ERR["msg"] = WK.PKG_ERR["msg"] or perr
         try:
             return pkg_detail_for(of(start), trip, start)
-        except Exception:  # noqa: BLE001
+        except OSError:
+            return None
+        except Exception as e:  # noqa: BLE001
+            WK.PKG_ERR["msg"] = WK.PKG_ERR["msg"] or f"package detail {type(e).__name__}"
             return None
     return get
 
 
 def _domestic():
-    """1.7.20 review: the pilot's smart.json "domestic" stations (counted as the US for customs, the rule
-    release_customs uses), for the duty timeout's release (PWA 2.19.b.2). Never raises."""
+    """1.7.20 review: the pilot's smart.json "domestic" stations, counted as the US for customs as release_customs
+    counts them, for the duty timeout's release (PWA 2.A.19.b.2). The timeout's own customs rule differs from
+    release_customs (timeout.customs: any border, or a country not on file; release_customs: a last leg from outside
+    the US), and its basis says so when the two give another release. Never raises."""
     try:
         return set((SMART.load(SMART_FILE) or {}).get("domestic") or ())
     except Exception:  # noqa: BLE001
@@ -5997,6 +6009,11 @@ def publish_working_flight(now=None, force=False):
             WORKING_LAST["err"] = err
             if err:
                 log.info("working flight: duty timeout not worked out (%s)", err)
+        perr = WK.PKG_ERR.get("msg") or ""
+        if perr != WORKING_LAST.get("pkg_err", ""):
+            WORKING_LAST["pkg_err"] = perr
+            if perr:
+                log.info("working flight: pairings package not read (%s); the duty timeout goes on without it", perr)
         news = WK.news(wf)
         last = WORKING_LAST.get("at")
         if (not force and news == WORKING_LAST.get("news") and last is not None

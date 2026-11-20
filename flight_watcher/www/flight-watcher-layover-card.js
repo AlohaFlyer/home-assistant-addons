@@ -55,7 +55,7 @@
 // 1.7.20 (Ryan, Nov 20: "calculate per FAR 117 and PWA when I timeout, both for if I extend or if I
 // do not. Add that number in bold with a dark orange square around it right of the report time"): the Watcher's
 // sensor.<prefix>_working_flight `timeout` (timeout.py: FAR 117 Tables A, B and C, acclimation, pilots, rest class,
-// flight time and the cumulative limits; PWA 2.19.b release) shows in a box with a 2 px dark orange border (#c2410c,
+// flight time and the cumulative limits; PWA 2.A.19.b release and Section 10 duty, rest and landings) shows in a box with a 2 px dark orange border (#c2410c,
 // 3:1 or more on light and dark cards; its text is the theme's own colors) right of the report time: TIMEOUT, the
 // no-extension time in bold, "Ext" and the time with the 2:00 extension, and the rule that binds. With no van the box
 // sits beside the Report block in the header (both wrap under the title on a phone); with a van, right of the Report
@@ -69,6 +69,14 @@
 // the rest class or the pilots), the earlier reading shown. The basis opens with the block-out and block-in limits
 // of both cases; how it is worked out and what is not checked fold under it. Under a van, the box sits right of the
 // Report line and Departs and Arrives keep the full width.
+// 1.7.20 (Ryan, Nov 20: PWA Section 10 now on file): the PWA duty Maximum (10.D) caps both last outs; when it binds,
+// a small line in the box names it as a duration ("PWA max duty 16 h", "Ext: PWA max duty 18 h"), NOT LEGAL when it is
+// over at the scheduled times, "PWA rest short" / "Landings over" / "Past PWA schedule" when flagged, and the details
+// carry a PWA row (the duty against its Scheduled limit, the rest of 10.E, the landings of 10.H).
+// 1.7.20 review: the time keeps 24 px with its '?' right after it and its clock smaller after it (a zone with no
+// letters is named by its station: "14:43? SIN"), so the box stays beside the Report block at 320 px; NOT LEGAL is
+// white on red ("Not legal as scheduled (PWA)" for a PWA Maximum, "Not legal to dispatch" for FAR 117), with its '?';
+// up to two flag chips show (a third and more as "+N more flags"), every one in the label.
 // Usage: type: custom:flight-watcher-layover-card, update_url: https://... (optional)
 const FW_LAYOVER_NOTE_MAX = 1000;  // layover.NOTE_MAX
 const FW_VAN_ADJUST = { lo: -120, hi: 120, step: 5 };  // layover.ADJUST_RANGE and ADJUST_STEP
@@ -233,53 +241,85 @@ class FlightWatcherLayoverCard extends HTMLElement {
   _toDay(x, t) { return x && x.day && t.report_day && x.day !== t.report_day ? String(x.day).split(" ")[0] : ""; }
   _toBox(t, a) {
     const e = (v) => this._e(v), lo = t.last_out, lx = t.last_out_ext || {}, ft = (t.ft && t.ft.short) || "";
+    // review UI-R1-1: a number keeps its unit and "of" its limit ("18 h", "16:30 of 16:00"): never a unit alone on a line
+    const nb = (v) => e(v).replace(/\d+(?::\d\d)?(?: h(?: \d+ min)?| min| of \d+:\d\d)/g, (m) => `<span class="nw">${m}</span>`);
     const q = t.sure === false ? `<span class="toq" title="Not sure: see the details">?</span>` : "";
     const unsure = t.sure === false ? "; not sure, the earlier reading is shown" : "";
+    // review: the time big with the '?' right after it, its clock smaller (it may wrap under the time on a phone)
+    const tm = (txt, wd) => {
+      const v = String(txt || ""), i = v.indexOf(" "), hm = i > 0 ? v.slice(0, i) : v, z = i > 0 ? v.slice(i + 1) : "";
+      return `<span class="ton">${e(hm)}${q}</span>${z ? `<span class="toz"> ${e(z)}</span>` : ""}${wd ? `<span class="tod"> ${e(wd)}</span>` : ""}`;
+    };
     let body, say;
     if (t.legal === false) {
-      body = `<span class="tol">Last out</span><span class="tot tonl" data-tono>Not legal</span>
-        <span class="tob" data-toby>${e(t.not_legal_short || "")}</span>`;
-      say = `Not legal to dispatch: ${t.not_legal_short || ""}. Details`;
+      // review: NOT LEGAL in white on red, the most serious state; a PWA Maximum is "not legal as scheduled", not a
+      // dispatch (FAA) limit
+      const nl = this._toNl(t);
+      body = `<span class="tol">Last out</span><span class="tot" data-tono><span class="tonl">Not legal</span>${q}</span>
+        <span class="tob" data-toby>${nb(t.not_legal_short || "")}</span>`;
+      say = `${nl}: ${t.not_legal_short || ""}${t.sure === false ? "; not sure, see the details" : ""}. Details`;
     } else if (lo && lo.txt) {
       const leg = lo.leg && lo.leg !== `${a.origin || ""}-${a.dest || ""}` ? ` ${lo.leg}` : "";
       const same = !!(lx.at && lx.at === lo.at), h = (x) => String(x || "").replace(/ HST$/, "");
-      const ext = !lx.txt ? "" : same ? `Ext same (${lx.short || ""})` : `Ext ${lx.txt}${lx.wd ? ` ${lx.wd}` : ""}`;
+      // the PWA duty Maximum when it binds (it caps both): the rule on a line of its own; when it binds only the
+      // extension, the no-extension rule above it, so neither reads as the reason for both (review UI-R1-2)
+      const bind = lo.pwa ? (lo.short || "") : lx.pwa ? `Ext: ${lx.short || ""}` : "";
+      const rule = lx.pwa && !lo.pwa ? (lo.short || "") : "";
+      const ext = !lx.txt ? "" : same ? (lo.pwa ? "Ext same" : `Ext same (${lx.short || ""})`) : `Ext ${lx.txt}${lx.wd ? ` ${lx.wd}` : ""}`;
       const hst = lo.txt !== lo.hst ? `(${h(lo.hst)}${lx.hst && !same ? ` / ${h(lx.hst)}` : ""} HST)` : "";
-      const warn = lo.early ? "Over as scheduled" : (t.flags || []).some((f) => f === "rest" || f === "week") ? "Rest short" : "";
+      const fl = t.flags || [];
+      // every flag set, most serious first; the box shows two (one chip a flag), the label all of them (review
+      // CARD-flags-segments-pilots-hidden: tests check that every flag timeout.py sets has its chip here)
+      const warns = [lo.early ? "Over as scheduled" : "", fl.includes("pilots") ? "Check crew" : "",
+        fl.some((f) => f === "rest" || f === "week") ? "Rest short" : "", fl.includes("pwa_rest") ? "PWA rest short" : "",
+        fl.includes("landings") ? "Landings over" : "", fl.includes("segments") ? "Over 3 segments (FOM)" : "",
+        fl.includes("pwa_sched") ? "Past PWA schedule" : "", fl.includes("rest_q") ? "Rest ?" : "",
+        fl.includes("landings_q") ? "Landings ?" : ""].filter(Boolean);
+      const shown = warns.length > 2 ? [warns[0], `+${warns.length - 1} more flags`] : warns;
       body = `<span class="tol">Last out${e(leg)}</span>
-        <span class="tot" data-tono>${e(lo.txt)}${lo.wd ? `<span class="tod"> ${e(lo.wd)}</span>` : ""}${q}</span>
+        <span class="tot" data-tono>${tm(lo.txt, lo.wd)}</span>
         ${ext ? `<span class="tox" data-toext>${e(ext)}</span>` : ""}${hst ? `<span class="toh" data-tohst>${e(hst)}</span>` : ""}
-        ${ft ? `<span class="tob" data-toby>${e(ft)}</span>` : ""}${warn ? `<span class="tow" data-towarn>${e(warn)}</span>` : ""}`;
-      say = `Last out${leg} ${lo.txt}${lo.wd ? ` ${lo.wd}` : ""}${lo.txt !== lo.hst ? `, ${lo.hst}` : ""} without an extension${ext ? `, ${same ? `the same with one (${lx.short || ""})` : `${lx.txt}${lx.txt !== lx.hst ? `, ${lx.hst}` : ""} with one`}` : ""}${t.ft && t.ft.txt ? `; flight time ${t.ft.txt}` : ""}${warn ? `; ${warn}` : ""}${unsure}. Details`;
+        ${rule ? `<span class="tob" data-torule>${nb(rule)}</span>` : ""}${bind ? `<span class="tob" data-tobind>${nb(bind)}</span>` : ""}
+        ${ft ? `<span class="tob" data-toby>${nb(ft)}</span>` : ""}${shown.map((w) => `<span class="tow" data-towarn>${e(w)}</span>`).join("")}`;
+      say = `Last out${leg} ${lo.txt}${lo.wd ? ` ${lo.wd}` : ""}${lo.txt !== lo.hst ? `, ${lo.hst}` : ""} without an extension${!lo.pwa && lo.short ? ` (${lo.short})` : ""}${ext ? `, ${same ? `the same with one${lo.pwa ? "" : ` (${lx.short || ""})`}` : `${lx.txt}${lx.txt !== lx.hst ? `, ${lx.hst}` : ""} with one`}` : ""}${bind ? `; ${bind}` : ""}${t.ft && t.ft.txt ? `; flight time ${t.ft.txt}` : ""}${warns.length ? `; ${warns.join(", ")}` : ""}${unsure}. Details`;
     } else {  // a Watcher before the last out: its block-in timeout
       const n = t.no_ext, x = t.ext || {}, dn = this._toDay(n, t), dx = this._toDay(x, t);
-      body = `<span class="tol">Timeout</span><span class="tot" data-tono>${e(n.txt)}${dn ? `<span class="tod"> ${e(dn)}</span>` : ""}${q}</span>
+      body = `<span class="tol">Timeout</span><span class="tot" data-tono>${tm(n.txt, dn)}</span>
         ${x.txt ? `<span class="tox" data-toext>Ext ${e(x.txt)}${dx ? ` ${e(dx)}` : ""}</span>` : ""}<span class="tob" data-toby>${e(n.short || n.by || "")}</span>`;
       say = `Timeout ${n.txt}${dn ? ` ${dn}` : ""} without an extension${x.txt ? `, ${x.txt}${dx ? ` ${dx}` : ""} with one` : ""}${n.short ? `, ${n.short}` : ""}${unsure}. Details`;
     }
-    return `<button class="to${t.legal === false ? " nl" : ""}" data-to aria-expanded="${this._open.to ? "true" : "false"}" aria-controls="todet" aria-label="${e(say)}">${body}</button>`;
+    return `<button class="to${t.legal === false ? " to-nl" : ""}" data-to aria-expanded="${this._open.to ? "true" : "false"}" aria-controls="todet" aria-label="${e(say)}">${body}</button>`;
   }
+  // review: what NOT LEGAL means: over a PWA Maximum as scheduled is a contract limit (Crew Scheduling must change it),
+  // the others (flight time, a cumulative limit) are FAR 117's: not legal to dispatch
+  _toNl(t) { return /^PWA/.test(String(t.not_legal_short || "")) ? "Not legal as scheduled (PWA)" : "Not legal to dispatch"; }
   _toDet(t) {
     const e = (v) => this._e(v), f = t.fdp || {}, lo = t.last_out, lx = t.last_out_ext, n = t.no_ext || {}, x = t.ext || {};
     const li = (v) => (Array.isArray(v) ? v : []).map((y) => `<li>${e(y)}</li>`).join("");
     const nc = Array.isArray(t.not_checked) ? t.not_checked : [];
     const out = (r) => r && r.txt ? `block out by ${e(r.txt)}${r.txt !== r.hst ? ` (${e(r.hst)} ${e(r.day || "")})` : ` ${e(r.day || "")}`}, ` : "";
+    // review UI-R1-3: the block-in's day when it is not the block-out's (an overnight duty)
+    const inDay = (d, r) => d && r && r.day && d !== r.day ? ` ${e(d)}` : "";
     const ontime = (r, more) => r && r.txt ? `<div class="u">Out on time${t.sched_out_txt ? ` (${e(t.sched_out_txt)})` : ""}: block in by ${e(r.txt)} ${e(r.day || "")}, ${e(r.short || "")}${more}.</div>` : "";
+    // review CARD-ontime, UI-R1-4: why the two on-time block-ins are one, by the rule that binds them
+    const xs = String(x.short || ""), one = !!(x.at && x.at === n.at);
+    const why1 = !one ? "" : /flight time$/.test(xs) ? ": an extension adds no flight time" : /^PWA/.test(xs) ? ": the PWA Maximum caps it, an extension adds nothing" : ": the same limit binds both, an extension adds nothing";
     let rows;
     if (t.legal === false) {
-      rows = `<div class="trw tnl"><b>Not legal to dispatch:</b> ${e(t.not_legal || "")}.</div>`;
+      rows = `<div class="trw tnl"><b class="tnlb">${e(this._toNl(t))}:</b> ${e(t.not_legal || "")}.</div>`;
     } else if (lo && lo.txt) {
-      rows = `<div class="trw"><b>No extension:</b> ${out(lo)}block in by ${e(f.in_txt || f.end_txt || "")}${f.release_txt ? `, release ${e(f.release_txt)}` : ""}<div class="u">${e(lo.by || "")}</div>${ontime(n, "")}</div>
-        <div class="trw"><b>With extension:</b> ${out(lx)}block in by ${e(f.ext_in_txt || f.ext_end_txt || "")}${f.ext_release_txt ? `, release ${e(f.ext_release_txt)}` : ""}<div class="u">${e((lx && lx.by) || "")}; before takeoff only</div>${ontime(x, x.at === n.at ? ": an extension adds no flight time" : "")}</div>`;
+      rows = `<div class="trw"><b>No extension:</b> ${out(lo)}block in by ${e(f.in_txt || f.end_txt || "")}${f.in_txt ? inDay(f.in_day, lo) : ""}${f.release_txt ? `, release ${e(f.release_txt)}` : ""}<div class="u">${e(lo.by || "")}</div>${ontime(n, "")}</div>
+        <div class="trw"><b>With extension:</b> ${out(lx)}block in by ${e(f.ext_in_txt || f.ext_end_txt || "")}${f.ext_in_txt ? inDay(f.ext_in_day, lx) : ""}${f.ext_release_txt ? `, release ${e(f.ext_release_txt)}` : ""}<div class="u">${e((lx && lx.by) || "")}; before takeoff only</div>${ontime(x, why1)}</div>`;
     } else {
       const row = (k, r) => r && r.txt ? `<div class="trw"><b>${k}:</b> ${e(r.txt)} ${e(r.day || "")}${r.release_txt ? `, release ${e(r.release_txt)}` : ""}<div class="u">${e(r.by || "")}</div></div>` : "";
       rows = `${row("No extension", n)}${row("With extension", x)}`;
     }
     const c = t.cum || {}, cum = ["ft_672", "fdp_168", "fdp_672"].filter((k) => c[k] && c[k].txt).map((k) => e(c[k].txt)).join(" &middot; ");
     const ftl = t.ft && t.ft.txt ? `<div class="trw"><b>Flight time:</b> ${e(t.ft.txt)}${cum ? ` &middot; ${cum}` : ""}</div>` : "";
-    const why = { acclimation: "acclimation", clock: "which clock enters the tables", "rest class": "the rest facility class", pilots: "the number of pilots" };
+    const pwa = t.pwa && t.pwa.txt ? `<div class="trw" data-topwa><b>PWA:</b> ${e(t.pwa.txt)}</div>` : "";
+    const why = { acclimation: "acclimation", clock: "which clock enters the tables", "rest class": "the rest facility class", pilots: "the number of pilots", "PWA crew": "the Captains of the crew (PWA 10.D.1.c or 10.D.1.d)", "Mixed Flying": "whether the duty is Mixed Flying (PWA 2.A.45: a neighbor island leg's long sit, or an interisland deadhead), which sets the PWA duty limit" };
     const uns = t.sure === false ? `<div class="trw" data-tounsure><b>? Not sure:</b> ${e((t.unsure || []).map((k) => why[k] || k).join(", "))}: the earlier reading is shown (see below).</div>` : "";
-    return `<div class="tdet" id="todet" data-todet${this._open.to ? "" : " hidden"}>${rows}${ftl}${uns}
+    return `<div class="tdet" id="todet" data-todet${this._open.to ? "" : " hidden"}>${rows}${ftl}${pwa}${uns}
       <details data-k="tobasis"${this._open.tobasis ? " open" : ""}><summary>How it is worked out</summary><ul data-tolines>${li(t.lines)}</ul></details>
       ${nc.length ? `<details data-k="tonc"${this._open.tonc ? " open" : ""}><summary>Not checked (${nc.length})</summary><ul data-tonc>${li(nc)}</ul></details>` : ""}
       <div class="u">From your FLICA schedule: the times move with the actual out and in.</div></div>`;
@@ -584,14 +624,16 @@ class FlightWatcherLayoverCard extends HTMLElement {
       button.to{flex:none;display:inline-flex;flex-direction:column;align-items:flex-end;gap:1px;text-align:right;min-width:104px;min-height:44px;margin:0;padding:6px 10px;border:2px solid #c2410c;border-radius:8px;background:var(--card-background-color);color:var(--primary-text-color);font-size:14px;font-weight:700;line-height:1.15}
       button.to:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px}
       .to .tol{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--secondary-text-color)}
-      .to .tot{font-size:24px;font-weight:800;font-variant-numeric:tabular-nums;white-space:nowrap}.to .tod{font-size:13px;font-weight:700}
+      .to .tot{font-size:24px;font-weight:800;font-variant-numeric:tabular-nums}.to .ton{white-space:nowrap}.to .tod,.to .toz{font-size:13px;font-weight:700;white-space:nowrap}
       .to .tox{font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
-      .to .tob{font-size:12px;font-weight:400;color:var(--secondary-text-color);max-width:150px}
+      .to .tob{font-size:12px;font-weight:400;color:var(--secondary-text-color);max-width:136px}.to .nw{white-space:nowrap}
       .to .toh{font-size:12px;font-weight:600;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;white-space:nowrap}
-      .to .toq{margin-left:2px}.to .tonl{font-size:20px;text-transform:uppercase;letter-spacing:.02em}
+      .to .toq{margin-left:2px}.to .tonl{display:inline-block;font-size:18px;text-transform:uppercase;letter-spacing:.02em;color:#fff;background:#b71c1c;border-radius:4px;padding:1px 6px}
       .to .tow{font-size:12px;font-weight:700;color:#fff;background:#b71c1c;border-radius:4px;padding:0 4px}
       .tmw{display:flex;align-items:flex-start;gap:10px;margin:8px 0 2px}.tmw .tm{flex:0 1 auto;min-width:0;margin:0}.tm.tms{margin-top:2px}
       .tdet{border:2px solid #c2410c;border-radius:8px;padding:6px 10px;margin:8px 0;font-size:13px}.tdet[hidden]{display:none}.tdet .trw{margin:2px 0 6px}
+      .tdet .tnl{margin:4px 0 8px}.tdet .tnlb{color:#fff;background:#b71c1c;border-radius:4px;padding:0 4px}
+      @media (max-width:360px){.hd.wt .rep .vt{font-size:30px}.hd.wt .van.rep{min-width:84px}}
       .tdet details{margin:4px 0}.tdet summary{cursor:pointer;font-weight:600;padding:6px 0}.tdet ul{margin:2px 0 6px;padding-left:20px}
       .va{display:flex;flex-direction:column;align-items:flex-end;text-align:right;margin:4px 0 0}
       .vck{position:relative;display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:0 4px;cursor:pointer;font-weight:600}

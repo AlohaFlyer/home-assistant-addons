@@ -33,14 +33,14 @@ SOURCE = "schedule"
 UPDATED_BY = "Flight Watcher"
 NO_TRIP = "No trip"
 STATE_MAX = 255  # Home Assistant's limit for a state
-# PWA 2.19.b (as recall._trip applies it): a later duty period reports 1:00 before departure in domicile, 1:15 out of it
+# PWA 2.A.19.b.1 (as recall._trip applies it): a later duty period reports 1:00 before departure in domicile, 1:15 out of it
 REPORT_DOMICILE_MIN, REPORT_AWAY_MIN = 60, 75
 VOLATILE = ("updated", "status_as_of")  # move on every call; a payload that differs only here is not news
 STN_RE = re.compile(r"^[A-Z]{3}$")
 # The zone of every station in pot.TZ (whose offsets are the standard ones): its local time with daylight time
 # (1.7.1: and of a few stations pot.TZ does not list; layover.py reads only this table)
 ZONES = {"HNL": "Pacific/Honolulu", "OGG": "Pacific/Honolulu", "KOA": "Pacific/Honolulu", "ITO": "Pacific/Honolulu",
-         "LIH": "Pacific/Honolulu", "PPT": "Pacific/Tahiti", "RAR": "Pacific/Rarotonga", "PPG": "Pacific/Pago_Pago",
+         "LIH": "Pacific/Honolulu", "MKK": "Pacific/Honolulu", "LNY": "Pacific/Honolulu", "PPT": "Pacific/Tahiti", "RAR": "Pacific/Rarotonga", "PPG": "Pacific/Pago_Pago",
          "ANC": "America/Anchorage",
          **{s: "America/Los_Angeles" for s in ("LAX", "SFO", "SEA", "SAN", "OAK", "SMF", "LAS", "PDX", "SJC", "ONT",
                                               "LGB")},
@@ -138,7 +138,7 @@ def _pairings(items):
 def _report(first, rec, dep, dep_l, frm, hst=True):
     """The report for a duty that starts with this leg. The trip's first duty: FLICA's check in (HNL time, so HST).
     A later duty (after a layover of LAYOVER_MIN_H or more): 1:15 before departure out of domicile, 1:00 in domicile
-    (PWA 2.19.b), shown as local and HST."""
+    (PWA 2.A.19.b.1), shown as local and HST."""
     if first and _mins(rec.get("report")) is not None:
         return f"{_hhmm(_mins(rec.get('report')))} HST"
     before = REPORT_DOMICILE_MIN if frm == DOMICILE else REPORT_AWAY_MIN
@@ -245,7 +245,7 @@ NOT_DUTY = ("VAC", "PAYP")  # schedule codes that are never duty (every other co
 def _report_at(first, rec, p, dep, frm):
     """(report, how) of a duty that starts with a leg leaving `frm` at `dep`: the trip's first duty, FLICA's check in
     (HNL time, so HST) on the trip's first day, the day before when it reads later than the departure; a later duty
-    1:00 before departure in domicile, 1:15 out of it (PWA 2.19.b.1; 1:00 when separate pilot transport is planned, so
+    1:00 before departure in domicile, 1:15 out of it (PWA 2.A.19.b.1; 1:00 when separate pilot transport is planned, so
     1:15 is the earlier)."""
     m = _mins(rec.get("report")) if first else None
     if m is not None:
@@ -257,7 +257,7 @@ def _report_at(first, rec, p, dep, frm):
         return r, f"FLICA check-in {_hhmm(m)} HST"
     before = REPORT_DOMICILE_MIN if frm == DOMICILE else REPORT_AWAY_MIN
     where = "in domicile" if frm == DOMICILE else "out of domicile"
-    how = f"{before // 60}:{before % 60:02d} before scheduled departure {where} (PWA 2.19.b.1)"
+    how = f"{before // 60}:{before % 60:02d} before scheduled departure {where} (PWA 2.A.19.b.1)"
     return dep - timedelta(minutes=before), how
 
 
@@ -357,7 +357,7 @@ def _deadheads(p, duties, pk):
     """1.7.20 review: FLICA's pairing page legs on file carry no deadhead (pot.parse_legs reads the flown legs only), so
     each duty of a read trip takes its deadheads from the pairings package detail (pdfs.package_legs: matched by its
     flown flights) and, when it starts with one or the package prints an earlier REPT, that report (a later duty: the
-    earlier of the package's REPT and the PWA 2.19.b.1 rule at the deadhead; the first: FLICA's check-in unless the
+    earlier of the package's REPT and the PWA 2.A.19.b.1 rule at the deadhead; the first: FLICA's check-in unless the
     deadhead leaves before it). Each duty gets dh_note, what the package said."""
     start = 0
     for n, d in enumerate(duties):
@@ -448,12 +448,19 @@ def _busy(items):
     return out
 
 
+PKG_ERR = {"msg": ""}  # 1.7.20 review: why a package detail lookup failed with an error other than OSError ('' none)
+
+
 def _pkg_of(pkg, p):
     """The pairings package detail ({eq, crew, ...}) of a pairing: pkg is a dict keyed TRIP|start or a callable
-    (trip, start); None when neither gives one."""
+    (trip, start); None when neither gives one. A package that cannot be read is no timeout input, never a failed
+    publish: an OSError is silent, any other error's type is kept in PKG_ERR (the Watcher logs it once a change)."""
     try:
         got = pkg.get(p["key"]) if isinstance(pkg, dict) else pkg(p["trip"], p["start"]) if callable(pkg) else None
-    except Exception:  # noqa: BLE001 (a package that cannot be read is no timeout input, never a failed publish)
+    except OSError:
+        got = None
+    except Exception as e:  # noqa: BLE001
+        PKG_ERR["msg"] = PKG_ERR["msg"] or f"package detail {type(e).__name__}"
         got = None
     return got if isinstance(got, dict) else None
 
@@ -466,6 +473,7 @@ def _timeout(items, pairs, cur, p, now, pkg, months, domestic=()):
     be read, so the working flight itself is always published. An error is kept in TIMEOUT_ERR (the Watcher logs it
     once a change)."""
     import timeout as TO
+    TO.ERR["last"] = ""  # 1.7.20 review: a return before duty_timeout runs never logs the last call's error
     try:
         got = _timeout_of(items, pairs, cur, p, now, pkg, months, domestic)
         TIMEOUT_ERR["msg"] = TO.ERR["last"] if got is None else ""
@@ -476,27 +484,31 @@ def _timeout(items, pairs, cur, p, now, pkg, months, domestic=()):
 
 
 def _crew(rec, pk):
-    """(pilots, where from, sure, firm, notes) of a pairing: the crew list's pilot seats when it has a CA; a crew list
-    with no CA misses that seat at least (the package crew line when it says as many or more, else the list plus one,
-    not sure); else the package crew line. firm: the package crew line says the same (a count that is not firm and
-    cannot fly the planned flight time is raised, timeout.py). (None, '', False, False, []) with neither."""
+    """(pilots, where from, sure, firm, notes, captains) of a pairing: the crew list's pilot seats when it has a CA; a
+    crew list with no CA misses that seat at least (the package crew line when it says as many or more, else the list
+    plus one, not sure); else the package crew line. firm: the package crew line says the same (a count that is not
+    firm and cannot fly the planned flight time is raised, timeout.py). captains (PWA 10.D.1.c / 10.D.1.d for 4
+    pilots): the Captains of the source used, None when not known (a crew list with no CA and no package line to
+    count them). (None, '', False, False, [], None) with neither."""
     import timeout as TO
-    n_r, ca = TO.roster_seats((rec or {}).get("crew"))
+    roster = (rec or {}).get("crew")
+    n_r, ca = TO.roster_seats(roster)
     code = str((pk or {}).get("crew") or "")
     n_p = TO.package_pilots(code)
     if n_r >= 2 and ca:
         notes = [f"The crew list shows {n_r} pilot seats, the package crew line {code} {n_p}: the crew list is used."
                  ] if n_p and n_p != n_r else []
-        return n_r, "the trip's crew list", not (n_p and n_p > n_r), n_p == n_r, notes
+        return n_r, "the trip's crew list", not (n_p and n_p > n_r), n_p == n_r, notes, TO.roster_captains(roster)
     if n_r >= 1 and not ca:
         low = min(n_r + 1, 4)
         if n_p and n_p >= low:
-            return n_p, f"package crew line {code}; the crew list has no CA", True, True, []
+            return (n_p, f"package crew line {code}; the crew list has no CA", True, True, [],
+                    TO.package_captains(code))
         notes = [f"The package crew line {code} says {n_p}."] if n_p else []
-        return low, f"the crew list's {n_r} pilot seats and its missing CA", False, False, notes
+        return low, f"the crew list's {n_r} pilot seats and its missing CA", False, False, notes, None
     if n_p:
-        return n_p, f"package crew line {code}", True, True, []
-    return None, "", False, False, []
+        return n_p, f"package crew line {code}", True, True, [], TO.package_captains(code)
+    return None, "", False, False, [], None
 
 
 def _unknown(pairs, months, ds, upto, today):
@@ -534,12 +546,12 @@ def _timeout_of(items, pairs, cur, p, now, pkg, months, domestic=()):
     if now >= cur["arr"]:
         k = next((j for j in range(k + 1, len(d["legs"])) if not d["legs"][j].get("dh")), k)
     pk = _pkg_of(pkg, p) or {}
-    pilots, src, sure, firm, notes = _crew(p["rec"], pk)
+    pilots, src, sure, firm, notes, captains = _crew(p["rec"], pk)
     upto = d["report"].astimezone(HST).date()
     known = _known_from(months, pairs, d["legs"][-1]["arr"].astimezone(HST).date(), now.date())
     return TO.duty_timeout(ds, idx, pilots, src, str(pk.get("eq") or ""), known, _busy(items), notes, work=k,
                            pilots_sure=sure, pilots_firm=firm, unknown=_unknown(pairs, months, ds, upto, now.date()),
-                           domestic=domestic, dh_note=d.get("dh_note", ""))
+                           domestic=domestic, dh_note=d.get("dh_note", ""), captains=captains)
 
 
 def working_flight(items, own, now, roll_h=2, pkg=None, months=None, domestic=()):
@@ -549,7 +561,7 @@ def working_flight(items, own, now, roll_h=2, pkg=None, months=None, domestic=()
     items: the schedule items (trip, start, end, lay); own: own_trips keyed TRIP|YYYY-MM-DD (start, HST) with legs and
     report; now: an aware datetime (a naive one is taken as HST). 1.7.20: pkg, the pairings package detail ({eq, crew})
     by TRIP|start (a dict, or a callable (trip, start)), and months, the schedule months on file (the Watcher's
-    S['schedule']), and domestic, the pilot's smart.json "domestic" stations (customs, PWA 2.19.b.2), for the duty
+    S['schedule']), and domestic, the pilot's smart.json "domestic" stations (customs, PWA 2.A.19.b), for the duty
     timeout. A trip whose legs are not read yet is skipped for the
     working leg but can be the next pairing; one that has not ended and comes before the working leg's pairing (the
     pilot is on it, or going to it first) shows as "No trip" with that pairing next, rather than a later trip's leg.
@@ -557,7 +569,7 @@ def working_flight(items, own, now, roll_h=2, pkg=None, months=None, domestic=()
     now = now.astimezone(HST) if now.tzinfo else now.replace(tzinfo=HST)
     own = own if isinstance(own, dict) else {}
     today, at = now.date().isoformat(), stamp(now)
-    TIMEOUT_ERR["msg"] = ""
+    TIMEOUT_ERR["msg"] = PKG_ERR["msg"] = ""
     pairs = _pairings(items)
     every = []
     for p in pairs:
