@@ -5955,25 +5955,48 @@ WORKING_ROLL_H = 2
 WORKING_LAST = {"news": None, "at": None}
 
 
-def _working_pkg(trip, start):
-    """1.7.20: the pairings package detail of the working leg's pairing ({eq, crew, ...}: pkg_detail_for of its bid
-    period, a rebuilt id's base too) for the duty timeout's equipment and crew line; None when not on file. No FLICA
-    load, no new file."""
+def _working_pkg():
+    """1.7.20: (trip, start) -> the pairings package detail of a pairing ({eq, crew, duties, ...}: pkg_detail_for of its
+    bid period, a rebuilt id's base too; None when not on file) for the duty timeout's equipment, crew line and
+    deadheads. The bid period function is built once per publish. No FLICA load, no new file."""
     try:
-        return pkg_detail_for(bid_period_key(start), trip, start)
+        of = bid_period_fn()
     except Exception:  # noqa: BLE001
-        return None
+        def of(iso):
+            return str(iso)[:7]
+
+    def get(trip, start):
+        try:
+            return pkg_detail_for(of(start), trip, start)
+        except Exception:  # noqa: BLE001
+            return None
+    return get
+
+
+def _domestic():
+    """1.7.20 review: the pilot's smart.json "domestic" stations (counted as the US for customs, the rule
+    release_customs uses), for the duty timeout's release (PWA 2.19.b.2). Never raises."""
+    try:
+        return set((SMART.load(SMART_FILE) or {}).get("domestic") or ())
+    except Exception:  # noqa: BLE001
+        return set()
 
 
 def publish_working_flight(now=None, force=False):
     """FW-0067: sensor.<prefix>_working_flight from this instance's own schedule and own trip legs (working.py), any
     pilot. Retained. Skipped when nothing but its time stamps changed, unless WORKING_REPUB_S passed. Never raises
     (logs and goes on). Returns True when it published. 1.7.20: with the duty timeout (`timeout`, working.py and
-    timeout.py), from the pairings package detail of the working pairing (_working_pkg) and the schedule months."""
+    timeout.py), from the pairings package detail of each pairing (_working_pkg), the schedule months and the
+    pilot's domestic stations; why a timeout could not be worked out after an error is logged once a change."""
     try:
         now = now or datetime.now(HST)
-        wf = WK.working_flight(_sched_items(), S.get("own_trips") or {}, now, WORKING_ROLL_H, pkg=_working_pkg,
-                               months=S.get("schedule") or {})
+        wf = WK.working_flight(_sched_items(), S.get("own_trips") or {}, now, WORKING_ROLL_H, pkg=_working_pkg(),
+                               months=S.get("schedule") or {}, domestic=_domestic())
+        err = WK.TIMEOUT_ERR.get("msg") or ""
+        if err != WORKING_LAST.get("err", ""):
+            WORKING_LAST["err"] = err
+            if err:
+                log.info("working flight: duty timeout not worked out (%s)", err)
         news = WK.news(wf)
         last = WORKING_LAST.get("at")
         if (not force and news == WORKING_LAST.get("news") and last is not None

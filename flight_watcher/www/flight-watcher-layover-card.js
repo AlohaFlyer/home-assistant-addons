@@ -52,7 +52,7 @@
 // end of the range is aria-disabled the same way; when Back goes after its answer, the focus moves to -5. A screen
 // reader hears "Saving", "Van moved to 05:10", "Van back to 05:25" or "Not saved, try again" from one visually hidden
 // role=status element that every render keeps (outside the part drawn again).
-// 1.7.20 (Ryan, Nov 20, on HA829 JFK-HNL: "calculate per FAR 117 and PWA when I timeout, both for if I extend or if I
+// 1.7.20 (Ryan, Nov 20: "calculate per FAR 117 and PWA when I timeout, both for if I extend or if I
 // do not. Add that number in bold with a dark orange square around it right of the report time"): the Watcher's
 // sensor.<prefix>_working_flight `timeout` (timeout.py: FAR 117 Tables A, B and C, acclimation, pilots, rest class,
 // flight time and the cumulative limits; PWA 2.19.b release) shows in a box with a 2 px dark orange border (#c2410c,
@@ -62,6 +62,13 @@
 // line. It is a button (Enter and Space too): it opens the basis under it, each rule with its FOM, FAR or PWA cite,
 // and what is not checked. The times are the Watcher's for the same pairing and leg (also under Hark's data). No
 // `timeout` attribute (an older Watcher, a crew not known): no box, nothing else changes.
+// 1.7.20 review (Ryan, Nov 20: "when is the last moment I can block out and be legal"): the box is LAST OUT, the last
+// legal block-out on the departure station's clock (as the big Report time), "Ext" with the extension, the two in HST
+// small, and the flight time as "FT 11:15 of 13:00". NOT LEGAL instead of a time when the planned flight time or a
+// cumulative limit is over at the scheduled times; a '?' after the time when it is not sure (acclimation, the clock,
+// the rest class or the pilots), the earlier reading shown. The basis opens with the block-out and block-in limits
+// of both cases; how it is worked out and what is not checked fold under it. Under a van, the box sits right of the
+// Report line and Departs and Arrives keep the full width.
 // Usage: type: custom:flight-watcher-layover-card, update_url: https://... (optional)
 const FW_LAYOVER_NOTE_MAX = 1000;  // layover.NOTE_MAX
 const FW_VAN_ADJUST = { lo: -120, hi: 120, step: 5 };  // layover.ADJUST_RANGE and ADJUST_STEP
@@ -218,27 +225,63 @@ class FlightWatcherLayoverCard extends HTMLElement {
   // pairing and origin), or null
   _toOf(a, hark, w) {
     const wa = (w && w.attributes) || {}, t = wa.timeout;
-    if (!t || typeof t !== "object" || !t.no_ext || !t.no_ext.txt) return null;
+    if (!t || typeof t !== "object" || !((t.no_ext && t.no_ext.txt) || (t.last_out && t.last_out.txt) || t.legal === false)) return null;
     if (hark && !(this._same(wa.pairing, a.pairing) && String(wa.origin || "").toUpperCase() === String(a.origin || "").toUpperCase())) return null;
     return t;
   }
   // the weekday ("Sat") of a result when it is not the report's day
   _toDay(x, t) { return x && x.day && t.report_day && x.day !== t.report_day ? String(x.day).split(" ")[0] : ""; }
-  _toBox(t) {
-    const n = t.no_ext, x = t.ext || {}, dn = this._toDay(n, t), dx = this._toDay(x, t);
-    const say = `Timeout ${n.txt}${dn ? ` ${dn}` : ""} without an extension${x.txt ? `, ${x.txt}${dx ? ` ${dx}` : ""} with one` : ""}${n.short ? `, ${n.short}` : ""}. Details`;
-    return `<button class="to" data-to aria-expanded="${this._open.to ? "true" : "false"}" aria-controls="todet" aria-label="${this._e(say)}">
-      <span class="tol">Timeout</span><span class="tot" data-tono>${this._e(n.txt)}${dn ? `<span class="tod"> ${this._e(dn)}</span>` : ""}</span>
-      ${x.txt ? `<span class="tox" data-toext>Ext ${this._e(x.txt)}${dx ? ` ${this._e(dx)}` : ""}</span>` : ""}
-      <span class="tob" data-toby>${this._e(n.short || n.by || "")}</span></button>`;
+  _toBox(t, a) {
+    const e = (v) => this._e(v), lo = t.last_out, lx = t.last_out_ext || {}, ft = (t.ft && t.ft.short) || "";
+    const q = t.sure === false ? `<span class="toq" title="Not sure: see the details">?</span>` : "";
+    const unsure = t.sure === false ? "; not sure, the earlier reading is shown" : "";
+    let body, say;
+    if (t.legal === false) {
+      body = `<span class="tol">Last out</span><span class="tot tonl" data-tono>Not legal</span>
+        <span class="tob" data-toby>${e(t.not_legal_short || "")}</span>`;
+      say = `Not legal to dispatch: ${t.not_legal_short || ""}. Details`;
+    } else if (lo && lo.txt) {
+      const leg = lo.leg && lo.leg !== `${a.origin || ""}-${a.dest || ""}` ? ` ${lo.leg}` : "";
+      const same = !!(lx.at && lx.at === lo.at), h = (x) => String(x || "").replace(/ HST$/, "");
+      const ext = !lx.txt ? "" : same ? `Ext same (${lx.short || ""})` : `Ext ${lx.txt}${lx.wd ? ` ${lx.wd}` : ""}`;
+      const hst = lo.txt !== lo.hst ? `(${h(lo.hst)}${lx.hst && !same ? ` / ${h(lx.hst)}` : ""} HST)` : "";
+      const warn = lo.early ? "Over as scheduled" : (t.flags || []).some((f) => f === "rest" || f === "week") ? "Rest short" : "";
+      body = `<span class="tol">Last out${e(leg)}</span>
+        <span class="tot" data-tono>${e(lo.txt)}${lo.wd ? `<span class="tod"> ${e(lo.wd)}</span>` : ""}${q}</span>
+        ${ext ? `<span class="tox" data-toext>${e(ext)}</span>` : ""}${hst ? `<span class="toh" data-tohst>${e(hst)}</span>` : ""}
+        ${ft ? `<span class="tob" data-toby>${e(ft)}</span>` : ""}${warn ? `<span class="tow" data-towarn>${e(warn)}</span>` : ""}`;
+      say = `Last out${leg} ${lo.txt}${lo.wd ? ` ${lo.wd}` : ""}${lo.txt !== lo.hst ? `, ${lo.hst}` : ""} without an extension${ext ? `, ${same ? `the same with one (${lx.short || ""})` : `${lx.txt}${lx.txt !== lx.hst ? `, ${lx.hst}` : ""} with one`}` : ""}${t.ft && t.ft.txt ? `; flight time ${t.ft.txt}` : ""}${warn ? `; ${warn}` : ""}${unsure}. Details`;
+    } else {  // a Watcher before the last out: its block-in timeout
+      const n = t.no_ext, x = t.ext || {}, dn = this._toDay(n, t), dx = this._toDay(x, t);
+      body = `<span class="tol">Timeout</span><span class="tot" data-tono>${e(n.txt)}${dn ? `<span class="tod"> ${e(dn)}</span>` : ""}${q}</span>
+        ${x.txt ? `<span class="tox" data-toext>Ext ${e(x.txt)}${dx ? ` ${e(dx)}` : ""}</span>` : ""}<span class="tob" data-toby>${e(n.short || n.by || "")}</span>`;
+      say = `Timeout ${n.txt}${dn ? ` ${dn}` : ""} without an extension${x.txt ? `, ${x.txt}${dx ? ` ${dx}` : ""} with one` : ""}${n.short ? `, ${n.short}` : ""}${unsure}. Details`;
+    }
+    return `<button class="to${t.legal === false ? " nl" : ""}" data-to aria-expanded="${this._open.to ? "true" : "false"}" aria-controls="todet" aria-label="${e(say)}">${body}</button>`;
   }
   _toDet(t) {
-    const row = (k, r) => r && r.txt ? `<div class="trw"><b>${k}:</b> ${this._e(r.txt)} ${this._e(r.day || "")}${r.release_txt ? `, release ${this._e(r.release_txt)}` : ""}<div class="u">${this._e(r.by || "")}</div></div>` : "";
-    const li = (v) => (Array.isArray(v) ? v : []).map((x) => `<li>${this._e(x)}</li>`).join("");
+    const e = (v) => this._e(v), f = t.fdp || {}, lo = t.last_out, lx = t.last_out_ext, n = t.no_ext || {}, x = t.ext || {};
+    const li = (v) => (Array.isArray(v) ? v : []).map((y) => `<li>${e(y)}</li>`).join("");
     const nc = Array.isArray(t.not_checked) ? t.not_checked : [];
-    return `<div class="tdet" id="todet" data-todet${this._open.to ? "" : " hidden"}>${row("No extension", t.no_ext)}${row("With extension", t.ext)}
-      <div class="bh">How it is worked out</div><ul data-tolines>${li(t.lines)}</ul>
-      ${nc.length ? `<div class="bh">Not checked</div><ul data-tonc>${li(nc)}</ul>` : ""}
+    const out = (r) => r && r.txt ? `block out by ${e(r.txt)}${r.txt !== r.hst ? ` (${e(r.hst)} ${e(r.day || "")})` : ` ${e(r.day || "")}`}, ` : "";
+    const ontime = (r, more) => r && r.txt ? `<div class="u">Out on time${t.sched_out_txt ? ` (${e(t.sched_out_txt)})` : ""}: block in by ${e(r.txt)} ${e(r.day || "")}, ${e(r.short || "")}${more}.</div>` : "";
+    let rows;
+    if (t.legal === false) {
+      rows = `<div class="trw tnl"><b>Not legal to dispatch:</b> ${e(t.not_legal || "")}.</div>`;
+    } else if (lo && lo.txt) {
+      rows = `<div class="trw"><b>No extension:</b> ${out(lo)}block in by ${e(f.in_txt || f.end_txt || "")}${f.release_txt ? `, release ${e(f.release_txt)}` : ""}<div class="u">${e(lo.by || "")}</div>${ontime(n, "")}</div>
+        <div class="trw"><b>With extension:</b> ${out(lx)}block in by ${e(f.ext_in_txt || f.ext_end_txt || "")}${f.ext_release_txt ? `, release ${e(f.ext_release_txt)}` : ""}<div class="u">${e((lx && lx.by) || "")}; before takeoff only</div>${ontime(x, x.at === n.at ? ": an extension adds no flight time" : "")}</div>`;
+    } else {
+      const row = (k, r) => r && r.txt ? `<div class="trw"><b>${k}:</b> ${e(r.txt)} ${e(r.day || "")}${r.release_txt ? `, release ${e(r.release_txt)}` : ""}<div class="u">${e(r.by || "")}</div></div>` : "";
+      rows = `${row("No extension", n)}${row("With extension", x)}`;
+    }
+    const c = t.cum || {}, cum = ["ft_672", "fdp_168", "fdp_672"].filter((k) => c[k] && c[k].txt).map((k) => e(c[k].txt)).join(" &middot; ");
+    const ftl = t.ft && t.ft.txt ? `<div class="trw"><b>Flight time:</b> ${e(t.ft.txt)}${cum ? ` &middot; ${cum}` : ""}</div>` : "";
+    const why = { acclimation: "acclimation", clock: "which clock enters the tables", "rest class": "the rest facility class", pilots: "the number of pilots" };
+    const uns = t.sure === false ? `<div class="trw" data-tounsure><b>? Not sure:</b> ${e((t.unsure || []).map((k) => why[k] || k).join(", "))}: the earlier reading is shown (see below).</div>` : "";
+    return `<div class="tdet" id="todet" data-todet${this._open.to ? "" : " hidden"}>${rows}${ftl}${uns}
+      <details data-k="tobasis"${this._open.tobasis ? " open" : ""}><summary>How it is worked out</summary><ul data-tolines>${li(t.lines)}</ul></details>
+      ${nc.length ? `<details data-k="tonc"${this._open.tonc ? " open" : ""}><summary>Not checked (${nc.length})</summary><ul data-tonc>${li(nc)}</ul></details>` : ""}
       <div class="u">From your FLICA schedule: the times move with the actual out and in.</div></div>`;
   }
   // the guide: escaped first, then headings, lists, bold, italics, code and https links (nothing else becomes markup)
@@ -502,7 +545,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
       }
       const alerts = vt && this._vanSensor(a, vt) ? this._vanSensor(a, vt).alerts || [] : [];
       // 1.7.20: the timeout box right of the report time: beside the header's Report block, or the Report line
-      const to = this._toOf(a, hark, w), toHd = !!(to && !vt), toBox = to ? this._toBox(to) : "";
+      const to = this._toOf(a, hark, w), toHd = !!(to && !vt), toBox = to ? this._toBox(to, a) : "";
       main = `<div class="hd${toHd ? " wt" : ""}"><div class="lt"><div class="fl">&#9992;&#65039; ${this._e(a.flight || a.pairing)} ${this._e(a.origin || "")} &rarr; ${this._e(a.dest || "")}</div>
           <div class="u">${this._e(a.pairing)}${a.leg ? ` &middot; leg ${this._e(a.leg)}` : ""}${a.date ? ` &middot; ${this._e(a.date)}` : ""}${a.tail ? ` &middot; ${this._e(a.tail)}` : ""}</div>
           ${a.mode ? `<span class="mode">${this._e(a.mode === "layover" ? `Layover ${a.origin || ""}` : a.mode)}</span>` : ""}</div>${toHd ? `<div class="rt" data-rt>${big}${toBox}</div>` : big}</div>
@@ -512,8 +555,8 @@ class FlightWatcherLayoverCard extends HTMLElement {
         ${vt && vt.place ? `<div class="vp">&#128656; Van at ${this._e(vt.place)}${alerts.length && this._vaShown() ? ` <span class="u">&middot; alerts ${alerts.map((x) => `${x.minutes} min ${x.status === "sent" ? "&#10003;" : x.status === "pending" ? `at ${this._e(x.at_hst)} HST` : this._e(x.status)}`).join(", ")}</span>` : ""}</div>` : ""}
         ${unread ? `<div class="vp" data-vanunread>&#128656; Van: ${this._e(unread)} <span class="u">&middot; no van alert: its time could not be read for sure</span></div>` : ""}
         ${unknown ? `<div class="vp" data-vanunknown>&#128656; Van time not known: not in the pairings package and not from Hark, so no van alert comes.${!va.at && va.why ? ` <span class="u">(${this._e(va.why)})</span>` : ""}</div>` : ""}
-        ${to && vt ? `<div class="tmw">` : ""}<div class="tm">${rep ? `<div><span class="k">Report</span> ${this._e(rep)}</div>` : ""}
-          ${dep ? `<div><span class="k">Departs</span> ${this._e(dsc)}</div>` : ""}${arr ? `<div><span class="k">Arrives</span> ${this._e(a.arr_sched)}</div>` : ""}</div>${to && vt ? `${toBox}</div>${this._toDet(to)}` : ""}
+        ${to && vt ? `<div class="tmw"><div class="tm tmr">${rep ? `<div><span class="k">Report</span> ${this._e(rep)}</div>` : ""}</div>${toBox}</div><div class="tm tms">` : `<div class="tm">${rep ? `<div><span class="k">Report</span> ${this._e(rep)}</div>` : ""}`}
+          ${dep ? `<div><span class="k">Departs</span> ${this._e(dsc)}</div>` : ""}${arr ? `<div><span class="k">Arrives</span> ${this._e(a.arr_sched)}</div>` : ""}</div>${to && vt ? this._toDet(to) : ""}
         ${status}${links ? `<div class="chips">${links}</div>` : ""}${rel}${lay}`;
     }
     const city = prevCity && prevCity.dataset.touched ? prevCity.value.toUpperCase() : this._cityNow(a, hark);
@@ -537,15 +580,19 @@ class FlightWatcherLayoverCard extends HTMLElement {
       .cd.soon,.cd.now{color:#fff;border-radius:6px;padding:0 6px;display:inline-block}.cd.soon{background:#8a5300}.cd.now{background:#b71c1c}
       .cd.past{color:var(--secondary-text-color);font-weight:400}
       .vp{margin:8px 0 2px;font-weight:600}
-      .hd.wt{flex-wrap:wrap}.hd.wt .lt{flex:1 1 160px}.rt{flex:none;display:flex;align-items:flex-start;gap:8px;margin-left:auto}
+      .hd.wt{flex-wrap:wrap}.hd.wt .lt{flex:1 1 160px}.rt{flex:0 1 auto;min-width:0;max-width:100%;display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:flex-start;gap:8px;margin-left:auto}
       button.to{flex:none;display:inline-flex;flex-direction:column;align-items:flex-end;gap:1px;text-align:right;min-width:104px;min-height:44px;margin:0;padding:6px 10px;border:2px solid #c2410c;border-radius:8px;background:var(--card-background-color);color:var(--primary-text-color);font-size:14px;font-weight:700;line-height:1.15}
       button.to:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px}
       .to .tol{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--secondary-text-color)}
       .to .tot{font-size:24px;font-weight:800;font-variant-numeric:tabular-nums;white-space:nowrap}.to .tod{font-size:13px;font-weight:700}
       .to .tox{font-size:14px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
       .to .tob{font-size:12px;font-weight:400;color:var(--secondary-text-color);max-width:150px}
-      .tmw{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:flex-end;gap:8px;margin:8px 0}.tmw .tm{flex:1 1 200px;margin:0}
+      .to .toh{font-size:12px;font-weight:600;color:var(--secondary-text-color);font-variant-numeric:tabular-nums;white-space:nowrap}
+      .to .toq{margin-left:2px}.to .tonl{font-size:20px;text-transform:uppercase;letter-spacing:.02em}
+      .to .tow{font-size:12px;font-weight:700;color:#fff;background:#b71c1c;border-radius:4px;padding:0 4px}
+      .tmw{display:flex;align-items:flex-start;gap:10px;margin:8px 0 2px}.tmw .tm{flex:0 1 auto;min-width:0;margin:0}.tm.tms{margin-top:2px}
       .tdet{border:2px solid #c2410c;border-radius:8px;padding:6px 10px;margin:8px 0;font-size:13px}.tdet[hidden]{display:none}.tdet .trw{margin:2px 0 6px}
+      .tdet details{margin:4px 0}.tdet summary{cursor:pointer;font-weight:600;padding:6px 0}.tdet ul{margin:2px 0 6px;padding-left:20px}
       .va{display:flex;flex-direction:column;align-items:flex-end;text-align:right;margin:4px 0 0}
       .vck{position:relative;display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:0 4px;cursor:pointer;font-weight:600}
       .vck input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}

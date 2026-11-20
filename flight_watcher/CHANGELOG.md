@@ -1,5 +1,78 @@
 # Changelog
 
+## 1.7.20
+
+Duty limits on the Working Flight card (Ryan, Nov 20, 2026: "calculate per FAR 117 and PWA when I timeout, both for if
+I extend or if I do not ... Keep in mind the flight time, and number of crew and rest", and that morning: "The number I
+need to know is when is the last moment I can block out and be legal"). A new attribute on the working flight sensor
+and a box on the layover card. No FLICA load, no new file, no contract change.
+
+### What the Watcher works out (`timeout.py`, `sensor.<prefix>_working_flight` attribute `timeout`, both instances)
+- The headline: the last legal block-out of the working leg (`last_out`), without and with the 2:00 extension
+  (`last_out_ext`): the FDP end (report + the Table B or C limit, with the extension 2:00 more, FAR 117.19(a), FOM
+  4.3.2.5), no later than the 117.23(c) cumulative FDP caps, less the scheduled time from this leg's block-out to the
+  duty's last flown block-in (its block, the later legs and the ground times). On the departure station's clock and
+  HST. Once a leg is in, the duty's next leg is the one. Rules from FOM 125.4 4.3.2, which reproduces 14 CFR 117 Tables
+  A, B and C.
+- Flight time is a duration check (FAR 117.11, FOM 4.3.2.2: no takeoff without a reasonable expectation to land within
+  it): the duty's planned flight time against Table A, 13:00 or 17:00 ("11:30 of 13:00, 1:30 spare"). Over it: "not
+  legal to dispatch at any time" and no last out. An FDP extension does not extend it. With the leg out on time, the
+  block-in it allows is kept too (`no_ext` / `ext`, which move with the actual out), and the FDP's own block-in limits
+  (`fdp`).
+- Acclimation (FAR 117.3, FOM 4.3.2.4.6): the pilot's duties on file are walked in time order from HNL. A theater is
+  60 degrees of longitude (a longitude for every station the Watcher knows). A report in a new theater is acclimated
+  after 36 h free from duty before it or 72 h in that theater; else the tables are entered on the last acclimated
+  theater's clock and the FDP limit is 30 min less (117.13(b), 117.17(b), FOM 4.3.2.4). Acclimated away from the
+  reference station, the reference clock and the station's own clock (daylight time included) are both read: FOM
+  4.3.2.4 says "the report time at local domicile or the local time in the theater" and the FAA lets a carrier use
+  either, so the lower limit is used, marked "?", and the other reading's last out is given. A schedule item that may
+  be duty inside the 36 h (training, reserve; not VAC or PAYP), a station with no longitude, a trip whose legs and duty
+  periods are not read, or days no schedule month covers: "?", and after a span of the line not known, the lowest value
+  of the table on any clock less 0:30 until 36 h free acclimates again.
+- Pilots: the trip's crew list (CA, FO, RO and SO seats, an OPEN seat too; never a name), else the pairings package
+  crew line (CA01FO01RO01 is 3); a disagreement is said. A crew list with no CA misses that seat (the package line, or
+  the list plus one, "?"). A count the package line does not confirm and whose planned flight time is over its limit
+  is raised to the fewest pilots that may fly it, "?" and flagged. 2 pilots: Table B by report time and segments and
+  Table A flight time. 3 or 4: Table C and 13 or 17 h; more than 3 segments is flagged (FOM 4.3.2.4.2).
+- Deadheads: FLICA's pairing page legs on file carry none, so each duty takes its deadheads from the pairings package
+  (matched by its flown flights): a duty that starts with one reports before it (the earlier of the package's REPT and
+  PWA 2.19.b.1), each counts as a segment (conservative), a trailing one sets the release. The basis says when the
+  package has no detail for the pairing.
+- Rest facility (FOM 5.1.23.7, 5.1.23.8, Table 5.1.23.8.1(1)): the A330 LDMCR with 3 pilots, all LDMCR available: Class
+  1. Where the FOM also requires a pilot crew rest seat in the cabin (A330 4 pilots, 787 3 or 4), a rest may be taken in
+  it: Class 2, "?". Other or unknown equipment: Class 3, "?". The other classes' ends and last outs are given.
+- Cumulative (FAR 117.23(b)(1), (c)(1), (c)(2)): 100 h flight time in 672 h is a duration check (over at the scheduled
+  block-in: not legal); 60 h FDP in 168 h and 190 h FDP in 672 h cap the FDP end. Only when the schedule months on file
+  and the trips' legs or duty periods cover the whole window; else listed as not checked. A leg's flight time is the
+  larger of its block and its printed out to in (they can disagree).
+- Rest (FAR 117.25(e), FOM 4.3.2.7): the time free from duty before the report against 10 h; 117.25(b), FOM 4.3.2.9: the
+  longest free period in the 168 h before it against 30 h. Short: flagged.
+- PWA 2.19.b: a later duty reports 1:15 before departure out of domicile (1:00 in it); the duty ends 15 min after
+  block-in, 30 min when clearing customs ("When required to clear Customs": a leg between two countries, or to or from
+  a station whose country is not on file; the Watcher's US list, now in `timeout.py`, and the pilot's smart.json
+  "domestic" stations are the US).
+- Not checked, and said so: PWA Section 10 (Hours of Service) duty limits (not on file: no PWA duty limit is used), an
+  extension of more than 30 min since the last 30 h free (117.19(a)(2)), the in-flight rest of an augmented FDP (FOM
+  4.3.2.4.2), the 8 h sleep opportunity (117.25(e)), flying outside the FLICA line (FOM 2.7.4) and 1000 h in 365 days
+  (117.23(b)(2)). Why a timeout could not be worked out after an error is logged once a change.
+- Example (synthetic, tests): BOS-HNL out 09:15 EST after a 24 h layover, 3 pilots, A330, not acclimated (BOS is 87
+  degrees from HNL), report 08:00 EST: Table C 0000-0559 on HNL time, 15:00 less 0:30 = 14:30, FDP end 17:30 HST (19:30
+  with the extension); block 11:30, so last out 11:00 EST (06:00 HST), 13:00 EST (08:00 HST) with the extension; flight
+  time 11:30 of 13:00; out on time the block-in is due by 17:15 HST either way; Class 2 16:30, Class 3 15:30.
+
+### The card (`flight-watcher-layover-card.js`)
+- Right of the report time, a box with a 2 px dark orange border (#c2410c, 3:1 or more on light and dark cards; its
+  text is the theme's own colors, WCAG AA): LAST OUT, the last out in bold on the departure station's clock (as the
+  big Report time), "Ext" and the one with the extension in bold ("Ext same" with the rule when a cap binds both), the
+  two in HST small, and "FT 11:30 of 13:00". NOT LEGAL with the reason instead of a time; a "?" after the time when it
+  is not sure; "Over as scheduled" or "Rest short" when flagged. A tap (Enter and Space too) opens the details: the
+  block-out and block-in limits of both cases with their releases, the on-time block-in, the flight time and
+  cumulative spares, what is not sure; how it is worked out (each rule with its cite) and what is not checked fold under
+  it. No `timeout` attribute: no box, nothing else changes. Under Hark's data the Watcher's timeout shows only for the
+  same pairing and origin, right of the Report line, with Departs and Arrives keeping the full width; on the narrowest
+  phones the box wraps under the Report block instead of leaving the card. The portal does not carry this card (as
+  before).
+
 ## 1.7.19
 
 Paychecks on the schedule card and a pilot's tax settings (Ryan, Nov 19, 2026). Cards plus one admin-only sensor. No contract or FLICA change.

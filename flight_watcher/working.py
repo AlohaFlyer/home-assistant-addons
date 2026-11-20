@@ -12,11 +12,12 @@ in neither ZONES nor pot.TZ: the leg hangs on its known end (known origin: arriv
 destination: departure = arrival - block); with neither end known only the printed local times show. The date is
 the departure day FLICA printed, the date at the origin.
 
-1.7.20 (Ryan, Nov 20: "calculate per FAR 117 and PWA when I timeout, both for if I extend or if I do not"): the
-`timeout` attribute, the latest block-in of the working leg's duty period without and with an extension
-(timeout.duty_timeout), from every duty on file (a trip's read legs, else its duty periods), the roster's pilots or the
-pairings package's crew line, the package's equipment and the schedule months on file (whether the cumulative limits'
-windows are all on file). Absent when it cannot be worked out."""
+1.7.20 (Ryan, Nov 20: "calculate per FAR 117 and PWA when I timeout, both for if I extend or if I do not", and "when
+is the last moment I can block out and be legal"): the `timeout` attribute, the working leg's last legal block-out and
+its duty period's block-in limits without and with an extension (timeout.duty_timeout), from every duty on file (a
+trip's read legs with the pairings package's deadheads, else its duty periods), the crew list's pilots or the pairings
+package's crew line, the package's equipment, the schedule months on file (whether the cumulative limits' windows are
+all on file, and the days not known) and the trips not read. Absent when it cannot be worked out."""
 import re
 from datetime import datetime, time as dtime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -256,7 +257,8 @@ def _report_at(first, rec, p, dep, frm):
         return r, f"FLICA check-in {_hhmm(m)} HST"
     before = REPORT_DOMICILE_MIN if frm == DOMICILE else REPORT_AWAY_MIN
     where = "in domicile" if frm == DOMICILE else "out of domicile"
-    return dep - timedelta(minutes=before), f"{before // 60}:{before % 60:02d} before scheduled departure {where} (PWA 2.19.b.1)"
+    how = f"{before // 60}:{before % 60:02d} before scheduled departure {where} (PWA 2.19.b.1)"
+    return dep - timedelta(minutes=before), how
 
 
 def _spans(p, rec):
@@ -273,29 +275,139 @@ def _spans(p, rec):
             lg = {"dep": du["dep"], "arr": du["arr"], "blk": int(du["arr"]) - int(du["dep"]),
                   "dep_l": du.get("dep_l"), "arr_l": du.get("arr_l")}
             dep, arr, _day, _hst = _times(p, lg, frm, to)
+            blk = int(du["blk"]) if du.get("blk") not in (None, "") else int((arr - dep).total_seconds() // 60)
             out.append({"key": p["key"], "frm": frm, "to": to, "dep": dep, "arr": arr, "flt": "", "dh": False,
-                        "blk": int(du["blk"]) if du.get("blk") not in (None, "") else int((arr - dep).total_seconds() // 60),
-                        "duty_start": True, "span": True})
+                        "blk": blk, "duty_start": True, "span": True})
             frm = to
     except (KeyError, TypeError, ValueError, AttributeError):
         return []
     return out
 
 
-def _duties(pairs):
-    """Every duty on file in time order: {key, report, report_txt, legs}; a trip whose legs are not read gives its duty
-    periods (_spans); one with neither gives nothing."""
+def _flt_no(s):
+    """A flight number as the legs keep it ('0123', '1127*' -> '123', '1127'); '' when there is none."""
+    m = re.match(r"\s*(\d+)", str(s or ""))
+    return str(int(m.group(1))) if m else ""
+
+
+def _dur_min(s):
+    """'5h42' or '5:42' -> 342; None when it is neither."""
+    m = re.fullmatch(r"(\d{1,3})[:h](\d{2})", str(s or "").strip())
+    return int(m.group(1)) * 60 + int(m.group(2)) if m else None
+
+
+def _printed(m, zone, near, after):
+    """The time printed as minute m at a zone next to `near`: the first at or after it (after), else the last at or
+    before it; None when neither falls within a day."""
+    day = near.astimezone(zone).date()
+    got = [c for c in (_at(day + timedelta(days=k), m, zone) for k in (-1, 0, 1)) if (c >= near if after else c <= near)]
+    return (min(got) if after else max(got)) if got else None
+
+
+def _pkg_duty(duty, pk, start):
+    """(k, package duty, its legs) for the first package duty from index start whose flown legs are this duty's (the
+    same flights from the same stations, in order); None when none is."""
+    flown = [x for x in duty["legs"] if not x.get("dh")]
+    if not flown or not all(x.get("flt") for x in flown):
+        return None
+    for k, du in enumerate(((pk or {}).get("duties") or [])[start:], start):
+        pl = [lg for lg in (du or {}).get("legs") or [] if isinstance(lg, (list, tuple)) and len(lg) >= 8]
+        fl = [lg for lg in pl if str(lg[1]).upper() != "DH"]
+        if len(fl) == len(flown) and all(_flt_no(lg[2]) == x["flt"] and str(lg[3]).upper() == x["frm"]
+                                         for lg, x in zip(fl, flown)):
+            return k, du, pl
+    return None
+
+
+def _with_deadheads(duty, pl):
+    """The duty's legs with the package legs' deadheads put in (dh True), each on its stations' clocks: one before the
+    first flown leg ends at the printed arrival before the next leg's out, one after a leg leaves at the printed time
+    after the previous block-in. Raises ValueError when one cannot be placed."""
+    flown = iter([x for x in duty["legs"] if not x.get("dh")])
+    out, lead = [], []
+    for lg in pl:
+        if str(lg[1]).upper() != "DH":
+            out.append(next(flown))
+            continue
+        blk = _dur_min(lg[7])
+        if blk is None:
+            raise ValueError("deadhead block")
+        x = {"frm": str(lg[3]).upper(), "to": str(lg[4]).upper(), "blk": blk, "flt": _flt_no(lg[2]), "dh": True,
+             "key": duty["key"], "i": None}
+        if not out:
+            lead.append((x, _mins(lg[6])))
+            continue
+        zf, dm = _zone(x["frm"]), _mins(lg[5])
+        dep = _printed(dm, zf, out[-1]["arr"], True) if zf and dm is not None else None
+        if dep is None:
+            raise ValueError("deadhead out")
+        out.append(x | {"dep": dep, "arr": dep + timedelta(minutes=blk)})
+    nxt = out[0]["dep"]
+    for x, am in reversed(lead):
+        zt = _zone(x["to"])
+        arr = _printed(am, zt, nxt, False) if zt and am is not None else None
+        if arr is None:
+            raise ValueError("deadhead in")
+        nxt = arr - timedelta(minutes=x["blk"])
+        out.insert(0, x | {"dep": nxt, "arr": arr})
+    return out
+
+
+def _deadheads(p, duties, pk):
+    """1.7.20 review: FLICA's pairing page legs on file carry no deadhead (pot.parse_legs reads the flown legs only), so
+    each duty of a read trip takes its deadheads from the pairings package detail (pdfs.package_legs: matched by its
+    flown flights) and, when it starts with one or the package prints an earlier REPT, that report (a later duty: the
+    earlier of the package's REPT and the PWA 2.19.b.1 rule at the deadhead; the first: FLICA's check-in unless the
+    deadhead leaves before it). Each duty gets dh_note, what the package said."""
+    start = 0
+    for n, d in enumerate(duties):
+        if not pk or not pk.get("duties"):
+            d["dh_note"] = ("FLICA's pairing page lists none and the pairings package has no detail for this pairing, so "
+                            "one there would not be counted")
+            continue
+        m = _pkg_duty(d, pk, start)
+        if m is None:
+            d["dh_note"] = ("FLICA's pairing page lists none and no duty of the pairings package matches this one's "
+                            "flights, so one there would not be counted")
+            continue
+        start, du, pl = m[0] + 1, m[1], m[2]
+        try:
+            legs = _with_deadheads(d, pl)
+        except (ValueError, StopIteration, TypeError, KeyError, IndexError):
+            d["dh_note"] = "the pairings package shows one here that could not be placed on the station clocks"
+            continue
+        dh = [f"{x['frm']}-{x['to']}" for x in legs if x.get("dh")]
+        d["dh_note"] = (f"from the pairings package: {', '.join(dh)} (FLICA's page lists none)" if dh
+                        else "the pairings package shows none for this duty")
+        d["legs"], cands = legs, []
+        if not (str(d.get("report_txt") or "").startswith("FLICA") and legs[0]["dep"] >= d["report"]):
+            if legs[0].get("dh"):  # a duty that starts with a deadhead reports before it
+                cands.append(_report_at(False, {}, p, legs[0]["dep"], legs[0]["frm"]))
+            rm, z0 = _mins(du.get("rept")), _zone(legs[0]["frm"])
+            r = _printed(rm, z0, legs[0]["dep"], False) if rm is not None and z0 else None
+            if r is not None:
+                cands.append((r, f"REPT {_hhmm(rm)} local in the pairings package"))
+        d["report"], d["report_txt"] = min([(d["report"], d["report_txt"])] + cands, key=lambda c: c[0])
+
+
+def _duties(pairs, pkg=None):
+    """Every duty on file in time order: {key, report, report_txt, legs, dh_note}; a trip whose legs are not read gives
+    its duty periods (_spans); one with neither gives nothing. A read trip's deadheads come from the pairings package
+    (_deadheads)."""
     out = []
     for p in pairs:
         legs = p["legs"] or _spans(p, p["rec"])
-        cur = None
+        cur, mine = None, []
         for j, x in enumerate(legs):
             if x["duty_start"] or cur is None:
                 rep, how = _report_at(j == 0, p["rec"], p, x["dep"], x["frm"])
                 cur = {"key": p["key"], "report": rep, "report_txt": how, "legs": []}
-                out.append(cur)
+                mine.append(cur)
             cur["legs"].append({k: x[k] for k in ("dep", "arr", "blk", "frm", "to", "flt", "dh", "key")}
                                | {"i": x.get("i")})
+        if p["legs"] and mine:
+            _deadheads(p, mine, _pkg_of(pkg, p) if pkg is not None else None)
+        out += mine
     out.sort(key=lambda d: d["report"])
     return out
 
@@ -346,42 +458,106 @@ def _pkg_of(pkg, p):
     return got if isinstance(got, dict) else None
 
 
-def _timeout(items, pairs, cur, p, now, pkg, months):
-    """The `timeout` attribute of the working leg's duty (timeout.duty_timeout), or None."""
+TIMEOUT_ERR = {"msg": ""}  # 1.7.20 review: why the last working flight has no timeout after an error ('' when none)
+
+
+def _timeout(items, pairs, cur, p, now, pkg, months, domestic=()):
+    """The `timeout` attribute of the working leg's duty (timeout.duty_timeout), or None: also when its inputs cannot
+    be read, so the working flight itself is always published. An error is kept in TIMEOUT_ERR (the Watcher logs it
+    once a change)."""
+    import timeout as TO
+    try:
+        got = _timeout_of(items, pairs, cur, p, now, pkg, months, domestic)
+        TIMEOUT_ERR["msg"] = TO.ERR["last"] if got is None else ""
+        return got
+    except Exception as e:  # noqa: BLE001
+        TIMEOUT_ERR["msg"] = type(e).__name__
+        return None
+
+
+def _crew(rec, pk):
+    """(pilots, where from, sure, firm, notes) of a pairing: the crew list's pilot seats when it has a CA; a crew list
+    with no CA misses that seat at least (the package crew line when it says as many or more, else the list plus one,
+    not sure); else the package crew line. firm: the package crew line says the same (a count that is not firm and
+    cannot fly the planned flight time is raised, timeout.py). (None, '', False, False, []) with neither."""
+    import timeout as TO
+    n_r, ca = TO.roster_seats((rec or {}).get("crew"))
+    code = str((pk or {}).get("crew") or "")
+    n_p = TO.package_pilots(code)
+    if n_r >= 2 and ca:
+        notes = [f"The crew list shows {n_r} pilot seats, the package crew line {code} {n_p}: the crew list is used."
+                 ] if n_p and n_p != n_r else []
+        return n_r, "the trip's crew list", not (n_p and n_p > n_r), n_p == n_r, notes
+    if n_r >= 1 and not ca:
+        low = min(n_r + 1, 4)
+        if n_p and n_p >= low:
+            return n_p, f"package crew line {code}; the crew list has no CA", True, True, []
+        notes = [f"The package crew line {code} says {n_p}."] if n_p else []
+        return low, f"the crew list's {n_r} pilot seats and its missing CA", False, False, notes
+    if n_p:
+        return n_p, f"package crew line {code}", True, True, []
+    return None, "", False, False, []
+
+
+def _unknown(pairs, months, ds, upto, today):
+    """[(start, end)] HST spans of the line that are not known: a pairing whose legs and duty periods are not read (its
+    days), and with schedule months on file, the days none covers (recall.line_gaps) from 2 days before the first duty
+    on file to upto (a date)."""
+    out = []
+    for q in pairs:
+        if q["legs"] or _spans(q, q["rec"]):
+            continue
+        end = datetime.strptime(q["end"], "%Y-%m-%d").replace(tzinfo=HST) + timedelta(days=1)
+        out.append((q["day0"], end))
+    if months and ds:
+        import recall as RC
+        lo = ds[0]["report"].astimezone(HST).date() - timedelta(days=2)
+        for a, b in RC.line_gaps(months, lo, upto, today):
+            out.append((datetime.strptime(a, "%Y-%m-%d").replace(tzinfo=HST),
+                        datetime.strptime(b, "%Y-%m-%d").replace(tzinfo=HST) + timedelta(days=1)))
+    return out
+
+
+def _timeout_of(items, pairs, cur, p, now, pkg, months, domestic=()):
     import timeout as TO
     if not all(x.get("hst", True) for x in p["legs"]):
         return None
-    ds = _duties(pairs)
+    ds = _duties(pairs, pkg)
     idx = next((j for j, d in enumerate(ds) if d["key"] == cur["key"]
                 and any(x.get("i") == cur["i"] for x in d["legs"])), None)
     if idx is None:
         return None
+    d = ds[idx]
+    # the leg the last out is for: the working leg; once it is in, the duty's next flown leg (still the working one
+    # until that leaves, working_flight's roll)
+    k = next(j for j, x in enumerate(d["legs"]) if x.get("i") == cur["i"] and x.get("key") == cur["key"])
+    if now >= cur["arr"]:
+        k = next((j for j in range(k + 1, len(d["legs"])) if not d["legs"][j].get("dh")), k)
     pk = _pkg_of(pkg, p) or {}
-    n_r, src_r = TO.pilots_of(p["rec"].get("crew"), "")
-    n_p, src_p = TO.pilots_of(None, pk.get("crew"))
-    pilots, src = (n_r, "the trip's crew list") if n_r else (n_p, f"package crew line {pk.get('crew')}") if n_p else (None, "")
-    notes = []
-    if n_r and n_p and n_r != n_p:
-        notes.append(f"The crew list shows {n_r} pilot seats, the package crew line {pk.get('crew')} {n_p}: the crew "
-                     f"list is used.")
-    known = _known_from(months, pairs, ds[idx]["legs"][-1]["arr"].astimezone(HST).date(), now.date())
-    return TO.duty_timeout(ds, idx, pilots, src, str(pk.get("eq") or ""), known, _busy(items), notes)
+    pilots, src, sure, firm, notes = _crew(p["rec"], pk)
+    upto = d["report"].astimezone(HST).date()
+    known = _known_from(months, pairs, d["legs"][-1]["arr"].astimezone(HST).date(), now.date())
+    return TO.duty_timeout(ds, idx, pilots, src, str(pk.get("eq") or ""), known, _busy(items), notes, work=k,
+                           pilots_sure=sure, pilots_firm=firm, unknown=_unknown(pairs, months, ds, upto, now.date()),
+                           domestic=domestic, dh_note=d.get("dh_note", ""))
 
 
-def working_flight(items, own, now, roll_h=2, pkg=None, months=None):
+def working_flight(items, own, now, roll_h=2, pkg=None, months=None, domestic=()):
     """{"state", "attributes"} for the working leg: of every read leg of every own trip, in departure order, the first
     whose block-in + roll_h hours is after now (it stays on a leg until 2 h after block-in, then rolls to the next;
     sooner only when the next leg blocks out within those 2 h).
     items: the schedule items (trip, start, end, lay); own: own_trips keyed TRIP|YYYY-MM-DD (start, HST) with legs and
     report; now: an aware datetime (a naive one is taken as HST). 1.7.20: pkg, the pairings package detail ({eq, crew})
     by TRIP|start (a dict, or a callable (trip, start)), and months, the schedule months on file (the Watcher's
-    S['schedule']), for the duty timeout. A trip whose legs are not read yet is skipped for the
+    S['schedule']), and domestic, the pilot's smart.json "domestic" stations (customs, PWA 2.19.b.2), for the duty
+    timeout. A trip whose legs are not read yet is skipped for the
     working leg but can be the next pairing; one that has not ended and comes before the working leg's pairing (the
     pilot is on it, or going to it first) shows as "No trip" with that pairing next, rather than a later trip's leg.
     No leg left: state "No trip"."""
     now = now.astimezone(HST) if now.tzinfo else now.replace(tzinfo=HST)
     own = own if isinstance(own, dict) else {}
     today, at = now.date().isoformat(), stamp(now)
+    TIMEOUT_ERR["msg"] = ""
     pairs = _pairings(items)
     every = []
     for p in pairs:
@@ -438,7 +614,7 @@ def working_flight(items, own, now, roll_h=2, pkg=None, months=None):
         "updated": at,
         "updated_by": UPDATED_BY,
     }
-    to = _timeout(items, pairs, cur, p, now, pkg, months)
+    to = _timeout(items, pairs, cur, p, now, pkg, months, set(domestic or ()))
     if to:
         attrs["timeout"] = to
     state = " ".join(s for s in (flight, f"{cur['frm']}-{cur['to']}") if s)
