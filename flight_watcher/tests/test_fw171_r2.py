@@ -644,12 +644,39 @@ def test_the_dashboard_snapshot_has_no_weather_view_and_matches_its_sha():
     assert views == ["watcher", "flight", "details", "recall", "settings"]
     readme = open(os.path.join(ROOT, "ha", "README.md"), encoding="utf-8").read()
     # the snapshot's sha256 is in the README. 1.7.2 live (Nov 13): the van alert settings tiles are applied, then the
-    # Working Flight view keeps the layover card only; the snapshot and Pako's dashboard have the same sha256 (read
-    # 2026-11-14) and nothing is pending
+    # Working Flight view keeps the layover card only; the snapshot and Pako's dashboard had the same sha256 (read
+    # 2026-11-14, be03a0a4...). Then one section per release, each applied at release time with Ryan's yes, in
+    # release order: 1.7.12 the Details view's data age stamp, 1.7.14 the near misses card, 1.7.15 the Swap ideas table
+    # with the automatic ideas and pay per day, 1.7.17 the pot table's Commutable chip (the macro, not in git) and its
+    # Key line (1.7.18 cross-item review: it had no section, and the snapshot had no Key line). Applied on Pako
+    # 2026-11-18 once 1.7.18 was live (the four dashboard edits in one patch about 08:04 HST, the macro about 08:18):
+    # Pako's dashboard reads the snapshot's sha256 again and each section names it; nothing is pending any more
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    assert sha == "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" and sha in readme
+    assert sha == "e322dc0eed2289d10236323e95afec78b4990867c7715eaa22ac936d9caac411" and sha in readme
+    assert "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" in readme  # Pako's before the patch
     assert "Applied on Pako 2026-11-13 about 05:47 HST (1.7.2): van alert settings" in readme
-    assert "Pending on Pako" not in readme and "ahead of Pako" not in readme
+    heads = ["## Applied on Pako 2026-11-18 about 08:04 HST (1.7.12): the Details view's data age stamp\n",
+             "## Applied on Pako 2026-11-18 about 08:04 HST (1.7.14): near misses card\n",
+             "## Applied on Pako 2026-11-18 about 08:04 HST (1.7.15): automatic swap ideas on the Swap ideas table\n",
+             "## Applied on Pako 2026-11-18 about 08:18 HST (1.7.17): Commutable chip in the pot table\n"]
+    assert readme.count("## Applied on Pako 2026-11-18") == len(heads)
+    assert "Pending on Pako" not in readme  # no pending section is left
+    at = [readme.index(h) for h in heads]
+    assert at == sorted(at)  # in release order
+    assert at[-1] < readme.index("## Applied on Pako 2026-11-13")  # before the older applied ones
+    rest, j = "", 0
+    for i, h in zip(at, heads):
+        end = readme.index("\n## ", i + len(h))
+        assert sha in readme[i:end], h  # each applied section names the snapshot's sha (what Pako reads now)
+        rest, j = rest + readme[j:i], end
+    rest += readme[j:]
+    cur = rest[rest.index("The 23 automations here match Pako's"):]
+    cur = cur[:cur.index("\n\n")]
+    flat = " ".join(cur.split())
+    now = flat[flat.index("The dashboard snapshot matches Pako's"):flat.index("Before that patch Pako read")]
+    assert sha in now and "be03a0a4" not in now and "read 2026-11-18 about 08:04 HST" in now
+    assert "be03a0a48b9df66962e49a86c285921858768f5f97d27fda88288c26a0595435" in flat.replace(now, "")  # the before
+    assert "ahead of Pako" not in readme and "pending edit" not in readme
     assert "lat=" not in text and "windy" not in text.lower()
     assert os.path.exists(os.path.join(ROOT, "ha", "packages", "flight_watcher_wx.yaml"))  # the wx package stays
     claude = open(os.path.join(ROOT, "CLAUDE.md"), encoding="utf-8").read()

@@ -1,10 +1,13 @@
-"""A trip not in the viewed month's pairings package takes its release from its own return to HNL, bounded by its own
-end, read from the month the trip came from. Before, the card searched the VIEWED month's days for the first HNL day
+"""Regression guard for the 1.7.11 review fix (no release of its own): a trip not in the viewed month's pairings
+package takes its release from its own return to HNL, bounded by its own end, read from the month the trip came from.
+Before 1.7.11, the card searched the VIEWED month's days for the first HNL day
 after the trip's start with no bound: a previous-month trip (the package is only the viewed month's) was released on
 the viewed month's first HNL day, and a one-day turn on the next trip's return day. That made Nov 1 to 4 mid-trip
 ("-") in the 30 h in 7 d column, Nov 5 "need 30" (FAR 117.25(b)), spread the turn's block over 9 days in the 100 h in
 672 h column (FAR 117.23(b)(1)), put the October turn's Legal next (PWA 10.E.1.a) on Nov 7 and stretched the trip box
 in the Layover column. Synthetic months, made-up trips, no FLICA, rendered in Chromium at 390 px."""
+import re
+
 import pytest
 
 from test_cards import _chromium
@@ -18,6 +21,12 @@ JS = """(h) => { const c = document.createElement('flight-watcher-schedule-card'
       far: [...tr.querySelectorAll('td.far')].map((td) => td.textContent.trim()),
       lg: ((tr.querySelector('td.lg') || {}).textContent || '').trim()};
     res(out); }, 300)); }"""
+
+
+def _left(cell):
+    """The 100 h in 672 h column (1.7.13: headroom, "90:00 left", "~" when a window reaches past the data on file)."""
+    m = re.search(r"(\d+:\d\d) left", cell)
+    return m.group(1) if m else cell
 
 
 def _month(y, m, n, marks):
@@ -77,8 +86,9 @@ def test_previous_month_turn_is_released_on_its_own_day(rows):
         assert rows[d]["far"][0] != "–", (d, rows[d])  # not mid-trip
         assert rows[d]["far"][0].startswith("✓"), (d, rows[d])  # 30 h free met (FAR 117.25(b))
     assert rows["2026-11-05"]["far"][0].startswith("✓"), rows["2026-11-05"]  # not "need 30"
-    # the turn's 10:00 block sits on Oct 30 only (FAR 117.23(b)(1)), not spread up to Nov 7
-    assert rows["2026-11-01"]["far"][1] == "10:00" and rows["2026-11-03"]["far"][1] == "10:00", rows["2026-11-03"]
+    # the turn's 10:00 block sits on Oct 30 only (FAR 117.23(b)(1)), not spread up to Nov 7: 100:00 - 10:00 left
+    assert _left(rows["2026-11-01"]["far"][1]) == "90:00" and _left(rows["2026-11-03"]["far"][1]) == "90:00", rows
+    assert _left(rows["2026-11-12"]["far"][1]) == "84:00", rows["2026-11-12"]  # 10:00 Oct 30 + 6:00 Nov 12
     assert rows["2026-11-07"]["lg"] == "", rows["2026-11-07"]  # no Legal next from the October turn
     for d in ("2026-11-01", "2026-11-02", "2026-11-03", "2026-11-04"):
         assert " bx" not in rows[d]["cls"], (d, rows[d])  # no trip box carried from October
@@ -92,7 +102,6 @@ def test_turn_not_in_package_ends_on_its_own_day_not_the_next_trips_return(rows)
     assert " bx" in cls and " bxs" in cls and " bxe" in cls, cls  # the box opens and closes on Nov 12
     assert " bx" not in rows["2026-11-13"]["cls"], rows["2026-11-13"]
     assert rows["2026-11-13"]["far"][0].startswith("✓"), rows["2026-11-13"]  # not mid-trip
-    assert rows["2026-11-12"]["far"][1] == "16:00", rows["2026-11-12"]  # 10:00 Oct 30 + 6:00 Nov 12
 
 
 def test_trips_with_a_return_day_keep_it(rows):

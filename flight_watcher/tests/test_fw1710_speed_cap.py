@@ -434,12 +434,16 @@ def test_a_request_that_leaves_the_list_is_forgotten_and_a_listed_one_is_kept(W,
     assert _pk(W.DB)["scored"] == 239  # the cap stays on the find
 
 
-def test_a_new_denial_pushed_with_its_view_page_is_not_read_twice(W, tmp_path, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize("sec", [0.0, 30.0, 59.5])
+def test_a_new_denial_pushed_with_its_view_page_is_not_read_twice(W, tmp_path, monkeypatch, sec):  # noqa: F811
     """Going forward: a denial that is news is read on its view page for the push (1.3.0); the cap takes it from
-    there, with the first-name-first comment, and its page is not loaded again."""
+    there, with the first-name-first comment, and its page is not loaded again.
+    1.7.11 integration review: 'now' is pinned to a second of the minute before this one (the request list prints
+    minutes, so the cap is that minute + 59 s less the entry: 659 s less the second); read from the wall clock, the
+    test failed about once a run in 60 (at :59.000001 to :59.999999 the cap is 599 s)."""
     from datetime import datetime, timedelta
     _seed(W)
-    now = datetime.now(W.HST)
+    now = (datetime.now(W.HST) - timedelta(minutes=1)).replace(second=int(sec), microsecond=int(round(sec % 1 * 1e6)))
     W.DB.db.execute("UPDATE finds SET first_seen=?, last_seen=?, gone_at=? WHERE key=?", (
         (now - timedelta(minutes=30)).astimezone(W.timezone.utc).isoformat(),
         (now - timedelta(minutes=2)).astimezone(W.timezone.utc).isoformat(), now.astimezone(W.timezone.utc).isoformat(), KEY))
@@ -455,7 +459,8 @@ def test_a_new_denial_pushed_with_its_view_page_is_not_read_twice(W, tmp_path, m
     read()
     assert _ids(fetched) == ["AAAA0:BBBB0"]
     assert [p["status"] for t, p in W.SENT if t == "event/request_decided"] == ["Denied"]
-    assert _pk(W.DB)["capped"] is True and 600 <= _pk(W.DB)["scored"] <= 720 < was  # his request, 10 minutes in
+    # his request, 10 minutes in: to the end of its minute, 10:59 less the entry's second
+    assert _pk(W.DB)["capped"] is True and _pk(W.DB)["scored"] == int(659 - sec) < was
     assert W.S["req_cap_views"]["003.152|AAAA0:BBBB0"]["reason"] == {"trip": "H3607", "day": "17NOV", "emp": "10001"}
 
 

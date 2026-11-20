@@ -159,6 +159,28 @@ def instances(pdir, crew_from=CREW_FROM, extra=None):
     return out
 
 
+def file_starts(pdir, month):
+    """1.7.11 integration review: {pairing id: {ISO first days}} of month's pairing file, by instances' rule (each row's
+    days list read with the file's period start); {} when there is no readable file."""
+    try:
+        d = json.load(open(os.path.join(pdir, f"pairings_{month}.json")))
+        cols = d.get("cols") or []
+        i, j = cols.index("id"), cols.index("days")
+        rows = [r for r in d.get("rows") or [] if isinstance(r, list) and len(r) > max(i, j)]
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+    prev_from = file_prev_from(month, [str(r[j] or "").split() for r in rows])
+    st = str(d.get("start") or "")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", st) and st < f"{month}-01":
+        prev_from = int(st[8:])
+    out = {}
+    for r in rows:
+        pid = str(r[i] or "").strip()
+        if pid:
+            out.setdefault(pid, set()).update(dt.isoformat() for dt in month_dates(month, r[j], prev_from))
+    return out
+
+
 def extra_instance(pdir, e, cache=None):
     """FW-0056: one trip instance from a schedule entry ({pairing, date, end, route, report, src}), or None when it has
     no pairing id or start date. src 'schedule', except FW-0068: a rebuilt copy found by the crew index's variant probe

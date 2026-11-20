@@ -18,6 +18,24 @@
 // extra fade.
 // 1.7.1 review: on a phone (700 px or less) the Pay settings selects are 16 px: iOS Safari zooms into a smaller one
 // when it is tapped and leaves the page wider than the screen (as F#43 found for the pilot lookup).
+// 1.7.11 (FW-0080, Ryan, Nov 17: "Everywhere"): the totals are the bid period's, as FLICA's are (PWA 4.A: a segment pays
+// on the date it originates; December 2026 runs Dec 2 to Dec 31, so a trip Dec 1 to 3 pays its Dec 1 duty in November
+// and its Dec 3 duty in December): each trip its part flown in the bid period (fwSplit, each duty's TCRD from the
+// pairings package, else its block share), the VAC and PAYP days in it, the versions' prices the same. The bid period
+// is the pairings package's, else the Watcher's (sensor periods), else the calendar month, which the totals then say.
+// 1.7.12 (Ryan, Nov 17): the header's "updated" gives way to the clock card's "Data age 12 min" stamp (the shared data
+// age block below: the time since the Watcher's last good read, amber "stale" past 1x the check interval, red "very
+// stale" past 2x). FLICA's own schedule time is only in its hover text, "FLICA updated ...". The stamp ticks each second
+// by itself (that span only; the card redraws only when its entities change, as before).
+// 1.7.12 review: the thresholds follow the Watcher's own longest cycle (the shared block; pending Ryan's yes on that
+// meaning of "1x"), "Watcher offline" in red when the app is down, and the hover text (a tap shows it, as every title
+// here) has the last good read in HST. The stamp keeps one width and weight at every level, at the header's right
+// (its own line on a phone), so the month arrows and Now never slide as the age ticks.
+// 1.7.18 (cross-item review): one box whatever the text says, so that holds for the long texts too ("2 h 10 min,
+// very stale", "over 1 h 5 min, Watcher offline" slid them up to 59 px): 21em at the right of a wide header (every
+// text on one line in the usual fonts; a wider font wraps inside it), and on a phone the rest of the Lock switch's
+// line, at its right (a long text wraps inside it, under the switch's 44 px), so the arrows, the month and Now keep
+// the second line to themselves and the header two lines.
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const DOW = ["SU","MO","TU","WE","TH","FR","SA"];
 const MON3 = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
@@ -53,8 +71,463 @@ const PAY_PREFS = ["input_number.flight_watcher_federal_tax_pct", "input_number.
 const PAY_PREF_LABEL = { [PAY_PREFS[0]]: "federal tax", [PAY_PREFS[1]]: "state tax", [PAY_PREFS[2]]: "longevity year" };
 const dohYear = (iso, doh) => { const [a, b] = [doh || DOH, iso].map((s) => String(s).slice(0, 10).split("-").map(Number)); return b[0] - a[0] - (b[1] < a[1] || (b[1] === a[1] && b[2] < a[2]) ? 1 : 0) + 1; };
 const hrs = (t) => { const mm = /^(\d+):(\d{2})$/.exec(String(t || "").trim()); return mm ? Number(mm[1]) + Number(mm[2]) / 60 : null; };
+// 1.7.13 (Ryan, Nov 17: "Give FAR-30/7, FAR-100/672 and Room real headers with units, and show headroom against each
+// limit (e.g. "100h/672h: 10:57 left")"): the 100h in 672h and Room to 100h cells say what is left of the FAR
+// 117.23(b)(1) limit (100 flight hours in any 672 consecutive hours), to the minute: "10:57 left", "0:00 left" at the
+// limit, "1:20 over" past it (both red: the words say it too, never the colour alone); "~" in front when a window
+// reaches past the schedule on file or holds a trip with no times on file (1.7.13 F3). 1.7.13 review: the caller
+// rounds the block to the minute once and passes 100:00 less that, so a cell and its title (the block) add up to 100:00.
+const farLeft = (left, approx) => {
+  const m = Math.round(left * 60), a = Math.abs(m);
+  return { txt: `${approx ? "~" : ""}${Math.floor(a / 60)}:${String(a % 60).padStart(2, "0")} ${m < 0 ? "over" : "left"}`, bad: m <= 0 };
+};
+// 1.7.13 (F1, Ryan Nov 18: "fix all of these things"): an own trip's flight time spans as far.py counts them for a
+// pickup's FAR check (recall._trip, read by far._cum): one per duty period, from its start (the trip's report; a later
+// one 1:00 before departure from HNL, 1:15 elsewhere, PWA 2.19.b) to its block-in, with that duty's block; with a duty
+// block missing, one span from report to last block-in with the trip's Block; with no duty times, that one span; none
+// with the dates only (far.py: whole days, block not known). [{s, e, h}]: ms (HST as UTC) and hours, h null = block not
+// known. at(iso, minutes) is the card's clock. The rules follow recall._trip step by step (its int() and time parsing
+// included), so Room to 100h and far.py count a line alike.
+const farInt = (x) => (typeof x === "number" ? (Number.isFinite(x) ? Math.trunc(x) : null)
+  : /^\s*[+-]?\d+\s*$/.test(String(x)) ? parseInt(x, 10) : null);
+const farHm = (x) => {  // far._t: "HH:MM" (or HH.MM) -> minutes, or null
+  const p = String(x == null ? "None" : x).replace(/\./g, ":").split(":");
+  const h = p.length > 1 ? farInt(p[0]) : null, m = p.length > 1 ? farInt(p[1]) : null;
+  return h != null && m != null && h >= 0 && h < 24 && m >= 0 && m < 60 ? h * 60 + m : null;
+};
+const farBlk = (x) => {  // recall._hrs: "H:MM" -> hours, or null
+  const p = String(x == null ? "None" : x).split(":");
+  const h = p.length > 1 ? farInt(p[0]) : null, m = p.length > 1 ? farInt(p[1]) : null;
+  return h != null && m != null ? h + m / 60 : null;
+};
+const farSpans = (it, t, at) => {
+  const a = it.start, b = it.end || it.start, base = at(a, 0), DEB = 15 * 60e3, DAY = 24 * 3600e3;
+  const dus = Array.isArray(t.duties) ? t.duties : [];
+  let rep = null, rel = null;
+  const r = farHm(t.report), la = farHm(t.last_arr);
+  if (a && r != null && la != null) { rep = at(a, r); rel = at(b, la) + DEB; if (rel <= rep) rel += DAY; }
+  if (rep == null && dus.length) {  // no report or last block-in: the first duty's departure - 1:00 to the last + 0:15
+    const d0 = farInt(dus[0] && dus[0].dep), arrs = dus.map((x) => farInt(x && x.arr));
+    if (d0 != null && arrs.every((v) => v != null)) { rep = base + (d0 - 60) * 60e3; rel = base + (Math.max(...arrs) + 15) * 60e3; }
+  }
+  if (rep == null) return [];
+  const bh = farBlk(t.blk), one = [{ s: rep, e: rel - DEB, h: bh }];
+  let du = [];
+  try {
+    if (dus.some((x) => farInt(x && x.dep) == null)) throw new Error("dep");
+    let prev = "HNL";
+    dus.slice().sort((x, y) => farInt(x.dep) - farInt(y.dep)).forEach((x, i) => {
+      const dep = base + farInt(x.dep) * 60e3, am = farInt(x.arr);
+      if (am == null || base + am * 60e3 <= dep) throw new Error("arr");
+      let h = null;
+      if (x.blk != null && x.blk !== "") { const v = farInt(x.blk); if (v == null) throw new Error("blk"); h = v / 60; }
+      du.push({ s: Math.min(i === 0 ? rep : dep - (prev === "HNL" ? 60 : 75) * 60e3, dep), e: base + am * 60e3, h });
+      prev = String(x.stn || x.to || "");
+    });
+  } catch (e) { du = []; }
+  if (du.length && Math.abs(du[du.length - 1].e + DEB - rel) <= 3600e3) return du.some((x) => x.h == null) ? one : du;
+  return one;
+};
+// The 30h in 7d cell (FAR 117.25(b): 30 consecutive hours free from all duty in the 168 h before a report): today's
+// states with units: "✓ 36h MM/DD" (the longest break off duty in the 168 h before a report at that day's first duty
+// start, 00:01 on a day off, in whole hours, and the day it ended), "need 30h off", "?" (the 168 h reach before the
+// schedule on file), "–" (mid-trip, no report). 1.7.13 review: no "off" in the tick, so the grid is about as wide as
+// in 1.7.11 (the header and the Key say the hours are off duty).
+const far30Txt = (st, h, md) => st === "ok" ? `&#10003; ${Math.floor(h)}h <span class="k">${md}</span>`
+  : st === "need" ? "need 30h off" : st === "unknown" ? "?" : "&#8211;";
 const usd = (v) => (v == null || Number.isNaN(v) ? "" : "$" + Math.round(v).toLocaleString("en-US"));  // 1.6.2 review: no rate, no figure
+// Paychecks (Ryan, Nov 19, 2026): per-check paycheck engine. Inputs from the admin's Pay model sensor (attributes), which a
+// routine keeps current from the pay stubs in Drive. Federal: IRS Pub 15-T 2026 percentage method, semimonthly (24
+// periods), table by W-4 (rows [annual wage from, tax at that point, rate]); supplemental pay at the flat rate.
+// Social Security 6.2% to the wage base, Medicare 1.45%, Additional Medicare 0.9% over the threshold, 401(k) deferral
+// to the 402(g) and 415(c) limits; once 415(c) is full the employer's contribution is paid as taxable cash on the
+// true-up (stub line "ER 415(c) Excess"). Backtest: within $1 of net on every regular 2026 stub from Mar 6 given its
+// earnings lines, except Sep 22 (the month 415(c) filled part way).
+const fwgR2 = (v) => Math.round(v * 100) / 100;
+const fwgWh = (T, w4, P) => {
+  const tb = (P.tables || {})[w4] || (P.tables || {}).single || [];
+  const A = T * 24;
+  let tax = 0;
+  for (let i = tb.length - 1; i >= 0; i--) { const [lo, base, r] = tb[i]; if (A > lo) { tax = base + (A - lo) * r; break; } }
+  return Math.max(0, fwgR2(tax / 24));
+};
+// g: {date, gross, eligible (401(k) base), erBase (employer base), meal (non-taxable meal pay), supp}; ytd is updated
+const fwgCheck = (g, ytd, P) => {
+  const yr = +g.date.slice(0, 4);
+  if (ytd.year !== yr) Object.assign(ytd, { year: yr, ss_wages: 0, med_wages: 0, c415: P.c415_start || 0, ee401: 0 });
+  const pre = (P.medical || 0) + (P.dental || 0);
+  const room = Math.max(0, (P.cap_415c || 0) - ytd.c415);
+  const def = fwgR2(Math.min((P.k401_pct || 0) * (g.eligible || 0), Math.max(0, (P.cap_402g || 0) - ytd.ee401), room));
+  const er = (P.er_pct || 0) * (g.erBase || 0), erPlan = Math.min(er, Math.max(0, room - def)), erCash = fwgR2(er - erPlan);
+  const gross = fwgR2(g.gross + erCash);
+  const T = fwgR2(gross - (g.meal || 0) - pre - def + (pre ? P.imputed || 0 : 0));
+  const supp = g.supp || 0;
+  const fed = fwgR2(fwgWh(T - supp, P.w4, P) + supp * (P.supp_rate || 0.22));
+  const mw = fwgR2(T + def), ssRoom = Math.max(0, (P.ss_base || 0) - ytd.ss_wages);
+  const ss = fwgR2(Math.min(mw, ssRoom) * 0.062), med = fwgR2(mw * 0.0145);
+  const at = P.addl_med_at || 200000;
+  const addl = fwgR2((Math.max(0, ytd.med_wages + mw - at) - Math.max(0, ytd.med_wages - at)) * 0.009);
+  ytd.ss_wages += Math.min(mw, ssRoom); ytd.med_wages += mw; ytd.c415 += def + erPlan; ytd.ee401 += def;
+  const aft = P.aftertax || 0;
+  const net = fwgR2(gross - fed - ss - med - addl - def - pre - aft);
+  return { date: g.date, gross, erCash, T, fed, ss, med, addl, def, pre, aft, net, toChk: fwgR2(net - (P.allot || 0)) };
+};
+// FW-0072 (Ryan, Nov 19): a pilot's pay stub (PDF) read in his browser to set his tax rates. Nothing leaves the device
+// and nothing of the stub is kept: the file's bytes and text live in this function's locals only, and the caller keeps
+// just the three percentages it returns. Reads the PeopleSoft pay advice Hawaiian Airlines issues (text in Type1 or
+// Type0 fonts, Flate streams, the Standard security handler RC4 or AES-128 with an empty open password).
+const fwpMd5 = (msg) => {
+  const K = new Uint32Array(64), S = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
+  for (let i = 0; i < 64; i++) K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296) >>> 0;
+  const n = msg.length, L = ((n + 8) >> 6) + 1, w = new Uint32Array(L * 16);
+  for (let i = 0; i < n; i++) w[i >> 2] |= msg[i] << ((i % 4) * 8);
+  w[n >> 2] |= 0x80 << ((n % 4) * 8); w[L * 16 - 2] = (n * 8) >>> 0; w[L * 16 - 1] = Math.floor(n / 536870912) >>> 0;
+  let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+  for (let o = 0; o < w.length; o += 16) {
+    let a = a0, b = b0, c = c0, d = d0;
+    for (let i = 0; i < 64; i++) {
+      let f, g;
+      if (i < 16) { f = (b & c) | (~b & d); g = i; } else if (i < 32) { f = (d & b) | (~d & c); g = (5 * i + 1) % 16; }
+      else if (i < 48) { f = b ^ c ^ d; g = (3 * i + 5) % 16; } else { f = c ^ (b | ~d); g = (7 * i) % 16; }
+      const t = d; d = c; c = b;
+      const x = (a + f + K[i] + w[o + g]) >>> 0, s = S[(i >> 4) * 4 + (i % 4)];
+      b = (b + ((x << s) | (x >>> (32 - s)))) >>> 0; a = t;
+    }
+    a0 = (a0 + a) >>> 0; b0 = (b0 + b) >>> 0; c0 = (c0 + c) >>> 0; d0 = (d0 + d) >>> 0;
+  }
+  const out = new Uint8Array(16);
+  [a0, b0, c0, d0].forEach((v, j) => { for (let k = 0; k < 4; k++) out[j * 4 + k] = (v >>> (8 * k)) & 255; });
+  return out;
+};
+const fwpRc4 = (key, data) => {
+  const s = new Uint8Array(256); for (let i = 0; i < 256; i++) s[i] = i;
+  for (let i = 0, j = 0; i < 256; i++) { j = (j + s[i] + key[i % key.length]) & 255; [s[i], s[j]] = [s[j], s[i]]; }
+  const out = new Uint8Array(data.length);
+  for (let k = 0, i = 0, j = 0; k < data.length; k++) {
+    i = (i + 1) & 255; j = (j + s[i]) & 255; [s[i], s[j]] = [s[j], s[i]]; out[k] = data[k] ^ s[(s[i] + s[j]) & 255];
+  }
+  return out;
+};
+const fwpCat = (...a) => { const o = new Uint8Array(a.reduce((n, x) => n + x.length, 0)); let p = 0; for (const x of a) { o.set(x, p); p += x.length; } return o; };
+const fwpLatin = (u8) => { let s = ""; for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192)); return s; };
+const fwpBytes = (s) => { const o = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) o[i] = s.charCodeAt(i) & 255; return o; };
+// a PDF string token's bytes: (literal, with its escapes) or <hex>
+const fwpStr = (t) => {
+  if (t[0] === "<") { const h = t.slice(1, -1).replace(/[^0-9a-fA-F]/g, ""); const o = []; for (let i = 0; i < h.length; i += 2) o.push(parseInt((h[i] + (h[i + 1] || "0")), 16)); return Uint8Array.from(o); }
+  const o = [], s = t.slice(1, -1), E = { n: 10, r: 13, t: 9, b: 8, f: 12 };
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c !== "\\") { o.push(c.charCodeAt(0) & 255); continue; }
+    const d = s[++i];
+    if (d === undefined) break;
+    if (E[d] !== undefined) o.push(E[d]);
+    else if (d >= "0" && d <= "7") { let v = d; while (v.length < 3 && s[i + 1] >= "0" && s[i + 1] <= "7") v += s[++i]; o.push(parseInt(v, 8) & 255); }
+    else if (d === "\r") { if (s[i + 1] === "\n") i++; } else if (d !== "\n") o.push(d.charCodeAt(0) & 255);
+  }
+  return Uint8Array.from(o);
+};
+// the string token that starts at s[i] ("(" or "<"), as text
+const fwpStrTok = (s, i) => {
+  if (s[i] === "<") { const j = s.indexOf(">", i); return s.slice(i, j + 1); }
+  let depth = 0, j = i;
+  for (; j < s.length; j++) { const c = s[j]; if (c === "\\") { j++; continue; } if (c === "(") depth++; else if (c === ")" && --depth === 0) break; }
+  return s.slice(i, j + 1);
+};
+const fwpInflate = async (u8) => new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream("deflate"))).arrayBuffer());
+const FWP_PAD = Uint8Array.from([0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41, 0x64, 0x00, 0x4E, 0x56, 0xFF, 0xFA, 0x01, 0x08,
+  0x2E, 0x2E, 0x00, 0xB6, 0xD0, 0x68, 0x3E, 0x80, 0x2F, 0x0C, 0xA9, 0xFE, 0x64, 0x53, 0x69, 0x7A]);
+class FwpError extends Error {}
+
+// PDF bytes -> its text, one string a line (top to bottom, left to right)
+const fwpPdfLines = async (buf) => {
+  const raw = new Uint8Array(buf), s = fwpLatin(raw);
+  if (!s.startsWith("%PDF")) throw new FwpError("not a PDF");
+  const objs = {};  // num -> {gen, dict, data (raw stream bytes) | null}
+  const re = /(\d+)\s+(\d+)\s+obj\b/g;
+  let m;
+  while ((m = re.exec(s))) {
+    const st = re.lastIndex, end = s.indexOf("endobj", st);
+    if (end < 0) break;
+    const body = s.slice(st, end), k = body.search(/\bstream(\r\n|\n|\r)/);
+    let dict = body, data = null;
+    if (k >= 0) {
+      dict = body.slice(0, k);
+      const d0 = st + k + body.slice(k).match(/^stream(\r\n|\n|\r)/)[0].length;
+      const lm = dict.match(/\/Length\s+(\d+)(?!\s+\d+\s+R)/);
+      let d1 = lm ? d0 + +lm[1] : s.lastIndexOf("endstream", end);
+      if (!lm) { while (d1 > d0 && (s[d1 - 1] === "\n" || s[d1 - 1] === "\r")) d1--; }
+      data = raw.subarray(d0, Math.min(d1, raw.length));
+    }
+    objs[+m[1]] = { num: +m[1], gen: +m[2], dict, data };
+    re.lastIndex = end;
+  }
+  // the Standard security handler (an empty open password)
+  let crypt = null;
+  const em = s.match(/\/Encrypt\s+(\d+)\s+\d+\s+R/g);
+  if (em) {
+    const en = objs[+em[em.length - 1].match(/(\d+)/)[1]];
+    if (!en || !/\/Filter\s*\/Standard/.test(en.dict)) throw new FwpError("protected in a way this can't open");
+    const g = (k) => { const x = en.dict.match(new RegExp("\\/" + k + "\\s+(-?\\d+)")); return x ? +x[1] : null; };
+    const V = g("V") || 0, R = g("R") || 2;
+    if (V > 4 || R > 4) throw new FwpError("protected in a way this can't open");
+    const tok = (k) => { const i = en.dict.search(new RegExp("\\/" + k + "\\s*[(<]")); if (i < 0) return null; const j = en.dict.indexOf(k, i) + k.length; const p = en.dict.slice(j).search(/[(<]/); return fwpStr(fwpStrTok(en.dict, j + p)); };
+    const O = tok("O"), U = tok("U"), P = g("P"), ids = [...s.matchAll(/\/ID\s*\[\s*[(<]/g)];
+    if (!O || !U || P === null || !ids.length) throw new FwpError("protected in a way this can't open");
+    const lastId = ids[ids.length - 1], id0 = fwpStr(fwpStrTok(s, lastId.index + lastId[0].length - 1));
+    const n = R === 2 ? 5 : (g("Length") || 40) / 8;
+    const cfm = (en.dict.match(/\/CFM\s*\/(\w+)/) || [])[1];
+    const aes = V === 4 && cfm === "AESV2";
+    if (V === 4 && cfm && cfm !== "AESV2" && cfm !== "V2") throw new FwpError("protected in a way this can't open");
+    const p4 = Uint8Array.from([P & 255, (P >> 8) & 255, (P >> 16) & 255, (P >>> 24) & 255]);
+    const noMeta = R >= 4 && /\/EncryptMetadata\s+false/.test(en.dict) ? Uint8Array.from([255, 255, 255, 255]) : new Uint8Array(0);
+    let h = fwpMd5(fwpCat(FWP_PAD, O.subarray(0, 32), p4, id0, noMeta));
+    if (R >= 3) for (let i = 0; i < 50; i++) h = fwpMd5(h.subarray(0, n));
+    const key = h.slice(0, n);
+    // the empty open password check (Algorithm 4 / 5)
+    let u;
+    if (R === 2) u = fwpRc4(key, FWP_PAD);
+    else { u = fwpRc4(key, fwpMd5(fwpCat(FWP_PAD, id0))); for (let i = 1; i < 20; i++) u = fwpRc4(key.map((b) => b ^ i), u); }
+    const cmpN = R === 2 ? 32 : 16;
+    for (let i = 0; i < cmpN; i++) if (u[i] !== U[i]) throw new FwpError("needs a password to open");
+    crypt = { key, n, aes };
+  }
+  const objKey = (o) => {
+    const k = fwpCat(crypt.key, Uint8Array.from([o.num & 255, (o.num >> 8) & 255, (o.num >> 16) & 255, o.gen & 255, (o.gen >> 8) & 255]),
+      crypt.aes ? Uint8Array.from([0x73, 0x41, 0x6C, 0x54]) : new Uint8Array(0));
+    return fwpMd5(k).slice(0, Math.min(crypt.n + 5, 16));
+  };
+  const streamOf = async (o) => {
+    if (!o || !o.data) return null;
+    let d = o.data;
+    if (crypt && !/\/Type\s*\/XRef/.test(o.dict)) {
+      if (crypt.aes) {
+        if (d.length < 32) return new Uint8Array(0);
+        if (!(globalThis.crypto && crypto.subtle)) throw new FwpError("needs Flight Watcher open over https to read it");
+        const ck = await crypto.subtle.importKey("raw", objKey(o), "AES-CBC", false, ["decrypt"]);
+        d = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-CBC", iv: d.slice(0, 16) }, ck, d.slice(16, 16 + ((d.length - 16) & ~15))));
+      } else d = fwpRc4(objKey(o), d);
+    }
+    if (/\/FlateDecode|\/Fl\b/.test(o.dict)) d = await fwpInflate(d);
+    else if (/\/Filter/.test(o.dict)) return null;  // a filter this reader has no use for (images)
+    return d;
+  };
+  // objects packed in object streams (their dicts only; a stream is never in one)
+  for (const o of Object.values(objs)) {
+    if (!/\/Type\s*\/ObjStm/.test(o.dict)) continue;
+    const d = fwpLatin(await streamOf(o)), first = +(o.dict.match(/\/First\s+(\d+)/) || [0, 0])[1];
+    const nums = d.slice(0, first).trim().split(/\s+/).map(Number);
+    for (let i = 0; i + 1 < nums.length; i += 2) {
+      const a = first + nums[i + 1], b = i + 3 < nums.length ? first + nums[i + 3] : d.length;
+      if (!objs[nums[i]]) objs[nums[i]] = { num: nums[i], gen: 0, dict: d.slice(a, b), data: null };
+    }
+  }
+  const ref = (txt, k) => { const x = txt.match(new RegExp("\\/" + k + "\\s+(\\d+)\\s+\\d+\\s+R")); return x ? objs[+x[1]] : null; };
+  // fonts by resource name: Type0 ones with a ToUnicode map read 2-byte codes through it
+  const fonts = {};
+  for (const o of Object.values(objs)) {
+    const fd = o.dict.match(/\/Font\s*<<([^>]*)>>/);
+    if (!fd) continue;
+    for (const f of fd[1].matchAll(/\/([^\s/<>[\]()]+)\s+(\d+)\s+\d+\s+R/g)) {
+      if (fonts[f[1]]) continue;
+      const fo = objs[+f[2]];
+      if (!fo) continue;
+      const map = {}, type0 = /\/Subtype\s*\/Type0/.test(fo.dict);
+      const tu = ref(fo.dict, "ToUnicode");
+      if (tu) {
+        const cm = fwpLatin((await streamOf(tu)) || new Uint8Array(0));
+        const hx = (x) => parseInt(x, 16);
+        const u16 = (x) => { let o = ""; for (let i = 0; i + 3 < x.length; i += 4) o += String.fromCharCode(hx(x.slice(i, i + 4))); return o; };
+        for (const b of cm.matchAll(/beginbfchar([\s\S]*?)endbfchar/g)) for (const p of b[1].matchAll(/<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>/g)) map[hx(p[1])] = u16(p[2]);
+        for (const b of cm.matchAll(/beginbfrange([\s\S]*?)endbfrange/g)) {
+          for (const p of b[1].matchAll(/<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*(<[0-9a-fA-F]+>|\[[^\]]*\])/g)) {
+            const lo = hx(p[1]), hi = hx(p[2]);
+            if (p[3][0] === "<") { const base = p[3].slice(1, -1); for (let c = lo; c <= hi && c - lo < 65536; c++) map[c] = u16(base.slice(0, -4) + (hx(base.slice(-4)) + c - lo).toString(16).padStart(4, "0")); }
+            else [...p[3].matchAll(/<([0-9a-fA-F]+)>/g)].forEach((q, i) => { map[lo + i] = u16(q[1]); });
+          }
+        }
+      }
+      fonts[f[1]] = { type0, map, uni: !!tu };
+    }
+  }
+  const dec = (font, b) => {
+    let o = "";
+    if (font && font.type0) { for (let i = 0; i + 1 < b.length; i += 2) { const c = (b[i] << 8) | b[i + 1]; o += font.map[c] !== undefined ? font.map[c] : ""; } return o; }
+    for (const c of b) o += font && font.uni && font.map[c] !== undefined ? font.map[c] : String.fromCharCode(c);
+    return o;
+  };
+  // the pages in order, their content streams
+  const pages = [], walk = (o, depth) => {
+    if (!o || depth > 32) return;
+    if (/\/Type\s*\/Pages\b/.test(o.dict)) { const k = o.dict.match(/\/Kids\s*\[([^\]]*)\]/); if (k) for (const r of k[1].matchAll(/(\d+)\s+\d+\s+R/g)) walk(objs[+r[1]], depth + 1); }
+    else if (/\/Type\s*\/Page\b/.test(o.dict)) pages.push(o);
+  };
+  const cat = Object.values(objs).find((o) => /\/Type\s*\/Catalog/.test(o.dict));
+  walk(cat && ref(cat.dict, "Pages"), 0);
+  const items = [];
+  for (const [pi, pg] of pages.entries()) {
+    const cs = [], c1 = pg.dict.match(/\/Contents\s*\[([^\]]*)\]/);
+    if (c1) for (const r of c1[1].matchAll(/(\d+)\s+\d+\s+R/g)) cs.push(objs[+r[1]]); else cs.push(ref(pg.dict, "Contents"));
+    let txt = "";
+    for (const c of cs) { const d = await streamOf(c); if (d) txt += fwpLatin(d) + "\n"; }
+    // a small content-stream interpreter: text position (Tm and the CTM) and the strings shown
+    const mul = (a, b) => [a[0] * b[0] + a[1] * b[2], a[0] * b[1] + a[1] * b[3], a[2] * b[0] + a[3] * b[2], a[2] * b[1] + a[3] * b[3],
+      a[4] * b[0] + a[5] * b[2] + b[4], a[4] * b[1] + a[5] * b[3] + b[5]];
+    let ctm = [1, 0, 0, 1, 0, 0], tm = ctm.slice(), tlm = ctm.slice(), lead = 0, font = null, size = 10;
+    const qs = [], ops = [];
+    const show = (str) => {
+      const p = mul(tm, ctm);
+      items.push({ pg: pi, x: p[4], y: p[5], s: str });
+      tm = mul([1, 0, 0, 1, str.length * size * 0.5, 0], tm);
+    };
+    const td = (x, y) => { tlm = mul([1, 0, 0, 1, x, y], tlm); tm = tlm.slice(); };
+    for (let i = 0; i < txt.length;) {
+      const c = txt[i];
+      if (/\s/.test(c)) { i++; continue; }
+      if (c === "%") { const j = txt.indexOf("\n", i); i = j < 0 ? txt.length : j; continue; }
+      if (c === "(" || (c === "<" && txt[i + 1] !== "<")) { const t = fwpStrTok(txt, i); ops.push({ str: fwpStr(t) }); i += t.length; continue; }
+      if (c === "[") { ops.push("["); i++; continue; }
+      if (c === "]") { const a = []; while (ops.length && ops[ops.length - 1] !== "[") a.unshift(ops.pop()); ops.pop(); ops.push({ arr: a }); i++; continue; }
+      if (c === "<" || c === ">") { i += 2; continue; }  // a dict (inline image parameters): not text
+      if (c === "/") { const m2 = txt.slice(i).match(/^\/[^\s/<>[\]()%]*/); ops.push({ name: m2[0].slice(1) }); i += m2[0].length; continue; }
+      const m3 = txt.slice(i, i + 64).match(/^[+-]?(\d+\.?\d*|\.\d+)/);
+      if (m3) { ops.push(+m3[0]); i += m3[0].length; continue; }
+      const m4 = txt.slice(i, i + 16).match(/^[A-Za-z'"*]+/);
+      if (!m4) { i++; continue; }
+      const op = m4[0], A = ops.splice(0);
+      i += op.length;
+      if (op === "BI") { const j = txt.indexOf("EI", i); i = j < 0 ? txt.length : j + 2; continue; }
+      const nums = A.filter((x) => typeof x === "number");
+      if (op === "q") qs.push(ctm.slice()); else if (op === "Q") ctm = qs.pop() || [1, 0, 0, 1, 0, 0];
+      else if (op === "cm" && nums.length === 6) ctm = mul(nums, ctm);
+      else if (op === "BT") { tm = [1, 0, 0, 1, 0, 0]; tlm = tm.slice(); }
+      else if (op === "Tf") { const nm = A.find((x) => x && x.name); font = nm ? fonts[nm.name] : null; size = nums[0] || size; }
+      else if (op === "TL") lead = nums[0] || 0;
+      else if (op === "Td" && nums.length === 2) td(nums[0], nums[1]);
+      else if (op === "TD" && nums.length === 2) { lead = -nums[1]; td(nums[0], nums[1]); }
+      else if (op === "Tm" && nums.length === 6) { tm = nums.slice(); tlm = nums.slice(); }
+      else if (op === "T*") td(0, -lead);
+      else if (op === "Tj" || op === "'" || op === "\"") { if (op !== "Tj") td(0, -lead); const st = A.find((x) => x && x.str); if (st) show(dec(font, st.str)); }
+      else if (op === "TJ") { const ar = A.find((x) => x && x.arr); if (ar) show(ar.arr.map((x) => (x && x.str ? dec(font, x.str) : typeof x === "number" && x < -200 ? " " : "")).join("")); }
+    }
+  }
+  // lines: items within 2.5 pt of height together, left to right
+  items.sort((a, b) => a.pg - b.pg || b.y - a.y);
+  const lines = [];
+  let cur = null;
+  for (const it of items) {
+    if (!it.s.trim()) continue;
+    if (!cur || cur.pg !== it.pg || Math.abs(cur.y - it.y) > 2.5) { cur = { pg: it.pg, y: it.y, its: [] }; lines.push(cur); }
+    cur.its.push(it);
+  }
+  return lines.map((l) => l.its.sort((a, b) => a.x - b.x).map((x) => x.s.trim()).join(" ").replace(/\s+/g, " "));
+};
+
+// the pay advice's text -> the year-to-date rates (percent of total gross). Hawaiian Airlines' PeopleSoft pay advice:
+// TOTAL GROSS / FED TAXABLE GROSS / TOTAL TAXES / TOTAL DEDUCTIONS / NET PAY, Current and YTD rows; the federal tax
+// lines Fed Withholding, Fed MED/EE, Fed OASDI/EE, Fed Addl Med. State and local = total taxes less the federal lines.
+const FWP_M = "(-?[\\d,]+\\.\\d\\d)";
+const fwpAmt = (x) => +String(x).replace(/,/g, "");
+const fwpRates = (lines) => {
+  const hi = lines.findIndex((l) => /TOTAL GROSS/i.test(l) && /NET PAY/i.test(l));
+  if (hi < 0) throw new FwpError("not a pay advice this can read");
+  const row = (w) => { for (let i = hi + 1; i < Math.min(lines.length, hi + 4); i++) { const m = lines[i].match(new RegExp("^" + w + "\\b(.*)", "i")); if (m) { const v = m[1].match(new RegExp(FWP_M, "g")); if (v && v.length >= 5) return v.slice(0, 5).map(fwpAmt); } } return null; };
+  const ytd = row("YTD");
+  if (!ytd) throw new FwpError("not a pay advice this can read");
+  const [gross, , taxes, deds, net] = ytd;
+  if (!(gross > 0)) throw new FwpError("shows no pay this year yet");
+  if (Math.abs(gross - taxes - deds - net) > 1.005) throw new FwpError("its totals don't add up as read");
+  const fedLine = (rx) => { for (const l of lines) { const m = l.match(new RegExp(rx + "\\s+" + FWP_M + "\\s+" + FWP_M, "i")); if (m) return fwpAmt(m[2]); } return 0; };
+  const fwh = fedLine("Fed Withholding"), fmed = fedLine("Fed MED\\/EE"), fss = fedLine("Fed OASDI\\/EE"), fadd = fedLine("Fed Addl Med");
+  if (!lines.some((l) => /Fed Withholding/i.test(l))) throw new FwpError("not a pay advice this can read");
+  const fed = fwh + fmed + fss + fadd, state = Math.max(0, taxes - fed);
+  if (fed > taxes + 0.005) throw new FwpError("its totals don't add up as read");
+  const pct = (v) => Math.round((v / gross) * 10000) / 100;
+  return { federal: pct(fed), state: pct(state), deductions: pct(deds) };
+};
+const fwpStep = (v, step, lo, hi) => Math.min(hi, Math.max(lo, Math.round(v / step) * step));
+// a File (or ArrayBuffer) -> {federal, state, deductions} percents; throws FwpError with a short reason
+const fwpReadStub = async (file) => fwpRates(await fwpPdfLines(file.arrayBuffer ? await file.arrayBuffer() : file));
+// FW-0072: each state's 2026 wage income tax, Tax Foundation, "State Individual Income Tax Rates and Brackets, 2026"
+// (as of January 1, 2026; taxfoundation.org): [name, n(one) | f(lat) | g(raduated), single brackets, married brackets
+// ([from $, rate %]), standard deduction single, married, personal exemption single, married (null: none on the page,
+// or a credit, which is not counted)]. A rate listed from a threshold above $0 leaves the income below it untaxed.
+const FWP_SRC = "Tax Foundation, State Individual Income Tax Rates and Brackets, 2026 (as of January 1, 2026)";
+const FWP_STATES = {
+  AL: ["Alabama","g",[[0,2.0],[500,4.0],[3000,5.0]],[[0,2.0],[1000,4.0],[6000,5.0]],3000,8500,1500,3000],
+  AK: ["Alaska","n",[],[],null,null,null,null],
+  AZ: ["Arizona","f",[[0,2.5]],[[0,2.5]],8350,16700,null,null],
+  AR: ["Arkansas","g",[[0,2.0],[4600,3.9]],[[0,2.0],[4600,3.9]],2470,4940,null,null],
+  CA: ["California","g",[[0,1.0],[11079,2.0],[26264,4.0],[41452,6.0],[57542,8.0],[72724,9.3],[371479,10.3],[445771,11.3],[742953,12.3],[1000000,13.3]],[[0,1.0],[22158,2.0],[52528,4.0],[82904,6.0],[115084,8.0],[145448,9.3],[742958,10.3],[891542,11.3],[1000000,12.3],[1485906,13.3]],5540,11080,null,null],
+  CO: ["Colorado","f",[[0,4.4]],[[0,4.4]],16100,32200,null,null],
+  CT: ["Connecticut","g",[[0,2.0],[10000,4.5],[50000,5.5],[100000,6.0],[200000,6.5],[250000,6.9],[500000,6.99]],[[0,2.0],[20000,4.5],[100000,5.5],[200000,6.0],[400000,6.5],[500000,6.9],[1000000,6.99]],null,null,15000,24000],
+  DE: ["Delaware","g",[[2000,2.2],[5000,3.9],[10000,4.8],[20000,5.2],[25000,5.55],[60000,6.6]],[[2000,2.2],[5000,3.9],[10000,4.8],[20000,5.2],[25000,5.55],[60000,6.6]],3250,6500,null,null],
+  DC: ["District of Columbia","g",[[0,4.0],[10000,6.0],[40000,6.5],[60000,8.5],[250000,9.25],[500000,9.75],[1000000,10.75]],[[0,4.0],[10000,6.0],[40000,6.5],[60000,8.5],[250000,9.25],[500000,9.75],[1000000,10.75]],16100,32200,null,null],
+  FL: ["Florida","n",[],[],null,null,null,null],
+  GA: ["Georgia","f",[[0,5.19]],[[0,5.19]],12000,24000,null,null],
+  HI: ["Hawaii","g",[[0,1.4],[9600,3.2],[14400,5.5],[19200,6.4],[24000,6.8],[36000,7.2],[48000,7.6],[125000,7.9],[175000,8.25],[225000,9.0],[275000,10.0],[325000,11.0]],[[0,1.4],[19200,3.2],[28800,5.5],[38400,6.4],[48000,6.8],[72000,7.2],[96000,7.6],[250000,7.9],[350000,8.25],[450000,9.0],[550000,10.0],[650000,11.0]],4400,8800,1144,2288],
+  ID: ["Idaho","f",[[4811,5.3]],[[9622,5.3]],16100,32200,null,null],
+  IL: ["Illinois","f",[[0,4.95]],[[0,4.95]],null,null,2925,5850],
+  IN: ["Indiana","f",[[0,2.95]],[[0,2.95]],null,null,1000,2000],
+  IA: ["Iowa","f",[[0,3.8]],[[0,3.8]],16100,32200,null,null],
+  KS: ["Kansas","g",[[0,5.2],[23000,5.58]],[[0,5.2],[46000,5.58]],3605,8240,9160,18320],
+  KY: ["Kentucky","f",[[0,3.5]],[[0,3.5]],3360,3360,null,null],
+  LA: ["Louisiana","f",[[0,3.0]],[[0,3.0]],12875,25750,null,null],
+  ME: ["Maine","g",[[0,5.8],[27399,6.75],[64849,7.15]],[[0,5.8],[54849,6.75],[129749,7.15]],8350,16700,5300,10600],
+  MD: ["Maryland","g",[[0,2.0],[1000,3.0],[2000,4.0],[3000,4.75],[100000,5.0],[125000,5.25],[150000,5.5],[250000,5.75],[500000,6.25],[1000000,6.5]],[[0,2.0],[1000,3.0],[2000,4.0],[3000,4.75],[150000,5.0],[175000,5.25],[225000,5.5],[300000,5.75],[600000,6.25],[1200000,6.5]],3350,6700,3200,6400],
+  MA: ["Massachusetts","g",[[0,5.0],[1083150,9.0]],[[0,5.0],[1083150,9.0]],null,null,4400,8800],
+  MI: ["Michigan","f",[[0,4.25]],[[0,4.25]],null,null,5900,11800],
+  MN: ["Minnesota","g",[[0,5.35],[33310,6.8],[109430,7.85],[203150,9.85]],[[0,5.35],[48700,6.8],[193480,7.85],[337930,9.85]],15300,30600,null,null],
+  MS: ["Mississippi","f",[[10000,4.0]],[[10000,4.0]],2300,4600,6000,12000],
+  MO: ["Missouri","g",[[1348,2.0],[2696,2.5],[4044,3.0],[5392,3.5],[6740,4.0],[8088,4.5],[9436,4.7]],[[1348,2.0],[2696,2.5],[4044,3.0],[5392,3.5],[6740,4.0],[8088,4.5],[9436,4.7]],16100,32200,null,null],
+  MT: ["Montana","g",[[0,4.7],[47500,5.65]],[[0,4.7],[95000,5.65]],16100,32200,null,null],
+  NE: ["Nebraska","g",[[0,2.46],[4130,3.51],[24760,4.55]],[[0,2.46],[8250,3.51],[49530,4.55]],8850,17700,null,null],
+  NV: ["Nevada","n",[],[],null,null,null,null],
+  NH: ["New Hampshire","n",[],[],null,null,null,null],
+  NJ: ["New Jersey","g",[[0,1.4],[20000,1.75],[35000,3.5],[40000,5.53],[75000,6.37],[500000,8.97],[1000000,10.75]],[[0,1.4],[20000,1.75],[50000,2.45],[70000,3.5],[80000,5.53],[150000,6.37],[500000,8.97],[1000000,10.75]],null,null,1000,2000],
+  NM: ["New Mexico","g",[[0,1.5],[5500,3.2],[16500,4.3],[33500,4.7],[66500,4.9],[210000,5.9]],[[0,1.5],[8000,3.2],[25000,4.3],[50000,4.7],[100000,4.9],[315000,5.9]],16100,32200,null,null],
+  NY: ["New York","g",[[0,3.9],[8500,4.4],[11700,5.15],[13900,5.4],[80650,5.9],[215400,6.85],[1077550,9.65],[5000000,10.3],[25000000,10.9]],[[0,3.9],[17150,4.4],[23600,5.15],[27900,5.4],[161550,5.9],[323200,6.85],[2155350,9.65],[5000000,10.3],[25000000,10.9]],8000,16050,null,null],
+  NC: ["North Carolina","f",[[0,3.99]],[[0,3.99]],12750,25500,null,null],
+  ND: ["North Dakota","g",[[48475,1.95],[244825,2.5]],[[80975,1.95],[298075,2.5]],16100,32200,null,null],
+  OH: ["Ohio","f",[[26050,2.75]],[[26050,2.75]],null,null,2400,4800],
+  OK: ["Oklahoma","g",[[3750,2.5],[4900,3.5],[7200,4.5]],[[7500,2.5],[9800,3.5],[14400,4.5]],6350,12700,1000,2000],
+  OR: ["Oregon","g",[[0,4.75],[4550,6.75],[11400,8.75],[125000,9.9]],[[0,4.75],[9100,6.75],[22800,8.75],[250000,9.9]],2910,5820,null,null],
+  PA: ["Pennsylvania","f",[[0,3.07]],[[0,3.07]],null,null,null,null],
+  RI: ["Rhode Island","g",[[0,3.75],[82050,4.75],[186450,5.99]],[[0,3.75],[82050,4.75],[186450,5.99]],11200,22400,5250,10500],
+  SC: ["South Carolina","g",[[0,0.0],[3640,3.0],[18230,6.0]],[[0,0.0],[3640,3.0],[18230,6.0]],8350,16700,null,null],
+  SD: ["South Dakota","n",[],[],null,null,null,null],
+  TN: ["Tennessee","n",[],[],null,null,null,null],
+  TX: ["Texas","n",[],[],null,null,null,null],
+  UT: ["Utah","f",[[0,4.5]],[[0,4.5]],null,null,null,null],
+  VT: ["Vermont","g",[[0,3.35],[49400,6.6],[119700,7.6],[249700,8.75]],[[0,3.35],[82500,6.6],[199450,7.6],[304000,8.75]],7650,15300,5300,10600],
+  VA: ["Virginia","g",[[0,2.0],[3000,3.0],[5000,5.0],[17000,5.75]],[[0,2.0],[3000,3.0],[5000,5.0],[17000,5.75]],8750,17500,930,1860],
+  WA: ["Washington","n",[],[],null,null,null,null],
+  WV: ["West Virginia","g",[[0,2.22],[10000,2.96],[25000,3.33],[40000,4.44],[60000,4.82]],[[0,2.22],[10000,2.96],[25000,3.33],[40000,4.44],[60000,4.82]],null,null,2000,4000],
+  WI: ["Wisconsin","g",[[0,3.5],[15110,4.4],[51950,5.3],[332720,7.65]],[[0,3.5],[20150,4.4],[69260,5.3],[443630,7.65]],13960,25840,700,1400],
+  WY: ["Wyoming","n",[],[],null,null,null,null]
+};
+// a state's tax as a percent of a year's gross: {name, type, pct (null with no gross), low, top}
+const fwpStateTax = (st, filing, annual) => {
+  const r = FWP_STATES[st];
+  if (!r) return null;
+  const [name, type, bs, bm, ss, sm, es, em] = r, mar = filing === "married", br = mar ? bm : bs;
+  if (type === "n") return { name, type, pct: 0, low: 0, top: 0 };
+  const top = br[br.length - 1][1], low = (br.find((b) => b[1] > 0) || br[0])[1];
+  if (!(annual > 0)) return { name, type, pct: null, low, top };
+  const taxable = Math.max(0, annual - ((mar ? sm : ss) || 0) - ((mar ? em : es) || 0));
+  let tax = 0;
+  for (let i = 0; i < br.length; i++) {
+    const lo = br[i][0], hi = i + 1 < br.length ? br[i + 1][0] : Infinity;
+    if (taxable > lo) tax += (Math.min(taxable, hi) - lo) * br[i][1] / 100;
+  }
+  return { name, type, pct: Math.round((tax / annual) * 10000) / 100, low, top };
+};
 const PAIRINGS_URL = "/local/flight-watcher/pairings_";  // the shared pairings package files (pairings_YYYY-MM.json)
+// 1.7.18: the lock switch's icon, an inline SVG (24 x 24): a shut shackle, or one lifted clear of the body, over a body
+// with a keyhole. Drawn the same on every phone (the emoji it replaces was each phone's own)
+const FWS_LOCK_BODY = "M6.5 10h11a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2V12a2 2 0 0 1 2-2zM12 13.4a1.8 1.8 0 0 0-.9 3.36V18.6h1.8v-1.84A1.8 1.8 0 0 0 12 13.4z";
+const fwsLockSvg = (shut) => `<svg class="lki" data-lock="${shut ? "shut" : "open"}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">` +
+  `<path d="${shut ? "M8 10.5V7.5a4 4 0 0 1 8 0v3" : "M8 10.5V5.5a4 4 0 0 1 8 0v1"}" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>` +
+  `<path d="${FWS_LOCK_BODY}" fill="currentColor" fill-rule="evenodd"/></svg>`;
 
 // FW-0060: a sensor's full list from its file under /local/ (<url><file_key>.json, the pilot's own www folder). Fetched
 // again whenever the sensor's rev changes; null until it is in (or when the sensor has no key), so the caller falls
@@ -72,6 +545,62 @@ function fwListFile(box, url, st, redraw) {
       .catch(() => { box.busy = false; box.want = want; });
   }
   return box.key === key ? box.data : null;
+}
+
+// 1.7.11 (FW-0080, Ryan, Nov 17: "Everywhere"; PWA 4.A: a segment pays on the date it originates): FLICA totals the bid
+// period, not the calendar month (December 2026 runs Dec 2 to Dec 31, November Nov 1 to Dec 1). fwSplit: a trip's part
+// in the bid period from..to (ISO). Each duty counts in the bid period that holds its HST departure date (dep: HST
+// minutes from 00:00 HST of the trip's first day st), its credit the duty's TCRD (the pairings package's) when every
+// duty outside the trip's home period (the one holding st) has one, else its block share (est); the home period keeps
+// the rest of the trip credit (rig, minimums), so the parts always add up to the trip. cr, bl: the trip's credit and
+// block in hours (null: unknown). null when no duty is placed (the whole trip pays in its home period), else {in, whole,
+// cr, bl (minutes here; null unknown), outCr, outBl (minutes paid in the other bid period), side ('before' / 'after' /
+// ''), est}. pay.split_by_period and period_share are the same rule (tests/test_fw1711_totals.py runs both).
+function fwSplit(st, duties, from, to, cr, bl) {
+  const where = (d) => (from <= d && d <= to ? "in" : d < from ? "before" : "after");
+  const t0 = Date.parse(String(st).slice(0, 10) + "T00:00:00Z");
+  if (Number.isNaN(t0)) return null;
+  const mins = (v) => (typeof v === "number" && Number.isFinite(v) ? Math.round(v) : fwgMins(v));
+  const du = (Array.isArray(duties) ? duties : []).filter((x) => x && typeof x.dep === "number" && typeof x.blk === "number" && Number.isFinite(x.dep) && Number.isFinite(x.blk))
+    .map((x) => ({ d: new Date(t0 + Math.floor(x.dep / 1440) * 864e5).toISOString().slice(0, 10), b: Math.trunc(x.blk), t: mins(x.tcrd) }));
+  const totB = du.reduce((a, x) => a + x.b, 0);
+  if (!du.length || totB <= 0) return null;
+  const home = where(String(st).slice(0, 10)), parts = {};
+  for (const x of du) { const k = where(x.d); const p = parts[k] || (parts[k] = { b: 0, t: 0, ok: true }); p.b += x.b; if (x.t == null) p.ok = false; else p.t += x.t; }
+  if (!parts[home]) parts[home] = { b: 0, t: 0, ok: true };
+  const others = Object.keys(parts).filter((k) => k !== home), est = !others.every((k) => parts[k].ok);
+  const cM = cr == null || Number.isNaN(cr) ? null : Math.round(cr * 60), bM = bl == null || Number.isNaN(bl) ? null : Math.round(bl * 60);
+  const by = {};
+  for (const k of Object.keys(parts)) by[k] = { c: null, b: null };
+  if (bM != null) { for (const k of others) by[k].b = Math.floor(bM * parts[k].b / totB + 0.5); by[home].b = Math.max(0, bM - others.reduce((a, k) => a + by[k].b, 0)); }
+  if (cM != null) { for (const k of others) by[k].c = Math.min(cM, est ? Math.floor(cM * parts[k].b / totB + 0.5) : parts[k].t); by[home].c = Math.max(0, cM - others.reduce((a, k) => a + by[k].c, 0)); }
+  const mine = by.in || { c: cM == null ? null : 0, b: bM == null ? null : 0 }, side = Object.keys(by).find((k) => k !== "in") || "";
+  return { in: !!by.in, whole: !side, cr: mine.c, bl: mine.b, outCr: side && cM != null ? cM - (mine.c || 0) : null,
+    outBl: side && bM != null ? bM - (mine.b || 0) : null, side, est: est && !!side };
+}
+
+// 1.7.11 review (FW-0080): a trip whose own times are not read yet places its duties from the pairings package's detail
+// (fwPkgDuties: each duty's first leg, its day number and local departure, made HST with FW_TZ, the Watcher's pot.TZ;
+// tests/test_fw1711_review.py keeps them equal), so it splits as the Watcher splits it from the package
+const FW_TZ = { HNL: -10, OGG: -10, KOA: -10, ITO: -10, LIH: -10, PPT: -10, RAR: -10, PPG: -11, ANC: -9,
+  LAX: -8, SFO: -8, SEA: -8, SAN: -8, OAK: -8, SMF: -8, LAS: -8, PDX: -8, SJC: -8, ONT: -8, LGB: -8,
+  PHX: -7, SLC: -7, DEN: -7, ORD: -6, DFW: -6, AUS: -6, MSP: -6, IAH: -6,
+  JFK: -5, BOS: -5, MCO: -5, IAD: -5, ATL: -5, MIA: -5, EWR: -5,
+  NRT: 9, HND: 9, KIX: 9, CTS: 9, FUK: 9, NGO: 9, ICN: 9, SYD: 10, BNE: 10, MEL: 10,
+  AKL: 12, SIN: 8, MNL: 8, CRK: 8, TPE: 8, PEK: 8, PVG: 8, HKG: 8 };
+// [{dep (HST minutes from 00:00 HST of the trip's first day), blk, tcrd}] of a package entry's duties (det.duties: legs
+// [day, dh, flt, from, to, dep local, ...], tblk, tcrd), [] when any duty's first leg, departure or block is unreadable
+function fwPkgDuties(pr) {
+  const dd = pr && pr.det && Array.isArray(pr.det.duties) ? pr.det.duties : [];
+  const out = [];
+  for (const x of dd) {
+    const l = x && Array.isArray(x.legs) && Array.isArray(x.legs[0]) ? x.legs[0] : null;
+    const n = l ? Number(l[0]) : NaN, t = l ? /^(\d{1,2}):?(\d{2})$/.exec(String(l[5] == null ? "" : l[5]).trim()) : null, b = x ? fwgMins(x.tblk) : null;
+    if (!Number.isInteger(n) || n < 1 || n > 40 || !t || Number(t[1]) > 23 || b == null) return [];
+    const shift = l[3] in FW_TZ && l[4] in FW_TZ ? (FW_TZ[l[3]] + 10) * 60 : 0;  // pot.leg_shift
+    out.push({ dep: (n - 1) * 1440 + Number(t[1]) * 60 + Number(t[2]) - shift, blk: b, tcrd: x.tcrd });
+  }
+  return out;
 }
 
 // ---- shared schedule grid: keep identical in every card that holds it (tests/test_sched_grid_shared.py) ----
@@ -416,7 +945,7 @@ const FWG_CSS = `
       .tm{font-size:10.5px;color:var(--secondary-text-color)}
       .tag{cursor:help}.lay{display:inline-block;min-width:28px}
       .st{color:var(--fw-ok,#2e7d32);font-weight:700;cursor:help}.st.fly{color:var(--fw-info,#1565c0)}
-      .tot{margin-top:8px;font-size:14px;font-weight:700;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tgrp{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tpay{flex-wrap:nowrap}.tot .ti{white-space:nowrap}.tot .k{font-weight:600;color:var(--secondary-text-color);font-size:12px;margin-right:4px}.tot .bad{color:var(--fw-err,#c62828)}
+      .tot{margin-top:8px;font-size:14px;font-weight:700;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tgrp{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 18px}.tot .tpay{flex-wrap:nowrap}.tot .ti{white-space:nowrap}.tot .k{font-weight:600;color:var(--secondary-text-color);font-size:12px;margin-right:4px}.tot .bad{color:var(--fw-err,#c62828)}.tot .tchk{flex-wrap:nowrap;font-weight:600}
       .trip[data-k]{cursor:pointer}.trip[aria-expanded="true"]{text-decoration:underline;text-underline-offset:2px}
       .trip:focus-visible,.pdx:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px;border-radius:3px}.fwss .pdx:focus-visible{outline-offset:-3px}
       .cal tr.pdh[data-d] td:nth-child(n){background-image:linear-gradient(var(--fwg-hl),var(--fwg-hl))}
@@ -451,6 +980,100 @@ const FWG_CSS = `
 `;
 // ---- end shared schedule grid ----
 
+// ---- shared data age: keep identical in every card that holds it (tests/test_fw1712_data_age.py) ----
+// 1.7.12 (Nov 17: "Replace the two clocks ("updated" and "Last check") with one "data age" stamp. Turn it amber
+// past 1x the normal interval and red past 2x."): the time since the Watcher's last good read (its last check time,
+// which a check sets only when it succeeds), with the word "stale" or "very stale" beside the colour, so the colour is
+// never the only cue (colour-blind users, screen readers).
+// 1.7.12 review (its meaning of "1x" is pending a yes): 1x and 2x of the Watcher's own longest cycle between two
+// good reads, not of the bare setting, so a healthy Watcher never reads stale. Each wait is the interval x 0.7 to 1.3
+// (watcher.py JITTER), starts when a check ends, and the next check takes time too (a crew index chunk: about 2 min in
+// normal mode, 20 s hunting). The cycle is the interval (on a pilot the pace his FLICA budget holds him to, when the
+// state note says "at least N s apart" and that is longer) x 1.3, plus FW_AGE_ROOM_S for the check, which also covers a
+// few seconds of a phone's clock running fast. It counts from the last good read, or later: from a change of hunt or
+// of the interval after that read (the Watcher's wait starts over then; a next check it planned before the change
+// counts too), and from the next check while the FLICA budget or host limit holds it (the gate's note). Very stale
+// no later than the Watcher's own Stuck limit (watcher.py stuck_after_s: 10 min hunting, else 2.5x the normal interval
+// and at least 30 min), so the clock card's "Stuck." always comes with a red stamp. "Data age
+// unknown" with no colour when the read time is unknown, missing or not a time; red "Watcher offline" when the entity
+// is unavailable (the app is down: "over N" from the moment it went), so the stamp warns when the data is stalest. An
+// interval that is unknown or 0 shows the age with no colour. Each card passes its own entity ids (fwAgeFrom): none
+// here, a pilot's copy rewrites them.
+const FW_AGE_JITTER = 0.3;
+const FW_AGE_ROOM_S = { hunt: 45, normal: 180 };
+const FW_AGE_PACE = / is held to \d+ FLICA loads an hour: checks wait for the budget, at least (\d+) s apart/;
+const FW_AGE_GATE = /^(?:(?:Hunting every \d+ s|Checking every \d+ min) is held to \d+ FLICA loads an hour: checks wait for the budget \(next at |FLICA (?:budget|host limit): )/;
+const FW_AGE_HST = new Intl.DateTimeFormat("en-US", { timeZone: "Pacific/Honolulu", year: "numeric", month: "short",
+  day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+function fwAgeDur(sec) {
+  const s = Math.max(0, Math.floor(sec)), m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (s < 60) return `${s} s`;
+  if (m < 60) return `${m} min`;
+  if (h < 24) return `${h} h` + (m % 60 ? ` ${m % 60} min` : "");
+  return `${d} d` + (h % 24 ? ` ${h % 24} h` : "");
+}
+function fwAgeSpan(sec) {  // a threshold in the hover text, to the second: "10 min 48 s"
+  const s = Math.max(0, Math.round(sec)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  return [h ? `${h} h` : "", m ? `${m} min` : "", r || !(h || m) ? `${r} s` : ""].filter(Boolean).join(" ");
+}
+function fwAgeWhen(t, now) {  // HST, with the day when it is not today's (HST): "01:27:00 HST", "Nov 9 23:30:00 HST"
+  const p = (d) => Object.fromEntries(FW_AGE_HST.formatToParts(new Date(d)).map((x) => [x.type, x.value]));
+  const a = p(t), b = p(now), day = a.year !== b.year ? `${a.month} ${a.day}, ${a.year} ` : a.month !== b.month || a.day !== b.day ? `${a.month} ${a.day} ` : "";
+  return `${day}${a.hour}:${a.minute}:${a.second} HST`;
+}
+function fwAgeMs(x) { const v = Date.parse(x == null ? "" : String(x)); return isNaN(v) ? NaN : v; }
+function fwDataAge(last, hunting, normalMin, huntSec, now, more) {
+  const o = more || {}, mode = hunting ? "hunt" : "normal", unit = hunting ? "s" : "min";
+  if (last === "unavailable") {  // the app is down (MQTT availability): no read comes until it is back
+    const went = fwAgeMs(o.lastChanged), gone = (now - went) / 1000;
+    return { sec: null, t: null, level: "red", word: "Watcher offline",
+      text: `Data age ${gone >= 60 ? `over ${fwAgeDur(gone)}` : "unknown"}, Watcher offline`,
+      read: isNaN(went) ? "The Watcher is offline." : `The Watcher is offline since ${fwAgeWhen(went, now)}.`,
+      rule: "No read comes until the Watcher app answers again." };
+  }
+  const per = parseFloat(hunting ? huntSec : normalMin), set = hunting ? per : per * 60;
+  const known = isFinite(set) && set > 0, note = String(o.note || ""), pm = FW_AGE_PACE.exec(note);
+  const pace = pm ? Number(pm[1]) : 0, room = FW_AGE_ROOM_S[mode];
+  const cyc = Math.ceil(+(Math.max(set, pace) * (1 + FW_AGE_JITTER)).toFixed(3)) + room;  // whole seconds
+  const why = (pace > set ? `the ${pace} s the FLICA budget holds the checks apart` : `the ${mode} check interval `
+    + `(${Math.round(per * 10) / 10} ${unit})`) + ` plus its 30 % jitter, and ${fwAgeSpan(room)} for the check`;
+  const stuck = hunting ? 600 : Math.max(1800, per * 150);  // watcher.py stuck_after_s
+  const rule = (a, b, x) => known ? `Stale past ${fwAgeSpan(a)}, very stale past ${fwAgeSpan(b)}: 1x and 2x the Watcher's `
+    + `longest ${mode} cycle, ${why}${b < a + cyc ? ", or its Stuck limit when that comes first" : ""}.${x || ""}`
+    : `No ${mode} check interval is known, so the age is not judged.`;
+  const t = fwAgeMs(last);
+  if (isNaN(t)) return { sec: null, t: null, level: "", word: "", text: "Data age unknown", read: "No good read on file.", rule: rule(cyc, Math.min(2 * cyc, stuck)) };
+  const sec = Math.max(0, (now - t) / 1000), nx = fwAgeMs(o.next);
+  const ch = Math.max(-Infinity, ...(o.changed || []).map(fwAgeMs).filter((v) => !isNaN(v)));
+  let due = t + cyc * 1000, from = "";
+  if (ch > t) {  // hunt or the interval changed after the read: the wait starts over, a next check planned before counts
+    const d = Math.max(ch + cyc * 1000, nx > t ? nx + room * 1000 : -Infinity);
+    if (d > due) { due = d; from = " Counted from the hunt or interval change after that read."; }
+  }
+  if (FW_AGE_GATE.test(note) && nx > t && nx + room * 1000 > due) {
+    due = nx + room * 1000; from = ` The FLICA budget or host limit holds the next check until ${fwAgeWhen(nx, now)}: counted from then.`;
+  }
+  const amber = (due - t) / 1000, red = from ? amber + cyc : Math.min(amber + cyc, stuck);
+  const level = !known ? "" : sec > red ? "red" : sec > amber ? "amber" : "";
+  const word = level === "red" ? "very stale" : level === "amber" ? "stale" : "";
+  return { sec, t, level, word, text: `Data age ${fwAgeDur(sec)}` + (word ? `, ${word}` : ""),
+    read: `Last good read ${fwAgeWhen(t, now)}.`, rule: rule(amber, red, from) };
+}
+// the stamp from a card's own entities (ids: last, state, next, hunt, normal, huntEvery); hunting by the switch or the
+// Watcher's state; the interval change that counts is the one in use (hunt's while hunting)
+function fwAgeFrom(states, ids, now) {
+  const e = (k) => (states && states[ids[k]]) || {};
+  const hunting = e("hunt").state === "on" || e("state").state === "hunting";
+  return fwDataAge(e("last").state, hunting, e("normal").state, e("huntEvery").state, now, {
+    note: (e("state").attributes || {}).note, next: e("next").state, lastChanged: e("last").last_changed,
+    changed: [e("hunt").last_changed, e(hunting ? "huntEvery" : "normal").last_changed] });
+}
+// ---- end shared data age ----
+
+const FW_AGE_IDS = { last: "sensor.flight_watcher_last_check", state: "sensor.flight_watcher_state",
+  next: "sensor.flight_watcher_next_check", hunt: "switch.flight_watcher_hunt_mode",
+  normal: "number.flight_watcher_normal_check_every", huntEvery: "number.flight_watcher_hunt_check_every" };
+
 class FlightWatcherScheduleCard extends HTMLElement {
   setConfig(c) { this.c = c || {}; this._pk = {}; }
   set hass(h) {
@@ -464,9 +1087,28 @@ class FlightWatcherScheduleCard extends HTMLElement {
     // 1.6.2 (Release A item 15): each state too, not only last_updated: the pilot portal keeps the month helper
     // (input_number.flight_watcher_month_offset) in the page, and a step there need not move last_updated
     this._h = h;
-    if (sig === this._sig) return;
+    if (!this._ageT && this.isConnected) this._ageT = setInterval(() => this._ageTick(), 1000);  // 1.7.12: it ticks
+    if (sig === this._sig) { this._ageTick(); return; }
     this._sig = sig;
     this._render();
+  }
+  // 1.7.12: the data age stamp (the clock card's), from this card's own entities (the shared block's fwAgeFrom)
+  _age() { return fwAgeFrom(this._h && this._h.states, FW_AGE_IDS, Date.now()); }
+  // its hover text: FLICA's own schedule time ("FLICA updated ...", the header showed it as "updated" before 1.7.12)
+  _ageTitle(a) { return (this._updT ? `FLICA updated ${this._updT}. ` : "") + `Data age: the time since the Watcher's last good read. ${a.read} ${a.rule}`; }
+  _ageHtml(upd) {
+    this._updT = upd || "";
+    const a = this._age();
+    return `<span class="ag" data-age="${a.level}" title="${this._esc(this._ageTitle(a))}">${this._esc(a.text)}</span>`;
+  }
+  // each second: that span only, never a redraw
+  _ageTick() {
+    const el = this.shadowRoot && this.shadowRoot.querySelector(".fwm .hd2 .ag[data-age]");
+    if (!el || !this._h) return;
+    const a = this._age(), title = this._ageTitle(a);
+    if (el.textContent !== a.text) el.textContent = a.text;
+    if (el.dataset.age !== a.level) el.dataset.age = a.level;
+    if (el.title !== title) el.title = title;
   }
   // FW-0010: the pilot's DOH from the state sensor ("" when none is on file or the Watcher is offline); only this
   // value is in the redraw signature, not the sensor's last_updated (its note changes on every check)
@@ -533,6 +1175,18 @@ class FlightWatcherScheduleCard extends HTMLElement {
   _role(h) { const s = ((h || this._h || {}).states || {})["sensor.flight_watcher_state"]; return (s && s.attributes && s.attributes.role) || ""; }
   _isAdmin(h) { const hh = h || this._h || {}; const s = (hh.states || {})["sensor.flight_watcher_state"]; return !!(s && s.attributes && s.attributes.role === "admin" && hh.user && hh.user.is_owner); }
   _marks() { return this._isAdmin() ? "availability, trade and drop marks" : "availability and trade marks"; }
+  // 1.7.18 (Nov 17: the lock did not show well on a Samsung phone, and it was not obvious when it was locked or
+  // unlocked): a switch, On = locked (the default). The lock icon (fwsLockSvg), the word Lock, a track with its knob
+  // (right = On) and the word On or Off, so the state never rests on colour alone. One button with role switch and
+  // the name "Lock schedule marks": a tap, Enter or Space flips it (the click handler's .lock), its title says what it
+  // freezes as before, and the stored value is the same (flight_watcher_lock, "0" = unlocked). On a phone (700 px or
+  // less) it has the header's first line to itself, so the month's arrows, title and Now stay together on the next
+  _lockHtml() {
+    const on = this._locked;
+    const t = on ? `Locked: ${this._marks()} cannot be changed by a tap. Tap to unlock.` : `Unlocked: taps change ${this._marks()}. Tap to lock.`;
+    return `<button type="button" class="lock ${on ? "shut" : "open"}" role="switch" aria-checked="${on ? "true" : "false"}" aria-label="Lock schedule marks" title="${t}">` +
+      `${fwsLockSvg(on)} <span class="lkl">Lock</span> <span class="lkt"><span class="lkk"></span></span> <span class="lks">${on ? "On" : "Off"}</span></button>`;
+  }
   _say(msg) { const box = this.shadowRoot.querySelector(".info"); if (box) { box.textContent = msg; box.style.whiteSpace = "pre-line"; box.style.display = "block"; } }
   _render() {
     if (this._locked === undefined) { let v = "1"; try { const g = localStorage.getItem("flight_watcher_lock"); v = g === null ? "1" : g; } catch (e) { v = "1"; } this._locked = v !== "0"; }  // v48: locked by default
@@ -566,7 +1220,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const locked = this._locked;
         const db = e.target.closest(".drb");
         if (db && !this._isAdmin()) return;  // FW-0048, FW-0063: drawn for the owner on the admin's card only; ignore a stale one
-        if (db && locked) { this._say(`Settings are locked: tap the lock at the top left to change ${this._marks().replace(" and ", " or ")}.`); return; }
+        if (db && locked) { this._say(`Settings are locked: turn the Lock switch at the top left Off to change ${this._marks().replace(" and ", " or ")}.`); return; }
         if (db && db.dataset.k) {
           db.classList.toggle("on");
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/drop/set", payload: JSON.stringify({ key: db.dataset.k }) });
@@ -574,7 +1228,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         }
         const tp = e.target.closest(".trb");  // 1.7.7: the pairing itself opens its detail
         if (tp && tp.dataset.k && tp.dataset.k.split("|")[1] <= new Date(Date.now() - 10 * H).toISOString().slice(0, 10)) return;  // v46: a started trip cannot be traded
-        if (tp && tp.dataset.k && locked) { this._say(`Settings are locked: tap the lock at the top left to change ${this._marks().replace(" and ", " or ")}.`); return; }
+        if (tp && tp.dataset.k && locked) { this._say(`Settings are locked: turn the Lock switch at the top left Off to change ${this._marks().replace(" and ", " or ")}.`); return; }
         if (tp && tp.dataset.k) {
           const row = tp.closest("td"); row.querySelector(".trip").classList.toggle("tr"); row.querySelector(".trb").classList.toggle("on");
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/trade/set", payload: JSON.stringify({ key: tp.dataset.k }) });
@@ -607,7 +1261,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const dc = e.target.closest("td"); if (!dc || dc.cellIndex > 1) return;  // v43 (Ryan): only the day/date cells toggle a blocked day
         const tr = e.target.closest("tr[data-d]"); if (!tr || !this._h) return;
         if (tr.classList.contains("vac")) { this._say("Vacation day: always unavailable."); return; }  // v48 (Ryan): VAC days cannot be toggled
-        if (locked) { this._say(`Settings are locked: tap the lock at the top left to change ${this._marks().replace(" and ", " or ")}.`); return; }
+        if (locked) { this._say(`Settings are locked: turn the Lock switch at the top left Off to change ${this._marks().replace(" and ", " or ")}.`); return; }
         tr.classList.toggle("blk");
         this._h.callService("mqtt", "publish", { topic: "flight_watcher/blocked/set", payload: JSON.stringify({ date: tr.dataset.d }) });
       });
@@ -668,6 +1322,15 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const mergeT = (live, ver) => { const o = { ...live }; for (const [k, v] of Object.entries(ver || {})) o[k] = { ...(live[k] || {}), ...v }; return o; };
     const ownT = vsel ? mergeT(liveOwnT, vsel.trips) : awd0 ? mergeT(liveOwnT, awd0.trips) : liveOwnT;
     const pk = this._pack(key);
+    // 1.7.11 (FW-0080): the bid period this month's totals cover, as FLICA's do (never the calendar month): the month's
+    // pairings package's start..end, else the Watcher's (sensor periods: the pairing files, else the schedule pages),
+    // else the calendar month; the totals line says which
+    const pkE = this._packE(key), perW = ((st && st.attributes && st.attributes.periods) || {})[key] || null;
+    const bp = pkE && FWG_ISO.test(pkE.start || "") && FWG_ISO.test(pkE.end || "") ? { from: pkE.start, to: pkE.end, src: "package" }
+      : perW && FWG_ISO.test(perW.start || "") && FWG_ISO.test(perW.end || "") ? { from: perW.start, to: perW.end, src: ["package", "schedule"].includes(perW.src) ? perW.src : "calendar" }
+        : { from: `${key}-01`, to: new Date(Date.UTC(y, m + 1, 0)).toISOString().slice(0, 10), src: "calendar" };
+    const inBp = (d) => bp.from <= d && d <= bp.to;
+    const bpNext = (side) => new Date(Date.UTC(y, m + (side === "before" ? -1 : 1), 1)).toISOString().slice(0, 7);
     const grid = ((S["sensor.flight_watcher_reserve_grid"] || {}).attributes || {}).days || {};
     const trade = new Set(((S["sensor.flight_watcher_would_trade"] || {}).attributes || {}).keys || []);
     const swaps = ((S["sensor.flight_watcher_swap_ideas"] || {}).attributes || {}).ideas || [];
@@ -680,8 +1343,22 @@ class FlightWatcherScheduleCard extends HTMLElement {
       body = `<div class="none">No schedule for ${MONTHS[m]} yet.</div>`;
     } else {
       const items = mon.items || [];
-      const busy = (a, b) => items.find((it) => a <= it.end && b >= it.start);
-      const inTrip = (d) => items.some((it) => it.trip !== "VAC" && it.trip !== PAYP && it.start <= d && d <= it.end);
+      const prevKey = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0, 7);
+      const prevItems = (SM[prevKey] || {}).items || [];
+      const nextKey = new Date(Date.UTC(y, m + 1, 1)).toISOString().slice(0, 7);
+      const nextItems = (SM[nextKey] || {}).items || [];
+      // 1.7.11 review: the three months' items, each trip and start once (the own list's rule, this month's copy
+      // first). A trip in progress from the month before (H3607 Nov 30 to Dec 2) has no code day on a page that
+      // starts Dec 1, so this month's items alone miss it: the Open column's clash test, the layover cell and the
+      // in-progress mark read these, as the Watcher's schedule_fit reads every month
+      const near = [], nearSeen = new Set();
+      for (const it of [...items, ...prevItems, ...nextItems]) {
+        if (!it || !it.trip || nearSeen.has(`${it.trip}|${it.start}`)) continue;
+        nearSeen.add(`${it.trip}|${it.start}`);
+        near.push(it);
+      }
+      const busy = (a, b) => near.find((it) => a <= (it.end || it.start) && b >= it.start);
+      const inTrip = (d) => near.some((it) => it.trip !== "VAC" && it.trip !== PAYP && it.start <= d && d <= (it.end || it.start));
       const opens = {};
       for (const p of pot) {
         const a = this._iso(p.start || (p.dates || "").split("-")[0], y);
@@ -693,15 +1370,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
       }
       // own trips: report / release (app times first, then the pairing package)
       const own = [];
-      const prevKey = new Date(Date.UTC(y, m - 1, 1)).toISOString().slice(0, 7);
-      const prevItems = (SM[prevKey] || {}).items || [];
-      const nextKey = new Date(Date.UTC(y, m + 1, 1)).toISOString().slice(0, 7);
-      const nextItems = (SM[nextKey] || {}).items || [];
-      // each item with the days of the month it came from (the viewed month's may be a version's)
-      const prevDays = (SM[prevKey] || {}).days || [], nextDays = (SM[nextKey] || {}).days || [];
-      const ownSrc = [...prevItems.map((it) => [it, prevDays]), ...items.map((it) => [it, mon.days || []]), ...nextItems.map((it) => [it, nextDays])];
-      for (const [it, itDays] of ownSrc) {
+      // 1.7.11 (Ryan, Nov 17: "over block on Dec 02?"): a trip across a month end (H3607 Nov 30 to Dec 2) is on both
+      // months' schedules; it is ONE trip, so it enters own (and the FAR legs, duties, rest) once (recall.line_records'
+      // rule). FLICA gives a trip in progress no code day on a later page: a page lists it at its start or not at all
+      const ownSeen = new Set();
+      for (const it of [...prevItems, ...items, ...nextItems]) {
         if (it.trip === "VAC" || !/^[A-Z]\d{4}/.test(it.trip || "")) continue;
+        if (ownSeen.has(`${it.trip}|${it.start}`)) continue;
+        ownSeen.add(`${it.trip}|${it.start}`);
         const t = ownT[`${it.trip}|${it.start}`] || {};
         const p = pk ? pk[it.trip.slice(0, 5)] : null;
         let rep = null, rel = null;
@@ -709,12 +1385,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
         else if (p && p.days.has(it.start)) rep = this._t(it.start, p.report);
         if (p && p.days.has(it.start)) rel = this._t(it.start, p.release) + p.relDays * 24 * H;
         else if (t.last_arr) {
-          // trip not in the package: it ends on the first later day its own month shows back in HNL, up to its own end
-          // (1.7.14: never a later trip's return day, never the viewed month's for a trip from another month), else
-          // on its own end (a turn: its own day; a trip running into the next month: the end its item carries)
-          const tEnd = it.end || it.start;
-          const back = itDays.find(([d, tr, ly]) => d > it.start && d <= tEnd && !tr && ly === "HNL");
-          const end = back ? back[0] : tEnd;
+          // trip not in the package: it ends on the first later day the schedule shows back in HNL. 1.7.11 review: a
+          // day of its own only (after its start, up to its end), on this page or its own month's: the first HNL day
+          // on this page after a trip from the month before is a later trip's (Dec 2 for every November trip in the
+          // December view), and an end with no HNL day (the next trip starts that day) is the item's end
+          const last = it.end || it.start;
+          const back = [...(mon.days || []), ...((SM[String(it.start).slice(0, 7)] || {}).days || [])]
+            .filter(([d, tr, ly]) => d > it.start && d <= last && !tr && ly === "HNL").map(([d]) => d).sort()[0];
+          const end = back || last;
           rel = this._t(end, t.last_arr) + 15 * 60e3; if (rep && rel <= rep) rel += 24 * H;
         }
         own.push({ it, rep, rel });
@@ -777,48 +1455,103 @@ class FlightWatcherScheduleCard extends HTMLElement {
       }
       // v49 (Ryan, Nov 5): FAR columns on EVERY day, looking back and forward.
       // 30/7 (117.25(b)): longest free block in the 168 h before a report that day: the real duty start on a duty day,
-      // 00:01 on an open day (worst case); blank on a mid-trip day with no duty start.
-      // 100/672 (117.23(b)(1)): leg block in the 672 h ending 24:00 that day; Room = 100:00 minus the busiest 672 h window
-      // that contains the day, back and forward 28 days.
-      const legs = [];
+      // 00:01 on an open day; blank on a mid-trip day with no duty start. 1.7.13 review: 00:01 is not the worst case (a
+      // later report that day can lose the break off the back of its 168 h), so the tick speaks for that one report
+      // and its title gives 'covers reports until'.
+      // 100/672 (117.23(b)(1)): leg block in the 672 h ending 24:00 that day (the 100h in 672h cell). Room = 100:00 minus
+      // the busiest 672 h window that holds any part of the day, back and forward. 1.7.13 (F1, Ryan Nov 18: "fix all of
+      // these things"): it tries the windows ending 24:00 HST (k = 0 to 27 below, leg by leg as the 100h cell counts
+      // them, so Room never shows more room than that cell) and far._cum's: each 672 h starting at a duty's start or
+      // ending at its block-in, where the busiest one always is, a block counting when its whole span is in the window
+      // (far._cum's sure count on recall._trip's spans, farSpans), so Room reads over wherever a pickup's FAR check finds
+      // a window over 100:00 that holds the day. A window holds the day when it holds part of it (far._cum: a window
+      // holding part of the pickup), so it ends after 00:00 that day and starts before 24:00.
+      // 1.7.13: headed "30h in 7d", "100h in 672h" and "Room to 100h"; the two flight time cells show what is left of
+      // the 100:00 (farLeft), the 30 h cell its states with units (far30Txt).
+      // 1.7.13 FAR review (R2, R3): a trip with a duty block missing counts its whole Block, as far.py does (recall._trip
+      // puts it on one span from report to last block-in): the duties with a block as before, the rest of the Block on
+      // the duties without one (departure to arrival, shared by their length), else on far.py's span (farSpans); with no
+      // trip Block its duties with a block count and it reads "~". A trip with no duties ends its leg at the last
+      // block-in (o.rel less the 15 min debrief, PWA 2.19.b), as far.py's span does
+      const legs = [], unk = [];
+      const atMin = (iso, mn) => this._t(iso, "0:0") + mn * 60e3;
       for (const o of own) {
-        const t = ownT[`${o.it.trip}|${o.it.start}`] || {}; const base = this._t(o.it.start, "0:0");
+        const t = ownT[`${o.it.trip}|${o.it.start}`] || {}; const base = this._t(o.it.start, "0:0"), n0 = legs.length;
         // duty blk can carry credit on some trips, so each trip's legs are scaled to FLICA's trip Block
         const dsum = (t.duties || []).reduce((sm, du) => sm + (du.blk || 0), 0) / 60, tb = hrs(t.blk), sc = tb != null && dsum > 0 ? Math.min(1, tb / dsum) : 1;
-        if (t.duties && t.duties.length) t.duties.forEach((du) => { if (du.blk) legs.push({ a: base + (du.arr - du.blk) * 60e3, b: base + du.arr * 60e3, h: du.blk / 60 * sc }); });
-        else { const bh = hrs(t.blk); if (bh != null && o.rep && o.rel) legs.push({ a: o.rep, b: o.rel, h: bh }); }
+        const noBlk = (t.duties || []).filter((du) => du.blk == null || du.blk === ""), miss = noBlk.length > 0;
+        const span = (du) => { const d0 = farInt(du && du.dep), d1 = farInt(du && du.arr); return d0 != null && d1 != null && d1 > d0 ? d1 - d0 : 0; };
+        const nbLen = noBlk.reduce((sm, du) => sm + span(du), 0), rest = tb != null ? Math.max(0, tb - dsum * sc) : null;
+        const one = miss && tb != null && !noBlk.every((du) => span(du) > 0) ? farSpans(o.it, t, atMin).filter((sp) => sp.e > sp.s)[0] : null;
+        if (one) legs.push({ a: one.s, b: one.e, h: tb });
+        else if (t.duties && t.duties.length) {
+          t.duties.forEach((du) => { if (du.blk) legs.push({ a: base + (du.arr - du.blk) * 60e3, b: base + du.arr * 60e3, h: du.blk / 60 * sc }); });
+          if (miss && rest) noBlk.forEach((du) => legs.push({ a: base + farInt(du.dep) * 60e3, b: base + farInt(du.arr) * 60e3, h: rest * span(du) / nbLen }));
+        } else { const bh = hrs(t.blk); if (bh != null && o.rep && o.rel) legs.push({ a: o.rep, b: Math.max(o.rep, o.rel - 15 * 60e3), h: bh }); }
+        // 1.7.13 (F3): a trip that adds no block (no times on file: no Block and no duties, a {} record, no record) is
+        // not known in full, so a window holding it (its report to release, else its whole days) reads with "~"; so
+        // does one whose duties count without the trip's Block when a duty has none (R2: part)
+        const part = miss && tb == null && legs.length > n0;
+        if ((legs.length === n0 && tb !== 0) || part) {
+          const known = o.rep && o.rel && o.rel > o.rep;
+          unk.push({ a: known ? o.rep : base, b: known ? o.rel : this._t(o.it.end || o.it.start, "0:0") + 24 * H,
+            txt: `${o.it.trip} ${String(o.it.start).slice(5).replace("-", "/")}`, part });
+        }
       }
       const blkIn = (w0, w1) => legs.reduce((sm, l) => { const ov = Math.min(l.b, w1) - Math.max(l.a, w0); return ov > 0 ? sm + l.h * Math.min(1, ov / Math.max(1, l.b - l.a)) : sm; }, 0);
+      const unkIn = (w0, w1) => unk.filter((u) => u.a < w1 && w0 < u.b);
+      const unkTxt = (u) => {
+        const none = u.filter((x) => !x.part).map((x) => x.txt), part = u.filter((x) => x.part).map((x) => x.txt);
+        return "~ = not known in full: " + [none.length ? `no block times on file yet for ${none.join(", ")} (counted 0:00)` : "",
+          part.length ? `no block time on file yet for a duty of ${part.join(", ")} (counted the duties with a block)` : ""].filter(Boolean).join("; ");
+      };
+      // far._cum's windows (1.7.13 F1), each with its sure block in whole minutes, earliest end first
+      const fsp = [];
+      for (const o of own) for (const sp of farSpans(o.it, ownT[`${o.it.trip}|${o.it.start}`] || {}, (iso, mn) => this._t(iso, "0:0") + mn * 60e3)) if (sp.h != null) fsp.push(sp);
+      const sureIn = (w0, w1) => fsp.reduce((sm, sp) => (sp.s >= w0 && sp.e <= w1 ? sm + sp.h : sm), 0);
+      const farWin = fsp.flatMap((sp) => [[sp.s, sp.s + 672 * H], [sp.e - 672 * H, sp.e]])
+        .map(([w0, w1]) => ({ a: w0, b: w1, m: Math.round(sureIn(w0, w1) * 60) })).sort((x, y) => x.b - y.b);
+      const winEnd = (ms) => (ms % (24 * H) === 0 ? `24:00 ${this._d(ms - 1)}` : `${this._hm(ms)} ${this._d(ms)}`);
       const free30 = (R) => { const w0 = R - 168 * H; let big = null;
         for (const f of frees) { const a0 = Math.max(f.a, w0), a1 = Math.min(f.b, R); if (a1 > a0 && (!big || a1 - a0 > big.b - big.a)) big = { a: a0, b: a1, at: f.at }; }
         return big; };
       const inDuty = (ms) => duties.some((du) => du.start <= ms && ms < du.end);
-      const hmS = (h) => (h < 0 ? "-" + hm(-h) : hm(h));
       const dutyStartOn = {};
       for (const du of duties) { const k = this._d(du.start); if (dutyStartOn[k] == null || du.start < dutyStartOn[k]) dutyStartOn[k] = du.start; }
       const farOn = {};
       for (const [d] of (mon.days || [])) {
         const R = dutyStartOn[d] != null ? dutyStartOn[d] : this._t(d, "0:01");
         const mid = dutyStartOn[d] == null && (inDuty(R) || own.some((o) => o.rep && o.rel && o.rep < R && R < o.rel));  // layover day inside a trip
-        let t30 = "&#8211;", t30t = "Mid-trip (layover): no report this day. The layover itself gets the teal edge if it is 30 h or more.", bad30 = false;
+        let t30 = far30Txt("mid"), t30t = "Mid-trip (layover): no report this day. The layover itself gets the teal edge if it is 30 h or more.", bad30 = false;
         if (!mid) {
           const big = free30(R); const ok = !!big && big.b - big.a >= 30 * H; const unknown = !ok && R - 168 * H < dataStart;
           const gu = ok ? Math.min(big.b, R) + 138 * H : null;
           const endD = ok ? this._d(Math.min(big.b, R)) : "";
-          t30 = ok ? `&#10003; <span class="k">${endD.slice(5).replace("-", "/")}</span>` : (unknown ? "?" : "need 30");
+          // 1.7.13: worded with units (far30Txt); the check itself is today's
+          t30 = far30Txt(ok ? "ok" : unknown ? "unknown" : "need", ok ? (big.b - big.a) / H : 0, endD.slice(5).replace("-", "/"));
           bad30 = !ok && !unknown;
-          t30t = `${dutyStartOn[d] != null ? "Duty starts " + this._hm(R) : "If you reported at 00:01"}: longest free block in the 168 h before was ${big ? this._dur(big.b - big.a) + " from " + this._hm(big.a) + " " + this._d(big.a) + (big.at && big.at !== "HNL" ? " at " + big.at : "") : "none"}. ` + (ok ? `30 in 7 met (FAR 117.25(b)); this break covers reports until ${this._hm(gu)} ${this._d(gu)}.` : unknown ? "The window reaches before the schedule on file." : "Under 30:00: 30 in 7 NOT met (FAR 117.25(b)).");
+          t30t = `${dutyStartOn[d] != null ? "Duty starts " + this._hm(R) : "If you reported at 00:01"}: longest free block in the 168 h before was ${big ? this._dur(big.b - big.a) + " from " + this._hm(big.a) + " " + this._d(big.a) + (big.at && big.at !== "HNL" ? " at " + big.at : "") : "none"}. ` + (ok ? `30 h free in 7 days met (FAR 117.25(b)): this break covers reports until ${this._hm(gu)} ${this._d(gu)}.` : unknown ? "The window reaches before the schedule on file." : "Under 30:00: 30 h free in 7 days NOT met (FAR 117.25(b)).");
         }
-        const E = this._t(d, "0:0") + 24 * H;
+        const E = this._t(d, "0:0") + 24 * H, D0 = E - 24 * H;
         const back = blkIn(E - 672 * H, E);
         let worst = back, wE = E;
         for (let k = 1; k < 28; k++) { const e2 = E + k * 24 * H; const v = blkIn(e2 - 672 * H, e2); if (v > worst) { worst = v; wE = e2; } }
-        const approxB = E - 672 * H < dataStart, approxR = approxB || E + 27 * 24 * H > dataEnd;
-        const room = 100 - worst;
-        farOn[d] = { t30, t30t, bad30, ok30: t30.startsWith("&#10003;"), b: hm(back) + (approxB ? "~" : ""), over: back >= 100,
-          bt: `Block flown in the 672 h (28 days) ending 24:00 ${d}, leg by leg${approxB ? "; ~ = part of the window is before the schedule on file" : ""}. FAR 117.23(b)(1) limit 100:00.`,
-          room: hmS(room) + (approxR ? "~" : ""), rbad: room <= 0,
-          rt: `Room = 100:00 minus the busiest 672 h window this day falls in (${hm(worst)} in the 28 days ending 24:00 ${this._d(wE - 1)}), looking back and forward. The most block you could add on this day.${approxR ? " ~ = a window reaches past the schedule on file." : ""}` };
+        // 1.7.13: both cells are what is left of the 100:00 (farLeft): back = the 672 h ending that day, worst = the
+        // busiest window that holds the day, back and forward. 1.7.13 review: each block is rounded to the minute once
+        // (bm, wm) and the cell is 100:00 less that, so the cell and its title add up. 1.7.13 (F1): far._cum's windows
+        // holding part of the day; a tie keeps the window ending 24:00
+        const bm = Math.round(back * 60);
+        let wm = Math.round(worst * 60);
+        for (const w of farWin) if (w.a < E && D0 < w.b && w.m > wm) { wm = w.m; wE = w.b; }
+        // "~": a window before or after the schedule on file, or holding a trip with no times (1.7.13 F3); the windows
+        // that hold part of the day start after 00:00 28 days before and end before 24:00 28 days after
+        const outB = E - 672 * H < dataStart, outR = D0 - 672 * H < dataStart || E + 672 * H > dataEnd;
+        const uB = unkIn(E - 672 * H, E), uR = unkIn(D0 - 672 * H, E + 672 * H);
+        const bl = farLeft((6000 - bm) / 60, outB || uB.length > 0), rl = farLeft((6000 - wm) / 60, outR || uR.length > 0);
+        farOn[d] = { t30, t30t, bad30, ok30: t30.startsWith("&#10003;"), b: bl.txt, over: bl.bad,
+          bt: `100h/672h: ${bl.txt}. ${hm(bm / 60)} block flown or scheduled in the 672 h (28 days) ending 24:00 ${d}, leg by leg${outB ? "; ~ = part of the window is before the schedule on file" : ""}${uB.length ? "; " + unkTxt(uB) : ""}. FAR 117.23(b)(1): at most 100 flight hours in any 672 consecutive hours; this cell checks the 672 h ending 24:00 that day.`,
+          room: rl.txt, rbad: rl.bad,
+          rt: `Room to 100h: ${rl.txt}. 100:00 minus the busiest 672 h window that holds part of this day (${hm(wm / 60)} flown or scheduled in the 672 h ending ${winEnd(wE)}), looking back and forward (FAR 117.23(b)(1)).${outR ? " ~ = a window reaches past the schedule on file." : ""}${uR.length ? ` ${unkTxt(uR)}.` : ""}` };
       }
       // when the next 30 h off is needed: first report time after now with no 30 h free block in the 168 h before it
       let need30 = null;
@@ -893,26 +1626,34 @@ class FlightWatcherScheduleCard extends HTMLElement {
         for (const it of its) {
           if (it.trip !== PAYP || !it.start) continue;
           const all = dys.filter(([d, t]) => t === PAYP && it.start <= d && d <= (it.end || it.start)).map(([d]) => d);
-          const ds = all.filter((d) => d.slice(0, 7) === key);
+          const ds = all.filter((d) => inBp(d));  // FW-0080: the PAYP days in this bid period
           if (!ds.length) continue;
-          const rec = tr[`${PAYP}|${it.start}`] || null, c = rec ? hrs(rec.credit) : null;
+          let rec = tr[`${PAYP}|${it.start}`] || null, c = rec ? hrs(rec.credit) : null;
+          // 1.7.11 review (FW-0080): no record of its own (a PAYP listed again on this page, from Dec 1, the bid period
+          // before's last day): the record of the PAYP it continues gives its share when its split names this bid period
+          if (c == null) {
+            const prev = Object.entries(tr || {}).find(([k, r]) => k.startsWith(PAYP + "|") && r && r.payp && !r.of && r.split && typeof r.split === "object"
+              && hrs(r.split[key]) != null && k.slice(PAYP.length + 1) < it.start && it.start <= fwgDay(r.end || k.slice(PAYP.length + 1), 1));
+            if (prev) { rec = { ...prev[1], credit: prev[1].split[key], split: null, of: prev[0] }; c = hrs(rec.credit); }
+          }
           const sp = c != null && rec.split && typeof rec.split === "object" ? rec.split : null;
-          out.push({ it, ds, all, row: ds[0], rec: c != null ? rec : null, h: c == null ? null : sp ? hrs(sp[key]) : (ds.includes(it.start) ? c : null), est: false });
+          // a continuation record (of) holds this bid period's share already (versions.payp_entries)
+          out.push({ it, ds, all, row: ds[0], rec: c != null ? rec : null, h: c == null ? null : sp ? hrs(sp[key]) : (rec.of || ds.includes(it.start) ? c : null), est: false });
         }
         for (const [k, r] of Object.entries(tr || {})) {
           if (!r || !r.payp || !k.startsWith(PAYP + "|") || hrs(r.credit) == null) continue;
           const s0 = k.slice(PAYP.length + 1), e0 = r.end || s0, prot = String(r.protected || "").split(",").filter(Boolean);
           if (its.some((it) => it.trip === PAYP && it.start <= e0 && s0 <= (it.end || it.start))) continue;
           const cov = its.find((it) => isP(it.trip) && s0 <= it.start && it.start <= e0 && !prot.some((q) => q === `${it.trip}|${it.start}` || q.slice(0, 5) === it.trip.slice(0, 5)));
-          const w = !cov ? null : r.split && typeof r.split === "object" ? hrs(r.split[key]) : (s0.slice(0, 7) === key ? hrs(r.credit) : null);
+          const w = !cov ? null : r.split && typeof r.split === "object" ? hrs(r.split[key]) : (inBp(s0) ? hrs(r.credit) : null);
           if (w) out.push({ it: null, cov, k, ds: [], all: [], row: null, rec: r, h: null, want: w, est: false });
         }
-        const mds = dys.filter(([d]) => d.slice(0, 7) === key), one = `${key}-01`;
+        const mds = dys.filter(([d]) => inBp(d)), one = bp.from;
         const known = (d, t) => hrs((tr[`${t}|${d}`] || {}).credit) != null || !!(pk && pk[t.slice(0, 5)] && hx(pk[t.slice(0, 5)].credit) != null);
         const why = flica == null ? `no ${srcFl} month credit to check it against`
           : mds.some(([, t]) => t && t !== "VAC" && t !== PAYP && !isP(t)) ? `${srcFl}'s month credit holds codes the card does not count (${[...new Set(mds.map(([, t]) => t).filter((t) => t && t !== "VAC" && t !== PAYP && !isP(t)))].join(", ")})`
           : mds.some(([d, t]) => isP(t) && !known(d, t)) ? "a trip's credit is not read yet"
-          : [...prevItems, ...its].some((it) => isP(it.trip) && it.start < one && (it.end || it.start) >= one) ? "a trip from last month runs into this month" : "";
+          : [...prevItems, ...its].some((it) => isP(it.trip) && it.start < one && (it.end || it.start) >= one && !carried.has(`${it.trip}|${it.start}`) && !(figs(it.start, it.trip).sp)) ? "a trip from the bid period before runs into this one" : "";
         let left = why ? null : Math.round((flica - other - out.reduce((a, p) => a + (p.h || 0), 0)) * 60);
         for (const p of out.filter((x) => x.want)) if (left != null && left >= Math.round(p.want * 60) - 1) { p.h = p.want; left -= Math.round(p.want * 60); }
         const need = out.filter((p) => p.it && !p.rec);
@@ -928,36 +1669,88 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const head = `Pay protected: ${prot || "the removed trip is not on file"} (${PAYP_REF})`;
         if (!p) return head;
         const sp = p.rec && p.rec.split && typeof p.rec.split === "object" ? Object.entries(p.rec.split).sort().map(([m0, v]) => `${MONTHS[parseInt(m0.slice(5, 7), 10) - 1]} ${v}`).join(", ") : "";
-        const by = sp ? ` by month: ${sp} (PWA 4.A: each month counts the share of the duties departing in it)` : "";
-        if (p.rec && p.h == null) return `${head}\nIts credit ${p.rec.credit} counts ${sp ? by.trim() : `in ${MONTHS[parseInt(p.it.start.slice(5, 7), 10) - 1]}, the month the PAYP starts`}.`;
-        if (p.rec) return `${head}\nCredit ${p.rec.credit} kept${p.rec.src ? ` (from ${p.rec.src})` : ""}${p.rec.of ? `, this month's share of the PAYP from ${mdy(p.rec.of.split("|")[1] || "")} (PWA 4.A)` : ""}${by}; no block (not flown).`;
+        const by = sp ? ` by bid period: ${sp} (PWA 4.A: each bid period counts the duties departing in it)` : "";
+        if (p.rec && p.h == null) return `${head}\nIts credit ${p.rec.credit} counts ${sp ? by.trim() : "in the bid period the PAYP starts in"}.`;
+        if (p.rec) return `${head}\nCredit ${p.rec.credit} kept${p.rec.src ? ` (from ${p.rec.src})` : ""}${p.rec.of ? `, this bid period's share of the PAYP from ${mdy(p.rec.of.split("|")[1] || "")} (PWA 4.A)` : ""}${by}; no block (not flown).`;
         if (p.est) return `${head}\nCredit ${hm(p.h)} is an estimate: ${srcFl}'s month credit ${hm(fl(tt.credit))} less everything else counted${p.ds.length ? `, over ${p.ds.length} PAYP day${p.ds.length > 1 ? "s" : ""}` : ""}.`;
         if (p.unk) return `${head}\nCredit unknown, not counted: ${p.why}.`;
         return `${head}\nNo credit counted: ${srcFl}'s month credit leaves none for it.`;
       };
-      // a row's Block / Credit / Soft as the month counts them (PWA 4.A share), for the rows and the PAYP estimate
-      const figs = (d, trip) => {
-        const ot = trip && trip !== "VAC" ? (ownT[`${trip}|${d}`] || {}) : {};
-        const pkr = trip && trip !== "VAC" && trip !== PAYP && pk ? (pk[trip.slice(0, 5)] || {}) : {};
+      // FW-0080: the package of the bid period a trip's first day is in (this month's, the one before or after), for its
+      // duties' TCRD: fetched only for a trip that starts outside this bid period
+      // 1.7.11 review (F#32): packWait = a package a price or a split asked for is still loading, so the month's
+      // Improved-Pay-Gross waits for it too (priced before it, a trip across the edge counts its block share)
+      let packWait = false;
+      const packAt = (d) => { if (inBp(d)) return pkE; const e = this._packE(bpNext(d < bp.from ? "before" : "after")); if (e === null) packWait = true; return e; };
+      // the package map that lists a trip starting on d: this month's in the bid period, else the bid period's of d
+      const pkOf = (d) => { if (inBp(d)) return pk; const e = packAt(d); return e ? e.map : null; };
+      // a row's Block / Credit / Soft as this bid period counts them (PWA 4.A, fwSplit), for the rows, the carried trips
+      // and the PAYP estimate. FW-0080: the trip's own duties (FLICA's pairing page), each one's TCRD from its pairings
+      // package's detail (the exact pairing, listed on that day, as many duties), else the block share (an estimate);
+      // a trip with no duty on file pays in the bid period of its first day (inP: any part of it counts here)
+      // 1.7.11 review (FW-0080): a trip whose own times are not read yet places the package detail's duties
+      // (fwPkgDuties, their TCRD with them), so it splits as the Watcher splits it (pilot_price, package_details)
+      const splitOf = (d, trip, ot, cH, bH) => {
+        if (!trip || trip === "VAC" || trip === PAYP || !isP(trip)) return null;
+        const own = Array.isArray(ot.duties) && ot.duties.length && ot.duties.every((x) => x && typeof x.dep === "number" && typeof x.blk === "number") ? ot.duties : null;
+        if (!own && Array.isArray(ot.duties) && ot.duties.length) return null;
+        const pe = packAt(d), pr = pe && Object.prototype.hasOwnProperty.call(pe.map, trip) && pe.map[trip].days.has(d) ? pe.map[trip] : null;
+        if (!own) { const pdu = fwPkgDuties(pr); return pdu.length ? fwSplit(d, pdu, bp.from, bp.to, cH, bH) : null; }
+        const pd = pr && pr.det && Array.isArray(pr.det.duties) && pr.det.duties.length === own.length ? pr.det.duties : null;
+        return fwSplit(d, own.map((x, i) => ({ dep: x.dep, blk: x.blk, tcrd: pd && pd[i] && typeof pd[i] === "object" ? pd[i].tcrd : null })), bp.from, bp.to, cH, bH);
+      };
+      const figs = (d, trip, tr) => {
+        const ot = trip && trip !== "VAC" ? ((tr || ownT)[`${trip}|${d}`] || {}) : {};
+        // 1.7.11 review: the package of the bid period the trip starts in (a trip from the bid period before is in
+        // that one's package, not this month's)
+        const pkm = isP(trip) ? pkOf(d) : null;  // a pairing only (a code never asks for another package)
+        const pkr = pkm ? (pkm[trip.slice(0, 5)] || {}) : {};
         // 1.6.3: the pairings package writes credit as "15h00"; hrs() reads "15:00", so a trip whose own times are not
         // read yet (a pilot's first days, or any new trip) counted 0:00 and $0 in the row and the month totals
         const pkC = pkr.credit ? String(pkr.credit).trim().replace(/^(\d+)h(\d{2})$/, "$1:$2") : "";
         const bcsAll = trip && trip !== "VAC" ? [ot.blk || "", ot.credit || pkC || "", ot.soft || ""] : ["", "", ""];
-        // PWA 4.A: a segment pays on the date it originates, so duties that start next month are next month's pay
-        let share = 1, blkOut = 0, nextMon = "";
-        if (trip && trip !== "VAC" && ot.duties && ot.duties.length && ot.duties[0].blk != null) {
-          const base = this._t(d, "0:0"); let inM = 0, all = 0;
-          for (const du of ot.duties) { const dm = this._d(base + du.dep * 60e3).slice(0, 7); all += du.blk; if (dm === key) inM += du.blk; else { blkOut += du.blk; nextMon = dm; } }
-          share = all ? inM / all : 1;
-        }
-        const bcs = share < 1 ? [hm((hrs(bcsAll[0]) || 0) * share), hm((hrs(bcsAll[1]) || 0) * share), hm(Math.max(0, (hrs(bcsAll[1]) || 0) * share - (hrs(bcsAll[0]) || 0) * share))] : bcsAll;
-        return { ot, pkr, bcsAll, bcs, share, blkOut, nextMon };
+        const bAll = hrs(bcsAll[0]) != null ? hrs(bcsAll[0]) : ot.blk ? null : hx(pkr.block);  // the package's block for a split
+        const sp = splitOf(d, trip, ot, hrs(bcsAll[1]), bAll);
+        const inP = sp ? sp.in : inBp(d), whole = sp ? sp.whole : inP;
+        const z = (v) => (v ? "0:00" : "");
+        const bcs = whole ? bcsAll : sp ? [sp.bl != null ? hm(sp.bl / 60) : "", sp.cr != null ? hm(sp.cr / 60) : "", sp.cr != null && sp.bl != null ? hm(Math.max(0, sp.cr - sp.bl) / 60) : ""]
+          : [z(bcsAll[0]), z(bcsAll[1]), z(bcsAll[2])];
+        return { ot, pkr, bcsAll, bcs, inP, whole, sp };
       };
+      // FW-0080: what a row's split mark says (its part here, and what part pays in the other bid period, PWA 4.A)
+      const splitWhy = (d, trip, F) => {
+        // 1.7.11 review: only a pairing splits (a reserve or other code on a grid day outside the bid period is plain)
+        if (F.whole || !trip || trip === "VAC" || trip === PAYP || !isP(trip)) return "";
+        const sd = F.sp && F.sp.side ? F.sp.side : d < bp.from ? "before" : "after";
+        const edge = sd === "before" ? `before ${mdy(bp.from)}` : `after ${mdy(bp.to)}`;
+        const other = `the ${MONTHS[parseInt(bpNext(sd).slice(5, 7), 10) - 1]} bid period`;
+        const all = `${F.bcsAll[0] || "?"} block / ${F.bcsAll[1] || "?"} credit in all`;
+        // 1.7.11 review: no duty times on file, so nothing says when any of it flew: it pays where its first day is
+        if (!F.sp) return `${trip}: ${all}, starts ${mdy(d)}; no duty times on file, so the whole trip pays in ${other}, the bid period of its first day (PWA 4.A), not in these totals.`;
+        const sp = F.sp, oc = sp.outCr != null ? hm(sp.outCr / 60) : "?", ob = sp.outBl != null ? hm(sp.outBl / 60) : "?";
+        if (!sp.in) return `${trip}: ${all}, all flown ${edge}: it pays in ${other} (PWA 4.A), not in these totals.`;
+        return `${trip}: ${all}; ${ob} block, ${oc} credit flown ${edge} pay in ${other} (PWA 4.A).` +
+          (sp.est ? " Credit split by block share (no duty credit on file): an estimate." : " Credit of each duty from the pairings package (TCRD); the rest of the trip credit (rig, minimums) stays with the bid period of its first day.");
+      };
+      // FW-0080: a trip with no row on this page (it starts before the page's first day, or after its last) whose duties
+      // fly part of this bid period: that part counts in the totals, named under them (carried)
+      const rowK = new Set((mon.days || []).filter(([, t]) => t).map(([d, t]) => `${t}|${d}`));
+      const carried = new Map();
+      for (const it of [...prevItems, ...items, ...nextItems]) {
+        if (!it || !/^[A-Z]\d{4}/.test(it.trip || "") || !FWG_ISO.test(it.start || "")) continue;
+        const k = `${it.trip}|${it.start}`;
+        if (carried.has(k) || rowK.has(k) || (it.end || it.start) < bp.from || it.start > bp.to) continue;
+        const F = figs(it.start, it.trip);
+        if (F.inP && F.sp) carried.set(k, { it, F });
+      }
       let crOther = 0;
       for (const [d, trip] of (mon.days || [])) {
-        if (d.slice(0, 7) !== key || !trip || trip === PAYP) continue;
-        crOther += trip === "VAC" ? VAC_H : (hrs(figs(d, trip).bcs[1]) || 0);
+        if (!trip || trip === PAYP) continue;
+        if (trip === "VAC") { if (inBp(d)) crOther += VAC_H; continue; }
+        const F = figs(d, trip);
+        if (F.inP) crOther += hrs(F.bcs[1]) || 0;
       }
+      for (const c of carried.values()) crOther += hrs(c.F.bcs[1]) || 0;
       const ppl = paypPlan(mon, ownT, crOther, fl(tt.credit));
       const ppDay = {};  // fix pass: every day of the PAYP, the next month's too, names its record
       for (const p of ppl) for (const d of p.all) ppDay[d] = p;
@@ -967,22 +1760,41 @@ class FlightWatcherScheduleCard extends HTMLElement {
       // month price of a version (same rules as the rows): Awarded-Pay-Gross and Improved-Pay-Gross
       // 1.7.2: a PAYP is priced as on the rows (paypPlan: the record's credit, else the estimate from the version's own
       // FLICA credit), so Awarded-Pay-Gross, Improved-Pay-Gross and a version's Pay-Gross count it too
-      const price = (mm, tr) => { let g = 0, other = 0; for (const [d, trip, lay] of ((mm && mm.days) || [])) { if (d.slice(0, 7) !== key) continue;
-          if (trip === "VAC") { g += VAC_H * RATE; other += VAC_H; continue; } if (!trip || !/^[A-Z]\d{4}/.test(trip)) continue;
-          const ot = tr[`${trip}|${d}`] || {}; const pr = pk ? (pk[trip.slice(0, 5)] || {}) : {};
+      const price = (mm, tr) => { let g = 0, other = 0;
+        // FW-0080: the rows' rule (figs): each trip its part in this bid period, the trips carried in from no row too
+        const one = (d, trip, lay) => {
+          const ot = tr[`${trip}|${d}`] || {}; const pm = pkOf(d), pr = pm ? (pm[trip.slice(0, 5)] || {}) : {};
           let cH = hrs(ot.credit); if (cH == null) cH = hx(pr.credit); let bH = hrs(ot.blk); if (bH == null) bH = hx(pr.block);
-          let share = 1; if (ot.duties && ot.duties.length && ot.duties[0].blk != null) { const base = this._t(d, "0:0"); let inM = 0, all = 0;
-            for (const du of ot.duties) { all += du.blk; if (this._d(base + du.dep * 60e3).slice(0, 7) === key) inM += du.blk; } share = all ? inM / all : 1; }
-          other += cH == null ? 0 : cH * share;
-          const v = tripFull(cH == null ? null : cH * share, bH == null ? null : bH * share, pr.crew, lay, `${trip}|${d}`, ot.seat); g += v || 0; }
+          const sp = splitOf(d, trip, ot, cH, bH);
+          if (!(sp ? sp.in : inBp(d))) return;
+          const c = sp && !sp.whole ? (sp.cr == null ? null : sp.cr / 60) : cH, b = sp && !sp.whole ? (sp.bl == null ? null : sp.bl / 60) : bH;
+          other += c == null ? 0 : c;
+          g += tripFull(c, b, pr.crew, lay, `${trip}|${d}`, ot.seat) || 0;
+        };
+        const rows = new Set(((mm && mm.days) || []).filter(([, t]) => t).map(([d, t]) => `${t}|${d}`));
+        for (const [d, trip, lay] of ((mm && mm.days) || [])) {
+          if (trip === "VAC") { if (inBp(d)) { g += VAC_H * RATE; other += VAC_H; } continue; }
+          if (!trip || !/^[A-Z]\d{4}/.test(trip)) continue;
+          one(d, trip, lay);
+        }
+        const seen = new Set();
+        for (const it of [...prevItems, ...((mm && mm.items) || []), ...nextItems]) {
+          const k = it && it.trip ? `${it.trip}|${it.start}` : "";
+          if (!k || seen.has(k) || rows.has(k) || !/^[A-Z]\d{4}/.test(it.trip) || !FWG_ISO.test(it.start || "") || (it.end || it.start) < bp.from || it.start > bp.to) continue;
+          seen.add(k);
+          if (splitOf(it.start, it.trip, tr[k] || {}, 0, 0)) one(it.start, it.trip, it.lay || "");
+        }
         for (const p of paypPlan(mm, tr, other, fl(((mm && mm.totals) || {}).credit))) if (p.h != null) g += tripFull(p.h, 0, "", "", p.it ? `${PAYP}|${p.row}` : p.k, "") || 0;
         return g; };
       const tripPay = {};
       // v51 (Ryan): swap / pick-up ideas. A swap may move off the trip's footprint onto any neighbouring day that is not
       // blocked and has no other assignment; legal rest before and after (11 h at domicile, PWA 10.E.1.a); pay from the
       // package credit (PWA 4.C.3 min 5:00 per calendar day already in it) with crew overrides (PWA 4.O.1).
-      const allItems = [...prevItems, ...items, ...nextItems];
-      const busyDay = (iso, excl) => blocked.has(iso) || allItems.some((it) => it !== excl && it.trip && it.start <= iso && iso <= it.end);
+      // 1.7.11 review: the trip a swap replaces is skipped by its trip and start, not by the copy own kept: a trip
+      // across a month end is on both months' pages (Schedule Lookup rows start in late November), and its other copy
+      // made every day of it busy, so no swap for it was ever offered
+      const busyDay = (iso, excl) => blocked.has(iso) || near.some((it) => it.trip && !(excl && it.trip === excl.trip && it.start === excl.start)
+        && it.start <= iso && iso <= (it.end || it.start));
       const addD = (iso, n) => this._d(Date.parse(iso + "T00:00:00Z") + n * 24 * H);
       const ideasFor = (d, trip) => {
         if (!pk) return null;
@@ -1070,7 +1882,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const turn = pkt && pkt.route ? [...new Set(pkt.route.split("-").slice(1, -1).filter((x) => x !== "HNL"))].join("/") : "";
         const l0 = lay === "-" && !inTrip(d) ? "" : (lay === "-" && turn ? `<b>${this._esc(turn)}</b>` : this._esc(lay));
         // v44 (Ryan): the layover cell carries the trip's crew (tap on a phone, hover on a Mac)
-        const cov = items.find((it) => it.trip !== "VAC" && it.trip !== PAYP && it.start <= d && d <= it.end);
+        const cov = near.find((it) => it.trip !== "VAC" && it.trip !== PAYP && it.start <= d && d <= (it.end || it.start));
         const covT = cov ? (ownT[`${cov.trip}|${cov.start}`] || {}) : null;
         const nowH = new Date(Date.now() - 10 * H); const nowHM = `${String(nowH.getUTCHours()).padStart(2, "0")}:${String(nowH.getUTCMinutes()).padStart(2, "0")}`;
         const tOwn = cov ? (ownT[`${cov.trip}|${cov.start}`] || {}) : {};
@@ -1080,11 +1892,11 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const l = l0 && cov ? `<span class="tag lay" title="${this._esc(`${cov.trip} ${cov.start} crew:\n${(covT && covT.crew || []).join("\n") || "crew not read yet"}`)}">${l0}</span>${st}` : l0;
         const g = grid[d]; const gc = g ? g.color : ""; const gb = gc === "green";
         const gcell = g ? `<span class="g ${gc}" title="Net reserves ${g.net}: ${gb ? "drop or swap off this day OK" : "add only (no drop/swap off this day)"}">${g.net}</span>` : "";
-        const F = figs(d, trip), ot = F.ot, pkr = F.pkr, share = F.share;
+        const F = figs(d, trip), ot = F.ot, pkr = F.pkr;
         // 1.7.2: a PAYP's credit on its first day (the record's, or the estimate), no block and no soft (not flown)
         const ppH = pp && pp.row === d && pp.h != null ? pp.h : null;
         const bcsAll = trip === PAYP ? ["", ppH != null ? hm(ppH) : "", ""] : F.bcsAll, bcs = trip === PAYP ? bcsAll : F.bcs;
-        const splitNote = trip === PAYP ? ppTitle(pp) : share < 1 ? `${trip}: ${bcsAll[0]} block / ${bcsAll[1]} credit in all; ${hm(F.blkOut / 60)} block flown from ${F.nextMon} pays next month (PWA 4.A). Credit split by block share${hrs(bcsAll[2]) ? ", estimate" : ""}.` : "";
+        const splitNote = trip === PAYP ? ppTitle(pp) : splitWhy(d, trip, F);
         const cH = hrs(bcs[1]), bH = hrs(bcs[0]);
         const gross = cH != null ? cH * RATE : null;
         const seat = trip === PAYP ? "" : (ot.seat || "").toUpperCase();  // 1.7.2: a PAYP flies no seat (no override)
@@ -1096,9 +1908,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const total = gross != null ? gross + roV + erV : null;
         const net = total != null ? total * (1 - (fed + stt) / 100) : null;
         if (trip && trip !== "VAC" && trip !== PAYP) tripPay[trip + "|" + d] = tripFull(hrs(bcsAll[1]) != null ? hrs(bcsAll[1]) : hx(pkr.credit), hrs(bcsAll[0]) != null ? hrs(bcsAll[0]) : hx(pkr.block), pkr.crew, l, trip + "|" + d, seat);
-        if (trip && trip !== "VAC" && d.slice(0, 7) === key) { sum.blk += bH || 0; sum.cr += cH || 0; sum.soft += hrs(bcs[2]) || 0; sum.gross += total || 0; sum.net += net || 0; }
-        if (trip === PAYP && d.slice(0, 7) === key && cH != null) { sum.payp += cH; sum.ppEst = sum.ppEst || !!pp.est; }
-        if (trip === "VAC" && d.slice(0, 7) === key) { sum.vacDays += 1; sum.vac += VAC_H; sum.gross += VAC_H * RATE; sum.net += VAC_H * RATE * (1 - (fed + stt) / 100); }
+        // FW-0080: the bid period's (a trip its part flown in it; a PAYP or VAC day in it), never the calendar month's
+        if (trip && trip !== "VAC" && (trip === PAYP ? inBp(d) : F.inP)) { sum.blk += bH || 0; sum.cr += cH || 0; sum.soft += hrs(bcs[2]) || 0; sum.gross += total || 0; sum.net += net || 0; }
+        if (trip === PAYP && inBp(d) && cH != null) { sum.payp += cH; sum.ppEst = sum.ppEst || !!pp.est; }
+        if (trip === "VAC" && inBp(d)) { sum.vacDays += 1; sum.vac += VAC_H; sum.gross += VAC_H * RATE; sum.net += VAC_H * RATE * (1 - (fed + stt) / 100); }
         const lines = gross != null ? [`Pay-Credit ${usd(gross)} (${bcs[1]} x ${rateTxt})`]
           .concat(seat === "RO" ? [`IRO override ${usd(roV)} (${bcs[0]} block x $${IRO_OVERRIDE.toFixed(2)}, PWA 4.O.1.a)`] : (roV ? [`IRO crew FO override ${usd(roV)} (${bcs[0]} block x $3.00, PWA 4.O.1.a)`] : []))
           .concat(erIs ? [`Extended Range type-rated FO +15% ${usd(erV)} (PWA 4.O.1.b)`] : [])
@@ -1113,6 +1926,15 @@ class FlightWatcherScheduleCard extends HTMLElement {
         return `<tr data-d="${d}" class="${wk ? "wk" : ""}${noSchool ? " hol" : (this._hol(d) ? " hol2" : "")}${other ? " oth" : ""}${blocked.has(d) ? " blk" : ""}${trip === "VAC" ? " vac" : ""}${gb ? " gg" : (gc ? " gx" : "")}${r30.has(d) ? " r30" : ""}${bx}${pdDays.has(d) ? " pdh" : ""}"><td>${DOW[dt.getDay()]}</td><td class="n" title="${r30.has(d) ? this._esc(r30Notes[d]) : ""}">${d.slice(8)}</td>` +
           `<td>${t}</td><td>${l}${rp}${rl}</td><td class="t${splitNote && trip !== PAYP ? " split" : ""}" title="${this._esc(splitNote)}">${this._esc(bcs[0])}</td><td class="t${splitNote && trip !== PAYP ? " split" : ""}${trip === PAYP ? " ppc" : ""}" title="${this._esc(splitNote)}">${this._esc(bcs[1])}${ppH != null && pp.est ? ' <span class="k">est</span>' : ""}</td><td class="t">${this._esc(bcs[2])}</td><td class="t tot1"><span class="pay" data-info="${this._esc(payT)}" data-btn="${this._esc(erBtn)}" title="${this._esc(payT)}">${usd(total)}</span></td><td class="t" title="Pay-Gross less ${fed}% federal and ${stt}% state">${usd(net)}</td><td class="gr">${gcell}</td><td class="t far${fo && fo.bad30 ? " bad" : ""}${fo && fo.ok30 ? " ok30" : ""}${fo && fo.t30 === "&#8211;" ? " mid" : ""}" title="${fo ? this._esc(fo.t30t) : ""}">${fo ? fo.t30 : ""}</td><td class="t far${fo && fo.over ? " bad" : ""}" title="${fo ? this._esc(fo.bt) : ""}">${fo ? fo.b : ""}</td><td class="t far${fo && fo.rbad ? " bad" : ""}" title="${fo ? this._esc(fo.rt) : ""}">${fo ? fo.room : ""}</td><td class="lg">${lcell}</td><td class="o">${(opens[d] || []).join("<br>")}</td><td class="tg">${ideaBtn(d, trip)}</td></tr>`;
       }).join("");
+      // FW-0080: the trips carried in (no row on this page) count their part flown in this bid period, as FLICA does
+      const carryT = [];
+      for (const { it, F } of carried.values()) {
+        const cH = hrs(F.bcs[1]), bH = hrs(F.bcs[0]), seat = (F.ot.seat || "").toUpperCase(), nP = crewN(F.pkr.crew);
+        const roV = bH != null ? (seat === "RO" ? bH * IRO_OVERRIDE : (seat !== "CA" && nP === 3 ? bH * 3.00 : 0)) : 0;
+        const total = cH != null ? cH * RATE + roV + (erOn(`${it.trip}|${it.start}`, it.lay || "", nP) ? cH * RATE * ER_PCT : 0) : null;
+        sum.blk += bH || 0; sum.cr += cH || 0; sum.soft += hrs(F.bcs[2]) || 0; sum.gross += total || 0; sum.net += total != null ? total * (1 - (fed + stt) / 100) : 0;
+        carryT.push(`${it.trip} ${mdy(it.start)}: ${F.bcs[0] || "?"} block, ${F.bcs[1] || "?"} credit flown in this bid period${F.sp && F.sp.est ? " (credit by block share, an estimate)" : ""}`);
+      }
       // fix pass (PWA 4.R.1): a PAYP with a trip added over all its days has no row; FLICA's month credit holds it
       for (const p of ppl) if (!p.it && p.h != null) { const g0 = tripFull(p.h, 0, "", "", p.k, "") || 0; sum.cr += p.h; sum.payp += p.h; sum.gross += g0; sum.net += g0 * (1 - (fed + stt) / 100); sum.ppCov.push(p); }
       for (const p of ppl) if (p.unk) sum.ppUnk = p.why;
@@ -1128,11 +1950,86 @@ class FlightWatcherScheduleCard extends HTMLElement {
         .map(([k, v]) => `<span class="ti"><span class="k">${k}</span> ${v}</span>`).join(""); return s ? `<span class="tgrp ${cls}">${s}</span>` : ""; };
       // fix pass: the PAYP estimate is FLICA's credit less the rest, so Credit matches FLICA by construction: no check mark
       const ppCovT = sum.ppCov.map((p) => `${String(p.rec.protected || "").split(",").filter(Boolean).map((q) => `${q.split("|")[0]} ${mdy(q.split("|")[1] || "")}`).join(" and ") || "The removed trip"}: ${hm(p.h)} kept with ${p.cov.trip} ${mdy(p.cov.start)} added on its days (PWA 4.R.1: Pay and Credit of the PAYP day and of the added trip).`).join(" ");
+      // Paychecks (Ryan, Nov 19, 2026): this month's pay as the next month's two paychecks. PWA 2.A.56: the 7th pays the
+      // next month's advance (half the 75:00 MMG, 37:30 x rate) and the 22nd pays this month's actuals less the advance
+      // already paid on this month's 7th; a payday on a weekend moves to the Friday before (2.A.56.b; holidays not
+      // checked). Per-check model (Ryan, Nov 19): on the admin's card, with the Pay model sensor on file (kept
+      // current from the pay stubs), each check is worked out per check (fwgCheck: Pub 15-T withholding, Social
+      // Security, Medicare, 401(k), benefits, after-tax deductions, the ER 415(c) excess on the 22nd) from the flying
+      // of the month it pays: Pay-Gross plus FLICA credit the card does not price (SIM, sick, training) at the month's
+      // rate, never below the 75:00 MMG. Checks between the last stub and these are worked through in order so the
+      // year-to-date limits carry. Otherwise (a pilot's card, no model): the flat tax settings, as Pay-Net does.
+      // FW-0072: the state picker's month of pay (x 12 for a year): this month's Pay-Gross, or 75:00 (the MMG) at his rate
+      this._payGrossMo = noYear ? 0 : sum.gross > 0 ? sum.gross : RATE * 75; this._payGrossWhy = sum.gross > 0 ? "this month's Pay-Gross x 12" : "75:00 a month at your rate x 12";
+      const chkGrp = (() => {
+        if (noYear || !(sum.gross > 0)) return "";
+        const ny = m === 11 ? y + 1 : y, nm = (m + 1) % 12;  // the month the checks land in (m is 0-based)
+        const pd = (yy, mm0, dd) => { const t = new Date(Date.UTC(yy, mm0, dd)); const w = t.getUTCDay(); if (w === 6) t.setUTCDate(dd - 1); if (w === 0) t.setUTCDate(dd - 2); return t; };
+        const lbl = (t) => `${MONTHS[t.getUTCMonth()].slice(0, 3)} ${t.getUTCDate()}`;
+        const iso = (t) => t.toISOString().slice(0, 10);
+        const mk = (yy, mm0) => new Date(Date.UTC(yy, mm0, 1)).toISOString().slice(0, 7);
+        const d7 = pd(ny, nm, 7), d22 = pd(ny, nm, 22);
+        const adv = (yy, mm0) => 37.5 * rateFor(lyr, `${mk(yy, mm0)}-01`);
+        const PM = admin ? (S["sensor.flight_watcher_pay_model"] || {}).attributes || null : null;
+        if (PM && Array.isArray((PM.tables || {}).single) && PM.ytd && FWG_ISO.test(PM.last_stub || "")) {
+          const imp = ((S["sensor.flight_watcher_improved_pay_gross"] || {}).attributes || {}).months || [];
+          const mPay = (yy, mm0) => {  // the bid period's pay that the 22nd check settles
+            const k = mk(yy, mm0), R = rateFor(lyr, `${k}-15`), mmg = 75 * R;
+            if (k === key) {
+              const xh = Math.max(0, (fCr || 0) - crAll), p = sum.gross + xh * R;
+              return { pay: Math.max(p, mmg), why: p < mmg ? `${MONTHS[mm0]} flying ${usd(p)} is under the 75:00 MMG, so ${usd(mmg)}` : `${MONTHS[mm0]} Pay-Gross ${usd(sum.gross)}${xh > 0.01 ? ` plus ${hm(xh)} FLICA credit the card does not price (SIM, sick, training) at $${R.toFixed(2)}` : ""}` };
+            }
+            const row = imp.find((r) => r && r.month === k), cr = fl(((SM[k] || {}).totals || {}).credit);
+            const p = Math.max((row && +row.current) || 0, (cr || 0) * R);
+            return { pay: Math.max(p, mmg), why: p > 0 ? `${MONTHS[mm0]} pay ${usd(Math.max(p, mmg))} from FW (that month's view prices it more closely)` : `no ${MONTHS[mm0]} schedule in FW, so the 75:00 MMG` };
+          };
+          const ytd = { year: +(PM.ytd.year || PM.last_stub.slice(0, 4)), ss_wages: +PM.ytd.ss_wages || 0, med_wages: +PM.ytd.med_wages || 0, c415: +PM.ytd.c415 || 0, ee401: +PM.ytd.ee401 || 0 };
+          const paid = PM.paid || {}, out = {};
+          let cy = +PM.last_stub.slice(0, 4), cm = +PM.last_stub.slice(5, 7) - 1;
+          for (let guard = 0; guard < 36 && (cy < ny || (cy === ny && cm <= nm)); guard++) {
+            const a = pd(cy, cm, 7), t = pd(cy, cm, 22), pm0 = cm === 0 ? 11 : cm - 1, py0 = cm === 0 ? cy - 1 : cy;
+            const ga = adv(cy, cm), mp = mPay(py0, pm0), gt = mp.pay - adv(py0, pm0);
+            const evs = [[a, { gross: ga, eligible: ga, erBase: 0 }, `${MONTHS[cm]} advance, 37:30 x $${(ga / 37.5).toFixed(2)}`],
+              [t, { gross: gt, eligible: gt, erBase: mp.pay, meal: +PM.meal_nt || 0 }, `${MONTHS[pm0]} true-up: ${mp.why}, less the ${usd(adv(py0, pm0))} advance`]];
+            for (const [dt, g, what] of evs) {
+              const di = iso(dt);
+              if (di <= PM.last_stub) { if (paid[di] != null) out[di] = { paid: +paid[di], what }; continue; }
+              out[di] = { ...fwgCheck({ ...g, date: di }, ytd, PM), what };
+            }
+            cm += 1; if (cm > 11) { cm = 0; cy += 1; }
+          }
+          for (const dt of [d7, d22]) if (!out[iso(dt)] && paid[iso(dt)] != null) out[iso(dt)] = { paid: +paid[iso(dt)] };  // an earlier month's checks, already paid
+          const yr = (+PM.tax_year) || 2026;
+          const c2 = (v) => "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          const tipOf = (di, r) => {
+            if (r.paid != null) return this._esc(`${di}: paid. Net ${c2(r.paid)} (pay stub).`);
+            return this._esc([`${di}: ${r.what}.`, `Gross ${c2(r.gross)}${r.erCash ? ` (with ${c2(r.erCash)} ER 415(c) excess)` : ""}`,
+              `Federal ${c2(r.fed)}, Social Security ${c2(r.ss)}, Medicare ${c2(fwgR2(r.med + r.addl))}`,
+              `401(k) ${c2(r.def)}, benefits ${c2(r.pre)}, after-tax deductions ${c2(r.aft)}`,
+              `Net ${c2(r.net)}; to main checking after ${c2(+PM.allot || 0)} allotments ${c2(r.toChk)}`,
+              `Estimate from pay stubs through ${PM.last_stub}${+di.slice(0, 4) > yr ? `; ${yr} tax tables until ${di.slice(0, 4)}'s are loaded` : ""}.`].join("\n"));
+          };
+          const val = (r) => r ? (r.paid != null ? r.paid : r.net) : null;
+          const cell = (di) => { const r = out[di]; return r && val(r) != null ? `<span title="${tipOf(di, r)}">${usd(val(r))}</span>` : ""; };
+          const a7 = out[iso(d7)], a22 = out[iso(d22)];
+          const both = val(a7) != null && val(a22) != null ? val(a7) + val(a22) : null;
+          const chk2 = a7 && a22 && a7.toChk != null && a22.toChk != null ? `; to main checking ${c2(fwgR2(a7.toChk + a22.toChk))}` : "";
+          return tgrp("tchk", [[lbl(d7), cell(iso(d7))], [lbl(d22), cell(iso(d22))],
+            [`${MONTHS[nm].slice(0, 3)} total`, both == null ? "" : `<span title="${this._esc(`${MONTHS[nm]} paychecks together: net ${c2(fwgR2(both))}${chk2}.`)}">${usd(both)}</span>`]]);
+        }
+        // FW-0072: a pilot's deductions percent from his pay stub (this device only) comes out of the checks too
+        const ded = admin ? 0 : this._payDed(), g7 = adv(ny, nm), g22 = sum.gross - adv(y, m), k = 1 - (fed + stt + ded) / 100;
+        const tip = (g, what) => this._esc(`${what}. Gross ${usd(g)}, net after ${fed}% federal and ${stt}% state${ded ? ` and ${ded}% deductions (benefits, 401(k), dues: from your pay stub)` : ""} ${usd(g * k)}.${ded ? "" : " Benefit, 401(k) loan and dues deductions not taken out."} Estimate (PWA 2.A.56).`);
+        const cell = (g, what) => `<span title="${tip(g, what)}">${usd(g * k)}</span>`;
+        return tgrp("tchk", [[lbl(d7), cell(g7, `${lbl(d7)} (${iso(d7)}): ${MONTHS[nm]} advance, 37:30 x ${"$" + (g7 / 37.5).toFixed(2)}`)],
+          [lbl(d22), cell(g22, `${lbl(d22)} (${iso(d22)}): ${MONTHS[m]} true-up, Pay-Gross ${usd(sum.gross)} less the ${usd(adv(y, m))} advance paid on the 7th`)],
+          [`${MONTHS[nm].slice(0, 3)} total`, cell(g7 + g22, `${MONTHS[nm]} paychecks together`)]]);
+      })();
       const tot = tgrp("thrs", [["Credit", hm(crAll) + (sum.ppEst ? ` <span class="k" title="${this._esc(`Not checked: the PAYP estimate is ${srcFl}'s month credit less everything else counted, so Credit matches it by construction.`)}">est</span>` : chk(crAll, fCr))], ["Block", hm(sum.blk) + chk(sum.blk, fBlk)], ["Block Avail", `<span class="${bAv <= 0 ? "bad" : ""}" title="98:00 bid-month block cap (crew scheduling) minus FLICA's bid-period Block">${bAv < 0 ? "-" + hm(-bAv) : hm(bAv)}</span>`], ["Soft", hm(sum.soft)],
         ["Vacation", sum.vacDays ? `${hm(sum.vac)} <span class="k">(${sum.vacDays} d x ${hm(VAC_H)})</span>` : ""],
         // 1.7.2: the pay protected credit inside Credit (never in Block or Block Avail: not flown)
         ["PAYP", sum.payp || sum.ppUnk ? `<span class="ppt" title="${this._esc(`Pay protected credit inside Credit, Pay-Gross and Pay-Net (${PAYP_REF}). Not in Block or Block Avail: not flown.${sum.ppEst ? ` Estimate: ${srcFl}'s month credit less everything else counted.` : ""}${ppCovT ? " " + ppCovT : ""}${sum.ppUnk ? ` A PAYP's credit is unknown and not counted: ${sum.ppUnk}.` : ""}`)}">${sum.payp ? hm(sum.payp) : ""}${sum.ppEst ? ' <span class="k">estimate</span>' : ""}${sum.ppUnk ? `${sum.payp ? " +" : ""} <span class="bad">credit unknown</span>` : ""}</span>` : ""]]) +
-        tgrp("tpay", noYear ? [["Pay", "set your longevity year in Pay settings"]] : [["Pay-Gross", usd(sum.gross)], ["Pay-Net", usd(sum.net)]]) +
+        tgrp("tpay", noYear ? [["Pay", "set your longevity year in Pay settings"]] : [["Pay-Gross", usd(sum.gross)], ["Pay-Net", usd(sum.net)]]) + chkGrp +
         tgrp("tdays", [["Days Off", tt.days_off == null ? "" : this._esc(tt.days_off)], ["Need 30 h off by", n30]]);
       if (this._idea && this._idea.key === key) {
         const r = ideasFor(this._idea.d, this._idea.trip);
@@ -1164,13 +2061,17 @@ class FlightWatcherScheduleCard extends HTMLElement {
         // 1.7.1 (F#32): only once the pairings package is in or known to be missing (pk null = still loading). Priced
         // before that, a trip without its own times pays 0 and no crew override, and the Watcher would store that low
         // figure until the redraw sent the right one (two reports a load, one of them wrong)
-        if (this._impSig[key] !== sig && this._h && !noYear && pk !== null) {
+        // 1.7.11 review: and every other bid period's package a price or split asked for (packWait), so a trip across
+        // the bid period's edge is priced with its duties' TCRD, not its block share first
+        if (this._impSig[key] !== sig && this._h && !noYear && pk !== null && !packWait) {
           this._impSig[key] = sig;
           this._h.callService("mqtt", "publish", { topic: "flight_watcher/improved/set", payload: JSON.stringify({ month: key, awarded: Math.round(awd * 100) / 100, current: Math.round(curG * 100) / 100, ver: vl[vl.length - 1].ver, awarded_ver: vl[0].ver }) });
         }
       }
-      const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th>Block</th><th>Credit</th><th>Soft</th><th title="Credit pay + RO + RO+15%; hover or tap for the breakdown">Pay-Gross</th><th>Pay-Net</th><th title="Reserve grid net reserves">Res Grid</th><th title="Check MM/DD = a 30 h break falls in the 168 h before a report that day and ended on MM/DD, FAR 117.25(b). The teal edge on a day marks the break itself. Hover for the hours and 'covered until'.">FAR-30/7</th><th title="Block flown in the 672 h ending that day, FAR 117.23(b)(1)">FAR-100/672</th><th title="100:00 minus the busiest 672 h window the day falls in, back and forward">Room</th><th title="Earliest report for another trip">Legal next</th><th>Open</th><th title="Tap the airplane: swap or pick-up ideas for that day, with the Pay-Gross difference">Ideas</th></tr>`;
-      body = `<div class="wrap"><table class="cal">${head}${rows}</table></div>${pdM && !narrow ? fwgPanelHtml(pdM) : ""}<div class="tot" title="${this._esc(`${MONTHS[m]} totals: flying credited to the month each segment originates (PWA 4.A) plus vacation days at ${hm(VAC_H)} (PWA 6.J) and pay protected (PAYP) credit (PWA Definitions 57). Pay at ${rateTxt}/credit h incl. RO and RO+15% where on; net after the tax settings. Checked against FLICA's Block and Credit.`)}">${tot}</div>`;
+      const head = `<tr class="hd"><th></th><th></th><th>Trip</th><th>Layover</th><th>Block</th><th>Credit</th><th>Soft</th><th title="Credit pay + RO + RO+15%; hover or tap for the breakdown">Pay-Gross</th><th>Pay-Net</th><th title="Reserve grid net reserves">Res Grid</th><th class="fh" title="FAR 117.25(b): 30 consecutive hours free from all duty in the 168 h (7 days) before a report. &#10003; 36h MM/DD = a report at that day's first duty start (00:01 on a day off) is covered: the longest break off duty in the 168 h before it, in whole hours, and the day it ended. A later report that day may not be: hover a cell for the hours and 'covered until'. The teal edge on a day marks the break itself.">30h in 7d</th><th class="fh" title="FAR 117.23(b)(1): at most 100 flight hours in any 672 consecutive hours (28 days). Left = 100:00 minus the block flown or scheduled in the 672 h ending 24:00 that day; over = past the limit by that much.">100h in <br class="hb">672h</th><th class="fh" title="FAR 117.23(b)(1) (100 flight hours in any 672 consecutive hours): 100:00 minus the busiest 672 h window that holds any part of the day, back and forward: the windows starting at a duty's start or ending at its block-in, as a pickup's FAR check tries them, and those ending 24:00 HST.">Room to <br class="hb">100h</th><th title="Earliest report for another trip">Legal next</th><th>Open</th><th title="Tap the airplane: swap or pick-up ideas for that day, with the Pay-Gross difference">Ideas</th></tr>`;
+      const bpTxt = `${mdy(bp.from)} to ${mdy(bp.to)}${bp.src === "package" ? " (the pairings package)" : bp.src === "schedule" ? " (the schedule pages: no pairings package on file)" : " (the calendar month: no pairings package or schedule page gives the bid period)"}`;
+      const totT = `${MONTHS[m]} totals: flown in the bid period, ${bpTxt}: each segment credited to the bid period it originates in (PWA 4.A), a trip across the bid period's edge its part here, plus vacation days at ${hm(VAC_H)} (PWA 6.J) and pay protected (PAYP) credit (PWA Definitions 57). Pay at ${rateTxt}/credit h incl. RO and RO+15% where on; net after the tax settings. Checked against FLICA's Block and Credit.${carryT.length ? ` Also counted: ${carryT.join("; ")}.` : ""}`;
+      body = `<div class="wrap"><table class="cal">${head}${rows}</table></div>${pdM && !narrow ? fwgPanelHtml(pdM) : ""}<div class="tot" title="${this._esc(totT)}">${tot}</div>${carryT.length ? `<div class="cin">Also counted (PWA 4.A): ${this._esc(carryT.join("; "))}.</div>` : ""}${bp.src === "calendar" ? `<div class="cin">Totals over the calendar month: no pairings package or schedule page on file gives this bid period.</div>` : ""}`;
     }
     const upd = awd0 ? "" : st && st.attributes ? (st.attributes.updated || "") : "";
     // 1.6.2: the award label and the read status sit above the grid (or the 'No schedule' line)
@@ -1186,6 +2087,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const main = this.shadowRoot.querySelector(".fwm");
     const ae = this.shadowRoot.activeElement;
     const fk = ae && ae.matches && ae.matches(".fwm .trip[data-k]") ? ae.dataset.k : "";  // the pairing that has the focus
+    const lf = !!(ae && ae.matches && ae.matches(".fwm .lock"));  // 1.7.18: the lock switch keeps the focus across a redraw
     main.innerHTML = `<style>${FWG_CSS}
       ha-card{padding:10px 8px 12px;font-size:12.5px;line-height:1.25;box-sizing:border-box}
       @media (max-width:700px){ha-card{font-size:10.5px;padding:6px 3px 8px}
@@ -1201,8 +2103,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
       h3{margin:0;font-size:16px}
       table{border-collapse:collapse;margin:0 auto}
       .cal th:nth-child(n+5):nth-child(-n+12){text-align:right}
-      .far{font-size:11px}.far.bad{color:var(--fw-err,#c62828);font-weight:700}.far.ok30{color:var(--fw-ok,#2e7d32);font-weight:700;text-align:center;white-space:nowrap}.far.ok30 .k{font-weight:400;font-size:10px;color:var(--secondary-text-color,#555)}
+      .far{font-size:11px;white-space:nowrap}@media (min-width:701px){.cal td.far,.cal th.fh{padding-left:4px;padding-right:4px}}@media (max-width:700px){.cal th .hb{display:none}}.far.bad{color:var(--fw-err,#c62828);font-weight:700}.far.ok30{color:var(--fw-ok,#2e7d32);font-weight:700;text-align:center;white-space:nowrap}.far.ok30 .k{font-weight:400;font-size:10px;color:var(--secondary-text-color,#555)}
       .cal tr.r30 td:nth-child(1){box-shadow:inset 4px 0 0 #00897b}
+      .cal td.t.split{color:var(--fw-split,#7b1fa2);cursor:help}:host([dark]){--fw-split:#ce93d8}
+      .cin{margin:4px auto 0;max-width:620px;font-size:11px;text-align:center;color:var(--secondary-text-color)}
       .cal td.far.mid{color:var(--secondary-text-color,#727272);text-align:center}
       .tot1{font-weight:600}
       .cal tr.gg td:nth-child(4),.cal tr.gg td:nth-child(10){background:rgba(76,175,80,.12)}
@@ -1213,8 +2117,14 @@ class FlightWatcherScheduleCard extends HTMLElement {
       :host([dark]) .nav:hover{background:rgba(255,255,255,.1)}
       .cal tr[data-d] td:nth-child(-n+2){cursor:pointer}
       .cal tr.blk td.n::after{content:" \\2298";color:#e53935;font-weight:700}
-      .lock{cursor:pointer;font-size:16px;line-height:1;padding:2px 6px;border-radius:6px;user-select:none;margin-right:auto}.lock:hover{background:rgba(0,0,0,.06)}
-      .lock.open{opacity:.9}.lock.shut{opacity:.6}
+      :host{--fws-on:#1565c0;--fws-off:#5f6368;--fws-knob:#fff;--fws-ring:#1565c0}:host([dark]){--fws-on:#90caf9;--fws-off:#a7b0b8;--fws-knob:#0d2235;--fws-ring:#90caf9}
+      .lock{display:inline-flex;align-items:center;gap:6px;box-sizing:border-box;min-height:44px;min-width:44px;margin:0 auto 0 0;padding:0 8px 0 4px;border:0;border-radius:8px;background:none;color:var(--primary-text-color);font:600 12px/1 sans-serif;cursor:pointer;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+      @media (hover:hover){.lock:hover{background:rgba(0,0,0,.06)}:host([dark]) .lock:hover{background:rgba(255,255,255,.1)}}.lock:focus-visible{outline:3px solid var(--fws-ring);outline-offset:1px}
+      @media (max-width:700px){.hd2{row-gap:2px}.hd2 .sp{flex:0 0 100%;height:0}}
+      .lock .lki{flex:none;width:20px;height:20px}.lock .lkt{position:relative;flex:none;box-sizing:border-box;width:40px;height:24px;border:2px solid var(--fws-off);border-radius:12px;background:transparent}
+      .lock .lkk{position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:var(--fws-off)}.lock .lks{min-width:22px;text-align:left}
+      .lock.shut .lkt{background:var(--fws-on);border-color:var(--fws-on)}.lock.shut .lkk{left:19px;background:var(--fws-knob)}.lock.shut .lks{font-weight:700}
+      @media (forced-colors:active){.lock .lkk{forced-color-adjust:none;background:CanvasText}.lock.shut .lkt{forced-color-adjust:none;background:Highlight;border-color:Highlight}.lock.shut .lkk{background:Canvas}}
       .ppt{cursor:help}.ppc .k{font-size:9.5px;color:var(--secondary-text-color)}
       .cal tr.gg td:nth-child(1),.cal tr.gg td:nth-child(2){font-weight:700}
       .gr{text-align:right;font-size:11px}.g.green{color:var(--fw-ok,#2e7d32);font-weight:700}.g.red{color:var(--fw-err,#c62828);font-weight:700}.g.black{color:var(--primary-text-color)}
@@ -1242,31 +2152,38 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .info::after{content:"tap to close";display:block;margin-top:6px;font-size:10px;color:var(--secondary-text-color);text-align:right}
       .none{text-align:center;color:var(--secondary-text-color);padding:12px}
       .awl,.rsl{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.awl{font-weight:600}.rsl{color:var(--fw-warn,#8a5300)}
+      .ag{font-size:11px;font-weight:600;color:var(--secondary-text-color);white-space:nowrap;font-variant-numeric:tabular-nums;cursor:pointer}
+      .ag[data-age="amber"]{color:var(--fw-warn,#8a5300)}.ag[data-age="red"]{color:var(--fw-err,#c62828)}
+      .hd2 .ag{margin-left:auto;text-align:right;white-space:normal;min-width:0;flex:0 0 21em}
+      @media (max-width:700px){.hd2 .ag{order:1;flex:1 1 0}.hd2 .sp{order:2}.hd2 .nav,.hd2 h3{order:3}}
       .unc{color:var(--fw-warn,#8a5300);font-weight:700}.ubn{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.set .keep{min-height:44px;padding:6px 12px;font:inherit;border-radius:6px;cursor:pointer}
-    </style><ha-card><div class="frame"><div class="hd2"><span class="lock ${this._locked ? "shut" : "open"}" title="${this._locked ? `Locked: ${this._marks()} cannot be changed by a tap. Tap to unlock.` : `Unlocked: taps change ${this._marks()}. Tap to lock.`}">${this._locked ? "&#128274;" : "&#128275;"}</span><span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${upd ? `<span class="u">updated ${this._esc(upd)}</span>` : ""}</div>${shead}${vhtml}${body}</div>${panel}
+    </style><ha-card><div class="frame"><div class="hd2">${this._lockHtml()}<span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${this._ageHtml(upd)}</div>${shead}${vhtml}${body}</div>${panel}
     <div class="info"></div>
     <details class="leg"><summary>Key</summary><table class="lt">
     <tr><td>Trip</td><td>Your pairing. Tap it for the pairing detail (legs, layovers, hotel, totals and crew, from the pairings package; below the schedule, or a sheet from the bottom on a phone); tap it again, the &#10005; or Esc to close. R = report time. Tap &#8644; to mark it "would trade" (orange).</td></tr>
     <tr><td>Layover</td><td>Layover city. <b>Bold</b> = turn, no layover. Rel = release time (block-in + 15 min).</td></tr>
-    <tr><td>Block / Credit / Soft</td><td>Your trip's block, credit and soft time (credit minus block), from FLICA's pairing page. Purple = this month's share only; the rest pays next month (PWA 4.A), hover for the split.</td></tr>
+    <tr><td>Block / Credit / Soft</td><td>Your trip's block, credit and soft time (credit minus block), from FLICA's pairing page. Purple = this bid period's part only (FLICA totals the bid period: December 2026 runs Dec 2 to Dec 31); the rest pays in the bid period its duties depart in (PWA 4.A), hover for the split. A trip from the bid period before that flies into this one counts its part here, named under the totals.</td></tr>
     <tr><td>Totals</td><td>Month totals incl. vacation at ${hm(VAC_H)} a day (PWA 6.J); &#10003; = matches FLICA's figure, red = FLICA differs.</td></tr>
-    <tr><td>PAYP</td><td>Pay protected: a trip removed from your schedule keeps its Pay and Credit (PWA Definitions 57). Its credit counts in Credit, Pay-Gross and Pay-Net on the PAYP's first day, at your rate; never in Block, Block Avail or the FAR columns (not flown). A trip whose duties depart in two months counts each month's share there (PWA 4.A). est = the removed trip is not on file, so the credit is FLICA's month credit less everything else (only when the card counts everything else in the month; Credit then shows est, not a check). Credit unknown = not counted (no FLICA total, other credited codes, a trip not read yet). A trip you add on PAYP days pays on top (PWA 4.R.1), also when it covers every PAYP day.</td></tr>
+    <tr><td>PAYP</td><td>Pay protected: a trip removed from your schedule keeps its Pay and Credit (PWA Definitions 57). Its credit counts in Credit, Pay-Gross and Pay-Net on the PAYP's first day, at your rate; never in Block, Block Avail or the FAR columns (not flown). A trip whose duties depart in two bid periods counts each bid period's part there (PWA 4.A). est = the removed trip is not on file, so the credit is FLICA's month credit less everything else (only when the card counts everything else in the month; Credit then shows est, not a check). Credit unknown = not counted (no FLICA total, other credited codes, a trip not read yet). A trip you add on PAYP days pays on top (PWA 4.R.1), also when it covers every PAYP day.</td></tr>
     <tr><td>Pay-Gross / Pay-Net</td><td>Gross = credit x ${rateTxt} + RO + RO+15%; hover or tap it for the breakdown. Net = gross after the tax settings below.</td></tr>
-    <tr><td>Teal edge</td><td>Thin teal mark left of the day = that day falls inside a break of 30+ consecutive hours free of all duty (FAR 117.25(b)), between duty periods, a long layover included. Hover the date for the break's start, end and 'covers reports until'. The FAR-30/7 column gives the date that counts: &#10003; MM/DD = the day the qualifying break ended (on a day still inside a break, usually that day's own date).</td></tr>
+    <tr><td>Teal edge</td><td>Thin teal mark left of the day = that day falls inside a break of 30+ consecutive hours free of all duty (FAR 117.25(b)), between duty periods, a long layover included. Hover the date for the break's start, end and 'covers reports until'. The 30h in 7d column gives the date that counts: &#10003; 36h MM/DD = the day the qualifying break ended (on a day still inside a break, usually that day's own date).</td></tr>
     <tr><td>RO / RO+15%</td><td>Add-ons inside Pay-Gross. RO = only on trips where you are listed RO: block x $${IRO_OVERRIDE.toFixed(2)} (PWA 4.O.1.a). RO+15% = Extended Range crew, 4 pilots, type-rated FO: 15% of pay (PWA 4.O.1.b); on by itself for SIN, tap Pay-Gross to switch any trip on or off.</td></tr>
     <tr><td>Res Grid</td><td>FLICA net reserves. <span class="g green">Green</span> = drop or swap off this day OK. <span class="g red">Red</span> = add only.</td></tr>
-    <tr><td>FAR-30/7, FAR-100/672, Room</td><td>A break of 30 h+ off all duty (teal edge on its days, a long layover counts) covers any report up to 138 h after it ends (FAR 117.25(b): 30 h free in the 168 h before report). FAR-30/7: &#10003; MM/DD = a report that day is covered, and the date the qualifying 30 h break ended; red 'need 30' = it is not; ? = the window reaches before the schedule on file; &#8211; = mid-trip, no report that day. Hover for the hours and 'covered until'. Training (SIM, OEB, ground school) and reserve days count as duty. Need 30 h off by (totals): the first report time after which you need 30 h off first. 100/672: block flown in the 28 days ending that day, leg by leg (117.23(b)(1)). Room: 100:00 minus the busiest 28-day window the day falls in, back and forward: the most block you could add that day. ~ = a window reaches past the schedule on file. Block Avail: 98:00 bid-month cap minus FLICA's bid-period Block.</td></tr>
+    <tr><td>30h in 7d</td><td>FAR 117.25(b): 30 consecutive hours free from all duty within the past 168 consecutive hours (7 days) before a report. A break of 30 h+ off all duty (teal edge on its days, a long layover counts) covers any report up to 138 h after it ends. &#10003; 36h MM/DD = a report at that day's first duty start (00:01 on a day off) is covered: the longest break off duty in the 168 h before it, in whole hours, and the date that break ended; a later report that day may not be (hover for the hours and 'covered until'); red 'need 30h off' = that report is not covered; ? = the window reaches before the schedule on file; &#8211; = mid-trip, no report that day. Training (SIM, OEB, ground school) and reserve days count as duty; a trip whose report and release are not on file yet (its times not read) counts as time off. Need 30 h off by (totals): the first report time after which you need 30 h off first.</td></tr>
+    <tr><td>100h in 672h</td><td>FAR 117.23(b)(1): at most 100 flight hours in any 672 consecutive hours (28 days). This cell checks the 672 h ending 24:00 that day: what is left, in hours and minutes, of 100:00 less the block flown or scheduled in it, leg by leg (10:57 left = 89:03 flown or scheduled). Red '0:00 left' = at the limit; red '1:20 over' = past it by that much. ~ = part of the window is before the schedule on file, or holds a trip whose times are not read yet (it adds 0:00, or only its duties with a block; hover for which). A trip with a duty's block missing counts its whole trip Block, as a pickup's FAR check does: the rest of it on the duties without one. Hover for the block.</td></tr>
+    <tr><td>Room to 100h</td><td>What is left, in hours and minutes (h:mm), under FAR 117.23(b)(1) (100 flight hours in any 672 consecutive hours): 100:00 minus the block flown or scheduled in the busiest 672 h (28-day) window that holds any part of that day, looking back and forward, so trips already on your line after that day count too (100h in 672h looks back only). It tries every window that starts at a duty's start or ends at its block-in, where the busiest one always is, counting a duty's block when the whole duty is in the window, as a pickup's FAR check does, and the windows ending 24:00 HST counted leg by leg as in 100h in 672h, so it never shows more room than 100h in 672h. 'left' = room under the limit; red '0:00 left' = none; red '1:20 over' = such a window is over 100:00 by that much. ~ = a window reaches past the schedule on file, or holds a trip whose times are not read yet (it adds 0:00, or only its duties with a block; hover for which). Block Avail (totals): 98:00 bid-month cap minus FLICA's bid-period Block.</td></tr>
     <tr><td>Legal next</td><td>Earliest report for another trip: release + 11 h (PWA 10.E.1.a). Tap for the 18 h case.</td></tr>
     <tr><td>Open</td><td>Open time trips starting that day: <span class="fit">fits</span>, <span class="clash">clashes or blocked</span>.</td></tr>
     <tr><td>Ideas</td><td>Tag-ons after your release with legal rest, <b>O</b> = in open time, <b>T</b> = on the Tradeboard. Orange = better trip for a marked one. Tap for details.</td></tr>
-    <tr><td>Day</td><td>Blue = weekend, ${this._role() === "admin" ? "yellow = no school at HPA (from the school year file), hatched yellow = US or Hawaii holiday with no school file loaded" : "hatched yellow = US or Hawaii holiday"}. Tap a day to block it (&#8856;), tap again to unblock; VAC days are always &#8856; and cannot be changed. The lock at the top left (&#128274;) freezes ${admin ? "availability, trade and drop" : "availability and trade"} taps. All times HNL.</td></tr>
+    <tr><td>Day</td><td>Blue = weekend, ${this._role() === "admin" ? "yellow = no school at HPA (from the school year file), hatched yellow = US or Hawaii holiday with no school file loaded" : "hatched yellow = US or Hawaii holiday"}. Tap a day to block it (&#8856;), tap again to unblock; VAC days are always &#8856; and cannot be changed. The lock switch at the top left (a lock, the word Lock, then On or Off) freezes ${admin ? "availability, trade and drop" : "availability and trade"} taps while it is On (the default); switch it Off to change them and On again to lock them. All times HNL.</td></tr>
     </table>${note ? `<div>${note}</div>` : ""}</details>
-    <details class="set"${unconf.length ? " open" : ""}><summary>Pay settings${unconf.length ? " (not set yet)" : ""}</summary>
+    <details class="set"${unconf.length || this._paySetOpen ? " open" : ""}><summary>Pay settings${unconf.length ? " (not set yet)" : ""}</summary>
       <span>Federal tax <select data-e="input_number.flight_watcher_federal_tax_pct"${flagged.includes(PAY_PREFS[0]) ? ' data-f="1"' : ""}>${sel(0, 45, 0.5, fed, "%")}</select></span>
       <span>State tax <select data-e="input_number.flight_watcher_state_tax_pct"${flagged.includes(PAY_PREFS[1]) ? ' data-f="1"' : ""}>${sel(0, 15, 0.25, stt, "%")}</select></span>
       <span>Longevity year <select data-e="input_number.flight_watcher_longevity_year"${flagged.includes(PAY_PREFS[2]) ? ' data-f="1"' : ""}>${noYear ? `<option value="" selected disabled>set</option>` : ""}${sel(1, 12, 1, lyr, "")}</select></span>
+      ${admin ? "" : this._payPickHtml()}
       ${flagged.length ? `<div class="r unc">These came from settings that were never set. Pick your own, or <button type="button" class="keep">Keep these</button></div>` : ""}
-      <div class="r">${noYear ? "Rate: set your longevity year here (A330 PAX FO, PWA 3.D.6; the table caps at 12). No pay is figured until it is set." : `Rate $${RATE.toFixed(2)}/credit h: A330 PAX FO, PWA 3.D.6, year ${lyr} ${doh ? `(DOH ${doh} = year ${dohYear(today, doh)}, table caps at 12)` : "(set your longevity year here; table caps at 12)"}, effective ${RATE_DATES.filter((x) => x <= today).pop()}. Net = gross less federal and state only; estimate.`}</div>
+      <div class="r">${noYear ? "Rate: set your longevity year here (A330 PAX FO, PWA 3.D.6; the table caps at 12). No pay is figured until it is set." : `Rate $${RATE.toFixed(2)}/credit h: A330 PAX FO, PWA 3.D.6, year ${lyr} ${doh ? `(DOH ${doh} = year ${dohYear(today, doh)}, table caps at 12)` : "(set your longevity year here; table caps at 12)"}, effective ${RATE_DATES.filter((x) => x <= today).pop()}. Net = gross less federal and state only${!admin && this._payDed() ? "; the paycheck estimates also take out your deductions" : ""}; estimate.`}</div>
     </details>${chtml}</ha-card>`;
     this._wire();
     // 1.7.7: the pairing detail after the redraw: the sheet (narrow) shown, updated or hidden; the wide panel scrolled into
@@ -1280,6 +2197,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       if (pn && pn.scrollIntoView) pn.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "nearest" });
     }
     if (fk && !this._sheet.open) { const t = this._tripEl(fk); if (t) t.focus({ preventScroll: true }); }
+    if (lf) { const l = main.querySelector(".lock"); if (l) l.focus({ preventScroll: true }); }
   }
   // 1.7.7: the pairing detail: open, swap to another pairing, or close (the same one again)
   _pdToggle(k) {
@@ -1299,6 +2217,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
   _hc() { return this.shadowRoot ? this.shadowRoot.querySelector(".fwm ha-card") : null; }
   // Esc closes the pairing detail, Tab stays inside the sheet; a rotation or resize past the phone width redraws it
   connectedCallback() {
+    if (this._h && !this._ageT) this._ageT = setInterval(() => this._ageTick(), 1000);  // 1.7.12: back on the page
     if (!this._kd) {
       this._kd = (e) => { if (!this._pd) return; if (e.key === "Escape") { this._pdClose(true); return; } if (this._sheet) this._sheet.trap(e); };
       this._rz = () => { if (this._pd && this._h && fwgNarrow(this._hc()) !== this._pdNarrow) this._render(); };
@@ -1307,6 +2226,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     window.addEventListener("resize", this._rz);
   }
   disconnectedCallback() {
+    clearInterval(this._ageT); this._ageT = null;  // 1.7.12: no tick off the page
     if (!this._kd) return;
     document.removeEventListener("keydown", this._kd);
     window.removeEventListener("resize", this._rz);
@@ -1319,7 +2239,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
     return `${items[0]} <span class="tag more" title="${this._esc(`${items.length - 1} more ${what}${items.length > 2 ? "s" : ""}:\n${rest}`)}">+${items.length - 1}</span>`;
   }
   _wire() {
-    this.shadowRoot.querySelectorAll(".set select").forEach((inp) => {
+    this.shadowRoot.querySelectorAll(".set select[data-e]").forEach((inp) => {
       inp.addEventListener("change", () => { this._h.callService("input_number", "set_value", { entity_id: inp.dataset.e, value: parseFloat(inp.value) }); });
     });
     const keep = this.shadowRoot.querySelector(".set .keep");  // 1.6.2: confirm the flagged values as they are
@@ -1331,6 +2251,71 @@ class FlightWatcherScheduleCard extends HTMLElement {
       });
       keep.disabled = true;
       keep.textContent = "Kept";
+    });    this._payWire();
+  }
+  // FW-0072 (Ryan, Nov 19): a pilot's state picker (2026 rates) and his pay stub, read once on this device. What this
+  // device keeps (localStorage, per pilot): the state and filing picked, the deductions percent and where the rates
+  // came from; the federal and state rates go to his own Pay settings helpers. Never the stub or anything read off it.
+  _ls(k) { try { return localStorage.getItem("flight_watcher_" + k); } catch (e) { return null; } }
+  _lsSet(k, v) { try { if (v === null) localStorage.removeItem("flight_watcher_" + k); else localStorage.setItem("flight_watcher_" + k, v); } catch (e) { /* ignore */ } }
+  _payDed() { const v = parseFloat(this._ls("pay_ded")); return v > 0 && v < 60 ? v : 0; }
+  _payPickHtml() {
+    const st = this._ls("pay_state") || "", fs = this._ls("pay_filing") === "married" ? "married" : "single", src = this._ls("pay_src");
+    const opts = Object.keys(FWP_STATES).sort((a, b) => FWP_STATES[a][0].localeCompare(FWP_STATES[b][0]))
+      .map((c) => `<option value="${c}"${c === st ? " selected" : ""}>${FWP_STATES[c][0]}</option>`).join("");
+    const pct = (v) => `${+v.toFixed(2)}%`;
+    let line = "";
+    const r = st ? fwpStateTax(st, fs, (this._payGrossMo || 0) * 12) : null;
+    if (r) {
+      line = r.type === "n" ? `${r.name}: no state income tax on wages.` : r.type === "f" && r.low === r.top
+        ? `${r.name}: flat ${pct(r.top)}${r.pct != null ? `, about ${pct(r.pct)} of your pay after its deduction and exemption` : ""}.`
+        : `${r.name}: ${pct(r.low)} to ${pct(r.top)} in brackets${r.pct != null ? `; about ${pct(r.pct)} of your pay (${this._payGrossWhy || "a year's pay"}, ${fs}, the state's standard deduction and exemption; credits not counted)` : "; the top rate is used until your longevity year is set"}.`;
+      line += src === "stub" ? " State tax is set from your pay stub for now (Clear stub rates to use this rate)." : ` State tax is set to the nearest 0.25%.`;
+    }
+    const ded = this._payDed();
+    const stubNote = src === "stub" ? `<div class="r">Federal and state tax set from your pay stub (federal includes Social Security and Medicare)${ded ? `; ${pct(ded)} deductions come out of the paycheck estimates` : ""}. <button type="button" class="fwpclr">Clear stub rates</button></div>` : "";
+    return `<span>State <select class="fwst" aria-label="State you pay income tax in"><option value=""${st ? "" : " selected"}>pick</option>${opts}</select></span>
+      <span>Filing <select class="fwfs" aria-label="Filing status"><option value="single"${fs === "single" ? " selected" : ""}>single</option><option value="married"${fs === "married" ? " selected" : ""}>married</option></select></span>
+      ${line ? `<div class="r">${this._esc(line)}</div>` : ""}<div class="r">State rates: ${this._esc(FWP_SRC)}.</div>
+      <div class="r">Or set them from your pay stub: <input type="file" class="fwstub" accept="application/pdf,.pdf" aria-label="Pay stub PDF"></div>
+      <div class="r">Your pay stub is read once on this device to set your tax rates, then discarded. Only the resulting rates are saved to your settings: federal, state and deductions, as percentages.</div>
+      ${this._stubMsg ? `<div class="r">${this._esc(this._stubMsg)}</div>` : ""}${stubNote}`;
+  }
+  _payWire() {
+    const sr = this.shadowRoot, fst = sr.querySelector(".set .fwst"), ffs = sr.querySelector(".set .fwfs"), stub = sr.querySelector(".set .fwstub");
+    const det = sr.querySelector("details.set");
+    if (det) det.addEventListener("toggle", () => { this._paySetOpen = det.open; });
+    // the two rate helpers only (named here so the portal's manifest check sees them): pref/set on the portal
+    const setFed = (v) => this._h.callService("input_number", "set_value", { entity_id: "input_number.flight_watcher_federal_tax_pct", value: v });
+    const setStt = (v) => this._h.callService("input_number", "set_value", { entity_id: "input_number.flight_watcher_state_tax_pct", value: v });
+    const applyState = (msg) => {
+      this._paySetOpen = true; this._stubMsg = typeof msg === "string" ? msg : "";
+      this._lsSet("pay_state", fst.value || null); this._lsSet("pay_filing", ffs.value);
+      const r = fst.value ? fwpStateTax(fst.value, ffs.value, (this._payGrossMo || 0) * 12) : null;
+      if (r) { setStt(fwpStep(r.pct != null ? r.pct : r.top, 0.25, 0, 15)); this._lsSet("pay_src", "table"); }
+      this._render();
+    };
+    if (fst) fst.addEventListener("change", () => applyState());
+    if (ffs) ffs.addEventListener("change", () => { if (fst && fst.value && this._ls("pay_src") !== "stub") applyState(); else { this._lsSet("pay_filing", ffs.value); this._paySetOpen = true; this._render(); } });
+    if (stub) stub.addEventListener("change", async () => {
+      const f = stub.files && stub.files[0];
+      if (!f) return;
+      stub.disabled = true; this._paySetOpen = true;
+      let r = null, why = "";
+      try { r = await fwpReadStub(f); } catch (e) { why = e instanceof FwpError ? e.message : "it could not be read"; }
+      stub.value = "";
+      if (!r) { this._stubMsg = `That file was not used (${why}). Nothing was saved.`; this._render(); return; }
+      const fv = fwpStep(r.federal, 0.5, 0, 45), sv = fwpStep(r.state, 0.25, 0, 15);
+      setFed(fv); setStt(sv);
+      this._lsSet("pay_ded", String(r.deductions)); this._lsSet("pay_src", "stub");
+      this._stubMsg = `Read and discarded. This year so far: federal ${r.federal}% (income tax, Social Security and Medicare), set as ${fv}%; state ${r.state}%, set as ${sv}%; deductions ${r.deductions}%.`;
+      this._render();
+    });
+    const clr = sr.querySelector(".set .fwpclr");
+    if (clr) clr.addEventListener("click", () => {
+      this._lsSet("pay_ded", null); this._lsSet("pay_src", null); this._paySetOpen = true;
+      this._stubMsg = fst && fst.value ? "Stub rates cleared; state tax is from the state table again. Set federal above." : "Stub rates cleared; pick your rates above.";
+      if (fst && fst.value) applyState(this._stubMsg); else this._render();
     });
   }
   getCardSize() { return 12; }

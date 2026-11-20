@@ -27,6 +27,11 @@ setting never leaves the van in hand with no alert. A slider moved after its own
 another (slot_sent: one alert a slider a van). A van learned or moved after the setting is a new key and follows the
 1.7.1 rules. The key keeps its form, so an alert sent once is never sent again, whatever the switch or the sliders do.
 
+1.7.11 (FW-0075, Ryan, Nov 17: "the company adjust the van time a little tiny bit ... I would want to be able to switch
+the van time in five minute increments so I could set it for 510"): adjusted() moves the van by a whole multiple of 5
+minutes in ADJUST_RANGE (the instant, then the station's clock read again), van_id() is the van before any move. A
+moved van is a new van time: a new key, so its alerts follow the 1.7.1 and 1.7.2 rules.
+
 Layover notes. Ryan's notes per layover station (the IATA code, e.g. SYD), one JSON file each under
 /share/flight_watcher/layovers (directory 0700, files 0600; never in git, never in a portal export): plain text, each
 note at most NOTE_MAX characters, at most NOTES_MAX a station. <CITY>.guide.md is the tidied guide Claude writes in
@@ -56,6 +61,10 @@ from working import ZONES
 HST = timezone(timedelta(hours=-10))
 UTC = timezone.utc
 OFFSETS = (30, 10)  # minutes before the van (Ryan's ticket: 30 and 10)
+# 1.7.11 (FW-0075): how far Ryan can move a van, in minutes (the layover card's FW_VAN_ADJUST says the same)
+ADJUST_RANGE = (-120, 120)
+ADJUST_STEP = 5
+ADJUST_KEYS = ("adjust_min", "orig_local", "orig_date")
 STATION_RE = re.compile(r"^[A-Z]{3}$")
 PAIRING_RE = re.compile(r"^[A-Z]\d{3,5}[A-Z]?$")
 # the card (www/flight-watcher-layover-card.js _parseVan) reads the van with the same three patterns
@@ -205,6 +214,49 @@ def key(info, minutes):
     return f"{_base_id(str(info['pairing']))}|{info['at'].astimezone(UTC).strftime('%Y-%m-%dT%H:%MZ')}|{minutes}"
 
 
+def adjust_ok(minutes):
+    """1.7.11 (FW-0075): True for a move Ryan can make: a whole number (an int, never a bool, a float or text) that is a
+    multiple of ADJUST_STEP within ADJUST_RANGE (0 is no move)."""
+    lo, hi = ADJUST_RANGE
+    return isinstance(minutes, int) and not isinstance(minutes, bool) and lo <= minutes <= hi \
+        and minutes % ADJUST_STEP == 0
+
+
+def van_id(info):
+    """1.7.11 (FW-0075): the van before any move, 'H3681|2026-11-18T13:25Z' (the pairing's base id and the van instant
+    as read, UTC; key(info, 0) without its minutes): what a move is kept under and what the card sends back. '' without
+    a van."""
+    if not info:
+        return ""
+    at = info["at"] - timedelta(minutes=int(info.get("adjust_min") or 0))
+    return f"{_base_id(str(info['pairing']))}|{at.astimezone(UTC).strftime('%Y-%m-%dT%H:%MZ')}"
+
+
+def adjusted(info, minutes):
+    """1.7.11 (FW-0075, Ryan, Nov 17: "switch the van time in five minute increments so I could set it for 510"): a copy
+    of the van moved by minutes from the van as read (absolute: a van already moved is moved from where it was read, and
+    0 puts it back; info as read and 0 is info itself). The instant moves (at plus the minutes), then local, date,
+    weekday and abbr are read again on the station's zone (daylight time right: 03:10 AEDT less 15 min is 01:55 AEST;
+    midnight right: 00:05 less 10 is 23:55 the day before) and hst, hst_date and hst_weekday on HST. A moved van has
+    adjust_min and orig_local and orig_date (the van as read); everything else (pairing, city, place, hotel, source)
+    stays. ValueError for a move adjust_ok refuses."""
+    if not adjust_ok(minutes):
+        raise ValueError("a van move is a whole multiple of 5 minutes from -120 to 120")
+    prev = int(info.get("adjust_min") or 0)
+    if minutes == prev:
+        return info
+    at = info["at"] - timedelta(minutes=prev) + timedelta(minutes=minutes)
+    loc, hst = at.astimezone(ZoneInfo(info["zone"])), at.astimezone(HST)
+    out = {k: v for k, v in info.items() if k not in ADJUST_KEYS}
+    out.update(at=at.astimezone(UTC), local=loc.strftime("%H:%M"), date=loc.strftime("%Y-%m-%d"),
+               weekday=loc.strftime("%a"), abbr=abbr(loc), hst=hst.strftime("%H:%M"),
+               hst_date=hst.strftime("%Y-%m-%d"), hst_weekday=hst.strftime("%a"))
+    if minutes:
+        out.update(adjust_min=minutes, orig_local=info.get("orig_local") or info["local"],
+                   orig_date=info.get("orig_date") or info["date"])
+    return out
+
+
 def offsets_of(first, second):
     """1.7.2: the alerts' lead times from the two settings: the distinct values above 0, largest first ((30, 10); a
     second alert of 0 is none, the same value twice is one alert)."""
@@ -303,14 +355,16 @@ def event(info, minutes, now, offsets=OFFSETS):
             "at_hst": now.astimezone(HST).isoformat(timespec="seconds"), "offsets": list(offsets)}
 
 
-def sensor(info, why, done, now, offsets=OFFSETS, on=True):
+def sensor(info, why, done, now, offsets=OFFSETS, on=True, adjustable=False):
     """The layover_van sensor's payload: state the van instant (a timestamp, None without one); the van as the card
     shows it, where it comes from (source: package or hark) and each alert's status (pending, sent, skipped, missed;
     1.7.2: off while alerts are off). Only what the card reads from it: not Hark's
     van text or hotel (the card shows those from Hark's own sensor), so the retained topic and HA's recorder keep no
     more of Hark's sensor than the card shows. 1.7.2: alerts_on and offsets (the lead times set, largest first, even
     while off and without a van); the alerts list is the current offsets, a skipped one with its why (late_start,
-    set_after_mark, slot_sent)."""
+    set_after_mark, slot_sent). 1.7.11 (FW-0075): with a van on the admin's instance (adjustable), adjustable true,
+    van_id (the van before any move, what the card sends back), adjust_min (0 when not moved) and, when moved,
+    orig_local and orig_date (the van as read); the van's own fields are the moved van's. Nothing new without a van."""
     base = {"alerts_on": bool(on), "offsets": [int(m) for m in offsets]}
     if not info:
         return {"at": None, "why": why, **base}
@@ -322,10 +376,16 @@ def sensor(info, why, done, now, offsets=OFFSETS, on=True):
         if rec.get("why"):
             a["why"] = str(rec["why"])
         alerts.append(a)
-    return {"at": info["at"].astimezone(UTC).isoformat(timespec="seconds"), "why": "",
-            **{k: info[k] for k in ("pairing", "city", "abbr", "date", "local", "weekday", "hst", "hst_weekday",
-                                    "place")},
-            "source": info.get("source") or "hark", "alerts": alerts, **base}
+    out = {"at": info["at"].astimezone(UTC).isoformat(timespec="seconds"), "why": "",
+           **{k: info[k] for k in ("pairing", "city", "abbr", "date", "local", "weekday", "hst", "hst_weekday",
+                                   "place")},
+           "source": info.get("source") or "hark", "alerts": alerts, **base}
+    if adjustable:
+        moved = int(info.get("adjust_min") or 0)
+        out.update(adjustable=True, van_id=van_id(info), adjust_min=moved)
+        if moved:
+            out.update(orig_local=info["orig_local"], orig_date=info["orig_date"])
+    return out
 
 
 # ---------------------------------------------------------------- the pairings package's van times

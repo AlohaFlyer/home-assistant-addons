@@ -469,11 +469,14 @@ def test_pot_card_shows_the_swap_ideas_like_the_admins_table():
         watching = _page(b, [_card("pot-card")]).evaluate(SWAP_JS, _pot_states(ideas=()))
         narrow = _page(b, [_card("pot-card")]).evaluate(SWAP_JS, _pot_states())
         wide = _page(b, [_card("pot-card")], width=1100).evaluate(SWAP_JS, _pot_states())
-    assert none["text"].startswith("Swap ideas No trips marked. On the Schedule tab, tap")
+    # 1.7.15: no mark and no idea (automatic ideas need no mark): nothing better in the pot, and the mark hint
+    assert none["text"].startswith("Swap ideas No better-paying swap in the open pot right now. On the Schedule tab, tap")
     assert watching["text"] == "Swap ideas Watching for better trips than H9102. Nothing better right now."
-    assert wide["heads"] == ["Give up", "For", "Dates", "Layover", "Days", "Credit", "Soft", "Gain", "Src", "Grid"]
-    assert wide["rows"] == ["H9102 H9205 21Nov-23Nov SFO 3 16:30 2:10 +1:05 soft, +0:40 cr Open time OK",
-                            "H9102 H9206 20Nov PPG turn 1 9:00 1:30 +0:35 soft, -1:10 cr Tradeboard red 11-21"]  # review r4: not "Grid grid red"
+    # 1.7.15: Pay and Per day after Soft ("-" for an idea with no pay figure, as an older Watcher sends)
+    assert wide["heads"] == ["Give up", "For", "Dates", "Layover", "Days", "Credit", "Soft", "Pay", "Per day", "Gain",
+                             "Src", "Grid"]
+    assert wide["rows"] == ["H9102 H9205 21Nov-23Nov SFO 3 16:30 2:10 - - +1:05 soft, +0:40 cr Open time OK",
+                            "H9102 H9206 20Nov PPG turn 1 9:00 1:30 - - +0:35 soft, -1:10 cr Tradeboard red 11-21"]  # review r4: not "Grid grid red"
     assert narrow["heads"] == [] and narrow["rows"] == wide["rows"]  # folded, the same cells
     assert narrow["fit"]["page"] <= 390 and narrow["fit"]["inner"] <= 0
     assert "Swap ideas 2" in wide["text"] and "nothing is filed from here" in wide["key"] and "PWA 10.E.1.a" in wide["key"]

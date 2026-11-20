@@ -31,7 +31,12 @@ NOW_UTC = "2026-11-11T20:00:00Z"  # the same moment for the browser's clock
 TODAY = "2026-11-11"
 DOH = "2019-03-01"  # made up: year 8 on TODAY
 # PORTAL_CONTRACT.md as 1.6.3 shipped it: the portal only relays ciphertext, so a date of hire changes no contract
-CONTRACT_DOC_SHA256 = "b14e730cd84f6b1eb997194c10ec53d787cbac7f1c90305595cc2d9388e44e38"  # 1.7.10: revision 5 (the contacts list upload)
+# 1.7.10: revision 5 (the contacts list upload) was b14e730cd84f6b1eb997194c10ec53d787cbac7f1c90305595cc2d9388e44e38
+# 1.7.11 revision 6 (the lookup's month) was 8fe0659c468e...; the integration review fixed section 5.7's stale "at most 5
+# matches" (12 since FW-0078), the doc only: the fixture is unchanged (e4f559e075f5...). 1.7.15 review (F5): section
+# 4.3's swap opt-in reads "no mark, no alert" and names the automatic ideas (auto_ideas, never an alert), the doc only:
+# the fixture is unchanged
+CONTRACT_DOC_SHA256 = "192e175cb57b3a5a88c8524a66964f65c48cf812bba4247a51cdcb060d7b97e2"
 
 
 def _src(name):

@@ -185,7 +185,8 @@ def test_the_name_lookup_rows_come_from_his_file(james):
     assert W.pilotdb_name_rows() == ([], "")  # no file yet
     _share(W, db, root)
     rows, sig = W.pilotdb_name_rows()
-    assert sorted(rows) == [("10001", "Doe", "Jane A.", ""), ("10002", "Roe", "Rick", "CA")] and sig.startswith("file:")
+    # 1.7.11 (FW-0078): each row carries the record's base too ('' when it has none)
+    assert sorted(rows) == [("10001", "Doe", "Jane A.", "", ""), ("10002", "Roe", "Rick", "CA", "")] and sig.startswith("file:")
     _share(W, db, root, on=False)
     assert W.pilotdb_name_rows() == ([], "")  # Ryan turned his share off: nothing of the database is searched
 
@@ -367,7 +368,7 @@ def test_the_manifest_names_revision_4_and_the_pilotdb_subs(james):
     W, _db, _root = james
     W.portal_export_once(full=True)
     m = _payload(W, "manifest.json", "manifest")
-    assert m["revision"] == 5 and {"pilotdb/note", "pilotdb/edit"} <= set(m["mqtt_subs"])
+    assert m["revision"] == 6 and {"pilotdb/note", "pilotdb/edit"} <= set(m["mqtt_subs"])  # 1.7.11: 6
     assert "flight-watcher-pilotdb-card-james.js" in m["cards"]
     pilot_tab = next(t for t in m["layout"]["tabs"] if t["id"] == "pilot")
     types = [c["type"] for c in pilot_tab["cards"]]

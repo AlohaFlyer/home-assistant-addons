@@ -42,7 +42,7 @@ def test_manifest_verifies_and_names_the_pilot(pilot):
     assert {k: m[k] for k in ("contract", "app_version", "pilot", "prefix", "role", "ntfy")} == {
         "contract": 1, "app_version": W.VERSION, "pilot": "pilot2", "prefix": P, "role": "pilot", "ntfy": False}
     assert set(m) == {"contract", "revision", "app_version", "pilot", "prefix", "role", "cards", "layout", "services",
-                      "mqtt_subs", "files", "ntfy"} and m["revision"] == roles.CONTRACT_REVISION == 5  # 1.7.9: 4; 1.7.10: 5
+                      "mqtt_subs", "files", "ntfy"} and m["revision"] == roles.CONTRACT_REVISION == 6  # 1.7.9: 4; 1.7.10: 5; 1.7.11: 6
     assert [t["id"] for t in m["layout"]["tabs"]] == list(roles.PORTAL_TABS)
     # 1.7.0: the tickets card's five subs (its _pub calls); 1.7.2 (revision 3): no recall/set (the admin's paste is
     # behind its role check, and the portal refuses it), and the pilot uploads card's upload/pdf
@@ -114,7 +114,8 @@ def test_every_entity_a_bundled_card_reads_is_exported(pilot):
             if eid not in ok:
                 missing.add(eid)
     assert missing <= _admin_only(W), sorted(missing - _admin_only(W))
-    assert missing == {f"sensor.{P}_would_drop"}  # the schedule card's admin-only drop marks, never drawn for a pilot
+    # the schedule card's admin-only drop marks and (1.7.19) its admin-only paycheck model, never read for a pilot
+    assert missing == {f"sensor.{P}_would_drop", f"sensor.{P}_pay_model"}
 
 
 def test_every_call_service_maps_to_the_manifest(pilot):

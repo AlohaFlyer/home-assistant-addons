@@ -1,4 +1,97 @@
-# HANDOFF: Flight Watcher (refreshed 2026-11-16, release 1.7.9 live with HOM 1.9.0; 1.7.10 built, not released)
+# HANDOFF: Flight Watcher (refreshed 2026-11-18: 1.7.18 live with HOM 1.9.2; every Pako edit applied)
+
+State (Nov 18): app **1.7.18** live on Pako HI, installed by Home Assistant's own update (Supervisor log: updates at
+04:02:41 and 04:06:56 HST; no connector or app API call made them, the app's auto-update is off; Ryan's "Ship it all"
+covered the update). The Watcher started at 04:06:57 HST; `sensor.flight_watcher_state` is idle, version 1.7.18. HOM
+**1.9.2** is deployed (Hark on the HOM bus, Nov 17 21:44 HST: "[fwportal] 1.9.2 listening ... self-check passed").
+Merged to main in order, each tested: 1.7.12 (#126) to 1.7.18 (#132), Recent releases below; main 2b9a3be: 3130 passed,
+1 skipped, push isolation guard OK (23 automations, 0 offenders). Backup: Home Assistant's automatic full backup
+`a9310263` (04:59 HST) holds Flight Watcher 1.7.18 and the HA configuration from before the Pako edits below.
+
+Verified on Pako after the update: `/config/www/flight-watcher-cards.json` reads version 1.7.18 (40 cards) and all 20
+`/config/www/flight-watcher-*.js` card files (not the `-<pilot>` copies; the loader is generated) are byte for byte
+main 2b9a3be's. The app log from 04:07 to 08:16 HST has no ERROR and no Traceback (normal checks, one FLICA session
+expiry at 05:35 answered by one login). The schedule card rendered in Chromium on live data: Credit 152:15 and Block
+103:18 match FLICA, the Room column is positive every day, Dec 2's 100 h / 672 h cell reads "16:18 left" (83:42 used,
+as before 1.7.13). The near misses card rendered on live data at 390 px, light and dark: 3 near misses, no page errors.
+`sensor.flight_watcher_near_misses` is 3; `sensor.flight_watcher_swap_ideas` is 0 ideas (auto 0, priced).
+
+Pako edits, all applied (`ha/README.md` has each one's section, check and undo): the four dashboard edits went on at
+08:04 HST as one JSON patch through the HA connector, with test guards and optimistic locking (config_hash
+`616b0423d2d1e229` before, `93c43f54442a5748` after): the Details view's "Last check" tile is the clock card in age
+mode (1.7.12), the near misses card sits right after the pot markdown card (1.7.14), the Swap ideas markdown card has
+the 1.7.15 content (1.7.15) and the pot Key has the "Commutable KOA" line after the CBA rest line (1.7.17). Pako's
+redacted dashboard read `be03a0a4...` (the 1.7.11 snapshot) before and reads `e322dc0e...` after, the sha256 of
+`ha/dashboard_flight_watcher.json`: nothing is pending on Pako. The `comm_chip` macro went into
+`/config/custom_templates/flight_watcher.jinja` (on Pako, not in git) about 08:18 HST, its call gated to the FAR column
+inside `pot_table`'s loop over `extra.cols` (file sha256 `03a72865923dd5b2...` before, `8759ee187964c830...` after),
+then `homeassistant.reload_custom_templates` at 08:19 HST: the README's test template rendered exactly what it must,
+and on live data 2 of the 3 pot rows show the bold "Commutable ..." chip in the FAR cell.
+
+James's FW-0076 and FW-0078 were marked `fixed`, version 1.7.11, at 08:23 HST, after Hark's HOM 1.9.2 answer; his
+instance sent one ticket-fixed alert for both (Ryan's yes: "Hark + James alerts"). They wait for James to verify or
+reopen; Claude never closes them. Open for Ryan: Open items 9 to 11 (the two "For Ryan to confirm" decisions, Pako
+connectivity, Hark's two notes); item 12 waits on James.
+
+**Nov 17: 1.7.11 is contract 1 REVISION 6 and HOM 1.9.2 goes live FIRST** (Ryan: "Ship it all when ready"; HOM 1.9.2
+deployed, Hark, Nov 17 21:44 HST). The ticket run of Nov 17 (CHANGELOG 1.7.11 has every section):
+- FW-0075 (Ryan): the layover card's "-5 min" / "+5 min" move the van time in 5 minute steps
+  (`flight_watcher/van/adjust/set`, admin only, absolute move, alerts settle 30 s, kept across a restart).
+- FW-0078 (James, Ryan's yes naming it): the pilot lookup lists up to 12 matches as "Doe, Jane · FO · HNL · #10001";
+  the pick stays the opaque id.
+- FW-0076 (James, Ryan's yes naming it): this-month / next-month buttons on the pilot card (`pilot/set` key `month`,
+  `commands.key_since_revision`), one Schedule Lookup page a tap, a 6 h cache per month.
+- FW-0080 (filed under Ryan from FW-0076 by james; scope "Everywhere"): totals by BID PERIOD, not calendar month
+  (PWA 4.A, each duty in the bid period it departs in, TCRD per duty, the home period keeps the rest) on the pilot
+  card, Ryan's schedule card, the versions and the PAYP split; stored versions re-split once (`PAYP_FIX_V`).
+- FW-0079 (same source): on a phone the pilot card's Crew column gives way to a crew list under the grid.
+- Log masks: fixed log texts are no longer blanked (a sweep test walks every log call), dates and schedule versions
+  are no phone numbers; the leak review found and closed 12 ways a phone or number got through.
+- Own trips (Ryan's pasted patch, folded into PR 124): a page with no times, or one that stops pairing reads, never
+  blanks times read before (H3620 Nov 15: Block 91:04 vs FLICA's 103:18); a trip across a month end counts once in the
+  schedule card's FAR-100/672 and Room (H3607 Nov 30 to Dec 2: 101:17 on Dec 2, real 83:42).
+- FW-0073 / FW-0074 (Ryan): the LAS layover guide is on Pako and both are closed. FW-0077 (James): fixed in 1.7.10,
+  left `fixed` for him to verify. James's FW-0076 and FW-0078 were marked `fixed` (version 1.7.11) on Nov 18 at
+  08:23 HST, one alert for both: they wait for him to verify or reopen (top).
+- 1.7.12 (Ryan, Nov 17): one "Data age" stamp replaces "updated" and "Last check" (amber "stale" past 1x, red "very
+  stale" past 2x); the review's "1x" (the Watcher's longest cycle, not the bare interval) ships under Ryan's "Ship it all" (his to undo), and the
+  Details view's tile was applied on Pako on Nov 18 (`ha/README.md`). No contract change.
+- 1.7.13 (Ryan, Nov 17): the schedule card's FAR 117 columns read `30h in 7d`, `100h in 672h` and `Room to 100h`, with
+  headroom ("10:57 left", red "0:00 left" / "1:20 over") and a Key row each; Room tries every 672 h window holding the
+  day as far.py does (mid-day ones too: over exactly where far.py finds one over 100:00) and `~` marks a window holding a
+  trip with no times (Nov 18, "fix all of these things"). FAR review fixes: far.py compares whole minutes (exactly
+  100:00 in 672 h, or 60:00 FDP in 168 h, is legal, was a false NO) and tries the windows at the open edges of a
+  pairing; 100h in 672h counts a trip whose duty has no block and ends a no-duty trip at its block-in. Nothing pending
+  on Pako, no contract change.
+- 1.7.14 (Ryan, Nov 17): near misses in the open time pot (`sensor.flight_watcher_near_misses`, the near card): each pot
+  trip hidden by a VAC day, a blocked day or an own trip, what to give up or drop to fly it, the pay difference (PWA
+  3.D.6, 4.O.1, VAC 4:00 a day PWA 6.J.1.c) and FAR 117 with the conflict removed; information only, no FLICA load,
+  off the portal (no contract change). The card under the pot table was applied on Pako on Nov 18 (`ha/README.md`).
+- 1.7.15 (Ryan, Nov 17, item 6): automatic swap ideas: every unmarked own trip that has not started against the open pot
+  of its bid period, ranked by pay per day (PWA 3.D.6, 4.O.1), the same legality (FAR 117 with the trip removed, the
+  11 h home rest PWA 10.E.1.a, no VAC or blocked day, a green grid); in `auto_ideas`, never pushed, never a draft or
+  the dry run. Revision 6 kept (PORTAL_CONTRACT.md 4.3 wording only, doc sha `192e175c...`). The Swap ideas table edit
+  was applied on Pako on Nov 18 (`ha/README.md`).
+- 1.7.16 (Ryan, Nov 17): When to hunt on the FO / RO pickers card: the median time to pickup, count and fastest by
+  layover, HST weekday and HST time of day the trip entered the pot (from `picker_log`, each pickup once, a capped
+  speed "at most"), groups under 5 grey, a tip naming the fastest day and time slot of 5 or more; `speed` on the
+  pickers sensor (aggregates only, at most 2500 bytes). No FLICA load, no new export, nothing pending on Pako.
+- 1.7.17 (Ryan, Nov 17): the pot and Tradeboard sensor rows carry `cm`, the airports the commute check passed both ways
+  from smart.json's timetables (PWA 26.QQ.2, customs release PWA 2.19.b; none without timetables, never a guess); the
+  pot card shows a "Commutable KOA LAS" chip. No FLICA load, no contract change (James's portal gets it as signed).
+  The HA Watcher view's `pot_table` macro (`flight_watcher.jinja`, not in git) and its Key line were applied on Pako
+  on Nov 18 (the macro about 08:18 HST, the custom templates reload at 08:19): `ha/README.md` "Applied on Pako
+  2026-11-18 about 08:18 HST (1.7.17)" has the macro, the call as placed, the Key line, the check and the undo (the
+  section was added by the 1.7.18 cross-item review; the snapshot has the Key line).
+- 1.7.18 (Ryan, Nov 17): two card changes. The uploads card's On file list folds under its heading (folded by default,
+  kept per browser, the Watcher's own count when the sensor list is cut); the schedule card's version lock is a switch
+  (an SVG lock, the word Lock, a track and knob, On = locked, role switch, 44 px; it starts the first line on a phone,
+  the Data age stamp at its right). Same lock storage and taps. No contract change, nothing pending on Pako of its own.
+  Cross-item review fixes (Nov 18, CHANGELOG 1.7.18): the schedule header's stamp is one fixed box (the month arrows
+  and Now no longer slide at long texts; on a phone it shares the switch's line, two lines in all); 1.7.17's Pako edits
+  got their `ha/README.md` section with the macro in git and the snapshot `e322dc0e...` carries every edit (Pako's
+  dashboard has read it since Nov 18); a busy month
+  of marked swap ideas keeps 1.7.11's count (the last ones drop their pay figures first); a swap draft carries `auto`.
 
 **Nov 16: 1.7.10 is contract 1 REVISION 5 and HOM 1.9.1 goes live FIRST.** Ryan: "His uploads should update the
 shared database too", and the contacts list upload on James's portal "Now, in 1.7.10". Built (commits "... a portal
@@ -15,7 +108,8 @@ Ryan's value Ryan's. Boundary changes 16 to 25 in the CHANGELOG. The fixture is 
 revision 4's: `86c2d8f905ef...`). HOM 1.9.1 pins these bytes and its chunk check takes the same two encodings.
 Open for Ryan: there is no one-step undo of a merged pilot's list (he restores values from a record's history).
 
-**1.7.10 built on branch `fw-1.7.10` (not pushed, not merged, not live).** Ryan's decisions of Nov 15: "The pilot
+**1.7.10 built on branch `fw-1.7.10` (merged as PR #123; Pako runs 1.7.18 since Nov 18, top).**
+Ryan's decisions of Nov 15: "The pilot
 database should be shared with James 100%; we work on a shared system; we do have our own schedules and pay rates
 though." Built in three commits on top of the part one commits (James sees the union ID and the AI note):
 
@@ -138,7 +232,7 @@ the top of this file).
   change Ryan's setup. This is a CLAUDE.md hard rule since Nov 15 (Ryan's yes; the spec's B18 wording, extended to
   field edits and AI notes).
 - Decided by Ryan (Nov 15), built in 1.7.10: James sees the union id (so his edit of it is not blind) and sees the AI
-  note read only. Until 1.7.10 is live, 1.7.9 shows neither on his portal.
+  note read only. Live since 1.7.10 (Pako runs 1.7.18 since Nov 18).
 
 **Pilot database, restore by hand** (spec 18): the card's "Daily copies" puts a copy back (typed RESTORE; the file in
 use is set aside as `pilotdb.sqlite.before-restore-<time>` first; it and a `pilotdb.sqlite.bad-<time>` from a failed
@@ -301,8 +395,38 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
    (it waits only when the pilot's hourly FLICA budget is used up; CHANGELOG 1.7.5); optional, drop
    the second mqtt.publish to `flight_watcher_james/recall/set` from "Flight Watcher recall list in (Hark webhook)"
    (harmless: the Watcher forwards recall lists itself, F#75).
+9. **Ryan, to confirm or undo** (shipped under "Ship it all", CHANGELOG 1.7.18 "For Ryan to confirm"): the Data age
+   stamp's "1x" is the Watcher's longest healthy cycle, not the bare interval (1.7.12; a no puts the bare interval
+   back, one constant); duty blocks over the trip Block are counted as far.py counts them (1.7.13; the other way is
+   far.py and recall.py using FLICA's Block).
+10. **Pako connectivity (open, Ryan's):** connector calls go through a gateway with about a 10 s limit, and Pako's Funnel
+    path answers its first request after an idle gap in 5 to 13 s, then about 2 s, so many single calls return 502 while
+    the NUC is healthy (up 15 days, load about 1.8, Nov 18); Hark saw the Nabu Casa remote URL failing in the same
+    window. Until it is fixed: send the same read call two or three times in parallel (one gets through), and send a
+    write only with guards (config_hash, test ops, idempotent scripts) so a duplicate cannot apply twice. The Pako HI
+    Shell app has no Supervisor API permission (it cannot update apps): app updates go through the HA connector.
+11. **Hark's two notes for Ryan** (from its HOM bus answer of Nov 17, a report only): the Supervisor logged
+    "backup_hint not in schema" warnings for the Home Assistant MCP Server app (`81f33d0f_ha_mcp`) at 21:10, 21:25 and
+    21:36 HST on Nov 17; Core logged one invalid-auth attempt at 21:27 HST on Nov 17 from an outside address (Hark has
+    the details).
+12. **Waiting on James:** FW-0076 and FW-0078 (fixed, 1.7.11, marked Nov 18 08:23 HST) and FW-0077 (fixed in 1.7.10)
+    stay `fixed` until he verifies or reopens them on his portal; Claude never closes a pilot's ticket and contacts
+    James only with Ryan's yes (the Nov 18 ticket-fixed alert had it: "Hark + James alerts").
 
 ## Rollback notes
+
+- **1.7.18 to 1.7.11** (Flight Watcher only; HOM 1.9.2 stays: 1.7.12 to 1.7.18 keep contract 1 revision 6 and its fixture; 1.7.15
+  changed the `PORTAL_CONTRACT.md` 4.3 wording only).
+  Home Assistant's automatic full backup `a9310263` (Nov 18 04:59 HST) holds Flight Watcher 1.7.18 and the HA
+  configuration from before the Pako edits: restoring it gives 1.7.18 (HA's update, 04:02 to 04:06 HST, came before
+  it), not a 1.7.11 copy, with the dashboard and the Jinja file as they were before 08:04 HST (and anything else
+  changed on Pako since put back too). For 1.7.11 itself (its code is git 2307cce, PR #124; read CHANGELOG 1.7.12 to
+  1.7.18 first), take the Pako edits off first, newest first, each by its `ha/README.md` Undo line (the clock card's
+  age mode exists only from 1.7.12 and the near misses card only from 1.7.14): the call
+  `{% if k == 'far' %}{{ comm_chip(p) }}{% endif %}` out of `pot_table` and a custom templates reload (the macro can
+  stay: unused, it prints nothing), then the dashboard's Key line, the Swap ideas `content`, the near misses card and
+  the Details tile, or the whole 1.7.11 dashboard from git history (`ha/dashboard_flight_watcher.json` at 2307cce,
+  sha256 `be03a0a4...`). Each step's sha256 is in `ha/README.md` (the snapshots at 66a3099, 54b929e and 33a4e70).
 
 - **1.7.10 to 1.7.9** (Flight Watcher first; HOM 1.9.1 can stay, it takes revision 4): safe. 1.7.9 refuses a chunk
   of kind `contacts` by its own shape check and answers an inbox file of cmd `contacts` "it could not be read"; the
@@ -393,6 +517,18 @@ portal prefs live in `/data/james/prefs.json`. The work list is the tickets fold
 
 ## Recent releases
 
+1.7.18 live on Pako Nov 18 (04:06 HST, with HOM 1.9.2; installed by Home Assistant's own update), each release merged
+to main in order and tested: 1.7.12 (#126) data age stamp, 1.7.13 (#127) FAR 117 columns with units and headroom,
+1.7.14 (#128) near misses, 1.7.15 (#129) automatic swap ideas by pay per day, 1.7.16 (#130) pickup speed stats, 1.7.17
+(#131) Commutable KOA/LAS chip, 1.7.18 (#132) On file list folds, version lock as an on/off switch, cross-item review
+fixes (main 2b9a3be: 3130 passed, 1 skipped). PR links: https://github.com/AlohaFlyer/home-assistant-addons/pull/<n>.
+1.7.11 Nov 17 (PR #124, git 2307cce): contract 1 revision 6, so HOM 1.9.2 had to go live
+first (deployed: Hark, Nov 17 21:44 HST).
+FW-0075 (the layover card's "-5 min" / "+5 min" move the van time in 5 minute steps, admin only), FW-0076 (this
+month / next month buttons on the pilot card, `pilot/set` key `month`), FW-0078 (the pick list shows up to 12 pilots
+with seat, base and employee number), FW-0079 (the pilot card's crew list on a phone), FW-0080 (totals by bid period
+everywhere, PWA 4.A; stored PAYP records split again once), the log mask fixes, and the integration review fixes
+(CHANGELOG 1.7.11, its last list).
 1.7.5 Nov 14 (Pause wins over a waiting FLICA login, login floor from when FLICA is reached), 1.7.4 Nov 14 (FLICA
 refusal block HMAC),
 1.7.3 Nov 14 (crew index probes no longer stop pairing reads, pilot log mask, pause note, plain FLICA error line),
