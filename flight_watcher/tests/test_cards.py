@@ -285,7 +285,10 @@ def test_pilot_card_draws_rebuilt_month_in_the_schedule_grid(tmp_path):
                 [{"trip": "H3826", "start": "2026-11-04", "end": "2026-11-04", "blk": "5:00", "credit": "5:30", "soft": "0:30",
                   "legs": [{"dow": "WE", "route": "HNL-OGG", "dep": "0800", "arr": "0840", "blk": "0:40"}],
                   "crew": [["CA", "Doe, Jane"]]}], "2026-11")
-    js = ("globalThis.HTMLElement = class {}; globalThis.customElements = {define() {}}; globalThis.window = {};\n" + src +
+    # the card's trip marks (complete, in progress) read today's HST date from Date.now(): the clock is held at Nov 18,
+    # 2026 12:00 HST, before H9002's Nov 20, so the expected cells do not change with the day the test runs
+    js = ("globalThis.HTMLElement = class {}; globalThis.customElements = {define() {}}; globalThis.window = {};\n"
+          "Date.now = () => Date.parse('2026-11-18T22:00:00Z');\n" + src +
           f"\nconst c = new FlightWatcherPilotCard(); const a = {json.dumps(a)}; const rd = {json.dumps(readable)};\n"
           "const nob = {...a, reconstructed: a.reconstructed.map((x) => x.pairing === 'H9002' ? {...x, blk: ''} : x)};\n"
           "const bare = {...a, reconstructed_from: undefined, reconstructed_to: undefined};\n"
