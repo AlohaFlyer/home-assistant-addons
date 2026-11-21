@@ -70,7 +70,7 @@ import pilotpdf as PP
 import pilotdb as PDBM
 import pdbshare as PS
 
-VERSION = "1.7.22"
+VERSION = "1.7.23"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -5919,6 +5919,11 @@ def crewtrac_fw_trips():
     """{'PID|start': {credit, blk, cut}} of the pilot's own trips as the schedule card shows them: FLICA's credit, or
     the PWA credit where the card replaces it (pay.pwa_trip 'fix', the trip's pairings package detail)."""
     out, cache = {}, {}
+    try:  # 1.7.23: CrewTrac's credit or a 'K+KEY' mark keeps FLICA's credit (pay.pwa_trip keep / ct)
+        snap = crewtrac_snapshot()
+        er = pay_settings()[2]
+    except Exception:  # noqa: BLE001
+        snap, er = None, []
     for k, t in (S.get("own_trips") or {}).items():
         pid, _, st = str(k).partition("|")
         if not isinstance(t, dict) or not re.fullmatch(r"H\d{4}[A-Z]?", pid):
@@ -5927,7 +5932,9 @@ def crewtrac_fw_trips():
         try:
             per = CI.period_for(CARD_PAIRINGS, st, cache)
             det = pkg_detail_for(per, pid[:5], st) if per else None
-            pa = PAY.pwa_trip(st, t, det, mine=bool(str(t.get("seat") or "").strip()))
+            ctt = CTR.find_trip(snap, pid, st) if snap and isinstance(snap.get("trips"), list) else None
+            pa = PAY.pwa_trip(st, t, det, mine=bool(str(t.get("seat") or "").strip()), keep=PAY.keep_of(er, k),
+                              ct=CTR.m_of(ctt.get("credit")) if isinstance(ctt, dict) else None)
         except Exception:  # noqa: BLE001 (the compare then uses FLICA's credit)
             pa = None
         if pa and pa.get("fix"):
