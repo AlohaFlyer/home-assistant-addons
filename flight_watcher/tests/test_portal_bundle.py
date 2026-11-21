@@ -115,7 +115,8 @@ def test_every_entity_a_bundled_card_reads_is_exported(pilot):
                 missing.add(eid)
     assert missing <= _admin_only(W), sorted(missing - _admin_only(W))
     # the schedule card's admin-only drop marks and (1.7.19) its admin-only paycheck model, never read for a pilot
-    assert missing == {f"sensor.{P}_would_drop", f"sensor.{P}_pay_model"}
+    # and (1.7.22) its admin-only CrewTrac check
+    assert missing == {f"sensor.{P}_would_drop", f"sensor.{P}_pay_model", f"sensor.{P}_crewtrac_check"}
 
 
 def test_every_call_service_maps_to_the_manifest(pilot):

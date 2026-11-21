@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.7.22
+
+The CrewTrac per-trip pay check (Hark, Ryan's option 1 of Nov 20, 2026: Hark reads CrewTrac daily and hands it to FW; FW
+holds no CrewTrac login for it). Pay only: crewtrac.py, the Watcher's check, the schedule card.
+
+- Hark reads CrewTrac once a day (read only: Schedule Detail CT5660 and Pay Report CT8840, current and next month) and
+  posts a snapshot as sensor.flight_watcher_crewtrac_snapshot. The Watcher keeps a copy in
+  /share/flight_watcher/crewtrac_snapshot.json (an HA restart drops a posted state) and publishes
+  sensor.flight_watcher_crewtrac_check: ok, mismatch, stale or missing, each own trip's compare, each month's, and the
+  snapshot for the card. The admin's Watcher only.
+- A trip's CrewTrac credit is the sum of its duty days' TCRD plus the Pay Report's minimum guarantee rows (MF*) in it; a
+  trip not flown yet is projected to the MDG (5:00 x calendar days) and marked. FLICA's id may carry another letter
+  (H3606A is CrewTrac's H3606B) and a late evening report may be dated a day apart: both still match.
+- Schedule card: each trip's Pay-Gross tooltip says "CrewTrac 21:09, FW 21:09" with a check mark, or the difference
+  in credit and block with the CrewTrac figures as the authoritative ones (the Pay-Gross turns red at 0:01 or more).
+  The totals line gets a CrewTrac item: the Pay Report's bid period credit against FW's. A snapshot missing or over 36 h
+  old says "CrewTrac not compared (snapshot N h old)" and never stops the card.
+
 ## 1.7.21
 
 Review of 1.7.20 on live data (Hark, Nov 20, 2026). Pay only, cards and pay.py.

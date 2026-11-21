@@ -49,6 +49,7 @@ import crewidx as CI
 import tickets as TK
 import sealed as SEAL
 import pay as PAY
+import crewtrac as CTR  # 1.7.22 (Hark): the CrewTrac per-trip pay check
 import seniority as SEN
 import wwwfiles as WF
 import trades as TR
@@ -69,7 +70,7 @@ import pilotpdf as PP
 import pilotdb as PDBM
 import pdbshare as PS
 
-VERSION = "1.7.21"
+VERSION = "1.7.22"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -1468,6 +1469,10 @@ def entity_defs():
         ("sensor", "schedule_versions", {"name": "Schedule versions", "state_topic": f"{T}/schedule_versions",
                                           "value_template": "{{ value_json.count }}",
                                           "json_attributes_topic": f"{T}/schedule_versions", "icon": "mdi:history"}),
+        # 1.7.22 (Hark, Ryan Nov 20, 2026): Hark's daily CrewTrac snapshot and the Watcher's check of each own trip
+        ("sensor", "crewtrac_check", {"name": "CrewTrac check", "state_topic": f"{T}/crewtrac_check",
+                                      "value_template": "{{ value_json.status }}",
+                                      "json_attributes_topic": f"{T}/crewtrac_check", "icon": "mdi:scale-balance"}),
         ("sensor", "own_trips", {"name": "Own trip times", "state_topic": f"{T}/own_trips",
                                  "value_template": "{{ value_json.count }}",
                                  "json_attributes_topic": f"{T}/own_trips", "icon": "mdi:clock-outline"}),
@@ -5876,6 +5881,98 @@ def ccr_thread():
             ccr_poll()
         except Exception as e:
             log.info("CCR poll: %s", e)
+
+
+# 1.7.22 (Hark, Ryan Nov 20, 2026, option 1): the CrewTrac per-trip pay check (crewtrac.py). Hark posts its daily
+# snapshot as sensor.flight_watcher_crewtrac_snapshot (HA REST, attributes = the snapshot); the Watcher keeps a copy in
+# CT_FILE (an HA restart drops a REST-posted state) and publishes sensor.flight_watcher_crewtrac_check: the snapshot
+# for the schedule card and its own compare, which Hark's daily run reads. The Watcher holds no CrewTrac login for this.
+CT_IN = "sensor.flight_watcher_crewtrac_snapshot"
+CT_FILE = "/share/flight_watcher/crewtrac_snapshot.json"
+CT_POLL_S = 600
+CT_META = ("friendly_name", "icon", "unit_of_measurement", "device_class")
+
+
+def crewtrac_snapshot():
+    """The newest snapshot: HA's (when it is newer than the file, it is written to CT_FILE), else CT_FILE's; None."""
+    code, js = ha_state_full(CT_IN)
+    got = {k: v for k, v in ((js or {}).get("attributes") or {}).items() if k not in CT_META} if code == 200 else {}
+    try:
+        with open(CT_FILE, encoding="utf-8") as f:
+            kept = json.load(f)
+    except (OSError, ValueError):
+        kept = None
+    if isinstance(got.get("trips"), list) and str(got.get("pulled_at") or "") > str((kept or {}).get("pulled_at") or ""):
+        try:
+            os.makedirs(os.path.dirname(CT_FILE), exist_ok=True)
+            tmp = CT_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(got, f)
+            os.replace(tmp, CT_FILE)
+        except OSError as e:
+            log.info("CrewTrac snapshot not kept: %s", e)
+        return got
+    return kept if isinstance(kept, dict) else (got or None)
+
+
+def crewtrac_fw_trips():
+    """{'PID|start': {credit, blk, cut}} of the pilot's own trips as the schedule card shows them: FLICA's credit, or
+    the PWA credit where the card replaces it (pay.pwa_trip 'fix', the trip's pairings package detail)."""
+    out, cache = {}, {}
+    for k, t in (S.get("own_trips") or {}).items():
+        pid, _, st = str(k).partition("|")
+        if not isinstance(t, dict) or not re.fullmatch(r"H\d{4}[A-Z]?", pid):
+            continue
+        cr, cut = t.get("credit"), 0
+        try:
+            per = CI.period_for(CARD_PAIRINGS, st, cache)
+            det = pkg_detail_for(per, pid[:5], st) if per else None
+            pa = PAY.pwa_trip(st, t, det, mine=bool(str(t.get("seat") or "").strip()))
+        except Exception:  # noqa: BLE001 (the compare then uses FLICA's credit)
+            pa = None
+        if pa and pa.get("fix"):
+            cr, cut = PAY.hm(pa["use"] / 60), pa["cut"]
+        out[k] = {"credit": cr, "blk": t.get("blk"), "cut": cut}
+    return out
+
+
+def crewtrac_check(now=None):
+    """Publish sensor.<prefix>_crewtrac_check: status (ok / mismatch / stale / missing), the compact snapshot, each own
+    trip's compare and each month's (CrewTrac Pay Report credit vs FW: FLICA's bid period credit less the PWA cuts)."""
+    now = now or datetime.now(timezone.utc)
+    snap = crewtrac_snapshot()
+    fw = crewtrac_fw_trips()
+    res = CTR.compare_trips(snap, fw, now)
+    months = []
+    if res["status"] == "ok":
+        sch = S.get("schedule") or {}
+        for mk, m in sorted((snap.get("months") or {}).items()):
+            fc = CTR.m_of(((sch.get(mk) or {}).get("totals") or {}).get("credit"))
+            if fc is None:
+                continue
+            cut = sum(v.get("cut") or 0 for k, v in fw.items() if k.split("|")[-1][:7] == mk)
+            line = CTR.month_line(snap, mk, CTR.hm(fc - cut))
+            if line:
+                ok = line.endswith("\u2713")
+                months.append({"month": mk, "line": line, "ok": ok})
+                res["mismatches"] += 0 if ok else 1
+    status = res["status"] if res["status"] != "ok" else ("mismatch" if res["mismatches"] else "ok")
+    # the newest 40 trips, each its id, first day and ok; a mismatch its line too (the card draws its own), so the sensor stays
+    # far under the recorder's 16 KB (tests/test_sensor_size.py)
+    rows = [{k: r[k] for k in (("trip", "start", "ok") if r["ok"] else ("trip", "start", "ok", "line"))} for r in res["rows"][-40:]]
+    pub("crewtrac_check", {"status": status, "checked": now_iso(), "age_h": res.get("age_h"), "line": res.get("line", ""),
+                           "mismatches": res["mismatches"], "rows": rows, "months": months,
+                           "snapshot": CTR.card_view(snap) if snap and isinstance(snap.get("trips"), list) else None})
+
+
+def crewtrac_thread():
+    """1.7.22: crewtrac_check() at start and every CT_POLL_S (the admin's Watcher only)."""
+    while True:
+        try:
+            crewtrac_check()
+        except Exception as e:  # noqa: BLE001 (never stops the Watcher; the card then says not compared)
+            log.info("CrewTrac check: %s", e)
+        time.sleep(CT_POLL_S)
 
 
 def publish_recall():
@@ -14091,6 +14188,8 @@ def main():
     recall_eval()
     start_charter_watch()
     threading.Thread(target=ccr_thread, daemon=True, name="ccr").start()  # 1.4.6: Hark's answers to CCR requests
+    if not is_pilot():  # 1.7.22 (Hark): the CrewTrac check is the admin's (Hark reads CrewTrac for Ryan only)
+        threading.Thread(target=crewtrac_thread, daemon=True, name="crewtrac").start()
     if os.environ.get("FLIGHT_WATCHER_WEB", "1") == "1":  # 0.10.0: only the default instance serves the ingress page
         web.serve(int(os.environ.get("INGRESS_PORT", "8099")), VERSION, lambda: RULES["list"],
                   save_rules_from_page, DB, log, get_settings=lambda: settings_state(load_creds()),
