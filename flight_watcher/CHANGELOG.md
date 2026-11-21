@@ -398,8 +398,15 @@ attribute on the working flight sensor and a box on the layover card. No FLICA l
   `fdp.alt` a dict): no last out moved; 235 PWA rests go from met to "?" (10.F.1 and the 10.E.2.b items), one FAR
   117.25(g) from met to "?" (a 36 h span earlier in the walk). (Round 5, fix 2: "no flag dropped, no verdict less
   strict" was not so: the verifiers' fuzz found 87 FAR "rest" flags dropped against round 5 in 49457 cases, sure
-  SHORTs the 36 h span anywhere above made "?"; fix 2 restores them.) Against concrete fillings of the spans (41000),
-  the bound held but for one shape that is the theater model's own (below).
+  SHORTs the 36 h span anywhere above made "?". Round 6: fix 2 restores those where the span had under 36 h of free
+  time on file before its end, 57 of the 87 on the fix-1 verifier's own 30000 cases; the other 30 do not (a station
+  with no longitude, a span with 36 h or more of free time on file before its end, a stay the bound reads: a "?", and
+  one met where round 5 had taken the walk's own re-acclimation after the span). Over those 30000 cases fix 2 drops
+  78 of round 5's "rest" flags in all: those 30, and 48 more from fix 2's after-any-span rule: 34 on the lowest row
+  where the bound fails (25 with a station with no longitude) and 14 where the bound reads a stay a span may begin or
+  end.)
+  Against concrete fillings of the spans (41000), the bound held but for one shape that is the theater model's own
+  (below).
 - Tests: 10 new (two spans, a stay begun in a span, the duty reading and the cases that keep the lowest row, a most
   equal to the need, a schedule item away and its margin at home, 10.F.1, a long sit before an interisland duty, a 36 h
   span earlier in the walk, the card's longer rest rows at 390 and 320 px); 7 updated, each with the reason (10.F.1's
@@ -414,13 +421,14 @@ attribute on the working flight sensor and a box on the layover card. No FLICA l
   it is read by the free and duty readings. So the lowest row stays only for a span that with the free time on file
   before it is 36 h or more, and, as before, for a stay that may reach 72 h inside a span, a station with no
   longitude, a schedule item that may be duty deciding a reading and more than 64 walks (`timeout.ACC_WALKS`). The
-  KIX-JFK deadhead reads SHORT again, 12:30 needed (fix 1: "?"), and so does a SIN deadhead after a 2 h span 6:00
-  after the release, 14:00 needed (rounds 5 and fix 1: "?").
+  JFK-HNL deadhead after KIX-JFK reads SHORT again, 12:30 needed (fix 1: "?"), and so does a SIN-HNL deadhead after a
+  2 h span ending 6:00 after the release, 14:00 needed (rounds 5 and fix 1: "?").
 - FAR 117.25(g), readings found by checking the bound against concrete fillings of the spans (one shape read met where
   a filling reads SHORT): after any span between duties on file the deadhead's acclimation is read by the bound, never
   by the walk's own re-acclimation after the span (36 h free at LAS took LAS's theater, a sure SHORT the line with the
   span free reads met); a duty inside a span may begin a stay at a station whose 60 degrees hold every station since
-  (LAX-ORD-LAX in a span makes LAX and JFK one stay: JFK 11:00, a "?" round 5 read met), and that stay may reach 72 h
+  (LAX-ORD-LAX in a span makes LAX and JFK one stay: JFK 11:00, a "?" round 5 read met; round 6: from the span's
+  start, fix 2 counted from the release before it), and that stay may reach 72 h
   inside a later span and acclimate him there; after a span read as duty a block-in on file may end a stay the walk
   counts (a stay begun at ICN ends at an HNL block-in: SIN less 0:30, a "?"). Only this rule reads the bound, so it
   moves no last out.
@@ -434,7 +442,8 @@ attribute on the working flight sensor and a box on the layover card. No FLICA l
   a 117.25(g) reading that only adds a "?": the longer of 10 h and the stretch, met only when the time since the last
   of them meets it ("a deadhead inside the schedule item that may be duty may need more ...: it runs 24:00"). Items
   are whole HST days (working.py), so a report within 24 h after an item day is a "?" again, as in round 4 (round 5:
-  met). The 10 h line says the margin from the item as before.
+  met). The 10 h line says the margin from the item as before. (Round 6: each span a piece of its own, joined only
+  where pieces touch, and the FAR rest row gives the time since the stretch: below.)
 - FAR 117.25(g) after a span (F2V-4): a span of 8:30 or less holds no deadhead past any Table B row, moved or not, so
   only the length counts (round 5 also read a span that moved him, with words saying a deadhead in it may have run
   past its FDP); a schedule item after the span counts by its end (met once the time since it meets the need; fix 1:
@@ -452,7 +461,11 @@ attribute on the working flight sensor and a box on the layover card. No FLICA l
   the rest where the bound reads a stay a span may begin or end, 9 of them SHORT in each of 200 fillings tried, so
   that "?" may be more than needed), 117 from "?" to met (a span now bounded, a stretch met since its end) and 63 from
   met to "?" (schedule items, the new readings); 11 synthetic last outs move earlier, each with a station with no
-  longitude, none later. Against 33000 cases' concrete fillings of the spans (40 each) no verdict of the bound fails.
+  longitude (round 6, fix 1: not "none later": on 150000 more synthetic cases 4 last outs were later than round 4, fix
+  2's, 72 h counted across a report at a station with no longitude; fixed there). Against 33000 cases' concrete
+  fillings of the spans (40 each) no verdict of the bound fails.
+  (Round 6: against round 5 the same cases drop 78 FAR "rest" flags, 77 SHORT to "?" and one to met; against round
+  4, fix 2 33 sure SHORTs turn "?", each named in round 6 below. The bound has no flight times.)
 - Tests: 11 new (a short span early in a long gap, a stay begun in a span reaching 72 h inside a later one, the early
   stay at exactly 72 h and only from the first leg, the 64-walk cap, the 10.F.1 window past 18:00, 10.E.1.b never short
   across a span, a schedule item that may hold a deadhead, a report at a station with no longitude, a stay a duty in a
@@ -461,33 +474,173 @@ attribute on the working flight sensor and a box on the layover card. No FLICA l
   SIN deadhead now SHORT, the PWA row's "at least" twice, F2V-4's 8:30 alone, the two-span mix checked on the walk
   itself, fix 1's LAS line bounded).
 
+### Review fixes (round 6)
+- FAR 117.25(g), where the bound of the deadhead's acclimation fails (a span with 36 h or more of free time on file
+  before its end, a stay that may reach 72 h inside a span, a station with no longitude, a schedule item that may be
+  duty deciding a reading, more than 64 walks): fix 2 kept the lowest row on any clock (8:30) even where 36 h free on
+  file after the last span had acclimated him again. 36 h free acclimates him (FAR 117.3) to a theater that holds that
+  station; only its reference is not known (he may never have left an earlier theater that holds it). So the walk
+  from that report is now read with every station within 60 degrees of it as the reference, each fork included, in
+  place of the lowest row. A SYD-HNL deadhead of 13:15 after 56:00 free at SYD reads SHORT again (fix 2: "?"; SIN's
+  and HKG's clocks, 13:00, are the highest in SYD's theater then); one of 12:45 stays a "?" (on SYD's clock alone, the
+  walk's own reading, it would be SHORT). A station with no longitude or a schedule item deciding a reading after
+  that report still keeps the lowest row. Only this rule reads it: no last out moves. The walk from that report starts
+  his stay at that station (of any length there), where the main walk keeps a stay across a report outside its
+  theater (the theater item below), so on one line the two stay models can disagree, either way. Like the bound, these
+  readings can also read met (no 117.25(g) line) where the lowest row read a "?", when every clock of that theater is
+  above the deadhead (none on the 38000 cases below, 1 in g6 50000-69999). (Round 6, fix 1: the walk from that
+  report keeps fix 2's block-in fork.)
+- FAR 117.25(g), the bound: a stay a duty inside a span may have begun at a station not on file now starts at the
+  span's start, where that duty's block-in may be, not at the release before the span as fix 2 counted (its own
+  comment said the span's start). The line on file before the span is free, so no block-in falls there, and no
+  concrete filling gives an earlier start. A later span that ends exactly 72 h after that start is bounded (no report
+  inside it follows 72 h there); one that ends later is not.
+- FAR 117.25(g), what the round 5 fixes still drop. On 38000 synthetic cases (the round 5 generators g6, g4, g5 and
+  g2): against round 4, fix 2 (d7227a0) round 5, fix 2 turns 33 sure SHORTs into "?", each a dropped "rest" flag.
+  Round 6 restores 7 and drops none of its own, so 26 remain: 9 with a station with no longitude (round 5's exception:
+  his theater is not known), 6 with a span with 36 h or more of free time on file before its end (fix 2's rule: a
+  report inside it may follow 36 h free), and 11 where the bound reads a stay a span may begin, move him into or end.
+  Concrete fillings of the spans show round 4's SHORT unsound in all 11 (a filling that needs no rest, or reads a
+  "?"); for two of them (g6:1465, g6:11274) only a filling with a 4 minute leg inside a 1 h span does, which the bound
+  allows since it has no flight times, and both fillings also need the theater model's own reading (the theater item
+  below): a stay begun at NRT holds SIN and AKL, 70.8 deg apart (g6:1465), one begun at PPG holds LAX and KIX, 106 deg
+  apart (g6:11274); a theater whose stations are each within 60 deg of one another would read both SHORT. Against
+  round 5, fix 2 (99c200a): 8 FAR rests
+  go from "?" to SHORT (5 the readings after 36 h free, 3 the stay's start at the span's), 145 from "?" to met (144 the
+  stretch pieces below, 1 the stay's start; 10 of them lose the "Rest ?" chip), none from SHORT to "?" or met, and
+  1735 FAR rest rows change only their words (the figure and kinds below, a stretch's need, or 117.25(g) named where it
+  is now firm); no last out moves; every payload is JSON with `fdp.alt` a dict.
+- FAR 117.25(g), a stretch that may hold a deadhead: each span not on file is a piece of its own, clipped to the
+  release before it and the report, joined to another span or a schedule item only where they touch, as schedule
+  items already were. Fix 2 made one piece of every span in the gap, from the earliest start to the latest end, the
+  free line on file between them included, so two spans of 1:00 and 1:30 far apart read as a 13:30 "span" and a "?".
+  The line now gives the stretch's real start and end ("the spans run 12:00 (00:00 HST Tue Apr 6 to 12:00 HST Tue Apr
+  6)").
+- Words, the card's FAR rest row: where a stretch's reading decides it, `rest.txt` gives the time that reading is
+  judged on, from the last piece of all after the duty before it (a span or a schedule item, any of which may be duty;
+  round 6, fix 1 corrects "the stretch's last piece"): "41:00 free (12:00 since a schedule item that may be duty),
+  24:00 needed (FAR 117.25(g)): ? (a schedule item that may be duty; if it applies)" (fix 2: "41:00 free", as if 41:00
+  were judged against 24:00). Its "?" names both kinds when the stretch holds a span and an item ("a span of your line
+  not on file and a schedule item that may be duty"; fix 2 named the span only).
+- Words, the stretch's line: "since the end of that span" only where that span is part of the stretch the line
+  describes; else the piece the time is counted from is named with its end ("at least 10:30 free (since the end of a
+  span of your line not on file at 01:30 HST Wed Apr 7)", "since a schedule item that may be duty ending 07:00 HST Wed
+  Apr 7").
+- Docs: round 5, fix 1's "fix 2 restores them" and fix 2's fuzz sentence now give the counts against round 5 and
+  round 4, fix 2; fix 2's KIX-JFK and SIN cases are named as they are (the JFK-HNL deadhead after KIX-JFK; a 2 h span
+  ending 6:00 after the release); the list below marks the items that read a "?" where the conservative reading
+  would be SHORT and names that reading in each, and adds FAR 117.25(g) after a duty's last flown leg and a span before
+  the first duty on file. The README and the module note describe the readings after 36 h free and the stretch pieces.
+- Ryan's live trips: no last out moved, every duty reads as in round 5, fix 2 (the 18-duty sweep is the same as
+  99c200a's), and the three acceptance cases hold (their last outs and extensions unchanged).
+- Tests: 12 new (the readings after 36 h free, at the deadhead's own report and one duty before it, and a stay in
+  that theater old enough to acclimate him; the stretch pieces; and, for the mutants that survived round 5: two long
+  stretches with the longer first, a report outside every theater a stay begun in a span may hold, a moved span read
+  as duty, a station exactly 60 degrees away, a theater not sure with a stay that may reach 72 h in a later span, a
+  block-in fork with a schedule item in the 36 h, two spans in one gap, the 72 h edge of a later span, and the 8:30,
+  8:31 and since-equal-to-the-need edges); 1 updated (the schedule item's stretch: the FAR rest row's new figure, the
+  span and item row, "a schedule item" for one outside the stretch) and 2 docstrings corrected (a stay begun in a span
+  counted from the span's start). Mutation check: the round 5 recheck's 41 mutants (adapted to the new code) and 12
+  of round 6's own, 53 in all, are each killed by tests/test_fw1720_timeout.py (round 5: 13 of 41 survived).
+
+### Review fixes (round 6, fix 1)
+- FAR 117.25(g), the readings after 36 h free past the last span: round 6 walked on from that report with no block-in
+  fork, though the spans before it may have held duty. So the stay the walk counts from a block-in on file (KIX-OGG in
+  18:05, a stay that holds SEA and AKL) acclimated him at AKL for sure and a 12:00 AKL-SEA deadhead read met, where a
+  filling of the span on file (BNE-LAX and LAX-BNE, in BNE 07:30 Nov 15) reads SHORT: the BNE stay holds OGG, the SEA
+  block-in ends it, and at AKL, 62.9 deg from SEA, he is not acclimated (SEA 17:40 PST less 0:30, 11:30). The walk from
+  that report now keeps round 5, fix 2's fork, where a stay he may be in is under 72 h old at the report (one begun
+  before that report at a station within 60 degrees of it, held or ended at each station since, as the bound reads stays
+  a span may begin): that deadhead is a "?" again, 12:00 needed (round 5, fix 2's lowest row read "?" too). The fork
+  reads a stay the model allows, whatever its flight times. On the verifiers' anchor generators (12000 lines) 16 go from
+  round 6's SHORT back to round 5, fix 2's "?" and 7 from round 6's met back to it, none from SHORT to met; in 15 of the
+  16, 80 random fillings of the spans each found no such stay (the fork takes any stay the model allows: one begun at
+  RAR holds NRT, 59.8 deg away), so those "?" may be more than needed (the list below). Forking at every such block-in,
+  43 would; none of the 64000 standard cases changes.
+- Acclimation, a report at a station with no longitude, the duty before it ending elsewhere (round 5, fix 2's rule): it
+  made the theater last acclimated to not sure but kept his stay across it, so 72 h counted across that report
+  acclimated him to a new theater on that station's clock alone, a later last out than round 4, fix 2's (4 synthetic
+  lines in 150000, up to 2:00 later). After such a report the walk is now read four ways, his stay kept or ended there
+  (as an arrival there ends it) and the theater last acclimated to kept (round 4, fix 2) or not sure (round 5, fix 2),
+  every reading of each is tried, the status is theirs where all four agree, else a "?", and the acclimation line says
+  why ("? acclimation not sure: you reported at XYZ since, with no longitude on file, so you may have left your theater
+  there or been acclimated there; ..."). This reads the last outs and FAR 117.25(g) on file; the bound and the readings
+  after 36 h free need no walks of their own for it (there a stay kept across that report acclimates him only on a fork
+  whose other choice gives no reading, so the lowest row stays). On the line of the new test an HNL-LAS last out is
+  16:00 HST (LAX 13:00 PDT less 0:30), where round 5, fix 2 read 18:30 (HNL's 14:00 alone) and round 4, fix 2 16:30
+  (LAX's 12:00). No live duty reports at a station with no longitude.
+- Words: a stretch that holds a span and a schedule item says the item is "in or next to" the span (an item may lie
+  inside it; round 6: "next to it"), and a stretch of spans alone says "so a deadhead in them may have run past its
+  Table B FDP" (round 6: "in it"). The stretch's time-since words for a span, never shown (after a span the time since
+  it is the free time itself), are gone.
+- Comments and docstrings: a stay a span read as duty moved him into starts at the release before the span (he may have
+  moved there on his own in the free time on file before it), as the code has done since round 5, fix 1; the FAR rest
+  row's figure is counted from the last piece of all after the duty before it; the module note, the walk's docstring and
+  the README describe the fork from the anchor and the four readings after a station with no longitude.
+- Docs above: round 5, fix 1's 78 dropped flags split as fix 2's after-any-span rule makes them (34 on the lowest row,
+  25 of them with a station with no longitude, and 14 where the bound reads a stay); round 5, fix 2's "none later"
+  corrected; round 6's g6:1465 and g6:11274 both rest on the theater model's own reading; round 6's live bullet no
+  longer names pairings; round 6's readings after 36 h free start his stay at that station, unlike the main walk, and
+  can read met where the lowest row read a "?" (1 in g6 50000-69999); the list below marks the span before the first
+  duty on file less conservative for now, names its conservative reading, gives the theater item's scope and its two
+  synthetic cases, and adds the two stay models and the four readings after a station with no longitude.
+- Ryan's live trips: no last out moved, every duty reads as in round 5, fix 2 and round 6 (the 18-duty sweep is the same
+  as both), and the three acceptance cases hold (their last outs and extensions unchanged).
+- Fuzz, every payload JSON with `fdp.alt` a dict: 64000 synthetic cases (the round 5 generators: g6 40000, g4 10000, g5
+  8000, g2 6000). Against round 6 (9b03277): no FAR or PWA rest verdict changes, 9 last outs earlier (each after a
+  report at a station with no longitude), none later; 2253 cases change words (the acclimation line after such a report,
+  the stretch words). Against round 5, fix 2 (99c200a): 202 FAR rests from "?" to met (201 the stretch pieces, CV7-3; 1
+  the stay's start at the span's, CV7-1), 14 of them losing the "Rest ?" chip, 21 from "?" to SHORT, none from SHORT to
+  "?" or met, 9 last outs earlier, none later. Against round 4, fix 2 (d7227a0): 51 FAR rests from SHORT to "?" and 1 to
+  met, each the same in round 5, fix 2 (round 5's rules: a station with no longitude, a 36 h span, a stay the bound
+  reads, the walk's own re-acclimation after a span not read), 31 last outs earlier, none later. On 110000 more g6 cases
+  (40000-149999) no last out is later than round 4, fix 2's or round 5, fix 2's (30 earlier than both, 81 than round 4,
+  fix 2's). On the anchor generators against round 5, fix 2: 139 FAR rests from "?" to met (135 the readings after 36 h
+  free, 3 the stay's start, 1 both) and 999 from "?" to SHORT.
+- Tests: 10 new (the anchor's block-in fork, at the walk cap too; its fork only where a stay he may be in is under 72 h
+  old, at exactly 72:00 and 71:59; a report his own way ending such a stay; the four readings after a station with no
+  longitude on a last out, an acclimation after 36 h free and FAR 117.25(g); the anchor at exactly 36:00 against 35:59;
+  a stay begun before the anchor reaching 72 h at a later report; a later anchor past the walk cap; a schedule item
+  inside a span; a stay a duty in a span may begin, from the first span of the gap; a span from the release, as a
+  stretch piece and as a stay's start), each with hand-worked numbers; 2 updated (the stretch words "in or next to it"
+  and "in them"). Mutation check (tests/test_fw1720_timeout.py, 182 tests): round 6's 53 (52 apply; round 5's
+  AFknown_ref moved with the code and is adapted) and fix 1's 30, the verifiers' round 6 survivors among them: all
+  killed but 4. Two are equivalent: V8anc_lt60 (no two stations on file are exactly 60.0 deg apart) and V17txt_lt (the
+  time since a stretch is never more than the free time). Two are equivalent on every line tried: F1prev_any (a report
+  where the duty before it ended has had its arrival read already, so the four walks agree) and F1mode_both (the stay
+  ended and the theater kept gives no reading the other three do not, in 63000 synthetic lines).
+
 ### For Ryan to confirm (all still open)
 Each names the reading used now. Those marked "less conservative for now" use a reading that is not the conservative
 one until Ryan says otherwise (the conservative one is named); those marked "a figure" use a figure Ryan should
-confirm; the others are the conservative reading.
+confirm; those marked a "?" for now read a "?" where the conservative reading would be SHORT, a red flag, and name it
+("the conservative reading: SHORT when short"); the others are the conservative reading.
 - PWA 10.D.3.a for every duty of a grouping that holds a Mixed Flying Duty Period (the PWA's words): the lower 10.D.3
   limits on every duty of it.
-- PWA 10.E.3.a: whether its table replaces 2 x the Duty Period (10.E.1.a.1) or adds to it, and that it counts the
-  landings performed in the grouping before the rest: a rest the table meets but 2 x the Duty Period does not is a "?",
-  and the whole grouping's landings needing more is a "?".
+- PWA 10.E.3.a, a "?" for now: whether its table replaces 2 x the Duty Period (10.E.1.a.1) or adds to it, and that it
+  counts the landings performed in the grouping before the rest: a rest the table meets but 2 x the Duty Period does
+  not is a "?", and the whole grouping's landings needing more is a "?". The conservative reading: SHORT if the table
+  adds to 2 x the Duty Period.
 - PWA 2.A.62 "minimal delay at the neighbor island station", less conservative for now and a figure: a sit of 2:00 or
   less (`timeout.REPO_SIT`) is a Repositioning Flight, so not Mixed Flying (the higher 10.D.1 limits and 10.H.1
   landings, no "?"); a longer sit is Mixed Flying for the duty limit and the landings (the lower limits) and the rest is
   judged both ways. The conservative reading would judge both readings for any sit (or take a shorter figure); it
   would move last outs.
-- PWA 10.E.1.a.2 "regular crew" read as 2 pilots: for 2 pilots a rest of 9:00 or more but under 2 x the Duty Period
-  is a "?", not met.
+- PWA 10.E.1.a.2 "regular crew" read as 2 pilots, a "?" for now: for 2 pilots a rest of 9:00 or more but under 2 x the
+  Duty Period is a "?", not met. The conservative reading: SHORT when short.
 - The two van rides out of domicile, a figure (`timeout.VAN_RIDES`, 2:30, the top of the 1:30 to 2:30 quoted; or a
   figure per hotel): a rest met from release to report by less is a "?". A larger figure would be more conservative.
 - The Interisland rest for an A330 pilot's all-interisland duty (2.A.36.b): 12:00 at home and 9:00 away on top of the
-  International rest; 2 x the preceding Duty Period on top of the 9:00 away is a reading, a "?" when short, whatever
-  the duty before it was (10.E.1.a.1 on top of 10.E.2.b, 2.A.38).
+  International rest; 2 x the preceding Duty Period on top of the 9:00 away is a reading, a "?" for now when short,
+  whatever the duty before it was (10.E.1.a.1 on top of 10.E.2.b, 2.A.38). The conservative reading: SHORT when short.
 - PWA 10.E.2.a's 12:00 at home after an all-interisland duty before an International one (and, round 5, after a span
-  of the line not on file whatever the duty before it): a reading, a "?" when short.
-- PWA 10.E.1.b before an all-interisland duty (it names an International Pilot's Segment): short of 18:00 is a "?",
-  never met.
+  of the line not on file whatever the duty before it): a reading, a "?" for now when short. The conservative reading:
+  SHORT when short.
+- PWA 10.E.1.b before an all-interisland duty (it names an International Pilot's Segment), a "?" for now: short of
+  18:00 is a "?", never met. The conservative reading: SHORT when short.
 - Whether a deadhead counts as a Segment for Mixed Flying (2.A.45, 2.A.62): counted for the 10.D.3 duty limit and the
-  10.H.3 landings (the lower limits); for the rest it only adds a "?".
+  10.H.3 landings (the lower limits); for the rest, a "?" for now: it only adds a "?" where 10.E.3.a's table would need
+  more than the rule read without it. The conservative reading: SHORT when that table is short.
 - PWA 10.F.1, less conservative for now on file (round 5, fix 1 across a span): a call-back inside a span of the line
   not on file is read as one Duty Period to the span's end whenever the span begins inside the longest 10.E rest that
   may apply (2 x the Duty Period or 18:00), so a sure "met" needs 2 x that. On file, a duty reported with less time off
@@ -500,39 +653,73 @@ confirm; the others are the conservative reading.
   Round 3 also tried that clock; this relaxes some round-3 SHORTs to "?" and some "?" to met. The conservative reading
   would add the start station's clock back as a reading.
 - FAR 117.25(g), less conservative for now (round 5): after spans of the line not on file between duties on file, the
-  deadhead's acclimation is bounded by every reading of the spans (each free time or duty, every mix, a stay begun in
-  a span in the theater he reports in or at a station whose 60 degrees hold every station since, a stay a block-in may
-  have ended); a deadhead under every bounded reading reads no 117.25(g) line (met) where round 4 read a "?". Round 4's
-  lowest row on any clock would be the conservative reading. The lowest row stays for a station with no longitude, a
-  span that with the free time on file before it is 36 h or more anywhere in the walk, a stay that may reach 72 h in
-  another theater inside a span, a schedule item that may be duty deciding a reading, or more than 64 walks
-  (`timeout.ACC_WALKS`). The bound has no flight times: a span may hold any trip, however short.
+  deadhead's acclimation is bounded by every reading of the spans (each free time or duty, every mix, a stay begun in a
+  span in the theater he reports in or, from the span's start, at a station whose 60 degrees hold every station since, a
+  stay a block-in may have ended); a deadhead under every bounded reading reads no 117.25(g) line (met) where round 4
+  read a "?". Round 4's lowest row on any clock would be the conservative reading. Where the bound fails (a station with
+  no longitude, a span that with the free time on file before it is 36 h or more anywhere in the walk, a stay that may
+  reach 72 h in another theater inside a span, a schedule item that may be duty deciding a reading, or more than 64
+  walks, `timeout.ACC_WALKS`) the lowest row stays, but (round 6) after 36 h free from a release on file past the last
+  span the walk from there is read with every station within 60 degrees of that station as the reference (round 6, fix
+  1: a block-in on file that may have ended the stay the walk counts a fork, where a stay he may be in is under 72 h
+  old), which, like the bound, may read met where the lowest row read a "?". The bound has no flight times: a span may
+  hold any trip, however short. That fork takes any stay the model allows, so on aimed synthetic lines 16 of round 6's
+  sure SHORTs read a "?" again (round 5, fix 2's), 15 of them SHORT on each of 80 random fillings: a "?" for now there,
+  the conservative reading SHORT when short on the walk's own stay. Against round 4, fix 2 (the walk's own reading after
+  a span), the bound reads "?" for 26 sure SHORTs in 38000 synthetic cases (round 6 above): a station with no longitude,
+  a 36 h span, or a SHORT a concrete filling of the spans shows unsound (two of those fillings need a 4 minute leg,
+  which the bound allows).
 - HNL's clock as a Table B reading for a deadhead acclimated elsewhere (FOM 4.3.2.4 "the report time at local
-  domicile"): a reading that only adds a "?".
+  domicile"), a "?" for now: a reading that only adds a "?". The conservative reading: SHORT when short (HNL's clock as
+  the one Crew Scheduling uses).
+- FAR 117.25(g) for deadhead transportation after the last flown leg of a duty (round 3), a "?" for now: whether it
+  counts toward Table B (FOM 4.3.2.10: transportation that "exceeds the applicable FDP in Table B") is not sure, so a
+  rest short of it is a "?", never SHORT (its length runs from the last flown block-in, the sit before it counted); a
+  deadhead-only duty past every Table B row is SHORT since round 4, fix 1. The conservative reading would count it:
+  SHORT when short.
 - FAR 117.25(d)'s three physiological nights read as the 0100-0700 HNL windows inside the 56 h (14 CFR 117.3: 10 h of
-  rest holding 0100-0700 at home base; not in the FOM): fewer than three is a "?" until confirmed, then SHORT.
+  rest holding 0100-0700 at home base; not in the FOM), a "?" for now: fewer than three is a "?" until confirmed. The
+  conservative reading: SHORT when short.
 - A PWA rest whose main rule is not checked because no duty before it is on file, less conservative for now: listed as
   not checked, no "Rest ?" chip (the chip would be the conservative reading). With no duty on file before the report,
   FAR 117.25(g) is not judged either (a deadhead before the line on file is not known).
+- FAR 117.25(g) after a span of the line not on file before the first duty on file (round 6, CV7-2; rounds 4 and 5
+  read it the same), less conservative for now, both ways: the walk reads it itself, so 36 h free after it takes that
+  station's theater (the walk's own reading, which after a span between duties on file the bound replaces). The
+  conservative reading would count that span as one between duties (the bound fails, the duty before it not being on
+  file, so the lowest row, or after 36 h free on file the readings above): a "?" line where there is none now, though
+  it would also turn some SHORTs into "?". Ryan's call.
 - Round 5, left as they were: 2 x the preceding Duty Period, and (round 5, fix 1) 10.E.2.b's 9:00 away, count any
   schedule item in the rest (a "?" even when the item ended long before the report: it may be the preceding duty and
   set the need, or leave less than the van rides), and 10.E.1.a.1 on top of 10.E.2.b with no duty on file before the
   report is a "?" even when the line on file shows no duty for weeks.
-- FAR 117.25(g) for a stretch that may be duty not on file (round 5; round 5, fix 2 for schedule items): the reading
-  needs the whole stretch, so a trip not read of several days, or a schedule item day (working.py gives whole HST
-  days), makes the FAR rest a "?" until the rest since it meets that length. A cap (the longest deadhead in the
-  pairings package), or the item's real times or kind, would be Ryan's call.
+- FAR 117.25(g) for a stretch that may be duty not on file (round 5; round 5, fix 2 for schedule items; round 6: each
+  span a piece of its own, joined only where pieces touch): the reading needs the whole stretch, so a trip not read of
+  several days, or a schedule item day (working.py gives whole HST days), makes the FAR rest a "?" until the rest
+  since it meets that length. A cap (the longest deadhead in the pairings package), or the item's real times or kind,
+  would be Ryan's call.
 - The theater (FAR 117.3, FOM 4.3.2.4.6), less conservative for now, found in round 5, fix 1 and read this way for
   every last out since 1.7.20 began: the 60 degrees around the station where his stay began, its clock and the report
-  station's. A chain of stations each within 60 degrees of the first is one stay (from SEA, HNL, BOS and JFK all are);
-  a report at a station outside the stay's theater does not end the stay when the duty brings him back into it; and
-  after 36 h free at a station following a span not on file the reference is that station (LAS), though he may never
-  have left another theater that holds it (HNL's; for FAR 117.25(g) the bound now reads it, round 5, fix 2). Trying
-  every clock a theater that holds the station may have would be the conservative reading; it would move last outs,
-  so it waits for Ryan.
+  station's. A chain of stations each within 60 degrees of the first is one stay (from SEA, HNL, BOS and JFK all are;
+  a stay begun at NRT holds SIN and AKL, 70.8 degrees apart, and one begun at PPG holds LAX and KIX, 106 degrees apart,
+  which keeps two synthetic 117.25(g) a "?" in round 6); a report at a station outside the stay's theater does not end
+  the stay when the duty brings him back into it; and after 36 h free at a station following a span not on file the
+  reference is that station (LAS), though he may never have left another theater that holds it (HNL's; for FAR
+  117.25(g) the bound now reads it, round 5, fix 2, and round 6, where 36 h free from a release on file follows the
+  last span, reads every reference within 60 degrees of that station). That walk from 36 h free (round 6) starts his
+  stay at that station, unlike the main walk, which keeps a stay begun before it across a report outside its theater:
+  on synthetic lines aimed at it, six read met where a filling of the spans read by the main walk is SHORT (a stay
+  begun at LAX in a span, kept across reports at HKG and SIN, acclimates him at LAS and not at SYD) and three read
+  SHORT where no filling gives a line. Trying every clock a theater that holds the station may have would be the
+  conservative reading (it would move last outs), and for FAR 117.25(g) after 36 h free past the last span both stay
+  models with the lower limit; they wait for Ryan.
 - A station with no longitude on file, less conservative for now: the lower of the last acclimated clock less 0:30 and
   the report station's own clock; 36 h free there could acclimate him to its theater, whose clock is not on file (the
-  lowest row would be the conservative reading). Every station in working.ZONES has a longitude.
+  lowest row would be the conservative reading). After a report there (round 6, fix 1) the walk is read four ways, his
+  stay kept or ended there and the theater last acclimated to kept or not sure, and the lowest limit is used, so a
+  last out may be earlier than round 4, fix 2's where he could not have been acclimated there (under 36 h free before
+  it): the rule of round 5, fix 2 that such a report makes the theater not sure, read as it was. Every station in
+  working.ZONES has a longitude.
 
 ## 1.7.19
 

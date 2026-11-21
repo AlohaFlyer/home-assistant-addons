@@ -528,7 +528,9 @@ Recent finds.
   with `not_legal`). `no_ext` / `ext`: the block-in limits with the leg out on time; `fdp`: the FDP's own (Table B or C
   row, acclimation, pilots, rest class and the other classes, the other clock's reading). From FAR 117 Tables A, B and C
   as FOM 125.4 4.3.2 gives them: acclimation (60 degrees, 36 h free or 72 h in the theater, else the last acclimated
-  clock less 0:30), the crew list's pilots (else the package crew line), the pairings package's equipment and deadheads,
+  clock less 0:30; after a report at a station with no longitude, the duty before it ending elsewhere, read four ways,
+  his stay kept or ended there and the theater last acclimated to kept or not sure, the lowest limit used, a "?" where
+  they differ), the crew list's pilots (else the package crew line), the pairings package's equipment and deadheads,
   the 117.23 limits when the line on file covers their window, and 117.25 rest (10 h, 30 h in 168 h, 56 h on return home
   after more than 168 h away and more than 60 degrees between two of HNL and the trip's stations, holding three
   0100-0700 HNL nights (fewer is a "?" until Ryan confirms 14 CFR 117.3's definition), 117.25(d), a return home inside a
@@ -536,17 +538,22 @@ Recent finds.
   places in it not known); as long as a deadhead past Table B on its own acclimation, 0:30 less when not acclimated,
   HNL's clock a reading too, sure past every Table B row whatever the acclimation, after a span of the line not on
   file before the deadhead its acclimation read with the span as free time and as duty (each span either way, a stay
-  in the theater he reports in that may have begun in the span, a stay a duty inside it may have begun at a station
-  whose 60 degrees hold every station since, and a stay a block-in on file may have ended; never the walk's own
-  re-acclimation after the span; a deadhead under every such reading needs no 117.25(g) rest; the lowest row when a
-  span anywhere in that walk with the free time on file before it, from the
-  release before it to its end, is 36 h or more (a report inside it may follow 36 h free), a stay may reach 72 h
-  inside a span, a station has no longitude, a schedule item that may be duty decides a reading, or the spans give more
-  than 64 walks, `timeout.ACC_WALKS`), a deadhead after the last flown leg measured from that leg's block-in,
+  in the theater he reports in that may have begun in the span, a stay a duty inside it may have begun, from the
+  span's start, at a station whose 60 degrees hold every station since, and a stay a block-in on file may have ended;
+  never the walk's own re-acclimation after the span; a deadhead under every such reading needs no 117.25(g) rest;
+  where a span anywhere in that walk with the free time on file before it, from the release before it to its end, is
+  36 h or more (a report inside it may follow 36 h free), a stay may reach 72 h inside a span, a station has no
+  longitude, a schedule item that may be duty decides a reading, or the spans give more than 64 walks,
+  `timeout.ACC_WALKS`, the readings after 36 h free from a release on file past the last span, every reference within
+  60 degrees of that station walked on from there, a block-in on file that may have ended the stay the walk counts a
+  fork where a stay he may be in is under 72 h old, else the lowest row), a deadhead after the last flown leg measured
+  from that leg's block-in,
   117.25(g); with a span of the line not on file before the report, a "?" unless met since it ended, but the 10 h
   SHORT when the most since the release before the span is under it; a stretch after the duty before it that may be
-  duty not on file (the spans, and the schedule items, joined where they touch) that runs over 8:30 may hold a
-  deadhead: a "?" unless the rest since the last of them meets the longer of 10 h and the stretch; a schedule item that
+  duty not on file (each span and each schedule item a piece of its own, joined only where pieces touch) that runs
+  over 8:30 may hold a deadhead: a "?" unless the rest since the last of them meets the longer of 10 h and the stretch
+  (when it decides, `rest.txt` gives that time: "at least 17:00 free (11:00 since a schedule item that may be duty)");
+  a schedule item that
   may be duty inside a rest: a "?" (for the 10 h only one ending inside it; met with one outside it, the margin from its
   end is said); `rest.cite` and `rest.txt` name the rule that
   decides, its need and verdict). `sure` is false (a "?" on the card) when acclimation, the clock, the rest class, the
