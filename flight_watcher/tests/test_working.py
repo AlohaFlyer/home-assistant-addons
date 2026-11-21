@@ -443,8 +443,11 @@ def test_a_check_paces_its_reads_and_publishes_the_working_flight_after_the_own_
     for f in ("versions_check", "uploads_check"):
         monkeypatch.setattr(W, f, lambda *a, **k: None)
     real = W.publish_working_flight
+    # the check's clock (local_now, Nov 8) for the working flight too: publish_working_flight's own default is the wall
+    # clock, which from Nov 20, 2026 reads H3999 under way (the return leg) and broke this test
+    now8 = datetime(2026, 11, 8, 12, 0, tzinfo=HST)
     monkeypatch.setattr(W, "publish_working_flight", lambda *a, **k: (fl.log.append(("publish", "working_flight")),
-                                                                      real(*a, **k))[1])
+                                                                      real(*a, **{"now": now8, **k}))[1])
     assert W.check(fl) == "killed"
     assert [e if e != "fetch" else ("pot" if u.endswith("/pot") else "own" if "mobilepairing" in u else u)
             for e, u in fl.log] == ["schedule", "sleep", "own", "sleep", "publish", "pot"]

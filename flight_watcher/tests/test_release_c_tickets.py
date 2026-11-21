@@ -646,10 +646,11 @@ def test_version_is_one_seven_two():
     # 1.7.21 (Nov 20, Hark): the pay engine acts only on duty times that name the pilot; no contract change
     # 1.7.22 (Nov 20, Hark): the CrewTrac per-trip pay check (Hark's daily snapshot); no contract change
     # 1.7.23 (Nov 21, Hark): CrewTrac booking FLICA's credit keeps it (no delay cut, H3606B); no contract change
-    assert _re.search(r'^version: "1\.7\.23"$', cfg, _re.M)
-    assert _re.search(r'^VERSION = "1\.7\.23"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
+    # 1.7.24 (Nov 21): the duty timeout on the working flight sensor and the layover card; no contract change
+    assert _re.search(r'^version: "1\.7\.24"$', cfg, _re.M)
+    assert _re.search(r'^VERSION = "1\.7\.24"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.7.23\n") and "\n## 1.7.22\n" in log and "\n## 1.7.21\n" in log and "\n## 1.7.20\n" in log and "\n## 1.7.19\n" in log and "\n## 1.7.18\n" in log and "\n## 1.7.17\n" in log and "\n## 1.7.16\n" in log and "\n## 1.7.15\n" in log and "\n## 1.7.14\n" in log and "\n## 1.7.13\n" in log and "\n## 1.7.12\n" in log and "\n## 1.7.11\n" in log and "\n## 1.7.10\n" in log and "\n## 1.7.9\n" in log and "\n## 1.7.8\n" in log and "\n## 1.7.7\n" in log and "\n## 1.7.6.1\n" in log and "\n## 1.7.6\n" in log and "\n## 1.7.5\n" in log and "\n## 1.7.4\n" in log and "\n## 1.7.3\n" in log and "\n## 1.7.2\n" in log and "\n## 1.7.1.1\n" in log and "\n## 1.7.1\n" in log and "\n## 1.7.0\n" in log
+    assert log.startswith("# Changelog\n\n## 1.7.24\n") and "\n## 1.7.23\n" in log and "\n## 1.7.22\n" in log and "\n## 1.7.21\n" in log and "\n## 1.7.20\n" in log and "\n## 1.7.19\n" in log and "\n## 1.7.18\n" in log and "\n## 1.7.17\n" in log and "\n## 1.7.16\n" in log and "\n## 1.7.15\n" in log and "\n## 1.7.14\n" in log and "\n## 1.7.13\n" in log and "\n## 1.7.12\n" in log and "\n## 1.7.11\n" in log and "\n## 1.7.10\n" in log and "\n## 1.7.9\n" in log and "\n## 1.7.8\n" in log and "\n## 1.7.7\n" in log and "\n## 1.7.6.1\n" in log and "\n## 1.7.6\n" in log and "\n## 1.7.5\n" in log and "\n## 1.7.4\n" in log and "\n## 1.7.3\n" in log and "\n## 1.7.2\n" in log and "\n## 1.7.1.1\n" in log and "\n## 1.7.1\n" in log and "\n## 1.7.0\n" in log
     assert chr(0x2014) not in log
     dock = open(os.path.join(HERE, "Dockerfile"), encoding="utf-8").read()
     assert "photos.py" in dock and "bidcal.py" in dock and "pilotpdf.py" in dock and "Pillow==11.0.0" in dock
