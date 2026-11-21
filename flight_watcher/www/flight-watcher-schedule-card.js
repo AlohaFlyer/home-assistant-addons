@@ -683,6 +683,57 @@ function fwRclOf(list, k) {
   return null;
 }
 
+// 1.7.22 (Hark, Ryan Nov 20, 2026, option 1): the CrewTrac per-trip pay check. CrewTrac (CTWeb) controls the schedule;
+// Hark reads it once a day and hands FW a snapshot (the Watcher's CrewTrac check sensor, attribute snapshot). crewtrac.py
+// mirrors these (find_trip, compare_trip, trip_line, month_line, not_compared; tests/test_fw1722_crewtrac.py runs both).
+// A difference of 0:01 or more is a mismatch; a snapshot over 36 h old is not compared.
+const FW_CT_STALE_H = 36;
+function fwCtHm(n) { if (n == null) return ""; const a = Math.abs(Math.round(n)); return `${n < 0 ? "-" : ""}${Math.floor(a / 60)}:${String(a % 60).padStart(2, "0")}`; }
+function fwCtM(v) { const m = /^\s*(\d{1,3}):?(\d{2})\s*$/.exec(String(v == null ? "" : v)); return m ? Number(m[1]) * 60 + Number(m[2]) : null; }
+function fwCtD(n) { return (n > 0 ? "+" : "-") + fwCtHm(Math.abs(n)); }
+function fwCtStatus(snap, nowMs) {
+  if (!snap || !Array.isArray(snap.trips)) return { st: "missing", age: null };
+  const t = Date.parse(String(snap.pulled_at || "")), age = Number.isFinite(t) ? (nowMs - t) / 36e5 : null;
+  return { st: age == null || age > FW_CT_STALE_H ? "stale" : "ok", age };
+}
+function fwCtNot(st, age) {
+  if (st === "missing") return "CrewTrac not compared (snapshot missing)";
+  return age != null ? `CrewTrac not compared (snapshot ${Math.round(age)} h old)` : "CrewTrac not compared (snapshot unreadable)";
+}
+function fwCtFind(snap, pid, start) {
+  const key = String(pid || "").slice(0, 5), cand = ((snap && snap.trips) || []).filter((t) => t && t.key === key);
+  const t0 = Date.parse(`${start}T00:00:00Z`);
+  if (!Number.isFinite(t0)) return null;
+  for (const d of [0, -1, 1]) { const iso = new Date(t0 + d * 864e5).toISOString().slice(0, 10); const hit = cand.find((t) => t.start === iso); if (hit) return hit; }
+  return null;
+}
+function fwCtLine(cc, fc, cb, fb) {
+  if (cc == null) return "CrewTrac: no credit for this trip in the snapshot";
+  const bad = [];
+  if (fc != null && fc !== cc) bad.push(`credit off by ${fwCtD(fc - cc)}`);
+  if (cb != null && fb != null && fb !== cb) bad.push(`block CrewTrac ${fwCtHm(cb)}, FW ${fwCtHm(fb)} (${fwCtD(fb - cb)})`);
+  return `CrewTrac ${fwCtHm(cc)}, FW ${fc != null ? fwCtHm(fc) : "?"}` + (bad.length ? ` \u2717 ${bad.join("; ")} (CrewTrac controls)` : " \u2713");
+}
+// one trip: {st, ok, line, ct (the snapshot trip)}; ok null when not compared
+function fwCtTrip(snap, pid, start, fwCr, fwBlk, nowMs) {
+  const s = fwCtStatus(snap, nowMs);
+  if (s.st !== "ok") return { st: s.st, ok: null, line: fwCtNot(s.st, s.age), ct: null };
+  if (!Object.prototype.hasOwnProperty.call(snap.months || {}, String(start).slice(0, 7))) return { st: "out", ok: null, line: "CrewTrac not compared (month not in the snapshot)", ct: null };
+  const ct = fwCtFind(snap, pid, start);
+  if (!ct) return { st: "ok", ok: false, line: `CrewTrac has no ${pid} on ${start} \u2717 (CrewTrac controls)`, ct: null };
+  const cc = fwCtM(ct.credit), fc = fwCtM(fwCr), cb = fwCtM(ct.block), fb = fwCtM(fwBlk);
+  const ok = cc != null && (fc == null || fc === cc) && (cb == null || fb == null || fb === cb);
+  return { st: "ok", ok, line: fwCtLine(cc, fc, cb, fb), ct };
+}
+function fwCtMonth(snap, month, fwCr, nowMs) {
+  const s = fwCtStatus(snap, nowMs);
+  if (s.st !== "ok") return { ok: null, line: fwCtNot(s.st, s.age) };
+  const pr = ((((snap.months || {})[month]) || {}).pay_report) || {}, cc = fwCtM((pr.totals || {}).credit), fc = fwCtM(fwCr);
+  if (cc == null) return { ok: null, line: "" };
+  const ok = fc === cc;
+  return { ok, line: `CrewTrac Pay Report ${fwCtHm(cc)} credit (as of ${pr.as_of || "?"}), FW ${fc != null ? fwCtHm(fc) : "?"}` + (ok ? " \u2713" : fc != null ? ` \u2717 off by ${fwCtD(fc - cc)} (CrewTrac controls)` : "") };
+}
+
 // ---- shared schedule grid: keep identical in every card that holds it (tests/test_sched_grid_shared.py) ----
 // 1.7.7 (Nov 14: "my schedule and other pilots schedule and reconstructed schedules should be exactly the same style
 // including this latest detail panel"): one look for every month grid and one pairing detail panel, in each card that
@@ -1163,7 +1214,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       "sensor.flight_watcher_blocked_days", "sensor.flight_watcher_own_trip_times", "sensor.flight_watcher_tradeboard_pickups",
       "sensor.flight_watcher_would_trade", "sensor.flight_watcher_swap_ideas", "sensor.flight_watcher_reserve_grid",
       "input_number.flight_watcher_federal_tax_pct", "input_number.flight_watcher_state_tax_pct", "input_number.flight_watcher_longevity_year", "input_text.flight_watcher_er_trips", "sensor.flight_watcher_schedule_versions"]
-      .map((e) => h.states[e] && `${h.states[e].last_updated}/${h.states[e].state}`).join("|") + "|" + this._doh(h) + (this._isAdmin(h) ? "|admin" : "|pilot") + "|" + this._role(h);
+      .map((e) => h.states[e] && `${h.states[e].last_updated}/${h.states[e].state}`).join("|") + "|" + this._doh(h) + (this._isAdmin(h) ? "|admin" : "|pilot") + "|" + this._role(h) + (this._isAdmin(h) ? "|" + ((h.states["sensor.flight_watcher_crewtrac_check"] || {}).last_updated || "") : "");  // 1.7.22: admin only
     // 1.6.2 (Release A item 15): each state too, not only last_updated: the pilot portal keeps the month helper
     // (input_number.flight_watcher_month_offset) in the page, and a step there need not move last_updated
     this._h = h;
@@ -1426,6 +1477,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const pot = ((S["sensor.flight_watcher_pot_count"] || {}).attributes || {}).pairings || [];
     const tb = ((S["sensor.flight_watcher_tradeboard_pickups"] || {}).attributes || {}).pairings || [];
     const liveOwnT = ((S["sensor.flight_watcher_own_trip_times"] || {}).attributes || {}).trips || {};
+    // 1.7.22 (Hark): the CrewTrac check, the admin's only (Hark reads CrewTrac for Ryan; a pilot's card shows nothing)
+    const ctSnap = admin ? ((S["sensor.flight_watcher_crewtrac_check"] || {}).attributes || {}).snapshot || null : null;
     // v51c: a version keeps its own block / credit / times but inherits fields it never recorded (seat, crew) from the live
     // record of the same trip, so an early version of a trip still pays the seat override (PWA 4.O.1)
     const mergeT = (live, ver) => { const o = { ...live }; for (const [k, v] of Object.entries(ver || {})) o[k] = { ...(live[k] || {}), ...v }; return o; };
@@ -1714,7 +1767,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         }
       } else if (pk === false) note = `No ${MONTHS[m]} pairing package on file, so no tag-on ideas.`;
       { const sc0 = this._school(key + "-15"); if (sc0 === false && this._role() === "admin") note += (note ? " " : "") + `No HPA school calendar file for this school year (school_YYYY-YY.json); holidays shown instead.`; }
-      const sum = { blk: 0, cr: 0, soft: 0, gross: 0, net: 0, vac: 0, vacDays: 0, payp: 0, ppEst: false, ppCov: [], ppUnk: "", lodo: 0, rcl: 0, cut: 0, cutT: [] };
+      const sum = { blk: 0, cr: 0, soft: 0, gross: 0, net: 0, vac: 0, vacDays: 0, payp: 0, ppEst: false, ppCov: [], ppUnk: "", lodo: 0, rcl: 0, cut: 0, cutT: [], ctBad: [] };
       const tt = mon.totals || {};
       const fl = (v) => { const m = /^(\d+)[.:](\d{2})$/.exec(String(v || "")); return m ? parseInt(m[1], 10) + parseInt(m[2], 10) / 60 : null; };
       const mdy = (iso) => { const mo = MON3[parseInt(String(iso).slice(5, 7), 10) - 1] || ""; return `${mo.slice(0, 1)}${mo.slice(1).toLowerCase()} ${parseInt(String(iso).slice(8, 10), 10) || ""}`.trim(); };
@@ -2039,6 +2092,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
         if (pa && F.inP && gross != null) { sum.lodo += lodoD.length * 4; sum.rcl += rclH; sum.cut += pa.cut / 60; if (pa.fix) sum.cutT.push(`${trip} ${mdy(d)}: FLICA ${pa.flica != null ? hm(pa.flica / 60) : "?"}, PWA ${hm(pa.use / 60)}`); }
         if (trip === PAYP && inBp(d) && cH != null) { sum.payp += cH; sum.ppEst = sum.ppEst || !!pp.est; }
         if (trip === "VAC" && inBp(d)) { sum.vacDays += 1; sum.vac += VAC_H; sum.gross += VAC_H * RATE; sum.net += VAC_H * RATE * (1 - (fed + stt) / 100); }
+        // 1.7.22 (Hark): the CrewTrac check of the whole trip (CrewTrac controls), from Hark's daily snapshot
+        const ctT = admin && trip && trip !== "VAC" && trip !== PAYP && isP(trip) ? fwCtTrip(ctSnap, trip, d, bcsAll[1], bcsAll[0], Date.now()) : { ok: null, line: "", ct: null };
+        if (ctT.ok === false) sum.ctBad.push(`${trip} ${mdy(d)}`);
         const ovLine = { iro: `IRO override ${usd(roV)} (${bcs[0]} block x $${IRO_OVERRIDE.toFixed(2)}, IRO seat on a ${nP || 3}-pilot crew, PWA 4.O.1.a)`,
           fo3: `IRO crew FO override ${usd(roV)} (${bcs[0]} block x $3.00, 3-pilot crew, PWA 4.O.1.a)`,
           erfo: `Extended Range crew FO override ${usd(roV)} (${bcs[0]} block x $3.00, ${nP}-pilot crew, ${seat || "FO"} seat; the 15% is only for the type-rated FO, PWA Definitions 25, 4.O.1.b)`,
@@ -2050,8 +2106,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
           .concat(rclV ? [`Recall +100% ${usd(rclV)} (${hm(rclH)} x ${rateTxt}: 200% pay, 100% credit on the recall ${pa.rclAll ? "trip" : "duties"}, PWA 4.M.1.a)`] : [])
           .concat(trip === PAYP ? [ppTitle(pp)] : [])
           .concat(pa ? this._pwaLines(pa, F, hm, mdy) : [])
-          .concat(gross != null && trip !== PAYP && isP(trip) ? [`Pay-Gross ${usd(total)}: credit pay ${usd(gross)}${roV || erV ? ` + override ${usd(roV + erV)}` : ""}${lodoV ? ` + LODO ${usd(lodoV)}` : ""}${rclV ? ` + recall ${usd(rclV)}` : ""}. Credit ${bcs[1]}${lodoD.length || rclV ? `; pay hours ${hm(cH + lodoD.length * 4 + rclH)} (LODO and recall are pay, not credit)` : ""}.`,
-            "CrewTrac check: not compared by FW yet (CrewTrac controls: check this trip's TCRD and BLKT in Schedule Detail)."] : []) : [];
+          .concat(gross != null && trip !== PAYP && isP(trip) ? [`Pay-Gross ${usd(total)}: credit pay ${usd(gross)}${roV || erV ? ` + override ${usd(roV + erV)}` : ""}${lodoV ? ` + LODO ${usd(lodoV)}` : ""}${rclV ? ` + recall ${usd(rclV)}` : ""}. Credit ${bcs[1]}${lodoD.length || rclV ? `; pay hours ${hm(cH + lodoD.length * 4 + rclH)} (LODO and recall are pay, not credit)` : ""}.`].concat(ctT.line ? [
+            ctT.line + (ctT.ct && ctT.ct.projected ? ` [${ctT.ct.projected}]` : "") + (ctT.ok === false && ctT.ct ? `. Authoritative: CrewTrac ${ctT.ct.credit} credit / ${ctT.ct.block || "?"} block` : "")] : []) : []) : [];
         const payT = lines.join("\n");
         const erBtn = cH != null ? `<span class="er tag${erIs ? " on" : ""}" data-k="${this._esc(erK)}">Type-rated FO +15% ${erIs ? "ON, tap to turn off" : "off, tap to turn on (only if you flew the Extended Range type-rated FO seat, PWA 4.O.1.b; else FO/RO $3.00)"}</span>` +
           (pa ? ` <span class="rcl tag${fwRclOf(erOv, erK) ? " on" : ""}" data-k="${this._esc(erK)}">Recall ${fwRclOf(erOv, erK) ? "ON, tap to turn off" : "off, tap if this trip was a recall (200% pay, PWA 4.M.1.a)"}</span>` : "") : "";
@@ -2061,7 +2117,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const bx = tripSpan ? " bx" + (tripSpan.it.start === d ? " bxs" : "") + ((o => o.rel ? this._d(o.rel) : o.it.end)(tripSpan) === d ? " bxe" : "") : "";
         const lg = legalOn[d]; const lcell = lg ? `<span class="tag lgl" title="${this._esc([`Released ${lg.rel}`, `Legal to report ${lg.t} (11 h, PWA 10.E.1.a)`, `For a 12 h+ duty leaving 1400-0359: ${lg.t18} (18 h, PWA 10.E.1.b)`].join("\n"))}">${lg.t}</span>` : "";
         return `<tr data-d="${d}" class="${wk ? "wk" : ""}${noSchool ? " hol" : (this._hol(d) ? " hol2" : "")}${other ? " oth" : ""}${blocked.has(d) ? " blk" : ""}${trip === "VAC" ? " vac" : ""}${gb ? " gg" : (gc ? " gx" : "")}${r30.has(d) ? " r30" : ""}${bx}${pdDays.has(d) ? " pdh" : ""}"><td>${DOW[dt.getDay()]}</td><td class="n" title="${r30.has(d) ? this._esc(r30Notes[d]) : ""}">${d.slice(8)}</td>` +
-          `<td>${t}</td><td>${l}${rp}${rl}</td><td class="t${splitNote && trip !== PAYP ? " split" : ""}" title="${this._esc(splitNote)}">${this._esc(bcs[0])}</td><td class="t${splitNote && trip !== PAYP ? " split" : ""}${trip === PAYP ? " ppc" : ""}" title="${this._esc(splitNote)}">${this._esc(bcs[1])}${ppH != null && pp.est ? ' <span class="k">est</span>' : ""}</td><td class="t">${this._esc(bcs[2])}</td><td class="t tot1"><span class="pay" data-info="${this._esc(payT)}" data-btn="${this._esc(erBtn)}" title="${this._esc(payT)}">${usd(total)}</span></td><td class="t" title="Pay-Gross less ${fed}% federal and ${stt}% state">${usd(net)}</td><td class="gr">${gcell}</td><td class="t far${fo && fo.bad30 ? " bad" : ""}${fo && fo.ok30 ? " ok30" : ""}${fo && fo.t30 === "&#8211;" ? " mid" : ""}" title="${fo ? this._esc(fo.t30t) : ""}">${fo ? fo.t30 : ""}</td><td class="t far${fo && fo.over ? " bad" : ""}" title="${fo ? this._esc(fo.bt) : ""}">${fo ? fo.b : ""}</td><td class="t far${fo && fo.rbad ? " bad" : ""}" title="${fo ? this._esc(fo.rt) : ""}">${fo ? fo.room : ""}</td><td class="lg">${lcell}</td><td class="o">${(opens[d] || []).join("<br>")}</td><td class="tg">${ideaBtn(d, trip)}</td></tr>`;
+          `<td>${t}</td><td>${l}${rp}${rl}</td><td class="t${splitNote && trip !== PAYP ? " split" : ""}" title="${this._esc(splitNote)}">${this._esc(bcs[0])}</td><td class="t${splitNote && trip !== PAYP ? " split" : ""}${trip === PAYP ? " ppc" : ""}" title="${this._esc(splitNote)}">${this._esc(bcs[1])}${ppH != null && pp.est ? ' <span class="k">est</span>' : ""}</td><td class="t">${this._esc(bcs[2])}</td><td class="t tot1"><span class="pay${ctT.ok === false ? " ctbad" : ""}" data-info="${this._esc(payT)}" data-btn="${this._esc(erBtn)}" title="${this._esc(payT)}">${usd(total)}</span></td><td class="t" title="Pay-Gross less ${fed}% federal and ${stt}% state">${usd(net)}</td><td class="gr">${gcell}</td><td class="t far${fo && fo.bad30 ? " bad" : ""}${fo && fo.ok30 ? " ok30" : ""}${fo && fo.t30 === "&#8211;" ? " mid" : ""}" title="${fo ? this._esc(fo.t30t) : ""}">${fo ? fo.t30 : ""}</td><td class="t far${fo && fo.over ? " bad" : ""}" title="${fo ? this._esc(fo.bt) : ""}">${fo ? fo.b : ""}</td><td class="t far${fo && fo.rbad ? " bad" : ""}" title="${fo ? this._esc(fo.rt) : ""}">${fo ? fo.room : ""}</td><td class="lg">${lcell}</td><td class="o">${(opens[d] || []).join("<br>")}</td><td class="tg">${ideaBtn(d, trip)}</td></tr>`;
       }).join("");
       // FW-0080: the trips carried in (no row on this page) count their part flown in this bid period, as FLICA does
       const carryT = [];
@@ -2164,7 +2220,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
           [`${MONTHS[nm].slice(0, 3)} total`, cell(g7 + g22, `${MONTHS[nm]} paychecks together`)]]);
       })();
       const cutT = sum.cut > 0.01 ? ` <span class="k" title="${this._esc(`FW counts ${hm(sum.cut)} less than FLICA: a delayed leg FLICA counted twice (PWA 2.A.15.a.1, 4.B.1). ${sum.cutT.join("; ")}. Tap the trip's Pay-Gross for the breakdown.`)}">PWA -${hm(sum.cut)}</span>` : "";
-      const tot = tgrp("thrs", [["Credit", hm(crAll) + cutT + (sum.ppEst ? ` <span class="k" title="${this._esc(`Not checked: the PAYP estimate is ${srcFl}'s month credit less everything else counted, so Credit matches it by construction.`)}">est</span>` : chk(crAll, fCr))], ["Block", hm(sum.blk) + chk(sum.blk, fBlk)], ["Block Avail", `<span class="${bAv <= 0 ? "bad" : ""}" title="98:00 bid-month block cap (crew scheduling) minus FLICA's bid-period Block">${bAv < 0 ? "-" + hm(-bAv) : hm(bAv)}</span>`], ["Soft", hm(sum.soft)],
+      const tot = tgrp("thrs", [["Credit", hm(crAll) + cutT + (sum.ppEst ? ` <span class="k" title="${this._esc(`Not checked: the PAYP estimate is ${srcFl}'s month credit less everything else counted, so Credit matches it by construction.`)}">est</span>` : chk(crAll, fCr))], ["CrewTrac", !admin ? "" : (() => { const c = fwCtMonth(ctSnap, key, hm(crAll), Date.now()); const bad = c.ok === false || sum.ctBad.length > 0;
+          return c.line || sum.ctBad.length ? `<span class="${bad ? "bad" : "okc"}" title="${this._esc([c.line, sum.ctBad.length ? `Trips off CrewTrac (tap the Pay-Gross): ${sum.ctBad.join(", ")}` : ""].filter(Boolean).join("\n"))}">${c.ok === true && !sum.ctBad.length ? "&#10003;" : c.ok === null && !sum.ctBad.length ? this._esc(c.line.replace(/^CrewTrac /, "")) : `&#10007; ${sum.ctBad.length ? sum.ctBad.length + " trip" + (sum.ctBad.length > 1 ? "s" : "") : ""}${c.ok === false ? `${sum.ctBad.length ? ", " : ""}month ${this._esc(c.line.replace(/^.*off by /, "").replace(/ \(CrewTrac controls\)$/, ""))}` : ""}`}</span>` : ""; })()],
+        ["Block", hm(sum.blk) + chk(sum.blk, fBlk)], ["Block Avail", `<span class="${bAv <= 0 ? "bad" : ""}" title="98:00 bid-month block cap (crew scheduling) minus FLICA's bid-period Block">${bAv < 0 ? "-" + hm(-bAv) : hm(bAv)}</span>`], ["Soft", hm(sum.soft)],
         ["Vacation", sum.vacDays ? `${hm(sum.vac)} <span class="k">(${sum.vacDays} d x ${hm(VAC_H)})</span>` : ""],
         // 1.7.20: pay with no credit (PWA 4.D.2.e LODO, the recall's extra 100%, 4.M.1.a): inside Pay-Gross, never in Credit
         ["LODO", sum.lodo ? `<span class="ppt" title="${this._esc(`Loss of Day Off: 4:00 pay, no credit, per day off lost (PWA 4.D.2.e). Inside Pay-Gross and the paychecks, not in Credit.`)}">${hm(sum.lodo)} <span class="k">pay only</span></span>` : ""],
@@ -2270,7 +2328,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .ppt{cursor:help}.ppc .k{font-size:9.5px;color:var(--secondary-text-color)}
       .cal tr.gg td:nth-child(1),.cal tr.gg td:nth-child(2){font-weight:700}
       .gr{text-align:right;font-size:11px}.g.green{color:var(--fw-ok,#2e7d32);font-weight:700}.g.red{color:var(--fw-err,#c62828);font-weight:700}.g.black{color:var(--primary-text-color)}
-      .er{color:var(--secondary-text-color);cursor:pointer;text-decoration:underline dotted}.er.on{color:var(--fw-ok,#2e7d32);font-weight:700}.pay{cursor:help}
+      .er{color:var(--secondary-text-color);cursor:pointer;text-decoration:underline dotted}.er.on{color:var(--fw-ok,#2e7d32);font-weight:700}.pay{cursor:help}.pay.ctbad{color:var(--fw-err,#c62828);font-weight:700;text-decoration:underline wavy var(--fw-err,#c62828)}
       .set{margin:8px auto 0;max-width:620px;font-size:11px;color:var(--secondary-text-color);text-align:center}
       .set summary{cursor:pointer;font-weight:600;font-size:11px;list-style:none;margin-bottom:3px}.set summary::before{content:"\\25B8 "}.set[open] summary::before{content:"\\25BE "}
       .set span{margin:0 8px;white-space:nowrap}.set select{font-size:11px;margin-left:3px}.set .r{margin-top:3px}

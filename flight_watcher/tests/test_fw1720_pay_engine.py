@@ -180,6 +180,7 @@ def test_schedule_card_draws_the_pwa_breakdown_and_lodo():
     assert "Credit 21:09" in tot and "PWA -11:10" in tot and "LODO 4:00" in tot, tot
     assert got["cells"][1] == "21:09" and got["cells"][2] == "0:01", got["cells"]
     for want in ("PWA 4.C.3.a", "GOP 21:09", "Trip Rig 17:54", "MDG 20:00", "GOP wins", "FLICA shows 32:19", "2.A.15.a.1",
-                 "LODO $1,231", "4.D.2.e", "IRO crew FO override $63", "4.O.1.a", "pay hours 25:09", "CrewTrac"):
+                 "LODO $1,231", "4.D.2.e", "IRO crew FO override $63", "4.O.1.a", "pay hours 25:09"):
         assert want in got["info"], (want, got["info"])
     assert 'class="er tag"' in got["btn"] and 'class="rcl tag"' in got["btn"]
+    assert "CrewTrac" not in got["info"]  # 1.7.22: the CrewTrac check is on the admin's card only (test_fw1722_crewtrac)

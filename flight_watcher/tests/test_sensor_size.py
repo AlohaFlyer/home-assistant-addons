@@ -342,6 +342,21 @@ def _fill(W, fake, tmp_path, monkeypatch):
                                 end=f"{today + timedelta(days=6 + i % 4):%d%b}", days="4", report="06:00", arrive="09:00",
                                 dates="", fit="") for i in range(60)])
     W.S["schedule"] = keep
+    # 1.7.22: Hark's CrewTrac snapshot of the three months (as posted: legs as strings, the duties) with every own trip
+    # 0:01 off, so each check row carries its line (the worst case), and each month's Pay Report off too
+    ct_trips = [{"pairing": k.split("|")[0][:5] + "Z", "key": k.split("|")[0][:5], "start": k.split("|")[1],
+                 "end": k.split("|")[1], "seat": "FO", "credit": "15:01", "block": "12:20", "tcrd": "12:20", "min_guar": "2:41",
+                 "projected": "TCRD 12:20 + MDG to 15:01 (posts after the trip)", "codes": ["FLT", "MFG", "PO3"],
+                 "legs": ["0808 HNL LAS 11-06", "0875 LAS HNL 11-08"], "months": [k.split("|")[1][:7]],
+                 "duties": [{"date": k.split("|")[1], "blkt": "6:10", "tcrd": "6:10"}] * 2} for k in W.S["own_trips"]]
+    ct = {"version": 1, "pulled_at": W.now_iso(), "source": {"how": "x" * 120},
+          "months": {mk: {"period": "1126", "bid": "HNL 332 FO", "trips": [], "codes": [],
+                          "pay_report": {"as_of": "2026-12-01", "totals": {"flt_h": "99:00", "pay": "199:00", "credit": "160:00",
+                                                                            "actual": "80:00"}}} for mk in months},
+          "trips": ct_trips}
+    monkeypatch.setattr(W, "ha_state_full", lambda e: (200, {"state": "x", "attributes": ct}))
+    monkeypatch.setattr(W, "CT_FILE", str(tmp_path / "crewtrac_snapshot.json"))
+    W.crewtrac_check()
     out = {}
     for t, p, _ in fake.msgs:
         if t.startswith(f"{W.T}/") and p and p[:1] == "{":
