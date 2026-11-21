@@ -1,4 +1,4 @@
-"""1.7.20 (Ryan, Nov 20, 2026: "I need this page to calculate per FAR 117 and PWA when I timeout, both for if I extend
+"""1.7.24 (Ryan, Nov 20, 2026: "I need this page to calculate per FAR 117 and PWA when I timeout, both for if I extend
 or if I do not ... Make sure it's accurate. Keep in mind the flight time, and number of crew and rest"; and that
 morning: "The number I need to know is when is the last moment I can block out and be legal ... that means calculating
 against the flight time"): the last legal block-out of the working leg (`last_out`, without and with an extension), the
@@ -17,10 +17,10 @@ PWA 2.A.19.b duty period; PWA Section 10 hours of service):
   or a schedule item that may be duty inside the 36 h: the lower of the readings, marked '?' (review round 6, fix 1:
   after a report at a station with no longitude, the duty before it ending elsewhere, the walk is read four ways, his
   stay kept or ended there and the theater last acclimated to kept or not sure, every reading of each tried, so 72 h
-  counted across that report is never the only reading). A span of the line that
-  is not known (a trip whose legs and duty periods are not read, days no schedule month covers) breaks the walk: after
-  it only 36 h free from duty acclimates for sure; until then the lowest value of the table on any clock (less 0:30)
-  is used, marked '?' (for a deadhead's 117.25(g) alone the readings are bounded instead, see Rest).
+  counted across that report is never the only reading). A span of the line that is not known (a trip whose legs and
+  duty periods are not read, days no schedule month covers) breaks the walk: after it only 36 h free from duty
+  acclimates for sure; until then the lowest value of the table on any clock (less 0:30) is used, marked '?' (a
+  deadhead's 117.25(g) takes the lowest row after any such span before it, see Rest).
 - Which clock of an acclimated theater: FOM 4.3.2.4 says "the report time at local domicile or the local time in the
   theater to which [he] is acclimated", and FAA interpretations let a carrier use either the local time where the FDP
   series starts or the home base time. Away from the reference station both readings are worked out (the reference
@@ -51,23 +51,16 @@ PWA 2.A.19.b duty period; PWA Section 10 hours of service):
   the whole window (known_from), else listed under not_checked. Over at the scheduled times: not legal.
 - Rest (117.25(e), FOM 4.3.2.7): 10 h free from duty before the report; 117.25(b), FOM 4.3.2.9: 30 consecutive hours
   free in the 168 h before it, when the line on file covers that window; 117.25(g), FOM 4.3.2.10: after deadhead
-  transportation past its Table B FDP (on the deadhead duty's own acclimation readings, 0:30 less when not acclimated;
-  HNL's clock and, from a station whose clock is not on file, the lowest row are readings that only add a '?'; sure
-  for deadheads alone past every acclimation reading, or past every Table B row on any clock; after a span of the line
-  not on file between duties on file (review round 5, fix 2: never the walk's own reading after it, which takes the
-  station of 36 h free as the theater), its readings are bounded in place of the lowest row: each span read as free
-  time and as duty, every mix of them, its acclimated clocks and the last acclimated clock less 0:30 read as duty, a
-  stay in the theater he reports in that may have begun in a span, a stay a duty inside a span may have begun (from
-  the span's start) at a station whose 60 degrees hold every station since, and a stay a block-in on file may have
-  ended (after a span read as duty its station may be one the span left him at); a deadhead under every such reading
-  needs no rest of its own; the bound fails when a span anywhere in that walk with the free time on file before it
-  (from the release before it to its end) is 36 h or more, so a report inside it may follow 36 h free, a stay may reach
-  72 h in another theater inside a span, a station has no longitude (a report there makes the theater not sure, as an
-  arrival does), a schedule item that may be duty decides a reading, or the spans give more than ACC_WALKS walks; then,
-  review round 6, where 36 h free from a release on file after the last span acclimated him, the walk from there with
-  every reference within 60 degrees of that station is read, fix 2's block-in fork included where a stay he may be in
-  is under 72 h old (round 6, fix 1), else the lowest row stays), a rest as long as the deadhead
-  (no less than 10 h; deadheads after a flown leg a '?', measured from the last flown block-in); 117.25(d),
+  transportation past its Table B FDP, a rest as long as the deadhead (no less than 10 h; deadheads after a flown leg a
+  '?', measured from the last flown block-in). Review round 7: with the line on file before the deadhead duty's
+  report, its Table B FDP is read on the main walk's readings (0:30 less when not acclimated; HNL's clock and, from a
+  station whose clock is not on file, the lowest row are readings that only add a '?'), sure for deadheads alone past
+  every reading when each walk read ends on a complete reading (acclimated, or not acclimated on a known clock; of the
+  four after a report at a station with no longitude, one that reads the theater not sure may also end on its 'not
+  known' reading, unless a report at such a station followed 36 h free or came first on file), else only past every
+  Table B row for its segments; after a span of the line not on file before that report (one before the first duty
+  on file too) its acclimation is not known: the lowest Table B row less 0:30 decides whether it may apply, and it is
+  sure only for deadheads alone past every Table B row for its segments; 117.25(d),
   FOM 4.3.2.11: 56 consecutive hours at home after a trip more than 168 h away that went more than 60 degrees (the
   widest spread between two of HNL and its stations; both a '?' when its start, a span inside it or its return home is
   not on file), holding three physiological nights (the 0100-0700 HNL windows inside it, FAR 117.3's reading: fewer is
@@ -149,7 +142,6 @@ LON = {"HNL": -157.9, "OGG": -156.4, "KOA": -156.0, "ITO": -155.0, "LIH": -159.3
        "LNK": -96.8, "MKK": -157.1, "LNY": -156.9}
 THEATER_DEG = 60
 FREE_ACCL, STAY_ACCL = timedelta(hours=36), timedelta(hours=72)
-ACC_WALKS = 64  # review round 5, fix 1 (R5V-1): the most bounded acclimation walks tried before the lowest row stays
 UNACCL = timedelta(minutes=30)
 EXT = timedelta(hours=2)
 RELEASE, RELEASE_CUSTOMS = timedelta(minutes=15), timedelta(minutes=30)  # PWA 2.A.19.b
@@ -478,135 +470,25 @@ def _hits(spans, a, b):
     return [(x, y) for x, y in spans if y > (a if a is not None else x) and x < b]
 
 
-def _anchors_cut(cands, lons):
-    """Review round 5, fix 2: the stations (with a longitude on file: the only ones a stay starts at, FAR 117.3's
-    theater being 60 degrees around it) a stay may have begun at and still holds, cut by the longitudes of more
-    stations he was at (a None cuts nothing: a station with no longitude makes the walk not sure anyway)."""
-    for lon in lons:
-        if lon is not None:
-            cands = frozenset(z for z in cands if ang(LON[z], lon) <= THEATER_DEG)
-    return cands
-
-
-def _chains_at(chains, stn, at):
-    """Review round 6, fix 1 (ANCHOR-DSPAN): the stays a walk from the anchor may be in (station it began at, since:
-    None before the anchor) once he is at stn at the time at: one whose 60 degrees do not hold stn (or stn has no
-    longitude) ended, and a new one begins there then (the stays begun before the anchor, a report ending one as in
-    _anchors_cut)."""
-    lon = LON.get(stn)
-    return frozenset((c, c_at) if lon is not None and c in LON and ang(LON[c], lon) <= THEATER_DEG else (stn, at)
-                     for c, c_at in chains)
-
-
-def _acclimation(ds, idx, busy, unknown=(), read=None, info=None, anchor=None, nolon=(False, False)):
+def _acclimation(ds, idx, busy, unknown=(), info=None, nolon=(False, False)):
     """The walk (see the module note) up to duty idx: (options, words, status, free, how). options: [(station whose
     clock enters the tables, or ANY; 0:30 less)], the readings to try (the lowest limit is used); status True / False /
     None (acclimated / not / unknown); free: the time free from duty before the report, from the last release
     ('release') or from the end of a span of the line not known ('unknown': at least that); None (how None) with
-    neither. Review round 5 (RV5-1, for FAR 117.25(g) only, never a last out): read (a list: _acc_bound's walk) walks a
-    span of the line not on file that it can bound (the duty before it on file, and from its release to the span's end
-    under 36 h, review round 5, fix 2: so no report inside it follows 36 h free and it holds no acclimation to a theater
-    not on file, the free time after it being read by both readings; and no stay in another theater that may reach 72 h
-    before the span ends) as free time or as duty; read as duty, the report after it takes the last acclimated clock
-    less 0:30 too (he may have left the theater). Review round 5, fix 1 (R5V-1, RV5-1-STAY): each such span is a fork
-    of its own (free time 0, duty 1), so every mix over several spans is walked; a span may have moved him into the
-    theater he reports in, or held a duty that broke his stay there and back, so that stay may have begun as early as
-    the release before the span ('early': review round 6, fix 1, R6-DOC-PEND-START: he may have moved into that
-    theater on his own in the free time on file before it, so not the span's start, as a stay begun at a block-in in
-    the span is below); at a report where that earliest start gives 72 h in the theater and the latest does not,
-    acclimated there (0) or not (1) is a fork too. read[k] is the k-th fork's choice; past its end 0, and info['path']
-    gets every choice made. Review round 5, fix 2: a span read as duty may hold a block-in at any station, so a stay may
-    have begun there as early as the span's start (review round 6, CV7-1: the start of the first span in that gap, no
-    earlier: the block-in is inside the span, and the line on file before it is free), at a station (on file: LON)
-    within 60 degrees of every station he is at since (_anchors_cut): where that gives 72 h at a report, acclimated (0)
-    or not (1) is a fork, and where it may reach 72 h inside a later span (begun at a station outside the theater he is
-    acclimated to) that span is not bounded; and his stay's station after it may be one the span left him at, not the
-    first block-in after it, so a stay that acclimates him later is a fork too (0 acclimated, 1 not). Any other span is
-    not known, as with read None. Review round 6 (CV7-1, _acc_anchor): anchor (j0, R) walks from duty j0 only, a report
-    after 36 h free from the release on file before it with no span after that release: there he is acclimated to a
-    theater whose reference is R (any station within 60 degrees of his station), and his stay in it may be of any
-    length (a stay in the theater of his station, or begun at a station within 60 degrees of it, whose 72 h are a fork
-    at each later report), and (review round 6, fix 1) the spans before it may have held duty, so a block-in on file
-    after it may have ended the stay the walk counts (fix 2's fork), where a stay he may be in (_chains_at: begun at a
-    station within 60 degrees of his, held or ended at each station since) is under 72 h old at that report. nolon
-    (review round 6, fix 1, _acc_walk): at a report at a station with no longitude, the duty before it ending
-    elsewhere, his stay ends there (nolon[0]) and the theater last acclimated to stays sure (nolon[1]);
-    info['nolon_at'] gets those stations. info (a dict): its 'kind' is set to the final reading's branch ('same',
-    'new', 'any', 'busy', 'not', 'nolon')."""
+    neither. nolon (review round 6, fix 1, _acc_walk): at a report at a station with no longitude, the duty before it
+    ending elsewhere, his stay ends there (nolon[0]) and the theater last acclimated to stays sure (nolon[1]);
+    info['nolon_at'] gets those stations (and info['nolon_36'] whether one followed 36 h free from duty, or none on
+    file). info (a dict): its 'kind' is set to the final reading's branch ('same', 'new', 'any', 'busy', 'not',
+    'nolon'; review round 7: 'same', 'new' and 'not' are the complete readings)."""
     ref, ref_sure = DOMICILE, True
     stay = {"stn": DOMICILE, "since": None}
-    pend = None  # review round 5, fix 1 (RV5-1-STAY): (where a bounded span left him, the earliest he was there)
-    # review round 5, fix 2 (found checking the bound against fillings of the spans): a duty inside a bounded span may
-    # have begun a stay at a station not on file there, from the span's start at the earliest (review round 6, CV7-1:
-    # its block-in is inside the span, so no earlier; round 5, fix 2 took the release before it), that holds while
-    # every station he is at since is within 60 degrees of it: [(earliest start, the stations it may have begun at)]
-    alts, duty_span = [], False
-    chains = frozenset()  # review round 6, fix 1 (_chains_at): the walk from the anchor only
-    if read is not None:
-        info["path"], info["n"] = list(read), 0
-
-    def pick():
-        """Review round 5, fix 1 (R5V-1): the next fork's choice, 0 past the end of read (kept in info['path'])."""
-        k = info["n"]
-        info["n"] = k + 1
-        if k == len(info["path"]):
-            info["path"].append(0)
-        return info["path"][k]
     for j in range(idx + 1):
-        if anchor is not None and j < anchor[0]:
-            continue  # review round 6 (CV7-1): the walk from the anchor on; what came before it holds no reading
         d = ds[j]
         s, rep = d["legs"][0]["frm"], d["report"]
         prev = ds[j - 1] if j else None
         lo = prev["release"] if prev else None
         gone, how = _hits(unknown, lo, rep), "release" if prev else None
-        span_duty = False  # review round 5 (RV5-1): the span before this report read as duty
-        if anchor is not None and j == anchor[0]:
-            # review round 6 (CV7-1): 36 h free from the release on file before it, no span after that release (the
-            # caller checks): acclimated to a theater that holds s, whose reference is anchor[1]; spans before it may
-            # have held him in that theater for any time, at s or at a station within 60 degrees of it. Review round 6,
-            # fix 1 (ANCHOR-DSPAN): those spans may have held duty, so a block-in on file after the anchor may have
-            # ended the stay the walk counts (fix 2's fork, as after a span read as duty), where a stay he may be in
-            # (chains: begun before the anchor at a station within 60 degrees of s, held or ended at each station
-            # since) is under 72 h old at a report: duty_span "anchor"
-            ref, ref_sure, pend, duty_span = anchor[1], True, None, "anchor"
-            stay = {"stn": s, "since": None, "early": rep - STAY_ACCL}
-            alts = [(rep - STAY_ACCL, frozenset(z for z in LON if ang(LON[z], LON[s]) <= THEATER_DEG))]
-            chains = frozenset((z, None) for z in alts[0][1])
-        elif anchor is not None:
-            chains = _chains_at(chains, s, rep)  # review round 6, fix 1: the report, before its reading
-        if gone and read is not None and prev is not None and ref is not None:
-            u_end = min(rep, max(y for _x, y in gone))
-            u_from = min([lo] + [x for x, _y in gone])
-            st_early = stay.get("early", stay.get("since"))
-            may_stay = (st_early is not None and st_early + STAY_ACCL < u_end
-                        and not (ref_sure and same_theater(stay["stn"], ref))
-                        # review round 5, fix 2: or one a duty inside an earlier span may have begun (at a station not
-                        # in ref's theater: a report inside this span may acclimate him to a theater not on file)
-                        or any(a_at + STAY_ACCL < u_end and not (ref_sure and all(same_theater(z, ref) for z in a_z))
-                               for a_at, a_z in alts))
-            # review round 5, fix 2 (RF1-36H-ANYWHERE): a report inside the span follows at most u_end - lo free from
-            # duty (the duty before it on file ends at lo), so under 36 h it acclimates him to no theater not on file;
-            # the free time after the span is read by the two readings (free time: all of it; duty: from u_end)
-            if u_end - lo < FREE_ACCL and not may_stay:
-                # review round 5, fix 1 (RV5-1-STAY): he reports in another theater than his stay's: he may have been
-                # in it since the release before the span (u_from: he may have moved there on his own in the free time
-                # on file before it; review round 6, fix 1 says so, the code is round 5's)
-                moved = same_theater(s, stay["stn"]) is not True
-                # review round 6 (CV7-1): a duty inside the span blocks in inside it: from the span's start
-                u_at = max(lo, min(x for x, _y in gone))
-                if pick():  # read as duty: it may have broken his stay (from its start at the earliest) and moved him
-                    lo, how, span_duty = u_end, "unknown", True
-                    pend = (s, u_from if moved else st_early)
-                    stay = {"stn": None, "since": u_end}
-                    alts.append((u_at, frozenset(LON)))
-                    duty_span = True
-                elif moved:
-                    pend = (s, u_from)
-                gone = []  # read as free time: the walk as if the span were not there
         if gone:  # a span of the line that is not known since the last duty: where he was is not known
-            if read is not None:  # review round 5, fix 1: a span the walk cannot bound: the theater he left it in too
-                info["open"] = True
             u_end = min(rep, max(y for _x, y in gone))
             lo = max(x for x in (lo, u_end) if x is not None)
             ref, ref_sure = None, False
@@ -618,25 +500,6 @@ def _acclimation(ds, idx, busy, unknown=(), read=None, info=None, anchor=None, n
         stay_ok = in_th is not None and in_th >= STAY_ACCL
         free_ok = free is not None and free >= FREE_ACCL
         known = s in LON
-        if read is not None and not stay_ok and known and ref is not None and not (ref_sure and same_theater(s, ref)):
-            # review round 5, fix 1 (R5V-1, RV5-1-STAY): his stay here may have begun as early as a bounded span; where
-            # that gives 72 h and the latest start does not, a fork: acclimated here (0) or not (1)
-            e_at = (pend[1] if pend is not None and same_theater(s, pend[0]) else
-                    stay.get("early") if same_theater(s, stay["stn"]) else None)
-            # review round 5, fix 2: or a stay a duty inside a span may have begun at a station not on file
-            e_alt = min((a_at for a_at, a_z in alts if _anchors_cut(a_z, [LON[s]])), default=None)
-            e_at = min((e for e in (e_at, e_alt) if e is not None), default=None)
-            if e_at is not None and rep - e_at >= STAY_ACCL and not pick():
-                stay_ok, in_th = True, rep - e_at
-        elif (read is not None and stay_ok and duty_span and not (free_ok and not busy_gap) and ref is not None
-              and not (ref_sure and same_theater(s, ref))
-              and (duty_span is True or any(c_at is not None and rep - c_at < STAY_ACCL for _c, c_at in chains))):
-            # review round 5, fix 2: after a span read as duty his stay's station may be one the span left him at, not
-            # the first block-in after it, so a block-in on file may have ended it: acclimated by it (0) or not (1);
-            # review round 6, fix 1 (ANCHOR-DSPAN): from the anchor, only where a stay he may be in (chains: one begun
-            # before the anchor, held or ended at each station since) is under 72 h old here
-            if pick():
-                stay_ok = False
         far = (f"{s} is {round(ang(LON[s], LON[ref]))} deg from {ref}" if known and ref in LON
                else f"{s} has no longitude on file")
         facts = (f"{hm(free)} free from duty (36 h needed)" if free is not None else "no duty before it on file") + (
@@ -672,9 +535,6 @@ def _acclimation(ds, idx, busy, unknown=(), read=None, info=None, anchor=None, n
             words = (f"? acclimation not known ({far}, or a station since the last acclimation has none): the lower of "
                      f"{ref} time less 0:30" + (f" and {s} time" if s != ref and own else "") +
                      " is used (conservative)" + ("" if own or s == ref else f"; {s}'s own clock is not on file"))
-        if span_duty and kind in ("same", "not"):  # review round 5 (RV5-1): he may have left the theater in it
-            opts = opts + ([] if (ref, True) in opts else [(ref, True)])
-            st = None if st else st
         if j == idx:
             if info is not None:
                 info["kind"] = kind
@@ -684,32 +544,22 @@ def _acclimation(ds, idx, busy, unknown=(), read=None, info=None, anchor=None, n
             # fix 1 (LASTOUT-NOLON-72H): whether he left his stay's theater there, or was acclimated there, is not known
             # either: nolon (_acc_walk) reads his stay ended there (nolon[0]: as an arrival there ends it) and the
             # theater last acclimated to kept (nolon[1]: round 4, fix 2's reading); a report where the duty before it
-            # ended is one an arrival on file has read already. The bound and the anchor (read) need no such readings:
-            # with his theater not sure, a stay kept across that report acclimates him later only on a fork whose other
-            # choice reads him not acclimated ('nolon', no reading of the bound): fix 2's block-in fork after a span
-            # read as duty (every bounded span is one in some walk), from the anchor where a stay he may be in (ended
-            # at that report at the latest) is under 72 h old, or the early-stay fork
+            # ended is one an arrival on file has read already
             if prev is None or prev["legs"][-1]["to"] != s:
                 if info is not None:
                     info.setdefault("nolon_at", []).append(s)
+                    # review round 7 (D2): 36 h free before it (or none on file) may have acclimated him to its theater,
+                    # whose clock is not known
+                    info["nolon_36"] = info.get("nolon_36", False) or free is None or free >= FREE_ACCL
                 if nolon[0]:
                     stay = {"stn": None, "since": None}
             if not nolon[1]:
                 ref_sure = False
-        # review round 5, fix 2: a stay begun in a span holds only while every station he is at stays in one theater
-        if alts:
-            here = [LON.get(s)] + [LON.get(x["to"]) for x in d["legs"]]
-            alts = [(a_at, a_z) for a_at, a_z in ((a_at, _anchors_cut(a_z, here)) for a_at, a_z in alts) if a_z]
-        for n_x, x in enumerate(d["legs"]):  # where the duty took him: the stay starts at the block-in that brought him
+        for x in d["legs"]:  # where the duty took him: the stay starts at the block-in that brought him
             if not same_theater(x["to"], stay["stn"]):
                 stay = {"stn": x["to"], "since": x["arr"]}
-                if not n_x and pend is not None and pend[1] is not None and same_theater(x["to"], pend[0]):
-                    stay["early"] = pend[1]  # review round 5, fix 1 (RV5-1-STAY): in that theater since the span, maybe
-            if anchor is not None:
-                chains = _chains_at(chains, x["to"], x["arr"])  # review round 6, fix 1: each block-in
             if x["to"] not in LON:
                 ref_sure = False
-        pend = None
     return [(DOMICILE, True)], "?", None, None, None
 
 
@@ -723,23 +573,41 @@ def _opts_w(opts):
 # review round 6, fix 1 (LASTOUT-NOLON-72H): _acclimation's other nolon readings ((False, False) is the walk itself):
 # (his stay ended at a report at a station with no longitude, the theater last acclimated to kept there)
 NOLON_MODES = ((False, True), (True, False), (True, True))
+ACC_DONE = ("same", "new", "not")  # review round 7 (D2): _acclimation's complete readings (info['kind'])
 
 
-def _acc_walk(ds, idx, busy, unknown=()):
-    """Review round 6, fix 1 (LASTOUT-NOLON-72H): the main walk (_acclimation, read None) for the last outs and for
-    FAR 117.25(g) on file. A report at a station with no longitude, the duty before it ending elsewhere, makes the
-    theater last acclimated to not sure (round 5, fix 2), but the walk kept his stay across it, so 72 h counted across
-    that report could acclimate him to a new theater on one clock where round 4, fix 2 read the old theater's clock and
-    the report station's (a later last out). Whether he left his stay's theater there, or was acclimated there, is not
-    known, so the walk is read four ways (his stay kept or ended there, the theater last acclimated to kept or not
-    sure): every reading of each is tried (the lowest limit is used), the status is theirs when all four agree, else
-    None, and the words say so. With no such report, the walk alone."""
-    info = {}
-    base = _acclimation(ds, idx, busy, unknown, info=info)
-    where = sorted(set(info.get("nolon_at", ())))
+def _acc_walk(ds, idx, busy, unknown=(), info=None):
+    """Review round 6, fix 1 (LASTOUT-NOLON-72H): the main walk (_acclimation) for the last outs and for FAR 117.25(g)
+    on file. A report at a station with no longitude, the duty before it ending elsewhere, makes the theater last
+    acclimated to not sure (round 5, fix 2), but the walk kept his stay across it, so 72 h counted across that report
+    could acclimate him to a new theater on one clock where round 4, fix 2 read the old theater's clock and the report
+    station's (a later last out). Whether he left his stay's theater there, or was acclimated there, is not known, so
+    the walk is read four ways (his stay kept or ended there, the theater last acclimated to kept or not sure): every
+    reading of each is tried (the lowest limit is used), the status is theirs when all four agree, else None, and the
+    words say so. With no such report, the walk alone. info (a dict, review round 7): 'complete' is True when every
+    walk read ends on a complete reading (ACC_DONE; of the four, one that reads the theater not sure may end on
+    'nolon' where no such report followed 36 h free or came first on file: FAR 117.25(g) past every reading of them is
+    sure, D2); 'four' when the words are the four readings'; 'q_clock' when those words lead with no '?' of their own
+    (all four acclimated, or all not), which the caller adds where the readings' limits differ (D3)."""
+    b_info = {}
+    base = _acclimation(ds, idx, busy, unknown, info=b_info)
+    where = sorted(set(b_info.get("nolon_at", ())))
+    walks, kinds = [base], [b_info.get("kind")]
+    for n_mode in NOLON_MODES if where else ():
+        m_info = {}
+        walks.append(_acclimation(ds, idx, busy, unknown, info=m_info, nolon=n_mode))
+        kinds.append(m_info.get("kind"))
+    if info is not None:
+        # review round 7 (D2): a walk that reads the theater last acclimated to not sure there (the walk itself and
+        # nolon (True, False)) may end on 'nolon' at the report where no report at a station with no longitude
+        # followed 36 h free (none may have acclimated him to a theater whose clock is not known): its readings (that
+        # clock less 0:30 and the report station's own) are then the not-acclimated side, and the walks that keep the
+        # theater (each on a complete reading, so the report station has a longitude) the rest
+        loose = bool(where) and not b_info.get("nolon_36")
+        info["complete"] = all(k in ACC_DONE or (loose and not w_mode[1] and k == "nolon")
+                               for k, w_mode in zip(kinds, ((False, False),) + NOLON_MODES))
     if not where:
         return base
-    walks = [base] + [_acclimation(ds, idx, busy, unknown, nolon=n_mode) for n_mode in NOLON_MODES]
     n_opts = []
     for w_got in walks:
         n_opts += [o for o in w_got[0] if o not in n_opts]
@@ -748,87 +616,17 @@ def _acc_walk(ds, idx, busy, unknown=()):
         return base
     n_st = n_sts.pop() if len(n_sts) == 1 else None
     b_w = base[1][2:] if base[1].startswith("? ") else base[1]
-    n_words = (f"? {'acclimated, but to which theater is' if n_st else 'acclimation'} not sure: you reported at "
-               f"{', '.join(where)} since, with no longitude on file, so you may have left your theater there or been "
-               f"acclimated there; read with your stay and the theater last acclimated to kept and ended there (the "
-               f"walk alone: {b_w}), the lower of {_opts_w(n_opts)} is used (conservative)")
+    # review round 7 (D3): worded by the status of the four readings; '?' leads when it is not known, else only where
+    # the readings' limits differ (the caller: 'clock')
+    n_head = ("? acclimation not sure" if n_st is None else "acclimated, but to which theater is not sure" if n_st else
+              "not acclimated, but which theater you were last acclimated to is not sure")
+    n_words = (f"{n_head}: you reported at {', '.join(where)} since, with no longitude on file, so you may have left "
+               f"your theater there or been acclimated there; read with your stay kept or ended there and the theater "
+               f"last acclimated to kept or not sure (the walk alone: {b_w}), the lower of {_opts_w(n_opts)} is used "
+               f"(conservative)")
+    if info is not None:
+        info.update(four=True, q_clock=n_st is not None)
     return n_opts, n_words, n_st, base[3], base[4]
-
-
-def _acc_bound(ds, idx, busy, unknown):
-    """Review round 5 (RV5-1): duty idx's acclimation readings when only spans of the line not on file make it not
-    known (the main walk's ANY; review round 5, fix 2: after any span between duties on file, see _dh_rest): every
-    reading of every bounded walk (_acclimation's read; fix 2 adds a stay begun in a span at a station not on file,
-    and one a block-in may have ended). Review round 5, fix 1
-    (R5V-1, RV5-1-STAY): every walk its forks allow (each span free time or duty, and acclimated or not where a stay
-    that may have begun in a span reaches 72 h), not only all spans free and all spans duty; more than ACC_WALKS walks:
-    None. None, so ANY stays, when a walk ends on no bounded reading: a span that with the free time on file before it
-    (from the release before it to its end) is 36 h or more, anywhere in the walk (a report inside it may follow 36 h
-    free, so it may hold an acclimation to a theater not on file, and after it the theater of the walk is not sure:
-    review round 5, fixes 1 and 2), a stay that may reach 72 h in another theater before a span ends (fix 2: one a
-    duty inside an earlier span may have begun too), a station with no longitude, or a schedule item that may be
-    duty. Else (options, status): status True / False when every walk agrees, else None."""
-    todo, walks = [[]], []
-    while todo:
-        if len(walks) == ACC_WALKS:
-            return None
-        script, info = todo.pop(), {}
-        w_opts, _w, w_st, _f, _h = _acclimation(ds, idx, busy, unknown, read=script, info=info)
-        if info.get("open") or info.get("kind") not in ("same", "new", "not") or any(s == ANY for s, _r in w_opts):
-            return None
-        walks.append((w_opts, w_st))
-        # the other choice at each fork this walk met past its script (each walk of the tree once)
-        todo += [info["path"][:k] + [1] for k in range(len(script), len(info["path"]))]
-    both = []
-    for w_opts, _st in walks:
-        both += [o for o in w_opts if o not in both]
-    w_sts = {w_st for _o, w_st in walks}
-    return both, (w_sts.pop() if len(w_sts) == 1 else None)
-
-
-def _acc_anchor(ds, idx, busy, unknown):
-    """Review round 6 (CV7-1): duty idx's acclimation readings where the bound fails (_acc_bound None after a span of
-    the line not on file between duties on file) but the walk re-acclimated on file after the last span: a report j0
-    (idx or earlier) after 36 h free from duty since the release on file before it, with no span from that release to
-    duty idx's report and no schedule item that may be duty in those 36 h, at a station with a longitude. 36 h free
-    acclimates him (FAR 117.3) to a theater that holds that station, whatever the spans held, but its reference may be
-    any station within 60 degrees of it (he may never have left an earlier theater that holds it: fix 2's LAS case),
-    so the walk from j0 is read with each of them (_acclimation's anchor, every fork). (options, status, station) as
-    _acc_bound gives them, or None when no such report gives readings: a walk ends on no reading of its own (a station
-    with no longitude since, a schedule item that may be duty deciding a reading) or more than ACC_WALKS walks for one
-    reference. The earliest such report is tried first (the walk from it reads the most of the line on file), then
-    the later ones."""
-    rep_k = ds[idx]["report"]
-    first = next((j for j in range(1, idx + 1) if not _hits(unknown, ds[j - 1]["release"], rep_k)), None)
-    for j0 in range(first or idx + 1, idx + 1):
-        lo, d = ds[j0 - 1]["release"], ds[j0]
-        s0 = d["legs"][0]["frm"]
-        if s0 not in LON or d["report"] - lo < FREE_ACCL or _hits(busy, lo, d["report"]):
-            continue
-        refs = sorted(z for z in LON if ang(LON[z], LON[s0]) <= THEATER_DEG)
-        a_opts, a_sts, ok = [], set(), True
-        for r_z in refs:
-            todo, n_walks = [[]], 0
-            while todo and ok:
-                if n_walks == ACC_WALKS:
-                    ok = False
-                    break
-                script, info = todo.pop(), {}
-                w_opts, _w, w_st, _f, _h = _acclimation(ds, idx, busy, unknown, read=script, info=info,
-                                                        anchor=(j0, r_z))
-                n_walks += 1
-                if (info.get("open") or info.get("kind") not in ("same", "new", "not")
-                        or any(o_s == ANY for o_s, _r in w_opts)):
-                    ok = False
-                    break
-                a_opts += [o for o in w_opts if o not in a_opts]
-                a_sts.add(w_st)
-                todo += [info["path"][:k] + [1] for k in range(len(script), len(info["path"]))]
-            if not ok:
-                break
-        if ok:
-            return a_opts, (a_sts.pop() if len(a_sts) == 1 else None), s0
-    return None
 
 
 def _leg_ft(x, a, end):
@@ -970,25 +768,29 @@ def _theater_rest(ds, idx, unknown=(), back_by=None):
             "where": where, "far": far, "away_txt": away_txt, "why": why, "home": home}
 
 
+# review round 7 (D1(b)): the 117.25(g) line's words after a span of the line not on file before the deadhead duty
+DH_GAP = ("a span of your line not on file before it, so its acclimation is not known: the lowest Table B row, less "
+          "0:30, decides whether it may apply")
+
+
 def _dh_rest(ds, idx, busy=(), unknown=()):
     """FAR 117.25(g), FOM 4.3.2.10 (review FAR-117.25d, 4.3.2.10): a pilot "engaged in deadhead transportation [that]
     exceeds the applicable FDP in Table B" needs a rest equal to the length of the deadhead transportation, no less than
     10 h, before the next FDP. The duty before idx: all deadheads, or flown legs and then deadheads (a '?': the
-    deadheads after the FDP), its report to its last block-in over its Table B FDP (every leg a segment) on its
-    acclimation readings (review round 3, R3-4: _acclimation's options, the lowest row on no known clock, 0:30 less
-    where not acclimated, FAR 117.13(b), FOM 4.3.2.4). Two more readings may only make it a '?' (review round 4, fix
-    1): HNL's clock (FOM 4.3.2.4 enters Table B on "the report time at local domicile or the local time in the theater"
-    acclimated to; 0:30 less unless acclimated) and, from a station whose clock is not on file, the lowest row. The
-    lowest limit decides whether it may apply; it is sure only for deadheads alone whose span is over every Table B
-    row on any clock, or whose acclimation is known and whose span is over every acclimation reading's limit. Its
-    length: from the report for deadheads alone, from the last flown block-in for trailing deadheads (review round 3,
-    R3-5: the sit before them counts, conservative). Review round 5 (RV5-1): where only spans of the line not on file
-    make its acclimation not known, its readings are bounded (_acc_bound: the spans read as free time and as duty, HNL's
-    clock as above) in place of the lowest row on any clock, so a deadhead past every bounded reading is sure (review
-    round 5, fix 1: every walk the spans allow, see _acc_bound; review round 5, fix 2: after any span between duties on
-    file, never the walk's own reading after it, and the lowest row where the bound cannot be made; review round 6,
-    CV7-1: there, after 36 h free from a release on file past the last span, every reference within 60 degrees of that
-    station, _acc_anchor). None when it does not apply; else {need, length, span, limit, how, over, sure, what, why}."""
+    deadheads after the FDP), its report to its last block-in over its Table B FDP (every leg a segment). Review round
+    7 (D1): its Table B limit is read in two ways only. (a) With no span of the line not on file before its report (one
+    before the first duty on file included): on the main walk's readings (_acc_walk, the ones the last outs use; review
+    round 3, R3-4: 0:30 less where not acclimated, FAR 117.13(b), FOM 4.3.2.4) and two that only lower the limit that
+    decides whether it may apply (review round 4, fix 1): HNL's clock (FOM 4.3.2.4 enters Table B on "the report time
+    at local domicile or the local time in the theater" acclimated to; 0:30 less unless acclimated) and, from a station
+    whose clock is not on file, the lowest row. The lowest limit decides whether it may apply; it is sure for deadheads
+    alone whose span is over every reading of the walk when every walk read ends on a complete reading (the four after
+    a report at a station with no longitude too, D2), else only past every Table B row for its segments. (b) After a
+    span of the line not on file before its report: its acclimation is not known, so the lowest Table B row on any
+    clock less 0:30 decides whether it may apply, and it is sure only for deadheads alone past every Table B row for
+    its segments with no reduction (round 4, fix 1's every-row rule). Its length: from the report for deadheads alone,
+    from the last flown block-in for trailing deadheads (review round 3, R3-5: the sit before them counts,
+    conservative). None when it does not apply; else {need, length, span, limit, how, over, sure, what, why}."""
     if idx == 0:
         return None
     pv = ds[idx - 1]
@@ -1000,42 +802,29 @@ def _dh_rest(ds, idx, busy=(), unknown=()):
     if not trail:
         return None  # its deadheads come before a flown leg: part of the FDP, the 10 h rule
     rep, n = pv["report"], min(len(legs), 7)
-    opts, _w, st, _f, _h = _acc_walk(ds, idx - 1, busy, unknown)  # review round 6, fix 1: _acc_walk
-    # review round 5 (RV5-1): only spans not on file make it not known: the bounded readings, not the lowest row.
-    # Review round 5, fix 2: after any span between duties on file too, not the walk's own reading: 36 h free after a
-    # span takes that station's theater though he may never have left another (LAS, not HNL's: fix 1's own case), so
-    # where the bound cannot be made the lowest row stays (review round 6: unless 36 h free on file after the last span
-    # anchors the walk, below)
-    spans_k = bool(_hits(unknown, ds[0]["report"], rep))
-    bnd = _acc_bound(ds, idx - 1, busy, unknown) if (ANY, True) in opts or spans_k else None
-    anc = None  # review round 6 (CV7-1): the station of 36 h free after the last span, whose theater is read
-    if bnd is None and spans_k:
-        # review round 6 (CV7-1): the bound fails, but 36 h free on file after the last span acclimated him to a
-        # theater that holds that station: its readings in place of the lowest row (_acc_anchor)
-        got_a = _acc_anchor(ds, idx - 1, busy, unknown)
-        if got_a is not None:
-            opts, st, anc = got_a
-            bnd = (opts, st)
-    if bnd is not None:
-        opts, st = bnd
-    elif spans_k:
+    gap_dh = bool(_hits(unknown, None, rep))  # (b): a span of the line not on file before its report
+    w_info = {}
+    if gap_dh:
         opts, st = [(ANY, True)], None
+    else:
+        opts, _w, st, _f, _h = _acc_walk(ds, idx - 1, busy, unknown, w_info)
+    done = bool(w_info.get("complete"))  # (a) only: every walk read ends on a complete reading
 
     def limit(stn, red, more="", note=""):
         cut, less = (UNACCL, (", less 0:30: not acclimated, FAR 117.13(b)" if st is False else
-                              f", less 0:30: not acclimated on a reading of a theater that holds {anc}" if anc else
-                              ", less 0:30: not acclimated on a reading of a span of your line not on file" if bnd else
+                              ", less 0:30: not acclimated on one of its readings, FAR 117.13(b)" if done else
                               ", less 0:30: acclimation not known")) if red else (timedelta(0), "")
         if stn == ANY:
             return _hrs(min(r[2][n - 1] for r in TABLE_B)) - cut, f"the lowest row on any clock{more}{less}{note}"
         return _hrs(_row(TABLE_B, _local_min(rep, stn))[2][n - 1]) - cut, f"{stn} time{more}{less}{note}"
     lims = [limit(s, r) for s, r in opts]
-    # review round 4, fix 1 (R4-2, R4-3): readings that only add a '?' (never make it sure)
+    # review round 4, fix 1 (R4-2, R4-3): readings that only add a '?' (never make it sure); after a span before it
+    # (D1(b)) the lowest row already decides
     extra = []
-    if (DOMICILE, st is not True) not in opts:
+    if not gap_dh and (DOMICILE, st is not True) not in opts:
         extra.append(limit(DOMICILE, st is not True, ", the domicile's clock", "; a reading to confirm, FOM 4.3.2.4"))
     s0 = legs[0]["frm"]
-    if s0 != DOMICILE and WK._zone(s0) is None and st is not True:
+    if not gap_dh and s0 != DOMICILE and WK._zone(s0) is None and st is not True:
         extra.append(limit(ANY, False, f", {s0}'s own clock not on file"))
     lo = min(lims + extra, key=lambda x: x[0])
     hi = max(x[0] for x in lims)  # the highest acclimation reading
@@ -1043,26 +832,21 @@ def _dh_rest(ds, idx, busy=(), unknown=()):
     span = legs[-1]["arr"] - rep
     if span <= lo[0]:
         return None
-    # past every reading of its acclimation, which is known or (review round 5, RV5-1) bounded across a span
-    known = (st is not None or bnd is not None) and span > hi
+    known = done and span > hi  # (a): past every reading of its acclimation, each walk's a complete one (D2)
     past = known or span > top  # or past every Table B row for its segments: on any clock, whatever the acclimation
     sure = not flown and past
     length = legs[-1]["arr"] - (rep if not flown else legs[flown[-1]]["arr"])
     seg = f"{n} segment{'' if n == 1 else 's'}{'' if n < 7 else ' or more'}"
     by = min(lims, key=lambda x: x[0]) if known else lo  # sure on its acclimation: the lowest of those readings
     hi_r = max(lims, key=lambda x: x[0])
-    anc_w = (f"36 h free at {anc} after a span of your line not on file: any theater that holds {anc}, every clock "
-             f"within 60 deg of it" if anc else "")
-    over = (f"over its Table B FDP on every reading of its acclimation, {anc_w} ({hm(hi_r[0])} at most, {hi_r[1]})"
-            if known and anc and span <= top else
-            f"over its Table B FDP on every reading of its acclimation across a span of your line not on file "
-            f"({hm(hi_r[0])} at most, {hi_r[1]})" if known and bnd is not None and span <= top else
-            f"over its Table B FDP {hm(by[0])} ({by[1]})" if (known and bnd is None) or not past else
+    four = bool(w_info.get("four"))  # the four readings after a report at a station with no longitude (D2)
+    over = (f"over its Table B FDP on every reading of its acclimation, read four ways after a report at a station "
+            f"with no longitude ({hm(hi_r[0])} at most, {hi_r[1]})" if known and four and span <= top else
+            f"over its Table B FDP {hm(by[0])} ({by[1]})" if (known and not four) or not past else
             f"over every Table B row ({hm(top)} at most for {seg}, on any clock)")
     why = (["whether deadheads after the FDP count is not sure"] if flown else []) + ([] if past else (
-        (["its acclimation is not known" + (f" ({anc_w})" if anc else
-                                             " (a span of your line not on file, each read as free time and as duty)"
-                                             if bnd is not None else "")] if st is None else []) +
+        [DH_GAP] if gap_dh else
+        (["its acclimation is not known"] if st is None and not done else []) +
         ([f"another reading of its acclimation gives {hm(hi)}"] if span <= hi and lo not in extra else []) +
         ([f"its acclimation readings give {hm(hi)}"] if span <= hi and lo in extra else [])))
     what = ("the duty before it was deadhead transportation only" if not flown else
@@ -1589,7 +1373,8 @@ def _timeout(duties, idx, pilots, pilots_src, eq, known_from, busy, notes, work,
     planned = sum((timedelta(minutes=int(x["blk"])) for x in flown), timedelta(0))
     segs = len(legs)
     lines, not_checked, flags, unsure = [], [], [], []
-    opts, acc_words, acc, free, free_how = _acc_walk(ds, idx, busy, unknown)  # review round 6, fix 1: _acc_walk
+    acc_info = {}  # review round 7 (D3): whether the four readings' words take a '?' where the limits differ
+    opts, acc_words, acc, free, free_how = _acc_walk(ds, idx, busy, unknown, acc_info)  # review round 6, fix 1
     if acc is None:
         unsure.append("acclimation")
     # ---- pilots: a count that may be short and cannot fly the planned flight time is raised to the fewest that can
@@ -1612,6 +1397,8 @@ def _timeout(duties, idx, pilots, pilots_src, eq, known_from, busy, notes, work,
     oth = rd["other"]
     if oth is not None and acc is not None:
         unsure.append("clock")
+        if acc_info.get("q_clock"):
+            acc_words = "? " + acc_words
     fdp_lim, ft_lim = best["lim"], rd["ft"]
     fdp_end = rep + fdp_lim
     ext_end = fdp_end + EXT

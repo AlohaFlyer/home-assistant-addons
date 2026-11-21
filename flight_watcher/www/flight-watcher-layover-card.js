@@ -52,7 +52,7 @@
 // end of the range is aria-disabled the same way; when Back goes after its answer, the focus moves to -5. A screen
 // reader hears "Saving", "Van moved to 05:10", "Van back to 05:25" or "Not saved, try again" from one visually hidden
 // role=status element that every render keeps (outside the part drawn again).
-// 1.7.20 (Ryan, Nov 20: "calculate per FAR 117 and PWA when I timeout, both for if I extend or if I
+// 1.7.24 (Ryan, Nov 20: "calculate per FAR 117 and PWA when I timeout, both for if I extend or if I
 // do not. Add that number in bold with a dark orange square around it right of the report time"): the Watcher's
 // sensor.<prefix>_working_flight `timeout` (timeout.py: FAR 117 Tables A, B and C, acclimation, pilots, rest class,
 // flight time and the cumulative limits; PWA 2.A.19.b release and Section 10 duty, rest and landings) shows in a box
@@ -63,7 +63,7 @@
 // each rule with its FOM, FAR or PWA cite, and what is not checked. The times are the Watcher's for the same pairing
 // and leg (also under Hark's data). No `timeout` attribute (an older Watcher, a crew not known): no box, nothing else
 // changes.
-// 1.7.20 review (Ryan, Nov 20: "when is the last moment I can block out and be legal"): the box is LAST OUT, the last
+// 1.7.24 review (Ryan, Nov 20: "when is the last moment I can block out and be legal"): the box is LAST OUT, the last
 // legal block-out on the departure station's clock (as the big Report time), "Ext" with the extension, the two in HST
 // small, and the flight time as "FT 11:15 of 13:00". NOT LEGAL instead of a time when the planned flight time, a
 // cumulative limit or the PWA Maximum is over at the scheduled times; a '?' after the time only for what moves a last
@@ -71,7 +71,7 @@
 // where the PWA binds, or Mixed Flying where its 10.D.3 limit binds), the earlier reading shown. The basis opens with
 // the block-out and block-in limits of both cases; how it is worked out and what is not checked fold under it. Under a
 // van, the box sits right of the Report line and Departs and Arrives keep the full width.
-// 1.7.20 (Ryan, Nov 20: PWA Section 10 now on file): the PWA duty Maximum (10.D) caps both last outs; when it binds,
+// 1.7.24 (Ryan, Nov 20: PWA Section 10 now on file): the PWA duty Maximum (10.D) caps both last outs; when it binds,
 // a small line in the box names it as a duration ("PWA max duty 16 h", "Ext: PWA max duty 18 h"), NOT LEGAL when it is
 // over at the scheduled times, and the details carry a PWA row (the duty against its Scheduled limit, the rest of
 // 10.E, the landings of 10.H). A chip for every flag (timeout `flags`), in a NOT LEGAL box too (review round 4, fix
@@ -81,7 +81,7 @@
 // move a last out). Review round 4, fix 2 (UI-R4V-1): the details carry a FAR rest row before the PWA one (timeout
 // rest.txt: the rest free, the need of the rule that decides, its cite and verdict, and 30 h in 168 h), so the rest a
 // chip is about is seen without opening "How it is worked out".
-// 1.7.20 review: the time keeps 24 px with its '?' right after it and its clock smaller after it (a zone with no
+// 1.7.24 review: the time keeps 24 px with its '?' right after it and its clock smaller after it (a zone with no
 // letters is named by its station: "14:43? SIN"), so the box stays beside the Report block at 320 px; NOT LEGAL is
 // white on red ("Not legal as scheduled (PWA)" for a PWA Maximum, "Not legal to dispatch" for FAR 117), with its '?';
 // up to two flag chips show (a third and more as "+N more flags"), every one in the label.
@@ -237,7 +237,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
     const z = va && va.at && this._same(va.pairing, a.pairing) && va.city === o && /^[A-Z]{2,5}$/.test(String(va.abbr || "")) ? va.abbr : "";
     return z ? t.replace(/\blocal\b/, z) : t;
   }
-  // 1.7.20: the Watcher's duty timeout for the leg shown (Hark's sensor carries none: the Watcher's on the same
+  // 1.7.24: the Watcher's duty timeout for the leg shown (Hark's sensor carries none: the Watcher's on the same
   // pairing and origin), or null
   _toOf(a, hark, w) {
     const wa = (w && w.attributes) || {}, t = wa.timeout;
@@ -605,7 +605,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
           ${a.van_rule ? `<div class="u">${this._e(a.van_rule)}</div>` : ""}</div>`;
       }
       const alerts = vt && this._vanSensor(a, vt) ? this._vanSensor(a, vt).alerts || [] : [];
-      // 1.7.20: the timeout box right of the report time: beside the header's Report block, or the Report line
+      // 1.7.24: the timeout box right of the report time: beside the header's Report block, or the Report line
       const to = this._toOf(a, hark, w), toHd = !!(to && !vt), toBox = to ? this._toBox(to, a) : "";
       main = `<div class="hd${toHd ? " wt" : ""}"><div class="lt"><div class="fl">&#9992;&#65039; ${this._e(a.flight || a.pairing)} ${this._e(a.origin || "")} &rarr; ${this._e(a.dest || "")}</div>
           <div class="u">${this._e(a.pairing)}${a.leg ? ` &middot; leg ${this._e(a.leg)}` : ""}${a.date ? ` &middot; ${this._e(a.date)}` : ""}${a.tail ? ` &middot; ${this._e(a.tail)}` : ""}</div>
@@ -754,7 +754,7 @@ class FlightWatcherLayoverCard extends HTMLElement {
         }
       };
     });
-    const tb = r.querySelector("[data-to]");  // 1.7.20: the timeout box opens and closes its basis
+    const tb = r.querySelector("[data-to]");  // 1.7.24: the timeout box opens and closes its basis
     if (tb && toFocus) tb.focus({ preventScroll: true });
     if (tb) tb.onclick = () => { this._open.to = !this._open.to; this._render(); };
     const vl = r.querySelector("[data-vaset]");

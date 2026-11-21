@@ -1,4 +1,4 @@
-"""1.7.20 (Ryan, Nov 20, 2026: "I need this page to calculate per FAR 117 and PWA when I timeout, both for if I extend
+"""1.7.24 (Ryan, Nov 20, 2026: "I need this page to calculate per FAR 117 and PWA when I timeout, both for if I extend
 or if I do not. Add that number in bold with a dark orange square around it right of the report time", and "the number I
 need to know is when is the last moment I can block out and be legal"): the last legal block-out and the duty limits
 (timeout.py, FOM 125.4 4.3.2 = 14 CFR 117 Tables A, B and C; FOM 5.1.23.7 and 5.1.23.8 crew rest; PWA 2.A.19.b and the
@@ -621,6 +621,10 @@ def test_lax_in_july_reads_pdt_and_takes_the_lower_clock_marked_unsure():
     assert t["report_txt"] == "04:55 HST" and t["fdp"]["acclimated"] is True
     assert t["fdp"]["row"] == "0400-0459 (HNL time 04:55)" and t["fdp"]["limit"] == "10:00"
     assert t["sure"] is False and t["unsure"] == ["clock"] and t["last_out"]["sure"] is False
+    # review round 7, fix 1 (TEST-D3-QCLOCK-GUARD, mutant M26): 'clock' puts no '?' before the walk alone's words (D3
+    # adds one only to the four readings' words after a report at a station with no longitude)
+    assert ("Acclimation (FAR 117.3, FOM 4.3.2.4.6): acclimated to the HNL theater (LAX is within 60 deg of "
+            "HNL).") in t["lines"]
     # last out 14:55 HST less 5:30 = 09:25 HST = 12:25 PDT; on the LAX clock 18:55 less 5:30 = 13:25 HST = 16:25 PDT;
     # with the extension that reading's 20:55 is past the PWA 16:00 duty Maximum (10.D.1.a): 04:55 + 16:00 = 20:55 less
     # the 0:15 debrief = 20:40, less 5:30 = 15:10 HST = 18:10 PDT
@@ -2134,7 +2138,7 @@ def test_card_timeout_box_reads_on_every_theme(browser, tmp_path, width, theme):
         assert bb["y"] < fl["y"] + fl["height"]
     for d in (tmp_path, SHOTS):
         if d:
-            pg.screenshot(path=os.path.join(str(d), f"fw1720_timeout_{width}_{theme}.png"), full_page=True)
+            pg.screenshot(path=os.path.join(str(d), f"fw1724_timeout_{width}_{theme}.png"), full_page=True)
     pg.close()
 
 
@@ -2586,10 +2590,11 @@ def test_an_unacclimated_deadhead_takes_its_last_acclimated_clock_less_30_minute
     01:00 HST; HNL-LAX reporting 12:00 HST Apr 4: 11:00 free, SHORT (round 3 read 12:00 on the HNL and JFK clocks, 18:00
     EDT, and did not apply it); 12:45: met. With a span of the line not on file before the deadhead (Apr 2 20:00 to Apr
     3 00:00 HST) round 4 read its acclimation as not known: the lowest row on any clock, 9:00 - 0:30 = 8:30, a '?'.
-    Review round 5 (RV5-1): the 23:45 from the release to the deadhead's report, the span inside it, is under 36 h and
-    he arrived at JFK 24:00 before it (under 72 h), so the span holds no acclimation: read as free time or as duty he is
-    not acclimated, HNL time less 0:30 = 11:30 both ways; 11:45 is over it: SHORT as with no span. With the span from
-    Apr 2 00:00 HST (inside the HNL-JFK duty, 37:00 to the report, 36 h or more) the lowest row stays: a '?'."""
+    Review round 5 (RV5-1) bounded that span (HNL time less 0:30 = 11:30 read as free time and as duty: SHORT); review
+    round 7 (D1(b)) drops the bound: after a span of the line not on file before the deadhead's report the lowest row
+    (8:30) decides whether it may apply, and it is sure only past every Table B row (14:00 for 1 segment, row
+    0700-1159): 11:45 is not, so 11:00 free of 11:45 is a '?' again. The span from Apr 2 00:00 HST (inside the HNL-JFK
+    duty) reads the same."""
     out = _duty(at(2027, 4, 2, "03:00"), _leg("HNL", "JFK", at(2027, 4, 2, "04:00"), at(2027, 4, 2, "13:00"), "0"))
     dh = _duty(at(2027, 4, 3, "13:00"),
                _leg("JFK", "HNL", at(2027, 4, 3, "14:00"), at(2027, 4, 4, "00:45"), "1", dh=True))
@@ -2602,23 +2607,19 @@ def test_an_unacclimated_deadhead_takes_its_last_acclimated_clock_less_30_minute
     assert "Flag: short of FAR rest (FAR 117.25(g)): 11:00 of 11:45." in t["lines"]
     t = TO.duty_timeout([out, dh, _lax(at(2027, 4, 4, "12:45"))], 2, 2, "roster", "332")
     assert (t["rest"]["ok"], t["rest"]["need"]) == (True, "11:45") and t["flags"] == []
-    t = TO.duty_timeout([out, dh, _lax(at(2027, 4, 4, "12:00"))], 2, 2, "roster", "332",
-                        unknown=[(at(2027, 4, 2, "20:00"), at(2027, 4, 3, "00:00"))])
-    # review round 5 (RV5-1): bounded across the span, so sure (round 4: '?', "need" not set)
-    assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"]) == (False, "11:45", "11:00") and "rest" in t["flags"]
-    assert ("Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10): the duty before it was deadhead "
-            "transportation only, 11:45 from its report to its last block-in, over its Table B FDP on every reading of "
-            "its acclimation across a span of your line not on file (11:30 at most, HNL time, less 0:30: not "
-            "acclimated, FAR 117.13(b)): a rest as long as the deadhead transportation (11:45, from the report), no "
-            "less than 10 h; 11:00 free: SHORT, check with Crew Scheduling.") in t["lines"]
-    t = TO.duty_timeout([out, dh, _lax(at(2027, 4, 4, "12:00"))], 2, 2, "roster", "332",
-                        unknown=[(at(2027, 4, 2, "00:00"), at(2027, 4, 3, "00:00"))])
-    assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "11:00") and "need" not in t["rest"]
-    assert "rest" not in t["flags"]
-    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10)") and "over its Table B "
-               "FDP 8:30 (the lowest row on any clock, less 0:30: acclimation not known)" in s and
-               "(? its acclimation is not known)" in s and s.endswith("11:00 free: ? SHORT of 11:45 if it applies.")
-               for s in t["lines"])
+    for u_from in (at(2027, 4, 2, "20:00"), at(2027, 4, 2, "00:00")):
+        t = TO.duty_timeout([out, dh, _lax(at(2027, 4, 4, "12:00"))], 2, 2, "roster", "332",
+                            unknown=[(u_from, at(2027, 4, 3, "00:00"))])
+        # review round 7 (D1(b)): the lowest row decides, 11:45 is not past 14:00: '?', "need" not set (rounds 5 and
+        # 6: SHORT on the bound for the span from 20:00)
+        assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "11:00") and "need" not in t["rest"]
+        assert "rest" not in t["flags"] and "rest_q" in t["flags"]
+        assert ("Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10): the duty before it was deadhead "
+                "transportation only, 11:45 from its report to its last block-in, over its Table B FDP 8:30 (the "
+                "lowest row on any clock, less 0:30: acclimation not known): a rest as long as the deadhead "
+                "transportation (11:45, from the report), no less than 10 h (? a span of your line not on file before "
+                "it, so its acclimation is not known: the lowest Table B row, less 0:30, decides whether it may "
+                "apply); 11:00 free: ? SHORT of 11:45 if it applies.") in t["lines"]
 
 
 def test_a_trailing_deadhead_is_measured_from_the_last_flown_block_in():
@@ -2687,15 +2688,12 @@ def test_a_deadhead_past_every_table_b_row_needs_its_rest_whatever_the_acclimati
     applicable FDP on every reading: 15:00 needed. Release 21:30 (customs); HNL-LAX reporting 10:30 HST Apr 9: 13:00
     free, SHORT, flagged (round 4 read a '?'). In 20:00 instead: 14:00 is not over the 14:00 row; round 4, fix 1 read
     that it may apply only (the lowest row on any clock, 9:00 less 0:30 = 8:30): release 20:30, the report 09:30 HST
-    Apr 9, 13:00 free of 14:00: '?'. Review round 5 (RV5-1): the 34:00 from the HNL-SIN release (20:00 Apr 6) to the
-    deadhead's report, the span inside it, is under 36 h, and he reached SIN 34:30 before it: the span holds no
-    acclimation, and read as free time or as duty he is not acclimated: HNL time 06:00, row 0600-0659, 13:00 less 0:30 =
-    12:30; 14:00 is over it: SHORT. Reported 2:00 later (08:00 HST Apr 8, in 22:00, 36:00 after the release): round 5
-    kept the lowest row (the span with the time around it is 36 h); review round 5, fix 2 (RF1-36H-ANYWHERE): a report
-    inside the span follows at most 6:00 free (20:00 Apr 6 to 02:00 Apr 7), so it holds no acclimation to a theater not
-    on file, and the span is bounded: free time, 36:00 free at SIN, acclimated there: SIN 02:00, row 0000-0359, 9:00;
-    duty, 30:00 free and 30:30 in that theater, not acclimated: HNL 08:00 less 0:30, 13:30. 14:00 is over both:
-    release 22:30, the report 11:30 HST Apr 9, 13:00 free of 14:00: SHORT (round 5 and fix 1: '?')."""
+    Apr 9, 13:00 free of 14:00: '?'. Review rounds 5 and 6 bounded the span (read as free time and as duty: HNL time
+    06:00 less 0:30, 12:30, so SHORT; reported 2:00 later, 08:00 HST Apr 8, in 22:00, SIN 02:00 9:00 and HNL 08:00 less
+    0:30 13:30, SHORT too). Review round 7 (D1(b)) drops the bound: after a span of the line not on file before the
+    deadhead's report the lowest row (8:30) decides whether it may apply and the every-row rule whether it is sure:
+    14:00 is not past the 14:00 row, so 13:00 free of 14:00 is a '?' both ways (release 20:30 and the report 09:30 HST
+    Apr 9; release 22:30 and the report 11:30)."""
     unk = [(at(2027, 4, 7, "00:00"), at(2027, 4, 7, "02:00"))]
     t = TO.duty_timeout(_dh_sin() + [_lax(at(2027, 4, 9, "10:30"))], 2, 2, "roster", "332", unknown=unk)
     assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"]) == (False, "15:00", "13:00") and "rest" in t["flags"]
@@ -2704,25 +2702,17 @@ def test_a_deadhead_past_every_table_b_row_needs_its_rest_whatever_the_acclimati
             "for 1 segment, on any clock): a rest as long as the deadhead transportation (15:00, from the report), no "
             "less than 10 h; 13:00 free: SHORT, check with Crew Scheduling.") in t["lines"]
     assert "Flag: short of FAR rest (FAR 117.25(g)): 13:00 of 15:00." in t["lines"]
-    t = TO.duty_timeout(_dh_sin("20:00") + [_lax(at(2027, 4, 9, "09:30"))], 2, 2, "roster", "332", unknown=unk)
-    # review round 5 (RV5-1): bounded across the span: sure, SHORT (round 4, fix 1: '?')
-    assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"]) == (False, "14:00", "13:00") and "rest" in t["flags"]
-    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10)") and "over its Table B "
-               "FDP on every reading of its acclimation across a span of your line not on file (12:30 at most, HNL "
-               "time, less 0:30: not acclimated, FAR 117.13(b))" in s and s.endswith("13:00 free: SHORT, check with "
-                                                                                    "Crew Scheduling.")
-               for s in t["lines"])
     ds = _dh_sin()[:1] + [_duty(at(2027, 4, 8, "08:00"), _leg("SIN", "HNL", at(2027, 4, 8, "09:00"),
                                                               at(2027, 4, 8, "22:00"), "1", dh=True))]
-    t = TO.duty_timeout(ds + [_lax(at(2027, 4, 9, "11:30"))], 2, 2, "roster", "332", unknown=unk)
-    # review round 5, fix 2 (RF1-36H-ANYWHERE): bounded, past both readings: SHORT (round 5 and fix 1: '?')
-    assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"]) == (False, "14:00", "13:00") and "rest" in t["flags"]
-    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10)") and "over its Table B "
-               "FDP on every reading of its acclimation across a span of your line not on file (13:30 at most, HNL "
-               "time, less 0:30: not acclimated on a reading of a span of your line not on file)" in s and
-               s.endswith("13:00 free: SHORT, check with Crew Scheduling.") for s in t["lines"])
-    pr = [TO._prep(d) for d in ds + [_lax(at(2027, 4, 9, "11:30"))]]
-    assert TO._acc_bound(pr, 1, (), unk) == ([("SIN", False), ("HNL", True)], None)
+    for t in (TO.duty_timeout(_dh_sin("20:00") + [_lax(at(2027, 4, 9, "09:30"))], 2, 2, "roster", "332", unknown=unk),
+              TO.duty_timeout(ds + [_lax(at(2027, 4, 9, "11:30"))], 2, 2, "roster", "332", unknown=unk)):
+        # review round 7 (D1(b)): 14:00 is over the lowest row (8:30) but not past every row (14:00): '?' (rounds 5
+        # and 6: SHORT on the bound)
+        assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "13:00") and "need" not in t["rest"]
+        assert "rest" not in t["flags"] and "rest_q" in t["flags"]
+        assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10)") and "over its "
+                   "Table B FDP 8:30 (the lowest row on any clock, less 0:30: acclimation not known)" in s and
+                   s.endswith("13:00 free: ? SHORT of 14:00 if it applies.") for s in t["lines"])
 
 
 def test_a_deadhead_also_takes_the_domicile_clock_and_a_station_clock_not_on_file_as_readings():
@@ -3463,50 +3453,59 @@ def test_a_need_that_holds_whatever_the_duty_before_is_short_across_a_span_when_
     assert (r["need"], r["ok"], r["cite"], t["rest"]["ok"], t["flags"]) == ("9:00", None, "10.E.3.a", False, ["rest"])
 
 
-def test_a_deadhead_across_a_span_of_the_line_is_judged_on_the_bounded_readings_of_its_acclimation():
-    """Review round 5 (RV5-1): a span of the line not on file before a deadhead made its acclimation 'not known' (the
-    lowest row on any clock, 8:30), so a 117.25(g) SHORT became '?' even for a 1 h span in the same theater. Now the
-    readings are bounded: the span read as free time and as duty (not acclimated, the last acclimated clock less 0:30),
-    plus HNL's clock. By hand, 2 pilots: HNL-LAX (report 08:00 HST Apr 1, in 14:15, release 14:30), a span at LAX Apr 2
-    02:00-03:00 HST, a LAX-HNL deadhead only reporting 14:00 HST Apr 2 (17:00 PDT), in 03:00 HST Apr 3: 13:00 from the
-    report. 23:30 from the release to that report, under 36 h, holds no acclimation to a theater not on file, and LAX is
-    39.5 deg from HNL: read as free time acclimated to HNL (HNL 14:00 and LAX 17:00 PDT, row 1300-1659 and 1700-2159,
-    12:00 for 1 segment both); read as duty, also HNL time less 0:30 = 11:30. 13:00 is over 12:00, the most: sure, 13:00
-    needed. Release 03:15; HNL-LAX reporting 15:15 HST Apr 3: 12:00 free, SHORT, flagged, as with no span and as round
-    3 (round 4: '?', rest_q). Not bounded (ANY stays) where a stay in another theater may reach 72 h inside the span:
-    HNL-SIN (in 19:30 HST Apr 1, release 20:00), SIN-NRT (report 06:00 HST Apr 3, 34:00 later, release 13:30), a span at
-    NRT Apr 4 12:00-20:00 HST, a NRT-HNL deadhead reporting 22:00 HST Apr 4 (32:30 after the release), in 11:30 Apr 5:
-    13:30. In the SIN-NRT theater since 19:30 Apr 1, 72 h at 19:30 Apr 4, inside the span: he may have been acclimated
-    there and left it, a reading neither walk gives, so the lowest row stays: release 12:00, HNL-LAX reporting 01:00
-    HST Apr 6, 13:00 free: '?'. The span ending 19:00 (before the 72 h): bounded, NRT time 22:00 HST = 17:00 JST Apr 5,
-    row 1700-2159, 12:00, and HNL time less 0:30 (row 2200-2259, 10:30): 13:30 is over both: SHORT."""
+def test_a_deadhead_after_a_span_of_the_line_takes_the_lowest_row_and_is_a_question_unless_the_rest_meets_it():
+    """Review round 7 (D1(b), test (i)): after a span of the line not on file before a deadhead duty's report its
+    acclimation is not known; the lowest Table B row on any clock less 0:30 (9:00 - 0:30 = 8:30) decides whether
+    FAR 117.25(g) may apply, and it is sure only past every Table B row for its segments (14:00 for 1 segment, row
+    0700-1159). Review round 5 (RV5-1) to round 6 bounded such spans (read as free time and as duty) and read the cases
+    below SHORT; that machinery is gone. By hand, 2 pilots: HNL-LAX (report 08:00 HST Apr 1, in 14:15, release 14:30),
+    a LAX-HNL deadhead only reporting 14:00 HST Apr 2 (17:00 PDT), in 03:00 HST Apr 3: 13:00 from the report. With no
+    span (fully on file): 23:30 free at LAX, 39.5 deg from HNL, acclimated to HNL (HNL 14:00 and LAX 17:00 PDT, rows
+    1300-1659 and 1700-2159, 12:00 for 1 segment both): 13:00 is over every reading, sure; release 03:15, HNL-LAX
+    reporting 15:15 HST Apr 3: 12:00 free, SHORT, flagged. With a span at LAX Apr 2 02:00-03:00 HST: 13:00 is over 8:30
+    but not past 14:00: 12:00 free of 13:00 is a '?' (rest_q, no flag 'rest'); reporting 16:15, 13:00 free: met, the
+    "? ... if it applies" gone. The last out is the duty's own walk's and does not move with this (22:00 HST, and 18:30
+    HST after the span: the lowest row there). HNL-SIN (in 19:30 HST Apr 1, release 20:00), SIN-NRT (report 06:00 HST
+    Apr 3, release 13:30), a span at NRT Apr 4 12:00-20:00 (or to 19:00) HST, a NRT-HNL deadhead reporting 22:00 HST
+    Apr 4, in 11:30 Apr 5: 13:30, over 8:30 and not past 14:00: release 12:00 (customs), HNL-LAX reporting 01:00 HST Apr
+    6, 13:00 free: '?' both ways (round 5 read the span to 19:00 SHORT on its bound, NRT 17:00 JST 12:00)."""
     d0 = _duty(at(2027, 4, 1, "08:00"), _leg("HNL", "LAX", at(2027, 4, 1, "09:00"), at(2027, 4, 1, "14:15"), "1"))
     dh = _duty(at(2027, 4, 2, "14:00"),
                _leg("LAX", "HNL", at(2027, 4, 2, "15:00"), at(2027, 4, 3, "03:00"), "2", dh=True))
-    for u in ([], [(at(2027, 4, 2, "02:00"), at(2027, 4, 2, "03:00"))]):
-        t = TO.duty_timeout([d0, dh, _lax(at(2027, 4, 3, "15:15"))], 2, 2, "roster", "332", unknown=u)
-        assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"]) == (False, "13:00", "12:00"), u
-        assert t["flags"] == ["rest"] and "Flag: short of FAR rest (FAR 117.25(g)): 12:00 of 13:00." in t["lines"]
-        assert t["last_out"]["hst"] == ("22:00 HST" if not u else "18:30 HST")  # the duty's own walk is unchanged
+    t = TO.duty_timeout([d0, dh, _lax(at(2027, 4, 3, "15:15"))], 2, 2, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"]) == (False, "13:00", "12:00")
+    assert t["flags"] == ["rest"] and "Flag: short of FAR rest (FAR 117.25(g)): 12:00 of 13:00." in t["lines"]
+    assert t["last_out"]["hst"] == "22:00 HST"
     assert ("Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10): the duty before it was deadhead "
-            "transportation only, 13:00 from its report to its last block-in, over its Table B FDP on every reading of "
-            "its acclimation across a span of your line not on file (12:00 at most, HNL time): a rest as long as the "
-            "deadhead transportation (13:00, from the report), no less than 10 h; 12:00 free: SHORT, check with Crew "
-            "Scheduling.") in t["lines"]
+            "transportation only, 13:00 from its report to its last block-in, over its Table B FDP 12:00 (HNL time): a "
+            "rest as long as the deadhead transportation (13:00, from the report), no less than 10 h; 12:00 free: "
+            "SHORT, check with Crew Scheduling.") in t["lines"]
+    u = [(at(2027, 4, 2, "02:00"), at(2027, 4, 2, "03:00"))]
+    t = TO.duty_timeout([d0, dh, _lax(at(2027, 4, 3, "15:15"))], 2, 2, "roster", "332", unknown=u)
+    assert (t["rest"]["ok"], t["rest"]["free"], t["flags"]) == (None, "12:00", ["rest_q"]) and "need" not in t["rest"]
+    assert t["last_out"]["hst"] == "18:30 HST"  # the duty's own walk is unchanged
+    assert ("Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10): the duty before it was deadhead "
+            "transportation only, 13:00 from its report to its last block-in, over its Table B FDP 8:30 (the lowest "
+            "row on any clock, less 0:30: acclimation not known): a rest as long as the deadhead transportation "
+            "(13:00, from the report), no less than 10 h (? a span of your line not on file before it, so its "
+            "acclimation is not known: the lowest Table B row, less 0:30, decides whether it may apply); 12:00 free: ? "
+            "SHORT of 13:00 if it applies.") in t["lines"]
     json.dumps(t)
+    t = TO.duty_timeout([d0, dh, _lax(at(2027, 4, 3, "16:15"))], 2, 2, "roster", "332", unknown=u)
+    assert (t["rest"]["ok"], t["rest"]["free"], t["flags"]) == (True, "13:00", [])
+    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and s.endswith("13:00 free: met.")
+               for s in t["lines"])
     s0 = _duty(at(2027, 4, 1, "08:00"), _leg("HNL", "SIN", at(2027, 4, 1, "09:00"), at(2027, 4, 1, "19:30"), "1"))
     s1 = _duty(at(2027, 4, 3, "06:00"), _leg("SIN", "NRT", at(2027, 4, 3, "07:00"), at(2027, 4, 3, "13:00"), "2"))
     s2 = _duty(at(2027, 4, 4, "22:00"),
                _leg("NRT", "HNL", at(2027, 4, 4, "23:00"), at(2027, 4, 5, "11:30"), "3", dh=True))
     ds = [s0, s1, s2, _lax(at(2027, 4, 6, "01:00"))]
-    t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=[(at(2027, 4, 4, "12:00"), at(2027, 4, 4, "20:00"))])
-    assert (t["rest"]["ok"], t["rest"]["free"], t["flags"]) == (None, "13:00", ["rest_q"])
-    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 8:30 (the "
-               "lowest row on any clock, less 0:30: acclimation not known)" in s for s in t["lines"])
-    t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=[(at(2027, 4, 4, "12:00"), at(2027, 4, 4, "19:00"))])
-    assert (t["rest"]["ok"], t["rest"]["need"], t["flags"]) == (False, "13:30", ["rest"])
-    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "(12:00 at most, NRT time)" in s
-               for s in t["lines"])
+    for u_end in ("20:00", "19:00"):
+        t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=[(at(2027, 4, 4, "12:00"), at(2027, 4, 4, u_end))])
+        assert (t["rest"]["ok"], t["rest"]["free"], t["flags"]) == (None, "13:00", ["rest_q"]), u_end
+        assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 8:30 "
+                   "(the lowest row on any clock, less 0:30: acclimation not known)" in s and
+                   s.endswith("13:00 free: ? SHORT of 13:30 if it applies.") for s in t["lines"]), u_end
 
 
 def test_a_mixed_flying_grouping_judges_2_x_the_duty_period_across_a_span_not_on_file():
@@ -3722,53 +3721,41 @@ def _jfk_line(dh_rep, dh_arr, nrt=False):
     return ds
 
 
-def test_a_deadhead_after_two_spans_is_judged_on_every_mix_of_their_readings():
-    """Review round 5, fix 1 (R5V-1): the bound of a deadhead's acclimation (RV5-1) read every span as free time, or
-    every span as duty, but not a mix, so with spans in two gaps a reading was missed. By hand, 2 pilots (_jfk_line): a
-    span Apr 3 08:00-12:00 (35:00 from the 06:00 release to the 17:00 Apr 4 report, under 36 h), a span Apr 7
-    06:00-23:00 (32:00 to the deadhead's 12:00 HST Apr 8 report), a HNL-JFK deadhead 12:00 HST Apr 8 to 00:00 Apr 9
-    (12:00), JFK-BOS 10:30 after its release. Both spans free: 73:00 in the JFK theater by Apr 4 17:00 (acclimated
-    there), then 80:00 back in HNL's by Apr 8 12:00: HNL time 12:00, row 1200-1259, 13:00. Both duty: never acclimated
-    to JFK, HNL time 13:00 and HNL less 0:30, 12:30. The first free, the second a trip out of HNL's theater (the reality
-    HNL-NRT-HNL Apr 7): acclimated to JFK and not to HNL: JFK time 18:00 EDT, row 1700-2159, 12:00 less 0:30 = 11:30,
-    a reading neither pure walk gives. 12:00 is over 11:30 and not over 13:00: '? SHORT of 12:00 if it applies', rest_q
-    (round 5: no 117.25(g) line, met); the reality with the trip on file: SHORT, 12:00 needed. With the deadhead
-    reporting 04:30 HST Apr 8 (in 15:30, 11:00): HNL 04:30, row 0400-0459, 10:00, less 0:30 9:30, and JFK 10:30 EDT,
-    row 0700-1159, 14:00 less 0:30 = 13:30: '?' (round 5: a sure SHORT on 10:00, though the trip on file reads '?').
-    Review round 5, fix 2: the same; the mixed walk itself (the first span free, the second duty, his stay at HNL not
-    begun in it) reads JFK less 0:30, the walk with both free HNL 12:00."""
+def test_a_deadhead_after_two_spans_takes_the_lowest_row_where_the_line_on_file_reads_short():
+    """Review round 5, fix 1 (R5V-1) read every mix of two spans' readings (the bound, removed in review round 7). D1(b)
+    reads the lowest row after them. By hand, 2 pilots (_jfk_line): spans Apr 3 08:00-12:00 and Apr 7 06:00-23:00, a
+    HNL-JFK deadhead 12:00 HST Apr 8 to 00:00 Apr 9 (12:00), JFK-BOS 10:30 after its release. 12:00 is over the lowest
+    row less 0:30 (9:00 - 0:30 = 8:30) and not past every row (14:00 for 1 segment): '? SHORT of 12:00 if it
+    applies', rest_q (rounds 5 and 6 read the same '?' on the bound's 11:30 to 13:00). The reality on file (the first
+    span free, an HNL-NRT-HNL trip Apr 7 in place of the second): 73:00 in the JFK theater by Apr 4 17:00 acclimated
+    him there; at the deadhead's HNL report 13:15 free and 13:30 in HNL's theater: not acclimated, JFK time 18:00 EDT,
+    row 1700-2159, 12:00 less 0:30 = 11:30; 12:00 is over it: SHORT, 12:00 needed. With the deadhead reporting 04:30
+    HST Apr 8 (in 15:30, 11:00): over 8:30, not past 14:00: '?'."""
     spans = [(at(2027, 4, 3, "08:00"), at(2027, 4, 3, "12:00")), (at(2027, 4, 7, "06:00"), at(2027, 4, 7, "23:00"))]
-    ds = _jfk_line(at(2027, 4, 8, "12:00"), at(2027, 4, 9, "00:00"))
-    t = TO.duty_timeout(ds, 5, 2, "roster", "332", unknown=spans)
-    assert (t["rest"]["ok"], t["rest"]["free"], t["rest"]["cite"]) == (None, "10:30", "FAR 117.25(g)")
-    assert "rest_q" in t["flags"] and "rest" not in t["flags"]
-    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 11:30 (JFK "
-               "time, less 0:30: not acclimated on a reading of a span of your line not on file)" in s and
-               "another reading of its acclimation gives 13:00" in s and s.endswith(
-                   "10:30 free: ? SHORT of 12:00 if it applies.") for s in t["lines"])
-    pr = [TO._prep(d) for d in ds]
-    assert TO._acclimation(pr, 4, (), spans, read=[0, 0], info={})[0] == [("HNL", False)]
-    assert TO._acclimation(pr, 4, (), spans, read=[0, 1, 1], info={})[0] == [("JFK", True)]
+    for dh_at, dh_in, length in ((at(2027, 4, 8, "12:00"), at(2027, 4, 9, "00:00"), "12:00"),
+                                 (at(2027, 4, 8, "04:30"), at(2027, 4, 8, "15:30"), "11:00")):
+        t = TO.duty_timeout(_jfk_line(dh_at, dh_in), 5, 2, "roster", "332", unknown=spans)
+        assert (t["rest"]["ok"], t["rest"]["free"], t["rest"]["cite"]) == (None, "10:30", "FAR 117.25(g)")
+        assert "rest_q" in t["flags"] and "rest" not in t["flags"]
+        assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 8:30 "
+                   "(the lowest row on any clock, less 0:30: acclimation not known)" in s and s.endswith(
+                       f"10:30 free: ? SHORT of {length} if it applies.") for s in t["lines"]), length
+        json.dumps(t)
     t = TO.duty_timeout(_jfk_line(at(2027, 4, 8, "12:00"), at(2027, 4, 9, "00:00"), nrt=True), 6, 2, "roster", "332")
     assert (t["rest"]["ok"], t["rest"]["need"], t["flags"]) == (False, "12:00", ["rest"])
-    ds = _jfk_line(at(2027, 4, 8, "04:30"), at(2027, 4, 8, "15:30"))
-    t = TO.duty_timeout(ds, 5, 2, "roster", "332", unknown=spans)
-    assert (t["rest"]["ok"], t["rest"]["cite"]) == (None, "FAR 117.25(g)") and "rest" not in t["flags"]
-    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 9:30 (HNL "
-               "time, less 0:30" in s and "gives 13:30" in s for s in t["lines"])
-    json.dumps(t)
+    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 11:30 (JFK "
+               "time, less 0:30: not acclimated, FAR 117.13(b))" in s for s in t["lines"])
 
 
-def test_a_span_that_moves_him_may_start_his_stay_in_the_new_theater_early():
-    """Review round 5, fix 1 (RV5-1-STAY): read as free time, a span that moved him to another theater started his
-    stay there only at the next block-in on file, so 72 h there (FAR 117.3) was missed and a 117.25(g) '?' became met.
-    By hand, 2 pilots: HNL-LAX (release 14:30 HST Apr 1), a span Apr 1 14:45-Apr 2 23:00, NRT-SIN reporting 02:00 HST
-    Apr 3 (35:30 after the release: bounded), SIN-HKG-SIN Apr 4, a SIN-HNL deadhead only reporting 07:00 HST Apr 5
-    (01:00 SGT Apr 6), in 18:30 (11:30), release 19:00 (customs); HNL-LAX reporting 06:15 HST Apr 6 (11:15 free). He
-    may have been in the NRT-SIN theater from the span's start: 88:30 by the deadhead's report, acclimated there: SIN
-    01:00, row 0000-0359, 9:00; or not: HNL 07:00 less 0:30, row 0700-1159, 13:30. 11:30 is over 9:00, not over
-    13:30: '? SHORT of 11:30 if it applies', rest_q (round 5: [HNL less 0:30] only, no line, met; rounds 3 and 4: '?').
-    With no span: in that theater from 10:00 Apr 3 (45:00), not acclimated: 13:30, no line."""
+def test_a_span_that_may_have_moved_him_before_a_deadhead_takes_the_lowest_row():
+    """Review round 5, fix 1 (RV5-1-STAY) read a stay in the new theater that may have begun in a span (the bound's
+    early stay, removed in review round 7). By hand, 2 pilots: HNL-LAX (release 14:30 HST Apr 1), a span Apr 1
+    14:45-Apr 2 23:00, NRT-SIN reporting 02:00 HST Apr 3, SIN-HKG-SIN Apr 4, a SIN-HNL deadhead only reporting 07:00
+    HST Apr 5, in 18:30 (11:30), release 19:00 (customs); HNL-LAX reporting 06:15 HST Apr 6 (11:15 free). D1(b): 11:30
+    is over the lowest row less 0:30 (8:30) and not past every row (14:00): '? SHORT of 11:30 if it applies', rest_q
+    (round 5, fix 1 to round 6: the same '?' on SIN 9:00 and HNL less 0:30 13:30). With no span (fully on file): in that
+    theater from 10:00 Apr 3 (45:00 by the report), not acclimated: HNL 07:00 less 0:30, row 0700-1159, 13:30: no
+    line, met."""
     a = _duty(at(2027, 4, 1, "08:00"), _leg("HNL", "LAX", at(2027, 4, 1, "09:00"), at(2027, 4, 1, "14:15"), "1"))
     b = _duty(at(2027, 4, 3, "02:00"), _leg("NRT", "SIN", at(2027, 4, 3, "03:00"), at(2027, 4, 3, "10:00"), "2"))
     b2 = _duty(at(2027, 4, 4, "04:00"), _leg("SIN", "HKG", at(2027, 4, 4, "05:00"), at(2027, 4, 4, "09:00"), "3"),
@@ -3780,35 +3767,31 @@ def test_a_span_that_moves_him_may_start_his_stay_in_the_new_theater_early():
     t = TO.duty_timeout(ds, 4, 2, "roster", "332", unknown=u)
     assert (t["rest"]["ok"], t["rest"]["free"], t["rest"]["cite"]) == (None, "11:15", "FAR 117.25(g)")
     assert "rest_q" in t["flags"] and "rest" not in t["flags"]
-    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 9:00 (SIN "
-               "time)" in s and "another reading of its acclimation gives 13:30" in s and s.endswith(
+    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 8:30 (the "
+               "lowest row on any clock, less 0:30: acclimation not known)" in s and s.endswith(
                    "11:15 free: ? SHORT of 11:30 if it applies.") for s in t["lines"])
-    pr = [TO._prep(d) for d in ds]
-    assert TO._acc_bound(pr, 3, (), u) == ([("SIN", False), ("HNL", True)], None)
     t = TO.duty_timeout(ds, 4, 2, "roster", "332")
     assert t["rest"]["ok"] is True and not any("117.25(g)" in s for s in t["lines"])
 
 
-def test_the_bound_keeps_the_duty_reading_and_the_lowest_row_where_it_cannot_bound():
-    """Review round 5, fix 1 (R5V-6, TEST-RV51-DUTYWALK): RV5-1's bound pinned by hand, 2 pilots:
-    - the duty reading's last acclimated clock less 0:30: HNL-SIN (in 19:30 HST Apr 1), SIN-NRT (report 06:00 HST Apr
-      3, in 13:00), a span at NRT Apr 4 12:00-19:00, a NRT-HNL deadhead reporting 22:00 HST Apr 4 (17:00 JST Apr 5),
-      in 08:45 Apr 5 (10:45), release 09:15; HNL-LAX reporting 19:15 HST Apr 5 (10:00 free). Free time: 74:30 in that
-      theater, acclimated to NRT: row 1700-2159, 12:00. Duty: his stay there may be broken, not acclimated: HNL 22:00,
-      row 2200-2259, 11:00 less 0:30 = 10:30. 10:45 is over 10:30 only: '? SHORT of 10:45 if it applies' (a free walk
-      alone: met);
-    - acclimated to a theater other than HNL across a short span: HNL-NRT (in 15:00 HST Apr 1), NRT-KIX-NRT (report
-      18:00 HST Apr 4, 75:00 there: acclimated to NRT, release 23:15), a span Apr 5 01:00-02:00, a NRT-HNL deadhead
-      reporting 05:00 HST Apr 5 (00:00 JST Apr 6), in 13:45 (8:45): NRT 00:00, row 0000-0359, 9:00, and read as duty
-      (he may have left the theater) NRT less 0:30, 8:30, status not known: 'over its Table B FDP 8:30 (NRT time, less
-      0:30 ...)', 'its acclimation is not known (...)', another reading 9:00; with no span 9:00 only, no line;
-    - the lowest row on any clock stays where a walk ends on no bounded reading. A station with no longitude: HNL-XYZ
-      (release 15:30 HST Apr 1), a span Apr 1 20:00-21:00, a XYZ-HNL deadhead reporting 08:00 HST Apr 2, in 16:45
-      (8:45): 8:30 (the lowest row less 0:30), a line (HNL 08:00 less 0:30 would be 13:30, no line). A schedule item
-      that decides the reading: HNL-NRT (release 15:30 HST Apr 1), a span Apr 2 00:00-02:00, NRT-KIX-NRT (report 20:00
-      HST Apr 2, release 01:15 Apr 3), an item Apr 3 12:00-14:00, a NRT-HNL deadhead reporting 14:00 HST Apr 4 (36:45
-      free, the item inside), in 00:00 Apr 5 (10:00): 8:30, a line (NRT 09:00 JST and HNL less 0:30 would be 14:00 and
-      11:30, no line)."""
+def test_after_a_span_a_deadhead_over_the_lowest_row_less_30_minutes_may_need_its_rest():
+    """Review round 5, fix 1 (R5V-6, TEST-RV51-DUTYWALK) pinned the bound's readings here; review round 7 (D1(b))
+    removed the bound, so after a span of the line not on file before the deadhead duty's report the lowest row less
+    0:30 (8:30) decides whether FAR 117.25(g) may apply, whatever the walk on file would read. By hand, 2 pilots:
+    - HNL-SIN (in 19:30 HST Apr 1), SIN-NRT (report 06:00 HST Apr 3, in 13:00), a span at NRT Apr 4 12:00-19:00, a
+      NRT-HNL deadhead reporting 22:00 HST Apr 4, in 08:45 Apr 5 (10:45), release 09:15; HNL-LAX reporting 19:15 HST
+      Apr 5 (10:00 free): over 8:30, not past 14:00: '? SHORT of 10:45 if it applies' (round 5: the same '?' on the
+      bound's HNL less 0:30, 10:30);
+    - HNL-NRT (in 15:00 HST Apr 1), NRT-KIX-NRT (report 18:00 HST Apr 4, 75:00 there: acclimated to NRT, release
+      23:15), a span Apr 5 01:00-02:00, a NRT-HNL deadhead reporting 05:00 HST Apr 5 (00:00 JST Apr 6), in 13:45 (8:45):
+      over 8:30, a line, met by 12:00 free (round 5: NRT 9:00 and NRT less 0:30 8:30); with no span NRT 00:00, row
+      0000-0359, 9:00 only: no line;
+    - a station with no longitude: HNL-XYZ (release 15:30 HST Apr 1), a span Apr 1 20:00-21:00, a XYZ-HNL deadhead
+      reporting 08:00 HST Apr 2, in 16:45 (8:45): 8:30, a line, as before;
+    - a schedule item: HNL-NRT (release 15:30 HST Apr 1), a span Apr 2 00:00-02:00, NRT-KIX-NRT (report 20:00 HST Apr
+      2, release 01:15 Apr 3), an item Apr 3 12:00-14:00, a NRT-HNL deadhead reporting 14:00 HST Apr 4, in 00:00 Apr 5
+      (10:00): 8:30, a line, as before; with no span the walk on file reads NRT 09:00 JST and HNL less 0:30 (14:00 and
+      11:30): no line."""
     s0 = _duty(at(2027, 4, 1, "08:00"), _leg("HNL", "SIN", at(2027, 4, 1, "09:00"), at(2027, 4, 1, "19:30"), "1"))
     s1 = _duty(at(2027, 4, 3, "06:00"), _leg("SIN", "NRT", at(2027, 4, 3, "07:00"), at(2027, 4, 3, "13:00"), "2"))
     s2 = _duty(at(2027, 4, 4, "22:00"),
@@ -3816,9 +3799,9 @@ def test_the_bound_keeps_the_duty_reading_and_the_lowest_row_where_it_cannot_bou
     t = TO.duty_timeout([s0, s1, s2, _lax(at(2027, 4, 5, "19:15"))], 3, 2, "roster", "332",
                         unknown=[(at(2027, 4, 4, "12:00"), at(2027, 4, 4, "19:00"))])
     assert (t["rest"]["ok"], t["rest"]["free"], t["rest"]["cite"]) == (None, "10:00", "FAR 117.25(g)")
-    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 10:30 (HNL "
-               "time, less 0:30: not acclimated on a reading of a span of your line not on file)" in s and s.endswith(
-                   "10:00 free: ? SHORT of 10:45 if it applies.") for s in t["lines"])
+    low = "over its Table B FDP 8:30 (the lowest row on any clock, less 0:30: acclimation not known)"
+    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and low in s and s.endswith(
+        "10:00 free: ? SHORT of 10:45 if it applies.") for s in t["lines"])
     n0 = _duty(at(2027, 4, 1, "06:00"), _leg("HNL", "NRT", at(2027, 4, 1, "07:00"), at(2027, 4, 1, "15:00"), "1"))
     n1 = _duty(at(2027, 4, 4, "18:00"), _leg("NRT", "KIX", at(2027, 4, 4, "19:00"), at(2027, 4, 4, "20:30"), "2"),
                _leg("KIX", "NRT", at(2027, 4, 4, "21:30"), at(2027, 4, 4, "23:00"), "3"))
@@ -3826,10 +3809,9 @@ def test_the_bound_keeps_the_duty_reading_and_the_lowest_row_where_it_cannot_bou
                _leg("NRT", "HNL", at(2027, 4, 5, "06:00"), at(2027, 4, 5, "13:45"), "4", dh=True))
     ds = [n0, n1, n2, _lax(at(2027, 4, 6, "02:15"))]
     t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=[(at(2027, 4, 5, "01:00"), at(2027, 4, 5, "02:00"))])
-    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 8:30 (NRT "
-               "time, less 0:30: not acclimated on a reading of a span of your line not on file)" in s and
-               "its acclimation is not known (a span of your line not on file, each read as free time and as duty)"
-               in s and "another reading of its acclimation gives 9:00" in s for s in t["lines"])
+    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and low in s and
+               "(? a span of your line not on file before it, so its acclimation is not known: the lowest Table B row, "
+               "less 0:30, decides whether it may apply)" in s and s.endswith("12:00 free: met.") for s in t["lines"])
     t = TO.duty_timeout(ds, 3, 2, "roster", "332")
     assert not any("117.25(g)" in s for s in t["lines"])
     x0 = _duty(at(2027, 4, 1, "06:00"), _leg("HNL", "XYZ", at(2027, 4, 1, "07:00"), at(2027, 4, 1, "15:00"), "1"))
@@ -3837,8 +3819,7 @@ def test_the_bound_keeps_the_duty_reading_and_the_lowest_row_where_it_cannot_bou
                _leg("XYZ", "HNL", at(2027, 4, 2, "09:00"), at(2027, 4, 2, "16:45"), "2", dh=True))
     t = TO.duty_timeout([x0, x1, _lax(at(2027, 4, 3, "05:15"))], 2, 2, "roster", "332",
                         unknown=[(at(2027, 4, 1, "20:00"), at(2027, 4, 1, "21:00"))])
-    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 8:30 (the "
-               "lowest row on any clock, less 0:30: acclimation not known)" in s for s in t["lines"])
+    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and low in s for s in t["lines"])
     b0 = _duty(at(2027, 4, 1, "06:00"), _leg("HNL", "NRT", at(2027, 4, 1, "07:00"), at(2027, 4, 1, "15:00"), "1"))
     b1 = _duty(at(2027, 4, 2, "20:00"), _leg("NRT", "KIX", at(2027, 4, 2, "21:00"), at(2027, 4, 2, "22:30"), "2"),
                _leg("KIX", "NRT", at(2027, 4, 2, "23:30"), at(2027, 4, 3, "01:00"), "3"))
@@ -3847,8 +3828,7 @@ def test_the_bound_keeps_the_duty_reading_and_the_lowest_row_where_it_cannot_bou
     item = [(at(2027, 4, 3, "12:00"), at(2027, 4, 3, "14:00"))]
     t = TO.duty_timeout([b0, b1, b2, _lax(at(2027, 4, 5, "12:30"))], 3, 2, "roster", "332", busy=item,
                         unknown=[(at(2027, 4, 2, "00:00"), at(2027, 4, 2, "02:00"))])
-    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 8:30 (the "
-               "lowest row on any clock, less 0:30: acclimation not known)" in s for s in t["lines"])
+    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and low in s for s in t["lines"])
     t = TO.duty_timeout([b0, b1, b2, _lax(at(2027, 4, 5, "12:30"))], 3, 2, "roster", "332", busy=item)
     assert not any("117.25(g)" in s for s in t["lines"])
 
@@ -3989,48 +3969,33 @@ def _las_line(first=None):
     return [a, b, c, _lax(at(2027, 5, 5, "17:15"))]
 
 
-def test_a_span_of_36_h_or_more_anywhere_before_the_deadhead_keeps_the_lowest_row():
-    """Review round 5, fix 1 (found checking the bound against fillings of its spans): RV5-1 bounded the deadhead's
-    acclimation when only the span just before it was short, though an earlier span had reset the walk: after it the
+def test_any_span_before_the_deadhead_takes_the_lowest_row_never_the_walks_reading_after_it():
+    """Review round 5, fix 1 found the walk's own reading after a span unsound for FAR 117.25(g): after the span the
     walk re-acclimates at the next station with 36 h free (LAS here) and takes that station's theater, while he may
-    never have left HNL's (LAS is 42.7 deg from HNL). Review round 5, fix 2 (RF1-36H-ANYWHERE): only a span that with
-    the free time on file before it is 36 h or more may hold an acclimation to a theater not on file; and after any
-    span the deadhead's acclimation is read by the bound, never by the walk's own re-acclimation. By hand, 2 pilots
-    (_las_line):
-    - HNL-LAX release 12:30 HST May 1, a span May 2 00:00-06:00 (17:30 from that release): bounded: free time or duty,
-      38:00 or more free at LAS, 42.7 deg from HNL, acclimated to HNL's theater; at AKL (27.3 deg from HNL) HNL 18:00,
-      row 1700-2159, 12:00, AKL 16:00 NZST, row 1300-1659, 12:00: 11:45 is under both, no 117.25(g) line, met (round 5
-      and fix 1: the walk's own reading, acclimated to LAS, AKL 70 deg from it, LAS 21:00 PDT less 0:30 = 11:30, a
-      sure SHORT the line with the span free does not give);
-    - with a span at AKL May 4 12:00-13:00 too, and that span alone: HNL and AKL 12:00, and read as duty HNL less 0:30,
-      11:30: 11:45 is over 11:30 only: '? SHORT of 11:45 if it applies', rest_q;
-    - HNL-LAX release 12:30 HST Apr 30, a span Apr 30 13:00-May 2 06:00 (41:30 from that release): a report inside it
-      may follow 36 h free: the lowest row, '? SHORT of 11:45 if it applies' (round 5: the sure SHORT on LAS), with the
-      AKL span and without it (the walk's own reading, LAS less 0:30, would be a sure SHORT)."""
+    never have left HNL's (LAS is 42.7 deg from HNL). Rounds 5 and 6 bounded such spans; review round 7 (D1(b)) reads
+    the lowest row after any span of the line not on file before the deadhead duty's report (8:30 for its 1 segment)
+    and the every-row rule (14:00) for sure. By hand, 2 pilots (_las_line), the AKL-HNL deadhead 11:45, 11:00 free:
+    - fully on file: 38:00 or more free at LAS, acclimated to HNL's theater; at AKL (27.3 deg from HNL) HNL 18:00, row
+      1700-2159, 12:00, AKL 16:00 NZST, row 1300-1659, 12:00: 11:45 is under both, no 117.25(g) line, met;
+    - a span May 2 00:00-06:00 (17:30 after the HNL-LAX release): 11:45 is over 8:30 and not past 14:00: '? SHORT of
+      11:45 if it applies', rest_q (rounds 5 and 6: met on the bound's HNL and AKL 12:00; the walk's own reading, LAS
+      21:00 PDT less 0:30 = 11:30, would be a sure SHORT the line with the span free does not give);
+    - with a span at AKL May 4 12:00-13:00 too, that span alone, and a span Apr 30 13:00-May 2 06:00 after an Apr 30
+      HNL-LAX (with the AKL span and without it): the same '?' (rounds 5 and 6 read the same '?' on HNL less 0:30
+      11:30 or on the lowest row)."""
     short = [(at(2027, 5, 4, "12:00"), at(2027, 5, 4, "13:00"))]
     may2 = [(at(2027, 5, 2, "00:00"), at(2027, 5, 2, "06:00"))]
-    ds = _las_line()
-    assert TO._acc_bound([TO._prep(d) for d in ds], 2, (), may2) == ([("HNL", False), ("AKL", False)], True)
-    for u in (may2, []):
-        t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
-        assert t["rest"]["ok"] is True and not any("117.25(g)" in s for s in t["lines"]), u
-    for u in (may2 + short, short):
-        t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
-        assert (t["rest"]["ok"], t["rest"]["free"], t["flags"]) == (None, "11:00", ["rest_q"]), u
-        assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "11:30 (HNL time, less 0:30"
-                   in s and "gives 12:00" in s and s.endswith("11:00 free: ? SHORT of 11:45 if it applies.")
-                   for s in t["lines"]), u
-        assert TO._acc_bound([TO._prep(d) for d in ds], 2, (), u) == ([("HNL", False), ("AKL", False), ("HNL", True)],
-                                                                       None), u
-    ds = _las_line(at(2027, 4, 30, "06:00"))
-    for u in ([(at(2027, 4, 30, "13:00"), at(2027, 5, 2, "06:00"))] + short,
-              [(at(2027, 4, 30, "13:00"), at(2027, 5, 2, "06:00"))]):
+    long_u = [(at(2027, 4, 30, "13:00"), at(2027, 5, 2, "06:00"))]
+    t = TO.duty_timeout(_las_line(), 3, 2, "roster", "332")
+    assert t["rest"]["ok"] is True and not any("117.25(g)" in s for s in t["lines"])
+    for ds, u in ((_las_line(), may2), (_las_line(), may2 + short), (_las_line(), short),
+                  (_las_line(at(2027, 4, 30, "06:00")), long_u + short), (_las_line(at(2027, 4, 30, "06:00")), long_u)):
         t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
         assert (t["rest"]["ok"], t["rest"]["free"], t["flags"]) == (None, "11:00", ["rest_q"]), u
         assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 8:30 "
                    "(the lowest row on any clock, less 0:30: acclimation not known)" in s and s.endswith(
                        "11:00 free: ? SHORT of 11:45 if it applies.") for s in t["lines"]), u
-        assert TO._acc_bound([TO._prep(d) for d in ds], 2, (), u) is None
+    u = long_u
     assert TO._acclimation([TO._prep(d) for d in ds], 2, (), u)[0] == [("LAS", True)]  # the walk's own reading
 
 
@@ -4049,42 +4014,31 @@ def _kix_jfk(span_end="01:00"):
                                                        (at(2027, 4, 4, "22:00"), at(2027, 4, 5, "01:00"))]
 
 
-def test_a_short_span_early_in_a_long_gap_is_bounded_and_a_deadhead_past_every_reading_is_short():
-    """Review round 5, fix 2 (RF1-36H-ANYWHERE): fix 1 kept the lowest row for any span with 36 h or more around it,
-    anywhere in the walk, though a report inside a span follows at most the time from the release before it to the
-    span's end free from duty: under 36 h it acclimates him to no theater not on file, and the free time after it is
-    read by the two readings. By hand, 2 pilots (_kix_jfk): the KIX span 20:00 Apr 1-01:00 Apr 2 (9:30 after the 15:30
-    release; 60:30 to the KIX-JFK report) and the JFK span (7:30 after the 17:30 release). Free time: 60:30 free at
-    KIX, acclimated there; duty: 51:00 free after the span, acclimated there too. At JFK: 33:30 free, 34:00 in that
-    theater, not acclimated (both readings): KIX 22:00 JST less 0:30, row 2200-2259, 11:00 less 0:30 = 10:30; HNL
-    03:00 less 0:30 (the domicile's reading) 8:30. 12:30 is over both: SHORT, 12:30 needed, 10:30 free, flagged (fix 1:
-    '? SHORT of 12:30 if it applies', the lowest row), as with either span alone and with none (round 5: SHORT in all
-    four). The
-    KIX span to 03:29 Apr 3 (35:59 after the release): bounded, free time acclimated to KIX (10:30), duty not (24:31
-    free after it): HNL less 0:30 at JFK, 8:30: SHORT. To 03:30 (36:00): a report inside it may follow 36 h free, so the
-    lowest row stays: '?'."""
+def test_a_short_span_early_in_a_long_gap_takes_the_lowest_row_and_the_line_on_file_is_short():
+    """Review round 5, fix 2 (RF1-36H-ANYWHERE) bounded a span with under 36 h around it and read the deadhead below
+    SHORT across it; review round 7 (D1(b)) reads any span before the deadhead duty's report with the lowest row. By
+    hand, 2 pilots (_kix_jfk): the JFK-HNL deadhead 12:30 (1 segment), 10:30 free after its release. Fully on file:
+    60:30 free at KIX, acclimated there; at JFK 33:30 free, 34:00 in that theater, not acclimated: KIX 22:00 JST less
+    0:30, row 2200-2259, 11:00 less 0:30 = 10:30 (the domicile's reading, HNL 03:00 less 0:30, 8:30, only adds a '?'):
+    12:30 is over 10:30, the walk's only reading: SHORT, 12:30 needed, flagged. With the KIX span (20:00 Apr 1-01:00
+    Apr 2), the JFK span (Apr 4 22:00-Apr 5 01:00), both, or the KIX span to 03:29 or 03:30 Apr 3: 12:30 is over the
+    lowest row less 0:30 (8:30), not past every row (14:00): '? SHORT of 12:30 if it applies', no rest flag (rounds 5
+    and 6: SHORT on the bound's KIX less 0:30 for all but the span to 03:30, which kept the lowest row)."""
     ds, (kix, jfk) = _kix_jfk()
-    for u in ([kix, jfk], [kix], [jfk], []):
-        t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
-        assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"]) == (False, "12:30", "10:30"), u
-        assert "rest" in t["flags"] and "Flag: short of FAR rest (FAR 117.25(g)): 10:30 of 12:30." in t["lines"], u
-    t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=[kix, jfk])
-    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP on every "
-               "reading of its acclimation across a span of your line not on file (10:30 at most, KIX time, less 0:30: "
-               "not acclimated, FAR 117.13(b))" in s and s.endswith("10:30 free: SHORT, check with Crew Scheduling.")
-               for s in t["lines"])
-    assert TO._acc_bound([TO._prep(d) for d in ds], 2, (), [kix, jfk]) == ([("KIX", True)], False)
-    ds, u = _kix_jfk(at(2027, 4, 3, "03:29"))
-    t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
-    assert (t["rest"]["ok"], t["rest"]["need"]) == (False, "12:30") and "rest" in t["flags"]
-    assert TO._acc_bound([TO._prep(d) for d in ds], 2, (), u) == ([("KIX", True), ("HNL", True)], False)
-    ds, u = _kix_jfk(at(2027, 4, 3, "03:30"))
-    t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
-    assert t["rest"]["ok"] is None and "rest" not in t["flags"] and TO._acc_bound([TO._prep(d) for d in ds], 2, (),
-                                                                                  u) is None
-    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 8:30 (the "
-               "lowest row on any clock, less 0:30: acclimation not known)" in s and s.endswith(
-                   "10:30 free: ? SHORT of 12:30 if it applies.") for s in t["lines"])
+    t = TO.duty_timeout(ds, 3, 2, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"]) == (False, "12:30", "10:30")
+    assert "rest" in t["flags"] and "Flag: short of FAR rest (FAR 117.25(g)): 10:30 of 12:30." in t["lines"]
+    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 10:30 (KIX "
+               "time, less 0:30: not acclimated, FAR 117.13(b))" in s and
+               s.endswith("10:30 free: SHORT, check with Crew Scheduling.") for s in t["lines"])
+    lines = [(ds, [kix, jfk]), (ds, [kix]), (ds, [jfk]), _kix_jfk(at(2027, 4, 3, "03:29")),
+             _kix_jfk(at(2027, 4, 3, "03:30"))]
+    for d_line, u in lines:
+        t = TO.duty_timeout(d_line, 3, 2, "roster", "332", unknown=u)
+        assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "10:30") and "rest" not in t["flags"], u
+        assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 8:30 "
+                   "(the lowest row on any clock, less 0:30: acclimation not known)" in s and s.endswith(
+                       "10:30 free: ? SHORT of 12:30 if it applies.") for s in t["lines"]), u
 
 
 def _nrt_stay(s2):
@@ -4100,88 +4054,58 @@ def _nrt_stay(s2):
     return ds, [(at(2027, 4, 1, "14:00"), at(2027, 4, 1, "15:00")), s2]
 
 
-def test_a_stay_begun_in_a_span_that_may_reach_72_h_inside_a_later_span_keeps_the_lowest_row():
-    """Review round 5, fix 2 (V6-MUT-P): a later span is bounded only where no stay in another theater may reach 72 h
-    before it ends, counted from the stay's earliest start (a span may have begun it), not its latest. By hand, 2
-    pilots (_nrt_stay): the first span moved him (the LAX release to an NRT report), so his NRT-theater stay may have
-    begun at 13:15 HST Apr 1 (else at the KIX block-in 11:00 Apr 2): 72 h from the earliest is 13:15 Apr 4, before the
-    end of a span Apr 4 14:00-16:00, so a report inside it may follow 72 h there, at a station whose clock is not on
-    file: the lowest row, 8:30; 11:45 is over it: '? SHORT of 11:45 if it applies', no rest flag (pwa_rest is 10.E.1.a's
-    11:00 at home, 10:15 free; on the latest start it would be bounded on NRT 12:00 acclimated and HNL 10:30 less 0:30,
-    13:30, with no line and met). The second span Apr 4 11:00-13:00 ends before 13:15: bounded, no line, met. With
-    KIX-NRT reported at JFK instead (a duty that does not start where the last one ended), the stay a duty in the first
-    span may have begun is cut away (no station is within 60 deg of NRT, KIX and JFK), and the earliest start of his
-    KIX stay alone keeps the later span from being bounded: the lowest row, '?' (on its latest start: met)."""
-    ds, u = _nrt_stay((at(2027, 4, 4, "14:00"), at(2027, 4, 4, "16:00")))
-    assert TO._acc_bound([TO._prep(d) for d in ds], 3, (), u) is None
-    t = TO.duty_timeout(ds, 4, 2, "roster", "332", unknown=u)
-    assert (t["rest"]["ok"], t["rest"]["free"], t["rest"]["cite"]) == (None, "10:15", "FAR 117.25(g)")
-    assert t["flags"] == ["pwa_rest"]
-    assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 8:30 (the "
-               "lowest row on any clock, less 0:30: acclimation not known)" in s and s.endswith(
-                   "10:15 free: ? SHORT of 11:45 if it applies.") for s in t["lines"])
+def test_a_stay_that_may_have_begun_in_a_span_takes_the_lowest_row_after_it():
+    """Review round 5, fix 2 (V6-MUT-P, RF1-MUT M6 and M13, V6-MUT-N) pinned the bound's 72 h stay forks; review round 7
+    (D1(b)) removed them: after a span of the line not on file before the deadhead duty's report the lowest row less
+    0:30 (8:30) decides whether FAR 117.25(g) may apply and every row (14:00, 1 segment) whether it is sure. By hand, 2
+    pilots:
+    - _nrt_stay, the NRT-HNL deadhead 11:45, 10:15 free (pwa_rest is 10.E.1.a's 11:00 at home): with a second span Apr
+      4 14:00-16:00 or 11:00-13:00, and with KIX-NRT reported at JFK: over 8:30, not past 14:00: '? SHORT of 11:45 if it
+      applies' (round 5, fix 2: the same '?' for the first and third, met for the second on the bound's NRT 12:00 and
+      HNL less 0:30 13:30); fully on file (no spans): the walk on file reads it under its readings, met, no line;
+    - HNL-LAX (release 11:30 HST Apr 1), a span Apr 1 12:00-Apr 2 20:00, NRT-SIN (report 22:00 HST Apr 2), a SIN-HNL
+      deadhead only reporting 11:30 or 11:29 HST Apr 4, 12:45: over 8:30, not past 14:00, 10:30 free: '? SHORT of 12:45
+      if it applies' both (round 5, fix 2: the same '?' at 11:30 on the early stay's SIN 12:00, met at 11:29 on HNL less
+      0:30 13:30);
+    - HNL-LAX (release 12:30 HST Apr 1), a span Apr 1 13:00-Apr 2 22:00, NRT-SFO-SIN (in 02:00 HST Apr 4), a SIN-HNL
+      deadhead only reporting 14:00 HST Apr 4, 12:30, HNL-LAX 10:00 after its release: '? SHORT of 12:30 if it
+      applies' (round 5, fix 2: SHORT on HNL 14:00 less 0:30, 11:30)."""
+    for s2 in ((at(2027, 4, 4, "14:00"), at(2027, 4, 4, "16:00")), (at(2027, 4, 4, "11:00"), at(2027, 4, 4, "13:00")),
+               "jfk"):
+        ds, u = _nrt_stay(s2 if s2 != "jfk" else (at(2027, 4, 4, "14:00"), at(2027, 4, 4, "16:00")))
+        if s2 == "jfk":
+            ds[2] = _duty(at(2027, 4, 3, "20:00"),
+                          _leg("JFK", "NRT", at(2027, 4, 3, "21:00"), at(2027, 4, 3, "23:00"), "3"))
+        t = TO.duty_timeout(ds, 4, 2, "roster", "332", unknown=u)
+        assert (t["rest"]["ok"], t["rest"]["free"], t["rest"]["cite"]) == (None, "10:15", "FAR 117.25(g)"), s2
+        assert t["flags"] == ["pwa_rest"], s2
+        assert any(s.startswith("Rest after deadhead transportation (FAR 117.25(g)") and "over its Table B FDP 8:30 "
+                   "(the lowest row on any clock, less 0:30: acclimation not known)" in s and s.endswith(
+                       "10:15 free: ? SHORT of 11:45 if it applies.") for s in t["lines"]), s2
     ds, u = _nrt_stay((at(2027, 4, 4, "11:00"), at(2027, 4, 4, "13:00")))
-    assert TO._acc_bound([TO._prep(d) for d in ds], 3, (), u) is not None
-    t = TO.duty_timeout(ds, 4, 2, "roster", "332", unknown=u)
+    t = TO.duty_timeout(ds, 4, 2, "roster", "332")
     assert t["rest"]["ok"] is True and not any(s.startswith("Rest after deadhead") for s in t["lines"])
-    ds, u = _nrt_stay((at(2027, 4, 4, "14:00"), at(2027, 4, 4, "16:00")))
-    ds[2] = _duty(at(2027, 4, 3, "20:00"), _leg("JFK", "NRT", at(2027, 4, 3, "21:00"), at(2027, 4, 3, "23:00"), "3"))
-    assert TO._acc_bound([TO._prep(d) for d in ds], 3, (), u) is None
-    t = TO.duty_timeout(ds, 4, 2, "roster", "332", unknown=u)
-    assert t["rest"]["ok"] is None and any(s.startswith("Rest after deadhead") and "8:30 (the lowest row" in s
-                                           for s in t["lines"])
-
-
-def test_the_early_stay_fork_holds_at_exactly_72_h_and_only_from_the_first_leg_after_the_span():
-    """Review round 5, fix 2 (RF1-MUT M6 and M13, V6-MUT-N): RV5-1-STAY's fork pinned at its edges. By hand, 2 pilots:
-    - HNL-LAX (release 11:30 HST Apr 1), a span Apr 1 12:00-Apr 2 20:00 (32:30 from the release: bounded), NRT-SIN
-      (report 22:00 HST Apr 2, in 06:00 Apr 3), a SIN-HNL deadhead only reporting 11:30 HST Apr 4 (05:30 SGT Apr 5),
-      in 00:15 Apr 5 (12:45). The span may have moved him to the NRT-SIN theater at the 11:30 release: exactly 72:00
-      there by the report (FAR 117.3: 72 h acclimates), so acclimated: SIN 05:30, row 0500-0559, 12:00; or not: HNL
-      11:30 less 0:30, 13:30. 12:45 is over 12:00 only: '? SHORT of 12:45 if it applies'. Reported 11:29 (71:59): only
-      HNL 13:30 (HNL 11:29 is in the same row), no line, met;
-    - HNL-LAX (release 12:30 HST Apr 1), a span Apr 1 13:00-Apr 2 22:00, NRT-SFO-SIN (report 23:00 HST Apr 2;
-      NRT-SFO leaves the NRT theater on the first leg, SFO-SIN in 02:00 Apr 4), a SIN-HNL deadhead only reporting 14:00
-      HST Apr 4 (08:00 SGT Apr 5), in 02:30 Apr 5 (12:30), HNL-LAX 10:00 after its release. His stay in SIN's theater
-      begins at 02:00 Apr 4 (the first leg took him out), not at the span: not acclimated, HNL 14:00 less 0:30, row
-      1300-1659, 11:30: SHORT, 12:30 needed (read from the span's start, SIN 08:00, row 0700-1159, 14:00, would make it
-      a '?')."""
     a = _duty(at(2027, 4, 1, "06:00"), _leg("HNL", "LAX", at(2027, 4, 1, "07:00"), at(2027, 4, 1, "11:15"), "1"))
     b = _duty(at(2027, 4, 2, "22:00"), _leg("NRT", "SIN", at(2027, 4, 2, "23:00"), at(2027, 4, 3, "06:00"), "2"))
     u = [(at(2027, 4, 1, "12:00"), at(2027, 4, 2, "20:00"))]
-    for rep, bnd, ok in ((at(2027, 4, 4, "11:30"), [("SIN", False), ("HNL", True)], None),
-                         (at(2027, 4, 4, "11:29"), [("HNL", True)], True)):
+    for rep in (at(2027, 4, 4, "11:30"), at(2027, 4, 4, "11:29")):
         c = _duty(rep, _leg("SIN", "HNL", rep + timedelta(hours=1), rep + timedelta(hours=12, minutes=45), "3",
                             dh=True))
         ds = [a, b, c, _lax(rep + timedelta(hours=23, minutes=45))]  # release 0:30 after the in, then 10:30
-        assert TO._acc_bound([TO._prep(d) for d in ds], 2, (), u)[0] == bnd, rep
         t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
-        assert (t["rest"]["ok"], t["rest"]["free"]) == (ok, "10:30"), rep
-        assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 12:00 (SIN time)" in s and s.endswith(
-            "10:30 free: ? SHORT of 12:45 if it applies.") for s in t["lines"]) == (ok is None), rep
+        assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "10:30"), rep
+        assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row" in s and
+                   s.endswith("10:30 free: ? SHORT of 12:45 if it applies.") for s in t["lines"]), rep
     a = _duty(at(2027, 4, 1, "06:00"), _leg("HNL", "LAX", at(2027, 4, 1, "07:00"), at(2027, 4, 1, "12:15"), "1"))
     b = _duty(at(2027, 4, 2, "23:00"), _leg("NRT", "SFO", at(2027, 4, 3, "00:00"), at(2027, 4, 3, "09:00"), "2"),
               _leg("SFO", "SIN", at(2027, 4, 3, "10:00"), at(2027, 4, 4, "02:00"), "3"))
     c = _duty(at(2027, 4, 4, "14:00"),
               _leg("SIN", "HNL", at(2027, 4, 4, "15:00"), at(2027, 4, 5, "02:30"), "4", dh=True))
     ds, u = [a, b, c, _lax(at(2027, 4, 5, "13:00"))], [(at(2027, 4, 1, "13:00"), at(2027, 4, 2, "22:00"))]
-    assert TO._acc_bound([TO._prep(d) for d in ds], 2, (), u) == ([("HNL", True)], False)
     t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
-    assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"]) == (False, "12:30", "10:00") and "rest" in t["flags"]
-
-
-def test_more_bounded_walks_than_the_cap_keep_the_lowest_row(monkeypatch):
-    """Review round 5, fix 2 (V6-MUT-T): past timeout.ACC_WALKS bounded walks the bound gives up (the lowest row
-    stays), never a part of the readings. By hand: _kix_jfk's two spans (four walks): with the cap at 64, KIX less 0:30
-    (10:30) and a sure SHORT of 12:30; with the cap at 1 the bound is None and the deadhead's line takes the lowest row
-    on any clock, 8:30: '? SHORT of 12:30 if it applies'."""
-    ds, u = _kix_jfk()
-    assert TO._acc_bound([TO._prep(d) for d in ds], 2, (), u) == ([("KIX", True)], False)
-    monkeypatch.setattr(TO, "ACC_WALKS", 1)
-    assert TO._acc_bound([TO._prep(d) for d in ds], 2, (), u) is None
-    t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
-    assert t["rest"]["ok"] is None and any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the "
-                                           "lowest row on any clock" in s for s in t["lines"])
+    assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "10:00") and "rest" not in t["flags"]
+    assert any(s.startswith("Rest after deadhead") and s.endswith("10:00 free: ? SHORT of 12:30 if it applies.")
+               for s in t["lines"])
 
 
 def test_a_call_back_window_takes_2_x_the_duty_period_when_that_is_over_18_h():
@@ -4289,7 +4213,9 @@ def test_a_report_at_a_station_with_no_longitude_counts_as_one_since_the_last_ac
     Apr 16 (33:20 free), in 23:00 (13:45), HNL-LAX 11:30 after its release (23:30). Round 5, fix 1, with no span: not
     acclimated, HNL 09:15 less 0:30, row 0700-1159, 13:30: a sure SHORT. Now the lower of HNL less 0:30 and NRT's own
     clock (04:15 JST, row 0400-0459, 10:00) with acclimation not known: '? SHORT of 13:45 if it applies', as the line
-    with an HNL-XYZ leg on file reads; with a span Apr 12 13:45-18:45 the bound keeps the lowest row (8:30)."""
+    with an HNL-XYZ leg on file reads; with a span Apr 12 13:45-18:45 the lowest row (8:30) decides (review round 7,
+    D1(b)). Review round 7 (D2) keeps it a '?' on file: XYZ followed 41:55 free (36 h or more), so it may have
+    acclimated him to a theater whose clock is not known, and the four readings are not complete."""
     a = _duty(at(2027, 4, 11, "16:00"), _leg("HNL", "AKL", at(2027, 4, 11, "17:15"), at(2027, 4, 12, "02:15"), "1"),
               _leg("AKL", "HNL", at(2027, 4, 12, "03:15"), at(2027, 4, 12, "13:15"), "2"))
     b = _duty(at(2027, 4, 14, "07:25"), _leg("XYZ", "KIX", at(2027, 4, 14, "08:25"), at(2027, 4, 14, "15:25"), "3"),
@@ -4306,24 +4232,24 @@ def test_a_report_at_a_station_with_no_longitude_counts_as_one_since_the_last_ac
     assert t2["rest"]["ok"] is None and [s for s in t2["lines"] if s.startswith("Rest after deadhead")] == [
         s for s in t["lines"] if s.startswith("Rest after deadhead")]
     u = [(at(2027, 4, 12, "13:45"), at(2027, 4, 12, "18:45"))]
-    assert TO._acc_bound([TO._prep(d) for d in ds], 2, (), u) is None
     t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
     assert t["rest"]["ok"] is None and any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the "
                                            "lowest row on any clock" in s for s in t["lines"])
 
 
-def test_a_duty_inside_a_span_may_begin_a_stay_at_a_station_not_on_file():
+def test_a_duty_inside_a_span_may_begin_a_stay_and_the_lowest_row_reads_it():
     """Review round 5, fix 2 (found checking the bound against fillings of the spans): a span read as duty may hold a
     block-in at any station, and a stay begun there (FAR 117.3's theater: 60 degrees around the station it began at,
-    the walk's own model) holds while every station he is at since is within 60 degrees of it. By hand, 2 pilots:
+    the walk's own model) holds while every station he is at since is within 60 degrees of it. Review round 7 (D1(b))
+    reads any span before the deadhead with the lowest row, which holds every such stay. By hand, 2 pilots:
     LIH-LAX (release 02:10 HST Feb 17), a span Feb 17 02:55-Feb 18 08:55 (30:45 from the release: bounded),
     LAX-JFK (report 14:55 HST Feb 19, in 01:55 Feb 20), a JFK-HNL deadhead only reporting 17:25 HST Feb 20 (22:25 EST),
     in 04:40 Feb 21 (11:15), HNL-OGG 10:30 after its release. The walks of fix 1's bound: never acclimated to JFK's
     theater, HNL 17:25 less 0:30, row 1700-2159, 11:30: no line, met. A LAX-ORD-LAX duty in the span (in LAX 14:30 Feb
     17) begins a stay at ORD, whose 60 degrees hold LAX and JFK: 86:30 there by the deadhead's report from the span's
     start (review round 6, CV7-1: the span's start; round 5, fix 2 counted 87:15 from the release before it), so
-    acclimated: JFK 22:25, row 2200-2259, 11:00: '? SHORT of 11:15 if it applies' (with that duty on file: SHORT,
-    11:15 needed)."""
+    acclimated: JFK 22:25, row 2200-2259, 11:00 (the bound's '?'). D1(b): 11:15 is over the lowest row less 0:30 (8:30)
+    and not past every row (14:00): '? SHORT of 11:15 if it applies'; with that duty on file: SHORT, 11:15 needed."""
     a = _duty(at(2027, 2, 16, "19:55"), _leg("LIH", "LAX", at(2027, 2, 16, "20:55"), at(2027, 2, 17, "01:55"), "1"))
     b = _duty(at(2027, 2, 19, "14:55"), _leg("LAX", "JFK", at(2027, 2, 19, "15:55"), at(2027, 2, 20, "01:55"), "2"))
     c = _duty(at(2027, 2, 20, "17:25"),
@@ -4332,29 +4258,29 @@ def test_a_duty_inside_a_span_may_begin_a_stay_at_a_station_not_on_file():
     d = _duty(rep, _leg("HNL", "OGG", rep + timedelta(hours=1), rep + timedelta(hours=1, minutes=40), "4"))
     u = [(at(2027, 2, 17, "02:55"), at(2027, 2, 18, "08:55"))]
     ds = [a, b, c, d]
-    assert TO._acc_bound([TO._prep(x) for x in ds], 2, (), u) == ([("HNL", True), ("JFK", False)], None)
     t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
     assert t["rest"]["ok"] is None and "rest" not in t["flags"]
-    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 11:00 (JFK time)" in s and
-               "another reading of its acclimation gives 11:30" in s and s.endswith(
-                   "10:30 free: ? SHORT of 11:15 if it applies.") for s in t["lines"])
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s and
+               s.endswith("10:30 free: ? SHORT of 11:15 if it applies.") for s in t["lines"])
     x = _duty(at(2027, 2, 17, "04:00"), _leg("LAX", "ORD", at(2027, 2, 17, "05:00"), at(2027, 2, 17, "09:00"), "5"),
               _leg("ORD", "LAX", at(2027, 2, 17, "10:00"), at(2027, 2, 17, "14:30"), "6"))
     t = TO.duty_timeout([a, x, b, c, d], 4, 2, "roster", "332")
     assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["cite"]) == (False, "11:15", "FAR 117.25(g)")
 
 
-def test_after_a_span_read_as_duty_a_block_in_on_file_may_have_ended_his_stay():
+def test_after_a_span_a_block_in_on_file_may_have_ended_his_stay_and_the_lowest_row_reads_it():
     """Review round 5, fix 2 (found checking the bound against fillings of the spans): after a span read as duty his
     stay's station may be one the span left him at, not the first block-in after it, so a later block-in on file may
-    have ended a stay the walk counts. By hand, 2 pilots: HNL-HKG (in 12:00 HST Apr 1), a span at HKG Apr 1 18:00-20:00,
+    have ended a stay the walk counts. Review round 7 (D1(b)) reads any span before the deadhead with the lowest row,
+    which holds that reading too. By hand, 2 pilots: HNL-HKG (in 12:00 HST Apr 1), a span at HKG Apr 1 18:00-20:00,
     SIN-AKL (report 06:00 HST Apr 2, in 16:00), SIN-ICN-HNL (report 06:00 HST Apr 4, 37:30 free: acclimated to SIN; in
     HNL 21:00), an HNL-JFK deadhead only reporting 08:00 HST Apr 6 (02:00 SGT Apr 7), in 19:00 (11:00), JFK-BOS 10:30
     after its release. Read from the AKL block-in (16:00 Apr 2) his stay holds ICN and HNL: 88:00 by the report,
     acclimated to HNL's theater, HNL 08:00, row 0700-1159, 14:00: no line, met (round 5 and fix 1). Had the span left
     him in a stay begun at ICN (HKG-BOS-ICN-SIN), AKL is inside its 60 degrees and HNL is not: the stay ends at the HNL
-    block-in, 11:00 by the report, not acclimated: SIN 02:00 less 0:30, row 0000-0359, 8:30: '? SHORT of 11:00 if it
-    applies' (with that duty on file: SHORT, 11:00 needed)."""
+    block-in, 11:00 by the report, not acclimated: SIN 02:00 less 0:30, row 0000-0359, 8:30 (the bound's '?'). D1(b):
+    11:00 is over the lowest row less 0:30 (8:30), not past 14:00: '? SHORT of 11:00 if it applies'; fully on file met
+    (no line); with that duty on file: SHORT, 11:00 needed."""
     d0 = _duty(at(2027, 4, 1, "00:00"), _leg("HNL", "HKG", at(2027, 4, 1, "01:00"), at(2027, 4, 1, "12:00"), "1"))
     d1 = _duty(at(2027, 4, 2, "06:00"), _leg("SIN", "AKL", at(2027, 4, 2, "07:00"), at(2027, 4, 2, "16:00"), "2"))
     d2 = _duty(at(2027, 4, 4, "06:00"), _leg("SIN", "ICN", at(2027, 4, 4, "07:00"), at(2027, 4, 4, "12:00"), "3"),
@@ -4365,12 +4291,10 @@ def test_after_a_span_read_as_duty_a_block_in_on_file_may_have_ended_his_stay():
     d4 = _duty(rep, _leg("JFK", "BOS", rep + timedelta(hours=1), rep + timedelta(hours=2), "6"))
     u = [(at(2027, 4, 1, "18:00"), at(2027, 4, 1, "20:00"))]
     ds = [d0, d1, d2, d3, d4]
-    assert TO._acc_bound([TO._prep(x) for x in ds], 3, (), u) == ([("HNL", False), ("SIN", True)], None)
     t = TO.duty_timeout(ds, 4, 2, "roster", "332", unknown=u)
     assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "10:30") and "rest" not in t["flags"]
-    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (SIN time, less 0:30" in s and
-               "another reading of its acclimation gives 14:00" in s and s.endswith(
-                   "10:30 free: ? SHORT of 11:00 if it applies.") for s in t["lines"])
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s and
+               s.endswith("10:30 free: ? SHORT of 11:00 if it applies.") for s in t["lines"])
     t = TO.duty_timeout(ds, 4, 2, "roster", "332")
     assert t["rest"]["ok"] is True and not any(s.startswith("Rest after deadhead") for s in t["lines"])
     x = _duty(at(2027, 4, 1, "18:00"), _leg("HKG", "BOS", at(2027, 4, 1, "18:10"), at(2027, 4, 1, "18:40"), "7"),
@@ -4380,7 +4304,7 @@ def test_after_a_span_read_as_duty_a_block_in_on_file_may_have_ended_his_stay():
     assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["cite"]) == (False, "11:00", "FAR 117.25(g)")
 
 
-def test_a_stay_a_duty_inside_a_span_may_begin_and_that_reaches_72_h_inside_a_later_span_is_not_bounded():
+def test_a_stay_a_duty_inside_a_span_may_begin_and_that_reaches_72_h_inside_a_later_span_takes_the_lowest_row():
     """Review round 5, fix 2 (found checking the bound against fillings of the spans): a stay a duty inside a span may
     have begun at a station not on file may reach 72 h inside a later span, and a report there at a station outside
     the theater he is acclimated to may acclimate him to it. By hand, 2 pilots: HNL-SYD (release 23:30 HST Jan 10), a
@@ -4392,7 +4316,8 @@ def test_a_stay_a_duty_inside_a_span_may_begin_and_that_reaches_72_h_inside_a_la
     (round 5 and fix 1: HNL 06:40, row 0600-0659, 13:00, SFO 08:40, 14:00, HNL less 0:30 12:30: no line, met). With
     SYD-BOS-SYD in the first span (in SYD 17:50 Jan 11) and SIN-SFO reported at SIN 20:38 Jan 14 (74:47 in that
     theater: acclimated to SIN) on file: SFO not acclimated, SIN 00:40 less 0:30, row 0000-0359, 8:30: SHORT. The second
-    span alone: bounded (HNL 13:00, SFO 14:00, HNL less 0:30 12:30), met."""
+    span alone: rounds 5 and 6 bounded it (HNL 13:00, SFO 14:00, HNL less 0:30 12:30), met; review round 7 (D1(b)):
+    11:00 is over the lowest row less 0:30 (8:30) and not past 14:00: '? SHORT of 11:00 if it applies'."""
     d0 = _duty(at(2027, 1, 10, "13:00"), _leg("HNL", "SYD", at(2027, 1, 10, "14:00"), at(2027, 1, 10, "23:00"), "1"))
     d1 = _duty(at(2027, 1, 14, "01:50"), _leg("SYD", "SIN", at(2027, 1, 14, "02:50"), at(2027, 1, 14, "10:00"), "2"))
     d2 = _duty(at(2027, 1, 16, "06:40"),
@@ -4401,15 +4326,11 @@ def test_a_stay_a_duty_inside_a_span_may_begin_and_that_reaches_72_h_inside_a_la
     d3 = _duty(rep, _leg("HNL", "AKL", rep + timedelta(hours=1), rep + timedelta(hours=8), "4"))
     u = [(at(2027, 1, 11, "04:30"), at(2027, 1, 11, "21:10")), (at(2027, 1, 14, "18:50"), at(2027, 1, 14, "23:50"))]
     ds = [d0, d1, d2, d3]
-    assert TO._acc_bound([TO._prep(d) for d in ds], 2, (), u) is None
-    t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
-    assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "10:30") and "rest" not in t["flags"]
-    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s and
-               s.endswith("10:30 free: ? SHORT of 11:00 if it applies.") for s in t["lines"])
-    assert TO._acc_bound([TO._prep(d) for d in ds], 2, (), u[1:]) == ([("HNL", False), ("SFO", False), ("HNL", True)],
-                                                                       None)
-    t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u[1:])
-    assert t["rest"]["ok"] is True and not any(s.startswith("Rest after deadhead") for s in t["lines"])
+    for u_got in (u, u[1:]):
+        t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u_got)
+        assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "10:30") and "rest" not in t["flags"], u_got
+        assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s
+                   and s.endswith("10:30 free: ? SHORT of 11:00 if it applies.") for s in t["lines"]), u_got
     x1 = _duty(at(2027, 1, 11, "12:00"), _leg("SYD", "BOS", at(2027, 1, 11, "13:00"), at(2027, 1, 11, "15:00"), "5"),
                _leg("BOS", "SYD", at(2027, 1, 11, "16:00"), at(2027, 1, 11, "17:50"), "6"))
     x2 = _duty(at(2027, 1, 14, "20:38"), _leg("SIN", "SFO", at(2027, 1, 14, "21:38"), at(2027, 1, 14, "22:39"), "7"))
@@ -4449,49 +4370,35 @@ def _syd_line(c_or_dh):
     return [a, b] + list(c_or_dh), [(at(2027, 4, 30, "13:00"), at(2027, 5, 2, "06:00"))]
 
 
-def test_after_36_h_free_on_file_past_the_last_span_a_deadhead_reads_every_clock_of_that_theater():
-    """Review round 6 (CV7-1): where the bound fails (here a span with 41:30 of free time on file before its end: a
-    report inside it may follow 36 h free) round 5, fix 2 kept the lowest row on any clock, 8:30, though 36 h free on
-    file after the last span acclimates him (FAR 117.3) to a theater that holds that station; only its reference is not
-    known (any station within 60 deg of it). By hand, 2 pilots (_syd_line):
-    - a SYD-HNL deadhead only reporting 18:30 HST May 5 (04:30 UTC May 6; 56:00 free since the 10:30 May 3 release, no
-      span after it): every reference within 60 deg of SYD reads 12:00 at that time (HNL 18:30, row 1700-2159; SYD
-      14:30 AEST and NRT 13:30, row 1300-1659; AKL 16:30 NZST; PPG 17:30; ANC 20:30 AKDT) but the clocks 8 h ahead of
-      UTC, 13:00 (SIN and HKG 12:30, row 1200-1259). In 07:45 May 6 (13:15), over 13:00: SHORT, 13:15 needed, 10:30
-      free, flagged (round 5, fix 2: '? SHORT of 13:15 if it applies' on 8:30). In 07:15 (12:45): over 12:00 only, '?
-      SHORT of 12:45 if it applies' (the walk's own reading, SYD 12:00 alone, would make it a sure SHORT);
-    - SYD-NRT reporting 18:30 HST May 5 (in 05:00 May 6, release 05:30), an NRT-HNL deadhead only reporting 23:00 HST
-      May 6 (09:00 UTC, 17:30 free), in 11:30 May 7 (12:30): from SYD each reference walked on: within 60 deg of NRT,
-      its clock or NRT's (12:00 for the clocks 8 to 12 h ahead of UTC, PPG 22:00 11:00, RAR 23:00 10:00); farther,
-      NRT's own (his stay in SYD's theater may be 72 h old: a fork) or not acclimated, that clock less 0:30 (HNL 23:00,
-      row 2300-2359, 10:00 less 0:30 = 9:30; ANC 01:00 AKDT, row 0000-0359, 9:00 less 0:30 = 8:30). 12:30 is over the
-      highest, 12:00: SHORT, 12:30 needed (round 5, fix 2: the lowest row, '?')."""
-    for dh, ok, flag in ((timedelta(hours=13, minutes=15), False, "rest"), (timedelta(hours=12, minutes=45), None, "")):
+def test_after_36_h_free_on_file_past_the_last_span_a_deadhead_still_takes_the_lowest_row():
+    """Review round 6 (CV7-1) read, where 36 h free on file after the last span acclimated him (FAR 117.3) to a theater
+    that holds that station, every clock within 60 deg of it (the anchor, removed in review round 7). D1(b): after any
+    span of the line not on file before the deadhead duty's report the lowest Table B row less 0:30 (8:30) decides
+    whether FAR 117.25(g) may apply and every row (14:00 for 1 segment) whether it is sure. By hand, 2 pilots
+    (_syd_line, the span Apr 30 13:00-May 2 06:00):
+    - a SYD-HNL deadhead only reporting 18:30 HST May 5, in 07:45 May 6 (13:15) or 07:15 (12:45), release 30 min after,
+      HNL-LAX 11:00 after the in, 10:30 free: over 8:30, not past 14:00: '? SHORT of 13:15 (12:45) if it applies'
+      (round 6: SHORT on the anchor's 13:00 for 13:15, and the same '?' for 12:45);
+    - SYD-NRT reporting 18:30 HST May 5, an NRT-HNL deadhead only reporting 23:00 HST May 6, in 11:30 May 7 (12:30),
+      HNL-LAX 11:00 after its release: '? SHORT of 12:30 if it applies' (round 6: SHORT on the anchor's 12:00)."""
+    for dh, length in ((timedelta(hours=13, minutes=15), "13:15"), (timedelta(hours=12, minutes=45), "12:45")):
         rep = at(2027, 5, 5, "18:30")
         c = _duty(rep, _leg("SYD", "HNL", rep + timedelta(hours=1), rep + dh, "3", dh=True))
         ds, u = _syd_line([c, _lax(rep + dh + timedelta(hours=11))])
-        pr = [TO._prep(d) for d in ds]
-        assert TO._acc_bound(pr, 2, (), u) is None
-        a_opts, a_st, a_stn = TO._acc_anchor(pr, 2, (), u)
-        assert (a_stn, a_st, len(a_opts)) == ("SYD", True, 29) and ("SIN", False) in a_opts and ("HNL", False) in a_opts
         t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
-        assert (t["rest"]["ok"], t["rest"]["free"], t["rest"]["cite"]) == (ok, "10:30", "FAR 117.25(g)"), dh
-        assert ("rest" in t["flags"]) == bool(flag), dh
-    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 12:00 (AKL time)" in s and
-               "another reading of its acclimation gives 13:00" in s and s.endswith(
-                   "10:30 free: ? SHORT of 12:45 if it applies.") for s in t["lines"])
+        assert (t["rest"]["ok"], t["rest"]["free"], t["rest"]["cite"]) == (None, "10:30", "FAR 117.25(g)"), dh
+        assert "rest" not in t["flags"], dh
+        assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s
+                   and s.endswith(f"10:30 free: ? SHORT of {length} if it applies.") for s in t["lines"]), dh
     c = _duty(at(2027, 5, 5, "18:30"), _leg("SYD", "NRT", at(2027, 5, 5, "19:30"), at(2027, 5, 6, "05:00"), "3"))
     rep = at(2027, 5, 6, "23:00")
     dh = _duty(rep, _leg("NRT", "HNL", rep + timedelta(hours=1), rep + timedelta(hours=12, minutes=30), "4", dh=True))
     ds, u = _syd_line([c, dh, _lax(rep + timedelta(hours=23, minutes=30))])
-    pr = [TO._prep(d) for d in ds]
-    a_opts, a_st, a_stn = TO._acc_anchor(pr, 3, (), u)
-    assert (a_stn, a_st) == ("SYD", None) and {("ANC", True), ("HNL", True), ("NRT", False)} <= set(a_opts)
     t = TO.duty_timeout(ds, 4, 2, "roster", "332", unknown=u)
-    assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["cite"]) == (False, "12:30", "FAR 117.25(g)")
-    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP on every reading of its acclimation, 36 h "
-               "free at SYD after a span of your line not on file: any theater that holds SYD, every clock within 60 "
-               "deg of it (12:00 at most" in s for s in t["lines"])
+    # the 56 h of FAR 117.25(d) is the larger '?' here (174 h away with the span inside the trip): the cite is its
+    assert (t["rest"]["ok"], t["rest"]["free"], t["rest"]["cite"]) == (None, "10:30", "FAR 117.25(d)")
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s
+               and s.endswith("10:30 free: ? SHORT of 12:30 if it applies.") for s in t["lines"])
     json.dumps(t)
 
 
@@ -4545,16 +4452,18 @@ def test_two_long_stretches_need_the_longest_even_when_it_comes_first():
                for s in t["lines"])
 
 
-def test_a_report_outside_every_theater_a_stay_begun_in_a_span_may_hold_is_no_fork():
-    """Review round 6 (CV7-4: mutant Gcut_rep): a stay a duty inside a span may have begun at a station not on file
-    forks the reading only at a report within 60 deg of a station it may have begun at. By hand, 2 pilots: HNL-LAX
+def test_a_short_after_a_span_on_the_walk_alone_is_a_question_after_the_span():
+    """Review round 6 (CV7-4: mutant Gcut_rep) pinned a fork of the bound (removed in review round 7) here. By hand, 2
+    pilots: HNL-LAX
     (report 08:00 HST Apr 1, release 14:30), a span Apr 2 00:00-01:00, LAX-JFK (report 20:00 HST Apr 2, release 02:15
     Apr 3), JFK-BOS-JFK (report 06:00 HST Apr 4, 27:45 free, release 10:30), an NRT-HNL deadhead only reporting 13:00
     HST Apr 5 (08:00 JST Apr 6, 26:30 free), in 01:00 Apr 6 (12:00), release 01:30; HNL-LAX 11:00 later. Never
     acclimated to the JFK or NRT theater: at NRT (61.7 deg from HNL) HNL 13:00 less 0:30, row 1300-1659, 11:30. A stay
     begun in the span (85:00 by the report) holds LAX, JFK and BOS only at a station between -131 and -58.4 deg (SEA,
-    ORD, ...); NRT is 97 deg or more from every one: no fork. 12:00 is over 11:30: SHORT, 12:00 needed, flagged (with
-    the fork: NRT 08:00 acclimated, row 0700-1159, 14:00, a '?')."""
+    ORD, ...); NRT is 97 deg or more from every one: no fork; 12:00 is over 11:30: SHORT (round 6). Review round 7
+    (D1(b)): with the span Apr 2 00:00-01:00 before the deadhead's report, 12:00 is over the lowest row less 0:30 (8:30)
+    and not past every row (14:00): '? SHORT of 12:00 if it applies'; fully on file (no span) the walk reads HNL 13:00
+    less 0:30, 11:30: SHORT, 12:00 needed, flagged."""
     d0 = _duty(at(2027, 4, 1, "08:00"), _leg("HNL", "LAX", at(2027, 4, 1, "09:00"), at(2027, 4, 1, "14:15"), "1"))
     d1 = _duty(at(2027, 4, 2, "20:00"), _leg("LAX", "JFK", at(2027, 4, 2, "21:00"), at(2027, 4, 3, "02:00"), "2"))
     d2 = _duty(at(2027, 4, 4, "06:00"), _leg("JFK", "BOS", at(2027, 4, 4, "07:00"), at(2027, 4, 4, "08:15"), "3"),
@@ -4562,21 +4471,26 @@ def test_a_report_outside_every_theater_a_stay_begun_in_a_span_may_hold_is_no_fo
     d3 = _duty(at(2027, 4, 5, "13:00"),
                _leg("NRT", "HNL", at(2027, 4, 5, "14:00"), at(2027, 4, 6, "01:00"), "5", dh=True))
     ds, u = [d0, d1, d2, d3, _lax(at(2027, 4, 6, "12:30"))], [(at(2027, 4, 2, "00:00"), at(2027, 4, 2, "01:00"))]
-    assert TO._acc_bound([TO._prep(d) for d in ds], 3, (), u) == ([("HNL", True)], False)
     t = TO.duty_timeout(ds, 4, 2, "roster", "332", unknown=u)
+    assert (t["rest"]["ok"], t["rest"]["free"], t["flags"]) == (None, "11:00", ["rest_q"])
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s
+               and s.endswith("11:00 free: ? SHORT of 12:00 if it applies.") for s in t["lines"])
+    t = TO.duty_timeout(ds, 4, 2, "roster", "332")
     assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"], t["flags"]) == (False, "12:00", "11:00", ["rest"])
 
 
-def test_a_span_read_as_duty_that_moved_him_starts_his_new_stay_at_the_release_before_it():
-    """Review round 6 (CV7-4: mutant Zpend_nomove): a span read as duty that moved him into another theater may have
-    started his stay there as early as the release before the span, not as early as the stay he had in the theater he
-    left. By hand, 2 pilots: HNL-JFK (in 16:00 HST Apr 1: in JFK's theater from then), JFK-BOS-JFK (report 22:00 HST
-    Apr 2, release 06:00 Apr 3), a span Apr 3 08:00-12:00, NRT-KIX (report 20:00 HST Apr 3, at NRT: the span moved him,
-    in 22:00, release 22:15), a KIX-HNL deadhead only reporting 20:00 HST Apr 4 (15:00 JST Apr 5, 21:45 free), in 08:00
+def test_a_span_that_moved_him_before_a_deadhead_turns_its_short_into_a_question():
+    """Review round 6 (CV7-4: mutant Zpend_nomove) pinned the bound's moved stay (removed in review round 7) here: a
+    span read as duty that moved him into another theater may have started his stay there as early as the release
+    before the span. By hand, 2 pilots: HNL-JFK (in 16:00 HST Apr 1: in JFK's theater from then), JFK-BOS-JFK (report
+    22:00 HST Apr 2, release 06:00 Apr 3), a span Apr 3 08:00-12:00, NRT-KIX (report 20:00 HST Apr 3, at NRT: the span
+    moved him, in 22:00, release 22:15), a KIX-HNL deadhead only reporting 20:00 HST Apr 4 (15:00 JST Apr 5, 21:45
+    free), in 08:00
     Apr 5 (12:00), release 08:30; HNL-LAX 11:00 later. At KIX (66.9 deg from HNL) not acclimated: HNL 20:00 less 0:30,
     row 1700-2159, 11:30. His stay in the NRT-KIX theater from the 06:00 Apr 3 release is 38:00 old at the KIX
-    report: no fork. 12:00 is over 11:30: SHORT, 12:00 needed (from his JFK stay's start, 76:00 there: KIX 15:00
-    acclimated, row 1300-1659, 12:00, a '?')."""
+    report: no fork; 12:00 is over 11:30: SHORT (round 6). Review round 7 (D1(b)): with the span Apr 3 08:00-12:00
+    before the deadhead's report, 12:00 is over the lowest row less 0:30 (8:30) and not past every row (14:00): '?
+    SHORT of 12:00 if it applies'; fully on file the walk reads HNL 20:00 less 0:30, 11:30: SHORT, 12:00 needed."""
     c0 = _duty(at(2027, 4, 1, "06:00"), _leg("HNL", "JFK", at(2027, 4, 1, "07:00"), at(2027, 4, 1, "16:00"), "1"))
     c1 = _duty(at(2027, 4, 2, "22:00"), _leg("JFK", "BOS", at(2027, 4, 2, "23:00"), at(2027, 4, 3, "00:15"), "2"),
                _leg("BOS", "JFK", at(2027, 4, 3, "04:00"), at(2027, 4, 3, "05:45"), "3"))
@@ -4584,26 +4498,18 @@ def test_a_span_read_as_duty_that_moved_him_starts_his_new_stay_at_the_release_b
     c3 = _duty(at(2027, 4, 4, "20:00"),
                _leg("KIX", "HNL", at(2027, 4, 4, "21:00"), at(2027, 4, 5, "08:00"), "5", dh=True))
     ds, u = [c0, c1, c2, c3, _lax(at(2027, 4, 5, "19:30"))], [(at(2027, 4, 3, "08:00"), at(2027, 4, 3, "12:00"))]
-    assert TO._acc_bound([TO._prep(d) for d in ds], 3, (), u) == ([("HNL", True)], False)
     t = TO.duty_timeout(ds, 4, 2, "roster", "332", unknown=u)
+    assert (t["rest"]["ok"], t["rest"]["free"], t["flags"]) == (None, "11:00", ["rest_q"])
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s
+               and s.endswith("11:00 free: ? SHORT of 12:00 if it applies.") for s in t["lines"])
+    t = TO.duty_timeout(ds, 4, 2, "roster", "332")
     assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"], t["flags"]) == (False, "12:00", "11:00", ["rest"])
 
 
-def test_a_station_exactly_60_degrees_from_one_he_is_at_since_keeps_a_stay_begun_in_a_span(monkeypatch):
-    """Review round 6 (CV7-4: mutant Uanchor_lt): FAR 117.3's theater is 60 degrees of longitude, so a station a stay
-    may have begun at is kept while every station he is at since is 60 degrees or less from it, exactly 60 included.
-    By hand (two made-up stations at 10.0 and 70.0 deg E, exactly 60.0 apart; one at 70.5, 60.5 away): kept at 70.0,
-    cut at 70.5; a None (no longitude) cuts nothing."""
-    monkeypatch.setitem(TO.LON, "QQA", 10.0)
-    monkeypatch.setitem(TO.LON, "QQB", 15.0)
-    assert TO.ang(10.0, 70.0) == 60.0
-    assert TO._anchors_cut(frozenset({"QQA", "QQB"}), [70.0]) == frozenset({"QQA", "QQB"})
-    assert TO._anchors_cut(frozenset({"QQA", "QQB"}), [70.5]) == frozenset({"QQB"})
-    assert TO._anchors_cut(frozenset({"QQA"}), [None, 70.0]) == frozenset({"QQA"})
-
-
-def test_with_his_theater_not_sure_a_stay_begun_in_a_span_that_may_reach_72_h_in_a_later_one_is_not_bounded():
-    """Review round 6 (CV7-4: mutant Xref_sure_alts): a later span is bounded only where no stay a duty in an earlier
+def test_with_his_theater_not_sure_a_stay_begun_in_a_span_that_may_reach_72_h_in_a_later_one_takes_the_lowest_row():
+    """Review round 6 (CV7-4: mutant Xref_sure_alts; review round 7, D1(b): any span before the deadhead's report now
+    takes the lowest row, so the verdict below holds without the bound): a later span is bounded only where no stay a
+    duty in an earlier
     span may have begun can reach 72 h inside it outside the theater he is sure of; with his theater not sure (a leg
     to a station with no longitude) that holds even when every station that stay may have begun at is within 60 deg
     of his last reference. By hand, 2 pilots: HNL-LAX (release 14:30 HST Apr 1), a span Apr 1 15:00-16:00, LAX-PPG-XYZ
@@ -4620,14 +4526,13 @@ def test_with_his_theater_not_sure_a_stay_begun_in_a_span_that_may_reach_72_h_in
                _leg("LAX", "HNL", at(2027, 4, 6, "23:00"), at(2027, 4, 7, "08:30"), "4", dh=True))
     ds = [e0, e1, e2, _lax(at(2027, 4, 7, "19:00"))]
     u = [(at(2027, 4, 1, "15:00"), at(2027, 4, 1, "16:00")), (at(2027, 4, 5, "08:00"), at(2027, 4, 5, "10:00"))]
-    assert TO._acc_bound([TO._prep(d) for d in ds], 2, (), u) is None
     t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
     assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "10:15") and "rest" not in t["flags"]
     assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s
                and s.endswith("10:15 free: ? SHORT of 10:30 if it applies.") for s in t["lines"])
 
 
-def test_after_a_span_read_as_duty_36_h_free_with_a_schedule_item_in_it_keeps_the_block_in_fork():
+def test_after_a_span_36_h_free_with_a_schedule_item_in_it_takes_the_lowest_row():
     """Review round 6 (CV7-4: mutant Yfree_ok_fork): after a span read as duty a block-in on file may have ended the
     stay the walk counts; 36 h free acclimates him whatever the stay, but not when a schedule item that may be duty
     lies inside the 36 h. By hand, 2 pilots, the line of test_after_a_span_read_as_duty_a_block_in_on_file_may_have_
@@ -4635,7 +4540,9 @@ def test_after_a_span_read_as_duty_36_h_free_with_a_schedule_item_in_it_keeps_th
     11:00) and an item Apr 5 12:00-13:00: on the stay from the AKL block-in (90:00), acclimated to HNL, row 0700-1159,
     14:00: no line; had the span left him in a stay the HNL block-in ends, only 36 h free acclimates him, and the item
     may be duty: no reading of its own, so the lowest row stays, 8:30: '? SHORT of 11:00 if it applies' (without the
-    fork: no line, met)."""
+    fork: no line, met). Review round 7 (D1(b)): the span Apr 1 18:00-20:00 before the deadhead's report makes it the
+    lowest row, 11:00 over 8:30 and not past 14:00, with the item or without it: '? SHORT of 11:00 if it applies' both
+    (round 6 read met without the item); fully on file, no line, met."""
     d0 = _duty(at(2027, 4, 1, "00:00"), _leg("HNL", "HKG", at(2027, 4, 1, "01:00"), at(2027, 4, 1, "12:00"), "1"))
     d1 = _duty(at(2027, 4, 2, "06:00"), _leg("SIN", "AKL", at(2027, 4, 2, "07:00"), at(2027, 4, 2, "16:00"), "2"))
     d2 = _duty(at(2027, 4, 4, "06:00"), _leg("SIN", "ICN", at(2027, 4, 4, "07:00"), at(2027, 4, 4, "12:00"), "3"),
@@ -4646,20 +4553,22 @@ def test_after_a_span_read_as_duty_36_h_free_with_a_schedule_item_in_it_keeps_th
     d4 = _duty(rep, _leg("JFK", "BOS", rep + timedelta(hours=1), rep + timedelta(hours=2), "6"))
     ds, u = [d0, d1, d2, d3, d4], [(at(2027, 4, 1, "18:00"), at(2027, 4, 1, "20:00"))]
     item = [(at(2027, 4, 5, "12:00"), at(2027, 4, 5, "13:00"))]
-    assert TO._acc_bound([TO._prep(d) for d in ds], 3, item, u) is None
-    t = TO.duty_timeout(ds, 4, 2, "roster", "332", unknown=u, busy=item)
-    assert (t["rest"]["ok"], t["rest"]["free"], t["flags"]) == (None, "10:30", ["rest_q"])
-    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s
-               and s.endswith("10:30 free: ? SHORT of 11:00 if it applies.") for s in t["lines"])
-    t = TO.duty_timeout(ds, 4, 2, "roster", "332", unknown=u)
+    for busy in (item, ()):
+        t = TO.duty_timeout(ds, 4, 2, "roster", "332", unknown=u, busy=busy)
+        assert (t["rest"]["ok"], t["rest"]["free"], t["flags"]) == (None, "10:30", ["rest_q"]), busy
+        assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s
+                   and s.endswith("10:30 free: ? SHORT of 11:00 if it applies.") for s in t["lines"]), busy
+    t = TO.duty_timeout(ds, 4, 2, "roster", "332")
     assert t["rest"]["ok"] is True and not any(s.startswith("Rest after deadhead") for s in t["lines"])
 
 
-def test_two_spans_in_one_gap_are_bounded_on_the_end_of_the_later():
-    """Review round 6 (CV7-4: mutant ACuend_lo): the free time on file before the spans of one gap runs from the release
-    to the end of the last of them. By hand, 2 pilots: HNL-LAX (release 14:30 HST Apr 1), spans Apr 1 16:00-17:00 and
-    Apr 3 03:00-04:00 (37:30 after the release: a report inside it may follow 36 h free), a LAX-HNL deadhead only
-    reporting 12:00 HST Apr 3, in 00:00 Apr 4 (12:00), release 00:15; HNL-LAX 10:30 later: the lowest row, 8:30, '?
+def test_two_spans_in_one_gap_take_the_lowest_row():
+    """Review round 6 (CV7-4: mutant ACuend_lo) pinned the bound here: the free time on file before the spans of one
+    gap runs from the release to the end of the last of them; review round 7 (D1(b)) reads the lowest row after any
+    span before the deadhead's report, the same '?' below. By hand, 2 pilots: HNL-LAX (release 14:30 HST Apr 1), spans
+    Apr 1 16:00-17:00 and Apr 3 03:00-04:00 (37:30 after the release: a report inside it may follow 36 h free), a
+    LAX-HNL deadhead only reporting 12:00 HST Apr 3, in 00:00 Apr 4 (12:00), release 00:15; HNL-LAX 10:30 later: the
+    lowest row, 8:30, '?
     SHORT of 12:00 if it applies', rest_q kept (on the first span's end, 2:30 after the release, it would be bounded:
     HNL 12:00, row 1200-1259, 13:00, LAX 15:00 PDT, row 1300-1659, 12:00, HNL less 0:30 12:30: no line, met)."""
     g0 = _duty(at(2027, 4, 1, "08:00"), _leg("HNL", "LAX", at(2027, 4, 1, "09:00"), at(2027, 4, 1, "14:15"), "1"))
@@ -4667,14 +4576,13 @@ def test_two_spans_in_one_gap_are_bounded_on_the_end_of_the_later():
                _leg("LAX", "HNL", at(2027, 4, 3, "13:00"), at(2027, 4, 4, "00:00"), "2", dh=True))
     ds = [g0, g1, _lax(at(2027, 4, 4, "10:45"))]
     u = [(at(2027, 4, 1, "16:00"), at(2027, 4, 1, "17:00")), (at(2027, 4, 3, "03:00"), at(2027, 4, 3, "04:00"))]
-    assert TO._acc_bound([TO._prep(d) for d in ds], 1, (), u) is None
     t = TO.duty_timeout(ds, 2, 2, "roster", "332", unknown=u)
     assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "10:30") and "rest" not in t["flags"]
     assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s
                and s.endswith("10:30 free: ? SHORT of 12:00 if it applies.") for s in t["lines"])
 
 
-def test_a_stay_begun_in_a_span_bounds_a_later_span_ending_at_its_72_h_and_not_one_ending_after():
+def test_a_stay_begun_in_a_span_takes_the_lowest_row_whether_a_later_span_ends_at_its_72_h_or_after():
     """Review round 6 (CV7-4: mutants Calts_le, BAalts_tight; CV7-1: the stay starts at the span's start, where its
     block-in may be, no earlier): FAR 117.3's 72 h are not reached by a report inside a later span that ends exactly at
     them. By hand, 2 pilots: HNL-SYD (release 23:30 HST Jan 10), a span Jan 11 04:00-06:00, SYD-SIN (report 06:00 HST
@@ -4684,20 +4592,20 @@ def test_a_stay_begun_in_a_span_bounds_a_later_span_ending_at_its_72_h_and_not_o
     exactly the second span's end: bounded, HNL 20:00 less 0:30 (row 1700-2159) 11:30 and, that stay acclimating him at
     SIN (88:00), SIN 14:00, row 1300-1659, 12:00: 11:00 is under both, no line, met (from the release, 23:30 Jan 10, as
     round 5, fix 2 counted, 72 h fall inside the span: '?'). The second span to 04:30: a report inside it may follow 72
-    h there: the lowest row, 8:30, '? SHORT of 11:00 if it applies'."""
+    h there: the lowest row, 8:30, '? SHORT of 11:00 if it applies'. Review round 7 (D1(b)): after any span before
+    the deadhead's report the lowest row decides: 11:00 is over 8:30 and not past 14:00, '? SHORT of 11:00 if it
+    applies' for both ends (round 6 read the span to 04:00 met on the bound)."""
     h0 = _duty(at(2027, 1, 10, "13:00"), _leg("HNL", "SYD", at(2027, 1, 10, "14:00"), at(2027, 1, 10, "23:00"), "1"))
     h1 = _duty(at(2027, 1, 13, "06:00"), _leg("SYD", "SIN", at(2027, 1, 13, "07:00"), at(2027, 1, 13, "14:00"), "2"))
     h2 = _duty(at(2027, 1, 14, "20:00"),
                _leg("SIN", "HNL", at(2027, 1, 14, "21:00"), at(2027, 1, 15, "07:00"), "3", dh=True))
     ds = [h0, h1, h2, _lax(at(2027, 1, 15, "18:00"))]
-    for end, ok in (("04:00", True), ("04:30", None)):
+    for end in ("04:00", "04:30"):
         u = [(at(2027, 1, 11, "04:00"), at(2027, 1, 11, "06:00")), (at(2027, 1, 14, "02:00"), at(2027, 1, 14, end))]
-        bnd = TO._acc_bound([TO._prep(d) for d in ds], 2, (), u)
-        assert bnd == (([("HNL", True), ("SIN", False)], None) if ok else None), end
         t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
-        assert (t["rest"]["ok"], t["rest"]["free"]) == (ok, "10:30"), end
-        assert any(s.startswith("Rest after deadhead") and s.endswith("10:30 free: ? SHORT of 11:00 if it applies.")
-                   for s in t["lines"]) == (ok is None), end
+        assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "10:30"), end
+        assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s
+                   and s.endswith("10:30 free: ? SHORT of 11:00 if it applies.") for s in t["lines"]), end
 
 
 def test_the_stretch_reading_edges_8_30_against_8_31_and_since_equal_to_the_need():
@@ -4719,8 +4627,9 @@ def test_the_stretch_reading_edges_8_30_against_8_31_and_since_equal_to_the_need
         assert (t["rest"]["ok"], t["flags"]) == (ok, flags), rep
 
 
-def test_after_36_h_free_past_the_last_span_his_stay_in_that_theater_may_be_long_enough_to_acclimate_him():
-    """Review round 6 (CV7-1; mutant R6anchor_early): after 36 h free on file past the last span his stay in that
+def test_after_36_h_free_past_the_last_span_a_stay_that_may_acclimate_him_is_read_by_the_lowest_row():
+    """Review round 6 (CV7-1; mutant R6anchor_early) read here, on the anchor (removed in review round 7), that after
+    36 h free on file past the last span his stay in that
     station's theater began no later than the block-in that brought him there and may be older (the spans), so later
     reports in that theater may follow 72 h there even where every reference's walk has left it. By hand, 2 pilots:
     HNL-LAX (release 12:30 HST Apr 30), a span Apr 30 13:00-May 2 06:00 (41:30: the bound fails), LAX-NRT (in 00:00
@@ -4730,8 +4639,10 @@ def test_after_36_h_free_past_the_last_span_his_stay_in_that_theater_may_be_long
     Not acclimated: LAX 13:00 PDT less 0:30 (row 1300-1659) 11:30, PPG 09:00 and RAR 10:00 less 0:30 (row 0700-1159)
     13:30. In NRT's theater since 00:00 May 3 (KIX and SIN are within 60 deg of NRT; his own trip to LAX is no block-in,
     the walk's stay model): 106 h, acclimated at SIN, 04:00 May 8, row 0400-0459, 10:00. 11:00 is over 10:00 only: '?
-    SHORT of 11:00 if it applies' (counted from the anchor's report, 69 h, no line). The FAR rest is a '?' on
-    117.25(d)'s 56 h anyway (a trip of 183 h past 60 degrees with a span inside it)."""
+    SHORT of 11:00 if it applies' (counted from the anchor's report, 69 h, no line). Review round 7 (D1(b)): with the
+    span before the deadhead's report the lowest row less 0:30 (8:30) decides: 11:00 is over it and not past 14:00, the
+    same '?' on the lowest row. The FAR rest is a '?' on 117.25(d)'s 56 h anyway (a trip of 183 h past 60 degrees
+    with a span inside it)."""
     a = _duty(at(2027, 4, 30, "06:00"), _leg("HNL", "LAX", at(2027, 4, 30, "07:00"), at(2027, 4, 30, "12:15"), "1"))
     b = _duty(at(2027, 5, 2, "12:00"), _leg("LAX", "NRT", at(2027, 5, 2, "13:00"), at(2027, 5, 3, "00:00"), "2"))
     c = _duty(at(2027, 5, 4, "13:00"), _leg("NRT", "KIX", at(2027, 5, 4, "14:00"), at(2027, 5, 4, "15:30"), "3"))
@@ -4739,13 +4650,10 @@ def test_after_36_h_free_past_the_last_span_his_stay_in_that_theater_may_be_long
     rep = at(2027, 5, 7, "10:00")
     e = _duty(rep, _leg("SIN", "HNL", rep + timedelta(hours=1), rep + timedelta(hours=11), "5", dh=True))
     ds, u = [a, b, c, d, e, _lax(rep + timedelta(hours=22))], [(at(2027, 4, 30, "13:00"), at(2027, 5, 2, "06:00"))]
-    pr = [TO._prep(x) for x in ds]
-    assert TO._acc_anchor(pr, 4, (), u) == ([("SIN", False), ("LAX", True), ("PPG", True), ("RAR", True)], None, "NRT")
     t = TO.duty_timeout(ds, 5, 2, "roster", "332", unknown=u)
     assert (t["rest"]["ok"], t["rest"]["cite"]) == (None, "FAR 117.25(d)")
-    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 10:00 (SIN time)" in s and
-               "another reading of its acclimation gives 13:30" in s and s.endswith(
-                   "10:30 free: ? SHORT of 11:00 if it applies.") for s in t["lines"])
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s and
+               s.endswith("10:30 free: ? SHORT of 11:00 if it applies.") for s in t["lines"])
 
 
 def _ja(d, hm):
@@ -4787,8 +4695,9 @@ def _kix_anchor_line():
     return ds, [(_nv(12, "07:35"), _nv(12, "08:35")), (_nv(14, "01:20"), _nv(15, "17:20"))]
 
 
-def test_after_36_h_free_past_the_last_span_a_block_in_on_file_may_have_ended_the_stay_the_walk_counts(monkeypatch):
-    """Review round 6, fix 1 (ANCHOR-DSPAN; mutants F1anc_dspan, V9anc_st_true): the walk from the anchor keeps round
+def test_after_36_h_free_past_the_last_span_a_block_in_that_may_have_ended_his_stay_is_read_by_the_lowest_row():
+    """Review round 6, fix 1 (ANCHOR-DSPAN; mutants F1anc_dspan, V9anc_st_true) read here, on the anchor (removed in
+    review round 7): the walk from the anchor keeps round
     5, fix 2's block-in fork: the spans before it may have held duty, so a stay the walk counts from a block-in on file
     may be one that block-in did not start. By hand (_kix_anchor_line): KIX is 68.4 deg from OGG, so the KIX-OGG
     block-in (18:05 Nov 18) starts a stay that holds SEA (34.1 deg from OGG) and AKL (28.8): 117:35 at the deadhead's
@@ -4796,29 +4705,22 @@ def test_after_36_h_free_past_the_last_span_a_block_in_on_file_may_have_ended_th
     too). Had the span left him in BNE's theater (OGG is 50.5 deg from BNE, SEA 84.6), the SEA block-in starts his stay
     and AKL is 62.9 deg from SEA: 33:50 there, not acclimated, SEA 17:40 PST less 0:30 (row 1700-2159) 11:30. 12:00 is
     over 11:30 only: '? SHORT of 12:00 if it applies', its acclimation not known (round 6: no line, met). Filling the
-    span with BNE-LAX and LAX-BNE (in BNE 07:30 Nov 15) on file: SHORT, 12:00 needed. With the walk cap at 1 the
-    anchor's forks are too many: the lowest row on any clock, 8:30."""
+    span with BNE-LAX and LAX-BNE (in BNE 07:30 Nov 15) on file: SHORT, 12:00 needed. Review round 7 (D1(b)): with the
+    spans before the deadhead's report 12:00 is over the lowest row less 0:30 (8:30) and not past 14:00 (1 segment):
+    the same '?', now on the lowest row; the filled line, all on file, is still SHORT."""
     ds, u = _kix_anchor_line()
-    pr = [TO._prep(d) for d in ds]
-    assert TO._acc_bound(pr, 6, (), u) is None
-    assert TO._acc_anchor(pr, 6, (), u) == ([("AKL", False), ("SEA", True), ("PPG", False)], None, "KIX")
     t = TO.duty_timeout(ds, 7, 3, "roster", "332", unknown=u)
     assert (t["rest"]["ok"], t["rest"]["free"], t["rest"]["cite"], "rest" in t["flags"]) == (None, "10:30",
                                                                                              "FAR 117.25(g)", False)
     assert t["rest"]["txt"] == "10:30 free, 12:00 needed (FAR 117.25(g)): ? (if it applies)"
-    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 11:30 (SEA time, less 0:30: not "
-               "acclimated on a reading of a theater that holds KIX)" in s and "(? its acclimation is not known (36 h "
-               "free at KIX after a span of your line not on file" in s
-               and s.endswith("10:30 free: ? SHORT of 12:00 if it applies.") for s in t["lines"])
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock, less "
+               "0:30: acclimation not known)" in s and "(? a span of your line not on file before it, so its "
+               "acclimation is not known" in s and s.endswith("10:30 free: ? SHORT of 12:00 if it applies.")
+               for s in t["lines"])
     f1 = _duty(_nv(14, "01:30"), _leg("BNE", "LAX", _nv(14, "02:30"), _nv(14, "15:30"), "10"))
     f2 = _duty(_nv(14, "16:30"), _leg("LAX", "BNE", _nv(14, "17:30"), _nv(15, "07:30"), "11"))
     t = TO.duty_timeout(ds[:2] + [f1, f2] + ds[2:], 9, 3, "roster", "332")
     assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["cite"]) == (False, "12:00", "FAR 117.25(g)")
-    monkeypatch.setattr(TO, "ACC_WALKS", 1)
-    assert TO._acc_anchor(pr, 6, (), u) is None
-    t = TO.duty_timeout(ds, 7, 3, "roster", "332", unknown=u)
-    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s
-               for s in t["lines"])
 
 
 def _xyz_line(rep4, *legs4):
@@ -4884,34 +4786,36 @@ def test_72_h_counted_across_a_report_at_a_station_with_no_longitude_is_never_th
                s.endswith("10:15 free: ? SHORT of 14:00 if it applies.") for s in t["lines"])
 
 
-def test_the_anchor_needs_36_h_free_exactly():
-    """Review round 6, fix 1 (TEST-ANCHOR-PATHS, TEST-R6-EDGE-SURVIVORS; mutants V3anc_36le, V5anc_36m1): the anchor is
-    a report after 36 h free from the release on file before it (FAR 117.3's 36 consecutive hours). By hand, 2 pilots:
+def test_after_a_span_the_lowest_row_decides_whatever_the_free_time_since():
+    """Review round 6, fix 1 (TEST-ANCHOR-PATHS, TEST-R6-EDGE-SURVIVORS; mutants V3anc_36le, V5anc_36m1) pinned here
+    the anchor's 36 h (removed in review round 7): a report after 36 h free from the release on file before it. By
+    hand, 2 pilots:
     HNL-LAX (release 12:30 HST Apr 30), a span Apr 30 13:00 to May 3 02:00 (61:30 from the release: the bound fails),
     LAX-SYD (in SYD 06:00 May 4, release 06:30), a SYD-HNL deadhead only reporting 18:30 HST May 5 (36:00 free), in
     06:15 May 6 (11:45), HNL-LAX 11:00 after its release (10:30 free). Every reference within 60 deg of SYD reads 12:00
     or more at 04:30 UTC May 6 (test_after_36_h_free_on_file_past_the_last_span_a_deadhead_reads_every_clock_of_that_
-    theater): no line, met. LAX-SYD a minute later (35:59 free): no anchor, the lowest row, 8:30: '? SHORT of 11:45 if
-    it applies'."""
+    theater): no line, met (round 6). LAX-SYD a minute later (35:59 free): no anchor, the lowest row, 8:30: '? SHORT of
+    11:45 if it applies'. Review round 7 (D1(b)): after the span before the deadhead's report the lowest row less 0:30
+    (8:30) decides whatever the free time since: 11:45 is over it and not past 14:00: '? SHORT of 11:45 if it
+    applies' both ways."""
     rep = _my(5, "18:30")
     u = [(_ap(30, "13:00"), _my(3, "02:00"))]
-    for late, ok in ((0, True), (1, None)):
+    for late in (0, 1):
         arr = _my(4, "06:00") + timedelta(minutes=late)
         ds = [_duty(_ap(30, "06:00"), _leg("HNL", "LAX", _ap(30, "07:00"), _ap(30, "12:15"), "1")),
               _duty(arr - timedelta(hours=16), _leg("LAX", "SYD", arr - timedelta(hours=15), arr, "2")),
               _duty(rep, _leg("SYD", "HNL", rep + timedelta(hours=1), rep + timedelta(hours=11, minutes=45), "3",
                               dh=True)),
               _lax(rep + timedelta(hours=22, minutes=45))]
-        a = TO._acc_anchor([TO._prep(d) for d in ds], 2, (), u)
-        assert (a is None) == (ok is None) and (a is None or (a[1], a[2]) == (True, "SYD")), late
         t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
-        assert (t["rest"]["ok"], t["rest"]["free"]) == (ok, "10:30"), late
+        assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "10:30"), late
         assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s
-                   and s.endswith("10:30 free: ? SHORT of 11:45 if it applies.") for s in t["lines"]) == (ok is None)
+                   and s.endswith("10:30 free: ? SHORT of 11:45 if it applies.") for s in t["lines"]), late
 
 
-def test_a_stay_begun_before_the_anchor_may_reach_72_h_at_a_later_report_outside_its_theater():
-    """Review round 6, fix 1 (TEST-ANCHOR-PATHS; mutant V1anc_noalts): after 36 h free past the last span his stay in
+def test_a_stay_begun_before_36_h_free_past_a_span_is_read_by_the_lowest_row():
+    """Review round 6, fix 1 (TEST-ANCHOR-PATHS; mutant V1anc_noalts) pinned the anchor's fork (removed in review round
+    7) here: after 36 h free past the last span his stay in
     that theater may have begun at any station within 60 deg of it (the spans), so at a later report within 60 deg of
     such a station and of every one he is at since it may be 72 h old: acclimated (0) or not (1), a fork. By hand, 2
     pilots: HNL-AKL (release 18:00 HST May 5), a span May 6 04:00 to May 7 20:00 (50:00 from the release: the bound
@@ -4922,7 +4826,8 @@ def test_a_stay_begun_before_the_anchor_may_reach_72_h_at_a_later_report_outside
     release. SYD, BNE and MEL are within 60 deg of PPG, HKG, HNL and SIN: a stay begun there 72 h before the anchor
     may acclimate him at the HNL report, and then at SIN he is not acclimated: HNL 17:15 less 0:30 (row 1700-2159)
     11:30; on HKG's acclimation SIN and HKG 11:15, row 0700-1159, 14:00. 11:45 is over 11:30 only: '? SHORT of 11:45 if
-    it applies' (without that stay: HKG's 14:00 alone, no line, met)."""
+    it applies' (without that stay: HKG's 14:00 alone, no line, met). Review round 7 (D1(b)): the span before the
+    deadhead's report makes it the lowest row less 0:30 (8:30): 11:45 is over it and not past 14:00, the same '?'."""
     ds = [_duty(_my(5, "05:15"), _leg("HNL", "AKL", _my(5, "06:30"), _my(5, "17:30"), "1")),
           _duty(_my(8, "06:00"), _leg("MNL", "PPG", _my(8, "07:15"), _my(8, "08:15"), "2")),
           _duty(_my(10, "08:45"), _leg("PPG", "HKG", _my(10, "09:45"), _my(10, "19:45"), "3")),
@@ -4932,17 +4837,15 @@ def test_a_stay_begun_before_the_anchor_may_reach_72_h_at_a_later_report_outside
                 _leg("SIN", "LAX", _my(14, "18:30"), _my(15, "05:00"), "6", dh=True)),
           _duty(_my(15, "15:45"), _leg("LAX", "MNL", _my(15, "16:45"), _my(15, "17:45"), "7"))]
     u = [(_my(6, "04:00"), _my(7, "20:00"))]
-    a_opts, a_st, a_stn = TO._acc_anchor([TO._prep(d) for d in ds], 5, (), u)
-    assert (a_stn, a_st) == ("PPG", None) and {("HNL", True), ("HKG", False), ("SIN", False)} <= set(a_opts)
     t = TO.duty_timeout(ds, 6, 2, "roster", "332", unknown=u)
     assert (t["rest"]["ok"], t["rest"]["free"], t["rest"]["cite"]) == (None, "10:15", "FAR 117.25(g)")
-    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 11:30 (HNL time, less 0:30: not "
-               "acclimated on a reading of a theater that holds PPG)" in s and "another reading of its acclimation "
-               "gives 14:00" in s and s.endswith("10:15 free: ? SHORT of 11:45 if it applies.") for s in t["lines"])
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s and
+               s.endswith("10:15 free: ? SHORT of 11:45 if it applies.") for s in t["lines"])
 
 
-def test_past_the_walk_cap_from_the_earliest_anchor_a_later_one_is_read(monkeypatch):
-    """Review round 6, fix 1 (TEST-ANCHOR-PATHS, TEST-R6-EDGE-SURVIVORS; mutants V4anc_cap_keep, V6anc_first): where the
+def test_a_deadhead_of_exactly_every_row_after_a_span_is_a_question():
+    """Review round 6, fix 1 (TEST-ANCHOR-PATHS, TEST-R6-EDGE-SURVIVORS; mutants V4anc_cap_keep, V6anc_first) pinned
+    the anchors and the walk cap (removed in review round 7) here: where the
     walk from the earliest report after 36 h free past the last span gives no reading (here more walks than the cap, set
     to 1), a later such report is read; the walks cut short by the cap are never kept. By hand, 2 pilots: HNL-ANC
     (release 04:50 HST May 4), a span May 4 15:05-16:05, HNL-PPT (release 20:35 May 5), PPT-SYD-SIN reporting 20:35 May
@@ -4953,7 +4856,9 @@ def test_past_the_walk_cap_from_the_earliest_anchor_a_later_one_is_read(monkeypa
     SIN: one walk per reference, every clock within 60 deg of SIN 12:00 at most (SIN and HKG 20:10, row 1700-2159; SYD
     and BNE 22:10 AEST, row 2200-2259, 11:00): 14:00 is over all, SHORT, 14:00 needed. With the cap at 64 the bound
     reads it (the 1:00 span, 10:15 after the release: SIN 12:00, sure) and the walk from PPT gives readings: SHORT
-    too."""
+    too. Review round 7 (D1(b)): after the span before the deadhead's report 14:00 is over the lowest row less 0:30
+    (8:30) but not past every row for its 1 segment (14:00, row 0700-1159: exactly it): '? SHORT of 14:00 if it
+    applies', no rest flag."""
     ds = [_duty(_my(3, "18:20"), _leg("HNL", "ANC", _my(3, "19:35"), _my(4, "04:35"), "1")),
           _duty(_my(5, "07:05"), _leg("HNL", "PPT", _my(5, "08:05"), _my(5, "20:05"), "2")),
           _duty(_my(7, "20:35"), _leg("PPT", "SYD", _my(7, "21:50"), _my(8, "00:50"), "3"),
@@ -4964,15 +4869,10 @@ def test_past_the_walk_cap_from_the_earliest_anchor_a_later_one_is_read(monkeypa
                 _leg("HKG", "ORD", _my(11, "03:10"), _my(11, "16:10"), "7", dh=True)),
           _duty(_my(12, "02:40"), _leg("ORD", "BNE", _my(12, "03:55"), _my(12, "08:55"), "8"))]
     u = [(_my(4, "15:05"), _my(4, "16:05"))]
-    pr = [TO._prep(d) for d in ds]
-    for cap, bnd, stn in ((64, ([("SIN", False)], True), "PPT"), (1, None, "SIN")):
-        monkeypatch.setattr(TO, "ACC_WALKS", cap)
-        assert TO._acc_bound(pr, 4, (), u) == bnd, cap
-        assert TO._acc_anchor(pr, 4, (), u)[1:] == (True, stn), cap
-        t = TO.duty_timeout(ds, 5, 2, "roster", "332", unknown=u)
-        assert (t["rest"]["ok"], t["rest"]["need"], "rest" in t["flags"]) == (False, "14:00", True), cap
-    assert any(s.startswith("Rest after deadhead") and "36 h free at SIN after a span of your line not on file" in s
-               for s in t["lines"])
+    t = TO.duty_timeout(ds, 5, 2, "roster", "332", unknown=u)
+    assert (t["rest"]["ok"], t["rest"]["free"], "rest" in t["flags"]) == (None, "10:00", False)
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s and
+               s.endswith("10:00 free: ? SHORT of 14:00 if it applies.") for s in t["lines"])
 
 
 def test_a_schedule_item_inside_a_span_leaves_the_stretch_its_full_length():
@@ -4994,16 +4894,18 @@ def test_a_schedule_item_inside_a_span_leaves_the_stretch_its_full_length():
                for s in t["lines"])
 
 
-def test_a_stay_a_duty_in_a_span_may_begin_starts_at_the_first_span_of_the_gap():
-    """Review round 6, fix 1 (TEST-R6-RELAX-SURVIVORS: mutant V10alt_lastspan): with two spans in one gap, a stay a
-    duty in a span may have begun starts at the first span's start, not the last's. By hand, 2 pilots, the line of
-    test_a_duty_inside_a_span_may_begin_a_stay_at_a_station_not_on_file with its span split in two, Feb 17 02:55-08:00
-    and Feb 17 18:00 to Feb 18 08:55 (30:45 from the 02:10 release to the last end: bounded): a stay begun in the first
-    (at ORD, whose 60 degrees hold LAX and JFK) is 86:30 old at the JFK deadhead's report (17:25 HST Feb 20):
+def test_two_spans_in_a_gap_that_may_begin_a_stay_take_the_lowest_row():
+    """Review round 6, fix 1 (TEST-R6-RELAX-SURVIVORS: mutant V10alt_lastspan) pinned the bound here (removed in review
+    round 7): with two spans in one gap, a stay a duty in a span may have begun starts at the first span's start, not
+    the last's. By hand, 2 pilots, the line of test_a_duty_inside_a_span_may_begin_a_stay_and_the_lowest_row_reads_it
+    with its span split in two, Feb 17 02:55-08:00 and Feb 17 18:00 to Feb 18 08:55 (30:45 from the 02:10 release to the
+    last end: bounded): a stay begun in the first (at ORD, whose 60 degrees hold LAX and JFK) is 86:30 old at the JFK
+    deadhead's report (17:25 HST Feb 20):
     acclimated, JFK 22:25 EST, row 2200-2259, 11:00; on HNL 17:25 less 0:30, 11:30: '? SHORT of 11:15 if it applies'
     (from the second span's start, 18:00 Feb 17, 71:25: no fork, no line, met). A filling on file, LAX-ORD in the first
     span (in 07:30 Feb 17) and ORD-LAX in the second (in 08:30 Feb 18): 81:55 in ORD's theater, acclimated, SHORT, 11:15
-    needed."""
+    needed. Review round 7 (D1(b)): with the spans before the deadhead's report 11:15 is over the lowest row less 0:30
+    (8:30) and not past 14:00: the same '? SHORT of 11:15 if it applies', on the lowest row."""
     a = _duty(_fb(16, "19:55"), _leg("LIH", "LAX", _fb(16, "20:55"), _fb(17, "01:55"), "1"))
     b = _duty(_fb(19, "14:55"), _leg("LAX", "JFK", _fb(19, "15:55"), _fb(20, "01:55"), "2"))
     c = _duty(_fb(20, "17:25"),
@@ -5011,11 +4913,9 @@ def test_a_stay_a_duty_in_a_span_may_begin_starts_at_the_first_span_of_the_gap()
     rep = _fb(21, "15:25")
     d = _duty(rep, _leg("HNL", "OGG", rep + timedelta(hours=1), rep + timedelta(hours=1, minutes=40), "4"))
     u = [(_fb(17, "02:55"), _fb(17, "08:00")), (_fb(17, "18:00"), _fb(18, "08:55"))]
-    assert TO._acc_bound([TO._prep(x) for x in (a, b, c, d)], 2, (), u) == ([("HNL", True), ("JFK", False)], None)
     t = TO.duty_timeout([a, b, c, d], 3, 2, "roster", "332", unknown=u)
-    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 11:00 (JFK time)" in s and
-               "another reading of its acclimation gives 11:30" in s and s.endswith(
-                   "10:30 free: ? SHORT of 11:15 if it applies.") for s in t["lines"])
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s and
+               s.endswith("10:30 free: ? SHORT of 11:15 if it applies.") for s in t["lines"])
     x1 = _duty(_fb(17, "03:00"), _leg("LAX", "ORD", _fb(17, "03:30"), _fb(17, "07:30"), "5"))
     x2 = _duty(_fb(18, "03:30"), _leg("ORD", "LAX", _fb(18, "04:00"), _fb(18, "08:30"), "6"))
     t = TO.duty_timeout([a, x1, x2, b, c, d], 5, 2, "roster", "332")
@@ -5029,10 +4929,11 @@ def test_a_span_that_begins_at_or_before_the_release_is_read_from_the_release():
     - _g0 (release 19:00 HST Apr 5), a span 19:00 Apr 5 (or 18:00) to 07:00 Apr 6, HNL-LAX reporting 18:59 HST Apr 6:
       the stretch runs 12:00 from the release, 12:00 needed, at least 11:59 since: '?' (from a minute later: 11:59,
       met);
-    - the line of test_a_stay_begun_in_a_span_bounds_a_later_span_ending_at_its_72_h_and_not_one_ending_after with its
-      first span from 23:00 Jan 10, before the 23:30 release, and the second Jan 13 20:00-23:30: a stay a duty in the
-      first may begin from 23:30 Jan 10, 72 h at 23:30 Jan 13, exactly the second span's end: bounded, no line, met
-      (from 23:00 Jan 10 it would reach 72 h inside the second span: the lowest row, '?')."""
+    - the line of test_a_stay_begun_in_a_span_takes_the_lowest_row_whether_a_later_span_ends_at_its_72_h_or_after
+      with its first span from 23:00 Jan 10, before the 23:30 release, and the second Jan 13 20:00-23:30: round 6 read
+      the bound from the release (met, no line); review round 7 (D1(b)): after the spans before the deadhead's report
+      the SIN-HNL deadhead's 11:00 is over the lowest row less 0:30 (8:30) and not past 14:00: '? SHORT of 11:00 if it
+      applies', 10:30 free."""
     for st in ("19:00", "18:00"):
         t = TO.duty_timeout([_g0(), _lax(_ap(6, "18:59"))], 1, 2, "roster", "332",
                             unknown=[(_ap(5, st), _ap(6, "07:00"))])
@@ -5046,14 +4947,15 @@ def test_a_span_that_begins_at_or_before_the_release_is_read_from_the_release():
                _leg("SIN", "HNL", _ja(14, "21:00"), _ja(15, "07:00"), "3", dh=True))
     ds = [h0, h1, h2, _lax(_ja(15, "18:00"))]
     u = [(_ja(10, "23:00"), _ja(11, "06:00")), (_ja(13, "20:00"), _ja(13, "23:30"))]
-    assert TO._acc_bound([TO._prep(d) for d in ds], 2, (), u) == ([("HNL", True), ("SIN", False)], None)
     t = TO.duty_timeout(ds, 3, 2, "roster", "332", unknown=u)
-    assert (t["rest"]["ok"], t["rest"]["free"]) == (True, "10:30")
-    assert not any(s.startswith("Rest after deadhead") for s in t["lines"])
+    assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "10:30")
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s and
+               s.endswith("10:30 free: ? SHORT of 11:00 if it applies.") for s in t["lines"])
 
 
-def test_from_the_anchor_a_block_in_forks_only_where_a_stay_he_may_be_in_is_under_72_h():
-    """Review round 6, fix 1 (ANCHOR-DSPAN; mutants F1chains_off, F1chains_norep, F1chains_noleg): the walk from the
+def test_a_deadhead_of_14_h_after_a_span_is_a_question_whatever_stay_he_may_be_in():
+    """Review round 6, fix 1 (ANCHOR-DSPAN; mutants F1chains_off, F1chains_norep, F1chains_noleg) pinned here the
+    anchor's chains (removed in review round 7): the walk from the
     anchor forks on a block-in on file (fix 2's fork) only where a stay he may be in, begun before the anchor at a
     station within 60 deg of his and held or ended at each station since, is under 72 h old at that report. By hand,
     2 pilots: HNL-ICN (release 07:15 HST May 15), a span May 15 07:15-09:15, OGG-ANC (release 21:30 May 15), SFO-LAX-KIX
@@ -5065,9 +4967,11 @@ def test_from_the_anchor_a_block_in_forks_only_where_a_stay_he_may_be_in_is_unde
     reading, KIX 16:25 (row 1300-1659) and PPG 20:25 SST (row 1700-2159), 12:00 at most: 14:00 is over it, SHORT, 14:00
     needed (forking anyway, the walk where the item may be duty reads no reading: the lowest row, '?'). Reporting at
     19:50 HST May 20 the KIX stay is exactly 72:00 old: no fork, SHORT (KIX 14:50 and PPG 18:50, 12:00); at 19:49,
-    71:59: a fork, the lowest row, '?' (mutant F1chains_le)."""
+    71:59: a fork, the lowest row, '?' (mutant F1chains_le). Review round 7 (D1(b)): after the span before the
+    deadhead's report the lowest row less 0:30 (8:30) decides and every row for its 1 segment (14:00) whether it is
+    sure: 14:00 is not past 14:00, so all three are '?' (10:00 free of 14:00, no rest flag)."""
     u, item = [(_my(15, "07:15"), _my(15, "09:15"))], [(_my(18, "07:20"), _my(18, "08:20"))]
-    for rp, ok in (("21:25", False), ("19:50", False), ("19:49", None)):
+    for rp in ("21:25", "19:50", "19:49"):
         r = _my(20, rp)
         ds = [_duty(_my(14, "20:45"), _leg("HNL", "ICN", _my(14, "21:45"), _my(15, "06:45"), "1")),
               _duty(_my(15, "19:15"), _leg("OGG", "ANC", _my(15, "20:15"), _my(15, "21:15"), "2")),
@@ -5077,18 +4981,15 @@ def test_from_the_anchor_a_block_in_forks_only_where_a_stay_he_may_be_in_is_unde
               _duty(r, _leg("PPG", "BOS", r + timedelta(hours=1), r + timedelta(hours=14), "6", dh=True)),
               _duty(r + timedelta(hours=24, minutes=30),
                     _leg("BOS", "BNE", r + timedelta(hours=25, minutes=45), r + timedelta(hours=30, minutes=45), "7"))]
-        pr = [TO._prep(d) for d in ds]
-        assert TO._acc_bound(pr, 4, item, u) is None
-        a = TO._acc_anchor(pr, 4, item, u)
-        assert a == (([("KIX", False), ("PPG", False)], True, "SFO") if ok is False else None), rp
         t = TO.duty_timeout(ds, 5, 2, "roster", "332", unknown=u, busy=item)
-        assert (t["rest"]["ok"], t["rest"]["free"], "rest" in t["flags"]) == (ok, "10:00", ok is False), rp
-        assert t["rest"]["txt"].startswith("10:00 free, 14:00 needed (FAR 117.25(g)): " + ("SHORT" if ok is False else
-                                                                                        "? (if it applies)")), rp
+        assert (t["rest"]["ok"], t["rest"]["free"], "rest" in t["flags"]) == (None, "10:00", False), rp
+        assert t["rest"]["txt"].startswith("10:00 free, 14:00 needed (FAR 117.25(g)): ? (if it applies)"), rp
 
 
-def test_from_the_anchor_a_report_his_own_way_ends_the_stays_it_does_not_hold():
-    """Review round 6, fix 1 (ANCHOR-DSPAN; mutant F1chains_norep): a stay he may be in ends where he reports at a
+def test_a_report_his_own_way_after_a_span_is_read_by_the_lowest_row():
+    """Review round 6, fix 1 (ANCHOR-DSPAN; mutant F1chains_norep) pinned here the anchor's chains (removed in review
+    round 7; D1(b) reads the lowest row after the spans: 12:00 over 8:30, not past 14:00, the same '?'): a stay he may
+    be in ends where he reports at a
     station outside its 60 degrees (he went there his own way), as at a block-in. By hand, 3 pilots, _kix_anchor_line
     with KIX-OGG alone (in OGG 18:05 Nov 18, release 18:35) and SEA-OGG reporting at SEA 08:05 HST Nov 21 (61:30 free):
     a stay begun before the anchor at BNE (50.5 deg from OGG) ends at that report (84.6 deg from BNE), the one begun
@@ -5098,9 +4999,430 @@ def test_from_the_anchor_a_report_his_own_way_ends_the_stays_it_does_not_hold():
     met)."""
     ds, u = _kix_anchor_line()
     ds[3] = _duty(_nv(18, "10:05"), _leg("KIX", "OGG", _nv(18, "11:05"), _nv(18, "18:05"), "4"))
-    pr = [TO._prep(d) for d in ds]
-    assert TO._acc_anchor(pr, 6, (), u) == ([("AKL", False), ("SEA", True), ("PPG", False)], None, "KIX")
     t = TO.duty_timeout(ds, 7, 3, "roster", "332", unknown=u)
     assert (t["rest"]["ok"], t["rest"]["free"], t["rest"]["cite"]) == (None, "10:30", "FAR 117.25(g)")
-    assert any(s.startswith("Rest after deadhead") and s.endswith("10:30 free: ? SHORT of 12:00 if it applies.")
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s and
+               s.endswith("10:30 free: ? SHORT of 12:00 if it applies.") for s in t["lines"])
+
+
+# ------------------------------------------------------------ review round 7 (the FAR 117.25(g) acclimation reading)
+def _lax_dh(dh_rep, dh_in):
+    """HNL-LAX (report 08:00 HST Apr 1, in 14:15, release 14:30), a LAX-HNL deadhead only (dh_rep, out 1:00 later, in
+    dh_in, release 0:15 after it: domestic)."""
+    return [_duty(_ap(1, "08:00"), _leg("HNL", "LAX", _ap(1, "09:00"), _ap(1, "14:15"), "1")),
+            _duty(dh_rep, _leg("LAX", "HNL", dh_rep + timedelta(hours=1), dh_in, "2", dh=True))]
+
+
+def test_after_a_span_a_deadhead_past_every_table_b_row_is_short():
+    """Review round 7 (D1(b), test (ii)): after a span of the line not on file before the deadhead duty's report it is
+    sure only past every Table B row for its segments with no reduction (round 4, fix 1's every-row rule): 14:00 for 1
+    segment (row 0700-1159). By hand, 2 pilots (_lax_dh): a span at LAX Apr 2 02:00-03:00 HST, the LAX-HNL deadhead
+    reporting 14:00 HST Apr 2, in 04:15 Apr 3: 14:15, past 14:00: sure; release 04:30, HNL-LAX reporting 16:30 HST Apr
+    3: 12:00 free of 14:15, SHORT, flagged 'rest'; reporting 18:45, 14:15 free: met. In 04:00 (14:00, not past it):
+    '? SHORT of 14:00 if it applies' with 12:00 free (reporting 16:15)."""
+    u = [(_ap(2, "02:00"), _ap(2, "03:00"))]
+    ds = _lax_dh(_ap(2, "14:00"), _ap(3, "04:15"))
+    t = TO.duty_timeout(ds + [_lax(_ap(3, "16:30"))], 2, 2, "roster", "332", unknown=u)
+    assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"], t["rest"]["cite"]) == (False, "14:15", "12:00",
+                                                                                          "FAR 117.25(g)")
+    assert "rest" in t["flags"] and "Flag: short of FAR rest (FAR 117.25(g)): 12:00 of 14:15." in t["lines"]
+    assert ("Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10): the duty before it was deadhead "
+            "transportation only, 14:15 from its report to its last block-in, over every Table B row (14:00 at most "
+            "for 1 segment, on any clock): a rest as long as the deadhead transportation (14:15, from the report), no "
+            "less than 10 h; 12:00 free: SHORT, check with Crew Scheduling.") in t["lines"]
+    t = TO.duty_timeout(ds + [_lax(_ap(3, "18:45"))], 2, 2, "roster", "332", unknown=u)
+    assert (t["rest"]["ok"], t["rest"]["need"], t["flags"]) == (True, "14:15", [])
+    ds = _lax_dh(_ap(2, "14:00"), _ap(3, "04:00"))
+    t = TO.duty_timeout(ds + [_lax(_ap(3, "16:15"))], 2, 2, "roster", "332", unknown=u)
+    assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "12:00") and "rest" not in t["flags"]
+    assert any(s.startswith("Rest after deadhead") and s.endswith("12:00 free: ? SHORT of 14:00 if it applies.")
                for s in t["lines"])
+
+
+def test_fully_on_file_a_deadhead_over_every_reading_of_the_walk_is_short():
+    """Review round 7 (D1(a), test (iii)): with no span of the line not on file before the deadhead duty's report its
+    Table B FDP is read on the main walk's readings, sure past every one of them. By hand, 2 pilots (_lax_dh): the
+    LAX-HNL deadhead reporting 12:00 HST Apr 2 (15:00 PDT; 21:30 free at LAX, 39.5 deg from HNL: acclimated to HNL's
+    theater): HNL 12:00, row 1200-1259, 13:00 for 1 segment, and LAX's own clock, row 1300-1659, 12:00. In 01:30 Apr 3
+    (13:30, over both): sure; release 01:45, HNL-LAX reporting 13:45 HST Apr 3: 12:00 free of 13:30, SHORT, flagged.
+    In 00:30 (12:30, over 12:00 only): '? SHORT of 12:30 if it applies', another reading giving 13:00 (release 00:45,
+    the report 12:45)."""
+    ds = _lax_dh(_ap(2, "12:00"), _ap(3, "01:30"))
+    t = TO.duty_timeout(ds + [_lax(_ap(3, "13:45"))], 2, 2, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"]) == (False, "13:30", "12:00") and "rest" in t["flags"]
+    assert ("Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10): the duty before it was deadhead "
+            "transportation only, 13:30 from its report to its last block-in, over its Table B FDP 12:00 (LAX time): a "
+            "rest as long as the deadhead transportation (13:30, from the report), no less than 10 h; 12:00 free: "
+            "SHORT, check with Crew Scheduling.") in t["lines"]
+    ds = _lax_dh(_ap(2, "12:00"), _ap(3, "00:30"))
+    t = TO.duty_timeout(ds + [_lax(_ap(3, "12:45"))], 2, 2, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "12:00") and "rest" not in t["flags"]
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 12:00 (LAX time)" in s and
+               "(? another reading of its acclimation gives 13:00)" in s and
+               s.endswith("12:00 free: ? SHORT of 12:30 if it applies.") for s in t["lines"])
+
+
+def test_a_deadhead_past_every_reading_of_the_four_complete_walks_is_short():
+    """Review round 7 (D2; round 6 LASTOUT-4WAY-STATUS and NOLON-WALK-ST-SHORT): after a report at a station with no
+    longitude the walk is read four ways (his stay kept or ended there, the theater last acclimated to kept or not
+    sure); the statuses differ, so round 6, fix 1 read every such deadhead '?'. Where every walk ends on a complete
+    reading (a walk reading the theater not sure may end on 'nolon', its not-acclimated side, when no report at a
+    station with no longitude followed 36 h free), the deadhead past every reading of all four is sure. By hand, 2
+    pilots (_xyz_line: XYZ followed 23:30 free after the LAX-SFO release), an HNL-SIN deadhead only reporting 14:00 HST
+    Apr 7 (17:00 PDT): the walk alone 94:00 in LAX's theater, HNL time, row 1300-1659, 12:00; the theater kept, LAX
+    17:00 PDT, row 1700-2159, 12:00, and HNL 12:00; his stay ended at XYZ and the theater not sure, LAX less 0:30,
+    11:30. In 03:00 Apr 8 (13:00, over 12:00, the highest): sure; release 03:30 (customs), SIN-HKG reporting 13:45:
+    10:15 free of 13:00, SHORT, flagged (rounds 4 to 6 HEAD: '?' as status None; d7227a0, 99c200a, 9b03277: SHORT).
+    12:45 long the
+    same. Reported 10:00 HST Apr 7 (HNL row 0700-1159, 14:00) and 14:00 long: not past 14:00, '?'. With XYZ reported
+    after 36:00 free (20:30 HST Apr 6), a report there may have acclimated him to a theater whose clock is not known:
+    the every-row rule decides, '?'."""
+    for rep, length, ok in ((_ap(7, "14:00"), timedelta(hours=13), False),
+                            (_ap(7, "14:00"), timedelta(hours=12, minutes=45), False),
+                            (_ap(7, "10:00"), timedelta(hours=14), None)):
+        arr = rep + length
+        ds = _xyz_line(rep, _leg("HNL", "SIN", rep + timedelta(hours=1), arr, "5", dh=True))
+        ds.append(_duty(arr + timedelta(hours=10, minutes=45),
+                        _leg("SIN", "HKG", arr + timedelta(hours=11, minutes=45), arr + timedelta(hours=15), "6")))
+        info = {}
+        opts = TO._acc_walk([TO._prep(d) for d in ds], 4, (), (), info)[0]
+        assert info["complete"] and info["four"], rep
+        t = TO.duty_timeout(ds, 5, 2, "roster", "332")
+        assert (t["rest"]["ok"], t["rest"]["free"], "rest" in t["flags"]) == (ok, "10:15", ok is False), (rep, length)
+        if ok is False:
+            assert set(opts) == {("HNL", False), ("LAX", False), ("LAX", True)}
+            assert t["rest"]["need"] == TO.hm(length)
+            assert any(s.startswith("Rest after deadhead") and "over its Table B FDP on every reading of its "
+                       "acclimation, read four ways after a report at a station with no longitude (12:00 at most, HNL "
+                       "time)" in s and s.endswith("10:15 free: SHORT, check with Crew Scheduling.")
+                       for s in t["lines"])
+    ds = _xyz_line(_ap(7, "14:00"), _leg("HNL", "SIN", _ap(7, "15:00"), _ap(8, "03:00"), "5", dh=True))
+    ds[3] = _duty(_ap(6, "20:30"), _leg("XYZ", "HNL", _ap(6, "21:30"), _ap(7, "03:30"), "4", dh=True))
+    ds.append(_duty(_ap(8, "13:45"), _leg("SIN", "HKG", _ap(8, "14:45"), _ap(8, "18:00"), "6")))
+    info = {}
+    TO._acc_walk([TO._prep(d) for d in ds], 4, (), (), info)
+    assert info["four"] and not info["complete"]
+    t = TO.duty_timeout(ds, 5, 2, "roster", "332")
+    assert (t["rest"]["ok"], "rest" in t["flags"]) == (None, False)
+
+
+def test_the_four_readings_all_not_acclimated_are_worded_so():
+    """Review round 7 (D3; round 6 WALK-FALSE-WORDS, TXT-4WAY-NOT-ACCL, NOLON-WORDS-NOTACC): the acclimation line of the
+    four readings after a report at a station with no longitude is worded by their status: None '? acclimation not
+    sure', True 'acclimated, but to which theater is not sure', False 'not acclimated, but which theater you were last
+    acclimated to is not sure'; a leading '?' only where the status is not known or the readings' limits differ (when
+    'clock' goes into unsure). By hand, 2 pilots: _xyz_line with HNL-SFO (report 10:00 HST Apr 7), SFO-SIN (report
+    16:00 HST Apr 9, in 10:00 Apr 10, release 10:30), SIN-HKG reporting 06:00 or 08:00 HST Apr 11 (19:30 or 21:30 free,
+    20:00 or 22:00 in SIN's theater): not acclimated on every reading, the theater last acclimated to HNL (the walk
+    alone), LAX (the theater kept) or SFO (his stay ended at XYZ, the theater not sure: 47:45 free at SFO acclimates).
+    At 06:00 HST: HNL 06:00, row 0600-0659, 13:00 less 0:30 = 12:30; LAX and SFO 09:00 PDT, row 0700-1159, 14:00 less
+    0:30 = 13:30: the limits differ, 'clock', the line leads with '?'. At 08:00 HST: HNL 08:00 and LAX and SFO 11:00
+    PDT, all row 0700-1159, 13:30 (Table A 9:00 on each): no '?', and neither 'acclimation' nor 'clock' in unsure."""
+    base = _xyz_line(_ap(7, "10:00"), _leg("HNL", "SFO", _ap(7, "11:00"), _ap(7, "16:00"), "5"))
+    base.append(_duty(_ap(9, "16:00"), _leg("SFO", "SIN", _ap(9, "17:00"), _ap(10, "10:00"), "6")))
+    head = ("Acclimation (FAR 117.3, FOM 4.3.2.4.6): {q}not acclimated, but which theater you were last acclimated to "
+            "is not sure: you reported at XYZ since, with no longitude on file, so you may have left your theater "
+            "there or been acclimated there; read with your stay kept or ended there and the theater last acclimated "
+            "to kept or not sure (the walk alone: not acclimated: SIN is 98 deg from HNL")
+    for rep, q, unsure, lim in ((_ap(11, "06:00"), "? ", ["clock"], "12:30"), (_ap(11, "08:00"), "", [], "13:30")):
+        ds = base + [_duty(rep, _leg("SIN", "HKG", rep + timedelta(hours=1), rep + timedelta(hours=5), "7"))]
+        w_opts, _w, w_st, _f, _h = TO._acc_walk([TO._prep(d) for d in ds], 6, (), ())
+        assert (set(w_opts), w_st) == ({("HNL", True), ("LAX", True), ("SFO", True)}, False), rep
+        t = TO.duty_timeout(ds, 6, 2, "roster", "332")
+        assert (t["fdp"]["acclimated"], t["unsure"], t["fdp"]["limit"]) == (False, unsure, lim), rep
+        assert any(s.startswith(head.format(q=q)) and s.endswith("the lower of HNL time less 0:30, LAX time less 0:30 "
+                                                                 "and SFO time less 0:30 is used (conservative).")
+                   for s in t["lines"]), rep
+        json.dumps(t)
+
+
+def test_the_walk_with_his_stay_ended_and_the_theater_kept_alone_may_give_the_lowest_limit():
+    """Review round 7 (D4; round 6 MUT-F1MODE-BOTH: mutant F1mode_both, NOLON_MODES without (True, True), was called
+    equivalent but is not). By hand, 3 pilots, A330 (Table C, Class 1), the gz:388 shape: HNL-NRT (report 15:30 HST Jul
+    6, in 21:30, release 22:00), NRT-JFK (report 02:20 HST Jul 8, in 08:20), JFK-LAX (report 01:30 HST Jul 9, in 09:30,
+    release 09:45), XYZ-LAX (report 19:20 HST Jul 10, his own way, 33:35 free; in 03:20 Jul 11, release 03:50), a
+    LAX-ORD deadhead (report 16:30 HST Jul 12, 36:40 free: acclimated to LAX on the walks that read the theater not
+    sure; in 02:30 Jul 13, release 02:45), ORD-HNL reporting 23:00 HST Jul 13 (20:15 free), out 00:00, in 05:00 Jul 14.
+    His stay from the JFK block-in (08:20 Jul 8; LAX and ORD within 60 deg of JFK) kept across XYZ is 134:40 old at
+    ORD: acclimated there (the theater kept) or to LAX's (the theater not sure, ORD 30.5 deg from LAX): LAX 02:00 PDT
+    and ORD 04:00 CDT, row 0000-0559, 15:00. With his stay ended at XYZ (the LAX block-in 03:20 Jul 11 starts one: 67:40
+    at ORD) and the theater kept (HNL's: ORD is 70 deg from HNL), not acclimated: HNL 23:00, row 1700-2359, 15:00 less
+    0:30 = 14:30, the lowest, from that walk alone. FDP end 13:30 HST Jul 14, less the 5:00 block: last out 08:30 HST
+    = 13:30 CDT, ext 15:30 CDT (without that walk: 15:00, 14:00 CDT, as d7227a0 and 99c200a read it)."""
+    ds = [_duty(at(2027, 7, 6, "15:30"), _leg("HNL", "NRT", at(2027, 7, 6, "16:30"), at(2027, 7, 6, "21:30"), "1")),
+          _duty(at(2027, 7, 8, "02:20"), _leg("NRT", "JFK", at(2027, 7, 8, "03:20"), at(2027, 7, 8, "08:20"), "2")),
+          _duty(at(2027, 7, 9, "01:30"), _leg("JFK", "LAX", at(2027, 7, 9, "02:30"), at(2027, 7, 9, "09:30"), "3")),
+          _duty(at(2027, 7, 10, "19:20"), _leg("XYZ", "LAX", at(2027, 7, 10, "20:20"), at(2027, 7, 11, "03:20"), "4")),
+          _duty(at(2027, 7, 12, "16:30"),
+                _leg("LAX", "ORD", at(2027, 7, 12, "17:30"), at(2027, 7, 13, "02:30"), "5", dh=True)),
+          _duty(at(2027, 7, 13, "23:00"), _leg("ORD", "HNL", at(2027, 7, 14, "00:00"), at(2027, 7, 14, "05:00"), "6"))]
+    pr = [TO._prep(d) for d in ds]
+    assert TO._acclimation(pr, 5, (), (), nolon=(True, True))[0] == [("HNL", True)]
+    assert all(("HNL", True) not in TO._acclimation(pr, 5, (), (), nolon=m)[0]
+               for m in ((False, False), (False, True), (True, False)))
+    t = TO.duty_timeout(ds, 5, 3, "roster", "332")
+    assert (t["last_out"]["txt"], t["last_out"]["hst"], t["last_out_ext"]["txt"]) == ("13:30 CDT", "08:30 HST",
+                                                                                      "15:30 CDT")
+    assert (t["last_out"]["by"], t["fdp"]["row"]) == ("FDP 14:30 (FAR 117.17, Table C)", "1700-2359 (HNL time 23:00)")
+    assert "acclimation" in t["unsure"] and t["fdp"]["acclimated"] is None
+
+
+def test_a_first_duty_at_a_station_with_no_longitude_is_read_four_ways_too():
+    """Review round 7 (D4; round 6 TEST-NOLON-SURVIVORS: mutant W4prev_none skipped the four readings for a first duty
+    on file at a station with no longitude). By hand, 2 pilots: XYZ-LAX (report 06:00 HST Apr 1, the first duty on
+    file, in 12:00, release 12:30: XYZ's country not on file), LAX-SFO reporting 05:30 HST Apr 3 (41:00 free), out
+    06:30, in 08:00. The walk alone (the theater not sure at XYZ): 36 h free acclimates him to LAX's theater, LAX 08:30
+    PDT, row 0700-1159, 14:00. The theater kept (HNL's; LAX is 39.5 deg from HNL): acclimated, HNL 05:30, row 0500-0559,
+    12:00, the lowest, from those walks alone (stay kept or ended). FDP end 17:30 HST less the 1:30 block: last out
+    16:00 HST = 19:00 PDT, ext 21:00 PDT, by FDP 12:00 (on the walk alone 14:00: 18:00 HST); status True on every
+    reading, the limits differ: 'acclimated, but to which theater is not sure', with a '?' and 'clock'."""
+    ds = [_duty(_ap(1, "06:00"), _leg("XYZ", "LAX", _ap(1, "07:00"), _ap(1, "12:00"), "1")),
+          _duty(_ap(3, "05:30"), _leg("LAX", "SFO", _ap(3, "06:30"), _ap(3, "08:00"), "2"))]
+    pr = [TO._prep(d) for d in ds]
+    assert TO._acclimation(pr, 1, (), ())[0] == [("LAX", False)]
+    w_opts, _w, w_st, _f, _h = TO._acc_walk(pr, 1, (), ())
+    assert (set(w_opts), w_st) == ({("LAX", False), ("HNL", False)}, True)
+    t = TO.duty_timeout(ds, 1, 2, "roster", "332")
+    assert (t["last_out"]["txt"], t["last_out"]["hst"], t["last_out_ext"]["txt"]) == ("19:00 PDT", "16:00 HST",
+                                                                                      "21:00 PDT")
+    assert (t["last_out"]["by"], t["fdp"]["acclimated"], t["unsure"]) == ("FDP 12:00 (FAR 117.13, Table B)", True,
+                                                                          ["clock"])
+    assert any(s.startswith("Acclimation (FAR 117.3, FOM 4.3.2.4.6): ? acclimated, but to which theater is not sure: "
+                            "you reported at XYZ since") for s in t["lines"])
+
+
+def test_walks_that_read_not_acclimated_and_not_known_on_the_same_clock_give_status_none():
+    """Review round 7 (D4; round 6 TEST-NOLON-SURVIVORS: mutant W2same_opts returned the walk alone where the options
+    of the four agree but their statuses differ). By hand, 2 pilots: HNL-JFK (report 08:00 HST Apr 1, in 17:00, release
+    17:15), XYZ-SIN (report 10:00 HST Apr 3, his own way, 40:45 free; in 22:00, release 22:30), SIN-HKG reporting 20:00
+    HST Apr 4 (21:30 free, 22:00 in SIN's theater). The theater kept (HNL's; SIN is 98 deg from HNL): not acclimated,
+    HNL less 0:30. The theater not sure: acclimation not known, the lower of HNL less 0:30 and SIN's own clock: the
+    same options as the walk alone, the statuses False and None: status None, 'acclimation' in unsure, and the line is
+    the four readings' (the walk alone's words in parentheses)."""
+    ds = [_duty(_ap(1, "08:00"), _leg("HNL", "JFK", _ap(1, "09:00"), _ap(1, "17:00"), "1")),
+          _duty(_ap(3, "10:00"), _leg("XYZ", "SIN", _ap(3, "11:00"), _ap(3, "22:00"), "2")),
+          _duty(_ap(4, "20:00"), _leg("SIN", "HKG", _ap(4, "21:00"), _ap(5, "01:00"), "3"))]
+    pr = [TO._prep(d) for d in ds]
+    walk = TO._acclimation(pr, 2, (), ())
+    assert (walk[0], walk[2]) == ([("HNL", True), ("SIN", False)], None)
+    assert [TO._acclimation(pr, 2, (), (), nolon=m)[2] for m in TO.NOLON_MODES] == [False, None, False]
+    w_opts, w_words, w_st, _f, _h = TO._acc_walk(pr, 2, (), ())
+    assert (w_opts, w_st) == ([("HNL", True), ("SIN", False)], None)
+    assert w_words.startswith("? acclimation not sure: you reported at XYZ since, with no longitude on file")
+    t = TO.duty_timeout(ds, 2, 2, "roster", "332")
+    assert "acclimation" in t["unsure"] and t["fdp"]["acclimated"] is None
+    assert any(s.startswith("Acclimation (FAR 117.3, FOM 4.3.2.4.6): ? acclimation not sure: you reported at XYZ")
+               for s in t["lines"])
+
+
+def test_a_span_before_the_first_duty_on_file_counts_as_a_span_before_the_deadhead():
+    """Review round 7 (D1(b); round 6 CV7-2: a span before the first duty on file was not read as one between duties, so
+    the walk's own reading after it decided FAR 117.25(g), though 36 h free after a span takes that station's theater
+    while he may never have left another). By hand, 2 pilots (_lax_dh): HNL-LAX (report 08:00 HST Apr 1), the LAX-HNL
+    deadhead reporting 14:00 HST Apr 3 (47:30 free), in 03:00 Apr 4 (13:00), release 03:15; HNL-LAX reporting 15:15
+    HST Apr 4: 12:00 free. Fully on file: acclimated to HNL's theater, HNL 14:00 and LAX 17:00 PDT, 12:00 both: SHORT,
+    13:00 needed. With a span Mar 31 10:00-12:00 HST before the first duty: round 6 read the walk's own LAX 12:00 (36 h
+    free acclimates there) and gave SHORT; now the lowest row less 0:30 (8:30) decides and 13:00 is not past 14:00:
+    '? SHORT of 13:00 if it applies'."""
+    ds = _lax_dh(_ap(3, "14:00"), _ap(4, "03:00")) + [_lax(_ap(4, "15:15"))]
+    t = TO.duty_timeout(ds, 2, 2, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"]) == (False, "13:00", "12:00") and "rest" in t["flags"]
+    u = [(at(2027, 3, 31, "10:00"), at(2027, 3, 31, "12:00"))]
+    assert TO._acclimation([TO._prep(d) for d in ds], 1, (), u)[0] == [("LAX", False)]  # the walk's own reading
+    t = TO.duty_timeout(ds, 2, 2, "roster", "332", unknown=u)
+    assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "12:00") and "rest" not in t["flags"]
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 8:30 (the lowest row on any clock" in s and
+               s.endswith("12:00 free: ? SHORT of 13:00 if it applies.") for s in t["lines"])
+
+
+def test_a_walk_keeping_the_theater_that_ends_not_known_leaves_the_four_readings_incomplete():
+    """Review round 7 (D2): only a walk that reads the theater last acclimated to not sure may end on 'nolon' for the
+    four readings to be complete; a walk that keeps it and still ends there (an arrival on file at a station with no
+    longitude, here QQQ) has no reading of the acclimated side, so the every-row rule decides. By hand, 2 pilots:
+    _xyz_line with HNL-QQQ (report 10:00 HST Apr 7, in 15:00), a QQQ-HNL deadhead only reporting 08:00 HST Apr 8, in
+    21:45 (13:45), release 22:15 (QQQ's country not on file); HNL-LAX reporting 08:15 HST Apr 9, 10:00 free. Every walk
+    ends on 'nolon' at QQQ: HNL 08:00 less 0:30 (the walk alone, acclimated at HNL on its 90 h stay) and LAX 11:00 PDT
+    less 0:30 (the other three), row 0700-1159, 13:30 both; QQQ's own clock not on file adds the lowest row, 9:00.
+    13:45 is over 13:30 but not past 14:00: '? SHORT of 13:45 if it applies' (taken as complete it would be SHORT)."""
+    ds = _xyz_line(_ap(7, "10:00"), _leg("HNL", "QQQ", _ap(7, "11:00"), _ap(7, "15:00"), "5"))
+    ds.append(_duty(_ap(8, "08:00"), _leg("QQQ", "HNL", _ap(8, "09:00"), _ap(8, "21:45"), "6", dh=True)))
+    ds.append(_duty(_ap(9, "08:15"), _leg("HNL", "LAX", _ap(9, "09:15"), _ap(9, "14:30"), "7")))
+    info = {}
+    w_opts = TO._acc_walk([TO._prep(d) for d in ds], 5, (), (), info)[0]
+    assert (set(w_opts), info["four"], info["complete"]) == ({("HNL", True), ("LAX", True)}, True, False)
+    t = TO.duty_timeout(ds, 6, 2, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["free"]) == (None, "10:00") and "rest" not in t["flags"]
+    assert any(s.startswith("Rest after deadhead") and "(? its acclimation is not known)" in s and
+               s.endswith("10:00 free: ? SHORT of 13:45 if it applies.") for s in t["lines"])
+
+
+def _xyz_first(*before):
+    """The duties given, an XYZ-HNL deadhead (report 08:00 HST Apr 6 at XYZ, a station with no longitude, in 15:00,
+    release 15:30: XYZ's country not on file), an HNL-SIN deadhead only (report 14:00 HST Apr 7, 22:30 free; in 03:00
+    Apr 8: 13:00; release 03:30, customs) and SIN-HKG reporting 13:45 HST Apr 8 (10:15 free)."""
+    return list(before) + [
+        _duty(_ap(6, "08:00"), _leg("XYZ", "HNL", _ap(6, "09:00"), _ap(6, "15:00"), "1", dh=True)),
+        _duty(_ap(7, "14:00"), _leg("HNL", "SIN", _ap(7, "15:00"), _ap(8, "03:00"), "2", dh=True)),
+        _duty(_ap(8, "13:45"), _leg("SIN", "HKG", _ap(8, "14:45"), _ap(8, "18:00"), "3"))]
+
+
+def test_a_first_duty_on_file_at_a_station_with_no_longitude_counts_as_36_h_free_for_the_four_readings():
+    """Review round 7, fix 1 (T1-D2-SURVIVORS, TEST-D2-36H-SURVIVORS: mutants M16 and M09 read a first duty on file at
+    a station with no longitude as no 36 h free). With no duty on file before the XYZ report he may have been free long
+    enough there to be acclimated to its theater, whose clock is not known, so a walk that reads the theater not sure
+    may not end on its 'nolon' reading for the four readings to be complete. By hand, 2 pilots (_xyz_first): at the
+    HNL-SIN deadhead (HNL 14:00, row 1300-1659, 12:00 for 1 segment) the walks that keep the theater (HNL's) read
+    acclimated, HNL 12:00; those that read it not sure end on 'nolon' at HNL, HNL less 0:30, 11:30 (the report station
+    is HNL: no other clock). 13:00 is over 12:00, the highest, but not past 14:00: as the first duty on file the
+    every-row rule decides, '? SHORT of 13:00 if it applies' with 10:15 free, no 'rest' flag. With HNL-LAX before it
+    (report 08:00 HST Apr 5, in 14:15, release 14:30: 17:30 free before XYZ, under 36 h) the four readings are
+    complete: SHORT, 13:00 needed, flagged."""
+    ds = _xyz_first()
+    info = {}
+    w_opts = TO._acc_walk([TO._prep(d) for d in ds], 1, (), (), info)[0]
+    assert (set(w_opts), info["four"], info["complete"]) == ({("HNL", True), ("HNL", False)}, True, False)
+    t = TO.duty_timeout(ds, 2, 2, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["free"], t["flags"]) == (None, "10:15", ["rest_q"])
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 11:30 (HNL time, less 0:30: acclimation "
+               "not known)" in s and "(? its acclimation is not known)" in s and
+               s.endswith("10:15 free: ? SHORT of 13:00 if it applies.") for s in t["lines"])
+    ds = _xyz_first(_duty(_ap(5, "08:00"), _leg("HNL", "LAX", _ap(5, "09:00"), _ap(5, "14:15"), "0")))
+    info = {}
+    TO._acc_walk([TO._prep(d) for d in ds], 2, (), (), info)
+    assert (info["four"], info["complete"]) == (True, True)
+    t = TO.duty_timeout(ds, 3, 2, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"]) == (False, "13:00", "10:15") and "rest" in t["flags"]
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP on every reading of its acclimation, read "
+               "four ways after a report at a station with no longitude (12:00 at most, HNL time)" in s and
+               s.endswith("10:15 free: SHORT, check with Crew Scheduling.") for s in t["lines"])
+
+
+def test_36_h_free_before_any_report_at_a_station_with_no_longitude_keeps_the_four_readings_incomplete():
+    """Review round 7, fix 1 (TEST-D2-36H-SURVIVORS: mutant M23 kept only the last such report's free time). By hand,
+    2 pilots: HNL-LAX (report 08:00 HST Apr 1, in 14:15, release 14:30), an XYZ-HNL deadhead (report 08:00 HST Apr 3,
+    41:30 free: he may have been acclimated to XYZ's theater; in 15:00, release 15:30), another (report 08:00 HST Apr 4,
+    16:30 free since the HNL release), an HNL-SIN deadhead only (report 14:00 HST Apr 5, 22:30 free; in 03:00 Apr 6:
+    13:00; release 03:30) and SIN-HKG reporting 13:45 HST Apr 6 (10:15 free). The readings are those of
+    _xyz_first's (HNL 12:00, HNL less 0:30 11:30); the later XYZ report followed 16:30 free, but the first 36 h, so the
+    'nolon' ending is not complete: '? SHORT of 13:00 if it applies', no 'rest' flag (on the last report alone it would
+    read SHORT)."""
+    ds = [_duty(_ap(1, "08:00"), _leg("HNL", "LAX", _ap(1, "09:00"), _ap(1, "14:15"), "1")),
+          _duty(_ap(3, "08:00"), _leg("XYZ", "HNL", _ap(3, "09:00"), _ap(3, "15:00"), "2", dh=True)),
+          _duty(_ap(4, "08:00"), _leg("XYZ", "HNL", _ap(4, "09:00"), _ap(4, "15:00"), "3", dh=True)),
+          _duty(_ap(5, "14:00"), _leg("HNL", "SIN", _ap(5, "15:00"), _ap(6, "03:00"), "4", dh=True)),
+          _duty(_ap(6, "13:45"), _leg("SIN", "HKG", _ap(6, "14:45"), _ap(6, "18:00"), "5"))]
+    info = {}
+    w_opts = TO._acc_walk([TO._prep(d) for d in ds], 3, (), (), info)[0]
+    assert (set(w_opts), info["four"], info["complete"]) == ({("HNL", True), ("HNL", False)}, True, False)
+    t = TO.duty_timeout(ds, 4, 2, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["free"], t["flags"]) == (None, "10:15", ["rest_q"])
+    assert any(s.startswith("Rest after deadhead") and s.endswith("10:15 free: ? SHORT of 13:00 if it applies.")
+               for s in t["lines"])
+
+
+def test_a_schedule_item_in_the_36_h_keeps_a_deadhead_past_both_readings_a_question():
+    """Review round 7, fix 1 (T1-D2-SURVIVORS, TEST-D2-36H-SURVIVORS: mutants M22 and M25 counted the walk's 'busy'
+    reading as complete). Fully on file, a schedule item that may be duty inside the 36 h before the deadhead duty's
+    report: the walk reads acclimated there (the item not duty) and not acclimated (it was), and the acclimation is not
+    known, so as since round 4 only the every-row rule makes it sure. By hand, 2 pilots: HNL-NRT (report 06:00 HST Apr
+    1, in 15:00, release 15:30, customs), an item Apr 2 06:00-07:00 HST, an NRT-HNL deadhead only reporting 23:00 HST
+    Apr 3 (55:30 free with the item in it, 56:00 in NRT's theater: under 72 h), in 12:00 Apr 4 (13:00), release 12:30;
+    HNL-LAX reporting 00:30 HST Apr 5 (12:00 free). Readings: NRT 18:00 JST, row 1700-2159, 12:00; HNL 23:00, row
+    2300-2359, 10:00 less 0:30, 9:30. 13:00 is over both but not past 14:00: '? SHORT of 13:00 if it applies', no
+    'rest' flag. With no item: acclimated to NRT, 12:00 alone, SHORT, 13:00 needed, flagged."""
+    ds = [_duty(_ap(1, "06:00"), _leg("HNL", "NRT", _ap(1, "07:00"), _ap(1, "15:00"), "1")),
+          _duty(_ap(3, "23:00"), _leg("NRT", "HNL", _ap(4, "00:00"), _ap(4, "12:00"), "2", dh=True)),
+          _duty(_ap(5, "00:30"), _leg("HNL", "LAX", _ap(5, "01:30"), _ap(5, "06:45"), "3"))]
+    busy = [(_ap(2, "06:00"), _ap(2, "07:00"))]
+    info = {}
+    w_got = TO._acc_walk([TO._prep(d) for d in ds], 1, busy, (), info)
+    assert (w_got[0], w_got[2], info) == ([("NRT", False), ("HNL", True)], None, {"complete": False})
+    t = TO.duty_timeout(ds, 2, 2, "roster", "332", busy=busy)
+    assert (t["rest"]["ok"], t["rest"]["free"], t["flags"]) == (None, "12:00", ["rest_q"])
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 9:30 (HNL time, less 0:30: acclimation "
+               "not known)" in s and s.endswith("12:00 free: ? SHORT of 13:00 if it applies.") for s in t["lines"])
+    t = TO.duty_timeout(ds, 2, 2, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["need"], t["flags"]) == (False, "13:00", ["rest"])
+    assert ("Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10): the duty before it was deadhead "
+            "transportation only, 13:00 from its report to its last block-in, over its Table B FDP 12:00 (NRT time): a "
+            "rest as long as the deadhead transportation (13:00, from the report), no less than 10 h; 12:00 free: "
+            "SHORT, check with Crew Scheduling.") in t["lines"]
+
+
+def test_hnl_domicile_clock_lowers_the_limit_when_the_walk_status_is_not_known():
+    """Review round 7, fix 2 (TEST-D1A-HNL-ST-NONE: mutant Y14 skipped HNL's reading where the main walk's status is
+    None and turned this '?' into met). D1(a): HNL's clock, less 0:30 unless acclimated, is a reading that only lowers
+    the limit that decides whether FAR 117.25(g) may apply, also where the walk's status is not known. By hand, 2
+    pilots, the gz:246 shape: HNL-NRT (report 16:30 HST Jan 9, in 22:30, release 23:00, customs), NRT-KIX (report 20:40
+    HST Jan 10, in 22:25, release 22:40), KIX-ORD (report 11:35 HST Jan 12: 36:55 free at KIX acclimates him to KIX's
+    theater; in 17:35, release 18:05), an XYZ-OGG deadhead (report 10:45 HST Jan 13, his own way, 16:40 free: under 36
+    h; in 12:30, release 13:00), OGG-NRT (report 05:40 HST Jan 14, in 18:40, release 19:10), an NRT-ORD deadhead only
+    reporting 16:50 HST Jan 15 (11:50 JST Jan 16; 21:40 free, 22:10 in NRT's theater), in 06:20 HST Jan 16 (13:30),
+    release 06:50; ORD-ICN reporting 16:50 HST Jan 16 (10:00 free). The theater kept (KIX's, NRT 5 deg from it):
+    acclimated, KIX 11:50, row 0700-1159, 14:00 for 1 segment. The theater not sure: not known, the lower of KIX less
+    0:30 (13:30) and NRT's own clock (14:00). Status None, HNL not among the readings; every walk complete (XYZ
+    followed 16:40 free). HNL 16:50, row 1300-1659, 12:00 less 0:30 = 11:30, the lowest: 13:30 is over it, not over
+    the highest reading (14:00) nor past every row (14:00): '? SHORT of 13:30 if it applies', no 'rest' flag. Without
+    HNL's reading the lowest is 13:30 and 13:30 is not over it: met on the 10 h rule (Y14)."""
+    ds = [_duty(_ja(9, "16:30"), _leg("HNL", "NRT", _ja(9, "17:30"), _ja(9, "22:30"), "9301")),
+          _duty(_ja(10, "20:40"), _leg("NRT", "KIX", _ja(10, "21:40"), _ja(10, "22:25"), "9302")),
+          _duty(_ja(12, "11:35"), _leg("KIX", "ORD", _ja(12, "12:35"), _ja(12, "17:35"), "9303")),
+          _duty(_ja(13, "10:45"), _leg("XYZ", "OGG", _ja(13, "11:45"), _ja(13, "12:30"), "9304", dh=True)),
+          _duty(_ja(14, "05:40"), _leg("OGG", "NRT", _ja(14, "06:40"), _ja(14, "18:40"), "9305")),
+          _duty(_ja(15, "16:50"), _leg("NRT", "ORD", _ja(15, "17:50"), _ja(16, "06:20"), "9306", dh=True)),
+          _duty(_ja(16, "16:50"), _leg("ORD", "ICN", _ja(16, "17:50"), _ja(16, "22:50"), "9307"))]
+    info = {}
+    w_opts, _w, w_st, _f, _h = TO._acc_walk([TO._prep(d) for d in ds], 5, (), (), info)
+    assert (set(w_opts), w_st) == ({("KIX", False), ("KIX", True), ("NRT", False)}, None)
+    assert (info["four"], info["complete"]) == (True, True)
+    t = TO.duty_timeout(ds, 6, 2, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["free"], t["flags"]) == (None, "10:00", ["rest_q"])
+    g = ("Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10): the duty before it was deadhead "
+         "transportation only, 13:30 from its report to its last block-in, over its Table B FDP 11:30 (HNL time, the "
+         "domicile's clock, less 0:30: not acclimated on one of its readings, FAR 117.13(b); a reading to confirm, FOM "
+         "4.3.2.4): a rest as long as the deadhead transportation (13:30, from the report), no less than 10 h (? its "
+         "acclimation readings give 14:00); 10:00 free: ? SHORT of 13:30 if it applies.")
+    assert g in t["lines"]
+
+
+def test_two_own_way_reports_at_stations_with_no_longitude_each_under_36_h_free_leave_the_four_readings_complete():
+    """Review round 7, fix 2 (TEST-D2-TWO-STATIONS: mutant Y16 let the 'nolon' ending count as complete only with one
+    such station). D2 reads every report at a station with no longitude his own way: where none followed 36 h free,
+    the walks that read the theater not sure may end on 'nolon' however many there were. By hand, 2 pilots: HNL-LAX
+    (report 08:00 HST Apr 1, in 14:15, release 14:30), an XYZ-LAX deadhead (report 08:00 HST Apr 2, his own way, 17:30
+    free; in 12:00, release 12:30: XYZ's country not on file), a QQQ-HNL deadhead (report 08:00 HST Apr 3, his own way,
+    19:30 free; in 15:00, release 15:30), an HNL-SIN deadhead only (report 14:00 HST Apr 4, 22:30 free; in 03:00 Apr 5:
+    13:00; release 03:30, customs) and SIN-HKG reporting 13:45 HST Apr 5 (10:15 free). The theater kept (HNL's):
+    acclimated, HNL 14:00, row 1300-1659, 12:00 for 1 segment; the theater not sure: not known (22:30 free, under 72 h
+    on file in HNL's theater), HNL less 0:30, 11:30. 13:00 is over 12:00, the highest, and every walk is
+    complete: SHORT, 13:00 needed, 10:15 free, flagged (Y16: '?'). With the first two duties 16:30 earlier (the XYZ
+    report 15:30 HST Apr 1, release 20:00) the QQQ report follows 36:00 free: he may have been acclimated there to a
+    theater whose clock is not known, so the every-row rule decides; 13:00 is not past 14:00: '? SHORT of 13:00 if it
+    applies', no 'rest' flag."""
+    ds = [_duty(_ap(1, "08:00"), _leg("HNL", "LAX", _ap(1, "09:00"), _ap(1, "14:15"), "9311")),
+          _duty(_ap(2, "08:00"), _leg("XYZ", "LAX", _ap(2, "09:00"), _ap(2, "12:00"), "9312", dh=True)),
+          _duty(_ap(3, "08:00"), _leg("QQQ", "HNL", _ap(3, "09:00"), _ap(3, "15:00"), "9313", dh=True)),
+          _duty(_ap(4, "14:00"), _leg("HNL", "SIN", _ap(4, "15:00"), _ap(5, "03:00"), "9314", dh=True)),
+          _duty(_ap(5, "13:45"), _leg("SIN", "HKG", _ap(5, "14:45"), _ap(5, "18:00"), "9315"))]
+    info = {}
+    w_opts, _w, w_st, _f, _h = TO._acc_walk([TO._prep(d) for d in ds], 3, (), (), info)
+    assert (set(w_opts), w_st) == ({("HNL", False), ("HNL", True)}, None)
+    assert (info["four"], info["complete"]) == (True, True)
+    t = TO.duty_timeout(ds, 4, 2, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["need"], t["rest"]["free"], t["flags"]) == (False, "13:00", "10:15", ["rest"])
+    assert ("Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10): the duty before it was deadhead "
+            "transportation only, 13:00 from its report to its last block-in, over its Table B FDP on every reading of "
+            "its acclimation, read four ways after a report at a station with no longitude (12:00 at most, HNL time): "
+            "a rest as long as the deadhead transportation (13:00, from the report), no less than 10 h; 10:15 free: "
+            "SHORT, check with Crew Scheduling.") in t["lines"]
+    early = timedelta(hours=-16, minutes=-30)
+    ds = [_shift(ds[0], early), _shift(ds[1], early)] + ds[2:]
+    assert TO._prep(ds[1])["release"] == _ap(1, "20:00") and ds[2]["report"] - _ap(1, "20:00") == timedelta(hours=36)
+    info = {}
+    w_opts = TO._acc_walk([TO._prep(d) for d in ds], 3, (), (), info)[0]
+    assert (set(w_opts), info["four"], info["complete"]) == ({("HNL", False), ("HNL", True)}, True, False)
+    t = TO.duty_timeout(ds, 4, 2, "roster", "332")
+    assert (t["rest"]["ok"], t["rest"]["free"], t["flags"]) == (None, "10:15", ["rest_q"])
+    assert any(s.startswith("Rest after deadhead") and "over its Table B FDP 11:30 (HNL time, less 0:30: acclimation "
+               "not known)" in s and "(? its acclimation is not known)" in s and
+               s.endswith("10:15 free: ? SHORT of 13:00 if it applies.") for s in t["lines"])

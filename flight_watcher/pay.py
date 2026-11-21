@@ -5,9 +5,9 @@ the two cannot drift apart.
 
 Rules (2023 PWA): credit x the A330 PAX FO hourly rate for the pilot's longevity year (PWA 3.D.6; the
 package credit already carries the 5:00 per calendar day minimum, PWA 4.C.3); plus, per PWA 4.O.1, the IRO
-override $4.00 per block hour when flying the RO seat, $3.00 per block hour for an FO on a 3-pilot crew, and
-the Extended Range +15% for a type-rated FO on a 4-pilot crew or a SIN trip (or as Ryan's per-trip ER list
-says: '+KEY' on, '-KEY' off).
+override $4.00 per block hour when flying the RO seat on a 3-pilot crew, $3.00 per block hour for an FO on a 3-pilot
+crew and for an FO or RO on a 4-pilot Extended Range crew, $5.00 for a Captain on 3 or more, and the type-rated FO's
++15% only where Ryan's per-trip list marks the trip '+KEY' (1.7.20: never by itself for SIN or 4 pilots).
 
 FW-0062 (1.4.2, Ryan): another pilot's month rebuilt from crew lines gets a pay line too, priced for the seat that
 pilot flew on each trip: a Captain at the PWA 3.C.4 A330 PAX / B787 Captain rate (same effective dates as the FO
@@ -73,36 +73,151 @@ def crew_n(crew):
     return sum(int(x) for x in re.findall(r"\d{2}", str(crew or "")))
 
 
-def er_on(key, lay, n, er_list):
-    if "-" + key in er_list:
-        return False
-    if "+" + key in er_list:
-        return True
-    return n >= 4 if n else bool(re.search(r"\bSIN\b", lay or ""))
+def er_on(key, lay=None, n=None, er_list=()):
+    """1.7.20 (Hark, Ryan Nov 20, 2026): the type-rated FO's 15% (PWA 4.O.1.b) only on a trip marked '+KEY' (and not
+    '-KEY'). Never by itself for a SIN layover or a 4-pilot crew: there an FO or RO is paid $3.00 per block hour. lay and
+    n are kept for the callers' signature."""
+    return ("+" + key) in er_list and ("-" + key) not in er_list
+
+
+def crew_own(crew):
+    """Pilots on FLICA's own crew list (['CA Doe, Jane (1)', 'FO ...']): one per seat listed, plus the Captain when the
+    list names none (a 4-pilot charter lists only its FOs and RO). The card's fwCrewOwn()."""
+    seats = [m.group(1) for m in (re.match(r"^\s*(CA|FO|RO|SO)\b", str(x or "")) for x in (crew or [])) if m]
+    return len(seats) + (1 if seats and "CA" not in seats else 0)
+
+
+def override(seat, n, block_h, credit_h, rate, er_plus=False):
+    """PWA 4.O.1 override of one trip, the card's fwOverride(): (dollars, kind). IRO crew (3 pilots, 4.O.1.a): CA $5.00,
+    IRO $4.00, FO $3.00 per block hour. Extended Range crew (4 pilots, Definitions 25, 4.O.1.b): CA $5.00, the type-rated
+    FO 15% of hourly pay (only when marked, er_plus), every other FO (an RO seat too) $3.00. CA "under all circumstances"
+    the Captain amount, never the 15%."""
+    s = str(seat or "FO").upper()
+    if er_plus and s != "CA":
+        return (0.0 if credit_h is None else credit_h * rate * ER_PCT), "er"
+    if block_h is None:
+        return 0.0, ""
+    if s == "CA":
+        return (block_h * CA_OVERRIDE, "ca") if n >= 3 else (0.0, "")
+    if n >= 4:
+        return block_h * FO3_OVERRIDE, "erfo"
+    if s == "RO":
+        return block_h * IRO_OVERRIDE, "iro"
+    if n == 3:
+        return block_h * FO3_OVERRIDE, "fo3"
+    return 0.0, ""
 
 
 def trip_gross(credit_h, block_h, crew, lay, key, seat, rate, er_list=(), ca_rules=False):
-    """The card's tripFull(): None without a credit. ca_rules (FW-0062, the pay line of another pilot's rebuilt
-    month): a CA seat is paid as PWA 4.O.1 words it, $5.00 per block hour on any crew of 3 or more pilots (IRO or
-    Extended Range, "under all circumstances") and never the type-rated FO's 15%. Off by default, so Ryan's own
-    pay and the schedule card's tripFull() stay exactly as they are."""
+    """The card's tripFull(): None without a credit. Credit x rate plus the PWA 4.O.1 override (override()).
+    1.7.20: a Captain is paid $5.00 per block hour on a crew of 3 or more on every card (PWA 4.O.1 "under all
+    circumstances"), so ca_rules (FW-0062) no longer changes anything; it is kept for the callers."""
     if credit_h is None:
         return None
     n = crew_n(crew)
-    seat = (seat or "FO").upper()
-    if ca_rules and seat == "CA":
-        return credit_h * rate + (block_h * CA_OVERRIDE if block_h is not None and n >= 3 else 0.0)
-    ov = 0.0
-    if block_h is not None:
-        ov = block_h * IRO_OVERRIDE if seat == "RO" else (block_h * FO3_OVERRIDE if seat != "CA" and n == 3 else 0.0)
-    return credit_h * rate + ov + (credit_h * rate * ER_PCT if er_on(key, lay, n, er_list) else 0.0)
+    return credit_h * rate + override(seat, n, block_h, credit_h, rate, er_on(key, lay, n, er_list))[0]
 
 
 def overrides_due(seat, n):
     """True when PWA 4.O.1 pays this seat a per block hour override on a crew of n pilots, so a trip priced without
-    its block is short: RO always, CA on 3 or more (ca_rules), FO on exactly 3."""
+    its block is short: RO always, CA on 3 or more, FO on 3 or more (IRO $3.00, Extended Range $3.00)."""
     seat = (seat or "FO").upper()
-    return seat == "RO" or (seat == "CA" and n >= 3) or (seat not in ("CA", "RO") and n == 3)
+    return seat == "RO" or (seat == "CA" and n >= 3) or (seat not in ("CA", "RO") and n >= 3)
+
+
+# ---------------------------------------------------------------- 1.7.20 (Hark): the PWA pay engine of an own trip
+FW_TZ = {"HNL": -10, "OGG": -10, "KOA": -10, "ITO": -10, "LIH": -10, "PPT": -10, "RAR": -10, "PPG": -11, "ANC": -9,
+         "LAX": -8, "SFO": -8, "SEA": -8, "SAN": -8, "OAK": -8, "SMF": -8, "LAS": -8, "PDX": -8, "SJC": -8, "ONT": -8,
+         "LGB": -8, "PHX": -7, "SLC": -7, "DEN": -7, "ORD": -6, "DFW": -6, "AUS": -6, "MSP": -6, "IAH": -6,
+         "JFK": -5, "BOS": -5, "MCO": -5, "IAD": -5, "ATL": -5, "MIA": -5, "EWR": -5,
+         "NRT": 9, "HND": 9, "KIX": 9, "CTS": 9, "FUK": 9, "NGO": 9, "ICN": 9, "SYD": 10, "BNE": 10, "MEL": 10,
+         "AKL": 12, "SIN": 8, "MNL": 8, "CRK": 8, "TPE": 8, "PEK": 8, "PVG": 8, "HKG": 8}
+
+
+def pkg_duties(det):
+    """The card's fwPkgDuties() on a package detail ({'duties': [{'legs': [[day, dh, flt, from, to, dep local, ...]],
+    'tblk', 'tcrd'}]}): [{dep (HST minutes from the first day), blk, tcrd}], [] when any duty is unreadable."""
+    out = []
+    for x in (det or {}).get("duties") or []:
+        legs = x.get("legs") if isinstance(x, dict) else None
+        l0 = legs[0] if isinstance(legs, list) and legs and isinstance(legs[0], list) else None
+        try:
+            n = int(l0[0]) if l0 else None
+        except (TypeError, ValueError):
+            n = None
+        t = re.match(r"^(\d{1,2}):?(\d{2})$", str(l0[5] if l0 and len(l0) > 5 and l0[5] is not None else "").strip()) if l0 else None
+        b = mins(x.get("tblk")) if isinstance(x, dict) else None
+        if n is None or n < 1 or n > 40 or not t or int(t.group(1)) > 23 or b is None:
+            return []
+        shift = (FW_TZ[l0[3]] + 10) * 60 if l0[3] in FW_TZ and l0[4] in FW_TZ else 0
+        out.append({"dep": (n - 1) * 1440 + int(t.group(1)) * 60 + int(t.group(2)) - shift, "blk": b, "tcrd": x.get("tcrd")})
+    return out
+
+
+def pwa_trip(start, ot, det=None, rel_days=None, is_off=None, rcl=None, mine=True, keep=False, ct=None):
+    """The card's fwPwaTrip() (minutes): PWA 4.C.3.a credit (greater of GOP 4.B.1, Trip Rig 1:3.5 TAFB, MDG 5:00 x
+    calendar days from Mar 2, 2025), delay vs reassignment (2.A.15.a.1: a delayed leg is ONE segment; FLICA's credit is
+    replaced only where it counted a delayed leg twice), LODO (4.D.2.e: 4:00 pay, no credit, per lost day off) and
+    recall (4.M.1.a: the extra 100% of the recall duties' credit, pay only). det: the package detail of the pairing on
+    that day (None: no package); rel_days: its scheduled release day (0 = the first day); is_off(iso): a day off.
+    mine=False (the duty times are from a pairing page whose crew list does not name the pilot): no fix, no LODO.
+    1.7.23 (Hark, Ryan Nov 21, 2026, H3606B): CrewTrac controls. keep=True (a 'K+KEY' mark in the per-trip list) or ct
+    (CrewTrac's credit for this trip, minutes) within 0:01 of FLICA's: the company booked FLICA's credit (a
+    reassignment with a protected leg, NF2, PWA 4.D.2.b), so FLICA's credit is kept and no delay cut is made."""
+    du = (ot or {}).get("duties") or []
+    if not du or not all(isinstance(x, dict) and all(isinstance(x.get(k), (int, float)) for k in ("dep", "arr", "blk")) for x in du):
+        return None
+    try:
+        d0 = date.fromisoformat(str(start))
+    except ValueError:
+        return None
+    pd = pkg_duties(det) if det else []
+    pdet = (det or {}).get("duties") or []
+    match = bool(pd) and len(pd) == len(du) and all(not x.get("stn") or i >= len(pdet) or not pdet[i].get("stn")
+                                                     or x.get("stn") == pdet[i].get("stn") for i, x in enumerate(du))
+    single = match and all(isinstance(x, dict) and isinstance(x.get("legs"), list) and len(x["legs"]) == 1 for x in pdet)
+    segs = []
+    for i, x in enumerate(du):
+        act = _half_up(x["blk"])
+        sch = pd[i]["blk"] if match else None
+        segs.append({"stn": str(x.get("stn") or ""), "act": act, "sch": sch, "cr": max(act, sch or 0),
+                     "delay": _half_up(x["dep"] - pd[i]["dep"]) if match else None,
+                     "day": (d0 + timedelta(days=math.floor(x["dep"] / 1440))).isoformat()})
+    gop = sum(s["cr"] for s in segs)
+    rep = mins(ot.get("report"))
+    rel = max(x["arr"] for x in du) + 15
+    tafb = rel - rep if rep is not None and rel > rep else None
+    rig = _half_up(tafb / 3.5) if tafb is not None else 0
+    days = math.floor(rel / 1440) + 1
+    mdg = 300 * days if str(start) >= "2025-03-02" else 0
+    pwa = max(gop, rig, mdg)
+    won = "gop" if pwa == gop else "rig" if pwa == rig else "mdg"
+    flica = mins(ot.get("credit"))
+    delayed = sum(1 for s in segs if s["delay"] is not None and 60 <= s["delay"] < 1440)
+    passed = sum(1 for s in segs if s["delay"] is not None and s["delay"] >= 1440)
+    kept = "mark" if keep else ("ct" if isinstance(ct, (int, float)) and flica is not None and abs(ct - flica) <= 1 else "")
+    fix = mine and single and delayed > 0 and not passed and flica is not None and flica - pwa >= 30 and not kept
+    use = pwa if fix else (flica if flica is not None else pwa)
+    a_rel = math.floor(rel / 1440)
+    lodo_days = []
+    if mine and rel_days is not None and a_rel > int(rel_days):
+        for k in range(int(rel_days) + 1, a_rel + 1):
+            iso = (d0 + timedelta(days=k)).isoformat()
+            if is_off is None or is_off(iso):
+                lodo_days.append(iso)
+    r = 0
+    if rcl is True:
+        r = use
+    elif isinstance(rcl, (list, tuple)):
+        r = sum(s["cr"] for i, s in enumerate(segs) if i in rcl)
+    return {"gop": gop, "rig": rig, "tafb": tafb, "days": days, "mdg": mdg, "pwa": pwa, "won": won, "flica": flica,
+            "use": use, "fix": fix, "cut": flica - use if fix else 0, "match": match, "delayed": delayed, "passed": passed,
+            "lodo_days": lodo_days, "lodo": 240 * len(lodo_days), "rcl": r, "segs": segs, "kept": kept}
+
+
+def keep_of(er_list, key):
+    """1.7.23: True when the per-trip list marks this trip 'K+PID|start' (keep FLICA's credit: CrewTrac booked it)."""
+    return ("K+" + str(key)) in (er_list or ())
 
 
 def hm(h):

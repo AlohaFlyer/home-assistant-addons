@@ -12,7 +12,7 @@ in neither ZONES nor pot.TZ: the leg hangs on its known end (known origin: arriv
 destination: departure = arrival - block); with neither end known only the printed local times show. The date is
 the departure day FLICA printed, the date at the origin.
 
-1.7.20 (Ryan, Nov 20: "calculate per FAR 117 and PWA when I timeout, both for if I extend or if I do not", and "when
+1.7.24 (Ryan, Nov 20: "calculate per FAR 117 and PWA when I timeout, both for if I extend or if I do not", and "when
 is the last moment I can block out and be legal"): the `timeout` attribute, the working leg's last legal block-out and
 its duty period's block-in limits without and with an extension (timeout.duty_timeout), from every duty on file (a
 trip's read legs with the pairings package's deadheads, else its duty periods), the crew list's pilots or the pairings
@@ -239,7 +239,7 @@ def _next_pairing(pairs, today, after=None, unread_only=False):
     return ""
 
 
-# ---------------------------------------------------------------- 1.7.20: the duty timeout's inputs
+# ---------------------------------------------------------------- 1.7.24: the duty timeout's inputs
 LOOK_D = 30  # days before the working duty the line on file is checked for the cumulative limits (672 h is 28)
 NOT_DUTY = ("VAC", "PAYP")  # schedule codes that are never duty (every other code may be: training, reserve...)
 
@@ -357,7 +357,7 @@ def _with_deadheads(duty, pl):
 
 
 def _deadheads(p, duties, pk):
-    """1.7.20 review: FLICA's pairing page legs on file carry no deadhead (pot.parse_legs reads the flown legs only), so
+    """1.7.24 review: FLICA's pairing page legs on file carry no deadhead (pot.parse_legs reads the flown legs only), so
     each duty of a read trip takes its deadheads from the pairings package detail (pdfs.package_legs: matched by its
     flown flights) and, when it starts with one or the package prints an earlier REPT, that report (a later duty: the
     earlier of the package's REPT and the PWA 2.A.19.b.1 rule at the deadhead; the first: FLICA's check-in unless the
@@ -451,7 +451,7 @@ def _busy(items):
     return out
 
 
-PKG_ERR = {"msg": ""}  # 1.7.20 review: why a package detail lookup failed with an error other than OSError ('' none)
+PKG_ERR = {"msg": ""}  # 1.7.24 review: why a package detail lookup failed with an error other than OSError ('' none)
 
 
 def _pkg_of(pkg, p):
@@ -468,7 +468,7 @@ def _pkg_of(pkg, p):
     return got if isinstance(got, dict) else None
 
 
-TIMEOUT_ERR = {"msg": ""}  # 1.7.20 review: why the last working flight has no timeout after an error ('' when none)
+TIMEOUT_ERR = {"msg": ""}  # 1.7.24 review: why the last working flight has no timeout after an error ('' when none)
 
 
 def _timeout(items, pairs, cur, p, now, pkg, months, domestic=()):
@@ -476,7 +476,7 @@ def _timeout(items, pairs, cur, p, now, pkg, months, domestic=()):
     be read, so the working flight itself is always published. An error is kept in TIMEOUT_ERR (the Watcher logs it
     once a change)."""
     import timeout as TO
-    TO.ERR["last"] = ""  # 1.7.20 review: a return before duty_timeout runs never logs the last call's error
+    TO.ERR["last"] = ""  # 1.7.24 review: a return before duty_timeout runs never logs the last call's error
     try:
         got = _timeout_of(items, pairs, cur, p, now, pkg, months, domestic)
         TIMEOUT_ERR["msg"] = TO.ERR["last"] if got is None else ""
@@ -562,7 +562,7 @@ def working_flight(items, own, now, roll_h=2, pkg=None, months=None, domestic=()
     whose block-in + roll_h hours is after now (it stays on a leg until 2 h after block-in, then rolls to the next;
     sooner only when the next leg blocks out within those 2 h).
     items: the schedule items (trip, start, end, lay); own: own_trips keyed TRIP|YYYY-MM-DD (start, HST) with legs and
-    report; now: an aware datetime (a naive one is taken as HST). 1.7.20: pkg, the pairings package detail ({eq, crew})
+    report; now: an aware datetime (a naive one is taken as HST). 1.7.24: pkg, the pairings package detail ({eq, crew})
     by TRIP|start (a dict, or a callable (trip, start)), and months, the schedule months on file (the Watcher's
     S['schedule']), and domestic, the pilot's smart.json "domestic" stations (customs, PWA 2.A.19.b), for the duty
     timeout. A trip whose legs are not read yet is skipped for the
