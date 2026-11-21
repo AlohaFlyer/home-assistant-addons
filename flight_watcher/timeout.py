@@ -1,8 +1,8 @@
-"""1.7.20 (Ryan, Nov 20, 2026: "I need this page to calculate per FAR 117 and PWA when I timeout, both for if I extend or
-if I do not ... Make sure it's accurate. Keep in mind the flight time, and number of crew and rest"; and that morning:
-"The number I need to know is when is the last moment I can block out and be legal ... that means calculating against
-the flight time"): the last legal block-out of the working leg (`last_out`, without and with an extension), the block-in
-limits of its flight duty period (FDP) and the flight time and cumulative checks, for the Working Flight card
+"""1.7.20 (Ryan, Nov 20, 2026: "I need this page to calculate per FAR 117 and PWA when I timeout, both for if I extend
+or if I do not ... Make sure it's accurate. Keep in mind the flight time, and number of crew and rest"; and that
+morning: "The number I need to know is when is the last moment I can block out and be legal ... that means calculating
+against the flight time"): the last legal block-out of the working leg (`last_out`, without and with an extension), the
+block-in limits of its flight duty period (FDP) and the flight time and cumulative checks, for the Working Flight card
 (working.py puts it on sensor.<prefix>_working_flight as `timeout`). Pure: no I/O, no clock of its own; every time is an
 aware datetime. No FLICA load: it reads the pilot's own trips and the pairings package.
 
@@ -17,7 +17,7 @@ PWA 2.A.19.b duty period; PWA Section 10 hours of service):
   or a schedule item that may be duty inside the 36 h: the lower of the readings, marked '?'. A span of the line that
   is not known (a trip whose legs and duty periods are not read, days no schedule month covers) breaks the walk: after
   it only 36 h free from duty acclimates for sure; until then the lowest value of the table on any clock (less 0:30)
-  is used, marked '?'.
+  is used, marked '?' (for a deadhead's 117.25(g) alone the readings are bounded instead, see Rest).
 - Which clock of an acclimated theater: FOM 4.3.2.4 says "the report time at local domicile or the local time in the
   theater to which [he] is acclimated", and FAA interpretations let a carrier use either the local time where the FDP
   series starts or the home base time. Away from the reference station both readings are worked out (the reference
@@ -48,9 +48,33 @@ PWA 2.A.19.b duty period; PWA Section 10 hours of service):
   the whole window (known_from), else listed under not_checked. Over at the scheduled times: not legal.
 - Rest (117.25(e), FOM 4.3.2.7): 10 h free from duty before the report; 117.25(b), FOM 4.3.2.9: 30 consecutive hours
   free in the 168 h before it, when the line on file covers that window; 117.25(g), FOM 4.3.2.10: after deadhead
-  transportation past its Table B FDP, a rest as long as the deadhead (no less than 10 h; deadheads after a flown leg a
-  '?'); 117.25(d), FOM 4.3.2.11: 56 consecutive hours at home after a trip more than 168 h away that went more than 60
-  degrees (a '?' when its start or a span inside it is not on file). Flagged when short.
+  transportation past its Table B FDP (on the deadhead duty's own acclimation readings, 0:30 less when not acclimated;
+  HNL's clock and, from a station whose clock is not on file, the lowest row are readings that only add a '?'; sure
+  for deadheads alone past every acclimation reading, or past every Table B row on any clock; after a span of the line
+  not on file between duties on file (review round 5, fix 2: never the walk's own reading after it, which takes the
+  station of 36 h free as the theater), its readings are bounded in place of the lowest row: each span read as free
+  time and as duty, every mix of them, its acclimated clocks and the last acclimated clock less 0:30 read as duty, a
+  stay in the theater he reports in that may have begun in a span, a stay a duty inside a span may have begun at a
+  station whose 60 degrees hold every station since, and a stay a block-in on file may have ended (after a span read
+  as duty its station may be one the span left him at); a deadhead under every such reading needs no rest of its
+  own; the lowest row stays when a span anywhere in that walk with the free time on file before it
+  (from the release before it to its end) is 36 h or more, so a report inside it may follow 36 h free, a stay may reach
+  72 h in another theater inside a span, a station has no longitude (a report there makes the theater not sure, as an
+  arrival does), a schedule item that may be duty decides a reading, or the spans give more than ACC_WALKS walks), a
+  rest as long as the deadhead (no less than 10 h; deadheads after a flown leg a '?', measured from the last flown
+  block-in); 117.25(d),
+  FOM 4.3.2.11: 56 consecutive hours at home after a trip more than 168 h away that went more than 60 degrees (the
+  widest spread between two of HNL and its stations; both a '?' when its start, a span inside it or its return home is
+  not on file), holding three physiological nights (the 0100-0700 HNL windows inside it, FAR 117.3's reading: fewer is
+  a '?' until Ryan confirms it). With a span of the line not on file before the report, both are judged on the duty
+  before it: met only when the time since the span ended meets it, else a '?'; 117.25(e)'s 10 h is SHORT when the
+  most the rest can be (since that duty's release) is under it, a duty in the span only shortening it. A stretch after
+  the duty before it that may be duty not on file (the spans not on file, as one, and the schedule items, joined where
+  they touch) that runs over 8:30 (the lowest Table B row less 0:30) may hold deadhead transportation past its Table
+  B FDP: a '?' unless the time since the last of them ended meets the longer of 10 h and the stretch. A schedule item
+  that may be duty makes a rest a '?': for the 10 h only one ending inside the 10 h before the report (met with one
+  outside it, the margin from its end is said).
+  Flagged when short; the binding rule's cite and words are the card's FAR rest row (rest cite, txt).
 - PWA 2.A.19.b: the Duty Period ends 15 min after block-in, 30 when clearing customs (a leg between two countries, or
   to or from a station whose country is not on file; the Watcher's US list and the pilot's smart.json "domestic"
   stations are the US): each result's release, after a trailing deadhead's block-in when the duty ends with one. Where
@@ -62,11 +86,12 @@ PWA 2.A.19.b duty period; PWA Section 10 hours of service):
   Captains not known: 18:00, marked '?'. A grouping (pairing, the duties' `key`) that holds a Mixed Flying Duty Period
   (2.A.45: a flown segment of 3:00 block or more and an interisland one besides a single Repositioning Flight, 2.A.62,
   whose "minimal delay at the neighbor island station" is read as a sit of 2:00 or less; a longer one is Mixed Flying,
-  and so is an interisland deadhead read as its interisland Segment, both marked '?' where they set the limit) takes 14:00 standard crew, 16:00 augmented in every duty (10.D.3.a: "a pilot assigned to a grouping
-  containing" one). A duty that is all interisland flying is an Interisland Pilot's (2.A.36.b): 10.D.2 (12 / 14 h
-  starting 0500-2159, 10 / 12 h 2200-0459, 12 h past 0300 for a duty starting before 2200), with the 10.D.4 pilot
-  option said, not used; the lowest Maximum that applies is used. The Duty Period starts at the report (the later of
-  the scheduled and actual one, 10.D.5) and ends 15 or 30 min after the duty's last block-in (a trailing deadhead too).
+  and so is an interisland deadhead read as its interisland Segment, both marked '?' where they set the limit) takes
+  14:00 standard crew, 16:00 augmented in every duty (10.D.3.a: "a pilot assigned to a grouping containing" one). A
+  duty that is all interisland flying is an Interisland Pilot's (2.A.36.b): 10.D.2 (12 / 14 h starting 0500-2159, 10 /
+  12 h 2200-0459, 12 h past 0300 for a duty starting before 2200), with the 10.D.4 pilot option said, not used; the
+  lowest Maximum that applies is used. The Duty Period starts at the report (the later of the scheduled and actual one,
+  10.D.5) and ends 15 or 30 min after the duty's last block-in (a trailing deadhead too).
   No 5.A.6 transfer time serves HNL (and 10.D.1.b.2 bars them for an IRO Crew), no pilot option exceeds an
   International Maximum (10.D.4 is Interisland), and a 117.19 extension stays within the CBA (FOM 4.3.2.5): pwa last out
   = report + Maximum - debrief - the scheduled time from this leg's out to the duty's last block-in caps both results.
@@ -74,17 +99,29 @@ PWA 2.A.19.b duty period; PWA Section 10 hours of service):
   in domicile (10.E.1.a); out of it 2 x the preceding Duty Period (10.E.1.a.1; for 2 pilots a rest of 9:00 or more under
   it is a '?': the Company may limit a regular crew's hotel rest to 9:00, 10.E.1.a.2), or in a grouping that holds a
   Mixed Flying Duty Period 9, 10 or 11 h by the landings performed in it (10.E.3.a; until Ryan confirms that the table
-  replaces 10.E.1.a.1, a rest it meets but 2 x the Duty Period does not is a '?'); before a duty that is all
-  interisland flying (an Interisland Pilot's) 12:00 in domicile, 9:00 out of it (10.E.2.a, 10.E.2.b); 18:00 when a
-  segment departs 1400-0359 local and the scheduled Duty Period is 12:00 or more (10.E.1.b; before an interisland duty
-  short of it is a '?': it names an International Pilot's Segment). Where a long sit at the neighbor island decides
-  whether the grouping is Mixed Flying, both readings are judged and a rest they disagree on is a '?'. From release to
-  report: out of domicile the PWA Rest Period is hotel time door to door (2.A.68.b, 10.E.1.a.3), so a rest met by less
-  than VAN_RIDES (the two van rides, 2:30) is a '?'. A rest or a landings count that is not sure is a flag of its own
-  (rest_q, landings_q: a chip on the card); the box's '?' is for what moves a last out. Landings (10.H.1): 10 scheduled, 11 required, 7 for a duty starting
-  2200-0459 local; Mixed Flying 4 (10.H.3); an Interisland Pilot's duty starting before 2200 HST and continuing after
-  0300 HST 8 (10.H.2). A station whose Local Time is not on file is never read as HST: 10.E.1.b and the 7 landings may
-  apply, a '?'.
+  replaces 10.E.1.a.1, a rest it meets but 2 x the Duty Period does not is a '?'; with a span of the line not on file
+  after the duty before it, 2 x that duty's Duty Period is met only when the rest since the span ended meets 2 x the
+  longer of it and the span, and of one Duty Period from its report to the span's end where the span begins inside a
+  10.E rest after it (a call-back, 10.F.1), else a '?'; a need that holds whatever the duty before it was, 11:00,
+  12:00, 9:00 and the table where no long sit's reading needs less (or the other reading is 10.E.2.b's 9:00), is
+  SHORT when the most the rest can be is under it, and at home (11:00, 12:00) only a schedule item ending inside the
+  need makes it a '?', with the margin from it said when met); before a duty that is all
+  interisland flying (an Interisland Pilot's) 12:00 in domicile, 9:00 out of it (10.E.2.a, 10.E.2.b: on top of the
+  International rest, the pilot holding that category, 2.A.38, so 11:00 met never excuses 12:00; out of it 2 x the
+  Duty Period is judged as a reading on top of the 9:00, a '?' until Ryan confirms it), and 12:00 at home after one is
+  judged too (after a span of the line not on file, whatever the duty before it: one inside the span may be one);
+  18:00 when a segment departs 1400-0359 local and the scheduled Duty Period is 12:00 or more
+  (10.E.1.b; before an interisland duty short of it is a '?': it names an International Pilot's Segment). Where a long
+  sit at the neighbor island decides whether the grouping is Mixed Flying, both readings are judged and a rest they
+  disagree on is a '?'; the rest reads no deadhead as a Segment (Mixed Flying needs less), and that reading only makes
+  a rest otherwise met a '?' where 10.E.3.a's table is not met by VAN_RIDES or 2 x the Duty Period is not known (the
+  table alone is no sure 'met', as for any Mixed Flying grouping). From release to report: out of domicile the
+  PWA Rest Period is hotel time door to door (2.A.68.b, 10.E.1.a.3), so a rest met by less than VAN_RIDES (the two van
+  rides, 2:30; against the whole grouping's 10.E.3.a need when it is the larger) is a '?'. A rest or a landings count
+  that is not sure is a flag of its own (rest_q, landings_q: a chip on the card); the box's '?' is for what moves a
+  last out. Landings (10.H.1): 10 scheduled, 11 required, 7 for a duty starting 2200-0459 local; Mixed Flying 4
+  (10.H.3); an Interisland Pilot's duty starting before 2200 HST and continuing after 0300 HST 8 (10.H.2). A station
+  whose Local Time is not on file is never read as HST: 10.E.1.b and the 7 landings may apply, a '?'.
 """
 import re
 from datetime import datetime, time as dtime, timedelta, timezone
@@ -106,16 +143,18 @@ LON = {"HNL": -157.9, "OGG": -156.4, "KOA": -156.0, "ITO": -155.0, "LIH": -159.3
        "LNK": -96.8, "MKK": -157.1, "LNY": -156.9}
 THEATER_DEG = 60
 FREE_ACCL, STAY_ACCL = timedelta(hours=36), timedelta(hours=72)
+ACC_WALKS = 64  # review round 5, fix 1 (R5V-1): the most bounded acclimation walks tried before the lowest row stays
 UNACCL = timedelta(minutes=30)
 EXT = timedelta(hours=2)
 RELEASE, RELEASE_CUSTOMS = timedelta(minutes=15), timedelta(minutes=30)  # PWA 2.A.19.b
 REST_MIN = timedelta(hours=10)  # FAR 117.25(e), FOM 4.3.2.7
 FREE_WEEK, WEEK = timedelta(hours=30), timedelta(hours=168)  # FAR 117.25(b), FOM 4.3.2.9
 THEATER_REST, AWAY_MAX = timedelta(hours=56), timedelta(hours=168)  # FAR 117.25(d), FOM 4.3.2.11
+NIGHTS, NIGHT = 3, timedelta(hours=6)  # FOM 4.3.2.11: three physiological nights; FAR 117.3: each holds 0100-0700
 # FW-0042 review: the stations a leg into the US comes from without clearing customs (watcher.US_STATIONS is this set)
-US_STATIONS = frozenset(("HNL", "OGG", "KOA", "ITO", "LIH", "MKK", "LNY", "ANC", "LAX", "SFO", "SEA", "SAN", "OAK", "SMF", "LAS",
-                         "PDX", "SJC", "ONT", "LGB", "PHX", "SLC", "DEN", "ORD", "DFW", "AUS", "MSP", "IAH", "JFK",
-                         "BOS", "MCO", "IAD", "ATL", "MIA", "EWR"))
+US_STATIONS = frozenset(("HNL", "OGG", "KOA", "ITO", "LIH", "MKK", "LNY", "ANC", "LAX", "SFO", "SEA", "SAN", "OAK",
+                         "SMF", "LAS", "PDX", "SJC", "ONT", "LGB", "PHX", "SLC", "DEN", "ORD", "DFW", "AUS", "MSP",
+                         "IAH", "JFK", "BOS", "MCO", "IAD", "ATL", "MIA", "EWR"))
 # The country (customs territory) of the stations outside the US list: a leg between two of them in one country clears
 # no customs; American Samoa (PPG) keeps its own customs. A station in neither: not known, so customs (conservative).
 COUNTRY = {**{s: "JP" for s in ("NRT", "HND", "KIX", "CTS", "FUK", "NGO")}, "ICN": "KR",
@@ -154,8 +193,8 @@ PWA_REST_HOME = timedelta(hours=11)  # 10.E.1.a
 PWA_REST_REGULAR = timedelta(hours=9)  # 10.E.1.a.2: a regular crew's hotel rest may be limited to 9 hours
 PWA_REST_LATE, PWA_LATE_DP = timedelta(hours=18), timedelta(hours=12)  # 10.E.1.b
 PWA_REST_II_HOME, PWA_REST_II_AWAY = timedelta(hours=12), timedelta(hours=9)  # 10.E.2.a, 10.E.2.b (Interisland)
-# 2.A.68.b, 10.E.1.a.3: out of domicile the Rest Period is hotel time door to door; FW knows release to report, longer by
-# the two van rides, which the schedule does not give: a rest met from release to report by less than this is a '?'
+# 2.A.68.b, 10.E.1.a.3: out of domicile the Rest Period is hotel time door to door; FW knows release to report, longer
+# by the two van rides, which the schedule does not give: a rest met from release to report by less than this is a '?'
 # (review PWA-VAN_RIDES: the two rides at a far-out hotel take 1:30 to 2:30 together; 2:30 until Ryan gives a figure)
 VAN_RIDES = timedelta(hours=2, minutes=30)
 MIXED_REST = ((5, 9), (7, 10), (999, 11))  # 10.E.3.a: landings performed in the grouping (up to), hours of rest
@@ -163,7 +202,8 @@ LANDINGS_SCHED, LANDINGS_REQ, LANDINGS_NIGHT, LANDINGS_MIXED = 10, 11, 7, 4  # 1
 LANDINGS_II_LATE = 8  # 10.H.2: an Interisland Pilot's duty starting before 2200 HST and continuing after 0300 HST
 PWA_NC = "PWA hotel door-to-door rest: van and hotel arrival times not on the schedule"
 PWA_NC_IRO = "IRO at the controls 8 h in 24 h (PWA 10.D.1.b.4): depends on the in-flight rest plan"
-ERR = {"last": ""}  # the last reason duty_timeout gave no timeout for an error ('' after one worked); working.py logs it
+# the last reason duty_timeout gave no timeout for an error ('' after one worked); working.py logs it
+ERR = {"last": ""}
 
 
 def ang(a, b):
@@ -303,8 +343,8 @@ def pwa_duty(pilots, captains=None, mixed=False, grouping=False):
 def _repo(flown, j):
     """2.A.62 for flown leg j: interisland to a neighbor island station for a departure out of the islands from there,
     or to Honolulu from one after an arrival from out of the islands, "scheduled with minimal delay at the neighbor
-    island station". (True, sit) when it is a Repositioning Flight (a sit there of REPO_SIT or less), ('long', sit) when it
-    would be one but for a longer sit, (False, None) otherwise."""
+    island station". (True, sit) when it is a Repositioning Flight (a sit there of REPO_SIT or less), ('long', sit) when
+    it would be one but for a longer sit, (False, None) otherwise."""
     x, sit = flown[j], None
     if x["to"] in NEIGHBOR and x["frm"] in HAWAII:
         nx = flown[j + 1] if j + 1 < len(flown) else None
@@ -325,8 +365,8 @@ def _repositioning(flown, j):
 
 
 def mixed_flying(legs, long_sit=False, dh=False):
-    """2.A.45 Mixed Flying: the duty's flown segments include one of 3:00 block or more and an interisland one (both ends
-    in Hawaii), besides a single Repositioning Flight (2.A.62). Deadheads are no segment flown. long_sit: the other
+    """2.A.45 Mixed Flying: the duty's flown segments include one of 3:00 block or more and an interisland one (both
+    ends in Hawaii), besides a single Repositioning Flight (2.A.62). Deadheads are no segment flown. long_sit: the other
     reading, a would-be Repositioning Flight with a longer sit at the neighbor island counted as one. dh: the deadhead
     reading (review PWA-deadhead-not-counted-for-mixed-flying): 2.A.62 positions "such aircraft, or operating crew" and
     2.A.45 counts Segments, so an interisland deadhead may be the interisland Segment (or the Repositioning Flight)."""
@@ -432,20 +472,92 @@ def _hits(spans, a, b):
     return [(x, y) for x, y in spans if y > (a if a is not None else x) and x < b]
 
 
-def _acclimation(ds, idx, busy, unknown=()):
+def _anchors_cut(cands, lons):
+    """Review round 5, fix 2: the stations (with a longitude on file: the only ones a stay starts at, FAR 117.3's
+    theater being 60 degrees around it) a stay may have begun at and still holds, cut by the longitudes of more
+    stations he was at (a None cuts nothing: a station with no longitude makes the walk not sure anyway)."""
+    for lon in lons:
+        if lon is not None:
+            cands = frozenset(z for z in cands if ang(LON[z], lon) <= THEATER_DEG)
+    return cands
+
+
+def _acclimation(ds, idx, busy, unknown=(), read=None, info=None):
     """The walk (see the module note) up to duty idx: (options, words, status, free, how). options: [(station whose
     clock enters the tables, or ANY; 0:30 less)], the readings to try (the lowest limit is used); status True / False /
-    None (acclimated / not / unknown); free: the time free from duty before the report, from the last release ('release')
-    or from the end of a span of the line not known ('unknown': at least that); None (how None) with neither."""
+    None (acclimated / not / unknown); free: the time free from duty before the report, from the last release
+    ('release') or from the end of a span of the line not known ('unknown': at least that); None (how None) with
+    neither. Review round 5 (RV5-1, for FAR 117.25(g) only, never a last out): read (a list: _acc_bound's walk) walks a
+    span of the line not on file that it can bound (the duty before it on file, and from its release to the span's end
+    under 36 h, review round 5, fix 2: so no report inside it follows 36 h free and it holds no acclimation to a theater
+    not on file, the free time after it being read by both readings; and no stay in another theater that may reach 72 h
+    before the span ends) as free time or as duty; read as duty, the report after it takes the last acclimated clock
+    less 0:30 too (he may have left the theater). Review round 5, fix 1 (R5V-1, RV5-1-STAY): each such span is a fork
+    of its own (free time 0, duty 1), so every mix over several spans is walked; a span may have moved him into the
+    theater he reports in, or held a duty that broke his stay there and back, so that stay may have begun as early as
+    the span ('early'); at a report where that earliest start gives 72 h in the theater and the latest does not,
+    acclimated there (0) or not (1) is a fork too. read[k] is the k-th fork's choice; past its end 0, and info['path']
+    gets every choice made. Review round 5, fix 2: a span read as duty may hold a block-in at any station, so a stay may
+    have begun there as early as the span, at a station (on file: LON) within 60 degrees of every station he is at
+    since (_anchors_cut): where that gives 72 h at a report, acclimated (0) or not (1) is a fork, and where it may
+    reach 72 h inside a later span (begun at a station outside the theater he is acclimated to) that span is not
+    bounded; and his stay's station after it may be one the span left him at, not the first block-in after it, so a
+    stay that acclimates him later is a fork too (0 acclimated, 1 not). Any other span is not known, as with read
+    None. info (a dict): its 'kind' is set to the final reading's branch ('same', 'new', 'any', 'busy', 'not',
+    'nolon')."""
     ref, ref_sure = DOMICILE, True
     stay = {"stn": DOMICILE, "since": None}
+    pend = None  # review round 5, fix 1 (RV5-1-STAY): (where a bounded span left him, the earliest he was there)
+    # review round 5, fix 2 (found checking the bound against fillings of the spans): a duty inside a bounded span may
+    # have begun a stay at a station not on file there, from the span's start at the earliest, that holds while every
+    # station he is at since is within 60 degrees of it: [(earliest start, the stations it may have begun at)]
+    alts, duty_span = [], False
+    if read is not None:
+        info["path"], info["n"] = list(read), 0
+
+    def pick():
+        """Review round 5, fix 1 (R5V-1): the next fork's choice, 0 past the end of read (kept in info['path'])."""
+        k = info["n"]
+        info["n"] = k + 1
+        if k == len(info["path"]):
+            info["path"].append(0)
+        return info["path"][k]
     for j in range(idx + 1):
         d = ds[j]
         s, rep = d["legs"][0]["frm"], d["report"]
         prev = ds[j - 1] if j else None
         lo = prev["release"] if prev else None
         gone, how = _hits(unknown, lo, rep), "release" if prev else None
+        span_duty = False  # review round 5 (RV5-1): the span before this report read as duty
+        if gone and read is not None and prev is not None and ref is not None:
+            u_end = min(rep, max(y for _x, y in gone))
+            u_from = min([lo] + [x for x, _y in gone])
+            st_early = stay.get("early", stay.get("since"))
+            may_stay = (st_early is not None and st_early + STAY_ACCL < u_end
+                        and not (ref_sure and same_theater(stay["stn"], ref))
+                        # review round 5, fix 2: or one a duty inside an earlier span may have begun (at a station not
+                        # in ref's theater: a report inside this span may acclimate him to a theater not on file)
+                        or any(a_at + STAY_ACCL < u_end and not (ref_sure and all(same_theater(z, ref) for z in a_z))
+                               for a_at, a_z in alts))
+            # review round 5, fix 2 (RF1-36H-ANYWHERE): a report inside the span follows at most u_end - lo free from
+            # duty (the duty before it on file ends at lo), so under 36 h it acclimates him to no theater not on file;
+            # the free time after the span is read by the two readings (free time: all of it; duty: from u_end)
+            if u_end - lo < FREE_ACCL and not may_stay:
+                # review round 5, fix 1 (RV5-1-STAY): he reports in another theater than his stay's: he may have been
+                # in it since the span began
+                moved = same_theater(s, stay["stn"]) is not True
+                if pick():  # read as duty: it may have broken his stay (from its start at the earliest) and moved him
+                    lo, how, span_duty = u_end, "unknown", True
+                    pend = (s, u_from if moved else st_early)
+                    stay = {"stn": None, "since": u_end}
+                    alts.append((u_from, frozenset(LON)))
+                    duty_span = True
+                elif moved:
+                    pend = (s, u_from)
+                gone = []  # read as free time: the walk as if the span were not there
         if gone:  # a span of the line that is not known since the last duty: where he was is not known
+            if read is not None:  # review round 5, fix 1: a span the walk cannot bound: the theater he left it in too
+                info["open"] = True
             u_end = min(rep, max(y for _x, y in gone))
             lo = max(x for x in (lo, u_end) if x is not None)
             ref, ref_sure = None, False
@@ -457,49 +569,110 @@ def _acclimation(ds, idx, busy, unknown=()):
         stay_ok = in_th is not None and in_th >= STAY_ACCL
         free_ok = free is not None and free >= FREE_ACCL
         known = s in LON
+        if read is not None and not stay_ok and known and ref is not None and not (ref_sure and same_theater(s, ref)):
+            # review round 5, fix 1 (R5V-1, RV5-1-STAY): his stay here may have begun as early as a bounded span; where
+            # that gives 72 h and the latest start does not, a fork: acclimated here (0) or not (1)
+            e_at = (pend[1] if pend is not None and same_theater(s, pend[0]) else
+                    stay.get("early") if same_theater(s, stay["stn"]) else None)
+            # review round 5, fix 2: or a stay a duty inside a span may have begun at a station not on file
+            e_alt = min((a_at for a_at, a_z in alts if _anchors_cut(a_z, [LON[s]])), default=None)
+            e_at = min((e for e in (e_at, e_alt) if e is not None), default=None)
+            if e_at is not None and rep - e_at >= STAY_ACCL and not pick():
+                stay_ok, in_th = True, rep - e_at
+        elif (read is not None and stay_ok and duty_span and not (free_ok and not busy_gap) and ref is not None
+              and not (ref_sure and same_theater(s, ref))):
+            # review round 5, fix 2: after a span read as duty his stay's station may be one the span left him at, not
+            # the first block-in after it, so a block-in on file may have ended it: acclimated by it (0) or not (1)
+            if pick():
+                stay_ok = False
         far = (f"{s} is {round(ang(LON[s], LON[ref]))} deg from {ref}" if known and ref in LON
                else f"{s} has no longitude on file")
         facts = (f"{hm(free)} free from duty (36 h needed)" if free is not None else "no duty before it on file") + (
             f", {hm(in_th)} in that theater (72 h needed)" if in_th is not None else "")
         if ref is not None and ref_sure and known and same_theater(s, ref):
-            st, opts = True, [(ref, False)]
+            st, opts, kind = True, [(ref, False)], "same"
             if WK._zone(s) is not None and rep.astimezone(zone(s)).utcoffset() != rep.astimezone(zone(ref)).utcoffset():
                 opts.append((s, False))  # the report station's own clock too: the lower limit is used
             words = (f"acclimated to the {ref} theater" + (f" ({s} is within 60 deg of {ref})" if s != ref else ""))
         elif known and (stay_ok or (free_ok and not busy_gap)):
             why = f"{hm(free)} free from duty" if free_ok and not busy_gap else f"{hm(in_th)} in that theater"
             ref, ref_sure = s, True
-            st, opts = True, [(s, False)]
+            st, opts, kind = True, [(s, False)], "new"
             words = f"acclimated to the {s} theater ({why}; 36 h free from duty or 72 h there acclimates)"
         elif ref is None:
-            st, opts = None, [(ANY, True)]
+            st, opts, kind = None, [(ANY, True)], "any"
             words = (f"? acclimation not known: a span of your line before this report is not on file (a trip not "
-                     f"read, or days no schedule month covers), and {facts}; the lowest value of the table on any clock, "
-                     f"less 0:30, is used (conservative)")
+                     f"read, or days no schedule month covers), and {facts}; the lowest value of the table on any "
+                     f"clock, less 0:30, is used (conservative)")
         elif known and ref_sure and free_ok and busy_gap:
-            st = None
+            st, kind = None, "busy"
             opts = [(s, False), (ref, True)]
             words = (f"? acclimated to {s} only if the schedule item inside the {hm(free)} free was not duty; the "
                      f"lower of acclimated ({s} time) and not acclimated ({ref} time, less 0:30) is used")
             ref_sure = False
         elif known and ref_sure:
-            st, opts = False, [(ref, True)]
+            st, opts, kind = False, [(ref, True)], "not"
             words = (f"not acclimated: {far}, {facts}; the tables are entered on {ref} time (the theater last "
                      f"acclimated to) and the FDP limit is 0:30 less (FAR 117.13(b), 117.17(b), FOM 4.3.2.4)")
         else:  # a station with no longitude, here or since the last acclimation: the lower of the readings
             own = WK._zone(s) is not None
-            st, opts = None, [(ref, True)] + ([(s, False)] if s != ref and own else [])
+            st, opts, kind = None, [(ref, True)] + ([(s, False)] if s != ref and own else []), "nolon"
             words = (f"? acclimation not known ({far}, or a station since the last acclimation has none): the lower of "
                      f"{ref} time less 0:30" + (f" and {s} time" if s != ref and own else "") +
                      " is used (conservative)" + ("" if own or s == ref else f"; {s}'s own clock is not on file"))
+        if span_duty and kind in ("same", "not"):  # review round 5 (RV5-1): he may have left the theater in it
+            opts = opts + ([] if (ref, True) in opts else [(ref, True)])
+            st = None if st else st
         if j == idx:
+            if info is not None:
+                info["kind"] = kind
             return opts, words, st, free, how
-        for x in d["legs"]:  # where the duty took him: the theater stay starts at the block-in that brought him there
+        if not known:  # review round 5, fix 2: he reported at a station with no longitude (its arrival not on file, or
+            ref_sure = False  # inside a span): a station since the last acclimation has none, as for an arrival there
+        # review round 5, fix 2: a stay begun in a span holds only while every station he is at stays in one theater
+        if alts:
+            here = [LON.get(s)] + [LON.get(x["to"]) for x in d["legs"]]
+            alts = [(a_at, a_z) for a_at, a_z in ((a_at, _anchors_cut(a_z, here)) for a_at, a_z in alts) if a_z]
+        for n_x, x in enumerate(d["legs"]):  # where the duty took him: the stay starts at the block-in that brought him
             if not same_theater(x["to"], stay["stn"]):
                 stay = {"stn": x["to"], "since": x["arr"]}
+                if not n_x and pend is not None and pend[1] is not None and same_theater(x["to"], pend[0]):
+                    stay["early"] = pend[1]  # review round 5, fix 1 (RV5-1-STAY): in that theater since the span, maybe
             if x["to"] not in LON:
                 ref_sure = False
+        pend = None
     return [(DOMICILE, True)], "?", None, None, None
+
+
+def _acc_bound(ds, idx, busy, unknown):
+    """Review round 5 (RV5-1): duty idx's acclimation readings when only spans of the line not on file make it not
+    known (the main walk's ANY; review round 5, fix 2: after any span between duties on file, see _dh_rest): every
+    reading of every bounded walk (_acclimation's read; fix 2 adds a stay begun in a span at a station not on file,
+    and one a block-in may have ended). Review round 5, fix 1
+    (R5V-1, RV5-1-STAY): every walk its forks allow (each span free time or duty, and acclimated or not where a stay
+    that may have begun in a span reaches 72 h), not only all spans free and all spans duty; more than ACC_WALKS walks:
+    None. None, so ANY stays, when a walk ends on no bounded reading: a span that with the free time on file before it
+    (from the release before it to its end) is 36 h or more, anywhere in the walk (a report inside it may follow 36 h
+    free, so it may hold an acclimation to a theater not on file, and after it the theater of the walk is not sure:
+    review round 5, fixes 1 and 2), a stay that may reach 72 h in another theater before a span ends (fix 2: one a
+    duty inside an earlier span may have begun too), a station with no longitude, or a schedule item that may be
+    duty. Else (options, status): status True / False when every walk agrees, else None."""
+    todo, walks = [[]], []
+    while todo:
+        if len(walks) == ACC_WALKS:
+            return None
+        script, info = todo.pop(), {}
+        w_opts, _w, w_st, _f, _h = _acclimation(ds, idx, busy, unknown, read=script, info=info)
+        if info.get("open") or info.get("kind") not in ("same", "new", "not") or any(s == ANY for s, _r in w_opts):
+            return None
+        walks.append((w_opts, w_st))
+        # the other choice at each fork this walk met past its script (each walk of the tree once)
+        todo += [info["path"][:k] + [1] for k in range(len(script), len(info["path"]))]
+    both = []
+    for w_opts, _st in walks:
+        both += [o for o in w_opts if o not in both]
+    w_sts = {w_st for _o, w_st in walks}
+    return both, (w_sts.pop() if len(w_sts) == 1 else None)
 
 
 def _leg_ft(x, a, end):
@@ -564,44 +737,101 @@ def _free_week(ds, idx, busy, known_from, rep):
     return longest(duty + list(busy)), longest(duty)
 
 
-def _theater_rest(ds, idx, unknown=()):
-    """FAR 117.25(d), FOM 4.3.2.11 (review FAR-117.25d): 56 consecutive hours of rest on return to home base after an FDP
-    or a series of FDPs that travelled more than 60 degrees of longitude and kept the pilot away from home base more than
-    168 consecutive hours. None when duty idx does not follow such a return for sure or may not; else {applies (True, or
-    None: may apply), away, start, end, far (the farthest station), deg, why (what is not sure)}. The trip runs from its
-    first report at HNL to the release of the duty that brought him home; deadheads travel too."""
+def _nights(a, b):
+    """FAR 117.25(d), FOM 4.3.2.11: the physiological nights a rest from a to b holds, as the 0100-0700 HNL windows
+    wholly inside it (14 CFR 117.3 reads a physiological night's rest as 10 h of rest holding 0100-0700 at home base;
+    a rest of 56 h holds the 10 h of each)."""
+    n, d = 0, a.astimezone(HST).date()
+    while True:
+        w = datetime.combine(d, dtime(1, 0), tzinfo=HST)
+        if w + NIGHT > b:
+            return n
+        n += w >= a
+        d += timedelta(days=1)
+
+
+def _theater_rest(ds, idx, unknown=(), back_by=None):
+    """FAR 117.25(d), FOM 4.3.2.11 (review FAR-117.25d): 56 consecutive hours of rest on return to home base after an
+    FDP or a series of FDPs that travelled more than 60 degrees of longitude and kept the pilot away from home base more
+    than 168 consecutive hours. None when duty idx does not follow such a return for sure or may not; else {applies
+    (True, or None: may apply), away, start, end, deg, where (the pair of places that far apart), away_txt, why (what is
+    not sure), home (the duty before it ended at HNL)}. The trip runs from its first report at HNL to the release of the
+    duty that brought him home; deadheads travel too. How far it travelled (review round 3, R3-6): the largest spread
+    between two of HNL and the trip's stations (conservative: LAX and SYD are 90 deg apart though each is within 60 of
+    HNL). back_by (review round 4, fix 1): the end of a span of the line not on file just before this report; when the
+    duty before it ended away from HNL, the return home falls inside that span, so the trip was away from its first
+    report to at least that duty's release and at most back_by. Review round 4, fix 2 (RV-3): with a span of the line
+    not on file inside the trip, holding its return home or before its start, a spread of 60 deg or less on file is a
+    '?' too (far: the line's words)."""
     me = ds[idx]
-    if idx == 0 or me["legs"][0]["frm"] != DOMICILE or ds[idx - 1]["legs"][-1]["to"] != DOMICILE:
+    if idx == 0 or me["legs"][0]["frm"] != DOMICILE:
+        return None
+    home = ds[idx - 1]["legs"][-1]["to"] == DOMICILE
+    if not home and back_by is None:
         return None
     k = idx - 1
     while k > 0 and ds[k - 1]["legs"][-1]["to"] != DOMICILE:
         k -= 1
     start, end = ds[k]["report"], ds[idx - 1]["release"]
+    if not home:  # the return falls inside a span not on file after that release: away at least to the span's start
+        end = max(end, min((x for x, _y in _hits(unknown, end, back_by)), default=end))
     away = end - start
+    most = away if home else back_by - start  # away at most: the return falls inside the span not on file
     no_start = ds[k]["legs"][0]["frm"] != DOMICILE  # the line on file starts away: the trip began earlier
     gaps = bool(_hits(unknown, start, end))  # he may have been home in a span of the line not on file
     stns = {x[s] for d in ds[k:idx] for x in d["legs"] for s in ("frm", "to")}
-    known = sorted((ang(LON[s], LON[DOMICILE]), s) for s in stns if s in LON)
-    deg, far = known[-1] if known else (0, "")
+    pts = sorted({DOMICILE} | {s for s in stns if s in LON})
+    deg, _home, s1, s2 = max(((ang(LON[a], LON[b]), DOMICILE in (a, b), a, b) for j, a in enumerate(pts)
+                              for b in pts[j + 1:]), default=(0, True, DOMICILE, DOMICILE))
     nolon = sorted(s for s in stns if s not in LON)
-    a_ok = (None if gaps else True) if away > AWAY_MAX else None if no_start else False
-    d_ok = True if deg > THEATER_DEG else None if nolon else False
+    # review round 4, fix 2 (RV-3): the stations of a span of the line not on file inside the trip, holding its return
+    # home or before its start are not known, so the on-file spread of 60 deg or less is not sure (a '?', never short)
+    unseen = gaps or not home or no_start
+    a_ok = (None if gaps else True) if away > AWAY_MAX else None if no_start or most > AWAY_MAX else False
+    d_ok = True if deg > THEATER_DEG else None if nolon or unseen else False
     if a_ok is False or d_ok is False:
         return None
+    dg = f"{deg:.0f}" if round(deg) > THEATER_DEG else f"{deg:.1f}"
+    where = (f"{s1 if s2 == DOMICILE else s2} is {dg} deg from HNL" if DOMICILE in (s1, s2) else
+             f"{s1} and {s2} are {dg} deg apart")
+    who = " or ".join(w for w in ("a station with no longitude on file" if nolon else "",
+                                  "a station in a span of your line not on file" if unseen else "") if w)
+    far = f"{where} (more than 60)" if d_ok else f"{who} may be more than 60 deg away"
+    more = "more than 168 h" if away > AWAY_MAX else "at least: it may be more than 168 h"
+    away_txt = (f"{hm(away)} away from HNL ({clock(start)} {day(start)} to release {clock(end)} {day(end)}, {more})"
+                if home else
+                f"{hm(away)} to {hm(most)} away from HNL ({clock(start)} {day(start)} to a return home inside a span "
+                f"of your line not on file, {clock(end)} {day(end)} to {clock(back_by)} {day(back_by)}; "
+                f"{'more than 168 h' if away > AWAY_MAX else 'it may be more than 168 h'})")
     why = ([f"the trip's start is not on file (away at least {hm(away)})"] if no_start and away <= AWAY_MAX else []) + (
         ["a span of your line inside the trip is not on file (you may have been home)"] if gaps else []) + (
-        [f"{', '.join(nolon)} {'has' if len(nolon) == 1 else 'have'} no longitude on file"] if d_ok is None else [])
-    return {"applies": True if a_ok and d_ok else None, "away": away, "start": start, "end": end, "far": far,
-            "deg": deg, "why": why}
+        ["its return home is not on file"] if not home and away <= AWAY_MAX else []) + (
+        [f"{', '.join(nolon)} {'has' if len(nolon) == 1 else 'have'} no longitude on file"] if d_ok is None and nolon
+        else []) + (
+        ["the stations of a span of your line not on file are not known"
+         + (f" (those on file: {where})" if len(pts) > 1 else "")] if d_ok is None and unseen else [])
+    return {"applies": True if a_ok and d_ok else None, "away": away, "start": start, "end": end, "deg": deg,
+            "where": where, "far": far, "away_txt": away_txt, "why": why, "home": home}
 
 
-def _dh_rest(ds, idx):
+def _dh_rest(ds, idx, busy=(), unknown=()):
     """FAR 117.25(g), FOM 4.3.2.10 (review FAR-117.25d, 4.3.2.10): a pilot "engaged in deadhead transportation [that]
     exceeds the applicable FDP in Table B" needs a rest equal to the length of the deadhead transportation, no less than
-    10 h, before the next FDP. The duty before idx: all deadheads (sure), or flown legs and then deadheads (a '?': the
-    deadheads after the FDP), its report to its last block-in over its Table B FDP (every leg a segment; the lower of the
-    HNL and its start station's clock, the lowest row when that clock is not on file). None when it does not apply; else
-    {need, length, span, limit, sure, what}."""
+    10 h, before the next FDP. The duty before idx: all deadheads, or flown legs and then deadheads (a '?': the
+    deadheads after the FDP), its report to its last block-in over its Table B FDP (every leg a segment) on its
+    acclimation readings (review round 3, R3-4: _acclimation's options, the lowest row on no known clock, 0:30 less
+    where not acclimated, FAR 117.13(b), FOM 4.3.2.4). Two more readings may only make it a '?' (review round 4, fix
+    1): HNL's clock (FOM 4.3.2.4 enters Table B on "the report time at local domicile or the local time in the theater"
+    acclimated to; 0:30 less unless acclimated) and, from a station whose clock is not on file, the lowest row. The
+    lowest limit decides whether it may apply; it is sure only for deadheads alone whose span is over every Table B
+    row on any clock, or whose acclimation is known and whose span is over every acclimation reading's limit. Its
+    length: from the report for deadheads alone, from the last flown block-in for trailing deadheads (review round 3,
+    R3-5: the sit before them counts, conservative). Review round 5 (RV5-1): where only spans of the line not on file
+    make its acclimation not known, its readings are bounded (_acc_bound: the spans read as free time and as duty, HNL's
+    clock as above) in place of the lowest row on any clock, so a deadhead past every bounded reading is sure (review
+    round 5, fix 1: every walk the spans allow, see _acc_bound; review round 5, fix 2: after any span between duties on
+    file, never the walk's own reading after it, and the lowest row where the bound cannot be made). None when it does
+    not apply; else {need, length, span, limit, how, over, sure, what, why}."""
     if idx == 0:
         return None
     pv = ds[idx - 1]
@@ -613,39 +843,77 @@ def _dh_rest(ds, idx):
     if not trail:
         return None  # its deadheads come before a flown leg: part of the FDP, the 10 h rule
     rep, n = pv["report"], min(len(legs), 7)
-    lims, sure = [], not flown
-    for stn in dict.fromkeys((DOMICILE, legs[0]["frm"])):
-        if stn != DOMICILE and WK._zone(stn) is None:
-            lims.append(_hrs(min(r[2][n - 1] for r in TABLE_B)))
-            sure = False
-            continue
-        lims.append(_hrs(_row(TABLE_B, _local_min(rep, stn))[2][n - 1]))
+    opts, _w, st, _f, _h = _acclimation(ds, idx - 1, busy, unknown)
+    # review round 5 (RV5-1): only spans not on file make it not known: the bounded readings, not the lowest row.
+    # Review round 5, fix 2: after any span between duties on file too, not the walk's own reading: 36 h free after a
+    # span takes that station's theater though he may never have left another (LAS, not HNL's: fix 1's own case), so
+    # where the bound cannot be made the lowest row stays
+    spans_k = bool(_hits(unknown, ds[0]["report"], rep))
+    bnd = _acc_bound(ds, idx - 1, busy, unknown) if (ANY, True) in opts or spans_k else None
+    if bnd is not None:
+        opts, st = bnd
+    elif spans_k:
+        opts, st = [(ANY, True)], None
+
+    def limit(stn, red, more="", note=""):
+        cut, less = (UNACCL, (", less 0:30: not acclimated, FAR 117.13(b)" if st is False else
+                              ", less 0:30: not acclimated on a reading of a span of your line not on file" if bnd else
+                              ", less 0:30: acclimation not known")) if red else (timedelta(0), "")
+        if stn == ANY:
+            return _hrs(min(r[2][n - 1] for r in TABLE_B)) - cut, f"the lowest row on any clock{more}{less}{note}"
+        return _hrs(_row(TABLE_B, _local_min(rep, stn))[2][n - 1]) - cut, f"{stn} time{more}{less}{note}"
+    lims = [limit(s, r) for s, r in opts]
+    # review round 4, fix 1 (R4-2, R4-3): readings that only add a '?' (never make it sure)
+    extra = []
+    if (DOMICILE, st is not True) not in opts:
+        extra.append(limit(DOMICILE, st is not True, ", the domicile's clock", "; a reading to confirm, FOM 4.3.2.4"))
+    s0 = legs[0]["frm"]
+    if s0 != DOMICILE and WK._zone(s0) is None and st is not True:
+        extra.append(limit(ANY, False, f", {s0}'s own clock not on file"))
+    lo = min(lims + extra, key=lambda x: x[0])
+    hi = max(x[0] for x in lims)  # the highest acclimation reading
+    top = _hrs(max(r[2][n - 1] for r in TABLE_B))  # the highest Table B row for its segments: past it on any clock
     span = legs[-1]["arr"] - rep
-    if span <= min(lims):
+    if span <= lo[0]:
         return None
-    sure = sure and span > max(lims)
-    length = legs[-1]["arr"] - (rep if not flown else trail[0]["dep"])
+    # past every reading of its acclimation, which is known or (review round 5, RV5-1) bounded across a span
+    known = (st is not None or bnd is not None) and span > hi
+    past = known or span > top  # or past every Table B row for its segments: on any clock, whatever the acclimation
+    sure = not flown and past
+    length = legs[-1]["arr"] - (rep if not flown else legs[flown[-1]]["arr"])
+    seg = f"{n} segment{'' if n == 1 else 's'}{'' if n < 7 else ' or more'}"
+    by = min(lims, key=lambda x: x[0]) if known else lo  # sure on its acclimation: the lowest of those readings
+    hi_r = max(lims, key=lambda x: x[0])
+    over = (f"over its Table B FDP on every reading of its acclimation across a span of your line not on file "
+            f"({hm(hi_r[0])} at most, {hi_r[1]})" if known and bnd is not None and span <= top else
+            f"over its Table B FDP {hm(by[0])} ({by[1]})" if (known and bnd is None) or not past else
+            f"over every Table B row ({hm(top)} at most for {seg}, on any clock)")
+    why = (["whether deadheads after the FDP count is not sure"] if flown else []) + ([] if past else (
+        (["its acclimation is not known" + (" (a span of your line not on file, each read as free time and as duty)"
+                                             if bnd is not None else "")] if st is None else []) +
+        ([f"another reading of its acclimation gives {hm(hi)}"] if span <= hi and lo not in extra else []) +
+        ([f"its acclimation readings give {hm(hi)}"] if span <= hi and lo in extra else [])))
     what = ("the duty before it was deadhead transportation only" if not flown else
             "the duty before it ended with deadhead transportation after its last flown leg")
-    return {"need": max(REST_MIN, length), "length": length, "span": span, "limit": min(lims), "sure": sure,
-            "what": what}
+    return {"need": max(REST_MIN, length), "length": length, "span": span, "limit": lo[0], "how": lo[1], "over": over,
+            "sure": sure, "what": what, "why": why}
 
 
 def duty_timeout(duties, idx, pilots=None, pilots_src="", eq="", known_from=None, busy=(), notes=(), work=None,
                  pilots_sure=True, pilots_firm=False, unknown=(), domestic=(), dh_note="", captains=None):
     """The `timeout` attribute for duty idx of the pilot's duties (all on file, in time order), or None when it cannot
-    be worked out (pilots not known, no flown leg). A duty: {report (aware), report_txt (how it was found), legs:
-    [{dep, arr (aware), blk (minutes), frm, to, flt, dh}]}. pilots / pilots_src: how many and where from; pilots_sure:
-    False when the count may be short (a crew list with no CA); pilots_firm: two sources agree (else a count that cannot
-    fly the planned flight time is raised to the fewest pilots that can, marked '?'). eq: the package's equipment ('332'). known_from: the
-    earliest time from which the pilot's line is all on file (None: not known). busy: [(start, end)] schedule items
-    that may be duty (no flight time, no FDP: training, reserve). unknown: [(start, end)] spans of the line not known
-    (a trip not read, days no schedule month covers). work: the index in the duty's legs of the leg the last out is
-    for (the first flown leg when None). domestic: stations counted as the US for customs. notes: more basis lines;
-    dh_note: what the pairings package said about deadheads. captains: the crew's Captains (PWA 10.D.1.c / 10.D.1.d
-    for 4 pilots; None: not known). A duty's `key` (its pairing, as working.py gives it) makes its grouping for PWA
-    10.D.3.a and 10.E.3.a; a duty with none is a grouping of its own. An error is kept in ERR['last'] (working.py logs
-    it)."""
+    be worked out (pilots not known, no flown leg). A duty: {report (aware), report_txt (how it was found), legs: [{dep,
+    arr (aware), blk (minutes), frm, to, flt, dh}]}. pilots / pilots_src: how many and where from; pilots_sure: False
+    when the count may be short (a crew list with no CA); pilots_firm: two sources agree (else a count that cannot fly
+    the planned flight time is raised to the fewest pilots that can, marked '?'). eq: the package's equipment ('332').
+    known_from: the earliest time from which the pilot's line is all on file (None: not known). busy: [(start, end)]
+    schedule items that may be duty (no flight time, no FDP: training, reserve). unknown: [(start, end)] spans of the
+    line not known (a trip not read, days no schedule month covers). work: the index in the duty's legs of the leg the
+    last out is for (the first flown leg when None). domestic: stations counted as the US for customs. notes: more basis
+    lines; dh_note: what the pairings package said about deadheads. captains: the crew's Captains (PWA 10.D.1.c /
+    10.D.1.d for 4 pilots; None: not known). A duty's `key` (its pairing, as working.py gives it) makes its grouping for
+    PWA 10.D.3.a and 10.E.3.a; a duty with none is a grouping of its own. An error is kept in ERR['last'] (working.py
+    logs it)."""
     try:
         got = _timeout(duties, idx, pilots, pilots_src, eq, known_from, busy, notes, work, pilots_sure, pilots_firm,
                        unknown, set(domestic or ()), dh_note, captains)
@@ -710,23 +978,46 @@ def mixed_rest(n):
 
 
 def _pwa_rest(ds, idx, first, dl, sched_dp, free, free_how, busy, known_from, pilots, lines, not_checked, flags,
-              mixed_grp=False, land=(0, 0), mixed_alt=None, sits="", inter=False):
+              mixed_grp=False, land=(0, 0), mixed_alt=None, sits="", inter=False, dh_mixed="", unknown=()):
     """PWA rest before the duty (lines and flags only: they do not move the last out). In domicile 11:00 (10.E.1.a);
-    12:00 before a duty that is all interisland flying (an Interisland Pilot's, 2.A.36.b; 10.E.2.a). Out of it 2 x the
-    preceding Duty Period (10.E.1.a.1); 9:00 before an interisland duty (10.E.2.b); in a grouping that holds a Mixed
-    Flying Duty Period, 10.E.3.a's table by the landings performed in the grouping before this rest (land: those and
-    the whole grouping's on file; the whole grouping's needing more is a '?'). Each other reading that may apply is
+    12:00 before a duty that is all interisland flying (an Interisland Pilot's, 2.A.36.b; 10.E.2.a: on top of 10.E.1.a,
+    the pilot holding the International category, 2.A.38). Out of it 2 x the preceding Duty Period (10.E.1.a.1); 9:00
+    before an interisland duty (10.E.2.b); in a grouping that holds a Mixed Flying Duty Period (mixed_grp, read with no
+    deadhead as a Segment), 10.E.3.a's table by the landings performed in the grouping before this rest (land: those
+    and the whole grouping's on file; the whole grouping's needing more is a '?'). Each other reading that may apply is
     judged too, and a rest the readings disagree on is a '?': the larger of the table and 2 x the Duty Period until Ryan
-    confirms that the table replaces 10.E.1.a.1; 2 x the Duty Period before an interisland duty when the duty before it
-    was International flying; where a long sit at the neighbor island decides Mixed Flying (mixed_alt: the grouping
-    with that leg read as a Repositioning Flight; sits: which leg), that reading's rule. 18:00 when a segment departs
-    1400-0359 local on a 12:00 Duty Period (10.E.1.b; before an interisland duty a '?' when short: it names an
-    International Pilot's Segment). Release to report is all FW knows; out of domicile the PWA Rest Period is hotel time
-    door to door (2.A.68.b, 10.E.1.a.3), so a rest met by less than VAN_RIDES is a '?'. For 2 pilots a rest of 9:00 or
-    more but under 2 x the Duty Period is a '?', not short: the Company may limit a regular crew's hotel rest to 9:00
-    (10.E.1.a.2; a regular crew is read as 2 pilots). {need, have, ok, cite, late, other, txt, _sit}: ok True / False /
-    None (not known); other: another reading's need when it gives another verdict ('12:30 (10.E.1.a.1)'); _sit: the
-    long sit's reading is one of them."""
+    confirms that the table replaces 10.E.1.a.1; 2 x the Duty Period before an interisland duty, whatever the duty
+    before it was (review round 4, fix 1, R4-5: 10.E.1.a.1 may apply on top of 10.E.2.b as 10.E.2.a's 12:00 does on
+    top of 10.E.1.a at home, the pilot holding the International category, 2.A.38); 12:00 (10.E.2.a) at home after an
+    all-interisland duty; where a long sit at the neighbor island decides Mixed Flying (mixed_alt: the grouping with
+    that leg read as a Repositioning Flight; sits: which leg), that reading's rule. With a span of the line not on file
+    after the duty before it (review round 4, fix 2, RV-5, C2), 2 x that duty's Duty Period is still judged where it
+    applies (two_u): met only when the rest since the span ended meets 2 x the longer of it and the span, else a '?'.
+    dh_mixed (the grouping is Mixed Flying only if an interisland deadhead is its Segment: which one): that reading
+    only makes a rest otherwise met a '?', where 10.E.3.a's table is not met or is met by less than VAN_RIDES (review
+    round 3, R3-2: Mixed Flying needs less rest, so it never relaxes a SHORT), or where 2 x the preceding Duty Period is
+    not known (review round 4, fix 1, R4-2: the table alone is no sure 'met'). 18:00 when a
+    segment departs 1400-0359 local on a 12:00 Duty Period (10.E.1.b; before an interisland duty a '?' when short: it
+    names an International Pilot's Segment). Release to report is all FW knows; out of domicile the PWA Rest Period is
+    hotel time door to door (2.A.68.b, 10.E.1.a.3), so a rest met by less than VAN_RIDES is a '?'. For 2 pilots a rest
+    of 9:00 or more but under 2 x the Duty Period is a '?', not short: the Company may limit a regular crew's hotel rest
+    to 9:00 (10.E.1.a.2; a regular crew is read as 2 pilots). A schedule item that may be duty inside the rest is a '?'
+    (review round 4, fix 2, C5: after a span not on file or with no duty on file before it too; review round 5, RV5-3:
+    for 11:00, 12:00 and 9:00 only one ending inside the need before the report). Review round 5: across a span not on
+    file, a need that holds whatever the duty before it was (11:00, 12:00, 9:00, and 10.E.3.a's table where no long
+    sit's reading needs less) is SHORT when the most the rest can be, since the duty before's release, is under it
+    (RV5-2); with the duty before it on file, 10.E.1.a.1 is judged across the span for a Mixed Flying grouping and the
+    deadhead reading too (F2V-1, F2V-2: a '?' only where it is not met); at home 10.E.2.a's 12:00 is a reading whatever
+    the duty before it (F2V-3: one inside the span may be all interisland; it only adds a '?'); review round 5, fix 2
+    (UI6-4): across a span the txt says "at least" before the rest, as the FAR row does. Review round 5, fix 1:
+    a call-back inside the span with less time off than a 10.E rest makes one Duty Period from the duty before's report
+    to the span's end (10.F.1, R5V-3: in two_u's sure need); away, 10.E.2.b counts any schedule item in the rest again
+    (UI5-1, R5V-2); before an all-interisland duty a long sit's table may be SHORT too (RV52-LONGSIT-II); a met need
+    with a schedule item outside it says the margin from the item (UI5-2). unknown: the spans of the line not on file.
+    {need, have, ok,
+    cite, late, other, txt, _sit}: ok True /
+    False / None (not known); other: another reading's need when it gives another verdict ('12:30 (10.E.1.a.1)'); _sit:
+    the long sit's reading is one of them."""
     rep = ds[idx]["report"]
     home = first["frm"] == DOMICILE
     prev = ds[idx - 1] if idx and free_how == "release" else None
@@ -734,67 +1025,157 @@ def _pwa_rest(ds, idx, first, dl, sched_dp, free, free_how, busy, known_from, pi
     n0, n1 = land
     mixed_alt = mixed_grp if mixed_alt is None else mixed_alt
     pdp = prev["release"] - prev["report"] if prev is not None else None
+    # review round 5 (RV5-2): across a span not on file the rest is at most the time since the duty before's release
+    most = rep - ds[idx - 1]["release"] if idx and free_how == "unknown" else None
+    chip = [False]
+    item_gap = [None]  # review round 5, fix 1 (UI5-2): a met need's time from a schedule item in the rest to the report
 
-    def judge(need, reg=False, hi=None):
+    def covered(need):
+        """With no duty on file before it: the line on file covers the `need` before the report."""
+        return known_from is not None and known_from <= rep - need
+
+    def judge(need, reg=False, hi=None, fx=""):
         """(ok, words) of release to report against `need`. reg: a 10.E.1.a.1 need that a regular crew's 9:00 may meet
-        (10.E.1.a.2); hi: the need of the whole grouping's landings on file (10.E.3.a)."""
+        (10.E.1.a.2); hi: the need of the whole grouping's landings on file (10.E.3.a). fx (review round 5): 'fixed'
+        for a need at home that holds whatever the preceding duty is (10.E.1.a, 10.E.2.a): across a span not on file
+        it is SHORT when the most the rest can be is under it (RV5-2), and only a schedule item ending inside the need
+        makes it a '?' (RV5-3); 'most' the first only (10.E.2.b's 9:00 away and 10.E.3.a's table where no reading of
+        the grouping needs less: review round 5, fix 1, UI5-1 and R5V-2: away an item anywhere in the rest counts, as
+        it may be the preceding Duty Period of 10.E.1.a.1 on top of 10.E.2.b, and the van rides are not on file),
+        'near' the second only (a reading of 10.E.2.a that may not apply)."""
+        near = bool(_hits(busy, rep - need, rep)) if fx in ("fixed", "near") else gap_busy
         if free_how == "release":
             if free < need:
                 if reg and free >= PWA_REST_REGULAR:
                     return None, ("? short of it, but 9:00 or more: met if the Company limits a regular crew's hotel "
                                   "rest to 9:00 (10.E.1.a.2; a regular crew is read as 2 pilots)")
                 return False, "SHORT"
-            if gap_busy:
+            if near:
                 return None, "? a schedule item inside it may be duty"
         elif free_how == "unknown":
             if free < need:
+                if fx in ("fixed", "most") and most is not None and most < need:
+                    return False, (f"SHORT: at most {hm(most)} since the release of the duty before it; a duty in the "
+                                   f"span not on file would only shorten it")
                 return None, "? not known"
+            if near:  # review round 4, fix 2 (C5): a schedule item that may be duty, as from a release
+                return None, "? a schedule item inside it may be duty"
         else:
-            return (True, "met") if known_from is not None and known_from <= rep - need else (None, "? not known")
+            if not covered(need):
+                return None, "? not known"
+            # review round 4, fix 2 (C5): no duty on file before it, but a schedule item inside the need may be one
+            if _hits(busy, rep - need, rep):
+                chip[0] = True  # a '?' of its own, not a rest that is only not on file: the "Rest ?" chip
+                return None, "? a schedule item inside it may be duty"
+            return True, "met"
         if hi is not None and free < hi:
-            return None, f"? met for those landings; the {n1} landings of the whole grouping on file would need {hm(hi)}"
-        spare = free - need
+            return None, (f"? met for those landings; the {n1} landings of the whole grouping on file would need "
+                          f"{hm(hi)}")
+        # review round 4, fix 1 (LOGIC-R4-2): the van rides are judged against the whole grouping's need too
+        whole = hi is not None and hi > need
+        spare = free - (hi if whole else need)
         if not home and spare < VAN_RIDES:
-            return None, (f"? met by {hm(spare)} from release to report, but the hotel time (door to door, 2.A.68.b, "
-                          f"10.E.1.a.3) is shorter by the two van rides, which are not on the schedule (under "
-                          f"{hm(VAN_RIDES)} spare is not sure)")
-        return True, f"met, {hm(spare)} spare"
+            # review round 5, fix 1 (R5V-4): across a span not on file the spare is counted from the span's end
+            return None, (f"? met by {hm(spare)} " + ("from release to report" if free_how == "release" else
+                                                       "since the span of your line not on file ended")
+                          + (f" for the {n1} landings of the whole grouping on file ({hm(hi)})" if whole else "")
+                          + f", but the hotel time (door to door, 2.A.68.b, 10.E.1.a.3) is shorter by the two van "
+                            f"rides, which are not on the schedule (under {hm(VAN_RIDES)} spare is not sure)")
+        if gap_busy and fx in ("fixed", "near"):
+            # review round 5, fix 1 (UI5-2): an item that may be duty lies in the rest, outside the need: the sure
+            # margin is from its end
+            i_end = max(y for _x, y in _hits(busy, rep - free, rep))
+            item_gap[0] = rep - i_end
+            return True, (f"met even if the schedule item ending {clock(i_end)} {day(i_end)} ({hm(rep - i_end)} "
+                          f"before the report) is duty, {hm(rep - i_end - need)} spare from it")
+        return True, f"met, {hm(spare)} spare" + (f" for the whole grouping's {hm(hi)}" if whole else "")
 
     two = None  # 10.E.1.a.1: (need, cite, words, reg, hi)
     if pdp is not None:
         two = (2 * pdp, "10.E.1.a.1", f"2 x the preceding Duty Period {hm(pdp)} ({clock(prev['report'])} "
                f"{day(prev['report'])} to release {clock(prev['release'])} {day(prev['release'])}) = {hm(2 * pdp)}",
-               pilots == 2 and 2 * pdp > PWA_REST_REGULAR, None)
+               pilots == 2 and 2 * pdp > PWA_REST_REGULAR, None, "")
+
+    # review round 4, fix 2 (RV-5, C2): a span of the line not on file follows the duty before it, so its Duty Period
+    # may not be the preceding one: 2 x it is judged as a reading that is met only when the rest since the span ended
+    # meets 2 x the longer of it and the span (a duty inside the span is no longer), else a '?' (never short)
+    pv = ds[idx - 1] if idx and free_how == "unknown" else None
+    two_u = None  # (2 x its Duty Period, the need a sure 'met' takes, release to report, words)
+    if pv is not None:
+        pdp_u, span_u = pv["release"] - pv["report"], max(timedelta(0), rep - free - pv["release"])
+        # review round 5, fix 1 (R5V-3, PWA 10.F.1): called back inside the span with less time off than a 10.E rest
+        # (2 x that Duty Period or 18:00 at the most), one Duty Period runs from its report to the final release: at
+        # most to the span's end
+        u_at = min((x for x, _y in _hits(unknown, pv["release"], rep)), default=rep - free)
+        call_u = max(u_at, pv["release"]) - pv["release"] < max(2 * pdp_u, PWA_REST_LATE)
+        one_u = rep - free - pv["report"]
+        two_u = (2 * pdp_u, 2 * max(pdp_u, span_u, one_u if call_u else timedelta(0)), rep - pv["release"],
+                 f"2 x the preceding Duty Period across a span of your line not on file: the duty before it on file "
+                 f"{hm(pdp_u)} ({clock(pv['report'])} {day(pv['report'])} to release {clock(pv['release'])} "
+                 f"{day(pv['release'])}), 2 x = {hm(2 * pdp_u)}; a duty inside the span (from that release) at most "
+                 f"{hm(span_u)}, 2 x = {hm(2 * span_u)}"
+                 + (f"; called back inside the span with less time off than a 10.E rest, one Duty Period from its "
+                    f"report to the span's end (10.F.1) at most {hm(one_u)}, 2 x = {hm(2 * one_u)}" if call_u else ""))
+
+    def judge_u():
+        """(ok, words) of the two_u reading: never False."""
+        need_u, sure_u, most_u, _w = two_u
+        if free >= sure_u:
+            return judge(sure_u)
+        return None, (f"? not known: SHORT of {hm(need_u)} if the span was free from duty ({hm(most_u)} since that "
+                      f"release)" if most_u < need_u else
+                      f"? not known: met only if no duty in the span needs more ({hm(most_u)} since that release)")
+
+    def intl(d):
+        """The label of 10.E.1.a.1 on top of 10.E.2.b by the duty before it (review round 4, fix 2, C4: a deadhead is
+        no flying, so only a flown leg outside the islands makes it International flying)."""
+        if any(not x.get("dh") and not (x["frm"] in HAWAII and x["to"] in HAWAII) for x in d["legs"]):
+            return "as an International Pilot, the duty before it being International flying"
+        return ("as an International Pilot too (2.A.38: 10.E.1.a.1 on top of 10.E.2.b, as 10.E.2.a is on top of "
+                "10.E.1.a at home; to confirm)")
 
     def away(mx):
         """The out of domicile requirement under one reading of Mixed Flying (mx)."""
         if mx:
             nd, hi = mixed_rest(n0), mixed_rest(n1)
+            # review round 5 (RV5-2): sure short across a span only where no long sit's reading needs less; review
+            # round 5, fix 1 (RV52-LONGSIT-II): before an all-interisland duty the other reading is 10.E.2.b's 9:00,
+            # no less than the table's lowest, so it may be SHORT too (the readings judged apart, a '?' if they differ)
             return (nd, "10.E.3.a", f"out of domicile in a grouping that holds a Mixed Flying Duty Period, {n0} landing"
                     f"{'' if n0 == 1 else 's'} performed in it before this rest: {hm(nd)} (10.E.3.a: up to 5 landings "
                     f"9:00, 6 or 7 10:00, 8 or more 11:00, in place of 2 x the preceding Duty Period, 10.E.1.a.1)",
-                    False, hi if hi > nd else None)
+                    False, hi if hi > nd else None, "most" if mixed_grp == mixed_alt or inter else "")
         if inter:
+            # review round 5, fix 1 (UI5-1, R5V-2): 'most', not 'fixed': SHORT on the most the rest can be, but any
+            # schedule item in the rest still counts (10.E.1.a.1 on top of it and the van rides depend on it)
             return (PWA_REST_II_AWAY, "10.E.2.b", "out of domicile before a duty that is all interisland flying (an "
-                    "Interisland Pilot's, 2.A.36.b), 9:00", False, None)
-        return (two[0], two[1], f"out of domicile, {two[2]}", two[3], None) if two else (
-            None, "10.E.1.a.1", "out of domicile, 2 x the preceding Duty Period", False, None)
+                    "Interisland Pilot's, 2.A.36.b), 9:00", False, None, "most")
+        return (two[0], two[1], f"out of domicile, {two[2]}", two[3], None, "") if two else (
+            None, "10.E.1.a.1", "out of domicile, 2 x the preceding Duty Period", False, None, "")
 
     if home:
-        prim = ((PWA_REST_II_HOME, "10.E.2.a", "in domicile before a duty that is all interisland flying (an Interisland "
-                 "Pilot's, 2.A.36.b), 12:00 (10.E.1.a's 11:00 is less)", False, None) if inter else
-                (PWA_REST_HOME, "10.E.1.a", "in domicile, 11:00", False, None))
+        prim = ((PWA_REST_II_HOME, "10.E.2.a", "in domicile before a duty that is all interisland flying (an "
+                 "Interisland Pilot's, 2.A.36.b), 12:00 (10.E.1.a's 11:00 is less)", False, None, "fixed") if inter else
+                (PWA_REST_HOME, "10.E.1.a", "in domicile, 11:00", False, None, "fixed"))
         alts = []
-        # review PWA-interisland-second-reading-asymmetric: the other category's rule, both ways, as out of domicile
-        p_ii = prev is not None and interisland(prev["legs"])
-        if prev is not None and not inter and p_ii:
+        # review PWA-interisland-second-reading-asymmetric (a): after an all-interisland duty, 10.E.2.a's 12:00 is
+        # judged before an International one too (it only raises). Review round 3 (R3-1): no reading the other way:
+        # the pilot always holds the International category (2.A.38) and before an interisland duty (2.A.36.b)
+        # 10.E.2.a's 12:00 applies on top of it, so 10.E.1.a's 11:00 met never excuses 12:00
+        pvh = prev if prev is not None else pv  # review round 4, fix 2: across a span not on file too ('?' only)
+        pv_ii = pvh is not None and interisland(pvh["legs"])
+        # review round 5 (F2V-3): after a span not on file, a duty inside it may be the preceding one, all interisland
+        if not inter and (pv_ii or free_how == "unknown"):
             r = (PWA_REST_II_HOME, "10.E.2.a", "in domicile after a duty that was all interisland flying, 12:00", False,
-                 None)
-            alts.append(("as an Interisland Pilot, the duty before it being all interisland flying (2.A.36.b)", [r], [r],
-                         False))
-        elif prev is not None and inter and not p_ii and any(not x.get("dh") for x in prev["legs"]):
-            r = (PWA_REST_HOME, "10.E.1.a", "in domicile, 11:00", False, None)
-            alts.append(("as an International Pilot, the duty before it being International flying", [r], [r], False))
+                 None, "near")
+            if prev is not None:
+                alts.append(("as an Interisland Pilot, the duty before it being all interisland flying (2.A.36.b)", [r],
+                             [r], False))
+            else:  # judged with 10.E.1.a, on top of which it applies: it only adds a '?', never relaxes a SHORT
+                alts.append((("as an Interisland Pilot, the duty before it being all interisland flying (2.A.36.b); a "
+                              "span of your line not on file follows it") if pv_ii else
+                             "a duty inside the span of your line not on file may be all interisland flying (2.A.36.b)",
+                             [prim, r], [r], False))
     else:
         prim, alts = away(mixed_grp), []  # alts: (reading, its requirements, the ones not in prim, long sit)
         adds = "if 10.E.3.a's table adds to 10.E.1.a.1 rather than replacing it (to confirm)"
@@ -807,9 +1188,11 @@ def _pwa_rest(ds, idx, first, dl, sched_dp, free, free_how, busy, known_from, pi
             add = add and not both
         if add:
             alts.append((adds, [prim, two], [two], False))
-        if two and inter and not mixed_grp and not interisland(prev["legs"]) and two[0] > prim[0]:
-            alts.append(("as an International Pilot, the duty before it being International flying", [prim, two],
-                         [two], False))
+        if two and inter and not mixed_grp and two[0] > prim[0]:
+            # review round 4, fix 1 (R4-5): the pilot holds the International category (2.A.38), so 10.E.1.a.1 may
+            # apply on top of 10.E.2.b away as 10.E.2.a's 12:00 does on top of 10.E.1.a at home (R3-1): judged as a
+            # reading whatever the duty before it was (it only adds a '?') until Ryan confirms it
+            alts.append((intl(prev), [prim, two], [two], False))
     late = [x for x in dl if _late(x)]
     maybe = [x for x in dl if _late(x) is None]  # a station whose Local Time is not on file
     late_on = bool(late or maybe) and sched_dp >= PWA_LATE_DP
@@ -819,19 +1202,46 @@ def _pwa_rest(ds, idx, first, dl, sched_dp, free, free_how, busy, known_from, pi
             f"at least {hm(free)} free (a span of your line before it is not on file)" if free_how == "unknown" else
             "no duty on file before it")
     sit = False
-    need_a, cite_a, what, reg, hi = prim
-    if need_a is None or (free is None and judge(need_a)[0] is None):
-        not_checked.append(f"PWA rest before this duty ({cite_a}): the duty before it is not on file")
+    need_a, cite_a, what, reg, hi, fx_a = prim
+    nd, hd = mixed_rest(n0), mixed_rest(n1)  # 10.E.3.a's table: the landings before this rest, the whole grouping's
+    dh_two = not home and dh_mixed and not mixed_grp and two is None  # the deadhead reading, 2 x the DP not known
+    if need_a is None or (free is None and not covered(need_a)):
+        if need_a is None and two_u is not None:  # review round 4, fix 2 (RV-5): judged, never short
+            u_ok, u_word = judge_u()
+            lines.append(f"PWA rest before this duty (10.E.1.a.1): out of domicile, {two_u[3]}; {have}: {u_word}.")
+            checks.append((two_u[0], "10.E.1.a.1", u_ok, ""))
+        else:
+            not_checked.append(f"PWA rest before this duty ({cite_a}): the duty before it is not on file")
+        if need_a is None and dh_two and not (free is None and not covered(nd)):
+            # review round 4, fix 1 (R4-2): the deadhead reading's table, as for any Mixed Flying grouping whose
+            # 2 x the Duty Period is not known, is no sure 'met' (round 3's '?' kept; it never makes one short)
+            d_ok, d_word = judge(nd, False, hd if hd > nd else None)
+            # review round 5 (F2V-2): with 10.E.1.a.1 judged across the span (two_u), the table's own verdict counts
+            # (a '?' only when it is not met); the blanket '?' stays only where 2 x the Duty Period is not known
+            dh_ok = None if two_u is None or d_ok is not True else True
+            if dh_ok is None:
+                lines.append(f"? PWA rest, the deadhead reading (10.E.3.a): if {dh_mixed}, this grouping holds a Mixed "
+                             f"Flying Duty Period and 10.E.3.a's table needs {hm(nd)} for the {n0} landing"
+                             f"{'' if n0 == 1 else 's'} performed in it before this rest; {have}: {d_word}. "
+                             + ("2 x the preceding Duty Period (10.E.1.a.1) is not known (the duty before it is not "
+                                "on file), so the table alone is not sure until Ryan confirms it replaces 10.E.1.a.1."
+                                if two_u is None else
+                                "10.E.1.a.1 is judged across the span not on file above; this reading only adds the "
+                                "'?'."))
+                # review round 5, fix 1 (R5V-5): a met reading is no check of its own (no line names it, and its need
+                # would take the cite), as where no span is: it only adds a '?'
+                checks.append((hd if hd > nd and free is not None and free >= nd else nd, "10.E.3.a", None, ""))
     else:
-        ok, word = judge(need_a, reg, hi)
+        ok, word = judge(need_a, reg, hi, fx_a)
         other = []  # the readings whose verdict is another
         for label, reqs, shown, s in alts:
-            got = [judge(r[0], r[3], r[4]) for r in reqs]
+            got = [judge(r[0], r[3], r[4], r[5]) for r in reqs]
             oks = [g[0] for g in got]
             o_ok = False if False in oks else None if None in oks else True
             if o_ok != ok:
                 other.append((label, shown, [g for r, g in zip(reqs, got) if r in shown], o_ok, s))
-        van = "" if home or "van rides" in word else "; hotel time (door to door, 10.E.1.a.3) is shorter by the van rides"
+        van = ("" if home or "van rides" in word else
+               "; hotel time (door to door, 10.E.1.a.3) is shorter by the van rides")
         lines.append(f"PWA rest before this duty ({cite_a}): {what} needed; {have}: {word}{van}"
                      + (". For a regular crew the Company may limit the hotel rest to 9:00 (10.E.1.a.2)"
                         if reg and "10.E.1.a.2" not in word else "") + ".")
@@ -843,15 +1253,57 @@ def _pwa_rest(ds, idx, first, dl, sched_dp, free, free_how, busy, known_from, pi
         oth = " or ".join(f"{hm(max(r[0] for r in shown))} ({max(shown, key=lambda r: r[0])[1]})"
                           for _l, shown, _g, _o, _s in other)
         ok = ok if not other else None
-        if ok is True and not home and mixed_grp and two is None:
+        if ok is True and not home and dh_mixed and not mixed_grp:
+            # review round 3 (R3-2): the deadhead reading of Mixed Flying (10.E.3.a's table) only adds a '?'
+            d_ok, d_word = judge(nd, False, hd if hd > nd else None)
+            if max(nd, hd) > need_a and d_ok is not True:
+                ok = None
+                # review round 4, fix 2 (C4): the need that is more than the main rule's is the one named
+                more = (f"needs {hm(nd)} for the {n0} landing{'' if n0 == 1 else 's'} performed in it before this rest"
+                        + ("" if nd > need_a else f" and {hm(hd)} for the {n1} landings of the whole grouping on file"))
+                lines.append(f"? PWA rest, the deadhead reading (10.E.3.a): if {dh_mixed}, this grouping holds a Mixed "
+                             f"Flying Duty Period and 10.E.3.a's table {more}, more than {hm(need_a)} ({cite_a}): "
+                             f"{d_word}. Read without it the rest is met; this reading only adds the '?'.")
+                d_need = hd if hd > nd and free is not None and free >= nd else nd  # the need the '?' is for
+                oth = " or ".join(o for o in (oth, f"{hm(d_need)} (10.E.3.a)") if o)
+        if ok is True and (mixed_grp and not home or dh_two) and two is None and two_u is not None:
+            # review round 5 (F2V-1): a span not on file follows the duty before it: 10.E.1.a.1 is judged across it
+            # (judge_u, never short); the rest is a '?' only when that is not met
+            u_ok, u_word = judge_u()
+            if u_ok is not True:
+                ok = None
+                lines.append(("? PWA rest, the other reading (10.E.1.a.1): " if mixed_grp else
+                              f"? PWA rest, the deadhead reading (10.E.3.a): if {dh_mixed}, this grouping holds a "
+                              f"Mixed Flying Duty Period, and ")
+                             + f"10.E.3.a's table alone is not sure until Ryan confirms it replaces 10.E.1.a.1: "
+                               f"{two_u[3]}; {have}: {u_word}.")
+                oth = " or ".join(o for o in (oth, f"{hm(two_u[0])} (10.E.1.a.1)") if o)
+        elif ok is True and (mixed_grp and not home or dh_two) and two is None:
             # review PWA-mixed-rest-table-sure-when-2xDP-unknown: the 10.E.1.a.1 reading cannot be judged, so the
-            # table alone is no sure 'met' (the same rest with no Mixed Flying is not checked)
+            # table alone is no sure 'met' (the same rest with no Mixed Flying is not checked); review round 4, fix 1
+            # (R4-2): the deadhead reading's table too (round 3's '?' kept)
             ok = None
-            lines.append("? PWA rest: 2 x the preceding Duty Period (10.E.1.a.1) is not known (the duty before it is "
-                         "not on file): 10.E.3.a's table alone is not sure until Ryan confirms it replaces 10.E.1.a.1.")
+            lines.append(("? PWA rest: " if mixed_grp else f"? PWA rest, the deadhead reading (10.E.3.a): if "
+                          f"{dh_mixed}, this grouping holds a Mixed Flying Duty Period, and ")
+                         + "2 x the preceding Duty Period (10.E.1.a.1) is not known (the duty before it is not on "
+                           "file): 10.E.3.a's table alone is not sure until Ryan confirms it replaces 10.E.1.a.1.")
+        if ok is True and inter and not home and not mixed_grp and two is None:
+            # review round 4, fix 2 (C2): R4-5's reading (10.E.1.a.1 on top of 10.E.2.b) when 2 x the preceding Duty
+            # Period is not known: met only when the span not on file cannot change it (two_u), else a '?'
+            u_ok, u_word = judge_u() if two_u else (None, "")
+            if u_ok is not True:
+                ok = None
+                lines.append("? PWA rest, the other reading (10.E.1.a.1): " + (
+                    f"{intl(pv)}: {two_u[3]}; {have}: {u_word}" if two_u else
+                    "as an International Pilot too (2.A.38: 10.E.1.a.1 on top of 10.E.2.b; to confirm): 2 x the "
+                    "preceding Duty Period is not known (the duty before it is not on file)")
+                    + ". The readings disagree, so the rest is not sure.")
+                if two_u:
+                    oth = " or ".join(o for o in (oth, f"{hm(two_u[0])} (10.E.1.a.1)") if o)
         checks.append((need_a, cite_a, ok, oth))
-        if ok is False:
-            lines.append(f"Flag: short of PWA rest ({cite_a}): {hm(free)} of {hm(need_a)}.")
+        if ok is False:  # review round 5 (RV5-2): across a span not on file, the most the rest can be
+            lines.append(f"Flag: short of PWA rest ({cite_a}): " + (f"at most {hm(most)}" if free_how == "unknown" else
+                                                                    hm(free)) + f" of {hm(need_a)}.")
     head = "PWA 10.E.1.b (18:00 rest when a segment departs 1400-0359 local and the scheduled Duty Period is 12:00+): "
     if not late_on:
         x = (late or maybe or [first])[0]
@@ -884,14 +1336,21 @@ def _pwa_rest(ds, idx, first, dl, sched_dp, free, free_how, busy, known_from, pi
     if ok is False:
         flags.append("pwa_rest")
     got = hm(free) if free is not None else ""
+    # review round 5, fix 2 (UI6-4): across a span not on file the rest is at least that (as the FAR row says)
+    got_w = f"at least {got}" if got and free_how == "unknown" else got
+    # review round 5, fix 1 (UI5-2): met with a schedule item that may be duty in the rest: the sure margin is from it
+    got_t = (f"{got_w} ({hm(item_gap[0])} after a schedule item that may be duty)" if ok is True and got and
+             item_gap[0] is not None else got_w)
     if not got:
         txt = f"rest met ({cite})" if ok else f"rest not on file ({cite})"
+    elif ok is False and free_how == "unknown":  # review round 5 (RV5-2): sure short on the most it can be
+        txt = f"rest at most {hm(most)}, {hm(need)} needed ({cite}): SHORT"
     elif oth:
-        txt = f"rest {got}, {hm(need)} ({cite}) or {oth} needed: ?"
+        txt = f"rest {got_w}, {hm(need)} ({cite}) or {oth} needed: ?"
     else:
-        txt = f"rest {got}, {hm(need)} needed ({cite}): " + ("met" if ok else "SHORT" if ok is False else "?")
+        txt = f"rest {got_t}, {hm(need)} needed ({cite}): " + ("met" if ok else "SHORT" if ok is False else "?")
     return {"need": hm(need), "have": got, "ok": ok, "cite": cite, "late": late_on, **({"other": oth} if oth else {}),
-            "txt": txt, "_sit": sit}
+            "txt": txt, "_sit": sit, "_chip": chip[0]}
 
 
 def _landings(rep, first, dl, mixed, lines, flags, inter=False, end=None, mixed_alt=None, sits=""):
@@ -916,9 +1375,10 @@ def _landings(rep, first, dl, mixed, lines, flags, inter=False, end=None, mixed_
             return (LANDINGS_NIGHT, "10.H.1", f" (the duty starts {loc} local, 2200-0459)",
                     f"no more than 7 when the duty starts 2200-0459 local (it starts {loc})", "7 at most, night start")
         if ii_late:
-            return (LANDINGS_II_LATE, "10.H.2", " (an Interisland Pilot's duty starting before 2200 HST and continuing "
-                    "after 0300 HST)", "no more than 8 required for an Interisland Pilot's duty starting before 2200 HST "
-                    "and continuing after 0300 HST the next morning (10 may be scheduled, 10.H.1)", "8 at most, past 0300")
+            return (LANDINGS_II_LATE, "10.H.2", " (an Interisland Pilot's duty starting before 2200 HST and "
+                    "continuing after 0300 HST)", "no more than 8 required for an Interisland Pilot's duty starting "
+                    "before 2200 HST and continuing after 0300 HST the next morning (10 may be scheduled, 10.H.1)",
+                    "8 at most, past 0300")
         rule = "no more than 10 may be scheduled (11 if required to perform)"
         if night is None:
             rule += f"; 7 when the duty starts 2200-0459 local, and {s}'s local time is not on file"
@@ -933,7 +1393,8 @@ def _landings(rep, first, dl, mixed, lines, flags, inter=False, end=None, mixed_
         ok = None
         rule += f"; if {sits}, so no Mixed Flying, {limit(mixed_alt)[3]} ({limit(mixed_alt)[1]}): the readings disagree"
     if ok is False:
-        lines.append(f"Flag: landings (PWA {cite}): {segs}, over {'the ' if more.startswith(' that') else ''}{lim}{more}.")
+        lines.append(f"Flag: landings (PWA {cite}): {segs}, over {'the ' if more.startswith(' that') else ''}"
+                     f"{lim}{more}.")
         flags.append("landings")
     else:
         lines.append(f"Landings (PWA {cite}): {segs}; {rule}" + (": ?" if ok is None else "") + ".")
@@ -1004,8 +1465,9 @@ def _timeout(duties, idx, pilots, pilots_src, eq, known_from, busy, notes, work,
     flown_dl = [x for x in dl if not x.get("dh")]
     # Mixed Flying (2.A.45): this duty's, and (10.D.3.a, 10.E.3.a: "a grouping containing a Mixed Flying Duty Period")
     # any duty of the same grouping (pairing); a would-be Repositioning Flight with a long sit at the neighbor island
-    # counts as Mixed Flying (the lower duty and landing limits), and the rest is judged both ways (Mixed Flying needs
-    # less, 10.E.3.a)
+    # and an interisland deadhead count as Mixed Flying for the duty limit and the landings (the lower limits). Out of
+    # domicile Mixed Flying needs less rest (10.E.3.a), so the rest reads the grouping without the deadhead reading
+    # (review round 3, R3-2: that reading may only add a '?' to a rest otherwise met) and judges a long sit both ways
     grp = [d for d in ds if me.get("key") is not None and d.get("key") == me.get("key")] or [me]
 
     def mx(legs):  # the conservative reading: a long sit counts as Mixed Flying, and so does an interisland deadhead
@@ -1013,17 +1475,22 @@ def _timeout(duties, idx, pilots, pilots_src, eq, known_from, busy, notes, work,
     mixed = mx(dl)
     mixed_grp = mixed or any(mx(d["legs"]) for d in grp if d is not me)
     mixed_alt = any(mixed_flying(d["legs"], True) for d in grp)
+    mixed_grp_rest = any(mixed_flying(d["legs"]) for d in grp)  # the rest's reading: no deadhead as a Segment
     long_sits = [(f"{x['frm']}-{x['to']}", sit) for d in grp for f in ([y for y in d["legs"] if not y.get("dh")],)
                  for j, x in enumerate(f) for k, sit in (_repo(f, j),) if k == "long"]
     dh_ii = [f"{x['frm']}-{x['to']}" for d in grp if mixed_flying(d["legs"], dh=True) and not mixed_flying(d["legs"])
              for x in d["legs"] if x.get("dh") and x["frm"] in HAWAII and x["to"] in HAWAII]
     inter = interisland(dl)
     one = lambda v, a, b: a if len(v) == 1 else b  # noqa: E731
-    sits = " and ".join(
-        ([f"{', '.join(a for a, _t in long_sits)} {one(long_sits, 'is a Repositioning Flight', 'are Repositioning Flights')}"
-          f" (2.A.62)"] if long_sits else []) +
-        ([f"the interisland deadhead{one(dh_ii, '', 's')} {', '.join(dh_ii)} {one(dh_ii, 'is', 'are')} no Segment "
-          f"(2.A.45)"] if dh_ii else []))
+    sits_long = (f"{', '.join(a for a, _t in long_sits)} "
+                 f"{one(long_sits, 'is a Repositioning Flight', 'are Repositioning Flights')} (2.A.62)"
+                 if long_sits else "")
+    sits_dh = (f"the interisland deadhead{one(dh_ii, '', 's')} {', '.join(dh_ii)} {one(dh_ii, 'is', 'are')}"
+               if dh_ii else "")
+    sits = " and ".join([s for s in (sits_long, f"{sits_dh} no Segment (2.A.45)" if dh_ii else "") if s])
+    # the deadhead reading for the rest: the grouping is Mixed Flying only if an interisland deadhead is its Segment
+    dh_mixed = ((f"{sits_dh} its interisland Segment" if dh_ii else "a deadhead is a Segment") + " (2.A.45, 2.A.62)"
+                if mixed_grp and not mixed_grp_rest else "")
     rules = ([interisland_duty(rep, duty_in + deb)] if inter else []) + (
         [pwa_duty(pilots, captains, mixed_grp, grouping=mixed_grp and not mixed)] if mixed_grp or not inter else [])
     p_sched, p_max, p_cite, p_crew, p_sure = min(rules, key=lambda r: (r[1] is None, r[1] or timedelta(0),
@@ -1076,7 +1543,8 @@ def _timeout(duties, idx, pilots, pilots_src, eq, known_from, busy, notes, work,
     caps = [(cum[k]["_cap"], (f"{w} ({ref})", short)) for k, _s, _l, _w, w, ref, short in CUM if k in cum]
     no_at, no_by = min([(fdp_end, by_fdp), (ft_end, ft_by)] + caps + pcap, key=lambda c: c[0])
     ex_at, ex_by = min([(ext_end, by_ext), (ft_end, ft_by)] + caps + pcap, key=lambda c: c[0])
-    pwa_binds = [k for k, b in (("no_ext", by_no), ("ext", by_ex)) if pwa_by is not None and b is pwa_by] if legal else []
+    pwa_binds = ([k for k, b in (("no_ext", by_no), ("ext", by_ex)) if pwa_by is not None and b is pwa_by]
+                 if legal else [])
     pwa_counts = bool(pwa_binds) or pwa_by in (no_by, ex_by) or nl_short.startswith("PWA")
     if not p_sure and pwa_counts:
         unsure.append("PWA crew")  # the Captains of a 4-pilot crew not known: 10.D.1.c, not 10.D.1.d, is used
@@ -1085,7 +1553,7 @@ def _timeout(duties, idx, pilots, pilots_src, eq, known_from, busy, notes, work,
     land = tuple(sum(not x.get("dh") for d in g for x in d["legs"]) for g in (grp[:k_me], grp))
     r_lines, r_nc, r_flags, l_lines, l_flags = [], [], [], [], []
     pr = _pwa_rest(ds, idx, first, dl, sched_dp, free, free_how, busy, known_from, pilots, r_lines, r_nc, r_flags,
-                   mixed_grp, land, mixed_alt, sits, inter)
+                   mixed_grp_rest, land, mixed_alt, sits_long, inter, dh_mixed, unknown)
     landings = _landings(rep, first, dl, mixed, l_lines, l_flags, inter, duty_in + deb, mixed_flying(dl, True), sits)
     # review PWA-rest-unsure-box-inconsistent: only what moves a last out makes the box '?'; a rest or a landings count
     # that is not sure (whatever the reason) shows as its own chip on the box (flags rest_q, landings_q)
@@ -1112,7 +1580,8 @@ def _timeout(duties, idx, pilots, pilots_src, eq, known_from, busy, notes, work,
     zsn = first["frm"]
     zs = zone(zsn)
     # ---- the basis, one line a rule
-    lines.append(f"Report {clock(rep, zs, zsn)} ({clock(rep)} {day(rep)}): {me.get('report_txt') or 'from the schedule'}.")
+    lines.append(f"Report {clock(rep, zs, zsn)} ({clock(rep)} {day(rep)}): "
+                 f"{me.get('report_txt') or 'from the schedule'}.")
     lines.append(f"Acclimation (FAR 117.3, FOM 4.3.2.4.6): {acc_words}.")
     roster = f"{pilots} pilots ({pilots_src})" if pilots_src else f"{pilots} pilots"
     kind = "augmented, Table C (FAR 117.17" if aug else "unaugmented, Table B (FAR 117.13"
@@ -1151,9 +1620,9 @@ def _timeout(duties, idx, pilots, pilots_src, eq, known_from, busy, notes, work,
         other = {"clock": oth["clock"], "row": oth["row"], "limit": hm(oth["lim"]),
                  "last_out_txt": clock(o_end - span, zd, wf), "last_out_ext_txt": clock(min(
                      [rep + oth["lim"] + EXT] + [c for c, _b in fdp_caps + pcap]) - span, zd, wf)}
-        why = ("FOM 4.3.2.4 enters the tables on \"the report time at local domicile or the local time in the theater\" "
-               "and the FAA lets a carrier use either clock; which one Crew Scheduling uses is not on file, so the "
-               "earlier is shown (?)" if acc else "the acclimation line says why the lower is used")
+        why = ("FOM 4.3.2.4 enters the tables on \"the report time at local domicile or the local time in the "
+               "theater\" and the FAA lets a carrier use either clock; which one Crew Scheduling uses is not on file, "
+               "so the earlier is shown (?)" if acc else "the acclimation line says why the lower is used")
         lines.append(f"Other reading: {oth['clock']} gives row {oth['row']}, FDP {hm(oth['lim'])}"
                      + (f" and {hm(oth['fa'])} flight time" if not aug and oth["fa"] != ft_lim else "")
                      + (f", last out {other['last_out_txt']} ({other['last_out_ext_txt']} with the extension)"
@@ -1163,21 +1632,21 @@ def _timeout(duties, idx, pilots, pilots_src, eq, known_from, busy, notes, work,
                      + (", or the PWA duty limit's last block-in when earlier," if pwa_binds else "")
                      + f" less the scheduled {hm(span)} from this leg's out "
                      f"({clock(wl['dep'], zd, wf)}) to the duty's last block-in ({clock(sched_in)}): {last_out['txt']} "
-                     f"({last_out['hst']} {last_out['day']}) without an extension, {last_ext['txt']} ({last_ext['hst']} "
-                     f"{last_ext['day']}) with it ("
+                     f"({last_out['hst']} {last_out['day']}) without an extension, {last_ext['txt']} "
+                     f"({last_ext['hst']} {last_ext['day']}) with it ("
                      + (f"{last_out['short']} for both" if last_out["short"] == last_ext["short"] else
                         f"{last_out['short']}; {last_ext['short']}") + ").")
         if last_out["early"]:
-            lines.append(f"Flag: the scheduled out {clock(wl['dep'], zd, wf)} is after the last out without an extension: "
-                         f"the duty as scheduled is over its limit; check with Crew Scheduling.")
+            lines.append(f"Flag: the scheduled out {clock(wl['dep'], zd, wf)} is after the last out without an "
+                         f"extension: the duty as scheduled is over its limit; check with Crew Scheduling.")
             flags.append("early")
     else:
         lines.append(f"Not legal: {nl}.")
         sched_fdp = sched_in - rep
         if sched_fdp > fdp_lim:  # FAR 117 over as scheduled too: said, as the last out line would with a legal duty
             lines.append(f"Flag: FAR 117 is over as scheduled too: the FDP from the report to the last flown block-in "
-                         f"({clock(sched_in)}) is {hm(sched_fdp)}, over the {hm(fdp_lim)} limit ({hm(fdp_lim + EXT)} with "
-                         f"the 2:00 extension, FAR 117.19(a); {rule}).")
+                         f"({clock(sched_in)}) is {hm(sched_fdp)}, over the {hm(fdp_lim)} limit ({hm(fdp_lim + EXT)} "
+                         f"with the 2:00 extension, FAR 117.19(a); {rule}).")
         if pwa_over and not nl_short.startswith("PWA"):  # and the PWA Maximum, when FAR 117 is what makes it not legal
             lines.append(f"Flag: the PWA {p_cite} Maximum is over as scheduled too: the scheduled Duty Period "
                          f"{hm(sched_dp)} of {hm(p_max)} ({p_crew}; to {int(deb.total_seconds() // 60)} min after the "
@@ -1223,8 +1692,8 @@ def _timeout(duties, idx, pilots, pilots_src, eq, known_from, busy, notes, work,
                          f"the Interisland Maximum if it has not passed at block-out, so block out before "
                          f"{clock(opt, zd, wf)}; the last outs above do not use the option." if wf != DOMICILE else
                          "Pilot option (10.D.4): none for a departure from HNL, your domicile.")
-            lines.append("No 5.A.6 transfer time is added (none serves HNL) and a FAR 117.19 extension stays within the "
-                         "CBA (FOM 4.3.2.5): the PWA Maximum caps both last outs.")
+            lines.append("No 5.A.6 transfer time is added (none serves HNL) and a FAR 117.19 extension stays within "
+                         "the CBA (FOM 4.3.2.5): the PWA Maximum caps both last outs.")
         else:
             lines.append("No 5.A.6 transfer time is added (none serves HNL"
                          + ("; 10.D.1.b.2 bars them for an IRO Crew" if p_cite == "10.D.1.b.1" else "")
@@ -1242,14 +1711,15 @@ def _timeout(duties, idx, pilots, pilots_src, eq, known_from, busy, notes, work,
         lines.append(f"? Mixed Flying (2.A.45): {', '.join(f'{a} (sit {hm(t)})' for a, t in long_sits)} would be a "
                      f"Repositioning Flight (2.A.62) but for a sit at the neighbor island over the 2:00 read as its "
                      f"minimal delay: counted as Mixed Flying for the duty limit and the landings (the lower limits, "
-                     f"conservative); the rest before this duty is judged both ways (out of domicile Mixed Flying needs "
-                     f"less, 10.E.3.a), not sure where they disagree.")
+                     f"conservative); the rest before this duty is judged both ways (out of domicile Mixed Flying "
+                     f"needs less, 10.E.3.a), not sure where they disagree.")
     if mixed_grp != mixed_alt and dh_ii:
-        lines.append(f"? Mixed Flying (2.A.45): the interisland deadhead{one(dh_ii, '', 's')} {', '.join(dh_ii)} may be "
-                     f"its interisland Segment (2.A.62 positions \"such aircraft, or operating crew\"; whether 2.A.45 "
-                     f"counts a deadhead as a Segment is not on file, Ryan to confirm): counted as Mixed Flying for the "
-                     f"duty limit and the landings (the lower limits, conservative); the rest before this duty is judged "
-                     f"both ways, not sure where they disagree.")
+        lines.append(f"? Mixed Flying (2.A.45): the interisland deadhead{one(dh_ii, '', 's')} {', '.join(dh_ii)} may "
+                     f"be its interisland Segment (2.A.62 positions \"such aircraft, or operating crew\"; whether "
+                     f"2.A.45 counts a deadhead as a Segment is not on file, Ryan to confirm): counted as Mixed Flying "
+                     f"for the duty limit and the landings (the lower limits, conservative). The rest before this duty "
+                     f"is judged without it (out of domicile Mixed Flying needs less, 10.E.3.a): it only makes a rest "
+                     f"otherwise met a '?' where 10.E.3.a's table would need more.")
     if inter:
         not_checked.append("This duty is all interisland flying (an Interisland Pilot's, PWA 2.A.36.b): one who "
                            "completes a Duty Period after 0200 may not start another that calendar day (10.D.2.c), not "
@@ -1276,69 +1746,199 @@ def _timeout(duties, idx, pilots, pilots_src, eq, known_from, busy, notes, work,
         lines.append("The cumulative FDP limits cap an extension before takeoff (FAR 117.19(a), 117.23(c)); after "
                      "takeoff they may be exceeded to land (FOM 4.3.2.3, 4.3.2.6).")
     # ---- rest before this FDP (FAR 117.25(e) and (b))
-    rest = {}
+    # review round 4, fix 2 (UI-R4V-1): every FAR rest rule judged keeps (ok, need, cite, firm, why) for rest's cite and
+    # txt, the card's FAR rest row (its chips "Rest short" and "Rest ?" are FAR's or PWA's: the rows say which)
+    rest, verdicts, item_e = {}, [], None
     if free_how is None:
         if known_from is not None and known_from <= rep - REST_MIN:
-            rest.update(free="", ok=True)
-            lines.append("Rest before this FDP (FAR 117.25(e), FOM 4.3.2.7): no duty on file in the 10 h before it: met.")
+            b = bool(_hits(busy, rep - REST_MIN, rep))  # review round 4, fix 2 (C5): a schedule item in the 10 h
+            rest.update(free="", ok=None if b else True)
+            verdicts.append((rest["ok"], REST_MIN, "FAR 117.25(e)", True, "a schedule item inside it may be duty"))
+            lines.append("Rest before this FDP (FAR 117.25(e), FOM 4.3.2.7): no duty on file in the 10 h before it: "
+                         + ("? a schedule item inside it may be duty." if b else "met."))
         else:
             not_checked.append("10 h rest before this FDP (FAR 117.25(e), FOM 4.3.2.7): the duty before it is not on "
                                "file")
     else:
-        gap_busy = bool(_hits(busy, rep - free, rep))
-        ok = True if free >= REST_MIN and not gap_busy else None if free >= REST_MIN or free_how == "unknown" else False
+        # review round 5 (RV5-3): only a schedule item ending inside the 10 h before the report may cut it short
+        near_e = bool(_hits(busy, rep - REST_MIN, rep))
+        # review round 5 (RV5-2): across a span not on file the rest is at most the time since the duty before's
+        # release, and a duty in the span would only shorten it: under 10 h is SHORT for sure
+        most_e = rep - ds[idx - 1]["release"] if free_how == "unknown" and idx else None
+        short_e = most_e is not None and most_e < REST_MIN
+        ok = ((None if near_e else True) if free >= REST_MIN else
+              False if free_how == "release" or short_e else None)
+        # review round 5, fix 1 (UI5-2): met with a schedule item that may be duty in the rest (outside the 10 h): the
+        # sure margin is from its end
+        in_e = _hits(busy, rep - free, rep) if ok else []
+        item_e = rep - max(y for _x, y in in_e) if in_e else None
         rest.update(free=hm(free), ok=ok)
+        verdicts.append((ok, REST_MIN, "FAR 117.25(e)", True, "a schedule item inside it may be duty" if near_e else
+                         "a span of your line before it is not on file"))
         since = "the last release" if free_how == "release" else "the end of a span of your line not on file (at least)"
-        lines.append(f"Rest before this FDP (FAR 117.25(e), FOM 4.3.2.7): {hm(free)} free from duty since {since}, 10 h "
-                     f"needed: " + ("met" if ok else "SHORT, check with Crew Scheduling" if ok is False else
-                                    "? a schedule item inside it may be duty" if gap_busy else "? not known") + ".")
+        lines.append(f"Rest before this FDP (FAR 117.25(e), FOM 4.3.2.7): {hm(free)} free from duty since {since}, "
+                     f"10 h needed: " + ((f"met even if the schedule item ending {clock(rep - item_e)} "
+                                         f"{day(rep - item_e)} ({hm(item_e)} before the report) is duty, "
+                                         f"{hm(item_e - REST_MIN)} spare from it") if ok and item_e is not None else
+                                        "met" if ok else
+                                    f"SHORT: at most {hm(most_e)} since the release of the duty before it; a duty in "
+                                    f"the span not on file would only shorten it, check with Crew Scheduling"
+                                    if short_e else
+                                    "SHORT, check with Crew Scheduling" if ok is False else
+                                    "? a schedule item inside it may be duty" if near_e else
+                                    "? not known") + ".")
         if ok is False:
             flags.append("rest")
-    if free_how == "release":  # the longer FAR rests that may apply (FAR 117.25(g) and (d)): each its own line
+    # the longer FAR rests that may apply (FAR 117.25(g) and (d)): each its own line. Review round 3 (R3-3): with a span
+    # of the line not on file since the duty before it, they are still judged on that duty: the rest is at least `free`
+    # (since the span ended) and at most `most` (since that duty's release): met only when `free` meets it, else a '?'
+    if free_how == "release" or (free_how == "unknown" and idx > 0):
         gap_busy = bool(_hits(busy, rep - free, rep))
-        oks, top = [rest["ok"]], REST_MIN
-        dhr, thr = _dh_rest(ds, idx), _theater_rest(ds, idx, unknown)
-        for need, firm, cite, head, what in (
-                (dhr["need"], dhr["sure"], "FAR 117.25(g)", "Rest after deadhead transportation (FAR 117.25(g), FOM "
-                 "4.3.2.10)",
-                 f"{dhr['what']}, {hm(dhr['span'])} from its report to its last block-in, over its Table B FDP "
-                 f"{hm(dhr['limit'])}: a rest as long as the deadhead transportation ({hm(dhr['length'])}"
-                 f"{', from the report' if 'only' in dhr['what'] else ''}), no less than 10 h")
-                if dhr else (None,) * 5,
-                (THEATER_REST, thr["applies"], "FAR 117.25(d)", "Rest on return to home base (FAR 117.25(d), FOM "
-                 "4.3.2.11)",
-                 f"{hm(thr['away'])} away from HNL ({clock(thr['start'])} {day(thr['start'])} to release "
-                 f"{clock(thr['end'])} {day(thr['end'])}, "
-                 f"{'more than 168 h' if thr['away'] > AWAY_MAX else 'at least: it may be more than 168 h'}) and "
-                 + (f"{thr['far']} is {round(thr['deg'])} deg from HNL (more than 60)" if thr["deg"] > THEATER_DEG
-                    else "a station with no longitude on file may be more than 60 deg away")
-                 + ": 56 consecutive hours, holding three physiological nights")
-                if thr else (None,) * 5):
-            if need is None:
-                continue
+        unk = free_how == "unknown"
+        most0 = rep - ds[idx - 1]["release"]
+        have0 = (f"at least {hm(free)} free (since the end of a span of your line not on file; {hm(most0)} since the "
+                 f"release of the duty before it)" if unk else f"{hm(free)} free")
+        oks, top, longer = [rest["ok"]], REST_MIN, []
+        dhr = _dh_rest(ds, idx, busy, unknown)
+        thr = _theater_rest(ds, idx, unknown, rep - free if unk else None)
+        # review round 4, fix 2 (RV-1, C1): every entry a dict of one shape; nothing is unpacked into another name
+        # (round 4's starred `alt` replaced the rest-class alternatives published as fdp.alt)
+        if dhr:
+            longer.append({"need": dhr["need"], "firm": dhr["sure"], "cite": "FAR 117.25(g)",
+                           "head": "Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10)",
+                           "what": f"{dhr['what']}, {hm(dhr['span'])} from its report to its last block-in, "
+                                   f"{dhr['over']}: a rest as long as the deadhead transportation "
+                                   f"({hm(dhr['length'])}, "
+                                   + ("from the report" if "only" in dhr["what"] else
+                                      "from the last flown block-in: the sit before the deadhead counts, conservative")
+                                   + "), no less than 10 h",
+                           "why": dhr["why"], "nights": None, "nights_most": None, "most": most0, "have": have0,
+                           "back": False, "inside": False})
+        if thr:
+            th = {"need": THEATER_REST, "firm": thr["applies"], "cite": "FAR 117.25(d)",
+                  "head": "Rest on return to home base (FAR 117.25(d), FOM 4.3.2.11)",
+                  "what": f"{thr['away_txt']} and {thr['far']}: 56 consecutive hours, holding three physiological "
+                          f"nights",
+                  "why": thr["why"], "nights": _nights(rep - free, rep), "most": most0, "have": have0, "back": False,
+                  "inside": False}
+            if not thr["home"]:  # its return home falls inside the span: the rest at home is at most from its start
+                m = rep - thr["end"]
+                th.update(most=m, back=True, have=f"at least {hm(free)} free (since the end of a span of your line not "
+                                                  f"on file; at most {hm(m)}, since that span began)")
+            th["nights_most"] = _nights(rep - th["most"], rep)  # review round 4, fix 2 (RV-4): at most too
+            longer.append(th)
+        # review round 5 (F2V-4): a span not on file may hold deadhead transportation past its Table B FDP: a reading
+        # that only adds a '?', needing the longer of 10 h and the span. Review round 5, fix 2 (RF1-ITEM-DEADHEAD,
+        # RF1-F2V4-SHORT-SPAN): a schedule item that may be duty may hold one too (RV5-3 counts it for the 10 h only
+        # inside the 10 h); a stretch after the duty before it that may be duty not on file (the spans not on file, as
+        # one, and the schedule items, each joined to what it touches) may hold one past a Table B FDP only when it is
+        # over 8:30 (the lowest row, 9:00, less 0:30), whether or not it moved him; met only when the time since the
+        # last of them ended meets the need
+        pv_rel = ds[idx - 1]["release"]
+        low_b = _hrs(min(min(r[2]) for r in TABLE_B)) - UNACCL
+        u_in = _hits(unknown, pv_rel, rep) if unk else []
+        pieces = ([(max(pv_rel, min(x for x, _y in u_in)), min(rep, max(y for _x, y in u_in)), "span")] if u_in
+                  else []) + [(max(pv_rel, x), min(rep, y), "item") for x, y in _hits(busy, pv_rel, rep)]
+        stretches = []  # [start, end, {kinds}, items]
+        for p_a, p_b, p_k in sorted(pieces):
+            if stretches and p_a <= stretches[-1][1]:
+                stretches[-1][1] = max(stretches[-1][1], p_b)
+                stretches[-1][2].add(p_k)
+                stretches[-1][3] += p_k == "item"
+            else:
+                stretches.append([p_a, p_b, {p_k}, int(p_k == "item")])
+        long_s = [x for x in stretches if x[1] - x[0] > low_b]
+        if long_s:
+            s_a, s_b, s_kinds, s_items = max(long_s, key=lambda x: (x[1] - x[0], x[1]))
+            s_len, s_last = s_b - s_a, max(x[1] for x in stretches)
+            last_span = any(p_k == "span" and p_b == s_last for _a, p_b, p_k in pieces)
+            itm = "the schedule item that may be duty" if s_items == 1 else "the schedule items that may be duty"
+            noun = ("the span of your line not on file" if s_kinds == {"span"} else itm if s_kinds == {"item"} else
+                    f"the span of your line not on file and {itm} next to it")
+            end_s, rep_s = ds[idx - 1]["legs"][-1]["to"], ds[idx]["legs"][0]["frm"]
+            moved_s = (f"; the duty before it ended at {end_s} and you report at {rep_s}"
+                       if "span" in s_kinds and end_s != rep_s else "")
+            longer.append({"need": max(REST_MIN, s_len), "firm": False, "cite": "FAR 117.25(g)",
+                           "head": "Rest after deadhead transportation (FAR 117.25(g), FOM 4.3.2.10)",
+                           "what": f"a deadhead inside {noun} may need more (FAR 117.25(g), FOM 4.3.2.10): "
+                                   f"{'it runs' if s_items else 'the span runs'} {hm(s_len)} ({clock(s_a)} {day(s_a)} "
+                                   f"to {clock(s_b)} {day(s_b)}), over {hm(low_b)} (the lowest Table B row less "
+                                   f"0:30){moved_s}, so a deadhead in it may have run past its Table B FDP and need a "
+                                   f"rest as long (at most {hm(s_len)}), no less than 10 h",
+                           "why": [], "nights": None, "nights_most": None, "most": most0,
+                           "have": (f"at least {hm(rep - s_last)} free (since the end of that span)" if last_span else
+                                    f"{hm(rep - s_last)} free since the schedule item that may be duty ending "
+                                    f"{clock(s_last)} {day(s_last)}"),
+                           "back": False, "inside": True, "since": rep - s_last,
+                           "in_what": "the span" if s_kinds == {"span"} else "it",
+                           "q_why": "a span of your line not on file" if "span" in s_kinds else
+                                    "a schedule item that may be duty"})
+        for r in longer:
+            need, firm, cite, most, nights, back = r["need"], r["firm"], r["cite"], r["most"], r["nights"], r["back"]
             top = max(top, need) if firm else top  # a rule that may not apply says its need in its line only
-            ok = (True if not gap_busy else None) if free >= need else False if firm else None
+            # review round 4, fix 1 (R4-4): the 56 h holds three physiological nights, counted as the 0100-0700 HNL
+            # windows inside the rest (FAR 117.3's reading, not in the FOM): fewer is a '?', not short, until confirmed
+            few = nights is not None and nights < NIGHTS
+            since_s = r.get("since")  # review round 5, fix 2: a stretch's reading, judged from the last of it
+            ok = ((True if since_s >= need else None) if since_s is not None else
+                  (None if gap_busy or few else True) if free >= need else False if firm and not unk else None)
             oks.append(ok)
-            why = thr["why"] if head.startswith("Rest on return") else [] if firm else [
-                "the Table B FDP of the duty before it or which of its deadheads count is not sure"]
-            lines.append(f"{head}: {what}{' (? ' + '; '.join(why) + ')' if why else ''}; {hm(free)} free: "
-                         + ("met" if ok else "SHORT, check with Crew Scheduling" if ok is False else
-                            "? a schedule item inside it may be duty" if free >= need else
-                            f"? SHORT of {hm(need)} if it applies") + ".")
+            nt = (f"{nights} of the three physiological nights (0100-0700 HNL) are inside it (FAR 117.3 reads one as "
+                  f"10 h of rest holding 0100-0700 at home base; not in the FOM, Ryan to confirm)")
+            qs = (["a schedule item inside it may be duty"] if gap_busy else []) + ([nt] if few else [])
+            # review round 4, fix 2 (RV-4): the rest at most holding fewer than three nights is a '?' even then
+            thin = r["nights_most"] is not None and r["nights_most"] < NIGHTS
+            even = (f", but it holds only {r['nights_most']} of the three physiological nights, 0100-0700 HNL: a '?' "
+                    f"even then" if thin else "")
+            word = ("met" + (f" ({nights} physiological nights, 0100-0700 HNL)" if nights is not None else "")
+                    if ok else
+                    "SHORT, check with Crew Scheduling" if ok is False else
+                    f"? not known: short if a deadhead in {r['in_what']} ran past its Table B FDP"
+                    if since_s is not None else
+                    "? " + "; ".join(qs) + ("" if firm else " (if it applies)") if free >= need else
+                    "? not known: short if a deadhead in the span ran past its Table B FDP" if r["inside"] else
+                    f"? not known: SHORT of {hm(need)} wherever its return falls in the span not on file"
+                    + ("" if firm else " (if it applies)") if back and most < need else
+                    f"? not known: met only if its return home came early in the span not on file (at most "
+                    f"{hm(most)}{even})" + ("" if firm else " and if it applies") if back else
+                    f"? not known: SHORT of {hm(need)} if no duty was in the span not on file"
+                    + ("" if firm else " and it applies") if unk and most < need else
+                    f"? not known: met only if the span not on file was free from duty ({hm(most)} then{even})"
+                    + ("" if firm else " and if it applies") if unk else
+                    f"? SHORT of {hm(need)} if it applies")
+            why = r["why"]
+            lines.append(f"{r['head']}: {r['what']}{' (? ' + '; '.join(why) + ')' if why else ''}; {r['have']}: "
+                         f"{word}.")
+            short = (["a schedule item inside it may be duty"] if gap_busy else []) + (
+                [f"{nights} of the three physiological nights, 0100-0700 HNL"] if few else [])
+            verdicts.append((ok, need, cite, bool(firm), "; ".join(
+                [r["q_why"], "if it applies"] if since_s is not None else
+                short if free >= need else (["a span of your line not on file"] if unk else []) + (
+                    [] if firm else ["if it applies"]))))
             if ok is False:
                 lines.append(f"Flag: short of FAR rest ({cite}): {hm(free)} of {hm(need)}.")
                 if "rest" not in flags:
                     flags.append("rest")
-            if head.startswith("Rest on return"):
-                not_checked.append("The three physiological nights of the 56 h rest on return to home base (FAR "
-                                   "117.25(d), FOM 4.3.2.11): local nights, not on the schedule")
         if top > REST_MIN:
             rest["need"] = hm(top)
         rest["ok"] = False if False in oks else None if None in oks else True
+    if verdicts:
+        f_ok = rest["ok"]
+        v = max([x for x in verdicts if x[0] is f_ok] if f_ok is not True else [x for x in verdicts if x[3]],
+                key=lambda x: x[1])
+        rest["cite"] = v[2]
+        # review round 5 (RV5-2): a sure SHORT across a span not on file says the most the rest can be
+        # review round 5, fix 1 (UI5-2): met with a schedule item that may be duty in the rest: the time since it too
+        i_txt = f" ({hm(item_e)} after a schedule item that may be duty)" if f_ok is True and item_e is not None else ""
+        rest["txt"] = ((f"at most {hm(rep - ds[idx - 1]['release'])} free" if free_how == "unknown" and f_ok is False
+                        else f"at least {rest['free']} free{i_txt}" if free_how == "unknown" else
+                        f"{rest['free']} free{i_txt}" if rest["free"] else "no duty on file in the 10 h before it")
+                       + f", {hm(v[1])} needed ({v[2]}): "
+                       + ("met" if f_ok else "SHORT" if f_ok is False else "?" + (f" ({v[4]})" if v[4] else "")))
     wk = _free_week(ds, idx, busy, known_from, rep)
     if wk is None:
-        not_checked.append("30 h free from duty in the 168 h before this FDP (FAR 117.25(b), FOM 4.3.2.9): your line in "
-                           "that window is not all on file")
+        not_checked.append("30 h free from duty in the 168 h before this FDP (FAR 117.25(b), FOM 4.3.2.9): your line "
+                           "in that window is not all on file")
     else:
         sure_free, may_free = wk
         rest["week"] = hm(sure_free)
@@ -1349,12 +1949,17 @@ def _timeout(duties, idx, pilots, pilots_src, eq, known_from, busy, notes, work,
                                            if may_free >= FREE_WEEK else ": SHORT, check with Crew Scheduling") + ".")
         if may_free < FREE_WEEK:
             flags.append("week")
+        w_ok = rest["week_ok"]
+        rest["txt"] = "; ".join(x for x in (rest.get("txt"), f"30 h free in 168 h (FAR 117.25(b)): longest "
+                                            f"{hm(sure_free)}, " + ("met" if w_ok else "SHORT" if w_ok is False else
+                                                                   "? (a schedule item in it may be duty)")) if x)
     lines.extend(r_lines + l_lines)
     not_checked.extend(r_nc)
     flags.extend(r_flags + l_flags)
     # review PWA-rest-unsure-box-inconsistent: a rest or a landings count that is not sure is a chip of its own
     if not any(f in flags for f in ("rest", "week", "pwa_rest")) and (
-            None in (rest.get("ok", True), rest.get("week_ok", True)) or (pr.get("ok", True) is None and free is not None)):
+            None in (rest.get("ok", True), rest.get("week_ok", True))
+            or (pr.get("ok", True) is None and (free is not None or pr.get("_chip")))):
         flags.append("rest_q")
     if landings["ok"] is None:
         flags.append("landings_q")

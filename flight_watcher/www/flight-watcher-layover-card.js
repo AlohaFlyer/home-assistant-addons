@@ -55,24 +55,32 @@
 // 1.7.20 (Ryan, Nov 20: "calculate per FAR 117 and PWA when I timeout, both for if I extend or if I
 // do not. Add that number in bold with a dark orange square around it right of the report time"): the Watcher's
 // sensor.<prefix>_working_flight `timeout` (timeout.py: FAR 117 Tables A, B and C, acclimation, pilots, rest class,
-// flight time and the cumulative limits; PWA 2.A.19.b release and Section 10 duty, rest and landings) shows in a box with a 2 px dark orange border (#c2410c,
-// 3:1 or more on light and dark cards; its text is the theme's own colors) right of the report time: TIMEOUT, the
-// no-extension time in bold, "Ext" and the time with the 2:00 extension, and the rule that binds. With no van the box
-// sits beside the Report block in the header (both wrap under the title on a phone); with a van, right of the Report
-// line. It is a button (Enter and Space too): it opens the basis under it, each rule with its FOM, FAR or PWA cite,
-// and what is not checked. The times are the Watcher's for the same pairing and leg (also under Hark's data). No
-// `timeout` attribute (an older Watcher, a crew not known): no box, nothing else changes.
+// flight time and the cumulative limits; PWA 2.A.19.b release and Section 10 duty, rest and landings) shows in a box
+// with a 2 px dark orange border (#c2410c, 3:1 or more on light and dark cards; its text is the theme's own colors)
+// right of the report time: TIMEOUT, the no-extension time in bold, "Ext" and the time with the 2:00 extension, and
+// the rule that binds. With no van the box sits beside the Report block in the header (both wrap under the title on a
+// phone); with a van, right of the Report line. It is a button (Enter and Space too): it opens the basis under it,
+// each rule with its FOM, FAR or PWA cite, and what is not checked. The times are the Watcher's for the same pairing
+// and leg (also under Hark's data). No `timeout` attribute (an older Watcher, a crew not known): no box, nothing else
+// changes.
 // 1.7.20 review (Ryan, Nov 20: "when is the last moment I can block out and be legal"): the box is LAST OUT, the last
 // legal block-out on the departure station's clock (as the big Report time), "Ext" with the extension, the two in HST
-// small, and the flight time as "FT 11:15 of 13:00". NOT LEGAL instead of a time when the planned flight time or a
-// cumulative limit is over at the scheduled times; a '?' after the time when it is not sure (acclimation, the clock,
-// the rest class or the pilots), the earlier reading shown. The basis opens with the block-out and block-in limits
-// of both cases; how it is worked out and what is not checked fold under it. Under a van, the box sits right of the
-// Report line and Departs and Arrives keep the full width.
+// small, and the flight time as "FT 11:15 of 13:00". NOT LEGAL instead of a time when the planned flight time, a
+// cumulative limit or the PWA Maximum is over at the scheduled times; a '?' after the time only for what moves a last
+// out when it is not sure (`unsure`: acclimation, the clock, the rest class, the pilots, a 4-pilot crew's Captains
+// where the PWA binds, or Mixed Flying where its 10.D.3 limit binds), the earlier reading shown. The basis opens with
+// the block-out and block-in limits of both cases; how it is worked out and what is not checked fold under it. Under a
+// van, the box sits right of the Report line and Departs and Arrives keep the full width.
 // 1.7.20 (Ryan, Nov 20: PWA Section 10 now on file): the PWA duty Maximum (10.D) caps both last outs; when it binds,
 // a small line in the box names it as a duration ("PWA max duty 16 h", "Ext: PWA max duty 18 h"), NOT LEGAL when it is
-// over at the scheduled times, "PWA rest short" / "Landings over" / "Past PWA schedule" when flagged, and the details
-// carry a PWA row (the duty against its Scheduled limit, the rest of 10.E, the landings of 10.H).
+// over at the scheduled times, and the details carry a PWA row (the duty against its Scheduled limit, the rest of
+// 10.E, the landings of 10.H). A chip for every flag (timeout `flags`), in a NOT LEGAL box too (review round 4, fix
+// 1): "Over as scheduled" (last_out.early), "Check crew" (pilots raised), "Rest short" (FAR rest or 30 h in 168 h),
+// "PWA rest short", "Landings over", "Over 3 segments (FOM)", "Past PWA schedule", and "Rest ?" / "Landings ?" for a
+// rest or a landings count that is not sure (rest_q, landings_q: these never put a '?' on the time, as they do not
+// move a last out). Review round 4, fix 2 (UI-R4V-1): the details carry a FAR rest row before the PWA one (timeout
+// rest.txt: the rest free, the need of the rule that decides, its cite and verdict, and 30 h in 168 h), so the rest a
+// chip is about is seen without opening "How it is worked out".
 // 1.7.20 review: the time keeps 24 px with its '?' right after it and its clock smaller after it (a zone with no
 // letters is named by its station: "14:43? SIN"), so the box stays beside the Report block at 320 px; NOT LEGAL is
 // white on red ("Not legal as scheduled (PWA)" for a PWA Maximum, "Not legal to dispatch" for FAR 117), with its '?';
@@ -250,14 +258,26 @@ class FlightWatcherLayoverCard extends HTMLElement {
       const v = String(txt || ""), i = v.indexOf(" "), hm = i > 0 ? v.slice(0, i) : v, z = i > 0 ? v.slice(i + 1) : "";
       return `<span class="ton">${e(hm)}${q}</span>${z ? `<span class="toz"> ${e(z)}</span>` : ""}${wd ? `<span class="tod"> ${e(wd)}</span>` : ""}`;
     };
+    // every flag set, most serious first; the box shows two (one chip a flag), the label all of them (review
+    // CARD-flags-segments-pilots-hidden: tests check that every flag timeout.py sets has its chip here). Review round
+    // 4, fix 1 (UI-R4-1): a NOT LEGAL box shows them too (a rest short stays short when the duty is re-timed to fit)
+    const fl = t.flags || [];
+    const warns = [lo && lo.early ? "Over as scheduled" : "", fl.includes("pilots") ? "Check crew" : "",
+      fl.some((f) => f === "rest" || f === "week") ? "Rest short" : "", fl.includes("pwa_rest") ? "PWA rest short" : "",
+      fl.includes("landings") ? "Landings over" : "", fl.includes("segments") ? "Over 3 segments (FOM)" : "",
+      fl.includes("pwa_sched") ? "Past PWA schedule" : "", fl.includes("rest_q") ? "Rest ?" : "",
+      fl.includes("landings_q") ? "Landings ?" : ""].filter(Boolean);
+    const shown = warns.length > 2 ? [warns[0], `+${warns.length - 1} more flags`] : warns;
+    const chips = shown.map((w) => `<span class="tow" data-towarn>${e(w)}</span>`).join("");
     let body, say;
     if (t.legal === false) {
       // review: NOT LEGAL in white on red, the most serious state; a PWA Maximum is "not legal as scheduled", not a
       // dispatch (FAA) limit
       const nl = this._toNl(t);
       body = `<span class="tol">Last out</span><span class="tot" data-tono><span class="tonl">Not legal</span>${q}</span>
-        <span class="tob" data-toby>${nb(t.not_legal_short || "")}</span>`;
-      say = `${nl}: ${t.not_legal_short || ""}${t.sure === false ? "; not sure, see the details" : ""}. Details`;
+        <span class="tob" data-toby>${nb(t.not_legal_short || "")}</span>${chips}`;
+      const nq = t.sure === false ? "; not sure, see the details" : "";
+      say = `${nl}: ${t.not_legal_short || ""}${warns.length ? `; ${warns.join(", ")}` : ""}${nq}. Details`;
     } else if (lo && lo.txt) {
       const leg = lo.leg && lo.leg !== `${a.origin || ""}-${a.dest || ""}` ? ` ${lo.leg}` : "";
       const same = !!(lx.at && lx.at === lo.at), h = (x) => String(x || "").replace(/ HST$/, "");
@@ -267,21 +287,19 @@ class FlightWatcherLayoverCard extends HTMLElement {
       const rule = lx.pwa && !lo.pwa ? (lo.short || "") : "";
       const ext = !lx.txt ? "" : same ? (lo.pwa ? "Ext same" : `Ext same (${lx.short || ""})`) : `Ext ${lx.txt}${lx.wd ? ` ${lx.wd}` : ""}`;
       const hst = lo.txt !== lo.hst ? `(${h(lo.hst)}${lx.hst && !same ? ` / ${h(lx.hst)}` : ""} HST)` : "";
-      const fl = t.flags || [];
-      // every flag set, most serious first; the box shows two (one chip a flag), the label all of them (review
-      // CARD-flags-segments-pilots-hidden: tests check that every flag timeout.py sets has its chip here)
-      const warns = [lo.early ? "Over as scheduled" : "", fl.includes("pilots") ? "Check crew" : "",
-        fl.some((f) => f === "rest" || f === "week") ? "Rest short" : "", fl.includes("pwa_rest") ? "PWA rest short" : "",
-        fl.includes("landings") ? "Landings over" : "", fl.includes("segments") ? "Over 3 segments (FOM)" : "",
-        fl.includes("pwa_sched") ? "Past PWA schedule" : "", fl.includes("rest_q") ? "Rest ?" : "",
-        fl.includes("landings_q") ? "Landings ?" : ""].filter(Boolean);
-      const shown = warns.length > 2 ? [warns[0], `+${warns.length - 1} more flags`] : warns;
       body = `<span class="tol">Last out${e(leg)}</span>
         <span class="tot" data-tono>${tm(lo.txt, lo.wd)}</span>
         ${ext ? `<span class="tox" data-toext>${e(ext)}</span>` : ""}${hst ? `<span class="toh" data-tohst>${e(hst)}</span>` : ""}
         ${rule ? `<span class="tob" data-torule>${nb(rule)}</span>` : ""}${bind ? `<span class="tob" data-tobind>${nb(bind)}</span>` : ""}
-        ${ft ? `<span class="tob" data-toby>${nb(ft)}</span>` : ""}${shown.map((w) => `<span class="tow" data-towarn>${e(w)}</span>`).join("")}`;
-      say = `Last out${leg} ${lo.txt}${lo.wd ? ` ${lo.wd}` : ""}${lo.txt !== lo.hst ? `, ${lo.hst}` : ""} without an extension${!lo.pwa && lo.short ? ` (${lo.short})` : ""}${ext ? `, ${same ? `the same with one${lo.pwa ? "" : ` (${lx.short || ""})`}` : `${lx.txt}${lx.txt !== lx.hst ? `, ${lx.hst}` : ""} with one`}` : ""}${bind ? `; ${bind}` : ""}${t.ft && t.ft.txt ? `; flight time ${t.ft.txt}` : ""}${warns.length ? `; ${warns.join(", ")}` : ""}${unsure}. Details`;
+        ${ft ? `<span class="tob" data-toby>${nb(ft)}</span>` : ""}${chips}`;
+      // review round 5, fix 2 (UI6-3): the extension's weekday too, as the box shows it ("Ext 03:45 HST Wed")
+      const sayNo = `${lo.txt}${lo.wd ? ` ${lo.wd}` : ""}${lo.txt !== lo.hst ? `, ${lo.hst}` : ""}`;
+      const sayEx = `${lx.txt}${lx.wd ? ` ${lx.wd}` : ""}${lx.txt !== lx.hst ? `, ${lx.hst}` : ""}`;
+      const sayExt = !ext ? "" : same ? `, the same with one${lo.pwa ? "" : ` (${lx.short || ""})`}`
+        : `, ${sayEx} with one`;
+      say = `Last out${leg} ${sayNo} without an extension${!lo.pwa && lo.short ? ` (${lo.short})` : ""}${sayExt}`
+        + `${bind ? `; ${bind}` : ""}${t.ft && t.ft.txt ? `; flight time ${t.ft.txt}` : ""}`
+        + `${warns.length ? `; ${warns.join(", ")}` : ""}${unsure}. Details`;
     } else {  // a Watcher before the last out: its block-in timeout
       const n = t.no_ext, x = t.ext || {}, dn = this._toDay(n, t), dx = this._toDay(x, t);
       body = `<span class="tol">Timeout</span><span class="tot" data-tono>${tm(n.txt, dn)}</span>
@@ -316,10 +334,13 @@ class FlightWatcherLayoverCard extends HTMLElement {
     }
     const c = t.cum || {}, cum = ["ft_672", "fdp_168", "fdp_672"].filter((k) => c[k] && c[k].txt).map((k) => e(c[k].txt)).join(" &middot; ");
     const ftl = t.ft && t.ft.txt ? `<div class="trw"><b>Flight time:</b> ${e(t.ft.txt)}${cum ? ` &middot; ${cum}` : ""}</div>` : "";
+    // review round 4, fix 2 (UI-R4V-1): the FAR rest row (117.25(e), (b), (d), (g): the rule that decides and its
+    // verdict) beside the PWA one, before the fold, so a "Rest short" or "Rest ?" chip is never read against PWA alone
+    const far = t.rest && t.rest.txt ? `<div class="trw" data-tofar><b>FAR rest:</b> ${e(t.rest.txt)}</div>` : "";
     const pwa = t.pwa && t.pwa.txt ? `<div class="trw" data-topwa><b>PWA:</b> ${e(t.pwa.txt)}</div>` : "";
     const why = { acclimation: "acclimation", clock: "which clock enters the tables", "rest class": "the rest facility class", pilots: "the number of pilots", "PWA crew": "the Captains of the crew (PWA 10.D.1.c or 10.D.1.d)", "Mixed Flying": "whether the duty is Mixed Flying (PWA 2.A.45: a neighbor island leg's long sit, or an interisland deadhead), which sets the PWA duty limit" };
     const uns = t.sure === false ? `<div class="trw" data-tounsure><b>? Not sure:</b> ${e((t.unsure || []).map((k) => why[k] || k).join(", "))}: the earlier reading is shown (see below).</div>` : "";
-    return `<div class="tdet" id="todet" data-todet${this._open.to ? "" : " hidden"}>${rows}${ftl}${pwa}${uns}
+    return `<div class="tdet" id="todet" data-todet${this._open.to ? "" : " hidden"}>${rows}${ftl}${far}${pwa}${uns}
       <details data-k="tobasis"${this._open.tobasis ? " open" : ""}><summary>How it is worked out</summary><ul data-tolines>${li(t.lines)}</ul></details>
       ${nc.length ? `<details data-k="tonc"${this._open.tonc ? " open" : ""}><summary>Not checked (${nc.length})</summary><ul data-tonc>${li(nc)}</ul></details>` : ""}
       <div class="u">From your FLICA schedule: the times move with the actual out and in.</div></div>`;

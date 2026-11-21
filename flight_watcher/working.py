@@ -33,14 +33,16 @@ SOURCE = "schedule"
 UPDATED_BY = "Flight Watcher"
 NO_TRIP = "No trip"
 STATE_MAX = 255  # Home Assistant's limit for a state
-# PWA 2.A.19.b.1 (as recall._trip applies it): a later duty period reports 1:00 before departure in domicile, 1:15 out of it
+# PWA 2.A.19.b.1 (as recall._trip applies it): a later duty period reports 1:00 before departure in domicile, 1:15 out
+# of it
 REPORT_DOMICILE_MIN, REPORT_AWAY_MIN = 60, 75
 VOLATILE = ("updated", "status_as_of")  # move on every call; a payload that differs only here is not news
 STN_RE = re.compile(r"^[A-Z]{3}$")
 # The zone of every station in pot.TZ (whose offsets are the standard ones): its local time with daylight time
 # (1.7.1: and of a few stations pot.TZ does not list; layover.py reads only this table)
 ZONES = {"HNL": "Pacific/Honolulu", "OGG": "Pacific/Honolulu", "KOA": "Pacific/Honolulu", "ITO": "Pacific/Honolulu",
-         "LIH": "Pacific/Honolulu", "MKK": "Pacific/Honolulu", "LNY": "Pacific/Honolulu", "PPT": "Pacific/Tahiti", "RAR": "Pacific/Rarotonga", "PPG": "Pacific/Pago_Pago",
+         "LIH": "Pacific/Honolulu", "MKK": "Pacific/Honolulu", "LNY": "Pacific/Honolulu", "PPT": "Pacific/Tahiti",
+         "RAR": "Pacific/Rarotonga", "PPG": "Pacific/Pago_Pago",
          "ANC": "America/Anchorage",
          **{s: "America/Los_Angeles" for s in ("LAX", "SFO", "SEA", "SAN", "OAK", "SMF", "LAS", "PDX", "SJC", "ONT",
                                               "LGB")},
@@ -300,7 +302,8 @@ def _printed(m, zone, near, after):
     """The time printed as minute m at a zone next to `near`: the first at or after it (after), else the last at or
     before it; None when neither falls within a day."""
     day = near.astimezone(zone).date()
-    got = [c for c in (_at(day + timedelta(days=k), m, zone) for k in (-1, 0, 1)) if (c >= near if after else c <= near)]
+    got = [c for c in (_at(day + timedelta(days=k), m, zone) for k in (-1, 0, 1))
+           if (c >= near if after else c <= near)]
     return (min(got) if after else max(got)) if got else None
 
 
@@ -362,8 +365,8 @@ def _deadheads(p, duties, pk):
     start = 0
     for n, d in enumerate(duties):
         if not pk or not pk.get("duties"):
-            d["dh_note"] = ("FLICA's pairing page lists none and the pairings package has no detail for this pairing, so "
-                            "one there would not be counted")
+            d["dh_note"] = ("FLICA's pairing page lists none and the pairings package has no detail for this pairing, "
+                            "so one there would not be counted")
             continue
         m = _pkg_duty(d, pk, start)
         if m is None:
@@ -588,7 +591,8 @@ def working_flight(items, own, now, roll_h=2, pkg=None, months=None, domestic=()
     # before the working leg's pairing, the pilot is flying it or flies it first, so no later leg is his working one
     unread = next((q for q in pairs if not q["legs"] and q["end"] >= today), None)
     if p is None or (unread is not None and (unread["start"], unread["trip"]) < (p["start"], p["trip"])):
-        return {"state": NO_TRIP, "attributes": {"source": SOURCE, "next": _next_pairing(pairs, today, unread_only=True),
+        return {"state": NO_TRIP, "attributes": {"source": SOURCE,
+                                                 "next": _next_pairing(pairs, today, unread_only=True),
                                                  "updated": at, "updated_by": UPDATED_BY}}
     if cur["i"] + 1 < cur["n"]:
         nl = p["legs"][cur["i"] + 1]

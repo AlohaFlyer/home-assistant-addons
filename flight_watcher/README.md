@@ -521,38 +521,66 @@ Recent finds.
   read yet shows as `No trip` with that trip next while it comes first. The legs live in the state, not on
   `sensor.<prefix>_own_trip_times` (size). Hark's `sensor.hark_working_flight` (Ryan only: release, MEL, NOTAMs, live
   status) is separate.
-- Duty limits (1.7.20, `timeout.py`): the working flight sensor's `timeout` attribute. `last_out` / `last_out_ext`:
-  the working leg's last legal block-out without and with the 2:00 extension (the FDP end, no later than the 117.23(c)
+- Duty limits (1.7.20, `timeout.py`): the working flight sensor's `timeout` attribute. `last_out` / `last_out_ext`: the
+  working leg's last legal block-out without and with the 2:00 extension (the FDP end, no later than the 117.23(c)
   cumulative FDP caps and the PWA duty Maximum, less the scheduled time to the duty's last block-in), on the departure
-  station's clock and HST.
-  `ft`: the duty's planned flight time against its limit (a duration; over it `legal` is false, with `not_legal`).
-  `no_ext` / `ext`: the block-in limits with the leg out on time; `fdp`: the FDP's own (Table B or C row, acclimation,
-  pilots, rest class and the other classes, the other clock's reading). From FAR 117 Tables A, B and C as FOM 125.4
-  4.3.2 gives them: acclimation (60 degrees, 36 h free or 72 h in the theater, else the last acclimated clock less
-  0:30), the crew list's pilots (else the package crew line), the pairings package's equipment and deadheads, the
-  117.23 limits when the line on file covers their window, and 117.25 rest (10 h, 30 h in 168 h, 56 h on return home
-  after more than 168 h away and 60 degrees, 117.25(d); as long as a deadhead past Table B, 117.25(g)). `sure` is
-  false (a "?" on the card) when
-  acclimation, the clock, the rest class, the pilots or a 4-pilot crew's Captains are not certain: the earlier reading
-  is used. `pwa`: the 2023 PWA Section 10 checks (Local Times, 2.A.43): the duty Maximum by crew, 16:00 for 2 pilots
-  (10.D.1.a), 18:00 for an IRO Crew (10.D.1.b) or a 1-Captain Extended Range Crew (10.D.1.c), none of its own for 2
-  Captains (Part 117 Table C, 10.D.1.d), 14:00 / 16:00 for every duty of a grouping that holds a Mixed Flying Duty
-  Period (10.D.3.a; a Repositioning Flight, 2.A.62, needs a sit of 2:00 or less at the neighbor island; an interisland
-  deadhead may be its interisland Segment, the lower limits and a "?"), 10.D.2 for an
-  all-interisland duty (2.A.36.b), from the report (10.D.5) to 15 or 30 min after the last block-in (2.A.19.b),
-  capping both last outs (over it as scheduled: not legal); the Scheduled limit (flagged when past); the rest before
-  the duty, 11:00 at home (10.E.1.a), 2 x the preceding Duty Period away (10.E.1.a.1; for 2 pilots 9:00 or more is a
-  "?", 10.E.1.a.2) or 9, 10 or 11 h by the grouping's landings in a Mixed Flying grouping (10.E.3.a), 12:00 at home and
-  9:00 away before an all-interisland duty (10.E.2), 18:00 before a 1400-0359 departure on a 12:00 duty (10.E.1.b),
-  flagged when short; every other reading that may apply is judged too and a rest they disagree on is a "?" (with
-  `other`, the other reading's need), as is one met by under 2:30 away from HNL (`timeout.VAN_RIDES`: hotel time door
-  to door, 2.A.68.b, is shorter by the two van rides); the landings (10.H.1, 10.H.2, 10.H.3). A station whose Local
-  Time is not on file is a "?" there, never HST. `flags`: early, pilots, rest, week, pwa_rest, landings, segments,
-  pwa_sched, and rest_q / landings_q (a rest or a landings count not sure). `lines` (one per rule, cited) and
-  `not_checked` carry the basis. The layover card shows LAST OUT in a dark orange box right of the report time (the
-  binding PWA rule named, as a duration, when it binds, with the FAR 117 one above it when the PWA binds only the
-  extension; NOT LEGAL in white on red; a chip for every flag, two shown); a tap opens the details. Absent when the
-  pilots are not known.
+  station's clock and HST. `ft`: the duty's planned flight time against its limit (a duration; over it `legal` is false,
+  with `not_legal`). `no_ext` / `ext`: the block-in limits with the leg out on time; `fdp`: the FDP's own (Table B or C
+  row, acclimation, pilots, rest class and the other classes, the other clock's reading). From FAR 117 Tables A, B and C
+  as FOM 125.4 4.3.2 gives them: acclimation (60 degrees, 36 h free or 72 h in the theater, else the last acclimated
+  clock less 0:30), the crew list's pilots (else the package crew line), the pairings package's equipment and deadheads,
+  the 117.23 limits when the line on file covers their window, and 117.25 rest (10 h, 30 h in 168 h, 56 h on return home
+  after more than 168 h away and more than 60 degrees between two of HNL and the trip's stations, holding three
+  0100-0700 HNL nights (fewer is a "?" until Ryan confirms 14 CFR 117.3's definition), 117.25(d), a return home inside a
+  span of the line not on file included (a span inside the trip, holding its return or before its start: a "?", the
+  places in it not known); as long as a deadhead past Table B on its own acclimation, 0:30 less when not acclimated,
+  HNL's clock a reading too, sure past every Table B row whatever the acclimation, after a span of the line not on
+  file before the deadhead its acclimation read with the span as free time and as duty (each span either way, a stay
+  in the theater he reports in that may have begun in the span, a stay a duty inside it may have begun at a station
+  whose 60 degrees hold every station since, and a stay a block-in on file may have ended; never the walk's own
+  re-acclimation after the span; a deadhead under every such reading needs no 117.25(g) rest; the lowest row when a
+  span anywhere in that walk with the free time on file before it, from the
+  release before it to its end, is 36 h or more (a report inside it may follow 36 h free), a stay may reach 72 h
+  inside a span, a station has no longitude, a schedule item that may be duty decides a reading, or the spans give more
+  than 64 walks, `timeout.ACC_WALKS`), a deadhead after the last flown leg measured from that leg's block-in,
+  117.25(g); with a span of the line not on file before the report, a "?" unless met since it ended, but the 10 h
+  SHORT when the most since the release before the span is under it; a stretch after the duty before it that may be
+  duty not on file (the spans, and the schedule items, joined where they touch) that runs over 8:30 may hold a
+  deadhead: a "?" unless the rest since the last of them meets the longer of 10 h and the stretch; a schedule item that
+  may be duty inside a rest: a "?" (for the 10 h only one ending inside it; met with one outside it, the margin from its
+  end is said); `rest.cite` and `rest.txt` name the rule that
+  decides, its need and verdict). `sure` is false (a "?" on the card) when acclimation, the clock, the rest class, the
+  pilots, a 4-pilot crew's Captains or Mixed Flying (a long sit or an interisland deadhead, where its 10.D.3 limit
+  binds) are not certain: the earlier reading is used. `pwa`: the 2023 PWA Section 10 checks (Local Times, 2.A.43): the
+  duty Maximum by crew, 16:00 for 2 pilots (10.D.1.a), 18:00 for an IRO Crew (10.D.1.b) or a 1-Captain Extended Range
+  Crew (10.D.1.c), none of its own for 2 Captains (Part 117 Table C, 10.D.1.d), 14:00 / 16:00 for every duty of a
+  grouping that holds a Mixed Flying Duty Period (10.D.3.a; a Repositioning Flight, 2.A.62, needs a sit of 2:00 or less
+  at the neighbor island; an interisland deadhead may be its interisland Segment, the lower limits and a "?"), 10.D.2
+  for an all-interisland duty (2.A.36.b), from the report (10.D.5) to 15 or 30 min after the last block-in (2.A.19.b),
+  capping both last outs (over it as scheduled: not legal); the Scheduled limit (flagged when past); the rest before the
+  duty, 11:00 at home (10.E.1.a), 2 x the preceding Duty Period away (10.E.1.a.1; for 2 pilots 9:00 or more is a "?",
+  10.E.1.a.2) or 9, 10 or 11 h by the grouping's landings in a Mixed Flying grouping (10.E.3.a), 12:00 at home and 9:00
+  away before an all-interisland duty (10.E.2; 12:00 short at home is short, whatever 10.E.1.a's 11:00 says; away, 2 x
+  the Duty Period is a reading on top of the 9:00, a "?" until Ryan confirms it), 18:00 before a 1400-0359 departure on
+  a 12:00 duty (10.E.1.b), flagged when short; with a span of the line not on file after the duty before it, 2 x that
+  duty's Duty Period is met only when the rest since the span ended meets 2 x the longer of it and the span (and of
+  one Duty Period from that duty's report to the span's end when the span begins inside a 10.E rest after it: a
+  call-back, 10.F.1), else a "?" (never short; for a Mixed Flying grouping and the deadhead reading too), while 11:00,
+  12:00, 9:00 and 10.E.3.a's table (no long sit, or before an all-interisland duty) are SHORT when the most since that
+  duty's release is under them, and at home 10.E.2.a's 12:00 is a reading whatever that duty was; at home a schedule
+  item counts against 11:00 or 12:00 only when it ends inside that need (met with one outside it, the margin from its
+  end is said; away any item in the rest counts: the van rides and 2 x the Duty Period on top of 10.E.2.b's 9:00 depend
+  on it); every other reading that may apply is judged too and a rest they disagree on is a "?" (with `other`,
+  the other reading's need), as is one met by under 2:30 away from HNL (`timeout.VAN_RIDES`: hotel time door to door,
+  2.A.68.b, is shorter by the two van rides; judged against the whole grouping's 10.E.3.a need when it is the larger);
+  the rest reads no deadhead as a Segment (Mixed Flying needs less rest), and that reading only makes a rest otherwise
+  met a "?" where 10.E.3.a's table would need more or 2 x the Duty Period is not known; the landings (10.H.1, 10.H.2,
+  10.H.3). A station whose Local Time is not on file is a "?" there, never HST. `flags`: early, pilots, rest, week,
+  pwa_rest, landings, segments, pwa_sched, and rest_q / landings_q (a rest or a landings count not sure). `lines` (one
+  per rule, cited) and `not_checked` carry the basis. The layover card shows LAST OUT in a dark orange box right of the
+  report time (the binding PWA rule named, as a duration, when it binds, with the FAR 117 one above it when the PWA
+  binds only the extension; NOT LEGAL in white on red; a chip for every flag, two shown, a NOT LEGAL box included); a
+  tap opens the details, with a FAR rest row (`rest.txt`) before the PWA one. Absent when the pilots are not known.
 - Bid calendar (1.7.1, FW-0070, `bidcal.py`): alerts for each PBS bid cycle, all HST. The cycle for bid month M+1
   runs in month M: the pairing package publishes on the 5th (1.7.7, Ryan, Nov 14: "pairings post on the 5th of the
   month and close on the 11th monthly"; the 4th before), practice runs on the 7th and the 10th, bids close on
