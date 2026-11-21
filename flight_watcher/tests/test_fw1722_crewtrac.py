@@ -258,8 +258,8 @@ def test_watcher_publishes_the_check(tmp_path, monkeypatch):
 
 
 def test_admin_card_flags_the_trip_and_the_month(tmp_path):
-    """The schedule card on the admin's own login: the trip's Pay-Gross turns red with CrewTrac's figures as the
-    authoritative ones, and the totals line carries the CrewTrac item."""
+    """The schedule card on the admin's own login: the trip's Pay-Gross carries the CrewTrac compare and the totals line
+    the CrewTrac item. 1.7.23: CrewTrac booking FLICA's credit keeps it (no delay cut), so the trip matches."""
     sync_api = pytest.importorskip("playwright.sync_api")
     from test_cards import _chromium
     from test_fw1720_pay_engine import DET, OT
@@ -303,6 +303,10 @@ def test_admin_card_flags_the_trip_and_the_month(tmp_path):
             got = pg.evaluate(js, st)
         finally:
             b.close()
-    assert "CrewTrac 32:19, FW 21:09 \u2717 credit off by -11:10 (CrewTrac controls). Authoritative: CrewTrac 32:19 credit / 21:08 block" in got["info"], got["info"]
-    assert "ctbad" in got["cls"]
-    assert "CrewTrac" in " ".join(got["tot"].split()) and "1 trip" in got["tot"], got["tot"]
+    # 1.7.23 (Ryan Nov 21, 2026, H3606B): CrewTrac books FLICA's 32:19 (NF2 protected leg), so the delay cut is not
+    # made and the trip matches; it was "CrewTrac 32:19, FW 21:09" red in 1.7.22. LODO stays (4.D.2.e).
+    assert "CrewTrac 32:19, FW 32:19 \u2713" in got["info"], got["info"]
+    assert "FLICA's 32:19 kept: CrewTrac books the same credit" in got["info"] and "LODO" in got["info"], got["info"]
+    assert "ctbad" not in got["cls"]
+    tot = " ".join(got["tot"].split())  # no Pay Report in this snapshot and no trip off: no CrewTrac item
+    assert "Credit 32:19" in tot and "LODO 4:00" in tot and "CrewTrac" not in tot, tot

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.7.23
+
+CrewTrac controls a rebuilt trip's credit (Hark, Ryan's override of Nov 21, 2026, H3606B). Pay only: pay.py, the
+Watcher's CrewTrac check, the schedule card.
+
+- The delay cut of 1.7.20 (a delayed leg counted once, PWA 2.A.15.a.1) is not made when CrewTrac books FLICA's credit
+  for the trip (within 0:01) or the per-trip list marks it 'K+PID|start': the company rebuilt it as a reassignment with
+  the original leg protected (NF2, PWA 4.D.2.b), so FLICA's credit stands. H3606B (Nov 18, 2026): CrewTrac 32:19 =
+  0830 9:49 + NF2 JFK-JFK 11:15 (protected) + 0829 11:15; FW had cut it to 21:09. LODO (4.D.2.e, 4:00 pay, no credit)
+  is unchanged. The Pay-Gross tooltip says why FLICA's credit was kept. The CrewTrac rule reads the snapshot at any
+  age (a past trip's booking does not change); the mark keeps it after the month leaves the snapshot.
+
 ## 1.7.22
 
 The CrewTrac per-trip pay check (Hark, Ryan's option 1 of Nov 20, 2026: Hark reads CrewTrac daily and hands it to FW; FW

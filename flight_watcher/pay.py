@@ -154,13 +154,16 @@ def pkg_duties(det):
     return out
 
 
-def pwa_trip(start, ot, det=None, rel_days=None, is_off=None, rcl=None, mine=True):
+def pwa_trip(start, ot, det=None, rel_days=None, is_off=None, rcl=None, mine=True, keep=False, ct=None):
     """The card's fwPwaTrip() (minutes): PWA 4.C.3.a credit (greater of GOP 4.B.1, Trip Rig 1:3.5 TAFB, MDG 5:00 x
     calendar days from Mar 2, 2025), delay vs reassignment (2.A.15.a.1: a delayed leg is ONE segment; FLICA's credit is
     replaced only where it counted a delayed leg twice), LODO (4.D.2.e: 4:00 pay, no credit, per lost day off) and
     recall (4.M.1.a: the extra 100% of the recall duties' credit, pay only). det: the package detail of the pairing on
     that day (None: no package); rel_days: its scheduled release day (0 = the first day); is_off(iso): a day off.
-    mine=False (the duty times are from a pairing page whose crew list does not name the pilot): no fix, no LODO."""
+    mine=False (the duty times are from a pairing page whose crew list does not name the pilot): no fix, no LODO.
+    1.7.23 (Hark, Ryan Nov 21, 2026, H3606B): CrewTrac controls. keep=True (a 'K+KEY' mark in the per-trip list) or ct
+    (CrewTrac's credit for this trip, minutes) within 0:01 of FLICA's: the company booked FLICA's credit (a
+    reassignment with a protected leg, NF2, PWA 4.D.2.b), so FLICA's credit is kept and no delay cut is made."""
     du = (ot or {}).get("duties") or []
     if not du or not all(isinstance(x, dict) and all(isinstance(x.get(k), (int, float)) for k in ("dep", "arr", "blk")) for x in du):
         return None
@@ -192,7 +195,8 @@ def pwa_trip(start, ot, det=None, rel_days=None, is_off=None, rcl=None, mine=Tru
     flica = mins(ot.get("credit"))
     delayed = sum(1 for s in segs if s["delay"] is not None and 60 <= s["delay"] < 1440)
     passed = sum(1 for s in segs if s["delay"] is not None and s["delay"] >= 1440)
-    fix = mine and single and delayed > 0 and not passed and flica is not None and flica - pwa >= 30
+    kept = "mark" if keep else ("ct" if isinstance(ct, (int, float)) and flica is not None and abs(ct - flica) <= 1 else "")
+    fix = mine and single and delayed > 0 and not passed and flica is not None and flica - pwa >= 30 and not kept
     use = pwa if fix else (flica if flica is not None else pwa)
     a_rel = math.floor(rel / 1440)
     lodo_days = []
@@ -208,7 +212,12 @@ def pwa_trip(start, ot, det=None, rel_days=None, is_off=None, rcl=None, mine=Tru
         r = sum(s["cr"] for i, s in enumerate(segs) if i in rcl)
     return {"gop": gop, "rig": rig, "tafb": tafb, "days": days, "mdg": mdg, "pwa": pwa, "won": won, "flica": flica,
             "use": use, "fix": fix, "cut": flica - use if fix else 0, "match": match, "delayed": delayed, "passed": passed,
-            "lodo_days": lodo_days, "lodo": 240 * len(lodo_days), "rcl": r, "segs": segs}
+            "lodo_days": lodo_days, "lodo": 240 * len(lodo_days), "rcl": r, "segs": segs, "kept": kept}
+
+
+def keep_of(er_list, key):
+    """1.7.23: True when the per-trip list marks this trip 'K+PID|start' (keep FLICA's credit: CrewTrac booked it)."""
+    return ("K+" + str(key)) in (er_list or ())
 
 
 def hm(h):
