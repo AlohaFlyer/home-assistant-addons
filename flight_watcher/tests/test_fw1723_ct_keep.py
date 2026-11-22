@@ -7,20 +7,23 @@ import shutil
 import pytest
 
 import pay as PAY
-from test_fw1720_pay_engine import DET, OT, _node
+from test_fw1720_pay_engine import DET, OT, OT_C, _node
 
 FL = 32 * 60 + 19
 
 
 def test_crewtrac_booking_keeps_flica_credit():
-    cut = PAY.pwa_trip("2026-11-18", OT, DET, 2, lambda iso: True)
+    # 1.7.25: OT_C, the continuous delay (OT is a broken duty, never cut: test_fw1725_alpa_delay)
+    cut = PAY.pwa_trip("2026-11-18", OT_C, DET, 2, lambda iso: True)
     assert cut["fix"] and cut["use"] < FL and cut["kept"] == ""
+    pc = PAY.pwa_trip("2026-11-18", OT_C, DET, 2, lambda iso: True, ct=FL)
+    assert not pc["fix"] and pc["use"] == FL and pc["kept"] == "ct"
     pa = PAY.pwa_trip("2026-11-18", OT, DET, 2, lambda iso: True, ct=FL)
     assert not pa["fix"] and pa["use"] == FL and pa["cut"] == 0 and pa["kept"] == "ct"
     assert pa["lodo_days"] == ["2026-11-21"] and pa["lodo"] == 240  # LODO 4:00 pay still due (4.D.2.e)
     assert PAY.pwa_trip("2026-11-18", OT, DET, 2, ct=FL + 1)["kept"] == "ct"  # within 0:01
     # CrewTrac at the cut figure (it agrees with the delay math): the cut stands
-    assert PAY.pwa_trip("2026-11-18", OT, DET, 2, ct=cut["use"])["fix"]
+    assert PAY.pwa_trip("2026-11-18", OT_C, DET, 2, ct=cut["use"])["fix"]
 
 
 def test_mark_keeps_flica_credit():

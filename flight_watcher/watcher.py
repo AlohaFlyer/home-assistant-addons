@@ -71,7 +71,7 @@ import pilotpdf as PP
 import pilotdb as PDBM
 import pdbshare as PS
 
-VERSION = "1.7.24"
+VERSION = "1.7.25"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -5933,7 +5933,8 @@ def crewtrac_fw_trips():
             det = pkg_detail_for(per, pid[:5], st) if per else None
             ctt = CTR.find_trip(snap, pid, st) if snap and isinstance(snap.get("trips"), list) else None
             pa = PAY.pwa_trip(st, t, det, mine=bool(str(t.get("seat") or "").strip()), keep=PAY.keep_of(er, k),
-                              ct=CTR.m_of(ctt.get("credit")) if isinstance(ctt, dict) else None)
+                              ct=CTR.m_of(ctt.get("credit")) if isinstance(ctt, dict) else None,
+                              ctp=PAY.ct_protected(ctt))  # 1.7.25: a broken duty (ALPA DART 417120), no delay cut
         except Exception:  # noqa: BLE001 (the compare then uses FLICA's credit)
             pa = None
         if pa and pa.get("fix"):
