@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.7.25
+
+ALPA's delay ruling as a general pay rule (Hark, Ryan's override of Nov 22, 2026; ALPA DART 417120, HAL ALPA Paycheck
+Issues, closed Nov 22, 2026, on H3606A/B). Pay only: pay.py, the Watcher's CrewTrac check, the schedule card.
+
+- A delayed leg whose duty was BROKEN (the pilot reported for it, was released, then re-reported for the same flight on
+  a later duty period) is no longer the one-segment delay of 1.7.20 (PWA 2.A.15.a.1): the original duty is credited at
+  its scheduled credit (pay protection, PWA 4.C.3.a) and the re-reported operation is its own duty period (the greater
+  of actual or scheduled, 4.B.1), so no delay cut is made. LODO stays 4:00 pay, no credit, per lost day off when the
+  release lands on a scheduled day off (4.D.2.e), once per day. H3606B (Nov 18 to 21, 2026): 9:49 + 11:15 (the
+  original 07:25 report) + 11:15 (the 21:30 re-report) = 32:19 pay and credit, plus LODO 4:00 (Nov 21), with or
+  without the 'K+H3606B|2026-11-18' mark.
+- How FW tells a break from a continuous delay: CrewTrac books the original duty as a protected NF2 duty with no block
+  and a later duty of the trip is flown (`pay.ct_protected`; the check sensor's snapshot trips carry it as 'prot', so the
+  card reads it; that protected credit is used), or, without
+  CrewTrac, the duty limit: the scheduled report (the package duty's 'rept', else 1:00 before the scheduled departure)
+  to the delayed leg's release (block-in + 0:15) is longer than any duty the crew could have been held on (PWA 10.D.1:
+  16:00 two pilots, 18:00 an IRO crew; 21:00 for 4 pilots or an unknown crew, Part 117 Table C + 117.19). H3606B:
+  07:25 EST to 05:41 HST next day, 27:16. A delay inside the limit with no NF2 is a continuous delay and keeps the
+  1.7.20 cut where FLICA counted the leg twice. A leg 24 h or more late stays a reassignment (FLICA kept).
+- The PWA tests add the protected duty to GOP ('brk', 'prot', 'brk_span' in pay.pwa_trip and fwPwaTrip). FLICA's credit
+  stays the one used (FW never raises it); the Pay-Gross tooltip says "Broken duty (ALPA DART 417120 ...)", the PWA
+  check against it, and the Pay-Gross and LODO lines name ALPA DART 417120 and PWA 4.D.2.e. The 1.7.23 CrewTrac rule
+  and mark keep working.
+- Tests: tests/test_fw1725_alpa_delay.py (H3606B without the mark 32:19 + LODO 4:00, CrewTrac NF2, a continuous delay
+  keeps the cut, crew size limits, card and pay.py agree); the 1.7.20 and 1.7.23 tests' continuous delay is OT_C.
+
 ## 1.7.24
 
 Duty limits on the Working Flight card (Ryan, Nov 20, 2026: "calculate per FAR 117 and PWA when I timeout, both for if

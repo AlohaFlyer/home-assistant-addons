@@ -643,6 +643,41 @@ function fwOverride(seat, n, blk, cr, rate, erPlus) {
 // - LODO (4.D.2.e): released in domicile after the scheduled footprint on a scheduled day off: 4:00 PAY, no credit, for
 //   each lost day off.
 // - Recall (4.M.1.a): 200% pay, 100% credit: the extra 100% of the recall duties' credit (pay only).
+// 1.7.25 (Hark, Ryan's override of Nov 22, 2026; ALPA DART 417120, HAL ALPA Paycheck Issues, on H3606A/B): a delayed
+// leg whose duty was BROKEN (reported, released, re-reported for the same flight on a later duty period) is credited
+// twice: the original duty at its scheduled credit (pay protection, PWA 4.C.3.a) and the re-reported operation as its
+// own duty period (4.B.1), no delay cut (2.A.15.a.1's one segment does not apply); LODO 4:00 pay, no credit, when the
+// release lands on a day off (4.D.2.e). Read from CrewTrac (a protected NF2 duty with no block, fwCtProt) or the duty
+// limit: the scheduled report to the delayed leg's release is longer than any duty the crew can be held on (PWA 10.D.1
+// 16:00 two pilots, 18:00 IRO; 21:00 for 4 or unknown, Part 117 Table C + 117.19). pay.pwa_trip 'brk' is the same.
+const FW_BRK_REPORT = 60, FW_BRK_MAX = { 2: 16 * 60, 3: 18 * 60 }, FW_BRK_MAX_ELSE = 21 * 60;
+function fwBrkMax(n) { return n >= 2 && FW_BRK_MAX[n] ? FW_BRK_MAX[n] : FW_BRK_MAX_ELSE; }
+function fwRepLead(x) {
+  const r = /^(\d{1,2}):?(\d{2})$/.exec(String((x && x.rept) || "").trim());
+  const l = x && Array.isArray(x.legs) && Array.isArray(x.legs[0]) ? x.legs[0] : null;
+  const t = l ? /^(\d{1,2}):?(\d{2})$/.exec(String(l[5] == null ? "" : l[5]).trim()) : null;
+  if (!r || !t) return FW_BRK_REPORT;
+  const d = ((Number(t[1]) * 60 + Number(t[2]) - Number(r[1]) * 60 - Number(r[2])) % 1440 + 1440) % 1440;
+  return d > 0 && d <= 300 ? d : FW_BRK_REPORT;
+}
+// CrewTrac's protected credit (minutes) on duties with no block carrying an NF2 leg, a later duty flown; null if none
+// (the check sensor's card view carries it as 'prot', crewtrac.card_view; a full snapshot trip is read here)
+function fwCtProt(ct) {
+  if (!ct || typeof ct !== "object") return null;
+  const nf2 = new Set();
+  for (const x of ct.legs || []) {
+    if (x && typeof x === "object" && String(x.flt || "").toUpperCase() === "NF2") nf2.add(String(x.date || "").slice(5, 10));
+    else if (typeof x === "string" && x.toUpperCase().startsWith("NF2")) { const m = /(\d{2}-\d{2})\s*$/.exec(x); nf2.add(m ? m[1] : ""); }
+  }
+  if (!nf2.size) return null;
+  const du = (ct.duties || []).filter((x) => x && typeof x === "object");
+  let tot = 0;
+  du.forEach((x, i) => {
+    const b = fwCtM(x.blkt), c = fwCtM(x.tcrd), dd = String(x.date || "").slice(5, 10);
+    if (b === 0 && c && (nf2.has(dd) || nf2.has("")) && du.slice(i + 1).some((y) => (fwCtM(y.blkt) || 0) > 0)) tot += c;
+  });
+  return tot || null;
+}
 function fwPwaTrip(o) {
   const ot = (o && o.ot) || {}, st = String((o && o.start) || "");
   const du = Array.isArray(ot.duties) && ot.duties.length && ot.duties.every((x) => x && typeof x.dep === "number" && typeof x.arr === "number" && typeof x.blk === "number") ? ot.duties : null;
@@ -664,18 +699,34 @@ function fwPwaTrip(o) {
   const delayed = segs.filter((s) => s.delay != null && s.delay >= 60 && s.delay < 1440).length;
   const passed = segs.filter((s) => s.delay != null && s.delay >= 1440).length;
   const mine = o.mine !== false;
+  // 1.7.25: a broken duty (ALPA DART 417120), see fwRepLead / fwCtProt above
+  const n = Math.max((String((pr && pr.det && pr.det.crew) || "").match(/\d{2}/g) || []).reduce((a, x) => a + parseInt(x, 10), 0), fwCrewOwn(Array.isArray(ot.crew) ? ot.crew : []));
+  let brk = "", prot = 0, brkSpan = null, gopB = gop;
+  const byCt = typeof o.ctp === "number" && o.ctp > 0;
+  segs.forEach((s, i) => {
+    if (!(single && s.delay != null && s.delay >= 60 && s.delay < 1440)) return;
+    const span = du[i].arr + 15 - (pd[i].dep - fwRepLead(pdet[i]));
+    if (byCt || span > fwBrkMax(n)) {
+      brk = byCt ? "ct" : "duty"; brkSpan = Math.round(span); s.brk = true;
+      if (!byCt) prot += fwgMins(pd[i].tcrd) || pd[i].blk;
+    }
+  });
+  if (brk === "ct") prot = Math.trunc(o.ctp);
+  if (brk) gopB = gop + prot;
+  const pwaB = brk ? Math.max(gopB, rig, mdg) : pwa, wonB = brk ? (pwaB === gopB ? "gop" : pwaB === rig ? "rig" : "mdg") : won;
   // 1.7.23 (Hark, Ryan Nov 21, 2026, H3606B): CrewTrac controls. A 'K+KEY' mark (o.keep) or CrewTrac's credit for the
   // trip (o.ct, minutes) within 0:01 of FLICA's: the company booked FLICA's credit (a reassignment with a protected leg,
   // NF2, PWA 4.D.2.b), so FLICA's credit is kept and no delay cut is made (pay.pwa_trip 'kept')
   const kept = o.keep ? "mark" : typeof o.ct === "number" && flica != null && Math.abs(o.ct - flica) <= 1 ? "ct" : "";
-  const fix = mine && single && delayed > 0 && !passed && flica != null && flica - pwa >= 30 && !kept;
-  const use = fix ? pwa : flica != null ? flica : pwa;
+  const fix = mine && single && delayed > 0 && !passed && flica != null && flica - pwaB >= 30 && !kept && !brk;
+  const use = fix ? pwaB : flica != null ? flica : pwaB;
   const sRel = pr && pr.relDays !== "" && pr.relDays != null && Number.isFinite(Number(pr.relDays)) ? Number(pr.relDays) : null;
   const aRel = Math.floor(rel / 1440), lodoDays = [];
   if (mine && sRel != null && aRel > sRel) for (let k = sRel + 1; k <= aRel; k++) { const iso = fwgDay(st, k); if (!o.isOff || o.isOff(iso)) lodoDays.push(iso); }
   const r = o.rcl, rcl = r === true ? use : Array.isArray(r) ? segs.reduce((a, s, i) => a + (r.includes(i) ? s.cr : 0), 0) : 0;
-  return { segs, gop, rig, tafb, days, mdg, pwa, won, flica, use, fix, cut: fix ? flica - use : 0, match, single, delayed, passed,
-    sRel, aRel, rel, lodoDays, lodo: 240 * lodoDays.length, rcl, rclAll: r === true, mine, kept };
+  return { segs, gop: gopB, rig, tafb, days, mdg, pwa: pwaB, won: wonB, flica, use, fix, cut: fix ? flica - use : 0, match, single, delayed, passed,
+    sRel, aRel, rel, lodoDays, lodo: 240 * lodoDays.length, rcl, rclAll: r === true, mine, kept,
+    brk, prot, brkSpan, brkMax: fwBrkMax(n), n };
 }
 // Recall marks in the per-trip list (input_text.flight_watcher_er_trips, beside the '+KEY' / '-KEY' type-rated FO
 // marks): 'R+KEY' the whole trip, 'R+KEY@0.2' its duties 0 and 2 (from the first). Returns true, [i, ...] or null.
@@ -1318,12 +1369,17 @@ class FlightWatcherScheduleCard extends HTMLElement {
     out.push(`PWA credit ${t(pa.pwa)} = the greater of (PWA 4.C.3.a): GOP ${t(pa.gop)} (4.B.1, each segment the greater of actual or scheduled block: ${seg}); Trip Rig ${t(pa.rig)} (1:3.5 of TAFB ${t(pa.tafb)}, 4.C.3.a.4); MDG ${t(pa.mdg)} (5:00 x ${pa.days} calendar day${pa.days > 1 ? "s" : ""}, 4.C.3.a.5). ${won} wins.`);
     if (!pa.mine) { out.push("These duty times come from a pairing page whose crew list does not name you (crew OPEN or not read): the PWA tests above are not applied; FLICA's credit kept, no LODO."); return out; }
     if (!pa.match) out.push(pa.sRel == null ? "Scheduled block not on file (no pairings package for this trip on this day): GOP uses actual block only." : "The legs differ from the pairings package (a reassignment or a rebuilt trip): FLICA's credit kept (pay protection, PWA 4.D.2.b).");
-    if (pa.kept && pa.delayed && !pa.passed && pa.flica != null && pa.flica - pa.pwa >= 30) out.push(`FLICA's ${t(pa.flica)} kept: ${pa.kept === "ct" ? "CrewTrac books the same credit" : "marked to match CrewTrac"} (a reassignment with a protected leg, PWA 4.D.2.b; CrewTrac controls), so no delay cut.`);
+    if (pa.brk) {
+      const b = pa.segs.find((s) => s.brk) || {};
+      out.push(`Broken duty (ALPA DART 417120, HAL ALPA Paycheck Issues, Nov 22, 2026): you reported for the original ${mdy(b.day || "")} duty, were released, and re-reported for the delayed operation (${pa.brk === "ct" ? "CrewTrac books the original duty as a protected NF2 duty" : `scheduled report to release ${t(pa.brkSpan)}, over the ${t(pa.brkMax)} duty a ${pa.n || "?"}-pilot crew can be held on (PWA 10.D.1), so it was not one continuous duty`}). The original duty is credited at its scheduled ${t(pa.prot)} (pay protection, PWA 4.C.3.a) and the re-reported operation is its own duty period (greater of actual or scheduled, 4.B.1): no delay cut (PWA 2.A.15.a.1's one segment does not apply). LODO 4:00 pay, no credit, when the release lands on a day off (PWA 4.D.2.e).`);
+      if (pa.flica != null) out.push(Math.abs(pa.flica - pa.pwa) <= 5 ? `PWA check: FLICA's ${t(pa.flica)} matches the broken-duty credit ${t(pa.pwa)}${pa.flica !== pa.pwa ? " (within 0:05)" : ""}; FLICA kept.` : `PWA check: FLICA ${t(pa.flica)}, broken-duty PWA credit ${t(pa.pwa)} (${pa.flica > pa.pwa ? "FLICA higher" : "FLICA lower: check it"}; FLICA kept).`);
+      if (pa.kept && pa.flica != null) out.push(`FLICA's ${t(pa.flica)} kept: ${pa.kept === "ct" ? "CrewTrac books the same credit" : "marked to match CrewTrac"} (CrewTrac controls).`);
+    } else if (pa.kept && pa.delayed && !pa.passed && pa.flica != null && pa.flica - pa.pwa >= 30) out.push(`FLICA's ${t(pa.flica)} kept: ${pa.kept === "ct" ? "CrewTrac books the same credit" : "marked to match CrewTrac"} (a reassignment with a protected leg, PWA 4.D.2.b; CrewTrac controls), so no delay cut.`);
     else if (pa.fix) out.push(`FLICA shows ${t(pa.flica)}: the delayed leg counted twice (the original and the delayed one). A delay, not a reassignment (PWA 2.A.15.a.1: only the time changed, before the next day's operation of that flight): one segment (4.B.1). FW counts ${t(pa.use)}, ${t(pa.cut)} less.`);
     else if (pa.passed) out.push("A leg left 24 h or more late (it may pass the next operation of that flight: a reassignment, PWA 2.A.15): FLICA's credit kept (pay protection, 4.D.2.b).");
     else if (pa.flica != null) out.push(Math.abs(pa.flica - pa.pwa) <= 1 ? `PWA check: matches FLICA's ${t(pa.flica)}.` : `PWA check: FLICA ${t(pa.flica)}, PWA tests ${t(pa.pwa)}${pa.flica > pa.pwa ? " (FLICA higher: segment credits or legs the duty times do not show; FLICA kept)" : " (FLICA lower: check it; FLICA kept)"}.`);
     if (pa.sRel != null && pa.aRel > pa.sRel && !pa.lodoDays.length) out.push(`Released after the scheduled footprint, but not on a day off: no LODO (PWA 4.D.2.e).`);
-    if (pa.delayed && !pa.fix && !pa.passed && !pa.kept) out.push("Delayed leg counted once (PWA 2.A.15.a.1, 4.B.1).");
+    if (pa.delayed && !pa.fix && !pa.passed && !pa.kept && !pa.brk) out.push("Delayed leg counted once (PWA 2.A.15.a.1, 4.B.1).");
     return out;
   }
   _marks() { return this._isAdmin() ? "availability, trade and drop marks" : "availability and trade marks"; }
@@ -1873,7 +1929,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
       const isOffFor = (iso, self) => !near.some((it) => it && it.trip && `${it.trip}|${it.start}` !== self && it.start <= iso && iso <= (it.end || it.start));
       const pwaOf = (d, trip, ot, pr) => (isP(trip) && trip !== PAYP ? fwPwaTrip({ start: d, ot, pr: pr && pr.days && pr.days.has(d) ? pr : null,
         isOff: (iso) => isOffFor(iso, `${trip}|${d}`), rcl: fwRclOf(erOv, `${trip}|${d}`), mine: !!String((ot && ot.seat) || "").trim(),
-        keep: erOv.includes(`K+${trip}|${d}`), ct: ctSnap ? (() => { const c = fwCtFind(ctSnap, trip, d); return c ? fwCtM(c.credit) : null; })() : null }) : null);
+        keep: erOv.includes(`K+${trip}|${d}`), ct: ctSnap ? (() => { const c = fwCtFind(ctSnap, trip, d); return c ? fwCtM(c.credit) : null; })() : null,
+        ctp: ctSnap ? (() => { const c = fwCtFind(ctSnap, trip, d); return c ? (c.prot ? fwCtM(c.prot) : fwCtProt(c)) : null; })() : null }) : null);
       const pwaAdj = (ot, pa) => {
         if (!pa || !pa.fix) return ot;
         const b = fwgMins(ot.blk);
@@ -2108,11 +2165,11 @@ class FlightWatcherScheduleCard extends HTMLElement {
           er: `Extended Range type-rated FO +15% ${usd(erV)} (${bcs[1]} x ${rateTxt} x 15%, marked as the type-rated FO seat, PWA 4.O.1.b)` }[ovO.kind];
         const lines = gross != null ? [`Pay-Credit ${usd(gross)} (${bcs[1]} x ${rateTxt})`]
           .concat(ovLine ? [ovLine] : [])
-          .concat(lodoD.length ? [`LODO ${usd(lodoV)} (4:00 x ${lodoD.length} lost day${lodoD.length > 1 ? "s" : ""} off: ${lodoD.map(mdy).join(", ")}; released in domicile after the scheduled footprint, PAY only, no credit, PWA 4.D.2.e)`] : [])
+          .concat(lodoD.length ? [`LODO ${usd(lodoV)} (4:00 x ${lodoD.length} lost day${lodoD.length > 1 ? "s" : ""} off: ${lodoD.map(mdy).join(", ")}; released in domicile after the scheduled footprint, PAY only, no credit, PWA 4.D.2.e${pa && pa.brk ? "; ALPA DART 417120" : ""})`] : [])
           .concat(rclV ? [`Recall +100% ${usd(rclV)} (${hm(rclH)} x ${rateTxt}: 200% pay, 100% credit on the recall ${pa.rclAll ? "trip" : "duties"}, PWA 4.M.1.a)`] : [])
           .concat(trip === PAYP ? [ppTitle(pp)] : [])
           .concat(pa ? this._pwaLines(pa, F, hm, mdy) : [])
-          .concat(gross != null && trip !== PAYP && isP(trip) ? [`Pay-Gross ${usd(total)}: credit pay ${usd(gross)}${roV || erV ? ` + override ${usd(roV + erV)}` : ""}${lodoV ? ` + LODO ${usd(lodoV)}` : ""}${rclV ? ` + recall ${usd(rclV)}` : ""}. Credit ${bcs[1]}${lodoD.length || rclV ? `; pay hours ${hm(cH + lodoD.length * 4 + rclH)} (LODO and recall are pay, not credit)` : ""}.`].concat(ctT.line ? [
+          .concat(gross != null && trip !== PAYP && isP(trip) ? [`Pay-Gross ${usd(total)}: credit pay ${usd(gross)}${roV || erV ? ` + override ${usd(roV + erV)}` : ""}${lodoV ? ` + LODO ${usd(lodoV)}` : ""}${rclV ? ` + recall ${usd(rclV)}` : ""}. Credit ${bcs[1]}${lodoD.length || rclV ? `; pay hours ${hm(cH + lodoD.length * 4 + rclH)} (LODO and recall are pay, not credit)` : ""}.${pa && pa.brk ? " Broken duty paid per ALPA DART 417120 (original duty protected, re-report its own duty period, PWA 4.C.3.a; LODO PWA 4.D.2.e)." : ""}`].concat(ctT.line ? [
             ctT.line + (ctT.ct && ctT.ct.projected ? ` [${ctT.ct.projected}]` : "") + (ctT.ok === false && ctT.ct ? `. Authoritative: CrewTrac ${ctT.ct.credit} credit / ${ctT.ct.block || "?"} block` : "")] : []) : []) : [];
         const payT = lines.join("\n");
         const erBtn = cH != null ? `<span class="er tag${erIs ? " on" : ""}" data-k="${this._esc(erK)}">Type-rated FO +15% ${erIs ? "ON, tap to turn off" : "off, tap to turn on (only if you flew the Extended Range type-rated FO seat, PWA 4.O.1.b; else FO/RO $3.00)"}</span>` +

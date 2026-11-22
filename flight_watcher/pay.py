@@ -154,7 +154,64 @@ def pkg_duties(det):
     return out
 
 
-def pwa_trip(start, ot, det=None, rel_days=None, is_off=None, rcl=None, mine=True, keep=False, ct=None):
+# 1.7.25 (Hark, Ryan's override of Nov 22, 2026; ALPA DART 417120, HAL ALPA Paycheck Issues, closed Nov 22, 2026, on
+# H3606A/B): a delayed leg whose duty was BROKEN (the pilot reported for it, was released, then re-reported for the same
+# flight on a later duty period) is not the 2.A.15.a.1 one-segment delay: the original duty is credited at its scheduled
+# credit (pay protection, PWA 4.C.3.a) and the re-reported operation is its own duty period (the greater of actual or
+# scheduled, 4.B.1), so no delay cut; LODO 4:00 pay, no credit, when the release lands on a day off (4.D.2.e).
+# FW reads a break from CrewTrac (a protected NF2 duty with no block) or, without it, from the duty limit: the original
+# report (the package's scheduled report, else 1:00 before the scheduled departure) to the delayed leg's release (block-in + 0:15) is longer
+# than any duty the pilot could have been held on (PWA 10.D.1: 16:00 two pilots, 18:00 an IRO crew; 21:00 for 4 or an
+# unknown crew, Part 117 Table C 19:00 + the 117.19 2:00), so the duty cannot have been continuous.
+BRK_REPORT = 60
+BRK_MAX = {2: 16 * 60, 3: 18 * 60}
+BRK_MAX_ELSE = 21 * 60
+
+
+def brk_max(n):
+    """The longest duty (minutes) a crew of n pilots can be held on (PWA 10.D.1, Part 117 Table C + 117.19)."""
+    return BRK_MAX.get(n, BRK_MAX_ELSE) if n and n >= 2 else BRK_MAX_ELSE
+
+
+def rep_lead(pdet_i):
+    """Minutes from a package duty's scheduled report ('rept', local) to its first leg's scheduled departure (local), 0
+    to 5:00; BRK_REPORT (1:00) when unreadable."""
+    try:
+        r = re.match(r"^(\d{1,2}):?(\d{2})$", str(pdet_i.get("rept") or "").strip())
+        t = re.match(r"^(\d{1,2}):?(\d{2})$", str(pdet_i["legs"][0][5] or "").strip())
+    except (AttributeError, IndexError, KeyError, TypeError):
+        return BRK_REPORT
+    if not r or not t:
+        return BRK_REPORT
+    d = (int(t.group(1)) * 60 + int(t.group(2)) - int(r.group(1)) * 60 - int(r.group(2))) % 1440
+    return d if 0 < d <= 300 else BRK_REPORT
+
+
+def ct_protected(ctt):
+    """Minutes of protected credit CrewTrac books on duties with no block that carry an NF2 (protected segment) leg, when
+    a later duty of the trip is flown (a broken duty: reported, released, re-reported). None when there is none. Reads
+    the full snapshot trip (legs as dicts) or the compact one (legs as 'NF2 DH JFK-JFK 11-20')."""
+    if not isinstance(ctt, dict):
+        return None
+    nf2 = set()
+    for x in ctt.get("legs") or []:
+        if isinstance(x, dict) and str(x.get("flt") or "").upper() == "NF2":
+            nf2.add(str(x.get("date") or "")[5:10])
+        elif isinstance(x, str) and x.upper().startswith("NF2"):
+            mm = re.search(r"(\d{2}-\d{2})\s*$", x)
+            nf2.add(mm.group(1) if mm else "")
+    if not nf2:
+        return None
+    du = [x for x in ctt.get("duties") or [] if isinstance(x, dict)]
+    tot = 0
+    for i, x in enumerate(du):
+        b, c = mins(x.get("blkt")), mins(x.get("tcrd"))
+        if b == 0 and c and str(x.get("date") or "")[5:10] in nf2 | {""} and any((mins(y.get("blkt")) or 0) > 0 for y in du[i + 1:]):
+            tot += c
+    return tot or None
+
+
+def pwa_trip(start, ot, det=None, rel_days=None, is_off=None, rcl=None, mine=True, keep=False, ct=None, ctp=None):
     """The card's fwPwaTrip() (minutes): PWA 4.C.3.a credit (greater of GOP 4.B.1, Trip Rig 1:3.5 TAFB, MDG 5:00 x
     calendar days from Mar 2, 2025), delay vs reassignment (2.A.15.a.1: a delayed leg is ONE segment; FLICA's credit is
     replaced only where it counted a delayed leg twice), LODO (4.D.2.e: 4:00 pay, no credit, per lost day off) and
@@ -163,7 +220,10 @@ def pwa_trip(start, ot, det=None, rel_days=None, is_off=None, rcl=None, mine=Tru
     mine=False (the duty times are from a pairing page whose crew list does not name the pilot): no fix, no LODO.
     1.7.23 (Hark, Ryan Nov 21, 2026, H3606B): CrewTrac controls. keep=True (a 'K+KEY' mark in the per-trip list) or ct
     (CrewTrac's credit for this trip, minutes) within 0:01 of FLICA's: the company booked FLICA's credit (a
-    reassignment with a protected leg, NF2, PWA 4.D.2.b), so FLICA's credit is kept and no delay cut is made."""
+    reassignment with a protected leg, NF2, PWA 4.D.2.b), so FLICA's credit is kept and no delay cut is made.
+    1.7.25 (ALPA DART 417120): a delayed leg whose duty was broken (ctp: CrewTrac's protected NF2 credit, minutes, or the
+    duty limit, brk_max) is credited twice, the original duty at its scheduled credit and the re-reported operation as
+    its own duty period: 'brk' ('ct' or 'duty'), 'prot' (the protected credit, in the PWA GOP), no delay cut."""
     du = (ot or {}).get("duties") or []
     if not du or not all(isinstance(x, dict) and all(isinstance(x.get(k), (int, float)) for k in ("dep", "arr", "blk")) for x in du):
         return None
@@ -195,8 +255,28 @@ def pwa_trip(start, ot, det=None, rel_days=None, is_off=None, rcl=None, mine=Tru
     flica = mins(ot.get("credit"))
     delayed = sum(1 for s in segs if s["delay"] is not None and 60 <= s["delay"] < 1440)
     passed = sum(1 for s in segs if s["delay"] is not None and s["delay"] >= 1440)
+    # 1.7.25: a broken duty (reported, released, re-reported for the same flight), ALPA DART 417120
+    n = max(crew_n((det or {}).get("crew")), crew_own((ot or {}).get("crew") if isinstance((ot or {}).get("crew"), list) else []))
+    brk, prot, brk_span = "", 0, None
+    for i, s in enumerate(segs):
+        if not (single and s["delay"] is not None and 60 <= s["delay"] < 1440):
+            continue
+        span = du[i]["arr"] + 15 - (pd[i]["dep"] - rep_lead(pdet[i] if i < len(pdet) else None))
+        by_ct = isinstance(ctp, (int, float)) and ctp > 0
+        if by_ct or span > brk_max(n):
+            brk = "ct" if by_ct else "duty"
+            brk_span = _half_up(span)
+            if not by_ct:  # the original duty at its scheduled credit (its package TCRD, else its scheduled block)
+                prot += mins(pd[i].get("tcrd")) or pd[i]["blk"]
+            s["brk"] = True
+    if brk == "ct":
+        prot = int(ctp)
+    if brk:
+        gop += prot
+        pwa = max(gop, rig, mdg)
+        won = "gop" if pwa == gop else "rig" if pwa == rig else "mdg"
     kept = "mark" if keep else ("ct" if isinstance(ct, (int, float)) and flica is not None and abs(ct - flica) <= 1 else "")
-    fix = mine and single and delayed > 0 and not passed and flica is not None and flica - pwa >= 30 and not kept
+    fix = mine and single and delayed > 0 and not passed and flica is not None and flica - pwa >= 30 and not kept and not brk
     use = pwa if fix else (flica if flica is not None else pwa)
     a_rel = math.floor(rel / 1440)
     lodo_days = []
@@ -212,7 +292,8 @@ def pwa_trip(start, ot, det=None, rel_days=None, is_off=None, rcl=None, mine=Tru
         r = sum(s["cr"] for i, s in enumerate(segs) if i in rcl)
     return {"gop": gop, "rig": rig, "tafb": tafb, "days": days, "mdg": mdg, "pwa": pwa, "won": won, "flica": flica,
             "use": use, "fix": fix, "cut": flica - use if fix else 0, "match": match, "delayed": delayed, "passed": passed,
-            "lodo_days": lodo_days, "lodo": 240 * len(lodo_days), "rcl": r, "segs": segs, "kept": kept}
+            "lodo_days": lodo_days, "lodo": 240 * len(lodo_days), "rcl": r, "segs": segs, "kept": kept,
+            "brk": brk, "prot": prot, "brk_span": brk_span, "brk_max": brk_max(n), "n": n}
 
 
 def keep_of(er_list, key):

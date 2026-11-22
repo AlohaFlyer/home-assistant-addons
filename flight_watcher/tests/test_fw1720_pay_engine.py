@@ -25,6 +25,13 @@ OT = {"report": "14:45", "blk": "21:08", "credit": "32:19", "soft": "11:11", "se
       "duties": [{"d": 0, "dep": 947, "arr": 1531, "stn": "JFK", "blk": 584}, {"d": 2, "dep": 3945, "arr": 4629, "stn": "HNL", "blk": 684}]}
 
 
+# 1.7.25 (ALPA DART 417120): OT is a BROKEN duty (scheduled report 07:25 EST to release ~05:40 HST next day, far over the
+# 18:00 an IRO crew can be held on), so it is no longer cut. OT_C is a continuous delay: the same leg 2:00 late, the
+# pilot held on one duty; FLICA's 32:19 there counts the delayed leg twice and the 1.7.20 cut stands.
+OT_C = json.loads(json.dumps(OT))
+OT_C["duties"][1].update({"dep": 3220, "arr": 3904})
+
+
 def _head():
     src = open(CARD, encoding="utf-8").read()
     return src[:src.index("class FlightWatcherScheduleCard")].replace("customElements", "//")
@@ -39,13 +46,16 @@ def _node(js, tmp_path):
 
 
 def test_delayed_leg_counts_once_with_lodo():
-    pa = PAY.pwa_trip("2026-11-18", OT, DET, 2, lambda iso: True)
-    assert pa["fix"] and pa["match"] and pa["delayed"] == 1 and not pa["passed"]
+    pa = PAY.pwa_trip("2026-11-18", OT_C, DET, 2, lambda iso: True)
+    assert pa["fix"] and pa["match"] and pa["delayed"] == 1 and not pa["passed"] and pa["brk"] == ""
     assert pa["gop"] == 9 * 60 + 45 + 11 * 60 + 24  # 9:45 sched > 9:44 actual; 11:24 actual > 11:15 sched
-    assert pa["rig"] == round((4629 + 15 - 885) / 3.5) and pa["mdg"] == 20 * 60 and pa["won"] == "gop"
+    assert pa["rig"] == round((3904 + 15 - 885) / 3.5) and pa["mdg"] == 15 * 60 and pa["won"] == "gop"
     assert pa["use"] == pa["gop"] and pa["cut"] == 32 * 60 + 19 - pa["gop"]
-    assert pa["lodo_days"] == ["2026-11-21"] and pa["lodo"] == 240
-    # the release day not a day off: no LODO
+    assert pa["lodo"] == 0  # released on the scheduled release day
+    # OT (1.7.25): a broken duty, LODO on the day off it lands on; the release day not a day off: no LODO
+    pb = PAY.pwa_trip("2026-11-18", OT, DET, 2, lambda iso: True)
+    assert pb["brk"] == "duty" and not pb["fix"] and pb["use"] == 32 * 60 + 19
+    assert pb["lodo_days"] == ["2026-11-21"] and pb["lodo"] == 240
     assert PAY.pwa_trip("2026-11-18", OT, DET, 2, lambda iso: False)["lodo"] == 0
 
 
@@ -177,10 +187,14 @@ def test_schedule_card_draws_the_pwa_breakdown_and_lodo():
         finally:
             b.close()
     tot = " ".join(got["tot"].split())
-    assert "Credit 21:09" in tot and "PWA -11:10" in tot and "LODO 4:00" in tot, tot
-    assert got["cells"][1] == "21:09" and got["cells"][2] == "0:01", got["cells"]
-    for want in ("PWA 4.C.3.a", "GOP 21:09", "Trip Rig 17:54", "MDG 20:00", "GOP wins", "FLICA shows 32:19", "2.A.15.a.1",
-                 "LODO $1,231", "4.D.2.e", "IRO crew FO override $63", "4.O.1.a", "pay hours 25:09"):
+    # 1.7.25 (ALPA DART 417120): the H3606A-style trip is a broken duty (reported 07:25, released, re-reported), so
+    # FLICA's 32:19 stands with no delay cut (was 21:09, "PWA -11:10", in 1.7.20 to 1.7.24) and LODO 4:00 is paid
+    assert "Credit 32:19" in tot and "PWA -" not in tot and "LODO 4:00" in tot, tot
+    assert got["cells"][1] == "32:19" and got["cells"][2] == "11:11", got["cells"]
+    for want in ("PWA 4.C.3.a", "GOP 32:24", "Trip Rig 17:54", "MDG 20:00", "GOP wins", "Broken duty (ALPA DART 417120",
+                 "scheduled report to release 26:44, over the 18:00", "scheduled 11:15", "2.A.15.a.1", "LODO $1,231",
+                 "4.D.2.e", "IRO crew FO override $63", "4.O.1.a", "pay hours 36:19", "Pay-Gross $11,241",
+                 "Broken duty paid per ALPA DART 417120"):
         assert want in got["info"], (want, got["info"])
     assert 'class="er tag"' in got["btn"] and 'class="rcl tag"' in got["btn"]
     assert "CrewTrac" not in got["info"]  # 1.7.22: the CrewTrac check is on the admin's card only (test_fw1722_crewtrac)

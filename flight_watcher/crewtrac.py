@@ -281,8 +281,21 @@ def card_view(snap):
             "months": {mk: {"pay_report": ({"as_of": m["pay_report"].get("as_of"), "totals": m["pay_report"].get("totals")}
                                            if m.get("pay_report") else None)}
                        for mk, m in ((snap or {}).get("months") or {}).items()},
-            "trips": [{k: t.get(k) for k in ("pairing", "key", "start", "end", "credit", "block", "projected") if t.get(k)}
-                      for t in (snap or {}).get("trips") or []]}
+            "trips": [_card_trip(t) for t in (snap or {}).get("trips") or []]}
+
+
+def _card_trip(t):
+    """One trip of card_view. 1.7.25: 'prot', CrewTrac's protected NF2 credit of a broken duty (pay.ct_protected), so
+    the card reads ALPA DART 417120's rule from CrewTrac."""
+    out = {k: t.get(k) for k in ("pairing", "key", "start", "end", "credit", "block", "projected") if t.get(k)}
+    try:
+        import pay as PAY  # noqa: PLC0415 (pay is pure; imported here so crewtrac stays importable on its own)
+        p = PAY.ct_protected(t)
+    except ImportError:
+        p = None
+    if p:
+        out["prot"] = f"{p // 60}:{p % 60:02d}"
+    return out
 
 
 # ---------------------------------------------------------------- the compare (the schedule card's fwCtCompare)
