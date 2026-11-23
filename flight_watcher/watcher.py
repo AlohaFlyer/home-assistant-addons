@@ -7560,8 +7560,8 @@ def close_in_check(fl, pot_all, full=False, moved_from=()):
             pub("event/new_pairing", ev, retain=False)
             pub("last_new", ev)
             run_rules(CLOSE_IN_KEY, k, rows[k])
-        for k in set(base) - set(pot) - set(regular):
-            pend.setdefault(k, {"tries": 0, "next": time.time() + PICKUP_FIRST_S})
+        for k in set(base) - set(pot) - set(regular):  # 1.8.1 (review R3): judged gone by this folder's good read
+            pend.setdefault(k, {"tries": 0, "next": time.time() + PICKUP_FIRST_S, "from": CLOSE_IN_KEY})
     DB.record_pot(CLOSE_IN_KEY, {k: rows.get(k) or regular[k] for k in pot}, new_keys)
     ci["baseline"] = sorted(pot)
     CLOSE_IN_LAST.update(bcid=b, at=time.time(), rows={k: dict(r) for k, r in rows.items()})
@@ -12841,7 +12841,10 @@ def pickup_check(fl, full=False):
     the FO/RO seat that was open, plus the CA. A seat still Open on the pairing page while the trip
     is not in the open time pot is stored as status 'open' (dashboard: suspected hidden by
     scheduling) and rechecked hourly until it is filled or the trip starts. Gone finds from before
-    0.3.7 are back-filled once. Returns True when any pickup record changed."""
+    0.3.7 are back-filled once. Returns True when any pickup record changed. 1.8.1 (POT-2, review R1, R3, F1-R2): a
+    pickup queued by a good read of the folder the trip left ('from': a month's pot, the close-in folder, an email find
+    judged) is judged by that read; any other (1.8.0's, an email find of a month not read) takes an Open seat as a
+    verdict only in a check that read its bid month's pot OK, else it waits with its stored record untouched."""
     pend = S.setdefault("pickup_pending", {})
     if not S.get("email_unchanged_fixed"):  # 0.4.2: email finds 0.4.1 wrongly marked 'same crew'
         for k in DB.email_unchanged():
@@ -12867,12 +12870,12 @@ def pickup_check(fl, full=False):
         S["ids_backfilled"] = True
     done, now, n = False, time.time(), 0
     for k, p in list(pend.items()):
+        if k in POT_JUDGE["live"]:  # 1.8.1 (POT-2): in a pot this check, so open: no pickup to check, no load (it is
+            pend.pop(k, None)  # queued again, judged, when it leaves its pot); review: due or not
+            continue
         if n >= (FULL_MAX if full else PICKUP_PER_CHECK) or not BRK.allow("pairing"):
             break  # 1.6.2: no try is used up while pairing pages are stopped
         if now < p.get("next", 0) and not full:
-            continue
-        if k in POT_JUDGE["live"]:  # 1.8.1 (POT-2): in a pot this check, so open: no pickup to check, no load (it is
-            pend.pop(k, None)  # queued again when it leaves its pot)
             continue
         row = DB.find_row(k)
         url = row and (row.get("detail_url") or detail_url(row))
@@ -12922,16 +12925,24 @@ def pickup_check(fl, full=False):
             raise
         except Exception as e:
             log.info("pickup lookup %s skipped: %s", k, e)
-        if status == "open" and find_period(k) not in POT_JUDGE["read"]:
-            # 1.8.1 (POT-2, LIVE-1): its bid month's pot was not read OK this check, so a seat still Open is no hidden
-            # trip (it may sit in that pot): no verdict and no push; tried again as an unknown read is
-            log.info("pickup %s: seat Open, its bid month's pot not read this check (no hidden verdict)", k)
-            status = "unknown"
         start = row_date(row.get("start") or (row.get("dates") or "").split("-")[0])
         started = bool(start and start < local_now().date())
+        if status == "open" and not p.get("from") and find_period(k) not in POT_JUDGE["read"]:
+            # 1.8.1 (POT-2, LIVE-1; review R1, F1-R2): no read of its folder judged it gone and its bid month's pot was
+            # not read OK this check, so a seat still Open is no hidden trip (it may sit in that pot): no verdict, no
+            # push, and its stored record stands (an 'open' found before keeps it); rechecked as an open seat is, for
+            # a check that reads its month, until the trip starts
+            log.info("pickup %s: seat Open, its bid month's pot not read this check (no hidden verdict)", k)
+            if started:
+                pend.pop(k, None)
+            else:
+                p["next"] = now + (PICKUP_RETRY_S if p["tries"] < PICKUP_TRIES else PICKUP_OPEN_S)
+            continue
         if status == "filled":
             DB.set_pickup(k, {"status": "filled", "by": who, "ca": ca, "known": known, "pickers": pickers,
                               "at": now_iso()})
+            DB.close_finds({k: now_iso()})  # 1.8.1 (review R2): an email find of a month not read was stored open; a
+            # filled seat says it left the pot (gone now, an upper bound), so its dwell is scored (a find gone keeps it)
             # 1.7.10 (Ryan, Nov 15): by seat, never a name or an employee number (the card shows who)
             seats = ", ".join(pos for pos, _nm, _e in by_parts(who)) or "nobody named"
             log.info("pickup %s: filled (%s; CA %s)", k, seats, "named" if ca else "?")
@@ -13189,7 +13200,10 @@ def email_check(fl, pot_all):
     gone (gone_at, its pickup check, so a hidden push and a speed) only against the pot of its own bid month
     (find_period), read OK in this check (POT_JUDGE); missing from the pots read is no proof it left when its month
     was not read (a December trip under This month): it is stored open, for a later read of its month to judge. It is
-    filed under the pot month it is live in, else its own bid month (never the first pot page's key)."""
+    filed under the pot month it is live in, else its own bid month (never the first pot page's key). Review (R2,
+    F1-R1): a find not in a pot this check has its pickup checked either way (who took it; a filled seat stamps it gone
+    then); one judged is marked with its month ('from'), one not judged takes an Open seat as a verdict only in a later
+    check that reads its month OK (pickup_check)."""
     if not has("admin_pushes"):
         return False
     q = S.get("email_queue") or []
@@ -13208,8 +13222,8 @@ def email_check(fl, pot_all):
             # 0.4.21 (Ryan): a known find named in a fresh alert went back to open time; re-read its page
             # so "who holds it now" is current, instead of trusting the old pickup record.
             row = DB.find_row(k) or {}
-            if judged and row.get("source") != "email":
-                S.setdefault("pickup_pending", {})[k] = {"tries": 0, "next": 0, "realert": True}
+            if judged and row.get("source") != "email":  # review R3: judged by its month's read ('from')
+                S.setdefault("pickup_pending", {})[k] = {"tries": 0, "next": 0, "realert": True, "from": per}
                 log.info("alert email names known find %s: pickup re-check queued", k)
             q.remove(it)
             continue
@@ -13228,8 +13242,8 @@ def email_check(fl, pot_all):
         if k not in live:  # roster read after it left the pot (or maybe so): no "before" to diff, names stay unbolded
             ev.pop("crew", None)
         DB.add_find(k, month, ev, it.get("at") or now_iso(), gone)
-        if gone:
-            S.setdefault("pickup_pending", {}).setdefault(k, {"tries": 0, "next": 0})
+        if k not in live:  # review R2, F1-R1: its pickup is checked as before; 'from' when its month's read judged it
+            S.setdefault("pickup_pending", {}).setdefault(k, {"tries": 0, "next": 0, **({"from": per} if gone else {})})
         log.info("finds: %s added from alert email (%s)", k, "in pot" if k in live else "already gone" if gone else
                  f"not in the pots read; the pot of {per or 'its month'} not read this check")
         q.remove(it)
@@ -14235,8 +14249,8 @@ def check(fl):
                 run_rules(month, k, pot[k])
         if base is not None:
             pend = S.setdefault("pickup_pending", {})
-            for k in set(base) - set(pot):
-                pend.setdefault(k, {"tries": 0, "next": time.time() + PICKUP_FIRST_S})
+            for k in set(base) - set(pot):  # 1.8.1 (review R3, F1-R2): judged gone by this good read of its folder
+                pend.setdefault(k, {"tries": 0, "next": time.time() + PICKUP_FIRST_S})["from"] = month
         DB.record_pot(month, pot, new_keys)
         new_any = new_any or bool(new_keys)
         S["baseline"][month] = sorted(pot.keys())
