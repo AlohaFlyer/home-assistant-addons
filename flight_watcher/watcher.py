@@ -12871,6 +12871,9 @@ def pickup_check(fl, full=False):
             break  # 1.6.2: no try is used up while pairing pages are stopped
         if now < p.get("next", 0) and not full:
             continue
+        if k in POT_JUDGE["live"]:  # 1.8.1 (POT-2): in a pot this check, so open: no pickup to check, no load (it is
+            pend.pop(k, None)  # queued again when it leaves its pot)
+            continue
         row = DB.find_row(k)
         url = row and (row.get("detail_url") or detail_url(row))
         if not url:
@@ -12919,6 +12922,11 @@ def pickup_check(fl, full=False):
             raise
         except Exception as e:
             log.info("pickup lookup %s skipped: %s", k, e)
+        if status == "open" and find_period(k) not in POT_JUDGE["read"]:
+            # 1.8.1 (POT-2, LIVE-1): its bid month's pot was not read OK this check, so a seat still Open is no hidden
+            # trip (it may sit in that pot): no verdict and no push; tried again as an unknown read is
+            log.info("pickup %s: seat Open, its bid month's pot not read this check (no hidden verdict)", k)
+            status = "unknown"
         start = row_date(row.get("start") or (row.get("dates") or "").split("-")[0])
         started = bool(start and start < local_now().date())
         if status == "filled":
@@ -13129,27 +13137,78 @@ def email_alert(payload):
         WAKE.set()
 
 
+def finds_period_close():
+    """1.8.1 (POT-6): a find still open whose trip's bid period has ended (its last day before today, HST) is in no
+    pot any more, though no read stamped it gone: its month left the watch (the roll-over, a Pot month change, an
+    email find of a month not read, 1.8.0's 'mobile' page that no plan reads). It is stamped gone at its period's end
+    (00:00 HST after the last day), with no push and no pickup check, and its pickup is no longer pending. A trip in a
+    pot this check is left to its pot's reads. No FLICA load."""
+    today = local_now().date()
+    of, ends, done = bid_period_fn(), {}, {}
+    try:
+        for k, first in DB.open_finds():
+            try:
+                seen = date.fromisoformat(str(first)[:10])  # the trip's year: the one nearest its first sight
+            except ValueError:
+                seen = today
+            per = None if k in POT_JUDGE["live"] else find_period(k, of, seen)
+            if not MONTH_KEY_RE.match(str(per)):
+                continue
+            if per not in ends:
+                ends[per] = str(bid_bounds(per)[1])[:10]
+            if ends[per] < today.isoformat():
+                end = datetime.fromisoformat(ends[per]).replace(tzinfo=HST) + timedelta(days=1)
+                done[k] = max(end.astimezone(timezone.utc).isoformat(), str(first))  # never before its first sight
+        if done:
+            DB.close_finds(done)
+    except Exception as e:  # noqa: BLE001 (never stops a check: the next one tries again)
+        log.info("finds of an ended bid period not closed: %s", type(e).__name__)
+        return
+    if done:
+        pend = S.setdefault("pickup_pending", {})
+        for k in done:
+            pend.pop(k, None)
+        keys = sorted(done)
+        log.info("finds closed at their bid period's end (in no pot read since): %s%s", ", ".join(keys[:20]),
+                 f" and {len(keys) - 20} more" if len(keys) > 20 else "")
+
+
+def find_period(key, of=None, today=None):
+    """1.8.1 (POT-2): the bid month ('YYYY-MM') of a find's trip (key 'TRIP|DDMon'): bid_period_key of its first day
+    (the pairing files' bounds: a Dec 1 trip is November's), its year the one row_date gives near today (HST); None
+    when the day does not read."""
+    d = row_date(str(key).partition("|")[2], today=today or local_now().date())
+    return (of or bid_period_key)(d.isoformat()) if d else None
+
+
 def email_check(fl, pot_all):
     """Add pairings from alert emails that are not finds yet (the pot moved faster than a check).
     One read-only detail GET each, so CA, times and the crew roster are known; a pairing not in
     the pot any more is stamped gone now and its pickup is tracked like any other find. 1.5.0 (FW-0063): the admin's
-    only (admin_pushes): a pilot instance never reads the queue."""
+    only (admin_pushes): a pilot instance never reads the queue. 1.8.1 (POT-2, LIVE-1, POT-8): a pairing is judged
+    gone (gone_at, its pickup check, so a hidden push and a speed) only against the pot of its own bid month
+    (find_period), read OK in this check (POT_JUDGE); missing from the pots read is no proof it left when its month
+    was not read (a December trip under This month): it is stored open, for a later read of its month to judge. It is
+    filed under the pot month it is live in, else its own bid month (never the first pot page's key)."""
     if not has("admin_pushes"):
         return False
     q = S.get("email_queue") or []
     if not q:
         return False
     live = {k: m for m, p in pot_all.items() for k in p}
+    of = bid_period_fn()
     added, n = False, 0
     for it in list(q):
         k = it["key"]
+        per = find_period(k, of)
+        judged = k not in live and per in POT_JUDGE["read"]  # 1.8.1 (POT-2): its own month's pot, read OK now
         if DB.has_find(k):
             if it.get("at") and DB.set_alert_at(k, it["at"]):  # 0.7.6: FLICA's alert time is the true pot-entry time
                 log.info("alert email: %s entered the pot at %s (pickup speed rescored)", k, it["at"])
             # 0.4.21 (Ryan): a known find named in a fresh alert went back to open time; re-read its page
             # so "who holds it now" is current, instead of trusting the old pickup record.
             row = DB.find_row(k) or {}
-            if k not in live and row.get("source") != "email":
+            if judged and row.get("source") != "email":
                 S.setdefault("pickup_pending", {})[k] = {"tries": 0, "next": 0, "realert": True}
                 log.info("alert email names known find %s: pickup re-check queued", k)
             q.remove(it)
@@ -13164,14 +13223,15 @@ def email_check(fl, pot_all):
         enrich(fl, ev)
         if ev.get("turn") and not ev.get("layover"):
             ev["layover"] = ev["turn"].split("/")[0]
-        month = next(iter(S.get("pot_urls") or {"mobile": 1}))
-        gone = None if k in live else now_iso()
-        if gone:  # roster read after it left the pot: no "before" to diff, so names stay unbolded
+        month = live.get(k) or per or this_month_key()  # 1.8.1 (POT-8, P9, LIVE-11): the pot it is in, else its month
+        gone = now_iso() if judged else None
+        if k not in live:  # roster read after it left the pot (or maybe so): no "before" to diff, names stay unbolded
             ev.pop("crew", None)
         DB.add_find(k, month, ev, it.get("at") or now_iso(), gone)
         if gone:
             S.setdefault("pickup_pending", {}).setdefault(k, {"tries": 0, "next": 0})
-        log.info("finds: %s added from alert email (%s)", k, "in pot" if k in live else "already gone")
+        log.info("finds: %s added from alert email (%s)", k, "in pot" if k in live else "already gone" if gone else
+                 f"not in the pots read; the pot of {per or 'its month'} not read this check")
         q.remove(it)
         added = True
     save_state(S)
@@ -13447,6 +13507,9 @@ POT_ROWS = {}  # month -> {"rows", "n"}: the rows of its last good read (memory 
 POT_SEQ = {"n": 0}  # planned checks so far (a month's cached rows stand in only in the check right after their read)
 POT_ATTR = {"last": None}  # the pot_months attribute last published
 POT_READ = {"months": set()}  # the bid months read in the last check (a try that read included), for pot_months
+# 1.8.1 (POT-2, LIVE-1): the bid months whose pot page was read OK in this check (no stand-in or cached rows) and the
+# keys in a pot this check (stand-ins and the close-in folder too): a find is judged gone or hidden only against them
+POT_JUDGE = {"read": set(), "live": set()}
 MONTH_KEY_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 POT_BAD = ("refused", "not open yet", "empty")  # statuses of a pick that is not (yet) its month's pot
 POT_SHOWN = {"ok": "ok", "refused": "refused", "not open yet": "not open yet", "empty": "not open yet"}
@@ -14059,6 +14122,7 @@ def check(fl):
     refreshed too: schedule, own trip times, pot details, pending pickups, tradeboard."""
     full, FLAGS["full"] = FLAGS.get("full", False), False
     tries, cached = [], {}
+    POT_JUDGE.update(read=set(), live=set())  # 1.8.1 (POT-2): nothing is judged against a check before
     if S.get("pot_plan") or not S.get("pot_urls"):
         # 1.8.1 (D1, D2): the pot pages of the bid months the Pot month select chooses, each from its own BCID (no
         # FLICA load; a main menu look first when a month's BCID is refused or not open, at most every 6 h a month)
@@ -14205,6 +14269,7 @@ def check(fl):
     S["baseline"] = {m: v for m, v in S["baseline"].items() if m in keep}
     S["baseline_bcid"] = {m: v for m, v in (S.get("baseline_bcid") or {}).items() if m in S["baseline"]}
     POT_READ["months"] = {m for m in read_now if MONTH_KEY_RE.match(str(m))}  # before the publish: a try read now
+    POT_JUDGE.update(read=POT_READ["months"] - set(cached), live={k for p in pot_all.values() for k in p})
     HEALTH["pot"] = pot_note() if S.get("pot_plan") else ""  # 1.8.1: a refused page, this month's pot not found
     pot_attr_publish()
     live = {k for p in pot_all.values() for k in p}
@@ -14217,6 +14282,7 @@ def check(fl):
     flat.sort(key=lambda r: r.get("src") != "C")  # FW-0034: close-in trips (under 16 h to report) first
     publish_pot(flat)
     publish_near_misses(flat)  # 1.7.14: from the rows, schedule and own trips on hand (no FLICA load)
+    finds_period_close()  # 1.8.1 (POT-6): finds of a bid period that ended, in no pot any more (no load)
     read_guard(email_check, fl, pot_all)
     read_guard(pickup_check, fl, full, optional=True)
     publish_finds()  # rows carry live CA / details now, so publish every check
