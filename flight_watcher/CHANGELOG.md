@@ -8,7 +8,7 @@ can you look at both?" and "Keep the 22 s, set it to Both").
 
 - What was wrong: 1.8.0 read one hard-coded page, the November 2026 pot (`mobileopentimepot.cgi?BCID=003.152`). FLICA
   gives each bid month's pot its own BCID (Ryan's December link is `otframe.cgi?BCID=003.153`) and its mobile pot page
-  has no link to the next month, so the Watcher never found December and from Dec 1 would still have read November.
+  has no link to the next month, so the Watcher never found December and from Dec 2 would still have read November.
 - Now each month's BCID is looked for (`pot_pick`), in this order: a BCID a main menu or pot page link named for it
   (read and checked before it is learned), else the one learned for it (Ryan's two links to start, 2026-11 `003.152`
   and 2026-12 `003.153`, then each month whose page read with its own trips), else the latest learned month's suffix
@@ -24,14 +24,19 @@ can you look at both?" and "Keep the 22 s, set it to Both").
   of its trips in the month proper (a month's last days fall in the next month's slack). A BCID refused for another
   month's trips may be named again once the month's try wait has passed (one odd page never bans a month's real
   BCID); one of another category (with trips or empty) stays refused, and its links name no candidates. A next
-  month's try is never later than its own first day (HST), so a
+  month's try is never later than its bid period's first day (HST), so a
   month not open or refused at its last try before the roll-over is read again at midnight. A menu or link
   BCID that is no open time page gives way to the learned one at once. A month not found is tried again later and
   looked for on the main menu at most every 6 h (through the gate; a reCAPTCHA there is never answered) and in the
   links of pages read anyway; when the menu names its pick, that page is read then, not at its next try. Nothing else
   is guessed, and the close-in folder's BCID is never a month's pot.
+- "This month" is the bid month of today, not the calendar month (council loop 1, Nov 23: ChatGPT, Gemini, Grok and
+  Perplexity each found it). Hawaiian's bid periods run November Nov 1 to Dec 1 and December Dec 2 to 31, so Dec 1's
+  open trips are in November's pot: on Dec 1 This month still reads November's pot and Both reads November's and
+  December's; the roll-over is at Dec 2 00:00 HST (the pairing files' period bounds, else the schedule pages, else the
+  calendar month when neither is on file).
 - The **Pot month** select (`select.<prefix>_pot_month`, the clock card's **Pot**): **This month** (the default on
-  every instance, as before: one page, the current HST month, so James's pot simply moves to December on Dec 1),
+  every instance, as before: one page, the current bid month's, so James's pot moves to December on Dec 2),
   **Next month** (the next bid month's pot once it is open, else this month's) or **Both**. A change re-plans the pot
   pages at the next check and wakes the loop like the hunt switch.
 - No new loads with This month or Next month: one pot page a check. While the next month is not open, Next month tries

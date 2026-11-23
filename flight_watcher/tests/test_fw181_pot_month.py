@@ -919,6 +919,62 @@ def test_the_links_of_a_page_of_another_category_name_no_candidates(mk):
     assert loads.count("001.154") == 1 and loads.count("001.155") == 0
 
 
+# ---------------------------------------------------------------- council loop 1 (Nov 23): the bid period, not the calendar
+def _periods(W):
+    """The pairing files' period bounds, as pdfs.py writes them: November Nov 1 to Dec 1, December Dec 2 to 31."""
+    os.makedirs(W.CARD_PAIRINGS, exist_ok=True)
+    for m, a, b in (("2026-11", "2026-11-01", "2026-12-01"), ("2026-12", "2026-12-02", "2026-12-31")):
+        with open(os.path.join(W.CARD_PAIRINGS, f"pairings_{m}.json"), "w") as f:
+            json.dump({"start": a, "end": b, "cols": [], "rows": []}, f)
+
+
+NOV_D1 = NOV + [("H3905", "01Dec")]  # a Dec 1 trip: November's bid period, in November's pot
+
+
+def test_dec_1_is_still_novembers_bid_month_for_the_pot(mk):
+    """Dec 1 belongs to November's bid period: This month still reads November's pot (its Dec 1 trips alert), and
+    December's pot takes over at Dec 2 00:00 HST with a first read (baseline only)."""
+    W, fl, pages = _w(mk, at(2026, 11, 30, 23), pages={"003.152": page(NOV_D1), "003.153": page(DEC)})
+    _periods(W)
+    assert _check(W, fl)[1] == ["003.152"]
+    W.CLOCK.t = at(2026, 12, 1, 0, 10)
+    assert W.this_month_key() == "2026-11" and _check(W, fl)[1] == ["003.152"]
+    pages["003.152"] = page(NOV_D1 + [("H3906", "01Dec")])
+    assert _check(W, fl)[1] == ["003.152"] and _new(W) == ["H3906"]
+    W.CLOCK.t = at(2026, 12, 2, 0, 5)
+    assert W.this_month_key() == "2026-12" and _check(W, fl)[1] == ["003.153"] and _new(W) == ["H3906"]
+    pages["003.153"] = page(DEC + [("H3914", "24Dec")])
+    assert _check(W, fl)[1] == ["003.153"] and _new(W) == ["H3906", "H3914"]
+
+
+def test_both_on_dec_1_reads_november_and_december(mk):
+    """Both on Dec 1: November's pot (Dec 1 trips) and December's; from Dec 2 December's and January's."""
+    W, fl, pages = _w(mk, at(2026, 12, 1, 9), "Both", {"003.152": page(NOV_D1), "003.153": page(DEC)})
+    _periods(W)
+    assert _check(W, fl)[1] == ["003.152", "003.153"]
+    assert [x["month"] for x in W.pot_months_attr()] == ["2026-11", "2026-12"]
+    W.CLOCK.t = at(2026, 12, 2, 0, 5)
+    assert _check(W, fl)[1] == ["003.153", "003.154"] and W.pot_months_of() == ["2026-12", "2027-01"]
+
+
+def test_a_next_month_refused_on_dec_1_is_tried_at_its_bid_periods_first_day(mk):
+    """On Dec 1 (November's bid month) December is still the next month: refused at 10:00, its try waits until its bid
+    period's first day (Dec 2 00:00), not 6 h as this month's would."""
+    W, fl, pages = _w(mk, at(2026, 12, 1, 10), "Both", {"003.152": page(NOV_D1), "003.153": page(NOV)})
+    _periods(W)
+    _check(W, fl)
+    assert W.pot_status("2026-12") == "refused"
+    assert abs(W.pot_rec("2026-12")["try_at"] - at(2026, 12, 2, 0, 0)) < 60
+    pages["003.153"] = page(DEC)
+    W.CLOCK.t = at(2026, 12, 2, 0, 10)
+    assert "003.153" in _check(W, fl)[1]
+
+
+def test_without_pairing_files_the_calendar_month_still_answers(mk):
+    W, fl, pages = _w(mk, at(2026, 12, 1, 9), pages={"003.153": page(DEC)})
+    assert W.this_month_key() == "2026-12" and _check(W, fl)[1] == ["003.153"]
+
+
 # ---------------------------------------------------------------- D4: the clock card in Chromium
 WWW = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "www")
 CARD_PAGE = ("<!doctype html><html><head><meta name='viewport' content='width=device-width'><style>"

@@ -3549,7 +3549,7 @@ def bid_period_of(d):
     crew index and the cards use (crewidx.period_for: Dec 1, 2026 is November's, whose period runs Nov 1 to Dec 1),
     or None when no pairing file speaks for it (no file for that month, and none made it another month than the
     calendar's): smart.bid_month then reads the bid month off the schedule pages. The bounds are cached 10 min."""
-    if time.time() - BID_PERIODS["at"] > BID_PERIODS_TTL_S:
+    if not 0 <= time.time() - BID_PERIODS["at"] <= BID_PERIODS_TTL_S:  # 1.8.1: a clock set back empties it too
         BID_PERIODS.update(at=time.time(), bounds={}, files={})
     mon = CI.period_for(CARD_PAIRINGS, d.isoformat(), BID_PERIODS["bounds"])
     if mon not in BID_PERIODS["files"]:
@@ -3583,7 +3583,7 @@ def bid_bounds(month):
     """1.7.11 (FW-0080): (first day, last day, src) of month's bid period for the schedule card: the pairing files'
     bounds (crewidx.period_start / period_end) when they speak for it, src 'package'; else the days the schedule pages
     on file give month (bid_period_key), src 'schedule'; else the calendar month, src 'calendar'."""
-    if time.time() - _BID_BOUNDS["at"] > BID_PERIODS_TTL_S:
+    if not 0 <= time.time() - _BID_BOUNDS["at"] <= BID_PERIODS_TTL_S:  # 1.8.1: a clock set back empties it too
         _BID_BOUNDS.update(at=time.time(), v={})
     if month not in _BID_BOUNDS["v"]:
         _BID_BOUNDS["v"][month] = _bid_bounds(month)
@@ -13466,9 +13466,35 @@ def month_name(key):
     return f"{MONTHS[int(key[5:7]) - 1]} {key[:4]}"
 
 
+_THIS_MONTH = {"day": None, "at": 0.0, "v": ""}  # this_month_key's cache: today's bid month, kept 10 min
+
+
 def this_month_key():
-    d = local_now()
-    return f"{d.year:04d}-{d.month:02d}"
+    """The bid month of today (HST), for the open time pot. Council loop 1 (Nov 23): Hawaiian's bid periods are not
+    calendar months (November runs Nov 1 to Dec 1, December Dec 2 to 31), so on Dec 1 'this month' is still November
+    and its open trips are in November's pot; the roll-over is at the bid period's first day (bid_period_key: the
+    pairing files' bounds, else the schedule pages, else the calendar month)."""
+    d = local_now().date()
+    if _THIS_MONTH["day"] == d and 0 <= time.time() - _THIS_MONTH["at"] < BID_PERIODS_TTL_S:
+        return _THIS_MONTH["v"]
+    cal = f"{d.year:04d}-{d.month:02d}"
+    try:
+        k = bid_period_key(d.isoformat())
+        if not (MONTH_KEY_RE.match(str(k)) and abs(month_gap(cal, k)) <= 1):
+            k = cal
+    except Exception as e:  # noqa: BLE001 (the calendar month still answers)
+        log.info("bid month of today not known (%s): the calendar month is used", type(e).__name__)
+        k = cal
+    _THIS_MONTH.update(day=d, at=time.time(), v=k)
+    return k
+
+
+def bid_start_ts(month):
+    """The first moment (HST) of month's bid period: bid_bounds' first day, else the calendar 1st."""
+    try:
+        return datetime.fromisoformat(str(bid_bounds(month)[0])[:10]).replace(tzinfo=HST).timestamp()
+    except Exception:  # noqa: BLE001
+        return datetime(int(month[:4]), int(month[5:7]), 1, tzinfo=HST).timestamp()
 
 
 def pot_mode():
@@ -13505,13 +13531,12 @@ def pot_rec(month):
 
 def pot_wait(month, this=None):
     """The try wait of a month whose pick is refused or not open: POT_TRY_NEXT_S for a next month, but never past its
-    own first day (HST), where this month's POT_TRY_THIS_S takes over (gate review: a January not open at the Dec 31
+    bid period's first day (HST: Dec 2 for December), where this month's POT_TRY_THIS_S takes over (gate review: a January not open at the Dec 31
     try is tried at the Jan 1 roll-over, not at Jan 1 19:00)."""
     this = this or this_month_key()
     if month <= this:
         return POT_TRY_THIS_S
-    start = datetime(int(month[:4]), int(month[5:7]), 1, tzinfo=HST).timestamp()
-    return min(POT_TRY_NEXT_S, max(0.0, start - time.time()))
+    return min(POT_TRY_NEXT_S, max(0.0, bid_start_ts(month) - time.time()))  # its bid period's first day
 
 
 def pot_banned(month):

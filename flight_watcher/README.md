@@ -361,8 +361,9 @@ pot is `003.152`, his December 2026 link `003.153`; `003` is the category, HNL 3
 so from Dec 1 it would still have read November. Now each check reads the pot of the bid month the
 `select.<prefix>_pot_month` select (**Pot month**, on the clock card as **Pot**) chooses:
 
-- **This month** (the default on every instance): the current HST month's pot, one page a check. On the 1st of a
-  month it moves to the new month; that pot's first read is its baseline (no alerts).
+- **This month** (the default on every instance): the current bid month's pot, one page a check. It moves to the new
+  month on the first day of its bid period (December 2026 starts Dec 2, so Dec 1 is still November's, whose pot holds
+  Dec 1's trips); that pot's first read is its baseline (no alerts).
 - **Next month**: the next bid month's pot once it is open (a page that reads as that month's pot), else this
   month's, so one pot page a check either way. While the next month is not open it is tried once a day, in place of
   that check's read of this month (whose rows from the check before stand in; with none on hand, as in the first
