@@ -70,8 +70,9 @@ import layover as LO
 import pilotpdf as PP
 import pilotdb as PDBM
 import pdbshare as PS
+import mirror as MR  # 1.8.0: the FLICA mirror (ingress page flica)
 
-VERSION = "1.7.26"
+VERSION = "1.8.0"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -2606,7 +2607,17 @@ class Flica:
             self._loaded(path, error=e)
             raise
         self._loaded(path, html, url=url)
+        mirror_keep(url, html)  # 1.8.0: the Watcher's own read is the mirror's copy too (no second FLICA load)
         return html
+
+    def mirror_load(self, url):
+        """1.8.0: one page for the FLICA mirror (main thread only), through the same gate as every read. It may be left
+        out (GateSkip) rather than wait for the hour's budget, and it never feeds the read paths' breakers: the
+        Watcher's own reads judge FLICA. Returns (classify kind, html)."""
+        GATE.acquire(keep=GATE_KEEP, abort=gate_abort)
+        count_fetch()
+        html = self.ctx.request.get(url, timeout=30000).text()
+        return classify(html), html
 
     def menu_tree(self):
         """0.8.4: the left menu's JS tree (M.addC entries with the tokened Schedules links). FLICA only
@@ -2689,7 +2700,8 @@ def gap():
 
 def sleep(sec):
     """Wait sec seconds or until WAKE is set. FW-0067: looks at the working flight every WORKING_TICK_S meanwhile
-    (it publishes only on a change), so it follows the schedule clock while no check runs."""
+    (it publishes only on a change), so it follows the schedule clock while no check runs. 1.8.0: loads the FLICA
+    mirror's pages meanwhile (mirror_wait)."""
     WAKE.clear()
     end = time.time() + sec
     while True:
@@ -2699,11 +2711,173 @@ def sleep(sec):
             return
         left = end - now
         due = WAKE_DUE["at"] - now if WAKE_DUE["at"] else left
-        if left <= 0 or WAKE.wait(max(0.0, min(left, due, WORKING_TICK_S))):
+        if left <= 0 or mirror_wait(max(0.0, min(left, due, WORKING_TICK_S))):
             return
         publish_working_flight()
         health_note_tick()  # 1.7.3: a read path's stop leaves the state note within a tick of its end
 
+
+
+# ---------------------------------------------------------------- 1.8.0: the FLICA mirror (ingress page flica)
+# FLICA allows one session per login and the Watcher owns it: the mirror shows FLICA's mobile pages to the pilot through
+# that session. The ingress thread asks (mirror_get), the main loop loads while it waits between checks (mirror_wait,
+# mirror_serve): Playwright is not thread safe. Only the admin's Watcher serves the ingress page, so only Ryan's own
+# FLICA session is ever shown. Read only: mirror.py loads only the pot, pairing and own schedule pages.
+MIRROR = {"q": [], "lock": threading.Lock(), "cache": {}, "fl": None, "thread": None, "held": {}}
+MIRROR_TICK_S = 1.0  # the loop's wait looks for a mirror page this often
+MIRROR_WAIT_S = 35  # the ingress page waits this long for its page, then shows the last copy
+MIRROR_PER_TICK = 3  # pages one look loads at most (the loop's wait stays short)
+MIRROR_CACHE_MAX = 60
+MIRROR_HOLD_S = 1800  # a CAPTCHA answer on a page holds that page for the mirror this long (never answered)
+MIRROR_LIVE = ("idle", "hunting")
+
+
+def mirror_keep(url, html, at=None):
+    """Keep a good copy of a page the mirror shows (from the mirror's own load or the Watcher's own read)."""
+    try:
+        if not MR.page_kind(url) or classify(html or "") != "ok":
+            return
+    except Exception:  # noqa: BLE001
+        return
+    c = MIRROR["cache"]
+    c[url] = (at or time.time(), html)
+    if len(c) > MIRROR_CACHE_MAX:
+        for k in sorted(c, key=lambda k: c[k][0])[:len(c) - MIRROR_CACHE_MAX]:
+            c.pop(k, None)
+
+
+def mirror_block():
+    """Why the mirror may not load FLICA now ('' when it may): MR.NOTES keys, with the yield's end."""
+    if FLAGS.get("pause"):
+        return "paused", ""
+    st = str(S.get("machine") or "")
+    if st == "yielded":
+        return "yielded", f" until {hst_hm(S.get('yield_until'))} HST" if S.get("yield_until") else ""
+    if st not in MIRROR_LIVE:
+        return "stopped", st or "starting"
+    if not S.get("last_login_ok"):
+        return "none", ""
+    return "", ""
+
+
+def mirror_wait(step):
+    """WAKE.wait(step), serving the mirror's pages meanwhile. True when WAKE was set."""
+    end = time.time() + step
+    while True:
+        if MIRROR["q"]:
+            mirror_serve()
+        left = end - time.time()
+        if left <= 0:
+            return False
+        if WAKE.wait(min(left, MIRROR_TICK_S) if MIRROR["fl"] is not None else left):
+            return True
+
+
+def mirror_serve():
+    """Main thread: load the pages the ingress page is waiting for (one load per page however many ask)."""
+    fl = MIRROR["fl"]
+    if fl is None or threading.current_thread() is not MIRROR["thread"]:
+        return
+    with MIRROR["lock"]:
+        items, MIRROR["q"] = MIRROR["q"], []
+    order, by = [], {}
+    for it in items:
+        if it["url"] not in by:
+            order.append(it["url"])
+        by.setdefault(it["url"], []).append(it)
+    for i, url in enumerate(order):
+        res = None
+        why, _ = mirror_block()
+        kind = MR.page_kind(url)
+        c = MIRROR["cache"].get(url)
+        if why:
+            res = (why, "", 0.0)
+        elif i >= MIRROR_PER_TICK:
+            res = ("busy", "", 0.0)
+        elif c and time.time() - c[0] < MR.FRESH_S:
+            res = ("ok", c[1], c[0])
+        elif time.time() < MIRROR["held"].get(kind, 0):
+            res = ("captcha", "", 0.0)
+        elif all(time.time() - it["at"] > MIRROR_WAIT_S for it in by[url]):
+            res = ("busy", "", 0.0)  # nobody is waiting for it any more
+        else:
+            try:
+                k, html = fl.mirror_load(url)
+                at = time.time()
+                res = (k, html, at)
+                if k == "ok":
+                    mirror_keep(url, html, at)
+                elif k == "captcha":
+                    MIRROR["held"][kind] = at + MIRROR_HOLD_S
+                    log.info("mirror: FLICA answered a %s page with a CAPTCHA (never answered); held %d min", kind,
+                             MIRROR_HOLD_S // 60)
+                elif k == "expired":
+                    WAKE.set()  # the next check signs in again now (the mirror never logs in itself)
+                elif k == "killed":
+                    WAKE.set()  # the check sees the kick and steps aside (yield)
+            except GT.GateSkip:
+                res = ("busy", "", 0.0)
+            except GT.GateAbort:
+                res = ("paused", "", 0.0)
+            except Exception as e:  # noqa: BLE001
+                res = ("error", type(e).__name__, 0.0)
+                log.info("mirror: %s page load failed: %s", kind, type(e).__name__)
+        for it in by[url]:
+            it["res"] = res
+            it["ev"].set()
+
+
+def mirror_links():
+    """[(label, FLICA URL)] of the mirror's bar: each open time pot the Watcher reads, then the pilot's schedule for
+    this month and the next."""
+    pots = [u for u in (S.get("pot_urls") or {}).values() if MR.page_kind(u) == "pot"]
+    pots = sorted(dict.fromkeys(pots), key=lambda u: bcid_key(bcid(u)) if bcid(u) else (0,)) or [MOBILE_POT]
+    out = [("Open time" if i == 0 else "Open time next", u) for i, u in enumerate(pots[:2])]
+    shape = S.get("sched_shape_mobile") or "/full/mobileschedule.cgi?BlockDate={bd}&From=MainMenu"
+    now = local_now()
+    nxt = (now.replace(day=1) + timedelta(days=32))
+    for label, d in (("My schedule", now), ("Next schedule", nxt)):
+        try:
+            u = sched_shape_url(shape, f"{d.year:04d}-{d.month:02d}")
+        except Exception:  # noqa: BLE001
+            u = ""
+        if MR.page_kind(u) == "schedule":
+            out.append((label, u))
+    return out
+
+
+def mirror_get(u):
+    """Ingress thread: (HTTP status, HTML) of the mirror page for `u` (a FLICA path and query; '' = the open time
+    pot). Waits up to MIRROR_WAIT_S for the main loop's load, else shows the last copy with a note."""
+    links = mirror_links()
+    url = MR.flica_url(u) if u else links[0][1]
+    if not url:
+        return 403, MR.page("", "", "FLICA", links, "", 0, MR.note("refused"), version=VERSION)
+    c = MIRROR["cache"].get(url)
+    note = ""
+    if not (c and time.time() - c[0] < MR.FRESH_S):
+        why, extra = mirror_block()
+        if why:
+            note = MR.note(why, until=extra, state=extra)
+        else:
+            it = {"url": url, "ev": threading.Event(), "res": None, "at": time.time()}
+            with MIRROR["lock"]:
+                MIRROR["q"].append(it)
+            it["ev"].wait(MIRROR_WAIT_S)
+            res = it["res"]
+            if res is None:
+                note = MR.note("busy")
+            elif res[0] == "ok":
+                c = (res[2], res[1])
+            elif res[0] == "error":
+                note = MR.note("error", why=res[1] or "no answer")
+            else:
+                note = MR.note(res[0], until=mirror_block()[1], state=str(S.get("machine") or ""))
+        c = MIRROR["cache"].get(url) if note else c
+    if not c:
+        return 200, MR.page("", "", "FLICA", links, url, 0, note or MR.note("none"), version=VERSION)
+    body, head, title = MR.rewrite(c[1], url)
+    return 200, MR.page(body, head, title, links, url, c[0], note, age_s=time.time() - c[0], version=VERSION)
 
 
 def sleep_announced(sec):
@@ -14510,10 +14684,13 @@ def main():
                   save_rules_from_page, DB, log, get_settings=lambda: settings_state(load_creds()),
                   save_settings=lambda d: settings_cmd(json.dumps(d)), clear_settings=settings_clear,
                   on_saved=lambda: (publish_uploads(force=True), pilotdb_nudge()), portal_key=PORTAL_PUB,
-                  pilotdb_get=pilotdb_get, pilotdb_post=pilotdb_post)  # 1.7.8: the Pilots card's api/pilotdb
+                  pilotdb_get=pilotdb_get, pilotdb_post=pilotdb_post,  # 1.7.8: the Pilots card's api/pilotdb
+                  mirror_get=mirror_get)  # 1.8.0: the FLICA mirror
     last_month_check = None
     with sync_playwright() as pw:
         fl = Flica(pw)
+        if os.environ.get("FLIGHT_WATCHER_WEB", "1") == "1":  # 1.8.0: the mirror loads on this thread (admin only)
+            MIRROR["fl"], MIRROR["thread"] = fl, threading.current_thread()
         while True:
             st = S.get("machine", "idle")
             # 1.7.1 (F#92): a Re-arm pressed while stepped aside for the pilot's own FLICA login waits for the
