@@ -71,7 +71,7 @@ import pilotpdf as PP
 import pilotdb as PDBM
 import pdbshare as PS
 
-VERSION = "1.7.25"
+VERSION = "1.7.26"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -155,6 +155,9 @@ def load_opts():
 
 
 OPTS = load_opts()
+# 1.7.26 review: contextlib.redirect_stdout swaps the process's sys.stdout; two at once (the main loop and the MQTT
+# thread) could leave it on a dead buffer, so every redirect in the Watcher (run.py's rules, which print) takes this
+STDOUT_LOCK = threading.Lock()
 
 logging.basicConfig(
     level=getattr(logging, OPTS.get("log_level", "info").upper()),
@@ -1952,8 +1955,27 @@ BRK = GT.Breakers(lambda: S.setdefault("breakers", {}), save=lambda: save_state(
 # stopped, and the check ends with nothing more loaded. On a pilot the reads that may be left out (read_guard
 # optional=True: the Tradeboard, the reserve grid, the request lists, the crew index, his own trips, pot details,
 # pickups) skip a load that would wait for his budget (GATE_KEEP) or pass opt_cap() an hour: the pot keeps its share.
-RUN = {"check": False, "optional": False, "aborted": "", "skipped": set(), "opt": [], "opt_name": "", "login": False}
+# 1.7.26 (Nov 22): host_keep, while the admin's crew index reads (crew_index_check): its loads leave that many of the
+# host's hour free (Flica._load passes it to the gate as keep: GateSkip instead of a wait), 0 otherwise.
+RUN = {"check": False, "optional": False, "aborted": "", "skipped": set(), "opt": [], "opt_name": "", "login": False,
+       "host_keep": 0}
 GATE_KEEP = 4  # an optional load leaves this many of a pilot's budget free (the next check's start)
+# 1.7.26 (Nov 22): the admin's FLICA loads an hour besides his pot checks and schedule reads, which his check pace
+# (host_pace_s) leaves room for (Ryan's range for it: about 24 to 40). Counted, as the code reads them in an hour: the
+# close-in folder while hunting, 12 (CLOSE_IN_READ_S 300 s); the request lists while no request is pending, about 8
+# (each folder's open time list and his trades list every 15 min, REQ_IDLE_GAP_S); pickups and in-flight re-checks,
+# about 12 (a find that left the pot at PICKUP_FIRST_S, then every PICKUP_RETRY_S 20 min, PICKUP_PER_CHECK and
+# INFLT_PER_CHECK a check); alert-email pickups (one detail page an email), new trips' pot details and his own trip
+# times (once a trip, an empty one at most hourly, OWN_EMPTY_RETRY_S), about 8. 12 + 8 + 12 + 8 = 40.
+# Not counted (1.7.26 review): the Tradeboard (2 loads a bid month every TB_MIN_GAP_S 120 s: up to 60 an hour a bid
+# month) and the reserve grid (one load a bid month every GRID_MIN_GAP_S 300 s and a render every 30 min: about 14 an
+# hour a bid month). With one bid month and no request pending they fit in the slack the held pace leaves (it is the
+# shortest wait, 1.15 times it on average, and each check takes its own time, so held checks come about 255 to 285 an
+# hour, not 329). With two bid months (once FLICA shows the next one: up to 120 and 28) or a request pending (its lists
+# every REQ_PENDING_GAP_S 2 min: 60 to 90 an hour) they can still fill the host's hour beside a held hunt and a pilot's
+# 100: the gate then holds his next check (the state note says until when), as in 1.7.25 but less often. Counting
+# them in the pace, or leaving them out while the host's hour is short, is Ryan's choice.
+ADMIN_OPT_RESERVE_H = 40
 
 
 PACE_OPT_H = 12  # 1.6.2: a pilot's paced hunt leaves at least this many loads an hour to the reads that may be left out
@@ -1993,6 +2015,85 @@ def budget_pace_s():
     return pot_pages() * 3600.0 / max(1.0, room)
 
 
+PILOTS_N = {"key": None, "n": 0}  # 1.7.26 review: pilots_running's count for the options it was taken from
+
+
+def pilots_running():
+    """1.7.26: the pilot Watchers run.py starts beside the admin, by its own rules on the add-on options (`pilots`, else
+    `second_pilot`; pilot_prefixes). Should those rules fail here, the pilots option is counted as it stands, at most
+    roles.MAX_PILOTS. 0 on a pilot (his own budget is his). 1.7.26 review: taken once for the options in hand (OPTS is
+    read at start; a change needs a restart), so gap(), held_apply() and host_keep(), on the main loop and the MQTT
+    thread, never go through pilot_prefixes' stdout redirect each time."""
+    if GATE.budget:
+        return 0
+    key = repr((OPTS.get("pilots"), OPTS.get("second_pilot")))
+    if PILOTS_N["key"] == key:
+        return PILOTS_N["n"]
+    try:
+        n = len(pilot_prefixes())
+    except Exception:  # noqa: BLE001
+        raw = OPTS.get("pilots")
+        n = len(raw) if isinstance(raw, list) else 0
+        n = min(ROLES.MAX_PILOTS, n or (1 if str(OPTS.get("second_pilot") or "").strip() else 0))
+    PILOTS_N.update(key=key, n=n)
+    return n
+
+
+def host_share_h():
+    """1.7.26: the host's FLICA loads an hour the admin's Watcher may count on: HOST_CAP_H (480, every Watcher in the
+    container) less PILOT_BUDGET_H (100) for each pilot's Watcher. Nov 22, one pilot: 480 - 100 = 380."""
+    return GT.HOST_CAP_H - GT.PILOT_BUDGET_H * pilots_running()
+
+
+def host_pace_s():
+    """1.7.26 (Ryan, Nov 22): on the admin, the shortest wait between his checks that keeps his pot pages inside his
+    share of the host's hour (host_share_h) less his schedule reads (4 x SCHED_TRIES_PER_READ: two reads every 30 min,
+    as many as the admin may make), one check's start (GATE_CHECK_TOKENS) and his other reads (ADMIN_OPT_RESERVE_H).
+    By hand, Nov 22 (hunt 10 s, 1 pot page, one pilot): 380 - 8 - 3 - 40 = 329 loads, 1 x 3600 / 329 = 10.94 s, so a
+    10 s hunt is held to at least 11 s apart and a 5 s hunt the same; with no pilot 429 loads, 8.39 s; normal mode with
+    the close-in folder (2 pages a check) 21.9 s, under every normal setting. 0 on a pilot (budget_pace_s is his)."""
+    if GATE.budget:
+        return 0.0
+    room = host_share_h() - 4 * SCHED_TRIES_PER_READ - GATE_CHECK_TOKENS - ADMIN_OPT_RESERVE_H
+    return pot_pages() * 3600.0 / max(1.0, room)
+
+
+def pace_s():
+    """The pace the checks are held to: a pilot's budget pace (budget_pace_s), 1.7.26 the admin's host pace."""
+    return budget_pace_s() if GATE.budget else host_pace_s()
+
+
+def pace_share_h():
+    """The FLICA loads an hour the held note names: a pilot's budget, 1.7.26 the admin's share of the host's hour."""
+    return GATE.budget or host_share_h()
+
+
+def check_every_s():
+    """The check interval in use: the setting (hunt or normal), or the pace that holds it when that is longer."""
+    fq = freq()
+    return max(1.0, float(fq["hunt_s"] if FLAGS.get("hunt") else fq["normal_min"] * 60), pace_s())
+
+
+def host_keep():
+    """1.7.26 (Ryan, Nov 22: "the crew index would only read while the hour still leaves room for your pot checks"): on
+    the admin, the host's FLICA loads the coming hour needs besides the crew index: his pot checks at the interval in
+    use (pot_pages() x 3600 / check_every_s(), the close-in folder's reads while hunting, close_in_h, and one check's
+    start, GATE_CHECK_TOKENS), PILOT_BUDGET_H for each pilot's Watcher and his schedule reads (4 x
+    SCHED_TRIES_PER_READ), at most HOST_CAP_H. Every crew index load goes to the gate with this keep: it goes only
+    while that many loads of the host's hour stay free after it, else GateSkip. By hand, Nov 22 (hunt 10 s held to
+    10.94 s, 1 pot page, one pilot): 329 + 3 + 100 + 8 = 440 (452 once the close-in folder is known: + 12), so the
+    crew index reads while the last hour holds fewer than 40 loads (28): not while that hunt runs. Normal 6 min with
+    the close-in folder (2 pages a check): 20 + 3 + 100 + 8 = 131, so it reads while under 349. 0 on a pilot. The keep
+    is taken at the interval in use and holds no room for his other reads (ADMIN_OPT_RESERVE_H, the Tradeboard, the
+    grid): the 40 a held hunt leaves are theirs and the crew index's alike, and pages read in normal mode stay in the
+    hour for up to 60 min after a switch to a hunt (1.7.26 review: Ryan's choice whether to keep room for those too)."""
+    if GATE.budget:
+        return 0
+    need = (pot_pages() * 3600.0 / check_every_s() + close_in_h() + GATE_CHECK_TOKENS
+            + GT.PILOT_BUDGET_H * pilots_running() + 4 * SCHED_TRIES_PER_READ)
+    return min(GT.HOST_CAP_H, int(math.ceil(need - 1e-9)))
+
+
 def _bid_folders():
     """(the BCIDs of his pot pages, the request folders requests_check reads: those and, once verified, the close-in
     folder)."""
@@ -2026,20 +2127,25 @@ def opt_hour():
 def held_note(until=None):
     """1.6.2 (Ryan 2026-11-10): a pilot's check frequency faster than his FLICA budget allows, in plain words ('Hunting
     every 10 s is held to 100 FLICA loads an hour: checks wait for the budget'), with the pace it is held to or, while
-    the gate makes the loop wait, the next check's time. '' when nothing holds it (the admin, a slow enough setting)."""
+    the gate makes the loop wait, the next check's time. '' when nothing holds it (a slow enough setting). 1.7.26
+    (Ryan, Nov 22): the admin's checks faster than his share of the host's hour allows (host_pace_s) say so in the same
+    words, with that share (host_share_h): "Hunting every 10 s is held to 380 FLICA loads an hour: checks wait for the
+    budget, at least 11 s apart", so the cards' data age reads the pace the same way (FW_AGE_PACE)."""
     fq, hunt = freq(), bool(FLAGS.get("hunt"))
-    pace = budget_pace_s()
+    pace = pace_s()
     want = fq["hunt_s"] if hunt else fq["normal_min"] * 60
-    if not GATE.budget or (not until and pace <= want):
+    share = pace_share_h()
+    if share <= 0 or (not until and pace <= want):
         return ""
     head = (f"Hunting every {fq['hunt_s']} s" if hunt else f"Checking every {fq['normal_min']} min") + \
-        f" is held to {GATE.budget} FLICA loads an hour: checks wait for the budget"
+        f" is held to {share} FLICA loads an hour: checks wait for the budget"
     return head + (f" (next at {hst_hm(until)} HST)" if until else f", at least {int(math.ceil(pace))} s apart")
 
 
 def held_apply():
-    """The held note (held_note) joins the state note while the Watcher is idle or hunting (health_note_apply)."""
-    want = held_note() if ROLES.role(INSTANCE) == ROLES.PILOT else ""
+    """The held note (held_note) joins the state note while the Watcher is idle or hunting (health_note_apply); 1.7.26
+    on the admin too (his host pace)."""
+    want = held_note()
     if want != HEALTH["held"]:
         HEALTH["held"] = want
         health_note_apply()
@@ -2052,8 +2158,7 @@ def opt_cap():
     start."""
     if not GATE.budget:
         return None
-    fq = freq()
-    every = max(1.0, float(fq["hunt_s"] if FLAGS.get("hunt") else fq["normal_min"] * 60), budget_pace_s())
+    every = check_every_s()
     pot = pot_pages() * 3600.0 / every + min(close_in_h(), 3600.0 / every)
     return max(0, GATE.budget - int(round(pot)) - 2 * SCHED_TRIES_PER_READ - GATE_CHECK_TOKENS)
 
@@ -2449,8 +2554,10 @@ class Flica:
         optional = bool(RUN["check"] and RUN["optional"] and GATE.budget)
         if optional:
             opt_load()  # 1.6.2 review: the pot's share of a pilot's budget is never spent on optional reads
+        # 1.7.26: a crew index load on the admin leaves RUN host_keep loads of the host's hour free (else GateSkip)
+        keep = max(GATE_KEEP if optional else 0, int(RUN.get("host_keep") or 0))
         try:
-            GATE.acquire(keep=GATE_KEEP if optional else 0, abort=gate_abort)
+            GATE.acquire(keep=keep, abort=gate_abort)
         except GT.GateAbort as e:
             if not RUN.get("login"):
                 RUN["aborted"] = e.why
@@ -2570,10 +2677,13 @@ def gap():
     lo, hi = mid * (1 - JITTER), mid * (1 + JITTER)
     if ROLES.role(INSTANCE) == ROLES.PILOT:  # 1.6.2 review: the jitter never takes a pilot under 5 s / 1 min
         lo = max(lo, FREQ_LIMITS["hunt_s"][0] if FLAGS["hunt"] else FREQ_LIMITS["normal_min"][0] * 60)
-        pace = budget_pace_s()  # 1.6.2 (Ryan 2026-11-10): a short hunt is spread over the hour, still irregular
-        if pace > lo:
-            lo, hi = pace, max(hi, pace * (1 + JITTER))
-        hi = max(hi, lo)
+    # 1.6.2 (Ryan 2026-11-10): a pilot's short hunt is spread over the hour by his budget, still irregular; 1.7.26 (Nov
+    # 22): the admin's by his share of the host's hour (host_pace_s), so his pot checks leave the pilots' budgets and
+    # his other reads their room (with two bid months or a request pending those can still fill it: ADMIN_OPT_RESERVE_H)
+    pace = pace_s()
+    if pace > lo:
+        lo, hi = pace, max(hi, pace * (1 + JITTER))
+    hi = max(hi, lo)
     return random.uniform(lo, hi)
 
 
@@ -4255,7 +4365,7 @@ def pilotdb_portal_pilots():
         return []
     import io
     import run as RUNNER
-    with contextlib.redirect_stdout(io.StringIO()):
+    with STDOUT_LOCK, contextlib.redirect_stdout(io.StringIO()):  # 1.7.26 review: one redirect at a time
         return [n for n, portal in RUNNER.pilot_entries(OPTS) if portal]
 
 
@@ -5282,7 +5392,7 @@ def pilot_prefixes():
     import contextlib
     import io
     import run as RUNNER
-    with contextlib.redirect_stdout(io.StringIO()):
+    with STDOUT_LOCK, contextlib.redirect_stdout(io.StringIO()):  # 1.7.26 review: one redirect at a time
         return [f"flight_watcher_{n}" for n in RUNNER.pilot_names(OPTS)]
 
 
@@ -9310,7 +9420,7 @@ def crew_variant_keep(insts, rows, base, vid, vt, crew, at):
     DB.remember_crew(vt)
 
 
-def crew_variants(fl, insts, rows, budget):
+def crew_variants(fl, insts, rows, budget, plan=None, mode=None):
     """FW-0068 (Ryan, Nov 8): FLICA rebuilds a package pairing it changes under the same id plus a letter (H3631 flown
     as H3631B on Nov 6) and the crew moves to it: the package trip's page then names no pilot (seats OPEN), and the new
     id is in no package and on no schedule the Watcher can read, so the trip was missing from that pilot's rebuilt
@@ -9332,55 +9442,25 @@ def crew_variants(fl, insts, rows, budget):
     failed come last, a page that stopped the path is no answer), and a trip is parked only once every letter had a
     try. insts and rows are updated in place. Returns (pages read, 'ok' or 'killed' / 'needs_login' / 'stop' when a
     page said so, halted by pause / re-arm or a stopped path). Ryan's instance only. Logs pairing ids and dates, never
-    names."""
+    names. 1.7.26 review: `plan` is crew_variant_plan's (crew_index_chunk takes it before its host-hour pre-check);
+    with `mode` (crew_mode) a change of Hunt or the interval ends the probe before its next read, its letters kept and
+    no try counted, as for a load the gate left out."""
     if not has("crew_index") or budget <= 0:
         return 0, "ok", False
-    now = local_now()
-    try:
-        reg0 = DB.get(CREW_VARIANT_KEY) or {}
-        cut = (now - timedelta(days=VARIANT_MAX_AGE_D + 30)).isoformat(timespec="seconds")
-        probed = {k: v for k, v in reg0.items() if str((v or {}).get("at") or "") >= cut}
-        for k, v in list(probed.items()):  # 1.4.12: a copy found before 1.4.12 that left seats unnamed: probe again
-            if (v or {}).get("v") != 2 and (v or {}).get("found"):
-                d = k.split("|", 1)[1]
-                named = set()
-                for vid in str(v["found"]).split(","):
-                    named |= CI.named_pilots((rows.get(f"{vid}|{d}") or {}).get("crew"))
-                if len(named) < max(CI.pilot_seats((rows.get(k) or {}).get("crew")), 1):
-                    del probed[k]
-        if probed != reg0:
-            DB.put(CREW_VARIANT_KEY, probed)
-        short0 = DB.get(CREW_VARIANT_TRIES_KEY) or {}  # 1.7.3: probes cut short, dropped once recorded or old
-        short = {k: v for k, v in short0.items() if k not in probed and str((v or {}).get("at") or "") >= cut}
-        if short != short0:
-            DB.put(CREW_VARIANT_TRIES_KEY, short)
-        run = S.get("crew_run")
-        tried = run.setdefault("variant_tried", []) if run else []  # a fetch error: not again in this run
-        cands = CI.variant_candidates(insts, rows, now, set(probed) | set(tried), VARIANT_MAX_AGE_D)[:VARIANT_PER_CHECK]
-    except Exception as e:
-        log.info("crew index: variant probe skipped: %s", e)
+    plan = crew_variant_plan(insts, rows) if plan is None else plan
+    if not plan:
         return 0, "ok", False
-    n = 0
+    probed, short, tried, cands = plan["probed"], plan["short"], plan["tried"], plan["cands"]
+    run, n = S.get("crew_run"), 0
     for base in cands:
         it = insts[base]
         d, complete = it["date"], True
         reads, stop = 0, None  # 1.7.3: this trip's pages read; the BreakerOpen that ended the probe
-        ids = CI.variant_ids(it["pairing"])
-        # 1.4.12: FLICA can split a rebuilt trip's crew over two copies (H3631B names the captain only): the copies are
-        # read until they name as many pilots as the package trip has pilot seats (its crew line, OPEN seats counted)
-        need = max(CI.pilot_seats((rows.get(base) or {}).get("crew")), 1)
-        found, got = [], set()
-        for v in ids:  # copies indexed already (from a schedule or an earlier probe) whose read names a pilot
-            r = rows.get(f"{v}|{d}") or {}
-            if f"{v}|{d}" in insts and r.get("status") == "ok" and CI.has_crew(r.get("crew")):
-                found.append(v)
-                got |= CI.named_pilots(r.get("crew"))
+        prev = short.get(base) or {}  # 1.7.3 review: earlier tries' letters answered (not read again) and failed (last)
+        ids, found, got, need = crew_variant_ids(base, insts, rows, prev)
         if found and len(got) >= need:
             log.info("crew index: %s %s flew as %s (indexed)", it["pairing"], d, ",".join(found))
-            ids = []
-        prev = short.get(base) or {}  # 1.7.3 review: earlier tries' letters answered (not read again) and failed (last)
         done, failed = set(prev.get("done") or ""), set(prev.get("fail") or "")
-        ids = [v for v in ids if v[-1] not in done | failed] + [v for v in ids if v[-1] in failed - done]
         for vid in ids:
             vk = f"{vid}|{d}"
             if vk in insts:  # indexed already, read by the queue, not by this probe
@@ -9398,6 +9478,9 @@ def crew_variants(fl, insts, rows, budget):
                 done.add(vid[-1])  # 1.7.3 review: never read, so never left for a later try
                 continue
             time.sleep(random.uniform(1.5, 3.5))  # before every read, the first too (pages read before this check)
+            if mode is not None and crew_mode() != mode:  # 1.7.26 review: no read with the old mode's keep
+                stop, complete = "mode", False
+                break
             n += 1
             reads += 1
             at = local_now().isoformat(timespec="seconds")
@@ -9450,6 +9533,13 @@ def crew_variants(fl, insts, rows, budget):
             log.info("crew index: %s %s names %d of %d pilots, the next letters are read too (crew line: %s)", vid, d,
                      len(got), need, CI.crew_mask(vt))
         parked = 0
+        moved = stop == "mode"  # 1.7.26 review: Hunt or the interval changed: kept as a load the gate left out
+        kept = moved or (isinstance(stop, GT.GateSkip) and bool(RUN.get("host_keep")))
+        if kept and reads:  # 1.7.26: left out for the host's hour: the letters answered so far are kept, no try counted
+            failed -= done
+            short[base] = {"n": int(prev.get("n") or 0), "at": local_now().isoformat(timespec="seconds"),
+                           "done": "".join(sorted(done)), "fail": "".join(sorted(failed))}
+            DB.put(CREW_VARIANT_TRIES_KEY, short)
         if not complete and reads and (stop is None or type(stop) is GT.BreakerOpen):
             # 1.7.3: cut short after a read (not by a pause or a load the gate left out): one try, the last records it
             if stop is not None:
@@ -9478,12 +9568,144 @@ def crew_variants(fl, insts, rows, budget):
                 log.info("crew index: %s %s, no rebuilt copy names a pilot (%s tried)", it["pairing"], d,
                          "/".join(CI.variant_ids(it["pairing"])))
         if stop is not None:
-            log.info("crew index: variant probe stopped (%s), run continues later", stop)
+            if moved:
+                log.info("crew index: Hunt or the check interval changed, %s stopped (run continues later)",
+                         "variant probe")
+            elif kept:
+                crew_held(run)  # 1.7.26: one line a run, not one a probe
+            else:
+                log.info("crew index: variant probe stopped (%s), run continues later", stop)
             return n, "ok", True
     return n, "ok", False
 
 
+def crew_variant_ids(base, insts, rows, prev):
+    """FW-0068: (the lettered copies of package trip `base` its probe reads, in order; the copies indexed already
+    whose read names a pilot; the pilots they name; the pilot seats to name). 1.4.12: FLICA can split a rebuilt trip's
+    crew over two copies (H3631B names the captain only): the copies are read until they name as many pilots as the
+    package trip has pilot seats (its crew line, OPEN seats counted), so none is read once the indexed copies name
+    them all. 1.7.3 review: the letters an earlier try answered (prev done) are not read again, the ones that failed
+    come last. A copy in the index is read by the queue, not by the probe (crew_variants skips it)."""
+    it = insts[base]
+    d, ids = it["date"], CI.variant_ids(it["pairing"])
+    need = max(CI.pilot_seats((rows.get(base) or {}).get("crew")), 1)
+    found, got = [], set()
+    for v in ids:  # copies indexed already (from a schedule or an earlier probe) whose read names a pilot
+        r = rows.get(f"{v}|{d}") or {}
+        if f"{v}|{d}" in insts and r.get("status") == "ok" and CI.has_crew(r.get("crew")):
+            found.append(v)
+            got |= CI.named_pilots(r.get("crew"))
+    if found and len(got) >= need:
+        ids = []
+    done, failed = set(prev.get("done") or ""), set(prev.get("fail") or "")
+    ids = [v for v in ids if v[-1] not in done | failed] + [v for v in ids if v[-1] in failed - done]
+    return ids, found, got, need
+
+
+def crew_variant_due(plan, insts, rows):
+    """1.7.26 review: True when crew_variants would load a page for one of plan's candidates (a lettered copy not
+    indexed yet and not answered by an earlier try), so crew_index_chunk's host-hour pre-check holds the chunk."""
+    for base in (plan or {}).get("cands") or []:
+        ids, _, _, _ = crew_variant_ids(base, insts, rows, (plan["short"].get(base) or {}))
+        if any(f"{v}|{insts[base]['date']}" not in insts for v in ids):
+            return True
+    return False
+
+
+def crew_variant_plan(insts, rows):
+    """FW-0068: what crew_variants probes: {probed, short, tried, cands} (the trips probed, the probes cut short so
+    far, the trips this run's fetch errors left out, the candidates: crewidx.variant_candidates, at most
+    VARIANT_PER_CHECK), {} when the probe is skipped. Drops records too old to matter and, 1.4.12, a record from before
+    1.4.12 whose copies leave seats unnamed (probed once more)."""
+    now = local_now()
+    try:
+        reg0 = DB.get(CREW_VARIANT_KEY) or {}
+        cut = (now - timedelta(days=VARIANT_MAX_AGE_D + 30)).isoformat(timespec="seconds")
+        probed = {k: v for k, v in reg0.items() if str((v or {}).get("at") or "") >= cut}
+        for k, v in list(probed.items()):  # 1.4.12: a copy found before 1.4.12 that left seats unnamed: probe again
+            if (v or {}).get("v") != 2 and (v or {}).get("found"):
+                d = k.split("|", 1)[1]
+                named = set()
+                for vid in str(v["found"]).split(","):
+                    named |= CI.named_pilots((rows.get(f"{vid}|{d}") or {}).get("crew"))
+                if len(named) < max(CI.pilot_seats((rows.get(k) or {}).get("crew")), 1):
+                    del probed[k]
+        if probed != reg0:
+            DB.put(CREW_VARIANT_KEY, probed)
+        short0 = DB.get(CREW_VARIANT_TRIES_KEY) or {}  # 1.7.3: probes cut short, dropped once recorded or old
+        short = {k: v for k, v in short0.items() if k not in probed and str((v or {}).get("at") or "") >= cut}
+        if short != short0:
+            DB.put(CREW_VARIANT_TRIES_KEY, short)
+        run = S.get("crew_run")
+        tried = run.setdefault("variant_tried", []) if run else []  # a fetch error: not again in this run
+        cands = CI.variant_candidates(insts, rows, now, set(probed) | set(tried), VARIANT_MAX_AGE_D)[:VARIANT_PER_CHECK]
+    except Exception as e:
+        log.info("crew index: variant probe skipped: %s", e)
+        return {}
+    return {"probed": probed, "short": short, "tried": tried, "cands": cands}
+
+
+CREW_HELD = {"key": None}  # 1.7.26: the run (its start) or 'reread' whose pause for the host hour is logged already
+
+
+def crew_held(run):
+    """1.7.26: the crew index paused for the host's hour (a load the gate kept for the pot checks, or no room before
+    the first): one log line a run (a re-read with no run going: once until a page is read again)."""
+    key = (run or {}).get("started") or "reread"
+    if CREW_HELD["key"] == key:
+        return
+    CREW_HELD["key"] = key
+    try:
+        used = int(GATE.counts()["host"])
+    except Exception:  # noqa: BLE001
+        used = -1
+    log.info("crew index: paused, the FLICA host hour is kept for the pot checks (%s of %d used)",
+             used if used >= 0 else "?", GT.HOST_CAP_H)
+
+
+def crew_host_full():
+    """1.7.26: True when the gate would leave the next crew index page out (its host count in the last hour plus that
+    page plus RUN host_keep passes the host cap), so a chunk stops before its first pacing wait. False with no keep."""
+    keep = int(RUN.get("host_keep") or 0)
+    if not keep:
+        return False
+    try:
+        return int(GATE.counts()["host"]) + 1 + keep > (GATE.cap or GT.HOST_CAP_H)
+    except Exception:  # noqa: BLE001 (the gate itself still decides each load)
+        return False
+
+
 def crew_index_check(fl):
+    """1.7.26 (Ryan, Nov 22: "the crew index would only read while the hour still leaves room for your pot checks"):
+    on the admin every crew index load (a run's chunk, the FW-0059 re-reads, the FW-0068 lettered-copy probes) goes to
+    the gate with keep=host_keep() (RUN host_keep, Flica._load): one the host's hour cannot spare is left out
+    (GateSkip), never waited for, so it does not take the room the coming hour's pot checks need at the interval in
+    use. The chunk then stops quietly: that page is neither read nor failed, no breaker counts it, the run keeps its
+    place and goes on at a later check (crew_held logs it once). 1.7.26 review: its pages stay in the host's hour, so a
+    hunt switched on within the hour after a normal-mode run can still be held by the host limit for a while (see
+    host_keep). A pilot's crew index (none today: the feature is the admin's) keeps its rules. Pages:
+    crew_index_chunk."""
+    if GATE.budget or not has("crew_index"):
+        return crew_index_chunk(fl)
+    mode = crew_mode()  # 1.7.26 review: taken before the keep, so a change between the two ends the chunk too
+    was = RUN.get("host_keep") or 0
+    RUN["host_keep"] = host_keep()
+    try:
+        return crew_index_chunk(fl, mode)
+    finally:
+        RUN["host_keep"] = was
+
+
+def crew_mode():
+    """1.7.26 review (D1): what a crew index chunk's keep (host_keep) and size (CREW_PER_CHECK, CREW_PER_CHECK_HUNT)
+    are worked out from, once at its start: Hunt and the check interval settings. A change during the chunk (Hunt
+    switched on, a new interval) ends it before its next page, as a pause does, so no page goes to the gate with the
+    old mode's keep; the run goes on at the next check, in the new mode."""
+    fq = freq()
+    return bool(FLAGS.get("hunt")), fq["hunt_s"], fq["normal_min"]
+
+
+def crew_index_chunk(fl, mode=None):
     """Read up to CREW_PER_CHECK pairing pages of the current crew index run (GET only, 1.5-3.5 s apart, each URL
     through SUB.safe_get and SM.safe_get). A run starts at the first check after each 6 h slot (once per slot, saved
     in state) or on Update schedules, and reads at most CREW_PER_RUN pages over as many checks as it takes.
@@ -9491,7 +9713,12 @@ def crew_index_check(fl):
     crew line cut at a seat code) are read first, one read each; with no run going a check reads just those. A
     re-read that fails keeps the trip's last good read. FW-0068: during a run, each chunk first probes up to
     VARIANT_PER_CHECK departed package trips that name no pilot for the rebuilt copy the crew flew (crew_variants).
-    Returns 'ok', or 'killed' / 'needs_login' / 'stop' when a page says so (the run is ended there)."""
+    Returns 'ok', or 'killed' / 'needs_login' / 'stop' when a page says so (the run is ended there). 1.7.26 review:
+    `mode` (crew_mode, crew_index_check takes it with the keep) sets the chunk's size, and a change of it during the
+    chunk ends the chunk before its next page; the queue and the lettered-copy candidates come before the host-hour
+    pre-check, which holds a chunk only when a FLICA load is due (a run with nothing left to load ends, loading
+    nothing)."""
+    mode = crew_mode() if mode is None else mode
     if not has("crew_index"):
         return "ok"
     if not BRK.allow("pairing"):  # 1.6.2: pairing pages stopped: no page is recorded as failed meanwhile
@@ -9520,17 +9747,30 @@ def crew_index_check(fl):
     if not run and not again:
         return "ok"
     n, res, halted, reread = 0, "ok", False, set()
-    per_check = CREW_PER_CHECK_HUNT if FLAGS.get("hunt") else CREW_PER_CHECK  # hunting: short chunks, pot first
+    per_check = CREW_PER_CHECK_HUNT if mode[0] else CREW_PER_CHECK  # hunting: short chunks, pot first
     if not run:
         per_check = min(per_check, CREW_REREAD_PER_CHECK)
+    # 1.7.26 review: what this chunk would load, before the pre-check: the lettered-copy probes and the queue
+    budget = min(per_check, CREW_PER_RUN - run["pages"]) if run else 0
+    plan = crew_variant_plan(insts, rows) if budget > 0 else {}
+    if run:
+        todo = CI.queue(insts, rows, local_now(), run["started"], again) if run["pages"] < CREW_PER_RUN else []
+    else:  # FW-0059: no run going: only the re-reads, soonest first
+        todo = sorted(again, key=lambda k: (CI.departs(insts[k]).isoformat(), k))
+    if (todo or crew_variant_due(plan, insts, rows)) and crew_host_full():
+        crew_held(run)  # 1.7.26: no room in the host's hour for one page: nothing loaded, the run keeps its place
+        if run:
+            save_state(S)
+        return "ok"
     if run:
         # FW-0068: package trips whose crew moved to a rebuilt copy (H3631 flown as H3631B), first; their reads
         # count in this chunk and this run
-        n, res, halted = crew_variants(fl, insts, rows, min(per_check, CREW_PER_RUN - run["pages"]))
+        n, res, halted = crew_variants(fl, insts, rows, budget, plan=plan, mode=mode)
         run["pages"] += n
-        todo = [] if res != "ok" or halted else CI.queue(insts, rows, local_now(), run["started"], again)
-    else:  # FW-0059: no run going: only the re-reads, soonest first
-        todo = sorted(again, key=lambda k: (CI.departs(insts[k]).isoformat(), k))
+        if res != "ok" or halted:
+            todo = []
+        elif n:  # the probes' reads may have indexed copies: the queue as it stands now
+            todo = CI.queue(insts, rows, local_now(), run["started"], again)
     awarded = CI.awarded_periods(insts, rows)  # FW-0016: bid periods with a read that named a pilot
     held0 = CI.held_periods(insts, rows, awarded)  # periods already held (their one probe is in todo)
     held, newly = set(held0), False
@@ -9553,6 +9793,10 @@ def crew_index_check(fl):
             continue
         if n:
             time.sleep(random.uniform(1.5, 3.5))
+        if crew_mode() != mode:  # 1.7.26 review: after the wait too, so no load goes with the old mode's keep
+            log.info("crew index: Hunt or the check interval changed, %s stopped (run continues later)", "chunk")
+            halted = True
+            break
         n += 1
         if run:
             run["pages"] += 1
@@ -9560,6 +9804,16 @@ def crew_index_check(fl):
         at = local_now().isoformat(timespec="seconds")
         try:
             page = fl.fetch(url)
+        except GT.GateSkip:
+            if run:
+                run["pages"] -= 1
+            if not RUN.get("host_keep"):
+                raise  # 1.6.2 review: a pilot's budget left it out (read_guard says so), as before
+            # 1.7.26: the host's hour is kept for the pot checks: not read, not failed; the run goes on later
+            n -= 1
+            halted = True
+            crew_held(run)
+            break
         except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
             if run:
                 run["pages"] -= 1
@@ -9571,6 +9825,8 @@ def crew_index_check(fl):
                 DB.crew_put(k, it["pairing"], it["date"], it["end_date"], it["route"], None, at, "fail",
                             f"fetch: {e}"[:200])
             continue
+        if not run and CREW_HELD["key"] == "reread":
+            CREW_HELD["key"] = None  # 1.7.26: a re-read went through: a later pause is logged again
         kind = classify(page)
         if kind != "ok":
             res = {"killed": "killed", "expired": "needs_login", "blocked": "stop"}.get(kind, "ok")

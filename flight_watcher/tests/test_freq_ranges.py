@@ -75,7 +75,11 @@ def test_the_check_timing_floors_follow_the_ranges(mk, monkeypatch):
     A = mk("")
     A.S["freq"] = {"hunt_s": 5, "normal_min": 90}
     A.FLAGS["hunt"] = True
-    assert A.budget_pace_s() == 0 and min(A.gap() for _ in range(2000)) < 5  # the admin: 5 s +-30 %, as before
+    # 1.7.26 (Nov 22): the admin's 5 s hunt is held by his share of the host's hour (no pilot here: 480 - 8 - 3 - 40 =
+    # 429 loads; two pot pages: 7200 / 429 = 16.8 s), never by a budget of his own
+    assert A.budget_pace_s() == 0 and A.host_pace_s() == pytest.approx(2 * 3600 / 429)
+    g = [A.gap() for _ in range(2000)]
+    assert A.host_pace_s() - 1e-6 <= min(g) and max(g) <= A.host_pace_s() * 1.3 + 1e-6
     A.FLAGS["hunt"] = False
     assert max(A.gap() for _ in range(2000)) > 90 * 60
     W.S["last_check_ts"] = W.S["check_started_ts"] = W.CLOCK.t - 4
@@ -221,7 +225,10 @@ def test_the_held_note_follows_the_hunt_and_the_budget(mk):
     A.FLAGS["hunt"] = True
     A.S["freq"] = {"hunt_s": 5}
     A.held_apply()
-    assert A.S["note"] == "" and A.held_note() == ""  # the admin has no budget: his 5 s is 5 s
+    # 1.7.26 (Nov 22): the admin has no budget, but his share of the host's hour holds a 5 s hunt (no pilot here: 480;
+    # two pot pages, 7200 / 429 = 16.8 s), in the pilot's words
+    assert A.S["note"] == A.held_note() == ("Hunting every 5 s is held to 480 FLICA loads an hour: checks wait for the "
+                                            "budget, at least 17 s apart")
     A.gate_note("host", A.CLOCK.t + 300)  # only the host cap can hold him
     assert A.S["note"].startswith("FLICA host limit: 480 page loads in the last hour")
 
