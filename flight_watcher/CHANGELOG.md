@@ -65,8 +65,12 @@ can you look at both?" and "Keep the 22 s, set it to Both").
   not offered (no portal command; the portal
   contract and its fixture are unchanged): the card shows the months as text.
 - The mirror's Open time buttons follow the pot pages the Watcher reads; the swap map uses that pot's bid number.
+- The Reserve Grid (Res Grid column) and the Open column follow the pot pages too (Ryan, Nov 23: "dec is missing
+  stuff"): 1.8.0 read November's grid and pot alone, so December's month showed neither. With Both, December's
+  grid (003.153) is read with November's. A grid's dates take the year of its bid month, so January's grid read
+  in December keys 2027 days (it keyed 2026 before).
 - After the update: the Pot month select on Ryan's clock card goes to **Both** (his Nov 23 choice): November's and
-  December's pots now, about 22 s apart; from Dec 1 December's, and January's once it opens. James's stays on This
+  December's pots now, about 22 s apart; from Dec 2 December's, and January's once it opens. James's stays on This
   month (his portal shows the months read only). `watch_next_month` stays in the Configuration tab as it is, but no
   longer adds a page: the Pot month select chooses.
 

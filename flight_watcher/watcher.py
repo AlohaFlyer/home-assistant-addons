@@ -8391,18 +8391,20 @@ def grid_check(fl, full=False):
         return
     S["grid_at"] = time.time()
     grid = {}
-    for u in S.get("pot_urls", {}).values():
+    for m, u in S.get("pot_urls", {}).items():
         b = bcid(u)
         if not b:
             continue
-        yr = local_now().year
+        # 1.8.1: each pot page's own grid (Both: this month's and next month's); its dates take the year of its bid
+        # month, so January's grid read in December keys 2027 days
+        yr, gm = local_now().year, (m if MONTH_KEY_RE.match(str(m)) else None)
         try:
             raw = fl.fetch(f"{BASE}/full/reserveGridService.cgi?bcid={b}&json=1")
             data = json.loads(raw)
             if not S.get("grid_json_logged"):
                 S["grid_json_logged"] = True
                 log.info("reserve grid json %s: %s", b, page_log(raw[:1500]))
-            got = G.parse_grid_json(data, yr)
+            got = G.parse_grid_json(data, yr, gm)
         except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
             raise
         except Exception as e:
@@ -8413,7 +8415,7 @@ def grid_check(fl, full=False):
             try:
                 html, _ = fl.render(f"{BASE}/ui/private/bidCloseReserveGrid/index.html?BCID={b}&GO=1",
                                     wait_for="table td", timeout=30000)
-                page = G.parse_grid_html(html, yr)
+                page = G.parse_grid_html(html, yr, gm)
                 S["grid_rendered_at"] = time.time()
                 if got and page and any(got[d]["color"] != page[d]["color"] for d in got if d in page):
                     log.info("reserve grid %s: json colors differ from the page, page wins", b)

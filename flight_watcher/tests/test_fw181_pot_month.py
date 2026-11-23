@@ -1072,3 +1072,58 @@ def test_the_clock_card_pot_select_on_a_phone_light_and_dark():
             "read": False}]
     changed = _render(src, {"c": (390, False, _clock_states("This month", one), None)})["c"]
     assert changed["months"] == "November 2026 not read yet" and changed["wide"] <= changed["vw"]
+
+
+# ---------------------------------------------------------------- Ryan, Nov 23: "dec is missing stuff" (Res Grid)
+def _grid_json(days):
+    """reserveGridService.cgi JSON (its real shape): days [(DDMON, net, color)]."""
+    return json.dumps({"success": True, "root": {"BidPeriod": "x", "data": [
+        {"date": d, "avl": str(n), "odp": "0", "net": str(n), "statusColor": {"net": c}} for d, n, c in days]}})
+
+
+def _grid_w(mk, t, grids):
+    """A Watcher on Both at time t whose pot pages are the months in grids {month: (bcid, [(DDMON, net, color)])}."""
+    W = mk("", t=t)
+    W.S["pot_month"] = "Both"
+    W.S["pot_urls"] = {m: W.mobile_pot_url(b) for m, (b, _) in grids.items()}
+    by_b = {b: _grid_json(days) for b, days in grids.values()}
+    fl = real_fl(W, lambda u: by_b.get(u.split("bcid=")[1].split("&")[0], "{}") if "reservegridservice" in u.lower()
+                 else "<html><body>x</body></html>")
+    fl.render = lambda *a, **k: ("", [])  # the page cross-check: nothing more than the JSON
+    return W, fl
+
+
+def test_both_reads_the_reserve_grid_of_each_month_it_reads_the_pot_of(mk):
+    """Nov 23, Both: November's and December's grids are read (003.152 and 003.153), so the December month shows its
+    Res Grid column (1.8.0 read November's alone: its one pot page)."""
+    W, fl = _grid_w(mk, at(2026, 11, 23), {"2026-11": ("003.152", [("23NOV", 12, "red"), ("01DEC", 16, "green")]),
+                                          "2026-12": ("003.153", [("02DEC", 15, "green"), ("31DEC", 17, "black")])})
+    W.grid_check(fl)
+    got = sorted(u.split("bcid=")[1][:7] for _, u in fl.loads if "reservegridservice" in u.lower())
+    assert got == ["003.152", "003.153"]
+    g = W.S["grid"]
+    assert g["2026-12-02"] == {"net": 15, "color": "green", "avail": 15, "open": 0}
+    assert {"2026-11-23", "2026-12-01", "2026-12-31"} <= set(g)
+
+
+def test_a_january_grid_read_in_december_is_filed_under_the_new_year(mk):
+    """Dec 20, Both: January's grid (003.154) keys 2027 dates, not 2026 (the year comes from the bid month, a period
+    starting before Jan 1 too), so January's Res Grid column fills and no 2026-01 days appear."""
+    W, fl = _grid_w(mk, at(2026, 12, 20), {"2026-12": ("003.153", [("20DEC", 15, "green")]),
+                                          "2027-01": ("003.154", [("01JAN", 16, "green"), ("30JAN", 18, "black")])})
+    W.grid_check(fl)
+    g = W.S["grid"]
+    assert {"2026-12-20", "2027-01-01", "2027-01-30"} <= set(g), sorted(g)
+    assert not [d for d in g if d.startswith(("2026-01", "2027-12", "2028"))], sorted(g)
+
+
+def test_the_grid_parsers_take_the_year_from_the_bid_month():
+    import grid as G
+    rows = [("31DEC", 14, "red"), ("01JAN", 16, "green")]
+    data = json.loads(_grid_json(rows))
+    assert sorted(G.parse_grid_json(data, 2026, "2027-01")) == ["2026-12-31", "2027-01-01"]
+    assert sorted(G.parse_grid_json(data, 2026)) == ["2026-12-31", "2027-01-01"]  # no month: as before
+    from test_grid import html
+    assert sorted(G.parse_grid_html(html(rows), 2027, "2027-01")) == ["2026-12-31", "2027-01-01"]
+    assert sorted(G.parse_grid_html(html(rows[1:]), 2026, "2027-01")) == ["2027-01-01"]
+    assert sorted(G.parse_grid_html(html(rows[1:]), 2026)) == ["2026-01-01"]  # no month: as before
