@@ -7710,7 +7710,13 @@ def requests_check(fl):
                 empty[b] = empty.get(b, 0) + 1
                 log.info("requests %s: list empty after %d rows, read again before believing it", b, len(rows_of[b]))
                 continue
-            empty.pop(b, None)
+            # 1.8.1 review (F2A-1): a folder's first read is a list with rows, or its second empty read in a row. An
+            # error page that only says 'request', or a list shown empty for a moment, never uses it up
+            mark = bool(rows) or bool(done_first.get(b)) or empty.get(b, 0) >= 1
+            if mark:
+                empty.pop(b, None)
+            else:
+                empty[b] = 1
             _pending_legs(fl, b, rows)  # FW-0064 review: a pending swap's trips, so the schedule can decide it
             first_b = first or not done_first.get(b)  # 1.8.1 (T3, S7): each folder's own first read, not only close-in
             for r in SUB.request_news(pushed, rows):
@@ -7743,7 +7749,8 @@ def requests_check(fl):
             req_cap_keep(rows, rows_of.get(b))  # 1.7.10: each denial's 'picked up by' stays on its row
             rows_of[b] = rows
             read_now.append(b)
-            done_first[b] = now_iso()
+            if mark:
+                done_first[b] = now_iso()
             read_ok = True
         except GT.GateAbort:
             raise
@@ -7781,6 +7788,8 @@ def requests_check(fl):
             rows_of.pop(b, None)  # a folder no longer watched: its Pending rows no longer hold the 2-min poll
         for k in [k for k in S.get("req_cap_views") or {} if k.split("|")[0] not in folders]:
             S["req_cap_views"].pop(k, None)
+        for b in [x for x in empty if x not in folders]:
+            empty.pop(b, None)  # 1.8.1 review (F2A-1): empty reads count in a row while the folder is watched
         nums = {b.split(".")[-1] for b in regular}
         for n in [x for x in trows_of if x not in nums]:
             trows_of.pop(n, None)
@@ -8064,6 +8073,11 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
                     log.info("trade requests %s: %d rows, page captured; text: %s", n, len(rows), page_log(text[:600]))
                 except Exception:
                     pass
+            if page_verdict("tradeboard", url, html) != "ok":
+                # 1.8.1 review (F2A-1, R1): the gate's own check (Flica._loaded): a page it judged not a Tradeboard
+                # page (maintenance, error) is no read at all, so it never uses up the number's first read
+                log.info("trade requests %s: not a Tradeboard page, skipped: %s", n, page_log(text[:120]))
+                continue
             first_n = first or not done_first.get(n)  # 1.8.1 (T3): this number's own first read too
             for r in SUB.request_news(pushed, rows):
                 try:
@@ -8085,7 +8099,8 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
                 if r["status"] in SUB.DECIDED:
                     pushed[SUB.push_key(r)] = now_iso()
             trows_of[n] = rows
-            done_first[n] = now_iso()
+            if not odd:  # 1.8.1 review (R1): a page whose trades the parser cannot read is not the first read
+                done_first[n] = now_iso()
             ok = True
         except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
             raise

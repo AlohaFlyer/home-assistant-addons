@@ -9,6 +9,8 @@ answers with synthetic pages (made-up pairings H39xx, made-up employee numbers, 
 import json
 from datetime import datetime, timedelta
 
+import pytest
+
 import submit as SUB
 import tradeboard as TB
 from pot import visible_text
@@ -181,3 +183,106 @@ def test_a_first_read_cut_short_stays_a_first_read(mk, monkeypatch):
     lists["003.152"] = req_page(f"{ago(W, 50)} add approved h3922")  # read before: a new decision on it
     _read(W, fl)
     assert _seen(W) == [("Approved", "003.152", ("H3922",))]
+
+
+# ---------------------------------------------------------------- 1.8.1 review: a first read is a page that is the list
+UNAVAILABLE = "<html><body><h1>Service Temporarily Unavailable</h1></body></html>"
+REQ_ERROR = "<html><body>An error occurred while processing your request. Please try again later.</body></html>"
+
+
+def _ryan_both(mk, monkeypatch):
+    """Ryan (admin), state from 1.8.0 (November's 003.152 and Tradeboard 152 read before, nothing on them), then Pot
+    month Both: December's 003.153 and 001.153 are new."""
+    W = mk("", t=at(2026, 11, 23, 9, 0))
+    _clock_now(W, monkeypatch)
+    W.S.update(ot_req_init=True, tb_req_init=True, ot_req_rows={"003.152": []}, tb_req_rows={"152": []})
+    W.S["pot_month"] = "Both"
+    W.S["pot_urls"] = W.pot_plan()[0]
+    return W
+
+
+def _james_dec2(mk, monkeypatch):
+    """A pilot instance on This month at Dec 2 00:05: November's 003.152 and 152 were read through Dec 1, December's
+    003.153 and 001.153 take over and are new."""
+    W = mk("james", t=at(2026, 12, 2, 0, 5))
+    _clock_now(W, monkeypatch)
+    _periods(W)
+    W.S.update(ot_req_init=True, tb_req_init=True, ot_req_rows={"003.152": []}, tb_req_rows={"152": []})
+    W.S["pot_urls"] = W.pot_plan()[0]
+    assert [W.bcid(u) for u in W.S["pot_urls"].values()] == ["003.153"]
+    return W
+
+
+@pytest.mark.parametrize("setup", [_ryan_both, _james_dec2])
+def test_a_tradeboard_page_the_gate_does_not_know_is_not_a_first_read(mk, monkeypatch, setup):
+    """1.8.1 review (F2A-1, R1): Tradeboard 153's first load is FLICA's 'Service Temporarily Unavailable' page. The
+    gate judges it not a Tradeboard page and stops the Tradeboard reads 30 min; it is not 153's first read either (no
+    mark, no rows), so once the real page loads its trades filed days ago stay history and only the one filed an hour
+    ago pushes; a trade decided after that pushes."""
+    W = setup(mk, monkeypatch)
+    tbs = {"153": UNAVAILABLE}
+    fl = _fl(W, {}, tbs)
+    _read(W, fl)
+    assert "001.153" in _read_from(fl, 0) and not W.BRK.allow("tradeboard")
+    assert "153" not in W.S["tb_req_first_done"] and "153" not in W.S["tb_req_rows"]
+    W.CLOCK.t += 31 * 60  # past the breaker's 30 min
+    rows = [tb_row(W, 190, "Approved"), tb_row(W, 100, "Denied", "H3935:10DEC", "H3936:11DEC"),
+            tb_row(W, 1, "Denied", "H3937:14DEC", "H3938:15DEC"), tb_row(W, 20, "Processing", "H3939:20DEC")]
+    tbs["153"] = tb_page(*rows)
+    k = len(fl.loads)
+    _read(W, fl)
+    assert "001.153" in _read_from(fl, k) and W.S["tb_req_first_done"].get("153")
+    assert _seen(W) == [("Denied", "001.153", ("H3937", "H3938"))]
+    tbs["153"] = tbs["153"].replace("Processing", "Approved")
+    _read(W, fl)
+    assert _seen(W)[1:] == [("Approved", "001.153", ("H3939", "H3932"))]
+
+
+def test_a_tradeboard_page_whose_trades_the_parser_cannot_read_is_not_a_first_read(mk, monkeypatch):
+    """1.8.1 review (R1): Tradeboard 153's first page is a My Requests page that names a trade the parser cannot read
+    (no rows: the page kept privately for parser checks). It is not 153's first read: when the next page reads, the
+    trade filed a week ago stays history and the one filed an hour ago pushes."""
+    W = _ryan_both(mk, monkeypatch)
+    odd = "<html><body>My Requests Trade H3931 05DEC With Emp #: 10001 For H3932 06DEC Approved</body></html>"
+    tbs = {"153": odd}
+    fl = _fl(W, {}, tbs)
+    _read(W, fl)
+    assert W.page_verdict("tradeboard", TB.my_requests_url(W.BASE, "153"), odd) == "ok"
+    assert W.BRK.allow("tradeboard") and "153" not in W.S["tb_req_first_done"]
+    tbs["153"] = tb_page(tb_row(W, 190, "Approved"), tb_row(W, 1, "Denied", "H3935:10DEC", "H3936:11DEC"))
+    _read(W, fl)
+    assert _seen(W) == [("Denied", "001.153", ("H3935", "H3936"))]
+
+
+@pytest.mark.parametrize("first_page", [REQ_ERROR, req_page("")], ids=["error-page", "empty-list"])
+@pytest.mark.parametrize("setup", [_ryan_both, _james_dec2])
+def test_a_new_folders_first_read_is_a_list_with_rows_or_a_second_empty_read(mk, monkeypatch, setup, first_page):
+    """1.8.1 review (F2A-1): December's first load is FLICA's error page that says 'request' (taken for an empty
+    list), or its list shown empty for a moment. Neither is 003.153's first read: when the real list loads, its
+    decisions filed days ago stay history and only the one filed 2 h ago pushes."""
+    W = setup(mk, monkeypatch)
+    lists = {"003.153": first_page}
+    fl = _fl(W, lists, {})
+    _read(W, fl)
+    assert "003.153" in _read_from(fl, 0) and "003.153" not in W.S["ot_req_first_done"]
+    lists["003.153"] = req_page(f"{ago(W, 260)} swap approved drop h3911 add h3912 {ago(W, 200)} add denied h3913 "
+                                f"{ago(W, 100)} add approved h3914 {ago(W, 2)} add denied h3915")
+    _read(W, fl)
+    assert _seen(W) == [("Denied", "003.153", ("H3915",))] and W.S["ot_req_first_done"].get("003.153")
+
+
+@pytest.mark.parametrize("setup", [_ryan_both, _james_dec2])
+def test_a_new_folder_that_reads_empty_twice_in_a_row_has_had_its_first_read(mk, monkeypatch, setup):
+    """1.8.1 review (F2A-1): a December folder with no requests yet is marked on its second empty read in a row (not
+    on the first), so a decision on it after that pushes, however long ago its request was filed. A folder read before
+    (November's 003.152) is not new: one empty read never changes its mark."""
+    W = setup(mk, monkeypatch)
+    lists = {}
+    fl = _fl(W, lists, {})
+    _read(W, fl)
+    assert "003.153" not in W.S["ot_req_first_done"]
+    _read(W, fl)
+    assert W.S["ot_req_first_done"].get("003.153") and W.S["ot_req_first_done"].get("003.152")
+    lists["003.153"] = req_page(f"{ago(W, 50)} add approved h3916")
+    _read(W, fl)
+    assert _seen(W) == [("Approved", "003.153", ("H3916",))]
