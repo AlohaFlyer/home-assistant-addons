@@ -894,6 +894,31 @@ def test_a_swap_seen_of_the_wrong_type_never_stops_the_watcher(mk, monkeypatch, 
     assert all(isinstance(k, str) for k in W.S["swap_seen"])
 
 
+# ---------------------------------------------------------------- the third gate's findings (Nov 23)
+def test_an_empty_page_of_another_category_never_holds_the_months_pick(mk):
+    """G3-1: the menu names an empty HNL 332 CA pot for January: refused for good, January's own pot is learned."""
+    W, fl, pages = _w(mk, at(2027, 1, 1, 0, 5), pages={"001.154": page((), cat="HNL 332 CA")})
+    _menu(W, fl, [_jan("001.154")])
+    _check(W, fl, step=1800)
+    pages["003.154"] = page(JAN)
+    while W.CLOCK.t < at(2027, 1, 3, 9):
+        _check(W, fl, step=1800)
+    loads = _pot_loads(W, fl)
+    assert loads.count("001.154") <= 1 and (W.pot_learned().get("2027-01") or {}).get("bcid") == "003.154"
+
+
+def test_the_links_of_a_page_of_another_category_name_no_candidates(mk):
+    """G3-3: a CA page's link to its own February pot never becomes February's candidate (no load of it)."""
+    ca = page(DEC, cat="HNL 332 CA", links=[("001.155", "Feb")])
+    W, fl, pages = _w(mk, at(2026, 12, 28, 9), "Both", {"003.153": page(DEC), "001.154": ca,
+                                                         "001.155": page(DEC, cat="HNL 332 CA")})
+    _menu(W, fl, [_jan("001.154")])
+    while W.CLOCK.t < at(2027, 1, 3, 9):
+        _check(W, fl, step=1800)
+    loads = _pot_loads(W, fl)
+    assert loads.count("001.154") == 1 and loads.count("001.155") == 0
+
+
 # ---------------------------------------------------------------- D4: the clock card in Chromium
 WWW = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "www")
 CARD_PAGE = ("<!doctype html><html><head><meta name='viewport' content='width=device-width'><style>"

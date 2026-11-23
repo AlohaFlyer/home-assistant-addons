@@ -13659,6 +13659,8 @@ def pot_link_scan(html, url, month):
     b = bcid(url)
     if not b or "." not in b:
         return
+    if (pot_learned().get(month) or {}).get("bcid") != b and not pot_category_ok(html):
+        return  # gate 3: a page of another category names no candidates (its links are its category's pots)
     pre, suf = b.split(".", 1)
     ci = pot_close_in_bcids()
     for l in pot_links(html, url):
@@ -13746,8 +13748,9 @@ def pot_verdict(month, url, html):
     was_ok = rec.get("bcid") == b and rec.get("status") == "ok"
     chk = pot_month_check(html, month)
     lasting = False
-    if how != "learned" and chk["verdict"] in ("ok", "refused") and not pot_category_ok(html):
-        # a page of another category (dated trips of any month) is refused for good, before the month checks (gate 2)
+    if how != "learned" and chk["verdict"] in ("ok", "refused", "empty") and not pot_category_ok(html):
+        # a page of another category (dated trips of any month, or none: gate 3, an empty pot still shows its category
+        # in the header) is refused for good, before the month checks (gate 2)
         chk = dict(chk, verdict="refused", other="", why=f"not an open time page of {OPTS.get('category_check')}")
         lasting = True
     elif chk["verdict"] == "ok" and how != "learned":
