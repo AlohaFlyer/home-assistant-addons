@@ -19,14 +19,27 @@ def _iso(ddmon, year):
     return date(year, MON[m.group(2)], int(m.group(1))).isoformat()
 
 
-def parse_grid_html(html, year):
+def year_near(ddmon, month, year):
+    """1.8.1: the year of a grid's first row (DDMON) in the bid month 'YYYY-MM', which may start a few days before the
+    month (Dec 31 for January); year when no bid month is given. A January grid read in December is 2027, not 2026."""
+    m = re.match(r"\d{2}([A-Z]{3})", str(ddmon).strip().upper())
+    if not month or not m or m.group(1) not in MON or not re.match(r"^\d{4}-\d{2}$", str(month)):
+        return year
+    y, bm, mon = int(month[:4]), int(month[5:7]), MON[m.group(1)]
+    return y - 1 if mon - bm > 6 else y + 1 if bm - mon > 6 else y
+
+
+def parse_grid_html(html, year, month=None):
     """{iso_date: {'net': int, 'color': 'green'|'red'|'black', 'avail': int, 'open': int}} from the
-    rendered page. Dates roll into the next year when the month goes backwards (Dec -> Jan)."""
+    rendered page. Dates roll into the next year when the month goes backwards (Dec -> Jan). 1.8.1: month, the bid
+    month 'YYYY-MM' the grid is of, sets the first row's year (year_near)."""
     out, last_m = {}, 0
     for row in ROW_RE.findall(html):
         cells = CELL_RE.findall(row)
         if len(cells) < 4:
             continue
+        if not last_m:
+            year = year_near(cells[0][1], month, year)
         d = _iso(cells[0][1], year)
         if not d:
             continue
@@ -71,10 +84,10 @@ def _int(v, default=0):
         return default
 
 
-def parse_grid_json(data, year):
+def parse_grid_json(data, year, month=None):
     """{iso_date: {'net','color','avail','open'}} from reserveGridService JSON. Color comes from
     statusColor.net (FLICA's own green/red/black); a row without one counts as black. Dates roll
-    into the next year when the month goes backwards (Dec -> Jan)."""
+    into the next year when the month goes backwards (Dec -> Jan). 1.8.1: month as in parse_grid_html."""
     rows = _find_rows(data)
     if not rows:
         return {}
@@ -89,6 +102,8 @@ def parse_grid_json(data, year):
             continue
         raw = str(r[dk]).strip()
         if re.match(r"\d{2}[A-Za-z]{3}", raw):
+            if not last_m:
+                year = year_near(raw, month, year)
             d = _iso(raw, year)
             if d and int(d[5:7]) < last_m:
                 year += 1

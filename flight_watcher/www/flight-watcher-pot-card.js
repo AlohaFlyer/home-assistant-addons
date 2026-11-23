@@ -187,9 +187,19 @@ class FlightWatcherPotCard extends HTMLElement {
         + (facts ? `<div class="l2">${facts}</div>` : "")
         + `<div class="l3"><span class="c ${fc}">${this._e(ft)}</span><span class="c ${ac}">${this._e(at)}</span>${this._cm(p)}${p.vac ? `<span class="c mute">VAC</span>` : ""}${p.blocked ? `<span class="c mute">blocked day</span>` : ""}</div></div>`;
     };
-    const nP = pot.length, nT = tb.length;
-    const head = `${nP} in the pot &middot; ${nT} Tradeboard pickup${nT === 1 ? "" : "s"}`;
-    const list = shown.length ? shown.map(row).join("") : `<div class="k">${rows.length ? "Every trip is on a VAC or blocked day." : "The open time pot is empty and there are no Tradeboard pickups."}</div>`;
+    // 1.8.1 (C3): the sensor's count (the whole pot, every bid month read), not the rows it carries: with two pots it
+    // carries a fair share of each month, and the rest are "not shown" here (still read and watched by the Watcher)
+    const pa = this._a("sensor.flight_watcher_pot_count"), cnt = Number(pa.count);
+    const nP = Number.isFinite(cnt) && cnt > pot.length ? Math.round(cnt) : pot.length, nT = tb.length;
+    const off = nP - pot.length;
+    const head = `${nP} in the pot${off ? `, ${off} not shown` : ""}`
+      + ` &middot; ${nT} Tradeboard pickup${nT === 1 ? "" : "s"}`;
+    const more = off ? `<div class="k more">${off} not shown: the sensor carries ${pot.length} of the ${nP} pot trips`
+      + " (all Home Assistant keeps; each bid month gets a fair share, soonest first)."
+      + ` The Watcher still reads and watches all ${nP}.</div>` : "";
+    const none = rows.length ? "Every trip is on a VAC or blocked day."
+      : off ? "" : "The open time pot is empty and there are no Tradeboard pickups.";
+    const list = (shown.length ? shown.map(row).join("") : none ? `<div class="k">${none}</div>` : "") + more;
     const vacBox = hidden.length || showVac ? `<label class="sv"><input type="checkbox" id="sv"${showVac ? " checked" : ""}> Show VAC/blocked${hidden.length && !showVac ? ` (${hidden.length} hidden)` : ""}</label>` : "";
     const cmKey = rows.some((p) => this._cmAps(p).length) ? `<li><b>Commutable</b> and an airport = you can commute from that airport both ways: 2 scheduled nonstops arriving HNL before report (PWA 26.QQ.2) and 1 nonstop home leaving at least your home gap after release (home_gap_min in your smart.json, 60 min unless set), same day (release 30 min after block-in when clearing customs, PWA 2.19.b), from your smart.json timetables. No chip = not commutable, or not known.</li>` : "";
     const valNote = rate == null ? "Value: set your longevity year in Pay settings (Schedule tab)."
