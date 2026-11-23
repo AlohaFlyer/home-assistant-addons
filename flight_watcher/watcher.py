@@ -13503,12 +13503,42 @@ def pot_rec(month):
     return S.setdefault("pot_months", {}).setdefault(month, {})
 
 
+def pot_wait(month, this=None):
+    """The try wait of a month whose pick is refused or not open: POT_TRY_NEXT_S for a next month, but never past its
+    own first day (HST), where this month's POT_TRY_THIS_S takes over (gate review: a January not open at the Dec 31
+    try is tried at the Jan 1 roll-over, not at Jan 1 19:00)."""
+    this = this or this_month_key()
+    if month <= this:
+        return POT_TRY_THIS_S
+    start = datetime(int(month[:4]), int(month[5:7]), 1, tzinfo=HST).timestamp()
+    return min(POT_TRY_NEXT_S, max(0.0, start - time.time()))
+
+
+def pot_banned(month):
+    """The BCIDs refused for the month now: a page of another category for good, a page of another month's trips (or a
+    candidate that was no open time page) until the month's try wait has passed since (gate review: one odd page
+    never bans a month's real BCID for good)."""
+    rec = (S.get("pot_months") or {}).get(month) or {}
+    at = rec.get("refused_at") if isinstance(rec.get("refused_at"), dict) else {}
+    now = time.time()
+    return {b for b in (rec.get("refused") or ()) if not _num(at.get(b)) or now < at[b] + pot_wait(month)}
+
+
+def pot_refuse(month, rec, b, lasting):
+    """b goes on the month's refused list (the last 5), with its time unless it is refused for good."""
+    rec["refused"] = [x for x in (rec.get("refused") or []) if x != b][-4:] + [b]
+    at = {k: v for k, v in (rec.get("refused_at") or {}).items() if k in rec["refused"] and k != b}
+    if not lasting:
+        at[b] = time.time()
+    rec["refused_at"] = at
+
+
 def pot_pick(month):
     """(bcid, how) a month's pot is read from: a menu or pot page link's not refused for it ('menu'), the learned one
     ('learned'; kept when a read refuses it), else the derivation ('derived')."""
     rec = (S.get("pot_months") or {}).get(month) or {}
     cand = (S.get("pot_cands") or {}).get(month) or {}
-    if cand.get("bcid") and cand["bcid"] not in (rec.get("refused") or ()):
+    if cand.get("bcid") and cand["bcid"] not in pot_banned(month):
         return cand["bcid"], "menu"
     lm = pot_learned()
     if isinstance(lm.get(month), dict) and lm[month].get("bcid"):
@@ -13598,7 +13628,7 @@ def pot_close_in_bcids():
 def pot_cand(month, b, how, via):
     """A BCID a menu or pot page named for month becomes its candidate (read and checked by the next pot read before
     it is learned), unless it is the month's pick already, one refused for it, or the close-in folder's."""
-    if b == pot_pick(month)[0] or b in (pot_rec(month).get("refused") or ()) or b in pot_close_in_bcids():
+    if b == pot_pick(month)[0] or b in pot_banned(month) or b in pot_close_in_bcids():
         return False
     S.setdefault("pot_cands", {})[month] = {"bcid": b, "how": how, "at": now_iso()}
     pot_rec(month)["try_at"] = 0
@@ -13713,10 +13743,16 @@ def pot_verdict(month, url, html):
     rec = pot_rec(month)
     was_ok = rec.get("bcid") == b and rec.get("status") == "ok"
     chk = pot_month_check(html, month)
+    if chk["verdict"] == "ok" and how != "learned":
+        strict = pot_month_check(html, month, 0)  # gate review: a BCID not learned yet needs most trips in the month
+        if strict["verdict"] == "refused":  # proper (a month's last days fall in the next month's slack)
+            chk = strict
+    lasting = False
     if chk["verdict"] == "ok" and how != "learned" and not pot_category_ok(html):  # its trips, another category
         chk = dict(chk, verdict="refused", other="", why=f"not an open time page of {OPTS.get('category_check')}")
+        lasting = True
     v, this = chk["verdict"], this_month_key()
-    wait = POT_TRY_NEXT_S if month > this else POT_TRY_THIS_S
+    wait = pot_wait(month, this)
     rec.update(bcid=b, at=now_iso(), why=chk["why"])
     if v == "not open" and was_ok:
         return "broken"
@@ -13729,8 +13765,7 @@ def pot_verdict(month, url, html):
     if v == "refused":
         rec.update(status="refused", other=chk["other"], try_at=time.time() + wait)
         rec.pop("refusals", None)
-        if b not in (rec.get("refused") or []):
-            rec["refused"] = (rec.get("refused") or [])[-4:] + [b]
+        pot_refuse(month, rec, b, lasting)
         if (S.get("pot_cands") or {}).get(month, {}).get("bcid") == b:
             S["pot_cands"].pop(month, None)
         keep = learned
@@ -13742,8 +13777,7 @@ def pot_verdict(month, url, html):
         rec.update(status="empty" if v == "empty" else "not open yet", try_at=time.time() + wait)
         if how == "menu" and learned:
             S["pot_cands"].pop(month, None)
-            if b not in (rec.get("refused") or []):
-                rec["refused"] = (rec.get("refused") or [])[-4:] + [b]
+            pot_refuse(month, rec, b, False)
             log.info("open time pot %s: BCID %s (named on a menu or link) is %s; the learned BCID %s is read again",
                      month, b, "an empty page" if v == "empty" else "no open time page", learned)
         elif v == "not open":
@@ -13773,6 +13807,10 @@ def pot_carry(watch):
         if k in base and m not in base:
             base[m] = base.pop(k)
             S.setdefault("baseline_bcid", {})[m] = bcid(watch[m])
+            trips, sm = set(base[m] or ()), S.setdefault("swap_seen_month", {})
+            for key in S.get("swap_seen") or ():  # gate review: 1.8.0's swap ideas are held for m while m is not read
+                if isinstance(key, str) and key.split(">", 1)[0] in trips:
+                    sm.setdefault(key, m)
             log.info("pot page %s is read as %s now (BCID %s): its baseline carries over", k, m, bcid(watch[m]))
         if k in fps and m not in fps:
             fps[m] = fps.pop(k)
@@ -13864,7 +13902,8 @@ def pot_months_attr():
             st = pot_status(m)
             if how != "learned" and (st == "refused" or (m == this and st == "not open yet")):
                 how = "not found yet"
-            now = m in watch or m in POT_READ["months"]  # 1.8.1 review: a try that read this check counts as read
+            now = (m in watch and st != "refused") or m in POT_READ["months"]  # a try that read this check is read;
+            # a month refused for the 3rd time in a row is not, though still in this check's plan
             shown = "not read yet" if st == "ok" and not now else POT_SHOWN.get(st, "not read yet")
             out.append({"month": m, "name": month_name(m), "bcid": b, "how": how, "status": shown, "read": now})
         return out
@@ -13875,7 +13914,7 @@ def pot_months_attr():
 
 def pot_attr_publish():
     """The state attributes go out again when the pot months changed (no other change of the state)."""
-    a = pot_months_attr()
+    a = (pot_mode(), pot_months_attr())  # gate review: Both and Next month can show the same months
     if a != POT_ATTR["last"]:
         POT_ATTR["last"] = a
         pub("state_attr", state_attrs(S.get("note", "")))
@@ -13916,10 +13955,22 @@ def pot_state_clean():
             rec.pop("refused", None)
         if "refusals" in rec and not (isinstance(rec["refusals"], int) and not isinstance(rec["refusals"], bool)):
             rec.pop("refusals", None)
+        if "refused_at" in rec:
+            ra = rec["refused_at"] if isinstance(rec["refused_at"], dict) else {}
+            rec["refused_at"] = {b: t for b, t in ra.items() if isinstance(b, str) and _num(t)}
     for k in ("baseline_bcid", "swap_seen_month"):
         d = S[k]
         for m in [m for m, v in d.items() if not isinstance(v, str)]:
             d.pop(m, None)
+    for k, ok in (("baseline", lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v)),
+                  ("fingerprints", lambda v: isinstance(v, str))):  # gate review: a check never raises on these
+        if not isinstance(S.get(k), dict):
+            if S.get(k) is not None:
+                log.info("state %s was a %s, reset", k, type(S.get(k)).__name__)
+            S[k] = {}
+        for m in [m for m, v in S[k].items() if not ok(v)]:
+            log.info("state %s %s was a %s, dropped", k, m, type(S[k][m]).__name__)
+            S[k].pop(m, None)
     S.pop("pot_link_next", None)
 
 

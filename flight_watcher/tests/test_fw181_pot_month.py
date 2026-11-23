@@ -685,6 +685,148 @@ def test_no_click_once_a_link_named_the_months_bcid(mk):
     assert len(fl.loads) == n
 
 
+# ---------------------------------------------------------------- the final gate's findings (Nov 23)
+@pytest.mark.parametrize("mode", ["Next month", "Both"])
+def test_a_next_month_not_open_at_its_last_try_is_read_at_the_rollover(mk, mode):
+    """rollover-next-wait: January not open at the Dec 31 try is tried at the Jan 1 roll-over, not a day later."""
+    W, fl, pages = _w(mk, at(2026, 12, 31, 19), mode, {"003.153": page(DEC)})
+    while W.CLOCK.t < at(2027, 1, 1, 0, 0):
+        _check(W, fl, step=3600)
+    pages["003.154"] = page(JAN)
+    got = [_check(W, fl, step=3600)[1] for _ in range(7)]
+    assert "003.154" in sum(got, []) and max(len(x) for x in got) <= (2 if mode == "Both" else 1)
+
+
+def test_this_month_refused_before_midnight_is_tried_at_the_rollover(mk):
+    """rollover-try-wait: December refused 3 times on Nov 30 as the next month is read again from Dec 1 00:00, and a
+    trip posted after its first read alerts."""
+    W, fl, pages = _w(mk, at(2026, 11, 30, 22, 0), "Both", {"003.152": page(NOV), "003.153": page(DEC)})
+    assert _check(W, fl)[1] == ["003.152", "003.153"]
+    pages["003.153"] = page(NOV)
+    for _ in range(3):
+        _check(W, fl)
+    assert W.pot_status("2026-12") == "refused"
+    pages["003.153"] = page(DEC)
+    W.CLOCK.t = at(2026, 12, 1, 0, 30)
+    got = []
+    while W.CLOCK.t < at(2026, 12, 1, 2, 0):
+        got += _check(W, fl)[1]
+    assert "003.153" in got
+    pages["003.153"] = page(DEC + [("H3914", "24Dec")])
+    _check(W, fl)
+    assert _new(W) == ["H3914"]
+
+
+def test_a_first_refusal_before_the_rollover_loses_no_alert(mk):
+    """rollover-next-month-wait-blinds-this-month (Both): December odd once on Nov 30 18:00, read from Dec 1 00:05."""
+    W, fl, pages = _w(mk, at(2026, 11, 30, 18), "Both", {"003.152": page(NOV), "003.153": page(NOV)})
+    _menu(W, fl, [])
+    _check(W, fl)
+    pages["003.153"] = page(DEC)
+    W.CLOCK.t = at(2026, 12, 1, 0, 5)
+    for _ in range(6):
+        _check(W, fl, step=1800)
+    pages["003.153"] = page(DEC + [("H3914", "24Dec")])
+    while W.CLOCK.t < at(2026, 12, 1, 6):
+        _check(W, fl, step=1800)
+    assert _new(W) == ["H3914"]
+
+
+def test_one_odd_page_never_bans_a_months_real_bcid_for_good(mk):
+    """cand-banned-forever: January renumbered (003.160 on the menu), its first page odd once: read again once its
+    wait has passed; a page of another category stays refused for good (test above)."""
+    W, fl, pages = _w(mk, at(2027, 1, 2, 8), pages={"003.160": page(DEC)})
+    looks = _menu(W, fl, [_jan("003.160")])
+    for _ in range(3):
+        _check(W, fl, step=3600)
+    assert "003.160" in W.pot_rec("2027-01")["refused"]
+    pages["003.160"] = page(JAN)
+    for _ in range(24):
+        _check(W, fl, step=3600)
+    assert looks and W.pot_status("2027-01") == "ok" and W.pot_learned()["2027-01"]["bcid"] == "003.160"
+    assert _new(W) == []
+
+
+def test_a_late_december_page_never_counts_as_januarys(mk):
+    """month-end slack: on Dec 29 December's pot holds only Dec 29 to 31 trips (inside January's 3-day slack); a BCID
+    not learned yet needs most trips in the month proper, so 003.154 is refused and no trip alerts twice."""
+    late = [("H3931", "29Dec"), ("H3932", "30Dec"), ("H3933", "31Dec")]
+    W, fl, pages = _w(mk, at(2026, 12, 29, 9), "Both", {"003.153": page(late), "003.154": page(late)})
+    assert _check(W, fl)[1] == ["003.153", "003.154"]
+    pages["003.153"] = pages["003.154"] = page(late + [("H3934", "31Dec")])
+    _check(W, fl)
+    assert _new(W) == ["H3934"] and "2027-01" not in W.pot_learned()
+    W2, fl2, _ = _w(mk, at(2026, 12, 5), "Both", {"003.153": page(DEC), "003.154": page(
+        [("H3941", "01Jan"), ("H3942", "02Jan"), ("H3943", "31Dec")])})  # a real January page with a carry-in
+    _check(W2, fl2)
+    assert W2.pot_learned()["2027-01"]["bcid"] == "003.154"
+
+
+def test_the_1_8_0_swap_ideas_are_held_through_a_refused_first_read(mk, monkeypatch):
+    """update-1-8-0-swap-seen: 1.8.0's pushed swap ideas are held while November's first 1.8.1 page is refused."""
+    W = mk("", t=at(2026, 11, 23))
+    for f in STUBS:
+        if f != "swap_scan":
+            setattr(W, f, lambda *a, **k: None)
+    W.close_in_check = lambda *a, **k: ({}, "ok")
+    W.crew_index_check = lambda *a, **k: "ok"
+    monkeypatch.setattr(W.SW, "better", lambda row, mine: (True, 1.0, 0.0, "more soft time"))
+    monkeypatch.setattr(W.G, "swap_allowed", lambda *a: (True, []))
+    W.far_for = lambda ev, exclude=None: "OK"
+    W.swap_test = lambda *a, **k: None
+    W.swap_auto = lambda *a, **k: []
+    mine = "H9001|20Nov"
+    W.S.update(trade_away=[mine], own_trips={mine: {"credit": "10:00", "soft": "1:00"}})
+    pages = {}
+    fl = real_fl(W, lambda u: pages.get(W.bcid(u), NOT_OPEN) if "opentimepot" in u else "<html><body>x</body></html>")
+    W.S["baseline"] = {"mobile": ["H3901|26Nov", "H3902|28Nov"]}
+    W.S["fingerprints"] = {"mobile": W.header_fingerprint(page(NOV))}
+    W.S["swap_seen"] = sorted(f"{p}>{mine}" for p in ("H3901|26Nov", "H3902|28Nov"))
+    W.S["pot_urls"] = {}
+    W.pot_start()
+    pages["003.152"] = page([("H3801", "12Dec"), ("H3802", "15Dec")])
+    _check(W, fl)
+    W.CLOCK.t += 6 * 3600
+    pages["003.152"] = page(NOV)
+    _check(W, fl)
+    assert [json.loads(p)["pairing"] for t, p in W.MQ.msgs if t == f"{W.T}/event/swap"] == []
+
+
+@pytest.mark.parametrize("key,bad", [("baseline", None), ("baseline", []), ("baseline", {"2026-12": 5}),
+                                     ("baseline", {"2026-12": [1, 2]}), ("fingerprints", None),
+                                     ("fingerprints", {"2026-12": 7})])
+def test_a_baseline_of_the_wrong_type_never_crashes_a_check(mk, key, bad):
+    """baseline-type-crash: a hand-edited baseline or fingerprints is dropped, never a check error."""
+    W, fl, pages = _w(mk, at(2026, 12, 10), pages={"003.153": page(DEC)})
+    W.S[key] = bad
+    W.pot_start()
+    assert _check(W, fl) == ("ok", ["003.153"])
+    W.S[key] = bad
+    assert _check(W, fl) == ("ok", ["003.153"])
+
+
+def test_the_state_attribute_follows_two_select_changes(mk, monkeypatch):
+    """mode-attr-stale: Both, Next month, Both before a check: the published pot_mode is Both."""
+    W, fl, pages = _w(mk, at(2026, 12, 10), "Both", {"003.153": page(DEC)})
+    monkeypatch.setattr(W, "WAKE", types.SimpleNamespace(set=lambda: None))
+    _check(W, fl)
+    W.pot_month_cmd(W.MQ, "Next month")
+    W.pot_month_cmd(W.MQ, "Both")
+    a = json.loads([p for t, p in W.MQ.msgs if t == f"{W.T}/state_attr"][-1])
+    assert a["pot_mode"] == "Both"
+
+
+def test_a_month_refused_the_third_time_is_not_shown_as_read(mk):
+    """attr-read-after-third-refusal."""
+    W, fl, pages = _w(mk, at(2026, 12, 10), pages={"003.153": page(DEC)})
+    _check(W, fl)
+    pages["003.153"] = page(NOV)
+    for _ in range(3):
+        _check(W, fl)
+    a = json.loads([p for t, p in W.MQ.msgs if t == f"{W.T}/state_attr"][-1])["pot_months"]
+    assert W.pot_status("2026-12") == "refused" and [(x["status"], x["read"]) for x in a] == [("refused", False)]
+
+
 # ---------------------------------------------------------------- D4: the clock card in Chromium
 WWW = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "www")
 CARD_PAGE = ("<!doctype html><html><head><meta name='viewport' content='width=device-width'><style>"

@@ -20,7 +20,11 @@ can you look at both?" and "Keep the 22 s, set it to Both").
   links of the latest learned month's prefix, `003`). A page of another month's trips (or category) is refused (one log
   line and the state note) and the month's last good BCID is kept: a page that read as its month's pot is read again
   at the next check with its baseline kept (its last good rows and pairing details stand in meanwhile, so no detail
-  page is read again), and only 3 refused reads in a row put it on its try time. A menu or link
+  page is read again), and only 3 refused reads in a row put it on its try time. A BCID not learned yet also needs most
+  of its trips in the month proper (a month's last days fall in the next month's slack). A BCID refused for another
+  month's trips may be named again once the month's try wait has passed (one odd page never bans a month's real
+  BCID); one of another category stays refused. A next month's try is never later than its own first day (HST), so a
+  month not open or refused at its last try before the roll-over is read again at midnight. A menu or link
   BCID that is no open time page gives way to the learned one at once. A month not found is tried again later and
   looked for on the main menu at most every 6 h (through the gate; a reCAPTCHA there is never answered) and in the
   links of pages read anyway; when the menu names its pick, that page is read then, not at its next try. Nothing else
@@ -46,8 +50,9 @@ can you look at both?" and "Keep the 22 s, set it to Both").
   baseline only: no alerts, pushes or finds from that read, swap idea pushes included. A month of the select that is
   not read in a check (a refused page) keeps its baseline and its pushed swap ideas, so the trips posted meanwhile
   alert at its next read and no idea is pushed twice. The update itself carries 1.8.0's November baseline over, so it
-  loses no alert. Pot keys of the wrong type in the state file (a hand edit) are dropped at start and before each
-  check, never a stop.
+  loses no alert, and 1.8.0's pushed swap ideas are held while November is not read. Pot keys of the wrong type in
+  the state file (a hand edit, baselines and fingerprints included) are dropped at start and before each check, never
+  a stop.
 - The clock card shows the Pot select (44 px on a phone) and the month or months each check reads ("December 2026
   (003.153)"), from `sensor.<prefix>_state`'s new `pot_months` and `pot_mode`; a month not planned yet (right after a
   select change) reads "not read yet"; a try that read in the last check reads ok. On a pilot's portal the select is
