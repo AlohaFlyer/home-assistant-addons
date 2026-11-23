@@ -11,10 +11,11 @@ import os
 
 import pytest
 
-from test_fw171_cards import _browser, _card, _page as _portal_page, _pilot, _s
+from test_fw171_cards import P as PILOT2, _browser, _card, _page as _portal_page, _pilot, _s, _sched_states
 import test_fw181_pot_month as PM
 from test_fw181_pot_month import _check, _w, at, page
 from test_layover_card import HA_DARK, HA_LIGHT
+from test_release_a_cards import POT as POT_ROWS
 from test_release_a_flica import mk, real_fl  # noqa: F401
 
 import cards
@@ -161,12 +162,17 @@ def test_a_pilot_on_this_month_keeps_the_soonest_trips_in_date_order(mk):
 
 def test_the_size_stays_under_the_cap_and_nothing_is_cut_after(mk):
     """The payload publish_pot builds is already at or under ATTR_MAX, so cap_attrs passes it as it is (the fair
-    share is never undone by a cut from the end)."""
+    share is never undone by a cut from the end). 1.8.1 (C3 review T1): the payload is caught as publish_pot hands it
+    to pub(), before cap_attrs (the one MQ.last holds has been through cap_attrs already, so it could never fail)."""
     W = mk("", t=at(2026, 11, 23))
+    seen, cap = [], W.cap_attrs
+    W.cap_attrs = lambda topic, payload: (seen.append((topic, json.loads(json.dumps(payload)))), cap(topic, payload))[1]
     flat = nov(30) + dec(30)
     W.publish_pot(flat)
-    out = W.MQ.last(f"{W.T}/pot/state")
-    assert W.cap_attrs("pot/state", out) == out and W.attr_size(out) <= W.ATTR_MAX
+    (sent,) = [p for t, p in seen if t == "pot/state"]
+    assert W.attr_size(sent) <= W.ATTR_MAX, (W.attr_size(sent), len(sent["pairings"]))
+    assert cap("pot/state", sent) == sent  # nothing cut from the end, no "trimmed" added or changed
+    assert W.MQ.last(f"{W.T}/pot/state") == sent and sent["trimmed"] == 60 - len(sent["pairings"])
 
 
 # ---------------------------------------------------------------- the pot card: the sensor's count and "N not shown"
@@ -229,6 +235,17 @@ def test_the_portal_pot_card_shows_the_count_and_how_many_are_not_shown(width, s
     assert whole["head"].startswith("24 in the pot") and whole["more"] is None and "not shown" not in whole["text"]
 
 
+def test_the_pot_card_with_no_row_on_the_sensor_never_says_the_pot_is_empty():
+    """1.8.1 (C3 review T2): the pot has 45 trips but none is on the sensor (count 45, pairings []) and no Tradeboard
+    pickup: the card gives the count and "45 not shown", never "The open time pot is empty"."""
+    with _browser() as b:
+        got = _portal_page(b, [_card("pot-card")]).evaluate(READ_JS % "flight-watcher-pot-card-pilot2",
+                                                            _states(45, [], tb=()))
+    assert got["head"].startswith("45 in the pot, 45 not shown"), got["head"]
+    assert got["more"].startswith("45 not shown:"), got["more"]
+    assert "pot is empty" not in got["text"] and got["rows"] == 0, got["text"]
+
+
 @pytest.mark.parametrize("theme,name,width", [(HA_LIGHT, "light", 390), (HA_DARK, "dark", 320)])
 def test_the_admins_pot_card_shows_the_count_and_not_shown_on_home_assistants_theme(theme, name, width):
     """Ryan's own copy (Home Assistant), HA's light theme at 390 px and dark at 320 px."""
@@ -259,8 +276,62 @@ def test_the_admins_pot_card_shows_the_count_and_not_shown_on_home_assistants_th
     assert got["color"] == ("rgb(155, 155, 155)" if name == "dark" else "rgb(114, 114, 114)")  # secondary text
 
 
+# ---------------------------------------------------------------- the schedule card: its Open column says the cut
+SCHED_JS = """([tag, st]) => { const c = mount(tag, {}, st);
+  return new Promise((ok) => setTimeout(() => { const r = c.shadowRoot, e = r.querySelector('.pcut');
+    ok({cut: e ? e.textContent.replace(/\\s+/g, ' ').trim() : null, fit: fwFits(c), contrast: fwContrast(c),
+        open: [...r.querySelectorAll('tr[data-d]')].map((tr) => tr.cells[14] && tr.cells[14].textContent.trim())
+          .filter((x) => x), text: r.textContent}); }, 80)); }"""
+
+
+def _sched(a, admin=False):
+    """The schedule card's states (the portal's pilot2, or the admin's own ids) with the pot sensor's attributes a."""
+    st = _sched_states()
+    st[f"sensor.{PILOT2}_pot_count"] = _s(str(a.get("count", len(a["pairings"]))), a)
+    return {k.replace(PILOT2 + "_", "flight_watcher_", 1): v for k, v in st.items()} if admin else st
+
+
+@pytest.mark.parametrize("width,scheme", [(390, "light"), (390, "dark"), (1100, "light")])
+def test_the_schedule_cards_open_column_says_how_many_pot_trips_are_not_shown(width, scheme):
+    """1.8.1 (C3-R1): the schedule card (on the admin's Home Assistant Watcher view and on a pilot's portal) draws the
+    Open column and the Ideas' O marks from the pot sensor's rows. With two pots it carries a fair share of each
+    month, so a line under the totals says how many pot trips are not shown there and that the Watcher still watches
+    all of them; an older Watcher's payload (count, no "trimmed") gives the same line; none when nothing is cut."""
+    cut = {"count": 45, "pairings": POT_ROWS, "trimmed": 43}
+    with _browser() as b:
+        got = {}
+        for name, tag, st in (
+                ("portal", "flight-watcher-schedule-card-pilot2", _sched(cut)),
+                ("admin", "flight-watcher-schedule-card", _sched(cut, admin=True)),
+                ("old", "flight-watcher-schedule-card-pilot2", _sched({"count": 45, "pairings": POT_ROWS})),
+                ("whole", "flight-watcher-schedule-card-pilot2", _sched({"count": 2, "pairings": POT_ROWS})),
+                ("180", "flight-watcher-schedule-card", _sched({"pairings": POT_ROWS}, admin=True))):
+            pg = _portal_page(b, [_card("schedule-card", pilot=name not in ("admin", "180"))], width=width,
+                              scheme=scheme)
+            got[name] = pg.evaluate(SCHED_JS, [tag, st])
+            if name == "portal":
+                _shot(pg, f"sched_{width}_{scheme}")
+            pg.context.close()
+    want = ("43 of the 45 pot trips are not in the Open column or the Ideas' O marks: the sensor carries 2 (all Home "
+            "Assistant keeps; each bid month gets a fair share, soonest first). The Watcher still reads and watches "
+            "all 45.")
+    for name in ("portal", "admin", "old"):
+        g = got[name]
+        assert g["cut"] == want, (name, g["cut"])
+        assert chr(0x2014) not in g["cut"] and chr(0x2013) not in g["cut"]
+        assert g["fit"]["page"] <= width and g["fit"]["right"] <= width, (name, g["fit"])
+        assert g["contrast"]["fails"] == [], (name, g["contrast"]["fails"])
+    assert got["portal"]["open"] == got["whole"]["open"] != []  # the rows it has are drawn as before
+    assert got["whole"]["cut"] is None and got["180"]["cut"] is None  # nothing cut, or 1.8.0's payload: no line
+
+
 def test_no_em_dash_and_short_lines_in_the_change():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for f in ("tests/test_fw181_pot_cap.py",):
         text = open(os.path.join(here, f), encoding="utf-8").read()
         assert "\u2014" not in text and all(len(x) <= 120 for x in text.splitlines()), f
+    # 1.8.1 (C3-R1): the schedule card's new lines (the card's older lines are longer; these are not)
+    sched = open(os.path.join(here, "www", "flight-watcher-schedule-card.js"), encoding="utf-8").read().splitlines()
+    new = [x for x in sched if "potCut" in x or "potOff" in x or "potN" in x or "(C3-R1)" in x
+           or "Ideas' O marks" in x]
+    assert len(new) >= 8 and all(len(x) <= 120 and chr(0x2014) not in x for x in new), new
