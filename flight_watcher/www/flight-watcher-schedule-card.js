@@ -1174,8 +1174,9 @@ const FWG_CSS = `
 // 1.7.12 review (its meaning of "1x" is pending a yes): 1x and 2x of the Watcher's own longest cycle between two
 // good reads, not of the bare setting, so a healthy Watcher never reads stale. Each wait is the interval x 0.7 to 1.3
 // (watcher.py JITTER), starts when a check ends, and the next check takes time too (a crew index chunk: about 2 min in
-// normal mode, 20 s hunting). The cycle is the interval (on a pilot the pace his FLICA budget holds him to, when the
-// state note says "at least N s apart" and that is longer) x 1.3, plus FW_AGE_ROOM_S for the check, which also covers a
+// normal mode, 20 s hunting). The cycle is the interval (or the pace the Watcher is held to: a pilot's FLICA budget,
+// since 1.7.26 also the admin's share of the host's hour; when the state note says "at least N s apart" and that is
+// longer) x 1.3, plus FW_AGE_ROOM_S for the check, which also covers a
 // few seconds of a phone's clock running fast. It counts from the last good read, or later: from a change of hunt or
 // of the interval after that read (the Watcher's wait starts over then; a next check it planned before the change
 // counts too), and from the next check while the FLICA budget or host limit holds it (the gate's note). Very stale
