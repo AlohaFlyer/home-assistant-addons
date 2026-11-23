@@ -13519,18 +13519,20 @@ def pot_banned(month):
     candidate that was no open time page) until the month's try wait has passed since (gate review: one odd page
     never bans a month's real BCID for good)."""
     rec = (S.get("pot_months") or {}).get(month) or {}
-    at = rec.get("refused_at") if isinstance(rec.get("refused_at"), dict) else {}
+    until = rec.get("refused_at") if isinstance(rec.get("refused_at"), dict) else {}
     now = time.time()
-    return {b for b in (rec.get("refused") or ()) if not _num(at.get(b)) or now < at[b] + pot_wait(month)}
+    return {b for b in (rec.get("refused") or ()) if not _num(until.get(b)) or now < until[b]}
 
 
 def pot_refuse(month, rec, b, lasting):
-    """b goes on the month's refused list (the last 5), with its time unless it is refused for good."""
+    """b goes on the month's refused list (the last 5), with the end of its ban (refused_at: now plus the month's try
+    wait, fixed at the refusal; gate 2: a wait worked out later shrinks toward the month's first day) unless it is
+    refused for good."""
     rec["refused"] = [x for x in (rec.get("refused") or []) if x != b][-4:] + [b]
-    at = {k: v for k, v in (rec.get("refused_at") or {}).items() if k in rec["refused"] and k != b}
+    until = {k: v for k, v in (rec.get("refused_at") or {}).items() if k in rec["refused"] and k != b}
     if not lasting:
-        at[b] = time.time()
-    rec["refused_at"] = at
+        until[b] = time.time() + pot_wait(month)
+    rec["refused_at"] = until
 
 
 def pot_pick(month):
@@ -13743,14 +13745,15 @@ def pot_verdict(month, url, html):
     rec = pot_rec(month)
     was_ok = rec.get("bcid") == b and rec.get("status") == "ok"
     chk = pot_month_check(html, month)
-    if chk["verdict"] == "ok" and how != "learned":
+    lasting = False
+    if how != "learned" and chk["verdict"] in ("ok", "refused") and not pot_category_ok(html):
+        # a page of another category (dated trips of any month) is refused for good, before the month checks (gate 2)
+        chk = dict(chk, verdict="refused", other="", why=f"not an open time page of {OPTS.get('category_check')}")
+        lasting = True
+    elif chk["verdict"] == "ok" and how != "learned":
         strict = pot_month_check(html, month, 0)  # gate review: a BCID not learned yet needs most trips in the month
         if strict["verdict"] == "refused":  # proper (a month's last days fall in the next month's slack)
             chk = strict
-    lasting = False
-    if chk["verdict"] == "ok" and how != "learned" and not pot_category_ok(html):  # its trips, another category
-        chk = dict(chk, verdict="refused", other="", why=f"not an open time page of {OPTS.get('category_check')}")
-        lasting = True
     v, this = chk["verdict"], this_month_key()
     wait = pot_wait(month, this)
     rec.update(bcid=b, at=now_iso(), why=chk["why"])
@@ -13962,6 +13965,10 @@ def pot_state_clean():
         d = S[k]
         for m in [m for m, v in d.items() if not isinstance(v, str)]:
             d.pop(m, None)
+    ss = S.get("swap_seen")  # gate 2: swap_scan and pot_carry read it as a list of strings
+    if ss is not None and not (isinstance(ss, list) and all(isinstance(x, str) for x in ss)):
+        log.info("state swap_seen was a %s, cleaned", type(ss).__name__)
+        S["swap_seen"] = [x for x in ss if isinstance(x, str)] if isinstance(ss, list) else []
     for k, ok in (("baseline", lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v)),
                   ("fingerprints", lambda v: isinstance(v, str))):  # gate review: a check never raises on these
         if not isinstance(S.get(k), dict):
