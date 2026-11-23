@@ -9569,7 +9569,8 @@ def crew_variants(fl, insts, rows, budget, plan=None, mode=None):
                          "/".join(CI.variant_ids(it["pairing"])))
         if stop is not None:
             if moved:
-                log.info(CREW_MODE_NOTE, "variant probe")
+                log.info("crew index: Hunt or the check interval changed, %s stopped (run continues later)",
+                         "variant probe")
             elif kept:
                 crew_held(run)  # 1.7.26: one line a run, not one a probe
             else:
@@ -9704,9 +9705,6 @@ def crew_mode():
     return bool(FLAGS.get("hunt")), fq["hunt_s"], fq["normal_min"]
 
 
-CREW_MODE_NOTE = "crew index: Hunt or the check interval changed, %s stopped (run continues later)"
-
-
 def crew_index_chunk(fl, mode=None):
     """Read up to CREW_PER_CHECK pairing pages of the current crew index run (GET only, 1.5-3.5 s apart, each URL
     through SUB.safe_get and SM.safe_get). A run starts at the first check after each 6 h slot (once per slot, saved
@@ -9796,7 +9794,7 @@ def crew_index_chunk(fl, mode=None):
         if n:
             time.sleep(random.uniform(1.5, 3.5))
         if crew_mode() != mode:  # 1.7.26 review: after the wait too, so no load goes with the old mode's keep
-            log.info(CREW_MODE_NOTE, "chunk")
+            log.info("crew index: Hunt or the check interval changed, %s stopped (run continues later)", "chunk")
             halted = True
             break
         n += 1
