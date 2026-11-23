@@ -69,6 +69,32 @@ can you look at both?" and "Keep the 22 s, set it to Both").
   stuff"): 1.8.0 read November's grid and pot alone, so December's month showed neither. With Both, December's
   grid (003.153) is read with November's. A grid's dates take the year of its bid month, so January's grid read
   in December keys 2027 days (it keyed 2026 before).
+- Audit fixes for the Nov to Dec change (Nov 23: six finders, adversarial checks, then a fixer and two reviewers a
+  group; every fix has a test that fails on the code before it):
+  - **Hidden trips and alert-email finds follow each trip's own bid month** (POT-2, LIVE-1, POT-6, POT-8, P9,
+    LIVE-11). 1.8.0 sent three false critical HIDDEN pushes overnight (H3613, H3625, H3604, all December): they were
+    missing from the one pot it read but sat in December's. An alert-email find now counts as gone, or hidden when its
+    seat is still Open, only against its own bid month's pot read OK in that check; else it stays open and filed under
+    its own month. A filled seat still records who took it at once; an Open seat waits for a check that reads its
+    month. A pickup queued by a good read is judged by that read, so a real hidden trip still pushes. Finds still open
+    when their bid period ends are closed at the period end, with no push and no FLICA load.
+  - **Request pushes when a bid month joins** (T3, S7): each request folder and each Tradeboard number has its own
+    first read, like the close-in folder. On it only decisions filed in the last 6 h push; older ones are history
+    (listed, never pushed). Setting Both, or December taking over on Dec 2, no longer sends 003.153's and 001.153's
+    whole history. Folders read before the update are not new. A page that is not really the list (FLICA's error
+    page, a gate-refused page, a list shown empty once) is never a first read. Limit: FLICA lists when a request was
+    filed, not decided, so on a new folder's first read a decision on a request filed over 6 h before is listed only.
+  - **The pot sensor keeps a fair share of each bid month** (C3): with Both it kept the first 60 rows and cut
+    December's. Close-in trips go first, then each month in turn, soonest first, sorted by month and start, with
+    "trimmed". The portal pot card shows the whole count and "N not shown", and never "empty" while the pot has
+    trips; the schedule card says "N of the M pot trips are not in the Open column" when the sensor could not carry
+    them all.
+  - **Drafts, rules and the close-in folder follow the bid month** (POT-5, LIVE-6, T10, POT-9, POT-10, POT-11): swap
+    and drop drafts name the folder of the trip's own bid month (never another month's, never a refused pick; else
+    they say the folder is not known), a close-in draft only for a trip of that folder's period. Marked swap ideas
+    stay inside one bid period, as automatic ones do. Rule months are HST bid months (Dec 1 is November's). The
+    close-in folder follows today's bid period whatever the select (kept all of Dec 1, December's from Dec 2).
+  - No new FLICA page loads; drafts only, nothing is ever sent.
 - After the update: the Pot month select on Ryan's clock card goes to **Both** (his Nov 23 choice): November's and
   December's pots now, about 22 s apart; from Dec 2 December's, and January's once it opens. James's stays on This
   month (his portal shows the months read only). `watch_next_month` stays in the Configuration tab as it is, but no
