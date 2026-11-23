@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.8.1
+
+December follows FLICA within a read (Hark for Ryan, Nov 23, 2026: "FW is not updating his December schedule
+completely"; HOM bus ASK m_01M84GMVMTTBBCZS4VT044491C).
+
+- Cause: no parser fault. On Nov 23 Ryan's December moved three times (H3665 12DEC to H3607 12DEC, H3665 03DEC to
+  H3613 04DEC, H3613 04DEC to 06DEC); FLICA's Block / Credit followed each step (43:56 / 80:35, 52:49 / 86:35,
+  52:57 / 86:35, the last matching CrewTrac). The Watcher reads a later month on Schedule Lookup at most every 6 h,
+  so December kept the 00:53 HST copy (H3613 04DEC) while November, read every 30 min, already carried FLICA's
+  05:08 and 05:37 stamps. The Nov 20 to 21 "H3665 on 12-03, 12-09 and 12-12" reads were real: H3665 operates on
+  those days and the 12DEC one was traded for H3607 (credit +6:00, block +8:53).
+- FLICA's "Last Updated" stamp covers the pilot's whole schedule (November's moved from 05:08 to 05:37 HST with
+  November unchanged). Each read keeps the current month's stamp (`sched_stamp`); a later month on file whose own
+  stamp is older and that was read under another current stamp (`cur_stamp`) is read again on that read, ahead of the
+  others: one paced Schedule Lookup load (1.5 to 3.5 s) per stamp change, inside the read's two loads, never a load
+  of its own. Past months keep their 6 h, a month in its failure back-off waits it, and a month FLICA no longer lists
+  is left alone. On the mobile schedule path the current month keeps its stored Block / Credit for that read only
+  when the month itself did not change (its trips with their ends and layovers, and its days): the change is the
+  later month's. A pass made only for such a month loads only it and leaves the other months' 6 h clock as it was,
+  and a month whose page fails to load (a timeout) waits its back-off like any failed month (1 h doubling to 6 h).
+  A pause, a stopped read path or a load error inside that pass ends it there (the previous month's mobile page is
+  not loaded and the clock does not move); a load error on the month list page counts as a failed list page; and any
+  Schedule Lookup page that parses (the totals, the month list, a month) ends a run of failed ones for its breaker.
+- The log line of such a read ends "(read again: FLICA's schedule stamp moved)", and a re-read that moves trips logs
+  `schedule YYYY-MM changed: added [...], removed [...]`. No new push, entity, option or FLICA page.
+
 ## 1.8.0
 
 The FLICA mirror (Ryan, Nov 23, 2026: "click on a page such as open time and have it automatically refresh every so
