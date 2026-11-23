@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.8.0
+
+The FLICA mirror (Ryan, Nov 23, 2026: "click on a page such as open time and have it automatically refresh every so
+often so that I can use the app without it timing out and kicking me out"). Open the Flight Watcher panel and tap
+**Open FLICA (live, stays signed in)**, or go straight to `/hassio/ingress/43b22650_flight_watcher/flica`.
+
+- FLICA allows one session per login and the Watcher owns it, so the mirror never logs in on its own (a second login
+  would kick the Watcher, and the Watcher's next login would kick it back). It shows FLICA's own mobile pages through
+  the Watcher's session: the ingress page `flica?u=<FLICA path>` asks, the main loop loads the page while it waits
+  between checks (Playwright stays on its own thread), through the same gate as every read (pacing 1.5 to 3.5 s, the
+  host's 480 an hour; a mirror load is left out rather than wait for the hour's budget, `GATE_KEEP`). A copy under a
+  minute old is shown without a load, and the Watcher's own pot reads are the mirror's copy too.
+- Pages: the open time pot (this bid month and the next once the Watcher reads it), a pairing's detail (tap a trip on
+  the pot), the pilot's own mobile schedule (this month and next). Nothing else is ever loaded: a link or query that
+  names a request, add, drop, swap, trade, bid, delete, priority or submit is shown as plain text, the Tradeboard and
+  the main menu are not mirrored, every form is shown disabled, and FLICA's scripts and event handlers are removed.
+  A link to any other FLICA page is plain text too (opening FLICA itself would sign in a second session).
+- The bar: page buttons, Refresh, and auto refresh every 1, 2 (default) or 5 min or off (kept on the device). The
+  timer runs only while the page is on screen, so a locked phone costs no FLICA loads.
+- While the Watcher is paused, stepped aside for the pilot's own FLICA login, or stopped, the mirror shows its last
+  copy with a note and loads nothing. A CAPTCHA answer is never answered: that page is held for the mirror for 30 min.
+  An ended session wakes the loop so its next check signs in again (the Watcher's login, unchanged).
+- Only the admin's Watcher serves the ingress page, so only Ryan's own session is ever shown (a pilot's is not).
+
 ## 1.7.26
 
 The crew index yields to the pot checks, the admin's checks are spread over his share of the host's hour, and the

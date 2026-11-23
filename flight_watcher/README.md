@@ -353,6 +353,13 @@ is added to that Settings view's `visible` list. The files are base-wide: every 
 - The progress line and the result line are live regions (the result a polite status), so a screen reader
   announces the upload's progress and whether the file was saved or refused.
 
+## FLICA mirror (1.8.0)
+
+The Flight Watcher panel's **Open FLICA (live, stays signed in)** button (`/hassio/ingress/43b22650_flight_watcher/flica`)
+shows FLICA's mobile open time pot, pairing pages and own schedule through the Watcher's own FLICA session, with an
+auto refresh that runs only while the page is on screen. It never logs in by itself (FLICA allows one session), never
+loads a request, add, drop or swap page, and never answers a CAPTCHA. Details: CHANGELOG 1.8.0, `mirror.py`.
+
 ## Web UI and rules
 
 The Web UI (sidebar "Flight Watcher Rules", an HA Ingress panel for HA admins) has Settings, Monthly PDFs, Rules and

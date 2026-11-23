@@ -61,6 +61,8 @@ nav a{{margin-right:14px}}.set label{{display:block;margin:6px 0}}.set input{{wi
 .set .k{{display:inline-block;width:150px}}
 </style></head><body>
 <h2>Flight Watcher {version}</h2>
+<p><a href="flica" style="display:inline-block;padding:10px 16px;background:#0b3d6b;color:#fff;border-radius:8px;
+text-decoration:none;font-size:16px">Open FLICA (live, stays signed in)</a></p>
 <nav><a href="#settings">Settings</a><a href="#pdfs">Monthly PDFs</a><a href="#rules">Rules</a><a href="#finds">Recent finds</a></nav>
 <h3 id="settings">Settings</h3>
 {settings_msg}{settings}{portal}
@@ -906,6 +908,15 @@ PILOTDB_BODY_MAX = 64 * 1024  # 1.7.8: a POST api/pilotdb body (spec 10.1)
 PILOTDB_CARD = "pilotdb"  # the X-FW-Card header the Pilots card sends: a plain cross-site form can send neither it nor JSON
 
 
+def mirror_u(query):
+    """1.8.0: the mirror's `u` (a FLICA path and query) from the ingress page's query string ('' when there is none)."""
+    try:
+        q = parse_qs(query or "", keep_blank_values=True, max_num_fields=8)
+    except ValueError:
+        return ""
+    return (q.get("u") or [""])[-1][:500]
+
+
 def _pilotdb_query(path):
     """{key: value} of a GET api/pilotdb query string (the last value of a repeated key); None when it is not one."""
     try:
@@ -927,13 +938,14 @@ def _json_object(raw):
 
 
 def serve(port, version, get_rules, save_rules, store, log, get_settings=None, save_settings=None,
-          clear_settings=None, on_saved=None, portal_key="", pilotdb_get=None, pilotdb_post=None):
+          clear_settings=None, on_saved=None, portal_key="", pilotdb_get=None, pilotdb_post=None, mirror_get=None):
     """The ingress page and its JSON endpoints. on_saved (1.4.8) runs after an upload is saved (the Watcher then
     publishes sensor.<prefix>_uploads); its failure never fails the upload. portal_key (1.6.0): the portal signing
     key's public half, shown when a pilot has a portal. pilotdb_get and pilotdb_post (1.7.8, the admin's Watcher
     only): api/pilotdb for the Pilots card, each (query or object) -> (HTTP status, body); a POST needs
     Content-Type application/json and the header X-FW-Card: pilotdb, and a body of at most PILOTDB_BODY_MAX bytes.
-    Every answer is Cache-Control: no-store; the same ingress-only guard as the page."""
+    Every answer is Cache-Control: no-store; the same ingress-only guard as the page. mirror_get (1.8.0, the admin's
+    Watcher only): the FLICA mirror page `flica?u=<FLICA path>`, (u) -> (HTTP status, HTML)."""
     def saved(r):
         if r.get("ok") and on_saved:
             try:
@@ -998,8 +1010,32 @@ def serve(port, version, get_rules, save_rules, store, log, get_settings=None, s
             m = re.search(r"(?:^|/)api(?:/([a-z]*))?$", p)
             return (m.group(1) or "") if m else None
 
+        def _mirror(self):
+            """1.8.0: the FLICA mirror page, or None for another path."""
+            sp = urlsplit(self.path)
+            if mirror_get is None or not re.search(r"(?:^|/)flica$", sp.path.rstrip("/")):
+                return None
+            u = mirror_u(sp.query)
+            try:
+                code, body = mirror_get(u)
+            except Exception as e:  # noqa: BLE001
+                log.info("mirror: page failed: %s", type(e).__name__)
+                code, body = 500, "<!doctype html><p>The FLICA mirror could not answer. Try again in a minute.</p>"
+            b = body.encode("utf-8")
+            self.send_response(int(code))
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+            return True
+
         def do_GET(self):
             if not self._guard():
+                return
+            if self._mirror():
                 return
             api = self._api()
             if api == "uploads":
