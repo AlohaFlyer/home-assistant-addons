@@ -36,6 +36,18 @@
 // text on one line in the usual fonts; a wider font wraps inside it), and on a phone the rest of the Lock switch's
 // line, at its right (a long text wraps inside it, under the switch's 44 px), so the arrows, the month and Now keep
 // the second line to themselves and the header two lines.
+// 1.8.2 (Ryan, Nov 23: "Maybe we need to add a little refresh button in the upper right corner of my schedule if I
+// don't think that it's right, but also maybe it should just always be right."): a small round refresh button (U+21BB)
+// at the right of the month header, next to Data age, a 44 px target on a phone, named "Refresh <Month YYYY> from
+// FLICA". A press publishes <prefix>/schedule/refresh with the month shown ({"month": "YYYY-MM"}); the Watcher reads
+// that month at its next check (woken at once). At most one press a month in 60 s ("Just refreshed", nothing sent); a
+// month FLICA does not list (the schedule sensor's listed) is refused here with a note. The line under the header says
+// "Refreshing..." until the month's FLICA 'updated' or read time (read_at) moves, then "Refreshed" with the version, or
+// "Not refreshed: <why>" (the Watcher's refusal, or after 3 min). Home Assistant only: the portal's copy (FW_PORTAL)
+// has no button (no such portal command). From 701 to 760 px the one-row header has no room for it beside the 21em
+// stamp, so the header there is two lines as on a phone (the switch, the stamp and the button, then the month's line).
+const FW_PORTAL = false;
+const RF_GAP_MS = 60000, RF_WAIT_MS = 180000, RF_SHOW_MS = 120000, RF_JUST_MS = 5000;
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const DOW = ["SU","MO","TU","WE","TH","FR","SA"];
 const MON3 = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
@@ -1436,6 +1448,77 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const box = this._ageShown();  // 1.7.26: its box, while open
     if (box) this._ageBoxFill(box, el);
     this._ageAria();  // 1.7.26 review: another tip took the box
+    this._rfShow();  // 1.8.2: the refresh line ("Refreshing..." gives way after 3 min)
+  }
+  // ---- 1.8.2: the refresh button (Home Assistant only; never in the portal's copy)
+  _rfHtml(key, y, m) {
+    if (FW_PORTAL) return "";
+    const name = `${MONTHS[m]} ${y}`, busy = this._rfText(key, Date.now()) === "Refreshing\u2026";
+    return `<button type="button" class="rfb" data-rf="${key}" aria-label="Refresh ${name} from FLICA" `
+      + `title="Refresh ${name} from FLICA" aria-busy="${busy}">`
+      + `<span class="rfi" aria-hidden="true">&#8635;</span></button>`;
+  }
+  _rfAttr() {
+    const st = this._h && this._h.states["sensor.flight_watcher_schedule"];
+    return (st && st.attributes) || {};
+  }
+  _rfMon(key) { return (this._rfAttr().months || {})[key] || {}; }
+  // the Watcher's current month (HST), which it always takes; any other month only when FLICA lists it
+  _rfCur() { return new Date(Date.now() - 10 * H).toISOString().slice(0, 7); }
+  _rfPress(key) {
+    if (FW_PORTAL || !this._h || !/^\d{4}-\d{2}$/.test(key || "")) return;
+    const now = Date.now(), all = this._rf || (this._rf = {}), r = all[key], at = this._rfAttr();
+    const name = `${MONTHS[parseInt(key.slice(5, 7), 10) - 1]} ${key.slice(0, 4)}`;
+    if (r && r.sent && now - r.sent < RF_GAP_MS) { r.just = now; this._rfShow(); return; }  // nothing is sent
+    const listed = Array.isArray(at.listed) ? at.listed : [];
+    if (listed.length && !listed.includes(key) && key !== this._rfCur()) {
+      all[key] = { note: `Not refreshed: FLICA does not list ${name}`, noteAt: now };
+      this._rfShow();
+      return;
+    }
+    const mon = this._rfMon(key), rf = at.refresh || {};
+    all[key] = { sent: now, upd: mon.updated || "", read: mon.read_at || "", rfAt: rf.at || "" };
+    this._h.callService("mqtt", "publish", { topic: "flight_watcher/schedule/refresh",
+      payload: JSON.stringify({ month: key }) });
+    this._rfShow();
+  }
+  // the line under the header for the month shown: '' (nothing pressed, or shown long enough), the press's note,
+  // "Refreshing...", "Refreshed ..." with the version, or "Not refreshed: <why>"
+  _rfText(key, now) {
+    const r = (this._rf || {})[key];
+    if (!r) return "";
+    if (r.just && now - r.just < RF_JUST_MS) return "Just refreshed";  // a press inside 60 s, for a few seconds
+    if (r.note) return now - r.noteAt < RF_SHOW_MS ? r.note : "";
+    if (!r.sent) return "";
+    const mon = this._rfMon(key), at = this._rfAttr(), rf = at.refresh || {};
+    if ((mon.updated || "") !== r.upd || (mon.read_at || "") !== r.read) {
+      if (!r.doneAt) r.doneAt = now;
+      return now - r.doneAt < RF_SHOW_MS ? `Refreshed: ${this._rfVer(key, mon)}` : "";
+    }
+    const mine = rf.month === key && (rf.at || "") !== r.rfAt;  // the Watcher's answer to this press
+    if (mine && (rf.state === "refused" || rf.state === "failed") || now - r.sent >= RF_WAIT_MS) {
+      if (!r.failAt) r.failAt = now;
+      const rs = at.read_status || {};
+      const why = (mine && rf.why) || (rs.ok === false && rs.why) || "no new read from FLICA in 3 min";
+      return now - r.failAt < RF_SHOW_MS ? `Not refreshed: ${why}` : "";
+    }
+    return "Refreshing\u2026";
+  }
+  // "v12.004, FLICA updated Nov 23, 2026 01:03, read 01:12:05 HST": the month's newest version and its read
+  _rfVer(key, mon) {
+    const vl = (this._vmonths()[key] || {}).versions || [], v = vl.length ? vl[vl.length - 1] : null;
+    const t = Date.parse(mon.read_at || "");
+    return [v ? `v${v.ver}` : "", mon.updated ? `FLICA updated ${mon.updated}` : "",
+      isNaN(t) ? "" : `read ${fwAgeWhen(t, Date.now())}`].filter(Boolean).join(", ") || "read from FLICA";
+  }
+  _rfShow() {
+    const sr = this.shadowRoot, el = sr && sr.querySelector(".fwm .rfs");
+    if (!el || !this._h) return;
+    const t = this._rfText(el.dataset.k, Date.now()), bad = t.startsWith("Not refreshed");
+    if (el.textContent !== t) el.textContent = t;
+    if (el.classList.contains("bad") !== bad) el.classList.toggle("bad", bad);
+    const b = sr.querySelector(".fwm .rfb"), busy = String(t === "Refreshing\u2026");
+    if (b && b.getAttribute("aria-busy") !== busy) b.setAttribute("aria-busy", busy);
   }
   // FW-0010: the pilot's DOH from the state sensor ("" when none is on file or the Watcher is offline); only this
   // value is in the redraw signature, not the sensor's last_updated (its note changes on every check)
@@ -1571,6 +1654,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
         if (ib2) { const k = this._key().key; const cur = this._idea; this._idea = cur && cur.key === k && cur.d === ib2.dataset.d ? null : { key: k, d: ib2.dataset.d, trip: ib2.dataset.trip };
           this._render(); const pn = this.shadowRoot.querySelector(".ipanel"); if (pn) pn.scrollIntoView({ behavior: "smooth", block: "nearest" }); return; }
         if (e.target.closest(".ix")) { this._idea = null; this._render(); return; }
+        const rb = e.target.closest(".rfb");  // 1.8.2: the refresh button (Home Assistant only)
+        if (rb) { this._rfPress(rb.dataset.rf); return; }
         const lk = e.target.closest(".lock");  // v48 (Ryan): lock / unlock the tap settings (blocked days, trade, drop)
         if (lk) { this._locked = !this._locked; try { localStorage.setItem("flight_watcher_lock", this._locked ? "1" : "0"); } catch (e2) { /* ignore */ } this._render(); return; }
         const locked = this._locked;
@@ -2501,6 +2586,10 @@ class FlightWatcherScheduleCard extends HTMLElement {
     const ae = this.shadowRoot.activeElement;
     const fk = ae && ae.matches && ae.matches(".fwm .trip[data-k]") ? ae.dataset.k : "";  // the pairing that has the focus
     const lf = !!(ae && ae.matches && ae.matches(".fwm .lock"));  // 1.7.18: the lock switch keeps the focus across a redraw
+    const rff = !!(ae && ae.matches && ae.matches(".fwm .rfb"));  // 1.8.2: so does the refresh button
+    // 1.8.2: the refresh button and its line (never in the portal's copy)
+    const rfB = this._rfHtml(key, y, m), rfS = FW_PORTAL ? "" : `<div class="rfs" role="status" aria-live="polite" `
+      + `data-k="${key}">${this._esc(this._rfText(key, Date.now()))}</div>`;
     main.innerHTML = `<style>${FWG_CSS}
       ha-card{padding:10px 8px 12px;font-size:12.5px;line-height:1.25;box-sizing:border-box}
       @media (max-width:700px){ha-card{font-size:10.5px;padding:6px 3px 8px}
@@ -2570,8 +2659,24 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .ag[data-age="amber"]{color:var(--fw-warn,#8a5300)}.ag[data-age="red"]{color:var(--fw-err,#c62828)}
       .hd2 .ag{margin-left:auto;text-align:right;white-space:normal;min-width:0;flex:0 0 21em}
       @media (max-width:700px){.hd2 .ag{order:1;flex:1 1 0}.hd2 .sp{order:2}.hd2 .nav,.hd2 h3{order:3}}
+      .rfb{flex:none;box-sizing:border-box;width:30px;height:30px;min-width:30px;padding:0;margin:0 0 0 2px;
+        border-radius:50%;border:1px solid var(--secondary-text-color,#555);
+        background:var(--card-background-color,#fff);
+        color:var(--primary-text-color,#212121);font:700 17px/1 sans-serif;cursor:pointer;display:inline-flex;
+        align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent}
+      @media (hover:hover){.rfb:hover{background:rgba(0,0,0,.06)}
+        :host([dark]) .rfb:hover{background:rgba(255,255,255,.1)}}
+      .rfb:focus-visible{outline:3px solid var(--fws-ring);outline-offset:1px}
+      .rfb[aria-busy="true"] .rfi{display:inline-block;animation:rfspin 1.2s linear infinite}@keyframes rfspin{
+        to{transform:rotate(360deg)}}@media (prefers-reduced-motion:reduce){.rfb[aria-busy="true"] .rfi{animation:none}}
+      @media (max-width:700px),(pointer:coarse){.rfb{width:44px;height:44px;min-width:44px;font-size:20px}
+        .hd2 .rfb{order:1}}
+      @media (min-width:701px) and (max-width:760px){.hd2{row-gap:2px}.hd2 .sp{flex:0 0 100%;height:0;order:2}
+        .hd2 .ag{order:1;flex:1 1 0}.hd2 .rfb{order:1}.hd2 .nav,.hd2 h3{order:3}}
+      .rfs{margin:0 auto 4px;max-width:620px;text-align:right;font-size:11.5px;line-height:1.3;
+        color:var(--secondary-text-color)}.rfs:empty{margin:0}.rfs.bad{color:var(--fw-warn,#8a5300);font-weight:600}
       .unc{color:var(--fw-warn,#8a5300);font-weight:700}.ubn{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.set .keep{min-height:44px;padding:6px 12px;font:inherit;border-radius:6px;cursor:pointer}
-    </style><ha-card><div class="frame"><div class="hd2">${this._lockHtml()}<span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${this._ageHtml(upd)}</div>${shead}${vhtml}${body}</div>${panel}
+    </style><ha-card><div class="frame"><div class="hd2">${this._lockHtml()}<span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${this._ageHtml(upd)}${rfB}</div>${rfS}${shead}${vhtml}${body}</div>${panel}
     <div class="info"></div>
     <details class="leg"><summary>Key</summary><table class="lt">
     <tr><td>Trip</td><td>Your pairing. Tap it for the pairing detail (legs, layovers, hotel, totals and crew, from the pairings package; below the schedule, or a sheet from the bottom on a phone); tap it again, the &#10005; or Esc to close. R = report time. Tap &#8644; to mark it "would trade" (orange).</td></tr>
@@ -2612,6 +2717,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
     }
     if (fk && !this._sheet.open) { const t = this._tripEl(fk); if (t) t.focus({ preventScroll: true }); }
     if (lf) { const l = main.querySelector(".lock"); if (l) l.focus({ preventScroll: true }); }
+    if (rff) { const b = main.querySelector(".rfb"); if (b) b.focus({ preventScroll: true }); }
+    this._rfShow();
   }
   // 1.7.7: the pairing detail: open, swap to another pairing, or close (the same one again)
   _pdToggle(k) {

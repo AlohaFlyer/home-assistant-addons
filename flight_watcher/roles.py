@@ -133,6 +133,9 @@ SUBS = {
     # 1.8.1 (Ryan, Nov 23): the Pot month select (This month, Next month, Both) of every instance; never a portal's
     # (NOT_ON_PORTAL: the spool refuses anything not in PORTAL_CMDS, which stays as it is)
     "pot_month/set": "core",
+    # 1.8.2 (Ryan, Nov 23): the schedule card's refresh button (one month read from FLICA now), every instance's own,
+    # from Home Assistant only; never a portal's (NOT_ON_PORTAL, as pot_month/set: no contract change)
+    "schedule/refresh": "core",
 }
 # FW-0066: chunks at qos 1; 1.7.9: a note or an edit too (its text is typed once); every other subscription at qos 0
 QOS = {"upload/chunk": 1, "upload/pdf": 1, "pilotdb/note": 1, "pilotdb/edit": 1}
@@ -330,7 +333,8 @@ PORTAL_REFUSED = ("email/alert", "crew_scan/press", "upload/chunk", "drop/set", 
 # revision 3, Ryan Nov 12): the admin's van alert settings (the spool refuses anything not in PORTAL_CMDS). 1.7.11
 # (FW-0075): the admin's van move, never a portal's (no contract change)
 NOT_ON_PORTAL = ("van/alerts/set", "van/first_min/set", "van/second_min/set", "van/adjust/set",
-                 "pot_month/set")  # 1.8.1: the Pot month select (no contract change; the portal shows the months only)
+                 "pot_month/set",  # 1.8.1: the Pot month select (no contract change; the portal shows the months only)
+                 "schedule/refresh")  # 1.8.2: the schedule card's refresh button (hidden on the portal)
 # the tabs of the portal (portal_layout.json), and the one each event opens (ntfy Click, the events list); 1.7.0: the
 # Tickets tab last, so the five tabs before it keep their places in the tab bar
 PORTAL_TABS = ("watcher", "schedule", "pilot", "recall", "settings", "tickets")

@@ -399,6 +399,29 @@ adds a month): the Pot month select chooses, and This month and Next month read 
 link that names no BCID) at most every 6 h a month, only while a month of the select is not found: none with This
 month once its pot reads, about 4 a day with Next month or Both until the next month's pot opens.
 
+## Schedule months kept fresh (1.8.2)
+
+Ryan's December stayed stale on Nov 23, 2026 (a 00:56 read caught FLICA's page just before a swap posted and the next
+December read came about 8 h later). The schedule read (every 30 min, at most 2 FLICA loads) now keeps the other
+months FLICA's Schedule Lookup lists fresh:
+
+- The next month is read again once its last read is 30 min old, the closed month once a day. A read's spare load (the
+  current month takes one) goes to the next month first; the closed month takes it once a day. On the mobile path,
+  whose page has no Block / Credit, the current month's totals are loaded first once they are an hour old (the next
+  month then waits one read); on Schedule Lookup the current month's page carries them.
+- A month is read early, at the next check (forced, still 2 loads), when: the pilot is no longer listed on one of his
+  own trips of that month (own trip times), one of his own trips of that month is in the open time pot, the CrewTrac
+  check finds a mismatch in that month (once a snapshot), or Check now is pressed (the future months). Each fires once
+  for the same evidence and a month at most every 5 min; one log line says why ("schedule 2026-12: read early (...)").
+- The schedule card's round refresh button (U+21BB, upper right of the month header, next to Data age; Home Assistant
+  only, never on a pilot's portal) asks for the month shown: `<prefix>/schedule/refresh` `{"month": "YYYY-MM"}`. The
+  Watcher reads it at the next check (woken at once). At most once a month in 60 s ("Just refreshed"); a month FLICA
+  does not list, a paused or stopped Watcher and a month backing off after a failed read are refused with a note. The
+  card shows "Refreshing..." until the month's read time or FLICA updated time moves, then "Refreshed" with the version,
+  or "Not refreshed: <why>" after 3 min. `sensor.<prefix>_schedule` carries `listed`, `refresh` and each month's
+  `read_at` for it.
+- Another month whose trips changed logs "SCHEDULE changed <month> {added, removed}" (no push, no event).
+
 ## FLICA mirror (1.8.0)
 
 The Flight Watcher panel's **Open FLICA (live, stays signed in)** button (`/hassio/ingress/43b22650_flight_watcher/flica`)

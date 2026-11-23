@@ -1,5 +1,71 @@
 # Changelog
 
+## 1.8.2
+
+The other months of the schedule are kept fresh, read early on the pilot's own signals, and the schedule card has a
+refresh button (Ryan, Nov 23, 2026: "Maybe we need to add a little refresh button in the upper right corner of my
+schedule if I don't think that it's right, but also maybe it should just always be right.").
+
+- What was wrong (found Nov 23 from Pako's live data, log and recorder, read only): Ryan's December schedule stayed
+  stale; it was no parse error. His Dec 4 H3613 was swapped through open time for the Dec 6 H3613 about 00:53 to 01:03
+  HST. The Watcher's December read at 00:56 caught FLICA's page before the swap posted, and December was not read again
+  for about 8 h: another month counted as fresh for 6 h, a pass that got every month then closed the `sched_prev_at`
+  gate for 6 h, a failed month backed off 1 h doubling to 6 h, and a read's spare load went to the other months in the
+  dropdown order, so the closed October took it one read before December (December every 7.5 to 9 h). The Watcher also
+  ignored its own signals: `own_trip_times` re-read H3613 12-04 at 01:15 and found Ryan no longer on it (seat FO
+  became empty), and his Dec 4 seat entered the open time pot at 01:03; neither read December again, and neither did
+  Check now. A month read on Schedule Lookup was stored with no change line in the log.
+- Cadence: a month after the current one is fresh for 30 min (`SCHED_FUTURE_FRESH_S`; it was 6 h), a month before it
+  (a closed month) for 24 h (`SCHED_PAST_FRESH_S`). A month counts as read at the start of the read that loaded it, so
+  it is due again at the next 30 min read. The 6 h `sched_prev_at` gate now holds only the mobile previous-month
+  fallback, never a future month that is due. The other months are read future months first (nearest first), past
+  months last; a month that already waited one read past its freshness goes first (the most overdue first), so the
+  closed month still gets one read a day although the next month is due on every read, and a month whose last read
+  failed goes after those that did not. `other_months_pending` asks the same `other_month_due` as
+  `other_months_check`. Only the months the schedule keeps (the latest three) are read.
+- Totals (FW-0019): the spare load of a read goes to a due future month, but when the current month is read on the
+  mobile path (its page has no Block / Credit) and its totals were last loaded an hour or more ago, the totals load
+  comes first and the future month waits one read. A current month read on Schedule Lookup itself (its page carries
+  the totals and the month list) needs no extra load. With nothing else due the spare load refreshes the totals, as
+  before.
+- Early re-reads: (a) `own_trip_times` finds the pilot no longer listed on one of his own trips of another month (its
+  seat went from set to empty); (b) a row in the open time pot is one of his own trips of another month (the same
+  pairing and start date: his seat went into the pot); (c) the CrewTrac check (`sensor.<prefix>_crewtrac_check`) flags
+  a mismatch in another month; (d) Check now reads the future months too. Each marks the month stale (`S
+  sched_stale`) with one log line naming it and the month ("schedule 2026-12: read early (his H3913 2026-12-04 is in
+  the open time pot)"); the next check runs the schedule read at once, forced, through the FLICA gate, still at most 2
+  loads, and the marked month takes the spare load first (before the totals). No read loop: (a) and (b) fire once per
+  trip and change (`S sched_trig`), (c) once per CrewTrac snapshot, a month is marked at most every 5 min
+  (`SCHED_TRIGGER_GAP_S`), and a mark forces one read only (one that read could not serve waits for the next due read).
+- Refresh button: a small round refresh button (U+21BB) at the upper right of the schedule card's month header, next to
+  Data age. A 44 px target on a phone, a real button (Tab, then Enter or Space), named "Refresh December 2026 from
+  FLICA", with the lock switch's focus ring (#1565c0 on light, #90caf9 on dark). A press publishes
+  `<prefix>/schedule/refresh` `{"month": "YYYY-MM"}` (the month shown) through the card's own `mqtt.publish`; the
+  Watcher marks that month stale (the current month: a forced read) and wakes the loop like Check now. At most one
+  press a month in 60 s: inside that the card says "Just refreshed" and sends nothing (the Watcher refuses one too). A
+  month FLICA does not list is refused with a note ("Not refreshed: FLICA does not list January 2027"), as are a paused
+  or stopped Watcher and a month backing off after a failed read. The line under the header says "Refreshing..." until
+  the month's FLICA updated or read time moves, then "Refreshed: v12.004, FLICA updated ..., read 01:31:10 HST", or
+  "Not refreshed: <why>" (the Watcher's refusal, its read status, or no new read in 3 min). `sensor.<prefix>_schedule`
+  carries each month's `read_at`, `listed` (the months FLICA's Schedule Lookup lists) and `refresh` (the last press:
+  month, state queued, read, failed or refused, why).
+- Admin only: `schedule/refresh` is a core sub (`roles.SUBS`) in `roles.NOT_ON_PORTAL`, as 1.8.1's `pot_month/set`:
+  the portal's copy of the card (`FW_PORTAL`) has no button and the spool refuses the topic as anything else. No
+  contract change: `PORTAL_CMDS`, `PORTAL_REFUSED`, `FEATURES`, the budgets and the contract fixture are as they were. A
+  second pilot's own Watcher answers on its own prefix only (his Home Assistant copy publishes
+  `flight_watcher_<name>/schedule/refresh`).
+- Log: "SCHEDULE changed 2026-12 {'added': [...], 'removed': [...]}" when another month's trips change; no push and no
+  event (push isolation unchanged), and the schedule versions work as before.
+- FLICA load budget: at most 2 loads a read (`SCHED_TRIES_PER_READ`), unchanged; GET only, no new page type, paced 1.5
+  to 3.5 s through the gate. A current month read on Schedule Lookup: the next month on every 30 min read, about 2 more
+  loads an hour per pilot (4 instead of 2), and the closed month once a day. On the mobile path with no totals on the
+  page: still 4 loads an hour (the totals and the next month take turns, each about hourly; the totals went every read
+  before), so there the next month may wait one read (up to an hour). A trigger adds one forced read (2 loads) at most
+  every 5 min a month.
+- Replayed in tests (`tests/test_fw182_sched_fresh.py`, synthetic pages): a December page that changes 10 min after a
+  read shows at the next 30 min read (20 min later; it was about 8 h), and at the next check (6 min) after trigger (a)
+  or (b).
+
 ## 1.8.1
 
 The open time pot follows the bid month (Ryan, Nov 23, 2026: "Always look for the new pot each month. It's a

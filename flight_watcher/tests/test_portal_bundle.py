@@ -142,6 +142,10 @@ def test_every_call_service_maps_to_the_manifest(pilot):
                 continue
             if dom == "mqtt":
                 lit = re.search(r'topic: "%s/([a-z_/]+)"' % P, data)
+                if lit and lit.group(1) == "schedule/refresh":  # 1.8.2: the refresh button, never drawn in the portal
+                    assert "schedule-card" in fn and 'if (FW_PORTAL) return "";' in text
+                    assert roles.portal_sub("schedule/refresh") is None and "schedule/refresh" in roles.NOT_ON_PORTAL
+                    continue
                 if lit:
                     assert lit.group(1) in subs or lit.group(1) in ("drop/set", "recall/set"), (fn, lit.group(1))
                     if lit.group(1) == "drop/set":

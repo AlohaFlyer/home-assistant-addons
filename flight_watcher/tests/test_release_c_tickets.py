@@ -652,11 +652,14 @@ def test_version_is_one_seven_two():
     # data age box; no new FLICA load, no contract change
     # 1.8.0 (Nov 23): the FLICA mirror through the Watcher's own session; no contract change
     # 1.8.1 (Nov 23): the open time pot follows the bid month, the Pot month select (off the portal); no contract change
-    assert _re.search(r'^version: "1\.8\.1"$', cfg, _re.M)
-    assert _re.search(r'^VERSION = "1\.8\.1"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
+    # 1.8.2 (Nov 23): other months kept fresh, early re-reads, the schedule refresh button (off the portal); no contract
+    # change
+    assert _re.search(r'^version: "1\.8\.2"$', cfg, _re.M)
+    assert _re.search(r'^VERSION = "1\.8\.2"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()
-    assert log.startswith("# Changelog\n\n## 1.8.1\n")  # 1.8.1 on top, the chain below it
-    for v in ("1.8.0", "1.7.26", "1.7.25", "1.7.24", "1.7.23", "1.7.22", "1.7.21", "1.7.20", "1.7.19", "1.7.18",
+    assert log.startswith("# Changelog\n\n## 1.8.2\n")  # 1.8.2 on top, the chain below it
+    for v in ("1.8.1", "1.8.0",
+              "1.7.26", "1.7.25", "1.7.24", "1.7.23", "1.7.22", "1.7.21", "1.7.20", "1.7.19", "1.7.18",
               "1.7.17", "1.7.16", "1.7.15", "1.7.14", "1.7.13", "1.7.12", "1.7.11", "1.7.10", "1.7.9", "1.7.8",
               "1.7.7", "1.7.6.1", "1.7.6", "1.7.5", "1.7.4", "1.7.3", "1.7.2", "1.7.1.1", "1.7.1", "1.7.0"):
         assert f"\n## {v}\n" in log, v

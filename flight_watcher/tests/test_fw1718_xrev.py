@@ -55,7 +55,18 @@ HEAD_JS = """([tag, st]) => { const c = mount(tag, {}, st); const r = c.shadowRo
     ok({text: ag.textContent, ag: B(ag), lock: B(q('.hd2 .lock')), hd: B(hd), prev: B(q('.hd2 .nav[data-nav="-1"]')),
         next: B(q('.hd2 .nav[data-nav="1"]')), h3: B(q('.hd2 h3')), now: B(q('.hd2 .nav.now')),
         textRight: tx.right, lines: new Set(lines).size, clip: [ag.scrollWidth - ag.clientWidth, ag.scrollHeight - ag.clientHeight],
-        hdOver: hd.scrollWidth - hd.clientWidth, page: document.documentElement.scrollWidth, dark: c.hasAttribute('dark')}); }, 80)); }"""
+        hdOver: hd.scrollWidth - hd.clientWidth, page: document.documentElement.scrollWidth,
+        dark: c.hasAttribute('dark'), rf: q('.hd2 .rfb') ? B(q('.hd2 .rfb')) : null}); }, 80)); }"""
+
+
+def _right(g):
+    """1.8.2: where the stamp's box ends: the header's right, or (Home Assistant's copy) the refresh button's left,
+    the button then at the header's right (in the portal's copy there is no button)."""
+    if g["rf"] is None:
+        return g["hd"]["r"]
+    assert abs(g["rf"]["r"] - g["hd"]["r"]) <= 1 and g["rf"]["t"] <= g["ag"]["b"], g["rf"]
+    assert 0 <= g["rf"]["l"] - g["ag"]["r"] <= 12, (g["rf"], g["ag"])  # next to Data age
+    return g["ag"]["r"]
 
 
 def _head(width, pilot, scheme):
@@ -79,7 +90,7 @@ def _spot(g):
 
 
 @pytest.mark.parametrize("scheme", ["light", "dark"])
-@pytest.mark.parametrize("width", [701, 820, 1024, 1280])
+@pytest.mark.parametrize("width", [761, 820, 1024, 1280])  # 1.8.2: one row from 761 px (the refresh button's room)
 def test_a_wide_header_keeps_the_month_controls_put_at_every_stamp_text(width, scheme):
     """Item 3 (1.7.12): one row, the stamp at its right in one fixed box, so the arrows, the month and Now sit at the
     same pixels whether the stamp reads 3 min, 2 h, 2 h 10 min very stale or over 23 h 59 min Watcher offline."""
@@ -92,14 +103,14 @@ def test_a_wide_header_keeps_the_month_controls_put_at_every_stamp_text(width, s
             assert g["dark"] == (scheme == "dark"), where
             assert g["clip"][0] <= 0 and g["clip"][1] <= 0 and g["hdOver"] <= 0 and g["page"] <= width, where
             assert g["lines"] == 1, where  # every text on one line in this font: nothing cut, nothing hidden
-            assert g["ag"]["l"] >= g["now"]["r"] and abs(g["ag"]["r"] - g["hd"]["r"]) <= 1, where  # right of Now
+            assert g["ag"]["l"] >= g["now"]["r"] and abs(g["ag"]["r"] - _right(g)) <= 1, where  # right of Now
             assert abs(g["textRight"] - g["ag"]["r"]) <= 1.5, where  # the text sits at the box's right
             assert abs((g["lock"]["t"] + g["lock"]["b"]) / 2 - (g["h3"]["t"] + g["h3"]["b"]) / 2) < 12, where  # one row
             assert round(g["hd"]["h"]) == 44, where
 
 
 @pytest.mark.parametrize("scheme", ["light", "dark"])
-@pytest.mark.parametrize("width", [360, 390, 430])
+@pytest.mark.parametrize("width", [360, 390, 430, 701, 760])  # 1.8.2: and 701 to 760 px (no room for one row)
 def test_a_phone_header_is_two_lines_with_the_stamp_beside_the_switch(width, scheme):
     """Item B (1.7.18) with item 3 (1.7.12): line 1 the Lock switch with the stamp at its right, line 2 the arrows,
     the month and Now. A long stamp text wraps inside its box under the switch's 44 px, so neither line moves."""
@@ -110,7 +121,7 @@ def test_a_phone_header_is_two_lines_with_the_stamp_beside_the_switch(width, sch
             where = (width, pilot, scheme, g["text"])
             lk, ag, hd = g["lock"], g["ag"], g["hd"]
             assert ag["t"] >= lk["t"] - 0.5 and ag["b"] <= lk["b"] + 0.5, where  # on the switch's line
-            assert ag["l"] >= lk["r"] and abs(ag["r"] - hd["r"]) <= 1 and abs(g["textRight"] - ag["r"]) <= 1.5, where
+            assert ag["l"] >= lk["r"] and abs(ag["r"] - _right(g)) <= 1 and abs(g["textRight"] - ag["r"]) <= 1.5, where
             assert g["prev"]["t"] >= lk["b"] and g["now"]["t"] >= lk["b"], where  # the month's line under it
             mids = [(g[k]["t"] + g[k]["b"]) / 2 for k in ("prev", "h3", "next", "now")]
             assert max(mids) - min(mids) < 12, where  # the arrows, the month and Now together
