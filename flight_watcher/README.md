@@ -366,7 +366,7 @@ so from Dec 1 it would still have read November. Now each check reads the pot of
 - **Next month**: the next bid month's pot once it is open (a page that reads as that month's pot), else this
   month's, so one pot page a check either way. While the next month is not open it is tried once a day, in place of
   that check's read of this month (whose rows from the check before stand in; with none on hand, as in the first
-  check after a start, that check reads both).
+  check after a start, the try waits one check).
 - **Both**: this month's and the next month's once open: two pot pages a check (and the Tradeboard, grid and request
   reads of both bid months). The admin's host pace (1.7.26) and a pilot's FLICA budget spread that out, and the
   held note says so: Ryan's hunt with James's Watcher running is held to at least about 22 s apart (2 pages x 3600 /
@@ -376,18 +376,26 @@ Where a month's BCID comes from, in order: a BCID the main menu or a pot page li
 one learned for it (Ryan's two links, then each month whose page read with its own trips), else the latest learned
 month's suffix plus the months between, so one renumbering by FLICA is learned once. A page counts as a month's pot
 only when it is an open time page and most of its trips start in that month (a few days either side for a bid
-period's edges); a page of another month's trips is refused (one log line and the state note) and the month's last
-good BCID is kept. No other BCID is guessed: a month whose BCID is refused or not open is tried again later and looked
-for on the main menu (its 'View Opentime Pot' links under `pot_section`, at most every 6 h a month, through the gate;
-a reCAPTCHA forward there is never answered and ends the look) and in the BCID links of the pot pages read anyway. The
-close-in folder's BCID is never a month's pot (FW-0034). `sensor.<prefix>_state` carries `pot_mode` and `pot_months`
-(each month: `bcid`, `how` learned / derived / menu / not found yet, `status` ok / not open yet / refused / not read
-yet, `read`), which the clock card shows beside its Pot select ("December 2026 (003.153)"). In a pilot's portal the
-select is not offered (no portal command): his clock card shows the mode and the months as text.
+period's edges), and a BCID not learned yet only on a page of the pilot's category (`category_check`). A page of
+another month's trips (or category) is refused (one log line and the state note) and the month's last good BCID is
+kept: a page that read as its month's pot is read again at the next check, its baseline kept, and only 3 refused
+reads in a row put it on its try time; a menu or link BCID that is no open time page gives way to the learned one. No
+other BCID is guessed: a month whose BCID is refused or not open is tried again later and looked for on the main menu
+(its 'View Opentime Pot' links under `pot_section`, the latest learned month's prefix first, at most every 6 h a
+month, through the gate; a reCAPTCHA forward there is never answered and ends the look; a menu naming the month's
+pick has it read then) and in the BCID links of the pot pages read anyway. The close-in folder's BCID is never a
+month's pot (FW-0034). A pot page read for the first time (a new month or BCID) is its baseline only, swap idea pushes
+included; a month the select keeps that is not read in a check keeps its baseline and its pushed swap ideas.
+`sensor.<prefix>_state` carries `pot_mode` and `pot_months` (each month: `bcid`, `how` learned / derived / menu / not
+found yet, `status` ok / not open yet / refused / not read yet, the last also for a month not planned yet, right
+after a select change; `read`), which the clock card shows beside its Pot select ("December 2026 (003.153)"). In a
+pilot's portal the select is not offered (no portal command): his clock card shows the mode and the months as text.
 
-The `watch_next_month` option stays in the Configuration tab: with This month it still adds the next month's pot if
-FLICA's mobile page ever links to it (it never has). The Pot month select is the way to choose now. The 1.8.0 6-hourly
-main menu walk for the next month is gone; with This month and Next month the Watcher reads one pot page a check.
+The `watch_next_month` option stays in the Configuration tab but no longer adds a page (a link on a pot page never
+adds a month): the Pot month select chooses, and This month and Next month read one pot page a check. The 1.8.0
+6-hourly walk for the next month (main menu and a pot page) is replaced by a main menu look (one load, plus one for a
+link that names no BCID) at most every 6 h a month, only while a month of the select is not found: none with This
+month once its pot reads, about 4 a day with Next month or Both until the next month's pot opens.
 
 ## FLICA mirror (1.8.0)
 

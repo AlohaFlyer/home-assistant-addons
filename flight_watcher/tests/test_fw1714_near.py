@@ -403,7 +403,7 @@ def test_no_flica_load_and_nothing_sent(tmp_path, monkeypatch):
 def test_check_publishes_the_list_each_pass_after_the_pot(tmp_path, monkeypatch):
     W = _w(tmp_path, monkeypatch)
     src = inspect.getsource(W.check)
-    assert src.index("publish_pot(flat)") < src.index("publish_near_misses(flat)") < src.index("swap_scan(flat)")
+    assert src.index("publish_pot(flat)") < src.index("publish_near_misses(flat)") < src.index("swap_scan(flat")
     # the pot sensor is as it was: no near miss fields on it (its 12 KB cap)
     W.publish_pot(_rows())
     pot = json.loads([p for t, p, _q, _r in W.MQ.msgs if t == "flight_watcher/pot/state"][-1])

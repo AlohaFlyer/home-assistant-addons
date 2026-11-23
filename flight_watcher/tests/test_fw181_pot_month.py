@@ -28,12 +28,12 @@ def at(y, m, d, h=12, mi=0):
     return datetime(y, m, d, h, mi, tzinfo=HST).timestamp()
 
 
-def page(rows=(), links=()):
-    """A synthetic mobile open time page: rows (pairing, start 'DDMon'), links (bcid, text)."""
+def page(rows=(), links=(), cat="HNL 332 FO"):
+    """A synthetic mobile open time page: rows (pairing, start 'DDMon'), links (bcid, text), its category."""
     trs = "".join(f"<tr><td>{p}</td><td>{s}</td><td>{s}</td><td>6.10</td><td>-none-</td><td></td><td></td>"
                   f"<td>09:00</td><td>15:00</td><td>1</td><td></td></tr>" for p, s in rows)
     a = "".join(f'<a href="mobileopentimepot.cgi?BCID={b}&amp;From=MainMenu">{t}</a> ' for b, t in links)
-    return f"<html><body><h3>Open Time Pot HNL 332 FO</h3>{a}<table>{trs}</table></body></html>"
+    return f"<html><body><h3>Open Time Pot {cat}</h3>{a}<table>{trs}</table></body></html>"
 
 
 NOV = [("H3901", "26Nov"), ("H3902", "28Nov")]
@@ -142,7 +142,10 @@ def test_next_month_reads_december_now_and_keeps_it_after_dec_1_with_one_page_a_
 
 def test_next_month_falls_back_to_this_month_while_the_next_page_is_refused(mk):
     W, fl, pages = _w(mk, at(2026, 12, 20), "Next month", {"003.153": page(DEC), "003.154": page(DEC)})
-    assert _check(W, fl)[1] == ["003.153", "003.154"]  # the first try: no rows of December's on hand yet
+    # the first check after a start: no rows of December's on hand yet, so December's page only; the try stays due
+    assert _check(W, fl)[1] == ["003.153"] and W.pot_status("2027-01") == "" and W.pot_due("2027-01")
+    assert _check(W, fl)[1] == ["003.154"]  # the try, in place of December's read (its rows of the check before)
+    assert W.MQ.last(f"{W.T}/pot/state")["count"] == 3  # December's rows stood in
     assert W.pot_status("2027-01") == "refused" and "2027-01" not in W.pot_learned()
     assert "January 2027 open time pot: BCID 003.154 refused (its trips start in December 2026)" in W.S["note"]
     assert list(W.S["pot_urls"]) == ["2026-12"] and _new(W) == []
@@ -165,13 +168,23 @@ def test_both_reads_this_and_next_once_open(mk):
 def test_a_learned_month_keeps_its_bcid_when_a_read_refuses_it(mk):
     W, fl, pages = _w(mk, at(2027, 1, 10), pages={"003.154": page(JAN)})
     assert _check(W, fl)[1] == ["003.154"] and W.pot_learned()["2027-01"]["bcid"] == "003.154"
-    pages["003.154"] = page(DEC)  # a page of another month's trips
-    assert _check(W, fl)[1] == ["003.154"] and W.pot_status("2027-01") == "refused"
-    assert W.pot_learned()["2027-01"]["bcid"] == "003.154" and "refused" in W.S["note"]
+    pages["003.154"] = page(DEC)  # one page of another month's trips: read again next check, its baseline kept
+    assert _check(W, fl)[1] == ["003.154"] and W.pot_status("2027-01") == "ok"
+    assert W.pot_rec("2027-01")["refusals"] == 1 and "refused" not in W.S.get("note", "")
+    assert list(W.S["pot_urls"]) == ["2027-01"] and W.S["baseline"]["2027-01"] == ["H3921|04Jan", "H3922|15Jan"]
+    pages["003.154"] = page(JAN + [("H3923", "20Jan")])  # a trip that came meanwhile alerts on the next good read
+    assert _check(W, fl)[1] == ["003.154"] and _new(W) == ["H3923"] and "refusals" not in W.pot_rec("2027-01")
+    pages["003.154"] = page(DEC)  # three refused reads in a row: the month waits for its try (6 h)
+    for _ in range(3):
+        assert _check(W, fl)[1] == ["003.154"]
+    assert W.pot_status("2027-01") == "refused" and W.pot_learned()["2027-01"]["bcid"] == "003.154"
+    assert "refused" in W.S["note"]
     assert _check(W, fl)[1] == [] and list(W.S["pot_urls"]) == []  # nothing read until its try (6 h)
+    assert "2027-01" in W.S["baseline"]  # kept: the month is still the select's
     W.CLOCK.t += 6 * 3600
-    pages["003.154"] = page(JAN)
+    pages["003.154"] = page(JAN + [("H3923", "20Jan"), ("H3924", "25Jan")])
     assert _check(W, fl)[1] == ["003.154"] and W.pot_status("2027-01") == "ok" and "refused" not in W.S["note"]
+    assert _new(W) == ["H3923", "H3924"]  # the trip posted while the month waited alerts (its baseline was kept)
 
 
 def test_a_month_is_derived_from_the_latest_learned_one(mk):
@@ -193,7 +206,8 @@ def test_the_close_in_folder_is_never_a_months_pot(mk):
     W, fl, pages = _w(mk, at(2026, 12, 5))
     W.S["close_in"] = {"bcid": "008.153", "verified": True}
     html = page(DEC, links=[("008.153", "Open time"), ("008.154", "Jan"), ("001.154", "Jan"),
-                            ("003.154", "Close in Opentime: &lt;16 Hrs to RPT")])
+                            ("003.154", "Close in Opentime: &lt;16 Hrs to RPT"),
+                            ("003.160", "Close in Opentime: &lt;16 Hrs to RPT")])  # not the derived 003.154 either
     W.pot_link_scan(html, W.mobile_pot_url("003.153"), "2026-12")
     assert not W.S.get("pot_cands")
     assert not W.pot_cand("2027-01", "008.153", "menu", "main menu")  # a close-in BCID is never a candidate
@@ -318,6 +332,235 @@ def test_the_old_rediscovery_and_hard_coded_page_are_gone():
     assert "def discover_pot_urls" not in src and "MOBILE_POT" not in src
 
 
+# ---------------------------------------------------------------- 1.8.1 review fixes
+SEC = "OPEN TIME- Add/Swap/Drop requests"
+
+
+def _menu(W, fl, links):
+    """The main menu fake: each look reads links (a list the test may change); returns the list of looks made."""
+    W.OPTS["pot_section"] = "OPEN TIME"
+    looks = []
+    fl.ctx.new_page = lambda: looks.append(1) or _Page([_Frame(list(links))])
+    fl.save = lambda: None
+    return looks
+
+
+def _jan(b, i=0, sec=SEC):
+    return {"i": i, "section": sec, "month": "January", "href": f"javascript:openOT('/full/otframe.cgi?BCID={b}');"}
+
+
+def test_a_menu_bcid_of_another_category_is_never_a_months_pot(mk):
+    """flica-1: the menu names January as 001.154, a page of another category (HNL 332 CA) with January's trips: it is
+    refused (no learning, the derivation stays on 003), never read again; a menu naming both takes the 003 one."""
+    W, fl, pages = _w(mk, at(2026, 12, 5), "Both", {"003.153": page(DEC), "001.154": page(JAN, cat="HNL 332 CA")})
+    links = [_jan("001.154")]
+    looks = _menu(W, fl, links)
+    assert _check(W, fl)[1] == ["003.153", "003.154"] and not looks  # January's derived BCID: not open yet
+    assert _check(W, fl)[1] == ["003.153", "001.154"] and looks == [1]  # the menu's BCID, read and checked
+    assert "2027-01" not in W.pot_learned() and W.pot_derive("2027-02") == "003.155"
+    rec = W.pot_rec("2027-01")
+    assert rec["status"] == "refused" and rec["why"] == "not an open time page of HNL 332 FO"
+    assert "001.154" in rec["refused"] and not (W.S.get("pot_cands") or {}).get("2027-01")
+    assert W.pot_pick("2027-01") == ("003.154", "derived")
+    assert _check(W, fl)[1] == ["003.153", "003.154"]  # its pick again: still not open, tried again tomorrow
+    for _ in range(40):  # 6 h 40 min: one more look names 001.154 again, never read again
+        _check(W, fl)
+    assert looks == [1, 1] and _pot_loads(W, fl).count("001.154") == 1
+    # a menu that names both: the latest learned month's category (003) is taken; it is January's pick, not open at
+    # its last read, so it is read on this check (not at tomorrow's try) and learned
+    links[:] = [_jan("001.154"), _jan("003.154", 1)]
+    W.CLOCK.t += 6 * 3600
+    pages["003.154"] = page(JAN)
+    assert _check(W, fl)[1] == ["003.153", "003.154"] and looks == [1, 1, 1]
+    assert W.pot_learned()["2027-01"]["bcid"] == "003.154" and W.pot_status("2027-01") == "ok"
+    # a derived pick on a page of another category is refused too, and the state note says why
+    W2, fl2, _ = _w(mk, at(2026, 12, 5), "Both", {"003.153": page(DEC), "003.154": page(JAN, cat="HNL 332 CA")})
+    assert _check(W2, fl2)[1] == ["003.153", "003.154"] and W2.pot_status("2027-01") == "refused"
+    assert "2027-01" not in W2.pot_learned()
+    assert ("January 2027 open time pot: BCID 003.154 refused (not an open time page of HNL 332 FO)"
+            in W2.S["note"])
+
+
+def test_the_menu_prefers_the_learned_category_and_never_takes_the_close_in_folder(mk):
+    """T1 (2): menu_pot_bcids itself: a link in the close-in section or naming a known close-in BCID gives nothing;
+    of two BCIDs for a month the one with the prefix asked for, else the first."""
+    W, fl, pages = _w(mk, at(2026, 12, 5))
+    W.S["close_in"] = {"bcid": "008.153", "verified": True}
+    links = [_jan("003.170", 0, "Close in Opentime: <16 Hrs to RPT"),
+             {"i": 1, "section": SEC, "month": "January", "href": "openOT('008.153'); BCID=003.161"}]
+    _menu(W, fl, links)
+    assert fl.menu_pot_bcids({"January": "2027-01"}) == {"2027-01": "003.161"}
+    links[:] = [_jan("001.154"), _jan("003.154", 1)]
+    assert fl.menu_pot_bcids({"January": "2027-01"}) == {"2027-01": "001.154"}
+    assert fl.menu_pot_bcids({"January": "2027-01"}, "003") == {"2027-01": "003.154"}
+
+
+def test_a_menu_that_names_the_pick_of_a_month_not_open_reads_it_then(mk):
+    """flica-2 and flica-4: Next month, January not open. When the main menu names its pick (the derived 003.154),
+    January is read at the next pot read, not a day later; Next month never reads two pot pages in a check."""
+    W, fl, pages = _w(mk, at(2026, 12, 14, 22), "Next month", {"003.153": page(DEC)})
+    links = []
+    looks = _menu(W, fl, links)
+    got = [_check(W, fl)[1] for _ in range(3)]
+    assert got == [["003.153"], ["003.154"], ["003.153"]] and looks == [1]  # the try, in place of December's read
+    assert W.pot_status("2027-01") == "not open yet"
+    for _ in range(12):  # 2 h of checks: December only
+        assert _check(W, fl)[1] == ["003.153"]
+    links[:] = [_jan("003.154")]  # Dec 15: January's pot opens and the menu names it
+    pages["003.154"] = page(JAN)
+    W.CLOCK.t = at(2026, 12, 15, 4, 30)
+    per = [_check(W, fl)[1] for _ in range(3)]
+    assert looks == [1, 1] and ["003.154"] in per[:2] and W.pot_learned()["2027-01"]["bcid"] == "003.154"
+    assert W.CLOCK.t < at(2026, 12, 15, 6)  # not at the daily try (Dec 15 22:10)
+    assert max(len(x) for x in got + per) == 1 and per[-1] == ["003.154"] and _new(W) == []
+
+
+def test_this_month_reads_one_page_even_when_it_links_to_the_next_month(mk):
+    """flica-3: This month (the default, James's) reads one pot page a check; a link on it to the next month's pot no
+    longer adds that month (1.8.0's watch_next_month link)."""
+    W, fl, pages = _w(mk, at(2026, 12, 16), pages={"003.153": page(DEC, links=[("003.154", "Jan")]),
+                                                   "003.154": page(JAN)})
+    W.OPTS["watch_next_month"] = True
+    for _ in range(5):
+        assert _check(W, fl)[1] == ["003.153"]
+    assert W.pot_months_of() == ["2026-12"] and "pot_link_next" not in W.S and not hasattr(W, "pot_link_on")
+    assert [x["month"] for x in W.pot_months_attr()] == ["2026-12"]
+
+
+def test_one_refused_read_keeps_the_baseline_and_both_alerts_the_trip_that_came_meanwhile(mk):
+    """alerts-refused-read-drops-baseline, M1 (Both): one odd December page keeps December read at the normal pace."""
+    W, fl, pages = _w(mk, at(2026, 12, 5), "Both", {"003.153": page(DEC)})
+    spy = []
+    W.swap_scan = lambda rows, read=None, quiet=(): spy.append((set(read), set(quiet)))
+    assert _check(W, fl)[1] == ["003.153", "003.154"] and spy[-1] == ({"2026-12", W.CLOSE_IN_KEY}, {"2026-12"})
+    pages["003.153"] = page(JAN)  # one page of January's trips
+    assert _check(W, fl)[1] == ["003.153"] and W.S["baseline"]["2026-12"]
+    assert spy[-1] == ({W.CLOSE_IN_KEY}, set())  # December not read: its swap ideas are kept, none pushed again
+    pages["003.153"] = page(DEC + [("H3919", "30Dec")])
+    assert _check(W, fl)[1] == ["003.153"] and _new(W) == ["H3919"] and spy[-1][1] == set()
+
+
+def test_a_first_read_from_another_bcid_sets_its_baseline_only(mk):
+    """alerts: the baseline remembers its BCID; a page of another BCID for the month (a new candidate) is a first
+    read."""
+    W, fl, pages = _w(mk, at(2026, 12, 5), pages={"003.153": page(DEC)})
+    assert _check(W, fl)[1] == ["003.153"] and W.S["baseline_bcid"] == {"2026-12": "003.153"}
+    W.S["pot_cands"] = {"2026-12": {"bcid": "003.199", "how": "menu", "at": W.now_iso()}}
+    pages["003.199"] = page(DEC + [("H3916", "22Dec")])
+    assert _check(W, fl)[1] == ["003.199"] and _new(W) == [] and W.pot_learned()["2026-12"]["bcid"] == "003.199"
+    pages["003.199"] = page(DEC + [("H3916", "22Dec"), ("H3917", "23Dec")])
+    assert _check(W, fl)[1] == ["003.199"] and _new(W) == ["H3917"]
+
+
+def test_a_candidate_that_is_no_open_time_page_gives_way_to_the_learned_bcid(mk):
+    """M2: a menu candidate whose page is not open never replaces the month's learned, proven BCID."""
+    W, fl, pages = _w(mk, at(2026, 12, 10), pages={"003.153": page(DEC)})
+    assert _check(W, fl)[1] == ["003.153"]
+    W.pot_cand("2026-12", "003.199", "menu", "main menu")
+    assert W.pot_pick("2026-12") == ("003.199", "menu")
+    assert _check(W, fl)[1] == ["003.199"]  # not open
+    assert W.pot_pick("2026-12") == ("003.153", "learned") and "003.199" in W.pot_rec("2026-12")["refused"]
+    pages["003.153"] = page(DEC + [("H3914", "24Dec")])
+    assert _check(W, fl)[1] == ["003.153"] and _new(W) == ["H3914"]  # read again at once, its baseline kept
+    W.pot_cand("2026-12", "003.199", "menu", "main menu")  # named again: refused for December
+    for _ in range(6):
+        assert _check(W, fl)[1] == ["003.153"]
+
+
+def test_a_refused_link_candidate_is_read_once_and_check_reads_page_links(mk):
+    """T1 (3), (9): a pot page read in check() names January's pot (a link): a candidate, read and refused once, never
+    read again although every December page still links to it."""
+    W, fl, pages = _w(mk, at(2026, 12, 5), "Both", {"003.153": page(DEC, links=[("003.160", "Jan")]),
+                                                  "003.160": page(DEC)})
+    assert _check(W, fl)[1] == ["003.153", "003.154"]
+    assert W.S["pot_cands"]["2027-01"]["bcid"] == "003.160"  # from the December page check() read
+    assert _check(W, fl)[1] == ["003.153", "003.160"] and W.pot_status("2027-01") == ""
+    assert "003.160" in W.pot_rec("2027-01")["refused"]
+    for _ in range(10):
+        _check(W, fl)
+    assert _pot_loads(W, fl).count("003.160") == 1 and not (W.S.get("pot_cands") or {}).get("2027-01")
+
+
+def test_a_main_menu_another_session_took_ends_the_check_killed(mk):
+    """T1 (4): the look meets FLICA's 'another session' page: check() returns killed (one FLICA session)."""
+    W, fl, pages = _w(mk, at(2026, 12, 5), "Both", {"003.153": page(DEC)})
+    W.OPTS["pot_section"] = "OPEN TIME"
+    _check(W, fl)
+    fl.ctx.new_page = lambda: _Page([], f"<html><body>{P.KILLED_TXT}</body></html>")
+    n = len(fl.loads)
+    assert _check(W, fl) == ("killed", []) and len(fl.loads) == n
+
+
+def test_the_1_8_0_finds_carry_over_and_are_stamped_gone(mk):
+    """T1 (5): a November find 1.8.0 kept under 'mobile' belongs to 2026-11 now: it gets gone_at when it leaves."""
+    W, fl, pages = _w(mk, at(2026, 11, 23), pages={"003.152": page(NOV[:1])})
+    rows = P.parse_pot(page(NOV))
+    W.DB.record_pot("mobile", rows, set(rows))
+    W.S["baseline"] = {"mobile": sorted(rows)}
+    W.pot_start()
+    assert _check(W, fl)[1] == ["003.152"] and _new(W) == []
+    got = dict(W.DB.db.execute("SELECT key, month || ' ' || ifnull(gone_at, '-') FROM finds").fetchall())
+    assert got["H3901|26Nov"] == "2026-11 -" and got["H3902|28Nov"].startswith("2026-11 2026-")
+
+
+def test_a_try_that_reads_keeps_its_baseline_and_an_empty_derived_page_sets_none(mk):
+    """T1 (6), (7): Next month's try that reads as January's pot is its baseline, kept into the next check; an empty
+    page on a derived BCID (Both) is never baselined, so its first trips later alert nothing."""
+    W, fl, pages = _w(mk, at(2026, 12, 20), "Next month", {"003.153": page(DEC), "003.154": page(JAN)})
+    assert [_check(W, fl)[1] for _ in range(2)] == [["003.153"], ["003.154"]] and _new(W) == []
+    pages["003.154"] = page(JAN + [("H3923", "20Jan")])
+    assert _check(W, fl)[1] == ["003.154"] and _new(W) == ["H3923"]
+    W2, fl2, pages2 = _w(mk, at(2026, 12, 5), "Both", {"003.153": page(DEC), "003.154": page()})
+    assert _check(W2, fl2)[1] == ["003.153", "003.154"] and W2.pot_status("2027-01") == "empty"
+    assert "2027-01" not in W2.S["baseline"] and "2027-01" not in W2.S["pot_urls"]
+    W2.CLOCK.t += 86400
+    pages2["003.154"] = page(JAN)
+    assert _check(W2, fl2)[1] == ["003.153", "003.154"] and _new(W2) == []
+    assert W2.pot_status("2027-01") == "ok" and W2.S["baseline"]["2027-01"]
+
+
+def test_a_learned_page_that_is_no_open_time_page_goes_through_the_layout_check(mk):
+    """T1 (8): a month's page that read as its pot and now is no open time page: retry, then a stop after 3."""
+    W, fl, pages = _w(mk, at(2026, 12, 10), pages={"003.153": page(DEC)})
+    assert _check(W, fl)[1] == ["003.153"]
+    pages["003.153"] = NOT_OPEN
+    assert _check(W, fl) == ("retry", ["003.153"]) and W.S["parse_fail"] == 1 and W.S["pot_urls"] == {}
+    assert _check(W, fl) == ("retry", ["003.153"]) and W.S["parse_fail"] == 2
+    assert _check(W, fl) == ("stop", ["003.153"]) and W.S["machine"] == "stopped_unexpected"
+
+
+@pytest.mark.parametrize("key,bad", [
+    ("pot_bcids", None), ("pot_bcids", []), ("pot_bcids", {"2026-11": "003.152"}),
+    ("pot_bcids", {"2026-11": {"bcid": 5}}), ("pot_months", []), ("pot_months", {"2026-11": "x"}),
+    ("pot_months", {"2026-11": {"bcid": "003.152", "status": "ok", "try_at": "soon", "refused": "003.152",
+                                "refusals": "2", "look_at": None}}),
+    ("pot_cands", {"2026-11": "x"}), ("pot_cands", {"2026-11": {"bcid": None}}), ("pot_cands", 7),
+    ("pot_link_next", "x"), ("baseline_bcid", []), ("baseline_bcid", {"2026-11": 3}), ("swap_seen_month", "x")])
+def test_a_state_with_pot_keys_of_the_wrong_type_never_stops_the_watcher(mk, key, bad):
+    """state-subkey-type-crash: pot_start and every check drop a pot key of the wrong type (a hand edit)."""
+    W, fl, pages = _w(mk, at(2026, 11, 23), pages={"003.152": page(NOV)})
+    W.S[key] = bad
+    W.pot_start()
+    assert W.pot_learned()["2026-11"]["bcid"] == "003.152"
+    assert _check(W, fl) == ("ok", ["003.152"])
+    W.S[key] = bad  # and in a running Watcher, before a check
+    assert _check(W, fl) == ("ok", ["003.152"]) and W.pot_months_attr()[0]["status"] == "ok"
+
+
+def test_a_month_not_planned_after_a_select_change_reads_not_read_yet(mk, monkeypatch):
+    """ui-3: right after a select change (or paused), a month whose page read ok is 'not read yet', never 'ok'."""
+    W, fl, pages = _w(mk, at(2026, 11, 23), pages={"003.152": page(NOV)})
+    monkeypatch.setattr(W, "WAKE", types.SimpleNamespace(set=lambda: None))
+    _check(W, fl)
+    assert [(x["status"], x["read"]) for x in W.pot_months_attr()] == [("ok", True)]
+    W.pot_month_cmd(W.MQ, "Next month")
+    W.pot_month_cmd(W.MQ, "This month")
+    assert [(x["month"], x["how"], x["status"], x["read"]) for x in W.pot_months_attr()] == [
+        ("2026-11", "learned", "not read yet", False)]
+    _check(W, fl)
+    assert [(x["status"], x["read"]) for x in W.pot_months_attr()] == [("ok", True)]
+
+
 # ---------------------------------------------------------------- D4: the clock card in Chromium
 WWW = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "www")
 CARD_PAGE = ("<!doctype html><html><head><meta name='viewport' content='width=device-width'><style>"
@@ -410,3 +653,8 @@ def test_the_clock_card_pot_select_on_a_phone_light_and_dark():
     portal = _render(PT.portal_card(src), {"p": (390, False, h, None)})["p"]
     assert not portal["shown"] and portal["mode"] == "Next month" and portal["months"] == "December 2026 (003.153)"
     assert portal["wide"] <= portal["vw"]
+    # ui-3: right after a select change a month whose last read was ok is not planned yet: 'not read yet', never 'ok'
+    one = [{"month": "2026-11", "name": "November 2026", "bcid": "003.152", "how": "learned", "status": "ok",
+            "read": False}]
+    changed = _render(src, {"c": (390, False, _clock_states("This month", one), None)})["c"]
+    assert changed["months"] == "November 2026 not read yet" and changed["wide"] <= changed["vw"]

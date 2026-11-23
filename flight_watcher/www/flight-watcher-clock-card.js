@@ -54,7 +54,8 @@ function fcPotText(list) {
   const ok = (r) => r && typeof r.month === "string";
   const read = list.filter((r) => ok(r) && r.read).map((r) => `${r.name || r.month} (${r.bcid || "?"})`);
   const rest = list.filter((r) => ok(r) && !r.read)
-    .map((r) => `${r.name || r.month} ${r.how === "not found yet" ? "not found yet" : r.status || "not read yet"}`);
+    .map((r) => `${r.name || r.month} ${r.how === "not found yet" ? "not found yet"
+      : r.status && r.status !== "ok" ? r.status : "not read yet"}`);  // 1.8.1: a page not planned yet is not read
   return [...read, ...rest].join(" \u00b7 ");
 }
 const FW_AGE_IDS = { last: "sensor.flight_watcher_last_check", state: "sensor.flight_watcher_state",
