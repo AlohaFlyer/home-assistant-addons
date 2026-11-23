@@ -13531,7 +13531,8 @@ def pot_rec(month):
 
 def pot_wait(month, this=None):
     """The try wait of a month whose pick is refused or not open: POT_TRY_NEXT_S for a next month, but never past its
-    bid period's first day (HST: Dec 2 for December), where this month's POT_TRY_THIS_S takes over (gate review: a January not open at the Dec 31
+    bid period's first day (HST: Dec 2 for December), where this month's POT_TRY_THIS_S takes over (gate review: a
+    January not open at the Dec 31
     try is tried at the Jan 1 roll-over, not at Jan 1 19:00)."""
     this = this or this_month_key()
     if month <= this:

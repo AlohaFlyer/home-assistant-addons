@@ -919,7 +919,7 @@ def test_the_links_of_a_page_of_another_category_name_no_candidates(mk):
     assert loads.count("001.154") == 1 and loads.count("001.155") == 0
 
 
-# ---------------------------------------------------------------- council loop 1 (Nov 23): the bid period, not the calendar
+# ---------------------------------------------------------------- council loop 1 (Nov 23): the bid period
 def _periods(W):
     """The pairing files' period bounds, as pdfs.py writes them: November Nov 1 to Dec 1, December Dec 2 to 31."""
     os.makedirs(W.CARD_PAIRINGS, exist_ok=True)
