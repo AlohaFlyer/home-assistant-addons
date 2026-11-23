@@ -627,11 +627,52 @@ def test_next_month_tries_the_next_month_while_this_months_page_is_empty(mk):
 
 def test_a_try_that_read_this_check_shows_as_read(mk):
     """ui-3 recheck: Both, January's pot opens: right after the check that reads it the card says ok, not 'not read
-    yet'."""
+    yet', in the state attribute the check itself publishes."""
     W, fl, pages = _w(mk, at(2026, 12, 5), "Both", {"003.153": page(DEC), "003.154": page(JAN)})
     assert _check(W, fl)[1] == ["003.153", "003.154"]
     jan = next(x for x in W.pot_months_attr() if x["month"] == "2027-01")
     assert (jan["bcid"], jan["status"], jan["read"]) == ("003.154", "ok", True)
+    attrs = [json.loads(p) for t, p in W.MQ.msgs if t == f"{W.T}/state_attr"]
+    jan = next(x for x in attrs[-1]["pot_months"] if x["month"] == "2027-01")
+    assert (jan["status"], jan["read"]) == ("ok", True)
+
+
+def test_an_empty_candidate_never_stands_in_for_the_learned_page(mk):
+    """recheck 2: Next month, Dec 20, December's learned 003.153 refused 3 times, then an empty menu candidate for
+    December while January's try is due: the learned page is read again next check, its rows and details kept."""
+    W, fl, pages = _w(mk, at(2026, 12, 20), "Next month", {"003.153": page(DEC)})
+    pubs = []
+    W.publish_pot = lambda flat: pubs.append(sum(1 for r in flat if r.get("month") == "2026-12"))
+    assert [_check(W, fl)[1] for _ in range(2)] == [["003.153"], ["003.154"]]
+    keys = sorted(W.S["baseline"]["2026-12"])
+    W.S["details"] = {k: {"legs": []} for k in keys}
+    pages["003.153"] = page(NOV)
+    for _ in range(3):
+        _check(W, fl)
+    assert W.pot_status("2026-12") == "refused"
+    pages["003.153"], pages["003.170"] = page(DEC), page()
+    W.CLOCK.t += 86400
+    W.pot_cand("2026-12", "003.170", "menu", "main menu")
+    got = [_check(W, fl)[1] for _ in range(3)]
+    assert got[0] == ["003.170"] and "003.153" in got[1] + got[2] and max(len(x) for x in got) == 1
+    assert pubs[-1] == 3 and sorted(W.S["details"]) == keys and _new(W) == []
+
+
+def test_stand_in_rows_are_never_days_old(mk):
+    """recheck 3: Both, then This month for 3 days, then Both: a refused first page of January publishes no old
+    January rows."""
+    W, fl, pages = _w(mk, at(2026, 12, 5), "Both", {"003.153": page(DEC), "003.154": page(JAN)})
+    pubs = []
+    W.publish_pot = lambda flat: pubs.append(sum(1 for r in flat if r.get("month") == "2027-01"))
+    _check(W, fl)
+    assert pubs[-1] == 2
+    W.S["pot_month"] = "This month"
+    for _ in range(3):
+        _check(W, fl, step=86400)
+    pages["003.154"] = page(DEC)
+    W.S["pot_month"] = "Both"
+    _check(W, fl)
+    assert pubs[-1] == 0 and _new(W) == []
 
 
 def test_no_click_once_a_link_named_the_months_bcid(mk):

@@ -14016,12 +14016,13 @@ def check(fl):
             pot_link_scan(html, url, month)  # D1b: a BCID link on it (another month's pot), no load
             if pot_verdict(month, url, html) == "skip":
                 rec, last = pot_rec(month), POT_ROWS.get(month)
-                if rec.get("status") == "ok" and rec.get("refusals") and last:
+                if (rec.get("status") == "ok" and rec.get("refusals") and last and month in S["baseline"]
+                        and last["n"] >= POT_SEQ["n"] - POT_REFUSE_MAX):  # rows of this run of reads only
                     # 1.8.1 review: a passing glitch on a month that read ok: its last good rows stand in this check
                     # (no alert, no baseline change), so its pairing details stay cached and its rows stay published
                     pot_all[month] = last["rows"]  # not in read_now: its swap ideas are kept, none pushed again
                     POT_ROWS[month] = {"rows": last["rows"], "n": POT_SEQ["n"]}
-                elif rec.get("status") == "empty" and bcid(url) == rec.get("bcid"):
+                elif rec.get("status") == "empty" and bcid(url) == pot_pick(month)[0]:  # its pick, not a candidate
                     POT_ROWS[month] = {"rows": {}, "n": POT_SEQ["n"]}  # an open time page with no trips: the Next
                     # month try can take its place at the next check (no rows to lose)
                 continue
@@ -14115,13 +14116,13 @@ def check(fl):
     keep = set(S["pot_urls"]) | read_now | (set(pot_months_of()) if S.get("pot_plan") else set())
     S["baseline"] = {m: v for m, v in S["baseline"].items() if m in keep}
     S["baseline_bcid"] = {m: v for m, v in (S.get("baseline_bcid") or {}).items() if m in S["baseline"]}
+    POT_READ["months"] = {m for m in read_now if MONTH_KEY_RE.match(str(m))}  # before the publish: a try read now
     HEALTH["pot"] = pot_note() if S.get("pot_plan") else ""  # 1.8.1: a refused page, this month's pot not found
     pot_attr_publish()
     live = {k for p in pot_all.values() for k in p}
     live |= {k for m in keep if m not in read_now for k in S["baseline"].get(m) or ()}  # 1.8.1 review: a month the
     # select still concerns but not read this check (refused once, a try waiting) keeps its pairing details cached
     S["details"] = {k: v for k, v in S.get("details", {}).items() if k in live}
-    POT_READ["months"] = {m for m in read_now if MONTH_KEY_RE.match(str(m))}
     S["relogin_streak"] = 0
     save_state(S)
     flat = [dict(v, month=m) for m, p in pot_all.items() for v in p.values()]
