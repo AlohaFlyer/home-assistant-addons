@@ -64,12 +64,18 @@ now at 12:58 was ignored ("the FLICA host limit holds the next check until 13:21
 - The pilot count the pace and the keep read (`pilots_running`) is taken once for the options in hand: run.py's rules
   print, so it swaps stdout, and the main loop and the MQTT thread doing that at once could leave stdout on a dead
   buffer; every such swap in the Watcher now goes one at a time (`STDOUT_LOCK`).
+- A chunk's keep and size (50 pages, 8 hunting) are taken at its start (`crew_mode`): Hunt switched on, or the
+  interval changed, during the chunk ends it before its next page, as a pause does (a probe keeps its letters, no try
+  counted); the run goes on at the next check with the new mode's keep and size.
+- The host-hour pre-check comes after the queue and the lettered-copy candidates and holds a chunk only when a FLICA
+  load is due: a run with nothing left to read ends even while the hour is full (`crew_last`, the month files).
 - Tests: tests/test_fw1726_host_share.py (host_keep and host_pace_s by hand, the admin's held note at 10 s and 5 s, the
   main loop holding a 5 s hunt inside 329 pot loads an hour, a crew index chunk that stops on GateSkip without a
   failed read and goes on later, the pre-check that loads and waits for nothing with no room (and its boundary), a
   probe that keeps its letters, the pilot count taken once with stdout left as it was under four threads, the hold
   line from the Watcher's own notes, the box in Chromium at 390 px light and 320 px dark, the box from the keyboard in
-  the portal's and Home Assistant's themes, a "Slowed." or "Waiting." clock card on screen);
+  the portal's and Home Assistant's themes, a "Slowed." or "Waiting." clock card on screen, a Hunt or interval change
+  mid-chunk, a finished run ending while the hour is full, the box with the pause switch on);
   tests/test_freq_ranges.py's admin 5 s hunt is held now.
 
 ## 1.7.25

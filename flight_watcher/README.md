@@ -124,7 +124,9 @@ publishes what it finds to Home Assistant over MQTT.
   check, and the log says "crew index: paused, the FLICA host hour is kept for the pot checks (N of 480 used)" once a
   run. So it does not read while a fast hunt runs, and reads about 170 to 270 pages an hour in normal mode. The keep
   holds no room for the admin's other reads, and pages read in normal mode stay in the hour for up to 60 min, so a
-  hunt switched on soon after a run can still wait for the host limit a while.
+  hunt switched on soon after a run can still wait for the host limit a while. Hunt or the interval changed during a
+  chunk ends it before its next page (the run goes on in the new mode), and a run with nothing left to read ends
+  even while the hour is full.
 - Pilots besides the admin (1.5.0): option `pilots` (or the older `second_pilot`) runs one more Watcher per pilot
   with its own data, MQTT prefix (`flight_watcher_<name>`), entities and card copies (Pilots and roles, below).
 
@@ -814,9 +816,10 @@ where it read "Last HH:MM:SS HST (N ago)", then Next as before; the schedule car
 it read "updated ...". It is the time since the Watcher's last good read (`sensor.<prefix>_last_check`, set only when a
 check succeeds), amber with "stale" past 1x and red with "very stale" past 2x the Watcher's longest cycle between two
 good reads, plain otherwise (review fix, its meaning of "1x" shipped under Ryan's "Ship it all", his to undo): the check interval in use (the
-normal one, the hunt one while hunting, or the pace a pilot's FLICA budget holds him to) x 1.3 for the Watcher's
-jitter, plus room for the check (3 min normal, 45 s hunting). Normal 6 min: stale past 10 min 48 s, very stale past 21
-min 36 s, and never later than the Watcher's own Stuck limit. It counts from later after a change of hunt or the
+normal one, the hunt one while hunting, or the pace the Watcher is held to: a pilot's FLICA budget, or since 1.7.26
+the admin's share of the host's hour) x 1.3 for the Watcher's jitter, plus room for the check (3 min normal, 45 s
+hunting). Normal 6 min: stale past 10 min 48 s, very stale past 21 min 36 s, and never later than the Watcher's
+own Stuck limit. It counts from later after a change of hunt or the
 interval, or while the FLICA budget or host limit holds the next check. "Data age unknown" with no colour when the
 last check time is not known (an unknown interval shows the age with no colour); red "Data age over 12 min, Watcher
 offline" when the app is down. Its hover text has the last good read in HST (with its day when that is not today), the

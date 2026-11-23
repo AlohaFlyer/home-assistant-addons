@@ -13,6 +13,7 @@ FLICA is never reached: synthetic pages and made-up names only ("Doe, Jane")."""
 import json
 import logging
 import math
+import os
 import re
 import sys
 import threading
@@ -283,6 +284,105 @@ def test_the_pre_check_stops_a_chunk_with_no_room_before_any_wait(mk, monkeypatc
         assert A.S["crew_run"]["pages"] == 1 and len(paused) == 1
 
 
+@pytest.mark.parametrize("change", ["hunt", "interval", "probe"])
+def test_a_hunt_or_interval_change_mid_chunk_ends_the_chunk(mk, monkeypatch, tmp_path, caplog, change):
+    """1.7.26 review (D1-keep-stale-within-chunk): a chunk's keep (host_keep) and size (50 pages, 8 hunting) are
+    worked out at its start. Hunt switched on, or the interval changed, during a normal-mode chunk (the third page's
+    read; for the lettered-copy probe, its first) ends the chunk before its next page, as a pause does: no load goes
+    to the gate with the old keep, nothing is failed, no try is counted, and the run goes on at the next check with
+    the new mode's keep and size (8 pages hunting), the probe from the letter it had reached."""
+    if change == "probe":
+        A = mk("", t=NOV10)  # no pilot: normal 6 min keeps 10 + 3 + 8 = 21
+        A.S["pot_urls"] = {"mobile": A.MOBILE_POT}
+        monkeypatch.setattr(A, "CREW_DIR", str(tmp_path / "crew_index"))
+        _setup9646(A, tmp_path)
+        A.S["crew_run"] = {"started": "2026-11-10T12:00:00", "pages": 0, "why": "slot", "slot": "2026-11-10T12"}
+        A.S["crew_slot"] = "2026-11-10T12"
+        at, old = 1, 21
+    else:
+        A = _admin(mk, hunt=False)
+        monkeypatch.setattr(A, "CREW_DIR", str(tmp_path / "crew_index"))
+        _file(tmp_path / "www", "2026-11", [_row(f"H{9000 + i}", " ".join(str(d) for d in range(1, 31)), rel=0)
+                                            for i in range(4)])
+        at, old = 3, 121
+    keeps, acquire = [], A.GATE.acquire
+
+    def rec(keep=0, abort=None):
+        keeps.append(keep)
+        return acquire(keep=keep, abort=abort)
+    monkeypatch.setattr(A.GATE, "acquire", rec)
+
+    def answer(u):
+        if len(fl.loads) == at:  # the setting changes while this page is read
+            if change == "interval":
+                A.S["freq"]["normal_min"] = 1
+            else:
+                A.FLAGS["hunt"] = True
+        if change == "probe":  # a lettered copy that does not exist (a miss)
+            pid = u.split("PID=")[1][:6].lower()
+            return f"<html><p>flica.net - mobile pairing pairing details {pid}:06nov</p></html>"
+        return _page(u)
+    fl = real_fl(A, answer)
+    assert A.host_keep() == old
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        assert A.crew_index_check(fl) == "ok"
+    what = "variant probe" if change == "probe" else "chunk"
+    assert [r.getMessage() for r in caplog.records if "changed" in r.getMessage()] == [
+        f"crew index: Hunt or the check interval changed, {what} stopped (run continues later)"]
+    assert len(fl.loads) == at and keeps == [old] * at and A.S["crew_run"]["pages"] == at  # the run keeps its place
+    assert A.RUN["host_keep"] == 0 and not A.S.get("breakers", {}).get("pairing", {}).get("fails")
+    if change == "probe":  # H9646A answered (a miss) and kept, no try counted
+        assert A.DB.get(A.CREW_VARIANT_TRIES_KEY)["H9646|2026-11-06"]["done"] == "A"
+        assert A.DB.get(A.CREW_VARIANT_TRIES_KEY)["H9646|2026-11-06"]["n"] == 0
+    else:
+        assert {r["status"] for r in A.DB.crew_rows().values()} == {"ok"} and len(A.DB.crew_rows()) == at
+    new = A.host_keep()
+    assert new == {"hunt": 329 + 3 + 100 + 8, "interval": 60 + 3 + 100 + 8, "probe": 90 + 3 + 8}[change]
+    assert A.crew_index_check(fl) == "ok"  # the next check: the new mode's keep for every load
+    assert keeps[at:] and set(keeps[at:]) == {new}
+    pids = [u.split("PID=")[1].split("&")[0] for _, u in fl.loads]
+    if change == "probe":
+        assert pids[:4] == ["H9646A", "H9646B", "H9646C", "H9646D"]  # on from B: A is not read again
+        assert A.DB.get(A.CREW_VARIANT_KEY)["H9646|2026-11-06"]["found"] == ""
+    else:
+        assert len(fl.loads) == at + (8 if change == "hunt" else 50)
+        assert len({u for _, u in fl.loads}) == len(fl.loads)  # none read twice
+
+
+def test_a_finished_run_ends_while_the_hour_is_full_with_no_load(mk, monkeypatch, tmp_path, caplog):
+    """1.7.26 review (precheck-holds-finished-run-open): the queue and the lettered-copy candidates come before the
+    host-hour pre-check, which holds a chunk only when a FLICA load is due. A run whose last page filled its chunk (so
+    it did not end there) ends at the next check even with the host's hour full: nothing loaded, no pause said, and
+    crew_last, the month files and the run's end as for any run."""
+    A = _admin(mk, hunt=False)
+    monkeypatch.setattr(A, "CREW_DIR", str(tmp_path / "crew_index"))
+    _file(tmp_path / "www", "2026-11", [_row(f"H{9000 + i}", " ".join(str(d) for d in range(1, 26)), rel=0)
+                                        for i in range(2)])
+    fl = real_fl(A, _page)
+    ends = []
+    monkeypatch.setattr(A, "pilotver_run_end", lambda insts: ends.append(len(insts)))
+    assert A.crew_index_check(fl) == "ok"
+    assert len(fl.loads) == A.CREW_PER_CHECK == 50 and A.S["crew_run"]["pages"] == 50 and not ends  # a full chunk
+    keep = A.host_keep()
+    _fill(A, A.GT.HOST_CAP_H - keep)
+    monkeypatch.setitem(A.RUN, "host_keep", keep)
+    assert A.crew_host_full()  # the old pre-check held this run open until the hour had room
+    monkeypatch.setitem(A.RUN, "host_keep", 0)
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        assert A.crew_index_check(fl) == "ok"
+    assert len(fl.loads) == 50 and "crew_run" not in A.S and ends == [50]
+    assert (A.S["crew_last"]["pages"], A.S["crew_last"]["ended"]) == (50, "ok")
+    msgs = [r.getMessage() for r in caplog.records]
+    assert "crew index run done: 50 pages (ok)" in msgs and not [m for m in msgs if "crew index: paused" in m]
+    assert any(f.endswith(".md") for f in os.listdir(tmp_path / "crew_index"))  # the month files, at the run's end
+    A.S["crew_slot"] = ""  # a new slot's run, with pages to read: the hour still holds it, nothing loaded
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        assert A.crew_index_check(fl) == "ok"
+    assert len(fl.loads) == 50 and A.S["crew_run"]["pages"] == 0
+    assert [m.getMessage() for m in caplog.records if "crew index: paused" in m.getMessage()] == [
+        f"crew index: paused, the FLICA host hour is kept for the pot checks ({480 - keep} of 480 used)"]
+
+
 def test_the_pilot_count_is_taken_once_and_stdout_is_never_left_redirected(mk, monkeypatch):
     """1.7.26 review: gap(), held_apply() and host_keep() run on the main loop and the MQTT thread; pilot_prefixes
     swaps sys.stdout (run.py's rules print). The count is taken once for the options in hand, and every redirect
@@ -398,6 +498,7 @@ CASES = {  # name: (state, note, pause, press)
     "gate": ("hunting", HOST_NOTE, "off", True),
     "paused": ("paused", "", "on", True),
     "stopped": ("stopped_unexpected", "3 check errors in a row", "off", True),
+    "pause switch on": ("hunting", "", "on", True),  # 1.7.26 review: the switch alone (a state not paused yet)
 }
 
 
@@ -428,8 +529,9 @@ def test_the_box_says_why_and_has_its_own_check_now(width, scheme):
                         # the clock card's (and the schedule card's at 390, as the 1.7.12 tests have it)
                         if card == "clock" or width >= 390:
                             assert g["fit"]["page"] <= width, (where, g["fit"])
-                        if name in ("paused", "stopped"):  # hidden where the clock card hides its Check now
-                            assert not a["shown"] and g["calls"] == [], where
+                        # hidden where the clock card hides its Check now: paused, stopped, the pause switch on
+                        if name in ("paused", "stopped", "pause switch on"):
+                            assert not a["shown"] and not z["shown"] and g["calls"] == [], where
                             continue
                         assert a["shown"] and a["tag"] == "BUTTON" and a["type"] == "button" and not a["dis"], where
                         assert a["hgt"] >= 44, (where, a["hgt"])  # a phone's touch target

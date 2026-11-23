@@ -9420,7 +9420,7 @@ def crew_variant_keep(insts, rows, base, vid, vt, crew, at):
     DB.remember_crew(vt)
 
 
-def crew_variants(fl, insts, rows, budget):
+def crew_variants(fl, insts, rows, budget, plan=None, mode=None):
     """FW-0068 (Ryan, Nov 8): FLICA rebuilds a package pairing it changes under the same id plus a letter (H3631 flown
     as H3631B on Nov 6) and the crew moves to it: the package trip's page then names no pilot (seats OPEN), and the new
     id is in no package and on no schedule the Watcher can read, so the trip was missing from that pilot's rebuilt
@@ -9442,55 +9442,25 @@ def crew_variants(fl, insts, rows, budget):
     failed come last, a page that stopped the path is no answer), and a trip is parked only once every letter had a
     try. insts and rows are updated in place. Returns (pages read, 'ok' or 'killed' / 'needs_login' / 'stop' when a
     page said so, halted by pause / re-arm or a stopped path). Ryan's instance only. Logs pairing ids and dates, never
-    names."""
+    names. 1.7.26 review: `plan` is crew_variant_plan's (crew_index_chunk takes it before its host-hour pre-check);
+    with `mode` (crew_mode) a change of Hunt or the interval ends the probe before its next read, its letters kept and
+    no try counted, as for a load the gate left out."""
     if not has("crew_index") or budget <= 0:
         return 0, "ok", False
-    now = local_now()
-    try:
-        reg0 = DB.get(CREW_VARIANT_KEY) or {}
-        cut = (now - timedelta(days=VARIANT_MAX_AGE_D + 30)).isoformat(timespec="seconds")
-        probed = {k: v for k, v in reg0.items() if str((v or {}).get("at") or "") >= cut}
-        for k, v in list(probed.items()):  # 1.4.12: a copy found before 1.4.12 that left seats unnamed: probe again
-            if (v or {}).get("v") != 2 and (v or {}).get("found"):
-                d = k.split("|", 1)[1]
-                named = set()
-                for vid in str(v["found"]).split(","):
-                    named |= CI.named_pilots((rows.get(f"{vid}|{d}") or {}).get("crew"))
-                if len(named) < max(CI.pilot_seats((rows.get(k) or {}).get("crew")), 1):
-                    del probed[k]
-        if probed != reg0:
-            DB.put(CREW_VARIANT_KEY, probed)
-        short0 = DB.get(CREW_VARIANT_TRIES_KEY) or {}  # 1.7.3: probes cut short, dropped once recorded or old
-        short = {k: v for k, v in short0.items() if k not in probed and str((v or {}).get("at") or "") >= cut}
-        if short != short0:
-            DB.put(CREW_VARIANT_TRIES_KEY, short)
-        run = S.get("crew_run")
-        tried = run.setdefault("variant_tried", []) if run else []  # a fetch error: not again in this run
-        cands = CI.variant_candidates(insts, rows, now, set(probed) | set(tried), VARIANT_MAX_AGE_D)[:VARIANT_PER_CHECK]
-    except Exception as e:
-        log.info("crew index: variant probe skipped: %s", e)
+    plan = crew_variant_plan(insts, rows) if plan is None else plan
+    if not plan:
         return 0, "ok", False
-    n = 0
+    probed, short, tried, cands = plan["probed"], plan["short"], plan["tried"], plan["cands"]
+    run, n = S.get("crew_run"), 0
     for base in cands:
         it = insts[base]
         d, complete = it["date"], True
         reads, stop = 0, None  # 1.7.3: this trip's pages read; the BreakerOpen that ended the probe
-        ids = CI.variant_ids(it["pairing"])
-        # 1.4.12: FLICA can split a rebuilt trip's crew over two copies (H3631B names the captain only): the copies are
-        # read until they name as many pilots as the package trip has pilot seats (its crew line, OPEN seats counted)
-        need = max(CI.pilot_seats((rows.get(base) or {}).get("crew")), 1)
-        found, got = [], set()
-        for v in ids:  # copies indexed already (from a schedule or an earlier probe) whose read names a pilot
-            r = rows.get(f"{v}|{d}") or {}
-            if f"{v}|{d}" in insts and r.get("status") == "ok" and CI.has_crew(r.get("crew")):
-                found.append(v)
-                got |= CI.named_pilots(r.get("crew"))
+        prev = short.get(base) or {}  # 1.7.3 review: earlier tries' letters answered (not read again) and failed (last)
+        ids, found, got, need = crew_variant_ids(base, insts, rows, prev)
         if found and len(got) >= need:
             log.info("crew index: %s %s flew as %s (indexed)", it["pairing"], d, ",".join(found))
-            ids = []
-        prev = short.get(base) or {}  # 1.7.3 review: earlier tries' letters answered (not read again) and failed (last)
         done, failed = set(prev.get("done") or ""), set(prev.get("fail") or "")
-        ids = [v for v in ids if v[-1] not in done | failed] + [v for v in ids if v[-1] in failed - done]
         for vid in ids:
             vk = f"{vid}|{d}"
             if vk in insts:  # indexed already, read by the queue, not by this probe
@@ -9508,6 +9478,9 @@ def crew_variants(fl, insts, rows, budget):
                 done.add(vid[-1])  # 1.7.3 review: never read, so never left for a later try
                 continue
             time.sleep(random.uniform(1.5, 3.5))  # before every read, the first too (pages read before this check)
+            if mode is not None and crew_mode() != mode:  # 1.7.26 review: no read with the old mode's keep
+                stop, complete = "mode", False
+                break
             n += 1
             reads += 1
             at = local_now().isoformat(timespec="seconds")
@@ -9560,7 +9533,8 @@ def crew_variants(fl, insts, rows, budget):
             log.info("crew index: %s %s names %d of %d pilots, the next letters are read too (crew line: %s)", vid, d,
                      len(got), need, CI.crew_mask(vt))
         parked = 0
-        kept = isinstance(stop, GT.GateSkip) and bool(RUN.get("host_keep"))
+        moved = stop == "mode"  # 1.7.26 review: Hunt or the interval changed: kept as a load the gate left out
+        kept = moved or (isinstance(stop, GT.GateSkip) and bool(RUN.get("host_keep")))
         if kept and reads:  # 1.7.26: left out for the host's hour: the letters answered so far are kept, no try counted
             failed -= done
             short[base] = {"n": int(prev.get("n") or 0), "at": local_now().isoformat(timespec="seconds"),
@@ -9594,12 +9568,80 @@ def crew_variants(fl, insts, rows, budget):
                 log.info("crew index: %s %s, no rebuilt copy names a pilot (%s tried)", it["pairing"], d,
                          "/".join(CI.variant_ids(it["pairing"])))
         if stop is not None:
-            if kept:
+            if moved:
+                log.info(CREW_MODE_NOTE, "variant probe")
+            elif kept:
                 crew_held(run)  # 1.7.26: one line a run, not one a probe
             else:
                 log.info("crew index: variant probe stopped (%s), run continues later", stop)
             return n, "ok", True
     return n, "ok", False
+
+
+def crew_variant_ids(base, insts, rows, prev):
+    """FW-0068: (the lettered copies of package trip `base` its probe reads, in order; the copies indexed already
+    whose read names a pilot; the pilots they name; the pilot seats to name). 1.4.12: FLICA can split a rebuilt trip's
+    crew over two copies (H3631B names the captain only): the copies are read until they name as many pilots as the
+    package trip has pilot seats (its crew line, OPEN seats counted), so none is read once the indexed copies name
+    them all. 1.7.3 review: the letters an earlier try answered (prev done) are not read again, the ones that failed
+    come last. A copy in the index is read by the queue, not by the probe (crew_variants skips it)."""
+    it = insts[base]
+    d, ids = it["date"], CI.variant_ids(it["pairing"])
+    need = max(CI.pilot_seats((rows.get(base) or {}).get("crew")), 1)
+    found, got = [], set()
+    for v in ids:  # copies indexed already (from a schedule or an earlier probe) whose read names a pilot
+        r = rows.get(f"{v}|{d}") or {}
+        if f"{v}|{d}" in insts and r.get("status") == "ok" and CI.has_crew(r.get("crew")):
+            found.append(v)
+            got |= CI.named_pilots(r.get("crew"))
+    if found and len(got) >= need:
+        ids = []
+    done, failed = set(prev.get("done") or ""), set(prev.get("fail") or "")
+    ids = [v for v in ids if v[-1] not in done | failed] + [v for v in ids if v[-1] in failed - done]
+    return ids, found, got, need
+
+
+def crew_variant_due(plan, insts, rows):
+    """1.7.26 review: True when crew_variants would load a page for one of plan's candidates (a lettered copy not
+    indexed yet and not answered by an earlier try), so crew_index_chunk's host-hour pre-check holds the chunk."""
+    for base in (plan or {}).get("cands") or []:
+        ids, _, _, _ = crew_variant_ids(base, insts, rows, (plan["short"].get(base) or {}))
+        if any(f"{v}|{insts[base]['date']}" not in insts for v in ids):
+            return True
+    return False
+
+
+def crew_variant_plan(insts, rows):
+    """FW-0068: what crew_variants probes: {probed, short, tried, cands} (the trips probed, the probes cut short so
+    far, the trips this run's fetch errors left out, the candidates: crewidx.variant_candidates, at most
+    VARIANT_PER_CHECK), {} when the probe is skipped. Drops records too old to matter and, 1.4.12, a record from before
+    1.4.12 whose copies leave seats unnamed (probed once more)."""
+    now = local_now()
+    try:
+        reg0 = DB.get(CREW_VARIANT_KEY) or {}
+        cut = (now - timedelta(days=VARIANT_MAX_AGE_D + 30)).isoformat(timespec="seconds")
+        probed = {k: v for k, v in reg0.items() if str((v or {}).get("at") or "") >= cut}
+        for k, v in list(probed.items()):  # 1.4.12: a copy found before 1.4.12 that left seats unnamed: probe again
+            if (v or {}).get("v") != 2 and (v or {}).get("found"):
+                d = k.split("|", 1)[1]
+                named = set()
+                for vid in str(v["found"]).split(","):
+                    named |= CI.named_pilots((rows.get(f"{vid}|{d}") or {}).get("crew"))
+                if len(named) < max(CI.pilot_seats((rows.get(k) or {}).get("crew")), 1):
+                    del probed[k]
+        if probed != reg0:
+            DB.put(CREW_VARIANT_KEY, probed)
+        short0 = DB.get(CREW_VARIANT_TRIES_KEY) or {}  # 1.7.3: probes cut short, dropped once recorded or old
+        short = {k: v for k, v in short0.items() if k not in probed and str((v or {}).get("at") or "") >= cut}
+        if short != short0:
+            DB.put(CREW_VARIANT_TRIES_KEY, short)
+        run = S.get("crew_run")
+        tried = run.setdefault("variant_tried", []) if run else []  # a fetch error: not again in this run
+        cands = CI.variant_candidates(insts, rows, now, set(probed) | set(tried), VARIANT_MAX_AGE_D)[:VARIANT_PER_CHECK]
+    except Exception as e:
+        log.info("crew index: variant probe skipped: %s", e)
+        return {}
+    return {"probed": probed, "short": short, "tried": tried, "cands": cands}
 
 
 CREW_HELD = {"key": None}  # 1.7.26: the run (its start) or 'reread' whose pause for the host hour is logged already
@@ -9644,15 +9686,28 @@ def crew_index_check(fl):
     crew_index_chunk."""
     if GATE.budget or not has("crew_index"):
         return crew_index_chunk(fl)
+    mode = crew_mode()  # 1.7.26 review: taken before the keep, so a change between the two ends the chunk too
     was = RUN.get("host_keep") or 0
     RUN["host_keep"] = host_keep()
     try:
-        return crew_index_chunk(fl)
+        return crew_index_chunk(fl, mode)
     finally:
         RUN["host_keep"] = was
 
 
-def crew_index_chunk(fl):
+def crew_mode():
+    """1.7.26 review (D1): what a crew index chunk's keep (host_keep) and size (CREW_PER_CHECK, CREW_PER_CHECK_HUNT)
+    are worked out from, once at its start: Hunt and the check interval settings. A change during the chunk (Hunt
+    switched on, a new interval) ends it before its next page, as a pause does, so no page goes to the gate with the
+    old mode's keep; the run goes on at the next check, in the new mode."""
+    fq = freq()
+    return bool(FLAGS.get("hunt")), fq["hunt_s"], fq["normal_min"]
+
+
+CREW_MODE_NOTE = "crew index: Hunt or the check interval changed, %s stopped (run continues later)"
+
+
+def crew_index_chunk(fl, mode=None):
     """Read up to CREW_PER_CHECK pairing pages of the current crew index run (GET only, 1.5-3.5 s apart, each URL
     through SUB.safe_get and SM.safe_get). A run starts at the first check after each 6 h slot (once per slot, saved
     in state) or on Update schedules, and reads at most CREW_PER_RUN pages over as many checks as it takes.
@@ -9660,7 +9715,12 @@ def crew_index_chunk(fl):
     crew line cut at a seat code) are read first, one read each; with no run going a check reads just those. A
     re-read that fails keeps the trip's last good read. FW-0068: during a run, each chunk first probes up to
     VARIANT_PER_CHECK departed package trips that name no pilot for the rebuilt copy the crew flew (crew_variants).
-    Returns 'ok', or 'killed' / 'needs_login' / 'stop' when a page says so (the run is ended there)."""
+    Returns 'ok', or 'killed' / 'needs_login' / 'stop' when a page says so (the run is ended there). 1.7.26 review:
+    `mode` (crew_mode, crew_index_check takes it with the keep) sets the chunk's size, and a change of it during the
+    chunk ends the chunk before its next page; the queue and the lettered-copy candidates come before the host-hour
+    pre-check, which holds a chunk only when a FLICA load is due (a run with nothing left to load ends, loading
+    nothing)."""
+    mode = crew_mode() if mode is None else mode
     if not has("crew_index"):
         return "ok"
     if not BRK.allow("pairing"):  # 1.6.2: pairing pages stopped: no page is recorded as failed meanwhile
@@ -9688,23 +9748,31 @@ def crew_index_chunk(fl):
         DB.put(CREW_REREAD_KEY, {k: v for k, v in pending.items() if k in again})
     if not run and not again:
         return "ok"
-    if crew_host_full():  # 1.7.26: no room in the host's hour for one page: nothing loaded, the run keeps its place
-        crew_held(run)
+    n, res, halted, reread = 0, "ok", False, set()
+    per_check = CREW_PER_CHECK_HUNT if mode[0] else CREW_PER_CHECK  # hunting: short chunks, pot first
+    if not run:
+        per_check = min(per_check, CREW_REREAD_PER_CHECK)
+    # 1.7.26 review: what this chunk would load, before the pre-check: the lettered-copy probes and the queue
+    budget = min(per_check, CREW_PER_RUN - run["pages"]) if run else 0
+    plan = crew_variant_plan(insts, rows) if budget > 0 else {}
+    if run:
+        todo = CI.queue(insts, rows, local_now(), run["started"], again) if run["pages"] < CREW_PER_RUN else []
+    else:  # FW-0059: no run going: only the re-reads, soonest first
+        todo = sorted(again, key=lambda k: (CI.departs(insts[k]).isoformat(), k))
+    if (todo or crew_variant_due(plan, insts, rows)) and crew_host_full():
+        crew_held(run)  # 1.7.26: no room in the host's hour for one page: nothing loaded, the run keeps its place
         if run:
             save_state(S)
         return "ok"
-    n, res, halted, reread = 0, "ok", False, set()
-    per_check = CREW_PER_CHECK_HUNT if FLAGS.get("hunt") else CREW_PER_CHECK  # hunting: short chunks, pot first
-    if not run:
-        per_check = min(per_check, CREW_REREAD_PER_CHECK)
     if run:
         # FW-0068: package trips whose crew moved to a rebuilt copy (H3631 flown as H3631B), first; their reads
         # count in this chunk and this run
-        n, res, halted = crew_variants(fl, insts, rows, min(per_check, CREW_PER_RUN - run["pages"]))
+        n, res, halted = crew_variants(fl, insts, rows, budget, plan=plan, mode=mode)
         run["pages"] += n
-        todo = [] if res != "ok" or halted else CI.queue(insts, rows, local_now(), run["started"], again)
-    else:  # FW-0059: no run going: only the re-reads, soonest first
-        todo = sorted(again, key=lambda k: (CI.departs(insts[k]).isoformat(), k))
+        if res != "ok" or halted:
+            todo = []
+        elif n:  # the probes' reads may have indexed copies: the queue as it stands now
+            todo = CI.queue(insts, rows, local_now(), run["started"], again)
     awarded = CI.awarded_periods(insts, rows)  # FW-0016: bid periods with a read that named a pilot
     held0 = CI.held_periods(insts, rows, awarded)  # periods already held (their one probe is in todo)
     held, newly = set(held0), False
@@ -9727,6 +9795,10 @@ def crew_index_chunk(fl):
             continue
         if n:
             time.sleep(random.uniform(1.5, 3.5))
+        if crew_mode() != mode:  # 1.7.26 review: after the wait too, so no load goes with the old mode's keep
+            log.info(CREW_MODE_NOTE, "chunk")
+            halted = True
+            break
         n += 1
         if run:
             run["pages"] += 1
