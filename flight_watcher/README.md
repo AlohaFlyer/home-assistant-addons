@@ -376,9 +376,11 @@ Where a month's BCID comes from, in order: a BCID the main menu or a pot page li
 one learned for it (Ryan's two links, then each month whose page read with its own trips), else the latest learned
 month's suffix plus the months between, so one renumbering by FLICA is learned once. A page counts as a month's pot
 only when it is an open time page and most of its trips start in that month (a few days either side for a bid
-period's edges), and a BCID not learned yet only on a page of the pilot's category (`category_check`). A page of
+period's edges), and a BCID not learned yet only on a page that names the pilot's category (`category_check`, as a
+whole phrase: "FO" in "SFO" never counts). A page of
 another month's trips (or category) is refused (one log line and the state note) and the month's last good BCID is
-kept: a page that read as its month's pot is read again at the next check, its baseline kept, and only 3 refused
+kept: a page that read as its month's pot is read again at the next check, its baseline, rows and pairing details
+kept, and only 3 refused
 reads in a row put it on its try time; a menu or link BCID that is no open time page gives way to the learned one. No
 other BCID is guessed: a month whose BCID is refused or not open is tried again later and looked for on the main menu
 (its 'View Opentime Pot' links under `pot_section`, the latest learned month's prefix first, at most every 6 h a

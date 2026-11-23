@@ -15,10 +15,12 @@ can you look at both?" and "Keep the 22 s, set it to Both").
   plus the months between (`pot_bcid`; the suffix goes up by one a bid month: 003.154 is January 2027). The page read
   is the frameless mobile pot (`mobile_pot_url`), never `otframe.cgi`. A page counts as a month's pot only when it is
   an open time page and most of its trips start in that month (3 days either side for a bid period's edges), and a
-  BCID not learned yet only on a page of the pilot's category (`category_check`, HNL 332 FO; the menu prefers links
-  of the latest learned month's prefix, `003`). A page of another month's trips (or category) is refused (one log
+  BCID not learned yet only on a page that names the pilot's category (`category_check`, HNL 332 FO, as a whole
+  phrase: the mobile page's header reads "[HNL 332 FO]", so "FO" in an SFO layover never counts; the menu prefers
+  links of the latest learned month's prefix, `003`). A page of another month's trips (or category) is refused (one log
   line and the state note) and the month's last good BCID is kept: a page that read as its month's pot is read again
-  at the next check with its baseline kept, and only 3 refused reads in a row put it on its try time. A menu or link
+  at the next check with its baseline kept (its last good rows and pairing details stand in meanwhile, so no detail
+  page is read again), and only 3 refused reads in a row put it on its try time. A menu or link
   BCID that is no open time page gives way to the learned one at once. A month not found is tried again later and
   looked for on the main menu at most every 6 h (through the gate; a reCAPTCHA there is never answered) and in the
   links of pages read anyway; when the menu names its pick, that page is read then, not at its next try. Nothing else
@@ -29,7 +31,9 @@ can you look at both?" and "Keep the 22 s, set it to Both").
   pages at the next check and wakes the loop like the hunt switch.
 - No new loads with This month or Next month: one pot page a check. While the next month is not open, Next month tries
   it once a day in place of that check's read of this month (whose rows from the check before stand in; with none on
-  hand, as in the first check after a start, the try waits one check). A link on a pot page never adds a month:
+  hand, as in the first check after a start, the try waits one check; when both months are tries in one check, after
+  a pause or a restart, the next month's page goes first and this month's at the next check). A link on a pot page
+  never adds a month:
   This month is one page a check on every instance. Both reads two pot pages a check (and the
   Tradeboard, grid and request reads of both bid months); the 1.7.26 host pace and a pilot's FLICA budget spread
   that, and the held note says so. Ryan's hunt with James's Watcher running is then held to at least about 22 s apart
@@ -46,7 +50,8 @@ can you look at both?" and "Keep the 22 s, set it to Both").
   check, never a stop.
 - The clock card shows the Pot select (44 px on a phone) and the month or months each check reads ("December 2026
   (003.153)"), from `sensor.<prefix>_state`'s new `pot_months` and `pot_mode`; a month not planned yet (right after a
-  select change) reads "not read yet". On a pilot's portal the select is not offered (no portal command; the portal
+  select change) reads "not read yet"; a try that read in the last check reads ok. On a pilot's portal the select is
+  not offered (no portal command; the portal
   contract and its fixture are unchanged): the card shows the months as text.
 - The mirror's Open time buttons follow the pot pages the Watcher reads; the swap map uses that pot's bid number.
 - After the update: the Pot month select on Ryan's clock card goes to **Both** (his Nov 23 choice): November's and

@@ -13444,6 +13444,7 @@ POT_REFUSE_MAX = 3  # a page that read as its month's pot is refused only after 
 POT_ROWS = {}  # month -> {"rows", "n"}: the rows of its last good read (memory only), for the Next month try
 POT_SEQ = {"n": 0}  # planned checks so far (a month's cached rows stand in only in the check right after their read)
 POT_ATTR = {"last": None}  # the pot_months attribute last published
+POT_READ = {"months": set()}  # the bid months read in the last check (a try that read included), for pot_months
 MONTH_KEY_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 POT_BAD = ("refused", "not open yet", "empty")  # statuses of a pick that is not (yet) its month's pot
 POT_SHOWN = {"ok": "ok", "refused": "refused", "not open yet": "not open yet", "empty": "not open yet"}
@@ -13687,10 +13688,14 @@ def pot_learn(month, b, how, why):
 
 
 def pot_category_ok(html):
-    """The page names the pilot's category (every word of OPTS category_check, as close_in_check reads it)."""
-    cat = [c.lower() for c in (OPTS.get("category_check") or "").split()]
-    text = visible_text(html or "") if cat else ""
-    return all(c in text for c in cat)
+    """The page names the pilot's category: OPTS category_check as a whole phrase of whole words, any case (the mobile
+    pot page's header reads "[HNL 332 FO]"). 1.8.1 review: a word inside another ('FO' in 'SFO' or 'for') or the
+    words apart never count, so a page of HNL 332 CA with an SFO layover is refused."""
+    cat = (OPTS.get("category_check") or "").lower().split()
+    if not cat:
+        return True
+    rx = r"(?<![a-z0-9])" + r"\s+".join(map(re.escape, cat)) + r"(?![a-z0-9])"
+    return bool(re.search(rx, visible_text(html or "")))
 
 
 def pot_verdict(month, url, html):
@@ -13795,6 +13800,7 @@ def pot_prepare(fl):
     the place of (its rows from the check before, so the try adds no page: one pot page a check; with no such rows,
     as in the first check after a start, the try waits for the next check, still due)."""
     POT_SEQ["n"] += 1
+    POT_READ["months"] = set()
     S["pot_plan"] = True
     pot_state_clean()
     this = this_month_key()
@@ -13820,6 +13826,10 @@ def pot_prepare(fl):
             cached[this] = c["rows"]
         else:  # no rows of this month's from the check before (a start): its page now, the try (still due) next check
             tries.remove(nxt)
+    elif pot_mode() == "Next month" and nxt in tries and this in tries:
+        # 1.8.1 review: both months are tries in one check (after a pause, a FLICA yield or a restart): the next
+        # month's page now, this month's try (still due) at the next check; Next month reads one pot page a check
+        tries.remove(this)
     return "", tries, cached
 
 
@@ -13854,9 +13864,9 @@ def pot_months_attr():
             st = pot_status(m)
             if how != "learned" and (st == "refused" or (m == this and st == "not open yet")):
                 how = "not found yet"
-            shown = "not read yet" if st == "ok" and m not in watch else POT_SHOWN.get(st, "not read yet")
-            out.append({"month": m, "name": month_name(m), "bcid": b, "how": how, "status": shown,
-                        "read": m in watch})
+            now = m in watch or m in POT_READ["months"]  # 1.8.1 review: a try that read this check counts as read
+            shown = "not read yet" if st == "ok" and not now else POT_SHOWN.get(st, "not read yet")
+            out.append({"month": m, "name": month_name(m), "bcid": b, "how": how, "status": shown, "read": now})
         return out
     except Exception as e:  # noqa: BLE001 (never stops a state publish)
         log.info("pot months attribute skipped: %s", type(e).__name__)
@@ -13946,6 +13956,7 @@ def pot_month_cmd(c, raw):
     if not changed:
         return False
     S["pot_urls"] = {}  # re-planned at the next check (pot_prepare)
+    POT_READ["months"] = set()
     held_apply()
     pot_attr_publish()
     return wake_check("pot month changed")
@@ -14004,6 +14015,15 @@ def check(fl):
         if MONTH_KEY_RE.match(month):  # 1.8.1 (D1): a planned bid month's page counts only when it is that month's pot
             pot_link_scan(html, url, month)  # D1b: a BCID link on it (another month's pot), no load
             if pot_verdict(month, url, html) == "skip":
+                rec, last = pot_rec(month), POT_ROWS.get(month)
+                if rec.get("status") == "ok" and rec.get("refusals") and last:
+                    # 1.8.1 review: a passing glitch on a month that read ok: its last good rows stand in this check
+                    # (no alert, no baseline change), so its pairing details stay cached and its rows stay published
+                    pot_all[month] = last["rows"]  # not in read_now: its swap ideas are kept, none pushed again
+                    POT_ROWS[month] = {"rows": last["rows"], "n": POT_SEQ["n"]}
+                elif rec.get("status") == "empty" and bcid(url) == rec.get("bcid"):
+                    POT_ROWS[month] = {"rows": {}, "n": POT_SEQ["n"]}  # an open time page with no trips: the Next
+                    # month try can take its place at the next check (no rows to lose)
                 continue
         if not is_pot_page(html, mobile=mobile):
             S["pot_urls"] = {}
@@ -14098,7 +14118,10 @@ def check(fl):
     HEALTH["pot"] = pot_note() if S.get("pot_plan") else ""  # 1.8.1: a refused page, this month's pot not found
     pot_attr_publish()
     live = {k for p in pot_all.values() for k in p}
+    live |= {k for m in keep if m not in read_now for k in S["baseline"].get(m) or ()}  # 1.8.1 review: a month the
+    # select still concerns but not read this check (refused once, a try waiting) keeps its pairing details cached
     S["details"] = {k: v for k, v in S.get("details", {}).items() if k in live}
+    POT_READ["months"] = {m for m in read_now if MONTH_KEY_RE.match(str(m))}
     S["relogin_streak"] = 0
     save_state(S)
     flat = [dict(v, month=m) for m, p in pot_all.items() for v in p.values()]

@@ -535,7 +535,9 @@ def test_a_learned_page_that_is_no_open_time_page_goes_through_the_layout_check(
     ("pot_months", {"2026-11": {"bcid": "003.152", "status": "ok", "try_at": "soon", "refused": "003.152",
                                 "refusals": "2", "look_at": None}}),
     ("pot_cands", {"2026-11": "x"}), ("pot_cands", {"2026-11": {"bcid": None}}), ("pot_cands", 7),
-    ("pot_link_next", "x"), ("baseline_bcid", []), ("baseline_bcid", {"2026-11": 3}), ("swap_seen_month", "x")])
+    ("pot_link_next", "x"), ("baseline_bcid", []), ("baseline_bcid", {"2026-11": 3}), ("swap_seen_month", "x"),
+    ("pot_months", {"2026-11": {"bcid": "003.152", "status": "refused", "try_at": "soon"}}),
+    ("pot_months", {"2026-11": {"bcid": "003.152", "status": "refused", "try_at": 0, "refused": "003.152"}})])
 def test_a_state_with_pot_keys_of_the_wrong_type_never_stops_the_watcher(mk, key, bad):
     """state-subkey-type-crash: pot_start and every check drop a pot key of the wrong type (a hand edit)."""
     W, fl, pages = _w(mk, at(2026, 11, 23), pages={"003.152": page(NOV)})
@@ -559,6 +561,87 @@ def test_a_month_not_planned_after_a_select_change_reads_not_read_yet(mk, monkey
         ("2026-11", "learned", "not read yet", False)]
     _check(W, fl)
     assert [(x["status"], x["read"]) for x in W.pot_months_attr()] == [("ok", True)]
+
+
+def test_the_category_is_a_whole_phrase_never_a_word_inside_another(mk):
+    """R1: an HNL 332 CA page with an SFO layover and 'Requests for open time' is no page of HNL 332 FO; the mobile
+    page's real header form '[HNL&nbsp;332 FO]' is."""
+    W, fl, pages = _w(mk, at(2026, 12, 5))
+    ca = page(JAN, cat="HNL 332 CA").replace("-none-", "SFO", 1).replace("<table>", "<p>Requests for open time</p>"
+                                                                           "<table>")
+    assert not W.pot_category_ok(ca)
+    assert not W.pot_category_ok(page(JAN, cat="FO HNL 332"))
+    assert W.pot_category_ok(page(JAN, cat="[HNL&nbsp;332 FO]")) and W.pot_category_ok(page(JAN, cat="hnl 332 fo"))
+    W2, fl2, _ = _w(mk, at(2026, 12, 5), "Both", {"003.153": page(DEC), "003.154": ca})
+    assert _check(W2, fl2)[1] == ["003.153", "003.154"] and W2.pot_status("2027-01") == "refused"
+    assert "2027-01" not in W2.pot_learned()
+
+
+def test_one_refused_read_keeps_the_months_rows_and_details_cached(mk):
+    """R2: one odd page of a month that read ok keeps its pairing details and its rows published (no detail
+    re-read at the next good read); after a restart (no rows in memory) the baseline still keeps the details."""
+    W, fl, pages = _w(mk, at(2026, 12, 10), pages={"003.153": page(DEC)})
+    pubs = []
+    W.publish_pot = lambda flat: pubs.append(sum(1 for r in flat if r.get("month") == "2026-12"))
+    assert _check(W, fl)[1] == ["003.153"]
+    assert _check(W, fl)[1] == ["003.153"]
+    keys = sorted(W.S["baseline"]["2026-12"])
+    assert len(keys) == 3
+    W.S["details"] = {k: {"legs": []} for k in keys}
+    pages["003.153"] = page(JAN)  # one page of January's trips
+    assert _check(W, fl)[1] == ["003.153"] and W.pot_rec("2026-12")["refusals"] == 1
+    assert sorted(W.S["details"]) == keys and pubs[-1] == 3
+    W.POT_ROWS.clear()  # a restart: no rows in memory
+    assert _check(W, fl)[1] == ["003.153"] and sorted(W.S["details"]) == keys
+    pages["003.153"] = page(DEC)
+    assert _check(W, fl)[1] == ["003.153"] and _new(W) == [] and len(W.S["details"]) == 3
+
+
+def test_next_month_reads_one_page_when_both_tries_are_due(mk):
+    """R3: Next month, December refused and waiting, January's try due in the same check (after a pause): the next
+    month's page now, December's at the next check; never two pot pages in a check."""
+    W, fl, pages = _w(mk, at(2026, 12, 20), "Next month", {"003.153": page(DEC)})
+    got = [_check(W, fl)[1] for _ in range(2)]
+    assert got == [["003.153"], ["003.154"]]  # January not open
+    pages["003.153"] = page(NOV)
+    for _ in range(3):  # December refused 3 times in a row: on its try time
+        got.append(_check(W, fl)[1])
+    assert W.pot_status("2026-12") == "refused"
+    W.CLOCK.t += 2 * 86400  # a pause: both tries due
+    pages["003.153"] = page(DEC)
+    for _ in range(4):
+        got.append(_check(W, fl)[1])
+    assert max(len(x) for x in got) == 1 and got[-4] == ["003.154"] and got[-3] == ["003.153"]
+
+
+def test_next_month_tries_the_next_month_while_this_months_page_is_empty(mk):
+    """next-month starved try: this month's pick is an empty open time page on an unproven BCID; the next month's try
+    still takes its place now and then, and January is learned once open."""
+    W, fl, pages = _w(mk, at(2027, 1, 2), "Next month", {"003.154": page(), "003.155": page(
+        [("H3931", "03Feb"), ("H3932", "10Feb")])})
+    W.S["pot_bcids"] = {"2026-12": {"bcid": "003.153", "how": "learned", "at": W.now_iso()}}
+    got = [_check(W, fl, step=3600)[1] for _ in range(30)]
+    assert "003.155" in sum(got, []) and max(len(x) for x in got) == 1
+    assert W.pot_learned()["2027-02"]["bcid"] == "003.155"
+
+
+def test_a_try_that_read_this_check_shows_as_read(mk):
+    """ui-3 recheck: Both, January's pot opens: right after the check that reads it the card says ok, not 'not read
+    yet'."""
+    W, fl, pages = _w(mk, at(2026, 12, 5), "Both", {"003.153": page(DEC), "003.154": page(JAN)})
+    assert _check(W, fl)[1] == ["003.153", "003.154"]
+    jan = next(x for x in W.pot_months_attr() if x["month"] == "2027-01")
+    assert (jan["bcid"], jan["status"], jan["read"]) == ("003.154", "ok", True)
+
+
+def test_no_click_once_a_link_named_the_months_bcid(mk):
+    """R4 (a): a link with no BCID after one that named January's BCID opens nothing (each click is a FLICA load)."""
+    W, fl, pages = _w(mk, at(2026, 12, 5))
+    links = [_jan("003.154"), {"i": 1, "section": SEC, "month": "January", "href": ""}]
+    _menu(W, fl, links)
+    n = len(fl.loads)
+    assert fl.menu_pot_bcids({"January": "2027-01"}, "003") == {"2027-01": "003.154"}
+    assert len(fl.loads) == n
 
 
 # ---------------------------------------------------------------- D4: the clock card in Chromium
