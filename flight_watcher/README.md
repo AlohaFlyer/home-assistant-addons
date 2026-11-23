@@ -365,10 +365,12 @@ so from Dec 1 it would still have read November. Now each check reads the pot of
   month it moves to the new month; that pot's first read is its baseline (no alerts).
 - **Next month**: the next bid month's pot once it is open (a page that reads as that month's pot), else this
   month's, so one pot page a check either way. While the next month is not open it is tried once a day, in place of
-  that check's read of this month (whose rows from the check before stand in).
+  that check's read of this month (whose rows from the check before stand in; with none on hand, as in the first
+  check after a start, that check reads both).
 - **Both**: this month's and the next month's once open: two pot pages a check (and the Tradeboard, grid and request
   reads of both bid months). The admin's host pace (1.7.26) and a pilot's FLICA budget spread that out, and the
-  held note says so.
+  held note says so: Ryan's hunt with James's Watcher running is held to at least about 22 s apart (2 pages x 3600 /
+  329 loads = 21.9 s; 10.9 s with one page). Ryan chose it on Nov 23 ("Keep the 22 s, set it to Both").
 
 Where a month's BCID comes from, in order: a BCID the main menu or a pot page link named for it (checked first), the
 one learned for it (Ryan's two links, then each month whose page read with its own trips), else the latest learned
