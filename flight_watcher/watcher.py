@@ -13178,12 +13178,61 @@ def email_check(fl, pot_all):
     return added
 
 
+POT_SENSOR_ROWS = 60  # the most pot rows the sensor carries (under ATTR_MAX bytes as well)
+
+
+def _pot_row_key(r):
+    """1.8.1 (C3): a sensor row's place: close-in trips first, then by bid month, then start date and pairing. The
+    start's year comes from the row's bid month ('01Dec' in November's runs to Dec 1; '31Dec' in January's is the
+    December before), a close-in row's from today (HST)."""
+    m = str(r.get("month") or "")
+    ok = bool(MONTH_KEY_RE.match(m))
+    today = date(int(m[:4]), int(m[5:7]), 1) if ok else local_now().date()
+    d = row_date(r.get("start") or str(r.get("dates") or "").split("-")[0], today=today)
+    return r.get("src") != "C", m if ok else "~" + m, d or date.max, str(r.get("pairing") or "")
+
+
+def pot_sensor_rows(flat):
+    """1.8.1 (C3): {count, pairings[, trimmed]} for sensor.<prefix>_pot_count, at most POT_SENSOR_ROWS rows and at
+    most ATTR_MAX bytes. With Pot month Both the check lists this month's rows first and the next month's after, and
+    flat[:60] plus cap_attrs' cut from the end left out the next month's (December's, the month Ryan trades). Now the
+    close-in trips go first, then each bid month read takes a row in turn (its soonest first) while the payload fits,
+    so no month is cut out while another keeps all of its rows; the rows kept go out by bid month, then start date.
+    trimmed: the rows left out (the row cap and the size cap); every one is still read and watched."""
+    keyed = sorted(((_pot_row_key(r), sensor_row(r)) for r in flat), key=lambda kr: kr[0])
+    rows = [r for _, r in keyed]
+    pos, lanes = {id(r): i for i, r in enumerate(rows)}, {}
+    for k, r in keyed:
+        lanes.setdefault(k[:2], []).append(r)
+    order = [r for k in sorted(lanes) if not k[0] for r in lanes[k]]  # the close-in folder's (src C) first
+    rest = [lanes[k] for k in sorted(lanes) if k[0]]
+    while any(rest):
+        order += [lane.pop(0) for lane in rest if lane]
+    out = {"count": len(rows), "pairings": []}
+    for r in order[:POT_SENSOR_ROWS]:
+        keep = sorted(out["pairings"] + [r], key=lambda x: pos[id(x)])
+        p = {"count": len(rows), "pairings": keep}
+        if len(rows) > len(keep):
+            p["trimmed"] = len(rows) - len(keep)
+        if attr_size(p) > ATTR_MAX:
+            break
+        out = p
+    if len(rows) > len(out["pairings"]):
+        out["trimmed"] = len(rows) - len(out["pairings"])
+        if "pot/state" not in ATTR_LOGGED and len(out["pairings"]) < min(len(rows), POT_SENSOR_ROWS):
+            ATTR_LOGGED.add("pot/state")
+            log.info("FW-0060: pot/state attributes over %d bytes: %d of %d pot rows on the sensor (each bid month a "
+                     "fair share)", ATTR_MAX, len(out["pairings"]), len(rows))
+    return out
+
+
 def publish_pot(flat):
-    """sensor.<prefix>_pot_count: the first 60 pot rows (close-in first). far_why and the FW-0042 smart fields stay off
-    the sensor (sensor_row: no card reads them there yet; they would cost rows under cap_attrs' 12 KB): the DB, the
-    finds month files, last_new and event/new_pairing keep them (the finds sensor carries FINDS_ATTR_KEYS only).
+    """sensor.<prefix>_pot_count: up to 60 pot rows (close-in first; 1.8.1 (C3): a fair share of each bid month read,
+    by bid month then start date, pot_sensor_rows). far_why and the FW-0042 smart fields stay off the sensor
+    (sensor_row: no card reads them there yet; they would cost rows under the 12 KB cap): the DB, the finds month
+    files, last_new and event/new_pairing keep them (the finds sensor carries FINDS_ATTR_KEYS only).
     1.7.17: a row commutable both ways carries cm, the airports (sensor_row), for the pot card's chip."""
-    pub("pot/state", {"count": len(flat), "pairings": [sensor_row(r) for r in flat[:60]]})
+    pub("pot/state", pot_sensor_rows(flat))
 
 
 # ---------------------------------------------------------------- 1.7.14 (Ryan, Nov 17): near misses in the open time pot
