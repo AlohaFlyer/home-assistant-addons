@@ -158,6 +158,9 @@ def test_every_call_service_maps_to_the_manifest(pilot):
                 ids = re.findall(r'data-e="([a-z_.0-9]+)"', text)
             elif data == "ent" or "...ent" in data:
                 ids = re.findall(r'ent = \{ entity_id: "([a-z_.0-9]+)" \}', text)
+            elif data == "{ entity_id: ids.chk }":  # 1.7.26: the data age box's Check now, the card's FW_AGE_IDS chk
+                ids = re.findall(r'\bchk: "([a-z_.0-9]+)"', text)
+                assert ids == [f"button.{P}_check_now"] and svc == "press", (fn, ids)
             else:
                 ids = re.findall(r'entity_id: "([a-z_.0-9]+)"', data)
             assert ids, (fn, call.group(0))

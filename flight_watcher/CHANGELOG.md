@@ -1,5 +1,58 @@
 # Changelog
 
+## 1.7.26
+
+The crew index yields to the pot checks, the admin's checks fit the host's hour, and the Data age box has its own
+Check now (Ryan's choice, Nov 22, 2026: "the crew index would only read while the hour still leaves room for your pot
+checks, and the Data age popup would show why reads are held and get its own Check now button", and no new loads). No
+new FLICA page load and no new FLICA URL: loads are only left out or spread out. The FLICA budgets (the host's 480 an
+hour, each pilot's 100), the pacing (1.5 to 3.5 s), roles.py and the portal contract are unchanged.
+
+What happened Nov 22 (live): the Data age went "very stale" (last good read 12:47:17 HST) because the host gate was
+full. The 12:00 HST crew index run read 300 pairing pages while the admin hunted every 10 s (one pot page a check), the
+pilot's Watcher used its 100 and the alert-email pickups added more, so every load waited until 13:21 HST, and Check
+now at 12:58 was ignored ("the FLICA host limit holds the next check until 13:21 HST").
+
+- The crew index yields (`host_keep`, `crew_index_check`): on the admin every crew index load (a run's chunk, the
+  FW-0059 re-reads, the FW-0068 lettered-copy probes) goes to the gate with a keep: the loads the coming hour needs for
+  his pot checks at the interval in use (plus the close-in folder while hunting and one check's start), 100 for each
+  pilot's Watcher and his schedule reads (8). A load the hour cannot spare is left out at once, never waited for: the
+  chunk stops, that page is neither read nor failed, no breaker counts it, the run keeps its place and goes on at a
+  later check, and the log says so once a run ("crew index: paused, the FLICA host hour is kept for the pot checks (N
+  of 480 used)"). A probe left out keeps the letters it read. Hunting at 10 s the keep is 440 (452 once the close-in
+  folder is known), so the crew index reads only while the last hour holds fewer than 40 (28) loads: not while that
+  hunt runs. In normal mode (6 min, the close-in folder known) the keep is 131: it reads while the hour holds fewer
+  than 349: about 170 to 270 pages an hour beside the other reads (the pilot's 100 used or not), so a run of 300
+  takes one to two hours.
+- The admin's checks fit the host's hour (`host_pace_s`, `gap`): his share is the host's 480 less 100 for each pilot's
+  Watcher (380 with one pilot); less his schedule reads (8), one check's start (3) and his other reads
+  (`ADMIN_OPT_RESERVE_H` 40: the close-in folder hunting, the request lists, pickups and in-flight re-checks,
+  alert-email pickups and his own trip times) that leaves 329 pot loads an hour. With one pot page his checks are at
+  least 3600 / 329 = 10.94 s apart: a 10 s hunt (and a 5 s one) is held to at least 11 s apart (each wait 10.94 to
+  14.2 s, 12.6 s on average, where a 10 s hunt waited 7 to 13 s), a 15 s hunt or slower is not held, and normal mode
+  never is (21.9 s with two pages a check). His state note says so in the pilot's words, "Hunting every 10 s is held
+  to 380 FLICA loads an hour: checks wait for the budget, at least 11 s apart", so the clock card reads "Slowed." and
+  the data age counts from that pace (no new rule in the card).
+- The Data age box (the shared data age block, both cards, every copy): a tap (or Enter or Space) on the stamp opens
+  it as before, and it now says why reads are held when the state note is a gate, host limit, budget, held pace or
+  stopped read path note ("Reads held: FLICA host limit, 480 page loads in the last hour from this host (every pilot's
+  Watcher); the next read at 13:21 HST."), and has its own Check now button: it presses the card's own
+  `button.<prefix>_check_now` (the clock card's service call; a pilot's copy its own, which his portal already
+  carries). It shows where the clock card shows Check now (idle or hunting, Pause off); while the gate holds the next
+  check it is marked unavailable with the reason beside it ("The FLICA host limit holds the next check until 13:21
+  HST: a press now would be ignored."); after a press it reads "Check now sent" until the next good read or 60 s, and
+  "Sending..." while a portal command is in flight. A tap on the button or beside it keeps the box open, a tap on its
+  text closes it; the button is a real button, reached with Tab, at least 44 px tall on a phone, with a visible focus
+  ring, AA contrast in light and dark, and Esc on it closes the box. The schedule card's stamp is a keyboard button too.
+- A fix on the clock card: the box's style (a bare `.info`, 1.7.12) also matched the card itself in its blue "info"
+  look, so a clock card that read "Waiting." or "Slowed." was hidden whole (status line and controls); with the
+  admin's hunt now held that would have been most of a hunt. The style is the box's alone now (`div.info`).
+- Tests: tests/test_fw1726_host_share.py (host_keep and host_pace_s by hand, the admin's held note at 10 s and 5 s, the
+  main loop holding a 5 s hunt inside 329 pot loads an hour, a crew index chunk that stops on GateSkip without a
+  failed read and goes on later, a probe that keeps its letters, the hold line from the Watcher's own notes, the box
+  in Chromium at 390 px light and 320 px dark, a "Slowed." or "Waiting." clock card on screen);
+  tests/test_freq_ranges.py's admin 5 s hunt is held now.
+
 ## 1.7.25
 
 ALPA's delay ruling as a general pay rule (Hark, Ryan's override of Nov 22, 2026; ALPA DART 417120, HAL ALPA Paycheck

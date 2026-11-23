@@ -45,7 +45,8 @@
 const FW_PORTAL = false;
 const FW_AGE_IDS = { last: "sensor.flight_watcher_last_check", state: "sensor.flight_watcher_state",
   next: "sensor.flight_watcher_next_check", hunt: "switch.flight_watcher_hunt_mode",
-  normal: "number.flight_watcher_normal_check_every", huntEvery: "number.flight_watcher_hunt_check_every" };
+  normal: "number.flight_watcher_normal_check_every", huntEvery: "number.flight_watcher_hunt_check_every",
+  chk: "button.flight_watcher_check_now", pause: "switch.flight_watcher_pause" };  // 1.7.26: the box's Check now
 const FC_HUNT = [5, 10, 15, 20, 30, 45, 60, 90];  // seconds (number.flight_watcher_hunt_check_every 5-90)
 const FC_NORM = [1, 2, 3, 5, 6, 10, 15, 20, 30, 45, 60, 90];  // minutes (number.flight_watcher_normal_check_every 1-90)
 const FC_PORTAL_MAX = { hunt: 90, normal: 90 };  // portal contract 1 revision 2 freq_limits (hunt_s 5-90, normal_min 1-90)
@@ -53,9 +54,10 @@ const FC_DEFAULT = { hunt: [5, 90], normal: [1, 90] };  // an entity with no min
 const FC_WANT_MS = 20000;  // 1.7.1 (F#4): how long a picked interval waits for the state to show it
 const FC_HELD = /^(Hunting every \d+ s|Checking every \d+ min) is held to \d+ FLICA loads an hour/;  // the Watcher's held_note
 const FC_TIME = new Intl.DateTimeFormat("en-US", { timeZone: "Pacific/Honolulu", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
-// 1.7.12 review: the box a tap on the data age stamp opens (its hover text), as the schedule card's for its titles
-const FC_INFO_CSS = `.info{display:none;position:fixed;left:8px;right:8px;bottom:14px;z-index:9;margin:0 auto;max-width:460px;font-size:12px;line-height:1.4;font-weight:400;padding:8px 10px;border-radius:8px;background:var(--secondary-background-color,#e5e5e5);color:var(--primary-text-color);box-shadow:0 4px 18px rgba(0,0,0,.35);cursor:pointer;white-space:normal;text-align:left}
-        .info::after{content:"tap to close";display:block;margin-top:6px;font-size:10px;color:var(--secondary-text-color);text-align:right}
+// 1.7.12 review: the box a tap on the data age stamp opens (its hover text), as the schedule card's for its titles.
+// 1.7.26: div.info, the box only: a bare .info also hid the card itself (ha-card class "info": Waiting., Slowed.)
+const FC_INFO_CSS = `div.info{display:none;position:fixed;left:8px;right:8px;bottom:14px;z-index:9;margin:0 auto;max-width:460px;font-size:12px;line-height:1.4;font-weight:400;padding:8px 10px;border-radius:8px;background:var(--secondary-background-color,#e5e5e5);color:var(--primary-text-color);box-shadow:0 4px 18px rgba(0,0,0,.35);cursor:pointer;white-space:normal;text-align:left}
+        div.info::after{content:"tap to close";display:block;margin-top:6px;font-size:10px;color:var(--secondary-text-color);text-align:right}
         .ag{cursor:pointer;border-radius:4px}.ag:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:2px}`;
 // ---- shared data age: keep identical in every card that holds it (tests/test_fw1712_data_age.py) ----
 // 1.7.12 (Nov 17: "Replace the two clocks ("updated" and "Last check") with one "data age" stamp. Turn it amber
@@ -145,6 +147,88 @@ function fwAgeFrom(states, ids, now) {
     note: (e("state").attributes || {}).note, next: e("next").state, lastChanged: e("last").last_changed,
     changed: [e("hunt").last_changed, e(hunting ? "huntEvery" : "normal").last_changed] });
 }
+// 1.7.26 (Nov 22: "the Data age popup would show why reads are held and get its own Check now button"): the box a tap
+// on the stamp opens says why reads are held when the Watcher's state note is a FLICA gate, host limit, budget, held
+// pace or stopped read path note ("Reads held: FLICA host limit, 480 page loads in the last hour from this host (every
+// pilot's Watcher); the next read at 13:21 HST."), and has a Check now button that presses the card's own check now
+// entity (ids.chk: the clock card's service call). It shows where the clock card shows its Check now (idle or hunting,
+// Pause off); while the gate holds the next check (the note names its time) it is marked unavailable with the reason
+// beside it, as the Watcher would ignore the press; after a press it reads "Check now sent" until the next good read or
+// FW_AGE_SENT_MS, and "Sending..." while a portal command is in flight. A tap on its row never closes the box.
+const FW_AGE_HELD = new RegExp([
+  String.raw`(?:Hunting every \d+ s|Checking every \d+ min) is held to \d+ FLICA loads an hour: checks wait for the `
+    + String.raw`budget(?: \(next at [0-9:]+ HST\)|, at least \d+ s apart)?`,
+  String.raw`FLICA (?:budget|host limit): [^;]*; the next one waits until [0-9:]+ HST`,
+  String.raw`FLICA [a-z_]+ read paused until [0-9:]+ HST(?:: [^;]*)?`].join("|"), "g");
+const FW_AGE_SENT_MS = 60000;
+const FW_AGE_BOX_CSS = `.fwa-h{margin-top:6px;font-weight:600}
+  .fwa-c{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;cursor:default}
+  .fwa-b{font:inherit;font-size:13px;font-weight:600;line-height:1.2;min-height:36px;padding:6px 14px;
+    border-radius:18px;border:1px solid var(--primary-text-color,#212121);background:var(--card-background-color,#fff);
+    color:var(--primary-text-color,#212121);cursor:pointer}
+  .fwa-b[aria-disabled="true"]{cursor:default;border-style:dashed}
+  .fwa-b:focus-visible,.ag:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:2px}
+  .fwa-r{flex:1 1 12em;min-width:0}
+  @media (max-width:700px),(pointer:coarse){.fwa-b{min-height:44px;min-width:44px}}`;
+// {line, hold}: the hold line for the box ('' when nothing holds reads), and the reason a press would be ignored now
+// ('' unless the gate holds the next check)
+function fwAgeHeld(note) {
+  const n = String(note || ""), parts = (n.match(FW_AGE_HELD) || []).map((p) => p.replace(/\.$/, "")
+    .replace(/^FLICA (budget|host limit): /, "FLICA $1, ")
+    .replace(/; the next one waits until /, "; the next read at "));
+  const at = FW_AGE_GATE.test(n) ? /(?:waits until|next at) ([0-9:]+) HST/.exec(n) : null;
+  return { line: parts.length ? `Reads held: ${parts.join("; ")}.` : "",
+    hold: at ? `The FLICA ${/^FLICA host limit/.test(n) ? "host limit" : "budget"} holds the next check until `
+      + `${at[1]} HST: a press now would be ignored.` : "" };
+}
+// the box's Check now from a card's hass (its states and, in the portal, fwPending) and the card's own memory of a
+// press (mem: {at, last}): {line, show, busy, off, label, reason}
+function fwAgeChk(hass, ids, mem, now) {
+  const s = (hass && hass.states) || {}, e = (k) => s[ids[k]] || {}, m = mem || {}, p = hass && hass.fwPending;
+  const st = e("state").state, held = fwAgeHeld((e("state").attributes || {}).note);
+  if (m.at && (now - m.at >= FW_AGE_SENT_MS || e("last").state !== m.last)) m.at = 0;
+  const busy = !!(p && Object.prototype.hasOwnProperty.call(p, ids.chk));
+  const show = ["idle", "hunting"].includes(st) && e("pause").state !== "on";
+  return { line: held.line, show, busy, off: busy || !!m.at || !!held.hold, reason: show ? held.hold : "",
+    label: busy ? "Sending..." : m.at ? "Check now sent" : "Check now" };
+}
+function fwAgePress(hass, ids, mem, now) {
+  if (!hass || !ids.chk || typeof hass.callService !== "function") return;
+  mem.at = now; mem.last = ((hass.states || {})[ids.last] || {}).state;
+  hass.callService("button", "press", { entity_id: ids.chk });
+}
+// fills the box (built once while it stays open, so the button keeps its focus as the age ticks): the stamp's text,
+// the hold line and the button's row. on: {press, close}; Esc on the button closes the box. A button that does nothing
+// now is aria-disabled (dashed, and a tap is ignored), never disabled, so the keyboard's focus stays on it
+function fwAgeBox(box, text, c, on) {
+  let t = box.querySelector(":scope > .fwa-t");
+  if (!t) {
+    const mk = (tag, cls) => { const x = document.createElement(tag); x.className = cls; return x; };
+    const row = mk("div", "fwa-c"), b = mk("button", "fwa-b"), r = mk("span", "fwa-r");
+    box.textContent = "";
+    t = mk("div", "fwa-t");
+    b.type = "button"; r.id = "fwa-r"; r.setAttribute("aria-live", "polite");
+    b.setAttribute("aria-describedby", "fwa-r");
+    b.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (b.getAttribute("aria-disabled") !== "true") on.press();
+    });
+    b.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { ev.stopPropagation(); on.close(); } });
+    row.addEventListener("click", (ev) => ev.stopPropagation());  // a tap beside the button keeps the box open too
+    row.append(b, r); box.append(t, mk("div", "fwa-h"), row);
+  }
+  const h = box.querySelector(":scope > .fwa-h"), row = box.querySelector(":scope > .fwa-c");
+  const b = row.querySelector(".fwa-b"), r = row.querySelector(".fwa-r");
+  if (t.textContent !== text) t.textContent = text;
+  if (h.textContent !== c.line) h.textContent = c.line;
+  h.style.display = c.line ? "" : "none";
+  row.style.display = c.show ? "" : "none";
+  if (b.textContent !== c.label) b.textContent = c.label;
+  b.setAttribute("aria-disabled", String(c.off));  // not disabled: it keeps the focus after a press
+  b.setAttribute("aria-busy", String(c.busy));
+  if (r.textContent !== c.reason) r.textContent = c.reason;
+  r.style.display = c.reason ? "" : "none";
+}
 // ---- end shared data age ----
 class FlightWatcherClockCard extends HTMLElement {
   setConfig(c) {
@@ -172,6 +256,7 @@ class FlightWatcherClockCard extends HTMLElement {
         .v{font-size:12px;line-height:16px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--secondary-text-color)}
         .ag[data-age="amber"] .v{color:var(--fw-warn,#8a5300)}.ag[data-age="red"] .v{color:var(--fw-err,#c62828)}
         ${FC_INFO_CSS}
+        ${FW_AGE_BOX_CSS}
       </style><ha-card><span class="ag" id="age" data-age="" role="button" tabindex="0" aria-expanded="false"><span class="lb">Data age </span><span class="v" id="agv">unknown</span></span></ha-card><div class="info" id="agi"></div>`;
       this._built = "age"; this._ageOpen = false;
       this._ageWire();
@@ -202,6 +287,7 @@ class FlightWatcherClockCard extends HTMLElement {
         .ivt{font-weight:600;color:var(--primary-text-color)}
         @media (max-width:700px){ha-card{font-size:12px;gap:6px}.ctl{margin-left:0;width:100%}.ag{flex-basis:100%}.s1,.s2{display:none}
           button{min-height:44px;min-width:44px;padding:6px 12px;font-size:13px}select{min-height:44px;min-width:56px;font-size:16px}}
+        ${FW_AGE_BOX_CSS}
       </style><ha-card><span class="st" id="st"></span><span class="m" id="msg"></span>
       <span class="sep s1" aria-hidden="true">|</span><span class="ag" id="age" data-age="" role="button" tabindex="0" aria-expanded="false">Data age unknown</span>
       <span class="sep s2" aria-hidden="true">|</span><span class="nx"><span class="k">Next</span> <span class="t" id="nt">-</span> <span class="k" id="na"></span></span>
@@ -241,7 +327,9 @@ class FlightWatcherClockCard extends HTMLElement {
     if (this._ageOpen) this._ageBox();
   }
   // 1.7.12 review: a tap, Enter or Space on the stamp opens its hover text in a box (no hover on a phone): the last
-  // good read in HST and the thresholds; a tap on the box, another on the stamp or Esc closes it
+  // good read in HST and the thresholds; a tap on the box, another on the stamp or Esc closes it. 1.7.26: the box also
+  // says why reads are held and has its own Check now (the shared block's fwAgeBox); a tap on that row keeps it open,
+  // Esc on its button closes it and gives the stamp the focus back
   _ageWire() {
     const el = this._root.getElementById("age"), box = this._root.getElementById("agi");
     const flip = (on) => { this._ageOpen = on; this._ageBox(); };
@@ -250,10 +338,14 @@ class FlightWatcherClockCard extends HTMLElement {
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); flip(!this._ageOpen); } else if (e.key === "Escape") flip(false);
     });
     box.addEventListener("click", () => flip(false));
+    this._fwa = this._fwa || {};
+    this._ageOn = { press: () => { fwAgePress(this._h, FW_AGE_IDS, this._fwa, Date.now()); this._ageBox(); },
+      close: () => { flip(false); el.focus(); } };
   }
   _ageBox() {
     const el = this._root.getElementById("age"), box = this._root.getElementById("agi"), on = !!this._ageOpen;
-    if (on && box.textContent !== el.title) box.textContent = el.title;
+    if (on) fwAgeBox(box, el.title, fwAgeChk(this._h, FW_AGE_IDS, this._fwa, Date.now()), this._ageOn);
+    else if (box.firstChild) box.textContent = "";  // closed: nothing (no button) is left in it
     if (box.style.display !== (on ? "block" : "")) box.style.display = on ? "block" : "";
     if (el.getAttribute("aria-expanded") !== String(on)) el.setAttribute("aria-expanded", String(on));
   }
