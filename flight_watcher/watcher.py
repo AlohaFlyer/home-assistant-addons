@@ -1258,6 +1258,7 @@ def drop_scan():
         return
     grid = S.get("grid") or {}
     ready = S.setdefault("drop_ready", {})
+    period_of = None
     for k in marks:
         it = next((x for x in _sched_items() if f"{x['trip']}|{x['start']}" == k), None)
         if not it:
@@ -1272,10 +1273,13 @@ def drop_scan():
             continue
         if k in ready:
             continue
-        b = sorted({bcid(u) for u in S.get("pot_urls", {}).values() if bcid(u)}, key=bcid_key)
+        # 1.8.1 (T10, LIVE-6): the folder of the trip's own bid period (a drop is filed inside one BCID: a December
+        # trip's in December's), never the earliest watched one
+        period_of = period_of or bid_period_fn()
+        month = _own_period(it["trip"], it["start"], period_of)
         own = S.get("own_trips", {}).get(k) or {}
         rep_h = SUB.hours_until(f"{it['start']}T{(own.get('report') or '')[:5]}", local_now()) if own.get("report") else None
-        rec = SUB.compose_drop(k, b[0] if b else None, rep_h, close_in_bcid=S.get("close_in_bcid"))
+        rec = _draft_month(SUB.compose_drop(k, draft_bcid(month), rep_h, close_in_bcid=draft_close_in(month)), month)
         rec.update({"key": k, "at": now_iso(), "days": days, "net": {d: (grid.get(d) or {}).get("net") for d in days},
                     "mode": SUB.DEFAULT_MODE, "sent": False,
                     "hours_to_report": round(rep_h, 1) if rep_h is not None else None})
@@ -3309,7 +3313,11 @@ def run_rules(month, key, row):
         lst = list(RULES["list"])
     if not lst:
         return
-    hits = R.evaluate(lst, row, DB.live_flags(), DB.would_submits_since(hst_midnight_utc()))
+    # 1.8.1 (POT-10): the rule months are the HST bid months: 'current' is today's (this_month_key; Dec 1 is still
+    # November's), and a trip counts in the bid month of its first day (bid_period_fn), never the UTC calendar's
+    per = bid_period_fn()
+    hits = R.evaluate(lst, row, DB.live_flags(), DB.would_submits_since(hst_midnight_utc()),
+                      today=local_now().date(), month_of=lambda d: per(d.isoformat()), this_month=this_month_key())
     for m in hits:
         DB.add_match(m, f"{month}|{key}")
         log.info("rule match %s %s would_submit=%s (%s)", m["rule_id"], row.get("pairing"),
@@ -7348,6 +7356,16 @@ def _regular_bcids():
     return {x for x in (bcid(u) for u in (S.get("pot_urls") or {}).values()) if x}
 
 
+def _close_in_periods():
+    """1.8.1 (POT-11, R4A-1): the bid period the close-in folder is of, as BCID last parts ({'152'}): today's
+    (this_month_key: Dec 1 is still November's), whatever the Pot month select, since trips under 16 h to report are of
+    today's bid period (on Next month the pot read is December's, yet the close-in trips are November's). From this
+    month's pot BCID: its watched page's, else its pick. The state on hand only: no FLICA load."""
+    this = this_month_key()
+    b = bcid((S.get("pot_urls") or {}).get(this) or "") or pot_pick(this)[0]
+    return {b.split(".")[-1]} if b else set()
+
+
 def close_in_scan(html, via):
     """FW-0034: look for the close-in folder ('Close in Opentime: <16 Hrs to RPT') on a page already read (a menu or
     an open time page; pot.close_in_folders: a link whose text names it, never a guess). A BCID found becomes the
@@ -7358,13 +7376,17 @@ def close_in_scan(html, via):
         ci = S.get("close_in") or {}
         ex = reg | {f"001.{b.split('.')[-1]}" for b in reg} | set(ci.get("rejected") or [])  # 001.n: Tradeboard
         found = close_in_folders(html, ex)
-        b = pick_close_in(found, {x.split(".")[-1] for x in reg})
+        per = _close_in_periods()  # 1.8.1 (R4A-1): today's bid period, never the watched pots' (Next month)
+        b = pick_close_in(found, per)
     except Exception as e:
         log.info("close-in scan of the %s failed: %s", via, e)
         return None
     if not b:
         return None
     ci = S.setdefault("close_in", {})
+    cur = ci.get("bcid")
+    if cur and b != cur and cur.split(".")[-1] in per and b.split(".")[-1] not in per:
+        return None  # 1.8.1 (R4A-1): a page naming only another bid period's folder never replaces today's
     if ci.get("bcid") != b:
         log.info("close-in folder found on the %s: BCID %s ('%s'); its open time page is read next, GET only", via, b,
                  next(f["text"] for f in found if f["bcid"] == b))
@@ -7412,7 +7434,7 @@ def close_in_menu_read(fl):
     followed). Returns (the BCID found or None, kind): kind is 'ok', or 'killed' / 'expired' / 'blocked' when a menu
     page said so (the caller ends the pass as the pot loop does)."""
     ci = S.setdefault("close_in", {})
-    periods = {x.split(".")[-1] for x in _regular_bcids()}
+    periods = _close_in_periods()  # 1.8.1 (R4A-1): today's bid period, whatever the Pot month select
     settled = ci.get("verified") and (not periods or ci["bcid"].split(".")[-1] in periods)  # a new bid period: look again
     if time.time() - ci.get("menu_at", 0) < (CLOSE_IN_RECHECK_S if settled else CLOSE_IN_GAP_S):
         return None, "ok"
@@ -12492,6 +12514,47 @@ def publish_swap_tests():
     pub("swap_tests", {"count": len(tests), "tests": tests[-20:], "mode": SUB.DEFAULT_MODE})
 
 
+def draft_bcid(month):
+    """1.8.1 (POT-5, LIVE-6, T10): the pot folder (BCID) a swap or drop draft of a trip of bid month `month` names.
+    FLICA files a request inside one BCID, so it is that month's own: its watched page's (S pot_urls), else its pick
+    (pot_pick: a menu link, the learned one, else the derivation). None when the month is not known (the draft then
+    says so), never another month's folder: R4A-4, nor a pick refused for the month, nor one not learned whose last
+    read was not its pot (refused, not open yet, empty). The state on hand only: no FLICA load."""
+    if not (isinstance(month, str) and MONTH_KEY_RE.match(month)):
+        return None
+    b = bcid((S.get("pot_urls") or {}).get(month) or "")
+    if b:
+        return b
+    b, how = pot_pick(month)
+    # 1.8.1 (R4A-4): never a pick refused for the month (another month's trips) or, not learned, not its pot (yet)
+    if b in pot_banned(month) or (how != "learned" and pot_status(month) in POT_BAD):
+        return None
+    return b
+
+
+def draft_close_in(month):
+    """1.8.1 (R4A-2): the close-in folder (BCID) a draft of a trip of bid month `month` names: the one trusted (S
+    close_in_bcid) only when it is that bid period's (its last part is that of the month's pot folder, draft_bcid), else
+    None, never another month's: on Dec 1 the folder read is November's, so a December trip reporting Dec 2 inside 16 h
+    names none (the draft says December's is not read)."""
+    ci, b = S.get("close_in_bcid"), draft_bcid(month)
+    return ci if ci and b and ci.split(".")[-1] == b.split(".")[-1] else None
+
+
+def _draft_month(rec, month):
+    """1.8.1 (POT-5): a draft record names the bid month its folder is of; a pot (or, R4A-2, close-in) folder not known
+    says so."""
+    ok = isinstance(month, str) and bool(MONTH_KEY_RE.match(month))
+    rec["bid_month"] = month if ok else ""
+    if rec.get("folder") == "pot" and not rec.get("bcid"):
+        rec["why"] = (f"{SUB.DRAFT}: the pot BCID of " + (month_name(month) if ok else "its bid month") +
+                      " is not known (no other month's folder is named)")
+    elif rec.get("folder") == "close-in" and not rec.get("bcid"):  # 1.8.1 (R4A-2): draft_close_in
+        rec["why"] = (f"{SUB.DRAFT}: the close-in folder BCID of " + (month_name(month) if ok else "its bid month") +
+                      " is not read yet (no other month's folder is named)")
+    return rec
+
+
 def swap_test(idea):
     """0.5.0 Test mode: compose the exact mobileotswap.cgi POST a swap would need for this idea, log it,
     keep the last 20 (sensor.flight_watcher_swap_test_requests) and push event/swap_test. FW-0028: a draft
@@ -12499,12 +12562,16 @@ def swap_test(idea):
     idea (auto: True), which only shows on the sensor."""
     if idea.get("auto"):
         return
-    b = sorted({bcid(u) for u in S.get("pot_urls", {}).values() if bcid(u)}, key=bcid_key)
+    # 1.8.1 (POT-5, LIVE-6): the folder of the idea's bid month (swap_scan's bid_month: the pot row's, which is his
+    # trip's; else his trip's own bid period), never the earliest watched one
+    give_trip, give_start = idea["for"].split("|")[:2]
+    month = idea["bid_month"] if "bid_month" in idea else _own_period(give_trip, give_start, bid_period_fn())
     rep_h = None
     if idea.get("report") and idea.get("start"):
         rep_h = SUB.hours_until(f"{idea['start']}T{idea['report'][:5]}", local_now())
     seat = "R" if (S.get("own_trips", {}).get(idea["for"]) or {}).get("seat") == "RO" else "F"
-    rec = SUB.compose(idea, b[0] if b else None, rep_h, seat=seat, close_in_bcid=S.get("close_in_bcid"))
+    rec = SUB.compose(idea, draft_bcid(month), rep_h, seat=seat, close_in_bcid=draft_close_in(month))
+    _draft_month(rec, month)
     rec.update({"key": idea["key"], "at": now_iso(), "mode": SUB.DEFAULT_MODE,
                 "hours_to_report": round(rep_h, 1) if rep_h is not None else None, "sent": False})
     # 1.7.18 (cross-item review of 1.7.15): the draft names the idea's auto flag, so pub()'s backstop sees it on
@@ -12737,7 +12804,9 @@ def swap_scan(pot_rows, read=None, quiet=()):
     1.8.1: read, the pot months whose rows this check holds (None: every row's month counts as read), and quiet, the
     months whose read this check was their first (D3): an idea of a quiet month is noted in swap_seen without a push;
     a pushed idea of a month not read this check (a page refused or skipped, a month the select left) stays in
-    swap_seen until its trip starts, so it is not pushed again when its month is read again."""
+    swap_seen until its trip starts, so it is not pushed again when its month is read again. POT-9: a marked trip's
+    ideas are of its own bid period only (as swap_auto's: one BCID), and each draft names that month's folder
+    (POT-5)."""
     marks = S.get("trade_away") or []
     own = S.get("own_trips", {})
     rows = [dict(r, src=r.get("src") or "O") for r in pot_rows] + [dict(r, src="T") for r in S.get("tb_details", {}).values()]
@@ -12750,14 +12819,21 @@ def swap_scan(pot_rows, read=None, quiet=()):
             items.setdefault(f"{it['trip']}|{it['start']}", it)
     ideas = []
     idea_month = {}  # idea key -> its row's pot month (1.8.1)
+    idea_per = {}  # idea key -> its bid period (1.8.1, POT-9: his trip's and the row's, one BCID; its draft's folder)
     for mk in marks:
         mine = own.get(mk) or {}
         trip = mk.split("|")[0]
         mine_it = items.get(mk)
         mine_days = _item_days(mine_it) if mine_it else []
         mine_pay = None
+        per = _own_period(trip, mk.split("|")[-1], period_of)
         for row in rows:
             if row.get("pairing") == trip or touches_vac(row) or touches_blocked(row):
+                continue
+            # 1.8.1 (POT-9): a FLICA swap stays inside one BCID: only a trip of his trip's bid period (the pot's own
+            # bid month, _pot_period, against his trip's, _own_period), as swap_auto keeps
+            row_days = _trip_days(row)
+            if _pot_period(row, row_days[0] if row_days else "", period_of) != per:
                 continue
             ok, ds, dc, why = SW.better(row, mine)
             if not ok:
@@ -12765,7 +12841,6 @@ def swap_scan(pot_rows, read=None, quiet=()):
             far = far_for(row, exclude=mk)
             if far != "OK":
                 continue
-            row_days = _trip_days(row)
             ok_grid, bad_days = G.swap_allowed(S.get("grid") or {}, mine_days, row_days)
             grid_note = "grid OK" if ok_grid else ("no shared day" if bad_days == ["no shared day"] else "grid red " + ", ".join(d[5:] for d in bad_days))
             if mine_pay is None:
@@ -12775,6 +12850,7 @@ def swap_scan(pot_rows, read=None, quiet=()):
                                cache, period_of)
             if row.get("month"):
                 idea_month[f"{row.get('pairing')}|{row.get('start')}>{mk}"] = row["month"]
+            idea_per[f"{row.get('pairing')}|{row.get('start')}>{mk}"] = per
             ideas.append(_swap_figs({"for": mk, "for_trip": trip, "for_credit": mine.get("credit", ""),
                                      "for_soft": mine.get("soft", ""), "pairing": row.get("pairing"),
                                      "start": row.get("start"), "end": row.get("end"), "dates": row.get("dates"),
@@ -12799,7 +12875,9 @@ def swap_scan(pot_rows, read=None, quiet=()):
                      i["pairing"], i["why"])
             continue
         ev = dict(i, key=k, at=now_iso())
-        swap_test(dict(i, key=k, report=next((r.get("report", "") for r in rows if r.get("pairing") == i["pairing"] and r.get("start") == i["start"]), "")))
+        rep = next((r.get("report", "") for r in rows
+                    if r.get("pairing") == i["pairing"] and r.get("start") == i["start"]), "")
+        swap_test(dict(i, key=k, report=rep, bid_month=idea_per.get(k, "")))  # 1.8.1 (POT-5): its folder's month
         if S.get("auto_swap") and has("auto_swap"):
             done = S.setdefault("auto_swap_log", {})
             if done.get(today, 0) < AUTO_SWAP_PER_DAY:

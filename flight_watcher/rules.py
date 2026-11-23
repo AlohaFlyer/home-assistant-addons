@@ -116,9 +116,19 @@ def _month_key(d):
     return f"{d.year:04d}-{d.month:02d}"
 
 
-def matches(rule, row, today=None):
-    """(True, '') or (False, reason). Every condition present must hold."""
+def _month_after(key):
+    y, mo = int(key[:4]), int(key[5:7])
+    return f"{y + mo // 12:04d}-{mo % 12 + 1:02d}"
+
+
+def matches(rule, row, today=None, month_of=None, this_month=None):
+    """(True, '') or (False, reason). Every condition present must hold.
+    1.8.1 (POT-10): today is the caller's date (the Watcher's HST day, so the row's year too); month_of(date) gives a
+    day's bid month 'YYYY-MM' (the Watcher's bid_period_key: Dec 1, 2026 is November's) and this_month the bid month
+    of today (the Watcher's this_month_key). 'current' is this_month, 'next' the month after it, and a trip counts in
+    the bid month of its first day. Without them, the calendar month (as before)."""
     today = today or date.today()
+    month_of = month_of or _month_key
     m = rule.get("match") or {}
     start = row_date(row.get("start") or (row.get("dates") or "").split("-")[0], today)
     if m.get("layover"):
@@ -130,11 +140,11 @@ def matches(rule, row, today=None):
     if m.get("months"):
         if not start:
             return False, "no date"
-        want = set()
-        nxt = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
-        for x in m["months"]:
-            want.add(_month_key(today) if x == "current" else _month_key(nxt) if x == "next" else x)
-        if _month_key(start) not in want:
+        cur = this_month or month_of(today)
+        if not re.match(r"^\d{4}-\d{2}$", str(cur)):
+            cur = _month_key(today)
+        want = {cur if x == "current" else _month_after(cur) if x == "next" else x for x in m["months"]}
+        if month_of(start) not in want:
             return False, "month"
     if m.get("date_from") or m.get("date_to"):
         if not start:
@@ -164,19 +174,22 @@ def matches(rule, row, today=None):
     return True, ""
 
 
-def evaluate(rules, row, live, submits_today, now=None):
+def evaluate(rules, row, live, submits_today, now=None, today=None, month_of=None, this_month=None):
     """Match one new row against all rules.
 
     live: {rule_id: bool} from the per-rule HA switch. submits_today: {rule_id: int}.
+    1.8.1 (POT-10): today, month_of and this_month go to matches (the Watcher's HST date and bid months; today
+    defaults to now's UTC date as before).
     Returns a list of match dicts (one per matching rule)."""
     now = now or datetime.now(timezone.utc)
+    today = today or now.date()
     out = []
     for r in rules:
         if not r["enabled"]:
             continue
         if r.get("expires_at") and now >= _iso_dt(r["expires_at"]):
             continue
-        ok, _ = matches(r, row, now.date())
+        ok, _ = matches(r, row, today, month_of, this_month)
         if not ok:
             continue
         age = now - _iso_dt(r["created_at"])
