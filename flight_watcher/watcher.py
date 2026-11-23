@@ -1874,7 +1874,8 @@ def check_tokens():
     if (S.get("close_in") or {}).get("bcid"):
         n += 1
     try:
-        if schedule_due(FLAGS.get("full") or bool(S.get("sched_stale"))):  # 1.8.2: a stale mark forces a read
+        # 1.8.2: a stale mark that forces a read (review: only one that would, never one already forced or waiting)
+        if schedule_due(FLAGS.get("full") or sched_stale_force(dry=True)):
             n += SCHED_TRIES_PER_READ
     except Exception:  # noqa: BLE001
         n += SCHED_TRIES_PER_READ
@@ -3800,9 +3801,10 @@ def own_trip_times(fl, full=False):
         empty_at.pop(k)
     for k in [k for k in stop_at if k not in keep]:
         stop_at.pop(k)
-    trig = _trig()["a"]  # 1.8.2: a seat trigger's evidence goes with its trip
-    for k in [k for k in trig if k not in keep]:
-        trig.pop(k)
+    with SCHED_TRIG_LOCK:  # 1.8.2: a seat trigger's evidence goes with its trip
+        trig = _trig()["a"]
+        for k in [k for k in trig if k not in keep]:
+            trig.pop(k)
     if n:
         save_state(S)
         time.sleep(random.uniform(1.5, 3.5))  # ... and after the last, before the check loads the pot
@@ -6589,7 +6591,7 @@ LOOKUP_PAGE = {"bd": "", "html": "", "at": 0}  # the last Schedule Lookup page r
 # the follow-on reads (FLICA's totals, the other months, last month). A follow-on that finds no load left waits for the
 # next due read (SchedFull). left None: no read is running (a direct call loads as before). lookup_ok: a Schedule Lookup
 # page of this read was a schedule (the path works, so one month's odd answer is not counted against it).
-SCHED_READ = {"left": None, "lookup_ok": False}
+SCHED_READ = {"left": None, "lookup_ok": False, "prev_at": 0}
 LOOKUP_MONTHS_KEEP_S = 6 * 3600  # the Schedule Lookup month list is kept this long (S lookup_months)
 OTHER_FAIL_FIRST_S = 3600  # a listed month that fails waits 1 h, then 2, 4, at most 6 h (S sched_other_fail)
 # 1.8.2 (Nov 23, 2026: Ryan's Dec 4 H3613 was swapped for the Dec 6 one about 00:53 to 01:03 HST; the December read at
@@ -6654,7 +6656,12 @@ def lookup_totals(fl, month):
     if not (SUB.safe_get(url) and SM.safe_get(url)):
         log.info("schedule %s totals: lookup url refused by safe_get", month)
         return {}
+    if SCHED_READ["left"] is not None and SCHED_READ["left"] <= 0:
+        raise SchedFull()  # no load left in this read (before the pacing wait: nothing is loaded)
     time.sleep(random.uniform(1.5, 3.5))
+    # 1.8.2 (S2, review): when the month's totals were last loaded, stamped on every load, a failed one too, so a
+    # totals page that fails takes its turn once in SCHED_TOTALS_STALE_S and never holds the other months' load
+    S["sched_totals"] = {"month": month, "at": read_stamp(), "ok": False}
     html = sched_fetch(fl, url)
     sp = IF.parse_cm_month(html) if classify(html) == "ok" else None
     if not sp or sp["month"] != month:
@@ -6664,21 +6671,26 @@ def lookup_totals(fl, month):
     LOOKUP_PAGE.update(bd=bd, html=html, at=time.time())
     note_lookup_months(html)
     SCHED_READ["lookup_ok"] = True
-    S["sched_totals"] = {"month": month, "at": read_stamp()}  # 1.8.2 (S2): when the month's totals were last loaded
+    S["sched_totals"]["ok"] = True
     return {k: v for k, v in (sp.get("totals") or {}).items() if k in LOOKUP_KEYS and v not in (None, "")}
 
 
-def totals_stale(month, now=None):
-    """1.8.2 (S2): True when the month's Block / Credit were last loaded (lookup_totals, or the month read on Schedule
-    Lookup itself) SCHED_TOTALS_STALE_S or more ago (read_stamp: the read that loaded them), or never."""
+def totals_age(month, now=None):
+    """1.8.2 (S2): seconds since the month's Block / Credit were last loaded (lookup_totals, a failed load too, or the
+    month read on Schedule Lookup itself; read_stamp: the read that loaded them); inf when never."""
     rec = S.get("sched_totals")
     if not isinstance(rec, dict) or rec.get("month") != month:
-        return True
+        return float("inf")
     try:
         at = float(rec.get("at") or 0)
     except (TypeError, ValueError):
-        return True
-    return (time.time() if now is None else now) - at >= SCHED_TOTALS_STALE_S
+        return float("inf")
+    return ((time.time() if now is None else now) - at) if at else float("inf")
+
+
+def totals_stale(month, now=None):
+    """1.8.2 (S2): True when the month's Block / Credit were last loaded SCHED_TOTALS_STALE_S or more ago, or never."""
+    return totals_age(month, now) >= SCHED_TOTALS_STALE_S
 
 
 def bd_month(bd):
@@ -6752,13 +6764,20 @@ def other_month_due(mon, cur_month, store=None, now=None):
     return "fresh" if other_month_age(mon, store, now) < other_month_fresh_s(mon, cur_month) else "due"
 
 
+def other_month_late(mon, cur_month, store=None, now=None):
+    """1.8.2: the month already waited a read past its freshness (overdue by SCHED_FUTURE_FRESH_S or more; never read
+    counts too)."""
+    return other_month_age(mon, store, now) - other_month_fresh_s(mon, cur_month) >= SCHED_FUTURE_FRESH_S
+
+
 def other_months_order(bds, cur_month, store=None):
     """1.8.2 (S1): the listed months other than cur_month in the order a read loads them: a month marked stale first;
-    then a month that already waited a read past its freshness (overdue by SCHED_FUTURE_FRESH_S or more), the most
-    overdue first, so the closed month is read once a day although the next month is due on every read; then the
-    future months (nearest first), then the past ones (latest first). A month whose last read failed goes after those
-    that did not, so one failing month never holds the others back. Only months the schedule keeps (the latest three
-    of those listed, on file and current, as _schedule_read keeps them) are read."""
+    then a month that already waited a read past its freshness (overdue by SCHED_FUTURE_FRESH_S or more: a future month
+    first, then the most overdue), so the closed month is read once a day although the next month is due on every
+    read, and never before a next month that already waited a read; then the future months (nearest first), then the
+    past ones (latest first). A month whose last read failed goes after those that did not, so one failing month never
+    holds the others back. Only months the schedule keeps (the latest three of those listed, on file and current, as
+    _schedule_read keeps them) are read."""
     store = (S.get("schedule") or {}) if store is None else store
     now = time.time()
     mons = [bd_month(b) for b in bds if isinstance(b, str) and re.fullmatch(r"\d{4}", b)]
@@ -6775,9 +6794,72 @@ def other_months_order(bds, cur_month, store=None):
         over = other_month_age(m, store, now) - other_month_fresh_s(m, cur_month)
         late = over >= SCHED_FUTURE_FRESH_S
         n = int(m.replace("-", ""))
-        return (0 if m in stale else 1, 1 if failed else 0, 0 if late else 1, -over if late else 0,
-                0 if m > cur_month else 1, n if m > cur_month else -n)
+        return (0 if m in stale else 1, 1 if failed else 0, 0 if late else 1, 0 if m > cur_month else 1,
+                -over if late else 0, n if m > cur_month else -n)
     return sorted(mons, key=rank)
+
+
+def kept_bds():
+    """The Schedule Lookup month list on file (S lookup_months bds, whatever its age), [] when none."""
+    kept = S.get("lookup_months") if isinstance(S.get("lookup_months"), dict) else {}
+    return [b for b in kept.get("bds") or () if isinstance(b, str)]
+
+
+def next_other_month(cur_month, store=None):
+    """1.8.2 review: the month other_months_check loads first at this read and why: (month, 'marked' | 'late' |
+    'due'), or ('', '') when none is due, the employee number is not known or the month list is older than
+    LOOKUP_MONTHS_KEEP_S (other_months_check would load the list page first). other_months_pending and totals_first
+    ask this."""
+    kept = S.get("lookup_months") if isinstance(S.get("lookup_months"), dict) else {}
+    try:
+        old = time.time() - float(kept.get("at") or 0) >= LOOKUP_MONTHS_KEEP_S
+    except (TypeError, ValueError):
+        old = True
+    if not S.get("own_emp") or not kept.get("bds") or old:
+        return "", ""
+    store = (S.get("schedule") or {}) if store is None else store
+    stale = sched_stale()
+    for m in other_months_order(kept_bds(), cur_month, store):
+        if other_month_due(m, cur_month, store) == "due":
+            return m, ("marked" if m in stale else "late" if other_month_late(m, cur_month, store) else "due")
+    return "", ""
+
+
+def read_at_prev(mon, store=None):
+    """1.8.2 review: the read before this one loaded the month (its read_ts is that read's start or later)."""
+    rec = ((S.get("schedule") or {}) if store is None else store).get(mon) or {}
+    try:
+        prev, ts = float(SCHED_READ.get("prev_at") or 0), float(rec.get("read_ts") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(prev) and rec.get("src") == "lookup" and ts >= prev
+
+
+def totals_first(month):
+    """1.8.2 (S2, review): on the mobile path (the current month's page has no Block / Credit), whether this read's
+    spare load goes to the month's totals (True) or to the month other_months_check loads first (False):
+    - nothing else due: the totals, as before;
+    - a month marked stale (a trigger, Check now, the refresh button) goes first while the totals are under
+      2 x SCHED_TOTALS_STALE_S old, or when the read before did not load that month; else the totals go first and the
+      mark forces the next check's read (marks that keep coming never hold the totals for ever);
+    - a month that already waited a read (late: the next month after a totals read, the closed month's daily read)
+      goes before totals under 2 x SCHED_TOTALS_STALE_S old, so the next month waits one read at most and the closed
+      month takes the totals' turn once a day (the totals are then up to about 2 h old);
+    - else the totals once they are SCHED_TOTALS_STALE_S old, the month before that."""
+    nxt, kind = next_other_month(month)
+    if not nxt:
+        return True
+    age, very = totals_age(month), 2 * SCHED_TOTALS_STALE_S
+    if kind == "marked":
+        if age < very or not read_at_prev(nxt):
+            return False
+        left, v = SCHED_READ.get("left"), sched_stale().get(nxt)
+        if isinstance(v, dict) and (left is None or left > 0):  # a load is left for the totals: they are then fresh
+            v["forced"] = False  # ... and the next check forces the read the mark asked for (no loop: one more)
+        return True
+    if kind == "late":
+        return age >= very
+    return age >= SCHED_TOTALS_STALE_S
 
 
 def merge_lookup_totals(fl, s, old=None):
@@ -6843,6 +6925,8 @@ def other_months_check(fl, cur_month):
     order = other_months_order(bds, cur_month, store)
     for mon in [m for m in list(stale) if m != cur_month and m not in order]:
         stale.pop(mon, None)  # 1.8.2: a month FLICA no longer lists (or the schedule no longer keeps) is never read
+        refresh_note(mon, "failed", f"Flight Watcher keeps only the latest three months ({month_name(mon)} is older)"
+                     if mon in {bd_month(b) for b in bds} else f"FLICA no longer lists {month_name(mon)}")
     for mon in order:
         bd = f"{mon[5:7]}{mon[2:4]}"
         state = other_month_due(mon, cur_month, store)
@@ -6921,7 +7005,8 @@ def mark_stale(month, why, trigger=True):
     if not isinstance(month, str) or not MONTH_KEY_RE.match(month):
         return False
     now, cur = time.time(), local_now().strftime("%Y-%m")
-    if trigger and (month == cur or month not in listed_months()):
+    # 1.8.2 review: only a month the read loads (FLICA lists it and the schedule keeps it: other_months_order)
+    if trigger and (month == cur or month not in other_months_order(kept_bds(), cur)):
         return False
     at = _sdict("sched_trig_at")
     try:
@@ -6936,33 +7021,53 @@ def mark_stale(month, why, trigger=True):
     return True
 
 
-def sched_stale_force():
-    """True when a month marked stale since the last read asks for a forced schedule read now (each mark forces one
+def sched_stale_force(dry=False):
+    """True when a month marked stale since the last read asks for a forced schedule read now. Each mark forces one
     read at most: a mark that read could not serve, say a read that needed both its loads for the current month, waits
-    for the next due read, so a mark never loops). A month backing off after a failed read does not force one."""
-    cur, store, listed = local_now().strftime("%Y-%m"), S.get("schedule") or {}, set(listed_months())
-    go = False
-    for m, v in list(sched_stale().items()):
-        if not isinstance(v, dict) or v.get("forced"):
-            continue
-        if m != cur and (m not in listed or other_month_due(m, cur, store) != "due"):
-            continue
-        v["forced"] = go = True
-    return go
+    for the next due read, so a mark never loops. 1.8.2 review: only the marks this read can serve are forced (the
+    current month's, and the first month other_months_check loads, as its spare load serves one month), so a second
+    marked month forces its own read at the next check. A month backing off after a failed read does not force one.
+    dry: only say whether it would (check_tokens), changing nothing."""
+    cur, store, marks = local_now().strftime("%Y-%m"), S.get("schedule") or {}, sched_stale()
+    go = [cur] if isinstance(marks.get(cur), dict) and not marks[cur].get("forced") else []
+    for m in other_months_order(kept_bds(), cur, store):
+        if other_month_due(m, cur, store) != "due":
+            continue  # backing off, or fresh: not loaded at this read
+        v = marks.get(m)
+        if isinstance(v, dict) and not v.get("forced"):
+            go.append(m)
+        break  # the read's spare load serves this month only
+    if not dry:
+        for m in go:
+            marks[m]["forced"] = True
+    return bool(go)
 
 
 def check_now_marks():
     """S3 (d): Check now (FLAGS full) reads the future months FLICA lists too, nearest first, through the read's
-    spare load (a second future month at the next check)."""
+    spare load (a second future month at the next check: sched_stale_force forces one month a read)."""
     cur = local_now().strftime("%Y-%m")
     for m in listed_months():
         if m > cur:
             mark_stale(m, "Check now")
 
 
+SCHED_TRIG_LOCK = threading.RLock()  # 1.8.2 review: the CrewTrac thread fires its evidence too (crewtrac_trigger)
+
+
+def _trig_locked(fn):
+    """The trigger evidence (S sched_trig) and its marks change on the main thread and the CrewTrac thread: one at a
+    time."""
+    def run(*a, **k):
+        with SCHED_TRIG_LOCK:
+            return fn(*a, **k)
+    run.__name__, run.__doc__ = fn.__name__, fn.__doc__
+    return run
+
+
 def _trig():
     t = _sdict("sched_trig")
-    for k in ("a", "b"):
+    for k in ("a", "b", "c"):
         if not isinstance(t.get(k), dict):
             t[k] = {}
     return t
@@ -6977,6 +7082,7 @@ def own_trip_month(trip, start):
     return ""
 
 
+@_trig_locked
 def seat_trigger(key, was, now_seat):
     """S3 (a): own_trip_times re-read one of his own trips of another month and he is no longer listed on it (its
     seat went from set to empty): that month is read early, once for this trip and change (S sched_trig a; the seat
@@ -6996,11 +7102,14 @@ def seat_trigger(key, was, now_seat):
     sched_triggers_fire()
 
 
+@_trig_locked
 def pot_own_trigger(pot_all, read):
     """S3 (b): a row in the open time pot is one of his own trips of another month (the same pairing and start date:
-    his seat went into the pot): that month is read early, once for this trip while the row stays (S sched_trig b; a
-    row gone from a pot read this check, or a trip gone from his schedule, ends it). read: the pot months read now."""
-    b, cur = _trig()["b"], local_now().strftime("%Y-%m")
+    his seat went into the pot): that month is read early, once for this trip (S sched_trig b). 1.8.2 review: the
+    evidence stays while the trip stays on his schedule, so a row that leaves the pot and comes back (pot rows are by
+    pairing and date, not seat) fires no second read; it ends when the trip leaves his schedule (a change), or when
+    its pot was read without the row for SCHED_STALE_KEEP_S. read: the pot months read now."""
+    b, cur, now = _trig()["b"], local_now().strftime("%Y-%m"), time.time()
     today = local_now().date()
     own = {}
     for mk, m in (S.get("schedule") or {}).items():
@@ -7020,41 +7129,76 @@ def pot_own_trigger(pot_all, read):
             if k in own:
                 seen[k] = pm
     for k in list(b):
-        v = b[k] if isinstance(b[k], dict) else {}
-        if k not in own or (k not in seen and v.get("pot") in read):
-            b.pop(k, None)
+        v = b[k]
+        if not isinstance(v, dict) or k not in own:
+            b.pop(k, None)  # the trip left his schedule: a new change fires again
+            continue
+        try:
+            last = float(v.get("seen") or 0)
+        except (TypeError, ValueError):
+            last = 0
+        if k not in seen and v.get("pot") in read and now - last >= SCHED_STALE_KEEP_S:
+            b.pop(k, None)  # gone from its pot that long: the row coming back is new evidence
     for k, pm in seen.items():
-        if k not in b:
-            trip, _, start = k.partition("|")
-            b[k] = {"month": own[k], "pot": pm, "why": f"his {trip} {start} is in the open time pot", "fired": False}
+        if k in b:
+            b[k]["seen"] = now
+            continue
+        trip, _, start = k.partition("|")
+        b[k] = {"month": own[k], "pot": pm, "why": f"his {trip} {start} is in the open time pot", "fired": False,
+                "seen": now}
     sched_triggers_fire()
 
 
+@_trig_locked
 def sched_triggers_fire():
     """Each trigger's evidence not fired yet marks its month (mark_stale), so one refused by the 5 min gap fires at a
-    later check instead; once fired it never fires again for the same evidence."""
-    t = _trig()
-    for kind in ("a", "b"):
-        for v in t[kind].values():
-            if isinstance(v, dict) and not v.get("fired") and mark_stale(v.get("month"), v.get("why") or kind):
+    later check instead; once fired it never fires again for the same evidence. 1.8.2 review: evidence for a month
+    that has a mark no read served yet (this one's or another's) is covered by that mark's read (one read for all the
+    evidence in hand); a CrewTrac month's evidence (c) is dropped once its month is the current one or after
+    SCHED_STALE_KEEP_S."""
+    t, cur, now = _trig(), local_now().strftime("%Y-%m"), time.time()
+    for m in list(t["c"]):
+        v = t["c"][m]
+        try:
+            old = now - float(v.get("at") or 0) > SCHED_STALE_KEEP_S
+        except (AttributeError, TypeError, ValueError):
+            old = True
+        if old or m == cur:
+            t["c"].pop(m, None)
+    marked = {m for m, v in list(sched_stale().items()) if isinstance(v, dict)}
+    for kind in ("a", "b", "c"):
+        for v in list(t[kind].values()):
+            if not isinstance(v, dict) or v.get("fired"):
+                continue
+            m = v.get("month")
+            if m in marked or mark_stale(m, v.get("why") or kind):
                 v["fired"] = True
+                marked.add(m)
 
 
+@_trig_locked
 def crewtrac_trigger(snap, rows, months):
     """S3 (c): the CrewTrac check found a mismatch in another month: that month is read early, at most once per
-    CrewTrac snapshot (S sched_trig ct, its pulled_at)."""
+    CrewTrac snapshot (S sched_trig ct, its pulled_at). 1.8.2 review: each month's mismatch is kept as evidence (S
+    sched_trig c {month: {sid, why, fired}}) and fired by sched_triggers_fire, so a month the 5 min gap refuses now is
+    read early at a later check instead of never."""
     t, cur = _trig(), local_now().strftime("%Y-%m")
     sid = str((snap or {}).get("pulled_at") or "")
     if not sid or t.get("ct") == sid:
+        sched_triggers_fire()  # the snapshot's evidence is in hand: a month the gap refused fires once it is over
         return
-    t["ct"] = sid
     bad = set()
     for r in rows or ():
         if isinstance(r, dict) and not r.get("ok") and r.get("start"):
             bad.add(own_trip_month(r.get("trip"), r.get("start")) or str(r["start"])[:7])
     bad |= {m.get("month") for m in months or () if isinstance(m, dict) and not m.get("ok") and m.get("month")}
-    for m in sorted(x for x in bad if x and x != cur):
-        mark_stale(m, f"the CrewTrac check differs in {month_name(m)}")
+    for m in sorted(x for x in bad if isinstance(x, str) and MONTH_KEY_RE.match(x) and x != cur):
+        old = t["c"].get(m)
+        if not (isinstance(old, dict) and old.get("sid") == sid):
+            t["c"][m] = {"month": m, "sid": sid, "why": f"the CrewTrac check differs in {month_name(m)}",
+                         "fired": False, "at": time.time()}
+    t["ct"] = sid
+    sched_triggers_fire()
 
 
 def refresh_note(month, state, why=""):
@@ -7086,6 +7230,8 @@ def refresh_refusal(month, cur):
         return f"FLICA's month list is not read yet: only {month_name(cur)} can be refreshed"
     if month not in listed:
         return f"FLICA does not list {month_name(month)}"
+    if month not in other_months_order(kept_bds(), cur):  # 1.8.2 review: listed, but the schedule keeps three months
+        return f"Flight Watcher keeps only the latest three months ({month_name(month)} is older)"
     if other_month_due(month, cur) == "wait":
         f = (S.get("sched_other_fail") or {}).get(month) or {}
         return f"{month_name(month)} did not read last time; next try {hst_hm(f.get('next'))} HST"
@@ -7295,7 +7441,7 @@ def schedule_check(fl, force=False):
     try:
         _schedule_read(fl, force)
     finally:
-        SCHED_READ.update(left=None, lookup_ok=False, lookup_failed=False)
+        SCHED_READ.update(left=None, lookup_ok=False, lookup_failed=False, prev_at=0)
 
 
 def other_months_pending(cur_month, stale_only=False):
@@ -7303,21 +7449,17 @@ def other_months_pending(cur_month, stale_only=False):
     off: other_month_due, as other_months_check asks it), so this read's last load goes to it and FLICA's totals keep
     their stored figures one read. 1.8.2: the 6 h sched_prev_at gate no longer holds it (other_months_check does not
     wait for it either); stale_only: only a month marked stale (a trigger or the refresh button)."""
-    kept = S.get("lookup_months") if isinstance(S.get("lookup_months"), dict) else {}
-    try:
-        old = time.time() - float(kept.get("at") or 0) >= LOOKUP_MONTHS_KEEP_S
-    except (TypeError, ValueError):
-        old = True
-    if not S.get("own_emp") or not kept.get("bds") or old:
-        return False
-    store, stale = S.get("schedule") or {}, sched_stale()
-    return any(other_month_due(m, cur_month, store) == "due" and (not stale_only or m in stale)
-               for m in other_months_order(kept["bds"], cur_month, store))
+    m, kind = next_other_month(cur_month)  # a month marked stale is ordered first whenever one is due
+    return bool(m) and (not stale_only or kind == "marked")
 
 
 def _schedule_read(fl, force):
     if force:
         SCHED_FORCED["used"] = True
+    try:  # 1.8.2 review: the read before this one (read_at_prev)
+        SCHED_READ["prev_at"] = float(S.get("sched_checked_at") or 0)
+    except (TypeError, ValueError):
+        SCHED_READ["prev_at"] = 0
     S["sched_checked_at"] = time.time()
     store = S.setdefault("schedule", {})
     cur_month = local_now().strftime("%Y-%m")
@@ -7330,14 +7472,13 @@ def _schedule_read(fl, force):
         read_at = now_iso()
         s["read_at"] = read_at  # 1.8.2 (S4): the card's refresh button waits for this (or 'updated') to move
         if s.get("src") == "lookup":
-            S["sched_totals"] = {"month": s["month"], "at": read_stamp()}  # its page carries the totals itself
+            S["sched_totals"] = {"month": s["month"], "at": read_stamp(), "ok": True}  # its page carries the totals
         else:
             old_tot = bool(old) and all(k in (old.get("totals") or {}) for k in LOOKUP_KEYS)
             # 1.8.2 (S2): the spare load goes to another month that is due, but the totals are loaded again first once
-            # they are over SCHED_TOTALS_STALE_S old (that month then waits one read), unless a month is marked stale
-            # (a trigger or the refresh button: it is read now). Nothing else due: the totals, as before.
-            if old_tot and other_months_pending(s["month"]) and (
-                    other_months_pending(s["month"], stale_only=True) or not totals_stale(s["month"])):
+            # they are over SCHED_TOTALS_STALE_S old (that month then waits one read); a month marked stale or one that
+            # already waited a read goes first (totals_first). Nothing else due: the totals, as before.
+            if old_tot and not totals_first(s["month"]):
                 merge_lookup_totals(None, s, old)  # 1.6.2 review: the stored figures; this read's load is a month's
             else:
                 merge_lookup_totals(fl, s, old)  # FW-0019: the mobile page has no Block / Credit; Schedule Lookup does

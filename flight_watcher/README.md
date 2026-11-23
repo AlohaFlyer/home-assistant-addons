@@ -408,15 +408,21 @@ months FLICA's Schedule Lookup lists fresh:
 - The next month is read again once its last read is 30 min old, the closed month once a day. A read's spare load (the
   current month takes one) goes to the next month first; the closed month takes it once a day. On the mobile path,
   whose page has no Block / Credit, the current month's totals are loaded first once they are an hour old (the next
-  month then waits one read); on Schedule Lookup the current month's page carries them.
+  month then waits one read, never more); once a day the closed month takes the totals' turn (the totals are then
+  about 2 h old), and a totals page that fails is tried once an hour. On Schedule Lookup the current month's page
+  carries the totals.
 - A month is read early, at the next check (forced, still 2 loads), when: the pilot is no longer listed on one of his
   own trips of that month (own trip times), one of his own trips of that month is in the open time pot, the CrewTrac
   check finds a mismatch in that month (once a snapshot), or Check now is pressed (the future months). Each fires once
-  for the same evidence and a month at most every 5 min; one log line says why ("schedule 2026-12: read early (...)").
+  for the same evidence (his trip in the pot: once while the trip stays on his schedule) and a month at most every
+  5 min (evidence that came inside the 5 min fires after them); one log line says why ("schedule 2026-12: read early
+  (...)"). A second marked month is read at the next check.
 - The schedule card's round refresh button (U+21BB, upper right of the month header, next to Data age; Home Assistant
   only, never on a pilot's portal) asks for the month shown: `<prefix>/schedule/refresh` `{"month": "YYYY-MM"}`. The
   Watcher reads it at the next check (woken at once). At most once a month in 60 s ("Just refreshed"); a month FLICA
-  does not list, a paused or stopped Watcher and a month backing off after a failed read are refused with a note. The
+  does not list, one the schedule does not keep (the latest three months), a paused or stopped Watcher and a month
+  backing off after a failed read are refused with a note. The button sits beside Data age; a card 700 px wide or less
+  has the phone's two-line header with the button in the upper right. The
   card shows "Refreshing..." until the month's read time or FLICA updated time moves, then "Refreshed" with the version,
   or "Not refreshed: <why>" after 3 min. `sensor.<prefix>_schedule` carries `listed`, `refresh` and each month's
   `read_at` for it.

@@ -89,12 +89,19 @@ def _spot(g):
     return tuple(round(g[k][x]) for k in ("prev", "h3", "next", "now") for x in ("l", "t")) + (round(g["hd"]["h"]),)
 
 
+# 1.8.2 review: the portal's copy (no refresh button) keeps its one-row header from 701 px as in 1.8.1; Home Assistant's
+# copy has the phone's two lines while its card is 700 px wide or less (a container query on its ha-card: on this page
+# the card is 50 px narrower than the window), one row with the button at the right above that
+WIDE = [(701, (True,)), (761, (False, True)), (820, (False, True)), (1024, (False, True)), (1280, (False, True))]
+PHONE = [(360, (False, True)), (390, (False, True)), (430, (False, True)), (701, (False,)), (750, (False,))]
+
+
 @pytest.mark.parametrize("scheme", ["light", "dark"])
-@pytest.mark.parametrize("width", [761, 820, 1024, 1280])  # 1.8.2: one row from 761 px (the refresh button's room)
-def test_a_wide_header_keeps_the_month_controls_put_at_every_stamp_text(width, scheme):
+@pytest.mark.parametrize("width,pilots", WIDE)
+def test_a_wide_header_keeps_the_month_controls_put_at_every_stamp_text(width, pilots, scheme):
     """Item 3 (1.7.12): one row, the stamp at its right in one fixed box, so the arrows, the month and Now sit at the
     same pixels whether the stamp reads 3 min, 2 h, 2 h 10 min very stale or over 23 h 59 min Watcher offline."""
-    for pilot in (False, True):
+    for pilot in pilots:
         got = _head(width, pilot, scheme)
         assert len({_spot(g) for g in got}) == 1, (width, pilot, [(g["text"], _spot(g)) for g in got])
         assert len({(round(g["ag"]["l"]), round(g["ag"]["w"])) for g in got}) == 1, (width, pilot)  # one box
@@ -110,11 +117,11 @@ def test_a_wide_header_keeps_the_month_controls_put_at_every_stamp_text(width, s
 
 
 @pytest.mark.parametrize("scheme", ["light", "dark"])
-@pytest.mark.parametrize("width", [360, 390, 430, 701, 760])  # 1.8.2: and 701 to 760 px (no room for one row)
-def test_a_phone_header_is_two_lines_with_the_stamp_beside_the_switch(width, scheme):
+@pytest.mark.parametrize("width,pilots", PHONE)
+def test_a_phone_header_is_two_lines_with_the_stamp_beside_the_switch(width, pilots, scheme):
     """Item B (1.7.18) with item 3 (1.7.12): line 1 the Lock switch with the stamp at its right, line 2 the arrows,
     the month and Now. A long stamp text wraps inside its box under the switch's 44 px, so neither line moves."""
-    for pilot in (False, True):
+    for pilot in pilots:
         got = _head(width, pilot, scheme)
         assert len({_spot(g) for g in got}) == 1, (width, pilot, [(g["text"], _spot(g)) for g in got])
         for g in got:

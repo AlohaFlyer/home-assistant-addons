@@ -44,8 +44,11 @@
 // month FLICA does not list (the schedule sensor's listed) is refused here with a note. The line under the header says
 // "Refreshing..." until the month's FLICA 'updated' or read time (read_at) moves, then "Refreshed" with the version, or
 // "Not refreshed: <why>" (the Watcher's refusal, or after 3 min). Home Assistant only: the portal's copy (FW_PORTAL)
-// has no button (no such portal command). From 701 to 760 px the one-row header has no room for it beside the 21em
-// stamp, so the header there is two lines as on a phone (the switch, the stamp and the button, then the month's line).
+// has no button (no such portal command). 1.8.2 review: the stamp and the button are one box (.agr) that never
+// breaks between them, so the button is always next to Data age at the header's right; a card 700 px wide or less
+// (the card's own width, a container query on its ha-card: a narrow card in a wide window too) has the phone's two
+// lines (the switch, the stamp and the button, then the month's line), so the button is in the upper right. The
+// portal's copy has neither: its header is as in 1.8.1.
 const FW_PORTAL = false;
 const RF_GAP_MS = 60000, RF_WAIT_MS = 180000, RF_SHOW_MS = 120000, RF_JUST_MS = 5000;
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -2590,6 +2593,8 @@ class FlightWatcherScheduleCard extends HTMLElement {
     // 1.8.2: the refresh button and its line (never in the portal's copy)
     const rfB = this._rfHtml(key, y, m), rfS = FW_PORTAL ? "" : `<div class="rfs" role="status" aria-live="polite" `
       + `data-k="${key}">${this._esc(this._rfText(key, Date.now()))}</div>`;
+    // 1.8.2 review: the stamp and the button in one box, so the button never wraps away from Data age
+    const agH = rfB ? `<span class="agr">${this._ageHtml(upd)}${rfB}</span>` : this._ageHtml(upd);
     main.innerHTML = `<style>${FWG_CSS}
       ha-card{padding:10px 8px 12px;font-size:12.5px;line-height:1.25;box-sizing:border-box}
       @media (max-width:700px){ha-card{font-size:10.5px;padding:6px 3px 8px}
@@ -2659,6 +2664,12 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .ag[data-age="amber"]{color:var(--fw-warn,#8a5300)}.ag[data-age="red"]{color:var(--fw-err,#c62828)}
       .hd2 .ag{margin-left:auto;text-align:right;white-space:normal;min-width:0;flex:0 0 21em}
       @media (max-width:700px){.hd2 .ag{order:1;flex:1 1 0}.hd2 .sp{order:2}.hd2 .nav,.hd2 h3{order:3}}
+      .hd2 .agr{display:inline-flex;align-items:center;gap:2px;margin-left:auto;min-width:0;flex:none}
+      .hd2 .agr .ag{margin-left:0;order:0}
+      @media (max-width:700px){.hd2 .agr{order:1;flex:1 1 0}.hd2 .agr .ag{flex:1 1 0}}${FW_PORTAL ? "" : `
+      ha-card{container:fwsc/inline-size}
+      @container fwsc (max-width:700px){.hd2.rf{row-gap:2px}.hd2.rf .sp{flex:0 0 100%;height:0;order:2}
+        .hd2.rf .agr{order:1;flex:1 1 0}.hd2.rf .agr .ag{flex:1 1 0}.hd2.rf .nav,.hd2.rf h3{order:3}}`}
       .rfb{flex:none;box-sizing:border-box;width:30px;height:30px;min-width:30px;padding:0;margin:0 0 0 2px;
         border-radius:50%;border:1px solid var(--secondary-text-color,#555);
         background:var(--card-background-color,#fff);
@@ -2669,14 +2680,11 @@ class FlightWatcherScheduleCard extends HTMLElement {
       .rfb:focus-visible{outline:3px solid var(--fws-ring);outline-offset:1px}
       .rfb[aria-busy="true"] .rfi{display:inline-block;animation:rfspin 1.2s linear infinite}@keyframes rfspin{
         to{transform:rotate(360deg)}}@media (prefers-reduced-motion:reduce){.rfb[aria-busy="true"] .rfi{animation:none}}
-      @media (max-width:700px),(pointer:coarse){.rfb{width:44px;height:44px;min-width:44px;font-size:20px}
-        .hd2 .rfb{order:1}}
-      @media (min-width:701px) and (max-width:760px){.hd2{row-gap:2px}.hd2 .sp{flex:0 0 100%;height:0;order:2}
-        .hd2 .ag{order:1;flex:1 1 0}.hd2 .rfb{order:1}.hd2 .nav,.hd2 h3{order:3}}
-      .rfs{margin:0 auto 4px;max-width:620px;text-align:right;font-size:11.5px;line-height:1.3;
+      @media (max-width:700px),(pointer:coarse){.rfb{width:44px;height:44px;min-width:44px;font-size:20px}}
+      .rfs{margin:0 0 4px;text-align:right;font-size:11.5px;line-height:1.3;
         color:var(--secondary-text-color)}.rfs:empty{margin:0}.rfs.bad{color:var(--fw-warn,#8a5300);font-weight:600}
       .unc{color:var(--fw-warn,#8a5300);font-weight:700}.ubn{margin:2px auto 6px;max-width:620px;text-align:center;font-size:12px;line-height:1.3}.set .keep{min-height:44px;padding:6px 12px;font:inherit;border-radius:6px;cursor:pointer}
-    </style><ha-card><div class="frame"><div class="hd2">${this._lockHtml()}<span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${this._ageHtml(upd)}${rfB}</div>${rfS}${shead}${vhtml}${body}</div>${panel}
+    </style><ha-card><div class="frame"><div class="hd2${rfB ? " rf" : ""}">${this._lockHtml()}<span class="sp"></span><span class="nav" data-nav="-1" title="Previous month">&#8249;</span><h3>${MONTHS[m]} ${y}</h3><span class="nav" data-nav="1" title="Next month">&#8250;</span><span class="nav now" data-nav="0" title="This month">Now</span>${agH}</div>${rfS}${shead}${vhtml}${body}</div>${panel}
     <div class="info"></div>
     <details class="leg"><summary>Key</summary><table class="lt">
     <tr><td>Trip</td><td>Your pairing. Tap it for the pairing detail (legs, layovers, hotel, totals and crew, from the pairings package; below the schedule, or a sheet from the bottom on a phone); tap it again, the &#10005; or Esc to close. R = report time. Tap &#8644; to mark it "would trade" (orange).</td></tr>

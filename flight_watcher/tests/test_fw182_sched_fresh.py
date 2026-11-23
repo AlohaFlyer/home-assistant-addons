@@ -62,12 +62,15 @@ class Flica:
         self.pg = {"1026": [("03", "H3905", "LAX")], "1126": [("05", "H3901", "LAX")], "1226": list(DEC4)}
         self.pg.update(pg or {})
         self.months, self.mobile, self.pots, self.pair = list(LISTED), mobile, pots or {}, "<html>pairing</html>"
+        self.bad = set()  # months (bd) whose Schedule Lookup page is not a schedule
         self.fl = real_fl(W, self.answer)
         self.W = W
 
     def answer(self, u):
         if "cmschedules" in u:
             bd = u.split("bd=")[1][:4]
+            if bd in self.bad:
+                return "<html><body>Schedule Lookup: no schedule for that crew member</body></html>"
             return _lk(bd, self.pg[bd], self.months) if bd in self.pg and bd in self.months else INVALID
         if "mobileschedule" in u:
             return NOV_MOBILE if self.mobile else INVALID
@@ -150,8 +153,8 @@ def test_the_6_h_gate_no_longer_holds_a_due_future_month(mk):
     other_months_pending agrees with other_months_check (the 1.6.2 review's 'the spare load goes to a month')."""
     W, F = _w(mk, mobile=True)
     got = [bd for _ in range(4) for _, bd in _tick(W, F, step=30 * MIN)]
-    # the totals, December, the totals again (an hour old), then October (never read yet)
-    assert got == ["mobile", "1126", "mobile", "1226", "mobile", "1126", "mobile", "1026"], got
+    # the totals (never loaded), December, October (never read: it takes the totals' turn), December (it waited a read)
+    assert got == ["mobile", "1126", "mobile", "1226", "mobile", "1026", "mobile", "1226"], got
     W.S["sched_prev_at"], W.S["sched_prev_v"] = W.CLOCK.t, 6  # as after a pass that got every month
     assert W.other_months_pending("2026-11") is True  # December is due again (30 min) despite the gate
     W.S["sched_totals"]["at"] = W.CLOCK.t  # the totals are fresh: December takes the spare load
@@ -175,25 +178,42 @@ def test_the_read_order_future_first_then_past_and_a_failing_month_last(mk):
 
 
 # ---------------------------------------------------------------- S2: the totals on the mobile path
-def test_mobile_path_totals_never_older_than_an_hour_and_december_waits_one_read(mk):
+def test_mobile_path_totals_an_hour_old_at_most_but_once_a_day_and_december_waits_one_read(mk):
+    """53 h, so the closed October's daily read is in it twice after its first (1.8.2 review: it took December's turn
+    and December went about 2 h 15 min unread once a day). Now October takes the totals' turn: December waits one read
+    at most, always; the totals are an hour old at most except once a day (about 2 h, the read October took)."""
     W, F = _w(mk, mobile=True)
     t0, every, per = W.CLOCK.t, [], []
-    while W.CLOCK.t < t0 + 8 * 3600:
+    while W.CLOCK.t < t0 + 53 * 3600:
         got = _tick(W, F)
         if got:
             per.append(got)
         every += got
     assert max(len(r) for r in per) <= 2 and all(r[0][1] == "mobile" for r in per), per
     tot = [t for t, bd in every if bd == "1126"]
-    dec = [t for t, bd in every if bd == "1226" and t >= t0 + 3 * 3600]  # after October's first read (startup)
-    assert all(b - a <= 60 * MIN + 6 * MIN + 30 for a, b in zip(tot, tot[1:])), tot  # reloaded once an hour old
-    assert all(b - a <= 60 * MIN + 6 * MIN + 30 for a, b in zip(dec, dec[1:])), dec  # waits one read at most
-    assert len(dec) >= 4 and len(tot) >= 7, (len(dec), len(tot))
+    dec = [t for t, bd in every if bd == "1226"]
+    octo = [t for t, bd in every if bd == "1026"]
+    assert len(octo) == 3 and all(b - a >= 24 * 3600 for a, b in zip(octo, octo[1:])), octo
+    dgaps = [b - a for a, b in zip(dec, dec[1:])]
+    assert max(dgaps) <= 60 * MIN + 6 * MIN + 30, [round(g / 60) for g in dgaps]  # one read at most, every day
+    tgaps = [b - a for a, b in zip(tot, tot[1:])]
+    long = [g for g in tgaps if g > 60 * MIN + 6 * MIN + 30]
+    assert len(long) == len(octo) and max(long) <= 2 * 3600 + 6 * MIN + 30, [round(g / 60) for g in tgaps]
+    assert len(dec) >= 45 and len(tot) >= 45, (len(dec), len(tot))
     nov = W.S["schedule"]["2026-11"]
     assert nov["totals"]["credit"] == "85:00" and nov["totals"]["block"] == "70:00"  # always FLICA's figures
-    # a read whose totals are an hour old loads them first, December waiting one read
+    # a read whose totals are an hour old loads them first, December (due, it has not waited a read) waiting one read
     W.S["sched_totals"]["at"] = W.CLOCK.t - 61 * MIN
     W.S["schedule"]["2026-12"]["read_ts"] = W.CLOCK.t - 40 * MIN
+    W.S["sched_checked_at"] = 0
+    assert [bd for _, bd in _tick(W, F)] == ["mobile", "1126"]
+    # December that already waited a read goes before totals under 2 h old; totals 2 h old go before it
+    W.S["sched_totals"]["at"] = W.CLOCK.t - 61 * MIN
+    W.S["schedule"]["2026-12"]["read_ts"] = W.CLOCK.t - 61 * MIN
+    W.S["sched_checked_at"] = 0
+    assert [bd for _, bd in _tick(W, F)] == ["mobile", "1226"]
+    W.S["sched_totals"]["at"] = W.CLOCK.t - 121 * MIN
+    W.S["schedule"]["2026-12"]["read_ts"] = W.CLOCK.t - 61 * MIN
     W.S["sched_checked_at"] = 0
     assert [bd for _, bd in _tick(W, F)] == ["mobile", "1126"]
 
@@ -250,15 +270,27 @@ def test_trigger_b_his_trip_in_the_pot_once_per_trip_while_the_row_stays(mk, cap
     assert _lines(caplog, "schedule 2026-12: read early") == [
         "schedule 2026-12: read early (his H3913 2026-12-04 is in the open time pot)"]
     assert W.sched_stale_force() is True and W.sched_stale_force() is False  # one forced read for one mark
-    # the row leaves the pot read this check, then comes back an hour later: a new change fires again
+    # 1.8.2 review: the row leaves the pot read this check and comes back an hour later (pot rows are by pairing and
+    # date, not seat): the trip is still on his schedule, so the evidence stays and nothing fires again
     W.pot_own_trigger({"2026-12": {}}, {"2026-12"})
-    assert "H3913|2026-12-04" not in W.S["sched_trig"]["b"]
-    W.CLOCK.t += 3600
-    W.pot_own_trigger({"2026-12": {"H3913|04Dec": row}}, {"2026-12"})
     assert W.S["sched_trig"]["b"]["H3913|2026-12-04"]["fired"] is True
+    W.CLOCK.t += 3600
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        W.pot_own_trigger({"2026-12": {"H3913|04Dec": row}}, {"2026-12"})
+    assert W.S["sched_trig"]["b"]["H3913|2026-12-04"]["fired"] is True and not _lines(caplog, "schedule 2026-12")
     # a row of a pot not read this check keeps its evidence (no re-fire when it is read again)
     W.pot_own_trigger({}, set())
     assert "H3913|2026-12-04" in W.S["sched_trig"]["b"]
+    # gone from its pot for 6 h: the row coming back is new evidence and fires again
+    W.pot_own_trigger({"2026-12": {}}, {"2026-12"})
+    W.CLOCK.t += 6 * 3600
+    W.pot_own_trigger({"2026-12": {}}, {"2026-12"})
+    assert "H3913|2026-12-04" not in W.S["sched_trig"]["b"]
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        W.pot_own_trigger({"2026-12": {"H3913|04Dec": row}}, {"2026-12"})
+    assert _lines(caplog, "schedule 2026-12: read early") == [
+        "schedule 2026-12: read early (his H3913 2026-12-04 is in the open time pot)"]
     # the current month's trip in the pot (his own drop request, say) is never a trigger: it is read every 30 min
     W.pot_own_trigger({"2026-11": {"H3901|05Nov": {"pairing": "H3901", "start": "05Nov"}}}, {"2026-11"})
     assert all(not k.startswith("H3901") for k in W.S["sched_trig"]["b"])
@@ -292,10 +324,9 @@ def test_trigger_c_crewtrac_mismatch_once_per_snapshot(mk, caplog, monkeypatch):
 
 def test_trigger_d_check_now_reads_the_future_month_too(mk, caplog):
     W, F = _w(mk, mobile=True)
-    _tick(W, F, step=30 * MIN)
-    _tick(W, F, step=30 * MIN)
-    assert "2026-12" in W.S["schedule"]
-    W.S["sched_totals"]["at"] = W.CLOCK.t - 2 * 3600  # even with the totals due
+    got = [bd for _ in range(4) for _, bd in _tick(W, F, step=30 * MIN)]
+    assert got == ["mobile", "1126", "mobile", "1226", "mobile", "1026", "mobile", "1226"], got
+    W.S["sched_totals"]["at"] = W.CLOCK.t - 90 * MIN  # even with the totals due (under 2 h)
     with caplog.at_level(logging.INFO, logger="flight_watcher"):
         got = _tick(W, F, full=True, step=4 * MIN)
     assert [bd for _, bd in got] == ["mobile", "1226"], got  # a marked month takes the spare load first
@@ -327,12 +358,14 @@ def test_a_mark_the_read_cannot_serve_forces_one_read_only(mk):
     W.S["sched_shape"] = "/full/mobileschedule.cgi?BCID=001.{n}&From=MainMenu"  # tried first, refused
     W.S["sched_shape_mobile"] = ""
     W.mark_stale("2026-12", "test")
-    loads = [len(_tick(W, F)) for _ in range(4)]
-    assert loads == [2, 0, 0, 0], loads
+    loads = [_tick(W, F) for _ in range(4)]
+    assert [[bd for _, bd in r] for r in loads] == [["mobile", "1126"], [], [], []], loads
     assert "2026-12" in W.S["sched_stale"]  # still first at the next due read
+    assert W.check_tokens() == W.GATE_CHECK_TOKENS  # a mark already forced asks for no schedule loads
     W.CLOCK.t += 30 * MIN
     got = _tick(W, F)
-    assert [bd for _, bd in got][-1] == "1226" or len(got) == 2
+    assert [bd for _, bd in got] == ["1126", "1226"], got  # the learned Schedule Lookup page, then December
+    assert "2026-12" not in W.S["sched_stale"]
 
 
 # ---------------------------------------------------------------- the Nov 23 timeline, replayed
@@ -716,3 +749,383 @@ def test_version_changelog_readme_and_no_em_dash():
                  "tests/test_fw182_sched_fresh.py"):
         text = open(os.path.join(here, name), encoding="utf-8").read()
         assert chr(0x2014) not in text, name
+
+
+# ---------------------------------------------------------------- 1.8.2 review: loads, triggers, the refresh command
+def _checker(mk, pots=None, t=None, instance=""):
+    """A Watcher whose check() runs for real (the pot pages, the schedule read and the triggers) with the slow reads
+    around them stubbed; chk() runs one check and moves the clock 6 min (step), returning the schedule loads."""
+    pots = pots if pots is not None else {"003.152": page([("H3902", "28Nov")]), "003.153": page([("H3911", "12Dec")])}
+    W, F = _w(mk, instance, t=t or at(2026, 11, 23, 0, 56), pots=pots)
+    for f in ("own_trip_times", "publish_working_flight", "versions_check", "uploads_check", "capture",
+              "detail_probe", "pot_details", "email_check", "pickup_check", "tradeboard_check", "requests_check",
+              "grid_check", "publish_finds", "publish_tickets", "enrich", "swap_scan", "drop_scan",
+              "publish_near_misses"):
+        setattr(W, f, lambda *a, **k: None)
+    W.close_in_check = lambda *a, **k: ({}, "ok")
+    W.crew_index_check = lambda *a, **k: "ok"
+    W.S["pot_month"], W.S["pot_urls"] = "Both", {}
+
+    def chk(step=6 * MIN):
+        n = len(F.fl.loads)
+        W.RUN.update(check=True, aborted="", skipped=set())
+        try:
+            assert W.check(F.fl) == "ok"
+        finally:
+            W.RUN["check"] = False
+        W.CLOCK.t += step
+        return [bd for _, bd in F.sched(n)]
+    return W, F, chk
+
+
+def test_review_check_now_in_a_real_check_reads_december_too(mk, caplog):
+    """S3 (d) through check() itself (the review: nothing tested the call in check()). Without the Check now mark the
+    read's spare load would go to October (never read yet)."""
+    W, F, chk = _checker(mk)
+    assert chk() == ["1126", "1226"]  # 00:56
+    W.FLAGS["full"] = True  # Check now at 01:02: December was read 6 min ago
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        got = chk()
+    assert got == ["1126", "1226"], got
+    assert _lines(caplog, "schedule 2026-12: read early") == ["schedule 2026-12: read early (Check now)"]
+    assert not W.FLAGS.get("full") and not W.S.get("sched_stale")
+
+
+def test_review_a_failing_totals_page_takes_its_turn_and_december_is_still_read(mk):
+    """The review: a totals page that failed never stamped sched_totals, so on the mobile path every read loaded it
+    again and December was never read. Now a failed load counts as the totals' turn (once an hour)."""
+    W, F = _w(mk, mobile=True)
+    for _ in range(6):
+        _tick(W, F, step=30 * MIN)  # the totals, December and October in hand
+    F.bad.add("1126")  # Schedule Lookup no longer gives November's page; December's still reads
+    t0, every = W.CLOCK.t, []
+    while W.CLOCK.t < t0 + 5 * 3600:
+        every += _tick(W, F)
+    dec = [t for t, bd in every if bd == "1226"]
+    tot = [t for t, bd in every if bd == "1126"]
+    assert len(dec) >= 4 and max(b - a for a, b in zip(dec, dec[1:])) <= 60 * MIN + 6 * MIN + 30, len(dec)
+    assert 4 <= len(tot) <= 6 and min(b - a for a, b in zip(tot, tot[1:])) >= 60 * MIN, len(tot)  # once an hour
+    assert W.S["sched_totals"]["ok"] is False
+    assert W.S["schedule"]["2026-11"]["totals"]["credit"] == "85:00"  # the figures last stored stay
+
+
+def test_review_marks_that_keep_coming_never_hold_the_totals_for_ever(mk):
+    """The review: any mark beat stale totals, so marks that kept coming (Check now, the refresh button, a recurring
+    trigger) kept the mobile path's Block / Credit unloaded for hours. Now a mark goes first while the totals are
+    under 2 h old (or when the read before did not load that month); else the totals load and the mark forces the
+    next check's read."""
+    W, F = _w(mk, mobile=True)
+    for _ in range(4):
+        _tick(W, F, step=30 * MIN)
+    t0, per = W.CLOCK.t, []
+    while W.CLOCK.t < t0 + 5 * 3600:
+        W.mark_stale("2026-12", "test")  # a mark at every check (6 min apart)
+        per.append([bd for _, bd in _tick(W, F)])
+    assert all(len(r) <= 2 for r in per), per
+    tot = [i for i, r in enumerate(per) if r == ["mobile", "1126"]]
+    assert len(tot) >= 2, per
+    assert all(b - a <= 21 for a, b in zip(tot, tot[1:])), tot  # every 2 h at most (20 checks of 6 min, and one)
+    assert all(per[i + 1] == ["mobile", "1226"] for i in tot if i + 1 < len(per)), per  # the mark at the next check
+    assert sum(1 for r in per if r == ["mobile", "1226"]) >= len(per) - len(tot) - 1
+
+
+def test_review_a_mark_beats_totals_under_2_h_or_when_the_month_was_not_read_the_read_before(mk):
+    W, F = _w(mk, mobile=True)
+    for _ in range(4):
+        _tick(W, F, step=30 * MIN)  # the read before this one loaded December
+    W.S["sched_totals"]["at"] = W.CLOCK.t - 121 * MIN
+    W.mark_stale("2026-12", "test")
+    assert [bd for _, bd in _tick(W, F)] == ["mobile", "1126"]  # the totals first: December was just read
+    assert W.S["sched_stale"]["2026-12"]["forced"] is False  # ... and the mark forces the next check's read
+    assert [bd for _, bd in _tick(W, F)] == ["mobile", "1226"] and not W.S["sched_stale"]
+    assert _tick(W, F) == []  # one more read, never a loop
+    # December not read by the read before (its last read was an earlier one): the mark goes first even with the
+    # totals over 2 h old
+    W.CLOCK.t += 30 * MIN
+    _tick(W, F)
+    W.S["schedule"]["2026-12"]["read_ts"] = W.S["sched_checked_at"] - 10 * MIN
+    W.S["sched_totals"]["at"] = W.CLOCK.t - 121 * MIN
+    W.mark_stale("2026-12", "test")
+    assert [bd for _, bd in _tick(W, F)] == ["mobile", "1226"]
+
+
+def test_review_trigger_b_a_row_that_comes_and_goes_fires_once(mk, caplog):
+    """The review: pot rows are by pairing and date, not seat, so a row that left the pot read and came back fired a
+    forced read each time (30 in 6 h). The evidence now stays while the trip is on his schedule."""
+    W, F = _w(mk)
+    _tick(W, F)
+    row = {"pairing": "H3913", "start": "04Dec", "dates": "04Dec"}
+    per = []
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        for i in range(60):  # 6 h of checks, the row in December's pot on every other one
+            W.pot_own_trigger({"2026-12": {"H3913|04Dec": row} if i % 2 == 0 else {}}, {"2026-12"})
+            per.append(len(_tick(W, F)))
+    assert len(_lines(caplog, "schedule 2026-12: read early")) == 1
+    assert sum(per) <= 2 * 13, per  # the read every 30 min (two loads) and the one forced read, no more
+
+
+def test_review_trigger_b_ends_when_the_trip_leaves_his_schedule(mk, caplog):
+    W, F = _w(mk)
+    _tick(W, F)
+    row = {"pairing": "H3913", "start": "04Dec", "dates": "04Dec"}
+    W.pot_own_trigger({"2026-12": {"H3913|04Dec": row}}, {"2026-12"})
+    assert W.S["sched_trig"]["b"]["H3913|2026-12-04"]["fired"] is True
+    F.pg["1226"] = list(DEC6)
+    _tick(W, F)  # the forced read: the Dec 4 trip is gone from his December (he is on Dec 6 now)
+    assert _items(W, "2026-12") == [("H3913", "2026-12-06")]
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        W.pot_own_trigger({"2026-12": {"H3913|04Dec": row}}, {"2026-12"})  # someone else's Dec 4 seat, not his
+    assert "H3913|2026-12-04" not in W.S["sched_trig"]["b"] and not _lines(caplog, "schedule 2026-12: read early")
+
+
+def test_review_two_own_trips_in_the_pot_one_forced_read(mk, caplog):
+    """The review: two pieces of evidence for one month in one check forced two reads 6 min apart."""
+    W, F = _w(mk, pg={"1226": [("04", "H3913", "SYD"), ("10", "H3920", "LAX")]})
+    _tick(W, F)
+    rows = {"H3913|04Dec": {"pairing": "H3913", "start": "04Dec"},
+            "H3920|10Dec": {"pairing": "H3920", "start": "10Dec"}}
+    per = []
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        for _ in range(6):  # a check every 3 min, the rows stay in the pot
+            W.pot_own_trigger({"2026-12": rows}, {"2026-12"})
+            per.append([bd for _, bd in _tick(W, F, step=3 * MIN)])
+    assert per == [["1126", "1226"], [], [], [], [], []], per
+    assert len(_lines(caplog, "schedule 2026-12: read early")) == 1
+    assert all(v["fired"] for v in W.S["sched_trig"]["b"].values())
+
+
+def _ct(W, monkeypatch, snap, rows, months=None):
+    monkeypatch.setattr(W, "crewtrac_snapshot", lambda: snap)
+    monkeypatch.setattr(W, "crewtrac_fw_trips", lambda: {})
+    res = {"status": "ok", "age_h": 1.0, "rows": rows, "mismatches": sum(1 for r in rows if not r["ok"])}
+    monkeypatch.setattr(W.CTR, "compare_trips", lambda s, fw, now: json.loads(json.dumps(res)))
+    monkeypatch.setattr(W.CTR, "card_view", lambda s: {})
+    if months is not None:  # each month's line ({month: ok}): ends with a tick when it agrees
+        monkeypatch.setattr(W.CTR, "m_of", lambda v: 0 if v else None)
+        monkeypatch.setattr(W.CTR, "month_line", lambda s, mk, fw: f"{mk} line " + ("✓" if months[mk] else "x"))
+
+
+def test_review_a_crewtrac_mismatch_inside_the_5_min_gap_fires_later(mk, caplog, monkeypatch):
+    """The review: a snapshot whose mismatch came inside the 5 min gap of the month was used up and never read the
+    month (the Nov 23 failure in small). Now its evidence waits and fires once the gap is over."""
+    W, F = _w(mk)
+    _tick(W, F)
+    W.S["machine"] = "idle"
+    assert _cmd(W, json.dumps({"month": "2026-12"})) is True
+    assert [bd for _, bd in _tick(W, F, step=2 * MIN)] == ["1126", "1226"]
+    snap = {"pulled_at": "2026-11-23T10:00:00Z", "trips": [], "months": {}}
+    _ct(W, monkeypatch, snap, [{"trip": "H3913", "start": "2026-12-04", "ok": False, "line": "x"}])
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        W.crewtrac_check()  # 2 min after the press: inside December's 5 min gap
+        assert not _lines(caplog, "schedule 2026-12: read early") and not W.S["sched_stale"]
+        assert W.S["sched_trig"]["c"]["2026-12"]["fired"] is False
+        got = []
+        for _ in range(3):  # the checks after it (each one's pot step fires pending evidence)
+            W.sched_triggers_fire()
+            got.append([bd for _, bd in _tick(W, F, step=2 * MIN)])
+    assert _lines(caplog, "schedule 2026-12: read early") == [
+        "schedule 2026-12: read early (the CrewTrac check differs in December 2026)"]
+    assert ["1126", "1226"] in got and W.S["sched_trig"]["c"]["2026-12"]["fired"] is True
+    # the CrewTrac poll alone (the same snapshot 10 min later) fires evidence the gap refused, too
+    W.S["sched_trig"]["c"]["2026-12"]["fired"] = False
+    W.S["sched_trig_at"]["2026-12"] = W.CLOCK.t - 6 * MIN
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        W.crewtrac_check()
+    assert len(_lines(caplog, "schedule 2026-12: read early")) == 1
+    W.sched_stale().clear()
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        W.CLOCK.t += 10 * MIN
+        W.crewtrac_check()  # the same snapshot: never again
+        W.sched_triggers_fire()
+    assert len(_lines(caplog, "schedule 2026-12: read early")) == 1
+
+
+def test_review_a_crewtrac_month_line_mismatch_reads_that_month(mk, caplog, monkeypatch):
+    W, F = _w(mk)
+    _tick(W, F)
+    snap = {"pulled_at": "2026-11-23T11:00:00Z", "trips": [], "months": {"2026-11": {}, "2026-12": {}}}
+    _ct(W, monkeypatch, snap, [{"trip": "H3913", "start": "2026-12-04", "ok": True}],
+        months={"2026-11": False, "2026-12": False})
+    W.CLOCK.t += 6 * MIN
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        W.crewtrac_check()
+    assert _lines(caplog, "schedule 2026-") == [
+        "schedule 2026-12: read early (the CrewTrac check differs in December 2026)"]  # never the current month
+    assert W.MQ.last("flight_watcher/crewtrac_check")["status"] == "mismatch"
+
+
+def test_review_check_tokens_counts_only_a_mark_that_forces_a_read(mk):
+    """The review: check_tokens added the read's two loads for any mark, also one already forced or for a month
+    backing off (up to 6 h), so a pilot's check waited for two tokens it never used."""
+    W, F = _w(mk)
+    F.pg.pop("1226")  # December's page is not a schedule: it backs off 1 h
+    _tick(W, F)
+    assert W.other_month_due("2026-12", "2026-11") == "wait"
+    base = W.check_tokens()
+    W.mark_stale("2026-12", "test")
+    before = json.dumps(W.S["sched_stale"], sort_keys=True)
+    assert W.sched_stale_force(dry=True) is False and W.check_tokens() == base == W.GATE_CHECK_TOKENS
+    assert json.dumps(W.S["sched_stale"], sort_keys=True) == before  # a dry ask changes nothing
+    assert W.sched_stale_force() is False and _tick(W, F) == []  # a month backing off forces no read
+    W.CLOCK.t += 61 * MIN
+    F.pg["1226"] = list(DEC4)
+    assert W.sched_stale_force(dry=True) is True  # the back-off is over: the mark forces the read now
+
+
+def test_review_check_now_with_two_future_months_reads_the_second_at_the_next_check(mk, caplog):
+    W, F = _w(mk, pg={"0127": [("05", "H3920", "LAX")]})
+    F.months = ["1126", "1226", "0127"]
+    _tick(W, F, step=30 * MIN)
+    _tick(W, F, step=30 * MIN)
+    got = [[bd for _, bd in _tick(W, F, full=True, step=1 * MIN)]]  # Check now
+    got += [[bd for _, bd in _tick(W, F, step=1 * MIN)] for _ in range(2)]
+    assert got == [["1126", "1226"], ["1126", "0127"], []], got
+    assert not W.S["sched_stale"]
+
+
+def test_review_refresh_of_a_month_flica_lists_but_the_schedule_does_not_keep(mk):
+    """The review: with October to January listed the schedule keeps the latest three months, so a refresh of October
+    was accepted, woke the loop and was dropped without a note ('Refreshing...' then the generic 3 min note)."""
+    W, F = _w(mk, pg={"0127": [("05", "H3920", "LAX")]})
+    F.months = ["1026", "1126", "1226", "0127"]
+    _tick(W, F)
+    W.S["machine"] = "idle"
+    assert _cmd(W, json.dumps({"month": "2026-10"})) is False
+    rf = W.MQ.last("flight_watcher/schedule")["refresh"]
+    assert rf["state"] == "refused"
+    assert rf["why"] == "Flight Watcher keeps only the latest three months (October 2026 is older)"
+    assert not W.S["sched_stale"] and W.mark_stale("2026-10", "a trigger") is False
+
+
+def test_review_a_queued_refresh_whose_month_is_no_longer_kept_says_why(mk):
+    W, F = _w(mk)
+    _tick(W, F)
+    W.S["machine"] = "idle"
+    W.CLOCK.t += 25 * 3600  # October is due again (once a day)
+    assert _cmd(W, json.dumps({"month": "2026-10"})) is True
+    F.months, F.pg["0127"] = ["1026", "1126", "1226", "0127"], [("05", "H3920", "LAX")]  # January is published
+    assert "1026" not in [bd for _, bd in _tick(W, F)]
+    rf = W.MQ.last("flight_watcher/schedule")["refresh"]
+    assert rf["state"] == "failed" and "keeps only the latest three months" in rf["why"], rf
+
+
+def test_review_a_refresh_whose_read_fails_says_why(mk):
+    W, F = _w(mk)
+    _tick(W, F)
+    W.S["machine"] = "idle"
+    F.bad.add("1226")  # December's page is not a schedule
+    assert _cmd(W, json.dumps({"month": "2026-12"})) is True
+    _tick(W, F)
+    rf = W.MQ.last("flight_watcher/schedule")["refresh"]
+    assert rf["state"] == "failed" and rf["why"].startswith("FLICA's December 2026 page was "), rf
+    # the current month: every schedule page fails (schedule_failed)
+    W.CLOCK.t += 61
+    F.bad.add("1126")
+    assert _cmd(W, json.dumps({"month": "2026-11"})) is True
+    _tick(W, F)
+    rf = W.MQ.last("flight_watcher/schedule")["refresh"]
+    assert rf["month"] == "2026-11" and rf["state"] == "failed" and rf["why"], rf
+
+
+def test_review_the_current_months_mark_is_served_by_its_read(mk):
+    W, F = _w(mk)
+    _tick(W, F)
+    W.S["machine"] = "idle"
+    assert _cmd(W, json.dumps({"month": "2026-11"})) is True
+    assert W.sched_stale_force(dry=True) is True and W.check_tokens() > W.GATE_CHECK_TOKENS
+    assert [bd for _, bd in _tick(W, F)][0] == "1126"  # forced, 6 min after the last read
+    assert "2026-11" not in W.S["sched_stale"] and W.sched_stale_force(dry=True) is False
+    assert _tick(W, F) == []
+
+
+def test_review_a_trigger_waits_5_min_after_a_refresh_press(mk, caplog):
+    W, F = _w(mk)
+    _tick(W, F)
+    W.S["machine"] = "idle"
+    assert _cmd(W, json.dumps({"month": "2026-12"})) is True
+    _tick(W, F, step=2 * MIN)  # the press's read
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        assert W.mark_stale("2026-12", "a trigger") is False  # 2 min after the press
+        W.CLOCK.t += 3 * MIN
+        assert W.mark_stale("2026-12", "a trigger") is True  # 5 min after it
+    assert _lines(caplog, "schedule 2026-12: read early") == ["schedule 2026-12: read early (a trigger)"]
+
+
+# ---------------------------------------------------------------- 1.8.2 review: the card's header in Chromium
+# Home Assistant's ha-card is a block (its own :host rule); the card sits in a column narrower than the window
+BLOCK_PAGE = CARD_PAGE.replace(
+    "customElements.define('ha-card', class extends HTMLElement {});",
+    "customElements.define('ha-card', class extends HTMLElement { constructor() { super(); "
+    "this.attachShadow({mode: 'open'}).innerHTML = '<style>:host{display:block}</style><slot></slot>'; } });")
+IN_COLUMN = """([h, dark, px]) => { document.body.innerHTML = '';
+  const w = document.createElement('div'); w.style.width = px + 'px'; document.body.appendChild(w);
+  const c = document.createElement('flight-watcher-schedule-card'); c.setConfig({}); w.appendChild(c);
+  window.card = c;
+  c.hass = {states: h, themes: {darkMode: dark}, user: {is_owner: true},
+            callService: (d, s, data) => { window.calls.push([d, s, data]); return Promise.resolve(); }};
+  const r = c.shadowRoot, B = (e) => { const b = e.getBoundingClientRect();
+    return {l: b.left, t: b.top, r: b.right, b: b.bottom, h: b.height}; };
+  return {hd: B(r.querySelector('.hd2')), rf: B(r.querySelector('.rfb')), ag: B(r.querySelector('.hd2 .ag')),
+          lock: B(r.querySelector('.hd2 .lock')), h3: B(r.querySelector('.hd2 h3')),
+          page: document.documentElement.scrollWidth}; }"""
+
+
+def test_review_the_button_stays_in_the_upper_right_of_a_card_narrower_than_the_window():
+    """The review: the header's layout was keyed to the window, so in a card 615 to 650 px wide in a wide window the
+    button wrapped alone to the left of a second row (and sat on the second row from 480 to 610 px). Now Data age and
+    the button are one box, and a card 700 px wide or less has the phone's two lines whatever the window."""
+    sync_api, chromium = _browser()
+    src, out = _src(), []
+    with sync_api.sync_playwright() as p:
+        b = chromium(p)
+        if not b:
+            pytest.skip("no Chromium for Playwright")
+        try:
+            for dark in (False, True):
+                pg = b.new_page(viewport={"width": 1280, "height": 900})
+                pg.clock.set_fixed_time(NOW)
+                pg.set_content(BLOCK_PAGE % (DARK if dark else LIGHT, src))
+                for px in (420, 480, 560, 600, 615, 630, 640, 650, 660, 700, 720, 760, 900):
+                    out.append((dark, px, pg.evaluate(f"({IN_COLUMN})", [_states(), dark, px])))
+                pg.close()
+        finally:
+            b.close()
+    for dark, px, g in out:
+        hd, rf, ag, lk = g["hd"], g["rf"], g["ag"], g["lock"]
+        where = (dark, px, g)
+        assert abs(rf["r"] - hd["r"]) <= 1, where  # at the header's right
+        assert rf["t"] >= lk["t"] - 0.5 and rf["b"] <= lk["b"] + 0.5, where  # on the first line, the Lock switch's
+        assert 0 <= rf["l"] - ag["r"] <= 12 and ag["t"] < rf["b"] and ag["b"] > rf["t"], where  # beside Data age
+        assert g["page"] <= 1280, where
+        if px <= 700:  # the phone's two lines: the month's line under the switch's
+            assert g["h3"]["t"] >= lk["b"], where
+        else:
+            assert round(hd["h"]) == 44, where
+
+
+def test_review_the_refresh_line_ends_under_the_button_on_a_wide_card():
+    sync_api, chromium = _browser()
+    src = _src()
+    with sync_api.sync_playwright() as p:
+        b = chromium(p)
+        if not b:
+            pytest.skip("no Chromium for Playwright")
+        try:
+            got = []
+            for width in (1024, 1280):
+                pg = b.new_page(viewport={"width": width, "height": 900})
+                pg.clock.set_fixed_time(NOW)
+                pg.set_content(BLOCK_PAGE % (LIGHT, src))
+                pg.evaluate(f"({MOUNT})", [_states(), False])
+                pg.evaluate("window.card.shadowRoot.querySelector('.rfb').click()")
+                got.append(pg.evaluate("""() => { const r = window.card.shadowRoot, s = r.querySelector('.rfs'),
+                    b = r.querySelector('.rfb').getBoundingClientRect(), g = document.createRange();
+                    g.selectNodeContents(s); const t = g.getBoundingClientRect();
+                    return [s.textContent, t.right, b.right, t.top, b.bottom]; }"""))
+                pg.close()
+        finally:
+            b.close()
+    for text, right, brt, top, bbot in got:
+        assert text == "Refreshing…" and abs(right - brt) <= 2 and top >= bbot, got  # under the button
