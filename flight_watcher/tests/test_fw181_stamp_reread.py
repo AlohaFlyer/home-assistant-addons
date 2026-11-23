@@ -191,3 +191,88 @@ def test_mobile_path_gives_the_last_load_to_the_moved_month_only_when_this_month
     assert len(got) == 2 and "bd=1126" in got[1]
     assert W.S["schedule"]["2026-12"]["cur_stamp"] != "Nov 23, 2026 05:37:39"
     assert W.later_months_stale("2026-11") == ["2026-12"]  # still owed: the next read with a load left takes it
+
+
+# ------------------------------------------------------------------ 1.8.1 review fixes
+def _three_on_file(W, mobile=False):
+    """October, November and December on file, the last pass complete; returns the FakeFl."""
+    months = ("1026", "1126", "1226")
+    fl = FakeFl(_pages(S0, DEC_04, S0, months=months))
+    fl.pages["bd=1026"] = _lookup("1026", months, [("03", "H3610", "LAX", "20261003")], S0)
+    if mobile:
+        mob = (FX / "mobile_schedule_nov.html").read_text().replace("<p>Block 92.33</p><p>Credit 121.48</p><p>YTD 592.22</p>", "")
+        fl.pages["mobileschedule"] = mob.replace("Nov 1, 2026 09:54:34", S0)
+        W.S["sched_url_ok"] = f"{W.BASE}/full/mobileschedule.cgi?BCID=001.152&From=MainMenu"
+    else:
+        W.S["sched_shape"] = "lookup"
+    for _ in range(3):
+        _read(W, fl)
+    assert {"2026-10", "2026-11", "2026-12"} <= set(W.S["schedule"]) and W.S.get("sched_prev_v") == 6
+    return fl
+
+
+def test_a_stale_only_pass_loads_only_the_stale_month_and_keeps_the_6h_clock(W):
+    fl = _three_on_file(W)
+    W.S["schedule"]["2026-10"]["read_ts"] -= 6 * 3600 + 60  # October is past its own 6 h
+    W.S["sched_prev_at"] = W.time.time() - 3600  # the pass clock is not due
+    before = W.S["sched_prev_at"]
+    fl.pages.update(_pages(S1, DEC_06, S1, months=("1026", "1126", "1226")))
+    got = _read(W, fl)
+    assert len(got) == 2 and "bd=1226" in got[1] and not [u for u in got if "bd=1026" in u]
+    assert ("H3613", "2026-12-06") in _starts(W, "2026-12")
+    assert W.S["sched_prev_at"] == before  # the 6 h clock of the other months is left as it was
+    # the review's case: October still fresh, so the pass would have counted as complete and restarted the clock
+    W.S["schedule"]["2026-10"]["read_ts"] = W.time.time() - 5 * 3600
+    fl.pages.update(_pages(S2, DEC_04, S2, months=("1026", "1126", "1226")))
+    got = _read(W, fl)
+    assert len(got) == 2 and "bd=1226" in got[1] and ("H3613", "2026-12-04") in _starts(W, "2026-12")
+    assert W.S["sched_prev_at"] == before
+
+
+def test_a_stale_month_whose_load_fails_waits_its_back_off(W):
+    fl = _three_on_file(W)
+    fl.pages.update(_pages(S1, DEC_06, S1, months=("1026", "1126", "1226")))
+    real = fl.fetch
+
+    def boom(url):
+        if "bd=1226" in url:
+            fl.urls.append(url)
+            raise TimeoutError("Timeout 45000ms exceeded")
+        return real(url)
+    fl.fetch = boom
+    got = _read(W, fl)
+    assert len(got) == 2 and "bd=1226" in got[1]
+    assert W.S["sched_other_fail"]["2026-12"]["n"] == 1 and not W.other_month_stale("2026-12", "2026-11")
+    assert len(_read(W, fl)) == 1 and len(_read(W, fl)) == 1  # no load again while it backs off
+    W.S["sched_other_fail"]["2026-12"]["next"] = 0  # the back-off is over: one more try
+    fl.fetch = real
+    got = _read(W, fl)
+    assert len(got) == 2 and "bd=1226" in got[1] and ("H3613", "2026-12-06") in _starts(W, "2026-12")
+    assert "2026-12" not in W.S["sched_other_fail"]
+
+
+def test_mobile_path_this_months_own_change_reads_its_totals_whatever_the_other_months_say(W):
+    """The review's case: the pass clock is closed, October is past its own 6 h, December is stale and November's own
+    trips moved: November's Block / Credit are read (as in 1.8.0), never the stored ones."""
+    fl = _three_on_file(W, mobile=True)
+    W.S["schedule"]["2026-10"]["read_ts"] -= 6 * 3600 + 60
+    W.S["sched_prev_at"] = W.time.time() - 3600
+    fl.pages["mobileschedule"] = fl.pages["mobileschedule"].replace(S0, S1)
+    fl.pages["bd=1126"] = _lookup("1126", ("1026", "1126", "1226"), NOV, S1, block="99.59", credit="111.11")
+    W.S["schedule"]["2026-11"]["items"] = W.S["schedule"]["2026-11"]["items"][1:]  # November's own trips moved
+    W.LOOKUP_PAGE.update(bd="", html="", at=0)
+    got = _read(W, fl)
+    assert "bd=1126" in got[1] and W.S["schedule"]["2026-11"]["totals"]["credit"] == "111:11"
+
+
+def test_mobile_path_a_trip_that_ends_later_is_this_months_change(W):
+    """Same trips and starts but a trip now ends a day later: November changed, so its totals are read."""
+    fl = _three_on_file(W, mobile=True)
+    fl.pages["mobileschedule"] = fl.pages["mobileschedule"].replace(S0, S1)
+    fl.pages["bd=1126"] = _lookup("1126", ("1026", "1126", "1226"), NOV, S1, block="99.59", credit="111.11")
+    it = W.S["schedule"]["2026-11"]["items"][0]
+    it["end"] = "2026-12-31"  # the stored copy differs from the page in one trip's end only
+    W.LOOKUP_PAGE.update(bd="", html="", at=0)
+    got = _read(W, fl)
+    assert "bd=1126" in got[1] and W.S["schedule"]["2026-11"]["totals"]["credit"] == "111:11"
+    assert W.later_months_stale("2026-11") == ["2026-12"]  # December waits for a read with a load left

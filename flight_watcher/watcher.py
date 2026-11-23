@@ -6665,11 +6665,12 @@ def merge_lookup_totals(fl, s, old=None):
             tot[k] = got[k]
 
 
-def other_months_check(fl, cur_month):
+def other_months_check(fl, cur_month, only=None):
     """0.8.5 (Ryan: October now, December once it is published): Tools > Schedule Lookup for Ryan's own
     number lists every month FLICA holds in its <select> (1026, 1126, later 1226); each listed month other
     than the current one is read with bd=MMYY (GET only) and parsed like a picker's month, so the FAR 30 in
-    7 / 100 in 672 columns can look back and forward. Returns True when every listed month is in."""
+    7 / 100 in 672 columns can look back and forward. Returns True when every listed month is in. 1.8.1: only (a list
+    of YYYY-MM) limits the loads to those months, for a pass made only for later months FLICA changed."""
     emp = S.get("own_emp")
     if not emp:
         return False
@@ -6706,7 +6707,7 @@ def other_months_check(fl, cur_month):
     stale = later_months_stale(cur_month)  # 1.8.1: changed since read (the stamp rule): these go first and are not fresh
     for bd in sorted(bds, key=lambda b: f"20{b[2:]}-{b[:2]}" not in stale):
         mon = f"20{bd[2:]}-{bd[:2]}"
-        if mon == cur_month:
+        if mon == cur_month or (only is not None and mon not in only):
             continue
         if (mon in store and store[mon].get("src") == "lookup" and time.time() - store[mon].get("read_ts", 0) < 6 * 3600
                 and mon not in stale):
@@ -6720,6 +6721,12 @@ def other_months_check(fl, cur_month):
         except SchedFull:
             waiting = True
             break
+        except GT.BreakerOpen:
+            raise  # a pause, a stop or an open breaker ends the pass as before
+        except Exception as e:  # 1.8.1 review: a load error waits the month's back-off, so it is not loaded every read
+            log.info("own schedule %s (bd=%s): load error %s", mon, bd, type(e).__name__)
+            other_failed(mon, f"load error ({type(e).__name__})")
+            continue
         sp = IF.parse_cm_month(page) if classify(page) == "ok" else None
         if sp and sp["month"] == mon:
             SCHED_READ["lookup_ok"] = True
@@ -6766,11 +6773,14 @@ def prev_month_check(fl, ok_url, cur_month):
     store = S.setdefault("schedule", {})
     y, m = int(cur_month[:4]), int(cur_month[5:7])
     prev = f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
-    if (time.time() - S.get("sched_prev_at", 0) < (6 * 3600 if S.get("sched_prev_v") == 6 else 1800)
-            and not later_months_stale(cur_month)):  # 1.8.1: a later month FLICA changed is read on this read
+    due = time.time() - S.get("sched_prev_at", 0) >= (6 * 3600 if S.get("sched_prev_v") == 6 else 1800)
+    stale = [] if due else later_months_stale(cur_month)  # 1.8.1: a later month FLICA changed is read on this read
+    if not due and not stale:
         return
     try:  # 0.8.5: Schedule Lookup lists every month FLICA holds; October (and December when out) come from there
-        done = other_months_check(fl, cur_month)
+        done = other_months_check(fl, cur_month, only=None if due else stale)
+        if not due:
+            return  # 1.8.1 review: a pass for the stale months only: the 6 h clock and the fallback stay as they were
         if done is None:
             return  # 1.6.2 review: this read's loads are used; the next due read goes on from here
         if done:
@@ -6926,9 +6936,8 @@ def other_months_pending(cur_month):
     kept = S.get("lookup_months") or {}
     if not S.get("own_emp") or not kept.get("bds") or time.time() - float(kept.get("at") or 0) >= LOOKUP_MONTHS_KEEP_S:
         return False
-    if (time.time() - S.get("sched_prev_at", 0) < (6 * 3600 if S.get("sched_prev_v") == 6 else 1800)
-            and not later_months_stale(cur_month)):
-        return False
+    if time.time() - S.get("sched_prev_at", 0) < (6 * 3600 if S.get("sched_prev_v") == 6 else 1800):
+        return False  # 1.8.1 review: a stale later month is accept()'s `moved`, never a reason to skip this month's totals
     store, fails = S.get("schedule") or {}, S.get("sched_other_fail") or {}
     for bd in kept["bds"]:
         mon = f"20{bd[2:]}-{bd[:2]}"
@@ -6955,10 +6964,12 @@ def _schedule_read(fl, force):
         if s.get("updated"):  # 1.8.1: FLICA's stamp for the whole schedule, so a later month it moved is read again
             S["sched_stamp"] = s["updated"]
         if s.get("src") != "lookup":
-            # 1.8.1: the stamp moved and this month's trips did not: the change is a later month's, so this read's
-            # last load goes to it and this month keeps its stored Block / Credit one read (as for a due month)
-            moved = bool(old and later_months_stale(s["month"]) and [(i["trip"], i["start"]) for i in old["items"]]
-                         == [(i["trip"], i["start"]) for i in s["items"]])
+            # 1.8.1: the stamp moved and this month did not (its trips with their ends and layovers, and its days): the
+            # change is a later month's, so this read's last load goes to it and this month keeps its stored Block /
+            # Credit one read (as for a due month)
+            moved = bool(old and later_months_stale(s["month"]) and old.get("days") == s.get("days")
+                         and [(i["trip"], i["start"], i.get("end"), i.get("lay")) for i in old["items"]]
+                         == [(i["trip"], i["start"], i.get("end"), i.get("lay")) for i in s["items"]])
             if (other_months_pending(s["month"]) or moved) and old and all(k in (old.get("totals") or {}) for k in LOOKUP_KEYS):
                 merge_lookup_totals(None, s, old)  # 1.6.2 review: the stored figures; this read's load is a month's
             else:

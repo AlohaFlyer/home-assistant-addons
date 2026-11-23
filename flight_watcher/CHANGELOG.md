@@ -17,7 +17,9 @@ completely"; HOM bus ASK m_01M84GMVMTTBBCZS4VT044491C).
   others: one paced Schedule Lookup load (1.5 to 3.5 s) per stamp change, inside the read's two loads, never a load
   of its own. Past months keep their 6 h, a month in its failure back-off waits it, and a month FLICA no longer lists
   is left alone. On the mobile schedule path the current month keeps its stored Block / Credit for that read only
-  when its own trips did not change (the change is the later month's).
+  when the month itself did not change (its trips with their ends and layovers, and its days): the change is the
+  later month's. A pass made only for such a month loads only it and leaves the other months' 6 h clock as it was,
+  and a month whose page fails to load (a timeout) waits its back-off like any failed month (1 h doubling to 6 h).
 - The log line of such a read ends "(read again: FLICA's schedule stamp moved)", and a re-read that moves trips logs
   `schedule YYYY-MM changed: added [...], removed [...]`. No new push, entity, option or FLICA page.
 
