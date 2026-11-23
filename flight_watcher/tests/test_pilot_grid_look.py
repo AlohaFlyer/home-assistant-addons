@@ -245,7 +245,8 @@ def test_one_look_for_every_month_grid(width, height, scheme):
         assert r["own"]["heads"][:8] == ["", "", "Trip", "Layover", "Block", "Credit", "Soft", "Pay-Gross"]
         assert r["pilot"]["labels"] == ["Credit", "Block", "Soft", "Pay-Gross", "Pay-Net", "Days Off"]
         assert r["recon"]["labels"] == ["Trips", "Credit", "Block", "Soft", "Pay-Gross", "Pay-Net", "Days Off"]
-        assert r["own"]["labels"][:2] == ["Credit", "Block"]
+        # 1.7.22 (#141): Ryan's own totals line has a CrewTrac item (the Pay Report's credit against FW's) after Credit
+        assert r["own"]["labels"][:3] == ["Credit", "CrewTrac", "Block"], r["own"]["labels"]
         rows = _texts(pg, "PIL", ".cal tr[data-d='2026-11-16']")
         crew = " CA Doe, John · FO Roe, Jane" if width > 700 else ""  # FW-0079: a phone's crew is in the list under the grid
         assert rows == [f"MO 16 H9102 LAX ✔ R 07:00 11:15 13:15 2:00 ${round(PER['H9102|2026-11-16']):,}{crew}"], rows
