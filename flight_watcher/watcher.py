@@ -6641,6 +6641,7 @@ def lookup_totals(fl, month):
     LOOKUP_PAGE.update(bd=bd, html=html, at=time.time())
     note_lookup_months(html)
     SCHED_READ["lookup_ok"] = True
+    BRK.ok("lookup")  # 1.8.1 review: a good Schedule Lookup page ends a run of failed ones (BRK_FAILS "in a row")
     return {k: v for k, v in (sp.get("totals") or {}).items() if k in LOOKUP_KEYS and v not in (None, "")}
 
 
@@ -6689,9 +6690,16 @@ def other_months_check(fl, cur_month, only=None):
             html = sched_fetch(fl, IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bdc))
         except SchedFull:
             return None  # this read's loads are used: the next due read goes on
+        except GT.BreakerOpen:
+            raise
+        except Exception as e:  # 1.8.1 review: as a month list page that is not a schedule (counted, logged)
+            log.info("own schedule lookup: month list load error %s", type(e).__name__)
+            other_failed(None, f"the month list page: load error ({type(e).__name__})")
+            return False
         if classify(html) == "ok" and re.search(r'<option value="(\d{4})"', html):
             note_lookup_months(html)
             SCHED_READ["lookup_ok"] = True
+            BRK.ok("lookup")
         else:
             other_failed(None, "the month list page: " + classify(html))
     if not bds:
@@ -6730,6 +6738,7 @@ def other_months_check(fl, cur_month, only=None):
         sp = IF.parse_cm_month(page) if classify(page) == "ok" else None
         if sp and sp["month"] == mon:
             SCHED_READ["lookup_ok"] = True
+            BRK.ok("lookup")
         if not sp or sp["month"] != mon:
             log.info("own schedule %s (bd=%s): %s %s", mon, bd, classify(page),
                      (sp and sp["month"]) or page_log(visible_text(page)[:160]))
@@ -6777,10 +6786,16 @@ def prev_month_check(fl, ok_url, cur_month):
     stale = [] if due else later_months_stale(cur_month)  # 1.8.1: a later month FLICA changed is read on this read
     if not due and not stale:
         return
+    if not due:  # 1.8.1 review: a pass for the stale months only: the 6 h clock and the fallback stay as they were
+        try:
+            other_months_check(fl, cur_month, only=stale)
+        except GT.BreakerOpen as e:
+            log.info("own schedule lookup (changed months) skipped: %s", e)
+        except Exception as e:
+            log.info("own schedule lookup (changed months) failed: %s", e)
+        return
     try:  # 0.8.5: Schedule Lookup lists every month FLICA holds; October (and December when out) come from there
-        done = other_months_check(fl, cur_month, only=None if due else stale)
-        if not due:
-            return  # 1.8.1 review: a pass for the stale months only: the 6 h clock and the fallback stay as they were
+        done = other_months_check(fl, cur_month)
         if done is None:
             return  # 1.6.2 review: this read's loads are used; the next due read goes on from here
         if done:

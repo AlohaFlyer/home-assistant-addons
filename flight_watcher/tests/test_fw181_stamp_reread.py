@@ -276,3 +276,55 @@ def test_mobile_path_a_trip_that_ends_later_is_this_months_change(W):
     got = _read(W, fl)
     assert "bd=1126" in got[1] and W.S["schedule"]["2026-11"]["totals"]["credit"] == "111:11"
     assert W.later_months_stale("2026-11") == ["2026-12"]  # December waits for a read with a load left
+
+
+def test_a_stale_only_pass_that_raises_leaves_the_clock_and_the_fallback_alone(W):
+    """Second review: a pause, a stopped path or a load error inside the pass for a changed later month never drops
+    into the previous month's mobile fallback nor moves the pass clock."""
+    fl = _three_on_file(W, mobile=True)
+    W.S["sched_prev_at"] = W.time.time() - 3600
+    before = (W.S["sched_prev_at"], W.S["sched_prev_v"])
+    real = fl.fetch
+    for exc in (W.GT.BreakerOpen("lookup", "07:00"), W.GT.GateAbort("paused"), TimeoutError("Timeout 45000ms")):
+        W.S.pop("sched_other_fail", None)
+        W.S["schedule"]["2026-12"]["cur_stamp"] = ""  # December owes a read under the current stamp
+
+        def boom(url, exc=exc):
+            if "bd=1226" in url:
+                fl.urls.append(url)
+                raise exc
+            return real(url)
+        fl.fetch = boom
+        fl.pages["mobileschedule"] = fl.pages["mobileschedule"].replace(S0, S1)
+        got = _read(W, fl)
+        assert len(got) == 2 and "bd=1226" in got[1], (exc, got)  # no fallback load of the previous month
+        assert (W.S["sched_prev_at"], W.S["sched_prev_v"]) == before, exc
+    fl.fetch = real
+
+
+def test_a_month_list_load_error_backs_off_and_counts_once(W):
+    W.S["sched_shape"] = "lookup"
+    W.S["own_emp"] = "10008"
+    calls = []
+
+    class Fl:
+        urls = []
+
+        def fetch(self, url):
+            calls.append(url)
+            raise TimeoutError("Timeout 45000ms")
+    W.LOOKUP_PAGE.update(bd="", html="", at=0)
+    assert W.other_months_check(Fl(), "2026-11") is False and len(calls) == 1
+    assert W.S["breakers"]["lookup"]["fails"] == 1  # counted once, as a month list page that is not a schedule
+
+
+def test_a_good_schedule_lookup_page_ends_a_run_of_failed_ones(W):
+    """Second review: on the mobile path the lookup path's failure count is reset by any Schedule Lookup page that
+    parses (the totals read, the month list, a month), so failures counted on different reads never add up to a stop
+    while the path works."""
+    fl = _three_on_file(W, mobile=True)
+    W.BRK.fail("lookup", "test: an earlier failure")
+    W.BRK.fail("lookup", "test: another")
+    assert W.S["breakers"]["lookup"]["fails"] == 2
+    _read(W, fl)  # the mobile page and November's totals on Schedule Lookup
+    assert int((W.S["breakers"].get("lookup") or {}).get("fails") or 0) == 0

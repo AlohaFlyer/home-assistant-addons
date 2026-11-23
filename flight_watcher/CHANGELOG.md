@@ -20,6 +20,9 @@ completely"; HOM bus ASK m_01M84GMVMTTBBCZS4VT044491C).
   when the month itself did not change (its trips with their ends and layovers, and its days): the change is the
   later month's. A pass made only for such a month loads only it and leaves the other months' 6 h clock as it was,
   and a month whose page fails to load (a timeout) waits its back-off like any failed month (1 h doubling to 6 h).
+  A pause, a stopped read path or a load error inside that pass ends it there (the previous month's mobile page is
+  not loaded and the clock does not move); a load error on the month list page counts as a failed list page; and any
+  Schedule Lookup page that parses (the totals, the month list, a month) ends a run of failed ones for its breaker.
 - The log line of such a read ends "(read again: FLICA's schedule stamp moved)", and a re-read that moves trips logs
   `schedule YYYY-MM changed: added [...], removed [...]`. No new push, entity, option or FLICA page.
 
