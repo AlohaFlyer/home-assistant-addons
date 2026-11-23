@@ -14,7 +14,10 @@ import json
 import logging
 import math
 import re
+import sys
+import threading
 import types
+from datetime import datetime, timezone
 
 import pytest
 
@@ -23,6 +26,8 @@ from test_crew_index import FakeFl, W, _file, _row  # noqa: F401  (W is the crew
 from test_crew_variants import _setup9646
 from test_fw171_cards import _browser, _card, _page as _portal_page, _pilot, _s
 from test_fw1712_data_age import OLD, _clock, _sched
+from test_fw171_r4_cards import HA_VARS_JS
+from test_layover_card import HA_DARK, HA_LIGHT
 from test_release_a_flica import mk, real_fl  # noqa: F401
 from test_release_a_cards import _run, _src
 from test_release_a_review import Stop, _run_main
@@ -235,6 +240,85 @@ def test_a_variant_probe_left_out_for_the_host_hour_keeps_its_letters(W, tmp_pat
     assert W.DB.get(W.CREW_VARIANT_KEY)["H9646|2026-11-06"]["found"] == ""
 
 
+NOV10 = datetime(2026, 11, 10, 22, 5, tzinfo=timezone.utc).timestamp()  # Nov 10 12:05 HST (the 12:00 slot's run)
+
+
+@pytest.mark.parametrize("room", [0, 1])
+def test_the_pre_check_stops_a_chunk_with_no_room_before_any_wait(mk, monkeypatch, tmp_path, caplog, room):
+    """1.7.26 review: with the host's hour at HOST_CAP_H - host_keep loads (room 0: this page plus the keep passes the
+    cap, as the gate counts it) the chunk stops before the lettered-copy probe's pacing sleep, so a held hunt check
+    with FW-0068 candidates never waits 1.5 to 3.5 s for a page the gate would leave out: no sleep at all (the probe's
+    nor the gate's pace wait) and no FLICA load. One page of room (479 - keep) lets the probe read that page."""
+    A = mk("", t=NOV10)
+    A.S["pot_urls"] = {"mobile": A.MOBILE_POT}
+    monkeypatch.setattr(A, "CREW_DIR", str(tmp_path / "crew_index"))
+    insts = _setup9646(A, tmp_path)
+    assert A.CI.variant_candidates(insts, A.DB.crew_rows(), A.local_now(), (), A.VARIANT_MAX_AGE_D) == [
+        "H9646|2026-11-06"]
+    A.S["crew_run"] = {"started": "2026-11-10T12:00:00", "pages": 0, "why": "slot", "slot": "2026-11-10T12"}
+    A.S["crew_slot"] = "2026-11-10T12"
+    keep = A.host_keep()
+    assert keep == 10 + 3 + 0 + 8 == 21  # normal 6 min, one pot page, no pilot: 10 pot loads, a start, 8 schedule
+    _fill(A, A.GT.HOST_CAP_H - keep - room)
+    sleeps, clock_sleep = [], A.CLOCK.sleep
+
+    def rec(sec):
+        sleeps.append(sec)
+        clock_sleep(sec)
+    monkeypatch.setattr("time.sleep", rec)
+    fl = real_fl(A, lambda u: f"<html><p>flica.net - mobile pairing pairing details {u.split('PID=')[1][:6].lower()}"
+                              ":06nov</p></html>")
+    with caplog.at_level(logging.INFO, logger="flight_watcher"):
+        assert A.crew_index_check(fl) == "ok"
+    paused = [r.getMessage() for r in caplog.records if "crew index: paused" in r.getMessage()]
+    if room == 0:
+        assert fl.loads == [] and sleeps == []  # not one load, not one wait
+        assert paused == [f"crew index: paused, the FLICA host hour is kept for the pot checks ({480 - keep} of 480 "
+                          "used)"]
+        assert A.S["crew_run"]["pages"] == 0 and A.RUN["host_keep"] == 0
+        assert A.DB.get(A.CREW_VARIANT_TRIES_KEY) in (None, {})  # no try counted
+    else:
+        assert [u.split("PID=")[1][:6] for _, u in fl.loads] == ["H9646A"]  # the one page of room, then the gate
+        assert 1.5 <= sleeps[0] <= 3.5, sleeps  # the probe's own pacing before that read
+        assert A.S["crew_run"]["pages"] == 1 and len(paused) == 1
+
+
+def test_the_pilot_count_is_taken_once_and_stdout_is_never_left_redirected(mk, monkeypatch):
+    """1.7.26 review: gap(), held_apply() and host_keep() run on the main loop and the MQTT thread; pilot_prefixes
+    swaps sys.stdout (run.py's rules print). The count is taken once for the options in hand, and every redirect
+    goes one at a time (STDOUT_LOCK), so threads calling it together leave sys.stdout as it was."""
+    A = _admin(mk)
+    calls, real = [], A.pilot_prefixes
+
+    def counted():
+        calls.append(1)
+        return real()
+    monkeypatch.setattr(A, "pilot_prefixes", counted)
+    for _ in range(50):
+        A.gap(), A.held_apply(), A.host_keep(), A.pilots_running()
+    assert len(calls) == 1 and A.pilots_running() == 1
+    A.OPTS["pilots"] = [{"name": "pilot2"}, {"name": "jane_doe"}]  # another option set (a test's): counted again
+    assert A.pilots_running() == 2 and A.host_share_h() == 280 and len(calls) == 2
+    monkeypatch.setattr(A, "pilot_prefixes", real)
+    orig, errs = sys.stdout, []
+
+    def hammer():
+        try:
+            for _ in range(3000):
+                real()
+                A.pilotdb_portal_pilots()
+        except Exception as e:  # noqa: BLE001
+            errs.append(e)
+    ts = [threading.Thread(target=hammer) for _ in range(4)]
+    for t in ts:
+        t.start()
+    for _ in range(3000):
+        real()
+    for t in ts:
+        t.join()
+    assert not errs and sys.stdout is orig
+
+
 # ---------------------------------------------------------------- D3: the hold line, from the Watcher's own notes
 HELD_JS = """(notes) => notes.map((n) => { const h = fwAgeHeld(n); return [h.line, h.hold]; })"""
 
@@ -385,35 +469,98 @@ def test_check_now_sent_lasts_until_the_next_good_read_or_60_s():
         assert pg.evaluate(SENT_JS)[:2] == ["Sending...", True]
 
 
-KEY_JS = """async () => { const r = C.shadowRoot, el = r.getElementById('age');
-  const b = () => r.querySelector('.fwa-b'), box = r.getElementById('agi');
-  return {focus: r.activeElement === b(), ring: b() ? getComputedStyle(b()).outlineStyle + ' '
-    + getComputedStyle(b()).outlineWidth : '', open: getComputedStyle(box).display !== 'none',
-    stamp: r.activeElement === el}; }"""
+# 1.7.26 review: what has the keyboard's focus in the card (the stamp, the box, its button), the box's state, and the
+# focus ring's contrast (WCAG 1.4.11, 3:1) against what is under it: the box for its button, the page and the card
+# for the box itself (its ring sits outside it)
+LOOK_JS = r"""() => { const r = C.shadowRoot;
+  const el = r.querySelector('.hd2 .ag[data-age]') || r.querySelector('.ag[data-age]');
+  const box = r.getElementById('agi') || r.querySelector('.fwm .info'), b = box.querySelector('.fwa-b');
+  const a = r.activeElement, cs = a ? getComputedStyle(a) : null;
+  const rgb = (c) => (/rgba?\(([^)]+)\)/.exec(c || '') || [0, '255, 255, 255'])[1].split(/[\s,\/]+/).map(parseFloat);
+  const lum = (c) => {
+    const f = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    const p = rgb(c); return 0.2126 * f(p[0]) + 0.7152 * f(p[1]) + 0.0722 * f(p[2]); };
+  const ratio = (x, y) => { const p = lum(x), q = lum(y); return (Math.max(p, q) + 0.05) / (Math.min(p, q) + 0.05); };
+  const solid = (c) => { const p = rgb(c); return p.length < 4 || p[3] >= 1; };
+  const under = (a === b ? [getComputedStyle(box).backgroundColor] : [getComputedStyle(document.body).backgroundColor,
+    getComputedStyle(r.querySelector('ha-card')).backgroundColor]).filter(solid);
+  return {act: a === el ? 'stamp' : a === box ? 'box' : a && a === b ? 'button' : (a ? a.tagName : 'none'),
+    open: getComputedStyle(box).display !== 'none', exp: el.getAttribute('aria-expanded'),
+    ring: cs ? cs.outlineStyle + ' ' + cs.outlineWidth : '',
+    con: cs ? Math.min(...under.map((u) => ratio(cs.outlineColor, u))) : 0,
+    shown: !!b && b.checkVisibility(), label: b ? b.textContent : null,
+    calls: window.calls.filter((x) => x[0] === 'button').length}; }"""
+THEMES = {  # name: (scheme, pilot copy, Home Assistant's own colours for the admin's copy)
+    "portal light": ("light", True, None), "portal dark": ("dark", True, None),
+    "ha light": ("light", False, HA_LIGHT.split(";background")[0] + ";--secondary-background-color:#e5e5e5"),
+    "ha dark": ("dark", False, HA_DARK.split(";background")[0] + ";--secondary-background-color:#282828")}
 
 
-def test_the_button_is_reached_and_used_from_the_keyboard():
+@pytest.mark.parametrize("theme", list(THEMES))
+def test_the_box_is_reached_used_and_closed_from_the_keyboard(theme):
+    """1.7.26 review: Enter or Space on the stamp opens the box and gives it the focus, so its Check now is the next Tab
+    in every card (the full clock card had its five controls first, the schedule card every trip of the month); Esc, or
+    Enter or Space on the box, closes it and gives the stamp the focus back; Enter on the stamp toggles it; the stamp's
+    aria-expanded says which. The focus rings reach 3:1 on Home Assistant's light box too (the primary colour was
+    2.59:1 on #e5e5e5)."""
+    scheme, pilot, ha = THEMES[theme]
     with _browser() as b:
-        for scheme in ("light", "dark"):
-            pg = _portal_page(b, [_card("clock-card", pilot=False)], width=390, scheme=scheme)
-            pg.evaluate("(st) => { window.C = mount('flight-watcher-clock-card', {mode: 'age'}, st); "
-                        "C.shadowRoot.getElementById('age').focus(); }", _states("clock", False))
-            pg.keyboard.press("Enter")  # opens the box
-            pg.keyboard.press("Tab")  # the stamp, then the box's button
-            g = pg.evaluate(KEY_JS)
-            assert g["focus"] and g["open"] and g["ring"] == "solid 2px", (scheme, g)  # a visible focus ring
-            pg.keyboard.press("Enter")
-            press = ["button", "press", {"entity_id": "button.flight_watcher_check_now"}]
-            assert pg.evaluate("window.calls") == [press]
-            g = pg.evaluate(KEY_JS)
-            assert g["focus"] and g["open"], g  # the press keeps the box open and the focus on the button
-            assert pg.evaluate(SENT_JS) == ["Check now sent", True, True]
-            pg.keyboard.press("Enter")  # "sent": a second press does nothing
-            assert len(pg.evaluate("window.calls")) == 1
-            pg.keyboard.press("Escape")
-            g = pg.evaluate(KEY_JS)
-            assert not g["open"] and g["stamp"], g  # Esc closes it and gives the stamp the focus back
-            pg.context.close()
+        for card, cfg in (("clock", {"mode": "age"}), ("clock", {}), ("schedule", {})):
+            for st in ("idle", "paused"):
+                pg = _portal_page(b, [_card(f"{card}-card", pilot=pilot)], width=390, scheme=scheme)
+                if ha:
+                    pg.evaluate(HA_VARS_JS, ha)
+                tag = f"flight-watcher-{card}-card" + ("-pilot2" if pilot else "")
+                states = _states(card, pilot, st=st, pause="on" if st == "paused" else "off")
+                pg.evaluate("([tag, cfg, st]) => { window.C = mount(tag, cfg, st); }", [tag, cfg, states])
+                pg.wait_for_timeout(350)  # the schedule card redraws once its files answer 404
+                stamp = ("C.shadowRoot.querySelector('.hd2 .ag[data-age]') || "
+                         "C.shadowRoot.querySelector('.ag[data-age]')")
+                pg.evaluate(f"() => ({stamp}).focus()")
+                where = (theme, card, cfg, st)
+
+                def key(k):
+                    pg.keyboard.press(k)
+                    return pg.evaluate(LOOK_JS)
+                g = key("Enter")  # opens the box, its focus in it
+                assert (g["open"], g["exp"], g["act"], g["ring"]) == (True, "true", "box", "solid 2px"), (where, g)
+                assert g["con"] >= 3, (where, g)
+                if st == "idle":
+                    g = key("Tab")  # the box's Check now: the very next stop
+                    assert (g["act"], g["open"], g["ring"]) == ("button", True, "solid 2px"), (where, g)
+                    assert g["con"] >= 3, (where, g)  # on the box's own background
+                    g = key("Enter")
+                    eid = "button.flight_watcher" + ("_pilot2" if pilot else "") + "_check_now"
+                    got = pg.evaluate("window.calls.filter((x) => x[0] === 'button')")  # the schedule card's own
+                    assert got == [["button", "press", {"entity_id": eid}]], (where, got)  # mqtt publishes aside
+                    assert (g["act"], g["open"], g["label"]) == ("button", True, "Check now sent"), (where, g)
+                    assert key("Enter")["calls"] == 1, where  # "sent": a second press does nothing
+                    g = key("Escape")
+                    assert (g["open"], g["exp"], g["act"]) == (False, "false", "stamp"), (where, g)
+                    pg.context.close()
+                    continue
+                assert not g["shown"], where  # paused: no Check now in it
+                g = key("Escape")  # Esc closes it: the box had no button to put it on before 1.7.26's review
+                assert (g["open"], g["exp"], g["act"]) == (False, "false", "stamp"), (where, g)
+                g = key("Enter")
+                assert (g["open"], g["act"]) == (True, "box"), (where, g)
+                g = key("Enter")  # Enter on the box closes it too
+                assert (g["open"], g["exp"], g["act"]) == (False, "false", "stamp"), (where, g)
+                g = key("Space")
+                assert (g["open"], g["act"]) == (True, "box"), (where, g)
+                g = key("Space")
+                assert (g["open"], g["exp"], g["act"]) == (False, "false", "stamp"), (where, g)
+                pg.evaluate(f"() => ({stamp}).click()")  # a tap opens it (the focus stays where it was)
+                assert pg.evaluate(LOOK_JS)["exp"] == "true", where
+                pg.evaluate(f"() => ({stamp}).focus()")
+                g = key("Enter")  # Enter on the stamp toggles it closed
+                assert (g["open"], g["exp"], g["act"]) == (False, "false", "stamp"), (where, g)
+                pg.evaluate(f"() => {{ ({stamp}).click(); const r = C.shadowRoot; "
+                            "const box = r.getElementById('agi') || r.querySelector('.fwm .info'); "
+                            "box.querySelector('.fwa-t').click(); }")
+                g = pg.evaluate(LOOK_JS)
+                assert (g["open"], g["exp"], g["calls"]) == (False, "false", 0), (where, g)  # a tap on its text
+                pg.context.close()
 
 
 def test_a_tap_on_the_box_text_still_closes_it_and_the_schedule_stamp_opens_by_keyboard():

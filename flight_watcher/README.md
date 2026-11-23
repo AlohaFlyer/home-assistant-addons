@@ -19,8 +19,10 @@ publishes what it finds to Home Assistant over MQTT.
   100 for each pilot's Watcher, less his schedule reads (8 an hour), one check's start (3) and his other reads
   (`ADMIN_OPT_RESERVE_H`, 40): with one pilot and one pot page his checks are at least 3600 / 329 = 10.94 s apart, so a
   10 s or 5 s hunt is held to at least 11 s apart ("Hunting every 10 s is held to 380 FLICA loads an hour: checks wait
-  for the budget, at least 11 s apart", the pilot's words); a 15 s hunt or slower and normal mode are not held. And the
-  crew index reads only while the hour leaves room for his pot checks (below).
+  for the budget, at least 11 s apart", the pilot's words); a 15 s hunt or slower and normal mode are not held. The
+  Tradeboard, the reserve grid and a pending request's lists (every 2 min) are not counted: with two bid months or a
+  request pending they can still fill the host's hour, and the gate then holds his next check. And the crew index
+  reads only while the hour leaves room for his pot checks (below).
 - Close-in folder (1.4.7, FW-0034): the "Close in Opentime: <16 Hrs to RPT" folder is read too, GET only, once a menu
   link that names it gives its BCID (never guessed) and its open time page reads as HNL 332 FO. Its trips are listed
   first on the pot (src `C`, folder `close-in`) and push like any new pairing (a trip moved there from the regular
@@ -120,7 +122,9 @@ publishes what it finds to Home Assistant over MQTT.
   440 hunting at 10 s with one pilot, 131 in normal mode at 6 min with the close-in folder). A load the hour cannot
   spare is left out, never waited for: the chunk stops (not read, not failed, no breaker), the run goes on at a later
   check, and the log says "crew index: paused, the FLICA host hour is kept for the pot checks (N of 480 used)" once a
-  run. So it does not read while a fast hunt runs, and reads about 170 to 270 pages an hour in normal mode.
+  run. So it does not read while a fast hunt runs, and reads about 170 to 270 pages an hour in normal mode. The keep
+  holds no room for the admin's other reads, and pages read in normal mode stay in the hour for up to 60 min, so a
+  hunt switched on soon after a run can still wait for the host limit a while.
 - Pilots besides the admin (1.5.0): option `pilots` (or the older `second_pilot`) runs one more Watcher per pilot
   with its own data, MQTT prefix (`flight_watcher_<name>`), entities and card copies (Pilots and roles, below).
 
@@ -825,7 +829,9 @@ when the state note is a gate, host limit, budget, held pace or stopped read pat
 **Check now** button (`button.<prefix>_check_now`, the clock card's press; a pilot's portal already carries it): shown
 where the clock card shows Check now (idle or hunting, Pause off), marked unavailable with the reason beside it while
 the gate holds the next check (the Watcher would ignore the press), "Check now sent" after a press until the next good
-read or 60 s. A tap on the button keeps the box open, a tap on its text closes it; Esc on the button closes it too. On
+read or 60 s. A tap on the button keeps the box open, a tap on its text closes it. From the keyboard Enter or Space
+on the stamp toggles the box (both cards; aria-expanded says which), the box then has the focus so its Check now is
+the next Tab, and Esc in it, or Enter or Space on the box, closes it and puts the focus back on the stamp. On
 the Details view the clock card with `mode: age` is the stamp alone, a 56 px tile ("Data age" over its value), in
 place of the "Last check" tile. A pilot's portal shows it on his clock and schedule cards from the entities it already
 has. The pot card's "Pot last read ..." note is unchanged.

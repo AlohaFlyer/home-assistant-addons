@@ -155,6 +155,9 @@ def load_opts():
 
 
 OPTS = load_opts()
+# 1.7.26 review: contextlib.redirect_stdout swaps the process's sys.stdout; two at once (the main loop and the MQTT
+# thread) could leave it on a dead buffer, so every redirect in the Watcher (run.py's rules, which print) takes this
+STDOUT_LOCK = threading.Lock()
 
 logging.basicConfig(
     level=getattr(logging, OPTS.get("log_level", "info").upper()),
@@ -1958,15 +1961,20 @@ RUN = {"check": False, "optional": False, "aborted": "", "skipped": set(), "opt"
        "host_keep": 0}
 GATE_KEEP = 4  # an optional load leaves this many of a pilot's budget free (the next check's start)
 # 1.7.26 (Nov 22): the admin's FLICA loads an hour besides his pot checks and schedule reads, which his check pace
-# (host_pace_s) leaves room for. What the code reads in an hour, steady and by event: the close-in folder while
-# hunting, 12 (CLOSE_IN_READ_S 300 s); the request lists, about 8 (each folder's open time list and his trades list
-# every 15 min, REQ_IDLE_GAP_S); pickups and in-flight re-checks, about 12 (a find that left the pot at PICKUP_FIRST_S,
-# then every PICKUP_RETRY_S 20 min, PICKUP_PER_CHECK and INFLT_PER_CHECK a check); alert-email pickups (one detail page
-# an email), new trips' pot details and his own trip times (once a trip, an empty one at most hourly,
-# OWN_EMPTY_RETRY_S), about 8. 12 + 8 + 12 + 8 = 40. The Tradeboard (2 loads every TB_MIN_GAP_S 120 s: up to 60 an
-# hour) and the reserve grid (GRID_MIN_GAP_S 300 s and a render every 30 min: up to 14) fit in the slack the held
-# pace leaves: it is the shortest wait (gap: 1 to 1.3 times it, 1.15 on average) and each check takes its own time,
-# so held checks come about 255 to 285 an hour, not 329 (Nov 22). The gate still holds whatever comes over.
+# (host_pace_s) leaves room for (Ryan's range for it: about 24 to 40). Counted, as the code reads them in an hour: the
+# close-in folder while hunting, 12 (CLOSE_IN_READ_S 300 s); the request lists while no request is pending, about 8
+# (each folder's open time list and his trades list every 15 min, REQ_IDLE_GAP_S); pickups and in-flight re-checks,
+# about 12 (a find that left the pot at PICKUP_FIRST_S, then every PICKUP_RETRY_S 20 min, PICKUP_PER_CHECK and
+# INFLT_PER_CHECK a check); alert-email pickups (one detail page an email), new trips' pot details and his own trip
+# times (once a trip, an empty one at most hourly, OWN_EMPTY_RETRY_S), about 8. 12 + 8 + 12 + 8 = 40.
+# Not counted (1.7.26 review): the Tradeboard (2 loads a bid month every TB_MIN_GAP_S 120 s: up to 60 an hour a bid
+# month) and the reserve grid (one load a bid month every GRID_MIN_GAP_S 300 s and a render every 30 min: about 14 an
+# hour a bid month). With one bid month and no request pending they fit in the slack the held pace leaves (it is the
+# shortest wait, 1.15 times it on average, and each check takes its own time, so held checks come about 255 to 285 an
+# hour, not 329). With two bid months (once FLICA shows the next one: up to 120 and 28) or a request pending (its lists
+# every REQ_PENDING_GAP_S 2 min: 60 to 90 an hour) they can still fill the host's hour beside a held hunt and a pilot's
+# 100: the gate then holds his next check (the state note says until when), as in 1.7.25 but less often. Counting
+# them in the pace, or leaving them out while the host's hour is short, is Ryan's choice.
 ADMIN_OPT_RESERVE_H = 40
 
 
@@ -2007,18 +2015,28 @@ def budget_pace_s():
     return pot_pages() * 3600.0 / max(1.0, room)
 
 
+PILOTS_N = {"key": None, "n": 0}  # 1.7.26 review: pilots_running's count for the options it was taken from
+
+
 def pilots_running():
     """1.7.26: the pilot Watchers run.py starts beside the admin, by its own rules on the add-on options (`pilots`, else
     `second_pilot`; pilot_prefixes). Should those rules fail here, the pilots option is counted as it stands, at most
-    roles.MAX_PILOTS. 0 on a pilot (his own budget is his)."""
+    roles.MAX_PILOTS. 0 on a pilot (his own budget is his). 1.7.26 review: taken once for the options in hand (OPTS is
+    read at start; a change needs a restart), so gap(), held_apply() and host_keep(), on the main loop and the MQTT
+    thread, never go through pilot_prefixes' stdout redirect each time."""
     if GATE.budget:
         return 0
+    key = repr((OPTS.get("pilots"), OPTS.get("second_pilot")))
+    if PILOTS_N["key"] == key:
+        return PILOTS_N["n"]
     try:
-        return len(pilot_prefixes())
+        n = len(pilot_prefixes())
     except Exception:  # noqa: BLE001
         raw = OPTS.get("pilots")
         n = len(raw) if isinstance(raw, list) else 0
-        return min(ROLES.MAX_PILOTS, n or (1 if str(OPTS.get("second_pilot") or "").strip() else 0))
+        n = min(ROLES.MAX_PILOTS, n or (1 if str(OPTS.get("second_pilot") or "").strip() else 0))
+    PILOTS_N.update(key=key, n=n)
+    return n
 
 
 def host_share_h():
@@ -2065,7 +2083,10 @@ def host_keep():
     while that many loads of the host's hour stay free after it, else GateSkip. By hand, Nov 22 (hunt 10 s held to
     10.94 s, 1 pot page, one pilot): 329 + 3 + 100 + 8 = 440 (452 once the close-in folder is known: + 12), so the
     crew index reads while the last hour holds fewer than 40 loads (28): not while that hunt runs. Normal 6 min with
-    the close-in folder (2 pages a check): 20 + 3 + 100 + 8 = 131, so it reads while under 349. 0 on a pilot."""
+    the close-in folder (2 pages a check): 20 + 3 + 100 + 8 = 131, so it reads while under 349. 0 on a pilot. The keep
+    is taken at the interval in use and holds no room for his other reads (ADMIN_OPT_RESERVE_H, the Tradeboard, the
+    grid): the 40 a held hunt leaves are theirs and the crew index's alike, and pages read in normal mode stay in the
+    hour for up to 60 min after a switch to a hunt (1.7.26 review: Ryan's choice whether to keep room for those too)."""
     if GATE.budget:
         return 0
     need = (pot_pages() * 3600.0 / check_every_s() + close_in_h() + GATE_CHECK_TOKENS
@@ -2657,7 +2678,8 @@ def gap():
     if ROLES.role(INSTANCE) == ROLES.PILOT:  # 1.6.2 review: the jitter never takes a pilot under 5 s / 1 min
         lo = max(lo, FREQ_LIMITS["hunt_s"][0] if FLAGS["hunt"] else FREQ_LIMITS["normal_min"][0] * 60)
     # 1.6.2 (Ryan 2026-11-10): a pilot's short hunt is spread over the hour by his budget, still irregular; 1.7.26 (Nov
-    # 22): the admin's by his share of the host's hour (host_pace_s), so his checks never fill the host gate
+    # 22): the admin's by his share of the host's hour (host_pace_s), so his pot checks leave the pilots' budgets and
+    # his other reads their room (with two bid months or a request pending those can still fill it: ADMIN_OPT_RESERVE_H)
     pace = pace_s()
     if pace > lo:
         lo, hi = pace, max(hi, pace * (1 + JITTER))
@@ -4343,7 +4365,7 @@ def pilotdb_portal_pilots():
         return []
     import io
     import run as RUNNER
-    with contextlib.redirect_stdout(io.StringIO()):
+    with STDOUT_LOCK, contextlib.redirect_stdout(io.StringIO()):  # 1.7.26 review: one redirect at a time
         return [n for n, portal in RUNNER.pilot_entries(OPTS) if portal]
 
 
@@ -5370,7 +5392,7 @@ def pilot_prefixes():
     import contextlib
     import io
     import run as RUNNER
-    with contextlib.redirect_stdout(io.StringIO()):
+    with STDOUT_LOCK, contextlib.redirect_stdout(io.StringIO()):  # 1.7.26 review: one redirect at a time
         return [f"flight_watcher_{n}" for n in RUNNER.pilot_names(OPTS)]
 
 
@@ -9614,9 +9636,11 @@ def crew_index_check(fl):
     """1.7.26 (Ryan, Nov 22: "the crew index would only read while the hour still leaves room for your pot checks"):
     on the admin every crew index load (a run's chunk, the FW-0059 re-reads, the FW-0068 lettered-copy probes) goes to
     the gate with keep=host_keep() (RUN host_keep, Flica._load): one the host's hour cannot spare is left out
-    (GateSkip), never waited for, so the next pot check is never held by it. The chunk then stops quietly: that page is
-    neither read nor failed, no breaker counts it, the run keeps its place and goes on at a later check (crew_held
-    logs it once). A pilot's crew index (none today: the feature is the admin's) keeps its rules. Pages:
+    (GateSkip), never waited for, so it does not take the room the coming hour's pot checks need at the interval in
+    use. The chunk then stops quietly: that page is neither read nor failed, no breaker counts it, the run keeps its
+    place and goes on at a later check (crew_held logs it once). 1.7.26 review: its pages stay in the host's hour, so a
+    hunt switched on within the hour after a normal-mode run can still be held by the host limit for a while (see
+    host_keep). A pilot's crew index (none today: the feature is the admin's) keeps its rules. Pages:
     crew_index_chunk."""
     if GATE.budget or not has("crew_index"):
         return crew_index_chunk(fl)

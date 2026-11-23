@@ -1274,7 +1274,8 @@ const FW_AGE_BOX_CSS = `.fwa-h{margin-top:6px;font-weight:600}
     border-radius:18px;border:1px solid var(--primary-text-color,#212121);background:var(--card-background-color,#fff);
     color:var(--primary-text-color,#212121);cursor:pointer}
   .fwa-b[aria-disabled="true"]{cursor:default;border-style:dashed}
-  .fwa-b:focus-visible,.ag:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:2px}
+  .fwa-b:focus-visible,div.info:focus-visible{outline:2px solid var(--primary-text-color,#212121);outline-offset:2px}
+  .ag:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:2px}
   .fwa-r{flex:1 1 12em;min-width:0}
   @media (max-width:700px),(pointer:coarse){.fwa-b{min-height:44px;min-width:44px}}`;
 // {line, hold}: the hold line for the box ('' when nothing holds reads), and the reason a press would be ignored now
@@ -1305,9 +1306,23 @@ function fwAgePress(hass, ids, mem, now) {
   hass.callService("button", "press", { entity_id: ids.chk });
 }
 // fills the box (built once while it stays open, so the button keeps its focus as the age ticks): the stamp's text,
-// the hold line and the button's row. on: {press, close}; Esc on the button closes the box. A button that does nothing
-// now is aria-disabled (dashed, and a tap is ignored), never disabled, so the keyboard's focus stays on it
+// the hold line and the button's row. on: {press, close}. A button that does nothing now is aria-disabled (dashed,
+// and a tap is ignored), never disabled, so the keyboard's focus stays on it. 1.7.26 review: the box itself takes the
+// focus when the keyboard opens it (tabindex -1, the card calls box.focus()), so its Check now is the next Tab stop
+// whatever follows the stamp; Esc anywhere in it, or Enter or Space on the box itself, closes it (on.close gives the
+// stamp the focus back)
 function fwAgeBox(box, text, c, on) {
+  box._fwaOn = on;
+  if (!box._fwaKey) {
+    box._fwaKey = true;
+    if (!box.hasAttribute("tabindex")) box.tabIndex = -1;
+    box.addEventListener("keydown", (ev) => {
+      if (!box._fwaOn || !box.querySelector(":scope > .fwa-t")) return;  // a card's other tip in the same box
+      if (ev.key === "Escape" || (ev.target === box && (ev.key === "Enter" || ev.key === " "))) {
+        ev.preventDefault(); ev.stopPropagation(); box._fwaOn.close();
+      }
+    });
+  }
   let t = box.querySelector(":scope > .fwa-t");
   if (!t) {
     const mk = (tag, cls) => { const x = document.createElement(tag); x.className = cls; return x; };
@@ -1318,9 +1333,8 @@ function fwAgeBox(box, text, c, on) {
     b.setAttribute("aria-describedby", "fwa-r");
     b.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      if (b.getAttribute("aria-disabled") !== "true") on.press();
+      if (b.getAttribute("aria-disabled") !== "true") box._fwaOn.press();
     });
-    b.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { ev.stopPropagation(); on.close(); } });
     row.addEventListener("click", (ev) => ev.stopPropagation());  // a tap beside the button keeps the box open too
     row.append(b, r); box.append(t, mk("div", "fwa-h"), row);
   }
@@ -1368,31 +1382,47 @@ class FlightWatcherScheduleCard extends HTMLElement {
   _ageHtml(upd) {
     this._updT = upd || "";
     const a = this._age();
-    // 1.7.26: a button for the keyboard too (Enter or Space opens its box, as a tap does)
-    return `<span class="ag" data-age="${a.level}" role="button" tabindex="0" title="${this._esc(this._ageTitle(a))}">`
-      + `${this._esc(a.text)}</span>`;
+    // 1.7.26: a button for the keyboard too (Enter or Space opens its box, as a tap does; the redraw closes the box)
+    return `<span class="ag" data-age="${a.level}" role="button" tabindex="0" aria-expanded="false" `
+      + `title="${this._esc(this._ageTitle(a))}">${this._esc(a.text)}</span>`;
   }
   // 1.7.26: the stamp's box (the shared block's fwAgeBox): its hover text, why reads are held, and its own Check now;
-  // opened by a tap (or Enter / Space) on the stamp, refreshed each second while open (_ageTick)
+  // opened by a tap (or Enter / Space) on the stamp, refreshed each second while open (_ageTick). 1.7.26 review: the
+  // stamp toggles it (a tap, Enter or Space), Esc in the card closes it, the stamp's aria-expanded says which, and from
+  // the keyboard the box takes the focus (its Check now is the next Tab, not one after every trip of the month)
   _ageOn() {
     this._fwa = this._fwa || {};
     return { press: () => { fwAgePress(this._h, FW_AGE_IDS, this._fwa, Date.now()); this._ageTick(); },
-      close: () => {
-        const box = this.shadowRoot.querySelector(".fwm .info"), el = this.shadowRoot.querySelector(".fwm .hd2 .ag");
-        if (box) box.style.display = "none";
-        if (el) el.focus();
-      } };
+      close: () => this._ageClose(true) };
+  }
+  _ageStamp() { return this.shadowRoot && this.shadowRoot.querySelector(".fwm .hd2 .ag[data-age]"); }
+  // the box while it is open on the data age (not on another tip), else null
+  _ageShown() {
+    const box = this.shadowRoot && this.shadowRoot.querySelector(".fwm .info");
+    return box && box.style.display === "block" && box.querySelector(":scope > .fwa-t") ? box : null;
+  }
+  _ageAria() {
+    const el = this._ageStamp(), on = String(!!this._ageShown());
+    if (el && el.getAttribute("aria-expanded") !== on) el.setAttribute("aria-expanded", on);
+  }
+  _ageClose(focus) {
+    const box = this._ageShown(), el = this._ageStamp();
+    if (box) box.style.display = "none";
+    this._ageAria();
+    if (focus && el) el.focus();
   }
   _ageBoxFill(box, el) {
     fwAgeBox(box, el.title, fwAgeChk(this._h, FW_AGE_IDS, this._fwa || (this._fwa = {}), Date.now()), this._ageOn());
   }
-  _ageBoxOpen(el) {
+  _ageBoxOpen(el, kb) {
     const box = this.shadowRoot.querySelector(".fwm .info");
     if (!box || !el) return;
     box.textContent = "";  // it may hold another tip
     box.style.whiteSpace = "normal";
     this._ageBoxFill(box, el);
     box.style.display = "block";
+    this._ageAria();
+    if (kb) box.focus();
   }
   // each second: that span only, never a redraw
   _ageTick() {
@@ -1402,8 +1432,9 @@ class FlightWatcherScheduleCard extends HTMLElement {
     if (el.textContent !== a.text) el.textContent = a.text;
     if (el.dataset.age !== a.level) el.dataset.age = a.level;
     if (el.title !== title) el.title = title;
-    const box = this.shadowRoot.querySelector(".fwm .info");  // 1.7.26: its box, while open
-    if (box && box.style.display === "block" && box.querySelector(":scope > .fwa-t")) this._ageBoxFill(box, el);
+    const box = this._ageShown();  // 1.7.26: its box, while open
+    if (box) this._ageBoxFill(box, el);
+    this._ageAria();  // 1.7.26 review: another tip took the box
   }
   // FW-0010: the pilot's DOH from the state sensor ("" when none is on file or the Watcher is offline); only this
   // value is in the redraw signature, not the sensor's last_updated (its note changes on every check)
@@ -1516,7 +1547,12 @@ class FlightWatcherScheduleCard extends HTMLElement {
         const t = e.target && e.target.closest ? e.target.closest(".trip[data-k]") : null;
         if (t && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); this._pdToggle(t.dataset.k); }
         const ag = e.target && e.target.closest ? e.target.closest(".hd2 .ag[data-age]") : null;  // 1.7.26
-        if (ag && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); this._ageBoxOpen(ag); }
+        if (ag && (e.key === "Enter" || e.key === " ")) {  // 1.7.26 review: it toggles the box
+          e.preventDefault();
+          if (this._ageShown()) this._ageClose(false); else this._ageBoxOpen(ag, true);
+        } else if (e.key === "Escape" && this._ageShown() && !(e.target.closest && e.target.closest(".fwsh"))) {
+          this._ageClose(true);  // Esc in the card (not in a pairing's sheet) closes the data age box
+        }
       });
       this.shadowRoot.addEventListener("click", (e) => {
         // 1.7.7 (Ryan, Nov 14): a tap on a pairing opens its detail (below the grid, or a bottom sheet on a phone); the
@@ -1571,7 +1607,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
           this._h.callService("input_text", "set_value", { entity_id: "input_text.flight_watcher_er_trips", value: next.join(",") });
           return;
         }
-        const ib = e.target.closest(".info"); if (ib) { ib.style.display = "none"; return; }
+        const ib = e.target.closest(".info"); if (ib) { ib.style.display = "none"; this._ageAria(); return; }
         const nv = e.target.closest(".nav");
         if (nv) {
           const d = parseInt(nv.dataset.nav, 10), ent = { entity_id: "input_number.flight_watcher_month_offset" };
@@ -1585,7 +1621,7 @@ class FlightWatcherScheduleCard extends HTMLElement {
         if (tg) { const box = this.shadowRoot.querySelector(".info"); if (box) { box.textContent = tg.title; box.style.whiteSpace = "pre-line"; box.style.display = "block"; } return; }
         if (e.target.closest(".set")) return;
         const ag = e.target.closest(".hd2 .ag[data-age]");  // 1.7.26: the data age stamp opens its own box
-        if (ag) { this._ageBoxOpen(ag); return; }
+        if (ag) { if (this._ageShown()) this._ageClose(false); else this._ageBoxOpen(ag); return; }  // review: toggles
         const tt = e.target.closest("span[title], th[title], b[title]");
         if (tt && tt.title) { const box = this.shadowRoot.querySelector(".info"); if (box) { box.textContent = tt.title; box.style.whiteSpace = "pre-line"; box.style.display = "block"; } return; }
         const dc = e.target.closest("td"); if (!dc || dc.cellIndex > 1) return;  // v43 (Ryan): only the day/date cells toggle a blocked day

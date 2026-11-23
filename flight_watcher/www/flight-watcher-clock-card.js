@@ -167,7 +167,8 @@ const FW_AGE_BOX_CSS = `.fwa-h{margin-top:6px;font-weight:600}
     border-radius:18px;border:1px solid var(--primary-text-color,#212121);background:var(--card-background-color,#fff);
     color:var(--primary-text-color,#212121);cursor:pointer}
   .fwa-b[aria-disabled="true"]{cursor:default;border-style:dashed}
-  .fwa-b:focus-visible,.ag:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:2px}
+  .fwa-b:focus-visible,div.info:focus-visible{outline:2px solid var(--primary-text-color,#212121);outline-offset:2px}
+  .ag:focus-visible{outline:2px solid var(--primary-color,#03a9f4);outline-offset:2px}
   .fwa-r{flex:1 1 12em;min-width:0}
   @media (max-width:700px),(pointer:coarse){.fwa-b{min-height:44px;min-width:44px}}`;
 // {line, hold}: the hold line for the box ('' when nothing holds reads), and the reason a press would be ignored now
@@ -198,9 +199,23 @@ function fwAgePress(hass, ids, mem, now) {
   hass.callService("button", "press", { entity_id: ids.chk });
 }
 // fills the box (built once while it stays open, so the button keeps its focus as the age ticks): the stamp's text,
-// the hold line and the button's row. on: {press, close}; Esc on the button closes the box. A button that does nothing
-// now is aria-disabled (dashed, and a tap is ignored), never disabled, so the keyboard's focus stays on it
+// the hold line and the button's row. on: {press, close}. A button that does nothing now is aria-disabled (dashed,
+// and a tap is ignored), never disabled, so the keyboard's focus stays on it. 1.7.26 review: the box itself takes the
+// focus when the keyboard opens it (tabindex -1, the card calls box.focus()), so its Check now is the next Tab stop
+// whatever follows the stamp; Esc anywhere in it, or Enter or Space on the box itself, closes it (on.close gives the
+// stamp the focus back)
 function fwAgeBox(box, text, c, on) {
+  box._fwaOn = on;
+  if (!box._fwaKey) {
+    box._fwaKey = true;
+    if (!box.hasAttribute("tabindex")) box.tabIndex = -1;
+    box.addEventListener("keydown", (ev) => {
+      if (!box._fwaOn || !box.querySelector(":scope > .fwa-t")) return;  // a card's other tip in the same box
+      if (ev.key === "Escape" || (ev.target === box && (ev.key === "Enter" || ev.key === " "))) {
+        ev.preventDefault(); ev.stopPropagation(); box._fwaOn.close();
+      }
+    });
+  }
   let t = box.querySelector(":scope > .fwa-t");
   if (!t) {
     const mk = (tag, cls) => { const x = document.createElement(tag); x.className = cls; return x; };
@@ -211,9 +226,8 @@ function fwAgeBox(box, text, c, on) {
     b.setAttribute("aria-describedby", "fwa-r");
     b.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      if (b.getAttribute("aria-disabled") !== "true") on.press();
+      if (b.getAttribute("aria-disabled") !== "true") box._fwaOn.press();
     });
-    b.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { ev.stopPropagation(); on.close(); } });
     row.addEventListener("click", (ev) => ev.stopPropagation());  // a tap beside the button keeps the box open too
     row.append(b, r); box.append(t, mk("div", "fwa-h"), row);
   }
@@ -328,14 +342,19 @@ class FlightWatcherClockCard extends HTMLElement {
   }
   // 1.7.12 review: a tap, Enter or Space on the stamp opens its hover text in a box (no hover on a phone): the last
   // good read in HST and the thresholds; a tap on the box, another on the stamp or Esc closes it. 1.7.26: the box also
-  // says why reads are held and has its own Check now (the shared block's fwAgeBox); a tap on that row keeps it open,
-  // Esc on its button closes it and gives the stamp the focus back
+  // says why reads are held and has its own Check now (the shared block's fwAgeBox); a tap on that row keeps it open.
+  // 1.7.26 review: opened from the keyboard the box takes the focus (its Check now is the next Tab, not the last of the
+  // card's controls); Esc in it, or Enter or Space on it, closes it and gives the stamp the focus back
   _ageWire() {
     const el = this._root.getElementById("age"), box = this._root.getElementById("agi");
     const flip = (on) => { this._ageOpen = on; this._ageBox(); };
     el.addEventListener("click", () => flip(!this._ageOpen));
     el.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); flip(!this._ageOpen); } else if (e.key === "Escape") flip(false);
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        flip(!this._ageOpen);
+        if (this._ageOpen) box.focus();
+      } else if (e.key === "Escape") flip(false);
     });
     box.addEventListener("click", () => flip(false));
     this._fwa = this._fwa || {};
