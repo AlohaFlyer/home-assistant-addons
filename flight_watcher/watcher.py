@@ -7196,6 +7196,7 @@ TB_PROBE = {"done": False}
 REQ_IDLE_GAP_S = 900     # 1.2.0: Open Time Requests read every 15 min,
 REQ_PENDING_GAP_S = 120  # every 2 min while a request is pending, and right after a yield to Ryan's own login
 REQ_FIRST_H = 6  # the feature's first read: decisions filed this recently are still pushed
+REQ_FIRST_V = 1  # 1.8.1 (T3, S7): the per-folder first read marks, seeded once from the folders read before
 
 
 MON3 = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
@@ -7641,12 +7642,14 @@ def requests_check(fl):
     Each decision is pushed once ever (S['ot_req_pushed']); on the feature's very first read only decisions filed
     in the last REQ_FIRST_H hours are news. FW-0034: the close-in folder's list is read too once its BCID is verified
     (close_in_check); its decisions carry folder 'close-in', and its own first read pushes only the last REQ_FIRST_H
-    hours (older ones are history)."""
+    hours (older ones are history). 1.8.1 (T3, S7): so does every folder's (and Tradeboard number's) own first read,
+    so a bid month that joins later (Pot month Both, or December on Dec 2) never pushes its whole history."""
+    req_first_seed()
     rows_of = S.setdefault("ot_req_rows", {})  # bcid -> rows of the last good read
     regular = sorted({x for x in (bcid(u) for u in S.get("pot_urls", {}).values()) if x})
     ci = S.get("close_in_bcid") if (S.get("close_in") or {}).get("verified") else None
     folders = regular + ([ci] if ci and ci not in regular else [])
-    done_first = S.setdefault("ot_req_first_done", {})  # FW-0034: folders (the close-in one) whose first read is done
+    done_first = S.setdefault("ot_req_first_done", {})  # folders whose first read is done (FW-0034, 1.8.1 T3 S7)
     trows_of = S.setdefault("tb_req_rows", {})  # 1.4.3: tradeboard number -> Ryan's trade requests of the last good read
     pending = any(r.get("status") in SUB.OPEN for b in folders for r in rows_of.get(b) or []) or \
         any(r.get("status") in SUB.OPEN for rs in trows_of.values() for r in rs or [])
@@ -7707,16 +7710,22 @@ def requests_check(fl):
                 empty[b] = empty.get(b, 0) + 1
                 log.info("requests %s: list empty after %d rows, read again before believing it", b, len(rows_of[b]))
                 continue
-            empty.pop(b, None)
+            # 1.8.1 review (F2A-1): a folder's first read is a list with rows, or its second empty read in a row. An
+            # error page that only says 'request', or a list shown empty for a moment, never uses it up
+            mark = bool(rows) or bool(done_first.get(b)) or empty.get(b, 0) >= 1
+            if mark:
+                empty.pop(b, None)
+            else:
+                empty[b] = 1
             _pending_legs(fl, b, rows)  # FW-0064 review: a pending swap's trips, so the schedule can decide it
-            first_b = first or (b == ci and not done_first.get(b))
+            first_b = first or not done_first.get(b)  # 1.8.1 (T3, S7): each folder's own first read, not only close-in
             for r in SUB.request_news(pushed, rows):
                 try:
                     old = _filed_at(r, now) < now - timedelta(hours=REQ_FIRST_H)
                 except Exception:
                     old = True
                 if first_b and old:
-                    continue  # the feature's (or the close-in folder's) first read: older decisions are history
+                    continue  # the feature's (or this folder's) first read: older decisions are history
                 if r.get("ts") and not r.get("legs"):
                     r.update(_request_view(fl, b, r["ts"]))  # the list names no trips; its view page does
                 ev = {**_req_shown(r), "bcid": b, "at": now_iso(), "url": url}
@@ -7740,7 +7749,7 @@ def requests_check(fl):
             req_cap_keep(rows, rows_of.get(b))  # 1.7.10: each denial's 'picked up by' stays on its row
             rows_of[b] = rows
             read_now.append(b)
-            if b == ci:
+            if mark:
                 done_first[b] = now_iso()
             read_ok = True
         except GT.GateAbort:
@@ -7779,6 +7788,8 @@ def requests_check(fl):
             rows_of.pop(b, None)  # a folder no longer watched: its Pending rows no longer hold the 2-min poll
         for k in [k for k in S.get("req_cap_views") or {} if k.split("|")[0] not in folders]:
             S["req_cap_views"].pop(k, None)
+        for b in [x for x in empty if x not in folders]:
+            empty.pop(b, None)  # 1.8.1 review (F2A-1): empty reads count in a row while the folder is watched
         nums = {b.split(".")[-1] for b in regular}
         for n in [x for x in trows_of if x not in nums]:
             trows_of.pop(n, None)
@@ -8015,14 +8026,31 @@ def req_cap_pass():
         pilotdb_nudge()  # the picker's pickup history in the pilot database
 
 
+def req_first_seed():
+    """1.8.1 (T3, S7), once after the update: the first read marks of the folders and Tradeboard numbers read before
+    (their last good reads on file, S ot_req_rows and tb_req_rows: November's 003.152 and 152), so they are not new.
+    Their decisions still push as before (none lost) and nothing already pushed goes out again; a folder never read
+    (December's 003.153 and 153) gets its own first read. No FLICA load."""
+    if S.get("req_first_v") == REQ_FIRST_V:
+        return
+    at = now_iso()
+    for key, rows_key in (("ot_req_first_done", "ot_req_rows"), ("tb_req_first_done", "tb_req_rows")):
+        done = S.setdefault(key, {})
+        for k in S.get(rows_key) or {}:
+            done.setdefault(k, at)
+    S["req_first_v"] = REQ_FIRST_V
+
+
 def _trade_requests_check(fl, folders, trows_of, pushed, now):
     """1.4.3 (Ryan's Nov 6 Trade, which the Open Time Requests list never shows): read only, Ryan's Tradeboard 'My
     Requests' page for each watched bid month. A crew-to-crew Trade that turns Approved or Denied fires
     event/request_decided once (type Trade, with Pay-Gross), like an open time request; while one reads Processing
     or Pending the list is read every 2 min. The first read of each month (and a page that mentions a trade the
-    parser cannot read) is kept privately in CAPTURE_DIR for parser checks. True when at least one page was read."""
+    parser cannot read) is kept privately in CAPTURE_DIR for parser checks. True when at least one page was read.
+    1.8.1 (T3): each number's own first read pushes only decisions filed in the last REQ_FIRST_H hours."""
     ok = False
     first = not S.get("tb_req_init")
+    done_first = S.setdefault("tb_req_first_done", {})  # 1.8.1 (T3): the numbers whose first read is done
     for n in sorted({b.split(".")[-1] for b in folders}):
         url = TB.my_requests_url(BASE, n)
         if not (SUB.safe_get(url) and SM.safe_get(url)):
@@ -8045,13 +8073,19 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
                     log.info("trade requests %s: %d rows, page captured; text: %s", n, len(rows), page_log(text[:600]))
                 except Exception:
                     pass
+            if page_verdict("tradeboard", url, html) != "ok":
+                # 1.8.1 review (F2A-1, R1): the gate's own check (Flica._loaded): a page it judged not a Tradeboard
+                # page (maintenance, error) is no read at all, so it never uses up the number's first read
+                log.info("trade requests %s: not a Tradeboard page, skipped: %s", n, page_log(text[:120]))
+                continue
+            first_n = first or not done_first.get(n)  # 1.8.1 (T3): this number's own first read too
             for r in SUB.request_news(pushed, rows):
                 try:
                     old = _filed_at(r, now) < now - timedelta(hours=REQ_FIRST_H)
                 except Exception:
                     old = True
-                if first and old:
-                    continue  # the feature's first read: older decisions are history, not news
+                if first_n and old:
+                    continue  # the feature's (or this number's) first read: older decisions are history, not news
                 ev = {**r, "bcid": f"001.{n}", "at": now_iso(), "url": url}
                 try:
                     ev["pay"] = price_request(r)
@@ -8065,6 +8099,8 @@ def _trade_requests_check(fl, folders, trows_of, pushed, now):
                 if r["status"] in SUB.DECIDED:
                     pushed[SUB.push_key(r)] = now_iso()
             trows_of[n] = rows
+            if not odd:  # 1.8.1 review (R1): a page whose trades the parser cannot read is not the first read
+                done_first[n] = now_iso()
             ok = True
         except GT.BreakerOpen:  # 1.6.2 review: given up or left out by the gate: not a failed read
             raise

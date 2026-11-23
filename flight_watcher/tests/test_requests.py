@@ -138,13 +138,19 @@ def test_error_page_and_empty_read_never_repush_or_zero_the_sensor(tmp_path, mon
 
 
 def test_new_folder_after_first_read_pushes_its_decisions(tmp_path, monkeypatch):
+    """1.8.1 (T3, S7): a folder that joins later has its own first read (its older decisions are history); a decision
+    made on it after that first read pushes, however long ago it was filed."""
     W, pages, fetched, read, events, sensor = _flow(tmp_path, monkeypatch)
     pages["text"] = _page("")
     read()
     W.S["pot_urls"]["2026-12"] = "https://ha2.flica.net/full/mobileopentimepot.cgi?BCID=003.153&From=MainMenu"
-    pages["003.153"] = _page(f"{_recent(W, 40)} swap approved drop h3629 add h3628")
+    pages["003.153"] = _page(f"{_recent(W, 40)} swap approved drop h3629 add h3628 "
+                             f"{_recent(W, 30)} swap pending drop h3631 add h3632")
     read()
-    assert [(e["status"], e["bcid"]) for e in events()] == [("Approved", "003.153")]
+    assert events() == []  # the folder's first read: the 40 h old decision is history
+    pages["003.153"] = pages["003.153"].replace("swap pending", "swap approved")
+    read()
+    assert [(e["status"], e["bcid"], e["trips"]) for e in events()] == [("Approved", "003.153", ["H3631", "H3632"])]
 
 
 def test_pending_in_an_unwatched_folder_does_not_hold_the_fast_poll(tmp_path, monkeypatch):
