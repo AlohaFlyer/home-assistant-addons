@@ -23,7 +23,8 @@ can you look at both?" and "Keep the 22 s, set it to Both").
   page is read again), and only 3 refused reads in a row put it on its try time. A BCID not learned yet also needs most
   of its trips in the month proper (a month's last days fall in the next month's slack). A BCID refused for another
   month's trips may be named again once the month's try wait has passed (one odd page never bans a month's real
-  BCID); one of another category (with trips or empty) stays refused, and its links name no candidates. A next month's try is never later than its own first day (HST), so a
+  BCID); one of another category (with trips or empty) stays refused, and its links name no candidates. A next
+  month's try is never later than its own first day (HST), so a
   month not open or refused at its last try before the roll-over is read again at midnight. A menu or link
   BCID that is no open time page gives way to the learned one at once. A month not found is tried again later and
   looked for on the main menu at most every 6 h (through the gate; a reCAPTCHA there is never answered) and in the
