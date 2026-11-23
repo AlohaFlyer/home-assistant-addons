@@ -152,7 +152,7 @@ def _sched_loads(fl):
 # ------------------------------------------------------------------ item 1: the gate inside Flica
 def test_every_flica_load_is_paced_including_the_pot_after_the_schedule(mk):
     W = mk()
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT}
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152")}
     W.S["own_emp"] = "10001"
     for f in ("own_trip_times", "publish_working_flight", "versions_check", "uploads_check"):
         setattr(W, f, lambda *a, **k: None)
@@ -254,7 +254,7 @@ def test_the_pot_page_has_no_breaker(mk):
     W = mk()
     fl = real_fl(W, lambda u: FORWARD)
     for _ in range(4):
-        fl.fetch(W.MOBILE_POT)
+        fl.fetch(W.mobile_pot_url("003.152"))
     assert len(fl.loads) == 4 and not W.BRK.open_paths()  # the pot watch keeps its own stop rules
 
 
@@ -283,7 +283,7 @@ def test_three_failed_reads_stop_a_path_30_min_then_60_and_a_good_read_resets(mk
 
 def test_a_page_the_request_parser_does_not_know_stops_the_list_at_once(mk):
     W = mk()
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT}
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152")}
     W.S["req_force"] = True
     fl = real_fl(W, lambda u: "<html><body>Maintenance tonight, back soon</body></html>")
     W.requests_check(fl)
@@ -299,7 +299,7 @@ def test_a_page_the_request_parser_does_not_know_stops_the_list_at_once(mk):
 
 def test_a_stopped_read_path_never_ends_the_check(mk):
     W = mk()
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT}
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152")}
     for f in ("schedule_check", "own_trip_times", "publish_working_flight", "versions_check", "uploads_check",
               "email_check", "pickup_check", "requests_check", "grid_check", "crew_index_check", "close_in_check"):
         setattr(W, f, (lambda *a, **k: ({}, "ok")) if f == "close_in_check" else (lambda *a, **k: "ok"))
@@ -353,7 +353,8 @@ def test_the_admins_learned_url_follows_the_bid_period_rollover(mk):
     shape is filled with December's period (153), December is read, and November is never taken for December."""
     W = mk("", t=DEC5)
     W.S["sched_url_ok"] = f"{W.BASE}/full/mobileschedule.cgi?BCID=001.152&From=MainMenu"
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT, "mobile_003.153": f"{W.BASE}/full/mobileopentimepot.cgi?BCID=003.153"}
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152"),
+                       "mobile_003.153": f"{W.BASE}/full/mobileopentimepot.cgi?BCID=003.153"}
     W.S["schedule"] = {"2026-11": {"month": "2026-11", "items": [], "days": [], "totals": {}, "updated": "x"}}
     fl = real_fl(W, lambda u: DEC if "BCID=001.153" in u else NOV if "BCID=001.152" in u else INVALID)
     W.schedule_check(fl, force=True)

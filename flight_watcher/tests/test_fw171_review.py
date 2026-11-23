@@ -51,7 +51,7 @@ def _tb_answer(pairings):
 def _pilot_at_the_floor(W):
     W.FLAGS["hunt"] = True
     W.S["freq"] = {"hunt_s": 5, "normal_min": 1}
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT}  # one bid month: cap 12, shares 8, pool 4
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152")}  # one bid month: cap 12, shares 8, pool 4
     W.S["tb_baseline"] = {"tb2_152": []}  # an earlier read saw no post
 
 
@@ -114,7 +114,7 @@ def test_a_left_out_detail_never_costs_the_next_bid_months_tradeboard(mk):
 
 def test_the_admins_tradeboard_reads_every_new_posts_details_once(mk):
     A = mk("")
-    A.S["pot_urls"] = {"mobile": A.MOBILE_POT}
+    A.S["pot_urls"] = {"mobile": A.mobile_pot_url("003.152")}
     A.S["tb_baseline"] = {"tb2_152": []}
     fl = real_fl(A, _tb_answer(["H9101", "H9102"]))
     _tb_read(A, fl)

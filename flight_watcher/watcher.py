@@ -42,6 +42,7 @@ import inflt as IF
 import charter as CH
 import versions as VER
 from pot import LAYOVER_MIN_H, leg_shift as pot_leg_shift
+from pot import link_bcids, pot_month_check  # 1.8.1
 import pdfs as PDF
 import recall as RC
 import ccr as CCR
@@ -72,7 +73,7 @@ import pilotdb as PDBM
 import pdbshare as PS
 import mirror as MR  # 1.8.0: the FLICA mirror (ingress page flica)
 
-VERSION = "1.8.0"
+VERSION = "1.8.1"
 BASE = "https://ha2.flica.net"
 DATA = os.environ.get("FLIGHT_WATCHER_DATA", "/data")
 STATE_FILE = f"{DATA}/state.json"
@@ -166,7 +167,28 @@ logging.basicConfig(
 )
 log = logging.getLogger("flight_watcher")
 
-MOBILE_POT = "https://ha2.flica.net/full/mobileopentimepot.cgi?BCID=003.152&From=MainMenu"
+# 1.8.1 (Ryan, Nov 23, 2026: "Always look for the new pot each month. It's a different bcid"): the open time pot's
+# BCID follows the HST bid month (1.8.0 read BCID 003.152, November's, for good). Anchor: Ryan's November 2026 mobile
+# pot (mobileopentimepot.cgi?BCID=003.152, the page 1.8.0 read) and his December 2026 link (otframe.cgi?BCID=003.153,
+# Nov 23): the suffix goes up by one a bid month, 003 is the category's prefix (HNL 332 FO). Every month's BCID is
+# looked for and learned (pot_pick, S pot_bcids), never assumed for good.
+POT_BCID_ANCHOR = ((2026, 11), "003", 152)
+POT_BCID_SEED = {"2026-11": "003.152", "2026-12": "003.153"}  # Ryan's two links (Nov 23, 2026)
+
+
+def pot_bcid(year, month, anchor=None):
+    """1.8.1 (D1): the open time pot BCID of an HST bid month from an anchor ((year, month), prefix, suffix), by
+    default POT_BCID_ANCHOR: the anchor's suffix plus the months between (Nov 2026 003.152, Dec 2026 003.153, Jan 2027
+    003.154, Dec 2027 003.165)."""
+    (ay, am), prefix, suffix = anchor or POT_BCID_ANCHOR
+    return f"{prefix}.{suffix + (year - ay) * 12 + (month - am):03d}"
+
+
+def mobile_pot_url(b):
+    """1.8.1 (D1): the frameless mobile open time page of a BCID, the page the parsers read (never otframe.cgi)."""
+    return f"{BASE}/full/mobileopentimepot.cgi?BCID={b}&From=MainMenu"
+
+
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
           "September", "October", "November", "December"]
 BACKOFF_MIN = [1, 2, 4, 8, 16, 30]  # minutes before each re-login on repeated needs_login; then park
@@ -426,6 +448,8 @@ def on_message(c, u, msg):
             FLAGS["full"] = True
             wake = wake_check("re-arm")
         log.info("re-arm pressed" + (f": {why}" if why else ""))
+    elif msg.topic == f"{T}/pot_month/set":  # 1.8.1 (D2): This month, Next month or Both (never a portal command)
+        wake = pot_month_cmd(c, msg.payload.decode(errors="replace"))
     elif msg.topic in (f"{T}/hunt/state", f"{T}/pause/state"):
         if p in ("ON", "OFF"):  # the retained state restores the switch after a restart (an empty payload is no state)
             remember_switch("hunt" if "hunt" in msg.topic else "pause", p == "ON")
@@ -641,6 +665,7 @@ def connect_states(c):
     on_connect have restored FLAGS: the switches, and Would drop (count 0 when nothing is marked)."""
     try:
         publish_switches(c)
+        publish_pot_month(c)  # 1.8.1: the Pot month select, from the Watcher's own state
         publish_drop()
     except Exception as e:
         log.info("connect states skipped: %s", e)
@@ -1565,6 +1590,11 @@ def entity_defs():
                                     "min": efl["hunt_s"][0], "max": efl["hunt_s"][1],
                                     "step": 5, "mode": "slider", "unit_of_measurement": "s",
                                     "icon": "mdi:timer-alert-outline"}),
+        # 1.8.1 (D2, Ryan Nov 23): which bid month's open time pot each check reads (pot_plan): This month (default),
+        # Next month (once its pot is open, else this month's) or Both. Every instance; off a portal (roles)
+        ("select", "pot_month", {"name": "Pot month", "command_topic": f"{T}/pot_month/set",
+                                 "state_topic": f"{T}/pot_month/state", "options": list(POT_MODES),
+                                 "icon": "mdi:calendar-month"}),
         ("sensor", "settings", {"name": "Settings", "state_topic": f"{T}/settings/state",
                                 "value_template": "{{ value_json.has_password }}",
                                 "json_attributes_topic": f"{T}/settings/state", "icon": "mdi:account-key",
@@ -1889,8 +1919,9 @@ def page_verdict(path, url, html):
         except Exception:  # noqa: BLE001
             return "error"
     return ""
-HEALTH = {"note": "", "gate": "", "held": "", "brk": ""}  # the state note the gate, the pace and the breakers last put
-# up; 1.7.3: brk is the breakers' part of it as health_note last saw it (health_note_tick)
+# the state note the gate, the pace and the breakers last put up; 1.7.3: brk is the breakers' part of it as health_note
+# last saw it (health_note_tick); 1.8.1: pot, the pot months' part (pot_note: a refused page, this month not found)
+HEALTH = {"note": "", "gate": "", "held": "", "brk": "", "pot": ""}
 
 
 def hst_hm(ts):
@@ -1916,7 +1947,7 @@ def gate_note(why, until):
 
 def health_note():
     HEALTH["brk"] = BRK.note()
-    return "; ".join(x for x in (HEALTH["gate"] or HEALTH["held"], HEALTH["brk"]) if x)
+    return "; ".join(x for x in (HEALTH["gate"] or HEALTH["held"], HEALTH["brk"], HEALTH.get("pot")) if x)
 
 
 def health_note_tick():
@@ -2269,7 +2300,8 @@ def set_machine(state, note=""):
 def state_attrs(note):
     """sensor.<prefix>_state's attributes (set_machine; 1.6.4: also right after a date of hire is saved)."""
     return {"note": note, "version": VERSION, "since": S.get("since") or "", "instance": INSTANCE, "doh": pilot_doh(),
-            "role": ROLES.role(INSTANCE), "features": ROLES.features(INSTANCE)}  # 1.5.0 (FW-0063)
+            "role": ROLES.role(INSTANCE), "features": ROLES.features(INSTANCE),  # 1.5.0 (FW-0063)
+            "pot_mode": pot_mode(), "pot_months": pot_months_attr()}  # 1.8.1 (D4): the clock card's Pot month
 
 
 def pilot_doh():
@@ -2434,9 +2466,15 @@ class Flica:
         finally:
             page.close()
 
-    def discover_pot_urls(self):
-        """Walk the main menu once, open each 'View Opentime Pot' under the configured
-        section for the current and next month, and remember the content frame URL."""
+    def menu_pot_bcids(self, want):
+        """1.8.1 (D1b): look on the main menu for the open time pot of the bid months `want` ({'November': '2026-11',
+        ...}), read only: the main menu (one load through the gate), and of each 'View Opentime Pot' link under the
+        OPTS pot_section heading for one of those months, the BCID the link itself names (no click) or else the
+        BCID of the frame it opens (one click, one load through the gate). The close-in folder's link is never taken
+        (FW-0034). Returns {'YYYY-MM': bcid}; {} when the menu does not load (the headless main menu often stops on a
+        reCAPTCHA forward: never answered, the look just ends); None when FLICA says the session is gone, 'killed'
+        when another session took it. Nothing here guesses a BCID: the page that BCID opens is read (and checked for
+        its month) by the pot check before it is learned."""
         page = self.ctx.new_page()
         found = {}
         try:
@@ -2448,44 +2486,13 @@ class Flica:
                 menu = next((f for f in page.frames if "leftmenu" in f.url.lower()), None)
                 if menu:
                     break
-            kind = classify(page.content())
             if not menu:
-                log.warning("main menu: no leftmenu frame (classify=%s) url=%s frames=%s", kind,
-                            page.url.split("?")[0], [f.url.split("?")[0] for f in page.frames])
-                if kind in ("killed", "expired"):
-                    return None
-                # Headless main menu can stall on a reCAPTCHA forward; the mobile pot page is
-                # frameless and works with the same session cookie (Ryan's Distill used it).
-                html = self.fetch(MOBILE_POT)
-                mk = classify(html)
-                txt = visible_text(html)
-                log.info("mobile pot probe: classify=%s len=%d text=%s", mk, len(html), page_log(txt[:1500]))
-                rows = re.findall(r"<tr[^>]*>.*?</tr>", html, re.S | re.I)
-                log.info("mobile pot rows=%d sample=%s", len(rows), page_log(str([r[:400] for r in rows[:4]])))
-                if mk in ("killed", "expired"):
-                    return None
-                if mk in ("captcha", "blocked"):  # 1.6.2 review: never answered, and no new login to get around it
-                    return mk
-                if "open time" in txt or "opentime" in txt:
-                    # key "mobile" kept for the first page so the v0.1.x baseline carries over
-                    urls = {"mobile": MOBILE_POT}
-                    close_in_scan(html, "mobile open time page")  # FW-0034: a link naming the close-in folder
-                    if OPTS.get("watch_next_month", True):
-                        links = pot_links(html, MOBILE_POT)
-                        log.info("mobile pot links to other bid months: %s", links)
-                        mine = bcid(MOBILE_POT)
-                        ci = (S.get("close_in") or {}).get("bcid")
-                        later = sorted((l for l in links if bcid(l["url"]) and bcid_after(bcid(l["url"]), mine)
-                                        and not CLOSE_IN_RE.search(l["text"]) and bcid(l["url"]) != ci),
-                                       key=lambda l: bcid_key(bcid(l["url"])))  # FW-0034: never the close-in folder
-                        if later:  # the nearest later bid period only, never an earlier month
-                            urls[f"mobile_{bcid(later[0]['url'])}"] = later[0]["url"]
-                        if len(urls) < 2:
-                            log.info("no next-month pot link on the mobile page yet (opens with the bid month)")
-                    return urls
-                if kind in ("captcha", "blocked"):  # the main menu asks for a CAPTCHA and the mobile pot is no way round
-                    return kind
-                return None
+                kind = classify(page.content())
+                log.info("main menu: no leftmenu frame (classify=%s) url=%s; no pot BCID from the menu this time",
+                         kind, page.url.split("?")[0])
+                if kind == "killed":
+                    return "killed"
+                return None if kind == "expired" else {}
             links = menu.evaluate(
                 """(sec) => {
                   const months = %s; let section = '', month = '', out = [], i = 0;
@@ -2499,7 +2506,9 @@ class Flica:
                       if (n.tagName !== 'A' && bold && !m && t) section = re.test(t) ? t : '';
                       if (m) month = m;
                       if (n.tagName === 'A' && /View Opentime Pot/i.test(t)) {
-                        n.setAttribute('data-fw', String(i)); out.push({i, section, month}); i++;
+                        n.setAttribute('data-fw', String(i));
+                        out.push({i, section, month, href: (n.getAttribute('href') || '') + ' ' +
+                                  (n.getAttribute('onclick') || '')}); i++;
                       }
                     }
                   }
@@ -2511,36 +2520,41 @@ class Flica:
                 close_in_scan(menu.content(), "main menu frame")
             except Exception as e:
                 log.info("close-in scan of the menu frame skipped: %s", e)
-            now = local_now()
-            want = {MONTHS[now.month - 1], MONTHS[now.month % 12]}
+            ci = pot_close_in_bcids()
             for l in links:
-                if not l["section"] or l["month"] not in want or l["month"] in found:
+                key = want.get(l["month"])
+                if not l["section"] or not key or key in found or CLOSE_IN_RE.search(l["section"]):
                     continue
-                self._load()  # 1.6.2: the click opens a FLICA page: one load through the gate
-                with self.ctx.expect_page(timeout=20000) as pinfo:
-                    menu.locator(f"a[data-fw='{l['i']}']").click()
-                pot = pinfo.value
-                pot.wait_for_load_state("domcontentloaded")
-                time.sleep(3)
-                alltxt = ""
-                for fr in pot.frames:
-                    try:
-                        alltxt += fr.inner_text("body")
-                    except Exception:
-                        pass
-                cat = OPTS["category_check"].split()
-                if cat and not all(c in alltxt for c in cat):
-                    log.warning("pot page for %s is not category %s, skipped", l["month"], OPTS["category_check"])
+                b = next((x for x in link_bcids(l.get("href") or "") if x not in ci), None)
+                if not b:
+                    self._load()  # 1.6.2: the click opens a FLICA page: one load through the gate
+                    with self.ctx.expect_page(timeout=20000) as pinfo:
+                        menu.locator(f"a[data-fw='{l['i']}']").click()
+                    pot = pinfo.value
+                    pot.wait_for_load_state("domcontentloaded")
+                    time.sleep(3)
+                    alltxt = ""
+                    for fr in pot.frames:
+                        try:
+                            alltxt += fr.inner_text("body")
+                        except Exception:
+                            pass
+                    cat = OPTS["category_check"].split()
+                    if cat and not all(c in alltxt for c in cat):
+                        log.warning("pot page for %s is not category %s, skipped", l["month"], OPTS["category_check"])
+                        pot.close()
+                        continue
+                    for fr in pot.frames:
+                        try:
+                            if "Opentime Pot" in fr.content() and bcid(fr.url) and bcid(fr.url) not in ci:
+                                b = bcid(fr.url)
+                        except Exception:
+                            pass
                     pot.close()
-                    continue
-                for fr in pot.frames:
-                    try:
-                        if "Opentime Pot" in fr.content() and fr.url.startswith("http"):
-                            found[l["month"]] = fr.url
-                    except Exception:
-                        pass
-                pot.close()
+                if b:
+                    found[key] = b
             self.save()
+            log.info("main menu: open time pot BCIDs %s (wanted %s)", found or "none", ", ".join(sorted(want.values())))
             return found
         finally:
             page.close()
@@ -2831,7 +2845,8 @@ def mirror_links():
     """[(label, FLICA URL)] of the mirror's bar: each open time pot the Watcher reads, then the pilot's schedule for
     this month and the next."""
     pots = [u for u in (S.get("pot_urls") or {}).values() if MR.page_kind(u) == "pot"]
-    pots = sorted(dict.fromkeys(pots), key=lambda u: bcid_key(bcid(u)) if bcid(u) else (0,)) or [MOBILE_POT]
+    pots = sorted(dict.fromkeys(pots), key=lambda u: bcid_key(bcid(u)) if bcid(u) else (0,)) or \
+        [mobile_pot_url(pot_bcid_now())]  # 1.8.1: before any is planned, this month's
     out = [("Open time" if i == 0 else "Open time next", u) for i, u in enumerate(pots[:2])]
     shape = S.get("sched_shape_mobile") or "/full/mobileschedule.cgi?BlockDate={bd}&From=MainMenu"
     now = local_now()
@@ -7148,7 +7163,7 @@ def capture(fl, month, html):
         from bs4 import BeautifulSoup
         from urllib.parse import urljoin
         cap_write(f"pot_{month}.html", html)
-        url = S["pot_urls"][month]
+        url = (S.get("pot_urls") or {}).get(month) or mobile_pot_url(pot_pick(month)[0])  # 1.8.1: a try's page too
         links = [{"text": a.get_text(" ", strip=True)[:60], "href": urljoin(url, a["href"])}
                  for a in BeautifulSoup(html, "html.parser").find_all("a", href=True)]
         cap_write(f"links_{month}.json", links)
@@ -7318,7 +7333,7 @@ STOP_KINDS = ("killed", "expired", "blocked")  # pages that end the pass (classi
 
 
 def close_in_url(b):
-    return f"{BASE}/full/mobileopentimepot.cgi?BCID={b}&From=MainMenu"
+    return mobile_pot_url(b)  # 1.8.1: the close-in folder's page is the same mobile open time page shape
 
 
 def _regular_bcids():
@@ -8435,8 +8450,9 @@ def swap_map_probe(fl):
     if not has("auto_swap"):
         return
     os.makedirs(f"{CAPTURE_DIR}/swapmap", exist_ok=True)
-    b = (bcid(MOBILE_POT) or "003.152").split(".")[-1]
-    queue = [("main menu", BASE + "/online/mainmenu.cgi"), ("mobile pot", MOBILE_POT),
+    pot_b = pot_bcid_now()  # 1.8.1: the BCID of the pot the Watcher reads (the swap map's 001.{b} and 003.{b} too)
+    b = pot_b.split(".")[-1]
+    queue = [("main menu", BASE + "/online/mainmenu.cgi"), ("mobile pot", mobile_pot_url(pot_b)),
              ("OT drop view", f"{BASE}/full/mobileschedule.cgi?BCID=001.{b}&Priority=1&From=MobileOTDrop"),
              ("tradeboard", f"{BASE}/online/tb_frame.cgi?BCID=001.{b}&dp=mr")]
     seen, index, n = set(), [], 0
@@ -13374,6 +13390,460 @@ def publish_near_misses(flat):
         log.info("near misses not published: %s: %s", type(e).__name__, e)
 
 
+# ---------------------------------------------------------------- 1.8.1: the open time pot follows the bid month
+# (Ryan, Nov 23, 2026: "Always look for the new pot each month. It's a different bcid"; "I'm working on Dec now".)
+# Each check reads the pot page of the bid month(s) the Pot month select chooses (This month, Next month, Both), each
+# from its own BCID (pot_pick): a BCID a menu or pot page link named for it, else the one learned for it (S pot_bcids:
+# Ryan's two links, then every month whose page read with its own trips), else the derivation from the latest learned
+# month (its suffix plus the months between). A page counts as a month's pot only when classify says ok, it is an open
+# time page and its trips start in that month (pot.pot_month_check); a page of another month's trips is refused (one
+# log line and the state note) and the month's last good BCID is kept. Nothing beyond that derivation is guessed: a
+# month whose BCID is refused or not open is tried again later (POT_TRY_NEXT_S, POT_TRY_THIS_S) and looked for on the
+# main menu (at most every POT_LOOK_S per month, through the gate) and in the links of the pot pages read anyway.
+POT_MODES = ("This month", "Next month", "Both")
+POT_MODE_DEFAULT = "This month"  # every instance: one pot, the current HST month (1.8.0's one page)
+POT_TRY_NEXT_S = 86400  # a next month whose pot is not open yet (or refused) is tried once a day
+POT_TRY_THIS_S = 6 * 3600  # this month's, when its BCID is refused or not open (with the menu look)
+POT_LOOK_S = 6 * 3600  # the main menu walk for a month's BCID: at most once every 6 h per month
+POT_KEEP_MONTHS = 12  # learned BCIDs, statuses and candidates of older months are dropped
+POT_ROWS = {}  # month -> {"rows", "n"}: the rows of its last good read (memory only), for the Next month try
+POT_SEQ = {"n": 0}  # planned checks so far (a month's cached rows stand in only in the check right after their read)
+POT_ATTR = {"last": None}  # the pot_months attribute last published
+MONTH_KEY_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+POT_BAD = ("refused", "not open yet", "empty")  # statuses of a pick that is not (yet) its month's pot
+POT_SHOWN = {"ok": "ok", "refused": "refused", "not open yet": "not open yet", "empty": "not open yet"}
+
+
+def month_add(key, n):
+    """'2026-11' plus n months."""
+    y, m = divmod(int(key[:4]) * 12 + int(key[5:7]) - 1 + n, 12)
+    return f"{y:04d}-{m + 1:02d}"
+
+
+def month_gap(a, b):
+    """Months from a to b ('YYYY-MM' each)."""
+    return (int(b[:4]) * 12 + int(b[5:7])) - (int(a[:4]) * 12 + int(a[5:7]))
+
+
+def month_name(key):
+    """'2026-12' -> 'December 2026'."""
+    return f"{MONTHS[int(key[5:7]) - 1]} {key[:4]}"
+
+
+def this_month_key():
+    d = local_now()
+    return f"{d.year:04d}-{d.month:02d}"
+
+
+def pot_mode():
+    """The Pot month select (S pot_month): 'This month' (default), 'Next month' or 'Both'."""
+    m = S.get("pot_month")
+    return m if m in POT_MODES else POT_MODE_DEFAULT
+
+
+def pot_learned():
+    """{month: {bcid, how, at}} of the BCIDs learned, seeded with Ryan's two links (POT_BCID_SEED)."""
+    lm = S.setdefault("pot_bcids", {})
+    for k, b in POT_BCID_SEED.items():
+        lm.setdefault(k, {"bcid": b, "how": "Ryan's link", "at": "2026-11-23"})
+    return lm
+
+
+def pot_derive(month):
+    """The BCID derived for a month: the latest learned month's prefix and suffix plus the months between (the anchor
+    when nothing is learned)."""
+    lm = pot_learned()
+    keys = sorted(k for k, v in lm.items() if MONTH_KEY_RE.match(str(k)) and isinstance(v, dict)
+                  and re.fullmatch(r"\d{3}\.\d{1,4}", str(v.get("bcid") or "")))
+    if not keys:
+        return pot_bcid(int(month[:4]), int(month[5:7]))
+    k = keys[-1]
+    pre, suf = lm[k]["bcid"].split(".")
+    return pot_bcid(int(month[:4]), int(month[5:7]), ((int(k[:4]), int(k[5:7])), pre, int(suf)))
+
+
+def pot_rec(month):
+    """S pot_months[month]: {bcid, status, why, at, try_at, look_at, refused} of the month's last pot read."""
+    return S.setdefault("pot_months", {}).setdefault(month, {})
+
+
+def pot_pick(month):
+    """(bcid, how) a month's pot is read from: a menu or pot page link's not refused for it ('menu'), the learned one
+    ('learned'; kept when a read refuses it), else the derivation ('derived')."""
+    rec = (S.get("pot_months") or {}).get(month) or {}
+    cand = (S.get("pot_cands") or {}).get(month) or {}
+    if cand.get("bcid") and cand["bcid"] not in (rec.get("refused") or ()):
+        return cand["bcid"], "menu"
+    lm = pot_learned()
+    if isinstance(lm.get(month), dict) and lm[month].get("bcid"):
+        return lm[month]["bcid"], "learned"
+    return pot_derive(month), "derived"
+
+
+def pot_status(month):
+    """The last read's status of the month's pick: 'ok', 'empty' (an open time page with no trips, BCID not proven),
+    'not open yet' (no open time page), 'refused' (another month's trips), or '' (not read yet)."""
+    rec = (S.get("pot_months") or {}).get(month) or {}
+    return rec.get("status", "") if rec.get("bcid") == pot_pick(month)[0] else ""
+
+
+def pot_due(month):
+    """A month whose pick is not its pot (yet) is read again once its try time passed."""
+    rec = (S.get("pot_months") or {}).get(month) or {}
+    return not pot_status(month) or time.time() >= float(rec.get("try_at") or 0)
+
+
+def pot_open(month):
+    """The month's pot reads as its own: its page read with its trips (or empty, on a learned BCID), or a learned BCID
+    not read yet (Ryan's link, a month learned before)."""
+    st = pot_status(month)
+    return st == "ok" or (not st and pot_pick(month)[1] == "learned")
+
+
+def pot_link_on(this):
+    """1.8.0's next-month link: This month with watch_next_month on reads the next month too once a pot page of this
+    month names it (pot_link_scan; FLICA's mobile page has never shown one)."""
+    return (OPTS.get("watch_next_month", True) and pot_mode() == "This month"
+            and (S.get("pot_link_next") or {}).get("month") == month_add(this, 1))
+
+
+def pot_plan(this=None):
+    """1.8.1 (D2): (watch, tries) of this check, from the Pot month select; no FLICA load. watch {month: url}: the
+    pages read every check (S pot_urls). tries [month]: a month of the select whose pick is refused or not open, due
+    again (POT_TRY_*), read this check too (and learned when its page reads as that month's pot).
+    This month: this month's pot. Next month: the next month's once open, else this month's (one page either way).
+    Both: this month's and the next month's once open. A month whose pick is refused or not open waits for its try."""
+    this = this or this_month_key()
+    nxt = month_add(this, 1)
+    mode = pot_mode()
+    watch, tries = {}, []
+
+    def add(m, ready):
+        if ready:
+            watch[m] = mobile_pot_url(pot_pick(m)[0])
+        elif pot_due(m):
+            tries.append(m)
+    this_ready = pot_status(this) in ("", "ok", "empty")  # an empty open time page is read every check
+    if mode == "Next month":
+        if pot_open(nxt):
+            add(nxt, True)
+        else:
+            add(nxt, False)
+            add(this, this_ready)
+    else:
+        add(this, this_ready)
+        if mode == "Both" or pot_link_on(this):
+            add(nxt, pot_open(nxt))
+    return watch, tries
+
+
+def pot_months_of(this=None):
+    """The months the select concerns now, in order (the state attribute, the menu look)."""
+    this = this or this_month_key()
+    nxt = month_add(this, 1)
+    mode = pot_mode()
+    if mode == "Next month":
+        return [nxt] if pot_open(nxt) else [this, nxt]
+    return [this, nxt] if mode == "Both" or pot_link_on(this) else [this]
+
+
+def pot_look_months(this=None):
+    """The months whose pick is refused or not open and whose last main menu look is POT_LOOK_S ago or more."""
+    return [m for m in pot_months_of(this) if pot_status(m) in POT_BAD
+            and time.time() - float(pot_rec(m).get("look_at") or 0) >= POT_LOOK_S]
+
+
+def pot_bcid_now():
+    """The BCID of the first pot page the Watcher reads (S pot_urls, earliest bid period first), else this month's
+    pick: the swap map's and the mirror's pot."""
+    got = sorted({x for x in (bcid(u) for u in (S.get("pot_urls") or {}).values()) if x}, key=bcid_key)
+    return got[0] if got else pot_pick(this_month_key())[0]
+
+
+def pot_close_in_bcids():
+    """FW-0034: the close-in folder's BCIDs (known, trusted or once rejected): never a month's pot."""
+    ci = S.get("close_in") or {}
+    return {b for b in [ci.get("bcid"), S.get("close_in_bcid"), *(ci.get("rejected") or [])] if b}
+
+
+def pot_cand(month, b, how, via):
+    """A BCID a menu or pot page named for month becomes its candidate (read and checked by the next pot read before
+    it is learned), unless it is the month's pick already, one refused for it, or the close-in folder's."""
+    if b == pot_pick(month)[0] or b in (pot_rec(month).get("refused") or ()) or b in pot_close_in_bcids():
+        return False
+    S.setdefault("pot_cands", {})[month] = {"bcid": b, "how": how, "at": now_iso()}
+    pot_rec(month)["try_at"] = 0
+    log.info("open time pot %s: BCID %s named on the %s; read and checked before it is learned", month, b, via)
+    return True
+
+
+def _link_month(text, ref):
+    """The bid month a link's text names ('Dec', 'December 2026'), nearest to ref; '' when it names none."""
+    m = re.match(r"\s*([A-Za-z]{3})[a-z]*\.?(?:\s+(\d{4}))?", text or "")
+    if not m or m.group(1).title() not in [x[:3] for x in MONTHS]:
+        return ""
+    mon = [x[:3] for x in MONTHS].index(m.group(1).title()) + 1
+    if m.group(2):
+        return f"{int(m.group(2)):04d}-{mon:02d}"
+    keys = [f"{int(ref[:4]) + dy:04d}-{mon:02d}" for dy in (-1, 0, 1)]
+    return min(keys, key=lambda k: abs(month_gap(ref, k)))
+
+
+def pot_link_scan(html, url, month):
+    """1.8.1 (D1b): the BCID links on a pot page read anyway (no load). A link to another bid month's pot (its month
+    from its text, else its suffix's distance from this page's own), with this page's prefix, never the close-in
+    folder's (its text or BCID), becomes that month's candidate when the month has no learned BCID or its pick is
+    refused or not open. On this month's page, a link to the next month is noted (pot_link_on)."""
+    b = bcid(url)
+    if not b or "." not in b:
+        return
+    pre, suf = b.split(".", 1)
+    ci = pot_close_in_bcids()
+    this = this_month_key()
+    nxt_link = None
+    for l in pot_links(html, url):
+        lb = bcid(l["url"])
+        if not lb or lb == b or lb in ci or CLOSE_IN_RE.search(l.get("text") or "") or "." not in lb:
+            continue
+        lpre, lsuf = lb.split(".", 1)
+        if lpre != pre or not (lsuf.isdigit() and suf.isdigit()):
+            continue
+        m = _link_month(l.get("text"), month) or month_add(month, int(lsuf) - int(suf))
+        if m == month or abs(month_gap(month, m)) > 2:
+            continue
+        if month == this and m == month_add(this, 1):
+            nxt_link = {"month": m, "bcid": lb}
+        if m in pot_learned() and pot_status(m) not in POT_BAD:
+            continue
+        pot_cand(m, lb, "link", f"{month} pot page (a link)")
+    if month == this:
+        if nxt_link:
+            if S.get("pot_link_next") != nxt_link and OPTS.get("watch_next_month", True):
+                log.info("mobile pot links to the next bid month: %s (%s)", nxt_link["month"], nxt_link["bcid"])
+            S["pot_link_next"] = nxt_link
+        else:
+            S.pop("pot_link_next", None)
+
+
+def pot_look(fl, months):
+    """1.8.1 (D1b): the main menu walk for months (Flica.menu_pot_bcids, through the gate), at most every POT_LOOK_S
+    a month: a BCID it names becomes the month's candidate (pot_cand). Returns 'killed', 'expired' or ''. A menu that
+    does not load ends the look (a reCAPTCHA forward is never answered; the next look is POT_LOOK_S later)."""
+    for m in months:
+        pot_rec(m)["look_at"] = time.time()
+    save_state(S)
+    want = {MONTHS[int(m[5:7]) - 1]: m for m in months}
+    log.info("looking on the main menu for the open time pot of %s", ", ".join(month_name(m) for m in months))
+    try:
+        got = fl.menu_pot_bcids(want)
+    except GT.GateAbort:
+        raise
+    except Exception as e:  # noqa: BLE001 (the look is a help, never a stop)
+        log.info("main menu look for the open time pot skipped: %s", type(e).__name__)
+        return ""
+    if got == "killed":
+        return "killed"
+    if got is None:
+        return "expired"
+    for m, b in (got or {}).items():
+        if m in months:
+            pot_cand(m, b, "menu", "main menu")
+    save_state(S)
+    return ""
+
+
+def pot_learn(month, b, how, why):
+    lm = pot_learned()
+    if (lm.get(month) or {}).get("bcid") != b:
+        lm[month] = {"bcid": b, "how": how, "at": now_iso()}
+        log.info("open time pot %s (%s): BCID %s learned (%s; %s)", month, month_name(month), b, how, why)
+    S.get("pot_cands", {}).pop(month, None)
+
+
+def pot_verdict(month, url, html):
+    """1.8.1 (D1): what a pot page read (classify ok) is for its month: 'read' (the month's pot: parsed, baseline,
+    finds), 'skip' (refused, not open yet, or an empty page on an unproven BCID: its status is kept, nothing else),
+    or 'broken' (a page that read as this month's pot before is no open time page now: 1.8.0's layout check)."""
+    b = bcid(url) or ""
+    how = ("learned" if (pot_learned().get(month) or {}).get("bcid") == b else
+           "menu" if ((S.get("pot_cands") or {}).get(month) or {}).get("bcid") == b else "derived")
+    rec = pot_rec(month)
+    was_ok = rec.get("bcid") == b and rec.get("status") == "ok"
+    chk = pot_month_check(html, month)
+    v, this = chk["verdict"], this_month_key()
+    wait = POT_TRY_NEXT_S if month > this else POT_TRY_THIS_S
+    rec.update(bcid=b, at=now_iso(), why=chk["why"])
+    if v == "not open" and was_ok:
+        return "broken"
+    if v == "refused":
+        rec.update(status="refused", other=chk["other"], try_at=time.time() + wait)
+        if b not in (rec.get("refused") or []):
+            rec["refused"] = (rec.get("refused") or [])[-4:] + [b]
+        if (S.get("pot_cands") or {}).get(month, {}).get("bcid") == b:
+            S["pot_cands"].pop(month, None)
+        keep = (pot_learned().get(month) or {}).get("bcid")
+        log.info("open time pot %s: BCID %s refused: %s (most in %s); %s", month, b, chk["why"],
+                 chk["other"] or "another month",
+                 f"the last good BCID {keep} is kept" if keep and keep != b else "the Watcher keeps looking")
+        return "skip"
+    if v == "not open" or (v == "empty" and how != "learned"):
+        rec.update(status="empty" if v == "empty" else "not open yet", try_at=time.time() + wait)
+        if v == "not open":
+            log.info("open time pot %s: BCID %s is not an open time page (not open yet); next try %s HST", month, b,
+                     hst_hm(rec["try_at"]))
+        return "skip"
+    if v == "ok" and how != "learned":
+        pot_learn(month, b, how, chk["why"])
+    rec.update(status="ok", try_at=0, read_at=time.time(), other="")
+    return "read"
+
+
+def pot_carry(watch):
+    """1.8.1: the first plan after an update from 1.8.0: the baseline and header fingerprint of a pot page under an
+    old key ('mobile': BCID 003.152, 1.8.0's one page; 'mobile_<bcid>'; a month name from the menu walk) move to the
+    bid month read now from the same BCID (or of that name), with its finds' month, so the update raises no alert and
+    loses none."""
+    base, fps = S.setdefault("baseline", {}), S.setdefault("fingerprints", {})
+    old = [k for k in set(base) | set(fps) if not MONTH_KEY_RE.match(str(k)) and k != CLOSE_IN_KEY]
+    for k in old:
+        kb = "003.152" if k == "mobile" else (k[7:] if str(k).startswith("mobile_") else "")
+        m = next((x for x, u in watch.items() if (kb and bcid(u) == kb) or (not kb and month_name(x).startswith(
+            str(k) + " "))), None)
+        if not m:
+            continue
+        if k in base and m not in base:
+            base[m] = base.pop(k)
+            log.info("pot page %s is read as %s now (BCID %s): its baseline carries over", k, m, bcid(watch[m]))
+        if k in fps and m not in fps:
+            fps[m] = fps.pop(k)
+        try:
+            DB.relabel_finds(k, m)
+        except Exception as e:  # noqa: BLE001
+            log.info("finds of %s not moved to %s: %s", k, m, type(e).__name__)
+
+
+def pot_prune(this):
+    """Learned BCIDs, statuses and candidates of months POT_KEEP_MONTHS behind are dropped (the latest learned stays,
+    the derivation's base)."""
+    lm = pot_learned()
+    latest = max((k for k in lm if MONTH_KEY_RE.match(str(k))), default="")
+    for d in (lm, S.get("pot_months") or {}, S.get("pot_cands") or {}):
+        for k in [k for k in d if MONTH_KEY_RE.match(str(k)) and month_gap(k, this) > POT_KEEP_MONTHS]:
+            if not (d is lm and k == latest):
+                d.pop(k, None)
+
+
+def pot_prepare(fl):
+    """1.8.1: plan this check's pot pages (pot_plan, no load), after a main menu look when a month of the select needs
+    one (pot_look). Returns (stop, tries, cached): stop a check() result ('killed', 'needs_login') or ''; tries the
+    months read this check besides S pot_urls; cached {month: rows} of the month whose read the Next month try takes
+    the place of (its rows from the check before, so the try adds no page: one pot page a check)."""
+    POT_SEQ["n"] += 1
+    S["pot_plan"] = True
+    this = this_month_key()
+    pot_prune(this)
+    look = pot_look_months(this)
+    if look:
+        k = pot_look(fl, look)
+        if k:
+            return ("killed" if k == "killed" else "needs_login"), [], {}
+    watch, tries = pot_plan(this)
+    pot_carry(watch)
+    if watch != S.get("pot_urls"):
+        log.info("pot pages: %s (Pot month: %s)%s", ", ".join(f"{m} BCID {bcid(u)}" for m, u in watch.items())
+                 or "none", pot_mode(), f"; trying {', '.join(tries)}" if tries else "")
+        S["pot_urls"] = watch
+        S["discovered_at"] = time.time()
+        save_state(S)
+    cached = {}
+    nxt = month_add(this, 1)
+    c = POT_ROWS.get(this)
+    if pot_mode() == "Next month" and nxt in tries and this in watch and c and c["n"] == POT_SEQ["n"] - 1:
+        cached[this] = c["rows"]
+    return "", tries, cached
+
+
+def pot_note():
+    """The state note's pot part: each month of the select whose page was refused, and this month's pot while it is
+    not found ('' when all is well)."""
+    this, out = this_month_key(), []
+    for m in pot_months_of(this):
+        st, rec = pot_status(m), pot_rec(m)
+        if st == "refused":
+            out.append(f"{month_name(m)} open time pot: BCID {rec.get('bcid')} refused (its trips start in "
+                       f"{month_name(rec['other']) if MONTH_KEY_RE.match(str(rec.get('other'))) else 'another month'})"
+                       f"; looking again {hst_hm(rec.get('try_at'))} HST")
+        elif m == this and st == "not open yet" and m not in (S.get("pot_urls") or {}):
+            out.append(f"{month_name(m)} open time pot not found yet (BCID {rec.get('bcid')} is no open time page); "
+                       f"looking again {hst_hm(rec.get('try_at'))} HST")
+    return "; ".join(out)
+
+
+def pot_months_attr():
+    """D4: sensor.<prefix>_state's pot_months: [{month, name, bcid, how, status, read}] of the months the select
+    concerns. how: 'learned', 'derived', 'menu' (a menu or pot page link named it) or 'not found yet' (its pick was
+    refused, or this month's is no open time page); status: 'ok', 'not open yet', 'refused' or 'not read yet';
+    read: read every check (S pot_urls)."""
+    try:
+        this, watch, out = this_month_key(), S.get("pot_urls") or {}, []
+        for m in pot_months_of(this):
+            b, how = pot_pick(m)
+            st = pot_status(m)
+            if how != "learned" and (st == "refused" or (m == this and st == "not open yet")):
+                how = "not found yet"
+            out.append({"month": m, "name": month_name(m), "bcid": b, "how": how,
+                        "status": POT_SHOWN.get(st, "not read yet"), "read": m in watch})
+        return out
+    except Exception as e:  # noqa: BLE001 (never stops a state publish)
+        log.info("pot months attribute skipped: %s", type(e).__name__)
+        return []
+
+
+def pot_attr_publish():
+    """The state attributes go out again when the pot months changed (no other change of the state)."""
+    a = pot_months_attr()
+    if a != POT_ATTR["last"]:
+        POT_ATTR["last"] = a
+        pub("state_attr", state_attrs(S.get("note", "")))
+
+
+def pot_start():
+    """1.8.1, at start: the learned BCIDs seeded, the select's mode kept (S pot_month, default This month), and the pot
+    pages planned from the next check on (a 1.8.0 page under its old key carries over: pot_carry)."""
+    pot_learned()
+    if S.get("pot_month") not in POT_MODES:
+        S["pot_month"] = POT_MODE_DEFAULT
+    S["pot_plan"] = True
+    save_state(S)
+    log.info("Pot month: %s", pot_mode())
+
+
+def publish_pot_month(c):
+    c.publish(f"{T}/pot_month/state", pot_mode(), retain=True)
+
+
+def pot_month_cmd(c, raw):
+    """D2: the Pot month select (select.<prefix>_pot_month): This month, Next month or Both. A change re-plans the pot
+    pages at the next check (no load beyond the pages chosen) and wakes the loop like the hunt switch. Returns True
+    when the loop is to be woken."""
+    v = next((m for m in POT_MODES if m.lower() == str(raw or "").strip().lower()), None)
+    if v is None:
+        log.info("Pot month %r ignored: use This month, Next month or Both", str(raw)[:40])
+        publish_pot_month(c)
+        return False
+    changed = pot_mode() != v
+    S["pot_month"] = v
+    save_state(S)
+    publish_pot_month(c)
+    log.info("Pot month %s", v)
+    if not changed:
+        return False
+    S["pot_urls"] = {}  # re-planned at the next check (pot_prepare)
+    held_apply()
+    pot_attr_publish()
+    return wake_check("pot month changed")
+
+
 CAPTCHA_STOP_NOTE = ("FLICA showed a CAPTCHA page on {where} (never answered); press Re-arm after you have opened "
                      "FLICA yourself")
 
@@ -13382,21 +13852,13 @@ def check(fl):
     """One pass. Returns next action hint. After Check now (FLAGS full) every cached read is
     refreshed too: schedule, own trip times, pot details, pending pickups, tradeboard."""
     full, FLAGS["full"] = FLAGS.get("full", False), False
-    if not S.get("pot_urls"):
-        urls = fl.discover_pot_urls()
-        if urls in ("captcha", "blocked"):  # 1.6.2 review: a stop, never a new login to get past the challenge
-            set_machine("stopped_unexpected", CAPTCHA_STOP_NOTE.format(where="the main menu") if urls == "captcha"
-                        else "FLICA showed a captcha/MFA/password page on the main menu")
-            return "stop"
-        if urls is None:
-            return "needs_login"
-        if not urls:
-            set_machine("stopped_unexpected", f"no 'View Opentime Pot' found under '{OPTS['pot_section']}'")
-            return "stop"
-        S["pot_urls"] = urls
-        S["discovered_at"] = time.time()
-        save_state(S)
-        log.info("pot pages: %s", list(urls))
+    tries, cached = [], {}
+    if S.get("pot_plan") or not S.get("pot_urls"):
+        # 1.8.1 (D1, D2): the pot pages of the bid months the Pot month select chooses, each from its own BCID (no
+        # FLICA load; a main menu look first when a month's BCID is refused or not open, at most every 6 h a month)
+        stop, tries, cached = pot_prepare(fl)
+        if stop:
+            return stop
     # 1.6.1: with no schedule stored, only the start's first pass forces the read (not every loop); then the back-off
     read_guard(schedule_check, fl, force=full or (not S.get("schedule") and not SCHED_FORCED["used"]))
     read_guard(own_trip_times, fl, full, optional=True)  # 1.6.2 review: optional reads (a pilot's budget, GATE_KEEP)
@@ -13406,7 +13868,11 @@ def check(fl):
     pot_all = {}
     new_any = False
     was_regular = {k for v in (S.get("baseline") or {}).values() for k in v or ()}  # FW-0034: before this pass's reads
-    for month, url in list(S["pot_urls"].items()):
+    read_now = set(cached)  # 1.8.1: the months read (or, for the Next month try, cached) this check keep their baseline
+    pot_all.update(cached)  # the Next month try's check: this month's rows of the check before (no page, no alert)
+    fetch = [(m, u) for m, u in S["pot_urls"].items() if m not in cached]
+    fetch += [(m, mobile_pot_url(pot_pick(m)[0])) for m in tries if m not in S["pot_urls"]]
+    for month, url in fetch:
         html = fl.fetch(url)
         kind = classify(html)
         if kind == "killed":
@@ -13419,14 +13885,19 @@ def check(fl):
             return "stop"
         if kind == "expired":
             return "needs_login"
-        if not is_pot_page(html, mobile=month.startswith("mobile")) and SESSION_LOST_TXT in visible_text(html):
+        mobile = month.startswith("mobile") or "mobileopentimepot" in url.lower()
+        if not is_pot_page(html, mobile=mobile) and SESSION_LOST_TXT in visible_text(html):
             # 1.7.6 (t1301): FLICA dropped the session (Nov 8 15:02 HST). Its open time page came back as
             # "application error initializesessiondata() failed"; that used to count as a layout miss ("retry"), so
             # the Watcher slept a full gap with state idle and session ON. Log in again now instead. Only the pot page
             # is read this way: a hidden Schedule Lookup prints the same error on a live session (FW-0069).
             log.info("open time page %s: FLICA session lost (%s); logging in again", month, SESSION_LOST_TXT)
             return "needs_login"
-        if not is_pot_page(html, mobile=month.startswith("mobile")):
+        if MONTH_KEY_RE.match(month):  # 1.8.1 (D1): a planned bid month's page counts only when it is that month's pot
+            pot_link_scan(html, url, month)  # D1b: a BCID link on it (another month's pot), no load
+            if pot_verdict(month, url, html) == "skip":
+                continue
+        if not is_pot_page(html, mobile=mobile):
             S["pot_urls"] = {}
             S["parse_fail"] = S.get("parse_fail", 0) + 1
             save_state(S)
@@ -13483,6 +13954,8 @@ def check(fl):
         DB.record_pot(month, pot, new_keys)
         new_any = new_any or bool(new_keys)
         S["baseline"][month] = sorted(pot.keys())
+        read_now.add(month)
+        POT_ROWS[month] = {"rows": pot, "n": POT_SEQ["n"]}
     ci_rows, ci_kind = {}, "ok"
     try:  # FW-0034: the close-in folder (trips under 16 h to report), read only
         ci_rows, ci_kind = close_in_check(fl, pot_all, full, was_regular)
@@ -13501,8 +13974,11 @@ def check(fl):
         return "stop"
     if ci_kind == "expired":
         return "needs_login"
-    # drop months no longer published, and cached details of pairings no longer in any pot
-    S["baseline"] = {m: v for m, v in S["baseline"].items() if m in S["pot_urls"]}
+    # drop months no longer published, and cached details of pairings no longer in any pot (1.8.1: a month read this
+    # check keeps its baseline too: a try that read as its month, the Next month try's cached month)
+    S["baseline"] = {m: v for m, v in S["baseline"].items() if m in S["pot_urls"] or m in read_now}
+    HEALTH["pot"] = pot_note() if S.get("pot_plan") else ""  # 1.8.1: a refused page, this month's pot not found
+    pot_attr_publish()
     live = {k for p in pot_all.values() for k in p}
     S["details"] = {k: v for k, v in S.get("details", {}).items() if k in live}
     S["relogin_streak"] = 0
@@ -14560,6 +15036,7 @@ def captures_cleanup():
 def main():
     global MQ
     migrate_swap_mode()  # FW-0028: before on_connect publishes the mode
+    pot_start()  # 1.8.1: the Pot month select and the learned pot BCIDs, before on_connect publishes the select
     enforce_role()
     flica_key_start()  # 1.7.4: a pilot's refusal record keyed (or its key found lost) before any command reads it
     again = flica_again_due()  # 1.7.4 review: read (and cleared) at every start
@@ -14758,15 +15235,14 @@ def main():
                     continue
                 try_login(fl, f"backoff step {S.get('relogin_streak', 0)}")
                 continue
-            # next bid month: its pot link appears mid-month, so rediscover every 6 h until found
-            if (OPTS.get("watch_next_month", True) and 0 < len(S.get("pot_urls") or {}) < 2
-                    and time.time() - S.get("discovered_at", 0) > 6 * 3600):
-                log.info("rediscovering pot pages to look for the next bid month")
-                S["pot_urls"] = {}
+            # 1.8.1: no 6 h rediscovery for the next bid month any more (it reloaded the main menu and the mobile pot):
+            # the Pot month select chooses the months, each check plans their pages (pot_prepare: no load), a month not
+            # open is tried once a day and looked for on the main menu at most every 6 h
             if time.time() - S.get("pruned_at", 0) > 86400:
                 DB.prune()
                 S["pruned_at"] = time.time()
-            # month rollover: rediscover once per new calendar month
+            # month rollover: the pot pages are planned again for the new HST month (1.8.1: This month moves to it,
+            # Next month to the one after once its pot is open; pot_prepare does it at every check anyway)
             mk = local_now().strftime("%Y-%m")
             if last_month_check and last_month_check != mk:
                 S["pot_urls"] = {}

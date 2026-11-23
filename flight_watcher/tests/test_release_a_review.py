@@ -318,7 +318,7 @@ def test_optional_reads_skip_instead_of_waiting_and_the_pot_still_loads(mk):
         fl.fetch(f"{W.BASE}/online/tb_frame.cgi?BCID=001.152&dp=mr")  # 97 + 1 would leave under 4 of 100 free
     W.RUN.update(optional=False)
     n = len(fl.loads)
-    fl.fetch(W.MOBILE_POT)  # the pot itself never skips (it waits for the budget instead)
+    fl.fetch(W.mobile_pot_url("003.152"))  # the pot itself never skips (it waits for the budget instead)
     assert len(fl.loads) == n + 1
 
 
@@ -326,7 +326,7 @@ def test_optional_loads_never_take_the_pots_share_of_the_hour(mk):
     W = mk("pilot2")
     W.FLAGS["hunt"] = True
     W.S["freq"] = {"hunt_s": 5}
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT, "mobile_003.153": W.MOBILE_POT + "&x=1"}
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152"), "mobile_003.153": W.mobile_pot_url("003.152") + "&x=1"}
     # a 5 s hunt is paced (about 91 s): the optional reads keep their hour. 1.7.1 (LIVE-1): 14, the secondary reads'
     # shares (10: one bid number, two pot pages) and the pool (4), so the pot is paced 100 - 14 - 4 - 3 = 79 an hour
     assert W.opt_cap() == W.opt_hour() == 14
@@ -354,7 +354,7 @@ def test_three_hours_of_pilot_hunting_never_wait_inside_a_check(mk):
     W.S["own_emp"] = "10001"
     W.FLAGS["hunt"] = True
     W.S["freq"] = {"hunt_s": 90, "normal_min": 2}
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT,
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152"),
                        "mobile_003.153": f"{W.BASE}/full/mobileopentimepot.cgi?BCID=003.153&From=MainMenu"}
     pot_html = open(os.path.join(FX, "mobile_pot_rows.html")).read()
 
@@ -400,32 +400,24 @@ def test_three_hours_of_pilot_hunting_never_wait_inside_a_check(mk):
 
 
 # ------------------------------------------------------------------ 6: a CAPTCHA on the main menu is a stop
-def test_a_captcha_main_menu_and_pot_stop_with_no_login(mk):
+def test_a_captcha_pot_and_stop_with_no_login(mk):
+    """1.8.1: the pot pages are planned from their BCIDs (no main menu walk first): a CAPTCHA on the planned pot page
+    is a stop, read once, never a new login."""
     W = mk("pilot2")
-
-    class Page:
-        url = f"{W.BASE}/online/mainmenu.cgi"
-        frames = []
-
-        def goto(self, *a, **k):
-            pass
-
-        def content(self):
-            return FORWARD
-
-        def close(self):
-            pass
+    opened = []
     fl = real_fl(W, lambda u: FORWARD)
-    fl.ctx.new_page = lambda: Page()
+    fl.ctx.new_page = lambda: opened.append(1)
     W.S["pot_urls"] = {}
     assert W.check(fl) == "stop"
-    assert W.S["machine"] == "stopped_unexpected" and "CAPTCHA page on the main menu (never answered)" in W.S["note"]
-    assert len([u for _, u in fl.loads if "opentimepot" in u]) == 1  # the mobile pot once; no login follows a stop
+    assert W.S["machine"] == "stopped_unexpected"
+    assert "CAPTCHA page on the open time pot (never answered)" in W.S["note"]
+    assert [u for _, u in fl.loads if "opentimepot" in u] == [W.mobile_pot_url("003.152")]  # once; no login follows
+    assert not opened  # no main menu page
 
 
 def test_a_captcha_pot_page_is_a_stop_not_a_retry(mk):
     W = mk("pilot2")
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT}
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152")}
     for f in ("schedule_check", "own_trip_times", "publish_working_flight", "versions_check", "uploads_check"):
         setattr(W, f, lambda *a, **k: None)
     fl = real_fl(W, lambda u: FORWARD)
@@ -433,7 +425,9 @@ def test_a_captcha_pot_page_is_a_stop_not_a_retry(mk):
     assert W.S.get("parse_fail", 0) == 0
 
 
-def test_the_admins_menu_captcha_still_falls_back_to_the_mobile_pot(mk):
+def test_the_admins_menu_captcha_ends_the_look_and_the_pot_still_reads(mk):
+    """1.8.1 (D1b): the main menu look for a month's BCID stops at a reCAPTCHA forward (never answered, no other page
+    loaded to get round it, nothing stopped): {} and the pot pages planned from their BCIDs read as before."""
     W = mk("")
     pot_html = open(os.path.join(FX, "mobile_pot_rows.html")).read()
 
@@ -452,8 +446,8 @@ def test_the_admins_menu_captcha_still_falls_back_to_the_mobile_pot(mk):
     fl = real_fl(W, lambda u: pot_html)
     fl.ctx.new_page = lambda: Page()
     fl.save = lambda: None
-    urls = fl.discover_pot_urls()
-    assert isinstance(urls, dict) and urls.get("mobile") == W.MOBILE_POT
+    assert fl.menu_pot_bcids({"November": "2026-11"}) == {} and fl.loads == []
+    assert W.pot_look(fl, ["2026-11"]) == "" and not W.S.get("pot_cands")
 
 
 # ------------------------------------------------------------------ 7: the admin's mobile shape survives a hiccup
@@ -546,7 +540,7 @@ UNAVAIL = "<html><body>Service Temporarily Unavailable</body></html>"
 
 def test_an_unknown_tradeboard_page_stops_it_for_30_min(mk):
     W = mk("pilot2")
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT}
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152")}
     fl = real_fl(W, lambda u: UNAVAIL)
     for k in range(10):
         try:
@@ -577,7 +571,7 @@ def test_an_unknown_pairing_page_stops_pairings_and_a_good_one_is_a_good_read(mk
 
 def test_an_unknown_grid_answer_stops_the_grid(mk):
     W = mk("pilot2")
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT}
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152")}
     fl = real_fl(W, lambda u: UNAVAIL)
     W.Flica.render = lambda self, url, wait_for=None, timeout=30000: (self.fetch(url), [])
     try:

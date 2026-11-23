@@ -10,8 +10,9 @@ publishes what it finds to Home Assistant over MQTT.
 
 - Pot watch: reloads the open time pot at random gaps (normal 1 to 90 min, hunt 5 to 90 s with
   `switch.flight_watcher_hunt_mode`, each wait +-30 %; a pilot's 100 FLICA loads an hour spreads a short hunt over the
-  hour), for the current bid month and the next one once FLICA shows it. A new pairing
-  fires `flight_watcher/event/new_pairing` and lands on the finds card.
+  hour), for the bid month or months the **Pot month** select chooses (1.8.1: this month, the next one once its pot
+  is open, or both; each from its own BCID, below). A new pairing fires `flight_watcher/event/new_pairing` and lands
+  on the finds card.
 - FLICA gate (1.6.2, `gate.py`): every Watcher in the container loads FLICA through one gate: 1.5 to 3.5 s between its
   own loads, 1.5 s between the host's, at most 480 loads in any rolling hour from the host (every pilot's Watcher) and
   100 from each pilot's Watcher. A load over a limit waits (the state note says until when); one that may be left out
@@ -353,12 +354,46 @@ is added to that Settings view's `visible` list. The files are base-wide: every 
 - The progress line and the result line are live regions (the result a polite status), so a screen reader
   announces the upload's progress and whether the file was saved or refused.
 
+## Open time pot months (1.8.1)
+
+FLICA gives each bid month's open time pot its own BCID; the suffix goes up by one a bid month (Ryan's November 2026
+pot is `003.152`, his December 2026 link `003.153`; `003` is the category, HNL 332 FO). 1.8.0 read `003.152` for good,
+so from Dec 1 it would still have read November. Now each check reads the pot of the bid month the
+`select.<prefix>_pot_month` select (**Pot month**, on the clock card as **Pot**) chooses:
+
+- **This month** (the default on every instance): the current HST month's pot, one page a check. On the 1st of a
+  month it moves to the new month; that pot's first read is its baseline (no alerts).
+- **Next month**: the next bid month's pot once it is open (a page that reads as that month's pot), else this
+  month's, so one pot page a check either way. While the next month is not open it is tried once a day, in place of
+  that check's read of this month (whose rows from the check before stand in).
+- **Both**: this month's and the next month's once open: two pot pages a check (and the Tradeboard, grid and request
+  reads of both bid months). The admin's host pace (1.7.26) and a pilot's FLICA budget spread that out, and the
+  held note says so.
+
+Where a month's BCID comes from, in order: a BCID the main menu or a pot page link named for it (checked first), the
+one learned for it (Ryan's two links, then each month whose page read with its own trips), else the latest learned
+month's suffix plus the months between, so one renumbering by FLICA is learned once. A page counts as a month's pot
+only when it is an open time page and most of its trips start in that month (a few days either side for a bid
+period's edges); a page of another month's trips is refused (one log line and the state note) and the month's last
+good BCID is kept. No other BCID is guessed: a month whose BCID is refused or not open is tried again later and looked
+for on the main menu (its 'View Opentime Pot' links under `pot_section`, at most every 6 h a month, through the gate;
+a reCAPTCHA forward there is never answered and ends the look) and in the BCID links of the pot pages read anyway. The
+close-in folder's BCID is never a month's pot (FW-0034). `sensor.<prefix>_state` carries `pot_mode` and `pot_months`
+(each month: `bcid`, `how` learned / derived / menu / not found yet, `status` ok / not open yet / refused / not read
+yet, `read`), which the clock card shows beside its Pot select ("December 2026 (003.153)"). In a pilot's portal the
+select is not offered (no portal command): his clock card shows the mode and the months as text.
+
+The `watch_next_month` option stays in the Configuration tab: with This month it still adds the next month's pot if
+FLICA's mobile page ever links to it (it never has). The Pot month select is the way to choose now. The 1.8.0 6-hourly
+main menu walk for the next month is gone; with This month and Next month the Watcher reads one pot page a check.
+
 ## FLICA mirror (1.8.0)
 
 The Flight Watcher panel's **Open FLICA (live, stays signed in)** button (`/hassio/ingress/43b22650_flight_watcher/flica`)
 shows FLICA's mobile open time pot, pairing pages and own schedule through the Watcher's own FLICA session, with an
 auto refresh that runs only while the page is on screen. It never logs in by itself (FLICA allows one session), never
-loads a request, add, drop or swap page, and never answers a CAPTCHA. Details: CHANGELOG 1.8.0, `mirror.py`.
+loads a request, add, drop or swap page, and never answers a CAPTCHA. Details: CHANGELOG 1.8.0, `mirror.py`. 1.8.1: its
+Open time buttons follow the pot pages the Watcher reads (the Pot month select, above).
 
 ## Web UI and rules
 

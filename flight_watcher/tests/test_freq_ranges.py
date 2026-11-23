@@ -158,7 +158,7 @@ def test_the_budget_holds_a_5_s_hunt_to_100_loads_an_hour_spread_over_the_hour(m
     W.S["freq"] = {"hunt_s": 5, "normal_min": 6}
     W.S["switches"] = {"hunt": True, "pause": False}
     W.FLAGS["hunt"] = True
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT,
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152"),
                        "mobile_003.153": f"{W.BASE}/full/mobileopentimepot.cgi?BCID=003.153&From=MainMenu"}
     fl = real_fl(W, _pilot_pages(W))
     W.Flica.render = lambda self, url, wait_for=None, timeout=30000: (self.fetch(url), [])
@@ -246,7 +246,7 @@ def test_the_close_in_folder_is_an_hourly_cost_of_a_hunt_and_a_page_of_each_norm
     before) and 115 s with the folder (105 s before), still under the removed 120 s floor."""
     W = mk("pilot2")
     W.S["freq"] = {"hunt_s": 5, "normal_min": 1}
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT,
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152"),
                        "mobile_003.153": f"{W.BASE}/full/mobileopentimepot.cgi?BCID=003.153&From=MainMenu"}
     W.FLAGS["hunt"] = True
     assert W.close_in_h() == 0 and W.pot_pages() == 2
@@ -289,7 +289,7 @@ def test_a_5_s_hunt_with_the_close_in_folder_paces_under_120_s_and_holds_the_bud
     W.S["freq"] = {"hunt_s": 5, "normal_min": 6}
     W.S["switches"] = {"hunt": True, "pause": False}
     W.FLAGS["hunt"] = True
-    W.S["pot_urls"] = {"mobile": W.MOBILE_POT,
+    W.S["pot_urls"] = {"mobile": W.mobile_pot_url("003.152"),
                        "mobile_003.153": f"{W.BASE}/full/mobileopentimepot.cgi?BCID=003.153&From=MainMenu"}
     W.S["close_in"] = {"bcid": CLOSE_IN, "verified": True, "menu_at": W.CLOCK.t}
     W.S["close_in_bcid"] = CLOSE_IN  # as close_in_check keeps it: its request list is read too

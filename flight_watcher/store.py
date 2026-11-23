@@ -498,6 +498,14 @@ class Store:
             q = ",".join("?" * len(keys))
             self.db.execute(f"UPDATE finds SET month=?, gone_at=NULL WHERE key IN ({q})", (month, *keys))
 
+    def relabel_finds(self, old, new):
+        """1.8.1: the finds of a pot page key 1.8.0 used ('mobile', 'mobile_<bcid>', a month name) belong to the bid
+        month key ('YYYY-MM') the same page is read under now, so its next read stamps the gone ones."""
+        if not old or not new or old == new:
+            return
+        with self.lock:
+            self.db.execute("UPDATE finds SET month=? WHERE month=?", (new, old))
+
     def recent_finds(self, n=50):
         with self.lock:
             rows = self.db.execute("SELECT key,row,month,first_seen,gone_at,pickup,last_seen,alert_at FROM finds "

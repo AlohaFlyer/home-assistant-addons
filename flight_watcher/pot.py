@@ -174,6 +174,11 @@ def _bcids(text):
     return [a or b for a, b in BCID_IN.findall(text or "")]
 
 
+def link_bcids(text):
+    """1.8.1: the BCIDs a link's href or onclick names (BCID=003.153, or a quoted '003.153'), in order."""
+    return _bcids(text)
+
+
 def _html_entries(soup):
     """(label, [bcid]) in page order: each <a> or onclick element (its text and title; BCIDs in href / onclick), each
     <option> whose value is a BCID, each other text node. Entities are decoded (&lt;16 reads <16)."""
@@ -328,6 +333,36 @@ def bcid_key(b):
 
 def bcid_after(b, mine):
     return bcid_key(b) > bcid_key(mine)
+
+
+def pot_month_check(html, month, slack_days=3):
+    """1.8.1 (D1): is this page the open time pot of the bid month `month` ('YYYY-MM')? classify() is the caller's.
+    {verdict, why, rows, dated, inside, other}: verdict 'not open' when it is no open time page; 'refused' when most
+    of its dated rows start outside the month (slack_days either side for a bid period's edges: November's runs
+    Nov 1 to Dec 1), other then names the month most of them start in; 'ok' when its rows start in the month;
+    'empty' when it has no dated row (an empty pot names no month)."""
+    out = {"verdict": "not open", "why": "not an open time page", "rows": 0, "dated": 0, "inside": 0, "other": ""}
+    if not is_pot_page(html or "", mobile=True):
+        return out
+    y, m = int(month[:4]), int(month[5:7])
+    first = date(y, m, 1)
+    last = (first + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    lo, hi = first - timedelta(days=slack_days), last + timedelta(days=slack_days)
+    rows = parse_pot(html)
+    days = [d for d in (row_date(r.get("start"), today=date(y, m, 15)) for r in rows.values()) if d]
+    inside = [d for d in days if lo <= d <= hi]
+    out.update(rows=len(rows), dated=len(days), inside=len(inside))
+    if not days:
+        out.update(verdict="empty", why="an open time page with no dated trips")
+        return out
+    if 2 * len(inside) <= len(days):
+        outside = [f"{d.year:04d}-{d.month:02d}" for d in days if not lo <= d <= hi]
+        other = max(sorted(set(outside)), key=outside.count) if outside else ""
+        out.update(verdict="refused", other=other,
+                   why=f"{len(days) - len(inside)} of its {len(days)} trips start outside {month}")
+        return out
+    out.update(verdict="ok", why=f"{len(inside)} of its {len(days)} trips start in {month}")
+    return out
 
 
 def row_date(s, today=None):

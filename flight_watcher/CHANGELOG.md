@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.8.1
+
+The open time pot follows the bid month (Ryan, Nov 23, 2026: "Always look for the new pot each month. It's a
+different bcid", and "I don't care about Nov. my schedule is set. I'm working on Dec now").
+
+- What was wrong: 1.8.0 read one hard-coded page, the November 2026 pot (`mobileopentimepot.cgi?BCID=003.152`). FLICA
+  gives each bid month's pot its own BCID (Ryan's December link is `otframe.cgi?BCID=003.153`) and its mobile pot page
+  has no link to the next month, so the Watcher never found December and from Dec 1 would still have read November.
+- Now each month's BCID is looked for: the one learned for it (Ryan's two links to start, then each month whose page
+  read with its own trips), a BCID a main menu or pot page link named, else the latest learned month's suffix plus the
+  months between (`pot_bcid`; the suffix goes up by one a bid month: 003.154 is January 2027). The page read is the
+  frameless mobile pot (`mobile_pot_url`), never `otframe.cgi`. A page counts as a month's pot only when it is an open
+  time page and its trips start in that month; a page of another month's trips is refused (one log line and the state
+  note) and the month's last good BCID is kept. A month not found is tried again later and looked for on the main menu
+  at most every 6 h (through the gate; a reCAPTCHA there is never answered) and in the links of pages read anyway.
+  Nothing else is guessed, and the close-in folder's BCID is never a month's pot.
+- The **Pot month** select (`select.<prefix>_pot_month`, the clock card's **Pot**): **This month** (the default on
+  every instance, as before: one page, the current HST month, so James's pot simply moves to December on Dec 1),
+  **Next month** (the next bid month's pot once it is open, else this month's) or **Both**. A change re-plans the pot
+  pages at the next check and wakes the loop like the hunt switch.
+- No new loads with This month or Next month: one pot page a check. While the next month is not open, Next month tries
+  it once a day in place of that check's read of this month. Both reads two pot pages a check (and the Tradeboard,
+  grid and request reads of both bid months); the 1.7.26 host pace and a pilot's FLICA budget spread that, and the
+  held note says so. The 1.8.0 6-hourly main menu walk for the next month (two loads) is gone.
+- A pot page read for the first time (a new month, or after a change of the select) sets its baseline only: no alerts,
+  pushes or finds from that read. The update itself carries 1.8.0's November baseline over, so it loses no alert.
+- The clock card shows the Pot select (44 px on a phone) and the month or months each check reads ("December 2026
+  (003.153)"), from `sensor.<prefix>_state`'s new `pot_months` and `pot_mode`. On a pilot's portal the select is not
+  offered (no portal command; the portal contract and its fixture are unchanged): the card shows the months as text.
+- The mirror's Open time buttons follow the pot pages the Watcher reads; the swap map uses that pot's bid number.
+- After the update: Ryan picks Next month on the clock card to watch December now. `watch_next_month` stays in the
+  Configuration tab as it is.
+
 ## 1.8.0
 
 The FLICA mirror (Ryan, Nov 23, 2026: "click on a page such as open time and have it automatically refresh every so

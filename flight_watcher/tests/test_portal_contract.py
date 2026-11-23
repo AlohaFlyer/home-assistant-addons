@@ -71,7 +71,10 @@ def test_every_subscription_is_allowed_or_refused_and_none_is_both():
     assert not later & (allowed | refused) and "layover/note" in refused
     assert set(roles.SUBS) == allowed | refused | later  # every MQTT command topic an instance takes is classified
     for s in later:
-        assert roles.portal_sub(s) is None and roles.FEATURES[roles.SUBS[s]][1] is False, s
+        assert roles.portal_sub(s) is None and s not in allowed, s
+        # 1.8.1: the Pot month select is a core command (every instance's, from Home Assistant) that no portal ever
+        # sends (its clock card shows the months read only): the only later sub of a feature a portal offers
+        assert roles.FEATURES[roles.SUBS[s]][1] is False or s == "pot_month/set", s
     for s in allowed:
         assert roles.FEATURES[roles.SUBS[s]][1] is True, s  # offered on a portal
     for s in refused:
