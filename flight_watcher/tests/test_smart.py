@@ -366,13 +366,18 @@ BP = SM.normalize({"v": 1, "month_types": {"2030-11": "line", "2030-12": "line"}
 
 
 def test_month_rules_follow_the_bid_period_not_the_calendar_month():
-    """FLICA's Days Off counts the bid period, and so does the rule: a Nov 25 pickup leaves November 12 (OK, as the fit
-    tag says), a Dec 25 pickup leaves December 11 (a real fail the calendar month missed)."""
+    """FLICA's Days Off counts the bid period, and so does the rule: a Dec 25 pickup leaves December 11 (a real fail
+    the calendar month missed). The fit tag is given the bid period's bounds, as schedule_fit gives them (_fit_bounds),
+    and keeps PWA 10.G.1.a's minimum (13 in November's 31-day period, 12 in December's 30): a Nov 25 pickup leaves
+    November 12, 'Days off 12', while month_rule keeps smart.json's min_days_off (12 here), 'OK'. 1.8.2 (G3-T2): the
+    two disagree in a 31-day period (the finds card shows both); which minimum a pickup must keep is Ryan's call."""
     m = bid_periods()
+    bounds = {"2030-11": ("2030-11-01", "2030-12-01"), "2030-12": ("2030-12-02", "2030-12-31")}
     assert SM.days_off("2030-11", m, BP) == 13 and SM.days_off("2030-12", m, BP) == 12
-    for d, mk, want in ((D(11, 25), "2030-11", "OK"), (D(12, 25), "2030-12", "Days off 11")):
-        fit = P.fit_tag(d, d, m[mk])
-        assert fit == ("Fits" if want == "OK" else want)
+    for d, mk, fit_want, want in ((D(11, 25), "2030-11", "Days off 12", "OK"),
+                                  (D(12, 25), "2030-12", "Days off 11", "Days off 11")):
+        fit = P.fit_tag(d, d, m[mk], bounds[mk])
+        assert fit == fit_want, d
         assert SM.month_rule(d, d, "6:00", fit, "OK", m, BP) == want, d
     # without FLICA's total the page's own bid period days are recounted, Dec 1 in November's
     for s in m.values():
@@ -691,8 +696,10 @@ def test_the_watcher_reads_the_bid_period_off_the_pairing_files(tmp_path, monkey
     row = dict(ROW, pairing="H9106", start="01Dec", end="01Dec", dates="01Dec", report="08:30")
     row["fit"] = W.schedule_fit(row)
     W.smart_fields(row)
-    # November's line day off, not December's 'Not SCR' (the 672 tag: the trips' blocks are not on file)
-    assert row["fit"] == "Fits" and row["month_rule"] == "672 ? (block not read)"
+    # November's line day off, not December's 'Not SCR' (the 672 tag: the trips' blocks are not on file). 1.8.2 (P4):
+    # the fit tag counts the Dec 1 day in November's 31-day period (Nov 1 to Dec 1), which needs 13 off (PWA 10.G.1.a);
+    # month_rule keeps smart.json's min_days_off (12 here)
+    assert row["fit"] == "Days off 12" and row["month_rule"] == "672 ? (block not read)"
     # December's own day, by the same bounds
     row = dict(ROW, pairing="H9107", start="25Dec", end="25Dec", dates="25Dec", report="08:30", fit="Fits")
     W.smart_fields(row)

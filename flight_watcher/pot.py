@@ -840,12 +840,15 @@ def _span(a, b):
 FREE_ITEMS = ("PAYP",)
 
 
-def fit_tag(start, end, sched):
+def fit_tag(start, end, sched, period=None):
     """'Fits', 'Conflict H3659', 'Check rest H3628', 'Days off 11' or '' when the schedule
     doesn't cover those dates. start/end are dates. Days off: 12 in a 30-day month, 13 in a
     31-day month (10.G). Rest next to a trip needs times the schedule page lacks, so it is flagged.
     1.7.2: a PAYP item is free for a pickup (PWA 4.R.1: a pilot may add a Flight Grouping on PAYP days and is paid
-    for both), never a Conflict; FLICA counts its days in Days Off, so a pickup on them uses days off as on any."""
+    for both), never a Conflict; FLICA counts its days in Days Off, so a pickup on them uses days off as on any.
+    1.8.2 (P4, S9): the month is the bid period (PWA 10.G.1.a and Definitions 47: November is Nov 1 to Dec 1, 31 days,
+    13 off; December Dec 2 to 31, 30 days, 12 off), as FLICA's Days Off total counts it: period is its (first, last)
+    day (ISO), and only the pickup's days inside it count; without it the calendar month of sched['month']."""
     from datetime import timedelta
     if not sched or not start:
         return ""
@@ -870,11 +873,13 @@ def fit_tag(start, end, sched):
         return f"Check rest {near}"
     off = sched.get("totals", {}).get("days_off")
     if isinstance(off, int):
-        y, m = map(int, sched["month"].split("-"))
-        nxt = date(y + (m == 12), m % 12 + 1, 1)
-        mdays = (nxt - date(y, m, 1)).days
-        need = 13 if mdays == 31 else 12
-        used = sum(1 for d in mine if d.year == y and d.month == m)
+        try:
+            a, b = (date.fromisoformat(str(x)[:10]) for x in period)
+        except (TypeError, ValueError):  # no bounds: the calendar month, as before 1.8.2
+            y, m = map(int, sched["month"].split("-"))
+            a, b = date(y, m, 1), date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1)
+        need = 13 if (b - a).days + 1 == 31 else 12
+        used = sum(1 for d in mine if a <= d <= b)
         if off - used < need:
             return f"Days off {off - used}"
     return "Fits"

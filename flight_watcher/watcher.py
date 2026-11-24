@@ -3417,7 +3417,7 @@ def _pickup_duties(ev, s):
     if d:
         return d
     try:
-        return RC.package_entry(ev.get("pairing"), s, pkg_details_for).get("duties") or []
+        return RC.package_entry(ev.get("pairing"), s, pkg_details_by_day()).get("duties") or []
     except Exception:
         return []
 
@@ -3503,7 +3503,7 @@ def report_release(ev):
     rel = datetime.combine(e or s, arr_t) + FAR.DEBRIEF if arr_t else None
     if rep is None:  # the pairings package's BASE REPT (pairing file column report)
         try:
-            pr = FAR._t(RC.package_entry(ev.get("pairing"), s, pkg_details_for).get("report"))
+            pr = FAR._t(RC.package_entry(ev.get("pairing"), s, pkg_details_by_day()).get("report"))
             rep = datetime.combine(s, pr) if pr else None
         except Exception:
             rep = None
@@ -3533,7 +3533,7 @@ def last_origin(ev):
     if not route:
         try:
             s, _ = _span(ev)
-            route = (RC.package_entry(ev.get("pairing"), s, pkg_details_for).get("route") or "") if s else ""
+            route = (RC.package_entry(ev.get("pairing"), s, pkg_details_by_day()).get("route") or "") if s else ""
         except Exception:
             route = ""
     parts = [p.strip().upper() for p in str(route).split("-") if p.strip()]
@@ -4037,6 +4037,17 @@ def pkg_details_for(period):
         log.info("pairing package %s not read: %s", period, e)
         det = {}
     _PKG_CACHE[period] = (mt, det)
+    return det
+
+
+def pkg_details_by_day(period_of=None):
+    """1.8.2 (P2, S4, POT-7, LIVE-7): pkg_details_for as recall.py's callable details, carrying period_of (ISO day ->
+    'YYYY-MM'; bid_period_key when none is given), so its lookups (RC.package_entry: the FAR column's duties, near
+    misses, report_release, last_origin; the Recall check) read the package of the day's bid period: a Dec 1 trip
+    reads November's package (PWA 4.A), where December's has the same id as another trip (FW-0062)."""
+    def det(period):
+        return pkg_details_for(period)
+    det.period_of = period_of or bid_period_key
     return det
 
 
@@ -5839,6 +5850,8 @@ def recall_eval(notify=False):
             if period not in pkgs:
                 pkgs[period] = pkg_details_for(period) or {}
             return pkgs[period]
+        # 1.8.2 (P2, S4, C8): a row's package and its Over 75 answer are its list day's bid month (Dec 1: November's)
+        det.period_of = bid_period_fn()
 
         prev = {v.get("id") or f"{v.get('date')}|{v.get('pairing')}|{v.get('kind')}": v.get("verdict")
                 for day in allr.values() for v in day.get("verdicts") or [] if isinstance(v, dict)}
@@ -6482,14 +6495,55 @@ def schedule_fit(ev):
                 e = s + timedelta(days=max(int(ev.get("days") or 1), 1) - 1)
             except ValueError:
                 e = s
-        for sched in S.get("schedule", {}).values():
-            tag = fit_tag(s, e, sched)
+        # 1.8.2 (P4, S9): the page of the pickup's bid month judges first (a Dec 1 pickup is November's, and both pages
+        # list Dec 1), each with its bid period's first and last day for the days off rule (pot.fit_tag)
+        months = S.get("schedule", {})
+        bm = bid_period_key(s.isoformat())
+        order = sorted(months, key=lambda k: k != bm)
+        tags = _fit_by_period(s, e, months, order)  # 1.8.2 (R2): each bid period the pickup touches
+        if tags:
+            return min(tags, key=lambda t: (_FIT_RANK.get(t.split(" ")[0], 3), tags.index(t)))
+        for mk in order:
+            tag = fit_tag(s, e, months[mk], _fit_bounds(months[mk].get("month") or mk))
             if tag:
                 return tag
         return "No sched"  # never blank: blank read as "fits" for months with no schedule yet
     except Exception as ex:
         log.info("fit skipped for %s: %s", ev.get("pairing"), ex)
     return ""
+
+
+_FIT_RANK = {"Conflict": 0, "Check": 1, "Days": 2}  # 1.8.2 (R2): the worst answer of the periods wins; Fits last
+
+
+def _fit_by_period(s, e, months, order):
+    """1.8.2 (R2): the fit tag of each page whose bid period holds a day of the pickup s..e (dates), in order, ''
+    dropped: the days off minimum (PWA 10.G.1.a) holds in each bid period (Definitions 47), so a Nov 30 to Dec 2 pickup
+    is judged in November (to Dec 1) and in December (from Dec 2). A page judges the part of the pickup it lists
+    (FLICA's November page runs to Dec 2, December's from Nov 30), so a Dec 1 to 3 trip still counts November's Dec 1.
+    [] when no page's bid period holds a pickup day (the caller then takes the first page that lists the dates)."""
+    out = []
+    for mk in order:
+        b = _fit_bounds(months[mk].get("month") or mk)
+        listed = sorted(str(d[0])[:10] for d in months[mk].get("days") or [] if d)
+        try:
+            a, z = max(s, date.fromisoformat(listed[0])), min(e, date.fromisoformat(listed[-1]))  # the part it lists
+            if not b or max(a, date.fromisoformat(b[0])) > min(z, date.fromisoformat(b[1])):
+                continue  # none of this period's days, or the page lists none of them
+        except (IndexError, ValueError):
+            continue
+        tag = fit_tag(a, z, months[mk], b)
+        if tag:
+            out.append(tag)
+    return out
+
+
+def _fit_bounds(month):
+    """1.8.2 (P4, S9): (first, last) ISO day of month's bid period (bid_bounds), None when month is not a 'YYYY-MM'."""
+    try:
+        return tuple(bid_bounds(month)[:2])
+    except (TypeError, ValueError):
+        return None
 
 
 DETAIL_FIELDS = ("captain", "report", "blk", "tafb", "soft", "turn", "route", "open_seats", "crew", "detail_url")
@@ -7975,14 +8029,15 @@ def _filed_at(r, now):
 
 
 def _own_trips_at(t):
-    """Ryan's trips ({TRIP: start}) on the schedule version in force at time t (versions are stamped UTC)."""
+    """Ryan's trips ({TRIP: [starts]}) on the schedule version in force at time t (versions are stamped UTC). 1.8.2
+    (P3, S2, T6): every start of a number, each once (he can hold one number twice: a Nov 30 carry-in and Dec 12)."""
     out = {}
     for month in sorted(S.get("schedule") or {}):
         vers = DB.get(f"sched_versions:{month}") or []
         before = [v for v in vers if v.get("at") and datetime.fromisoformat(v["at"]) <= t]
         for it in (before[-1] if before else (vers[0] if vers else {})).get("items") or []:
-            if it.get("trip"):
-                out.setdefault(it["trip"], it.get("start"))
+            if it.get("trip") and it.get("start") and it["start"] not in out.setdefault(it["trip"], []):
+                out[it["trip"]].append(it["start"])
     return out
 
 
@@ -7992,7 +8047,9 @@ def price_request(r, now=None):
     by the request type, else for a swap or a trade (1.4.1) the trips Ryan held when he filed are the ones given. A
     trip given is priced from his own trip record (FLICA's credit, block, seat), a trip taken from the month's pairing
     package in the seat the view page marks, (F) / (R) / (C), FO when unmarked (1.4.1). None when any leg cannot be
-    priced; the push then goes out without an amount."""
+    priced; the push then goes out without an amount. 1.8.2 (P2, P3, T6): the package is the trip's bid period's
+    (_swap_package: Dec 1 is November's), and a trip given is the held one the leg names by its day (one number can be
+    held twice)."""
     if r.get("status") != "Approved" or not r.get("legs"):
         return None
     now = now or local_now().replace(tzinfo=HST)
@@ -8001,14 +8058,16 @@ def price_request(r, now=None):
         return None
     filed = _filed_at(r, now)
     held = _own_trips_at(filed.astimezone(timezone.utc))
-    own, cache, parts = S.get("own_trips") or {}, {}, []
+    own, cache, parts, per = S.get("own_trips") or {}, {}, [], bid_period_fn()
+
+    def held_start(leg):  # 1.8.2 (P3, S2, T6): the start of the held trip the leg names by its day (DDMON)
+        sts, d = held.get(leg["trip"]) or [], leg.get("day") or ""
+        if not d:  # no day: the number alone, only when he held it once
+            return sts[0] if len(sts) == 1 else None
+        return next((st for st in sts if st[8:10] == d[:2] and MON3.index(d[2:]) + 1 == int(st[5:7])), None)
 
     def was_held(leg):  # Ryan held this trip (on this date, when the page gives one) when he filed
-        st = held.get(leg["trip"])
-        if not st:
-            return False
-        d = leg.get("day") or ""
-        return not d or (st[8:10] == d[:2] and MON3.index(d[2:]) + 1 == int(st[5:7]))
+        return bool(held.get(leg["trip"])) and (not leg.get("day") or bool(held_start(leg)))
     # 1.2.2 review: the request type decides an Add or a Drop; a swap's sides come from what Ryan held when he
     # filed. Page words only when no schedule version is on file, and only when they name both sides; else no
     # amount (a missing Pay-Gross beats a wrong one).
@@ -8021,7 +8080,7 @@ def price_request(r, now=None):
     for i, leg in enumerate(r["legs"]):
         trip = leg["trip"]
         side = typed or sides[i]
-        start = held.get(trip) if side == "drop" else None
+        start = held_start(leg) if side == "drop" else None
         if not start and leg.get("day"):
             mo = MON3.index(leg["day"][2:]) + 1
             y = filed.year + (1 if mo < filed.month - 6 else 0)
@@ -8029,7 +8088,7 @@ def price_request(r, now=None):
         if not start:
             return None
         rec = (own.get(f"{trip}|{start}") or {}) if side == "drop" else {}
-        pk = _package(start[:7], cache).get(trip[:5]) or {}
+        pk = _swap_package(trip, start, cache, per)  # 1.8.2 (P2, S3, T6): its bid period's package (Dec 1: Nov)
         credit = PAY.hrs(rec.get("credit")) if rec.get("credit") else PAY.hrs(pk.get("credit"))
         block = PAY.hrs(rec.get("blk")) if rec.get("blk") else PAY.hrs(pk.get("block"))
         lay = "/".join(x for x in str(pk.get("route") or "").split("-") if x and x != "HNL")
@@ -8910,14 +8969,15 @@ def price_moves(group, legs=None):
     schedule card's rules): each trip at its own credit x the PWA 3.D.6 rate for the longevity year, plus the PWA 4.O.1
     override for the seat flown (RO $4.00 per block hour; FO $3.00 on a 3-pilot crew) and the Extended Range +15% where
     on. A trip's credit, block, seat and crew come from Ryan's own trip record (a given trip's as kept when it left), else
-    the month's pairing package (seat as the request page marks it, else FO). None when any trip cannot be priced."""
+    the month's pairing package (seat as the request page marks it, else FO). None when any trip cannot be priced.
+    1.8.2 (P2, S3): the package of the trip's bid period (_swap_package: Dec 1 is November's)."""
     rate, yr, er = pay_settings()
     if not rate:
         return None
-    cache, parts, cr = {}, [], 0.0
+    cache, parts, cr, per = {}, [], 0.0, bid_period_fn()
     for m in sorted(group, key=lambda x: (x["side"] != "drop", x["t"], x["start"])):
         rec = (m.get("rec") or {}) if m["side"] == "drop" else _add_rec(m)
-        pk = _package(m["start"][:7], cache).get(m["trip"][:5]) or {}
+        pk = _swap_package(m["trip"], m["start"], cache, per)  # 1.8.2 (P2, S3, T6): its bid period's package
         credit = PAY.hrs(rec.get("credit")) if rec.get("credit") else PAY.hrs(pk.get("credit"))
         block = PAY.hrs(rec.get("blk")) if rec.get("blk") else PAY.hrs(pk.get("block"))
         lay = "/".join(x for x in str(pk.get("route") or "").split("-") if x and x != "HNL") or m.get("lay") or ""
@@ -9525,10 +9585,11 @@ def pick_entry(emp, name, pos, base, pick=""):
 
 # ---------------------------------------------------------------- 1.7.11 (FW-0076): the lookup's month
 def lookup_months():
-    """(this HST month, the next) as YYYY-MM: the only months pilot/set's month may name (the pilot card's buttons)."""
-    t = local_now()
-    nxt = (t.year + 1, 1) if t.month == 12 else (t.year, t.month + 1)
-    return f"{t.year}-{t.month:02d}", f"{nxt[0]}-{nxt[1]:02d}"
+    """(this HST month, the next) as YYYY-MM: the only months pilot/set's month may name (the pilot card's buttons).
+    1.8.2 (T8): this month is the bid month of today (this_month_key), so on Dec 1, the last day of November's period
+    (Nov 1 to Dec 1), a pilot's November line can still be looked up, and January, not published yet, is not."""
+    a = this_month_key()
+    return a, month_add(a, 1)
 
 
 def month_label(m):
@@ -9541,7 +9602,8 @@ def month_label(m):
 
 def month_refused_status():
     a, b = lookup_months()
-    return f"Only {month_label(a)} and {month_label(b)} can be looked up (this month and the next, HST)."
+    # 1.8.2 (G3-T3): bid months (lookup_months, T8): on Dec 1, November's last day, it names Nov and Dec
+    return f"Only {month_label(a)} and {month_label(b)} can be looked up (this bid month and the next, HST)."
 
 
 LOOKUP_WAIT_STATES = ("paused", "yielded", "backoff", "needs_settings")
@@ -10911,7 +10973,8 @@ def write_crew_md(insts, rows, held=None, flags=None):
     try:
         os.makedirs(CREW_DIR, exist_ok=True)
         stamp = local_now().strftime("%Y-%m-%d %H:%M")
-        for month in sorted({it["month"] for it in insts.values()}):
+        # 1.8.2 (T11): a file for each calendar month and each bid period (a Dec 1 trip is in 2026-11.md too)
+        for month in sorted({it["month"] for it in insts.values()} | {CI.period_of(it) for it in insts.values()}):
             path = os.path.join(CREW_DIR, f"{month}.md")
             tmp = path + ".tmp"
             with open(tmp, "w") as f:
@@ -13333,13 +13396,10 @@ def swap_pay_settings():
 
 def _swap_package(trip, start, cache, period_of):
     """1.7.15: the pairings package row of a trip starting on start (ISO): the package of the bid period that holds
-    its first day first (1.7.11, PWA 4.A: a Dec 1 trip of November's bid period is in November's package), then the
-    calendar month's. {} when neither lists it."""
-    for month in dict.fromkeys((period_of(start), start[:7])):
-        pk = _package(month, cache).get(str(trip or "")[:5])
-        if pk:
-            return pk
-    return {}
+    its first day (1.7.11, PWA 4.A: a Dec 1 trip of November's bid period is in November's package). {} when it does
+    not list it. 1.8.2 (P2, S3): never the calendar month's when that is another bid period: there the same id is
+    another trip (FW-0062), so no figure beats a wrong one."""
+    return _package(period_of(start) or start[:7], cache).get(str(trip or "")[:5]) or {}
 
 
 def _pot_seat(row):
