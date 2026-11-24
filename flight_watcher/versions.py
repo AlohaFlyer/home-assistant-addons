@@ -201,16 +201,22 @@ def seed(db, path, iso_of):
     return made
 
 
-def set_award(db, month, sched, iso_now):
+def set_award(db, month, sched, iso_now, reparse=False):
     """Make the parsed PBS award this month's version .001 (replacing an earlier award) and renumber the rest
-    after it. Returns the version list."""
+    after it. Returns the version list. 1.8.2 (T5): reparse (the same award text read again by a newer parser, an
+    award already on file): the version after the award is compared with it again, every later one stays as stored."""
     key = f"sched_versions:{month}"
-    vers = [v for v in (db.get(key) or []) if not v.get("award")]
+    old = db.get(key) or []
+    vers = [v for v in old if not v.get("award")]
+    keep = reparse and len(vers) == len(old) - 1  # an award was there: the numbering stays
     rec = {"items": sched["items"], "days": sched["days"], "totals": sched.get("totals") or {},
            "updated": sched.get("updated") or "Award", "trips": sched.get("trips") or {}, "at": iso_now, "award": True}
     rec["fp"] = fingerprint(rec, rec["trips"])
     out = []
     for n, v in enumerate([rec] + vers, 1):
+        if keep and n > 2:
+            out.append(v)
+            continue
         v = {**v, "ver": f"{int(month[5:7])}.{n:03d}", "n": n}
         v["changes"] = ["awarded line (PBS bid run)"] if v.get("award") else diff(out[-1] if out else None, v)
         out.append(v)
