@@ -6845,11 +6845,12 @@ def stamp_marks(cur_month):
     today), once S sched_stamp holds its page's stamp. Each later month later_months_stale lists (FLICA's stamp moved
     since that month's read: its cur_stamp; not while it backs off after a failed read) is marked stale (S
     sched_stale, why SCHED_STAMP_WHY, one log line), so it takes this read's spare load first (other_months_order;
-    totals_first: a marked month). Its read keeps the new cur_stamp, so one read per stamp change; a month whose read
-    failed is marked again only once its back-off is over. The mark never forces a read of its own (forced True:
-    sched_stale_force leaves it, defer_mark does not force it again), so its load is always inside a read's
-    SCHED_TRIES_PER_READ (a read with no load left: the next due read). A month with a mark already keeps that one;
-    the 5 min trigger gap does not apply (the stamp is its own limit). Returns the months marked; never raises."""
+    totals_first: a marked month), after a month a trigger, Check now or the refresh button marked (the read such a
+    mark forced serves that month: merge review M1). Its read keeps the new cur_stamp, so one read per stamp change;
+    a month whose read failed is marked again only once its back-off is over. The mark never forces a read of its own
+    (forced True: sched_stale_force leaves it, defer_mark does not force it again), so its load is always inside a
+    read's SCHED_TRIES_PER_READ (a read with no load left: the next due read). A month with a mark already keeps that
+    one; the 5 min trigger gap does not apply (the stamp is its own limit). Returns the months marked; never raises."""
     try:
         marks, out = sched_stale(), []
         order = other_months_order(kept_bds(), cur_month)
@@ -7063,8 +7064,9 @@ def other_month_late(mon, cur_month, store=None, now=None):
 
 
 def other_months_order(bds, cur_month, store=None):
-    """1.8.2 (S1): the listed months other than cur_month in the order a read loads them: a month marked stale first;
-    then a month that already waited a read past its freshness (overdue by SCHED_FUTURE_FRESH_S or more: a future month
+    """1.8.2 (S1): the listed months other than cur_month in the order a read loads them: a month marked stale first
+    (1.8.2 merge: a month only FLICA's stamp marked after one a trigger, Check now or the refresh button marked); then a
+    month that already waited a read past its freshness (overdue by SCHED_FUTURE_FRESH_S or more: a future month
     first, then the most overdue), so the closed month is read once a day although the next month is due on every
     read, and never before a next month that already waited a read; then the future months (nearest first), then the
     past ones (latest first). A month whose last read failed goes after those that did not, so one failing month never
@@ -7091,7 +7093,11 @@ def other_months_order(bds, cur_month, store=None):
         over = other_month_age(m, store, now) - other_month_fresh_s(m, cur_month)
         late = over >= SCHED_FUTURE_FRESH_S
         n = int(m.replace("-", ""))
-        return (0 if m in stale else 1, 1 if failed else 0, 0 if late else 1, 0 if m > cur_month else 1,
+        # 1.8.2 (merge review M1): a stamp mark (stamp_marks) after a trigger's, a press's or Check now's, so the
+        # read a press or a trigger forced loads that month (December took it and the pressed month waited 30 min)
+        mk = stale.get(m)
+        mark = (1 if isinstance(mk, dict) and mk.get("why") == SCHED_STAMP_WHY else 0) if m in stale else 2
+        return (mark, 1 if failed else 0, 0 if late else 1, 0 if m > cur_month else 1,
                 -over if late else 0, n if m > cur_month else -n)
     return sorted(mons, key=rank)
 
