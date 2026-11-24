@@ -366,14 +366,59 @@ def trip_line(cc, fc, cb, fb):
     return s + (" \u2713" if not bad else " \u2717 " + "; ".join(bad) + " (CrewTrac controls)")
 
 
-def month_line(snap, month, fw_credit):
-    """'CrewTrac Pay Report 163:34, FW 152:24 ✗ off by -11:10 (CrewTrac controls)'; '' with no Pay Report."""
+def month_line(snap, month, fw_credit, fw_at=None):
+    """'CrewTrac Pay Report 163:34, FW 152:24 ✗ off by -11:10 (CrewTrac controls)'; '' with no Pay Report. 1.8.2
+    (LIVE-8): a difference while FW's month credit is newer than the snapshot (fw_at, newer) is 'CrewTrac not updated
+    yet (pulled HH:MM HST): Pay Report ...', no cross."""
     pr = (((snap or {}).get("months") or {}).get(month) or {}).get("pay_report") or {}
     cc, fc = m_of((pr.get("totals") or {}).get("credit")), m_of(fw_credit)
     if cc is None:
         return ""
+    if fc is not None and fc != cc and newer(fw_at, snap):
+        return wait_line(snap, f"Pay Report {hm(cc)} credit (as of {pr.get('as_of') or '?'}), FW {hm(fc)}")
     s = f"CrewTrac Pay Report {hm(cc)} credit (as of {pr.get('as_of') or '?'}), FW {hm(fc) if fc is not None else '?'}"
     return s + (" \u2713" if fc == cc else (f" \u2717 off by {_d(fc - cc)} (CrewTrac controls)" if fc is not None else ""))
+
+
+# 1.8.2 (LIVE-8): the snapshot is pulled once a day, FW reads FLICA every 30 min. A trip or month credit whose FW copy
+# (the schedule version that holds it as it is now, versions.held_since) is newer than the snapshot's pulled_at differs
+# because CrewTrac was pulled before the change: 'CrewTrac not updated yet (pulled HH:MM HST)', no cross, no 'CrewTrac
+# controls', no mismatch (and so no early read, the Watcher's trigger c). A snapshot newer than FW's copy keeps the
+# mismatch: FW may be the stale one. The schedule card mirrors these (fwCtAt, fwCtWait, fwCtWaitWhat).
+def _ts(v):
+    """An ISO time (a zone, else UTC) as an aware datetime; None when unreadable."""
+    try:
+        t = datetime.fromisoformat(str(v or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def newer(fw_at, snap):
+    """True when FW's copy time fw_at (ISO) is after the snapshot's pulled_at; False when either is unreadable."""
+    a, b = _ts(fw_at) if fw_at else None, _ts((snap or {}).get("pulled_at"))
+    return bool(a and b and a > b)
+
+
+def pulled_hst(snap):
+    """The snapshot's pull time, 'HH:MM' HST ('?' when unreadable)."""
+    t = _ts((snap or {}).get("pulled_at"))
+    return t.astimezone(timezone(timedelta(hours=-10))).strftime("%H:%M") if t else "?"
+
+
+def wait_line(snap, what):
+    return f"CrewTrac not updated yet (pulled {pulled_hst(snap)} HST): {what}"
+
+
+def _wait_what(ct, pid, start, fw_credit, fw_blk):
+    """What differs on a trip while CrewTrac is not updated yet: the figures, no cross."""
+    if not ct:
+        return f"no {pid} on {start} in CrewTrac"
+    cc, fc, cb, fb = m_of(ct.get("credit")), m_of(fw_credit), m_of(ct.get("block")), m_of(fw_blk)
+    if cc is None:
+        return "no credit for this trip in the snapshot"
+    s = f"CrewTrac {hm(cc)}, FW {hm(fc) if fc is not None else '?'}"
+    return s + (f", block CrewTrac {hm(cb)}, FW {hm(fb)}" if cb is not None and fb is not None and fb != cb else "")
 
 
 def not_compared(status, age):
@@ -384,11 +429,13 @@ def not_compared(status, age):
 
 
 def compare_trips(snap, fw_trips, now):
-    """FW's own trips ({'PID|start': {credit, blk}}) against the snapshot: {status, age_h, rows: [{trip, start,
-    ct_pairing, ...compare_trip}], mismatches}. Trips CrewTrac does not list (outside the months pulled) are left
-    out; a trip in the months pulled that CrewTrac lacks is a mismatch (ct_credit '')."""
+    """FW's own trips ({'PID|start': {credit, blk, at}}) against the snapshot: {status, age_h, rows: [{trip, start,
+    ct_pairing, ...compare_trip}], mismatches, waiting}. Trips CrewTrac does not list (outside the months pulled) are
+    left out; a trip in the months pulled that CrewTrac lacks is a mismatch (ct_credit ''). 1.8.2 (LIVE-8): a trip that
+    differs while its FW copy (at) is newer than the snapshot waits: ok None, wait True, 'CrewTrac not updated yet'
+    (counted in waiting, never in mismatches)."""
     st, age = snap_status(snap, now)
-    out = {"status": st, "age_h": round(age, 1) if age is not None else None, "rows": [], "mismatches": 0}
+    out = {"status": st, "age_h": round(age, 1) if age is not None else None, "rows": [], "mismatches": 0, "waiting": 0}
     if st != "ok":
         out["line"] = not_compared(st, age)
         return out
@@ -402,8 +449,12 @@ def compare_trips(snap, fw_trips, now):
         row.update(compare_trip(ct, (t or {}).get("credit"), (t or {}).get("blk")))
         if not ct:
             row["line"] = f"CrewTrac has no {pid} on {start} \u2717 (CrewTrac controls)"
+        if not row["ok"] and newer((t or {}).get("at"), snap):  # 1.8.2 (LIVE-8): CrewTrac was pulled before the change
+            row.update(ok=None, wait=True,
+                       line=wait_line(snap, _wait_what(ct, pid, start, (t or {}).get("credit"), (t or {}).get("blk"))))
         out["rows"].append(row)
-        out["mismatches"] += 0 if row["ok"] else 1
+        out["mismatches"] += 1 if row["ok"] is False else 0
+        out["waiting"] += 1 if row.get("wait") else 0
     return out
 
 

@@ -1927,8 +1927,9 @@ def page_verdict(path, url, html):
             return "error"
     return ""
 # the state note the gate, the pace and the breakers last put up; 1.7.3: brk is the breakers' part of it as health_note
-# last saw it (health_note_tick); 1.8.1: pot, the pot months' part (pot_note: a refused page, this month not found)
-HEALTH = {"note": "", "gate": "", "held": "", "brk": "", "pot": ""}
+# last saw it (health_note_tick); 1.8.1: pot, the pot months' part (pot_note: a refused page, this month not found);
+# 1.8.2 (S6): smart, a bid month read with no month type in smart.json (smart_month_note)
+HEALTH = {"note": "", "gate": "", "held": "", "brk": "", "pot": "", "smart": ""}
 
 
 def hst_hm(ts):
@@ -1954,7 +1955,8 @@ def gate_note(why, until):
 
 def health_note():
     HEALTH["brk"] = BRK.note()
-    return "; ".join(x for x in (HEALTH["gate"] or HEALTH["held"], HEALTH["brk"], HEALTH.get("pot")) if x)
+    parts = (HEALTH["gate"] or HEALTH["held"], HEALTH["brk"], HEALTH.get("pot"), HEALTH.get("smart"))  # 1.8.2: smart
+    return "; ".join(x for x in parts if x)
 
 
 def health_note_tick():
@@ -3667,6 +3669,35 @@ def smart_fields(ev):
     return out
 
 
+SMART_GAP = {"day": "", "note": ""}  # 1.8.2 (S6): smart_month_note's last log line (once a day, HST)
+
+
+def smart_month_note():
+    """1.8.2 (S6): the state note's smart.json part: 'smart.json has no month type for December 2026' while a bid month
+    the Watcher reads (this bid month and each pot month read every check, S pot_urls) has no month type in the pilot's
+    smart.json and the file types some month (a file with none uses no month rules): that month's finds and pushes then
+    carry no month rule (Days off, Conflict, Rest, 672). The type is never guessed and the file never written: the
+    pilot, or Hark for Ryan, adds "YYYY-MM": "line" or "reserve". Logged once a day (HST) while it lasts; '' when all is
+    typed. Files on hand only, no FLICA load; never raises."""
+    try:
+        types = (SMART.load(SMART_FILE, warn=log.info) or {}).get("month_types") or {}
+        read = {this_month_key()} | {m for m in (S.get("pot_urls") or {}) if MONTH_KEY_RE.match(str(m))}
+        gap = sorted(m for m in read if types and not types.get(m))
+    except Exception as e:  # noqa: BLE001 (a note, never an error)
+        log.info("smart.json month types not checked: %s", e)
+        return ""
+    note = f"smart.json has no month type for {' and '.join(month_name(m) for m in gap)}" if gap else ""
+    day = local_now().date().isoformat()
+    if note and (SMART_GAP["day"], SMART_GAP["note"]) != (day, note):
+        # 1.8.2 review (S6-logmask): lower case and no 'Word, Word' / 'Word, 672' in the fixed text, which both log
+        # masks (captures.mask_crew, captures.mask) would read as a crew name and number
+        log.info("%s: its finds and pushes carry no month rule (the days off, conflict, rest and 672 checks) until %s "
+                 "is added to smart.json (the Watcher never guesses a type)", note,
+                 " and ".join(f'"{m}": "line" or "reserve"' for m in gap))
+    SMART_GAP.update(day=day, note=note)
+    return note
+
+
 def sensor_row(r):
     """FW-0042: a pot / Tradeboard row as its sensor carries it: no far_why and none of the smart fields (SENSOR_DROP),
     so the sensor rows are what they were in 1.4.12 and a busy month keeps as many rows under the 12 KB cap. Showing
@@ -3968,20 +3999,22 @@ def versions_check(force_pub=False):
     try:
         months, own = S.get("schedule") or {}, S.get("own_trips") or {}
         wait = S.setdefault("ver_wait", {})
-        ready = {}
+        ready, seen = {}, {}
         for mk, sch in months.items():
             missing = [i for i in sch.get("items") or [] if PAIRING_RE.match(i.get("trip") or "")
                        and f"{i['trip']}|{i['start']}" not in own]
             if missing and time.time() - wait.setdefault(mk, time.time()) < 7200:
                 continue
-            wait.pop(mk, None)
+            w = wait.pop(mk, None)
+            if isinstance(w, (int, float)):  # 1.8.2 review (LIVE8-wait-flip): the read that began the wait
+                seen[mk] = datetime.fromtimestamp(float(w), timezone.utc).isoformat()
             ready[mk] = sch
         if has("one_writer") and not S.get("ver_seeded"):  # 0.9.0: Nov 2-4 versions rebuilt from HA's recorder (before the Watcher kept versions); Ryan only
             for mk, v in VER.seed(DB, "/share/flight_watcher/versions_seed.json",
                                   lambda ts: datetime.fromtimestamp(ts or time.time(), timezone.utc).isoformat()):
                 log.info("schedule version %s (%s) imported from the recorder", v, mk)
             S["ver_seeded"] = True
-        made = VER.update(DB, ready, own, now_iso())
+        made = VER.update(DB, ready, own, now_iso(), seen=seen)
         for mk, v in made:
             log.info("schedule version %s (%s)", v, mk)
         if made or force_pub or not S.get("ver_published"):
@@ -6241,9 +6274,10 @@ def crewtrac_snapshot():
 
 
 def crewtrac_fw_trips():
-    """{'PID|start': {credit, blk, cut}} of the pilot's own trips as the schedule card shows them: FLICA's credit, or
-    the PWA credit where the card replaces it (pay.pwa_trip 'fix', the trip's pairings package detail)."""
-    out, cache = {}, {}
+    """{'PID|start': {credit, blk, cut, at}} of the pilot's own trips as the schedule card shows them: FLICA's credit,
+    or the PWA credit where the card replaces it (pay.pwa_trip 'fix', the trip's pairings package detail). 1.8.2
+    (LIVE-8): at, when FW's copy of the trip took its current form (crewtrac_copy_at)."""
+    out, cache, memo = {}, {}, {}  # 1.8.2 (LIVE-8): memo, crewtrac_copy_at's cache for this call
     try:  # 1.7.23: CrewTrac's credit or a 'K+KEY' mark keeps FLICA's credit (pay.pwa_trip keep / ct)
         snap = crewtrac_snapshot()
         er = pay_settings()[2]
@@ -6265,18 +6299,55 @@ def crewtrac_fw_trips():
             pa = None
         if pa and pa.get("fix"):
             cr, cut = PAY.hm(pa["use"] / 60), pa["cut"]
-        out[k] = {"credit": cr, "blk": t.get("blk"), "cut": cut}
+        out[k] = {"credit": cr, "blk": t.get("blk"), "cut": cut, "at": crewtrac_copy_at(k, memo=memo)}  # 1.8.2
     return out
+
+
+def crewtrac_copy_at(key=None, month=None, memo=None):
+    """1.8.2 (LIVE-8): when FW's copy of an own trip (key 'PID|start') or of a month's credit (month) took its current
+    form, for the CrewTrac check: versions.held_since over the versions of the schedule month that lists the trip (its
+    bid month, bid_period_fn, else own_trip_month) or of month. A form FW reads now that no version holds yet (a version
+    waits for a new trip's times, versions_check) dates from the read: when that wait began (S ver_wait), else the
+    month's read_at. '' with no version or no time (the check then compares as before). memo: one call's cache (the
+    bid period lookup and each month's versions)."""
+    memo = {} if memo is None else memo
+    try:
+        sch = S.get("schedule") or {}
+        if key:
+            pid, _, st = str(key).partition("|")
+            per = memo["per"] if "per" in memo else memo.setdefault("per", bid_period_fn())
+            months = [per(st), own_trip_month(pid, st)]
+        else:
+            months = [month]
+        for mk in dict.fromkeys(m for m in months if m):
+            m = sch.get(mk) if isinstance(sch.get(mk), dict) else {}
+            if key and not any(isinstance(i, dict) and f"{i.get('trip')}|{i.get('start')}" == key
+                               for i in m.get("items") or ()):
+                continue
+            cur = ((S.get("own_trips") or {}).get(key) or {}) if key else (m.get("totals") or {}).get("credit")
+            if mk not in memo:
+                memo[mk] = DB.get(f"sched_versions:{mk}") or []
+            at = VER.held_since(memo[mk], key or None, cur=cur)
+            if at is None:  # FW's copy is ahead of its versions: the read that brought it
+                w = (S.get("ver_wait") or {}).get(mk)
+                return datetime.fromtimestamp(float(w), timezone.utc).isoformat() if w else str(m.get("read_at") or "")
+            return at
+    except Exception as e:  # noqa: BLE001 (no time: the compare stays as it was)
+        log.info("CrewTrac copy time of %s skipped: %s", key or month, e)
+    return ""
 
 
 def crewtrac_check(now=None):
     """Publish sensor.<prefix>_crewtrac_check: status (ok / mismatch / stale / missing), the compact snapshot, each own
-    trip's compare and each month's (CrewTrac Pay Report credit vs FW: FLICA's bid period credit less the PWA cuts)."""
+    trip's compare and each month's (CrewTrac Pay Report credit vs FW: FLICA's bid period credit less the PWA cuts).
+    1.8.2 (LIVE-8): a trip or month credit whose FW copy is newer than the snapshot (crewtrac_copy_at) and differs is
+    'CrewTrac not updated yet' (ok None, counted in waiting, never a mismatch, so trigger c never reads it early); the
+    snapshot attribute's fw_at carries those copy times for the schedule card's own compare."""
     now = now or datetime.now(timezone.utc)
     snap = crewtrac_snapshot()
     fw = crewtrac_fw_trips()
     res = CTR.compare_trips(snap, fw, now)
-    months = []
+    months, fw_at, memo = [], {k: v.get("at") for k, v in fw.items() if CTR.newer(v.get("at"), snap)}, {}
     if res["status"] == "ok":
         sch = S.get("schedule") or {}
         for mk, m in sorted((snap.get("months") or {}).items()):
@@ -6287,8 +6358,14 @@ def crewtrac_check(now=None):
             line = CTR.month_line(snap, mk, CTR.hm(fc - cut))
             if line:
                 ok = line.endswith("\u2713")
+                at = crewtrac_copy_at(month=mk, memo=memo)
+                if CTR.newer(at, snap):  # 1.8.2 (LIVE-8): FW's month credit is newer than the pull
+                    fw_at[mk] = at
+                    if not ok:
+                        line, ok = CTR.month_line(snap, mk, CTR.hm(fc - cut), fw_at=at), None
+                        res["waiting"] = res.get("waiting", 0) + 1
                 months.append({"month": mk, "line": line, "ok": ok})
-                res["mismatches"] += 0 if ok else 1
+                res["mismatches"] += 1 if ok is False else 0
     status = res["status"] if res["status"] != "ok" else ("mismatch" if res["mismatches"] else "ok")
     if status == "mismatch":
         try:  # 1.8.2 (S3 c): a mismatch in another month reads that month early, once per snapshot
@@ -6298,9 +6375,12 @@ def crewtrac_check(now=None):
     # the newest 40 trips, each its id, first day and ok; a mismatch its line too (the card draws its own), so the sensor stays
     # far under the recorder's 16 KB (tests/test_sensor_size.py)
     rows = [{k: r[k] for k in (("trip", "start", "ok") if r["ok"] else ("trip", "start", "ok", "line"))} for r in res["rows"][-40:]]
+    view = CTR.card_view(snap) if snap and isinstance(snap.get("trips"), list) else None
+    if view is not None and fw_at:
+        view = dict(view, fw_at=fw_at)  # 1.8.2 (LIVE-8): the card's fwCtAt reads FW's copy times newer than the pull
     pub("crewtrac_check", {"status": status, "checked": now_iso(), "age_h": res.get("age_h"), "line": res.get("line", ""),
-                           "mismatches": res["mismatches"], "rows": rows, "months": months,
-                           "snapshot": CTR.card_view(snap) if snap and isinstance(snap.get("trips"), list) else None})
+                           "mismatches": res["mismatches"], "waiting": res.get("waiting", 0), "rows": rows,
+                           "months": months, "snapshot": view})
 
 
 def crewtrac_thread():
@@ -7195,11 +7275,11 @@ def crewtrac_trigger(snap, rows, months):
     if not sid or t.get("ct") == sid:
         sched_triggers_fire()  # the snapshot's evidence is in hand: a month the gap refused fires once it is over
         return
-    bad = set()
+    bad = set()  # 1.8.2 (LIVE-8): a 'CrewTrac not updated yet' row or month (ok None) is no evidence, only ok False is
     for r in rows or ():
-        if isinstance(r, dict) and not r.get("ok") and r.get("start"):
+        if isinstance(r, dict) and r.get("ok") is False and r.get("start"):
             bad.add(own_trip_month(r.get("trip"), r.get("start")) or str(r["start"])[:7])
-    bad |= {m.get("month") for m in months or () if isinstance(m, dict) and not m.get("ok") and m.get("month")}
+    bad |= {m.get("month") for m in months or () if isinstance(m, dict) and m.get("ok") is False and m.get("month")}
     for m in sorted(x for x in bad if isinstance(x, str) and MONTH_KEY_RE.match(x) and x != cur):
         old = t["c"].get(m)
         if not (isinstance(old, dict) and old.get("sid") == sid):
@@ -15014,6 +15094,7 @@ def check(fl):
     except Exception as e:  # noqa: BLE001
         log.info("schedule pot trigger skipped: %s", e)
     HEALTH["pot"] = pot_note() if S.get("pot_plan") else ""  # 1.8.1: a refused page, this month's pot not found
+    HEALTH["smart"] = smart_month_note()  # 1.8.2 (S6): a bid month read with no month type in smart.json (no load)
     pot_attr_publish()
     live = {k for p in pot_all.values() for k in p}
     live |= {k for m in keep if m not in read_now for k in S["baseline"].get(m) or ()}  # 1.8.1 review: a month the

@@ -90,9 +90,11 @@ def diff(old, new):
     return out or ["schedule re-read with small differences"]
 
 
-def update(db, months, own_trips, now_iso):
+def update(db, months, own_trips, now_iso, seen=None):
     """Compare each month on file with its last stored version; store a new one when anything differs.
-    Returns the list of (month, version) created."""
+    Returns the list of (month, version) created. 1.8.2 review (LIVE8-wait-flip): seen {month: ISO time}, when the
+    month's version waited for a new trip's times (the Watcher's versions_check, S ver_wait): the read that began the
+    wait, kept on the version as seen_at (at stays when it was stored), so held_since dates FW's copy from the read."""
     made = []
     for month, sched in (months or {}).items():
         if not sched or not sched.get("days"):
@@ -109,6 +111,9 @@ def update(db, months, own_trips, now_iso):
                "items": sched.get("items") or [], "days": sched.get("days") or [], "totals": sched.get("totals") or {},
                "trips": trips, "fp": fp}
         rec["changes"] = diff(last, rec)
+        w = (seen or {}).get(month)
+        if _when(w) and _when(now_iso) and _when(w) < _when(now_iso):  # 1.8.2 review (LIVE8-wait-flip)
+            rec["seen_at"] = w
         vers.append(rec)
         db.put(key, vers)
         made.append((month, rec["ver"]))
@@ -135,6 +140,52 @@ def summary(full):
     return {mk: {"count": m["count"], "current": m["current"], "awarded": m["awarded"],
                  "current_at": (m["versions"][-1].get("at") or "") if m.get("versions") else ""}
             for mk, m in (full or {}).items()}
+
+
+def _when(t):
+    """1.8.2 review: an ISO time as an aware datetime (no zone read as UTC), None when it is not one."""
+    try:
+        d = datetime.fromisoformat(str(t).replace("Z", "+00:00")) if isinstance(t, str) and t else None
+    except ValueError:
+        return None
+    return d.replace(tzinfo=timezone.utc) if d and d.tzinfo is None else d
+
+
+def held_since(vers, key=None, cur=None):
+    """1.8.2 (LIVE-8): when FW's copy took its current form, for the CrewTrac check: the 'at' of the oldest version in
+    the newest unbroken run of versions (a month's, oldest first) that hold trip key ('PID|start': listed, the same
+    block / credit / seat / times, FP_FIELDS) or, key None, the same month credit (FLICA's totals). '' when the newest
+    version does not hold the trip, no version of the run has a time, or there is no version. cur: FW's form now (the
+    own trip record for key, the month credit without one); None when the newest version does not hold it: FW's copy
+    is ahead of its versions (a version waits up to 2 h for a new trip's times, the Watcher's versions_check).
+    1.8.2 review (LIVE8-award-order, LIVE8-wait-flip): the earliest time across the run, not the oldest by position (a
+    PBS award is put first as .001 when its upload is processed, set_award, which can be after FLICA versions on file),
+    and a version that waited counts from the read that began the wait (seen_at), not from when it was stored."""
+    def norm(t):
+        t = t if isinstance(t, dict) else {}
+        return tuple(None if t.get(f) in (None, "", []) else t.get(f) for f in FP_FIELDS)
+
+    def form(v):
+        if not isinstance(v, dict):
+            return None
+        if key is None:
+            return ("credit", (v.get("totals") or {}).get("credit") or None)
+        if not any(isinstance(i, dict) and f"{i.get('trip')}|{i.get('start')}" == key for i in v.get("items") or ()):
+            return None
+        return norm((v.get("trips") or {}).get(key))
+    vers = vers if isinstance(vers, list) else []
+    if vers and cur is not None and form(vers[-1]) != (("credit", cur or None) if key is None else norm(cur)):
+        return None
+    at, want, times = "", None, []
+    for v in reversed(vers):
+        f = form(v)
+        if f is None or (want is not None and f != want):
+            break
+        want, at = f, v.get("at") or at
+        times += [t for t in (v.get("seen_at"), v.get("at")) if _when(t)]
+    if times:  # 1.8.2 review: the earliest time of the run (a time that does not parse keeps the old order)
+        return min(times, key=_when)
+    return at if isinstance(at, str) else ""
 
 
 # The marker repair_ends() leaves on a version it changed. A plain label, not a ticket number: the trip end fix has
