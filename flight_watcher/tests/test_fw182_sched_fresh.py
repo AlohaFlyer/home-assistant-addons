@@ -371,7 +371,8 @@ def test_a_mark_the_read_cannot_serve_forces_one_read_only(mk):
 # ---------------------------------------------------------------- the Nov 23 timeline, replayed
 def test_nov23_a_page_that_changes_10_min_after_a_read_shows_within_30_min(mk, caplog):
     """00:56 December read before the swap posted; FLICA's page changes at 01:06; the 01:26 read shows it (it was
-    about 8 h). No push or event for another month: one log line."""
+    about 8 h). 1.8.2 (S1, P6, T2): another month's change runs the current month's change path: one log line and
+    event/schedule_changed (the trade push waits for a quiet read: test_fw182_bid_month_sched)."""
     W, F = _w(mk, t=at(2026, 11, 22, 23, 56))
 
     def at_(d, h, m):  # a check at that HST time
@@ -390,9 +391,9 @@ def test_nov23_a_page_that_changes_10_min_after_a_read_shows_within_30_min(mk, c
         got = at_(23, 1, 26)  # 20 min after the change (it was about 8 h)
     assert got == ["1126", "1226"]
     assert _items(W, "2026-12") == [("H3913", "2026-12-06")]
-    assert _lines(caplog, "SCHEDULE changed 2026-12") == [
-        "SCHEDULE changed 2026-12 {'added': ['H3913 2026-12-06'], 'removed': ['H3913 2026-12-04']}"]
-    assert not [t for t, _ in W.MQ.msgs if "/event/" in t]  # push isolation: no event for another month
+    (line,) = _lines(caplog, "SCHEDULE changed")
+    assert "'month': '2026-12'" in line and "'added': ['H3913 2026-12-06'], 'removed': ['H3913 2026-12-04']" in line
+    assert [t for t, _ in W.MQ.msgs if "/event/" in t] == ["flight_watcher/event/schedule_changed"]
     months = W.MQ.last("flight_watcher/schedule")["months"]
     assert months["2026-12"]["items"][0]["start"] == "2026-12-06" and months["2026-12"]["read_at"]
 

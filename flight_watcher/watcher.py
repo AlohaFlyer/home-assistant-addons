@@ -6562,7 +6562,7 @@ def schedule_failed(seen, why=(), paths=()):
     log.info("schedule read failed (%d in a row, %d tries: %s); next read in %d min", n, len(seen),
              "; ".join(seen) or "none", round((nxt - time.time()) / 60))
     sched_status("; ".join(why) or "no page accepted", len(seen))
-    refresh_note(local_now().strftime("%Y-%m"), "failed", "; ".join(why) or "no schedule page accepted")
+    refresh_note(sched_month(), "failed", "; ".join(why) or "no schedule page accepted")  # 1.8.2 (LIVE-10)
     save_state(S)
     publish_schedule()
 
@@ -6739,10 +6739,26 @@ def _sdict(key):
     return d
 
 
+def sched_month():
+    """1.8.2 (LIVE-10, council loop 2): the schedule's current month: the bid month of today (this_month_key), not the
+    HST calendar month. On Dec 1 November is still current (its bid period runs Nov 1 to Dec 1: read every
+    SCHED_GAP_S, Schedule Lookup bd=1126, the mobile page of its bid period) and December a future month."""
+    return this_month_key()
+
+
+def bid_period_over(month):
+    """1.8.2 (LIVE-10): month's bid period has ended (bid_bounds' last day is before today, HST); True when unknown."""
+    try:
+        return str(bid_bounds(month)[1])[:10] < local_now().date().isoformat()
+    except Exception:  # noqa: BLE001: the calendar's answer, as before
+        return True
+
+
 def other_month_fresh_s(mon, cur_month):
     """1.8.2 (S1): how long a read of another month counts as fresh: SCHED_FUTURE_FRESH_S after cur_month,
-    SCHED_PAST_FRESH_S before it."""
-    return SCHED_FUTURE_FRESH_S if mon > cur_month else SCHED_PAST_FRESH_S
+    SCHED_PAST_FRESH_S before it. 1.8.2 (LIVE-10): a month before cur_month is past only once its bid period has
+    ended (November on Dec 1 stays SCHED_FUTURE_FRESH_S even when the current month comes from the calendar)."""
+    return SCHED_FUTURE_FRESH_S if mon > cur_month or not bid_period_over(mon) else SCHED_PAST_FRESH_S
 
 
 def other_month_age(mon, store=None, now=None):
@@ -6900,8 +6916,7 @@ def other_months_check(fl, cur_month):
     if not emp:
         return False
     store = S.setdefault("schedule", {})
-    cur = local_now()
-    bdc = f"{cur.month:02d}{cur.year % 100:02d}"
+    bdc = f"{cur_month[5:7]}{cur_month[2:4]}"  # 1.8.2 (LIVE-10): the current bid month's page (_schedule_read's)
     kept = S.get("lookup_months") or {}
     bds = []
     if LOOKUP_PAGE["bd"] == bdc and time.time() - LOOKUP_PAGE["at"] < 300:
@@ -6965,7 +6980,7 @@ def other_months_check(fl, cur_month):
         store[mon] = {"month": mon, "updated": sp.get("updated", ""), "days": sp["days"], "items": sp["items"],
                       "totals": sp.get("totals") or {}, "src": "lookup", "read_ts": read_stamp(), "read_at": now_iso()}
         got.append(mon)
-        other_month_changed(mon, old, store[mon])
+        sched_change(old, store[mon], store[mon]["read_at"])  # 1.8.2 (S1, P6, T2): as the current month's
         log.info("schedule %s: %d items via Schedule Lookup (bd=%s)%s, totals %s", mon, len(sp["items"]), bd,
                  f" ({why})" if why else "", sp.get("totals"))
         refresh_note(mon, "read")
@@ -6974,16 +6989,90 @@ def other_months_check(fl, cur_month):
     return len(got) == len(order)
 
 
-def other_month_changed(mon, old, new):
-    """1.8.2 (S5): one log line when another month's trips changed between two reads ('SCHEDULE changed <month>
-    {added, removed}', by trip and start, as the current month's): no push, no event (push isolation is unchanged),
-    and the schedule versions see the month as before (versions_check)."""
-    if not isinstance(old, dict) or not old.get("items") and not old.get("days"):
-        return
-    a = {f"{i.get('trip')} {i.get('start')}" for i in old.get("items") or [] if isinstance(i, dict)}
-    b = {f"{i.get('trip')} {i.get('start')}" for i in new.get("items") or [] if isinstance(i, dict)}
-    if a != b:
-        log.info("SCHEDULE changed %s %s", mon, {"added": sorted(b - a), "removed": sorted(a - b)})
+def sched_change(old, s, read_at):
+    """The change path of a month read again (FW-0064). 1.8.2 (S1, P6, T2): every month's, not only the current one's
+    (accept()): other_months_check and prev_month_check run it too, so a December trade or swap seen on Schedule Lookup
+    before Dec 2 is pushed (trade_check, after the read) and the first current read of December finds it on file. When
+    the trips (by trip and start) differ from the copy on file: one 'SCHEDULE changed' line, event/schedule_changed
+    (the same for every instance: push isolation is unchanged), and, when both copies come from the same page (src),
+    the moves trade_check decides one quiet read later and pushes once (sched_moves_record). A month's first read (no
+    copy on file) is no change. 1.8.2 (G1A-1): a change another month's page already reported (a trip on both pages,
+    sched_seen) is left out of this one's event and moves; a read whose only changes are such is no change. 1.8.2
+    (G1A-2): the read is noted for its month (note_month_read). True when it changed."""
+    note_month_read(s["month"], read_at)
+    if not isinstance(old, dict) or not old:
+        return False
+    was, now = (old.get("items") or []), (s.get("items") or [])
+    if [(i["trip"], i["start"]) for i in was] == [(i["trip"], i["start"]) for i in now]:
+        return False
+    a, b = {i["trip"] + " " + i["start"] for i in was}, {i["trip"] + " " + i["start"] for i in now}
+    same = old.get("src") == s.get("src")  # the same page read twice (1.6.2: Schedule Lookup each time counts too)
+    try:
+        told, moved = sched_seen(s["month"], a - b, b - a, read_at, same)
+    except Exception as e:  # noqa: BLE001: never fails the read; each change is this page's then
+        log.info("schedule %s: changes not compared with the other months' (%s)", s["month"], type(e).__name__)
+        told, moved = set(), set()
+    if told:
+        log.info("schedule %s: %s changed on another month's page too (one change)", s["month"],
+                 ", ".join(sorted(told)))
+    ev = {"month": s["month"], "updated": s.get("updated", ""), "added": sorted(b - a - told),
+          "removed": sorted(a - b - told), "totals": s.get("totals") or {}}
+    changed = bool(ev["added"] or ev["removed"]) or a == b  # 1.8.2 (G1A-1): not when another page told it all
+    if changed:
+        log.info("SCHEDULE changed %s", ev)
+        pub("event/schedule_changed", ev, retain=False)
+    try:  # FW-0064; never fails the read (an error here must not make schedule_check load another URL)
+        # the same page read twice; a month first read on Schedule Lookup and now on the mobile page is not.
+        # 1.8.2 (G1A-1): the moves another month's page recorded are left out (one move each)
+        if same:
+            keep = lambda its: [i for i in its if f"{i['trip']} {i['start']}" not in moved]  # noqa: E731
+            sched_moves_record(s["month"], keep(was), keep(now), s.get("updated"), read_at)
+    except Exception as e:
+        log.info("schedule moves not recorded: %s", e)
+    return changed
+
+
+def sched_seen(month, removed, added, read_at, moves):
+    """1.8.2 (G1A-1): a trip on two pages is one change. A trip that runs across the bid-period edge is on its own
+    month's page and, carried in, on the next month's (H3907 Nov 30 to Dec 2 on November's and December's, as Ryan's
+    H3607), and each page read again diffs it: one trade given twice made a push with that leg twice (its Pay-Gross a
+    loss), an open copy of the drop made a second, false Trade with a later assignment, and two schedule_changed
+    pushes went out. S sched_seen {'TRIP start': {side, month, at, moves}} keeps each change (removed: drop, added:
+    add) TR.KEEP_DAYS with the page that saw it first and whether that page recorded its FW-0064 moves (a state from
+    1.8.1: the trip's newest move on file). Returns (told, moved): the changes in removed and added another month's
+    page saw the same way last (left out of this page's event) and, of those, the ones whose moves it recorded (left
+    out of this page's moves). A change this page sees first, or again after the trip moved the other way, is noted
+    for it. moves: this page records its moves (sched_change's same page)."""
+    seen = _sdict("sched_seen")
+    cut = (datetime.fromisoformat(read_at) - timedelta(days=TR.KEEP_DAYS)).isoformat()
+    for k in [k for k, v in seen.items() if not isinstance(v, dict) or str(v.get("at") or "") < cut]:
+        seen.pop(k, None)
+    last = {f"{m.get('trip')} {m.get('start')}": {**m, "moves": True}
+            for m in TR.prune(S.get("sched_moves") or [], read_at) if isinstance(m, dict)}
+    told, moved = set(), set()
+    for side, keys in (("drop", removed), ("add", added)):
+        for k in sorted(keys):
+            v = seen.get(k) or last.get(k) or {}
+            pairing = bool(TR.PAIRING.match(k.split(" ")[0]))
+            if v.get("side") != side or v.get("month") in (None, "", month):
+                seen[k] = {"side": side, "month": month, "at": read_at, "moves": bool(moves)}
+                continue
+            told.add(k)
+            if v.get("moves") and pairing:
+                moved.add(k)
+            elif moves and k in seen:
+                seen[k]["moves"] = True  # its first page recorded no moves (another page than its copy): this one does
+    return told, moved
+
+
+def note_month_read(month, read_at):
+    """1.8.2 (G1A-2): S sched_read_at_by_month {month: {at, ts}}, when each month's page was last read (at: the read's
+    ISO time, as its moves are stamped; ts: time.time()), for trade_check's quiet read of that month (group_read_at).
+    The latest six months are kept."""
+    d = _sdict("sched_read_at_by_month")
+    d[month] = {"at": read_at, "ts": time.time()}
+    for k in sorted(d)[:-6]:
+        d.pop(k, None)
 
 
 def other_failed(mon, why):
@@ -7012,7 +7101,7 @@ def mark_stale(month, why, trigger=True):
     once in SCHED_TRIGGER_GAP_S a month. True when marked."""
     if not isinstance(month, str) or not MONTH_KEY_RE.match(month):
         return False
-    now, cur = time.time(), local_now().strftime("%Y-%m")
+    now, cur = time.time(), sched_month()  # 1.8.2 (LIVE-10): the bid month of today
     # 1.8.2 review: only a month the read loads (FLICA lists it and the schedule keeps it: other_months_order)
     if trigger and (month == cur or month not in other_months_order(kept_bds(), cur)):
         return False
@@ -7036,7 +7125,7 @@ def sched_stale_force(dry=False):
     current month's, and the first month other_months_check loads, as its spare load serves one month), so a second
     marked month forces its own read at the next check. A month backing off after a failed read does not force one.
     dry: only say whether it would (check_tokens), changing nothing."""
-    cur, store, marks = local_now().strftime("%Y-%m"), S.get("schedule") or {}, sched_stale()
+    cur, store, marks = sched_month(), S.get("schedule") or {}, sched_stale()  # 1.8.2 (LIVE-10): _schedule_read's
     go = [cur] if isinstance(marks.get(cur), dict) and not marks[cur].get("forced") else []
     for m in other_months_order(kept_bds(), cur, store):
         if other_month_due(m, cur, store) != "due":
@@ -7054,7 +7143,7 @@ def sched_stale_force(dry=False):
 def check_now_marks():
     """S3 (d): Check now (FLAGS full) reads the future months FLICA lists too, nearest first, through the read's
     spare load (a second future month at the next check: sched_stale_force forces one month a read)."""
-    cur = local_now().strftime("%Y-%m")
+    cur = sched_month()  # 1.8.2 (LIVE-10): on Dec 1 December is a future month
     for m in listed_months():
         if m > cur:
             mark_stale(m, "Check now")
@@ -7102,7 +7191,7 @@ def seat_trigger(key, was, now_seat):
     if not was or key in a:
         return
     trip, _, start = key.partition("|")
-    mon, cur = own_trip_month(trip, start), local_now().strftime("%Y-%m")
+    mon, cur = own_trip_month(trip, start), sched_month()  # 1.8.2 (LIVE-10)
     if not mon or mon == cur:
         return
     a[key] = {"month": mon, "why": f"own trip {trip} {start} no longer lists you (seat {was} is empty)",
@@ -7117,7 +7206,7 @@ def pot_own_trigger(pot_all, read):
     evidence stays while the trip stays on his schedule, so a row that leaves the pot and comes back (pot rows are by
     pairing and date, not seat) fires no second read; it ends when the trip leaves his schedule (a change), or when
     its pot was read without the row for SCHED_STALE_KEEP_S. read: the pot months read now."""
-    b, cur, now = _trig()["b"], local_now().strftime("%Y-%m"), time.time()
+    b, cur, now = _trig()["b"], sched_month(), time.time()  # 1.8.2 (LIVE-10)
     today = local_now().date()
     own = {}
     for mk, m in (S.get("schedule") or {}).items():
@@ -7164,7 +7253,7 @@ def sched_triggers_fire():
     that has a mark no read served yet (this one's or another's) is covered by that mark's read (one read for all the
     evidence in hand); a CrewTrac month's evidence (c) is dropped once its month is the current one or after
     SCHED_STALE_KEEP_S."""
-    t, cur, now = _trig(), local_now().strftime("%Y-%m"), time.time()
+    t, cur, now = _trig(), sched_month(), time.time()  # 1.8.2 (LIVE-10)
     for m in list(t["c"]):
         v = t["c"][m]
         try:
@@ -7190,7 +7279,7 @@ def crewtrac_trigger(snap, rows, months):
     CrewTrac snapshot (S sched_trig ct, its pulled_at). 1.8.2 review: each month's mismatch is kept as evidence (S
     sched_trig c {month: {sid, why, fired}}) and fired by sched_triggers_fire, so a month the 5 min gap refuses now is
     read early at a later check instead of never."""
-    t, cur = _trig(), local_now().strftime("%Y-%m")
+    t, cur = _trig(), sched_month()  # 1.8.2 (LIVE-10)
     sid = str((snap or {}).get("pulled_at") or "")
     if not sid or t.get("ct") == sid:
         sched_triggers_fire()  # the snapshot's evidence is in hand: a month the gap refused fires once it is over
@@ -7198,7 +7287,7 @@ def crewtrac_trigger(snap, rows, months):
     bad = set()
     for r in rows or ():
         if isinstance(r, dict) and not r.get("ok") and r.get("start"):
-            bad.add(own_trip_month(r.get("trip"), r.get("start")) or str(r["start"])[:7])
+            bad.add(own_trip_month(r.get("trip"), r.get("start")) or bid_period_key(r["start"]))  # 1.8.2 (LIVE-10)
     bad |= {m.get("month") for m in months or () if isinstance(m, dict) and not m.get("ok") and m.get("month")}
     for m in sorted(x for x in bad if isinstance(x, str) and MONTH_KEY_RE.match(x) and x != cur):
         old = t["c"].get(m)
@@ -7260,7 +7349,7 @@ def schedule_refresh_cmd(raw):
     if not isinstance(month, str) or not MONTH_KEY_RE.match(month):
         log.info("schedule refresh refused: not a month (YYYY-MM)")
         return False
-    now, cur = time.time(), local_now().strftime("%Y-%m")
+    now, cur = time.time(), sched_month()  # 1.8.2 (LIVE-10): Dec 1's current month is November
     last = _sdict("sched_refresh_at")
     try:
         gone = now - float(last.get(month) or 0)
@@ -7332,7 +7421,9 @@ def prev_month_check(fl, ok_url, cur_month):
                 continue
             sp = parse_schedule(html)
             if sp and sp["month"] == prev:
+                old, sp["read_at"] = store.get(prev), now_iso()
                 store[prev] = sp
+                sched_change(old, sp, sp["read_at"])  # 1.8.2 (S1, P6, T2): as the current month's
                 S["sched_prev_url"] = url
                 log.info("schedule %s (previous month): %d items via %s", prev, len(sp["items"]), url.split("?")[1])
                 return
@@ -7423,7 +7514,7 @@ def publish_schedule(updated=None, source=None):
     press: {month, state queued / read / failed / refused, why, at}) for the schedule card's refresh button. The months
     are copied first: the MQTT thread publishes this too (a refresh press)."""
     sch = dict(S.get("schedule") or {})
-    cur = sch.get(local_now().strftime("%Y-%m")) or {}
+    cur = sch.get(sched_month()) or {}  # 1.8.2 (LIVE-10): the current bid month's 'updated'
     periods = {}
     for k in sch:  # 1.7.11 (FW-0080): each month's bid period, for the schedule card's totals
         try:
@@ -7470,7 +7561,7 @@ def _schedule_read(fl, force):
         SCHED_READ["prev_at"] = 0
     S["sched_checked_at"] = time.time()
     store = S.setdefault("schedule", {})
-    cur_month = local_now().strftime("%Y-%m")
+    cur_month = sched_month()  # 1.8.2 (LIVE-10): the bid month of today (Dec 1 is November's), not the calendar's
     sched_stale().pop(cur_month, None)  # 1.8.2: a mark for the current month (refresh button) is served by this read
 
     def accept(url, s):
@@ -7490,20 +7581,7 @@ def _schedule_read(fl, force):
                 merge_lookup_totals(None, s, old)  # 1.6.2 review: the stored figures; this read's load is a month's
             else:
                 merge_lookup_totals(fl, s, old)  # FW-0019: the mobile page has no Block / Credit; Schedule Lookup does
-        if old and [(i["trip"], i["start"]) for i in old["items"]] != [(i["trip"], i["start"]) for i in s["items"]]:
-            ev = {"month": s["month"], "updated": s["updated"],
-                  "added": sorted({i["trip"] + " " + i["start"] for i in s["items"]} - {i["trip"] + " " + i["start"] for i in old["items"]}),
-                  "removed": sorted({i["trip"] + " " + i["start"] for i in old["items"]} - {i["trip"] + " " + i["start"] for i in s["items"]}),
-                  "totals": s["totals"]}
-            log.info("SCHEDULE changed %s", ev)
-            pub("event/schedule_changed", ev, retain=False)
-            try:  # FW-0064; never fails the read (an error here must not make schedule_check load another URL)
-                # the same page read twice (1.6.2: a current month read on Schedule Lookup each time counts too); a month
-                # first read on Schedule Lookup and now on the mobile page is not
-                if old.get("src") == s.get("src"):
-                    sched_moves_record(s["month"], old["items"], s["items"], s.get("updated"), read_at)
-            except Exception as e:
-                log.info("schedule moves not recorded: %s", e)
+        sched_change(old, s, read_at)  # 1.8.2 (S1, P6, T2): the change path every month read again runs
         S["sched_read_at"] = read_at  # FW-0064: a trade seen on the schedule is decided one quiet read later
         S["sched_url_ok"] = url
         S["sched_shape"] = sched_shape_of(url)
@@ -8791,6 +8869,29 @@ def _priced(m):
     return bool(_add_rec(m).get("credit"))
 
 
+SCHED_QUIET_WAIT_S = 2 * 3600  # 1.8.2 (G1A-2): a month whose page is not read again this long: any read decides
+
+
+def group_read_at(grp):
+    """1.8.2 (G1A-2): the read after which trade_check may decide a group of schedule moves (TR.settled: a read after
+    its newest move): the oldest of the current month's last read (sched_read_at) and the last read of each month whose
+    page its moves were seen on (S sched_read_at_by_month), so a trade is decided once each of those pages was read
+    again with nothing new (on Ryan's mobile path December is read every other read: a December trade FLICA posts in
+    two steps is one push, as the current month's). A month whose bid period is over (read once a day) or whose page
+    was not read for SCHED_QUIET_WAIT_S (its reads fail) counts the current month's read, as before."""
+    last = S.get("sched_read_at") or ""
+    by = S.get("sched_read_at_by_month") if isinstance(S.get("sched_read_at_by_month"), dict) else {}
+    for mon in sorted({m.get("month") for m in grp if isinstance(m.get("month"), str)}):
+        v = by.get(mon) if isinstance(by.get(mon), dict) else {}
+        try:
+            gone = time.time() - float(v.get("ts") or 0)
+        except (TypeError, ValueError):
+            gone = float("inf")
+        if last and v.get("at") and gone < SCHED_QUIET_WAIT_S and not bid_period_over(mon):
+            last = min(last, str(v["at"]))
+    return last
+
+
 def trade_check():
     """FW-0064: schedule changes that are a decided request. A pending request (Open Time Requests or Tradeboard My
     Requests) whose every leg is now on the schedule is decided at once under its own key (the list path then never
@@ -8825,7 +8926,7 @@ def trade_check():
         pub("event/request_decided", ev, retain=False)
     done = S.setdefault("sched_trades_pushed", {})
     for day, grp in sorted(TR.groups(mvs).items()):
-        if not TR.settled(grp, S.get("sched_read_at"), now_iso(), _priced):
+        if not TR.settled(grp, group_read_at(grp), now_iso(), _priced):  # 1.8.2 (G1A-2): each month's own read
             continue
         ev = TR.group_event(day, grp)
         if ev["key"] in done:
@@ -13786,7 +13887,8 @@ def inflt_check(fl, limit=INFLT_PER_CHECK):
     if not (BRK.allow("lookup") and BRK.allow("pairing")):  # 1.6.2: no try is used up while those reads are stopped
         return False
     changed = IF.run(fl, DB, limit, log, local_now, BASE, HST,
-                     on_sched=lambda items: note_sched_trips(items, "picker"))  # FW-0056: the crew index reads them too
+                     on_sched=lambda items: note_sched_trips(items, "picker"),  # FW-0056: the crew index reads them too
+                     period_of=bid_period_fn())  # 1.8.2 (LIVE-10): the pickup day's bid month
     if changed:
         publish_finds()
         pilotdb_nudge()  # 1.7.8: each picker's in-flight verdict in his pickup history

@@ -741,6 +741,7 @@ def parse_schedule(html, domicile="HNL"):
     if not m:
         return None
     mon, yr = MON3.index(m.group(1)[:3].upper()) + 1, int(m.group(2))
+    page_month = f"{yr}-{mon:02d}"  # 1.8.2 (LIVE-10, P5): the page's own month is its header's
     days, prev_dd = [], 0
     for tr in soup.find_all("tr"):
         cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"], recursive=False)]
@@ -748,7 +749,9 @@ def parse_schedule(html, domicile="HNL"):
         if i is None or i + 2 >= len(cells) or not re.fullmatch(r"\d{1,2}", cells[i + 1]):
             continue
         dd = int(cells[i + 1])
-        if dd < prev_dd:  # rolled into the next month (trip ending after month end)
+        if not prev_dd and dd > 20:  # 1.8.2 (LIVE-10, P5): a first row past the 20th is a day of a trip carried in
+            mon, yr = (12, yr - 1) if mon == 1 else (mon - 1, yr)  # from the month before (Nov 30 on December's page)
+        elif dd < prev_dd:  # rolled into the next month (trip ending after month end)
             mon, yr = (1, yr + 1) if mon == 12 else (mon + 1, yr)
         prev_dd = dd
         rest = [c for c in cells[i + 2:]]
@@ -769,7 +772,7 @@ def parse_schedule(html, domicile="HNL"):
         if t:
             tot[key] = int(t.group(1)) if key == "days_off" else t.group(1)
     if "days_off" not in tot:  # the OT drop view has no totals; FLICA counts VAC days as off
-        y0, m0 = days[0][0][:4], days[0][0][5:7]
+        y0, m0 = page_month[:4], page_month[5:7]
         work = set()
         for it in items:
             if PAIRING_RE.match(it["trip"]):
@@ -777,8 +780,7 @@ def parse_schedule(html, domicile="HNL"):
                     work.add(d.isoformat())
         tot["days_off"] = sum(1 for d in days if d[0][:7] == f"{y0}-{m0}" and d[0] not in work)
     u = SCHED_UPDATED.search(text)
-    first = date.fromisoformat(days[0][0])
-    return {"month": f"{first.year}-{first.month:02d}", "updated": u.group(1) if u else "",
+    return {"month": page_month, "updated": u.group(1) if u else "",
             "days": days, "items": items, "totals": tot}
 
 
