@@ -575,8 +575,18 @@ def test_dec_1_sensor_failed_note_and_check_now_follow_the_bid_month(mk):
     W.schedule_failed(["mobile: down"], ["the mobile page: no answer"])
     assert W.S["sched_refresh"]["state"] == "failed"
     W.S["lookup_months"] = {"bds": ["1026", "1126", "1226"], "at": W.CLOCK.t}
+    W.S["sched_totals"] = {"month": "2026-11", "at": W.CLOCK.t}  # November's Block / Credit just loaded
     W.check_now_marks()
     assert set(W.sched_stale()) == {"2026-12"}
+    # with November's totals old, Check now also asks for them (review 2): a mark on the CURRENT month (November on
+    # Dec 1, never December's calendar month), not forced; December stays the future month marked
+    W.sched_stale().clear()
+    W.CLOCK.t += 2 * W.SCHED_TRIGGER_GAP_S  # past the 5 min gap a month is marked at most once in
+    W.S["sched_totals"] = {"month": "2026-11", "at": W.CLOCK.t - 2 * W.SCHED_TRIGGER_GAP_S}
+    W.check_now_marks()
+    st = W.sched_stale()
+    assert set(st) == {"2026-11", "2026-12"} and st["2026-11"]["forced"] is False
+    assert st["2026-11"]["why"] == W.SCHED_CHECK_NOW_WHY
 
 
 def test_dec_1_a_forced_read_serves_one_other_month(mk):

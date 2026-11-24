@@ -427,7 +427,8 @@ months FLICA's Schedule Lookup lists fresh:
   card shows "Refreshing..." until the month's read time or FLICA updated time moves, then "Refreshed" with the version,
   or "Not refreshed: <why>" after 3 min. `sensor.<prefix>_schedule` carries `listed`, `refresh` and each month's
   `read_at` for it.
-- Another month whose trips changed logs "SCHEDULE changed <month> {added, removed}" (no push, no event).
+- Another month whose trips changed runs the same change path as the current month (1.8.2): a "SCHEDULE changed"
+  log line, event/schedule_changed and the FW-0064 trade moves, pushed once (a month's first read is no change).
 
 ## FLICA mirror (1.8.0)
 

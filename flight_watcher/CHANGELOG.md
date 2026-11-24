@@ -21,23 +21,28 @@ schedule if I don't think that it's right, but also maybe it should just always 
   fallback, never a future month that is due. The other months are read future months first (nearest first), past
   months last; a month that already waited one read past its freshness goes first (a future month before a past one,
   then the most overdue), so the closed month still gets one read a day although the next month is due on every read,
-  and a month whose last read failed goes after those that did not. `other_months_pending` asks the same
-  `other_month_due` as `other_months_check` (`next_other_month`). Only the months the schedule keeps (the latest three)
-  are read.
+  and a month whose last read failed goes after those that did not, until it has waited one read past its back-off
+  (then it is tried once per back-off step: 1 h, 2 h, 4 h, then 6 h). Only the months the schedule keeps (the latest
+  three) are read.
 - Totals (FW-0019): the spare load of a read goes to a due future month, but when the current month is read on the
   mobile path (its page has no Block / Credit) and its totals were last loaded an hour or more ago, the totals load
   comes first and the future month waits one read (`totals_first`). A month that already waited a read goes before
   totals under 2 h old: the next month never waits more than one read, and once a day the closed month takes the
   totals' turn (the totals are then about 2 h old, once a day). A failed totals load counts as their turn too, so a
-  totals page that fails is tried once an hour, never on every read. A month marked stale goes before totals under
-  2 h old, or when the read before did not load that month; else the totals load first and the mark forces the next
-  check's read, so marks that keep coming never hold the totals for ever. A current month read on Schedule Lookup
+  totals page that fails is tried once an hour, never on every read, also when no other month is due; while it fails
+  the month list on file stands (that page is the list's too), and every good Schedule Lookup page of another month
+  keeps the list. A month marked stale goes before totals under 2 h old, or when the read before did not load that
+  month; else the totals load first and the mark forces the next check's read (at once for a refresh press, which
+  costs one more check, pot pages included; Check now's own mark goes first at the next due read), so marks that keep
+  coming never hold the totals for ever. A refresh press for the current month on the mobile path re-reads its Block
+  / Credit too, and Check now does when they are 5 min old or more. A current month read on Schedule Lookup
   itself (its page carries the totals and the month list) needs no extra load. With nothing else due the spare load
   refreshes the totals, as before.
 - Early re-reads: (a) `own_trip_times` finds the pilot no longer listed on one of his own trips of another month (its
   seat went from set to empty); (b) a row in the open time pot is one of his own trips of another month (the same
   pairing and start date: his seat went into the pot); (c) the CrewTrac check (`sensor.<prefix>_crewtrac_check`) flags
-  a mismatch in another month; (d) Check now reads the future months too. Each marks the month stale (`S
+  a mismatch in another month; (d) Check now reads the future months too (and, on the mobile path, the current
+  month's totals when they are 5 min old or more). Each marks the month stale (`S
   sched_stale`) with one log line naming it and the month ("schedule 2026-12: read early (his H3913 2026-12-04 is in
   the open time pot)"); the next check runs the schedule read at once, forced, through the FLICA gate, still at most 2
   loads, and the marked month takes the spare load first. No read loop: (a) fires once per trip and change, (b) once
@@ -71,15 +76,65 @@ schedule if I don't think that it's right, but also maybe it should just always 
   contract change: `PORTAL_CMDS`, `PORTAL_REFUSED`, `FEATURES`, the budgets and the contract fixture are as they were. A
   second pilot's own Watcher answers on its own prefix only (his Home Assistant copy publishes
   `flight_watcher_<name>/schedule/refresh`).
-- Log: "SCHEDULE changed 2026-12 {'added': [...], 'removed': [...]}" when another month's trips change; no push and no
-  event (push isolation unchanged), and the schedule versions work as before.
+- **The schedule follows the bid month** (audit LIVE-10, council loop 2): the current month is the bid month of today,
+  not the HST calendar month. On Dec 1 November is still current (read every 30 min, Schedule Lookup bd=1126 or the
+  mobile page of bid period 152; the refresh button, the sensor's `updated`, a failed read's note, Check now and the
+  triggers use November) and December is a future month until Dec 2. A past month's day-long freshness waits for its
+  bid period to end. The mobile page's month is its header's: December's carry-in rows (Nov 30, Dec 1) are dated in
+  November (Nov 30 read as Dec 30 before, moving the whole line a month), and a page of another month is never stored
+  as the current one. The in-flight lookup reads the picker's page for the pickup day's bid month.
+- **Another month's changes push** (audit S1, P6, T2): a month read again on Schedule Lookup, or through the previous
+  month's mobile fallback, runs the current month's change path: one "SCHEDULE changed" log line, event/schedule_changed
+  (a "Schedule changed" notice on a pilot's portal and ntfy, each instance on its own prefix, push isolation
+  unchanged), and the FW-0064 moves, pushed once as request_decided with the same text and Pay-Gross. Before, a
+  December trade seen before Dec 2 was log only. A month's first read is no change; a trip on two pages (Nov 30 to Dec
+  2, on November's page and carried onto December's) is one change, reported by the page that saw it first; a group of
+  moves is decided once every month it was seen on has been read again with nothing new.
+- **Read cadence follow-ups**: `own_trip_times` loads each trip and start once per check (a carry-in both months list
+  was loaded twice on Check now); `other_months_pending` lost its unused `stale_only`; dead `totals_stale` removed.
+- **Pricing, packages and months by bid period** (audit P2 to P4, S2 to S4, S8, S9, T6, T8, T11, POT-7, LIVE-7, C8,
+  LIVE-9; PWA Section 2 Definitions 47): requests and trades seen on the schedule price each trip from its own bid
+  period's pairings package (a Dec 1 trip uses November's, never December's same-numbered trip; with no figure the push
+  carries no amount, never a wrong one), and a number held twice (Nov 30 and Dec 12) is priced as the trip the request
+  names by its day. For a Dec 1 trip the FAR column, near misses, report and release, the customs origin (PWA 2.19.b)
+  and the Recall check read November's package. Over 75 eligibility (PWA 22.G.2.d) of a Dec 1 row is November's
+  answer (the Recall card gives such a row its own "Over 75 in Nov 2026" select). The fit tag's days off minimum (PWA
+  10.G.1.a: 12 in a 30-day period, 13 in a 31-day one) counts the bid period; a pickup across the edge is checked in
+  each period it touches. A Dec 1 trip is in November's crew index file too. On Dec 1 the pilot lookup offers November
+  and December.
+- **December award carry-in and Improved pay** (audit T5, LIVE-3, T9): the award parser reads a trip carried in from the
+  bid period before (FLICA prints it in the C/IN column left of the first day with its first day, "Nov30", under it): it
+  is dated from that marker, priced from the previous period's package and keeps its Cr row share as this period's
+  credit. A pairing printed just right of a day header moves to the next day only when its own release shows it there
+  (December's first trip, released under Dec 5, starts Dec 3). Everything else reads as 1.8.1 read it. After the update
+  the award texts on file are read again (no FLICA load); a changed awarded line keeps its time, the version after it
+  is compared again, later versions stay as stored, and the month's stale Improved pay row leaves the sensor so the card
+  prices it again. Ryan's December Improved-Pay-Gross read -$4,638 from a phantom 21:00 trip. The Improved pay gross
+  state is the bid month in progress, named in a new `month` attribute.
+- **Cards follow HST and the bid month** (audit C4, C5, C7, C9, C10, P8, S11): the schedule card's month is the bid
+  month holding today in HST, never the device's clock or time zone (a phone on Japan time turned the month up to 19 h
+  early). On Dec 1 Now opens November (the carried trip keeps its code and in-flight mark); December from Dec 2. An
+  offset set in an earlier bid month counts as 0 once the month moves on. The faded rows are the days outside the bid
+  period the totals cover (Dec 1 plain on November, faded on December). The Recall/O75 card moves on with the clock
+  at midnight HST unless a month was picked. The pilot card offers this bid month and the next.
+- **CrewTrac check knows which copy is newer** (audit LIVE-8): when FW's copy of a trip or month credit is newer than
+  Hark's snapshot and the two differ, it reads "CrewTrac not updated yet (pulled HH:MM HST)", counted as waiting (new
+  `waiting` attribute), never a mismatch, so it never triggers an early read. A snapshot newer than FW's copy keeps the
+  mismatch and the early read. After each December trade the check read "CrewTrac controls" for about 12.6 h while FW
+  was right.
+- **A missing smart.json month type is said** (audit S6): while a bid month the Watcher reads has no month type, the
+  state note says so ("smart.json has no month type for December 2026") and the log says once a day that its finds and
+  pushes carry no month rule. Nothing is guessed and the file is never written. (Ryan added December as "line" on Nov
+  23.)
 - FLICA load budget: at most 2 loads a read (`SCHED_TRIES_PER_READ`), unchanged; GET only, no new page type, paced 1.5
   to 3.5 s through the gate. A current month read on Schedule Lookup: the next month on every 30 min read, about 2 more
   loads an hour per pilot (4 instead of 2), and the closed month once a day. On the mobile path with no totals on the
   page: still 4 loads an hour (the totals and the next month take turns, each about hourly; the totals went every read
   before), so there the next month waits one read at most (about an hour, every day), and once a day the closed
   month takes the totals' turn (the totals about 2 h old then). A trigger adds one forced read (2 loads) at most every
-  5 min a month.
+  5 min a month. A refresh press is Ryan's own request for a read (at most one a month a minute): in the one case where
+  totals 2 h old take its read, it starts one more check at once (its pot pages included). The audit fixes add no
+  FLICA page load (on Dec 1 the in-flight lookup skips FLICA's default page, one load fewer).
 - Replayed in tests (`tests/test_fw182_sched_fresh.py`, synthetic pages): a December page that changes 10 min after a
   read shows at the next 30 min read (20 min later; it was about 8 h), and at the next check (6 min) after trigger (a)
   or (b).
