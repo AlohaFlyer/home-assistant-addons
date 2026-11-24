@@ -651,9 +651,9 @@ def test_version_is_one_seven_two():
     # 1.7.26 (Nov 22): the crew index yields to the pot checks, the admin's checks fit the host hour, Check now in the
     # data age box; no new FLICA load, no contract change
     # 1.8.0 (Nov 23): the FLICA mirror through the Watcher's own session; no contract change
-    # 1.8.1 (Nov 23): the open time pot follows the bid month, the Pot month select (off the portal); no contract change
-    # 1.8.2 (Nov 23): other months kept fresh, early re-reads, the schedule refresh button (off the portal); no contract
-    # change
+    # 1.8.1 (Nov 23, Hark for Ryan): a later month is read again when FLICA's schedule stamp moves; no contract change
+    # 1.8.2 (Nov 23): the open time pot follows the bid month, the Pot month select (off the portal), other months kept
+    # fresh, early re-reads, the schedule refresh button (off the portal); no contract change
     assert _re.search(r'^version: "1\.8\.2"$', cfg, _re.M)
     assert _re.search(r'^VERSION = "1\.8\.2"$', open(os.path.join(HERE, "watcher.py"), encoding="utf-8").read(), _re.M)
     log = open(os.path.join(HERE, "CHANGELOG.md"), encoding="utf-8").read()

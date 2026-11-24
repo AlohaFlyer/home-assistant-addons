@@ -6793,6 +6793,76 @@ SCHED_STALE_KEEP_S = 6 * 3600
 SCHED_REFRESH_GAP_S = 60  # 1.8.2 (S4): the schedule card's refresh button, at most once a month in this long
 SCHED_REFRESH_WHY = "refresh button"  # the why of a refresh press's mark (S sched_stale): its card waits 3 min
 SCHED_CHECK_NOW_WHY = "Check now"  # the why of Check now's marks (check_now_marks)
+SCHED_STAMP_WHY = "FLICA's schedule stamp moved"  # the why of 1.8.1's stamp rule's marks (stamp_marks)
+
+
+# 1.8.1 (Hark for Ryan, Nov 23, 2026: "FW is not updating his December schedule completely"): FLICA's "Last Updated"
+# stamp is the pilot's whole schedule's, not one month's. On Nov 23 the November page's stamp moved from 05:08 to 05:37
+# HST with November unchanged, while trades moved December (H3613 04DEC to 06DEC), and the December copy, read on
+# Schedule Lookup at most every 6 h, kept the 00:53 stamp and the old dates. The current month is read every 30 min,
+# so a later month on file is read again on the next read once the current month's stamp (S sched_stamp) is newer
+# than the month's own and has moved since the month was read (its cur_stamp): one paced load per stamp change, inside
+# the read's SCHED_TRIES_PER_READ, never a load of its own. Past months keep their own cadence (a trade moves no past
+# day). 1.8.2 (merge): the rule is one more early re-read signal: stamp_marks marks such a month (S sched_stale), so it
+# takes the read's spare load first (other_months_order, totals_first), and it never forces a read of its own.
+def flica_stamp(s):
+    """FLICA's "Last Updated" stamp ('Nov 23, 2026 05:37:39', HST) as a naive datetime, or None."""
+    t = re.sub(r"\s+", " ", str(s or "").strip())
+    for fmt in ("%b %d, %Y %H:%M:%S", "%b %d, %Y %H:%M"):
+        try:
+            return datetime.strptime(t, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def other_month_stale(mon, cur_month):
+    """1.8.1: a later month on file (Schedule Lookup's copy) that FLICA changed since it was read, by the stamp rule
+    above. False for the current month, a past month, a month not on file (other_month_due reads it) or no stamp."""
+    if not mon or not cur_month or mon <= cur_month:
+        return False
+    e = (S.get("schedule") or {}).get(mon)
+    cur = S.get("sched_stamp") or ""
+    now = flica_stamp(cur)
+    if not e or e.get("src") != "lookup" or now is None or e.get("cur_stamp") == cur:
+        return False
+    bds = (S.get("lookup_months") or {}).get("bds") or []
+    if bds and f"{mon[5:7]}{mon[2:4]}" not in bds:
+        return False  # FLICA no longer lists the month: nothing to read
+    if time.time() < float(((S.get("sched_other_fail") or {}).get(mon) or {}).get("next") or 0):
+        return False  # a month that failed waits its back-off (other_failed), stamp or not
+    mine = flica_stamp(e.get("updated"))
+    return mine is None or now > mine
+
+
+def later_months_stale(cur_month):
+    """1.8.1: the later months on file that other_month_stale says to read again, in month order."""
+    return [m for m in sorted(S.get("schedule") or {}) if other_month_stale(m, cur_month)]
+
+
+def stamp_marks(cur_month):
+    """1.8.2 (merge of 1.8.1's stamp rule): called on each read of the current month (cur_month: the bid month of
+    today), once S sched_stamp holds its page's stamp. Each later month later_months_stale lists (FLICA's stamp moved
+    since that month's read: its cur_stamp; not while it backs off after a failed read) is marked stale (S
+    sched_stale, why SCHED_STAMP_WHY, one log line), so it takes this read's spare load first (other_months_order;
+    totals_first: a marked month). Its read keeps the new cur_stamp, so one read per stamp change; a month whose read
+    failed is marked again only once its back-off is over. The mark never forces a read of its own (forced True:
+    sched_stale_force leaves it, defer_mark does not force it again), so its load is always inside a read's
+    SCHED_TRIES_PER_READ (a read with no load left: the next due read). A month with a mark already keeps that one;
+    the 5 min trigger gap does not apply (the stamp is its own limit). Returns the months marked; never raises."""
+    try:
+        marks, out = sched_stale(), []
+        order = other_months_order(kept_bds(), cur_month)
+        for m in later_months_stale(cur_month):
+            if m in marks or m not in order:
+                continue
+            marks[m] = {"why": SCHED_STAMP_WHY, "at": time.time(), "forced": True}
+            log.info("schedule %s: read early (%s)", m, SCHED_STAMP_WHY)
+            out.append(m)
+        return out
+    except Exception as e:  # noqa: BLE001: never fails the read; the month then waits for its own due read
+        log.info("schedule: stamp marks skipped (%s)", type(e).__name__)
+        return []
 
 
 class SchedFull(Exception):
@@ -6877,6 +6947,7 @@ def lookup_totals(fl, month):
     note_lookup_months(html)
     SCHED_READ["lookup_ok"] = True
     S["sched_totals"]["ok"] = True
+    BRK.ok("lookup")  # 1.8.1 review: a good Schedule Lookup page ends a run of failed ones (BRK_FAILS "in a row")
     return {k: v for k, v in (sp.get("totals") or {}).items() if k in LOOKUP_KEYS and v not in (None, "")}
 
 
@@ -7098,8 +7169,8 @@ def defer_mark(month):
     check (sleep clears WAKE when it starts; a due WAKE_DUE still ends it). False when the month's mark is not
     forced again (none, or Check now's)."""
     v = sched_stale().get(month)
-    if not isinstance(v, dict) or v.get("why") == SCHED_CHECK_NOW_WHY:
-        return False
+    if not isinstance(v, dict) or v.get("why") in (SCHED_CHECK_NOW_WHY, SCHED_STAMP_WHY):
+        return False  # 1.8.2 (merge): nor the stamp's mark (stamp_marks: never a read of its own)
     v["forced"] = False
     # 1.8.2 (defer-mark-wake-adds-a-full-check): a trigger's or Check now's mark has no card waiting on it: the next
     # check at its pace reads it (it started one more check, pot pages and all, on every deferral)
@@ -7133,7 +7204,9 @@ def other_months_check(fl, cur_month):
     """0.8.5 (Ryan: October now, December once it is published): Tools > Schedule Lookup for Ryan's own
     number lists every month FLICA holds in its <select> (1026, 1126, later 1226); each listed month other
     than the current one is read with bd=MMYY (GET only) and parsed like a picker's month, so the FAR 30 in
-    7 / 100 in 672 columns can look back and forward. Returns True when every listed month is in."""
+    7 / 100 in 672 columns can look back and forward. Returns True when every listed month is in. 1.8.1: a month's
+    load error waits its back-off (other_failed) and the pass goes on; each month read keeps the current month's
+    stamp (cur_stamp, other_month_stale)."""
     emp = S.get("own_emp")
     if not emp:
         return False
@@ -7153,9 +7226,16 @@ def other_months_check(fl, cur_month):
             html = sched_fetch(fl, IF.CM_SCHED_MONTH.format(base=BASE, emp=emp, bd=bdc))
         except SchedFull:
             return None  # this read's loads are used: the next due read goes on
+        except GT.BreakerOpen:
+            raise
+        except Exception as e:  # 1.8.1 review: as a month list page that is not a schedule (counted, logged)
+            log.info("own schedule lookup: month list load error %s", type(e).__name__)
+            other_failed(None, f"the month list page: load error ({type(e).__name__})")
+            return False
         if classify(html) == "ok" and re.search(r'<option value="(\d{4})"', html):
             note_lookup_months(html)
             SCHED_READ["lookup_ok"] = True
+            BRK.ok("lookup")
         else:
             other_failed(None, "the month list page: " + classify(html))
     if not bds:
@@ -7168,7 +7248,7 @@ def other_months_check(fl, cur_month):
         return False
     got, waiting = [], False
     fails = _sdict("sched_other_fail")
-    stale = sched_stale()
+    stale = sched_stale()  # 1.8.2: the marks (a trigger, Check now, the refresh button, 1.8.1's stamp: stamp_marks)
     order = other_months_order(bds, cur_month, store)
     for mon in [m for m in list(stale) if m != cur_month and m not in order]:
         stale.pop(mon, None)  # 1.8.2: a month FLICA no longer lists (or the schedule no longer keeps) is never read
@@ -7188,10 +7268,19 @@ def other_months_check(fl, cur_month):
         except SchedFull:
             waiting = True
             break
+        except GT.BreakerOpen:
+            raise  # 1.8.1: a pause, a stop or an open breaker ends the pass as before (the month's mark stays)
+        except Exception as e:  # 1.8.1 review: a load error waits the month's back-off, so it is not loaded every read
+            stale.pop(mon, None)  # 1.8.2: a mark is served by this load, read or not
+            log.info("own schedule %s (bd=%s): load error %s", mon, bd, type(e).__name__)
+            other_failed(mon, f"load error ({type(e).__name__})")
+            refresh_note(mon, "failed", f"FLICA's {month_name(mon)} page did not load ({type(e).__name__})")
+            continue
         why = (stale.pop(mon, None) or {}).get("why") or ""  # 1.8.2: a mark is served by this load, read or not
         sp = IF.parse_cm_month(page) if classify(page) == "ok" else None
         if sp and sp["month"] == mon:
             SCHED_READ["lookup_ok"] = True
+            BRK.ok("lookup")  # 1.8.1 review: a good Schedule Lookup page ends a run of failed ones
             if {bd, bdc} <= set(re.findall(r'<option value="(\d{4})"', page)):
                 # 1.8.2 (current-lookup-page-fails-starves-other-months): its month list (the same select) keeps the
                 # list, so a current month page that fails holds back only its totals, never the other months
@@ -7206,7 +7295,8 @@ def other_months_check(fl, cur_month):
         fails.pop(mon, None)
         old = store.get(mon)
         store[mon] = {"month": mon, "updated": sp.get("updated", ""), "days": sp["days"], "items": sp["items"],
-                      "totals": sp.get("totals") or {}, "src": "lookup", "read_ts": read_stamp(), "read_at": now_iso()}
+                      "totals": sp.get("totals") or {}, "src": "lookup", "read_ts": read_stamp(), "read_at": now_iso(),
+                      "cur_stamp": S.get("sched_stamp") or ""}  # 1.8.1: the current month's stamp when read
         got.append(mon)
         sched_change(old, store[mon], store[mon]["read_at"])  # 1.8.2 (S1, P6, T2): as the current month's
         log.info("schedule %s: %d items via Schedule Lookup (bd=%s)%s, totals %s", mon, len(sp["items"]), bd,
@@ -7496,7 +7586,8 @@ def sched_triggers_fire():
             old = True
         if old or m == cur:
             t["c"].pop(m, None)
-    marked = {m for m, v in list(sched_stale().items()) if isinstance(v, dict)}
+    # 1.8.2 (merge): a stamp mark (stamp_marks) forces no read, so a trigger's evidence is not covered by it
+    marked = {m for m, v in list(sched_stale().items()) if isinstance(v, dict) and v.get("why") != SCHED_STAMP_WHY}
     for kind in ("a", "b", "c"):
         for v in list(t[kind].values()):
             if not isinstance(v, dict) or v.get("fired"):
@@ -7803,6 +7894,9 @@ def _schedule_read(fl, force):
         old = store.get(s["month"])
         read_at = now_iso()
         s["read_at"] = read_at  # 1.8.2 (S4): the card's refresh button waits for this (or 'updated') to move
+        if s.get("updated"):  # 1.8.1: FLICA's stamp for the whole schedule, so a later month it moved is read again
+            S["sched_stamp"] = s["updated"]
+        stamp_marks(cur_month)  # 1.8.2 (merge of 1.8.1): such a month is marked before the spare load is given out
         if s.get("src") == "lookup":
             S["sched_totals"] = {"month": s["month"], "at": read_stamp(), "ok": True}  # its page carries the totals
         else:
