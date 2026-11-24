@@ -5365,6 +5365,9 @@ def _write_pairings(path, pj):
         raise
 
 
+AWARD_KEYS = ("items", "days", "totals", "trips")  # 1.8.2 (T5): what an awarded line read again is compared by
+
+
 def _uploads_check():
     try:
         upload_gens_check()
@@ -5383,6 +5386,9 @@ def _uploads_check():
                 sig = f"{os.path.getmtime(path):.0f}"
                 if kind == "pairings":  # 1.7.7: a newer parser (the pairing detail) reads the text copies on file again
                     sig += f"|p{PDF.PKG_PARSER}"
+                else:  # 1.8.2 (T5): so do a newer award parser (the carry-in) and the month before's package coming
+                    prev_det = pkg_details_for(month_add(f[:7], -1)) if re.fullmatch(r"\d{4}-\d{2}", f[:7]) else {}
+                    sig += f"|a{PDF.AWARD_PARSER}" + ("|c" if prev_det else "")
                 if done.get(f) == sig:
                     continue
                 month = f[:7]
@@ -5407,8 +5413,8 @@ def _uploads_check():
                     emp = S.get("own_emp") or ""
                     pv = S.setdefault("pilotver_awards", {})
                     if det and pv.get(f) != sig:  # FW-0069: an award after a looked-up pilot's first version is his
-                        pilotver_awards(month, text, det)  # .001 now (once per file version, even while this waits)
-                        pv[f] = sig
+                        pilotver_awards(month, text, det, prev_det)  # .001 now (once per file version, even while
+                        pv[f] = sig  # this waits); 1.8.2 (T5): his carry-in from the month before's package
                     if not det or not emp:
                         log.info("upload %s: waiting for the %s pairing package and the employee number", f, month)
                         continue
@@ -5417,15 +5423,29 @@ def _uploads_check():
                     except (OSError, ValueError, AttributeError):
                         start = None
                     try:
-                        aw, why = PDF.parse_award(text, emp, det, month, start), f"employee {emp} not in this award"
+                        aw = PDF.parse_award(text, emp, det, month, start, prev_det)
+                        why = f"employee {emp} not in this award"
                     except ValueError as e:  # logged once: the file is marked done until it changes
                         aw, why = None, f"award not read: {e}"
+                    # 1.8.2 (T5): the awarded line on file, and whether this is its own file read again (same time)
+                    old = next((v for v in DB.get(f"sched_versions:{month}") or [] if v.get("award")), None)
+                    same = old is not None and str(done.get(f) or "").split("|")[0] == sig.split("|")[0]
+                    moved = old is None or any(old.get(k) != (aw or {}).get(k) for k in AWARD_KEYS)
                     if not aw:
                         log.info("upload %s: %s", f, why)
+                    elif same and not moved:
+                        pass  # 1.8.2 (T5): the same file read again by a newer parser, its line the same: nothing moves
                     else:
-                        vers = VER.set_award(DB, month, aw, now_iso())
+                        # 1.8.2 (T5): the same file read again (a newer parser) keeps the awarded line's time and the
+                        # later versions as stored; only the version after it is compared again
+                        at_ = (old.get("at") if same else None) or now_iso()
+                        vers = VER.set_award(DB, month, aw, at_, reparse=same)
                         log.info("upload %s: awarded line is version %s (%d items, credit %s); %d versions",
                                  f, vers[0]["ver"], len(aw["items"]), aw["totals"].get("credit"), len(vers))
+                        imp = DB.get("improved_pay") or {}
+                        if moved and imp.pop(month, None) is not None:  # 1.8.2 (T5): priced from the old line: the
+                            DB.put("improved_pay", imp)  # schedule card prices the month again when it next shows it
+                            publish_improved()
                         versions_check(force_pub=True)
                 done[f] = sig
                 save_state(S)
@@ -6367,11 +6387,27 @@ def recall_versions_from(allr):
         return ""
 
 
+_IMPROVED = {"for": ""}  # 1.8.2 (T9): the bid month the Improved pay headline was published for
+
+
 def publish_improved():
+    """The Improved pay sensor: months (the cards' bars), ytd, and its state. 1.8.2 (T9): the state is the bid month in
+    progress (this_month_key: Dec 1 is still November's), else the latest month priced before it, named in month (it
+    was the latest month priced, December's, with no month to say so)."""
     allm = DB.get("improved_pay") or {}
     rows = [allm[k] for k in sorted(allm)]
-    cur = rows[-1] if rows else {}
-    pub("improved_pay", {"improved": cur.get("improved", 0), "months": rows, "ytd": round(sum(r.get("improved", 0) for r in rows), 2)})
+    now = this_month_key()
+    k = now if now in allm else next((m for m in sorted(allm, reverse=True) if m <= now), max(allm) if allm else "")
+    cur = allm.get(k) or {}
+    _IMPROVED["for"] = now
+    pub("improved_pay", {"improved": cur.get("improved", 0), "month": cur.get("month") or k, "months": rows,
+                         "ytd": round(sum(r.get("improved", 0) for r in rows), 2)})
+
+
+def improved_tick():
+    """1.8.2 (T9): the headline follows the bid month in progress when it changes (Dec 2 00:00 HST), card or not."""
+    if _IMPROVED["for"] != this_month_key():
+        publish_improved()
 
 
 def publish_own_trips():
@@ -9970,8 +10006,9 @@ def pilot_award(emp, month):
     det = pkg_details_for(month) if os.path.exists(path) else None
     if not det:
         return None
-    try:
-        return PDF.parse_award(open(path, errors="replace").read(), emp, det, month, pairings_start(month))
+    try:  # 1.8.2 (T5): a carry-in from the month before's package
+        return PDF.parse_award(open(path, errors="replace").read(), emp, det, month, pairings_start(month),
+                               pkg_details_for(month_add(month, -1)))
     except ValueError:
         return None
 
@@ -10057,16 +10094,17 @@ def pilotver_run_end(insts=None):
         return 0
 
 
-def pilotver_awards(month, text, det):
+def pilotver_awards(month, text, det, prev_det=None):
     """FW-0069: an award uploaded after pilots' versions of its month were made goes in as each one's .001 (the rest
-    renumbered). Never raises. Returns the number of pilots it changed."""
+    renumbered). Never raises. Returns the number of pilots it changed. 1.8.2 (T5): prev_det, the month before's
+    package details, gives a pilot's carry-in (pdfs.parse_award)."""
     try:
         start = pairings_start(month)
         first, _, end = CI.grid_range(CARD_PAIRINGS, month)
         n = 0
         for emp in PV.registered(DB, month):
             try:
-                aw = PDF.parse_award(text, emp, det, month, start)
+                aw = PDF.parse_award(text, emp, det, month, start, prev_det)
             except ValueError:
                 continue  # no date header above his line, or (1.7.2) his line cut off: the next pilot's may read
             if aw and PV.set_award(DB, emp, month, aw, now_iso(), (first, end), first):
@@ -11686,6 +11724,10 @@ def upload_janitor():
                     schedule_unread_tick()  # 1.7.2 (contract 1 revision 3): a portal pilot's schedule not read
                 except Exception as e:  # noqa: BLE001
                     log.info("schedule not read alert: %s", type(e).__name__)
+                try:
+                    improved_tick()  # 1.8.2 (T9): the Improved pay headline follows the bid month in progress
+                except Exception as e:  # noqa: BLE001
+                    log.info("improved pay headline: %s", type(e).__name__)
                 try:  # 1.7.2 (FW-0066): a pilot's upload or the admin's decision, followed whatever the state
                     if UPLOADS_RECHECK.is_set() or upload_gens_pending():
                         UPLOADS_RECHECK.clear()
